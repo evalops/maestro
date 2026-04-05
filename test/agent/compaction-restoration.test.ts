@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	BACKGROUND_TASKS_COMPACTION_CUSTOM_TYPE,
+	HEADLESS_CLIENT_REQUESTS_COMPACTION_CUSTOM_TYPE,
 	MCP_SERVERS_COMPACTION_CUSTOM_TYPE,
 	PLAN_FILE_COMPACTION_CUSTOM_TYPE,
 	PLAN_MODE_COMPACTION_CUSTOM_TYPE,
 	collectBackgroundTaskMessagesForCompaction,
+	collectHeadlessClientRequestMessagesForCompaction,
 	collectMcpMessagesForCompaction,
 	collectPlanMessagesForCompaction,
 } from "../../src/agent/compaction-restoration.js";
@@ -356,5 +358,102 @@ describe("collectMcpMessagesForCompaction", () => {
 		expect(collectMcpMessagesForCompaction(existingMessages, servers)).toEqual(
 			[],
 		);
+	});
+});
+
+describe("collectHeadlessClientRequestMessagesForCompaction", () => {
+	it("returns no messages when no client requests are pending", () => {
+		expect(
+			collectHeadlessClientRequestMessagesForCompaction([], {
+				pendingClientTools: [],
+				pendingUserInputs: [],
+			}),
+		).toEqual([]);
+	});
+
+	it("returns a hidden restoration message for pending client tools and user inputs", () => {
+		const restored = collectHeadlessClientRequestMessagesForCompaction([], {
+			pendingClientTools: [
+				{
+					call_id: "call_client",
+					tool: "artifacts",
+					args: {
+						command: "create",
+						filename: "report.txt",
+						token: "sk-secret-value",
+					},
+				},
+			],
+			pendingUserInputs: [
+				{
+					call_id: "call_user_input",
+					request_id: "req_user_input",
+					tool: "ask_user",
+					args: {
+						questions: [
+							{
+								header: "Stack",
+								question: "Which schema library should we use?",
+							},
+							{
+								header: "Tests",
+								question: "Do we need integration coverage?",
+							},
+						],
+					},
+				},
+			],
+		});
+
+		expect(restored).toEqual([
+			expect.objectContaining({
+				role: "hookMessage",
+				customType: HEADLESS_CLIENT_REQUESTS_COMPACTION_CUSTOM_TYPE,
+				display: false,
+				content: expect.stringContaining(
+					"# Pending headless client requests restored after compaction",
+				),
+			}),
+		]);
+
+		const content = String(restored[0]?.content);
+		expect(content).toContain(
+			"type=client_tool; tool=artifacts; call_id=call_client",
+		);
+		expect(content).toContain(
+			'args={"command":"create","filename":"report.txt","token":"[secret]"}',
+		);
+		expect(content).toContain(
+			"type=user_input; tool=ask_user; call_id=call_user_input; request_id=req_user_input; questions=2 [Stack, Tests]",
+		);
+		expect(content).toContain(
+			"duplicate requests unless the pending request is cancelled or fails",
+		);
+	});
+
+	it("deduplicates already-present headless client request restoration messages", () => {
+		const existing = collectHeadlessClientRequestMessagesForCompaction([], {
+			pendingClientTools: [
+				{
+					call_id: "call_client",
+					tool: "artifacts",
+					args: { command: "create", filename: "report.txt" },
+				},
+			],
+			pendingUserInputs: [],
+		});
+
+		expect(
+			collectHeadlessClientRequestMessagesForCompaction(existing, {
+				pendingClientTools: [
+					{
+						call_id: "call_client",
+						tool: "artifacts",
+						args: { command: "create", filename: "report.txt" },
+					},
+				],
+				pendingUserInputs: [],
+			}),
+		).toEqual([]);
 	});
 });

@@ -340,6 +340,18 @@ function createMcpServersHookMessage(
 	};
 }
 
+function createHeadlessClientRequestsHookMessage(
+	content = '# Pending headless client requests restored after compaction\n\n- type=client_tool; tool=artifacts; call_id=call_client; args={"command":"create","filename":"report.txt"}',
+): AppMessage {
+	return {
+		role: "hookMessage",
+		customType: "headless-client-requests",
+		content,
+		display: false,
+		timestamp: Date.now(),
+	};
+}
+
 function createPlanModeHookMessage(
 	content = "Plan file: /tmp/plan.md",
 ): AppMessage {
@@ -2240,6 +2252,41 @@ Current plan contents:
 		);
 		expect(String(restoredMcpMessages[0]?.content)).not.toContain(
 			"tools=1; resources=0",
+		);
+	});
+
+	it("refreshes stale kept-tail headless client request context across repeated compactions", async () => {
+		const messages = buildConversation(10);
+		messages.splice(
+			messages.length - 1,
+			0,
+			createHeadlessClientRequestsHookMessage(
+				'# Pending headless client requests restored after compaction\n\n- type=client_tool; tool=artifacts; call_id=call_client; args={"command":"old"}',
+			),
+		);
+		const agent = createMockAgentWithoutAppendMessage(messages);
+		const sessionManager = createMockSessionManager();
+
+		const result = await performCompaction({
+			agent,
+			sessionManager,
+			getPostKeepMessages: async () => [
+				createHeadlessClientRequestsHookMessage(
+					'# Pending headless client requests restored after compaction\n\n- type=client_tool; tool=artifacts; call_id=call_client; args={"command":"new"}',
+				),
+			],
+		});
+
+		expect(result.success).toBe(true);
+		const restoredMessages = getReplacedMessages(agent).filter(
+			(message) =>
+				message.role === "hookMessage" &&
+				message.customType === "headless-client-requests",
+		);
+		expect(restoredMessages).toHaveLength(1);
+		expect(String(restoredMessages[0]?.content)).toContain('"command":"new"');
+		expect(String(restoredMessages[0]?.content)).not.toContain(
+			'"command":"old"',
 		);
 	});
 

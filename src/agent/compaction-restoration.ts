@@ -12,7 +12,11 @@ export const PLAN_FILE_COMPACTION_CUSTOM_TYPE = "plan-file";
 export const PLAN_MODE_COMPACTION_CUSTOM_TYPE = "plan-mode";
 export const BACKGROUND_TASKS_COMPACTION_CUSTOM_TYPE = "background-tasks";
 export const MCP_SERVERS_COMPACTION_CUSTOM_TYPE = "mcp-servers";
+export const HEADLESS_CLIENT_REQUESTS_COMPACTION_CUSTOM_TYPE =
+	"headless-client-requests";
 const MAX_MCP_RESTORED_ITEMS_PER_CATEGORY = 5;
+const MAX_HEADLESS_RESTORED_REQUESTS = 5;
+const MAX_HEADLESS_ARGS_SUMMARY_LENGTH = 180;
 
 export interface McpServerRestoreState {
 	name: string;
@@ -21,6 +25,16 @@ export interface McpServerRestoreState {
 	tools: { name: string }[];
 	resources: string[];
 	prompts: string[];
+}
+
+export interface HeadlessPendingRequestRestoreState {
+	call_id: string;
+	request_id?: string;
+	tool: string;
+	args: unknown;
+	display_name?: string;
+	summary_label?: string;
+	action_description?: string;
 }
 
 function sanitizeBackgroundTaskField(value: string): string {
@@ -144,6 +158,159 @@ function buildMcpServersCompactionContent(
 	].join("\n");
 }
 
+function sanitizeHeadlessRequestField(value: string): string {
+	return sanitizeWithStaticMask(value).replace(/\s+/g, " ").trim();
+}
+
+function redactStructuredSecretFields(value: string): string {
+	return value.replace(
+		/"[^"]*(?:token|secret|password|key)[^"]*"\s*:\s*"([^"]+)"/gi,
+		(full, secret: string) => full.replace(secret, "[secret]"),
+	);
+}
+
+function stringifyHeadlessRequestArgs(args: unknown): string | null {
+	try {
+		const serialized = JSON.stringify(args);
+		if (typeof serialized !== "string" || serialized.length === 0) {
+			return null;
+		}
+		const sanitized = sanitizeHeadlessRequestField(
+			redactStructuredSecretFields(serialized),
+		);
+		if (sanitized.length <= MAX_HEADLESS_ARGS_SUMMARY_LENGTH) {
+			return sanitized;
+		}
+		return `${sanitized.slice(0, MAX_HEADLESS_ARGS_SUMMARY_LENGTH - 3)}...`;
+	} catch {
+		return null;
+	}
+}
+
+function summarizeHeadlessUserInputArgs(args: unknown): string | null {
+	if (typeof args !== "object" || args === null || !("questions" in args)) {
+		return null;
+	}
+
+	const questions = Array.isArray(args.questions) ? args.questions : [];
+	if (questions.length === 0) {
+		return null;
+	}
+
+	const headers = questions
+		.map((question) =>
+			typeof question === "object" &&
+			question !== null &&
+			"header" in question &&
+			typeof question.header === "string"
+				? sanitizeHeadlessRequestField(question.header)
+				: null,
+		)
+		.filter((header): header is string => Boolean(header));
+	const visibleHeaders = headers.slice(0, 3);
+	const hiddenHeaderCount = headers.length - visibleHeaders.length;
+
+	if (visibleHeaders.length === 0) {
+		return `questions=${questions.length}`;
+	}
+
+	const suffix = hiddenHeaderCount > 0 ? ` (+${hiddenHeaderCount} more)` : "";
+	return `questions=${questions.length} [${visibleHeaders.join(", ")}${suffix}]`;
+}
+
+function buildHeadlessPendingRequestLine(
+	type: "client_tool" | "user_input",
+	request: HeadlessPendingRequestRestoreState,
+): string {
+	const sections = [
+		`- type=${type}`,
+		`tool=${sanitizeHeadlessRequestField(request.tool)}`,
+		`call_id=${sanitizeHeadlessRequestField(request.call_id)}`,
+	];
+
+	if (
+		typeof request.request_id === "string" &&
+		request.request_id.length > 0 &&
+		request.request_id !== request.call_id
+	) {
+		sections.push(
+			`request_id=${sanitizeHeadlessRequestField(request.request_id)}`,
+		);
+	}
+	if (
+		typeof request.display_name === "string" &&
+		request.display_name.length > 0
+	) {
+		sections.push(
+			`display_name=${sanitizeHeadlessRequestField(request.display_name)}`,
+		);
+	}
+	if (
+		typeof request.summary_label === "string" &&
+		request.summary_label.length > 0
+	) {
+		sections.push(
+			`summary=${sanitizeHeadlessRequestField(request.summary_label)}`,
+		);
+	}
+	if (
+		typeof request.action_description === "string" &&
+		request.action_description.length > 0
+	) {
+		sections.push(
+			`action=${sanitizeHeadlessRequestField(request.action_description)}`,
+		);
+	}
+
+	const argsSummary =
+		type === "user_input"
+			? (summarizeHeadlessUserInputArgs(request.args) ??
+				stringifyHeadlessRequestArgs(request.args))
+			: stringifyHeadlessRequestArgs(request.args);
+	if (argsSummary) {
+		sections.push(
+			type === "user_input" && argsSummary.startsWith("questions=")
+				? argsSummary
+				: `args=${argsSummary}`,
+		);
+	}
+
+	return sections.join("; ");
+}
+
+function buildHeadlessClientRequestsCompactionContent(params: {
+	pendingClientTools: readonly HeadlessPendingRequestRestoreState[];
+	pendingUserInputs: readonly HeadlessPendingRequestRestoreState[];
+}): string | null {
+	const pendingRequests = [
+		...params.pendingClientTools.map((request) =>
+			buildHeadlessPendingRequestLine("client_tool", request),
+		),
+		...params.pendingUserInputs.map((request) =>
+			buildHeadlessPendingRequestLine("user_input", request),
+		),
+	];
+
+	if (pendingRequests.length === 0) {
+		return null;
+	}
+
+	const visibleRequests = pendingRequests.slice(
+		0,
+		MAX_HEADLESS_RESTORED_REQUESTS,
+	);
+	const hiddenCount = pendingRequests.length - visibleRequests.length;
+
+	return [
+		"# Pending headless client requests restored after compaction",
+		"",
+		"These requests are still pending with the connected headless client. Reuse the existing client-tool or `ask_user` flow instead of issuing duplicate requests unless the pending request is cancelled or fails.",
+		"",
+		...visibleRequests,
+		...(hiddenCount > 0 ? [`- (+${hiddenCount} more pending requests)`] : []),
+	].join("\n");
+}
+
 function hasMcpServersCompactionMessage(
 	messages: AppMessage[],
 	expectedContent: string,
@@ -152,6 +319,18 @@ function hasMcpServersCompactionMessage(
 		(message) =>
 			message.role === "hookMessage" &&
 			message.customType === MCP_SERVERS_COMPACTION_CUSTOM_TYPE &&
+			message.content === expectedContent,
+	);
+}
+
+function hasHeadlessClientRequestsCompactionMessage(
+	messages: AppMessage[],
+	expectedContent: string,
+): boolean {
+	return messages.some(
+		(message) =>
+			message.role === "hookMessage" &&
+			message.customType === HEADLESS_CLIENT_REQUESTS_COMPACTION_CUSTOM_TYPE &&
 			message.content === expectedContent,
 	);
 }
@@ -332,6 +511,32 @@ export function collectMcpMessagesForCompaction(
 	return [
 		createHookMessage(
 			MCP_SERVERS_COMPACTION_CUSTOM_TYPE,
+			content,
+			false,
+			undefined,
+			new Date().toISOString(),
+		),
+	];
+}
+
+export function collectHeadlessClientRequestMessagesForCompaction(
+	messages: AppMessage[],
+	params: {
+		pendingClientTools: readonly HeadlessPendingRequestRestoreState[];
+		pendingUserInputs: readonly HeadlessPendingRequestRestoreState[];
+	},
+): AppMessage[] {
+	const content = buildHeadlessClientRequestsCompactionContent(params);
+	if (
+		typeof content !== "string" ||
+		hasHeadlessClientRequestsCompactionMessage(messages, content)
+	) {
+		return [];
+	}
+
+	return [
+		createHookMessage(
+			HEADLESS_CLIENT_REQUESTS_COMPACTION_CUSTOM_TYPE,
 			content,
 			false,
 			undefined,
