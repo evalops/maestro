@@ -25,6 +25,7 @@ import {
 	enterPlanMode,
 	exitPlanMode,
 } from "../../src/agent/plan-mode.js";
+import { SESSION_START_INITIAL_USER_METADATA_KIND } from "../../src/agent/session-start-metadata.js";
 import type {
 	AppMessage,
 	AssistantMessage,
@@ -297,6 +298,20 @@ function createSessionStartHookMessage(
 		customType: "SessionStart",
 		content,
 		display: true,
+		timestamp: Date.now(),
+	};
+}
+
+function createSessionStartInitialUserMessage(
+	content = "Compaction hook prompt",
+): AppMessage {
+	return {
+		role: "user",
+		content,
+		metadata: {
+			kind: SESSION_START_INITIAL_USER_METADATA_KIND,
+			source: "compact",
+		},
 		timestamp: Date.now(),
 	};
 }
@@ -836,6 +851,28 @@ describe("performCompaction", () => {
 		);
 	});
 
+	it("skips compact SessionStart initial user messages in summarization input", async () => {
+		const messages = buildConversation(10);
+		messages.splice(2, 0, createSessionStartInitialUserMessage());
+		const agent = createMockAgent(messages);
+		const sessionManager = createMockSessionManager();
+
+		await performCompaction({ agent, sessionManager });
+
+		const summaryInput = (agent.generateSummary as ReturnType<typeof vi.fn>)
+			.mock.calls[0]?.[0] as AppMessage[] | undefined;
+		expect(summaryInput).toBeDefined();
+		expect(summaryInput).not.toContainEqual(
+			expect.objectContaining({
+				role: "user",
+				content: "Compaction hook prompt",
+				metadata: expect.objectContaining({
+					kind: SESSION_START_INITIAL_USER_METADATA_KIND,
+				}),
+			}),
+		);
+	});
+
 	it("skips background task restoration guidance in summarization input", async () => {
 		const messages = buildConversation(10);
 		messages.splice(2, 0, createBackgroundTasksHookMessage());
@@ -896,6 +933,54 @@ describe("performCompaction", () => {
 		expect(backgroundMessages[0]).not.toEqual(
 			expect.objectContaining({
 				content: expect.stringContaining("status=running"),
+			}),
+		);
+	});
+
+	it("replaces stale SessionStart restoration messages in the kept tail", async () => {
+		const messages = [
+			...buildConversation(10),
+			createSessionStartHookMessage("Stale compacted repo context."),
+			createSessionStartInitialUserMessage("Stale compaction hook prompt"),
+		];
+		const agent = createMockAgent(messages);
+		const sessionManager = createMockSessionManager();
+
+		await performCompaction({
+			agent,
+			sessionManager,
+			getPostKeepMessages: async () => [
+				createSessionStartHookMessage("Fresh compacted repo context."),
+				createSessionStartInitialUserMessage("Fresh compaction hook prompt"),
+			],
+		});
+
+		const sessionStartHooks = getReplacedMessages(agent).filter(
+			(message) =>
+				message.role === "hookMessage" && message.customType === "SessionStart",
+		);
+		expect(sessionStartHooks).toHaveLength(1);
+		expect(sessionStartHooks[0]).toEqual(
+			expect.objectContaining({
+				content: "Fresh compacted repo context.",
+			}),
+		);
+		expect(sessionStartHooks[0]).not.toEqual(
+			expect.objectContaining({
+				content: "Stale compacted repo context.",
+			}),
+		);
+
+		const sessionStartUsers = getReplacedMessages(agent).filter(
+			(message) =>
+				message.role === "user" &&
+				message.content === "Fresh compaction hook prompt",
+		);
+		expect(sessionStartUsers).toHaveLength(1);
+		expect(getReplacedMessages(agent)).not.toContainEqual(
+			expect.objectContaining({
+				role: "user",
+				content: "Stale compaction hook prompt",
 			}),
 		);
 	});

@@ -287,6 +287,8 @@ export interface UserMessage {
 	role: "user";
 	/** Message content - string or array of content blocks */
 	content: string | (TextContent | ImageContent)[];
+	/** Optional non-LLM metadata for runtime bookkeeping */
+	metadata?: Record<string, unknown>;
 	/** Unix timestamp in milliseconds when message was created */
 	timestamp: number;
 }

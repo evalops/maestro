@@ -65,6 +65,7 @@ import {
 	createHookMessage,
 } from "./custom-messages.js";
 import { getPlanFilePathForCompactionRestore } from "./plan-mode.js";
+import { SESSION_START_INITIAL_USER_METADATA_KIND } from "./session-start-metadata.js";
 import type {
 	Api,
 	AppMessage,
@@ -198,24 +199,36 @@ function shouldSkipAssistantCompactionMessage(message: AppMessage): boolean {
 
 function shouldSkipReinjectedCompactionMessage(message: AppMessage): boolean {
 	return (
-		message.role === "hookMessage" &&
-		((message.customType === "skill" && message.display === false) ||
-			message.customType === READ_RESTORE_COMPACTION_CUSTOM_TYPE ||
-			message.customType === PLAN_FILE_COMPACTION_CUSTOM_TYPE ||
-			message.customType === BACKGROUND_TASKS_COMPACTION_CUSTOM_TYPE ||
-			message.customType === MCP_SERVERS_COMPACTION_CUSTOM_TYPE ||
-			message.customType === "PostCompact" ||
-			message.customType === "SessionStart" ||
-			message.customType === PLAN_MODE_COMPACTION_CUSTOM_TYPE)
+		(message.role === "hookMessage" &&
+			((message.customType === "skill" && message.display === false) ||
+				message.customType === READ_RESTORE_COMPACTION_CUSTOM_TYPE ||
+				message.customType === PLAN_FILE_COMPACTION_CUSTOM_TYPE ||
+				message.customType === BACKGROUND_TASKS_COMPACTION_CUSTOM_TYPE ||
+				message.customType === MCP_SERVERS_COMPACTION_CUSTOM_TYPE ||
+				message.customType === "PostCompact" ||
+				message.customType === "SessionStart" ||
+				message.customType === PLAN_MODE_COMPACTION_CUSTOM_TYPE)) ||
+		isSessionStartInitialUserMessage(message)
+	);
+}
+
+function isSessionStartInitialUserMessage(message: AppMessage): boolean {
+	return (
+		message.role === "user" &&
+		typeof message.metadata === "object" &&
+		message.metadata !== null &&
+		message.metadata.kind === SESSION_START_INITIAL_USER_METADATA_KIND
 	);
 }
 
 function stripRuntimeRestoreMessages(messages: AppMessage[]): AppMessage[] {
 	return messages.filter(
 		(message) =>
-			message.role !== "hookMessage" ||
-			(message.customType !== BACKGROUND_TASKS_COMPACTION_CUSTOM_TYPE &&
-				message.customType !== MCP_SERVERS_COMPACTION_CUSTOM_TYPE),
+			(message.role !== "hookMessage" ||
+				(message.customType !== BACKGROUND_TASKS_COMPACTION_CUSTOM_TYPE &&
+					message.customType !== MCP_SERVERS_COMPACTION_CUSTOM_TYPE &&
+					message.customType !== "SessionStart")) &&
+			!isSessionStartInitialUserMessage(message),
 	);
 }
 

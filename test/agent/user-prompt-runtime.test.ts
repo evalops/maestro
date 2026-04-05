@@ -7,6 +7,7 @@ import {
 	clearPlanModeState,
 	enterPlanMode,
 } from "../../src/agent/plan-mode.js";
+import { SESSION_START_INITIAL_USER_METADATA_KIND } from "../../src/agent/session-start-metadata.js";
 import type {
 	AgentEvent,
 	AgentRunConfig,
@@ -211,6 +212,10 @@ describe("user prompt runtime", () => {
 		expect(queueNextRunHistoryMessage).toHaveBeenNthCalledWith(2, {
 			role: "user",
 			content: "Read the project conventions first.",
+			metadata: {
+				kind: SESSION_START_INITIAL_USER_METADATA_KIND,
+				source: "cli",
+			},
 			timestamp: expect.any(Number),
 		});
 		expect(queueNextRunPromptOnlyMessage).not.toHaveBeenCalled();
@@ -269,6 +274,10 @@ describe("user prompt runtime", () => {
 		expect(appendMessage).toHaveBeenNthCalledWith(3, {
 			role: "user",
 			content: "Resume from the compacted state.",
+			metadata: {
+				kind: SESSION_START_INITIAL_USER_METADATA_KIND,
+				source: "compact",
+			},
 			timestamp: expect.any(Number),
 		});
 		expect(saveMessage).toHaveBeenCalledTimes(3);
@@ -290,6 +299,10 @@ describe("user prompt runtime", () => {
 		expect(saveMessage).toHaveBeenNthCalledWith(3, {
 			role: "user",
 			content: "Resume from the compacted state.",
+			metadata: {
+				kind: SESSION_START_INITIAL_USER_METADATA_KIND,
+				source: "compact",
+			},
 			timestamp: expect.any(Number),
 		});
 		expect(queueNextRunSystemPromptAddition).not.toHaveBeenCalled();
