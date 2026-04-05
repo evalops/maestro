@@ -46,8 +46,12 @@ import {
 	type AutoRetryController,
 	createAutoRetryController,
 } from "../agent/auto-retry.js";
+import { applySessionEndHooks } from "../agent/session-lifecycle-hooks.js";
 import { SessionRecoveryManager } from "../agent/session-recovery.js";
-import { runUserPromptWithRecovery } from "../agent/user-prompt-runtime.js";
+import {
+	applySessionStartHooks,
+	runUserPromptWithRecovery,
+} from "../agent/user-prompt-runtime.js";
 import {
 	type AutoVerifyService,
 	registerTestVerificationHooks,
@@ -922,6 +926,20 @@ export class TuiRenderer {
 				footer: this.footer,
 				notificationView: this.notificationView,
 				clearActiveSkills: () => this.skillsController.clearActiveSkills(),
+				runSessionEndHooks: (reason) =>
+					applySessionEndHooks({
+						agent: this.agent,
+						sessionManager: this.sessionManager,
+						cwd: process.cwd(),
+						reason,
+					}),
+				runSessionStartHooks: (source) =>
+					applySessionStartHooks({
+						agent: this.agent,
+						sessionManager: this.sessionManager,
+						cwd: process.cwd(),
+						source,
+					}),
 			},
 			callbacks: {
 				refreshFooterHint: () => this.refreshFooterHint(),
@@ -1698,6 +1716,20 @@ export class TuiRenderer {
 				getAgentState: () => this.agent.state,
 				updateFooterState: (state) => this.footer.updateState(state),
 				refreshFooterHint: () => this.refreshFooterHint(),
+				runSessionEndHooks: (reason) =>
+					applySessionEndHooks({
+						agent: this.agent,
+						sessionManager: this.sessionManager,
+						cwd: process.cwd(),
+						reason,
+					}),
+				runSessionStartHooks: (source) =>
+					applySessionStartHooks({
+						agent: this.agent,
+						sessionManager: this.sessionManager,
+						cwd: process.cwd(),
+						source,
+					}),
 				showSuccess: (msg) => this.notificationView.showToast(msg, "success"),
 				showError: (msg) => {
 					this.chatContainer.addChild(new Spacer(1));

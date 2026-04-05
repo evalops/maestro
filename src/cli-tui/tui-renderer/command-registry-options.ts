@@ -113,7 +113,9 @@ export interface TuiCommandRegistryDeps {
 	handleCompactToolsCommand: (rawInput: string) => void;
 	handleSteerCommand: (context: CommandExecutionContext) => void;
 	handleStatsCommand: (context: CommandExecutionContext) => void;
-	handleNewChatCommand: (context: CommandExecutionContext) => void;
+	handleNewChatCommand: (
+		context: CommandExecutionContext,
+	) => void | Promise<void>;
 	handleTreeCommand: (context: CommandExecutionContext) => void;
 	handleMcpCommand: (context: CommandExecutionContext) => void;
 	handleComposerCommand: (context: CommandExecutionContext) => void;

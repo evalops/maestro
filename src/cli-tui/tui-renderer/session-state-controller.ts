@@ -14,6 +14,7 @@ import type {
 	AppMessage,
 	ThinkingLevel,
 } from "../../agent/types.js";
+import type { SessionEndHookInput } from "../../hooks/types.js";
 import { getRegisteredModels } from "../../models/registry.js";
 import type { SessionManager } from "../../session/manager.js";
 import type { CommandExecutionContext } from "../commands/types.js";
@@ -40,6 +41,8 @@ export interface SessionStateControllerDeps {
 	footer: FooterComponent;
 	notificationView: NotificationView;
 	clearActiveSkills?: () => void;
+	runSessionEndHooks?: (reason: SessionEndHookInput["reason"]) => Promise<void>;
+	runSessionStartHooks?: (source: string) => Promise<void>;
 }
 
 export interface SessionStateControllerCallbacks {
@@ -97,14 +100,25 @@ export class SessionStateController {
 		this.deps.messageView.renderInitialMessages(this.deps.agent.state);
 	}
 
-	handleNewChatCommand(context: CommandExecutionContext): void {
+	async handleNewChatCommand(context: CommandExecutionContext): Promise<void> {
 		if (this.callbacks.isAgentRunning()) {
 			context.showError(
 				"Wait for the current run to finish before starting a new chat.",
 			);
 			return;
 		}
-		this.resetConversation([], undefined, "Started a new chat session.");
+		try {
+			await this.deps.runSessionEndHooks?.("clear");
+			this.resetConversation([], undefined);
+			await this.deps.runSessionStartHooks?.("new_chat");
+			this.deps.notificationView.showToast(
+				"Started a new chat session.",
+				"success",
+			);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			context.showError(`Failed to start a new chat session: ${message}`);
+		}
 	}
 
 	handleSessionRecoverCommand(context: CommandExecutionContext): void {

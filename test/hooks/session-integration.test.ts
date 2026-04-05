@@ -165,6 +165,7 @@ describe("SessionHookService", () => {
 				"error",
 				"timeout",
 				"complete",
+				"clear",
 			];
 
 			for (const reason of reasons) {

@@ -158,7 +158,7 @@ export interface SessionStartHookInput extends HookInputBase {
 export interface SessionEndHookInput extends HookInputBase {
 	hook_event_name: "SessionEnd";
 	/** Reason for session ending */
-	reason: "user_exit" | "error" | "timeout" | "abort" | "complete";
+	reason: "user_exit" | "error" | "timeout" | "abort" | "complete" | "clear";
 	/** Duration in milliseconds */
 	duration_ms: number;
 	/** Number of turns in the session */

@@ -6,6 +6,7 @@
  */
 
 import type { AgentState } from "../../agent/types.js";
+import type { SessionEndHookInput } from "../../hooks/types.js";
 
 export interface ClearControllerCallbacks {
 	/** Abort agent and wait for idle */
@@ -52,6 +53,10 @@ export interface ClearControllerCallbacks {
 	updateFooterState: (state: AgentState) => void;
 	/** Refresh footer hint */
 	refreshFooterHint: () => void;
+	/** Run session end hooks before clearing */
+	runSessionEndHooks?: (reason: SessionEndHookInput["reason"]) => Promise<void>;
+	/** Run session start hooks after clearing */
+	runSessionStartHooks?: (source: string) => Promise<void>;
 	/** Show success notification */
 	showSuccess: (message: string) => void;
 	/** Show error in chat */
@@ -93,6 +98,8 @@ export class ClearController {
 			this.callbacks.stopLoader();
 			this.callbacks.clearStatusContainer();
 
+			await this.callbacks.runSessionEndHooks?.("clear");
+
 			// Reset agent and session
 			this.callbacks.resetAgent();
 			this.callbacks.resetSession();
@@ -119,6 +126,8 @@ export class ClearController {
 
 			// Clear interrupt state if armed
 			this.callbacks.clearInterruptState();
+
+			await this.callbacks.runSessionStartHooks?.("clear");
 
 			// Reset message view state and render initial messages
 			const state = this.callbacks.getAgentState();

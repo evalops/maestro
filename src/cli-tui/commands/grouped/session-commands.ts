@@ -24,7 +24,7 @@ import { isHelpRequest, isSessionId, parseSubcommand } from "./utils.js";
 
 export interface SessionCommandDeps {
 	handleSessionInfo: (ctx: CommandExecutionContext) => void;
-	handleNewChat: () => void;
+	handleNewChat: () => void | Promise<void>;
 	handleClear: () => Promise<void> | void;
 	handleSessionsList: (ctx: CommandExecutionContext) => Promise<void> | void;
 	handleBranch: (ctx: CommandExecutionContext) => Promise<void> | void;

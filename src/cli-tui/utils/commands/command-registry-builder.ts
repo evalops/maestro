@@ -74,7 +74,7 @@ export interface CommandRegistryOptions {
 	handleQuit: (context: CommandExecutionContext) => void;
 	handleApprovals: (context: CommandExecutionContext) => void;
 	handlePlanMode: (context: CommandExecutionContext) => void;
-	handleNewChat: (context: CommandExecutionContext) => void;
+	handleNewChat: (context: CommandExecutionContext) => void | Promise<void>;
 	handleInitAgents: (context: CommandExecutionContext) => void;
 	handleMcp: (context: CommandExecutionContext) => void;
 	handleComposer: (context: CommandExecutionContext) => void;
