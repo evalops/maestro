@@ -5,6 +5,7 @@
 import type {
 	ComposerActionApprovalRequest,
 	ComposerApprovalMode,
+	ComposerToolRetryRequest,
 } from "@evalops/contracts";
 import { LitElement, type PropertyValues, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
@@ -49,6 +50,7 @@ import "./composer-share-dialog.js";
 import "./composer-export-dialog.js";
 import "./composer-settings.js";
 import "./composer-approval.js";
+import "./composer-tool-retry.js";
 import "./model-selector.js";
 import "./admin-settings.js";
 import "./composer-artifacts-panel.js";
@@ -1057,6 +1059,8 @@ export class ComposerChat extends LitElement {
 	@state() private lastApiError: string | null = null;
 	@state() private pendingApprovalQueue: ComposerActionApprovalRequest[] = [];
 	@state() private approvalSubmitting = false;
+	@state() private pendingToolRetryQueue: ComposerToolRetryRequest[] = [];
+	@state() private toolRetrySubmitting = false;
 	@state() private approvalMode: ComposerApprovalMode | null = null;
 	@state() private approvalModeNotice: string | null = null;
 	@state() private nextRefreshAllowed = 0;
@@ -1527,12 +1531,39 @@ export class ComposerChat extends LitElement {
 		);
 	}
 
+	private enqueueToolRetryRequest(request: ComposerToolRetryRequest) {
+		if (this.pendingToolRetryQueue.some((entry) => entry.id === request.id)) {
+			return;
+		}
+		this.pendingToolRetryQueue = [...this.pendingToolRetryQueue, request];
+	}
+
+	private clearToolRetryRequest(requestId: string) {
+		this.pendingToolRetryQueue = this.pendingToolRetryQueue.filter(
+			(request) => request.id !== requestId,
+		);
+	}
+
 	private handleApproveRequest = (e: CustomEvent<{ requestId?: string }>) => {
 		void this.submitApprovalDecision("approved", e.detail?.requestId);
 	};
 
 	private handleDenyRequest = (e: CustomEvent<{ requestId?: string }>) => {
 		void this.submitApprovalDecision("denied", e.detail?.requestId);
+	};
+
+	private handleRetryRequest = (e: CustomEvent<{ requestId?: string }>) => {
+		void this.submitToolRetryDecision("retry", e.detail?.requestId);
+	};
+
+	private handleSkipRetryRequest = (e: CustomEvent<{ requestId?: string }>) => {
+		void this.submitToolRetryDecision("skip", e.detail?.requestId);
+	};
+
+	private handleAbortRetryRequest = (
+		e: CustomEvent<{ requestId?: string }>,
+	) => {
+		void this.submitToolRetryDecision("abort", e.detail?.requestId);
 	};
 
 	private async submitApprovalDecision(
@@ -1563,6 +1594,41 @@ export class ComposerChat extends LitElement {
 			);
 		} finally {
 			this.approvalSubmitting = false;
+		}
+	}
+
+	private async submitToolRetryDecision(
+		action: "retry" | "skip" | "abort",
+		requestId?: string,
+	) {
+		if (!requestId || this.toolRetrySubmitting) {
+			return;
+		}
+
+		this.toolRetrySubmitting = true;
+
+		try {
+			await this.apiClient.submitToolRetryDecision({ requestId, action });
+			this.clearToolRetryRequest(requestId);
+			this.showToast(
+				action === "retry"
+					? "Retry submitted"
+					: action === "skip"
+						? "Retry skipped"
+						: "Retry aborted",
+				action === "abort" ? "info" : "success",
+				1500,
+			);
+		} catch (error) {
+			this.showToast(
+				error instanceof Error
+					? error.message
+					: "Failed to submit retry decision",
+				"error",
+				2200,
+			);
+		} finally {
+			this.toolRetrySubmitting = false;
 		}
 	}
 
@@ -1956,6 +2022,8 @@ export class ComposerChat extends LitElement {
 		if (changed.has("currentSessionId")) {
 			this.pendingApprovalQueue = [];
 			this.approvalSubmitting = false;
+			this.pendingToolRetryQueue = [];
+			this.toolRetrySubmitting = false;
 			if (this.currentSessionId) {
 				void this.refreshUiState(this.currentSessionId);
 			}
@@ -3082,6 +3150,16 @@ export class ComposerChat extends LitElement {
 						break;
 					}
 
+					case "tool_retry_required": {
+						this.enqueueToolRetryRequest(agentEvent.request);
+						break;
+					}
+
+					case "tool_retry_resolved": {
+						this.clearToolRetryRequest(agentEvent.request.id);
+						break;
+					}
+
 					case "client_tool_request": {
 						if (agentEvent.toolName === "artifacts") {
 							const args = coerceArtifactsArgs(agentEvent.args);
@@ -3743,15 +3821,28 @@ export class ComposerChat extends LitElement {
 					: latency > 400
 						? "ok"
 						: "fast";
+		const activeApprovalRequest = this.pendingApprovalQueue[0] ?? null;
+		const activeToolRetryRequest =
+			activeApprovalRequest === null
+				? (this.pendingToolRetryQueue[0] ?? null)
+				: null;
 
 		return html`
 			<composer-approval
-				.request=${this.pendingApprovalQueue[0] ?? null}
+				.request=${activeApprovalRequest}
 				.submitting=${this.approvalSubmitting}
 				.queueLength=${this.pendingApprovalQueue.length}
 				@approve=${this.handleApproveRequest}
 				@deny=${this.handleDenyRequest}
 			></composer-approval>
+			<composer-tool-retry
+				.request=${activeToolRetryRequest}
+				.submitting=${this.toolRetrySubmitting}
+				.queueLength=${this.pendingToolRetryQueue.length}
+				@retry=${this.handleRetryRequest}
+				@skip=${this.handleSkipRetryRequest}
+				@abort=${this.handleAbortRetryRequest}
+			></composer-tool-retry>
 			<composer-attachment-viewer
 				.open=${this.attachmentViewerOpen}
 				.attachment=${this.attachmentViewerAttachment}

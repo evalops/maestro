@@ -79,4 +79,41 @@ describe("ApiClient approvals", () => {
 		expect(headers.get("x-composer-api-key")).toBe("api-key");
 		expect(headers.get("x-composer-csrf")).toBe("csrf-token");
 	});
+
+	it("posts tool retry decisions to the chat tool-retry endpoint", async () => {
+		global.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ success: true }), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			}),
+		);
+
+		const api = new ApiClient("http://localhost:8080", {
+			auth: {
+				accessToken: "access-token",
+				apiKey: "api-key",
+				csrfToken: "csrf-token",
+			},
+		});
+		await api.submitToolRetryDecision({
+			requestId: "retry_123",
+			action: "retry",
+			reason: "Try again",
+		});
+
+		expect(global.fetch).toHaveBeenCalled();
+		const [url, init] = vi.mocked(global.fetch).mock.calls[0] ?? [];
+		const headers = new Headers((init as RequestInit).headers);
+		expect(String(url)).toContain("/api/chat/tool-retry");
+		expect((init as RequestInit).body).toBe(
+			JSON.stringify({
+				requestId: "retry_123",
+				action: "retry",
+				reason: "Try again",
+			}),
+		);
+		expect(headers.get("authorization")).toBe("Bearer access-token");
+		expect(headers.get("x-composer-api-key")).toBe("api-key");
+		expect(headers.get("x-composer-csrf")).toBe("csrf-token");
+	});
 });

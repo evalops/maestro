@@ -15,6 +15,7 @@ import {
 import { handleApproval } from "../../src/server/handlers/approval.js";
 import { handleChat } from "../../src/server/handlers/chat.js";
 import { handleClientToolResult } from "../../src/server/handlers/client-tools.js";
+import { handleToolRetry } from "../../src/server/handlers/tool-retry.js";
 import { serverRequestManager } from "../../src/server/server-request-manager.js";
 
 const mockModel: RegisteredModel = {
@@ -473,6 +474,139 @@ describe("handleChat", () => {
 		expect(serverRequestManager.listPending()).toEqual([]);
 		expect(res.body).toContain("[DONE]");
 		expect(res.body).toContain("artifact created");
+	});
+
+	it("resolves tool retry requests through the shared tool-retry endpoint during SSE chat", async () => {
+		const req = new PassThrough() as MockPassThrough;
+		req.method = "POST";
+		req.url = "/api/chat";
+		req.headers = {};
+		req.end(
+			JSON.stringify({
+				messages: [{ role: "user", content: "retry the tool if needed" }],
+			}),
+		);
+
+		const res = makeRes();
+		const createAgent: WebServerContext["createAgent"] = async (
+			_model,
+			_thinking,
+			_approval,
+			options,
+		) => {
+			type EventCallback = (e: unknown) => void | Promise<void>;
+			let subscriber: EventCallback | undefined;
+			return {
+				state: {
+					systemPrompt: "",
+					model: mockModel,
+					thinkingLevel: "off",
+					tools: [],
+					messages: [],
+					isStreaming: false,
+					streamMessage: null,
+					pendingToolCalls: new Map(),
+				},
+				subscribe: (fn: EventCallback) => {
+					subscriber = fn;
+					return () => {
+						subscriber = undefined;
+					};
+				},
+				replaceMessages: () => {},
+				clearMessages: () => {},
+				prompt: async () => {
+					const retryService = options?.toolRetryService;
+					if (!retryService) {
+						throw new Error("tool retry service missing");
+					}
+					const decision = await retryService.requestDecision({
+						id: "retry_web_chat",
+						toolCallId: "call_bash",
+						toolName: "bash",
+						args: { command: "ls" },
+						errorMessage: "Command failed",
+						attempt: 1,
+						summary: "Retry bash command",
+					});
+					await subscriber?.({
+						type: "message_end",
+						message: {
+							role: "assistant",
+							content: [{ type: "text", text: decision.action }],
+							api: mockModel.api,
+							provider: mockModel.provider,
+							model: mockModel.id,
+							usage: {
+								input: 1,
+								output: 1,
+								cacheRead: 0,
+								cacheWrite: 0,
+								cost: {
+									input: 0,
+									output: 0,
+									cacheRead: 0,
+									cacheWrite: 0,
+									total: 0,
+								},
+							},
+							stopReason: "stop",
+							timestamp: Date.now(),
+						},
+					});
+				},
+				abort: () => {},
+			} as unknown as Agent;
+		};
+
+		const context: Partial<WebServerContext> = {
+			createAgent,
+			getRegisteredModel: async () => mockModel,
+			defaultApprovalMode: "prompt",
+			defaultProvider: "anthropic",
+			defaultModelId: mockModel.id,
+			corsHeaders: cors,
+		};
+
+		const chatPromise = handleChat(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			context as WebServerContext,
+		);
+
+		const pendingRequest = await waitForPendingRequest("tool_retry");
+		expect(pendingRequest).toMatchObject({
+			id: "retry_web_chat",
+			kind: "tool_retry",
+			toolName: "bash",
+		});
+
+		const retryReq = new PassThrough() as MockPassThrough;
+		retryReq.method = "POST";
+		retryReq.url = "/api/chat/tool-retry";
+		retryReq.headers = {};
+		retryReq.end(
+			JSON.stringify({
+				requestId: pendingRequest.id,
+				action: "retry",
+				reason: "Try again",
+			}),
+		);
+
+		const retryRes = makeRes();
+		await handleToolRetry(
+			retryReq as unknown as IncomingMessage,
+			retryRes as unknown as ServerResponse,
+			context as WebServerContext,
+		);
+
+		await chatPromise;
+
+		expect(retryRes.statusCode).toBe(200);
+		expect(retryRes.body).toContain('"success":true');
+		expect(serverRequestManager.listPending()).toEqual([]);
+		expect(res.body).toContain("[DONE]");
+		expect(res.body).toContain("retry");
 	});
 
 	it("runs Notification hooks during SSE chat even without desktop notifications configured", async () => {
