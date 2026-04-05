@@ -1949,6 +1949,42 @@ Current plan contents:
 		);
 	});
 
+	it("refreshes stale kept-tail active skill context from caller post-keep messages", async () => {
+		const messages = buildConversation(10);
+		messages.splice(messages.length - 1, 0, {
+			role: "hookMessage",
+			customType: "skill",
+			content: "Injected instructions for debug (stale)",
+			display: false,
+			details: { name: "debug", action: "activate" },
+			timestamp: Date.now(),
+		});
+		const agent = createMockAgentWithoutAppendMessage(messages);
+		const sessionManager = createMockSessionManager();
+
+		const result = await performCompaction({
+			agent,
+			sessionManager,
+			getPostKeepMessages: async () => [createActiveSkillHookMessage("debug")],
+		});
+
+		expect(result.success).toBe(true);
+		const restoredSkillMessages = getReplacedMessages(agent).filter(
+			(message) =>
+				message.role === "hookMessage" &&
+				message.customType === "skill" &&
+				typeof message.details === "object" &&
+				message.details !== null &&
+				"name" in message.details &&
+				message.details.name === "debug",
+		);
+		expect(restoredSkillMessages).toHaveLength(1);
+		expect(String(restoredSkillMessages[0]?.content)).toContain(
+			"Injected instructions for debug",
+		);
+		expect(String(restoredSkillMessages[0]?.content)).not.toContain("stale");
+	});
+
 	it("re-restores prior hidden MCP context across repeated compactions", async () => {
 		const servers = [
 			{

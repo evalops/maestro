@@ -439,7 +439,9 @@ function getSkillRestoreNameFromMessage(message: AppMessage): string | null {
 		: null;
 }
 
-function isToolSkillRestoreHookMessage(message: AppMessage): boolean {
+function isToolSkillRestoreHookMessage(
+	message: AppMessage,
+): message is HookMessage {
 	if (message.role !== "hookMessage" || message.customType !== "skill") {
 		return false;
 	}
@@ -450,6 +452,20 @@ function isToolSkillRestoreHookMessage(message: AppMessage): boolean {
 		details !== null &&
 		"source" in details &&
 		details.source === "tool"
+	);
+}
+
+function isActiveSkillHookMessage(message: AppMessage): message is HookMessage {
+	if (message.role !== "hookMessage" || message.customType !== "skill") {
+		return false;
+	}
+
+	const details = message.details;
+	return (
+		typeof details === "object" &&
+		details !== null &&
+		"action" in details &&
+		details.action === "activate"
 	);
 }
 
@@ -902,6 +918,53 @@ function shouldReplacePreservedToolSkillMessage(
 	replacedSkillNames: Set<string>,
 ): boolean {
 	if (!isToolSkillRestoreHookMessage(message)) {
+		return false;
+	}
+
+	const skillName = getSkillRestoreNameFromMessage(message);
+	return skillName !== null && replacedSkillNames.has(skillName);
+}
+
+function collectActiveSkillNamesToReplace(
+	preservedMessages: AppMessage[],
+	postKeepMessages: AppMessage[],
+): Set<string> {
+	const activeSkillNamesToReplace = new Set<string>();
+
+	for (const message of postKeepMessages) {
+		if (!isActiveSkillHookMessage(message)) {
+			continue;
+		}
+
+		const skillName = getSkillRestoreNameFromMessage(message);
+		if (!skillName) {
+			continue;
+		}
+
+		const expectedContent = normalizeSkillRestoreContent(message.content);
+		for (const preservedMessage of preservedMessages) {
+			if (!isActiveSkillHookMessage(preservedMessage)) {
+				continue;
+			}
+
+			if (getSkillRestoreNameFromMessage(preservedMessage) !== skillName) {
+				continue;
+			}
+
+			if (!hasMatchingSkillRestoreContent(preservedMessage, expectedContent)) {
+				activeSkillNamesToReplace.add(skillName);
+			}
+		}
+	}
+
+	return activeSkillNamesToReplace;
+}
+
+function shouldReplacePreservedActiveSkillMessage(
+	message: AppMessage,
+	replacedSkillNames: Set<string>,
+): boolean {
+	if (!isActiveSkillHookMessage(message)) {
 		return false;
 	}
 
@@ -2218,11 +2281,19 @@ export async function performCompaction(params: {
 		older,
 		preservedTailMessages,
 	);
+	const activeSkillNamesToReplace = collectActiveSkillNamesToReplace(
+		keep,
+		callerPostKeepMessages,
+	);
 	const filteredKeep = keep.filter(
 		(message) =>
 			!shouldReplacePreservedToolSkillMessage(
 				message,
 				skillRestoreResult.replacedPreservedToolSkillNames,
+			) &&
+			!shouldReplacePreservedActiveSkillMessage(
+				message,
+				activeSkillNamesToReplace,
 			),
 	);
 
