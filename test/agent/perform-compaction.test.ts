@@ -1445,6 +1445,43 @@ describe("performCompaction", () => {
 		expect(readRestoreText).not.toContain("stale");
 	});
 
+	it("refreshes stale kept-tail read-file context across repeated compactions", async () => {
+		const filePath = "/tmp/restored-repeat.ts";
+		const messages = buildConversation(10);
+		messages.splice(
+			2,
+			0,
+			createReadRestoreHookMessage(
+				filePath,
+				"export const restored = 'fresh';",
+			),
+		);
+		messages.splice(
+			messages.length - 1,
+			0,
+			createReadRestoreHookMessage(
+				filePath,
+				"export const restored = 'stale-tail';",
+			),
+		);
+		const agent = createMockAgentWithoutAppendMessage(messages);
+		const sessionManager = createMockSessionManager();
+
+		const result = await performCompaction({ agent, sessionManager });
+
+		expect(result.success).toBe(true);
+		const restoredReadMessages = getReplacedMessages(agent).filter(
+			(message) =>
+				message.role === "hookMessage" &&
+				message.customType === "read-file" &&
+				message.details?.filePath === filePath,
+		);
+		expect(restoredReadMessages).toHaveLength(1);
+		const readRestoreText = JSON.stringify(restoredReadMessages[0]?.content);
+		expect(readRestoreText).toContain("fresh");
+		expect(readRestoreText).not.toContain("stale-tail");
+	});
+
 	it("does not restore read results that are still visible in the kept tail", async () => {
 		const messages = buildConversation(10);
 		messages.splice(

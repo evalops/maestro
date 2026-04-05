@@ -359,22 +359,6 @@ function collectVisibleReadPaths(messages: AppMessage[]): Set<string> {
 	const visiblePaths = new Set<string>();
 	for (const message of messages) {
 		if (
-			message.role === "hookMessage" &&
-			message.customType === READ_RESTORE_COMPACTION_CUSTOM_TYPE
-		) {
-			const details = message.details;
-			if (
-				typeof details === "object" &&
-				details !== null &&
-				"filePath" in details &&
-				typeof details.filePath === "string"
-			) {
-				visiblePaths.add(normalizeReadPath(details.filePath));
-			}
-			continue;
-		}
-
-		if (
 			message.role !== "toolResult" ||
 			message.toolName !== "read" ||
 			message.isError
@@ -387,6 +371,17 @@ function collectVisibleReadPaths(messages: AppMessage[]): Set<string> {
 		}
 	}
 	return visiblePaths;
+}
+
+function collectRestoredReadPaths(messages: AppMessage[]): Set<string> {
+	const restoredPaths = new Set<string>();
+	for (const message of messages) {
+		const filePath = getReadRestoreFilePath(message);
+		if (filePath) {
+			restoredPaths.add(normalizeReadPath(filePath));
+		}
+	}
+	return restoredPaths;
 }
 
 function extractSkillRestoreName(
@@ -604,6 +599,67 @@ function hasReadRestoreMessage(
 
 		return JSON.stringify(message.content) === expectedContent;
 	});
+}
+
+function isReadRestoreHookMessage(message: AppMessage): message is HookMessage {
+	return (
+		message.role === "hookMessage" &&
+		message.customType === READ_RESTORE_COMPACTION_CUSTOM_TYPE
+	);
+}
+
+function getReadRestoreFilePath(message: AppMessage): string | null {
+	if (!isReadRestoreHookMessage(message)) {
+		return null;
+	}
+
+	const details = message.details;
+	return typeof details === "object" &&
+		details !== null &&
+		"filePath" in details &&
+		typeof details.filePath === "string"
+		? details.filePath
+		: null;
+}
+
+function collectReadRestorePathsToReplace(
+	preservedMessages: AppMessage[],
+	restoredMessages: AppMessage[],
+): Set<string> {
+	const filePathsToReplace = new Set<string>();
+
+	for (const message of restoredMessages) {
+		if (!isReadRestoreHookMessage(message)) {
+			continue;
+		}
+
+		const filePath = getReadRestoreFilePath(message);
+		if (!filePath || !Array.isArray(message.content)) {
+			continue;
+		}
+
+		for (const preservedMessage of preservedMessages) {
+			if (getReadRestoreFilePath(preservedMessage) !== filePath) {
+				continue;
+			}
+
+			if (
+				!hasReadRestoreMessage([preservedMessage], filePath, message.content)
+			) {
+				filePathsToReplace.add(filePath);
+			}
+		}
+	}
+
+	return filePathsToReplace;
+}
+
+function shouldReplacePreservedReadRestoreMessage(
+	message: AppMessage,
+	replacedFilePaths: Set<string>,
+): boolean {
+	const filePath = getReadRestoreFilePath(message);
+	return filePath !== null && replacedFilePaths.has(filePath);
 }
 
 function estimateHookContentTokens(
@@ -2098,7 +2154,7 @@ export async function performCompaction(params: {
 		agent.state.systemPromptSourcePaths,
 	);
 	const readPathsRestoredAfterCompaction =
-		collectVisibleReadPaths(restoredReadMessages);
+		collectRestoredReadPaths(restoredReadMessages);
 
 	const tokensBefore = lastUsage ? calculateContextTokens(lastUsage) : 0;
 	let effectiveCustomInstructions = customInstructions;
@@ -2281,12 +2337,20 @@ export async function performCompaction(params: {
 		older,
 		preservedTailMessages,
 	);
+	const readRestorePathsToReplace = collectReadRestorePathsToReplace(
+		keep,
+		dedupedRestoredReadMessages,
+	);
 	const activeSkillNamesToReplace = collectActiveSkillNamesToReplace(
 		keep,
 		callerPostKeepMessages,
 	);
 	const filteredKeep = keep.filter(
 		(message) =>
+			!shouldReplacePreservedReadRestoreMessage(
+				message,
+				readRestorePathsToReplace,
+			) &&
 			!shouldReplacePreservedToolSkillMessage(
 				message,
 				skillRestoreResult.replacedPreservedToolSkillNames,
