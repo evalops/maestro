@@ -846,6 +846,44 @@ describe("performCompaction", () => {
 		);
 	});
 
+	it("replaces stale background task restoration messages in the kept tail", async () => {
+		const messages = [
+			...buildConversation(10),
+			createBackgroundTasksHookMessage(
+				"# Background tasks restored after compaction\n\n- id=task-running; status=running; shell=exec; cwd=/tmp/app; command=npm run dev",
+			),
+		];
+		const agent = createMockAgent(messages);
+		const sessionManager = createMockSessionManager();
+
+		await performCompaction({
+			agent,
+			sessionManager,
+			getPostKeepMessages: async () => [
+				createBackgroundTasksHookMessage(
+					"# Background tasks restored after compaction\n\n- id=task-running; status=restarting; shell=exec; cwd=/tmp/app; command=npm run dev",
+				),
+			],
+		});
+
+		const backgroundMessages = getReplacedMessages(agent).filter(
+			(message) =>
+				message.role === "hookMessage" &&
+				message.customType === "background-tasks",
+		);
+		expect(backgroundMessages).toHaveLength(1);
+		expect(backgroundMessages[0]).toEqual(
+			expect.objectContaining({
+				content: expect.stringContaining("status=restarting"),
+			}),
+		);
+		expect(backgroundMessages[0]).not.toEqual(
+			expect.objectContaining({
+				content: expect.stringContaining("status=running"),
+			}),
+		);
+	});
+
 	it("skips plan-mode restoration guidance in summarization input", async () => {
 		const messages = buildConversation(10);
 		messages.splice(2, 0, createPlanModeHookMessage());

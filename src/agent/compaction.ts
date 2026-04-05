@@ -208,6 +208,16 @@ function shouldSkipReinjectedCompactionMessage(message: AppMessage): boolean {
 	);
 }
 
+function stripBackgroundTaskRestoreMessages(
+	messages: AppMessage[],
+): AppMessage[] {
+	return messages.filter(
+		(message) =>
+			message.role !== "hookMessage" ||
+			message.customType !== BACKGROUND_TASKS_COMPACTION_CUSTOM_TYPE,
+	);
+}
+
 function normalizeReadPath(path: string): string {
 	return resolvePath(expandUserPath(path));
 }
@@ -1909,7 +1919,7 @@ export async function performCompaction(params: {
 	if (!older.length) {
 		return { success: false, error: "No earlier messages to compact" };
 	}
-	const keep = messages.slice(boundary);
+	const keep = stripBackgroundTaskRestoreMessages(messages.slice(boundary));
 	const restoredReadMessages = await collectRecentReadRestoreMessages(
 		older,
 		keep,
