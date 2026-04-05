@@ -52,6 +52,7 @@ import "./composer-export-dialog.js";
 import "./composer-settings.js";
 import "./composer-approval.js";
 import "./composer-tool-retry.js";
+import "./composer-user-input.js";
 import "./model-selector.js";
 import "./admin-settings.js";
 import "./composer-artifacts-panel.js";
@@ -151,6 +152,12 @@ function coerceToolArgsRecord(args: unknown): Record<string, unknown> {
 		return {};
 	}
 	return args as Record<string, unknown>;
+}
+
+function isUserInputRequest(
+	request: Pick<ComposerPendingClientToolRequest, "kind" | "toolName">,
+): boolean {
+	return request.kind === "user_input" || request.toolName === "ask_user";
 }
 
 function getOptionalStringArg(
@@ -1062,6 +1069,9 @@ export class ComposerChat extends LitElement {
 	@state() private approvalSubmitting = false;
 	@state() private pendingToolRetryQueue: ComposerToolRetryRequest[] = [];
 	@state() private toolRetrySubmitting = false;
+	@state()
+	private pendingUserInputQueue: ComposerPendingClientToolRequest[] = [];
+	@state() private userInputSubmitting = false;
 	@state() private approvalMode: ComposerApprovalMode | null = null;
 	@state() private approvalModeNotice: string | null = null;
 	@state() private nextRefreshAllowed = 0;
@@ -1545,6 +1555,25 @@ export class ComposerChat extends LitElement {
 		);
 	}
 
+	private enqueueUserInputRequest(request: ComposerPendingClientToolRequest) {
+		const existingIndex = this.pendingUserInputQueue.findIndex(
+			(entry) => entry.toolCallId === request.toolCallId,
+		);
+		if (existingIndex < 0) {
+			this.pendingUserInputQueue = [...this.pendingUserInputQueue, request];
+			return;
+		}
+		const nextQueue = [...this.pendingUserInputQueue];
+		nextQueue[existingIndex] = request;
+		this.pendingUserInputQueue = nextQueue;
+	}
+
+	private clearUserInputRequest(toolCallId: string) {
+		this.pendingUserInputQueue = this.pendingUserInputQueue.filter(
+			(request) => request.toolCallId !== toolCallId,
+		);
+	}
+
 	private restorePendingSessionRequests(session: Session) {
 		this.pendingApprovalQueue = Array.isArray(session.pendingApprovalRequests)
 			? [...session.pendingApprovalRequests]
@@ -1560,13 +1589,19 @@ export class ComposerChat extends LitElement {
 		)
 			? [...session.pendingClientToolRequests]
 			: [];
-		if (pendingClientToolRequests.length === 0) {
+		this.pendingUserInputQueue =
+			pendingClientToolRequests.filter(isUserInputRequest);
+		this.userInputSubmitting = false;
+		const replayableClientToolRequests = pendingClientToolRequests.filter(
+			(request) => !isUserInputRequest(request),
+		);
+		if (replayableClientToolRequests.length === 0) {
 			return;
 		}
 
 		void this.replayPendingClientToolRequests(
 			session.id,
-			pendingClientToolRequests,
+			replayableClientToolRequests,
 		);
 	}
 
@@ -1591,6 +1626,16 @@ export class ComposerChat extends LitElement {
 		toolName: string,
 		args: unknown,
 	): Promise<void> {
+		if (toolName === "ask_user") {
+			this.enqueueUserInputRequest({
+				toolCallId,
+				toolName,
+				args,
+				kind: "user_input",
+			});
+			return;
+		}
+
 		if (toolName === "artifacts") {
 			const argsRecord = coerceArtifactsArgs(args);
 			if (argsRecord.command === "logs" && argsRecord.filename) {
@@ -1707,6 +1752,25 @@ export class ComposerChat extends LitElement {
 		void this.submitToolRetryDecision("abort", e.detail?.requestId);
 	};
 
+	private handleSubmitUserInputRequest = (
+		e: CustomEvent<{ toolCallId?: string; responseText?: string }>,
+	) => {
+		void this.submitUserInputResponse(
+			e.detail?.responseText,
+			e.detail?.toolCallId,
+		);
+	};
+
+	private handleCancelUserInputRequest = (
+		e: CustomEvent<{ toolCallId?: string }>,
+	) => {
+		void this.submitUserInputResponse(
+			"User cancelled structured input request.",
+			e.detail?.toolCallId,
+			true,
+		);
+	};
+
 	private async submitApprovalDecision(
 		decision: "approved" | "denied",
 		requestId?: string,
@@ -1770,6 +1834,51 @@ export class ComposerChat extends LitElement {
 			);
 		} finally {
 			this.toolRetrySubmitting = false;
+		}
+	}
+
+	private async submitUserInputResponse(
+		responseText?: string,
+		toolCallId?: string,
+		isError = false,
+	) {
+		const trimmedResponse = responseText?.trim();
+		if (!toolCallId || this.userInputSubmitting) {
+			return;
+		}
+		if (!trimmedResponse) {
+			this.showToast(
+				"Select an option or enter a custom response",
+				"info",
+				1800,
+			);
+			return;
+		}
+
+		this.userInputSubmitting = true;
+
+		try {
+			await this.apiClient.sendClientToolResult({
+				toolCallId,
+				content: [{ type: "text", text: trimmedResponse }],
+				isError,
+			});
+			this.clearUserInputRequest(toolCallId);
+			this.showToast(
+				isError ? "Input request cancelled" : "Input submitted",
+				isError ? "info" : "success",
+				1500,
+			);
+		} catch (error) {
+			this.showToast(
+				error instanceof Error
+					? error.message
+					: "Failed to submit input response",
+				"error",
+				2200,
+			);
+		} finally {
+			this.userInputSubmitting = false;
 		}
 	}
 
@@ -2165,6 +2274,8 @@ export class ComposerChat extends LitElement {
 			this.approvalSubmitting = false;
 			this.pendingToolRetryQueue = [];
 			this.toolRetrySubmitting = false;
+			this.pendingUserInputQueue = [];
+			this.userInputSubmitting = false;
 			if (this.currentSessionId) {
 				void this.refreshUiState(this.currentSessionId);
 			}
@@ -3885,6 +3996,10 @@ export class ComposerChat extends LitElement {
 			activeApprovalRequest === null
 				? (this.pendingToolRetryQueue[0] ?? null)
 				: null;
+		const activeUserInputRequest =
+			activeApprovalRequest === null && activeToolRetryRequest === null
+				? (this.pendingUserInputQueue[0] ?? null)
+				: null;
 
 		return html`
 			<composer-approval
@@ -3902,6 +4017,13 @@ export class ComposerChat extends LitElement {
 				@skip=${this.handleSkipRetryRequest}
 				@abort=${this.handleAbortRetryRequest}
 			></composer-tool-retry>
+			<composer-user-input
+				.request=${activeUserInputRequest}
+				.submitting=${this.userInputSubmitting}
+				.queueLength=${this.pendingUserInputQueue.length}
+				@submit-response=${this.handleSubmitUserInputRequest}
+				@cancel=${this.handleCancelUserInputRequest}
+			></composer-user-input>
 			<composer-attachment-viewer
 				.open=${this.attachmentViewerOpen}
 				.attachment=${this.attachmentViewerAttachment}

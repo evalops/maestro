@@ -21,6 +21,7 @@ type SessionPendingInternals = {
 	updateComplete: Promise<void>;
 	pendingApprovalQueue: Array<Record<string, unknown>>;
 	pendingToolRetryQueue: Array<Record<string, unknown>>;
+	pendingUserInputQueue: Array<Record<string, unknown>>;
 	selectSession: (sessionId: string) => Promise<void>;
 };
 
@@ -37,7 +38,7 @@ function createChat() {
 }
 
 describe("composer-chat session pending request restore", () => {
-	it("restores pending approval and tool-retry queues and replays pending client tool requests", async () => {
+	it("restores pending approval, tool-retry, and user-input queues without auto-failing ask_user", async () => {
 		const element = createChat();
 		const sendClientToolResult = vi.fn().mockResolvedValue({ success: true });
 		element.apiClient = {
@@ -67,7 +68,24 @@ describe("composer-chat session pending request restore", () => {
 					{
 						toolCallId: "client-call-1",
 						toolName: "ask_user",
-						args: { prompt: "Continue?" },
+						args: {
+							questions: [
+								{
+									header: "Stack",
+									question: "Which schema library should we use?",
+									options: [
+										{
+											label: "Zod",
+											description: "Use Zod schemas",
+										},
+										{
+											label: "Valibot",
+											description: "Use Valibot schemas",
+										},
+									],
+								},
+							],
+						},
 						kind: "user_input",
 					},
 				],
@@ -96,15 +114,31 @@ describe("composer-chat session pending request restore", () => {
 				attempt: 2,
 			},
 		]);
-		expect(sendClientToolResult).toHaveBeenCalledWith({
-			toolCallId: "client-call-1",
-			content: [
-				{
-					type: "text",
-					text: "Unsupported client tool: ask_user",
+		expect(element.pendingUserInputQueue).toEqual([
+			{
+				toolCallId: "client-call-1",
+				toolName: "ask_user",
+				args: {
+					questions: [
+						{
+							header: "Stack",
+							question: "Which schema library should we use?",
+							options: [
+								{
+									label: "Zod",
+									description: "Use Zod schemas",
+								},
+								{
+									label: "Valibot",
+									description: "Use Valibot schemas",
+								},
+							],
+						},
+					],
 				},
-			],
-			isError: true,
-		});
+				kind: "user_input",
+			},
+		]);
+		expect(sendClientToolResult).not.toHaveBeenCalled();
 	});
 });
