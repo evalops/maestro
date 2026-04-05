@@ -289,7 +289,10 @@ function buildConversation(turns: number): AppMessage[] {
 	return messages;
 }
 
-function createMockAgent(messages: AppMessage[]): CompactionAgent {
+function createMockAgent(
+	messages: AppMessage[],
+	options?: { systemPromptSourcePaths?: string[] },
+): CompactionAgent {
 	const state = {
 		messages: [...messages],
 		model: {
@@ -297,6 +300,7 @@ function createMockAgent(messages: AppMessage[]): CompactionAgent {
 			provider: "anthropic" as const,
 			id: "claude-3-5-sonnet",
 		},
+		systemPromptSourcePaths: options?.systemPromptSourcePaths,
 	};
 	return {
 		state,
@@ -315,6 +319,7 @@ function createMockAgent(messages: AppMessage[]): CompactionAgent {
 
 function createMockAgentWithoutAppendMessage(
 	messages: AppMessage[],
+	options?: { systemPromptSourcePaths?: string[] },
 ): CompactionAgent {
 	const state = {
 		messages: [...messages],
@@ -323,6 +328,7 @@ function createMockAgentWithoutAppendMessage(
 			provider: "anthropic" as const,
 			id: "claude-3-5-sonnet",
 		},
+		systemPromptSourcePaths: options?.systemPromptSourcePaths,
 	};
 	return {
 		state,
@@ -1206,6 +1212,44 @@ describe("performCompaction", () => {
 			process.chdir(originalCwd);
 			clearConfigCache();
 		}
+	});
+
+	it("does not restore explicit system prompt files already layered into the prompt", async () => {
+		const workspaceDir = mkdtempSync(join(tmpdir(), "maestro-system-prompt-"));
+		const promptsDir = join(workspaceDir, "prompts");
+		const systemPromptPath = join(promptsDir, "custom-system.md");
+		mkdirSync(promptsDir, { recursive: true });
+		writeFileSync(systemPromptPath, "Follow the custom system prompt.");
+
+		const messages = buildConversation(10);
+		messages.splice(
+			2,
+			0,
+			createReadToolCallMessage(
+				systemPromptPath,
+				"call-read-explicit-system-prompt",
+			),
+			createReadToolResultMessage(
+				systemPromptPath,
+				"call-read-explicit-system-prompt",
+				"Follow the custom system prompt.",
+			),
+		);
+		const agent = createMockAgentWithoutAppendMessage(messages, {
+			systemPromptSourcePaths: [systemPromptPath],
+		});
+		const sessionManager = createMockSessionManager();
+
+		const result = await performCompaction({ agent, sessionManager });
+
+		expect(result.success).toBe(true);
+		expect(getReplacedMessages(agent)).not.toContainEqual(
+			expect.objectContaining({
+				role: "hookMessage",
+				customType: "read-file",
+				details: { filePath: systemPromptPath },
+			}),
+		);
 	});
 
 	it("truncates oversized restored read results to the per-file budget", async () => {

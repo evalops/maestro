@@ -215,7 +215,9 @@ function normalizeComparableReadPath(path: string): string {
 	}
 }
 
-function getExcludedReadRestorePaths(): Set<string> {
+function getExcludedReadRestorePaths(
+	additionalPaths: string[] = [],
+): Set<string> {
 	const loadedAppendSystemPromptPath = resolveLoadedAppendSystemPromptPath(
 		process.cwd(),
 	);
@@ -223,6 +225,7 @@ function getExcludedReadRestorePaths(): Set<string> {
 		[
 			...resolvePromptLoadedProjectDocPaths(process.cwd()),
 			...(loadedAppendSystemPromptPath ? [loadedAppendSystemPromptPath] : []),
+			...additionalPaths,
 		].map((path) => normalizeComparableReadPath(path)),
 	);
 }
@@ -480,6 +483,7 @@ function truncateReadRestoreBlocks(
 async function collectRecentReadRestoreMessages(
 	compactedMessages: AppMessage[],
 	preservedMessages: AppMessage[],
+	additionalExcludedPaths: string[] = [],
 ): Promise<AppMessage[]> {
 	const visiblePaths = collectVisibleReadPaths(preservedMessages);
 	const requestsByCallId =
@@ -488,7 +492,7 @@ async function collectRecentReadRestoreMessages(
 	const normalizedPlanFilePath = currentPlanFilePath
 		? normalizeReadPath(currentPlanFilePath)
 		: null;
-	const excludedPaths = getExcludedReadRestorePaths();
+	const excludedPaths = getExcludedReadRestorePaths(additionalExcludedPaths);
 	const restoredMessages: AppMessage[] = [];
 	const seenPaths = new Set<string>();
 	let usedTokens = 0;
@@ -1488,6 +1492,7 @@ export interface CompactionAgent {
 	state: {
 		messages: AppMessage[];
 		model: { api: Api; provider: string; id: string };
+		systemPromptSourcePaths?: string[];
 	};
 	generateSummary(
 		history: AppMessage[],
@@ -1848,7 +1853,11 @@ export async function performCompaction(params: {
 	};
 
 	const postKeepMessages = [
-		...(await collectRecentReadRestoreMessages(older, keep)),
+		...(await collectRecentReadRestoreMessages(
+			older,
+			keep,
+			agent.state.systemPromptSourcePaths,
+		)),
 		...((await getPostKeepMessages?.()) ?? []),
 	];
 	persistTailMessages(postKeepMessages);

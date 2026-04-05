@@ -79,6 +79,7 @@ export interface AgentCreationResult {
  */
 export function createAgentInstance(params: {
 	systemPrompt: string;
+	systemPromptSourcePaths?: string[];
 	model: Model<Api>;
 	reasoningSummary: "auto" | "detailed" | "concise" | null | undefined;
 	allTools: AgentTool[];
@@ -99,6 +100,7 @@ export function createAgentInstance(params: {
 }): AgentCreationResult {
 	const {
 		systemPrompt,
+		systemPromptSourcePaths,
 		model,
 		reasoningSummary,
 		allTools,
@@ -156,6 +158,7 @@ export function createAgentInstance(params: {
 	const agent = new Agent({
 		initialState: {
 			systemPrompt,
+			systemPromptSourcePaths,
 			model,
 			thinkingLevel: "off",
 			reasoningSummary,

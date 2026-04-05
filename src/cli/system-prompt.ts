@@ -71,6 +71,26 @@ function resolvePromptInput(value?: string): string | null {
 	return value;
 }
 
+function resolvePromptInputPath(value?: string): string | null {
+	if (!value || !existsSync(value)) {
+		return null;
+	}
+	return resolve(value);
+}
+
+export function resolveExplicitSystemPromptSourcePaths(
+	customPrompt?: string,
+	appendPrompt?: string,
+): string[] {
+	return [
+		...new Set(
+			[customPrompt, appendPrompt]
+				.map((value) => resolvePromptInputPath(value))
+				.filter((value): value is string => typeof value === "string"),
+		),
+	];
+}
+
 function loadAppendSystemPrompt(cwd: string): string | null {
 	const projectPath = join(cwd, ".maestro", "APPEND_SYSTEM.md");
 	if (existsSync(projectPath)) {

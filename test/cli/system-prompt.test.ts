@@ -1,8 +1,11 @@
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { buildSystemPrompt } from "../../src/cli/system-prompt.js";
+import {
+	buildSystemPrompt,
+	resolveExplicitSystemPromptSourcePaths,
+} from "../../src/cli/system-prompt.js";
 import { clearConfigCache } from "../../src/config/index.js";
 
 describe("buildSystemPrompt", () => {
@@ -42,5 +45,27 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).toContain(
 			"Length limits: keep text between tool calls to <=25 words. Keep final responses to <=100 words unless the task requires more detail.",
 		);
+	});
+
+	it("returns exact paths for explicit prompt files only", () => {
+		const promptsDir = join(testDir, "prompts");
+		const systemPromptPath = join(promptsDir, "system.md");
+		const appendPromptPath = join(promptsDir, "append.md");
+		mkdirSync(promptsDir, { recursive: true });
+		writeFileSync(systemPromptPath, "custom system prompt");
+		writeFileSync(appendPromptPath, "append system prompt");
+
+		expect(
+			resolveExplicitSystemPromptSourcePaths(
+				systemPromptPath,
+				appendPromptPath,
+			),
+		).toEqual([systemPromptPath, appendPromptPath]);
+		expect(
+			resolveExplicitSystemPromptSourcePaths(
+				"inline instructions",
+				appendPromptPath,
+			),
+		).toEqual([appendPromptPath]);
 	});
 });

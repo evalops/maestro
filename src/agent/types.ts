@@ -928,6 +928,8 @@ export interface PendingToolCall {
 export interface AgentState {
 	/** System prompt providing instructions and context */
 	systemPrompt: string;
+	/** Exact prompt source files layered into the current system prompt */
+	systemPromptSourcePaths?: string[];
 	/** Current model configuration */
 	model: Model<Api>;
 	/** Current thinking level for extended reasoning */

@@ -126,7 +126,10 @@ import {
 	emitUserTurn as emitUserTurnEvent,
 } from "./cli/jsonl-writer.js";
 import { selectSession } from "./cli/session.js";
-import { buildSystemPrompt } from "./cli/system-prompt.js";
+import {
+	buildSystemPrompt,
+	resolveExplicitSystemPromptSourcePaths,
+} from "./cli/system-prompt.js";
 import { validateFrameworkPreference } from "./config/framework.js";
 import { loadRuntimeConfig } from "./config/runtime-config.js";
 import { loadEnv } from "./load-env.js";
@@ -945,6 +948,10 @@ export async function main(args: string[]) {
 		systemPromptToolNames,
 		parsed.appendSystemPrompt,
 	);
+	const systemPromptSourcePaths = resolveExplicitSystemPromptSourcePaths(
+		parsed.systemPrompt,
+		parsed.appendSystemPrompt,
+	);
 
 	// Determine approval mode for tool execution:
 	// - "prompt": Ask user before each tool execution (default for interactive)
@@ -1043,6 +1050,7 @@ export async function main(args: string[]) {
 	})();
 	const { agent } = createAgentInstance({
 		systemPrompt,
+		systemPromptSourcePaths,
 		model,
 		reasoningSummary,
 		allTools,
