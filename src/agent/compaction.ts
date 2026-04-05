@@ -171,6 +171,14 @@ function shouldSkipAssistantCompactionMessage(message: AppMessage): boolean {
 	);
 }
 
+function shouldSkipReinjectedCompactionMessage(message: AppMessage): boolean {
+	return (
+		message.role === "hookMessage" &&
+		message.customType === "skill" &&
+		message.display === false
+	);
+}
+
 function buildAttachmentMarkers(message: UserMessageWithAttachments): string[] {
 	if (!Array.isArray(message.attachments) || message.attachments.length === 0) {
 		return [];
@@ -249,7 +257,10 @@ function prepareMessagesForCompactionSummary(
 	messages: AppMessage[],
 ): AppMessage[] {
 	return messages.flatMap((message) => {
-		if (shouldSkipAssistantCompactionMessage(message)) {
+		if (
+			shouldSkipAssistantCompactionMessage(message) ||
+			shouldSkipReinjectedCompactionMessage(message)
+		) {
 			return [];
 		}
 		if (message.role === "user") {

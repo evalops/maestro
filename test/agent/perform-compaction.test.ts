@@ -129,6 +129,17 @@ function createHookMessageWithInlineImage(text = "hook context"): AppMessage {
 	};
 }
 
+function createActiveSkillHookMessage(name = "debug"): AppMessage {
+	return {
+		role: "hookMessage",
+		customType: "skill",
+		content: `Injected instructions for ${name}`,
+		display: false,
+		details: { name, action: "activate" },
+		timestamp: Date.now(),
+	};
+}
+
 function createErrorAssistantMessage(
 	text = "provider failed",
 	errorMessage = "Anthropic API error (429): rate limit exceeded.",
@@ -421,6 +432,30 @@ describe("performCompaction", () => {
 			display: false,
 			timestamp: expect.any(Number),
 		});
+	});
+
+	it("skips reinjected active skill hooks in summarization input", async () => {
+		const messages = buildConversation(10);
+		messages.splice(2, 0, createActiveSkillHookMessage("debug"));
+		const agent = createMockAgent(messages);
+		const sessionManager = createMockSessionManager();
+
+		await performCompaction({ agent, sessionManager });
+
+		const summaryInput = (agent.generateSummary as ReturnType<typeof vi.fn>)
+			.mock.calls[0]?.[0] as AppMessage[] | undefined;
+		expect(summaryInput).toBeDefined();
+		expect(summaryInput).not.toContainEqual(
+			expect.objectContaining({
+				role: "hookMessage",
+				customType: "skill",
+			}),
+		);
+		expect(summaryInput).not.toContainEqual(
+			expect.objectContaining({
+				content: "Injected instructions for debug",
+			}),
+		);
 	});
 
 	it("returns failure when a PreCompact hook blocks compaction", async () => {
