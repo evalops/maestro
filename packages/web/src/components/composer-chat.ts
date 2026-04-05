@@ -13,6 +13,9 @@ import {
 	type AgentEvent,
 	ApiClient,
 	type ComposerToolCall,
+	type McpResourceReadResponse,
+	type McpServerStatus,
+	type McpStatus,
 	type Message,
 	type Model,
 	type Session,
@@ -137,6 +140,167 @@ export function hasAssistantMessageProgress(
 		return true;
 	}
 	return Array.isArray(message.tools) && message.tools.length > 0;
+}
+
+function coerceToolArgsRecord(args: unknown): Record<string, unknown> {
+	if (!args || typeof args !== "object" || Array.isArray(args)) {
+		return {};
+	}
+	return args as Record<string, unknown>;
+}
+
+function getOptionalStringArg(
+	args: Record<string, unknown>,
+	key: string,
+): string | undefined {
+	const value = args[key];
+	if (typeof value !== "string") return undefined;
+	const trimmed = value.trim();
+	return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function getMcpToolCount(server: McpServerStatus): number {
+	if (Array.isArray(server.tools)) {
+		return server.tools.length;
+	}
+	return typeof server.tools === "number" ? server.tools : 0;
+}
+
+function formatMcpServers(status: McpStatus): string {
+	if (status.servers.length === 0) {
+		return "No MCP servers configured.";
+	}
+
+	const lines: string[] = ["# MCP Servers", ""];
+	for (const server of status.servers) {
+		lines.push(
+			`- ${server.name}: ${server.connected ? "connected" : "disconnected"}`,
+		);
+		if (server.transport) {
+			lines.push(`  transport: ${server.transport}`);
+		}
+		if (server.scope) {
+			lines.push(`  scope: ${server.scope}`);
+		}
+		lines.push(`  tools: ${getMcpToolCount(server)}`);
+		lines.push(`  resources: ${server.resources?.length ?? 0}`);
+		lines.push(`  prompts: ${server.prompts?.length ?? 0}`);
+		if (server.error) {
+			lines.push(`  error: ${server.error}`);
+		}
+	}
+	return lines.join("\n");
+}
+
+function formatMcpTools(
+	status: McpStatus,
+	serverName?: string,
+): { isError: boolean; text: string } {
+	const servers = serverName
+		? status.servers.filter((server) => server.name === serverName)
+		: status.servers;
+
+	if (serverName && servers.length === 0) {
+		return { isError: true, text: `MCP server '${serverName}' not found.` };
+	}
+
+	const disconnected = serverName
+		? servers.find((server) => !server.connected)
+		: null;
+	if (disconnected) {
+		return {
+			isError: true,
+			text: `MCP server '${disconnected.name}' is not connected.`,
+		};
+	}
+
+	const connectedWithTools = servers
+		.filter((server) => server.connected)
+		.map((server) => ({
+			name: server.name,
+			tools: Array.isArray(server.tools) ? server.tools : [],
+		}))
+		.filter((server) => server.tools.length > 0);
+
+	if (connectedWithTools.length === 0) {
+		return {
+			isError: false,
+			text: "No MCP tools available. Either no servers are connected or they don't expose tools.",
+		};
+	}
+
+	const lines: string[] = ["# Available MCP Tools", ""];
+	for (const server of connectedWithTools) {
+		lines.push(`## ${server.name}`);
+		for (const tool of server.tools) {
+			lines.push(
+				tool.description
+					? `- ${tool.name}: ${tool.description}`
+					: `- ${tool.name}`,
+			);
+		}
+		lines.push("");
+	}
+
+	return { isError: false, text: lines.join("\n").trimEnd() };
+}
+
+function formatMcpResources(
+	status: McpStatus,
+	serverName: string | undefined,
+): { isError: boolean; text: string } {
+	if (!serverName) {
+		return {
+			isError: true,
+			text: "Error: list_mcp_resources requires a server name",
+		};
+	}
+
+	const server = status.servers.find((entry) => entry.name === serverName);
+	if (!server) {
+		return { isError: true, text: `MCP server '${serverName}' not found.` };
+	}
+	if (!server.connected) {
+		return {
+			isError: true,
+			text: `MCP server '${serverName}' is not connected.`,
+		};
+	}
+	if (!server.resources || server.resources.length === 0) {
+		return {
+			isError: false,
+			text: `No MCP resources available on server '${serverName}'.`,
+		};
+	}
+
+	const lines: string[] = [
+		"# Available MCP Resources",
+		"",
+		`## ${server.name}`,
+	];
+	for (const uri of server.resources) {
+		lines.push(`- ${uri}`);
+	}
+	return { isError: false, text: lines.join("\n") };
+}
+
+function formatMcpResourceRead(
+	result: McpResourceReadResponse,
+	uri: string,
+): string {
+	if (result.contents.length === 0) {
+		return `Resource '${uri}' is empty.`;
+	}
+
+	const textContents = result.contents
+		.filter((content) => typeof content.text === "string")
+		.map((content) => content.text as string);
+
+	if (textContents.length > 0) {
+		return textContents.join("\n---\n");
+	}
+
+	return JSON.stringify(result.contents, null, 2);
 }
 
 export function getTerminalStreamOutcome(
@@ -2902,6 +3066,35 @@ export class ComposerChat extends LitElement {
 								content: [{ type: "text", text: res.text }],
 								isError: res.isError,
 							});
+						} else if (
+							agentEvent.toolName === "list_mcp_servers" ||
+							agentEvent.toolName === "list_mcp_tools" ||
+							agentEvent.toolName === "list_mcp_resources" ||
+							agentEvent.toolName === "read_mcp_resource"
+						) {
+							try {
+								const res = await this.runMcpClientTool(
+									agentEvent.toolName,
+									agentEvent.args,
+								);
+								await this.apiClient.sendClientToolResult({
+									toolCallId: agentEvent.toolCallId,
+									content: [{ type: "text", text: res.text }],
+									isError: res.isError,
+								});
+							} catch (error) {
+								await this.apiClient.sendClientToolResult({
+									toolCallId: agentEvent.toolCallId,
+									content: [
+										{
+											type: "text",
+											text:
+												error instanceof Error ? error.message : String(error),
+										},
+									],
+									isError: true,
+								});
+							}
 						} else {
 							await this.apiClient.sendClientToolResult({
 								toolCallId: agentEvent.toolCallId,
@@ -3174,6 +3367,52 @@ export class ComposerChat extends LitElement {
 		return {
 			isError: Boolean(errorState.value),
 			text: lines.filter(Boolean).join("\n"),
+		};
+	}
+
+	private async runMcpClientTool(
+		toolName: string,
+		args: unknown,
+	): Promise<{ isError: boolean; text: string }> {
+		const argRecord = coerceToolArgsRecord(args);
+
+		if (toolName === "read_mcp_resource") {
+			const server = getOptionalStringArg(argRecord, "server");
+			const uri = getOptionalStringArg(argRecord, "uri");
+			if (!server || !uri) {
+				return {
+					isError: true,
+					text: "Error: read_mcp_resource requires server and uri",
+				};
+			}
+
+			const result = await this.apiClient.readMcpResource(server, uri);
+			return {
+				isError: false,
+				text: formatMcpResourceRead(result, uri),
+			};
+		}
+
+		const status = await this.apiClient.getMcpStatus();
+		if (toolName === "list_mcp_servers") {
+			return {
+				isError: false,
+				text: formatMcpServers(status),
+			};
+		}
+		if (toolName === "list_mcp_tools") {
+			return formatMcpTools(status, getOptionalStringArg(argRecord, "server"));
+		}
+		if (toolName === "list_mcp_resources") {
+			return formatMcpResources(
+				status,
+				getOptionalStringArg(argRecord, "server"),
+			);
+		}
+
+		return {
+			isError: true,
+			text: `Unsupported MCP client tool: ${toolName}`,
 		};
 	}
 

@@ -233,6 +233,17 @@ export interface McpStatus {
 	servers: McpServerStatus[];
 }
 
+export interface McpResourceContent {
+	uri: string;
+	text?: string;
+	blob?: string;
+	mimeType?: string;
+}
+
+export interface McpResourceReadResponse {
+	contents: McpResourceContent[];
+}
+
 export type SessionArtifactAccessAction = "view" | "file" | "events" | "zip";
 
 interface SessionArtifactAccessResponse {
@@ -1890,6 +1901,20 @@ export class ApiClient {
 	// MCP
 	async getMcpStatus(): Promise<McpStatus> {
 		return (await this.fetchJsonWithFallback("/api/mcp")) as McpStatus;
+	}
+
+	async readMcpResource(
+		server: string,
+		uri: string,
+	): Promise<McpResourceReadResponse> {
+		const params = new URLSearchParams({
+			action: "read-resource",
+			server,
+			uri,
+		});
+		return (await this.fetchJsonWithFallback(
+			`/api/mcp?${params.toString()}`,
+		)) as McpResourceReadResponse;
 	}
 
 	// Background Tasks
