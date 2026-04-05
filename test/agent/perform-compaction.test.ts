@@ -105,19 +105,25 @@ function buildConversation(turns: number): AppMessage[] {
 }
 
 function createMockAgent(messages: AppMessage[]): CompactionAgent {
-	return {
-		state: {
-			messages,
-			model: {
-				api: "anthropic-messages",
-				provider: "anthropic",
-				id: "claude-3-5-sonnet",
-			},
+	const state = {
+		messages: [...messages],
+		model: {
+			api: "anthropic-messages" as const,
+			provider: "anthropic" as const,
+			id: "claude-3-5-sonnet",
 		},
+	};
+	return {
+		state,
 		generateSummary: vi
 			.fn()
 			.mockResolvedValue(createAssistantMessage("LLM summary of conversation")),
-		replaceMessages: vi.fn(),
+		replaceMessages: vi.fn((nextMessages: AppMessage[]) => {
+			state.messages = [...nextMessages];
+		}),
+		appendMessage: vi.fn((message: AppMessage) => {
+			state.messages.push(message);
+		}),
 		clearTransientRunState: vi.fn(),
 	};
 }
@@ -160,9 +166,7 @@ function createMockHookService(
 
 /** Extract the messages passed to replaceMessages from the mock. */
 function getReplacedMessages(agent: CompactionAgent): AppMessage[] {
-	const mock = agent.replaceMessages as ReturnType<typeof vi.fn>;
-	const call = mock.mock.calls[0] as [AppMessage[]] | undefined;
-	return call?.[0] ?? [];
+	return [...agent.state.messages];
 }
 
 describe("performCompaction", () => {
@@ -367,6 +371,77 @@ describe("performCompaction", () => {
 			"LLM summary of conversation",
 			undefined,
 		);
+	});
+
+	it("persists PostCompact hook guidance into the compacted transcript", async () => {
+		const messages = buildConversation(10);
+		const agent = createMockAgent(messages);
+		const sessionManager = createMockSessionManager();
+		const hookService = createMockHookService();
+		(
+			hookService.runPostCompactHooks as ReturnType<typeof vi.fn>
+		).mockResolvedValue({
+			blocked: false,
+			preventContinuation: false,
+			systemMessage: "Keep using the compacted summary as the source of truth.",
+			additionalContext: "The active plan still expects migration cleanup.",
+		});
+
+		const result = await performCompaction({
+			agent,
+			sessionManager,
+			hookService,
+		});
+
+		expect(result.success).toBe(true);
+		const replaced = getReplacedMessages(agent);
+		expect(replaced[0]?.role).toBe("assistant");
+		expect(replaced[1]?.role).toBe("user");
+		expect(replaced.at(-2)).toMatchObject({
+			role: "hookMessage",
+			customType: "PostCompact",
+			content: expect.stringContaining(
+				"PostCompact hook system guidance:\nKeep using the compacted summary as the source of truth.",
+			),
+		});
+		expect(replaced.at(-1)).toMatchObject({
+			role: "hookMessage",
+			customType: "PostCompact",
+			content: "The active plan still expects migration cleanup.",
+		});
+		expect(sessionManager.saveMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				role: "hookMessage",
+				customType: "PostCompact",
+			}),
+		);
+	});
+
+	it("ignores unsupported PostCompact control flow output", async () => {
+		const messages = buildConversation(10);
+		const agent = createMockAgent(messages);
+		const sessionManager = createMockSessionManager();
+		const hookService = createMockHookService();
+		(
+			hookService.runPostCompactHooks as ReturnType<typeof vi.fn>
+		).mockResolvedValue({
+			blocked: true,
+			blockReason: "too late to block",
+			preventContinuation: true,
+			stopReason: "also too late",
+		});
+
+		const result = await performCompaction({
+			agent,
+			sessionManager,
+			hookService,
+		});
+
+		expect(result.success).toBe(true);
+		const replaced = getReplacedMessages(agent);
+		expect(replaced[0]?.role).toBe("assistant");
+		expect(replaced[1]?.role).toBe("user");
+		expect(replaced.at(-1)?.role).not.toBe("hookMessage");
 	});
 
 	it("replaced messages start with summary and resume then kept messages", async () => {

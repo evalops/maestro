@@ -34,6 +34,7 @@
  */
 
 import type { SessionEntry } from "../session/types.js";
+import { createLogger } from "../utils/logger.js";
 import { runPostCompactionCleanup } from "./compaction-cleanup.js";
 import {
 	type CompactionHookContext,
@@ -45,7 +46,10 @@ import {
 	isOverflowErrorMessage,
 	parseOverflowDetails,
 } from "./context-overflow.js";
-import { convertAppMessageToLlm } from "./custom-messages.js";
+import {
+	convertAppMessageToLlm,
+	createHookMessage,
+} from "./custom-messages.js";
 import type {
 	Api,
 	AppMessage,
@@ -53,6 +57,8 @@ import type {
 	Usage,
 	UserMessageWithAttachments,
 } from "./types.js";
+
+const logger = createLogger("agent:compaction");
 
 // ============================================================================
 // Types
@@ -1030,6 +1036,7 @@ export interface CompactionAgent {
 		systemPrompt: string,
 	): Promise<AssistantMessage>;
 	replaceMessages(messages: AppMessage[]): void;
+	appendMessage?(message: AppMessage): void;
 	clearTransientRunState?(): void;
 }
 
@@ -1089,6 +1096,41 @@ function buildEffectiveCustomInstructions(
 	}
 
 	return `${trimmedCustomInstructions}\n\n${hookSections.join("\n\n")}`;
+}
+
+function buildPostCompactHookMessages(hookResult: {
+	systemMessage?: string;
+	additionalContext?: string;
+}): AppMessage[] {
+	const timestamp = new Date().toISOString();
+	const messages: AppMessage[] = [];
+	const systemMessage = hookResult.systemMessage?.trim();
+	if (systemMessage) {
+		messages.push(
+			createHookMessage(
+				"PostCompact",
+				`PostCompact hook system guidance:\n${systemMessage}`,
+				true,
+				undefined,
+				timestamp,
+			),
+		);
+	}
+
+	const additionalContext = hookResult.additionalContext?.trim();
+	if (additionalContext) {
+		messages.push(
+			createHookMessage(
+				"PostCompact",
+				additionalContext,
+				true,
+				undefined,
+				timestamp,
+			),
+		);
+	}
+
+	return messages;
 }
 
 /**
@@ -1315,16 +1357,56 @@ export async function performCompaction(params: {
 		firstKeptEntryIndex: boundary,
 	});
 
+	let postCompactHookMessages: AppMessage[] = [];
+
 	if (
 		effectiveHookService?.runPostCompactHooks &&
 		(!effectiveHookService.hasHooks ||
 			effectiveHookService.hasHooks("PostCompact"))
 	) {
-		await effectiveHookService.runPostCompactHooks(
-			trigger ?? (auto ? "auto" : "manual"),
-			summaryText,
-			hookContext?.signal,
+		const postCompactHookResult =
+			await effectiveHookService.runPostCompactHooks(
+				trigger ?? (auto ? "auto" : "manual"),
+				summaryText,
+				hookContext?.signal,
+			);
+		if (
+			postCompactHookResult.blocked ||
+			postCompactHookResult.preventContinuation
+		) {
+			logger.warn(
+				"PostCompact hook returned unsupported control flow request; ignoring",
+				{
+					trigger: trigger ?? (auto ? "auto" : "manual"),
+					blocked: postCompactHookResult.blocked,
+					preventContinuation: postCompactHookResult.preventContinuation,
+					reason:
+						postCompactHookResult.blockReason ??
+						postCompactHookResult.stopReason,
+				},
+			);
+		}
+		postCompactHookMessages = buildPostCompactHookMessages(
+			postCompactHookResult,
 		);
+		if (postCompactHookMessages.length > 0) {
+			if (typeof agent.appendMessage === "function") {
+				for (const message of postCompactHookMessages) {
+					agent.appendMessage(message);
+					sessionManager.saveMessage(message);
+				}
+			} else {
+				agent.replaceMessages([
+					summaryMessage as AppMessage,
+					resumeMessage,
+					...postCompactHookMessages,
+					...keep,
+				]);
+				for (const message of postCompactHookMessages) {
+					sessionManager.saveMessage(message);
+				}
+			}
+		}
 	}
 
 	return {
