@@ -1,8 +1,8 @@
-import { createLogger } from "../utils/logger.js";
 import type { Agent } from "./agent.js";
-import type { AppMessage } from "./types.js";
-
-const logger = createLogger("max-output-recovery");
+import {
+	type MaxOutputRecoveryResult,
+	recoverFromMaxOutput as recoverFromPromptRecovery,
+} from "./prompt-recovery.js";
 
 export interface MaxOutputRecoveryOptions {
 	enabled?: boolean;
@@ -12,45 +12,13 @@ export interface MaxOutputRecoveryOptions {
 	onStoppedEarly?: (attempt: number, maxContinuations: number) => void;
 }
 
-export interface MaxOutputRecoveryResult {
-	recovered: boolean;
-	attempts: number;
-	exhausted: boolean;
-	stoppedEarly: boolean;
-}
-
-const DEFAULT_MAX_CONTINUATIONS = 5;
-const DIMINISHING_THRESHOLD_TOKENS = 500;
-const DIMINISHING_MIN_ATTEMPTS = 3;
-
-function lastAssistantHitMaxOutput(messages: AppMessage[]): boolean {
-	const lastMessage = messages[messages.length - 1];
-	return (
-		lastMessage?.role === "assistant" && lastMessage.stopReason === "length"
-	);
-}
-
-function lastAssistantOutputTokens(messages: AppMessage[]): number | undefined {
-	const lastMessage = messages[messages.length - 1];
-	if (lastMessage?.role !== "assistant") {
-		return undefined;
-	}
-
-	const output = lastMessage.usage.output;
-	return typeof output === "number" && output > 0 ? output : undefined;
-}
+export type { MaxOutputRecoveryResult };
 
 export async function recoverFromMaxOutput(
 	agent: Pick<Agent, "state" | "continue">,
 	options: MaxOutputRecoveryOptions = {},
 ): Promise<MaxOutputRecoveryResult> {
-	const enabled = options.enabled ?? true;
-	const maxContinuations = Math.max(
-		1,
-		options.maxContinuations ?? DEFAULT_MAX_CONTINUATIONS,
-	);
-
-	if (!enabled) {
+	if ((options.enabled ?? true) === false) {
 		return {
 			recovered: false,
 			attempts: 0,
@@ -59,61 +27,31 @@ export async function recoverFromMaxOutput(
 		};
 	}
 
-	let attempts = 0;
-	let previousContinuationOutputTokens: number | undefined;
-
-	while (
-		attempts < maxContinuations &&
-		lastAssistantHitMaxOutput(agent.state.messages)
-	) {
-		const currentOutputTokens = lastAssistantOutputTokens(agent.state.messages);
-		const shouldStopForDiminishingReturns =
-			attempts >= DIMINISHING_MIN_ATTEMPTS &&
-			typeof previousContinuationOutputTokens === "number" &&
-			typeof currentOutputTokens === "number" &&
-			previousContinuationOutputTokens < DIMINISHING_THRESHOLD_TOKENS &&
-			currentOutputTokens < DIMINISHING_THRESHOLD_TOKENS;
-		if (shouldStopForDiminishingReturns) {
-			options.onStoppedEarly?.(attempts, maxContinuations);
-			logger.info("Stopped automatic continuation after diminishing returns", {
-				attempts,
-				maxContinuations,
-				previousOutputTokens: previousContinuationOutputTokens,
-				currentOutputTokens,
-			});
+	const recoveryAgent = {
+		continue: agent.continue,
+		get state() {
 			return {
-				recovered: attempts > 0,
-				attempts,
-				exhausted: false,
-				stoppedEarly: true,
+				...agent.state,
+				model:
+					(
+						agent.state as Agent["state"] & {
+							model?: Agent["state"]["model"];
+						}
+					).model ??
+					({
+						provider: "openai",
+						maxTokens: Number.MAX_SAFE_INTEGER,
+					} as Agent["state"]["model"]),
 			};
-		}
+		},
+	} as Agent;
 
-		attempts += 1;
-		options.onContinue?.(attempts, maxContinuations);
-		logger.info("Continuing after max output stop", {
-			attempt: attempts,
-			maxContinuations,
-		});
-		previousContinuationOutputTokens = currentOutputTokens;
-		await agent.continue();
-	}
-
-	const exhausted =
-		attempts >= maxContinuations &&
-		lastAssistantHitMaxOutput(agent.state.messages);
-
-	if (exhausted) {
-		options.onExhausted?.(maxContinuations);
-		logger.warn("Stopped automatic continuation after max output limit", {
-			maxContinuations,
-		});
-	}
-
-	return {
-		recovered: attempts > 0,
-		attempts,
-		exhausted,
-		stoppedEarly: false,
-	};
+	return recoverFromPromptRecovery(recoveryAgent, {
+		maxContinuations: options.maxContinuations,
+		callbacks: {
+			onMaxOutputContinue: options.onContinue,
+			onMaxOutputExhausted: options.onExhausted,
+			onMaxOutputStoppedEarly: options.onStoppedEarly,
+		},
+	});
 }
