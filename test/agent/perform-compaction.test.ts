@@ -178,6 +178,19 @@ function createSessionStartHookMessage(
 	};
 }
 
+function createPlanModeHookMessage(
+	content = "Plan file: /tmp/plan.md",
+): AppMessage {
+	return {
+		role: "hookMessage",
+		customType: "plan-mode",
+		content,
+		display: false,
+		details: { filePath: "/tmp/plan.md" },
+		timestamp: Date.now(),
+	};
+}
+
 function createErrorAssistantMessage(
 	text = "provider failed",
 	errorMessage = "Anthropic API error (429): rate limit exceeded.",
@@ -563,6 +576,30 @@ describe("performCompaction", () => {
 		expect(summaryInput).not.toContainEqual(
 			expect.objectContaining({
 				content: "Restored compacted repo context.",
+			}),
+		);
+	});
+
+	it("skips plan-mode restoration guidance in summarization input", async () => {
+		const messages = buildConversation(10);
+		messages.splice(2, 0, createPlanModeHookMessage());
+		const agent = createMockAgent(messages);
+		const sessionManager = createMockSessionManager();
+
+		await performCompaction({ agent, sessionManager });
+
+		const summaryInput = (agent.generateSummary as ReturnType<typeof vi.fn>)
+			.mock.calls[0]?.[0] as AppMessage[] | undefined;
+		expect(summaryInput).toBeDefined();
+		expect(summaryInput).not.toContainEqual(
+			expect.objectContaining({
+				role: "hookMessage",
+				customType: "plan-mode",
+			}),
+		);
+		expect(summaryInput).not.toContainEqual(
+			expect.objectContaining({
+				content: "Plan file: /tmp/plan.md",
 			}),
 		);
 	});

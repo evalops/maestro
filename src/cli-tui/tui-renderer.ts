@@ -46,6 +46,7 @@ import {
 	type AutoRetryController,
 	createAutoRetryController,
 } from "../agent/auto-retry.js";
+import { collectPlanModeMessagesForCompaction } from "../agent/compaction-restoration.js";
 import { applySessionEndHooks } from "../agent/session-lifecycle-hooks.js";
 import { SessionRecoveryManager } from "../agent/session-recovery.js";
 import {
@@ -1015,9 +1016,9 @@ export class TuiRenderer {
 			renderMessages: () => this.renderInitialMessages(this.agent.state),
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
 			getPostKeepMessages: async (source) => {
-				const skillMessages =
+				const restorationMessages =
 					source === "compact"
-						? this.collectActiveSkillMessagesForCompaction()
+						? this.collectOrderedCompactionRestorationMessages()
 						: [];
 				const sessionStartMessages =
 					await collectPersistedSessionStartHookMessages({
@@ -1025,7 +1026,7 @@ export class TuiRenderer {
 						cwd: process.cwd(),
 						source,
 					});
-				return [...skillMessages, ...sessionStartMessages];
+				return [...restorationMessages, ...sessionStartMessages];
 			},
 		});
 		this.compactionController = createCompactionController({
@@ -2360,6 +2361,13 @@ export class TuiRenderer {
 
 	public collectActiveSkillMessagesForCompaction(): AppMessage[] {
 		return this.skillsController.collectActiveSkillMessagesForCompaction();
+	}
+
+	public collectOrderedCompactionRestorationMessages(): AppMessage[] {
+		return [
+			...collectPlanModeMessagesForCompaction(this.agent.state.messages),
+			...this.collectActiveSkillMessagesForCompaction(),
+		];
 	}
 
 	public refreshFooterHint(): void {

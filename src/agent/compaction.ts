@@ -41,6 +41,7 @@ import {
 	type CompactionHookService,
 	createCompactionHookService,
 } from "./compaction-hooks.js";
+import { PLAN_MODE_COMPACTION_CUSTOM_TYPE } from "./compaction-restoration.js";
 import {
 	isContextOverflow as isCompactionOverflowMessage,
 	isOverflowErrorMessage,
@@ -176,7 +177,8 @@ function shouldSkipReinjectedCompactionMessage(message: AppMessage): boolean {
 		message.role === "hookMessage" &&
 		((message.customType === "skill" && message.display === false) ||
 			message.customType === "PostCompact" ||
-			message.customType === "SessionStart")
+			message.customType === "SessionStart" ||
+			message.customType === PLAN_MODE_COMPACTION_CUSTOM_TYPE)
 	);
 }
 

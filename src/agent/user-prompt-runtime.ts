@@ -2,6 +2,7 @@ import { createSessionHookService } from "../hooks/session-integration.js";
 import { createLogger } from "../utils/logger.js";
 import type { Agent } from "./agent.js";
 import { buildCompactionHookContext } from "./compaction-hooks.js";
+import { collectPlanModeMessagesForCompaction } from "./compaction-restoration.js";
 import { createHookMessage } from "./custom-messages.js";
 import {
 	type PromptRecoveryCallbacks,
@@ -566,6 +567,9 @@ async function applyTokenBudgetContinuations(params: {
 			),
 			getPostKeepMessages: () =>
 				Promise.all([
+					Promise.resolve(
+						collectPlanModeMessagesForCompaction(params.agent.state.messages),
+					),
 					params.getPostKeepMessages?.() ?? Promise.resolve([]),
 					collectPersistedSessionStartHookMessages({
 						sessionManager: params.sessionManager,
@@ -573,7 +577,8 @@ async function applyTokenBudgetContinuations(params: {
 						source: "compact",
 						signal: params.signal,
 					}),
-				]).then(([callerMessages, sessionStartMessages]) => [
+				]).then(([planMessages, callerMessages, sessionStartMessages]) => [
+					...planMessages,
 					...callerMessages,
 					...sessionStartMessages,
 				]),
@@ -626,16 +631,20 @@ export async function runUserPromptWithRecovery(params: {
 	);
 	try {
 		const collectPostKeepMessages = async (): Promise<AppMessage[]> => {
-			const [callerMessages, sessionStartMessages] = await Promise.all([
-				params.getPostKeepMessages?.() ?? Promise.resolve([]),
-				collectPersistedSessionStartHookMessages({
-					sessionManager: params.sessionManager,
-					cwd: params.cwd,
-					source: "compact",
-					signal: params.signal,
-				}),
-			]);
-			return [...callerMessages, ...sessionStartMessages];
+			const [planMessages, callerMessages, sessionStartMessages] =
+				await Promise.all([
+					Promise.resolve(
+						collectPlanModeMessagesForCompaction(params.agent.state.messages),
+					),
+					params.getPostKeepMessages?.() ?? Promise.resolve([]),
+					collectPersistedSessionStartHookMessages({
+						sessionManager: params.sessionManager,
+						cwd: params.cwd,
+						source: "compact",
+						signal: params.signal,
+					}),
+				]);
+			return [...planMessages, ...callerMessages, ...sessionStartMessages];
 		};
 
 		throwIfAborted(params.signal);

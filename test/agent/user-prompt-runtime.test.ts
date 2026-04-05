@@ -1,5 +1,12 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Agent } from "../../src/agent/agent.js";
+import {
+	clearPlanModeState,
+	enterPlanMode,
+} from "../../src/agent/plan-mode.js";
 import type {
 	AgentEvent,
 	AgentRunConfig,
@@ -1052,97 +1059,124 @@ describe("user prompt runtime", () => {
 		);
 	});
 
-	it("prepends caller post-keep messages before compact SessionStart output during overflow recovery", async () => {
+	it("prepends plan-mode and caller post-keep messages before compact SessionStart output during overflow recovery", async () => {
 		const overflowMessage =
 			"Anthropic rejected this request because the prompt exceeded 200,000 tokens. Use /compact to summarize prior messages or remove large attachments, then retry.";
+		const planDir = mkdtempSync(join(tmpdir(), "maestro-plan-compaction-"));
+		const previousPlanDir = process.env.MAESTRO_PLAN_DIR;
+		const previousPlanFile = process.env.MAESTRO_PLAN_FILE;
+		process.env.MAESTRO_PLAN_DIR = planDir;
+		process.env.MAESTRO_PLAN_FILE = join(planDir, "active-plan.md");
 
-		registerHook("SessionStart", {
-			type: "callback",
-			callback: async () => ({
-				systemMessage: "Re-establish compacted context.",
-				hookSpecificOutput: {
-					hookEventName: "SessionStart",
-					additionalContext: "Compaction hook context",
-				},
-			}),
-		});
+		try {
+			enterPlanMode({ name: "Compaction test plan" });
+			registerHook("SessionStart", {
+				type: "callback",
+				callback: async () => ({
+					systemMessage: "Re-establish compacted context.",
+					hookSpecificOutput: {
+						hookEventName: "SessionStart",
+						additionalContext: "Compaction hook context",
+					},
+				}),
+			});
 
-		class OverflowThenSuccessTransport implements AgentTransport {
-			async *run(
-				_messages: Message[],
-				userMessage: Message,
-				_config: AgentRunConfig,
-			): AsyncGenerator<AgentEvent, void, unknown> {
-				if (typeof userMessage.content === "string") {
-					const assistant = {
-						...createAssistantMessage("Too much context"),
-						stopReason: "error" as const,
-						errorMessage: overflowMessage,
-					};
+			class OverflowThenSuccessTransport implements AgentTransport {
+				async *run(
+					_messages: Message[],
+					userMessage: Message,
+					_config: AgentRunConfig,
+				): AsyncGenerator<AgentEvent, void, unknown> {
+					if (typeof userMessage.content === "string") {
+						const assistant = {
+							...createAssistantMessage("Too much context"),
+							stopReason: "error" as const,
+							errorMessage: overflowMessage,
+						};
+						yield { type: "message_start", message: assistant };
+						yield { type: "message_end", message: assistant };
+						return;
+					}
+
+					const assistant = createAssistantMessage("Recovered response");
 					yield { type: "message_start", message: assistant };
 					yield { type: "message_end", message: assistant };
-					return;
 				}
-
-				const assistant = createAssistantMessage("Recovered response");
-				yield { type: "message_start", message: assistant };
-				yield { type: "message_end", message: assistant };
 			}
+
+			const agent = new Agent({
+				transport: new OverflowThenSuccessTransport(),
+				initialState: {
+					model: mockModel,
+					tools: [],
+					systemPrompt: "Base system prompt",
+				},
+			});
+			agent.replaceMessages(buildConversation(5));
+			vi.spyOn(agent, "generateSummary").mockResolvedValue(
+				createAssistantMessage("LLM summary"),
+			);
+			const sessionManager = {
+				getSessionId: () => "session-compact-skill-restore",
+				buildSessionContext: () => ({
+					messageEntries: Array.from({ length: 50 }, (_, index) => ({
+						id: `entry-${index}`,
+					})),
+				}),
+				saveCompaction: vi.fn(),
+				saveMessage: vi.fn(),
+			};
+			const getPostKeepMessages = vi.fn().mockResolvedValue([
+				{
+					role: "hookMessage" as const,
+					customType: "skill" as const,
+					content: "Injected instructions for debug",
+					display: false,
+					details: { name: "debug", action: "activate" },
+					timestamp: Date.now(),
+				},
+			]);
+
+			await runUserPromptWithRecovery({
+				agent,
+				sessionManager: sessionManager as never,
+				cwd: "/tmp/compact-skill-restore",
+				prompt: "latest question",
+				execute: () => agent.prompt("latest question"),
+				getPostKeepMessages,
+			});
+
+			expect(getPostKeepMessages).toHaveBeenCalledTimes(1);
+			const planIndex = agent.state.messages.findIndex(
+				(message) =>
+					message.role === "hookMessage" && message.customType === "plan-mode",
+			);
+			const skillIndex = agent.state.messages.findIndex(
+				(message) =>
+					message.role === "hookMessage" && message.customType === "skill",
+			);
+			const sessionStartIndex = agent.state.messages.findIndex(
+				(message) =>
+					message.role === "hookMessage" &&
+					message.customType === "SessionStart",
+			);
+			expect(planIndex).toBeGreaterThan(-1);
+			expect(skillIndex).toBeGreaterThan(planIndex);
+			expect(sessionStartIndex).toBeGreaterThan(skillIndex);
+		} finally {
+			clearPlanModeState();
+			if (previousPlanDir === undefined) {
+				delete process.env.MAESTRO_PLAN_DIR;
+			} else {
+				process.env.MAESTRO_PLAN_DIR = previousPlanDir;
+			}
+			if (previousPlanFile === undefined) {
+				delete process.env.MAESTRO_PLAN_FILE;
+			} else {
+				process.env.MAESTRO_PLAN_FILE = previousPlanFile;
+			}
+			rmSync(planDir, { recursive: true, force: true });
 		}
-
-		const agent = new Agent({
-			transport: new OverflowThenSuccessTransport(),
-			initialState: {
-				model: mockModel,
-				tools: [],
-				systemPrompt: "Base system prompt",
-			},
-		});
-		agent.replaceMessages(buildConversation(5));
-		vi.spyOn(agent, "generateSummary").mockResolvedValue(
-			createAssistantMessage("LLM summary"),
-		);
-		const sessionManager = {
-			getSessionId: () => "session-compact-skill-restore",
-			buildSessionContext: () => ({
-				messageEntries: Array.from({ length: 50 }, (_, index) => ({
-					id: `entry-${index}`,
-				})),
-			}),
-			saveCompaction: vi.fn(),
-			saveMessage: vi.fn(),
-		};
-		const getPostKeepMessages = vi.fn().mockResolvedValue([
-			{
-				role: "hookMessage" as const,
-				customType: "skill" as const,
-				content: "Injected instructions for debug",
-				display: false,
-				details: { name: "debug", action: "activate" },
-				timestamp: Date.now(),
-			},
-		]);
-
-		await runUserPromptWithRecovery({
-			agent,
-			sessionManager: sessionManager as never,
-			cwd: "/tmp/compact-skill-restore",
-			prompt: "latest question",
-			execute: () => agent.prompt("latest question"),
-			getPostKeepMessages,
-		});
-
-		expect(getPostKeepMessages).toHaveBeenCalledTimes(1);
-		const skillIndex = agent.state.messages.findIndex(
-			(message) =>
-				message.role === "hookMessage" && message.customType === "skill",
-		);
-		const sessionStartIndex = agent.state.messages.findIndex(
-			(message) =>
-				message.role === "hookMessage" && message.customType === "SessionStart",
-		);
-		expect(skillIndex).toBeGreaterThan(-1);
-		expect(sessionStartIndex).toBeGreaterThan(skillIndex);
 	});
 
 	it("withholds recoverable overflow assistant errors until recovery succeeds", async () => {

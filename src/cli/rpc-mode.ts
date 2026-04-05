@@ -20,6 +20,7 @@
 
 import type { Agent } from "../agent/agent.js";
 import { buildCompactionHookContext } from "../agent/compaction-hooks.js";
+import { collectPlanModeMessagesForCompaction } from "../agent/compaction-restoration.js";
 import { performCompaction } from "../agent/compaction.js";
 import {
 	buildCompactionEvent,
@@ -116,6 +117,8 @@ export async function runRpcMode(
 						process.cwd(),
 					),
 					execute: () => agent.continue(input.options),
+					getPostKeepMessages: async () =>
+						collectPlanModeMessagesForCompaction(agent.state.messages),
 					callbacks: {
 						onCompacted: (result) => {
 							console.log(
@@ -138,12 +141,14 @@ export async function runRpcMode(
 						sessionManager,
 						process.cwd(),
 					),
-					getPostKeepMessages: () =>
-						collectPersistedSessionStartHookMessages({
+					getPostKeepMessages: async () => [
+						...collectPlanModeMessagesForCompaction(agent.state.messages),
+						...(await collectPersistedSessionStartHookMessages({
 							sessionManager,
 							cwd: process.cwd(),
 							source: "compact",
-						}),
+						})),
+					],
 					customInstructions,
 					renderSummaryText: (summary: AssistantMessage) => {
 						const renderable = createRenderableMessage(summary as AppMessage);
