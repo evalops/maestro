@@ -695,6 +695,51 @@ describe("performCompaction", () => {
 		);
 	});
 
+	it("skips read tool results that will be restored after compaction", async () => {
+		const messages = buildConversation(10);
+		messages.splice(
+			2,
+			0,
+			createReadToolCallMessage("/tmp/restored.ts", "call-read-restore"),
+			createReadToolResultMessage(
+				"/tmp/restored.ts",
+				"call-read-restore",
+				"export const restored = true;",
+			),
+		);
+		const agent = createMockAgent(messages);
+		const sessionManager = createMockSessionManager();
+
+		await performCompaction({ agent, sessionManager });
+
+		const summaryInput = (agent.generateSummary as ReturnType<typeof vi.fn>)
+			.mock.calls[0]?.[0] as AppMessage[] | undefined;
+		expect(summaryInput).toBeDefined();
+		expect(summaryInput).not.toContainEqual(
+			expect.objectContaining({
+				role: "toolResult",
+				toolName: "read",
+			}),
+		);
+		expect(summaryInput).not.toContainEqual(
+			expect.objectContaining({
+				content: [
+					{
+						type: "text",
+						text: "export const restored = true;",
+					},
+				],
+			}),
+		);
+		expect(getReplacedMessages(agent)).toContainEqual(
+			expect.objectContaining({
+				role: "hookMessage",
+				customType: "read-file",
+				details: { filePath: "/tmp/restored.ts" },
+			}),
+		);
+	});
+
 	it("skips PostCompact hook guidance in summarization input", async () => {
 		const messages = buildConversation(10);
 		messages.splice(2, 0, createPostCompactHookMessage());

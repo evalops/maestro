@@ -332,6 +332,22 @@ function collectVisibleReadPaths(messages: AppMessage[]): Set<string> {
 	const visiblePaths = new Set<string>();
 	for (const message of messages) {
 		if (
+			message.role === "hookMessage" &&
+			message.customType === READ_RESTORE_COMPACTION_CUSTOM_TYPE
+		) {
+			const details = message.details;
+			if (
+				typeof details === "object" &&
+				details !== null &&
+				"filePath" in details &&
+				typeof details.filePath === "string"
+			) {
+				visiblePaths.add(normalizeReadPath(details.filePath));
+			}
+			continue;
+		}
+
+		if (
 			message.role !== "toolResult" ||
 			message.toolName !== "read" ||
 			message.isError
@@ -807,8 +823,23 @@ function stripAttachmentsForCompactionSummary(
 
 function prepareMessagesForCompactionSummary(
 	messages: AppMessage[],
+	readPathsRestoredAfterCompaction: ReadonlySet<string> = new Set(),
 ): AppMessage[] {
+	const readRequestsByCallId =
+		readPathsRestoredAfterCompaction.size > 0
+			? collectReadRestoreRequestsByCallId(messages)
+			: new Map<string, ReadRestoreRequest>();
 	return messages.flatMap((message) => {
+		if (
+			message.role === "toolResult" &&
+			message.toolName === "read" &&
+			!message.isError
+		) {
+			const request = readRequestsByCallId.get(message.toolCallId);
+			if (request && readPathsRestoredAfterCompaction.has(request.path)) {
+				return [];
+			}
+		}
 		if (
 			message.role === "toolResult" &&
 			message.toolName === "Skill" &&
@@ -1833,6 +1864,14 @@ export async function performCompaction(params: {
 	if (!older.length) {
 		return { success: false, error: "No earlier messages to compact" };
 	}
+	const keep = messages.slice(boundary);
+	const restoredReadMessages = await collectRecentReadRestoreMessages(
+		older,
+		keep,
+		agent.state.systemPromptSourcePaths,
+	);
+	const readPathsRestoredAfterCompaction =
+		collectVisibleReadPaths(restoredReadMessages);
 
 	const tokensBefore = lastUsage ? calculateContextTokens(lastUsage) : 0;
 	let effectiveCustomInstructions = customInstructions;
@@ -1879,7 +1918,10 @@ export async function performCompaction(params: {
 	// Look for previous summary (cascading)
 	const previousSummary = findPreviousSummary(messages);
 	const olderForSummary = stripRedundantPreviousCompactionMessages(
-		prepareMessagesForCompactionSummary(older),
+		prepareMessagesForCompactionSummary(
+			older,
+			readPathsRestoredAfterCompaction,
+		),
 		previousSummary,
 	);
 	const summaryInput: AppMessage[] = [];
@@ -1985,7 +2027,6 @@ export async function performCompaction(params: {
 	});
 
 	// Replace agent messages
-	const keep = messages.slice(boundary);
 	const newMessages = [summaryMessage as AppMessage, resumeMessage, ...keep];
 	agent.replaceMessages(newMessages);
 	agent.clearTransientRunState?.();
@@ -2026,12 +2067,30 @@ export async function performCompaction(params: {
 
 	const callerPostKeepMessages = (await getPostKeepMessages?.()) ?? [];
 	const preservedTailMessages = [...keep, ...callerPostKeepMessages];
+	const dedupedRestoredReadMessages = restoredReadMessages.filter((message) => {
+		if (
+			message.role !== "hookMessage" ||
+			message.customType !== READ_RESTORE_COMPACTION_CUSTOM_TYPE ||
+			!Array.isArray(message.content)
+		) {
+			return false;
+		}
+
+		const details = message.details;
+		const filePath =
+			typeof details === "object" &&
+			details !== null &&
+			"filePath" in details &&
+			typeof details.filePath === "string"
+				? details.filePath
+				: null;
+		return (
+			filePath !== null &&
+			!hasReadRestoreMessage(preservedTailMessages, filePath, message.content)
+		);
+	});
 	const postKeepMessages = [
-		...(await collectRecentReadRestoreMessages(
-			older,
-			preservedTailMessages,
-			agent.state.systemPromptSourcePaths,
-		)),
+		...dedupedRestoredReadMessages,
 		...(await collectRecentSkillRestoreMessages(older, preservedTailMessages)),
 		...callerPostKeepMessages,
 	];
