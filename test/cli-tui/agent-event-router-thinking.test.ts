@@ -199,7 +199,7 @@ describe("AgentEventRouter reasoning summary streaming", () => {
 		});
 		router.handle({ type: "error", message: "Auto-compaction failed" });
 
-		expect(showRuntimeStatus).toHaveBeenCalledWith("compacting");
+		expect(showRuntimeStatus).toHaveBeenCalledWith("compacting", {});
 		expect(showCompactionNotice).toHaveBeenCalledWith(true);
 		expect(showRuntimeError).toHaveBeenCalledWith("Auto-compaction failed");
 		expect(requestRender).toHaveBeenCalledTimes(3);

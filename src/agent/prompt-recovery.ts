@@ -96,6 +96,26 @@ function getRecoverableOverflowAssistantMessage(
 		: undefined;
 }
 
+function flushWithheldRecoverableLengthMessage(
+	agent: Agent,
+): AssistantMessage | undefined {
+	return typeof (
+		agent as Agent & {
+			flushWithheldRecoverableLengthMessage?: () =>
+				| AssistantMessage
+				| undefined;
+		}
+	).flushWithheldRecoverableLengthMessage === "function"
+		? (
+				agent as Agent & {
+					flushWithheldRecoverableLengthMessage: () =>
+						| AssistantMessage
+						| undefined;
+				}
+			).flushWithheldRecoverableLengthMessage()
+		: undefined;
+}
+
 function getAssistantText(message?: AssistantMessage): string | undefined {
 	if (!message) {
 		return undefined;
@@ -572,6 +592,7 @@ export async function runWithPromptRecovery(
 					callbacks,
 					maxContinuations: options.maxOutputContinuations,
 				});
+				flushWithheldRecoverableLengthMessage(agent);
 				const postContinuationOverflowError = getPromptOverflowAssistantError(
 					agent,
 					agent.state.messages,
@@ -641,6 +662,8 @@ export async function runWithPromptRecovery(
 	}
 
 	if (executionError !== undefined) {
+		flushWithheldRecoverableLengthMessage(agent);
+		newMessages = agent.state.messages.slice(initialMessageCount);
 		const terminalStopFailure = getTerminalStopFailure(
 			newMessages,
 			executionError,
@@ -664,6 +687,7 @@ export async function runWithPromptRecovery(
 		callbacks,
 		maxContinuations: options.maxOutputContinuations,
 	});
+	flushWithheldRecoverableLengthMessage(agent);
 	const lastAssistant = getLastAssistantMessage(agent.state.messages);
 	if (lastAssistant?.stopReason === "length") {
 		await reportStopFailure({

@@ -118,6 +118,7 @@ import type {
 	TextContent,
 	ThinkingLevel,
 	ToolResultMessage,
+	Usage,
 	UserMessage,
 	UserMessageWithAttachments,
 } from "./types.js";
@@ -318,6 +319,48 @@ function isDuplicateMessage(
 	return true;
 }
 
+function mergeUsage(messages: AssistantMessage[]): Usage {
+	return messages.reduce<Usage>(
+		(acc, message) => ({
+			input: acc.input + message.usage.input,
+			output: acc.output + message.usage.output,
+			cacheRead: acc.cacheRead + message.usage.cacheRead,
+			cacheWrite: acc.cacheWrite + message.usage.cacheWrite,
+			cost: {
+				input: acc.cost.input + message.usage.cost.input,
+				output: acc.cost.output + message.usage.cost.output,
+				cacheRead: acc.cost.cacheRead + message.usage.cost.cacheRead,
+				cacheWrite: acc.cost.cacheWrite + message.usage.cost.cacheWrite,
+				total: acc.cost.total + message.usage.cost.total,
+			},
+		}),
+		{
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			cost: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				total: 0,
+			},
+		},
+	);
+}
+
+function mergeAssistantMessages(
+	messages: AssistantMessage[],
+): AssistantMessage {
+	const lastMessage = messages[messages.length - 1]!;
+	return {
+		...lastMessage,
+		content: messages.flatMap((message) => message.content),
+		usage: mergeUsage(messages),
+	};
+}
+
 /**
  * Configuration options for creating an Agent instance.
  */
@@ -392,6 +435,8 @@ export class Agent {
 	}> = [];
 	private suppressRecoverableOverflowErrors = false;
 	private withheldRecoverableOverflowError?: AssistantMessage;
+	private withheldRecoverableLengthMessages: AssistantMessage[] = [];
+	private pendingMergedRecoverableTurnEnd?: AssistantMessage;
 
 	/**
 	 * Creates a new Agent instance.
@@ -740,6 +785,10 @@ export class Agent {
 		this.promptOnlyQueue = [];
 		this._state.error = undefined;
 		this.withheldRecoverableOverflowError = undefined;
+		this.pendingMergedRecoverableTurnEnd = undefined;
+		if (!this.suppressRecoverableOverflowErrors) {
+			this.withheldRecoverableLengthMessages = [];
+		}
 		this._partialAccepted = null;
 	}
 
@@ -747,11 +796,37 @@ export class Agent {
 		this.suppressRecoverableOverflowErrors = enabled;
 		if (!enabled) {
 			this.withheldRecoverableOverflowError = undefined;
+			this.withheldRecoverableLengthMessages = [];
+			this.pendingMergedRecoverableTurnEnd = undefined;
 		}
 	}
 
 	getWithheldRecoverableOverflowError(): AssistantMessage | undefined {
 		return this.withheldRecoverableOverflowError;
+	}
+
+	flushWithheldRecoverableLengthMessage(): AssistantMessage | undefined {
+		if (this.withheldRecoverableLengthMessages.length === 0) {
+			return undefined;
+		}
+
+		const merged = mergeAssistantMessages(
+			this.withheldRecoverableLengthMessages,
+		);
+		this._state.messages = [
+			...this._state.messages.slice(
+				0,
+				-this.withheldRecoverableLengthMessages.length,
+			),
+			merged,
+		];
+		this.withheldRecoverableLengthMessages = [];
+		this.pendingMergedRecoverableTurnEnd = undefined;
+		this.primeToolBatch(merged);
+		this.emit({ type: "message_start", message: merged });
+		this.emit({ type: "message_end", message: merged });
+		this.emit({ type: "turn_end", message: merged, toolResults: [] });
+		return merged;
 	}
 
 	/**
@@ -802,6 +877,48 @@ export class Agent {
 			message.stopReason === "error" &&
 			isAssistantContextOverflow(message, this._state.model.contextWindow)
 		);
+	}
+
+	private shouldWithholdRecoverableMaxOutput(
+		message: AssistantMessage,
+	): boolean {
+		return (
+			this.suppressRecoverableOverflowErrors && message.stopReason === "length"
+		);
+	}
+
+	private shouldMergeRecoverableLengthContinuation(
+		message: AssistantMessage,
+	): boolean {
+		return (
+			this.suppressRecoverableOverflowErrors &&
+			this.withheldRecoverableLengthMessages.length > 0 &&
+			message.stopReason !== "length" &&
+			message.stopReason !== "error"
+		);
+	}
+
+	private mergeWithWithheldRecoverableLengthMessages(
+		incoming: AssistantMessage,
+	): AssistantMessage {
+		if (this.withheldRecoverableLengthMessages.length === 0) {
+			return incoming;
+		}
+
+		const merged = mergeAssistantMessages([
+			...this.withheldRecoverableLengthMessages,
+			incoming,
+		]);
+		this._state.messages = [
+			...this._state.messages.slice(
+				0,
+				-this.withheldRecoverableLengthMessages.length,
+			),
+			merged,
+		];
+		this.withheldRecoverableLengthMessages = [];
+		this.pendingMergedRecoverableTurnEnd = merged;
+		return merged;
 	}
 
 	/**
@@ -1068,6 +1185,9 @@ export class Agent {
 		this.abortController = undefined;
 		this.runningPrompt = undefined;
 		this.resolveRunningPrompt = undefined;
+		this.withheldRecoverableOverflowError = undefined;
+		this.withheldRecoverableLengthMessages = [];
+		this.pendingMergedRecoverableTurnEnd = undefined;
 		// Note: Do NOT clear listeners - they contain the TUI subscription
 		// and must persist across resets for UI updates to work
 	}
@@ -1195,7 +1315,10 @@ export class Agent {
 					if (
 						this.shouldWithholdRecoverableOverflowError(
 							event.message as AppMessage,
-						)
+						) ||
+						(isAssistantMessage(event.message) &&
+							(this.shouldWithholdRecoverableMaxOutput(event.message) ||
+								this.shouldMergeRecoverableLengthContinuation(event.message)))
 					) {
 						this._state.streamMessage = null;
 						continue;
@@ -1208,7 +1331,10 @@ export class Agent {
 					if (
 						this.shouldWithholdRecoverableOverflowError(
 							event.message as AppMessage,
-						)
+						) ||
+						(isAssistantMessage(event.message) &&
+							(this.shouldWithholdRecoverableMaxOutput(event.message) ||
+								this.shouldMergeRecoverableLengthContinuation(event.message)))
 					) {
 						this._state.streamMessage = null;
 						continue;
@@ -1219,10 +1345,38 @@ export class Agent {
 					this.emit(event);
 				} else if (event.type === "message_end") {
 					this._state.streamMessage = null;
-					const incoming = event.message as AppMessage;
+					let incoming = event.message as AppMessage;
 					if (this.shouldWithholdRecoverableOverflowError(incoming)) {
 						this.withheldRecoverableOverflowError = incoming;
 						lastStopReason = incoming.stopReason;
+						continue;
+					}
+					if (
+						isAssistantMessage(incoming) &&
+						this.shouldWithholdRecoverableMaxOutput(incoming)
+					) {
+						const assistantIncoming = incoming;
+						const lastMessage =
+							this._state.messages[this._state.messages.length - 1];
+						if (!isDuplicateMessage(lastMessage, assistantIncoming)) {
+							this._state.messages = [
+								...this._state.messages,
+								assistantIncoming,
+							];
+						}
+						this.withheldRecoverableLengthMessages.push(assistantIncoming);
+						lastStopReason = "length";
+						continue;
+					}
+					if (
+						isAssistantMessage(incoming) &&
+						this.shouldMergeRecoverableLengthContinuation(incoming)
+					) {
+						incoming =
+							this.mergeWithWithheldRecoverableLengthMessages(incoming);
+						this.primeToolBatch(incoming);
+						this.emit({ type: "message_start", message: incoming });
+						this.emit({ ...event, message: incoming });
 						continue;
 					}
 					const lastMessage =
@@ -1238,13 +1392,32 @@ export class Agent {
 						lastStopReason = event.message.stopReason;
 					}
 					this.primeToolBatch(incoming);
-					this.emit(event);
+					this.emit({ ...event, message: incoming });
 				} else if (event.type === "tool_execution_start") {
 					this.handleToolExecutionStart(event);
 				} else if (event.type === "tool_execution_update") {
 					this.handleToolExecutionUpdate(event);
 				} else if (event.type === "tool_execution_end") {
 					this.handleToolExecutionEnd(event);
+				} else if (event.type === "turn_end") {
+					if (
+						this.shouldWithholdRecoverableOverflowError(
+							event.message as AppMessage,
+						) ||
+						(isAssistantMessage(event.message) &&
+							this.shouldWithholdRecoverableMaxOutput(event.message))
+					) {
+						continue;
+					}
+					if (this.pendingMergedRecoverableTurnEnd) {
+						this.emit({
+							...event,
+							message: this.pendingMergedRecoverableTurnEnd,
+						});
+						this.pendingMergedRecoverableTurnEnd = undefined;
+						continue;
+					}
+					this.emit(event);
 				} else {
 					this.emit(event);
 				}
@@ -1424,7 +1597,10 @@ export class Agent {
 					if (
 						this.shouldWithholdRecoverableOverflowError(
 							event.message as AppMessage,
-						)
+						) ||
+						(isAssistantMessage(event.message) &&
+							(this.shouldWithholdRecoverableMaxOutput(event.message) ||
+								this.shouldMergeRecoverableLengthContinuation(event.message)))
 					) {
 						this._state.streamMessage = null;
 						continue;
@@ -1437,7 +1613,10 @@ export class Agent {
 					if (
 						this.shouldWithholdRecoverableOverflowError(
 							event.message as AppMessage,
-						)
+						) ||
+						(isAssistantMessage(event.message) &&
+							(this.shouldWithholdRecoverableMaxOutput(event.message) ||
+								this.shouldMergeRecoverableLengthContinuation(event.message)))
 					) {
 						this._state.streamMessage = null;
 						continue;
@@ -1448,10 +1627,38 @@ export class Agent {
 					this.emit(event);
 				} else if (event.type === "message_end") {
 					this._state.streamMessage = null;
-					const incoming = event.message as AppMessage;
+					let incoming = event.message as AppMessage;
 					if (this.shouldWithholdRecoverableOverflowError(incoming)) {
 						this.withheldRecoverableOverflowError = incoming;
 						lastStopReason = incoming.stopReason;
+						continue;
+					}
+					if (
+						isAssistantMessage(incoming) &&
+						this.shouldWithholdRecoverableMaxOutput(incoming)
+					) {
+						const assistantIncoming = incoming;
+						const lastMessage =
+							this._state.messages[this._state.messages.length - 1];
+						if (!isDuplicateMessage(lastMessage, assistantIncoming)) {
+							this._state.messages = [
+								...this._state.messages,
+								assistantIncoming,
+							];
+						}
+						this.withheldRecoverableLengthMessages.push(assistantIncoming);
+						lastStopReason = "length";
+						continue;
+					}
+					if (
+						isAssistantMessage(incoming) &&
+						this.shouldMergeRecoverableLengthContinuation(incoming)
+					) {
+						incoming =
+							this.mergeWithWithheldRecoverableLengthMessages(incoming);
+						this.primeToolBatch(incoming);
+						this.emit({ type: "message_start", message: incoming });
+						this.emit({ ...event, message: incoming });
 						continue;
 					}
 					const lastMessage =
@@ -1467,13 +1674,32 @@ export class Agent {
 						lastStopReason = event.message.stopReason;
 					}
 					this.primeToolBatch(incoming);
-					this.emit(event);
+					this.emit({ ...event, message: incoming });
 				} else if (event.type === "tool_execution_start") {
 					this.handleToolExecutionStart(event);
 				} else if (event.type === "tool_execution_update") {
 					this.handleToolExecutionUpdate(event);
 				} else if (event.type === "tool_execution_end") {
 					this.handleToolExecutionEnd(event);
+				} else if (event.type === "turn_end") {
+					if (
+						this.shouldWithholdRecoverableOverflowError(
+							event.message as AppMessage,
+						) ||
+						(isAssistantMessage(event.message) &&
+							this.shouldWithholdRecoverableMaxOutput(event.message))
+					) {
+						continue;
+					}
+					if (this.pendingMergedRecoverableTurnEnd) {
+						this.emit({
+							...event,
+							message: this.pendingMergedRecoverableTurnEnd,
+						});
+						this.pendingMergedRecoverableTurnEnd = undefined;
+						continue;
+					}
+					this.emit(event);
 				} else {
 					this.emit(event);
 				}
