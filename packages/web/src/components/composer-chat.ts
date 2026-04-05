@@ -13,6 +13,7 @@ import {
 	type AgentEvent,
 	ApiClient,
 	type ComposerToolCall,
+	type McpPromptResponse,
 	type McpResourceReadResponse,
 	type McpServerStatus,
 	type McpStatus,
@@ -301,6 +302,67 @@ function formatMcpResourceRead(
 	}
 
 	return JSON.stringify(result.contents, null, 2);
+}
+
+function formatMcpPrompts(
+	status: McpStatus,
+	serverName?: string,
+): { isError: boolean; text: string } {
+	const servers = serverName
+		? status.servers.filter((server) => server.name === serverName)
+		: status.servers;
+
+	if (serverName && servers.length === 0) {
+		return { isError: true, text: `MCP server '${serverName}' not found.` };
+	}
+
+	const disconnected = serverName
+		? servers.find((server) => !server.connected)
+		: null;
+	if (disconnected) {
+		return {
+			isError: true,
+			text: `MCP server '${disconnected.name}' is not connected.`,
+		};
+	}
+
+	const connectedWithPrompts = servers
+		.filter((server) => server.connected)
+		.filter((server) => (server.prompts?.length ?? 0) > 0);
+
+	if (connectedWithPrompts.length === 0) {
+		return {
+			isError: false,
+			text: "No MCP prompts available. Either no servers are connected or they don't expose prompts.",
+		};
+	}
+
+	const lines: string[] = ["# Available MCP Prompts", ""];
+	for (const server of connectedWithPrompts) {
+		lines.push(`## ${server.name}`);
+		for (const prompt of server.prompts ?? []) {
+			lines.push(`- ${prompt}`);
+		}
+		lines.push("");
+	}
+
+	return { isError: false, text: lines.join("\n").trimEnd() };
+}
+
+function formatMcpPrompt(
+	result: McpPromptResponse,
+	promptName: string,
+): string {
+	const lines: string[] = [`Prompt: ${promptName}`, ""];
+	if (result.description) {
+		lines.push(`Description: ${result.description}`, "");
+	}
+	for (const message of result.messages) {
+		lines.push(`[${message.role}]`);
+		lines.push(message.content);
+		lines.push("");
+	}
+	return lines.join("\n").trimEnd();
 }
 
 export function getTerminalStreamOutcome(
@@ -3070,7 +3132,9 @@ export class ComposerChat extends LitElement {
 							agentEvent.toolName === "list_mcp_servers" ||
 							agentEvent.toolName === "list_mcp_tools" ||
 							agentEvent.toolName === "list_mcp_resources" ||
-							agentEvent.toolName === "read_mcp_resource"
+							agentEvent.toolName === "read_mcp_resource" ||
+							agentEvent.toolName === "list_mcp_prompts" ||
+							agentEvent.toolName === "get_mcp_prompt"
 						) {
 							try {
 								const res = await this.runMcpClientTool(
@@ -3393,6 +3457,37 @@ export class ComposerChat extends LitElement {
 			};
 		}
 
+		if (toolName === "get_mcp_prompt") {
+			const server = getOptionalStringArg(argRecord, "server");
+			const name = getOptionalStringArg(argRecord, "name");
+			const promptArgs =
+				argRecord.args &&
+				typeof argRecord.args === "object" &&
+				!Array.isArray(argRecord.args)
+					? Object.fromEntries(
+							Object.entries(argRecord.args as Record<string, unknown>).filter(
+								([, value]) => typeof value === "string",
+							),
+						)
+					: undefined;
+			if (!server || !name) {
+				return {
+					isError: true,
+					text: "Error: get_mcp_prompt requires server and name",
+				};
+			}
+
+			const result = await this.apiClient.getMcpPrompt(
+				server,
+				name,
+				promptArgs,
+			);
+			return {
+				isError: false,
+				text: formatMcpPrompt(result, name),
+			};
+		}
+
 		const status = await this.apiClient.getMcpStatus();
 		if (toolName === "list_mcp_servers") {
 			return {
@@ -3405,6 +3500,12 @@ export class ComposerChat extends LitElement {
 		}
 		if (toolName === "list_mcp_resources") {
 			return formatMcpResources(
+				status,
+				getOptionalStringArg(argRecord, "server"),
+			);
+		}
+		if (toolName === "list_mcp_prompts") {
+			return formatMcpPrompts(
 				status,
 				getOptionalStringArg(argRecord, "server"),
 			);

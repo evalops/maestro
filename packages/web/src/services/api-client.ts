@@ -244,6 +244,16 @@ export interface McpResourceReadResponse {
 	contents: McpResourceContent[];
 }
 
+export interface McpPromptMessage {
+	role: string;
+	content: string;
+}
+
+export interface McpPromptResponse {
+	description?: string;
+	messages: McpPromptMessage[];
+}
+
 export type SessionArtifactAccessAction = "view" | "file" | "events" | "zip";
 
 interface SessionArtifactAccessResponse {
@@ -1915,6 +1925,24 @@ export class ApiClient {
 		return (await this.fetchJsonWithFallback(
 			`/api/mcp?${params.toString()}`,
 		)) as McpResourceReadResponse;
+	}
+
+	async getMcpPrompt(
+		server: string,
+		name: string,
+		args?: Record<string, string>,
+	): Promise<McpPromptResponse> {
+		const params = new URLSearchParams({
+			action: "get-prompt",
+			server,
+			name,
+		});
+		for (const [key, value] of Object.entries(args ?? {})) {
+			params.set(`arg:${key}`, value);
+		}
+		return (await this.fetchJsonWithFallback(
+			`/api/mcp?${params.toString()}`,
+		)) as McpPromptResponse;
 	}
 
 	// Background Tasks

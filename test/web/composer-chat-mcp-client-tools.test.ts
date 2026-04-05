@@ -51,6 +51,22 @@ describe("composer-chat MCP client tools", () => {
 				args: { server: "docs", uri: "memo://guide" },
 			};
 			yield {
+				type: "client_tool_request",
+				toolCallId: "call_prompts",
+				toolName: "list_mcp_prompts",
+				args: { server: "docs" },
+			};
+			yield {
+				type: "client_tool_request",
+				toolCallId: "call_prompt",
+				toolName: "get_mcp_prompt",
+				args: {
+					server: "docs",
+					name: "summarize",
+					args: { topic: "MCP" },
+				},
+			};
+			yield {
 				type: "message_end",
 				message: { role: "assistant" },
 			};
@@ -85,6 +101,10 @@ describe("composer-chat MCP client tools", () => {
 			readMcpResource: vi.fn().mockResolvedValue({
 				contents: [{ uri: "memo://guide", text: "Guide body" }],
 			}),
+			getMcpPrompt: vi.fn().mockResolvedValue({
+				description: "Summarize docs",
+				messages: [{ role: "user", content: "Summarize MCP" }],
+			}),
 		};
 		element.clientOnline = true;
 		element.loadSessions = vi.fn().mockResolvedValue(undefined);
@@ -101,7 +121,7 @@ describe("composer-chat MCP client tools", () => {
 			new CustomEvent("submit", { detail: { text: "Hello" } }),
 		);
 
-		expect(element.apiClient.sendClientToolResult).toHaveBeenCalledTimes(4);
+		expect(element.apiClient.sendClientToolResult).toHaveBeenCalledTimes(6);
 		const results = element.apiClient.sendClientToolResult.mock.calls.map(
 			([payload]) => payload,
 		);
@@ -139,6 +159,29 @@ describe("composer-chat MCP client tools", () => {
 		expect(element.apiClient.readMcpResource).toHaveBeenCalledWith(
 			"docs",
 			"memo://guide",
+		);
+
+		expect(results[4]).toMatchObject({
+			toolCallId: "call_prompts",
+			isError: false,
+		});
+		expect(results[4]?.content?.[0]?.text).toContain("# Available MCP Prompts");
+		expect(results[4]?.content?.[0]?.text).toContain("summarize");
+
+		expect(results[5]).toMatchObject({
+			toolCallId: "call_prompt",
+			isError: false,
+		});
+		expect(results[5]?.content?.[0]?.text).toContain("Prompt: summarize");
+		expect(results[5]?.content?.[0]?.text).toContain(
+			"Description: Summarize docs",
+		);
+		expect(results[5]?.content?.[0]?.text).toContain("[user]");
+		expect(results[5]?.content?.[0]?.text).toContain("Summarize MCP");
+		expect(element.apiClient.getMcpPrompt).toHaveBeenCalledWith(
+			"docs",
+			"summarize",
+			{ topic: "MCP" },
 		);
 	});
 });
