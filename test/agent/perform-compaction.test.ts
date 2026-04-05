@@ -310,6 +310,18 @@ function createBackgroundTasksHookMessage(
 	};
 }
 
+function createMcpServersHookMessage(
+	content = "# Connected MCP servers restored after compaction\n\n- context7; transport=stdio; tools=2; resources=1; prompts=0",
+): AppMessage {
+	return {
+		role: "hookMessage",
+		customType: "mcp-servers",
+		content,
+		display: false,
+		timestamp: Date.now(),
+	};
+}
+
 function createPlanModeHookMessage(
 	content = "Plan file: /tmp/plan.md",
 ): AppMessage {
@@ -880,6 +892,72 @@ describe("performCompaction", () => {
 		expect(backgroundMessages[0]).not.toEqual(
 			expect.objectContaining({
 				content: expect.stringContaining("status=running"),
+			}),
+		);
+	});
+
+	it("skips MCP restoration guidance in summarization input", async () => {
+		const messages = buildConversation(10);
+		messages.splice(
+			2,
+			0,
+			createMcpServersHookMessage(
+				[
+					"# Connected MCP servers restored after compaction",
+					"",
+					"- context7; transport=stdio; tools=2; resources=1; prompts=0",
+				].join("\n"),
+			),
+		);
+		const agent = createMockAgentWithoutAppendMessage(messages);
+		const sessionManager = createMockSessionManager();
+		const generateSummary = vi
+			.spyOn(agent, "generateSummary")
+			.mockResolvedValue(createAssistantMessage("LLM summary"));
+
+		await performCompaction({ agent, sessionManager });
+
+		const summaryInput = generateSummary.mock.calls[0]?.[0] ?? [];
+		expect(JSON.stringify(summaryInput)).not.toContain(
+			"Connected MCP servers restored after compaction",
+		);
+	});
+
+	it("replaces stale MCP restoration messages in the kept tail", async () => {
+		const messages = buildConversation(10);
+		messages.splice(
+			10,
+			0,
+			createMcpServersHookMessage(
+				"# Connected MCP servers restored after compaction\n\n- context7; transport=stdio; tools=1; resources=0; prompts=0",
+			),
+		);
+		const agent = createMockAgentWithoutAppendMessage(messages);
+		const sessionManager = createMockSessionManager();
+
+		await performCompaction({
+			agent,
+			sessionManager,
+			getPostKeepMessages: async () => [
+				createMcpServersHookMessage(
+					"# Connected MCP servers restored after compaction\n\n- context7; transport=stdio; tools=2; resources=1; prompts=0",
+				),
+			],
+		});
+
+		const mcpMessages = getReplacedMessages(agent).filter(
+			(message) =>
+				message.role === "hookMessage" && message.customType === "mcp-servers",
+		);
+		expect(mcpMessages).toHaveLength(1);
+		expect(mcpMessages[0]).toEqual(
+			expect.objectContaining({
+				content: expect.stringContaining("tools=2; resources=1"),
+			}),
+		);
+		expect(mcpMessages[0]).not.toEqual(
+			expect.objectContaining({
+				content: expect.stringContaining("tools=1; resources=0"),
 			}),
 		);
 	});

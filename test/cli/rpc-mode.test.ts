@@ -1,12 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	collectBackgroundTaskMessagesForCompaction,
+	collectMcpMessagesForCompaction,
 	collectPlanMessagesForCompaction,
 } from "../../src/agent/compaction-restoration.js";
 import { performCompaction } from "../../src/agent/compaction.js";
 import { runWithPromptRecovery } from "../../src/agent/prompt-recovery.js";
 import { collectPersistedSessionStartHookMessages } from "../../src/agent/user-prompt-runtime.js";
 import { runRpcMode } from "../../src/cli/rpc-mode.js";
+import { mcpManager } from "../../src/mcp/index.js";
 
 let lineHandler: ((line: string) => void | Promise<void>) | undefined;
 
@@ -42,7 +44,14 @@ vi.mock("../../src/agent/user-prompt-runtime.js", async () => {
 
 vi.mock("../../src/agent/compaction-restoration.js", () => ({
 	collectBackgroundTaskMessagesForCompaction: vi.fn(() => []),
+	collectMcpMessagesForCompaction: vi.fn(() => []),
 	collectPlanMessagesForCompaction: vi.fn(),
+}));
+
+vi.mock("../../src/mcp/index.js", () => ({
+	mcpManager: {
+		getStatus: vi.fn(() => ({ servers: [] })),
+	},
 }));
 
 vi.mock("../../src/agent/prompt-recovery.js", async () => {
@@ -62,6 +71,10 @@ describe("runRpcMode", () => {
 		vi.mocked(collectBackgroundTaskMessagesForCompaction)
 			.mockReset()
 			.mockReturnValue([]);
+		vi.mocked(collectMcpMessagesForCompaction).mockReset().mockReturnValue([]);
+		vi.mocked(mcpManager.getStatus)
+			.mockReset()
+			.mockReturnValue({ servers: [] });
 		vi.mocked(collectPlanMessagesForCompaction).mockReset();
 		vi.mocked(collectPersistedSessionStartHookMessages).mockReset();
 		vi.mocked(runWithPromptRecovery).mockReset().mockResolvedValue(undefined);
@@ -128,6 +141,10 @@ describe("runRpcMode", () => {
 		expect(collectBackgroundTaskMessagesForCompaction).toHaveBeenCalledWith(
 			agent.state.messages,
 		);
+		expect(collectMcpMessagesForCompaction).toHaveBeenCalledWith(
+			agent.state.messages,
+			[],
+		);
 		expect(collectPersistedSessionStartHookMessages).toHaveBeenCalledWith(
 			expect.objectContaining({
 				sessionManager,
@@ -188,6 +205,10 @@ describe("runRpcMode", () => {
 		);
 		expect(collectBackgroundTaskMessagesForCompaction).toHaveBeenCalledWith(
 			agent.state.messages,
+		);
+		expect(collectMcpMessagesForCompaction).toHaveBeenCalledWith(
+			agent.state.messages,
+			[],
 		);
 		expect(collectPersistedSessionStartHookMessages).toHaveBeenCalledWith(
 			expect.objectContaining({

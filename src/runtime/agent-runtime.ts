@@ -1,10 +1,12 @@
 import type { Agent } from "../agent/agent.js";
+import { collectMcpMessagesForCompaction } from "../agent/compaction-restoration.js";
 import { buildCompactionEvent } from "../agent/prompt-recovery.js";
 import type { AppMessage } from "../agent/types.js";
 import { runUserPromptWithRecovery } from "../agent/user-prompt-runtime.js";
 import { type PromptPayload, PromptQueue } from "../cli-tui/prompt-queue.js";
 import type { TuiRenderer } from "../cli-tui/tui-renderer.js";
 import { composerManager } from "../composers/index.js";
+import { mcpManager } from "../mcp/index.js";
 import type { SessionManager } from "../session/manager.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -58,8 +60,14 @@ export class AgentRuntimeController {
 						(attachment) => attachment.fileName,
 					),
 					execute: () => this.options.agent.prompt(text, attachments),
-					getPostKeepMessages: async () =>
-						this.renderer?.collectActiveSkillMessagesForCompaction?.() ?? [],
+					getPostKeepMessages: async () => [
+						...collectMcpMessagesForCompaction(
+							this.options.agent.state.messages,
+							mcpManager.getStatus().servers,
+						),
+						...(this.renderer?.collectActiveSkillMessagesForCompaction?.() ??
+							[]),
+					],
 					callbacks: {
 						onCompacting: () => {
 							this.options.agent.emitStatus("compacting", {
