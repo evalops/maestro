@@ -1962,6 +1962,103 @@ Current plan contents:
 		}
 	});
 
+	it("replaces stale kept-tail plan restoration when the tracked plan path changes", async () => {
+		const originalCwd = process.cwd();
+		const workspaceDir = mkdtempSync(
+			join(tmpdir(), "maestro-plan-path-change-"),
+		);
+		const planDir = join(workspaceDir, ".maestro", "plans");
+		const previousPlanDir = process.env.MAESTRO_PLAN_DIR;
+		const previousPlanFile = process.env.MAESTRO_PLAN_FILE;
+		process.chdir(workspaceDir);
+		process.env.MAESTRO_PLAN_DIR = planDir;
+		clearConfigCache();
+
+		try {
+			const oldState = enterPlanMode({ name: "Old plan" });
+			writeFileSync(oldState.filePath, "# Plan\n\n1. Old tracked plan");
+			exitPlanMode();
+
+			const newState = enterPlanMode({ name: "New plan" });
+			writeFileSync(newState.filePath, "# Plan\n\n1. New tracked plan");
+
+			const messages = buildConversation(10);
+			messages.push(
+				createPlanFileHookMessage(
+					`# Active plan file restored after compaction
+
+Plan file: ${oldState.filePath}
+
+Current plan contents:
+# Plan
+
+1. Old tracked plan`,
+					oldState.filePath,
+				),
+				createPlanModeHookMessage(`Plan file: ${oldState.filePath}`),
+			);
+			const agent = createMockAgentWithoutAppendMessage(messages);
+			const sessionManager = createMockSessionManager();
+
+			const result = await performCompaction({
+				agent,
+				sessionManager,
+				getPostKeepMessages: async (preservedMessages) =>
+					collectPlanMessagesForCompaction(preservedMessages),
+			});
+
+			expect(result.success).toBe(true);
+			const restoredPlanMessages = getReplacedMessages(agent).filter(
+				(message) =>
+					message.role === "hookMessage" &&
+					(message.customType === "plan-file" ||
+						message.customType === "plan-mode"),
+			);
+			expect(restoredPlanMessages).toHaveLength(2);
+			expect(restoredPlanMessages).toContainEqual(
+				expect.objectContaining({
+					customType: "plan-file",
+					details: { filePath: newState.filePath },
+					content: expect.stringContaining("New tracked plan"),
+				}),
+			);
+			expect(restoredPlanMessages).toContainEqual(
+				expect.objectContaining({
+					customType: "plan-mode",
+					details: { filePath: newState.filePath },
+					content: expect.stringContaining(`Plan file: ${newState.filePath}`),
+				}),
+			);
+			expect(restoredPlanMessages).not.toContainEqual(
+				expect.objectContaining({
+					customType: "plan-file",
+					details: { filePath: oldState.filePath },
+				}),
+			);
+			expect(restoredPlanMessages).not.toContainEqual(
+				expect.objectContaining({
+					customType: "plan-mode",
+					details: { filePath: oldState.filePath },
+				}),
+			);
+		} finally {
+			clearPlanModeState();
+			if (previousPlanDir === undefined) {
+				delete process.env.MAESTRO_PLAN_DIR;
+			} else {
+				process.env.MAESTRO_PLAN_DIR = previousPlanDir;
+			}
+			if (previousPlanFile === undefined) {
+				delete process.env.MAESTRO_PLAN_FILE;
+			} else {
+				process.env.MAESTRO_PLAN_FILE = previousPlanFile;
+			}
+			process.chdir(originalCwd);
+			clearConfigCache();
+			rmSync(workspaceDir, { recursive: true, force: true });
+		}
+	});
+
 	it("restores recently loaded skills after compaction", async () => {
 		const messages = buildConversation(10);
 		messages.splice(

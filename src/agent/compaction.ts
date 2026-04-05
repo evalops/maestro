@@ -685,6 +685,43 @@ function getPlanFileRestorePath(message: AppMessage): string | null {
 		: null;
 }
 
+function isPlanModeRestoreHookMessage(
+	message: AppMessage,
+): message is HookMessage {
+	return (
+		message.role === "hookMessage" &&
+		message.customType === PLAN_MODE_COMPACTION_CUSTOM_TYPE
+	);
+}
+
+function getPlanModeRestorePath(message: AppMessage): string | null {
+	if (!isPlanModeRestoreHookMessage(message)) {
+		return null;
+	}
+
+	const details = message.details;
+	return typeof details === "object" &&
+		details !== null &&
+		"filePath" in details &&
+		typeof details.filePath === "string"
+		? details.filePath
+		: null;
+}
+
+function collectPlanRestorePaths(
+	restoredMessages: AppMessage[],
+	getPath: (message: AppMessage) => string | null,
+): Set<string> {
+	const filePaths = new Set<string>();
+	for (const message of restoredMessages) {
+		const filePath = getPath(message);
+		if (filePath) {
+			filePaths.add(filePath);
+		}
+	}
+	return filePaths;
+}
+
 function hasPlanFileRestoreMessage(
 	messages: AppMessage[],
 	filePath: string,
@@ -743,9 +780,26 @@ function collectPlanFilePathsToReplace(
 function shouldReplacePreservedPlanFileMessage(
 	message: AppMessage,
 	replacedFilePaths: Set<string>,
+	currentPlanFilePaths: Set<string>,
 ): boolean {
 	const filePath = getPlanFileRestorePath(message);
-	return filePath !== null && replacedFilePaths.has(filePath);
+	return (
+		filePath !== null &&
+		(replacedFilePaths.has(filePath) ||
+			(currentPlanFilePaths.size > 0 && !currentPlanFilePaths.has(filePath)))
+	);
+}
+
+function shouldReplacePreservedPlanModeMessage(
+	message: AppMessage,
+	currentPlanModePaths: Set<string>,
+): boolean {
+	const filePath = getPlanModeRestorePath(message);
+	return (
+		filePath !== null &&
+		currentPlanModePaths.size > 0 &&
+		!currentPlanModePaths.has(filePath)
+	);
 }
 
 function estimateHookContentTokens(
@@ -2431,6 +2485,14 @@ export async function performCompaction(params: {
 		keep,
 		callerPostKeepMessages,
 	);
+	const currentPlanFilePaths = collectPlanRestorePaths(
+		callerPostKeepMessages,
+		getPlanFileRestorePath,
+	);
+	const currentPlanModePaths = collectPlanRestorePaths(
+		callerPostKeepMessages,
+		getPlanModeRestorePath,
+	);
 	const activeSkillNamesToReplace = collectActiveSkillNamesToReplace(
 		keep,
 		callerPostKeepMessages,
@@ -2441,7 +2503,12 @@ export async function performCompaction(params: {
 				message,
 				readRestorePathsToReplace,
 			) &&
-			!shouldReplacePreservedPlanFileMessage(message, planFilePathsToReplace) &&
+			!shouldReplacePreservedPlanFileMessage(
+				message,
+				planFilePathsToReplace,
+				currentPlanFilePaths,
+			) &&
+			!shouldReplacePreservedPlanModeMessage(message, currentPlanModePaths) &&
 			!shouldReplacePreservedToolSkillMessage(
 				message,
 				skillRestoreResult.replacedPreservedToolSkillNames,
