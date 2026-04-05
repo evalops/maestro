@@ -651,6 +651,50 @@ describe("performCompaction", () => {
 		);
 	});
 
+	it("skips successful Skill tool results in summarization input", async () => {
+		const messages = buildConversation(10);
+		messages.splice(
+			2,
+			0,
+			createSkillToolCallMessage("reviewer", "call-skill-reviewer"),
+			createSkillToolResultMessage(
+				"reviewer",
+				"call-skill-reviewer",
+				"# Skill: reviewer\n\n> Review specialist\n\n## Instructions\n\nInspect the diff for regressions.",
+			),
+		);
+		const agent = createMockAgent(messages);
+		const sessionManager = createMockSessionManager();
+
+		await performCompaction({ agent, sessionManager });
+
+		const summaryInput = (agent.generateSummary as ReturnType<typeof vi.fn>)
+			.mock.calls[0]?.[0] as AppMessage[] | undefined;
+		expect(summaryInput).toBeDefined();
+		expect(summaryInput).not.toContainEqual(
+			expect.objectContaining({
+				role: "toolResult",
+				toolName: "Skill",
+			}),
+		);
+		expect(summaryInput).not.toContainEqual(
+			expect.objectContaining({
+				content: expect.arrayContaining([
+					expect.objectContaining({
+						text: expect.stringContaining("Inspect the diff for regressions."),
+					}),
+				]),
+			}),
+		);
+		expect(getReplacedMessages(agent)).toContainEqual(
+			expect.objectContaining({
+				role: "hookMessage",
+				customType: "skill",
+				details: { name: "reviewer", source: "tool" },
+			}),
+		);
+	});
+
 	it("skips PostCompact hook guidance in summarization input", async () => {
 		const messages = buildConversation(10);
 		messages.splice(2, 0, createPostCompactHookMessage());

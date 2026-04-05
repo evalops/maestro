@@ -810,6 +810,13 @@ function prepareMessagesForCompactionSummary(
 ): AppMessage[] {
 	return messages.flatMap((message) => {
 		if (
+			message.role === "toolResult" &&
+			message.toolName === "Skill" &&
+			!message.isError
+		) {
+			return [];
+		}
+		if (
 			shouldSkipAssistantCompactionMessage(message) ||
 			shouldSkipReinjectedCompactionMessage(message)
 		) {
