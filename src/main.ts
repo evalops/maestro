@@ -99,6 +99,7 @@ import {
 	type Model,
 	isAssistantMessage,
 } from "./agent/index.js";
+import { applySessionEndHooks } from "./agent/session-lifecycle-hooks.js";
 import { type ToolRetryMode, ToolRetryService } from "./agent/tool-retry.js";
 import {
 	applySessionStartHooks,
@@ -205,42 +206,55 @@ async function runInteractiveMode(
 	const { redirectLoggerToFile } = await import("./utils/logger.js");
 	redirectLoggerToFile();
 
-	// Initialize the TUI renderer which manages all terminal output
-	const renderer = new TuiRenderer(
-		agent,
-		sessionManager,
-		version,
-		approvalService,
-		toolRetryService,
-		explicitApiKey,
-		options,
-	);
-	const runtime = new AgentRuntimeController({
-		agent,
-		sessionManager,
-		renderer,
-		onError: (error) => {
-			const message =
-				error instanceof Error ? error.message : "Unknown error occurred";
-			renderer.showError(message);
-		},
-	});
+	let sessionEndReason: "user_exit" | "error" = "user_exit";
+	try {
+		// Initialize the TUI renderer which manages all terminal output
+		const renderer = new TuiRenderer(
+			agent,
+			sessionManager,
+			version,
+			approvalService,
+			toolRetryService,
+			explicitApiKey,
+			options,
+		);
+		const runtime = new AgentRuntimeController({
+			agent,
+			sessionManager,
+			renderer,
+			onError: (error) => {
+				const message =
+					error instanceof Error ? error.message : "Unknown error occurred";
+				renderer.showError(message);
+			},
+		});
 
-	// Initialize TUI - sets up terminal raw mode, cursor handling, and rendering
-	await renderer.init();
+		// Initialize TUI - sets up terminal raw mode, cursor handling, and rendering
+		await renderer.init();
 
-	// Render any existing messages from a continued session (--continue mode)
-	// This allows users to see their previous conversation context
-	renderer.renderInitialMessages(agent.state);
+		// Render any existing messages from a continued session (--continue mode)
+		// This allows users to see their previous conversation context
+		renderer.renderInitialMessages(agent.state);
 
-	// Subscribe to agent events for real-time UI updates
-	// The renderer handles streaming text, tool execution, errors, and completion
-	agent.subscribe(async (event) => {
-		await renderer.handleEvent(event, agent.state);
-	});
+		// Subscribe to agent events for real-time UI updates
+		// The renderer handles streaming text, tool execution, errors, and completion
+		agent.subscribe(async (event) => {
+			await renderer.handleEvent(event, agent.state);
+		});
 
-	// Run the main interactive loop - blocks until user exits
-	await runtime.runInteractiveLoop(renderer);
+		// Run the main interactive loop - blocks until user exits
+		await runtime.runInteractiveLoop(renderer);
+	} catch (error) {
+		sessionEndReason = "error";
+		throw error;
+	} finally {
+		await applySessionEndHooks({
+			agent,
+			sessionManager,
+			cwd: process.cwd(),
+			reason: sessionEndReason,
+		});
+	}
 }
 
 /**
@@ -295,6 +309,7 @@ async function runSingleShotMode(
 		});
 	}
 
+	let sessionEndReason: "complete" | "error" = "complete";
 	try {
 		// Process each message sequentially
 		// This allows multi-message conversations in single-shot mode
@@ -328,11 +343,19 @@ async function runSingleShotMode(
 			emitThreadEnd(jsonlWriter, threadId, "ok", threadId);
 		}
 	} catch (error) {
+		sessionEndReason = "error";
 		// Ensure error is recorded in JSONL output for machine processing
 		if (jsonlWriter) {
 			emitThreadEnd(jsonlWriter, threadId, "error", threadId);
 		}
 		throw error;
+	} finally {
+		await applySessionEndHooks({
+			agent,
+			sessionManager,
+			cwd: process.cwd(),
+			reason: sessionEndReason,
+		});
 	}
 }
 

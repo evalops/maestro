@@ -407,6 +407,50 @@ describe("CLI integration", () => {
 		expect(combined).toContain("Echo: hello");
 	});
 
+	it("runs SessionEnd hooks after a CLI prompt completes", async () => {
+		let sessionEndInput: Record<string, unknown> | undefined;
+
+		registerHook("SessionEnd", {
+			type: "callback",
+			callback: async (input) => {
+				sessionEndInput = input as Record<string, unknown>;
+				return { continue: true };
+			},
+		});
+
+		await main(["hello"]);
+
+		expect(sessionEndInput).toMatchObject({
+			hook_event_name: "SessionEnd",
+			reason: "complete",
+			turn_count: 1,
+		});
+		expect(sessionEndInput?.duration_ms).toEqual(expect.any(Number));
+		expect(Number(sessionEndInput?.duration_ms)).toBeGreaterThanOrEqual(0);
+	});
+
+	it("runs SessionEnd hooks after maestro exec completes", async () => {
+		let sessionEndInput: Record<string, unknown> | undefined;
+
+		registerHook("SessionEnd", {
+			type: "callback",
+			callback: async (input) => {
+				sessionEndInput = input as Record<string, unknown>;
+				return { continue: true };
+			},
+		});
+
+		await main(["exec", "Summarize release notes"]);
+
+		expect(sessionEndInput).toMatchObject({
+			hook_event_name: "SessionEnd",
+			reason: "complete",
+			turn_count: 1,
+		});
+		expect(sessionEndInput?.duration_ms).toEqual(expect.any(Number));
+		expect(Number(sessionEndInput?.duration_ms)).toBeGreaterThanOrEqual(0);
+	});
+
 	it("streams JSON events in composer exec", async () => {
 		const originalWrite = process.stdout.write;
 		let streamed = "";

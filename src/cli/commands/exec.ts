@@ -56,6 +56,7 @@ import AjvModule, {
 } from "ajv";
 import chalk from "chalk";
 import type { Agent } from "../../agent/agent.js";
+import { applySessionEndHooks } from "../../agent/session-lifecycle-hooks.js";
 import type { AgentEvent } from "../../agent/types.js";
 import { runUserPromptWithRecovery } from "../../agent/user-prompt-runtime.js";
 import type { SessionManager } from "../../session/manager.js";
@@ -236,6 +237,12 @@ export async function runExecCommand(
 		});
 		throw error;
 	} finally {
+		await applySessionEndHooks({
+			agent: options.agent,
+			sessionManager: options.sessionManager,
+			cwd: process.cwd(),
+			reason: runStatus === "error" ? "error" : "complete",
+		});
 		emitThreadEnd(jsonlWriter, threadId, runStatus, threadId);
 		jsonlWriter.emit({
 			type: "done",
