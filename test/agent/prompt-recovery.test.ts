@@ -753,6 +753,89 @@ echo '{"continue": true, "systemMessage": "Preserve operator guidance from overf
 		expect(agent.continue).toHaveBeenCalledOnce();
 	});
 
+	it("surfaces assistant overflow errors after a compaction continuation", async () => {
+		const agent = createMockAgent([
+			...buildConversation(5),
+			createUserMessage("latest question"),
+		]);
+		const sessionManager = createMockSessionManager();
+		const stopFailureHookService = createMockStopFailureHookService();
+		const overflowMessage =
+			"Anthropic rejected this request because the prompt exceeded 200,000 tokens. Use /compact to summarize prior messages or remove large attachments, then retry.";
+
+		agent.continue.mockImplementationOnce(async () => {
+			agent.state.messages = [
+				...agent.state.messages,
+				createAssistantMessage({
+					text: "still overflowing",
+					stopReason: "error",
+					errorMessage: overflowMessage,
+				}),
+			];
+		});
+
+		await expect(
+			runWithPromptRecovery({
+				agent: agent as never,
+				sessionManager,
+				stopFailureHookService,
+				execute: async () => {
+					throw new Error(overflowMessage);
+				},
+			}),
+		).rejects.toThrow(overflowMessage);
+
+		expect(sessionManager.saveCompaction).toHaveBeenCalledOnce();
+		expect(agent.continue).toHaveBeenCalledOnce();
+		expect(stopFailureHookService.runStopFailureHooks).toHaveBeenCalledWith(
+			"prompt_overflow",
+			overflowMessage,
+			"still overflowing",
+			undefined,
+		);
+	});
+
+	it("runs StopFailure hooks when a compaction continuation ends on an assistant API error", async () => {
+		const agent = createMockAgent([
+			...buildConversation(5),
+			createUserMessage("latest question"),
+		]);
+		const sessionManager = createMockSessionManager();
+		const stopFailureHookService = createMockStopFailureHookService();
+
+		agent.continue.mockImplementationOnce(async () => {
+			agent.state.messages = [
+				...agent.state.messages,
+				createAssistantMessage({
+					text: "Temporary failure",
+					stopReason: "error",
+					errorMessage:
+						"Anthropic API error (429): rate limit exceeded, please retry later.",
+				}),
+			];
+		});
+
+		await runWithPromptRecovery({
+			agent: agent as never,
+			sessionManager,
+			stopFailureHookService,
+			execute: async () => {
+				throw new Error(
+					"Anthropic rejected this request because the prompt exceeded 200,000 tokens. Use /compact to summarize prior messages or remove large attachments, then retry.",
+				);
+			},
+		});
+
+		expect(sessionManager.saveCompaction).toHaveBeenCalledOnce();
+		expect(agent.continue).toHaveBeenCalledOnce();
+		expect(stopFailureHookService.runStopFailureHooks).toHaveBeenCalledWith(
+			"api_error",
+			"Anthropic API error (429): rate limit exceeded, please retry later.",
+			"Temporary failure",
+			undefined,
+		);
+	});
+
 	it("runs StopFailure hooks when max-output recovery is exhausted", async () => {
 		const agent = createMockAgent([
 			createUserMessage("question"),

@@ -517,10 +517,57 @@ export async function runWithPromptRecovery(
 				callbacks,
 			);
 			if (recovered) {
+				const recoveredMessages = agent.state.messages;
+				const recoveredOverflowError = getPromptOverflowAssistantError(
+					agent,
+					recoveredMessages,
+				);
+				if (recoveredOverflowError) {
+					await reportStopFailure({
+						error: "prompt_overflow",
+						errorDetails: recoveredOverflowError.message,
+						lastAssistantMessage: getAssistantText(
+							getLastAssistantMessage(agent.state.messages),
+						),
+					});
+					throw recoveredOverflowError;
+				}
+
+				const recoveredTerminalStopFailure = getTerminalStopFailure(
+					recoveredMessages,
+					undefined,
+				);
+				if (recoveredTerminalStopFailure) {
+					await reportStopFailure(recoveredTerminalStopFailure);
+					return;
+				}
+
 				const maxOutputRecovery = await recoverFromMaxOutput(agent, {
 					callbacks,
 					maxContinuations: options.maxOutputContinuations,
 				});
+				const postContinuationOverflowError = getPromptOverflowAssistantError(
+					agent,
+					agent.state.messages,
+				);
+				if (postContinuationOverflowError) {
+					await reportStopFailure({
+						error: "prompt_overflow",
+						errorDetails: postContinuationOverflowError.message,
+						lastAssistantMessage: getAssistantText(
+							getLastAssistantMessage(agent.state.messages),
+						),
+					});
+					throw postContinuationOverflowError;
+				}
+				const postContinuationStopFailure = getTerminalStopFailure(
+					agent.state.messages,
+					undefined,
+				);
+				if (postContinuationStopFailure) {
+					await reportStopFailure(postContinuationStopFailure);
+					return;
+				}
 				const lastAssistant = getLastAssistantMessage(agent.state.messages);
 				if (lastAssistant?.stopReason === "length") {
 					await reportStopFailure({
