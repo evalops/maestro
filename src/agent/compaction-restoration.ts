@@ -11,6 +11,16 @@ import type { AppMessage } from "./types.js";
 export const PLAN_FILE_COMPACTION_CUSTOM_TYPE = "plan-file";
 export const PLAN_MODE_COMPACTION_CUSTOM_TYPE = "plan-mode";
 export const BACKGROUND_TASKS_COMPACTION_CUSTOM_TYPE = "background-tasks";
+export const MCP_SERVERS_COMPACTION_CUSTOM_TYPE = "mcp-servers";
+
+export interface McpServerRestoreState {
+	name: string;
+	connected: boolean;
+	transport: string;
+	tools: { name: string }[];
+	resources: string[];
+	prompts: string[];
+}
 
 function sanitizeBackgroundTaskField(value: string): string {
 	return sanitizeWithStaticMask(value).replace(/\s+/g, " ").trim();
@@ -62,6 +72,43 @@ function hasBackgroundTasksCompactionMessage(
 		(message) =>
 			message.role === "hookMessage" &&
 			message.customType === BACKGROUND_TASKS_COMPACTION_CUSTOM_TYPE &&
+			message.content === expectedContent,
+	);
+}
+
+function buildMcpServersCompactionContent(
+	servers: readonly McpServerRestoreState[],
+): string | null {
+	const connectedServers = servers
+		.filter((server) => server.connected)
+		.sort((left, right) => left.name.localeCompare(right.name));
+
+	if (connectedServers.length === 0) {
+		return null;
+	}
+
+	return [
+		"# Connected MCP servers restored after compaction",
+		"",
+		"These MCP servers are already connected in this session. Their tools and resources remain available after compaction.",
+		"",
+		...connectedServers.map(
+			(server) =>
+				`- ${server.name}; transport=${server.transport}; tools=${server.tools.length}; resources=${server.resources.length}; prompts=${server.prompts.length}`,
+		),
+		"",
+		"Use `list_mcp_servers` to inspect current server status, `list_mcp_tools` to inspect available tool names, and `list_mcp_resources` / `read_mcp_resource` for server resources.",
+	].join("\n");
+}
+
+function hasMcpServersCompactionMessage(
+	messages: AppMessage[],
+	expectedContent: string,
+): boolean {
+	return messages.some(
+		(message) =>
+			message.role === "hookMessage" &&
+			message.customType === MCP_SERVERS_COMPACTION_CUSTOM_TYPE &&
 			message.content === expectedContent,
 	);
 }
@@ -219,6 +266,29 @@ export function collectBackgroundTaskMessagesForCompaction(
 	return [
 		createHookMessage(
 			BACKGROUND_TASKS_COMPACTION_CUSTOM_TYPE,
+			content,
+			false,
+			undefined,
+			new Date().toISOString(),
+		),
+	];
+}
+
+export function collectMcpMessagesForCompaction(
+	messages: AppMessage[],
+	servers: readonly McpServerRestoreState[],
+): AppMessage[] {
+	const content = buildMcpServersCompactionContent(servers);
+	if (
+		typeof content !== "string" ||
+		hasMcpServersCompactionMessage(messages, content)
+	) {
+		return [];
+	}
+
+	return [
+		createHookMessage(
+			MCP_SERVERS_COMPACTION_CUSTOM_TYPE,
 			content,
 			false,
 			undefined,

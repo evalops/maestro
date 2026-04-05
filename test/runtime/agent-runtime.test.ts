@@ -6,6 +6,16 @@ vi.mock("../../src/agent/user-prompt-runtime.js", () => ({
 	runUserPromptWithRecovery: vi.fn(),
 }));
 
+vi.mock("../../src/agent/compaction-restoration.js", () => ({
+	collectMcpMessagesForCompaction: vi.fn(() => []),
+}));
+
+vi.mock("../../src/mcp/index.js", () => ({
+	mcpManager: {
+		getStatus: vi.fn(() => ({ servers: [] })),
+	},
+}));
+
 vi.mock("../../src/composers/index.js", () => ({
 	composerManager: {
 		getState: vi.fn(() => ({ active: false })),

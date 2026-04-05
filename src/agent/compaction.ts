@@ -51,6 +51,7 @@ import {
 } from "./compaction-hooks.js";
 import {
 	BACKGROUND_TASKS_COMPACTION_CUSTOM_TYPE,
+	MCP_SERVERS_COMPACTION_CUSTOM_TYPE,
 	PLAN_FILE_COMPACTION_CUSTOM_TYPE,
 	PLAN_MODE_COMPACTION_CUSTOM_TYPE,
 } from "./compaction-restoration.js";
@@ -202,19 +203,19 @@ function shouldSkipReinjectedCompactionMessage(message: AppMessage): boolean {
 			message.customType === READ_RESTORE_COMPACTION_CUSTOM_TYPE ||
 			message.customType === PLAN_FILE_COMPACTION_CUSTOM_TYPE ||
 			message.customType === BACKGROUND_TASKS_COMPACTION_CUSTOM_TYPE ||
+			message.customType === MCP_SERVERS_COMPACTION_CUSTOM_TYPE ||
 			message.customType === "PostCompact" ||
 			message.customType === "SessionStart" ||
 			message.customType === PLAN_MODE_COMPACTION_CUSTOM_TYPE)
 	);
 }
 
-function stripBackgroundTaskRestoreMessages(
-	messages: AppMessage[],
-): AppMessage[] {
+function stripRuntimeRestoreMessages(messages: AppMessage[]): AppMessage[] {
 	return messages.filter(
 		(message) =>
 			message.role !== "hookMessage" ||
-			message.customType !== BACKGROUND_TASKS_COMPACTION_CUSTOM_TYPE,
+			(message.customType !== BACKGROUND_TASKS_COMPACTION_CUSTOM_TYPE &&
+				message.customType !== MCP_SERVERS_COMPACTION_CUSTOM_TYPE),
 	);
 }
 
@@ -1919,7 +1920,7 @@ export async function performCompaction(params: {
 	if (!older.length) {
 		return { success: false, error: "No earlier messages to compact" };
 	}
-	const keep = stripBackgroundTaskRestoreMessages(messages.slice(boundary));
+	const keep = stripRuntimeRestoreMessages(messages.slice(boundary));
 	const restoredReadMessages = await collectRecentReadRestoreMessages(
 		older,
 		keep,

@@ -24,6 +24,7 @@ import type {
 import type { AgentEvent, AgentState, AppMessage } from "../agent/types.js";
 import { PATHS } from "../config/constants.js";
 import type { CleanMode } from "../conversation/render-model.js";
+import { mcpManager } from "../mcp/index.js";
 import type { RegisteredModel } from "../models/registry.js";
 import { getRegisteredModels } from "../models/registry.js";
 import { listOAuthProviders, loadOAuthCredentials } from "../oauth/storage.js";
@@ -48,6 +49,7 @@ import {
 } from "../agent/auto-retry.js";
 import {
 	collectBackgroundTaskMessagesForCompaction,
+	collectMcpMessagesForCompaction,
 	collectPlanMessagesForCompaction,
 } from "../agent/compaction-restoration.js";
 import { applySessionEndHooks } from "../agent/session-lifecycle-hooks.js";
@@ -2370,6 +2372,10 @@ export class TuiRenderer {
 		return [
 			...collectPlanMessagesForCompaction(this.agent.state.messages),
 			...collectBackgroundTaskMessagesForCompaction(this.agent.state.messages),
+			...collectMcpMessagesForCompaction(
+				this.agent.state.messages,
+				mcpManager.getStatus().servers,
+			),
 			...this.collectActiveSkillMessagesForCompaction(),
 		];
 	}

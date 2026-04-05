@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	BACKGROUND_TASKS_COMPACTION_CUSTOM_TYPE,
+	MCP_SERVERS_COMPACTION_CUSTOM_TYPE,
 	PLAN_FILE_COMPACTION_CUSTOM_TYPE,
 	PLAN_MODE_COMPACTION_CUSTOM_TYPE,
 	collectBackgroundTaskMessagesForCompaction,
+	collectMcpMessagesForCompaction,
 	collectPlanMessagesForCompaction,
 } from "../../src/agent/compaction-restoration.js";
 import {
@@ -211,5 +213,96 @@ describe("collectBackgroundTaskMessagesForCompaction", () => {
 		expect(
 			collectBackgroundTaskMessagesForCompaction(existingMessages),
 		).toEqual([]);
+	});
+});
+
+describe("collectMcpMessagesForCompaction", () => {
+	it("returns no messages when no MCP servers are connected", () => {
+		expect(
+			collectMcpMessagesForCompaction(
+				[],
+				[
+					{
+						name: "context7",
+						connected: false,
+						transport: "stdio",
+						tools: [],
+						resources: [],
+						prompts: [],
+					},
+				],
+			),
+		).toEqual([]);
+	});
+
+	it("returns a hidden restoration message for connected MCP servers", () => {
+		const servers = [
+			{
+				name: "github",
+				connected: true,
+				transport: "http",
+				tools: [{ name: "search" }] as never,
+				resources: [],
+				prompts: ["triage"],
+			},
+			{
+				name: "context7",
+				connected: true,
+				transport: "stdio",
+				tools: [{ name: "resolve" }, { name: "get-docs" }] as never,
+				resources: ["lib://react"],
+				prompts: [],
+			},
+			{
+				name: "remote",
+				connected: false,
+				transport: "sse",
+				tools: [{ name: "ignored" }] as never,
+				resources: ["ignore://me"],
+				prompts: ["ignored"],
+			},
+		];
+
+		expect(collectMcpMessagesForCompaction([], servers)).toEqual([
+			expect.objectContaining({
+				role: "hookMessage",
+				customType: MCP_SERVERS_COMPACTION_CUSTOM_TYPE,
+				display: false,
+				content: expect.stringContaining(
+					"# Connected MCP servers restored after compaction",
+				),
+			}),
+		]);
+
+		const content = String(
+			collectMcpMessagesForCompaction([], servers)[0]?.content,
+		);
+		expect(content).toContain(
+			"context7; transport=stdio; tools=2; resources=1; prompts=0",
+		);
+		expect(content).toContain(
+			"github; transport=http; tools=1; resources=0; prompts=1",
+		);
+		expect(content).not.toContain("remote");
+		expect(content).toContain("`list_mcp_servers`");
+		expect(content).toContain("`list_mcp_tools`");
+	});
+
+	it("deduplicates already-present MCP restoration messages", () => {
+		const servers = [
+			{
+				name: "context7",
+				connected: true,
+				transport: "stdio",
+				tools: [{ name: "resolve" }] as never,
+				resources: [],
+				prompts: [],
+			},
+		];
+
+		const existingMessages = collectMcpMessagesForCompaction([], servers);
+		expect(collectMcpMessagesForCompaction(existingMessages, servers)).toEqual(
+			[],
+		);
 	});
 });

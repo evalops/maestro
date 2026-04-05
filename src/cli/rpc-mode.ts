@@ -22,6 +22,7 @@ import type { Agent } from "../agent/agent.js";
 import { buildCompactionHookContext } from "../agent/compaction-hooks.js";
 import {
 	collectBackgroundTaskMessagesForCompaction,
+	collectMcpMessagesForCompaction,
 	collectPlanMessagesForCompaction,
 } from "../agent/compaction-restoration.js";
 import { performCompaction } from "../agent/compaction.js";
@@ -42,6 +43,7 @@ import {
 	createRenderableMessage,
 	renderMessageToPlainText,
 } from "../conversation/render-model.js";
+import { mcpManager } from "../mcp/index.js";
 import type { SessionManager } from "../session/manager.js";
 
 /**
@@ -123,6 +125,10 @@ export async function runRpcMode(
 					getPostKeepMessages: async () => [
 						...collectPlanMessagesForCompaction(agent.state.messages),
 						...collectBackgroundTaskMessagesForCompaction(agent.state.messages),
+						...collectMcpMessagesForCompaction(
+							agent.state.messages,
+							mcpManager.getStatus().servers,
+						),
 						...(await collectPersistedSessionStartHookMessages({
 							sessionManager,
 							cwd: process.cwd(),
@@ -154,6 +160,10 @@ export async function runRpcMode(
 					getPostKeepMessages: async () => [
 						...collectPlanMessagesForCompaction(agent.state.messages),
 						...collectBackgroundTaskMessagesForCompaction(agent.state.messages),
+						...collectMcpMessagesForCompaction(
+							agent.state.messages,
+							mcpManager.getStatus().servers,
+						),
 						...(await collectPersistedSessionStartHookMessages({
 							sessionManager,
 							cwd: process.cwd(),
