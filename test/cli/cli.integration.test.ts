@@ -353,6 +353,20 @@ describe("CLI integration", () => {
 		exitSpy.mockRestore();
 	});
 
+	it("fails fast on invalid task budgets", async () => {
+		const exitCodes: number[] = [];
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
+			exitCodes.push(Number(code ?? 0));
+			throw new Error("exit");
+		});
+		await expect(main(["--task-budget", "0", "hello"])).rejects.toThrow("exit");
+		expect(exitCodes).toEqual([1]);
+		expect(output.join("\n")).toContain(
+			"--task-budget must be a positive integer",
+		);
+		exitSpy.mockRestore();
+	});
+
 	it("prints providers summary for filter", async () => {
 		const exitCodes: number[] = [];
 		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {

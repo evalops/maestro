@@ -423,6 +423,11 @@ export async function main(args: string[]) {
 		process.exit(0);
 	}
 
+	if (parsed.error) {
+		console.error(chalk.red(parsed.error));
+		process.exit(1);
+	}
+
 	// Handle `maestro web` early exit (start the bundled web server + UI).
 	if (parsed.command === "web") {
 		if (parsed.messages.length > 0) {

@@ -4,6 +4,7 @@ export interface Args {
 	provider?: string;
 	model?: string;
 	taskBudget?: number;
+	error?: string;
 	modelsFile?: string;
 	apiKey?: string;
 	systemPrompt?: string;
@@ -113,10 +114,22 @@ export function parseArgs(args: string[]): Args {
 			result.provider = args[++i];
 		} else if ((arg === "--model" || arg === "-m") && i + 1 < args.length) {
 			result.model = args[++i];
-		} else if (arg === "--task-budget" && i + 1 < args.length) {
-			const value = Number(args[++i] ?? "");
+		} else if (arg === "--task-budget") {
+			const rawValue = args[i + 1];
+			if (
+				rawValue === undefined ||
+				(rawValue.startsWith("-") && Number.isNaN(Number(rawValue)))
+			) {
+				result.error = "--task-budget requires a value";
+				continue;
+			}
+
+			i++;
+			const value = Number(rawValue);
 			if (Number.isInteger(value) && value > 0) {
 				result.taskBudget = value;
+			} else {
+				result.error = "--task-budget must be a positive integer";
 			}
 		} else if (arg === "--models" && i + 1 < args.length) {
 			const modelsArg = args[++i]!;

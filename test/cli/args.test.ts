@@ -6,12 +6,27 @@ describe("parseArgs", () => {
 		expect(parseArgs(["--task-budget", "500000"]).taskBudget).toBe(500000);
 	});
 
-	it("ignores invalid task budgets", () => {
-		expect(parseArgs(["--task-budget", "0"]).taskBudget).toBeUndefined();
-		expect(parseArgs(["--task-budget", "-10"]).taskBudget).toBeUndefined();
-		expect(parseArgs(["--task-budget", "1.5"]).taskBudget).toBeUndefined();
-		expect(
-			parseArgs(["--task-budget", "not-a-number"]).taskBudget,
-		).toBeUndefined();
+	it("rejects invalid task budgets", () => {
+		expect(parseArgs(["--task-budget", "0"]).error).toBe(
+			"--task-budget must be a positive integer",
+		);
+		expect(parseArgs(["--task-budget", "-10"]).error).toBe(
+			"--task-budget must be a positive integer",
+		);
+		expect(parseArgs(["--task-budget", "1.5"]).error).toBe(
+			"--task-budget must be a positive integer",
+		);
+		expect(parseArgs(["--task-budget", "not-a-number"]).error).toBe(
+			"--task-budget must be a positive integer",
+		);
+	});
+
+	it("rejects missing task-budget values", () => {
+		expect(parseArgs(["--task-budget"]).error).toBe(
+			"--task-budget requires a value",
+		);
+		expect(parseArgs(["--task-budget", "--model", "test"]).error).toBe(
+			"--task-budget requires a value",
+		);
 	});
 });
