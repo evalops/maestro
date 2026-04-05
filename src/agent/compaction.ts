@@ -121,13 +121,13 @@ const PREVIOUS_SUMMARY_PREFIX = "Previous session summary:\n";
 const COMPACTION_OVERFLOW_RETRY_MARKER =
 	"[earlier conversation truncated for compaction retry]";
 const READ_RESTORE_COMPACTION_CUSTOM_TYPE = "read-file";
-const MAX_READ_RESTORE_MESSAGES = 3;
-const READ_RESTORE_TOKEN_BUDGET = 20_000;
+const MAX_READ_RESTORE_MESSAGES = 5;
+const READ_RESTORE_TOKEN_BUDGET = 50_000;
 const READ_RESTORE_MAX_TOKENS_PER_FILE = 5_000;
 const READ_RESTORE_TRUNCATION_MARKER =
 	"\n\n[... restored read result truncated for compaction; use `read` on the path again if you need the full contents]";
-const MAX_SKILL_RESTORE_MESSAGES = 3;
-const SKILL_RESTORE_TOKEN_BUDGET = 15_000;
+const MAX_SKILL_RESTORE_MESSAGES = 5;
+const SKILL_RESTORE_TOKEN_BUDGET = 25_000;
 const SKILL_RESTORE_MAX_TOKENS_PER_SKILL = 5_000;
 const SKILL_RESTORE_TRUNCATION_MARKER =
 	"\n\n[... restored skill truncated for compaction; use the `Skill` tool again if you need the full instructions]";

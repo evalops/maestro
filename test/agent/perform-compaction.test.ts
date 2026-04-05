@@ -1087,6 +1087,33 @@ describe("performCompaction", () => {
 		});
 	});
 
+	it("restores up to five recent read results after compaction", async () => {
+		const messages = buildConversation(10);
+		for (let i = 0; i < 5; i += 1) {
+			messages.splice(
+				2 + i * 2,
+				0,
+				createReadToolCallMessage(`/tmp/restored-${i}.ts`, `call-read-${i}`),
+				createReadToolResultMessage(
+					`/tmp/restored-${i}.ts`,
+					`call-read-${i}`,
+					`export const restored${i} = true;`,
+				),
+			);
+		}
+		const agent = createMockAgentWithoutAppendMessage(messages);
+		const sessionManager = createMockSessionManager();
+
+		const result = await performCompaction({ agent, sessionManager });
+
+		expect(result.success).toBe(true);
+		const restoredReadMessages = getReplacedMessages(agent).filter(
+			(message) =>
+				message.role === "hookMessage" && message.customType === "read-file",
+		);
+		expect(restoredReadMessages).toHaveLength(5);
+	});
+
 	it("refreshes restored read results from disk instead of replaying stale output", async () => {
 		const filePath = join(
 			mkdtempSync(join(tmpdir(), "maestro-read-restore-")),
@@ -1410,6 +1437,33 @@ describe("performCompaction", () => {
 				]),
 			}),
 		);
+	});
+
+	it("restores up to five recently loaded skills after compaction", async () => {
+		const messages = buildConversation(10);
+		for (let i = 0; i < 5; i += 1) {
+			messages.splice(
+				2 + i * 2,
+				0,
+				createSkillToolCallMessage(`skill-${i}`, `call-skill-${i}`),
+				createSkillToolResultMessage(
+					`skill-${i}`,
+					`call-skill-${i}`,
+					`# Skill: skill-${i}\n\n> Skill ${i}\n\n## Instructions\n\nFollow skill ${i}.`,
+				),
+			);
+		}
+		const agent = createMockAgentWithoutAppendMessage(messages);
+		const sessionManager = createMockSessionManager();
+
+		const result = await performCompaction({ agent, sessionManager });
+
+		expect(result.success).toBe(true);
+		const restoredSkillMessages = getReplacedMessages(agent).filter(
+			(message) =>
+				message.role === "hookMessage" && message.customType === "skill",
+		);
+		expect(restoredSkillMessages).toHaveLength(5);
 	});
 
 	it("deduplicates restored skills against caller post-keep skill messages", async () => {
