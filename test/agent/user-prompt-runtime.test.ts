@@ -209,6 +209,87 @@ describe("user prompt runtime", () => {
 		expect(queueNextRunPromptOnlyMessage).not.toHaveBeenCalled();
 	});
 
+	it("persists compact SessionStart hook context immediately when requested", async () => {
+		const appendMessage = vi.fn();
+		const queueNextRunPromptOnlyMessage = vi.fn();
+		const queueNextRunSystemPromptAddition = vi.fn();
+		const queueNextRunHistoryMessage = vi.fn();
+		const saveMessage = vi.fn();
+
+		registerHook("SessionStart", {
+			type: "callback",
+			callback: async () => ({
+				hookSpecificOutput: {
+					hookEventName: "SessionStart",
+					additionalContext: "Restored compacted repo context.",
+					initialUserMessage: "Resume from the compacted state.",
+				},
+				systemMessage: "Preserve compacted constraints.",
+			}),
+		});
+
+		await applySessionStartHooks({
+			agent: {
+				appendMessage,
+				queueNextRunPromptOnlyMessage,
+				queueNextRunSystemPromptAddition,
+				queueNextRunHistoryMessage,
+			} as unknown as Agent,
+			sessionManager: {
+				getSessionId: () => "compact-session-start",
+				saveMessage,
+			} as never,
+			cwd: "/tmp/session-start-hooks",
+			source: "compact",
+			delivery: "persistHistory",
+		});
+
+		expect(appendMessage).toHaveBeenNthCalledWith(1, {
+			role: "hookMessage",
+			customType: "SessionStart",
+			content:
+				"SessionStart hook system guidance:\nPreserve compacted constraints.",
+			display: true,
+			timestamp: expect.any(Number),
+		});
+		expect(appendMessage).toHaveBeenNthCalledWith(2, {
+			role: "hookMessage",
+			customType: "SessionStart",
+			content: "Restored compacted repo context.",
+			display: true,
+			timestamp: expect.any(Number),
+		});
+		expect(appendMessage).toHaveBeenNthCalledWith(3, {
+			role: "user",
+			content: "Resume from the compacted state.",
+			timestamp: expect.any(Number),
+		});
+		expect(saveMessage).toHaveBeenCalledTimes(3);
+		expect(saveMessage).toHaveBeenNthCalledWith(1, {
+			role: "hookMessage",
+			customType: "SessionStart",
+			content:
+				"SessionStart hook system guidance:\nPreserve compacted constraints.",
+			display: true,
+			timestamp: expect.any(Number),
+		});
+		expect(saveMessage).toHaveBeenNthCalledWith(2, {
+			role: "hookMessage",
+			customType: "SessionStart",
+			content: "Restored compacted repo context.",
+			display: true,
+			timestamp: expect.any(Number),
+		});
+		expect(saveMessage).toHaveBeenNthCalledWith(3, {
+			role: "user",
+			content: "Resume from the compacted state.",
+			timestamp: expect.any(Number),
+		});
+		expect(queueNextRunSystemPromptAddition).not.toHaveBeenCalled();
+		expect(queueNextRunHistoryMessage).not.toHaveBeenCalled();
+		expect(queueNextRunPromptOnlyMessage).not.toHaveBeenCalled();
+	});
+
 	it("ignores SessionStart blocking directives without throwing", async () => {
 		const queueNextRunPromptOnlyMessage = vi.fn();
 		const queueNextRunSystemPromptAddition = vi.fn();
@@ -870,6 +951,7 @@ describe("user prompt runtime", () => {
 				systemPrompt: "Base system prompt",
 			},
 		});
+		const appendMessage = vi.spyOn(agent, "appendMessage");
 		const queueNextRunSystemPromptAddition = vi.spyOn(
 			agent,
 			"queueNextRunSystemPromptAddition",
@@ -882,19 +964,20 @@ describe("user prompt runtime", () => {
 		vi.spyOn(agent, "generateSummary").mockResolvedValue(
 			createAssistantMessage("LLM summary"),
 		);
+		const sessionManager = {
+			getSessionId: () => "session-compact-session-start",
+			buildSessionContext: () => ({
+				messageEntries: Array.from({ length: 50 }, (_, index) => ({
+					id: `entry-${index}`,
+				})),
+			}),
+			saveCompaction: vi.fn(),
+			saveMessage: vi.fn(),
+		};
 
 		await runUserPromptWithRecovery({
 			agent,
-			sessionManager: {
-				getSessionId: () => "session-compact-session-start",
-				buildSessionContext: () => ({
-					messageEntries: Array.from({ length: 50 }, (_, index) => ({
-						id: `entry-${index}`,
-					})),
-				}),
-				saveCompaction: vi.fn(),
-				saveMessage: vi.fn(),
-			} as never,
+			sessionManager: sessionManager as never,
 			cwd: "/tmp/compact-session-start",
 			prompt: "latest question",
 			execute: () => agent.prompt("latest question"),
@@ -904,24 +987,58 @@ describe("user prompt runtime", () => {
 			hook_event_name: "SessionStart",
 			source: "compact",
 		});
-		expect(queueNextRunSystemPromptAddition).toHaveBeenCalledWith(
-			"SessionStart hook system guidance:\nRe-establish compacted context.",
+		expect(appendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				role: "hookMessage",
+				customType: "SessionStart",
+				content:
+					"SessionStart hook system guidance:\nRe-establish compacted context.",
+			}),
 		);
-		expect(queueNextRunHistoryMessage).toHaveBeenCalledWith(
+		expect(appendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				role: "hookMessage",
 				customType: "SessionStart",
 				content: "Compaction hook context",
 			}),
 		);
-		expect(queueNextRunHistoryMessage).toHaveBeenCalledWith(
+		expect(appendMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				role: "user",
 				content: "Compaction hook prompt",
 			}),
 		);
+		expect(sessionManager.saveMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				role: "hookMessage",
+				customType: "SessionStart",
+				content:
+					"SessionStart hook system guidance:\nRe-establish compacted context.",
+			}),
+		);
+		expect(sessionManager.saveMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				role: "hookMessage",
+				customType: "SessionStart",
+				content: "Compaction hook context",
+			}),
+		);
+		expect(sessionManager.saveMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				role: "user",
+				content: "Compaction hook prompt",
+			}),
+		);
+		expect(queueNextRunSystemPromptAddition).not.toHaveBeenCalled();
+		expect(queueNextRunHistoryMessage).not.toHaveBeenCalled();
 		expect(agent.state.messages).toEqual(
 			expect.arrayContaining([
+				expect.objectContaining({
+					role: "hookMessage",
+					customType: "SessionStart",
+					content:
+						"SessionStart hook system guidance:\nRe-establish compacted context.",
+				}),
 				expect.objectContaining({
 					role: "hookMessage",
 					customType: "SessionStart",

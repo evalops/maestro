@@ -162,6 +162,7 @@ export async function runRpcMode(
 					sessionManager,
 					cwd: process.cwd(),
 					source: "compact",
+					delivery: "persistHistory",
 				});
 
 				// Emit compaction event

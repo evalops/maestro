@@ -24,6 +24,7 @@ type PromptRuntimeSessionManager =
 	RunWithPromptRecoveryOptions["sessionManager"] & {
 		getSessionId?: () => string | undefined;
 	};
+type SessionStartHookDelivery = "queue" | "persistHistory";
 
 const logger = createLogger("prompt-runtime-hooks");
 
@@ -47,6 +48,18 @@ function buildSessionStartInitialUserMessage(text: string): UserMessage {
 
 function buildSessionStartHookSystemGuidance(text: string): string {
 	return `SessionStart hook system guidance:\n${text}`;
+}
+
+function buildPersistedSessionStartHookSystemMessage(
+	text: string,
+): HookMessage {
+	return createHookMessage(
+		"SessionStart",
+		buildSessionStartHookSystemGuidance(text),
+		true,
+		undefined,
+		new Date().toISOString(),
+	);
 }
 
 function buildUserPromptHookContextMessage(text: string): HookMessage {
@@ -184,6 +197,7 @@ export async function applySessionStartHooks(params: {
 	cwd: string;
 	source: string;
 	signal?: AbortSignal;
+	delivery?: SessionStartHookDelivery;
 }): Promise<void> {
 	const service = createSessionHookService({
 		cwd: params.cwd,
@@ -210,20 +224,43 @@ export async function applySessionStartHooks(params: {
 	}
 
 	const systemMessage = result.systemMessage?.trim();
+	const additionalContext = result.additionalContext?.trim();
+	const initialUserMessage = result.initialUserMessage?.trim();
+	if (params.delivery === "persistHistory") {
+		const persistedMessages: AppMessage[] = [];
+		if (systemMessage) {
+			persistedMessages.push(
+				buildPersistedSessionStartHookSystemMessage(systemMessage),
+			);
+		}
+		if (additionalContext) {
+			persistedMessages.push(
+				buildSessionStartHookContextMessage(additionalContext),
+			);
+		}
+		if (initialUserMessage) {
+			persistedMessages.push(
+				buildSessionStartInitialUserMessage(initialUserMessage),
+			);
+		}
+
+		for (const message of persistedMessages) {
+			params.agent.appendMessage(message);
+			params.sessionManager.saveMessage(message);
+		}
+		return;
+	}
+
 	if (systemMessage) {
 		params.agent.queueNextRunSystemPromptAddition(
 			buildSessionStartHookSystemGuidance(systemMessage),
 		);
 	}
-
-	const additionalContext = result.additionalContext?.trim();
 	if (additionalContext) {
 		params.agent.queueNextRunHistoryMessage(
 			buildSessionStartHookContextMessage(additionalContext),
 		);
 	}
-
-	const initialUserMessage = result.initialUserMessage?.trim();
 	if (initialUserMessage) {
 		params.agent.queueNextRunHistoryMessage(
 			buildSessionStartInitialUserMessage(initialUserMessage),
@@ -536,6 +573,7 @@ export async function runUserPromptWithRecovery(params: {
 					cwd: params.cwd,
 					source: "compact",
 					signal: params.signal,
+					delivery: "persistHistory",
 				});
 			},
 		};

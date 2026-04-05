@@ -1018,6 +1018,7 @@ export class TuiRenderer {
 					sessionManager: this.sessionManager,
 					cwd: process.cwd(),
 					source,
+					delivery: "persistHistory",
 				}),
 		});
 		this.compactionController = createCompactionController({

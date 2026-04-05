@@ -73,6 +73,7 @@ describe("runRpcMode", () => {
 				sessionManager,
 				cwd: process.cwd(),
 				source: "compact",
+				delivery: "persistHistory",
 			}),
 		);
 	});
