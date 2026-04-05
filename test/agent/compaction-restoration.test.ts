@@ -6,7 +6,7 @@ import {
 	PLAN_FILE_COMPACTION_CUSTOM_TYPE,
 	PLAN_MODE_COMPACTION_CUSTOM_TYPE,
 	collectBackgroundTaskMessagesForCompaction,
-	collectHeadlessClientRequestMessagesForCompaction,
+	collectHeadlessRequestMessagesForCompaction,
 	collectMcpMessagesForCompaction,
 	collectPlanMessagesForCompaction,
 } from "../../src/agent/compaction-restoration.js";
@@ -361,18 +361,28 @@ describe("collectMcpMessagesForCompaction", () => {
 	});
 });
 
-describe("collectHeadlessClientRequestMessagesForCompaction", () => {
-	it("returns no messages when no client requests are pending", () => {
+describe("collectHeadlessRequestMessagesForCompaction", () => {
+	it("returns no messages when no runtime requests are pending", () => {
 		expect(
-			collectHeadlessClientRequestMessagesForCompaction([], {
+			collectHeadlessRequestMessagesForCompaction([], {
+				pendingApprovals: [],
 				pendingClientTools: [],
 				pendingUserInputs: [],
+				pendingToolRetries: [],
 			}),
 		).toEqual([]);
 	});
 
-	it("returns a hidden restoration message for pending client tools and user inputs", () => {
-		const restored = collectHeadlessClientRequestMessagesForCompaction([], {
+	it("returns a hidden restoration message for pending headless runtime requests", () => {
+		const restored = collectHeadlessRequestMessagesForCompaction([], {
+			pendingApprovals: [
+				{
+					call_id: "call_bash",
+					tool: "bash",
+					args: { command: "git push --force" },
+					action_description: "Force push requires approval",
+				},
+			],
 			pendingClientTools: [
 				{
 					call_id: "call_client",
@@ -403,6 +413,20 @@ describe("collectHeadlessClientRequestMessagesForCompaction", () => {
 					},
 				},
 			],
+			pendingToolRetries: [
+				{
+					call_id: "call_retry",
+					request_id: "retry_1",
+					tool: "bash",
+					args: {
+						tool_call_id: "call_retry",
+						args: { command: "ls" },
+						error_message: "Command failed",
+						attempt: 1,
+						summary: "Retry bash command",
+					},
+				},
+			],
 		});
 
 		expect(restored).toEqual([
@@ -411,12 +435,15 @@ describe("collectHeadlessClientRequestMessagesForCompaction", () => {
 				customType: HEADLESS_CLIENT_REQUESTS_COMPACTION_CUSTOM_TYPE,
 				display: false,
 				content: expect.stringContaining(
-					"# Pending headless client requests restored after compaction",
+					"# Pending headless runtime requests restored after compaction",
 				),
 			}),
 		]);
 
 		const content = String(restored[0]?.content);
+		expect(content).toContain(
+			'type=approval; tool=bash; call_id=call_bash; action=Force push requires approval; args={"command":"git push --force"}',
+		);
 		expect(content).toContain(
 			"type=client_tool; tool=artifacts; call_id=call_client",
 		);
@@ -427,12 +454,16 @@ describe("collectHeadlessClientRequestMessagesForCompaction", () => {
 			"type=user_input; tool=ask_user; call_id=call_user_input; request_id=req_user_input; questions=2 [Stack, Tests]",
 		);
 		expect(content).toContain(
-			"duplicate requests unless the pending request is cancelled or fails",
+			'type=tool_retry; tool=bash; call_id=call_retry; request_id=retry_1; attempt=1; summary=Retry bash command; error=Command failed; args={"command":"ls"}',
+		);
+		expect(content).toContain(
+			"Reuse the existing approval, client-tool, `ask_user`, or tool-retry flow",
 		);
 	});
 
-	it("deduplicates already-present headless client request restoration messages", () => {
-		const existing = collectHeadlessClientRequestMessagesForCompaction([], {
+	it("deduplicates already-present headless runtime request restoration messages", () => {
+		const existing = collectHeadlessRequestMessagesForCompaction([], {
+			pendingApprovals: [],
 			pendingClientTools: [
 				{
 					call_id: "call_client",
@@ -441,10 +472,12 @@ describe("collectHeadlessClientRequestMessagesForCompaction", () => {
 				},
 			],
 			pendingUserInputs: [],
+			pendingToolRetries: [],
 		});
 
 		expect(
-			collectHeadlessClientRequestMessagesForCompaction(existing, {
+			collectHeadlessRequestMessagesForCompaction(existing, {
+				pendingApprovals: [],
 				pendingClientTools: [
 					{
 						call_id: "call_client",
@@ -453,6 +486,7 @@ describe("collectHeadlessClientRequestMessagesForCompaction", () => {
 					},
 				],
 				pendingUserInputs: [],
+				pendingToolRetries: [],
 			}),
 		).toEqual([]);
 	});

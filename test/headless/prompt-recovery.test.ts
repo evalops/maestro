@@ -17,6 +17,13 @@ describe("withHeadlessPostKeepMessages", () => {
 
 	it("combines MCP restoration with pending headless client requests", async () => {
 		const getPostKeepMessages = withHeadlessPostKeepMessages(() => ({
+			pending_approvals: [
+				{
+					call_id: "call_bash",
+					tool: "bash",
+					args: { command: "git push --force" },
+				},
+			],
 			pending_client_tools: [
 				{
 					call_id: "call_client",
@@ -38,6 +45,19 @@ describe("withHeadlessPostKeepMessages", () => {
 					},
 				},
 			],
+			pending_tool_retries: [
+				{
+					call_id: "call_retry",
+					request_id: "retry_1",
+					tool: "bash",
+					args: {
+						tool_call_id: "call_retry",
+						args: { command: "ls" },
+						error_message: "Command failed",
+						attempt: 1,
+					},
+				},
+			],
 		}));
 
 		await expect(getPostKeepMessages([])).resolves.toEqual([
@@ -46,7 +66,7 @@ describe("withHeadlessPostKeepMessages", () => {
 				customType: "headless-client-requests",
 				display: false,
 				content: expect.stringContaining(
-					"# Pending headless client requests restored after compaction",
+					"# Pending headless runtime requests restored after compaction",
 				),
 			}),
 		]);

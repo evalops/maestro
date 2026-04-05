@@ -218,8 +218,41 @@ function summarizeHeadlessUserInputArgs(args: unknown): string | null {
 	return `questions=${questions.length} [${visibleHeaders.join(", ")}${suffix}]`;
 }
 
+function summarizeHeadlessToolRetryArgs(args: unknown): string | null {
+	if (typeof args !== "object" || args === null) {
+		return null;
+	}
+
+	const sections: string[] = [];
+	if ("attempt" in args && typeof args.attempt === "number") {
+		sections.push(`attempt=${args.attempt}`);
+	}
+	if (
+		"summary" in args &&
+		typeof args.summary === "string" &&
+		args.summary.length > 0
+	) {
+		sections.push(`summary=${sanitizeHeadlessRequestField(args.summary)}`);
+	}
+	if (
+		"error_message" in args &&
+		typeof args.error_message === "string" &&
+		args.error_message.length > 0
+	) {
+		sections.push(`error=${sanitizeHeadlessRequestField(args.error_message)}`);
+	}
+	if ("args" in args && typeof args.args === "object" && args.args !== null) {
+		const nestedArgs = stringifyHeadlessRequestArgs(args.args);
+		if (nestedArgs) {
+			sections.push(`args=${nestedArgs}`);
+		}
+	}
+
+	return sections.length > 0 ? sections.join("; ") : null;
+}
+
 function buildHeadlessPendingRequestLine(
-	type: "client_tool" | "user_input",
+	type: "approval" | "client_tool" | "user_input" | "tool_retry",
 	request: HeadlessPendingRequestRestoreState,
 ): string {
 	const sections = [
@@ -266,10 +299,17 @@ function buildHeadlessPendingRequestLine(
 		type === "user_input"
 			? (summarizeHeadlessUserInputArgs(request.args) ??
 				stringifyHeadlessRequestArgs(request.args))
-			: stringifyHeadlessRequestArgs(request.args);
+			: type === "tool_retry"
+				? (summarizeHeadlessToolRetryArgs(request.args) ??
+					stringifyHeadlessRequestArgs(request.args))
+				: stringifyHeadlessRequestArgs(request.args);
 	if (argsSummary) {
 		sections.push(
-			type === "user_input" && argsSummary.startsWith("questions=")
+			(type === "user_input" && argsSummary.startsWith("questions=")) ||
+				(type === "tool_retry" &&
+					(argsSummary.startsWith("attempt=") ||
+						argsSummary.startsWith("summary=") ||
+						argsSummary.startsWith("error=")))
 				? argsSummary
 				: `args=${argsSummary}`,
 		);
@@ -278,16 +318,24 @@ function buildHeadlessPendingRequestLine(
 	return sections.join("; ");
 }
 
-function buildHeadlessClientRequestsCompactionContent(params: {
+function buildHeadlessRuntimeRequestsCompactionContent(params: {
+	pendingApprovals: readonly HeadlessPendingRequestRestoreState[];
 	pendingClientTools: readonly HeadlessPendingRequestRestoreState[];
 	pendingUserInputs: readonly HeadlessPendingRequestRestoreState[];
+	pendingToolRetries: readonly HeadlessPendingRequestRestoreState[];
 }): string | null {
 	const pendingRequests = [
+		...params.pendingApprovals.map((request) =>
+			buildHeadlessPendingRequestLine("approval", request),
+		),
 		...params.pendingClientTools.map((request) =>
 			buildHeadlessPendingRequestLine("client_tool", request),
 		),
 		...params.pendingUserInputs.map((request) =>
 			buildHeadlessPendingRequestLine("user_input", request),
+		),
+		...params.pendingToolRetries.map((request) =>
+			buildHeadlessPendingRequestLine("tool_retry", request),
 		),
 	];
 
@@ -302,9 +350,9 @@ function buildHeadlessClientRequestsCompactionContent(params: {
 	const hiddenCount = pendingRequests.length - visibleRequests.length;
 
 	return [
-		"# Pending headless client requests restored after compaction",
+		"# Pending headless runtime requests restored after compaction",
 		"",
-		"These requests are still pending with the connected headless client. Reuse the existing client-tool or `ask_user` flow instead of issuing duplicate requests unless the pending request is cancelled or fails.",
+		"These requests are still pending with the connected headless runtime. Reuse the existing approval, client-tool, `ask_user`, or tool-retry flow instead of issuing duplicates unless the pending request is cancelled or fails.",
 		"",
 		...visibleRequests,
 		...(hiddenCount > 0 ? [`- (+${hiddenCount} more pending requests)`] : []),
@@ -519,14 +567,16 @@ export function collectMcpMessagesForCompaction(
 	];
 }
 
-export function collectHeadlessClientRequestMessagesForCompaction(
+export function collectHeadlessRequestMessagesForCompaction(
 	messages: AppMessage[],
 	params: {
+		pendingApprovals: readonly HeadlessPendingRequestRestoreState[];
 		pendingClientTools: readonly HeadlessPendingRequestRestoreState[];
 		pendingUserInputs: readonly HeadlessPendingRequestRestoreState[];
+		pendingToolRetries: readonly HeadlessPendingRequestRestoreState[];
 	},
 ): AppMessage[] {
-	const content = buildHeadlessClientRequestsCompactionContent(params);
+	const content = buildHeadlessRuntimeRequestsCompactionContent(params);
 	if (
 		typeof content !== "string" ||
 		hasHeadlessClientRequestsCompactionMessage(messages, content)
