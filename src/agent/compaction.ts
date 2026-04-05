@@ -40,6 +40,10 @@ import {
 	type CompactionHookService,
 	createCompactionHookService,
 } from "./compaction-hooks.js";
+import {
+	isContextOverflow as isCompactionOverflowMessage,
+	isOverflowErrorMessage,
+} from "./context-overflow.js";
 import { convertAppMessageToLlm } from "./custom-messages.js";
 import type {
 	Api,
@@ -86,6 +90,9 @@ export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
  */
 export const COMPACTION_RESUME_PROMPT =
 	"Use the above summary to resume the plan from where we left off.";
+
+const MAX_COMPACTION_OVERFLOW_RETRIES = 3;
+const PREVIOUS_SUMMARY_PREFIX = "Previous session summary:\n";
 
 /**
  * Result of a compaction operation, ready to be persisted.
@@ -200,6 +207,46 @@ function prepareMessagesForCompactionSummary(
 		}
 		return [message];
 	});
+}
+
+function isPreviousSummaryPreamble(message: AppMessage | undefined): boolean {
+	return (
+		message?.role === "user" &&
+		typeof message.content === "string" &&
+		message.content.startsWith(PREVIOUS_SUMMARY_PREFIX)
+	);
+}
+
+function truncateSummaryInputForOverflowRetry(
+	messages: AppMessage[],
+): AppMessage[] | null {
+	if (messages.length < 2) {
+		return null;
+	}
+
+	const preamble = isPreviousSummaryPreamble(messages[0]) ? messages[0] : null;
+	const body = preamble ? messages.slice(1) : messages;
+	if (body.length < 2) {
+		return null;
+	}
+
+	const approximateDropCount = Math.max(1, Math.floor(body.length * 0.2));
+	const turnBoundaries = findTurnBoundaries(body, 0, body.length).filter(
+		(index) => index > 0,
+	);
+	let boundary =
+		turnBoundaries.find((index) => index >= approximateDropCount) ??
+		approximateDropCount;
+	boundary = adjustBoundaryForToolResults(body, boundary);
+	if (boundary >= body.length) {
+		return null;
+	}
+
+	const truncatedBody = body.slice(boundary);
+	if (truncatedBody.length === 0) {
+		return null;
+	}
+	return preamble ? [preamble, ...truncatedBody] : truncatedBody;
 }
 
 /**
@@ -1101,21 +1148,49 @@ export async function performCompaction(params: {
 
 	let summaryText = "";
 	let usedModel = false;
+	let summaryInputForAttempt = summaryInput;
+	let overflowAttempts = 0;
 
-	try {
+	for (;;) {
 		const prompt = buildSummarizationPrompt(effectiveCustomInstructions);
-		const summary = await agent.generateSummary(
-			summaryInput,
-			prompt,
-			"You are a careful note-taker that distills coding conversations into actionable summaries.",
-		);
-		const llmText = renderSummaryText
-			? renderSummaryText(summary)
-			: extractMessageText(summary);
-		summaryText = llmText.trim() || buildLocalSummary(olderForSummary, 32);
-		usedModel = true;
-	} catch {
-		summaryText = buildLocalSummary(olderForSummary, 32);
+		try {
+			const summary = await agent.generateSummary(
+				summaryInputForAttempt,
+				prompt,
+				"You are a careful note-taker that distills coding conversations into actionable summaries.",
+			);
+			if (isCompactionOverflowMessage(summary)) {
+				throw new Error(
+					summary.errorMessage ||
+						extractMessageText(summary) ||
+						"Prompt too long",
+				);
+			}
+			const llmText = renderSummaryText
+				? renderSummaryText(summary)
+				: extractMessageText(summary);
+			summaryText =
+				llmText.trim() || buildLocalSummary(summaryInputForAttempt, 32);
+			usedModel = true;
+			break;
+		} catch (error) {
+			if (
+				error instanceof Error &&
+				isOverflowErrorMessage(error.message) &&
+				overflowAttempts < MAX_COMPACTION_OVERFLOW_RETRIES
+			) {
+				const truncated = truncateSummaryInputForOverflowRetry(
+					summaryInputForAttempt,
+				);
+				if (truncated) {
+					summaryInputForAttempt = truncated;
+					overflowAttempts += 1;
+					continue;
+				}
+			}
+			summaryText = buildLocalSummary(summaryInputForAttempt, 32);
+			break;
+		}
 	}
 
 	const decorated = decorateSummaryText(summaryText, older.length, usedModel);

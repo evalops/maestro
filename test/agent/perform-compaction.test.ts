@@ -449,6 +449,53 @@ describe("performCompaction", () => {
 		expect(firstBlock.text).toContain("[document]");
 	});
 
+	it("retries summary generation after a thrown overflow error", async () => {
+		const messages = buildConversation(20);
+		const agent = createMockAgent(messages);
+		const overflowMessage =
+			"Anthropic rejected this request because the prompt exceeded 200,000 tokens. Use /compact to summarize prior messages or remove large attachments, then retry.";
+		(agent.generateSummary as ReturnType<typeof vi.fn>)
+			.mockRejectedValueOnce(new Error(overflowMessage))
+			.mockResolvedValueOnce(createAssistantMessage("summary after retry"));
+		const sessionManager = createMockSessionManager();
+
+		await performCompaction({ agent, sessionManager });
+
+		expect(agent.generateSummary).toHaveBeenCalledTimes(2);
+		const firstInput = (agent.generateSummary as ReturnType<typeof vi.fn>).mock
+			.calls[0]?.[0] as AppMessage[];
+		const secondInput = (agent.generateSummary as ReturnType<typeof vi.fn>).mock
+			.calls[1]?.[0] as AppMessage[];
+		expect(secondInput.length).toBeLessThan(firstInput.length);
+
+		const replaced = getReplacedMessages(agent);
+		const summary = replaced[0] as AssistantMessage;
+		const firstBlock = summary.content[0] as { type: string; text: string };
+		expect(firstBlock.text).toContain("summary after retry");
+	});
+
+	it("retries summary generation after an assistant overflow response", async () => {
+		const messages = buildConversation(20);
+		const agent = createMockAgent(messages);
+		const overflowMessage =
+			"Anthropic rejected this request because the prompt exceeded 200,000 tokens. Use /compact to summarize prior messages or remove large attachments, then retry.";
+		(agent.generateSummary as ReturnType<typeof vi.fn>)
+			.mockResolvedValueOnce(
+				createErrorAssistantMessage("still overflowing", overflowMessage),
+			)
+			.mockResolvedValueOnce(createAssistantMessage("summary after retry"));
+		const sessionManager = createMockSessionManager();
+
+		await performCompaction({ agent, sessionManager });
+
+		expect(agent.generateSummary).toHaveBeenCalledTimes(2);
+		const firstInput = (agent.generateSummary as ReturnType<typeof vi.fn>).mock
+			.calls[0]?.[0] as AppMessage[];
+		const secondInput = (agent.generateSummary as ReturnType<typeof vi.fn>).mock
+			.calls[1]?.[0] as AppMessage[];
+		expect(secondInput.length).toBeLessThan(firstInput.length);
+	});
+
 	it("passes auto and customInstructions to saveCompaction", async () => {
 		const messages = buildConversation(10);
 		const agent = createMockAgent(messages);
