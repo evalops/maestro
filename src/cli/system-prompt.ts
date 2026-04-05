@@ -163,6 +163,9 @@ function buildGuidelines(toolNames: Set<string>, currentYear: number): string {
 	guidelines.push(
 		"When evaluating new features, use precise, technical language",
 	);
+	guidelines.push(
+		'When the user specifies an explicit output token target such as "+500k", "use 2M tokens", or "spend 1B tokens", keep working until you approach that target productively instead of stopping early.',
+	);
 	guidelines.push("Avoid unnecessary emojis unless humor improves clarity");
 	guidelines.push(
 		"Do NOT create summary documents or CHANGELOG files unless explicitly requested by the user",

@@ -8,6 +8,11 @@ import {
 	type RunWithPromptRecoveryOptions,
 	runWithPromptRecovery,
 } from "./prompt-recovery.js";
+import {
+	checkTokenBudget,
+	createTokenBudgetTracker,
+	parseTokenBudget,
+} from "./token-budget.js";
 import type { AppMessage, HookMessage, UserMessage } from "./types.js";
 
 type PromptRuntimeSessionManager =
@@ -110,6 +115,31 @@ function findLatestTurnUserMessageIndex(
 		}
 	}
 	return undefined;
+}
+
+function resolveTurnAnchorIndex(
+	messages: AppMessage[],
+	messageStartIndex: number,
+	turnStartedAt: number,
+): number {
+	return (
+		findLatestTurnUserMessageIndex(messages, turnStartedAt) ??
+		Math.min(messageStartIndex, messages.length)
+	);
+}
+
+function getTurnOutputTokens(
+	messages: AppMessage[],
+	turnAnchorIndex: number,
+): number {
+	let total = 0;
+	for (let index = turnAnchorIndex + 1; index < messages.length; index += 1) {
+		const message = messages[index];
+		if (message?.role === "assistant") {
+			total += message.usage.output ?? 0;
+		}
+	}
+	return total;
 }
 
 function setRecoverableOverflowErrorSuppression(
@@ -287,11 +317,11 @@ async function applyPostMessageHooks(params: {
 		return;
 	}
 
-	const turnAnchorIndex =
-		findLatestTurnUserMessageIndex(
-			params.agent.state.messages,
-			params.turnStartedAt,
-		) ?? Math.min(params.messageStartIndex, params.agent.state.messages.length);
+	const turnAnchorIndex = resolveTurnAnchorIndex(
+		params.agent.state.messages,
+		params.messageStartIndex,
+		params.turnStartedAt,
+	);
 	const assistantMessage = findLatestAssistantMessage(
 		params.agent.state.messages,
 		turnAnchorIndex,
@@ -344,6 +374,73 @@ async function applyPostMessageHooks(params: {
 	}
 }
 
+async function applyTokenBudgetContinuations(params: {
+	agent: Agent;
+	sessionManager: PromptRuntimeSessionManager;
+	cwd: string;
+	prompt: string;
+	messageStartIndex: number;
+	turnStartedAt: number;
+	callbacks?: PromptRecoveryCallbacks;
+	maxOutputContinuations?: number;
+}): Promise<void> {
+	const budget = parseTokenBudget(params.prompt);
+	if (budget === null || budget <= 0) {
+		return;
+	}
+
+	const tracker = createTokenBudgetTracker();
+
+	while (true) {
+		const turnAnchorIndex = resolveTurnAnchorIndex(
+			params.agent.state.messages,
+			params.messageStartIndex,
+			params.turnStartedAt,
+		);
+		const lastAssistant = findLatestAssistantMessage(
+			params.agent.state.messages,
+			turnAnchorIndex,
+		);
+		if (
+			lastAssistant?.role !== "assistant" ||
+			lastAssistant.stopReason !== "stop"
+		) {
+			return;
+		}
+
+		const decision = checkTokenBudget(
+			tracker,
+			budget,
+			getTurnOutputTokens(params.agent.state.messages, turnAnchorIndex),
+		);
+		if (decision.action === "stop") {
+			return;
+		}
+
+		logger.debug("Continuing turn toward explicit token budget", {
+			budget: decision.budget,
+			pct: decision.pct,
+			turnOutputTokens: decision.turnOutputTokens,
+			continuationCount: decision.continuationCount,
+		});
+
+		await runWithPromptRecovery({
+			agent: params.agent,
+			sessionManager: params.sessionManager,
+			hookContext: buildCompactionHookContext(
+				params.sessionManager,
+				params.cwd,
+			),
+			execute: () =>
+				params.agent.continue({
+					continuationPrompt: decision.continuationPrompt,
+				}),
+			callbacks: params.callbacks,
+			maxOutputContinuations: params.maxOutputContinuations,
+		});
+	}
+}
+
 export async function runUserPromptWithRecovery(params: {
 	agent: Agent;
 	sessionManager: PromptRuntimeSessionManager;
@@ -370,6 +467,16 @@ export async function runUserPromptWithRecovery(params: {
 				params.cwd,
 			),
 			execute: params.execute,
+			callbacks: params.callbacks,
+			maxOutputContinuations: params.maxOutputContinuations,
+		});
+		await applyTokenBudgetContinuations({
+			agent: params.agent,
+			sessionManager: params.sessionManager,
+			cwd: params.cwd,
+			prompt: params.prompt,
+			messageStartIndex,
+			turnStartedAt,
 			callbacks: params.callbacks,
 			maxOutputContinuations: params.maxOutputContinuations,
 		});

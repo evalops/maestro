@@ -390,6 +390,86 @@ describe("user prompt runtime", () => {
 		expect(captured?.duration_ms).toBeGreaterThanOrEqual(0);
 	});
 
+	it("continues toward an explicit token budget from the user prompt", async () => {
+		const continuationPrompts: string[] = [];
+		let continuationCount = 0;
+
+		class BudgetTransport implements AgentTransport {
+			async *run(
+				messages: Message[],
+				userMessage: Message,
+				_config: AgentRunConfig,
+			): AsyncGenerator<AgentEvent, void, unknown> {
+				if (Array.isArray(userMessage.content)) {
+					continuationCount += 1;
+					const lastMessage = messages[messages.length - 1];
+					if (
+						lastMessage?.role === "user" &&
+						typeof lastMessage.content === "string"
+					) {
+						continuationPrompts.push(lastMessage.content);
+					}
+				}
+
+				const nextAssistant =
+					continuationCount === 0
+						? createAssistantMessageWithUsage("Phase 1", {
+								inputTokens: 50,
+								outputTokens: 200,
+								stopReason: "stop",
+							})
+						: continuationCount === 1
+							? createAssistantMessageWithUsage("Phase 2", {
+									inputTokens: 40,
+									outputTokens: 400,
+									stopReason: "stop",
+								})
+							: createAssistantMessageWithUsage("Phase 3", {
+									inputTokens: 35,
+									outputTokens: 350,
+									stopReason: "stop",
+								});
+
+				yield { type: "message_start", message: nextAssistant };
+				yield { type: "message_end", message: nextAssistant };
+			}
+		}
+
+		const agent = new Agent({
+			transport: new BudgetTransport(),
+			initialState: {
+				model: mockModel,
+				tools: [],
+				systemPrompt: "Base system prompt",
+			},
+		});
+
+		await runUserPromptWithRecovery({
+			agent,
+			sessionManager: {
+				getSessionId: () => "session-token-budget",
+			} as never,
+			cwd: "/tmp/token-budget",
+			prompt: "Investigate this issue thoroughly +1k",
+			execute: () => agent.prompt("Investigate this issue thoroughly +1k"),
+		});
+
+		expect(continuationPrompts).toEqual([
+			"Stopped at 20% of token target (200 / 1,000). Keep working - do not summarize.",
+			"Stopped at 60% of token target (600 / 1,000). Keep working - do not summarize.",
+		]);
+		expect(
+			agent.state.messages.filter((message) => message.role === "assistant"),
+		).toHaveLength(3);
+		expect(
+			extractAssistantText(
+				agent.state.messages[
+					agent.state.messages.length - 1
+				] as AssistantMessage,
+			),
+		).toBe("Phase 3");
+	});
+
 	it("skips PostMessage hooks when recovery ends on a truncated response", async () => {
 		let called = false;
 
