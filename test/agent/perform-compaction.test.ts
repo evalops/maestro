@@ -298,6 +298,18 @@ function createSessionStartHookMessage(
 	};
 }
 
+function createBackgroundTasksHookMessage(
+	content = "# Background tasks restored after compaction\n\n- id=task-running; status=running; shell=exec; cwd=/tmp/app; command=npm run dev",
+): AppMessage {
+	return {
+		role: "hookMessage",
+		customType: "background-tasks",
+		content,
+		display: false,
+		timestamp: Date.now(),
+	};
+}
+
 function createPlanModeHookMessage(
 	content = "Plan file: /tmp/plan.md",
 ): AppMessage {
@@ -804,6 +816,32 @@ describe("performCompaction", () => {
 		expect(summaryInput).not.toContainEqual(
 			expect.objectContaining({
 				content: "Restored compacted repo context.",
+			}),
+		);
+	});
+
+	it("skips background task restoration guidance in summarization input", async () => {
+		const messages = buildConversation(10);
+		messages.splice(2, 0, createBackgroundTasksHookMessage());
+		const agent = createMockAgent(messages);
+		const sessionManager = createMockSessionManager();
+
+		await performCompaction({ agent, sessionManager });
+
+		const summaryInput = (agent.generateSummary as ReturnType<typeof vi.fn>)
+			.mock.calls[0]?.[0] as AppMessage[] | undefined;
+		expect(summaryInput).toBeDefined();
+		expect(summaryInput).not.toContainEqual(
+			expect.objectContaining({
+				role: "hookMessage",
+				customType: "background-tasks",
+			}),
+		);
+		expect(summaryInput).not.toContainEqual(
+			expect.objectContaining({
+				content: expect.stringContaining(
+					"Background tasks restored after compaction",
+				),
 			}),
 		);
 	});

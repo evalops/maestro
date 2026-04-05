@@ -20,7 +20,10 @@
 
 import type { Agent } from "../agent/agent.js";
 import { buildCompactionHookContext } from "../agent/compaction-hooks.js";
-import { collectPlanMessagesForCompaction } from "../agent/compaction-restoration.js";
+import {
+	collectBackgroundTaskMessagesForCompaction,
+	collectPlanMessagesForCompaction,
+} from "../agent/compaction-restoration.js";
 import { performCompaction } from "../agent/compaction.js";
 import {
 	buildCompactionEvent,
@@ -119,6 +122,7 @@ export async function runRpcMode(
 					execute: () => agent.continue(input.options),
 					getPostKeepMessages: async () => [
 						...collectPlanMessagesForCompaction(agent.state.messages),
+						...collectBackgroundTaskMessagesForCompaction(agent.state.messages),
 						...(await collectPersistedSessionStartHookMessages({
 							sessionManager,
 							cwd: process.cwd(),
@@ -149,6 +153,7 @@ export async function runRpcMode(
 					),
 					getPostKeepMessages: async () => [
 						...collectPlanMessagesForCompaction(agent.state.messages),
+						...collectBackgroundTaskMessagesForCompaction(agent.state.messages),
 						...(await collectPersistedSessionStartHookMessages({
 							sessionManager,
 							cwd: process.cwd(),

@@ -50,6 +50,7 @@ import {
 	createCompactionHookService,
 } from "./compaction-hooks.js";
 import {
+	BACKGROUND_TASKS_COMPACTION_CUSTOM_TYPE,
 	PLAN_FILE_COMPACTION_CUSTOM_TYPE,
 	PLAN_MODE_COMPACTION_CUSTOM_TYPE,
 } from "./compaction-restoration.js";
@@ -200,6 +201,7 @@ function shouldSkipReinjectedCompactionMessage(message: AppMessage): boolean {
 		((message.customType === "skill" && message.display === false) ||
 			message.customType === READ_RESTORE_COMPACTION_CUSTOM_TYPE ||
 			message.customType === PLAN_FILE_COMPACTION_CUSTOM_TYPE ||
+			message.customType === BACKGROUND_TASKS_COMPACTION_CUSTOM_TYPE ||
 			message.customType === "PostCompact" ||
 			message.customType === "SessionStart" ||
 			message.customType === PLAN_MODE_COMPACTION_CUSTOM_TYPE)

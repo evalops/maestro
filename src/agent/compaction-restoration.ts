@@ -1,3 +1,5 @@
+import { backgroundTaskManager } from "../tools/background-tasks.js";
+import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
 import { createHookMessage } from "./custom-messages.js";
 import {
 	getPlanFilePathForCompactionRestore,
@@ -8,6 +10,61 @@ import type { AppMessage } from "./types.js";
 
 export const PLAN_FILE_COMPACTION_CUSTOM_TYPE = "plan-file";
 export const PLAN_MODE_COMPACTION_CUSTOM_TYPE = "plan-mode";
+export const BACKGROUND_TASKS_COMPACTION_CUSTOM_TYPE = "background-tasks";
+
+function sanitizeBackgroundTaskField(value: string): string {
+	return sanitizeWithStaticMask(value).replace(/\s+/g, " ").trim();
+}
+
+function formatBackgroundTaskCommand(command: string): string {
+	const sanitized = sanitizeBackgroundTaskField(command);
+	const maxLength = 180;
+	if (sanitized.length <= maxLength) {
+		return sanitized;
+	}
+	return `${sanitized.slice(0, maxLength - 3)}...`;
+}
+
+function buildBackgroundTasksCompactionContent(): string | null {
+	const activeTasks = backgroundTaskManager
+		.getTasks()
+		.filter((task) => task.status === "running" || task.status === "restarting")
+		.sort((left, right) => right.startedAt - left.startedAt);
+
+	if (activeTasks.length === 0) {
+		return null;
+	}
+
+	const lines = [
+		"# Background tasks restored after compaction",
+		"",
+		"These background tasks are already active in this session. Reuse them instead of starting duplicates unless you intentionally need another one.",
+		"",
+		...activeTasks.map((task) => {
+			const command = formatBackgroundTaskCommand(task.command);
+			const cwd = task.cwd
+				? `; cwd=${sanitizeBackgroundTaskField(task.cwd)}`
+				: "";
+			return `- id=${task.id}; status=${task.status}; shell=${task.shellMode}${cwd}; command=${command}`;
+		}),
+		"",
+		"Use `background_tasks` action=list to inspect the current task set and `background_tasks` action=logs taskId=<id> to review output.",
+	];
+
+	return lines.join("\n");
+}
+
+function hasBackgroundTasksCompactionMessage(
+	messages: AppMessage[],
+	expectedContent: string,
+): boolean {
+	return messages.some(
+		(message) =>
+			message.role === "hookMessage" &&
+			message.customType === BACKGROUND_TASKS_COMPACTION_CUSTOM_TYPE &&
+			message.content === expectedContent,
+	);
+}
 
 function buildPlanFileCompactionContent(
 	filePath: string,
@@ -146,4 +203,26 @@ export function collectPlanModeMessagesForCompaction(
 			message.role === "hookMessage" &&
 			message.customType === PLAN_MODE_COMPACTION_CUSTOM_TYPE,
 	);
+}
+
+export function collectBackgroundTaskMessagesForCompaction(
+	messages: AppMessage[],
+): AppMessage[] {
+	const content = buildBackgroundTasksCompactionContent();
+	if (
+		typeof content !== "string" ||
+		hasBackgroundTasksCompactionMessage(messages, content)
+	) {
+		return [];
+	}
+
+	return [
+		createHookMessage(
+			BACKGROUND_TASKS_COMPACTION_CUSTOM_TYPE,
+			content,
+			false,
+			undefined,
+			new Date().toISOString(),
+		),
+	];
 }

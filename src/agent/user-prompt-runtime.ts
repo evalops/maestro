@@ -2,7 +2,10 @@ import { createSessionHookService } from "../hooks/session-integration.js";
 import { createLogger } from "../utils/logger.js";
 import type { Agent } from "./agent.js";
 import { buildCompactionHookContext } from "./compaction-hooks.js";
-import { collectPlanMessagesForCompaction } from "./compaction-restoration.js";
+import {
+	collectBackgroundTaskMessagesForCompaction,
+	collectPlanMessagesForCompaction,
+} from "./compaction-restoration.js";
 import { createHookMessage } from "./custom-messages.js";
 import {
 	type PromptRecoveryCallbacks,
@@ -570,6 +573,11 @@ async function applyTokenBudgetContinuations(params: {
 					Promise.resolve(
 						collectPlanMessagesForCompaction(params.agent.state.messages),
 					),
+					Promise.resolve(
+						collectBackgroundTaskMessagesForCompaction(
+							params.agent.state.messages,
+						),
+					),
 					params.getPostKeepMessages?.() ?? Promise.resolve([]),
 					collectPersistedSessionStartHookMessages({
 						sessionManager: params.sessionManager,
@@ -577,11 +585,19 @@ async function applyTokenBudgetContinuations(params: {
 						source: "compact",
 						signal: params.signal,
 					}),
-				]).then(([planMessages, callerMessages, sessionStartMessages]) => [
-					...planMessages,
-					...callerMessages,
-					...sessionStartMessages,
-				]),
+				]).then(
+					([
+						planMessages,
+						backgroundTaskMessages,
+						callerMessages,
+						sessionStartMessages,
+					]) => [
+						...planMessages,
+						...backgroundTaskMessages,
+						...callerMessages,
+						...sessionStartMessages,
+					],
+				),
 			execute: () =>
 				params.agent.continue({
 					continuationPrompt: decision.continuationPrompt,
@@ -631,20 +647,34 @@ export async function runUserPromptWithRecovery(params: {
 	);
 	try {
 		const collectPostKeepMessages = async (): Promise<AppMessage[]> => {
-			const [planMessages, callerMessages, sessionStartMessages] =
-				await Promise.all([
-					Promise.resolve(
-						collectPlanMessagesForCompaction(params.agent.state.messages),
+			const [
+				planMessages,
+				backgroundTaskMessages,
+				callerMessages,
+				sessionStartMessages,
+			] = await Promise.all([
+				Promise.resolve(
+					collectPlanMessagesForCompaction(params.agent.state.messages),
+				),
+				Promise.resolve(
+					collectBackgroundTaskMessagesForCompaction(
+						params.agent.state.messages,
 					),
-					params.getPostKeepMessages?.() ?? Promise.resolve([]),
-					collectPersistedSessionStartHookMessages({
-						sessionManager: params.sessionManager,
-						cwd: params.cwd,
-						source: "compact",
-						signal: params.signal,
-					}),
-				]);
-			return [...planMessages, ...callerMessages, ...sessionStartMessages];
+				),
+				params.getPostKeepMessages?.() ?? Promise.resolve([]),
+				collectPersistedSessionStartHookMessages({
+					sessionManager: params.sessionManager,
+					cwd: params.cwd,
+					source: "compact",
+					signal: params.signal,
+				}),
+			]);
+			return [
+				...planMessages,
+				...backgroundTaskMessages,
+				...callerMessages,
+				...sessionStartMessages,
+			];
 		};
 
 		throwIfAborted(params.signal);
