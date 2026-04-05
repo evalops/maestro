@@ -1880,7 +1880,9 @@ export async function performCompaction(params: {
 	persistCustomInstructions?: boolean;
 	hookContext?: CompactionHookContext;
 	hookService?: CompactionHookService;
-	getPostKeepMessages?: () => Promise<AppMessage[]>;
+	getPostKeepMessages?: (
+		preservedMessages: AppMessage[],
+	) => Promise<AppMessage[]>;
 	renderSummaryText?: (message: AssistantMessage) => string;
 }): Promise<PerformCompactionResult> {
 	const {
@@ -2121,7 +2123,7 @@ export async function performCompaction(params: {
 		}
 	};
 
-	const callerPostKeepMessages = (await getPostKeepMessages?.()) ?? [];
+	const callerPostKeepMessages = (await getPostKeepMessages?.(keep)) ?? [];
 	const preservedTailMessages = [...keep, ...callerPostKeepMessages];
 	const dedupedRestoredReadMessages = restoredReadMessages.filter((message) => {
 		if (

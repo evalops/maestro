@@ -55,7 +55,9 @@ export interface RunWithPromptRecoveryOptions {
 	hookService?: CompactionHookService;
 	overflowHookService?: OverflowHookService;
 	stopFailureHookService?: StopFailureHookService;
-	getPostKeepMessages?: () => Promise<AppMessage[]>;
+	getPostKeepMessages?: (
+		preservedMessages: AppMessage[],
+	) => Promise<AppMessage[]>;
 	callbacks?: PromptRecoveryCallbacks;
 	maxOutputContinuations?: number;
 }
@@ -514,7 +516,9 @@ async function recoverFromPromptOverflow(
 	hookService: CompactionHookService | undefined,
 	customInstructions: string | undefined,
 	persistCustomInstructions: boolean,
-	getPostKeepMessages: (() => Promise<AppMessage[]>) | undefined,
+	getPostKeepMessages:
+		| ((preservedMessages: AppMessage[]) => Promise<AppMessage[]>)
+		| undefined,
 	preCompactContextTokens: number | undefined,
 	callbacks?: PromptRecoveryCallbacks,
 ): Promise<boolean> {

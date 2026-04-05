@@ -45,8 +45,8 @@ describe("ConversationCompactor", () => {
 		await compactor.compactHistory();
 
 		const params = vi.mocked(performCompaction).mock.calls[0]?.[0];
-		await params?.getPostKeepMessages?.();
-		expect(getPostKeepMessages).toHaveBeenCalledWith("compact");
+		await params?.getPostKeepMessages?.([]);
+		expect(getPostKeepMessages).toHaveBeenCalledWith("compact", []);
 		expect(showInfoMessage).toHaveBeenCalledWith("Compacted 3 messages.");
 	});
 });

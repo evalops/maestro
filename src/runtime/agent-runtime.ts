@@ -60,13 +60,14 @@ export class AgentRuntimeController {
 						(attachment) => attachment.fileName,
 					),
 					execute: () => this.options.agent.prompt(text, attachments),
-					getPostKeepMessages: async () => [
+					getPostKeepMessages: async (preservedMessages) => [
 						...collectMcpMessagesForCompaction(
-							this.options.agent.state.messages,
+							preservedMessages,
 							mcpManager.getStatus().servers,
 						),
-						...(this.renderer?.collectActiveSkillMessagesForCompaction?.() ??
-							[]),
+						...(this.renderer?.collectActiveSkillMessagesForCompaction?.(
+							preservedMessages,
+						) ?? []),
 					],
 					callbacks: {
 						onCompacting: () => {

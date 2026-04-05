@@ -65,14 +65,15 @@ export class SkillsController {
 	 * away. The current message history is checked first so repeated compactions do
 	 * not duplicate still-preserved skill instructions.
 	 */
-	collectActiveSkillMessagesForCompaction(): AppMessage[] {
+	collectActiveSkillMessagesForCompaction(
+		preservedMessages = this.deps.getMessages(),
+	): AppMessage[] {
 		if (this.activeSkills.size === 0) {
 			return [];
 		}
 
-		const injectedSkillNames = this.collectInjectedSkillNames(
-			this.deps.getMessages(),
-		);
+		const injectedSkillNames =
+			this.collectInjectedSkillNames(preservedMessages);
 		const { skills } = loadSkills(this.deps.cwd());
 		const restoredMessages: AppMessage[] = [];
 

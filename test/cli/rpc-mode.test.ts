@@ -125,7 +125,7 @@ describe("runRpcMode", () => {
 		await lineHandler?.(JSON.stringify({ type: "compact" }));
 
 		const params = vi.mocked(performCompaction).mock.calls[0]?.[0];
-		await expect(params?.getPostKeepMessages?.()).resolves.toEqual([
+		await expect(params?.getPostKeepMessages?.([])).resolves.toEqual([
 			expect.objectContaining({
 				role: "hookMessage",
 				customType: "plan-file",
@@ -135,16 +135,9 @@ describe("runRpcMode", () => {
 				customType: "plan-mode",
 			}),
 		]);
-		expect(collectPlanMessagesForCompaction).toHaveBeenCalledWith(
-			agent.state.messages,
-		);
-		expect(collectBackgroundTaskMessagesForCompaction).toHaveBeenCalledWith(
-			agent.state.messages,
-		);
-		expect(collectMcpMessagesForCompaction).toHaveBeenCalledWith(
-			agent.state.messages,
-			[],
-		);
+		expect(collectPlanMessagesForCompaction).toHaveBeenCalledWith([]);
+		expect(collectBackgroundTaskMessagesForCompaction).toHaveBeenCalledWith([]);
+		expect(collectMcpMessagesForCompaction).toHaveBeenCalledWith([], []);
 		expect(collectPersistedSessionStartHookMessages).toHaveBeenCalledWith(
 			expect.objectContaining({
 				sessionManager,
@@ -190,7 +183,7 @@ describe("runRpcMode", () => {
 		await lineHandler?.(JSON.stringify({ type: "continue", options: {} }));
 
 		const params = vi.mocked(runWithPromptRecovery).mock.calls[0]?.[0];
-		await expect(params?.getPostKeepMessages?.()).resolves.toEqual([
+		await expect(params?.getPostKeepMessages?.([])).resolves.toEqual([
 			expect.objectContaining({
 				role: "hookMessage",
 				customType: "plan-mode",
@@ -200,16 +193,9 @@ describe("runRpcMode", () => {
 				customType: "SessionStart",
 			}),
 		]);
-		expect(collectPlanMessagesForCompaction).toHaveBeenCalledWith(
-			agent.state.messages,
-		);
-		expect(collectBackgroundTaskMessagesForCompaction).toHaveBeenCalledWith(
-			agent.state.messages,
-		);
-		expect(collectMcpMessagesForCompaction).toHaveBeenCalledWith(
-			agent.state.messages,
-			[],
-		);
+		expect(collectPlanMessagesForCompaction).toHaveBeenCalledWith([]);
+		expect(collectBackgroundTaskMessagesForCompaction).toHaveBeenCalledWith([]);
+		expect(collectMcpMessagesForCompaction).toHaveBeenCalledWith([], []);
 		expect(collectPersistedSessionStartHookMessages).toHaveBeenCalledWith(
 			expect.objectContaining({
 				sessionManager,
