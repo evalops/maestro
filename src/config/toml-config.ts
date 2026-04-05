@@ -504,6 +504,17 @@ export const DEFAULT_CONFIG: ComposerConfig = {
 	project_doc_fallback_filenames: ["CLAUDE.md"],
 };
 
+export function resolveProjectDocCandidateFilenames(
+	config?: ComposerConfig,
+): string[] {
+	const fallback =
+		config?.project_doc_fallback_filenames ??
+		DEFAULT_CONFIG.project_doc_fallback_filenames ??
+		[];
+	const merged = [...PATHS.AGENT_CONTEXT_FILES, ...fallback];
+	return Array.from(new Set(merged));
+}
+
 // ─────────────────────────────────────────────────────────────
 // Configuration Loading
 // ─────────────────────────────────────────────────────────────

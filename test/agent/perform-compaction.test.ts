@@ -2,6 +2,9 @@
  * Tests for performCompaction() — the consolidated compaction function.
  */
 
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
 	registerPostCompactionCleanup,
@@ -19,6 +22,7 @@ import type {
 	Attachment,
 	Usage,
 } from "../../src/agent/types.js";
+import { clearConfigCache } from "../../src/config/index.js";
 
 function createUsage(input = 0, output = 0): Usage {
 	return {
@@ -1014,6 +1018,51 @@ describe("performCompaction", () => {
 				details: { filePath: "/tmp/workspace/.maestro/AGENTS.md" },
 			}),
 		);
+	});
+
+	it("does not restore custom project doc fallback files already layered into the prompt", async () => {
+		const originalCwd = process.cwd();
+		const workspaceDir = mkdtempSync(join(tmpdir(), "maestro-project-doc-"));
+		mkdirSync(join(workspaceDir, ".maestro"), { recursive: true });
+		writeFileSync(
+			join(workspaceDir, ".maestro", "config.toml"),
+			'project_doc_fallback_filenames = ["CONTEXT.md"]\n',
+		);
+		process.chdir(workspaceDir);
+		clearConfigCache();
+
+		try {
+			const messages = buildConversation(10);
+			messages.splice(
+				2,
+				0,
+				createReadToolCallMessage(
+					"/tmp/workspace/CONTEXT.md",
+					"call-read-context-doc",
+				),
+				createReadToolResultMessage(
+					"/tmp/workspace/CONTEXT.md",
+					"call-read-context-doc",
+					"# Context\nCustom project instructions",
+				),
+			);
+			const agent = createMockAgentWithoutAppendMessage(messages);
+			const sessionManager = createMockSessionManager();
+
+			const result = await performCompaction({ agent, sessionManager });
+
+			expect(result.success).toBe(true);
+			expect(getReplacedMessages(agent)).not.toContainEqual(
+				expect.objectContaining({
+					role: "hookMessage",
+					customType: "read-file",
+					details: { filePath: "/tmp/workspace/CONTEXT.md" },
+				}),
+			);
+		} finally {
+			process.chdir(originalCwd);
+			clearConfigCache();
+		}
 	});
 
 	it("truncates oversized restored read results to the per-file budget", async () => {

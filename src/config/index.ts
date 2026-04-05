@@ -20,6 +20,7 @@ export {
 	parseCliOverride,
 	applyCliOverride,
 	DEFAULT_CONFIG,
+	resolveProjectDocCandidateFilenames,
 	type ComposerConfig,
 	type ApprovalPolicy,
 	type SandboxMode,

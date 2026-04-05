@@ -9,8 +9,12 @@ import {
 import { join, resolve } from "node:path";
 import chalk from "chalk";
 import { buildSearchGuidelines } from "../agent/search-guidance.js";
-import { PATHS, getAgentDir } from "../config/constants.js";
-import { type ComposerConfig, loadConfig } from "../config/index.js";
+import { getAgentDir } from "../config/constants.js";
+import {
+	type ComposerConfig,
+	loadConfig,
+	resolveProjectDocCandidateFilenames,
+} from "../config/index.js";
 
 // Tool descriptions for dynamic system prompt generation
 const TOOL_DESCRIPTIONS: Record<string, string> = {
@@ -321,9 +325,7 @@ function loadContextFileFromDir(
 }
 
 function resolveContextCandidates(config?: ComposerConfig): string[] {
-	const fallback = config?.project_doc_fallback_filenames ?? [];
-	const merged = [...PATHS.AGENT_CONTEXT_FILES, ...fallback];
-	return Array.from(new Set(merged));
+	return resolveProjectDocCandidateFilenames(config);
 }
 
 export function loadProjectContextFiles(

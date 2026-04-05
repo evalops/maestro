@@ -34,7 +34,10 @@
  */
 
 import { basename, resolve as resolvePath } from "node:path";
-import { PATHS } from "../config/constants.js";
+import {
+	loadConfig,
+	resolveProjectDocCandidateFilenames,
+} from "../config/index.js";
 import type { SessionEntry } from "../session/types.js";
 import { createLogger } from "../utils/logger.js";
 import { expandUserPath } from "../utils/path-validation.js";
@@ -201,11 +204,19 @@ function normalizeReadPath(path: string): string {
 	return resolvePath(expandUserPath(path));
 }
 
-function shouldExcludeReadRestorePath(filePath: string): boolean {
-	return PATHS.AGENT_CONTEXT_FILES.some(
-		(contextFile) =>
-			basename(filePath).toLowerCase() === contextFile.toLowerCase(),
+function getExcludedReadRestoreBasenames(): Set<string> {
+	return new Set(
+		resolveProjectDocCandidateFilenames(loadConfig(process.cwd())).map((name) =>
+			name.toLowerCase(),
+		),
 	);
+}
+
+function shouldExcludeReadRestorePath(
+	filePath: string,
+	excludedBasenames: Set<string>,
+): boolean {
+	return excludedBasenames.has(basename(filePath).toLowerCase());
 }
 
 function collectReadToolPathsByCallId(
@@ -370,6 +381,7 @@ function collectRecentReadRestoreMessages(
 	const normalizedPlanFilePath = currentPlanFilePath
 		? normalizeReadPath(currentPlanFilePath)
 		: null;
+	const excludedBasenames = getExcludedReadRestoreBasenames();
 	const restoredMessages: AppMessage[] = [];
 	const seenPaths = new Set<string>();
 	let usedTokens = 0;
@@ -394,7 +406,7 @@ function collectRecentReadRestoreMessages(
 			!filePath ||
 			visiblePaths.has(filePath) ||
 			seenPaths.has(filePath) ||
-			shouldExcludeReadRestorePath(filePath) ||
+			shouldExcludeReadRestorePath(filePath, excludedBasenames) ||
 			(normalizedPlanFilePath !== null && filePath === normalizedPlanFilePath)
 		) {
 			continue;
