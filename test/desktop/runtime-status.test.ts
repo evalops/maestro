@@ -32,6 +32,16 @@ describe("desktop runtime status", () => {
 		).toBe("Read app.ts");
 	});
 
+	it("formats token-budget continuation statuses without the generic prefix", () => {
+		expect(
+			formatDesktopRuntimeStatus({
+				type: "status",
+				status: "Target: 200 / 1,000 (20%)",
+				details: { kind: "token_budget_continuation" },
+			}),
+		).toBe("Target: 200 / 1,000 (20%)");
+	});
+
 	it("formats compaction events", () => {
 		expect(
 			formatDesktopRuntimeStatus({

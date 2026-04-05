@@ -117,7 +117,7 @@ export class LoaderView {
 		this.stageManager.markToolComplete(toolCallId);
 	}
 
-	showRuntimeStatus(status: string): void {
+	showRuntimeStatus(status: string, details?: Record<string, unknown>): void {
 		const normalized = status.trim();
 		if (!normalized) {
 			return;
@@ -125,7 +125,10 @@ export class LoaderView {
 		this.options.footer.setToast(
 			normalized === "compacting"
 				? "Compacting conversation..."
-				: `Status: ${normalized}`,
+				: details?.kind === "tool_execution_summary" ||
+						details?.kind === "token_budget_continuation"
+					? normalized
+					: `Status: ${normalized}`,
 			"info",
 			4500,
 		);

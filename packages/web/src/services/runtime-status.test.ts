@@ -42,6 +42,16 @@ describe("web runtime status", () => {
 		).toBe("Read app.ts");
 	});
 
+	it("formats token-budget continuation statuses without the generic prefix", () => {
+		expect(
+			formatWebRuntimeStatus({
+				type: "status",
+				status: "Target: 200 / 1,000 (20%)",
+				details: { kind: "token_budget_continuation" },
+			}),
+		).toBe("Target: 200 / 1,000 (20%)");
+	});
+
 	it("trims status values before formatting", () => {
 		expect(
 			formatWebRuntimeStatus({

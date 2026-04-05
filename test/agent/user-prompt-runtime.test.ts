@@ -392,6 +392,10 @@ describe("user prompt runtime", () => {
 
 	it("continues toward an explicit token budget from the user prompt", async () => {
 		const continuationPrompts: string[] = [];
+		const runtimeStatuses: Array<{
+			status: string;
+			details: Record<string, unknown>;
+		}> = [];
 		let continuationCount = 0;
 
 		class BudgetTransport implements AgentTransport {
@@ -443,6 +447,14 @@ describe("user prompt runtime", () => {
 				systemPrompt: "Base system prompt",
 			},
 		});
+		agent.subscribe((event) => {
+			if (event.type === "status") {
+				runtimeStatuses.push({
+					status: event.status,
+					details: event.details,
+				});
+			}
+		});
 
 		await runUserPromptWithRecovery({
 			agent,
@@ -457,6 +469,28 @@ describe("user prompt runtime", () => {
 		expect(continuationPrompts).toEqual([
 			"Stopped at 20% of token target (200 / 1,000). Keep working - do not summarize.",
 			"Stopped at 60% of token target (600 / 1,000). Keep working - do not summarize.",
+		]);
+		expect(runtimeStatuses).toEqual([
+			{
+				status: "Target: 200 / 1,000 (20%)",
+				details: {
+					kind: "token_budget_continuation",
+					budget: 1_000,
+					pct: 20,
+					turnOutputTokens: 200,
+					continuationCount: 1,
+				},
+			},
+			{
+				status: "Target: 600 / 1,000 (60%)",
+				details: {
+					kind: "token_budget_continuation",
+					budget: 1_000,
+					pct: 60,
+					turnOutputTokens: 600,
+					continuationCount: 2,
+				},
+			},
 		]);
 		expect(
 			agent.state.messages.filter((message) => message.role === "assistant"),

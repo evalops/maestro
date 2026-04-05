@@ -83,6 +83,15 @@ export function getBudgetContinuationPrompt(
 	return `Stopped at ${pct}% of token target (${formatter.format(turnOutputTokens)} / ${formatter.format(budget)}). Keep working - do not summarize.`;
 }
 
+export function formatTokenBudgetStatus(
+	turnOutputTokens: number,
+	budget: number,
+	pct: number,
+): string {
+	const formatter = new Intl.NumberFormat("en-US");
+	return `Target: ${formatter.format(turnOutputTokens)} / ${formatter.format(budget)} (${pct}%)`;
+}
+
 export function checkTokenBudget(
 	tracker: TokenBudgetTracker,
 	budget: number | null,

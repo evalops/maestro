@@ -11,6 +11,7 @@ import {
 import {
 	checkTokenBudget,
 	createTokenBudgetTracker,
+	formatTokenBudgetStatus,
 	parseTokenBudget,
 } from "./token-budget.js";
 import type { AppMessage, HookMessage, UserMessage } from "./types.js";
@@ -439,6 +440,21 @@ async function applyTokenBudgetContinuations(params: {
 		if (decision.action === "stop") {
 			return;
 		}
+
+		params.agent.emitStatus(
+			formatTokenBudgetStatus(
+				decision.turnOutputTokens,
+				decision.budget,
+				decision.pct,
+			),
+			{
+				kind: "token_budget_continuation",
+				budget: decision.budget,
+				pct: decision.pct,
+				turnOutputTokens: decision.turnOutputTokens,
+				continuationCount: decision.continuationCount,
+			},
+		);
 
 		logger.debug("Continuing turn toward explicit token budget", {
 			budget: decision.budget,

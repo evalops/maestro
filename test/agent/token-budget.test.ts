@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	checkTokenBudget,
 	createTokenBudgetTracker,
+	formatTokenBudgetStatus,
 	getBudgetContinuationPrompt,
 	parseTokenBudget,
 } from "../../src/agent/token-budget.js";
@@ -103,6 +104,12 @@ describe("token budget", () => {
 	it("formats continuation prompts with human-readable token counts", () => {
 		expect(getBudgetContinuationPrompt(25, 250_000, 1_000_000)).toBe(
 			"Stopped at 25% of token target (250,000 / 1,000,000). Keep working - do not summarize.",
+		);
+	});
+
+	it("formats runtime token-budget status with human-readable token counts", () => {
+		expect(formatTokenBudgetStatus(250_000, 1_000_000, 25)).toBe(
+			"Target: 250,000 / 1,000,000 (25%)",
 		);
 	});
 });

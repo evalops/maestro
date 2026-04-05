@@ -15,7 +15,10 @@ export function formatVscodeRuntimeStatus(
 			if (!status) {
 				return undefined;
 			}
-			if (event.details.kind === "tool_execution_summary") {
+			if (
+				event.details.kind === "tool_execution_summary" ||
+				event.details.kind === "token_budget_continuation"
+			) {
 				return status;
 			}
 			return status === "compacting"

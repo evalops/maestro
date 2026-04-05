@@ -115,7 +115,7 @@ export class AgentEventRouter {
 				return;
 
 			case "status":
-				this.options.loaderView.showRuntimeStatus(event.status);
+				this.options.loaderView.showRuntimeStatus(event.status, event.details);
 				this.options.requestRender();
 				return;
 

@@ -6,7 +6,10 @@ export function formatDesktopRuntimeStatus(event: AgentEvent): string | null {
 		if (!status) {
 			return null;
 		}
-		if (event.details?.kind === "tool_execution_summary") {
+		if (
+			event.details?.kind === "tool_execution_summary" ||
+			event.details?.kind === "token_budget_continuation"
+		) {
 			return status;
 		}
 		return status === "compacting"
