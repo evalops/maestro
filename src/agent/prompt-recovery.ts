@@ -38,6 +38,9 @@ const POST_COMPACTION_CONTINUATION_PROMPT =
 export interface PromptRecoveryCallbacks {
 	onCompacting?: () => void;
 	onCompacted?: (result: PerformCompactionResult) => void;
+	onCompactedBeforeContinue?: (
+		result: PerformCompactionResult,
+	) => void | Promise<void>;
 	onCompactionFailed?: (message: string) => void;
 	onMaxOutputContinue?: (attempt: number, maxContinuations: number) => void;
 	onMaxOutputExhausted?: (maxContinuations: number) => void;
@@ -557,6 +560,7 @@ async function recoverFromPromptOverflow(
 			),
 		});
 	}
+	await callbacks?.onCompactedBeforeContinue?.(result);
 	await agent.continue({
 		continuationPrompt: POST_COMPACTION_CONTINUATION_PROMPT,
 	});

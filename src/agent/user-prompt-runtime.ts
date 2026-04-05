@@ -526,6 +526,19 @@ export async function runUserPromptWithRecovery(params: {
 		throwIfAborted(params.signal);
 		await applyPreMessageHooks(params);
 		throwIfAborted(params.signal);
+		const recoveryCallbacks: PromptRecoveryCallbacks = {
+			...params.callbacks,
+			onCompactedBeforeContinue: async (result) => {
+				await params.callbacks?.onCompactedBeforeContinue?.(result);
+				await applySessionStartHooks({
+					agent: params.agent,
+					sessionManager: params.sessionManager,
+					cwd: params.cwd,
+					source: "compact",
+					signal: params.signal,
+				});
+			},
+		};
 		await runWithPromptRecovery({
 			agent: params.agent,
 			sessionManager: params.sessionManager,
@@ -534,7 +547,7 @@ export async function runUserPromptWithRecovery(params: {
 				params.cwd,
 			),
 			execute: params.execute,
-			callbacks: params.callbacks,
+			callbacks: recoveryCallbacks,
 			maxOutputContinuations: params.maxOutputContinuations,
 		});
 		throwIfAborted(params.signal);

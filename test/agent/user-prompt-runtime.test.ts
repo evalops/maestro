@@ -819,6 +819,122 @@ describe("user prompt runtime", () => {
 		]);
 	});
 
+	it("runs SessionStart hooks with compact source before overflow recovery continues", async () => {
+		const overflowMessage =
+			"Anthropic rejected this request because the prompt exceeded 200,000 tokens. Use /compact to summarize prior messages or remove large attachments, then retry.";
+		let sessionStartInput: Record<string, unknown> | undefined;
+
+		registerHook("SessionStart", {
+			type: "callback",
+			callback: async (input) => {
+				sessionStartInput = input as Record<string, unknown>;
+				return {
+					systemMessage: "Re-establish compacted context.",
+					hookSpecificOutput: {
+						hookEventName: "SessionStart",
+						additionalContext: "Compaction hook context",
+						initialUserMessage: "Compaction hook prompt",
+					},
+				};
+			},
+		});
+
+		class OverflowThenSuccessTransport implements AgentTransport {
+			async *run(
+				_messages: Message[],
+				userMessage: Message,
+				_config: AgentRunConfig,
+			): AsyncGenerator<AgentEvent, void, unknown> {
+				if (typeof userMessage.content === "string") {
+					const assistant = {
+						...createAssistantMessage("Too much context"),
+						stopReason: "error" as const,
+						errorMessage: overflowMessage,
+					};
+					yield { type: "message_start", message: assistant };
+					yield { type: "message_end", message: assistant };
+					return;
+				}
+
+				const assistant = createAssistantMessage("Recovered response");
+				yield { type: "message_start", message: assistant };
+				yield { type: "message_end", message: assistant };
+			}
+		}
+
+		const agent = new Agent({
+			transport: new OverflowThenSuccessTransport(),
+			initialState: {
+				model: mockModel,
+				tools: [],
+				systemPrompt: "Base system prompt",
+			},
+		});
+		const queueNextRunSystemPromptAddition = vi.spyOn(
+			agent,
+			"queueNextRunSystemPromptAddition",
+		);
+		const queueNextRunHistoryMessage = vi.spyOn(
+			agent,
+			"queueNextRunHistoryMessage",
+		);
+		agent.replaceMessages(buildConversation(5));
+		vi.spyOn(agent, "generateSummary").mockResolvedValue(
+			createAssistantMessage("LLM summary"),
+		);
+
+		await runUserPromptWithRecovery({
+			agent,
+			sessionManager: {
+				getSessionId: () => "session-compact-session-start",
+				buildSessionContext: () => ({
+					messageEntries: Array.from({ length: 50 }, (_, index) => ({
+						id: `entry-${index}`,
+					})),
+				}),
+				saveCompaction: vi.fn(),
+				saveMessage: vi.fn(),
+			} as never,
+			cwd: "/tmp/compact-session-start",
+			prompt: "latest question",
+			execute: () => agent.prompt("latest question"),
+		});
+
+		expect(sessionStartInput).toMatchObject({
+			hook_event_name: "SessionStart",
+			source: "compact",
+		});
+		expect(queueNextRunSystemPromptAddition).toHaveBeenCalledWith(
+			"SessionStart hook system guidance:\nRe-establish compacted context.",
+		);
+		expect(queueNextRunHistoryMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				role: "hookMessage",
+				customType: "SessionStart",
+				content: "Compaction hook context",
+			}),
+		);
+		expect(queueNextRunHistoryMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				role: "user",
+				content: "Compaction hook prompt",
+			}),
+		);
+		expect(agent.state.messages).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					role: "hookMessage",
+					customType: "SessionStart",
+					content: "Compaction hook context",
+				}),
+				expect.objectContaining({
+					role: "user",
+					content: "Compaction hook prompt",
+				}),
+			]),
+		);
+	});
+
 	it("withholds recoverable overflow assistant errors until recovery succeeds", async () => {
 		const overflowMessage =
 			"Anthropic rejected this request because the prompt exceeded 200,000 tokens. Use /compact to summarize prior messages or remove large attachments, then retry.";
