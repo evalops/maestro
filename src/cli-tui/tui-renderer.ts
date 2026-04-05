@@ -69,6 +69,7 @@ import type {
 	CommandEntry,
 	CommandExecutionContext,
 } from "./commands/types.js";
+import { withTuiCompactionRestoration } from "./compaction-recovery.js";
 import { ConfigView } from "./config-view.js";
 import { ContextView } from "./context-view.js";
 import { CustomEditor } from "./custom-editor.js";
@@ -1015,7 +1016,7 @@ export class TuiRenderer {
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
 			runSessionStartHooks: async (source) => {
 				if (source === "compact") {
-					this.skillsController.restoreActiveSkillsAfterCompaction();
+					this.restoreActiveSkillsAfterCompaction();
 				}
 				await applySessionStartHooks({
 					agent: this.agent,
@@ -1977,6 +1978,7 @@ export class TuiRenderer {
 							),
 							execute: () =>
 								this.agent.prompt(payload.text, payload.attachments),
+							callbacks: withTuiCompactionRestoration(undefined, this),
 						}).catch((error) => {
 							this.restoreQueuedPromptBatchToEditor(steeringBatch);
 							const message =
@@ -2090,6 +2092,7 @@ export class TuiRenderer {
 				cwd: process.cwd(),
 				prompt,
 				execute: () => this.agent.prompt(prompt),
+				callbacks: withTuiCompactionRestoration(undefined, this),
 			});
 		} catch (error) {
 			const message =
@@ -2346,6 +2349,10 @@ export class TuiRenderer {
 
 	showInfo(message: string): void {
 		this.notificationView.showInfo(message);
+	}
+
+	public restoreActiveSkillsAfterCompaction(): number {
+		return this.skillsController.restoreActiveSkillsAfterCompaction();
 	}
 
 	public refreshFooterHint(): void {
