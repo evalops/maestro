@@ -1020,10 +1020,12 @@ export class TuiRenderer {
 			toolComponents: this.toolOutputView.getTrackedComponents(),
 			renderMessages: () => this.renderInitialMessages(this.agent.state),
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
-			getPostKeepMessages: async (source) => {
+			getPostKeepMessages: async (source, preservedMessages) => {
 				const restorationMessages =
 					source === "compact"
-						? this.collectOrderedCompactionRestorationMessages()
+						? this.collectOrderedCompactionRestorationMessages(
+								preservedMessages,
+							)
 						: [];
 				const sessionStartMessages =
 					await collectPersistedSessionStartHookMessages({
@@ -1985,8 +1987,8 @@ export class TuiRenderer {
 							),
 							execute: () =>
 								this.agent.prompt(payload.text, payload.attachments),
-							getPostKeepMessages: async () =>
-								this.collectActiveSkillMessagesForCompaction(),
+							getPostKeepMessages: async (preservedMessages) =>
+								this.collectActiveSkillMessagesForCompaction(preservedMessages),
 						}).catch((error) => {
 							this.restoreQueuedPromptBatchToEditor(steeringBatch);
 							const message =
@@ -2100,8 +2102,8 @@ export class TuiRenderer {
 				cwd: process.cwd(),
 				prompt,
 				execute: () => this.agent.prompt(prompt),
-				getPostKeepMessages: async () =>
-					this.collectActiveSkillMessagesForCompaction(),
+				getPostKeepMessages: async (preservedMessages) =>
+					this.collectActiveSkillMessagesForCompaction(preservedMessages),
 			});
 		} catch (error) {
 			const message =
@@ -2364,19 +2366,25 @@ export class TuiRenderer {
 		return this.skillsController.restoreActiveSkillsAfterCompaction();
 	}
 
-	public collectActiveSkillMessagesForCompaction(): AppMessage[] {
-		return this.skillsController.collectActiveSkillMessagesForCompaction();
+	public collectActiveSkillMessagesForCompaction(
+		preservedMessages?: AppMessage[],
+	): AppMessage[] {
+		return this.skillsController.collectActiveSkillMessagesForCompaction(
+			preservedMessages,
+		);
 	}
 
-	public collectOrderedCompactionRestorationMessages(): AppMessage[] {
+	public collectOrderedCompactionRestorationMessages(
+		preservedMessages: AppMessage[],
+	): AppMessage[] {
 		return [
-			...collectPlanMessagesForCompaction(this.agent.state.messages),
-			...collectBackgroundTaskMessagesForCompaction(this.agent.state.messages),
+			...collectPlanMessagesForCompaction(preservedMessages),
+			...collectBackgroundTaskMessagesForCompaction(preservedMessages),
 			...collectMcpMessagesForCompaction(
-				this.agent.state.messages,
+				preservedMessages,
 				mcpManager.getStatus().servers,
 			),
-			...this.collectActiveSkillMessagesForCompaction(),
+			...this.collectActiveSkillMessagesForCompaction(preservedMessages),
 		];
 	}
 

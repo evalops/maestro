@@ -122,11 +122,11 @@ export async function runRpcMode(
 						process.cwd(),
 					),
 					execute: () => agent.continue(input.options),
-					getPostKeepMessages: async () => [
-						...collectPlanMessagesForCompaction(agent.state.messages),
-						...collectBackgroundTaskMessagesForCompaction(agent.state.messages),
+					getPostKeepMessages: async (preservedMessages) => [
+						...collectPlanMessagesForCompaction(preservedMessages),
+						...collectBackgroundTaskMessagesForCompaction(preservedMessages),
 						...collectMcpMessagesForCompaction(
-							agent.state.messages,
+							preservedMessages,
 							mcpManager.getStatus().servers,
 						),
 						...(await collectPersistedSessionStartHookMessages({
@@ -157,11 +157,11 @@ export async function runRpcMode(
 						sessionManager,
 						process.cwd(),
 					),
-					getPostKeepMessages: async () => [
-						...collectPlanMessagesForCompaction(agent.state.messages),
-						...collectBackgroundTaskMessagesForCompaction(agent.state.messages),
+					getPostKeepMessages: async (preservedMessages) => [
+						...collectPlanMessagesForCompaction(preservedMessages),
+						...collectBackgroundTaskMessagesForCompaction(preservedMessages),
 						...collectMcpMessagesForCompaction(
-							agent.state.messages,
+							preservedMessages,
 							mcpManager.getStatus().servers,
 						),
 						...(await collectPersistedSessionStartHookMessages({

@@ -25,7 +25,10 @@ interface ConversationCompactorOptions {
 	toolComponents: Set<ToolExecutionComponent>;
 	renderMessages: () => void;
 	showInfoMessage: (message: string) => void;
-	getPostKeepMessages?: (source: string) => Promise<AppMessage[]>;
+	getPostKeepMessages?: (
+		source: string,
+		preservedMessages: AppMessage[],
+	) => Promise<AppMessage[]>;
 }
 
 /**
@@ -94,8 +97,11 @@ export class ConversationCompactor {
 					this.options.sessionManager,
 					process.cwd(),
 				),
-				getPostKeepMessages: async () =>
-					(await this.options.getPostKeepMessages?.("compact")) ?? [],
+				getPostKeepMessages: async (preservedMessages) =>
+					(await this.options.getPostKeepMessages?.(
+						"compact",
+						preservedMessages,
+					)) ?? [],
 				customInstructions: options?.customInstructions,
 				renderSummaryText: (summary: AssistantMessage) => {
 					const renderable = createRenderableMessage(summary as AppMessage);

@@ -71,7 +71,7 @@ describe("AgentRuntimeController", () => {
 		);
 
 		const params = vi.mocked(runUserPromptWithRecovery).mock.calls[0]?.[0];
-		await expect(params?.getPostKeepMessages?.()).resolves.toEqual(
+		await expect(params?.getPostKeepMessages?.([])).resolves.toEqual(
 			skillMessages,
 		);
 		expect(params?.callbacks?.onCompacted).toBeTypeOf("function");
@@ -84,7 +84,9 @@ describe("AgentRuntimeController", () => {
 			tokensBefore: 1234,
 		});
 
-		expect(renderer.collectActiveSkillMessagesForCompaction).toHaveBeenCalled();
+		expect(
+			renderer.collectActiveSkillMessagesForCompaction,
+		).toHaveBeenCalledWith([]);
 		expect(renderer.renderInitialMessages).toHaveBeenCalledTimes(1);
 		expect(renderer.refreshFooterHint).toHaveBeenCalledTimes(1);
 	});

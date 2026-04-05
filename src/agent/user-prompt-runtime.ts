@@ -499,7 +499,9 @@ async function applyTokenBudgetContinuations(params: {
 	prompt: string;
 	messageStartIndex: number;
 	turnStartedAt: number;
-	getPostKeepMessages?: () => Promise<AppMessage[]>;
+	getPostKeepMessages?: (
+		preservedMessages: AppMessage[],
+	) => Promise<AppMessage[]>;
 	callbacks?: PromptRecoveryCallbacks;
 	maxOutputContinuations?: number;
 	signal?: AbortSignal;
@@ -568,17 +570,14 @@ async function applyTokenBudgetContinuations(params: {
 				params.sessionManager,
 				params.cwd,
 			),
-			getPostKeepMessages: () =>
+			getPostKeepMessages: (preservedMessages) =>
 				Promise.all([
+					Promise.resolve(collectPlanMessagesForCompaction(preservedMessages)),
 					Promise.resolve(
-						collectPlanMessagesForCompaction(params.agent.state.messages),
+						collectBackgroundTaskMessagesForCompaction(preservedMessages),
 					),
-					Promise.resolve(
-						collectBackgroundTaskMessagesForCompaction(
-							params.agent.state.messages,
-						),
-					),
-					params.getPostKeepMessages?.() ?? Promise.resolve([]),
+					params.getPostKeepMessages?.(preservedMessages) ??
+						Promise.resolve([]),
 					collectPersistedSessionStartHookMessages({
 						sessionManager: params.sessionManager,
 						cwd: params.cwd,
@@ -619,7 +618,9 @@ export async function runUserPromptWithRecovery(params: {
 	attachmentNames?: string[];
 	signal?: AbortSignal;
 	execute: () => Promise<void>;
-	getPostKeepMessages?: () => Promise<AppMessage[]>;
+	getPostKeepMessages?: (
+		preservedMessages: AppMessage[],
+	) => Promise<AppMessage[]>;
 	callbacks?: PromptRecoveryCallbacks;
 	maxOutputContinuations?: number;
 }): Promise<void> {
@@ -646,22 +647,20 @@ export async function runUserPromptWithRecovery(params: {
 			: undefined,
 	);
 	try {
-		const collectPostKeepMessages = async (): Promise<AppMessage[]> => {
+		const collectPostKeepMessages = async (
+			preservedMessages: AppMessage[],
+		): Promise<AppMessage[]> => {
 			const [
 				planMessages,
 				backgroundTaskMessages,
 				callerMessages,
 				sessionStartMessages,
 			] = await Promise.all([
+				Promise.resolve(collectPlanMessagesForCompaction(preservedMessages)),
 				Promise.resolve(
-					collectPlanMessagesForCompaction(params.agent.state.messages),
+					collectBackgroundTaskMessagesForCompaction(preservedMessages),
 				),
-				Promise.resolve(
-					collectBackgroundTaskMessagesForCompaction(
-						params.agent.state.messages,
-					),
-				),
-				params.getPostKeepMessages?.() ?? Promise.resolve([]),
+				params.getPostKeepMessages?.(preservedMessages) ?? Promise.resolve([]),
 				collectPersistedSessionStartHookMessages({
 					sessionManager: params.sessionManager,
 					cwd: params.cwd,

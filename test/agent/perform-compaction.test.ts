@@ -11,7 +11,10 @@ import {
 	resetPostCompactionCleanupRegistry,
 } from "../../src/agent/compaction-cleanup.js";
 import type { CompactionHookService } from "../../src/agent/compaction-hooks.js";
-import { collectPlanMessagesForCompaction } from "../../src/agent/compaction-restoration.js";
+import {
+	collectMcpMessagesForCompaction,
+	collectPlanMessagesForCompaction,
+} from "../../src/agent/compaction-restoration.js";
 import {
 	type CompactionAgent,
 	type CompactionSessionManager,
@@ -337,13 +340,14 @@ function createPlanModeHookMessage(
 
 function createPlanFileHookMessage(
 	content = "# Active plan file restored after compaction\n\nPlan file: /tmp/plan.md\n\nCurrent plan contents:\n# Plan",
+	filePath = "/tmp/plan.md",
 ): AppMessage {
 	return {
 		role: "hookMessage",
 		customType: "plan-file",
 		content,
 		display: false,
-		details: { filePath: "/tmp/plan.md" },
+		details: { filePath },
 		timestamp: Date.now(),
 	};
 }
@@ -1680,6 +1684,84 @@ describe("performCompaction", () => {
 		}
 	});
 
+	it("re-restores prior hidden plan-file context across repeated compactions", async () => {
+		const originalCwd = process.cwd();
+		const workspaceDir = mkdtempSync(join(tmpdir(), "maestro-plan-repeat-"));
+		const planDir = join(workspaceDir, ".maestro", "plans");
+		const previousPlanDir = process.env.MAESTRO_PLAN_DIR;
+		const previousPlanFile = process.env.MAESTRO_PLAN_FILE;
+		process.chdir(workspaceDir);
+		process.env.MAESTRO_PLAN_DIR = planDir;
+		process.env.MAESTRO_PLAN_FILE = join(planDir, "tracked-plan.md");
+		clearConfigCache();
+
+		try {
+			const state = enterPlanMode({ name: "Repeated plan" });
+			writeFileSync(state.filePath, "# Plan\n\n1. Ship the current fix");
+			exitPlanMode();
+
+			const messages = buildConversation(10);
+			messages.splice(
+				2,
+				0,
+				createPlanFileHookMessage(
+					`# Active plan file restored after compaction
+
+Plan file: ${state.filePath}
+
+Current plan contents:
+# Plan
+
+1. Stale snapshot`,
+					state.filePath,
+				),
+			);
+			const agent = createMockAgentWithoutAppendMessage(messages);
+			const sessionManager = createMockSessionManager();
+
+			const result = await performCompaction({
+				agent,
+				sessionManager,
+				getPostKeepMessages: async (preservedMessages) =>
+					collectPlanMessagesForCompaction(preservedMessages),
+			});
+
+			expect(result.success).toBe(true);
+			const restoredPlanMessages = getReplacedMessages(agent).filter(
+				(message) =>
+					message.role === "hookMessage" && message.customType === "plan-file",
+			);
+			expect(restoredPlanMessages).toHaveLength(1);
+			expect(restoredPlanMessages[0]).toMatchObject({
+				role: "hookMessage",
+				customType: "plan-file",
+				display: false,
+				details: { filePath: state.filePath },
+			});
+			expect(String(restoredPlanMessages[0]?.content)).toContain(
+				"Ship the current fix",
+			);
+			expect(String(restoredPlanMessages[0]?.content)).not.toContain(
+				"Stale snapshot",
+			);
+		} finally {
+			clearPlanModeState();
+			if (previousPlanDir === undefined) {
+				delete process.env.MAESTRO_PLAN_DIR;
+			} else {
+				process.env.MAESTRO_PLAN_DIR = previousPlanDir;
+			}
+			if (previousPlanFile === undefined) {
+				delete process.env.MAESTRO_PLAN_FILE;
+			} else {
+				process.env.MAESTRO_PLAN_FILE = previousPlanFile;
+			}
+			process.chdir(originalCwd);
+			clearConfigCache();
+			rmSync(workspaceDir, { recursive: true, force: true });
+		}
+	});
+
 	it("restores recently loaded skills after compaction", async () => {
 		const messages = buildConversation(10);
 		messages.splice(
@@ -1735,6 +1817,49 @@ describe("performCompaction", () => {
 		});
 		expect(JSON.stringify(restoredSkillMessages[0]?.content)).toContain(
 			"Inspect the diff for regressions.",
+		);
+	});
+
+	it("re-restores prior hidden MCP context across repeated compactions", async () => {
+		const servers = [
+			{
+				name: "context7",
+				connected: true,
+				transport: "stdio",
+				tools: [{ name: "resolve" }, { name: "get-docs" }],
+				resources: ["lib://react"],
+				prompts: [],
+			},
+		] as const;
+		const messages = buildConversation(10);
+		messages.splice(
+			2,
+			0,
+			createMcpServersHookMessage(
+				"# Connected MCP servers restored after compaction\n\n- context7; transport=stdio; tools=1; resources=0; prompts=0",
+			),
+		);
+		const agent = createMockAgentWithoutAppendMessage(messages);
+		const sessionManager = createMockSessionManager();
+
+		const result = await performCompaction({
+			agent,
+			sessionManager,
+			getPostKeepMessages: async (preservedMessages) =>
+				collectMcpMessagesForCompaction(preservedMessages, servers),
+		});
+
+		expect(result.success).toBe(true);
+		const restoredMcpMessages = getReplacedMessages(agent).filter(
+			(message) =>
+				message.role === "hookMessage" && message.customType === "mcp-servers",
+		);
+		expect(restoredMcpMessages).toHaveLength(1);
+		expect(String(restoredMcpMessages[0]?.content)).toContain(
+			"tools=2; resources=1",
+		);
+		expect(String(restoredMcpMessages[0]?.content)).not.toContain(
+			"tools=1; resources=0",
 		);
 	});
 
