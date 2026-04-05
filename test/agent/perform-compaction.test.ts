@@ -2,7 +2,7 @@
  * Tests for performCompaction() — the consolidated compaction function.
  */
 
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -11,11 +11,17 @@ import {
 	resetPostCompactionCleanupRegistry,
 } from "../../src/agent/compaction-cleanup.js";
 import type { CompactionHookService } from "../../src/agent/compaction-hooks.js";
+import { collectPlanMessagesForCompaction } from "../../src/agent/compaction-restoration.js";
 import {
 	type CompactionAgent,
 	type CompactionSessionManager,
 	performCompaction,
 } from "../../src/agent/compaction.js";
+import {
+	clearPlanModeState,
+	enterPlanMode,
+	exitPlanMode,
+} from "../../src/agent/plan-mode.js";
 import type {
 	AppMessage,
 	AssistantMessage,
@@ -1404,6 +1410,74 @@ describe("performCompaction", () => {
 				details: { filePath: systemPromptPath },
 			}),
 		);
+	});
+
+	it("does not restore tracked plan files through read-file restore when plan restoration already covers them", async () => {
+		const originalCwd = process.cwd();
+		const workspaceDir = mkdtempSync(join(tmpdir(), "maestro-plan-read-"));
+		const planDir = join(workspaceDir, ".maestro", "plans");
+		const previousPlanDir = process.env.MAESTRO_PLAN_DIR;
+		const previousPlanFile = process.env.MAESTRO_PLAN_FILE;
+		process.chdir(workspaceDir);
+		process.env.MAESTRO_PLAN_DIR = planDir;
+		process.env.MAESTRO_PLAN_FILE = join(planDir, "tracked-plan.md");
+		clearConfigCache();
+
+		try {
+			const state = enterPlanMode({ name: "Tracked plan" });
+			writeFileSync(state.filePath, "# Plan\n\n1. Ship the fix");
+			exitPlanMode();
+
+			const messages = buildConversation(10);
+			messages.splice(
+				2,
+				0,
+				createReadToolCallMessage(state.filePath, "call-read-plan"),
+				createReadToolResultMessage(
+					state.filePath,
+					"call-read-plan",
+					"# Plan\n\nStale plan snapshot",
+				),
+			);
+			const agent = createMockAgentWithoutAppendMessage(messages);
+			const sessionManager = createMockSessionManager();
+			const planMessages = collectPlanMessagesForCompaction([]);
+
+			expect(planMessages).toContainEqual(
+				expect.objectContaining({
+					role: "hookMessage",
+					customType: "plan-file",
+					details: { filePath: state.filePath },
+					content: expect.stringContaining("Ship the fix"),
+				}),
+			);
+
+			const result = await performCompaction({ agent, sessionManager });
+
+			expect(result.success).toBe(true);
+			expect(getReplacedMessages(agent)).not.toContainEqual(
+				expect.objectContaining({
+					role: "hookMessage",
+					customType: "read-file",
+					details: { filePath: state.filePath },
+				}),
+			);
+		} finally {
+			clearPlanModeState();
+			if (previousPlanDir === undefined) {
+				delete process.env.MAESTRO_PLAN_DIR;
+			} else {
+				process.env.MAESTRO_PLAN_DIR = previousPlanDir;
+			}
+			if (previousPlanFile === undefined) {
+				delete process.env.MAESTRO_PLAN_FILE;
+			} else {
+				process.env.MAESTRO_PLAN_FILE = previousPlanFile;
+			}
+			process.chdir(originalCwd);
+			clearConfigCache();
+			rmSync(workspaceDir, { recursive: true, force: true });
+		}
 	});
 
 	it("restores recently loaded skills after compaction", async () => {
