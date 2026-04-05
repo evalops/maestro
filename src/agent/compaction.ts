@@ -403,44 +403,112 @@ function extractSkillRestoreName(
 	return match?.[1]?.trim() || null;
 }
 
-function collectVisibleSkillNames(messages: AppMessage[]): Set<string> {
-	const visibleSkillNames = new Set<string>();
+function normalizeSkillRestoreContent(
+	content: string | (TextContent | ImageContent)[],
+): (TextContent | ImageContent)[] {
+	return typeof content === "string"
+		? [{ type: "text", text: content }]
+		: content;
+}
+
+function getSkillRestoreNameFromMessage(message: AppMessage): string | null {
+	if (
+		message.role === "toolResult" &&
+		message.toolName === "Skill" &&
+		!message.isError
+	) {
+		return extractSkillRestoreName(message.content);
+	}
+
+	if (message.role !== "hookMessage" || message.customType !== "skill") {
+		return null;
+	}
+
+	const details = message.details;
+	if (
+		typeof details === "object" &&
+		details !== null &&
+		"name" in details &&
+		typeof details.name === "string"
+	) {
+		return details.name;
+	}
+
+	return Array.isArray(message.content)
+		? extractSkillRestoreName(message.content)
+		: null;
+}
+
+function isToolSkillRestoreHookMessage(message: AppMessage): boolean {
+	if (message.role !== "hookMessage" || message.customType !== "skill") {
+		return false;
+	}
+
+	const details = message.details;
+	return (
+		typeof details === "object" &&
+		details !== null &&
+		"source" in details &&
+		details.source === "tool"
+	);
+}
+
+function hasMatchingSkillRestoreContent(
+	message: AppMessage,
+	expectedContent: (TextContent | ImageContent)[],
+): boolean {
+	if (
+		message.role === "toolResult" &&
+		message.toolName === "Skill" &&
+		!message.isError
+	) {
+		return (
+			JSON.stringify(normalizeSkillRestoreContent(message.content)) ===
+			JSON.stringify(expectedContent)
+		);
+	}
+
+	if (message.role !== "hookMessage" || message.customType !== "skill") {
+		return false;
+	}
+
+	return (
+		JSON.stringify(normalizeSkillRestoreContent(message.content)) ===
+		JSON.stringify(expectedContent)
+	);
+}
+
+function getPreservedSkillRestoreState(
+	messages: AppMessage[],
+	skillName: string,
+	content: (TextContent | ImageContent)[],
+): "visible" | "replace" | "absent" {
+	let hasStaleToolSkillHook = false;
+
 	for (const message of messages) {
+		const visibleSkillName = getSkillRestoreNameFromMessage(message);
+		if (visibleSkillName !== skillName) {
+			continue;
+		}
+
 		if (
 			message.role === "toolResult" &&
 			message.toolName === "Skill" &&
 			!message.isError
 		) {
-			const skillName = extractSkillRestoreName(message.content);
-			if (skillName) {
-				visibleSkillNames.add(skillName);
-			}
-			continue;
+			return "visible";
 		}
 
-		if (message.role !== "hookMessage" || message.customType !== "skill") {
-			continue;
+		if (hasMatchingSkillRestoreContent(message, content)) {
+			return "visible";
 		}
 
-		const details = message.details;
-		if (
-			typeof details === "object" &&
-			details !== null &&
-			"name" in details &&
-			typeof details.name === "string"
-		) {
-			visibleSkillNames.add(details.name);
-			continue;
-		}
-
-		if (Array.isArray(message.content)) {
-			const skillName = extractSkillRestoreName(message.content);
-			if (skillName) {
-				visibleSkillNames.add(skillName);
-			}
+		if (isToolSkillRestoreHookMessage(message)) {
+			hasStaleToolSkillHook = true;
 		}
 	}
-	return visibleSkillNames;
+
+	return hasStaleToolSkillHook ? "replace" : "absent";
 }
 
 async function refreshReadRestoreContent(
@@ -733,13 +801,18 @@ async function collectRecentReadRestoreMessages(
 	return restoredMessages;
 }
 
+type SkillRestoreCollectionResult = {
+	replacedPreservedToolSkillNames: Set<string>;
+	restoredMessages: AppMessage[];
+};
+
 async function collectRecentSkillRestoreMessages(
 	compactedMessages: AppMessage[],
 	preservedMessages: AppMessage[],
-): Promise<AppMessage[]> {
-	const visibleSkillNames = collectVisibleSkillNames(preservedMessages);
+): Promise<SkillRestoreCollectionResult> {
 	const restoredMessages: AppMessage[] = [];
 	const seenSkillNames = new Set<string>();
+	const replacedPreservedToolSkillNames = new Set<string>();
 	let usedTokens = 0;
 
 	for (let i = compactedMessages.length - 1; i >= 0; i -= 1) {
@@ -786,13 +859,21 @@ async function collectRecentSkillRestoreMessages(
 			content = message.content;
 		}
 
-		if (
-			!skillName ||
-			!content ||
-			visibleSkillNames.has(skillName) ||
-			seenSkillNames.has(skillName)
-		) {
+		if (!skillName || !content || seenSkillNames.has(skillName)) {
 			continue;
+		}
+
+		const preservedState = getPreservedSkillRestoreState(
+			preservedMessages,
+			skillName,
+			content,
+		);
+		if (preservedState === "visible") {
+			seenSkillNames.add(skillName);
+			continue;
+		}
+		if (preservedState === "replace") {
+			replacedPreservedToolSkillNames.add(skillName);
 		}
 
 		const estimatedTokens = estimateHookContentTokens(content);
@@ -813,7 +894,19 @@ async function collectRecentSkillRestoreMessages(
 		);
 	}
 
-	return restoredMessages;
+	return { replacedPreservedToolSkillNames, restoredMessages };
+}
+
+function shouldReplacePreservedToolSkillMessage(
+	message: AppMessage,
+	replacedSkillNames: Set<string>,
+): boolean {
+	if (!isToolSkillRestoreHookMessage(message)) {
+		return false;
+	}
+
+	const skillName = getSkillRestoreNameFromMessage(message);
+	return skillName !== null && replacedSkillNames.has(skillName);
 }
 
 function buildAttachmentMarkers(message: UserMessageWithAttachments): string[] {
@@ -2097,8 +2190,48 @@ export async function performCompaction(params: {
 		firstKeptEntryId,
 	});
 
+	const callerPostKeepMessages = (await getPostKeepMessages?.(keep)) ?? [];
+	const preservedTailMessages = [...keep, ...callerPostKeepMessages];
+	const dedupedRestoredReadMessages = restoredReadMessages.filter((message) => {
+		if (
+			message.role !== "hookMessage" ||
+			message.customType !== READ_RESTORE_COMPACTION_CUSTOM_TYPE ||
+			!Array.isArray(message.content)
+		) {
+			return false;
+		}
+
+		const details = message.details;
+		const filePath =
+			typeof details === "object" &&
+			details !== null &&
+			"filePath" in details &&
+			typeof details.filePath === "string"
+				? details.filePath
+				: null;
+		return (
+			filePath !== null &&
+			!hasReadRestoreMessage(preservedTailMessages, filePath, message.content)
+		);
+	});
+	const skillRestoreResult = await collectRecentSkillRestoreMessages(
+		older,
+		preservedTailMessages,
+	);
+	const filteredKeep = keep.filter(
+		(message) =>
+			!shouldReplacePreservedToolSkillMessage(
+				message,
+				skillRestoreResult.replacedPreservedToolSkillNames,
+			),
+	);
+
 	// Replace agent messages
-	const newMessages = [summaryMessage as AppMessage, resumeMessage, ...keep];
+	const newMessages = [
+		summaryMessage as AppMessage,
+		resumeMessage,
+		...filteredKeep,
+	];
 	agent.replaceMessages(newMessages);
 	agent.clearTransientRunState?.();
 	sessionManager.saveMessage(summaryMessage);
@@ -2128,41 +2261,16 @@ export async function performCompaction(params: {
 		agent.replaceMessages([
 			summaryMessage as AppMessage,
 			resumeMessage,
-			...keep,
+			...filteredKeep,
 			...appendedTailMessages,
 		]);
 		for (const message of messagesToPersist) {
 			sessionManager.saveMessage(message);
 		}
 	};
-
-	const callerPostKeepMessages = (await getPostKeepMessages?.(keep)) ?? [];
-	const preservedTailMessages = [...keep, ...callerPostKeepMessages];
-	const dedupedRestoredReadMessages = restoredReadMessages.filter((message) => {
-		if (
-			message.role !== "hookMessage" ||
-			message.customType !== READ_RESTORE_COMPACTION_CUSTOM_TYPE ||
-			!Array.isArray(message.content)
-		) {
-			return false;
-		}
-
-		const details = message.details;
-		const filePath =
-			typeof details === "object" &&
-			details !== null &&
-			"filePath" in details &&
-			typeof details.filePath === "string"
-				? details.filePath
-				: null;
-		return (
-			filePath !== null &&
-			!hasReadRestoreMessage(preservedTailMessages, filePath, message.content)
-		);
-	});
 	const postKeepMessages = [
 		...dedupedRestoredReadMessages,
-		...(await collectRecentSkillRestoreMessages(older, preservedTailMessages)),
+		...skillRestoreResult.restoredMessages,
 		...callerPostKeepMessages,
 	];
 	persistTailMessages(postKeepMessages);
