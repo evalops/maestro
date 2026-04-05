@@ -324,7 +324,10 @@ export function calculateFooterStats(state: AgentState): FooterStats {
 		if (!msg) continue;
 		if (msg.role === "assistant") {
 			const assistantMsg = msg as AssistantMessage;
-			if (assistantMsg.stopReason !== "aborted") {
+			if (
+				assistantMsg.stopReason !== "aborted" &&
+				assistantMsg.stopReason !== "error"
+			) {
 				lastSuccessfulUsage = normalizeUsage(assistantMsg.usage);
 				break;
 			}

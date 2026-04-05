@@ -158,6 +158,20 @@ describe("FooterComponent", () => {
 			expect(statsLine).toContain("75.0%");
 		});
 
+		it("should ignore errored assistant turns when anchoring context percentage", () => {
+			const messages = [
+				createAssistantMessage({ input: 100000, output: 50000 }), // 150k tokens
+				createAssistantMessage({ input: 10000, output: 5000 }, "error"),
+			];
+
+			const state = createMockState(messages, 200000);
+			const footer = new FooterComponent(state);
+			const rendered = footer.render(120);
+
+			const statsLine = statsLineFrom(rendered);
+			expect(statsLine).toContain("75.0%");
+		});
+
 		it("should include cache reads when computing context percentage", () => {
 			const messages = [
 				createAssistantMessage({
