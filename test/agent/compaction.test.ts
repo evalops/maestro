@@ -41,7 +41,7 @@ function createUsage(
 
 function createAssistantMessage(
 	usage: Usage,
-	stopReason: "stop" | "toolUse" = "stop",
+	stopReason: "stop" | "toolUse" | "error" | "aborted" = "stop",
 ): AssistantMessage {
 	return {
 		role: "assistant",
@@ -134,6 +134,23 @@ describe("Context Compaction", () => {
 				createAssistantMessage(createUsage(100, 50)),
 				createUserMessage("followup"),
 				abortedMessage,
+			];
+
+			const usage = getLastAssistantUsage(messages);
+			expect(usage?.input).toBe(100);
+		});
+
+		it("skips assistant error messages", () => {
+			const erroredMessage: AssistantMessage = {
+				...createAssistantMessage(createUsage(500, 500)),
+				stopReason: "error",
+				errorMessage: "Anthropic API error (429): rate limit exceeded.",
+			};
+			const messages: AppMessage[] = [
+				createUserMessage(),
+				createAssistantMessage(createUsage(100, 50)),
+				createUserMessage("followup"),
+				erroredMessage,
 			];
 
 			const usage = getLastAssistantUsage(messages);
@@ -349,6 +366,39 @@ describe("Context Compaction", () => {
 			expect(DEFAULT_COMPACTION_SETTINGS.enabled).toBe(true);
 			expect(DEFAULT_COMPACTION_SETTINGS.reserveTokens).toBe(16384);
 			expect(DEFAULT_COMPACTION_SETTINGS.keepRecentTokens).toBe(20000);
+		});
+	});
+
+	describe("buildLocalSummary", () => {
+		it("skips assistant error and aborted turns", () => {
+			const summary = buildLocalSummary([
+				createUserMessage("first"),
+				createAssistantMessage(createUsage(100, 50)),
+				createUserMessage("second"),
+				{
+					...createAssistantMessage(createUsage(200, 75), "error"),
+					content: [{ type: "text", text: "provider failed" }],
+					errorMessage: "Anthropic API error (429): rate limit exceeded.",
+				},
+				createUserMessage("third"),
+				{
+					...createAssistantMessage(createUsage(300, 100), "aborted"),
+					content: [{ type: "text", text: "partial aborted output" }],
+				},
+				createUserMessage("fourth"),
+				{
+					...createAssistantMessage(createUsage(400, 150)),
+					content: [{ type: "text", text: "normal response" }],
+				},
+			]);
+
+			expect(summary).toContain("User 1: first");
+			expect(summary).toContain("Assistant: response");
+			expect(summary).toContain("User 2: second");
+			expect(summary).not.toContain("provider failed");
+			expect(summary).not.toContain("partial aborted output");
+			expect(summary).toContain("User 2: fourth");
+			expect(summary).toContain("Assistant: normal response");
 		});
 	});
 });

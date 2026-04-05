@@ -126,11 +126,30 @@ export function calculateContextTokens(usage: Usage): number {
 function getAssistantUsage(msg: AppMessage): Usage | null {
 	if (msg.role === "assistant") {
 		const assistantMsg = msg as AssistantMessage;
-		if (assistantMsg.stopReason !== "aborted" && assistantMsg.usage) {
+		if (
+			assistantMsg.stopReason !== "aborted" &&
+			assistantMsg.stopReason !== "error" &&
+			assistantMsg.usage
+		) {
 			return assistantMsg.usage;
 		}
 	}
 	return null;
+}
+
+function shouldSkipAssistantCompactionMessage(message: AppMessage): boolean {
+	return (
+		message.role === "assistant" &&
+		(message.stopReason === "aborted" || message.stopReason === "error")
+	);
+}
+
+function filterMessagesForCompactionSummary(
+	messages: AppMessage[],
+): AppMessage[] {
+	return messages.filter(
+		(message) => !shouldSkipAssistantCompactionMessage(message),
+	);
 }
 
 /**
@@ -667,6 +686,7 @@ export function buildLocalSummary(
 
 	for (const message of messages) {
 		if (lines.length >= maxExchanges) break;
+		if (shouldSkipAssistantCompactionMessage(message)) continue;
 
 		const content = extractMessageText(message);
 		if (!content) continue;
@@ -796,7 +816,9 @@ export function prepareCompaction(
 
 	// Add older messages (limit to most recent 40 for summarization efficiency)
 	const sliceSize = Math.min(40, older.length);
-	messagesToSummarize.push(...older.slice(-sliceSize));
+	messagesToSummarize.push(
+		...filterMessagesForCompactionSummary(older.slice(-sliceSize)),
+	);
 
 	return {
 		messagesToSummarize,
@@ -1024,7 +1046,9 @@ export async function performCompaction(params: {
 		});
 	}
 	const sliceSize = Math.min(40, older.length);
-	summaryInput.push(...older.slice(-sliceSize));
+	summaryInput.push(
+		...filterMessagesForCompactionSummary(older.slice(-sliceSize)),
+	);
 
 	let summaryText = "";
 	let usedModel = false;

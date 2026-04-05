@@ -49,6 +49,17 @@ function createAssistantMessage(
 	};
 }
 
+function createErrorAssistantMessage(
+	text = "provider failed",
+	errorMessage = "Anthropic API error (429): rate limit exceeded.",
+): AssistantMessage {
+	return {
+		...createAssistantMessage(text, createUsage(100, 50)),
+		stopReason: "error",
+		errorMessage,
+	};
+}
+
 /** Build a conversation with the given number of turn pairs (user + assistant). */
 function buildConversation(turns: number): AppMessage[] {
 	const messages: AppMessage[] = [];
@@ -222,6 +233,30 @@ describe("performCompaction", () => {
 				"Hook context:\nPending migration notes remain open.",
 			),
 			expect.any(String),
+		);
+	});
+
+	it("excludes assistant error turns from summarization input", async () => {
+		const messages = buildConversation(10);
+		messages.splice(2, 0, createErrorAssistantMessage());
+		const agent = createMockAgent(messages);
+		const sessionManager = createMockSessionManager();
+
+		await performCompaction({ agent, sessionManager });
+
+		const summaryInput = (agent.generateSummary as ReturnType<typeof vi.fn>)
+			.mock.calls[0]?.[0] as AppMessage[] | undefined;
+		expect(summaryInput).toBeDefined();
+		expect(summaryInput).not.toContainEqual(
+			expect.objectContaining({
+				role: "assistant",
+				stopReason: "error",
+			}),
+		);
+		expect(summaryInput).not.toContainEqual(
+			expect.objectContaining({
+				content: [{ type: "text", text: "provider failed" }],
+			}),
 		);
 	});
 
