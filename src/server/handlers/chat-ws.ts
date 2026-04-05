@@ -29,9 +29,11 @@ import {
 	normalizeApprovalMode,
 	resolveApprovalModeForRequest,
 } from "../approval-mode-store.js";
+import { WebActionApprovalService } from "../approval-service.js";
 import { publishArtifactUpdate } from "../artifacts-live-reload.js";
 import { getAuthSubject } from "../authz.js";
 import { getAgentCircuitBreaker } from "../circuit-breaker.js";
+import { clientToolService } from "../client-tools-service.js";
 import { getRequestHeader } from "../server-utils.js";
 import { createSessionManagerForRequest } from "../session-scope.js";
 import { convertComposerMessagesToApp } from "../session-serialization.js";
@@ -446,19 +448,30 @@ export function handleChatWebSocket(
 					"x-maestro-client",
 				)?.toLowerCase();
 			})();
+			const sessionIdProvider = () =>
+				sessionManager.getSessionId() ?? undefined;
+			const requestApprovalService = new WebActionApprovalService(
+				effectiveApproval,
+				sessionIdProvider,
+			);
 
 			const agent = await createAgent(
 				registeredModel,
 				chatReq.thinkingLevel || "off",
 				effectiveApproval,
-				clientToolsHeader
-					? {
-							enableClientTools: true,
-							includeVscodeTools: clientHeader === "vscode",
-							includeJetBrainsTools: clientHeader === "jetbrains",
-							includeConductorTools: clientHeader === "conductor",
-						}
-					: undefined,
+				{
+					approvalService: requestApprovalService,
+					...(clientToolsHeader
+						? {
+								enableClientTools: true,
+								clientToolService:
+									clientToolService.forSession(sessionIdProvider),
+								includeVscodeTools: clientHeader === "vscode",
+								includeJetBrainsTools: clientHeader === "jetbrains",
+								includeConductorTools: clientHeader === "conductor",
+							}
+						: {}),
+				},
 			);
 
 			const historyMessages = incomingMessages.slice(0, -1);

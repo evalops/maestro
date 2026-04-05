@@ -12,7 +12,10 @@ import {
 	resetApprovalModeStore,
 	setApprovalModeForSession,
 } from "../../src/server/approval-mode-store.js";
+import { handleApproval } from "../../src/server/handlers/approval.js";
 import { handleChat } from "../../src/server/handlers/chat.js";
+import { handleClientToolResult } from "../../src/server/handlers/client-tools.js";
+import { serverRequestManager } from "../../src/server/server-request-manager.js";
 
 const mockModel: RegisteredModel = {
 	id: "claude-sonnet-4-5",
@@ -67,6 +70,25 @@ function makeRes(): MockResponse {
 	return res;
 }
 
+async function waitForPendingRequest(
+	kind?: "approval" | "client_tool" | "user_input" | "tool_retry",
+) {
+	for (let attempt = 0; attempt < 50; attempt += 1) {
+		const request = serverRequestManager
+			.listPending()
+			.find((entry) => (kind ? entry.kind === kind : true));
+		if (request) {
+			return request;
+		}
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	throw new Error(
+		kind
+			? `Timed out waiting for pending ${kind} request`
+			: "Timed out waiting for pending request",
+	);
+}
+
 function findJsonlFiles(dir: string): string[] {
 	const entries = readdirSync(dir, { withFileTypes: true });
 	const files: string[] = [];
@@ -91,6 +113,9 @@ describe("handleChat", () => {
 	afterEach(() => {
 		resetApprovalModeStore();
 		clearRegisteredHooks();
+		for (const request of serverRequestManager.listPending()) {
+			serverRequestManager.cancel(request.id, "test cleanup", "runtime");
+		}
 		vi.unstubAllEnvs();
 	});
 
@@ -184,6 +209,270 @@ describe("handleChat", () => {
 		// SSE stream writes contain DONE marker
 		expect(res.body).toContain("[DONE]");
 		expect(res.statusCode).toBe(200);
+	});
+
+	it("resolves approval requests through the shared approval endpoint during SSE chat", async () => {
+		const req = new PassThrough() as MockPassThrough;
+		req.method = "POST";
+		req.url = "/api/chat";
+		req.headers = {};
+		req.end(
+			JSON.stringify({
+				messages: [{ role: "user", content: "run the command" }],
+			}),
+		);
+
+		const res = makeRes();
+		const createAgent: WebServerContext["createAgent"] = async (
+			_model,
+			_thinking,
+			_approval,
+			options,
+		) => {
+			type EventCallback = (e: unknown) => void | Promise<void>;
+			let subscriber: EventCallback | undefined;
+			return {
+				state: {
+					systemPrompt: "",
+					model: mockModel,
+					thinkingLevel: "off",
+					tools: [],
+					messages: [],
+					isStreaming: false,
+					streamMessage: null,
+					pendingToolCalls: new Map(),
+				},
+				subscribe: (fn: EventCallback) => {
+					subscriber = fn;
+					return () => {
+						subscriber = undefined;
+					};
+				},
+				replaceMessages: () => {},
+				clearMessages: () => {},
+				prompt: async () => {
+					const approvalService = options?.approvalService;
+					if (!approvalService) {
+						throw new Error("approval service missing");
+					}
+					const decision = await approvalService.requestApproval({
+						id: "approval_web_chat",
+						toolName: "bash",
+						args: { command: "git push --force" },
+						reason: "Force push requires approval",
+					});
+					await subscriber?.({
+						type: "message_end",
+						message: {
+							role: "assistant",
+							content: [
+								{
+									type: "text",
+									text: decision.approved ? "approved" : "denied",
+								},
+							],
+							api: mockModel.api,
+							provider: mockModel.provider,
+							model: mockModel.id,
+							usage: {
+								input: 1,
+								output: 1,
+								cacheRead: 0,
+								cacheWrite: 0,
+								cost: {
+									input: 0,
+									output: 0,
+									cacheRead: 0,
+									cacheWrite: 0,
+									total: 0,
+								},
+							},
+							stopReason: "stop",
+							timestamp: Date.now(),
+						},
+					});
+				},
+				abort: () => {},
+			} as unknown as Agent;
+		};
+
+		const context: Partial<WebServerContext> = {
+			createAgent,
+			getRegisteredModel: async () => mockModel,
+			defaultApprovalMode: "prompt",
+			defaultProvider: "anthropic",
+			defaultModelId: mockModel.id,
+			corsHeaders: cors,
+		};
+
+		const chatPromise = handleChat(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			context as WebServerContext,
+		);
+
+		const pendingRequest = await waitForPendingRequest("approval");
+		expect(pendingRequest).toMatchObject({
+			id: "approval_web_chat",
+			kind: "approval",
+			toolName: "bash",
+		});
+
+		const approvalReq = new PassThrough() as MockPassThrough;
+		approvalReq.method = "POST";
+		approvalReq.url = "/api/chat/approval";
+		approvalReq.headers = {};
+		approvalReq.end(
+			JSON.stringify({
+				requestId: pendingRequest.id,
+				decision: "approved",
+				reason: "Looks good",
+			}),
+		);
+
+		const approvalRes = makeRes();
+		await handleApproval(
+			approvalReq as unknown as IncomingMessage,
+			approvalRes as unknown as ServerResponse,
+			context as WebServerContext,
+		);
+
+		await chatPromise;
+
+		expect(approvalRes.statusCode).toBe(200);
+		expect(approvalRes.body).toContain('"success":true');
+		expect(serverRequestManager.listPending()).toEqual([]);
+		expect(res.body).toContain("[DONE]");
+		expect(res.body).toContain("approved");
+	});
+
+	it("resolves client tool requests through the shared client-tool endpoint during SSE chat", async () => {
+		const req = new PassThrough() as MockPassThrough;
+		req.method = "POST";
+		req.url = "/api/chat";
+		req.headers = { "x-composer-client-tools": "1" };
+		req.end(
+			JSON.stringify({
+				messages: [{ role: "user", content: "create an artifact" }],
+			}),
+		);
+
+		const res = makeRes();
+		const createAgent: WebServerContext["createAgent"] = async (
+			_model,
+			_thinking,
+			_approval,
+			options,
+		) => {
+			type EventCallback = (e: unknown) => void | Promise<void>;
+			let subscriber: EventCallback | undefined;
+			return {
+				state: {
+					systemPrompt: "",
+					model: mockModel,
+					thinkingLevel: "off",
+					tools: [],
+					messages: [],
+					isStreaming: false,
+					streamMessage: null,
+					pendingToolCalls: new Map(),
+				},
+				subscribe: (fn: EventCallback) => {
+					subscriber = fn;
+					return () => {
+						subscriber = undefined;
+					};
+				},
+				replaceMessages: () => {},
+				clearMessages: () => {},
+				prompt: async () => {
+					const executionService = options?.clientToolService;
+					if (!executionService) {
+						throw new Error("client tool service missing");
+					}
+					const result = await executionService.requestExecution(
+						"client_tool_web_chat",
+						"artifacts",
+						{ command: "create", filename: "report.txt" },
+					);
+					await subscriber?.({
+						type: "message_end",
+						message: {
+							role: "assistant",
+							content: result.content,
+							api: mockModel.api,
+							provider: mockModel.provider,
+							model: mockModel.id,
+							usage: {
+								input: 1,
+								output: 1,
+								cacheRead: 0,
+								cacheWrite: 0,
+								cost: {
+									input: 0,
+									output: 0,
+									cacheRead: 0,
+									cacheWrite: 0,
+									total: 0,
+								},
+							},
+							stopReason: "stop",
+							timestamp: Date.now(),
+						},
+					});
+				},
+				abort: () => {},
+			} as unknown as Agent;
+		};
+
+		const context: Partial<WebServerContext> = {
+			createAgent,
+			getRegisteredModel: async () => mockModel,
+			defaultApprovalMode: "prompt",
+			defaultProvider: "anthropic",
+			defaultModelId: mockModel.id,
+			corsHeaders: cors,
+		};
+
+		const chatPromise = handleChat(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			context as WebServerContext,
+		);
+
+		const pendingRequest = await waitForPendingRequest("client_tool");
+		expect(pendingRequest).toMatchObject({
+			id: "client_tool_web_chat",
+			kind: "client_tool",
+			toolName: "artifacts",
+		});
+
+		const toolResultReq = new PassThrough() as MockPassThrough;
+		toolResultReq.method = "POST";
+		toolResultReq.url = "/api/chat/client-tool-result";
+		toolResultReq.headers = {};
+		toolResultReq.end(
+			JSON.stringify({
+				toolCallId: pendingRequest.id,
+				content: [{ type: "text", text: "artifact created" }],
+				isError: false,
+			}),
+		);
+
+		const toolResultRes = makeRes();
+		await handleClientToolResult(
+			toolResultReq as unknown as IncomingMessage,
+			toolResultRes as unknown as ServerResponse,
+			context as WebServerContext,
+		);
+
+		await chatPromise;
+
+		expect(toolResultRes.statusCode).toBe(200);
+		expect(toolResultRes.body).toContain('"success":true');
+		expect(serverRequestManager.listPending()).toEqual([]);
+		expect(res.body).toContain("[DONE]");
+		expect(res.body).toContain("artifact created");
 	});
 
 	it("runs Notification hooks during SSE chat even without desktop notifications configured", async () => {
