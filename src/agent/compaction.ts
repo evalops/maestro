@@ -623,43 +623,65 @@ async function collectRecentReadRestoreMessages(
 		}
 
 		const message = compactedMessages[i];
-		if (
-			!message ||
-			message.role !== "toolResult" ||
-			message.toolName !== "read" ||
-			message.isError
-		) {
+		if (!message) {
 			continue;
 		}
 
-		const request = requestsByCallId.get(message.toolCallId);
-		const filePath = request?.path;
+		let filePath: string | null = null;
+		let content: (TextContent | ImageContent)[] | null = null;
+
+		if (
+			message.role === "toolResult" &&
+			message.toolName === "read" &&
+			!message.isError
+		) {
+			const request = requestsByCallId.get(message.toolCallId);
+			filePath = request?.path ?? null;
+			const refreshedContent = request
+				? await refreshReadRestoreContent(
+						request,
+						`compaction-read-restore-${message.toolCallId}`,
+					)
+				: null;
+			content = buildReadRestoreContent(
+				filePath ?? "",
+				refreshedContent ?? message.content,
+			);
+		} else if (
+			message.role === "hookMessage" &&
+			message.customType === READ_RESTORE_COMPACTION_CUSTOM_TYPE &&
+			Array.isArray(message.content)
+		) {
+			const details = message.details;
+			filePath =
+				typeof details === "object" &&
+				details !== null &&
+				"filePath" in details &&
+				typeof details.filePath === "string"
+					? normalizeReadPath(details.filePath)
+					: null;
+			content = message.content;
+		}
+
 		if (
 			!filePath ||
+			!content ||
 			visiblePaths.has(filePath) ||
 			seenPaths.has(filePath) ||
 			shouldExcludeReadRestorePath(filePath, excludedPaths)
 		) {
 			continue;
 		}
-
-		const refreshedContent = request
-			? await refreshReadRestoreContent(
-					request,
-					`compaction-read-restore-${message.toolCallId}`,
-				)
-			: null;
-		const content = buildReadRestoreContent(
-			filePath,
-			refreshedContent ?? message.content,
-		);
-		if (
-			hasReadRestoreMessage(
-				[...compactedMessages, ...preservedMessages, ...restoredMessages],
-				filePath,
-				content,
-			)
-		) {
+		const dedupeMessages =
+			message.role === "hookMessage"
+				? [
+						...compactedMessages.slice(0, i),
+						...compactedMessages.slice(i + 1),
+						...preservedMessages,
+						...restoredMessages,
+					]
+				: [...compactedMessages, ...preservedMessages, ...restoredMessages];
+		if (hasReadRestoreMessage(dedupeMessages, filePath, content)) {
 			seenPaths.add(filePath);
 			continue;
 		}

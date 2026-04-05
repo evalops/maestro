@@ -1120,6 +1120,38 @@ describe("performCompaction", () => {
 		expect(restoredReadMessages).toHaveLength(5);
 	});
 
+	it("re-restores prior hidden read-file context across repeated compactions", async () => {
+		const messages = buildConversation(10);
+		messages.splice(
+			2,
+			0,
+			createReadRestoreHookMessage(
+				"/tmp/restored-twice.ts",
+				"export const restoredTwice = true;",
+			),
+		);
+		const agent = createMockAgentWithoutAppendMessage(messages);
+		const sessionManager = createMockSessionManager();
+
+		const result = await performCompaction({ agent, sessionManager });
+
+		expect(result.success).toBe(true);
+		const restoredReadMessages = getReplacedMessages(agent).filter(
+			(message) =>
+				message.role === "hookMessage" && message.customType === "read-file",
+		);
+		expect(restoredReadMessages).toHaveLength(1);
+		expect(restoredReadMessages[0]).toMatchObject({
+			role: "hookMessage",
+			customType: "read-file",
+			display: false,
+			details: { filePath: "/tmp/restored-twice.ts" },
+		});
+		expect(JSON.stringify(restoredReadMessages[0]?.content)).toContain(
+			"restoredTwice = true",
+		);
+	});
+
 	it("refreshes restored read results from disk instead of replaying stale output", async () => {
 		const filePath = join(
 			mkdtempSync(join(tmpdir(), "maestro-read-restore-")),
