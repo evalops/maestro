@@ -134,6 +134,7 @@ import { validateFrameworkPreference } from "./config/framework.js";
 import { loadRuntimeConfig } from "./config/runtime-config.js";
 import { loadEnv } from "./load-env.js";
 import { bootstrapLsp } from "./lsp/bootstrap.js";
+import { withMcpPostKeepMessages } from "./mcp/prompt-recovery.js";
 import { ensureModelsLoaded } from "./models/builtin.js";
 import type { RegisteredModel } from "./models/registry.js";
 import { reloadModelConfig } from "./models/registry.js";
@@ -326,6 +327,7 @@ async function runSingleShotMode(
 				cwd: process.cwd(),
 				prompt: message,
 				execute: () => agent.prompt(message),
+				getPostKeepMessages: withMcpPostKeepMessages(),
 			});
 		}
 

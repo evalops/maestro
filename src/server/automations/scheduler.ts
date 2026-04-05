@@ -4,6 +4,7 @@ import { relative, resolve } from "node:path";
 import { DateTime } from "luxon";
 import type { AgentEvent, AppMessage } from "../../agent/types.js";
 import { runUserPromptWithRecovery } from "../../agent/user-prompt-runtime.js";
+import { withMcpPostKeepMessages } from "../../mcp/prompt-recovery.js";
 import { createRuntimeSessionSummaryUpdater } from "../../session/runtime-summary-updater.js";
 import { createLogger } from "../../utils/logger.js";
 import type { WebServerContext } from "../app-context.js";
@@ -488,6 +489,7 @@ async function executeAutomation(
 			cwd: process.cwd(),
 			prompt: userInput,
 			execute: () => agent.prompt(userInput),
+			getPostKeepMessages: withMcpPostKeepMessages(),
 		});
 		await sessionManager.flush();
 		unsubscribe();

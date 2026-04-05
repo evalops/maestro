@@ -25,6 +25,7 @@ import type { AgentEvent, AgentState, AppMessage } from "../agent/types.js";
 import { PATHS } from "../config/constants.js";
 import type { CleanMode } from "../conversation/render-model.js";
 import { mcpManager } from "../mcp/index.js";
+import { withMcpPostKeepMessages } from "../mcp/prompt-recovery.js";
 import type { RegisteredModel } from "../models/registry.js";
 import { getRegisteredModels } from "../models/registry.js";
 import { listOAuthProviders, loadOAuthCredentials } from "../oauth/storage.js";
@@ -1987,8 +1988,12 @@ export class TuiRenderer {
 							),
 							execute: () =>
 								this.agent.prompt(payload.text, payload.attachments),
-							getPostKeepMessages: async (preservedMessages) =>
-								this.collectActiveSkillMessagesForCompaction(preservedMessages),
+							getPostKeepMessages: withMcpPostKeepMessages(
+								(preservedMessages) =>
+									this.collectActiveSkillMessagesForCompaction(
+										preservedMessages,
+									),
+							),
 						}).catch((error) => {
 							this.restoreQueuedPromptBatchToEditor(steeringBatch);
 							const message =
@@ -2102,8 +2107,9 @@ export class TuiRenderer {
 				cwd: process.cwd(),
 				prompt,
 				execute: () => this.agent.prompt(prompt),
-				getPostKeepMessages: async (preservedMessages) =>
+				getPostKeepMessages: withMcpPostKeepMessages((preservedMessages) =>
 					this.collectActiveSkillMessagesForCompaction(preservedMessages),
+				),
 			});
 		} catch (error) {
 			const message =

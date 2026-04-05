@@ -44,6 +44,7 @@ import {
 	renderMessageToPlainText,
 } from "../conversation/render-model.js";
 import { mcpManager } from "../mcp/index.js";
+import { withMcpPostKeepMessages } from "../mcp/prompt-recovery.js";
 import type { SessionManager } from "../session/manager.js";
 
 /**
@@ -81,6 +82,7 @@ export async function runRpcMode(
 					cwd: process.cwd(),
 					prompt: input.message,
 					execute: () => agent.prompt(input.message),
+					getPostKeepMessages: withMcpPostKeepMessages(),
 					callbacks: {
 						onCompacted: (result) => {
 							console.log(

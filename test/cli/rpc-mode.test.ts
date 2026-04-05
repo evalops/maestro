@@ -6,7 +6,10 @@ import {
 } from "../../src/agent/compaction-restoration.js";
 import { performCompaction } from "../../src/agent/compaction.js";
 import { runWithPromptRecovery } from "../../src/agent/prompt-recovery.js";
-import { collectPersistedSessionStartHookMessages } from "../../src/agent/user-prompt-runtime.js";
+import {
+	collectPersistedSessionStartHookMessages,
+	runUserPromptWithRecovery,
+} from "../../src/agent/user-prompt-runtime.js";
 import { runRpcMode } from "../../src/cli/rpc-mode.js";
 import { mcpManager } from "../../src/mcp/index.js";
 
@@ -39,6 +42,7 @@ vi.mock("../../src/agent/user-prompt-runtime.js", async () => {
 	return {
 		...actual,
 		collectPersistedSessionStartHookMessages: vi.fn(),
+		runUserPromptWithRecovery: vi.fn(),
 	};
 });
 
@@ -77,8 +81,47 @@ describe("runRpcMode", () => {
 			.mockReturnValue({ servers: [] });
 		vi.mocked(collectPlanMessagesForCompaction).mockReset();
 		vi.mocked(collectPersistedSessionStartHookMessages).mockReset();
+		vi.mocked(runUserPromptWithRecovery)
+			.mockReset()
+			.mockResolvedValue(undefined);
 		vi.mocked(runWithPromptRecovery).mockReset().mockResolvedValue(undefined);
 		vi.spyOn(console, "log").mockImplementation(() => {});
+	});
+
+	it("passes MCP restoration messages into prompt recovery", async () => {
+		vi.mocked(collectMcpMessagesForCompaction).mockReturnValue([
+			{
+				role: "hookMessage",
+				customType: "mcp-servers",
+				content: "# Connected MCP servers restored after compaction",
+				display: false,
+				timestamp: Date.now(),
+			},
+		]);
+
+		const agent = {
+			state: { messages: [], isStreaming: false },
+			subscribe: vi.fn(),
+			abort: vi.fn(),
+			continue: vi.fn(),
+			prompt: vi.fn(),
+			getQueuedMessageCount: vi.fn().mockReturnValue(0),
+		};
+		const sessionManager = {};
+
+		void runRpcMode(agent as never, sessionManager as never);
+		await vi.waitFor(() => expect(lineHandler).toBeTypeOf("function"));
+		await lineHandler?.(JSON.stringify({ type: "prompt", message: "hello" }));
+
+		const params = vi.mocked(runUserPromptWithRecovery).mock.calls[0]?.[0];
+		await expect(params?.getPostKeepMessages?.([])).resolves.toEqual([
+			expect.objectContaining({
+				role: "hookMessage",
+				customType: "mcp-servers",
+			}),
+		]);
+		expect(collectMcpMessagesForCompaction).toHaveBeenCalledWith([], []);
+		expect(mcpManager.getStatus).toHaveBeenCalled();
 	});
 
 	it("passes plan and compact SessionStart restoration messages into performCompaction", async () => {

@@ -19,6 +19,7 @@ import { HeadlessUtilityCommandManager } from "../headless/utility-command-manag
 import { readWorkspaceFile } from "../headless/utility-file-read.js";
 import { searchWorkspaceFiles } from "../headless/utility-file-search.js";
 import { HeadlessUtilityFileWatchManager } from "../headless/utility-file-watch-manager.js";
+import { withMcpPostKeepMessages } from "../mcp/prompt-recovery.js";
 import { clientToolService } from "../server/client-tools-service.js";
 import { serverRequestManager } from "../server/server-request-manager.js";
 import type { SessionManager } from "../session/manager.js";
@@ -437,6 +438,7 @@ export async function runHeadlessMode(
 						prompt: msg.content,
 						attachmentCount: msg.attachments?.length ?? 0,
 						attachmentNames: msg.attachments,
+						getPostKeepMessages: withMcpPostKeepMessages(),
 						execute: async () => {
 							if (msg.attachments && msg.attachments.length > 0) {
 								const loaded = await loadPromptAttachments(
