@@ -54,7 +54,12 @@ import type {
 	Api,
 	AppMessage,
 	AssistantMessage,
+	HookMessage,
+	ImageContent,
+	TextContent,
+	ToolResultMessage,
 	Usage,
+	UserMessage,
 	UserMessageWithAttachments,
 } from "./types.js";
 
@@ -175,6 +180,42 @@ function buildAttachmentMarkers(message: UserMessageWithAttachments): string[] {
 	);
 }
 
+function replaceImageBlocksWithMarkers(
+	content: (TextContent | ImageContent)[],
+): (TextContent | ImageContent)[] {
+	return content.map((block) =>
+		block.type === "image" ? { type: "text", text: "[image]" } : block,
+	);
+}
+
+function stripInlineImagesForCompactionSummary<
+	T extends
+		| UserMessage
+		| UserMessageWithAttachments
+		| HookMessage
+		| ToolResultMessage,
+>(message: T): T {
+	if (!Array.isArray(message.content)) {
+		return message;
+	}
+
+	let hasImage = false;
+	for (const block of message.content) {
+		if (block.type === "image") {
+			hasImage = true;
+			break;
+		}
+	}
+	if (!hasImage) {
+		return message;
+	}
+
+	return {
+		...message,
+		content: replaceImageBlocksWithMarkers(message.content),
+	} as T;
+}
+
 function stripAttachmentsForCompactionSummary(
 	message: UserMessageWithAttachments,
 ): AppMessage {
@@ -211,8 +252,15 @@ function prepareMessagesForCompactionSummary(
 		if (shouldSkipAssistantCompactionMessage(message)) {
 			return [];
 		}
-		if (message.role === "user" && "attachments" in message) {
-			return [stripAttachmentsForCompactionSummary(message)];
+		if (message.role === "user") {
+			const sanitizedMessage = stripInlineImagesForCompactionSummary(message);
+			if ("attachments" in sanitizedMessage) {
+				return [stripAttachmentsForCompactionSummary(sanitizedMessage)];
+			}
+			return [sanitizedMessage];
+		}
+		if (message.role === "toolResult" || message.role === "hookMessage") {
+			return [stripInlineImagesForCompactionSummary(message)];
 		}
 		return [message];
 	});

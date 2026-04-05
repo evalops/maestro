@@ -65,6 +65,21 @@ function createUserMessageWithAttachments(
 	};
 }
 
+function createUserMessageWithInlineImage(
+	text = "see screenshot",
+	imageLabel = "before image",
+): AppMessage {
+	return {
+		role: "user",
+		content: [
+			{ type: "text", text },
+			{ type: "image", data: "image-bytes", mimeType: "image/png" },
+			{ type: "text", text: imageLabel },
+		],
+		timestamp: Date.now(),
+	};
+}
+
 function createAssistantMessage(
 	text = "response",
 	usage = createUsage(100, 50),
@@ -77,6 +92,39 @@ function createAssistantMessage(
 		model: "claude-3-5-sonnet",
 		usage,
 		stopReason: "stop",
+		timestamp: Date.now(),
+	};
+}
+
+function createToolResultMessage(
+	toolName = "bash",
+	content: Array<
+		| { type: "text"; text: string }
+		| { type: "image"; data: string; mimeType: string }
+	> = [
+		{ type: "text", text: "tool output" },
+		{ type: "image", data: "image-bytes", mimeType: "image/png" },
+	],
+): AppMessage {
+	return {
+		role: "toolResult",
+		toolCallId: `call-${toolName}`,
+		toolName,
+		content,
+		isError: false,
+		timestamp: Date.now(),
+	};
+}
+
+function createHookMessageWithInlineImage(text = "hook context"): AppMessage {
+	return {
+		role: "hookMessage",
+		customType: "status",
+		content: [
+			{ type: "text", text },
+			{ type: "image", data: "image-bytes", mimeType: "image/png" },
+		],
+		display: false,
 		timestamp: Date.now(),
 	};
 }
@@ -330,6 +378,51 @@ describe("performCompaction", () => {
 		});
 	});
 
+	it("downgrades inline image blocks to compact markers in summarization input", async () => {
+		const messages = buildConversation(10);
+		messages[0] = createUserMessageWithInlineImage("see screenshot");
+		messages.splice(2, 0, createToolResultMessage());
+		messages.splice(3, 0, createHookMessageWithInlineImage("hook context"));
+		const agent = createMockAgent(messages);
+		const sessionManager = createMockSessionManager();
+
+		await performCompaction({ agent, sessionManager });
+
+		const summaryInput = (agent.generateSummary as ReturnType<typeof vi.fn>)
+			.mock.calls[0]?.[0] as AppMessage[] | undefined;
+		expect(summaryInput).toBeDefined();
+		expect(summaryInput).toContainEqual({
+			role: "user",
+			content: [
+				{ type: "text", text: "see screenshot" },
+				{ type: "text", text: "[image]" },
+				{ type: "text", text: "before image" },
+			],
+			timestamp: expect.any(Number),
+		});
+		expect(summaryInput).toContainEqual({
+			role: "toolResult",
+			toolCallId: "call-bash",
+			toolName: "bash",
+			content: [
+				{ type: "text", text: "tool output" },
+				{ type: "text", text: "[image]" },
+			],
+			isError: false,
+			timestamp: expect.any(Number),
+		});
+		expect(summaryInput).toContainEqual({
+			role: "hookMessage",
+			customType: "status",
+			content: [
+				{ type: "text", text: "hook context" },
+				{ type: "text", text: "[image]" },
+			],
+			display: false,
+			timestamp: expect.any(Number),
+		});
+	});
+
 	it("returns failure when a PreCompact hook blocks compaction", async () => {
 		const messages = buildConversation(10);
 		const agent = createMockAgent(messages);
@@ -522,6 +615,26 @@ describe("performCompaction", () => {
 		const firstBlock = summary.content[0] as { type: string; text: string };
 		expect(firstBlock.text).toContain("[image]");
 		expect(firstBlock.text).toContain("[document]");
+	});
+
+	it("preserves inline image markers in the local summary fallback", async () => {
+		const messages = buildConversation(10);
+		messages[0] = createUserMessageWithInlineImage("see screenshot");
+		messages.splice(2, 0, createToolResultMessage());
+		messages.splice(3, 0, createHookMessageWithInlineImage("hook context"));
+		const agent = createMockAgent(messages);
+		(agent.generateSummary as ReturnType<typeof vi.fn>).mockRejectedValue(
+			new Error("API failure"),
+		);
+		const sessionManager = createMockSessionManager();
+
+		await performCompaction({ agent, sessionManager });
+
+		const replaced = getReplacedMessages(agent);
+		const summary = replaced[0] as AssistantMessage;
+		const firstBlock = summary.content[0] as { type: string; text: string };
+		expect(firstBlock.text).toContain("see screenshot [image] before image");
+		expect(firstBlock.text).toContain("Tool bash: tool output [image]");
 	});
 
 	it("retries summary generation after a thrown overflow error", async () => {
