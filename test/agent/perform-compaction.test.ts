@@ -260,6 +260,20 @@ function createActiveSkillHookMessage(name = "debug"): AppMessage {
 	};
 }
 
+function createRestoredSkillHookMessage(
+	name = "reviewer",
+	content = "# Skill: reviewer\n\n> Review specialist\n\n## Instructions\n\nInspect the diff for regressions.",
+): AppMessage {
+	return {
+		role: "hookMessage",
+		customType: "skill",
+		content: [{ type: "text", text: content.replaceAll("reviewer", name) }],
+		display: false,
+		details: { name, source: "tool" },
+		timestamp: Date.now(),
+	};
+}
+
 function createPostCompactHookMessage(
 	content = "Re-apply compacted constraints.",
 ): AppMessage {
@@ -1542,6 +1556,31 @@ describe("performCompaction", () => {
 					}),
 				]),
 			}),
+		);
+	});
+
+	it("re-restores prior hidden tool skill context across repeated compactions", async () => {
+		const messages = buildConversation(10);
+		messages.splice(2, 0, createRestoredSkillHookMessage("reviewer"));
+		const agent = createMockAgentWithoutAppendMessage(messages);
+		const sessionManager = createMockSessionManager();
+
+		const result = await performCompaction({ agent, sessionManager });
+
+		expect(result.success).toBe(true);
+		const restoredSkillMessages = getReplacedMessages(agent).filter(
+			(message) =>
+				message.role === "hookMessage" && message.customType === "skill",
+		);
+		expect(restoredSkillMessages).toHaveLength(1);
+		expect(restoredSkillMessages[0]).toMatchObject({
+			role: "hookMessage",
+			customType: "skill",
+			display: false,
+			details: { name: "reviewer", source: "tool" },
+		});
+		expect(JSON.stringify(restoredSkillMessages[0]?.content)).toContain(
+			"Inspect the diff for regressions.",
 		);
 	});
 

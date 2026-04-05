@@ -718,28 +718,57 @@ async function collectRecentSkillRestoreMessages(
 
 	for (let i = compactedMessages.length - 1; i >= 0; i -= 1) {
 		const message = compactedMessages[i];
-		if (
-			!message ||
-			message.role !== "toolResult" ||
-			message.toolName !== "Skill" ||
-			message.isError
-		) {
+		if (!message) {
 			continue;
 		}
 
-		const skillName = extractSkillRestoreName(message.content);
+		let skillName: string | null = null;
+		let content: (TextContent | ImageContent)[] | null = null;
+
+		if (
+			message.role === "toolResult" &&
+			message.toolName === "Skill" &&
+			!message.isError
+		) {
+			skillName = extractSkillRestoreName(message.content);
+			content = truncateSkillRestoreBlocks(
+				message.content,
+				SKILL_RESTORE_MAX_TOKENS_PER_SKILL,
+			);
+		} else if (
+			message.role === "hookMessage" &&
+			message.customType === "skill" &&
+			message.display === false &&
+			Array.isArray(message.content)
+		) {
+			const details = message.details;
+			const sourcedFromTool =
+				typeof details === "object" &&
+				details !== null &&
+				"source" in details &&
+				details.source === "tool";
+			if (!sourcedFromTool) {
+				continue;
+			}
+			skillName =
+				typeof details === "object" &&
+				details !== null &&
+				"name" in details &&
+				typeof details.name === "string"
+					? details.name
+					: extractSkillRestoreName(message.content);
+			content = message.content;
+		}
+
 		if (
 			!skillName ||
+			!content ||
 			visibleSkillNames.has(skillName) ||
 			seenSkillNames.has(skillName)
 		) {
 			continue;
 		}
 
-		const content = truncateSkillRestoreBlocks(
-			message.content,
-			SKILL_RESTORE_MAX_TOKENS_PER_SKILL,
-		);
 		const estimatedTokens = estimateHookContentTokens(content);
 		if (usedTokens + estimatedTokens > SKILL_RESTORE_TOKEN_BUDGET) {
 			continue;
