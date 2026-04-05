@@ -174,8 +174,8 @@ function shouldSkipAssistantCompactionMessage(message: AppMessage): boolean {
 function shouldSkipReinjectedCompactionMessage(message: AppMessage): boolean {
 	return (
 		message.role === "hookMessage" &&
-		message.customType === "skill" &&
-		message.display === false
+		((message.customType === "skill" && message.display === false) ||
+			message.customType === "PostCompact")
 	);
 }
 

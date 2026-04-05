@@ -140,6 +140,18 @@ function createActiveSkillHookMessage(name = "debug"): AppMessage {
 	};
 }
 
+function createPostCompactHookMessage(
+	content = "Re-apply compacted constraints.",
+): AppMessage {
+	return {
+		role: "hookMessage",
+		customType: "PostCompact",
+		content,
+		display: true,
+		timestamp: Date.now(),
+	};
+}
+
 function createErrorAssistantMessage(
 	text = "provider failed",
 	errorMessage = "Anthropic API error (429): rate limit exceeded.",
@@ -454,6 +466,30 @@ describe("performCompaction", () => {
 		expect(summaryInput).not.toContainEqual(
 			expect.objectContaining({
 				content: "Injected instructions for debug",
+			}),
+		);
+	});
+
+	it("skips PostCompact hook guidance in summarization input", async () => {
+		const messages = buildConversation(10);
+		messages.splice(2, 0, createPostCompactHookMessage());
+		const agent = createMockAgent(messages);
+		const sessionManager = createMockSessionManager();
+
+		await performCompaction({ agent, sessionManager });
+
+		const summaryInput = (agent.generateSummary as ReturnType<typeof vi.fn>)
+			.mock.calls[0]?.[0] as AppMessage[] | undefined;
+		expect(summaryInput).toBeDefined();
+		expect(summaryInput).not.toContainEqual(
+			expect.objectContaining({
+				role: "hookMessage",
+				customType: "PostCompact",
+			}),
+		);
+		expect(summaryInput).not.toContainEqual(
+			expect.objectContaining({
+				content: "Re-apply compacted constraints.",
 			}),
 		);
 	});
