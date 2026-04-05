@@ -95,6 +95,23 @@ function findLatestAssistantMessage(
 	return undefined;
 }
 
+function findLatestTurnUserMessageIndex(
+	messages: AppMessage[],
+	turnStartedAt: number,
+): number | undefined {
+	for (let index = messages.length - 1; index >= 0; index -= 1) {
+		const message = messages[index];
+		if (
+			message?.role === "user" &&
+			typeof message.timestamp === "number" &&
+			message.timestamp >= turnStartedAt
+		) {
+			return index;
+		}
+	}
+	return undefined;
+}
+
 function setRecoverableOverflowErrorSuppression(
 	agent: Agent,
 	enabled: boolean,
@@ -270,9 +287,14 @@ async function applyPostMessageHooks(params: {
 		return;
 	}
 
+	const turnAnchorIndex =
+		findLatestTurnUserMessageIndex(
+			params.agent.state.messages,
+			params.turnStartedAt,
+		) ?? Math.min(params.messageStartIndex, params.agent.state.messages.length);
 	const assistantMessage = findLatestAssistantMessage(
 		params.agent.state.messages,
-		params.messageStartIndex,
+		turnAnchorIndex,
 	);
 	if (
 		assistantMessage?.role === "assistant" &&

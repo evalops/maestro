@@ -449,6 +449,94 @@ describe("user prompt runtime", () => {
 		expect(called).toBe(false);
 	});
 
+	it("runs PostMessage hooks after overflow recovery compacts the turn", async () => {
+		let captured: PostMessageHookInput | undefined;
+		const overflowMessage =
+			"Anthropic rejected this request because the prompt exceeded 200,000 tokens. Use /compact to summarize prior messages or remove large attachments, then retry.";
+
+		registerHook("PostMessage", {
+			type: "callback",
+			callback: async (input) => {
+				captured = input as PostMessageHookInput;
+				return {};
+			},
+		});
+
+		class OverflowThenSuccessTransport implements AgentTransport {
+			async *run(
+				_messages: Message[],
+				userMessage: Message,
+				_config: AgentRunConfig,
+			): AsyncGenerator<AgentEvent, void, unknown> {
+				if (typeof userMessage.content === "string") {
+					const assistant = {
+						...createAssistantMessage("Too much context"),
+						stopReason: "error" as const,
+						errorMessage: overflowMessage,
+					};
+					yield { type: "message_start", message: assistant };
+					yield { type: "message_end", message: assistant };
+					return;
+				}
+
+				const assistant = createAssistantMessageWithUsage(
+					"Recovered response",
+					{
+						inputTokens: 21,
+						outputTokens: 55,
+						stopReason: "stop",
+					},
+				);
+				yield { type: "message_start", message: assistant };
+				yield { type: "message_end", message: assistant };
+			}
+		}
+
+		const agent = new Agent({
+			transport: new OverflowThenSuccessTransport(),
+			initialState: {
+				model: mockModel,
+				tools: [],
+				systemPrompt: "Base system prompt",
+			},
+		});
+		agent.replaceMessages(buildConversation(5));
+		vi.spyOn(agent, "generateSummary").mockResolvedValue(
+			createAssistantMessage("LLM summary"),
+		);
+
+		const sessionManager = {
+			getSessionId: () => "session-post-message-overflow",
+			buildSessionContext: () => ({
+				messageEntries: Array.from({ length: 50 }, (_, index) => ({
+					id: `entry-${index}`,
+				})),
+			}),
+			saveCompaction: vi.fn(),
+			saveMessage: vi.fn(),
+		};
+
+		await runUserPromptWithRecovery({
+			agent,
+			sessionManager: sessionManager as never,
+			cwd: "/tmp/post-message-overflow",
+			prompt: "latest question",
+			execute: () => agent.prompt("latest question"),
+		});
+
+		expect(sessionManager.saveCompaction).toHaveBeenCalledOnce();
+		expect(captured).toMatchObject({
+			hook_event_name: "PostMessage",
+			cwd: "/tmp/post-message-overflow",
+			session_id: "session-post-message-overflow",
+			response: "Recovered response",
+			input_tokens: 21,
+			output_tokens: 55,
+			stop_reason: "stop",
+		});
+		expect(captured?.duration_ms).toBeGreaterThanOrEqual(0);
+	});
+
 	it("withholds recoverable overflow assistant errors until recovery succeeds", async () => {
 		const overflowMessage =
 			"Anthropic rejected this request because the prompt exceeded 200,000 tokens. Use /compact to summarize prior messages or remove large attachments, then retry.";
