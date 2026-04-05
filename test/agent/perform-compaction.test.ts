@@ -1466,6 +1466,33 @@ describe("performCompaction", () => {
 		expect(restoredSkillMessages).toHaveLength(5);
 	});
 
+	it("restores more than five small skills when they fit under the token budget", async () => {
+		const messages = buildConversation(10);
+		for (let i = 0; i < 6; i += 1) {
+			messages.splice(
+				2 + i * 2,
+				0,
+				createSkillToolCallMessage(`skill-${i}`, `call-skill-${i}`),
+				createSkillToolResultMessage(
+					`skill-${i}`,
+					`call-skill-${i}`,
+					`# Skill: skill-${i}\n\n> Skill ${i}\n\n## Instructions\n\nFollow skill ${i}.`,
+				),
+			);
+		}
+		const agent = createMockAgentWithoutAppendMessage(messages);
+		const sessionManager = createMockSessionManager();
+
+		const result = await performCompaction({ agent, sessionManager });
+
+		expect(result.success).toBe(true);
+		const restoredSkillMessages = getReplacedMessages(agent).filter(
+			(message) =>
+				message.role === "hookMessage" && message.customType === "skill",
+		);
+		expect(restoredSkillMessages).toHaveLength(6);
+	});
+
 	it("deduplicates restored skills against caller post-keep skill messages", async () => {
 		const skillContent =
 			"# Skill: reviewer\n\n> Review specialist\n\n## Instructions\n\nInspect the diff for regressions.";

@@ -126,7 +126,6 @@ const READ_RESTORE_TOKEN_BUDGET = 50_000;
 const READ_RESTORE_MAX_TOKENS_PER_FILE = 5_000;
 const READ_RESTORE_TRUNCATION_MARKER =
 	"\n\n[... restored read result truncated for compaction; use `read` on the path again if you need the full contents]";
-const MAX_SKILL_RESTORE_MESSAGES = 5;
 const SKILL_RESTORE_TOKEN_BUDGET = 25_000;
 const SKILL_RESTORE_MAX_TOKENS_PER_SKILL = 5_000;
 const SKILL_RESTORE_TRUNCATION_MARKER =
@@ -699,10 +698,6 @@ async function collectRecentSkillRestoreMessages(
 	let usedTokens = 0;
 
 	for (let i = compactedMessages.length - 1; i >= 0; i -= 1) {
-		if (restoredMessages.length >= MAX_SKILL_RESTORE_MESSAGES) {
-			break;
-		}
-
 		const message = compactedMessages[i];
 		if (
 			!message ||
