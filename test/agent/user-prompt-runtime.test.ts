@@ -66,6 +66,7 @@ describe("user prompt runtime", () => {
 	it("queues UserPromptSubmit hook context for the next run", async () => {
 		const queueNextRunPromptOnlyMessage = vi.fn();
 		const queueNextRunSystemPromptAddition = vi.fn();
+		const queueNextRunHistoryMessage = vi.fn();
 
 		registerHook("UserPromptSubmit", {
 			type: "callback",
@@ -82,6 +83,7 @@ describe("user prompt runtime", () => {
 			agent: {
 				queueNextRunPromptOnlyMessage,
 				queueNextRunSystemPromptAddition,
+				queueNextRunHistoryMessage,
 			} as unknown as Agent,
 			sessionManager: {
 				getSessionId: () => "session-user-prompt",
@@ -94,16 +96,14 @@ describe("user prompt runtime", () => {
 		expect(queueNextRunSystemPromptAddition).toHaveBeenCalledWith(
 			"UserPromptSubmit hook system guidance:\nPrefer minimal diffs.",
 		);
-		expect(queueNextRunPromptOnlyMessage).toHaveBeenCalledWith({
-			role: "user",
-			content: [
-				{
-					type: "text",
-					text: "UserPromptSubmit hook context:\nRemember the migration checklist.",
-				},
-			],
+		expect(queueNextRunHistoryMessage).toHaveBeenCalledWith({
+			role: "hookMessage",
+			customType: "UserPromptSubmit",
+			content: "Remember the migration checklist.",
+			display: true,
 			timestamp: expect.any(Number),
 		});
+		expect(queueNextRunPromptOnlyMessage).not.toHaveBeenCalled();
 	});
 
 	it("queues SessionStart hook context for the first run", async () => {
@@ -139,21 +139,19 @@ describe("user prompt runtime", () => {
 		expect(queueNextRunSystemPromptAddition).toHaveBeenCalledWith(
 			"SessionStart hook system guidance:\nPrefer workspace-local scripts over global installs.",
 		);
-		expect(queueNextRunPromptOnlyMessage).toHaveBeenCalledWith({
-			role: "user",
-			content: [
-				{
-					type: "text",
-					text: "SessionStart hook context:\nThis workspace uses generated API clients.",
-				},
-			],
+		expect(queueNextRunHistoryMessage).toHaveBeenNthCalledWith(1, {
+			role: "hookMessage",
+			customType: "SessionStart",
+			content: "This workspace uses generated API clients.",
+			display: true,
 			timestamp: expect.any(Number),
 		});
-		expect(queueNextRunHistoryMessage).toHaveBeenCalledWith({
+		expect(queueNextRunHistoryMessage).toHaveBeenNthCalledWith(2, {
 			role: "user",
 			content: "Read the project conventions first.",
 			timestamp: expect.any(Number),
 		});
+		expect(queueNextRunPromptOnlyMessage).not.toHaveBeenCalled();
 	});
 
 	it("ignores SessionStart blocking directives without throwing", async () => {
@@ -189,6 +187,68 @@ describe("user prompt runtime", () => {
 		expect(queueNextRunSystemPromptAddition).not.toHaveBeenCalled();
 		expect(queueNextRunPromptOnlyMessage).not.toHaveBeenCalled();
 		expect(queueNextRunHistoryMessage).not.toHaveBeenCalled();
+	});
+
+	it("persists hook additional context as a hook message for the next run", async () => {
+		class PromptCaptureTransport implements AgentTransport {
+			capturedMessages: Message[][] = [];
+
+			async *run(
+				messages: Message[],
+				_userMessage: Message,
+				_config: AgentRunConfig,
+			): AsyncGenerator<AgentEvent, void, unknown> {
+				this.capturedMessages.push(messages);
+				const assistant = createAssistantMessage("Done");
+				yield { type: "message_start", message: assistant };
+				yield { type: "message_end", message: assistant };
+			}
+
+			async *continue(): AsyncGenerator<AgentEvent, void, unknown> {
+				const assistant = createAssistantMessage("Continued");
+				yield { type: "message_start", message: assistant };
+				yield { type: "message_end", message: assistant };
+			}
+		}
+
+		const transport = new PromptCaptureTransport();
+		const agent = new Agent({
+			transport,
+			initialState: {
+				model: mockModel,
+				tools: [],
+				systemPrompt: "Base system prompt",
+			},
+		});
+
+		agent.queueNextRunHistoryMessage({
+			role: "hookMessage",
+			customType: "SessionStart",
+			content: "Workspace conventions from hook",
+			display: true,
+			timestamp: Date.now(),
+		});
+
+		await agent.prompt("first");
+
+		expect(
+			agent.state.messages.find(
+				(message) =>
+					message.role === "hookMessage" &&
+					message.customType === "SessionStart" &&
+					message.content === "Workspace conventions from hook",
+			),
+		).toBeDefined();
+		expect(transport.capturedMessages[0]).toEqual([
+			expect.objectContaining({
+				role: "user",
+				content: [{ type: "text", text: "Workspace conventions from hook" }],
+			}),
+			expect.objectContaining({
+				role: "user",
+				content: "first",
+			}),
+		]);
 	});
 
 	it("delivers a queued SessionStart initial user message once and persists it", async () => {

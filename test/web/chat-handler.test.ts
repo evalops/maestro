@@ -297,7 +297,7 @@ describe("handleChat", () => {
 	});
 
 	it("runs UserPromptSubmit hooks before executing SSE chat prompts", async () => {
-		const queueNextRunPromptOnlyMessage = vi.fn();
+		const queueNextRunHistoryMessage = vi.fn();
 		const queueNextRunSystemPromptAddition = vi.fn();
 
 		registerHook("UserPromptSubmit", {
@@ -344,7 +344,7 @@ describe("handleChat", () => {
 							subscriber = undefined;
 						};
 					},
-					queueNextRunPromptOnlyMessage,
+					queueNextRunHistoryMessage,
 					queueNextRunSystemPromptAddition,
 					replaceMessages: () => {},
 					clearMessages: () => {},
@@ -394,14 +394,12 @@ describe("handleChat", () => {
 		expect(queueNextRunSystemPromptAddition).toHaveBeenCalledWith(
 			"UserPromptSubmit hook system guidance:\nAvoid unnecessary refactors.",
 		);
-		expect(queueNextRunPromptOnlyMessage).toHaveBeenCalledWith({
-			role: "user",
-			content: [
-				{
-					type: "text",
-					text: "UserPromptSubmit hook context:\nRemember the repo coding conventions.",
-				},
-			],
+		expect(queueNextRunHistoryMessage).toHaveBeenCalledWith({
+			role: "hookMessage",
+			customType: "UserPromptSubmit",
+			content: "Remember the repo coding conventions.",
+			display: true,
+			details: undefined,
 			timestamp: expect.any(Number),
 		});
 	});

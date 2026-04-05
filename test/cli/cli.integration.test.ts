@@ -31,6 +31,15 @@ vi.mock("../../src/agent/agent.js", async () => {
 		public state: MockAgentState;
 		private subscribers: SubscriptionHandler[] = [];
 		private nextRunSystemPromptAdditions: string[] = [];
+		private nextRunHistoryMessages: Array<{
+			role: string;
+			content:
+				| string
+				| Array<{
+						type: string;
+						text?: string;
+				  }>;
+		}> = [];
 		private nextRunPromptOnlyMessages: Array<{
 			role: string;
 			content: Array<{ type: string; text: string }>;
@@ -49,8 +58,10 @@ vi.mock("../../src/agent/agent.js", async () => {
 
 		async prompt(message: string) {
 			const queuedSystemPrompt = this.nextRunSystemPromptAdditions.join("\n");
+			const queuedHistoryMessages = [...this.nextRunHistoryMessages];
 			const queuedPromptOnlyMessages = [...this.nextRunPromptOnlyMessages];
 			this.nextRunSystemPromptAdditions = [];
+			this.nextRunHistoryMessages = [];
 			this.nextRunPromptOnlyMessages = [];
 
 			this.state.messages.push({
@@ -62,6 +73,16 @@ vi.mock("../../src/agent/agent.js", async () => {
 				? message.slice(5)
 				: [
 						queuedSystemPrompt,
+						queuedHistoryMessages
+							.map((queuedMessage) =>
+								typeof queuedMessage.content === "string"
+									? queuedMessage.content
+									: queuedMessage.content
+											.filter((block) => block.type === "text")
+											.map((block) => block.text ?? "")
+											.join("\n"),
+							)
+							.join("\n"),
 						queuedPromptOnlyMessages
 							.flatMap((queuedMessage) => queuedMessage.content)
 							.filter((block) => block.type === "text")
@@ -106,6 +127,18 @@ vi.mock("../../src/agent/agent.js", async () => {
 
 		queueNextRunSystemPromptAddition(text: string) {
 			this.nextRunSystemPromptAdditions.push(text);
+		}
+
+		queueNextRunHistoryMessage(message: {
+			role: string;
+			content:
+				| string
+				| Array<{
+						type: string;
+						text?: string;
+				  }>;
+		}) {
+			this.nextRunHistoryMessages.push(message);
 		}
 
 		queueNextRunPromptOnlyMessage(message: {
@@ -370,9 +403,7 @@ describe("CLI integration", () => {
 		expect(combined).toContain(
 			"SessionStart hook system guidance:\nHook says: keep changes scoped.",
 		);
-		expect(combined).toContain(
-			"SessionStart hook context:\nHook says: this repo uses Nx.",
-		);
+		expect(combined).toContain("Hook says: this repo uses Nx.");
 		expect(combined).toContain("Echo: hello");
 	});
 

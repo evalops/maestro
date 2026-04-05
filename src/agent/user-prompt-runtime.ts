@@ -2,12 +2,13 @@ import { createSessionHookService } from "../hooks/session-integration.js";
 import { createLogger } from "../utils/logger.js";
 import type { Agent } from "./agent.js";
 import { buildCompactionHookContext } from "./compaction-hooks.js";
+import { createHookMessage } from "./custom-messages.js";
 import {
 	type PromptRecoveryCallbacks,
 	type RunWithPromptRecoveryOptions,
 	runWithPromptRecovery,
 } from "./prompt-recovery.js";
-import type { UserMessage } from "./types.js";
+import type { HookMessage, UserMessage } from "./types.js";
 
 type PromptRuntimeSessionManager =
 	RunWithPromptRecoveryOptions["sessionManager"] & {
@@ -16,17 +17,14 @@ type PromptRuntimeSessionManager =
 
 const logger = createLogger("prompt-runtime-hooks");
 
-function buildSessionStartHookContextMessage(text: string): UserMessage {
-	return {
-		role: "user",
-		content: [
-			{
-				type: "text",
-				text: `SessionStart hook context:\n${text}`,
-			},
-		],
-		timestamp: Date.now(),
-	};
+function buildSessionStartHookContextMessage(text: string): HookMessage {
+	return createHookMessage(
+		"SessionStart",
+		text,
+		true,
+		undefined,
+		new Date().toISOString(),
+	);
 }
 
 function buildSessionStartInitialUserMessage(text: string): UserMessage {
@@ -41,17 +39,14 @@ function buildSessionStartHookSystemGuidance(text: string): string {
 	return `SessionStart hook system guidance:\n${text}`;
 }
 
-function buildUserPromptHookContextMessage(text: string): UserMessage {
-	return {
-		role: "user",
-		content: [
-			{
-				type: "text",
-				text: `UserPromptSubmit hook context:\n${text}`,
-			},
-		],
-		timestamp: Date.now(),
-	};
+function buildUserPromptHookContextMessage(text: string): HookMessage {
+	return createHookMessage(
+		"UserPromptSubmit",
+		text,
+		true,
+		undefined,
+		new Date().toISOString(),
+	);
 }
 
 function buildUserPromptHookSystemGuidance(text: string): string {
@@ -98,7 +93,7 @@ export async function applySessionStartHooks(params: {
 
 	const additionalContext = result.additionalContext?.trim();
 	if (additionalContext) {
-		params.agent.queueNextRunPromptOnlyMessage(
+		params.agent.queueNextRunHistoryMessage(
 			buildSessionStartHookContextMessage(additionalContext),
 		);
 	}
@@ -152,7 +147,7 @@ export async function applyUserPromptSubmitHooks(params: {
 
 	const additionalContext = result.additionalContext?.trim();
 	if (additionalContext) {
-		params.agent.queueNextRunPromptOnlyMessage(
+		params.agent.queueNextRunHistoryMessage(
 			buildUserPromptHookContextMessage(additionalContext),
 		);
 	}
