@@ -41,7 +41,13 @@ import {
 	createCompactionHookService,
 } from "./compaction-hooks.js";
 import { convertAppMessageToLlm } from "./custom-messages.js";
-import type { Api, AppMessage, AssistantMessage, Usage } from "./types.js";
+import type {
+	Api,
+	AppMessage,
+	AssistantMessage,
+	Usage,
+	UserMessageWithAttachments,
+} from "./types.js";
 
 // ============================================================================
 // Types
@@ -144,12 +150,56 @@ function shouldSkipAssistantCompactionMessage(message: AppMessage): boolean {
 	);
 }
 
-function filterMessagesForCompactionSummary(
+function buildAttachmentMarkers(message: UserMessageWithAttachments): string[] {
+	if (!Array.isArray(message.attachments) || message.attachments.length === 0) {
+		return [];
+	}
+	return message.attachments.map((attachment) =>
+		attachment.type === "document" ? "[document]" : "[image]",
+	);
+}
+
+function stripAttachmentsForCompactionSummary(
+	message: UserMessageWithAttachments,
+): AppMessage {
+	const attachmentMarkers = buildAttachmentMarkers(message);
+	if (attachmentMarkers.length === 0) {
+		return message;
+	}
+
+	const { attachments: _attachments, ...rest } = message;
+	const markerText = attachmentMarkers.join("\n");
+	if (typeof rest.content === "string") {
+		return {
+			...rest,
+			content: `${rest.content}\n\n${markerText}`,
+		};
+	}
+
+	return {
+		...rest,
+		content: [
+			...rest.content,
+			{
+				type: "text" as const,
+				text: markerText,
+			},
+		],
+	};
+}
+
+function prepareMessagesForCompactionSummary(
 	messages: AppMessage[],
 ): AppMessage[] {
-	return messages.filter(
-		(message) => !shouldSkipAssistantCompactionMessage(message),
-	);
+	return messages.flatMap((message) => {
+		if (shouldSkipAssistantCompactionMessage(message)) {
+			return [];
+		}
+		if (message.role === "user" && "attachments" in message) {
+			return [stripAttachmentsForCompactionSummary(message)];
+		}
+		return [message];
+	});
 }
 
 /**
@@ -817,7 +867,7 @@ export function prepareCompaction(
 	// Add older messages (limit to most recent 40 for summarization efficiency)
 	const sliceSize = Math.min(40, older.length);
 	messagesToSummarize.push(
-		...filterMessagesForCompactionSummary(older.slice(-sliceSize)),
+		...prepareMessagesForCompactionSummary(older.slice(-sliceSize)),
 	);
 
 	return {
@@ -1037,6 +1087,7 @@ export async function performCompaction(params: {
 
 	// Look for previous summary (cascading)
 	const previousSummary = findPreviousSummary(messages);
+	const olderForSummary = prepareMessagesForCompactionSummary(older);
 	const summaryInput: AppMessage[] = [];
 	if (previousSummary) {
 		summaryInput.push({
@@ -1046,9 +1097,7 @@ export async function performCompaction(params: {
 		});
 	}
 	const sliceSize = Math.min(40, older.length);
-	summaryInput.push(
-		...filterMessagesForCompactionSummary(older.slice(-sliceSize)),
-	);
+	summaryInput.push(...olderForSummary.slice(-sliceSize));
 
 	let summaryText = "";
 	let usedModel = false;
@@ -1063,10 +1112,10 @@ export async function performCompaction(params: {
 		const llmText = renderSummaryText
 			? renderSummaryText(summary)
 			: extractMessageText(summary);
-		summaryText = llmText.trim() || buildLocalSummary(older, 32);
+		summaryText = llmText.trim() || buildLocalSummary(olderForSummary, 32);
 		usedModel = true;
 	} catch {
-		summaryText = buildLocalSummary(older, 32);
+		summaryText = buildLocalSummary(olderForSummary, 32);
 	}
 
 	const decorated = decorateSummaryText(summaryText, older.length, usedModel);

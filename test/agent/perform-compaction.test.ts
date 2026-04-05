@@ -16,6 +16,7 @@ import {
 import type {
 	AppMessage,
 	AssistantMessage,
+	Attachment,
 	Usage,
 } from "../../src/agent/types.js";
 
@@ -31,6 +32,37 @@ function createUsage(input = 0, output = 0): Usage {
 
 function createUserMessage(text = "hello"): AppMessage {
 	return { role: "user", content: text, timestamp: Date.now() };
+}
+
+function createUserMessageWithAttachments(
+	text = "see attachments",
+	attachments?: Attachment[],
+): AppMessage {
+	return {
+		role: "user",
+		content: text,
+		attachments: attachments ?? [
+			{
+				id: "image-1",
+				type: "image",
+				fileName: "diagram.png",
+				mimeType: "image/png",
+				size: 3,
+				content: "abc",
+			},
+			{
+				id: "doc-1",
+				type: "document",
+				fileName: "notes.txt",
+				mimeType: "text/plain",
+				size: 5,
+				content: "def",
+				extractedText:
+					"full document text that should not be in compaction input",
+			},
+		],
+		timestamp: Date.now(),
+	};
 }
 
 function createAssistantMessage(
@@ -260,6 +292,40 @@ describe("performCompaction", () => {
 		);
 	});
 
+	it("downgrades attachments to compact markers in summarization input", async () => {
+		const messages = buildConversation(10);
+		messages[0] = createUserMessageWithAttachments("see attached context");
+		const agent = createMockAgent(messages);
+		const sessionManager = createMockSessionManager();
+
+		await performCompaction({ agent, sessionManager });
+
+		const summaryInput = (agent.generateSummary as ReturnType<typeof vi.fn>)
+			.mock.calls[0]?.[0] as AppMessage[] | undefined;
+		expect(summaryInput).toBeDefined();
+
+		const attachmentMessage = summaryInput?.find(
+			(message) =>
+				message.role === "user" &&
+				typeof message.content === "string" &&
+				message.content.includes("see attached context"),
+		);
+		expect(attachmentMessage).toMatchObject({
+			role: "user",
+			content: expect.stringContaining("[image]"),
+		});
+		expect(attachmentMessage).toMatchObject({
+			role: "user",
+			content: expect.stringContaining("[document]"),
+		});
+		expect(attachmentMessage).not.toHaveProperty("attachments");
+		expect(attachmentMessage).not.toMatchObject({
+			content: expect.stringContaining(
+				"full document text that should not be in compaction input",
+			),
+		});
+	});
+
 	it("returns failure when a PreCompact hook blocks compaction", async () => {
 		const messages = buildConversation(10);
 		const agent = createMockAgent(messages);
@@ -363,6 +429,24 @@ describe("performCompaction", () => {
 		const summary = replaced[0] as AssistantMessage;
 		const firstBlock = summary.content[0] as { type: string; text: string };
 		expect(firstBlock.text).toContain("Local summary");
+	});
+
+	it("preserves attachment markers in the local summary fallback", async () => {
+		const messages = buildConversation(10);
+		messages[0] = createUserMessageWithAttachments("see attached context");
+		const agent = createMockAgent(messages);
+		(agent.generateSummary as ReturnType<typeof vi.fn>).mockRejectedValue(
+			new Error("API failure"),
+		);
+		const sessionManager = createMockSessionManager();
+
+		await performCompaction({ agent, sessionManager });
+
+		const replaced = getReplacedMessages(agent);
+		const summary = replaced[0] as AssistantMessage;
+		const firstBlock = summary.content[0] as { type: string; text: string };
+		expect(firstBlock.text).toContain("[image]");
+		expect(firstBlock.text).toContain("[document]");
 	});
 
 	it("passes auto and customInstructions to saveCompaction", async () => {
