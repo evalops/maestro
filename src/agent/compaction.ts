@@ -93,6 +93,8 @@ export const COMPACTION_RESUME_PROMPT =
 
 const MAX_COMPACTION_OVERFLOW_RETRIES = 3;
 const PREVIOUS_SUMMARY_PREFIX = "Previous session summary:\n";
+const COMPACTION_OVERFLOW_RETRY_MARKER =
+	"[earlier conversation truncated for compaction retry]";
 
 /**
  * Result of a compaction operation, ready to be persisted.
@@ -217,6 +219,14 @@ function isPreviousSummaryPreamble(message: AppMessage | undefined): boolean {
 	);
 }
 
+function isOverflowRetryMarker(message: AppMessage | undefined): boolean {
+	return (
+		message?.role === "user" &&
+		typeof message.content === "string" &&
+		message.content === COMPACTION_OVERFLOW_RETRY_MARKER
+	);
+}
+
 function truncateSummaryInputForOverflowRetry(
 	messages: AppMessage[],
 ): AppMessage[] | null {
@@ -225,7 +235,10 @@ function truncateSummaryInputForOverflowRetry(
 	}
 
 	const preamble = isPreviousSummaryPreamble(messages[0]) ? messages[0] : null;
-	const body = preamble ? messages.slice(1) : messages;
+	const bodyWithMarker = preamble ? messages.slice(1) : messages;
+	const body = isOverflowRetryMarker(bodyWithMarker[0])
+		? bodyWithMarker.slice(1)
+		: bodyWithMarker;
 	if (body.length < 2) {
 		return null;
 	}
@@ -246,7 +259,15 @@ function truncateSummaryInputForOverflowRetry(
 	if (truncatedBody.length === 0) {
 		return null;
 	}
-	return preamble ? [preamble, ...truncatedBody] : truncatedBody;
+
+	const markerMessage: AppMessage = {
+		role: "user",
+		content: COMPACTION_OVERFLOW_RETRY_MARKER,
+		timestamp: Date.now(),
+	};
+	return preamble
+		? [preamble, markerMessage, ...truncatedBody]
+		: [markerMessage, ...truncatedBody];
 }
 
 /**

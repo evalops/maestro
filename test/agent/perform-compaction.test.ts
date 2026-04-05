@@ -467,6 +467,10 @@ describe("performCompaction", () => {
 		const secondInput = (agent.generateSummary as ReturnType<typeof vi.fn>).mock
 			.calls[1]?.[0] as AppMessage[];
 		expect(secondInput.length).toBeLessThan(firstInput.length);
+		expect(secondInput[0]).toMatchObject({
+			role: "user",
+			content: "[earlier conversation truncated for compaction retry]",
+		});
 
 		const replaced = getReplacedMessages(agent);
 		const summary = replaced[0] as AssistantMessage;
@@ -494,6 +498,47 @@ describe("performCompaction", () => {
 		const secondInput = (agent.generateSummary as ReturnType<typeof vi.fn>).mock
 			.calls[1]?.[0] as AppMessage[];
 		expect(secondInput.length).toBeLessThan(firstInput.length);
+		expect(secondInput[0]).toMatchObject({
+			role: "user",
+			content: "[earlier conversation truncated for compaction retry]",
+		});
+	});
+
+	it("keeps a single truncation marker across repeated overflow retries", async () => {
+		const messages = buildConversation(30);
+		const agent = createMockAgent(messages);
+		const overflowMessage =
+			"Anthropic rejected this request because the prompt exceeded 200,000 tokens. Use /compact to summarize prior messages or remove large attachments, then retry.";
+		(agent.generateSummary as ReturnType<typeof vi.fn>)
+			.mockRejectedValueOnce(new Error(overflowMessage))
+			.mockRejectedValueOnce(new Error(overflowMessage))
+			.mockResolvedValueOnce(createAssistantMessage("summary after retry"));
+		const sessionManager = createMockSessionManager();
+
+		await performCompaction({ agent, sessionManager });
+
+		expect(agent.generateSummary).toHaveBeenCalledTimes(3);
+		const secondInput = (agent.generateSummary as ReturnType<typeof vi.fn>).mock
+			.calls[1]?.[0] as AppMessage[];
+		const thirdInput = (agent.generateSummary as ReturnType<typeof vi.fn>).mock
+			.calls[2]?.[0] as AppMessage[];
+		expect(
+			secondInput.filter(
+				(message) =>
+					message.role === "user" &&
+					message.content ===
+						"[earlier conversation truncated for compaction retry]",
+			),
+		).toHaveLength(1);
+		expect(
+			thirdInput.filter(
+				(message) =>
+					message.role === "user" &&
+					message.content ===
+						"[earlier conversation truncated for compaction retry]",
+			),
+		).toHaveLength(1);
+		expect(thirdInput.length).toBeLessThan(secondInput.length);
 	});
 
 	it("passes auto and customInstructions to saveCompaction", async () => {
