@@ -481,6 +481,23 @@ export interface ComposerActionApprovalDecision {
 	resolvedBy: "policy" | "user";
 }
 
+export interface ComposerToolRetryRequest {
+	id: string;
+	toolCallId: string;
+	toolName: string;
+	args: unknown;
+	errorMessage: string;
+	attempt: number;
+	maxAttempts?: number;
+	summary?: string;
+}
+
+export interface ComposerToolRetryDecision {
+	action: "retry" | "skip" | "abort";
+	reason?: string;
+	resolvedBy: "policy" | "user" | "runtime";
+}
+
 /**
  * Agent-level streaming events (SSE payloads).
  */
@@ -554,6 +571,12 @@ export type ComposerAgentEvent =
 			toolCallId: string;
 			toolName: string;
 			args: unknown;
+	  }
+	| { type: "tool_retry_required"; request: ComposerToolRetryRequest }
+	| {
+			type: "tool_retry_resolved";
+			request: ComposerToolRetryRequest;
+			decision: ComposerToolRetryDecision;
 	  }
 	| {
 			type: "compaction";

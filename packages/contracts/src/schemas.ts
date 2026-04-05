@@ -304,6 +304,31 @@ export const ComposerActionApprovalDecisionSchema = Type.Object({
 	resolvedBy: Type.Union([Type.Literal("policy"), Type.Literal("user")]),
 });
 
+export const ComposerToolRetryRequestSchema = Type.Object({
+	id: Type.String(),
+	toolCallId: Type.String(),
+	toolName: Type.String(),
+	args: Type.Unknown(),
+	errorMessage: Type.String(),
+	attempt: Type.Number(),
+	maxAttempts: Type.Optional(Type.Number()),
+	summary: Type.Optional(Type.String()),
+});
+
+export const ComposerToolRetryDecisionSchema = Type.Object({
+	action: Type.Union([
+		Type.Literal("retry"),
+		Type.Literal("skip"),
+		Type.Literal("abort"),
+	]),
+	reason: Type.Optional(Type.String()),
+	resolvedBy: Type.Union([
+		Type.Literal("policy"),
+		Type.Literal("user"),
+		Type.Literal("runtime"),
+	]),
+});
+
 export const ComposerAgentEventSchema = Type.Union([
 	Type.Object({ type: Type.Literal("agent_start") }),
 	Type.Object({
@@ -395,6 +420,15 @@ export const ComposerAgentEventSchema = Type.Union([
 		toolCallId: Type.String(),
 		toolName: Type.String(),
 		args: Type.Unknown(),
+	}),
+	Type.Object({
+		type: Type.Literal("tool_retry_required"),
+		request: ComposerToolRetryRequestSchema,
+	}),
+	Type.Object({
+		type: Type.Literal("tool_retry_resolved"),
+		request: ComposerToolRetryRequestSchema,
+		decision: ComposerToolRetryDecisionSchema,
 	}),
 	Type.Object({
 		type: Type.Literal("compaction"),

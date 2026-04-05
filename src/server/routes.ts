@@ -77,6 +77,7 @@ import {
 import { handleStats } from "./handlers/stats.js";
 import { handleStatus } from "./handlers/status.js";
 import { handleTelemetry } from "./handlers/telemetry.js";
+import { handleToolRetry } from "./handlers/tool-retry.js";
 import { handleTools } from "./handlers/tools.js";
 import { handleTraining } from "./handlers/training.js";
 import { handleUI } from "./handlers/ui.js";
@@ -568,6 +569,11 @@ export function createRoutes(context: WebServerContext): Route[] {
 			method: "POST",
 			path: "/api/chat/client-tool-result",
 			handler: (req, res) => handleClientToolResult(req, res, context),
+		},
+		{
+			method: "POST",
+			path: "/api/chat/tool-retry",
+			handler: (req, res) => handleToolRetry(req, res, context),
 		},
 		{
 			method: "POST",

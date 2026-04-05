@@ -1303,6 +1303,18 @@ export class ApiClient {
 		);
 	}
 
+	async submitToolRetryDecision(input: {
+		requestId: string;
+		action: "retry" | "skip" | "abort";
+		reason?: string;
+	}): Promise<{ success: boolean }> {
+		return await this.fetchJsonRequestWithFallback<{ success: boolean }>(
+			"/api/chat/tool-retry",
+			"POST",
+			input,
+		);
+	}
+
 	/**
 	 * Get list of available models
 	 */

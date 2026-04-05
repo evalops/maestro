@@ -74,6 +74,7 @@ import {
 import { createSessionManagerForRequest } from "../session-scope.js";
 import { convertComposerMessagesToApp } from "../session-serialization.js";
 import { SseSession, sendSSE, sendSessionUpdate } from "../sse-session.js";
+import { ServerRequestToolRetryService } from "../tool-retry-service.js";
 import {
 	type ChatRequestInput,
 	ChatRequestSchema,
@@ -299,6 +300,10 @@ export async function handleChat(
 			effectiveApproval,
 			sessionIdProvider,
 		);
+		const toolRetryService = new ServerRequestToolRetryService(
+			"prompt",
+			sessionIdProvider,
+		);
 
 		const agent = await createAgent(
 			registeredModel,
@@ -306,6 +311,7 @@ export async function handleChat(
 			effectiveApproval,
 			{
 				approvalService: requestApprovalService,
+				toolRetryService,
 				...(clientToolsHeader
 					? {
 							enableClientTools: true,
