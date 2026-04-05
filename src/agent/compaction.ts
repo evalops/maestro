@@ -293,6 +293,21 @@ function isOverflowRetryMarker(message: AppMessage | undefined): boolean {
 	);
 }
 
+function stripRedundantPreviousCompactionMessages(
+	messages: AppMessage[],
+	previousSummary: string | undefined,
+): AppMessage[] {
+	if (!previousSummary) {
+		return messages;
+	}
+
+	return messages.filter(
+		(message) =>
+			!isDecoratedCompactionSummaryMessage(message) &&
+			!isCompactionResumePromptMessage(message),
+	);
+}
+
 function getOverflowTokenGap(errorMessage: string): number | undefined {
 	const parsed = parseOverflowDetails(errorMessage);
 	if (parsed?.requestedTokens === undefined || parsed.maxTokens === undefined) {
@@ -1042,9 +1057,11 @@ export function prepareCompaction(
 
 	// Add older messages (limit to most recent 40 for summarization efficiency)
 	const sliceSize = Math.min(40, older.length);
-	messagesToSummarize.push(
-		...prepareMessagesForCompactionSummary(older.slice(-sliceSize)),
+	const summaryTail = stripRedundantPreviousCompactionMessages(
+		prepareMessagesForCompactionSummary(older.slice(-sliceSize)),
+		previousSummary,
 	);
+	messagesToSummarize.push(...summaryTail);
 
 	return {
 		messagesToSummarize,
@@ -1299,7 +1316,10 @@ export async function performCompaction(params: {
 
 	// Look for previous summary (cascading)
 	const previousSummary = findPreviousSummary(messages);
-	const olderForSummary = prepareMessagesForCompactionSummary(older);
+	const olderForSummary = stripRedundantPreviousCompactionMessages(
+		prepareMessagesForCompactionSummary(older),
+		previousSummary,
+	);
 	const summaryInput: AppMessage[] = [];
 	if (previousSummary) {
 		summaryInput.push({

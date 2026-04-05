@@ -96,6 +96,20 @@ function createAssistantMessage(
 	};
 }
 
+function createDecoratedCompactionSummaryMessage(
+	text = "Summarized prior work.",
+): AssistantMessage {
+	return {
+		...createAssistantMessage(text),
+		content: [
+			{
+				type: "text",
+				text: `Another language model started to solve this problem and produced a summary of its thinking process. ${text}\n\n(Compacted 12 messages on 4/5/2026, 2:00:00 AM)`,
+			},
+		],
+	};
+}
+
 function createToolResultMessage(
 	toolName = "bash",
 	content: Array<
@@ -490,6 +504,48 @@ describe("performCompaction", () => {
 		expect(summaryInput).not.toContainEqual(
 			expect.objectContaining({
 				content: "Re-apply compacted constraints.",
+			}),
+		);
+	});
+
+	it("uses the previous summary preamble without re-summarizing compact summary messages", async () => {
+		const messages = buildConversation(10);
+		messages.unshift({
+			role: "user",
+			content:
+				"Use the above summary to resume the plan from where we left off.",
+			timestamp: Date.now(),
+		});
+		messages.unshift(createDecoratedCompactionSummaryMessage());
+		const agent = createMockAgent(messages);
+		const sessionManager = createMockSessionManager();
+
+		await performCompaction({ agent, sessionManager });
+
+		const summaryInput = (agent.generateSummary as ReturnType<typeof vi.fn>)
+			.mock.calls[0]?.[0] as AppMessage[] | undefined;
+		expect(summaryInput?.[0]).toMatchObject({
+			role: "user",
+			content: expect.stringContaining("Previous session summary:\n"),
+		});
+		expect(summaryInput).not.toContainEqual(
+			expect.objectContaining({
+				role: "assistant",
+				content: expect.arrayContaining([
+					expect.objectContaining({
+						type: "text",
+						text: expect.stringContaining(
+							"Another language model started to solve this problem",
+						),
+					}),
+				]),
+			}),
+		);
+		expect(summaryInput).not.toContainEqual(
+			expect.objectContaining({
+				role: "user",
+				content:
+					"Use the above summary to resume the plan from where we left off.",
 			}),
 		);
 	});
