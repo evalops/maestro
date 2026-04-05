@@ -986,6 +986,36 @@ describe("performCompaction", () => {
 		);
 	});
 
+	it("does not restore agent context files that are already layered into the prompt", async () => {
+		const messages = buildConversation(10);
+		messages.splice(
+			2,
+			0,
+			createReadToolCallMessage(
+				"/tmp/workspace/.maestro/AGENTS.md",
+				"call-read-agents",
+			),
+			createReadToolResultMessage(
+				"/tmp/workspace/.maestro/AGENTS.md",
+				"call-read-agents",
+				"# AGENTS\nProject instructions",
+			),
+		);
+		const agent = createMockAgentWithoutAppendMessage(messages);
+		const sessionManager = createMockSessionManager();
+
+		const result = await performCompaction({ agent, sessionManager });
+
+		expect(result.success).toBe(true);
+		expect(getReplacedMessages(agent)).not.toContainEqual(
+			expect.objectContaining({
+				role: "hookMessage",
+				customType: "read-file",
+				details: { filePath: "/tmp/workspace/.maestro/AGENTS.md" },
+			}),
+		);
+	});
+
 	it("keeps PostCompact hook guidance after preserved messages without appendMessage", async () => {
 		const messages = buildConversation(10);
 		const agent = createMockAgentWithoutAppendMessage(messages);
