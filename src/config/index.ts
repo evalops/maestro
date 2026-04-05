@@ -20,6 +20,7 @@ export {
 	parseCliOverride,
 	applyCliOverride,
 	DEFAULT_CONFIG,
+	resolveLoadedAppendSystemPromptPath,
 	resolveProjectDocCandidateFilenames,
 	resolvePromptLoadedProjectDocPaths,
 	type ComposerConfig,

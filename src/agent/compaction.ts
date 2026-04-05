@@ -35,7 +35,10 @@
 
 import { realpathSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
-import { resolvePromptLoadedProjectDocPaths } from "../config/index.js";
+import {
+	resolveLoadedAppendSystemPromptPath,
+	resolvePromptLoadedProjectDocPaths,
+} from "../config/index.js";
 import type { SessionEntry } from "../session/types.js";
 import { readTool } from "../tools/read.js";
 import { createLogger } from "../utils/logger.js";
@@ -213,10 +216,14 @@ function normalizeComparableReadPath(path: string): string {
 }
 
 function getExcludedReadRestorePaths(): Set<string> {
+	const loadedAppendSystemPromptPath = resolveLoadedAppendSystemPromptPath(
+		process.cwd(),
+	);
 	return new Set(
-		resolvePromptLoadedProjectDocPaths(process.cwd()).map((path) =>
-			normalizeComparableReadPath(path),
-		),
+		[
+			...resolvePromptLoadedProjectDocPaths(process.cwd()),
+			...(loadedAppendSystemPromptPath ? [loadedAppendSystemPromptPath] : []),
+		].map((path) => normalizeComparableReadPath(path)),
 	);
 }
 

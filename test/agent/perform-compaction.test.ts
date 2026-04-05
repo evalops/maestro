@@ -1165,6 +1165,49 @@ describe("performCompaction", () => {
 		}
 	});
 
+	it("does not restore append system prompt files already layered into the prompt", async () => {
+		const originalCwd = process.cwd();
+		const workspaceDir = mkdtempSync(join(tmpdir(), "maestro-append-system-"));
+		const appendSystemPath = join(workspaceDir, ".maestro", "APPEND_SYSTEM.md");
+		mkdirSync(join(workspaceDir, ".maestro"), { recursive: true });
+		writeFileSync(appendSystemPath, "Append these extra system instructions.");
+		process.chdir(workspaceDir);
+		clearConfigCache();
+
+		try {
+			const messages = buildConversation(10);
+			messages.splice(
+				2,
+				0,
+				createReadToolCallMessage(
+					appendSystemPath,
+					"call-read-append-system-prompt",
+				),
+				createReadToolResultMessage(
+					appendSystemPath,
+					"call-read-append-system-prompt",
+					"Append these extra system instructions.",
+				),
+			);
+			const agent = createMockAgentWithoutAppendMessage(messages);
+			const sessionManager = createMockSessionManager();
+
+			const result = await performCompaction({ agent, sessionManager });
+
+			expect(result.success).toBe(true);
+			expect(getReplacedMessages(agent)).not.toContainEqual(
+				expect.objectContaining({
+					role: "hookMessage",
+					customType: "read-file",
+					details: { filePath: appendSystemPath },
+				}),
+			);
+		} finally {
+			process.chdir(originalCwd);
+			clearConfigCache();
+		}
+	});
+
 	it("truncates oversized restored read results to the per-file budget", async () => {
 		const messages = buildConversation(10);
 		const oversizedContent = `${"x".repeat(30_000)}TRUNCATE_ME_SUFFIX`;

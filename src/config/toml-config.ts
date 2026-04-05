@@ -575,6 +575,19 @@ export function resolvePromptLoadedProjectDocPaths(
 	return paths;
 }
 
+export function resolveLoadedAppendSystemPromptPath(
+	cwdOverride?: string,
+): string | null {
+	const cwd = cwdOverride ?? process.cwd();
+	const projectPath = resolve(join(cwd, ".maestro", "APPEND_SYSTEM.md"));
+	if (existsSync(projectPath)) {
+		return projectPath;
+	}
+
+	const globalPath = resolve(join(getAgentDir(), "APPEND_SYSTEM.md"));
+	return existsSync(globalPath) ? globalPath : null;
+}
+
 // ─────────────────────────────────────────────────────────────
 // Configuration Loading
 // ─────────────────────────────────────────────────────────────
