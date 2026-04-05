@@ -6,6 +6,7 @@ import {
 	handleSessions,
 	handleSharedSession,
 } from "../src/server/handlers/sessions.js";
+import { serverRequestManager } from "../src/server/server-request-manager.js";
 
 function makeTestAnthropicToken(): string {
 	return [
@@ -178,6 +179,7 @@ describe("Session Endpoints", () => {
 	});
 
 	afterEach(() => {
+		vi.restoreAllMocks();
 		delete process.env.MAESTRO_STRICT_SESSION_ACCESS;
 	});
 
@@ -207,6 +209,101 @@ describe("Session Endpoints", () => {
 			};
 			expect(body.id).toBe("test-session-1");
 			expect(body.messages).toHaveLength(2);
+		});
+
+		it("includes pending server requests for the loaded session", async () => {
+			vi.spyOn(serverRequestManager, "listPending").mockReturnValue([
+				{
+					id: "approval-1",
+					kind: "approval",
+					sessionId: "test-session-1",
+					callId: "approval-1",
+					toolName: "bash",
+					displayName: "Shell Command",
+					summaryLabel: "run bash",
+					actionDescription: "Run a shell command",
+					args: { command: "rm -rf /tmp/demo" },
+					reason: "Needs approval",
+					timestamp: 1,
+				},
+				{
+					id: "retry-1",
+					kind: "tool_retry",
+					sessionId: "test-session-1",
+					callId: "tool-call-1",
+					toolName: "read",
+					args: {
+						tool_call_id: "tool-call-1",
+						args: { file: "README.md" },
+						error_message: "timed out",
+						attempt: 2,
+						max_attempts: 3,
+						summary: "Read failed twice",
+					},
+					reason: "Read failed twice",
+					timestamp: 2,
+				},
+				{
+					id: "client-1",
+					kind: "client_tool",
+					sessionId: "test-session-1",
+					callId: "client-call-1",
+					toolName: "javascript_repl",
+					args: { code: "1 + 1" },
+					reason: "Client execution required",
+					timestamp: 3,
+				},
+			]);
+
+			const req = createMockRequest("GET");
+			const { res, getBody } = createMockResponse();
+
+			await handleSessions(req, res, { id: "test-session-1" }, corsHeaders);
+
+			const body = getBody() as {
+				pendingApprovalRequests: Array<{ id: string; displayName?: string }>;
+				pendingToolRetryRequests: Array<{
+					id: string;
+					toolCallId: string;
+					attempt: number;
+				}>;
+				pendingClientToolRequests: Array<{
+					toolCallId: string;
+					toolName: string;
+				}>;
+			};
+			expect(body.pendingApprovalRequests).toEqual([
+				{
+					id: "approval-1",
+					toolName: "bash",
+					displayName: "Shell Command",
+					summaryLabel: "run bash",
+					actionDescription: "Run a shell command",
+					args: { command: "rm -rf /tmp/demo" },
+					reason: "Needs approval",
+				},
+			]);
+			expect(body.pendingToolRetryRequests).toEqual([
+				{
+					id: "retry-1",
+					toolCallId: "tool-call-1",
+					toolName: "read",
+					args: { file: "README.md" },
+					errorMessage: "timed out",
+					attempt: 2,
+					maxAttempts: 3,
+					summary: "Read failed twice",
+				},
+			]);
+			expect(body.pendingClientToolRequests).toEqual([
+				{
+					toolCallId: "client-call-1",
+					toolName: "javascript_repl",
+					args: { code: "1 + 1" },
+					kind: "client_tool",
+					reason: "Client execution required",
+				},
+			]);
 		});
 
 		it("should return 404 for non-existent session", async () => {

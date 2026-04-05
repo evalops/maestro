@@ -5,6 +5,7 @@
 import type {
 	ComposerActionApprovalRequest,
 	ComposerApprovalMode,
+	ComposerPendingClientToolRequest,
 	ComposerToolRetryRequest,
 } from "@evalops/contracts";
 import { LitElement, type PropertyValues, css, html } from "lit";
@@ -1544,6 +1545,146 @@ export class ComposerChat extends LitElement {
 		);
 	}
 
+	private restorePendingSessionRequests(session: Session) {
+		this.pendingApprovalQueue = Array.isArray(session.pendingApprovalRequests)
+			? [...session.pendingApprovalRequests]
+			: [];
+		this.approvalSubmitting = false;
+		this.pendingToolRetryQueue = Array.isArray(session.pendingToolRetryRequests)
+			? [...session.pendingToolRetryRequests]
+			: [];
+		this.toolRetrySubmitting = false;
+
+		const pendingClientToolRequests = Array.isArray(
+			session.pendingClientToolRequests,
+		)
+			? [...session.pendingClientToolRequests]
+			: [];
+		if (pendingClientToolRequests.length === 0) {
+			return;
+		}
+
+		void this.replayPendingClientToolRequests(
+			session.id,
+			pendingClientToolRequests,
+		);
+	}
+
+	private async replayPendingClientToolRequests(
+		sessionId: string,
+		requests: ComposerPendingClientToolRequest[],
+	) {
+		for (const request of requests) {
+			if (this.currentSessionId !== sessionId || this.shareToken) {
+				return;
+			}
+			await this.handleClientToolRequest(
+				request.toolCallId,
+				request.toolName,
+				request.args,
+			);
+		}
+	}
+
+	private async handleClientToolRequest(
+		toolCallId: string,
+		toolName: string,
+		args: unknown,
+	): Promise<void> {
+		if (toolName === "artifacts") {
+			const argsRecord = coerceArtifactsArgs(args);
+			if (argsRecord.command === "logs" && argsRecord.filename) {
+				const sandboxId = `artifact:${argsRecord.filename}`;
+				const snap = getSandboxConsoleSnapshot(sandboxId);
+				const logs = snap?.logs ?? [];
+				const error = snap?.lastError ?? null;
+				const text = (() => {
+					if (logs.length === 0 && !error) {
+						return `No logs captured for ${argsRecord.filename}. Open the artifact preview to generate logs.`;
+					}
+					const lines: string[] = [`Logs for ${argsRecord.filename}`, ""];
+					for (const line of logs) {
+						lines.push(`[${line.level}] ${line.text}`);
+					}
+					if (error) {
+						lines.push("", "Last error:", error.message);
+						if (error.stack) lines.push(error.stack);
+					}
+					return lines.filter(Boolean).join("\n");
+				})();
+				await this.apiClient.sendClientToolResult({
+					toolCallId,
+					content: [{ type: "text", text }],
+					isError: false,
+				});
+				return;
+			}
+
+			const result = applyArtifactsCommand(this.artifactsState, argsRecord);
+			this.artifactsState = result.state;
+			if (!result.isError && argsRecord.filename) {
+				this.setActiveArtifact(argsRecord.filename);
+			}
+			await this.apiClient.sendClientToolResult({
+				toolCallId,
+				content: [{ type: "text", text: result.output }],
+				isError: result.isError,
+			});
+			return;
+		}
+
+		if (toolName === "javascript_repl") {
+			const result = await this.runJavascriptRepl(args);
+			await this.apiClient.sendClientToolResult({
+				toolCallId,
+				content: [{ type: "text", text: result.text }],
+				isError: result.isError,
+			});
+			return;
+		}
+
+		if (
+			toolName === "list_mcp_servers" ||
+			toolName === "list_mcp_tools" ||
+			toolName === "list_mcp_resources" ||
+			toolName === "read_mcp_resource" ||
+			toolName === "list_mcp_prompts" ||
+			toolName === "get_mcp_prompt"
+		) {
+			try {
+				const res = await this.runMcpClientTool(toolName, args);
+				await this.apiClient.sendClientToolResult({
+					toolCallId,
+					content: [{ type: "text", text: res.text }],
+					isError: res.isError,
+				});
+			} catch (error) {
+				await this.apiClient.sendClientToolResult({
+					toolCallId,
+					content: [
+						{
+							type: "text",
+							text: error instanceof Error ? error.message : String(error),
+						},
+					],
+					isError: true,
+				});
+			}
+			return;
+		}
+
+		await this.apiClient.sendClientToolResult({
+			toolCallId,
+			content: [
+				{
+					type: "text",
+					text: `Unsupported client tool: ${toolName}`,
+				},
+			],
+			isError: true,
+		});
+	}
+
 	private handleApproveRequest = (e: CustomEvent<{ requestId?: string }>) => {
 		void this.submitApprovalDecision("approved", e.detail?.requestId);
 	};
@@ -2637,6 +2778,7 @@ export class ComposerChat extends LitElement {
 			this.artifactsState = reconstructArtifactsFromMessages(this.messages);
 			this.activeArtifact = null;
 			this.error = null;
+			this.restorePendingSessionRequests(session);
 			await this.refreshUiState(session.id);
 			this.requestUpdate(); // Force update
 			await this.updateComplete; // Wait for render
@@ -3161,94 +3303,11 @@ export class ComposerChat extends LitElement {
 					}
 
 					case "client_tool_request": {
-						if (agentEvent.toolName === "artifacts") {
-							const args = coerceArtifactsArgs(agentEvent.args);
-							if (args.command === "logs" && args.filename) {
-								const sandboxId = `artifact:${args.filename}`;
-								const snap = getSandboxConsoleSnapshot(sandboxId);
-								const logs = snap?.logs ?? [];
-								const error = snap?.lastError ?? null;
-								const text = (() => {
-									if (logs.length === 0 && !error) {
-										return `No logs captured for ${args.filename}. Open the artifact preview to generate logs.`;
-									}
-									const lines: string[] = [`Logs for ${args.filename}`, ""];
-									for (const l of logs) {
-										lines.push(`[${l.level}] ${l.text}`);
-									}
-									if (error) {
-										lines.push("", "Last error:", error.message);
-										if (error.stack) lines.push(error.stack);
-									}
-									return lines.filter(Boolean).join("\n");
-								})();
-								await this.apiClient.sendClientToolResult({
-									toolCallId: agentEvent.toolCallId,
-									content: [{ type: "text", text }],
-									isError: false,
-								});
-								break;
-							}
-							const result = applyArtifactsCommand(this.artifactsState, args);
-							this.artifactsState = result.state;
-							if (!result.isError && args.filename) {
-								this.setActiveArtifact(args.filename);
-							}
-							await this.apiClient.sendClientToolResult({
-								toolCallId: agentEvent.toolCallId,
-								content: [{ type: "text", text: result.output }],
-								isError: result.isError,
-							});
-						} else if (agentEvent.toolName === "javascript_repl") {
-							const res = await this.runJavascriptRepl(agentEvent.args);
-							await this.apiClient.sendClientToolResult({
-								toolCallId: agentEvent.toolCallId,
-								content: [{ type: "text", text: res.text }],
-								isError: res.isError,
-							});
-						} else if (
-							agentEvent.toolName === "list_mcp_servers" ||
-							agentEvent.toolName === "list_mcp_tools" ||
-							agentEvent.toolName === "list_mcp_resources" ||
-							agentEvent.toolName === "read_mcp_resource" ||
-							agentEvent.toolName === "list_mcp_prompts" ||
-							agentEvent.toolName === "get_mcp_prompt"
-						) {
-							try {
-								const res = await this.runMcpClientTool(
-									agentEvent.toolName,
-									agentEvent.args,
-								);
-								await this.apiClient.sendClientToolResult({
-									toolCallId: agentEvent.toolCallId,
-									content: [{ type: "text", text: res.text }],
-									isError: res.isError,
-								});
-							} catch (error) {
-								await this.apiClient.sendClientToolResult({
-									toolCallId: agentEvent.toolCallId,
-									content: [
-										{
-											type: "text",
-											text:
-												error instanceof Error ? error.message : String(error),
-										},
-									],
-									isError: true,
-								});
-							}
-						} else {
-							await this.apiClient.sendClientToolResult({
-								toolCallId: agentEvent.toolCallId,
-								content: [
-									{
-										type: "text",
-										text: `Unsupported client tool: ${agentEvent.toolName}`,
-									},
-								],
-								isError: true,
-							});
-						}
+						await this.handleClientToolRequest(
+							agentEvent.toolCallId,
+							agentEvent.toolName,
+							agentEvent.args,
+						);
 						break;
 					}
 

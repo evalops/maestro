@@ -377,6 +377,14 @@ export interface ComposerSessionSummary {
 	tags?: string[];
 }
 
+export interface ComposerPendingClientToolRequest {
+	toolCallId: string;
+	toolName: string;
+	args: unknown;
+	kind?: "client_tool" | "user_input";
+	reason?: string;
+}
+
 /**
  * Full session data including message history.
  *
@@ -385,6 +393,12 @@ export interface ComposerSessionSummary {
 export interface ComposerSession extends ComposerSessionSummary {
 	/** Complete conversation history */
 	messages: ComposerMessage[];
+	/** Pending approval requests that still require a decision */
+	pendingApprovalRequests?: ComposerActionApprovalRequest[];
+	/** Pending client or ask_user requests that still require client handling */
+	pendingClientToolRequests?: ComposerPendingClientToolRequest[];
+	/** Pending tool retry requests that still require a decision */
+	pendingToolRetryRequests?: ComposerToolRetryRequest[];
 }
 
 /**

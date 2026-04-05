@@ -197,17 +197,6 @@ export const ComposerSessionSummarySchema = Type.Object({
 	tags: Type.Optional(Type.Array(Type.String())),
 });
 
-export const ComposerSessionSchema = Type.Object({
-	id: Type.String(),
-	title: Type.Optional(Type.String()),
-	createdAt: Type.String(),
-	updatedAt: Type.String(),
-	messageCount: Type.Number(),
-	favorite: Type.Optional(Type.Boolean()),
-	tags: Type.Optional(Type.Array(Type.String())),
-	messages: Type.Array(ComposerMessageSchema),
-});
-
 export const ComposerAssistantMessageEventSchema = Type.Union([
 	Type.Object({
 		type: Type.Literal("start"),
@@ -304,6 +293,16 @@ export const ComposerActionApprovalDecisionSchema = Type.Object({
 	resolvedBy: Type.Union([Type.Literal("policy"), Type.Literal("user")]),
 });
 
+export const ComposerPendingClientToolRequestSchema = Type.Object({
+	toolCallId: Type.String(),
+	toolName: Type.String(),
+	args: Type.Unknown(),
+	kind: Type.Optional(
+		Type.Union([Type.Literal("client_tool"), Type.Literal("user_input")]),
+	),
+	reason: Type.Optional(Type.String()),
+});
+
 export const ComposerToolRetryRequestSchema = Type.Object({
 	id: Type.String(),
 	toolCallId: Type.String(),
@@ -327,6 +326,26 @@ export const ComposerToolRetryDecisionSchema = Type.Object({
 		Type.Literal("user"),
 		Type.Literal("runtime"),
 	]),
+});
+
+export const ComposerSessionSchema = Type.Object({
+	id: Type.String(),
+	title: Type.Optional(Type.String()),
+	createdAt: Type.String(),
+	updatedAt: Type.String(),
+	messageCount: Type.Number(),
+	favorite: Type.Optional(Type.Boolean()),
+	tags: Type.Optional(Type.Array(Type.String())),
+	messages: Type.Array(ComposerMessageSchema),
+	pendingApprovalRequests: Type.Optional(
+		Type.Array(ComposerActionApprovalRequestSchema),
+	),
+	pendingClientToolRequests: Type.Optional(
+		Type.Array(ComposerPendingClientToolRequestSchema),
+	),
+	pendingToolRetryRequests: Type.Optional(
+		Type.Array(ComposerToolRetryRequestSchema),
+	),
 });
 
 export const ComposerAgentEventSchema = Type.Union([
