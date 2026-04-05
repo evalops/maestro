@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { clearRegisteredHooks, registerHook } from "../../src/hooks/index.js";
 import { main } from "../../src/main.js";
 
 interface MockAgentState {
@@ -29,6 +30,11 @@ vi.mock("../../src/agent/agent.js", async () => {
 	class Agent {
 		public state: MockAgentState;
 		private subscribers: SubscriptionHandler[] = [];
+		private nextRunSystemPromptAdditions: string[] = [];
+		private nextRunPromptOnlyMessages: Array<{
+			role: string;
+			content: Array<{ type: string; text: string }>;
+		}> = [];
 
 		constructor(config: MockAgentConfig) {
 			this.state = {
@@ -42,6 +48,11 @@ vi.mock("../../src/agent/agent.js", async () => {
 		}
 
 		async prompt(message: string) {
+			const queuedSystemPrompt = this.nextRunSystemPromptAdditions.join("\n");
+			const queuedPromptOnlyMessages = [...this.nextRunPromptOnlyMessages];
+			this.nextRunSystemPromptAdditions = [];
+			this.nextRunPromptOnlyMessages = [];
+
 			this.state.messages.push({
 				role: "user",
 				content: [{ type: "text", text: message }],
@@ -49,7 +60,17 @@ vi.mock("../../src/agent/agent.js", async () => {
 
 			const responseText = message.startsWith("JSON:")
 				? message.slice(5)
-				: `Echo: ${message}`;
+				: [
+						queuedSystemPrompt,
+						queuedPromptOnlyMessages
+							.flatMap((queuedMessage) => queuedMessage.content)
+							.filter((block) => block.type === "text")
+							.map((block) => block.text)
+							.join("\n"),
+						`Echo: ${message}`,
+					]
+						.filter(Boolean)
+						.join("\n");
 			const assistantMessage = {
 				role: "assistant",
 				content: [{ type: "text", text: responseText }],
@@ -81,6 +102,17 @@ vi.mock("../../src/agent/agent.js", async () => {
 
 		setThinkingLevel(level: string) {
 			this.state.thinkingLevel = level;
+		}
+
+		queueNextRunSystemPromptAddition(text: string) {
+			this.nextRunSystemPromptAdditions.push(text);
+		}
+
+		queueNextRunPromptOnlyMessage(message: {
+			role: string;
+			content: Array<{ type: string; text: string }>;
+		}) {
+			this.nextRunPromptOnlyMessages.push(message);
 		}
 	}
 
@@ -173,6 +205,7 @@ vi.mock("../../src/models/registry.js", () => ({
 describe("CLI integration", () => {
 	const originalEnv = process.env.ANTHROPIC_API_KEY;
 	const originalAgentDir = process.env.MAESTRO_AGENT_DIR;
+	const originalMaestroHome = process.env.MAESTRO_HOME;
 	const originalOpenAI = process.env.OPENAI_API_KEY;
 	const originalClaude = process.env.CLAUDE_CODE_TOKEN;
 	const originalAnthropicOAuthFile = process.env.ANTHROPIC_OAUTH_FILE;
@@ -184,6 +217,7 @@ describe("CLI integration", () => {
 
 	beforeEach(() => {
 		tempAgentDir = mkdtempSync(join(tmpdir(), "composer-cli-test-"));
+		process.env.MAESTRO_HOME = tempAgentDir;
 		process.env.MAESTRO_AGENT_DIR = tempAgentDir;
 		process.env.ANTHROPIC_OAUTH_FILE = join(
 			tempAgentDir,
@@ -235,9 +269,15 @@ describe("CLI integration", () => {
 		} else {
 			process.env.MAESTRO_AGENT_DIR = originalAgentDir;
 		}
+		if (originalMaestroHome === undefined) {
+			Reflect.deleteProperty(process.env, "MAESTRO_HOME");
+		} else {
+			process.env.MAESTRO_HOME = originalMaestroHome;
+		}
 		if (tempAgentDir) {
 			rmSync(tempAgentDir, { recursive: true, force: true });
 		}
+		clearRegisteredHooks();
 		vi.restoreAllMocks();
 		vi.resetModules();
 	});
@@ -311,6 +351,29 @@ describe("CLI integration", () => {
 		await main(["exec", "Summarize release notes"]);
 		const combined = output.join("\n");
 		expect(combined).toContain("Echo: Summarize release notes");
+	});
+
+	it("applies SessionStart hook context before the first CLI prompt", async () => {
+		registerHook("SessionStart", {
+			type: "callback",
+			callback: async () => ({
+				systemMessage: "Hook says: keep changes scoped.",
+				hookSpecificOutput: {
+					hookEventName: "SessionStart",
+					additionalContext: "Hook says: this repo uses Nx.",
+				},
+			}),
+		});
+
+		await main(["hello"]);
+		const combined = output.join("\n");
+		expect(combined).toContain(
+			"SessionStart hook system guidance:\nHook says: keep changes scoped.",
+		);
+		expect(combined).toContain(
+			"SessionStart hook context:\nHook says: this repo uses Nx.",
+		);
+		expect(combined).toContain("Echo: hello");
 	});
 
 	it("streams JSON events in composer exec", async () => {

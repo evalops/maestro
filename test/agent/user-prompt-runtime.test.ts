@@ -9,7 +9,10 @@ import type {
 	Model,
 	TextContent,
 } from "../../src/agent/types.js";
-import { applyUserPromptSubmitHooks } from "../../src/agent/user-prompt-runtime.js";
+import {
+	applySessionStartHooks,
+	applyUserPromptSubmitHooks,
+} from "../../src/agent/user-prompt-runtime.js";
 import { clearRegisteredHooks, registerHook } from "../../src/hooks/index.js";
 
 const mockModel: Model<"openai-completions"> = {
@@ -101,6 +104,80 @@ describe("user prompt runtime", () => {
 			],
 			timestamp: expect.any(Number),
 		});
+	});
+
+	it("queues SessionStart hook context for the first run", async () => {
+		const queueNextRunPromptOnlyMessage = vi.fn();
+		const queueNextRunSystemPromptAddition = vi.fn();
+
+		registerHook("SessionStart", {
+			type: "callback",
+			callback: async () => ({
+				hookSpecificOutput: {
+					hookEventName: "SessionStart",
+					additionalContext: "This workspace uses generated API clients.",
+				},
+				systemMessage: "Prefer workspace-local scripts over global installs.",
+			}),
+		});
+
+		await applySessionStartHooks({
+			agent: {
+				queueNextRunPromptOnlyMessage,
+				queueNextRunSystemPromptAddition,
+			} as unknown as Agent,
+			sessionManager: {
+				getSessionId: () => "session-start",
+			} as never,
+			cwd: "/tmp/session-start-hooks",
+			source: "cli",
+		});
+
+		expect(queueNextRunSystemPromptAddition).toHaveBeenCalledWith(
+			"SessionStart hook system guidance:\nPrefer workspace-local scripts over global installs.",
+		);
+		expect(queueNextRunPromptOnlyMessage).toHaveBeenCalledWith({
+			role: "user",
+			content: [
+				{
+					type: "text",
+					text: "SessionStart hook context:\nThis workspace uses generated API clients.",
+				},
+			],
+			timestamp: expect.any(Number),
+		});
+	});
+
+	it("ignores SessionStart blocking directives without throwing", async () => {
+		const queueNextRunPromptOnlyMessage = vi.fn();
+		const queueNextRunSystemPromptAddition = vi.fn();
+
+		registerHook("SessionStart", {
+			type: "callback",
+			callback: async () => ({
+				continue: false,
+				reason: "SessionStart should not block startup",
+				hookSpecificOutput: {
+					hookEventName: "SessionStart",
+					additionalContext: "Startup context still applies.",
+				},
+			}),
+		});
+
+		await applySessionStartHooks({
+			agent: {
+				queueNextRunPromptOnlyMessage,
+				queueNextRunSystemPromptAddition,
+			} as unknown as Agent,
+			sessionManager: {
+				getSessionId: () => "session-start-blocked",
+			} as never,
+			cwd: "/tmp/session-start-hooks",
+			source: "interactive",
+		});
+
+		expect(queueNextRunSystemPromptAddition).not.toHaveBeenCalled();
+		expect(queueNextRunPromptOnlyMessage).not.toHaveBeenCalled();
 	});
 
 	it("delivers next-run prompt context once without persisting it", async () => {

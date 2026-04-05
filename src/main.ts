@@ -100,7 +100,10 @@ import {
 	isAssistantMessage,
 } from "./agent/index.js";
 import { type ToolRetryMode, ToolRetryService } from "./agent/tool-retry.js";
-import { runUserPromptWithRecovery } from "./agent/user-prompt-runtime.js";
+import {
+	applySessionStartHooks,
+	runUserPromptWithRecovery,
+} from "./agent/user-prompt-runtime.js";
 import { createAuthSetup, validateCodexFlags } from "./bootstrap/auth-setup.js";
 import {
 	disposeCheckpointService,
@@ -331,6 +334,27 @@ async function runSingleShotMode(
 		}
 		throw error;
 	}
+}
+
+function resolveSessionStartHookSource(params: {
+	mode: Mode;
+	command?: string;
+	isInteractive: boolean;
+	headless?: boolean;
+}): string {
+	if (params.command === "exec") {
+		return "exec";
+	}
+	if (params.mode === "rpc") {
+		return "rpc";
+	}
+	if (params.mode === "headless" || params.headless) {
+		return "headless";
+	}
+	if (params.isInteractive) {
+		return "interactive";
+	}
+	return "cli";
 }
 
 /**
@@ -1074,6 +1098,18 @@ export async function main(args: string[]) {
 			version: VERSION,
 			models: parsed.models,
 		});
+
+	await applySessionStartHooks({
+		agent,
+		sessionManager,
+		cwd: process.cwd(),
+		source: resolveSessionStartHookSource({
+			mode,
+			command: parsed.command,
+			isInteractive,
+			headless: parsed.headless,
+		}),
+	});
 
 	// ─────────────────────────────────────────────────────────────────────────────
 	// PHASE 14.5: Event Subscriptions

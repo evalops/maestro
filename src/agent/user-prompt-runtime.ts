@@ -1,4 +1,5 @@
 import { createSessionHookService } from "../hooks/session-integration.js";
+import { createLogger } from "../utils/logger.js";
 import type { Agent } from "./agent.js";
 import { buildCompactionHookContext } from "./compaction-hooks.js";
 import {
@@ -12,6 +13,25 @@ type PromptRuntimeSessionManager =
 	RunWithPromptRecoveryOptions["sessionManager"] & {
 		getSessionId?: () => string | undefined;
 	};
+
+const logger = createLogger("prompt-runtime-hooks");
+
+function buildSessionStartHookContextMessage(text: string): UserMessage {
+	return {
+		role: "user",
+		content: [
+			{
+				type: "text",
+				text: `SessionStart hook context:\n${text}`,
+			},
+		],
+		timestamp: Date.now(),
+	};
+}
+
+function buildSessionStartHookSystemGuidance(text: string): string {
+	return `SessionStart hook system guidance:\n${text}`;
+}
 
 function buildUserPromptHookContextMessage(text: string): UserMessage {
 	return {
@@ -28,6 +48,52 @@ function buildUserPromptHookContextMessage(text: string): UserMessage {
 
 function buildUserPromptHookSystemGuidance(text: string): string {
 	return `UserPromptSubmit hook system guidance:\n${text}`;
+}
+
+export async function applySessionStartHooks(params: {
+	agent: Agent;
+	sessionManager: PromptRuntimeSessionManager;
+	cwd: string;
+	source: string;
+	signal?: AbortSignal;
+}): Promise<void> {
+	const service = createSessionHookService({
+		cwd: params.cwd,
+		sessionId: params.sessionManager.getSessionId?.(),
+	});
+	if (!service.hasHooks("SessionStart")) {
+		return;
+	}
+
+	const result = await service.runSessionStartHooks(
+		params.source,
+		params.signal,
+	);
+	if (result.blocked || result.preventContinuation) {
+		logger.warn(
+			"SessionStart hook attempted to stop session startup; ignoring control flow request",
+			{
+				source: params.source,
+				blocked: result.blocked,
+				preventContinuation: result.preventContinuation,
+				reason: result.blockReason ?? result.stopReason,
+			},
+		);
+	}
+
+	const systemMessage = result.systemMessage?.trim();
+	if (systemMessage) {
+		params.agent.queueNextRunSystemPromptAddition(
+			buildSessionStartHookSystemGuidance(systemMessage),
+		);
+	}
+
+	const additionalContext = result.additionalContext?.trim();
+	if (additionalContext) {
+		params.agent.queueNextRunPromptOnlyMessage(
+			buildSessionStartHookContextMessage(additionalContext),
+		);
+	}
 }
 
 export async function applyUserPromptSubmitHooks(params: {
