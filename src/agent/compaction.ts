@@ -43,6 +43,7 @@ import {
 import {
 	isContextOverflow as isCompactionOverflowMessage,
 	isOverflowErrorMessage,
+	parseOverflowDetails,
 } from "./context-overflow.js";
 import { convertAppMessageToLlm } from "./custom-messages.js";
 import type {
@@ -227,8 +228,26 @@ function isOverflowRetryMarker(message: AppMessage | undefined): boolean {
 	);
 }
 
+function getOverflowTokenGap(errorMessage: string): number | undefined {
+	const parsed = parseOverflowDetails(errorMessage);
+	if (parsed?.requestedTokens === undefined || parsed.maxTokens === undefined) {
+		return undefined;
+	}
+	const gap = parsed.requestedTokens - parsed.maxTokens;
+	return gap > 0 ? gap : undefined;
+}
+
+function estimateRetryMessageTokens(message: AppMessage): number {
+	const llmMessage = convertAppMessageToLlm(message);
+	if (!llmMessage) {
+		return 0;
+	}
+	return Math.max(1, Math.ceil(JSON.stringify(llmMessage).length / 4));
+}
+
 function truncateSummaryInputForOverflowRetry(
 	messages: AppMessage[],
+	overflowErrorMessage?: string,
 ): AppMessage[] | null {
 	if (messages.length < 2) {
 		return null;
@@ -243,13 +262,37 @@ function truncateSummaryInputForOverflowRetry(
 		return null;
 	}
 
-	const approximateDropCount = Math.max(1, Math.floor(body.length * 0.2));
 	const turnBoundaries = findTurnBoundaries(body, 0, body.length).filter(
 		(index) => index > 0,
 	);
-	let boundary =
-		turnBoundaries.find((index) => index >= approximateDropCount) ??
-		approximateDropCount;
+	const tokenGap = overflowErrorMessage
+		? getOverflowTokenGap(overflowErrorMessage)
+		: undefined;
+	let boundary = 0;
+	if (tokenGap !== undefined) {
+		let coveredTokens = 0;
+		const segmentEnds = [...turnBoundaries, body.length];
+		for (const segmentEnd of segmentEnds) {
+			if (segmentEnd <= boundary) {
+				continue;
+			}
+			coveredTokens += body
+				.slice(boundary, segmentEnd)
+				.reduce(
+					(total, message) => total + estimateRetryMessageTokens(message),
+					0,
+				);
+			boundary = segmentEnd;
+			if (coveredTokens >= tokenGap) {
+				break;
+			}
+		}
+	} else {
+		const approximateDropCount = Math.max(1, Math.floor(body.length * 0.2));
+		boundary =
+			turnBoundaries.find((index) => index >= approximateDropCount) ??
+			approximateDropCount;
+	}
 	boundary = adjustBoundaryForToolResults(body, boundary);
 	if (boundary >= body.length) {
 		return null;
@@ -1202,6 +1245,7 @@ export async function performCompaction(params: {
 			) {
 				const truncated = truncateSummaryInputForOverflowRetry(
 					summaryInputForAttempt,
+					error.message,
 				);
 				if (truncated) {
 					summaryInputForAttempt = truncated;

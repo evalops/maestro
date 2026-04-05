@@ -541,6 +541,39 @@ describe("performCompaction", () => {
 		expect(thirdInput.length).toBeLessThan(secondInput.length);
 	});
 
+	it("uses parsed overflow gap to skip multiple turns in one retry", async () => {
+		const messages: AppMessage[] = [];
+		for (let i = 0; i < 10; i++) {
+			messages.push(createUserMessage(`message ${i} ${"x".repeat(1000)}`));
+			messages.push(
+				createAssistantMessage(
+					`response ${i} ${"y".repeat(1000)}`,
+					createUsage(100 * (i + 1), 50),
+				),
+			);
+		}
+		const agent = createMockAgent(messages);
+		(agent.generateSummary as ReturnType<typeof vi.fn>)
+			.mockRejectedValueOnce(
+				new Error("prompt is too long: 2500 tokens > 1600 maximum"),
+			)
+			.mockResolvedValueOnce(createAssistantMessage("summary after retry"));
+		const sessionManager = createMockSessionManager();
+
+		await performCompaction({ agent, sessionManager });
+
+		expect(agent.generateSummary).toHaveBeenCalledTimes(2);
+		const firstInput = (agent.generateSummary as ReturnType<typeof vi.fn>).mock
+			.calls[0]?.[0] as AppMessage[];
+		const secondInput = (agent.generateSummary as ReturnType<typeof vi.fn>).mock
+			.calls[1]?.[0] as AppMessage[];
+		expect(firstInput.length - secondInput.length).toBeGreaterThanOrEqual(3);
+		expect(secondInput[0]).toMatchObject({
+			role: "user",
+			content: "[earlier conversation truncated for compaction retry]",
+		});
+	});
+
 	it("passes auto and customInstructions to saveCompaction", async () => {
 		const messages = buildConversation(10);
 		const agent = createMockAgent(messages);
