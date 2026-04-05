@@ -17,6 +17,10 @@ import {
 	isContextOverflow as isAssistantContextOverflow,
 	parseOverflowDetails,
 } from "./context-overflow.js";
+import {
+	getCurrentTaskBudget,
+	setCurrentTaskBudget,
+} from "./task-budget-access.js";
 import { isAssistantMessage } from "./type-guards.js";
 import type { AppMessage, AssistantMessage } from "./types.js";
 
@@ -157,6 +161,33 @@ function getErrorMessage(error: unknown): string | undefined {
 
 function isAbortError(error: unknown): boolean {
 	return error instanceof Error && error.name === "AbortError";
+}
+
+function getTaskBudgetPreCompactionTokens(params: {
+	agent: Agent;
+	newMessages: AppMessage[];
+	error: unknown;
+}): number | undefined {
+	const lastAssistant =
+		getRecoverableOverflowAssistantMessage(params.agent) ??
+		getLastAssistantMessage(params.newMessages);
+	if (lastAssistant?.usage) {
+		return (
+			lastAssistant.usage.input +
+			lastAssistant.usage.cacheRead +
+			lastAssistant.usage.cacheWrite
+		);
+	}
+
+	const overflowMessage = getOverflowErrorMessage(
+		params.agent,
+		params.newMessages,
+		params.error,
+	);
+	const parsedDetails = overflowMessage
+		? parseOverflowDetails(overflowMessage)
+		: null;
+	return parsedDetails?.requestedTokens;
 }
 
 function getTerminalStopFailure(
@@ -479,6 +510,7 @@ async function recoverFromPromptOverflow(
 	hookService: CompactionHookService | undefined,
 	customInstructions: string | undefined,
 	persistCustomInstructions: boolean,
+	preCompactContextTokens: number | undefined,
 	callbacks?: PromptRecoveryCallbacks,
 ): Promise<boolean> {
 	callbacks?.onCompacting?.();
@@ -510,6 +542,21 @@ async function recoverFromPromptOverflow(
 	}
 
 	callbacks?.onCompacted?.(result);
+	const currentTaskBudget = getCurrentTaskBudget(agent);
+	if (
+		currentTaskBudget &&
+		typeof preCompactContextTokens === "number" &&
+		preCompactContextTokens > 0
+	) {
+		setCurrentTaskBudget(agent, {
+			total: currentTaskBudget.total,
+			remaining: Math.max(
+				0,
+				(currentTaskBudget.remaining ?? currentTaskBudget.total) -
+					preCompactContextTokens,
+			),
+		});
+	}
 	await agent.continue({
 		continuationPrompt: POST_COMPACTION_CONTINUATION_PROMPT,
 	});
@@ -546,6 +593,11 @@ export async function runWithPromptRecovery(
 	newMessages = agent.state.messages.slice(initialMessageCount);
 
 	if (hasPromptOverflow(agent, newMessages, executionError)) {
+		const preCompactContextTokens = getTaskBudgetPreCompactionTokens({
+			agent,
+			newMessages,
+			error: executionError,
+		});
 		try {
 			const overflowHookGuidance = await runOverflowHooks(
 				agent,
@@ -560,6 +612,7 @@ export async function runWithPromptRecovery(
 				options.hookService,
 				overflowHookGuidance,
 				overflowHookGuidance === undefined,
+				preCompactContextTokens,
 				callbacks,
 			);
 			if (recovered) {

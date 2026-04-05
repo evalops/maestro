@@ -1327,6 +1327,11 @@ export interface AgentRunConfig {
 	temperature?: number;
 	/** Top-p sampling override (0.0-1.0) */
 	topP?: number;
+	/** Optional Anthropic API-side task budget for the current turn */
+	taskBudget?: {
+		total: number;
+		remaining?: number;
+	};
 }
 
 /**
@@ -1396,6 +1401,11 @@ export interface StreamOptions {
 	headers?: Record<string, string>;
 	/** Authentication type for the request */
 	authType?: "api-key" | "anthropic-oauth";
+	/** Optional Anthropic API-side task budget for the current turn */
+	taskBudget?: {
+		total: number;
+		remaining?: number;
+	};
 }
 
 /**

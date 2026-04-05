@@ -202,6 +202,8 @@ export interface AnthropicOptions extends StreamOptions {
 	thinking?: ReasoningEffort;
 }
 
+const ANTHROPIC_TASK_BUDGETS_BETA_HEADER = "task-budgets-2026-03-13";
+
 interface AnthropicTextContent {
 	type: "text";
 	text: string;
@@ -351,6 +353,13 @@ interface AnthropicRequestBody {
 	thinking?: {
 		type: "enabled";
 		budget_tokens: number;
+	};
+	output_config?: {
+		task_budget?: {
+			type: "tokens";
+			total: number;
+			remaining?: number;
+		};
 	};
 }
 
@@ -630,6 +639,18 @@ export async function* streamAnthropic(
 		}
 	}
 
+	if (options.taskBudget) {
+		requestBody.output_config = {
+			task_budget: {
+				type: "tokens",
+				total: options.taskBudget.total,
+				...(options.taskBudget.remaining !== undefined
+					? { remaining: options.taskBudget.remaining }
+					: {}),
+			},
+		};
+	}
+
 	const headers: Record<string, string> = {
 		"Content-Type": "application/json",
 		"anthropic-version": "2023-06-01",
@@ -639,7 +660,10 @@ export async function* streamAnthropic(
 	const isOAuth = options.authType === "anthropic-oauth";
 	if (isOAuth) {
 		headers.authorization = `Bearer ${apiKey}`;
-		headers["anthropic-beta"] = CLAUDE_CODE_BETA_HEADER;
+		headers["anthropic-beta"] = [
+			CLAUDE_CODE_BETA_HEADER,
+			...(options.taskBudget ? [ANTHROPIC_TASK_BUDGETS_BETA_HEADER] : []),
+		].join(",");
 	} else {
 		headers["x-api-key"] = apiKey;
 		const betaHeaders = ["prompt-caching-2024-07-31"];
@@ -648,6 +672,9 @@ export async function* streamAnthropic(
 		}
 		if (hasAdvancedToolFeatures) {
 			betaHeaders.push("advanced-tool-use-2025-11-20");
+		}
+		if (options.taskBudget) {
+			betaHeaders.push(ANTHROPIC_TASK_BUDGETS_BETA_HEADER);
 		}
 		headers["anthropic-beta"] = betaHeaders.join(",");
 	}

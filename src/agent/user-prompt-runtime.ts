@@ -9,6 +9,10 @@ import {
 	runWithPromptRecovery,
 } from "./prompt-recovery.js";
 import {
+	getTaskBudgetTotal,
+	setCurrentTaskBudget,
+} from "./task-budget-access.js";
+import {
 	checkTokenBudget,
 	createTokenBudgetTracker,
 	formatTokenBudgetStatus,
@@ -496,6 +500,7 @@ export async function runUserPromptWithRecovery(params: {
 }): Promise<void> {
 	const messageStartIndex = params.agent.state.messages.length;
 	const turnStartedAt = Date.now();
+	const taskBudgetTotal = getTaskBudgetTotal(params.agent);
 	const abortAgent = () => {
 		params.agent.abort();
 	};
@@ -509,6 +514,12 @@ export async function runUserPromptWithRecovery(params: {
 	}
 
 	setRecoverableOverflowErrorSuppression(params.agent, true);
+	setCurrentTaskBudget(
+		params.agent,
+		typeof taskBudgetTotal === "number"
+			? { total: taskBudgetTotal }
+			: undefined,
+	);
 	try {
 		throwIfAborted(params.signal);
 		await applyUserPromptSubmitHooks(params);
@@ -549,6 +560,7 @@ export async function runUserPromptWithRecovery(params: {
 		});
 	} finally {
 		params.signal?.removeEventListener("abort", abortAgent);
+		setCurrentTaskBudget(params.agent, undefined);
 		setRecoverableOverflowErrorSuppression(params.agent, false);
 	}
 }

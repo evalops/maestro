@@ -53,6 +53,7 @@ export function printHelp(version: string) {
 	const options = `${sectionHeading("Options")}${[
 		"--provider <name>       Provider name (default: anthropic)",
 		"-m, --model <id>        Model ID (default: claude-sonnet-4-5)",
+		"--task-budget <tokens> API-side Anthropic task budget in tokens",
 		"--models <patterns>     Comma-separated patterns for Ctrl+P model cycling",
 		"--tools <names>         Comma-separated tool names to enable (e.g., read,search,list,find)",
 		"--api-key <key>         API key (defaults to env vars)",

@@ -3,6 +3,7 @@ export type Mode = "text" | "json" | "rpc" | "headless";
 export interface Args {
 	provider?: string;
 	model?: string;
+	taskBudget?: number;
 	modelsFile?: string;
 	apiKey?: string;
 	systemPrompt?: string;
@@ -112,6 +113,11 @@ export function parseArgs(args: string[]): Args {
 			result.provider = args[++i];
 		} else if ((arg === "--model" || arg === "-m") && i + 1 < args.length) {
 			result.model = args[++i];
+		} else if (arg === "--task-budget" && i + 1 < args.length) {
+			const value = Number(args[++i] ?? "");
+			if (Number.isInteger(value) && value > 0) {
+				result.taskBudget = value;
+			}
 		} else if (arg === "--models" && i + 1 < args.length) {
 			const modelsArg = args[++i]!;
 			const patterns = modelsArg

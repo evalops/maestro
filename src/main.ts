@@ -1027,6 +1027,7 @@ export async function main(args: string[]) {
 	const { createAgentInstance } = await import(
 		"./bootstrap/agent-creation-setup.js"
 	);
+	const { setTaskBudgetTotal } = await import("./agent/task-budget-access.js");
 	const enterpriseUser = (() => {
 		const u = enterpriseContext.getUser();
 		return u ? { id: u.userId, orgId: u.orgId } : undefined;
@@ -1047,6 +1048,7 @@ export async function main(args: string[]) {
 		composer: parsed.composer,
 		cwd: process.cwd(),
 	});
+	setTaskBudgetTotal(agent, parsed.taskBudget);
 
 	// ─────────────────────────────────────────────────────────────────────────────
 	// PHASE 11.5: TypeScript Hooks Initialization

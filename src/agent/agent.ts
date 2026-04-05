@@ -418,6 +418,13 @@ export class Agent {
 	private nextRunPromptOnlyQueue: Message[] = [];
 	private promptOnlyQueue: Message[] = [];
 	private nextRunSystemPromptAdditions: string[] = [];
+	private defaultTaskBudgetTotal?: number;
+	private currentTaskBudget?:
+		| {
+				total: number;
+				remaining?: number;
+		  }
+		| undefined;
 	private steeringMode: "all" | "one" = "all";
 	private followUpMode: "all" | "one" = "all";
 	private queueMode: "all" | "one" = "all";
@@ -759,6 +766,34 @@ export class Agent {
 	 */
 	setTopP(p: number | undefined): void {
 		this._state.topP = p;
+	}
+
+	setTaskBudgetTotal(total: number | undefined): void {
+		this.defaultTaskBudgetTotal = total;
+	}
+
+	getTaskBudgetTotal(): number | undefined {
+		return this.defaultTaskBudgetTotal;
+	}
+
+	setCurrentTaskBudget(
+		taskBudget:
+			| {
+					total: number;
+					remaining?: number;
+			  }
+			| undefined,
+	): void {
+		this.currentTaskBudget = taskBudget ? { ...taskBudget } : undefined;
+	}
+
+	getCurrentTaskBudget():
+		| {
+				total: number;
+				remaining?: number;
+		  }
+		| undefined {
+		return this.currentTaskBudget ? { ...this.currentTaskBudget } : undefined;
 	}
 
 	/**
@@ -1188,6 +1223,7 @@ export class Agent {
 		this.withheldRecoverableOverflowError = undefined;
 		this.withheldRecoverableLengthMessages = [];
 		this.pendingMergedRecoverableTurnEnd = undefined;
+		this.currentTaskBudget = undefined;
 		// Note: Do NOT clear listeners - they contain the TUI subscription
 		// and must persist across resets for UI updates to work
 	}
@@ -1303,6 +1339,7 @@ export class Agent {
 				sandbox: this._state.sandbox,
 				temperature: this._state.temperature,
 				topP: this._state.topP,
+				taskBudget: this.currentTaskBudget,
 			};
 
 			for await (const event of this.transport.run(
@@ -1584,6 +1621,7 @@ export class Agent {
 				sandbox: this._state.sandbox,
 				temperature: this._state.temperature,
 				topP: this._state.topP,
+				taskBudget: this.currentTaskBudget,
 				emitUserMessageEnd: false,
 			};
 

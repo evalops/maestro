@@ -375,6 +375,7 @@ export class ProviderTransport implements AgentTransport {
 			signal,
 			authType: credential?.type ?? "api-key",
 			headers,
+			taskBudget: cfg.taskBudget,
 		};
 
 		let hasMoreToolCalls = true;

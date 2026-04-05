@@ -170,4 +170,57 @@ describe("Anthropic streaming", () => {
 		>;
 		expect(toolEnd.toolCall.arguments).toEqual({ path: "/tmp/object.txt" });
 	});
+
+	it("sends task budget output_config and beta header when configured", async () => {
+		const lines = [
+			sse("message_start", {
+				type: "message_start",
+				message: {
+					id: "msg_03",
+					type: "message",
+					role: "assistant",
+					content: [],
+					model: "claude-test",
+					stop_reason: null,
+					usage: { input_tokens: 10, output_tokens: 0 },
+				},
+			}),
+			sse("message_delta", {
+				type: "message_delta",
+				delta: { stop_reason: "end_turn" },
+				usage: { output_tokens: 5 },
+			}),
+			sse("message_stop", { type: "message_stop" }),
+		];
+
+		const mockFetch = vi.mocked(fetch);
+		mockFetch.mockResolvedValue(
+			new Response(makeStream(lines), { status: 200 }),
+		);
+
+		for await (const _ of streamAnthropic(baseModel, baseContext, {
+			apiKey: "test-key",
+			taskBudget: {
+				total: 50_000,
+				remaining: 32_000,
+			},
+		})) {
+			// Drain the stream.
+		}
+
+		expect(mockFetch).toHaveBeenCalledOnce();
+		const [, init] = mockFetch.mock.calls[0] ?? [];
+		const request = init as RequestInit;
+		const headers = request.headers as Record<string, string>;
+		expect(headers["anthropic-beta"]).toContain("task-budgets-2026-03-13");
+		expect(JSON.parse(String(request.body))).toMatchObject({
+			output_config: {
+				task_budget: {
+					type: "tokens",
+					total: 50_000,
+					remaining: 32_000,
+				},
+			},
+		});
+	});
 });

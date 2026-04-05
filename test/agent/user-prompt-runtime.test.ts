@@ -729,6 +729,96 @@ describe("user prompt runtime", () => {
 		expect(captured?.duration_ms).toBeGreaterThanOrEqual(0);
 	});
 
+	it("carries Anthropic task-budget remaining across overflow compaction and resets it next turn", async () => {
+		const configs: Array<AgentRunConfig["taskBudget"]> = [];
+		const overflowMessage =
+			"Anthropic rejected this request because the prompt exceeded 200,000 tokens. Use /compact to summarize prior messages or remove large attachments, then retry.";
+		let turn = 0;
+
+		class OverflowThenSuccessTransport implements AgentTransport {
+			async *run(
+				_messages: Message[],
+				userMessage: Message,
+				config: AgentRunConfig,
+			): AsyncGenerator<AgentEvent, void, unknown> {
+				configs.push(config.taskBudget);
+				if (typeof userMessage.content === "string" && turn === 0) {
+					turn += 1;
+					const assistant = {
+						...createAssistantMessageWithUsage("Too much context", {
+							inputTokens: 20_000,
+							outputTokens: 0,
+							stopReason: "error",
+						}),
+						errorMessage: overflowMessage,
+					};
+					yield { type: "message_start", message: assistant };
+					yield { type: "message_end", message: assistant };
+					return;
+				}
+
+				const assistant = createAssistantMessageWithUsage("Recovered", {
+					inputTokens: 21,
+					outputTokens: 55,
+					stopReason: "stop",
+				});
+				yield { type: "message_start", message: assistant };
+				yield { type: "message_end", message: assistant };
+			}
+		}
+
+		const agent = new Agent({
+			transport: new OverflowThenSuccessTransport(),
+			initialState: {
+				model: {
+					...mockModel,
+					api: "anthropic-messages",
+					provider: "anthropic",
+				} as Model<"anthropic-messages">,
+				tools: [],
+				systemPrompt: "Base system prompt",
+			},
+		});
+		agent.setTaskBudgetTotal(50_000);
+		agent.replaceMessages(buildConversation(5));
+		vi.spyOn(agent, "generateSummary").mockResolvedValue(
+			createAssistantMessage("LLM summary"),
+		);
+
+		const sessionManager = {
+			getSessionId: () => "session-task-budget-overflow",
+			buildSessionContext: () => ({
+				messageEntries: Array.from({ length: 50 }, (_, index) => ({
+					id: `entry-${index}`,
+				})),
+			}),
+			saveCompaction: vi.fn(),
+			saveMessage: vi.fn(),
+		};
+
+		await runUserPromptWithRecovery({
+			agent,
+			sessionManager: sessionManager as never,
+			cwd: "/tmp/task-budget-overflow",
+			prompt: "latest question",
+			execute: () => agent.prompt("latest question"),
+		});
+
+		await runUserPromptWithRecovery({
+			agent,
+			sessionManager: sessionManager as never,
+			cwd: "/tmp/task-budget-overflow",
+			prompt: "follow up",
+			execute: () => agent.prompt("follow up"),
+		});
+
+		expect(configs).toEqual([
+			{ total: 50_000 },
+			{ total: 50_000, remaining: 30_000 },
+			{ total: 50_000 },
+		]);
+	});
+
 	it("withholds recoverable overflow assistant errors until recovery succeeds", async () => {
 		const overflowMessage =
 			"Anthropic rejected this request because the prompt exceeded 200,000 tokens. Use /compact to summarize prior messages or remove large attachments, then retry.";
