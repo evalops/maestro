@@ -12,6 +12,7 @@ import {
 	type RunWithPromptRecoveryOptions,
 	runWithPromptRecovery,
 } from "./prompt-recovery.js";
+import { SESSION_START_INITIAL_USER_METADATA_KIND } from "./session-start-metadata.js";
 import {
 	getTaskBudgetTotal,
 	setCurrentTaskBudget,
@@ -48,10 +49,17 @@ function buildSessionStartHookContextMessage(text: string): HookMessage {
 	);
 }
 
-function buildSessionStartInitialUserMessage(text: string): UserMessage {
+function buildSessionStartInitialUserMessage(
+	text: string,
+	source?: string,
+): UserMessage {
 	return {
 		role: "user",
 		content: text,
+		metadata: {
+			kind: SESSION_START_INITIAL_USER_METADATA_KIND,
+			source,
+		},
 		timestamp: Date.now(),
 	};
 }
@@ -240,6 +248,7 @@ async function runSessionStartHooksInternal(params: {
 
 function buildPersistedSessionStartHookMessages(
 	outputs: SessionStartHookOutputs | null,
+	source: string,
 ): AppMessage[] {
 	if (!outputs) {
 		return [];
@@ -258,7 +267,7 @@ function buildPersistedSessionStartHookMessages(
 	}
 	if (outputs.initialUserMessage) {
 		persistedMessages.push(
-			buildSessionStartInitialUserMessage(outputs.initialUserMessage),
+			buildSessionStartInitialUserMessage(outputs.initialUserMessage, source),
 		);
 	}
 	return persistedMessages;
@@ -272,6 +281,7 @@ export async function collectPersistedSessionStartHookMessages(params: {
 }): Promise<AppMessage[]> {
 	return buildPersistedSessionStartHookMessages(
 		await runSessionStartHooksInternal(params),
+		params.source,
 	);
 }
 
@@ -319,7 +329,10 @@ export async function applySessionStartHooks(params: {
 	}
 	if (outputs.initialUserMessage) {
 		params.agent.queueNextRunHistoryMessage(
-			buildSessionStartInitialUserMessage(outputs.initialUserMessage),
+			buildSessionStartInitialUserMessage(
+				outputs.initialUserMessage,
+				params.source,
+			),
 		);
 	}
 }
