@@ -25,7 +25,8 @@ interface ConversationCompactorOptions {
 	toolComponents: Set<ToolExecutionComponent>;
 	renderMessages: () => void;
 	showInfoMessage: (message: string) => void;
-	runSessionStartHooks?: (source: string) => Promise<void>;
+	getPostKeepMessages?: (source: string) => Promise<AppMessage[]>;
+	runAfterCompaction?: (source: string) => Promise<void>;
 }
 
 /**
@@ -94,6 +95,8 @@ export class ConversationCompactor {
 					this.options.sessionManager,
 					process.cwd(),
 				),
+				getPostKeepMessages: async () =>
+					(await this.options.getPostKeepMessages?.("compact")) ?? [],
 				customInstructions: options?.customInstructions,
 				renderSummaryText: (summary: AssistantMessage) => {
 					const renderable = createRenderableMessage(summary as AppMessage);
@@ -110,7 +113,7 @@ export class ConversationCompactor {
 				return;
 			}
 
-			await this.options.runSessionStartHooks?.("compact");
+			await this.options.runAfterCompaction?.("compact");
 
 			this.options.chatContainer.clear();
 			this.options.toolComponents.clear();

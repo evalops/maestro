@@ -50,6 +50,7 @@ import { applySessionEndHooks } from "../agent/session-lifecycle-hooks.js";
 import { SessionRecoveryManager } from "../agent/session-recovery.js";
 import {
 	applySessionStartHooks,
+	collectPersistedSessionStartHookMessages,
 	runUserPromptWithRecovery,
 } from "../agent/user-prompt-runtime.js";
 import {
@@ -1014,17 +1015,16 @@ export class TuiRenderer {
 			toolComponents: this.toolOutputView.getTrackedComponents(),
 			renderMessages: () => this.renderInitialMessages(this.agent.state),
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
-			runSessionStartHooks: async (source) => {
-				if (source === "compact") {
-					this.restoreActiveSkillsAfterCompaction();
-				}
-				await applySessionStartHooks({
-					agent: this.agent,
+			getPostKeepMessages: (source) =>
+				collectPersistedSessionStartHookMessages({
 					sessionManager: this.sessionManager,
 					cwd: process.cwd(),
 					source,
-					delivery: "persistHistory",
-				});
+				}),
+			runAfterCompaction: async (source) => {
+				if (source === "compact") {
+					this.restoreActiveSkillsAfterCompaction();
+				}
 			},
 		});
 		this.compactionController = createCompactionController({

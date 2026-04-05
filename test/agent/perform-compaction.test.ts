@@ -696,6 +696,54 @@ describe("performCompaction", () => {
 		);
 	});
 
+	it("inserts compact restoration messages before PostCompact hook guidance", async () => {
+		const messages = buildConversation(10);
+		const agent = createMockAgentWithoutAppendMessage(messages);
+		const sessionManager = createMockSessionManager();
+		const hookService = createMockHookService();
+		(
+			hookService.runPostCompactHooks as ReturnType<typeof vi.fn>
+		).mockResolvedValue({
+			blocked: false,
+			preventContinuation: false,
+			systemMessage: "Keep using the compacted summary as the source of truth.",
+		});
+
+		const result = await performCompaction({
+			agent,
+			sessionManager,
+			hookService,
+			getPostKeepMessages: async () => [createSessionStartHookMessage()],
+		});
+
+		expect(result.success).toBe(true);
+		const replaced = getReplacedMessages(agent);
+		const sessionStartIndex = replaced.findIndex(
+			(message) =>
+				message.role === "hookMessage" && message.customType === "SessionStart",
+		);
+		const postCompactIndex = replaced.findIndex(
+			(message) =>
+				message.role === "hookMessage" && message.customType === "PostCompact",
+		);
+		expect(sessionStartIndex).toBeGreaterThan(1);
+		expect(postCompactIndex).toBeGreaterThan(sessionStartIndex);
+		expect(sessionManager.saveMessage).toHaveBeenNthCalledWith(
+			3,
+			expect.objectContaining({
+				role: "hookMessage",
+				customType: "SessionStart",
+			}),
+		);
+		expect(sessionManager.saveMessage).toHaveBeenNthCalledWith(
+			4,
+			expect.objectContaining({
+				role: "hookMessage",
+				customType: "PostCompact",
+			}),
+		);
+	});
+
 	it("keeps PostCompact hook guidance after preserved messages without appendMessage", async () => {
 		const messages = buildConversation(10);
 		const agent = createMockAgentWithoutAppendMessage(messages);

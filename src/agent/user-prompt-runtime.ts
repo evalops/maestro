@@ -26,6 +26,12 @@ type PromptRuntimeSessionManager =
 	};
 type SessionStartHookDelivery = "queue" | "persistHistory";
 
+interface SessionStartHookOutputs {
+	systemMessage?: string;
+	additionalContext?: string;
+	initialUserMessage?: string;
+}
+
 const logger = createLogger("prompt-runtime-hooks");
 
 function buildSessionStartHookContextMessage(text: string): HookMessage {
@@ -191,20 +197,18 @@ function throwIfAborted(signal?: AbortSignal): void {
 	throw abortError;
 }
 
-export async function applySessionStartHooks(params: {
-	agent: Agent;
+async function runSessionStartHooksInternal(params: {
 	sessionManager: PromptRuntimeSessionManager;
 	cwd: string;
 	source: string;
 	signal?: AbortSignal;
-	delivery?: SessionStartHookDelivery;
-}): Promise<void> {
+}): Promise<SessionStartHookOutputs | null> {
 	const service = createSessionHookService({
 		cwd: params.cwd,
 		sessionId: params.sessionManager.getSessionId?.(),
 	});
 	if (!service.hasHooks("SessionStart")) {
-		return;
+		return null;
 	}
 
 	const result = await service.runSessionStartHooks(
@@ -223,27 +227,65 @@ export async function applySessionStartHooks(params: {
 		);
 	}
 
-	const systemMessage = result.systemMessage?.trim();
-	const additionalContext = result.additionalContext?.trim();
-	const initialUserMessage = result.initialUserMessage?.trim();
-	if (params.delivery === "persistHistory") {
-		const persistedMessages: AppMessage[] = [];
-		if (systemMessage) {
-			persistedMessages.push(
-				buildPersistedSessionStartHookSystemMessage(systemMessage),
-			);
-		}
-		if (additionalContext) {
-			persistedMessages.push(
-				buildSessionStartHookContextMessage(additionalContext),
-			);
-		}
-		if (initialUserMessage) {
-			persistedMessages.push(
-				buildSessionStartInitialUserMessage(initialUserMessage),
-			);
-		}
+	return {
+		systemMessage: result.systemMessage?.trim(),
+		additionalContext: result.additionalContext?.trim(),
+		initialUserMessage: result.initialUserMessage?.trim(),
+	};
+}
 
+function buildPersistedSessionStartHookMessages(
+	outputs: SessionStartHookOutputs | null,
+): AppMessage[] {
+	if (!outputs) {
+		return [];
+	}
+
+	const persistedMessages: AppMessage[] = [];
+	if (outputs.systemMessage) {
+		persistedMessages.push(
+			buildPersistedSessionStartHookSystemMessage(outputs.systemMessage),
+		);
+	}
+	if (outputs.additionalContext) {
+		persistedMessages.push(
+			buildSessionStartHookContextMessage(outputs.additionalContext),
+		);
+	}
+	if (outputs.initialUserMessage) {
+		persistedMessages.push(
+			buildSessionStartInitialUserMessage(outputs.initialUserMessage),
+		);
+	}
+	return persistedMessages;
+}
+
+export async function collectPersistedSessionStartHookMessages(params: {
+	sessionManager: PromptRuntimeSessionManager;
+	cwd: string;
+	source: string;
+	signal?: AbortSignal;
+}): Promise<AppMessage[]> {
+	return buildPersistedSessionStartHookMessages(
+		await runSessionStartHooksInternal(params),
+	);
+}
+
+export async function applySessionStartHooks(params: {
+	agent: Agent;
+	sessionManager: PromptRuntimeSessionManager;
+	cwd: string;
+	source: string;
+	signal?: AbortSignal;
+	delivery?: SessionStartHookDelivery;
+}): Promise<void> {
+	if (params.delivery === "persistHistory") {
+		const persistedMessages = await collectPersistedSessionStartHookMessages({
+			sessionManager: params.sessionManager,
+			cwd: params.cwd,
+			source: params.source,
+			signal: params.signal,
+		});
 		for (const message of persistedMessages) {
 			params.agent.appendMessage(message);
 			params.sessionManager.saveMessage(message);
@@ -251,19 +293,29 @@ export async function applySessionStartHooks(params: {
 		return;
 	}
 
-	if (systemMessage) {
+	const outputs = await runSessionStartHooksInternal({
+		sessionManager: params.sessionManager,
+		cwd: params.cwd,
+		source: params.source,
+		signal: params.signal,
+	});
+	if (!outputs) {
+		return;
+	}
+
+	if (outputs.systemMessage) {
 		params.agent.queueNextRunSystemPromptAddition(
-			buildSessionStartHookSystemGuidance(systemMessage),
+			buildSessionStartHookSystemGuidance(outputs.systemMessage),
 		);
 	}
-	if (additionalContext) {
+	if (outputs.additionalContext) {
 		params.agent.queueNextRunHistoryMessage(
-			buildSessionStartHookContextMessage(additionalContext),
+			buildSessionStartHookContextMessage(outputs.additionalContext),
 		);
 	}
-	if (initialUserMessage) {
+	if (outputs.initialUserMessage) {
 		params.agent.queueNextRunHistoryMessage(
-			buildSessionStartInitialUserMessage(initialUserMessage),
+			buildSessionStartInitialUserMessage(outputs.initialUserMessage),
 		);
 	}
 }
@@ -511,6 +563,13 @@ async function applyTokenBudgetContinuations(params: {
 				params.sessionManager,
 				params.cwd,
 			),
+			getPostKeepMessages: () =>
+				collectPersistedSessionStartHookMessages({
+					sessionManager: params.sessionManager,
+					cwd: params.cwd,
+					source: "compact",
+					signal: params.signal,
+				}),
 			execute: () =>
 				params.agent.continue({
 					continuationPrompt: decision.continuationPrompt,
@@ -563,20 +622,6 @@ export async function runUserPromptWithRecovery(params: {
 		throwIfAborted(params.signal);
 		await applyPreMessageHooks(params);
 		throwIfAborted(params.signal);
-		const recoveryCallbacks: PromptRecoveryCallbacks = {
-			...params.callbacks,
-			onCompactedBeforeContinue: async (result) => {
-				await params.callbacks?.onCompactedBeforeContinue?.(result);
-				await applySessionStartHooks({
-					agent: params.agent,
-					sessionManager: params.sessionManager,
-					cwd: params.cwd,
-					source: "compact",
-					signal: params.signal,
-					delivery: "persistHistory",
-				});
-			},
-		};
 		await runWithPromptRecovery({
 			agent: params.agent,
 			sessionManager: params.sessionManager,
@@ -585,7 +630,14 @@ export async function runUserPromptWithRecovery(params: {
 				params.cwd,
 			),
 			execute: params.execute,
-			callbacks: recoveryCallbacks,
+			callbacks: params.callbacks,
+			getPostKeepMessages: () =>
+				collectPersistedSessionStartHookMessages({
+					sessionManager: params.sessionManager,
+					cwd: params.cwd,
+					source: "compact",
+					signal: params.signal,
+				}),
 			maxOutputContinuations: params.maxOutputContinuations,
 		});
 		throwIfAborted(params.signal);

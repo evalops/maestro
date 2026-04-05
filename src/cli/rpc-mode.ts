@@ -31,7 +31,7 @@ import type {
 	AssistantMessage,
 } from "../agent/types.js";
 import {
-	applySessionStartHooks,
+	collectPersistedSessionStartHookMessages,
 	runUserPromptWithRecovery,
 } from "../agent/user-prompt-runtime.js";
 import {
@@ -138,6 +138,12 @@ export async function runRpcMode(
 						sessionManager,
 						process.cwd(),
 					),
+					getPostKeepMessages: () =>
+						collectPersistedSessionStartHookMessages({
+							sessionManager,
+							cwd: process.cwd(),
+							source: "compact",
+						}),
 					customInstructions,
 					renderSummaryText: (summary: AssistantMessage) => {
 						const renderable = createRenderableMessage(summary as AppMessage);
@@ -156,14 +162,6 @@ export async function runRpcMode(
 					);
 					return;
 				}
-
-				await applySessionStartHooks({
-					agent,
-					sessionManager,
-					cwd: process.cwd(),
-					source: "compact",
-					delivery: "persistHistory",
-				});
 
 				// Emit compaction event
 				const compactionEvent: AgentEvent = {

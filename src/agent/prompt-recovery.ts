@@ -55,6 +55,7 @@ export interface RunWithPromptRecoveryOptions {
 	hookService?: CompactionHookService;
 	overflowHookService?: OverflowHookService;
 	stopFailureHookService?: StopFailureHookService;
+	getPostKeepMessages?: () => Promise<AppMessage[]>;
 	callbacks?: PromptRecoveryCallbacks;
 	maxOutputContinuations?: number;
 }
@@ -513,6 +514,7 @@ async function recoverFromPromptOverflow(
 	hookService: CompactionHookService | undefined,
 	customInstructions: string | undefined,
 	persistCustomInstructions: boolean,
+	getPostKeepMessages: (() => Promise<AppMessage[]>) | undefined,
 	preCompactContextTokens: number | undefined,
 	callbacks?: PromptRecoveryCallbacks,
 ): Promise<boolean> {
@@ -529,6 +531,7 @@ async function recoverFromPromptOverflow(
 			hookService,
 			customInstructions,
 			persistCustomInstructions,
+			getPostKeepMessages,
 		});
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -616,6 +619,7 @@ export async function runWithPromptRecovery(
 				options.hookService,
 				overflowHookGuidance,
 				overflowHookGuidance === undefined,
+				options.getPostKeepMessages,
 				preCompactContextTokens,
 				callbacks,
 			);

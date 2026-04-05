@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { performCompaction } from "../../src/agent/compaction.js";
-import { applySessionStartHooks } from "../../src/agent/user-prompt-runtime.js";
+import { collectPersistedSessionStartHookMessages } from "../../src/agent/user-prompt-runtime.js";
 import { runRpcMode } from "../../src/cli/rpc-mode.js";
 
 let lineHandler: ((line: string) => void | Promise<void>) | undefined;
@@ -31,7 +31,7 @@ vi.mock("../../src/agent/user-prompt-runtime.js", async () => {
 	>("../../src/agent/user-prompt-runtime.js");
 	return {
 		...actual,
-		applySessionStartHooks: vi.fn(),
+		collectPersistedSessionStartHookMessages: vi.fn(),
 	};
 });
 
@@ -39,11 +39,11 @@ describe("runRpcMode", () => {
 	beforeEach(() => {
 		lineHandler = undefined;
 		vi.mocked(performCompaction).mockReset();
-		vi.mocked(applySessionStartHooks).mockReset();
+		vi.mocked(collectPersistedSessionStartHookMessages).mockReset();
 		vi.spyOn(console, "log").mockImplementation(() => {});
 	});
 
-	it("reruns SessionStart hooks after successful manual compaction", async () => {
+	it("passes compact SessionStart restoration messages into performCompaction", async () => {
 		vi.mocked(performCompaction).mockResolvedValue({
 			success: true,
 			compactedCount: 2,
@@ -51,7 +51,7 @@ describe("runRpcMode", () => {
 			firstKeptEntryIndex: 7,
 			tokensBefore: 900,
 		});
-		vi.mocked(applySessionStartHooks).mockResolvedValue(undefined);
+		vi.mocked(collectPersistedSessionStartHookMessages).mockResolvedValue([]);
 
 		const agent = {
 			state: { messages: [], isStreaming: false },
@@ -67,13 +67,13 @@ describe("runRpcMode", () => {
 		await vi.waitFor(() => expect(lineHandler).toBeTypeOf("function"));
 		await lineHandler?.(JSON.stringify({ type: "compact" }));
 
-		expect(applySessionStartHooks).toHaveBeenCalledWith(
+		const params = vi.mocked(performCompaction).mock.calls[0]?.[0];
+		await params?.getPostKeepMessages?.();
+		expect(collectPersistedSessionStartHookMessages).toHaveBeenCalledWith(
 			expect.objectContaining({
-				agent,
 				sessionManager,
 				cwd: process.cwd(),
 				source: "compact",
-				delivery: "persistHistory",
 			}),
 		);
 	});

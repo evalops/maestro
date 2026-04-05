@@ -1234,6 +1234,7 @@ export async function performCompaction(params: {
 	persistCustomInstructions?: boolean;
 	hookContext?: CompactionHookContext;
 	hookService?: CompactionHookService;
+	getPostKeepMessages?: () => Promise<AppMessage[]>;
 	renderSummaryText?: (message: AssistantMessage) => string;
 }): Promise<PerformCompactionResult> {
 	const {
@@ -1245,6 +1246,7 @@ export async function performCompaction(params: {
 		persistCustomInstructions = true,
 		hookContext,
 		hookService,
+		getPostKeepMessages,
 		renderSummaryText,
 	} = params;
 	const messages = [...agent.state.messages];
@@ -1437,6 +1439,35 @@ export async function performCompaction(params: {
 		firstKeptEntryIndex: boundary,
 	});
 
+	const appendedTailMessages: AppMessage[] = [];
+	const persistTailMessages = (messagesToPersist: AppMessage[]) => {
+		if (messagesToPersist.length === 0) {
+			return;
+		}
+
+		appendedTailMessages.push(...messagesToPersist);
+		if (typeof agent.appendMessage === "function") {
+			for (const message of messagesToPersist) {
+				agent.appendMessage(message);
+				sessionManager.saveMessage(message);
+			}
+			return;
+		}
+
+		agent.replaceMessages([
+			summaryMessage as AppMessage,
+			resumeMessage,
+			...keep,
+			...appendedTailMessages,
+		]);
+		for (const message of messagesToPersist) {
+			sessionManager.saveMessage(message);
+		}
+	};
+
+	const postKeepMessages = (await getPostKeepMessages?.()) ?? [];
+	persistTailMessages(postKeepMessages);
+
 	let postCompactHookMessages: AppMessage[] = [];
 
 	if (
@@ -1469,24 +1500,7 @@ export async function performCompaction(params: {
 		postCompactHookMessages = buildPostCompactHookMessages(
 			postCompactHookResult,
 		);
-		if (postCompactHookMessages.length > 0) {
-			if (typeof agent.appendMessage === "function") {
-				for (const message of postCompactHookMessages) {
-					agent.appendMessage(message);
-					sessionManager.saveMessage(message);
-				}
-			} else {
-				agent.replaceMessages([
-					summaryMessage as AppMessage,
-					resumeMessage,
-					...keep,
-					...postCompactHookMessages,
-				]);
-				for (const message of postCompactHookMessages) {
-					sessionManager.saveMessage(message);
-				}
-			}
-		}
+		persistTailMessages(postCompactHookMessages);
 	}
 
 	return {

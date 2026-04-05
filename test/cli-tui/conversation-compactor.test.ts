@@ -17,7 +17,7 @@ describe("ConversationCompactor", () => {
 		vi.mocked(performCompaction).mockReset();
 	});
 
-	it("reruns SessionStart hooks after a successful compaction", async () => {
+	it("passes compact restoration messages into performCompaction and runs follow-up restoration before rerender", async () => {
 		vi.mocked(performCompaction).mockResolvedValue({
 			success: true,
 			compactedCount: 3,
@@ -26,7 +26,8 @@ describe("ConversationCompactor", () => {
 			tokensBefore: 1234,
 		});
 
-		const runSessionStartHooks = vi.fn().mockResolvedValue(undefined);
+		const getPostKeepMessages = vi.fn().mockResolvedValue([]);
+		const runAfterCompaction = vi.fn().mockResolvedValue(undefined);
 		const renderMessages = vi.fn();
 		const showInfoMessage = vi.fn();
 		const compactor = new ConversationCompactor({
@@ -39,13 +40,17 @@ describe("ConversationCompactor", () => {
 			toolComponents: new Set(),
 			renderMessages,
 			showInfoMessage,
-			runSessionStartHooks,
+			getPostKeepMessages,
+			runAfterCompaction,
 		});
 
 		await compactor.compactHistory();
 
-		expect(runSessionStartHooks).toHaveBeenCalledWith("compact");
-		expect(runSessionStartHooks.mock.invocationCallOrder[0]).toBeLessThan(
+		const params = vi.mocked(performCompaction).mock.calls[0]?.[0];
+		await params?.getPostKeepMessages?.();
+		expect(getPostKeepMessages).toHaveBeenCalledWith("compact");
+		expect(runAfterCompaction).toHaveBeenCalledWith("compact");
+		expect(runAfterCompaction.mock.invocationCallOrder[0]).toBeLessThan(
 			renderMessages.mock.invocationCallOrder[0],
 		);
 		expect(showInfoMessage).toHaveBeenCalledWith("Compacted 3 messages.");
