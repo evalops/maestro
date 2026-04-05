@@ -32,6 +32,8 @@ export interface SkillsControllerCallbacks {
 export interface SkillsControllerDeps {
 	/** Inject a message into the agent conversation. */
 	injectMessage: (message: AppMessage) => void;
+	/** Current agent messages, used to avoid duplicate skill restoration. */
+	getMessages: () => AppMessage[];
 	/** Current working directory (for skill discovery). */
 	cwd: () => string;
 }
@@ -56,6 +58,37 @@ export class SkillsController {
 	/** Clear all active skills (e.g. on session reset). */
 	clearActiveSkills(): void {
 		this.activeSkills.clear();
+	}
+
+	/**
+	 * Re-inject active skill instructions after compaction if they were summarized
+	 * away. The current message history is checked first so repeated compactions do
+	 * not duplicate still-preserved skill instructions.
+	 */
+	restoreActiveSkillsAfterCompaction(): number {
+		if (this.activeSkills.size === 0) {
+			return 0;
+		}
+
+		const injectedSkillNames = this.collectInjectedSkillNames(
+			this.deps.getMessages(),
+		);
+		const { skills } = loadSkills(this.deps.cwd());
+		let restoredCount = 0;
+
+		for (const skillName of this.activeSkills) {
+			if (injectedSkillNames.has(skillName)) {
+				continue;
+			}
+			const skill = findSkill(skills, skillName);
+			if (!skill) {
+				continue;
+			}
+			this.injectSkillMessage(skill, "activate");
+			restoredCount += 1;
+		}
+
+		return restoredCount;
 	}
 
 	// ─── Command Handler ───────────────────────────────────────────────────
@@ -235,6 +268,25 @@ export class SkillsController {
 			timestamp: Date.now(),
 		};
 		this.deps.injectMessage(message);
+	}
+
+	private collectInjectedSkillNames(messages: AppMessage[]): Set<string> {
+		const names = new Set<string>();
+		for (const message of messages) {
+			if (message.role !== "hookMessage" || message.customType !== "skill") {
+				continue;
+			}
+			const details = message.details;
+			if (
+				typeof details === "object" &&
+				details !== null &&
+				"name" in details &&
+				typeof details.name === "string"
+			) {
+				names.add(details.name);
+			}
+		}
+		return names;
 	}
 
 	private resolveSkillTarget(

@@ -636,6 +636,7 @@ export class TuiRenderer {
 		this.skillsController = createSkillsController({
 			deps: {
 				injectMessage: (message) => this.agent.injectMessage(message),
+				getMessages: () => this.agent.state.messages,
 				cwd: () => process.cwd(),
 			},
 			callbacks: {
@@ -1012,14 +1013,18 @@ export class TuiRenderer {
 			toolComponents: this.toolOutputView.getTrackedComponents(),
 			renderMessages: () => this.renderInitialMessages(this.agent.state),
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
-			runSessionStartHooks: (source) =>
-				applySessionStartHooks({
+			runSessionStartHooks: async (source) => {
+				if (source === "compact") {
+					this.skillsController.restoreActiveSkillsAfterCompaction();
+				}
+				await applySessionStartHooks({
 					agent: this.agent,
 					sessionManager: this.sessionManager,
 					cwd: process.cwd(),
 					source,
 					delivery: "persistHistory",
-				}),
+				});
+			},
 		});
 		this.compactionController = createCompactionController({
 			deps: {
