@@ -662,6 +662,92 @@ function shouldReplacePreservedReadRestoreMessage(
 	return filePath !== null && replacedFilePaths.has(filePath);
 }
 
+function isPlanFileRestoreHookMessage(
+	message: AppMessage,
+): message is HookMessage {
+	return (
+		message.role === "hookMessage" &&
+		message.customType === PLAN_FILE_COMPACTION_CUSTOM_TYPE
+	);
+}
+
+function getPlanFileRestorePath(message: AppMessage): string | null {
+	if (!isPlanFileRestoreHookMessage(message)) {
+		return null;
+	}
+
+	const details = message.details;
+	return typeof details === "object" &&
+		details !== null &&
+		"filePath" in details &&
+		typeof details.filePath === "string"
+		? details.filePath
+		: null;
+}
+
+function hasPlanFileRestoreMessage(
+	messages: AppMessage[],
+	filePath: string,
+	content: string | (TextContent | ImageContent)[],
+): boolean {
+	const expectedContent = JSON.stringify(content);
+	return messages.some((message) => {
+		if (!isPlanFileRestoreHookMessage(message)) {
+			return false;
+		}
+
+		if (getPlanFileRestorePath(message) !== filePath) {
+			return false;
+		}
+
+		return JSON.stringify(message.content) === expectedContent;
+	});
+}
+
+function collectPlanFilePathsToReplace(
+	preservedMessages: AppMessage[],
+	restoredMessages: AppMessage[],
+): Set<string> {
+	const filePathsToReplace = new Set<string>();
+
+	for (const message of restoredMessages) {
+		if (!isPlanFileRestoreHookMessage(message)) {
+			continue;
+		}
+
+		const filePath = getPlanFileRestorePath(message);
+		if (!filePath) {
+			continue;
+		}
+
+		for (const preservedMessage of preservedMessages) {
+			if (getPlanFileRestorePath(preservedMessage) !== filePath) {
+				continue;
+			}
+
+			if (
+				!hasPlanFileRestoreMessage(
+					[preservedMessage],
+					filePath,
+					message.content,
+				)
+			) {
+				filePathsToReplace.add(filePath);
+			}
+		}
+	}
+
+	return filePathsToReplace;
+}
+
+function shouldReplacePreservedPlanFileMessage(
+	message: AppMessage,
+	replacedFilePaths: Set<string>,
+): boolean {
+	const filePath = getPlanFileRestorePath(message);
+	return filePath !== null && replacedFilePaths.has(filePath);
+}
+
 function estimateHookContentTokens(
 	content: string | (TextContent | ImageContent)[],
 ): number {
@@ -2341,6 +2427,10 @@ export async function performCompaction(params: {
 		keep,
 		dedupedRestoredReadMessages,
 	);
+	const planFilePathsToReplace = collectPlanFilePathsToReplace(
+		keep,
+		callerPostKeepMessages,
+	);
 	const activeSkillNamesToReplace = collectActiveSkillNamesToReplace(
 		keep,
 		callerPostKeepMessages,
@@ -2351,6 +2441,7 @@ export async function performCompaction(params: {
 				message,
 				readRestorePathsToReplace,
 			) &&
+			!shouldReplacePreservedPlanFileMessage(message, planFilePathsToReplace) &&
 			!shouldReplacePreservedToolSkillMessage(
 				message,
 				skillRestoreResult.replacedPreservedToolSkillNames,
