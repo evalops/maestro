@@ -80,6 +80,24 @@ describe("token budget", () => {
 				},
 			});
 		});
+
+		it("does not regress budget progress after compaction drops local history", () => {
+			const tracker = createTokenBudgetTracker();
+
+			expect(checkTokenBudget(tracker, 10_000, 4_000)).toMatchObject({
+				action: "continue",
+				continuationCount: 1,
+				pct: 40,
+				turnOutputTokens: 4_000,
+			});
+
+			expect(checkTokenBudget(tracker, 10_000, 250)).toMatchObject({
+				action: "continue",
+				continuationCount: 2,
+				pct: 40,
+				turnOutputTokens: 4_000,
+			});
+		});
 	});
 
 	it("formats continuation prompts with human-readable token counts", () => {

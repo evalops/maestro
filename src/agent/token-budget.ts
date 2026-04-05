@@ -92,27 +92,38 @@ export function checkTokenBudget(
 		return { action: "stop", completion: null };
 	}
 
-	const pct = Math.round((turnOutputTokens / budget) * 100);
-	const deltaSinceLastCheck = turnOutputTokens - tracker.lastTurnOutputTokens;
+	// Compaction can remove earlier assistant turns from local message history.
+	// Keep token-budget progress monotonic so automatic continuations do not
+	// regress and loop forever after a recovery compact.
+	const effectiveTurnOutputTokens = Math.max(
+		turnOutputTokens,
+		tracker.lastTurnOutputTokens,
+	);
+	const pct = Math.round((effectiveTurnOutputTokens / budget) * 100);
+	const deltaSinceLastCheck =
+		effectiveTurnOutputTokens - tracker.lastTurnOutputTokens;
 	const isDiminishing =
 		tracker.continuationCount >= DIMINISHING_MIN_CONTINUATIONS &&
 		deltaSinceLastCheck < DIMINISHING_THRESHOLD_TOKENS &&
 		tracker.lastDeltaTokens < DIMINISHING_THRESHOLD_TOKENS;
 
-	if (!isDiminishing && turnOutputTokens < budget * COMPLETION_THRESHOLD) {
+	if (
+		!isDiminishing &&
+		effectiveTurnOutputTokens < budget * COMPLETION_THRESHOLD
+	) {
 		tracker.continuationCount += 1;
 		tracker.lastDeltaTokens = deltaSinceLastCheck;
-		tracker.lastTurnOutputTokens = turnOutputTokens;
+		tracker.lastTurnOutputTokens = effectiveTurnOutputTokens;
 		return {
 			action: "continue",
 			continuationPrompt: getBudgetContinuationPrompt(
 				pct,
-				turnOutputTokens,
+				effectiveTurnOutputTokens,
 				budget,
 			),
 			continuationCount: tracker.continuationCount,
 			pct,
-			turnOutputTokens,
+			turnOutputTokens: effectiveTurnOutputTokens,
 			budget,
 		};
 	}
@@ -123,7 +134,7 @@ export function checkTokenBudget(
 			completion: {
 				continuationCount: tracker.continuationCount,
 				pct,
-				turnOutputTokens,
+				turnOutputTokens: effectiveTurnOutputTokens,
 				budget,
 				diminishingReturns: isDiminishing,
 				durationMs: Date.now() - tracker.startedAt,

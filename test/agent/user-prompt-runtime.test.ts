@@ -470,6 +470,84 @@ describe("user prompt runtime", () => {
 		).toBe("Phase 3");
 	});
 
+	it("aborts token-budget continuations when the caller signal is canceled", async () => {
+		let continueSignal: AbortSignal | undefined;
+		let resolveContinuationStarted: (() => void) | undefined;
+		const continuationStarted = new Promise<void>((resolve) => {
+			resolveContinuationStarted = resolve;
+		});
+
+		class BudgetTransport implements AgentTransport {
+			async *run(
+				_messages: Message[],
+				userMessage: Message,
+				_config: AgentRunConfig,
+				signal?: AbortSignal,
+			): AsyncGenerator<AgentEvent, void, unknown> {
+				if (Array.isArray(userMessage.content)) {
+					continueSignal = signal;
+					resolveContinuationStarted?.();
+					await new Promise<void>((_, reject) => {
+						if (signal?.aborted) {
+							const abortError = new Error("Operation aborted");
+							abortError.name = "AbortError";
+							reject(abortError);
+							return;
+						}
+
+						signal?.addEventListener(
+							"abort",
+							() => {
+								const abortError = new Error("Operation aborted");
+								abortError.name = "AbortError";
+								reject(abortError);
+							},
+							{ once: true },
+						);
+					});
+					return;
+				}
+
+				const assistant = createAssistantMessageWithUsage("Phase 1", {
+					inputTokens: 50,
+					outputTokens: 200,
+					stopReason: "stop",
+				});
+				yield { type: "message_start", message: assistant };
+				yield { type: "message_end", message: assistant };
+			}
+		}
+
+		const agent = new Agent({
+			transport: new BudgetTransport(),
+			initialState: {
+				model: mockModel,
+				tools: [],
+				systemPrompt: "Base system prompt",
+			},
+		});
+		const abortController = new AbortController();
+
+		const runPromise = runUserPromptWithRecovery({
+			agent,
+			sessionManager: {
+				getSessionId: () => "session-token-budget-abort",
+			} as never,
+			cwd: "/tmp/token-budget-abort",
+			prompt: "Investigate this issue thoroughly +1k",
+			signal: abortController.signal,
+			execute: () => agent.prompt("Investigate this issue thoroughly +1k"),
+		});
+
+		await continuationStarted;
+		abortController.abort();
+
+		await expect(runPromise).rejects.toMatchObject({
+			name: "AbortError",
+		});
+		expect(continueSignal?.aborted).toBe(true);
+	});
+
 	it("skips PostMessage hooks when recovery ends on a truncated response", async () => {
 		let called = false;
 

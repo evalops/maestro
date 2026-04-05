@@ -153,6 +153,26 @@ function setRecoverableOverflowErrorSuppression(
 	).setRecoverableOverflowErrorSuppression?.(enabled);
 }
 
+function throwIfAborted(signal?: AbortSignal): void {
+	if (!signal?.aborted) {
+		return;
+	}
+
+	if (signal.reason instanceof Error && signal.reason.name === "AbortError") {
+		throw signal.reason;
+	}
+
+	const abortError = new Error(
+		signal.reason instanceof Error
+			? signal.reason.message
+			: typeof signal.reason === "string" && signal.reason.length > 0
+				? signal.reason
+				: "Operation aborted",
+	);
+	abortError.name = "AbortError";
+	throw abortError;
+}
+
 export async function applySessionStartHooks(params: {
 	agent: Agent;
 	sessionManager: PromptRuntimeSessionManager;
@@ -383,6 +403,7 @@ async function applyTokenBudgetContinuations(params: {
 	turnStartedAt: number;
 	callbacks?: PromptRecoveryCallbacks;
 	maxOutputContinuations?: number;
+	signal?: AbortSignal;
 }): Promise<void> {
 	const budget = parseTokenBudget(params.prompt);
 	if (budget === null || budget <= 0) {
@@ -392,6 +413,8 @@ async function applyTokenBudgetContinuations(params: {
 	const tracker = createTokenBudgetTracker();
 
 	while (true) {
+		throwIfAborted(params.signal);
+
 		const turnAnchorIndex = resolveTurnAnchorIndex(
 			params.agent.state.messages,
 			params.messageStartIndex,
@@ -438,6 +461,8 @@ async function applyTokenBudgetContinuations(params: {
 			callbacks: params.callbacks,
 			maxOutputContinuations: params.maxOutputContinuations,
 		});
+
+		throwIfAborted(params.signal);
 	}
 }
 
@@ -455,10 +480,25 @@ export async function runUserPromptWithRecovery(params: {
 }): Promise<void> {
 	const messageStartIndex = params.agent.state.messages.length;
 	const turnStartedAt = Date.now();
+	const abortAgent = () => {
+		params.agent.abort();
+	};
+
+	if (params.signal) {
+		if (params.signal.aborted) {
+			abortAgent();
+		} else {
+			params.signal.addEventListener("abort", abortAgent, { once: true });
+		}
+	}
+
 	setRecoverableOverflowErrorSuppression(params.agent, true);
 	try {
+		throwIfAborted(params.signal);
 		await applyUserPromptSubmitHooks(params);
+		throwIfAborted(params.signal);
 		await applyPreMessageHooks(params);
+		throwIfAborted(params.signal);
 		await runWithPromptRecovery({
 			agent: params.agent,
 			sessionManager: params.sessionManager,
@@ -470,6 +510,7 @@ export async function runUserPromptWithRecovery(params: {
 			callbacks: params.callbacks,
 			maxOutputContinuations: params.maxOutputContinuations,
 		});
+		throwIfAborted(params.signal);
 		await applyTokenBudgetContinuations({
 			agent: params.agent,
 			sessionManager: params.sessionManager,
@@ -479,7 +520,9 @@ export async function runUserPromptWithRecovery(params: {
 			turnStartedAt,
 			callbacks: params.callbacks,
 			maxOutputContinuations: params.maxOutputContinuations,
+			signal: params.signal,
 		});
+		throwIfAborted(params.signal);
 		await applyPostMessageHooks({
 			agent: params.agent,
 			sessionManager: params.sessionManager,
@@ -489,6 +532,7 @@ export async function runUserPromptWithRecovery(params: {
 			signal: params.signal,
 		});
 	} finally {
+		params.signal?.removeEventListener("abort", abortAgent);
 		setRecoverableOverflowErrorSuppression(params.agent, false);
 	}
 }
