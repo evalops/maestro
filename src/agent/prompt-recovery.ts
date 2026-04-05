@@ -117,6 +117,49 @@ function getAssistantOutputTokens(
 	return typeof output === "number" && output > 0 ? output : undefined;
 }
 
+function getErrorMessage(error: unknown): string | undefined {
+	if (error instanceof Error) {
+		return error.message;
+	}
+	if (typeof error === "string") {
+		return error;
+	}
+	return undefined;
+}
+
+function isAbortError(error: unknown): boolean {
+	return error instanceof Error && error.name === "AbortError";
+}
+
+function getTerminalStopFailure(
+	newMessages: AppMessage[],
+	executionError: unknown,
+): {
+	error: string;
+	errorDetails?: string;
+	lastAssistantMessage?: string;
+} | null {
+	const lastAssistant = getLastAssistantMessage(newMessages);
+	if (lastAssistant?.stopReason === "error") {
+		return {
+			error: "api_error",
+			errorDetails:
+				lastAssistant.errorMessage ?? getErrorMessage(executionError),
+			lastAssistantMessage: getAssistantText(lastAssistant),
+		};
+	}
+
+	if (executionError === undefined || isAbortError(executionError)) {
+		return null;
+	}
+
+	return {
+		error: "runtime_error",
+		errorDetails: getErrorMessage(executionError),
+		lastAssistantMessage: getAssistantText(lastAssistant),
+	};
+}
+
 function shouldEscalateMaxOutputCap(agent: Agent): boolean {
 	return (
 		agent.state.model.provider === "anthropic" &&
@@ -525,7 +568,23 @@ export async function runWithPromptRecovery(
 	}
 
 	if (executionError !== undefined) {
+		const terminalStopFailure = getTerminalStopFailure(
+			newMessages,
+			executionError,
+		);
+		if (terminalStopFailure) {
+			await reportStopFailure(terminalStopFailure);
+		}
 		throw executionError;
+	}
+
+	const terminalStopFailure = getTerminalStopFailure(
+		newMessages,
+		executionError,
+	);
+	if (terminalStopFailure) {
+		await reportStopFailure(terminalStopFailure);
+		return;
 	}
 
 	const maxOutputRecovery = await recoverFromMaxOutput(agent, {

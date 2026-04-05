@@ -622,6 +622,62 @@ echo '{"continue": true, "systemMessage": "Preserve operator guidance from overf
 		expect(agent.continue).not.toHaveBeenCalled();
 	});
 
+	it("runs StopFailure hooks when execution ends on an assistant API error", async () => {
+		const agent = createMockAgent(buildConversation(2));
+		const sessionManager = createMockSessionManager();
+		const stopFailureHookService = createMockStopFailureHookService();
+
+		await runWithPromptRecovery({
+			agent: agent as never,
+			sessionManager,
+			stopFailureHookService,
+			execute: async () => {
+				agent.state.messages = [
+					...agent.state.messages,
+					createAssistantMessage({
+						text: "Temporary failure",
+						stopReason: "error",
+						errorMessage:
+							"Anthropic API error (429): rate limit exceeded, please retry later.",
+					}),
+				];
+			},
+		});
+
+		expect(stopFailureHookService.runStopFailureHooks).toHaveBeenCalledWith(
+			"api_error",
+			"Anthropic API error (429): rate limit exceeded, please retry later.",
+			"Temporary failure",
+			undefined,
+		);
+		expect(agent.continue).not.toHaveBeenCalled();
+	});
+
+	it("runs StopFailure hooks before rethrowing runtime failures", async () => {
+		const agent = createMockAgent(buildConversation(2));
+		const sessionManager = createMockSessionManager();
+		const stopFailureHookService = createMockStopFailureHookService();
+
+		await expect(
+			runWithPromptRecovery({
+				agent: agent as never,
+				sessionManager,
+				stopFailureHookService,
+				execute: async () => {
+					throw new Error("network timeout");
+				},
+			}),
+		).rejects.toThrow("network timeout");
+
+		expect(stopFailureHookService.runStopFailureHooks).toHaveBeenCalledWith(
+			"runtime_error",
+			"network timeout",
+			undefined,
+			undefined,
+		);
+		expect(agent.continue).not.toHaveBeenCalled();
+	});
+
 	it("does not auto-compact after a successful silent-overflow style response", async () => {
 		const agent = createMockAgent([
 			...buildConversation(5),
