@@ -504,6 +504,90 @@ describe("Agent mock transport", () => {
 		).toBe(false);
 	});
 
+	it("continue() can override max tokens for a single continuation", async () => {
+		let receivedMaxTokens: number | null = null;
+
+		class MaxTokensContinuationTransport implements AgentTransport {
+			async *continue(): AsyncGenerator<AgentEvent, void, unknown> {
+				yield* (async function* empty(): AsyncGenerator<AgentEvent> {})();
+			}
+
+			async *run(
+				_messages: Message[],
+				userMessage: Message,
+				config: AgentRunConfig,
+			): AsyncGenerator<AgentEvent, void, unknown> {
+				receivedMaxTokens = config.model.maxTokens;
+				yield { type: "turn_start" };
+				yield { type: "message_start", message: userMessage };
+
+				const assistant: AssistantMessage = {
+					role: "assistant",
+					content: [{ type: "text", text: "continued" }],
+					api: "openai-completions",
+					provider: "mock",
+					model: "mock",
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						cost: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							total: 0,
+						},
+					},
+					stopReason: "stop",
+					timestamp: Date.now(),
+				};
+
+				yield { type: "message_start", message: assistant };
+				yield { type: "message_end", message: assistant };
+			}
+		}
+
+		const agent = new Agent({
+			transport: new MaxTokensContinuationTransport(),
+			initialState: {
+				model: mockModel,
+				tools: [],
+				messages: [
+					{ role: "user", content: "Need the rest", timestamp: 1 },
+					{
+						role: "assistant",
+						content: [{ type: "text", text: "partial answer" }],
+						api: "openai-completions",
+						provider: "mock",
+						model: "mock",
+						usage: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							cost: {
+								input: 0,
+								output: 0,
+								cacheRead: 0,
+								cacheWrite: 0,
+								total: 0,
+							},
+						},
+						stopReason: "length",
+						timestamp: 2,
+					},
+				],
+			},
+		});
+
+		await agent.continue({ maxTokensOverride: 64_000 });
+
+		expect(receivedMaxTokens).toBe(64_000);
+		expect(agent.state.model.maxTokens).toBe(mockModel.maxTokens);
+	});
+
 	it("clears stale agent errors before a subsequent successful prompt", async () => {
 		class FailThenSucceedTransport implements AgentTransport {
 			private attempts = 0;

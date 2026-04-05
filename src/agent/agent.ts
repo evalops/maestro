@@ -1247,6 +1247,8 @@ export class Agent {
 	async continue(options?: {
 		/** Override the system prompt for this continuation */
 		systemPromptOverride?: string;
+		/** Override max output tokens for this continuation only. */
+		maxTokensOverride?: number;
 		/**
 		 * Provider-only user instruction appended for this continuation.
 		 * Not persisted to session history or shown in the UI.
@@ -1343,7 +1345,13 @@ export class Agent {
 			const runConfig = {
 				systemPrompt,
 				tools: this._state.tools,
-				model: this._state.model,
+				model:
+					options?.maxTokensOverride !== undefined
+						? {
+								...this._state.model,
+								maxTokens: options.maxTokensOverride,
+							}
+						: this._state.model,
 				reasoning,
 				reasoningSummary: this._state.reasoningSummary,
 				preprocessMessages: this.preprocessMessages,

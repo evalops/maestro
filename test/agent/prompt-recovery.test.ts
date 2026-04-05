@@ -137,6 +137,8 @@ describe("recoverFromMaxOutput", () => {
 			createUserMessage("question"),
 			createAssistantMessage({ stopReason: "length", text: "partial" }),
 		]);
+		agent.state.model.provider = "openai";
+		agent.state.model.api = "openai-completions";
 
 		agent.continue.mockImplementationOnce(async () => {
 			agent.state.messages = [
@@ -158,6 +160,74 @@ describe("recoverFromMaxOutput", () => {
 			}),
 		);
 		expect(onContinue).toHaveBeenCalledWith(1, 3);
+	});
+
+	it("tries a larger Anthropic output cap before using continuation prompts", async () => {
+		const agent = createMockAgent([
+			createUserMessage("question"),
+			createAssistantMessage({ stopReason: "length", text: "partial" }),
+		]);
+
+		agent.continue.mockImplementationOnce(async (options?: unknown) => {
+			expect(options).toMatchObject({ maxTokensOverride: 64_000 });
+			agent.state.messages = [
+				...agent.state.messages,
+				createAssistantMessage({
+					text: "expanded response",
+					stopReason: "stop",
+				}),
+			];
+		});
+
+		const onContinue = vi.fn();
+
+		await recoverFromMaxOutput(agent as never, {
+			callbacks: { onMaxOutputContinue: onContinue },
+		});
+
+		expect(agent.continue).toHaveBeenCalledTimes(1);
+		expect(agent.continue).toHaveBeenCalledWith({
+			maxTokensOverride: 64_000,
+		});
+		expect(onContinue).not.toHaveBeenCalled();
+	});
+
+	it("falls back to continuation prompts when the escalated cap still truncates", async () => {
+		const agent = createMockAgent([
+			createUserMessage("question"),
+			createAssistantMessage({ stopReason: "length", text: "partial" }),
+		]);
+
+		agent.continue
+			.mockImplementationOnce(async (options?: unknown) => {
+				expect(options).toMatchObject({ maxTokensOverride: 64_000 });
+				agent.state.messages = [
+					...agent.state.messages,
+					createAssistantMessage({
+						text: "still partial",
+						stopReason: "length",
+					}),
+				];
+			})
+			.mockImplementationOnce(async (options?: unknown) => {
+				expect(options).toMatchObject({
+					continuationPrompt: expect.stringContaining("Resume directly"),
+				});
+				agent.state.messages = [
+					...agent.state.messages,
+					createAssistantMessage({ text: "rest", stopReason: "stop" }),
+				];
+			});
+
+		await recoverFromMaxOutput(agent as never);
+
+		expect(agent.continue).toHaveBeenCalledTimes(2);
+		expect(agent.continue.mock.calls[0]?.[0]).toMatchObject({
+			maxTokensOverride: 64_000,
+		});
+		expect(agent.continue.mock.calls[1]?.[0]).toMatchObject({
+			continuationPrompt: expect.stringContaining("Resume directly"),
+		});
 	});
 });
 

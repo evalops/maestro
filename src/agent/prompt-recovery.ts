@@ -22,6 +22,7 @@ import type { AppMessage, AssistantMessage } from "./types.js";
 const logger = createLogger("agent:prompt-recovery");
 
 const DEFAULT_MAX_OUTPUT_CONTINUATIONS = 3;
+const MAX_OUTPUT_ESCALATION_TOKENS = 64_000;
 const MAX_OUTPUT_CONTINUATION_PROMPT =
 	"Output token limit hit. Resume directly with the unfinished answer. No apology, no recap, and no restating the task. Pick up mid-thought if needed, and keep the remaining work broken into smaller pieces.";
 const POST_COMPACTION_CONTINUATION_PROMPT =
@@ -73,6 +74,13 @@ function getLastAssistantMessage(
 	return lastMessage && isAssistantMessage(lastMessage)
 		? lastMessage
 		: undefined;
+}
+
+function shouldEscalateMaxOutputCap(agent: Agent): boolean {
+	return (
+		agent.state.model.provider === "anthropic" &&
+		agent.state.model.maxTokens < MAX_OUTPUT_ESCALATION_TOKENS
+	);
 }
 
 function hasPromptOverflow(
@@ -207,6 +215,15 @@ export async function recoverFromMaxOutput(
 	const maxContinuations =
 		options?.maxContinuations ?? DEFAULT_MAX_OUTPUT_CONTINUATIONS;
 	let attempt = 0;
+
+	if (shouldEscalateMaxOutputCap(agent)) {
+		const lastAssistant = getLastAssistantMessage(agent.state.messages);
+		if (lastAssistant?.stopReason === "length") {
+			await agent.continue({
+				maxTokensOverride: MAX_OUTPUT_ESCALATION_TOKENS,
+			});
+		}
+	}
 
 	while (attempt < maxContinuations) {
 		const lastAssistant = getLastAssistantMessage(agent.state.messages);
