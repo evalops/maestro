@@ -140,7 +140,7 @@ function buildMcpServersCompactionContent(
 		"",
 		...connectedServers.map(buildMcpServerCompactionLine),
 		"",
-		"Use `list_mcp_servers` to inspect current server status, `list_mcp_tools` to inspect available tool names, and `list_mcp_resources` / `read_mcp_resource` for server resources.",
+		"Use `list_mcp_servers` to inspect current server status, `list_mcp_tools` to inspect available tool names, `list_mcp_resources` / `read_mcp_resource` for server resources, and `list_mcp_prompts` / `get_mcp_prompt` for server prompts.",
 	].join("\n");
 }
 

@@ -151,4 +151,47 @@ describe("handleMcpStatus", () => {
 			error: "Missing required query parameters: server and uri",
 		});
 	});
+
+	it("gets MCP prompts through the query action", async () => {
+		const getPrompt = vi.spyOn(mcpManager, "getPrompt").mockResolvedValue({
+			description: "Summarize docs",
+			messages: [{ role: "user", content: "Summarize MCP" }],
+		});
+
+		const req = makeReq(
+			"/api/mcp?action=get-prompt&server=docs&name=summarize&arg%3Atopic=MCP",
+		);
+		const res = makeRes();
+
+		await handleMcpStatus(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			corsHeaders,
+		);
+
+		expect(getPrompt).toHaveBeenCalledWith("docs", "summarize", {
+			topic: "MCP",
+		});
+		expect(res.statusCode).toBe(200);
+		expect(JSON.parse(res.body)).toEqual({
+			description: "Summarize docs",
+			messages: [{ role: "user", content: "Summarize MCP" }],
+		});
+	});
+
+	it("validates required query parameters for prompt reads", async () => {
+		const req = makeReq("/api/mcp?action=get-prompt&server=docs");
+		const res = makeRes();
+
+		await handleMcpStatus(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			corsHeaders,
+		);
+
+		expect(res.statusCode).toBe(400);
+		expect(JSON.parse(res.body)).toEqual({
+			error: "Missing required query parameters: server and name",
+		});
+	});
 });

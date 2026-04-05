@@ -286,6 +286,8 @@ describe("collectMcpMessagesForCompaction", () => {
 		expect(content).not.toContain("remote");
 		expect(content).toContain("`list_mcp_servers`");
 		expect(content).toContain("`list_mcp_tools`");
+		expect(content).toContain("`list_mcp_prompts`");
+		expect(content).toContain("`get_mcp_prompt`");
 	});
 
 	it("caps restored MCP item listings while keeping counts", () => {

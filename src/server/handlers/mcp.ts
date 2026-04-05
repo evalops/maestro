@@ -41,6 +41,36 @@ export async function handleMcpStatus(
 			return;
 		}
 
+		if (action === "get-prompt") {
+			const server = url.searchParams.get("server");
+			const promptName = url.searchParams.get("name");
+
+			if (!server || !promptName) {
+				sendJson(
+					res,
+					400,
+					{ error: "Missing required query parameters: server and name" },
+					corsHeaders,
+				);
+				return;
+			}
+
+			const args: Record<string, string> = {};
+			for (const [key, value] of url.searchParams.entries()) {
+				if (key.startsWith("arg:")) {
+					args[key.slice(4)] = value;
+				}
+			}
+
+			const result = await mcpManager.getPrompt(
+				server,
+				promptName,
+				Object.keys(args).length > 0 ? args : undefined,
+			);
+			sendJson(res, 200, result, corsHeaders);
+			return;
+		}
+
 		sendJson(res, 400, { error: "Invalid action" }, corsHeaders);
 	} catch (error) {
 		sendJson(
@@ -50,7 +80,9 @@ export async function handleMcpStatus(
 				error:
 					action === "read-resource"
 						? "Failed to read MCP resource"
-						: "Failed to get MCP status",
+						: action === "get-prompt"
+							? "Failed to get MCP prompt"
+							: "Failed to get MCP status",
 				details: error instanceof Error ? error.message : String(error),
 			},
 			corsHeaders,

@@ -460,6 +460,32 @@ export const conductorReadMcpResourceTool: AgentTool = {
 	execute: async () => ({ content: [], isError: false }),
 };
 
+export const conductorListMcpPromptsTool: AgentTool = {
+	name: "list_mcp_prompts",
+	description: "List prompts exposed by connected MCP servers.",
+	parameters: Type.Object(
+		{ server: Type.Optional(Type.String()) },
+		{ additionalProperties: true },
+	),
+	executionLocation: "client",
+	execute: async () => ({ content: [], isError: false }),
+};
+
+export const conductorGetMcpPromptTool: AgentTool = {
+	name: "get_mcp_prompt",
+	description: "Fetch an MCP prompt by server and prompt name.",
+	parameters: Type.Object(
+		{
+			server: Type.String({ description: "MCP server name" }),
+			name: Type.String({ description: "Prompt name" }),
+			args: Type.Optional(Type.Record(Type.String(), Type.String())),
+		},
+		{ additionalProperties: true },
+	),
+	executionLocation: "client",
+	execute: async () => ({ content: [], isError: false }),
+};
+
 export const conductorClientTools: AgentTool[] = [
 	conductorReadPageTool,
 	conductorSearchPageTool,
@@ -494,4 +520,6 @@ export const conductorClientTools: AgentTool[] = [
 	conductorListMcpToolsTool,
 	conductorListMcpResourcesTool,
 	conductorReadMcpResourceTool,
+	conductorListMcpPromptsTool,
+	conductorGetMcpPromptTool,
 ];
