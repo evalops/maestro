@@ -1905,6 +1905,50 @@ Current plan contents:
 		);
 	});
 
+	it("refreshes stale kept-tail tool skill context across repeated compactions", async () => {
+		const messages = buildConversation(10);
+		messages.splice(
+			2,
+			0,
+			createSkillToolCallMessage("reviewer", "call-skill-reviewer"),
+			createSkillToolResultMessage(
+				"reviewer",
+				"call-skill-reviewer",
+				"# Skill: reviewer\n\n> Review specialist\n\n## Instructions\n\nInspect the diff for regressions.",
+			),
+		);
+		messages.splice(
+			messages.length - 1,
+			0,
+			createRestoredSkillHookMessage(
+				"reviewer",
+				"# Skill: reviewer\n\n> Review specialist\n\n## Instructions\n\nStale reviewer guidance.",
+			),
+		);
+		const agent = createMockAgentWithoutAppendMessage(messages);
+		const sessionManager = createMockSessionManager();
+
+		const result = await performCompaction({ agent, sessionManager });
+
+		expect(result.success).toBe(true);
+		const restoredSkillMessages = getReplacedMessages(agent).filter(
+			(message) =>
+				message.role === "hookMessage" &&
+				message.customType === "skill" &&
+				typeof message.details === "object" &&
+				message.details !== null &&
+				"name" in message.details &&
+				message.details.name === "reviewer",
+		);
+		expect(restoredSkillMessages).toHaveLength(1);
+		expect(JSON.stringify(restoredSkillMessages[0]?.content)).toContain(
+			"Inspect the diff for regressions.",
+		);
+		expect(JSON.stringify(restoredSkillMessages[0]?.content)).not.toContain(
+			"Stale reviewer guidance.",
+		);
+	});
+
 	it("re-restores prior hidden MCP context across repeated compactions", async () => {
 		const servers = [
 			{
