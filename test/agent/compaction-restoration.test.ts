@@ -278,14 +278,64 @@ describe("collectMcpMessagesForCompaction", () => {
 			collectMcpMessagesForCompaction([], servers)[0]?.content,
 		);
 		expect(content).toContain(
-			"context7; transport=stdio; tools=2; resources=1; prompts=0",
+			"context7; transport=stdio; tools=2 [get-docs, resolve]; resources=1 [lib://react]; prompts=0",
 		);
 		expect(content).toContain(
-			"github; transport=http; tools=1; resources=0; prompts=1",
+			"github; transport=http; tools=1 [search]; resources=0; prompts=1 [triage]",
 		);
 		expect(content).not.toContain("remote");
 		expect(content).toContain("`list_mcp_servers`");
 		expect(content).toContain("`list_mcp_tools`");
+	});
+
+	it("caps restored MCP item listings while keeping counts", () => {
+		const servers = [
+			{
+				name: "big-server",
+				connected: true,
+				transport: "stdio",
+				tools: [
+					{ name: "tool-z" },
+					{ name: "tool-a" },
+					{ name: "tool-c" },
+					{ name: "tool-d" },
+					{ name: "tool-e" },
+					{ name: "tool-f" },
+				] as never,
+				resources: [
+					"res://c",
+					"res://a",
+					"res://b",
+					"res://d",
+					"res://e",
+					"res://f",
+				],
+				prompts: [
+					"prompt-c",
+					"prompt-a",
+					"prompt-b",
+					"prompt-d",
+					"prompt-e",
+					"prompt-f",
+				],
+			},
+		];
+
+		const content = String(
+			collectMcpMessagesForCompaction([], servers)[0]?.content,
+		);
+		expect(content).toContain(
+			"tools=6 [tool-a, tool-c, tool-d, tool-e, tool-f (+1 more)]",
+		);
+		expect(content).toContain(
+			"resources=6 [res://a, res://b, res://c, res://d, res://e (+1 more)]",
+		);
+		expect(content).toContain(
+			"prompts=6 [prompt-a, prompt-b, prompt-c, prompt-d, prompt-e (+1 more)]",
+		);
+		expect(content).not.toContain("tool-z,");
+		expect(content).not.toContain("res://f,");
+		expect(content).not.toContain("prompt-f,");
 	});
 
 	it("deduplicates already-present MCP restoration messages", () => {

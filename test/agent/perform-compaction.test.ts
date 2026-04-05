@@ -2233,7 +2233,10 @@ Current plan contents:
 		);
 		expect(restoredMcpMessages).toHaveLength(1);
 		expect(String(restoredMcpMessages[0]?.content)).toContain(
-			"tools=2; resources=1",
+			"tools=2 [get-docs, resolve]",
+		);
+		expect(String(restoredMcpMessages[0]?.content)).toContain(
+			"resources=1 [lib://react]",
 		);
 		expect(String(restoredMcpMessages[0]?.content)).not.toContain(
 			"tools=1; resources=0",
