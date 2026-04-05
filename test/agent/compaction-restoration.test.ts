@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	BACKGROUND_TASKS_COMPACTION_CUSTOM_TYPE,
 	PLAN_FILE_COMPACTION_CUSTOM_TYPE,
 	PLAN_MODE_COMPACTION_CUSTOM_TYPE,
+	collectBackgroundTaskMessagesForCompaction,
 	collectPlanMessagesForCompaction,
 } from "../../src/agent/compaction-restoration.js";
 import {
@@ -9,11 +11,18 @@ import {
 	isPlanModeActive,
 	readPlanFileForCompactionRestore,
 } from "../../src/agent/plan-mode.js";
+import { backgroundTaskManager } from "../../src/tools/background-tasks.js";
 
 vi.mock("../../src/agent/plan-mode.js", () => ({
 	getPlanFilePathForCompactionRestore: vi.fn(),
 	isPlanModeActive: vi.fn(),
 	readPlanFileForCompactionRestore: vi.fn(),
+}));
+
+vi.mock("../../src/tools/background-tasks.js", () => ({
+	backgroundTaskManager: {
+		getTasks: vi.fn(),
+	},
 }));
 
 describe("collectPlanMessagesForCompaction", () => {
@@ -25,6 +34,7 @@ describe("collectPlanMessagesForCompaction", () => {
 		vi.mocked(readPlanFileForCompactionRestore)
 			.mockReset()
 			.mockReturnValue(null);
+		vi.mocked(backgroundTaskManager.getTasks).mockReset().mockReturnValue([]);
 	});
 
 	it("returns no messages when no tracked plan file exists", () => {
@@ -128,5 +138,78 @@ describe("collectPlanMessagesForCompaction", () => {
 		];
 
 		expect(collectPlanMessagesForCompaction(existingMessages)).toEqual([]);
+	});
+});
+
+describe("collectBackgroundTaskMessagesForCompaction", () => {
+	it("returns no messages when no background tasks are active", () => {
+		expect(collectBackgroundTaskMessagesForCompaction([])).toEqual([]);
+	});
+
+	it("returns a hidden restoration message for running background tasks", () => {
+		vi.mocked(backgroundTaskManager.getTasks).mockReturnValue([
+			{
+				id: "task-running",
+				command: "npm run dev -- --token sk-super-secret-value",
+				cwd: "/tmp/app",
+				startedAt: 20,
+				status: "running",
+				shellMode: "exec",
+			},
+			{
+				id: "task-restarting",
+				command: "bun run watch",
+				cwd: "/tmp/app",
+				startedAt: 10,
+				status: "restarting",
+				shellMode: "shell",
+			},
+			{
+				id: "task-stopped",
+				command: "npm run lint",
+				cwd: "/tmp/app",
+				startedAt: 5,
+				status: "stopped",
+				shellMode: "exec",
+			},
+		] as never);
+
+		expect(collectBackgroundTaskMessagesForCompaction([])).toEqual([
+			expect.objectContaining({
+				role: "hookMessage",
+				customType: BACKGROUND_TASKS_COMPACTION_CUSTOM_TYPE,
+				display: false,
+				content: expect.stringContaining(
+					"# Background tasks restored after compaction",
+				),
+			}),
+		]);
+
+		const content = String(
+			collectBackgroundTaskMessagesForCompaction([])[0]?.content,
+		);
+		expect(content).toContain("id=task-running; status=running");
+		expect(content).toContain("id=task-restarting; status=restarting");
+		expect(content).not.toContain("task-stopped");
+		expect(content).toContain("command=npm run dev -- --token [secret]");
+		expect(content).toContain("background_tasks` action=list");
+	});
+
+	it("deduplicates already-present background task restoration messages", () => {
+		vi.mocked(backgroundTaskManager.getTasks).mockReturnValue([
+			{
+				id: "task-running",
+				command: "npm run dev",
+				cwd: "/tmp/app",
+				startedAt: 20,
+				status: "running",
+				shellMode: "exec",
+			},
+		] as never);
+
+		const existingMessages = collectBackgroundTaskMessagesForCompaction([]);
+		expect(
+			collectBackgroundTaskMessagesForCompaction(existingMessages),
+		).toEqual([]);
 	});
 });

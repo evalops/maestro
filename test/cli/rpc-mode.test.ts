@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { collectPlanMessagesForCompaction } from "../../src/agent/compaction-restoration.js";
+import {
+	collectBackgroundTaskMessagesForCompaction,
+	collectPlanMessagesForCompaction,
+} from "../../src/agent/compaction-restoration.js";
 import { performCompaction } from "../../src/agent/compaction.js";
 import { runWithPromptRecovery } from "../../src/agent/prompt-recovery.js";
 import { collectPersistedSessionStartHookMessages } from "../../src/agent/user-prompt-runtime.js";
@@ -38,6 +41,7 @@ vi.mock("../../src/agent/user-prompt-runtime.js", async () => {
 });
 
 vi.mock("../../src/agent/compaction-restoration.js", () => ({
+	collectBackgroundTaskMessagesForCompaction: vi.fn(() => []),
 	collectPlanMessagesForCompaction: vi.fn(),
 }));
 
@@ -55,6 +59,9 @@ describe("runRpcMode", () => {
 	beforeEach(() => {
 		lineHandler = undefined;
 		vi.mocked(performCompaction).mockReset();
+		vi.mocked(collectBackgroundTaskMessagesForCompaction)
+			.mockReset()
+			.mockReturnValue([]);
 		vi.mocked(collectPlanMessagesForCompaction).mockReset();
 		vi.mocked(collectPersistedSessionStartHookMessages).mockReset();
 		vi.mocked(runWithPromptRecovery).mockReset().mockResolvedValue(undefined);
@@ -118,6 +125,9 @@ describe("runRpcMode", () => {
 		expect(collectPlanMessagesForCompaction).toHaveBeenCalledWith(
 			agent.state.messages,
 		);
+		expect(collectBackgroundTaskMessagesForCompaction).toHaveBeenCalledWith(
+			agent.state.messages,
+		);
 		expect(collectPersistedSessionStartHookMessages).toHaveBeenCalledWith(
 			expect.objectContaining({
 				sessionManager,
@@ -174,6 +184,9 @@ describe("runRpcMode", () => {
 			}),
 		]);
 		expect(collectPlanMessagesForCompaction).toHaveBeenCalledWith(
+			agent.state.messages,
+		);
+		expect(collectBackgroundTaskMessagesForCompaction).toHaveBeenCalledWith(
 			agent.state.messages,
 		);
 		expect(collectPersistedSessionStartHookMessages).toHaveBeenCalledWith(
