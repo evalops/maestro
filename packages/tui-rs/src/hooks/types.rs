@@ -43,6 +43,7 @@ pub enum HookEventType {
     PostCompact,
     Notification,
     Overflow,
+    StopFailure,
     /// Before sending user message to model
     PreMessage,
     /// After receiving assistant response
@@ -118,6 +119,20 @@ pub struct OverflowInput {
     pub timestamp: String,
     pub token_count: u64,
     pub max_tokens: u64,
+}
+
+/// Input data for StopFailure hooks
+///
+/// Called when recovery cannot produce a valid completion.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StopFailureInput {
+    pub hook_event_name: String,
+    pub cwd: String,
+    pub session_id: Option<String>,
+    pub timestamp: String,
+    pub error: String,
+    pub error_details: Option<String>,
+    pub last_assistant_message: Option<String>,
 }
 
 /// Input data for `UserPromptSubmit` hooks
@@ -332,6 +347,17 @@ pub trait OverflowHook: Send + Sync {
     /// # Returns
     /// A `HookResult` - typically Continue to allow auto-compaction
     fn on_overflow(&self, input: &OverflowInput) -> HookResult;
+}
+
+/// Trait for StopFailure hooks
+///
+/// Called when recovery cannot produce a valid completion.
+pub trait StopFailureHook: Send + Sync {
+    /// Called when recovery ends without a valid assistant completion
+    ///
+    /// # Returns
+    /// A `HookResult` - typically Continue so the caller can surface the failure.
+    fn on_stop_failure(&self, input: &StopFailureInput) -> HookResult;
 }
 
 /// Trait for `UserPromptSubmit` hooks
@@ -568,6 +594,10 @@ mod tests {
             serde_json::to_string(&HookEventType::PostCompact).unwrap(),
             "\"PostCompact\""
         );
+        assert_eq!(
+            serde_json::to_string(&HookEventType::StopFailure).unwrap(),
+            "\"StopFailure\""
+        );
     }
 
     #[test]
@@ -587,6 +617,10 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<HookEventType>("\"PostCompact\"").unwrap(),
             HookEventType::PostCompact
+        );
+        assert_eq!(
+            serde_json::from_str::<HookEventType>("\"StopFailure\"").unwrap(),
+            HookEventType::StopFailure
         );
     }
 
@@ -682,6 +716,25 @@ mod tests {
         assert_eq!(json["hook_event_name"], "PreToolUse");
         assert_eq!(json["tool_name"], "bash");
         assert_eq!(json["tool_input"]["command"], "ls");
+    }
+
+    #[test]
+    fn test_stop_failure_input_serialization() {
+        let input = StopFailureInput {
+            hook_event_name: "StopFailure".to_string(),
+            cwd: "/home/user".to_string(),
+            session_id: Some("sess-123".to_string()),
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            error: "max_output_tokens".to_string(),
+            error_details: Some("Continuation budget exhausted".to_string()),
+            last_assistant_message: Some("Partial response".to_string()),
+        };
+
+        let json = serde_json::to_value(&input).unwrap();
+        assert_eq!(json["hook_event_name"], "StopFailure");
+        assert_eq!(json["error"], "max_output_tokens");
+        assert_eq!(json["error_details"], "Continuation budget exhausted");
+        assert_eq!(json["last_assistant_message"], "Partial response");
     }
 
     #[test]

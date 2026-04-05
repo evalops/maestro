@@ -583,6 +583,10 @@ fn test_hooks_disabled_returns_continue() {
         HookResult::Continue
     ));
     assert!(matches!(
+        system.execute_stop_failure("max_output_tokens", None, None),
+        HookResult::Continue
+    ));
+    assert!(matches!(
         system.execute_eval_gate("Bash", "1", &serde_json::json!({}), ""),
         HookResult::Continue
     ));
@@ -604,7 +608,9 @@ fn test_hooks_disabled_returns_continue() {
 // Registry Tests for New Events
 // ============================================================================
 
-use maestro_tui::hooks::{OnErrorHook, OnErrorInput, PreMessageHook, PreMessageInput};
+use maestro_tui::hooks::{
+    OnErrorHook, OnErrorInput, PreMessageHook, PreMessageInput, StopFailureHook, StopFailureInput,
+};
 
 struct TestPreMessageHook {
     block_long_messages: bool,
@@ -720,6 +726,42 @@ fn test_registry_on_error_hook() {
     ));
 }
 
+struct TestStopFailureHook;
+
+impl StopFailureHook for TestStopFailureHook {
+    fn on_stop_failure(&self, input: &StopFailureInput) -> HookResult {
+        if input.error == "max_output_tokens" {
+            HookResult::InjectContext {
+                context: "Stop failure observed".to_string(),
+            }
+        } else {
+            HookResult::Continue
+        }
+    }
+}
+
+#[test]
+fn test_registry_stop_failure_hook() {
+    use maestro_tui::hooks::HookRegistry;
+
+    let mut registry = HookRegistry::new();
+    registry.register_stop_failure(Arc::new(TestStopFailureHook));
+
+    let input = StopFailureInput {
+        hook_event_name: "StopFailure".to_string(),
+        cwd: "/tmp".to_string(),
+        session_id: None,
+        timestamp: "2024-01-01T00:00:00Z".to_string(),
+        error: "max_output_tokens".to_string(),
+        error_details: Some("Continuation budget exhausted".to_string()),
+        last_assistant_message: Some("Partial response".to_string()),
+    };
+    assert!(matches!(
+        registry.execute_stop_failure(&input),
+        HookResult::InjectContext { .. }
+    ));
+}
+
 #[test]
 fn test_registry_has_hooks_for_new_events() {
     use maestro_tui::hooks::HookRegistry;
@@ -730,6 +772,7 @@ fn test_registry_has_hooks_for_new_events() {
     assert!(!registry.has_hooks(HookEventType::PreMessage));
     assert!(!registry.has_hooks(HookEventType::PostMessage));
     assert!(!registry.has_hooks(HookEventType::OnError));
+    assert!(!registry.has_hooks(HookEventType::StopFailure));
     assert!(!registry.has_hooks(HookEventType::EvalGate));
     assert!(!registry.has_hooks(HookEventType::SubagentStart));
     assert!(!registry.has_hooks(HookEventType::SubagentStop));
@@ -743,10 +786,12 @@ fn test_registry_has_hooks_for_new_events() {
     registry.register_on_error(Arc::new(TestOnErrorHook {
         suppress_network_errors: false,
     }));
+    registry.register_stop_failure(Arc::new(TestStopFailureHook));
 
     // Now we should have hooks
     assert!(registry.has_hooks(HookEventType::PreMessage));
     assert!(registry.has_hooks(HookEventType::OnError));
+    assert!(registry.has_hooks(HookEventType::StopFailure));
 }
 
 #[test]
@@ -768,6 +813,9 @@ fn test_registry_total_hook_count() {
         suppress_network_errors: false,
     }));
     assert_eq!(registry.total_hook_count(), 3);
+
+    registry.register_stop_failure(Arc::new(TestStopFailureHook));
+    assert_eq!(registry.total_hook_count(), 4);
 }
 
 // ============================================================================

@@ -359,6 +359,65 @@ describe("user prompt runtime", () => {
 		expect(captured?.duration_ms).toBeGreaterThanOrEqual(0);
 	});
 
+	it("skips PostMessage hooks when recovery ends on a truncated response", async () => {
+		let called = false;
+
+		registerHook("PostMessage", {
+			type: "callback",
+			callback: async () => {
+				called = true;
+				return {};
+			},
+		});
+
+		class LengthTransport implements AgentTransport {
+			async *run(
+				_messages: Message[],
+				_userMessage: Message,
+				_config: AgentRunConfig,
+			): AsyncGenerator<AgentEvent, void, unknown> {
+				const assistant = createAssistantMessageWithUsage("Partial", {
+					inputTokens: 12,
+					outputTokens: 34,
+					stopReason: "length",
+				});
+				yield { type: "message_start", message: assistant };
+				yield { type: "message_end", message: assistant };
+			}
+
+			async *continue(): AsyncGenerator<AgentEvent, void, unknown> {
+				const assistant = createAssistantMessageWithUsage("Still partial", {
+					inputTokens: 12,
+					outputTokens: 34,
+					stopReason: "length",
+				});
+				yield { type: "message_start", message: assistant };
+				yield { type: "message_end", message: assistant };
+			}
+		}
+
+		const agent = new Agent({
+			transport: new LengthTransport(),
+			initialState: {
+				model: mockModel,
+				tools: [],
+				systemPrompt: "Base system prompt",
+			},
+		});
+
+		await runUserPromptWithRecovery({
+			agent,
+			sessionManager: {
+				getSessionId: () => "session-post-message-length",
+			} as never,
+			cwd: "/tmp/post-message-length",
+			prompt: "first",
+			execute: () => agent.prompt("first"),
+		});
+
+		expect(called).toBe(false);
+	});
+
 	it("persists hook additional context as a hook message for the next run", async () => {
 		class PromptCaptureTransport implements AgentTransport {
 			capturedMessages: Message[][] = [];

@@ -263,6 +263,16 @@ async function applyPostMessageHooks(params: {
 		params.agent.state.messages,
 		params.messageStartIndex,
 	);
+	if (
+		assistantMessage?.role === "assistant" &&
+		assistantMessage.stopReason !== "stop"
+	) {
+		logger.debug("Skipping PostMessage hooks for non-final assistant message", {
+			stopReason: assistantMessage.stopReason,
+		});
+		return;
+	}
+
 	const response = extractAssistantText(assistantMessage).trim();
 	if (!response) {
 		return;

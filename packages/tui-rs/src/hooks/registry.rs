@@ -7,8 +7,8 @@ use super::types::{
     OverflowHook, OverflowInput, PermissionRequestHook, PermissionRequestInput, PostMessageHook,
     PostMessageInput, PostToolUseHook, PostToolUseInput, PreMessageHook, PreMessageInput,
     PreToolUseHook, PreToolUseInput, SessionEndHook, SessionEndInput, SessionStartHook,
-    SessionStartInput, SubagentStartHook, SubagentStartInput, SubagentStopHook, SubagentStopInput,
-    UserPromptSubmitHook, UserPromptSubmitInput,
+    SessionStartInput, StopFailureHook, StopFailureInput, SubagentStartHook, SubagentStartInput,
+    SubagentStopHook, SubagentStopInput, UserPromptSubmitHook, UserPromptSubmitInput,
 };
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -22,6 +22,7 @@ pub struct HookRegistry {
     session_start_hooks: Vec<Arc<dyn SessionStartHook>>,
     session_end_hooks: Vec<Arc<dyn SessionEndHook>>,
     overflow_hooks: Vec<Arc<dyn OverflowHook>>,
+    stop_failure_hooks: Vec<Arc<dyn StopFailureHook>>,
     user_prompt_submit_hooks: Vec<Arc<dyn UserPromptSubmitHook>>,
     pre_message_hooks: Vec<Arc<dyn PreMessageHook>>,
     post_message_hooks: Vec<Arc<dyn PostMessageHook>>,
@@ -48,6 +49,7 @@ impl HookRegistry {
             session_start_hooks: Vec::new(),
             session_end_hooks: Vec::new(),
             overflow_hooks: Vec::new(),
+            stop_failure_hooks: Vec::new(),
             user_prompt_submit_hooks: Vec::new(),
             pre_message_hooks: Vec::new(),
             post_message_hooks: Vec::new(),
@@ -82,6 +84,11 @@ impl HookRegistry {
     /// Register an Overflow hook
     pub fn register_overflow(&mut self, hook: Arc<dyn OverflowHook>) {
         self.overflow_hooks.push(hook);
+    }
+
+    /// Register a StopFailure hook
+    pub fn register_stop_failure(&mut self, hook: Arc<dyn StopFailureHook>) {
+        self.stop_failure_hooks.push(hook);
     }
 
     /// Register a `UserPromptSubmit` hook
@@ -189,6 +196,19 @@ impl HookRegistry {
     pub fn execute_overflow(&self, input: &OverflowInput) -> HookResult {
         for hook in &self.overflow_hooks {
             let result = hook.on_overflow(input);
+            match &result {
+                HookResult::Continue => continue,
+                _ => return result,
+            }
+        }
+        HookResult::Continue
+    }
+
+    /// Execute StopFailure hooks
+    #[must_use]
+    pub fn execute_stop_failure(&self, input: &StopFailureInput) -> HookResult {
+        for hook in &self.stop_failure_hooks {
+            let result = hook.on_stop_failure(input);
             match &result {
                 HookResult::Continue => continue,
                 _ => return result,
@@ -310,6 +330,7 @@ impl HookRegistry {
             HookEventType::SessionStart => !self.session_start_hooks.is_empty(),
             HookEventType::SessionEnd => !self.session_end_hooks.is_empty(),
             HookEventType::Overflow => !self.overflow_hooks.is_empty(),
+            HookEventType::StopFailure => !self.stop_failure_hooks.is_empty(),
             HookEventType::UserPromptSubmit => !self.user_prompt_submit_hooks.is_empty(),
             HookEventType::PreMessage => !self.pre_message_hooks.is_empty(),
             HookEventType::PostMessage => !self.post_message_hooks.is_empty(),
@@ -338,6 +359,7 @@ impl HookRegistry {
             + self.session_start_hooks.len()
             + self.session_end_hooks.len()
             + self.overflow_hooks.len()
+            + self.stop_failure_hooks.len()
             + self.user_prompt_submit_hooks.len()
             + self.pre_message_hooks.len()
             + self.post_message_hooks.len()

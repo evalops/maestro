@@ -12,8 +12,8 @@ use super::{
     types::{
         EvalGateInput, HookEventType, HookResult, OnErrorInput, OverflowInput,
         PermissionRequestInput, PostMessageInput, PostToolUseInput, PreMessageInput,
-        PreToolUseInput, SessionEndInput, SessionStartInput, SubagentStartInput, SubagentStopInput,
-        UserPromptSubmitHook, UserPromptSubmitInput,
+        PreToolUseInput, SessionEndInput, SessionStartInput, StopFailureInput, SubagentStartInput,
+        SubagentStopInput, UserPromptSubmitHook, UserPromptSubmitInput,
     },
     wasm::WasmHookExecutor,
 };
@@ -735,6 +735,32 @@ impl IntegratedHookSystem {
         );
 
         self.registry.execute_on_error(&input)
+    }
+
+    /// Execute StopFailure hooks - called when recovery cannot produce a valid completion
+    pub fn execute_stop_failure(
+        &mut self,
+        error: &str,
+        error_details: Option<&str>,
+        last_assistant_message: Option<&str>,
+    ) -> HookResult {
+        if !self.enabled {
+            return HookResult::Continue;
+        }
+
+        let input = StopFailureInput {
+            hook_event_name: "StopFailure".to_string(),
+            cwd: self.cwd.clone(),
+            session_id: self.session_id.clone(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            error: error.to_string(),
+            error_details: error_details.map(String::from),
+            last_assistant_message: last_assistant_message.map(String::from),
+        };
+
+        self.log_event("StopFailure", &format!("error={error}"));
+
+        self.execute_with_timeout(|| self.registry.execute_stop_failure(&input))
     }
 
     /// Execute `EvalGate` hooks - called after tool execution for evaluation

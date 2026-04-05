@@ -420,6 +420,7 @@ fn parse_event_type(name: &str) -> Option<HookEventType> {
         "PostCompact" => Some(HookEventType::PostCompact),
         "Notification" => Some(HookEventType::Notification),
         "Overflow" => Some(HookEventType::Overflow),
+        "StopFailure" => Some(HookEventType::StopFailure),
         "PreMessage" => Some(HookEventType::PreMessage),
         "PostMessage" => Some(HookEventType::PostMessage),
         "OnError" => Some(HookEventType::OnError),
