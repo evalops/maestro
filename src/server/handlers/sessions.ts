@@ -36,6 +36,7 @@
 import crypto from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type {
+	ComposerPendingClientToolRequest,
 	ComposerSession,
 	ComposerSessionSummary,
 } from "@evalops/contracts";
@@ -45,6 +46,7 @@ import {
 } from "../../safety/outbound-secret-preflight.js";
 import { createLogger } from "../../utils/logger.js";
 import { getAuthSubject } from "../authz.js";
+import { serverRequestManager } from "../server-request-manager.js";
 import {
 	buildContentDisposition,
 	readJsonBody,
@@ -86,6 +88,89 @@ export type {
 const logger = createLogger("sessions-handler");
 const sessionIdPattern = /^[a-zA-Z0-9._-]+$/;
 const attachmentIdPattern = /^[a-zA-Z0-9._-]+$/;
+
+function getPendingServerRequestPayload(
+	sessionId: string,
+): Pick<
+	ComposerSession,
+	| "pendingApprovalRequests"
+	| "pendingClientToolRequests"
+	| "pendingToolRetryRequests"
+> {
+	const pending = serverRequestManager.listPending({ sessionId });
+
+	const pendingApprovalRequests = pending
+		.filter((entry) => entry.kind === "approval")
+		.map((entry) => ({
+			id: entry.id,
+			toolName: entry.toolName,
+			displayName: entry.displayName,
+			summaryLabel: entry.summaryLabel,
+			actionDescription: entry.actionDescription,
+			args: entry.args,
+			reason: entry.reason,
+		}));
+
+	const pendingClientToolRequests: ComposerPendingClientToolRequest[] = pending
+		.filter(
+			(
+				entry,
+			): entry is typeof entry & {
+				kind: "client_tool" | "user_input";
+			} => entry.kind === "client_tool" || entry.kind === "user_input",
+		)
+		.map((entry) => ({
+			toolCallId: entry.callId,
+			toolName: entry.toolName,
+			args: entry.args,
+			kind: entry.kind,
+			reason: entry.reason,
+		}));
+
+	const pendingToolRetryRequests = pending
+		.filter((entry) => entry.kind === "tool_retry")
+		.map((entry) => {
+			const args =
+				entry.args &&
+				typeof entry.args === "object" &&
+				!Array.isArray(entry.args)
+					? (entry.args as Record<string, unknown>)
+					: {};
+			return {
+				id: entry.id,
+				toolCallId:
+					typeof args.tool_call_id === "string"
+						? args.tool_call_id
+						: entry.callId,
+				toolName: entry.toolName,
+				args: args.args,
+				errorMessage:
+					typeof args.error_message === "string"
+						? args.error_message
+						: entry.reason,
+				attempt:
+					typeof args.attempt === "number" && Number.isFinite(args.attempt)
+						? args.attempt
+						: 1,
+				maxAttempts:
+					typeof args.max_attempts === "number" &&
+					Number.isFinite(args.max_attempts)
+						? args.max_attempts
+						: undefined,
+				summary: typeof args.summary === "string" ? args.summary : undefined,
+			};
+		});
+
+	return {
+		...(pendingApprovalRequests.length > 0 ? { pendingApprovalRequests } : {}),
+		...(pendingClientToolRequests.length > 0
+			? { pendingClientToolRequests }
+			: {}),
+		...(pendingToolRetryRequests.length > 0
+			? { pendingToolRetryRequests }
+			: {}),
+	};
+}
 
 function sendSensitiveContentBlockedResponse(
 	req: IncomingMessage,
@@ -328,6 +413,7 @@ export async function handleSessions(
 				messages: convertAppMessagesToComposer(session.messages || [], {
 					includeAttachmentContent: false,
 				}),
+				...getPendingServerRequestPayload(session.id),
 			};
 
 			sendJson(res, 200, responseBody, cors, req);
