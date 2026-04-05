@@ -175,4 +175,47 @@ describe("SkillsController", () => {
 		expect(restored).toBe(0);
 		expect(injectMessage).not.toHaveBeenCalled();
 	});
+
+	it("refreshes active skill instructions when the kept tail preserved a stale skill message", () => {
+		const skill = createSkill("debug");
+		vi.mocked(loadSkills).mockReturnValue({ skills: [skill], errors: [] });
+
+		let currentMessages: AppMessage[] = [];
+		const controller = new SkillsController({
+			deps: {
+				injectMessage: vi.fn((message: AppMessage) => {
+					currentMessages = [...currentMessages, message];
+				}),
+				getMessages: () => currentMessages,
+				cwd: () => process.cwd(),
+			},
+			callbacks: {
+				pushCommandOutput: vi.fn(),
+				showInfo: vi.fn(),
+				showError: vi.fn(),
+			},
+		});
+
+		controller.handleSkillsCommand(createCommandContext("activate debug"));
+
+		expect(
+			controller.collectActiveSkillMessagesForCompaction([
+				{
+					role: "hookMessage",
+					customType: "skill",
+					content: "Injected instructions for debug (stale)",
+					display: false,
+					details: { name: "debug", action: "activate" },
+					timestamp: Date.now(),
+				},
+			]),
+		).toEqual([
+			expect.objectContaining({
+				role: "hookMessage",
+				customType: "skill",
+				content: "Injected instructions for debug",
+				details: { name: "debug", action: "activate" },
+			}),
+		]);
+	});
 });
