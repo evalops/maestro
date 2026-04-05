@@ -126,6 +126,11 @@ const READ_RESTORE_TOKEN_BUDGET = 20_000;
 const READ_RESTORE_MAX_TOKENS_PER_FILE = 5_000;
 const READ_RESTORE_TRUNCATION_MARKER =
 	"\n\n[... restored read result truncated for compaction; use `read` on the path again if you need the full contents]";
+const MAX_SKILL_RESTORE_MESSAGES = 3;
+const SKILL_RESTORE_TOKEN_BUDGET = 15_000;
+const SKILL_RESTORE_MAX_TOKENS_PER_SKILL = 5_000;
+const SKILL_RESTORE_TRUNCATION_MARKER =
+	"\n\n[... restored skill truncated for compaction; use the `Skill` tool again if you need the full instructions]";
 
 /**
  * Result of a compaction operation, ready to be persisted.
@@ -341,6 +346,60 @@ function collectVisibleReadPaths(messages: AppMessage[]): Set<string> {
 	return visiblePaths;
 }
 
+function extractSkillRestoreName(
+	content: string | (TextContent | ImageContent)[],
+): string | null {
+	const text =
+		typeof content === "string"
+			? content
+			: content
+					.filter((block): block is TextContent => block.type === "text")
+					.map((block) => block.text)
+					.join("\n");
+	const match = text.match(/^# Skill:\s+(.+)$/m);
+	return match?.[1]?.trim() || null;
+}
+
+function collectVisibleSkillNames(messages: AppMessage[]): Set<string> {
+	const visibleSkillNames = new Set<string>();
+	for (const message of messages) {
+		if (
+			message.role === "toolResult" &&
+			message.toolName === "Skill" &&
+			!message.isError
+		) {
+			const skillName = extractSkillRestoreName(message.content);
+			if (skillName) {
+				visibleSkillNames.add(skillName);
+			}
+			continue;
+		}
+
+		if (message.role !== "hookMessage" || message.customType !== "skill") {
+			continue;
+		}
+
+		const details = message.details;
+		if (
+			typeof details === "object" &&
+			details !== null &&
+			"name" in details &&
+			typeof details.name === "string"
+		) {
+			visibleSkillNames.add(details.name);
+			continue;
+		}
+
+		if (Array.isArray(message.content)) {
+			const skillName = extractSkillRestoreName(message.content);
+			if (skillName) {
+				visibleSkillNames.add(skillName);
+			}
+		}
+	}
+	return visibleSkillNames;
+}
+
 async function refreshReadRestoreContent(
 	request: ReadRestoreRequest,
 	toolCallId: string,
@@ -480,6 +539,54 @@ function truncateReadRestoreBlocks(
 	return restored;
 }
 
+function truncateSkillRestoreBlocks(
+	content: (TextContent | ImageContent)[],
+	maxTokens: number,
+): (TextContent | ImageContent)[] {
+	const restored: (TextContent | ImageContent)[] = [];
+	let usedTokens = 0;
+
+	for (const block of content) {
+		const blockTokens = estimateHookContentTokens([block]);
+		if (usedTokens + blockTokens <= maxTokens) {
+			restored.push(block);
+			usedTokens += blockTokens;
+			continue;
+		}
+
+		const remainingTokens = maxTokens - usedTokens;
+		if (remainingTokens <= 0) {
+			break;
+		}
+
+		if (block.type === "text") {
+			const charBudget = Math.max(
+				0,
+				remainingTokens * 4 - SKILL_RESTORE_TRUNCATION_MARKER.length,
+			);
+			const truncatedText =
+				charBudget > 0
+					? `${block.text.slice(0, charBudget)}${SKILL_RESTORE_TRUNCATION_MARKER}`
+					: SKILL_RESTORE_TRUNCATION_MARKER;
+			const truncationBlock = buildReadRestoreTruncationBlock(truncatedText);
+			if (truncationBlock) {
+				restored.push(truncationBlock);
+			}
+			break;
+		}
+
+		const imageMarker = buildReadRestoreTruncationBlock(
+			"[image omitted from restored skill due to compaction budget; use the `Skill` tool again if needed]",
+		);
+		if (imageMarker) {
+			restored.push(imageMarker);
+		}
+		break;
+	}
+
+	return restored;
+}
+
 async function collectRecentReadRestoreMessages(
 	compactedMessages: AppMessage[],
 	preservedMessages: AppMessage[],
@@ -558,6 +665,64 @@ async function collectRecentReadRestoreMessages(
 				content,
 				false,
 				{ filePath },
+				new Date().toISOString(),
+			),
+		);
+	}
+
+	return restoredMessages;
+}
+
+async function collectRecentSkillRestoreMessages(
+	compactedMessages: AppMessage[],
+	preservedMessages: AppMessage[],
+): Promise<AppMessage[]> {
+	const visibleSkillNames = collectVisibleSkillNames(preservedMessages);
+	const restoredMessages: AppMessage[] = [];
+	const seenSkillNames = new Set<string>();
+	let usedTokens = 0;
+
+	for (let i = compactedMessages.length - 1; i >= 0; i -= 1) {
+		if (restoredMessages.length >= MAX_SKILL_RESTORE_MESSAGES) {
+			break;
+		}
+
+		const message = compactedMessages[i];
+		if (
+			!message ||
+			message.role !== "toolResult" ||
+			message.toolName !== "Skill" ||
+			message.isError
+		) {
+			continue;
+		}
+
+		const skillName = extractSkillRestoreName(message.content);
+		if (
+			!skillName ||
+			visibleSkillNames.has(skillName) ||
+			seenSkillNames.has(skillName)
+		) {
+			continue;
+		}
+
+		const content = truncateSkillRestoreBlocks(
+			message.content,
+			SKILL_RESTORE_MAX_TOKENS_PER_SKILL,
+		);
+		const estimatedTokens = estimateHookContentTokens(content);
+		if (usedTokens + estimatedTokens > SKILL_RESTORE_TOKEN_BUDGET) {
+			continue;
+		}
+
+		usedTokens += estimatedTokens;
+		seenSkillNames.add(skillName);
+		restoredMessages.push(
+			createHookMessage(
+				"skill",
+				content,
+				false,
+				{ name: skillName, source: "tool" },
 				new Date().toISOString(),
 			),
 		);
@@ -1852,13 +2017,16 @@ export async function performCompaction(params: {
 		}
 	};
 
+	const callerPostKeepMessages = (await getPostKeepMessages?.()) ?? [];
+	const preservedTailMessages = [...keep, ...callerPostKeepMessages];
 	const postKeepMessages = [
 		...(await collectRecentReadRestoreMessages(
 			older,
-			keep,
+			preservedTailMessages,
 			agent.state.systemPromptSourcePaths,
 		)),
-		...((await getPostKeepMessages?.()) ?? []),
+		...(await collectRecentSkillRestoreMessages(older, preservedTailMessages)),
+		...callerPostKeepMessages,
 	];
 	persistTailMessages(postKeepMessages);
 

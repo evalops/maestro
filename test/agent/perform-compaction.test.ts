@@ -166,6 +166,44 @@ function createReadToolResultMessage(
 	};
 }
 
+function createSkillToolCallMessage(
+	skill = "my-skill",
+	toolCallId = "call-skill",
+): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [
+			{
+				type: "toolCall",
+				id: toolCallId,
+				name: "Skill",
+				arguments: { skill },
+			},
+		],
+		api: "anthropic-messages",
+		provider: "anthropic",
+		model: "claude-3-5-sonnet",
+		usage: createUsage(120, 30),
+		stopReason: "tool_use",
+		timestamp: Date.now(),
+	};
+}
+
+function createSkillToolResultMessage(
+	skill = "my-skill",
+	toolCallId = "call-skill",
+	content = "# Skill: my-skill\n\n> Test skill\n\n## Instructions\n\nFollow the skill instructions.",
+): AppMessage {
+	return {
+		role: "toolResult",
+		toolCallId,
+		toolName: "Skill",
+		content: [{ type: "text", text: content.replaceAll("my-skill", skill) }],
+		isError: false,
+		timestamp: Date.now(),
+	};
+}
+
 function createReadRestoreHookMessage(
 	filePath = "/tmp/notes.md",
 	text = "contents of /tmp/notes.md",
@@ -1250,6 +1288,85 @@ describe("performCompaction", () => {
 				details: { filePath: systemPromptPath },
 			}),
 		);
+	});
+
+	it("restores recently loaded skills after compaction", async () => {
+		const messages = buildConversation(10);
+		messages.splice(
+			2,
+			0,
+			createSkillToolCallMessage("reviewer", "call-skill-reviewer"),
+			createSkillToolResultMessage(
+				"reviewer",
+				"call-skill-reviewer",
+				"# Skill: reviewer\n\n> Review specialist\n\n## Instructions\n\nInspect the diff for regressions.",
+			),
+		);
+		const agent = createMockAgentWithoutAppendMessage(messages);
+		const sessionManager = createMockSessionManager();
+
+		const result = await performCompaction({ agent, sessionManager });
+
+		expect(result.success).toBe(true);
+		expect(getReplacedMessages(agent)).toContainEqual(
+			expect.objectContaining({
+				role: "hookMessage",
+				customType: "skill",
+				display: false,
+				details: { name: "reviewer", source: "tool" },
+				content: expect.arrayContaining([
+					expect.objectContaining({
+						text: expect.stringContaining("Inspect the diff for regressions."),
+					}),
+				]),
+			}),
+		);
+	});
+
+	it("deduplicates restored skills against caller post-keep skill messages", async () => {
+		const skillContent =
+			"# Skill: reviewer\n\n> Review specialist\n\n## Instructions\n\nInspect the diff for regressions.";
+		const messages = buildConversation(10);
+		messages.splice(
+			2,
+			0,
+			createSkillToolCallMessage("reviewer", "call-skill-reviewer"),
+			createSkillToolResultMessage(
+				"reviewer",
+				"call-skill-reviewer",
+				skillContent,
+			),
+		);
+		const agent = createMockAgentWithoutAppendMessage(messages);
+		const sessionManager = createMockSessionManager();
+
+		const result = await performCompaction({
+			agent,
+			sessionManager,
+			getPostKeepMessages: async () => [
+				{
+					role: "hookMessage",
+					customType: "skill",
+					content: skillContent,
+					display: false,
+					details: { name: "reviewer" },
+					timestamp: Date.now(),
+				},
+			],
+		});
+
+		expect(result.success).toBe(true);
+		expect(
+			getReplacedMessages(agent).filter(
+				(message) =>
+					message.role === "hookMessage" &&
+					message.customType === "skill" &&
+					typeof message.details === "object" &&
+					message.details !== null &&
+					"name" in message.details &&
+					message.details.name === "reviewer",
+			),
+		).toHaveLength(1);
 	});
 
 	it("truncates oversized restored read results to the per-file budget", async () => {
