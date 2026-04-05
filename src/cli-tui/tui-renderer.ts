@@ -1012,6 +1012,13 @@ export class TuiRenderer {
 			toolComponents: this.toolOutputView.getTrackedComponents(),
 			renderMessages: () => this.renderInitialMessages(this.agent.state),
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
+			runSessionStartHooks: (source) =>
+				applySessionStartHooks({
+					agent: this.agent,
+					sessionManager: this.sessionManager,
+					cwd: process.cwd(),
+					source,
+				}),
 		});
 		this.compactionController = createCompactionController({
 			deps: {

@@ -25,6 +25,7 @@ interface ConversationCompactorOptions {
 	toolComponents: Set<ToolExecutionComponent>;
 	renderMessages: () => void;
 	showInfoMessage: (message: string) => void;
+	runSessionStartHooks?: (source: string) => Promise<void>;
 }
 
 /**
@@ -108,6 +109,8 @@ export class ConversationCompactor {
 				);
 				return;
 			}
+
+			await this.options.runSessionStartHooks?.("compact");
 
 			this.options.chatContainer.clear();
 			this.options.toolComponents.clear();

@@ -30,7 +30,10 @@ import type {
 	AppMessage,
 	AssistantMessage,
 } from "../agent/types.js";
-import { runUserPromptWithRecovery } from "../agent/user-prompt-runtime.js";
+import {
+	applySessionStartHooks,
+	runUserPromptWithRecovery,
+} from "../agent/user-prompt-runtime.js";
 import {
 	createRenderableMessage,
 	renderMessageToPlainText,
@@ -153,6 +156,13 @@ export async function runRpcMode(
 					);
 					return;
 				}
+
+				await applySessionStartHooks({
+					agent,
+					sessionManager,
+					cwd: process.cwd(),
+					source: "compact",
+				});
 
 				// Emit compaction event
 				const compactionEvent: AgentEvent = {
