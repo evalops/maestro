@@ -118,6 +118,9 @@ const COMPACTION_OVERFLOW_RETRY_MARKER =
 const READ_RESTORE_COMPACTION_CUSTOM_TYPE = "read-file";
 const MAX_READ_RESTORE_MESSAGES = 3;
 const READ_RESTORE_TOKEN_BUDGET = 20_000;
+const READ_RESTORE_MAX_TOKENS_PER_FILE = 5_000;
+const READ_RESTORE_TRUNCATION_MARKER =
+	"\n\n[... restored read result truncated for compaction; use `read` on the path again if you need the full contents]";
 
 /**
  * Result of a compaction operation, ready to be persisted.
@@ -250,19 +253,22 @@ function buildReadRestoreContent(
 	filePath: string,
 	content: (TextContent | ImageContent)[],
 ): (TextContent | ImageContent)[] {
-	return [
-		{
-			type: "text",
-			text: [
-				"# Recently read file restored after compaction",
-				"",
-				`File: ${filePath}`,
-				"",
-				"Last read result:",
-			].join("\n"),
-		},
-		...content,
-	];
+	const header: TextContent = {
+		type: "text",
+		text: [
+			"# Recently read file restored after compaction",
+			"",
+			`File: ${filePath}`,
+			"",
+			"Last read result:",
+		].join("\n"),
+	};
+	const remainingTokens = Math.max(
+		0,
+		READ_RESTORE_MAX_TOKENS_PER_FILE - estimateHookContentTokens([header]),
+	);
+
+	return [header, ...truncateReadRestoreBlocks(content, remainingTokens)];
 }
 
 function hasReadRestoreMessage(
@@ -298,6 +304,60 @@ function estimateHookContentTokens(
 	content: string | (TextContent | ImageContent)[],
 ): number {
 	return Math.max(1, Math.ceil(JSON.stringify(content).length / 4));
+}
+
+function buildReadRestoreTruncationBlock(text: string): TextContent | null {
+	return estimateHookContentTokens([{ type: "text", text }]) > 0
+		? { type: "text", text }
+		: null;
+}
+
+function truncateReadRestoreBlocks(
+	content: (TextContent | ImageContent)[],
+	maxTokens: number,
+): (TextContent | ImageContent)[] {
+	const restored: (TextContent | ImageContent)[] = [];
+	let usedTokens = 0;
+
+	for (const block of content) {
+		const blockTokens = estimateHookContentTokens([block]);
+		if (usedTokens + blockTokens <= maxTokens) {
+			restored.push(block);
+			usedTokens += blockTokens;
+			continue;
+		}
+
+		const remainingTokens = maxTokens - usedTokens;
+		if (remainingTokens <= 0) {
+			break;
+		}
+
+		if (block.type === "text") {
+			const charBudget = Math.max(
+				0,
+				remainingTokens * 4 - READ_RESTORE_TRUNCATION_MARKER.length,
+			);
+			const truncatedText =
+				charBudget > 0
+					? `${block.text.slice(0, charBudget)}${READ_RESTORE_TRUNCATION_MARKER}`
+					: READ_RESTORE_TRUNCATION_MARKER;
+			const truncationBlock = buildReadRestoreTruncationBlock(truncatedText);
+			if (truncationBlock) {
+				restored.push(truncationBlock);
+			}
+			break;
+		}
+
+		const imageMarker = buildReadRestoreTruncationBlock(
+			"[image omitted from restored read result due to compaction budget; use `read` on the path again if needed]",
+		);
+		if (imageMarker) {
+			restored.push(imageMarker);
+		}
+		break;
+	}
+
+	return restored;
 }
 
 function collectRecentReadRestoreMessages(

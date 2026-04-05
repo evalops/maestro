@@ -1016,6 +1016,40 @@ describe("performCompaction", () => {
 		);
 	});
 
+	it("truncates oversized restored read results to the per-file budget", async () => {
+		const messages = buildConversation(10);
+		const oversizedContent = `${"x".repeat(30_000)}TRUNCATE_ME_SUFFIX`;
+		messages.splice(
+			2,
+			0,
+			createReadToolCallMessage("/tmp/large.ts", "call-read-large"),
+			createReadToolResultMessage(
+				"/tmp/large.ts",
+				"call-read-large",
+				oversizedContent,
+			),
+		);
+		const agent = createMockAgentWithoutAppendMessage(messages);
+		const sessionManager = createMockSessionManager();
+
+		const result = await performCompaction({ agent, sessionManager });
+
+		expect(result.success).toBe(true);
+		const readRestore = getReplacedMessages(agent).find(
+			(message) =>
+				message.role === "hookMessage" &&
+				message.customType === "read-file" &&
+				message.details?.filePath === "/tmp/large.ts",
+		);
+		expect(readRestore).toBeDefined();
+		expect(JSON.stringify(readRestore?.content)).toContain(
+			"restored read result truncated for compaction",
+		);
+		expect(JSON.stringify(readRestore?.content)).not.toContain(
+			"TRUNCATE_ME_SUFFIX",
+		);
+	});
+
 	it("keeps PostCompact hook guidance after preserved messages without appendMessage", async () => {
 		const messages = buildConversation(10);
 		const agent = createMockAgentWithoutAppendMessage(messages);
