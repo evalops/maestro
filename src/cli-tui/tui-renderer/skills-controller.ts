@@ -72,20 +72,19 @@ export class SkillsController {
 			return [];
 		}
 
-		const injectedSkillNames =
-			this.collectInjectedSkillNames(preservedMessages);
 		const { skills } = loadSkills(this.deps.cwd());
 		const restoredMessages: AppMessage[] = [];
 
 		for (const skillName of this.activeSkills) {
-			if (injectedSkillNames.has(skillName)) {
-				continue;
-			}
 			const skill = findSkill(skills, skillName);
 			if (!skill) {
 				continue;
 			}
-			restoredMessages.push(this.buildSkillMessage(skill, "activate"));
+			const message = this.buildSkillMessage(skill, "activate");
+			if (this.hasMatchingSkillMessage(preservedMessages, message)) {
+				continue;
+			}
+			restoredMessages.push(message);
 		}
 
 		return restoredMessages;
@@ -284,8 +283,23 @@ export class SkillsController {
 		};
 	}
 
-	private collectInjectedSkillNames(messages: AppMessage[]): Set<string> {
-		const names = new Set<string>();
+	private hasMatchingSkillMessage(
+		messages: AppMessage[],
+		expected: AppMessage,
+	): boolean {
+		if (
+			expected.role !== "hookMessage" ||
+			expected.customType !== "skill" ||
+			typeof expected.details !== "object" ||
+			expected.details === null ||
+			!("name" in expected.details) ||
+			typeof expected.details.name !== "string"
+		) {
+			return false;
+		}
+
+		const expectedName = expected.details.name;
+		const expectedContent = JSON.stringify(expected.content);
 		for (const message of messages) {
 			if (message.role !== "hookMessage" || message.customType !== "skill") {
 				continue;
@@ -295,12 +309,14 @@ export class SkillsController {
 				typeof details === "object" &&
 				details !== null &&
 				"name" in details &&
-				typeof details.name === "string"
+				typeof details.name === "string" &&
+				details.name === expectedName &&
+				JSON.stringify(message.content) === expectedContent
 			) {
-				names.add(details.name);
+				return true;
 			}
 		}
-		return names;
+		return false;
 	}
 
 	private resolveSkillTarget(
