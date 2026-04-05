@@ -36,11 +36,11 @@ import {
 	createHeadlessRuntimeState,
 	loadPromptAttachments,
 } from "../cli/headless-protocol.js";
+import { withHeadlessPostKeepMessages } from "../headless/prompt-recovery.js";
 import { HeadlessUtilityCommandManager } from "../headless/utility-command-manager.js";
 import { readWorkspaceFile } from "../headless/utility-file-read.js";
 import { searchWorkspaceFiles } from "../headless/utility-file-search.js";
 import { HeadlessUtilityFileWatchManager } from "../headless/utility-file-watch-manager.js";
-import { withMcpPostKeepMessages } from "../mcp/prompt-recovery.js";
 import type { RegisteredModel } from "../models/registry.js";
 import { checkSessionLimits } from "../safety/policy.js";
 import type { SessionManager } from "../session/manager.js";
@@ -1742,7 +1742,7 @@ export class HeadlessSessionRuntime {
 				attachmentNames: attachments?.map((attachment) => attachment.fileName),
 				execute: () =>
 					breaker.execute(() => this.agent.prompt(content, attachments)),
-				getPostKeepMessages: withMcpPostKeepMessages(),
+				getPostKeepMessages: withHeadlessPostKeepMessages(() => this.state),
 				callbacks: {
 					onCompacting: () => {
 						this.publish({

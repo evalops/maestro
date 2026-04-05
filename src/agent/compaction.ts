@@ -51,6 +51,7 @@ import {
 } from "./compaction-hooks.js";
 import {
 	BACKGROUND_TASKS_COMPACTION_CUSTOM_TYPE,
+	HEADLESS_CLIENT_REQUESTS_COMPACTION_CUSTOM_TYPE,
 	MCP_SERVERS_COMPACTION_CUSTOM_TYPE,
 	PLAN_FILE_COMPACTION_CUSTOM_TYPE,
 	PLAN_MODE_COMPACTION_CUSTOM_TYPE,
@@ -204,6 +205,8 @@ function shouldSkipReinjectedCompactionMessage(message: AppMessage): boolean {
 				message.customType === READ_RESTORE_COMPACTION_CUSTOM_TYPE ||
 				message.customType === PLAN_FILE_COMPACTION_CUSTOM_TYPE ||
 				message.customType === BACKGROUND_TASKS_COMPACTION_CUSTOM_TYPE ||
+				message.customType ===
+					HEADLESS_CLIENT_REQUESTS_COMPACTION_CUSTOM_TYPE ||
 				message.customType === MCP_SERVERS_COMPACTION_CUSTOM_TYPE ||
 				message.customType === "PostCompact" ||
 				message.customType === "SessionStart" ||
@@ -226,6 +229,8 @@ function stripRuntimeRestoreMessages(messages: AppMessage[]): AppMessage[] {
 		(message) =>
 			(message.role !== "hookMessage" ||
 				(message.customType !== BACKGROUND_TASKS_COMPACTION_CUSTOM_TYPE &&
+					message.customType !==
+						HEADLESS_CLIENT_REQUESTS_COMPACTION_CUSTOM_TYPE &&
 					message.customType !== MCP_SERVERS_COMPACTION_CUSTOM_TYPE &&
 					message.customType !== "SessionStart")) &&
 			!isSessionStartInitialUserMessage(message),
