@@ -62,7 +62,7 @@ import {
 	convertAppMessageToLlm,
 	createHookMessage,
 } from "./custom-messages.js";
-import { getCurrentPlanFilePath } from "./plan-mode.js";
+import { getPlanFilePathForCompactionRestore } from "./plan-mode.js";
 import type {
 	Api,
 	AppMessage,
@@ -225,10 +225,12 @@ function getExcludedReadRestorePaths(
 	const loadedAppendSystemPromptPath = resolveLoadedAppendSystemPromptPath(
 		process.cwd(),
 	);
+	const trackedPlanFilePath = getPlanFilePathForCompactionRestore();
 	return new Set(
 		[
 			...resolvePromptLoadedProjectDocPaths(process.cwd()),
 			...(loadedAppendSystemPromptPath ? [loadedAppendSystemPromptPath] : []),
+			...(trackedPlanFilePath ? [trackedPlanFilePath] : []),
 			...additionalPaths,
 		].map((path) => normalizeComparableReadPath(path)),
 	);
@@ -610,10 +612,6 @@ async function collectRecentReadRestoreMessages(
 	const visiblePaths = collectVisibleReadPaths(preservedMessages);
 	const requestsByCallId =
 		collectReadRestoreRequestsByCallId(compactedMessages);
-	const currentPlanFilePath = getCurrentPlanFilePath();
-	const normalizedPlanFilePath = currentPlanFilePath
-		? normalizeReadPath(currentPlanFilePath)
-		: null;
 	const excludedPaths = getExcludedReadRestorePaths(additionalExcludedPaths);
 	const restoredMessages: AppMessage[] = [];
 	const seenPaths = new Set<string>();
@@ -640,8 +638,7 @@ async function collectRecentReadRestoreMessages(
 			!filePath ||
 			visiblePaths.has(filePath) ||
 			seenPaths.has(filePath) ||
-			shouldExcludeReadRestorePath(filePath, excludedPaths) ||
-			(normalizedPlanFilePath !== null && filePath === normalizedPlanFilePath)
+			shouldExcludeReadRestorePath(filePath, excludedPaths)
 		) {
 			continue;
 		}
