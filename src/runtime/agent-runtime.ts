@@ -92,6 +92,11 @@ export class AgentRuntimeController {
 								`Stopped after ${maxContinuations} automatic continuations because the response kept hitting the output limit.`,
 							);
 						},
+						onMaxOutputStoppedEarly: (attempt, maxContinuations) => {
+							this.renderer?.showInfo(
+								`Stopped automatic continuation early after ${attempt}/${maxContinuations} retries because recent responses made minimal progress.`,
+							);
+						},
 					},
 				});
 			},

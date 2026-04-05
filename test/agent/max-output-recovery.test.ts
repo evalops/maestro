@@ -9,6 +9,7 @@ import type {
 
 function createAssistantMessage(
 	stopReason: AssistantMessage["stopReason"],
+	outputTokens = 1,
 ): AssistantMessage {
 	return {
 		role: "assistant",
@@ -18,7 +19,7 @@ function createAssistantMessage(
 		model: "claude-sonnet-4-20250514",
 		usage: {
 			input: 1,
-			output: 1,
+			output: outputTokens,
 			cacheRead: 0,
 			cacheWrite: 0,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
@@ -59,6 +60,7 @@ describe("recoverFromMaxOutput", () => {
 			recovered: false,
 			attempts: 0,
 			exhausted: false,
+			stoppedEarly: false,
 		});
 		expect(agent.continue).not.toHaveBeenCalled();
 	});
@@ -76,10 +78,11 @@ describe("recoverFromMaxOutput", () => {
 			recovered: true,
 			attempts: 2,
 			exhausted: false,
+			stoppedEarly: false,
 		});
 		expect(agent.continue).toHaveBeenCalledTimes(2);
-		expect(onContinue).toHaveBeenNthCalledWith(1, 1, 3);
-		expect(onContinue).toHaveBeenNthCalledWith(2, 2, 3);
+		expect(onContinue).toHaveBeenNthCalledWith(1, 1, 5);
+		expect(onContinue).toHaveBeenNthCalledWith(2, 2, 5);
 	});
 
 	it("stops after the configured continuation limit", async () => {
@@ -98,8 +101,37 @@ describe("recoverFromMaxOutput", () => {
 			recovered: true,
 			attempts: 2,
 			exhausted: true,
+			stoppedEarly: false,
 		});
 		expect(agent.continue).toHaveBeenCalledTimes(2);
 		expect(onExhausted).toHaveBeenCalledWith(2);
+	});
+
+	it("stops early when the last two retries both produce tiny outputs", async () => {
+		const onStoppedEarly = vi.fn();
+		const agent = createAgentStub(
+			["length", "length", "length", "length"],
+			[createAssistantMessage("length", 100)],
+		);
+
+		agent.continue = vi.fn().mockImplementation(async () => {
+			agent.state.messages = [
+				...agent.state.messages,
+				createAssistantMessage("length", 100),
+			];
+		});
+
+		const result = await recoverFromMaxOutput(agent, {
+			onStoppedEarly,
+		});
+
+		expect(result).toEqual({
+			recovered: true,
+			attempts: 3,
+			exhausted: false,
+			stoppedEarly: true,
+		});
+		expect(agent.continue).toHaveBeenCalledTimes(3);
+		expect(onStoppedEarly).toHaveBeenCalledWith(3, 5);
 	});
 });

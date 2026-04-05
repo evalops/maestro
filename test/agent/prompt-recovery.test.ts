@@ -172,7 +172,7 @@ describe("recoverFromMaxOutput", () => {
 				continuationPrompt: expect.stringContaining("Resume directly"),
 			}),
 		);
-		expect(onContinue).toHaveBeenCalledWith(1, 3);
+		expect(onContinue).toHaveBeenCalledWith(1, 5);
 	});
 
 	it("tries a larger Anthropic output cap before using continuation prompts", async () => {
@@ -241,6 +241,45 @@ describe("recoverFromMaxOutput", () => {
 		expect(agent.continue.mock.calls[1]?.[0]).toMatchObject({
 			continuationPrompt: expect.stringContaining("Resume directly"),
 		});
+	});
+
+	it("stops automatic continuation early when recent retries make minimal progress", async () => {
+		const agent = createMockAgent([
+			createUserMessage("question"),
+			createAssistantMessage({
+				stopReason: "length",
+				text: "partial",
+				usage: createUsage(100, 100),
+			}),
+		]);
+		agent.state.model.provider = "openai";
+		agent.state.model.api = "openai-completions";
+
+		agent.continue.mockImplementation(async () => {
+			agent.state.messages = [
+				...agent.state.messages,
+				createAssistantMessage({
+					text: "still partial",
+					stopReason: "length",
+					usage: createUsage(100, 100),
+				}),
+			];
+		});
+
+		const onStoppedEarly = vi.fn();
+
+		const result = await recoverFromMaxOutput(agent as never, {
+			callbacks: { onMaxOutputStoppedEarly: onStoppedEarly },
+		});
+
+		expect(result).toEqual({
+			recovered: true,
+			attempts: 3,
+			exhausted: false,
+			stoppedEarly: true,
+		});
+		expect(agent.continue).toHaveBeenCalledTimes(3);
+		expect(onStoppedEarly).toHaveBeenCalledWith(3, 5);
 	});
 });
 
@@ -661,7 +700,11 @@ echo '{"continue": true, "systemMessage": "Preserve operator guidance from overf
 	it("runs StopFailure hooks when max-output recovery is exhausted", async () => {
 		const agent = createMockAgent([
 			createUserMessage("question"),
-			createAssistantMessage({ stopReason: "length", text: "partial" }),
+			createAssistantMessage({
+				stopReason: "length",
+				text: "partial",
+				usage: createUsage(100, 1_000),
+			}),
 		]);
 		const sessionManager = createMockSessionManager();
 		const stopFailureHookService = createMockStopFailureHookService();
@@ -676,6 +719,7 @@ echo '{"continue": true, "systemMessage": "Preserve operator guidance from overf
 				createAssistantMessage({
 					text: nextText,
 					stopReason: "length",
+					usage: createUsage(100, 1_000),
 				}),
 			];
 		});
@@ -690,6 +734,46 @@ echo '{"continue": true, "systemMessage": "Preserve operator guidance from overf
 		expect(stopFailureHookService.runStopFailureHooks).toHaveBeenCalledWith(
 			"max_output_tokens",
 			"Automatic continuation recovery exhausted before the model completed the response.",
+			"still partial",
+			undefined,
+		);
+	});
+
+	it("reports diminishing-returns stop failures with a specific reason", async () => {
+		const agent = createMockAgent([
+			createUserMessage("question"),
+			createAssistantMessage({
+				stopReason: "length",
+				text: "partial",
+				usage: createUsage(100, 100),
+			}),
+		]);
+		const sessionManager = createMockSessionManager();
+		const stopFailureHookService = createMockStopFailureHookService();
+		agent.state.model.provider = "openai";
+		agent.state.model.api = "openai-completions";
+
+		agent.continue.mockImplementation(async () => {
+			agent.state.messages = [
+				...agent.state.messages,
+				createAssistantMessage({
+					text: "still partial",
+					stopReason: "length",
+					usage: createUsage(100, 100),
+				}),
+			];
+		});
+
+		await runWithPromptRecovery({
+			agent: agent as never,
+			sessionManager,
+			stopFailureHookService,
+			execute: async () => {},
+		});
+
+		expect(stopFailureHookService.runStopFailureHooks).toHaveBeenCalledWith(
+			"max_output_tokens",
+			"Automatic continuation stopped early after 3 automatic continuations because recent retries made minimal progress.",
 			"still partial",
 			undefined,
 		);

@@ -22,8 +22,10 @@ import type { AppMessage, AssistantMessage } from "./types.js";
 
 const logger = createLogger("agent:prompt-recovery");
 
-const DEFAULT_MAX_OUTPUT_CONTINUATIONS = 3;
+const DEFAULT_MAX_OUTPUT_CONTINUATIONS = 5;
 const MAX_OUTPUT_ESCALATION_TOKENS = 64_000;
+const MAX_OUTPUT_DIMINISHING_THRESHOLD_TOKENS = 500;
+const MAX_OUTPUT_DIMINISHING_MIN_ATTEMPTS = 3;
 const MAX_OUTPUT_CONTINUATION_PROMPT =
 	"Output token limit hit. Resume directly with the unfinished answer. No apology, no recap, and no restating the task. Pick up mid-thought if needed, and keep the remaining work broken into smaller pieces.";
 const POST_COMPACTION_CONTINUATION_PROMPT =
@@ -35,6 +37,7 @@ export interface PromptRecoveryCallbacks {
 	onCompactionFailed?: (message: string) => void;
 	onMaxOutputContinue?: (attempt: number, maxContinuations: number) => void;
 	onMaxOutputExhausted?: (maxContinuations: number) => void;
+	onMaxOutputStoppedEarly?: (attempt: number, maxContinuations: number) => void;
 }
 
 export interface RunWithPromptRecoveryOptions {
@@ -47,6 +50,13 @@ export interface RunWithPromptRecoveryOptions {
 	stopFailureHookService?: StopFailureHookService;
 	callbacks?: PromptRecoveryCallbacks;
 	maxOutputContinuations?: number;
+}
+
+export interface MaxOutputRecoveryResult {
+	recovered: boolean;
+	attempts: number;
+	exhausted: boolean;
+	stoppedEarly: boolean;
 }
 
 export function buildCompactionEvent(
@@ -98,6 +108,13 @@ function getAssistantText(message?: AssistantMessage): string | undefined {
 		.trim();
 
 	return text || undefined;
+}
+
+function getAssistantOutputTokens(
+	message?: AssistantMessage,
+): number | undefined {
+	const output = message?.usage.output;
+	return typeof output === "number" && output > 0 ? output : undefined;
 }
 
 function shouldEscalateMaxOutputCap(agent: Agent): boolean {
@@ -286,14 +303,15 @@ export async function recoverFromMaxOutput(
 	options?: {
 		callbacks?: Pick<
 			PromptRecoveryCallbacks,
-			"onMaxOutputContinue" | "onMaxOutputExhausted"
+			"onMaxOutputContinue" | "onMaxOutputExhausted" | "onMaxOutputStoppedEarly"
 		>;
 		maxContinuations?: number;
 	},
-): Promise<boolean> {
+): Promise<MaxOutputRecoveryResult> {
 	const maxContinuations =
 		options?.maxContinuations ?? DEFAULT_MAX_OUTPUT_CONTINUATIONS;
 	let attempt = 0;
+	let previousContinuationOutputTokens: number | undefined;
 
 	if (shouldEscalateMaxOutputCap(agent)) {
 		const lastAssistant = getLastAssistantMessage(agent.state.messages);
@@ -307,11 +325,41 @@ export async function recoverFromMaxOutput(
 	while (attempt < maxContinuations) {
 		const lastAssistant = getLastAssistantMessage(agent.state.messages);
 		if (!lastAssistant || lastAssistant.stopReason !== "length") {
-			return attempt > 0;
+			return {
+				recovered: attempt > 0,
+				attempts: attempt,
+				exhausted: false,
+				stoppedEarly: false,
+			};
+		}
+
+		const currentOutputTokens = getAssistantOutputTokens(lastAssistant);
+		const shouldStopForDiminishingReturns =
+			attempt >= MAX_OUTPUT_DIMINISHING_MIN_ATTEMPTS &&
+			typeof previousContinuationOutputTokens === "number" &&
+			typeof currentOutputTokens === "number" &&
+			previousContinuationOutputTokens <
+				MAX_OUTPUT_DIMINISHING_THRESHOLD_TOKENS &&
+			currentOutputTokens < MAX_OUTPUT_DIMINISHING_THRESHOLD_TOKENS;
+		if (shouldStopForDiminishingReturns) {
+			options?.callbacks?.onMaxOutputStoppedEarly?.(attempt, maxContinuations);
+			logger.info("Stopped automatic continuation after diminishing returns", {
+				attempt,
+				maxContinuations,
+				previousOutputTokens: previousContinuationOutputTokens,
+				currentOutputTokens,
+			});
+			return {
+				recovered: attempt > 0,
+				attempts: attempt,
+				exhausted: false,
+				stoppedEarly: true,
+			};
 		}
 
 		attempt += 1;
 		options?.callbacks?.onMaxOutputContinue?.(attempt, maxContinuations);
+		previousContinuationOutputTokens = currentOutputTokens;
 		await agent.continue({
 			continuationPrompt: MAX_OUTPUT_CONTINUATION_PROMPT,
 		});
@@ -320,8 +368,19 @@ export async function recoverFromMaxOutput(
 	const lastAssistant = getLastAssistantMessage(agent.state.messages);
 	if (lastAssistant?.stopReason === "length") {
 		options?.callbacks?.onMaxOutputExhausted?.(maxContinuations);
+		return {
+			recovered: attempt > 0,
+			attempts: attempt,
+			exhausted: true,
+			stoppedEarly: false,
+		};
 	}
-	return attempt > 0;
+	return {
+		recovered: attempt > 0,
+		attempts: attempt,
+		exhausted: false,
+		stoppedEarly: false,
+	};
 }
 
 async function recoverFromPromptOverflow(
@@ -415,7 +474,7 @@ export async function runWithPromptRecovery(
 				callbacks,
 			);
 			if (recovered) {
-				await recoverFromMaxOutput(agent, {
+				const maxOutputRecovery = await recoverFromMaxOutput(agent, {
 					callbacks,
 					maxContinuations: options.maxOutputContinuations,
 				});
@@ -423,8 +482,9 @@ export async function runWithPromptRecovery(
 				if (lastAssistant?.stopReason === "length") {
 					await reportStopFailure({
 						error: "max_output_tokens",
-						errorDetails:
-							"Automatic continuation recovery exhausted before the model completed the response.",
+						errorDetails: maxOutputRecovery.stoppedEarly
+							? `Automatic continuation stopped early after ${maxOutputRecovery.attempts} automatic continuations because recent retries made minimal progress.`
+							: "Automatic continuation recovery exhausted before the model completed the response.",
 						lastAssistantMessage: getAssistantText(lastAssistant),
 					});
 				}
@@ -468,7 +528,7 @@ export async function runWithPromptRecovery(
 		throw executionError;
 	}
 
-	await recoverFromMaxOutput(agent, {
+	const maxOutputRecovery = await recoverFromMaxOutput(agent, {
 		callbacks,
 		maxContinuations: options.maxOutputContinuations,
 	});
@@ -476,8 +536,9 @@ export async function runWithPromptRecovery(
 	if (lastAssistant?.stopReason === "length") {
 		await reportStopFailure({
 			error: "max_output_tokens",
-			errorDetails:
-				"Automatic continuation recovery exhausted before the model completed the response.",
+			errorDetails: maxOutputRecovery.stoppedEarly
+				? `Automatic continuation stopped early after ${maxOutputRecovery.attempts} automatic continuations because recent retries made minimal progress.`
+				: "Automatic continuation recovery exhausted before the model completed the response.",
 			lastAssistantMessage: getAssistantText(lastAssistant),
 		});
 	}
