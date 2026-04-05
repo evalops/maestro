@@ -115,6 +115,36 @@ export interface GitSnapshotOptions {
 	recentCommitCount?: number;
 }
 
+export function getDefaultBranch(
+	cwd: string = process.cwd(),
+): string | undefined {
+	const remoteHead = runGitText(cwd, [
+		"symbolic-ref",
+		"--short",
+		"refs/remotes/origin/HEAD",
+	]);
+	if (remoteHead.ok && remoteHead.stdout) {
+		const branch = remoteHead.stdout.replace(/^origin\//, "").trim();
+		if (branch) {
+			return branch;
+		}
+	}
+
+	const configuredDefault = runGitText(cwd, ["config", "init.defaultBranch"]);
+	if (configuredDefault.ok && configuredDefault.stdout) {
+		return configuredDefault.stdout;
+	}
+
+	return getCurrentBranch(cwd);
+}
+
+export function getGitUserName(
+	cwd: string = process.cwd(),
+): string | undefined {
+	const result = runGitText(cwd, ["config", "user.name"]);
+	return result.ok && result.stdout ? result.stdout : undefined;
+}
+
 /**
  * Get the current commit SHA.
  */
@@ -305,6 +335,8 @@ export function getGitSnapshot(
 		: "(git log unavailable)";
 
 	const branch = state.branch ?? "(detached HEAD)";
+	const defaultBranch = getDefaultBranch(cwd);
+	const gitUser = getGitUserName(cwd);
 	const upstream = state.upstream
 		? `Upstream: ${state.upstream} (ahead ${state.ahead ?? 0}, behind ${state.behind ?? 0})`
 		: "Upstream: (none)";
@@ -312,7 +344,10 @@ export function getGitSnapshot(
 
 	return [
 		"# Repository Snapshot",
+		"This is the git status snapshot at the start of the session. It does not update automatically during the conversation.",
 		`Current branch: ${branch}`,
+		`Main branch (usually the PR target): ${defaultBranch ?? "(unknown)"}`,
+		...(gitUser ? ["Git user is configured for this repository."] : []),
 		upstream,
 		`Working tree: ${workingTree}`,
 		`Status:\n${statusText}`,

@@ -7,9 +7,11 @@ import {
 	getAheadBehind,
 	getCommitSha,
 	getCurrentBranch,
+	getDefaultBranch,
 	getGitRoot,
 	getGitSnapshot,
 	getGitState,
+	getGitUserName,
 	isDirtyWorkingTree,
 	isInsideGitRepository,
 } from "../../src/utils/git.js";
@@ -228,9 +230,17 @@ describe("getGitSnapshot", () => {
 			writeFileSync(join(dir, "modified.txt"), "pending change\n");
 
 			const snapshot = getGitSnapshot(dir);
+			const branch = getCurrentBranch(dir);
 
 			expect(snapshot).toContain("# Repository Snapshot");
+			expect(snapshot).toContain(
+				"This is the git status snapshot at the start of the session.",
+			);
 			expect(snapshot).toContain("Current branch:");
+			expect(snapshot).toContain(
+				`Main branch (usually the PR target): ${branch}`,
+			);
+			expect(snapshot).toContain("Git user is configured for this repository.");
 			expect(snapshot).toContain("Working tree: dirty");
 			expect(snapshot).toContain("Status:");
 			expect(snapshot).toContain("modified.txt");
@@ -316,6 +326,34 @@ exit 1
 				process.env.PATH = originalPath;
 			}
 			rmSync(binDir, { recursive: true, force: true });
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("getDefaultBranch", () => {
+	it("falls back to the current branch when origin/HEAD is unavailable", () => {
+		const dir = mkdtempSync(join(tmpdir(), "composer-git-default-branch-"));
+
+		try {
+			initGitRepo(dir);
+			commitFile(dir, "tracked.txt", "tracked\n", "initial commit");
+
+			expect(getDefaultBranch(dir)).toBe(getCurrentBranch(dir));
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("getGitUserName", () => {
+	it("returns the configured git user name", () => {
+		const dir = mkdtempSync(join(tmpdir(), "composer-git-user-name-"));
+
+		try {
+			initGitRepo(dir);
+			expect(getGitUserName(dir)).toBe("Test User");
+		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
