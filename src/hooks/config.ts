@@ -406,6 +406,7 @@ function loadHooksFromEnv(): HookConfiguration {
 		PRE_COMPACT: "PreCompact",
 		POST_COMPACT: "PostCompact",
 		PERMISSION_REQUEST: "PermissionRequest",
+		STOP_FAILURE: "StopFailure",
 	};
 
 	for (const [key, value] of Object.entries(process.env)) {
@@ -620,6 +621,8 @@ export function getMatchTarget(input: HookInput): string | undefined {
 			return input.reason;
 		case "SubagentStart":
 			return input.agent_type;
+		case "StopFailure":
+			return input.error;
 		case "UserPromptSubmit":
 			return undefined; // Always matches
 		default:

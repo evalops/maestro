@@ -6,6 +6,7 @@ import type {
 	CompactionHookContext,
 	CompactionHookService,
 	OverflowHookService,
+	StopFailureHookService,
 } from "./compaction-hooks.js";
 import {
 	type CompactionSessionManager,
@@ -43,6 +44,7 @@ export interface RunWithPromptRecoveryOptions {
 	hookContext?: CompactionHookContext;
 	hookService?: CompactionHookService;
 	overflowHookService?: OverflowHookService;
+	stopFailureHookService?: StopFailureHookService;
 	callbacks?: PromptRecoveryCallbacks;
 	maxOutputContinuations?: number;
 }
@@ -74,6 +76,28 @@ function getLastAssistantMessage(
 	return lastMessage && isAssistantMessage(lastMessage)
 		? lastMessage
 		: undefined;
+}
+
+function getAssistantText(message?: AssistantMessage): string | undefined {
+	if (!message) {
+		return undefined;
+	}
+
+	const text = message.content
+		.filter(
+			(
+				block,
+			): block is Extract<
+				AssistantMessage["content"][number],
+				{ type: "text" }
+			> => block.type === "text",
+		)
+		.map((block) => block.text.trim())
+		.filter(Boolean)
+		.join("\n")
+		.trim();
+
+	return text || undefined;
 }
 
 function shouldEscalateMaxOutputCap(agent: Agent): boolean {
@@ -148,6 +172,61 @@ function buildOverflowHookGuidance(result: {
 	].filter((section): section is string => Boolean(section));
 
 	return sections.length > 0 ? sections.join("\n\n") : undefined;
+}
+
+async function runStopFailureHooks(
+	options: RunWithPromptRecoveryOptions,
+	params: {
+		error: string;
+		errorDetails?: string;
+		lastAssistantMessage?: string;
+	},
+): Promise<void> {
+	const { hookContext } = options;
+	const stopFailureHookService =
+		options.stopFailureHookService ??
+		(hookContext
+			? compactionHooks.createStopFailureHookService(hookContext)
+			: undefined);
+	if (!stopFailureHookService) {
+		return;
+	}
+	if (
+		stopFailureHookService.hasHooks &&
+		!stopFailureHookService.hasHooks("StopFailure")
+	) {
+		return;
+	}
+
+	try {
+		const result = await stopFailureHookService.runStopFailureHooks(
+			params.error,
+			params.errorDetails,
+			params.lastAssistantMessage,
+			hookContext?.signal,
+		);
+
+		if (
+			result.blocked ||
+			result.preventContinuation ||
+			result.systemMessage ||
+			result.additionalContext
+		) {
+			logger.warn(
+				"StopFailure hooks returned unsupported control or context output; ignoring",
+				{
+					error: params.error,
+					blocked: result.blocked,
+					preventContinuation: result.preventContinuation,
+				},
+			);
+		}
+	} catch (error) {
+		logger.warn("StopFailure hooks failed", {
+			error: error instanceof Error ? error.message : String(error),
+			stopFailureCode: params.error,
+		});
+	}
 }
 
 async function runOverflowHooks(
@@ -296,6 +375,19 @@ export async function runWithPromptRecovery(
 	const initialMessageCount = agent.state.messages.length;
 	let executionError: unknown;
 	let newMessages: AppMessage[] = [];
+	let stopFailureReported = false;
+
+	const reportStopFailure = async (params: {
+		error: string;
+		errorDetails?: string;
+		lastAssistantMessage?: string;
+	}) => {
+		if (stopFailureReported) {
+			return;
+		}
+		stopFailureReported = true;
+		await runStopFailureHooks(options, params);
+	};
 
 	try {
 		await execute();
@@ -327,6 +419,15 @@ export async function runWithPromptRecovery(
 					callbacks,
 					maxContinuations: options.maxOutputContinuations,
 				});
+				const lastAssistant = getLastAssistantMessage(agent.state.messages);
+				if (lastAssistant?.stopReason === "length") {
+					await reportStopFailure({
+						error: "max_output_tokens",
+						errorDetails:
+							"Automatic continuation recovery exhausted before the model completed the response.",
+						lastAssistantMessage: getAssistantText(lastAssistant),
+					});
+				}
 				return;
 			}
 
@@ -334,10 +435,27 @@ export async function runWithPromptRecovery(
 				agent,
 				newMessages,
 			);
+			await reportStopFailure({
+				error: "prompt_overflow",
+				errorDetails:
+					assistantOverflowError?.message ??
+					getOverflowErrorMessage(newMessages, executionError) ??
+					"Prompt overflow could not be recovered.",
+				lastAssistantMessage: getAssistantText(
+					getLastAssistantMessage(agent.state.messages),
+				),
+			});
 			if (assistantOverflowError) {
 				throw assistantOverflowError;
 			}
 		} catch (error) {
+			await reportStopFailure({
+				error: "prompt_overflow",
+				errorDetails: error instanceof Error ? error.message : String(error),
+				lastAssistantMessage: getAssistantText(
+					getLastAssistantMessage(agent.state.messages),
+				),
+			});
 			logger.warn("Prompt overflow recovery continuation failed", {
 				error: error instanceof Error ? error.message : String(error),
 				stack: error instanceof Error ? error.stack : undefined,
@@ -354,4 +472,13 @@ export async function runWithPromptRecovery(
 		callbacks,
 		maxContinuations: options.maxOutputContinuations,
 	});
+	const lastAssistant = getLastAssistantMessage(agent.state.messages);
+	if (lastAssistant?.stopReason === "length") {
+		await reportStopFailure({
+			error: "max_output_tokens",
+			errorDetails:
+				"Automatic continuation recovery exhausted before the model completed the response.",
+			lastAssistantMessage: getAssistantText(lastAssistant),
+		});
+	}
 }

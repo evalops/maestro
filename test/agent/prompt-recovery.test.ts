@@ -2,7 +2,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import type { CompactionHookService } from "../../src/agent/compaction-hooks.js";
+import type {
+	CompactionHookService,
+	StopFailureHookService,
+} from "../../src/agent/compaction-hooks.js";
 import {
 	recoverFromMaxOutput,
 	runWithPromptRecovery,
@@ -86,6 +89,16 @@ function createMockOverflowHookService() {
 	return {
 		hasHooks: vi.fn().mockReturnValue(true),
 		runOverflowHooks: vi.fn().mockResolvedValue({
+			blocked: false,
+			preventContinuation: false,
+		}),
+	};
+}
+
+function createMockStopFailureHookService(): StopFailureHookService {
+	return {
+		hasHooks: vi.fn().mockReturnValue(true),
+		runStopFailureHooks: vi.fn().mockResolvedValue({
 			blocked: false,
 			preventContinuation: false,
 		}),
@@ -491,6 +504,37 @@ echo '{"continue": true, "systemMessage": "Preserve operator guidance from overf
 		);
 	});
 
+	it("runs StopFailure hooks when prompt overflow recovery cannot compact", async () => {
+		const error = new Error(
+			"Anthropic rejected this request because the prompt exceeded 200,000 tokens. Use /compact to summarize prior messages or remove large attachments, then retry.",
+		);
+		const agent = createMockAgent([
+			createUserMessage("short"),
+			createAssistantMessage(),
+			createUserMessage("latest question"),
+		]);
+		const sessionManager = createMockSessionManager();
+		const stopFailureHookService = createMockStopFailureHookService();
+
+		await expect(
+			runWithPromptRecovery({
+				agent: agent as never,
+				sessionManager,
+				stopFailureHookService,
+				execute: async () => {
+					throw error;
+				},
+			}),
+		).rejects.toThrow(error.message);
+
+		expect(stopFailureHookService.runStopFailureHooks).toHaveBeenCalledWith(
+			"prompt_overflow",
+			error.message,
+			undefined,
+			undefined,
+		);
+	});
+
 	it("rethrows assistant overflow errors if compaction cannot run", async () => {
 		const agent = createMockAgent([
 			createUserMessage("short"),
@@ -612,5 +656,42 @@ echo '{"continue": true, "systemMessage": "Preserve operator guidance from overf
 
 		expect(sessionManager.saveCompaction).toHaveBeenCalledOnce();
 		expect(agent.continue).toHaveBeenCalledOnce();
+	});
+
+	it("runs StopFailure hooks when max-output recovery is exhausted", async () => {
+		const agent = createMockAgent([
+			createUserMessage("question"),
+			createAssistantMessage({ stopReason: "length", text: "partial" }),
+		]);
+		const sessionManager = createMockSessionManager();
+		const stopFailureHookService = createMockStopFailureHookService();
+
+		agent.continue.mockImplementation(async (options?: unknown) => {
+			const nextText =
+				options && typeof options === "object" && "maxTokensOverride" in options
+					? "expanded partial"
+					: "still partial";
+			agent.state.messages = [
+				...agent.state.messages,
+				createAssistantMessage({
+					text: nextText,
+					stopReason: "length",
+				}),
+			];
+		});
+
+		await runWithPromptRecovery({
+			agent: agent as never,
+			sessionManager,
+			stopFailureHookService,
+			execute: async () => {},
+		});
+
+		expect(stopFailureHookService.runStopFailureHooks).toHaveBeenCalledWith(
+			"max_output_tokens",
+			"Automatic continuation recovery exhausted before the model completed the response.",
+			"still partial",
+			undefined,
+		);
 	});
 });

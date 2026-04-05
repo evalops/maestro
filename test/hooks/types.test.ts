@@ -16,6 +16,7 @@ import type {
 	PreToolUseHookInput,
 	SessionEndHookInput,
 	SessionStartHookInput,
+	StopFailureHookInput,
 	SubagentStartHookInput,
 	SubagentStopHookInput,
 	UserPromptSubmitHookInput,
@@ -23,7 +24,7 @@ import type {
 
 describe("Hook Types", () => {
 	describe("HookEventType", () => {
-		it("includes all 17 event types", () => {
+		it("includes all supported event types", () => {
 			const eventTypes: HookEventType[] = [
 				"PreToolUse",
 				"PostToolUse",
@@ -31,6 +32,9 @@ describe("Hook Types", () => {
 				"EvalGate",
 				"SessionStart",
 				"SessionEnd",
+				"SessionSwitch",
+				"SessionBeforeTree",
+				"SessionTree",
 				"SubagentStart",
 				"SubagentStop",
 				"UserPromptSubmit",
@@ -39,12 +43,14 @@ describe("Hook Types", () => {
 				"PostCompact",
 				"PermissionRequest",
 				"Overflow",
+				"StopFailure",
 				"PreMessage",
 				"PostMessage",
 				"OnError",
+				"Branch",
 			];
 
-			expect(eventTypes).toHaveLength(17);
+			expect(eventTypes).toHaveLength(22);
 		});
 	});
 
@@ -204,6 +210,35 @@ describe("Hook Types", () => {
 			};
 
 			expect(input.attachments).toHaveLength(0);
+		});
+	});
+
+	describe("StopFailureHookInput", () => {
+		it("includes failure code and optional details", () => {
+			const input: StopFailureHookInput = {
+				hook_event_name: "StopFailure",
+				cwd: "/home/user",
+				timestamp: new Date().toISOString(),
+				error: "prompt_overflow",
+				error_details: "Prompt exceeded 200,000 tokens",
+				last_assistant_message: "Partial assistant response",
+			};
+
+			expect(input.error).toBe("prompt_overflow");
+			expect(input.error_details).toBe("Prompt exceeded 200,000 tokens");
+			expect(input.last_assistant_message).toBe("Partial assistant response");
+		});
+
+		it("allows the last assistant message to be omitted", () => {
+			const input: StopFailureHookInput = {
+				hook_event_name: "StopFailure",
+				cwd: "/tmp",
+				timestamp: new Date().toISOString(),
+				error: "max_output_tokens",
+			};
+
+			expect(input.error_details).toBeUndefined();
+			expect(input.last_assistant_message).toBeUndefined();
 		});
 	});
 
@@ -443,6 +478,12 @@ describe("Hook Types", () => {
 					max_tokens: 80000,
 				},
 				{
+					hook_event_name: "StopFailure",
+					cwd: "/tmp",
+					timestamp: new Date().toISOString(),
+					error: "max_output_tokens",
+				},
+				{
 					hook_event_name: "PreMessage",
 					cwd: "/tmp",
 					timestamp: new Date().toISOString(),
@@ -468,7 +509,7 @@ describe("Hook Types", () => {
 				},
 			];
 
-			expect(inputs).toHaveLength(6);
+			expect(inputs).toHaveLength(7);
 			for (const input of inputs) {
 				expect(input.hook_event_name).toBeDefined();
 				expect(input.cwd).toBeDefined();

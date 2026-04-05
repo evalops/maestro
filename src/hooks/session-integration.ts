@@ -11,6 +11,7 @@
  * - PostCompact
  * - Notification
  * - Overflow
+ * - StopFailure
  * - PreMessage
  * - PostMessage
  * - OnError
@@ -29,6 +30,7 @@ import type {
 	PreMessageHookInput,
 	SessionEndHookInput,
 	SessionStartHookInput,
+	StopFailureHookInput,
 	SubagentStartHookInput,
 	SubagentStopHookInput,
 	UserPromptSubmitHookInput,
@@ -177,6 +179,16 @@ export interface SessionHookService {
 	): Promise<SessionHookResult>;
 
 	/**
+	 * Run StopFailure hooks when recovery cannot produce a valid completion.
+	 */
+	runStopFailureHooks(
+		error: string,
+		errorDetails?: string,
+		lastAssistantMessage?: string,
+		signal?: AbortSignal,
+	): Promise<SessionHookResult>;
+
+	/**
 	 * Run PreMessage hooks before sending user message to model.
 	 */
 	runPreMessageHooks(
@@ -223,6 +235,7 @@ export interface SessionHookService {
 			| "PostCompact"
 			| "Notification"
 			| "Overflow"
+			| "StopFailure"
 			| "PreMessage"
 			| "PostMessage"
 			| "OnError",
@@ -556,6 +569,35 @@ export function createSessionHookService(
 			return processed;
 		},
 
+		async runStopFailureHooks(
+			error: string,
+			errorDetails?: string,
+			lastAssistantMessage?: string,
+			signal?: AbortSignal,
+		): Promise<SessionHookResult> {
+			const input: StopFailureHookInput = {
+				hook_event_name: "StopFailure",
+				cwd: context.cwd,
+				session_id: context.sessionId,
+				timestamp: new Date().toISOString(),
+				error,
+				error_details: errorDetails,
+				last_assistant_message: lastAssistantMessage,
+			};
+
+			const results = await executeHooks(input, context.cwd, signal);
+			const processed = processResults(results);
+
+			logger.debug("StopFailure hooks completed", {
+				error,
+				hasErrorDetails: Boolean(errorDetails),
+				hasLastAssistantMessage: Boolean(lastAssistantMessage),
+				resultCount: results.length,
+			});
+
+			return processed;
+		},
+
 		async runPreMessageHooks(
 			message: string,
 			attachments: string[],
@@ -661,6 +703,7 @@ export function createSessionHookService(
 				| "PostCompact"
 				| "Notification"
 				| "Overflow"
+				| "StopFailure"
 				| "PreMessage"
 				| "PostMessage"
 				| "OnError",

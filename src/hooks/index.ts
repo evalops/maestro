@@ -22,6 +22,7 @@
  * - **PostCompact**: After context compaction succeeds
  * - **PermissionRequest**: When permission is required
  * - **Overflow**: When context overflow is detected
+ * - **StopFailure**: When recovery cannot produce a valid completion
  * - **PreMessage**: Before user message is sent to model
  * - **PostMessage**: After assistant response is generated
  * - **OnError**: When an error occurs
@@ -75,6 +76,7 @@ export type {
 	PostCompactHookInput,
 	PermissionRequestHookInput,
 	OverflowHookInput,
+	StopFailureHookInput,
 	PreMessageHookInput,
 	PostMessageHookInput,
 	OnErrorHookInput,

@@ -44,6 +44,16 @@ export interface OverflowHookService {
 	): Promise<CompactionHookResult>;
 }
 
+export interface StopFailureHookService {
+	hasHooks?(eventType: "StopFailure"): boolean;
+	runStopFailureHooks(
+		error: string,
+		errorDetails?: string,
+		lastAssistantMessage?: string,
+		signal?: AbortSignal,
+	): Promise<CompactionHookResult>;
+}
+
 export function buildCompactionHookContext(
 	sessionManager: { getSessionId?: () => string | undefined },
 	cwd: string,
@@ -68,6 +78,15 @@ export function createCompactionHookService(
 export function createOverflowHookService(
 	context: CompactionHookContext,
 ): OverflowHookService {
+	return createSessionHookService({
+		cwd: context.cwd,
+		sessionId: context.sessionId,
+	});
+}
+
+export function createStopFailureHookService(
+	context: CompactionHookContext,
+): StopFailureHookService {
 	return createSessionHookService({
 		cwd: context.cwd,
 		sessionId: context.sessionId,

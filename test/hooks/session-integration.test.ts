@@ -54,6 +54,7 @@ describe("SessionHookService", () => {
 			expect(service.runSessionStartHooks).toBeDefined();
 			expect(service.runSessionEndHooks).toBeDefined();
 			expect(service.runOverflowHooks).toBeDefined();
+			expect(service.runStopFailureHooks).toBeDefined();
 			expect(service.runPreMessageHooks).toBeDefined();
 			expect(service.runPostMessageHooks).toBeDefined();
 			expect(service.runPostCompactHooks).toBeDefined();
@@ -198,6 +199,35 @@ describe("SessionHookService", () => {
 			});
 
 			const result = await service.runOverflowHooks(200000, 128000);
+
+			expect(result).toBeDefined();
+			expect(result.hookResults).toBeInstanceOf(Array);
+		});
+	});
+
+	describe("StopFailure hooks", () => {
+		it("runs stop-failure hooks with failure metadata", async () => {
+			const service = createSessionHookService({
+				cwd: testDir,
+				sessionId: "test-session",
+			});
+
+			const result = await service.runStopFailureHooks(
+				"prompt_overflow",
+				"Prompt exceeded context window",
+				"Partial assistant response",
+			);
+
+			expect(result).toBeDefined();
+			expect(result.blocked).toBe(false);
+		});
+
+		it("handles stop-failure hooks without optional details", async () => {
+			const service = createSessionHookService({
+				cwd: testDir,
+			});
+
+			const result = await service.runStopFailureHooks("max_output_tokens");
 
 			expect(result).toBeDefined();
 			expect(result.hookResults).toBeInstanceOf(Array);
@@ -540,6 +570,7 @@ describe("SessionHookService", () => {
 			expect(service.hasHooks("SessionStart")).toBe(false);
 			expect(service.hasHooks("SessionEnd")).toBe(false);
 			expect(service.hasHooks("Overflow")).toBe(false);
+			expect(service.hasHooks("StopFailure")).toBe(false);
 			expect(service.hasHooks("PreMessage")).toBe(false);
 			expect(service.hasHooks("PostMessage")).toBe(false);
 			expect(service.hasHooks("OnError")).toBe(false);
@@ -560,6 +591,7 @@ describe("SessionHookService", () => {
 				"PostCompact",
 				"Notification",
 				"Overflow",
+				"StopFailure",
 				"PreMessage",
 				"PostMessage",
 				"OnError",
@@ -672,6 +704,10 @@ describe("SessionHookService", () => {
 			await service.runPostMessageHooks("response", 100, 50, 500, "end_turn");
 			await service.runOnErrorHooks("error", "TestError", undefined, true);
 			await service.runOverflowHooks(100000, 80000);
+			await service.runStopFailureHooks(
+				"prompt_overflow",
+				"Prompt exceeded context window",
+			);
 			await service.runSessionEndHooks("complete", 10000, 2);
 
 			// If we got here without errors, context propagation works

@@ -35,6 +35,7 @@ export type HookEventType =
 	| "PostCompact"
 	| "PermissionRequest"
 	| "Overflow"
+	| "StopFailure"
 	| "PreMessage"
 	| "PostMessage"
 	| "OnError"
@@ -327,6 +328,19 @@ export interface OverflowHookInput extends HookInputBase {
 }
 
 /**
+ * Input for StopFailure hooks - called when recovery cannot produce a valid completion.
+ */
+export interface StopFailureHookInput extends HookInputBase {
+	hook_event_name: "StopFailure";
+	/** Stable failure code for matcher routing */
+	error: string;
+	/** Provider or runtime failure details */
+	error_details?: string;
+	/** Text content of the last assistant message before stopping */
+	last_assistant_message?: string;
+}
+
+/**
  * Input for PreMessage hooks - called before user message is sent to model.
  */
 export interface PreMessageHookInput extends HookInputBase {
@@ -407,6 +421,7 @@ export type HookInput =
 	| PostCompactHookInput
 	| PermissionRequestHookInput
 	| OverflowHookInput
+	| StopFailureHookInput
 	| PreMessageHookInput
 	| PostMessageHookInput
 	| OnErrorHookInput
