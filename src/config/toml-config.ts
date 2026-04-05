@@ -24,12 +24,12 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { Type } from "@sinclair/typebox";
 import { parse as parseTOML } from "smol-toml";
 import { createLogger } from "../utils/logger.js";
 import { compileTypeboxSchema } from "../utils/typebox-ajv.js";
-import { PATHS } from "./constants.js";
+import { PATHS, getAgentDir } from "./constants.js";
 
 const logger = createLogger("config:toml");
 
@@ -513,6 +513,66 @@ export function resolveProjectDocCandidateFilenames(
 		[];
 	const merged = [...PATHS.AGENT_CONTEXT_FILES, ...fallback];
 	return Array.from(new Set(merged));
+}
+
+function resolveFirstProjectDocPathInDir(
+	dir: string,
+	candidates: string[],
+): string | null {
+	for (const filename of candidates) {
+		const filePath = join(dir, filename);
+		if (existsSync(filePath)) {
+			return resolve(filePath);
+		}
+	}
+	return null;
+}
+
+export function resolvePromptLoadedProjectDocPaths(
+	cwdOverride?: string,
+	config?: ComposerConfig,
+): string[] {
+	const cwd = cwdOverride ?? process.cwd();
+	const resolvedConfig = config ?? loadConfig(cwd);
+	const candidates = resolveProjectDocCandidateFilenames(resolvedConfig);
+	const paths: string[] = [];
+
+	const globalContextDir = resolve(getAgentDir());
+	const globalContextPath = resolveFirstProjectDocPathInDir(
+		globalContextDir,
+		candidates,
+	);
+	if (globalContextPath) {
+		paths.push(globalContextPath);
+	}
+
+	const directories: string[] = [];
+	let currentDir = resolve(cwd);
+	const root = resolve("/");
+
+	while (true) {
+		directories.push(currentDir);
+		if (currentDir === root) {
+			break;
+		}
+
+		const parentDir = resolve(currentDir, "..");
+		if (parentDir === currentDir) {
+			break;
+		}
+		currentDir = parentDir;
+	}
+
+	directories.reverse();
+
+	for (const dir of directories) {
+		const contextPath = resolveFirstProjectDocPathInDir(dir, candidates);
+		if (contextPath) {
+			paths.push(contextPath);
+		}
+	}
+
+	return paths;
 }
 
 // ─────────────────────────────────────────────────────────────

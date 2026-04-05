@@ -1027,39 +1027,50 @@ describe("performCompaction", () => {
 	});
 
 	it("does not restore agent context files that are already layered into the prompt", async () => {
-		const messages = buildConversation(10);
-		messages.splice(
-			2,
-			0,
-			createReadToolCallMessage(
-				"/tmp/workspace/.maestro/AGENTS.md",
-				"call-read-agents",
-			),
-			createReadToolResultMessage(
-				"/tmp/workspace/.maestro/AGENTS.md",
-				"call-read-agents",
-				"# AGENTS\nProject instructions",
-			),
-		);
-		const agent = createMockAgentWithoutAppendMessage(messages);
-		const sessionManager = createMockSessionManager();
+		const originalCwd = process.cwd();
+		const workspaceDir = mkdtempSync(join(tmpdir(), "maestro-agent-context-"));
+		const agentContextPath = join(workspaceDir, "AGENTS.md");
+		writeFileSync(agentContextPath, "# AGENTS\nProject instructions");
+		process.chdir(workspaceDir);
+		clearConfigCache();
 
-		const result = await performCompaction({ agent, sessionManager });
+		try {
+			const messages = buildConversation(10);
+			messages.splice(
+				2,
+				0,
+				createReadToolCallMessage(agentContextPath, "call-read-agents"),
+				createReadToolResultMessage(
+					agentContextPath,
+					"call-read-agents",
+					"# AGENTS\nProject instructions",
+				),
+			);
+			const agent = createMockAgentWithoutAppendMessage(messages);
+			const sessionManager = createMockSessionManager();
 
-		expect(result.success).toBe(true);
-		expect(getReplacedMessages(agent)).not.toContainEqual(
-			expect.objectContaining({
-				role: "hookMessage",
-				customType: "read-file",
-				details: { filePath: "/tmp/workspace/.maestro/AGENTS.md" },
-			}),
-		);
+			const result = await performCompaction({ agent, sessionManager });
+
+			expect(result.success).toBe(true);
+			expect(getReplacedMessages(agent)).not.toContainEqual(
+				expect.objectContaining({
+					role: "hookMessage",
+					customType: "read-file",
+					details: { filePath: agentContextPath },
+				}),
+			);
+		} finally {
+			process.chdir(originalCwd);
+			clearConfigCache();
+		}
 	});
 
 	it("does not restore custom project doc fallback files already layered into the prompt", async () => {
 		const originalCwd = process.cwd();
 		const workspaceDir = mkdtempSync(join(tmpdir(), "maestro-project-doc-"));
 		mkdirSync(join(workspaceDir, ".maestro"), { recursive: true });
+		const contextPath = join(workspaceDir, "CONTEXT.md");
+		writeFileSync(contextPath, "# Context\nCurrent project instructions");
 		writeFileSync(
 			join(workspaceDir, ".maestro", "config.toml"),
 			'project_doc_fallback_filenames = ["CONTEXT.md"]\n',
@@ -1072,12 +1083,9 @@ describe("performCompaction", () => {
 			messages.splice(
 				2,
 				0,
-				createReadToolCallMessage(
-					"/tmp/workspace/CONTEXT.md",
-					"call-read-context-doc",
-				),
+				createReadToolCallMessage(contextPath, "call-read-context-doc"),
 				createReadToolResultMessage(
-					"/tmp/workspace/CONTEXT.md",
+					contextPath,
 					"call-read-context-doc",
 					"# Context\nCustom project instructions",
 				),
@@ -1092,7 +1100,63 @@ describe("performCompaction", () => {
 				expect.objectContaining({
 					role: "hookMessage",
 					customType: "read-file",
-					details: { filePath: "/tmp/workspace/CONTEXT.md" },
+					details: { filePath: contextPath },
+				}),
+			);
+		} finally {
+			process.chdir(originalCwd);
+			clearConfigCache();
+		}
+	});
+
+	it("restores nested fallback-named files that are not prompt-loaded project docs", async () => {
+		const originalCwd = process.cwd();
+		const workspaceDir = mkdtempSync(
+			join(tmpdir(), "maestro-nested-project-doc-"),
+		);
+		const nestedDir = join(workspaceDir, "docs");
+		const nestedContextPath = join(nestedDir, "CONTEXT.md");
+		mkdirSync(join(workspaceDir, ".maestro"), { recursive: true });
+		mkdirSync(nestedDir, { recursive: true });
+		writeFileSync(
+			join(workspaceDir, ".maestro", "config.toml"),
+			'project_doc_fallback_filenames = ["CONTEXT.md"]\n',
+		);
+		writeFileSync(nestedContextPath, "# Context\nNested file contents");
+		process.chdir(workspaceDir);
+		clearConfigCache();
+
+		try {
+			const messages = buildConversation(10);
+			messages.splice(
+				2,
+				0,
+				createReadToolCallMessage(
+					nestedContextPath,
+					"call-read-nested-context-doc",
+				),
+				createReadToolResultMessage(
+					nestedContextPath,
+					"call-read-nested-context-doc",
+					"# Context\nStale nested file contents",
+				),
+			);
+			const agent = createMockAgentWithoutAppendMessage(messages);
+			const sessionManager = createMockSessionManager();
+
+			const result = await performCompaction({ agent, sessionManager });
+
+			expect(result.success).toBe(true);
+			expect(getReplacedMessages(agent)).toContainEqual(
+				expect.objectContaining({
+					role: "hookMessage",
+					customType: "read-file",
+					details: { filePath: nestedContextPath },
+					content: expect.arrayContaining([
+						expect.objectContaining({
+							text: expect.stringContaining("Nested file contents"),
+						}),
+					]),
 				}),
 			);
 		} finally {

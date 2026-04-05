@@ -33,11 +33,9 @@
  * @module agent/compaction
  */
 
-import { basename, resolve as resolvePath } from "node:path";
-import {
-	loadConfig,
-	resolveProjectDocCandidateFilenames,
-} from "../config/index.js";
+import { realpathSync } from "node:fs";
+import { resolve as resolvePath } from "node:path";
+import { resolvePromptLoadedProjectDocPaths } from "../config/index.js";
 import type { SessionEntry } from "../session/types.js";
 import { readTool } from "../tools/read.js";
 import { createLogger } from "../utils/logger.js";
@@ -205,19 +203,28 @@ function normalizeReadPath(path: string): string {
 	return resolvePath(expandUserPath(path));
 }
 
-function getExcludedReadRestoreBasenames(): Set<string> {
+function normalizeComparableReadPath(path: string): string {
+	const normalizedPath = normalizeReadPath(path);
+	try {
+		return realpathSync.native(normalizedPath);
+	} catch {
+		return normalizedPath;
+	}
+}
+
+function getExcludedReadRestorePaths(): Set<string> {
 	return new Set(
-		resolveProjectDocCandidateFilenames(loadConfig(process.cwd())).map((name) =>
-			name.toLowerCase(),
+		resolvePromptLoadedProjectDocPaths(process.cwd()).map((path) =>
+			normalizeComparableReadPath(path),
 		),
 	);
 }
 
 function shouldExcludeReadRestorePath(
 	filePath: string,
-	excludedBasenames: Set<string>,
+	excludedPaths: Set<string>,
 ): boolean {
-	return excludedBasenames.has(basename(filePath).toLowerCase());
+	return excludedPaths.has(normalizeComparableReadPath(filePath));
 }
 
 type ReadRestoreRequest = {
@@ -474,7 +481,7 @@ async function collectRecentReadRestoreMessages(
 	const normalizedPlanFilePath = currentPlanFilePath
 		? normalizeReadPath(currentPlanFilePath)
 		: null;
-	const excludedBasenames = getExcludedReadRestoreBasenames();
+	const excludedPaths = getExcludedReadRestorePaths();
 	const restoredMessages: AppMessage[] = [];
 	const seenPaths = new Set<string>();
 	let usedTokens = 0;
@@ -500,7 +507,7 @@ async function collectRecentReadRestoreMessages(
 			!filePath ||
 			visiblePaths.has(filePath) ||
 			seenPaths.has(filePath) ||
-			shouldExcludeReadRestorePath(filePath, excludedBasenames) ||
+			shouldExcludeReadRestorePath(filePath, excludedPaths) ||
 			(normalizedPlanFilePath !== null && filePath === normalizedPlanFilePath)
 		) {
 			continue;

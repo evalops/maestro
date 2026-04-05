@@ -21,6 +21,7 @@ export {
 	applyCliOverride,
 	DEFAULT_CONFIG,
 	resolveProjectDocCandidateFilenames,
+	resolvePromptLoadedProjectDocPaths,
 	type ComposerConfig,
 	type ApprovalPolicy,
 	type SandboxMode,
