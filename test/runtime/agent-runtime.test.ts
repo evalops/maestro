@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { collectMcpMessagesForCompaction } from "../../src/agent/compaction-restoration.js";
 import { runUserPromptWithRecovery } from "../../src/agent/user-prompt-runtime.js";
+import { mcpManager } from "../../src/mcp/index.js";
 import { AgentRuntimeController } from "../../src/runtime/agent-runtime.js";
 
 vi.mock("../../src/agent/user-prompt-runtime.js", () => ({
@@ -26,12 +28,25 @@ vi.mock("../../src/composers/index.js", () => ({
 
 describe("AgentRuntimeController", () => {
 	beforeEach(() => {
+		vi.mocked(collectMcpMessagesForCompaction).mockReset().mockReturnValue([]);
+		vi.mocked(mcpManager.getStatus)
+			.mockReset()
+			.mockReturnValue({ servers: [] });
 		vi.mocked(runUserPromptWithRecovery)
 			.mockReset()
 			.mockResolvedValue(undefined);
 	});
 
-	it("passes active skill restoration through the shared compaction path", async () => {
+	it("passes MCP and active skill restoration through the shared compaction path", async () => {
+		const mcpMessages = [
+			{
+				role: "hookMessage" as const,
+				customType: "mcp-servers" as const,
+				content: "Connected MCP servers restored after compaction",
+				display: false,
+				timestamp: Date.now(),
+			},
+		];
 		const skillMessages = [
 			{
 				role: "hookMessage" as const,
@@ -42,6 +57,7 @@ describe("AgentRuntimeController", () => {
 				timestamp: Date.now(),
 			},
 		];
+		vi.mocked(collectMcpMessagesForCompaction).mockReturnValue(mcpMessages);
 		const renderer = {
 			setInterruptCallback: vi.fn(),
 			ensureContextBudgetBeforePrompt: vi.fn().mockResolvedValue(undefined),
@@ -71,9 +87,10 @@ describe("AgentRuntimeController", () => {
 		);
 
 		const params = vi.mocked(runUserPromptWithRecovery).mock.calls[0]?.[0];
-		await expect(params?.getPostKeepMessages?.([])).resolves.toEqual(
-			skillMessages,
-		);
+		await expect(params?.getPostKeepMessages?.([])).resolves.toEqual([
+			...mcpMessages,
+			...skillMessages,
+		]);
 		expect(params?.callbacks?.onCompacted).toBeTypeOf("function");
 
 		params?.callbacks?.onCompacted?.({
@@ -84,6 +101,7 @@ describe("AgentRuntimeController", () => {
 			tokensBefore: 1234,
 		});
 
+		expect(collectMcpMessagesForCompaction).toHaveBeenCalledWith([], []);
 		expect(
 			renderer.collectActiveSkillMessagesForCompaction,
 		).toHaveBeenCalledWith([]);

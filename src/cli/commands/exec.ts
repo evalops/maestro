@@ -59,6 +59,7 @@ import type { Agent } from "../../agent/agent.js";
 import { applySessionEndHooks } from "../../agent/session-lifecycle-hooks.js";
 import type { AgentEvent } from "../../agent/types.js";
 import { runUserPromptWithRecovery } from "../../agent/user-prompt-runtime.js";
+import { withMcpPostKeepMessages } from "../../mcp/prompt-recovery.js";
 import type { SessionManager } from "../../session/manager.js";
 import { resolveDefaultExport } from "../../utils/module-interop.js";
 import {
@@ -179,6 +180,7 @@ export async function runExecCommand(
 				cwd: process.cwd(),
 				prompt: normalized,
 				execute: () => options.agent.prompt(normalized),
+				getPostKeepMessages: withMcpPostKeepMessages(),
 			});
 		}
 

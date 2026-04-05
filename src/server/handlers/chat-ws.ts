@@ -19,6 +19,7 @@ import {
 	summarizeNotificationPayload,
 } from "../../hooks/notification-hooks.js";
 import { createSessionHookService } from "../../hooks/session-integration.js";
+import { withMcpPostKeepMessages } from "../../mcp/prompt-recovery.js";
 import { checkSessionLimits } from "../../safety/policy.js";
 import { toSessionModelMetadata } from "../../session/manager.js";
 import { createRuntimeSessionSummaryUpdater } from "../../session/runtime-summary-updater.js";
@@ -771,6 +772,7 @@ export function handleChatWebSocket(
 					),
 					execute: () =>
 						breaker.execute(() => agent.prompt(userInput, attachmentsToSend)),
+					getPostKeepMessages: withMcpPostKeepMessages(),
 				});
 				wsSession.sendDone();
 			} catch (error) {

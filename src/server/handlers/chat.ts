@@ -35,6 +35,7 @@ import {
 	summarizeNotificationPayload,
 } from "../../hooks/notification-hooks.js";
 import { createSessionHookService } from "../../hooks/session-integration.js";
+import { withMcpPostKeepMessages } from "../../mcp/prompt-recovery.js";
 import { checkSessionLimits } from "../../safety/policy.js";
 import { createLogger } from "../../utils/logger.js";
 
@@ -691,6 +692,7 @@ export async function handleChat(
 				),
 				execute: () =>
 					breaker.execute(() => agent.prompt(userInput, attachmentsToSend)),
+				getPostKeepMessages: withMcpPostKeepMessages(),
 			});
 
 			// Send completion signal if connection is still open
