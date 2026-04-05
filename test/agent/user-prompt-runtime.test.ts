@@ -4,6 +4,7 @@ import type {
 	AgentEvent,
 	AgentRunConfig,
 	AgentTransport,
+	AppMessage,
 	AssistantMessage,
 	Message,
 	Model,
@@ -80,6 +81,36 @@ function createAssistantMessageWithUsage(
 		},
 		stopReason: options.stopReason ?? "stop",
 	};
+}
+
+function extractAssistantText(message: AssistantMessage | undefined): string {
+	if (!message) {
+		return "";
+	}
+
+	return message.content
+		.filter((block): block is TextContent => block.type === "text")
+		.map((block) => block.text)
+		.join("");
+}
+
+function buildConversation(turns: number): AppMessage[] {
+	const messages: AppMessage[] = [];
+	for (let i = 0; i < turns; i += 1) {
+		messages.push({
+			role: "user",
+			content: `message ${i}`,
+			timestamp: Date.now(),
+		});
+		messages.push(
+			createAssistantMessageWithUsage(`response ${i}`, {
+				inputTokens: 2000 + i * 100,
+				outputTokens: 200,
+				stopReason: "stop",
+			}),
+		);
+	}
+	return messages;
 }
 
 describe("user prompt runtime", () => {
@@ -416,6 +447,86 @@ describe("user prompt runtime", () => {
 		});
 
 		expect(called).toBe(false);
+	});
+
+	it("withholds recoverable overflow assistant errors until recovery succeeds", async () => {
+		const overflowMessage =
+			"Anthropic rejected this request because the prompt exceeded 200,000 tokens. Use /compact to summarize prior messages or remove large attachments, then retry.";
+
+		class OverflowThenSuccessTransport implements AgentTransport {
+			async *run(
+				_messages: Message[],
+				userMessage: Message,
+				_config: AgentRunConfig,
+			): AsyncGenerator<AgentEvent, void, unknown> {
+				if (typeof userMessage.content === "string") {
+					const assistant = {
+						...createAssistantMessage("Too much context"),
+						stopReason: "error" as const,
+						errorMessage: overflowMessage,
+					};
+					yield { type: "message_start", message: assistant };
+					yield { type: "message_end", message: assistant };
+					return;
+				}
+
+				const assistant = createAssistantMessage("Recovered response");
+				yield { type: "message_start", message: assistant };
+				yield { type: "message_end", message: assistant };
+			}
+		}
+
+		const agent = new Agent({
+			transport: new OverflowThenSuccessTransport(),
+			initialState: {
+				model: mockModel,
+				tools: [],
+				systemPrompt: "Base system prompt",
+			},
+		});
+		agent.replaceMessages(buildConversation(5));
+		vi.spyOn(agent, "generateSummary").mockResolvedValue(
+			createAssistantMessage("LLM summary"),
+		);
+
+		const emittedAssistantEnds: AssistantMessage[] = [];
+		agent.subscribe((event) => {
+			if (event.type === "message_end" && event.message.role === "assistant") {
+				emittedAssistantEnds.push(event.message);
+			}
+		});
+
+		const sessionManager = {
+			getSessionId: () => "session-overflow-withheld",
+			buildSessionContext: () => ({
+				messageEntries: Array.from({ length: 50 }, (_, index) => ({
+					id: `entry-${index}`,
+				})),
+			}),
+			saveCompaction: vi.fn(),
+			saveMessage: vi.fn(),
+		};
+
+		await runUserPromptWithRecovery({
+			agent,
+			sessionManager: sessionManager as never,
+			cwd: "/tmp/overflow-withheld",
+			prompt: "latest question",
+			execute: () => agent.prompt("latest question"),
+		});
+
+		expect(sessionManager.saveCompaction).toHaveBeenCalledOnce();
+		expect(emittedAssistantEnds).toHaveLength(1);
+		expect(emittedAssistantEnds[0]?.stopReason).toBe("stop");
+		expect(extractAssistantText(emittedAssistantEnds[0])).toBe(
+			"Recovered response",
+		);
+		expect(
+			agent.state.messages.some(
+				(message) =>
+					message.role === "assistant" && message.stopReason === "error",
+			),
+		).toBe(false);
 	});
 
 	it("persists hook additional context as a hook message for the next run", async () => {

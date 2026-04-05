@@ -88,6 +88,14 @@ function getLastAssistantMessage(
 		: undefined;
 }
 
+function getRecoverableOverflowAssistantMessage(
+	agent: Agent,
+): AssistantMessage | undefined {
+	return typeof agent.getWithheldRecoverableOverflowError === "function"
+		? agent.getWithheldRecoverableOverflowError()
+		: undefined;
+}
+
 function getAssistantText(message?: AssistantMessage): string | undefined {
 	if (!message) {
 		return undefined;
@@ -176,6 +184,11 @@ function hasPromptOverflow(
 		return isOverflowError(error, agent.state.model);
 	}
 
+	const withheldOverflow = getRecoverableOverflowAssistantMessage(agent);
+	if (withheldOverflow) {
+		return true;
+	}
+
 	const lastAssistant = getLastAssistantMessage(newMessages);
 	return Boolean(
 		lastAssistant &&
@@ -191,6 +204,14 @@ function getPromptOverflowAssistantError(
 	agent: Agent,
 	newMessages: AppMessage[],
 ): Error | undefined {
+	const withheldOverflow = getRecoverableOverflowAssistantMessage(agent);
+	if (withheldOverflow) {
+		return new Error(
+			withheldOverflow.errorMessage ||
+				"Prompt overflow could not be recovered.",
+		);
+	}
+
 	const lastAssistant = getLastAssistantMessage(newMessages);
 	if (
 		lastAssistant &&
@@ -206,6 +227,7 @@ function getPromptOverflowAssistantError(
 }
 
 function getOverflowErrorMessage(
+	agent: Agent,
 	newMessages: AppMessage[],
 	error?: unknown,
 ): string | undefined {
@@ -214,6 +236,10 @@ function getOverflowErrorMessage(
 	}
 	if (typeof error === "string") {
 		return error;
+	}
+	const withheldOverflow = getRecoverableOverflowAssistantMessage(agent);
+	if (withheldOverflow?.errorMessage) {
+		return withheldOverflow.errorMessage;
 	}
 	return getLastAssistantMessage(newMessages)?.errorMessage;
 }
@@ -311,7 +337,7 @@ async function runOverflowHooks(
 		return undefined;
 	}
 
-	const overflowMessage = getOverflowErrorMessage(newMessages, error);
+	const overflowMessage = getOverflowErrorMessage(agent, newMessages, error);
 	const parsedDetails = overflowMessage
 		? parseOverflowDetails(overflowMessage)
 		: null;
@@ -589,7 +615,7 @@ export async function runWithPromptRecovery(
 				error: "prompt_overflow",
 				errorDetails:
 					assistantOverflowError?.message ??
-					getOverflowErrorMessage(newMessages, executionError) ??
+					getOverflowErrorMessage(agent, newMessages, executionError) ??
 					"Prompt overflow could not be recovered.",
 				lastAssistantMessage: getAssistantText(
 					getLastAssistantMessage(agent.state.messages),

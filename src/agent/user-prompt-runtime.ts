@@ -95,6 +95,17 @@ function findLatestAssistantMessage(
 	return undefined;
 }
 
+function setRecoverableOverflowErrorSuppression(
+	agent: Agent,
+	enabled: boolean,
+): void {
+	(
+		agent as Agent & {
+			setRecoverableOverflowErrorSuppression?: (enabled: boolean) => void;
+		}
+	).setRecoverableOverflowErrorSuppression?.(enabled);
+}
+
 export async function applySessionStartHooks(params: {
 	agent: Agent;
 	sessionManager: PromptRuntimeSessionManager;
@@ -325,22 +336,30 @@ export async function runUserPromptWithRecovery(params: {
 }): Promise<void> {
 	const messageStartIndex = params.agent.state.messages.length;
 	const turnStartedAt = Date.now();
-	await applyUserPromptSubmitHooks(params);
-	await applyPreMessageHooks(params);
-	await runWithPromptRecovery({
-		agent: params.agent,
-		sessionManager: params.sessionManager,
-		hookContext: buildCompactionHookContext(params.sessionManager, params.cwd),
-		execute: params.execute,
-		callbacks: params.callbacks,
-		maxOutputContinuations: params.maxOutputContinuations,
-	});
-	await applyPostMessageHooks({
-		agent: params.agent,
-		sessionManager: params.sessionManager,
-		cwd: params.cwd,
-		messageStartIndex,
-		turnStartedAt,
-		signal: params.signal,
-	});
+	setRecoverableOverflowErrorSuppression(params.agent, true);
+	try {
+		await applyUserPromptSubmitHooks(params);
+		await applyPreMessageHooks(params);
+		await runWithPromptRecovery({
+			agent: params.agent,
+			sessionManager: params.sessionManager,
+			hookContext: buildCompactionHookContext(
+				params.sessionManager,
+				params.cwd,
+			),
+			execute: params.execute,
+			callbacks: params.callbacks,
+			maxOutputContinuations: params.maxOutputContinuations,
+		});
+		await applyPostMessageHooks({
+			agent: params.agent,
+			sessionManager: params.sessionManager,
+			cwd: params.cwd,
+			messageStartIndex,
+			turnStartedAt,
+			signal: params.signal,
+		});
+	} finally {
+		setRecoverableOverflowErrorSuppression(params.agent, false);
+	}
 }

@@ -93,12 +93,14 @@ import {
 	type AgentContextSource,
 	type ContextLoadResult,
 } from "./context-manager.js";
+import { isContextOverflow as isAssistantContextOverflow } from "./context-overflow.js";
 import { convertAppMessagesToLlm, isCoreMessage } from "./custom-messages.js";
 import {
 	type PreprocessMessagesFn,
 	chainPreprocessMessages,
 	defaultPreprocessMessages,
 } from "./preprocess-messages.js";
+import { isAssistantMessage } from "./type-guards.js";
 import type {
 	AgentEvent,
 	AgentState,
@@ -388,6 +390,8 @@ export class Agent {
 		isError: boolean;
 		tool?: Pick<AgentTool, "getToolUseSummary" | "getActivityDescription">;
 	}> = [];
+	private suppressRecoverableOverflowErrors = false;
+	private withheldRecoverableOverflowError?: AssistantMessage;
 
 	/**
 	 * Creates a new Agent instance.
@@ -735,7 +739,19 @@ export class Agent {
 		this.completedToolBatch = [];
 		this.promptOnlyQueue = [];
 		this._state.error = undefined;
+		this.withheldRecoverableOverflowError = undefined;
 		this._partialAccepted = null;
+	}
+
+	setRecoverableOverflowErrorSuppression(enabled: boolean): void {
+		this.suppressRecoverableOverflowErrors = enabled;
+		if (!enabled) {
+			this.withheldRecoverableOverflowError = undefined;
+		}
+	}
+
+	getWithheldRecoverableOverflowError(): AssistantMessage | undefined {
+		return this.withheldRecoverableOverflowError;
 	}
 
 	/**
@@ -775,6 +791,17 @@ export class Agent {
 			return;
 		}
 		this.emit({ type: "error", message: normalized });
+	}
+
+	private shouldWithholdRecoverableOverflowError(
+		message: AppMessage,
+	): message is AssistantMessage {
+		return (
+			this.suppressRecoverableOverflowErrors &&
+			isAssistantMessage(message) &&
+			message.stopReason === "error" &&
+			isAssistantContextOverflow(message, this._state.model.contextWindow)
+		);
 	}
 
 	/**
@@ -1177,6 +1204,11 @@ export class Agent {
 				} else if (event.type === "message_end") {
 					this._state.streamMessage = null;
 					const incoming = event.message as AppMessage;
+					if (this.shouldWithholdRecoverableOverflowError(incoming)) {
+						this.withheldRecoverableOverflowError = incoming;
+						lastStopReason = incoming.stopReason;
+						continue;
+					}
 					const lastMessage =
 						this._state.messages[this._state.messages.length - 1];
 					if (!isDuplicateMessage(lastMessage, incoming)) {
@@ -1385,6 +1417,11 @@ export class Agent {
 				} else if (event.type === "message_end") {
 					this._state.streamMessage = null;
 					const incoming = event.message as AppMessage;
+					if (this.shouldWithholdRecoverableOverflowError(incoming)) {
+						this.withheldRecoverableOverflowError = incoming;
+						lastStopReason = incoming.stopReason;
+						continue;
+					}
 					const lastMessage =
 						this._state.messages[this._state.messages.length - 1];
 					if (!isDuplicateMessage(lastMessage, incoming)) {
