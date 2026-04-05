@@ -213,6 +213,29 @@ function createMockAgent(messages: AppMessage[]): CompactionAgent {
 	};
 }
 
+function createMockAgentWithoutAppendMessage(
+	messages: AppMessage[],
+): CompactionAgent {
+	const state = {
+		messages: [...messages],
+		model: {
+			api: "anthropic-messages" as const,
+			provider: "anthropic" as const,
+			id: "claude-3-5-sonnet",
+		},
+	};
+	return {
+		state,
+		generateSummary: vi
+			.fn()
+			.mockResolvedValue(createAssistantMessage("LLM summary of conversation")),
+		replaceMessages: vi.fn((nextMessages: AppMessage[]) => {
+			state.messages = [...nextMessages];
+		}),
+		clearTransientRunState: vi.fn(),
+	};
+}
+
 function createMockSessionManager(): CompactionSessionManager {
 	return {
 		buildSessionContext: vi.fn().mockReturnValue({
@@ -635,6 +658,48 @@ describe("performCompaction", () => {
 				customType: "PostCompact",
 			}),
 		);
+	});
+
+	it("keeps PostCompact hook guidance after preserved messages without appendMessage", async () => {
+		const messages = buildConversation(10);
+		const agent = createMockAgentWithoutAppendMessage(messages);
+		const sessionManager = createMockSessionManager();
+		const hookService = createMockHookService();
+		(
+			hookService.runPostCompactHooks as ReturnType<typeof vi.fn>
+		).mockResolvedValue({
+			blocked: false,
+			preventContinuation: false,
+			systemMessage: "Keep using the compacted summary as the source of truth.",
+			additionalContext: "The active plan still expects migration cleanup.",
+		});
+
+		const result = await performCompaction({
+			agent,
+			sessionManager,
+			hookService,
+		});
+
+		expect(result.success).toBe(true);
+		const replaced = getReplacedMessages(agent);
+		expect(replaced[0]?.role).toBe("assistant");
+		expect(replaced[1]?.role).toBe("user");
+		expect(replaced.at(-3)).toMatchObject({
+			role: "assistant",
+			content: [{ type: "text", text: "response 9" }],
+		});
+		expect(replaced.at(-2)).toMatchObject({
+			role: "hookMessage",
+			customType: "PostCompact",
+			content: expect.stringContaining(
+				"PostCompact hook system guidance:\nKeep using the compacted summary as the source of truth.",
+			),
+		});
+		expect(replaced.at(-1)).toMatchObject({
+			role: "hookMessage",
+			customType: "PostCompact",
+			content: "The active plan still expects migration cleanup.",
+		});
 	});
 
 	it("ignores unsupported PostCompact control flow output", async () => {

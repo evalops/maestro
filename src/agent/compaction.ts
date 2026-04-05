@@ -1478,8 +1478,8 @@ export async function performCompaction(params: {
 				agent.replaceMessages([
 					summaryMessage as AppMessage,
 					resumeMessage,
-					...postCompactHookMessages,
 					...keep,
+					...postCompactHookMessages,
 				]);
 				for (const message of postCompactHookMessages) {
 					sessionManager.saveMessage(message);
