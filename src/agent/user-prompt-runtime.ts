@@ -29,6 +29,14 @@ function buildSessionStartHookContextMessage(text: string): UserMessage {
 	};
 }
 
+function buildSessionStartInitialUserMessage(text: string): UserMessage {
+	return {
+		role: "user",
+		content: text,
+		timestamp: Date.now(),
+	};
+}
+
 function buildSessionStartHookSystemGuidance(text: string): string {
 	return `SessionStart hook system guidance:\n${text}`;
 }
@@ -92,6 +100,13 @@ export async function applySessionStartHooks(params: {
 	if (additionalContext) {
 		params.agent.queueNextRunPromptOnlyMessage(
 			buildSessionStartHookContextMessage(additionalContext),
+		);
+	}
+
+	const initialUserMessage = result.initialUserMessage?.trim();
+	if (initialUserMessage) {
+		params.agent.queueNextRunHistoryMessage(
+			buildSessionStartInitialUserMessage(initialUserMessage),
 		);
 	}
 }

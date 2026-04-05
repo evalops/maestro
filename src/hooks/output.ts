@@ -230,9 +230,10 @@ function validateHookSpecificOutput(
 		case "EvalGate":
 			return validateEvalGateOutput(obj);
 		case "PostToolUseFailure":
-		case "SessionStart":
 		case "SubagentStart":
 			return validateContextOutput(obj);
+		case "SessionStart":
+			return validateSessionStartOutput(obj);
 		case "SessionBeforeTree":
 			return validateSessionBeforeTreeOutput(obj);
 		case "UserPromptSubmit":
@@ -360,6 +361,27 @@ function validateContextOutput(
 		return {
 			valid: false,
 			error: "hookSpecificOutput.additionalContext must be a string",
+		};
+	}
+
+	return { valid: true };
+}
+
+function validateSessionStartOutput(
+	obj: Record<string, unknown>,
+): { valid: true } | { valid: false; error: string } {
+	const base = validateContextOutput(obj);
+	if (!base.valid) {
+		return base;
+	}
+
+	if (
+		"initialUserMessage" in obj &&
+		typeof obj.initialUserMessage !== "string"
+	) {
+		return {
+			valid: false,
+			error: "hookSpecificOutput.initialUserMessage must be a string",
 		};
 	}
 

@@ -60,6 +60,8 @@ export interface SessionHookResult {
 	blockReason?: string;
 	/** Additional context to inject */
 	additionalContext?: string;
+	/** Initial user message to queue for the next real run */
+	initialUserMessage?: string;
 	/** System message to inject */
 	systemMessage?: string;
 	/** Whether to prevent continuation */
@@ -234,6 +236,7 @@ function processResults(results: HookExecutionResult[]): SessionHookResult {
 	let blocked = false;
 	let blockReason: string | undefined;
 	let additionalContext: string | undefined;
+	let initialUserMessage: string | undefined;
 	let systemMessage: string | undefined;
 	let preventContinuation = false;
 	let stopReason: string | undefined;
@@ -260,6 +263,10 @@ function processResults(results: HookExecutionResult[]): SessionHookResult {
 				: result.additionalContext;
 		}
 
+		if (result.initialUserMessage) {
+			initialUserMessage = result.initialUserMessage;
+		}
+
 		// Collect system message
 		if (result.systemMessage) {
 			systemMessage = systemMessage
@@ -272,6 +279,7 @@ function processResults(results: HookExecutionResult[]): SessionHookResult {
 		blocked,
 		blockReason,
 		additionalContext,
+		initialUserMessage,
 		systemMessage,
 		preventContinuation,
 		stopReason,

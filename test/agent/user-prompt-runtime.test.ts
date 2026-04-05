@@ -109,6 +109,7 @@ describe("user prompt runtime", () => {
 	it("queues SessionStart hook context for the first run", async () => {
 		const queueNextRunPromptOnlyMessage = vi.fn();
 		const queueNextRunSystemPromptAddition = vi.fn();
+		const queueNextRunHistoryMessage = vi.fn();
 
 		registerHook("SessionStart", {
 			type: "callback",
@@ -116,6 +117,7 @@ describe("user prompt runtime", () => {
 				hookSpecificOutput: {
 					hookEventName: "SessionStart",
 					additionalContext: "This workspace uses generated API clients.",
+					initialUserMessage: "Read the project conventions first.",
 				},
 				systemMessage: "Prefer workspace-local scripts over global installs.",
 			}),
@@ -125,6 +127,7 @@ describe("user prompt runtime", () => {
 			agent: {
 				queueNextRunPromptOnlyMessage,
 				queueNextRunSystemPromptAddition,
+				queueNextRunHistoryMessage,
 			} as unknown as Agent,
 			sessionManager: {
 				getSessionId: () => "session-start",
@@ -146,11 +149,17 @@ describe("user prompt runtime", () => {
 			],
 			timestamp: expect.any(Number),
 		});
+		expect(queueNextRunHistoryMessage).toHaveBeenCalledWith({
+			role: "user",
+			content: "Read the project conventions first.",
+			timestamp: expect.any(Number),
+		});
 	});
 
 	it("ignores SessionStart blocking directives without throwing", async () => {
 		const queueNextRunPromptOnlyMessage = vi.fn();
 		const queueNextRunSystemPromptAddition = vi.fn();
+		const queueNextRunHistoryMessage = vi.fn();
 
 		registerHook("SessionStart", {
 			type: "callback",
@@ -168,6 +177,7 @@ describe("user prompt runtime", () => {
 			agent: {
 				queueNextRunPromptOnlyMessage,
 				queueNextRunSystemPromptAddition,
+				queueNextRunHistoryMessage,
 			} as unknown as Agent,
 			sessionManager: {
 				getSessionId: () => "session-start-blocked",
@@ -178,6 +188,79 @@ describe("user prompt runtime", () => {
 
 		expect(queueNextRunSystemPromptAddition).not.toHaveBeenCalled();
 		expect(queueNextRunPromptOnlyMessage).not.toHaveBeenCalled();
+		expect(queueNextRunHistoryMessage).not.toHaveBeenCalled();
+	});
+
+	it("delivers a queued SessionStart initial user message once and persists it", async () => {
+		class PromptCaptureTransport implements AgentTransport {
+			capturedMessages: Message[][] = [];
+
+			async *run(
+				messages: Message[],
+				_userMessage: Message,
+				_config: AgentRunConfig,
+			): AsyncGenerator<AgentEvent, void, unknown> {
+				this.capturedMessages.push(messages);
+				const assistant = createAssistantMessage("Done");
+				yield { type: "message_start", message: assistant };
+				yield { type: "message_end", message: assistant };
+			}
+
+			async *continue(): AsyncGenerator<AgentEvent, void, unknown> {
+				const assistant = createAssistantMessage("Continued");
+				yield { type: "message_start", message: assistant };
+				yield { type: "message_end", message: assistant };
+			}
+		}
+
+		const transport = new PromptCaptureTransport();
+		const agent = new Agent({
+			transport,
+			initialState: {
+				model: mockModel,
+				tools: [],
+				systemPrompt: "Base system prompt",
+			},
+		});
+
+		const deliveredMessages: Message[] = [];
+		agent.subscribe((event) => {
+			if (event.type === "message_end" && event.message.role === "user") {
+				deliveredMessages.push(event.message);
+			}
+		});
+
+		agent.queueNextRunHistoryMessage({
+			role: "user",
+			content: "SessionStart seeded prompt",
+			timestamp: Date.now(),
+		});
+
+		await agent.prompt("first");
+		await agent.prompt("second");
+
+		expect(
+			deliveredMessages.filter(
+				(message) => message.content === "SessionStart seeded prompt",
+			),
+		).toHaveLength(1);
+		expect(
+			agent.state.messages.filter(
+				(message) =>
+					message.role === "user" &&
+					message.content === "SessionStart seeded prompt",
+			),
+		).toHaveLength(1);
+		expect(transport.capturedMessages[0]).toEqual([
+			expect.objectContaining({
+				role: "user",
+				content: "SessionStart seeded prompt",
+			}),
+			expect.objectContaining({
+				role: "user",
+				content: "first",
+			}),
+		]);
 	});
 
 	it("delivers next-run prompt context once without persisting it", async () => {

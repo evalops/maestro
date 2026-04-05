@@ -574,7 +574,6 @@ function parseStructuredHookOutput(
 				break;
 
 			case "PostToolUseFailure":
-			case "SessionStart":
 			case "SubagentStart":
 				if (specific.additionalContext) {
 					result.additionalContext = specific.additionalContext;
@@ -585,6 +584,22 @@ function parseStructuredHookOutput(
 						toolUseID,
 						content: specific.additionalContext,
 					});
+				}
+				break;
+
+			case "SessionStart":
+				if (specific.additionalContext) {
+					result.additionalContext = specific.additionalContext;
+					result.message = createHookMessage({
+						type: "hook_additional_context",
+						hookName,
+						hookEvent,
+						toolUseID,
+						content: specific.additionalContext,
+					});
+				}
+				if (specific.initialUserMessage) {
+					result.initialUserMessage = specific.initialUserMessage;
 				}
 				break;
 

@@ -656,6 +656,8 @@ export interface SessionStartHookOutput {
 	hookEventName: "SessionStart";
 	/** Additional context to inject at session start */
 	additionalContext?: string;
+	/** Initial user message to queue for the first real run */
+	initialUserMessage?: string;
 }
 
 /**
@@ -805,6 +807,8 @@ export interface HookExecutionResult {
 	systemMessage?: string;
 	/** Additional context to add */
 	additionalContext?: string;
+	/** Initial user message to queue for the next run */
+	initialUserMessage?: string;
 	/** Updated tool input */
 	updatedInput?: Record<string, unknown>;
 	/** Updated MCP tool output */

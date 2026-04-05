@@ -369,6 +369,7 @@ export class Agent {
 	private preprocessMessages?: PreprocessMessagesFn;
 	private steeringQueue: Array<QueuedMessage<AppMessage>> = [];
 	private followUpQueue: Array<QueuedMessage<AppMessage>> = [];
+	private nextRunHistoryQueue: AppMessage[] = [];
 	private nextRunPromptOnlyQueue: Message[] = [];
 	private promptOnlyQueue: Message[] = [];
 	private nextRunSystemPromptAdditions: string[] = [];
@@ -579,6 +580,15 @@ export class Agent {
 		return queued;
 	}
 
+	private dequeueNextRunHistoryMessages(): AppMessage[] {
+		if (this.nextRunHistoryQueue.length === 0) {
+			return [];
+		}
+		const queued = [...this.nextRunHistoryQueue];
+		this.nextRunHistoryQueue = [];
+		return queued;
+	}
+
 	private dequeueNextRunSystemPromptAdditions(): string[] {
 		if (this.nextRunSystemPromptAdditions.length === 0) {
 			return [];
@@ -781,6 +791,13 @@ export class Agent {
 	 */
 	queueNextRunPromptOnlyMessage(message: Message): void {
 		this.nextRunPromptOnlyQueue.push(message);
+	}
+
+	/**
+	 * Queue a persisted history message for the next run.
+	 */
+	queueNextRunHistoryMessage(message: AppMessage): void {
+		this.nextRunHistoryQueue.push(message);
 	}
 
 	/**
@@ -1014,6 +1031,7 @@ export class Agent {
 		this._state.pendingToolCalls.clear();
 		this.activeToolBatchIds = null;
 		this.completedToolBatch = [];
+		this.nextRunHistoryQueue = [];
 		this.nextRunPromptOnlyQueue = [];
 		this.promptOnlyQueue = [];
 		this.nextRunSystemPromptAdditions = [];
@@ -1065,6 +1083,10 @@ export class Agent {
 		this.runningPrompt = new Promise<void>((resolve) => {
 			this.resolveRunningPrompt = resolve;
 		});
+
+		for (const queuedMessage of this.dequeueNextRunHistoryMessages()) {
+			this.injectMessage(queuedMessage);
+		}
 
 		const userMessage: UserMessageWithAttachments = {
 			role: "user",
@@ -1249,6 +1271,10 @@ export class Agent {
 		this.runningPrompt = new Promise<void>((resolve) => {
 			this.resolveRunningPrompt = resolve;
 		});
+
+		for (const queuedMessage of this.dequeueNextRunHistoryMessages()) {
+			this.injectMessage(queuedMessage);
+		}
 
 		this._state.isStreaming = true;
 

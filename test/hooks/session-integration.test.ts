@@ -94,7 +94,8 @@ describe("SessionHookService", () => {
   pi.on("SessionStart", async (input) => ({
     hookSpecificOutput: {
       hookEventName: "SessionStart",
-      additionalContext: "TS session start for " + input.source
+      additionalContext: "TS session start for " + input.source,
+      initialUserMessage: "Seeded from " + input.source
     }
   }));
 }
@@ -110,9 +111,33 @@ describe("SessionHookService", () => {
 			const result = await service.runSessionStartHooks("cli");
 
 			expect(result.additionalContext).toBe("TS session start for cli");
+			expect(result.initialUserMessage).toBe("Seeded from cli");
 			expect(result.hookResults).toHaveLength(1);
 			expect(result.hookResults[0]?.message.hookName).toContain(
 				"session-start.ts",
+			);
+		});
+
+		it("surfaces callback SessionStart initial user message", async () => {
+			registerHook("SessionStart", {
+				type: "callback",
+				callback: async () => ({
+					hookSpecificOutput: {
+						hookEventName: "SessionStart",
+						initialUserMessage: "Review the generated changelog first.",
+					},
+				}),
+			});
+
+			const service = createSessionHookService({
+				cwd: testDir,
+				sessionId: "test-session",
+			});
+
+			const result = await service.runSessionStartHooks("cli");
+
+			expect(result.initialUserMessage).toBe(
+				"Review the generated changelog first.",
 			);
 		});
 	});
