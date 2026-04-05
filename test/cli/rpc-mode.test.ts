@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { collectPlanModeMessagesForCompaction } from "../../src/agent/compaction-restoration.js";
+import { collectPlanMessagesForCompaction } from "../../src/agent/compaction-restoration.js";
 import { performCompaction } from "../../src/agent/compaction.js";
 import { collectPersistedSessionStartHookMessages } from "../../src/agent/user-prompt-runtime.js";
 import { runRpcMode } from "../../src/cli/rpc-mode.js";
@@ -37,14 +37,14 @@ vi.mock("../../src/agent/user-prompt-runtime.js", async () => {
 });
 
 vi.mock("../../src/agent/compaction-restoration.js", () => ({
-	collectPlanModeMessagesForCompaction: vi.fn(),
+	collectPlanMessagesForCompaction: vi.fn(),
 }));
 
 describe("runRpcMode", () => {
 	beforeEach(() => {
 		lineHandler = undefined;
 		vi.mocked(performCompaction).mockReset();
-		vi.mocked(collectPlanModeMessagesForCompaction).mockReset();
+		vi.mocked(collectPlanMessagesForCompaction).mockReset();
 		vi.mocked(collectPersistedSessionStartHookMessages).mockReset();
 		vi.spyOn(console, "log").mockImplementation(() => {});
 	});
@@ -57,7 +57,16 @@ describe("runRpcMode", () => {
 			firstKeptEntryIndex: 7,
 			tokensBefore: 900,
 		});
-		vi.mocked(collectPlanModeMessagesForCompaction).mockReturnValue([
+		vi.mocked(collectPlanMessagesForCompaction).mockReturnValue([
+			{
+				role: "hookMessage",
+				customType: "plan-file",
+				content:
+					"# Active plan file restored after compaction\n\nPlan file: /tmp/plan.md\n\nCurrent plan contents:\n# Plan",
+				display: false,
+				details: { filePath: "/tmp/plan.md" },
+				timestamp: Date.now(),
+			},
 			{
 				role: "hookMessage",
 				customType: "plan-mode",
@@ -87,10 +96,14 @@ describe("runRpcMode", () => {
 		await expect(params?.getPostKeepMessages?.()).resolves.toEqual([
 			expect.objectContaining({
 				role: "hookMessage",
+				customType: "plan-file",
+			}),
+			expect.objectContaining({
+				role: "hookMessage",
 				customType: "plan-mode",
 			}),
 		]);
-		expect(collectPlanModeMessagesForCompaction).toHaveBeenCalledWith(
+		expect(collectPlanMessagesForCompaction).toHaveBeenCalledWith(
 			agent.state.messages,
 		);
 		expect(collectPersistedSessionStartHookMessages).toHaveBeenCalledWith(

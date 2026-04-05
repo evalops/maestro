@@ -46,7 +46,7 @@ import {
 	type AutoRetryController,
 	createAutoRetryController,
 } from "../agent/auto-retry.js";
-import { collectPlanModeMessagesForCompaction } from "../agent/compaction-restoration.js";
+import { collectPlanMessagesForCompaction } from "../agent/compaction-restoration.js";
 import { applySessionEndHooks } from "../agent/session-lifecycle-hooks.js";
 import { SessionRecoveryManager } from "../agent/session-recovery.js";
 import {
@@ -2365,7 +2365,7 @@ export class TuiRenderer {
 
 	public collectOrderedCompactionRestorationMessages(): AppMessage[] {
 		return [
-			...collectPlanModeMessagesForCompaction(this.agent.state.messages),
+			...collectPlanMessagesForCompaction(this.agent.state.messages),
 			...this.collectActiveSkillMessagesForCompaction(),
 		];
 	}

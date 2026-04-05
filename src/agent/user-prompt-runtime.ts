@@ -2,7 +2,7 @@ import { createSessionHookService } from "../hooks/session-integration.js";
 import { createLogger } from "../utils/logger.js";
 import type { Agent } from "./agent.js";
 import { buildCompactionHookContext } from "./compaction-hooks.js";
-import { collectPlanModeMessagesForCompaction } from "./compaction-restoration.js";
+import { collectPlanMessagesForCompaction } from "./compaction-restoration.js";
 import { createHookMessage } from "./custom-messages.js";
 import {
 	type PromptRecoveryCallbacks,
@@ -568,7 +568,7 @@ async function applyTokenBudgetContinuations(params: {
 			getPostKeepMessages: () =>
 				Promise.all([
 					Promise.resolve(
-						collectPlanModeMessagesForCompaction(params.agent.state.messages),
+						collectPlanMessagesForCompaction(params.agent.state.messages),
 					),
 					params.getPostKeepMessages?.() ?? Promise.resolve([]),
 					collectPersistedSessionStartHookMessages({
@@ -634,7 +634,7 @@ export async function runUserPromptWithRecovery(params: {
 			const [planMessages, callerMessages, sessionStartMessages] =
 				await Promise.all([
 					Promise.resolve(
-						collectPlanModeMessagesForCompaction(params.agent.state.messages),
+						collectPlanMessagesForCompaction(params.agent.state.messages),
 					),
 					params.getPostKeepMessages?.() ?? Promise.resolve([]),
 					collectPersistedSessionStartHookMessages({

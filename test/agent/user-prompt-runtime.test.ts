@@ -1059,7 +1059,7 @@ describe("user prompt runtime", () => {
 		);
 	});
 
-	it("prepends plan-mode and caller post-keep messages before compact SessionStart output during overflow recovery", async () => {
+	it("prepends plan restoration and caller post-keep messages before compact SessionStart output during overflow recovery", async () => {
 		const overflowMessage =
 			"Anthropic rejected this request because the prompt exceeded 200,000 tokens. Use /compact to summarize prior messages or remove large attachments, then retry.";
 		const planDir = mkdtempSync(join(tmpdir(), "maestro-plan-compaction-"));
@@ -1147,6 +1147,10 @@ describe("user prompt runtime", () => {
 			});
 
 			expect(getPostKeepMessages).toHaveBeenCalledTimes(1);
+			const planFileIndex = agent.state.messages.findIndex(
+				(message) =>
+					message.role === "hookMessage" && message.customType === "plan-file",
+			);
 			const planIndex = agent.state.messages.findIndex(
 				(message) =>
 					message.role === "hookMessage" && message.customType === "plan-mode",
@@ -1160,7 +1164,8 @@ describe("user prompt runtime", () => {
 					message.role === "hookMessage" &&
 					message.customType === "SessionStart",
 			);
-			expect(planIndex).toBeGreaterThan(-1);
+			expect(planFileIndex).toBeGreaterThan(-1);
+			expect(planIndex).toBeGreaterThan(planFileIndex);
 			expect(skillIndex).toBeGreaterThan(planIndex);
 			expect(sessionStartIndex).toBeGreaterThan(skillIndex);
 		} finally {

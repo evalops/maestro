@@ -191,6 +191,19 @@ function createPlanModeHookMessage(
 	};
 }
 
+function createPlanFileHookMessage(
+	content = "# Active plan file restored after compaction\n\nPlan file: /tmp/plan.md\n\nCurrent plan contents:\n# Plan",
+): AppMessage {
+	return {
+		role: "hookMessage",
+		customType: "plan-file",
+		content,
+		display: false,
+		details: { filePath: "/tmp/plan.md" },
+		timestamp: Date.now(),
+	};
+}
+
 function createErrorAssistantMessage(
 	text = "provider failed",
 	errorMessage = "Anthropic API error (429): rate limit exceeded.",
@@ -600,6 +613,30 @@ describe("performCompaction", () => {
 		expect(summaryInput).not.toContainEqual(
 			expect.objectContaining({
 				content: "Plan file: /tmp/plan.md",
+			}),
+		);
+	});
+
+	it("skips plan-file restoration guidance in summarization input", async () => {
+		const messages = buildConversation(10);
+		messages.splice(2, 0, createPlanFileHookMessage());
+		const agent = createMockAgent(messages);
+		const sessionManager = createMockSessionManager();
+
+		await performCompaction({ agent, sessionManager });
+
+		const summaryInput = (agent.generateSummary as ReturnType<typeof vi.fn>)
+			.mock.calls[0]?.[0] as AppMessage[] | undefined;
+		expect(summaryInput).toBeDefined();
+		expect(summaryInput).not.toContainEqual(
+			expect.objectContaining({
+				role: "hookMessage",
+				customType: "plan-file",
+			}),
+		);
+		expect(summaryInput).not.toContainEqual(
+			expect.objectContaining({
+				content: expect.stringContaining("Current plan contents:"),
 			}),
 		);
 	});
