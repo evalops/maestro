@@ -12,6 +12,7 @@ export const PLAN_FILE_COMPACTION_CUSTOM_TYPE = "plan-file";
 export const PLAN_MODE_COMPACTION_CUSTOM_TYPE = "plan-mode";
 export const BACKGROUND_TASKS_COMPACTION_CUSTOM_TYPE = "background-tasks";
 export const MCP_SERVERS_COMPACTION_CUSTOM_TYPE = "mcp-servers";
+const MAX_MCP_RESTORED_ITEMS_PER_CATEGORY = 5;
 
 export interface McpServerRestoreState {
 	name: string;
@@ -76,6 +77,51 @@ function hasBackgroundTasksCompactionMessage(
 	);
 }
 
+function formatMcpRestoredItems(items: readonly string[]): string | null {
+	const uniqueItems = Array.from(new Set(items)).sort((left, right) =>
+		left.localeCompare(right),
+	);
+	if (uniqueItems.length === 0) {
+		return null;
+	}
+
+	const visibleItems = uniqueItems.slice(
+		0,
+		MAX_MCP_RESTORED_ITEMS_PER_CATEGORY,
+	);
+	const hiddenCount = uniqueItems.length - visibleItems.length;
+	return hiddenCount > 0
+		? `${visibleItems.join(", ")} (+${hiddenCount} more)`
+		: visibleItems.join(", ");
+}
+
+function buildMcpServerCompactionLine(server: McpServerRestoreState): string {
+	const toolNames = formatMcpRestoredItems(
+		server.tools.map((tool) => tool.name),
+	);
+	const resources = formatMcpRestoredItems(server.resources);
+	const prompts = formatMcpRestoredItems(server.prompts);
+
+	const sections = [`- ${server.name}; transport=${server.transport}`];
+	sections.push(
+		toolNames
+			? `tools=${server.tools.length} [${toolNames}]`
+			: `tools=${server.tools.length}`,
+	);
+	sections.push(
+		resources
+			? `resources=${server.resources.length} [${resources}]`
+			: `resources=${server.resources.length}`,
+	);
+	sections.push(
+		prompts
+			? `prompts=${server.prompts.length} [${prompts}]`
+			: `prompts=${server.prompts.length}`,
+	);
+
+	return sections.join("; ");
+}
+
 function buildMcpServersCompactionContent(
 	servers: readonly McpServerRestoreState[],
 ): string | null {
@@ -90,12 +136,9 @@ function buildMcpServersCompactionContent(
 	return [
 		"# Connected MCP servers restored after compaction",
 		"",
-		"These MCP servers are already connected in this session. Their tools and resources remain available after compaction.",
+		"These MCP servers are already connected in this session. Their tools, resources, and prompts remain available after compaction.",
 		"",
-		...connectedServers.map(
-			(server) =>
-				`- ${server.name}; transport=${server.transport}; tools=${server.tools.length}; resources=${server.resources.length}; prompts=${server.prompts.length}`,
-		),
+		...connectedServers.map(buildMcpServerCompactionLine),
 		"",
 		"Use `list_mcp_servers` to inspect current server status, `list_mcp_tools` to inspect available tool names, and `list_mcp_resources` / `read_mcp_resource` for server resources.",
 	].join("\n");
