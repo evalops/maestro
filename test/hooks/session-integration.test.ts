@@ -2,7 +2,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { clearRegisteredHooks, registerHook } from "../../src/hooks/index.js";
+import {
+	clearLoadedTypeScriptHooks,
+	clearRegisteredHooks,
+	discoverAndLoadTypeScriptHooks,
+	registerHook,
+} from "../../src/hooks/index.js";
 import { createSessionHookService } from "../../src/hooks/session-integration.js";
 import type {
 	OnErrorHookInput,
@@ -18,15 +23,24 @@ import type {
 describe("SessionHookService", () => {
 	let testDir: string;
 	let hooksDir: string;
+	let previousMaestroHome: string | undefined;
 
 	beforeEach(() => {
 		testDir = mkdtempSync(join(tmpdir(), "hooks-test-"));
 		hooksDir = join(testDir, ".maestro", "hooks");
 		mkdirSync(hooksDir, { recursive: true });
+		previousMaestroHome = process.env.MAESTRO_HOME;
+		process.env.MAESTRO_HOME = join(testDir, ".maestro-home");
 	});
 
 	afterEach(() => {
+		clearLoadedTypeScriptHooks();
 		rmSync(testDir, { recursive: true, force: true });
+		if (previousMaestroHome === undefined) {
+			delete process.env.MAESTRO_HOME;
+		} else {
+			process.env.MAESTRO_HOME = previousMaestroHome;
+		}
 	});
 
 	describe("service creation", () => {
@@ -71,6 +85,35 @@ describe("SessionHookService", () => {
 
 			expect(result.hookResults).toBeInstanceOf(Array);
 			expect(result.preventContinuation).toBe(false);
+		});
+
+		it("runs project TypeScript session start hooks through the shared executor", async () => {
+			writeFileSync(
+				join(hooksDir, "session-start.ts"),
+				`export default function (pi) {
+  pi.on("SessionStart", async (input) => ({
+    hookSpecificOutput: {
+      hookEventName: "SessionStart",
+      additionalContext: "TS session start for " + input.source
+    }
+  }));
+}
+`,
+			);
+			await discoverAndLoadTypeScriptHooks([], testDir);
+
+			const service = createSessionHookService({
+				cwd: testDir,
+				sessionId: "test-session",
+			});
+
+			const result = await service.runSessionStartHooks("cli");
+
+			expect(result.additionalContext).toBe("TS session start for cli");
+			expect(result.hookResults).toHaveLength(1);
+			expect(result.hookResults[0]?.message.hookName).toContain(
+				"session-start.ts",
+			);
 		});
 	});
 
@@ -500,6 +543,59 @@ describe("SessionHookService", () => {
 				const hasHook = service.hasHooks(eventType);
 				expect(typeof hasHook).toBe("boolean");
 			}
+		});
+
+		it("returns true when only TypeScript hooks are loaded", async () => {
+			writeFileSync(
+				join(hooksDir, "prompt-submit.ts"),
+				`export default function (pi) {
+  pi.on("UserPromptSubmit", async () => ({
+    hookSpecificOutput: {
+      hookEventName: "UserPromptSubmit",
+      additionalContext: "TS prompt context"
+    }
+  }));
+}
+`,
+			);
+			await discoverAndLoadTypeScriptHooks([], testDir);
+
+			const service = createSessionHookService({
+				cwd: testDir,
+			});
+
+			expect(service.hasHooks("UserPromptSubmit")).toBe(true);
+		});
+	});
+
+	describe("TypeScript lifecycle hooks", () => {
+		it("runs UserPromptSubmit TypeScript hooks through the shared executor", async () => {
+			writeFileSync(
+				join(hooksDir, "user-prompt-submit.ts"),
+				`export default function (pi) {
+  pi.on("UserPromptSubmit", async (input) => ({
+    hookSpecificOutput: {
+      hookEventName: "UserPromptSubmit",
+      additionalContext: "TS prompt for " + input.prompt
+    }
+  }));
+}
+`,
+			);
+			await discoverAndLoadTypeScriptHooks([], testDir);
+
+			const service = createSessionHookService({
+				cwd: testDir,
+				sessionId: "test-session",
+			});
+
+			const result = await service.runUserPromptSubmitHooks("ship it", 0);
+
+			expect(result.additionalContext).toBe("TS prompt for ship it");
+			expect(result.hookResults).toHaveLength(1);
+			expect(result.hookResults[0]?.message.hookName).toContain(
+				"user-prompt-submit.ts",
+			);
 		});
 	});
 

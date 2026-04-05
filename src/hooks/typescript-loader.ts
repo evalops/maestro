@@ -32,6 +32,7 @@ import type {
 	HookUIContext,
 	LoadedTypeScriptHook,
 	RegisteredCommand,
+	TypeScriptHookExecutionOutput,
 } from "./types.js";
 
 const logger = createLogger("hooks:typescript-loader");
@@ -454,8 +455,8 @@ export async function executeTypeScriptHooks(
 	event: HookEventType,
 	input: HookInput,
 	timeout = 30000,
-): Promise<Array<HookJsonOutput | undefined>> {
-	const results: Array<HookJsonOutput | undefined> = [];
+): Promise<TypeScriptHookExecutionOutput[]> {
+	const results: TypeScriptHookExecutionOutput[] = [];
 	const ctx = createEventContext();
 
 	for (const hook of loadedHooks) {
@@ -478,7 +479,10 @@ export async function executeTypeScriptHooks(
 					handler(input, ctx),
 					timeoutPromise,
 				]);
-				results.push(result);
+				results.push({
+					hookPath: hook.resolvedPath,
+					output: result,
+				});
 			} catch (error) {
 				logger.error(
 					"TypeScript hook handler error",

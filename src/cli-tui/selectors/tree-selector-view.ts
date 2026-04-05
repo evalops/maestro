@@ -9,15 +9,9 @@ import {
 	createRenderableMessage,
 	renderMessageToPlainText,
 } from "../../conversation/render-model.js";
-import {
-	executeHooks,
-	executeTypeScriptHooks,
-	hasHooksForEvent,
-	hasTypeScriptHookHandlers,
-} from "../../hooks/index.js";
+import { executeHooks, hasHooksForEvent } from "../../hooks/index.js";
 import type {
 	HookExecutionResult,
-	HookJsonOutput,
 	SessionBeforeTreeHookInput,
 	SessionTreeHookInput,
 } from "../../hooks/types.js";
@@ -150,9 +144,7 @@ export class TreeSelectorView {
 			hookResults: [],
 		};
 
-		const hasExternal = hasHooksForEvent("SessionBeforeTree", process.cwd());
-		const hasTs = hasTypeScriptHookHandlers("SessionBeforeTree");
-		if (!hasExternal && !hasTs) {
+		if (!hasHooksForEvent("SessionBeforeTree", process.cwd())) {
 			return outcome;
 		}
 
@@ -186,59 +178,21 @@ export class TreeSelectorView {
 			}
 		};
 
-		if (hasExternal) {
-			const results = await executeHooks(input, process.cwd(), signal);
-			outcome.hookResults = results;
-			for (const result of results) {
-				if (result.blockingError) {
-					outcome.cancel = true;
-					outcome.cancelReason = result.blockingError.blockingError;
-					break;
-				}
-				if (result.preventContinuation) {
-					outcome.cancel = true;
-					outcome.cancelReason = result.stopReason;
-					break;
-				}
-				if (result.hookSpecificOutput?.hookEventName === "SessionBeforeTree") {
-					applyTreeOutput(result.hookSpecificOutput);
-				}
+		const results = await executeHooks(input, process.cwd(), signal);
+		outcome.hookResults = results;
+		for (const result of results) {
+			if (result.blockingError) {
+				outcome.cancel = true;
+				outcome.cancelReason = result.blockingError.blockingError;
+				break;
 			}
-		}
-
-		if (!outcome.cancel && hasTs) {
-			const tsInput = signal ? { ...input, signal } : input;
-			const results = await executeTypeScriptHooks(
-				"SessionBeforeTree",
-				tsInput,
-			);
-			for (const result of results) {
-				if (!result || typeof result !== "object") {
-					continue;
-				}
-				const jsonResult = result as HookJsonOutput;
-				if (jsonResult.continue === false) {
-					outcome.cancel = true;
-					outcome.cancelReason = jsonResult.stopReason;
-					break;
-				}
-				if (
-					jsonResult.hookSpecificOutput?.hookEventName === "SessionBeforeTree"
-				) {
-					const specific = jsonResult.hookSpecificOutput;
-					applyTreeOutput({
-						cancel: specific.cancel,
-						summary: specific.summary,
-					});
-					continue;
-				}
-				const direct = result as {
-					cancel?: boolean;
-					summary?: { summary: string; details?: unknown };
-				};
-				if (direct.cancel || direct.summary) {
-					applyTreeOutput(direct);
-				}
+			if (result.preventContinuation) {
+				outcome.cancel = true;
+				outcome.cancelReason = result.stopReason;
+				break;
+			}
+			if (result.hookSpecificOutput?.hookEventName === "SessionBeforeTree") {
+				applyTreeOutput(result.hookSpecificOutput);
 			}
 		}
 
@@ -259,9 +213,7 @@ export class TreeSelectorView {
 		},
 		signal?: AbortSignal,
 	): Promise<void> {
-		const hasExternal = hasHooksForEvent("SessionTree", process.cwd());
-		const hasTs = hasTypeScriptHookHandlers("SessionTree");
-		if (!hasExternal && !hasTs) {
+		if (!hasHooksForEvent("SessionTree", process.cwd())) {
 			return;
 		}
 
@@ -277,12 +229,7 @@ export class TreeSelectorView {
 		};
 
 		try {
-			if (hasExternal) {
-				await executeHooks(input, process.cwd(), signal);
-			}
-			if (hasTs) {
-				await executeTypeScriptHooks("SessionTree", input);
-			}
+			await executeHooks(input, process.cwd(), signal);
 		} catch (error) {
 			logger.warn("SessionTree hook execution failed", {
 				error: error instanceof Error ? error.message : String(error),

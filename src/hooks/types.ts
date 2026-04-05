@@ -1248,3 +1248,13 @@ export interface LoadedTypeScriptHook {
 	/** Append entry handler setter */
 	setAppendEntryHandler: (handler: HookAppendEntryHandler) => void;
 }
+
+/**
+ * Result of executing a loaded TypeScript hook handler.
+ */
+export interface TypeScriptHookExecutionOutput {
+	/** Absolute path of the hook file that produced the output */
+	hookPath: string;
+	/** Raw hook output from the handler */
+	output: HookJsonOutput | undefined;
+}

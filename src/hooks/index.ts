@@ -135,6 +135,7 @@ export type {
 	HookAPI,
 	HookFactory,
 	LoadedTypeScriptHook,
+	TypeScriptHookExecutionOutput,
 } from "./types.js";
 
 export {

@@ -23,6 +23,10 @@ import type {
 	HookResultMessage,
 } from "./types.js";
 import { isAsyncHookResponse } from "./types.js";
+import {
+	executeTypeScriptHooks,
+	hasTypeScriptHookHandlers,
+} from "./typescript-loader.js";
 
 const logger = createLogger("hooks:executor");
 
@@ -618,6 +622,82 @@ function parseStructuredHookOutput(
 	return result;
 }
 
+function normalizeTypeScriptHookOutput(
+	event: HookEventType,
+	output: HookJsonOutput | undefined,
+): HookJsonOutput | null {
+	if (!output || typeof output !== "object") {
+		return null;
+	}
+
+	if (
+		"continue" in output ||
+		"stopReason" in output ||
+		"suppressOutput" in output ||
+		"decision" in output ||
+		"reason" in output ||
+		"systemMessage" in output ||
+		"permissionDecision" in output ||
+		"hookSpecificOutput" in output
+	) {
+		return output;
+	}
+
+	if (event === "SessionBeforeTree") {
+		const direct = output as {
+			cancel?: boolean;
+			summary?: { summary: string; details?: unknown };
+		};
+		if (direct.cancel !== undefined || direct.summary !== undefined) {
+			return {
+				hookSpecificOutput: {
+					hookEventName: "SessionBeforeTree",
+					cancel: direct.cancel,
+					summary: direct.summary,
+				},
+			};
+		}
+	}
+
+	return null;
+}
+
+async function executeLoadedTypeScriptHooks(
+	input: HookInput,
+): Promise<HookExecutionResult[]> {
+	if (!hasTypeScriptHookHandlers(input.hook_event_name)) {
+		return [];
+	}
+
+	const results: HookExecutionResult[] = [];
+	const toolUseID = "tool_call_id" in input ? input.tool_call_id : undefined;
+	const outputs = await executeTypeScriptHooks(input.hook_event_name, input);
+
+	for (const { hookPath, output } of outputs) {
+		const normalized = normalizeTypeScriptHookOutput(
+			input.hook_event_name,
+			output,
+		);
+		if (!normalized) {
+			continue;
+		}
+
+		const result = parseStructuredHookOutput(
+			normalized,
+			hookPath,
+			input.hook_event_name,
+			toolUseID,
+		);
+		results.push(result);
+
+		if (result.blockingError || result.preventContinuation) {
+			break;
+		}
+	}
+
+	return results;
+}
+
 /**
  * Execute a single hook and return the result.
  */
@@ -684,8 +764,9 @@ export async function executeHooks(
 ): Promise<HookExecutionResult[]> {
 	const config = loadHookConfiguration(cwd);
 	const hooks = getMatchingHooks(config, input);
+	const hasTypeScriptHooks = hasTypeScriptHookHandlers(input.hook_event_name);
 
-	if (hooks.length === 0) {
+	if (hooks.length === 0 && !hasTypeScriptHooks) {
 		return [];
 	}
 
@@ -716,6 +797,15 @@ export async function executeHooks(
 		}
 	}
 
+	if (
+		!signal?.aborted &&
+		!results.some(
+			(result) => result.blockingError || result.preventContinuation,
+		)
+	) {
+		results.push(...(await executeLoadedTypeScriptHooks(input)));
+	}
+
 	// Clean up async bookkeeping after execution in case hooks marked themselves async
 	cleanupAsyncHooks();
 
@@ -731,7 +821,9 @@ export function hasHooksForEvent(
 ): boolean {
 	const config = loadHookConfiguration(cwd);
 	const matchers = config[eventType];
-	return Boolean(matchers && matchers.length > 0);
+	return Boolean(
+		(matchers && matchers.length > 0) || hasTypeScriptHookHandlers(eventType),
+	);
 }
 
 /**
