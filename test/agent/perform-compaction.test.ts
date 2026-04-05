@@ -130,6 +130,64 @@ function createToolResultMessage(
 	};
 }
 
+function createReadToolCallMessage(
+	filePath = "/tmp/notes.md",
+	toolCallId = "call-read",
+): AssistantMessage {
+	return {
+		...createAssistantMessage("reading file"),
+		content: [
+			{
+				type: "toolCall",
+				id: toolCallId,
+				name: "read",
+				arguments: { path: filePath },
+			},
+		],
+	};
+}
+
+function createReadToolResultMessage(
+	filePath = "/tmp/notes.md",
+	toolCallId = "call-read",
+	text = `contents of ${filePath}`,
+): AppMessage {
+	return {
+		role: "toolResult",
+		toolCallId,
+		toolName: "read",
+		content: [{ type: "text", text }],
+		isError: false,
+		timestamp: Date.now(),
+	};
+}
+
+function createReadRestoreHookMessage(
+	filePath = "/tmp/notes.md",
+	text = "contents of /tmp/notes.md",
+): AppMessage {
+	return {
+		role: "hookMessage",
+		customType: "read-file",
+		content: [
+			{
+				type: "text",
+				text: [
+					"# Recently read file restored after compaction",
+					"",
+					`File: ${filePath}`,
+					"",
+					"Last read result:",
+				].join("\n"),
+			},
+			{ type: "text", text },
+		],
+		display: false,
+		details: { filePath },
+		timestamp: Date.now(),
+	};
+}
+
 function createHookMessageWithInlineImage(text = "hook context"): AppMessage {
 	return {
 		role: "hookMessage",
@@ -641,6 +699,39 @@ describe("performCompaction", () => {
 		);
 	});
 
+	it("skips restored read-file guidance in summarization input", async () => {
+		const messages = buildConversation(10);
+		messages.splice(2, 0, createReadRestoreHookMessage());
+		const agent = createMockAgent(messages);
+		const sessionManager = createMockSessionManager();
+
+		await performCompaction({ agent, sessionManager });
+
+		const summaryInput = (agent.generateSummary as ReturnType<typeof vi.fn>)
+			.mock.calls[0]?.[0] as AppMessage[] | undefined;
+		expect(summaryInput).toBeDefined();
+		expect(summaryInput).not.toContainEqual(
+			expect.objectContaining({
+				role: "hookMessage",
+				customType: "read-file",
+			}),
+		);
+		expect(
+			summaryInput?.some(
+				(message) =>
+					message.role === "hookMessage" &&
+					Array.isArray(message.content) &&
+					message.content.some(
+						(part) =>
+							part.type === "text" &&
+							part.text.includes(
+								"Recently read file restored after compaction",
+							),
+					),
+			),
+		).toBe(false);
+	});
+
 	it("uses the previous summary preamble without re-summarizing compact summary messages", async () => {
 		const messages = buildConversation(10);
 		messages.unshift({
@@ -814,6 +905,83 @@ describe("performCompaction", () => {
 			expect.objectContaining({
 				role: "hookMessage",
 				customType: "PostCompact",
+			}),
+		);
+	});
+
+	it("restores recent read results before caller post-keep messages", async () => {
+		const messages = buildConversation(10);
+		messages.splice(
+			2,
+			0,
+			createReadToolCallMessage("/tmp/restored.ts", "call-read-restore"),
+			createReadToolResultMessage(
+				"/tmp/restored.ts",
+				"call-read-restore",
+				"export const restored = true;",
+			),
+		);
+		const agent = createMockAgentWithoutAppendMessage(messages);
+		const sessionManager = createMockSessionManager();
+
+		const result = await performCompaction({
+			agent,
+			sessionManager,
+			getPostKeepMessages: async () => [createSessionStartHookMessage()],
+		});
+
+		expect(result.success).toBe(true);
+		const replaced = getReplacedMessages(agent);
+		const readRestoreIndex = replaced.findIndex(
+			(message) =>
+				message.role === "hookMessage" && message.customType === "read-file",
+		);
+		const sessionStartIndex = replaced.findIndex(
+			(message) =>
+				message.role === "hookMessage" && message.customType === "SessionStart",
+		);
+		expect(readRestoreIndex).toBeGreaterThan(1);
+		expect(sessionStartIndex).toBeGreaterThan(readRestoreIndex);
+		expect(replaced[readRestoreIndex]).toMatchObject({
+			role: "hookMessage",
+			customType: "read-file",
+			display: false,
+			details: { filePath: "/tmp/restored.ts" },
+		});
+	});
+
+	it("does not restore read results that are still visible in the kept tail", async () => {
+		const messages = buildConversation(10);
+		messages.splice(
+			2,
+			0,
+			createReadToolCallMessage("/tmp/shared.ts", "call-read-old"),
+			createReadToolResultMessage(
+				"/tmp/shared.ts",
+				"call-read-old",
+				"old visible contents",
+			),
+		);
+		messages.splice(
+			messages.length - 2,
+			0,
+			createReadToolCallMessage("/tmp/shared.ts", "call-read-new"),
+			createReadToolResultMessage(
+				"/tmp/shared.ts",
+				"call-read-new",
+				"new visible contents",
+			),
+		);
+		const agent = createMockAgentWithoutAppendMessage(messages);
+		const sessionManager = createMockSessionManager();
+
+		const result = await performCompaction({ agent, sessionManager });
+
+		expect(result.success).toBe(true);
+		expect(getReplacedMessages(agent)).not.toContainEqual(
+			expect.objectContaining({
+				role: "hookMessage",
+				customType: "read-file",
 			}),
 		);
 	});

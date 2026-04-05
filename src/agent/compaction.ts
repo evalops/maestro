@@ -33,8 +33,10 @@
  * @module agent/compaction
  */
 
+import { resolve as resolvePath } from "node:path";
 import type { SessionEntry } from "../session/types.js";
 import { createLogger } from "../utils/logger.js";
+import { expandUserPath } from "../utils/path-validation.js";
 import { runPostCompactionCleanup } from "./compaction-cleanup.js";
 import {
 	type CompactionHookContext,
@@ -54,6 +56,7 @@ import {
 	convertAppMessageToLlm,
 	createHookMessage,
 } from "./custom-messages.js";
+import { getCurrentPlanFilePath } from "./plan-mode.js";
 import type {
 	Api,
 	AppMessage,
@@ -111,6 +114,9 @@ const MAX_COMPACTION_OVERFLOW_RETRIES = 3;
 const PREVIOUS_SUMMARY_PREFIX = "Previous session summary:\n";
 const COMPACTION_OVERFLOW_RETRY_MARKER =
 	"[earlier conversation truncated for compaction retry]";
+const READ_RESTORE_COMPACTION_CUSTOM_TYPE = "read-file";
+const MAX_READ_RESTORE_MESSAGES = 3;
+const READ_RESTORE_TOKEN_BUDGET = 20_000;
 
 /**
  * Result of a compaction operation, ready to be persisted.
@@ -179,11 +185,183 @@ function shouldSkipReinjectedCompactionMessage(message: AppMessage): boolean {
 	return (
 		message.role === "hookMessage" &&
 		((message.customType === "skill" && message.display === false) ||
+			message.customType === READ_RESTORE_COMPACTION_CUSTOM_TYPE ||
 			message.customType === PLAN_FILE_COMPACTION_CUSTOM_TYPE ||
 			message.customType === "PostCompact" ||
 			message.customType === "SessionStart" ||
 			message.customType === PLAN_MODE_COMPACTION_CUSTOM_TYPE)
 	);
+}
+
+function normalizeReadPath(path: string): string {
+	return resolvePath(expandUserPath(path));
+}
+
+function collectReadToolPathsByCallId(
+	messages: AppMessage[],
+): Map<string, string> {
+	const pathsByCallId = new Map<string, string>();
+	for (const message of messages) {
+		if (message.role !== "assistant") {
+			continue;
+		}
+		for (const part of message.content) {
+			if (part.type !== "toolCall" || part.name !== "read") {
+				continue;
+			}
+			const rawPath = part.arguments.path;
+			if (typeof rawPath !== "string") {
+				continue;
+			}
+			pathsByCallId.set(part.id, normalizeReadPath(rawPath));
+		}
+	}
+	return pathsByCallId;
+}
+
+function collectVisibleReadPaths(messages: AppMessage[]): Set<string> {
+	const pathsByCallId = collectReadToolPathsByCallId(messages);
+	const visiblePaths = new Set<string>();
+	for (const message of messages) {
+		if (
+			message.role !== "toolResult" ||
+			message.toolName !== "read" ||
+			message.isError
+		) {
+			continue;
+		}
+		const filePath = pathsByCallId.get(message.toolCallId);
+		if (filePath) {
+			visiblePaths.add(filePath);
+		}
+	}
+	return visiblePaths;
+}
+
+function buildReadRestoreContent(
+	filePath: string,
+	content: (TextContent | ImageContent)[],
+): (TextContent | ImageContent)[] {
+	return [
+		{
+			type: "text",
+			text: [
+				"# Recently read file restored after compaction",
+				"",
+				`File: ${filePath}`,
+				"",
+				"Last read result:",
+			].join("\n"),
+		},
+		...content,
+	];
+}
+
+function hasReadRestoreMessage(
+	messages: AppMessage[],
+	filePath: string,
+	content: (TextContent | ImageContent)[],
+): boolean {
+	const expectedContent = JSON.stringify(content);
+	return messages.some((message) => {
+		if (
+			message.role !== "hookMessage" ||
+			message.customType !== READ_RESTORE_COMPACTION_CUSTOM_TYPE
+		) {
+			return false;
+		}
+
+		const details = message.details;
+		if (
+			typeof details === "object" &&
+			details !== null &&
+			"filePath" in details &&
+			typeof details.filePath === "string" &&
+			details.filePath !== filePath
+		) {
+			return false;
+		}
+
+		return JSON.stringify(message.content) === expectedContent;
+	});
+}
+
+function estimateHookContentTokens(
+	content: string | (TextContent | ImageContent)[],
+): number {
+	return Math.max(1, Math.ceil(JSON.stringify(content).length / 4));
+}
+
+function collectRecentReadRestoreMessages(
+	compactedMessages: AppMessage[],
+	preservedMessages: AppMessage[],
+): AppMessage[] {
+	const visiblePaths = collectVisibleReadPaths(preservedMessages);
+	const pathsByCallId = collectReadToolPathsByCallId(compactedMessages);
+	const currentPlanFilePath = getCurrentPlanFilePath();
+	const normalizedPlanFilePath = currentPlanFilePath
+		? normalizeReadPath(currentPlanFilePath)
+		: null;
+	const restoredMessages: AppMessage[] = [];
+	const seenPaths = new Set<string>();
+	let usedTokens = 0;
+
+	for (let i = compactedMessages.length - 1; i >= 0; i -= 1) {
+		if (restoredMessages.length >= MAX_READ_RESTORE_MESSAGES) {
+			break;
+		}
+
+		const message = compactedMessages[i];
+		if (
+			!message ||
+			message.role !== "toolResult" ||
+			message.toolName !== "read" ||
+			message.isError
+		) {
+			continue;
+		}
+
+		const filePath = pathsByCallId.get(message.toolCallId);
+		if (
+			!filePath ||
+			visiblePaths.has(filePath) ||
+			seenPaths.has(filePath) ||
+			(normalizedPlanFilePath !== null && filePath === normalizedPlanFilePath)
+		) {
+			continue;
+		}
+
+		const content = buildReadRestoreContent(filePath, message.content);
+		if (
+			hasReadRestoreMessage(
+				[...compactedMessages, ...preservedMessages, ...restoredMessages],
+				filePath,
+				content,
+			)
+		) {
+			seenPaths.add(filePath);
+			continue;
+		}
+
+		const estimatedTokens = estimateHookContentTokens(content);
+		if (usedTokens + estimatedTokens > READ_RESTORE_TOKEN_BUDGET) {
+			continue;
+		}
+
+		usedTokens += estimatedTokens;
+		seenPaths.add(filePath);
+		restoredMessages.push(
+			createHookMessage(
+				READ_RESTORE_COMPACTION_CUSTOM_TYPE,
+				content,
+				false,
+				{ filePath },
+				new Date().toISOString(),
+			),
+		);
+	}
+
+	return restoredMessages;
 }
 
 function buildAttachmentMarkers(message: UserMessageWithAttachments): string[] {
@@ -1471,7 +1649,10 @@ export async function performCompaction(params: {
 		}
 	};
 
-	const postKeepMessages = (await getPostKeepMessages?.()) ?? [];
+	const postKeepMessages = [
+		...collectRecentReadRestoreMessages(older, keep),
+		...((await getPostKeepMessages?.()) ?? []),
+	];
 	persistTailMessages(postKeepMessages);
 
 	let postCompactHookMessages: AppMessage[] = [];
