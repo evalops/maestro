@@ -575,6 +575,7 @@ function parseStructuredHookOutput(
 
 			case "PostToolUseFailure":
 			case "SubagentStart":
+			case "PreMessage":
 				if (specific.additionalContext) {
 					result.additionalContext = specific.additionalContext;
 					result.message = createHookMessage({

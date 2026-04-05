@@ -436,6 +436,7 @@ export async function runHeadlessMode(
 						cwd: process.cwd(),
 						prompt: msg.content,
 						attachmentCount: msg.attachments?.length ?? 0,
+						attachmentNames: msg.attachments,
 						execute: async () => {
 							if (msg.attachments && msg.attachments.length > 0) {
 								const loaded = await loadPromptAttachments(

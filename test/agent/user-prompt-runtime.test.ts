@@ -7,13 +7,17 @@ import type {
 	AssistantMessage,
 	Message,
 	Model,
+	StopReason,
 	TextContent,
 } from "../../src/agent/types.js";
 import {
+	applyPreMessageHooks,
 	applySessionStartHooks,
 	applyUserPromptSubmitHooks,
+	runUserPromptWithRecovery,
 } from "../../src/agent/user-prompt-runtime.js";
 import { clearRegisteredHooks, registerHook } from "../../src/hooks/index.js";
+import type { PostMessageHookInput } from "../../src/hooks/types.js";
 
 const mockModel: Model<"openai-completions"> = {
 	id: "mock",
@@ -55,6 +59,26 @@ function createAssistantMessage(text: string): AssistantMessage {
 		},
 		stopReason: "stop",
 		timestamp: Date.now(),
+	};
+}
+
+function createAssistantMessageWithUsage(
+	text: string,
+	options: {
+		inputTokens: number;
+		outputTokens: number;
+		stopReason?: StopReason;
+	},
+): AssistantMessage {
+	const assistant = createAssistantMessage(text);
+	return {
+		...assistant,
+		usage: {
+			...assistant.usage,
+			input: options.inputTokens,
+			output: options.outputTokens,
+		},
+		stopReason: options.stopReason ?? "stop",
 	};
 }
 
@@ -187,6 +211,152 @@ describe("user prompt runtime", () => {
 		expect(queueNextRunSystemPromptAddition).not.toHaveBeenCalled();
 		expect(queueNextRunPromptOnlyMessage).not.toHaveBeenCalled();
 		expect(queueNextRunHistoryMessage).not.toHaveBeenCalled();
+	});
+
+	it("queues PreMessage hook context for the current run", async () => {
+		const queueNextRunPromptOnlyMessage = vi.fn();
+		const queueNextRunSystemPromptAddition = vi.fn();
+		const queueNextRunHistoryMessage = vi.fn();
+
+		registerHook("PreMessage", {
+			type: "callback",
+			callback: async () => ({
+				hookSpecificOutput: {
+					hookEventName: "PreMessage",
+					additionalContext: "Read the migration plan before editing.",
+				},
+				systemMessage: "Prefer migration-safe edits.",
+			}),
+		});
+
+		await applyPreMessageHooks({
+			agent: {
+				state: {
+					model: mockModel,
+				},
+				queueNextRunPromptOnlyMessage,
+				queueNextRunSystemPromptAddition,
+				queueNextRunHistoryMessage,
+			} as unknown as Agent,
+			sessionManager: {
+				getSessionId: () => "session-pre-message",
+			} as never,
+			cwd: "/tmp/pre-message-hooks",
+			prompt: "Update the migration",
+			attachmentNames: ["plan.md"],
+		});
+
+		expect(queueNextRunSystemPromptAddition).toHaveBeenCalledWith(
+			"PreMessage hook system guidance:\nPrefer migration-safe edits.",
+		);
+		expect(queueNextRunPromptOnlyMessage).toHaveBeenCalledWith({
+			role: "user",
+			content: [
+				{
+					type: "text",
+					text: "PreMessage hook context:\nRead the migration plan before editing.",
+				},
+			],
+			timestamp: expect.any(Number),
+		});
+		expect(queueNextRunHistoryMessage).not.toHaveBeenCalled();
+	});
+
+	it("stops prompt execution when a PreMessage hook blocks the run", async () => {
+		const execute = vi.fn(async () => {});
+
+		registerHook("PreMessage", {
+			type: "callback",
+			callback: async () => ({
+				continue: false,
+				stopReason: "Prompt blocked by PreMessage hook",
+			}),
+		});
+
+		await expect(
+			runUserPromptWithRecovery({
+				agent: {
+					state: {
+						model: mockModel,
+						messages: [],
+					},
+					queueNextRunPromptOnlyMessage: vi.fn(),
+					queueNextRunSystemPromptAddition: vi.fn(),
+					queueNextRunHistoryMessage: vi.fn(),
+				} as unknown as Agent,
+				sessionManager: {
+					getSessionId: () => "session-pre-message-blocked",
+				} as never,
+				cwd: "/tmp/pre-message-hooks",
+				prompt: "Blocked prompt",
+				execute,
+			}),
+		).rejects.toThrow("Prompt blocked by PreMessage hook");
+		expect(execute).not.toHaveBeenCalled();
+	});
+
+	it("runs PostMessage hooks after a successful prompt turn", async () => {
+		let captured: PostMessageHookInput | undefined;
+
+		registerHook("PostMessage", {
+			type: "callback",
+			callback: async (input) => {
+				captured = input as PostMessageHookInput;
+				return {};
+			},
+		});
+
+		class PromptCaptureTransport implements AgentTransport {
+			async *run(
+				_messages: Message[],
+				_userMessage: Message,
+				_config: AgentRunConfig,
+			): AsyncGenerator<AgentEvent, void, unknown> {
+				const assistant = createAssistantMessageWithUsage("Done", {
+					inputTokens: 12,
+					outputTokens: 34,
+					stopReason: "stop",
+				});
+				yield { type: "message_start", message: assistant };
+				yield { type: "message_end", message: assistant };
+			}
+
+			async *continue(): AsyncGenerator<AgentEvent, void, unknown> {
+				const assistant = createAssistantMessage("Continued");
+				yield { type: "message_start", message: assistant };
+				yield { type: "message_end", message: assistant };
+			}
+		}
+
+		const agent = new Agent({
+			transport: new PromptCaptureTransport(),
+			initialState: {
+				model: mockModel,
+				tools: [],
+				systemPrompt: "Base system prompt",
+			},
+		});
+
+		await runUserPromptWithRecovery({
+			agent,
+			sessionManager: {
+				getSessionId: () => "session-post-message",
+			} as never,
+			cwd: "/tmp/post-message-hooks",
+			prompt: "first",
+			execute: () => agent.prompt("first"),
+		});
+
+		expect(captured).toMatchObject({
+			hook_event_name: "PostMessage",
+			cwd: "/tmp/post-message-hooks",
+			session_id: "session-post-message",
+			response: "Done",
+			input_tokens: 12,
+			output_tokens: 34,
+			stop_reason: "stop",
+		});
+		expect(captured?.duration_ms).toBeGreaterThanOrEqual(0);
 	});
 
 	it("persists hook additional context as a hook message for the next run", async () => {

@@ -1738,6 +1738,7 @@ export class HeadlessSessionRuntime {
 				cwd: process.cwd(),
 				prompt: content,
 				attachmentCount: attachments?.length ?? 0,
+				attachmentNames: attachments?.map((attachment) => attachment.fileName),
 				execute: () =>
 					breaker.execute(() => this.agent.prompt(content, attachments)),
 				callbacks: {

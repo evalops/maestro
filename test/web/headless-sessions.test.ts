@@ -320,6 +320,11 @@ describe("headless session runtime", () => {
 				type: "prompt",
 				content: "Summarize the session",
 			});
+			await vi.waitFor(() => {
+				expect(fakeAgent.prompts).toEqual([
+					{ content: "Summarize the session", attachments: undefined },
+				]);
+			});
 
 			const snapshot = runtime.getSnapshot();
 			expect(snapshot.last_init).toEqual({
@@ -328,9 +333,6 @@ describe("headless session runtime", () => {
 				thinking_level: "high",
 			});
 			expect(Value.Check(HeadlessRuntimeSnapshotSchema, snapshot)).toBe(true);
-			expect(fakeAgent.prompts).toEqual([
-				{ content: "Summarize the session", attachments: undefined },
-			]);
 			expect(snapshot.state.last_status).toBe("Prompt: Summarize the session");
 
 			const replay = runtime.replayFrom(0);

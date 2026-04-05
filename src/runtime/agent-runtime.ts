@@ -54,6 +54,9 @@ export class AgentRuntimeController {
 					cwd: process.cwd(),
 					prompt: text,
 					attachmentCount: attachments?.length ?? 0,
+					attachmentNames: attachments?.map(
+						(attachment) => attachment.fileName,
+					),
 					execute: () => this.options.agent.prompt(text, attachments),
 					callbacks: {
 						onCompacting: () => {

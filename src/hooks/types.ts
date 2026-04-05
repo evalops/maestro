@@ -715,6 +715,15 @@ export interface UserPromptSubmitHookOutput {
 }
 
 /**
+ * Hook-specific output for PreMessage events.
+ */
+export interface PreMessageHookOutput {
+	hookEventName: "PreMessage";
+	/** Additional context to inject into the current model call */
+	additionalContext?: string;
+}
+
+/**
  * Hook-specific output for PostCompact events.
  */
 export interface PostCompactHookOutput {
@@ -760,6 +769,7 @@ export type HookSpecificOutput =
 	| SessionSwitchHookOutput
 	| SessionBeforeTreeHookOutput
 	| UserPromptSubmitHookOutput
+	| PreMessageHookOutput
 	| PostCompactHookOutput
 	| PermissionRequestHookOutput
 	| BranchHookOutput;

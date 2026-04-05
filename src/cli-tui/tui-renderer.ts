@@ -47,6 +47,7 @@ import {
 	createAutoRetryController,
 } from "../agent/auto-retry.js";
 import { SessionRecoveryManager } from "../agent/session-recovery.js";
+import { runUserPromptWithRecovery } from "../agent/user-prompt-runtime.js";
 import {
 	type AutoVerifyService,
 	registerTestVerificationHooks,
@@ -1920,18 +1921,27 @@ export class TuiRenderer {
 						payload.text.trim().length > 0 ||
 						(payload.attachments?.length ?? 0) > 0
 					) {
-						void this.agent
-							.prompt(payload.text, payload.attachments)
-							.catch((error) => {
-								this.restoreQueuedPromptBatchToEditor(steeringBatch);
-								const message =
-									error instanceof Error
-										? error.message
-										: String(error ?? "unknown");
-								this.notificationView.showError(
-									`Failed to submit queued steering: ${message}`,
-								);
-							});
+						void runUserPromptWithRecovery({
+							agent: this.agent,
+							sessionManager: this.sessionManager,
+							cwd: process.cwd(),
+							prompt: payload.text,
+							attachmentCount: payload.attachments?.length ?? 0,
+							attachmentNames: payload.attachments?.map(
+								(attachment) => attachment.fileName,
+							),
+							execute: () =>
+								this.agent.prompt(payload.text, payload.attachments),
+						}).catch((error) => {
+							this.restoreQueuedPromptBatchToEditor(steeringBatch);
+							const message =
+								error instanceof Error
+									? error.message
+									: String(error ?? "unknown");
+							this.notificationView.showError(
+								`Failed to submit queued steering: ${message}`,
+							);
+						});
 					}
 					this.notificationView.showToast(
 						steeringBatch.length === 1
@@ -2029,7 +2039,13 @@ export class TuiRenderer {
 
 		const prompt = buildReviewPrompt(reviewContext);
 		try {
-			await this.agent.prompt(prompt);
+			await runUserPromptWithRecovery({
+				agent: this.agent,
+				sessionManager: this.sessionManager,
+				cwd: process.cwd(),
+				prompt,
+				execute: () => this.agent.prompt(prompt),
+			});
 		} catch (error) {
 			const message =
 				error instanceof Error ? error.message : String(error ?? "unknown");

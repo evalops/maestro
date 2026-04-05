@@ -24,6 +24,7 @@ const VALID_HOOK_EVENT_NAMES = new Set([
 	"SubagentStart",
 	"SubagentStop",
 	"UserPromptSubmit",
+	"PreMessage",
 	"Notification",
 	"PreCompact",
 	"PostCompact",
@@ -238,6 +239,8 @@ function validateHookSpecificOutput(
 			return validateSessionBeforeTreeOutput(obj);
 		case "UserPromptSubmit":
 			return validateUserPromptSubmitOutput(obj);
+		case "PreMessage":
+			return validateContextOutput(obj);
 		case "PermissionRequest":
 			return validatePermissionRequestOutput(obj);
 		default:
@@ -633,6 +636,10 @@ export function getHookOutputSchema(): string {
 				"for UserPromptSubmit": {
 					hookEventName: '"UserPromptSubmit"',
 					additionalContext: "string (required)",
+				},
+				"for PreMessage": {
+					hookEventName: '"PreMessage"',
+					additionalContext: "string (optional)",
 				},
 				"for PostToolUse": {
 					hookEventName: '"PostToolUse"',

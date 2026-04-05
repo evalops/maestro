@@ -240,6 +240,16 @@ describe("Hook System", () => {
 			expect(result.valid).toBe(true);
 		});
 
+		it("should validate PreMessage hookSpecificOutput", () => {
+			const result = validateHookOutput({
+				hookSpecificOutput: {
+					hookEventName: "PreMessage",
+					additionalContext: "Read the migration plan first.",
+				},
+			});
+			expect(result.valid).toBe(true);
+		});
+
 		it("should reject invalid hookSpecificOutput", () => {
 			const result = validateHookOutput({
 				hookSpecificOutput: {

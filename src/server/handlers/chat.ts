@@ -686,6 +686,9 @@ export async function handleChat(
 				cwd: process.cwd(),
 				prompt: userInput,
 				attachmentCount: attachmentsToSend?.length ?? 0,
+				attachmentNames: attachmentsToSend?.map(
+					(attachment) => attachment.fileName,
+				),
 				execute: () =>
 					breaker.execute(() => agent.prompt(userInput, attachmentsToSend)),
 			});
