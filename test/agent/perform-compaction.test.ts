@@ -166,6 +166,18 @@ function createPostCompactHookMessage(
 	};
 }
 
+function createSessionStartHookMessage(
+	content = "Restored compacted repo context.",
+): AppMessage {
+	return {
+		role: "hookMessage",
+		customType: "SessionStart",
+		content,
+		display: true,
+		timestamp: Date.now(),
+	};
+}
+
 function createErrorAssistantMessage(
 	text = "provider failed",
 	errorMessage = "Anthropic API error (429): rate limit exceeded.",
@@ -527,6 +539,30 @@ describe("performCompaction", () => {
 		expect(summaryInput).not.toContainEqual(
 			expect.objectContaining({
 				content: "Re-apply compacted constraints.",
+			}),
+		);
+	});
+
+	it("skips SessionStart hook guidance in summarization input", async () => {
+		const messages = buildConversation(10);
+		messages.splice(2, 0, createSessionStartHookMessage());
+		const agent = createMockAgent(messages);
+		const sessionManager = createMockSessionManager();
+
+		await performCompaction({ agent, sessionManager });
+
+		const summaryInput = (agent.generateSummary as ReturnType<typeof vi.fn>)
+			.mock.calls[0]?.[0] as AppMessage[] | undefined;
+		expect(summaryInput).toBeDefined();
+		expect(summaryInput).not.toContainEqual(
+			expect.objectContaining({
+				role: "hookMessage",
+				customType: "SessionStart",
+			}),
+		);
+		expect(summaryInput).not.toContainEqual(
+			expect.objectContaining({
+				content: "Restored compacted repo context.",
 			}),
 		);
 	});

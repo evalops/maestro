@@ -175,7 +175,8 @@ function shouldSkipReinjectedCompactionMessage(message: AppMessage): boolean {
 	return (
 		message.role === "hookMessage" &&
 		((message.customType === "skill" && message.display === false) ||
-			message.customType === "PostCompact")
+			message.customType === "PostCompact" ||
+			message.customType === "SessionStart")
 	);
 }
 
