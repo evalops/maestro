@@ -851,6 +851,332 @@ describe("handleChat", () => {
 		expect(serverRequestManager.listPending()).toEqual([]);
 	});
 
+	it("creates a recoverable session before first-turn approval requests over websocket", async () => {
+		const req = new PassThrough() as MockPassThrough;
+		req.method = "GET";
+		req.url = "/api/chat/ws";
+		req.headers = { host: "localhost" };
+		const ws = new MockWebSocket();
+
+		const createAgent: WebServerContext["createAgent"] = async (
+			_model,
+			_thinking,
+			_approval,
+			options,
+		) => {
+			type EventCallback = (e: unknown) => void | Promise<void>;
+			let subscriber: EventCallback | undefined;
+			return {
+				state: {
+					systemPrompt: "",
+					model: mockModel,
+					thinkingLevel: "off",
+					tools: [],
+					messages: [],
+					isStreaming: false,
+					streamMessage: null,
+					pendingToolCalls: new Map(),
+				},
+				subscribe: (fn: EventCallback) => {
+					subscriber = fn;
+					return () => {
+						subscriber = undefined;
+					};
+				},
+				replaceMessages: () => {},
+				clearMessages: () => {},
+				prompt: async () => {
+					const approvalService = options?.approvalService;
+					if (!approvalService) {
+						throw new Error("approval service missing");
+					}
+					const decision = await approvalService.requestApproval({
+						id: "approval_websocket_chat",
+						toolName: "bash",
+						args: { command: "git push --force" },
+						reason: "Force push requires approval",
+					});
+					await subscriber?.({
+						type: "message_end",
+						message: {
+							role: "assistant",
+							content: [
+								{
+									type: "text",
+									text: decision.approved ? "approved" : "denied",
+								},
+							],
+							api: mockModel.api,
+							provider: mockModel.provider,
+							model: mockModel.id,
+							usage: {
+								input: 1,
+								output: 1,
+								cacheRead: 0,
+								cacheWrite: 0,
+								cost: {
+									input: 0,
+									output: 0,
+									cacheRead: 0,
+									cacheWrite: 0,
+									total: 0,
+								},
+							},
+							stopReason: "stop",
+							timestamp: Date.now(),
+						},
+					});
+				},
+				abort: () => {},
+			} as unknown as Agent;
+		};
+
+		const context: Partial<WebServerContext> = {
+			createAgent,
+			getRegisteredModel: async () => mockModel,
+			defaultApprovalMode: "prompt",
+			defaultProvider: "anthropic",
+			defaultModelId: mockModel.id,
+			corsHeaders: cors,
+		};
+
+		handleChatWebSocket(
+			ws as unknown as Parameters<typeof handleChatWebSocket>[0],
+			req as unknown as IncomingMessage,
+			context as WebServerContext,
+		);
+
+		ws.emit(
+			"message",
+			JSON.stringify({
+				messages: [{ role: "user", content: "run the command" }],
+			}),
+		);
+
+		const pendingRequest = await waitForPendingRequest("approval");
+		expect(pendingRequest).toMatchObject({
+			id: "approval_websocket_chat",
+			kind: "approval",
+			toolName: "bash",
+		});
+		expect(typeof pendingRequest.sessionId).toBe("string");
+		expect(pendingRequest.sessionId).toBeTruthy();
+
+		await waitForWebSocketMessage(
+			ws,
+			(payload) =>
+				payload.includes('"type":"session_update"') &&
+				payload.includes(String(pendingRequest.sessionId)),
+		);
+
+		const sessionReq = new PassThrough() as MockPassThrough;
+		sessionReq.method = "GET";
+		sessionReq.url = `/api/sessions/${pendingRequest.sessionId}`;
+		sessionReq.headers = {};
+		sessionReq.end();
+
+		const sessionRes = makeRes();
+		await handleSessions(
+			sessionReq as unknown as IncomingMessage,
+			sessionRes as unknown as ServerResponse,
+			{ id: pendingRequest.sessionId },
+			cors,
+		);
+
+		expect(sessionRes.statusCode).toBe(200);
+		expect(sessionRes.body).toContain('"pendingApprovalRequests"');
+		expect(sessionRes.body).toContain('"toolName":"bash"');
+
+		const approvalReq = new PassThrough() as MockPassThrough;
+		approvalReq.method = "POST";
+		approvalReq.url = "/api/chat/approval";
+		approvalReq.headers = {};
+		approvalReq.end(
+			JSON.stringify({
+				requestId: pendingRequest.id,
+				decision: "approved",
+				reason: "Looks good",
+			}),
+		);
+
+		const approvalRes = makeRes();
+		await handleApproval(
+			approvalReq as unknown as IncomingMessage,
+			approvalRes as unknown as ServerResponse,
+			context as WebServerContext,
+		);
+
+		expect(approvalRes.statusCode).toBe(200);
+		await waitForWebSocketMessage(ws, (payload) =>
+			payload.includes("approved"),
+		);
+		await waitForWebSocketMessage(ws, (payload) =>
+			payload.includes('"type":"done"'),
+		);
+		expect(serverRequestManager.listPending()).toEqual([]);
+	});
+
+	it("creates a recoverable session before first-turn tool retry requests over websocket", async () => {
+		const req = new PassThrough() as MockPassThrough;
+		req.method = "GET";
+		req.url = "/api/chat/ws";
+		req.headers = { host: "localhost" };
+		const ws = new MockWebSocket();
+
+		const createAgent: WebServerContext["createAgent"] = async (
+			_model,
+			_thinking,
+			_approval,
+			options,
+		) => {
+			type EventCallback = (e: unknown) => void | Promise<void>;
+			let subscriber: EventCallback | undefined;
+			return {
+				state: {
+					systemPrompt: "",
+					model: mockModel,
+					thinkingLevel: "off",
+					tools: [],
+					messages: [],
+					isStreaming: false,
+					streamMessage: null,
+					pendingToolCalls: new Map(),
+				},
+				subscribe: (fn: EventCallback) => {
+					subscriber = fn;
+					return () => {
+						subscriber = undefined;
+					};
+				},
+				replaceMessages: () => {},
+				clearMessages: () => {},
+				prompt: async () => {
+					const retryService = options?.toolRetryService;
+					if (!retryService) {
+						throw new Error("tool retry service missing");
+					}
+					const decision = await retryService.requestDecision({
+						id: "retry_websocket_chat",
+						toolCallId: "call_bash",
+						toolName: "bash",
+						args: { command: "ls" },
+						errorMessage: "Command failed",
+						attempt: 1,
+						summary: "Retry bash command",
+					});
+					await subscriber?.({
+						type: "message_end",
+						message: {
+							role: "assistant",
+							content: [{ type: "text", text: decision.action }],
+							api: mockModel.api,
+							provider: mockModel.provider,
+							model: mockModel.id,
+							usage: {
+								input: 1,
+								output: 1,
+								cacheRead: 0,
+								cacheWrite: 0,
+								cost: {
+									input: 0,
+									output: 0,
+									cacheRead: 0,
+									cacheWrite: 0,
+									total: 0,
+								},
+							},
+							stopReason: "stop",
+							timestamp: Date.now(),
+						},
+					});
+				},
+				abort: () => {},
+			} as unknown as Agent;
+		};
+
+		const context: Partial<WebServerContext> = {
+			createAgent,
+			getRegisteredModel: async () => mockModel,
+			defaultApprovalMode: "prompt",
+			defaultProvider: "anthropic",
+			defaultModelId: mockModel.id,
+			corsHeaders: cors,
+		};
+
+		handleChatWebSocket(
+			ws as unknown as Parameters<typeof handleChatWebSocket>[0],
+			req as unknown as IncomingMessage,
+			context as WebServerContext,
+		);
+
+		ws.emit(
+			"message",
+			JSON.stringify({
+				messages: [{ role: "user", content: "retry the tool if needed" }],
+			}),
+		);
+
+		const pendingRequest = await waitForPendingRequest("tool_retry");
+		expect(pendingRequest).toMatchObject({
+			id: "retry_websocket_chat",
+			kind: "tool_retry",
+			toolName: "bash",
+		});
+		expect(typeof pendingRequest.sessionId).toBe("string");
+		expect(pendingRequest.sessionId).toBeTruthy();
+
+		await waitForWebSocketMessage(
+			ws,
+			(payload) =>
+				payload.includes('"type":"session_update"') &&
+				payload.includes(String(pendingRequest.sessionId)),
+		);
+
+		const sessionReq = new PassThrough() as MockPassThrough;
+		sessionReq.method = "GET";
+		sessionReq.url = `/api/sessions/${pendingRequest.sessionId}`;
+		sessionReq.headers = {};
+		sessionReq.end();
+
+		const sessionRes = makeRes();
+		await handleSessions(
+			sessionReq as unknown as IncomingMessage,
+			sessionRes as unknown as ServerResponse,
+			{ id: pendingRequest.sessionId },
+			cors,
+		);
+
+		expect(sessionRes.statusCode).toBe(200);
+		expect(sessionRes.body).toContain('"pendingToolRetryRequests"');
+		expect(sessionRes.body).toContain('"toolName":"bash"');
+
+		const retryReq = new PassThrough() as MockPassThrough;
+		retryReq.method = "POST";
+		retryReq.url = "/api/chat/tool-retry";
+		retryReq.headers = {};
+		retryReq.end(
+			JSON.stringify({
+				requestId: pendingRequest.id,
+				action: "retry",
+				reason: "Try once more",
+			}),
+		);
+
+		const retryRes = makeRes();
+		await handleToolRetry(
+			retryReq as unknown as IncomingMessage,
+			retryRes as unknown as ServerResponse,
+			context as WebServerContext,
+		);
+
+		expect(retryRes.statusCode).toBe(200);
+		await waitForWebSocketMessage(ws, (payload) => payload.includes("retry"));
+		await waitForWebSocketMessage(ws, (payload) =>
+			payload.includes('"type":"done"'),
+		);
+		expect(serverRequestManager.listPending()).toEqual([]);
+	});
+
 	it("resolves tool retry requests through the shared tool-retry endpoint during SSE chat", async () => {
 		const req = new PassThrough() as MockPassThrough;
 		req.method = "POST";
