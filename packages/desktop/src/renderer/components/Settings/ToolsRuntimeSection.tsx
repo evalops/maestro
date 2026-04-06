@@ -21,6 +21,12 @@ import type {
 	ComposerProfile,
 	ComposerStatus,
 	LspStatus,
+	McpAuthPresetAddRequest,
+	McpAuthPresetMutationResponse,
+	McpAuthPresetRemoveRequest,
+	McpAuthPresetRemoveResponse,
+	McpAuthPresetStatus,
+	McpAuthPresetUpdateRequest,
 	McpOfficialRegistryEntry,
 	McpRegistryImportRequest,
 	McpRegistryImportResponse,
@@ -72,6 +78,7 @@ export interface McpServerViewModel {
 	remoteUrl: string | null;
 	headerKeys: string[];
 	headersHelper: string | null;
+	authPreset: string | null;
 	timeout: number | null;
 	officialRegistryName: string | null;
 	officialRegistryDirectoryUrl: string | null;
@@ -123,12 +130,21 @@ export interface ToolsRuntimeSectionProps {
 	onAddMcpServer: (
 		input: McpServerAddRequest,
 	) => Promise<McpServerMutationResponse>;
+	onAddMcpAuthPreset: (
+		input: McpAuthPresetAddRequest,
+	) => Promise<McpAuthPresetMutationResponse>;
 	onUpdateMcpServer: (
 		input: McpServerUpdateRequest,
 	) => Promise<McpServerMutationResponse>;
+	onUpdateMcpAuthPreset: (
+		input: McpAuthPresetUpdateRequest,
+	) => Promise<McpAuthPresetMutationResponse>;
 	onRemoveMcpServer: (
 		input: McpServerRemoveRequest,
 	) => Promise<McpServerRemoveResponse>;
+	onRemoveMcpAuthPreset: (
+		input: McpAuthPresetRemoveRequest,
+	) => Promise<McpAuthPresetRemoveResponse>;
 	composerStatus: ComposerStatus | null;
 	selectedComposer: string;
 	onSelectedComposerChange: (name: string) => void;
@@ -244,6 +260,7 @@ export function buildMcpServerViewModel(
 		remoteUrl: server.remoteUrl?.trim() || null,
 		headerKeys: Array.isArray(server.headerKeys) ? server.headerKeys : [],
 		headersHelper: server.headersHelper?.trim() || null,
+		authPreset: server.authPreset?.trim() || null,
 		timeout: typeof server.timeout === "number" ? server.timeout : null,
 		officialRegistryName: server.officialRegistry?.displayName?.trim() || null,
 		officialRegistryDirectoryUrl:
@@ -359,8 +376,11 @@ export function ToolsRuntimeSection({
 	onSearchMcpRegistry,
 	onImportMcpRegistry,
 	onAddMcpServer,
+	onAddMcpAuthPreset,
 	onUpdateMcpServer,
+	onUpdateMcpAuthPreset,
 	onRemoveMcpServer,
+	onRemoveMcpAuthPreset,
 	composerStatus,
 	selectedComposer,
 	onSelectedComposerChange,
@@ -406,11 +426,17 @@ export function ToolsRuntimeSection({
 	const [customServerHeadersText, setCustomServerHeadersText] = useState("");
 	const [customServerHeadersHelper, setCustomServerHeadersHelper] =
 		useState("");
+	const [customServerAuthPreset, setCustomServerAuthPreset] = useState("");
 	const [customServerTimeoutText, setCustomServerTimeoutText] = useState("");
 	const [customServerTransport, setCustomServerTransport] = useState<
 		"stdio" | "http" | "sse"
 	>("http");
 	const [customServerScope, setCustomServerScope] =
+		useState<McpRegistryImportRequest["scope"]>("local");
+	const [authPresetName, setAuthPresetName] = useState("");
+	const [authPresetHeadersText, setAuthPresetHeadersText] = useState("");
+	const [authPresetHeadersHelper, setAuthPresetHeadersHelper] = useState("");
+	const [authPresetScope, setAuthPresetScope] =
 		useState<McpRegistryImportRequest["scope"]>("local");
 	const [serverMutationError, setServerMutationError] = useState<string | null>(
 		null,
@@ -419,9 +445,13 @@ export function ToolsRuntimeSection({
 		string | null
 	>(null);
 	const [customServerSubmitting, setCustomServerSubmitting] = useState(false);
+	const [authPresetSubmitting, setAuthPresetSubmitting] = useState(false);
 	const [removingServerName, setRemovingServerName] = useState<string | null>(
 		null,
 	);
+	const [removingAuthPresetName, setRemovingAuthPresetName] = useState<
+		string | null
+	>(null);
 	const [editingServerUrls, setEditingServerUrls] = useState<
 		Record<string, string>
 	>({});
@@ -442,6 +472,9 @@ export function ToolsRuntimeSection({
 	>({});
 	const [editingServerHeadersHelpers, setEditingServerHeadersHelpers] =
 		useState<Record<string, string>>({});
+	const [editingServerAuthPresets, setEditingServerAuthPresets] = useState<
+		Record<string, string>
+	>({});
 	const [editingServerHeadersTexts, setEditingServerHeadersTexts] = useState<
 		Record<string, string>
 	>({});
@@ -450,12 +483,19 @@ export function ToolsRuntimeSection({
 	const [editingServerTimeouts, setEditingServerTimeouts] = useState<
 		Record<string, string>
 	>({});
+	const [editingAuthPresetHeadersTexts, setEditingAuthPresetHeadersTexts] =
+		useState<Record<string, string>>({});
+	const [editingAuthPresetHeadersHelpers, setEditingAuthPresetHeadersHelpers] =
+		useState<Record<string, string>>({});
 	const [editingServerTransports, setEditingServerTransports] = useState<
 		Record<string, "stdio" | "http" | "sse">
 	>({});
 	const [updatingServerName, setUpdatingServerName] = useState<string | null>(
 		null,
 	);
+	const [updatingAuthPresetName, setUpdatingAuthPresetName] = useState<
+		string | null
+	>(null);
 	const registryResults = useMemo(
 		() =>
 			registryEntries.map((entry, index) =>
@@ -467,6 +507,7 @@ export function ToolsRuntimeSection({
 		() => buildComposerProfilesViewModel(composerStatus, selectedComposer),
 		[composerStatus, selectedComposer],
 	);
+	const authPresets = mcpStatus?.authPresets ?? [];
 
 	useEffect(() => {
 		let active = true;
@@ -597,6 +638,10 @@ export function ToolsRuntimeSection({
 						customServerTransport === "stdio"
 							? undefined
 							: customServerHeadersHelper.trim() || undefined,
+					authPreset:
+						customServerTransport === "stdio"
+							? undefined
+							: customServerAuthPreset || undefined,
 					timeout: parseMcpTimeoutText(customServerTimeoutText),
 				},
 			});
@@ -609,6 +654,7 @@ export function ToolsRuntimeSection({
 			setCustomServerUrl("");
 			setCustomServerHeadersText("");
 			setCustomServerHeadersHelper("");
+			setCustomServerAuthPreset("");
 			setCustomServerTimeoutText("");
 			setCustomServerTransport("http");
 		} catch (error) {
@@ -617,6 +663,108 @@ export function ToolsRuntimeSection({
 			);
 		} finally {
 			setCustomServerSubmitting(false);
+		}
+	};
+
+	const handleAuthPresetSubmit = async (
+		event: FormEvent<HTMLFormElement>,
+	): Promise<void> => {
+		event.preventDefault();
+		setAuthPresetSubmitting(true);
+		setServerMutationError(null);
+		setServerMutationNotice(null);
+		try {
+			const result = await onAddMcpAuthPreset({
+				scope: authPresetScope,
+				preset: {
+					name: authPresetName.trim(),
+					headers: parseMcpKeyValueText(authPresetHeadersText) ?? null,
+					headersHelper: authPresetHeadersHelper.trim() || null,
+				},
+			});
+			setServerMutationNotice(
+				`Added auth preset ${result.name} to ${formatMcpRegistryScopeLabel(result.scope)}.`,
+			);
+			setAuthPresetName("");
+			setAuthPresetHeadersText("");
+			setAuthPresetHeadersHelper("");
+		} catch (error) {
+			setServerMutationError(
+				error instanceof Error
+					? error.message
+					: "Failed to add MCP auth preset",
+			);
+		} finally {
+			setAuthPresetSubmitting(false);
+		}
+	};
+
+	const handleUpdateAuthPreset = async (
+		preset: McpAuthPresetStatus,
+	): Promise<void> => {
+		const writableScope = getWritableMcpScope(preset.scope);
+		if (!writableScope) {
+			return;
+		}
+		setUpdatingAuthPresetName(preset.name);
+		setServerMutationError(null);
+		setServerMutationNotice(null);
+		try {
+			const result = await onUpdateMcpAuthPreset({
+				name: preset.name,
+				scope: writableScope,
+				preset: {
+					name: preset.name,
+					headers:
+						parseMcpKeyValueText(
+							editingAuthPresetHeadersTexts[preset.name] ?? "",
+						) ?? null,
+					headersHelper:
+						editingAuthPresetHeadersHelpers[preset.name]?.trim() || null,
+				},
+			});
+			setServerMutationNotice(
+				`Saved auth preset ${result.name} in ${formatMcpRegistryScopeLabel(result.scope)}.`,
+			);
+		} catch (error) {
+			setServerMutationError(
+				error instanceof Error
+					? error.message
+					: "Failed to update MCP auth preset",
+			);
+		} finally {
+			setUpdatingAuthPresetName(null);
+		}
+	};
+
+	const handleRemoveAuthPreset = async (
+		preset: McpAuthPresetStatus,
+	): Promise<void> => {
+		const writableScope = getWritableMcpScope(preset.scope);
+		if (!writableScope) {
+			return;
+		}
+		setRemovingAuthPresetName(preset.name);
+		setServerMutationError(null);
+		setServerMutationNotice(null);
+		try {
+			const result = await onRemoveMcpAuthPreset({
+				name: preset.name,
+				scope: writableScope,
+			});
+			setServerMutationNotice(
+				result.fallback
+					? `Removed auth preset ${result.name} from ${formatMcpRegistryScopeLabel(result.scope)}. ${result.fallback.name} from ${formatMcpRegistryScopeLabel(result.fallback.scope ?? "local")} is now active.`
+					: `Removed auth preset ${result.name} from ${formatMcpRegistryScopeLabel(result.scope)}.`,
+			);
+		} catch (error) {
+			setServerMutationError(
+				error instanceof Error
+					? error.message
+					: "Failed to remove MCP auth preset",
+			);
+		} finally {
+			setRemovingAuthPresetName(null);
 		}
 	};
 
@@ -687,6 +835,8 @@ export function ToolsRuntimeSection({
 				editingServerTimeouts,
 				server.name,
 			);
+			const editableAuthPreset =
+				editingServerAuthPresets[server.name] ?? server.authPreset ?? "";
 			const serverInput: McpServerUpdateRequest["server"] =
 				server.transport === "stdio"
 					? {
@@ -731,6 +881,7 @@ export function ToolsRuntimeSection({
 							headersHelper: hasEditedHeadersHelper
 								? editingServerHeadersHelpers[server.name]?.trim() || null
 								: undefined,
+							authPreset: editableAuthPreset.trim() || null,
 							timeout: hasEditedTimeout
 								? (parseMcpTimeoutText(
 										editingServerTimeouts[server.name] ?? "",
@@ -836,6 +987,176 @@ export function ToolsRuntimeSection({
 						>
 							Refresh
 						</button>
+					</div>
+					<div className="rounded-lg border border-line-subtle/60 bg-bg-secondary/40 px-3 py-3 space-y-2">
+						<div className="text-text-primary font-medium">Auth presets</div>
+						<div className="text-xs text-text-muted">
+							Reusable hidden headers/helpers for remote MCP servers.
+						</div>
+						{authPresets.length ? (
+							<div className="grid grid-cols-1 gap-2">
+								{authPresets.map((preset) => {
+									const writableScope = getWritableMcpScope(preset.scope);
+									return (
+										<div
+											key={preset.name}
+											className="rounded-lg border border-line-subtle/60 bg-bg-tertiary/30 px-2.5 py-2 space-y-2 text-[11px] text-text-muted"
+										>
+											<div className="flex items-center justify-between gap-2">
+												<div>
+													<div className="text-text-primary">{preset.name}</div>
+													<div>
+														{formatMcpScopeLabel(preset.scope) ??
+															"Merged config"}
+													</div>
+												</div>
+												{writableScope && (
+													<button
+														type="button"
+														className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-secondary/60 disabled:opacity-60"
+														onClick={() => void handleRemoveAuthPreset(preset)}
+														disabled={removingAuthPresetName === preset.name}
+													>
+														{removingAuthPresetName === preset.name
+															? "Removing..."
+															: "Remove"}
+													</button>
+												)}
+											</div>
+											<div>
+												{preset.headersHelper && (
+													<div
+														className="truncate"
+														title={preset.headersHelper}
+													>
+														Headers helper: {preset.headersHelper}
+													</div>
+												)}
+												<div title={preset.headerKeys.join(", ")}>
+													Header keys:{" "}
+													{preset.headerKeys.length
+														? preset.headerKeys.join(", ")
+														: "none"}
+												</div>
+											</div>
+											{writableScope && (
+												<>
+													<div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_auto] gap-2">
+														<input
+															type="text"
+															value={
+																editingAuthPresetHeadersHelpers[preset.name] ??
+																preset.headersHelper ??
+																""
+															}
+															onChange={(event) =>
+																setEditingAuthPresetHeadersHelpers((prev) => ({
+																	...prev,
+																	[preset.name]: event.target.value,
+																}))
+															}
+															placeholder="Headers helper (optional)"
+															aria-label={`Headers helper for auth preset ${preset.name}`}
+															className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+														/>
+														<button
+															type="button"
+															className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-60"
+															onClick={() =>
+																void handleUpdateAuthPreset(preset)
+															}
+															disabled={updatingAuthPresetName === preset.name}
+														>
+															{updatingAuthPresetName === preset.name
+																? "Saving..."
+																: "Save"}
+														</button>
+													</div>
+													<textarea
+														value={
+															editingAuthPresetHeadersTexts[preset.name] ?? ""
+														}
+														onChange={(event) =>
+															setEditingAuthPresetHeadersTexts((prev) => ({
+																...prev,
+																[preset.name]: event.target.value,
+															}))
+														}
+														placeholder="Headers (KEY=VALUE, one per line)"
+														aria-label={`Headers for auth preset ${preset.name}`}
+														className="min-h-[88px] bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+													/>
+												</>
+											)}
+										</div>
+									);
+								})}
+							</div>
+						) : (
+							<div className="text-xs text-text-muted">
+								No MCP auth presets configured.
+							</div>
+						)}
+						<form
+							className="grid grid-cols-1 gap-2"
+							onSubmit={handleAuthPresetSubmit}
+						>
+							<input
+								type="text"
+								value={authPresetName}
+								onChange={(event) => setAuthPresetName(event.target.value)}
+								placeholder="Preset name"
+								aria-label="MCP auth preset name"
+								className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+							/>
+							<input
+								type="text"
+								value={authPresetHeadersHelper}
+								onChange={(event) =>
+									setAuthPresetHeadersHelper(event.target.value)
+								}
+								placeholder="Headers helper (optional)"
+								aria-label="MCP auth preset headers helper"
+								className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+							/>
+							<textarea
+								value={authPresetHeadersText}
+								onChange={(event) =>
+									setAuthPresetHeadersText(event.target.value)
+								}
+								placeholder="Headers (KEY=VALUE, one per line)"
+								aria-label="MCP auth preset headers"
+								className="min-h-[88px] bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+							/>
+							<div className="flex items-center gap-2">
+								<select
+									value={authPresetScope}
+									onChange={(event) =>
+										setAuthPresetScope(
+											event.target.value as McpRegistryImportRequest["scope"],
+										)
+									}
+									aria-label="MCP auth preset scope"
+									className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary"
+								>
+									<option value="local">Local config</option>
+									<option value="project">Project config</option>
+									<option value="user">User config</option>
+								</select>
+								<button
+									type="submit"
+									className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-60"
+									disabled={
+										authPresetSubmitting ||
+										authPresetName.trim().length === 0 ||
+										(authPresetHeadersHelper.trim().length === 0 &&
+											authPresetHeadersText.trim().length === 0)
+									}
+								>
+									{authPresetSubmitting ? "Adding..." : "Add preset"}
+								</button>
+							</div>
+						</form>
 					</div>
 					{mcpServers.length ? (
 						<div className="grid grid-cols-1 gap-2">
@@ -944,11 +1265,15 @@ export function ToolsRuntimeSection({
 														)}
 														{(server.timeout ||
 															server.headersHelper ||
+															server.authPreset ||
 															server.envKeys.length > 0 ||
 															server.headerKeys.length > 0) && (
 															<div className="space-y-1">
 																{server.timeout && (
 																	<div>Timeout: {server.timeout} ms</div>
+																)}
+																{server.authPreset && (
+																	<div>Auth preset: {server.authPreset}</div>
 																)}
 																{server.headersHelper && (
 																	<div
@@ -1061,6 +1386,31 @@ export function ToolsRuntimeSection({
 																		<option value="http">HTTP</option>
 																		<option value="sse">SSE</option>
 																	</select>
+																	<select
+																		value={
+																			editingServerAuthPresets[server.name] ??
+																			server.authPreset ??
+																			""
+																		}
+																		onChange={(event) =>
+																			setEditingServerAuthPresets((prev) => ({
+																				...prev,
+																				[server.name]: event.target.value,
+																			}))
+																		}
+																		aria-label={`Auth preset for ${server.name}`}
+																		className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary"
+																	>
+																		<option value="">No auth preset</option>
+																		{authPresets.map((preset) => (
+																			<option
+																				key={preset.name}
+																				value={preset.name}
+																			>
+																				{preset.name}
+																			</option>
+																		))}
+																	</select>
 																	<button
 																		type="button"
 																		className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-60"
@@ -1171,7 +1521,8 @@ export function ToolsRuntimeSection({
 																			: `Header values stay hidden and will be preserved unless you enable replacement. Current keys: ${server.headerKeys.join(", ")}.`
 																		: "Enter KEY=VALUE lines to set headers for this server."}{" "}
 																	Delete optional values like timeout or headers
-																	helper, then save, to clear them.
+																	helper, or select "No auth preset", then save
+																	to clear them.
 																</div>
 																<div>
 																	Edits apply to the{" "}
@@ -1515,6 +1866,21 @@ export function ToolsRuntimeSection({
 										aria-label="Custom MCP server headers helper"
 										className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
 									/>
+									<select
+										value={customServerAuthPreset}
+										onChange={(event) =>
+											setCustomServerAuthPreset(event.target.value)
+										}
+										aria-label="Custom MCP server auth preset"
+										className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary"
+									>
+										<option value="">No auth preset</option>
+										{authPresets.map((preset) => (
+											<option key={preset.name} value={preset.name}>
+												{preset.name}
+											</option>
+										))}
+									</select>
 									<textarea
 										value={customServerHeadersText}
 										onChange={(event) =>

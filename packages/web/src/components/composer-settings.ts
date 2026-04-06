@@ -22,6 +22,9 @@ import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import type {
 	ApiClient,
+	McpAuthPresetConfigInput,
+	McpAuthPresetRemoveResponse,
+	McpAuthPresetStatus,
 	McpOfficialRegistryEntry,
 	McpRegistryImportRequest,
 	McpRemoteTrust,
@@ -480,14 +483,23 @@ export class ComposerSettings extends LitElement {
 	@state() private mcpCustomUrl = "";
 	@state() private mcpCustomHeadersText = "";
 	@state() private mcpCustomHeadersHelper = "";
+	@state() private mcpCustomAuthPreset = "";
 	@state() private mcpCustomTimeoutText = "";
 	@state() private mcpCustomTransport: "stdio" | "http" | "sse" = "http";
 	@state() private mcpCustomScope: McpRegistryImportRequest["scope"] = "local";
+	@state() private mcpAuthPresetName = "";
+	@state() private mcpAuthPresetHeadersText = "";
+	@state() private mcpAuthPresetHeadersHelper = "";
+	@state() private mcpAuthPresetScope: McpRegistryImportRequest["scope"] =
+		"local";
 	@state() private mcpManagementError: string | null = null;
 	@state() private mcpManagementNotice: string | null = null;
 	@state() private mcpCustomSubmitting = false;
+	@state() private mcpAuthPresetSubmitting = false;
 	@state() private mcpRemovingName: string | null = null;
+	@state() private mcpRemovingAuthPresetName: string | null = null;
 	@state() private mcpUpdatingName: string | null = null;
+	@state() private mcpUpdatingAuthPresetName: string | null = null;
 	@state() private mcpEditingCommands: Record<string, string> = {};
 	@state() private mcpEditingArgsText: Record<string, string> = {};
 	@state() private mcpEditingCwds: Record<string, string> = {};
@@ -497,6 +509,11 @@ export class ComposerSettings extends LitElement {
 	@state() private mcpEditingHeadersTexts: Record<string, string> = {};
 	@state() private mcpEditingReplaceHeaders: Record<string, boolean> = {};
 	@state() private mcpEditingHeadersHelpers: Record<string, string> = {};
+	@state() private mcpEditingAuthPresets: Record<string, string> = {};
+	@state() private mcpEditingAuthPresetHeadersTexts: Record<string, string> =
+		{};
+	@state() private mcpEditingAuthPresetHeadersHelpers: Record<string, string> =
+		{};
 	@state() private mcpEditingTimeouts: Record<string, string> = {};
 	@state() private mcpEditingTransports: Record<
 		string,
@@ -633,6 +650,7 @@ export class ComposerSettings extends LitElement {
 
 	private getWritableMcpScope(
 		scope:
+			| McpAuthPresetStatus["scope"]
 			| McpServerStatus["scope"]
 			| McpRegistryImportRequest["scope"]
 			| undefined,
@@ -741,6 +759,34 @@ export class ComposerSettings extends LitElement {
 		});
 	}
 
+	private formatMcpAuthPresetAddMessage(
+		name: string,
+		scope: McpRegistryImportRequest["scope"],
+	): string {
+		return `Added auth preset ${name} to ${this.formatMcpScopeLabel(scope ?? "local")}.`;
+	}
+
+	private formatMcpAuthPresetUpdateMessage(
+		name: string,
+		scope: McpRegistryImportRequest["scope"],
+	): string {
+		return `Saved auth preset ${name} in ${this.formatMcpScopeLabel(scope ?? "local")}.`;
+	}
+
+	private formatMcpAuthPresetRemoveMessage(
+		result: McpAuthPresetRemoveResponse,
+	): string {
+		const base = `Removed auth preset ${result.name} from ${this.formatMcpScopeLabel(result.scope)}.`;
+		if (!result.fallback) {
+			return base;
+		}
+		return `${base} ${result.fallback.name} from ${this.formatMcpScopeLabel(result.fallback.scope ?? "local")} is now active.`;
+	}
+
+	private getAvailableAuthPresets(): McpAuthPresetStatus[] {
+		return this.mcpStatus?.authPresets ?? [];
+	}
+
 	private formatMcpArgsText(args: string[] | undefined): string {
 		return formatMcpArgsText(args);
 	}
@@ -801,6 +847,10 @@ export class ComposerSettings extends LitElement {
 						this.mcpCustomTransport === "stdio"
 							? undefined
 							: this.mcpCustomHeadersHelper.trim() || undefined,
+					authPreset:
+						this.mcpCustomTransport === "stdio"
+							? undefined
+							: this.mcpCustomAuthPreset || undefined,
 					timeout: this.parseMcpTimeoutText(this.mcpCustomTimeoutText),
 				},
 			};
@@ -819,6 +869,7 @@ export class ComposerSettings extends LitElement {
 			this.mcpCustomUrl = "";
 			this.mcpCustomHeadersText = "";
 			this.mcpCustomHeadersHelper = "";
+			this.mcpCustomAuthPreset = "";
 			this.mcpCustomTimeoutText = "";
 			this.mcpCustomTransport = "http";
 		} catch (error) {
@@ -826,6 +877,98 @@ export class ComposerSettings extends LitElement {
 				error instanceof Error ? error.message : "Failed to add MCP server";
 		} finally {
 			this.mcpCustomSubmitting = false;
+		}
+	}
+
+	private async addMcpAuthPreset() {
+		this.mcpAuthPresetSubmitting = true;
+		this.mcpManagementError = null;
+		this.mcpManagementNotice = null;
+		try {
+			const input = {
+				scope: this.mcpAuthPresetScope,
+				preset: {
+					name: this.mcpAuthPresetName.trim(),
+					headers:
+						this.parseMcpKeyValueText(this.mcpAuthPresetHeadersText) ?? null,
+					headersHelper: this.mcpAuthPresetHeadersHelper.trim() || null,
+				} satisfies McpAuthPresetConfigInput,
+			};
+			const result = await this.apiClient.addMcpAuthPreset(input);
+			this.mcpStatus = await this.apiClient.getMcpStatus();
+			this.mcpManagementNotice = this.formatMcpAuthPresetAddMessage(
+				result.name,
+				result.scope,
+			);
+			this.mcpAuthPresetName = "";
+			this.mcpAuthPresetHeadersText = "";
+			this.mcpAuthPresetHeadersHelper = "";
+		} catch (error) {
+			this.mcpManagementError =
+				error instanceof Error
+					? error.message
+					: "Failed to add MCP auth preset";
+		} finally {
+			this.mcpAuthPresetSubmitting = false;
+		}
+	}
+
+	private async updateMcpAuthPreset(
+		preset: McpAuthPresetStatus,
+		scope: McpRegistryImportRequest["scope"],
+	) {
+		this.mcpUpdatingAuthPresetName = preset.name;
+		this.mcpManagementError = null;
+		this.mcpManagementNotice = null;
+		try {
+			const headers =
+				this.parseMcpKeyValueText(
+					this.mcpEditingAuthPresetHeadersTexts[preset.name] ?? "",
+				) ?? null;
+			const headersHelper =
+				this.mcpEditingAuthPresetHeadersHelpers[preset.name]?.trim() || null;
+			const result = await this.apiClient.updateMcpAuthPreset({
+				name: preset.name,
+				scope,
+				preset: {
+					name: preset.name,
+					headers,
+					headersHelper,
+				},
+			});
+			this.mcpStatus = await this.apiClient.getMcpStatus();
+			this.mcpManagementNotice = this.formatMcpAuthPresetUpdateMessage(
+				result.name,
+				result.scope,
+			);
+		} catch (error) {
+			this.mcpManagementError =
+				error instanceof Error
+					? error.message
+					: "Failed to update MCP auth preset";
+		} finally {
+			this.mcpUpdatingAuthPresetName = null;
+		}
+	}
+
+	private async removeMcpAuthPreset(
+		name: string,
+		scope: McpRegistryImportRequest["scope"],
+	) {
+		this.mcpRemovingAuthPresetName = name;
+		this.mcpManagementError = null;
+		this.mcpManagementNotice = null;
+		try {
+			const result = await this.apiClient.removeMcpAuthPreset({ name, scope });
+			this.mcpStatus = await this.apiClient.getMcpStatus();
+			this.mcpManagementNotice = this.formatMcpAuthPresetRemoveMessage(result);
+		} catch (error) {
+			this.mcpManagementError =
+				error instanceof Error
+					? error.message
+					: "Failed to remove MCP auth preset";
+		} finally {
+			this.mcpRemovingAuthPresetName = null;
 		}
 	}
 
@@ -890,6 +1033,8 @@ export class ComposerSettings extends LitElement {
 				this.mcpEditingTimeouts,
 				server.name,
 			);
+			const editableAuthPreset =
+				this.mcpEditingAuthPresets[server.name] ?? server.authPreset ?? "";
 			const input: McpServerUpdateRequest = {
 				name: server.name,
 				scope,
@@ -938,6 +1083,7 @@ export class ComposerSettings extends LitElement {
 								headersHelper: hasEditedHeadersHelper
 									? this.mcpEditingHeadersHelpers[server.name]?.trim() || null
 									: undefined,
+								authPreset: editableAuthPreset.trim() || null,
 								timeout: hasEditedTimeout
 									? (this.parseMcpTimeoutText(
 											this.mcpEditingTimeouts[server.name] ?? "",
@@ -1049,6 +1195,7 @@ export class ComposerSettings extends LitElement {
 
 	private renderMcpSection() {
 		const servers = this.mcpStatus?.servers ?? [];
+		const authPresets = this.getAvailableAuthPresets();
 
 		return html`
 			<div class="section">
@@ -1056,6 +1203,216 @@ export class ComposerSettings extends LitElement {
 					<h3>MCP</h3>
 				</div>
 				<div class="section-content">
+					<div class="control-row">
+						<div>
+							<div class="info-value">Auth Presets</div>
+							<div class="info-label">
+								Reusable hidden headers/helpers for remote MCP servers
+							</div>
+						</div>
+					</div>
+					${
+						authPresets.length > 0
+							? html`
+								<div class="panel-grid" style="margin-bottom: 1rem;">
+									${authPresets.map((preset) => {
+										const writableScope = this.getWritableMcpScope(
+											preset.scope,
+										);
+										const editableHeadersText =
+											this.mcpEditingAuthPresetHeadersTexts[preset.name] ?? "";
+										const editableHeadersHelper =
+											this.mcpEditingAuthPresetHeadersHelpers[preset.name] ??
+											preset.headersHelper ??
+											"";
+										return html`
+											<div class="panel-card">
+												<div class="panel-card-header">
+													<div>
+														<div class="panel-card-title">${preset.name}</div>
+														<div class="panel-card-copy">
+															${preset.scope ? this.formatMcpScopeLabel(preset.scope) : "Merged config"}
+														</div>
+													</div>
+													${
+														writableScope
+															? html`<button
+																	class="action-btn mcp-auth-preset-remove-button"
+																	@click=${() =>
+																		void this.removeMcpAuthPreset(
+																			preset.name,
+																			writableScope,
+																		)}
+																	?disabled=${this.mcpRemovingAuthPresetName === preset.name}
+																>
+																	${
+																		this.mcpRemovingAuthPresetName ===
+																		preset.name
+																			? "Removing..."
+																			: "Remove"
+																	}
+																</button>`
+															: ""
+													}
+												</div>
+												<div class="panel-card-copy">
+													${preset.headersHelper ? html`Headers helper: ${preset.headersHelper}<br />` : ""}
+													${
+														preset.headerKeys.length > 0
+															? html`Header keys: ${preset.headerKeys.join(", ")}`
+															: html`No static headers configured.`
+													}
+												</div>
+												${
+													writableScope
+														? html`
+															<div class="control-row">
+																<input
+																	class="field-input"
+																	type="text"
+																	.placeholder=${"Headers helper (optional)"}
+																	.value=${editableHeadersHelper}
+																	aria-label=${`Headers helper for auth preset ${preset.name}`}
+																	@input=${(event: Event) => {
+																		this.mcpEditingAuthPresetHeadersHelpers = {
+																			...this
+																				.mcpEditingAuthPresetHeadersHelpers,
+																			[preset.name]: (
+																				event.target as HTMLInputElement
+																			).value,
+																		};
+																	}}
+																/>
+																<button
+																	class="action-btn mcp-auth-preset-save-button"
+																	@click=${() =>
+																		void this.updateMcpAuthPreset(
+																			preset,
+																			writableScope,
+																		)}
+																	?disabled=${this.mcpUpdatingAuthPresetName === preset.name}
+																>
+																	${
+																		this.mcpUpdatingAuthPresetName ===
+																		preset.name
+																			? "Saving..."
+																			: "Save"
+																	}
+																</button>
+															</div>
+															<div class="control-row">
+																<textarea
+																	class="field-input"
+																	style="min-height: 5.5rem;"
+																	.placeholder=${"Headers (KEY=VALUE, one per line)"}
+																	.value=${editableHeadersText}
+																	aria-label=${`Headers for auth preset ${preset.name}`}
+																	@input=${(event: Event) => {
+																		this.mcpEditingAuthPresetHeadersTexts = {
+																			...this.mcpEditingAuthPresetHeadersTexts,
+																			[preset.name]: (
+																				event.target as HTMLTextAreaElement
+																			).value,
+																		};
+																	}}
+																></textarea>
+															</div>
+															<div class="panel-card-copy">
+																Header values stay hidden. Enter KEY=VALUE lines to replace them. Leave the field blank and save to clear them. Current keys: ${
+																	preset.headerKeys.length > 0
+																		? preset.headerKeys.join(", ")
+																		: "none"
+																}.
+															</div>
+														`
+														: ""
+												}
+											</div>
+										`;
+									})}
+								</div>
+							`
+							: html`<div class="empty-state">No MCP auth presets configured</div>`
+					}
+					<div class="section" style="margin: 1rem 0;">
+						<div class="section-header">
+							<h3>New Auth Preset</h3>
+						</div>
+						<div class="section-content">
+							<div class="panel-card-copy">
+								Create a reusable remote auth preset with hidden header values or
+								a headers helper command.
+							</div>
+							<div class="control-row" style="margin-top: 0.75rem;">
+								<input
+									class="field-input"
+									type="text"
+									.placeholder=${"Preset name"}
+									.value=${this.mcpAuthPresetName}
+									aria-label=${"MCP auth preset name"}
+									@input=${(event: Event) => {
+										this.mcpAuthPresetName = (
+											event.target as HTMLInputElement
+										).value;
+									}}
+								/>
+								<input
+									class="field-input"
+									type="text"
+									.placeholder=${"Headers helper (optional)"}
+									.value=${this.mcpAuthPresetHeadersHelper}
+									aria-label=${"MCP auth preset headers helper"}
+									@input=${(event: Event) => {
+										this.mcpAuthPresetHeadersHelper = (
+											event.target as HTMLInputElement
+										).value;
+									}}
+								/>
+							</div>
+							<div class="control-row">
+								<textarea
+									class="field-input"
+									style="min-height: 5.5rem;"
+									.placeholder=${"Headers (KEY=VALUE, one per line)"}
+									.value=${this.mcpAuthPresetHeadersText}
+									aria-label=${"MCP auth preset headers"}
+									@input=${(event: Event) => {
+										this.mcpAuthPresetHeadersText = (
+											event.target as HTMLTextAreaElement
+										).value;
+									}}
+								></textarea>
+							</div>
+							<div class="control-row">
+								<select
+									class="field-select"
+									.value=${this.mcpAuthPresetScope}
+									aria-label=${"MCP auth preset scope"}
+									@change=${(event: Event) => {
+										this.mcpAuthPresetScope = (
+											event.target as HTMLSelectElement
+										).value as McpRegistryImportRequest["scope"];
+									}}
+								>
+									<option value="local">Local config</option>
+									<option value="project">Project config</option>
+									<option value="user">User config</option>
+								</select>
+								<button
+									class="action-btn mcp-auth-preset-add-button"
+									@click=${() => void this.addMcpAuthPreset()}
+									?disabled=${
+										this.mcpAuthPresetSubmitting ||
+										this.mcpAuthPresetName.trim().length === 0 ||
+										(this.mcpAuthPresetHeadersHelper.trim().length === 0 &&
+											this.mcpAuthPresetHeadersText.trim().length === 0)
+									}
+								>
+									${this.mcpAuthPresetSubmitting ? "Adding..." : "Add Preset"}
+								</button>
+							</div>
+						</div>
+					</div>
 					<div class="control-row">
 						<div>
 							<div class="info-value">Configured Servers</div>
@@ -1105,6 +1462,10 @@ export class ComposerSettings extends LitElement {
 										const editableHeadersHelper =
 											this.mcpEditingHeadersHelpers[server.name] ??
 											server.headersHelper ??
+											"";
+										const editableAuthPreset =
+											this.mcpEditingAuthPresets[server.name] ??
+											server.authPreset ??
 											"";
 										const editableHeadersText =
 											this.mcpEditingHeadersTexts[server.name] ?? "";
@@ -1187,11 +1548,13 @@ export class ComposerSettings extends LitElement {
 												${
 													server.timeout ||
 													server.headersHelper ||
+													server.authPreset ||
 													(server.envKeys?.length ?? 0) > 0 ||
 													(server.headerKeys?.length ?? 0) > 0
 														? html`
 															<div class="panel-card-copy">
 																${server.timeout ? html`Timeout: ${server.timeout} ms<br />` : ""}
+																${server.authPreset ? html`Auth preset: ${server.authPreset}<br />` : ""}
 																${server.headersHelper ? html`Headers helper: ${server.headersHelper}<br />` : ""}
 																${
 																	(server.envKeys?.length ?? 0) > 0
@@ -1241,6 +1604,28 @@ export class ComposerSettings extends LitElement {
 																>
 																	<option value="http">HTTP</option>
 																	<option value="sse">SSE</option>
+																</select>
+																<select
+																	class="field-select"
+																	.value=${editableAuthPreset}
+																	aria-label=${`Auth preset for ${server.name}`}
+																	@change=${(event: Event) => {
+																		this.mcpEditingAuthPresets = {
+																			...this.mcpEditingAuthPresets,
+																			[server.name]: (
+																				event.target as HTMLSelectElement
+																			).value,
+																		};
+																	}}
+																>
+																	<option value="">No auth preset</option>
+																	${authPresets.map(
+																		(
+																			preset,
+																		) => html`<option value=${preset.name}>
+																			${preset.name}
+																		</option>`,
+																	)}
 																</select>
 																<button
 																	class="action-btn mcp-update-button"
@@ -1367,7 +1752,8 @@ export class ComposerSettings extends LitElement {
 																}
 																<br />
 																Delete optional values like timeout or headers
-																helper, then save, to clear them.
+																helper, or select "No auth preset", then save to clear
+																them.
 															</div>
 															<div class="panel-card-copy">
 																Edits apply to the ${this.formatMcpScopeLabel(
@@ -1681,6 +2067,23 @@ export class ComposerSettings extends LitElement {
 													).value;
 												}}
 											/>
+											<select
+												class="field-select"
+												.value=${this.mcpCustomAuthPreset}
+												aria-label=${"Custom MCP server auth preset"}
+												@change=${(event: Event) => {
+													this.mcpCustomAuthPreset = (
+														event.target as HTMLSelectElement
+													).value;
+												}}
+											>
+												<option value="">No auth preset</option>
+												${authPresets.map(
+													(preset) => html`<option value=${preset.name}>
+														${preset.name}
+													</option>`,
+												)}
+											</select>
 											<textarea
 												class="field-input"
 												style="min-height: 5.5rem;"

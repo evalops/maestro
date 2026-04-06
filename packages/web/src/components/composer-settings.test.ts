@@ -26,6 +26,14 @@ function createApiClientMock(): ApiClient {
 			byModel: {},
 		}),
 		getMcpStatus: vi.fn().mockResolvedValue({
+			authPresets: [
+				{
+					name: "linear-auth",
+					scope: "local",
+					headerKeys: ["Authorization"],
+					headersHelper: "bun run scripts/mcp-headers.ts",
+				},
+			],
 			servers: [
 				{
 					name: "linear",
@@ -34,6 +42,7 @@ function createApiClientMock(): ApiClient {
 					transport: "http",
 					remoteTrust: "official",
 					remoteHost: "mcp.linear.app",
+					authPreset: "linear-auth",
 				},
 			],
 		}),
@@ -78,6 +87,32 @@ function createApiClientMock(): ApiClient {
 				transport: "http",
 				url: "https://docs.example.com/mcp",
 			},
+		}),
+		addMcpAuthPreset: vi.fn().mockResolvedValue({
+			name: "new-auth",
+			scope: "local",
+			path: "/repo/.maestro/mcp.json",
+			preset: {
+				name: "new-auth",
+				headers: {
+					Authorization: "Bearer token",
+				},
+			},
+		}),
+		updateMcpAuthPreset: vi.fn().mockResolvedValue({
+			name: "linear-auth",
+			scope: "local",
+			path: "/repo/.maestro/mcp.local.json",
+			preset: {
+				name: "linear-auth",
+				headersHelper: "bun run scripts/updated-headers.ts",
+			},
+		}),
+		removeMcpAuthPreset: vi.fn().mockResolvedValue({
+			name: "linear-auth",
+			scope: "local",
+			path: "/repo/.maestro/mcp.local.json",
+			fallback: null,
 		}),
 		removeMcpServer: vi.fn().mockResolvedValue({
 			name: "linear",
@@ -143,6 +178,84 @@ describe("ComposerSettings MCP section", () => {
 		expect(text).toContain("Official Registry");
 		expect(text).toContain("Track issues and projects.");
 		expect(text).toContain("Official remote");
+		expect(text).toContain("Auth Presets");
+		expect(text).toContain("linear-auth");
+		expect(text).toContain("Auth preset: linear-auth");
+	});
+
+	it("adds an MCP auth preset and refreshes status", async () => {
+		const apiClient = createApiClientMock();
+		(apiClient.getMcpStatus as ReturnType<typeof vi.fn>)
+			.mockResolvedValueOnce({ authPresets: [], servers: [] })
+			.mockResolvedValueOnce({
+				authPresets: [
+					{
+						name: "new-auth",
+						scope: "local",
+						headerKeys: ["Authorization"],
+					},
+				],
+				servers: [],
+			});
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Boolean(element.shadowRoot?.querySelector(".mcp-auth-preset-add-button")),
+		);
+
+		const nameInput = element.shadowRoot?.querySelector(
+			'input[aria-label="MCP auth preset name"]',
+		) as HTMLInputElement | null;
+		const headersInput = element.shadowRoot?.querySelector(
+			'textarea[aria-label="MCP auth preset headers"]',
+		) as HTMLTextAreaElement | null;
+		expect(nameInput).not.toBeNull();
+		expect(headersInput).not.toBeNull();
+		if (!nameInput || !headersInput) {
+			throw new Error("Expected auth preset inputs");
+		}
+
+		nameInput.value = "new-auth";
+		nameInput.dispatchEvent(new Event("input", { bubbles: true }));
+		headersInput.value = "Authorization=Bearer token";
+		headersInput.dispatchEvent(new Event("input", { bubbles: true }));
+
+		await waitForSettled(
+			element,
+			() => {
+				const button = element.shadowRoot?.querySelector(
+					".mcp-auth-preset-add-button",
+				) as HTMLButtonElement | null;
+				return Boolean(button && !button.disabled);
+			},
+			20,
+		);
+
+		const addButton = element.shadowRoot?.querySelector(
+			".mcp-auth-preset-add-button",
+		) as HTMLButtonElement | null;
+		expect(addButton).not.toBeNull();
+		addButton?.click();
+
+		await waitForSettled(
+			element,
+			() =>
+				(apiClient.addMcpAuthPreset as ReturnType<typeof vi.fn>).mock.calls
+					.length > 0,
+			30,
+		);
+
+		expect(apiClient.addMcpAuthPreset).toHaveBeenCalledWith({
+			scope: "local",
+			preset: {
+				name: "new-auth",
+				headers: {
+					Authorization: "Bearer token",
+				},
+				headersHelper: null,
+			},
+		});
+		expect(apiClient.getMcpStatus).toHaveBeenCalledTimes(2);
 	});
 
 	it("imports a registry entry and refreshes MCP status", async () => {
@@ -192,8 +305,24 @@ describe("ComposerSettings MCP section", () => {
 	it("adds a custom remote MCP server and refreshes status", async () => {
 		const apiClient = createApiClientMock();
 		(apiClient.getMcpStatus as ReturnType<typeof vi.fn>)
-			.mockResolvedValueOnce({ servers: [] })
 			.mockResolvedValueOnce({
+				authPresets: [
+					{
+						name: "linear-auth",
+						scope: "local",
+						headerKeys: ["Authorization"],
+					},
+				],
+				servers: [],
+			})
+			.mockResolvedValueOnce({
+				authPresets: [
+					{
+						name: "linear-auth",
+						scope: "local",
+						headerKeys: ["Authorization"],
+					},
+				],
 				servers: [
 					{
 						name: "custom-docs",
@@ -201,6 +330,7 @@ describe("ComposerSettings MCP section", () => {
 						scope: "project",
 						transport: "http",
 						remoteTrust: "custom",
+						authPreset: "linear-auth",
 					},
 				],
 			});
@@ -219,14 +349,24 @@ describe("ComposerSettings MCP section", () => {
 		const headersHelperInput = element.shadowRoot?.querySelector(
 			'input[aria-label="Custom MCP server headers helper"]',
 		) as HTMLInputElement | null;
+		const authPresetSelect = element.shadowRoot?.querySelector(
+			'select[aria-label="Custom MCP server auth preset"]',
+		) as HTMLSelectElement | null;
 		const timeoutInput = element.shadowRoot?.querySelector(
 			'input[aria-label="Custom MCP server timeout"]',
 		) as HTMLInputElement | null;
 		expect(nameInput).not.toBeNull();
 		expect(urlInput).not.toBeNull();
 		expect(headersHelperInput).not.toBeNull();
+		expect(authPresetSelect).not.toBeNull();
 		expect(timeoutInput).not.toBeNull();
-		if (!nameInput || !urlInput || !headersHelperInput || !timeoutInput) {
+		if (
+			!nameInput ||
+			!urlInput ||
+			!headersHelperInput ||
+			!authPresetSelect ||
+			!timeoutInput
+		) {
 			throw new Error("Expected MCP custom remote inputs");
 		}
 		nameInput.value = "custom-docs";
@@ -235,6 +375,8 @@ describe("ComposerSettings MCP section", () => {
 		urlInput.dispatchEvent(new Event("input", { bubbles: true }));
 		headersHelperInput.value = "bun run scripts/mcp-headers.ts";
 		headersHelperInput.dispatchEvent(new Event("input", { bubbles: true }));
+		authPresetSelect.value = "linear-auth";
+		authPresetSelect.dispatchEvent(new Event("change", { bubbles: true }));
 		timeoutInput.value = "15000";
 		timeoutInput.dispatchEvent(new Event("input", { bubbles: true }));
 		await waitForSettled(
@@ -267,6 +409,7 @@ describe("ComposerSettings MCP section", () => {
 				transport: "http",
 				url: "https://docs.example.com/mcp",
 				headersHelper: "bun run scripts/mcp-headers.ts",
+				authPreset: "linear-auth",
 				timeout: 15000,
 			},
 		});
@@ -549,6 +692,7 @@ describe("ComposerSettings MCP section", () => {
 					"X-Org": "acme",
 				},
 				headersHelper: "bun run scripts/new-headers.ts",
+				authPreset: null,
 				timeout: 15000,
 			},
 		});
@@ -802,6 +946,7 @@ describe("ComposerSettings MCP section", () => {
 				url: "https://mcp.linear.app/mcp",
 				headers: null,
 				headersHelper: null,
+				authPreset: null,
 				timeout: null,
 			},
 		});
@@ -893,6 +1038,7 @@ describe("ComposerSettings MCP section", () => {
 				name: "linear",
 				transport: "sse",
 				url: "https://mcp.linear.app/sse",
+				authPreset: null,
 				timeout: 15000,
 			},
 		});

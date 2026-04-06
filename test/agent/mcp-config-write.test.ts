@@ -3,10 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	addMcpAuthPresetToConfig,
 	addMcpServerToConfig,
 	getWritableMcpConfigPath,
 	inferRemoteMcpTransport,
+	removeMcpAuthPresetFromConfig,
 	removeMcpServerFromConfig,
+	updateMcpAuthPresetInConfig,
 	updateMcpServerInConfig,
 } from "../../src/mcp/config.js";
 
@@ -235,6 +238,106 @@ describe("MCP config writing", () => {
 					headers: {
 						Authorization: "Bearer token",
 					},
+				},
+			},
+		});
+	});
+
+	it("writes a new auth preset alongside existing MCP servers", () => {
+		const result = addMcpAuthPresetToConfig({
+			projectRoot: testDir,
+			scope: "local",
+			preset: {
+				name: "linear-auth",
+				headers: {
+					Authorization: "Bearer token",
+				},
+			},
+		});
+
+		expect(result.path).toBe(getWritableMcpConfigPath("local", testDir));
+		expect(JSON.parse(readFileSync(result.path, "utf-8"))).toEqual({
+			authPresets: {
+				"linear-auth": {
+					headers: {
+						Authorization: "Bearer token",
+					},
+				},
+			},
+		});
+	});
+
+	it("updates an auth preset in place using the merged writable scope", () => {
+		const configPath = getWritableMcpConfigPath("local", testDir);
+		mkdirSync(join(testDir, ".maestro"), { recursive: true });
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				authPresets: {
+					"linear-auth": {
+						headers: {
+							Authorization: "Bearer token",
+						},
+					},
+				},
+			}),
+		);
+
+		const result = updateMcpAuthPresetInConfig({
+			projectRoot: testDir,
+			name: "linear-auth",
+			preset: {
+				name: "linear-auth",
+				headersHelper: "bun run scripts/mcp-headers.ts",
+			},
+		});
+
+		expect(result).toEqual({
+			path: configPath,
+			scope: "local",
+		});
+		expect(JSON.parse(readFileSync(configPath, "utf-8"))).toEqual({
+			authPresets: {
+				"linear-auth": {
+					headersHelper: "bun run scripts/mcp-headers.ts",
+				},
+			},
+		});
+	});
+
+	it("removes an auth preset from an existing config", () => {
+		const configPath = getWritableMcpConfigPath("project", testDir);
+		mkdirSync(join(testDir, ".maestro"), { recursive: true });
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				authPresets: {
+					"filesystem-auth": {
+						headersHelper: "bun run scripts/fs-headers.ts",
+					},
+					"linear-auth": {
+						headers: {
+							Authorization: "Bearer token",
+						},
+					},
+				},
+			}),
+		);
+
+		const result = removeMcpAuthPresetFromConfig({
+			projectRoot: testDir,
+			scope: "project",
+			name: "linear-auth",
+		});
+
+		expect(result).toEqual({
+			path: configPath,
+			scope: "project",
+		});
+		expect(JSON.parse(readFileSync(configPath, "utf-8"))).toEqual({
+			authPresets: {
+				"filesystem-auth": {
+					headersHelper: "bun run scripts/fs-headers.ts",
 				},
 			},
 		});

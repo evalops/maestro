@@ -65,6 +65,13 @@ export interface McpOfficialRegistryEntry extends McpOfficialRegistryInfo {
 	promptCount?: number;
 }
 
+export interface McpAuthPresetConfig {
+	name: string;
+	headers?: Record<string, string>;
+	headersHelper?: string;
+	scope?: McpScope;
+}
+
 export interface McpServerConfig {
 	name: string;
 	transport: McpTransport;
@@ -77,6 +84,7 @@ export interface McpServerConfig {
 	url?: string;
 	headers?: Record<string, string>;
 	headersHelper?: string;
+	authPreset?: string;
 	// Common options
 	enabled?: boolean;
 	disabled?: boolean;
@@ -86,6 +94,7 @@ export interface McpServerConfig {
 
 export interface McpConfig {
 	servers: McpServerConfig[];
+	authPresets: McpAuthPresetConfig[];
 	envLimits?: Record<
 		string,
 		{ effective: number; status: string; message?: string }
@@ -109,11 +118,20 @@ export interface McpServerStatus {
 	remoteHost?: string;
 	headerKeys?: string[];
 	headersHelper?: string;
+	authPreset?: string;
 	timeout?: number;
 	remoteTrust?: McpRemoteTrust;
 	officialRegistry?: McpOfficialRegistryInfo;
 }
 
+export interface McpAuthPresetStatus {
+	name: string;
+	scope?: McpScope;
+	headerKeys: string[];
+	headersHelper?: string;
+}
+
 export interface McpManagerStatus {
 	servers: McpServerStatus[];
+	authPresets: McpAuthPresetStatus[];
 }

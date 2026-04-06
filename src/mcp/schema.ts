@@ -1,20 +1,35 @@
 import { z } from "zod";
 
+const mcpNameSchema = z
+	.string()
+	.min(1)
+	.regex(/^[a-zA-Z0-9_-]+$/, "Name must use letters, numbers, _ or -");
+
 export const mcpTransportSchema = z.union([
 	z.literal("stdio"),
 	z.literal("http"),
 	z.literal("sse"),
 ]);
 
+export const mcpAuthPresetSchema = z
+	.object({
+		name: mcpNameSchema,
+		headers: z.record(z.string(), z.string()).optional(),
+		headersHelper: z.string().optional(),
+	})
+	.strict()
+	.superRefine((cfg, ctx) => {
+		if (!cfg.headers && !cfg.headersHelper) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				message: "Auth preset requires headers and/or headersHelper",
+			});
+		}
+	});
+
 export const mcpServerSchema = z
 	.object({
-		name: z
-			.string()
-			.min(1)
-			.regex(
-				/^[a-zA-Z0-9_-]+$/,
-				"Server name must use letters, numbers, _ or -",
-			),
+		name: mcpNameSchema,
 		transport: mcpTransportSchema.optional(),
 		// stdio
 		command: z.string().optional(),
@@ -25,6 +40,7 @@ export const mcpServerSchema = z
 		url: z.string().url().optional(),
 		headers: z.record(z.string(), z.string()).optional(),
 		headersHelper: z.string().optional(),
+		authPreset: mcpNameSchema.optional(),
 		// common
 		timeout: z.number().int().positive().optional(),
 		enabled: z.boolean().optional(),
@@ -47,8 +63,16 @@ export const mcpServerSchema = z
 				message: "HTTP/SSE transport requires url",
 			});
 		}
+		if (transport === "stdio" && cfg.authPreset) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["authPreset"],
+				message: "Stdio transport does not support auth presets",
+			});
+		}
 	});
 
+export type McpAuthPresetInput = z.infer<typeof mcpAuthPresetSchema>;
 export type McpServerInput = z.infer<typeof mcpServerSchema>;
 
 // Accept both array format and Claude-style { mcpServers: { name: {...} } }
@@ -56,6 +80,7 @@ export const mcpConfigSchema = z.object({
 	servers: z.array(mcpServerSchema).optional(),
 	// allow loose objects; we normalize/validate per-entry later
 	mcpServers: z.record(z.string(), z.unknown()).optional(),
+	authPresets: z.record(z.string(), z.unknown()).optional(),
 });
 
 export type McpConfigInput = z.infer<typeof mcpConfigSchema>;

@@ -123,6 +123,41 @@ describe("MCP config loader", () => {
 		expect(config.servers[0]!.headersHelper).toBe("/tmp/mcp-headers-helper");
 	});
 
+	it("loads auth presets from config", () => {
+		const configDir = join(testDir, ".maestro");
+		mkdirSync(configDir, { recursive: true });
+		writeFileSync(
+			join(configDir, "mcp.json"),
+			JSON.stringify({
+				authPresets: {
+					"linear-auth": {
+						headers: {
+							Authorization: "Bearer token",
+						},
+					},
+				},
+				mcpServers: {
+					remote: {
+						url: "https://example.com/mcp",
+						authPreset: "linear-auth",
+					},
+				},
+			}),
+		);
+
+		const config = loadMcpConfig(testDir);
+		expect(config.authPresets).toEqual([
+			{
+				name: "linear-auth",
+				scope: "project",
+				headers: {
+					Authorization: "Bearer token",
+				},
+			},
+		]);
+		expect(config.servers[0]!.authPreset).toBe("linear-auth");
+	});
+
 	it("detects SSE transport when URL ends with /sse", () => {
 		const configDir = join(testDir, ".maestro");
 		mkdirSync(configDir, { recursive: true });
@@ -251,6 +286,7 @@ describe("MCP client manager", () => {
 	it("tracks configured servers in status", async () => {
 		const manager = createManager();
 		await manager.configure({
+			authPresets: [],
 			servers: [
 				{
 					name: "test",
@@ -267,6 +303,47 @@ describe("MCP client manager", () => {
 		expect(status.servers[0]!.connected).toBe(false);
 		expect(status.servers[0]!.scope).toBe("project");
 		expect(status.servers[0]!.transport).toBe("stdio");
+	});
+
+	it("surfaces effective auth preset metadata in status", async () => {
+		const manager = createManager();
+		await manager.configure({
+			authPresets: [
+				{
+					name: "linear-auth",
+					headers: {
+						Authorization: "Bearer token",
+					},
+					headersHelper: "bun run scripts/mcp-headers.ts",
+					scope: "local",
+				},
+			],
+			servers: [
+				{
+					name: "linear",
+					transport: "http",
+					url: "https://mcp.linear.app/mcp",
+					authPreset: "linear-auth",
+					scope: "project",
+				},
+			],
+		});
+
+		const status = manager.getStatus();
+		expect(status.authPresets).toEqual([
+			{
+				name: "linear-auth",
+				scope: "local",
+				headerKeys: ["Authorization"],
+				headersHelper: "bun run scripts/mcp-headers.ts",
+			},
+		]);
+		expect(status.servers[0]).toMatchObject({
+			name: "linear",
+			authPreset: "linear-auth",
+			headerKeys: ["Authorization"],
+			headersHelper: "bun run scripts/mcp-headers.ts",
+		});
 	});
 
 	it("includes the last connection error in status", async () => {

@@ -67,6 +67,14 @@ describe("handleMcpStatus", () => {
 
 	it("returns MCP status by default", async () => {
 		vi.spyOn(mcp.mcpManager, "getStatus").mockReturnValue({
+			authPresets: [
+				{
+					name: "linear-auth",
+					scope: "local",
+					headerKeys: ["Authorization"],
+					headersHelper: "bun run scripts/mcp-headers.ts",
+				},
+			],
 			servers: [
 				{
 					name: "docs",
@@ -101,6 +109,14 @@ describe("handleMcpStatus", () => {
 
 		expect(res.statusCode).toBe(200);
 		expect(JSON.parse(res.body)).toEqual({
+			authPresets: [
+				{
+					name: "linear-auth",
+					scope: "local",
+					headerKeys: ["Authorization"],
+					headersHelper: "bun run scripts/mcp-headers.ts",
+				},
+			],
 			servers: [
 				{
 					name: "docs",
@@ -392,6 +408,164 @@ describe("handleMcpStatus", () => {
 		});
 	});
 
+	it("adds an MCP auth preset and reloads MCP config", async () => {
+		const loadConfig = vi
+			.spyOn(mcp, "loadMcpConfig")
+			.mockReturnValueOnce({ servers: [], authPresets: [] })
+			.mockReturnValueOnce({
+				servers: [],
+				authPresets: [
+					{
+						name: "linear-auth",
+						scope: "project",
+						headers: {
+							Authorization: "Bearer token",
+						},
+					},
+				],
+			});
+		const addConfig = vi
+			.spyOn(mcp, "addMcpAuthPresetToConfig")
+			.mockReturnValue({
+				path: "/tmp/project/.maestro/mcp.json",
+			});
+		const configure = vi
+			.spyOn(mcp.mcpManager, "configure")
+			.mockResolvedValue(undefined);
+
+		const req = makeReq("/api/mcp?action=add-auth-preset", {
+			method: "POST",
+			body: {
+				scope: "project",
+				preset: {
+					name: "linear-auth",
+					headers: {
+						Authorization: "Bearer token",
+					},
+				},
+			},
+		});
+		const res = makeRes();
+
+		await handleMcpStatus(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			corsHeaders,
+		);
+
+		expect(addConfig).toHaveBeenCalledWith({
+			projectRoot: process.cwd(),
+			scope: "project",
+			preset: {
+				name: "linear-auth",
+				headers: {
+					Authorization: "Bearer token",
+				},
+			},
+		});
+		expect(loadConfig).toHaveBeenCalledWith(process.cwd(), {
+			includeEnvLimits: true,
+		});
+		expect(configure).toHaveBeenCalledTimes(1);
+		expect(res.statusCode).toBe(200);
+		expect(JSON.parse(res.body)).toEqual({
+			name: "linear-auth",
+			scope: "project",
+			path: "/tmp/project/.maestro/mcp.json",
+			preset: {
+				name: "linear-auth",
+				headers: {
+					Authorization: "Bearer token",
+				},
+			},
+		});
+	});
+
+	it("adds a custom MCP server with an auth preset reference", async () => {
+		vi.spyOn(mcp, "prefetchOfficialMcpRegistry").mockResolvedValue(undefined);
+		const loadConfig = vi
+			.spyOn(mcp, "loadMcpConfig")
+			.mockReturnValueOnce({
+				servers: [],
+				authPresets: [
+					{
+						name: "linear-auth",
+						scope: "local",
+						headersHelper: "bun run scripts/mcp-headers.ts",
+					},
+				],
+			})
+			.mockReturnValueOnce({
+				servers: [
+					{
+						name: "custom-docs",
+						transport: "http",
+						url: "https://docs.example.com/mcp",
+						authPreset: "linear-auth",
+					},
+				],
+				authPresets: [
+					{
+						name: "linear-auth",
+						scope: "local",
+						headersHelper: "bun run scripts/mcp-headers.ts",
+					},
+				],
+			});
+		const addConfig = vi.spyOn(mcp, "addMcpServerToConfig").mockReturnValue({
+			path: "/tmp/project/.maestro/mcp.json",
+		});
+		const configure = vi
+			.spyOn(mcp.mcpManager, "configure")
+			.mockResolvedValue(undefined);
+
+		const req = makeReq("/api/mcp?action=add-server", {
+			method: "POST",
+			body: {
+				scope: "project",
+				server: {
+					name: "custom-docs",
+					url: "https://docs.example.com/mcp",
+					authPreset: "linear-auth",
+				},
+			},
+		});
+		const res = makeRes();
+
+		await handleMcpStatus(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			corsHeaders,
+		);
+
+		expect(addConfig).toHaveBeenCalledWith({
+			projectRoot: process.cwd(),
+			scope: "project",
+			server: {
+				name: "custom-docs",
+				transport: "http",
+				url: "https://docs.example.com/mcp",
+				authPreset: "linear-auth",
+			},
+		});
+		expect(loadConfig).toHaveBeenCalledWith(process.cwd(), {
+			includeEnvLimits: true,
+		});
+		expect(configure).toHaveBeenCalledTimes(1);
+		expect(res.statusCode).toBe(200);
+		expect(JSON.parse(res.body)).toEqual({
+			name: "custom-docs",
+			scope: "project",
+			path: "/tmp/project/.maestro/mcp.json",
+			server: {
+				name: "custom-docs",
+				transport: "http",
+				url: "https://docs.example.com/mcp",
+				authPreset: "linear-auth",
+			},
+		});
+	});
+
 	it("removes a writable MCP server and reports fallback state", async () => {
 		const removeConfig = vi
 			.spyOn(mcp, "removeMcpServerFromConfig")
@@ -456,6 +630,75 @@ describe("handleMcpStatus", () => {
 			path: "/tmp/project/.maestro/mcp.local.json",
 			fallback: {
 				name: "linear",
+				scope: "user",
+			},
+		});
+	});
+
+	it("removes a writable MCP auth preset and reports fallback state", async () => {
+		const removeConfig = vi
+			.spyOn(mcp, "removeMcpAuthPresetFromConfig")
+			.mockReturnValue({
+				path: "/tmp/project/.maestro/mcp.local.json",
+				scope: "local",
+			});
+		const loadConfig = vi
+			.spyOn(mcp, "loadMcpConfig")
+			.mockReturnValueOnce({
+				servers: [],
+				authPresets: [
+					{
+						name: "linear-auth",
+						scope: "user",
+						headersHelper: "bun run scripts/mcp-headers.ts",
+					},
+				],
+			})
+			.mockReturnValueOnce({
+				servers: [],
+				authPresets: [
+					{
+						name: "linear-auth",
+						scope: "user",
+						headersHelper: "bun run scripts/mcp-headers.ts",
+					},
+				],
+			});
+		const configure = vi
+			.spyOn(mcp.mcpManager, "configure")
+			.mockResolvedValue(undefined);
+
+		const req = makeReq("/api/mcp?action=remove-auth-preset", {
+			method: "POST",
+			body: {
+				name: "linear-auth",
+				scope: "local",
+			},
+		});
+		const res = makeRes();
+
+		await handleMcpStatus(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			corsHeaders,
+		);
+
+		expect(removeConfig).toHaveBeenCalledWith({
+			projectRoot: process.cwd(),
+			scope: "local",
+			name: "linear-auth",
+		});
+		expect(loadConfig).toHaveBeenCalledWith(process.cwd(), {
+			includeEnvLimits: true,
+		});
+		expect(configure).toHaveBeenCalledTimes(1);
+		expect(res.statusCode).toBe(200);
+		expect(JSON.parse(res.body)).toEqual({
+			name: "linear-auth",
+			scope: "local",
+			path: "/tmp/project/.maestro/mcp.local.json",
+			fallback: {
+				name: "linear-auth",
 				scope: "user",
 			},
 		});
@@ -544,6 +787,86 @@ describe("handleMcpStatus", () => {
 				url: "https://mcp.linear.app/sse",
 				headersHelper: "bun run scripts/mcp-headers.ts",
 				timeout: 20_000,
+			},
+		});
+	});
+
+	it("updates a writable MCP auth preset and reloads MCP config", async () => {
+		const loadConfig = vi
+			.spyOn(mcp, "loadMcpConfig")
+			.mockReturnValueOnce({
+				servers: [],
+				authPresets: [
+					{
+						name: "linear-auth",
+						scope: "local",
+						headers: {
+							Authorization: "Bearer token",
+						},
+					},
+				],
+			})
+			.mockReturnValueOnce({
+				servers: [],
+				authPresets: [
+					{
+						name: "linear-auth",
+						scope: "local",
+						headersHelper: "bun run scripts/new-headers.ts",
+					},
+				],
+			});
+		const updateConfig = vi
+			.spyOn(mcp, "updateMcpAuthPresetInConfig")
+			.mockReturnValue({
+				path: "/tmp/project/.maestro/mcp.local.json",
+				scope: "local",
+			});
+		const configure = vi
+			.spyOn(mcp.mcpManager, "configure")
+			.mockResolvedValue(undefined);
+
+		const req = makeReq("/api/mcp?action=update-auth-preset", {
+			method: "POST",
+			body: {
+				name: "linear-auth",
+				scope: "local",
+				preset: {
+					name: "linear-auth",
+					headers: null,
+					headersHelper: "bun run scripts/new-headers.ts",
+				},
+			},
+		});
+		const res = makeRes();
+
+		await handleMcpStatus(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			corsHeaders,
+		);
+
+		expect(updateConfig).toHaveBeenCalledWith({
+			projectRoot: process.cwd(),
+			scope: "local",
+			name: "linear-auth",
+			preset: {
+				name: "linear-auth",
+				headersHelper: "bun run scripts/new-headers.ts",
+			},
+		});
+		expect(loadConfig).toHaveBeenCalledWith(process.cwd(), {
+			includeEnvLimits: true,
+		});
+		expect(configure).toHaveBeenCalledTimes(1);
+		expect(res.statusCode).toBe(200);
+		expect(JSON.parse(res.body)).toEqual({
+			name: "linear-auth",
+			scope: "local",
+			path: "/tmp/project/.maestro/mcp.local.json",
+			preset: {
+				name: "linear-auth",
+				headersHelper: "bun run scripts/new-headers.ts",
 			},
 		});
 	});
