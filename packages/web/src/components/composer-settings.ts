@@ -26,8 +26,10 @@ import type {
 	McpAuthPresetRemoveResponse,
 	McpAuthPresetStatus,
 	McpOfficialRegistryEntry,
+	McpPromptResponse,
 	McpRegistryImportRequest,
 	McpRemoteTrust,
+	McpResourceReadResponse,
 	McpServerAddRequest,
 	McpServerConfigInput,
 	McpServerRemoveResponse,
@@ -437,6 +439,20 @@ export class ComposerSettings extends LitElement {
 			color: var(--accent-green);
 		}
 
+		.panel-code-block {
+			margin: 0;
+			padding: 0.75rem 0.9rem;
+			border-radius: 8px;
+			border: 1px solid var(--border-primary);
+			background: var(--bg-panel);
+			font-size: 0.72rem;
+			font-family: var(--font-mono);
+			line-height: 1.55;
+			color: var(--text-secondary);
+			white-space: pre-wrap;
+			word-break: break-word;
+		}
+
 		@media (max-width: 768px) {
 			.model-grid {
 				grid-template-columns: 1fr;
@@ -519,6 +535,15 @@ export class ComposerSettings extends LitElement {
 		string,
 		"stdio" | "http" | "sse"
 	> = {};
+	@state() private mcpSelectedResources: Record<string, string> = {};
+	@state() private mcpSelectedPrompts: Record<string, string> = {};
+	@state() private mcpPromptArgsText: Record<string, string> = {};
+	@state() private mcpResourceOutputs: Record<string, string> = {};
+	@state() private mcpPromptOutputs: Record<string, string> = {};
+	@state() private mcpResourceErrors: Record<string, string> = {};
+	@state() private mcpPromptErrors: Record<string, string> = {};
+	@state() private mcpReadingResourceName: string | null = null;
+	@state() private mcpGettingPromptName: string | null = null;
 	@state() private selectedTab: "workspace" | "models" | "usage" = "workspace";
 
 	override async connectedCallback() {
@@ -807,6 +832,97 @@ export class ComposerSettings extends LitElement {
 
 	private parseMcpTimeoutText(text: string): number | undefined {
 		return parseMcpTimeoutText(text);
+	}
+
+	private formatMcpResourceOutput(result: McpResourceReadResponse): string {
+		if (result.contents.length === 0) {
+			return "No resource contents returned.";
+		}
+
+		return result.contents
+			.map((content) => {
+				const lines = [content.uri];
+				if (content.mimeType) {
+					lines.push(`mime: ${content.mimeType}`);
+				}
+				if (typeof content.text === "string") {
+					lines.push("", content.text);
+				} else if (typeof content.blob === "string") {
+					lines.push("", `[binary content: ${content.blob.length} chars]`);
+				} else {
+					lines.push("", "[empty content]");
+				}
+				return lines.join("\n");
+			})
+			.join("\n\n");
+	}
+
+	private formatMcpPromptOutput(result: McpPromptResponse): string {
+		const lines: string[] = [];
+		if (result.description) {
+			lines.push(result.description, "");
+		}
+		if (result.messages.length === 0) {
+			lines.push("No prompt messages returned.");
+			return lines.join("\n").trim();
+		}
+		for (const message of result.messages) {
+			lines.push(`${message.role}:`, message.content, "");
+		}
+		return lines.join("\n").trim();
+	}
+
+	private async readMcpResource(server: McpServerStatus, uri: string) {
+		this.mcpReadingResourceName = server.name;
+		this.mcpResourceErrors = Object.fromEntries(
+			Object.entries(this.mcpResourceErrors).filter(
+				([key]) => key !== server.name,
+			),
+		);
+		try {
+			const result = await this.apiClient.readMcpResource(server.name, uri);
+			this.mcpResourceOutputs = {
+				...this.mcpResourceOutputs,
+				[server.name]: this.formatMcpResourceOutput(result),
+			};
+		} catch (error) {
+			this.mcpResourceErrors = {
+				...this.mcpResourceErrors,
+				[server.name]:
+					error instanceof Error
+						? error.message
+						: "Failed to read MCP resource",
+			};
+		} finally {
+			this.mcpReadingResourceName = null;
+		}
+	}
+
+	private async getMcpPrompt(server: McpServerStatus, name: string) {
+		this.mcpGettingPromptName = server.name;
+		this.mcpPromptErrors = Object.fromEntries(
+			Object.entries(this.mcpPromptErrors).filter(
+				([key]) => key !== server.name,
+			),
+		);
+		try {
+			const args = this.parseMcpKeyValueText(
+				this.mcpPromptArgsText[server.name] ?? "",
+			);
+			const result = await this.apiClient.getMcpPrompt(server.name, name, args);
+			this.mcpPromptOutputs = {
+				...this.mcpPromptOutputs,
+				[server.name]: this.formatMcpPromptOutput(result),
+			};
+		} catch (error) {
+			this.mcpPromptErrors = {
+				...this.mcpPromptErrors,
+				[server.name]:
+					error instanceof Error ? error.message : "Failed to run MCP prompt",
+			};
+		} finally {
+			this.mcpGettingPromptName = null;
+		}
 	}
 
 	private async addCustomMcpServer() {
@@ -1472,6 +1588,24 @@ export class ComposerSettings extends LitElement {
 										const editableTimeout =
 											this.mcpEditingTimeouts[server.name] ??
 											this.formatMcpTimeoutText(server.timeout);
+										const selectedResource =
+											this.mcpSelectedResources[server.name] ??
+											server.resources?.[0] ??
+											"";
+										const selectedPrompt =
+											this.mcpSelectedPrompts[server.name] ??
+											server.prompts?.[0] ??
+											"";
+										const promptArgsText =
+											this.mcpPromptArgsText[server.name] ?? "";
+										const resourceOutput =
+											this.mcpResourceOutputs[server.name] ?? "";
+										const promptOutput =
+											this.mcpPromptOutputs[server.name] ?? "";
+										const resourceError =
+											this.mcpResourceErrors[server.name] ?? null;
+										const promptError =
+											this.mcpPromptErrors[server.name] ?? null;
 										return html`
 											<div class="panel-card">
 												<div class="panel-card-header">
@@ -1959,6 +2093,149 @@ export class ComposerSettings extends LitElement {
 																			</a>`
 																		: ""
 																}
+															</div>
+														`
+														: ""
+												}
+												${
+													(server.resources?.length ?? 0) > 0
+														? html`
+															<div class="section" style="margin: 0;">
+																<div class="section-header">
+																	<h3>Resources</h3>
+																</div>
+																<div class="section-content">
+																	<div class="control-row">
+																		<select
+																			class="field-select"
+																			.value=${selectedResource}
+																			aria-label=${`MCP resource for ${server.name}`}
+																			@change=${(event: Event) => {
+																				this.mcpSelectedResources = {
+																					...this.mcpSelectedResources,
+																					[server.name]: (
+																						event.target as HTMLSelectElement
+																					).value,
+																				};
+																			}}
+																		>
+																			${(server.resources ?? []).map(
+																				(
+																					resource,
+																				) => html`<option value=${resource}>
+																					${resource}
+																				</option>`,
+																			)}
+																		</select>
+																		<button
+																			class="action-btn"
+																			aria-label=${`Read resource for ${server.name}`}
+																			@click=${() =>
+																				void this.readMcpResource(
+																					server,
+																					selectedResource,
+																				)}
+																			?disabled=${this.mcpReadingResourceName === server.name || !selectedResource}
+																		>
+																			${
+																				this.mcpReadingResourceName ===
+																				server.name
+																					? "Loading..."
+																					: "Read Resource"
+																			}
+																		</button>
+																	</div>
+																	${
+																		resourceError
+																			? html`<div class="panel-feedback error">${resourceError}</div>`
+																			: ""
+																	}
+																	${
+																		resourceOutput
+																			? html`<pre class="panel-code-block">${resourceOutput}</pre>`
+																			: ""
+																	}
+																</div>
+															</div>
+														`
+														: ""
+												}
+												${
+													(server.prompts?.length ?? 0) > 0
+														? html`
+															<div class="section" style="margin: 0;">
+																<div class="section-header">
+																	<h3>Prompts</h3>
+																</div>
+																<div class="section-content">
+																	<div class="control-row">
+																		<select
+																			class="field-select"
+																			.value=${selectedPrompt}
+																			aria-label=${`MCP prompt for ${server.name}`}
+																			@change=${(event: Event) => {
+																				this.mcpSelectedPrompts = {
+																					...this.mcpSelectedPrompts,
+																					[server.name]: (
+																						event.target as HTMLSelectElement
+																					).value,
+																				};
+																			}}
+																		>
+																			${(server.prompts ?? []).map(
+																				(
+																					prompt,
+																				) => html`<option value=${prompt}>
+																					${prompt}
+																				</option>`,
+																			)}
+																		</select>
+																		<button
+																			class="action-btn"
+																			aria-label=${`Run prompt for ${server.name}`}
+																			@click=${() =>
+																				void this.getMcpPrompt(
+																					server,
+																					selectedPrompt,
+																				)}
+																			?disabled=${this.mcpGettingPromptName === server.name || !selectedPrompt}
+																		>
+																			${
+																				this.mcpGettingPromptName ===
+																				server.name
+																					? "Running..."
+																					: "Run Prompt"
+																			}
+																		</button>
+																	</div>
+																	<div class="control-row">
+																		<textarea
+																			class="field-input"
+																			style="min-height: 5.5rem;"
+																			.placeholder=${"Prompt args (KEY=VALUE, one per line)"}
+																			.value=${promptArgsText}
+																			aria-label=${`Prompt arguments for ${server.name}`}
+																			@input=${(event: Event) => {
+																				this.mcpPromptArgsText = {
+																					...this.mcpPromptArgsText,
+																					[server.name]: (
+																						event.target as HTMLTextAreaElement
+																					).value,
+																				};
+																			}}
+																		></textarea>
+																	</div>
+																	${
+																		promptError
+																			? html`<div class="panel-feedback error">${promptError}</div>`
+																			: ""
+																	}
+																	${
+																		promptOutput
+																			? html`<pre class="panel-code-block">${promptOutput}</pre>`
+																			: ""
+																	}
+																</div>
 															</div>
 														`
 														: ""

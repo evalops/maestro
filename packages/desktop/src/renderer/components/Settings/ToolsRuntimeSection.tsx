@@ -28,9 +28,11 @@ import type {
 	McpAuthPresetStatus,
 	McpAuthPresetUpdateRequest,
 	McpOfficialRegistryEntry,
+	McpPromptResponse,
 	McpRegistryImportRequest,
 	McpRegistryImportResponse,
 	McpRegistrySearchResponse,
+	McpResourceReadResponse,
 	McpServerAddRequest,
 	McpServerMutationResponse,
 	McpServerRemoveRequest,
@@ -145,6 +147,15 @@ export interface ToolsRuntimeSectionProps {
 	onRemoveMcpAuthPreset: (
 		input: McpAuthPresetRemoveRequest,
 	) => Promise<McpAuthPresetRemoveResponse>;
+	onReadMcpResource: (
+		server: string,
+		uri: string,
+	) => Promise<McpResourceReadResponse>;
+	onGetMcpPrompt: (
+		server: string,
+		name: string,
+		args?: Record<string, string>,
+	) => Promise<McpPromptResponse>;
 	composerStatus: ComposerStatus | null;
 	selectedComposer: string;
 	onSelectedComposerChange: (name: string) => void;
@@ -182,6 +193,46 @@ function formatMcpTrustLabel(
 		default:
 			return null;
 	}
+}
+
+export function formatMcpResourceReadResult(
+	result: McpResourceReadResponse,
+): string {
+	if (result.contents.length === 0) {
+		return "No resource contents returned.";
+	}
+
+	return result.contents
+		.map((content) => {
+			const lines = [content.uri];
+			if (content.mimeType) {
+				lines.push(`mime: ${content.mimeType}`);
+			}
+			if (typeof content.text === "string") {
+				lines.push("", content.text);
+			} else if (typeof content.blob === "string") {
+				lines.push("", `[binary content: ${content.blob.length} chars]`);
+			} else {
+				lines.push("", "[empty content]");
+			}
+			return lines.join("\n");
+		})
+		.join("\n\n");
+}
+
+export function formatMcpPromptResult(result: McpPromptResponse): string {
+	const lines: string[] = [];
+	if (result.description) {
+		lines.push(result.description, "");
+	}
+	if (result.messages.length === 0) {
+		lines.push("No prompt messages returned.");
+		return lines.join("\n").trim();
+	}
+	for (const message of result.messages) {
+		lines.push(`${message.role}:`, message.content, "");
+	}
+	return lines.join("\n").trim();
 }
 
 export {
@@ -381,6 +432,8 @@ export function ToolsRuntimeSection({
 	onUpdateMcpAuthPreset,
 	onRemoveMcpServer,
 	onRemoveMcpAuthPreset,
+	onReadMcpResource,
+	onGetMcpPrompt,
 	composerStatus,
 	selectedComposer,
 	onSelectedComposerChange,
@@ -483,6 +536,31 @@ export function ToolsRuntimeSection({
 	const [editingServerTimeouts, setEditingServerTimeouts] = useState<
 		Record<string, string>
 	>({});
+	const [selectedResourceUris, setSelectedResourceUris] = useState<
+		Record<string, string>
+	>({});
+	const [selectedPromptNames, setSelectedPromptNames] = useState<
+		Record<string, string>
+	>({});
+	const [promptArgsTexts, setPromptArgsTexts] = useState<
+		Record<string, string>
+	>({});
+	const [resourceOutputs, setResourceOutputs] = useState<
+		Record<string, string>
+	>({});
+	const [promptOutputs, setPromptOutputs] = useState<Record<string, string>>(
+		{},
+	);
+	const [resourceErrors, setResourceErrors] = useState<Record<string, string>>(
+		{},
+	);
+	const [promptErrors, setPromptErrors] = useState<Record<string, string>>({});
+	const [readingResourceName, setReadingResourceName] = useState<string | null>(
+		null,
+	);
+	const [gettingPromptName, setGettingPromptName] = useState<string | null>(
+		null,
+	);
 	const [editingAuthPresetHeadersTexts, setEditingAuthPresetHeadersTexts] =
 		useState<Record<string, string>>({});
 	const [editingAuthPresetHeadersHelpers, setEditingAuthPresetHeadersHelpers] =
@@ -508,6 +586,72 @@ export function ToolsRuntimeSection({
 		[composerStatus, selectedComposer],
 	);
 	const authPresets = mcpStatus?.authPresets ?? [];
+
+	const handleReadResource = async (server: McpServerViewModel) => {
+		const uri = selectedResourceUris[server.name] ?? server.resources[0] ?? "";
+		if (!uri) {
+			return;
+		}
+
+		setReadingResourceName(server.name);
+		setResourceErrors((prev) =>
+			Object.fromEntries(
+				Object.entries(prev).filter(([key]) => key !== server.name),
+			),
+		);
+		try {
+			const result = await onReadMcpResource(server.name, uri);
+			setResourceOutputs((prev) => ({
+				...prev,
+				[server.name]: formatMcpResourceReadResult(result),
+			}));
+		} catch (error) {
+			setResourceErrors((prev) => ({
+				...prev,
+				[server.name]:
+					error instanceof Error
+						? error.message
+						: "Failed to read MCP resource",
+			}));
+		} finally {
+			setReadingResourceName((current) =>
+				current === server.name ? null : current,
+			);
+		}
+	};
+
+	const handleGetPrompt = async (server: McpServerViewModel) => {
+		const promptName =
+			selectedPromptNames[server.name] ?? server.prompts[0] ?? "";
+		if (!promptName) {
+			return;
+		}
+
+		setGettingPromptName(server.name);
+		setPromptErrors((prev) =>
+			Object.fromEntries(
+				Object.entries(prev).filter(([key]) => key !== server.name),
+			),
+		);
+		try {
+			const args = parseMcpKeyValueText(promptArgsTexts[server.name] ?? "");
+			const result = await onGetMcpPrompt(server.name, promptName, args);
+			setPromptOutputs((prev) => ({
+				...prev,
+				[server.name]: formatMcpPromptResult(result),
+			}));
+		} catch (error) {
+			setPromptErrors((prev) => ({
+				...prev,
+				[server.name]:
+					error instanceof Error ? error.message : "Failed to run MCP prompt",
+			}));
+		} finally {
+			setGettingPromptName((current) =>
+				current === server.name ? null : current,
+			);
+		}
+	};
 
 	useEffect(() => {
 		let active = true;
@@ -1175,6 +1319,19 @@ export function ToolsRuntimeSection({
 										const canEditHeaderValues =
 											server.headerKeys.length === 0 ||
 											replaceHiddenHeaderValues;
+										const selectedResourceUri =
+											selectedResourceUris[server.name] ??
+											server.resources[0] ??
+											"";
+										const selectedPromptName =
+											selectedPromptNames[server.name] ??
+											server.prompts[0] ??
+											"";
+										const promptArgsText = promptArgsTexts[server.name] ?? "";
+										const resourceOutput = resourceOutputs[server.name] ?? "";
+										const promptOutput = promptOutputs[server.name] ?? "";
+										const resourceError = resourceErrors[server.name] ?? null;
+										const promptError = promptErrors[server.name] ?? null;
 										return (
 											<>
 												<div className="flex items-center gap-2 px-3 py-2">
@@ -1720,41 +1877,127 @@ export function ToolsRuntimeSection({
 														) : (
 															<div>{server.toolDetailsLabel}</div>
 														)}
-														<div className="grid grid-cols-2 gap-2">
-															<div>
-																<div className="text-text-tertiary uppercase tracking-wide text-[10px] mb-1">
+														<div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+															<div className="rounded-lg border border-line-subtle/60 bg-bg-secondary/40 px-2.5 py-2 space-y-2">
+																<div className="text-text-tertiary uppercase tracking-wide text-[10px]">
 																	Resources
 																</div>
 																{server.resources.length ? (
-																	<ul className="space-y-1">
-																		{server.resources.map((resource) => (
-																			<li
-																				key={`${server.name}:${resource}`}
-																				className="truncate"
-																			>
-																				{resource}
-																			</li>
-																		))}
-																	</ul>
+																	<>
+																		<select
+																			value={selectedResourceUri}
+																			onChange={(event) =>
+																				setSelectedResourceUris((prev) => ({
+																					...prev,
+																					[server.name]: event.target.value,
+																				}))
+																			}
+																			aria-label={`MCP resource for ${server.name}`}
+																			className="w-full bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary"
+																		>
+																			{server.resources.map((resource) => (
+																				<option
+																					key={`${server.name}:${resource}`}
+																					value={resource}
+																				>
+																					{resource}
+																				</option>
+																			))}
+																		</select>
+																		<button
+																			type="button"
+																			className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-60"
+																			onClick={() =>
+																				void handleReadResource(server)
+																			}
+																			disabled={
+																				readingResourceName === server.name ||
+																				!selectedResourceUri
+																			}
+																		>
+																			{readingResourceName === server.name
+																				? "Loading..."
+																				: "Read resource"}
+																		</button>
+																		{resourceError && (
+																			<div className="rounded-lg border border-error/40 bg-error/10 px-2.5 py-2 text-error">
+																				{resourceError}
+																			</div>
+																		)}
+																		{resourceOutput && (
+																			<pre className="whitespace-pre-wrap break-words rounded-lg border border-line-subtle/60 bg-bg-tertiary/40 px-2.5 py-2 text-[11px] text-text-secondary">
+																				{resourceOutput}
+																			</pre>
+																		)}
+																	</>
 																) : (
 																	<div>None</div>
 																)}
 															</div>
-															<div>
-																<div className="text-text-tertiary uppercase tracking-wide text-[10px] mb-1">
+															<div className="rounded-lg border border-line-subtle/60 bg-bg-secondary/40 px-2.5 py-2 space-y-2">
+																<div className="text-text-tertiary uppercase tracking-wide text-[10px]">
 																	Prompts
 																</div>
 																{server.prompts.length ? (
-																	<ul className="space-y-1">
-																		{server.prompts.map((prompt) => (
-																			<li
-																				key={`${server.name}:${prompt}`}
-																				className="truncate"
-																			>
-																				{prompt}
-																			</li>
-																		))}
-																	</ul>
+																	<>
+																		<select
+																			value={selectedPromptName}
+																			onChange={(event) =>
+																				setSelectedPromptNames((prev) => ({
+																					...prev,
+																					[server.name]: event.target.value,
+																				}))
+																			}
+																			aria-label={`MCP prompt for ${server.name}`}
+																			className="w-full bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary"
+																		>
+																			{server.prompts.map((prompt) => (
+																				<option
+																					key={`${server.name}:${prompt}`}
+																					value={prompt}
+																				>
+																					{prompt}
+																				</option>
+																			))}
+																		</select>
+																		<textarea
+																			value={promptArgsText}
+																			onChange={(event) =>
+																				setPromptArgsTexts((prev) => ({
+																					...prev,
+																					[server.name]: event.target.value,
+																				}))
+																			}
+																			placeholder="Prompt args (KEY=VALUE, one per line)"
+																			aria-label={`Prompt arguments for ${server.name}`}
+																			className="min-h-[88px] bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+																		/>
+																		<button
+																			type="button"
+																			className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-60"
+																			onClick={() =>
+																				void handleGetPrompt(server)
+																			}
+																			disabled={
+																				gettingPromptName === server.name ||
+																				!selectedPromptName
+																			}
+																		>
+																			{gettingPromptName === server.name
+																				? "Running..."
+																				: "Run prompt"}
+																		</button>
+																		{promptError && (
+																			<div className="rounded-lg border border-error/40 bg-error/10 px-2.5 py-2 text-error">
+																				{promptError}
+																			</div>
+																		)}
+																		{promptOutput && (
+																			<pre className="whitespace-pre-wrap break-words rounded-lg border border-line-subtle/60 bg-bg-tertiary/40 px-2.5 py-2 text-[11px] text-text-secondary">
+																				{promptOutput}
+																			</pre>
+																		)}
+																	</>
 																) : (
 																	<div>None</div>
 																)}

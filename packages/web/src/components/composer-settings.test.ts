@@ -43,6 +43,26 @@ function createApiClientMock(): ApiClient {
 					remoteTrust: "official",
 					remoteHost: "mcp.linear.app",
 					authPreset: "linear-auth",
+					resources: ["linear://workspace"],
+					prompts: ["summarize-issue"],
+				},
+			],
+		}),
+		readMcpResource: vi.fn().mockResolvedValue({
+			contents: [
+				{
+					uri: "linear://workspace",
+					text: "workspace content",
+					mimeType: "text/plain",
+				},
+			],
+		}),
+		getMcpPrompt: vi.fn().mockResolvedValue({
+			description: "Summarize a Linear issue",
+			messages: [
+				{
+					role: "user",
+					content: "Summarize issue MAE-1",
 				},
 			],
 		}),
@@ -181,6 +201,74 @@ describe("ComposerSettings MCP section", () => {
 		expect(text).toContain("Auth Presets");
 		expect(text).toContain("linear-auth");
 		expect(text).toContain("Auth preset: linear-auth");
+	});
+
+	it("reads MCP resources and runs MCP prompts from settings", async () => {
+		const apiClient = createApiClientMock();
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Boolean(
+				element.shadowRoot?.querySelector(
+					'button[aria-label="Read resource for linear"]',
+				),
+			),
+		);
+
+		const readButton = element.shadowRoot?.querySelector(
+			'button[aria-label="Read resource for linear"]',
+		) as HTMLButtonElement | null;
+		expect(readButton).not.toBeNull();
+		readButton?.dispatchEvent(new Event("click", { bubbles: true }));
+
+		await waitForSettled(
+			element,
+			() =>
+				(apiClient.readMcpResource as ReturnType<typeof vi.fn>).mock.calls
+					.length > 0,
+		);
+
+		expect(apiClient.readMcpResource).toHaveBeenCalledWith(
+			"linear",
+			"linear://workspace",
+		);
+		expect(element.shadowRoot?.textContent ?? "").toContain(
+			"workspace content",
+		);
+
+		const promptArgs = element.shadowRoot?.querySelector(
+			'textarea[aria-label="Prompt arguments for linear"]',
+		) as HTMLTextAreaElement | null;
+		expect(promptArgs).not.toBeNull();
+		if (!promptArgs) {
+			throw new Error("Expected MCP prompt arguments textarea");
+		}
+		promptArgs.value = "ISSUE=MAE-1";
+		promptArgs.dispatchEvent(new Event("input", { bubbles: true }));
+
+		const runButton = element.shadowRoot?.querySelector(
+			'button[aria-label="Run prompt for linear"]',
+		) as HTMLButtonElement | null;
+		expect(runButton).not.toBeNull();
+		runButton?.dispatchEvent(new Event("click", { bubbles: true }));
+
+		await waitForSettled(
+			element,
+			() =>
+				(apiClient.getMcpPrompt as ReturnType<typeof vi.fn>).mock.calls.length >
+				0,
+		);
+
+		expect(apiClient.getMcpPrompt).toHaveBeenCalledWith(
+			"linear",
+			"summarize-issue",
+			{
+				ISSUE: "MAE-1",
+			},
+		);
+		expect(element.shadowRoot?.textContent ?? "").toContain(
+			"Summarize issue MAE-1",
+		);
 	});
 
 	it("adds an MCP auth preset and refreshes status", async () => {
