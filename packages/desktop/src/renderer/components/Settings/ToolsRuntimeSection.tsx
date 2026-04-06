@@ -1,3 +1,21 @@
+import {
+	formatMcpArgsText,
+	formatMcpConfigScopeLabel,
+	formatMcpKeyValueText,
+	formatMcpRegistryImportMessage,
+	formatMcpRegistryScopeLabel,
+	formatMcpServerAddMessage,
+	formatMcpServerRemoveMessage,
+	formatMcpServerUpdateMessage,
+	formatMcpTimeoutText,
+	formatMcpTransportLabel,
+	getMcpRegistryEntryId,
+	getMcpRegistryUrlOptions,
+	getWritableMcpScope,
+	parseMcpArgsText,
+	parseMcpKeyValueText,
+	parseMcpTimeoutText,
+} from "@evalops/contracts";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import type {
 	ComposerProfile,
@@ -119,67 +137,6 @@ export interface ToolsRuntimeSectionProps {
 	onDeactivateComposer: () => Promise<void> | void;
 }
 
-function formatMcpScopeLabel(scope: McpServerStatus["scope"]): string | null {
-	switch (scope) {
-		case "enterprise":
-			return "Enterprise config";
-		case "plugin":
-			return "Plugin config";
-		case "project":
-			return "Project config";
-		case "local":
-			return "Local config";
-		case "user":
-			return "User config";
-		default:
-			return null;
-	}
-}
-
-function getWritableMcpScope(
-	scope:
-		| McpServerStatus["scope"]
-		| McpRegistryImportRequest["scope"]
-		| undefined,
-): McpRegistryImportRequest["scope"] | null {
-	switch (scope) {
-		case "local":
-		case "project":
-		case "user":
-			return scope;
-		default:
-			return null;
-	}
-}
-
-function formatMcpTransportLabel(
-	transport: McpServerStatus["transport"],
-): string | null {
-	switch (transport) {
-		case "stdio":
-			return "stdio";
-		case "http":
-			return "HTTP";
-		case "sse":
-			return "SSE";
-		default:
-			return null;
-	}
-}
-
-function formatMcpRegistryScopeLabel(
-	scope: McpRegistryImportRequest["scope"],
-): string {
-	switch (scope) {
-		case "project":
-			return "Project";
-		case "user":
-			return "User";
-		default:
-			return "Local";
-	}
-}
-
 function formatCountLabel(
 	count: number,
 	singular: string,
@@ -211,19 +168,21 @@ function formatMcpTrustLabel(
 	}
 }
 
-export function getMcpRegistryEntryId(
-	entry: McpOfficialRegistryEntry,
-	fallbackIndex = 0,
-): string {
-	const rawId =
-		entry.slug?.trim() ||
-		entry.serverName?.trim() ||
-		entry.displayName?.trim() ||
-		entry.url?.trim() ||
-		entry.directoryUrl?.trim() ||
-		`entry-${fallbackIndex}`;
-	return rawId.toLowerCase().replace(/\s+/g, "-");
-}
+export {
+	formatMcpArgsText,
+	formatMcpKeyValueText,
+	formatMcpRegistryImportMessage,
+	formatMcpServerAddMessage,
+	formatMcpServerRemoveMessage,
+	formatMcpServerUpdateMessage,
+	formatMcpTimeoutText,
+	getMcpRegistryEntryId,
+	parseMcpArgsText,
+	parseMcpKeyValueText,
+	parseMcpTimeoutText,
+};
+
+const formatMcpScopeLabel = formatMcpConfigScopeLabel;
 
 export function buildLspViewModel(
 	status: LspStatus | null,
@@ -320,29 +279,8 @@ export function buildMcpRegistryEntryViewModel(
 			? formatCountLabel(entry.promptCount, "prompt", "prompts")
 			: null,
 	].filter((part): part is string => Boolean(part));
-	const urlOptions =
-		entry.urlOptions
-			?.map((option, index) => {
-				const url = option.url?.trim();
-				if (!url) {
-					return null;
-				}
-				const label =
-					option.label?.trim() ||
-					option.description?.trim() ||
-					(index === 0 ? "Default endpoint" : `Endpoint ${index + 1}`);
-				return { url, label };
-			})
-			.filter((option): option is { url: string; label: string } =>
-				Boolean(option),
-			) ?? [];
+	const normalizedUrlOptions = getMcpRegistryUrlOptions(entry);
 	const fallbackUrl = entry.url?.trim() || null;
-	const normalizedUrlOptions =
-		urlOptions.length > 0
-			? urlOptions
-			: fallbackUrl
-				? [{ url: fallbackUrl, label: "Default endpoint" }]
-				: [];
 	const importQuery =
 		entry.slug?.trim() ||
 		entry.serverName?.trim() ||
@@ -376,108 +314,6 @@ export function buildMcpRegistryEntryViewModel(
 		urlOptions: normalizedUrlOptions,
 		defaultUrl: normalizedUrlOptions[0]?.url ?? null,
 	};
-}
-
-export function formatMcpRegistryImportMessage(
-	result: McpRegistryImportResponse,
-): string {
-	const transportLabel =
-		formatMcpTransportLabel(result.server.transport) ?? result.server.transport;
-	return `Imported ${result.name} into ${formatMcpRegistryScopeLabel(result.scope)} config via ${transportLabel}.`;
-}
-
-export function formatMcpServerAddMessage(
-	result: McpServerMutationResponse,
-): string {
-	const transportLabel =
-		formatMcpTransportLabel(result.server.transport) ?? result.server.transport;
-	return `Added ${result.name} to ${formatMcpRegistryScopeLabel(result.scope)} config via ${transportLabel}.`;
-}
-
-export function formatMcpServerUpdateMessage(
-	result: McpServerMutationResponse,
-): string {
-	const transportLabel =
-		formatMcpTransportLabel(result.server.transport) ?? result.server.transport;
-	return `Updated ${result.name} in ${formatMcpRegistryScopeLabel(result.scope)} config via ${transportLabel}.`;
-}
-
-export function formatMcpArgsText(args: string[] | undefined): string {
-	if (!Array.isArray(args) || args.length === 0) {
-		return "";
-	}
-	return args.join("\n");
-}
-
-export function parseMcpArgsText(text: string): string[] | undefined {
-	const args = text
-		.split(/\r?\n/)
-		.map((line) => line.trim())
-		.filter((line) => line.length > 0);
-	return args.length > 0 ? args : undefined;
-}
-
-export function formatMcpKeyValueText(
-	values: Record<string, string> | undefined,
-): string {
-	if (!values) {
-		return "";
-	}
-	return Object.entries(values)
-		.map(([key, value]) => `${key}=${value}`)
-		.join("\n");
-}
-
-export function parseMcpKeyValueText(
-	text: string,
-): Record<string, string> | undefined {
-	const entries = text
-		.split(/\r?\n/)
-		.map((line) => line.trim())
-		.filter((line) => line.length > 0)
-		.map((line) => {
-			const separatorIndex = line.indexOf("=");
-			if (separatorIndex <= 0) {
-				throw new Error(`Expected KEY=VALUE format for "${line}".`);
-			}
-			return [
-				line.slice(0, separatorIndex).trim(),
-				line.slice(separatorIndex + 1),
-			] as const;
-		});
-
-	if (entries.length === 0) {
-		return undefined;
-	}
-
-	return Object.fromEntries(entries);
-}
-
-export function formatMcpTimeoutText(
-	timeout: number | null | undefined,
-): string {
-	return typeof timeout === "number" ? String(timeout) : "";
-}
-
-export function parseMcpTimeoutText(text: string): number | undefined {
-	const trimmed = text.trim();
-	if (!trimmed) {
-		return undefined;
-	}
-	const value = Number(trimmed);
-	if (!Number.isInteger(value) || value < 1) {
-		throw new Error("Timeout must be a positive integer in milliseconds.");
-	}
-	return value;
-}
-
-export function formatMcpServerRemoveMessage(
-	result: McpServerRemoveResponse,
-): string {
-	if (result.fallback) {
-		return `Removed ${result.name} from ${formatMcpRegistryScopeLabel(result.scope)} config. Now using ${result.fallback.name} from ${formatMcpScopeLabel(result.fallback.scope) ?? result.fallback.scope ?? "another config"}.`;
-	}
-	return `Removed ${result.name} from ${formatMcpRegistryScopeLabel(result.scope)} config.`;
 }
 
 export function buildComposerProfilesViewModel(
