@@ -1089,9 +1089,6 @@ async function collectRecentSkillRestoreMessages(
 			seenSkillNames.add(skillName);
 			continue;
 		}
-		if (preservedState === "replace") {
-			replacedPreservedToolSkillNames.add(skillName);
-		}
 
 		const estimatedTokens = estimateHookContentTokens(content);
 		if (usedTokens + estimatedTokens > SKILL_RESTORE_TOKEN_BUDGET) {
@@ -1100,6 +1097,9 @@ async function collectRecentSkillRestoreMessages(
 
 		usedTokens += estimatedTokens;
 		seenSkillNames.add(skillName);
+		if (preservedState === "replace") {
+			replacedPreservedToolSkillNames.add(skillName);
+		}
 		restoredMessages.push(
 			createHookMessage(
 				"skill",

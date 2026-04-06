@@ -443,6 +443,12 @@ function parseMcpServerMutationArgs(
 			index += 1;
 			continue;
 		}
+		if (token.startsWith("-")) {
+			return {
+				ok: false,
+				error: `Unknown MCP option: ${token}\n${usage}`,
+			};
+		}
 
 		positionals.push(token);
 	}
@@ -868,7 +874,7 @@ export async function executeWebSlashCommand(
 								MCP_ADD_USAGE,
 								MCP_EDIT_USAGE,
 								MCP_REMOVE_USAGE,
-								"/mcp import <id> [name] [--scope local|project|user]",
+								MCP_IMPORT_USAGE,
 							].join("\n"),
 						),
 					);

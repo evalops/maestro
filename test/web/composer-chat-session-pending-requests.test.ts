@@ -187,6 +187,95 @@ describe("composer-chat session pending request restore", () => {
 		expect(sendClientToolResult).not.toHaveBeenCalled();
 	});
 
+	it("restores pending queues after the current-session update cycle runs", async () => {
+		const element = createChat();
+		let flushedSessionUpdate = false;
+		Object.defineProperty(element, "updateComplete", {
+			configurable: true,
+			get: () =>
+				Promise.resolve().then(() => {
+					if (!flushedSessionUpdate) {
+						flushedSessionUpdate = true;
+						(
+							element as SessionPendingInternals & {
+								updated: (changed: Map<string, unknown>) => void;
+							}
+						).updated(new Map([["currentSessionId", null]]));
+					}
+				}),
+		});
+		element.apiClient = {
+			createSession: vi.fn(),
+			getSession: vi.fn().mockResolvedValue({
+				id: "session-2",
+				messages: [],
+				pendingApprovalRequests: [
+					{
+						id: "approval-restored",
+						toolName: "bash",
+						args: { command: "echo hi" },
+						reason: "Needs approval",
+					},
+				],
+				pendingToolRetryRequests: [],
+				pendingClientToolRequests: [
+					{
+						toolCallId: "client-call-restored",
+						toolName: "ask_user",
+						args: {
+							questions: [
+								{
+									header: "Mode",
+									question: "Continue?",
+									options: [
+										{
+											label: "Yes",
+											description: "Keep going",
+										},
+									],
+								},
+							],
+						},
+						kind: "user_input",
+					},
+				],
+			}),
+			sendClientToolResult: vi.fn(),
+		};
+
+		await element.selectSession("session-2");
+
+		expect(element.pendingApprovalQueue).toEqual([
+			{
+				id: "approval-restored",
+				toolName: "bash",
+				args: { command: "echo hi" },
+				reason: "Needs approval",
+			},
+		]);
+		expect(element.pendingUserInputQueue).toEqual([
+			{
+				toolCallId: "client-call-restored",
+				toolName: "ask_user",
+				args: {
+					questions: [
+						{
+							header: "Mode",
+							question: "Continue?",
+							options: [
+								{
+									label: "Yes",
+									description: "Keep going",
+								},
+							],
+						},
+					],
+				},
+				kind: "user_input",
+			},
+		]);
+	});
+
 	it("recovers pending queues from a websocket-born session after a stream error", async () => {
 		const element = createChat();
 		const recoveredSession = {

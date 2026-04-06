@@ -37,12 +37,12 @@ export interface HeadlessPendingRequestRestoreState {
 	action_description?: string;
 }
 
-function sanitizeBackgroundTaskField(value: string): string {
+function sanitizeCompactionField(value: string): string {
 	return sanitizeWithStaticMask(value).replace(/\s+/g, " ").trim();
 }
 
 function formatBackgroundTaskCommand(command: string): string {
-	const sanitized = sanitizeBackgroundTaskField(command);
+	const sanitized = sanitizeCompactionField(command);
 	const maxLength = 180;
 	if (sanitized.length <= maxLength) {
 		return sanitized;
@@ -67,9 +67,7 @@ function buildBackgroundTasksCompactionContent(): string | null {
 		"",
 		...activeTasks.map((task) => {
 			const command = formatBackgroundTaskCommand(task.command);
-			const cwd = task.cwd
-				? `; cwd=${sanitizeBackgroundTaskField(task.cwd)}`
-				: "";
+			const cwd = task.cwd ? `; cwd=${sanitizeCompactionField(task.cwd)}` : "";
 			return `- id=${task.id}; status=${task.status}; shell=${task.shellMode}${cwd}; command=${command}`;
 		}),
 		"",
@@ -158,10 +156,6 @@ function buildMcpServersCompactionContent(
 	].join("\n");
 }
 
-function sanitizeHeadlessRequestField(value: string): string {
-	return sanitizeWithStaticMask(value).replace(/\s+/g, " ").trim();
-}
-
 function redactStructuredSecretFields(value: string): string {
 	return value.replace(
 		/"[^"]*(?:token|secret|password|key)[^"]*"\s*:\s*"([^"]+)"/gi,
@@ -175,7 +169,7 @@ function stringifyHeadlessRequestArgs(args: unknown): string | null {
 		if (typeof serialized !== "string" || serialized.length === 0) {
 			return null;
 		}
-		const sanitized = sanitizeHeadlessRequestField(
+		const sanitized = sanitizeCompactionField(
 			redactStructuredSecretFields(serialized),
 		);
 		if (sanitized.length <= MAX_HEADLESS_ARGS_SUMMARY_LENGTH) {
@@ -203,7 +197,7 @@ function summarizeHeadlessUserInputArgs(args: unknown): string | null {
 			question !== null &&
 			"header" in question &&
 			typeof question.header === "string"
-				? sanitizeHeadlessRequestField(question.header)
+				? sanitizeCompactionField(question.header)
 				: null,
 		)
 		.filter((header): header is string => Boolean(header));
@@ -232,14 +226,14 @@ function summarizeHeadlessToolRetryArgs(args: unknown): string | null {
 		typeof args.summary === "string" &&
 		args.summary.length > 0
 	) {
-		sections.push(`summary=${sanitizeHeadlessRequestField(args.summary)}`);
+		sections.push(`summary=${sanitizeCompactionField(args.summary)}`);
 	}
 	if (
 		"error_message" in args &&
 		typeof args.error_message === "string" &&
 		args.error_message.length > 0
 	) {
-		sections.push(`error=${sanitizeHeadlessRequestField(args.error_message)}`);
+		sections.push(`error=${sanitizeCompactionField(args.error_message)}`);
 	}
 	if ("args" in args && typeof args.args === "object" && args.args !== null) {
 		const nestedArgs = stringifyHeadlessRequestArgs(args.args);
@@ -262,8 +256,8 @@ function buildHeadlessPendingRequestLine(
 ): string {
 	const sections = [
 		`- type=${type}`,
-		`tool=${sanitizeHeadlessRequestField(request.tool)}`,
-		`call_id=${sanitizeHeadlessRequestField(request.call_id)}`,
+		`tool=${sanitizeCompactionField(request.tool)}`,
+		`call_id=${sanitizeCompactionField(request.call_id)}`,
 	];
 
 	if (
@@ -271,32 +265,28 @@ function buildHeadlessPendingRequestLine(
 		request.request_id.length > 0 &&
 		request.request_id !== request.call_id
 	) {
-		sections.push(
-			`request_id=${sanitizeHeadlessRequestField(request.request_id)}`,
-		);
+		sections.push(`request_id=${sanitizeCompactionField(request.request_id)}`);
 	}
 	if (
 		typeof request.display_name === "string" &&
 		request.display_name.length > 0
 	) {
 		sections.push(
-			`display_name=${sanitizeHeadlessRequestField(request.display_name)}`,
+			`display_name=${sanitizeCompactionField(request.display_name)}`,
 		);
 	}
 	if (
 		typeof request.summary_label === "string" &&
 		request.summary_label.length > 0
 	) {
-		sections.push(
-			`summary=${sanitizeHeadlessRequestField(request.summary_label)}`,
-		);
+		sections.push(`summary=${sanitizeCompactionField(request.summary_label)}`);
 	}
 	if (
 		typeof request.action_description === "string" &&
 		request.action_description.length > 0
 	) {
 		sections.push(
-			`action=${sanitizeHeadlessRequestField(request.action_description)}`,
+			`action=${sanitizeCompactionField(request.action_description)}`,
 		);
 	}
 
@@ -314,7 +304,8 @@ function buildHeadlessPendingRequestLine(
 				(type === "tool_retry" &&
 					(argsSummary.startsWith("attempt=") ||
 						argsSummary.startsWith("summary=") ||
-						argsSummary.startsWith("error=")))
+						argsSummary.startsWith("error=") ||
+						argsSummary.startsWith("args=")))
 				? argsSummary
 				: `args=${argsSummary}`,
 		);

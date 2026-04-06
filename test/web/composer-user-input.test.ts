@@ -114,4 +114,72 @@ describe("composer-user-input", () => {
 			},
 		});
 	});
+
+	it('preserves typed "Other" text when switching back to a standard option', async () => {
+		const el = document.createElement("composer-user-input") as HTMLElement & {
+			request: {
+				toolCallId: string;
+				toolName: string;
+				args: Record<string, unknown>;
+				kind: "user_input";
+			};
+			updateComplete?: Promise<void>;
+		};
+
+		el.request = {
+			toolCallId: "call-user-input-2",
+			toolName: "ask_user",
+			kind: "user_input",
+			args: {
+				questions: [
+					{
+						header: "Stack",
+						question: "Which schema library should we use?",
+						options: [
+							{
+								label: "Zod",
+								description: "Use Zod schemas",
+							},
+							{
+								label: "Valibot",
+								description: "Use Valibot schemas",
+							},
+						],
+					},
+				],
+			},
+		};
+
+		document.body.appendChild(el);
+		await el.updateComplete;
+
+		const otherOption = el.shadowRoot?.querySelector(
+			'input[data-question-index="0"][data-option-index="other"]',
+		) as HTMLInputElement | null;
+		expect(otherOption).not.toBeNull();
+		otherOption?.click();
+		await el.updateComplete;
+
+		const otherInput = el.shadowRoot?.querySelector(
+			'input.other-input[data-question-index="0"]',
+		) as HTMLInputElement | null;
+		expect(otherInput).not.toBeNull();
+		otherInput!.value = "Custom schema";
+		otherInput?.dispatchEvent(new Event("input", { bubbles: true }));
+		await el.updateComplete;
+
+		const firstOption = el.shadowRoot?.querySelector(
+			'input[data-question-index="0"][data-option-index="0"]',
+		) as HTMLInputElement | null;
+		firstOption?.click();
+		await el.updateComplete;
+
+		otherOption?.click();
+		await el.updateComplete;
+
+		const restoredOtherInput = el.shadowRoot?.querySelector(
+			'input.other-input[data-question-index="0"]',
+		) as HTMLInputElement | null;
+		expect(restoredOtherInput?.value).toBe("Custom schema");
+	});
 });

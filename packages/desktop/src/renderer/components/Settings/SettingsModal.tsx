@@ -694,7 +694,7 @@ export function SettingsModal({
 			if (prev !== input.name) {
 				return prev;
 			}
-			return result.fallback?.name === input.name ? input.name : null;
+			return result.fallback?.name ?? null;
 		});
 		return result;
 	};

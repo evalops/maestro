@@ -36,7 +36,6 @@ import {
 } from "../../hooks/notification-hooks.js";
 import { createSessionHookService } from "../../hooks/session-integration.js";
 import { withMcpPostKeepMessages } from "../../mcp/prompt-recovery.js";
-import { checkSessionLimits } from "../../safety/policy.js";
 import { createLogger } from "../../utils/logger.js";
 
 const logger = createLogger("web:chat");
@@ -72,6 +71,7 @@ import {
 	respondWithApiError,
 	sendJson,
 } from "../server-utils.js";
+import { startSessionWithPolicy } from "../session-initialization.js";
 import { createSessionManagerForRequest } from "../session-scope.js";
 import { convertComposerMessagesToApp } from "../session-serialization.js";
 import { SseSession, sendSSE, sendSessionUpdate } from "../sse-session.js";
@@ -382,49 +382,21 @@ export async function handleChat(
 			if (existingSessionLoaded || sessionManager.isInitialized()) {
 				return null;
 			}
-
-			let activeCount: number | undefined;
-			try {
-				const sessions = sessionManager.loadAllSessions();
-				activeCount = sessions.filter(
-					(session) => Date.now() - session.modified.getTime() < 60 * 60 * 1000,
-				).length;
-			} catch (error) {
-				logger.warn("Failed to count active sessions", {
-					error: error instanceof Error ? error.message : String(error),
-				});
+			const initializationError = startSessionWithPolicy({
+				agent,
+				enterpriseContext,
+				logger,
+				modelId: registeredModel.id,
+				onSessionReady: (sessionId) => {
+					sendSessionUpdate(sseSession, sessionId);
+					sseSession.setContext({ sessionId });
+				},
+				sessionManager,
+				subject,
+			});
+			if (initializationError) {
+				return initializationError;
 			}
-
-			const limitCheck = checkSessionLimits(
-				{ startedAt: new Date() },
-				activeCount !== undefined
-					? { activeSessionCount: activeCount + 1 }
-					: undefined,
-			);
-
-			if (!limitCheck.allowed) {
-				return limitCheck.reason ?? "Session policy blocked chat request";
-			}
-
-			sessionManager.startSession(agent.state, { subject });
-
-			if (enterpriseContext.isEnterprise()) {
-				enterpriseContext.startSession(
-					sessionManager.getSessionId(),
-					registeredModel.id,
-				);
-				const session = enterpriseContext.getSession();
-				if (session) {
-					agent.setSession({
-						id: session.sessionId,
-						startedAt: session.startedAt,
-					});
-				}
-			}
-
-			const sessionId = sessionManager.getSessionId();
-			sendSessionUpdate(sseSession, sessionId);
-			sseSession.setContext({ sessionId });
 			existingSessionLoaded = true;
 			return null;
 		};
@@ -645,61 +617,28 @@ export async function handleChat(
 
 				// Auto-initialize session on first user message
 				if (sessionManager.shouldInitializeSession(agent.state.messages)) {
-					// Check concurrent session limit before starting
-					// We define "active" as updated in the last hour
-					let activeCount: number | undefined;
-					try {
-						const sessions = sessionManager.loadAllSessions();
-						activeCount = sessions.filter(
-							(s) => Date.now() - s.modified.getTime() < 60 * 60 * 1000,
-						).length;
-					} catch (error) {
-						// Fallback to undefined to let checkSessionLimits decide (it will fail-closed if limit exists)
-						logger.warn("Failed to count active sessions", {
-							error: error instanceof Error ? error.message : String(error),
-						});
-					}
+					const initializationError = startSessionWithPolicy({
+						agent,
+						enterpriseContext,
+						logger,
+						modelId: registeredModel.id,
+						onSessionReady: (sessionId) => {
+							sendSessionUpdate(sseSession, sessionId);
+							sseSession.setContext({ sessionId });
+						},
+						sessionManager,
+						subject,
+					});
 
-					// Check against policy (+1 for the session we are about to create)
-					const limitCheck = checkSessionLimits(
-						{ startedAt: new Date() },
-						// If loadAllSessions failed (activeCount undefined), we pass undefined to trigger fail-closed
-						// If successful (activeCount number), we pass count + 1
-						activeCount !== undefined
-							? { activeSessionCount: activeCount + 1 }
-							: undefined,
-					);
-
-					if (!limitCheck.allowed) {
+					if (initializationError) {
 						// Send error to client via SSE
 						sendSSE(sseSession, {
 							type: "error",
-							message: `[Policy] ${limitCheck.reason}`,
+							message: `[Policy] ${initializationError}`,
 						});
 						sseSession.end();
 						return;
 					}
-
-					sessionManager.startSession(agent.state, { subject });
-
-					// Record session start in enterprise context for audit logging
-					if (enterpriseContext.isEnterprise()) {
-						enterpriseContext.startSession(
-							sessionManager.getSessionId(),
-							registeredModel.id,
-						);
-						const session = enterpriseContext.getSession();
-						if (session) {
-							agent.setSession({
-								id: session.sessionId,
-								startedAt: session.startedAt,
-							});
-						}
-					}
-
-					const sessionId = sessionManager.getSessionId();
-					sendSessionUpdate(sseSession, sessionId);
-					sseSession.setContext({ sessionId });
 				}
 			}
 
