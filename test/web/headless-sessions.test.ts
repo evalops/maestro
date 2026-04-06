@@ -2020,45 +2020,48 @@ describe("headless session handlers", () => {
 			.mockResolvedValueOnce(secondAgent);
 		const context = createContext({ createAgent });
 		const service = context.headlessRuntimeService;
-		const firstRuntime = await service.ensureRuntime({
-			scope_key: "anon",
-			sessionId: "first",
-			registeredModel: TEST_MODEL,
-			thinkingLevel: "off",
-			approvalMode: "prompt",
-			context,
-			sessionManager: createSessionManagerForRequest(
-				createJsonRequest("POST", "/api/headless/sessions", {}),
-				"headless",
-			),
-		});
-		const secondRuntime = await service.ensureRuntime({
-			scope_key: "anon",
-			sessionId: "second",
-			registeredModel: TEST_MODEL,
-			thinkingLevel: "off",
-			approvalMode: "prompt",
-			context,
-			sessionManager: createSessionManagerForRequest(
-				createJsonRequest("POST", "/api/headless/sessions", {}),
-				"headless",
-			),
-		});
+		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-runtime-"));
+		try {
+			const firstRuntime = await service.ensureRuntime({
+				scope_key: "anon",
+				sessionId: "first",
+				registeredModel: TEST_MODEL,
+				thinkingLevel: "off",
+				approvalMode: "prompt",
+				context,
+				sessionManager: new SessionManager(false, undefined, {
+					sessionDir: tempDir,
+				}),
+			});
+			const secondRuntime = await service.ensureRuntime({
+				scope_key: "anon",
+				sessionId: "second",
+				registeredModel: TEST_MODEL,
+				thinkingLevel: "off",
+				approvalMode: "prompt",
+				context,
+				sessionManager: new SessionManager(false, undefined, {
+					sessionDir: tempDir,
+				}),
+			});
 
-		vi.spyOn(firstRuntime, "isIdle").mockReturnValue(true);
-		vi.spyOn(secondRuntime, "isIdle").mockReturnValue(true);
-		vi.spyOn(firstRuntime, "dispose").mockRejectedValueOnce(
-			new Error("first dispose failed"),
-		);
+			vi.spyOn(firstRuntime, "isIdle").mockReturnValue(true);
+			vi.spyOn(secondRuntime, "isIdle").mockReturnValue(true);
+			vi.spyOn(firstRuntime, "dispose").mockRejectedValueOnce(
+				new Error("first dispose failed"),
+			);
 
-		await (
-			service as unknown as {
-				cleanup: () => Promise<void>;
-			}
-		).cleanup();
+			await (
+				service as unknown as {
+					cleanup: () => Promise<void>;
+				}
+			).cleanup();
 
-		expect(service.getRuntime("anon", firstRuntime.id())).toBe(firstRuntime);
-		expect(service.getRuntime("anon", secondRuntime.id())).toBeUndefined();
+			expect(service.getRuntime("anon", firstRuntime.id())).toBe(firstRuntime);
+			expect(service.getRuntime("anon", secondRuntime.id())).toBeUndefined();
+		} finally {
+			await rm(tempDir, { recursive: true, force: true });
+		}
 	});
 
 	it("force-disposes idle runtimes after repeated cleanup failures", async () => {

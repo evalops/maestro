@@ -855,6 +855,10 @@ export class SessionManager {
 		return context.modelMetadata ?? this.lastModelMetadata;
 	}
 
+	isInitialized(): boolean {
+		return this.sessionInitialized;
+	}
+
 	getSessionId(): string {
 		return this.sessionId;
 	}
