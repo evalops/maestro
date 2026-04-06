@@ -269,6 +269,23 @@ export interface McpRegistrySearchResponse {
 	entries: McpOfficialRegistryEntry[];
 }
 
+export interface McpResourceReadResponse {
+	contents: Array<{
+		uri: string;
+		text?: string;
+		blob?: string;
+		mimeType?: string;
+	}>;
+}
+
+export interface McpPromptResponse {
+	description?: string;
+	messages: Array<{
+		role: string;
+		content: string;
+	}>;
+}
+
 export interface McpRegistryImportRequest {
 	query: string;
 	name?: string;
@@ -1080,6 +1097,38 @@ export class ApiClient {
 			"/api/mcp?action=remove-auth-preset",
 			"POST",
 			input,
+		);
+	}
+
+	async readMcpResource(
+		server: string,
+		uri: string,
+	): Promise<McpResourceReadResponse> {
+		const params = new URLSearchParams({
+			action: "read-resource",
+			server,
+			uri,
+		});
+		return await this.fetchJson<McpResourceReadResponse>(
+			`/api/mcp?${params.toString()}`,
+		);
+	}
+
+	async getMcpPrompt(
+		server: string,
+		name: string,
+		args?: Record<string, string>,
+	): Promise<McpPromptResponse> {
+		const params = new URLSearchParams({
+			action: "get-prompt",
+			server,
+			name,
+		});
+		for (const [key, value] of Object.entries(args ?? {})) {
+			params.set(`arg:${key}`, value);
+		}
+		return await this.fetchJson<McpPromptResponse>(
+			`/api/mcp?${params.toString()}`,
 		);
 	}
 

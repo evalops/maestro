@@ -6,7 +6,9 @@ import {
 	buildMcpServerViewModel,
 	formatMcpArgsText,
 	formatMcpKeyValueText,
+	formatMcpPromptResult,
 	formatMcpRegistryImportMessage,
+	formatMcpResourceReadResult,
 	formatMcpServerAddMessage,
 	formatMcpServerRemoveMessage,
 	formatMcpServerUpdateMessage,
@@ -268,6 +270,36 @@ describe("buildMcpServerViewModel", () => {
 		expect(viewModel.headerKeys).toEqual(["Authorization", "X-Org"]);
 		expect(viewModel.headersHelper).toBe("bun run scripts/mcp-headers.ts");
 		expect(viewModel.timeout).toBe(20_000);
+	});
+});
+
+describe("MCP inspector formatting", () => {
+	it("formats MCP resource reads for display", () => {
+		expect(
+			formatMcpResourceReadResult({
+				contents: [
+					{
+						uri: "linear://workspace",
+						mimeType: "text/plain",
+						text: "workspace content",
+					},
+				],
+			}),
+		).toBe("linear://workspace\nmime: text/plain\n\nworkspace content");
+	});
+
+	it("formats MCP prompt results for display", () => {
+		expect(
+			formatMcpPromptResult({
+				description: "Summarize a Linear issue",
+				messages: [
+					{
+						role: "user",
+						content: "Summarize issue MAE-1",
+					},
+				],
+			}),
+		).toBe("Summarize a Linear issue\n\nuser:\nSummarize issue MAE-1");
 	});
 });
 

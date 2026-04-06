@@ -731,6 +731,18 @@ export function SettingsModal({
 		return result;
 	};
 
+	const readMcpResource = async (server: string, uri: string) => {
+		return await apiClient.readMcpResource(server, uri);
+	};
+
+	const getMcpPrompt = async (
+		server: string,
+		name: string,
+		args?: Record<string, string>,
+	) => {
+		return await apiClient.getMcpPrompt(server, name, args);
+	};
+
 	const refreshComposers = async () => {
 		try {
 			const status = await apiClient.getComposers();
@@ -909,6 +921,8 @@ export function SettingsModal({
 						onUpdateMcpAuthPreset={updateMcpAuthPreset}
 						onRemoveMcpServer={removeMcpServer}
 						onRemoveMcpAuthPreset={removeMcpAuthPreset}
+						onReadMcpResource={readMcpResource}
+						onGetMcpPrompt={getMcpPrompt}
 						composerStatus={composerStatus}
 						selectedComposer={selectedComposer}
 						onSelectedComposerChange={setSelectedComposer}
