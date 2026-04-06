@@ -13,6 +13,7 @@ type CommandOutput = {
 function createContext(overrides: Partial<WebSlashCommandContext> = {}) {
 	const outputs: CommandOutput[] = [];
 	const apiClient = {
+		addMcpServer: vi.fn(),
 		cancelQueuedPrompt: vi.fn(),
 		createBranch: vi.fn(),
 		enterPlanMode: vi.fn(),
@@ -34,6 +35,7 @@ function createContext(overrides: Partial<WebSlashCommandContext> = {}) {
 		getUsage: vi.fn(),
 		listBranchOptions: vi.fn(),
 		listQueue: vi.fn(),
+		removeMcpServer: vi.fn(),
 		runScript: vi.fn(),
 		saveConfig: vi.fn(),
 		searchMcpRegistry: vi.fn(),
@@ -44,6 +46,7 @@ function createContext(overrides: Partial<WebSlashCommandContext> = {}) {
 		setQueueMode: vi.fn(),
 		setTelemetry: vi.fn(),
 		setZenMode: vi.fn(),
+		updateMcpServer: vi.fn(),
 		updatePlan: vi.fn(),
 	};
 
@@ -197,6 +200,115 @@ describe("executeWebSlashCommand", () => {
 				output: expect.stringContaining(
 					'Imported official MCP server "linear"',
 				),
+			}),
+		]);
+	});
+
+	it("adds a remote MCP server from the web slash command", async () => {
+		const { context, outputs, apiClient } = createContext();
+		apiClient.addMcpServer.mockResolvedValue({
+			name: "custom-docs",
+			scope: "project",
+			path: "/repo/.maestro/mcp.json",
+			server: {
+				name: "custom-docs",
+				transport: "http",
+				url: "https://docs.example.com/mcp",
+				headersHelper: "bun run scripts/mcp-headers.ts",
+			},
+		});
+
+		await executeWebSlashCommand(
+			"mcp",
+			"add custom-docs https://docs.example.com/mcp --scope project --headers-helper 'bun run scripts/mcp-headers.ts'",
+			context,
+		);
+
+		expect(apiClient.addMcpServer).toHaveBeenCalledWith({
+			scope: "project",
+			server: expect.objectContaining({
+				name: "custom-docs",
+				transport: "http",
+				url: "https://docs.example.com/mcp",
+				headersHelper: "bun run scripts/mcp-headers.ts",
+			}),
+		});
+		expect(outputs).toEqual([
+			expect.objectContaining({
+				isError: false,
+				output: expect.stringContaining('Added MCP server "custom-docs"'),
+			}),
+		]);
+	});
+
+	it("edits a stdio MCP server from the web slash command", async () => {
+		const { context, outputs, apiClient } = createContext();
+		apiClient.updateMcpServer.mockResolvedValue({
+			name: "filesystem",
+			scope: "local",
+			path: "/repo/.maestro/mcp.local.json",
+			server: {
+				name: "filesystem",
+				transport: "stdio",
+				command: "npx",
+				args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+				cwd: "/repo",
+				env: { DEBUG: "1" },
+			},
+		});
+
+		await executeWebSlashCommand(
+			"mcp",
+			"edit filesystem --scope local --cwd /repo --env DEBUG=1 -- npx -y @modelcontextprotocol/server-filesystem /tmp",
+			context,
+		);
+
+		expect(apiClient.updateMcpServer).toHaveBeenCalledWith({
+			name: "filesystem",
+			scope: "local",
+			server: expect.objectContaining({
+				name: "filesystem",
+				transport: "stdio",
+				command: "npx",
+				args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+				cwd: "/repo",
+				env: { DEBUG: "1" },
+			}),
+		});
+		expect(outputs).toEqual([
+			expect.objectContaining({
+				isError: false,
+				output: expect.stringContaining('Updated MCP server "filesystem"'),
+			}),
+		]);
+	});
+
+	it("removes an MCP server from the web slash command", async () => {
+		const { context, outputs, apiClient } = createContext();
+		apiClient.removeMcpServer.mockResolvedValue({
+			name: "linear",
+			scope: "project",
+			path: "/repo/.maestro/mcp.json",
+			fallback: {
+				name: "linear",
+				scope: "user",
+			},
+		});
+
+		await executeWebSlashCommand(
+			"mcp",
+			"remove linear --scope project",
+			context,
+		);
+
+		expect(apiClient.removeMcpServer).toHaveBeenCalledWith({
+			name: "linear",
+			scope: "project",
+		});
+		expect(outputs).toEqual([
+			expect.objectContaining({
+				isError: false,
+				output: expect.stringContaining("fallback: linear (user)"),
 			}),
 		]);
 	});

@@ -44,8 +44,9 @@ const BUILTIN_WEB_SLASH_COMMANDS: Array<Omit<WebSlashCommand, "source">> = [
 	},
 	{
 		name: "mcp",
-		description: "Show MCP servers or search/import official remotes",
-		usage: "/mcp [status|search <query>|import <id> [name]]",
+		description: "Show, manage, or import MCP servers",
+		usage:
+			"/mcp [status|search <query>|add <name> <command-or-url>|edit <name> <command-or-url>|remove <name>|import <id> [name]]",
 		tags: ["tools"],
 	},
 	{

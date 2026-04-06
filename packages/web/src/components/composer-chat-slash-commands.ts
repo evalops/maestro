@@ -3,6 +3,10 @@ import type {
 	McpOfficialRegistryEntry,
 	McpRegistryImportRequest,
 	McpRegistryImportResponse,
+	McpServerAddRequest,
+	McpServerMutationResponse,
+	McpServerRemoveRequest,
+	McpServerRemoveResponse,
 	McpStatus,
 } from "../services/api-client.js";
 import {
@@ -29,12 +33,14 @@ type WebSlashCommandApiClient = Pick<
 	| "getReview"
 	| "getRunScripts"
 	| "importMcpRegistry"
+	| "addMcpServer"
 	| "getStats"
 	| "getStatus"
 	| "getTelemetryStatus"
 	| "getUsage"
 	| "listBranchOptions"
 	| "listQueue"
+	| "removeMcpServer"
 	| "runScript"
 	| "saveConfig"
 	| "searchMcpRegistry"
@@ -45,6 +51,7 @@ type WebSlashCommandApiClient = Pick<
 	| "setQueueMode"
 	| "setTelemetry"
 	| "setZenMode"
+	| "updateMcpServer"
 	| "updatePlan"
 >;
 
@@ -56,6 +63,17 @@ type ApprovalModeStatusUpdate = {
 	notify?: boolean;
 	sessionId?: string | null;
 };
+
+type WritableMcpScope = "local" | "project" | "user";
+type McpTransport = "stdio" | "http" | "sse";
+
+const MCP_ADD_USAGE =
+	"/mcp add <name> <command-or-url> [args...] [--scope local|project|user] [--transport stdio|http|sse] [--cwd <path>] [--env KEY=value] [--header 'Name: value'] [--headers-helper <command>]";
+const MCP_EDIT_USAGE =
+	"/mcp edit <name> <command-or-url> [args...] [--scope local|project|user] [--transport stdio|http|sse] [--cwd <path>] [--env KEY=value] [--header 'Name: value'] [--headers-helper <command>]";
+const MCP_REMOVE_USAGE = "/mcp remove <name> [--scope local|project|user]";
+const MCP_IMPORT_USAGE =
+	"/mcp import <id> [name] [--scope local|project|user] [--url <https-url>] [--transport http|sse]";
 
 export interface WebSlashCommandContext {
 	apiClient: WebSlashCommandApiClient;
@@ -145,6 +163,29 @@ function tokenizeSlashArgs(input: string): string[] {
 		}
 		return token;
 	});
+}
+
+function isWritableMcpScope(value: string): value is WritableMcpScope {
+	return value === "local" || value === "project" || value === "user";
+}
+
+function isMcpTransport(value: string): value is McpTransport {
+	return value === "stdio" || value === "http" || value === "sse";
+}
+
+function looksLikeRemoteUrl(value: string): boolean {
+	try {
+		const parsed = new URL(value);
+		return parsed.protocol === "http:" || parsed.protocol === "https:";
+	} catch {
+		return false;
+	}
+}
+
+function inferRemoteTransport(
+	url: string,
+): Extract<McpTransport, "http" | "sse"> {
+	return /(^|\/)sse(\/|$)/i.test(url) ? "sse" : "http";
 }
 
 function formatMcpStatusBlock(status: McpStatus): string {
@@ -240,6 +281,289 @@ function formatMcpImportResult(result: McpRegistryImportResponse): string {
 	].join("\n");
 }
 
+function formatMcpServerMutationResult(
+	action: "added" | "updated",
+	result: McpServerMutationResponse,
+): string {
+	const lines = [
+		`${action === "added" ? "Added" : "Updated"} MCP server "${result.name}"`,
+		`scope: ${result.scope}`,
+		`path: ${result.path}`,
+		`transport: ${result.server.transport}`,
+	];
+
+	if (result.server.url) {
+		lines.push(`remote: ${result.server.url}`);
+	}
+	if (result.server.command) {
+		lines.push(`command: ${result.server.command}`);
+	}
+	if (result.server.args && result.server.args.length > 0) {
+		lines.push(`args: ${result.server.args.join(" ")}`);
+	}
+	if (result.server.cwd) {
+		lines.push(`cwd: ${result.server.cwd}`);
+	}
+	if (result.server.env && Object.keys(result.server.env).length > 0) {
+		lines.push(`env: ${Object.keys(result.server.env).sort().join(", ")}`);
+	}
+	if (result.server.headers && Object.keys(result.server.headers).length > 0) {
+		lines.push(
+			`headers: ${Object.keys(result.server.headers).sort().join(", ")}`,
+		);
+	}
+	if (result.server.headersHelper) {
+		lines.push(`headers-helper: ${result.server.headersHelper}`);
+	}
+	if (typeof result.server.timeout === "number") {
+		lines.push(`timeout: ${result.server.timeout}`);
+	}
+
+	return lines.join("\n");
+}
+
+function formatMcpRemoveResult(result: McpServerRemoveResponse): string {
+	return [
+		`Removed MCP server "${result.name}"`,
+		`scope: ${result.scope}`,
+		`path: ${result.path}`,
+		result.fallback
+			? `fallback: ${result.fallback.name} (${result.fallback.scope ?? "unknown"})`
+			: "fallback: none",
+	].join("\n");
+}
+
+type ParsedMcpMutationCommand = {
+	scope?: WritableMcpScope;
+	server: McpServerAddRequest["server"];
+};
+
+function parseMcpServerMutationArgs(
+	args: string,
+	command: "add" | "edit",
+):
+	| { ok: true; request: ParsedMcpMutationCommand }
+	| { ok: false; error: string } {
+	const usage = command === "add" ? MCP_ADD_USAGE : MCP_EDIT_USAGE;
+	const tokens = tokenizeSlashArgs(args);
+	if (tokens[0]?.toLowerCase() !== command) {
+		return { ok: false, error: usage };
+	}
+
+	const name = tokens[1];
+	if (!name) {
+		return { ok: false, error: usage };
+	}
+
+	let scope: WritableMcpScope | undefined;
+	let transport: McpTransport | undefined;
+	let cwd: string | undefined;
+	let headersHelper: string | undefined;
+	const headers: Record<string, string> = {};
+	const env: Record<string, string> = {};
+	const positionals: string[] = [];
+	let separatorIndex = -1;
+
+	for (let index = 2; index < tokens.length; index += 1) {
+		const token = tokens[index]!;
+		if (token === "--") {
+			separatorIndex = index;
+			break;
+		}
+		if (token === "--scope" || token === "-s") {
+			const value = tokens[index + 1];
+			if (!value || !isWritableMcpScope(value)) {
+				return {
+					ok: false,
+					error: "Invalid MCP scope. Use local, project, or user.",
+				};
+			}
+			scope = value;
+			index += 1;
+			continue;
+		}
+		if (token === "--transport" || token === "-t") {
+			const value = tokens[index + 1];
+			if (!value || !isMcpTransport(value)) {
+				return {
+					ok: false,
+					error: "Invalid MCP transport. Use stdio, http, or sse.",
+				};
+			}
+			transport = value;
+			index += 1;
+			continue;
+		}
+		if (token === "--cwd") {
+			const value = tokens[index + 1];
+			if (!value) {
+				return { ok: false, error: "Missing value for --cwd." };
+			}
+			cwd = value;
+			index += 1;
+			continue;
+		}
+		if (token === "--headers-helper") {
+			const value = tokens[index + 1];
+			if (!value) {
+				return { ok: false, error: "Missing value for --headers-helper." };
+			}
+			headersHelper = value;
+			index += 1;
+			continue;
+		}
+		if (token === "--header" || token === "-H") {
+			const value = tokens[index + 1];
+			if (!value) {
+				return { ok: false, error: "Missing value for --header." };
+			}
+			const [headerName, ...rest] = value.split(":");
+			const headerValue = rest.join(":").trim();
+			if (!headerName?.trim() || headerValue.length === 0) {
+				return { ok: false, error: `Invalid MCP header: ${value}` };
+			}
+			headers[headerName.trim()] = headerValue;
+			index += 1;
+			continue;
+		}
+		if (token === "--env" || token === "-e") {
+			const value = tokens[index + 1];
+			if (!value) {
+				return { ok: false, error: "Missing value for --env." };
+			}
+			const separator = value.indexOf("=");
+			if (separator <= 0) {
+				return { ok: false, error: `Invalid MCP env var: ${value}` };
+			}
+			const envName = value.slice(0, separator).trim();
+			if (!envName) {
+				return { ok: false, error: `Invalid MCP env var: ${value}` };
+			}
+			env[envName] = value.slice(separator + 1);
+			index += 1;
+			continue;
+		}
+
+		positionals.push(token);
+	}
+
+	const commandTokens =
+		separatorIndex >= 0 ? tokens.slice(separatorIndex + 1) : positionals;
+	if (commandTokens.length === 0) {
+		return { ok: false, error: usage };
+	}
+
+	const target = commandTokens[0]!;
+	const resolvedTransport =
+		transport ??
+		(looksLikeRemoteUrl(target) ? inferRemoteTransport(target) : "stdio");
+
+	if (resolvedTransport === "http" || resolvedTransport === "sse") {
+		if (!looksLikeRemoteUrl(target)) {
+			return {
+				ok: false,
+				error: `Remote MCP servers require an http(s) URL target. Received: ${target}`,
+			};
+		}
+		if (commandTokens.length > 1) {
+			return {
+				ok: false,
+				error:
+					"Remote MCP servers accept a single URL target. Move command arguments after -- only for stdio servers.",
+			};
+		}
+		if (cwd) {
+			return {
+				ok: false,
+				error: "--cwd is only supported for stdio MCP servers.",
+			};
+		}
+		if (Object.keys(env).length > 0) {
+			return {
+				ok: false,
+				error: "--env is only supported for stdio MCP servers.",
+			};
+		}
+		return {
+			ok: true,
+			request: {
+				scope,
+				server: {
+					name,
+					transport: resolvedTransport,
+					url: target,
+					headers: Object.keys(headers).length > 0 ? headers : undefined,
+					headersHelper,
+				},
+			},
+		};
+	}
+
+	if (Object.keys(headers).length > 0) {
+		return {
+			ok: false,
+			error: "--header is only supported for remote MCP servers.",
+		};
+	}
+	if (headersHelper) {
+		return {
+			ok: false,
+			error: "--headers-helper is only supported for remote MCP servers.",
+		};
+	}
+
+	return {
+		ok: true,
+		request: {
+			scope,
+			server: {
+				name,
+				transport: "stdio",
+				command: target,
+				args: commandTokens.slice(1),
+				env: Object.keys(env).length > 0 ? env : undefined,
+				cwd,
+			},
+		},
+	};
+}
+
+function parseMcpRemoveArgs(
+	args: string,
+):
+	| { ok: true; request: McpServerRemoveRequest }
+	| { ok: false; error: string } {
+	const tokens = tokenizeSlashArgs(args);
+	if (tokens[0]?.toLowerCase() !== "remove") {
+		return { ok: false, error: MCP_REMOVE_USAGE };
+	}
+
+	const name = tokens[1];
+	if (!name) {
+		return { ok: false, error: MCP_REMOVE_USAGE };
+	}
+
+	let scope: WritableMcpScope | undefined;
+	for (let index = 2; index < tokens.length; index += 1) {
+		const token = tokens[index]!;
+		if (token === "--scope" || token === "-s") {
+			const value = tokens[index + 1];
+			if (!value || !isWritableMcpScope(value)) {
+				return {
+					ok: false,
+					error: "Invalid MCP scope. Use local, project, or user.",
+				};
+			}
+			scope = value;
+			index += 1;
+			continue;
+		}
+		return { ok: false, error: MCP_REMOVE_USAGE };
+	}
+
+	return { ok: true, request: { name, scope } };
+}
+
 function parseMcpImportArgs(
 	args: string,
 ):
@@ -249,8 +573,7 @@ function parseMcpImportArgs(
 	if (tokens[0]?.toLowerCase() !== "import") {
 		return {
 			ok: false,
-			error:
-				"Usage: /mcp import <id> [name] [--scope local|project|user] [--url <https-url>] [--transport http|sse]",
+			error: MCP_IMPORT_USAGE,
 		};
 	}
 
@@ -267,8 +590,7 @@ function parseMcpImportArgs(
 			if (!value || !["local", "project", "user"].includes(value)) {
 				return {
 					ok: false,
-					error:
-						"Usage: /mcp import <id> [name] [--scope local|project|user] [--url <https-url>] [--transport http|sse]",
+					error: MCP_IMPORT_USAGE,
 				};
 			}
 			scope = value as McpRegistryImportRequest["scope"];
@@ -280,8 +602,7 @@ function parseMcpImportArgs(
 			if (!value) {
 				return {
 					ok: false,
-					error:
-						"Usage: /mcp import <id> [name] [--scope local|project|user] [--url <https-url>] [--transport http|sse]",
+					error: MCP_IMPORT_USAGE,
 				};
 			}
 			url = value;
@@ -293,8 +614,7 @@ function parseMcpImportArgs(
 			if (!value || !["http", "sse"].includes(value)) {
 				return {
 					ok: false,
-					error:
-						"Usage: /mcp import <id> [name] [--scope local|project|user] [--url <https-url>] [--transport http|sse]",
+					error: MCP_IMPORT_USAGE,
 				};
 			}
 			transport = value as McpRegistryImportRequest["transport"];
@@ -304,8 +624,7 @@ function parseMcpImportArgs(
 		if (token.startsWith("--")) {
 			return {
 				ok: false,
-				error:
-					"Usage: /mcp import <id> [name] [--scope local|project|user] [--url <https-url>] [--transport http|sse]",
+				error: MCP_IMPORT_USAGE,
 			};
 		}
 		if (!query) {
@@ -318,16 +637,14 @@ function parseMcpImportArgs(
 		}
 		return {
 			ok: false,
-			error:
-				"Usage: /mcp import <id> [name] [--scope local|project|user] [--url <https-url>] [--transport http|sse]",
+			error: MCP_IMPORT_USAGE,
 		};
 	}
 
 	if (!query) {
 		return {
 			ok: false,
-			error:
-				"Usage: /mcp import <id> [name] [--scope local|project|user] [--url <https-url>] [--transport http|sse]",
+			error: MCP_IMPORT_USAGE,
 		};
 	}
 
@@ -489,6 +806,58 @@ export async function executeWebSlashCommand(
 					break;
 				}
 
+				if (sub === "add") {
+					if (!requireWritableSession("MCP add")) break;
+					const parsed = parseMcpServerMutationArgs(args, "add");
+					if (!parsed.ok) {
+						context.appendCommandOutput(parsed.error, true);
+						break;
+					}
+					const result = await context.apiClient.addMcpServer(parsed.request);
+					context.appendCommandOutput(
+						formatCommandCodeBlock(
+							formatMcpServerMutationResult("added", result),
+						),
+					);
+					break;
+				}
+
+				if (sub === "edit") {
+					if (!requireWritableSession("MCP edit")) break;
+					const parsed = parseMcpServerMutationArgs(args, "edit");
+					if (!parsed.ok) {
+						context.appendCommandOutput(parsed.error, true);
+						break;
+					}
+					const result = await context.apiClient.updateMcpServer({
+						name: parsed.request.server.name,
+						scope: parsed.request.scope,
+						server: parsed.request.server,
+					});
+					context.appendCommandOutput(
+						formatCommandCodeBlock(
+							formatMcpServerMutationResult("updated", result),
+						),
+					);
+					break;
+				}
+
+				if (sub === "remove") {
+					if (!requireWritableSession("MCP remove")) break;
+					const parsed = parseMcpRemoveArgs(args);
+					if (!parsed.ok) {
+						context.appendCommandOutput(parsed.error, true);
+						break;
+					}
+					const result = await context.apiClient.removeMcpServer(
+						parsed.request,
+					);
+					context.appendCommandOutput(
+						formatCommandCodeBlock(formatMcpRemoveResult(result)),
+					);
+					break;
+				}
+
 				if (["help", "-h", "--help", "?"].includes(sub)) {
 					context.appendCommandOutput(
 						formatCommandCodeBlock(
@@ -496,6 +865,9 @@ export async function executeWebSlashCommand(
 								"/mcp",
 								"/mcp status",
 								"/mcp search [query]",
+								MCP_ADD_USAGE,
+								MCP_EDIT_USAGE,
+								MCP_REMOVE_USAGE,
 								"/mcp import <id> [name] [--scope local|project|user]",
 							].join("\n"),
 						),
@@ -504,7 +876,7 @@ export async function executeWebSlashCommand(
 				}
 
 				context.appendCommandOutput(
-					"Usage: /mcp [status|search <query>|import <id> [name]]",
+					"Usage: /mcp [status|search <query>|add <name> <command-or-url>|edit <name> <command-or-url>|remove <name>|import <id> [name]]",
 					true,
 				);
 				break;
