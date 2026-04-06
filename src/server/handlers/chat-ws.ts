@@ -395,12 +395,14 @@ export function handleChatWebSocket(
 
 			const sessionManager = createSessionManagerForRequest(req, false);
 			const subject = getAuthSubject(req);
+			let existingSessionLoaded = false;
 			if (chatReq.sessionId) {
 				const sessionFile = sessionManager.getSessionFileById(
 					chatReq.sessionId,
 				);
 				if (sessionFile) {
 					sessionManager.setSessionFile(sessionFile);
+					existingSessionLoaded = true;
 				}
 			}
 
@@ -495,6 +497,73 @@ export function handleChatWebSocket(
 			const modelKey = `${registeredModel.provider}/${registeredModel.id}`;
 			const wsSession = new WsSession(ws, undefined, { requestId, modelKey });
 			const { enterpriseContext } = await import("../../enterprise/context.js");
+
+			const initializeSessionIfNeeded = (): string | null => {
+				if (existingSessionLoaded || sessionManager.isInitialized()) {
+					return null;
+				}
+
+				let activeCount: number | undefined;
+				try {
+					const sessions = sessionManager.loadAllSessions();
+					activeCount = sessions.filter(
+						(session) =>
+							Date.now() - session.modified.getTime() < 60 * 60 * 1000,
+					).length;
+				} catch (error) {
+					logger.warn("Failed to count active sessions", {
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
+
+				const limitCheck = checkSessionLimits(
+					{ startedAt: new Date() },
+					activeCount !== undefined
+						? { activeSessionCount: activeCount + 1 }
+						: undefined,
+				);
+
+				if (!limitCheck.allowed) {
+					return limitCheck.reason ?? "Session policy blocked chat request";
+				}
+
+				sessionManager.startSession(agent.state, { subject });
+
+				if (enterpriseContext.isEnterprise()) {
+					enterpriseContext.startSession(
+						sessionManager.getSessionId(),
+						registeredModel.id,
+					);
+					const session = enterpriseContext.getSession();
+					if (session) {
+						agent.setSession({
+							id: session.sessionId,
+							startedAt: session.startedAt,
+						});
+					}
+				}
+
+				const sessionId = sessionManager.getSessionId();
+				wsSession.sendSessionUpdate(sessionId);
+				wsSession.setContext({ sessionId });
+				existingSessionLoaded = true;
+				return null;
+			};
+
+			const initializationError = initializeSessionIfNeeded();
+			if (initializationError) {
+				wsSession.sendEvent({
+					type: "error",
+					message: `[Policy] ${initializationError}`,
+				});
+				wsSession.sendDone();
+				wsSession.end();
+				if (sseLease && releaseSse) {
+					releaseSse(sseLease);
+					sseLease = null;
+				}
+				return;
+			}
 
 			const toolArgsByCallId = new Map<string, Record<string, unknown>>();
 			const slimValue = getRequestHeader(

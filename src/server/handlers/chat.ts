@@ -256,10 +256,12 @@ export async function handleChat(
 		const subject = getAuthSubject(req);
 
 		// Resume existing session if sessionId provided
+		let existingSessionLoaded = false;
 		if (chatReq.sessionId) {
 			const sessionFile = sessionManager.getSessionFileById(chatReq.sessionId);
 			if (sessionFile) {
 				sessionManager.setSessionFile(sessionFile);
+				existingSessionLoaded = true;
 			}
 		}
 
@@ -374,6 +376,71 @@ export async function handleChat(
 		// Subscribe to agent events and forward them to the SSE stream
 		// Pre-load enterprise context for session tracking
 		const { enterpriseContext } = await import("../../enterprise/context.js");
+
+		const initializeSessionIfNeeded = (): string | null => {
+			if (existingSessionLoaded || sessionManager.isInitialized()) {
+				return null;
+			}
+
+			let activeCount: number | undefined;
+			try {
+				const sessions = sessionManager.loadAllSessions();
+				activeCount = sessions.filter(
+					(session) => Date.now() - session.modified.getTime() < 60 * 60 * 1000,
+				).length;
+			} catch (error) {
+				logger.warn("Failed to count active sessions", {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+
+			const limitCheck = checkSessionLimits(
+				{ startedAt: new Date() },
+				activeCount !== undefined
+					? { activeSessionCount: activeCount + 1 }
+					: undefined,
+			);
+
+			if (!limitCheck.allowed) {
+				return limitCheck.reason ?? "Session policy blocked chat request";
+			}
+
+			sessionManager.startSession(agent.state, { subject });
+
+			if (enterpriseContext.isEnterprise()) {
+				enterpriseContext.startSession(
+					sessionManager.getSessionId(),
+					registeredModel.id,
+				);
+				const session = enterpriseContext.getSession();
+				if (session) {
+					agent.setSession({
+						id: session.sessionId,
+						startedAt: session.startedAt,
+					});
+				}
+			}
+
+			const sessionId = sessionManager.getSessionId();
+			sendSessionUpdate(sseSession, sessionId);
+			sseSession.setContext({ sessionId });
+			existingSessionLoaded = true;
+			return null;
+		};
+
+		const initializationError = initializeSessionIfNeeded();
+		if (initializationError) {
+			sendSSE(sseSession, {
+				type: "error",
+				message: `[Policy] ${initializationError}`,
+			});
+			sseSession.end();
+			if (sseLease && releaseSse) {
+				releaseSse(sseLease);
+				sseLease = null;
+			}
+			return;
+		}
 
 		const toolArgsByCallId = new Map<string, Record<string, unknown>>();
 		const slimValue = getRequestHeader(
