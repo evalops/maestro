@@ -24,6 +24,7 @@ export const mcpServerSchema = z
 		// http/sse
 		url: z.string().url().optional(),
 		headers: z.record(z.string(), z.string()).optional(),
+		headersHelper: z.string().optional(),
 		// common
 		timeout: z.number().int().positive().optional(),
 		enabled: z.boolean().optional(),

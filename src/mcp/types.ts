@@ -49,6 +49,7 @@ export interface McpServerConfig {
 	// For http/sse transport
 	url?: string;
 	headers?: Record<string, string>;
+	headersHelper?: string;
 	// Common options
 	enabled?: boolean;
 	disabled?: boolean;

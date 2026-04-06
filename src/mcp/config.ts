@@ -46,7 +46,7 @@
  * ## Environment Variable Expansion
  *
  * Supports `${VAR}` and `${VAR:-default}` syntax in:
- * - command, args, url, cwd
+ * - command, args, url, cwd, headersHelper
  * - env values
  * - headers
  *
@@ -301,6 +301,7 @@ function expandEnv(
 					}),
 				)
 			: undefined,
+		headersHelper: expand(server.headersHelper),
 		cwd: expand(server.cwd),
 	};
 }

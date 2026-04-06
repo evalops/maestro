@@ -35,10 +35,13 @@
  * - `log`: Log message from server
  */
 
+import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { promisify } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
 	LoggingMessageNotificationSchema,
@@ -48,6 +51,7 @@ import {
 	ResourceListChangedNotificationSchema,
 	ToolListChangedNotificationSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import { parseCommandArguments } from "../tools/shell-utils.js";
 import { createLogger } from "../utils/logger.js";
 import { getHomeDir } from "../utils/path-expansion.js";
 import type {
@@ -58,6 +62,7 @@ import type {
 } from "./types.js";
 
 const logger = createLogger("mcp:manager");
+const execFileAsync = promisify(execFile);
 
 /**
  * Result from calling an MCP tool.
@@ -81,6 +86,111 @@ const DEFAULT_RECONNECT_DELAY_MS = 5000;
 
 // Maximum number of automatic reconnection attempts
 const MAX_RECONNECT_ATTEMPTS = 3;
+
+function buildSafeEnv(
+	explicitEnv?: Record<string, string>,
+	extraEnv?: Record<string, string>,
+): Record<string, string> {
+	const safeBaseEnv: Record<string, string> = {};
+	if (process.env.PATH) safeBaseEnv.PATH = process.env.PATH;
+	if (process.env.HOME) {
+		safeBaseEnv.HOME = process.env.HOME;
+	} else {
+		const homeDir = getHomeDir();
+		if (homeDir) safeBaseEnv.HOME = homeDir;
+	}
+	if (process.env.USER) {
+		safeBaseEnv.USER = process.env.USER;
+	} else if (process.env.USERNAME) {
+		safeBaseEnv.USER = process.env.USERNAME;
+	}
+	if (process.env.SHELL) safeBaseEnv.SHELL = process.env.SHELL;
+	if (process.env.TERM) safeBaseEnv.TERM = process.env.TERM;
+
+	return Object.fromEntries(
+		Object.entries({ ...safeBaseEnv, ...explicitEnv, ...extraEnv }).filter(
+			([, value]) => value !== undefined,
+		),
+	) as Record<string, string>;
+}
+
+async function resolveHeadersHelper(
+	config: McpServerConfig,
+): Promise<Record<string, string> | undefined> {
+	if (!config.headersHelper) {
+		return undefined;
+	}
+
+	let command: string[];
+	try {
+		command = parseCommandArguments(config.headersHelper);
+	} catch (error) {
+		logger.warn("Invalid MCP headers helper command", {
+			name: config.name,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return undefined;
+	}
+
+	if (command.length === 0) {
+		logger.warn("Empty MCP headers helper command", { name: config.name });
+		return undefined;
+	}
+
+	try {
+		const { stdout } = await execFileAsync(command[0]!, command.slice(1), {
+			cwd: config.cwd,
+			env: buildSafeEnv(config.env, {
+				MAESTRO_MCP_SERVER_NAME: config.name,
+				MAESTRO_MCP_SERVER_URL: config.url ?? "",
+			}),
+			timeout: config.timeout ?? DEFAULT_TIMEOUT_MS,
+			maxBuffer: 1024 * 1024,
+			encoding: "utf8",
+			windowsHide: true,
+		});
+
+		const trimmed = stdout.trim();
+		if (!trimmed) {
+			return {};
+		}
+
+		const parsed = JSON.parse(trimmed) as unknown;
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+			throw new Error("headersHelper must return a JSON object");
+		}
+
+		const headers: Record<string, string> = {};
+		for (const [key, value] of Object.entries(parsed)) {
+			if (typeof value !== "string") {
+				throw new Error(
+					`headersHelper must return string values for key "${key}"`,
+				);
+			}
+			headers[key] = value;
+		}
+
+		return headers;
+	} catch (error) {
+		logger.warn("Failed to resolve MCP headers helper", {
+			name: config.name,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return undefined;
+	}
+}
+
+async function buildRemoteRequestInit(
+	config: McpServerConfig,
+): Promise<RequestInit | undefined> {
+	const helperHeaders = await resolveHeadersHelper(config);
+	const headers = {
+		...(config.headers ?? {}),
+		...(helperHeaders ?? {}),
+	};
+
+	return Object.keys(headers).length > 0 ? { headers } : undefined;
+}
 
 /**
  * Internal state for a connected MCP server.
@@ -237,7 +347,20 @@ export class McpClientManager extends EventEmitter {
 					logger.warn("No URL specified for HTTP server", { name });
 					return;
 				}
-				transport = new SSEClientTransport(new URL(config.url));
+				const requestInit = await buildRemoteRequestInit(config);
+				const transportOptions = requestInit ? { requestInit } : undefined;
+
+				if (transportType === "http") {
+					transport = new StreamableHTTPClientTransport(
+						new URL(config.url),
+						transportOptions,
+					);
+				} else {
+					transport = new SSEClientTransport(
+						new URL(config.url),
+						transportOptions,
+					);
+				}
 			} else {
 				// Stdio transport - spawn subprocess
 				if (!config.command) {
@@ -247,35 +370,10 @@ export class McpClientManager extends EventEmitter {
 
 				// SECURITY: Only pass essential env vars plus explicit config
 				// Do NOT pass process.env - this would leak API keys and secrets
-				const safeBaseEnv: Record<string, string> = {};
-				if (process.env.PATH) safeBaseEnv.PATH = process.env.PATH;
-				if (process.env.HOME) {
-					safeBaseEnv.HOME = process.env.HOME;
-				} else {
-					const homeDir = getHomeDir();
-					if (homeDir) safeBaseEnv.HOME = homeDir;
-				}
-				if (process.env.USER) {
-					safeBaseEnv.USER = process.env.USER;
-				} else if (process.env.USERNAME) {
-					safeBaseEnv.USER = process.env.USERNAME;
-				}
-				if (process.env.SHELL) safeBaseEnv.SHELL = process.env.SHELL;
-				if (process.env.TERM) safeBaseEnv.TERM = process.env.TERM;
-
-				// Merge explicit config env vars with safe base
-				const mergedEnv = config.env
-					? Object.fromEntries(
-							Object.entries({ ...safeBaseEnv, ...config.env }).filter(
-								([, v]) => v !== undefined,
-							),
-						)
-					: safeBaseEnv;
-
 				transport = new StdioClientTransport({
 					command: config.command,
 					args: config.args,
-					env: mergedEnv as Record<string, string> | undefined,
+					env: buildSafeEnv(config.env),
 					cwd: config.cwd,
 				});
 			}
