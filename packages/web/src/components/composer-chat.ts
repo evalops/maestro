@@ -1633,6 +1633,17 @@ export class ComposerChat extends LitElement {
 		);
 	}
 
+	private resetPendingSessionRequestUiState() {
+		this.pendingApprovalQueue = [];
+		this.approvalSubmitting = false;
+		this.pendingToolRetryQueue = [];
+		this.toolRetrySubmitting = false;
+		this.pendingMcpElicitationQueue = [];
+		this.mcpElicitationSubmitting = false;
+		this.pendingUserInputQueue = [];
+		this.userInputSubmitting = false;
+	}
+
 	private restorePendingSessionRequests(session: Session) {
 		this.pendingApprovalQueue = Array.isArray(session.pendingApprovalRequests)
 			? [...session.pendingApprovalRequests]
@@ -2430,14 +2441,7 @@ export class ComposerChat extends LitElement {
 		}
 
 		if (changed.has("currentSessionId")) {
-			this.pendingApprovalQueue = [];
-			this.approvalSubmitting = false;
-			this.pendingToolRetryQueue = [];
-			this.toolRetrySubmitting = false;
-			this.pendingMcpElicitationQueue = [];
-			this.mcpElicitationSubmitting = false;
-			this.pendingUserInputQueue = [];
-			this.userInputSubmitting = false;
+			this.resetPendingSessionRequestUiState();
 			if (this.currentSessionId) {
 				void this.refreshUiState(this.currentSessionId);
 			}
@@ -3033,7 +3037,6 @@ export class ComposerChat extends LitElement {
 	}
 
 	private async selectSession(sessionId: string) {
-		this.currentSessionId = sessionId;
 		this.runtimeStatus = null;
 		try {
 			const session = await this.apiClient.getSession(sessionId);
@@ -3051,6 +3054,7 @@ export class ComposerChat extends LitElement {
 			this.artifactsState = reconstructArtifactsFromMessages(this.messages);
 			this.activeArtifact = null;
 			this.error = null;
+			await this.updateComplete;
 			this.restorePendingSessionRequests(session);
 			await this.refreshUiState(session.id);
 			this.requestUpdate(); // Force update

@@ -356,6 +356,9 @@ export class ComposerToolRetry extends LitElement {
 	}
 
 	private handleKeyDown(event: KeyboardEvent) {
+		if (!this.request) {
+			return;
+		}
 		if (event.key === "Enter") {
 			event.preventDefault();
 			this.dispatchDecision("retry");

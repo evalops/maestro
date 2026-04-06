@@ -441,7 +441,7 @@ export class ComposerUserInput extends LitElement {
 				...current,
 				selectedOptionIndexes: checked ? [optionIndex] : [],
 				otherSelected: false,
-				otherText: checked ? "" : current.otherText,
+				otherText: current.otherText,
 			};
 		}
 

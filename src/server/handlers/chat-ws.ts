@@ -20,7 +20,6 @@ import {
 } from "../../hooks/notification-hooks.js";
 import { createSessionHookService } from "../../hooks/session-integration.js";
 import { withMcpPostKeepMessages } from "../../mcp/prompt-recovery.js";
-import { checkSessionLimits } from "../../safety/policy.js";
 import { toSessionModelMetadata } from "../../session/manager.js";
 import { createRuntimeSessionSummaryUpdater } from "../../session/runtime-summary-updater.js";
 import { createLogger } from "../../utils/logger.js";
@@ -36,6 +35,7 @@ import { getAgentCircuitBreaker } from "../circuit-breaker.js";
 import { clientToolService } from "../client-tools-service.js";
 import { serverRequestManager } from "../server-request-manager.js";
 import { getRequestHeader } from "../server-utils.js";
+import { startSessionWithPolicy } from "../session-initialization.js";
 import { createSessionManagerForRequest } from "../session-scope.js";
 import { convertComposerMessagesToApp } from "../session-serialization.js";
 import type { SseContext, SseSkipListener } from "../sse-session.js";
@@ -503,50 +503,21 @@ export function handleChatWebSocket(
 				if (existingSessionLoaded || sessionManager.isInitialized()) {
 					return null;
 				}
-
-				let activeCount: number | undefined;
-				try {
-					const sessions = sessionManager.loadAllSessions();
-					activeCount = sessions.filter(
-						(session) =>
-							Date.now() - session.modified.getTime() < 60 * 60 * 1000,
-					).length;
-				} catch (error) {
-					logger.warn("Failed to count active sessions", {
-						error: error instanceof Error ? error.message : String(error),
-					});
+				const initializationError = startSessionWithPolicy({
+					agent,
+					enterpriseContext,
+					logger,
+					modelId: registeredModel.id,
+					onSessionReady: (sessionId) => {
+						wsSession.sendSessionUpdate(sessionId);
+						wsSession.setContext({ sessionId });
+					},
+					sessionManager,
+					subject,
+				});
+				if (initializationError) {
+					return initializationError;
 				}
-
-				const limitCheck = checkSessionLimits(
-					{ startedAt: new Date() },
-					activeCount !== undefined
-						? { activeSessionCount: activeCount + 1 }
-						: undefined,
-				);
-
-				if (!limitCheck.allowed) {
-					return limitCheck.reason ?? "Session policy blocked chat request";
-				}
-
-				sessionManager.startSession(agent.state, { subject });
-
-				if (enterpriseContext.isEnterprise()) {
-					enterpriseContext.startSession(
-						sessionManager.getSessionId(),
-						registeredModel.id,
-					);
-					const session = enterpriseContext.getSession();
-					if (session) {
-						agent.setSession({
-							id: session.sessionId,
-							startedAt: session.startedAt,
-						});
-					}
-				}
-
-				const sessionId = sessionManager.getSessionId();
-				wsSession.sendSessionUpdate(sessionId);
-				wsSession.setContext({ sessionId });
 				existingSessionLoaded = true;
 				return null;
 			};
@@ -770,53 +741,27 @@ export function handleChatWebSocket(
 					sessionManager.saveMessage(event.message);
 
 					if (sessionManager.shouldInitializeSession(agent.state.messages)) {
-						let activeCount: number | undefined;
-						try {
-							const sessions = sessionManager.loadAllSessions();
-							activeCount = sessions.filter(
-								(s) => Date.now() - s.modified.getTime() < 60 * 60 * 1000,
-							).length;
-						} catch (error) {
-							logger.warn("Failed to count active sessions", {
-								error: error instanceof Error ? error.message : String(error),
-							});
-						}
+						const initializationError = startSessionWithPolicy({
+							agent,
+							enterpriseContext,
+							logger,
+							modelId: registeredModel.id,
+							onSessionReady: (sessionId) => {
+								wsSession.sendSessionUpdate(sessionId);
+								wsSession.setContext({ sessionId });
+							},
+							sessionManager,
+							subject,
+						});
 
-						const limitCheck = checkSessionLimits(
-							{ startedAt: new Date() },
-							activeCount !== undefined
-								? { activeSessionCount: activeCount + 1 }
-								: undefined,
-						);
-
-						if (!limitCheck.allowed) {
+						if (initializationError) {
 							wsSession.sendEvent({
 								type: "error",
-								message: `[Policy] ${limitCheck.reason}`,
+								message: `[Policy] ${initializationError}`,
 							});
 							wsSession.end();
 							return;
 						}
-
-						sessionManager.startSession(agent.state, { subject });
-
-						if (enterpriseContext.isEnterprise()) {
-							enterpriseContext.startSession(
-								sessionManager.getSessionId(),
-								registeredModel.id,
-							);
-							const session = enterpriseContext.getSession();
-							if (session) {
-								agent.setSession({
-									id: session.sessionId,
-									startedAt: session.startedAt,
-								});
-							}
-						}
-
-						const sessionId = sessionManager.getSessionId();
-						wsSession.sendSessionUpdate(sessionId);
-						wsSession.setContext({ sessionId });
 					}
 				}
 

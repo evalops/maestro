@@ -241,6 +241,24 @@ describe("executeWebSlashCommand", () => {
 		]);
 	});
 
+	it("rejects unknown MCP add flags instead of treating them as command args", async () => {
+		const { context, outputs, apiClient } = createContext();
+
+		await executeWebSlashCommand(
+			"mcp",
+			"add custom-docs https://docs.example.com/mcp --bogus",
+			context,
+		);
+
+		expect(apiClient.addMcpServer).not.toHaveBeenCalled();
+		expect(outputs).toEqual([
+			{
+				output: expect.stringContaining("Unknown MCP option: --bogus"),
+				isError: true,
+			},
+		]);
+	});
+
 	it("edits a stdio MCP server from the web slash command", async () => {
 		const { context, outputs, apiClient } = createContext();
 		apiClient.updateMcpServer.mockResolvedValue({
@@ -309,6 +327,21 @@ describe("executeWebSlashCommand", () => {
 			expect.objectContaining({
 				isError: false,
 				output: expect.stringContaining("fallback: linear (user)"),
+			}),
+		]);
+	});
+
+	it("shows the full MCP import usage in help output", async () => {
+		const { context, outputs } = createContext();
+
+		await executeWebSlashCommand("mcp", "help", context);
+
+		expect(outputs).toEqual([
+			expect.objectContaining({
+				isError: false,
+				output: expect.stringContaining(
+					"/mcp import <id> [name] [--scope local|project|user] [--url <https-url>] [--transport http|sse]",
+				),
 			}),
 		]);
 	});

@@ -354,13 +354,14 @@ function createHeadlessClientRequestsHookMessage(
 
 function createPlanModeHookMessage(
 	content = "Plan file: /tmp/plan.md",
+	filePath = "/tmp/plan.md",
 ): AppMessage {
 	return {
 		role: "hookMessage",
 		customType: "plan-mode",
 		content,
 		display: false,
-		details: { filePath: "/tmp/plan.md" },
+		details: { filePath },
 		timestamp: Date.now(),
 	};
 }
@@ -2007,7 +2008,10 @@ Current plan contents:
 1. Old tracked plan`,
 					oldState.filePath,
 				),
-				createPlanModeHookMessage(`Plan file: ${oldState.filePath}`),
+				createPlanModeHookMessage(
+					`Plan file: ${oldState.filePath}`,
+					oldState.filePath,
+				),
 			);
 			const agent = createMockAgentWithoutAppendMessage(messages);
 			const sessionManager = createMockSessionManager();
@@ -2170,6 +2174,70 @@ Current plan contents:
 		);
 		expect(JSON.stringify(restoredSkillMessages[0]?.content)).not.toContain(
 			"Stale reviewer guidance.",
+		);
+	});
+
+	it("keeps the prior restored tool skill when the replacement would exceed budget", async () => {
+		const repeatedFreshGuidance = "Inspect the diff for regressions.\n".repeat(
+			1_000,
+		);
+		const skillNames = Array.from(
+			{ length: 6 },
+			(_, index) => `auditor-${index}`,
+		);
+		const messages = buildConversation(10);
+		for (const [index, skillName] of skillNames.entries()) {
+			messages.splice(
+				2 + index * 2,
+				0,
+				createSkillToolCallMessage(skillName, `call-skill-${skillName}`),
+				createSkillToolResultMessage(
+					skillName,
+					`call-skill-${skillName}`,
+					`# Skill: ${skillName}\n\n## Instructions\n\nFresh guidance for ${skillName}.\n${repeatedFreshGuidance}`,
+				),
+			);
+			messages.splice(
+				messages.length - 1,
+				0,
+				createRestoredSkillHookMessage(
+					skillName,
+					`# Skill: ${skillName}\n\n## Instructions\n\nStale guidance for ${skillName}.`,
+				),
+			);
+		}
+		const agent = createMockAgentWithoutAppendMessage(messages);
+		const sessionManager = createMockSessionManager();
+
+		const result = await performCompaction({ agent, sessionManager });
+
+		expect(result.success).toBe(true);
+		const restoredSkillMessages = getReplacedMessages(agent).filter(
+			(message) =>
+				message.role === "hookMessage" && message.customType === "skill",
+		);
+		const staleSkillMessage = restoredSkillMessages.find(
+			(message) =>
+				typeof message.details === "object" &&
+				message.details !== null &&
+				"name" in message.details &&
+				message.details.name === "auditor-0",
+		);
+		const refreshedSkillMessage = restoredSkillMessages.find(
+			(message) =>
+				typeof message.details === "object" &&
+				message.details !== null &&
+				"name" in message.details &&
+				message.details.name === "auditor-5",
+		);
+		expect(JSON.stringify(staleSkillMessage?.content)).toContain(
+			"Stale guidance for auditor-0.",
+		);
+		expect(JSON.stringify(staleSkillMessage?.content)).not.toContain(
+			"Fresh guidance for auditor-0.",
+		);
+		expect(JSON.stringify(refreshedSkillMessage?.content)).toContain(
+			"Fresh guidance for auditor-5.",
 		);
 	});
 

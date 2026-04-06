@@ -461,6 +461,29 @@ describe("collectHeadlessRequestMessagesForCompaction", () => {
 		);
 	});
 
+	it("does not double-prefix nested tool retry args in the summary output", () => {
+		const restored = collectHeadlessRequestMessagesForCompaction([], {
+			pendingApprovals: [],
+			pendingClientTools: [],
+			pendingUserInputs: [],
+			pendingToolRetries: [
+				{
+					call_id: "call_retry",
+					tool: "bash",
+					args: {
+						args: { command: "ls" },
+					},
+				},
+			],
+		});
+
+		const content = String(restored[0]?.content);
+		expect(content).toContain(
+			'type=tool_retry; tool=bash; call_id=call_retry; args={"command":"ls"}',
+		);
+		expect(content).not.toContain("args=args=");
+	});
+
 	it("deduplicates already-present headless runtime request restoration messages", () => {
 		const existing = collectHeadlessRequestMessagesForCompaction([], {
 			pendingApprovals: [],
