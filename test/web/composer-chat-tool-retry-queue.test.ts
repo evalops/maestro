@@ -79,6 +79,7 @@ describe("composer-chat tool retry queue", () => {
 		const element = new ComposerChat() as ComposerChat & {
 			apiClient: {
 				chatWithEvents: ReturnType<typeof vi.fn>;
+				createSession: ReturnType<typeof vi.fn>;
 				submitToolRetryDecision: ReturnType<typeof vi.fn>;
 				getSessions: ReturnType<typeof vi.fn>;
 			};
@@ -111,6 +112,10 @@ describe("composer-chat tool retry queue", () => {
 					yield { type: "agent_end" };
 				})(),
 			),
+			createSession: vi.fn().mockResolvedValue({
+				id: "session-retry",
+				messages: [],
+			}),
 			submitToolRetryDecision: vi
 				.fn()
 				.mockImplementation(() => retryDone.promise),

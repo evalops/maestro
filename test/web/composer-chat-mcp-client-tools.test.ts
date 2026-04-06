@@ -5,6 +5,7 @@ import { ComposerChat } from "../../packages/web/src/components/composer-chat.js
 type ComposerChatMcpInternals = {
 	apiClient: {
 		chatWithEvents: ReturnType<typeof vi.fn>;
+		createSession: ReturnType<typeof vi.fn>;
 		sendClientToolResult: ReturnType<typeof vi.fn>;
 		getMcpStatus: ReturnType<typeof vi.fn>;
 		readMcpResource: ReturnType<typeof vi.fn>;
@@ -75,6 +76,10 @@ describe("composer-chat MCP client tools", () => {
 		const element = new ComposerChat() as unknown as ComposerChatMcpInternals;
 		element.apiClient = {
 			chatWithEvents: vi.fn().mockReturnValue(stream()),
+			createSession: vi.fn().mockResolvedValue({
+				id: "session-mcp",
+				messages: [],
+			}),
 			sendClientToolResult: vi.fn().mockResolvedValue(undefined),
 			getMcpStatus: vi.fn().mockResolvedValue({
 				servers: [

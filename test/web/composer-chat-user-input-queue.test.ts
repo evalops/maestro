@@ -23,6 +23,7 @@ describe("composer-chat user input queue", () => {
 		const element = new ComposerChat() as ComposerChat & {
 			apiClient: {
 				chatWithEvents: ReturnType<typeof vi.fn>;
+				createSession: ReturnType<typeof vi.fn>;
 				sendClientToolResult: ReturnType<typeof vi.fn>;
 				getSessions: ReturnType<typeof vi.fn>;
 			};
@@ -62,6 +63,10 @@ describe("composer-chat user input queue", () => {
 					yield { type: "agent_end" };
 				})(),
 			),
+			createSession: vi.fn().mockResolvedValue({
+				id: "session-user-input",
+				messages: [],
+			}),
 			sendClientToolResult: vi.fn().mockResolvedValue(undefined),
 			getSessions: vi.fn().mockResolvedValue([]),
 		};
