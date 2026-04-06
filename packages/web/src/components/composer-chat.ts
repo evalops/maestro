@@ -3503,6 +3503,9 @@ export class ComposerChat extends LitElement {
 			await this.loadSessions();
 		} catch (e) {
 			await recoverPendingSessionRequestsOnce();
+			if (sessionIdDuringStream) {
+				await this.loadSessions();
+			}
 			this.error = e instanceof Error ? e.message : "Failed to send message";
 			this.runtimeStatus = null;
 			if (!hasAssistantMessageProgress(assistantMessage)) {

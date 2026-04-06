@@ -298,6 +298,7 @@ describe("composer-chat session pending request restore", () => {
 		);
 		await flushAsyncWork();
 
+		expect(element.apiClient.getSessions).toHaveBeenCalledTimes(1);
 		expect(element.apiClient.createSession).toHaveBeenCalledWith("New Chat");
 		expect(element.apiClient.chatWithEvents).toHaveBeenCalledWith(
 			expect.objectContaining({ sessionId: "session-precreated" }),
