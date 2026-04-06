@@ -24,6 +24,7 @@ function createContext(overrides: Partial<WebSlashCommandContext> = {}) {
 		getDiagnostics: vi.fn(),
 		getFiles: vi.fn(),
 		getMcpStatus: vi.fn(),
+		getMcpPrompt: vi.fn(),
 		getPlan: vi.fn(),
 		getPreview: vi.fn(),
 		getQueueStatus: vi.fn(),
@@ -36,6 +37,7 @@ function createContext(overrides: Partial<WebSlashCommandContext> = {}) {
 		getUsage: vi.fn(),
 		listBranchOptions: vi.fn(),
 		listQueue: vi.fn(),
+		readMcpResource: vi.fn(),
 		removeMcpAuthPreset: vi.fn(),
 		removeMcpServer: vi.fn(),
 		runScript: vi.fn(),
@@ -168,6 +170,98 @@ describe("executeWebSlashCommand", () => {
 			}),
 		]);
 		expect(outputs[0]?.output).toContain("Linear");
+	});
+
+	it("lists MCP resources from the web slash command", async () => {
+		const { context, outputs, apiClient } = createContext();
+		apiClient.getMcpStatus.mockResolvedValue({
+			authPresets: [],
+			servers: [
+				{
+					name: "docs",
+					connected: true,
+					transport: "http",
+					resources: ["memo://guide"],
+					prompts: [],
+				},
+			],
+		});
+
+		await executeWebSlashCommand("mcp", "resources", context);
+
+		expect(apiClient.getMcpStatus).toHaveBeenCalledOnce();
+		expect(outputs).toEqual([
+			expect.objectContaining({
+				isError: false,
+				output: expect.stringContaining("MCP Resources"),
+			}),
+		]);
+		expect(outputs[0]?.output).toContain("memo://guide");
+	});
+
+	it("reads an MCP resource from the web slash command", async () => {
+		const { context, outputs, apiClient } = createContext();
+		apiClient.readMcpResource.mockResolvedValue({
+			contents: [{ text: "Guide body", mimeType: "text/plain" }],
+		});
+
+		await executeWebSlashCommand("mcp", "resources docs memo://guide", context);
+
+		expect(apiClient.readMcpResource).toHaveBeenCalledWith(
+			"docs",
+			"memo://guide",
+		);
+		expect(outputs).toEqual([
+			expect.objectContaining({
+				isError: false,
+				output: expect.stringContaining("Guide body"),
+			}),
+		]);
+	});
+
+	it("lists MCP prompts from the web slash command", async () => {
+		const { context, outputs, apiClient } = createContext();
+		apiClient.getMcpStatus.mockResolvedValue({
+			authPresets: [],
+			servers: [
+				{
+					name: "docs",
+					connected: true,
+					transport: "http",
+					resources: [],
+					prompts: ["summarize"],
+				},
+			],
+		});
+
+		await executeWebSlashCommand("mcp", "prompts", context);
+
+		expect(apiClient.getMcpStatus).toHaveBeenCalledOnce();
+		expect(outputs).toEqual([
+			expect.objectContaining({
+				isError: false,
+				output: expect.stringContaining("MCP Prompts"),
+			}),
+		]);
+		expect(outputs[0]?.output).toContain("summarize");
+	});
+
+	it("gets an MCP prompt from the web slash command", async () => {
+		const { context, outputs, apiClient } = createContext();
+		apiClient.getMcpPrompt.mockResolvedValue({
+			description: "Summarize docs",
+			messages: [{ role: "user", content: "Summarize MCP" }],
+		});
+
+		await executeWebSlashCommand("mcp", "prompts docs summarize", context);
+
+		expect(apiClient.getMcpPrompt).toHaveBeenCalledWith("docs", "summarize");
+		expect(outputs).toEqual([
+			expect.objectContaining({
+				isError: false,
+				output: expect.stringContaining("Summarize MCP"),
+			}),
+		]);
 	});
 
 	it("shows MCP auth presets in status output", async () => {
@@ -477,11 +571,10 @@ describe("executeWebSlashCommand", () => {
 		expect(outputs).toEqual([
 			expect.objectContaining({
 				isError: false,
-				output: expect.stringContaining(
-					"/mcp import <id> [name] [--scope local|project|user] [--url <https-url>] [--transport http|sse] [--header 'Name: value'] [--headers-helper <command>] [--auth-preset <name>]",
-				),
+				output: expect.stringContaining("/mcp resources [server uri]"),
 			}),
 		]);
+		expect(outputs[0]?.output).toContain("/mcp prompts [server name]");
 	});
 
 	it("inserts custom command prompts by command name", async () => {
