@@ -5,6 +5,7 @@ import { ComposerChat } from "./composer-chat.js";
 type ChatInternals = {
 	apiClient: {
 		chatWithEvents: ReturnType<typeof vi.fn>;
+		createSession: ReturnType<typeof vi.fn>;
 		getSessions: ReturnType<typeof vi.fn>;
 	};
 	clientOnline: boolean;
@@ -22,6 +23,10 @@ function createChatWithStream(
 	const element = new ComposerChat() as unknown as ChatInternals;
 	element.apiClient = {
 		chatWithEvents: vi.fn().mockReturnValue(stream),
+		createSession: vi.fn().mockResolvedValue({
+			id: "session-stream",
+			messages: [],
+		}),
 		getSessions: vi.fn().mockResolvedValue([]),
 	};
 	element.clientOnline = true;
