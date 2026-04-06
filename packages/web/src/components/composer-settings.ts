@@ -2,6 +2,22 @@
  * Settings panel component - comprehensive configuration interface
  */
 
+import {
+	formatMcpArgsText,
+	formatMcpRegistryImportMessage,
+	formatMcpRegistryScopeLabel,
+	formatMcpServerAddMessage,
+	formatMcpServerRemoveMessage,
+	formatMcpServerUpdateMessage,
+	formatMcpTimeoutText,
+	formatMcpTransportLabel,
+	getMcpRegistryEntryId,
+	getMcpRegistryUrlOptions,
+	getWritableMcpScope,
+	parseMcpArgsText,
+	parseMcpKeyValueText,
+	parseMcpTimeoutText,
+} from "@evalops/contracts";
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import type {
@@ -589,16 +605,7 @@ export class ComposerSettings extends LitElement {
 	private formatMcpTransportLabel(
 		transport: McpServerStatus["transport"],
 	): string | null {
-		switch (transport) {
-			case "stdio":
-				return "stdio";
-			case "http":
-				return "HTTP";
-			case "sse":
-				return "SSE";
-			default:
-				return null;
-		}
+		return formatMcpTransportLabel(transport);
 	}
 
 	private formatMcpTrustLabel(
@@ -619,29 +626,7 @@ export class ComposerSettings extends LitElement {
 	private formatMcpScopeLabel(
 		scope: McpRegistryImportRequest["scope"],
 	): string {
-		switch (scope) {
-			case "project":
-				return "Project";
-			case "user":
-				return "User";
-			default:
-				return "Local";
-		}
-	}
-
-	private formatAnyMcpScopeLabel(scope: McpServerStatus["scope"]): string {
-		switch (scope) {
-			case "enterprise":
-				return "Enterprise";
-			case "plugin":
-				return "Plugin";
-			case "project":
-				return "Project";
-			case "user":
-				return "User";
-			default:
-				return "Local";
-		}
+		return formatMcpRegistryScopeLabel(scope);
 	}
 
 	private getWritableMcpScope(
@@ -650,53 +635,18 @@ export class ComposerSettings extends LitElement {
 			| McpRegistryImportRequest["scope"]
 			| undefined,
 	): McpRegistryImportRequest["scope"] | null {
-		switch (scope) {
-			case "local":
-			case "project":
-			case "user":
-				return scope;
-			default:
-				return null;
-		}
+		return getWritableMcpScope(scope);
 	}
 
 	private getMcpRegistryEntryId(
 		entry: McpOfficialRegistryEntry,
 		index: number,
 	): string {
-		const rawId =
-			entry.slug?.trim() ||
-			entry.serverName?.trim() ||
-			entry.displayName?.trim() ||
-			entry.url?.trim() ||
-			entry.directoryUrl?.trim() ||
-			`entry-${index}`;
-		return rawId.toLowerCase().replace(/\s+/g, "-");
+		return getMcpRegistryEntryId(entry, index);
 	}
 
 	private getMcpRegistryUrlOptions(entry: McpOfficialRegistryEntry) {
-		const options =
-			entry.urlOptions
-				?.map((option, index) => {
-					const url = option.url?.trim();
-					if (!url) {
-						return null;
-					}
-					const label =
-						option.label?.trim() ||
-						option.description?.trim() ||
-						(index === 0 ? "Default endpoint" : `Endpoint ${index + 1}`);
-					return { url, label };
-				})
-				.filter((option): option is { url: string; label: string } =>
-					Boolean(option),
-				) ?? [];
-		const fallbackUrl = entry.url?.trim();
-		return options.length > 0
-			? options
-			: fallbackUrl
-				? [{ url: fallbackUrl, label: "Default endpoint" }]
-				: [];
+		return getMcpRegistryUrlOptions(entry);
 	}
 
 	private async searchMcpRegistry(query: string) {
@@ -742,10 +692,7 @@ export class ComposerSettings extends LitElement {
 					undefined,
 			});
 			this.mcpStatus = await this.apiClient.getMcpStatus();
-			this.mcpRegistryNotice = `Imported ${result.name} into ${this.formatMcpScopeLabel(result.scope)} config via ${
-				this.formatMcpTransportLabel(result.server.transport) ??
-				result.server.transport
-			}.`;
+			this.mcpRegistryNotice = formatMcpRegistryImportMessage(result);
 			this.mcpRegistryNames = {
 				...this.mcpRegistryNames,
 				[entryId]: "",
@@ -765,21 +712,17 @@ export class ComposerSettings extends LitElement {
 		scope: McpRegistryImportRequest["scope"],
 		name: string,
 	): string {
-		const transportLabel = this.formatMcpTransportLabel(
-			server.transport as McpServerStatus["transport"],
-		);
-		return `Added ${name} to ${this.formatMcpScopeLabel(scope)} config via ${
-			transportLabel ?? server.transport
-		}.`;
+		return formatMcpServerAddMessage({
+			name,
+			scope: scope ?? "local",
+			server: {
+				transport: server.transport,
+			},
+		});
 	}
 
 	private formatMcpRemoveMessage(result: McpServerRemoveResponse): string {
-		if (result.fallback) {
-			return `Removed ${result.name} from ${this.formatMcpScopeLabel(result.scope)} config. Now using ${result.fallback.name} from ${this.formatAnyMcpScopeLabel(
-				result.fallback.scope,
-			)}.`;
-		}
-		return `Removed ${result.name} from ${this.formatMcpScopeLabel(result.scope)} config.`;
+		return formatMcpServerRemoveMessage(result);
 	}
 
 	private formatMcpUpdateMessage(
@@ -787,68 +730,35 @@ export class ComposerSettings extends LitElement {
 		scope: McpRegistryImportRequest["scope"],
 		name: string,
 	): string {
-		const transportLabel = this.formatMcpTransportLabel(
-			server.transport as McpServerStatus["transport"],
-		);
-		return `Updated ${name} in ${this.formatMcpScopeLabel(scope)} config via ${
-			transportLabel ?? server.transport
-		}.`;
+		return formatMcpServerUpdateMessage({
+			name,
+			scope: scope ?? "local",
+			server: {
+				transport: server.transport,
+			},
+		});
 	}
 
 	private formatMcpArgsText(args: string[] | undefined): string {
-		if (!Array.isArray(args) || args.length === 0) {
-			return "";
-		}
-		return args.join("\n");
+		return formatMcpArgsText(args);
 	}
 
 	private parseMcpArgsText(text: string): string[] | undefined {
-		const args = text
-			.split(/\r?\n/)
-			.map((line) => line.trim())
-			.filter((line) => line.length > 0);
-		return args.length > 0 ? args : undefined;
+		return parseMcpArgsText(text);
 	}
 
 	private parseMcpKeyValueText(
 		text: string,
 	): Record<string, string> | undefined {
-		const entries = text
-			.split(/\r?\n/)
-			.map((line) => line.trim())
-			.filter((line) => line.length > 0)
-			.map((line) => {
-				const separatorIndex = line.indexOf("=");
-				if (separatorIndex <= 0) {
-					throw new Error(`Expected KEY=VALUE format for "${line}".`);
-				}
-				return [
-					line.slice(0, separatorIndex).trim(),
-					line.slice(separatorIndex + 1),
-				] as const;
-			});
-
-		if (entries.length === 0) {
-			return undefined;
-		}
-
-		return Object.fromEntries(entries);
+		return parseMcpKeyValueText(text);
 	}
 
 	private formatMcpTimeoutText(timeout: number | null | undefined): string {
-		return typeof timeout === "number" ? String(timeout) : "";
+		return formatMcpTimeoutText(timeout);
 	}
 
 	private parseMcpTimeoutText(text: string): number | undefined {
-		const trimmed = text.trim();
-		if (!trimmed) {
-			return undefined;
-		}
-		const value = Number(trimmed);
-		if (!Number.isInteger(value) || value < 1) {
-			throw new Error("Timeout must be a positive integer in milliseconds.");
-		}
-		return value;
+		return parseMcpTimeoutText(text);
 	}
 
 	private async addCustomMcpServer() {

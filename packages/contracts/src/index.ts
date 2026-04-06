@@ -45,6 +45,7 @@
 
 export * from "./headless-protocol-generated.js";
 export * from "./headless-protocol-schemas.generated.js";
+export * from "./mcp-settings.js";
 
 /**
  * Role of a message in the conversation.
