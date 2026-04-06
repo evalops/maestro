@@ -2,15 +2,22 @@ import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { runWithMcpClientToolService } from "../../src/mcp/elicitation.js";
 
 const mockClientConnect = vi.fn();
 const mockClientClose = vi.fn();
 const mockSetNotificationHandler = vi.fn();
+const mockSetRequestHandler = vi.fn();
 const sseTransportCtor = vi.fn();
 const httpTransportCtor = vi.fn();
+const clientCtorOptions: unknown[] = [];
 
 vi.mock("@modelcontextprotocol/sdk/client/index.js", () => ({
 	Client: class MockClient {
+		constructor(_clientInfo: unknown, options?: unknown) {
+			clientCtorOptions.push(options);
+		}
+
 		connect = mockClientConnect.mockResolvedValue(undefined);
 		getServerCapabilities = vi.fn(() => ({
 			tools: {},
@@ -21,6 +28,7 @@ vi.mock("@modelcontextprotocol/sdk/client/index.js", () => ({
 		listResources = vi.fn().mockResolvedValue({ resources: [] });
 		listPrompts = vi.fn().mockResolvedValue({ prompts: [] });
 		setNotificationHandler = mockSetNotificationHandler;
+		setRequestHandler = mockSetRequestHandler;
 		close = mockClientClose.mockResolvedValue(undefined);
 	},
 }));
@@ -58,8 +66,10 @@ describe("MCP manager remote transports", () => {
 		mockClientConnect.mockClear();
 		mockClientClose.mockClear();
 		mockSetNotificationHandler.mockClear();
+		mockSetRequestHandler.mockClear();
 		sseTransportCtor.mockClear();
 		httpTransportCtor.mockClear();
+		clientCtorOptions.length = 0;
 	});
 
 	afterEach(async () => {
@@ -105,6 +115,37 @@ describe("MCP manager remote transports", () => {
 		expect(manager.isConnected("remote-sse")).toBe(true);
 	});
 
+	it("reconnects a server when the same name is reconfigured", async () => {
+		await manager.configure({
+			servers: [
+				{
+					name: "remote-http",
+					transport: "http",
+					url: "https://example.com/mcp",
+				},
+			],
+		});
+
+		mockClientClose.mockClear();
+
+		await manager.configure({
+			servers: [
+				{
+					name: "remote-http",
+					transport: "http",
+					url: "https://example.com/mcp/v2",
+				},
+			],
+		});
+
+		expect(mockClientClose).toHaveBeenCalledTimes(1);
+		expect(httpTransportCtor).toHaveBeenCalledTimes(2);
+		expect(String(httpTransportCtor.mock.calls[1]![0])).toBe(
+			"https://example.com/mcp/v2",
+		);
+		expect(manager.isConnected("remote-http")).toBe(true);
+	});
+
 	it("merges static headers with headersHelper output for remote transports", async () => {
 		const helperPath = join(tempDir, "headers-helper.sh");
 		writeFileSync(
@@ -144,5 +185,131 @@ describe("MCP manager remote transports", () => {
 		expect(headers.get("X-Static")).toBe("1");
 		expect(headers.get("X-Dynamic")).toBe("helper-token");
 		expect(headers.get("X-Server")).toBe("remote-http");
+	});
+
+	it("registers an elicitation handler that proxies through the current client tool service", async () => {
+		await manager.configure({
+			servers: [
+				{
+					name: "remote-http",
+					transport: "http",
+					url: "https://example.com/mcp",
+				},
+			],
+		});
+
+		expect(mockSetRequestHandler).toHaveBeenCalledTimes(1);
+		expect(clientCtorOptions[0]).toMatchObject({
+			capabilities: {
+				elicitation: {
+					form: { applyDefaults: true },
+					url: {},
+				},
+			},
+		});
+
+		const handler = mockSetRequestHandler.mock.calls[0]?.[1] as
+			| ((
+					request: unknown,
+					extra: { requestId: string; signal?: AbortSignal },
+			  ) => Promise<unknown>)
+			| undefined;
+		expect(handler).toBeTypeOf("function");
+
+		const requestExecution = vi.fn().mockResolvedValue({
+			content: [
+				{
+					type: "text",
+					text: JSON.stringify({
+						action: "accept",
+						content: {
+							name: "Maestro",
+							enabled: true,
+							count: 2,
+							tags: ["alpha"],
+						},
+					}),
+				},
+			],
+			isError: false,
+		});
+
+		const result = await runWithMcpClientToolService(
+			{ requestExecution },
+			() =>
+				handler?.(
+					{
+						method: "elicitation/create",
+						params: {
+							message: "Provide settings",
+							requestedSchema: {
+								type: "object",
+								properties: {
+									name: { type: "string" },
+								},
+							},
+						},
+					},
+					{ requestId: "request-123" },
+				) ?? Promise.resolve(undefined),
+		);
+
+		expect(requestExecution).toHaveBeenCalledWith(
+			"mcp_elicitation:remote-http:request-123",
+			"mcp_elicitation",
+			{
+				serverName: "remote-http",
+				requestId: "request-123",
+				mode: "form",
+				message: "Provide settings",
+				requestedSchema: {
+					type: "object",
+					properties: {
+						name: { type: "string" },
+					},
+				},
+			},
+			undefined,
+		);
+		expect(result).toEqual({
+			action: "accept",
+			content: {
+				name: "Maestro",
+				enabled: true,
+				count: 2,
+				tags: ["alpha"],
+			},
+		});
+	});
+
+	it("cancels elicitation requests when no client tool service is available", async () => {
+		await manager.configure({
+			servers: [
+				{
+					name: "remote-http",
+					transport: "http",
+					url: "https://example.com/mcp",
+				},
+			],
+		});
+
+		const handler = mockSetRequestHandler.mock.calls[0]?.[1] as
+			| ((request: unknown, extra: { requestId: string }) => Promise<unknown>)
+			| undefined;
+
+		await expect(
+			handler?.(
+				{
+					method: "elicitation/create",
+					params: {
+						mode: "url",
+						message: "Authorize",
+						url: "https://example.com/authorize",
+						elicitationId: "elicit-1",
+					},
+				},
+				{ requestId: "request-456" },
+			),
+		).resolves.toEqual({ action: "cancel" });
 	});
 });

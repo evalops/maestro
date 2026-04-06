@@ -25,6 +25,7 @@ type SessionPendingInternals = {
 	updateComplete: Promise<void>;
 	messages?: Array<Record<string, unknown>>;
 	pendingApprovalQueue: Array<Record<string, unknown>>;
+	pendingMcpElicitationQueue: Array<Record<string, unknown>>;
 	pendingToolRetryQueue: Array<Record<string, unknown>>;
 	pendingUserInputQueue: Array<Record<string, unknown>>;
 	handleSubmit?: (event: CustomEvent<{ text: string }>) => Promise<void>;
@@ -44,7 +45,7 @@ function createChat() {
 }
 
 describe("composer-chat session pending request restore", () => {
-	it("restores pending approval, tool-retry, and user-input queues without auto-failing ask_user", async () => {
+	it("restores pending approval, tool-retry, MCP elicitation, and user-input queues without auto-failing pending prompts", async () => {
 		const element = createChat();
 		const sendClientToolResult = vi.fn().mockResolvedValue({ success: true });
 		element.apiClient = {
@@ -71,6 +72,24 @@ describe("composer-chat session pending request restore", () => {
 					},
 				],
 				pendingClientToolRequests: [
+					{
+						toolCallId: "mcp-call-1",
+						toolName: "mcp_elicitation",
+						args: {
+							serverName: "context7",
+							requestId: "request-1",
+							mode: "form",
+							message: "Provide the project name",
+							requestedSchema: {
+								type: "object",
+								properties: {
+									project: { type: "string" },
+								},
+								required: ["project"],
+							},
+						},
+						kind: "mcp_elicitation",
+					},
 					{
 						toolCallId: "client-call-1",
 						toolName: "ask_user",
@@ -118,6 +137,26 @@ describe("composer-chat session pending request restore", () => {
 				args: { file: "README.md" },
 				errorMessage: "timed out",
 				attempt: 2,
+			},
+		]);
+		expect(element.pendingMcpElicitationQueue).toEqual([
+			{
+				toolCallId: "mcp-call-1",
+				toolName: "mcp_elicitation",
+				args: {
+					serverName: "context7",
+					requestId: "request-1",
+					mode: "form",
+					message: "Provide the project name",
+					requestedSchema: {
+						type: "object",
+						properties: {
+							project: { type: "string" },
+						},
+						required: ["project"],
+					},
+				},
+				kind: "mcp_elicitation",
 			},
 		]);
 		expect(element.pendingUserInputQueue).toEqual([
@@ -213,6 +252,7 @@ describe("composer-chat session pending request restore", () => {
 		element.currentSessionId = null;
 		element.messages = [];
 		element.pendingApprovalQueue = [];
+		element.pendingMcpElicitationQueue = [];
 		element.pendingToolRetryQueue = [];
 		element.pendingUserInputQueue = [];
 
@@ -290,6 +330,7 @@ describe("composer-chat session pending request restore", () => {
 		element.currentSessionId = null;
 		element.messages = [];
 		element.pendingApprovalQueue = [];
+		element.pendingMcpElicitationQueue = [];
 		element.pendingToolRetryQueue = [];
 		element.pendingUserInputQueue = [];
 
@@ -348,6 +389,7 @@ describe("composer-chat session pending request restore", () => {
 		element.currentSessionId = "session-existing";
 		element.messages = [];
 		element.pendingApprovalQueue = [];
+		element.pendingMcpElicitationQueue = [];
 		element.pendingToolRetryQueue = [];
 		element.pendingUserInputQueue = [];
 

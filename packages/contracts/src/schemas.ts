@@ -298,7 +298,11 @@ export const ComposerPendingClientToolRequestSchema = Type.Object({
 	toolName: Type.String(),
 	args: Type.Unknown(),
 	kind: Type.Optional(
-		Type.Union([Type.Literal("client_tool"), Type.Literal("user_input")]),
+		Type.Union([
+			Type.Literal("client_tool"),
+			Type.Literal("mcp_elicitation"),
+			Type.Literal("user_input"),
+		]),
 	),
 	reason: Type.Optional(Type.String()),
 });

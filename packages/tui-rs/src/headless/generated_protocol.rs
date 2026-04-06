@@ -4,8 +4,13 @@
 // Do not edit manually; update `headless-protocol.manifest.json` instead.
 
 pub const HEADLESS_PROTOCOL_VERSION: &str = "2026-04-02";
-pub const HEADLESS_SERVER_REQUEST_TYPES: &[&str] =
-    &["approval", "client_tool", "user_input", "tool_retry"];
+pub const HEADLESS_SERVER_REQUEST_TYPES: &[&str] = &[
+    "approval",
+    "client_tool",
+    "mcp_elicitation",
+    "user_input",
+    "tool_retry",
+];
 pub const HEADLESS_SERVER_REQUEST_RESOLUTIONS: &[&str] = &[
     "approved",
     "denied",

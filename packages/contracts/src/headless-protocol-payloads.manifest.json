@@ -1010,6 +1010,10 @@
 					"kind": "array",
 					"items": { "kind": "ref", "name": "HeadlessPendingToolStateSchema" }
 				},
+				"pending_mcp_elicitations": {
+					"kind": "array",
+					"items": { "kind": "ref", "name": "HeadlessPendingToolStateSchema" }
+				},
 				"pending_user_inputs": {
 					"kind": "array",
 					"items": { "kind": "ref", "name": "HeadlessPendingToolStateSchema" }

@@ -87,7 +87,12 @@ export class ClientToolService {
 				sessionId,
 				toolName,
 				args,
-				kind: toolName === "ask_user" ? "user_input" : "client_tool",
+				kind:
+					toolName === "ask_user"
+						? "user_input"
+						: toolName === "mcp_elicitation"
+							? "mcp_elicitation"
+							: "client_tool",
 				resolve: (content, isError) => {
 					safeResolve({ content, isError });
 					return true;

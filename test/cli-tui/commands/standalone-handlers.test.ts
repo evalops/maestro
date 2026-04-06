@@ -341,7 +341,34 @@ describe("memory-handlers", () => {
 
 // ── MCP handlers ────────────────────────────────────────────────────────
 
+const mockOfficialRegistryEntry = {
+	displayName: "Linear",
+	slug: "linear",
+	serverName: "linear/linear",
+	transport: "http" as const,
+	url: "https://mcp.linear.app/mcp",
+	documentationUrl: "https://linear.app/docs/mcp",
+	oneLiner: "Issue and project management",
+};
+
 vi.mock("../../../src/mcp/index.js", () => ({
+	addMcpServerToConfig: vi.fn(() => ({
+		path: "/tmp/project/.maestro/mcp.local.json",
+	})),
+	buildSuggestedMcpServerName: vi.fn(() => "linear"),
+	getOfficialMcpRegistryEntries: vi.fn(() => [mockOfficialRegistryEntry]),
+	getOfficialMcpRegistryUrls: vi.fn((entry: { url?: string }) =>
+		entry.url ? [entry.url] : [],
+	),
+	getOfficialMcpRegistryMatch: vi.fn(() => ({
+		trust: "official",
+		info: {
+			displayName: "Linear",
+			documentationUrl: "https://linear.app/docs/mcp",
+		},
+	})),
+	inferRemoteMcpTransport: vi.fn(() => "http"),
+	loadMcpConfig: vi.fn(() => ({ servers: [] })),
 	mcpManager: {
 		getStatus: vi.fn(() => ({
 			servers: [
@@ -362,13 +389,43 @@ vi.mock("../../../src/mcp/index.js", () => ({
 					tools: [],
 					resources: [],
 					prompts: [],
+					remoteUrl: "https://mcp.linear.app/mcp",
+					remoteTrust: "official",
+					officialRegistry: {
+						displayName: "Linear",
+						documentationUrl: "https://linear.app/docs/mcp",
+						permissions: "Read and write",
+					},
 					error: "Connection refused",
 				},
 			],
 		})),
+		configure: vi.fn().mockResolvedValue(undefined),
 		readResource: vi.fn(),
 		getPrompt: vi.fn(),
 	},
+	normalizeMcpRemoteUrl: vi.fn((url: string) => url),
+	officialMcpRegistryEntryMatchesUrl: vi.fn(() => true),
+	prefetchOfficialMcpRegistry: vi.fn().mockResolvedValue(undefined),
+	removeMcpServerFromConfig: vi.fn(() => ({
+		path: "/tmp/project/.maestro/mcp.local.json",
+		scope: "local",
+	})),
+	resolveOfficialMcpRegistryEntry: vi.fn((query: string) => ({
+		entry:
+			query === "linear" || query === "Linear"
+				? mockOfficialRegistryEntry
+				: undefined,
+		matches:
+			query === "linear" || query === "Linear"
+				? [mockOfficialRegistryEntry]
+				: [],
+	})),
+	searchOfficialMcpRegistry: vi.fn(() => [mockOfficialRegistryEntry]),
+	updateMcpServerInConfig: vi.fn(() => ({
+		path: "/tmp/project/.maestro/mcp.local.json",
+		scope: "local",
+	})),
 }));
 
 import {
@@ -377,7 +434,18 @@ import {
 	handleMcpPromptsCommand,
 	handleMcpResourcesCommand,
 } from "../../../src/cli-tui/commands/mcp-handlers.js";
-import { mcpManager } from "../../../src/mcp/index.js";
+import {
+	addMcpServerToConfig,
+	buildSuggestedMcpServerName,
+	getOfficialMcpRegistryEntries,
+	loadMcpConfig,
+	mcpManager,
+	prefetchOfficialMcpRegistry,
+	removeMcpServerFromConfig,
+	resolveOfficialMcpRegistryEntry,
+	searchOfficialMcpRegistry,
+	updateMcpServerInConfig,
+} from "../../../src/mcp/index.js";
 
 function createMcpCtx(rawInput: string): McpRenderContext {
 	return {
@@ -414,6 +482,18 @@ describe("mcp-handlers", () => {
 			);
 			expect(ctx.addContent).toHaveBeenCalledWith(
 				expect.stringContaining("Transport: HTTP"),
+			);
+			expect(ctx.addContent).toHaveBeenCalledWith(
+				expect.stringContaining("Remote: https://mcp.linear.app/mcp"),
+			);
+			expect(ctx.addContent).toHaveBeenCalledWith(
+				expect.stringContaining("Trust: Official registry (Linear)"),
+			);
+			expect(ctx.addContent).toHaveBeenCalledWith(
+				expect.stringContaining("Docs: https://linear.app/docs/mcp"),
+			);
+			expect(ctx.addContent).toHaveBeenCalledWith(
+				expect.stringContaining("Permissions: Read and write"),
 			);
 			expect(ctx.addContent).toHaveBeenCalledWith(
 				expect.stringContaining("Error: Connection refused"),
@@ -458,6 +538,222 @@ describe("mcp-handlers", () => {
 			expect(ctx.addContent).toHaveBeenCalledWith(
 				expect.stringContaining("MCP Prompts"),
 			);
+		});
+
+		it("adds a remote MCP server and reloads the manager", async () => {
+			const ctx = createMcpCtx(
+				"/mcp add linear https://mcp.linear.app/mcp --scope project",
+			);
+
+			handleMcpCommand(ctx);
+
+			await vi.waitFor(() => {
+				expect(prefetchOfficialMcpRegistry).toHaveBeenCalledTimes(1);
+				expect(addMcpServerToConfig).toHaveBeenCalledWith({
+					projectRoot: process.cwd(),
+					scope: "project",
+					server: {
+						name: "linear",
+						transport: "http",
+						url: "https://mcp.linear.app/mcp",
+						headers: undefined,
+						headersHelper: undefined,
+					},
+				});
+				expect(loadMcpConfig).toHaveBeenCalledWith(process.cwd(), {
+					includeEnvLimits: true,
+				});
+				expect(mcpManager.configure).toHaveBeenCalledTimes(1);
+			});
+
+			expect(ctx.addContent).toHaveBeenCalledWith(
+				expect.stringContaining('Added MCP server "linear"'),
+			);
+			expect(ctx.addContent).toHaveBeenCalledWith(
+				expect.stringContaining("trust: official (Linear)"),
+			);
+		});
+
+		it("parses stdio MCP servers after --", async () => {
+			const ctx = createMcpCtx(
+				"/mcp add filesystem --scope local -- npx -y @modelcontextprotocol/server-filesystem .",
+			);
+
+			handleMcpCommand(ctx);
+
+			await vi.waitFor(() => {
+				expect(addMcpServerToConfig).toHaveBeenCalledWith({
+					projectRoot: process.cwd(),
+					scope: "local",
+					server: {
+						name: "filesystem",
+						transport: "stdio",
+						command: "npx",
+						args: ["-y", "@modelcontextprotocol/server-filesystem", "."],
+						env: undefined,
+						cwd: undefined,
+					},
+				});
+				expect(ctx.addContent).toHaveBeenCalledWith(
+					expect.stringContaining("command: npx"),
+				);
+			});
+		});
+
+		it("edits an existing MCP server and reloads the manager", async () => {
+			vi.mocked(loadMcpConfig)
+				.mockReturnValueOnce({
+					servers: [
+						{
+							name: "linear",
+							transport: "http",
+							url: "https://mcp.linear.app/mcp",
+							scope: "local",
+						},
+					],
+				})
+				.mockReturnValueOnce({
+					servers: [
+						{
+							name: "linear",
+							transport: "http",
+							url: "https://mcp.linear.app/mcp/v2",
+							scope: "local",
+						},
+					],
+				});
+
+			const ctx = createMcpCtx(
+				"/mcp edit linear https://mcp.linear.app/mcp/v2",
+			);
+			handleMcpCommand(ctx);
+
+			await vi.waitFor(() => {
+				expect(updateMcpServerInConfig).toHaveBeenCalledWith({
+					projectRoot: process.cwd(),
+					scope: undefined,
+					name: "linear",
+					server: {
+						name: "linear",
+						transport: "http",
+						url: "https://mcp.linear.app/mcp/v2",
+						headers: undefined,
+						headersHelper: undefined,
+					},
+				});
+				expect(mcpManager.configure).toHaveBeenCalledTimes(1);
+			});
+
+			expect(ctx.addContent).toHaveBeenCalledWith(
+				expect.stringContaining('Updated MCP server "linear"'),
+			);
+			expect(ctx.addContent).toHaveBeenCalledWith(
+				expect.stringContaining("remote: https://mcp.linear.app/mcp/v2"),
+			);
+		});
+
+		it("removes an MCP server and reports lower-precedence fallback config", async () => {
+			vi.mocked(loadMcpConfig).mockReturnValueOnce({
+				servers: [
+					{
+						name: "linear",
+						transport: "http",
+						url: "https://mcp.linear.app/mcp",
+						scope: "user",
+					},
+				],
+			});
+
+			const ctx = createMcpCtx("/mcp remove linear");
+			handleMcpCommand(ctx);
+
+			await vi.waitFor(() => {
+				expect(removeMcpServerFromConfig).toHaveBeenCalledWith({
+					projectRoot: process.cwd(),
+					scope: undefined,
+					name: "linear",
+				});
+				expect(mcpManager.configure).toHaveBeenCalledTimes(1);
+				expect(ctx.addContent).toHaveBeenCalledWith(
+					expect.stringContaining('Removed MCP server "linear"'),
+				);
+			});
+			expect(ctx.addContent).toHaveBeenCalledWith(
+				expect.stringContaining("fallback: now using User config"),
+			);
+		});
+
+		it("searches the official MCP registry", async () => {
+			const ctx = createMcpCtx("/mcp search linear");
+			handleMcpCommand(ctx);
+
+			await vi.waitFor(() => {
+				expect(prefetchOfficialMcpRegistry).toHaveBeenCalledTimes(1);
+				expect(getOfficialMcpRegistryEntries).toHaveBeenCalledTimes(1);
+				expect(searchOfficialMcpRegistry).toHaveBeenCalledWith("linear", {
+					limit: 8,
+				});
+				expect(ctx.addContent).toHaveBeenCalledWith(
+					expect.stringContaining('Official MCP Registry matches for "linear"'),
+				);
+			});
+			expect(ctx.addContent).toHaveBeenCalledWith(
+				expect.stringContaining("Linear"),
+			);
+		});
+
+		it("imports an official MCP server entry", async () => {
+			vi.mocked(loadMcpConfig)
+				.mockReturnValueOnce({ servers: [] })
+				.mockReturnValueOnce({
+					servers: [
+						{
+							name: "linear",
+							transport: "http",
+							url: "https://mcp.linear.app/mcp",
+							scope: "local",
+						},
+					],
+				});
+
+			const ctx = createMcpCtx("/mcp import linear");
+			handleMcpCommand(ctx);
+
+			await vi.waitFor(() => {
+				expect(resolveOfficialMcpRegistryEntry).toHaveBeenCalledWith("linear");
+				expect(buildSuggestedMcpServerName).toHaveBeenCalledWith(
+					mockOfficialRegistryEntry,
+				);
+				expect(addMcpServerToConfig).toHaveBeenCalledWith({
+					projectRoot: process.cwd(),
+					scope: "local",
+					server: {
+						name: "linear",
+						transport: "http",
+						url: "https://mcp.linear.app/mcp",
+						headers: undefined,
+						headersHelper: undefined,
+					},
+				});
+			});
+
+			expect(ctx.addContent).toHaveBeenCalledWith(
+				expect.stringContaining('Imported official MCP server "linear"'),
+			);
+			expect(ctx.addContent).toHaveBeenCalledWith(
+				expect.stringContaining("source: Linear"),
+			);
+		});
+
+		it("shows usage for incomplete add commands", async () => {
+			const ctx = createMcpCtx("/mcp add");
+			handleMcpCommand(ctx);
+
+			await vi.waitFor(() => {
+				expect(ctx.showError).toHaveBeenCalledWith(
+					expect.stringContaining("/mcp add <name> <command-or-url>"),
+				);
+			});
 		});
 	});
 

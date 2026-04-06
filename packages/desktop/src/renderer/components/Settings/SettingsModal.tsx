@@ -4,7 +4,7 @@
  * Comprehensive settings panel for desktop preferences.
  */
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
 	type ApprovalMode,
 	type BackgroundStatus,
@@ -14,6 +14,9 @@ import {
 	type FrameworkSummary,
 	type GuardianStatus,
 	type LspStatus,
+	type McpServerAddRequest,
+	type McpServerRemoveRequest,
+	type McpServerUpdateRequest,
 	type McpStatus,
 	type ModeStatus,
 	type PlanStatus,
@@ -657,6 +660,53 @@ export function SettingsModal({
 		setExpandedMcpServer((prev) => (prev === name ? null : name));
 	};
 
+	const searchMcpRegistry = useCallback(async (query: string) => {
+		return await apiClient.searchMcpRegistry(query);
+	}, []);
+
+	const importMcpRegistry = async (input: {
+		query: string;
+		name?: string;
+		scope?: "local" | "project" | "user";
+		url?: string;
+		transport?: "http" | "sse";
+	}) => {
+		const result = await apiClient.importMcpRegistry(input);
+		const status = await apiClient.getMcpStatus();
+		setMcpStatus(status);
+		setExpandedMcpServer(result.name);
+		return result;
+	};
+
+	const addMcpServer = async (input: McpServerAddRequest) => {
+		const result = await apiClient.addMcpServer(input);
+		const status = await apiClient.getMcpStatus();
+		setMcpStatus(status);
+		setExpandedMcpServer(result.name);
+		return result;
+	};
+
+	const removeMcpServer = async (input: McpServerRemoveRequest) => {
+		const result = await apiClient.removeMcpServer(input);
+		const status = await apiClient.getMcpStatus();
+		setMcpStatus(status);
+		setExpandedMcpServer((prev) => {
+			if (prev !== input.name) {
+				return prev;
+			}
+			return result.fallback?.name === input.name ? input.name : null;
+		});
+		return result;
+	};
+
+	const updateMcpServer = async (input: McpServerUpdateRequest) => {
+		const result = await apiClient.updateMcpServer(input);
+		const status = await apiClient.getMcpStatus();
+		setMcpStatus(status);
+		setExpandedMcpServer(result.name);
+		return result;
+	};
+
 	const refreshComposers = async () => {
 		try {
 			const status = await apiClient.getComposers();
@@ -827,6 +877,11 @@ export function SettingsModal({
 						expandedMcpServer={expandedMcpServer}
 						onToggleMcpServer={toggleMcpServer}
 						onRefreshMcpStatus={refreshMcpStatus}
+						onSearchMcpRegistry={searchMcpRegistry}
+						onImportMcpRegistry={importMcpRegistry}
+						onAddMcpServer={addMcpServer}
+						onUpdateMcpServer={updateMcpServer}
+						onRemoveMcpServer={removeMcpServer}
 						composerStatus={composerStatus}
 						selectedComposer={selectedComposer}
 						onSelectedComposerChange={setSelectedComposer}

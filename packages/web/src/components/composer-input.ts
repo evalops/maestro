@@ -53,10 +53,13 @@ function buildMcpToolName(server: string, tool: string): string {
 }
 
 function getMcpBadge(
-	server: Pick<McpServerStatus, "scope" | "transport">,
+	server: Pick<McpServerStatus, "scope" | "transport" | "remoteTrust">,
 ): string {
 	if (server.scope) {
 		return server.scope;
+	}
+	if (server.remoteTrust === "official") {
+		return "official";
 	}
 	return server.transport === "stdio" ? "stdio" : "remote";
 }

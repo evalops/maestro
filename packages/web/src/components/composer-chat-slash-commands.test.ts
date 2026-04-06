@@ -21,11 +21,13 @@ function createContext(overrides: Partial<WebSlashCommandContext> = {}) {
 		getConfig: vi.fn(),
 		getDiagnostics: vi.fn(),
 		getFiles: vi.fn(),
+		getMcpStatus: vi.fn(),
 		getPlan: vi.fn(),
 		getPreview: vi.fn(),
 		getQueueStatus: vi.fn(),
 		getReview: vi.fn(),
 		getRunScripts: vi.fn(),
+		importMcpRegistry: vi.fn(),
 		getStats: vi.fn(),
 		getStatus: vi.fn(),
 		getTelemetryStatus: vi.fn(),
@@ -34,6 +36,7 @@ function createContext(overrides: Partial<WebSlashCommandContext> = {}) {
 		listQueue: vi.fn(),
 		runScript: vi.fn(),
 		saveConfig: vi.fn(),
+		searchMcpRegistry: vi.fn(),
 		setApprovalMode: vi.fn(),
 		setCleanMode: vi.fn(),
 		setFooterMode: vi.fn(),
@@ -130,6 +133,71 @@ describe("executeWebSlashCommand", () => {
 				output: "Model set to anthropic/claude-opus",
 				isError: false,
 			},
+		]);
+	});
+
+	it("searches the MCP registry from the web slash command", async () => {
+		const { context, outputs, apiClient } = createContext();
+		apiClient.searchMcpRegistry.mockResolvedValue({
+			query: "linear",
+			entries: [
+				{
+					displayName: "Linear",
+					slug: "linear",
+					transport: "http",
+					url: "https://mcp.linear.app/mcp",
+				},
+			],
+		});
+
+		await executeWebSlashCommand("mcp", "search linear", context);
+
+		expect(apiClient.searchMcpRegistry).toHaveBeenCalledWith("linear");
+		expect(outputs).toEqual([
+			expect.objectContaining({
+				isError: false,
+				output: expect.stringContaining(
+					'Official MCP registry matches for "linear"',
+				),
+			}),
+		]);
+		expect(outputs[0]?.output).toContain("Linear");
+	});
+
+	it("imports an official MCP server from the web slash command", async () => {
+		const { context, outputs, apiClient } = createContext();
+		apiClient.importMcpRegistry.mockResolvedValue({
+			name: "linear",
+			scope: "local",
+			path: "/tmp/project/.maestro/mcp.local.json",
+			entry: {
+				displayName: "Linear",
+				slug: "linear",
+				transport: "http",
+				url: "https://mcp.linear.app/mcp",
+			},
+			server: {
+				transport: "http",
+				url: "https://mcp.linear.app/mcp",
+			},
+		});
+
+		await executeWebSlashCommand("mcp", "import linear", context);
+
+		expect(apiClient.importMcpRegistry).toHaveBeenCalledWith({
+			query: "linear",
+			name: undefined,
+			scope: undefined,
+			url: undefined,
+			transport: undefined,
+		});
+		expect(outputs).toEqual([
+			expect.objectContaining({
+				isError: false,
+				output: expect.stringContaining(
+					'Imported official MCP server "linear"',
+				),
+			}),
 		]);
 	});
 

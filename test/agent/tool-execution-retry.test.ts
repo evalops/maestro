@@ -10,6 +10,7 @@ import type {
 	AgentToolResult,
 	ToolCall,
 } from "../../src/agent/types.js";
+import { getCurrentMcpClientToolService } from "../../src/mcp/elicitation.js";
 import type { AdaptiveThresholds } from "../../src/safety/adaptive-thresholds.js";
 import type { SafetyMiddleware } from "../../src/safety/safety-middleware.js";
 import type { Clock } from "../../src/utils/clock.js";
@@ -218,5 +219,27 @@ describe("tool execution retry", () => {
 		const outcome = await outcomePromise;
 		// Should surface the error (not loop forever)
 		expect(outcome.isError).toBe(true);
+	});
+
+	it("runs server tools inside the request-scoped MCP client tool context", async () => {
+		const clientToolService = {
+			requestExecution: async () => ({
+				content: [{ type: "text" as const, text: "ok" }],
+				isError: false,
+			}),
+		};
+		const tool = makeServerTool({
+			execute: async () => {
+				expect(getCurrentMcpClientToolService()).toBe(clientToolService);
+				return ok;
+			},
+		});
+
+		const outcome = await createToolExecutionPromise(
+			makeCtx(tool, { clientToolService }),
+		);
+
+		expect(outcome.isError).toBe(false);
+		expect(getCurrentMcpClientToolService()).toBeUndefined();
 	});
 });

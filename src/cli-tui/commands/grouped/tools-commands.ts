@@ -8,7 +8,7 @@
  *   /tools list             - List all tools
  *   /tools failures         - Show tool failures
  *   /tools clear            - Clear tool logs
- *   /tools mcp              - Show MCP servers
+ *   /tools mcp              - Show, search, or manage MCP servers
  *   /tools lsp [cmd]        - LSP server management
  *   /tools workflow [cmd]   - Run workflows
  *   /tools run <script>     - Run npm scripts
@@ -106,7 +106,7 @@ function showToolsHelp(ctx: CommandExecutionContext): void {
   /tools list             List all tools
   /tools failures         Show tool failures
   /tools clear            Clear tool logs
-  /tools mcp              Show MCP servers
+  /tools mcp              Show, search, or manage MCP servers
   /tools lsp [cmd]        LSP (status|start|stop|restart|detect)
   /tools workflow [cmd]   Workflows (list|run|validate|show)
   /tools run <script>     Run npm script

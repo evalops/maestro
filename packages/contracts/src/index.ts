@@ -381,7 +381,7 @@ export interface ComposerPendingClientToolRequest {
 	toolCallId: string;
 	toolName: string;
 	args: unknown;
-	kind?: "client_tool" | "user_input";
+	kind?: "client_tool" | "mcp_elicitation" | "user_input";
 	reason?: string;
 }
 

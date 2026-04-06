@@ -208,6 +208,20 @@ function getHeadlessRole(
 	return headerRole === "viewer" ? "viewer" : "controller";
 }
 
+function getViewerDisallowedServerRequest(
+	serverRequests?: Static<
+		typeof HeadlessCreateBaseProperties.capabilities
+	>["serverRequests"],
+): "mcp_elicitation" | "user_input" | undefined {
+	if (serverRequests?.includes("mcp_elicitation")) {
+		return "mcp_elicitation";
+	}
+	if (serverRequests?.includes("user_input")) {
+		return "user_input";
+	}
+	return undefined;
+}
+
 function writeSse(res: ServerResponse, payload: unknown): boolean {
 	return res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
@@ -336,13 +350,13 @@ async function ensureRuntime(
 			"viewer headless connections cannot enable client-side tools",
 		);
 	}
-	if (
-		role === "viewer" &&
-		input.capabilities?.serverRequests?.includes("user_input")
-	) {
+	const disallowedViewerRequest = getViewerDisallowedServerRequest(
+		input.capabilities?.serverRequests,
+	);
+	if (role === "viewer" && disallowedViewerRequest) {
 		throw new ApiError(
 			400,
-			"viewer headless connections cannot negotiate user_input requests",
+			`viewer headless connections cannot negotiate ${disallowedViewerRequest} requests`,
 		);
 	}
 	const headerApproval = normalizeApprovalMode(
@@ -491,13 +505,13 @@ export async function handleHeadlessSessionSubscribe(
 		HeadlessSessionSubscribeSchema,
 	);
 	const role = getHeadlessRole(req, input.role);
-	if (
-		role === "viewer" &&
-		input.capabilities?.serverRequests?.includes("user_input")
-	) {
+	const disallowedViewerRequest = getViewerDisallowedServerRequest(
+		input.capabilities?.serverRequests,
+	);
+	if (role === "viewer" && disallowedViewerRequest) {
 		throw new ApiError(
 			400,
-			"viewer headless connections cannot negotiate user_input requests",
+			`viewer headless connections cannot negotiate ${disallowedViewerRequest} requests`,
 		);
 	}
 	try {

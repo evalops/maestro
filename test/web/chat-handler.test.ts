@@ -75,7 +75,12 @@ function makeRes(): MockResponse {
 }
 
 async function waitForPendingRequest(
-	kind?: "approval" | "client_tool" | "user_input" | "tool_retry",
+	kind?:
+		| "approval"
+		| "client_tool"
+		| "mcp_elicitation"
+		| "user_input"
+		| "tool_retry",
 ) {
 	for (let attempt = 0; attempt < 50; attempt += 1) {
 		const request = serverRequestManager
@@ -674,6 +679,174 @@ describe("handleChat", () => {
 		expect(toolResultRes.statusCode).toBe(200);
 		expect(serverRequestManager.listPending()).toEqual([]);
 		expect(res.body).toContain("Use Zod");
+	});
+
+	it("bridges MCP elicitation requests to SSE clients and persists them in the session payload", async () => {
+		const req = new PassThrough() as MockPassThrough;
+		req.method = "POST";
+		req.url = "/api/chat";
+		req.headers = { "x-composer-client-tools": "1" };
+		req.end(
+			JSON.stringify({
+				messages: [{ role: "user", content: "connect the MCP server" }],
+			}),
+		);
+
+		const res = makeRes();
+		const createAgent: WebServerContext["createAgent"] = async (
+			_model,
+			_thinking,
+			_approval,
+			options,
+		) => {
+			type EventCallback = (e: unknown) => void | Promise<void>;
+			let subscriber: EventCallback | undefined;
+			return {
+				state: {
+					systemPrompt: "",
+					model: mockModel,
+					thinkingLevel: "off",
+					tools: [],
+					messages: [],
+					isStreaming: false,
+					streamMessage: null,
+					pendingToolCalls: new Map(),
+				},
+				subscribe: (fn: EventCallback) => {
+					subscriber = fn;
+					return () => {
+						subscriber = undefined;
+					};
+				},
+				replaceMessages: () => {},
+				clearMessages: () => {},
+				prompt: async () => {
+					const executionService = options?.clientToolService;
+					if (!executionService) {
+						throw new Error("client tool service missing");
+					}
+					const result = await executionService.requestExecution(
+						"mcp_elicitation_sse",
+						"mcp_elicitation",
+						{
+							serverName: "context7",
+							requestId: "request-1",
+							mode: "form",
+							message: "Provide the project name",
+							requestedSchema: {
+								type: "object",
+								properties: {
+									project: { type: "string", title: "Project" },
+								},
+								required: ["project"],
+							},
+						},
+					);
+					await subscriber?.({
+						type: "message_end",
+						message: {
+							role: "assistant",
+							content: result.content,
+							api: mockModel.api,
+							provider: mockModel.provider,
+							model: mockModel.id,
+							usage: {
+								input: 1,
+								output: 1,
+								cacheRead: 0,
+								cacheWrite: 0,
+								cost: {
+									input: 0,
+									output: 0,
+									cacheRead: 0,
+									cacheWrite: 0,
+									total: 0,
+								},
+							},
+							stopReason: "stop",
+							timestamp: Date.now(),
+						},
+					});
+				},
+				abort: () => {},
+			} as unknown as Agent;
+		};
+
+		const context: Partial<WebServerContext> = {
+			createAgent,
+			getRegisteredModel: async () => mockModel,
+			defaultApprovalMode: "prompt",
+			defaultProvider: "anthropic",
+			defaultModelId: mockModel.id,
+			corsHeaders: cors,
+		};
+
+		const chatPromise = handleChat(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			context as WebServerContext,
+		);
+
+		const pendingRequest = await waitForPendingRequest("mcp_elicitation");
+		expect(pendingRequest).toMatchObject({
+			id: "mcp_elicitation_sse",
+			kind: "mcp_elicitation",
+			toolName: "mcp_elicitation",
+		});
+		expect(res.body).toContain('"type":"client_tool_request"');
+		expect(res.body).toContain('"toolName":"mcp_elicitation"');
+
+		const sessionReq = new PassThrough() as MockPassThrough;
+		sessionReq.method = "GET";
+		sessionReq.url = `/api/sessions/${pendingRequest.sessionId}`;
+		sessionReq.headers = {};
+		sessionReq.end();
+
+		const sessionRes = makeRes();
+		await handleSessions(
+			sessionReq as unknown as IncomingMessage,
+			sessionRes as unknown as ServerResponse,
+			{ id: pendingRequest.sessionId },
+			cors,
+		);
+
+		expect(sessionRes.statusCode).toBe(200);
+		expect(sessionRes.body).toContain('"pendingClientToolRequests"');
+		expect(sessionRes.body).toContain('"kind":"mcp_elicitation"');
+
+		const toolResultReq = new PassThrough() as MockPassThrough;
+		toolResultReq.method = "POST";
+		toolResultReq.url = "/api/chat/client-tool-result";
+		toolResultReq.headers = {};
+		toolResultReq.end(
+			JSON.stringify({
+				toolCallId: pendingRequest.id,
+				content: [
+					{
+						type: "text",
+						text: JSON.stringify({
+							action: "accept",
+							content: { project: "Maestro" },
+						}),
+					},
+				],
+				isError: false,
+			}),
+		);
+
+		const toolResultRes = makeRes();
+		await handleClientToolResult(
+			toolResultReq as unknown as IncomingMessage,
+			toolResultRes as unknown as ServerResponse,
+			context as WebServerContext,
+		);
+
+		await chatPromise;
+
+		expect(toolResultRes.statusCode).toBe(200);
+		expect(serverRequestManager.listPending()).toEqual([]);
+		expect(res.body).toContain('\\"action\\":\\"accept\\"');
+		expect(res.body).toContain('\\"project\\":\\"Maestro\\"');
 	});
 
 	it("creates a recoverable session before first-turn ask_user requests over websocket", async () => {

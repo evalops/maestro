@@ -6,6 +6,15 @@ import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import type {
 	ApiClient,
+	McpOfficialRegistryEntry,
+	McpRegistryImportRequest,
+	McpRemoteTrust,
+	McpServerAddRequest,
+	McpServerConfigInput,
+	McpServerRemoveResponse,
+	McpServerStatus,
+	McpServerUpdateRequest,
+	McpStatus,
 	Model,
 	UsageSummary,
 	WorkspaceStatus,
@@ -278,6 +287,137 @@ export class ComposerSettings extends LitElement {
 			font-family: var(--font-mono);
 		}
 
+		.control-row {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 0.75rem;
+			align-items: center;
+			margin-bottom: 0.75rem;
+		}
+
+		.field-input,
+		.field-select {
+			background: var(--bg-primary);
+			border: 1px solid var(--border-primary);
+			border-radius: 6px;
+			padding: 0.65rem 0.75rem;
+			color: var(--text-primary);
+			font-size: 0.78rem;
+			font-family: var(--font-mono);
+		}
+
+		.field-input {
+			flex: 1 1 240px;
+		}
+
+		.field-select {
+			min-width: 140px;
+		}
+
+		.action-btn {
+			background: var(--bg-panel);
+			border: 1px solid var(--border-primary);
+			border-radius: 6px;
+			padding: 0.65rem 0.85rem;
+			color: var(--text-secondary);
+			font-size: 0.72rem;
+			font-family: var(--font-mono);
+			text-transform: uppercase;
+			letter-spacing: 0.05em;
+			cursor: pointer;
+			transition: all 0.2s;
+		}
+
+		.action-btn:hover {
+			color: var(--text-primary);
+			border-color: var(--border-secondary);
+			transform: translateY(-1px);
+		}
+
+		.action-btn:disabled {
+			opacity: 0.6;
+			cursor: not-allowed;
+			transform: none;
+		}
+
+		.panel-grid {
+			display: grid;
+			grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+			gap: 0.75rem;
+		}
+
+		.panel-card {
+			background: var(--bg-primary);
+			border: 1px solid var(--border-primary);
+			border-radius: 8px;
+			padding: 0.9rem;
+			display: flex;
+			flex-direction: column;
+			gap: 0.6rem;
+		}
+
+		.panel-card-header {
+			display: flex;
+			align-items: flex-start;
+			justify-content: space-between;
+			gap: 0.75rem;
+		}
+
+		.panel-card-title {
+			font-size: 0.84rem;
+			font-weight: 600;
+			color: var(--text-primary);
+		}
+
+		.panel-card-copy {
+			font-size: 0.75rem;
+			color: var(--text-secondary);
+			line-height: 1.55;
+		}
+
+		.panel-badges {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 0.35rem;
+		}
+
+		.panel-link-row {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 0.85rem;
+			font-size: 0.72rem;
+			font-family: var(--font-mono);
+		}
+
+		.panel-link-row a {
+			color: var(--accent-blue);
+			text-decoration: none;
+		}
+
+		.panel-link-row a:hover {
+			text-decoration: underline;
+		}
+
+		.panel-feedback {
+			border-radius: 8px;
+			padding: 0.75rem 0.9rem;
+			font-size: 0.75rem;
+			font-family: var(--font-mono);
+			line-height: 1.5;
+		}
+
+		.panel-feedback.error {
+			background: rgba(239, 68, 68, 0.1);
+			border: 1px solid rgba(239, 68, 68, 0.3);
+			color: var(--accent-red);
+		}
+
+		.panel-feedback.success {
+			background: rgba(16, 185, 129, 0.1);
+			border: 1px solid rgba(16, 185, 129, 0.3);
+			color: var(--accent-green);
+		}
+
 		@media (max-width: 768px) {
 			.model-grid {
 				grid-template-columns: 1fr;
@@ -285,6 +425,11 @@ export class ComposerSettings extends LitElement {
 
 			.usage-stats {
 				grid-template-columns: 1fr;
+			}
+
+			.control-row {
+				flex-direction: column;
+				align-items: stretch;
 			}
 		}
 	`;
@@ -300,6 +445,43 @@ export class ComposerSettings extends LitElement {
 	@state() private status: WorkspaceStatus | null = null;
 	@state() private models: Model[] = [];
 	@state() private usage: UsageSummary | null = null;
+	@state() private mcpStatus: McpStatus | null = null;
+	@state() private mcpRegistryEntries: McpOfficialRegistryEntry[] = [];
+	@state() private mcpRegistryQuery = "";
+	@state() private mcpRegistryScope: McpRegistryImportRequest["scope"] =
+		"local";
+	@state() private mcpRegistryLoading = false;
+	@state() private mcpRegistryError: string | null = null;
+	@state() private mcpRegistryNotice: string | null = null;
+	@state() private mcpImportingId: string | null = null;
+	@state() private mcpRegistryNames: Record<string, string> = {};
+	@state() private mcpRegistrySelectedUrls: Record<string, string> = {};
+	@state() private mcpCustomName = "";
+	@state() private mcpCustomCommand = "";
+	@state() private mcpCustomArgsText = "";
+	@state() private mcpCustomCwd = "";
+	@state() private mcpCustomEnvText = "";
+	@state() private mcpCustomUrl = "";
+	@state() private mcpCustomHeadersText = "";
+	@state() private mcpCustomHeadersHelper = "";
+	@state() private mcpCustomTimeoutText = "";
+	@state() private mcpCustomTransport: "stdio" | "http" | "sse" = "http";
+	@state() private mcpCustomScope: McpRegistryImportRequest["scope"] = "local";
+	@state() private mcpManagementError: string | null = null;
+	@state() private mcpManagementNotice: string | null = null;
+	@state() private mcpCustomSubmitting = false;
+	@state() private mcpRemovingName: string | null = null;
+	@state() private mcpUpdatingName: string | null = null;
+	@state() private mcpEditingCommands: Record<string, string> = {};
+	@state() private mcpEditingArgsText: Record<string, string> = {};
+	@state() private mcpEditingCwds: Record<string, string> = {};
+	@state() private mcpEditingUrls: Record<string, string> = {};
+	@state() private mcpEditingHeadersHelpers: Record<string, string> = {};
+	@state() private mcpEditingTimeouts: Record<string, string> = {};
+	@state() private mcpEditingTransports: Record<
+		string,
+		"stdio" | "http" | "sse"
+	> = {};
 	@state() private selectedTab: "workspace" | "models" | "usage" = "workspace";
 
 	override async connectedCallback() {
@@ -310,6 +492,7 @@ export class ComposerSettings extends LitElement {
 	private async loadData() {
 		this.loading = true;
 		this.error = null;
+		this.mcpRegistryError = null;
 
 		try {
 			let statusData = this.statusPrefetch;
@@ -327,6 +510,28 @@ export class ComposerSettings extends LitElement {
 
 			if (!statusData || !modelsData || modelsData.length === 0) {
 				throw new Error("Failed to load settings data");
+			}
+
+			const [mcpStatusResult, registryResult] = await Promise.allSettled([
+				this.apiClient.getMcpStatus(),
+				this.apiClient.searchMcpRegistry(""),
+			]);
+
+			if (mcpStatusResult.status === "fulfilled") {
+				this.mcpStatus = mcpStatusResult.value;
+			} else {
+				this.mcpStatus = null;
+			}
+
+			if (registryResult.status === "fulfilled") {
+				this.mcpRegistryEntries = registryResult.value.entries ?? [];
+				this.mcpRegistryError = null;
+			} else {
+				this.mcpRegistryEntries = [];
+				this.mcpRegistryError =
+					registryResult.reason instanceof Error
+						? registryResult.reason.message
+						: "Failed to load official MCP registry";
 			}
 		} catch (e) {
 			this.error = e instanceof Error ? e.message : "Failed to load settings";
@@ -369,6 +574,431 @@ export class ComposerSettings extends LitElement {
 		if (count < 1000) return count.toString();
 		if (count < 1_000_000) return `${(count / 1000).toFixed(1)}k`;
 		return `${(count / 1_000_000).toFixed(1)}M`;
+	}
+
+	private formatCountLabel(
+		count: number,
+		singular: string,
+		plural: string,
+	): string {
+		return `${count} ${count === 1 ? singular : plural}`;
+	}
+
+	private formatMcpTransportLabel(
+		transport: McpServerStatus["transport"],
+	): string | null {
+		switch (transport) {
+			case "stdio":
+				return "stdio";
+			case "http":
+				return "HTTP";
+			case "sse":
+				return "SSE";
+			default:
+				return null;
+		}
+	}
+
+	private formatMcpTrustLabel(
+		trust: McpRemoteTrust | undefined,
+	): string | null {
+		switch (trust) {
+			case "official":
+				return "Official remote";
+			case "custom":
+				return "Custom remote";
+			case "unknown":
+				return "Unverified remote";
+			default:
+				return null;
+		}
+	}
+
+	private formatMcpScopeLabel(
+		scope: McpRegistryImportRequest["scope"],
+	): string {
+		switch (scope) {
+			case "project":
+				return "Project";
+			case "user":
+				return "User";
+			default:
+				return "Local";
+		}
+	}
+
+	private formatAnyMcpScopeLabel(scope: McpServerStatus["scope"]): string {
+		switch (scope) {
+			case "enterprise":
+				return "Enterprise";
+			case "plugin":
+				return "Plugin";
+			case "project":
+				return "Project";
+			case "user":
+				return "User";
+			default:
+				return "Local";
+		}
+	}
+
+	private getWritableMcpScope(
+		scope:
+			| McpServerStatus["scope"]
+			| McpRegistryImportRequest["scope"]
+			| undefined,
+	): McpRegistryImportRequest["scope"] | null {
+		switch (scope) {
+			case "local":
+			case "project":
+			case "user":
+				return scope;
+			default:
+				return null;
+		}
+	}
+
+	private getMcpRegistryEntryId(
+		entry: McpOfficialRegistryEntry,
+		index: number,
+	): string {
+		const rawId =
+			entry.slug?.trim() ||
+			entry.serverName?.trim() ||
+			entry.displayName?.trim() ||
+			entry.url?.trim() ||
+			entry.directoryUrl?.trim() ||
+			`entry-${index}`;
+		return rawId.toLowerCase().replace(/\s+/g, "-");
+	}
+
+	private getMcpRegistryUrlOptions(entry: McpOfficialRegistryEntry) {
+		const options =
+			entry.urlOptions
+				?.map((option, index) => {
+					const url = option.url?.trim();
+					if (!url) {
+						return null;
+					}
+					const label =
+						option.label?.trim() ||
+						option.description?.trim() ||
+						(index === 0 ? "Default endpoint" : `Endpoint ${index + 1}`);
+					return { url, label };
+				})
+				.filter((option): option is { url: string; label: string } =>
+					Boolean(option),
+				) ?? [];
+		const fallbackUrl = entry.url?.trim();
+		return options.length > 0
+			? options
+			: fallbackUrl
+				? [{ url: fallbackUrl, label: "Default endpoint" }]
+				: [];
+	}
+
+	private async searchMcpRegistry(query: string) {
+		this.mcpRegistryLoading = true;
+		this.mcpRegistryError = null;
+		this.mcpRegistryNotice = null;
+		try {
+			const result = await this.apiClient.searchMcpRegistry(query);
+			this.mcpRegistryEntries = result.entries ?? [];
+		} catch (error) {
+			this.mcpRegistryEntries = [];
+			this.mcpRegistryError =
+				error instanceof Error
+					? error.message
+					: "Failed to search the official MCP registry";
+		} finally {
+			this.mcpRegistryLoading = false;
+		}
+	}
+
+	private async importMcpRegistry(
+		entry: McpOfficialRegistryEntry,
+		index: number,
+	) {
+		const entryId = this.getMcpRegistryEntryId(entry, index);
+		const urlOptions = this.getMcpRegistryUrlOptions(entry);
+		this.mcpImportingId = entryId;
+		this.mcpRegistryError = null;
+		this.mcpRegistryNotice = null;
+		try {
+			const result = await this.apiClient.importMcpRegistry({
+				query:
+					entry.slug?.trim() ||
+					entry.serverName?.trim() ||
+					entry.displayName?.trim() ||
+					entry.url?.trim() ||
+					`entry-${index}`,
+				name: this.mcpRegistryNames[entryId]?.trim() || undefined,
+				scope: this.mcpRegistryScope,
+				url:
+					this.mcpRegistrySelectedUrls[entryId] ||
+					urlOptions[0]?.url ||
+					undefined,
+			});
+			this.mcpStatus = await this.apiClient.getMcpStatus();
+			this.mcpRegistryNotice = `Imported ${result.name} into ${this.formatMcpScopeLabel(result.scope)} config via ${
+				this.formatMcpTransportLabel(result.server.transport) ??
+				result.server.transport
+			}.`;
+			this.mcpRegistryNames = {
+				...this.mcpRegistryNames,
+				[entryId]: "",
+			};
+		} catch (error) {
+			this.mcpRegistryError =
+				error instanceof Error
+					? error.message
+					: "Failed to import MCP registry entry";
+		} finally {
+			this.mcpImportingId = null;
+		}
+	}
+
+	private formatMcpAddMessage(
+		server: McpServerConfigInput & { transport: string },
+		scope: McpRegistryImportRequest["scope"],
+		name: string,
+	): string {
+		const transportLabel = this.formatMcpTransportLabel(
+			server.transport as McpServerStatus["transport"],
+		);
+		return `Added ${name} to ${this.formatMcpScopeLabel(scope)} config via ${
+			transportLabel ?? server.transport
+		}.`;
+	}
+
+	private formatMcpRemoveMessage(result: McpServerRemoveResponse): string {
+		if (result.fallback) {
+			return `Removed ${result.name} from ${this.formatMcpScopeLabel(result.scope)} config. Now using ${result.fallback.name} from ${this.formatAnyMcpScopeLabel(
+				result.fallback.scope,
+			)}.`;
+		}
+		return `Removed ${result.name} from ${this.formatMcpScopeLabel(result.scope)} config.`;
+	}
+
+	private formatMcpUpdateMessage(
+		server: McpServerConfigInput & { transport: string },
+		scope: McpRegistryImportRequest["scope"],
+		name: string,
+	): string {
+		const transportLabel = this.formatMcpTransportLabel(
+			server.transport as McpServerStatus["transport"],
+		);
+		return `Updated ${name} in ${this.formatMcpScopeLabel(scope)} config via ${
+			transportLabel ?? server.transport
+		}.`;
+	}
+
+	private formatMcpArgsText(args: string[] | undefined): string {
+		if (!Array.isArray(args) || args.length === 0) {
+			return "";
+		}
+		return args.join("\n");
+	}
+
+	private parseMcpArgsText(text: string): string[] | undefined {
+		const args = text
+			.split(/\r?\n/)
+			.map((line) => line.trim())
+			.filter((line) => line.length > 0);
+		return args.length > 0 ? args : undefined;
+	}
+
+	private parseMcpKeyValueText(
+		text: string,
+	): Record<string, string> | undefined {
+		const entries = text
+			.split(/\r?\n/)
+			.map((line) => line.trim())
+			.filter((line) => line.length > 0)
+			.map((line) => {
+				const separatorIndex = line.indexOf("=");
+				if (separatorIndex <= 0) {
+					throw new Error(`Expected KEY=VALUE format for "${line}".`);
+				}
+				return [
+					line.slice(0, separatorIndex).trim(),
+					line.slice(separatorIndex + 1),
+				] as const;
+			});
+
+		if (entries.length === 0) {
+			return undefined;
+		}
+
+		return Object.fromEntries(entries);
+	}
+
+	private formatMcpTimeoutText(timeout: number | null | undefined): string {
+		return typeof timeout === "number" ? String(timeout) : "";
+	}
+
+	private parseMcpTimeoutText(text: string): number | undefined {
+		const trimmed = text.trim();
+		if (!trimmed) {
+			return undefined;
+		}
+		const value = Number(trimmed);
+		if (!Number.isInteger(value) || value < 1) {
+			throw new Error("Timeout must be a positive integer in milliseconds.");
+		}
+		return value;
+	}
+
+	private async addCustomMcpServer() {
+		this.mcpCustomSubmitting = true;
+		this.mcpManagementError = null;
+		this.mcpManagementNotice = null;
+		try {
+			const input: McpServerAddRequest = {
+				scope: this.mcpCustomScope,
+				server: {
+					name: this.mcpCustomName.trim(),
+					transport: this.mcpCustomTransport,
+					command:
+						this.mcpCustomTransport === "stdio"
+							? this.mcpCustomCommand.trim()
+							: undefined,
+					args:
+						this.mcpCustomTransport === "stdio"
+							? this.parseMcpArgsText(this.mcpCustomArgsText)
+							: undefined,
+					cwd:
+						this.mcpCustomTransport === "stdio"
+							? this.mcpCustomCwd.trim() || undefined
+							: undefined,
+					env:
+						this.mcpCustomTransport === "stdio"
+							? this.parseMcpKeyValueText(this.mcpCustomEnvText)
+							: undefined,
+					url:
+						this.mcpCustomTransport === "stdio"
+							? undefined
+							: this.mcpCustomUrl.trim(),
+					headers:
+						this.mcpCustomTransport === "stdio"
+							? undefined
+							: this.parseMcpKeyValueText(this.mcpCustomHeadersText),
+					headersHelper:
+						this.mcpCustomTransport === "stdio"
+							? undefined
+							: this.mcpCustomHeadersHelper.trim() || undefined,
+					timeout: this.parseMcpTimeoutText(this.mcpCustomTimeoutText),
+				},
+			};
+			const result = await this.apiClient.addMcpServer(input);
+			this.mcpStatus = await this.apiClient.getMcpStatus();
+			this.mcpManagementNotice = this.formatMcpAddMessage(
+				result.server,
+				result.scope,
+				result.name,
+			);
+			this.mcpCustomName = "";
+			this.mcpCustomCommand = "";
+			this.mcpCustomArgsText = "";
+			this.mcpCustomCwd = "";
+			this.mcpCustomEnvText = "";
+			this.mcpCustomUrl = "";
+			this.mcpCustomHeadersText = "";
+			this.mcpCustomHeadersHelper = "";
+			this.mcpCustomTimeoutText = "";
+			this.mcpCustomTransport = "http";
+		} catch (error) {
+			this.mcpManagementError =
+				error instanceof Error ? error.message : "Failed to add MCP server";
+		} finally {
+			this.mcpCustomSubmitting = false;
+		}
+	}
+
+	private async removeMcpServer(
+		name: string,
+		scope: McpRegistryImportRequest["scope"],
+	) {
+		this.mcpRemovingName = name;
+		this.mcpManagementError = null;
+		this.mcpManagementNotice = null;
+		try {
+			const result = await this.apiClient.removeMcpServer({ name, scope });
+			this.mcpStatus = await this.apiClient.getMcpStatus();
+			this.mcpManagementNotice = this.formatMcpRemoveMessage(result);
+		} catch (error) {
+			this.mcpManagementError =
+				error instanceof Error ? error.message : "Failed to remove MCP server";
+		} finally {
+			this.mcpRemovingName = null;
+		}
+	}
+
+	private async updateMcpServer(
+		server: McpServerStatus,
+		scope: McpRegistryImportRequest["scope"],
+	) {
+		this.mcpUpdatingName = server.name;
+		this.mcpManagementError = null;
+		this.mcpManagementNotice = null;
+		try {
+			const input: McpServerUpdateRequest = {
+				name: server.name,
+				scope,
+				server:
+					server.transport === "stdio"
+						? {
+								name: server.name,
+								transport: "stdio",
+								command:
+									this.mcpEditingCommands[server.name]?.trim() ||
+									server.command ||
+									"",
+								args: this.parseMcpArgsText(
+									this.mcpEditingArgsText[server.name] ??
+										this.formatMcpArgsText(server.args),
+								),
+								cwd:
+									this.mcpEditingCwds[server.name]?.trim() ||
+									server.cwd ||
+									undefined,
+								timeout: this.parseMcpTimeoutText(
+									this.mcpEditingTimeouts[server.name] ??
+										this.formatMcpTimeoutText(server.timeout),
+								),
+							}
+						: {
+								name: server.name,
+								transport:
+									this.mcpEditingTransports[server.name] ??
+									(server.transport === "sse" ? "sse" : "http"),
+								url:
+									this.mcpEditingUrls[server.name]?.trim() ||
+									server.remoteUrl ||
+									"",
+								headersHelper:
+									this.mcpEditingHeadersHelpers[server.name]?.trim() ||
+									server.headersHelper ||
+									undefined,
+								timeout: this.parseMcpTimeoutText(
+									this.mcpEditingTimeouts[server.name] ??
+										this.formatMcpTimeoutText(server.timeout),
+								),
+							},
+			};
+			const result = await this.apiClient.updateMcpServer(input);
+			this.mcpStatus = await this.apiClient.getMcpStatus();
+			this.mcpManagementNotice = this.formatMcpUpdateMessage(
+				result.server,
+				result.scope,
+				result.name,
+			);
+		} catch (error) {
+			this.mcpManagementError =
+				error instanceof Error ? error.message : "Failed to update MCP server";
+		} finally {
+			this.mcpUpdatingName = null;
+		}
 	}
 
 	private renderWorkspaceTab() {
@@ -451,6 +1081,804 @@ export class ComposerSettings extends LitElement {
 						<div class="info-label">Node:</div>
 						<div class="info-value">${this.status.server.version}</div>
 					</div>
+				</div>
+			</div>
+
+			${this.renderMcpSection()}
+		`;
+	}
+
+	private renderMcpSection() {
+		const servers = this.mcpStatus?.servers ?? [];
+
+		return html`
+			<div class="section">
+				<div class="section-header">
+					<h3>MCP</h3>
+				</div>
+				<div class="section-content">
+					<div class="control-row">
+						<div>
+							<div class="info-value">Configured Servers</div>
+							<div class="info-label">Slash command: /mcp</div>
+						</div>
+					</div>
+					${
+						servers.length > 0
+							? html`
+								<div class="panel-grid">
+									${servers.map((server) => {
+										const writableScope = this.getWritableMcpScope(
+											server.scope,
+										);
+										const editableTransport =
+											this.mcpEditingTransports[server.name] ??
+											(server.transport === "stdio"
+												? "stdio"
+												: server.transport === "sse"
+													? "sse"
+													: "http");
+										const editableUrl =
+											this.mcpEditingUrls[server.name] ??
+											server.remoteUrl ??
+											"";
+										const editableCommand =
+											this.mcpEditingCommands[server.name] ??
+											server.command ??
+											"";
+										const editableArgsText =
+											this.mcpEditingArgsText[server.name] ??
+											this.formatMcpArgsText(server.args);
+										const editableCwd =
+											this.mcpEditingCwds[server.name] ?? server.cwd ?? "";
+										const editableHeadersHelper =
+											this.mcpEditingHeadersHelpers[server.name] ??
+											server.headersHelper ??
+											"";
+										const editableTimeout =
+											this.mcpEditingTimeouts[server.name] ??
+											this.formatMcpTimeoutText(server.timeout);
+										return html`
+											<div class="panel-card">
+												<div class="panel-card-header">
+													<div>
+														<div class="panel-card-title">${server.name}</div>
+														<div class="panel-card-copy">
+															${server.connected ? "Connected" : "Offline"}
+														</div>
+													</div>
+													${
+														writableScope
+															? html`<button
+																	class="action-btn mcp-remove-button"
+																	@click=${() =>
+																		void this.removeMcpServer(
+																			server.name,
+																			writableScope,
+																		)}
+																	?disabled=${this.mcpRemovingName === server.name}
+																>
+																	${
+																		this.mcpRemovingName === server.name
+																			? "Removing..."
+																			: "Remove"
+																	}
+																</button>`
+															: ""
+													}
+												</div>
+												<div class="panel-badges">
+													${
+														server.scope
+															? html`<span class="badge">${server.scope}</span>`
+															: ""
+													}
+													${
+														this.formatMcpTransportLabel(server.transport)
+															? html`<span class="badge active">${this.formatMcpTransportLabel(server.transport)}</span>`
+															: ""
+													}
+													${
+														this.formatMcpTrustLabel(server.remoteTrust)
+															? html`<span class="badge">${this.formatMcpTrustLabel(server.remoteTrust)}</span>`
+															: ""
+													}
+												</div>
+												${
+													server.remoteHost || server.remoteUrl
+														? html`
+															<div class="panel-card-copy">
+																${server.remoteHost ? html`Host: ${server.remoteHost}<br />` : ""}
+																${server.remoteUrl ? html`URL: ${server.remoteUrl}` : ""}
+															</div>
+														`
+														: ""
+												}
+												${
+													server.command ||
+													server.cwd ||
+													(server.args?.length ?? 0) > 0
+														? html`
+															<div class="panel-card-copy">
+																${server.command ? html`Command: ${server.command}<br />` : ""}
+																${
+																	(server.args?.length ?? 0) > 0
+																		? html`Args: ${(server.args ?? []).join(" ")}<br />`
+																		: ""
+																}
+																${server.cwd ? html`CWD: ${server.cwd}` : ""}
+															</div>
+														`
+														: ""
+												}
+												${
+													server.timeout ||
+													server.headersHelper ||
+													(server.envKeys?.length ?? 0) > 0 ||
+													(server.headerKeys?.length ?? 0) > 0
+														? html`
+															<div class="panel-card-copy">
+																${server.timeout ? html`Timeout: ${server.timeout} ms<br />` : ""}
+																${server.headersHelper ? html`Headers helper: ${server.headersHelper}<br />` : ""}
+																${
+																	(server.envKeys?.length ?? 0) > 0
+																		? html`Env keys: ${(server.envKeys ?? []).join(", ")}<br />`
+																		: ""
+																}
+																${
+																	(server.headerKeys?.length ?? 0) > 0
+																		? html`Header keys: ${(server.headerKeys ?? []).join(", ")}`
+																		: ""
+																}
+															</div>
+														`
+														: ""
+												}
+												${
+													writableScope && server.remoteUrl
+														? html`
+															<div class="control-row">
+																<input
+																	class="field-input"
+																	type="url"
+																	.placeholder=${"https://example.com/mcp"}
+																	.value=${editableUrl}
+																	aria-label=${`Remote URL for ${server.name}`}
+																	@input=${(event: Event) => {
+																		this.mcpEditingUrls = {
+																			...this.mcpEditingUrls,
+																			[server.name]: (
+																				event.target as HTMLInputElement
+																			).value,
+																		};
+																	}}
+																/>
+																<select
+																	class="field-select"
+																	.value=${editableTransport}
+																	aria-label=${`Remote transport for ${server.name}`}
+																	@change=${(event: Event) => {
+																		this.mcpEditingTransports = {
+																			...this.mcpEditingTransports,
+																			[server.name]: (
+																				event.target as HTMLSelectElement
+																			).value as "stdio" | "http" | "sse",
+																		};
+																	}}
+																>
+																	<option value="http">HTTP</option>
+																	<option value="sse">SSE</option>
+																</select>
+																<button
+																	class="action-btn mcp-update-button"
+																	@click=${() =>
+																		void this.updateMcpServer(
+																			server,
+																			writableScope,
+																		)}
+																	?disabled=${this.mcpUpdatingName === server.name}
+																>
+																	${
+																		this.mcpUpdatingName === server.name
+																			? "Saving..."
+																			: "Save"
+																	}
+																</button>
+															</div>
+															<div class="control-row">
+																<input
+																	class="field-input"
+																	type="text"
+																	.placeholder=${"Headers helper (optional)"}
+																	.value=${editableHeadersHelper}
+																	aria-label=${`Headers helper for ${server.name}`}
+																	@input=${(event: Event) => {
+																		this.mcpEditingHeadersHelpers = {
+																			...this.mcpEditingHeadersHelpers,
+																			[server.name]: (
+																				event.target as HTMLInputElement
+																			).value,
+																		};
+																	}}
+																/>
+																<input
+																	class="field-input"
+																	type="number"
+																	min="1"
+																	.placeholder=${"Timeout (ms)"}
+																	.value=${editableTimeout}
+																	aria-label=${`Timeout for ${server.name}`}
+																	@input=${(event: Event) => {
+																		this.mcpEditingTimeouts = {
+																			...this.mcpEditingTimeouts,
+																			[server.name]: (
+																				event.target as HTMLInputElement
+																			).value,
+																		};
+																	}}
+																/>
+															</div>
+															<div class="panel-card-copy">
+																Edits apply to the ${this.formatMcpScopeLabel(
+																	writableScope,
+																)} config file.
+															</div>
+														`
+														: ""
+												}
+												${
+													writableScope && server.transport === "stdio"
+														? html`
+															<div class="control-row" style="align-items: stretch;">
+																<input
+																	class="field-input"
+																	type="text"
+																	.placeholder=${"Command"}
+																	.value=${editableCommand}
+																	aria-label=${`Command for ${server.name}`}
+																	@input=${(event: Event) => {
+																		this.mcpEditingCommands = {
+																			...this.mcpEditingCommands,
+																			[server.name]: (
+																				event.target as HTMLInputElement
+																			).value,
+																		};
+																	}}
+																/>
+																<textarea
+																	class="field-input"
+																	style="min-height: 5.5rem;"
+																	.placeholder=${"Arguments (one per line)"}
+																	.value=${editableArgsText}
+																	aria-label=${`Arguments for ${server.name}`}
+																	@input=${(event: Event) => {
+																		this.mcpEditingArgsText = {
+																			...this.mcpEditingArgsText,
+																			[server.name]: (
+																				event.target as HTMLTextAreaElement
+																			).value,
+																		};
+																	}}
+																></textarea>
+																<input
+																	class="field-input"
+																	type="text"
+																	.placeholder=${"Working directory (optional)"}
+																	.value=${editableCwd}
+																	aria-label=${`Working directory for ${server.name}`}
+																	@input=${(event: Event) => {
+																		this.mcpEditingCwds = {
+																			...this.mcpEditingCwds,
+																			[server.name]: (
+																				event.target as HTMLInputElement
+																			).value,
+																		};
+																	}}
+																/>
+																<input
+																	class="field-input"
+																	type="number"
+																	min="1"
+																	.placeholder=${"Timeout (ms)"}
+																	.value=${editableTimeout}
+																	aria-label=${`Timeout for ${server.name}`}
+																	@input=${(event: Event) => {
+																		this.mcpEditingTimeouts = {
+																			...this.mcpEditingTimeouts,
+																			[server.name]: (
+																				event.target as HTMLInputElement
+																			).value,
+																		};
+																	}}
+																/>
+																<button
+																	class="action-btn mcp-update-button"
+																	@click=${() =>
+																		void this.updateMcpServer(
+																			server,
+																			writableScope,
+																		)}
+																	?disabled=${this.mcpUpdatingName === server.name || editableCommand.trim().length === 0}
+																>
+																	${
+																		this.mcpUpdatingName === server.name
+																			? "Saving..."
+																			: "Save"
+																	}
+																</button>
+															</div>
+															<div class="panel-card-copy">
+																Edits apply to the ${this.formatMcpScopeLabel(
+																	writableScope,
+																)} config file.
+															</div>
+														`
+														: ""
+												}
+												${
+													server.officialRegistry?.displayName
+														? html`
+															<div class="panel-card-copy">
+																Official registry: ${server.officialRegistry.displayName}
+																${
+																	server.officialRegistry.authorName
+																		? html`<br />Author: ${server.officialRegistry.authorName}`
+																		: ""
+																}
+															</div>
+															<div class="panel-link-row">
+																${
+																	server.officialRegistry.directoryUrl
+																		? html`<a
+																				href=${server.officialRegistry.directoryUrl}
+																				target="_blank"
+																				rel="noreferrer"
+																			>
+																				Directory
+																			</a>`
+																		: ""
+																}
+																${
+																	server.officialRegistry.documentationUrl
+																		? html`<a
+																				href=${server.officialRegistry.documentationUrl}
+																				target="_blank"
+																				rel="noreferrer"
+																			>
+																				Docs
+																			</a>`
+																		: ""
+																}
+															</div>
+														`
+														: ""
+												}
+											</div>
+										`;
+									})}
+								</div>
+							`
+							: html`<div class="empty-state">No MCP servers configured</div>`
+					}
+					<div class="section" style="margin: 1rem 0 0;">
+						<div class="section-header">
+							<h3>Custom Server</h3>
+						</div>
+						<div class="section-content">
+							<div class="panel-card-copy">
+								Add a stdio command or arbitrary HTTP/SSE MCP endpoint to local,
+								project, or user config.
+							</div>
+							<div class="control-row" style="margin-top: 0.75rem;">
+								<input
+									class="field-input"
+									type="text"
+									.placeholder=${"Server name"}
+									.value=${this.mcpCustomName}
+									@input=${(event: Event) => {
+										this.mcpCustomName = (
+											event.target as HTMLInputElement
+										).value;
+									}}
+								/>
+								${
+									this.mcpCustomTransport === "stdio"
+										? html`
+											<input
+												class="field-input"
+												type="text"
+												.placeholder=${"Command"}
+												.value=${this.mcpCustomCommand}
+												aria-label=${"Custom MCP server command"}
+												@input=${(event: Event) => {
+													this.mcpCustomCommand = (
+														event.target as HTMLInputElement
+													).value;
+												}}
+											/>
+											<textarea
+												class="field-input"
+												style="min-height: 5.5rem;"
+												.placeholder=${"Arguments (one per line)"}
+												.value=${this.mcpCustomArgsText}
+												aria-label=${"Custom MCP server arguments"}
+												@input=${(event: Event) => {
+													this.mcpCustomArgsText = (
+														event.target as HTMLTextAreaElement
+													).value;
+												}}
+											></textarea>
+											<input
+												class="field-input"
+												type="text"
+												.placeholder=${"Working directory (optional)"}
+												.value=${this.mcpCustomCwd}
+												aria-label=${"Custom MCP server working directory"}
+												@input=${(event: Event) => {
+													this.mcpCustomCwd = (
+														event.target as HTMLInputElement
+													).value;
+												}}
+											/>
+											<textarea
+												class="field-input"
+												style="min-height: 5.5rem;"
+												.placeholder=${"Env vars (KEY=VALUE, one per line)"}
+												.value=${this.mcpCustomEnvText}
+												aria-label=${"Custom MCP server environment variables"}
+												@input=${(event: Event) => {
+													this.mcpCustomEnvText = (
+														event.target as HTMLTextAreaElement
+													).value;
+												}}
+											></textarea>
+										`
+										: html`
+											<input
+												class="field-input"
+												type="url"
+												.placeholder=${"https://example.com/mcp"}
+												.value=${this.mcpCustomUrl}
+												@input=${(event: Event) => {
+													this.mcpCustomUrl = (
+														event.target as HTMLInputElement
+													).value;
+												}}
+											/>
+											<input
+												class="field-input"
+												type="text"
+												.placeholder=${"Headers helper (optional)"}
+												.value=${this.mcpCustomHeadersHelper}
+												aria-label=${"Custom MCP server headers helper"}
+												@input=${(event: Event) => {
+													this.mcpCustomHeadersHelper = (
+														event.target as HTMLInputElement
+													).value;
+												}}
+											/>
+											<textarea
+												class="field-input"
+												style="min-height: 5.5rem;"
+												.placeholder=${"Headers (KEY=VALUE, one per line)"}
+												.value=${this.mcpCustomHeadersText}
+												aria-label=${"Custom MCP server headers"}
+												@input=${(event: Event) => {
+													this.mcpCustomHeadersText = (
+														event.target as HTMLTextAreaElement
+													).value;
+												}}
+											></textarea>
+										`
+								}
+							</div>
+							<div class="control-row">
+								<select
+									class="field-select"
+									.value=${this.mcpCustomTransport}
+									aria-label=${"Custom MCP server transport"}
+									@change=${(event: Event) => {
+										this.mcpCustomTransport = (
+											event.target as HTMLSelectElement
+										).value as "stdio" | "http" | "sse";
+									}}
+								>
+									<option value="stdio">stdio</option>
+									<option value="http">HTTP</option>
+									<option value="sse">SSE</option>
+								</select>
+								<select
+									class="field-select"
+									.value=${this.mcpCustomScope}
+									aria-label=${"Custom MCP server scope"}
+									@change=${(event: Event) => {
+										this.mcpCustomScope = (event.target as HTMLSelectElement)
+											.value as McpRegistryImportRequest["scope"];
+									}}
+								>
+									<option value="local">Local config</option>
+									<option value="project">Project config</option>
+									<option value="user">User config</option>
+								</select>
+								<input
+									class="field-input"
+									type="number"
+									min="1"
+									.placeholder=${"Timeout (ms)"}
+									.value=${this.mcpCustomTimeoutText}
+									aria-label=${"Custom MCP server timeout"}
+									@input=${(event: Event) => {
+										this.mcpCustomTimeoutText = (
+											event.target as HTMLInputElement
+										).value;
+									}}
+								/>
+								<button
+									class="action-btn mcp-custom-add-button"
+									@click=${() => void this.addCustomMcpServer()}
+									?disabled=${
+										this.mcpCustomSubmitting ||
+										this.mcpCustomName.trim().length === 0 ||
+										(this.mcpCustomTransport === "stdio"
+											? this.mcpCustomCommand.trim().length === 0
+											: this.mcpCustomUrl.trim().length === 0)
+									}
+								>
+									${this.mcpCustomSubmitting ? "Adding..." : "Add Server"}
+								</button>
+							</div>
+							${
+								this.mcpManagementError
+									? html`<div class="panel-feedback error">${this.mcpManagementError}</div>`
+									: ""
+							}
+							${
+								this.mcpManagementNotice
+									? html`<div class="panel-feedback success">${this.mcpManagementNotice}</div>`
+									: ""
+							}
+						</div>
+					</div>
+				</div>
+			</div>
+
+			<div class="section">
+				<div class="section-header">
+					<h3>Official Registry</h3>
+				</div>
+				<div class="section-content">
+					<div class="control-row">
+						<input
+							class="field-input mcp-search-input"
+							type="text"
+							.placeholder=${"Search official MCP registry"}
+							.value=${this.mcpRegistryQuery}
+							@input=${(event: Event) => {
+								this.mcpRegistryQuery = (
+									event.target as HTMLInputElement
+								).value;
+							}}
+						/>
+						<select
+							class="field-select"
+							.value=${this.mcpRegistryScope}
+							@change=${(event: Event) => {
+								this.mcpRegistryScope = (event.target as HTMLSelectElement)
+									.value as McpRegistryImportRequest["scope"];
+							}}
+						>
+							<option value="local">Local config</option>
+							<option value="project">Project config</option>
+							<option value="user">User config</option>
+						</select>
+						<button
+							class="action-btn"
+							@click=${() => void this.searchMcpRegistry(this.mcpRegistryQuery)}
+							?disabled=${this.mcpRegistryLoading}
+						>
+							${this.mcpRegistryLoading ? "Searching..." : "Search"}
+						</button>
+						<button
+							class="action-btn"
+							@click=${() => {
+								this.mcpRegistryQuery = "";
+								void this.searchMcpRegistry("");
+							}}
+							?disabled=${this.mcpRegistryLoading}
+						>
+							Top Picks
+						</button>
+					</div>
+					<div class="panel-card-copy">
+						Imports target the ${this.formatMcpScopeLabel(this.mcpRegistryScope)}
+						config by default.
+					</div>
+					${
+						this.mcpRegistryError
+							? html`<div class="panel-feedback error">${this.mcpRegistryError}</div>`
+							: ""
+					}
+					${
+						this.mcpRegistryNotice
+							? html`<div class="panel-feedback success">${this.mcpRegistryNotice}</div>`
+							: ""
+					}
+					${
+						this.mcpRegistryEntries.length > 0
+							? html`
+								<div class="panel-grid">
+									${this.mcpRegistryEntries.map((entry, index) => {
+										const entryId = this.getMcpRegistryEntryId(entry, index);
+										const urlOptions = this.getMcpRegistryUrlOptions(entry);
+										const selectedUrl =
+											this.mcpRegistrySelectedUrls[entryId] ||
+											urlOptions[0]?.url ||
+											"";
+										const transportLabel = this.formatMcpTransportLabel(
+											entry.transport,
+										);
+										const countBits = [
+											typeof entry.toolCount === "number"
+												? this.formatCountLabel(
+														entry.toolCount,
+														"tool",
+														"tools",
+													)
+												: null,
+											typeof entry.promptCount === "number"
+												? this.formatCountLabel(
+														entry.promptCount,
+														"prompt",
+														"prompts",
+													)
+												: null,
+										].filter((value): value is string => Boolean(value));
+										return html`
+											<div class="panel-card">
+												<div class="panel-card-header">
+													<div>
+														<div class="panel-card-title">
+															${
+																entry.displayName ||
+																entry.serverName ||
+																entry.slug ||
+																"Unnamed registry entry"
+															}
+														</div>
+														${
+															entry.oneLiner
+																? html`<div class="panel-card-copy">${entry.oneLiner}</div>`
+																: ""
+														}
+													</div>
+													<button
+														class="action-btn mcp-import-button"
+														@click=${() => void this.importMcpRegistry(entry, index)}
+														?disabled=${Boolean(
+															this.mcpImportingId &&
+																this.mcpImportingId !== entryId,
+														)}
+													>
+														${
+															this.mcpImportingId === entryId
+																? "Importing..."
+																: "Import"
+														}
+													</button>
+												</div>
+												<div class="panel-badges">
+													${
+														transportLabel
+															? html`<span class="badge active">${transportLabel}</span>`
+															: ""
+													}
+													${
+														countBits.length > 0
+															? html`<span class="badge">${countBits.join(" · ")}</span>`
+															: ""
+													}
+													${
+														entry.authorName
+															? html`<span class="badge">by ${entry.authorName}</span>`
+															: ""
+													}
+												</div>
+												<input
+													class="field-input"
+													type="text"
+													.placeholder=${"Name override (optional)"}
+													.value=${this.mcpRegistryNames[entryId] ?? ""}
+													@input=${(event: Event) => {
+														this.mcpRegistryNames = {
+															...this.mcpRegistryNames,
+															[entryId]: (event.target as HTMLInputElement)
+																.value,
+														};
+													}}
+												/>
+												${
+													urlOptions.length > 1
+														? html`
+															<select
+																class="field-select"
+																.value=${selectedUrl}
+																@change=${(event: Event) => {
+																	this.mcpRegistrySelectedUrls = {
+																		...this.mcpRegistrySelectedUrls,
+																		[entryId]: (
+																			event.target as HTMLSelectElement
+																		).value,
+																	};
+																}}
+															>
+																${urlOptions.map(
+																	(option) => html`
+																		<option value=${option.url}>
+																			${option.label}
+																		</option>
+																	`,
+																)}
+															</select>
+														`
+														: html`
+															<div class="panel-card-copy">
+																${
+																	selectedUrl ||
+																	"Default endpoint provided by registry"
+																}
+															</div>
+														`
+												}
+												${
+													entry.permissions
+														? html`<div class="panel-card-copy">
+																Permissions: ${entry.permissions}
+															</div>`
+														: ""
+												}
+												${
+													entry.directoryUrl || entry.documentationUrl
+														? html`
+															<div class="panel-link-row">
+																${
+																	entry.directoryUrl
+																		? html`<a
+																				href=${entry.directoryUrl}
+																				target="_blank"
+																				rel="noreferrer"
+																			>
+																				Directory
+																			</a>`
+																		: ""
+																}
+																${
+																	entry.documentationUrl
+																		? html`<a
+																				href=${entry.documentationUrl}
+																				target="_blank"
+																				rel="noreferrer"
+																			>
+																				Docs
+																			</a>`
+																		: ""
+																}
+															</div>
+														`
+														: ""
+												}
+											</div>
+										`;
+									})}
+								</div>
+							`
+							: html`<div class="empty-state">
+									${
+										this.mcpRegistryLoading
+											? "Loading official MCP registry..."
+											: "No official registry matches"
+									}
+								</div>`
+					}
 				</div>
 			</div>
 		`;

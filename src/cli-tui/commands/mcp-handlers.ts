@@ -1,5 +1,39 @@
 import chalk from "chalk";
-import { type McpServerStatus, mcpManager } from "../../mcp/index.js";
+import {
+	type McpOfficialRegistryEntry,
+	type McpServerConfig,
+	type McpServerStatus,
+	type WritableMcpScope,
+	addMcpServerToConfig,
+	buildSuggestedMcpServerName,
+	getOfficialMcpRegistryEntries,
+	getOfficialMcpRegistryMatch,
+	getOfficialMcpRegistryUrls,
+	inferRemoteMcpTransport,
+	loadMcpConfig,
+	mcpManager,
+	officialMcpRegistryEntryMatchesUrl,
+	prefetchOfficialMcpRegistry,
+	removeMcpServerFromConfig,
+	resolveOfficialMcpRegistryEntry,
+	searchOfficialMcpRegistry,
+	updateMcpServerInConfig,
+} from "../../mcp/index.js";
+import { parseCommandArguments } from "../../tools/shell-utils.js";
+
+type RemoteMcpTransport = "http" | "sse";
+
+type ConfigurableMcpServer = Pick<
+	McpServerConfig,
+	| "transport"
+	| "url"
+	| "command"
+	| "args"
+	| "env"
+	| "cwd"
+	| "headers"
+	| "headersHelper"
+>;
 
 export interface McpRenderContext {
 	rawInput: string;
@@ -7,6 +41,45 @@ export interface McpRenderContext {
 	showError(message: string): void;
 	requestRender(): void;
 }
+
+interface ParsedMcpServerMutationCommand {
+	scope?: WritableMcpScope;
+	server: {
+		name: string;
+		transport: "stdio" | "http" | "sse";
+		command?: string;
+		args?: string[];
+		env?: Record<string, string>;
+		cwd?: string;
+		url?: string;
+		headers?: Record<string, string>;
+		headersHelper?: string;
+	};
+}
+
+interface ParsedMcpRemoveCommand {
+	name: string;
+	scope?: WritableMcpScope;
+}
+
+interface ParsedMcpImportCommand {
+	query: string;
+	localName?: string;
+	scope: WritableMcpScope;
+	url?: string;
+	transport?: RemoteMcpTransport;
+	headers?: Record<string, string>;
+	headersHelper?: string;
+}
+
+const MCP_ADD_USAGE =
+	"/mcp add <name> <command-or-url> [args...] [--scope local|project|user] [--transport stdio|http|sse] [--cwd <path>] [--env KEY=value] [--header 'Name: value'] [--headers-helper <command>]";
+const MCP_EDIT_USAGE =
+	"/mcp edit <name> <command-or-url> [args...] [--scope local|project|user] [--transport stdio|http|sse] [--cwd <path>] [--env KEY=value] [--header 'Name: value'] [--headers-helper <command>]";
+const MCP_REMOVE_USAGE = "/mcp remove <name> [--scope local|project|user]";
+const MCP_SEARCH_USAGE = "/mcp search [query]";
+const MCP_IMPORT_USAGE =
+	"/mcp import <official-id> [name] [--scope local|project|user] [--url <https-url>] [--transport http|sse] [--header 'Name: value'] [--headers-helper <command>]";
 
 function formatMcpScopeLabel(scope: McpServerStatus["scope"]): string | null {
 	switch (scope) {
@@ -26,15 +99,19 @@ function formatMcpScopeLabel(scope: McpServerStatus["scope"]): string | null {
 }
 
 function formatMcpTransportLabel(
-	transport: McpServerStatus["transport"],
+	transport:
+		| McpServerStatus["transport"]
+		| McpOfficialRegistryEntry["transport"],
 ): string {
 	switch (transport) {
 		case "http":
 			return "HTTP";
 		case "sse":
 			return "SSE";
-		default:
+		case "stdio":
 			return "stdio";
+		default:
+			return "unknown";
 	}
 }
 
@@ -46,11 +123,483 @@ function formatMcpErrorLabel(error: string | undefined): string | null {
 	return error.trim() || "Connection failed.";
 }
 
+function formatMcpTrustLabel(server: McpServerStatus): string | null {
+	if (server.transport !== "http" && server.transport !== "sse") {
+		return null;
+	}
+
+	switch (server.remoteTrust) {
+		case "official":
+			return server.officialRegistry?.displayName
+				? `Official registry (${server.officialRegistry.displayName})`
+				: "Official registry";
+		case "custom":
+			return "Custom remote";
+		default:
+			return "Unverified remote";
+	}
+}
+
+function isWritableScope(value: string): value is WritableMcpScope {
+	return value === "local" || value === "project" || value === "user";
+}
+
+function isMcpTransport(value: string): value is "stdio" | "http" | "sse" {
+	return value === "stdio" || value === "http" || value === "sse";
+}
+
+function isRemoteMcpTransport(value: string): value is RemoteMcpTransport {
+	return value === "http" || value === "sse";
+}
+
+function looksLikeRemoteUrl(value: string): boolean {
+	try {
+		const parsed = new URL(value);
+		return parsed.protocol === "http:" || parsed.protocol === "https:";
+	} catch {
+		return false;
+	}
+}
+
+function parseTokens(rawInput: string): string[] {
+	try {
+		return parseCommandArguments(rawInput);
+	} catch (error) {
+		throw new Error(
+			error instanceof Error
+				? `Invalid /mcp command: ${error.message}`
+				: String(error),
+		);
+	}
+}
+
+function parseMcpServerMutationCommand(
+	rawInput: string,
+	command: "add" | "edit",
+	defaultScope?: WritableMcpScope,
+): ParsedMcpServerMutationCommand {
+	const usage = command === "add" ? MCP_ADD_USAGE : MCP_EDIT_USAGE;
+	const tokens = parseTokens(rawInput);
+
+	if (tokens[0] !== "/mcp" || tokens[1] !== command) {
+		throw new Error(usage);
+	}
+
+	const name = tokens[2];
+	if (!name) {
+		throw new Error(usage);
+	}
+
+	let scope = defaultScope;
+	let transport: "stdio" | "http" | "sse" | undefined;
+	let cwd: string | undefined;
+	let headersHelper: string | undefined;
+	const headers: Record<string, string> = {};
+	const env: Record<string, string> = {};
+	const positionals: string[] = [];
+	let separatorIndex = -1;
+
+	for (let index = 3; index < tokens.length; index += 1) {
+		const token = tokens[index]!;
+		if (token === "--") {
+			separatorIndex = index;
+			break;
+		}
+		if (token === "--scope" || token === "-s") {
+			const value = tokens[index + 1];
+			if (!value || !isWritableScope(value)) {
+				throw new Error("Invalid MCP scope. Use local, project, or user.");
+			}
+			scope = value;
+			index += 1;
+			continue;
+		}
+		if (token === "--transport" || token === "-t") {
+			const value = tokens[index + 1];
+			if (!value || !isMcpTransport(value)) {
+				throw new Error("Invalid MCP transport. Use stdio, http, or sse.");
+			}
+			transport = value;
+			index += 1;
+			continue;
+		}
+		if (token === "--cwd") {
+			const value = tokens[index + 1];
+			if (!value) {
+				throw new Error("Missing value for --cwd.");
+			}
+			cwd = value;
+			index += 1;
+			continue;
+		}
+		if (token === "--headers-helper") {
+			const value = tokens[index + 1];
+			if (!value) {
+				throw new Error("Missing value for --headers-helper.");
+			}
+			headersHelper = value;
+			index += 1;
+			continue;
+		}
+		if (token === "--header" || token === "-H") {
+			const value = tokens[index + 1];
+			if (!value) {
+				throw new Error("Missing value for --header.");
+			}
+			const [headerName, ...rest] = value.split(":");
+			const headerValue = rest.join(":").trim();
+			if (!headerName?.trim() || headerValue.length === 0) {
+				throw new Error(`Invalid MCP header: ${value}`);
+			}
+			headers[headerName.trim()] = headerValue;
+			index += 1;
+			continue;
+		}
+		if (token === "--env" || token === "-e") {
+			const value = tokens[index + 1];
+			if (!value) {
+				throw new Error("Missing value for --env.");
+			}
+			const separator = value.indexOf("=");
+			if (separator <= 0) {
+				throw new Error(`Invalid MCP env var: ${value}`);
+			}
+			const envName = value.slice(0, separator).trim();
+			const envValue = value.slice(separator + 1);
+			if (!envName) {
+				throw new Error(`Invalid MCP env var: ${value}`);
+			}
+			env[envName] = envValue;
+			index += 1;
+			continue;
+		}
+
+		positionals.push(token);
+	}
+
+	const commandTokens =
+		separatorIndex >= 0 ? tokens.slice(separatorIndex + 1) : positionals;
+	if (commandTokens.length === 0) {
+		throw new Error(usage);
+	}
+
+	const target = commandTokens[0]!;
+	const resolvedTransport =
+		transport ??
+		(looksLikeRemoteUrl(target) ? inferRemoteMcpTransport(target) : "stdio");
+
+	if (resolvedTransport === "http" || resolvedTransport === "sse") {
+		if (!looksLikeRemoteUrl(target)) {
+			throw new Error(
+				`Remote MCP servers require an http(s) URL target. Received: ${target}`,
+			);
+		}
+		if (commandTokens.length > 1) {
+			throw new Error(
+				"Remote MCP servers accept a single URL target. Move command arguments after -- only for stdio servers.",
+			);
+		}
+		if (cwd) {
+			throw new Error("--cwd is only supported for stdio MCP servers.");
+		}
+		if (Object.keys(env).length > 0) {
+			throw new Error("--env is only supported for stdio MCP servers.");
+		}
+		return {
+			scope,
+			server: {
+				name,
+				transport: resolvedTransport,
+				url: target,
+				headers: Object.keys(headers).length > 0 ? headers : undefined,
+				headersHelper,
+			},
+		};
+	}
+
+	if (Object.keys(headers).length > 0) {
+		throw new Error("--header is only supported for remote MCP servers.");
+	}
+	if (headersHelper) {
+		throw new Error(
+			"--headers-helper is only supported for remote MCP servers.",
+		);
+	}
+
+	return {
+		scope,
+		server: {
+			name,
+			transport: "stdio",
+			command: commandTokens[0],
+			args: commandTokens.slice(1),
+			env: Object.keys(env).length > 0 ? env : undefined,
+			cwd,
+		},
+	};
+}
+
+function parseMcpRemoveCommand(rawInput: string): ParsedMcpRemoveCommand {
+	const tokens = parseTokens(rawInput);
+	if (tokens[0] !== "/mcp" || tokens[1] !== "remove") {
+		throw new Error(MCP_REMOVE_USAGE);
+	}
+
+	const name = tokens[2];
+	if (!name) {
+		throw new Error(MCP_REMOVE_USAGE);
+	}
+
+	let scope: WritableMcpScope | undefined;
+	for (let index = 3; index < tokens.length; index += 1) {
+		const token = tokens[index]!;
+		if (token === "--scope" || token === "-s") {
+			const value = tokens[index + 1];
+			if (!value || !isWritableScope(value)) {
+				throw new Error("Invalid MCP scope. Use local, project, or user.");
+			}
+			scope = value;
+			index += 1;
+			continue;
+		}
+		throw new Error(MCP_REMOVE_USAGE);
+	}
+
+	return { name, scope };
+}
+
+function parseMcpSearchQuery(rawInput: string): string {
+	const tokens = parseTokens(rawInput);
+	if (
+		tokens[0] !== "/mcp" ||
+		(tokens[1] !== "search" && tokens[1] !== "registry")
+	) {
+		throw new Error(MCP_SEARCH_USAGE);
+	}
+	return tokens.slice(2).join(" ").trim();
+}
+
+function parseMcpImportCommand(rawInput: string): ParsedMcpImportCommand {
+	const tokens = parseTokens(rawInput);
+	if (tokens[0] !== "/mcp" || tokens[1] !== "import") {
+		throw new Error(MCP_IMPORT_USAGE);
+	}
+
+	const query = tokens[2];
+	if (!query) {
+		throw new Error(MCP_IMPORT_USAGE);
+	}
+
+	let localName: string | undefined;
+	let scope: WritableMcpScope = "local";
+	let url: string | undefined;
+	let transport: RemoteMcpTransport | undefined;
+	let headersHelper: string | undefined;
+	const headers: Record<string, string> = {};
+
+	for (let index = 3; index < tokens.length; index += 1) {
+		const token = tokens[index]!;
+		if (token === "--scope" || token === "-s") {
+			const value = tokens[index + 1];
+			if (!value || !isWritableScope(value)) {
+				throw new Error("Invalid MCP scope. Use local, project, or user.");
+			}
+			scope = value;
+			index += 1;
+			continue;
+		}
+		if (token === "--url") {
+			const value = tokens[index + 1];
+			if (!value || !looksLikeRemoteUrl(value)) {
+				throw new Error("Provide a valid http(s) URL for --url.");
+			}
+			url = value;
+			index += 1;
+			continue;
+		}
+		if (token === "--transport" || token === "-t") {
+			const value = tokens[index + 1];
+			if (!value || !isRemoteMcpTransport(value)) {
+				throw new Error("Invalid MCP transport. Use http or sse.");
+			}
+			transport = value;
+			index += 1;
+			continue;
+		}
+		if (token === "--headers-helper") {
+			const value = tokens[index + 1];
+			if (!value) {
+				throw new Error("Missing value for --headers-helper.");
+			}
+			headersHelper = value;
+			index += 1;
+			continue;
+		}
+		if (token === "--header" || token === "-H") {
+			const value = tokens[index + 1];
+			if (!value) {
+				throw new Error("Missing value for --header.");
+			}
+			const [headerName, ...rest] = value.split(":");
+			const headerValue = rest.join(":").trim();
+			if (!headerName?.trim() || headerValue.length === 0) {
+				throw new Error(`Invalid MCP header: ${value}`);
+			}
+			headers[headerName.trim()] = headerValue;
+			index += 1;
+			continue;
+		}
+		if (token.startsWith("-")) {
+			throw new Error(MCP_IMPORT_USAGE);
+		}
+		if (!localName) {
+			localName = token;
+			continue;
+		}
+		throw new Error(MCP_IMPORT_USAGE);
+	}
+
+	return {
+		query,
+		localName,
+		scope,
+		url,
+		transport,
+		headers: Object.keys(headers).length > 0 ? headers : undefined,
+		headersHelper,
+	};
+}
+
+async function reloadMcpManager(projectRoot: string) {
+	const nextConfig = loadMcpConfig(projectRoot, { includeEnvLimits: true });
+	await mcpManager.configure(nextConfig);
+	return nextConfig;
+}
+
+async function ensureOfficialRegistryLoaded(): Promise<
+	McpOfficialRegistryEntry[]
+> {
+	await prefetchOfficialMcpRegistry();
+	const entries = getOfficialMcpRegistryEntries();
+	if (entries.length === 0) {
+		throw new Error("Official MCP registry metadata is unavailable right now.");
+	}
+	return entries;
+}
+
+function formatOfficialRegistryIdentifier(
+	entry: Pick<McpOfficialRegistryEntry, "slug" | "serverName">,
+): string | undefined {
+	return entry.slug ?? entry.serverName;
+}
+
+function appendConfiguredServerSummary(
+	lines: string[],
+	server: ConfigurableMcpServer,
+): void {
+	lines.push(`  transport: ${server.transport}`);
+
+	if (server.url) {
+		lines.push(`  remote: ${server.url}`);
+		const registryMatch = getOfficialMcpRegistryMatch(server.url);
+		if (registryMatch.trust === "official") {
+			lines.push(
+				`  trust: official${registryMatch.info?.displayName ? ` (${registryMatch.info.displayName})` : ""}`,
+			);
+			if (registryMatch.info?.documentationUrl) {
+				lines.push(`  docs: ${registryMatch.info.documentationUrl}`);
+			}
+		} else if (registryMatch.trust === "custom") {
+			lines.push("  trust: custom");
+		}
+		if (server.headers && Object.keys(server.headers).length > 0) {
+			lines.push(`  headers: ${Object.keys(server.headers).join(", ")}`);
+		}
+		if (server.headersHelper) {
+			lines.push(`  headers helper: ${server.headersHelper}`);
+		}
+		return;
+	}
+
+	lines.push(`  command: ${server.command}`);
+	if (server.args?.length) {
+		lines.push(`  args: ${server.args.join(" ")}`);
+	}
+	if (server.cwd) {
+		lines.push(`  cwd: ${server.cwd}`);
+	}
+	if (server.env && Object.keys(server.env).length > 0) {
+		lines.push(`  env: ${Object.keys(server.env).join(", ")}`);
+	}
+}
+
+function renderOfficialRegistryResults(
+	renderCtx: McpRenderContext,
+	title: string,
+	entries: McpOfficialRegistryEntry[],
+	footer?: string,
+): void {
+	const lines: string[] = [title, ""];
+
+	for (const [index, entry] of entries.entries()) {
+		lines.push(`${index + 1}. ${entry.displayName}`);
+		const registryId = formatOfficialRegistryIdentifier(entry);
+		if (registryId) {
+			lines.push(`    id: ${registryId}`);
+		}
+		if (entry.transport) {
+			lines.push(`    transport: ${formatMcpTransportLabel(entry.transport)}`);
+		}
+		const urls = getOfficialMcpRegistryUrls(entry);
+		if (urls.length === 1) {
+			lines.push(`    url: ${urls[0]}`);
+		} else if (urls.length > 1) {
+			lines.push(`    url: ${urls[0]} (+${urls.length - 1} more)`);
+		} else if (entry.urlRegex) {
+			lines.push(`    url pattern: ${entry.urlRegex}`);
+		}
+		if (entry.oneLiner) {
+			lines.push(`    summary: ${entry.oneLiner}`);
+		}
+		if (entry.documentationUrl) {
+			lines.push(`    docs: ${entry.documentationUrl}`);
+		}
+		lines.push("");
+	}
+
+	if (footer) {
+		lines.push(chalk.dim(footer));
+	}
+
+	renderCtx.addContent(lines.join("\n").trimEnd());
+	renderCtx.requestRender();
+}
+
 export function handleMcpCommand(renderCtx: McpRenderContext): void {
 	const args = renderCtx.rawInput.replace(/^\/mcp\s*/, "").trim();
 	const parts = args.split(/\s+/);
 	const subcommand = parts[0]?.toLowerCase() || "";
 
+	if (subcommand === "add") {
+		void handleMcpAddCommand(renderCtx);
+		return;
+	}
+	if (subcommand === "edit") {
+		void handleMcpEditCommand(renderCtx);
+		return;
+	}
+	if (subcommand === "remove") {
+		void handleMcpRemoveCommand(renderCtx);
+		return;
+	}
+	if (subcommand === "search" || subcommand === "registry") {
+		void handleMcpSearchCommand(renderCtx);
+		return;
+	}
+	if (subcommand === "import") {
+		void handleMcpImportCommand(renderCtx);
+		return;
+	}
 	if (subcommand === "resources") {
 		handleMcpResourcesCommand(parts.slice(1), renderCtx);
 		return;
@@ -60,7 +609,6 @@ export function handleMcpCommand(renderCtx: McpRenderContext): void {
 		return;
 	}
 
-	// Default: show status
 	const status = mcpManager.getStatus();
 	const lines: string[] = ["Model Context Protocol", ""];
 
@@ -68,7 +616,12 @@ export function handleMcpCommand(renderCtx: McpRenderContext): void {
 		lines.push(
 			"No MCP servers configured.",
 			"",
-			"Add servers to ~/.maestro/mcp.json or .maestro/mcp.json:",
+			"Add servers to ~/.maestro/mcp.json, .maestro/mcp.json, or use /mcp:",
+			"",
+			"  /mcp search linear",
+			"  /mcp import linear",
+			"  /mcp add linear https://mcp.linear.app/mcp",
+			"  /mcp add filesystem -- npx -y @modelcontextprotocol/server-filesystem .",
 			"",
 			'  { "mcpServers": { "my-server": { "command": "npx", "args": ["-y", "@example/mcp-server"] } } }',
 		);
@@ -81,10 +634,23 @@ export function handleMcpCommand(renderCtx: McpRenderContext): void {
 				lines.push(`    Source: ${scopeLabel}`);
 			}
 			lines.push(`    Transport: ${formatMcpTransportLabel(server.transport)}`);
+			if (server.remoteUrl) {
+				lines.push(`    Remote: ${server.remoteUrl}`);
+			}
+			const trustLabel = formatMcpTrustLabel(server);
+			if (trustLabel) {
+				lines.push(`    Trust: ${trustLabel}`);
+			}
+			if (server.officialRegistry?.documentationUrl) {
+				lines.push(`    Docs: ${server.officialRegistry.documentationUrl}`);
+			}
+			if (server.officialRegistry?.permissions) {
+				lines.push(`    Permissions: ${server.officialRegistry.permissions}`);
+			}
 			if (server.connected) {
 				if (server.tools.length > 0) {
 					lines.push(
-						`    Tools: ${server.tools.map((t) => t.name).join(", ")}`,
+						`    Tools: ${server.tools.map((tool) => tool.name).join(", ")}`,
 					);
 				}
 				if (server.resources.length > 0) {
@@ -102,11 +668,266 @@ export function handleMcpCommand(renderCtx: McpRenderContext): void {
 			}
 		}
 		lines.push("");
-		lines.push(chalk.dim("Subcommands: /mcp resources, /mcp prompts"));
+		lines.push(
+			chalk.dim(
+				"Subcommands: /mcp add, /mcp edit, /mcp remove, /mcp search, /mcp import, /mcp resources, /mcp prompts",
+			),
+		);
 	}
 
 	renderCtx.addContent(lines.join("\n"));
 	renderCtx.requestRender();
+}
+
+async function handleMcpAddCommand(renderCtx: McpRenderContext): Promise<void> {
+	try {
+		const projectRoot = process.cwd();
+		const parsed = parseMcpServerMutationCommand(
+			renderCtx.rawInput,
+			"add",
+			"local",
+		);
+		const existingServer = loadMcpConfig(projectRoot).servers.find(
+			(server) => server.name === parsed.server.name,
+		);
+		if (existingServer) {
+			throw new Error(
+				`MCP server "${parsed.server.name}" already exists in merged config (scope: ${existingServer.scope ?? "unknown"}). Choose a different name.`,
+			);
+		}
+
+		if (parsed.server.url) {
+			await prefetchOfficialMcpRegistry();
+		}
+
+		const { path } = addMcpServerToConfig({
+			projectRoot,
+			scope: parsed.scope ?? "local",
+			server: parsed.server,
+		});
+		await reloadMcpManager(projectRoot);
+
+		const lines = [
+			`Added MCP server "${parsed.server.name}"`,
+			`  scope: ${parsed.scope ?? "local"}`,
+			`  path: ${path}`,
+		];
+		appendConfiguredServerSummary(lines, parsed.server);
+
+		renderCtx.addContent(lines.join("\n"));
+		renderCtx.requestRender();
+	} catch (error) {
+		renderCtx.showError(error instanceof Error ? error.message : String(error));
+	}
+}
+
+async function handleMcpEditCommand(
+	renderCtx: McpRenderContext,
+): Promise<void> {
+	try {
+		const projectRoot = process.cwd();
+		const parsed = parseMcpServerMutationCommand(renderCtx.rawInput, "edit");
+		const currentConfig = loadMcpConfig(projectRoot);
+		const existingServer = currentConfig.servers.find(
+			(server) => server.name === parsed.server.name,
+		);
+		if (!existingServer) {
+			throw new Error(
+				`MCP server "${parsed.server.name}" not found in merged config.`,
+			);
+		}
+
+		if (existingServer.url || parsed.server.url) {
+			await prefetchOfficialMcpRegistry();
+		}
+
+		const { path, scope } = updateMcpServerInConfig({
+			projectRoot,
+			scope: parsed.scope,
+			name: parsed.server.name,
+			server: parsed.server,
+		});
+		const reloadedConfig = await reloadMcpManager(projectRoot);
+		const activeServer = reloadedConfig.servers.find(
+			(server) => server.name === parsed.server.name,
+		);
+
+		const lines = [
+			`Updated MCP server "${parsed.server.name}"`,
+			`  scope: ${scope}`,
+			`  path: ${path}`,
+		];
+		appendConfiguredServerSummary(lines, activeServer ?? parsed.server);
+
+		renderCtx.addContent(lines.join("\n"));
+		renderCtx.requestRender();
+	} catch (error) {
+		renderCtx.showError(error instanceof Error ? error.message : String(error));
+	}
+}
+
+async function handleMcpRemoveCommand(
+	renderCtx: McpRenderContext,
+): Promise<void> {
+	try {
+		const projectRoot = process.cwd();
+		const parsed = parseMcpRemoveCommand(renderCtx.rawInput);
+		const { path, scope } = removeMcpServerFromConfig({
+			projectRoot,
+			scope: parsed.scope,
+			name: parsed.name,
+		});
+		const reloadedConfig = await reloadMcpManager(projectRoot);
+		const fallbackServer = reloadedConfig.servers.find(
+			(server) => server.name === parsed.name,
+		);
+
+		const lines = [
+			`Removed MCP server "${parsed.name}"`,
+			`  scope: ${scope}`,
+			`  path: ${path}`,
+		];
+		if (fallbackServer) {
+			lines.push(
+				`  fallback: now using ${formatMcpScopeLabel(fallbackServer.scope) ?? fallbackServer.scope ?? "another"} for "${parsed.name}"`,
+			);
+		} else {
+			lines.push("  status: removed from merged config");
+		}
+
+		renderCtx.addContent(lines.join("\n"));
+		renderCtx.requestRender();
+	} catch (error) {
+		renderCtx.showError(error instanceof Error ? error.message : String(error));
+	}
+}
+
+async function handleMcpSearchCommand(
+	renderCtx: McpRenderContext,
+): Promise<void> {
+	try {
+		await ensureOfficialRegistryLoaded();
+		const query = parseMcpSearchQuery(renderCtx.rawInput);
+		const matches = searchOfficialMcpRegistry(query, { limit: 8 });
+		if (matches.length === 0) {
+			renderCtx.addContent(
+				[
+					query
+						? `Official MCP Registry matches for "${query}"`
+						: "Official MCP Registry",
+					"",
+					query
+						? `No matches found for "${query}".`
+						: "No official MCP registry entries available.",
+				].join("\n"),
+			);
+			renderCtx.requestRender();
+			return;
+		}
+
+		renderOfficialRegistryResults(
+			renderCtx,
+			query
+				? `Official MCP Registry matches for "${query}"`
+				: "Official MCP Registry",
+			matches,
+			"Use /mcp import <id> [name] to add one of these servers.",
+		);
+	} catch (error) {
+		renderCtx.showError(error instanceof Error ? error.message : String(error));
+	}
+}
+
+async function handleMcpImportCommand(
+	renderCtx: McpRenderContext,
+): Promise<void> {
+	try {
+		const projectRoot = process.cwd();
+		const parsed = parseMcpImportCommand(renderCtx.rawInput);
+		await ensureOfficialRegistryLoaded();
+
+		const { entry, matches } = resolveOfficialMcpRegistryEntry(parsed.query);
+		if (!entry) {
+			if (matches.length > 0) {
+				renderOfficialRegistryResults(
+					renderCtx,
+					`Multiple official MCP registry matches for "${parsed.query}"`,
+					matches,
+					"Use a more specific id, or inspect candidates with /mcp search <query>.",
+				);
+				return;
+			}
+			throw new Error(
+				`No official MCP registry match found for "${parsed.query}". Try /mcp search ${parsed.query}`,
+			);
+		}
+
+		const localName = parsed.localName ?? buildSuggestedMcpServerName(entry);
+		const existingServer = loadMcpConfig(projectRoot).servers.find(
+			(server) => server.name === localName,
+		);
+		if (existingServer) {
+			throw new Error(
+				`MCP server "${localName}" already exists in merged config (scope: ${existingServer.scope ?? "unknown"}). Choose a different name.`,
+			);
+		}
+
+		const resolvedUrl = parsed.url ?? entry.url ?? entry.urlOptions?.[0]?.url;
+		if (!resolvedUrl) {
+			throw new Error(
+				`Official MCP registry entry "${entry.displayName}" requires --url because it does not publish a default remote URL.`,
+			);
+		}
+		if (!looksLikeRemoteUrl(resolvedUrl)) {
+			throw new Error(
+				`Official MCP URL must be http(s). Received: ${resolvedUrl}`,
+			);
+		}
+		if (parsed.url && !officialMcpRegistryEntryMatchesUrl(entry, parsed.url)) {
+			throw new Error(
+				`URL does not match the official MCP registry entry "${entry.displayName}".`,
+			);
+		}
+
+		const transport =
+			parsed.transport ??
+			entry.transport ??
+			inferRemoteMcpTransport(resolvedUrl);
+		const { path } = addMcpServerToConfig({
+			projectRoot,
+			scope: parsed.scope,
+			server: {
+				name: localName,
+				transport,
+				url: resolvedUrl,
+				headers: parsed.headers,
+				headersHelper: parsed.headersHelper,
+			},
+		});
+		await reloadMcpManager(projectRoot);
+
+		const lines = [
+			`Imported official MCP server "${localName}"`,
+			`  scope: ${parsed.scope}`,
+			`  path: ${path}`,
+		];
+		const registryId = formatOfficialRegistryIdentifier(entry);
+		if (registryId) {
+			lines.push(`  registry id: ${registryId}`);
+		}
+		lines.push(`  source: ${entry.displayName}`);
+		appendConfiguredServerSummary(lines, {
+			transport,
+			url: resolvedUrl,
+			headers: parsed.headers,
+			headersHelper: parsed.headersHelper,
+		});
+
+		renderCtx.addContent(lines.join("\n"));
+		renderCtx.requestRender();
+	} catch (error) {
+		renderCtx.showError(error instanceof Error ? error.message : String(error));
+	}
 }
 
 export function handleMcpResourcesCommand(
@@ -116,11 +937,10 @@ export function handleMcpResourcesCommand(
 	const status = mcpManager.getStatus();
 	const lines: string[] = ["MCP Resources", ""];
 
-	// /mcp resources [server] [uri] - read a specific resource
 	if (args.length >= 2) {
 		const serverName = args[0]!;
 		const uri = args.slice(1).join(" ");
-		const server = status.servers.find((s) => s.name === serverName);
+		const server = status.servers.find((entry) => entry.name === serverName);
 		if (!server?.connected) {
 			lines.push(`Server '${serverName}' not connected`);
 		} else {
@@ -140,14 +960,14 @@ export function handleMcpResourcesCommand(
 					renderCtx.addContent(resourceLines.join("\n"));
 					renderCtx.requestRender();
 				})
-				.catch((err: unknown) => {
-					const message = err instanceof Error ? err.message : String(err);
+				.catch((error: unknown) => {
+					const message =
+						error instanceof Error ? error.message : String(error);
 					renderCtx.showError(`Failed to read resource: ${message}`);
 				});
 			return;
 		}
 	} else {
-		// List all resources from all servers
 		let hasResources = false;
 		for (const server of status.servers) {
 			if (!server.connected || server.resources.length === 0) continue;
@@ -176,11 +996,10 @@ export function handleMcpPromptsCommand(
 	const status = mcpManager.getStatus();
 	const lines: string[] = ["MCP Prompts", ""];
 
-	// /mcp prompts [server] [name] - get a specific prompt
 	if (args.length >= 2) {
 		const serverName = args[0]!;
 		const promptName = args[1]!;
-		const server = status.servers.find((s) => s.name === serverName);
+		const server = status.servers.find((entry) => entry.name === serverName);
 		if (!server?.connected) {
 			lines.push(`Server '${serverName}' not connected`);
 		} else if (!server.prompts.includes(promptName)) {
@@ -193,22 +1012,22 @@ export function handleMcpPromptsCommand(
 					if (result.description) {
 						promptLines.push(`Description: ${result.description}`, "");
 					}
-					for (const msg of result.messages) {
-						promptLines.push(`[${msg.role}]`);
-						promptLines.push(msg.content);
+					for (const message of result.messages) {
+						promptLines.push(`[${message.role}]`);
+						promptLines.push(message.content);
 						promptLines.push("");
 					}
 					renderCtx.addContent(promptLines.join("\n"));
 					renderCtx.requestRender();
 				})
-				.catch((err: unknown) => {
-					const message = err instanceof Error ? err.message : String(err);
+				.catch((error: unknown) => {
+					const message =
+						error instanceof Error ? error.message : String(error);
 					renderCtx.showError(`Failed to get prompt: ${message}`);
 				});
 			return;
 		}
 	} else {
-		// List all prompts from all servers
 		let hasPrompts = false;
 		for (const server of status.servers) {
 			if (!server.connected || server.prompts.length === 0) continue;

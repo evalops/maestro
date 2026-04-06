@@ -6,6 +6,7 @@
 
 import { getErrorMessage, isRetriableError } from "../../errors/index.js";
 import type { ToolHookService } from "../../hooks/tool-integration.js";
+import { runWithMcpClientToolService } from "../../mcp/elicitation.js";
 import { METRICS } from "../../safety/adaptive-thresholds.js";
 import type { AdaptiveThresholds } from "../../safety/adaptive-thresholds.js";
 import type { SafetyMiddleware } from "../../safety/safety-middleware.js";
@@ -18,6 +19,7 @@ import type {
 	ToolRetryRequest,
 	ToolRetryService,
 } from "../tool-retry.js";
+import type { ClientToolExecutionService } from "../transport.js";
 import type {
 	AgentRunConfig,
 	AgentTool,
@@ -57,6 +59,7 @@ export interface ToolExecutionContext {
 	>;
 	toolRetryService?: ToolRetryService;
 	toolRetryConfig?: ToolRetryConfig;
+	clientToolService?: ClientToolExecutionService;
 	// Concurrency
 	toolUpdateQueue: ToolUpdateQueue;
 	/** Pre-created client tool execution promise (if applicable) */
@@ -256,6 +259,7 @@ export function createToolExecutionPromise(
 		clientToolExecPromise,
 		toolRetryService,
 		toolRetryConfig,
+		clientToolService,
 	} = ctx;
 
 	const startTime = clock.now();
@@ -306,7 +310,14 @@ export function createToolExecutionPromise(
 				details: undefined,
 			} as AgentToolResult;
 		}
-		return tool.execute(toolCall.id, validatedArgs, signal, context, onUpdate);
+		if (!clientToolService) {
+			return Promise.resolve(
+				tool.execute(toolCall.id, validatedArgs, signal, context, onUpdate),
+			);
+		}
+		return runWithMcpClientToolService(clientToolService, () =>
+			tool.execute(toolCall.id, validatedArgs, signal, context, onUpdate),
+		);
 	};
 
 	const executeWithRetry = async (): Promise<AgentToolResult> => {

@@ -252,7 +252,12 @@ function summarizeHeadlessToolRetryArgs(args: unknown): string | null {
 }
 
 function buildHeadlessPendingRequestLine(
-	type: "approval" | "client_tool" | "user_input" | "tool_retry",
+	type:
+		| "approval"
+		| "client_tool"
+		| "mcp_elicitation"
+		| "user_input"
+		| "tool_retry",
 	request: HeadlessPendingRequestRestoreState,
 ): string {
 	const sections = [

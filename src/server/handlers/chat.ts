@@ -65,6 +65,7 @@ import { publishArtifactUpdate } from "../artifacts-live-reload.js";
 import { getAuthSubject } from "../authz.js";
 import { getAgentCircuitBreaker } from "../circuit-breaker.js";
 import { clientToolService } from "../client-tools-service.js";
+import { serverRequestManager } from "../server-request-manager.js";
 import {
 	ApiError,
 	getRequestHeader,
@@ -443,6 +444,14 @@ export async function handleChat(
 		}
 
 		const toolArgsByCallId = new Map<string, Record<string, unknown>>();
+		const storeToolArgs = (toolCallId: string, args: unknown) => {
+			toolArgsByCallId.set(
+				toolCallId,
+				(args && typeof args === "object" && !Array.isArray(args)
+					? (args as Record<string, unknown>)
+					: {}) as Record<string, unknown>,
+			);
+		};
 		const slimValue = getRequestHeader(
 			req,
 			"x-composer-slim-events",
@@ -572,6 +581,28 @@ export async function handleChat(
 			cwd: process.cwd(),
 			sessionId: sessionManager.getSessionId(),
 		});
+		const unsubscribeMcpElicitationBridge = serverRequestManager.subscribe(
+			(event) => {
+				const activeSessionId = sessionIdProvider();
+				if (!activeSessionId || event.request.sessionId !== activeSessionId) {
+					return;
+				}
+				if (event.request.kind !== "mcp_elicitation") {
+					return;
+				}
+				if (event.type === "registered") {
+					sendSSE(sseSession, {
+						type: "client_tool_request",
+						toolCallId: event.request.callId,
+						toolName: event.request.toolName,
+						args: event.request.args,
+					});
+					storeToolArgs(event.request.callId, event.request.args);
+					return;
+				}
+				toolArgsByCallId.delete(event.request.callId);
+			},
+		);
 
 		const unsubscribe = agent.subscribe((event: AgentEvent) => {
 			updateSessionSummary(event);
@@ -581,20 +612,10 @@ export async function handleChat(
 
 			// Track tool args for later event correlation (used by artifact live reload)
 			if (event.type === "tool_execution_start") {
-				toolArgsByCallId.set(
-					event.toolCallId,
-					(event.args && typeof event.args === "object"
-						? (event.args as Record<string, unknown>)
-						: {}) as Record<string, unknown>,
-				);
+				storeToolArgs(event.toolCallId, event.args);
 			}
 			if (event.type === "client_tool_request") {
-				toolArgsByCallId.set(
-					event.toolCallId,
-					(event.args && typeof event.args === "object"
-						? (event.args as Record<string, unknown>)
-						: {}) as Record<string, unknown>,
-				);
+				storeToolArgs(event.toolCallId, event.args);
 			}
 			if (event.type === "tool_execution_end") {
 				if (event.toolName === "artifacts" && !event.isError) {
@@ -740,6 +761,7 @@ export async function handleChat(
 			req.off("close", handleConnectionClose);
 			res.off("close", handleConnectionClose);
 			unsubscribe();
+			unsubscribeMcpElicitationBridge();
 
 			// Flush any pending session writes
 			await sessionManager.flush();

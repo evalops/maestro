@@ -220,7 +220,7 @@ export const DIAG_SUBCOMMANDS: SubcommandDef[] = [
 		aliases: ["bg"],
 	},
 	{ name: "lsp", description: "LSP server status" },
-	{ name: "mcp", description: "MCP server status" },
+	{ name: "mcp", description: "MCP server management" },
 	{ name: "keys", description: "API key status", aliases: ["api"] },
 	{ name: "telemetry", description: "Telemetry status", aliases: ["telem"] },
 	{ name: "training", description: "Training preference", aliases: ["train"] },
@@ -406,7 +406,11 @@ export const TOOLS_SUBCOMMANDS: SubcommandDef[] = [
 		aliases: ["errors", "failed"],
 	},
 	{ name: "clear", description: "Clear tool logs", aliases: ["reset"] },
-	{ name: "mcp", description: "Show MCP servers", aliases: ["servers"] },
+	{
+		name: "mcp",
+		description: "Show or manage MCP servers",
+		aliases: ["servers"],
+	},
 	{ name: "lsp", description: "LSP server management", aliases: ["language"] },
 	{
 		name: "workflow",

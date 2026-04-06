@@ -44,6 +44,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
+	ElicitRequestSchema,
 	LoggingMessageNotificationSchema,
 	type Tool as McpTool,
 	ProgressNotificationSchema,
@@ -54,6 +55,16 @@ import {
 import { parseCommandArguments } from "../tools/shell-utils.js";
 import { createLogger } from "../utils/logger.js";
 import { getHomeDir } from "../utils/path-expansion.js";
+import {
+	buildMcpElicitationToolCallId,
+	getCurrentMcpClientToolService,
+	normalizeMcpElicitationArgs,
+	parseMcpElicitationClientToolResult,
+} from "./elicitation.js";
+import {
+	getMcpRemoteHost,
+	getOfficialMcpRegistryMatch,
+} from "./official-registry.js";
 import type {
 	McpConfig,
 	McpManagerStatus,
@@ -86,6 +97,66 @@ const DEFAULT_RECONNECT_DELAY_MS = 5000;
 
 // Maximum number of automatic reconnection attempts
 const MAX_RECONNECT_ATTEMPTS = 3;
+
+function arraysEqual(
+	left: readonly string[] | undefined,
+	right: readonly string[] | undefined,
+): boolean {
+	if (left === right) {
+		return true;
+	}
+	if (!left || !right || left.length !== right.length) {
+		return false;
+	}
+	return left.every((value, index) => value === right[index]);
+}
+
+function recordsEqual(
+	left: Record<string, string> | undefined,
+	right: Record<string, string> | undefined,
+): boolean {
+	if (left === right) {
+		return true;
+	}
+	if (!left || !right) {
+		return false;
+	}
+	const leftEntries = Object.entries(left).sort(([leftKey], [rightKey]) =>
+		leftKey.localeCompare(rightKey),
+	);
+	const rightEntries = Object.entries(right).sort(([leftKey], [rightKey]) =>
+		leftKey.localeCompare(rightKey),
+	);
+	if (leftEntries.length !== rightEntries.length) {
+		return false;
+	}
+	return leftEntries.every(
+		([leftKey, leftValue], index) =>
+			leftKey === rightEntries[index]?.[0] &&
+			leftValue === rightEntries[index]?.[1],
+	);
+}
+
+function serverConfigsEqual(
+	left: McpServerConfig,
+	right: McpServerConfig,
+): boolean {
+	return (
+		left.name === right.name &&
+		left.transport === right.transport &&
+		left.command === right.command &&
+		arraysEqual(left.args, right.args) &&
+		recordsEqual(left.env, right.env) &&
+		left.cwd === right.cwd &&
+		left.url === right.url &&
+		recordsEqual(left.headers, right.headers) &&
+		left.headersHelper === right.headersHelper &&
+		left.enabled === right.enabled &&
+		left.disabled === right.disabled &&
+		left.timeout === right.timeout &&
+		left.scope === right.scope
+	);
+}
 
 function buildSafeEnv(
 	explicitEnv?: Record<string, string>,
@@ -244,14 +315,26 @@ export class McpClientManager extends EventEmitter {
 	 * @param config - New MCP configuration with server list
 	 */
 	async configure(config: McpConfig): Promise<void> {
-		const oldServerNames = new Set(this.config.servers.map((s) => s.name));
+		const previousServers = new Map(
+			this.config.servers.map((server) => [server.name, server]),
+		);
+		const oldServerNames = new Set(previousServers.keys());
 		const newServerNames = new Set(config.servers.map((s) => s.name));
 
 		// Find servers to remove (in old but not in new)
 		const toRemove = [...oldServerNames].filter((n) => !newServerNames.has(n));
 
+		// Reconnect servers whose config changed in place.
+		const toReconnect = config.servers.filter((server) => {
+			const previous = previousServers.get(server.name);
+			return previous && !serverConfigsEqual(previous, server);
+		});
+		const reconnectNames = new Set(toReconnect.map((server) => server.name));
+
 		// Find servers to add (in new but not in old)
-		const toAdd = config.servers.filter((s) => !oldServerNames.has(s.name));
+		const toAdd = config.servers.filter(
+			(server) => !oldServerNames.has(server.name),
+		);
 
 		this.config = config;
 
@@ -260,8 +343,24 @@ export class McpClientManager extends EventEmitter {
 			toRemove.map((name) => this.disconnectServer(name)),
 		);
 
+		// Disconnect and reconnect updated servers so in-place edits take effect.
+		await Promise.allSettled(
+			toReconnect.map(async (server) => {
+				const pendingConnection = this.connecting.get(server.name);
+				if (pendingConnection) {
+					await Promise.allSettled([pendingConnection]);
+				}
+				await this.disconnectServer(server.name);
+				await this.connectServer(server);
+			}),
+		);
+
 		// Connect new servers (don't wait for success)
-		await Promise.allSettled(toAdd.map((server) => this.connectServer(server)));
+		await Promise.allSettled(
+			toAdd
+				.filter((server) => !reconnectNames.has(server.name))
+				.map((server) => this.connectServer(server)),
+		);
 	}
 
 	/**
@@ -378,9 +477,52 @@ export class McpClientManager extends EventEmitter {
 				});
 			}
 
-			const client = new Client({
-				name: "composer",
-				version: "1.0.0",
+			const client = new Client(
+				{
+					name: "composer",
+					version: "1.0.0",
+				},
+				{
+					capabilities: {
+						elicitation: {
+							form: { applyDefaults: true },
+							url: {},
+						},
+					},
+				},
+			);
+
+			client.setRequestHandler(ElicitRequestSchema, async (request, extra) => {
+				const clientToolService = getCurrentMcpClientToolService();
+				if (!clientToolService) {
+					return { action: "cancel" };
+				}
+
+				const requestId =
+					extra.requestId ??
+					("elicitationId" in request.params
+						? request.params.elicitationId
+						: "unknown");
+				const toolCallId = buildMcpElicitationToolCallId(name, requestId);
+
+				try {
+					const result = await clientToolService.requestExecution(
+						toolCallId,
+						"mcp_elicitation",
+						normalizeMcpElicitationArgs(name, requestId, request.params),
+						extra.signal,
+					);
+					return parseMcpElicitationClientToolResult(
+						result.content,
+						result.isError,
+					);
+				} catch (error) {
+					logger.warn("Failed to resolve MCP elicitation request", {
+						name,
+						error: error instanceof Error ? error.message : String(error),
+					});
+					return { action: "cancel" };
+				}
 			});
 
 			await client.connect(transport, {
@@ -702,6 +844,14 @@ export class McpClientManager extends EventEmitter {
 		// Include configured but not connected servers
 		for (const config of this.config.servers) {
 			const connected = this.servers.get(config.name);
+			const remoteUrl =
+				config.transport === "http" || config.transport === "sse"
+					? config.url
+					: undefined;
+			const remoteHost = remoteUrl ? getMcpRemoteHost(remoteUrl) : undefined;
+			const remoteRegistryMatch = remoteUrl
+				? getOfficialMcpRegistryMatch(remoteUrl)
+				: undefined;
 			servers.push({
 				name: config.name,
 				connected: !!connected,
@@ -711,6 +861,17 @@ export class McpClientManager extends EventEmitter {
 				tools: connected?.tools ?? [],
 				resources: connected?.resources ?? [],
 				prompts: connected?.prompts ?? [],
+				command: config.transport === "stdio" ? config.command : undefined,
+				args: config.transport === "stdio" ? config.args : undefined,
+				cwd: config.transport === "stdio" ? config.cwd : undefined,
+				envKeys: config.env ? Object.keys(config.env).sort() : [],
+				remoteUrl,
+				remoteHost,
+				headerKeys: config.headers ? Object.keys(config.headers).sort() : [],
+				headersHelper: config.headersHelper,
+				timeout: config.timeout,
+				remoteTrust: remoteRegistryMatch?.trust,
+				officialRegistry: remoteRegistryMatch?.info,
 			});
 		}
 
