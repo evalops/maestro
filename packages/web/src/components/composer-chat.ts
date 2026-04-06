@@ -3137,6 +3137,13 @@ export class ComposerChat extends LitElement {
 		};
 
 		try {
+			if (!this.currentSessionId) {
+				const session = await this.apiClient.createSession("New Chat");
+				sessionIdDuringStream = session.id;
+				this.currentSessionId = session.id;
+				this.requestUpdate();
+			}
+
 			const requestMessages = await this.buildMessagesForChatRequest(
 				this.messages.slice(0, -1), // Exclude placeholder
 			);

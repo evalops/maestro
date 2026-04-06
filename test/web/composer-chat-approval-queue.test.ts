@@ -73,6 +73,7 @@ describe("composer-chat approval queue", () => {
 		const element = new ComposerChat() as ComposerChat & {
 			apiClient: {
 				chatWithEvents: ReturnType<typeof vi.fn>;
+				createSession: ReturnType<typeof vi.fn>;
 				submitApprovalDecision: ReturnType<typeof vi.fn>;
 				getSessions: ReturnType<typeof vi.fn>;
 			};
@@ -103,6 +104,10 @@ describe("composer-chat approval queue", () => {
 					yield { type: "agent_end" };
 				})(),
 			),
+			createSession: vi.fn().mockResolvedValue({
+				id: "session-approval",
+				messages: [],
+			}),
 			submitApprovalDecision: vi
 				.fn()
 				.mockImplementation(() => approvalDone.promise),

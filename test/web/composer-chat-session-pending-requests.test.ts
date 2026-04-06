@@ -201,7 +201,10 @@ describe("composer-chat session pending request restore", () => {
 					throw new Error("WebSocket connection failed");
 				})(),
 			),
-			createSession: vi.fn(),
+			createSession: vi.fn().mockResolvedValue({
+				id: "session-live",
+				messages: [],
+			}),
 			getSession: vi.fn().mockResolvedValue(recoveredSession),
 			getSessions: vi.fn().mockResolvedValue([]),
 			sendClientToolResult: vi.fn().mockResolvedValue({ success: true }),
@@ -225,6 +228,86 @@ describe("composer-chat session pending request restore", () => {
 		);
 		expect(element.pendingToolRetryQueue).toEqual(
 			recoveredSession.pendingToolRetryRequests,
+		);
+		expect(element.pendingUserInputQueue).toEqual(
+			recoveredSession.pendingClientToolRequests,
+		);
+	});
+
+	it("precreates a new session so websocket failures before session_update can still recover pending queues", async () => {
+		const element = createChat();
+		const recoveredSession = {
+			id: "session-precreated",
+			messages: [],
+			pendingApprovalRequests: [
+				{
+					id: "approval-precreated",
+					toolName: "bash",
+					args: { command: "git push --force" },
+					reason: "Needs approval",
+				},
+			],
+			pendingToolRetryRequests: [],
+			pendingClientToolRequests: [
+				{
+					toolCallId: "client-call-precreated",
+					toolName: "ask_user",
+					args: {
+						questions: [
+							{
+								header: "Mode",
+								question: "How should we proceed?",
+								options: [
+									{
+										label: "Retry",
+										description: "Try again",
+									},
+								],
+							},
+						],
+					},
+					kind: "user_input",
+				},
+			],
+		};
+
+		element.apiClient = {
+			chatWithEvents: vi.fn().mockReturnValue(
+				(async function* () {
+					yield { type: "status", status: "connecting" };
+					throw new Error("WebSocket closed before completion");
+				})(),
+			),
+			createSession: vi.fn().mockResolvedValue({
+				id: "session-precreated",
+				messages: [],
+			}),
+			getSession: vi.fn().mockResolvedValue(recoveredSession),
+			getSessions: vi.fn().mockResolvedValue([]),
+			sendClientToolResult: vi.fn().mockResolvedValue({ success: true }),
+		};
+		element.clientOnline = true;
+		element.currentSessionId = null;
+		element.messages = [];
+		element.pendingApprovalQueue = [];
+		element.pendingToolRetryQueue = [];
+		element.pendingUserInputQueue = [];
+
+		await element.handleSubmit?.(
+			new CustomEvent("submit", { detail: { text: "run the command" } }),
+		);
+		await flushAsyncWork();
+
+		expect(element.apiClient.createSession).toHaveBeenCalledWith("New Chat");
+		expect(element.apiClient.chatWithEvents).toHaveBeenCalledWith(
+			expect.objectContaining({ sessionId: "session-precreated" }),
+		);
+		expect(element.apiClient.getSession).toHaveBeenCalledWith(
+			"session-precreated",
+		);
+		expect(element.currentSessionId).toBe("session-precreated");
+		expect(element.pendingApprovalQueue).toEqual(
+			recoveredSession.pendingApprovalRequests,
 		);
 		expect(element.pendingUserInputQueue).toEqual(
 			recoveredSession.pendingClientToolRequests,
@@ -307,7 +390,10 @@ describe("composer-chat session pending request restore", () => {
 					yield { type: "error", message: "Stream failed" };
 				})(),
 			),
-			createSession: vi.fn(),
+			createSession: vi.fn().mockResolvedValue({
+				id: "session-refresh-failure",
+				messages: [],
+			}),
 			getSession: vi.fn().mockResolvedValue(recoveredSession),
 			getSessions: vi
 				.fn()
