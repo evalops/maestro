@@ -11,17 +11,23 @@ async function flushAsyncWork(iterations = 4) {
 
 type SessionPendingInternals = {
 	apiClient: {
+		chatWithEvents?: ReturnType<typeof vi.fn>;
 		createSession: ReturnType<typeof vi.fn>;
 		getSession: ReturnType<typeof vi.fn>;
+		getSessions?: ReturnType<typeof vi.fn>;
 		sendClientToolResult: ReturnType<typeof vi.fn>;
 	};
+	clientOnline?: boolean;
+	currentSessionId?: string | null;
 	refreshUiState: ReturnType<typeof vi.fn>;
 	requestUpdate: ReturnType<typeof vi.fn>;
 	scrollToBottom: ReturnType<typeof vi.fn>;
 	updateComplete: Promise<void>;
+	messages?: Array<Record<string, unknown>>;
 	pendingApprovalQueue: Array<Record<string, unknown>>;
 	pendingToolRetryQueue: Array<Record<string, unknown>>;
 	pendingUserInputQueue: Array<Record<string, unknown>>;
+	handleSubmit?: (event: CustomEvent<{ text: string }>) => Promise<void>;
 	selectSession: (sessionId: string) => Promise<void>;
 };
 
@@ -140,5 +146,137 @@ describe("composer-chat session pending request restore", () => {
 			},
 		]);
 		expect(sendClientToolResult).not.toHaveBeenCalled();
+	});
+
+	it("recovers pending queues from a websocket-born session after a stream error", async () => {
+		const element = createChat();
+		const recoveredSession = {
+			id: "session-live",
+			messages: [],
+			pendingApprovalRequests: [
+				{
+					id: "approval-live",
+					toolName: "bash",
+					args: { command: "git push --force" },
+					reason: "Needs approval",
+				},
+			],
+			pendingToolRetryRequests: [
+				{
+					id: "retry-live",
+					toolCallId: "tool-call-live",
+					toolName: "read",
+					args: { file: "README.md" },
+					errorMessage: "timed out",
+					attempt: 1,
+				},
+			],
+			pendingClientToolRequests: [
+				{
+					toolCallId: "client-call-live",
+					toolName: "ask_user",
+					args: {
+						questions: [
+							{
+								header: "Mode",
+								question: "How should we proceed?",
+								options: [
+									{
+										label: "Retry",
+										description: "Try again",
+									},
+								],
+							},
+						],
+					},
+					kind: "user_input",
+				},
+			],
+		};
+
+		element.apiClient = {
+			chatWithEvents: vi.fn().mockReturnValue(
+				(async function* () {
+					yield { type: "session_update", sessionId: "session-live" };
+					throw new Error("WebSocket connection failed");
+				})(),
+			),
+			createSession: vi.fn(),
+			getSession: vi.fn().mockResolvedValue(recoveredSession),
+			getSessions: vi.fn().mockResolvedValue([]),
+			sendClientToolResult: vi.fn().mockResolvedValue({ success: true }),
+		};
+		element.clientOnline = true;
+		element.currentSessionId = null;
+		element.messages = [];
+		element.pendingApprovalQueue = [];
+		element.pendingToolRetryQueue = [];
+		element.pendingUserInputQueue = [];
+
+		await element.handleSubmit?.(
+			new CustomEvent("submit", { detail: { text: "run the command" } }),
+		);
+		await flushAsyncWork();
+
+		expect(element.apiClient.getSession).toHaveBeenCalledWith("session-live");
+		expect(element.currentSessionId).toBe("session-live");
+		expect(element.pendingApprovalQueue).toEqual(
+			recoveredSession.pendingApprovalRequests,
+		);
+		expect(element.pendingToolRetryQueue).toEqual(
+			recoveredSession.pendingToolRetryRequests,
+		);
+		expect(element.pendingUserInputQueue).toEqual(
+			recoveredSession.pendingClientToolRequests,
+		);
+	});
+
+	it("recovers pending queues for an existing session after a stream error", async () => {
+		const element = createChat();
+		const recoveredSession = {
+			id: "session-existing",
+			messages: [],
+			pendingApprovalRequests: [
+				{
+					id: "approval-existing",
+					toolName: "write",
+					args: { path: "/tmp/demo.txt" },
+					reason: "Writes a file",
+				},
+			],
+			pendingToolRetryRequests: [],
+			pendingClientToolRequests: [],
+		};
+
+		element.apiClient = {
+			chatWithEvents: vi.fn().mockReturnValue(
+				(async function* () {
+					yield { type: "status", status: "connecting" };
+					throw new Error("WebSocket connection failed");
+				})(),
+			),
+			createSession: vi.fn(),
+			getSession: vi.fn().mockResolvedValue(recoveredSession),
+			getSessions: vi.fn().mockResolvedValue([]),
+			sendClientToolResult: vi.fn().mockResolvedValue({ success: true }),
+		};
+		element.clientOnline = true;
+		element.currentSessionId = "session-existing";
+		element.messages = [];
+		element.pendingApprovalQueue = [];
+		element.pendingToolRetryQueue = [];
+		element.pendingUserInputQueue = [];
+
+		await element.handleSubmit?.(
+			new CustomEvent("submit", { detail: { text: "write the file" } }),
+		);
+		await flushAsyncWork();
+
+		expect(element.apiClient.getSession).toHaveBeenCalledWith(
+			"session-existing",
+		);
+		expect(element.pendingApprovalQueue).toEqual(
+			recoveredSession.pendingApprovalRequests,
+		);
 	});
 });

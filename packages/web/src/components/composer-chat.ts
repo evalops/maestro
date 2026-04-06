@@ -1621,6 +1621,24 @@ export class ComposerChat extends LitElement {
 		}
 	}
 
+	private async recoverPendingSessionRequests(
+		sessionId: string | null | undefined,
+	): Promise<void> {
+		if (!sessionId || this.shareToken) {
+			return;
+		}
+
+		try {
+			const session = await this.apiClient.getSession(sessionId);
+			if (!session?.id || session.id !== this.currentSessionId) {
+				return;
+			}
+			this.restorePendingSessionRequests(session);
+		} catch (error) {
+			console.warn("Failed to recover pending session requests", error);
+		}
+	}
+
 	private async handleClientToolRequest(
 		toolCallId: string,
 		toolName: string,
@@ -3108,6 +3126,7 @@ export class ComposerChat extends LitElement {
 		let currentThinkingIndex: number | null = null;
 		let terminalStreamOutcome: ReturnType<typeof getTerminalStreamOutcome> =
 			null;
+		let sessionIdDuringStream: string | null = this.currentSessionId;
 
 		try {
 			const requestMessages = await this.buildMessagesForChatRequest(
@@ -3126,6 +3145,7 @@ export class ComposerChat extends LitElement {
 				switch (agentEvent.type) {
 					case "session_update":
 						if (agentEvent.sessionId) {
+							sessionIdDuringStream = agentEvent.sessionId;
 							this.currentSessionId = agentEvent.sessionId;
 							this.requestUpdate();
 							void this.refreshUiState(agentEvent.sessionId);
@@ -3444,6 +3464,9 @@ export class ComposerChat extends LitElement {
 			}
 
 			if (terminalStreamOutcome) {
+				if (terminalStreamOutcome.type === "error") {
+					await this.recoverPendingSessionRequests(sessionIdDuringStream);
+				}
 				this.error = terminalStreamOutcome.message;
 				this.lastSendFailed = text;
 				this.lastApiError = terminalStreamOutcome.message;
@@ -3464,6 +3487,7 @@ export class ComposerChat extends LitElement {
 			// Refresh sessions list
 			await this.loadSessions();
 		} catch (e) {
+			await this.recoverPendingSessionRequests(sessionIdDuringStream);
 			this.error = e instanceof Error ? e.message : "Failed to send message";
 			this.runtimeStatus = null;
 			if (!hasAssistantMessageProgress(assistantMessage)) {
