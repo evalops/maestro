@@ -104,6 +104,9 @@ const McpRegistryImportSchema = Type.Object({
 	name: Type.Optional(Type.String({ minLength: 1 })),
 	scope: Type.Optional(WritableMcpScopeSchema),
 	url: Type.Optional(Type.String({ minLength: 1 })),
+	headers: Type.Optional(Type.Record(Type.String(), Type.String())),
+	headersHelper: Type.Optional(Type.String({ minLength: 1 })),
+	authPreset: Type.Optional(Type.String({ minLength: 1 })),
 	transport: Type.Optional(
 		Type.Union([Type.Literal("http"), Type.Literal("sse")]),
 	),
@@ -633,6 +636,7 @@ async function handleImportRegistry(
 	const transport =
 		body.transport ?? entry.transport ?? inferRemoteMcpTransport(resolvedUrl);
 	const scope = getWritableScope(body.scope);
+	resolveKnownAuthPreset(projectRoot, body.authPreset);
 	const { path } = addMcpServerToConfig({
 		projectRoot,
 		scope,
@@ -640,6 +644,9 @@ async function handleImportRegistry(
 			name,
 			transport,
 			url: resolvedUrl,
+			headers: body.headers,
+			headersHelper: body.headersHelper,
+			authPreset: body.authPreset,
 		},
 	});
 
@@ -656,6 +663,9 @@ async function handleImportRegistry(
 			server: {
 				transport,
 				url: resolvedUrl,
+				headers: body.headers,
+				headersHelper: body.headersHelper,
+				authPreset: body.authPreset,
 			},
 		},
 		corsHeaders,
