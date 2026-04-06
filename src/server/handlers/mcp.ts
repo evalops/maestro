@@ -1,8 +1,10 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { type Static, Type } from "@sinclair/typebox";
 import {
+	type McpAuthPresetInput,
 	type McpServerInput,
 	type WritableMcpScope,
+	addMcpAuthPresetToConfig,
 	addMcpServerToConfig,
 	buildSuggestedMcpServerName,
 	getOfficialMcpRegistryEntries,
@@ -11,9 +13,11 @@ import {
 	mcpManager,
 	officialMcpRegistryEntryMatchesUrl,
 	prefetchOfficialMcpRegistry,
+	removeMcpAuthPresetFromConfig,
 	removeMcpServerFromConfig,
 	resolveOfficialMcpRegistryEntry,
 	searchOfficialMcpRegistry,
+	updateMcpAuthPresetInConfig,
 	updateMcpServerInConfig,
 } from "../../mcp/index.js";
 import { ApiError, respondWithApiError, sendJson } from "../server-utils.js";
@@ -41,9 +45,16 @@ const McpServerInputSchema = Type.Object({
 	url: Type.Optional(Type.String({ minLength: 1 })),
 	headers: Type.Optional(Type.Record(Type.String(), Type.String())),
 	headersHelper: Type.Optional(Type.String({ minLength: 1 })),
+	authPreset: Type.Optional(Type.String({ minLength: 1 })),
 	timeout: Type.Optional(Type.Integer({ minimum: 1 })),
 	enabled: Type.Optional(Type.Boolean()),
 	disabled: Type.Optional(Type.Boolean()),
+});
+
+const McpAuthPresetInputSchema = Type.Object({
+	name: Type.String({ minLength: 1 }),
+	headers: Type.Optional(Type.Record(Type.String(), Type.String())),
+	headersHelper: Type.Optional(Type.String({ minLength: 1 })),
 });
 
 const NullableStringSchema = Type.Union([
@@ -76,9 +87,16 @@ const McpServerUpdateInputSchema = Type.Object({
 	url: Type.Optional(Type.String({ minLength: 1 })),
 	headers: Type.Optional(NullableStringRecordSchema),
 	headersHelper: Type.Optional(NullableStringSchema),
+	authPreset: Type.Optional(NullableStringSchema),
 	timeout: Type.Optional(NullablePositiveIntegerSchema),
 	enabled: Type.Optional(Type.Boolean()),
 	disabled: Type.Optional(Type.Boolean()),
+});
+
+const McpAuthPresetUpdateInputSchema = Type.Object({
+	name: Type.String({ minLength: 1 }),
+	headers: Type.Optional(NullableStringRecordSchema),
+	headersHelper: Type.Optional(NullableStringSchema),
 });
 
 const McpRegistryImportSchema = Type.Object({
@@ -101,16 +119,38 @@ const McpRemoveServerSchema = Type.Object({
 	name: Type.String({ minLength: 1 }),
 });
 
+const McpAddAuthPresetSchema = Type.Object({
+	scope: Type.Optional(WritableMcpScopeSchema),
+	preset: McpAuthPresetInputSchema,
+});
+
+const McpRemoveAuthPresetSchema = Type.Object({
+	scope: Type.Optional(WritableMcpScopeSchema),
+	name: Type.String({ minLength: 1 }),
+});
+
 const McpUpdateServerSchema = Type.Object({
 	scope: Type.Optional(WritableMcpScopeSchema),
 	name: Type.String({ minLength: 1 }),
 	server: McpServerUpdateInputSchema,
 });
 
+const McpUpdateAuthPresetSchema = Type.Object({
+	scope: Type.Optional(WritableMcpScopeSchema),
+	name: Type.String({ minLength: 1 }),
+	preset: McpAuthPresetUpdateInputSchema,
+});
+
 type McpRegistryImportInput = Static<typeof McpRegistryImportSchema>;
 type McpAddServerInput = Static<typeof McpAddServerSchema>;
+type McpAddAuthPresetInput = Static<typeof McpAddAuthPresetSchema>;
+type McpAuthPresetUpdateInputConfig = Static<
+	typeof McpAuthPresetUpdateInputSchema
+>;
 type McpRemoveServerInput = Static<typeof McpRemoveServerSchema>;
+type McpRemoveAuthPresetInput = Static<typeof McpRemoveAuthPresetSchema>;
 type McpUpdateServerInput = Static<typeof McpUpdateServerSchema>;
+type McpUpdateAuthPresetInput = Static<typeof McpUpdateAuthPresetSchema>;
 type McpUpdateServerInputConfig = Static<typeof McpServerUpdateInputSchema>;
 
 async function ensureOfficialRegistryLoaded(): Promise<void> {
@@ -143,6 +183,24 @@ function resolveServerTransport(server: {
 		server.transport ??
 		(server.url ? inferRemoteMcpTransport(server.url) : "stdio")
 	);
+}
+
+function resolveKnownAuthPreset(
+	projectRoot: string,
+	authPreset: string | undefined,
+) {
+	if (!authPreset) {
+		return;
+	}
+	const existingPreset = loadMcpConfig(projectRoot).authPresets.find(
+		(preset) => preset.name === authPreset,
+	);
+	if (!existingPreset) {
+		throw new ApiError(
+			404,
+			`MCP auth preset "${authPreset}" not found in merged config.`,
+		);
+	}
 }
 
 function mergeEditableServerConfig(
@@ -204,12 +262,55 @@ function mergeEditableServerConfig(
 			existingServer.headersHelper,
 			nextServer.headersHelper,
 		),
+		authPreset: mergeOptional(
+			"authPreset",
+			existingServer.authPreset,
+			nextServer.authPreset,
+		),
+	};
+}
+
+function mergeEditableAuthPresetConfig(
+	existingPreset: McpAuthPresetInput & { name: string },
+	nextPreset: McpAuthPresetUpdateInputConfig & { name: string },
+): McpAuthPresetInput & { name: string } {
+	const hasField = <T extends object>(value: T, key: keyof T): boolean =>
+		Object.prototype.hasOwnProperty.call(value, key);
+	const mergeOptional = <T>(
+		key: keyof McpAuthPresetUpdateInputConfig,
+		existing: T | undefined,
+		next: T | null | undefined,
+	): T | undefined => {
+		if (!hasField(nextPreset, key)) {
+			return existing;
+		}
+		return next === null ? undefined : next;
+	};
+
+	return {
+		name: nextPreset.name,
+		headers: mergeOptional(
+			"headers",
+			existingPreset.headers,
+			nextPreset.headers,
+		),
+		headersHelper: mergeOptional(
+			"headersHelper",
+			existingPreset.headersHelper,
+			nextPreset.headersHelper,
+		),
 	};
 }
 
 function findWritableFallbackServer(projectRoot: string, name: string) {
 	return loadMcpConfig(projectRoot).servers.find(
 		(server) => server.name === name,
+	);
+}
+
+function findWritableFallbackAuthPreset(projectRoot: string, name: string) {
+	return loadMcpConfig(projectRoot).authPresets.find(
+		(preset) => preset.name === name,
 	);
 }
 
@@ -239,6 +340,7 @@ async function handleAddServer(
 
 	const scope = getWritableScope(body.scope);
 	const transport = resolveServerTransport(body.server);
+	resolveKnownAuthPreset(projectRoot, body.server.authPreset);
 	const { path } = addMcpServerToConfig({
 		projectRoot,
 		scope,
@@ -324,6 +426,7 @@ async function handleUpdateServer(
 	}
 
 	const mergedServer = mergeEditableServerConfig(existingServer, body.server);
+	resolveKnownAuthPreset(projectRoot, mergedServer.authPreset);
 
 	if (mergedServer.url) {
 		await prefetchOfficialMcpRegistry();
@@ -344,6 +447,131 @@ async function handleUpdateServer(
 			scope,
 			path,
 			server: mergedServer,
+		},
+		corsHeaders,
+		req,
+	);
+}
+
+async function handleAddAuthPreset(
+	req: IncomingMessage,
+	res: ServerResponse,
+	corsHeaders: Record<string, string>,
+): Promise<void> {
+	const body = await parseAndValidateJson<McpAddAuthPresetInput>(
+		req,
+		McpAddAuthPresetSchema,
+	);
+	const projectRoot = process.cwd();
+	const existingPreset = loadMcpConfig(projectRoot).authPresets.find(
+		(preset) => preset.name === body.preset.name,
+	);
+	if (existingPreset) {
+		throw new ApiError(
+			409,
+			`MCP auth preset "${body.preset.name}" already exists in merged config (scope: ${existingPreset.scope ?? "unknown"}). Choose a different name.`,
+		);
+	}
+
+	const scope = getWritableScope(body.scope);
+	const { path } = addMcpAuthPresetToConfig({
+		projectRoot,
+		scope,
+		preset: body.preset,
+	});
+	await reloadMcpManager(projectRoot);
+
+	sendJson(
+		res,
+		200,
+		{
+			name: body.preset.name,
+			scope,
+			path,
+			preset: body.preset,
+		},
+		corsHeaders,
+		req,
+	);
+}
+
+async function handleRemoveAuthPreset(
+	req: IncomingMessage,
+	res: ServerResponse,
+	corsHeaders: Record<string, string>,
+): Promise<void> {
+	const body = await parseAndValidateJson<McpRemoveAuthPresetInput>(
+		req,
+		McpRemoveAuthPresetSchema,
+	);
+	const projectRoot = process.cwd();
+	const { path, scope } = removeMcpAuthPresetFromConfig({
+		projectRoot,
+		scope: body.scope,
+		name: body.name,
+	});
+	await reloadMcpManager(projectRoot);
+	const fallback = findWritableFallbackAuthPreset(projectRoot, body.name);
+
+	sendJson(
+		res,
+		200,
+		{
+			name: body.name,
+			scope,
+			path,
+			fallback: fallback
+				? {
+						name: fallback.name,
+						scope: fallback.scope,
+					}
+				: null,
+		},
+		corsHeaders,
+		req,
+	);
+}
+
+async function handleUpdateAuthPreset(
+	req: IncomingMessage,
+	res: ServerResponse,
+	corsHeaders: Record<string, string>,
+): Promise<void> {
+	const body = await parseAndValidateJson<McpUpdateAuthPresetInput>(
+		req,
+		McpUpdateAuthPresetSchema,
+	);
+	const projectRoot = process.cwd();
+	const existingPreset = loadMcpConfig(projectRoot).authPresets.find(
+		(preset) => preset.name === body.name,
+	);
+	if (!existingPreset) {
+		throw new ApiError(
+			404,
+			`MCP auth preset "${body.name}" not found in merged config.`,
+		);
+	}
+
+	const mergedPreset = mergeEditableAuthPresetConfig(
+		existingPreset,
+		body.preset,
+	);
+	const { path, scope } = updateMcpAuthPresetInConfig({
+		projectRoot,
+		scope: body.scope,
+		name: body.name,
+		preset: mergedPreset,
+	});
+	await reloadMcpManager(projectRoot);
+
+	sendJson(
+		res,
+		200,
+		{
+			name: body.preset.name,
+			scope,
+			path,
+			preset: mergedPreset,
 		},
 		corsHeaders,
 		req,
@@ -527,13 +755,28 @@ export async function handleMcpStatus(
 				return;
 			}
 
+			if (action === "add-auth-preset") {
+				await handleAddAuthPreset(req, res, corsHeaders);
+				return;
+			}
+
 			if (action === "remove-server") {
 				await handleRemoveServer(req, res, corsHeaders);
 				return;
 			}
 
+			if (action === "remove-auth-preset") {
+				await handleRemoveAuthPreset(req, res, corsHeaders);
+				return;
+			}
+
 			if (action === "update-server") {
 				await handleUpdateServer(req, res, corsHeaders);
+				return;
+			}
+
+			if (action === "update-auth-preset") {
+				await handleUpdateAuthPreset(req, res, corsHeaders);
 				return;
 			}
 

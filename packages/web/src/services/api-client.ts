@@ -263,13 +263,22 @@ export interface McpServerStatus {
 	remoteHost?: string;
 	headerKeys?: string[];
 	headersHelper?: string;
+	authPreset?: string;
 	timeout?: number;
 	remoteTrust?: McpRemoteTrust;
 	officialRegistry?: McpOfficialRegistryInfo;
 }
 
+export interface McpAuthPresetStatus {
+	name: string;
+	scope?: "enterprise" | "plugin" | "project" | "local" | "user";
+	headerKeys: string[];
+	headersHelper?: string;
+}
+
 export interface McpStatus {
 	servers: McpServerStatus[];
+	authPresets: McpAuthPresetStatus[];
 }
 
 export interface McpRegistrySearchResponse {
@@ -306,9 +315,16 @@ export interface McpServerConfigInput {
 	url?: string;
 	headers?: Record<string, string> | null;
 	headersHelper?: string | null;
+	authPreset?: string | null;
 	timeout?: number | null;
 	enabled?: boolean;
 	disabled?: boolean;
+}
+
+export interface McpAuthPresetConfigInput {
+	name: string;
+	headers?: Record<string, string> | null;
+	headersHelper?: string | null;
 }
 
 export interface McpServerAddRequest {
@@ -337,6 +353,39 @@ export interface McpServerRemoveRequest {
 }
 
 export interface McpServerRemoveResponse {
+	name: string;
+	scope: "local" | "project" | "user";
+	path: string;
+	fallback: {
+		name: string;
+		scope?: "enterprise" | "plugin" | "project" | "local" | "user";
+	} | null;
+}
+
+export interface McpAuthPresetAddRequest {
+	scope?: "local" | "project" | "user";
+	preset: McpAuthPresetConfigInput;
+}
+
+export interface McpAuthPresetUpdateRequest {
+	name: string;
+	scope?: "local" | "project" | "user";
+	preset: McpAuthPresetConfigInput;
+}
+
+export interface McpAuthPresetMutationResponse {
+	name: string;
+	scope: "local" | "project" | "user";
+	path: string;
+	preset: McpAuthPresetConfigInput;
+}
+
+export interface McpAuthPresetRemoveRequest {
+	name: string;
+	scope?: "local" | "project" | "user";
+}
+
+export interface McpAuthPresetRemoveResponse {
 	name: string;
 	scope: "local" | "project" | "user";
 	path: string;
@@ -2089,6 +2138,36 @@ export class ApiClient {
 	): Promise<McpServerRemoveResponse> {
 		return await this.fetchJsonRequestWithFallback<McpServerRemoveResponse>(
 			"/api/mcp?action=remove-server",
+			"POST",
+			input,
+		);
+	}
+
+	async addMcpAuthPreset(
+		input: McpAuthPresetAddRequest,
+	): Promise<McpAuthPresetMutationResponse> {
+		return await this.fetchJsonRequestWithFallback<McpAuthPresetMutationResponse>(
+			"/api/mcp?action=add-auth-preset",
+			"POST",
+			input,
+		);
+	}
+
+	async updateMcpAuthPreset(
+		input: McpAuthPresetUpdateRequest,
+	): Promise<McpAuthPresetMutationResponse> {
+		return await this.fetchJsonRequestWithFallback<McpAuthPresetMutationResponse>(
+			"/api/mcp?action=update-auth-preset",
+			"POST",
+			input,
+		);
+	}
+
+	async removeMcpAuthPreset(
+		input: McpAuthPresetRemoveRequest,
+	): Promise<McpAuthPresetRemoveResponse> {
+		return await this.fetchJsonRequestWithFallback<McpAuthPresetRemoveResponse>(
+			"/api/mcp?action=remove-auth-preset",
 			"POST",
 			input,
 		);

@@ -66,6 +66,8 @@ import {
 	getOfficialMcpRegistryMatch,
 } from "./official-registry.js";
 import type {
+	McpAuthPresetConfig,
+	McpAuthPresetStatus,
 	McpConfig,
 	McpManagerStatus,
 	McpServerConfig,
@@ -137,6 +139,58 @@ function recordsEqual(
 	);
 }
 
+interface ResolvedRemoteAuthConfig {
+	headers?: Record<string, string>;
+	headersHelper?: string;
+	preset?: McpAuthPresetConfig;
+}
+
+function buildAuthPresetMap(
+	authPresets: readonly McpAuthPresetConfig[],
+): Map<string, McpAuthPresetConfig> {
+	return new Map(
+		(authPresets ?? []).map((authPreset) => [authPreset.name, authPreset]),
+	);
+}
+
+function resolveRemoteAuthConfig(
+	config: McpServerConfig,
+	authPresetMap: ReadonlyMap<string, McpAuthPresetConfig>,
+): ResolvedRemoteAuthConfig {
+	if (config.transport !== "http" && config.transport !== "sse") {
+		return {
+			headers: config.headers,
+			headersHelper: config.headersHelper,
+		};
+	}
+
+	const preset = config.authPreset
+		? authPresetMap.get(config.authPreset)
+		: undefined;
+	const headers = {
+		...(preset?.headers ?? {}),
+		...(config.headers ?? {}),
+	};
+
+	return {
+		headers: Object.keys(headers).length > 0 ? headers : undefined,
+		headersHelper: config.headersHelper ?? preset?.headersHelper,
+		preset,
+	};
+}
+
+function buildComparableServerConfig(
+	config: McpServerConfig,
+	authPresetMap: ReadonlyMap<string, McpAuthPresetConfig>,
+): McpServerConfig {
+	const resolvedAuth = resolveRemoteAuthConfig(config, authPresetMap);
+	return {
+		...config,
+		headers: resolvedAuth.headers,
+		headersHelper: resolvedAuth.headersHelper,
+	};
+}
+
 function serverConfigsEqual(
 	left: McpServerConfig,
 	right: McpServerConfig,
@@ -187,14 +241,15 @@ function buildSafeEnv(
 
 async function resolveHeadersHelper(
 	config: McpServerConfig,
+	headersHelper = config.headersHelper,
 ): Promise<Record<string, string> | undefined> {
-	if (!config.headersHelper) {
+	if (!headersHelper) {
 		return undefined;
 	}
 
 	let command: string[];
 	try {
-		command = parseCommandArguments(config.headersHelper);
+		command = parseCommandArguments(headersHelper);
 	} catch (error) {
 		logger.warn("Invalid MCP headers helper command", {
 			name: config.name,
@@ -253,10 +308,15 @@ async function resolveHeadersHelper(
 
 async function buildRemoteRequestInit(
 	config: McpServerConfig,
+	authPresetMap: ReadonlyMap<string, McpAuthPresetConfig>,
 ): Promise<RequestInit | undefined> {
-	const helperHeaders = await resolveHeadersHelper(config);
+	const resolvedAuth = resolveRemoteAuthConfig(config, authPresetMap);
+	const helperHeaders = await resolveHeadersHelper(
+		config,
+		resolvedAuth.headersHelper,
+	);
 	const headers = {
-		...(config.headers ?? {}),
+		...(resolvedAuth.headers ?? {}),
 		...(helperHeaders ?? {}),
 	};
 
@@ -304,7 +364,7 @@ export class McpClientManager extends EventEmitter {
 	private lastErrors = new Map<string, string>();
 
 	/** Current configuration */
-	private config: McpConfig = { servers: [] };
+	private config: McpConfig = { servers: [], authPresets: [] };
 
 	/**
 	 * Apply a new configuration, connecting/disconnecting servers as needed.
@@ -315,28 +375,41 @@ export class McpClientManager extends EventEmitter {
 	 * @param config - New MCP configuration with server list
 	 */
 	async configure(config: McpConfig): Promise<void> {
+		const nextConfig: McpConfig = {
+			servers: config.servers ?? [],
+			authPresets: config.authPresets ?? [],
+			envLimits: config.envLimits,
+		};
+		const previousAuthPresetMap = buildAuthPresetMap(this.config.authPresets);
+		const nextAuthPresetMap = buildAuthPresetMap(nextConfig.authPresets);
 		const previousServers = new Map(
 			this.config.servers.map((server) => [server.name, server]),
 		);
 		const oldServerNames = new Set(previousServers.keys());
-		const newServerNames = new Set(config.servers.map((s) => s.name));
+		const newServerNames = new Set(nextConfig.servers.map((s) => s.name));
 
 		// Find servers to remove (in old but not in new)
 		const toRemove = [...oldServerNames].filter((n) => !newServerNames.has(n));
 
 		// Reconnect servers whose config changed in place.
-		const toReconnect = config.servers.filter((server) => {
+		const toReconnect = nextConfig.servers.filter((server) => {
 			const previous = previousServers.get(server.name);
-			return previous && !serverConfigsEqual(previous, server);
+			return (
+				previous &&
+				!serverConfigsEqual(
+					buildComparableServerConfig(previous, previousAuthPresetMap),
+					buildComparableServerConfig(server, nextAuthPresetMap),
+				)
+			);
 		});
 		const reconnectNames = new Set(toReconnect.map((server) => server.name));
 
 		// Find servers to add (in new but not in old)
-		const toAdd = config.servers.filter(
+		const toAdd = nextConfig.servers.filter(
 			(server) => !oldServerNames.has(server.name),
 		);
 
-		this.config = config;
+		this.config = nextConfig;
 
 		// Disconnect removed servers (don't wait for success)
 		await Promise.allSettled(
@@ -446,7 +519,10 @@ export class McpClientManager extends EventEmitter {
 					logger.warn("No URL specified for HTTP server", { name });
 					return;
 				}
-				const requestInit = await buildRemoteRequestInit(config);
+				const requestInit = await buildRemoteRequestInit(
+					config,
+					buildAuthPresetMap(this.config.authPresets),
+				);
 				const transportOptions = requestInit ? { requestInit } : undefined;
 
 				if (transportType === "http") {
@@ -840,10 +916,22 @@ export class McpClientManager extends EventEmitter {
 
 	getStatus(): McpManagerStatus {
 		const servers: McpServerStatus[] = [];
+		const authPresets: McpAuthPresetStatus[] = (
+			this.config.authPresets ?? []
+		).map((authPreset) => ({
+			name: authPreset.name,
+			scope: authPreset.scope,
+			headerKeys: authPreset.headers
+				? Object.keys(authPreset.headers).sort()
+				: [],
+			headersHelper: authPreset.headersHelper,
+		}));
+		const authPresetMap = buildAuthPresetMap(this.config.authPresets ?? []);
 
 		// Include configured but not connected servers
 		for (const config of this.config.servers) {
 			const connected = this.servers.get(config.name);
+			const resolvedAuth = resolveRemoteAuthConfig(config, authPresetMap);
 			const remoteUrl =
 				config.transport === "http" || config.transport === "sse"
 					? config.url
@@ -867,15 +955,18 @@ export class McpClientManager extends EventEmitter {
 				envKeys: config.env ? Object.keys(config.env).sort() : [],
 				remoteUrl,
 				remoteHost,
-				headerKeys: config.headers ? Object.keys(config.headers).sort() : [],
-				headersHelper: config.headersHelper,
+				headerKeys: resolvedAuth.headers
+					? Object.keys(resolvedAuth.headers).sort()
+					: [],
+				headersHelper: resolvedAuth.headersHelper,
+				authPreset: config.authPreset,
 				timeout: config.timeout,
 				remoteTrust: remoteRegistryMatch?.trust,
 				officialRegistry: remoteRegistryMatch?.info,
 			});
 		}
 
-		return { servers };
+		return { servers, authPresets };
 	}
 
 	getServer(name: string): ConnectedServer | undefined {

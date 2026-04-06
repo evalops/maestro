@@ -1,10 +1,13 @@
 export {
+	addMcpAuthPresetToConfig,
 	addMcpServerToConfig,
 	getConfigPaths,
 	getWritableMcpConfigPath,
 	inferRemoteMcpTransport,
 	loadMcpConfig,
+	removeMcpAuthPresetFromConfig,
 	removeMcpServerFromConfig,
+	updateMcpAuthPresetInConfig,
 	updateMcpServerInConfig,
 	type WritableMcpScope,
 } from "./config.js";
@@ -36,6 +39,8 @@ export {
 	buildSuggestedMcpServerName,
 } from "./official-registry.js";
 export type {
+	McpAuthPresetConfig,
+	McpAuthPresetStatus,
 	McpConfig,
 	McpOfficialRegistryEntry,
 	McpOfficialRegistryInfo,
@@ -47,4 +52,4 @@ export type {
 	McpTransport,
 	McpScope,
 } from "./types.js";
-export type { McpServerInput } from "./schema.js";
+export type { McpAuthPresetInput, McpServerInput } from "./schema.js";

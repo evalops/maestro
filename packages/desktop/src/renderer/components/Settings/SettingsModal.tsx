@@ -14,6 +14,9 @@ import {
 	type FrameworkSummary,
 	type GuardianStatus,
 	type LspStatus,
+	type McpAuthPresetAddRequest,
+	type McpAuthPresetRemoveRequest,
+	type McpAuthPresetUpdateRequest,
 	type McpServerAddRequest,
 	type McpServerRemoveRequest,
 	type McpServerUpdateRequest,
@@ -686,6 +689,13 @@ export function SettingsModal({
 		return result;
 	};
 
+	const addMcpAuthPreset = async (input: McpAuthPresetAddRequest) => {
+		const result = await apiClient.addMcpAuthPreset(input);
+		const status = await apiClient.getMcpStatus();
+		setMcpStatus(status);
+		return result;
+	};
+
 	const removeMcpServer = async (input: McpServerRemoveRequest) => {
 		const result = await apiClient.removeMcpServer(input);
 		const status = await apiClient.getMcpStatus();
@@ -699,11 +709,25 @@ export function SettingsModal({
 		return result;
 	};
 
+	const removeMcpAuthPreset = async (input: McpAuthPresetRemoveRequest) => {
+		const result = await apiClient.removeMcpAuthPreset(input);
+		const status = await apiClient.getMcpStatus();
+		setMcpStatus(status);
+		return result;
+	};
+
 	const updateMcpServer = async (input: McpServerUpdateRequest) => {
 		const result = await apiClient.updateMcpServer(input);
 		const status = await apiClient.getMcpStatus();
 		setMcpStatus(status);
 		setExpandedMcpServer(result.name);
+		return result;
+	};
+
+	const updateMcpAuthPreset = async (input: McpAuthPresetUpdateRequest) => {
+		const result = await apiClient.updateMcpAuthPreset(input);
+		const status = await apiClient.getMcpStatus();
+		setMcpStatus(status);
 		return result;
 	};
 
@@ -880,8 +904,11 @@ export function SettingsModal({
 						onSearchMcpRegistry={searchMcpRegistry}
 						onImportMcpRegistry={importMcpRegistry}
 						onAddMcpServer={addMcpServer}
+						onAddMcpAuthPreset={addMcpAuthPreset}
 						onUpdateMcpServer={updateMcpServer}
+						onUpdateMcpAuthPreset={updateMcpAuthPreset}
 						onRemoveMcpServer={removeMcpServer}
+						onRemoveMcpAuthPreset={removeMcpAuthPreset}
 						composerStatus={composerStatus}
 						selectedComposer={selectedComposer}
 						onSelectedComposerChange={setSelectedComposer}

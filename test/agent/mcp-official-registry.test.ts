@@ -232,6 +232,7 @@ describe("official MCP registry", () => {
 		};
 
 		expect(manager.getStatus()).toEqual({
+			authPresets: [],
 			servers: [
 				expect.objectContaining({
 					name: "query-remote",
