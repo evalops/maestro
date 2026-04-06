@@ -501,17 +501,25 @@ describe("ComposerSettings MCP section", () => {
 		const headersInput = element.shadowRoot?.querySelector(
 			'textarea[aria-label="Headers for linear"]',
 		) as HTMLTextAreaElement | null;
+		const replaceHeadersInput = element.shadowRoot?.querySelector(
+			'input[aria-label="Replace hidden headers for linear"]',
+		) as HTMLInputElement | null;
 		const timeoutInput = element.shadowRoot?.querySelector(
 			'input[aria-label="Timeout for linear"]',
 		) as HTMLInputElement | null;
 		expect(transportSelect).not.toBeNull();
 		expect(headersHelperInput).not.toBeNull();
 		expect(headersInput).not.toBeNull();
+		expect(replaceHeadersInput).not.toBeNull();
 		expect(timeoutInput).not.toBeNull();
+		expect(headersInput?.disabled).toBe(true);
 		transportSelect!.value = "sse";
 		transportSelect!.dispatchEvent(new Event("change", { bubbles: true }));
 		headersHelperInput!.value = "bun run scripts/new-headers.ts";
 		headersHelperInput!.dispatchEvent(new Event("input", { bubbles: true }));
+		replaceHeadersInput!.click();
+		await waitForSettled(element, () => headersInput!.disabled === false);
+		expect(headersInput!.disabled).toBe(false);
 		headersInput!.value = "Authorization=Bearer token\nX-Org=acme";
 		headersInput!.dispatchEvent(new Event("input", { bubbles: true }));
 		timeoutInput!.value = "15000";
@@ -617,6 +625,9 @@ describe("ComposerSettings MCP section", () => {
 		const envInput = element.shadowRoot?.querySelector(
 			'textarea[aria-label="Environment variables for filesystem"]',
 		) as HTMLTextAreaElement | null;
+		const replaceEnvInput = element.shadowRoot?.querySelector(
+			'input[aria-label="Replace hidden environment variables for filesystem"]',
+		) as HTMLInputElement | null;
 		const cwdInput = element.shadowRoot?.querySelector(
 			'input[aria-label="Working directory for filesystem"]',
 		) as HTMLInputElement | null;
@@ -626,12 +637,14 @@ describe("ComposerSettings MCP section", () => {
 		expect(commandInput).not.toBeNull();
 		expect(argsInput).not.toBeNull();
 		expect(envInput).not.toBeNull();
+		expect(replaceEnvInput).not.toBeNull();
 		expect(cwdInput).not.toBeNull();
 		expect(timeoutInput).not.toBeNull();
 		if (
 			!commandInput ||
 			!argsInput ||
 			!envInput ||
+			!replaceEnvInput ||
 			!cwdInput ||
 			!timeoutInput
 		) {
@@ -642,6 +655,10 @@ describe("ComposerSettings MCP section", () => {
 		commandInput.dispatchEvent(new Event("input", { bubbles: true }));
 		argsInput.value = "-y\n@modelcontextprotocol/server-filesystem\n/workspace";
 		argsInput.dispatchEvent(new Event("input", { bubbles: true }));
+		expect(envInput.disabled).toBe(true);
+		replaceEnvInput.click();
+		await waitForSettled(element, () => envInput.disabled === false);
+		expect(envInput.disabled).toBe(false);
 		envInput.value = "HOME=/Users/demo\nTOKEN=rotated";
 		envInput.dispatchEvent(new Event("input", { bubbles: true }));
 		cwdInput.value = "/workspace";
@@ -737,6 +754,9 @@ describe("ComposerSettings MCP section", () => {
 		const headersInput = element.shadowRoot?.querySelector(
 			'textarea[aria-label="Headers for linear"]',
 		) as HTMLTextAreaElement | null;
+		const replaceHeadersInput = element.shadowRoot?.querySelector(
+			'input[aria-label="Replace hidden headers for linear"]',
+		) as HTMLInputElement | null;
 		const timeoutInput = element.shadowRoot?.querySelector(
 			'input[aria-label="Timeout for linear"]',
 		) as HTMLInputElement | null;
@@ -745,14 +765,22 @@ describe("ComposerSettings MCP section", () => {
 		) as HTMLButtonElement | null;
 		expect(headersHelperInput).not.toBeNull();
 		expect(headersInput).not.toBeNull();
+		expect(replaceHeadersInput).not.toBeNull();
 		expect(timeoutInput).not.toBeNull();
 		expect(button).not.toBeNull();
-		if (!headersHelperInput || !headersInput || !timeoutInput || !button) {
+		if (
+			!headersHelperInput ||
+			!headersInput ||
+			!replaceHeadersInput ||
+			!timeoutInput ||
+			!button
+		) {
 			throw new Error("Expected MCP remote edit inputs");
 		}
 
 		headersHelperInput.value = "";
 		headersHelperInput.dispatchEvent(new Event("input", { bubbles: true }));
+		replaceHeadersInput.click();
 		headersInput.value = "";
 		headersInput.dispatchEvent(new Event("input", { bubbles: true }));
 		timeoutInput.value = "";
@@ -775,6 +803,97 @@ describe("ComposerSettings MCP section", () => {
 				headers: null,
 				headersHelper: null,
 				timeout: null,
+			},
+		});
+	});
+
+	it("preserves hidden remote headers unless replacement is enabled", async () => {
+		const apiClient = createApiClientMock();
+		(apiClient.getMcpStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
+			servers: [
+				{
+					name: "linear",
+					connected: true,
+					scope: "local",
+					transport: "http",
+					remoteTrust: "official",
+					remoteUrl: "https://mcp.linear.app/mcp",
+					headerKeys: ["Authorization"],
+					headersHelper: "bun run scripts/mcp-headers.ts",
+					timeout: 20000,
+				},
+			],
+		});
+		(
+			apiClient.updateMcpServer as ReturnType<typeof vi.fn>
+		).mockResolvedValueOnce({
+			name: "linear",
+			scope: "local",
+			path: "/repo/.maestro/mcp.local.json",
+			server: {
+				name: "linear",
+				transport: "sse",
+				url: "https://mcp.linear.app/sse",
+				headersHelper: "bun run scripts/mcp-headers.ts",
+				timeout: 15000,
+			},
+		});
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Boolean(
+				element.shadowRoot?.querySelector(
+					'input[aria-label="Remote URL for linear"]',
+				),
+			),
+		);
+
+		const urlInput = element.shadowRoot?.querySelector(
+			'input[aria-label="Remote URL for linear"]',
+		) as HTMLInputElement | null;
+		const transportSelect = element.shadowRoot?.querySelector(
+			'select[aria-label="Remote transport for linear"]',
+		) as HTMLSelectElement | null;
+		const timeoutInput = element.shadowRoot?.querySelector(
+			'input[aria-label="Timeout for linear"]',
+		) as HTMLInputElement | null;
+		const headersInput = element.shadowRoot?.querySelector(
+			'textarea[aria-label="Headers for linear"]',
+		) as HTMLTextAreaElement | null;
+		const button = element.shadowRoot?.querySelector(
+			".mcp-update-button",
+		) as HTMLButtonElement | null;
+		expect(urlInput).not.toBeNull();
+		expect(transportSelect).not.toBeNull();
+		expect(timeoutInput).not.toBeNull();
+		expect(headersInput?.disabled).toBe(true);
+		expect(button).not.toBeNull();
+		if (!urlInput || !transportSelect || !timeoutInput || !button) {
+			throw new Error("Expected MCP remote edit inputs");
+		}
+
+		urlInput.value = "https://mcp.linear.app/sse";
+		urlInput.dispatchEvent(new Event("input", { bubbles: true }));
+		transportSelect.value = "sse";
+		transportSelect.dispatchEvent(new Event("change", { bubbles: true }));
+		timeoutInput.value = "15000";
+		timeoutInput.dispatchEvent(new Event("input", { bubbles: true }));
+		button.click();
+
+		await waitForSettled(element, () =>
+			(element.shadowRoot?.textContent ?? "").includes(
+				"Updated linear in Local config via SSE.",
+			),
+		);
+
+		expect(apiClient.updateMcpServer).toHaveBeenCalledWith({
+			name: "linear",
+			scope: "local",
+			server: {
+				name: "linear",
+				transport: "sse",
+				url: "https://mcp.linear.app/sse",
+				timeout: 15000,
 			},
 		});
 	});

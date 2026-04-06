@@ -492,8 +492,10 @@ export class ComposerSettings extends LitElement {
 	@state() private mcpEditingArgsText: Record<string, string> = {};
 	@state() private mcpEditingCwds: Record<string, string> = {};
 	@state() private mcpEditingEnvTexts: Record<string, string> = {};
+	@state() private mcpEditingReplaceEnv: Record<string, boolean> = {};
 	@state() private mcpEditingUrls: Record<string, string> = {};
 	@state() private mcpEditingHeadersTexts: Record<string, string> = {};
+	@state() private mcpEditingReplaceHeaders: Record<string, boolean> = {};
 	@state() private mcpEditingHeadersHelpers: Record<string, string> = {};
 	@state() private mcpEditingTimeouts: Record<string, string> = {};
 	@state() private mcpEditingTransports: Record<
@@ -862,14 +864,24 @@ export class ComposerSettings extends LitElement {
 				this.mcpEditingCwds,
 				server.name,
 			);
-			const hasEditedEnv = Object.prototype.hasOwnProperty.call(
-				this.mcpEditingEnvTexts,
-				server.name,
-			);
-			const hasEditedHeaders = Object.prototype.hasOwnProperty.call(
-				this.mcpEditingHeadersTexts,
-				server.name,
-			);
+			const replacingEnvValues =
+				this.mcpEditingReplaceEnv[server.name] === true;
+			const replacingHeaderValues =
+				this.mcpEditingReplaceHeaders[server.name] === true;
+			const hasEditedEnv =
+				replacingEnvValues ||
+				((server.envKeys?.length ?? 0) === 0 &&
+					Object.prototype.hasOwnProperty.call(
+						this.mcpEditingEnvTexts,
+						server.name,
+					));
+			const hasEditedHeaders =
+				replacingHeaderValues ||
+				((server.headerKeys?.length ?? 0) === 0 &&
+					Object.prototype.hasOwnProperty.call(
+						this.mcpEditingHeadersTexts,
+						server.name,
+					));
 			const hasEditedHeadersHelper = Object.prototype.hasOwnProperty.call(
 				this.mcpEditingHeadersHelpers,
 				server.name,
@@ -1058,6 +1070,16 @@ export class ComposerSettings extends LitElement {
 										const writableScope = this.getWritableMcpScope(
 											server.scope,
 										);
+										const replaceHiddenEnvValues =
+											this.mcpEditingReplaceEnv[server.name] === true;
+										const replaceHiddenHeaderValues =
+											this.mcpEditingReplaceHeaders[server.name] === true;
+										const canEditEnvValues =
+											(server.envKeys?.length ?? 0) === 0 ||
+											replaceHiddenEnvValues;
+										const canEditHeaderValues =
+											(server.headerKeys?.length ?? 0) === 0 ||
+											replaceHiddenHeaderValues;
 										const editableTransport =
 											this.mcpEditingTransports[server.name] ??
 											(server.transport === "stdio"
@@ -1270,11 +1292,60 @@ export class ComposerSettings extends LitElement {
 																/>
 															</div>
 															<div class="control-row">
+																${
+																	(server.headerKeys?.length ?? 0) > 0
+																		? html`
+																			<label class="panel-card-copy">
+																				<input
+																					type="checkbox"
+																					.checked=${replaceHiddenHeaderValues}
+																					aria-label=${`Replace hidden headers for ${server.name}`}
+																					@change=${(event: Event) => {
+																						const checked = (
+																							event.target as HTMLInputElement
+																						).checked;
+																						this.mcpEditingReplaceHeaders =
+																							checked
+																								? {
+																										...this
+																											.mcpEditingReplaceHeaders,
+																										[server.name]: true,
+																									}
+																								: Object.fromEntries(
+																										Object.entries(
+																											this
+																												.mcpEditingReplaceHeaders,
+																										).filter(
+																											([key]) =>
+																												key !== server.name,
+																										),
+																									);
+																						if (!checked) {
+																							this.mcpEditingHeadersTexts =
+																								Object.fromEntries(
+																									Object.entries(
+																										this.mcpEditingHeadersTexts,
+																									).filter(
+																										([key]) =>
+																											key !== server.name,
+																									),
+																								);
+																						}
+																					}}
+																				/>
+																				${" "}Replace hidden header values
+																			</label>
+																		`
+																		: ""
+																}
+															</div>
+															<div class="control-row">
 																<textarea
 																	class="field-input"
 																	style="min-height: 5.5rem;"
 																	.placeholder=${"Headers (KEY=VALUE, one per line)"}
 																	.value=${editableHeadersText}
+																	?disabled=${!canEditHeaderValues}
 																	aria-label=${`Headers for ${server.name}`}
 																	@input=${(event: Event) => {
 																		this.mcpEditingHeadersTexts = {
@@ -1287,11 +1358,12 @@ export class ComposerSettings extends LitElement {
 																></textarea>
 															</div>
 															<div class="panel-card-copy">
-																Header values stay hidden. Enter KEY=VALUE
-																lines to replace them.${
+																${
 																	(server.headerKeys?.length ?? 0) > 0
-																		? html` Current keys: ${(server.headerKeys ?? []).join(", ")}.`
-																		: ""
+																		? replaceHiddenHeaderValues
+																			? html`Header values stay hidden. Enter KEY=VALUE lines to replace them. Leave the field blank and save to clear them. Current keys: ${(server.headerKeys ?? []).join(", ")}.`
+																			: html`Header values stay hidden and will be preserved unless you enable replacement. Current keys: ${(server.headerKeys ?? []).join(", ")}.`
+																		: html`Enter KEY=VALUE lines to set headers for this server.`
 																}
 																<br />
 																Delete optional values like timeout or headers
@@ -1344,6 +1416,7 @@ export class ComposerSettings extends LitElement {
 																	style="min-height: 5.5rem;"
 																	.placeholder=${"Env vars (KEY=VALUE, one per line)"}
 																	.value=${editableEnvText}
+																	?disabled=${!canEditEnvValues}
 																	aria-label=${`Environment variables for ${server.name}`}
 																	@input=${(event: Event) => {
 																		this.mcpEditingEnvTexts = {
@@ -1401,12 +1474,58 @@ export class ComposerSettings extends LitElement {
 																	}
 																</button>
 															</div>
+															${
+																(server.envKeys?.length ?? 0) > 0
+																	? html`
+																		<div class="control-row">
+																			<label class="panel-card-copy">
+																				<input
+																					type="checkbox"
+																					.checked=${replaceHiddenEnvValues}
+																					aria-label=${`Replace hidden environment variables for ${server.name}`}
+																					@change=${(event: Event) => {
+																						const checked = (
+																							event.target as HTMLInputElement
+																						).checked;
+																						this.mcpEditingReplaceEnv = checked
+																							? {
+																									...this.mcpEditingReplaceEnv,
+																									[server.name]: true,
+																								}
+																							: Object.fromEntries(
+																									Object.entries(
+																										this.mcpEditingReplaceEnv,
+																									).filter(
+																										([key]) =>
+																											key !== server.name,
+																									),
+																								);
+																						if (!checked) {
+																							this.mcpEditingEnvTexts =
+																								Object.fromEntries(
+																									Object.entries(
+																										this.mcpEditingEnvTexts,
+																									).filter(
+																										([key]) =>
+																											key !== server.name,
+																									),
+																								);
+																						}
+																					}}
+																				/>
+																				${" "}Replace hidden environment values
+																			</label>
+																		</div>
+																	`
+																	: ""
+															}
 															<div class="panel-card-copy">
-																Env values stay hidden. Enter KEY=VALUE lines to
-																replace them.${
+																${
 																	(server.envKeys?.length ?? 0) > 0
-																		? html` Current keys: ${(server.envKeys ?? []).join(", ")}.`
-																		: ""
+																		? replaceHiddenEnvValues
+																			? html`Env values stay hidden. Enter KEY=VALUE lines to replace them. Leave the field blank and save to clear them. Current keys: ${(server.envKeys ?? []).join(", ")}.`
+																			: html`Env values stay hidden and will be preserved unless you enable replacement. Current keys: ${(server.envKeys ?? []).join(", ")}.`
+																		: html`Enter KEY=VALUE lines to set environment variables for this server.`
 																}
 																<br />
 																Delete optional values like args, cwd, env vars, or
