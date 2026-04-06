@@ -279,4 +279,56 @@ describe("composer-chat session pending request restore", () => {
 			recoveredSession.pendingApprovalRequests,
 		);
 	});
+
+	it("only recovers pending queues once when session refresh fails after a stream error", async () => {
+		const element = createChat();
+		const recoveredSession = {
+			id: "session-refresh-failure",
+			messages: [],
+			pendingApprovalRequests: [
+				{
+					id: "approval-refresh-failure",
+					toolName: "bash",
+					args: { command: "git push --force" },
+					reason: "Needs approval",
+				},
+			],
+			pendingToolRetryRequests: [],
+			pendingClientToolRequests: [],
+		};
+
+		element.apiClient = {
+			chatWithEvents: vi.fn().mockReturnValue(
+				(async function* () {
+					yield {
+						type: "session_update",
+						sessionId: "session-refresh-failure",
+					};
+					yield { type: "error", message: "Stream failed" };
+				})(),
+			),
+			createSession: vi.fn(),
+			getSession: vi.fn().mockResolvedValue(recoveredSession),
+			getSessions: vi
+				.fn()
+				.mockRejectedValue(new Error("Failed to refresh sessions")),
+			sendClientToolResult: vi.fn().mockResolvedValue({ success: true }),
+		};
+		element.clientOnline = true;
+		element.currentSessionId = null;
+		element.messages = [];
+		element.pendingApprovalQueue = [];
+		element.pendingToolRetryQueue = [];
+		element.pendingUserInputQueue = [];
+
+		await element.handleSubmit?.(
+			new CustomEvent("submit", { detail: { text: "run the command" } }),
+		);
+		await flushAsyncWork();
+
+		expect(element.apiClient.getSession).toHaveBeenCalledTimes(1);
+		expect(element.pendingApprovalQueue).toEqual(
+			recoveredSession.pendingApprovalRequests,
+		);
+	});
 });

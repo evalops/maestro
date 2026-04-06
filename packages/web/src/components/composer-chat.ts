@@ -3127,6 +3127,14 @@ export class ComposerChat extends LitElement {
 		let terminalStreamOutcome: ReturnType<typeof getTerminalStreamOutcome> =
 			null;
 		let sessionIdDuringStream: string | null = this.currentSessionId;
+		let recoveredPendingSessionRequests = false;
+		const recoverPendingSessionRequestsOnce = async () => {
+			if (recoveredPendingSessionRequests) {
+				return;
+			}
+			recoveredPendingSessionRequests = true;
+			await this.recoverPendingSessionRequests(sessionIdDuringStream);
+		};
 
 		try {
 			const requestMessages = await this.buildMessagesForChatRequest(
@@ -3465,7 +3473,7 @@ export class ComposerChat extends LitElement {
 
 			if (terminalStreamOutcome) {
 				if (terminalStreamOutcome.type === "error") {
-					await this.recoverPendingSessionRequests(sessionIdDuringStream);
+					await recoverPendingSessionRequestsOnce();
 				}
 				this.error = terminalStreamOutcome.message;
 				this.lastSendFailed = text;
@@ -3487,7 +3495,7 @@ export class ComposerChat extends LitElement {
 			// Refresh sessions list
 			await this.loadSessions();
 		} catch (e) {
-			await this.recoverPendingSessionRequests(sessionIdDuringStream);
+			await recoverPendingSessionRequestsOnce();
 			this.error = e instanceof Error ? e.message : "Failed to send message";
 			this.runtimeStatus = null;
 			if (!hasAssistantMessageProgress(assistantMessage)) {
