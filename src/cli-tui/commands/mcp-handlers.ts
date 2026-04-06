@@ -1,9 +1,11 @@
 import chalk from "chalk";
 import {
+	type McpAuthPresetStatus,
 	type McpOfficialRegistryEntry,
 	type McpServerConfig,
 	type McpServerStatus,
 	type WritableMcpScope,
+	addMcpAuthPresetToConfig,
 	addMcpServerToConfig,
 	buildSuggestedMcpServerName,
 	getOfficialMcpRegistryEntries,
@@ -14,9 +16,11 @@ import {
 	mcpManager,
 	officialMcpRegistryEntryMatchesUrl,
 	prefetchOfficialMcpRegistry,
+	removeMcpAuthPresetFromConfig,
 	removeMcpServerFromConfig,
 	resolveOfficialMcpRegistryEntry,
 	searchOfficialMcpRegistry,
+	updateMcpAuthPresetInConfig,
 	updateMcpServerInConfig,
 } from "../../mcp/index.js";
 import { parseCommandArguments } from "../../tools/shell-utils.js";
@@ -33,6 +37,7 @@ type ConfigurableMcpServer = Pick<
 	| "cwd"
 	| "headers"
 	| "headersHelper"
+	| "authPreset"
 >;
 
 export interface McpRenderContext {
@@ -54,6 +59,16 @@ interface ParsedMcpServerMutationCommand {
 		url?: string;
 		headers?: Record<string, string>;
 		headersHelper?: string;
+		authPreset?: string;
+	};
+}
+
+interface ParsedMcpAuthPresetMutationCommand {
+	scope?: WritableMcpScope;
+	preset: {
+		name: string;
+		headers?: Record<string, string>;
+		headersHelper?: string;
 	};
 }
 
@@ -70,16 +85,24 @@ interface ParsedMcpImportCommand {
 	transport?: RemoteMcpTransport;
 	headers?: Record<string, string>;
 	headersHelper?: string;
+	authPreset?: string;
 }
 
 const MCP_ADD_USAGE =
-	"/mcp add <name> <command-or-url> [args...] [--scope local|project|user] [--transport stdio|http|sse] [--cwd <path>] [--env KEY=value] [--header 'Name: value'] [--headers-helper <command>]";
+	"/mcp add <name> <command-or-url> [args...] [--scope local|project|user] [--transport stdio|http|sse] [--cwd <path>] [--env KEY=value] [--header 'Name: value'] [--headers-helper <command>] [--auth-preset <name>]";
 const MCP_EDIT_USAGE =
-	"/mcp edit <name> <command-or-url> [args...] [--scope local|project|user] [--transport stdio|http|sse] [--cwd <path>] [--env KEY=value] [--header 'Name: value'] [--headers-helper <command>]";
+	"/mcp edit <name> <command-or-url> [args...] [--scope local|project|user] [--transport stdio|http|sse] [--cwd <path>] [--env KEY=value] [--header 'Name: value'] [--headers-helper <command>] [--auth-preset <name>]";
 const MCP_REMOVE_USAGE = "/mcp remove <name> [--scope local|project|user]";
 const MCP_SEARCH_USAGE = "/mcp search [query]";
 const MCP_IMPORT_USAGE =
-	"/mcp import <official-id> [name] [--scope local|project|user] [--url <https-url>] [--transport http|sse] [--header 'Name: value'] [--headers-helper <command>]";
+	"/mcp import <official-id> [name] [--scope local|project|user] [--url <https-url>] [--transport http|sse] [--header 'Name: value'] [--headers-helper <command>] [--auth-preset <name>]";
+const MCP_AUTH_USAGE = "/mcp auth [list|add|edit|remove]";
+const MCP_AUTH_ADD_USAGE =
+	"/mcp auth add <name> [--scope local|project|user] [--header 'Name: value'] [--headers-helper <command>]";
+const MCP_AUTH_EDIT_USAGE =
+	"/mcp auth edit <name> [--scope local|project|user] [--header 'Name: value'] [--headers-helper <command>]";
+const MCP_AUTH_REMOVE_USAGE =
+	"/mcp auth remove <name> [--scope local|project|user]";
 
 function formatMcpScopeLabel(scope: McpServerStatus["scope"]): string | null {
 	switch (scope) {
@@ -194,6 +217,7 @@ function parseMcpServerMutationCommand(
 	let transport: "stdio" | "http" | "sse" | undefined;
 	let cwd: string | undefined;
 	let headersHelper: string | undefined;
+	let authPreset: string | undefined;
 	const headers: Record<string, string> = {};
 	const env: Record<string, string> = {};
 	const positionals: string[] = [];
@@ -238,6 +262,15 @@ function parseMcpServerMutationCommand(
 				throw new Error("Missing value for --headers-helper.");
 			}
 			headersHelper = value;
+			index += 1;
+			continue;
+		}
+		if (token === "--auth-preset") {
+			const value = tokens[index + 1];
+			if (!value) {
+				throw new Error("Missing value for --auth-preset.");
+			}
+			authPreset = value;
 			index += 1;
 			continue;
 		}
@@ -313,6 +346,7 @@ function parseMcpServerMutationCommand(
 				url: target,
 				headers: Object.keys(headers).length > 0 ? headers : undefined,
 				headersHelper,
+				authPreset,
 			},
 		};
 	}
@@ -324,6 +358,9 @@ function parseMcpServerMutationCommand(
 		throw new Error(
 			"--headers-helper is only supported for remote MCP servers.",
 		);
+	}
+	if (authPreset) {
+		throw new Error("--auth-preset is only supported for remote MCP servers.");
 	}
 
 	return {
@@ -395,6 +432,7 @@ function parseMcpImportCommand(rawInput: string): ParsedMcpImportCommand {
 	let url: string | undefined;
 	let transport: RemoteMcpTransport | undefined;
 	let headersHelper: string | undefined;
+	let authPreset: string | undefined;
 	const headers: Record<string, string> = {};
 
 	for (let index = 3; index < tokens.length; index += 1) {
@@ -435,6 +473,15 @@ function parseMcpImportCommand(rawInput: string): ParsedMcpImportCommand {
 			index += 1;
 			continue;
 		}
+		if (token === "--auth-preset") {
+			const value = tokens[index + 1];
+			if (!value) {
+				throw new Error("Missing value for --auth-preset.");
+			}
+			authPreset = value;
+			index += 1;
+			continue;
+		}
 		if (token === "--header" || token === "-H") {
 			const value = tokens[index + 1];
 			if (!value) {
@@ -467,7 +514,130 @@ function parseMcpImportCommand(rawInput: string): ParsedMcpImportCommand {
 		transport,
 		headers: Object.keys(headers).length > 0 ? headers : undefined,
 		headersHelper,
+		authPreset,
 	};
+}
+
+function parseMcpAuthPresetMutationCommand(
+	rawInput: string,
+	command: "add" | "edit",
+	defaultScope?: WritableMcpScope,
+): ParsedMcpAuthPresetMutationCommand {
+	const usage = command === "add" ? MCP_AUTH_ADD_USAGE : MCP_AUTH_EDIT_USAGE;
+	const tokens = parseTokens(rawInput);
+
+	if (tokens[0] !== "/mcp" || tokens[1] !== "auth" || tokens[2] !== command) {
+		throw new Error(usage);
+	}
+
+	const name = tokens[3];
+	if (!name) {
+		throw new Error(usage);
+	}
+
+	let scope = defaultScope;
+	let headersHelper: string | undefined;
+	const headers: Record<string, string> = {};
+
+	for (let index = 4; index < tokens.length; index += 1) {
+		const token = tokens[index]!;
+		if (token === "--scope" || token === "-s") {
+			const value = tokens[index + 1];
+			if (!value || !isWritableScope(value)) {
+				throw new Error("Invalid MCP scope. Use local, project, or user.");
+			}
+			scope = value;
+			index += 1;
+			continue;
+		}
+		if (token === "--headers-helper") {
+			const value = tokens[index + 1];
+			if (!value) {
+				throw new Error("Missing value for --headers-helper.");
+			}
+			headersHelper = value;
+			index += 1;
+			continue;
+		}
+		if (token === "--header" || token === "-H") {
+			const value = tokens[index + 1];
+			if (!value) {
+				throw new Error("Missing value for --header.");
+			}
+			const [headerName, ...rest] = value.split(":");
+			const headerValue = rest.join(":").trim();
+			if (!headerName?.trim() || headerValue.length === 0) {
+				throw new Error(`Invalid MCP header: ${value}`);
+			}
+			headers[headerName.trim()] = headerValue;
+			index += 1;
+			continue;
+		}
+		throw new Error(usage);
+	}
+
+	if (Object.keys(headers).length === 0 && !headersHelper) {
+		throw new Error(
+			"MCP auth presets require at least one --header or --headers-helper value.",
+		);
+	}
+
+	return {
+		scope,
+		preset: {
+			name,
+			headers: Object.keys(headers).length > 0 ? headers : undefined,
+			headersHelper,
+		},
+	};
+}
+
+function parseMcpAuthPresetRemoveCommand(
+	rawInput: string,
+): ParsedMcpRemoveCommand {
+	const tokens = parseTokens(rawInput);
+	if (tokens[0] !== "/mcp" || tokens[1] !== "auth" || tokens[2] !== "remove") {
+		throw new Error(MCP_AUTH_REMOVE_USAGE);
+	}
+
+	const name = tokens[3];
+	if (!name) {
+		throw new Error(MCP_AUTH_REMOVE_USAGE);
+	}
+
+	let scope: WritableMcpScope | undefined;
+	for (let index = 4; index < tokens.length; index += 1) {
+		const token = tokens[index]!;
+		if (token === "--scope" || token === "-s") {
+			const value = tokens[index + 1];
+			if (!value || !isWritableScope(value)) {
+				throw new Error("Invalid MCP scope. Use local, project, or user.");
+			}
+			scope = value;
+			index += 1;
+			continue;
+		}
+		throw new Error(MCP_AUTH_REMOVE_USAGE);
+	}
+
+	return { name, scope };
+}
+
+function resolveKnownAuthPresetName(
+	projectRoot: string,
+	authPreset: string | undefined,
+): void {
+	if (!authPreset) {
+		return;
+	}
+	const existingPreset = (loadMcpConfig(projectRoot).authPresets ?? []).find(
+		(preset) => preset.name === authPreset,
+	);
+	if (!existingPreset) {
+		throw new Error(
+			`MCP auth preset "${authPreset}" not found in merged config.`,
+		);
+	}
 }
 
 async function reloadMcpManager(projectRoot: string) {
@@ -517,6 +687,9 @@ function appendConfiguredServerSummary(
 		}
 		if (server.headersHelper) {
 			lines.push(`  headers helper: ${server.headersHelper}`);
+		}
+		if (server.authPreset) {
+			lines.push(`  auth preset: ${server.authPreset}`);
 		}
 		return;
 	}
@@ -575,44 +748,67 @@ function renderOfficialRegistryResults(
 	renderCtx.requestRender();
 }
 
-export function handleMcpCommand(renderCtx: McpRenderContext): void {
-	const args = renderCtx.rawInput.replace(/^\/mcp\s*/, "").trim();
-	const parts = args.split(/\s+/);
-	const subcommand = parts[0]?.toLowerCase() || "";
+function appendAuthPresetSummary(
+	lines: string[],
+	preset: {
+		name: string;
+		scope?: McpAuthPresetStatus["scope"];
+		headers?: Record<string, string>;
+		headerKeys?: string[];
+		headersHelper?: string;
+	},
+): void {
+	lines.push(preset.name);
+	const scopeLabel = formatMcpScopeLabel(preset.scope);
+	if (scopeLabel) {
+		lines.push(`    Source: ${scopeLabel}`);
+	}
+	const headerKeys =
+		preset.headerKeys ??
+		(preset.headers ? Object.keys(preset.headers).sort() : undefined);
+	if (headerKeys && headerKeys.length > 0) {
+		lines.push(`    Header keys: ${headerKeys.join(", ")}`);
+	}
+	if (preset.headersHelper) {
+		lines.push(`    Headers helper: ${preset.headersHelper}`);
+	}
+}
 
-	if (subcommand === "add") {
-		void handleMcpAddCommand(renderCtx);
-		return;
+function appendConfiguredAuthPresetDetails(
+	lines: string[],
+	preset: {
+		headers?: Record<string, string>;
+		headerKeys?: string[];
+		headersHelper?: string;
+	},
+): void {
+	const headerKeys =
+		preset.headerKeys ??
+		(preset.headers ? Object.keys(preset.headers).sort() : undefined);
+	if (headerKeys && headerKeys.length > 0) {
+		lines.push(`  headers: ${headerKeys.join(", ")}`);
 	}
-	if (subcommand === "edit") {
-		void handleMcpEditCommand(renderCtx);
-		return;
+	if (preset.headersHelper) {
+		lines.push(`  headers helper: ${preset.headersHelper}`);
 	}
-	if (subcommand === "remove") {
-		void handleMcpRemoveCommand(renderCtx);
-		return;
-	}
-	if (subcommand === "search" || subcommand === "registry") {
-		void handleMcpSearchCommand(renderCtx);
-		return;
-	}
-	if (subcommand === "import") {
-		void handleMcpImportCommand(renderCtx);
-		return;
-	}
-	if (subcommand === "resources") {
-		handleMcpResourcesCommand(parts.slice(1), renderCtx);
-		return;
-	}
-	if (subcommand === "prompts") {
-		handleMcpPromptsCommand(parts.slice(1), renderCtx);
-		return;
-	}
+}
 
+function renderMcpStatus(renderCtx: McpRenderContext): void {
 	const status = mcpManager.getStatus();
 	const lines: string[] = ["Model Context Protocol", ""];
 
+	if (status.authPresets.length > 0) {
+		lines.push("Auth presets", "");
+		for (const preset of status.authPresets) {
+			appendAuthPresetSummary(lines, preset);
+			lines.push("");
+		}
+	}
+
 	if (status.servers.length === 0) {
+		if (status.authPresets.length > 0) {
+			lines.push("Servers", "");
+		}
 		lines.push(
 			"No MCP servers configured.",
 			"",
@@ -621,11 +817,16 @@ export function handleMcpCommand(renderCtx: McpRenderContext): void {
 			"  /mcp search linear",
 			"  /mcp import linear",
 			"  /mcp add linear https://mcp.linear.app/mcp",
+			"  /mcp add linear https://mcp.linear.app/mcp --auth-preset linear-auth",
+			"  /mcp auth add linear-auth --header 'Authorization: Bearer ...'",
 			"  /mcp add filesystem -- npx -y @modelcontextprotocol/server-filesystem .",
 			"",
 			'  { "mcpServers": { "my-server": { "command": "npx", "args": ["-y", "@example/mcp-server"] } } }',
 		);
 	} else {
+		if (status.authPresets.length > 0) {
+			lines.push("Servers", "");
+		}
 		for (const server of status.servers) {
 			const statusIcon = server.connected ? chalk.green("●") : chalk.red("○");
 			lines.push(`${statusIcon} ${server.name}`);
@@ -636,6 +837,15 @@ export function handleMcpCommand(renderCtx: McpRenderContext): void {
 			lines.push(`    Transport: ${formatMcpTransportLabel(server.transport)}`);
 			if (server.remoteUrl) {
 				lines.push(`    Remote: ${server.remoteUrl}`);
+			}
+			if (server.authPreset) {
+				lines.push(`    Auth preset: ${server.authPreset}`);
+			}
+			if (server.headerKeys && server.headerKeys.length > 0) {
+				lines.push(`    Header keys: ${server.headerKeys.join(", ")}`);
+			}
+			if (server.headersHelper) {
+				lines.push(`    Headers helper: ${server.headersHelper}`);
 			}
 			const trustLabel = formatMcpTrustLabel(server);
 			if (trustLabel) {
@@ -667,16 +877,62 @@ export function handleMcpCommand(renderCtx: McpRenderContext): void {
 				}
 			}
 		}
-		lines.push("");
-		lines.push(
-			chalk.dim(
-				"Subcommands: /mcp add, /mcp edit, /mcp remove, /mcp search, /mcp import, /mcp resources, /mcp prompts",
-			),
-		);
 	}
 
-	renderCtx.addContent(lines.join("\n"));
+	lines.push("");
+	lines.push(
+		chalk.dim(
+			"Subcommands: /mcp add, /mcp edit, /mcp remove, /mcp search, /mcp import, /mcp auth, /mcp resources, /mcp prompts",
+		),
+	);
+
+	renderCtx.addContent(lines.join("\n").trimEnd());
 	renderCtx.requestRender();
+}
+
+export function handleMcpCommand(renderCtx: McpRenderContext): void {
+	const args = renderCtx.rawInput.replace(/^\/mcp\s*/, "").trim();
+	const parts = args.split(/\s+/);
+	const subcommand = parts[0]?.toLowerCase() || "";
+
+	if (subcommand === "add") {
+		void handleMcpAddCommand(renderCtx);
+		return;
+	}
+	if (subcommand === "edit") {
+		void handleMcpEditCommand(renderCtx);
+		return;
+	}
+	if (subcommand === "remove") {
+		void handleMcpRemoveCommand(renderCtx);
+		return;
+	}
+	if (subcommand === "search" || subcommand === "registry") {
+		void handleMcpSearchCommand(renderCtx);
+		return;
+	}
+	if (subcommand === "import") {
+		void handleMcpImportCommand(renderCtx);
+		return;
+	}
+	if (
+		subcommand === "auth" ||
+		subcommand === "preset" ||
+		subcommand === "presets"
+	) {
+		void handleMcpAuthCommand(renderCtx);
+		return;
+	}
+	if (subcommand === "resources") {
+		handleMcpResourcesCommand(parts.slice(1), renderCtx);
+		return;
+	}
+	if (subcommand === "prompts") {
+		handleMcpPromptsCommand(parts.slice(1), renderCtx);
+		return;
+	}
+
+	renderMcpStatus(renderCtx);
 }
 
 async function handleMcpAddCommand(renderCtx: McpRenderContext): Promise<void> {
@@ -695,6 +951,7 @@ async function handleMcpAddCommand(renderCtx: McpRenderContext): Promise<void> {
 				`MCP server "${parsed.server.name}" already exists in merged config (scope: ${existingServer.scope ?? "unknown"}). Choose a different name.`,
 			);
 		}
+		resolveKnownAuthPresetName(projectRoot, parsed.server.authPreset);
 
 		if (parsed.server.url) {
 			await prefetchOfficialMcpRegistry();
@@ -736,6 +993,7 @@ async function handleMcpEditCommand(
 				`MCP server "${parsed.server.name}" not found in merged config.`,
 			);
 		}
+		resolveKnownAuthPresetName(projectRoot, parsed.server.authPreset);
 
 		if (existingServer.url || parsed.server.url) {
 			await prefetchOfficialMcpRegistry();
@@ -871,6 +1129,7 @@ async function handleMcpImportCommand(
 				`MCP server "${localName}" already exists in merged config (scope: ${existingServer.scope ?? "unknown"}). Choose a different name.`,
 			);
 		}
+		resolveKnownAuthPresetName(projectRoot, parsed.authPreset);
 
 		const resolvedUrl = parsed.url ?? entry.url ?? entry.urlOptions?.[0]?.url;
 		if (!resolvedUrl) {
@@ -902,6 +1161,7 @@ async function handleMcpImportCommand(
 				url: resolvedUrl,
 				headers: parsed.headers,
 				headersHelper: parsed.headersHelper,
+				authPreset: parsed.authPreset,
 			},
 		});
 		await reloadMcpManager(projectRoot);
@@ -921,7 +1181,179 @@ async function handleMcpImportCommand(
 			url: resolvedUrl,
 			headers: parsed.headers,
 			headersHelper: parsed.headersHelper,
+			authPreset: parsed.authPreset,
 		});
+
+		renderCtx.addContent(lines.join("\n"));
+		renderCtx.requestRender();
+	} catch (error) {
+		renderCtx.showError(error instanceof Error ? error.message : String(error));
+	}
+}
+
+async function handleMcpAuthCommand(
+	renderCtx: McpRenderContext,
+): Promise<void> {
+	const tokens = parseTokens(renderCtx.rawInput);
+	const subcommand = tokens[2]?.toLowerCase() ?? "list";
+
+	if (subcommand === "list") {
+		const status = mcpManager.getStatus();
+		const lines: string[] = ["MCP Auth Presets", ""];
+
+		if (status.authPresets.length === 0) {
+			lines.push(
+				"No MCP auth presets configured.",
+				"",
+				"Examples:",
+				"  /mcp auth add linear-auth --header 'Authorization: Bearer ...'",
+				"  /mcp add linear https://mcp.linear.app/mcp --auth-preset linear-auth",
+			);
+		} else {
+			for (const preset of status.authPresets) {
+				appendAuthPresetSummary(lines, preset);
+				lines.push("");
+			}
+			lines.push(
+				chalk.dim(
+					"Usage: /mcp auth add|edit|remove <name> [--scope ...] [--header ...] [--headers-helper ...]",
+				),
+			);
+		}
+
+		renderCtx.addContent(lines.join("\n").trimEnd());
+		renderCtx.requestRender();
+		return;
+	}
+
+	if (subcommand === "add") {
+		await handleMcpAuthAddCommand(renderCtx);
+		return;
+	}
+	if (subcommand === "edit") {
+		await handleMcpAuthEditCommand(renderCtx);
+		return;
+	}
+	if (subcommand === "remove") {
+		await handleMcpAuthRemoveCommand(renderCtx);
+		return;
+	}
+
+	renderCtx.showError(MCP_AUTH_USAGE);
+}
+
+async function handleMcpAuthAddCommand(
+	renderCtx: McpRenderContext,
+): Promise<void> {
+	try {
+		const projectRoot = process.cwd();
+		const parsed = parseMcpAuthPresetMutationCommand(
+			renderCtx.rawInput,
+			"add",
+			"local",
+		);
+		const existingPreset = loadMcpConfig(projectRoot).authPresets.find(
+			(preset) => preset.name === parsed.preset.name,
+		);
+		if (existingPreset) {
+			throw new Error(
+				`MCP auth preset "${parsed.preset.name}" already exists in merged config (scope: ${existingPreset.scope ?? "unknown"}). Choose a different name.`,
+			);
+		}
+
+		const { path } = addMcpAuthPresetToConfig({
+			projectRoot,
+			scope: parsed.scope ?? "local",
+			preset: parsed.preset,
+		});
+		await reloadMcpManager(projectRoot);
+
+		const lines = [
+			`Added MCP auth preset "${parsed.preset.name}"`,
+			`  scope: ${parsed.scope ?? "local"}`,
+			`  path: ${path}`,
+		];
+		appendConfiguredAuthPresetDetails(lines, parsed.preset);
+
+		renderCtx.addContent(lines.join("\n"));
+		renderCtx.requestRender();
+	} catch (error) {
+		renderCtx.showError(error instanceof Error ? error.message : String(error));
+	}
+}
+
+async function handleMcpAuthEditCommand(
+	renderCtx: McpRenderContext,
+): Promise<void> {
+	try {
+		const projectRoot = process.cwd();
+		const parsed = parseMcpAuthPresetMutationCommand(
+			renderCtx.rawInput,
+			"edit",
+		);
+		const currentConfig = loadMcpConfig(projectRoot);
+		const existingPreset = currentConfig.authPresets.find(
+			(preset) => preset.name === parsed.preset.name,
+		);
+		if (!existingPreset) {
+			throw new Error(
+				`MCP auth preset "${parsed.preset.name}" not found in merged config.`,
+			);
+		}
+
+		const { path, scope } = updateMcpAuthPresetInConfig({
+			projectRoot,
+			scope: parsed.scope,
+			name: parsed.preset.name,
+			preset: parsed.preset,
+		});
+		const reloadedConfig = await reloadMcpManager(projectRoot);
+		const activePreset = reloadedConfig.authPresets.find(
+			(preset) => preset.name === parsed.preset.name,
+		);
+
+		const lines = [
+			`Updated MCP auth preset "${parsed.preset.name}"`,
+			`  scope: ${scope}`,
+			`  path: ${path}`,
+		];
+		appendConfiguredAuthPresetDetails(lines, activePreset ?? parsed.preset);
+
+		renderCtx.addContent(lines.join("\n"));
+		renderCtx.requestRender();
+	} catch (error) {
+		renderCtx.showError(error instanceof Error ? error.message : String(error));
+	}
+}
+
+async function handleMcpAuthRemoveCommand(
+	renderCtx: McpRenderContext,
+): Promise<void> {
+	try {
+		const projectRoot = process.cwd();
+		const parsed = parseMcpAuthPresetRemoveCommand(renderCtx.rawInput);
+		const { path, scope } = removeMcpAuthPresetFromConfig({
+			projectRoot,
+			scope: parsed.scope,
+			name: parsed.name,
+		});
+		const reloadedConfig = await reloadMcpManager(projectRoot);
+		const fallbackPreset = reloadedConfig.authPresets.find(
+			(preset) => preset.name === parsed.name,
+		);
+
+		const lines = [
+			`Removed MCP auth preset "${parsed.name}"`,
+			`  scope: ${scope}`,
+			`  path: ${path}`,
+		];
+		if (fallbackPreset) {
+			lines.push(
+				`  fallback: now using ${formatMcpScopeLabel(fallbackPreset.scope) ?? fallbackPreset.scope ?? "another"} for "${parsed.name}"`,
+			);
+		} else {
+			lines.push("  status: removed from merged config");
+		}
 
 		renderCtx.addContent(lines.join("\n"));
 		renderCtx.requestRender();

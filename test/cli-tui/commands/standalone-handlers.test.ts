@@ -352,6 +352,9 @@ const mockOfficialRegistryEntry = {
 };
 
 vi.mock("../../../src/mcp/index.js", () => ({
+	addMcpAuthPresetToConfig: vi.fn(() => ({
+		path: "/tmp/project/.maestro/mcp.local.json",
+	})),
 	addMcpServerToConfig: vi.fn(() => ({
 		path: "/tmp/project/.maestro/mcp.local.json",
 	})),
@@ -368,9 +371,27 @@ vi.mock("../../../src/mcp/index.js", () => ({
 		},
 	})),
 	inferRemoteMcpTransport: vi.fn(() => "http"),
-	loadMcpConfig: vi.fn(() => ({ servers: [] })),
+	loadMcpConfig: vi.fn(() => ({
+		servers: [],
+		authPresets: [
+			{
+				name: "linear-auth",
+				headers: { Authorization: "Bearer test" },
+				headersHelper: "op run --env-file",
+				scope: "local",
+			},
+		],
+	})),
 	mcpManager: {
 		getStatus: vi.fn(() => ({
+			authPresets: [
+				{
+					name: "linear-auth",
+					scope: "local",
+					headerKeys: ["Authorization"],
+					headersHelper: "op run --env-file",
+				},
+			],
 			servers: [
 				{
 					name: "test-server",
@@ -397,6 +418,9 @@ vi.mock("../../../src/mcp/index.js", () => ({
 						permissions: "Read and write",
 					},
 					error: "Connection refused",
+					authPreset: "linear-auth",
+					headerKeys: ["Authorization"],
+					headersHelper: "op run --env-file",
 				},
 			],
 		})),
@@ -407,6 +431,10 @@ vi.mock("../../../src/mcp/index.js", () => ({
 	normalizeMcpRemoteUrl: vi.fn((url: string) => url),
 	officialMcpRegistryEntryMatchesUrl: vi.fn(() => true),
 	prefetchOfficialMcpRegistry: vi.fn().mockResolvedValue(undefined),
+	removeMcpAuthPresetFromConfig: vi.fn(() => ({
+		path: "/tmp/project/.maestro/mcp.local.json",
+		scope: "local",
+	})),
 	removeMcpServerFromConfig: vi.fn(() => ({
 		path: "/tmp/project/.maestro/mcp.local.json",
 		scope: "local",
@@ -422,6 +450,10 @@ vi.mock("../../../src/mcp/index.js", () => ({
 				: [],
 	})),
 	searchOfficialMcpRegistry: vi.fn(() => [mockOfficialRegistryEntry]),
+	updateMcpAuthPresetInConfig: vi.fn(() => ({
+		path: "/tmp/project/.maestro/mcp.local.json",
+		scope: "local",
+	})),
 	updateMcpServerInConfig: vi.fn(() => ({
 		path: "/tmp/project/.maestro/mcp.local.json",
 		scope: "local",
@@ -435,15 +467,18 @@ import {
 	handleMcpResourcesCommand,
 } from "../../../src/cli-tui/commands/mcp-handlers.js";
 import {
+	addMcpAuthPresetToConfig,
 	addMcpServerToConfig,
 	buildSuggestedMcpServerName,
 	getOfficialMcpRegistryEntries,
 	loadMcpConfig,
 	mcpManager,
 	prefetchOfficialMcpRegistry,
+	removeMcpAuthPresetFromConfig,
 	removeMcpServerFromConfig,
 	resolveOfficialMcpRegistryEntry,
 	searchOfficialMcpRegistry,
+	updateMcpAuthPresetInConfig,
 	updateMcpServerInConfig,
 } from "../../../src/mcp/index.js";
 
@@ -469,6 +504,12 @@ describe("mcp-handlers", () => {
 				expect.stringContaining("Model Context Protocol"),
 			);
 			expect(ctx.addContent).toHaveBeenCalledWith(
+				expect.stringContaining("Auth presets"),
+			);
+			expect(ctx.addContent).toHaveBeenCalledWith(
+				expect.stringContaining("linear-auth"),
+			);
+			expect(ctx.addContent).toHaveBeenCalledWith(
 				expect.stringContaining("test-server"),
 			);
 			expect(ctx.addContent).toHaveBeenCalledWith(
@@ -487,6 +528,12 @@ describe("mcp-handlers", () => {
 				expect.stringContaining("Remote: https://mcp.linear.app/mcp"),
 			);
 			expect(ctx.addContent).toHaveBeenCalledWith(
+				expect.stringContaining("Auth preset: linear-auth"),
+			);
+			expect(ctx.addContent).toHaveBeenCalledWith(
+				expect.stringContaining("Headers helper: op run --env-file"),
+			);
+			expect(ctx.addContent).toHaveBeenCalledWith(
 				expect.stringContaining("Trust: Official registry (Linear)"),
 			);
 			expect(ctx.addContent).toHaveBeenCalledWith(
@@ -502,6 +549,7 @@ describe("mcp-handlers", () => {
 
 		it("falls back to a generic message for blank server errors", () => {
 			vi.mocked(mcpManager.getStatus).mockReturnValueOnce({
+				authPresets: [],
 				servers: [
 					{
 						name: "blank-error",
@@ -574,6 +622,33 @@ describe("mcp-handlers", () => {
 			);
 		});
 
+		it("adds a remote MCP server with an auth preset", async () => {
+			const ctx = createMcpCtx(
+				"/mcp add linear https://mcp.linear.app/mcp --auth-preset linear-auth",
+			);
+
+			handleMcpCommand(ctx);
+
+			await vi.waitFor(() => {
+				expect(addMcpServerToConfig).toHaveBeenCalledWith({
+					projectRoot: process.cwd(),
+					scope: "local",
+					server: {
+						name: "linear",
+						transport: "http",
+						url: "https://mcp.linear.app/mcp",
+						headers: undefined,
+						headersHelper: undefined,
+						authPreset: "linear-auth",
+					},
+				});
+			});
+
+			expect(ctx.addContent).toHaveBeenCalledWith(
+				expect.stringContaining("auth preset: linear-auth"),
+			);
+		});
+
 		it("parses stdio MCP servers after --", async () => {
 			const ctx = createMcpCtx(
 				"/mcp add filesystem --scope local -- npx -y @modelcontextprotocol/server-filesystem .",
@@ -611,6 +686,13 @@ describe("mcp-handlers", () => {
 							scope: "local",
 						},
 					],
+					authPresets: [
+						{
+							name: "linear-auth",
+							headers: { Authorization: "Bearer test" },
+							scope: "local",
+						},
+					],
 				})
 				.mockReturnValueOnce({
 					servers: [
@@ -618,6 +700,13 @@ describe("mcp-handlers", () => {
 							name: "linear",
 							transport: "http",
 							url: "https://mcp.linear.app/mcp/v2",
+							scope: "local",
+						},
+					],
+					authPresets: [
+						{
+							name: "linear-auth",
+							headers: { Authorization: "Bearer test" },
 							scope: "local",
 						},
 					],
@@ -662,6 +751,7 @@ describe("mcp-handlers", () => {
 						scope: "user",
 					},
 				],
+				authPresets: [],
 			});
 
 			const ctx = createMcpCtx("/mcp remove linear");
@@ -704,13 +794,29 @@ describe("mcp-handlers", () => {
 
 		it("imports an official MCP server entry", async () => {
 			vi.mocked(loadMcpConfig)
-				.mockReturnValueOnce({ servers: [] })
+				.mockReturnValueOnce({
+					servers: [],
+					authPresets: [
+						{
+							name: "linear-auth",
+							headers: { Authorization: "Bearer test" },
+							scope: "local",
+						},
+					],
+				})
 				.mockReturnValueOnce({
 					servers: [
 						{
 							name: "linear",
 							transport: "http",
 							url: "https://mcp.linear.app/mcp",
+							scope: "local",
+						},
+					],
+					authPresets: [
+						{
+							name: "linear-auth",
+							headers: { Authorization: "Bearer test" },
 							scope: "local",
 						},
 					],
@@ -754,6 +860,124 @@ describe("mcp-handlers", () => {
 					expect.stringContaining("/mcp add <name> <command-or-url>"),
 				);
 			});
+		});
+
+		it("lists MCP auth presets", async () => {
+			const ctx = createMcpCtx("/mcp auth");
+
+			handleMcpCommand(ctx);
+
+			await vi.waitFor(() => {
+				expect(ctx.addContent).toHaveBeenCalledWith(
+					expect.stringContaining("MCP Auth Presets"),
+				);
+			});
+			expect(ctx.addContent).toHaveBeenCalledWith(
+				expect.stringContaining("linear-auth"),
+			);
+		});
+
+		it("adds an MCP auth preset and reloads the manager", async () => {
+			const ctx = createMcpCtx(
+				"/mcp auth add github-auth --scope project --header 'Authorization: Bearer test' --headers-helper 'op run --env-file'",
+			);
+
+			handleMcpCommand(ctx);
+
+			await vi.waitFor(() => {
+				expect(addMcpAuthPresetToConfig).toHaveBeenCalledWith({
+					projectRoot: process.cwd(),
+					scope: "project",
+					preset: {
+						name: "github-auth",
+						headers: { Authorization: "Bearer test" },
+						headersHelper: "op run --env-file",
+					},
+				});
+				expect(mcpManager.configure).toHaveBeenCalledTimes(1);
+				expect(ctx.addContent).toHaveBeenCalledWith(
+					expect.stringContaining('Added MCP auth preset "github-auth"'),
+				);
+			});
+		});
+
+		it("edits an MCP auth preset and reloads the manager", async () => {
+			vi.mocked(loadMcpConfig)
+				.mockReturnValueOnce({
+					servers: [],
+					authPresets: [
+						{
+							name: "linear-auth",
+							headers: { Authorization: "Bearer test" },
+							scope: "local",
+						},
+					],
+				})
+				.mockReturnValueOnce({
+					servers: [],
+					authPresets: [
+						{
+							name: "linear-auth",
+							headers: { Authorization: "Bearer next" },
+							scope: "local",
+						},
+					],
+				});
+
+			const ctx = createMcpCtx(
+				"/mcp auth edit linear-auth --header 'Authorization: Bearer next'",
+			);
+
+			handleMcpCommand(ctx);
+
+			await vi.waitFor(() => {
+				expect(updateMcpAuthPresetInConfig).toHaveBeenCalledWith({
+					projectRoot: process.cwd(),
+					scope: undefined,
+					name: "linear-auth",
+					preset: {
+						name: "linear-auth",
+						headers: { Authorization: "Bearer next" },
+						headersHelper: undefined,
+					},
+				});
+				expect(mcpManager.configure).toHaveBeenCalledTimes(1);
+				expect(ctx.addContent).toHaveBeenCalledWith(
+					expect.stringContaining('Updated MCP auth preset "linear-auth"'),
+				);
+			});
+		});
+
+		it("removes an MCP auth preset and reports fallback config", async () => {
+			vi.mocked(loadMcpConfig).mockReturnValueOnce({
+				servers: [],
+				authPresets: [
+					{
+						name: "linear-auth",
+						headers: { Authorization: "Bearer test" },
+						scope: "user",
+					},
+				],
+			});
+
+			const ctx = createMcpCtx("/mcp auth remove linear-auth");
+
+			handleMcpCommand(ctx);
+
+			await vi.waitFor(() => {
+				expect(removeMcpAuthPresetFromConfig).toHaveBeenCalledWith({
+					projectRoot: process.cwd(),
+					scope: undefined,
+					name: "linear-auth",
+				});
+				expect(ctx.addContent).toHaveBeenCalledWith(
+					expect.stringContaining('Removed MCP auth preset "linear-auth"'),
+				);
+			});
+
+			expect(ctx.addContent).toHaveBeenCalledWith(
+				expect.stringContaining("fallback: now using User config"),
+			);
 		});
 	});
 
