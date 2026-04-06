@@ -437,11 +437,16 @@ export function ToolsRuntimeSection({
 	const [editingServerEnvTexts, setEditingServerEnvTexts] = useState<
 		Record<string, string>
 	>({});
+	const [editingServerReplaceEnv, setEditingServerReplaceEnv] = useState<
+		Record<string, boolean>
+	>({});
 	const [editingServerHeadersHelpers, setEditingServerHeadersHelpers] =
 		useState<Record<string, string>>({});
 	const [editingServerHeadersTexts, setEditingServerHeadersTexts] = useState<
 		Record<string, string>
 	>({});
+	const [editingServerReplaceHeaders, setEditingServerReplaceHeaders] =
+		useState<Record<string, boolean>>({});
 	const [editingServerTimeouts, setEditingServerTimeouts] = useState<
 		Record<string, string>
 	>({});
@@ -657,14 +662,23 @@ export function ToolsRuntimeSection({
 				editingServerCwds,
 				server.name,
 			);
-			const hasEditedEnv = Object.prototype.hasOwnProperty.call(
-				editingServerEnvTexts,
-				server.name,
-			);
-			const hasEditedHeaders = Object.prototype.hasOwnProperty.call(
-				editingServerHeadersTexts,
-				server.name,
-			);
+			const replacingEnvValues = editingServerReplaceEnv[server.name] === true;
+			const replacingHeaderValues =
+				editingServerReplaceHeaders[server.name] === true;
+			const hasEditedEnv =
+				replacingEnvValues ||
+				(server.envKeys.length === 0 &&
+					Object.prototype.hasOwnProperty.call(
+						editingServerEnvTexts,
+						server.name,
+					));
+			const hasEditedHeaders =
+				replacingHeaderValues ||
+				(server.headerKeys.length === 0 &&
+					Object.prototype.hasOwnProperty.call(
+						editingServerHeadersTexts,
+						server.name,
+					));
 			const hasEditedHeadersHelper = Object.prototype.hasOwnProperty.call(
 				editingServerHeadersHelpers,
 				server.name,
@@ -830,449 +844,576 @@ export function ToolsRuntimeSection({
 									key={server.name}
 									className="rounded-lg border border-line-subtle/60 bg-bg-tertiary/30"
 								>
-									<div className="flex items-center gap-2 px-3 py-2">
-										<button
-											type="button"
-											className="flex-1 flex items-center justify-between text-xs text-text-muted"
-											onClick={() => onToggleMcpServer(server.name)}
-										>
-											<span className="text-text-primary">{server.name}</span>
-											<span>{server.summary}</span>
-										</button>
-										{server.writableScope && (
-											<button
-												type="button"
-												className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-secondary/60 disabled:opacity-60"
-												onClick={() => void handleRemoveServer(server)}
-												disabled={removingServerName === server.name}
-											>
-												{removingServerName === server.name
-													? "Removing..."
-													: "Remove"}
-											</button>
-										)}
-									</div>
-									{server.isExpanded && (
-										<div className="border-t border-line-subtle/60 px-3 py-2 space-y-2 text-[11px] text-text-muted">
-											{(server.sourceLabel ||
-												server.transportLabel ||
-												server.remoteTrustLabel) && (
-												<div className="flex flex-wrap gap-1">
-													{server.sourceLabel && (
-														<span className="px-2 py-0.5 rounded-full border border-line-subtle/60 bg-bg-secondary/60 text-text-secondary">
-															{server.sourceLabel}
+									{(() => {
+										const replaceHiddenEnvValues =
+											editingServerReplaceEnv[server.name] === true;
+										const replaceHiddenHeaderValues =
+											editingServerReplaceHeaders[server.name] === true;
+										const canEditEnvValues =
+											server.envKeys.length === 0 || replaceHiddenEnvValues;
+										const canEditHeaderValues =
+											server.headerKeys.length === 0 ||
+											replaceHiddenHeaderValues;
+										return (
+											<>
+												<div className="flex items-center gap-2 px-3 py-2">
+													<button
+														type="button"
+														className="flex-1 flex items-center justify-between text-xs text-text-muted"
+														onClick={() => onToggleMcpServer(server.name)}
+													>
+														<span className="text-text-primary">
+															{server.name}
 														</span>
-													)}
-													{server.transportLabel && (
-														<span className="px-2 py-0.5 rounded-full border border-line-subtle/60 bg-bg-secondary/60 text-text-secondary">
-															{server.transportLabel}
-														</span>
-													)}
-													{server.remoteTrustLabel && (
-														<span className="px-2 py-0.5 rounded-full border border-line-subtle/60 bg-bg-secondary/60 text-text-secondary">
-															{server.remoteTrustLabel}
-														</span>
-													)}
-												</div>
-											)}
-											{server.errorLabel && (
-												<div className="rounded-lg border border-error/40 bg-error/10 px-2.5 py-2 text-error">
-													{server.errorLabel}
-												</div>
-											)}
-											{(server.remoteHost || server.remoteUrl) && (
-												<div className="space-y-1">
-													{server.remoteHost && (
-														<div>Host: {server.remoteHost}</div>
-													)}
-													{server.remoteUrl && (
-														<div className="truncate" title={server.remoteUrl}>
-															URL: {server.remoteUrl}
-														</div>
-													)}
-												</div>
-											)}
-											{(server.command ||
-												server.cwd ||
-												server.args.length > 0) && (
-												<div className="space-y-1">
-													{server.command && (
-														<div>Command: {server.command}</div>
-													)}
-													{server.args.length > 0 && (
-														<div title={server.args.join(" ")}>
-															Args: {server.args.join(" ")}
-														</div>
-													)}
-													{server.cwd && (
-														<div className="truncate" title={server.cwd}>
-															CWD: {server.cwd}
-														</div>
-													)}
-												</div>
-											)}
-											{(server.timeout ||
-												server.headersHelper ||
-												server.envKeys.length > 0 ||
-												server.headerKeys.length > 0) && (
-												<div className="space-y-1">
-													{server.timeout && (
-														<div>Timeout: {server.timeout} ms</div>
-													)}
-													{server.headersHelper && (
-														<div
-															className="truncate"
-															title={server.headersHelper}
-														>
-															Headers helper: {server.headersHelper}
-														</div>
-													)}
-													{server.envKeys.length > 0 && (
-														<div title={server.envKeys.join(", ")}>
-															Env keys: {server.envKeys.join(", ")}
-														</div>
-													)}
-													{server.headerKeys.length > 0 && (
-														<div title={server.headerKeys.join(", ")}>
-															Header keys: {server.headerKeys.join(", ")}
-														</div>
-													)}
-												</div>
-											)}
-											{server.officialRegistryName && (
-												<div className="rounded-lg border border-line-subtle/60 bg-bg-secondary/50 px-2.5 py-2 space-y-1">
-													<div className="text-text-primary">
-														Official registry: {server.officialRegistryName}
-													</div>
-													{server.officialRegistryAuthor && (
-														<div>Author: {server.officialRegistryAuthor}</div>
-													)}
-													{server.officialRegistryPermissions && (
-														<div>
-															Permissions: {server.officialRegistryPermissions}
-														</div>
-													)}
-													{(server.officialRegistryDirectoryUrl ||
-														server.officialRegistryDocumentationUrl) && (
-														<div className="flex flex-wrap gap-3">
-															{server.officialRegistryDirectoryUrl && (
-																<a
-																	href={server.officialRegistryDirectoryUrl}
-																	target="_blank"
-																	rel="noreferrer"
-																	className="text-accent hover:underline"
-																>
-																	Directory
-																</a>
-															)}
-															{server.officialRegistryDocumentationUrl && (
-																<a
-																	href={server.officialRegistryDocumentationUrl}
-																	target="_blank"
-																	rel="noreferrer"
-																	className="text-accent hover:underline"
-																>
-																	Docs
-																</a>
-															)}
-														</div>
-													)}
-												</div>
-											)}
-											{server.writableScope && server.remoteUrl && (
-												<div className="rounded-lg border border-line-subtle/60 bg-bg-secondary/40 px-2.5 py-2 space-y-2">
-													<div className="text-text-primary">Edit remote</div>
-													<div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_140px_auto] gap-2">
-														<input
-															type="url"
-															value={
-																editingServerUrls[server.name] ??
-																server.remoteUrl
-															}
-															onChange={(event) =>
-																setEditingServerUrls((prev) => ({
-																	...prev,
-																	[server.name]: event.target.value,
-																}))
-															}
-															placeholder="https://example.com/mcp"
-															aria-label={`Remote URL for ${server.name}`}
-															className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
-														/>
-														<select
-															value={
-																editingServerTransports[server.name] ??
-																(server.transport === "sse" ? "sse" : "http")
-															}
-															onChange={(event) =>
-																setEditingServerTransports((prev) => ({
-																	...prev,
-																	[server.name]: event.target.value as
-																		| "http"
-																		| "sse",
-																}))
-															}
-															aria-label={`Remote transport for ${server.name}`}
-															className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary"
-														>
-															<option value="http">HTTP</option>
-															<option value="sse">SSE</option>
-														</select>
+														<span>{server.summary}</span>
+													</button>
+													{server.writableScope && (
 														<button
 															type="button"
-															className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-60"
-															onClick={() => void handleUpdateServer(server)}
-															disabled={updatingServerName === server.name}
+															className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-secondary/60 disabled:opacity-60"
+															onClick={() => void handleRemoveServer(server)}
+															disabled={removingServerName === server.name}
 														>
-															{updatingServerName === server.name
-																? "Saving..."
-																: "Save"}
+															{removingServerName === server.name
+																? "Removing..."
+																: "Remove"}
 														</button>
-													</div>
-													<div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_180px] gap-2">
-														<input
-															type="text"
-															value={
-																editingServerHeadersHelpers[server.name] ??
-																server.headersHelper ??
-																""
-															}
-															onChange={(event) =>
-																setEditingServerHeadersHelpers((prev) => ({
-																	...prev,
-																	[server.name]: event.target.value,
-																}))
-															}
-															placeholder="Headers helper (optional)"
-															aria-label={`Headers helper for ${server.name}`}
-															className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
-														/>
-														<input
-															type="number"
-															min="1"
-															value={
-																editingServerTimeouts[server.name] ??
-																formatMcpTimeoutText(server.timeout)
-															}
-															onChange={(event) =>
-																setEditingServerTimeouts((prev) => ({
-																	...prev,
-																	[server.name]: event.target.value,
-																}))
-															}
-															placeholder="Timeout (ms)"
-															aria-label={`Timeout for ${server.name}`}
-															className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
-														/>
-													</div>
-													<textarea
-														value={editingServerHeadersTexts[server.name] ?? ""}
-														onChange={(event) =>
-															setEditingServerHeadersTexts((prev) => ({
-																...prev,
-																[server.name]: event.target.value,
-															}))
-														}
-														placeholder="Headers (KEY=VALUE, one per line)"
-														aria-label={`Headers for ${server.name}`}
-														className="min-h-[88px] bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
-													/>
-													<div>
-														Header values stay hidden. Enter KEY=VALUE lines to
-														replace them.
-														{server.headerKeys.length > 0
-															? ` Current keys: ${server.headerKeys.join(", ")}.`
-															: ""}{" "}
-														Delete optional values like timeout or headers
-														helper, then save, to clear them.
-													</div>
-													<div>
-														Edits apply to the{" "}
-														{formatMcpRegistryScopeLabel(server.writableScope)}{" "}
-														config file.
-													</div>
+													)}
 												</div>
-											)}
-											{server.writableScope && server.transport === "stdio" && (
-												<div className="rounded-lg border border-line-subtle/60 bg-bg-secondary/40 px-2.5 py-2 space-y-2">
-													<div className="text-text-primary">Edit stdio</div>
-													<div className="grid grid-cols-1 gap-2">
-														<input
-															type="text"
-															value={
-																editingServerCommands[server.name] ??
-																server.command ??
-																""
-															}
-															onChange={(event) =>
-																setEditingServerCommands((prev) => ({
-																	...prev,
-																	[server.name]: event.target.value,
-																}))
-															}
-															placeholder="Command"
-															aria-label={`Command for ${server.name}`}
-															className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
-														/>
-														<textarea
-															value={
-																editingServerArgsText[server.name] ??
-																formatMcpArgsText(server.args)
-															}
-															onChange={(event) =>
-																setEditingServerArgsText((prev) => ({
-																	...prev,
-																	[server.name]: event.target.value,
-																}))
-															}
-															placeholder={"Arguments (one per line)"}
-															aria-label={`Arguments for ${server.name}`}
-															className="min-h-[88px] bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
-														/>
-														<textarea
-															value={editingServerEnvTexts[server.name] ?? ""}
-															onChange={(event) =>
-																setEditingServerEnvTexts((prev) => ({
-																	...prev,
-																	[server.name]: event.target.value,
-																}))
-															}
-															placeholder={"Env vars (KEY=VALUE, one per line)"}
-															aria-label={`Environment variables for ${server.name}`}
-															className="min-h-[88px] bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
-														/>
-														<div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_180px_auto] gap-2">
-															<input
-																type="text"
-																value={
-																	editingServerCwds[server.name] ??
-																	server.cwd ??
-																	""
-																}
-																onChange={(event) =>
-																	setEditingServerCwds((prev) => ({
-																		...prev,
-																		[server.name]: event.target.value,
-																	}))
-																}
-																placeholder="Working directory (optional)"
-																aria-label={`Working directory for ${server.name}`}
-																className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
-															/>
-															<input
-																type="number"
-																min="1"
-																value={
-																	editingServerTimeouts[server.name] ??
-																	formatMcpTimeoutText(server.timeout)
-																}
-																onChange={(event) =>
-																	setEditingServerTimeouts((prev) => ({
-																		...prev,
-																		[server.name]: event.target.value,
-																	}))
-																}
-																placeholder="Timeout (ms)"
-																aria-label={`Timeout for ${server.name}`}
-																className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
-															/>
-															<button
-																type="button"
-																className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-60"
-																onClick={() => void handleUpdateServer(server)}
-																disabled={
-																	updatingServerName === server.name ||
-																	(
-																		editingServerCommands[server.name] ??
-																		server.command ??
-																		""
-																	).trim().length === 0
-																}
-															>
-																{updatingServerName === server.name
-																	? "Saving..."
-																	: "Save"}
-															</button>
+												{server.isExpanded && (
+													<div className="border-t border-line-subtle/60 px-3 py-2 space-y-2 text-[11px] text-text-muted">
+														{(server.sourceLabel ||
+															server.transportLabel ||
+															server.remoteTrustLabel) && (
+															<div className="flex flex-wrap gap-1">
+																{server.sourceLabel && (
+																	<span className="px-2 py-0.5 rounded-full border border-line-subtle/60 bg-bg-secondary/60 text-text-secondary">
+																		{server.sourceLabel}
+																	</span>
+																)}
+																{server.transportLabel && (
+																	<span className="px-2 py-0.5 rounded-full border border-line-subtle/60 bg-bg-secondary/60 text-text-secondary">
+																		{server.transportLabel}
+																	</span>
+																)}
+																{server.remoteTrustLabel && (
+																	<span className="px-2 py-0.5 rounded-full border border-line-subtle/60 bg-bg-secondary/60 text-text-secondary">
+																		{server.remoteTrustLabel}
+																	</span>
+																)}
+															</div>
+														)}
+														{server.errorLabel && (
+															<div className="rounded-lg border border-error/40 bg-error/10 px-2.5 py-2 text-error">
+																{server.errorLabel}
+															</div>
+														)}
+														{(server.remoteHost || server.remoteUrl) && (
+															<div className="space-y-1">
+																{server.remoteHost && (
+																	<div>Host: {server.remoteHost}</div>
+																)}
+																{server.remoteUrl && (
+																	<div
+																		className="truncate"
+																		title={server.remoteUrl}
+																	>
+																		URL: {server.remoteUrl}
+																	</div>
+																)}
+															</div>
+														)}
+														{(server.command ||
+															server.cwd ||
+															server.args.length > 0) && (
+															<div className="space-y-1">
+																{server.command && (
+																	<div>Command: {server.command}</div>
+																)}
+																{server.args.length > 0 && (
+																	<div title={server.args.join(" ")}>
+																		Args: {server.args.join(" ")}
+																	</div>
+																)}
+																{server.cwd && (
+																	<div className="truncate" title={server.cwd}>
+																		CWD: {server.cwd}
+																	</div>
+																)}
+															</div>
+														)}
+														{(server.timeout ||
+															server.headersHelper ||
+															server.envKeys.length > 0 ||
+															server.headerKeys.length > 0) && (
+															<div className="space-y-1">
+																{server.timeout && (
+																	<div>Timeout: {server.timeout} ms</div>
+																)}
+																{server.headersHelper && (
+																	<div
+																		className="truncate"
+																		title={server.headersHelper}
+																	>
+																		Headers helper: {server.headersHelper}
+																	</div>
+																)}
+																{server.envKeys.length > 0 && (
+																	<div title={server.envKeys.join(", ")}>
+																		Env keys: {server.envKeys.join(", ")}
+																	</div>
+																)}
+																{server.headerKeys.length > 0 && (
+																	<div title={server.headerKeys.join(", ")}>
+																		Header keys: {server.headerKeys.join(", ")}
+																	</div>
+																)}
+															</div>
+														)}
+														{server.officialRegistryName && (
+															<div className="rounded-lg border border-line-subtle/60 bg-bg-secondary/50 px-2.5 py-2 space-y-1">
+																<div className="text-text-primary">
+																	Official registry:{" "}
+																	{server.officialRegistryName}
+																</div>
+																{server.officialRegistryAuthor && (
+																	<div>
+																		Author: {server.officialRegistryAuthor}
+																	</div>
+																)}
+																{server.officialRegistryPermissions && (
+																	<div>
+																		Permissions:{" "}
+																		{server.officialRegistryPermissions}
+																	</div>
+																)}
+																{(server.officialRegistryDirectoryUrl ||
+																	server.officialRegistryDocumentationUrl) && (
+																	<div className="flex flex-wrap gap-3">
+																		{server.officialRegistryDirectoryUrl && (
+																			<a
+																				href={
+																					server.officialRegistryDirectoryUrl
+																				}
+																				target="_blank"
+																				rel="noreferrer"
+																				className="text-accent hover:underline"
+																			>
+																				Directory
+																			</a>
+																		)}
+																		{server.officialRegistryDocumentationUrl && (
+																			<a
+																				href={
+																					server.officialRegistryDocumentationUrl
+																				}
+																				target="_blank"
+																				rel="noreferrer"
+																				className="text-accent hover:underline"
+																			>
+																				Docs
+																			</a>
+																		)}
+																	</div>
+																)}
+															</div>
+														)}
+														{server.writableScope && server.remoteUrl && (
+															<div className="rounded-lg border border-line-subtle/60 bg-bg-secondary/40 px-2.5 py-2 space-y-2">
+																<div className="text-text-primary">
+																	Edit remote
+																</div>
+																<div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_140px_auto] gap-2">
+																	<input
+																		type="url"
+																		value={
+																			editingServerUrls[server.name] ??
+																			server.remoteUrl
+																		}
+																		onChange={(event) =>
+																			setEditingServerUrls((prev) => ({
+																				...prev,
+																				[server.name]: event.target.value,
+																			}))
+																		}
+																		placeholder="https://example.com/mcp"
+																		aria-label={`Remote URL for ${server.name}`}
+																		className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+																	/>
+																	<select
+																		value={
+																			editingServerTransports[server.name] ??
+																			(server.transport === "sse"
+																				? "sse"
+																				: "http")
+																		}
+																		onChange={(event) =>
+																			setEditingServerTransports((prev) => ({
+																				...prev,
+																				[server.name]: event.target.value as
+																					| "http"
+																					| "sse",
+																			}))
+																		}
+																		aria-label={`Remote transport for ${server.name}`}
+																		className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary"
+																	>
+																		<option value="http">HTTP</option>
+																		<option value="sse">SSE</option>
+																	</select>
+																	<button
+																		type="button"
+																		className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-60"
+																		onClick={() =>
+																			void handleUpdateServer(server)
+																		}
+																		disabled={
+																			updatingServerName === server.name
+																		}
+																	>
+																		{updatingServerName === server.name
+																			? "Saving..."
+																			: "Save"}
+																	</button>
+																</div>
+																<div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_180px] gap-2">
+																	<input
+																		type="text"
+																		value={
+																			editingServerHeadersHelpers[
+																				server.name
+																			] ??
+																			server.headersHelper ??
+																			""
+																		}
+																		onChange={(event) =>
+																			setEditingServerHeadersHelpers(
+																				(prev) => ({
+																					...prev,
+																					[server.name]: event.target.value,
+																				}),
+																			)
+																		}
+																		placeholder="Headers helper (optional)"
+																		aria-label={`Headers helper for ${server.name}`}
+																		className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+																	/>
+																	<input
+																		type="number"
+																		min="1"
+																		value={
+																			editingServerTimeouts[server.name] ??
+																			formatMcpTimeoutText(server.timeout)
+																		}
+																		onChange={(event) =>
+																			setEditingServerTimeouts((prev) => ({
+																				...prev,
+																				[server.name]: event.target.value,
+																			}))
+																		}
+																		placeholder="Timeout (ms)"
+																		aria-label={`Timeout for ${server.name}`}
+																		className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+																	/>
+																</div>
+																{server.headerKeys.length > 0 && (
+																	<label className="flex items-center gap-2 text-xs text-text-muted">
+																		<input
+																			type="checkbox"
+																			checked={replaceHiddenHeaderValues}
+																			onChange={(event) => {
+																				const checked = event.target.checked;
+																				setEditingServerReplaceHeaders(
+																					(prev) =>
+																						checked
+																							? { ...prev, [server.name]: true }
+																							: Object.fromEntries(
+																									Object.entries(prev).filter(
+																										([key]) =>
+																											key !== server.name,
+																									),
+																								),
+																				);
+																				if (!checked) {
+																					setEditingServerHeadersTexts((prev) =>
+																						Object.fromEntries(
+																							Object.entries(prev).filter(
+																								([key]) => key !== server.name,
+																							),
+																						),
+																					);
+																				}
+																			}}
+																			aria-label={`Replace hidden headers for ${server.name}`}
+																		/>
+																		<span>Replace hidden header values</span>
+																	</label>
+																)}
+																<textarea
+																	value={
+																		editingServerHeadersTexts[server.name] ?? ""
+																	}
+																	disabled={!canEditHeaderValues}
+																	onChange={(event) =>
+																		setEditingServerHeadersTexts((prev) => ({
+																			...prev,
+																			[server.name]: event.target.value,
+																		}))
+																	}
+																	placeholder="Headers (KEY=VALUE, one per line)"
+																	aria-label={`Headers for ${server.name}`}
+																	className="min-h-[88px] bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+																/>
+																<div>
+																	{server.headerKeys.length > 0
+																		? replaceHiddenHeaderValues
+																			? `Header values stay hidden. Enter KEY=VALUE lines to replace them. Leave the field blank and save to clear them. Current keys: ${server.headerKeys.join(", ")}.`
+																			: `Header values stay hidden and will be preserved unless you enable replacement. Current keys: ${server.headerKeys.join(", ")}.`
+																		: "Enter KEY=VALUE lines to set headers for this server."}{" "}
+																	Delete optional values like timeout or headers
+																	helper, then save, to clear them.
+																</div>
+																<div>
+																	Edits apply to the{" "}
+																	{formatMcpRegistryScopeLabel(
+																		server.writableScope,
+																	)}{" "}
+																	config file.
+																</div>
+															</div>
+														)}
+														{server.writableScope &&
+															server.transport === "stdio" && (
+																<div className="rounded-lg border border-line-subtle/60 bg-bg-secondary/40 px-2.5 py-2 space-y-2">
+																	<div className="text-text-primary">
+																		Edit stdio
+																	</div>
+																	<div className="grid grid-cols-1 gap-2">
+																		<input
+																			type="text"
+																			value={
+																				editingServerCommands[server.name] ??
+																				server.command ??
+																				""
+																			}
+																			onChange={(event) =>
+																				setEditingServerCommands((prev) => ({
+																					...prev,
+																					[server.name]: event.target.value,
+																				}))
+																			}
+																			placeholder="Command"
+																			aria-label={`Command for ${server.name}`}
+																			className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+																		/>
+																		<textarea
+																			value={
+																				editingServerArgsText[server.name] ??
+																				formatMcpArgsText(server.args)
+																			}
+																			onChange={(event) =>
+																				setEditingServerArgsText((prev) => ({
+																					...prev,
+																					[server.name]: event.target.value,
+																				}))
+																			}
+																			placeholder={"Arguments (one per line)"}
+																			aria-label={`Arguments for ${server.name}`}
+																			className="min-h-[88px] bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+																		/>
+																		<textarea
+																			value={
+																				editingServerEnvTexts[server.name] ?? ""
+																			}
+																			disabled={!canEditEnvValues}
+																			onChange={(event) =>
+																				setEditingServerEnvTexts((prev) => ({
+																					...prev,
+																					[server.name]: event.target.value,
+																				}))
+																			}
+																			placeholder={
+																				"Env vars (KEY=VALUE, one per line)"
+																			}
+																			aria-label={`Environment variables for ${server.name}`}
+																			className="min-h-[88px] bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+																		/>
+																		<div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_180px_auto] gap-2">
+																			<input
+																				type="text"
+																				value={
+																					editingServerCwds[server.name] ??
+																					server.cwd ??
+																					""
+																				}
+																				onChange={(event) =>
+																					setEditingServerCwds((prev) => ({
+																						...prev,
+																						[server.name]: event.target.value,
+																					}))
+																				}
+																				placeholder="Working directory (optional)"
+																				aria-label={`Working directory for ${server.name}`}
+																				className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+																			/>
+																			<input
+																				type="number"
+																				min="1"
+																				value={
+																					editingServerTimeouts[server.name] ??
+																					formatMcpTimeoutText(server.timeout)
+																				}
+																				onChange={(event) =>
+																					setEditingServerTimeouts((prev) => ({
+																						...prev,
+																						[server.name]: event.target.value,
+																					}))
+																				}
+																				placeholder="Timeout (ms)"
+																				aria-label={`Timeout for ${server.name}`}
+																				className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+																			/>
+																			<button
+																				type="button"
+																				className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-60"
+																				onClick={() =>
+																					void handleUpdateServer(server)
+																				}
+																				disabled={
+																					updatingServerName === server.name ||
+																					(
+																						editingServerCommands[
+																							server.name
+																						] ??
+																						server.command ??
+																						""
+																					).trim().length === 0
+																				}
+																			>
+																				{updatingServerName === server.name
+																					? "Saving..."
+																					: "Save"}
+																			</button>
+																		</div>
+																	</div>
+																	{server.envKeys.length > 0 && (
+																		<label className="flex items-center gap-2 text-xs text-text-muted">
+																			<input
+																				type="checkbox"
+																				checked={replaceHiddenEnvValues}
+																				onChange={(event) => {
+																					const checked = event.target.checked;
+																					setEditingServerReplaceEnv((prev) =>
+																						checked
+																							? { ...prev, [server.name]: true }
+																							: Object.fromEntries(
+																									Object.entries(prev).filter(
+																										([key]) =>
+																											key !== server.name,
+																									),
+																								),
+																					);
+																					if (!checked) {
+																						setEditingServerEnvTexts((prev) =>
+																							Object.fromEntries(
+																								Object.entries(prev).filter(
+																									([key]) =>
+																										key !== server.name,
+																								),
+																							),
+																						);
+																					}
+																				}}
+																				aria-label={`Replace hidden environment variables for ${server.name}`}
+																			/>
+																			<span>
+																				Replace hidden environment values
+																			</span>
+																		</label>
+																	)}
+																	<div>
+																		{server.envKeys.length > 0
+																			? replaceHiddenEnvValues
+																				? `Env values stay hidden. Enter KEY=VALUE lines to replace them. Leave the field blank and save to clear them. Current keys: ${server.envKeys.join(", ")}.`
+																				: `Env values stay hidden and will be preserved unless you enable replacement. Current keys: ${server.envKeys.join(", ")}.`
+																			: "Enter KEY=VALUE lines to set environment variables for this server."}{" "}
+																		Delete optional values like args, cwd, env
+																		vars, or timeout, then save, to clear them.
+																	</div>
+																	<div>
+																		Edits apply to the{" "}
+																		{formatMcpRegistryScopeLabel(
+																			server.writableScope,
+																		)}{" "}
+																		config file.
+																	</div>
+																</div>
+															)}
+														{server.tools.length > 0 ? (
+															<div>
+																<div className="text-text-tertiary uppercase tracking-wide text-[10px] mb-1">
+																	Tools
+																</div>
+																<div className="flex flex-wrap gap-1">
+																	{server.tools.map((tool) => (
+																		<span
+																			key={`${server.name}:${tool.name}`}
+																			className="px-2 py-0.5 rounded-full border border-line-subtle/60 bg-bg-secondary/60 text-text-secondary"
+																			title={tool.description}
+																		>
+																			{tool.name}
+																		</span>
+																	))}
+																</div>
+															</div>
+														) : (
+															<div>{server.toolDetailsLabel}</div>
+														)}
+														<div className="grid grid-cols-2 gap-2">
+															<div>
+																<div className="text-text-tertiary uppercase tracking-wide text-[10px] mb-1">
+																	Resources
+																</div>
+																{server.resources.length ? (
+																	<ul className="space-y-1">
+																		{server.resources.map((resource) => (
+																			<li
+																				key={`${server.name}:${resource}`}
+																				className="truncate"
+																			>
+																				{resource}
+																			</li>
+																		))}
+																	</ul>
+																) : (
+																	<div>None</div>
+																)}
+															</div>
+															<div>
+																<div className="text-text-tertiary uppercase tracking-wide text-[10px] mb-1">
+																	Prompts
+																</div>
+																{server.prompts.length ? (
+																	<ul className="space-y-1">
+																		{server.prompts.map((prompt) => (
+																			<li
+																				key={`${server.name}:${prompt}`}
+																				className="truncate"
+																			>
+																				{prompt}
+																			</li>
+																		))}
+																	</ul>
+																) : (
+																	<div>None</div>
+																)}
+															</div>
 														</div>
 													</div>
-													<div>
-														Env values stay hidden. Enter KEY=VALUE lines to
-														replace them.
-														{server.envKeys.length > 0
-															? ` Current keys: ${server.envKeys.join(", ")}.`
-															: ""}{" "}
-														Delete optional values like args, cwd, env vars, or
-														timeout, then save, to clear them.
-													</div>
-													<div>
-														Edits apply to the{" "}
-														{formatMcpRegistryScopeLabel(server.writableScope)}{" "}
-														config file.
-													</div>
-												</div>
-											)}
-											{server.tools.length > 0 ? (
-												<div>
-													<div className="text-text-tertiary uppercase tracking-wide text-[10px] mb-1">
-														Tools
-													</div>
-													<div className="flex flex-wrap gap-1">
-														{server.tools.map((tool) => (
-															<span
-																key={`${server.name}:${tool.name}`}
-																className="px-2 py-0.5 rounded-full border border-line-subtle/60 bg-bg-secondary/60 text-text-secondary"
-																title={tool.description}
-															>
-																{tool.name}
-															</span>
-														))}
-													</div>
-												</div>
-											) : (
-												<div>{server.toolDetailsLabel}</div>
-											)}
-											<div className="grid grid-cols-2 gap-2">
-												<div>
-													<div className="text-text-tertiary uppercase tracking-wide text-[10px] mb-1">
-														Resources
-													</div>
-													{server.resources.length ? (
-														<ul className="space-y-1">
-															{server.resources.map((resource) => (
-																<li
-																	key={`${server.name}:${resource}`}
-																	className="truncate"
-																>
-																	{resource}
-																</li>
-															))}
-														</ul>
-													) : (
-														<div>None</div>
-													)}
-												</div>
-												<div>
-													<div className="text-text-tertiary uppercase tracking-wide text-[10px] mb-1">
-														Prompts
-													</div>
-													{server.prompts.length ? (
-														<ul className="space-y-1">
-															{server.prompts.map((prompt) => (
-																<li
-																	key={`${server.name}:${prompt}`}
-																	className="truncate"
-																>
-																	{prompt}
-																</li>
-															))}
-														</ul>
-													) : (
-														<div>None</div>
-													)}
-												</div>
-											</div>
-										</div>
-									)}
+												)}
+											</>
+										);
+									})()}
 								</div>
 							))}
 						</div>
