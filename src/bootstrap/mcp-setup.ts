@@ -11,6 +11,7 @@ import type { Agent, AgentTool } from "../agent/index.js";
 import { composerManager } from "../composers/index.js";
 import { loadMcpConfig } from "../mcp/config.js";
 import { mcpManager } from "../mcp/manager.js";
+import { prefetchOfficialMcpRegistry } from "../mcp/official-registry.js";
 import { getAllMcpTools } from "../mcp/tool-bridge.js";
 
 /**
@@ -27,6 +28,13 @@ export function initializeMcpServers(params: {
 	const mcpConfig = loadMcpConfig(cwd, { includeEnvLimits: true });
 	if (mcpConfig.servers.length === 0) {
 		return;
+	}
+	if (
+		mcpConfig.servers.some(
+			(server) => server.transport === "http" || server.transport === "sse",
+		)
+	) {
+		void prefetchOfficialMcpRegistry();
 	}
 
 	// Listen for MCP server connections to add their tools

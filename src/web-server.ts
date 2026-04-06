@@ -39,6 +39,7 @@ import { initLifecycle, shutdownLifecycle } from "./lifecycle.js";
 import { loadEnv } from "./load-env.js";
 import { bootstrapLsp } from "./lsp/bootstrap.js";
 import { loadMcpConfig, mcpManager } from "./mcp/index.js";
+import { prefetchOfficialMcpRegistry } from "./mcp/official-registry.js";
 import { getAllMcpTools } from "./mcp/tool-bridge.js";
 import type { RegisteredModel } from "./models/registry.js";
 import {
@@ -755,6 +756,13 @@ export async function startWebServer(port = 8080) {
 		const mcpConfig = loadMcpConfig(process.cwd(), { includeEnvLimits: true });
 		if (mcpConfig.servers.length > 0) {
 			logger.info("Initializing MCP servers...");
+			if (
+				mcpConfig.servers.some(
+					(server) => server.transport === "http" || server.transport === "sse",
+				)
+			) {
+				void prefetchOfficialMcpRegistry();
+			}
 
 			// Listen for connection events
 			mcpManager.on("connected", (event) => {

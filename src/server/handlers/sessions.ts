@@ -116,8 +116,11 @@ function getPendingServerRequestPayload(
 			(
 				entry,
 			): entry is typeof entry & {
-				kind: "client_tool" | "user_input";
-			} => entry.kind === "client_tool" || entry.kind === "user_input",
+				kind: "client_tool" | "mcp_elicitation" | "user_input";
+			} =>
+				entry.kind === "client_tool" ||
+				entry.kind === "mcp_elicitation" ||
+				entry.kind === "user_input",
 		)
 		.map((entry) => ({
 			toolCallId: entry.callId,

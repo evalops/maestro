@@ -841,11 +841,20 @@ export function createCommandRegistry({
 		buildEntry(
 			{
 				name: "mcp",
-				description: "Show configured Model Context Protocol servers",
-				usage: "/mcp",
+				description: "Show or manage Model Context Protocol servers",
+				usage: "/mcp [add|edit|remove|search|import|resources|prompts]",
 				tags: ["tools"],
+				examples: [
+					"/mcp",
+					"/mcp search linear",
+					"/mcp import linear",
+					"/mcp add linear https://mcp.linear.app/mcp",
+					"/mcp edit linear https://mcp.linear.app/mcp --header 'Authorization: Bearer ...'",
+					"/mcp remove linear",
+					"/mcp add filesystem -- npx -y @modelcontextprotocol/server-filesystem .",
+				],
 			},
-			equals("mcp"),
+			withArgs("mcp"),
 			handlers.mcp,
 			createContext,
 		),

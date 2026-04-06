@@ -577,14 +577,18 @@ export class HeadlessSessionRuntime {
 	static async create(
 		options: RuntimeOptions,
 	): Promise<HeadlessSessionRuntime> {
+		const negotiatedServerRequests =
+			options.capabilities?.server_requests ?? [];
+		const needsScopedClientToolService =
+			options.enableClientTools ||
+			negotiatedServerRequests.includes("user_input") ||
+			negotiatedServerRequests.includes("mcp_elicitation");
 		const approvalService = new WebActionApprovalService(
 			options.approvalMode,
 			options.session_id,
 		);
 		const toolRetryService = new ServerRequestToolRetryService(
-			options.capabilities?.server_requests?.includes("tool_retry")
-				? "prompt"
-				: "skip",
+			negotiatedServerRequests.includes("tool_retry") ? "prompt" : "skip",
 			options.session_id,
 		);
 		const agent = await options.context.createAgent(
@@ -595,14 +599,10 @@ export class HeadlessSessionRuntime {
 				approvalService,
 				toolRetryService,
 				enableClientTools: options.enableClientTools,
-				useClientAskUser:
-					options.capabilities?.server_requests?.includes("user_input") ??
-					false,
-				clientToolService:
-					options.enableClientTools ||
-					options.capabilities?.server_requests?.includes("user_input")
-						? clientToolService.forSession(options.session_id)
-						: undefined,
+				useClientAskUser: negotiatedServerRequests.includes("user_input"),
+				clientToolService: needsScopedClientToolService
+					? clientToolService.forSession(options.session_id)
+					: undefined,
 				includeVscodeTools: options.client === "vscode",
 				includeJetBrainsTools: options.client === "jetbrains",
 				includeConductorTools: options.client === "conductor",

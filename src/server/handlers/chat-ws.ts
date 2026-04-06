@@ -34,6 +34,7 @@ import { publishArtifactUpdate } from "../artifacts-live-reload.js";
 import { getAuthSubject } from "../authz.js";
 import { getAgentCircuitBreaker } from "../circuit-breaker.js";
 import { clientToolService } from "../client-tools-service.js";
+import { serverRequestManager } from "../server-request-manager.js";
 import { getRequestHeader } from "../server-utils.js";
 import { createSessionManagerForRequest } from "../session-scope.js";
 import { convertComposerMessagesToApp } from "../session-serialization.js";
@@ -566,6 +567,14 @@ export function handleChatWebSocket(
 			}
 
 			const toolArgsByCallId = new Map<string, Record<string, unknown>>();
+			const storeToolArgs = (toolCallId: string, args: unknown) => {
+				toolArgsByCallId.set(
+					toolCallId,
+					(args && typeof args === "object" && !Array.isArray(args)
+						? (args as Record<string, unknown>)
+						: {}) as Record<string, unknown>,
+				);
+			};
 			const slimValue = getRequestHeader(
 				req,
 				"x-composer-slim-events",
@@ -701,6 +710,28 @@ export function handleChatWebSocket(
 				cwd: process.cwd(),
 				sessionId: sessionManager.getSessionId(),
 			});
+			const unsubscribeMcpElicitationBridge = serverRequestManager.subscribe(
+				(event) => {
+					const activeSessionId = sessionIdProvider();
+					if (!activeSessionId || event.request.sessionId !== activeSessionId) {
+						return;
+					}
+					if (event.request.kind !== "mcp_elicitation") {
+						return;
+					}
+					if (event.type === "registered") {
+						wsSession.sendEvent({
+							type: "client_tool_request",
+							toolCallId: event.request.callId,
+							toolName: event.request.toolName,
+							args: event.request.args,
+						});
+						storeToolArgs(event.request.callId, event.request.args);
+						return;
+					}
+					toolArgsByCallId.delete(event.request.callId);
+				},
+			);
 
 			const unsubscribe = agent.subscribe((event: AgentEvent) => {
 				updateSessionSummary(event);
@@ -708,20 +739,10 @@ export function handleChatWebSocket(
 				wsSession.sendEvent(maybeSlimEvent(event));
 
 				if (event.type === "tool_execution_start") {
-					toolArgsByCallId.set(
-						event.toolCallId,
-						(event.args && typeof event.args === "object"
-							? (event.args as Record<string, unknown>)
-							: {}) as Record<string, unknown>,
-					);
+					storeToolArgs(event.toolCallId, event.args);
 				}
 				if (event.type === "client_tool_request") {
-					toolArgsByCallId.set(
-						event.toolCallId,
-						(event.args && typeof event.args === "object"
-							? (event.args as Record<string, unknown>)
-							: {}) as Record<string, unknown>,
-					);
+					storeToolArgs(event.toolCallId, event.args);
 				}
 				if (event.type === "tool_execution_end") {
 					if (event.toolName === "artifacts" && !event.isError) {
@@ -835,6 +856,7 @@ export function handleChatWebSocket(
 				if (cleanedUp) return;
 				cleanedUp = true;
 				unsubscribe();
+				unsubscribeMcpElicitationBridge();
 				await sessionManager.flush();
 				if (aborted) {
 					wsSession.sendAborted();

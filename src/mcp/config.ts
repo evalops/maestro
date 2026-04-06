@@ -46,7 +46,7 @@
  * ## Environment Variable Expansion
  *
  * Supports `${VAR}` and `${VAR:-default}` syntax in:
- * - command, args, url, cwd
+ * - command, args, url, cwd, headersHelper
  * - env values
  * - headers
  *
@@ -55,8 +55,9 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { z } from "zod";
+import type { z } from "zod";
 import { PATHS } from "../config/constants.js";
+import { readJsonFile, writeJsonFile } from "../utils/fs.js";
 import { createLogger } from "../utils/logger.js";
 import { resolveEnvPath } from "../utils/path-expansion.js";
 import { defaultEnvValidators, evaluateEnvValidators } from "./env-limits.js";
@@ -81,10 +82,32 @@ const getUserConfigPath = (): string =>
 	join(PATHS.MAESTRO_HOME, "mcp.json");
 
 type ParsedConfig = { servers: McpServerConfig[] };
+type RawMcpConfigFile = z.infer<typeof mcpConfigSchema>;
+type PersistedMcpServerConfig = Omit<McpServerInput, "name">;
+export type WritableMcpScope = Exclude<McpScope, "enterprise" | "plugin">;
 
 export interface LoadMcpOptions {
 	pluginServers?: McpServerConfig[];
 	includeEnvLimits?: boolean;
+}
+
+export interface AddMcpServerOptions {
+	projectRoot?: string;
+	scope: WritableMcpScope;
+	server: McpServerInput & { name: string };
+}
+
+export interface RemoveMcpServerOptions {
+	projectRoot?: string;
+	scope?: WritableMcpScope;
+	name: string;
+}
+
+export interface UpdateMcpServerOptions {
+	projectRoot?: string;
+	scope?: WritableMcpScope;
+	name: string;
+	server: McpServerInput & { name: string };
 }
 
 export function loadMcpConfig(
@@ -134,6 +157,141 @@ export function getConfigPaths(projectRoot?: string): string[] {
 	return paths;
 }
 
+export function getWritableMcpConfigPath(
+	scope: WritableMcpScope,
+	projectRoot = process.cwd(),
+): string {
+	switch (scope) {
+		case "user":
+			return getUserConfigPath();
+		case "project":
+			return resolve(projectRoot, PROJECT_CONFIG_NAME);
+		case "local":
+			return resolve(projectRoot, LOCAL_CONFIG_NAME);
+	}
+}
+
+export function inferRemoteMcpTransport(url: string): "http" | "sse" {
+	return isSseUrl(url) ? "sse" : "http";
+}
+
+export function addMcpServerToConfig(options: AddMcpServerOptions): {
+	path: string;
+} {
+	const path = getWritableMcpConfigPath(options.scope, options.projectRoot);
+	const validatedServer = mcpServerSchema.parse({
+		...options.server,
+		transport:
+			options.server.transport ??
+			(options.server.url
+				? inferRemoteMcpTransport(options.server.url)
+				: "stdio"),
+	});
+	const existing = readJsonFile<unknown>(path, { fallback: {} });
+	const parsed = mcpConfigSchema.safeParse(existing);
+	if (!parsed.success) {
+		throw new Error(
+			`Invalid MCP config at ${path}: ${parsed.error.issues.map((issue) => issue.message).join("; ")}`,
+		);
+	}
+
+	const nextConfig = structuredClone(parsed.data) as RawMcpConfigFile;
+	const hasObjectFormat =
+		isRecord(nextConfig.mcpServers) || !Array.isArray(nextConfig.servers);
+	if (hasObjectFormat) {
+		const existingServers = isRecord(nextConfig.mcpServers)
+			? nextConfig.mcpServers
+			: {};
+		if (
+			Object.prototype.hasOwnProperty.call(
+				existingServers,
+				validatedServer.name,
+			)
+		) {
+			throw new Error(
+				`MCP server "${validatedServer.name}" already exists in ${path}`,
+			);
+		}
+		nextConfig.mcpServers = {
+			...existingServers,
+			[validatedServer.name]: buildPersistedServerConfig(validatedServer),
+		};
+	} else {
+		const servers = nextConfig.servers ?? [];
+		if (servers.some((server) => server.name === validatedServer.name)) {
+			throw new Error(
+				`MCP server "${validatedServer.name}" already exists in ${path}`,
+			);
+		}
+		nextConfig.servers = [
+			...servers,
+			{
+				...buildPersistedServerConfig(validatedServer),
+				name: validatedServer.name,
+			},
+		];
+	}
+
+	writeJsonFile(path, nextConfig);
+	return { path };
+}
+
+export function removeMcpServerFromConfig(options: RemoveMcpServerOptions): {
+	path: string;
+	scope: WritableMcpScope;
+} {
+	const projectRoot = options.projectRoot ?? process.cwd();
+	const scope = resolveWritableMutationScope(
+		options.name,
+		options.scope,
+		projectRoot,
+	);
+	const { path, config } = readWritableMcpConfig(scope, projectRoot);
+	const nextConfig = structuredClone(config) as RawMcpConfigFile;
+	const removed = mutateWritableMcpConfig(nextConfig, options.name, "remove");
+	if (!removed) {
+		throw new Error(`MCP server "${options.name}" not found in ${path}`);
+	}
+
+	writeJsonFile(path, nextConfig);
+	return { path, scope };
+}
+
+export function updateMcpServerInConfig(options: UpdateMcpServerOptions): {
+	path: string;
+	scope: WritableMcpScope;
+} {
+	const projectRoot = options.projectRoot ?? process.cwd();
+	const scope = resolveWritableMutationScope(
+		options.name,
+		options.scope,
+		projectRoot,
+	);
+	if (options.server.name !== options.name) {
+		throw new Error("Renaming MCP servers is not supported by /mcp edit.");
+	}
+
+	const validatedServer = mcpServerSchema.parse({
+		...options.server,
+		transport:
+			options.server.transport ??
+			(options.server.url
+				? inferRemoteMcpTransport(options.server.url)
+				: "stdio"),
+	});
+	const { path, config } = readWritableMcpConfig(scope, projectRoot);
+	const nextConfig = structuredClone(config) as RawMcpConfigFile;
+	const updated = mutateWritableMcpConfig(nextConfig, options.name, "update", {
+		server: validatedServer,
+	});
+	if (!updated) {
+		throw new Error(`MCP server "${options.name}" not found in ${path}`);
+	}
+
+	writeJsonFile(path, nextConfig);
+	return { path, scope };
+}
+
 function parseConfigFile(path: string, scope: McpScope): ParsedConfig {
 	if (!existsSync(path)) {
 		return { servers: [] };
@@ -177,6 +335,83 @@ function parseConfigFile(path: string, scope: McpScope): ParsedConfig {
 		});
 		return { servers: [] };
 	}
+}
+
+function readWritableMcpConfig(
+	scope: WritableMcpScope,
+	projectRoot: string,
+): {
+	path: string;
+	config: RawMcpConfigFile;
+} {
+	const path = getWritableMcpConfigPath(scope, projectRoot);
+	const existing = readJsonFile<unknown>(path, { fallback: {} });
+	const parsed = mcpConfigSchema.safeParse(existing);
+	if (!parsed.success) {
+		throw new Error(
+			`Invalid MCP config at ${path}: ${parsed.error.issues.map((issue) => issue.message).join("; ")}`,
+		);
+	}
+	return { path, config: parsed.data };
+}
+
+function resolveWritableMutationScope(
+	name: string,
+	scope: WritableMcpScope | undefined,
+	projectRoot: string,
+): WritableMcpScope {
+	if (scope) {
+		return scope;
+	}
+
+	const activeServer = loadMcpConfig(projectRoot).servers.find(
+		(server) => server.name === name,
+	);
+	if (!activeServer) {
+		throw new Error(`MCP server "${name}" not found in merged config.`);
+	}
+	if (!isWritableScope(activeServer.scope)) {
+		throw new Error(
+			`MCP server "${name}" is managed by ${activeServer.scope ?? "an unknown"} scope and cannot be edited here.`,
+		);
+	}
+	return activeServer.scope;
+}
+
+function mutateWritableMcpConfig(
+	config: RawMcpConfigFile,
+	name: string,
+	mode: "remove" | "update",
+	options?: { server: McpServerInput & { name: string } },
+): boolean {
+	if (
+		isRecord(config.mcpServers) &&
+		Object.prototype.hasOwnProperty.call(config.mcpServers, name)
+	) {
+		if (mode === "remove") {
+			delete config.mcpServers[name];
+		} else {
+			config.mcpServers[name] = buildPersistedServerConfig(options!.server);
+		}
+		return true;
+	}
+
+	if (Array.isArray(config.servers)) {
+		const index = config.servers.findIndex((server) => server.name === name);
+		if (index >= 0) {
+			if (mode === "remove") {
+				config.servers.splice(index, 1);
+			} else {
+				config.servers[index] = {
+					...buildPersistedServerConfig(options!.server),
+					name: options!.server.name,
+				};
+			}
+			return true;
+		}
+	}
+
+	return false;
 }
 
 function normalizeServer(
@@ -256,6 +491,34 @@ function isSseUrl(rawUrl: string): boolean {
 	}
 }
 
+function buildPersistedServerConfig(
+	server: McpServerInput & { name: string },
+): PersistedMcpServerConfig {
+	return {
+		transport: server.transport,
+		command: server.command,
+		args: server.args,
+		env: server.env,
+		cwd: server.cwd,
+		url: server.url,
+		headers: server.headers,
+		headersHelper: server.headersHelper,
+		timeout: server.timeout,
+		enabled: server.enabled,
+		disabled: server.disabled,
+	};
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function isWritableScope(
+	value: McpScope | undefined,
+): value is WritableMcpScope {
+	return value === "local" || value === "project" || value === "user";
+}
+
 function expandEnv(
 	server: McpServerInput & {
 		transport: McpServerConfig["transport"];
@@ -301,10 +564,7 @@ function expandEnv(
 					}),
 				)
 			: undefined,
+		headersHelper: expand(server.headersHelper),
 		cwd: expand(server.cwd),
 	};
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

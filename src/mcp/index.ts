@@ -1,4 +1,13 @@
-export { loadMcpConfig, getConfigPaths } from "./config.js";
+export {
+	addMcpServerToConfig,
+	getConfigPaths,
+	getWritableMcpConfigPath,
+	inferRemoteMcpTransport,
+	loadMcpConfig,
+	removeMcpServerFromConfig,
+	updateMcpServerInConfig,
+	type WritableMcpScope,
+} from "./config.js";
 export { mcpManager, McpClientManager } from "./manager.js";
 export {
 	createMcpToolWrapper,
@@ -12,11 +21,30 @@ export {
 	type EnvValidator,
 	type EnvValidatorResult,
 } from "./env-limits.js";
+export {
+	getMcpRemoteHost,
+	getOfficialMcpRegistryUrls,
+	getOfficialMcpRegistryEntries,
+	getOfficialMcpRegistryMatch,
+	normalizeMcpRemoteUrl,
+	officialMcpRegistryEntryMatchesUrl,
+	prefetchOfficialMcpRegistry,
+	resetOfficialMcpRegistryCacheForTesting,
+	resolveOfficialMcpRegistryEntry,
+	searchOfficialMcpRegistry,
+	setOfficialMcpRegistryCacheForTesting,
+	buildSuggestedMcpServerName,
+} from "./official-registry.js";
 export type {
 	McpConfig,
+	McpOfficialRegistryEntry,
+	McpOfficialRegistryInfo,
+	McpOfficialRegistryUrlOption,
 	McpServerConfig,
 	McpServerStatus,
 	McpManagerStatus,
+	McpRemoteTrust,
 	McpTransport,
 	McpScope,
 } from "./types.js";
+export type { McpServerInput } from "./schema.js";

@@ -37,6 +37,33 @@ import type { Tool as McpTool } from "@modelcontextprotocol/sdk/types.js";
 
 export type McpTransport = "stdio" | "http" | "sse";
 export type McpScope = "enterprise" | "plugin" | "project" | "local" | "user";
+export type McpRemoteTrust = "official" | "custom" | "unknown";
+
+export interface McpOfficialRegistryInfo {
+	displayName?: string;
+	directoryUrl?: string;
+	documentationUrl?: string;
+	permissions?: string;
+	authorName?: string;
+	url?: string;
+}
+
+export interface McpOfficialRegistryUrlOption {
+	url: string;
+	label?: string;
+	description?: string;
+}
+
+export interface McpOfficialRegistryEntry extends McpOfficialRegistryInfo {
+	slug?: string;
+	serverName?: string;
+	oneLiner?: string;
+	transport?: McpTransport;
+	urlOptions?: McpOfficialRegistryUrlOption[];
+	urlRegex?: string;
+	toolCount?: number;
+	promptCount?: number;
+}
 
 export interface McpServerConfig {
 	name: string;
@@ -49,6 +76,7 @@ export interface McpServerConfig {
 	// For http/sse transport
 	url?: string;
 	headers?: Record<string, string>;
+	headersHelper?: string;
 	// Common options
 	enabled?: boolean;
 	disabled?: boolean;
@@ -73,6 +101,17 @@ export interface McpServerStatus {
 	tools: McpTool[];
 	resources: string[];
 	prompts: string[];
+	command?: string;
+	args?: string[];
+	cwd?: string;
+	envKeys?: string[];
+	remoteUrl?: string;
+	remoteHost?: string;
+	headerKeys?: string[];
+	headersHelper?: string;
+	timeout?: number;
+	remoteTrust?: McpRemoteTrust;
+	officialRegistry?: McpOfficialRegistryInfo;
 }
 
 export interface McpManagerStatus {

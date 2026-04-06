@@ -110,6 +110,7 @@ import {
 	disposeCheckpointService,
 	initCheckpointService,
 } from "./checkpoints/index.js";
+import { TuiClientToolService } from "./cli-tui/client-tools/local-client-tool-service.js";
 import { TuiRenderer } from "./cli-tui/tui-renderer.js";
 import { type Mode, parseArgs } from "./cli/args.js";
 import {
@@ -147,6 +148,7 @@ import { ServerRequestActionApprovalService } from "./server/approval-service.js
 import { clientToolService } from "./server/client-tools-service.js";
 import { ServerRequestToolRetryService } from "./server/tool-retry-service.js";
 import { SessionManager } from "./session/manager.js";
+import { askUserClientTool } from "./tools/ask-user-client.js";
 import type { UpdateCheckResult } from "./update/check.js";
 import { isInsideGitRepository } from "./utils/git.js";
 /**
@@ -168,6 +170,7 @@ let sandboxCleanupRegistered = false;
  * These options customize the startup experience shown to users.
  */
 interface InteractiveOptions {
+	clientToolService?: TuiClientToolService;
 	/** Subset of models available for switching (from --models flag) */
 	modelScope?: RegisteredModel[];
 	/** Changelog summary to display on startup (e.g., "v1.2.0 — New features") */
@@ -986,6 +989,10 @@ export async function main(args: string[]) {
 				() => sessionManager.getSessionId() ?? undefined,
 			)
 		: undefined;
+	const interactiveClientToolService =
+		isInteractiveTui && !isHeadlessMode
+			? new TuiClientToolService()
+			: undefined;
 	const toolRetryMode: ToolRetryMode =
 		isInteractiveTui && !isHeadlessMode ? "prompt" : "skip";
 	const toolRetryService = isHeadlessMode
@@ -1020,6 +1027,17 @@ export async function main(args: string[]) {
 		process.exit(1);
 	}
 	const { allTools, baseTools, sandbox, sandboxMode } = toolsResult;
+	const useInteractiveClientTools = Boolean(interactiveClientToolService);
+	const replaceAskUserTool = <T extends typeof allTools>(tools: T): T =>
+		tools.map((tool) =>
+			tool.name === "ask_user" ? askUserClientTool : tool,
+		) as T;
+	const configuredBaseTools = useInteractiveClientTools
+		? replaceAskUserTool(baseTools)
+		: baseTools;
+	const configuredAllTools = useInteractiveClientTools
+		? replaceAskUserTool(allTools)
+		: allTools;
 
 	// Register sandbox cleanup on exit (only if sandbox is active)
 	if (sandbox && toolsResult.disposeSandbox) {
@@ -1055,12 +1073,13 @@ export async function main(args: string[]) {
 		systemPromptSourcePaths,
 		model,
 		reasoningSummary,
-		allTools,
+		allTools: configuredAllTools,
 		sandbox,
 		sandboxMode: sandboxMode ?? null,
 		approvalService,
 		toolRetryService,
-		clientToolService: headlessClientToolService,
+		clientToolService:
+			headlessClientToolService ?? interactiveClientToolService,
 		requireCredential,
 		enterpriseUser,
 		readonly: parsed.readonly,
@@ -1088,7 +1107,11 @@ export async function main(args: string[]) {
 
 	const mcpInitStartedAt = performance.now();
 	const { initializeMcpServers } = await import("./bootstrap/mcp-setup.js");
-	initializeMcpServers({ agent, baseTools, cwd: process.cwd() });
+	initializeMcpServers({
+		agent,
+		baseTools: configuredBaseTools,
+		cwd: process.cwd(),
+	});
 	logStartupPhase("mcp.bootstrap_queued", mcpInitStartedAt);
 
 	// Determine mode early to know if we should print messages
@@ -1220,6 +1243,7 @@ export async function main(args: string[]) {
 			toolRetryService,
 			parsed.apiKey,
 			{
+				clientToolService: interactiveClientToolService,
 				modelScope: scopedModels,
 				startupChangelogSummary,
 				updateNotice,

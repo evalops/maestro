@@ -1,6 +1,12 @@
 {
 	"protocolVersion": "2026-04-02",
-	"serverRequestTypes": ["approval", "client_tool", "user_input", "tool_retry"],
+	"serverRequestTypes": [
+		"approval",
+		"client_tool",
+		"mcp_elicitation",
+		"user_input",
+		"tool_retry"
+	],
 	"serverRequestResolutions": [
 		"approved",
 		"denied",

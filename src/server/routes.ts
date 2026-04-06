@@ -270,6 +270,11 @@ export function createRoutes(context: WebServerContext): Route[] {
 			handler: (req, res) => handleMcpStatus(req, res, corsHeaders),
 		},
 		{
+			method: "POST",
+			path: "/api/mcp",
+			handler: (req, res) => handleMcpStatus(req, res, corsHeaders),
+		},
+		{
 			method: "GET",
 			path: "/api/usage",
 			handler: (req, res) => handleUsage(req, res, corsHeaders),

@@ -873,6 +873,7 @@ export class ProviderTransport implements AgentTransport {
 						hookService,
 						toolRetryService: this.options.toolRetryService,
 						toolRetryConfig: this.options.toolRetryConfig,
+						clientToolService: this.options.clientToolService,
 						toolUpdateQueue,
 						clientToolExecPromise,
 					});

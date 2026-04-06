@@ -1,4 +1,10 @@
-import type { ApiClient } from "../services/api-client.js";
+import type {
+	ApiClient,
+	McpOfficialRegistryEntry,
+	McpRegistryImportRequest,
+	McpRegistryImportResponse,
+	McpStatus,
+} from "../services/api-client.js";
 import {
 	WEB_SLASH_COMMANDS,
 	type WebSlashCommand,
@@ -16,11 +22,13 @@ type WebSlashCommandApiClient = Pick<
 	| "getConfig"
 	| "getDiagnostics"
 	| "getFiles"
+	| "getMcpStatus"
 	| "getPlan"
 	| "getPreview"
 	| "getQueueStatus"
 	| "getReview"
 	| "getRunScripts"
+	| "importMcpRegistry"
 	| "getStats"
 	| "getStatus"
 	| "getTelemetryStatus"
@@ -29,6 +37,7 @@ type WebSlashCommandApiClient = Pick<
 	| "listQueue"
 	| "runScript"
 	| "saveConfig"
+	| "searchMcpRegistry"
 	| "setApprovalMode"
 	| "setCleanMode"
 	| "setFooterMode"
@@ -123,6 +132,215 @@ export function formatCommandCodeBlock(
 
 export function formatCommandJsonBlock(data: unknown): string {
 	return formatCommandCodeBlock(JSON.stringify(data, null, 2), "json");
+}
+
+function tokenizeSlashArgs(input: string): string[] {
+	const matches = input.match(/"([^"\\]|\\.)*"|'([^'\\]|\\.)*'|\S+/g) ?? [];
+	return matches.map((token) => {
+		if (
+			(token.startsWith('"') && token.endsWith('"')) ||
+			(token.startsWith("'") && token.endsWith("'"))
+		) {
+			return token.slice(1, -1);
+		}
+		return token;
+	});
+}
+
+function formatMcpStatusBlock(status: McpStatus): string {
+	if (status.servers.length === 0) {
+		return "No MCP servers configured.";
+	}
+
+	const lines: string[] = ["MCP Servers", ""];
+	for (const server of status.servers) {
+		lines.push(
+			`- ${server.name}: ${server.connected ? "connected" : "disconnected"}`,
+		);
+		if (server.transport) {
+			lines.push(`  transport: ${server.transport}`);
+		}
+		if (server.scope) {
+			lines.push(`  scope: ${server.scope}`);
+		}
+		if (server.remoteUrl) {
+			lines.push(`  remote: ${server.remoteUrl}`);
+		}
+		if (server.remoteTrust) {
+			lines.push(`  trust: ${server.remoteTrust}`);
+		}
+		if (server.officialRegistry?.displayName) {
+			lines.push(`  official: ${server.officialRegistry.displayName}`);
+		}
+		if (server.error) {
+			lines.push(`  error: ${server.error}`);
+		}
+	}
+
+	return lines.join("\n");
+}
+
+function getRegistryEntryId(
+	entry: Pick<McpOfficialRegistryEntry, "slug" | "serverName">,
+): string | undefined {
+	return entry.slug ?? entry.serverName;
+}
+
+function formatMcpRegistrySearchBlock(
+	query: string,
+	entries: McpOfficialRegistryEntry[],
+): string {
+	if (entries.length === 0) {
+		return query
+			? `No official MCP registry matches for "${query}".`
+			: "No official MCP registry entries available.";
+	}
+
+	const lines: string[] = [
+		query
+			? `Official MCP registry matches for "${query}"`
+			: "Official MCP registry",
+		"",
+	];
+
+	for (const [index, entry] of entries.entries()) {
+		lines.push(`${index + 1}. ${entry.displayName}`);
+		const entryId = getRegistryEntryId(entry);
+		if (entryId) {
+			lines.push(`   id: ${entryId}`);
+		}
+		if (entry.transport) {
+			lines.push(`   transport: ${entry.transport}`);
+		}
+		if (entry.url) {
+			lines.push(`   url: ${entry.url}`);
+		} else if (entry.urlOptions?.[0]?.url) {
+			lines.push(`   url: ${entry.urlOptions[0].url}`);
+		}
+		if (entry.oneLiner) {
+			lines.push(`   summary: ${entry.oneLiner}`);
+		}
+		if (entry.documentationUrl) {
+			lines.push(`   docs: ${entry.documentationUrl}`);
+		}
+		lines.push("");
+	}
+
+	return lines.join("\n").trimEnd();
+}
+
+function formatMcpImportResult(result: McpRegistryImportResponse): string {
+	return [
+		`Imported official MCP server "${result.name}"`,
+		`scope: ${result.scope}`,
+		`path: ${result.path}`,
+		`source: ${result.entry.displayName}`,
+		`remote: ${result.server.url}`,
+		`transport: ${result.server.transport}`,
+	].join("\n");
+}
+
+function parseMcpImportArgs(
+	args: string,
+):
+	| { ok: true; request: McpRegistryImportRequest }
+	| { ok: false; error: string } {
+	const tokens = tokenizeSlashArgs(args);
+	if (tokens[0]?.toLowerCase() !== "import") {
+		return {
+			ok: false,
+			error:
+				"Usage: /mcp import <id> [name] [--scope local|project|user] [--url <https-url>] [--transport http|sse]",
+		};
+	}
+
+	let query: string | undefined;
+	let name: string | undefined;
+	let scope: McpRegistryImportRequest["scope"];
+	let url: string | undefined;
+	let transport: McpRegistryImportRequest["transport"];
+
+	for (let index = 1; index < tokens.length; index += 1) {
+		const token = tokens[index]!;
+		if (token === "--scope") {
+			const value = tokens[index + 1];
+			if (!value || !["local", "project", "user"].includes(value)) {
+				return {
+					ok: false,
+					error:
+						"Usage: /mcp import <id> [name] [--scope local|project|user] [--url <https-url>] [--transport http|sse]",
+				};
+			}
+			scope = value as McpRegistryImportRequest["scope"];
+			index += 1;
+			continue;
+		}
+		if (token === "--url") {
+			const value = tokens[index + 1];
+			if (!value) {
+				return {
+					ok: false,
+					error:
+						"Usage: /mcp import <id> [name] [--scope local|project|user] [--url <https-url>] [--transport http|sse]",
+				};
+			}
+			url = value;
+			index += 1;
+			continue;
+		}
+		if (token === "--transport") {
+			const value = tokens[index + 1];
+			if (!value || !["http", "sse"].includes(value)) {
+				return {
+					ok: false,
+					error:
+						"Usage: /mcp import <id> [name] [--scope local|project|user] [--url <https-url>] [--transport http|sse]",
+				};
+			}
+			transport = value as McpRegistryImportRequest["transport"];
+			index += 1;
+			continue;
+		}
+		if (token.startsWith("--")) {
+			return {
+				ok: false,
+				error:
+					"Usage: /mcp import <id> [name] [--scope local|project|user] [--url <https-url>] [--transport http|sse]",
+			};
+		}
+		if (!query) {
+			query = token;
+			continue;
+		}
+		if (!name) {
+			name = token;
+			continue;
+		}
+		return {
+			ok: false,
+			error:
+				"Usage: /mcp import <id> [name] [--scope local|project|user] [--url <https-url>] [--transport http|sse]",
+		};
+	}
+
+	if (!query) {
+		return {
+			ok: false,
+			error:
+				"Usage: /mcp import <id> [name] [--scope local|project|user] [--url <https-url>] [--transport http|sse]",
+		};
+	}
+
+	return {
+		ok: true,
+		request: {
+			query,
+			name,
+			scope,
+			url,
+			transport,
+		},
+	};
 }
 
 export async function executeWebSlashCommand(
@@ -229,6 +447,65 @@ export async function executeWebSlashCommand(
 				context.appendCommandOutput(
 					formatCommandCodeBlock(outputParts.join("\n")),
 					!result.success,
+				);
+				break;
+			}
+			case "mcp": {
+				const tokens = tokenizeSlashArgs(args);
+				const sub = tokens[0]?.toLowerCase() ?? "status";
+
+				if (["", "status", "st", "list"].includes(sub)) {
+					const status = await context.apiClient.getMcpStatus();
+					context.appendCommandOutput(
+						formatCommandCodeBlock(formatMcpStatusBlock(status)),
+					);
+					break;
+				}
+
+				if (sub === "search") {
+					const query = args.replace(/^search\b/i, "").trim();
+					const result = await context.apiClient.searchMcpRegistry(query);
+					context.appendCommandOutput(
+						formatCommandCodeBlock(
+							formatMcpRegistrySearchBlock(result.query, result.entries),
+						),
+					);
+					break;
+				}
+
+				if (sub === "import") {
+					if (!requireWritableSession("MCP import")) break;
+					const parsed = parseMcpImportArgs(args);
+					if (!parsed.ok) {
+						context.appendCommandOutput(parsed.error, true);
+						break;
+					}
+					const result = await context.apiClient.importMcpRegistry(
+						parsed.request,
+					);
+					context.appendCommandOutput(
+						formatCommandCodeBlock(formatMcpImportResult(result)),
+					);
+					break;
+				}
+
+				if (["help", "-h", "--help", "?"].includes(sub)) {
+					context.appendCommandOutput(
+						formatCommandCodeBlock(
+							[
+								"/mcp",
+								"/mcp status",
+								"/mcp search [query]",
+								"/mcp import <id> [name] [--scope local|project|user]",
+							].join("\n"),
+						),
+					);
+					break;
+				}
+
+				context.appendCommandOutput(
+					"Usage: /mcp [status|search <query>|import <id> [name]]",
+					true,
 				);
 				break;
 			}

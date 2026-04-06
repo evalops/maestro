@@ -1,5 +1,6 @@
 import type { Tool as McpTool } from "@modelcontextprotocol/sdk/types.js";
 import { type TSchema, Type } from "@sinclair/typebox";
+import type { AgentTool } from "../agent/types.js";
 import { createTool } from "../tools/tool-dsl.js";
 import { mcpManager } from "./manager.js";
 import { buildMcpToolName, parseMcpToolName } from "./names.js";
@@ -107,17 +108,21 @@ export function createMcpToolWrapper(serverName: string, mcpTool: McpTool) {
 	});
 }
 
-export function getAllMcpTools() {
+export function getAllMcpTools(): AgentTool[] {
 	const mcpTools = mcpManager.getAllTools();
-	return mcpTools.map(({ server, tool }) => createMcpToolWrapper(server, tool));
+	return [
+		...mcpTools.map(({ server, tool }) => createMcpToolWrapper(server, tool)),
+		...getMcpHelperTools(),
+	];
 }
 
-export function getMcpToolMap(): Map<
-	string,
-	ReturnType<typeof createMcpToolWrapper>
-> {
-	const map = new Map<string, ReturnType<typeof createMcpToolWrapper>>();
+export function getMcpToolMap(): Map<string, AgentTool> {
+	const map = new Map<string, AgentTool>();
 	const mcpTools = mcpManager.getAllTools();
+
+	for (const tool of getMcpHelperTools()) {
+		map.set(tool.name, tool);
+	}
 
 	for (const { server, tool } of mcpTools) {
 		const wrapper = createMcpToolWrapper(server, tool);
@@ -269,9 +274,159 @@ export const readMcpResourceTool = createTool<
 	},
 });
 
+interface McpPromptListDetails {
+	servers: Array<{
+		name: string;
+		prompts: string[];
+	}>;
+}
+
+const listMcpPromptsSchema = Type.Object({
+	server: Type.Optional(
+		Type.String({
+			description:
+				"Optional server name to filter prompts. If omitted, lists prompts from all servers.",
+		}),
+	),
+});
+
+/**
+ * Tool to list available MCP prompts across all connected servers.
+ */
+export const listMcpPromptsTool = createTool<
+	typeof listMcpPromptsSchema,
+	McpPromptListDetails
+>({
+	name: "mcp_list_prompts",
+	description:
+		"List available prompts from MCP servers. Prompts are reusable prompt templates exposed by servers.",
+	schema: listMcpPromptsSchema,
+	annotations: {
+		readOnlyHint: true,
+	},
+	async run(params, { respond }) {
+		const status = mcpManager.getStatus();
+		const result: Array<{ name: string; prompts: string[] }> = [];
+
+		for (const server of status.servers) {
+			if (params.server && server.name !== params.server) {
+				continue;
+			}
+			if (server.connected && server.prompts.length > 0) {
+				result.push({
+					name: server.name,
+					prompts: server.prompts,
+				});
+			}
+		}
+
+		if (result.length === 0) {
+			return respond
+				.text(
+					"No MCP prompts available. Either no servers are connected or they don't expose prompts.",
+				)
+				.detail({ servers: [] });
+		}
+
+		const lines: string[] = ["# Available MCP Prompts\n"];
+		for (const server of result) {
+			lines.push(`## ${server.name}`);
+			for (const prompt of server.prompts) {
+				lines.push(`- ${prompt}`);
+			}
+			lines.push("");
+		}
+
+		return respond.text(lines.join("\n")).detail({ servers: result });
+	},
+});
+
+interface McpPromptDetails {
+	server: string;
+	name: string;
+	description?: string;
+	messages: Array<{ role: string; content: string }>;
+}
+
+const getMcpPromptSchema = Type.Object({
+	server: Type.String({
+		description: "Name of the MCP server that hosts the prompt",
+	}),
+	name: Type.String({
+		description: "Name of the prompt to fetch",
+	}),
+	args: Type.Optional(
+		Type.Record(
+			Type.String(),
+			Type.String({
+				description: "Optional string arguments passed to the prompt",
+			}),
+		),
+	),
+});
+
+/**
+ * Tool to fetch a specific MCP prompt.
+ */
+export const getMcpPromptTool = createTool<
+	typeof getMcpPromptSchema,
+	McpPromptDetails
+>({
+	name: "mcp_get_prompt",
+	description:
+		"Fetch an MCP prompt by name. Use mcp_list_prompts first to discover available prompts.",
+	schema: getMcpPromptSchema,
+	annotations: {
+		readOnlyHint: true,
+	},
+	async run(params, { respond }) {
+		const { server, name, args } = params;
+
+		try {
+			const result = await mcpManager.getPrompt(server, name, args);
+			const lines: string[] = [`Prompt: ${name}`];
+
+			if (result.description) {
+				lines.push(`Description: ${result.description}`);
+			}
+
+			if (result.messages.length === 0) {
+				lines.push("");
+				lines.push("No prompt messages returned.");
+			} else {
+				lines.push("");
+				for (const message of result.messages) {
+					lines.push(`[${message.role}]`);
+					lines.push(message.content);
+					lines.push("");
+				}
+			}
+
+			return respond.text(lines.join("\n").trimEnd()).detail({
+				server,
+				name,
+				description: result.description,
+				messages: result.messages,
+			});
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			return respond.error(`Failed to get prompt: ${message}`);
+		}
+	},
+});
+
 /**
  * Get all MCP resource tools.
  */
 export function getMcpResourceTools() {
 	return [listMcpResourcesTool, readMcpResourceTool];
+}
+
+function getMcpHelperTools() {
+	return [
+		listMcpResourcesTool,
+		readMcpResourceTool,
+		listMcpPromptsTool,
+		getMcpPromptTool,
+	];
 }

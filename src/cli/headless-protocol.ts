@@ -577,6 +577,7 @@ export interface HeadlessRuntimeState {
 	current_response?: HeadlessStreamingResponseState;
 	pending_approvals: HeadlessPendingApprovalState[];
 	pending_client_tools: HeadlessPendingApprovalState[];
+	pending_mcp_elicitations: HeadlessPendingApprovalState[];
 	pending_user_inputs: HeadlessPendingApprovalState[];
 	pending_tool_retries: HeadlessPendingApprovalState[];
 	active_tools: HeadlessActiveToolState[];
@@ -611,6 +612,7 @@ export function createHeadlessRuntimeState(): HeadlessRuntimeState {
 		connections: [],
 		pending_approvals: [],
 		pending_client_tools: [],
+		pending_mcp_elicitations: [],
 		pending_user_inputs: [],
 		pending_tool_retries: [],
 		active_tools: [],
@@ -641,11 +643,14 @@ export function headlessViewerHasDisallowedCapabilities(
 export function headlessViewerDisallowedCapability(
 	msg: HeadlessToAgentMessage,
 	currentRole?: HeadlessConnectionRole,
-): "user_input" | "tool_retry" | undefined {
+): "mcp_elicitation" | "user_input" | "tool_retry" | undefined {
 	const effectiveRole =
 		msg.type === "hello" ? (msg.role ?? currentRole) : currentRole;
 	if (msg.type !== "hello" || effectiveRole !== "viewer") {
 		return undefined;
+	}
+	if (msg.capabilities?.server_requests?.includes("mcp_elicitation") === true) {
+		return "mcp_elicitation";
 	}
 	if (msg.capabilities?.server_requests?.includes("user_input") === true) {
 		return "user_input";
@@ -1412,6 +1417,7 @@ export function applyOutgoingHeadlessMessage(
 			state.current_response = undefined;
 			state.pending_approvals = [];
 			state.pending_client_tools = [];
+			state.pending_mcp_elicitations = [];
 			state.pending_user_inputs = [];
 			state.pending_tool_retries = [];
 			state.active_tools = [];
@@ -1424,6 +1430,7 @@ export function applyOutgoingHeadlessMessage(
 			state.current_response = undefined;
 			state.pending_approvals = [];
 			state.pending_client_tools = [];
+			state.pending_mcp_elicitations = [];
 			state.pending_user_inputs = [];
 			state.pending_tool_retries = [];
 			state.active_tools = [];
@@ -1533,6 +1540,9 @@ export function applyIncomingHeadlessMessage(
 			const pendingClientTool = state.pending_client_tools.find(
 				(request) => request.call_id === msg.call_id,
 			);
+			const pendingMcpElicitation = state.pending_mcp_elicitations.find(
+				(request) => request.call_id === msg.call_id,
+			);
 			const pendingUserInput = state.pending_user_inputs.find(
 				(request) => request.call_id === msg.call_id,
 			);
@@ -1547,6 +1557,7 @@ export function applyIncomingHeadlessMessage(
 						tracked?.tool ??
 						pending?.tool ??
 						pendingClientTool?.tool ??
+						pendingMcpElicitation?.tool ??
 						pendingUserInput?.tool ??
 						pendingToolRetry?.tool ??
 						"unknown",
@@ -1570,6 +1581,9 @@ export function applyIncomingHeadlessMessage(
 				(approval) => approval.call_id !== msg.call_id,
 			);
 			state.pending_client_tools = state.pending_client_tools.filter(
+				(request) => request.call_id !== msg.call_id,
+			);
+			state.pending_mcp_elicitations = state.pending_mcp_elicitations.filter(
 				(request) => request.call_id !== msg.call_id,
 			);
 			state.pending_user_inputs = state.pending_user_inputs.filter(
@@ -1656,6 +1670,18 @@ export function applyIncomingHeadlessMessage(
 						args: msg.args,
 					}),
 				];
+			} else if (msg.request_type === "mcp_elicitation") {
+				state.pending_mcp_elicitations = [
+					...state.pending_mcp_elicitations.filter(
+						(request) => request.call_id !== msg.call_id,
+					),
+					toPendingRequestState({
+						call_id: msg.call_id,
+						request_id: msg.request_id,
+						tool: msg.tool,
+						args: msg.args,
+					}),
+				];
 			} else if (msg.request_type === "user_input") {
 				state.pending_user_inputs = [
 					...state.pending_user_inputs.filter(
@@ -1701,6 +1727,10 @@ export function applyIncomingHeadlessMessage(
 						(tool) => tool.call_id !== msg.call_id,
 					);
 				}
+			} else if (msg.request_type === "mcp_elicitation") {
+				state.pending_mcp_elicitations = state.pending_mcp_elicitations.filter(
+					(request) => getPendingRequestId(request) !== msg.request_id,
+				);
 			} else if (msg.request_type === "user_input") {
 				state.pending_user_inputs = state.pending_user_inputs.filter(
 					(request) => getPendingRequestId(request) !== msg.request_id,
@@ -1805,6 +1835,7 @@ export function buildHeadlessServerRequestCancellationMessages(
 		HeadlessRuntimeState,
 		| "pending_approvals"
 		| "pending_client_tools"
+		| "pending_mcp_elicitations"
 		| "pending_user_inputs"
 		| "pending_tool_retries"
 	>,
@@ -1824,6 +1855,15 @@ export function buildHeadlessServerRequestCancellationMessages(
 			type: "server_request_resolved" as const,
 			request_id: getPendingRequestId(request),
 			request_type: "client_tool" as const,
+			call_id: request.call_id,
+			resolution: "cancelled" as const,
+			reason,
+			resolved_by: "runtime" as const,
+		})),
+		...state.pending_mcp_elicitations.map((request) => ({
+			type: "server_request_resolved" as const,
+			request_id: getPendingRequestId(request),
+			request_type: "mcp_elicitation" as const,
 			call_id: request.call_id,
 			resolution: "cancelled" as const,
 			reason,

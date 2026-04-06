@@ -43,6 +43,12 @@ const BUILTIN_WEB_SLASH_COMMANDS: Array<Omit<WebSlashCommand, "source">> = [
 		tags: ["automation"],
 	},
 	{
+		name: "mcp",
+		description: "Show MCP servers or search/import official remotes",
+		usage: "/mcp [status|search <query>|import <id> [name]]",
+		tags: ["tools"],
+	},
+	{
 		name: "diff",
 		description: "Show git diff",
 		usage: "/diff <path>",

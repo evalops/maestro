@@ -178,6 +178,8 @@ import { WelcomeAnimation } from "./welcome-animation.js";
 import { areAnimationsDisabled } from "../config/env-vars.js";
 import type { UpdateCheckResult } from "../update/check.js";
 import { resolveEnvPath } from "../utils/path-expansion.js";
+import type { ClientToolController } from "./client-tools/client-tool-controller.js";
+import type { TuiClientToolService } from "./client-tools/local-client-tool-service.js";
 import { HookInputModal } from "./hooks/hook-input-modal.js";
 import { ModalManager } from "./modal-manager.js";
 import { PasteHandler } from "./paste/paste-handler.js";
@@ -200,6 +202,7 @@ import {
 	type ClearController,
 	createClearController,
 } from "./tui-renderer/clear-controller.js";
+import { createClientToolController } from "./tui-renderer/client-tools-setup.js";
 import {
 	type CompactionController,
 	createCompactionController,
@@ -402,6 +405,7 @@ export class TuiRenderer {
 	private readonly minimalMode = checkMinimalMode();
 	private isAgentRunning = false;
 	private approvalController?: ApprovalController;
+	private clientToolController?: ClientToolController;
 	private toolRetryController?: ToolRetryController;
 	private approvalService: ActionApprovalService;
 	private toolRetryService: ToolRetryService;
@@ -435,6 +439,7 @@ export class TuiRenderer {
 		toolRetryService: ToolRetryService,
 		explicitApiKey?: string,
 		options: {
+			clientToolService?: TuiClientToolService;
 			modelScope?: RegisteredModel[];
 			startupChangelog?: string | null;
 			startupChangelogSummary?: string | null;
@@ -801,6 +806,20 @@ export class TuiRenderer {
 			editorContainer: this.editorContainer,
 			notificationView: this.notificationView,
 		});
+		if (options.clientToolService) {
+			this.clientToolController = createClientToolController({
+				clientToolService: options.clientToolService,
+				ui: this.ui,
+				editor: this.editor,
+				editorContainer: this.editorContainer,
+				notificationView: this.notificationView,
+				onPendingStatusChange: (toolCallId, status) => {
+					const component = this.pendingTools.get(toolCallId);
+					component?.setPendingStatus(status);
+					this.ui.requestRender();
+				},
+			});
+		}
 		this.toolRetryController = createToolRetryController({
 			toolRetryService,
 			ui: this.ui,

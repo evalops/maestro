@@ -2790,6 +2790,36 @@ describe("headless session handlers", () => {
 		);
 	});
 
+	it("enables scoped client tools when mcp_elicitation capability is negotiated", async () => {
+		const createAgent = vi.fn().mockResolvedValue(new FakeAgent());
+		const context = createContext({ createAgent });
+		const req = createJsonRequest("POST", "/api/headless/sessions", {
+			model: TEST_MODEL.id,
+			capabilities: {
+				serverRequests: ["approval", "mcp_elicitation"],
+			},
+		});
+		const res = new MockResponse();
+		res.req = req;
+
+		await handleHeadlessSessionCreate(
+			req,
+			res as unknown as ServerResponse,
+			context,
+		);
+
+		expect(createAgent).toHaveBeenCalledWith(
+			TEST_MODEL,
+			"off",
+			"prompt",
+			expect.objectContaining({
+				enableClientTools: undefined,
+				useClientAskUser: false,
+				clientToolService: expect.any(Object),
+			}),
+		);
+	});
+
 	it("rejects enabling client tools without negotiated client_tool support", async () => {
 		const context = createContext({});
 		const req = createJsonRequest("POST", "/api/headless/sessions", {
@@ -2838,6 +2868,31 @@ describe("headless session handlers", () => {
 			statusCode: 400,
 			message:
 				"viewer headless connections cannot negotiate user_input requests",
+		});
+	});
+
+	it("rejects viewer mcp_elicitation capability negotiation", async () => {
+		const context = createContext({});
+		const req = createJsonRequest("POST", "/api/headless/sessions", {
+			model: TEST_MODEL.id,
+			role: "viewer",
+			capabilities: {
+				serverRequests: ["approval", "mcp_elicitation"],
+			},
+		});
+		const res = new MockResponse();
+		res.req = req;
+
+		await expect(
+			handleHeadlessSessionCreate(
+				req,
+				res as unknown as ServerResponse,
+				context,
+			),
+		).rejects.toMatchObject({
+			statusCode: 400,
+			message:
+				"viewer headless connections cannot negotiate mcp_elicitation requests",
 		});
 	});
 

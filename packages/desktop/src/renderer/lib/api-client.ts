@@ -208,10 +208,125 @@ export interface McpServerStatus {
 	resources?: string[];
 	prompts?: string[];
 	error?: string;
+	command?: string;
+	args?: string[];
+	cwd?: string;
+	envKeys?: string[];
+	remoteUrl?: string;
+	remoteHost?: string;
+	headerKeys?: string[];
+	headersHelper?: string;
+	timeout?: number;
+	remoteTrust?: "official" | "custom" | "unknown";
+	officialRegistry?: {
+		displayName?: string;
+		directoryUrl?: string;
+		documentationUrl?: string;
+		permissions?: string;
+		authorName?: string;
+		url?: string;
+	};
 }
 
 export interface McpStatus {
 	servers: McpServerStatus[];
+}
+
+export interface McpOfficialRegistryUrlOption {
+	url: string;
+	label?: string;
+	description?: string;
+}
+
+export interface McpOfficialRegistryEntry {
+	displayName?: string;
+	directoryUrl?: string;
+	documentationUrl?: string;
+	permissions?: string;
+	authorName?: string;
+	url?: string;
+	slug?: string;
+	serverName?: string;
+	oneLiner?: string;
+	transport?: "stdio" | "http" | "sse";
+	urlOptions?: McpOfficialRegistryUrlOption[];
+	urlRegex?: string;
+	toolCount?: number;
+	promptCount?: number;
+}
+
+export interface McpRegistrySearchResponse {
+	query: string;
+	entries: McpOfficialRegistryEntry[];
+}
+
+export interface McpRegistryImportRequest {
+	query: string;
+	name?: string;
+	scope?: "local" | "project" | "user";
+	url?: string;
+	transport?: "http" | "sse";
+}
+
+export interface McpRegistryImportResponse {
+	name: string;
+	scope: "local" | "project" | "user";
+	path: string;
+	entry: McpOfficialRegistryEntry;
+	server: {
+		transport: "http" | "sse";
+		url: string;
+	};
+}
+
+export interface McpServerConfigInput {
+	name: string;
+	transport?: "stdio" | "http" | "sse";
+	command?: string;
+	args?: string[];
+	env?: Record<string, string>;
+	cwd?: string;
+	url?: string;
+	headers?: Record<string, string>;
+	headersHelper?: string;
+	timeout?: number;
+	enabled?: boolean;
+	disabled?: boolean;
+}
+
+export interface McpServerAddRequest {
+	scope?: "local" | "project" | "user";
+	server: McpServerConfigInput;
+}
+
+export interface McpServerUpdateRequest {
+	name: string;
+	scope?: "local" | "project" | "user";
+	server: McpServerConfigInput;
+}
+
+export interface McpServerMutationResponse {
+	name: string;
+	scope: "local" | "project" | "user";
+	path: string;
+	server: McpServerConfigInput & {
+		transport: "stdio" | "http" | "sse";
+	};
+}
+
+export interface McpServerRemoveRequest {
+	name: string;
+	scope?: "local" | "project" | "user";
+}
+
+export interface McpServerRemoveResponse {
+	name: string;
+	scope: "local" | "project" | "user";
+	path: string;
+	fallback: {
+		name: string;
+		scope?: "enterprise" | "plugin" | "project" | "local" | "user";
+	} | null;
 }
 
 export interface AutomationCreateInput {
@@ -830,6 +945,57 @@ export class ApiClient {
 	// MCP
 	async getMcpStatus(): Promise<McpStatus> {
 		return await this.fetchJson<McpStatus>("/api/mcp");
+	}
+
+	async searchMcpRegistry(query = ""): Promise<McpRegistrySearchResponse> {
+		const params = new URLSearchParams({ action: "search-registry" });
+		const trimmedQuery = query.trim();
+		if (trimmedQuery.length > 0) {
+			params.set("query", trimmedQuery);
+		}
+		return await this.fetchJson<McpRegistrySearchResponse>(
+			`/api/mcp?${params.toString()}`,
+		);
+	}
+
+	async importMcpRegistry(
+		input: McpRegistryImportRequest,
+	): Promise<McpRegistryImportResponse> {
+		return await this.fetchJsonRequest<McpRegistryImportResponse>(
+			"/api/mcp?action=import-registry",
+			"POST",
+			input,
+		);
+	}
+
+	async addMcpServer(
+		input: McpServerAddRequest,
+	): Promise<McpServerMutationResponse> {
+		return await this.fetchJsonRequest<McpServerMutationResponse>(
+			"/api/mcp?action=add-server",
+			"POST",
+			input,
+		);
+	}
+
+	async updateMcpServer(
+		input: McpServerUpdateRequest,
+	): Promise<McpServerMutationResponse> {
+		return await this.fetchJsonRequest<McpServerMutationResponse>(
+			"/api/mcp?action=update-server",
+			"POST",
+			input,
+		);
+	}
+
+	async removeMcpServer(
+		input: McpServerRemoveRequest,
+	): Promise<McpServerRemoveResponse> {
+		return await this.fetchJsonRequest<McpServerRemoveResponse>(
+			"/api/mcp?action=remove-server",
+			"POST",
+			input,
+		);
 	}
 
 	// Composers

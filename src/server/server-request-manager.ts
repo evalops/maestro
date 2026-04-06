@@ -15,6 +15,7 @@ type ToolResultContent = TextContent | ImageContent;
 export type ServerRequestKind =
 	| "approval"
 	| "client_tool"
+	| "mcp_elicitation"
 	| "user_input"
 	| "tool_retry";
 export type ServerRequestResolution =
@@ -68,7 +69,7 @@ type ApprovalRequestEntry = PendingServerRequestSnapshot & {
 };
 
 type ClientToolRequestEntry = PendingServerRequestSnapshot & {
-	kind: "client_tool" | "user_input";
+	kind: "client_tool" | "mcp_elicitation" | "user_input";
 	timeoutMs: number;
 	resolve: (content: ToolResultContent[], isError: boolean) => boolean;
 	cancel: (reason: string) => boolean;
@@ -99,7 +100,7 @@ type RegisterClientToolOptions = {
 	args: unknown;
 	reason?: string;
 	timeoutMs?: number;
-	kind?: "client_tool" | "user_input";
+	kind?: "client_tool" | "mcp_elicitation" | "user_input";
 	resolve: (content: ToolResultContent[], isError: boolean) => boolean;
 	cancel: (reason: string) => boolean;
 };
@@ -119,6 +120,8 @@ function getTimeoutReason(kind: ServerRequestKind): string {
 	switch (kind) {
 		case "approval":
 			return "Approval request timed out";
+		case "mcp_elicitation":
+			return "MCP elicitation request timed out before the connected client responded.";
 		case "user_input":
 			return "User input request timed out before the connected client responded.";
 		case "client_tool":
@@ -176,7 +179,9 @@ export class ServerRequestManager {
 				options.reason ??
 				(kind === "user_input"
 					? "Agent requested structured user input"
-					: `Client tool ${options.toolName} requires local execution`),
+					: kind === "mcp_elicitation"
+						? "MCP server requested additional user input"
+						: `Client tool ${options.toolName} requires local execution`),
 			timestamp: Date.now(),
 			timeoutMs: options.timeoutMs ?? DEFAULT_CLIENT_TOOL_TIMEOUT_MS,
 			resolve: options.resolve,
@@ -365,13 +370,15 @@ export class ServerRequestManager {
 				request,
 				resolution: isError
 					? "failed"
-					: request.kind === "user_input"
+					: request.kind === "user_input" || request.kind === "mcp_elicitation"
 						? "answered"
 						: "completed",
 				reason: isError
 					? request.kind === "user_input"
 						? "User input request reported an error"
-						: "Client tool result reported an error"
+						: request.kind === "mcp_elicitation"
+							? "MCP elicitation request reported an error"
+							: "Client tool result reported an error"
 					: undefined,
 				resolvedBy: "client",
 			});

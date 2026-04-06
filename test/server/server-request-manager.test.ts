@@ -330,6 +330,84 @@ describe("ServerRequestManager", () => {
 		});
 	});
 
+	it("tracks MCP elicitation requests as answered prompts with their own timeout reason", () => {
+		const resolve = vi.fn().mockReturnValue(true);
+		const cancel = vi.fn().mockReturnValue(true);
+		const listener = vi.fn();
+		manager.subscribe(listener);
+
+		manager.registerClientTool({
+			id: "mcp_elicitation_1",
+			sessionId: "sess_mcp",
+			toolName: "mcp_elicitation",
+			args: {
+				serverName: "context7",
+				requestId: "123",
+				mode: "form",
+				message: "Provide additional details",
+			},
+			kind: "mcp_elicitation",
+			resolve,
+			cancel,
+		});
+
+		expect(manager.resolveClientTool("mcp_elicitation_1", [], false)).toBe(
+			true,
+		);
+		expect(listener).toHaveBeenNthCalledWith(1, {
+			type: "registered",
+			request: expect.objectContaining({
+				id: "mcp_elicitation_1",
+				kind: "mcp_elicitation",
+				sessionId: "sess_mcp",
+			}),
+		});
+		expect(listener).toHaveBeenNthCalledWith(2, {
+			type: "resolved",
+			request: expect.objectContaining({
+				id: "mcp_elicitation_1",
+				kind: "mcp_elicitation",
+			}),
+			resolution: "answered",
+			reason: undefined,
+			resolvedBy: "client",
+		});
+
+		manager.registerClientTool({
+			id: "mcp_elicitation_timeout",
+			sessionId: "sess_mcp",
+			toolName: "mcp_elicitation",
+			args: {
+				serverName: "context7",
+				requestId: "124",
+				mode: "url",
+				message: "Authorize",
+				url: "https://example.com/authorize",
+			},
+			kind: "mcp_elicitation",
+			timeoutMs: 1,
+			resolve: vi.fn().mockReturnValue(true),
+			cancel,
+		});
+
+		manager.cleanup(Date.now() + 5);
+
+		expect(cancel).toHaveBeenCalledWith(
+			"MCP elicitation request timed out before the connected client responded.",
+		);
+		expect(listener).toHaveBeenLastCalledWith({
+			type: "resolved",
+			request: expect.objectContaining({
+				id: "mcp_elicitation_timeout",
+				kind: "mcp_elicitation",
+			}),
+			resolution: "failed",
+			reason:
+				"MCP elicitation request timed out before the connected client responded.",
+			resolvedBy: "policy",
+		});
+	});
+
 	it("resolves tool retry prompts through the shared registry", () => {
 		const service = new ToolRetryService("prompt");
 		const retrySpy = vi.spyOn(service, "retry").mockReturnValue(true);

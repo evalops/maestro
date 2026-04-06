@@ -8,6 +8,7 @@ export const headlessProtocolVersion = "2026-04-02" as const;
 export const headlessServerRequestTypes = [
 	"approval",
 	"client_tool",
+	"mcp_elicitation",
 	"user_input",
 	"tool_retry",
 ] as const;

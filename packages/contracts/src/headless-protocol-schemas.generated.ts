@@ -834,6 +834,7 @@ export const HeadlessRuntimeStateSchema = Type.Object(
 		current_response: Type.Optional(HeadlessStreamingResponseStateSchema),
 		pending_approvals: Type.Array(HeadlessPendingToolStateSchema),
 		pending_client_tools: Type.Array(HeadlessPendingToolStateSchema),
+		pending_mcp_elicitations: Type.Array(HeadlessPendingToolStateSchema),
 		pending_user_inputs: Type.Array(HeadlessPendingToolStateSchema),
 		pending_tool_retries: Type.Array(HeadlessPendingToolStateSchema),
 		active_tools: Type.Array(HeadlessActiveToolStateSchema),

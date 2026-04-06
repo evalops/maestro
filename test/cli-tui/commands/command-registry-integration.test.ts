@@ -262,6 +262,14 @@ describe("command-registry-integration", () => {
 			expect(thinkingEntry!.command.name).toBe("thinking");
 		});
 
+		it("matches /mcp subcommands with arguments", () => {
+			const mcpEntry = findMatchingEntry(
+				"/mcp add linear https://mcp.linear.app/mcp",
+			);
+			expect(mcpEntry).toBeDefined();
+			expect(mcpEntry!.command.name).toBe("mcp");
+		});
+
 		it("matches alias commands", () => {
 			const helpAlias = findMatchingEntry("/h");
 			expect(helpAlias).toBeDefined();

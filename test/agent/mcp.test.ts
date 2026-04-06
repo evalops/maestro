@@ -103,6 +103,26 @@ describe("MCP config loader", () => {
 		expect(config.servers[0]!.transport).toBe("http");
 	});
 
+	it("loads headersHelper for remote servers", () => {
+		const configDir = join(testDir, ".maestro");
+		mkdirSync(configDir, { recursive: true });
+		writeFileSync(
+			join(configDir, "mcp.json"),
+			JSON.stringify({
+				mcpServers: {
+					remote: {
+						url: "https://example.com/mcp",
+						headersHelper: "/tmp/mcp-headers-helper",
+					},
+				},
+			}),
+		);
+
+		const config = loadMcpConfig(testDir);
+		expect(config.servers).toHaveLength(1);
+		expect(config.servers[0]!.headersHelper).toBe("/tmp/mcp-headers-helper");
+	});
+
 	it("detects SSE transport when URL ends with /sse", () => {
 		const configDir = join(testDir, ".maestro");
 		mkdirSync(configDir, { recursive: true });
