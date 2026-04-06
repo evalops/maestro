@@ -31,10 +31,12 @@ type WebSlashCommandApiClient = Pick<
 	| "getDiagnostics"
 	| "getFiles"
 	| "getMcpStatus"
+	| "getMcpPrompt"
 	| "getPlan"
 	| "getPreview"
 	| "getQueueStatus"
 	| "getReview"
+	| "readMcpResource"
 	| "getRunScripts"
 	| "importMcpRegistry"
 	| "addMcpServer"
@@ -396,6 +398,98 @@ function formatMcpRemoveResult(result: McpServerRemoveResponse): string {
 			? `fallback: ${result.fallback.name} (${result.fallback.scope ?? "unknown"})`
 			: "fallback: none",
 	].join("\n");
+}
+
+function formatMcpResourcesBlock(status: McpStatus): string {
+	const lines: string[] = ["MCP Resources", ""];
+	let hasResources = false;
+	for (const server of status.servers) {
+		const resources = server.resources ?? [];
+		if (!server.connected || resources.length === 0) continue;
+		hasResources = true;
+		lines.push(`${server.name}:`);
+		for (const uri of resources) {
+			lines.push(`  ${uri}`);
+		}
+		lines.push("");
+	}
+	if (!hasResources) {
+		lines.push(
+			"No resources available. Either no servers are connected or they do not expose resources.",
+		);
+	}
+	lines.push("", "Usage: /mcp resources <server> <uri>");
+	return lines.join("\n");
+}
+
+function formatMcpResourceReadBlock(
+	server: string,
+	uri: string,
+	result: {
+		contents: Array<{ text?: string; blob?: string; mimeType?: string }>;
+	},
+): string {
+	const lines = ["MCP Resource", `server: ${server}`, `uri: ${uri}`, ""];
+	if (result.contents.length === 0) {
+		lines.push("No resource content returned.");
+		return lines.join("\n");
+	}
+	for (const content of result.contents) {
+		if (content.text) {
+			lines.push(content.text, "");
+			continue;
+		}
+		if (content.blob) {
+			lines.push(`[Binary data: ${content.mimeType ?? "unknown type"}]`, "");
+			continue;
+		}
+		lines.push("[Empty resource content]", "");
+	}
+	return lines.join("\n").trimEnd();
+}
+
+function formatMcpPromptsBlock(status: McpStatus): string {
+	const lines: string[] = ["MCP Prompts", ""];
+	let hasPrompts = false;
+	for (const server of status.servers) {
+		const prompts = server.prompts ?? [];
+		if (!server.connected || prompts.length === 0) continue;
+		hasPrompts = true;
+		lines.push(`${server.name}:`);
+		for (const prompt of prompts) {
+			lines.push(`  ${prompt}`);
+		}
+		lines.push("");
+	}
+	if (!hasPrompts) {
+		lines.push(
+			"No prompts available. Either no servers are connected or they do not expose prompts.",
+		);
+	}
+	lines.push("", "Usage: /mcp prompts <server> <name>");
+	return lines.join("\n");
+}
+
+function formatMcpPromptBlock(
+	server: string,
+	name: string,
+	result: {
+		description?: string;
+		messages: Array<{ role: string; content: string }>;
+	},
+): string {
+	const lines = ["MCP Prompt", `server: ${server}`, `name: ${name}`, ""];
+	if (result.description) {
+		lines.push(`description: ${result.description}`, "");
+	}
+	if (result.messages.length === 0) {
+		lines.push("No prompt messages returned.");
+		return lines.join("\n");
+	}
+	for (const message of result.messages) {
+		lines.push(`[${message.role}]`, message.content, "");
+	}
+	return lines.join("\n").trimEnd();
 }
 
 function formatMcpAuthPresetMutationResult(
@@ -1092,6 +1186,47 @@ export async function executeWebSlashCommand(
 					break;
 				}
 
+				if (sub === "resources") {
+					const server = tokens[1];
+					const uri = tokens.slice(2).join(" ").trim();
+					if (!server || !uri) {
+						const status = await context.apiClient.getMcpStatus();
+						context.appendCommandOutput(
+							formatCommandCodeBlock(formatMcpResourcesBlock(status)),
+						);
+						break;
+					}
+					const result = await context.apiClient.readMcpResource(server, uri);
+					context.appendCommandOutput(
+						formatCommandCodeBlock(
+							formatMcpResourceReadBlock(server, uri, result),
+						),
+					);
+					break;
+				}
+
+				if (sub === "prompts") {
+					const server = tokens[1];
+					const promptName = tokens[2];
+					if (!server || !promptName) {
+						const status = await context.apiClient.getMcpStatus();
+						context.appendCommandOutput(
+							formatCommandCodeBlock(formatMcpPromptsBlock(status)),
+						);
+						break;
+					}
+					const result = await context.apiClient.getMcpPrompt(
+						server,
+						promptName,
+					);
+					context.appendCommandOutput(
+						formatCommandCodeBlock(
+							formatMcpPromptBlock(server, promptName, result),
+						),
+					);
+					break;
+				}
+
 				if (sub === "import") {
 					if (!requireWritableSession("MCP import")) break;
 					const parsed = parseMcpImportArgs(args);
@@ -1249,6 +1384,8 @@ export async function executeWebSlashCommand(
 								MCP_AUTH_ADD_USAGE,
 								MCP_AUTH_EDIT_USAGE,
 								MCP_AUTH_REMOVE_USAGE,
+								"/mcp resources [server uri]",
+								"/mcp prompts [server name]",
 							].join("\n"),
 						),
 					);
@@ -1256,7 +1393,7 @@ export async function executeWebSlashCommand(
 				}
 
 				context.appendCommandOutput(
-					"Usage: /mcp [status|search <query>|add <name> <command-or-url>|edit <name> <command-or-url>|remove <name>|import <id> [name]|auth [list|add|edit|remove]]",
+					"Usage: /mcp [status|search <query>|resources [server uri]|prompts [server name]|add <name> <command-or-url>|edit <name> <command-or-url>|remove <name>|import <id> [name]|auth [list|add|edit|remove]]",
 					true,
 				);
 				break;
