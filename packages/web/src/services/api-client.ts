@@ -1146,6 +1146,7 @@ export class ApiClient {
 		const ws = new WebSocket(url);
 		const queue: AgentEvent[] = [];
 		let done = false;
+		let sawDoneEvent = false;
 		let error: Error | null = null;
 		let notify: (() => void) | null = null;
 
@@ -1165,6 +1166,7 @@ export class ApiClient {
 				if (!raw) return;
 				const parsed = JSON.parse(raw);
 				if (parsed && typeof parsed === "object" && parsed.type === "done") {
+					sawDoneEvent = true;
 					done = true;
 					if (VALIDATE_AGENT_EVENTS && !isComposerAgentEvent(parsed)) {
 						console.warn("Invalid agent event payload:", parsed);
@@ -1200,6 +1202,9 @@ export class ApiClient {
 		});
 
 		ws.addEventListener("close", () => {
+			if (!sawDoneEvent && !error) {
+				error = new Error("WebSocket closed before completion");
+			}
 			done = true;
 			if (notify) notify();
 		});
