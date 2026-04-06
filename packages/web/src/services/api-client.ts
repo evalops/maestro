@@ -291,6 +291,9 @@ export interface McpRegistryImportRequest {
 	name?: string;
 	scope?: "local" | "project" | "user";
 	url?: string;
+	headers?: Record<string, string>;
+	headersHelper?: string;
+	authPreset?: string;
 	transport?: "http" | "sse";
 }
 
@@ -302,6 +305,9 @@ export interface McpRegistryImportResponse {
 	server: {
 		transport: "http" | "sse";
 		url: string;
+		headers?: Record<string, string>;
+		headersHelper?: string;
+		authPreset?: string;
 	};
 }
 

@@ -13,6 +13,7 @@ type CommandOutput = {
 function createContext(overrides: Partial<WebSlashCommandContext> = {}) {
 	const outputs: CommandOutput[] = [];
 	const apiClient = {
+		addMcpAuthPreset: vi.fn(),
 		addMcpServer: vi.fn(),
 		cancelQueuedPrompt: vi.fn(),
 		createBranch: vi.fn(),
@@ -35,6 +36,7 @@ function createContext(overrides: Partial<WebSlashCommandContext> = {}) {
 		getUsage: vi.fn(),
 		listBranchOptions: vi.fn(),
 		listQueue: vi.fn(),
+		removeMcpAuthPreset: vi.fn(),
 		removeMcpServer: vi.fn(),
 		runScript: vi.fn(),
 		saveConfig: vi.fn(),
@@ -46,6 +48,7 @@ function createContext(overrides: Partial<WebSlashCommandContext> = {}) {
 		setQueueMode: vi.fn(),
 		setTelemetry: vi.fn(),
 		setZenMode: vi.fn(),
+		updateMcpAuthPreset: vi.fn(),
 		updateMcpServer: vi.fn(),
 		updatePlan: vi.fn(),
 	};
@@ -167,6 +170,42 @@ describe("executeWebSlashCommand", () => {
 		expect(outputs[0]?.output).toContain("Linear");
 	});
 
+	it("shows MCP auth presets in status output", async () => {
+		const { context, outputs, apiClient } = createContext();
+		apiClient.getMcpStatus.mockResolvedValue({
+			authPresets: [
+				{
+					name: "linear-auth",
+					scope: "local",
+					headerKeys: ["Authorization"],
+					headersHelper: "bun run scripts/mcp-headers.ts",
+				},
+			],
+			servers: [
+				{
+					name: "linear",
+					connected: true,
+					transport: "http",
+					scope: "project",
+					remoteUrl: "https://mcp.linear.app/mcp",
+					authPreset: "linear-auth",
+					headerKeys: ["Authorization"],
+					headersHelper: "bun run scripts/mcp-headers.ts",
+				},
+			],
+		});
+
+		await executeWebSlashCommand("mcp", "status", context);
+
+		expect(outputs).toEqual([
+			expect.objectContaining({
+				isError: false,
+				output: expect.stringContaining("MCP Auth Presets"),
+			}),
+		]);
+		expect(outputs[0]?.output).toContain("auth preset: linear-auth");
+	});
+
 	it("imports an official MCP server from the web slash command", async () => {
 		const { context, outputs, apiClient } = createContext();
 		apiClient.importMcpRegistry.mockResolvedValue({
@@ -182,16 +221,24 @@ describe("executeWebSlashCommand", () => {
 			server: {
 				transport: "http",
 				url: "https://mcp.linear.app/mcp",
+				authPreset: "linear-auth",
 			},
 		});
 
-		await executeWebSlashCommand("mcp", "import linear", context);
+		await executeWebSlashCommand(
+			"mcp",
+			"import linear --auth-preset linear-auth",
+			context,
+		);
 
 		expect(apiClient.importMcpRegistry).toHaveBeenCalledWith({
 			query: "linear",
 			name: undefined,
 			scope: undefined,
 			url: undefined,
+			headers: undefined,
+			headersHelper: undefined,
+			authPreset: "linear-auth",
 			transport: undefined,
 		});
 		expect(outputs).toEqual([
@@ -215,12 +262,13 @@ describe("executeWebSlashCommand", () => {
 				transport: "http",
 				url: "https://docs.example.com/mcp",
 				headersHelper: "bun run scripts/mcp-headers.ts",
+				authPreset: "linear-auth",
 			},
 		});
 
 		await executeWebSlashCommand(
 			"mcp",
-			"add custom-docs https://docs.example.com/mcp --scope project --headers-helper 'bun run scripts/mcp-headers.ts'",
+			"add custom-docs https://docs.example.com/mcp --scope project --headers-helper 'bun run scripts/mcp-headers.ts' --auth-preset linear-auth",
 			context,
 		);
 
@@ -231,6 +279,7 @@ describe("executeWebSlashCommand", () => {
 				transport: "http",
 				url: "https://docs.example.com/mcp",
 				headersHelper: "bun run scripts/mcp-headers.ts",
+				authPreset: "linear-auth",
 			}),
 		});
 		expect(outputs).toEqual([
@@ -331,6 +380,95 @@ describe("executeWebSlashCommand", () => {
 		]);
 	});
 
+	it("lists MCP auth presets from the web slash command", async () => {
+		const { context, outputs, apiClient } = createContext();
+		apiClient.getMcpStatus.mockResolvedValue({
+			authPresets: [
+				{
+					name: "linear-auth",
+					scope: "local",
+					headerKeys: ["Authorization"],
+					headersHelper: "bun run scripts/mcp-headers.ts",
+				},
+			],
+			servers: [],
+		});
+
+		await executeWebSlashCommand("mcp", "auth", context);
+
+		expect(outputs).toEqual([
+			expect.objectContaining({
+				isError: false,
+				output: expect.stringContaining("MCP Auth Presets"),
+			}),
+		]);
+	});
+
+	it("adds an MCP auth preset from the web slash command", async () => {
+		const { context, outputs, apiClient } = createContext();
+		apiClient.addMcpAuthPreset.mockResolvedValue({
+			name: "linear-auth",
+			scope: "project",
+			path: "/repo/.maestro/mcp.json",
+			preset: {
+				name: "linear-auth",
+				headers: { Authorization: "Bearer test" },
+				headersHelper: "bun run scripts/mcp-headers.ts",
+			},
+		});
+
+		await executeWebSlashCommand(
+			"mcp",
+			"auth add linear-auth --scope project --header 'Authorization: Bearer test' --headers-helper 'bun run scripts/mcp-headers.ts'",
+			context,
+		);
+
+		expect(apiClient.addMcpAuthPreset).toHaveBeenCalledWith({
+			scope: "project",
+			preset: {
+				name: "linear-auth",
+				headers: { Authorization: "Bearer test" },
+				headersHelper: "bun run scripts/mcp-headers.ts",
+			},
+		});
+		expect(outputs).toEqual([
+			expect.objectContaining({
+				isError: false,
+				output: expect.stringContaining('Added MCP auth preset "linear-auth"'),
+			}),
+		]);
+	});
+
+	it("removes an MCP auth preset from the web slash command", async () => {
+		const { context, outputs, apiClient } = createContext();
+		apiClient.removeMcpAuthPreset.mockResolvedValue({
+			name: "linear-auth",
+			scope: "project",
+			path: "/repo/.maestro/mcp.json",
+			fallback: {
+				name: "linear-auth",
+				scope: "user",
+			},
+		});
+
+		await executeWebSlashCommand(
+			"mcp",
+			"auth remove linear-auth --scope project",
+			context,
+		);
+
+		expect(apiClient.removeMcpAuthPreset).toHaveBeenCalledWith({
+			name: "linear-auth",
+			scope: "project",
+		});
+		expect(outputs).toEqual([
+			expect.objectContaining({
+				isError: false,
+				output: expect.stringContaining("fallback: linear-auth (user)"),
+			}),
+		]);
+	});
+
 	it("shows the full MCP import usage in help output", async () => {
 		const { context, outputs } = createContext();
 
@@ -340,7 +478,7 @@ describe("executeWebSlashCommand", () => {
 			expect.objectContaining({
 				isError: false,
 				output: expect.stringContaining(
-					"/mcp import <id> [name] [--scope local|project|user] [--url <https-url>] [--transport http|sse]",
+					"/mcp import <id> [name] [--scope local|project|user] [--url <https-url>] [--transport http|sse] [--header 'Name: value'] [--headers-helper <command>] [--auth-preset <name>]",
 				),
 			}),
 		]);

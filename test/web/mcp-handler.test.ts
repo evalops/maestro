@@ -291,8 +291,8 @@ describe("handleMcpStatus", () => {
 		});
 		const loadConfig = vi
 			.spyOn(mcp, "loadMcpConfig")
-			.mockReturnValueOnce({ servers: [] })
-			.mockReturnValueOnce({ servers: [] });
+			.mockReturnValueOnce({ servers: [], authPresets: [] })
+			.mockReturnValueOnce({ servers: [], authPresets: [] });
 		const addConfig = vi.spyOn(mcp, "addMcpServerToConfig").mockReturnValue({
 			path: "/tmp/project/.maestro/mcp.local.json",
 		});
@@ -339,6 +339,115 @@ describe("handleMcpStatus", () => {
 			server: {
 				transport: "http",
 				url: "https://mcp.linear.app/mcp",
+				headers: undefined,
+				headersHelper: undefined,
+				authPreset: undefined,
+			},
+		});
+	});
+
+	it("imports an official MCP registry entry with remote auth metadata", async () => {
+		vi.spyOn(mcp, "prefetchOfficialMcpRegistry").mockResolvedValue(undefined);
+		vi.spyOn(mcp, "getOfficialMcpRegistryEntries").mockReturnValue([
+			{
+				displayName: "Linear",
+				slug: "linear",
+				transport: "http",
+				url: "https://mcp.linear.app/mcp",
+			},
+		]);
+		vi.spyOn(mcp, "resolveOfficialMcpRegistryEntry").mockReturnValue({
+			entry: {
+				displayName: "Linear",
+				slug: "linear",
+				transport: "http",
+				url: "https://mcp.linear.app/mcp",
+			},
+			matches: [
+				{
+					displayName: "Linear",
+					slug: "linear",
+					transport: "http",
+					url: "https://mcp.linear.app/mcp",
+				},
+			],
+		});
+		const loadConfig = vi
+			.spyOn(mcp, "loadMcpConfig")
+			.mockReturnValueOnce({
+				servers: [],
+				authPresets: [
+					{
+						name: "linear-auth",
+						headersHelper: "bun run scripts/mcp-headers.ts",
+					},
+				],
+			})
+			.mockReturnValueOnce({
+				servers: [],
+				authPresets: [
+					{
+						name: "linear-auth",
+						headersHelper: "bun run scripts/mcp-headers.ts",
+					},
+				],
+			});
+		const addConfig = vi.spyOn(mcp, "addMcpServerToConfig").mockReturnValue({
+			path: "/tmp/project/.maestro/mcp.local.json",
+		});
+		const configure = vi
+			.spyOn(mcp.mcpManager, "configure")
+			.mockResolvedValue(undefined);
+
+		const req = makeReq("/api/mcp?action=import-registry", {
+			method: "POST",
+			body: {
+				query: "linear",
+				authPreset: "linear-auth",
+				headersHelper: "bun run scripts/mcp-headers.ts",
+			},
+		});
+		const res = makeRes();
+
+		await handleMcpStatus(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			corsHeaders,
+		);
+
+		expect(addConfig).toHaveBeenCalledWith({
+			projectRoot: process.cwd(),
+			scope: "local",
+			server: {
+				name: "linear",
+				transport: "http",
+				url: "https://mcp.linear.app/mcp",
+				headers: undefined,
+				headersHelper: "bun run scripts/mcp-headers.ts",
+				authPreset: "linear-auth",
+			},
+		});
+		expect(loadConfig).toHaveBeenCalledWith(process.cwd(), {
+			includeEnvLimits: true,
+		});
+		expect(configure).toHaveBeenCalledTimes(1);
+		expect(res.statusCode).toBe(200);
+		expect(JSON.parse(res.body)).toEqual({
+			name: "linear",
+			scope: "local",
+			path: "/tmp/project/.maestro/mcp.local.json",
+			entry: {
+				displayName: "Linear",
+				slug: "linear",
+				transport: "http",
+				url: "https://mcp.linear.app/mcp",
+			},
+			server: {
+				transport: "http",
+				url: "https://mcp.linear.app/mcp",
+				headers: undefined,
+				headersHelper: "bun run scripts/mcp-headers.ts",
+				authPreset: "linear-auth",
 			},
 		});
 	});
