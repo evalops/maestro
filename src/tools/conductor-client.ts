@@ -437,9 +437,16 @@ export const conductorListMcpToolsTool: AgentTool = {
 
 export const conductorListMcpResourcesTool: AgentTool = {
 	name: "list_mcp_resources",
-	description: "List resources exposed by an MCP server.",
+	description: "List resources exposed by connected MCP servers.",
 	parameters: Type.Object(
-		{ server: Type.String({ description: "MCP server name" }) },
+		{
+			server: Type.Optional(
+				Type.String({
+					description:
+						"Optional MCP server name to filter resources. If omitted, lists resources from all connected servers.",
+				}),
+			),
+		},
 		{ additionalProperties: true },
 	),
 	executionLocation: "client",

@@ -260,39 +260,47 @@ function formatMcpResources(
 	status: McpStatus,
 	serverName: string | undefined,
 ): { isError: boolean; text: string } {
-	if (!serverName) {
+	const servers = serverName
+		? status.servers.filter((server) => server.name === serverName)
+		: status.servers;
+
+	if (serverName && servers.length === 0) {
 		return {
 			isError: true,
-			text: "Error: list_mcp_resources requires a server name",
+			text: `MCP server '${serverName}' not found.`,
 		};
 	}
 
-	const server = status.servers.find((entry) => entry.name === serverName);
-	if (!server) {
-		return { isError: true, text: `MCP server '${serverName}' not found.` };
-	}
-	if (!server.connected) {
+	const disconnected = serverName
+		? servers.find((server) => !server.connected)
+		: null;
+	if (disconnected) {
 		return {
 			isError: true,
-			text: `MCP server '${serverName}' is not connected.`,
+			text: `MCP server '${disconnected.name}' is not connected.`,
 		};
 	}
-	if (!server.resources || server.resources.length === 0) {
+
+	const connectedWithResources = servers
+		.filter((server) => server.connected)
+		.filter((server) => (server.resources?.length ?? 0) > 0);
+
+	if (connectedWithResources.length === 0) {
 		return {
 			isError: false,
-			text: `No MCP resources available on server '${serverName}'.`,
+			text: "No MCP resources available. Either no servers are connected or they don't expose resources.",
 		};
 	}
 
-	const lines: string[] = [
-		"# Available MCP Resources",
-		"",
-		`## ${server.name}`,
-	];
-	for (const uri of server.resources) {
-		lines.push(`- ${uri}`);
+	const lines: string[] = ["# Available MCP Resources", ""];
+	for (const server of connectedWithResources) {
+		lines.push(`## ${server.name}`);
+		for (const uri of server.resources ?? []) {
+			lines.push(`- ${uri}`);
+		}
+		lines.push("");
 	}
-	return { isError: false, text: lines.join("\n") };
+	return { isError: false, text: lines.join("\n").trimEnd() };
 }
 
 function formatMcpResourceRead(

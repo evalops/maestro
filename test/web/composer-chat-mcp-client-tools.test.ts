@@ -43,7 +43,7 @@ describe("composer-chat MCP client tools", () => {
 				type: "client_tool_request",
 				toolCallId: "call_resources",
 				toolName: "list_mcp_resources",
-				args: { server: "docs" },
+				args: {},
 			};
 			yield {
 				type: "client_tool_request",
@@ -91,6 +91,15 @@ describe("composer-chat MCP client tools", () => {
 						tools: [{ name: "search_docs", description: "Search docs" }],
 						resources: ["memo://guide"],
 						prompts: ["summarize"],
+					},
+					{
+						name: "notes",
+						connected: true,
+						transport: "stdio",
+						scope: "global",
+						tools: [],
+						resources: ["memo://notes"],
+						prompts: [],
 					},
 					{
 						name: "broken",
@@ -154,7 +163,10 @@ describe("composer-chat MCP client tools", () => {
 		expect(results[2]?.content?.[0]?.text).toContain(
 			"# Available MCP Resources",
 		);
+		expect(results[2]?.content?.[0]?.text).toContain("## docs");
 		expect(results[2]?.content?.[0]?.text).toContain("memo://guide");
+		expect(results[2]?.content?.[0]?.text).toContain("## notes");
+		expect(results[2]?.content?.[0]?.text).toContain("memo://notes");
 
 		expect(results[3]).toMatchObject({
 			toolCallId: "call_read",
