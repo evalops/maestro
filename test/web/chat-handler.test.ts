@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
@@ -13,6 +14,7 @@ import {
 	setApprovalModeForSession,
 } from "../../src/server/approval-mode-store.js";
 import { handleApproval } from "../../src/server/handlers/approval.js";
+import { handleChatWebSocket } from "../../src/server/handlers/chat-ws.js";
 import { handleChat } from "../../src/server/handlers/chat.js";
 import { handleClientToolResult } from "../../src/server/handlers/client-tools.js";
 import { handleSessions } from "../../src/server/handlers/sessions.js";
@@ -109,6 +111,37 @@ interface MockPassThrough extends PassThrough {
 	method: string;
 	url: string;
 	headers: Record<string, string>;
+}
+
+class MockWebSocket extends EventEmitter {
+	readyState = 1;
+	sent: string[] = [];
+
+	send(payload: string) {
+		this.sent.push(payload);
+	}
+
+	close() {
+		if (this.readyState !== 1) {
+			return;
+		}
+		this.readyState = 3;
+		this.emit("close");
+	}
+}
+
+async function waitForWebSocketMessage(
+	ws: MockWebSocket,
+	predicate: (payload: string) => boolean,
+) {
+	for (let attempt = 0; attempt < 50; attempt += 1) {
+		const match = ws.sent.find(predicate);
+		if (match) {
+			return match;
+		}
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	throw new Error("Timed out waiting for WebSocket message");
 }
 
 describe("handleChat", () => {
@@ -641,6 +674,181 @@ describe("handleChat", () => {
 		expect(toolResultRes.statusCode).toBe(200);
 		expect(serverRequestManager.listPending()).toEqual([]);
 		expect(res.body).toContain("Use Zod");
+	});
+
+	it("creates a recoverable session before first-turn ask_user requests over websocket", async () => {
+		const req = new PassThrough() as MockPassThrough;
+		req.method = "GET";
+		req.url = "/api/chat/ws?clientTools=1";
+		req.headers = { host: "localhost" };
+		const ws = new MockWebSocket();
+
+		const createAgent: WebServerContext["createAgent"] = async (
+			_model,
+			_thinking,
+			_approval,
+			options,
+		) => {
+			type EventCallback = (e: unknown) => void | Promise<void>;
+			let subscriber: EventCallback | undefined;
+			return {
+				state: {
+					systemPrompt: "",
+					model: mockModel,
+					thinkingLevel: "off",
+					tools: [],
+					messages: [],
+					isStreaming: false,
+					streamMessage: null,
+					pendingToolCalls: new Map(),
+				},
+				subscribe: (fn: EventCallback) => {
+					subscriber = fn;
+					return () => {
+						subscriber = undefined;
+					};
+				},
+				replaceMessages: () => {},
+				clearMessages: () => {},
+				prompt: async () => {
+					const executionService = options?.clientToolService;
+					if (!executionService) {
+						throw new Error("client tool service missing");
+					}
+					const result = await executionService.requestExecution(
+						"client_tool_websocket_user_input",
+						"ask_user",
+						{
+							questions: [
+								{
+									header: "Stack",
+									question: "Which schema library should we use?",
+									options: [
+										{
+											label: "Zod",
+											description: "Use Zod schemas",
+										},
+										{
+											label: "Valibot",
+											description: "Use Valibot schemas",
+										},
+									],
+								},
+							],
+						},
+					);
+					await subscriber?.({
+						type: "message_end",
+						message: {
+							role: "assistant",
+							content: result.content,
+							api: mockModel.api,
+							provider: mockModel.provider,
+							model: mockModel.id,
+							usage: {
+								input: 1,
+								output: 1,
+								cacheRead: 0,
+								cacheWrite: 0,
+								cost: {
+									input: 0,
+									output: 0,
+									cacheRead: 0,
+									cacheWrite: 0,
+									total: 0,
+								},
+							},
+							stopReason: "stop",
+							timestamp: Date.now(),
+						},
+					});
+				},
+				abort: () => {},
+			} as unknown as Agent;
+		};
+
+		const context: Partial<WebServerContext> = {
+			createAgent,
+			getRegisteredModel: async () => mockModel,
+			defaultApprovalMode: "prompt",
+			defaultProvider: "anthropic",
+			defaultModelId: mockModel.id,
+			corsHeaders: cors,
+		};
+
+		handleChatWebSocket(
+			ws as unknown as Parameters<typeof handleChatWebSocket>[0],
+			req as unknown as IncomingMessage,
+			context as WebServerContext,
+		);
+
+		ws.emit(
+			"message",
+			JSON.stringify({
+				messages: [{ role: "user", content: "help me choose" }],
+			}),
+		);
+
+		const pendingRequest = await waitForPendingRequest("user_input");
+		expect(pendingRequest).toMatchObject({
+			id: "client_tool_websocket_user_input",
+			kind: "user_input",
+			toolName: "ask_user",
+		});
+		expect(typeof pendingRequest.sessionId).toBe("string");
+		expect(pendingRequest.sessionId).toBeTruthy();
+
+		const sessionUpdate = await waitForWebSocketMessage(
+			ws,
+			(payload) =>
+				payload.includes('"type":"session_update"') &&
+				payload.includes(String(pendingRequest.sessionId)),
+		);
+		expect(sessionUpdate).toContain('"type":"session_update"');
+
+		const sessionReq = new PassThrough() as MockPassThrough;
+		sessionReq.method = "GET";
+		sessionReq.url = `/api/sessions/${pendingRequest.sessionId}`;
+		sessionReq.headers = {};
+		sessionReq.end();
+
+		const sessionRes = makeRes();
+		await handleSessions(
+			sessionReq as unknown as IncomingMessage,
+			sessionRes as unknown as ServerResponse,
+			{ id: pendingRequest.sessionId },
+			cors,
+		);
+
+		expect(sessionRes.statusCode).toBe(200);
+		expect(sessionRes.body).toContain('"pendingClientToolRequests"');
+		expect(sessionRes.body).toContain('"toolName":"ask_user"');
+
+		const toolResultReq = new PassThrough() as MockPassThrough;
+		toolResultReq.method = "POST";
+		toolResultReq.url = "/api/chat/client-tool-result";
+		toolResultReq.headers = {};
+		toolResultReq.end(
+			JSON.stringify({
+				toolCallId: pendingRequest.id,
+				content: [{ type: "text", text: "Use Zod" }],
+				isError: false,
+			}),
+		);
+
+		const toolResultRes = makeRes();
+		await handleClientToolResult(
+			toolResultReq as unknown as IncomingMessage,
+			toolResultRes as unknown as ServerResponse,
+			context as WebServerContext,
+		);
+
+		expect(toolResultRes.statusCode).toBe(200);
+		await waitForWebSocketMessage(ws, (payload) => payload.includes("Use Zod"));
+		await waitForWebSocketMessage(ws, (payload) =>
+			payload.includes('"type":"done"'),
+		);
+		expect(serverRequestManager.listPending()).toEqual([]);
 	});
 
 	it("resolves tool retry requests through the shared tool-retry endpoint during SSE chat", async () => {
