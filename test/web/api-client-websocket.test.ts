@@ -155,4 +155,51 @@ describe("ApiClient websocket chat transport", () => {
 		]);
 		expect(ws?.readyState).toBe(MockWebSocket.CLOSED);
 	});
+
+	it("throws when the websocket closes before a done event", async () => {
+		const webSockets: MockWebSocket[] = [];
+		vi.stubGlobal(
+			"WebSocket",
+			class extends MockWebSocket {
+				constructor(url: string | URL) {
+					super(url);
+					webSockets.push(this);
+				}
+			} as unknown as typeof WebSocket,
+		);
+
+		const api = new ApiClient("http://localhost:8080");
+		api.setTransportPreference("ws");
+
+		const received: Array<Record<string, unknown>> = [];
+		const consumePromise = (async () => {
+			for await (const event of api.chatWithEvents({
+				messages: [{ role: "user", content: "hi" }],
+			})) {
+				received.push(event as Record<string, unknown>);
+			}
+		})();
+
+		for (
+			let attempt = 0;
+			attempt < 20 && webSockets.length === 0;
+			attempt += 1
+		) {
+			await Promise.resolve();
+		}
+		const ws = webSockets[0];
+		expect(ws).toBeDefined();
+
+		ws?.emit("message", {
+			data: JSON.stringify({ type: "session_update", sessionId: "session-2" }),
+		});
+		ws?.close();
+
+		await expect(consumePromise).rejects.toThrow(
+			"WebSocket closed before completion",
+		);
+		expect(received).toEqual([
+			{ type: "session_update", sessionId: "session-2" },
+		]);
+	});
 });
