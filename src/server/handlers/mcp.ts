@@ -46,6 +46,41 @@ const McpServerInputSchema = Type.Object({
 	disabled: Type.Optional(Type.Boolean()),
 });
 
+const NullableStringSchema = Type.Union([
+	Type.String({ minLength: 1 }),
+	Type.Null(),
+]);
+
+const NullableStringArraySchema = Type.Union([
+	Type.Array(Type.String()),
+	Type.Null(),
+]);
+
+const NullableStringRecordSchema = Type.Union([
+	Type.Record(Type.String(), Type.String()),
+	Type.Null(),
+]);
+
+const NullablePositiveIntegerSchema = Type.Union([
+	Type.Integer({ minimum: 1 }),
+	Type.Null(),
+]);
+
+const McpServerUpdateInputSchema = Type.Object({
+	name: Type.String({ minLength: 1 }),
+	transport: Type.Optional(McpTransportSchema),
+	command: Type.Optional(Type.String({ minLength: 1 })),
+	args: Type.Optional(NullableStringArraySchema),
+	env: Type.Optional(NullableStringRecordSchema),
+	cwd: Type.Optional(NullableStringSchema),
+	url: Type.Optional(Type.String({ minLength: 1 })),
+	headers: Type.Optional(NullableStringRecordSchema),
+	headersHelper: Type.Optional(NullableStringSchema),
+	timeout: Type.Optional(NullablePositiveIntegerSchema),
+	enabled: Type.Optional(Type.Boolean()),
+	disabled: Type.Optional(Type.Boolean()),
+});
+
 const McpRegistryImportSchema = Type.Object({
 	query: Type.String({ minLength: 1 }),
 	name: Type.Optional(Type.String({ minLength: 1 })),
@@ -69,13 +104,14 @@ const McpRemoveServerSchema = Type.Object({
 const McpUpdateServerSchema = Type.Object({
 	scope: Type.Optional(WritableMcpScopeSchema),
 	name: Type.String({ minLength: 1 }),
-	server: McpServerInputSchema,
+	server: McpServerUpdateInputSchema,
 });
 
 type McpRegistryImportInput = Static<typeof McpRegistryImportSchema>;
 type McpAddServerInput = Static<typeof McpAddServerSchema>;
 type McpRemoveServerInput = Static<typeof McpRemoveServerSchema>;
 type McpUpdateServerInput = Static<typeof McpUpdateServerSchema>;
+type McpUpdateServerInputConfig = Static<typeof McpServerUpdateInputSchema>;
 
 async function ensureOfficialRegistryLoaded(): Promise<void> {
 	await prefetchOfficialMcpRegistry();
@@ -99,9 +135,10 @@ function getWritableScope(
 	return scope ?? "local";
 }
 
-function resolveServerTransport(
-	server: McpServerInput,
-): McpServerInput["transport"] {
+function resolveServerTransport(server: {
+	transport?: McpServerInput["transport"];
+	url?: string | null;
+}): McpServerInput["transport"] {
 	return (
 		server.transport ??
 		(server.url ? inferRemoteMcpTransport(server.url) : "stdio")
@@ -110,35 +147,63 @@ function resolveServerTransport(
 
 function mergeEditableServerConfig(
 	existingServer: McpServerInput & { name: string },
-	nextServer: McpServerInput & { name: string },
+	nextServer: McpUpdateServerInputConfig & { name: string },
 ): McpServerInput & { name: string } {
 	const transport = resolveServerTransport({
 		...existingServer,
 		...nextServer,
 	});
+	const hasField = <T extends object>(value: T, key: keyof T): boolean =>
+		Object.prototype.hasOwnProperty.call(value, key);
+	const mergeOptional = <T>(
+		key: keyof McpUpdateServerInputConfig,
+		existing: T | undefined,
+		next: T | null | undefined,
+	): T | undefined => {
+		if (!hasField(nextServer, key)) {
+			return existing;
+		}
+		return next === null ? undefined : next;
+	};
 	const common = {
 		name: nextServer.name,
 		transport,
 		enabled: nextServer.enabled ?? existingServer.enabled,
 		disabled: nextServer.disabled ?? existingServer.disabled,
-		timeout: nextServer.timeout ?? existingServer.timeout,
+		timeout: mergeOptional(
+			"timeout",
+			existingServer.timeout,
+			nextServer.timeout,
+		),
 	};
 
 	if (transport === "stdio") {
 		return {
 			...common,
-			command: nextServer.command ?? existingServer.command,
-			args: nextServer.args ?? existingServer.args,
-			env: nextServer.env ?? existingServer.env,
-			cwd: nextServer.cwd ?? existingServer.cwd,
+			command:
+				(hasField(nextServer, "command") ? nextServer.command : undefined) ??
+				existingServer.command,
+			args: mergeOptional("args", existingServer.args, nextServer.args),
+			env: mergeOptional("env", existingServer.env, nextServer.env),
+			cwd: mergeOptional("cwd", existingServer.cwd, nextServer.cwd),
 		};
 	}
 
 	return {
 		...common,
-		url: nextServer.url ?? existingServer.url,
-		headers: nextServer.headers ?? existingServer.headers,
-		headersHelper: nextServer.headersHelper ?? existingServer.headersHelper,
+		url:
+			(hasField(nextServer, "url") ? nextServer.url : undefined) ??
+			existingServer.url,
+		headers: mergeOptional(
+			"headers",
+			existingServer.headers,
+			nextServer.headers,
+		),
+		headersHelper: mergeOptional(
+			"headersHelper",
+			existingServer.headersHelper,
+			nextServer.headersHelper,
+		),
 	};
 }
 

@@ -598,8 +598,14 @@ export function ToolsRuntimeSection({
 	const [editingServerCwds, setEditingServerCwds] = useState<
 		Record<string, string>
 	>({});
+	const [editingServerEnvTexts, setEditingServerEnvTexts] = useState<
+		Record<string, string>
+	>({});
 	const [editingServerHeadersHelpers, setEditingServerHeadersHelpers] =
 		useState<Record<string, string>>({});
+	const [editingServerHeadersTexts, setEditingServerHeadersTexts] = useState<
+		Record<string, string>
+	>({});
 	const [editingServerTimeouts, setEditingServerTimeouts] = useState<
 		Record<string, string>
 	>({});
@@ -807,6 +813,30 @@ export function ToolsRuntimeSection({
 		setServerMutationError(null);
 		setServerMutationNotice(null);
 		try {
+			const hasEditedArgs = Object.prototype.hasOwnProperty.call(
+				editingServerArgsText,
+				server.name,
+			);
+			const hasEditedCwd = Object.prototype.hasOwnProperty.call(
+				editingServerCwds,
+				server.name,
+			);
+			const hasEditedEnv = Object.prototype.hasOwnProperty.call(
+				editingServerEnvTexts,
+				server.name,
+			);
+			const hasEditedHeaders = Object.prototype.hasOwnProperty.call(
+				editingServerHeadersTexts,
+				server.name,
+			);
+			const hasEditedHeadersHelper = Object.prototype.hasOwnProperty.call(
+				editingServerHeadersHelpers,
+				server.name,
+			);
+			const hasEditedTimeout = Object.prototype.hasOwnProperty.call(
+				editingServerTimeouts,
+				server.name,
+			);
 			const serverInput: McpServerUpdateRequest["server"] =
 				server.transport === "stdio"
 					? {
@@ -816,18 +846,23 @@ export function ToolsRuntimeSection({
 								editingServerCommands[server.name]?.trim() ||
 								server.command ||
 								"",
-							args: parseMcpArgsText(
-								editingServerArgsText[server.name] ??
-									formatMcpArgsText(server.args),
-							),
-							cwd:
-								editingServerCwds[server.name]?.trim() ||
-								server.cwd ||
-								undefined,
-							timeout: parseMcpTimeoutText(
-								editingServerTimeouts[server.name] ??
-									formatMcpTimeoutText(server.timeout),
-							),
+							args: hasEditedArgs
+								? (parseMcpArgsText(editingServerArgsText[server.name] ?? "") ??
+									null)
+								: undefined,
+							cwd: hasEditedCwd
+								? editingServerCwds[server.name]?.trim() || null
+								: undefined,
+							env: hasEditedEnv
+								? (parseMcpKeyValueText(
+										editingServerEnvTexts[server.name] ?? "",
+									) ?? null)
+								: undefined,
+							timeout: hasEditedTimeout
+								? (parseMcpTimeoutText(
+										editingServerTimeouts[server.name] ?? "",
+									) ?? null)
+								: undefined,
 						}
 					: {
 							name: server.name,
@@ -838,14 +873,19 @@ export function ToolsRuntimeSection({
 								editingServerUrls[server.name]?.trim() ||
 								server.remoteUrl ||
 								"",
-							headersHelper:
-								editingServerHeadersHelpers[server.name]?.trim() ||
-								server.headersHelper ||
-								undefined,
-							timeout: parseMcpTimeoutText(
-								editingServerTimeouts[server.name] ??
-									formatMcpTimeoutText(server.timeout),
-							),
+							headers: hasEditedHeaders
+								? (parseMcpKeyValueText(
+										editingServerHeadersTexts[server.name] ?? "",
+									) ?? null)
+								: undefined,
+							headersHelper: hasEditedHeadersHelper
+								? editingServerHeadersHelpers[server.name]?.trim() || null
+								: undefined,
+							timeout: hasEditedTimeout
+								? (parseMcpTimeoutText(
+										editingServerTimeouts[server.name] ?? "",
+									) ?? null)
+								: undefined,
 						};
 			const result = await onUpdateMcpServer({
 				name: server.name,
@@ -1189,6 +1229,27 @@ export function ToolsRuntimeSection({
 															className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
 														/>
 													</div>
+													<textarea
+														value={editingServerHeadersTexts[server.name] ?? ""}
+														onChange={(event) =>
+															setEditingServerHeadersTexts((prev) => ({
+																...prev,
+																[server.name]: event.target.value,
+															}))
+														}
+														placeholder="Headers (KEY=VALUE, one per line)"
+														aria-label={`Headers for ${server.name}`}
+														className="min-h-[88px] bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+													/>
+													<div>
+														Header values stay hidden. Enter KEY=VALUE lines to
+														replace them.
+														{server.headerKeys.length > 0
+															? ` Current keys: ${server.headerKeys.join(", ")}.`
+															: ""}{" "}
+														Delete optional values like timeout or headers
+														helper, then save, to clear them.
+													</div>
 													<div>
 														Edits apply to the{" "}
 														{formatMcpRegistryScopeLabel(server.writableScope)}{" "}
@@ -1230,6 +1291,18 @@ export function ToolsRuntimeSection({
 															}
 															placeholder={"Arguments (one per line)"}
 															aria-label={`Arguments for ${server.name}`}
+															className="min-h-[88px] bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+														/>
+														<textarea
+															value={editingServerEnvTexts[server.name] ?? ""}
+															onChange={(event) =>
+																setEditingServerEnvTexts((prev) => ({
+																	...prev,
+																	[server.name]: event.target.value,
+																}))
+															}
+															placeholder={"Env vars (KEY=VALUE, one per line)"}
+															aria-label={`Environment variables for ${server.name}`}
 															className="min-h-[88px] bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
 														/>
 														<div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_180px_auto] gap-2">
@@ -1285,6 +1358,15 @@ export function ToolsRuntimeSection({
 																	: "Save"}
 															</button>
 														</div>
+													</div>
+													<div>
+														Env values stay hidden. Enter KEY=VALUE lines to
+														replace them.
+														{server.envKeys.length > 0
+															? ` Current keys: ${server.envKeys.join(", ")}.`
+															: ""}{" "}
+														Delete optional values like args, cwd, env vars, or
+														timeout, then save, to clear them.
 													</div>
 													<div>
 														Edits apply to the{" "}

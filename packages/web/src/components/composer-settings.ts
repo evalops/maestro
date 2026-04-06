@@ -475,7 +475,9 @@ export class ComposerSettings extends LitElement {
 	@state() private mcpEditingCommands: Record<string, string> = {};
 	@state() private mcpEditingArgsText: Record<string, string> = {};
 	@state() private mcpEditingCwds: Record<string, string> = {};
+	@state() private mcpEditingEnvTexts: Record<string, string> = {};
 	@state() private mcpEditingUrls: Record<string, string> = {};
+	@state() private mcpEditingHeadersTexts: Record<string, string> = {};
 	@state() private mcpEditingHeadersHelpers: Record<string, string> = {};
 	@state() private mcpEditingTimeouts: Record<string, string> = {};
 	@state() private mcpEditingTransports: Record<
@@ -942,6 +944,30 @@ export class ComposerSettings extends LitElement {
 		this.mcpManagementError = null;
 		this.mcpManagementNotice = null;
 		try {
+			const hasEditedArgs = Object.prototype.hasOwnProperty.call(
+				this.mcpEditingArgsText,
+				server.name,
+			);
+			const hasEditedCwd = Object.prototype.hasOwnProperty.call(
+				this.mcpEditingCwds,
+				server.name,
+			);
+			const hasEditedEnv = Object.prototype.hasOwnProperty.call(
+				this.mcpEditingEnvTexts,
+				server.name,
+			);
+			const hasEditedHeaders = Object.prototype.hasOwnProperty.call(
+				this.mcpEditingHeadersTexts,
+				server.name,
+			);
+			const hasEditedHeadersHelper = Object.prototype.hasOwnProperty.call(
+				this.mcpEditingHeadersHelpers,
+				server.name,
+			);
+			const hasEditedTimeout = Object.prototype.hasOwnProperty.call(
+				this.mcpEditingTimeouts,
+				server.name,
+			);
 			const input: McpServerUpdateRequest = {
 				name: server.name,
 				scope,
@@ -954,18 +980,24 @@ export class ComposerSettings extends LitElement {
 									this.mcpEditingCommands[server.name]?.trim() ||
 									server.command ||
 									"",
-								args: this.parseMcpArgsText(
-									this.mcpEditingArgsText[server.name] ??
-										this.formatMcpArgsText(server.args),
-								),
-								cwd:
-									this.mcpEditingCwds[server.name]?.trim() ||
-									server.cwd ||
-									undefined,
-								timeout: this.parseMcpTimeoutText(
-									this.mcpEditingTimeouts[server.name] ??
-										this.formatMcpTimeoutText(server.timeout),
-								),
+								args: hasEditedArgs
+									? (this.parseMcpArgsText(
+											this.mcpEditingArgsText[server.name] ?? "",
+										) ?? null)
+									: undefined,
+								cwd: hasEditedCwd
+									? this.mcpEditingCwds[server.name]?.trim() || null
+									: undefined,
+								env: hasEditedEnv
+									? (this.parseMcpKeyValueText(
+											this.mcpEditingEnvTexts[server.name] ?? "",
+										) ?? null)
+									: undefined,
+								timeout: hasEditedTimeout
+									? (this.parseMcpTimeoutText(
+											this.mcpEditingTimeouts[server.name] ?? "",
+										) ?? null)
+									: undefined,
 							}
 						: {
 								name: server.name,
@@ -976,14 +1008,19 @@ export class ComposerSettings extends LitElement {
 									this.mcpEditingUrls[server.name]?.trim() ||
 									server.remoteUrl ||
 									"",
-								headersHelper:
-									this.mcpEditingHeadersHelpers[server.name]?.trim() ||
-									server.headersHelper ||
-									undefined,
-								timeout: this.parseMcpTimeoutText(
-									this.mcpEditingTimeouts[server.name] ??
-										this.formatMcpTimeoutText(server.timeout),
-								),
+								headers: hasEditedHeaders
+									? (this.parseMcpKeyValueText(
+											this.mcpEditingHeadersTexts[server.name] ?? "",
+										) ?? null)
+									: undefined,
+								headersHelper: hasEditedHeadersHelper
+									? this.mcpEditingHeadersHelpers[server.name]?.trim() || null
+									: undefined,
+								timeout: hasEditedTimeout
+									? (this.parseMcpTimeoutText(
+											this.mcpEditingTimeouts[server.name] ?? "",
+										) ?? null)
+									: undefined,
 							},
 			};
 			const result = await this.apiClient.updateMcpServer(input);
@@ -1131,10 +1168,14 @@ export class ComposerSettings extends LitElement {
 											this.formatMcpArgsText(server.args);
 										const editableCwd =
 											this.mcpEditingCwds[server.name] ?? server.cwd ?? "";
+										const editableEnvText =
+											this.mcpEditingEnvTexts[server.name] ?? "";
 										const editableHeadersHelper =
 											this.mcpEditingHeadersHelpers[server.name] ??
 											server.headersHelper ??
 											"";
+										const editableHeadersText =
+											this.mcpEditingHeadersTexts[server.name] ?? "";
 										const editableTimeout =
 											this.mcpEditingTimeouts[server.name] ??
 											this.formatMcpTimeoutText(server.timeout);
@@ -1318,6 +1359,34 @@ export class ComposerSettings extends LitElement {
 																	}}
 																/>
 															</div>
+															<div class="control-row">
+																<textarea
+																	class="field-input"
+																	style="min-height: 5.5rem;"
+																	.placeholder=${"Headers (KEY=VALUE, one per line)"}
+																	.value=${editableHeadersText}
+																	aria-label=${`Headers for ${server.name}`}
+																	@input=${(event: Event) => {
+																		this.mcpEditingHeadersTexts = {
+																			...this.mcpEditingHeadersTexts,
+																			[server.name]: (
+																				event.target as HTMLTextAreaElement
+																			).value,
+																		};
+																	}}
+																></textarea>
+															</div>
+															<div class="panel-card-copy">
+																Header values stay hidden. Enter KEY=VALUE
+																lines to replace them.${
+																	(server.headerKeys?.length ?? 0) > 0
+																		? html` Current keys: ${(server.headerKeys ?? []).join(", ")}.`
+																		: ""
+																}
+																<br />
+																Delete optional values like timeout or headers
+																helper, then save, to clear them.
+															</div>
 															<div class="panel-card-copy">
 																Edits apply to the ${this.formatMcpScopeLabel(
 																	writableScope,
@@ -1354,6 +1423,21 @@ export class ComposerSettings extends LitElement {
 																	@input=${(event: Event) => {
 																		this.mcpEditingArgsText = {
 																			...this.mcpEditingArgsText,
+																			[server.name]: (
+																				event.target as HTMLTextAreaElement
+																			).value,
+																		};
+																	}}
+																></textarea>
+																<textarea
+																	class="field-input"
+																	style="min-height: 5.5rem;"
+																	.placeholder=${"Env vars (KEY=VALUE, one per line)"}
+																	.value=${editableEnvText}
+																	aria-label=${`Environment variables for ${server.name}`}
+																	@input=${(event: Event) => {
+																		this.mcpEditingEnvTexts = {
+																			...this.mcpEditingEnvTexts,
 																			[server.name]: (
 																				event.target as HTMLTextAreaElement
 																			).value,
@@ -1406,6 +1490,17 @@ export class ComposerSettings extends LitElement {
 																			: "Save"
 																	}
 																</button>
+															</div>
+															<div class="panel-card-copy">
+																Env values stay hidden. Enter KEY=VALUE lines to
+																replace them.${
+																	(server.envKeys?.length ?? 0) > 0
+																		? html` Current keys: ${(server.envKeys ?? []).join(", ")}.`
+																		: ""
+																}
+																<br />
+																Delete optional values like args, cwd, env vars, or
+																timeout, then save, to clear them.
 															</div>
 															<div class="panel-card-copy">
 																Edits apply to the ${this.formatMcpScopeLabel(

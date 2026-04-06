@@ -300,13 +300,13 @@ export interface McpServerConfigInput {
 	name: string;
 	transport?: "stdio" | "http" | "sse";
 	command?: string;
-	args?: string[];
-	env?: Record<string, string>;
-	cwd?: string;
+	args?: string[] | null;
+	env?: Record<string, string> | null;
+	cwd?: string | null;
 	url?: string;
-	headers?: Record<string, string>;
-	headersHelper?: string;
-	timeout?: number;
+	headers?: Record<string, string> | null;
+	headersHelper?: string | null;
+	timeout?: number | null;
 	enabled?: boolean;
 	disabled?: boolean;
 }

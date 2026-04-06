@@ -548,6 +548,95 @@ describe("handleMcpStatus", () => {
 		});
 	});
 
+	it("clears optional MCP update fields when null is provided", async () => {
+		vi.spyOn(mcp, "prefetchOfficialMcpRegistry").mockResolvedValue(undefined);
+		const loadConfig = vi
+			.spyOn(mcp, "loadMcpConfig")
+			.mockReturnValueOnce({
+				servers: [
+					{
+						name: "linear",
+						scope: "local",
+						transport: "http",
+						url: "https://mcp.linear.app/mcp",
+						headers: {
+							Authorization: "Bearer token",
+						},
+						headersHelper: "bun run scripts/mcp-headers.ts",
+						timeout: 20_000,
+					},
+				],
+			})
+			.mockReturnValueOnce({
+				servers: [
+					{
+						name: "linear",
+						scope: "local",
+						transport: "http",
+						url: "https://mcp.linear.app/mcp",
+					},
+				],
+			});
+		const updateConfig = vi
+			.spyOn(mcp, "updateMcpServerInConfig")
+			.mockReturnValue({
+				path: "/tmp/project/.maestro/mcp.local.json",
+				scope: "local",
+			});
+		const configure = vi
+			.spyOn(mcp.mcpManager, "configure")
+			.mockResolvedValue(undefined);
+
+		const req = makeReq("/api/mcp?action=update-server", {
+			method: "POST",
+			body: {
+				name: "linear",
+				scope: "local",
+				server: {
+					name: "linear",
+					transport: "http",
+					url: "https://mcp.linear.app/mcp",
+					headers: null,
+					headersHelper: null,
+					timeout: null,
+				},
+			},
+		});
+		const res = makeRes();
+
+		await handleMcpStatus(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			corsHeaders,
+		);
+
+		expect(updateConfig).toHaveBeenCalledWith({
+			projectRoot: process.cwd(),
+			scope: "local",
+			name: "linear",
+			server: {
+				name: "linear",
+				transport: "http",
+				url: "https://mcp.linear.app/mcp",
+			},
+		});
+		expect(loadConfig).toHaveBeenCalledWith(process.cwd(), {
+			includeEnvLimits: true,
+		});
+		expect(configure).toHaveBeenCalledTimes(1);
+		expect(res.statusCode).toBe(200);
+		expect(JSON.parse(res.body)).toEqual({
+			name: "linear",
+			scope: "local",
+			path: "/tmp/project/.maestro/mcp.local.json",
+			server: {
+				name: "linear",
+				transport: "http",
+				url: "https://mcp.linear.app/mcp",
+			},
+		});
+	});
+
 	it("validates required query parameters for prompt reads", async () => {
 		const req = makeReq("/api/mcp?action=get-prompt&server=docs");
 		const res = makeRes();
