@@ -11,12 +11,7 @@
 import chalk from "chalk";
 import type { Agent } from "../agent/index.js";
 import type { AppMessage } from "../agent/types.js";
-import {
-	createNotificationFromAgentEvent,
-	isNotificationEnabled,
-	sendNotification,
-	summarizeNotificationPayload,
-} from "../hooks/notification-hooks.js";
+import { dispatchAgentNotification } from "../hooks/notification-hooks.js";
 import { createSessionHookService } from "../hooks/session-integration.js";
 import { mcpManager } from "../mcp/manager.js";
 import type { RegisteredModel } from "../models/registry.js";
@@ -195,32 +190,18 @@ export function setupEventSubscriptions(params: {
 	// ── Notification hooks ───────────────────────────────────────────────────
 
 	agent.subscribe((event) => {
-		const payload = createNotificationFromAgentEvent(event, {
-			cwd,
-			sessionId: sessionManager.getSessionId(),
-			messages: agent.state.messages,
-		});
-		if (!payload) {
-			return;
-		}
-
-		if (sessionHookService.hasHooks("Notification")) {
-			void sessionHookService
-				.runNotificationHooks(
-					payload.type,
-					summarizeNotificationPayload(payload) ?? payload.type,
-				)
-				.catch((error) => {
-					logger.warn("Notification hooks failed", {
-						type: payload.type,
-						error: error instanceof Error ? error.message : String(error),
-					});
-				});
-		}
-
-		if (isNotificationEnabled(payload.type)) {
-			void sendNotification(payload);
-		}
+		dispatchAgentNotification(
+			event,
+			{
+				cwd,
+				sessionId: sessionManager.getSessionId(),
+				messages: agent.state.messages,
+			},
+			{
+				sessionHookService,
+				logger,
+			},
+		);
 	});
 
 	return { turnTracker };

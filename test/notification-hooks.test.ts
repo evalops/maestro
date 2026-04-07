@@ -317,6 +317,64 @@ describe("Notification Hooks", () => {
 
 			expect(payload).toBeNull();
 		});
+
+		it("dispatches notification hooks even when desktop notifications are disabled", async () => {
+			const { clearNotificationConfigCache, dispatchAgentNotification } =
+				await import("../src/hooks/notification-hooks.js");
+			clearNotificationConfigCache();
+
+			const runNotificationHooks = vi.fn().mockResolvedValue({});
+			const logger = { warn: vi.fn() };
+			const payload = dispatchAgentNotification(
+				{
+					type: "turn_end",
+					message: {
+						role: "assistant",
+						content: [{ type: "text", text: "Done" }],
+						api: "anthropic-messages",
+						provider: "anthropic",
+						model: "claude-sonnet-4-5-20250929",
+						usage: {
+							input: 1,
+							output: 1,
+							cacheRead: 0,
+							cacheWrite: 0,
+							cost: {
+								input: 0,
+								output: 0,
+								cacheRead: 0,
+								cacheWrite: 0,
+								total: 0,
+							},
+						},
+						stopReason: "stop",
+						timestamp: Date.now(),
+					},
+					toolResults: [],
+				},
+				{
+					cwd: "/tmp/project",
+					sessionId: "session-123",
+					messages: [
+						{ role: "user", content: "Summarize", timestamp: Date.now() },
+					],
+				},
+				{
+					sessionHookService: {
+						hasHooks: () => true,
+						runNotificationHooks,
+					} as never,
+					logger,
+				},
+			);
+
+			expect(payload?.type).toBe("turn-complete");
+			expect(runNotificationHooks).toHaveBeenCalledWith(
+				"turn-complete",
+				"Done",
+			);
+			expect(logger.warn).not.toHaveBeenCalled();
+		});
 	});
 
 	describe("sendNotification", () => {

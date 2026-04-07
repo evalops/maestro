@@ -266,6 +266,15 @@ function describeKnownToolActivity(
 			return pattern
 				? `Searching web for ${quoteLabel(pattern)}`
 				: "Searching web";
+		case "batch": {
+			const calls =
+				(Array.isArray(args.tool_uses) ? args.tool_uses.length : 0) ||
+				(Array.isArray(args.calls) ? args.calls.length : 0);
+			if (calls > 0) {
+				return `Running ${calls} tool call${calls === 1 ? "" : "s"}`;
+			}
+			return "Running tool batch";
+		}
 		case "todo":
 			return "Updating task list";
 		case "background_tasks": {

@@ -78,6 +78,14 @@ describe("summarizeToolUse", () => {
 		).toBe("Starting background task");
 	});
 
+	it("uses present-tense activity labels for tool batches", () => {
+		expect(
+			describeToolActivity("batch", {
+				tool_uses: [{ tool: "read" }, { tool: "bash" }],
+			}),
+		).toBe("Running 2 tool calls");
+	});
+
 	it("summarizes tool batches into a compact one-line label", () => {
 		expect(
 			summarizeToolBatch([

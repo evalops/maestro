@@ -39,6 +39,14 @@ interface SessionStartHookOutputs {
 
 const logger = createLogger("prompt-runtime-hooks");
 
+function clearQueuedPromptInputs(agent: Agent): void {
+	(
+		agent as Agent & {
+			clearQueuedPromptInputs?: () => void;
+		}
+	).clearQueuedPromptInputs?.();
+}
+
 function buildSessionStartHookContextMessage(text: string): HookMessage {
 	return createHookMessage(
 		"SessionStart",
@@ -694,18 +702,25 @@ export async function runUserPromptWithRecovery(params: {
 		throwIfAborted(params.signal);
 		await applyPreMessageHooks(params);
 		throwIfAborted(params.signal);
-		await runWithPromptRecovery({
-			agent: params.agent,
-			sessionManager: params.sessionManager,
-			hookContext: buildCompactionHookContext(
-				params.sessionManager,
-				params.cwd,
-			),
-			execute: params.execute,
-			callbacks: params.callbacks,
-			getPostKeepMessages: collectPostKeepMessages,
-			maxOutputContinuations: params.maxOutputContinuations,
-		});
+		try {
+			await runWithPromptRecovery({
+				agent: params.agent,
+				sessionManager: params.sessionManager,
+				hookContext: buildCompactionHookContext(
+					params.sessionManager,
+					params.cwd,
+				),
+				execute: params.execute,
+				callbacks: params.callbacks,
+				getPostKeepMessages: collectPostKeepMessages,
+				maxOutputContinuations: params.maxOutputContinuations,
+			});
+		} catch (error) {
+			if (params.agent.state.messages.length === messageStartIndex) {
+				clearQueuedPromptInputs(params.agent);
+			}
+			throw error;
+		}
 		throwIfAborted(params.signal);
 		await applyTokenBudgetContinuations({
 			agent: params.agent,

@@ -3569,6 +3569,8 @@ export class ComposerChat extends LitElement {
 								toolInfo.index
 							] as ExtendedToolCall;
 							tool.result = agentEvent.partialResult;
+							tool.displayName = agentEvent.displayName ?? tool.displayName;
+							tool.summaryLabel = agentEvent.summaryLabel ?? tool.summaryLabel;
 							this.messages = [...this.messages];
 						}
 						break;

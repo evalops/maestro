@@ -169,6 +169,92 @@ describe("user prompt runtime", () => {
 		expect(queueNextRunPromptOnlyMessage).not.toHaveBeenCalled();
 	});
 
+	it("clears queued prompt hook additions when execution fails before prompt start", async () => {
+		const capturedRuns: Array<{
+			messages: Message[];
+			systemPrompt: string;
+		}> = [];
+
+		registerHook("UserPromptSubmit", {
+			type: "callback",
+			callback: async () => ({
+				hookSpecificOutput: {
+					hookEventName: "UserPromptSubmit",
+					additionalContext: "Leaked user prompt hook context",
+				},
+				systemMessage: "Leaked user prompt system guidance",
+			}),
+		});
+		registerHook("PreMessage", {
+			type: "callback",
+			callback: async () => ({
+				hookSpecificOutput: {
+					hookEventName: "PreMessage",
+					additionalContext: "Leaked pre-message hook context",
+				},
+			}),
+		});
+
+		class CaptureTransport implements AgentTransport {
+			async *run(
+				messages: Message[],
+				_userMessage: Message,
+				config: AgentRunConfig,
+			): AsyncGenerator<AgentEvent, void, unknown> {
+				capturedRuns.push({
+					messages: structuredClone(messages),
+					systemPrompt: config.systemPrompt,
+				});
+				const assistant = createAssistantMessage("Recovered cleanly");
+				yield { type: "message_start", message: assistant };
+				yield { type: "message_end", message: assistant };
+			}
+		}
+
+		const agent = new Agent({
+			transport: new CaptureTransport(),
+			initialState: {
+				model: mockModel,
+				tools: [],
+				systemPrompt: "Base system prompt",
+			},
+		});
+		const sessionManager = {
+			getSessionId: () => "session-hook-leak-cleanup",
+		};
+
+		await expect(
+			runUserPromptWithRecovery({
+				agent,
+				sessionManager: sessionManager as never,
+				cwd: "/tmp/hook-leak-cleanup",
+				prompt: "first",
+				execute: async () => {
+					throw new Error("Circuit breaker open");
+				},
+			}),
+		).rejects.toThrow("Circuit breaker open");
+
+		clearRegisteredHooks();
+
+		await runUserPromptWithRecovery({
+			agent,
+			sessionManager: sessionManager as never,
+			cwd: "/tmp/hook-leak-cleanup",
+			prompt: "second",
+			execute: () => agent.prompt("second"),
+		});
+
+		expect(capturedRuns).toHaveLength(1);
+		expect(capturedRuns[0]?.systemPrompt).toBe("Base system prompt");
+		expect(JSON.stringify(capturedRuns[0]?.messages ?? [])).not.toContain(
+			"Leaked user prompt hook context",
+		);
+		expect(JSON.stringify(capturedRuns[0]?.messages ?? [])).not.toContain(
+			"Leaked pre-message hook context",
+		);
+	});
+
 	it("queues SessionStart hook context for the first run", async () => {
 		const queueNextRunPromptOnlyMessage = vi.fn();
 		const queueNextRunSystemPromptAddition = vi.fn();

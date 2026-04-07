@@ -26,6 +26,7 @@ import type { AgentEvent, AppMessage } from "../agent/types.js";
 import { PATHS } from "../config/constants.js";
 import { getTimeSinceLastUserInteraction } from "../interaction/user-interaction.js";
 import { createLogger } from "../utils/logger.js";
+import type { SessionHookService } from "./session-integration.js";
 
 const logger = createLogger("hooks:notify");
 const DEFAULT_IDLE_THRESHOLD_MS = 6_000;
@@ -49,6 +50,10 @@ export interface NotificationPayload {
 	toolResult?: string;
 	error?: string;
 }
+
+type NotificationDispatchLogger = {
+	warn: (message: string, data?: Record<string, unknown>) => void;
+};
 
 export interface NotificationHooksConfig {
 	program?: string;
@@ -408,6 +413,47 @@ export function createNotificationFromAgentEvent(
 		default:
 			return null;
 	}
+}
+
+export function dispatchAgentNotification(
+	event: AgentEvent,
+	context: {
+		cwd: string;
+		sessionId?: string;
+		messages?: AppMessage[];
+	},
+	options?: {
+		sessionHookService?: Pick<
+			SessionHookService,
+			"hasHooks" | "runNotificationHooks"
+		>;
+		logger?: NotificationDispatchLogger;
+	},
+): NotificationPayload | null {
+	const payload = createNotificationFromAgentEvent(event, context);
+	if (!payload) {
+		return null;
+	}
+
+	if (options?.sessionHookService?.hasHooks("Notification")) {
+		void options.sessionHookService
+			.runNotificationHooks(
+				payload.type,
+				summarizeNotificationPayload(payload) ?? payload.type,
+			)
+			.catch((error) => {
+				options.logger?.warn("Notification hooks failed", {
+					type: payload.type,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			});
+	}
+
+	if (isNotificationEnabled(payload.type)) {
+		void sendNotification(payload);
+	}
+
+	return payload;
 }
 
 function extractUserMessages(messages: AppMessage[]): string[] {

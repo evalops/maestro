@@ -1037,6 +1037,17 @@ export class Agent {
 	}
 
 	/**
+	 * Clear queued one-shot prompt inputs that were prepared for the next run but
+	 * not yet consumed.
+	 */
+	clearQueuedPromptInputs(): void {
+		this.nextRunHistoryQueue = [];
+		this.nextRunPromptOnlyQueue = [];
+		this.promptOnlyQueue = [];
+		this.nextRunSystemPromptAdditions = [];
+	}
+
+	/**
 	 * Queues a steering message to interrupt the agent mid-run.
 	 *
 	 * Delivered after the current tool execution and skips remaining tools.

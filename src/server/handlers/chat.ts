@@ -28,12 +28,7 @@ import type {
 	AgentEvent,
 } from "../../agent/types.js";
 import { runUserPromptWithRecovery } from "../../agent/user-prompt-runtime.js";
-import {
-	createNotificationFromAgentEvent,
-	isNotificationEnabled,
-	sendNotification,
-	summarizeNotificationPayload,
-} from "../../hooks/notification-hooks.js";
+import { dispatchAgentNotification } from "../../hooks/notification-hooks.js";
 import { createSessionHookService } from "../../hooks/session-integration.js";
 import { withMcpPostKeepMessages } from "../../mcp/prompt-recovery.js";
 import { createLogger } from "../../utils/logger.js";
@@ -614,10 +609,11 @@ export async function handleChat(
 			// Handle message completion - persist to session
 			if (event.type === "message_end") {
 				sessionManager.saveMessage(event.message);
+				let initializationError: string | null = null;
 
 				// Auto-initialize session on first user message
 				if (sessionManager.shouldInitializeSession(agent.state.messages)) {
-					const initializationError = startSessionWithPolicy({
+					initializationError = startSessionWithPolicy({
 						agent,
 						enterpriseContext,
 						logger,
@@ -629,17 +625,34 @@ export async function handleChat(
 						sessionManager,
 						subject,
 					});
-
-					if (initializationError) {
-						// Send error to client via SSE
-						sendSSE(sseSession, {
-							type: "error",
-							message: `[Policy] ${initializationError}`,
-						});
-						sseSession.end();
-						return;
-					}
 				}
+
+				// Update session snapshot on every event
+				sessionManager.updateSnapshot(
+					agent.state,
+					toSessionModelMetadata(registeredModel),
+				);
+				dispatchAgentNotification(
+					event,
+					{
+						cwd: process.cwd(),
+						sessionId: sessionManager.getSessionId(),
+						messages: agent.state.messages,
+					},
+					{
+						sessionHookService,
+						logger,
+					},
+				);
+
+				if (initializationError) {
+					sendSSE(sseSession, {
+						type: "error",
+						message: `[Policy] ${initializationError}`,
+					});
+					sseSession.end();
+				}
+				return;
 			}
 
 			// Update session snapshot on every event
@@ -647,32 +660,18 @@ export async function handleChat(
 				agent.state,
 				toSessionModelMetadata(registeredModel),
 			);
-			const payload = createNotificationFromAgentEvent(event, {
-				cwd: process.cwd(),
-				sessionId: sessionManager.getSessionId(),
-				messages: agent.state.messages,
-			});
-			if (!payload) {
-				return;
-			}
-
-			if (sessionHookService.hasHooks("Notification")) {
-				void sessionHookService
-					.runNotificationHooks(
-						payload.type,
-						summarizeNotificationPayload(payload) ?? payload.type,
-					)
-					.catch((error) => {
-						logger.warn("Notification hooks failed", {
-							type: payload.type,
-							error: error instanceof Error ? error.message : String(error),
-						});
-					});
-			}
-
-			if (isNotificationEnabled(payload.type)) {
-				void sendNotification(payload);
-			}
+			dispatchAgentNotification(
+				event,
+				{
+					cwd: process.cwd(),
+					sessionId: sessionManager.getSessionId(),
+					messages: agent.state.messages,
+				},
+				{
+					sessionHookService,
+					logger,
+				},
+			);
 		});
 
 		// ===== Phase 6: Connection Close Handling =====
