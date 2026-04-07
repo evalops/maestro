@@ -261,16 +261,60 @@ function normalizeMessagesForProvider(
 	messages: Message[],
 	targetModel: Model<Api>,
 ): Message[] {
-	return messages.map((msg) => {
+	const normalizedMessages: Message[] = [];
+
+	for (const msg of messages) {
 		if (msg.role !== "assistant") {
-			return msg;
+			if (msg.role === "user") {
+				const previous = normalizedMessages[normalizedMessages.length - 1];
+				if (previous?.role === "user") {
+					const previousContent: (TextContent | ImageContent)[] =
+						typeof previous.content === "string"
+							? [{ type: "text", text: previous.content }]
+							: [...previous.content];
+					const currentContent: (TextContent | ImageContent)[] =
+						typeof msg.content === "string"
+							? [{ type: "text", text: msg.content }]
+							: [...msg.content];
+					const mergedContent: (TextContent | ImageContent)[] =
+						previousContent.length > 0 && currentContent.length > 0
+							? [
+									...previousContent,
+									{ type: "text", text: "\n\n" } as TextContent,
+									...currentContent,
+								]
+							: [...previousContent, ...currentContent];
+					const previousAttachments = (
+						"attachments" in previous ? previous.attachments : undefined
+					) as Attachment[] | undefined;
+					const currentAttachments = (
+						"attachments" in msg ? msg.attachments : undefined
+					) as Attachment[] | undefined;
+					const mergedAttachments: Attachment[] = [
+						...(previousAttachments ?? []),
+						...(currentAttachments ?? []),
+					];
+					const mergedUser: UserMessageWithAttachments = {
+						...previous,
+						content: mergedContent,
+						attachments:
+							mergedAttachments.length > 0 ? mergedAttachments : undefined,
+						metadata: previous.metadata ?? msg.metadata,
+					};
+					normalizedMessages[normalizedMessages.length - 1] = mergedUser;
+					continue;
+				}
+			}
+			normalizedMessages.push(msg);
+			continue;
 		}
 		const shouldConvertThinking =
 			msg.provider !== targetModel.provider ||
 			msg.api !== targetModel.api ||
 			!targetModel.reasoning;
 		if (!shouldConvertThinking) {
-			return msg;
+			normalizedMessages.push(msg);
+			continue;
 		}
 		const content = msg.content.map((block) => {
 			if (block.type === "thinking") {
@@ -281,8 +325,10 @@ function normalizeMessagesForProvider(
 			}
 			return block;
 		});
-		return { ...msg, content };
-	});
+		normalizedMessages.push({ ...msg, content });
+	}
+
+	return normalizedMessages;
 }
 
 function isDuplicateMessage(
@@ -1288,6 +1334,7 @@ export class Agent {
 
 		let aborted = false;
 		let lastStopReason: import("./types.js").StopReason | undefined;
+		let pendingAssistantStart: AssistantMessage | null = null;
 
 		try {
 			const transformedMessages = await this.messageTransformer(
@@ -1350,6 +1397,26 @@ export class Agent {
 			)) {
 				if (event.type === "message_start") {
 					if (
+						this.suppressRecoverableOverflowErrors &&
+						isAssistantMessage(event.message)
+					) {
+						pendingAssistantStart = event.message;
+						this._state.streamMessage = isCoreMessage(event.message)
+							? event.message
+							: null;
+						if (
+							this.shouldWithholdRecoverableOverflowError(
+								event.message as AppMessage,
+							) ||
+							this.shouldWithholdRecoverableMaxOutput(event.message) ||
+							this.shouldMergeRecoverableLengthContinuation(event.message)
+						) {
+							this._state.streamMessage = null;
+							pendingAssistantStart = null;
+						}
+						continue;
+					}
+					if (
 						this.shouldWithholdRecoverableOverflowError(
 							event.message as AppMessage,
 						) ||
@@ -1374,7 +1441,15 @@ export class Agent {
 								this.shouldMergeRecoverableLengthContinuation(event.message)))
 					) {
 						this._state.streamMessage = null;
+						pendingAssistantStart = null;
 						continue;
+					}
+					if (pendingAssistantStart) {
+						this.emit({
+							type: "message_start",
+							message: pendingAssistantStart,
+						});
+						pendingAssistantStart = null;
 					}
 					this._state.streamMessage = isCoreMessage(event.message)
 						? event.message
@@ -1384,6 +1459,7 @@ export class Agent {
 					this._state.streamMessage = null;
 					let incoming = event.message as AppMessage;
 					if (this.shouldWithholdRecoverableOverflowError(incoming)) {
+						pendingAssistantStart = null;
 						this.withheldRecoverableOverflowError = incoming;
 						lastStopReason = incoming.stopReason;
 						continue;
@@ -1392,6 +1468,7 @@ export class Agent {
 						isAssistantMessage(incoming) &&
 						this.shouldWithholdRecoverableMaxOutput(incoming)
 					) {
+						pendingAssistantStart = null;
 						const assistantIncoming = incoming;
 						const lastMessage =
 							this._state.messages[this._state.messages.length - 1];
@@ -1409,6 +1486,7 @@ export class Agent {
 						isAssistantMessage(incoming) &&
 						this.shouldMergeRecoverableLengthContinuation(incoming)
 					) {
+						pendingAssistantStart = null;
 						incoming =
 							this.mergeWithWithheldRecoverableLengthMessages(incoming);
 						lastStopReason = incoming.stopReason;
@@ -1416,6 +1494,13 @@ export class Agent {
 						this.emit({ type: "message_start", message: incoming });
 						this.emit({ ...event, message: incoming });
 						continue;
+					}
+					if (pendingAssistantStart && isAssistantMessage(incoming)) {
+						this.emit({
+							type: "message_start",
+							message: pendingAssistantStart,
+						});
+						pendingAssistantStart = null;
 					}
 					const lastMessage =
 						this._state.messages[this._state.messages.length - 1];
@@ -1546,6 +1631,7 @@ export class Agent {
 
 		let aborted = false;
 		let lastStopReason: import("./types.js").StopReason | undefined;
+		let pendingAssistantStart: AssistantMessage | null = null;
 
 		try {
 			const transformedMessages = await this.messageTransformer(
@@ -1634,6 +1720,26 @@ export class Agent {
 			)) {
 				if (event.type === "message_start") {
 					if (
+						this.suppressRecoverableOverflowErrors &&
+						isAssistantMessage(event.message)
+					) {
+						pendingAssistantStart = event.message;
+						this._state.streamMessage = isCoreMessage(event.message)
+							? event.message
+							: null;
+						if (
+							this.shouldWithholdRecoverableOverflowError(
+								event.message as AppMessage,
+							) ||
+							this.shouldWithholdRecoverableMaxOutput(event.message) ||
+							this.shouldMergeRecoverableLengthContinuation(event.message)
+						) {
+							this._state.streamMessage = null;
+							pendingAssistantStart = null;
+						}
+						continue;
+					}
+					if (
 						this.shouldWithholdRecoverableOverflowError(
 							event.message as AppMessage,
 						) ||
@@ -1658,7 +1764,15 @@ export class Agent {
 								this.shouldMergeRecoverableLengthContinuation(event.message)))
 					) {
 						this._state.streamMessage = null;
+						pendingAssistantStart = null;
 						continue;
+					}
+					if (pendingAssistantStart) {
+						this.emit({
+							type: "message_start",
+							message: pendingAssistantStart,
+						});
+						pendingAssistantStart = null;
 					}
 					this._state.streamMessage = isCoreMessage(event.message)
 						? event.message
@@ -1668,6 +1782,7 @@ export class Agent {
 					this._state.streamMessage = null;
 					let incoming = event.message as AppMessage;
 					if (this.shouldWithholdRecoverableOverflowError(incoming)) {
+						pendingAssistantStart = null;
 						this.withheldRecoverableOverflowError = incoming;
 						lastStopReason = incoming.stopReason;
 						continue;
@@ -1676,6 +1791,7 @@ export class Agent {
 						isAssistantMessage(incoming) &&
 						this.shouldWithholdRecoverableMaxOutput(incoming)
 					) {
+						pendingAssistantStart = null;
 						const assistantIncoming = incoming;
 						const lastMessage =
 							this._state.messages[this._state.messages.length - 1];
@@ -1693,6 +1809,7 @@ export class Agent {
 						isAssistantMessage(incoming) &&
 						this.shouldMergeRecoverableLengthContinuation(incoming)
 					) {
+						pendingAssistantStart = null;
 						incoming =
 							this.mergeWithWithheldRecoverableLengthMessages(incoming);
 						lastStopReason = incoming.stopReason;
@@ -1700,6 +1817,13 @@ export class Agent {
 						this.emit({ type: "message_start", message: incoming });
 						this.emit({ ...event, message: incoming });
 						continue;
+					}
+					if (pendingAssistantStart && isAssistantMessage(incoming)) {
+						this.emit({
+							type: "message_start",
+							message: pendingAssistantStart,
+						});
+						pendingAssistantStart = null;
 					}
 					const lastMessage =
 						this._state.messages[this._state.messages.length - 1];
@@ -1944,6 +2068,10 @@ export class Agent {
 		};
 
 		const runMessages: Message[] = [...history, userMessage];
+		const providerMessages = normalizeMessagesForProvider(
+			runMessages,
+			summaryModel,
+		);
 		const runConfig = {
 			systemPrompt,
 			tools: [],
@@ -1972,7 +2100,7 @@ export class Agent {
 
 		try {
 			for await (const event of this.transport.run(
-				runMessages,
+				providerMessages,
 				userMessage,
 				runConfig,
 				controller.signal,

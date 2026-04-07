@@ -332,15 +332,24 @@ exit 1
 });
 
 describe("getDefaultBranch", () => {
-	it("falls back to the current branch when origin/HEAD is unavailable", () => {
+	it("returns unknown when origin/HEAD is unavailable", () => {
 		const dir = mkdtempSync(join(tmpdir(), "composer-git-default-branch-"));
+		const emptyGlobalConfig = join(dir, "global.gitconfig");
+		const originalGlobalConfig = process.env.GIT_CONFIG_GLOBAL;
 
 		try {
 			initGitRepo(dir);
 			commitFile(dir, "tracked.txt", "tracked\n", "initial commit");
+			writeFileSync(emptyGlobalConfig, "");
+			process.env.GIT_CONFIG_GLOBAL = emptyGlobalConfig;
 
-			expect(getDefaultBranch(dir)).toBe(getCurrentBranch(dir));
+			expect(getDefaultBranch(dir)).toBeUndefined();
 		} finally {
+			if (originalGlobalConfig === undefined) {
+				Reflect.deleteProperty(process.env, "GIT_CONFIG_GLOBAL");
+			} else {
+				process.env.GIT_CONFIG_GLOBAL = originalGlobalConfig;
+			}
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});

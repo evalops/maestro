@@ -1975,6 +1975,80 @@ describe("runHeadlessMode", () => {
 		});
 	});
 
+	it("passes attachment base names into prompt recovery", async () => {
+		let onLine: LineHandler | undefined;
+		let onClose: CloseHandler | undefined;
+		const readlineInterface = {
+			on(event: string, handler: LineHandler | CloseHandler) {
+				if (event === "line") {
+					onLine = handler as LineHandler;
+				}
+				if (event === "close") {
+					onClose = handler as CloseHandler;
+				}
+				return this;
+			},
+		};
+
+		vi.doMock("node:readline", () => ({
+			createInterface: () => readlineInterface,
+		}));
+
+		const runUserPromptWithRecovery = vi.fn().mockResolvedValue(undefined);
+		vi.doMock("../../src/agent/user-prompt-runtime.js", async () => {
+			const actual = await vi.importActual<
+				typeof import("../../src/agent/user-prompt-runtime.js")
+			>("../../src/agent/user-prompt-runtime.js");
+			return {
+				...actual,
+				runUserPromptWithRecovery,
+			};
+		});
+
+		const { runHeadlessMode } = await import("../../src/cli/headless.ts");
+
+		const runPromise = runHeadlessMode(
+			{
+				state: { model: { id: "gpt-5.4", provider: "openai" } },
+				subscribe: vi.fn(),
+				prompt: vi.fn(),
+				abort: vi.fn(),
+			} as never,
+			{
+				getSessionId: () => "session-headless-test",
+			} as never,
+		);
+
+		await vi.waitFor(() => {
+			expect(onLine).toBeTypeOf("function");
+			expect(onClose).toBeTypeOf("function");
+		});
+
+		await onLine?.(
+			JSON.stringify({
+				type: "hello",
+				protocol_version: HEADLESS_PROTOCOL_VERSION,
+				client_info: { name: "maestro-test", version: "0.1.0" },
+				role: "editor",
+			}),
+		);
+		await onLine?.(
+			JSON.stringify({
+				type: "prompt",
+				content: "review this file",
+				attachments: ["/tmp/workspace/docs/plan.md"],
+			}),
+		);
+		onClose?.();
+		await runPromise;
+
+		expect(runUserPromptWithRecovery).toHaveBeenCalledWith(
+			expect.objectContaining({
+				attachmentNames: ["plan.md"],
+			}),
+		);
+	});
+
 	it("rejects viewer tool_response messages before handling them", async () => {
 		let onLine: LineHandler | undefined;
 		let onClose: CloseHandler | undefined;

@@ -6,6 +6,7 @@
  * remote runtimes stay aligned.
  */
 
+import { basename } from "node:path";
 import {
 	assertHeadlessFromAgentMessage,
 	assertHeadlessToAgentMessage,
@@ -437,7 +438,7 @@ export async function runHeadlessMode(
 						cwd: process.cwd(),
 						prompt: msg.content,
 						attachmentCount: msg.attachments?.length ?? 0,
-						attachmentNames: msg.attachments,
+						attachmentNames: msg.attachments?.map((path) => basename(path)),
 						getPostKeepMessages: withHeadlessPostKeepMessages(() => state),
 						execute: async () => {
 							if (msg.attachments && msg.attachments.length > 0) {

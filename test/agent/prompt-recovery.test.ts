@@ -205,6 +205,33 @@ describe("recoverFromMaxOutput", () => {
 		expect(onContinue).not.toHaveBeenCalled();
 	});
 
+	it("counts an escalated max-output recovery as a recovered attempt", async () => {
+		const agent = createMockAgent([
+			createUserMessage("question"),
+			createAssistantMessage({ stopReason: "length", text: "partial" }),
+		]);
+
+		agent.continue.mockImplementationOnce(async (options?: unknown) => {
+			expect(options).toMatchObject({ maxTokensOverride: 64_000 });
+			agent.state.messages = [
+				...agent.state.messages,
+				createAssistantMessage({
+					text: "expanded response",
+					stopReason: "stop",
+				}),
+			];
+		});
+
+		const result = await recoverFromMaxOutput(agent as never);
+
+		expect(result).toEqual({
+			recovered: true,
+			attempts: 1,
+			exhausted: false,
+			stoppedEarly: false,
+		});
+	});
+
 	it("falls back to continuation prompts when the escalated cap still truncates", async () => {
 		const agent = createMockAgent([
 			createUserMessage("question"),
@@ -241,6 +268,42 @@ describe("recoverFromMaxOutput", () => {
 		expect(agent.continue.mock.calls[1]?.[0]).toMatchObject({
 			continuationPrompt: expect.stringContaining("Resume directly"),
 		});
+	});
+
+	it("falls back to continuation prompts when the escalated cap throws", async () => {
+		const agent = createMockAgent([
+			createUserMessage("question"),
+			createAssistantMessage({ stopReason: "length", text: "partial" }),
+		]);
+
+		agent.continue
+			.mockImplementationOnce(async (options?: unknown) => {
+				expect(options).toMatchObject({ maxTokensOverride: 64_000 });
+				throw new Error("temporary transport failure");
+			})
+			.mockImplementationOnce(async (options?: unknown) => {
+				expect(options).toMatchObject({
+					continuationPrompt: expect.stringContaining("Resume directly"),
+				});
+				agent.state.messages = [
+					...agent.state.messages,
+					createAssistantMessage({ text: "rest", stopReason: "stop" }),
+				];
+			});
+
+		const onContinue = vi.fn();
+		const result = await recoverFromMaxOutput(agent as never, {
+			callbacks: { onMaxOutputContinue: onContinue },
+		});
+
+		expect(result).toEqual({
+			recovered: true,
+			attempts: 1,
+			exhausted: false,
+			stoppedEarly: false,
+		});
+		expect(agent.continue).toHaveBeenCalledTimes(2);
+		expect(onContinue).toHaveBeenCalledWith(1, 5);
 	});
 
 	it("stops automatic continuation early when recent retries make minimal progress", async () => {
@@ -832,6 +895,52 @@ echo '{"continue": true, "systemMessage": "Preserve operator guidance from overf
 			"api_error",
 			"Anthropic API error (429): rate limit exceeded, please retry later.",
 			"Temporary failure",
+			undefined,
+		);
+	});
+
+	it("reports runtime failures when max-output recovery throws during overflow recovery", async () => {
+		const agent = createMockAgent([
+			...buildConversation(5),
+			createUserMessage("latest question"),
+		]);
+		agent.state.model.provider = "openai";
+		agent.state.model.api = "openai-completions";
+		const sessionManager = createMockSessionManager();
+		const stopFailureHookService = createMockStopFailureHookService();
+		const overflowMessage =
+			"Anthropic rejected this request because the prompt exceeded 200,000 tokens. Use /compact to summarize prior messages or remove large attachments, then retry.";
+
+		agent.continue
+			.mockImplementationOnce(async () => {
+				agent.state.messages = [
+					...agent.state.messages,
+					createAssistantMessage({
+						text: "partial",
+						stopReason: "length",
+						usage: createUsage(100, 1_000),
+					}),
+				];
+			})
+			.mockImplementationOnce(async () => {
+				throw new Error("temporary transport failure");
+			});
+
+		await expect(
+			runWithPromptRecovery({
+				agent: agent as never,
+				sessionManager,
+				stopFailureHookService,
+				execute: async () => {
+					throw new Error(overflowMessage);
+				},
+			}),
+		).rejects.toThrow("temporary transport failure");
+
+		expect(stopFailureHookService.runStopFailureHooks).toHaveBeenCalledWith(
+			"runtime_error",
+			"temporary transport failure",
+			"partial",
 			undefined,
 		);
 	});

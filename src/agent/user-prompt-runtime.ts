@@ -556,9 +556,9 @@ async function applyTokenBudgetContinuations(params: {
 
 		params.agent.emitStatus(
 			formatTokenBudgetStatus(
+				decision.pct,
 				decision.turnOutputTokens,
 				decision.budget,
-				decision.pct,
 			),
 			{
 				kind: "token_budget_continuation",

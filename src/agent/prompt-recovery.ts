@@ -438,13 +438,27 @@ export async function recoverFromMaxOutput(
 		options?.maxContinuations ?? DEFAULT_MAX_OUTPUT_CONTINUATIONS;
 	let attempt = 0;
 	let previousContinuationOutputTokens: number | undefined;
+	let escalationRecovered = false;
 
 	if (shouldEscalateMaxOutputCap(agent)) {
 		const lastAssistant = getLastAssistantMessage(agent.state.messages);
 		if (lastAssistant?.stopReason === "length") {
-			await agent.continue({
-				maxTokensOverride: MAX_OUTPUT_ESCALATION_TOKENS,
-			});
+			try {
+				await agent.continue({
+					maxTokensOverride: MAX_OUTPUT_ESCALATION_TOKENS,
+				});
+				escalationRecovered =
+					getLastAssistantMessage(agent.state.messages)?.stopReason !==
+					"length";
+			} catch (error) {
+				logger.warn(
+					"Escalated max-output continuation failed; falling back to prompt continuation",
+					{
+						error: error instanceof Error ? error.message : String(error),
+						stack: error instanceof Error ? error.stack : undefined,
+					},
+				);
+			}
 		}
 	}
 
@@ -452,8 +466,8 @@ export async function recoverFromMaxOutput(
 		const lastAssistant = getLastAssistantMessage(agent.state.messages);
 		if (!lastAssistant || lastAssistant.stopReason !== "length") {
 			return {
-				recovered: attempt > 0,
-				attempts: attempt,
+				recovered: escalationRecovered || attempt > 0,
+				attempts: attempt + (escalationRecovered ? 1 : 0),
 				exhausted: false,
 				stoppedEarly: false,
 			};
@@ -476,8 +490,8 @@ export async function recoverFromMaxOutput(
 				currentOutputTokens,
 			});
 			return {
-				recovered: attempt > 0,
-				attempts: attempt,
+				recovered: escalationRecovered || attempt > 0,
+				attempts: attempt + (escalationRecovered ? 1 : 0),
 				exhausted: false,
 				stoppedEarly: true,
 			};
@@ -495,15 +509,15 @@ export async function recoverFromMaxOutput(
 	if (lastAssistant?.stopReason === "length") {
 		options?.callbacks?.onMaxOutputExhausted?.(maxContinuations);
 		return {
-			recovered: attempt > 0,
-			attempts: attempt,
+			recovered: escalationRecovered || attempt > 0,
+			attempts: attempt + (escalationRecovered ? 1 : 0),
 			exhausted: true,
 			stoppedEarly: false,
 		};
 	}
 	return {
-		recovered: attempt > 0,
-		attempts: attempt,
+		recovered: escalationRecovered || attempt > 0,
+		attempts: attempt + (escalationRecovered ? 1 : 0),
 		exhausted: false,
 		stoppedEarly: false,
 	};
@@ -711,13 +725,30 @@ export async function runWithPromptRecovery(
 				throw assistantOverflowError;
 			}
 		} catch (error) {
-			await reportStopFailure({
-				error: "prompt_overflow",
-				errorDetails: error instanceof Error ? error.message : String(error),
-				lastAssistantMessage: getAssistantText(
-					getLastAssistantMessage(agent.state.messages),
-				),
-			});
+			const overflowErrorMessage = hasPromptOverflow(
+				agent,
+				agent.state.messages,
+				error,
+			)
+				? getOverflowErrorMessage(agent, agent.state.messages, error)
+				: undefined;
+			const stopFailure = overflowErrorMessage
+				? {
+						error: "prompt_overflow",
+						errorDetails: overflowErrorMessage,
+						lastAssistantMessage: getAssistantText(
+							getLastAssistantMessage(agent.state.messages),
+						),
+					}
+				: (getTerminalStopFailure(agent.state.messages, error) ?? {
+						error: "runtime_error",
+						errorDetails:
+							error instanceof Error ? error.message : String(error),
+						lastAssistantMessage: getAssistantText(
+							getLastAssistantMessage(agent.state.messages),
+						),
+					});
+			await reportStopFailure(stopFailure);
 			logger.warn("Prompt overflow recovery continuation failed", {
 				error: error instanceof Error ? error.message : String(error),
 				stack: error instanceof Error ? error.stack : undefined,

@@ -84,9 +84,9 @@ export function getBudgetContinuationPrompt(
 }
 
 export function formatTokenBudgetStatus(
+	pct: number,
 	turnOutputTokens: number,
 	budget: number,
-	pct: number,
 ): string {
 	const formatter = new Intl.NumberFormat("en-US");
 	return `Target: ${formatter.format(turnOutputTokens)} / ${formatter.format(budget)} (${pct}%)`;

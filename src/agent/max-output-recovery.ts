@@ -28,7 +28,7 @@ export async function recoverFromMaxOutput(
 	}
 
 	const recoveryAgent = {
-		continue: agent.continue,
+		continue: agent.continue.bind(agent),
 		get state() {
 			return {
 				...agent.state,

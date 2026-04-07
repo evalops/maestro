@@ -108,7 +108,7 @@ describe("token budget", () => {
 	});
 
 	it("formats runtime token-budget status with human-readable token counts", () => {
-		expect(formatTokenBudgetStatus(250_000, 1_000_000, 25)).toBe(
+		expect(formatTokenBudgetStatus(25, 250_000, 1_000_000)).toBe(
 			"Target: 250,000 / 1,000,000 (25%)",
 		);
 	});

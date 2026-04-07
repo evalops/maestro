@@ -221,6 +221,54 @@ describe("user prompt runtime", () => {
 		expect(queueNextRunPromptOnlyMessage).not.toHaveBeenCalled();
 	});
 
+	it("combines multiple SessionStart initial user messages in hook order", async () => {
+		const queueNextRunHistoryMessage = vi.fn();
+
+		registerHook("SessionStart", {
+			type: "callback",
+			callback: async () => ({
+				hookSpecificOutput: {
+					hookEventName: "SessionStart",
+					initialUserMessage: "Read the repository guide first.",
+				},
+			}),
+		});
+		registerHook("SessionStart", {
+			type: "callback",
+			callback: async () => ({
+				hookSpecificOutput: {
+					hookEventName: "SessionStart",
+					initialUserMessage: "Then check the package-specific commands.",
+				},
+			}),
+		});
+
+		await applySessionStartHooks({
+			agent: {
+				queueNextRunPromptOnlyMessage: vi.fn(),
+				queueNextRunSystemPromptAddition: vi.fn(),
+				queueNextRunHistoryMessage,
+			} as unknown as Agent,
+			sessionManager: {
+				getSessionId: () => "session-start-multi",
+			} as never,
+			cwd: "/tmp/session-start-hooks",
+			source: "cli",
+		});
+
+		expect(queueNextRunHistoryMessage).toHaveBeenCalledOnce();
+		expect(queueNextRunHistoryMessage).toHaveBeenCalledWith({
+			role: "user",
+			content:
+				"Read the repository guide first.\nThen check the package-specific commands.",
+			metadata: {
+				kind: SESSION_START_INITIAL_USER_METADATA_KIND,
+				source: "cli",
+			},
+			timestamp: expect.any(Number),
+		});
+	});
+
 	it("persists compact SessionStart hook context immediately when requested", async () => {
 		const appendMessage = vi.fn();
 		const queueNextRunPromptOnlyMessage = vi.fn();
@@ -882,13 +930,14 @@ describe("user prompt runtime", () => {
 				_config: AgentRunConfig,
 			): AsyncGenerator<AgentEvent, void, unknown> {
 				if (typeof userMessage.content === "string") {
-					const assistant = {
-						...createAssistantMessage("Too much context"),
+					const assistantStart = createAssistantMessage("Too much context");
+					const assistantEnd = {
+						...assistantStart,
 						stopReason: "error" as const,
 						errorMessage: overflowMessage,
 					};
-					yield { type: "message_start", message: assistant };
-					yield { type: "message_end", message: assistant };
+					yield { type: "message_start", message: assistantStart };
+					yield { type: "message_end", message: assistantEnd };
 					return;
 				}
 
@@ -1728,11 +1777,11 @@ describe("user prompt runtime", () => {
 		expect(transport.capturedMessages[0]).toEqual([
 			expect.objectContaining({
 				role: "user",
-				content: [{ type: "text", text: "Workspace conventions from hook" }],
-			}),
-			expect.objectContaining({
-				role: "user",
-				content: "first",
+				content: [
+					{ type: "text", text: "Workspace conventions from hook" },
+					{ type: "text", text: "\n\n" },
+					{ type: "text", text: "first" },
+				],
 			}),
 		]);
 	});
@@ -1800,11 +1849,73 @@ describe("user prompt runtime", () => {
 		expect(transport.capturedMessages[0]).toEqual([
 			expect.objectContaining({
 				role: "user",
-				content: "SessionStart seeded prompt",
+				content: [
+					{ type: "text", text: "SessionStart seeded prompt" },
+					{ type: "text", text: "\n\n" },
+					{ type: "text", text: "first" },
+				],
 			}),
+		]);
+	});
+
+	it("collapses consecutive user turns before summary generation", async () => {
+		class SummaryCaptureTransport implements AgentTransport {
+			capturedMessages: Message[][] = [];
+
+			async *run(
+				messages: Message[],
+				_userMessage: Message,
+				_config: AgentRunConfig,
+			): AsyncGenerator<AgentEvent, void, unknown> {
+				this.capturedMessages.push(messages);
+				const assistant = createAssistantMessage("Summary");
+				yield { type: "message_start", message: assistant };
+				yield { type: "message_end", message: assistant };
+			}
+
+			async *continue(): AsyncGenerator<AgentEvent, void, unknown> {
+				const assistant = createAssistantMessage("Continued");
+				yield { type: "message_start", message: assistant };
+				yield { type: "message_end", message: assistant };
+			}
+		}
+
+		const transport = new SummaryCaptureTransport();
+		const agent = new Agent({
+			transport,
+			initialState: {
+				model: mockModel,
+				tools: [],
+				systemPrompt: "Base system prompt",
+			},
+		});
+
+		await agent.generateSummary(
+			[
+				{
+					role: "user",
+					content: "SessionStart seeded prompt",
+					timestamp: Date.now(),
+				},
+				{
+					role: "user",
+					content: "latest question",
+					timestamp: Date.now(),
+				},
+			],
+			"Summarize this conversation.",
+		);
+
+		expect(transport.capturedMessages[0]).toEqual([
 			expect.objectContaining({
 				role: "user",
-				content: "first",
+				content: [
+					{ type: "text", text: "SessionStart seeded prompt" },
+					{ type: "text", text: "\n\n" },
+					{ type: "text", text: "latest question" },
+					{ type: "text", text: "\n\n" },
+					{ type: "text", text: "Summarize this conversation." },
+				],
 			}),
 		]);
 	});

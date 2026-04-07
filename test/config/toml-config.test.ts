@@ -675,10 +675,10 @@ experimental_instructions_file = ".maestro/instructions.md"
 			expect(resolvedPaths).toEqual(loadedPaths);
 		});
 
-		it("matches the prompt loader when a doc exactly ends on a multi-byte UTF-8 boundary", () => {
+		it("matches the prompt loader when truncation lands on a multi-byte UTF-8 boundary", () => {
 			const appDir = join(projectDir, "apps", "web");
 			mkdirSync(appDir, { recursive: true });
-			writeFileSync(join(projectDir, "AGENT.md"), "A😀");
+			writeFileSync(join(projectDir, "AGENT.md"), "A😀B");
 			writeFileSync(join(appDir, "AGENT.md"), "B");
 
 			const config = {

@@ -53,7 +53,7 @@ export function createSessionCommandHandler(deps: SessionCommandDeps) {
 				break;
 
 			case "new":
-				deps.handleNewChat();
+				await deps.handleNewChat();
 				break;
 
 			case "clear":

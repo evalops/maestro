@@ -277,7 +277,9 @@ function processResults(results: HookExecutionResult[]): SessionHookResult {
 		}
 
 		if (result.initialUserMessage) {
-			initialUserMessage = result.initialUserMessage;
+			initialUserMessage = initialUserMessage
+				? `${initialUserMessage}\n${result.initialUserMessage}`
+				: result.initialUserMessage;
 		}
 
 		// Collect system message

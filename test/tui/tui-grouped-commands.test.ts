@@ -49,6 +49,35 @@ describe("Grouped Command Handlers", () => {
 			expect(deps.handleNewChat).toHaveBeenCalled();
 		});
 
+		it("awaits async new-chat handlers", async () => {
+			const { createSessionCommandHandler } = await import(
+				"../../src/cli-tui/commands/grouped/session-commands.js"
+			);
+
+			let finished = false;
+			const deps = {
+				handleNewChat: vi.fn().mockImplementation(async () => {
+					await Promise.resolve();
+					finished = true;
+				}),
+				handleClear: vi.fn(),
+				handleSessionInfo: vi.fn(),
+				handleSessionsList: vi.fn(),
+				handleBranch: vi.fn(),
+				handleTree: vi.fn(),
+				handleQueue: vi.fn(),
+				handleExport: vi.fn(),
+				handleShare: vi.fn(),
+				handleRecover: vi.fn(),
+				showInfo: vi.fn(),
+			};
+
+			const handler = createSessionCommandHandler(deps);
+			await handler(createMockContext("/ss new", "new"));
+
+			expect(finished).toBe(true);
+		});
+
 		it("routes 'clear' subcommand to handleClear", async () => {
 			const { createSessionCommandHandler } = await import(
 				"../../src/cli-tui/commands/grouped/session-commands.js"

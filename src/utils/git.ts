@@ -135,7 +135,7 @@ export function getDefaultBranch(
 		return configuredDefault.stdout;
 	}
 
-	return getCurrentBranch(cwd);
+	return undefined;
 }
 
 export function getGitUserName(
