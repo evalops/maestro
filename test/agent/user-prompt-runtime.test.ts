@@ -1335,6 +1335,7 @@ describe("user prompt runtime", () => {
 		const emittedAssistantStarts: AssistantMessage[] = [];
 		const emittedAssistantEnds: AssistantMessage[] = [];
 		const emittedTurnEnds: AssistantMessage[] = [];
+		const agentEndStopReasons: StopReason[] = [];
 		agent.subscribe((event) => {
 			if (
 				event.type === "message_start" &&
@@ -1347,6 +1348,9 @@ describe("user prompt runtime", () => {
 			}
 			if (event.type === "turn_end" && event.message.role === "assistant") {
 				emittedTurnEnds.push(event.message as AssistantMessage);
+			}
+			if (event.type === "agent_end" && event.stopReason) {
+				agentEndStopReasons.push(event.stopReason);
 			}
 		});
 
@@ -1370,6 +1374,77 @@ describe("user prompt runtime", () => {
 		expect(emittedAssistantEnds[0]?.stopReason).toBe("stop");
 		expect(emittedTurnEnds).toHaveLength(1);
 		expect(extractAssistantText(emittedTurnEnds[0])).toBe("Partial rest");
+		expect(agentEndStopReasons.at(-1)).toBe("stop");
+		expect(
+			agent.state.messages.filter((message) => message.role === "assistant"),
+		).toHaveLength(1);
+		expect(
+			extractAssistantText(
+				agent.state.messages[
+					agent.state.messages.length - 1
+				] as AssistantMessage,
+			),
+		).toBe("Partial rest");
+	});
+
+	it("ignores duplicate recoverable max-output endings when merging continuations", async () => {
+		class DuplicateLengthThenSuccessTransport implements AgentTransport {
+			async *run(
+				_messages: Message[],
+				userMessage: Message,
+				_config: AgentRunConfig,
+			): AsyncGenerator<AgentEvent, void, unknown> {
+				if (typeof userMessage.content === "string") {
+					const assistant = createAssistantMessageWithUsage("Partial ", {
+						inputTokens: 12,
+						outputTokens: 34,
+						stopReason: "length",
+					});
+					yield { type: "message_start", message: assistant };
+					yield { type: "message_end", message: assistant };
+					yield { type: "message_end", message: assistant };
+					yield { type: "turn_end", message: assistant, toolResults: [] };
+					return;
+				}
+
+				const assistant = createAssistantMessageWithUsage("rest", {
+					inputTokens: 8,
+					outputTokens: 21,
+					stopReason: "stop",
+				});
+				yield { type: "message_start", message: assistant };
+				yield { type: "message_end", message: assistant };
+				yield { type: "turn_end", message: assistant, toolResults: [] };
+			}
+		}
+
+		const agent = new Agent({
+			transport: new DuplicateLengthThenSuccessTransport(),
+			initialState: {
+				model: mockModel,
+				tools: [],
+				systemPrompt: "Base system prompt",
+			},
+		});
+
+		await runUserPromptWithRecovery({
+			agent,
+			sessionManager: {
+				getSessionId: () => "session-length-duplicate",
+			} as never,
+			cwd: "/tmp/length-duplicate",
+			prompt: "latest question",
+			execute: () => agent.prompt("latest question"),
+		});
+
+		expect(
+			agent.state.messages.filter((message) => message.role === "user"),
+		).toContainEqual(
+			expect.objectContaining({
+				role: "user",
+				content: "latest question",
+			}),
+		);
 		expect(
 			agent.state.messages.filter((message) => message.role === "assistant"),
 		).toHaveLength(1);

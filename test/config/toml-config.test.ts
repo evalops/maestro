@@ -1,7 +1,8 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { loadProjectContextFiles } from "../../src/cli/system-prompt.js";
 import {
 	type ComposerConfig,
 	DEFAULT_CONFIG,
@@ -11,6 +12,7 @@ import {
 	getConfigSummary,
 	loadConfig,
 	parseCliOverride,
+	resolvePromptLoadedProjectDocPaths,
 } from "../../src/config/toml-config.js";
 
 describe("toml-config", () => {
@@ -646,6 +648,31 @@ experimental_instructions_file = ".maestro/instructions.md"
 			// Should not throw, just warns
 			const config = loadConfig(projectDir);
 			expect(config.model).toBe(DEFAULT_CONFIG.model);
+		});
+	});
+
+	describe("resolvePromptLoadedProjectDocPaths", () => {
+		it("tracks the same project docs that actually fit into the prompt byte budget", () => {
+			const appDir = join(projectDir, "apps", "web");
+			mkdirSync(appDir, { recursive: true });
+			writeFileSync(join(projectDir, "AGENT.md"), "A".repeat(40));
+			writeFileSync(join(projectDir, "apps", "AGENT.md"), "B".repeat(40));
+			writeFileSync(join(appDir, "AGENT.md"), "C".repeat(40));
+
+			const config = {
+				...DEFAULT_CONFIG,
+				project_doc_max_bytes: 70,
+			} as ComposerConfig;
+
+			const loadedPaths = loadProjectContextFiles(appDir, { config }).map(
+				(file) => resolve(file.path),
+			);
+			const resolvedPaths = resolvePromptLoadedProjectDocPaths(
+				appDir,
+				config,
+			).map((filePath) => resolve(filePath));
+
+			expect(resolvedPaths).toEqual(loadedPaths);
 		});
 	});
 });

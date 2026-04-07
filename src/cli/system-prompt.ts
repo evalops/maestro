@@ -13,6 +13,7 @@ import { getAgentDir } from "../config/constants.js";
 import {
 	type ComposerConfig,
 	loadConfig,
+	resolveLoadedAppendSystemPromptPath,
 	resolveProjectDocCandidateFilenames,
 } from "../config/index.js";
 
@@ -92,15 +93,8 @@ export function resolveExplicitSystemPromptSourcePaths(
 }
 
 function loadAppendSystemPrompt(cwd: string): string | null {
-	const projectPath = join(cwd, ".maestro", "APPEND_SYSTEM.md");
-	if (existsSync(projectPath)) {
-		return resolvePromptInput(projectPath);
-	}
-	const globalPath = join(getAgentDir(), "APPEND_SYSTEM.md");
-	if (existsSync(globalPath)) {
-		return resolvePromptInput(globalPath);
-	}
-	return null;
+	const appendSystemPath = resolveLoadedAppendSystemPromptPath(cwd);
+	return appendSystemPath ? resolvePromptInput(appendSystemPath) : null;
 }
 
 function buildGuidelines(toolNames: Set<string>, currentYear: number): string {

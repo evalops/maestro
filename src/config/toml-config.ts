@@ -23,7 +23,14 @@
  * allowing users to have personal settings that don't get committed to git.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import {
+	closeSync,
+	existsSync,
+	openSync,
+	readFileSync,
+	readSync,
+	statSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import { Type } from "@sinclair/typebox";
 import { parse as parseTOML } from "smol-toml";
@@ -515,14 +522,73 @@ export function resolveProjectDocCandidateFilenames(
 	return Array.from(new Set(merged));
 }
 
+function truncateUtf8ToValidBytes(buffer: Buffer, bytesRead: number): number {
+	let end = bytesRead;
+	while (end > 0 && (buffer[end - 1]! & 0b1100_0000) === 0b1000_0000) {
+		end -= 1;
+	}
+
+	if (end === 0) {
+		return 0;
+	}
+
+	const start = end - 1;
+	const lead = buffer[start]!;
+	let expected = 1;
+	if ((lead & 0b1000_0000) === 0) {
+		expected = 1;
+	} else if ((lead & 0b1110_0000) === 0b1100_0000) {
+		expected = 2;
+	} else if ((lead & 0b1111_0000) === 0b1110_0000) {
+		expected = 3;
+	} else if ((lead & 0b1111_1000) === 0b1111_0000) {
+		expected = 4;
+	} else {
+		end = start;
+	}
+
+	if (start + expected > end) {
+		end = start;
+	}
+
+	return Math.max(0, end);
+}
+
+function estimateProjectDocBytesRead(
+	filePath: string,
+	budget?: number,
+): number {
+	const stats = statSync(filePath);
+	if (budget === undefined || budget <= 0 || stats.size <= budget) {
+		return stats.size;
+	}
+
+	const fd = openSync(filePath, "r");
+	try {
+		const buffer = Buffer.alloc(budget);
+		const bytesRead = readSync(fd, buffer, 0, budget, 0);
+		return truncateUtf8ToValidBytes(buffer, bytesRead);
+	} finally {
+		closeSync(fd);
+	}
+}
+
 function resolveFirstProjectDocPathInDir(
 	dir: string,
 	candidates: string[],
-): string | null {
+	remainingBytes?: number,
+): { path: string; bytesRead: number } | null {
+	if (remainingBytes !== undefined && remainingBytes <= 0) {
+		return null;
+	}
 	for (const filename of candidates) {
 		const filePath = join(dir, filename);
 		if (existsSync(filePath)) {
-			return resolve(filePath);
+			const resolvedPath = resolve(filePath);
+			return {
+				path: resolvedPath,
+				bytesRead: estimateProjectDocBytesRead(resolvedPath, remainingBytes),
+			};
 		}
 	}
 	return null;
@@ -535,15 +601,31 @@ export function resolvePromptLoadedProjectDocPaths(
 	const cwd = cwdOverride ?? process.cwd();
 	const resolvedConfig = config ?? loadConfig(cwd);
 	const candidates = resolveProjectDocCandidateFilenames(resolvedConfig);
+	const maxBytesRaw = resolvedConfig.project_doc_max_bytes;
+	const maxBytes =
+		typeof maxBytesRaw === "number"
+			? Math.max(0, Math.floor(maxBytesRaw))
+			: undefined;
+	let remainingBytes = maxBytes;
+	if (remainingBytes === 0) {
+		return [];
+	}
 	const paths: string[] = [];
 
 	const globalContextDir = resolve(getAgentDir());
 	const globalContextPath = resolveFirstProjectDocPathInDir(
 		globalContextDir,
 		candidates,
+		remainingBytes,
 	);
 	if (globalContextPath) {
-		paths.push(globalContextPath);
+		paths.push(globalContextPath.path);
+		if (remainingBytes !== undefined) {
+			remainingBytes = Math.max(
+				0,
+				remainingBytes - globalContextPath.bytesRead,
+			);
+		}
 	}
 
 	const directories: string[] = [];
@@ -566,9 +648,19 @@ export function resolvePromptLoadedProjectDocPaths(
 	directories.reverse();
 
 	for (const dir of directories) {
-		const contextPath = resolveFirstProjectDocPathInDir(dir, candidates);
+		if (remainingBytes === 0) {
+			break;
+		}
+		const contextPath = resolveFirstProjectDocPathInDir(
+			dir,
+			candidates,
+			remainingBytes,
+		);
 		if (contextPath) {
-			paths.push(contextPath);
+			paths.push(contextPath.path);
+			if (remainingBytes !== undefined) {
+				remainingBytes = Math.max(0, remainingBytes - contextPath.bytesRead);
+			}
 		}
 	}
 

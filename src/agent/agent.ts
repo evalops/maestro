@@ -1400,8 +1400,8 @@ export class Agent {
 								...this._state.messages,
 								assistantIncoming,
 							];
+							this.withheldRecoverableLengthMessages.push(assistantIncoming);
 						}
-						this.withheldRecoverableLengthMessages.push(assistantIncoming);
 						lastStopReason = "length";
 						continue;
 					}
@@ -1411,6 +1411,7 @@ export class Agent {
 					) {
 						incoming =
 							this.mergeWithWithheldRecoverableLengthMessages(incoming);
+						lastStopReason = incoming.stopReason;
 						this.primeToolBatch(incoming);
 						this.emit({ type: "message_start", message: incoming });
 						this.emit({ ...event, message: incoming });
@@ -1683,8 +1684,8 @@ export class Agent {
 								...this._state.messages,
 								assistantIncoming,
 							];
+							this.withheldRecoverableLengthMessages.push(assistantIncoming);
 						}
-						this.withheldRecoverableLengthMessages.push(assistantIncoming);
 						lastStopReason = "length";
 						continue;
 					}
@@ -1694,6 +1695,7 @@ export class Agent {
 					) {
 						incoming =
 							this.mergeWithWithheldRecoverableLengthMessages(incoming);
+						lastStopReason = incoming.stopReason;
 						this.primeToolBatch(incoming);
 						this.emit({ type: "message_start", message: incoming });
 						this.emit({ ...event, message: incoming });

@@ -47,6 +47,41 @@ import { mcpManager } from "../mcp/index.js";
 import { withMcpPostKeepMessages } from "../mcp/prompt-recovery.js";
 import type { SessionManager } from "../session/manager.js";
 
+async function collectRpcPostKeepMessages(
+	sessionManager: SessionManager,
+	cwd: string,
+	preservedMessages: AppMessage[],
+): Promise<AppMessage[]> {
+	const [
+		planMessages,
+		backgroundTaskMessages,
+		mcpMessages,
+		sessionStartMessages,
+	] = await Promise.all([
+		Promise.resolve(collectPlanMessagesForCompaction(preservedMessages)),
+		Promise.resolve(
+			collectBackgroundTaskMessagesForCompaction(preservedMessages),
+		),
+		Promise.resolve(
+			collectMcpMessagesForCompaction(
+				preservedMessages,
+				mcpManager.getStatus().servers,
+			),
+		),
+		collectPersistedSessionStartHookMessages({
+			sessionManager,
+			cwd,
+			source: "compact",
+		}),
+	]);
+	return [
+		...planMessages,
+		...backgroundTaskMessages,
+		...mcpMessages,
+		...sessionStartMessages,
+	];
+}
+
 /**
  * Run the CLI in RPC mode.
  *
@@ -124,19 +159,12 @@ export async function runRpcMode(
 						process.cwd(),
 					),
 					execute: () => agent.continue(input.options),
-					getPostKeepMessages: async (preservedMessages) => [
-						...collectPlanMessagesForCompaction(preservedMessages),
-						...collectBackgroundTaskMessagesForCompaction(preservedMessages),
-						...collectMcpMessagesForCompaction(
-							preservedMessages,
-							mcpManager.getStatus().servers,
-						),
-						...(await collectPersistedSessionStartHookMessages({
+					getPostKeepMessages: (preservedMessages) =>
+						collectRpcPostKeepMessages(
 							sessionManager,
-							cwd: process.cwd(),
-							source: "compact",
-						})),
-					],
+							process.cwd(),
+							preservedMessages,
+						),
 					callbacks: {
 						onCompacted: (result) => {
 							console.log(
@@ -159,19 +187,12 @@ export async function runRpcMode(
 						sessionManager,
 						process.cwd(),
 					),
-					getPostKeepMessages: async (preservedMessages) => [
-						...collectPlanMessagesForCompaction(preservedMessages),
-						...collectBackgroundTaskMessagesForCompaction(preservedMessages),
-						...collectMcpMessagesForCompaction(
-							preservedMessages,
-							mcpManager.getStatus().servers,
-						),
-						...(await collectPersistedSessionStartHookMessages({
+					getPostKeepMessages: (preservedMessages) =>
+						collectRpcPostKeepMessages(
 							sessionManager,
-							cwd: process.cwd(),
-							source: "compact",
-						})),
-					],
+							process.cwd(),
+							preservedMessages,
+						),
 					customInstructions,
 					renderSummaryText: (summary: AssistantMessage) => {
 						const renderable = createRenderableMessage(summary as AppMessage);

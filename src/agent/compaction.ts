@@ -285,6 +285,8 @@ type ReadRestoreRequest = {
 	encoding?: "utf-8" | "utf-16le" | "latin1" | "ascii";
 };
 
+type ReadRestoreExecutor = typeof readTool.execute;
+
 function parseOptionalInteger(value: unknown, minimum = 1): number | undefined {
 	return typeof value === "number" &&
 		Number.isInteger(value) &&
@@ -434,9 +436,46 @@ function getSkillRestoreNameFromMessage(message: AppMessage): string | null {
 		return details.name;
 	}
 
-	return Array.isArray(message.content)
-		? extractSkillRestoreName(message.content)
-		: null;
+	return extractSkillRestoreName(message.content);
+}
+
+function collectSuccessfulSkillToolCallIds(
+	messages: AppMessage[],
+): Set<string> {
+	const toolCallIds = new Set<string>();
+	for (const message of messages) {
+		if (
+			message.role === "toolResult" &&
+			message.toolName === "Skill" &&
+			!message.isError
+		) {
+			toolCallIds.add(message.toolCallId);
+		}
+	}
+	return toolCallIds;
+}
+
+function stripSuccessfulSkillToolCallsForCompactionSummary(
+	message: AssistantMessage,
+	successfulSkillToolCallIds: ReadonlySet<string>,
+): AppMessage[] {
+	if (successfulSkillToolCallIds.size === 0) {
+		return [message];
+	}
+
+	const filteredContent = message.content.filter(
+		(part) =>
+			part.type !== "toolCall" ||
+			part.name !== "Skill" ||
+			!successfulSkillToolCallIds.has(part.id),
+	);
+	if (filteredContent.length === message.content.length) {
+		return [message];
+	}
+	if (filteredContent.length === 0) {
+		return [];
+	}
+	return [{ ...message, content: filteredContent }];
 }
 
 function isToolSkillRestoreHookMessage(
@@ -530,29 +569,39 @@ function getPreservedSkillRestoreState(
 async function refreshReadRestoreContent(
 	request: ReadRestoreRequest,
 	toolCallId: string,
+	readRestoreExecute: ReadRestoreExecutor,
 ): Promise<(TextContent | ImageContent)[] | null> {
-	const result = await readTool.execute(toolCallId, {
-		path: request.path,
-		offset: request.offset,
-		limit: request.limit,
-		mode: request.mode,
-		lineNumbers: request.lineNumbers,
-		wrapInCodeFence: request.wrapInCodeFence,
-		language: request.language,
-		encoding: request.encoding,
-		withDiagnostics: false,
-	});
-	if (result.isError) {
+	try {
+		const result = await readRestoreExecute(toolCallId, {
+			path: request.path,
+			offset: request.offset,
+			limit: request.limit,
+			mode: request.mode,
+			lineNumbers: request.lineNumbers,
+			wrapInCodeFence: request.wrapInCodeFence,
+			language: request.language,
+			encoding: request.encoding,
+			withDiagnostics: false,
+		});
+		if (result.isError) {
+			return null;
+		}
+		return result.content.filter(
+			(
+				block,
+			): block is
+				| { type: "text"; text: string }
+				| { type: "image"; data: string; mimeType: string } =>
+				block.type === "text" || block.type === "image",
+		);
+	} catch (error) {
+		logger.warn("Failed to refresh read restore content during compaction", {
+			filePath: request.path,
+			toolCallId,
+			error: error instanceof Error ? error.message : String(error),
+		});
 		return null;
 	}
-	return result.content.filter(
-		(
-			block,
-		): block is
-			| { type: "text"; text: string }
-			| { type: "image"; data: string; mimeType: string } =>
-			block.type === "text" || block.type === "image",
-	);
 }
 
 function buildReadRestoreContent(
@@ -919,6 +968,7 @@ async function collectRecentReadRestoreMessages(
 	compactedMessages: AppMessage[],
 	preservedMessages: AppMessage[],
 	additionalExcludedPaths: string[] = [],
+	readRestoreExecute: ReadRestoreExecutor = readTool.execute,
 ): Promise<AppMessage[]> {
 	const visiblePaths = collectVisibleReadPaths(preservedMessages);
 	const requestsByCallId =
@@ -952,6 +1002,7 @@ async function collectRecentReadRestoreMessages(
 				? await refreshReadRestoreContent(
 						request,
 						`compaction-read-restore-${message.toolCallId}`,
+						readRestoreExecute,
 					)
 				: null;
 			content = buildReadRestoreContent(
@@ -983,15 +1034,7 @@ async function collectRecentReadRestoreMessages(
 		) {
 			continue;
 		}
-		const dedupeMessages =
-			message.role === "hookMessage"
-				? [
-						...compactedMessages.slice(0, i),
-						...compactedMessages.slice(i + 1),
-						...preservedMessages,
-						...restoredMessages,
-					]
-				: [...compactedMessages, ...preservedMessages, ...restoredMessages];
+		const dedupeMessages = [...preservedMessages, ...restoredMessages];
 		if (hasReadRestoreMessage(dedupeMessages, filePath, content)) {
 			seenPaths.add(filePath);
 			continue;
@@ -1255,6 +1298,8 @@ function prepareMessagesForCompactionSummary(
 		readPathsRestoredAfterCompaction.size > 0
 			? collectReadRestoreRequestsByCallId(messages)
 			: new Map<string, ReadRestoreRequest>();
+	const successfulSkillToolCallIds =
+		collectSuccessfulSkillToolCallIds(messages);
 	return messages.flatMap((message) => {
 		if (
 			message.role === "toolResult" &&
@@ -1278,6 +1323,12 @@ function prepareMessagesForCompactionSummary(
 			shouldSkipReinjectedCompactionMessage(message)
 		) {
 			return [];
+		}
+		if (message.role === "assistant") {
+			return stripSuccessfulSkillToolCallsForCompactionSummary(
+				message,
+				successfulSkillToolCallIds,
+			);
 		}
 		if (message.role === "user") {
 			const sanitizedMessage = stripInlineImagesForCompactionSummary(message);
@@ -1361,6 +1412,10 @@ function truncateSummaryInputForOverflowRetry(
 	const turnBoundaries = findTurnBoundaries(body, 0, body.length).filter(
 		(index) => index > 0,
 	);
+	const approximateDropCount = Math.max(1, Math.floor(body.length * 0.2));
+	const fallbackBoundary =
+		turnBoundaries.find((index) => index >= approximateDropCount) ??
+		approximateDropCount;
 	const tokenGap = overflowErrorMessage
 		? getOverflowTokenGap(overflowErrorMessage)
 		: undefined;
@@ -1384,10 +1439,10 @@ function truncateSummaryInputForOverflowRetry(
 			}
 		}
 	} else {
-		const approximateDropCount = Math.max(1, Math.floor(body.length * 0.2));
-		boundary =
-			turnBoundaries.find((index) => index >= approximateDropCount) ??
-			approximateDropCount;
+		boundary = fallbackBoundary;
+	}
+	if (boundary >= body.length) {
+		boundary = fallbackBoundary;
 	}
 	boundary = adjustBoundaryForToolResults(body, boundary);
 	if (boundary >= body.length) {
@@ -2254,6 +2309,7 @@ export async function performCompaction(params: {
 		preservedMessages: AppMessage[],
 	) => Promise<AppMessage[]>;
 	renderSummaryText?: (message: AssistantMessage) => string;
+	readRestoreExecute?: ReadRestoreExecutor;
 }): Promise<PerformCompactionResult> {
 	const {
 		agent,
@@ -2266,6 +2322,7 @@ export async function performCompaction(params: {
 		hookService,
 		getPostKeepMessages,
 		renderSummaryText,
+		readRestoreExecute = readTool.execute,
 	} = params;
 	const messages = [...agent.state.messages];
 	const keepCount = 6;
@@ -2297,6 +2354,7 @@ export async function performCompaction(params: {
 		older,
 		keep,
 		agent.state.systemPromptSourcePaths,
+		readRestoreExecute,
 	);
 	const readPathsRestoredAfterCompaction =
 		collectRestoredReadPaths(restoredReadMessages);
@@ -2345,9 +2403,10 @@ export async function performCompaction(params: {
 
 	// Look for previous summary (cascading)
 	const previousSummary = findPreviousSummary(messages);
+	const sliceSize = Math.min(40, older.length);
 	const olderForSummary = stripRedundantPreviousCompactionMessages(
 		prepareMessagesForCompactionSummary(
-			older,
+			older.slice(-sliceSize),
 			readPathsRestoredAfterCompaction,
 		),
 		previousSummary,
@@ -2360,8 +2419,7 @@ export async function performCompaction(params: {
 			timestamp: Date.now(),
 		});
 	}
-	const sliceSize = Math.min(40, older.length);
-	summaryInput.push(...olderForSummary.slice(-sliceSize));
+	summaryInput.push(...olderForSummary);
 
 	let summaryText = "";
 	let usedModel = false;
@@ -2386,8 +2444,7 @@ export async function performCompaction(params: {
 			const llmText = renderSummaryText
 				? renderSummaryText(summary)
 				: extractMessageText(summary);
-			summaryText =
-				llmText.trim() || buildLocalSummary(summaryInputForAttempt, 32);
+			summaryText = llmText.trim() || buildLocalSummary(olderForSummary, 32);
 			usedModel = true;
 			break;
 		} catch (error) {
@@ -2406,7 +2463,7 @@ export async function performCompaction(params: {
 					continue;
 				}
 			}
-			summaryText = buildLocalSummary(summaryInputForAttempt, 32);
+			summaryText = buildLocalSummary(olderForSummary, 32);
 			break;
 		}
 	}

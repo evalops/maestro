@@ -77,15 +77,11 @@ function buildBackgroundTasksCompactionContent(): string | null {
 	return lines.join("\n");
 }
 
-function hasBackgroundTasksCompactionMessage(
-	messages: AppMessage[],
-	expectedContent: string,
-): boolean {
+function hasBackgroundTasksCompactionMessage(messages: AppMessage[]): boolean {
 	return messages.some(
 		(message) =>
 			message.role === "hookMessage" &&
-			message.customType === BACKGROUND_TASKS_COMPACTION_CUSTOM_TYPE &&
-			message.content === expectedContent,
+			message.customType === BACKGROUND_TASKS_COMPACTION_CUSTOM_TYPE,
 	);
 }
 
@@ -382,9 +378,12 @@ function hasHeadlessClientRequestsCompactionMessage(
 function buildPlanFileCompactionContent(
 	filePath: string,
 	planContent: string,
+	isActive: boolean,
 ): string {
 	return [
-		"# Active plan file restored after compaction",
+		isActive
+			? "# Active plan file restored after compaction"
+			: "# Inactive tracked plan file restored after compaction",
 		"",
 		`Plan file: ${filePath}`,
 		"",
@@ -396,10 +395,11 @@ function buildPlanFileCompactionContent(
 function buildPlanFileCompactionMessage(
 	filePath: string,
 	planContent: string,
+	isActive: boolean,
 ): AppMessage {
 	return createHookMessage(
 		PLAN_FILE_COMPACTION_CUSTOM_TYPE,
-		buildPlanFileCompactionContent(filePath, planContent),
+		buildPlanFileCompactionContent(filePath, planContent, isActive),
 		false,
 		{ filePath },
 		new Date().toISOString(),
@@ -427,8 +427,13 @@ function hasPlanFileCompactionMessage(
 	messages: AppMessage[],
 	filePath: string,
 	planContent: string,
+	isActive: boolean,
 ): boolean {
-	const expectedContent = buildPlanFileCompactionContent(filePath, planContent);
+	const expectedContent = buildPlanFileCompactionContent(
+		filePath,
+		planContent,
+		isActive,
+	);
 	return messages.some((message) => {
 		if (
 			message.role !== "hookMessage" ||
@@ -490,32 +495,28 @@ export function collectPlanMessagesForCompaction(
 	}
 
 	const restoredMessages: AppMessage[] = [];
+	const planModeActive = isPlanModeActive();
 	const planContent = readPlanFileForCompactionRestore();
 	if (
 		typeof planContent === "string" &&
 		planContent.length > 0 &&
-		!hasPlanFileCompactionMessage(messages, filePath, planContent)
+		!hasPlanFileCompactionMessage(
+			messages,
+			filePath,
+			planContent,
+			planModeActive,
+		)
 	) {
 		restoredMessages.push(
-			buildPlanFileCompactionMessage(filePath, planContent),
+			buildPlanFileCompactionMessage(filePath, planContent, planModeActive),
 		);
 	}
 
-	if (isPlanModeActive() && !hasPlanModeCompactionMessage(messages, filePath)) {
+	if (planModeActive && !hasPlanModeCompactionMessage(messages, filePath)) {
 		restoredMessages.push(buildPlanModeCompactionMessage(filePath));
 	}
 
 	return restoredMessages;
-}
-
-export function collectPlanModeMessagesForCompaction(
-	messages: AppMessage[],
-): AppMessage[] {
-	return collectPlanMessagesForCompaction(messages).filter(
-		(message) =>
-			message.role === "hookMessage" &&
-			message.customType === PLAN_MODE_COMPACTION_CUSTOM_TYPE,
-	);
 }
 
 export function collectBackgroundTaskMessagesForCompaction(
@@ -524,7 +525,7 @@ export function collectBackgroundTaskMessagesForCompaction(
 	const content = buildBackgroundTasksCompactionContent();
 	if (
 		typeof content !== "string" ||
-		hasBackgroundTasksCompactionMessage(messages, content)
+		hasBackgroundTasksCompactionMessage(messages)
 	) {
 		return [];
 	}

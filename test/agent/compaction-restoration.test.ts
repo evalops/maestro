@@ -100,6 +100,9 @@ describe("collectPlanMessagesForCompaction", () => {
 				role: "hookMessage",
 				customType: PLAN_FILE_COMPACTION_CUSTOM_TYPE,
 				display: false,
+				content: expect.stringContaining(
+					"# Inactive tracked plan file restored after compaction",
+				),
 				details: { filePath: "/tmp/plan.md" },
 			}),
 		]);
@@ -214,6 +217,32 @@ describe("collectBackgroundTaskMessagesForCompaction", () => {
 		const existingMessages = collectBackgroundTaskMessagesForCompaction([]);
 		expect(
 			collectBackgroundTaskMessagesForCompaction(existingMessages),
+		).toEqual([]);
+	});
+
+	it("deduplicates stale background task restoration messages by hook type", () => {
+		vi.mocked(backgroundTaskManager.getTasks).mockReturnValue([
+			{
+				id: "task-running",
+				command: "npm run dev",
+				cwd: "/tmp/app",
+				startedAt: 20,
+				status: "restarting",
+				shellMode: "exec",
+			},
+		] as never);
+
+		expect(
+			collectBackgroundTaskMessagesForCompaction([
+				{
+					role: "hookMessage",
+					customType: BACKGROUND_TASKS_COMPACTION_CUSTOM_TYPE,
+					content:
+						"# Background tasks restored after compaction\n\n- id=task-running; status=running; shell=exec; cwd=/tmp/app; command=npm run dev",
+					display: false,
+					timestamp: Date.now(),
+				},
+			]),
 		).toEqual([]);
 	});
 });

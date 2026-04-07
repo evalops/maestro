@@ -755,6 +755,18 @@ describe("performCompaction", () => {
 		);
 		expect(summaryInput).not.toContainEqual(
 			expect.objectContaining({
+				role: "assistant",
+				content: expect.arrayContaining([
+					expect.objectContaining({
+						type: "toolCall",
+						id: "call-skill-reviewer",
+						name: "Skill",
+					}),
+				]),
+			}),
+		);
+		expect(summaryInput).not.toContainEqual(
+			expect.objectContaining({
 				content: expect.arrayContaining([
 					expect.objectContaining({
 						text: expect.stringContaining("Inspect the diff for regressions."),
@@ -769,6 +781,50 @@ describe("performCompaction", () => {
 				details: { name: "reviewer", source: "tool" },
 			}),
 		);
+	});
+
+	it("deduplicates restored skills against string-only caller post-keep messages", async () => {
+		const skillContent =
+			"# Skill: reviewer\n\n> Review specialist\n\n## Instructions\n\nInspect the diff for regressions.";
+		const messages = buildConversation(10);
+		messages.splice(
+			2,
+			0,
+			createSkillToolCallMessage("reviewer", "call-skill-reviewer"),
+			createSkillToolResultMessage(
+				"reviewer",
+				"call-skill-reviewer",
+				skillContent,
+			),
+		);
+		const agent = createMockAgentWithoutAppendMessage(messages);
+		const sessionManager = createMockSessionManager();
+
+		const result = await performCompaction({
+			agent,
+			sessionManager,
+			getPostKeepMessages: async () => [
+				{
+					role: "hookMessage",
+					customType: "skill",
+					content: skillContent,
+					display: false,
+					timestamp: Date.now(),
+				},
+			],
+		});
+
+		expect(result.success).toBe(true);
+		expect(
+			getReplacedMessages(agent).filter(
+				(message) =>
+					message.role === "hookMessage" &&
+					message.customType === "skill" &&
+					JSON.stringify(message.content).includes(
+						"Inspect the diff for regressions.",
+					),
+			),
+		).toHaveLength(1);
 	});
 
 	it("skips read tool results that will be restored after compaction", async () => {
@@ -812,6 +868,79 @@ describe("performCompaction", () => {
 				role: "hookMessage",
 				customType: "read-file",
 				details: { filePath: "/tmp/restored.ts" },
+			}),
+		);
+	});
+
+	it("restores a read hook even when an identical stale restore hook only exists in compacted history", async () => {
+		const messages = buildConversation(10);
+		messages.splice(
+			2,
+			0,
+			createReadToolCallMessage("/tmp/restored.ts", "call-read-restore"),
+			createReadToolResultMessage(
+				"/tmp/restored.ts",
+				"call-read-restore",
+				"export const restored = true;",
+			),
+			createReadRestoreHookMessage(
+				"/tmp/restored.ts",
+				"export const restored = true;",
+			),
+		);
+		const agent = createMockAgentWithoutAppendMessage(messages);
+		const sessionManager = createMockSessionManager();
+
+		const result = await performCompaction({ agent, sessionManager });
+
+		expect(result.success).toBe(true);
+		expect(
+			getReplacedMessages(agent).filter(
+				(message) =>
+					message.role === "hookMessage" &&
+					message.customType === "read-file" &&
+					message.details?.filePath === "/tmp/restored.ts",
+			),
+		).toHaveLength(1);
+	});
+
+	it("falls back to the historical read result when read refresh throws during compaction", async () => {
+		const messages = buildConversation(10);
+		messages.splice(
+			2,
+			0,
+			createReadToolCallMessage("/tmp/restored.ts", "call-read-restore"),
+			createReadToolResultMessage(
+				"/tmp/restored.ts",
+				"call-read-restore",
+				"historical read result",
+			),
+		);
+		const agent = createMockAgentWithoutAppendMessage(messages);
+		const sessionManager = createMockSessionManager();
+		const readRestoreExecute = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("read failed"));
+
+		const result = await performCompaction({
+			agent,
+			sessionManager,
+			readRestoreExecute,
+		});
+
+		expect(result.success).toBe(true);
+		expect(readRestoreExecute).toHaveBeenCalledTimes(1);
+		expect(getReplacedMessages(agent)).toContainEqual(
+			expect.objectContaining({
+				role: "hookMessage",
+				customType: "read-file",
+				details: { filePath: "/tmp/restored.ts" },
+				content: expect.arrayContaining([
+					expect.objectContaining({
+						type: "text",
+						text: "historical read result",
+					}),
+				]),
 			}),
 		);
 	});
@@ -2690,6 +2819,27 @@ Current plan contents:
 		expect(firstBlock.text).toContain("summary after retry");
 	});
 
+	it("falls back to approximate truncation when the parsed overflow gap exceeds the available history", async () => {
+		const messages = buildConversation(20);
+		const agent = createMockAgent(messages);
+		(agent.generateSummary as ReturnType<typeof vi.fn>)
+			.mockRejectedValueOnce(
+				new Error("prompt is too long: 999999 tokens > 1600 maximum"),
+			)
+			.mockResolvedValueOnce(createAssistantMessage("summary after retry"));
+		const sessionManager = createMockSessionManager();
+
+		await performCompaction({ agent, sessionManager });
+
+		expect(agent.generateSummary).toHaveBeenCalledTimes(2);
+		const secondInput = (agent.generateSummary as ReturnType<typeof vi.fn>).mock
+			.calls[1]?.[0] as AppMessage[];
+		expect(secondInput[0]).toMatchObject({
+			role: "user",
+			content: "[earlier conversation truncated for compaction retry]",
+		});
+	});
+
 	it("retries summary generation after an assistant overflow response", async () => {
 		const messages = buildConversation(20);
 		const agent = createMockAgent(messages);
@@ -2784,6 +2934,27 @@ Current plan contents:
 			role: "user",
 			content: "[earlier conversation truncated for compaction retry]",
 		});
+	});
+
+	it("uses the full prepared history for local summary fallback after overflow retries fail", async () => {
+		const messages = buildConversation(20);
+		const agent = createMockAgent(messages);
+		(agent.generateSummary as ReturnType<typeof vi.fn>)
+			.mockRejectedValueOnce(
+				new Error("prompt is too long: 999999 tokens > 1600 maximum"),
+			)
+			.mockRejectedValueOnce(new Error("API failure"));
+		const sessionManager = createMockSessionManager();
+
+		await performCompaction({ agent, sessionManager });
+
+		const summary = getReplacedMessages(agent)[0] as AssistantMessage;
+		const firstBlock = summary.content[0] as { type: string; text: string };
+		expect(firstBlock.text).toContain("Local summary");
+		expect(firstBlock.text).toContain("message 0");
+		expect(firstBlock.text).not.toContain(
+			"[earlier conversation truncated for compaction retry]",
+		);
 	});
 
 	it("passes auto and customInstructions to saveCompaction", async () => {
