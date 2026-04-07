@@ -4668,6 +4668,7 @@ export class ComposerChat extends LitElement {
 					<composer-settings
 						.apiClient=${this.apiClient}
 						.currentModel=${this.currentModel}
+						.currentSessionId=${this.currentSessionId}
 						@close=${this.toggleSettings}
 						@model-select=${this.handleModelSelect}
 					></composer-settings>

@@ -28,7 +28,7 @@ import type {
 	MemoryStats,
 	MemoryTopicSummary,
 } from "@evalops/contracts";
-import { LitElement, css, html } from "lit";
+import { LitElement, type PropertyValues, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import type {
 	ApiClient,
@@ -493,6 +493,7 @@ export class ComposerSettings extends LitElement {
 
 	@property({ attribute: false }) apiClient!: ApiClient;
 	@property({ type: String }) currentModel = "";
+	@property({ attribute: false }) currentSessionId: string | null = null;
 	@property({ attribute: false }) statusPrefetch: WorkspaceStatus | null = null;
 	@property({ attribute: false }) modelsPrefetch: Model[] | null = null;
 	@property({ attribute: false }) usagePrefetch: UsageSummary | null = null;
@@ -581,6 +582,7 @@ export class ComposerSettings extends LitElement {
 	@state() private memorySaveTopic = "";
 	@state() private memorySaveContent = "";
 	@state() private memoryClearConfirmed = false;
+	@state() private memorySessionOnly = false;
 	@state() private memoryPendingAction: MemoryAction = null;
 	@state() private memoryError: string | null = null;
 	@state() private memoryNotice: string | null = null;
@@ -588,7 +590,19 @@ export class ComposerSettings extends LitElement {
 
 	override async connectedCallback() {
 		super.connectedCallback();
+		this.memorySessionOnly = Boolean(this.currentSessionId);
 		await this.loadData();
+	}
+
+	override updated(changed: PropertyValues<this>) {
+		if (changed.has("currentSessionId")) {
+			if (!this.currentSessionId) {
+				this.memorySessionOnly = false;
+			}
+			if (!this.loading) {
+				void this.reloadMemorySection();
+			}
+		}
 	}
 
 	private async loadData() {
@@ -623,9 +637,9 @@ export class ComposerSettings extends LitElement {
 			] = await Promise.allSettled([
 				this.apiClient.getMcpStatus(),
 				this.apiClient.searchMcpRegistry(""),
-				this.apiClient.listMemoryTopics(),
-				this.apiClient.getMemoryStats(),
-				this.apiClient.getRecentMemories(12),
+				this.apiClient.listMemoryTopics(this.activeMemorySessionId),
+				this.apiClient.getMemoryStats(this.activeMemorySessionId),
+				this.apiClient.getRecentMemories(12, this.activeMemorySessionId),
 			]);
 
 			if (mcpStatusResult.status === "fulfilled") {
@@ -1392,6 +1406,12 @@ export class ComposerSettings extends LitElement {
 		return this.memoryPendingAction !== null;
 	}
 
+	private get activeMemorySessionId(): string | undefined {
+		return this.memorySessionOnly
+			? (this.currentSessionId ?? undefined)
+			: undefined;
+	}
+
 	private getMemoryViewLabel(view: MemoryView): string {
 		switch (view.kind) {
 			case "topic":
@@ -1405,8 +1425,8 @@ export class ComposerSettings extends LitElement {
 
 	private async refreshMemorySummary() {
 		const [topicsResponse, statsResponse] = await Promise.all([
-			this.apiClient.listMemoryTopics(),
-			this.apiClient.getMemoryStats(),
+			this.apiClient.listMemoryTopics(this.activeMemorySessionId),
+			this.apiClient.getMemoryStats(this.activeMemorySessionId),
 		]);
 		this.memoryTopics = topicsResponse.topics ?? [];
 		this.memoryStats = statsResponse.stats ?? EMPTY_MEMORY_STATS;
@@ -1414,19 +1434,39 @@ export class ComposerSettings extends LitElement {
 
 	private async loadMemoryView(view: MemoryView) {
 		if (view.kind === "topic") {
-			const response = await this.apiClient.listMemoryTopic(view.topic);
+			const response = await this.apiClient.listMemoryTopic(
+				view.topic,
+				this.activeMemorySessionId,
+			);
 			this.memoryEntries = response.memories ?? [];
 			return;
 		}
 		if (view.kind === "search") {
-			const response = await this.apiClient.searchMemory(view.query, 12);
+			const response = await this.apiClient.searchMemory(
+				view.query,
+				12,
+				this.activeMemorySessionId,
+			);
 			this.memoryEntries = (response.results ?? []).map(
 				(result) => result.entry,
 			);
 			return;
 		}
-		const response = await this.apiClient.getRecentMemories(12);
+		const response = await this.apiClient.getRecentMemories(
+			12,
+			this.activeMemorySessionId,
+		);
 		this.memoryEntries = response.memories ?? [];
+	}
+
+	private async reloadMemorySection() {
+		try {
+			await this.refreshMemorySummary();
+			await this.loadMemoryView(this.memoryActiveView);
+		} catch (error) {
+			this.memoryError =
+				error instanceof Error ? error.message : "Failed to load memory";
+		}
 	}
 
 	private async runMemoryAction(
@@ -1490,6 +1530,7 @@ export class ComposerSettings extends LitElement {
 				topic,
 				content,
 				tags.length > 0 ? tags : undefined,
+				this.activeMemorySessionId,
 			);
 			const savedTopic = result.entry?.topic ?? topic;
 			this.memoryNotice =
@@ -1626,7 +1667,13 @@ export class ComposerSettings extends LitElement {
 				<div class="section-content">
 					<div class="control-row">
 						<div>
-							<div class="info-value">Cross-session memory</div>
+							<div class="info-value">
+								${
+									this.memorySessionOnly
+										? "Current-session memory"
+										: "Cross-session memory"
+								}
+							</div>
 							<div class="info-label">
 								Slash command: /memory
 							</div>
@@ -1637,6 +1684,26 @@ export class ComposerSettings extends LitElement {
 							Newest: ${formatMemoryRelativeTime(this.memoryStats.newestEntry)}
 						</div>
 					</div>
+					${
+						this.currentSessionId
+							? html`
+								<label class="panel-card-copy">
+									<input
+										type="checkbox"
+										.checked=${this.memorySessionOnly}
+										aria-label=${"Show current session memories only"}
+										@change=${(event: Event) => {
+											this.memorySessionOnly = (
+												event.target as HTMLInputElement
+											).checked;
+											void this.reloadMemorySection();
+										}}
+									/>
+									${" "}Show current session only
+								</label>
+							`
+							: ""
+					}
 					${
 						this.memoryError
 							? html`<div class="panel-feedback error">${this.memoryError}</div>`

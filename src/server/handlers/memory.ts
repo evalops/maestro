@@ -35,28 +35,31 @@ export async function handleMemory(
 		const topic = url.searchParams.get("topic");
 		const query = url.searchParams.get("query");
 		const limit = url.searchParams.get("limit");
+		const sessionId = url.searchParams.get("sessionId") || undefined;
 
 		try {
 			if (action === "list") {
 				if (topic) {
-					const memories = getTopicMemories(topic);
+					const memories = getTopicMemories(topic, { sessionId });
 					sendJson(res, 200, { topic, memories }, corsHeaders);
 				} else {
-					const topics = listTopics();
+					const topics = listTopics({ sessionId });
 					sendJson(res, 200, { topics }, corsHeaders);
 				}
 			} else if (action === "search" && query) {
 				const results = searchMemories(query, {
+					sessionId,
 					limit: limit ? Number.parseInt(limit, 10) : 10,
 				});
 				sendJson(res, 200, { query, results }, corsHeaders);
 			} else if (action === "recent") {
 				const memories = getRecentMemories(
 					limit ? Number.parseInt(limit, 10) : 10,
+					{ sessionId },
 				);
 				sendJson(res, 200, { memories }, corsHeaders);
 			} else if (action === "stats") {
-				const stats = getStats();
+				const stats = getStats({ sessionId });
 				sendJson(res, 200, { stats }, corsHeaders);
 			} else {
 				sendJson(
@@ -79,6 +82,7 @@ export async function handleMemory(
 				topic?: string;
 				content?: string;
 				tags?: string[];
+				sessionId?: string;
 				id?: string;
 				path?: string;
 				force?: boolean;
@@ -97,6 +101,7 @@ export async function handleMemory(
 				}
 				const entry = addMemory(data.topic, data.content, {
 					tags: data.tags,
+					sessionId: data.sessionId,
 				});
 				sendJson(
 					res,

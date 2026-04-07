@@ -22,18 +22,27 @@ type MemoryView =
 	| { kind: "search"; query: string };
 
 export interface MemorySectionProps {
-	onListMemoryTopics: () => Promise<MemoryTopicsResponse>;
-	onListMemoryTopic: (topic: string) => Promise<MemoryTopicResponse>;
+	sessionId?: string | null;
+	onListMemoryTopics: (sessionId?: string) => Promise<MemoryTopicsResponse>;
+	onListMemoryTopic: (
+		topic: string,
+		sessionId?: string,
+	) => Promise<MemoryTopicResponse>;
 	onSearchMemory: (
 		query: string,
 		limit?: number,
+		sessionId?: string,
 	) => Promise<MemorySearchResponse>;
-	onGetRecentMemories: (limit?: number) => Promise<MemoryRecentResponse>;
-	onGetMemoryStats: () => Promise<MemoryStatsResponse>;
+	onGetRecentMemories: (
+		limit?: number,
+		sessionId?: string,
+	) => Promise<MemoryRecentResponse>;
+	onGetMemoryStats: (sessionId?: string) => Promise<MemoryStatsResponse>;
 	onSaveMemory: (
 		topic: string,
 		content: string,
 		tags?: string[],
+		sessionId?: string,
 	) => Promise<MemoryMutationResponse>;
 	onDeleteMemory: (
 		id?: string,
@@ -61,6 +70,7 @@ function getViewLabel(view: MemoryView): string {
 }
 
 export function MemorySection({
+	sessionId,
 	onListMemoryTopics,
 	onListMemoryTopic,
 	onSearchMemory,
@@ -78,9 +88,11 @@ export function MemorySection({
 	const [saveTopic, setSaveTopic] = useState("");
 	const [saveContent, setSaveContent] = useState("");
 	const [clearConfirmed, setClearConfirmed] = useState(false);
+	const [sessionOnly, setSessionOnly] = useState(Boolean(sessionId));
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [statusMessage, setStatusMessage] = useState<string | null>(null);
+	const activeSessionId = sessionOnly ? (sessionId ?? undefined) : undefined;
 	const updateSaveTopic = useCallback((value: string) => {
 		setSaveTopic(value);
 	}, []);
@@ -93,29 +105,29 @@ export function MemorySection({
 
 	const refreshSummary = useCallback(async () => {
 		const [topicsResponse, statsResponse] = await Promise.all([
-			onListMemoryTopics(),
-			onGetMemoryStats(),
+			onListMemoryTopics(activeSessionId),
+			onGetMemoryStats(activeSessionId),
 		]);
 		setTopics(topicsResponse.topics ?? []);
 		setStats(statsResponse.stats ?? EMPTY_STATS);
-	}, [onGetMemoryStats, onListMemoryTopics]);
+	}, [activeSessionId, onGetMemoryStats, onListMemoryTopics]);
 
 	const loadView = useCallback(
 		async (view: MemoryView) => {
 			if (view.kind === "topic") {
-				const response = await onListMemoryTopic(view.topic);
+				const response = await onListMemoryTopic(view.topic, activeSessionId);
 				setEntries(response.memories ?? []);
 				return;
 			}
 			if (view.kind === "search") {
-				const response = await onSearchMemory(view.query, 12);
+				const response = await onSearchMemory(view.query, 12, activeSessionId);
 				setEntries((response.results ?? []).map((result) => result.entry));
 				return;
 			}
-			const response = await onGetRecentMemories(12);
+			const response = await onGetRecentMemories(12, activeSessionId);
 			setEntries(response.memories ?? []);
 		},
-		[onGetRecentMemories, onListMemoryTopic, onSearchMemory],
+		[activeSessionId, onGetRecentMemories, onListMemoryTopic, onSearchMemory],
 	);
 
 	const runAction = useCallback(async (action: () => Promise<void>) => {
@@ -132,6 +144,12 @@ export function MemorySection({
 	}, []);
 
 	useEffect(() => {
+		if (!sessionId) {
+			setSessionOnly(false);
+		}
+	}, [sessionId]);
+
+	useEffect(() => {
 		let active = true;
 
 		const load = async () => {
@@ -140,9 +158,9 @@ export function MemorySection({
 			try {
 				const [topicsResponse, statsResponse, recentResponse] =
 					await Promise.all([
-						onListMemoryTopics(),
-						onGetMemoryStats(),
-						onGetRecentMemories(12),
+						onListMemoryTopics(activeSessionId),
+						onGetMemoryStats(activeSessionId),
+						onGetRecentMemories(12, activeSessionId),
 					]);
 				if (!active) return;
 				setTopics(topicsResponse.topics ?? []);
@@ -163,7 +181,12 @@ export function MemorySection({
 		return () => {
 			active = false;
 		};
-	}, [onGetMemoryStats, onGetRecentMemories, onListMemoryTopics]);
+	}, [
+		activeSessionId,
+		onGetMemoryStats,
+		onGetRecentMemories,
+		onListMemoryTopics,
+	]);
 
 	const handleShowRecent = useCallback(async () => {
 		const nextView: MemoryView = { kind: "recent" };
@@ -211,6 +234,7 @@ export function MemorySection({
 				topic,
 				content,
 				tags.length ? tags : undefined,
+				activeSessionId,
 			);
 			const savedTopic = result.entry?.topic ?? topic;
 			setStatusMessage(
@@ -225,6 +249,7 @@ export function MemorySection({
 		});
 	}, [
 		loadView,
+		activeSessionId,
 		onSaveMemory,
 		refreshSummary,
 		runAction,
@@ -271,7 +296,7 @@ export function MemorySection({
 				<div className="flex items-start justify-between gap-4">
 					<div>
 						<div className="text-text-primary font-medium">
-							Cross-session memory
+							{sessionOnly ? "Current-session memory" : "Cross-session memory"}
 						</div>
 						<div className="text-xs text-text-muted">
 							Save, search, and prune durable notes without leaving desktop.
@@ -283,6 +308,19 @@ export function MemorySection({
 						<div>Newest: {formatMemoryRelativeTime(stats.newestEntry)}</div>
 					</div>
 				</div>
+
+				{sessionId && (
+					<label className="inline-flex items-center gap-2 text-xs text-text-tertiary">
+						<input
+							aria-label="Show current session memories only"
+							type="checkbox"
+							checked={sessionOnly}
+							onChange={(event) => setSessionOnly(event.target.checked)}
+							className="h-4 w-4 rounded border-line-subtle bg-bg-tertiary text-accent focus:ring-accent"
+						/>
+						<span>Show current session only</span>
+					</label>
+				)}
 
 				{error && (
 					<div className="border border-error/40 bg-error/10 text-error px-3 py-2 rounded-lg text-xs">

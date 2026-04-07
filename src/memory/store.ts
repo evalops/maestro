@@ -11,6 +11,8 @@ import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
 import type {
 	MemoryEntry,
+	MemoryQueryOptions,
+	MemorySearchOptions,
 	MemorySearchResult,
 	MemoryStats,
 	MemoryStore,
@@ -78,6 +80,34 @@ function saveStore(store: MemoryStore): void {
 	}
 }
 
+function normalizeTopic(topic: string): string {
+	return topic.toLowerCase().trim();
+}
+
+function normalizeTags(tags?: string[]): string[] | undefined {
+	return tags?.map((tag) => tag.toLowerCase().trim());
+}
+
+function matchesQueryOptions(
+	entry: MemoryEntry,
+	options?: MemoryQueryOptions,
+): boolean {
+	if (
+		options?.sessionId !== undefined &&
+		entry.sessionId !== options.sessionId
+	) {
+		return false;
+	}
+	return true;
+}
+
+function filterEntries(
+	entries: MemoryEntry[],
+	options?: MemoryQueryOptions,
+): MemoryEntry[] {
+	return entries.filter((entry) => matchesQueryOptions(entry, options));
+}
+
 /**
  * Add a new memory entry.
  */
@@ -94,9 +124,9 @@ export function addMemory(
 
 	const entry: MemoryEntry = {
 		id: generateId(),
-		topic: topic.toLowerCase().trim(),
+		topic: normalizeTopic(topic),
 		content,
-		tags: options?.tags?.map((t) => t.toLowerCase().trim()),
+		tags: normalizeTags(options?.tags),
 		sessionId: options?.sessionId,
 		createdAt: now,
 		updatedAt: now,
@@ -108,6 +138,60 @@ export function addMemory(
 	logger.info("Memory added", { id: entry.id, topic: entry.topic });
 
 	return entry;
+}
+
+/**
+ * Upsert a single scoped memory entry, keyed by topic + session id.
+ */
+export function upsertScopedMemory(
+	topic: string,
+	content: string,
+	options: {
+		sessionId?: string;
+		tags?: string[];
+	},
+): MemoryEntry {
+	const store = loadStore();
+	const normalizedTopic = normalizeTopic(topic);
+	const normalizedTags = normalizeTags(options.tags);
+	const existing = store.entries
+		.filter(
+			(entry) =>
+				entry.topic === normalizedTopic &&
+				entry.sessionId === options.sessionId,
+		)
+		.sort((a, b) => b.updatedAt - a.updatedAt)[0];
+
+	if (!existing) {
+		const now = Date.now();
+		const entry: MemoryEntry = {
+			id: generateId(),
+			topic: normalizedTopic,
+			content,
+			tags: normalizedTags,
+			sessionId: options.sessionId,
+			createdAt: now,
+			updatedAt: now,
+		};
+		store.entries.push(entry);
+		saveStore(store);
+		return entry;
+	}
+
+	const nextTags = normalizedTags ?? [];
+	const previousTags = existing.tags ?? [];
+	const tagsChanged =
+		nextTags.length !== previousTags.length ||
+		nextTags.some((tag, index) => previousTags[index] !== tag);
+	if (existing.content === content && !tagsChanged) {
+		return existing;
+	}
+
+	existing.content = content;
+	existing.tags = normalizedTags;
+	existing.updatedAt = Date.now();
+	saveStore(store);
+	return existing;
 }
 
 /**
@@ -132,10 +216,10 @@ export function updateMemory(
 		entry.content = updates.content;
 	}
 	if (updates.topic !== undefined) {
-		entry.topic = updates.topic.toLowerCase().trim();
+		entry.topic = normalizeTopic(updates.topic);
 	}
 	if (updates.tags !== undefined) {
-		entry.tags = updates.tags.map((t) => t.toLowerCase().trim());
+		entry.tags = normalizeTags(updates.tags);
 	}
 	entry.updatedAt = Date.now();
 
@@ -168,7 +252,7 @@ export function deleteMemory(id: string): boolean {
  */
 export function deleteTopicMemories(topic: string): number {
 	const store = loadStore();
-	const normalizedTopic = topic.toLowerCase().trim();
+	const normalizedTopic = normalizeTopic(topic);
 	const before = store.entries.length;
 
 	store.entries = store.entries.filter((e) => e.topic !== normalizedTopic);
@@ -185,19 +269,15 @@ export function deleteTopicMemories(topic: string): number {
  */
 export function searchMemories(
 	query: string,
-	options?: {
-		topic?: string;
-		tags?: string[];
-		limit?: number;
-	},
+	options?: MemorySearchOptions,
 ): MemorySearchResult[] {
 	const store = loadStore();
 	const normalizedQuery = query.toLowerCase().trim();
 	const results: MemorySearchResult[] = [];
 
-	for (const entry of store.entries) {
+	for (const entry of filterEntries(store.entries, options)) {
 		// Filter by topic if specified
-		if (options?.topic && entry.topic !== options.topic.toLowerCase()) {
+		if (options?.topic && entry.topic !== normalizeTopic(options.topic)) {
 			continue;
 		}
 
@@ -258,11 +338,14 @@ export function searchMemories(
 /**
  * Get all memories for a topic.
  */
-export function getTopicMemories(topic: string): MemoryEntry[] {
+export function getTopicMemories(
+	topic: string,
+	options?: MemoryQueryOptions,
+): MemoryEntry[] {
 	const store = loadStore();
-	const normalizedTopic = topic.toLowerCase().trim();
+	const normalizedTopic = normalizeTopic(topic);
 
-	return store.entries
+	return filterEntries(store.entries, options)
 		.filter((e) => e.topic === normalizedTopic)
 		.sort((a, b) => b.updatedAt - a.updatedAt);
 }
@@ -278,14 +361,14 @@ export function getMemory(id: string): MemoryEntry | null {
 /**
  * List all topics with their stats.
  */
-export function listTopics(): MemoryTopic[] {
+export function listTopics(options?: MemoryQueryOptions): MemoryTopic[] {
 	const store = loadStore();
 	const topicMap = new Map<
 		string,
 		{ count: number; lastUpdated: number; description?: string }
 	>();
 
-	for (const entry of store.entries) {
+	for (const entry of filterEntries(store.entries, options)) {
 		const existing = topicMap.get(entry.topic);
 		if (existing) {
 			existing.count++;
@@ -310,10 +393,11 @@ export function listTopics(): MemoryTopic[] {
 /**
  * Get memory statistics.
  */
-export function getStats(): MemoryStats {
+export function getStats(options?: MemoryQueryOptions): MemoryStats {
 	const store = loadStore();
+	const entries = filterEntries(store.entries, options);
 
-	if (store.entries.length === 0) {
+	if (entries.length === 0) {
 		return {
 			totalEntries: 0,
 			topics: 0,
@@ -322,11 +406,11 @@ export function getStats(): MemoryStats {
 		};
 	}
 
-	const topics = new Set(store.entries.map((e) => e.topic));
-	const timestamps = store.entries.map((e) => e.createdAt);
+	const topics = new Set(entries.map((e) => e.topic));
+	const timestamps = entries.map((e) => e.createdAt);
 
 	return {
-		totalEntries: store.entries.length,
+		totalEntries: entries.length,
 		topics: topics.size,
 		oldestEntry: Math.min(...timestamps),
 		newestEntry: Math.max(...timestamps),
@@ -336,10 +420,13 @@ export function getStats(): MemoryStats {
 /**
  * Get recent memories across all topics.
  */
-export function getRecentMemories(limit = 10): MemoryEntry[] {
+export function getRecentMemories(
+	limit = 10,
+	options?: MemoryQueryOptions,
+): MemoryEntry[] {
 	const store = loadStore();
 
-	return store.entries
+	return filterEntries(store.entries, options)
 		.slice()
 		.sort((a, b) => b.updatedAt - a.updatedAt)
 		.slice(0, limit);

@@ -255,11 +255,15 @@ function createApiClientMock(): ApiClient {
 	} as unknown as ApiClient;
 }
 
-function createSettings(apiClient: ApiClient): ComposerSettings {
+function createSettings(
+	apiClient: ApiClient,
+	options?: { currentSessionId?: string | null },
+): ComposerSettings {
 	const element = document.createElement(
 		"composer-settings",
 	) as ComposerSettings;
 	element.apiClient = apiClient;
+	element.currentSessionId = options?.currentSessionId ?? null;
 	document.body.append(element);
 	return element;
 }
@@ -414,7 +418,10 @@ describe("ComposerSettings MCP section", () => {
 			30,
 		);
 
-		expect(apiClient.listMemoryTopic).toHaveBeenCalledWith("api-design");
+		expect(apiClient.listMemoryTopic).toHaveBeenCalledWith(
+			"api-design",
+			undefined,
+		);
 		expect(element.shadowRoot?.textContent ?? "").toContain(
 			"Topic-specific memory",
 		);
@@ -464,6 +471,7 @@ describe("ComposerSettings MCP section", () => {
 			"api-design",
 			"Use REST conventions #rest",
 			["rest"],
+			undefined,
 		);
 		expect(element.shadowRoot?.textContent ?? "").toContain(
 			'Memory saved to topic "api-design"',
@@ -610,11 +618,51 @@ describe("ComposerSettings MCP section", () => {
 			"API-Design",
 			"Preserve topic casing #rest",
 			["rest"],
+			undefined,
 		);
-		expect(apiClient.listMemoryTopic).toHaveBeenLastCalledWith("API-Design");
+		expect(apiClient.listMemoryTopic).toHaveBeenLastCalledWith(
+			"API-Design",
+			undefined,
+		);
 		expect(element.shadowRoot?.textContent ?? "").toContain(
 			'Memory saved to topic "API-Design"',
 		);
+	});
+
+	it("scopes memory settings to the current session when enabled", async () => {
+		const apiClient = createApiClientMock();
+		const element = createSettings(apiClient, { currentSessionId: "sess_123" });
+
+		await waitForSettled(element, () =>
+			Boolean(
+				element.shadowRoot?.querySelector(
+					'input[aria-label="Show current session memories only"]',
+				),
+			),
+		);
+
+		expect(apiClient.listMemoryTopics).toHaveBeenCalledWith("sess_123");
+		expect(apiClient.getRecentMemories).toHaveBeenCalledWith(12, "sess_123");
+		expect(element.shadowRoot?.textContent ?? "").toContain(
+			"Current-session memory",
+		);
+
+		const scopeToggle = element.shadowRoot?.querySelector(
+			'input[aria-label="Show current session memories only"]',
+		) as HTMLInputElement | null;
+		expect(scopeToggle).not.toBeNull();
+		scopeToggle?.click();
+
+		await waitForSettled(
+			element,
+			() =>
+				(
+					apiClient.listMemoryTopics as ReturnType<typeof vi.fn>
+				).mock.calls.some((args) => args[0] === undefined),
+			30,
+		);
+
+		expect(apiClient.getRecentMemories).toHaveBeenLastCalledWith(12, undefined);
 	});
 
 	it("validates required structured MCP prompt arguments before running", async () => {

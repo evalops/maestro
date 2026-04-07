@@ -569,29 +569,43 @@ export function SettingsModal({
 		}
 	};
 
-	const listMemoryTopics = useCallback(async () => {
-		return await apiClient.listMemoryTopics();
+	const listMemoryTopics = useCallback(async (targetSessionId?: string) => {
+		return await apiClient.listMemoryTopics(targetSessionId);
 	}, []);
 
-	const listMemoryTopic = useCallback(async (topic: string) => {
-		return await apiClient.listMemoryTopic(topic);
-	}, []);
+	const listMemoryTopic = useCallback(
+		async (topic: string, targetSessionId?: string) => {
+			return await apiClient.listMemoryTopic(topic, targetSessionId);
+		},
+		[],
+	);
 
-	const searchMemory = useCallback(async (query: string, limit = 10) => {
-		return await apiClient.searchMemory(query, limit);
-	}, []);
+	const searchMemory = useCallback(
+		async (query: string, limit = 10, targetSessionId?: string) => {
+			return await apiClient.searchMemory(query, limit, targetSessionId);
+		},
+		[],
+	);
 
-	const getRecentMemories = useCallback(async (limit = 10) => {
-		return await apiClient.getRecentMemories(limit);
-	}, []);
+	const getRecentMemories = useCallback(
+		async (limit = 10, targetSessionId?: string) => {
+			return await apiClient.getRecentMemories(limit, targetSessionId);
+		},
+		[],
+	);
 
-	const getMemoryStats = useCallback(async () => {
-		return await apiClient.getMemoryStats();
+	const getMemoryStats = useCallback(async (targetSessionId?: string) => {
+		return await apiClient.getMemoryStats(targetSessionId);
 	}, []);
 
 	const saveMemory = useCallback(
-		async (topic: string, content: string, tags?: string[]) => {
-			return await apiClient.saveMemory(topic, content, tags);
+		async (
+			topic: string,
+			content: string,
+			tags?: string[],
+			targetSessionId?: string,
+		) => {
+			return await apiClient.saveMemory(topic, content, tags, targetSessionId);
 		},
 		[],
 	);
@@ -931,6 +945,7 @@ export function SettingsModal({
 					/>
 
 					<MemorySection
+						sessionId={sessionId}
 						onListMemoryTopics={listMemoryTopics}
 						onListMemoryTopic={listMemoryTopic}
 						onSearchMemory={searchMemory}

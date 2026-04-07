@@ -34,6 +34,16 @@ export interface MemorySearchResult {
 	matchedOn: "content" | "topic" | "tag";
 }
 
+export interface MemoryQueryOptions {
+	sessionId?: string;
+}
+
+export interface MemorySearchOptions extends MemoryQueryOptions {
+	topic?: string;
+	tags?: string[];
+	limit?: number;
+}
+
 export interface MemoryStats {
 	totalEntries: number;
 	topics: number;

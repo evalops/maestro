@@ -54,6 +54,7 @@ import {
 	generateEntryId,
 	safeReadSessionEntries,
 } from "./session-context.js";
+import { syncSessionMemory } from "./session-memory.js";
 import {
 	applyAttachmentExtracts,
 	sanitizeMessageForSession,
@@ -783,6 +784,7 @@ export class SessionManager {
 		const target = sessionPath ?? this.sessionFile;
 		if (!target || !existsSync(target)) return;
 		this.appendSessionMetaEntry(target, { summary: trimmed });
+		this.syncSessionMemoryEntry(target);
 		if (target === this.sessionFile) {
 			queueSharedMemoryUpdate({
 				sessionId: this.sessionId,
@@ -809,6 +811,7 @@ export class SessionManager {
 		const target = sessionPath ?? this.sessionFile;
 		if (!target || !existsSync(target)) return;
 		this.appendSessionMetaEntry(target, { resumeSummary: trimmed });
+		this.syncSessionMemoryEntry(target);
 	}
 
 	setSessionFavorite(sessionPath: string, favorite: boolean): void {
@@ -819,11 +822,24 @@ export class SessionManager {
 	setSessionTitle(sessionPath: string, title: string): void {
 		if (!sessionPath || !existsSync(sessionPath)) return;
 		this.appendSessionMetaEntry(sessionPath, { title });
+		this.syncSessionMemoryEntry(sessionPath);
 	}
 
 	setSessionTags(sessionPath: string, tags: string[]): void {
 		if (!sessionPath || !existsSync(sessionPath)) return;
 		this.appendSessionMetaEntry(sessionPath, { tags });
+		this.syncSessionMemoryEntry(sessionPath);
+	}
+
+	private syncSessionMemoryEntry(sessionPath: string): void {
+		try {
+			syncSessionMemory(sessionPath);
+		} catch (error) {
+			logger.warn("Failed to sync session memory", {
+				sessionPath,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
 	}
 
 	buildSessionContext(

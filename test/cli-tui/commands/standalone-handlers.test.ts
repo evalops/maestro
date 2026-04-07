@@ -267,7 +267,10 @@ describe("memory-handlers", () => {
 		it("searches memories", () => {
 			const ctx = createMemoryCtx("/memory search REST");
 			handleMemoryCommand(ctx);
-			expect(searchMemories).toHaveBeenCalledWith("REST", { limit: 10 });
+			expect(searchMemories).toHaveBeenCalledWith("REST", {
+				limit: 10,
+				sessionId: undefined,
+			});
 		});
 
 		it("shows error when search has no query", () => {
@@ -302,6 +305,15 @@ describe("memory-handlers", () => {
 			expect(ctx.showInfo).toHaveBeenCalledWith(
 				expect.stringContaining("No memories saved"),
 			);
+		});
+
+		it("filters memory commands to the current session when requested", () => {
+			const ctx = createMemoryCtx("/memory search REST --session");
+			handleMemoryCommand(ctx);
+			expect(searchMemories).toHaveBeenCalledWith("REST", {
+				limit: 10,
+				sessionId: "test-session",
+			});
 		});
 
 		it("exports to a maestro filename by default", () => {

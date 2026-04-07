@@ -141,7 +141,7 @@ describe("MemorySection UI", () => {
 
 		expect(props.onListMemoryTopics).toHaveBeenCalledOnce();
 		expect(props.onGetMemoryStats).toHaveBeenCalledOnce();
-		expect(props.onGetRecentMemories).toHaveBeenCalledWith(12);
+		expect(props.onGetRecentMemories).toHaveBeenCalledWith(12, undefined);
 		expect(container.textContent ?? "").toContain("Recent memory");
 		expect(container.textContent ?? "").toContain("Entries: 2");
 
@@ -155,7 +155,10 @@ describe("MemorySection UI", () => {
 			await flushAsyncWork(3);
 		});
 
-		expect(props.onListMemoryTopic).toHaveBeenCalledWith("api-design");
+		expect(props.onListMemoryTopic).toHaveBeenCalledWith(
+			"api-design",
+			undefined,
+		);
 		expect(container.textContent ?? "").toContain("Topic-specific memory");
 	});
 
@@ -197,6 +200,7 @@ describe("MemorySection UI", () => {
 			"api-design",
 			"Use REST conventions #rest #rest",
 			["rest"],
+			undefined,
 		);
 		expect(container.textContent ?? "").toContain(
 			'Memory saved to topic "api-design"',
@@ -271,10 +275,36 @@ describe("MemorySection UI", () => {
 			"API-Design",
 			"Preserve topic casing #rest",
 			["rest"],
+			undefined,
 		);
-		expect(props.onListMemoryTopic).toHaveBeenLastCalledWith("API-Design");
+		expect(props.onListMemoryTopic).toHaveBeenLastCalledWith(
+			"API-Design",
+			undefined,
+		);
 		expect(container.textContent ?? "").toContain(
 			'Memory saved to topic "API-Design"',
 		);
+	});
+
+	it("scopes memory actions to the current session when enabled", async () => {
+		const { props, container } = await renderSection({
+			sessionId: "sess_123",
+		});
+
+		expect(props.onListMemoryTopics).toHaveBeenCalledWith("sess_123");
+		expect(props.onGetRecentMemories).toHaveBeenCalledWith(12, "sess_123");
+
+		const scopeToggle = container.querySelector(
+			'input[aria-label="Show current session memories only"]',
+		) as HTMLInputElement | null;
+		expect(scopeToggle).not.toBeNull();
+
+		await act(async () => {
+			scopeToggle?.click();
+			await flushAsyncWork(4);
+		});
+
+		expect(props.onListMemoryTopics).toHaveBeenLastCalledWith(undefined);
+		expect(props.onGetRecentMemories).toHaveBeenLastCalledWith(12, undefined);
 	});
 });

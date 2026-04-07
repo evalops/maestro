@@ -606,7 +606,8 @@ export function createCommandRegistry({
 			{
 				name: "memory",
 				description: "Cross-session memory for facts and learnings",
-				usage: "/memory [save|search|list|delete|stats|export|import|clear]",
+				usage:
+					"/memory [save|search|list|session|delete|stats|export|import|clear]",
 				tags: ["memory", "session"],
 				arguments: [
 					{
@@ -618,6 +619,7 @@ export function createCommandRegistry({
 							"save",
 							"search",
 							"list",
+							"session",
 							"delete",
 							"stats",
 							"export",
@@ -631,8 +633,10 @@ export function createCommandRegistry({
 					"/memory",
 					"/memory save api-design Use REST conventions #rest",
 					"/memory search REST",
+					"/memory search REST --session",
 					"/memory list",
 					"/memory list api-design",
+					"/memory session 5",
 					"/memory stats",
 				],
 			},
