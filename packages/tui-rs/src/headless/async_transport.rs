@@ -12,9 +12,10 @@ use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
+use super::local_controller_capabilities;
 use super::messages::{
-    AgentEvent, AgentState, ClientCapabilities, ClientInfo, ConnectionRole, FromAgentMessage,
-    InitConfig, ServerRequestType, ToAgentMessage, UtilityOperation,
+    AgentEvent, AgentState, ClientInfo, ConnectionRole, FromAgentMessage, InitConfig,
+    ToAgentMessage,
 };
 
 /// Configuration for the async agent transport
@@ -137,18 +138,6 @@ impl AsyncTransportError {
                 ..
             }
         )
-    }
-}
-
-fn local_controller_capabilities() -> ClientCapabilities {
-    ClientCapabilities {
-        server_requests: Some(vec![
-            ServerRequestType::Approval,
-            ServerRequestType::UserInput,
-            ServerRequestType::ToolRetry,
-        ]),
-        utility_operations: Some(vec![UtilityOperation::CommandExec]),
-        raw_agent_events: None,
     }
 }
 
@@ -621,6 +610,8 @@ impl Default for AsyncAgentTransportBuilder {
 
 #[cfg(test)]
 mod tests {
+    use crate::headless::ServerRequestType;
+
     use super::super::messages::FromAgentMessage;
     use super::*;
 

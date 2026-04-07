@@ -1385,6 +1385,9 @@ async fn reader_loop(
                                 }
                             }
                             Err(error) => {
+                                if event_tx.is_closed() {
+                                    return;
+                                }
                                 eprintln!("failed to decode remote event: {error}");
                             }
                         }
@@ -3818,6 +3821,60 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert!(cancel_token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn remote_transport_reader_exits_after_malformed_event_when_receiver_is_dropped() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        let server_handle = tokio::spawn(async move {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            let Some((_path, _headers, _body)) = read_http_request(&mut socket).await else {
+                return;
+            };
+
+            let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
+            if socket.write_all(headers.as_bytes()).await.is_err() {
+                return;
+            }
+
+            let malformed_event = "data: {\"type\":\"message\",\"cursor\":1,\"message\":\n\n";
+            if socket.write_all(malformed_event.as_bytes()).await.is_err() {
+                return;
+            }
+
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        });
+
+        let (event_tx, event_rx) =
+            mpsc::unbounded_channel::<Result<RemoteIncoming, AsyncTransportError>>();
+        drop(event_rx);
+
+        let cancel = CancellationToken::new();
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            reader_loop(
+                Client::new(),
+                RemoteTransportConfig {
+                    base_url: format!("http://{addr}"),
+                    ..RemoteTransportConfig::default()
+                },
+                "sess_remote".to_string(),
+                "sub_remote".to_string(),
+                0,
+                event_tx,
+                cancel.clone(),
+            ),
+        )
+        .await
+        .expect("reader loop should exit once the consumer channel is dropped");
+
+        cancel.cancel();
+        server_handle.abort();
+        let _ = server_handle.await;
     }
 
     #[tokio::test]

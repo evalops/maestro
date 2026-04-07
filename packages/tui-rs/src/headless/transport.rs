@@ -83,9 +83,10 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
+use super::local_controller_capabilities;
 use super::messages::{
-    AgentEvent, AgentState, ClientCapabilities, ClientInfo, ConnectionRole, FromAgentMessage,
-    InitConfig, ServerRequestType, ToAgentMessage, UtilityOperation,
+    AgentEvent, AgentState, ClientInfo, ConnectionRole, FromAgentMessage, InitConfig,
+    ToAgentMessage,
 };
 
 /// Error type for transport operations
@@ -118,18 +119,6 @@ impl std::fmt::Display for TransportError {
 }
 
 impl std::error::Error for TransportError {}
-
-fn local_controller_capabilities() -> ClientCapabilities {
-    ClientCapabilities {
-        server_requests: Some(vec![
-            ServerRequestType::Approval,
-            ServerRequestType::UserInput,
-            ServerRequestType::ToolRetry,
-        ]),
-        utility_operations: Some(vec![UtilityOperation::CommandExec]),
-        raw_agent_events: None,
-    }
-}
 
 /// Configuration for the agent transport.
 ///
@@ -549,6 +538,8 @@ impl Default for AgentTransportBuilder {
 
 #[cfg(test)]
 mod tests {
+    use crate::headless::ServerRequestType;
+
     use super::*;
 
     #[test]

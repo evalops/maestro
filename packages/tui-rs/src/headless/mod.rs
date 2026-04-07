@@ -204,6 +204,18 @@ mod session;
 mod supervisor;
 mod transport;
 
+fn local_controller_capabilities() -> messages::ClientCapabilities {
+    messages::ClientCapabilities {
+        server_requests: Some(vec![
+            messages::ServerRequestType::Approval,
+            messages::ServerRequestType::UserInput,
+            messages::ServerRequestType::ToolRetry,
+        ]),
+        utility_operations: Some(vec![messages::UtilityOperation::CommandExec]),
+        raw_agent_events: None,
+    }
+}
+
 // Core message types
 pub use messages::{
     ActiveTool, AgentEvent, AgentState, ApprovalMode, ClientCapabilities, ClientInfo,
