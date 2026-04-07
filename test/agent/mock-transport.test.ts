@@ -668,6 +668,88 @@ describe("Agent mock transport", () => {
 		).toBe(false);
 	});
 
+	it("continue() normalizes appended continuation prompts with trailing user turns", async () => {
+		let receivedMessages: Message[] | null = null;
+
+		class ContinuationPromptMergeTransport implements AgentTransport {
+			async *continue(): AsyncGenerator<AgentEvent, void, unknown> {
+				yield* (async function* empty(): AsyncGenerator<AgentEvent> {})();
+			}
+
+			async *run(
+				messages: Message[],
+				userMessage: Message,
+				_config: AgentRunConfig,
+			): AsyncGenerator<AgentEvent, void, unknown> {
+				receivedMessages = messages;
+				yield { type: "turn_start" };
+				yield { type: "message_start", message: userMessage };
+
+				const assistant: AssistantMessage = {
+					role: "assistant",
+					content: [{ type: "text", text: "continued" }],
+					api: "openai-completions",
+					provider: "mock",
+					model: "mock",
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						cost: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							total: 0,
+						},
+					},
+					stopReason: "stop",
+					timestamp: Date.now(),
+				};
+
+				yield { type: "message_start", message: assistant };
+				yield { type: "message_end", message: assistant };
+				yield { type: "turn_end", message: assistant, toolResults: [] };
+			}
+		}
+
+		const agent = new Agent({
+			transport: new ContinuationPromptMergeTransport(),
+			initialState: {
+				model: mockModel,
+				tools: [],
+				messages: [
+					{
+						role: "user",
+						content: "Queued SessionStart prompt",
+						timestamp: 1,
+					},
+					{
+						role: "user",
+						content: "Queued follow-up prompt",
+						timestamp: 2,
+					},
+				],
+			},
+		});
+
+		await agent.continue({
+			continuationPrompt: "Resume directly with the unfinished answer.",
+		});
+
+		expect(receivedMessages).not.toBeNull();
+		expect(receivedMessages).toHaveLength(1);
+		expect(receivedMessages?.[0]?.role).toBe("user");
+		expect(receivedMessages?.[0]?.content).toMatchObject([
+			{ type: "text", text: "Queued SessionStart prompt" },
+			{ type: "text", text: "\n\n" },
+			{ type: "text", text: "Queued follow-up prompt" },
+			{ type: "text", text: "\n\n" },
+			{ type: "text", text: "Resume directly with the unfinished answer." },
+		]);
+	});
+
 	it("continue() can override max tokens for a single continuation", async () => {
 		let receivedMaxTokens: number | null = null;
 

@@ -115,6 +115,7 @@ import type {
 	Model,
 	QueuedMessage,
 	ReasoningEffort,
+	StopReason,
 	TextContent,
 	ThinkingLevel,
 	ToolResultMessage,
@@ -330,6 +331,16 @@ function normalizeMessagesForProvider(
 
 	return normalizedMessages;
 }
+
+type BufferedAssistantStartState = {
+	pendingAssistantStart: AssistantMessage | null;
+	lastStopReason?: StopReason;
+};
+
+type StreamedMessageEvent = Extract<
+	AgentEvent,
+	{ type: "message_start" | "message_update" | "message_end" }
+>;
 
 function isDuplicateMessage(
 	existing: AppMessage | undefined,
@@ -1285,6 +1296,154 @@ export class Agent {
 		// and must persist across resets for UI updates to work
 	}
 
+	private buildProviderMessages(
+		transformedMessages: Message[],
+		continuationPrompt?: string,
+	): Message[] {
+		const providerInputMessages = continuationPrompt
+			? [
+					...transformedMessages,
+					{
+						role: "user" as const,
+						content: continuationPrompt,
+						timestamp: Date.now(),
+					},
+				]
+			: transformedMessages;
+		return normalizeMessagesForProvider(
+			providerInputMessages,
+			this._state.model,
+		);
+	}
+
+	private handleStreamedMessageEvent(
+		event: StreamedMessageEvent,
+		state: BufferedAssistantStartState,
+	): BufferedAssistantStartState {
+		let { pendingAssistantStart, lastStopReason } = state;
+
+		if (event.type === "message_start") {
+			if (
+				this.suppressRecoverableOverflowErrors &&
+				isAssistantMessage(event.message)
+			) {
+				pendingAssistantStart = event.message;
+				this._state.streamMessage = isCoreMessage(event.message)
+					? event.message
+					: null;
+				if (
+					this.shouldWithholdRecoverableOverflowError(
+						event.message as AppMessage,
+					) ||
+					this.shouldWithholdRecoverableMaxOutput(event.message) ||
+					this.shouldMergeRecoverableLengthContinuation(event.message)
+				) {
+					this._state.streamMessage = null;
+					pendingAssistantStart = null;
+				}
+				return { pendingAssistantStart, lastStopReason };
+			}
+			if (
+				this.shouldWithholdRecoverableOverflowError(
+					event.message as AppMessage,
+				) ||
+				(isAssistantMessage(event.message) &&
+					(this.shouldWithholdRecoverableMaxOutput(event.message) ||
+						this.shouldMergeRecoverableLengthContinuation(event.message)))
+			) {
+				this._state.streamMessage = null;
+				return { pendingAssistantStart, lastStopReason };
+			}
+			this._state.streamMessage = isCoreMessage(event.message)
+				? event.message
+				: null;
+			this.emit(event);
+			return { pendingAssistantStart, lastStopReason };
+		}
+
+		if (event.type === "message_update") {
+			if (
+				this.shouldWithholdRecoverableOverflowError(
+					event.message as AppMessage,
+				) ||
+				(isAssistantMessage(event.message) &&
+					(this.shouldWithholdRecoverableMaxOutput(event.message) ||
+						this.shouldMergeRecoverableLengthContinuation(event.message)))
+			) {
+				this._state.streamMessage = null;
+				pendingAssistantStart = null;
+				return { pendingAssistantStart, lastStopReason };
+			}
+			if (pendingAssistantStart) {
+				this.emit({
+					type: "message_start",
+					message: pendingAssistantStart,
+				});
+				pendingAssistantStart = null;
+			}
+			this._state.streamMessage = isCoreMessage(event.message)
+				? event.message
+				: null;
+			this.emit(event);
+			return { pendingAssistantStart, lastStopReason };
+		}
+
+		this._state.streamMessage = null;
+		let incoming = event.message as AppMessage;
+		if (this.shouldWithholdRecoverableOverflowError(incoming)) {
+			pendingAssistantStart = null;
+			this.withheldRecoverableOverflowError = incoming;
+			lastStopReason = incoming.stopReason;
+			return { pendingAssistantStart, lastStopReason };
+		}
+		if (
+			isAssistantMessage(incoming) &&
+			this.shouldWithholdRecoverableMaxOutput(incoming)
+		) {
+			pendingAssistantStart = null;
+			const assistantIncoming = incoming;
+			const lastMessage = this._state.messages[this._state.messages.length - 1];
+			if (!isDuplicateMessage(lastMessage, assistantIncoming)) {
+				this._state.messages = [...this._state.messages, assistantIncoming];
+				this.withheldRecoverableLengthMessages.push(assistantIncoming);
+			}
+			lastStopReason = "length";
+			return { pendingAssistantStart, lastStopReason };
+		}
+		if (
+			isAssistantMessage(incoming) &&
+			this.shouldMergeRecoverableLengthContinuation(incoming)
+		) {
+			pendingAssistantStart = null;
+			incoming = this.mergeWithWithheldRecoverableLengthMessages(incoming);
+			lastStopReason = incoming.stopReason;
+			this.primeToolBatch(incoming);
+			this.emit({ type: "message_start", message: incoming });
+			this.emit({ ...event, message: incoming });
+			return { pendingAssistantStart, lastStopReason };
+		}
+		if (pendingAssistantStart && isAssistantMessage(incoming)) {
+			this.emit({
+				type: "message_start",
+				message: pendingAssistantStart,
+			});
+			pendingAssistantStart = null;
+		}
+		const lastMessage = this._state.messages[this._state.messages.length - 1];
+		if (!isDuplicateMessage(lastMessage, incoming)) {
+			this._state.messages = [...this._state.messages, incoming];
+		}
+		if (
+			"stopReason" in event.message &&
+			event.message.stopReason !== undefined
+		) {
+			lastStopReason = event.message.stopReason;
+		}
+		this.primeToolBatch(incoming);
+		this.emit({ ...event, message: incoming });
+		return { pendingAssistantStart, lastStopReason };
+	}
+
 	/**
 	 * Sends a prompt to the model and processes the response, including tool calls.
 	 *
@@ -1344,17 +1503,14 @@ export class Agent {
 		this.emit({ type: "agent_start" });
 
 		let aborted = false;
-		let lastStopReason: import("./types.js").StopReason | undefined;
+		let lastStopReason: StopReason | undefined;
 		let pendingAssistantStart: AssistantMessage | null = null;
 
 		try {
 			const transformedMessages = await this.messageTransformer(
 				this._state.messages,
 			);
-			const messagesToSend = normalizeMessagesForProvider(
-				transformedMessages,
-				this._state.model,
-			);
+			const messagesToSend = this.buildProviderMessages(transformedMessages);
 
 			// Determine reasoning level
 			const level = this._state.thinkingLevel;
@@ -1406,127 +1562,16 @@ export class Agent {
 				runConfig,
 				abortController.signal,
 			)) {
-				if (event.type === "message_start") {
-					if (
-						this.suppressRecoverableOverflowErrors &&
-						isAssistantMessage(event.message)
-					) {
-						pendingAssistantStart = event.message;
-						this._state.streamMessage = isCoreMessage(event.message)
-							? event.message
-							: null;
-						if (
-							this.shouldWithholdRecoverableOverflowError(
-								event.message as AppMessage,
-							) ||
-							this.shouldWithholdRecoverableMaxOutput(event.message) ||
-							this.shouldMergeRecoverableLengthContinuation(event.message)
-						) {
-							this._state.streamMessage = null;
-							pendingAssistantStart = null;
-						}
-						continue;
-					}
-					if (
-						this.shouldWithholdRecoverableOverflowError(
-							event.message as AppMessage,
-						) ||
-						(isAssistantMessage(event.message) &&
-							(this.shouldWithholdRecoverableMaxOutput(event.message) ||
-								this.shouldMergeRecoverableLengthContinuation(event.message)))
-					) {
-						this._state.streamMessage = null;
-						continue;
-					}
-					this._state.streamMessage = isCoreMessage(event.message)
-						? event.message
-						: null;
-					this.emit(event);
-				} else if (event.type === "message_update") {
-					if (
-						this.shouldWithholdRecoverableOverflowError(
-							event.message as AppMessage,
-						) ||
-						(isAssistantMessage(event.message) &&
-							(this.shouldWithholdRecoverableMaxOutput(event.message) ||
-								this.shouldMergeRecoverableLengthContinuation(event.message)))
-					) {
-						this._state.streamMessage = null;
-						pendingAssistantStart = null;
-						continue;
-					}
-					if (pendingAssistantStart) {
-						this.emit({
-							type: "message_start",
-							message: pendingAssistantStart,
-						});
-						pendingAssistantStart = null;
-					}
-					this._state.streamMessage = isCoreMessage(event.message)
-						? event.message
-						: null;
-					this.emit(event);
-				} else if (event.type === "message_end") {
-					this._state.streamMessage = null;
-					let incoming = event.message as AppMessage;
-					if (this.shouldWithholdRecoverableOverflowError(incoming)) {
-						pendingAssistantStart = null;
-						this.withheldRecoverableOverflowError = incoming;
-						lastStopReason = incoming.stopReason;
-						continue;
-					}
-					if (
-						isAssistantMessage(incoming) &&
-						this.shouldWithholdRecoverableMaxOutput(incoming)
-					) {
-						pendingAssistantStart = null;
-						const assistantIncoming = incoming;
-						const lastMessage =
-							this._state.messages[this._state.messages.length - 1];
-						if (!isDuplicateMessage(lastMessage, assistantIncoming)) {
-							this._state.messages = [
-								...this._state.messages,
-								assistantIncoming,
-							];
-							this.withheldRecoverableLengthMessages.push(assistantIncoming);
-						}
-						lastStopReason = "length";
-						continue;
-					}
-					if (
-						isAssistantMessage(incoming) &&
-						this.shouldMergeRecoverableLengthContinuation(incoming)
-					) {
-						pendingAssistantStart = null;
-						incoming =
-							this.mergeWithWithheldRecoverableLengthMessages(incoming);
-						lastStopReason = incoming.stopReason;
-						this.primeToolBatch(incoming);
-						this.emit({ type: "message_start", message: incoming });
-						this.emit({ ...event, message: incoming });
-						continue;
-					}
-					if (pendingAssistantStart && isAssistantMessage(incoming)) {
-						this.emit({
-							type: "message_start",
-							message: pendingAssistantStart,
-						});
-						pendingAssistantStart = null;
-					}
-					const lastMessage =
-						this._state.messages[this._state.messages.length - 1];
-					if (!isDuplicateMessage(lastMessage, incoming)) {
-						this._state.messages = [...this._state.messages, incoming];
-					}
-					// Track last stop reason for overflow detection
-					if (
-						"stopReason" in event.message &&
-						event.message.stopReason !== undefined
-					) {
-						lastStopReason = event.message.stopReason;
-					}
-					this.primeToolBatch(incoming);
-					this.emit({ ...event, message: incoming });
+				if (
+					event.type === "message_start" ||
+					event.type === "message_update" ||
+					event.type === "message_end"
+				) {
+					({ pendingAssistantStart, lastStopReason } =
+						this.handleStreamedMessageEvent(event, {
+							pendingAssistantStart,
+							lastStopReason,
+						}));
 				} else if (event.type === "tool_execution_start") {
 					this.handleToolExecutionStart(event);
 				} else if (event.type === "tool_execution_update") {
@@ -1641,28 +1686,18 @@ export class Agent {
 		this.emit({ type: "agent_start", continuation: true });
 
 		let aborted = false;
-		let lastStopReason: import("./types.js").StopReason | undefined;
+		let lastStopReason: StopReason | undefined;
 		let pendingAssistantStart: AssistantMessage | null = null;
 
 		try {
 			const transformedMessages = await this.messageTransformer(
 				this._state.messages,
 			);
-			const messagesToSend = normalizeMessagesForProvider(
-				transformedMessages,
-				this._state.model,
-			);
 			const continuationPrompt = options?.continuationPrompt?.trim();
-			const providerMessages = continuationPrompt
-				? [
-						...messagesToSend,
-						{
-							role: "user" as const,
-							content: continuationPrompt,
-							timestamp: Date.now(),
-						},
-					]
-				: messagesToSend;
+			const providerMessages = this.buildProviderMessages(
+				transformedMessages,
+				continuationPrompt,
+			);
 
 			// Determine reasoning level
 			const level = this._state.thinkingLevel;
@@ -1729,127 +1764,16 @@ export class Agent {
 				runConfig,
 				abortController.signal,
 			)) {
-				if (event.type === "message_start") {
-					if (
-						this.suppressRecoverableOverflowErrors &&
-						isAssistantMessage(event.message)
-					) {
-						pendingAssistantStart = event.message;
-						this._state.streamMessage = isCoreMessage(event.message)
-							? event.message
-							: null;
-						if (
-							this.shouldWithholdRecoverableOverflowError(
-								event.message as AppMessage,
-							) ||
-							this.shouldWithholdRecoverableMaxOutput(event.message) ||
-							this.shouldMergeRecoverableLengthContinuation(event.message)
-						) {
-							this._state.streamMessage = null;
-							pendingAssistantStart = null;
-						}
-						continue;
-					}
-					if (
-						this.shouldWithholdRecoverableOverflowError(
-							event.message as AppMessage,
-						) ||
-						(isAssistantMessage(event.message) &&
-							(this.shouldWithholdRecoverableMaxOutput(event.message) ||
-								this.shouldMergeRecoverableLengthContinuation(event.message)))
-					) {
-						this._state.streamMessage = null;
-						continue;
-					}
-					this._state.streamMessage = isCoreMessage(event.message)
-						? event.message
-						: null;
-					this.emit(event);
-				} else if (event.type === "message_update") {
-					if (
-						this.shouldWithholdRecoverableOverflowError(
-							event.message as AppMessage,
-						) ||
-						(isAssistantMessage(event.message) &&
-							(this.shouldWithholdRecoverableMaxOutput(event.message) ||
-								this.shouldMergeRecoverableLengthContinuation(event.message)))
-					) {
-						this._state.streamMessage = null;
-						pendingAssistantStart = null;
-						continue;
-					}
-					if (pendingAssistantStart) {
-						this.emit({
-							type: "message_start",
-							message: pendingAssistantStart,
-						});
-						pendingAssistantStart = null;
-					}
-					this._state.streamMessage = isCoreMessage(event.message)
-						? event.message
-						: null;
-					this.emit(event);
-				} else if (event.type === "message_end") {
-					this._state.streamMessage = null;
-					let incoming = event.message as AppMessage;
-					if (this.shouldWithholdRecoverableOverflowError(incoming)) {
-						pendingAssistantStart = null;
-						this.withheldRecoverableOverflowError = incoming;
-						lastStopReason = incoming.stopReason;
-						continue;
-					}
-					if (
-						isAssistantMessage(incoming) &&
-						this.shouldWithholdRecoverableMaxOutput(incoming)
-					) {
-						pendingAssistantStart = null;
-						const assistantIncoming = incoming;
-						const lastMessage =
-							this._state.messages[this._state.messages.length - 1];
-						if (!isDuplicateMessage(lastMessage, assistantIncoming)) {
-							this._state.messages = [
-								...this._state.messages,
-								assistantIncoming,
-							];
-							this.withheldRecoverableLengthMessages.push(assistantIncoming);
-						}
-						lastStopReason = "length";
-						continue;
-					}
-					if (
-						isAssistantMessage(incoming) &&
-						this.shouldMergeRecoverableLengthContinuation(incoming)
-					) {
-						pendingAssistantStart = null;
-						incoming =
-							this.mergeWithWithheldRecoverableLengthMessages(incoming);
-						lastStopReason = incoming.stopReason;
-						this.primeToolBatch(incoming);
-						this.emit({ type: "message_start", message: incoming });
-						this.emit({ ...event, message: incoming });
-						continue;
-					}
-					if (pendingAssistantStart && isAssistantMessage(incoming)) {
-						this.emit({
-							type: "message_start",
-							message: pendingAssistantStart,
-						});
-						pendingAssistantStart = null;
-					}
-					const lastMessage =
-						this._state.messages[this._state.messages.length - 1];
-					if (!isDuplicateMessage(lastMessage, incoming)) {
-						this._state.messages = [...this._state.messages, incoming];
-					}
-					// Track last stop reason for overflow detection
-					if (
-						"stopReason" in event.message &&
-						event.message.stopReason !== undefined
-					) {
-						lastStopReason = event.message.stopReason;
-					}
-					this.primeToolBatch(incoming);
-					this.emit({ ...event, message: incoming });
+				if (
+					event.type === "message_start" ||
+					event.type === "message_update" ||
+					event.type === "message_end"
+				) {
+					({ pendingAssistantStart, lastStopReason } =
+						this.handleStreamedMessageEvent(event, {
+							pendingAssistantStart,
+							lastStopReason,
+						}));
 				} else if (event.type === "tool_execution_start") {
 					this.handleToolExecutionStart(event);
 				} else if (event.type === "tool_execution_update") {
