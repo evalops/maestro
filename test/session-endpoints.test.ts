@@ -21,6 +21,7 @@ function createMockSessionManager() {
 			{
 				id: "test-session-1",
 				title: "Test Session 1",
+				resumeSummary: "Reviewing the session and continuing the next fix.",
 				createdAt: "2024-01-01T00:00:00Z",
 				updatedAt: "2024-01-02T00:00:00Z",
 				messageCount: 5,
@@ -42,6 +43,7 @@ function createMockSessionManager() {
 				return Promise.resolve({
 					id: "test-session-1",
 					title: "Test Session 1",
+					resumeSummary: "Reviewing the session and continuing the next fix.",
 					owner: "anon",
 					createdAt: "2024-01-01T00:00:00Z",
 					updatedAt: "2024-01-02T00:00:00Z",
@@ -190,9 +192,14 @@ describe("Session Endpoints", () => {
 
 			await handleSessions(req, res, {}, corsHeaders);
 
-			const body = getBody() as { sessions: Array<{ id: string }> };
+			const body = getBody() as {
+				sessions: Array<{ id: string; resumeSummary?: string }>;
+			};
 			expect(body.sessions).toHaveLength(2);
 			expect(body.sessions[0]!.id).toBe("test-session-1");
+			expect(body.sessions[0]!.resumeSummary).toBe(
+				"Reviewing the session and continuing the next fix.",
+			);
 		});
 	});
 
@@ -205,9 +212,13 @@ describe("Session Endpoints", () => {
 
 			const body = getBody() as {
 				id: string;
+				resumeSummary?: string;
 				messages: Array<{ role: string }>;
 			};
 			expect(body.id).toBe("test-session-1");
+			expect(body.resumeSummary).toBe(
+				"Reviewing the session and continuing the next fix.",
+			);
 			expect(body.messages).toHaveLength(2);
 		});
 

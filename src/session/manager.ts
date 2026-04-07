@@ -704,6 +704,7 @@ export class SessionManager {
 		targetFile: string,
 		meta: {
 			summary?: string;
+			resumeSummary?: string;
 			favorite?: boolean;
 			title?: string;
 			tags?: string[];
@@ -712,6 +713,7 @@ export class SessionManager {
 		if (!existsSync(targetFile)) return;
 		if (
 			meta.summary === undefined &&
+			meta.resumeSummary === undefined &&
 			meta.favorite === undefined &&
 			meta.title === undefined &&
 			meta.tags === undefined
@@ -799,6 +801,14 @@ export class SessionManager {
 				},
 			});
 		}
+	}
+
+	saveSessionResumeSummary(summary: string, sessionPath?: string): void {
+		const trimmed = summary.trim();
+		if (!trimmed) return;
+		const target = sessionPath ?? this.sessionFile;
+		if (!target || !existsSync(target)) return;
+		this.appendSessionMetaEntry(target, { resumeSummary: trimmed });
 	}
 
 	setSessionFavorite(sessionPath: string, favorite: boolean): void {
@@ -1126,6 +1136,7 @@ export class SessionManager {
 		id: string;
 		subject?: string;
 		title?: string;
+		resumeSummary?: string;
 		messages: AppMessage[];
 		createdAt: string;
 		updatedAt: string;
@@ -1142,6 +1153,7 @@ export class SessionManager {
 	async createSession(options?: { title?: string }): Promise<{
 		id: string;
 		title?: string;
+		resumeSummary?: string;
 		messages: AppMessage[];
 		createdAt: string;
 		updatedAt: string;

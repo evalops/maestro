@@ -28,6 +28,7 @@ export interface LoadedSessionData {
 	id: string;
 	subject?: string;
 	title?: string;
+	resumeSummary?: string;
 	messages: AppMessage[];
 	createdAt: string;
 	updatedAt: string;
@@ -84,6 +85,7 @@ export class SessionCatalog {
 						messageCount: info.messageCount,
 						firstMessage: info.firstMessage || "(no messages)",
 						summary: derivedSummary,
+						resumeSummary: info.resumeSummary,
 						favorite: info.favorite,
 						allMessagesText: info.allMessagesText,
 					});
@@ -135,6 +137,7 @@ export class SessionCatalog {
 					id: info.id,
 					subject: info.subject,
 					title: info.title ?? info.summary,
+					resumeSummary: info.resumeSummary,
 					createdAt: info.created.toISOString(),
 					updatedAt: stats.mtime.toISOString(),
 					messageCount: info.messageCount,
@@ -167,6 +170,7 @@ export class SessionCatalog {
 			id: info.id,
 			subject: info.subject,
 			title: info.title ?? info.summary,
+			resumeSummary: info.resumeSummary,
 			messages: info.messages,
 			createdAt: info.created.toISOString(),
 			updatedAt: stats.mtime.toISOString(),

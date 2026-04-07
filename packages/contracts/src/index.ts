@@ -369,6 +369,8 @@ export interface ComposerSessionSummary {
 	id: string;
 	/** User-assigned or auto-generated title */
 	title?: string;
+	/** Short persisted recap shown when resuming a session */
+	resumeSummary?: string;
 	/** ISO 8601 timestamp when session was created */
 	createdAt: string;
 	/** ISO 8601 timestamp when session was last updated */

@@ -133,6 +133,23 @@ function getMessageTextContent(content: Message["content"]): string {
 		.join("");
 }
 
+function normalizeResumeSummary(
+	summary: string | null | undefined,
+): string | null {
+	if (typeof summary !== "string") {
+		return null;
+	}
+	const trimmed = summary.trim();
+	return trimmed.length > 0 ? trimmed : null;
+}
+
+function truncateResumeSummary(summary: string, max = 140): string {
+	if (summary.length <= max) {
+		return summary;
+	}
+	return `${summary.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
+}
+
 export function hasAssistantMessageProgress(
 	message: AssistantMessageSnapshot,
 ): boolean {
@@ -1006,6 +1023,23 @@ export class ComposerChat extends LitElement {
 			font-size: 0.8rem;
 			font-weight: 500;
 			margin-bottom: 0.35rem;
+		}
+
+		.session-card-meta {
+			font-family: var(--font-mono, monospace);
+			font-size: 0.62rem;
+			color: var(--text-tertiary, #5c5e62);
+			display: flex;
+			gap: 0.35rem;
+			flex-wrap: wrap;
+		}
+
+		.session-card-summary {
+			margin-top: 0.55rem;
+			font-family: var(--font-mono, monospace);
+			font-size: 0.68rem;
+			line-height: 1.45;
+			color: var(--text-secondary, #a4a8ae);
 		}
 
 		/* Responsive */
@@ -3083,6 +3117,14 @@ export class ComposerChat extends LitElement {
 			await this.updateComplete;
 			this.restorePendingSessionRequests(session);
 			await this.refreshUiState(session.id);
+			const resumeSummary = normalizeResumeSummary(session.resumeSummary);
+			if (resumeSummary) {
+				this.showToast(
+					`Resume: ${truncateResumeSummary(resumeSummary)}`,
+					"info",
+					2600,
+				);
+			}
 			this.requestUpdate(); // Force update
 			await this.updateComplete; // Wait for render
 			this.scrollToBottom({ force: true });
@@ -4529,6 +4571,18 @@ export class ComposerChat extends LitElement {
 																	<span>•</span>
 																	<span>Updated ${this.formatSessionDate(session.updatedAt)}</span>
 																</div>
+																${
+																	normalizeResumeSummary(session.resumeSummary)
+																		? html`<div class="session-card-summary">
+																			${truncateResumeSummary(
+																				normalizeResumeSummary(
+																					session.resumeSummary,
+																				)!,
+																				110,
+																			)}
+																		</div>`
+																		: ""
+																}
 															</button>
 													`,
 													)}

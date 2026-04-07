@@ -190,6 +190,7 @@ export const ComposerFilesResponseSchema = Type.Object({
 export const ComposerSessionSummarySchema = Type.Object({
 	id: Type.String(),
 	title: Type.Optional(Type.String()),
+	resumeSummary: Type.Optional(Type.String()),
 	createdAt: Type.String(),
 	updatedAt: Type.String(),
 	messageCount: Type.Number(),
@@ -335,6 +336,7 @@ export const ComposerToolRetryDecisionSchema = Type.Object({
 export const ComposerSessionSchema = Type.Object({
 	id: Type.String(),
 	title: Type.Optional(Type.String()),
+	resumeSummary: Type.Optional(Type.String()),
 	createdAt: Type.String(),
 	updatedAt: Type.String(),
 	messageCount: Type.Number(),

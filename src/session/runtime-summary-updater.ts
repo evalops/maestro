@@ -3,6 +3,7 @@ import type { AgentEvent } from "../agent/types.js";
 interface SessionSummarySink {
 	getSessionFile(): string | null | undefined;
 	saveSessionSummary(summary: string, sessionPath?: string): void;
+	saveSessionResumeSummary(summary: string, sessionPath?: string): void;
 }
 
 export function createRuntimeSessionSummaryUpdater(
@@ -29,6 +30,7 @@ export function createRuntimeSessionSummaryUpdater(
 		}
 
 		sessionManager.saveSessionSummary(summary, sessionPath);
+		sessionManager.saveSessionResumeSummary(summary, sessionPath);
 		lastSavedSummary = summary;
 	};
 }

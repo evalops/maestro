@@ -256,6 +256,18 @@ const logger = createLogger("tui:renderer");
 const getTodoStorePath = () =>
 	resolveEnvPath(process.env.MAESTRO_TODO_FILE) ?? PATHS.TODO_STORE;
 
+function formatLoadedSessionToast(sessionInfo: {
+	id: string;
+	messageCount: number;
+	resumeSummary?: string;
+}): string {
+	const prefix = `Loaded session ${sessionInfo.id} (${sessionInfo.messageCount} messages).`;
+	if (!sessionInfo.resumeSummary?.trim()) {
+		return prefix;
+	}
+	return `${prefix} ${sessionInfo.resumeSummary.trim()}`;
+}
+
 /**
  * Main TUI (Terminal User Interface) renderer for the Composer coding agent.
  *
@@ -890,9 +902,7 @@ export class TuiRenderer {
 				this.toolOutputView.clearTrackedComponents();
 				this.renderInitialMessages(this.agent.state);
 				this.footer.updateState(this.agent.state);
-				this.notificationView.showInfo(
-					`Loaded session ${sessionInfo.id} (${sessionInfo.messageCount} messages).`,
-				);
+				this.notificationView.showInfo(formatLoadedSessionToast(sessionInfo));
 			},
 		});
 		this.sessionView = sessionSubsystem.sessionView;

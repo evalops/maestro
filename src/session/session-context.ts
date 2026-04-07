@@ -41,6 +41,7 @@ export interface SessionFileInfo {
 	messages: AppMessage[];
 	messageCount: number;
 	summary?: string;
+	resumeSummary?: string;
 	title?: string;
 	tags?: string[];
 	favorite: boolean;
@@ -304,6 +305,7 @@ export function buildSessionFileInfo(
 	let subject: string | undefined;
 	let created = stats.birthtime;
 	let summary: string | undefined;
+	let resumeSummary: string | undefined;
 	let title: string | undefined;
 	let tags: string[] | undefined;
 	let favorite = false;
@@ -328,6 +330,12 @@ export function buildSessionFileInfo(
 			case "session_meta":
 				if (typeof entry.summary === "string" && entry.summary.trim()) {
 					summary = entry.summary;
+				}
+				if (
+					typeof entry.resumeSummary === "string" &&
+					entry.resumeSummary.trim()
+				) {
+					resumeSummary = entry.resumeSummary;
 				}
 				if (typeof entry.title === "string" && entry.title.trim()) {
 					title = entry.title;
@@ -374,6 +382,7 @@ export function buildSessionFileInfo(
 		messages: normalizedMessages,
 		messageCount,
 		summary,
+		resumeSummary,
 		title,
 		tags,
 		favorite,

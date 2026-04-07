@@ -104,6 +104,7 @@ describe("SessionCatalog", () => {
 		options: {
 			title?: string;
 			favorite?: boolean;
+			resumeSummary?: string;
 			modifiedAt?: Date;
 		} = {},
 	) {
@@ -126,7 +127,10 @@ describe("SessionCatalog", () => {
 		if (options.favorite) {
 			manager.setSessionFavorite(sessionFile, true);
 		}
-		if (options.title || options.favorite) {
+		if (options.resumeSummary) {
+			manager.saveSessionResumeSummary(options.resumeSummary, sessionFile);
+		}
+		if (options.title || options.favorite || options.resumeSummary) {
 			await manager.flush();
 		}
 		if (options.modifiedAt) {
@@ -149,7 +153,11 @@ describe("SessionCatalog", () => {
 	it("loads metadata and full session details from persisted files", async () => {
 		const session = await createPersistedSession(
 			"Deeply review the codebase before touching tests",
-			{ title: "Review Session", favorite: true },
+			{
+				title: "Review Session",
+				favorite: true,
+				resumeSummary: "Reviewing the codebase before touching tests.",
+			},
 		);
 
 		const catalog = createCatalog(dirname(session.sessionFile), session.id);
@@ -158,6 +166,7 @@ describe("SessionCatalog", () => {
 		expect(sessions[0]).toMatchObject({
 			id: session.id,
 			summary: expect.stringContaining("Deeply review the codebase"),
+			resumeSummary: "Reviewing the codebase before touching tests.",
 			favorite: true,
 		});
 
@@ -166,6 +175,7 @@ describe("SessionCatalog", () => {
 			expect.objectContaining({
 				id: session.id,
 				title: "Review Session",
+				resumeSummary: "Reviewing the codebase before touching tests.",
 				favorite: true,
 				messageCount: 2,
 			}),
@@ -175,6 +185,7 @@ describe("SessionCatalog", () => {
 		expect(loaded).toMatchObject({
 			id: session.id,
 			title: "Review Session",
+			resumeSummary: "Reviewing the codebase before touching tests.",
 			favorite: true,
 			messageCount: 2,
 		});

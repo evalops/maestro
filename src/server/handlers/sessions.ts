@@ -372,6 +372,7 @@ export async function handleSessions(
 			const sessionList: ComposerSessionSummary[] = pagedSessions.map((s) => ({
 				id: s.id,
 				title: s.title || `Session ${s.id.slice(0, 8)}`,
+				resumeSummary: s.resumeSummary,
 				createdAt: s.createdAt || new Date().toISOString(),
 				updatedAt: s.updatedAt || new Date().toISOString(),
 				messageCount: s.messageCount || 0,
@@ -408,6 +409,7 @@ export async function handleSessions(
 			const responseBody: ComposerSession = {
 				id: session.id,
 				title: session.title,
+				resumeSummary: session.resumeSummary,
 				createdAt: session.createdAt,
 				updatedAt: session.updatedAt,
 				messageCount: session.messageCount,
@@ -426,6 +428,7 @@ export async function handleSessions(
 			const responseBody: ComposerSession = {
 				id: session.id,
 				title: session.title,
+				resumeSummary: session.resumeSummary,
 				createdAt: session.createdAt,
 				updatedAt: session.updatedAt,
 				messageCount: session.messageCount,
@@ -686,6 +689,7 @@ export async function handleSharedSession(
 			// Don't leak the underlying session id through share links; treat token as the public id.
 			id: `shared:${shareToken}`,
 			title: session.title,
+			resumeSummary: session.resumeSummary,
 			createdAt: session.createdAt,
 			updatedAt: session.updatedAt,
 			messageCount: session.messageCount,

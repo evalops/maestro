@@ -38,7 +38,11 @@ interface SessionViewOptions {
 	summarizeSession: (session: SessionItem) => Promise<void>;
 	applyLoadedSessionContext: () => void;
 	showInfoMessage: (message: string) => void;
-	onSessionLoaded: (session: { id: string; messageCount: number }) => void;
+	onSessionLoaded: (session: {
+		id: string;
+		messageCount: number;
+		resumeSummary?: string;
+	}) => void;
 	sessionContext: SessionContext;
 }
 
@@ -213,6 +217,7 @@ ${muted("Use /sessions load <number> to switch.")}`;
 		this.options.onSessionLoaded({
 			id: session.id,
 			messageCount: session.messageCount,
+			resumeSummary: session.resumeSummary,
 		});
 		return true;
 	}

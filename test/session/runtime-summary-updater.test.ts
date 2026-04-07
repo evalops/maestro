@@ -17,6 +17,7 @@ describe("runtime-session-summary-updater", () => {
 		const sessionManager = {
 			getSessionFile: vi.fn(() => "/tmp/session.jsonl"),
 			saveSessionSummary: vi.fn(),
+			saveSessionResumeSummary: vi.fn(),
 		};
 		const update = createRuntimeSessionSummaryUpdater(sessionManager);
 
@@ -26,12 +27,17 @@ describe("runtime-session-summary-updater", () => {
 			"Read 2 files, ran tests",
 			"/tmp/session.jsonl",
 		);
+		expect(sessionManager.saveSessionResumeSummary).toHaveBeenCalledWith(
+			"Read 2 files, ran tests",
+			"/tmp/session.jsonl",
+		);
 	});
 
 	it("deduplicates repeated summaries", () => {
 		const sessionManager = {
 			getSessionFile: vi.fn(() => "/tmp/session.jsonl"),
 			saveSessionSummary: vi.fn(),
+			saveSessionResumeSummary: vi.fn(),
 		};
 		const update = createRuntimeSessionSummaryUpdater(sessionManager);
 		const event = createToolBatchStatus("Read 1 file");
@@ -40,12 +46,14 @@ describe("runtime-session-summary-updater", () => {
 		update(event);
 
 		expect(sessionManager.saveSessionSummary).toHaveBeenCalledTimes(1);
+		expect(sessionManager.saveSessionResumeSummary).toHaveBeenCalledTimes(1);
 	});
 
 	it("ignores non-tool-batch status events", () => {
 		const sessionManager = {
 			getSessionFile: vi.fn(() => "/tmp/session.jsonl"),
 			saveSessionSummary: vi.fn(),
+			saveSessionResumeSummary: vi.fn(),
 		};
 		const update = createRuntimeSessionSummaryUpdater(sessionManager);
 
@@ -56,6 +64,7 @@ describe("runtime-session-summary-updater", () => {
 		});
 
 		expect(sessionManager.saveSessionSummary).not.toHaveBeenCalled();
+		expect(sessionManager.saveSessionResumeSummary).not.toHaveBeenCalled();
 	});
 
 	it("does not mark a summary as saved before a session file exists", () => {
@@ -66,6 +75,7 @@ describe("runtime-session-summary-updater", () => {
 		const sessionManager = {
 			getSessionFile,
 			saveSessionSummary: vi.fn(),
+			saveSessionResumeSummary: vi.fn(),
 		};
 		const update = createRuntimeSessionSummaryUpdater(sessionManager);
 		const event = createToolBatchStatus("Read 1 file");
@@ -75,6 +85,11 @@ describe("runtime-session-summary-updater", () => {
 
 		expect(sessionManager.saveSessionSummary).toHaveBeenCalledTimes(1);
 		expect(sessionManager.saveSessionSummary).toHaveBeenCalledWith(
+			"Read 1 file",
+			"/tmp/session.jsonl",
+		);
+		expect(sessionManager.saveSessionResumeSummary).toHaveBeenCalledTimes(1);
+		expect(sessionManager.saveSessionResumeSummary).toHaveBeenCalledWith(
 			"Read 1 file",
 			"/tmp/session.jsonl",
 		);
