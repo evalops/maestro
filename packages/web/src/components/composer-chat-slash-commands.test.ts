@@ -16,32 +16,42 @@ function createContext(overrides: Partial<WebSlashCommandContext> = {}) {
 		addMcpAuthPreset: vi.fn(),
 		addMcpServer: vi.fn(),
 		cancelQueuedPrompt: vi.fn(),
+		clearMemory: vi.fn(),
 		createBranch: vi.fn(),
+		deleteMemory: vi.fn(),
 		enterPlanMode: vi.fn(),
 		exitPlanMode: vi.fn(),
+		exportMemory: vi.fn(),
 		getApprovalMode: vi.fn(),
 		getConfig: vi.fn(),
 		getDiagnostics: vi.fn(),
 		getFiles: vi.fn(),
+		getMemoryStats: vi.fn(),
 		getMcpStatus: vi.fn(),
 		getMcpPrompt: vi.fn(),
 		getPlan: vi.fn(),
 		getPreview: vi.fn(),
 		getQueueStatus: vi.fn(),
+		getRecentMemories: vi.fn(),
 		getReview: vi.fn(),
 		getRunScripts: vi.fn(),
 		importMcpRegistry: vi.fn(),
+		importMemory: vi.fn(),
 		getStats: vi.fn(),
 		getStatus: vi.fn(),
 		getTelemetryStatus: vi.fn(),
 		getUsage: vi.fn(),
 		listBranchOptions: vi.fn(),
+		listMemoryTopic: vi.fn(),
+		listMemoryTopics: vi.fn(),
 		listQueue: vi.fn(),
 		readMcpResource: vi.fn(),
 		removeMcpAuthPreset: vi.fn(),
 		removeMcpServer: vi.fn(),
 		runScript: vi.fn(),
+		saveMemory: vi.fn(),
 		saveConfig: vi.fn(),
+		searchMemory: vi.fn(),
 		searchMcpRegistry: vi.fn(),
 		setApprovalMode: vi.fn(),
 		setCleanMode: vi.fn(),
@@ -142,6 +152,109 @@ describe("executeWebSlashCommand", () => {
 				isError: false,
 			},
 		]);
+	});
+
+	it("lists memory topics from the web slash command", async () => {
+		const { context, outputs, apiClient } = createContext();
+		apiClient.listMemoryTopics.mockResolvedValue({
+			topics: [
+				{
+					name: "api-design",
+					entryCount: 2,
+					lastUpdated: Date.now(),
+				},
+			],
+		});
+
+		await executeWebSlashCommand("memory", "list", context);
+
+		expect(apiClient.listMemoryTopics).toHaveBeenCalledOnce();
+		expect(outputs).toEqual([
+			expect.objectContaining({
+				isError: false,
+				output: expect.stringContaining("Memory Topics (1)"),
+			}),
+		]);
+		expect(outputs[0]?.output).toContain("api-design");
+	});
+
+	it("saves memory from the web slash command", async () => {
+		const { context, outputs, apiClient } = createContext();
+		apiClient.saveMemory.mockResolvedValue({
+			message: 'Memory saved to topic "api design"',
+			entry: {
+				id: "mem_123",
+				topic: "api design",
+				content: "Use REST conventions #rest",
+				updatedAt: Date.now(),
+				tags: ["rest"],
+			},
+		});
+
+		await executeWebSlashCommand(
+			"memory",
+			'save "api design" Use REST conventions #rest',
+			context,
+		);
+
+		expect(apiClient.saveMemory).toHaveBeenCalledWith(
+			"api design",
+			"Use REST conventions #rest",
+			["rest"],
+		);
+		expect(outputs).toEqual([
+			{
+				output: 'Memory saved to topic "api design"',
+				isError: false,
+			},
+		]);
+	});
+
+	it("requires force before clearing memory from the web slash command", async () => {
+		const { context, outputs, apiClient } = createContext();
+
+		await executeWebSlashCommand("memory", "clear", context);
+
+		expect(apiClient.clearMemory).not.toHaveBeenCalled();
+		expect(outputs).toEqual([
+			{
+				output:
+					"This will delete ALL memories. Use /memory clear --force to confirm.",
+				isError: true,
+			},
+		]);
+	});
+
+	it("searches memory from the web slash command", async () => {
+		const { context, outputs, apiClient } = createContext();
+		apiClient.searchMemory.mockResolvedValue({
+			query: "REST",
+			results: [
+				{
+					entry: {
+						id: "mem_123",
+						topic: "api-design",
+						content: "Use REST conventions",
+						updatedAt: Date.now(),
+						tags: ["rest"],
+					},
+					score: 4.2,
+					matchedOn: "content",
+				},
+			],
+		});
+
+		await executeWebSlashCommand("memory", "search REST", context);
+
+		expect(apiClient.searchMemory).toHaveBeenCalledWith("REST");
+		expect(outputs).toEqual([
+			expect.objectContaining({
+				isError: false,
+				output: expect.stringContaining('Search Results for "REST"'),
+			}),
+		]);
+		expect(outputs[0]?.output).toContain("api-design");
+		expect(outputs[0]?.output).toContain("Use REST conventions");
 	});
 
 	it("searches the MCP registry from the web slash command", async () => {

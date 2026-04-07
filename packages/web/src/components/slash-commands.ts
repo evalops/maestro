@@ -50,6 +50,13 @@ const BUILTIN_WEB_SLASH_COMMANDS: Array<Omit<WebSlashCommand, "source">> = [
 		tags: ["tools"],
 	},
 	{
+		name: "memory",
+		description: "Search and manage cross-session memory",
+		usage:
+			"/memory [save <topic> <content>|search <query>|list [topic]|recent [N]|delete <id|topic>|stats|export [path]|import <path>|clear --force]",
+		tags: ["memory", "session"],
+	},
+	{
 		name: "diff",
 		description: "Show git diff",
 		usage: "/diff <path>",

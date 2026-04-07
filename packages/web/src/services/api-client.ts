@@ -2575,7 +2575,7 @@ export class ApiClient {
 
 	async listMemoryTopic(topic: string): Promise<Record<string, unknown>> {
 		return await this.fetchJsonWithFallback(
-			`/api/memory?action=list&topic=${topic}`,
+			`/api/memory?action=list&topic=${encodeURIComponent(topic)}`,
 		);
 	}
 

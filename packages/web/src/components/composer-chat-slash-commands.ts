@@ -24,22 +24,28 @@ import {
 type WebSlashCommandApiClient = Pick<
 	ApiClient,
 	| "cancelQueuedPrompt"
+	| "clearMemory"
 	| "createBranch"
+	| "deleteMemory"
 	| "enterPlanMode"
 	| "exitPlanMode"
+	| "exportMemory"
 	| "getApprovalMode"
 	| "getConfig"
 	| "getDiagnostics"
 	| "getFiles"
+	| "getMemoryStats"
 	| "getMcpStatus"
 	| "getMcpPrompt"
 	| "getPlan"
 	| "getPreview"
 	| "getQueueStatus"
+	| "getRecentMemories"
 	| "getReview"
 	| "readMcpResource"
 	| "getRunScripts"
 	| "importMcpRegistry"
+	| "importMemory"
 	| "addMcpServer"
 	| "addMcpAuthPreset"
 	| "getStats"
@@ -47,11 +53,15 @@ type WebSlashCommandApiClient = Pick<
 	| "getTelemetryStatus"
 	| "getUsage"
 	| "listBranchOptions"
+	| "listMemoryTopic"
+	| "listMemoryTopics"
 	| "listQueue"
 	| "removeMcpAuthPreset"
 	| "removeMcpServer"
 	| "runScript"
+	| "saveMemory"
 	| "saveConfig"
+	| "searchMemory"
 	| "searchMcpRegistry"
 	| "setApprovalMode"
 	| "setCleanMode"
@@ -91,6 +101,28 @@ const MCP_AUTH_EDIT_USAGE =
 	"/mcp auth edit <name> [--scope local|project|user] [--header 'Name: value'] [--headers-helper <command>]";
 const MCP_AUTH_REMOVE_USAGE =
 	"/mcp auth remove <name> [--scope local|project|user]";
+const MEMORY_USAGE =
+	"/memory [save <topic> <content>|search <query>|list [topic]|recent [N]|delete <id|topic>|stats|export [path]|import <path>|clear --force]";
+
+type MemoryEntry = {
+	id: string;
+	topic: string;
+	content: string;
+	updatedAt: number;
+	tags: string[];
+};
+
+type MemoryTopicSummary = {
+	name: string;
+	entryCount: number;
+	lastUpdated: number;
+};
+
+type MemorySearchResult = {
+	entry: MemoryEntry;
+	score: number;
+	matchedOn: string;
+};
 
 export interface WebSlashCommandContext {
 	apiClient: WebSlashCommandApiClient;
@@ -167,6 +199,197 @@ export function formatCommandCodeBlock(
 
 export function formatCommandJsonBlock(data: unknown): string {
 	return formatCommandCodeBlock(JSON.stringify(data, null, 2), "json");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
+}
+
+function toStringArray(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+	return value.filter((entry): entry is string => typeof entry === "string");
+}
+
+function parseMemoryEntry(value: unknown): MemoryEntry | null {
+	if (!isRecord(value)) return null;
+	if (
+		typeof value.id !== "string" ||
+		typeof value.topic !== "string" ||
+		typeof value.content !== "string" ||
+		typeof value.updatedAt !== "number"
+	) {
+		return null;
+	}
+	return {
+		id: value.id,
+		topic: value.topic,
+		content: value.content,
+		updatedAt: value.updatedAt,
+		tags: toStringArray(value.tags),
+	};
+}
+
+function parseMemoryTopicSummary(value: unknown): MemoryTopicSummary | null {
+	if (!isRecord(value)) return null;
+	if (
+		typeof value.name !== "string" ||
+		typeof value.entryCount !== "number" ||
+		typeof value.lastUpdated !== "number"
+	) {
+		return null;
+	}
+	return {
+		name: value.name,
+		entryCount: value.entryCount,
+		lastUpdated: value.lastUpdated,
+	};
+}
+
+function parseMemorySearchResult(value: unknown): MemorySearchResult | null {
+	if (!isRecord(value)) return null;
+	const entry = parseMemoryEntry(value.entry);
+	if (
+		!entry ||
+		typeof value.score !== "number" ||
+		typeof value.matchedOn !== "string"
+	) {
+		return null;
+	}
+	return {
+		entry,
+		score: value.score,
+		matchedOn: value.matchedOn,
+	};
+}
+
+function formatRelativeTime(timestamp: number): string {
+	const diff = Date.now() - timestamp;
+	if (diff < 60000) return "just now";
+	if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+	if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+	return `${Math.floor(diff / 86400000)}d ago`;
+}
+
+function truncateText(text: string, maxLen: number): string {
+	if (text.length <= maxLen) return text;
+	return `${text.slice(0, maxLen - 3)}...`;
+}
+
+function extractMemoryTags(content: string): string[] {
+	return (content.match(/#(\w+)/g) ?? []).map((tag) => tag.slice(1));
+}
+
+function formatMemoryTopicsBlock(result: Record<string, unknown>): string {
+	const topics = Array.isArray(result.topics)
+		? result.topics
+				.map(parseMemoryTopicSummary)
+				.filter((topic): topic is MemoryTopicSummary => topic !== null)
+		: [];
+	if (topics.length === 0) {
+		return "No memories saved yet. Use /memory save <topic> <content> to add one.";
+	}
+	const lines = [`Memory Topics (${topics.length})`, ""];
+	for (const topic of topics) {
+		lines.push(
+			`  ${topic.name} - ${topic.entryCount} ${topic.entryCount === 1 ? "entry" : "entries"} (${formatRelativeTime(topic.lastUpdated)})`,
+		);
+	}
+	lines.push("", "Use /memory list <topic> to see entries");
+	return lines.join("\n");
+}
+
+function formatMemoryTopicEntriesBlock(
+	topic: string,
+	result: Record<string, unknown>,
+): string {
+	const memories = Array.isArray(result.memories)
+		? result.memories
+				.map(parseMemoryEntry)
+				.filter((entry): entry is MemoryEntry => entry !== null)
+		: [];
+	if (memories.length === 0) {
+		return `No memories found for topic "${topic}"`;
+	}
+	const lines = [`Memories in "${topic}" (${memories.length})`, ""];
+	for (const entry of memories.slice(0, 20)) {
+		const tags = entry.tags.length ? ` [${entry.tags.join(", ")}]` : "";
+		lines.push(`  • ${truncateText(entry.content, 70)}${tags}`);
+		lines.push(`    ${entry.id} • ${formatRelativeTime(entry.updatedAt)}`);
+	}
+	if (memories.length > 20) {
+		lines.push(`  ... and ${memories.length - 20} more`);
+	}
+	return lines.join("\n");
+}
+
+function formatMemorySearchResultsBlock(
+	query: string,
+	result: Record<string, unknown>,
+): string {
+	const results = Array.isArray(result.results)
+		? result.results
+				.map(parseMemorySearchResult)
+				.filter((entry): entry is MemorySearchResult => entry !== null)
+		: [];
+	if (results.length === 0) {
+		return `No memories found for "${query}"`;
+	}
+	const lines = [`Search Results for "${query}" (${results.length} found)`, ""];
+	for (let index = 0; index < results.length; index += 1) {
+		const resultEntry = results[index];
+		if (!resultEntry) continue;
+		lines.push(
+			`${index + 1}. [${resultEntry.entry.topic}] ${truncateText(resultEntry.entry.content, 60)} [${resultEntry.score.toFixed(1)}] (${resultEntry.matchedOn})`,
+		);
+		lines.push(
+			`   ID: ${resultEntry.entry.id} • ${formatRelativeTime(resultEntry.entry.updatedAt)}`,
+		);
+	}
+	return lines.join("\n");
+}
+
+function formatRecentMemoriesBlock(result: Record<string, unknown>): string {
+	const memories = Array.isArray(result.memories)
+		? result.memories
+				.map(parseMemoryEntry)
+				.filter((entry): entry is MemoryEntry => entry !== null)
+		: [];
+	if (memories.length === 0) {
+		return "No recent memories found.";
+	}
+	const lines = [`Recent Memories (${memories.length})`, ""];
+	for (const entry of memories) {
+		lines.push(`  [${entry.topic}] ${truncateText(entry.content, 70)}`);
+		lines.push(`    ${entry.id} • ${formatRelativeTime(entry.updatedAt)}`);
+	}
+	return lines.join("\n");
+}
+
+function formatMemoryStatsBlock(result: Record<string, unknown>): string {
+	const stats = isRecord(result.stats) ? result.stats : {};
+	const lines = ["Memory Statistics", ""];
+	lines.push(
+		`  Total entries: ${typeof stats.totalEntries === "number" ? stats.totalEntries : 0}`,
+	);
+	lines.push(
+		`  Topics: ${typeof stats.topics === "number" ? stats.topics : 0}`,
+	);
+	if (typeof stats.oldestEntry === "number") {
+		lines.push(`  Oldest: ${formatRelativeTime(stats.oldestEntry)}`);
+	}
+	if (typeof stats.newestEntry === "number") {
+		lines.push(`  Newest: ${formatRelativeTime(stats.newestEntry)}`);
+	}
+	return lines.join("\n");
+}
+
+function formatMemoryMutationMessage(
+	result: Record<string, unknown>,
+	fallback: string,
+): string {
+	return typeof result.message === "string" && result.message.length > 0
+		? result.message
+		: fallback;
 }
 
 function tokenizeSlashArgs(input: string): string[] {
@@ -1528,6 +1751,182 @@ export async function executeWebSlashCommand(
 					"Usage: /mcp [status|search <query>|resources [server uri]|prompts [server [name KEY=value...]]|add <name> <command-or-url>|edit <name> <command-or-url>|remove <name>|import <id> [name]|auth [list|add|edit|remove]]",
 					true,
 				);
+				break;
+			}
+			case "memory": {
+				const tokens = tokenizeSlashArgs(args);
+				const sub = tokens[0]?.toLowerCase() ?? "help";
+
+				if (["", "help", "-h", "--help", "?"].includes(sub)) {
+					context.appendCommandOutput(
+						formatCommandCodeBlock(
+							[
+								"/memory",
+								"/memory save <topic> <content>",
+								"/memory search <query>",
+								"/memory list [topic]",
+								"/memory recent [N]",
+								"/memory delete <id|topic>",
+								"/memory stats",
+								"/memory export [path]",
+								"/memory import <path>",
+								"/memory clear --force",
+							].join("\n"),
+						),
+					);
+					break;
+				}
+
+				if (["list", "ls"].includes(sub)) {
+					const topic = tokens.slice(1).join(" ").trim();
+					if (topic) {
+						const result = await context.apiClient.listMemoryTopic(topic);
+						context.appendCommandOutput(
+							formatCommandCodeBlock(
+								formatMemoryTopicEntriesBlock(topic, result),
+							),
+						);
+						break;
+					}
+					const result = await context.apiClient.listMemoryTopics();
+					context.appendCommandOutput(
+						formatCommandCodeBlock(formatMemoryTopicsBlock(result)),
+					);
+					break;
+				}
+
+				if (["search", "find"].includes(sub)) {
+					const query = tokens.slice(1).join(" ").trim();
+					if (!query) {
+						context.appendCommandOutput("Usage: /memory search <query>", true);
+						break;
+					}
+					const result = await context.apiClient.searchMemory(query);
+					context.appendCommandOutput(
+						formatCommandCodeBlock(
+							formatMemorySearchResultsBlock(query, result),
+						),
+					);
+					break;
+				}
+
+				if (sub === "recent") {
+					const limit = tokens[1] ? Number.parseInt(tokens[1], 10) : 10;
+					if (!Number.isInteger(limit) || limit <= 0) {
+						context.appendCommandOutput("Usage: /memory recent [N]", true);
+						break;
+					}
+					const result = await context.apiClient.getRecentMemories(limit);
+					context.appendCommandOutput(
+						formatCommandCodeBlock(formatRecentMemoriesBlock(result)),
+					);
+					break;
+				}
+
+				if (["stats", "status"].includes(sub)) {
+					const result = await context.apiClient.getMemoryStats();
+					context.appendCommandOutput(
+						formatCommandCodeBlock(formatMemoryStatsBlock(result)),
+					);
+					break;
+				}
+
+				if (["save", "add"].includes(sub)) {
+					if (!requireWritableSession("Memory save")) break;
+					const topic = tokens[1];
+					const content = tokens.slice(2).join(" ").trim();
+					if (!topic || !content) {
+						context.appendCommandOutput(
+							"Usage: /memory save <topic> <content>",
+							true,
+						);
+						break;
+					}
+					const tags = extractMemoryTags(content);
+					const result = await context.apiClient.saveMemory(
+						topic,
+						content,
+						tags.length > 0 ? tags : undefined,
+					);
+					const entry = parseMemoryEntry(result.entry);
+					context.appendCommandOutput(
+						formatMemoryMutationMessage(
+							result,
+							entry
+								? `Memory saved to topic "${entry.topic}" (${entry.id})`
+								: `Memory saved to topic "${topic}"`,
+						),
+					);
+					break;
+				}
+
+				if (["delete", "rm", "forget"].includes(sub)) {
+					if (!requireWritableSession("Memory delete")) break;
+					const target = tokens.slice(1).join(" ").trim();
+					if (!target) {
+						context.appendCommandOutput(
+							"Usage: /memory delete <id|topic>",
+							true,
+						);
+						break;
+					}
+					const isId = target.startsWith("mem_");
+					const result = await context.apiClient.deleteMemory(
+						isId ? target : undefined,
+						isId ? undefined : target,
+					);
+					context.appendCommandOutput(
+						formatMemoryMutationMessage(
+							result,
+							isId
+								? `Memory ${target} deleted`
+								: `Deleted memories from topic "${target}"`,
+						),
+					);
+					break;
+				}
+
+				if (sub === "export") {
+					if (!requireWritableSession("Memory export")) break;
+					const path = tokens.slice(1).join(" ").trim() || undefined;
+					const result = await context.apiClient.exportMemory(path);
+					context.appendCommandOutput(
+						formatMemoryMutationMessage(result, "Memories exported."),
+					);
+					break;
+				}
+
+				if (sub === "import") {
+					if (!requireWritableSession("Memory import")) break;
+					const path = tokens.slice(1).join(" ").trim();
+					if (!path) {
+						context.appendCommandOutput("Usage: /memory import <path>", true);
+						break;
+					}
+					const result = await context.apiClient.importMemory(path);
+					context.appendCommandOutput(
+						formatMemoryMutationMessage(result, "Memories imported."),
+					);
+					break;
+				}
+
+				if (sub === "clear") {
+					if (!requireWritableSession("Memory clear")) break;
+					if (!tokens.includes("--force") && !tokens.includes("-f")) {
+						context.appendCommandOutput(
+							"This will delete ALL memories. Use /memory clear --force to confirm.",
+							true,
+						);
+						break;
+					}
+					const result = await context.apiClient.clearMemory(true);
+					context.appendCommandOutput(
+						formatMemoryMutationMessage(result, "Memories cleared."),
+					);
+					break;
+				}
+
+				context.appendCommandOutput(MEMORY_USAGE, true);
 				break;
 			}
 			case "diff": {
