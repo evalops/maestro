@@ -99,6 +99,13 @@ export const PATHS = {
 	get TOOL_FAILURE_LOG(): string {
 		return join(getComposerHome(), "tool-failures.log");
 	},
+	/** Project MCP approval decisions */
+	get MCP_PROJECT_APPROVALS_FILE(): string {
+		return (
+			resolveEnvPath(process.env.MAESTRO_MCP_PROJECT_APPROVALS_FILE) ??
+			join(getComposerHome(), "mcp-project-approvals.json")
+		);
+	},
 	/** Background task log directory */
 	get BACKGROUND_TASK_LOG_DIR(): string {
 		return join(getComposerHome(), "background-tasks");

@@ -366,6 +366,7 @@ function createDefaultMcpStatus() {
 				name: "test-server",
 				connected: true,
 				scope: "project" as const,
+				projectApproval: "approved" as const,
 				transport: "stdio" as const,
 				tools: [{ name: "test_tool" }],
 				resources: ["resource://test"],
@@ -468,6 +469,7 @@ vi.mock("../../../src/mcp/index.js", () => ({
 				: [],
 	})),
 	searchOfficialMcpRegistry: vi.fn(() => [mockOfficialRegistryEntry]),
+	setProjectMcpServerApprovalDecision: vi.fn(),
 	updateMcpAuthPresetInConfig: vi.fn(() => ({
 		path: "/tmp/project/.maestro/mcp.local.json",
 		scope: "local",
@@ -497,6 +499,7 @@ import {
 	removeMcpServerFromConfig,
 	resolveOfficialMcpRegistryEntry,
 	searchOfficialMcpRegistry,
+	setProjectMcpServerApprovalDecision,
 	updateMcpAuthPresetInConfig,
 	updateMcpServerInConfig,
 } from "../../../src/mcp/index.js";
@@ -513,6 +516,17 @@ function createMcpCtx(rawInput: string): McpRenderContext {
 describe("mcp-handlers", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		vi.mocked(loadMcpConfig).mockImplementation(() => ({
+			servers: [],
+			authPresets: [
+				{
+					name: "linear-auth",
+					headers: { Authorization: "Bearer test" },
+					headersHelper: "op run --env-file",
+					scope: "local",
+				},
+			],
+		}));
 		vi.mocked(mcpManager.getStatus).mockImplementation(() =>
 			createDefaultMcpStatus(),
 		);
@@ -559,6 +573,9 @@ describe("mcp-handlers", () => {
 				expect.stringContaining("Trust: Official registry (Linear)"),
 			);
 			expect(ctx.addContent).toHaveBeenCalledWith(
+				expect.stringContaining("Approval: Approved locally"),
+			);
+			expect(ctx.addContent).toHaveBeenCalledWith(
 				expect.stringContaining("Docs: https://linear.app/docs/mcp"),
 			);
 			expect(ctx.addContent).toHaveBeenCalledWith(
@@ -567,6 +584,40 @@ describe("mcp-handlers", () => {
 			expect(ctx.addContent).toHaveBeenCalledWith(
 				expect.stringContaining("Error: Connection refused"),
 			);
+		});
+
+		it("approves a project MCP server", async () => {
+			vi.mocked(loadMcpConfig).mockReturnValueOnce({
+				projectRoot: process.cwd(),
+				servers: [
+					{
+						name: "test-server",
+						scope: "project",
+						transport: "stdio",
+						command: "npx",
+					},
+				],
+				authPresets: [],
+			});
+
+			const ctx = createMcpCtx("/mcp approve test-server");
+			handleMcpCommand(ctx);
+			await vi.waitFor(() => {
+				expect(setProjectMcpServerApprovalDecision).toHaveBeenCalledWith({
+					projectRoot: process.cwd(),
+					server: {
+						name: "test-server",
+						scope: "project",
+						transport: "stdio",
+						command: "npx",
+					},
+					authPresets: [],
+					decision: "approved",
+				});
+				expect(ctx.addContent).toHaveBeenCalledWith(
+					'Approved project MCP server "test-server".',
+				);
+			});
 		});
 
 		it("falls back to a generic message for blank server errors", () => {

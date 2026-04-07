@@ -240,6 +240,7 @@ export interface McpServerStatus {
 		authorName?: string;
 		url?: string;
 	};
+	projectApproval?: "pending" | "approved" | "denied";
 }
 
 export interface McpPromptArgument {
@@ -425,6 +426,18 @@ export interface McpAuthPresetRemoveResponse {
 		name: string;
 		scope?: "enterprise" | "plugin" | "project" | "local" | "user";
 	} | null;
+}
+
+export interface McpProjectApprovalRequest {
+	name: string;
+	decision: "approved" | "denied";
+}
+
+export interface McpProjectApprovalResponse {
+	name: string;
+	scope: "project";
+	decision: "approved" | "denied";
+	projectApproval: "pending" | "approved" | "denied";
 }
 
 export type {
@@ -1200,6 +1213,16 @@ export class ApiClient {
 	): Promise<McpServerRemoveResponse> {
 		return await this.fetchJsonRequest<McpServerRemoveResponse>(
 			"/api/mcp?action=remove-server",
+			"POST",
+			input,
+		);
+	}
+
+	async setMcpProjectApproval(
+		input: McpProjectApprovalRequest,
+	): Promise<McpProjectApprovalResponse> {
+		return await this.fetchJsonRequest<McpProjectApprovalResponse>(
+			"/api/mcp?action=set-project-approval",
 			"POST",
 			input,
 		);

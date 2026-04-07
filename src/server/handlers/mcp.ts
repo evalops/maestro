@@ -17,6 +17,7 @@ import {
 	removeMcpServerFromConfig,
 	resolveOfficialMcpRegistryEntry,
 	searchOfficialMcpRegistry,
+	setProjectMcpServerApprovalDecision,
 	updateMcpAuthPresetInConfig,
 	updateMcpServerInConfig,
 } from "../../mcp/index.js";
@@ -144,6 +145,16 @@ const McpUpdateAuthPresetSchema = Type.Object({
 	preset: McpAuthPresetUpdateInputSchema,
 });
 
+const McpProjectApprovalDecisionSchema = Type.Union([
+	Type.Literal("approved"),
+	Type.Literal("denied"),
+]);
+
+const McpSetProjectApprovalSchema = Type.Object({
+	name: Type.String({ minLength: 1 }),
+	decision: McpProjectApprovalDecisionSchema,
+});
+
 type McpRegistryImportInput = Static<typeof McpRegistryImportSchema>;
 type McpAddServerInput = Static<typeof McpAddServerSchema>;
 type McpAddAuthPresetInput = Static<typeof McpAddAuthPresetSchema>;
@@ -155,6 +166,7 @@ type McpRemoveAuthPresetInput = Static<typeof McpRemoveAuthPresetSchema>;
 type McpUpdateServerInput = Static<typeof McpUpdateServerSchema>;
 type McpUpdateAuthPresetInput = Static<typeof McpUpdateAuthPresetSchema>;
 type McpUpdateServerInputConfig = Static<typeof McpServerUpdateInputSchema>;
+type McpSetProjectApprovalInput = Static<typeof McpSetProjectApprovalSchema>;
 
 async function ensureOfficialRegistryLoaded(): Promise<void> {
 	await prefetchOfficialMcpRegistry();
@@ -676,6 +688,58 @@ async function handleImportRegistry(
 	);
 }
 
+async function handleSetProjectApproval(
+	req: IncomingMessage,
+	res: ServerResponse,
+	corsHeaders: Record<string, string>,
+): Promise<void> {
+	const body = await parseAndValidateJson<McpSetProjectApprovalInput>(
+		req,
+		McpSetProjectApprovalSchema,
+	);
+	const projectRoot = process.cwd();
+	const config = loadMcpConfig(projectRoot);
+	const existingServer = config.servers.find(
+		(server) => server.name === body.name,
+	);
+	if (!existingServer) {
+		throw new ApiError(
+			404,
+			`MCP server "${body.name}" not found in merged config.`,
+		);
+	}
+	if (existingServer.scope !== "project") {
+		throw new ApiError(
+			400,
+			`MCP server "${body.name}" is not loaded from project config.`,
+		);
+	}
+
+	setProjectMcpServerApprovalDecision({
+		projectRoot,
+		server: existingServer,
+		authPresets: config.authPresets,
+		decision: body.decision,
+	});
+	await reloadMcpManager(projectRoot);
+	const activeServer = mcpManager
+		.getStatus()
+		.servers.find((server) => server.name === body.name);
+
+	sendJson(
+		res,
+		200,
+		{
+			name: body.name,
+			scope: "project",
+			decision: body.decision,
+			projectApproval: activeServer?.projectApproval ?? body.decision,
+		},
+		corsHeaders,
+		req,
+	);
+}
+
 export async function handleMcpStatus(
 	req: IncomingMessage,
 	res: ServerResponse,
@@ -790,6 +854,11 @@ export async function handleMcpStatus(
 
 			if (action === "update-auth-preset") {
 				await handleUpdateAuthPreset(req, res, corsHeaders);
+				return;
+			}
+
+			if (action === "set-project-approval") {
+				await handleSetProjectApproval(req, res, corsHeaders);
 				return;
 			}
 

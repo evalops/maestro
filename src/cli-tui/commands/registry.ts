@@ -843,12 +843,14 @@ export function createCommandRegistry({
 				name: "mcp",
 				description:
 					"Show or manage Model Context Protocol servers and auth presets",
-				usage: "/mcp [add|edit|remove|search|import|auth|resources|prompts]",
+				usage:
+					"/mcp [add|edit|remove|approve|deny|search|import|auth|resources|prompts]",
 				tags: ["tools"],
 				examples: [
 					"/mcp",
 					"/mcp search linear",
 					"/mcp import linear",
+					"/mcp approve linear",
 					"/mcp auth add linear-auth --header 'Authorization: Bearer ...'",
 					"/mcp add linear https://mcp.linear.app/mcp",
 					"/mcp add linear https://mcp.linear.app/mcp --auth-preset linear-auth",

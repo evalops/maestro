@@ -38,6 +38,11 @@ export {
 	setOfficialMcpRegistryCacheForTesting,
 	buildSuggestedMcpServerName,
 } from "./official-registry.js";
+export {
+	buildProjectMcpServerFingerprint,
+	getProjectMcpServerApprovalStatus,
+	setProjectMcpServerApprovalDecision,
+} from "./project-approvals.js";
 export type {
 	McpAuthPresetConfig,
 	McpAuthPresetStatus,
@@ -45,6 +50,8 @@ export type {
 	McpOfficialRegistryEntry,
 	McpOfficialRegistryInfo,
 	McpOfficialRegistryUrlOption,
+	McpProjectApprovalDecision,
+	McpProjectApprovalStatus,
 	McpServerConfig,
 	McpServerStatus,
 	McpManagerStatus,

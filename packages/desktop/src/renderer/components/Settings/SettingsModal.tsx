@@ -745,6 +745,17 @@ export function SettingsModal({
 		return result;
 	};
 
+	const setMcpProjectApproval = async (input: {
+		name: string;
+		decision: "approved" | "denied";
+	}) => {
+		const result = await apiClient.setMcpProjectApproval(input);
+		const status = await apiClient.getMcpStatus();
+		setMcpStatus(status);
+		setExpandedMcpServer(result.name);
+		return result;
+	};
+
 	const removeMcpAuthPreset = async (input: McpAuthPresetRemoveRequest) => {
 		const result = await apiClient.removeMcpAuthPreset(input);
 		const status = await apiClient.getMcpStatus();
@@ -967,6 +978,7 @@ export function SettingsModal({
 						onUpdateMcpServer={updateMcpServer}
 						onUpdateMcpAuthPreset={updateMcpAuthPreset}
 						onRemoveMcpServer={removeMcpServer}
+						onSetMcpProjectApproval={setMcpProjectApproval}
 						onRemoveMcpAuthPreset={removeMcpAuthPreset}
 						onReadMcpResource={readMcpResource}
 						onGetMcpPrompt={getMcpPrompt}

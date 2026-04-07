@@ -158,6 +158,31 @@ describe("buildMcpServerViewModel", () => {
 		);
 	});
 
+	it("surfaces project approval state ahead of connection errors", () => {
+		const viewModel = buildMcpServerViewModel(
+			{
+				name: "repo-server",
+				connected: false,
+				scope: "project",
+				transport: "http",
+				projectApproval: "pending",
+				error: "Connection refused",
+				tools: [],
+				resources: [],
+				prompts: [],
+			},
+			null,
+		);
+
+		expect(viewModel.summary).toBe(
+			"Pending approval · Project config · via HTTP · 0 tools · 0 resources · 0 prompts",
+		);
+		expect(viewModel.connectionLabel).toBe("Pending approval");
+		expect(viewModel.projectApproval).toBe("pending");
+		expect(viewModel.projectApprovalLabel).toBe("Pending approval");
+		expect(viewModel.errorLabel).toBeNull();
+	});
+
 	it("reports empty tool state when nothing is available", () => {
 		const viewModel = buildMcpServerViewModel(
 			{

@@ -30,6 +30,7 @@ import type {
 	McpAuthPresetStatus,
 	McpAuthPresetUpdateRequest,
 	McpOfficialRegistryEntry,
+	McpProjectApprovalResponse,
 	McpPromptDefinition,
 	McpPromptResponse,
 	McpRegistryImportRequest,
@@ -69,11 +70,14 @@ export interface McpServerViewModel {
 	name: string;
 	summary: string;
 	isExpanded: boolean;
+	connectionLabel: string;
 	transport: McpServerStatus["transport"];
 	writableScope: McpRegistryImportRequest["scope"] | null;
 	sourceLabel: string | null;
 	transportLabel: string | null;
 	remoteTrustLabel: string | null;
+	projectApproval: McpServerStatus["projectApproval"] | null;
+	projectApprovalLabel: string | null;
 	errorLabel: string | null;
 	command: string | null;
 	args: string[];
@@ -148,6 +152,10 @@ export interface ToolsRuntimeSectionProps {
 	onRemoveMcpServer: (
 		input: McpServerRemoveRequest,
 	) => Promise<McpServerRemoveResponse>;
+	onSetMcpProjectApproval: (input: {
+		name: string;
+		decision: "approved" | "denied";
+	}) => Promise<McpProjectApprovalResponse>;
 	onRemoveMcpAuthPreset: (
 		input: McpAuthPresetRemoveRequest,
 	) => Promise<McpAuthPresetRemoveResponse>;
@@ -196,6 +204,32 @@ function formatMcpTrustLabel(
 			return "Unverified remote";
 		default:
 			return null;
+	}
+}
+
+function formatMcpProjectApprovalLabel(
+	projectApproval: McpServerStatus["projectApproval"],
+): string | null {
+	switch (projectApproval) {
+		case "pending":
+			return "Pending approval";
+		case "approved":
+			return "Approved locally";
+		case "denied":
+			return "Denied locally";
+		default:
+			return null;
+	}
+}
+
+function formatMcpConnectionLabel(server: McpServerStatus): string {
+	switch (server.projectApproval) {
+		case "pending":
+			return "Pending approval";
+		case "denied":
+			return "Denied";
+		default:
+			return server.connected ? "Connected" : "Offline";
 	}
 }
 
@@ -266,8 +300,12 @@ export function buildMcpServerViewModel(
 	const sourceLabel = formatMcpScopeLabel(server.scope);
 	const transportLabel = formatMcpTransportLabel(server.transport);
 	const remoteTrustLabel = formatMcpTrustLabel(server.remoteTrust);
+	const projectApprovalLabel = formatMcpProjectApprovalLabel(
+		server.projectApproval,
+	);
+	const connectionLabel = formatMcpConnectionLabel(server);
 	const summaryParts = [
-		server.connected ? "Connected" : "Offline",
+		connectionLabel,
 		sourceLabel,
 		transportLabel ? `via ${transportLabel}` : null,
 		formatCountLabel(toolCount, "tool", "tools"),
@@ -279,12 +317,19 @@ export function buildMcpServerViewModel(
 		name: server.name,
 		summary: summaryParts.join(" · "),
 		isExpanded: expandedServer === server.name,
+		connectionLabel,
 		transport: server.transport,
 		writableScope: getWritableMcpScope(server.scope),
 		sourceLabel,
 		transportLabel,
 		remoteTrustLabel,
-		errorLabel: formatMcpErrorLabel(server.error),
+		projectApproval: server.projectApproval ?? null,
+		projectApprovalLabel,
+		errorLabel:
+			server.projectApproval === "pending" ||
+			server.projectApproval === "denied"
+				? null
+				: formatMcpErrorLabel(server.error),
 		command: server.command?.trim() || null,
 		args: Array.isArray(server.args) ? server.args : [],
 		cwd: server.cwd?.trim() || null,
@@ -414,6 +459,7 @@ export function ToolsRuntimeSection({
 	onUpdateMcpServer,
 	onUpdateMcpAuthPreset,
 	onRemoveMcpServer,
+	onSetMcpProjectApproval,
 	onRemoveMcpAuthPreset,
 	onReadMcpResource,
 	onGetMcpPrompt,
@@ -488,6 +534,10 @@ export function ToolsRuntimeSection({
 	const [removingAuthPresetName, setRemovingAuthPresetName] = useState<
 		string | null
 	>(null);
+	const [projectApprovalMutation, setProjectApprovalMutation] = useState<{
+		name: string;
+		decision: "approved" | "denied";
+	} | null>(null);
 	const [editingServerUrls, setEditingServerUrls] = useState<
 		Record<string, string>
 	>({});
@@ -987,6 +1037,39 @@ export function ToolsRuntimeSection({
 		}
 	};
 
+	const handleSetProjectApproval = async (
+		server: McpServerViewModel,
+		decision: "approved" | "denied",
+	): Promise<void> => {
+		if (!server.projectApproval) {
+			return;
+		}
+		setProjectApprovalMutation({ name: server.name, decision });
+		setServerMutationError(null);
+		setServerMutationNotice(null);
+		try {
+			const result = await onSetMcpProjectApproval({
+				name: server.name,
+				decision,
+			});
+			setServerMutationNotice(
+				result.projectApproval === "approved"
+					? `Approved project MCP server ${result.name}.`
+					: `Denied project MCP server ${result.name}.`,
+			);
+		} catch (error) {
+			setServerMutationError(
+				error instanceof Error
+					? error.message
+					: "Failed to update MCP project approval",
+			);
+		} finally {
+			setProjectApprovalMutation((current) =>
+				current?.name === server.name ? null : current,
+			);
+		}
+	};
+
 	const handleUpdateServer = async (
 		server: McpServerViewModel,
 	): Promise<void> => {
@@ -1469,7 +1552,8 @@ export function ToolsRuntimeSection({
 													<div className="border-t border-line-subtle/60 px-3 py-2 space-y-2 text-[11px] text-text-muted">
 														{(server.sourceLabel ||
 															server.transportLabel ||
-															server.remoteTrustLabel) && (
+															server.remoteTrustLabel ||
+															server.projectApprovalLabel) && (
 															<div className="flex flex-wrap gap-1">
 																{server.sourceLabel && (
 																	<span className="px-2 py-0.5 rounded-full border border-line-subtle/60 bg-bg-secondary/60 text-text-secondary">
@@ -1486,6 +1570,71 @@ export function ToolsRuntimeSection({
 																		{server.remoteTrustLabel}
 																	</span>
 																)}
+																{server.projectApprovalLabel && (
+																	<span className="px-2 py-0.5 rounded-full border border-line-subtle/60 bg-bg-secondary/60 text-text-secondary">
+																		{server.projectApprovalLabel}
+																	</span>
+																)}
+															</div>
+														)}
+														{server.projectApproval && (
+															<div className="rounded-lg border border-line-subtle/60 bg-bg-secondary/50 px-2.5 py-2 space-y-2">
+																<div className="text-text-primary">
+																	Project approval:{" "}
+																	{server.projectApprovalLabel}
+																</div>
+																<div>
+																	Repo-provided MCP servers stay disconnected
+																	until they are approved locally.
+																</div>
+																<div className="flex flex-wrap gap-2">
+																	{server.projectApproval !== "approved" && (
+																		<button
+																			type="button"
+																			className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-60"
+																			onClick={() =>
+																				void handleSetProjectApproval(
+																					server,
+																					"approved",
+																				)
+																			}
+																			disabled={
+																				projectApprovalMutation?.name ===
+																				server.name
+																			}
+																		>
+																			{projectApprovalMutation?.name ===
+																				server.name &&
+																			projectApprovalMutation.decision ===
+																				"approved"
+																				? "Approving..."
+																				: "Approve"}
+																		</button>
+																	)}
+																	{server.projectApproval !== "denied" && (
+																		<button
+																			type="button"
+																			className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-60"
+																			onClick={() =>
+																				void handleSetProjectApproval(
+																					server,
+																					"denied",
+																				)
+																			}
+																			disabled={
+																				projectApprovalMutation?.name ===
+																				server.name
+																			}
+																		>
+																			{projectApprovalMutation?.name ===
+																				server.name &&
+																			projectApprovalMutation.decision ===
+																				"denied"
+																				? "Denying..."
+																				: "Deny"}
+																		</button>
+																	)}
+																</div>
 															</div>
 														)}
 														{server.errorLabel && (

@@ -246,6 +246,12 @@ function createApiClientMock(): ApiClient {
 				url: "https://mcp.linear.app/sse",
 			},
 		}),
+		setMcpProjectApproval: vi.fn().mockResolvedValue({
+			name: "linear",
+			scope: "project",
+			decision: "approved",
+			projectApproval: "approved",
+		}),
 	} as unknown as ApiClient;
 }
 
@@ -639,6 +645,77 @@ describe("ComposerSettings MCP section", () => {
 		);
 
 		expect(apiClient.getMcpPrompt).not.toHaveBeenCalled();
+	});
+
+	it("approves pending project MCP servers from settings", async () => {
+		const apiClient = createApiClientMock();
+		(apiClient.getMcpStatus as ReturnType<typeof vi.fn>)
+			.mockResolvedValueOnce({
+				authPresets: [],
+				servers: [
+					{
+						name: "repo-linear",
+						connected: false,
+						scope: "project",
+						transport: "http",
+						projectApproval: "pending",
+						resources: [],
+						prompts: [],
+					},
+				],
+			})
+			.mockResolvedValue({
+				authPresets: [],
+				servers: [
+					{
+						name: "repo-linear",
+						connected: true,
+						scope: "project",
+						transport: "http",
+						projectApproval: "approved",
+						resources: [],
+						prompts: [],
+					},
+				],
+			});
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Boolean(
+				Array.from(element.shadowRoot?.querySelectorAll("button") ?? []).find(
+					(button) => button.textContent?.trim() === "Approve",
+				),
+			),
+		);
+
+		const approveButton = Array.from(
+			element.shadowRoot?.querySelectorAll("button") ?? [],
+		).find((button) => button.textContent?.trim() === "Approve");
+		expect(approveButton).toBeDefined();
+		approveButton?.dispatchEvent(new Event("click", { bubbles: true }));
+
+		await waitForSettled(
+			element,
+			() =>
+				(apiClient.setMcpProjectApproval as ReturnType<typeof vi.fn>).mock.calls
+					.length > 0,
+			30,
+		);
+		await waitForSettled(
+			element,
+			() =>
+				(apiClient.getMcpStatus as ReturnType<typeof vi.fn>).mock.calls
+					.length >= 2,
+			30,
+		);
+
+		expect(apiClient.setMcpProjectApproval).toHaveBeenCalledWith({
+			name: "repo-linear",
+			decision: "approved",
+		});
+		expect(
+			(apiClient.getMcpStatus as ReturnType<typeof vi.fn>).mock.calls.length,
+		).toBeGreaterThanOrEqual(2);
 	});
 
 	it("clears stale MCP resource and prompt output when reruns fail", async () => {

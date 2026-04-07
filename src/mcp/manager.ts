@@ -66,11 +66,13 @@ import {
 	getMcpRemoteHost,
 	getOfficialMcpRegistryMatch,
 } from "./official-registry.js";
+import { getProjectMcpServerApprovalStatus } from "./project-approvals.js";
 import type {
 	McpAuthPresetConfig,
 	McpAuthPresetStatus,
 	McpConfig,
 	McpManagerStatus,
+	McpProjectApprovalStatus,
 	McpPromptDefinition,
 	McpServerConfig,
 	McpServerStatus,
@@ -212,6 +214,34 @@ function serverConfigsEqual(
 		left.timeout === right.timeout &&
 		left.scope === right.scope
 	);
+}
+
+function buildProjectApprovalMap(
+	config: McpConfig,
+): Map<string, McpProjectApprovalStatus> {
+	const approvals = new Map<string, McpProjectApprovalStatus>();
+	if (!config.projectRoot) {
+		return approvals;
+	}
+	for (const server of config.servers ?? []) {
+		const approval = getProjectMcpServerApprovalStatus({
+			projectRoot: config.projectRoot,
+			server,
+			authPresets: config.authPresets ?? [],
+		});
+		if (approval) {
+			approvals.set(server.name, approval);
+		}
+	}
+	return approvals;
+}
+
+function canConnectServer(
+	server: McpServerConfig,
+	approvalMap: ReadonlyMap<string, McpProjectApprovalStatus>,
+): boolean {
+	const approval = approvalMap.get(server.name);
+	return approval !== "pending" && approval !== "denied";
 }
 
 function buildSafeEnv(
@@ -402,10 +432,13 @@ export class McpClientManager extends EventEmitter {
 		const nextConfig: McpConfig = {
 			servers: config.servers ?? [],
 			authPresets: config.authPresets ?? [],
+			projectRoot: config.projectRoot,
 			envLimits: config.envLimits,
 		};
 		const previousAuthPresetMap = buildAuthPresetMap(this.config.authPresets);
 		const nextAuthPresetMap = buildAuthPresetMap(nextConfig.authPresets);
+		const previousApprovalMap = buildProjectApprovalMap(this.config);
+		const nextApprovalMap = buildProjectApprovalMap(nextConfig);
 		const previousServers = new Map(
 			this.config.servers.map((server) => [server.name, server]),
 		);
@@ -420,10 +453,12 @@ export class McpClientManager extends EventEmitter {
 			const previous = previousServers.get(server.name);
 			return (
 				previous &&
-				!serverConfigsEqual(
+				(!serverConfigsEqual(
 					buildComparableServerConfig(previous, previousAuthPresetMap),
 					buildComparableServerConfig(server, nextAuthPresetMap),
-				)
+				) ||
+					canConnectServer(previous, previousApprovalMap) !==
+						canConnectServer(server, nextApprovalMap))
 			);
 		});
 		const reconnectNames = new Set(toReconnect.map((server) => server.name));
@@ -448,14 +483,20 @@ export class McpClientManager extends EventEmitter {
 					await Promise.allSettled([pendingConnection]);
 				}
 				await this.disconnectServer(server.name);
-				await this.connectServer(server);
+				if (canConnectServer(server, nextApprovalMap)) {
+					await this.connectServer(server);
+				}
 			}),
 		);
 
 		// Connect new servers (don't wait for success)
 		await Promise.allSettled(
 			toAdd
-				.filter((server) => !reconnectNames.has(server.name))
+				.filter(
+					(server) =>
+						!reconnectNames.has(server.name) &&
+						canConnectServer(server, nextApprovalMap),
+				)
 				.map((server) => this.connectServer(server)),
 		);
 	}
@@ -465,9 +506,10 @@ export class McpClientManager extends EventEmitter {
 	 * Non-blocking - returns after connection attempts are started.
 	 */
 	async connectAll(): Promise<void> {
-		const promises = this.config.servers.map((server) =>
-			this.connectServer(server),
-		);
+		const approvalMap = buildProjectApprovalMap(this.config);
+		const promises = this.config.servers
+			.filter((server) => canConnectServer(server, approvalMap))
+			.map((server) => this.connectServer(server));
 		await Promise.allSettled(promises);
 	}
 
@@ -720,6 +762,10 @@ export class McpClientManager extends EventEmitter {
 		if (!config) {
 			return false;
 		}
+		if (!canConnectServer(config, buildProjectApprovalMap(this.config))) {
+			await this.disconnectServer(name);
+			return false;
+		}
 
 		await this.disconnectServer(name);
 		await this.doConnect(config, true);
@@ -954,10 +1000,12 @@ export class McpClientManager extends EventEmitter {
 			headersHelper: authPreset.headersHelper,
 		}));
 		const authPresetMap = buildAuthPresetMap(this.config.authPresets ?? []);
+		const approvalMap = buildProjectApprovalMap(this.config);
 
 		// Include configured but not connected servers
 		for (const config of this.config.servers) {
 			const connected = this.servers.get(config.name);
+			const projectApproval = approvalMap.get(config.name);
 			const resolvedAuth = resolveRemoteAuthConfig(config, authPresetMap);
 			const remoteUrl =
 				config.transport === "http" || config.transport === "sse"
@@ -970,7 +1018,10 @@ export class McpClientManager extends EventEmitter {
 			servers.push({
 				name: config.name,
 				connected: !!connected,
-				error: this.lastErrors.get(config.name),
+				error:
+					projectApproval === "pending" || projectApproval === "denied"
+						? undefined
+						: this.lastErrors.get(config.name),
 				scope: config.scope,
 				transport: config.transport,
 				tools: connected?.tools ?? [],
@@ -994,6 +1045,7 @@ export class McpClientManager extends EventEmitter {
 				timeout: config.timeout,
 				remoteTrust: remoteRegistryMatch?.trust,
 				officialRegistry: remoteRegistryMatch?.info,
+				projectApproval,
 			});
 		}
 

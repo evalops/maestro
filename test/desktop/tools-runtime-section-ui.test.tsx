@@ -99,6 +99,12 @@ function createProps(
 			},
 		}),
 		onRemoveMcpServer: vi.fn(),
+		onSetMcpProjectApproval: vi.fn().mockResolvedValue({
+			name: "linear",
+			scope: "project",
+			decision: "approved",
+			projectApproval: "approved",
+		}),
 		onRemoveMcpAuthPreset: vi.fn(),
 		onReadMcpResource: vi.fn().mockResolvedValue({
 			contents: [
@@ -331,5 +337,40 @@ describe("ToolsRuntimeSection UI", () => {
 			ISSUE: "MAE-1",
 		});
 		expect(container.textContent ?? "").toContain("Summarize issue MAE-1");
+	});
+
+	it("approves pending project MCP servers from the settings panel", async () => {
+		const { container, props } = await renderSection({
+			expandedMcpServer: "linear",
+			mcpStatus: {
+				authPresets: [],
+				servers: [
+					{
+						name: "linear",
+						connected: false,
+						scope: "project",
+						transport: "http",
+						projectApproval: "pending",
+						resources: [],
+						prompts: [],
+					},
+				],
+			},
+		});
+
+		const approveButton = Array.from(container.querySelectorAll("button")).find(
+			(button) => button.textContent?.trim() === "Approve",
+		) as HTMLButtonElement | undefined;
+		expect(approveButton).toBeDefined();
+
+		await act(async () => {
+			approveButton?.click();
+			await flushAsyncWork(3);
+		});
+
+		expect(props.onSetMcpProjectApproval).toHaveBeenCalledWith({
+			name: "linear",
+			decision: "approved",
+		});
 	});
 });

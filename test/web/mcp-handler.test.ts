@@ -1154,4 +1154,79 @@ describe("handleMcpStatus", () => {
 			error: "Missing required query parameters: server and name",
 		});
 	});
+
+	it("updates project MCP approval and reloads MCP config", async () => {
+		const loadConfig = vi.spyOn(mcp, "loadMcpConfig").mockReturnValue({
+			projectRoot: process.cwd(),
+			servers: [
+				{
+					name: "linear",
+					scope: "project",
+					transport: "http",
+					url: "https://mcp.linear.app/mcp",
+				},
+			],
+			authPresets: [],
+		});
+		const setApproval = vi
+			.spyOn(mcp, "setProjectMcpServerApprovalDecision")
+			.mockReturnValue(undefined);
+		const configure = vi
+			.spyOn(mcp.mcpManager, "configure")
+			.mockResolvedValue(undefined);
+		vi.spyOn(mcp.mcpManager, "getStatus").mockReturnValue({
+			authPresets: [],
+			servers: [
+				{
+					name: "linear",
+					connected: false,
+					scope: "project",
+					transport: "http",
+					tools: [],
+					resources: [],
+					prompts: [],
+					projectApproval: "approved",
+				},
+			],
+		});
+
+		const req = makeReq("/api/mcp?action=set-project-approval", {
+			method: "POST",
+			body: {
+				name: "linear",
+				decision: "approved",
+			},
+		});
+		const res = makeRes();
+
+		await handleMcpStatus(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			corsHeaders,
+		);
+
+		expect(setApproval).toHaveBeenCalledWith({
+			projectRoot: process.cwd(),
+			server: {
+				name: "linear",
+				scope: "project",
+				transport: "http",
+				url: "https://mcp.linear.app/mcp",
+			},
+			authPresets: [],
+			decision: "approved",
+		});
+		expect(loadConfig).toHaveBeenCalledWith(process.cwd());
+		expect(loadConfig).toHaveBeenCalledWith(process.cwd(), {
+			includeEnvLimits: true,
+		});
+		expect(configure).toHaveBeenCalledTimes(1);
+		expect(res.statusCode).toBe(200);
+		expect(JSON.parse(res.body)).toEqual({
+			name: "linear",
+			scope: "project",
+			decision: "approved",
+			projectApproval: "approved",
+		});
+	});
 });

@@ -255,6 +255,7 @@ export interface McpPromptDefinition {
 }
 
 export type McpRemoteTrust = "official" | "custom" | "unknown";
+export type McpProjectApprovalStatus = "pending" | "approved" | "denied";
 
 export interface McpOfficialRegistryInfo {
 	displayName?: string;
@@ -304,6 +305,7 @@ export interface McpServerStatus {
 	timeout?: number;
 	remoteTrust?: McpRemoteTrust;
 	officialRegistry?: McpOfficialRegistryInfo;
+	projectApproval?: McpProjectApprovalStatus;
 }
 
 export interface McpAuthPresetStatus {
@@ -436,6 +438,18 @@ export interface McpAuthPresetRemoveResponse {
 		name: string;
 		scope?: "enterprise" | "plugin" | "project" | "local" | "user";
 	} | null;
+}
+
+export interface McpProjectApprovalRequest {
+	name: string;
+	decision: Exclude<McpProjectApprovalStatus, "pending">;
+}
+
+export interface McpProjectApprovalResponse {
+	name: string;
+	scope: "project";
+	decision: Exclude<McpProjectApprovalStatus, "pending">;
+	projectApproval: McpProjectApprovalStatus;
 }
 
 export interface McpResourceContent {
@@ -2181,6 +2195,16 @@ export class ApiClient {
 	): Promise<McpServerRemoveResponse> {
 		return await this.fetchJsonRequestWithFallback<McpServerRemoveResponse>(
 			"/api/mcp?action=remove-server",
+			"POST",
+			input,
+		);
+	}
+
+	async setMcpProjectApproval(
+		input: McpProjectApprovalRequest,
+	): Promise<McpProjectApprovalResponse> {
+		return await this.fetchJsonRequestWithFallback<McpProjectApprovalResponse>(
+			"/api/mcp?action=set-project-approval",
 			"POST",
 			input,
 		);

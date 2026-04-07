@@ -21,6 +21,7 @@ import {
 	removeMcpServerFromConfig,
 	resolveOfficialMcpRegistryEntry,
 	searchOfficialMcpRegistry,
+	setProjectMcpServerApprovalDecision,
 	updateMcpAuthPresetInConfig,
 	updateMcpServerInConfig,
 } from "../../mcp/index.js";
@@ -78,6 +79,10 @@ interface ParsedMcpRemoveCommand {
 	scope?: WritableMcpScope;
 }
 
+interface ParsedMcpProjectApprovalCommand {
+	name: string;
+}
+
 interface ParsedMcpImportCommand {
 	query: string;
 	localName?: string;
@@ -94,6 +99,8 @@ const MCP_ADD_USAGE =
 const MCP_EDIT_USAGE =
 	"/mcp edit <name> <command-or-url> [args...] [--scope local|project|user] [--transport stdio|http|sse] [--cwd <path>] [--env KEY=value] [--header 'Name: value'] [--headers-helper <command>] [--auth-preset <name>]";
 const MCP_REMOVE_USAGE = "/mcp remove <name> [--scope local|project|user]";
+const MCP_APPROVE_USAGE = "/mcp approve <name>";
+const MCP_DENY_USAGE = "/mcp deny <name>";
 const MCP_SEARCH_USAGE = "/mcp search [query]";
 const MCP_IMPORT_USAGE =
 	"/mcp import <official-id> [name] [--scope local|project|user] [--url <https-url>] [--transport http|sse] [--header 'Name: value'] [--headers-helper <command>] [--auth-preset <name>]";
@@ -161,6 +168,38 @@ function formatMcpTrustLabel(server: McpServerStatus): string | null {
 			return "Custom remote";
 		default:
 			return "Unverified remote";
+	}
+}
+
+function formatMcpProjectApprovalLabel(
+	projectApproval: McpServerStatus["projectApproval"],
+): string | null {
+	switch (projectApproval) {
+		case "pending":
+			return "Pending local approval";
+		case "approved":
+			return "Approved locally";
+		case "denied":
+			return "Denied locally";
+		default:
+			return null;
+	}
+}
+
+function getMcpConnectionState(server: McpServerStatus): {
+	icon: string;
+	label: string;
+} {
+	switch (server.projectApproval) {
+		case "pending":
+			return { icon: chalk.yellow("◐"), label: "Pending approval" };
+		case "denied":
+			return { icon: chalk.red("■"), label: "Denied" };
+		default:
+			return {
+				icon: server.connected ? chalk.green("●") : chalk.red("○"),
+				label: server.connected ? "Connected" : "Not connected",
+			};
 	}
 }
 
@@ -439,6 +478,24 @@ function parseMcpRemoveCommand(rawInput: string): ParsedMcpRemoveCommand {
 	}
 
 	return { name, scope };
+}
+
+function parseMcpProjectApprovalCommand(
+	rawInput: string,
+	command: "approve" | "deny",
+): ParsedMcpProjectApprovalCommand {
+	const tokens = parseTokens(rawInput);
+	const usage = command === "approve" ? MCP_APPROVE_USAGE : MCP_DENY_USAGE;
+	if (tokens[0] !== "/mcp" || tokens[1] !== command) {
+		throw new Error(usage);
+	}
+
+	const name = tokens[2];
+	if (!name || tokens.length !== 3) {
+		throw new Error(usage);
+	}
+
+	return { name };
 }
 
 function parseMcpSearchQuery(rawInput: string): string {
@@ -963,12 +1020,13 @@ function renderMcpStatus(renderCtx: McpRenderContext): void {
 			lines.push("Servers", "");
 		}
 		for (const server of status.servers) {
-			const statusIcon = server.connected ? chalk.green("●") : chalk.red("○");
-			lines.push(`${statusIcon} ${server.name}`);
+			const connectionState = getMcpConnectionState(server);
+			lines.push(`${connectionState.icon} ${server.name}`);
 			const scopeLabel = formatMcpScopeLabel(server.scope);
 			if (scopeLabel) {
 				lines.push(`    Source: ${scopeLabel}`);
 			}
+			lines.push(`    Status: ${connectionState.label}`);
 			lines.push(`    Transport: ${formatMcpTransportLabel(server.transport)}`);
 			if (server.remoteUrl) {
 				lines.push(`    Remote: ${server.remoteUrl}`);
@@ -985,6 +1043,12 @@ function renderMcpStatus(renderCtx: McpRenderContext): void {
 			const trustLabel = formatMcpTrustLabel(server);
 			if (trustLabel) {
 				lines.push(`    Trust: ${trustLabel}`);
+			}
+			const approvalLabel = formatMcpProjectApprovalLabel(
+				server.projectApproval,
+			);
+			if (approvalLabel) {
+				lines.push(`    Approval: ${approvalLabel}`);
 			}
 			if (server.officialRegistry?.documentationUrl) {
 				lines.push(`    Docs: ${server.officialRegistry.documentationUrl}`);
@@ -1004,6 +1068,13 @@ function renderMcpStatus(renderCtx: McpRenderContext): void {
 				if (server.prompts.length > 0) {
 					lines.push(`    Prompts: ${server.prompts.join(", ")}`);
 				}
+			} else if (
+				server.projectApproval === "pending" ||
+				server.projectApproval === "denied"
+			) {
+				lines.push(
+					`    ${chalk.dim("Connection is blocked by local approval state")}`,
+				);
 			} else {
 				lines.push(`    ${chalk.dim("Not connected")}`);
 				const errorLabel = formatMcpErrorLabel(server.error);
@@ -1017,7 +1088,7 @@ function renderMcpStatus(renderCtx: McpRenderContext): void {
 	lines.push("");
 	lines.push(
 		chalk.dim(
-			"Subcommands: /mcp add, /mcp edit, /mcp remove, /mcp search, /mcp import, /mcp auth, /mcp resources, /mcp prompts",
+			"Subcommands: /mcp add, /mcp edit, /mcp remove, /mcp approve, /mcp deny, /mcp search, /mcp import, /mcp auth, /mcp resources, /mcp prompts",
 		),
 	);
 
@@ -1040,6 +1111,14 @@ export function handleMcpCommand(renderCtx: McpRenderContext): void {
 	}
 	if (subcommand === "remove") {
 		void handleMcpRemoveCommand(renderCtx);
+		return;
+	}
+	if (subcommand === "approve") {
+		void handleMcpProjectApprovalCommand(renderCtx, "approve");
+		return;
+	}
+	if (subcommand === "deny") {
+		void handleMcpProjectApprovalCommand(renderCtx, "deny");
 		return;
 	}
 	if (subcommand === "search" || subcommand === "registry") {
@@ -1185,6 +1264,48 @@ async function handleMcpRemoveCommand(
 		}
 
 		renderCtx.addContent(lines.join("\n"));
+		renderCtx.requestRender();
+	} catch (error) {
+		renderCtx.showError(error instanceof Error ? error.message : String(error));
+	}
+}
+
+async function handleMcpProjectApprovalCommand(
+	renderCtx: McpRenderContext,
+	command: "approve" | "deny",
+): Promise<void> {
+	try {
+		const projectRoot = process.cwd();
+		const parsed = parseMcpProjectApprovalCommand(renderCtx.rawInput, command);
+		const currentConfig = loadMcpConfig(projectRoot);
+		const existingServer = currentConfig.servers.find(
+			(server) => server.name === parsed.name,
+		);
+		if (!existingServer) {
+			throw new Error(
+				`MCP server "${parsed.name}" not found in merged config.`,
+			);
+		}
+		if (existingServer.scope !== "project") {
+			throw new Error(
+				`MCP server "${parsed.name}" is not loaded from project config.`,
+			);
+		}
+
+		const decision = command === "approve" ? "approved" : "denied";
+		setProjectMcpServerApprovalDecision({
+			projectRoot,
+			server: existingServer,
+			authPresets: currentConfig.authPresets,
+			decision,
+		});
+		await reloadMcpManager(projectRoot);
+
+		renderCtx.addContent(
+			decision === "approved"
+				? `Approved project MCP server "${parsed.name}".`
+				: `Denied project MCP server "${parsed.name}".`,
+		);
 		renderCtx.requestRender();
 	} catch (error) {
 		renderCtx.showError(error instanceof Error ? error.message : String(error));

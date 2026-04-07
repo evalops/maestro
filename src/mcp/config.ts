@@ -185,6 +185,7 @@ export function loadMcpConfig(
 	return {
 		servers: Array.from(merged.values()),
 		authPresets: Array.from(mergedAuthPresets.values()),
+		projectRoot: projectRoot ? resolve(projectRoot) : undefined,
 		envLimits,
 	};
 }

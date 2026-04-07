@@ -38,6 +38,8 @@ import type { Tool as McpTool } from "@modelcontextprotocol/sdk/types.js";
 export type McpTransport = "stdio" | "http" | "sse";
 export type McpScope = "enterprise" | "plugin" | "project" | "local" | "user";
 export type McpRemoteTrust = "official" | "custom" | "unknown";
+export type McpProjectApprovalDecision = "approved" | "denied";
+export type McpProjectApprovalStatus = "pending" | McpProjectApprovalDecision;
 
 export interface McpOfficialRegistryInfo {
 	displayName?: string;
@@ -108,6 +110,7 @@ export interface McpServerConfig {
 export interface McpConfig {
 	servers: McpServerConfig[];
 	authPresets: McpAuthPresetConfig[];
+	projectRoot?: string;
 	envLimits?: Record<
 		string,
 		{ effective: number; status: string; message?: string }
@@ -136,6 +139,7 @@ export interface McpServerStatus {
 	timeout?: number;
 	remoteTrust?: McpRemoteTrust;
 	officialRegistry?: McpOfficialRegistryInfo;
+	projectApproval?: McpProjectApprovalStatus;
 }
 
 export interface McpAuthPresetStatus {

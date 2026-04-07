@@ -536,6 +536,10 @@ export class ComposerSettings extends LitElement {
 	@state() private mcpAuthPresetSubmitting = false;
 	@state() private mcpRemovingName: string | null = null;
 	@state() private mcpRemovingAuthPresetName: string | null = null;
+	@state() private mcpProjectApprovalMutation: {
+		name: string;
+		decision: "approved" | "denied";
+	} | null = null;
 	@state() private mcpUpdatingName: string | null = null;
 	@state() private mcpUpdatingAuthPresetName: string | null = null;
 	@state() private mcpEditingCommands: Record<string, string> = {};
@@ -734,6 +738,32 @@ export class ComposerSettings extends LitElement {
 				return "Unverified remote";
 			default:
 				return null;
+		}
+	}
+
+	private formatMcpProjectApprovalLabel(
+		projectApproval: McpServerStatus["projectApproval"],
+	): string | null {
+		switch (projectApproval) {
+			case "pending":
+				return "Pending approval";
+			case "approved":
+				return "Approved locally";
+			case "denied":
+				return "Denied locally";
+			default:
+				return null;
+		}
+	}
+
+	private getMcpConnectionLabel(server: McpServerStatus): string {
+		switch (server.projectApproval) {
+			case "pending":
+				return "Pending approval";
+			case "denied":
+				return "Denied";
+			default:
+				return server.connected ? "Connected" : "Offline";
 		}
 	}
 
@@ -1211,6 +1241,35 @@ export class ComposerSettings extends LitElement {
 				error instanceof Error ? error.message : "Failed to remove MCP server";
 		} finally {
 			this.mcpRemovingName = null;
+		}
+	}
+
+	private async setMcpProjectApproval(
+		name: string,
+		decision: "approved" | "denied",
+	) {
+		this.mcpProjectApprovalMutation = { name, decision };
+		this.mcpManagementError = null;
+		this.mcpManagementNotice = null;
+		try {
+			const result = await this.apiClient.setMcpProjectApproval({
+				name,
+				decision,
+			});
+			this.mcpStatus = await this.apiClient.getMcpStatus();
+			this.mcpManagementNotice =
+				result.projectApproval === "approved"
+					? `Approved project MCP server ${result.name}.`
+					: `Denied project MCP server ${result.name}.`;
+		} catch (error) {
+			this.mcpManagementError =
+				error instanceof Error
+					? error.message
+					: "Failed to update MCP project approval";
+		} finally {
+			if (this.mcpProjectApprovalMutation?.name === name) {
+				this.mcpProjectApprovalMutation = null;
+			}
 		}
 	}
 
@@ -2142,7 +2201,7 @@ export class ComposerSettings extends LitElement {
 													<div>
 														<div class="panel-card-title">${server.name}</div>
 														<div class="panel-card-copy">
-															${server.connected ? "Connected" : "Offline"}
+															${this.getMcpConnectionLabel(server)}
 														</div>
 													</div>
 													${
@@ -2181,7 +2240,81 @@ export class ComposerSettings extends LitElement {
 															? html`<span class="badge">${this.formatMcpTrustLabel(server.remoteTrust)}</span>`
 															: ""
 													}
+													${
+														this.formatMcpProjectApprovalLabel(
+															server.projectApproval,
+														)
+															? html`<span class="badge">${this.formatMcpProjectApprovalLabel(server.projectApproval)}</span>`
+															: ""
+													}
 												</div>
+												${
+													server.projectApproval
+														? html`
+															<div class="panel-card-copy">
+																Project approval:
+																${this.formatMcpProjectApprovalLabel(
+																	server.projectApproval,
+																)}
+																<br />
+																Repo-provided MCP servers stay disconnected until
+																they are approved locally.
+															</div>
+															<div class="control-row">
+																${
+																	server.projectApproval !== "approved"
+																		? html`<button
+																				class="action-btn"
+																				@click=${() =>
+																					void this.setMcpProjectApproval(
+																						server.name,
+																						"approved",
+																					)}
+																				?disabled=${
+																					this.mcpProjectApprovalMutation
+																						?.name === server.name
+																				}
+																			>
+																				${
+																					this.mcpProjectApprovalMutation
+																						?.name === server.name &&
+																					this.mcpProjectApprovalMutation
+																						.decision === "approved"
+																						? "Approving..."
+																						: "Approve"
+																				}
+																			</button>`
+																		: ""
+																}
+																${
+																	server.projectApproval !== "denied"
+																		? html`<button
+																				class="action-btn"
+																				@click=${() =>
+																					void this.setMcpProjectApproval(
+																						server.name,
+																						"denied",
+																					)}
+																				?disabled=${
+																					this.mcpProjectApprovalMutation
+																						?.name === server.name
+																				}
+																			>
+																				${
+																					this.mcpProjectApprovalMutation
+																						?.name === server.name &&
+																					this.mcpProjectApprovalMutation
+																						.decision === "denied"
+																						? "Denying..."
+																						: "Deny"
+																				}
+																			</button>`
+																		: ""
+																}
+															</div>
+														`
+														: ""
+												}
 												${
 													server.remoteHost || server.remoteUrl
 														? html`
