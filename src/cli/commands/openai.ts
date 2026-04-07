@@ -7,6 +7,7 @@ import {
 import { URL } from "node:url";
 import chalk from "chalk";
 import {
+	DEFAULT_PORT,
 	deleteOpenAIOAuthCredential,
 	exchangeIdTokenForApiKey,
 	exchangeOpenAIAuthorizationCode,
@@ -16,7 +17,7 @@ import {
 	saveOpenAIOAuthCredential,
 } from "../../providers/openai-auth.js";
 
-const CALLBACK_ORIGIN = "http://127.0.0.1:1455";
+const CALLBACK_ORIGIN = `http://127.0.0.1:${DEFAULT_PORT}`;
 
 export async function handleOpenAICommand(
 	subcommand?: string,
@@ -131,7 +132,7 @@ async function handleLogin(): Promise<void> {
 		if (e.code === "EADDRINUSE") {
 			console.error(
 				chalk.red(
-					"Port 1455 is already in use. Please close the other process and try again.",
+					`Port ${DEFAULT_PORT} is already in use. Please close the other process and try again.`,
 				),
 			);
 			process.exit(1);
@@ -140,7 +141,7 @@ async function handleLogin(): Promise<void> {
 		process.exit(1);
 	});
 
-	server.listen(1455, "127.0.0.1");
+	server.listen(DEFAULT_PORT, "127.0.0.1");
 }
 
 async function handleLogout(): Promise<void> {

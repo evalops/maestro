@@ -70,7 +70,7 @@ export interface OpenAIOAuthCredential {
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const ORIGINATOR = "codex_cli_rs"; // Using the same originator as Codex CLI for compatibility
 const ISSUER = "https://auth.openai.com";
-const DEFAULT_PORT = 1455;
+export const DEFAULT_PORT = 1455;
 const LOCAL_CALLBACK_ORIGIN = `http://127.0.0.1:${DEFAULT_PORT}`;
 
 interface OpenAITokenResponse {

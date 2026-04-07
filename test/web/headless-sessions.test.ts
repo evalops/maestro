@@ -2910,7 +2910,7 @@ describe("headless session handlers", () => {
 				role: "viewer",
 			},
 		},
-	])("rejects viewer headless %s message posts", async ({ message }) => {
+	])("rejects viewer headless $name message posts", async ({ message }) => {
 		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-viewer-"));
 		try {
 			const sessionManager = new SessionManager(false, undefined, {
@@ -2928,6 +2928,7 @@ describe("headless session handlers", () => {
 				context,
 				sessionManager,
 			});
+			const sendSpy = vi.spyOn(runtime, "send");
 
 			const req = createJsonRequest(
 				"POST",
@@ -2949,6 +2950,7 @@ describe("headless session handlers", () => {
 				statusCode: 403,
 				message: "Viewer headless connections cannot send messages",
 			});
+			expect(sendSpy).not.toHaveBeenCalled();
 			expect(fakeAgent.prompts).toEqual([]);
 		} finally {
 			await rm(tempDir, { recursive: true, force: true });

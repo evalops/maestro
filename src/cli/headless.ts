@@ -41,7 +41,6 @@ import {
 	headlessHelloChangesConnectionRole,
 	headlessViewerCanSend,
 	headlessViewerDisallowedCapability,
-	headlessViewerHasDisallowedCapabilities,
 	loadPromptAttachments,
 } from "./headless-protocol.js";
 
@@ -343,7 +342,7 @@ export async function runHeadlessMode(
 				msg,
 				state.connection_role,
 			);
-			if (headlessViewerHasDisallowedCapabilities(msg, state.connection_role)) {
+			if (disallowedViewerCapability !== undefined) {
 				send({
 					type: "error",
 					message: `viewer headless connections cannot negotiate ${disallowedViewerCapability} requests`,
