@@ -1,11 +1,13 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Type } from "@sinclair/typebox";
 import { describe, expect, it } from "vitest";
 import { Agent } from "../../src/agent/agent.js";
 import type {
 	AgentEvent,
 	AgentRunConfig,
+	AgentTool,
 	AgentTransport,
 	AppMessage,
 	AssistantMessage,
@@ -49,6 +51,55 @@ const isAssistantMessageStart = (
 ): event is Extract<AgentEvent, { type: "message_start" }> & {
 	message: AssistantMessage;
 } => event.type === "message_start" && event.message.role === "assistant";
+
+function createAssistantToolCallMessage(
+	toolCallId: string,
+	toolName: string,
+	args: Record<string, unknown>,
+): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [
+			{
+				type: "toolCall",
+				id: toolCallId,
+				name: toolName,
+				arguments: args,
+			},
+		],
+		api: "openai-completions",
+		provider: "mock",
+		model: "mock-model",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "toolUse",
+		timestamp: Date.now(),
+	};
+}
+
+function createAssistantTextMessage(text: string): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text }],
+		api: "openai-completions",
+		provider: "mock",
+		model: "mock-model",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+		timestamp: Date.now(),
+	};
+}
 
 describe("Agent mock transport", () => {
 	it("runs tool execution flow", async () => {
@@ -188,6 +239,119 @@ describe("Agent mock transport", () => {
 				(message): message is AssistantMessage => message.role === "assistant",
 			);
 		expect(finalAssistant?.content.find(isTextContent)?.text).toBe("Done");
+	});
+
+	it("preserves specific live tool labels across generic updates", async () => {
+		const events: AgentEvent[] = [];
+		const descriptiveTool: AgentTool = {
+			name: "custom_read",
+			label: "Custom Read",
+			description: "Read a specific resource",
+			parameters: Type.Object({
+				path: Type.Optional(Type.String()),
+			}),
+			getDisplayName: (params) =>
+				typeof params.path === "string" ? `Read ${params.path}` : "Read file",
+			getToolUseSummary: (params) =>
+				typeof params.path === "string" ? `Read ${params.path}` : "Read file",
+			execute: async () => ({
+				content: [{ type: "text", text: "unused" }],
+			}),
+		};
+
+		class SparseUpdateTransport implements AgentTransport {
+			async *continue(): AsyncGenerator<AgentEvent, void, unknown> {}
+
+			async *run(
+				_messages: Message[],
+				userMessage: Message,
+				_config: AgentRunConfig,
+			): AsyncGenerator<AgentEvent, void, unknown> {
+				yield { type: "message_start", message: userMessage };
+				yield { type: "message_end", message: userMessage };
+
+				const toolCallId = "tool-call-1";
+				const fullArgs = { path: "README.md" };
+				yield {
+					type: "message_start",
+					message: createAssistantToolCallMessage(
+						toolCallId,
+						"custom_read",
+						fullArgs,
+					),
+				};
+				yield {
+					type: "message_end",
+					message: createAssistantToolCallMessage(
+						toolCallId,
+						"custom_read",
+						fullArgs,
+					),
+				};
+				yield {
+					type: "tool_execution_start",
+					toolCallId,
+					toolName: "custom_read",
+					args: fullArgs,
+				};
+				yield {
+					type: "tool_execution_update",
+					toolCallId,
+					toolName: "custom_read",
+					args: {},
+					partialResult: {
+						content: [{ type: "text", text: "partial" }],
+					},
+				};
+				yield {
+					type: "tool_execution_end",
+					toolCallId,
+					toolName: "custom_read",
+					result: {
+						role: "toolResult",
+						toolCallId,
+						toolName: "custom_read",
+						content: [{ type: "text", text: "done" }],
+						isError: false,
+						timestamp: Date.now(),
+					},
+					isError: false,
+				};
+				const finalMessage = createAssistantTextMessage("Done");
+				yield { type: "message_start", message: finalMessage };
+				yield { type: "message_end", message: finalMessage };
+			}
+		}
+
+		const agent = new Agent({
+			transport: new SparseUpdateTransport(),
+			initialState: { model: mockModel, tools: [descriptiveTool] },
+		});
+
+		agent.subscribe((event) => events.push(event));
+		await agent.prompt("read file");
+
+		const updateEvent = events.find(
+			(
+				event,
+			): event is Extract<AgentEvent, { type: "tool_execution_update" }> =>
+				event.type === "tool_execution_update",
+		);
+		const endEvent = events.find(
+			(event): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
+				event.type === "tool_execution_end",
+		);
+
+		expect(updateEvent).toMatchObject({
+			type: "tool_execution_update",
+			displayName: "Read README.md",
+			summaryLabel: "Read README.md",
+		});
+		expect(endEvent).toMatchObject({
+			type: "tool_execution_end",
+			displayName: "Read README.md",
+			summaryLabel: "Read README.md",
+		});
 	});
 
 	it("aborts execution when agent abort is called", async () => {

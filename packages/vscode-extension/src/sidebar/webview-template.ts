@@ -461,6 +461,7 @@ export function getWebviewScript(): string {
 					createToolCall(
 						message.id,
 						message.name,
+						message.displayName,
 						message.summaryLabel,
 						message.args,
 					);
@@ -625,7 +626,7 @@ export function getWebviewScript(): string {
 							toolDiv.className = 'tool-call';
 							toolDiv.innerHTML = \`
 								<div class="tool-header" onclick="this.parentElement.classList.toggle('expanded')">
-									<span class="tool-name" title="\${tool.name}">\${tool.summaryLabel || tool.name}</span>
+									<span class="tool-name" title="\${tool.name}">\${tool.summaryLabel || tool.displayName || tool.name}</span>
 									<span class="tool-status">Completed</span>
 								</div>
 								<div class="tool-body">
@@ -692,7 +693,7 @@ export function getWebviewScript(): string {
 			}
 		}
 
-		function createToolCall(id, name, summaryLabel, args) {
+		function createToolCall(id, name, displayName, summaryLabel, args) {
 			if (!currentAssistantMessage) createAssistantMessage();
 			const content = currentAssistantMessage.querySelector('.message-content');
 
@@ -700,7 +701,7 @@ export function getWebviewScript(): string {
 			toolDiv.className = 'tool-call';
 			toolDiv.innerHTML = \`
 				<div class="tool-header" onclick="this.parentElement.classList.toggle('expanded')">
-					<span class="tool-name" title="\${name}">\${summaryLabel || name}</span>
+					<span class="tool-name" title="\${name}">\${summaryLabel || displayName || name}</span>
 					<span class="tool-status">Running...</span>
 				</div>
 				<div class="tool-body">

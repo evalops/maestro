@@ -549,10 +549,6 @@ export class ComposerToolExecution extends LitElement {
 		return this.summaryLabel || this.displayName || this.toolName;
 	}
 
-	private getToolLabel(): string {
-		return this.displayName || this.toolName;
-	}
-
 	private getFilePathFromArgs(): string | null {
 		const path = this.args?.path;
 		if (typeof path === "string") return path;

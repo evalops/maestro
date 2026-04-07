@@ -1945,17 +1945,42 @@ export class Agent {
 		this.emit({ ...event, displayName, summaryLabel });
 	}
 
+	private preserveSpecificPendingToolLabel(
+		nextLabel: string,
+		pendingLabel: string | undefined,
+		genericLabel: string,
+	): string {
+		if (
+			!pendingLabel ||
+			pendingLabel === genericLabel ||
+			nextLabel !== genericLabel
+		) {
+			return nextLabel;
+		}
+		return pendingLabel;
+	}
+
 	private handleToolExecutionUpdate(
 		event: Extract<AgentEvent, { type: "tool_execution_update" }>,
 	): void {
 		const pending = this._state.pendingToolCalls.get(event.toolCallId);
 		const tool = pending?.tool;
-		const displayName =
-			describeToolDisplayName(event.toolName, event.args, tool) ??
-			pending?.displayName;
-		const summaryLabel =
-			summarizeToolUse(event.toolName, event.args, tool) ??
-			pending?.summaryLabel;
+		const nextDisplayName = describeToolDisplayName(
+			event.toolName,
+			event.args,
+			tool,
+		);
+		const nextSummaryLabel = summarizeToolUse(event.toolName, event.args, tool);
+		const displayName = this.preserveSpecificPendingToolLabel(
+			nextDisplayName,
+			pending?.displayName,
+			describeToolDisplayName(event.toolName, {}, tool),
+		);
+		const summaryLabel = this.preserveSpecificPendingToolLabel(
+			nextSummaryLabel,
+			pending?.summaryLabel,
+			summarizeToolUse(event.toolName, {}, tool),
+		);
 		if (pending) {
 			pending.args = event.args;
 			pending.displayName = displayName;

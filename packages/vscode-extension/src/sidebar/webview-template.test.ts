@@ -26,8 +26,10 @@ describe("webview template", () => {
 			cspConnect: "http://localhost:8080",
 		});
 
-		expect(html).toContain("tool.summaryLabel || tool.name");
-		expect(html).toContain("summaryLabel || name");
+		expect(html).toContain(
+			"tool.summaryLabel || tool.displayName || tool.name",
+		);
+		expect(html).toContain("summaryLabel || displayName || name");
 	});
 
 	it("renders runtime status UI hooks", () => {

@@ -10,6 +10,13 @@ export type SummaryMessage = Message & {
 	tools?: SummaryToolCall[];
 };
 
+export interface LiveToolStartPayload {
+	name: string;
+	displayName?: string;
+	summaryLabel: string;
+	args: Record<string, unknown>;
+}
+
 function getStringArg(
 	args: Record<string, unknown>,
 	keys: readonly string[],
@@ -155,6 +162,24 @@ export function summarizeVscodeToolCall(
 				`Ran ${truncateLabel(humanizeToolName(toolName), 40)}`,
 			);
 	}
+}
+
+export function buildLiveToolStartPayload(
+	toolName: string,
+	args: Record<string, unknown> = {},
+	options: {
+		displayName?: string;
+		summaryLabel?: string;
+	} = {},
+): LiveToolStartPayload {
+	const displayName = options.displayName?.trim() || undefined;
+	const summaryLabel = options.summaryLabel?.trim();
+	return {
+		name: toolName,
+		displayName,
+		summaryLabel: summaryLabel || summarizeVscodeToolCall(toolName, args),
+		args,
+	};
 }
 
 export function withToolSummaryLabels(message: Message): SummaryMessage {

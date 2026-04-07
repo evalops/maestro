@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	buildLiveToolStartPayload,
 	summarizeVscodeToolCall,
 	withToolSummaryLabels,
 } from "./tool-summary.js";
@@ -36,5 +37,20 @@ describe("vscode tool summary", () => {
 		});
 
 		expect(message.tools?.[0]?.summaryLabel).toBe("Read index.ts");
+	});
+
+	it("preserves raw tool names in live tool payloads", () => {
+		expect(
+			buildLiveToolStartPayload(
+				"read",
+				{ path: "/workspace/README.md" },
+				{ displayName: "Read File" },
+			),
+		).toEqual({
+			name: "read",
+			displayName: "Read File",
+			summaryLabel: "Read README.md",
+			args: { path: "/workspace/README.md" },
+		});
 	});
 });
