@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { execSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -261,15 +261,30 @@ describe("find tool", () => {
 		});
 
 		it.skipIf(!hasFd)(
-			"skips manual ignore files when searching inside a git repository",
+			"passes ancestor .gitignore files when searching inside a git repository",
 			async () => {
+				const nestedDir = join(testDir, "nested");
+				mkdirSync(nestedDir);
+				writeFileSync(join(testDir, ".gitignore"), "ignored.txt\n");
+				writeFileSync(join(nestedDir, "ignored.txt"), "");
+				writeFileSync(join(nestedDir, "kept.txt"), "");
+				execSync("git init -q", { cwd: testDir, stdio: "ignore" });
+
 				const result = await findTool.execute("find-14b", {
-					pattern: "nonexistent_pattern_xyz",
+					pattern: "*.txt",
+					path: nestedDir,
 				});
 
+				expect(result.isError).toBeFalsy();
+				const output = getTextOutput(result);
+				expect(output).toContain("kept.txt");
+				expect(output).not.toContain("ignored.txt");
 				expect(result.details).toHaveProperty("command");
-				expect((result.details as { command: string }).command).not.toContain(
+				expect((result.details as { command: string }).command).toContain(
 					"--ignore-file",
+				);
+				expect((result.details as { command: string }).command).toContain(
+					join(testDir, ".gitignore"),
 				);
 			},
 		);

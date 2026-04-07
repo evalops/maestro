@@ -53,7 +53,7 @@ import { existsSync } from "node:fs";
 import { relative, resolve as resolvePath, sep } from "node:path";
 import { Type } from "@sinclair/typebox";
 import { globSync } from "glob";
-import { isInsideGitRepository } from "../utils/git.js";
+import { getGitRoot } from "../utils/git.js";
 import { expandTildePath } from "../utils/path-expansion.js";
 import { createTool } from "./tool-dsl.js";
 import { ensureTool } from "./tools-manager.js";
@@ -88,6 +88,47 @@ type FindToolDetails = {
 	fileCount: number;
 	truncated: boolean;
 };
+
+function collectGitignoreFiles(searchPath: string): string[] {
+	const gitignoreFiles = new Set<string>();
+	const gitRoot = getGitRoot(searchPath);
+	const ancestorDirs = new Set<string>();
+
+	let currentDir = searchPath;
+	ancestorDirs.add(currentDir);
+
+	while (gitRoot && currentDir !== gitRoot) {
+		const parentDir = resolvePath(currentDir, "..");
+		if (parentDir === currentDir) {
+			break;
+		}
+		currentDir = parentDir;
+		ancestorDirs.add(currentDir);
+	}
+
+	for (const directory of ancestorDirs) {
+		const gitignorePath = resolvePath(directory, ".gitignore");
+		if (existsSync(gitignorePath)) {
+			gitignoreFiles.add(gitignorePath);
+		}
+	}
+
+	try {
+		const nestedGitignores = globSync("**/.gitignore", {
+			cwd: searchPath,
+			dot: true,
+			absolute: true,
+			ignore: ["**/node_modules/**", "**/.git/**"],
+		});
+		for (const file of nestedGitignores) {
+			gitignoreFiles.add(file);
+		}
+	} catch {
+		// Ignore glob errors
+	}
+
+	return [...gitignoreFiles];
+}
 
 export const findTool = createTool<typeof findSchema, FindToolDetails>({
 	name: "find",
@@ -133,32 +174,10 @@ export const findTool = createTool<typeof findSchema, FindToolDetails>({
 			args.push("--hidden");
 		}
 
-		// fd already honors nested .gitignore files inside Git repositories.
-		// Only add explicit ignore files for non-repo directories.
-		if (!isInsideGitRepository(searchPath)) {
-			const gitignoreFiles = new Set<string>();
-			const rootGitignore = resolvePath(searchPath, ".gitignore");
-			if (existsSync(rootGitignore)) {
-				gitignoreFiles.add(rootGitignore);
-			}
-
-			try {
-				const nestedGitignores = globSync("**/.gitignore", {
-					cwd: searchPath,
-					dot: true,
-					absolute: true,
-					ignore: ["**/node_modules/**", "**/.git/**"],
-				});
-				for (const file of nestedGitignores) {
-					gitignoreFiles.add(file);
-				}
-			} catch {
-				// Ignore glob errors
-			}
-
-			for (const gitignorePath of gitignoreFiles) {
-				args.push("--ignore-file", gitignorePath);
-			}
+		// Pass .gitignore files explicitly so search behavior stays stable even
+		// when a user's fd config disables native VCS ignore handling.
+		for (const gitignorePath of collectGitignoreFiles(searchPath)) {
+			args.push("--ignore-file", gitignorePath);
 		}
 
 		args.push(pattern);
