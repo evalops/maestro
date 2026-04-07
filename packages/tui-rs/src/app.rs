@@ -84,7 +84,9 @@ use crate::components::{
 use crate::config_watcher::{ConfigEvent, ConfigWatcher, ConfigWatcherBuilder};
 use crate::files::get_workspace_files;
 use crate::git;
-use crate::mcp::{McpConfigScope, McpPrompt, McpRuntimeEvent, McpTransport};
+use crate::mcp::{
+    append_mcp_prompt_summary, McpConfigScope, McpPrompt, McpRuntimeEvent, McpTransport,
+};
 use crate::safety::{
     check_model_allowed, check_path_allowed, check_session_limits, FirewallVerdict,
 };
@@ -421,61 +423,6 @@ fn render_mcp_status_lines(servers: &[crate::tools::McpServerStatus]) -> Vec<Str
     lines
 }
 
-fn format_mcp_prompt_argument_summary(argument: &crate::mcp::McpPromptArgument) -> String {
-    let mut summary = if argument.required {
-        format!("{} (required)", argument.name)
-    } else {
-        argument.name.clone()
-    };
-
-    if let Some(description) = argument
-        .description
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        summary.push_str(": ");
-        summary.push_str(description);
-    }
-
-    summary
-}
-
-fn append_mcp_prompt_summary(lines: &mut Vec<String>, prompt: &McpPrompt, indent: &str) {
-    lines.push(format!("{indent}{}", prompt.name));
-
-    if let Some(title) = prompt
-        .title
-        .as_deref()
-        .map(str::trim)
-        .filter(|title| !title.is_empty() && *title != prompt.name)
-    {
-        lines.push(format!("{indent}  title: {title}"));
-    }
-
-    if let Some(description) = prompt
-        .description
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        lines.push(format!("{indent}  description: {description}"));
-    }
-
-    if let Some(arguments) = prompt
-        .arguments
-        .as_ref()
-        .filter(|entries| !entries.is_empty())
-    {
-        let summary = arguments
-            .iter()
-            .map(format_mcp_prompt_argument_summary)
-            .collect::<Vec<_>>()
-            .join("; ");
-        lines.push(format!("{indent}  args: {summary}"));
-    }
-}
-
 fn render_mcp_prompt_lines(
     prompt_servers: &[(String, Vec<McpPrompt>)],
     server_name: Option<&str>,
@@ -491,7 +438,7 @@ fn render_mcp_prompt_lines(
         for (server_name, prompts) in prompt_servers {
             lines.push(format!("{server_name}:"));
             for prompt in prompts {
-                append_mcp_prompt_summary(&mut lines, prompt, "  ");
+                append_mcp_prompt_summary(&mut lines, prompt, "  ", "    ");
             }
             lines.push(String::new());
         }

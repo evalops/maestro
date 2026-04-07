@@ -121,7 +121,7 @@ use crate::agent::{FromAgent, ToolDefinition, ToolResult};
 use crate::ai::Tool;
 use crate::lsp;
 use crate::mcp::{
-    load_mcp_config, McpClient, McpConfigScope, McpContent, McpPrompt, McpPromptArgument,
+    append_mcp_prompt_summary, load_mcp_config, McpClient, McpConfigScope, McpContent, McpPrompt,
     McpTransport,
 };
 use crate::safety::{
@@ -358,66 +358,6 @@ pub struct McpServerStatus {
     pub tools: Vec<String>,
     pub resources: Vec<String>,
     pub prompts: Vec<String>,
-}
-
-fn format_mcp_prompt_argument_summary(argument: &McpPromptArgument) -> String {
-    let mut summary = if argument.required {
-        format!("{} (required)", argument.name)
-    } else {
-        argument.name.clone()
-    };
-
-    if let Some(description) = argument
-        .description
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        summary.push_str(": ");
-        summary.push_str(description);
-    }
-
-    summary
-}
-
-fn append_mcp_prompt_summary(
-    lines: &mut Vec<String>,
-    prompt: &McpPrompt,
-    name_prefix: &str,
-    detail_prefix: &str,
-) {
-    lines.push(format!("{name_prefix}{}", prompt.name));
-
-    if let Some(title) = prompt
-        .title
-        .as_deref()
-        .map(str::trim)
-        .filter(|title| !title.is_empty() && *title != prompt.name)
-    {
-        lines.push(format!("{detail_prefix}title: {title}"));
-    }
-
-    if let Some(description) = prompt
-        .description
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        lines.push(format!("{detail_prefix}description: {description}"));
-    }
-
-    if let Some(arguments) = prompt
-        .arguments
-        .as_ref()
-        .filter(|entries| !entries.is_empty())
-    {
-        let summary = arguments
-            .iter()
-            .map(format_mcp_prompt_argument_summary)
-            .collect::<Vec<_>>()
-            .join("; ");
-        lines.push(format!("{detail_prefix}args: {summary}"));
-    }
 }
 
 /// Tool executor that dispatches and runs agent tools
@@ -2663,10 +2603,18 @@ impl ToolExecutor {
                 };
 
                 let mut servers = Vec::new();
+                let mut lines = Vec::new();
+                lines.push("# Available MCP Prompts".to_string());
+                lines.push(String::new());
                 for (name, prompts) in prompt_servers {
                     if prompts.is_empty() {
                         continue;
                     }
+                    lines.push(format!("## {name}"));
+                    for prompt in &prompts {
+                        append_mcp_prompt_summary(&mut lines, prompt, "- ", "  ");
+                    }
+                    lines.push(String::new());
                     servers.push(serde_json::json!({
                         "name": name,
                         "prompts": prompts
@@ -2678,27 +2626,6 @@ impl ToolExecutor {
                         "No MCP prompts available. Either no servers are connected or they don't expose prompts.".to_string(),
                     )
                     .with_details(serde_json::json!({ "servers": [] }));
-                }
-
-                let mut lines = Vec::new();
-                lines.push("# Available MCP Prompts".to_string());
-                lines.push(String::new());
-                for server in &servers {
-                    let name = server
-                        .get("name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown");
-                    lines.push(format!("## {name}"));
-                    if let Some(prompts) = server.get("prompts").and_then(|v| v.as_array()) {
-                        for prompt in prompts {
-                            if let Ok(prompt_entry) =
-                                serde_json::from_value::<McpPrompt>(prompt.clone())
-                            {
-                                append_mcp_prompt_summary(&mut lines, &prompt_entry, "- ", "  ");
-                            }
-                        }
-                    }
-                    lines.push(String::new());
                 }
 
                 ToolResult::success(lines.join("\n"))

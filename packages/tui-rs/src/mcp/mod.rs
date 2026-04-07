@@ -62,10 +62,12 @@
 mod client;
 mod config;
 mod http;
+mod prompt_formatting;
 pub mod protocol;
 
 pub use client::{McpClient, McpConnection, McpError, McpRuntimeEvent};
 pub use config::{load_mcp_config, McpConfig, McpConfigScope, McpServerConfig, McpTransport};
+pub use prompt_formatting::{append_mcp_prompt_summary, format_mcp_prompt_argument_summary};
 pub use protocol::{
     McpContent, McpPrompt, McpPromptArgument, McpPromptContent, McpPromptMessage, McpRequest,
     McpResponse, McpTool, McpToolAnnotations, McpToolResult, PromptGetResult, PromptsListResult,
