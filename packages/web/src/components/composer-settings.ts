@@ -45,11 +45,18 @@ import type {
 	UsageSummary,
 	WorkspaceStatus,
 } from "../services/api-client.js";
+import {
+	extractMemoryTags,
+	formatMemoryRelativeTime,
+	truncateMemoryText,
+} from "./memory-utils.js";
 
 type MemoryView =
 	| { kind: "recent" }
 	| { kind: "topic"; topic: string }
 	| { kind: "search"; query: string };
+
+type MemoryAction = "clear" | "delete" | "load" | "save" | "search" | null;
 
 const EMPTY_MEMORY_STATS: MemoryStats = {
 	totalEntries: 0,
@@ -572,7 +579,7 @@ export class ComposerSettings extends LitElement {
 	@state() private memorySaveTopic = "";
 	@state() private memorySaveContent = "";
 	@state() private memoryClearConfirmed = false;
-	@state() private memoryLoading = false;
+	@state() private memoryPendingAction: MemoryAction = null;
 	@state() private memoryError: string | null = null;
 	@state() private memoryNotice: string | null = null;
 	@state() private selectedTab: "workspace" | "models" | "usage" = "workspace";
@@ -1324,26 +1331,8 @@ export class ComposerSettings extends LitElement {
 		}
 	}
 
-	private formatMemoryRelativeTime(
-		timestamp: number | null | undefined,
-	): string {
-		if (!timestamp) return "Never";
-		const diff = Date.now() - timestamp;
-		if (diff < 60_000) return "just now";
-		if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
-		if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
-		return `${Math.floor(diff / 86_400_000)}d ago`;
-	}
-
-	private truncateMemoryText(text: string, maxLength: number): string {
-		if (text.length <= maxLength) return text;
-		return `${text.slice(0, maxLength - 3)}...`;
-	}
-
-	private extractMemoryTags(content: string): string[] {
-		return Array.from(
-			new Set((content.match(/#(\w+)/g) ?? []).map((tag) => tag.slice(1))),
-		);
+	private get memoryLoading(): boolean {
+		return this.memoryPendingAction !== null;
 	}
 
 	private getMemoryViewLabel(view: MemoryView): string {
@@ -1383,8 +1372,11 @@ export class ComposerSettings extends LitElement {
 		this.memoryEntries = response.memories ?? [];
 	}
 
-	private async runMemoryAction(action: () => Promise<void>) {
-		this.memoryLoading = true;
+	private async runMemoryAction(
+		actionType: Exclude<MemoryAction, null>,
+		action: () => Promise<void>,
+	) {
+		this.memoryPendingAction = actionType;
 		this.memoryError = null;
 		this.memoryNotice = null;
 		try {
@@ -1393,13 +1385,13 @@ export class ComposerSettings extends LitElement {
 			this.memoryError =
 				error instanceof Error ? error.message : "Memory action failed";
 		} finally {
-			this.memoryLoading = false;
+			this.memoryPendingAction = null;
 		}
 	}
 
 	private async showRecentMemories() {
 		const nextView: MemoryView = { kind: "recent" };
-		await this.runMemoryAction(async () => {
+		await this.runMemoryAction("load", async () => {
 			this.memoryActiveView = nextView;
 			await this.loadMemoryView(nextView);
 		});
@@ -1407,7 +1399,7 @@ export class ComposerSettings extends LitElement {
 
 	private async selectMemoryTopic(topic: string) {
 		const nextView: MemoryView = { kind: "topic", topic };
-		await this.runMemoryAction(async () => {
+		await this.runMemoryAction("load", async () => {
 			this.memoryActiveView = nextView;
 			await this.loadMemoryView(nextView);
 		});
@@ -1421,7 +1413,7 @@ export class ComposerSettings extends LitElement {
 		}
 
 		const nextView: MemoryView = { kind: "search", query };
-		await this.runMemoryAction(async () => {
+		await this.runMemoryAction("search", async () => {
 			this.memoryActiveView = nextView;
 			await this.loadMemoryView(nextView);
 		});
@@ -1435,14 +1427,14 @@ export class ComposerSettings extends LitElement {
 			return;
 		}
 
-		await this.runMemoryAction(async () => {
-			const tags = this.extractMemoryTags(content);
+		await this.runMemoryAction("save", async () => {
+			const tags = extractMemoryTags(content);
 			const result = await this.apiClient.saveMemory(
 				topic,
 				content,
 				tags.length > 0 ? tags : undefined,
 			);
-			const savedTopic = result.entry?.topic ?? topic.toLowerCase();
+			const savedTopic = result.entry?.topic ?? topic;
 			this.memoryNotice =
 				result.message || `Memory saved to topic "${savedTopic}"`;
 			this.memorySaveTopic = "";
@@ -1455,7 +1447,7 @@ export class ComposerSettings extends LitElement {
 	}
 
 	private async deleteMemoryEntry(entry: MemoryEntry) {
-		await this.runMemoryAction(async () => {
+		await this.runMemoryAction("delete", async () => {
 			const result = await this.apiClient.deleteMemory(entry.id);
 			this.memoryNotice = result.message || `Memory ${entry.id} deleted`;
 			await this.refreshMemorySummary();
@@ -1469,7 +1461,7 @@ export class ComposerSettings extends LitElement {
 			return;
 		}
 
-		await this.runMemoryAction(async () => {
+		await this.runMemoryAction("clear", async () => {
 			const result = await this.apiClient.clearMemory(true);
 			this.memoryNotice = result.message || "Cleared all memories";
 			this.memoryClearConfirmed = false;
@@ -1585,9 +1577,7 @@ export class ComposerSettings extends LitElement {
 						<div class="panel-card-copy">
 							Entries: ${this.memoryStats.totalEntries}<br />
 							Topics: ${this.memoryStats.topics}<br />
-							Newest: ${this.formatMemoryRelativeTime(
-								this.memoryStats.newestEntry,
-							)}
+							Newest: ${formatMemoryRelativeTime(this.memoryStats.newestEntry)}
 						</div>
 					</div>
 					${
@@ -1636,7 +1626,11 @@ export class ComposerSettings extends LitElement {
 								@click=${() => void this.saveMemoryEntry()}
 								?disabled=${this.memoryLoading}
 							>
-								${this.memoryLoading ? "Saving..." : "Save memory"}
+								${
+									this.memoryPendingAction === "save"
+										? "Saving..."
+										: "Save memory"
+								}
 							</button>
 						</div>
 
@@ -1675,7 +1669,7 @@ export class ComposerSettings extends LitElement {
 												${topic.entryCount} ${
 													topic.entryCount === 1 ? "entry" : "entries"
 												}
-												· ${this.formatMemoryRelativeTime(topic.lastUpdated)}
+												· ${formatMemoryRelativeTime(topic.lastUpdated)}
 											</div>
 										`,
 										)}`
@@ -1745,9 +1739,7 @@ export class ComposerSettings extends LitElement {
 															<div>
 																<div class="panel-card-title">${entry.topic}</div>
 																<div class="panel-card-copy">
-																	${entry.id} · ${this.formatMemoryRelativeTime(
-																		entry.updatedAt,
-																	)}
+																	${entry.id} · ${formatMemoryRelativeTime(entry.updatedAt)}
 																</div>
 															</div>
 															<button
@@ -1760,7 +1752,7 @@ export class ComposerSettings extends LitElement {
 															</button>
 														</div>
 														<div class="panel-card-copy">
-															${this.truncateMemoryText(entry.content, 240)}
+															${truncateMemoryText(entry.content, 240)}
 														</div>
 														${
 															entry.tags && entry.tags.length > 0

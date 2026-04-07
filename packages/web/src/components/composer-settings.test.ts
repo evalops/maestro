@@ -491,6 +491,126 @@ describe("ComposerSettings MCP section", () => {
 		expect(apiClient.deleteMemory).toHaveBeenCalledWith("mem_topic");
 	});
 
+	it("keeps the save button label during non-save memory actions", async () => {
+		const apiClient = createApiClientMock();
+		const deleteDeferred = createDeferred<{
+			success: boolean;
+			message: string;
+		}>();
+		(apiClient.deleteMemory as ReturnType<typeof vi.fn>).mockReturnValueOnce(
+			deleteDeferred.promise,
+		);
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Boolean(
+				element.shadowRoot?.querySelector(
+					'button[aria-label="Delete memory mem_recent"]',
+				),
+			),
+		);
+
+		const deleteButton = element.shadowRoot?.querySelector(
+			'button[aria-label="Delete memory mem_recent"]',
+		) as HTMLButtonElement | null;
+		const saveButton = element.shadowRoot?.querySelector(
+			".memory-save-button",
+		) as HTMLButtonElement | null;
+		expect(deleteButton).not.toBeNull();
+		expect(saveButton).not.toBeNull();
+		if (!deleteButton || !saveButton) {
+			throw new Error("Expected memory action buttons");
+		}
+
+		deleteButton.click();
+		await Promise.resolve();
+		await element.updateComplete;
+
+		expect(apiClient.deleteMemory).toHaveBeenCalledWith("mem_recent");
+		expect(saveButton.textContent?.trim()).toBe("Save memory");
+		expect(saveButton.disabled).toBe(true);
+
+		deleteDeferred.resolve({
+			success: true,
+			message: "Memory mem_recent deleted",
+		});
+		await waitForSettled(
+			element,
+			() =>
+				(element.shadowRoot?.textContent ?? "").includes(
+					"Memory mem_recent deleted",
+				),
+			30,
+		);
+	});
+
+	it("preserves topic casing when save metadata omits the saved entry topic", async () => {
+		const apiClient = createApiClientMock();
+		(apiClient.saveMemory as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+			success: true,
+			message: "",
+		});
+		(apiClient.listMemoryTopic as ReturnType<typeof vi.fn>).mockResolvedValue({
+			topic: "API-Design",
+			memories: [],
+		});
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Boolean(
+				element.shadowRoot?.querySelector('input[aria-label="Memory topic"]'),
+			),
+		);
+
+		const topicInput = element.shadowRoot?.querySelector(
+			'input[aria-label="Memory topic"]',
+		) as HTMLInputElement | null;
+		const contentInput = element.shadowRoot?.querySelector(
+			'textarea[aria-label="Memory content"]',
+		) as HTMLTextAreaElement | null;
+		const saveButton = element.shadowRoot?.querySelector(
+			".memory-save-button",
+		) as HTMLButtonElement | null;
+		expect(topicInput).not.toBeNull();
+		expect(contentInput).not.toBeNull();
+		expect(saveButton).not.toBeNull();
+		if (!topicInput || !contentInput || !saveButton) {
+			throw new Error("Expected memory save controls");
+		}
+
+		topicInput.value = "API-Design";
+		topicInput.dispatchEvent(new Event("input", { bubbles: true }));
+		contentInput.value = "Preserve topic casing #rest";
+		contentInput.dispatchEvent(new Event("input", { bubbles: true }));
+		saveButton.click();
+
+		await waitForSettled(
+			element,
+			() =>
+				(apiClient.saveMemory as ReturnType<typeof vi.fn>).mock.calls.length >
+				0,
+			30,
+		);
+		await waitForSettled(
+			element,
+			() =>
+				(apiClient.listMemoryTopic as ReturnType<typeof vi.fn>).mock.calls.some(
+					([topic]) => topic === "API-Design",
+				),
+			30,
+		);
+
+		expect(apiClient.saveMemory).toHaveBeenCalledWith(
+			"API-Design",
+			"Preserve topic casing #rest",
+			["rest"],
+		);
+		expect(apiClient.listMemoryTopic).toHaveBeenLastCalledWith("API-Design");
+		expect(element.shadowRoot?.textContent ?? "").toContain(
+			'Memory saved to topic "API-Design"',
+		);
+	});
+
 	it("validates required structured MCP prompt arguments before running", async () => {
 		const apiClient = createApiClientMock();
 		const element = createSettings(apiClient);

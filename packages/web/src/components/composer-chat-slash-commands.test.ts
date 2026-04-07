@@ -210,6 +210,22 @@ describe("executeWebSlashCommand", () => {
 		]);
 	});
 
+	it("deduplicates repeated memory tags in the web slash command", async () => {
+		const { context, apiClient } = createContext();
+
+		await executeWebSlashCommand(
+			"memory",
+			'save "api design" Use REST conventions #rest #rest #api',
+			context,
+		);
+
+		expect(apiClient.saveMemory).toHaveBeenCalledWith(
+			"api design",
+			"Use REST conventions #rest #rest #api",
+			["rest", "api"],
+		);
+	});
+
 	it("requires force before clearing memory from the web slash command", async () => {
 		const { context, outputs, apiClient } = createContext();
 

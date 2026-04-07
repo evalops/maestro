@@ -15,6 +15,11 @@ import type {
 	McpStatus,
 } from "../services/api-client.js";
 import {
+	extractMemoryTags,
+	formatMemoryRelativeTime,
+	truncateMemoryText,
+} from "./memory-utils.js";
+import {
 	WEB_SLASH_COMMANDS,
 	type WebSlashCommand,
 	findCustomWebSlashCommand,
@@ -262,23 +267,6 @@ function parseMemorySearchResult(value: unknown): MemorySearchResult | null {
 	};
 }
 
-function formatRelativeTime(timestamp: number): string {
-	const diff = Date.now() - timestamp;
-	if (diff < 60000) return "just now";
-	if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
-	if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
-	return `${Math.floor(diff / 86400000)}d ago`;
-}
-
-function truncateText(text: string, maxLen: number): string {
-	if (text.length <= maxLen) return text;
-	return `${text.slice(0, maxLen - 3)}...`;
-}
-
-function extractMemoryTags(content: string): string[] {
-	return (content.match(/#(\w+)/g) ?? []).map((tag) => tag.slice(1));
-}
-
 function formatMemoryTopicsBlock(result: Record<string, unknown>): string {
 	const topics = Array.isArray(result.topics)
 		? result.topics
@@ -291,7 +279,7 @@ function formatMemoryTopicsBlock(result: Record<string, unknown>): string {
 	const lines = [`Memory Topics (${topics.length})`, ""];
 	for (const topic of topics) {
 		lines.push(
-			`  ${topic.name} - ${topic.entryCount} ${topic.entryCount === 1 ? "entry" : "entries"} (${formatRelativeTime(topic.lastUpdated)})`,
+			`  ${topic.name} - ${topic.entryCount} ${topic.entryCount === 1 ? "entry" : "entries"} (${formatMemoryRelativeTime(topic.lastUpdated)})`,
 		);
 	}
 	lines.push("", "Use /memory list <topic> to see entries");
@@ -313,8 +301,10 @@ function formatMemoryTopicEntriesBlock(
 	const lines = [`Memories in "${topic}" (${memories.length})`, ""];
 	for (const entry of memories.slice(0, 20)) {
 		const tags = entry.tags.length ? ` [${entry.tags.join(", ")}]` : "";
-		lines.push(`  • ${truncateText(entry.content, 70)}${tags}`);
-		lines.push(`    ${entry.id} • ${formatRelativeTime(entry.updatedAt)}`);
+		lines.push(`  • ${truncateMemoryText(entry.content, 70)}${tags}`);
+		lines.push(
+			`    ${entry.id} • ${formatMemoryRelativeTime(entry.updatedAt)}`,
+		);
 	}
 	if (memories.length > 20) {
 		lines.push(`  ... and ${memories.length - 20} more`);
@@ -339,10 +329,10 @@ function formatMemorySearchResultsBlock(
 		const resultEntry = results[index];
 		if (!resultEntry) continue;
 		lines.push(
-			`${index + 1}. [${resultEntry.entry.topic}] ${truncateText(resultEntry.entry.content, 60)} [${resultEntry.score.toFixed(1)}] (${resultEntry.matchedOn})`,
+			`${index + 1}. [${resultEntry.entry.topic}] ${truncateMemoryText(resultEntry.entry.content, 60)} [${resultEntry.score.toFixed(1)}] (${resultEntry.matchedOn})`,
 		);
 		lines.push(
-			`   ID: ${resultEntry.entry.id} • ${formatRelativeTime(resultEntry.entry.updatedAt)}`,
+			`   ID: ${resultEntry.entry.id} • ${formatMemoryRelativeTime(resultEntry.entry.updatedAt)}`,
 		);
 	}
 	return lines.join("\n");
@@ -359,8 +349,10 @@ function formatRecentMemoriesBlock(result: Record<string, unknown>): string {
 	}
 	const lines = [`Recent Memories (${memories.length})`, ""];
 	for (const entry of memories) {
-		lines.push(`  [${entry.topic}] ${truncateText(entry.content, 70)}`);
-		lines.push(`    ${entry.id} • ${formatRelativeTime(entry.updatedAt)}`);
+		lines.push(`  [${entry.topic}] ${truncateMemoryText(entry.content, 70)}`);
+		lines.push(
+			`    ${entry.id} • ${formatMemoryRelativeTime(entry.updatedAt)}`,
+		);
 	}
 	return lines.join("\n");
 }
@@ -375,10 +367,10 @@ function formatMemoryStatsBlock(result: Record<string, unknown>): string {
 		`  Topics: ${typeof stats.topics === "number" ? stats.topics : 0}`,
 	);
 	if (typeof stats.oldestEntry === "number") {
-		lines.push(`  Oldest: ${formatRelativeTime(stats.oldestEntry)}`);
+		lines.push(`  Oldest: ${formatMemoryRelativeTime(stats.oldestEntry)}`);
 	}
 	if (typeof stats.newestEntry === "number") {
-		lines.push(`  Newest: ${formatRelativeTime(stats.newestEntry)}`);
+		lines.push(`  Newest: ${formatMemoryRelativeTime(stats.newestEntry)}`);
 	}
 	return lines.join("\n");
 }
