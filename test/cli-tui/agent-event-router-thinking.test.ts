@@ -205,6 +205,69 @@ describe("AgentEventRouter reasoning summary streaming", () => {
 		expect(requestRender).toHaveBeenCalledTimes(3);
 	});
 
+	it("suppresses tool execution summary statuses while keeping continuation statuses", () => {
+		const showRuntimeStatus = vi.fn();
+		const requestRender = vi.fn();
+		const chatContainer = new MockContainer();
+		const streamingView = new StreamingView({
+			chatContainer,
+			toolOutputView: noopToolOutputView,
+			pendingTools: new Map(),
+			lowBandwidth: { enabled: false, batchIntervalMs: 0, scrollbackLimit: 10 },
+			getCleanMode: () => "off",
+		});
+
+		const router = new AgentEventRouter({
+			messageView: { addMessage: vi.fn() } as unknown as {
+				addMessage: (message: unknown) => void;
+			},
+			streamingView,
+			loaderView: {
+				beginTurn: vi.fn(),
+				completeTurn: vi.fn(),
+				setStreamingActive: vi.fn(),
+				maybeTransitionToResponding: vi.fn(),
+				registerToolStage: vi.fn(),
+				markToolComplete: vi.fn(),
+				showRuntimeStatus,
+			} as unknown,
+			runController: {
+				handleAgentStart: vi.fn(),
+				handleAgentEnd: (cb: () => void) => cb(),
+			} as unknown,
+			sessionContext: {
+				beginTurn: vi.fn(),
+				completeTurn: vi.fn(),
+				setLastUserMessage: vi.fn(),
+				setLastAssistantMessage: vi.fn(),
+				recordToolUsage: vi.fn(),
+			} as unknown,
+			extractText: () => "",
+			clearEditor: vi.fn(),
+			requestRender,
+			clearPendingTools: vi.fn(),
+			refreshPlanHint: vi.fn(),
+		});
+
+		router.handle({
+			type: "status",
+			status: "Read README.md",
+			details: { kind: "tool_execution_summary" },
+		});
+		router.handle({
+			type: "status",
+			status: "Continuing after token budget",
+			details: { kind: "token_budget_continuation" },
+		});
+
+		expect(showRuntimeStatus).toHaveBeenCalledTimes(1);
+		expect(showRuntimeStatus).toHaveBeenCalledWith(
+			"Continuing after token budget",
+			{ kind: "token_budget_continuation" },
+		);
+		expect(requestRender).toHaveBeenCalledTimes(1);
+	});
+
 	it("shows transient tool batch summaries through the loader view", () => {
 		const showToolBatchSummary = vi.fn();
 		const requestRender = vi.fn();

@@ -115,6 +115,9 @@ export class AgentEventRouter {
 				return;
 
 			case "status":
+				if (event.details.kind === "tool_execution_summary") {
+					return;
+				}
 				this.options.loaderView.showRuntimeStatus(event.status, event.details);
 				this.options.requestRender();
 				return;
