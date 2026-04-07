@@ -31,11 +31,11 @@ describe("inline tool execution (EPIPE)", () => {
 	afterEach(() => {
 		rmSync(testDir, { recursive: true, force: true });
 		vi.resetModules();
-		vi.unmock("node:child_process");
+		vi.doUnmock("node:child_process");
 	});
 
 	it("ignores stdin EPIPE when the child exits immediately", async () => {
-		vi.mock("node:child_process", () => {
+		vi.doMock("node:child_process", () => {
 			return {
 				spawn: () => {
 					const child = new EventEmitter() as unknown as {
