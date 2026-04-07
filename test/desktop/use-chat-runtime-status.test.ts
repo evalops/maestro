@@ -1,11 +1,12 @@
 // @vitest-environment happy-dom
-import { createElement } from "react";
+import { act, createElement } from "react";
 import { type Root, createRoot } from "react-dom/client";
-import { act } from "react-dom/test-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useChat } from "../../packages/desktop/src/renderer/hooks/useChat";
 import { apiClient } from "../../packages/desktop/src/renderer/lib/api-client";
 import type { Message } from "../../packages/desktop/src/renderer/lib/types";
+
+globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 type HookSnapshot = {
 	messages: Message[];
