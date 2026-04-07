@@ -225,22 +225,18 @@ describe("executeWebSlashCommand", () => {
 		]);
 	});
 
-	it("allows memory export in shared sessions", async () => {
+	it("blocks memory export in shared sessions", async () => {
 		const { context, outputs, apiClient } = createContext({
 			isSharedSession: true,
-		});
-		apiClient.exportMemory.mockResolvedValue({
-			message: "Memories exported.",
-			path: "/tmp/maestro-memory.json",
 		});
 
 		await executeWebSlashCommand("memory", "export", context);
 
-		expect(apiClient.exportMemory).toHaveBeenCalledWith(undefined);
+		expect(apiClient.exportMemory).not.toHaveBeenCalled();
 		expect(outputs).toEqual([
 			{
-				output: "Memories exported.",
-				isError: false,
+				output: "Memory export is disabled in shared sessions.",
+				isError: true,
 			},
 		]);
 	});

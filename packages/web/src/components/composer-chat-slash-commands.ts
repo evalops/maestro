@@ -1887,6 +1887,7 @@ export async function executeWebSlashCommand(
 				}
 
 				if (sub === "export") {
+					if (!requireWritableSession("Memory export")) break;
 					const path = tokens.slice(1).join(" ").trim() || undefined;
 					const result = await context.apiClient.exportMemory(path);
 					context.appendCommandOutput(
