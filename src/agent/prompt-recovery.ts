@@ -21,7 +21,7 @@ import {
 	getCurrentTaskBudget,
 	setCurrentTaskBudget,
 } from "./task-budget-access.js";
-import { isAssistantMessage } from "./type-guards.js";
+import { getLastAssistantMessage } from "./type-guards.js";
 import type { AppMessage, AssistantMessage } from "./types.js";
 
 const logger = createLogger("agent:prompt-recovery");
@@ -87,15 +87,6 @@ export function buildCompactionEvent(
 		customInstructions: options?.customInstructions,
 		timestamp: options?.timestamp ?? new Date().toISOString(),
 	};
-}
-
-function getLastAssistantMessage(
-	messages: AppMessage[],
-): AssistantMessage | undefined {
-	const lastMessage = messages[messages.length - 1];
-	return lastMessage && isAssistantMessage(lastMessage)
-		? lastMessage
-		: undefined;
 }
 
 function getRecoverableOverflowAssistantMessage(
@@ -439,6 +430,12 @@ export async function recoverFromMaxOutput(
 	let attempt = 0;
 	let previousContinuationOutputTokens: number | undefined;
 	let escalationRecovered = false;
+	const incompleteResult = () => ({
+		recovered: false,
+		attempts: attempt + (escalationRecovered ? 1 : 0),
+		exhausted: false,
+		stoppedEarly: false,
+	});
 
 	if (shouldEscalateMaxOutputCap(agent)) {
 		const lastAssistant = getLastAssistantMessage(agent.state.messages);
@@ -464,6 +461,14 @@ export async function recoverFromMaxOutput(
 
 	while (attempt < maxContinuations) {
 		const lastAssistant = getLastAssistantMessage(agent.state.messages);
+		if (
+			lastAssistant?.stopReason === "error" &&
+			isAssistantContextOverflow(lastAssistant, agent.state.model.contextWindow)
+		) {
+			throw new Error(
+				lastAssistant.errorMessage || "Prompt overflow could not be recovered.",
+			);
+		}
 		if (!lastAssistant || lastAssistant.stopReason !== "length") {
 			return {
 				recovered: escalationRecovered || attempt > 0,
@@ -500,9 +505,18 @@ export async function recoverFromMaxOutput(
 		attempt += 1;
 		options?.callbacks?.onMaxOutputContinue?.(attempt, maxContinuations);
 		previousContinuationOutputTokens = currentOutputTokens;
+		const messageCountBefore = agent.state.messages.length;
+		const lastAssistantBefore = lastAssistant;
 		await agent.continue({
 			continuationPrompt: MAX_OUTPUT_CONTINUATION_PROMPT,
 		});
+		const latestAssistant = getLastAssistantMessage(agent.state.messages);
+		if (
+			agent.state.messages.length === messageCountBefore &&
+			latestAssistant === lastAssistantBefore
+		) {
+			return incompleteResult();
+		}
 	}
 
 	const lastAssistant = getLastAssistantMessage(agent.state.messages);

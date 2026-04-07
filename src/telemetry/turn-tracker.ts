@@ -193,8 +193,8 @@ export class TurnTracker {
 	private startTurn(isContinuation = false): void {
 		if (!isContinuation || this.turnNumber === 0) {
 			this.turnNumber++;
+			this.accumulatedUsage = null;
 		}
-		this.accumulatedUsage = null;
 
 		this.currentTurn = new TurnCollector(
 			this.config.sessionId,

@@ -344,6 +344,33 @@ describe("recoverFromMaxOutput", () => {
 		expect(agent.continue).toHaveBeenCalledTimes(3);
 		expect(onStoppedEarly).toHaveBeenCalledWith(3, 5);
 	});
+
+	it("throws overflow errors surfaced by a continuation attempt", async () => {
+		const overflowMessage =
+			"Anthropic rejected this request because the prompt exceeded 200,000 tokens. Use /compact to summarize prior messages or remove large attachments, then retry.";
+		const agent = createMockAgent([
+			createUserMessage("question"),
+			createAssistantMessage({ stopReason: "length", text: "partial" }),
+		]);
+		agent.state.model.provider = "openai";
+		agent.state.model.api = "openai-completions";
+
+		agent.continue.mockImplementationOnce(async () => {
+			agent.state.messages = [
+				...agent.state.messages,
+				createAssistantMessage({
+					text: "overflow",
+					stopReason: "error",
+					errorMessage: overflowMessage,
+				}),
+			];
+		});
+
+		await expect(recoverFromMaxOutput(agent as never)).rejects.toThrow(
+			overflowMessage,
+		);
+		expect(agent.continue).toHaveBeenCalledTimes(1);
+	});
 });
 
 describe("runWithPromptRecovery", () => {
@@ -632,7 +659,7 @@ echo '{"continue": true, "systemMessage": "Preserve operator guidance from overf
 		expect(stopFailureHookService.runStopFailureHooks).toHaveBeenCalledWith(
 			"prompt_overflow",
 			error.message,
-			undefined,
+			"response",
 			undefined,
 		);
 	});
