@@ -134,4 +134,20 @@ describe("recoverFromMaxOutput", () => {
 		expect(agent.continue).toHaveBeenCalledTimes(3);
 		expect(onStoppedEarly).toHaveBeenCalledWith(3, 5);
 	});
+
+	it("stops retrying when a continuation makes no progress", async () => {
+		const agent = createAgentStub([], [createAssistantMessage("length")]);
+
+		agent.continue = vi.fn(async () => {});
+
+		const result = await recoverFromMaxOutput(agent);
+
+		expect(result).toEqual({
+			recovered: false,
+			attempts: 1,
+			exhausted: false,
+			stoppedEarly: false,
+		});
+		expect(agent.continue).toHaveBeenCalledTimes(1);
+	});
 });
