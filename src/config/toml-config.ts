@@ -524,15 +524,19 @@ export function resolveProjectDocCandidateFilenames(
 
 function truncateUtf8ToValidBytes(buffer: Buffer, bytesRead: number): number {
 	let end = bytesRead;
-	while (end > 0 && (buffer[end - 1]! & 0b1100_0000) === 0b1000_0000) {
-		end -= 1;
-	}
-
 	if (end === 0) {
 		return 0;
 	}
 
-	const start = end - 1;
+	let start = end - 1;
+	while (start >= 0 && (buffer[start]! & 0b1100_0000) === 0b1000_0000) {
+		start -= 1;
+	}
+
+	if (start < 0) {
+		return 0;
+	}
+
 	const lead = buffer[start]!;
 	let expected = 1;
 	if ((lead & 0b1000_0000) === 0) {

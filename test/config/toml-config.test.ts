@@ -674,6 +674,30 @@ experimental_instructions_file = ".maestro/instructions.md"
 
 			expect(resolvedPaths).toEqual(loadedPaths);
 		});
+
+		it("matches the prompt loader when a doc exactly ends on a multi-byte UTF-8 boundary", () => {
+			const appDir = join(projectDir, "apps", "web");
+			mkdirSync(appDir, { recursive: true });
+			writeFileSync(join(projectDir, "AGENT.md"), "A😀");
+			writeFileSync(join(appDir, "AGENT.md"), "B");
+
+			const config = {
+				...DEFAULT_CONFIG,
+				project_doc_max_bytes: Buffer.byteLength("A😀"),
+			} as ComposerConfig;
+
+			const loadedPaths = loadProjectContextFiles(appDir, { config }).map(
+				(file) => resolve(file.path),
+			);
+			const resolvedPaths = resolvePromptLoadedProjectDocPaths(
+				appDir,
+				config,
+			).map((filePath) => resolve(filePath));
+
+			expect(resolvedPaths).toEqual(loadedPaths);
+			expect(resolvedPaths).toHaveLength(1);
+			expect(resolvedPaths[0]).toBe(resolve(join(projectDir, "AGENT.md")));
+		});
 	});
 });
 
