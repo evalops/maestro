@@ -554,6 +554,9 @@ async function handleUpdateAuthPreset(
 			`MCP auth preset "${body.name}" not found in merged config.`,
 		);
 	}
+	if (body.preset.name !== body.name) {
+		throw new ApiError(400, "Renaming MCP auth presets is not supported.");
+	}
 
 	const mergedPreset = mergeEditableAuthPresetConfig(
 		existingPreset,

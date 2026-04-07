@@ -49,6 +49,27 @@ export interface McpServerRemoveResponseLike {
 	} | null;
 }
 
+export interface McpResourceContentLike {
+	uri: string;
+	mimeType?: string;
+	text?: string;
+	blob?: string;
+}
+
+export interface McpResourceReadResponseLike {
+	contents: McpResourceContentLike[];
+}
+
+export interface McpPromptMessageLike {
+	role: string;
+	content: string;
+}
+
+export interface McpPromptResponseLike {
+	description?: string;
+	messages: McpPromptMessageLike[];
+}
+
 export function formatMcpTransportLabel(
 	transport: McpTransport | undefined,
 ): string | null {
@@ -68,21 +89,6 @@ export function formatMcpRegistryScopeLabel(
 	scope: McpWritableScope | undefined,
 ): string {
 	switch (scope) {
-		case "project":
-			return "Project";
-		case "user":
-			return "User";
-		default:
-			return "Local";
-	}
-}
-
-export function formatAnyMcpScopeLabel(scope: McpScope | undefined): string {
-	switch (scope) {
-		case "enterprise":
-			return "Enterprise";
-		case "plugin":
-			return "Plugin";
 		case "project":
 			return "Project";
 		case "user":
@@ -163,6 +169,46 @@ export function getMcpRegistryUrlOptions(
 		: fallbackUrl
 			? [{ url: fallbackUrl, label: "Default endpoint" }]
 			: [];
+}
+
+export function formatMcpResourceOutput(
+	result: McpResourceReadResponseLike,
+): string {
+	if (result.contents.length === 0) {
+		return "No resource contents returned.";
+	}
+
+	return result.contents
+		.map((content) => {
+			const lines = [content.uri];
+			if (content.mimeType) {
+				lines.push(`mime: ${content.mimeType}`);
+			}
+			if (typeof content.text === "string") {
+				lines.push("", content.text);
+			} else if (typeof content.blob === "string") {
+				lines.push("", `[binary content: ${content.blob.length} chars]`);
+			} else {
+				lines.push("", "[empty content]");
+			}
+			return lines.join("\n");
+		})
+		.join("\n\n");
+}
+
+export function formatMcpPromptOutput(result: McpPromptResponseLike): string {
+	const lines: string[] = [];
+	if (result.description) {
+		lines.push(result.description, "");
+	}
+	if (result.messages.length === 0) {
+		lines.push("No prompt messages returned.");
+		return lines.join("\n").trim();
+	}
+	for (const message of result.messages) {
+		lines.push(`${message.role}:`, message.content, "");
+	}
+	return lines.join("\n").trim();
 }
 
 export function formatMcpRegistryImportMessage(

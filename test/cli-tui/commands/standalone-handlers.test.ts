@@ -948,6 +948,49 @@ describe("mcp-handlers", () => {
 			});
 		});
 
+		it("accepts /mcp preset aliases for auth preset edits", async () => {
+			vi.mocked(loadMcpConfig)
+				.mockReturnValueOnce({
+					servers: [],
+					authPresets: [
+						{
+							name: "linear-auth",
+							headers: { Authorization: "Bearer test" },
+							scope: "local",
+						},
+					],
+				})
+				.mockReturnValueOnce({
+					servers: [],
+					authPresets: [
+						{
+							name: "linear-auth",
+							headers: { Authorization: "Bearer next" },
+							scope: "local",
+						},
+					],
+				});
+
+			const ctx = createMcpCtx(
+				"/mcp preset edit linear-auth --header 'Authorization: Bearer next'",
+			);
+
+			handleMcpCommand(ctx);
+
+			await vi.waitFor(() => {
+				expect(updateMcpAuthPresetInConfig).toHaveBeenCalledWith({
+					projectRoot: process.cwd(),
+					scope: undefined,
+					name: "linear-auth",
+					preset: {
+						name: "linear-auth",
+						headers: { Authorization: "Bearer next" },
+						headersHelper: undefined,
+					},
+				});
+			});
+		});
+
 		it("removes an MCP auth preset and reports fallback config", async () => {
 			vi.mocked(loadMcpConfig).mockReturnValueOnce({
 				servers: [],
@@ -978,6 +1021,18 @@ describe("mcp-handlers", () => {
 			expect(ctx.addContent).toHaveBeenCalledWith(
 				expect.stringContaining("fallback: now using User config"),
 			);
+		});
+
+		it("surfaces /mcp auth parse errors as user-visible command errors", async () => {
+			const ctx = createMcpCtx('/mcp auth "unterminated');
+
+			handleMcpCommand(ctx);
+
+			await vi.waitFor(() => {
+				expect(ctx.showError).toHaveBeenCalledWith(
+					expect.stringContaining("Invalid /mcp command"),
+				);
+			});
 		});
 	});
 

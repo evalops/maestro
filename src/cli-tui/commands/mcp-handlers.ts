@@ -196,6 +196,10 @@ function parseTokens(rawInput: string): string[] {
 	}
 }
 
+function isMcpAuthAlias(value: string | undefined): boolean {
+	return value === "auth" || value === "preset" || value === "presets";
+}
+
 function parseMcpServerMutationCommand(
 	rawInput: string,
 	command: "add" | "edit",
@@ -526,7 +530,11 @@ function parseMcpAuthPresetMutationCommand(
 	const usage = command === "add" ? MCP_AUTH_ADD_USAGE : MCP_AUTH_EDIT_USAGE;
 	const tokens = parseTokens(rawInput);
 
-	if (tokens[0] !== "/mcp" || tokens[1] !== "auth" || tokens[2] !== command) {
+	if (
+		tokens[0] !== "/mcp" ||
+		!isMcpAuthAlias(tokens[1]) ||
+		tokens[2] !== command
+	) {
 		throw new Error(usage);
 	}
 
@@ -596,7 +604,11 @@ function parseMcpAuthPresetRemoveCommand(
 	rawInput: string,
 ): ParsedMcpRemoveCommand {
 	const tokens = parseTokens(rawInput);
-	if (tokens[0] !== "/mcp" || tokens[1] !== "auth" || tokens[2] !== "remove") {
+	if (
+		tokens[0] !== "/mcp" ||
+		!isMcpAuthAlias(tokens[1]) ||
+		tokens[2] !== "remove"
+	) {
 		throw new Error(MCP_AUTH_REMOVE_USAGE);
 	}
 
@@ -915,11 +927,7 @@ export function handleMcpCommand(renderCtx: McpRenderContext): void {
 		void handleMcpImportCommand(renderCtx);
 		return;
 	}
-	if (
-		subcommand === "auth" ||
-		subcommand === "preset" ||
-		subcommand === "presets"
-	) {
+	if (isMcpAuthAlias(subcommand)) {
 		void handleMcpAuthCommand(renderCtx);
 		return;
 	}
@@ -1194,52 +1202,56 @@ async function handleMcpImportCommand(
 async function handleMcpAuthCommand(
 	renderCtx: McpRenderContext,
 ): Promise<void> {
-	const tokens = parseTokens(renderCtx.rawInput);
-	const subcommand = tokens[2]?.toLowerCase() ?? "list";
+	try {
+		const tokens = parseTokens(renderCtx.rawInput);
+		const subcommand = tokens[2]?.toLowerCase() ?? "list";
 
-	if (subcommand === "list") {
-		const status = mcpManager.getStatus();
-		const lines: string[] = ["MCP Auth Presets", ""];
+		if (subcommand === "list") {
+			const status = mcpManager.getStatus();
+			const lines: string[] = ["MCP Auth Presets", ""];
 
-		if (status.authPresets.length === 0) {
-			lines.push(
-				"No MCP auth presets configured.",
-				"",
-				"Examples:",
-				"  /mcp auth add linear-auth --header 'Authorization: Bearer ...'",
-				"  /mcp add linear https://mcp.linear.app/mcp --auth-preset linear-auth",
-			);
-		} else {
-			for (const preset of status.authPresets) {
-				appendAuthPresetSummary(lines, preset);
-				lines.push("");
+			if (status.authPresets.length === 0) {
+				lines.push(
+					"No MCP auth presets configured.",
+					"",
+					"Examples:",
+					"  /mcp auth add linear-auth --header 'Authorization: Bearer ...'",
+					"  /mcp add linear https://mcp.linear.app/mcp --auth-preset linear-auth",
+				);
+			} else {
+				for (const preset of status.authPresets) {
+					appendAuthPresetSummary(lines, preset);
+					lines.push("");
+				}
+				lines.push(
+					chalk.dim(
+						"Usage: /mcp auth add|edit|remove <name> [--scope ...] [--header ...] [--headers-helper ...]",
+					),
+				);
 			}
-			lines.push(
-				chalk.dim(
-					"Usage: /mcp auth add|edit|remove <name> [--scope ...] [--header ...] [--headers-helper ...]",
-				),
-			);
+
+			renderCtx.addContent(lines.join("\n").trimEnd());
+			renderCtx.requestRender();
+			return;
 		}
 
-		renderCtx.addContent(lines.join("\n").trimEnd());
-		renderCtx.requestRender();
-		return;
-	}
+		if (subcommand === "add") {
+			await handleMcpAuthAddCommand(renderCtx);
+			return;
+		}
+		if (subcommand === "edit") {
+			await handleMcpAuthEditCommand(renderCtx);
+			return;
+		}
+		if (subcommand === "remove") {
+			await handleMcpAuthRemoveCommand(renderCtx);
+			return;
+		}
 
-	if (subcommand === "add") {
-		await handleMcpAuthAddCommand(renderCtx);
-		return;
+		renderCtx.showError(MCP_AUTH_USAGE);
+	} catch (error) {
+		renderCtx.showError(error instanceof Error ? error.message : String(error));
 	}
-	if (subcommand === "edit") {
-		await handleMcpAuthEditCommand(renderCtx);
-		return;
-	}
-	if (subcommand === "remove") {
-		await handleMcpAuthRemoveCommand(renderCtx);
-		return;
-	}
-
-	renderCtx.showError(MCP_AUTH_USAGE);
 }
 
 async function handleMcpAuthAddCommand(
