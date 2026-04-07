@@ -148,6 +148,14 @@ export class ComposerSessionSidebar extends LitElement {
 			color: var(--text-tertiary, #5c5e62);
 		}
 
+		.session-resume {
+			margin-top: 0.4rem;
+			font-family: var(--font-mono, monospace);
+			font-size: 0.63rem;
+			line-height: 1.45;
+			color: var(--text-secondary, #a4a8ae);
+		}
+
 		.session-tags {
 			display: flex;
 			gap: 0.25rem;
@@ -302,15 +310,33 @@ export class ComposerSessionSidebar extends LitElement {
 		return d.toLocaleDateString();
 	}
 
+	private formatResumeSummary(summary: string | undefined): string | null {
+		if (typeof summary !== "string") {
+			return null;
+		}
+		const normalized = summary.trim();
+		if (!normalized) {
+			return null;
+		}
+		if (normalized.length <= 140) {
+			return normalized;
+		}
+		return `${normalized.slice(0, 139).trimEnd()}…`;
+	}
+
 	private get filteredSessions(): SessionSummary[] {
 		const query = this.sessionSearch.trim().toLowerCase();
 		const filtered = this.sessions.filter((session) => {
 			if (!query) return true;
 			const title = session.title?.toLowerCase() ?? "";
 			const id = session.id?.toLowerCase() ?? "";
+			const resumeSummary = session.resumeSummary?.toLowerCase() ?? "";
 			const tags = session.tags?.join(" ").toLowerCase() ?? "";
 			return (
-				title.includes(query) || id.includes(query) || tags.includes(query)
+				title.includes(query) ||
+				id.includes(query) ||
+				resumeSummary.includes(query) ||
+				tags.includes(query)
 			);
 		});
 		return [...filtered].sort(
@@ -480,6 +506,13 @@ export class ComposerSessionSidebar extends LitElement {
 										<div class="session-meta">
 											${this.formatSessionDate(session.updatedAt)} • ${session.messageCount || 0} msgs
 										</div>
+										${
+											this.formatResumeSummary(session.resumeSummary)
+												? html`<div class="session-resume">
+													${this.formatResumeSummary(session.resumeSummary)}
+												</div>`
+												: ""
+										}
 										${
 											session.tags?.length
 												? html`<div class="session-tags">

@@ -18,7 +18,11 @@ export function createSessionSubsystem(params: {
 	notificationView: NotificationView;
 	sessionContext: SessionContext;
 	applyLoadedSessionContext: () => void;
-	onSessionLoaded: (sessionInfo: { id: string; messageCount: number }) => void;
+	onSessionLoaded: (sessionInfo: {
+		id: string;
+		messageCount: number;
+		resumeSummary?: string;
+	}) => void;
 }): {
 	sessionDataProvider: SessionDataProvider;
 	sessionSummaryController: SessionSummaryController;

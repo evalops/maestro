@@ -70,6 +70,7 @@ export interface SessionMetaEntry {
 	type: "session_meta";
 	timestamp: string;
 	summary?: string;
+	resumeSummary?: string;
 	favorite?: boolean;
 	title?: string;
 	tags?: string[];
@@ -148,6 +149,7 @@ export interface SessionMetadata {
 	messageCount: number;
 	firstMessage: string;
 	summary: string;
+	resumeSummary?: string;
 	favorite: boolean;
 	allMessagesText: string;
 }
@@ -156,6 +158,7 @@ export interface SessionSummary {
 	id: string;
 	subject?: string;
 	title?: string;
+	resumeSummary?: string;
 	createdAt: string;
 	updatedAt: string;
 	messageCount: number;

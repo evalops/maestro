@@ -16,6 +16,7 @@ type RuntimeStatusInternals = {
 		getSession: ReturnType<typeof vi.fn>;
 	};
 	runtimeStatus: string | null;
+	showToast: ReturnType<typeof vi.fn>;
 	refreshUiState: ReturnType<typeof vi.fn>;
 	loadSessions: ReturnType<typeof vi.fn>;
 	requestUpdate: ReturnType<typeof vi.fn>;
@@ -31,6 +32,7 @@ function createChat() {
 	element.loadSessions = vi.fn().mockResolvedValue(undefined);
 	element.requestUpdate = vi.fn();
 	element.scrollToBottom = vi.fn();
+	element.showToast = vi.fn();
 	Object.defineProperty(element, "updateComplete", {
 		configurable: true,
 		value: Promise.resolve(),
@@ -53,6 +55,7 @@ describe("composer-chat runtime status", () => {
 			createSession: vi.fn().mockReturnValue(pendingSession.promise),
 			getSession: vi.fn(),
 		};
+		element.showToast = vi.fn();
 		element.runtimeStatus = "Compacting conversation...";
 
 		const createPromise = element.createNewSession();
@@ -69,6 +72,7 @@ describe("composer-chat runtime status", () => {
 	it("clears runtime status immediately when selecting another session", async () => {
 		const pendingSession = createDeferred<{
 			id: string;
+			resumeSummary?: string;
 			messages: unknown[];
 		}>();
 		const element = createChat();
@@ -76,6 +80,7 @@ describe("composer-chat runtime status", () => {
 			createSession: vi.fn(),
 			getSession: vi.fn().mockReturnValue(pendingSession.promise),
 		};
+		element.showToast = vi.fn();
 		element.runtimeStatus = "Compacting conversation...";
 
 		const selectPromise = element.selectSession("session-2");
@@ -84,8 +89,14 @@ describe("composer-chat runtime status", () => {
 
 		pendingSession.resolve({
 			id: "session-2",
+			resumeSummary: "Continue tightening the session resume flow.",
 			messages: [],
 		});
 		await selectPromise;
+		expect(element.showToast).toHaveBeenCalledWith(
+			"Resume: Continue tightening the session resume flow.",
+			"info",
+			2600,
+		);
 	});
 });

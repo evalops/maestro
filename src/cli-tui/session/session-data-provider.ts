@@ -9,6 +9,7 @@ export interface SessionItem {
 	messageCount: number;
 	firstMessage: string;
 	summary: string;
+	resumeSummary?: string;
 	favorite: boolean;
 	allMessagesText: string;
 }

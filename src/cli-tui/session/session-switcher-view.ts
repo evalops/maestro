@@ -29,7 +29,6 @@ export class SessionSwitcherView {
 			onSelect: (session) => {
 				const loaded = this.options.loadSession(session);
 				if (loaded) {
-					this.options.showInfoMessage(`Loaded session ${session.summary}`);
 					this.hide();
 				}
 			},
