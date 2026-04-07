@@ -169,16 +169,99 @@ export function formatCommandJsonBlock(data: unknown): string {
 }
 
 function tokenizeSlashArgs(input: string): string[] {
-	const matches = input.match(/"([^"\\]|\\.)*"|'([^'\\]|\\.)*'|\S+/g) ?? [];
-	return matches.map((token) => {
-		if (
-			(token.startsWith('"') && token.endsWith('"')) ||
-			(token.startsWith("'") && token.endsWith("'"))
-		) {
-			return token.slice(1, -1);
+	const tokens: string[] = [];
+	let current = "";
+	let quote: '"' | "'" | null = null;
+	let escaped = false;
+
+	for (const char of input) {
+		if (escaped) {
+			current += char;
+			escaped = false;
+			continue;
 		}
-		return token;
-	});
+
+		if (char === "\\") {
+			escaped = true;
+			continue;
+		}
+
+		if (quote) {
+			if (char === quote) {
+				quote = null;
+				continue;
+			}
+			current += char;
+			continue;
+		}
+
+		if (char === '"' || char === "'") {
+			quote = char;
+			continue;
+		}
+
+		if (/\s/.test(char)) {
+			if (current.length > 0) {
+				tokens.push(current);
+				current = "";
+			}
+			continue;
+		}
+
+		current += char;
+	}
+
+	if (escaped) {
+		current += "\\";
+	}
+	if (current.length > 0) {
+		tokens.push(current);
+	}
+
+	return tokens;
+}
+
+function parseMcpPromptSlashArgs(tokens: string[]): {
+	server?: string;
+	promptName?: string;
+	args?: Record<string, string>;
+	error?: string;
+} {
+	const server = tokens[1];
+	const promptName = tokens[2];
+	if (!server || !promptName) {
+		return { server, promptName };
+	}
+
+	const promptArgs: Record<string, string> = {};
+	for (const token of tokens.slice(3)) {
+		const separatorIndex = token.indexOf("=");
+		if (separatorIndex <= 0) {
+			return {
+				server,
+				promptName,
+				error:
+					"Invalid MCP prompt argument. Use KEY=value after the prompt name.",
+			};
+		}
+		const key = token.slice(0, separatorIndex).trim();
+		const value = token.slice(separatorIndex + 1);
+		if (!key) {
+			return {
+				server,
+				promptName,
+				error:
+					"Invalid MCP prompt argument. Use KEY=value after the prompt name.",
+			};
+		}
+		promptArgs[key] = value;
+	}
+
+	return {
+		server,
+		promptName,
+		args: Object.keys(promptArgs).length > 0 ? promptArgs : undefined,
+	};
 }
 
 function isWritableMcpScope(value: string): value is WritableMcpScope {
@@ -517,7 +600,7 @@ function formatMcpPromptsBlock(
 			lines.push("");
 		}
 	}
-	lines.push("", "Usage: /mcp prompts <server> <name>");
+	lines.push("", "Usage: /mcp prompts <server> <name> [KEY=value ...]");
 	return { isError: false, output: lines.join("\n") };
 }
 
@@ -1257,8 +1340,8 @@ export async function executeWebSlashCommand(
 				}
 
 				if (sub === "prompts") {
-					const server = tokens[1];
-					const promptName = tokens[2];
+					const parsedPromptArgs = parseMcpPromptSlashArgs(tokens);
+					const { server, promptName } = parsedPromptArgs;
 					if (!promptName) {
 						const status = await context.apiClient.getMcpStatus();
 						const formatted = formatMcpPromptsBlock(status, server);
@@ -1268,9 +1351,14 @@ export async function executeWebSlashCommand(
 						);
 						break;
 					}
+					if (parsedPromptArgs.error) {
+						context.appendCommandOutput(parsedPromptArgs.error, true);
+						break;
+					}
 					const result = await context.apiClient.getMcpPrompt(
 						server,
 						promptName,
+						parsedPromptArgs.args,
 					);
 					context.appendCommandOutput(
 						formatCommandCodeBlock(
@@ -1438,7 +1526,7 @@ export async function executeWebSlashCommand(
 								MCP_AUTH_EDIT_USAGE,
 								MCP_AUTH_REMOVE_USAGE,
 								"/mcp resources [server uri]",
-								"/mcp prompts [server name]",
+								"/mcp prompts [server [name KEY=value...]]",
 							].join("\n"),
 						),
 					);
@@ -1446,7 +1534,7 @@ export async function executeWebSlashCommand(
 				}
 
 				context.appendCommandOutput(
-					"Usage: /mcp [status|search <query>|resources [server uri]|prompts [server name]|add <name> <command-or-url>|edit <name> <command-or-url>|remove <name>|import <id> [name]|auth [list|add|edit|remove]]",
+					"Usage: /mcp [status|search <query>|resources [server uri]|prompts [server [name KEY=value...]]|add <name> <command-or-url>|edit <name> <command-or-url>|remove <name>|import <id> [name]|auth [list|add|edit|remove]]",
 					true,
 				);
 				break;

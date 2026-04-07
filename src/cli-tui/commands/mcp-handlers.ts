@@ -196,6 +196,47 @@ function parseTokens(rawInput: string): string[] {
 	}
 }
 
+function parseMcpPromptInvocationTokens(rawInput: string): {
+	serverName?: string;
+	promptName?: string;
+	args?: Record<string, string>;
+} {
+	const tokens = parseTokens(rawInput);
+	if (tokens[0] !== "/mcp" || tokens[1] !== "prompts") {
+		return {};
+	}
+
+	const serverName = tokens[2];
+	const promptName = tokens[3];
+	if (!serverName || !promptName) {
+		return { serverName, promptName };
+	}
+
+	const promptArgs: Record<string, string> = {};
+	for (const token of tokens.slice(4)) {
+		const separatorIndex = token.indexOf("=");
+		if (separatorIndex <= 0) {
+			throw new Error(
+				"Invalid MCP prompt argument. Use KEY=value after the prompt name.",
+			);
+		}
+		const key = token.slice(0, separatorIndex).trim();
+		const value = token.slice(separatorIndex + 1);
+		if (!key) {
+			throw new Error(
+				"Invalid MCP prompt argument. Use KEY=value after the prompt name.",
+			);
+		}
+		promptArgs[key] = value;
+	}
+
+	return {
+		serverName,
+		promptName,
+		args: Object.keys(promptArgs).length > 0 ? promptArgs : undefined,
+	};
+}
+
 function isMcpAuthAlias(value: string | undefined): boolean {
 	return value === "auth" || value === "preset" || value === "presets";
 }
@@ -892,7 +933,7 @@ export function formatMcpPromptList(
 	}
 
 	lines.push("");
-	lines.push(chalk.dim("Usage: /mcp prompts <server> <name>"));
+	lines.push(chalk.dim("Usage: /mcp prompts <server> <name> [KEY=value ...]"));
 	return lines.join("\n");
 }
 
@@ -1532,8 +1573,17 @@ export function handleMcpPromptsCommand(
 	const lines: string[] = ["MCP Prompts", ""];
 
 	if (args.length >= 2) {
-		const serverName = args[0]!;
-		const promptName = args[1]!;
+		let promptInvocation: ReturnType<typeof parseMcpPromptInvocationTokens>;
+		try {
+			promptInvocation = parseMcpPromptInvocationTokens(renderCtx.rawInput);
+		} catch (error) {
+			renderCtx.showError(
+				error instanceof Error ? error.message : String(error),
+			);
+			return;
+		}
+		const serverName = promptInvocation.serverName ?? args[0]!;
+		const promptName = promptInvocation.promptName ?? args[1]!;
 		const server = status.servers.find((entry) => entry.name === serverName);
 		if (!server) {
 			lines.push(`Server '${serverName}' not found`);
@@ -1543,7 +1593,7 @@ export function handleMcpPromptsCommand(
 			lines.push(`Prompt '${promptName}' not found on server '${serverName}'`);
 		} else {
 			mcpManager
-				.getPrompt(serverName, promptName)
+				.getPrompt(serverName, promptName, promptInvocation.args)
 				.then((result) => {
 					const promptLines = [`Prompt: ${promptName}`, ""];
 					if (result.description) {

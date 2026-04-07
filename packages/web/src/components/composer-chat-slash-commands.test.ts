@@ -325,12 +325,54 @@ describe("executeWebSlashCommand", () => {
 
 		await executeWebSlashCommand("mcp", "prompts docs summarize", context);
 
-		expect(apiClient.getMcpPrompt).toHaveBeenCalledWith("docs", "summarize");
+		expect(apiClient.getMcpPrompt).toHaveBeenCalledWith(
+			"docs",
+			"summarize",
+			undefined,
+		);
 		expect(outputs).toEqual([
 			expect.objectContaining({
 				isError: false,
 				output: expect.stringContaining("Summarize MCP"),
 			}),
+		]);
+	});
+
+	it("passes KEY=value prompt args through the web slash command", async () => {
+		const { context, apiClient } = createContext();
+		apiClient.getMcpPrompt.mockResolvedValue({
+			description: "Summarize docs",
+			messages: [{ role: "user", content: "Summarize MCP auth flow" }],
+		});
+
+		await executeWebSlashCommand(
+			"mcp",
+			'prompts docs summarize topic="MCP auth flow" format=brief',
+			context,
+		);
+
+		expect(apiClient.getMcpPrompt).toHaveBeenCalledWith("docs", "summarize", {
+			topic: "MCP auth flow",
+			format: "brief",
+		});
+	});
+
+	it("shows an error for invalid MCP prompt args in the web slash command", async () => {
+		const { context, outputs, apiClient } = createContext();
+
+		await executeWebSlashCommand(
+			"mcp",
+			"prompts docs summarize invalid-arg",
+			context,
+		);
+
+		expect(apiClient.getMcpPrompt).not.toHaveBeenCalled();
+		expect(outputs).toEqual([
+			{
+				output:
+					"Invalid MCP prompt argument. Use KEY=value after the prompt name.",
+				isError: true,
+			},
 		]);
 	});
 
@@ -644,7 +686,9 @@ describe("executeWebSlashCommand", () => {
 				output: expect.stringContaining("/mcp resources [server uri]"),
 			}),
 		]);
-		expect(outputs[0]?.output).toContain("/mcp prompts [server name]");
+		expect(outputs[0]?.output).toContain(
+			"/mcp prompts [server [name KEY=value...]]",
+		);
 	});
 
 	it("inserts custom command prompts by command name", async () => {

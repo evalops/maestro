@@ -622,6 +622,48 @@ describe("mcp-handlers", () => {
 			expect(output).toContain("Description: Summarize a tracked issue");
 			expect(output).toContain("Args: ISSUE (required): Issue identifier");
 			expect(output).not.toContain("broken-server");
+			expect(output).toContain(
+				"Usage: /mcp prompts <server> <name> [KEY=value ...]",
+			);
+		});
+
+		it("passes KEY=value prompt args through the TUI MCP prompt command", async () => {
+			vi.mocked(mcpManager.getPrompt).mockResolvedValueOnce({
+				description: "Summarize a tracked issue",
+				messages: [{ role: "user", content: "Summarize issue MAE-1" }],
+			});
+			const ctx = createMcpCtx(
+				'/mcp prompts test-server my-prompt ISSUE=MAE-1 mode="full text"',
+			);
+
+			handleMcpCommand(ctx);
+
+			await vi.waitFor(() => {
+				expect(mcpManager.getPrompt).toHaveBeenCalledWith(
+					"test-server",
+					"my-prompt",
+					{
+						ISSUE: "MAE-1",
+						mode: "full text",
+					},
+				);
+			});
+			expect(ctx.addContent).toHaveBeenCalledWith(
+				expect.stringContaining("Summarize issue MAE-1"),
+			);
+		});
+
+		it("shows an error for invalid MCP prompt args in the TUI command", () => {
+			const ctx = createMcpCtx(
+				"/mcp prompts test-server my-prompt invalid-arg",
+			);
+
+			handleMcpCommand(ctx);
+
+			expect(mcpManager.getPrompt).not.toHaveBeenCalled();
+			expect(ctx.showError).toHaveBeenCalledWith(
+				"Invalid MCP prompt argument. Use KEY=value after the prompt name.",
+			);
 		});
 
 		it("adds a remote MCP server and reloads the manager", async () => {

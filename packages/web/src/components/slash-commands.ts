@@ -46,7 +46,7 @@ const BUILTIN_WEB_SLASH_COMMANDS: Array<Omit<WebSlashCommand, "source">> = [
 		name: "mcp",
 		description: "Show, manage, or import MCP servers and auth presets",
 		usage:
-			"/mcp [status|search <query>|resources [server uri]|prompts [server name]|add <name> <command-or-url>|edit <name> <command-or-url>|remove <name>|import <id> [name]|auth [list|add|edit|remove]]",
+			"/mcp [status|search <query>|resources [server uri]|prompts [server [name KEY=value...]]|add <name> <command-or-url>|edit <name> <command-or-url>|remove <name>|import <id> [name]|auth [list|add|edit|remove]]",
 		tags: ["tools"],
 	},
 	{
