@@ -415,6 +415,70 @@ export interface McpAuthPresetRemoveResponse {
 	} | null;
 }
 
+export interface MemoryEntry {
+	id: string;
+	topic: string;
+	content: string;
+	tags?: string[];
+	sessionId?: string;
+	createdAt: number;
+	updatedAt: number;
+}
+
+export interface MemoryTopicSummary {
+	name: string;
+	entryCount: number;
+	lastUpdated: number;
+}
+
+export interface MemoryStats {
+	totalEntries: number;
+	topics: number;
+	oldestEntry: number | null;
+	newestEntry: number | null;
+}
+
+export interface MemorySearchResult {
+	entry: MemoryEntry;
+	score: number;
+	matchedOn: string;
+}
+
+export interface MemoryTopicsResponse {
+	topics: MemoryTopicSummary[];
+}
+
+export interface MemoryTopicResponse {
+	topic: string;
+	memories: MemoryEntry[];
+}
+
+export interface MemorySearchResponse {
+	query: string;
+	results: MemorySearchResult[];
+}
+
+export interface MemoryRecentResponse {
+	memories: MemoryEntry[];
+}
+
+export interface MemoryStatsResponse {
+	stats: MemoryStats;
+}
+
+export interface MemoryMutationResponse {
+	success: boolean;
+	message: string;
+	entry?: MemoryEntry;
+	count?: number;
+	path?: string;
+	result?: {
+		added: number;
+		updated: number;
+		skipped: number;
+	};
+}
+
 export interface AutomationCreateInput {
 	name: string;
 	prompt: string;
@@ -1025,6 +1089,102 @@ export class ApiClient {
 			"/api/lsp",
 			"POST",
 			{ action: "restart" },
+		);
+	}
+
+	// Memory
+	async listMemoryTopics(): Promise<MemoryTopicsResponse> {
+		return await this.fetchJson<MemoryTopicsResponse>(
+			"/api/memory?action=list",
+		);
+	}
+
+	async listMemoryTopic(topic: string): Promise<MemoryTopicResponse> {
+		return await this.fetchJson<MemoryTopicResponse>(
+			`/api/memory?action=list&topic=${encodeURIComponent(topic)}`,
+		);
+	}
+
+	async searchMemory(query: string, limit = 10): Promise<MemorySearchResponse> {
+		return await this.fetchJson<MemorySearchResponse>(
+			`/api/memory?action=search&query=${encodeURIComponent(query)}&limit=${limit}`,
+		);
+	}
+
+	async getRecentMemories(limit = 10): Promise<MemoryRecentResponse> {
+		return await this.fetchJson<MemoryRecentResponse>(
+			`/api/memory?action=recent&limit=${limit}`,
+		);
+	}
+
+	async getMemoryStats(): Promise<MemoryStatsResponse> {
+		return await this.fetchJson<MemoryStatsResponse>(
+			"/api/memory?action=stats",
+		);
+	}
+
+	async saveMemory(
+		topic: string,
+		content: string,
+		tags?: string[],
+	): Promise<MemoryMutationResponse> {
+		return await this.fetchJsonRequest<MemoryMutationResponse>(
+			"/api/memory",
+			"POST",
+			{
+				action: "save",
+				topic,
+				content,
+				tags,
+			},
+		);
+	}
+
+	async deleteMemory(
+		id?: string,
+		topic?: string,
+	): Promise<MemoryMutationResponse> {
+		return await this.fetchJsonRequest<MemoryMutationResponse>(
+			"/api/memory",
+			"POST",
+			{
+				action: "delete",
+				id,
+				topic,
+			},
+		);
+	}
+
+	async exportMemory(path?: string): Promise<MemoryMutationResponse> {
+		return await this.fetchJsonRequest<MemoryMutationResponse>(
+			"/api/memory",
+			"POST",
+			{
+				action: "export",
+				path,
+			},
+		);
+	}
+
+	async importMemory(path: string): Promise<MemoryMutationResponse> {
+		return await this.fetchJsonRequest<MemoryMutationResponse>(
+			"/api/memory",
+			"POST",
+			{
+				action: "import",
+				path,
+			},
+		);
+	}
+
+	async clearMemory(force = false): Promise<MemoryMutationResponse> {
+		return await this.fetchJsonRequest<MemoryMutationResponse>(
+			"/api/memory",
+			"POST",
+			{
+				action: "clear",
+				force,
+			},
 		);
 	}
 

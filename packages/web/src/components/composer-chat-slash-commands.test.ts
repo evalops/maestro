@@ -225,6 +225,26 @@ describe("executeWebSlashCommand", () => {
 		]);
 	});
 
+	it("allows memory export in shared sessions", async () => {
+		const { context, outputs, apiClient } = createContext({
+			isSharedSession: true,
+		});
+		apiClient.exportMemory.mockResolvedValue({
+			message: "Memories exported.",
+			path: "/tmp/maestro-memory.json",
+		});
+
+		await executeWebSlashCommand("memory", "export", context);
+
+		expect(apiClient.exportMemory).toHaveBeenCalledWith(undefined);
+		expect(outputs).toEqual([
+			{
+				output: "Memories exported.",
+				isError: false,
+			},
+		]);
+	});
+
 	it("searches memory from the web slash command", async () => {
 		const { context, outputs, apiClient } = createContext();
 		apiClient.searchMemory.mockResolvedValue({

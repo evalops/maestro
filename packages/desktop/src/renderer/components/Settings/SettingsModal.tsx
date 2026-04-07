@@ -34,6 +34,7 @@ import type { Model, ThinkingLevel } from "../../lib/types";
 import { AppearanceSection } from "./AppearanceSection";
 import { BackgroundTasksSection } from "./BackgroundTasksSection";
 import { FrameworkSection } from "./FrameworkSection";
+import { MemorySection } from "./MemorySection";
 import {
 	DEFAULT_MODE_OPTIONS,
 	ModelReasoningSection,
@@ -568,6 +569,41 @@ export function SettingsModal({
 		}
 	};
 
+	const listMemoryTopics = useCallback(async () => {
+		return await apiClient.listMemoryTopics();
+	}, []);
+
+	const listMemoryTopic = useCallback(async (topic: string) => {
+		return await apiClient.listMemoryTopic(topic);
+	}, []);
+
+	const searchMemory = useCallback(async (query: string, limit = 10) => {
+		return await apiClient.searchMemory(query, limit);
+	}, []);
+
+	const getRecentMemories = useCallback(async (limit = 10) => {
+		return await apiClient.getRecentMemories(limit);
+	}, []);
+
+	const getMemoryStats = useCallback(async () => {
+		return await apiClient.getMemoryStats();
+	}, []);
+
+	const saveMemory = useCallback(
+		async (topic: string, content: string, tags?: string[]) => {
+			return await apiClient.saveMemory(topic, content, tags);
+		},
+		[],
+	);
+
+	const deleteMemory = useCallback(async (id?: string, topic?: string) => {
+		return await apiClient.deleteMemory(id, topic);
+	}, []);
+
+	const clearMemory = useCallback(async (force = false) => {
+		return await apiClient.clearMemory(force);
+	}, []);
+
 	const handlePlanDraftChange = (draft: string) => {
 		setPlanDraft(draft);
 		setPlanDirty(true);
@@ -881,6 +917,17 @@ export function SettingsModal({
 						onStartPlan={startPlan}
 						onExitPlan={exitPlan}
 						onSavePlan={savePlan}
+					/>
+
+					<MemorySection
+						onListMemoryTopics={listMemoryTopics}
+						onListMemoryTopic={listMemoryTopic}
+						onSearchMemory={searchMemory}
+						onGetRecentMemories={getRecentMemories}
+						onGetMemoryStats={getMemoryStats}
+						onSaveMemory={saveMemory}
+						onDeleteMemory={deleteMemory}
+						onClearMemory={clearMemory}
 					/>
 
 					<SessionBehaviorSection

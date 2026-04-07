@@ -19,6 +19,12 @@ const makeSseResponse = (chunks: string[]) => {
 	});
 };
 
+const makeJsonResponse = (payload: unknown) =>
+	new Response(JSON.stringify(payload), {
+		status: 200,
+		headers: { "content-type": "application/json" },
+	});
+
 describe("desktop api client", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
@@ -59,6 +65,53 @@ describe("desktop api client", () => {
 		await client.setModel("claude");
 
 		const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+		const headers = new Headers(init.headers);
+		expect(headers.get("x-composer-csrf")).toBe("maestro-desktop-csrf");
+		expect(headers.get("x-maestro-csrf")).toBe("maestro-desktop-csrf");
+	});
+
+	it("encodes memory topic names in read requests", async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			makeJsonResponse({
+				topic: "api design",
+				memories: [],
+			}),
+		);
+		global.fetch = fetchMock;
+
+		const client = new ApiClient("http://localhost:8080");
+		await client.listMemoryTopic("api design");
+
+		expect(fetchMock.mock.calls[0]?.[0]).toBe(
+			"http://localhost:8080/api/memory?action=list&topic=api%20design",
+		);
+	});
+
+	it("posts memory writes with csrf headers and request payload", async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			makeJsonResponse({
+				success: true,
+				message: 'Memory saved to topic "api-design"',
+			}),
+		);
+		global.fetch = fetchMock;
+
+		const client = new ApiClient("http://localhost:8080");
+		await client.saveMemory("api-design", "Use REST conventions", ["rest"]);
+
+		expect(fetchMock.mock.calls[0]?.[0]).toBe(
+			"http://localhost:8080/api/memory",
+		);
+		const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+		expect(init.method).toBe("POST");
+		expect(init.body).toBe(
+			JSON.stringify({
+				action: "save",
+				topic: "api-design",
+				content: "Use REST conventions",
+				tags: ["rest"],
+			}),
+		);
 		const headers = new Headers(init.headers);
 		expect(headers.get("x-composer-csrf")).toBe("maestro-desktop-csrf");
 		expect(headers.get("x-maestro-csrf")).toBe("maestro-desktop-csrf");
