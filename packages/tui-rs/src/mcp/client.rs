@@ -839,6 +839,19 @@ impl McpClient {
         results
     }
 
+    /// Get detailed prompt metadata from all connected servers
+    pub async fn list_all_prompt_details(&self) -> Vec<(String, Vec<McpPrompt>)> {
+        let connections = self.connections.read().await;
+        let mut results = Vec::new();
+
+        for (name, conn) in connections.iter() {
+            let conn = conn.lock().await;
+            results.push((name.clone(), conn.prompts().to_vec()));
+        }
+
+        results
+    }
+
     /// Get a prompt from a connected server
     pub async fn get_prompt(
         &self,

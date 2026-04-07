@@ -461,6 +461,45 @@ fn parse_arguments(
     Ok(result)
 }
 
+fn tokenize_command_args(raw: &str) -> Vec<String> {
+    shlex::split(raw).unwrap_or_else(|| raw.split_whitespace().map(str::to_string).collect())
+}
+
+fn parse_mcp_prompts_action(raw: &str) -> Result<McpAction, CommandError> {
+    let tokens = tokenize_command_args(raw);
+    let server = tokens.get(1).cloned();
+    let name = tokens.get(2).cloned();
+
+    let mut arguments = HashMap::new();
+    if server.is_none() || name.is_none() {
+        return Ok(McpAction::Prompts {
+            server,
+            name,
+            arguments,
+        });
+    }
+
+    for token in tokens.iter().skip(3) {
+        let Some((key, value)) = token.split_once('=') else {
+            return Err(CommandError::new(
+                "Invalid MCP prompt argument. Use KEY=value after the prompt name.",
+            ));
+        };
+        if key.trim().is_empty() {
+            return Err(CommandError::new(
+                "Invalid MCP prompt argument. Use KEY=value after the prompt name.",
+            ));
+        }
+        arguments.insert(key.trim().to_string(), value.to_string());
+    }
+
+    Ok(McpAction::Prompts {
+        server,
+        name,
+        arguments,
+    })
+}
+
 /// Build the default command registry with all built-in commands
 ///
 /// Constructs and returns a fully populated `CommandRegistry` containing all
@@ -1111,15 +1150,18 @@ pub fn build_command_registry() -> CommandRegistry {
         CommandCategory::Tools,
         Box::new(|ctx| {
             let raw = ctx.raw_args.trim();
-            let mut parts = raw.split_whitespace();
-            let subcommand = parts.next().unwrap_or("").to_lowercase();
+            let tokens = tokenize_command_args(raw);
+            let subcommand = tokens
+                .first()
+                .map(|token| token.to_lowercase())
+                .unwrap_or_default();
 
             let action = match subcommand.as_str() {
                 "" => McpAction::Status,
                 "resources" => {
-                    let server = parts.next().map(|s| s.to_string());
+                    let server = tokens.get(1).cloned();
                     let uri = if server.is_some() {
-                        let rest = parts.collect::<Vec<_>>().join(" ");
+                        let rest = tokens.iter().skip(2).cloned().collect::<Vec<_>>().join(" ");
                         if rest.is_empty() {
                             None
                         } else {
@@ -1130,11 +1172,7 @@ pub fn build_command_registry() -> CommandRegistry {
                     };
                     McpAction::Resources { server, uri }
                 }
-                "prompts" => {
-                    let server = parts.next().map(|s| s.to_string());
-                    let name = parts.next().map(|s| s.to_string());
-                    McpAction::Prompts { server, name }
-                }
+                "prompts" => parse_mcp_prompts_action(raw)?,
                 other => {
                     return Err(
                         CommandError::new(format!("Unknown mcp subcommand: {other}"))
@@ -1888,5 +1926,53 @@ mod tests {
         // Clear
         let result = registry.execute("/toolhistory clear", "/tmp", None, None);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn mcp_prompts_command_parses_prompt_arguments() {
+        let registry = build_command_registry();
+        let result = registry.execute(
+            r#"/mcp prompts docs summarize topic="MCP auth flow" format=brief"#,
+            "/tmp",
+            None,
+            None,
+        );
+
+        match result.expect("mcp prompt args should parse") {
+            CommandOutput::Action(CommandAction::Mcp(McpAction::Prompts {
+                server,
+                name,
+                arguments,
+            })) => {
+                assert_eq!(server.as_deref(), Some("docs"));
+                assert_eq!(name.as_deref(), Some("summarize"));
+                assert_eq!(
+                    arguments.get("topic").map(std::string::String::as_str),
+                    Some("MCP auth flow")
+                );
+                assert_eq!(
+                    arguments.get("format").map(std::string::String::as_str),
+                    Some("brief")
+                );
+            }
+            other => panic!("expected MCP prompts action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mcp_prompts_command_rejects_invalid_prompt_arguments() {
+        let registry = build_command_registry();
+        let result = registry.execute(
+            "/mcp prompts docs summarize invalid-arg",
+            "/tmp",
+            None,
+            None,
+        );
+
+        let err = result.expect_err("invalid MCP prompt args should fail");
+        assert_eq!(
+            err.message,
+            "Invalid MCP prompt argument. Use KEY=value after the prompt name."
+        );
     }
 }

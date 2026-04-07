@@ -316,6 +316,33 @@ describe("executeWebSlashCommand", () => {
 		expect(outputs[0]?.output).not.toContain("recap");
 	});
 
+	it("shows MCP prompt listing errors as plain text", async () => {
+		const { context, outputs, apiClient } = createContext();
+		apiClient.getMcpStatus.mockResolvedValue({
+			authPresets: [],
+			servers: [
+				{
+					name: "docs",
+					connected: false,
+					transport: "http",
+					resources: [],
+					prompts: [],
+					promptDetails: [],
+				},
+			],
+		});
+
+		await executeWebSlashCommand("mcp", "prompts docs", context);
+
+		expect(outputs).toEqual([
+			{
+				output: "MCP server 'docs' is not connected.",
+				isError: true,
+			},
+		]);
+		expect(outputs[0]?.output).not.toContain("```");
+	});
+
 	it("gets an MCP prompt from the web slash command", async () => {
 		const { context, outputs, apiClient } = createContext();
 		apiClient.getMcpPrompt.mockResolvedValue({

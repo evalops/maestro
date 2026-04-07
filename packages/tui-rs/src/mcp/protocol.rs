@@ -414,12 +414,25 @@ pub struct ResourcesListResult {
 /// MCP prompt definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct McpPrompt {
+pub struct McpPromptArgument {
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
-    pub arguments: Option<Value>,
+    pub required: bool,
+}
+
+/// MCP prompt definition
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpPrompt {
+    pub name: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub arguments: Option<Vec<McpPromptArgument>>,
 }
 
 /// Prompts list response

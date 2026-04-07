@@ -1346,7 +1346,9 @@ export async function executeWebSlashCommand(
 						const status = await context.apiClient.getMcpStatus();
 						const formatted = formatMcpPromptsBlock(status, server);
 						context.appendCommandOutput(
-							formatCommandCodeBlock(formatted.output),
+							formatted.isError
+								? formatted.output
+								: formatCommandCodeBlock(formatted.output),
 							formatted.isError,
 						);
 						break;

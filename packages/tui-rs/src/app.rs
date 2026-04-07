@@ -84,7 +84,7 @@ use crate::components::{
 use crate::config_watcher::{ConfigEvent, ConfigWatcher, ConfigWatcherBuilder};
 use crate::files::get_workspace_files;
 use crate::git;
-use crate::mcp::{McpConfigScope, McpRuntimeEvent, McpTransport};
+use crate::mcp::{McpConfigScope, McpPrompt, McpRuntimeEvent, McpTransport};
 use crate::safety::{
     check_model_allowed, check_path_allowed, check_session_limits, FirewallVerdict,
 };
@@ -418,6 +418,87 @@ fn render_mcp_status_lines(servers: &[crate::tools::McpServerStatus]) -> Vec<Str
 
     lines.push(String::new());
     lines.push("Subcommands: /mcp resources, /mcp prompts".to_string());
+    lines
+}
+
+fn format_mcp_prompt_argument_summary(argument: &crate::mcp::McpPromptArgument) -> String {
+    let mut summary = if argument.required {
+        format!("{} (required)", argument.name)
+    } else {
+        argument.name.clone()
+    };
+
+    if let Some(description) = argument
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        summary.push_str(": ");
+        summary.push_str(description);
+    }
+
+    summary
+}
+
+fn append_mcp_prompt_summary(lines: &mut Vec<String>, prompt: &McpPrompt, indent: &str) {
+    lines.push(format!("{indent}{}", prompt.name));
+
+    if let Some(title) = prompt
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|title| !title.is_empty() && *title != prompt.name)
+    {
+        lines.push(format!("{indent}  title: {title}"));
+    }
+
+    if let Some(description) = prompt
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        lines.push(format!("{indent}  description: {description}"));
+    }
+
+    if let Some(arguments) = prompt
+        .arguments
+        .as_ref()
+        .filter(|entries| !entries.is_empty())
+    {
+        let summary = arguments
+            .iter()
+            .map(format_mcp_prompt_argument_summary)
+            .collect::<Vec<_>>()
+            .join("; ");
+        lines.push(format!("{indent}  args: {summary}"));
+    }
+}
+
+fn render_mcp_prompt_lines(
+    prompt_servers: &[(String, Vec<McpPrompt>)],
+    server_name: Option<&str>,
+) -> Vec<String> {
+    let mut lines = vec!["MCP Prompts".to_string(), String::new()];
+
+    if prompt_servers.is_empty() {
+        lines.push(match server_name {
+            Some(name) => format!("Server '{name}' does not expose prompts."),
+            None => "No prompts available from connected servers.".to_string(),
+        });
+    } else {
+        for (server_name, prompts) in prompt_servers {
+            lines.push(format!("{server_name}:"));
+            for prompt in prompts {
+                append_mcp_prompt_summary(&mut lines, prompt, "  ");
+            }
+            lines.push(String::new());
+        }
+    }
+
+    lines.push(String::new());
+    lines.push("Usage: /mcp prompts <server> <name> [KEY=value ...]".to_string());
     lines
 }
 
@@ -3181,7 +3262,11 @@ Add the required fields and retry.",
                 lines.push("Usage: /mcp resources <server> <uri>".to_string());
                 self.state.add_system_message(lines.join("\n"));
             }
-            McpAction::Prompts { server, name } => {
+            McpAction::Prompts {
+                server,
+                name,
+                arguments,
+            } => {
                 let servers = match self.tool_executor.mcp_status().await {
                     Ok(servers) => servers,
                     Err(err) => {
@@ -3192,25 +3277,54 @@ Add the required fields and retry.",
                 };
                 self.update_mcp_badge_counts(&servers);
 
-                if let (Some(server), Some(name)) = (server, name) {
-                    let status = servers.iter().find(|s| s.name == server);
-                    if let Some(status) = status {
-                        if !status.connected {
-                            self.state
-                                .add_system_message(format!("Server '{server}' not connected"));
-                            return;
-                        }
-                        if !status.prompts.contains(&name) {
-                            self.state.add_system_message(format!(
-                                "Prompt '{name}' not found on server '{server}'"
-                            ));
-                            return;
-                        }
+                let server_filter = server.clone();
+                if let Some(server_name) = server_filter.as_deref() {
+                    let Some(status) = servers.iter().find(|entry| entry.name == server_name)
+                    else {
+                        self.state
+                            .add_system_message(format!("Server '{server_name}' not found"));
+                        return;
+                    };
+                    if !status.connected {
+                        self.state
+                            .add_system_message(format!("Server '{server_name}' not connected"));
+                        return;
                     }
+                }
+
+                let prompt_servers = match self
+                    .tool_executor
+                    .mcp_prompt_details(server_filter.as_deref())
+                    .await
+                {
+                    Ok(entries) => entries,
+                    Err(err) => {
+                        self.state
+                            .add_system_message(format!("Failed to load MCP prompts: {err}"));
+                        return;
+                    }
+                };
+
+                if let (Some(server), Some(name), arguments) = (server, name, arguments) {
+                    let prompt_exists = prompt_servers.iter().any(|(server_name, prompts)| {
+                        server_name == &server && prompts.iter().any(|prompt| prompt.name == name)
+                    });
+                    if !prompt_exists {
+                        self.state.add_system_message(format!(
+                            "Prompt '{name}' not found on server '{server}'"
+                        ));
+                        return;
+                    }
+
+                    let prompt_arguments = if arguments.is_empty() {
+                        None
+                    } else {
+                        Some(arguments)
+                    };
 
                     match self
                         .tool_executor
-                        .mcp_get_prompt(&server, &name, None)
+                        .mcp_get_prompt(&server, &name, prompt_arguments)
                         .await
                     {
                         Ok(result) => {
@@ -3237,25 +3351,9 @@ Add the required fields and retry.",
                     return;
                 }
 
-                let mut lines = vec!["MCP Prompts".to_string(), String::new()];
-                let mut has_prompts = false;
-                for server in servers {
-                    if !server.connected || server.prompts.is_empty() {
-                        continue;
-                    }
-                    has_prompts = true;
-                    lines.push(format!("{}:", server.name));
-                    for prompt in server.prompts {
-                        lines.push(format!("  {prompt}"));
-                    }
-                    lines.push(String::new());
-                }
-                if !has_prompts {
-                    lines.push("No prompts available from connected servers.".to_string());
-                }
-                lines.push(String::new());
-                lines.push("Usage: /mcp prompts <server> <name>".to_string());
-                self.state.add_system_message(lines.join("\n"));
+                self.state.add_system_message(
+                    render_mcp_prompt_lines(&prompt_servers, server_filter.as_deref()).join("\n"),
+                );
             }
         }
     }
@@ -5853,6 +5951,41 @@ mod tests {
 
         let rendered = lines.join("\n");
         assert!(rendered.contains("Error: Connection failed."));
+    }
+
+    #[test]
+    fn test_render_mcp_prompt_lines_include_metadata_and_argument_summaries() {
+        let lines = render_mcp_prompt_lines(
+            &[(
+                "docs".to_string(),
+                vec![McpPrompt {
+                    name: "summarize".to_string(),
+                    title: Some("Summarize Docs".to_string()),
+                    description: Some("Summarize the selected documentation.".to_string()),
+                    arguments: Some(vec![crate::mcp::McpPromptArgument {
+                        name: "topic".to_string(),
+                        description: Some("Topic to summarize".to_string()),
+                        required: true,
+                    }]),
+                }],
+            )],
+            None,
+        );
+
+        let rendered = lines.join("\n");
+        assert!(rendered.contains("docs:"));
+        assert!(rendered.contains("  summarize"));
+        assert!(rendered.contains("    title: Summarize Docs"));
+        assert!(rendered.contains("    description: Summarize the selected documentation."));
+        assert!(rendered.contains("    args: topic (required): Topic to summarize"));
+        assert!(rendered.contains("Usage: /mcp prompts <server> <name> [KEY=value ...]"));
+    }
+
+    #[test]
+    fn test_render_mcp_prompt_lines_show_server_specific_empty_state() {
+        let lines = render_mcp_prompt_lines(&[], Some("docs"));
+        let rendered = lines.join("\n");
+        assert!(rendered.contains("Server 'docs' does not expose prompts."));
     }
 
     #[test]

@@ -346,6 +346,7 @@ pub enum McpAction {
     Prompts {
         server: Option<String>,
         name: Option<String>,
+        arguments: HashMap<String, String>,
     },
 }
 

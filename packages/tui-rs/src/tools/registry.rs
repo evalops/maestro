@@ -120,7 +120,10 @@ use super::web_fetch::{WebFetchArgs, WebFetchTool};
 use crate::agent::{FromAgent, ToolDefinition, ToolResult};
 use crate::ai::Tool;
 use crate::lsp;
-use crate::mcp::{load_mcp_config, McpClient, McpConfigScope, McpContent, McpTransport};
+use crate::mcp::{
+    load_mcp_config, McpClient, McpConfigScope, McpContent, McpPrompt, McpPromptArgument,
+    McpTransport,
+};
 use crate::safety::{
     expand_tilde, is_tilde_path, require_plan, run_validators_with_diagnostics, ActionFirewall,
     FirewallVerdict,
@@ -355,6 +358,66 @@ pub struct McpServerStatus {
     pub tools: Vec<String>,
     pub resources: Vec<String>,
     pub prompts: Vec<String>,
+}
+
+fn format_mcp_prompt_argument_summary(argument: &McpPromptArgument) -> String {
+    let mut summary = if argument.required {
+        format!("{} (required)", argument.name)
+    } else {
+        argument.name.clone()
+    };
+
+    if let Some(description) = argument
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        summary.push_str(": ");
+        summary.push_str(description);
+    }
+
+    summary
+}
+
+fn append_mcp_prompt_summary(
+    lines: &mut Vec<String>,
+    prompt: &McpPrompt,
+    name_prefix: &str,
+    detail_prefix: &str,
+) {
+    lines.push(format!("{name_prefix}{}", prompt.name));
+
+    if let Some(title) = prompt
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|title| !title.is_empty() && *title != prompt.name)
+    {
+        lines.push(format!("{detail_prefix}title: {title}"));
+    }
+
+    if let Some(description) = prompt
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        lines.push(format!("{detail_prefix}description: {description}"));
+    }
+
+    if let Some(arguments) = prompt
+        .arguments
+        .as_ref()
+        .filter(|entries| !entries.is_empty())
+    {
+        let summary = arguments
+            .iter()
+            .map(format_mcp_prompt_argument_summary)
+            .collect::<Vec<_>>()
+            .join("; ");
+        lines.push(format!("{detail_prefix}args: {summary}"));
+    }
 }
 
 /// Tool executor that dispatches and runs agent tools
@@ -712,6 +775,23 @@ impl ToolExecutor {
         }
 
         Ok(statuses)
+    }
+
+    /// Get detailed MCP prompt metadata for connected servers
+    pub async fn mcp_prompt_details(
+        &self,
+        server_filter: Option<&str>,
+    ) -> Result<Vec<(String, Vec<McpPrompt>)>, String> {
+        let client = self.ensure_mcp_client().await?;
+        let mut prompts = client.list_all_prompt_details().await;
+        if let Some(filter) = server_filter {
+            prompts.retain(|(name, _)| name == filter);
+        }
+
+        Ok(prompts
+            .into_iter()
+            .filter(|(_, prompt_entries)| !prompt_entries.is_empty())
+            .collect())
     }
 
     /// Read an MCP resource via the configured client
@@ -2577,24 +2657,19 @@ impl ToolExecutor {
             }
             "mcp_list_prompts" => {
                 let server_filter = args.get("server").and_then(|v| v.as_str());
-                let client = match self.ensure_mcp_client().await {
-                    Ok(client) => client,
+                let prompt_servers = match self.mcp_prompt_details(server_filter).await {
+                    Ok(entries) => entries,
                     Err(err) => return ToolResult::failure(err),
                 };
 
-                let mut prompts = client.list_all_prompts().await;
-                if let Some(filter) = server_filter {
-                    prompts.retain(|(name, _)| name == filter);
-                }
-
                 let mut servers = Vec::new();
-                for (name, names) in prompts {
-                    if names.is_empty() {
+                for (name, prompts) in prompt_servers {
+                    if prompts.is_empty() {
                         continue;
                     }
                     servers.push(serde_json::json!({
                         "name": name,
-                        "prompts": names
+                        "prompts": prompts
                     }));
                 }
 
@@ -2616,8 +2691,10 @@ impl ToolExecutor {
                     lines.push(format!("## {name}"));
                     if let Some(prompts) = server.get("prompts").and_then(|v| v.as_array()) {
                         for prompt in prompts {
-                            if let Some(prompt_str) = prompt.as_str() {
-                                lines.push(format!("- {prompt_str}"));
+                            if let Ok(prompt_entry) =
+                                serde_json::from_value::<McpPrompt>(prompt.clone())
+                            {
+                                append_mcp_prompt_summary(&mut lines, &prompt_entry, "- ", "  ");
                             }
                         }
                     }
@@ -4318,6 +4395,36 @@ mod tests {
         assert!(registry.get("glob").is_some());
         assert!(registry.get("grep").is_some());
         assert!(registry.get("edit").is_some());
+    }
+
+    #[test]
+    fn test_append_mcp_prompt_summary_includes_metadata_and_arguments() {
+        let mut lines = Vec::new();
+        append_mcp_prompt_summary(
+            &mut lines,
+            &crate::mcp::McpPrompt {
+                name: "summarize".to_string(),
+                title: Some("Summarize Docs".to_string()),
+                description: Some("Summarize the selected documentation.".to_string()),
+                arguments: Some(vec![crate::mcp::McpPromptArgument {
+                    name: "topic".to_string(),
+                    description: Some("Topic to summarize".to_string()),
+                    required: true,
+                }]),
+            },
+            "- ",
+            "  ",
+        );
+
+        assert_eq!(
+            lines,
+            vec![
+                "- summarize".to_string(),
+                "  title: Summarize Docs".to_string(),
+                "  description: Summarize the selected documentation.".to_string(),
+                "  args: topic (required): Topic to summarize".to_string(),
+            ]
+        );
     }
 
     #[tokio::test]
