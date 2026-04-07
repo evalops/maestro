@@ -375,15 +375,41 @@ function formatMcpPrompts(
 	if (connectedWithPrompts.length === 0) {
 		return {
 			isError: false,
-			text: "No MCP prompts available. Either no servers are connected or they don't expose prompts.",
+			text: serverName
+				? `MCP server '${serverName}' does not expose prompts.`
+				: "No MCP prompts available. Either no servers are connected or they don't expose prompts.",
 		};
 	}
 
 	const lines: string[] = ["# Available MCP Prompts", ""];
 	for (const server of connectedWithPrompts) {
 		lines.push(`## ${server.name}`);
-		for (const prompt of server.prompts ?? []) {
-			lines.push(`- ${prompt}`);
+		for (const promptName of server.prompts ?? []) {
+			lines.push(`- ${promptName}`);
+			const prompt = server.promptDetails?.find(
+				(entry) => entry.name === promptName,
+			);
+			const promptArguments = prompt?.arguments ?? [];
+			if (prompt?.title && prompt.title !== promptName) {
+				lines.push(`  Title: ${prompt.title}`);
+			}
+			if (prompt?.description) {
+				lines.push(`  Description: ${prompt.description}`);
+			}
+			if (promptArguments.length > 0) {
+				lines.push(
+					`  Args: ${promptArguments
+						.map((argument) => {
+							const summary = argument.required
+								? `${argument.name} (required)`
+								: argument.name;
+							return argument.description
+								? `${summary}: ${argument.description}`
+								: summary;
+						})
+						.join("; ")}`,
+				);
+			}
 		}
 		lines.push("");
 	}

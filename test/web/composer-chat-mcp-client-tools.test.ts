@@ -91,6 +91,20 @@ describe("composer-chat MCP client tools", () => {
 						tools: [{ name: "search_docs", description: "Search docs" }],
 						resources: ["memo://guide"],
 						prompts: ["summarize"],
+						promptDetails: [
+							{
+								name: "summarize",
+								title: "Summarize docs",
+								description: "Summarize the selected documentation",
+								arguments: [
+									{
+										name: "topic",
+										description: "Topic to summarize",
+										required: true,
+									},
+								],
+							},
+						],
 					},
 					{
 						name: "notes",
@@ -184,6 +198,10 @@ describe("composer-chat MCP client tools", () => {
 		});
 		expect(results[4]?.content?.[0]?.text).toContain("# Available MCP Prompts");
 		expect(results[4]?.content?.[0]?.text).toContain("summarize");
+		expect(results[4]?.content?.[0]?.text).toContain("Title: Summarize docs");
+		expect(results[4]?.content?.[0]?.text).toContain(
+			"Args: topic (required): Topic to summarize",
+		);
 
 		expect(results[5]).toMatchObject({
 			toolCallId: "call_prompt",

@@ -351,6 +351,64 @@ const mockOfficialRegistryEntry = {
 	oneLiner: "Issue and project management",
 };
 
+function createDefaultMcpStatus() {
+	return {
+		authPresets: [
+			{
+				name: "linear-auth",
+				scope: "local" as const,
+				headerKeys: ["Authorization"],
+				headersHelper: "op run --env-file",
+			},
+		],
+		servers: [
+			{
+				name: "test-server",
+				connected: true,
+				scope: "project" as const,
+				transport: "stdio" as const,
+				tools: [{ name: "test_tool" }],
+				resources: ["resource://test"],
+				prompts: ["my-prompt"],
+				promptDetails: [
+					{
+						name: "my-prompt",
+						title: "Summarize issue",
+						description: "Summarize a tracked issue",
+						arguments: [
+							{
+								name: "ISSUE",
+								description: "Issue identifier",
+								required: true,
+							},
+						],
+					},
+				],
+			},
+			{
+				name: "broken-server",
+				connected: false,
+				scope: "user" as const,
+				transport: "http" as const,
+				tools: [],
+				resources: [],
+				prompts: [],
+				remoteUrl: "https://mcp.linear.app/mcp",
+				remoteTrust: "official" as const,
+				officialRegistry: {
+					displayName: "Linear",
+					documentationUrl: "https://linear.app/docs/mcp",
+					permissions: "Read and write",
+				},
+				error: "Connection refused",
+				authPreset: "linear-auth",
+				headerKeys: ["Authorization"],
+				headersHelper: "op run --env-file",
+			},
+		],
+	};
+}
+
 vi.mock("../../../src/mcp/index.js", () => ({
 	addMcpAuthPresetToConfig: vi.fn(() => ({
 		path: "/tmp/project/.maestro/mcp.local.json",
@@ -383,47 +441,7 @@ vi.mock("../../../src/mcp/index.js", () => ({
 		],
 	})),
 	mcpManager: {
-		getStatus: vi.fn(() => ({
-			authPresets: [
-				{
-					name: "linear-auth",
-					scope: "local",
-					headerKeys: ["Authorization"],
-					headersHelper: "op run --env-file",
-				},
-			],
-			servers: [
-				{
-					name: "test-server",
-					connected: true,
-					scope: "project",
-					transport: "stdio",
-					tools: [{ name: "test_tool" }],
-					resources: ["resource://test"],
-					prompts: ["my-prompt"],
-				},
-				{
-					name: "broken-server",
-					connected: false,
-					scope: "user",
-					transport: "http",
-					tools: [],
-					resources: [],
-					prompts: [],
-					remoteUrl: "https://mcp.linear.app/mcp",
-					remoteTrust: "official",
-					officialRegistry: {
-						displayName: "Linear",
-						documentationUrl: "https://linear.app/docs/mcp",
-						permissions: "Read and write",
-					},
-					error: "Connection refused",
-					authPreset: "linear-auth",
-					headerKeys: ["Authorization"],
-					headersHelper: "op run --env-file",
-				},
-			],
-		})),
+		getStatus: vi.fn(() => createDefaultMcpStatus()),
 		configure: vi.fn().mockResolvedValue(undefined),
 		readResource: vi.fn(),
 		getPrompt: vi.fn(),
@@ -462,6 +480,7 @@ vi.mock("../../../src/mcp/index.js", () => ({
 
 import {
 	type McpRenderContext,
+	formatMcpPromptList,
 	handleMcpCommand,
 	handleMcpPromptsCommand,
 	handleMcpResourcesCommand,
@@ -494,6 +513,9 @@ function createMcpCtx(rawInput: string): McpRenderContext {
 describe("mcp-handlers", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		vi.mocked(mcpManager.getStatus).mockImplementation(() =>
+			createDefaultMcpStatus(),
+		);
 	});
 
 	describe("handleMcpCommand", () => {
@@ -586,6 +608,20 @@ describe("mcp-handlers", () => {
 			expect(ctx.addContent).toHaveBeenCalledWith(
 				expect.stringContaining("MCP Prompts"),
 			);
+		});
+
+		it("filters MCP prompts to a specific server and shows metadata", () => {
+			const output = formatMcpPromptList(
+				createDefaultMcpStatus().servers,
+				"test-server",
+			);
+
+			expect(output).toContain("test-server");
+			expect(output).toContain("my-prompt");
+			expect(output).toContain("Title: Summarize issue");
+			expect(output).toContain("Description: Summarize a tracked issue");
+			expect(output).toContain("Args: ISSUE (required): Issue identifier");
+			expect(output).not.toContain("broken-server");
 		});
 
 		it("adds a remote MCP server and reloads the manager", async () => {

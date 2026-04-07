@@ -448,26 +448,77 @@ function formatMcpResourceReadBlock(
 	return lines.join("\n").trimEnd();
 }
 
-function formatMcpPromptsBlock(status: McpStatus): string {
-	const lines: string[] = ["MCP Prompts", ""];
-	let hasPrompts = false;
-	for (const server of status.servers) {
-		const prompts = server.prompts ?? [];
-		if (!server.connected || prompts.length === 0) continue;
-		hasPrompts = true;
-		lines.push(`${server.name}:`);
-		for (const prompt of prompts) {
-			lines.push(`  ${prompt}`);
-		}
-		lines.push("");
+function formatMcpPromptsBlock(
+	status: McpStatus,
+	serverName?: string,
+): { isError: boolean; output: string } {
+	const servers = serverName
+		? status.servers.filter((server) => server.name === serverName)
+		: status.servers;
+
+	if (serverName && servers.length === 0) {
+		return {
+			isError: true,
+			output: `MCP server '${serverName}' not found.`,
+		};
 	}
-	if (!hasPrompts) {
+
+	const disconnected = serverName
+		? servers.find((server) => !server.connected)
+		: null;
+	if (disconnected) {
+		return {
+			isError: true,
+			output: `MCP server '${disconnected.name}' is not connected.`,
+		};
+	}
+
+	const connectedWithPrompts = servers
+		.filter((server) => server.connected)
+		.filter((server) => (server.prompts?.length ?? 0) > 0);
+
+	const lines: string[] = ["MCP Prompts", ""];
+	if (connectedWithPrompts.length === 0) {
 		lines.push(
-			"No prompts available. Either no servers are connected or they do not expose prompts.",
+			serverName
+				? `MCP server '${serverName}' does not expose prompts.`
+				: "No prompts available. Either no servers are connected or they do not expose prompts.",
 		);
+	} else {
+		for (const server of connectedWithPrompts) {
+			lines.push(`${server.name}:`);
+			for (const promptName of server.prompts ?? []) {
+				lines.push(`  ${promptName}`);
+				const prompt = server.promptDetails?.find(
+					(entry) => entry.name === promptName,
+				);
+				const promptArguments = prompt?.arguments ?? [];
+				if (prompt?.title && prompt.title !== promptName) {
+					lines.push(`    title: ${prompt.title}`);
+				}
+				if (prompt?.description) {
+					lines.push(`    description: ${prompt.description}`);
+				}
+				if (promptArguments.length > 0) {
+					lines.push(
+						`    args: ${promptArguments
+							.map((argument) => {
+								const summary = argument.required
+									? `${argument.name} (required)`
+									: argument.name;
+								return argument.description
+									? `${summary}: ${argument.description}`
+									: summary;
+							})
+							.join("; ")}`,
+					);
+				}
+			}
+			lines.push("");
+		}
 	}
 	lines.push("", "Usage: /mcp prompts <server> <name>");
-	return lines.join("\n");
+	return { isError: false, output: lines.join("\n") };
 }
 
 function formatMcpPromptBlock(
@@ -1208,10 +1259,12 @@ export async function executeWebSlashCommand(
 				if (sub === "prompts") {
 					const server = tokens[1];
 					const promptName = tokens[2];
-					if (!server || !promptName) {
+					if (!promptName) {
 						const status = await context.apiClient.getMcpStatus();
+						const formatted = formatMcpPromptsBlock(status, server);
 						context.appendCommandOutput(
-							formatCommandCodeBlock(formatMcpPromptsBlock(status)),
+							formatCommandCodeBlock(formatted.output),
+							formatted.isError,
 						);
 						break;
 					}

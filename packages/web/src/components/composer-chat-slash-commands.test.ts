@@ -230,6 +230,20 @@ describe("executeWebSlashCommand", () => {
 					transport: "http",
 					resources: [],
 					prompts: ["summarize"],
+					promptDetails: [
+						{
+							name: "summarize",
+							title: "Summarize docs",
+							description: "Summarize the selected documentation",
+							arguments: [
+								{
+									name: "topic",
+									description: "Topic to summarize",
+									required: true,
+								},
+							],
+						},
+					],
 				},
 			],
 		});
@@ -244,6 +258,62 @@ describe("executeWebSlashCommand", () => {
 			}),
 		]);
 		expect(outputs[0]?.output).toContain("summarize");
+		expect(outputs[0]?.output).toContain("title: Summarize docs");
+		expect(outputs[0]?.output).toContain(
+			"args: topic (required): Topic to summarize",
+		);
+	});
+
+	it("filters MCP prompts to a single server in the web slash command", async () => {
+		const { context, outputs, apiClient } = createContext();
+		apiClient.getMcpStatus.mockResolvedValue({
+			authPresets: [],
+			servers: [
+				{
+					name: "docs",
+					connected: true,
+					transport: "http",
+					resources: [],
+					prompts: ["summarize"],
+					promptDetails: [
+						{
+							name: "summarize",
+							title: "Summarize docs",
+							description: "Summarize the selected documentation",
+							arguments: [],
+						},
+					],
+				},
+				{
+					name: "notes",
+					connected: true,
+					transport: "http",
+					resources: [],
+					prompts: ["recap"],
+					promptDetails: [
+						{
+							name: "recap",
+							title: "Recap notes",
+							description: "Recap the latest notes",
+							arguments: [],
+						},
+					],
+				},
+			],
+		});
+
+		await executeWebSlashCommand("mcp", "prompts docs", context);
+
+		expect(apiClient.getMcpStatus).toHaveBeenCalledOnce();
+		expect(outputs).toEqual([
+			expect.objectContaining({
+				isError: false,
+				output: expect.stringContaining("docs:"),
+			}),
+		]);
+		expect(outputs[0]?.output).toContain("summarize");
+		expect(outputs[0]?.output).not.toContain("notes:");
+		expect(outputs[0]?.output).not.toContain("recap");
 	});
 
 	it("gets an MCP prompt from the web slash command", async () => {

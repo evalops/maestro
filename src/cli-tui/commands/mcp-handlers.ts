@@ -805,6 +805,97 @@ function appendConfiguredAuthPresetDetails(
 	}
 }
 
+function formatMcpPromptArgumentSummary(
+	server: McpServerStatus,
+	promptName: string,
+): string | null {
+	const prompt = server.promptDetails?.find(
+		(entry) => entry.name === promptName,
+	);
+	const promptArguments = prompt?.arguments ?? [];
+	if (!prompt || promptArguments.length === 0) {
+		return null;
+	}
+
+	return promptArguments
+		.map((argument) => {
+			const summary = argument.required
+				? `${argument.name} (required)`
+				: argument.name;
+			return argument.description
+				? `${summary}: ${argument.description}`
+				: summary;
+		})
+		.join("; ");
+}
+
+function appendMcpPromptSummary(
+	lines: string[],
+	server: McpServerStatus,
+	promptName: string,
+	indent = "  ",
+): void {
+	lines.push(`${indent}${promptName}`);
+	const prompt = server.promptDetails?.find(
+		(entry) => entry.name === promptName,
+	);
+	if (!prompt) {
+		return;
+	}
+
+	const detailIndent = `${indent}  `;
+	if (prompt.title && prompt.title !== promptName) {
+		lines.push(`${detailIndent}Title: ${prompt.title}`);
+	}
+	if (prompt.description) {
+		lines.push(`${detailIndent}Description: ${prompt.description}`);
+	}
+	const argumentSummary = formatMcpPromptArgumentSummary(server, promptName);
+	if (argumentSummary) {
+		lines.push(`${detailIndent}Args: ${argumentSummary}`);
+	}
+}
+
+export function formatMcpPromptList(
+	servers: McpServerStatus[],
+	serverName?: string,
+): string {
+	const lines: string[] = ["MCP Prompts", ""];
+	const visibleServers = serverName
+		? servers.filter((entry) => entry.name === serverName)
+		: servers;
+
+	if (serverName && visibleServers.length === 0) {
+		lines.push(`Server '${serverName}' not found`);
+	} else if (serverName && !visibleServers[0]?.connected) {
+		lines.push(`Server '${serverName}' not connected`);
+	} else {
+		const connectedWithPrompts = visibleServers
+			.filter((server) => server.connected)
+			.filter((server) => server.prompts.length > 0);
+
+		if (connectedWithPrompts.length === 0) {
+			lines.push(
+				serverName
+					? `Server '${serverName}' does not expose prompts.`
+					: "No prompts available from connected servers.",
+			);
+		} else {
+			for (const server of connectedWithPrompts) {
+				lines.push(`${chalk.bold(server.name)}:`);
+				for (const prompt of server.prompts) {
+					appendMcpPromptSummary(lines, server, prompt);
+				}
+				lines.push("");
+			}
+		}
+	}
+
+	lines.push("");
+	lines.push(chalk.dim("Usage: /mcp prompts <server> <name>"));
+	return lines.join("\n");
+}
+
 function renderMcpStatus(renderCtx: McpRenderContext): void {
 	const status = mcpManager.getStatus();
 	const lines: string[] = ["Model Context Protocol", ""];
@@ -1444,7 +1535,9 @@ export function handleMcpPromptsCommand(
 		const serverName = args[0]!;
 		const promptName = args[1]!;
 		const server = status.servers.find((entry) => entry.name === serverName);
-		if (!server?.connected) {
+		if (!server) {
+			lines.push(`Server '${serverName}' not found`);
+		} else if (!server.connected) {
 			lines.push(`Server '${serverName}' not connected`);
 		} else if (!server.prompts.includes(promptName)) {
 			lines.push(`Prompt '${promptName}' not found on server '${serverName}'`);
@@ -1472,21 +1565,9 @@ export function handleMcpPromptsCommand(
 			return;
 		}
 	} else {
-		let hasPrompts = false;
-		for (const server of status.servers) {
-			if (!server.connected || server.prompts.length === 0) continue;
-			hasPrompts = true;
-			lines.push(`${chalk.bold(server.name)}:`);
-			for (const prompt of server.prompts) {
-				lines.push(`  ${prompt}`);
-			}
-			lines.push("");
-		}
-		if (!hasPrompts) {
-			lines.push("No prompts available from connected servers.");
-		}
-		lines.push("");
-		lines.push(chalk.dim("Usage: /mcp prompts <server> <name>"));
+		renderCtx.addContent(formatMcpPromptList(status.servers, args[0]));
+		renderCtx.requestRender();
+		return;
 	}
 
 	renderCtx.addContent(lines.join("\n"));
