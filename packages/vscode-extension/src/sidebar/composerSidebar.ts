@@ -16,7 +16,7 @@ import {
 import { formatVscodeRuntimeStatus } from "../lib/runtime-status.js";
 import {
 	type SummaryMessage,
-	summarizeVscodeToolCall,
+	buildLiveToolStartPayload,
 	withToolSummaryLabels,
 } from "../lib/tool-summary.js";
 import { getWebviewHtml } from "./webview-template.js";
@@ -860,16 +860,16 @@ export class ComposerSidebarProvider
 					const displayName = getEventProp<string>("displayName");
 					const summaryLabel = getEventProp<string>("summaryLabel");
 					const args = getEventProp<Record<string, unknown>>("args") ?? {};
+					if (!toolName) {
+						continue;
+					}
 					this._view?.webview.postMessage({
 						type: "tool_start",
 						id: getEventProp<string>("toolCallId"),
-						name: displayName || toolName,
-						summaryLabel: summaryLabel
-							? summaryLabel
-							: toolName
-								? summarizeVscodeToolCall(toolName, args)
-								: undefined,
-						args,
+						...buildLiveToolStartPayload(toolName, args, {
+							displayName,
+							summaryLabel,
+						}),
 					});
 				} else if (event.type === "tool_execution_end") {
 					this._view?.webview.postMessage({
