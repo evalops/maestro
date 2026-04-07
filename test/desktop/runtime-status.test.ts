@@ -22,6 +22,15 @@ describe("desktop runtime status", () => {
 		).toBe("Status: planning");
 	});
 
+	it("does not crash when status details are omitted", () => {
+		expect(
+			formatDesktopRuntimeStatus({
+				type: "status",
+				status: "planning",
+			}),
+		).toBe("Status: planning");
+	});
+
 	it("formats live tool summaries without the generic prefix", () => {
 		expect(
 			formatDesktopRuntimeStatus({

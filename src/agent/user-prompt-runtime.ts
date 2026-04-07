@@ -590,6 +590,7 @@ async function applyTokenBudgetContinuations(params: {
 			hookContext: buildCompactionHookContext(
 				params.sessionManager,
 				params.cwd,
+				params.signal,
 			),
 			getPostKeepMessages: (preservedMessages) =>
 				Promise.all([
@@ -709,6 +710,7 @@ export async function runUserPromptWithRecovery(params: {
 				hookContext: buildCompactionHookContext(
 					params.sessionManager,
 					params.cwd,
+					params.signal,
 				),
 				execute: params.execute,
 				callbacks: params.callbacks,
