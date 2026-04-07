@@ -1,3 +1,4 @@
+import { parseKeyValueTokens } from "@evalops/contracts";
 import type {
 	ApiClient,
 	McpAuthPresetAddRequest,
@@ -233,34 +234,22 @@ function parseMcpPromptSlashArgs(tokens: string[]): {
 		return { server, promptName };
 	}
 
-	const promptArgs: Record<string, string> = {};
-	for (const token of tokens.slice(3)) {
-		const separatorIndex = token.indexOf("=");
-		if (separatorIndex <= 0) {
-			return {
-				server,
-				promptName,
-				error:
-					"Invalid MCP prompt argument. Use KEY=value after the prompt name.",
-			};
-		}
-		const key = token.slice(0, separatorIndex).trim();
-		const value = token.slice(separatorIndex + 1);
-		if (!key) {
-			return {
-				server,
-				promptName,
-				error:
-					"Invalid MCP prompt argument. Use KEY=value after the prompt name.",
-			};
-		}
-		promptArgs[key] = value;
+	const parsedArgs = parseKeyValueTokens(
+		tokens.slice(3),
+		"Invalid MCP prompt argument. Use KEY=value after the prompt name.",
+	);
+	if (parsedArgs.error) {
+		return {
+			server,
+			promptName,
+			error: parsedArgs.error,
+		};
 	}
 
 	return {
 		server,
 		promptName,
-		args: Object.keys(promptArgs).length > 0 ? promptArgs : undefined,
+		args: parsedArgs.values,
 	};
 }
 

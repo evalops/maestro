@@ -1,3 +1,4 @@
+import { parseKeyValueTokens } from "@evalops/contracts";
 import chalk from "chalk";
 import {
 	type McpAuthPresetStatus,
@@ -212,28 +213,18 @@ function parseMcpPromptInvocationTokens(rawInput: string): {
 		return { serverName, promptName };
 	}
 
-	const promptArgs: Record<string, string> = {};
-	for (const token of tokens.slice(4)) {
-		const separatorIndex = token.indexOf("=");
-		if (separatorIndex <= 0) {
-			throw new Error(
-				"Invalid MCP prompt argument. Use KEY=value after the prompt name.",
-			);
-		}
-		const key = token.slice(0, separatorIndex).trim();
-		const value = token.slice(separatorIndex + 1);
-		if (!key) {
-			throw new Error(
-				"Invalid MCP prompt argument. Use KEY=value after the prompt name.",
-			);
-		}
-		promptArgs[key] = value;
+	const parsedArgs = parseKeyValueTokens(
+		tokens.slice(4),
+		"Invalid MCP prompt argument. Use KEY=value after the prompt name.",
+	);
+	if (parsedArgs.error) {
+		throw new Error(parsedArgs.error);
 	}
 
 	return {
 		serverName,
 		promptName,
-		args: Object.keys(promptArgs).length > 0 ? promptArgs : undefined,
+		args: parsedArgs.values,
 	};
 }
 
