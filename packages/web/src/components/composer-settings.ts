@@ -20,6 +20,11 @@ import {
 	parseMcpKeyValueText,
 	parseMcpTimeoutText,
 } from "@evalops/contracts";
+import type {
+	MemoryEntry,
+	MemoryStats,
+	MemoryTopicSummary,
+} from "@evalops/contracts";
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import type {
@@ -40,6 +45,18 @@ import type {
 	UsageSummary,
 	WorkspaceStatus,
 } from "../services/api-client.js";
+
+type MemoryView =
+	| { kind: "recent" }
+	| { kind: "topic"; topic: string }
+	| { kind: "search"; query: string };
+
+const EMPTY_MEMORY_STATS: MemoryStats = {
+	totalEntries: 0,
+	topics: 0,
+	oldestEntry: null,
+	newestEntry: null,
+};
 
 @customElement("composer-settings")
 export class ComposerSettings extends LitElement {
@@ -547,6 +564,17 @@ export class ComposerSettings extends LitElement {
 	@state() private mcpPromptErrors: Record<string, string> = {};
 	@state() private mcpReadingResourceName: string | null = null;
 	@state() private mcpGettingPromptName: string | null = null;
+	@state() private memoryStats: MemoryStats = EMPTY_MEMORY_STATS;
+	@state() private memoryTopics: MemoryTopicSummary[] = [];
+	@state() private memoryEntries: MemoryEntry[] = [];
+	@state() private memoryActiveView: MemoryView = { kind: "recent" };
+	@state() private memorySearchQuery = "";
+	@state() private memorySaveTopic = "";
+	@state() private memorySaveContent = "";
+	@state() private memoryClearConfirmed = false;
+	@state() private memoryLoading = false;
+	@state() private memoryError: string | null = null;
+	@state() private memoryNotice: string | null = null;
 	@state() private selectedTab: "workspace" | "models" | "usage" = "workspace";
 
 	override async connectedCallback() {
@@ -577,9 +605,18 @@ export class ComposerSettings extends LitElement {
 				throw new Error("Failed to load settings data");
 			}
 
-			const [mcpStatusResult, registryResult] = await Promise.allSettled([
+			const [
+				mcpStatusResult,
+				registryResult,
+				memoryTopicsResult,
+				memoryStatsResult,
+				memoryRecentResult,
+			] = await Promise.allSettled([
 				this.apiClient.getMcpStatus(),
 				this.apiClient.searchMcpRegistry(""),
+				this.apiClient.listMemoryTopics(),
+				this.apiClient.getMemoryStats(),
+				this.apiClient.getRecentMemories(12),
 			]);
 
 			if (mcpStatusResult.status === "fulfilled") {
@@ -597,6 +634,31 @@ export class ComposerSettings extends LitElement {
 					registryResult.reason instanceof Error
 						? registryResult.reason.message
 						: "Failed to load official MCP registry";
+			}
+
+			if (
+				memoryTopicsResult.status === "fulfilled" &&
+				memoryStatsResult.status === "fulfilled" &&
+				memoryRecentResult.status === "fulfilled"
+			) {
+				this.memoryTopics = memoryTopicsResult.value.topics ?? [];
+				this.memoryStats = memoryStatsResult.value.stats ?? EMPTY_MEMORY_STATS;
+				this.memoryEntries = memoryRecentResult.value.memories ?? [];
+				this.memoryError = null;
+			} else {
+				this.memoryTopics = [];
+				this.memoryStats = EMPTY_MEMORY_STATS;
+				this.memoryEntries = [];
+				const firstError = [
+					memoryTopicsResult,
+					memoryStatsResult,
+					memoryRecentResult,
+				].find((result) => result.status === "rejected");
+				this.memoryError =
+					firstError?.status === "rejected" &&
+					firstError.reason instanceof Error
+						? firstError.reason.message
+						: "Failed to load memory";
 			}
 		} catch (e) {
 			this.error = e instanceof Error ? e.message : "Failed to load settings";
@@ -1262,6 +1324,161 @@ export class ComposerSettings extends LitElement {
 		}
 	}
 
+	private formatMemoryRelativeTime(
+		timestamp: number | null | undefined,
+	): string {
+		if (!timestamp) return "Never";
+		const diff = Date.now() - timestamp;
+		if (diff < 60_000) return "just now";
+		if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+		if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+		return `${Math.floor(diff / 86_400_000)}d ago`;
+	}
+
+	private truncateMemoryText(text: string, maxLength: number): string {
+		if (text.length <= maxLength) return text;
+		return `${text.slice(0, maxLength - 3)}...`;
+	}
+
+	private extractMemoryTags(content: string): string[] {
+		return Array.from(
+			new Set((content.match(/#(\w+)/g) ?? []).map((tag) => tag.slice(1))),
+		);
+	}
+
+	private getMemoryViewLabel(view: MemoryView): string {
+		switch (view.kind) {
+			case "topic":
+				return `Topic: ${view.topic}`;
+			case "search":
+				return `Search results for "${view.query}"`;
+			default:
+				return "Recent memories";
+		}
+	}
+
+	private async refreshMemorySummary() {
+		const [topicsResponse, statsResponse] = await Promise.all([
+			this.apiClient.listMemoryTopics(),
+			this.apiClient.getMemoryStats(),
+		]);
+		this.memoryTopics = topicsResponse.topics ?? [];
+		this.memoryStats = statsResponse.stats ?? EMPTY_MEMORY_STATS;
+	}
+
+	private async loadMemoryView(view: MemoryView) {
+		if (view.kind === "topic") {
+			const response = await this.apiClient.listMemoryTopic(view.topic);
+			this.memoryEntries = response.memories ?? [];
+			return;
+		}
+		if (view.kind === "search") {
+			const response = await this.apiClient.searchMemory(view.query, 12);
+			this.memoryEntries = (response.results ?? []).map(
+				(result) => result.entry,
+			);
+			return;
+		}
+		const response = await this.apiClient.getRecentMemories(12);
+		this.memoryEntries = response.memories ?? [];
+	}
+
+	private async runMemoryAction(action: () => Promise<void>) {
+		this.memoryLoading = true;
+		this.memoryError = null;
+		this.memoryNotice = null;
+		try {
+			await action();
+		} catch (error) {
+			this.memoryError =
+				error instanceof Error ? error.message : "Memory action failed";
+		} finally {
+			this.memoryLoading = false;
+		}
+	}
+
+	private async showRecentMemories() {
+		const nextView: MemoryView = { kind: "recent" };
+		await this.runMemoryAction(async () => {
+			this.memoryActiveView = nextView;
+			await this.loadMemoryView(nextView);
+		});
+	}
+
+	private async selectMemoryTopic(topic: string) {
+		const nextView: MemoryView = { kind: "topic", topic };
+		await this.runMemoryAction(async () => {
+			this.memoryActiveView = nextView;
+			await this.loadMemoryView(nextView);
+		});
+	}
+
+	private async searchMemoryEntries() {
+		const query = this.memorySearchQuery.trim();
+		if (!query) {
+			this.memoryError = "Enter a memory search query.";
+			return;
+		}
+
+		const nextView: MemoryView = { kind: "search", query };
+		await this.runMemoryAction(async () => {
+			this.memoryActiveView = nextView;
+			await this.loadMemoryView(nextView);
+		});
+	}
+
+	private async saveMemoryEntry() {
+		const topic = this.memorySaveTopic.trim();
+		const content = this.memorySaveContent.trim();
+		if (!topic || !content) {
+			this.memoryError = "Topic and content are required.";
+			return;
+		}
+
+		await this.runMemoryAction(async () => {
+			const tags = this.extractMemoryTags(content);
+			const result = await this.apiClient.saveMemory(
+				topic,
+				content,
+				tags.length > 0 ? tags : undefined,
+			);
+			const savedTopic = result.entry?.topic ?? topic.toLowerCase();
+			this.memoryNotice =
+				result.message || `Memory saved to topic "${savedTopic}"`;
+			this.memorySaveTopic = "";
+			this.memorySaveContent = "";
+			await this.refreshMemorySummary();
+			const nextView: MemoryView = { kind: "topic", topic: savedTopic };
+			this.memoryActiveView = nextView;
+			await this.loadMemoryView(nextView);
+		});
+	}
+
+	private async deleteMemoryEntry(entry: MemoryEntry) {
+		await this.runMemoryAction(async () => {
+			const result = await this.apiClient.deleteMemory(entry.id);
+			this.memoryNotice = result.message || `Memory ${entry.id} deleted`;
+			await this.refreshMemorySummary();
+			await this.loadMemoryView(this.memoryActiveView);
+		});
+	}
+
+	private async clearMemoryEntries() {
+		if (!this.memoryClearConfirmed) {
+			this.memoryError = "Enable confirmation before clearing all memories.";
+			return;
+		}
+
+		await this.runMemoryAction(async () => {
+			const result = await this.apiClient.clearMemory(true);
+			this.memoryNotice = result.message || "Cleared all memories";
+			this.memoryClearConfirmed = false;
+			this.memoryActiveView = { kind: "recent" };
+			this.memoryEntries = [];
+			await this.refreshMemorySummary();
+		});
+	}
+
 	private renderWorkspaceTab() {
 		if (!this.status)
 			return html`<div class="loading">Loading workspace status...</div>`;
@@ -1345,7 +1562,223 @@ export class ComposerSettings extends LitElement {
 				</div>
 			</div>
 
-			${this.renderMcpSection()}
+			${this.renderMcpSection()} ${this.renderMemorySection()}
+		`;
+	}
+
+	private renderMemorySection() {
+		const viewLabel = this.getMemoryViewLabel(this.memoryActiveView);
+
+		return html`
+			<div class="section">
+				<div class="section-header">
+					<h3>Memory</h3>
+				</div>
+				<div class="section-content">
+					<div class="control-row">
+						<div>
+							<div class="info-value">Cross-session memory</div>
+							<div class="info-label">
+								Slash command: /memory
+							</div>
+						</div>
+						<div class="panel-card-copy">
+							Entries: ${this.memoryStats.totalEntries}<br />
+							Topics: ${this.memoryStats.topics}<br />
+							Newest: ${this.formatMemoryRelativeTime(
+								this.memoryStats.newestEntry,
+							)}
+						</div>
+					</div>
+					${
+						this.memoryError
+							? html`<div class="panel-feedback error">${this.memoryError}</div>`
+							: ""
+					}
+					${
+						this.memoryNotice && !this.memoryError
+							? html`<div class="panel-feedback success">${this.memoryNotice}</div>`
+							: ""
+					}
+					<div class="panel-grid">
+						<div class="panel-card">
+							<div class="panel-card-title">Save memory</div>
+							<div class="control-row">
+								<input
+									class="field-input"
+									type="text"
+									.placeholder=${"api-design"}
+									.value=${this.memorySaveTopic}
+									aria-label=${"Memory topic"}
+									@input=${(event: Event) => {
+										this.memorySaveTopic = (
+											event.target as HTMLInputElement
+										).value;
+									}}
+								/>
+							</div>
+							<div class="control-row">
+								<textarea
+									class="field-input"
+									style="min-height: 5.5rem;"
+									.placeholder=${"Use REST conventions #rest"}
+									.value=${this.memorySaveContent}
+									aria-label=${"Memory content"}
+									@input=${(event: Event) => {
+										this.memorySaveContent = (
+											event.target as HTMLTextAreaElement
+										).value;
+									}}
+								></textarea>
+							</div>
+							<button
+								class="action-btn memory-save-button"
+								@click=${() => void this.saveMemoryEntry()}
+								?disabled=${this.memoryLoading}
+							>
+								${this.memoryLoading ? "Saving..." : "Save memory"}
+							</button>
+						</div>
+
+						<div class="panel-card">
+							<div class="panel-card-header">
+								<div>
+									<div class="panel-card-title">Topics</div>
+									<div class="panel-card-copy">
+										Select a topic or jump back to recent entries.
+									</div>
+								</div>
+								<button
+									class="action-btn"
+									@click=${() => void this.showRecentMemories()}
+									?disabled=${this.memoryLoading}
+								>
+									Recent
+								</button>
+							</div>
+							${
+								this.memoryTopics.length === 0
+									? html`<div class="panel-card-copy">
+										No topics saved yet.
+									</div>`
+									: html`${this.memoryTopics.map(
+											(topic) => html`
+											<button
+												class="action-btn"
+												aria-label=${`Show memories for topic ${topic.name}`}
+												@click=${() => void this.selectMemoryTopic(topic.name)}
+												?disabled=${this.memoryLoading}
+											>
+												${topic.name}
+											</button>
+											<div class="panel-card-copy">
+												${topic.entryCount} ${
+													topic.entryCount === 1 ? "entry" : "entries"
+												}
+												· ${this.formatMemoryRelativeTime(topic.lastUpdated)}
+											</div>
+										`,
+										)}`
+							}
+						</div>
+
+						<div class="panel-card">
+							<div class="panel-card-title">Search</div>
+							<div class="control-row">
+								<input
+									class="field-input"
+									type="text"
+									.placeholder=${"Search by topic, content, or tag"}
+									.value=${this.memorySearchQuery}
+									aria-label=${"Search memories"}
+									@input=${(event: Event) => {
+										this.memorySearchQuery = (
+											event.target as HTMLInputElement
+										).value;
+									}}
+								/>
+								<button
+									class="action-btn memory-search-button"
+									@click=${() => void this.searchMemoryEntries()}
+									?disabled=${this.memoryLoading}
+								>
+									Search
+								</button>
+							</div>
+							<label class="panel-card-copy">
+								<input
+									type="checkbox"
+									.checked=${this.memoryClearConfirmed}
+									aria-label=${"Confirm clear all memories"}
+									@change=${(event: Event) => {
+										this.memoryClearConfirmed = (
+											event.target as HTMLInputElement
+										).checked;
+									}}
+								/>
+								${" "}Confirm clear all memories
+							</label>
+							<button
+								class="action-btn memory-clear-button"
+								@click=${() => void this.clearMemoryEntries()}
+								?disabled=${this.memoryLoading || !this.memoryClearConfirmed}
+							>
+								Clear all memories
+							</button>
+						</div>
+					</div>
+
+					<div class="section" style="margin: 1rem 0 0;">
+						<div class="section-header">
+							<h3>${viewLabel}${this.memoryLoading ? " · Loading…" : ""}</h3>
+						</div>
+						<div class="section-content">
+							${
+								this.memoryEntries.length === 0
+									? html`<div class="empty-state">No memories to display.</div>`
+									: html`
+										<div class="panel-grid">
+											${this.memoryEntries.map(
+												(entry) => html`
+													<div class="panel-card">
+														<div class="panel-card-header">
+															<div>
+																<div class="panel-card-title">${entry.topic}</div>
+																<div class="panel-card-copy">
+																	${entry.id} · ${this.formatMemoryRelativeTime(
+																		entry.updatedAt,
+																	)}
+																</div>
+															</div>
+															<button
+																class="action-btn"
+																aria-label=${`Delete memory ${entry.id}`}
+																@click=${() => void this.deleteMemoryEntry(entry)}
+																?disabled=${this.memoryLoading}
+															>
+																Delete
+															</button>
+														</div>
+														<div class="panel-card-copy">
+															${this.truncateMemoryText(entry.content, 240)}
+														</div>
+														${
+															entry.tags && entry.tags.length > 0
+																? html`<div class="panel-card-copy">
+																	Tags: ${entry.tags.join(", ")}
+																</div>`
+																: ""
+														}
+													</div>
+												`,
+											)}
+										</div>
+									`
+							}
+						</div>
+					</div>
+				</div>
+			</div>
 		`;
 	}
 

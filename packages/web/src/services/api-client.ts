@@ -111,12 +111,35 @@ import type {
 	ComposerToolCall,
 	ComposerUndoOperationResponse,
 	ComposerUndoStatusResponse,
+	MemoryEntry,
+	MemoryMutationResponse,
+	MemoryRecentResponse,
+	MemorySearchResponse,
+	MemorySearchResult,
+	MemoryStats,
+	MemoryStatsResponse,
+	MemoryTopicResponse,
+	MemoryTopicSummary,
+	MemoryTopicsResponse,
 } from "@evalops/contracts";
 import {
 	getStoredComposerAccessToken,
 	getStoredComposerApiKey,
 	getStoredComposerCsrfToken,
 } from "./enterprise-api.js";
+
+export type {
+	MemoryEntry,
+	MemoryMutationResponse,
+	MemoryRecentResponse,
+	MemorySearchResponse,
+	MemorySearchResult,
+	MemoryStats,
+	MemoryStatsResponse,
+	MemoryTopicResponse,
+	MemoryTopicSummary,
+	MemoryTopicsResponse,
+};
 
 export type Message = ComposerMessage;
 export type { ComposerToolCall };
@@ -2569,32 +2592,29 @@ export class ApiClient {
 	}
 
 	// Memory
-	async listMemoryTopics(): Promise<Record<string, unknown>> {
+	async listMemoryTopics(): Promise<MemoryTopicsResponse> {
 		return await this.fetchJsonWithFallback("/api/memory?action=list");
 	}
 
-	async listMemoryTopic(topic: string): Promise<Record<string, unknown>> {
+	async listMemoryTopic(topic: string): Promise<MemoryTopicResponse> {
 		return await this.fetchJsonWithFallback(
 			`/api/memory?action=list&topic=${encodeURIComponent(topic)}`,
 		);
 	}
 
-	async searchMemory(
-		query: string,
-		limit = 10,
-	): Promise<Record<string, unknown>> {
+	async searchMemory(query: string, limit = 10): Promise<MemorySearchResponse> {
 		return await this.fetchJsonWithFallback(
 			`/api/memory?action=search&query=${encodeURIComponent(query)}&limit=${limit}`,
 		);
 	}
 
-	async getRecentMemories(limit = 10): Promise<Record<string, unknown>> {
+	async getRecentMemories(limit = 10): Promise<MemoryRecentResponse> {
 		return await this.fetchJsonWithFallback(
 			`/api/memory?action=recent&limit=${limit}`,
 		);
 	}
 
-	async getMemoryStats(): Promise<Record<string, unknown>> {
+	async getMemoryStats(): Promise<MemoryStatsResponse> {
 		return await this.fetchJsonWithFallback("/api/memory?action=stats");
 	}
 
@@ -2602,7 +2622,7 @@ export class ApiClient {
 		topic: string,
 		content: string,
 		tags?: string[],
-	): Promise<Record<string, unknown>> {
+	): Promise<MemoryMutationResponse> {
 		return await this.fetchJsonRequestWithFallback("/api/memory", "POST", {
 			action: "save",
 			topic,
@@ -2614,7 +2634,7 @@ export class ApiClient {
 	async deleteMemory(
 		id?: string,
 		topic?: string,
-	): Promise<Record<string, unknown>> {
+	): Promise<MemoryMutationResponse> {
 		return await this.fetchJsonRequestWithFallback("/api/memory", "POST", {
 			action: "delete",
 			id,
@@ -2622,21 +2642,21 @@ export class ApiClient {
 		});
 	}
 
-	async exportMemory(path?: string): Promise<Record<string, unknown>> {
+	async exportMemory(path?: string): Promise<MemoryMutationResponse> {
 		return await this.fetchJsonRequestWithFallback("/api/memory", "POST", {
 			action: "export",
 			path,
 		});
 	}
 
-	async importMemory(path: string): Promise<Record<string, unknown>> {
+	async importMemory(path: string): Promise<MemoryMutationResponse> {
 		return await this.fetchJsonRequestWithFallback("/api/memory", "POST", {
 			action: "import",
 			path,
 		});
 	}
 
-	async clearMemory(force = false): Promise<Record<string, unknown>> {
+	async clearMemory(force = false): Promise<MemoryMutationResponse> {
 		return await this.fetchJsonRequestWithFallback("/api/memory", "POST", {
 			action: "clear",
 			force,

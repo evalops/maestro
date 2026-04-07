@@ -25,6 +25,88 @@ function createApiClientMock(): ApiClient {
 			byProvider: {},
 			byModel: {},
 		}),
+		listMemoryTopics: vi.fn().mockResolvedValue({
+			topics: [
+				{
+					name: "api-design",
+					entryCount: 1,
+					lastUpdated: Date.now(),
+				},
+			],
+		}),
+		listMemoryTopic: vi.fn().mockResolvedValue({
+			topic: "api-design",
+			memories: [
+				{
+					id: "mem_topic",
+					topic: "api-design",
+					content: "Topic-specific memory",
+					createdAt: Date.now(),
+					updatedAt: Date.now(),
+					tags: ["rest"],
+				},
+			],
+		}),
+		searchMemory: vi.fn().mockResolvedValue({
+			query: "REST",
+			results: [
+				{
+					entry: {
+						id: "mem_search",
+						topic: "api-design",
+						content: "Search result memory",
+						createdAt: Date.now(),
+						updatedAt: Date.now(),
+						tags: ["rest"],
+					},
+					score: 4.2,
+					matchedOn: "content",
+				},
+			],
+		}),
+		getRecentMemories: vi.fn().mockResolvedValue({
+			memories: [
+				{
+					id: "mem_recent",
+					topic: "general",
+					content: "Recent memory",
+					createdAt: Date.now(),
+					updatedAt: Date.now(),
+					tags: ["note"],
+				},
+			],
+		}),
+		getMemoryStats: vi.fn().mockResolvedValue({
+			stats: {
+				totalEntries: 2,
+				topics: 2,
+				oldestEntry: Date.now() - 1_000,
+				newestEntry: Date.now(),
+			},
+		}),
+		saveMemory: vi.fn().mockResolvedValue({
+			success: true,
+			message: 'Memory saved to topic "api-design"',
+			entry: {
+				id: "mem_saved",
+				topic: "api-design",
+				content: "Use REST conventions #rest",
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+				tags: ["rest"],
+			},
+		}),
+		deleteMemory: vi.fn().mockResolvedValue({
+			success: true,
+			message: "Memory mem_topic deleted",
+		}),
+		clearMemory: vi.fn().mockResolvedValue({
+			success: true,
+			message: "Cleared 2 memories",
+			count: 2,
+		}),
+		exportMemory: vi.fn(),
+		importMemory: vi.fn(),
 		getMcpStatus: vi.fn().mockResolvedValue({
 			authPresets: [
 				{
@@ -293,6 +375,120 @@ describe("ComposerSettings MCP section", () => {
 		expect(element.shadowRoot?.textContent ?? "").toContain(
 			"Summarize issue MAE-1",
 		);
+	});
+
+	it("renders memory summary and switches to topic-specific memories", async () => {
+		const apiClient = createApiClientMock();
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Boolean(
+				element.shadowRoot?.querySelector(
+					'button[aria-label="Show memories for topic api-design"]',
+				),
+			),
+		);
+
+		const text = element.shadowRoot?.textContent ?? "";
+		expect(text).toContain("Cross-session memory");
+		expect(text).toContain("Entries: 2");
+		expect(text).toContain("Recent memory");
+
+		const topicButton = element.shadowRoot?.querySelector(
+			'button[aria-label="Show memories for topic api-design"]',
+		) as HTMLButtonElement | null;
+		expect(topicButton).not.toBeNull();
+		topicButton?.click();
+
+		await waitForSettled(
+			element,
+			() =>
+				(apiClient.listMemoryTopic as ReturnType<typeof vi.fn>).mock.calls
+					.length > 0,
+			30,
+		);
+
+		expect(apiClient.listMemoryTopic).toHaveBeenCalledWith("api-design");
+		expect(element.shadowRoot?.textContent ?? "").toContain(
+			"Topic-specific memory",
+		);
+	});
+
+	it("saves and deletes memory entries from settings", async () => {
+		const apiClient = createApiClientMock();
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Boolean(
+				element.shadowRoot?.querySelector('input[aria-label="Memory topic"]'),
+			),
+		);
+
+		const topicInput = element.shadowRoot?.querySelector(
+			'input[aria-label="Memory topic"]',
+		) as HTMLInputElement | null;
+		const contentInput = element.shadowRoot?.querySelector(
+			'textarea[aria-label="Memory content"]',
+		) as HTMLTextAreaElement | null;
+		const saveButton = element.shadowRoot?.querySelector(
+			".memory-save-button",
+		) as HTMLButtonElement | null;
+		expect(topicInput).not.toBeNull();
+		expect(contentInput).not.toBeNull();
+		expect(saveButton).not.toBeNull();
+		if (!topicInput || !contentInput || !saveButton) {
+			throw new Error("Expected memory save controls");
+		}
+
+		topicInput.value = "api-design";
+		topicInput.dispatchEvent(new Event("input", { bubbles: true }));
+		contentInput.value = "Use REST conventions #rest";
+		contentInput.dispatchEvent(new Event("input", { bubbles: true }));
+		saveButton.click();
+
+		await waitForSettled(
+			element,
+			() =>
+				(apiClient.saveMemory as ReturnType<typeof vi.fn>).mock.calls.length >
+				0,
+			30,
+		);
+
+		expect(apiClient.saveMemory).toHaveBeenCalledWith(
+			"api-design",
+			"Use REST conventions #rest",
+			["rest"],
+		);
+		expect(element.shadowRoot?.textContent ?? "").toContain(
+			'Memory saved to topic "api-design"',
+		);
+
+		await waitForSettled(
+			element,
+			() =>
+				Boolean(
+					element.shadowRoot?.querySelector(
+						'button[aria-label="Delete memory mem_topic"]',
+					),
+				),
+			30,
+		);
+
+		const deleteButton = element.shadowRoot?.querySelector(
+			'button[aria-label="Delete memory mem_topic"]',
+		) as HTMLButtonElement | null;
+		expect(deleteButton).not.toBeNull();
+		deleteButton?.click();
+
+		await waitForSettled(
+			element,
+			() =>
+				(apiClient.deleteMemory as ReturnType<typeof vi.fn>).mock.calls.length >
+				0,
+			30,
+		);
+
+		expect(apiClient.deleteMemory).toHaveBeenCalledWith("mem_topic");
 	});
 
 	it("validates required structured MCP prompt arguments before running", async () => {
