@@ -1,6 +1,6 @@
 use super::{McpPrompt, McpPromptArgument};
 
-pub fn format_mcp_prompt_argument_summary(argument: &McpPromptArgument) -> String {
+fn format_mcp_prompt_argument_summary(argument: &McpPromptArgument) -> String {
     let mut summary = if argument.required {
         format!("{} (required)", argument.name)
     } else {
