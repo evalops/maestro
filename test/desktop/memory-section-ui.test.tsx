@@ -1,8 +1,7 @@
 // @vitest-environment happy-dom
 import type { ComponentProps } from "react";
-import { createElement } from "react";
+import { act, createElement } from "react";
 import { type Root, createRoot } from "react-dom/client";
-import { act } from "react-dom/test-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemorySection } from "../../packages/desktop/src/renderer/components/Settings/MemorySection";
 

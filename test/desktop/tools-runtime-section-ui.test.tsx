@@ -1,16 +1,35 @@
 // @vitest-environment happy-dom
 import type { ComponentProps } from "react";
-import { createElement } from "react";
+import { act, createElement } from "react";
 import { type Root, createRoot } from "react-dom/client";
-import { act } from "react-dom/test-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ToolsRuntimeSection } from "../../packages/desktop/src/renderer/components/Settings/ToolsRuntimeSection";
+
+globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 async function flushAsyncWork(iterations = 4) {
 	for (let index = 0; index < iterations; index += 1) {
 		await Promise.resolve();
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	}
+}
+
+function setTextControlValue(
+	control: HTMLInputElement | HTMLTextAreaElement,
+	value: string,
+) {
+	const prototype =
+		control instanceof HTMLTextAreaElement
+			? HTMLTextAreaElement.prototype
+			: HTMLInputElement.prototype;
+	const descriptor = Object.getOwnPropertyDescriptor(prototype, "value");
+	descriptor?.set?.call(control, value);
+	const inputEvent =
+		typeof InputEvent === "function"
+			? new InputEvent("input", { bubbles: true, data: value })
+			: new Event("input", { bubbles: true });
+	control.dispatchEvent(inputEvent);
+	control.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
 function createProps(
@@ -168,8 +187,7 @@ describe("ToolsRuntimeSection UI", () => {
 		) as HTMLInputElement | null;
 		expect(replaceHeaders).not.toBeNull();
 		await act(async () => {
-			replaceHeaders!.checked = true;
-			replaceHeaders!.dispatchEvent(new Event("change", { bubbles: true }));
+			replaceHeaders?.click();
 			await flushAsyncWork(2);
 		});
 
@@ -215,17 +233,17 @@ describe("ToolsRuntimeSection UI", () => {
 			onGetMcpPrompt: getPrompt,
 		});
 
-		const readButton = container.querySelector(
-			'button[aria-label="Read resource for linear"]',
-		) as HTMLButtonElement | null;
-		const promptButton = container.querySelector(
-			'button[aria-label="Run prompt for linear"]',
-		) as HTMLButtonElement | null;
+		const readButton = Array.from(container.querySelectorAll("button")).find(
+			(button) => button.textContent?.trim() === "Read resource",
+		) as HTMLButtonElement | undefined;
+		const promptButton = Array.from(container.querySelectorAll("button")).find(
+			(button) => button.textContent?.trim() === "Run prompt",
+		) as HTMLButtonElement | undefined;
 		const promptArgumentInput = container.querySelector(
 			'input[aria-label="Prompt argument ISSUE for linear"]',
 		) as HTMLInputElement | null;
-		expect(readButton).not.toBeNull();
-		expect(promptButton).not.toBeNull();
+		expect(readButton).toBeDefined();
+		expect(promptButton).toBeDefined();
 		expect(promptArgumentInput).not.toBeNull();
 
 		await act(async () => {
@@ -246,8 +264,7 @@ describe("ToolsRuntimeSection UI", () => {
 			if (!promptArgumentInput) {
 				throw new Error("Expected MCP prompt argument input");
 			}
-			promptArgumentInput.value = "MAE-1";
-			promptArgumentInput.dispatchEvent(new Event("input", { bubbles: true }));
+			setTextControlValue(promptArgumentInput, "MAE-1");
 			await flushAsyncWork(1);
 		});
 		await act(async () => {
@@ -260,8 +277,7 @@ describe("ToolsRuntimeSection UI", () => {
 			if (!promptArgumentInput) {
 				throw new Error("Expected MCP prompt argument input");
 			}
-			promptArgumentInput.value = "MAE-1";
-			promptArgumentInput.dispatchEvent(new Event("input", { bubbles: true }));
+			setTextControlValue(promptArgumentInput, "MAE-1");
 			await flushAsyncWork(1);
 		});
 		await act(async () => {
@@ -294,16 +310,15 @@ describe("ToolsRuntimeSection UI", () => {
 		const legacyTextarea = container.querySelector(
 			'textarea[aria-label="Prompt arguments for linear"]',
 		);
-		const promptButton = container.querySelector(
-			'button[aria-label="Run prompt for linear"]',
-		) as HTMLButtonElement | null;
+		const promptButton = Array.from(container.querySelectorAll("button")).find(
+			(button) => button.textContent?.trim() === "Run prompt",
+		) as HTMLButtonElement | undefined;
 		expect(promptArgInput).not.toBeNull();
 		expect(legacyTextarea).toBeNull();
-		expect(promptButton).not.toBeNull();
+		expect(promptButton).toBeDefined();
 
 		await act(async () => {
-			promptArgInput!.value = "MAE-1";
-			promptArgInput!.dispatchEvent(new Event("input", { bubbles: true }));
+			setTextControlValue(promptArgInput!, "MAE-1");
 			await flushAsyncWork(2);
 		});
 

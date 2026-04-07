@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatContainer } from "../../packages/desktop/src/renderer/components/Chat/ChatContainer";
@@ -9,6 +10,11 @@ const useChatMock = vi.fn();
 vi.mock("../../packages/desktop/src/renderer/hooks/useChat", () => ({
 	useChat: (...args: unknown[]) => useChatMock(...args),
 }));
+
+Object.defineProperty(window, "electron", {
+	value: { isMac: false },
+	configurable: true,
+});
 
 describe("desktop chat UI", () => {
 	beforeEach(() => {

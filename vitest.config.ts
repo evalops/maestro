@@ -10,10 +10,14 @@ const poolOptions = fastMode
 	: { forks: { singleFork: true } };
 
 export default defineConfig({
+	esbuild: {
+		jsx: "automatic",
+		jsxImportSource: "react",
+	},
 	test: {
 		globals: true,
 		environment: "node",
-		include: ["test/**/*.test.ts"],
+		include: ["test/**/*.test.ts", "test/**/*.test.tsx"],
 		testTimeout: 30000, // 30 seconds for API calls
 		hookTimeout: 30000,
 		setupFiles: [
@@ -33,7 +37,7 @@ export default defineConfig({
 		pool: fastMode ? "threads" : "forks",
 		// Benchmark configuration
 		benchmark: {
-			include: ["test/**/*.bench.ts"],
+			include: ["test/**/*.bench.ts", "test/**/*.bench.tsx"],
 			reporters: ["verbose"],
 		},
 		// Coverage configuration (run with --coverage flag)
