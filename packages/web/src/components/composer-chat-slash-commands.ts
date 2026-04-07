@@ -107,7 +107,7 @@ const MCP_AUTH_EDIT_USAGE =
 const MCP_AUTH_REMOVE_USAGE =
 	"/mcp auth remove <name> [--scope local|project|user]";
 const MEMORY_USAGE =
-	"/memory [save <topic> <content>|search <query>|list [topic]|recent [N]|delete <id|topic>|stats|export [path]|import <path>|clear --force]";
+	"/memory [save <topic> <content>|search <query> [--session]|list [topic] [--session]|recent [N] [--session]|stats [--session]|delete <id|topic>|export [path]|import <path>|clear --force]";
 
 type MemoryEntry = {
 	id: string;
@@ -1747,7 +1747,24 @@ export async function executeWebSlashCommand(
 			}
 			case "memory": {
 				const tokens = tokenizeSlashArgs(args);
-				const sub = tokens[0]?.toLowerCase() ?? "help";
+				const scopedTokens = tokens.filter(
+					(token) => token !== "--session" && token !== "-s",
+				);
+				const sessionOnly = scopedTokens.length !== tokens.length;
+				const resolveMemorySessionId = (): string | undefined | null => {
+					if (!sessionOnly) {
+						return undefined;
+					}
+					if (!context.currentSessionId) {
+						context.appendCommandOutput(
+							"Current session required for /memory ... --session.",
+							true,
+						);
+						return null;
+					}
+					return context.currentSessionId;
+				};
+				const sub = scopedTokens[0]?.toLowerCase() ?? "help";
 
 				if (["", "help", "-h", "--help", "?"].includes(sub)) {
 					context.appendCommandOutput(
@@ -1755,11 +1772,11 @@ export async function executeWebSlashCommand(
 							[
 								"/memory",
 								"/memory save <topic> <content>",
-								"/memory search <query>",
-								"/memory list [topic]",
-								"/memory recent [N]",
+								"/memory search <query> [--session]",
+								"/memory list [topic] [--session]",
+								"/memory recent [N] [--session]",
+								"/memory stats [--session]",
 								"/memory delete <id|topic>",
-								"/memory stats",
 								"/memory export [path]",
 								"/memory import <path>",
 								"/memory clear --force",
@@ -1770,9 +1787,14 @@ export async function executeWebSlashCommand(
 				}
 
 				if (["list", "ls"].includes(sub)) {
-					const topic = tokens.slice(1).join(" ").trim();
+					const memorySessionId = resolveMemorySessionId();
+					if (memorySessionId === null) break;
+					const topic = scopedTokens.slice(1).join(" ").trim();
 					if (topic) {
-						const result = await context.apiClient.listMemoryTopic(topic);
+						const result = await context.apiClient.listMemoryTopic(
+							topic,
+							memorySessionId,
+						);
 						context.appendCommandOutput(
 							formatCommandCodeBlock(
 								formatMemoryTopicEntriesBlock(topic, result),
@@ -1780,7 +1802,8 @@ export async function executeWebSlashCommand(
 						);
 						break;
 					}
-					const result = await context.apiClient.listMemoryTopics();
+					const result =
+						await context.apiClient.listMemoryTopics(memorySessionId);
 					context.appendCommandOutput(
 						formatCommandCodeBlock(formatMemoryTopicsBlock(result)),
 					);
@@ -1788,12 +1811,21 @@ export async function executeWebSlashCommand(
 				}
 
 				if (["search", "find"].includes(sub)) {
-					const query = tokens.slice(1).join(" ").trim();
+					const memorySessionId = resolveMemorySessionId();
+					if (memorySessionId === null) break;
+					const query = scopedTokens.slice(1).join(" ").trim();
 					if (!query) {
-						context.appendCommandOutput("Usage: /memory search <query>", true);
+						context.appendCommandOutput(
+							"Usage: /memory search <query> [--session]",
+							true,
+						);
 						break;
 					}
-					const result = await context.apiClient.searchMemory(query);
+					const result = await context.apiClient.searchMemory(
+						query,
+						10,
+						memorySessionId,
+					);
 					context.appendCommandOutput(
 						formatCommandCodeBlock(
 							formatMemorySearchResultsBlock(query, result),
@@ -1803,12 +1835,22 @@ export async function executeWebSlashCommand(
 				}
 
 				if (sub === "recent") {
-					const limit = tokens[1] ? Number.parseInt(tokens[1], 10) : 10;
+					const memorySessionId = resolveMemorySessionId();
+					if (memorySessionId === null) break;
+					const limit = scopedTokens[1]
+						? Number.parseInt(scopedTokens[1], 10)
+						: 10;
 					if (!Number.isInteger(limit) || limit <= 0) {
-						context.appendCommandOutput("Usage: /memory recent [N]", true);
+						context.appendCommandOutput(
+							"Usage: /memory recent [N] [--session]",
+							true,
+						);
 						break;
 					}
-					const result = await context.apiClient.getRecentMemories(limit);
+					const result = await context.apiClient.getRecentMemories(
+						limit,
+						memorySessionId,
+					);
 					context.appendCommandOutput(
 						formatCommandCodeBlock(formatRecentMemoriesBlock(result)),
 					);
@@ -1816,7 +1858,10 @@ export async function executeWebSlashCommand(
 				}
 
 				if (["stats", "status"].includes(sub)) {
-					const result = await context.apiClient.getMemoryStats();
+					const memorySessionId = resolveMemorySessionId();
+					if (memorySessionId === null) break;
+					const result =
+						await context.apiClient.getMemoryStats(memorySessionId);
 					context.appendCommandOutput(
 						formatCommandCodeBlock(formatMemoryStatsBlock(result)),
 					);
@@ -1825,8 +1870,8 @@ export async function executeWebSlashCommand(
 
 				if (["save", "add"].includes(sub)) {
 					if (!requireWritableSession("Memory save")) break;
-					const topic = tokens[1];
-					const content = tokens.slice(2).join(" ").trim();
+					const topic = scopedTokens[1];
+					const content = scopedTokens.slice(2).join(" ").trim();
 					if (!topic || !content) {
 						context.appendCommandOutput(
 							"Usage: /memory save <topic> <content>",
@@ -1839,6 +1884,7 @@ export async function executeWebSlashCommand(
 						topic,
 						content,
 						tags.length > 0 ? tags : undefined,
+						context.currentSessionId ?? undefined,
 					);
 					const entry = parseMemoryEntry(result.entry);
 					context.appendCommandOutput(

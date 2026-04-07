@@ -87,6 +87,22 @@ describe("desktop api client", () => {
 		);
 	});
 
+	it("includes session id in scoped memory read requests", async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			makeJsonResponse({
+				topics: [],
+			}),
+		);
+		global.fetch = fetchMock;
+
+		const client = new ApiClient("http://localhost:8080");
+		await client.listMemoryTopics("sess_123");
+
+		expect(fetchMock.mock.calls[0]?.[0]).toBe(
+			"http://localhost:8080/api/memory?action=list&sessionId=sess_123",
+		);
+	});
+
 	it("posts memory writes with csrf headers and request payload", async () => {
 		const fetchMock = vi.fn().mockResolvedValue(
 			makeJsonResponse({
@@ -97,7 +113,12 @@ describe("desktop api client", () => {
 		global.fetch = fetchMock;
 
 		const client = new ApiClient("http://localhost:8080");
-		await client.saveMemory("api-design", "Use REST conventions", ["rest"]);
+		await client.saveMemory(
+			"api-design",
+			"Use REST conventions",
+			["rest"],
+			"sess_123",
+		);
 
 		expect(fetchMock.mock.calls[0]?.[0]).toBe(
 			"http://localhost:8080/api/memory",
@@ -110,6 +131,7 @@ describe("desktop api client", () => {
 				topic: "api-design",
 				content: "Use REST conventions",
 				tags: ["rest"],
+				sessionId: "sess_123",
 			}),
 		);
 		const headers = new Headers(init.headers);

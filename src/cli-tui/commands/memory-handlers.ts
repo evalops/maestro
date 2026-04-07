@@ -75,6 +75,35 @@ function parseMemoryCommand(rawInput: string): {
 	return { subcommand, args, rawArgs };
 }
 
+function extractSessionScope(args: string[]): {
+	args: string[];
+	sessionOnly: boolean;
+} {
+	let sessionOnly = false;
+	const filteredArgs = args.filter((arg) => {
+		if (arg === "--session" || arg === "-s") {
+			sessionOnly = true;
+			return false;
+		}
+		return true;
+	});
+	return { args: filteredArgs, sessionOnly };
+}
+
+function resolveScopedSessionId(
+	ctx: MemoryRenderContext,
+	sessionOnly: boolean,
+): string | undefined | null {
+	if (!sessionOnly) {
+		return undefined;
+	}
+	if (!ctx.sessionId) {
+		ctx.showError("Current session required for --session.");
+		return null;
+	}
+	return ctx.sessionId;
+}
+
 /**
  * Handle the /memory command.
  */
@@ -86,13 +115,18 @@ export function handleMemoryCommand(ctx: MemoryRenderContext): void {
 		case "add":
 			handleSave(ctx, args, rawArgs);
 			break;
+		case "session":
+			handleRecent(ctx, args[0] ? Number.parseInt(args[0], 10) : 10, {
+				sessionId: resolveScopedSessionId(ctx, true),
+			});
+			break;
 		case "search":
 		case "find":
-			handleSearch(ctx, rawArgs);
+			handleSearch(ctx, args);
 			break;
 		case "list":
 		case "ls":
-			handleList(ctx, args[0]);
+			handleList(ctx, args);
 			break;
 		case "delete":
 		case "rm":
@@ -101,7 +135,7 @@ export function handleMemoryCommand(ctx: MemoryRenderContext): void {
 			break;
 		case "stats":
 		case "status":
-			handleStats(ctx);
+			handleStats(ctx, args);
 			break;
 		case "export":
 			handleExport(ctx, args[0]);
@@ -113,7 +147,16 @@ export function handleMemoryCommand(ctx: MemoryRenderContext): void {
 			handleClear(ctx, args.includes("--force") || args.includes("-f"));
 			break;
 		case "recent":
-			handleRecent(ctx, args[0] ? Number.parseInt(args[0], 10) : 10);
+			{
+				const { args: recentArgs, sessionOnly } = extractSessionScope(args);
+				handleRecent(
+					ctx,
+					recentArgs[0] ? Number.parseInt(recentArgs[0], 10) : 10,
+					{
+						sessionId: resolveScopedSessionId(ctx, sessionOnly),
+					},
+				);
+			}
 			break;
 		default:
 			handleHelp(ctx);
@@ -151,13 +194,19 @@ function handleSave(
 	ctx.showSuccess(`Memory saved to topic "${topic}" (${entry.id})`);
 }
 
-function handleSearch(ctx: MemoryRenderContext, query: string): void {
+function handleSearch(ctx: MemoryRenderContext, rawArgs: string[]): void {
+	const { args, sessionOnly } = extractSessionScope(rawArgs);
+	const sessionId = resolveScopedSessionId(ctx, sessionOnly);
+	if (sessionId === null) {
+		return;
+	}
+	const query = args.join(" ").trim();
 	if (!query) {
-		ctx.showError("Usage: /memory search <query>");
+		ctx.showError("Usage: /memory search <query> [--session]");
 		return;
 	}
 
-	const results = searchMemories(query, { limit: 10 });
+	const results = searchMemories(query, { limit: 10, sessionId });
 
 	if (results.length === 0) {
 		ctx.showInfo(`No memories found for "${query}"`);
@@ -186,10 +235,16 @@ function handleSearch(ctx: MemoryRenderContext, query: string): void {
 	ctx.requestRender();
 }
 
-function handleList(ctx: MemoryRenderContext, topic?: string): void {
+function handleList(ctx: MemoryRenderContext, rawArgs: string[]): void {
+	const { args, sessionOnly } = extractSessionScope(rawArgs);
+	const sessionId = resolveScopedSessionId(ctx, sessionOnly);
+	if (sessionId === null) {
+		return;
+	}
+	const topic = args[0];
 	if (topic) {
 		// List memories for a specific topic
-		const memories = getTopicMemories(topic);
+		const memories = getTopicMemories(topic, { sessionId });
 
 		if (memories.length === 0) {
 			ctx.showInfo(`No memories found for topic "${topic}"`);
@@ -216,7 +271,7 @@ function handleList(ctx: MemoryRenderContext, topic?: string): void {
 		ctx.requestRender();
 	} else {
 		// List all topics
-		const topics = listTopics();
+		const topics = listTopics({ sessionId });
 
 		if (topics.length === 0) {
 			ctx.showInfo(
@@ -268,8 +323,13 @@ function handleDelete(ctx: MemoryRenderContext, target?: string): void {
 	}
 }
 
-function handleStats(ctx: MemoryRenderContext): void {
-	const stats = getStats();
+function handleStats(ctx: MemoryRenderContext, rawArgs: string[]): void {
+	const { sessionOnly } = extractSessionScope(rawArgs);
+	const sessionId = resolveScopedSessionId(ctx, sessionOnly);
+	if (sessionId === null) {
+		return;
+	}
+	const stats = getStats({ sessionId });
 
 	const lines = ["Memory Statistics", ""];
 
@@ -345,8 +405,17 @@ function handleClear(ctx: MemoryRenderContext, force: boolean): void {
 	ctx.showSuccess(`Cleared ${count} memories`);
 }
 
-function handleRecent(ctx: MemoryRenderContext, limit: number): void {
-	const memories = getRecentMemories(limit);
+function handleRecent(
+	ctx: MemoryRenderContext,
+	limit: number,
+	options?: { sessionId?: string | null },
+): void {
+	if (options?.sessionId === null) {
+		return;
+	}
+	const memories = getRecentMemories(limit, {
+		sessionId: options?.sessionId ?? undefined,
+	});
 
 	if (memories.length === 0) {
 		ctx.showInfo("No memories saved yet.");
@@ -373,8 +442,11 @@ function handleHelp(ctx: MemoryRenderContext): void {
 		"",
 		"  /memory save <topic> <content>  Save a memory (use #tags for tagging)",
 		"  /memory search <query>          Search across all memories",
+		"  /memory search <query> --session Search current-session memories",
 		"  /memory list                    List all topics",
 		"  /memory list <topic>            List memories in a topic",
+		"  /memory list --session          List current-session topics",
+		"  /memory session [N]             Show recent current-session memories",
 		"  /memory recent [N]              Show N most recent memories",
 		"  /memory delete <id|topic>       Delete a memory or topic",
 		"  /memory stats                   Show memory statistics",
@@ -385,7 +457,9 @@ function handleHelp(ctx: MemoryRenderContext): void {
 		"Examples:",
 		"  /memory save api-design Use REST conventions #rest #naming",
 		"  /memory search REST",
+		"  /memory search REST --session",
 		"  /memory list api-design",
+		"  /memory session 5",
 		"  /memory delete api-design",
 	];
 

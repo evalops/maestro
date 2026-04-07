@@ -2616,42 +2616,71 @@ export class ApiClient {
 	}
 
 	// Memory
-	async listMemoryTopics(): Promise<MemoryTopicsResponse> {
-		return await this.fetchJsonWithFallback("/api/memory?action=list");
+	async listMemoryTopics(sessionId?: string): Promise<MemoryTopicsResponse> {
+		const suffix = sessionId
+			? `&sessionId=${encodeURIComponent(sessionId)}`
+			: "";
+		return await this.fetchJsonWithFallback(`/api/memory?action=list${suffix}`);
 	}
 
-	async listMemoryTopic(topic: string): Promise<MemoryTopicResponse> {
+	async listMemoryTopic(
+		topic: string,
+		sessionId?: string,
+	): Promise<MemoryTopicResponse> {
+		const suffix = sessionId
+			? `&sessionId=${encodeURIComponent(sessionId)}`
+			: "";
 		return await this.fetchJsonWithFallback(
-			`/api/memory?action=list&topic=${encodeURIComponent(topic)}`,
+			`/api/memory?action=list&topic=${encodeURIComponent(topic)}${suffix}`,
 		);
 	}
 
-	async searchMemory(query: string, limit = 10): Promise<MemorySearchResponse> {
+	async searchMemory(
+		query: string,
+		limit = 10,
+		sessionId?: string,
+	): Promise<MemorySearchResponse> {
+		const suffix = sessionId
+			? `&sessionId=${encodeURIComponent(sessionId)}`
+			: "";
 		return await this.fetchJsonWithFallback(
-			`/api/memory?action=search&query=${encodeURIComponent(query)}&limit=${limit}`,
+			`/api/memory?action=search&query=${encodeURIComponent(query)}&limit=${limit}${suffix}`,
 		);
 	}
 
-	async getRecentMemories(limit = 10): Promise<MemoryRecentResponse> {
+	async getRecentMemories(
+		limit = 10,
+		sessionId?: string,
+	): Promise<MemoryRecentResponse> {
+		const suffix = sessionId
+			? `&sessionId=${encodeURIComponent(sessionId)}`
+			: "";
 		return await this.fetchJsonWithFallback(
-			`/api/memory?action=recent&limit=${limit}`,
+			`/api/memory?action=recent&limit=${limit}${suffix}`,
 		);
 	}
 
-	async getMemoryStats(): Promise<MemoryStatsResponse> {
-		return await this.fetchJsonWithFallback("/api/memory?action=stats");
+	async getMemoryStats(sessionId?: string): Promise<MemoryStatsResponse> {
+		const suffix = sessionId
+			? `&sessionId=${encodeURIComponent(sessionId)}`
+			: "";
+		return await this.fetchJsonWithFallback(
+			`/api/memory?action=stats${suffix}`,
+		);
 	}
 
 	async saveMemory(
 		topic: string,
 		content: string,
 		tags?: string[],
+		sessionId?: string,
 	): Promise<MemoryMutationResponse> {
 		return await this.fetchJsonRequestWithFallback("/api/memory", "POST", {
 			action: "save",
 			topic,
 			content,
 			tags,
+			sessionId,
 		});
 	}
 

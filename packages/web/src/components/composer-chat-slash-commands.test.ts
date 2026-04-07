@@ -168,7 +168,7 @@ describe("executeWebSlashCommand", () => {
 
 		await executeWebSlashCommand("memory", "list", context);
 
-		expect(apiClient.listMemoryTopics).toHaveBeenCalledOnce();
+		expect(apiClient.listMemoryTopics).toHaveBeenCalledWith(undefined);
 		expect(outputs).toEqual([
 			expect.objectContaining({
 				isError: false,
@@ -201,6 +201,7 @@ describe("executeWebSlashCommand", () => {
 			"api design",
 			"Use REST conventions #rest",
 			["rest"],
+			"session-1",
 		);
 		expect(outputs).toEqual([
 			{
@@ -223,6 +224,7 @@ describe("executeWebSlashCommand", () => {
 			"api design",
 			"Use REST conventions #rest #rest #api",
 			["rest", "api"],
+			"session-1",
 		);
 	});
 
@@ -278,7 +280,7 @@ describe("executeWebSlashCommand", () => {
 
 		await executeWebSlashCommand("memory", "search REST", context);
 
-		expect(apiClient.searchMemory).toHaveBeenCalledWith("REST");
+		expect(apiClient.searchMemory).toHaveBeenCalledWith("REST", 10, undefined);
 		expect(outputs).toEqual([
 			expect.objectContaining({
 				isError: false,
@@ -287,6 +289,23 @@ describe("executeWebSlashCommand", () => {
 		]);
 		expect(outputs[0]?.output).toContain("api-design");
 		expect(outputs[0]?.output).toContain("Use REST conventions");
+	});
+
+	it("filters memory reads to the current session when requested", async () => {
+		const { context, apiClient } = createContext();
+
+		await executeWebSlashCommand("memory", "list --session", context);
+		expect(apiClient.listMemoryTopics).toHaveBeenCalledWith("session-1");
+
+		await executeWebSlashCommand("memory", "search REST --session", context);
+		expect(apiClient.searchMemory).toHaveBeenCalledWith(
+			"REST",
+			10,
+			"session-1",
+		);
+
+		await executeWebSlashCommand("memory", "recent 5 --session", context);
+		expect(apiClient.getRecentMemories).toHaveBeenCalledWith(5, "session-1");
 	});
 
 	it("searches the MCP registry from the web slash command", async () => {

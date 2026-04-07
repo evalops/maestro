@@ -24,6 +24,7 @@
 export {
 	addMemory,
 	updateMemory,
+	upsertScopedMemory,
 	deleteMemory,
 	deleteTopicMemories,
 	searchMemories,
@@ -39,6 +40,8 @@ export {
 
 export type {
 	MemoryEntry,
+	MemoryQueryOptions,
+	MemorySearchOptions,
 	MemoryTopic,
 	MemorySearchResult,
 	MemoryStats,
