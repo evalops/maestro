@@ -261,30 +261,32 @@ describe("find tool", () => {
 		});
 
 		it.skipIf(!hasFd)(
-			"passes ancestor .gitignore files when searching inside a git repository",
+			"forces native vcs ignores when searching inside a git repository",
 			async () => {
 				const nestedDir = join(testDir, "nested");
+				const nestedDistDir = join(nestedDir, "dist");
 				mkdirSync(nestedDir);
-				writeFileSync(join(testDir, ".gitignore"), "ignored.txt\n");
-				writeFileSync(join(nestedDir, "ignored.txt"), "");
+				mkdirSync(nestedDistDir);
+				writeFileSync(join(testDir, ".gitignore"), "/dist\n");
 				writeFileSync(join(nestedDir, "kept.txt"), "");
+				writeFileSync(join(nestedDistDir, "kept-too.txt"), "");
 				execSync("git init -q", { cwd: testDir, stdio: "ignore" });
 
 				const result = await findTool.execute("find-14b", {
-					pattern: "*.txt",
+					pattern: "**/*.txt",
 					path: nestedDir,
 				});
 
 				expect(result.isError).toBeFalsy();
 				const output = getTextOutput(result);
 				expect(output).toContain("kept.txt");
-				expect(output).not.toContain("ignored.txt");
+				expect(output).toContain("dist/kept-too.txt");
 				expect(result.details).toHaveProperty("command");
 				expect((result.details as { command: string }).command).toContain(
-					"--ignore-file",
+					"--ignore-vcs",
 				);
-				expect((result.details as { command: string }).command).toContain(
-					join(testDir, ".gitignore"),
+				expect((result.details as { command: string }).command).not.toContain(
+					"--ignore-file",
 				);
 			},
 		);

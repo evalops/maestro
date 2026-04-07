@@ -91,26 +91,10 @@ type FindToolDetails = {
 
 function collectGitignoreFiles(searchPath: string): string[] {
 	const gitignoreFiles = new Set<string>();
-	const gitRoot = getGitRoot(searchPath);
-	const ancestorDirs = new Set<string>();
 
-	let currentDir = searchPath;
-	ancestorDirs.add(currentDir);
-
-	while (gitRoot && currentDir !== gitRoot) {
-		const parentDir = resolvePath(currentDir, "..");
-		if (parentDir === currentDir) {
-			break;
-		}
-		currentDir = parentDir;
-		ancestorDirs.add(currentDir);
-	}
-
-	for (const directory of ancestorDirs) {
-		const gitignorePath = resolvePath(directory, ".gitignore");
-		if (existsSync(gitignorePath)) {
-			gitignoreFiles.add(gitignorePath);
-		}
+	const rootGitignore = resolvePath(searchPath, ".gitignore");
+	if (existsSync(rootGitignore)) {
+		gitignoreFiles.add(rootGitignore);
 	}
 
 	try {
@@ -174,10 +158,14 @@ export const findTool = createTool<typeof findSchema, FindToolDetails>({
 			args.push("--hidden");
 		}
 
-		// Pass .gitignore files explicitly so search behavior stays stable even
-		// when a user's fd config disables native VCS ignore handling.
-		for (const gitignorePath of collectGitignoreFiles(searchPath)) {
-			args.push("--ignore-file", gitignorePath);
+		if (getGitRoot(searchPath)) {
+			// Force fd to honor repo-native ignore rules even if user config disables
+			// VCS ignores, while keeping anchored patterns scoped to the repo root.
+			args.push("--ignore-vcs");
+		} else {
+			for (const gitignorePath of collectGitignoreFiles(searchPath)) {
+				args.push("--ignore-file", gitignorePath);
+			}
 		}
 
 		args.push(pattern);
