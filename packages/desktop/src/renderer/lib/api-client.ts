@@ -207,6 +207,7 @@ export interface McpServerStatus {
 		| number;
 	resources?: string[];
 	prompts?: string[];
+	promptDetails?: McpPromptDefinition[];
 	error?: string;
 	command?: string;
 	args?: string[];
@@ -227,6 +228,19 @@ export interface McpServerStatus {
 		authorName?: string;
 		url?: string;
 	};
+}
+
+export interface McpPromptArgument {
+	name: string;
+	description?: string;
+	required?: boolean;
+}
+
+export interface McpPromptDefinition {
+	name: string;
+	title?: string;
+	description?: string;
+	arguments?: McpPromptArgument[];
 }
 
 export interface McpAuthPresetStatus {

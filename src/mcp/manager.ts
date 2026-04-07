@@ -46,6 +46,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
 	ElicitRequestSchema,
 	LoggingMessageNotificationSchema,
+	type Prompt as McpPrompt,
 	type Tool as McpTool,
 	ProgressNotificationSchema,
 	PromptListChangedNotificationSchema,
@@ -70,6 +71,7 @@ import type {
 	McpAuthPresetStatus,
 	McpConfig,
 	McpManagerStatus,
+	McpPromptDefinition,
 	McpServerConfig,
 	McpServerStatus,
 } from "./types.js";
@@ -340,8 +342,30 @@ interface ConnectedServer {
 	resources: string[];
 	/** Cached list of prompt names */
 	prompts: string[];
+	/** Cached prompt metadata for structured prompt UIs */
+	promptDetails: McpPromptDefinition[];
 	/** Counter for reconnection attempts */
 	reconnectAttempts: number;
+}
+
+function normalizePromptDefinition(prompt: McpPrompt): McpPromptDefinition {
+	return {
+		name: prompt.name,
+		title: prompt.title,
+		description: prompt.description,
+		arguments:
+			prompt.arguments?.map((argument) => ({
+				name: argument.name,
+				description: argument.description,
+				required: argument.required,
+			})) ?? [],
+	};
+}
+
+function getPromptNames(
+	promptDetails: readonly McpPromptDefinition[],
+): string[] {
+	return promptDetails.map((prompt) => prompt.name);
 }
 
 /**
@@ -608,7 +632,8 @@ export class McpClientManager extends EventEmitter {
 			// Fetch capabilities
 			const tools = await this.fetchTools(client);
 			const resources = await this.fetchResources(client);
-			const prompts = await this.fetchPrompts(client);
+			const promptDetails = await this.fetchPrompts(client);
+			const prompts = getPromptNames(promptDetails);
 
 			this.servers.set(name, {
 				config,
@@ -617,6 +642,7 @@ export class McpClientManager extends EventEmitter {
 				tools,
 				resources,
 				prompts,
+				promptDetails,
 				reconnectAttempts: 0,
 			});
 			this.lastErrors.delete(name);
@@ -726,14 +752,14 @@ export class McpClientManager extends EventEmitter {
 		}
 	}
 
-	private async fetchPrompts(client: Client): Promise<string[]> {
+	private async fetchPrompts(client: Client): Promise<McpPromptDefinition[]> {
 		try {
 			const caps = client.getServerCapabilities();
 			if (!caps?.prompts) {
 				return [];
 			}
 			const result = await client.listPrompts();
-			return result.prompts.map((p) => p.name);
+			return result.prompts.map(normalizePromptDefinition);
 		} catch {
 			return [];
 		}
@@ -793,7 +819,8 @@ export class McpClientManager extends EventEmitter {
 				try {
 					const server = this.servers.get(serverName);
 					if (server) {
-						server.prompts = await this.fetchPrompts(client);
+						server.promptDetails = await this.fetchPrompts(client);
+						server.prompts = getPromptNames(server.promptDetails);
 						this.emit("prompts_changed", {
 							name: serverName,
 							prompts: server.prompts,
@@ -949,6 +976,10 @@ export class McpClientManager extends EventEmitter {
 				tools: connected?.tools ?? [],
 				resources: connected?.resources ?? [],
 				prompts: connected?.prompts ?? [],
+				promptDetails:
+					connected && connected.promptDetails.length > 0
+						? connected.promptDetails
+						: undefined,
 				command: config.transport === "stdio" ? config.command : undefined,
 				args: config.transport === "stdio" ? config.args : undefined,
 				cwd: config.transport === "stdio" ? config.cwd : undefined,

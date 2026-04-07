@@ -84,6 +84,20 @@ describe("handleMcpStatus", () => {
 					tools: [],
 					resources: ["memo://guide"],
 					prompts: ["summarize"],
+					promptDetails: [
+						{
+							name: "summarize",
+							title: "Summarize Memo",
+							description: "Summarize a memo resource.",
+							arguments: [
+								{
+									name: "URI",
+									description: "Memo resource URI",
+									required: true,
+								},
+							],
+						},
+					],
 					remoteUrl: "https://mcp.linear.app/mcp",
 					remoteHost: "mcp.linear.app",
 					headerKeys: ["Authorization"],
@@ -126,6 +140,20 @@ describe("handleMcpStatus", () => {
 					tools: [],
 					resources: ["memo://guide"],
 					prompts: ["summarize"],
+					promptDetails: [
+						{
+							name: "summarize",
+							title: "Summarize Memo",
+							description: "Summarize a memo resource.",
+							arguments: [
+								{
+									name: "URI",
+									description: "Memo resource URI",
+									required: true,
+								},
+							],
+						},
+					],
 					remoteUrl: "https://mcp.linear.app/mcp",
 					remoteHost: "mcp.linear.app",
 					headerKeys: ["Authorization"],

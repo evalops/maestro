@@ -38,6 +38,20 @@ function createProps(
 					transport: "http",
 					resources: ["linear://workspace"],
 					prompts: ["summarize-issue"],
+					promptDetails: [
+						{
+							name: "summarize-issue",
+							title: "Summarize Issue",
+							description: "Summarize a Linear issue",
+							arguments: [
+								{
+									name: "ISSUE",
+									description: "Issue identifier",
+									required: true,
+								},
+							],
+						},
+					],
 				},
 			],
 		},
@@ -207,8 +221,12 @@ describe("ToolsRuntimeSection UI", () => {
 		const promptButton = container.querySelector(
 			'button[aria-label="Run prompt for linear"]',
 		) as HTMLButtonElement | null;
+		const promptArgumentInput = container.querySelector(
+			'input[aria-label="Prompt argument ISSUE for linear"]',
+		) as HTMLInputElement | null;
 		expect(readButton).not.toBeNull();
 		expect(promptButton).not.toBeNull();
+		expect(promptArgumentInput).not.toBeNull();
 
 		await act(async () => {
 			readButton?.click();
@@ -225,11 +243,27 @@ describe("ToolsRuntimeSection UI", () => {
 		expect(afterReadFailure).not.toContain("workspace content");
 
 		await act(async () => {
+			if (!promptArgumentInput) {
+				throw new Error("Expected MCP prompt argument input");
+			}
+			promptArgumentInput.value = "MAE-1";
+			promptArgumentInput.dispatchEvent(new Event("input", { bubbles: true }));
+			await flushAsyncWork(1);
+		});
+		await act(async () => {
 			promptButton?.click();
 			await flushAsyncWork(3);
 		});
 		expect(container.textContent ?? "").toContain("Summarize issue MAE-1");
 
+		await act(async () => {
+			if (!promptArgumentInput) {
+				throw new Error("Expected MCP prompt argument input");
+			}
+			promptArgumentInput.value = "MAE-1";
+			promptArgumentInput.dispatchEvent(new Event("input", { bubbles: true }));
+			await flushAsyncWork(1);
+		});
 		await act(async () => {
 			promptButton?.click();
 			await flushAsyncWork(3);
@@ -237,5 +271,50 @@ describe("ToolsRuntimeSection UI", () => {
 		const afterPromptFailure = container.textContent ?? "";
 		expect(afterPromptFailure).toContain("Prompt run failed");
 		expect(afterPromptFailure).not.toContain("Summarize issue MAE-1");
+	});
+
+	it("runs MCP prompts from structured argument fields when metadata is available", async () => {
+		const getPrompt = vi.fn().mockResolvedValue({
+			description: "Summarize a Linear issue",
+			messages: [
+				{
+					role: "user",
+					content: "Summarize issue MAE-1",
+				},
+			],
+		});
+		const { container } = await renderSection({
+			expandedMcpServer: "linear",
+			onGetMcpPrompt: getPrompt,
+		});
+
+		const promptArgInput = container.querySelector(
+			'input[aria-label="Prompt argument ISSUE for linear"]',
+		) as HTMLInputElement | null;
+		const legacyTextarea = container.querySelector(
+			'textarea[aria-label="Prompt arguments for linear"]',
+		);
+		const promptButton = container.querySelector(
+			'button[aria-label="Run prompt for linear"]',
+		) as HTMLButtonElement | null;
+		expect(promptArgInput).not.toBeNull();
+		expect(legacyTextarea).toBeNull();
+		expect(promptButton).not.toBeNull();
+
+		await act(async () => {
+			promptArgInput!.value = "MAE-1";
+			promptArgInput!.dispatchEvent(new Event("input", { bubbles: true }));
+			await flushAsyncWork(2);
+		});
+
+		await act(async () => {
+			promptButton?.click();
+			await flushAsyncWork(3);
+		});
+
+		expect(getPrompt).toHaveBeenCalledWith("linear", "summarize-issue", {
+			ISSUE: "MAE-1",
+		});
+		expect(container.textContent ?? "").toContain("Summarize issue MAE-1");
 	});
 });

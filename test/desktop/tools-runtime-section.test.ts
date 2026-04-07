@@ -81,6 +81,12 @@ describe("buildMcpServerViewModel", () => {
 				tools: [{ name: "read_file", description: "Read a file" }],
 				resources: ["repo://root"],
 				prompts: ["summarize"],
+				promptDetails: [
+					{
+						name: "summarize",
+						title: "Summarize Repository",
+					},
+				],
 			},
 			"filesystem",
 		);
@@ -107,6 +113,12 @@ describe("buildMcpServerViewModel", () => {
 			{ name: "read_file", description: "Read a file" },
 		]);
 		expect(viewModel.toolDetailsLabel).toBeNull();
+		expect(viewModel.promptDetails).toEqual([
+			{
+				name: "summarize",
+				title: "Summarize Repository",
+			},
+		]);
 	});
 
 	it("preserves numeric tool counts when details are unavailable", () => {

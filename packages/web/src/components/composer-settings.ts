@@ -540,6 +540,7 @@ export class ComposerSettings extends LitElement {
 	@state() private mcpSelectedResources: Record<string, string> = {};
 	@state() private mcpSelectedPrompts: Record<string, string> = {};
 	@state() private mcpPromptArgsText: Record<string, string> = {};
+	@state() private mcpPromptArgumentValues: Record<string, string> = {};
 	@state() private mcpResourceOutputs: Record<string, string> = {};
 	@state() private mcpPromptOutputs: Record<string, string> = {};
 	@state() private mcpResourceErrors: Record<string, string> = {};
@@ -836,6 +837,14 @@ export class ComposerSettings extends LitElement {
 		return parseMcpTimeoutText(text);
 	}
 
+	private getMcpPromptArgumentValueKey(
+		serverName: string,
+		promptName: string,
+		argumentName: string,
+	): string {
+		return `${serverName}::${promptName}::${argumentName}`;
+	}
+
 	private async readMcpResource(server: McpServerStatus, uri: string) {
 		this.mcpReadingResourceName = server.name;
 		this.mcpResourceErrors = Object.fromEntries(
@@ -887,9 +896,37 @@ export class ComposerSettings extends LitElement {
 			),
 		);
 		try {
-			const args = this.parseMcpKeyValueText(
-				this.mcpPromptArgsText[server.name] ?? "",
+			const selectedPrompt = server.promptDetails?.find(
+				(prompt) => prompt.name === name,
 			);
+			const args =
+				selectedPrompt && (selectedPrompt.arguments?.length ?? 0) > 0
+					? (() => {
+							const entries = (selectedPrompt.arguments ?? []).flatMap(
+								(argument) => {
+									const key = this.getMcpPromptArgumentValueKey(
+										server.name,
+										name,
+										argument.name,
+									);
+									const value = this.mcpPromptArgumentValues[key]?.trim() ?? "";
+									if (argument.required && value.length === 0) {
+										throw new Error(
+											`Missing required prompt argument "${argument.name}".`,
+										);
+									}
+									return value.length > 0
+										? ([[argument.name, value]] as const)
+										: [];
+								},
+							);
+							return entries.length > 0
+								? Object.fromEntries(entries)
+								: undefined;
+						})()
+					: this.parseMcpKeyValueText(
+							this.mcpPromptArgsText[server.name] ?? "",
+						);
 			const result = await this.apiClient.getMcpPrompt(server.name, name, args);
 			this.mcpPromptOutputs = {
 				...this.mcpPromptOutputs,
@@ -1662,6 +1699,10 @@ export class ComposerSettings extends LitElement {
 											this.mcpSelectedPrompts[server.name] ??
 											server.prompts?.[0] ??
 											"";
+										const selectedPromptDetail =
+											server.promptDetails?.find(
+												(prompt) => prompt.name === selectedPrompt,
+											) ?? null;
 										const promptArgsText =
 											this.mcpPromptArgsText[server.name] ?? "";
 										const resourceOutput =
@@ -2247,16 +2288,21 @@ export class ComposerSettings extends LitElement {
 																					).value,
 																				};
 																			}}
-																		>
-																			${(server.prompts ?? []).map(
-																				(
-																					prompt,
-																				) => html`<option value=${prompt}>
-																					${prompt}
-																				</option>`,
-																			)}
-																		</select>
-																		<button
+																			>
+																				${(server.prompts ?? []).map(
+																					(prompt) => {
+																						const promptDetail =
+																							server.promptDetails?.find(
+																								(detail) =>
+																									detail.name === prompt,
+																							);
+																						return html`<option value=${prompt}>
+																							${promptDetail?.title ?? prompt}
+																						</option>`;
+																					},
+																				)}
+																			</select>
+																			<button
 																			class="action-btn"
 																			aria-label=${`Run prompt for ${server.name}`}
 																			@click=${() =>
@@ -2265,37 +2311,114 @@ export class ComposerSettings extends LitElement {
 																					selectedPrompt,
 																				)}
 																			?disabled=${this.mcpGettingPromptName === server.name || !selectedPrompt}
-																		>
-																			${
-																				this.mcpGettingPromptName ===
-																				server.name
-																					? "Running..."
-																					: "Run Prompt"
-																			}
-																		</button>
-																	</div>
-																	<div class="control-row">
-																		<textarea
-																			class="field-input"
-																			style="min-height: 5.5rem;"
-																			.placeholder=${"Prompt args (KEY=VALUE, one per line)"}
-																			.value=${promptArgsText}
-																			aria-label=${`Prompt arguments for ${server.name}`}
-																			@input=${(event: Event) => {
-																				this.mcpPromptArgsText = {
-																					...this.mcpPromptArgsText,
-																					[server.name]: (
-																						event.target as HTMLTextAreaElement
-																					).value,
-																				};
-																			}}
-																		></textarea>
-																	</div>
-																	${
-																		promptError
-																			? html`<div class="panel-feedback error">${promptError}</div>`
-																			: ""
-																	}
+																			>
+																				${
+																					this.mcpGettingPromptName ===
+																					server.name
+																						? "Running..."
+																						: "Run Prompt"
+																				}
+																			</button>
+																		</div>
+																		${
+																			selectedPromptDetail?.description
+																				? html`<div class="panel-card-copy">${selectedPromptDetail.description}</div>`
+																				: ""
+																		}
+																		${
+																			(
+																				selectedPromptDetail?.arguments
+																					?.length ?? 0
+																			) > 0
+																				? html`
+																					<div class="section-content" style="padding: 0;">
+																						${(
+																							selectedPromptDetail?.arguments ??
+																								[]
+																						).map((argument) => {
+																							const argumentKey =
+																								this.getMcpPromptArgumentValueKey(
+																									server.name,
+																									selectedPrompt,
+																									argument.name,
+																								);
+																							return html`
+																									<label class="section" style="margin: 0 0 0.75rem 0;">
+																										<div class="section-header">
+																											<h3>
+																												${argument.name}${
+																													argument.required
+																														? " (required)"
+																														: ""
+																												}
+																											</h3>
+																										</div>
+																										<div class="section-content">
+																											<input
+																												class="field-input"
+																												type="text"
+																												.placeholder=${
+																													argument.description ??
+																													argument.name
+																												}
+																												.value=${
+																													this
+																														.mcpPromptArgumentValues[
+																														argumentKey
+																													] ?? ""
+																												}
+																												aria-label=${`Prompt argument ${argument.name} for ${server.name}`}
+																												@input=${(
+																													event: Event,
+																												) => {
+																													this.mcpPromptArgumentValues =
+																														{
+																															...this
+																																.mcpPromptArgumentValues,
+																															[argumentKey]: (
+																																event.target as HTMLInputElement
+																															).value,
+																														};
+																												}}
+																											/>
+																											${
+																												argument.description
+																													? html`<div class="panel-card-copy">${argument.description}</div>`
+																													: ""
+																											}
+																										</div>
+																									</label>
+																								`;
+																						})}
+																					</div>
+																				`
+																				: selectedPromptDetail
+																					? ""
+																					: html`
+																						<div class="control-row">
+																							<textarea
+																								class="field-input"
+																								style="min-height: 5.5rem;"
+																								.placeholder=${"Prompt args (KEY=VALUE, one per line)"}
+																								.value=${promptArgsText}
+																								aria-label=${`Prompt arguments for ${server.name}`}
+																								@input=${(event: Event) => {
+																									this.mcpPromptArgsText = {
+																										...this.mcpPromptArgsText,
+																										[server.name]: (
+																											event.target as HTMLTextAreaElement
+																										).value,
+																									};
+																								}}
+																							></textarea>
+																						</div>
+																					`
+																		}
+																		${
+																			promptError
+																				? html`<div class="panel-feedback error">${promptError}</div>`
+																				: ""
+																		}
 																	${
 																		promptOutput
 																			? html`<pre class="panel-code-block">${promptOutput}</pre>`

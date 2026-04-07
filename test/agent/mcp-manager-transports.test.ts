@@ -8,6 +8,7 @@ const mockClientConnect = vi.fn();
 const mockClientClose = vi.fn();
 const mockSetNotificationHandler = vi.fn();
 const mockSetRequestHandler = vi.fn();
+const mockListPrompts = vi.fn().mockResolvedValue({ prompts: [] });
 const sseTransportCtor = vi.fn();
 const httpTransportCtor = vi.fn();
 const clientCtorOptions: unknown[] = [];
@@ -26,7 +27,7 @@ vi.mock("@modelcontextprotocol/sdk/client/index.js", () => ({
 		}));
 		listTools = vi.fn().mockResolvedValue({ tools: [] });
 		listResources = vi.fn().mockResolvedValue({ resources: [] });
-		listPrompts = vi.fn().mockResolvedValue({ prompts: [] });
+		listPrompts = mockListPrompts;
 		setNotificationHandler = mockSetNotificationHandler;
 		setRequestHandler = mockSetRequestHandler;
 		close = mockClientClose.mockResolvedValue(undefined);
@@ -67,6 +68,7 @@ describe("MCP manager remote transports", () => {
 		mockClientClose.mockClear();
 		mockSetNotificationHandler.mockClear();
 		mockSetRequestHandler.mockClear();
+		mockListPrompts.mockReset().mockResolvedValue({ prompts: [] });
 		sseTransportCtor.mockClear();
 		httpTransportCtor.mockClear();
 		clientCtorOptions.length = 0;
@@ -113,6 +115,54 @@ describe("MCP manager remote transports", () => {
 			"https://example.com/sse",
 		);
 		expect(manager.isConnected("remote-sse")).toBe(true);
+	});
+
+	it("surfaces MCP prompt metadata in status", async () => {
+		mockListPrompts.mockResolvedValueOnce({
+			prompts: [
+				{
+					name: "summarize-issue",
+					title: "Summarize Issue",
+					description: "Summarize a ticket by id.",
+					arguments: [
+						{
+							name: "ISSUE",
+							description: "Issue identifier",
+							required: true,
+						},
+					],
+				},
+			],
+		});
+
+		await manager.configure({
+			servers: [
+				{
+					name: "remote-http",
+					transport: "http",
+					url: "https://example.com/mcp",
+				},
+			],
+		});
+
+		expect(manager.getStatus().servers[0]).toMatchObject({
+			name: "remote-http",
+			prompts: ["summarize-issue"],
+			promptDetails: [
+				{
+					name: "summarize-issue",
+					title: "Summarize Issue",
+					description: "Summarize a ticket by id.",
+					arguments: [
+						{
+							name: "ISSUE",
+							description: "Issue identifier",
+							required: true,
+						},
+					],
+				},
+			],
+		});
 	});
 
 	it("reconnects a server when the same name is reconfigured", async () => {

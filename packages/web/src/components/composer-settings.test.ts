@@ -45,6 +45,20 @@ function createApiClientMock(): ApiClient {
 					authPreset: "linear-auth",
 					resources: ["linear://workspace"],
 					prompts: ["summarize-issue"],
+					promptDetails: [
+						{
+							name: "summarize-issue",
+							title: "Summarize Issue",
+							description: "Summarize a Linear issue",
+							arguments: [
+								{
+									name: "ISSUE",
+									description: "Issue identifier",
+									required: true,
+								},
+							],
+						},
+					],
 				},
 			],
 		}),
@@ -247,13 +261,13 @@ describe("ComposerSettings MCP section", () => {
 		);
 
 		const promptArgs = element.shadowRoot?.querySelector(
-			'textarea[aria-label="Prompt arguments for linear"]',
-		) as HTMLTextAreaElement | null;
+			'input[aria-label="Prompt argument ISSUE for linear"]',
+		) as HTMLInputElement | null;
 		expect(promptArgs).not.toBeNull();
 		if (!promptArgs) {
-			throw new Error("Expected MCP prompt arguments textarea");
+			throw new Error("Expected MCP prompt argument input");
 		}
-		promptArgs.value = "ISSUE=MAE-1";
+		promptArgs.value = "MAE-1";
 		promptArgs.dispatchEvent(new Event("input", { bubbles: true }));
 
 		const runButton = element.shadowRoot?.querySelector(
@@ -279,6 +293,36 @@ describe("ComposerSettings MCP section", () => {
 		expect(element.shadowRoot?.textContent ?? "").toContain(
 			"Summarize issue MAE-1",
 		);
+	});
+
+	it("validates required structured MCP prompt arguments before running", async () => {
+		const apiClient = createApiClientMock();
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Boolean(
+				element.shadowRoot?.querySelector(
+					'button[aria-label="Run prompt for linear"]',
+				),
+			),
+		);
+
+		const runButton = element.shadowRoot?.querySelector(
+			'button[aria-label="Run prompt for linear"]',
+		) as HTMLButtonElement | null;
+		expect(runButton).not.toBeNull();
+		runButton?.dispatchEvent(new Event("click", { bubbles: true }));
+
+		await waitForSettled(
+			element,
+			() =>
+				(element.shadowRoot?.textContent ?? "").includes(
+					'Missing required prompt argument "ISSUE".',
+				),
+			30,
+		);
+
+		expect(apiClient.getMcpPrompt).not.toHaveBeenCalled();
 	});
 
 	it("clears stale MCP resource and prompt output when reruns fail", async () => {
@@ -321,9 +365,13 @@ describe("ComposerSettings MCP section", () => {
 		const promptButton = element.shadowRoot?.querySelector(
 			'button[aria-label="Run prompt for linear"]',
 		) as HTMLButtonElement | null;
+		const promptArgumentInput = element.shadowRoot?.querySelector(
+			'input[aria-label="Prompt argument ISSUE for linear"]',
+		) as HTMLInputElement | null;
 		expect(readButton).not.toBeNull();
 		expect(promptButton).not.toBeNull();
-		if (!readButton || !promptButton) {
+		expect(promptArgumentInput).not.toBeNull();
+		if (!readButton || !promptButton || !promptArgumentInput) {
 			throw new Error("Expected MCP resource and prompt buttons");
 		}
 
@@ -351,6 +399,8 @@ describe("ComposerSettings MCP section", () => {
 		expect(afterReadFailure).toContain("Resource read failed");
 		expect(afterReadFailure).not.toContain("workspace content");
 
+		promptArgumentInput.value = "MAE-1";
+		promptArgumentInput.dispatchEvent(new Event("input", { bubbles: true }));
 		promptButton.click();
 		await waitForSettled(
 			element,
@@ -364,6 +414,8 @@ describe("ComposerSettings MCP section", () => {
 			"Summarize issue MAE-1",
 		);
 
+		promptArgumentInput.value = "MAE-1";
+		promptArgumentInput.dispatchEvent(new Event("input", { bubbles: true }));
 		promptButton.click();
 		await waitForSettled(
 			element,

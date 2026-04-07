@@ -218,6 +218,19 @@ export interface McpToolDefinition {
 	annotations?: Record<string, unknown>;
 }
 
+export interface McpPromptArgument {
+	name: string;
+	description?: string;
+	required?: boolean;
+}
+
+export interface McpPromptDefinition {
+	name: string;
+	title?: string;
+	description?: string;
+	arguments?: McpPromptArgument[];
+}
+
 export type McpRemoteTrust = "official" | "custom" | "unknown";
 
 export interface McpOfficialRegistryInfo {
@@ -254,6 +267,7 @@ export interface McpServerStatus {
 	tools?: McpToolDefinition[] | number;
 	resources?: string[];
 	prompts?: string[];
+	promptDetails?: McpPromptDefinition[];
 	error?: string;
 	command?: string;
 	args?: string[];

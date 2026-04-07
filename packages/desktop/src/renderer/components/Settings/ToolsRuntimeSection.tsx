@@ -30,6 +30,7 @@ import type {
 	McpAuthPresetStatus,
 	McpAuthPresetUpdateRequest,
 	McpOfficialRegistryEntry,
+	McpPromptDefinition,
 	McpPromptResponse,
 	McpRegistryImportRequest,
 	McpRegistryImportResponse,
@@ -94,6 +95,7 @@ export interface McpServerViewModel {
 	toolDetailsLabel: string | null;
 	resources: string[];
 	prompts: string[];
+	promptDetails: McpPromptDefinition[];
 }
 
 export interface McpRegistryEntryViewModel {
@@ -207,6 +209,14 @@ export function formatMcpPromptResult(result: McpPromptResponse): string {
 	return formatSharedMcpPromptOutput(result);
 }
 
+export function getMcpPromptArgumentValueKey(
+	serverName: string,
+	promptName: string,
+	argumentName: string,
+): string {
+	return `${serverName}::${promptName}::${argumentName}`;
+}
+
 export {
 	formatMcpArgsText,
 	formatMcpKeyValueText,
@@ -303,6 +313,7 @@ export function buildMcpServerViewModel(
 					: "No tools reported.",
 		resources,
 		prompts,
+		promptDetails: server.promptDetails ?? [],
 	};
 }
 
@@ -517,6 +528,9 @@ export function ToolsRuntimeSection({
 	const [promptArgsTexts, setPromptArgsTexts] = useState<
 		Record<string, string>
 	>({});
+	const [promptArgumentValues, setPromptArgumentValues] = useState<
+		Record<string, string>
+	>({});
 	const [resourceOutputs, setResourceOutputs] = useState<
 		Record<string, string>
 	>({});
@@ -623,7 +637,35 @@ export function ToolsRuntimeSection({
 			),
 		);
 		try {
-			const args = parseMcpKeyValueText(promptArgsTexts[server.name] ?? "");
+			const selectedPrompt = server.promptDetails.find(
+				(prompt) => prompt.name === promptName,
+			);
+			const args =
+				selectedPrompt && (selectedPrompt.arguments?.length ?? 0) > 0
+					? (() => {
+							const entries = (selectedPrompt.arguments ?? []).flatMap(
+								(argument) => {
+									const key = getMcpPromptArgumentValueKey(
+										server.name,
+										promptName,
+										argument.name,
+									);
+									const value = promptArgumentValues[key]?.trim() ?? "";
+									if (argument.required && value.length === 0) {
+										throw new Error(
+											`Missing required prompt argument "${argument.name}".`,
+										);
+									}
+									return value.length > 0
+										? ([[argument.name, value]] as const)
+										: [];
+								},
+							);
+							return entries.length > 0
+								? Object.fromEntries(entries)
+								: undefined;
+						})()
+					: parseMcpKeyValueText(promptArgsTexts[server.name] ?? "");
 			const result = await onGetMcpPrompt(server.name, promptName, args);
 			setPromptOutputs((prev) => ({
 				...prev,
@@ -1388,6 +1430,10 @@ export function ToolsRuntimeSection({
 											selectedPromptNames[server.name] ??
 											server.prompts[0] ??
 											"";
+										const selectedPromptDetail =
+											server.promptDetails.find(
+												(prompt) => prompt.name === selectedPromptName,
+											) ?? null;
 										const promptArgsText = promptArgsTexts[server.name] ?? "";
 										const resourceOutput = resourceOutputs[server.name] ?? "";
 										const promptOutput = promptOutputs[server.name] ?? "";
@@ -2012,27 +2058,95 @@ export function ToolsRuntimeSection({
 																			aria-label={`MCP prompt for ${server.name}`}
 																			className="w-full bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary"
 																		>
-																			{server.prompts.map((prompt) => (
-																				<option
-																					key={`${server.name}:${prompt}`}
-																					value={prompt}
-																				>
-																					{prompt}
-																				</option>
-																			))}
+																			{server.prompts.map((prompt) => {
+																				const promptDetail =
+																					server.promptDetails.find(
+																						(detail) => detail.name === prompt,
+																					);
+																				return (
+																					<option
+																						key={`${server.name}:${prompt}`}
+																						value={prompt}
+																					>
+																						{promptDetail?.title ?? prompt}
+																					</option>
+																				);
+																			})}
 																		</select>
-																		<textarea
-																			value={promptArgsText}
-																			onChange={(event) =>
-																				setPromptArgsTexts((prev) => ({
-																					...prev,
-																					[server.name]: event.target.value,
-																				}))
-																			}
-																			placeholder="Prompt args (KEY=VALUE, one per line)"
-																			aria-label={`Prompt arguments for ${server.name}`}
-																			className="min-h-[88px] bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
-																		/>
+																		{selectedPromptDetail?.description && (
+																			<div className="text-text-muted">
+																				{selectedPromptDetail.description}
+																			</div>
+																		)}
+																		{(selectedPromptDetail?.arguments?.length ??
+																			0) > 0 ? (
+																			<div className="grid grid-cols-1 gap-2">
+																				{(
+																					selectedPromptDetail?.arguments ?? []
+																				).map((argument) => {
+																					const argumentKey =
+																						getMcpPromptArgumentValueKey(
+																							server.name,
+																							selectedPromptName,
+																							argument.name,
+																						);
+																					return (
+																						<label
+																							key={argumentKey}
+																							className="grid grid-cols-1 gap-1"
+																						>
+																							<span className="text-text-muted">
+																								{argument.name}
+																								{argument.required
+																									? " (required)"
+																									: ""}
+																							</span>
+																							<input
+																								type="text"
+																								value={
+																									promptArgumentValues[
+																										argumentKey
+																									] ?? ""
+																								}
+																								onChange={(event) =>
+																									setPromptArgumentValues(
+																										(prev) => ({
+																											...prev,
+																											[argumentKey]:
+																												event.target.value,
+																										}),
+																									)
+																								}
+																								placeholder={
+																									argument.description ??
+																									argument.name
+																								}
+																								aria-label={`Prompt argument ${argument.name} for ${server.name}`}
+																								className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+																							/>
+																							{argument.description && (
+																								<span className="text-text-muted">
+																									{argument.description}
+																								</span>
+																							)}
+																						</label>
+																					);
+																				})}
+																			</div>
+																		) : selectedPromptDetail ? null : (
+																			<textarea
+																				value={promptArgsText}
+																				onChange={(event) =>
+																					setPromptArgsTexts((prev) => ({
+																						...prev,
+																						[server.name]: event.target.value,
+																					}))
+																				}
+																				placeholder="Prompt args (KEY=VALUE, one per line)"
+																				aria-label={`Prompt arguments for ${server.name}`}
+																				className="min-h-[88px] bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+																			/>
+																		)}
 																		<button
 																			type="button"
 																			className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-60"

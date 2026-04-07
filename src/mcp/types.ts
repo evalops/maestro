@@ -65,6 +65,19 @@ export interface McpOfficialRegistryEntry extends McpOfficialRegistryInfo {
 	promptCount?: number;
 }
 
+export interface McpPromptArgument {
+	name: string;
+	description?: string;
+	required?: boolean;
+}
+
+export interface McpPromptDefinition {
+	name: string;
+	title?: string;
+	description?: string;
+	arguments?: McpPromptArgument[];
+}
+
 export interface McpAuthPresetConfig {
 	name: string;
 	headers?: Record<string, string>;
@@ -110,6 +123,7 @@ export interface McpServerStatus {
 	tools: McpTool[];
 	resources: string[];
 	prompts: string[];
+	promptDetails?: McpPromptDefinition[];
 	command?: string;
 	args?: string[];
 	cwd?: string;
