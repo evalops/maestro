@@ -388,8 +388,7 @@ impl AgentSupervisor {
         if let Some(transport) = self.transport.take() {
             self.begin_transport_shutdown(transport);
         }
-        self.clear_transient_progress_state();
-        self.clear_pending_request_state();
+        self.clear_disconnect_state();
         self.last_response = None;
         self.pending_auto_reconnect = false;
         self.stale_reference_retries = 0;
@@ -430,9 +429,6 @@ impl AgentSupervisor {
 
             match self.spawn_transport().await {
                 Ok(transport) => {
-                    if let Some(existing) = self.transport.take() {
-                        let _ = existing.shutdown();
-                    }
                     self.set_transport(transport)?;
                     self.health_status = HealthStatus::Healthy;
                     self.reconnect_attempts = 0;
@@ -445,8 +441,9 @@ impl AgentSupervisor {
                     return Ok(());
                 }
                 Err(e) => {
+                    let within_retry_budget = self.consume_retry_budget_for_error(&e);
                     let reconnect_elapsed = reconnect_started_at.elapsed();
-                    if !e.is_retryable()
+                    if !within_retry_budget
                         || (max_attempts > 0 && self.reconnect_attempts >= max_attempts)
                         || reconnect_elapsed >= self.config.max_reconnect_elapsed
                     {
@@ -618,13 +615,16 @@ impl AgentSupervisor {
 
     fn clear_transient_progress_state(&mut self) {
         self.state.clear_transient_progress();
-        if let Some(ref mut recorder) = self.session_recorder {
-            let _ = recorder.apply_snapshot(self.state.clone(), self.last_init.clone());
-        }
+        self.persist_session_snapshot();
     }
 
-    fn clear_pending_request_state(&mut self) {
+    fn clear_disconnect_state(&mut self) {
+        self.state.clear_transient_progress();
         self.state.clear_pending_request_state();
+        self.persist_session_snapshot();
+    }
+
+    fn persist_session_snapshot(&mut self) {
         if let Some(ref mut recorder) = self.session_recorder {
             let _ = recorder.apply_snapshot(self.state.clone(), self.last_init.clone());
         }
@@ -669,7 +669,7 @@ impl AgentSupervisor {
         }
     }
 
-    fn should_schedule_disconnect_retry(&mut self, error: &AsyncTransportError) -> bool {
+    fn consume_retry_budget_for_error(&mut self, error: &AsyncTransportError) -> bool {
         if !error.is_retryable() {
             self.stale_reference_retries = 0;
             return false;
@@ -686,7 +686,7 @@ impl AgentSupervisor {
 
     fn handle_transport_disconnect(&mut self, error: AsyncTransportError) -> SupervisorEvent {
         let should_retry =
-            self.config.auto_reconnect && self.should_schedule_disconnect_retry(&error);
+            self.config.auto_reconnect && self.consume_retry_budget_for_error(&error);
         if let Some(transport) = self.transport.take() {
             self.begin_transport_shutdown(transport);
         }
@@ -776,19 +776,7 @@ impl AgentSupervisor {
                 return None;
             }
 
-            self.health_status = HealthStatus::Unhealthy;
-            self.last_response = None;
-            if self.config.auto_reconnect {
-                if let Some(transport) = self.transport.take() {
-                    self.begin_transport_shutdown(transport);
-                }
-                self.pending_auto_reconnect = true;
-            } else {
-                self.clear_transient_progress_state();
-            }
-            return Some(SupervisorEvent::HealthChanged {
-                status: HealthStatus::Unhealthy,
-            });
+            return Some(self.transition_to_unhealthy_for_silence());
         }
         match self.health_status {
             HealthStatus::Healthy if silence >= self.config.health_check_interval => {
@@ -801,21 +789,26 @@ impl AgentSupervisor {
                 if silence
                     >= self.config.health_check_interval + self.config.health_check_timeout =>
             {
-                self.health_status = HealthStatus::Unhealthy;
-                self.last_response = None;
-                if self.config.auto_reconnect {
-                    if let Some(transport) = self.transport.take() {
-                        self.begin_transport_shutdown(transport);
-                    }
-                    self.pending_auto_reconnect = true;
-                } else {
-                    self.clear_transient_progress_state();
-                }
-                Some(SupervisorEvent::HealthChanged {
-                    status: HealthStatus::Unhealthy,
-                })
+                Some(self.transition_to_unhealthy_for_silence())
             }
             _ => None,
+        }
+    }
+
+    fn transition_to_unhealthy_for_silence(&mut self) -> SupervisorEvent {
+        self.health_status = HealthStatus::Unhealthy;
+        self.last_response = None;
+        if self.config.auto_reconnect {
+            if let Some(transport) = self.transport.take() {
+                self.begin_transport_shutdown(transport);
+            }
+            self.pending_auto_reconnect = true;
+        } else {
+            self.pending_auto_reconnect = false;
+            self.clear_transient_progress_state();
+        }
+        SupervisorEvent::HealthChanged {
+            status: HealthStatus::Unhealthy,
         }
     }
 
@@ -1282,6 +1275,7 @@ mod tests {
     use crate::headless::messages::{
         ActiveFileWatch, ActiveUtilityCommand, PendingApproval, UtilityCommandTerminalMode,
     };
+    use crate::headless::session::SessionEntry;
     use crate::headless::{
         ActiveTool, HeadlessErrorType, StreamingResponse, TokenUsage, UtilityCommandShellMode,
     };
@@ -2267,6 +2261,65 @@ mod tests {
     }
 
     #[test]
+    fn disconnect_writes_one_checkpoint_after_clearing_disconnect_state() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let sessions_dir = temp.path();
+        let recorder = SessionRecorder::new(sessions_dir).expect("recorder");
+        let session_id = recorder.id().to_string();
+        let mut supervisor =
+            AgentSupervisor::new(SupervisorConfig::default()).with_session_recorder(recorder);
+        let approval = PendingApproval {
+            call_id: "call_disconnect".to_string(),
+            request_id: Some("req_disconnect".to_string()),
+            tool: "bash".to_string(),
+            args: serde_json::json!({ "command": "git push" }),
+        };
+
+        supervisor.state.current_response = Some(StreamingResponse::new("resp_disconnect".into()));
+        supervisor.state.is_responding = true;
+        supervisor.state.pending_approvals.push(approval.clone());
+        supervisor
+            .state
+            .tracked_tools
+            .insert(approval.call_id.clone(), approval);
+        supervisor.state.active_tools.insert(
+            "call_disconnect".to_string(),
+            ActiveTool {
+                call_id: "call_disconnect".to_string(),
+                tool: "grep".to_string(),
+                output: "partial".to_string(),
+                started: Instant::now(),
+            },
+        );
+
+        supervisor.disconnect();
+        supervisor
+            .session_recorder
+            .as_mut()
+            .expect("session recorder")
+            .flush()
+            .expect("flush");
+        drop(supervisor);
+
+        let reader = SessionReader::load(sessions_dir, &session_id).expect("load session");
+        let checkpoints = reader
+            .entries()
+            .iter()
+            .filter_map(|entry| match entry {
+                SessionEntry::Checkpoint { state, .. } => Some(state.as_ref()),
+                SessionEntry::Sent { .. } | SessionEntry::Received { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(checkpoints.len(), 1);
+        let checkpoint = checkpoints[0];
+        assert!(checkpoint.current_response.is_none());
+        assert!(!checkpoint.is_responding);
+        assert!(checkpoint.pending_approvals.is_empty());
+        assert!(checkpoint.tracked_tools.is_empty());
+        assert!(checkpoint.active_tools.is_empty());
+    }
+
+    #[test]
     fn event_to_message_preserves_headless_metadata() {
         let ready = event_to_message(&AgentEvent::Ready {
             protocol_version: Some("2026-03-30".to_string()),
@@ -2992,6 +3045,99 @@ done
             supervisor.stale_reference_retries,
             MAX_STALE_REMOTE_REFERENCE_RETRIES + 1
         );
+        assert!(!supervisor.pending_auto_reconnect);
+    }
+
+    #[tokio::test]
+    async fn remote_reconnect_stale_session_errors_respect_retry_budget() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let bootstrap_attempts = Arc::new(AtomicUsize::new(0));
+        let subscribe_attempts = Arc::new(AtomicUsize::new(0));
+
+        tokio::spawn({
+            let bootstrap_attempts = Arc::clone(&bootstrap_attempts);
+            let subscribe_attempts = Arc::clone(&subscribe_attempts);
+            async move {
+                loop {
+                    let Ok((mut socket, _)) = listener.accept().await else {
+                        break;
+                    };
+                    let bootstrap_attempts = Arc::clone(&bootstrap_attempts);
+                    let subscribe_attempts = Arc::clone(&subscribe_attempts);
+                    tokio::spawn(async move {
+                        let Some((path, _headers, _body)) = read_http_request(&mut socket).await
+                        else {
+                            return;
+                        };
+                        if path == "/api/headless/connections" {
+                            bootstrap_attempts.fetch_add(1, Ordering::SeqCst);
+                            write_http_response(
+                                &mut socket,
+                                "HTTP/1.1 200 OK",
+                                "application/json",
+                                r#"{"session_id":"sess_remote","connection_id":"conn_remote"}"#,
+                            )
+                            .await;
+                            return;
+                        }
+                        if path.starts_with("/api/headless/sessions/")
+                            && path.ends_with("/subscribe")
+                        {
+                            subscribe_attempts.fetch_add(1, Ordering::SeqCst);
+                            write_http_response(
+                                &mut socket,
+                                "HTTP/1.1 404 Not Found",
+                                "application/json",
+                                r#"{"error":"Headless session not found"}"#,
+                            )
+                            .await;
+                            return;
+                        }
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 404 Not Found",
+                            "text/plain",
+                            "not found",
+                        )
+                        .await;
+                    });
+                }
+            }
+        });
+
+        let mut supervisor = SupervisorBuilder::new()
+            .remote_base_url(format!("http://{addr}"))
+            .max_reconnect_attempts(0)
+            .reconnect_delay(Duration::from_millis(1))
+            .build();
+
+        let error = supervisor
+            .reconnect()
+            .await
+            .expect_err("reconnect should stop after stale-session retry budget is exhausted");
+        assert!(matches!(
+            error,
+            AsyncTransportError::RemoteStatus {
+                status: 404,
+                retryable: true,
+                kind: RemoteErrorKind::StaleSession,
+                ..
+            }
+        ));
+        assert_eq!(
+            bootstrap_attempts.load(Ordering::SeqCst),
+            (MAX_STALE_REMOTE_REFERENCE_RETRIES + 1) as usize
+        );
+        assert_eq!(
+            subscribe_attempts.load(Ordering::SeqCst),
+            (MAX_STALE_REMOTE_REFERENCE_RETRIES + 1) as usize
+        );
+        assert_eq!(
+            supervisor.stale_reference_retries,
+            MAX_STALE_REMOTE_REFERENCE_RETRIES + 1
+        );
+        assert_eq!(supervisor.health(), HealthStatus::Unhealthy);
         assert!(!supervisor.pending_auto_reconnect);
     }
 
