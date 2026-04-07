@@ -295,7 +295,8 @@ case "$args" in
   "rev-parse --abbrev-ref --symbolic-full-name @{u}")
     exit 1
     ;;
-  "status --porcelain")
+  "--no-optional-locks status --porcelain")
+    printf ' M tracked.txt\\n'
     exit 0
     ;;
   "--no-optional-locks status --short")
@@ -317,6 +318,7 @@ exit 1
 
 			const snapshot = getGitSnapshot(dir);
 
+			expect(snapshot).toContain("Working tree: dirty");
 			expect(snapshot).toContain("Status:\nM tracked.txt");
 			expect(snapshot).toContain("Recent commits:\n(git log unavailable)");
 		} finally {

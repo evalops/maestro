@@ -186,11 +186,15 @@ export function getCurrentBranch(
  * Check if there are uncommitted changes (dirty working tree).
  */
 export function isDirtyWorkingTree(cwd: string = process.cwd()): boolean {
-	const result = spawnSync("git", ["status", "--porcelain"], {
-		cwd,
-		encoding: "utf-8",
-		stdio: ["ignore", "pipe", "pipe"],
-	});
+	const result = spawnSync(
+		"git",
+		["--no-optional-locks", "status", "--porcelain"],
+		{
+			cwd,
+			encoding: "utf-8",
+			stdio: ["ignore", "pipe", "pipe"],
+		},
+	);
 
 	if (result.error || result.status !== 0) {
 		return false;
