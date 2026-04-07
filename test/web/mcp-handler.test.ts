@@ -980,6 +980,48 @@ describe("handleMcpStatus", () => {
 		});
 	});
 
+	it("rejects MCP auth preset renames as a bad request", async () => {
+		vi.spyOn(mcp, "loadMcpConfig").mockReturnValue({
+			servers: [],
+			authPresets: [
+				{
+					name: "linear-auth",
+					scope: "local",
+					headers: {
+						Authorization: "Bearer token",
+					},
+				},
+			],
+		});
+		const updateConfig = vi.spyOn(mcp, "updateMcpAuthPresetInConfig");
+
+		const req = makeReq("/api/mcp?action=update-auth-preset", {
+			method: "POST",
+			body: {
+				name: "linear-auth",
+				scope: "local",
+				preset: {
+					name: "renamed-auth",
+					headersHelper: "bun run scripts/new-headers.ts",
+				},
+			},
+		});
+		const res = makeRes();
+
+		await handleMcpStatus(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			corsHeaders,
+		);
+
+		expect(updateConfig).not.toHaveBeenCalled();
+		expect(res.statusCode).toBe(400);
+		expect(JSON.parse(res.body)).toEqual({
+			code: "INVALID_ARGUMENT",
+			error: "Renaming MCP auth presets is not supported.",
+		});
+	});
+
 	it("clears optional MCP update fields when null is provided", async () => {
 		vi.spyOn(mcp, "prefetchOfficialMcpRegistry").mockResolvedValue(undefined);
 		const loadConfig = vi

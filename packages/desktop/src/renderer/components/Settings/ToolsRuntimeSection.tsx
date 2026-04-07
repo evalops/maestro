@@ -9,6 +9,8 @@ import {
 	formatMcpServerUpdateMessage,
 	formatMcpTimeoutText,
 	formatMcpTransportLabel,
+	formatMcpPromptOutput as formatSharedMcpPromptOutput,
+	formatMcpResourceOutput as formatSharedMcpResourceOutput,
 	getMcpRegistryEntryId,
 	getMcpRegistryUrlOptions,
 	getWritableMcpScope,
@@ -198,41 +200,11 @@ function formatMcpTrustLabel(
 export function formatMcpResourceReadResult(
 	result: McpResourceReadResponse,
 ): string {
-	if (result.contents.length === 0) {
-		return "No resource contents returned.";
-	}
-
-	return result.contents
-		.map((content) => {
-			const lines = [content.uri];
-			if (content.mimeType) {
-				lines.push(`mime: ${content.mimeType}`);
-			}
-			if (typeof content.text === "string") {
-				lines.push("", content.text);
-			} else if (typeof content.blob === "string") {
-				lines.push("", `[binary content: ${content.blob.length} chars]`);
-			} else {
-				lines.push("", "[empty content]");
-			}
-			return lines.join("\n");
-		})
-		.join("\n\n");
+	return formatSharedMcpResourceOutput(result);
 }
 
 export function formatMcpPromptResult(result: McpPromptResponse): string {
-	const lines: string[] = [];
-	if (result.description) {
-		lines.push(result.description, "");
-	}
-	if (result.messages.length === 0) {
-		lines.push("No prompt messages returned.");
-		return lines.join("\n").trim();
-	}
-	for (const message of result.messages) {
-		lines.push(`${message.role}:`, message.content, "");
-	}
-	return lines.join("\n").trim();
+	return formatSharedMcpPromptOutput(result);
 }
 
 export {
@@ -563,6 +535,8 @@ export function ToolsRuntimeSection({
 	);
 	const [editingAuthPresetHeadersTexts, setEditingAuthPresetHeadersTexts] =
 		useState<Record<string, string>>({});
+	const [editingAuthPresetReplaceHeaders, setEditingAuthPresetReplaceHeaders] =
+		useState<Record<string, boolean>>({});
 	const [editingAuthPresetHeadersHelpers, setEditingAuthPresetHeadersHelpers] =
 		useState<Record<string, string>>({});
 	const [editingServerTransports, setEditingServerTransports] = useState<
@@ -599,6 +573,11 @@ export function ToolsRuntimeSection({
 				Object.entries(prev).filter(([key]) => key !== server.name),
 			),
 		);
+		setResourceOutputs((prev) =>
+			Object.fromEntries(
+				Object.entries(prev).filter(([key]) => key !== server.name),
+			),
+		);
 		try {
 			const result = await onReadMcpResource(server.name, uri);
 			setResourceOutputs((prev) => ({
@@ -606,6 +585,11 @@ export function ToolsRuntimeSection({
 				[server.name]: formatMcpResourceReadResult(result),
 			}));
 		} catch (error) {
+			setResourceOutputs((prev) =>
+				Object.fromEntries(
+					Object.entries(prev).filter(([key]) => key !== server.name),
+				),
+			);
 			setResourceErrors((prev) => ({
 				...prev,
 				[server.name]:
@@ -633,6 +617,11 @@ export function ToolsRuntimeSection({
 				Object.entries(prev).filter(([key]) => key !== server.name),
 			),
 		);
+		setPromptOutputs((prev) =>
+			Object.fromEntries(
+				Object.entries(prev).filter(([key]) => key !== server.name),
+			),
+		);
 		try {
 			const args = parseMcpKeyValueText(promptArgsTexts[server.name] ?? "");
 			const result = await onGetMcpPrompt(server.name, promptName, args);
@@ -641,6 +630,11 @@ export function ToolsRuntimeSection({
 				[server.name]: formatMcpPromptResult(result),
 			}));
 		} catch (error) {
+			setPromptOutputs((prev) =>
+				Object.fromEntries(
+					Object.entries(prev).filter(([key]) => key !== server.name),
+				),
+			);
 			setPromptErrors((prev) => ({
 				...prev,
 				[server.name]:
@@ -854,17 +848,32 @@ export function ToolsRuntimeSection({
 		setServerMutationError(null);
 		setServerMutationNotice(null);
 		try {
+			const replacingHeaderValues =
+				editingAuthPresetReplaceHeaders[preset.name] === true;
+			const hasEditedHeaders =
+				replacingHeaderValues ||
+				((preset.headerKeys?.length ?? 0) === 0 &&
+					Object.prototype.hasOwnProperty.call(
+						editingAuthPresetHeadersTexts,
+						preset.name,
+					));
+			const hasEditedHeadersHelper = Object.prototype.hasOwnProperty.call(
+				editingAuthPresetHeadersHelpers,
+				preset.name,
+			);
 			const result = await onUpdateMcpAuthPreset({
 				name: preset.name,
 				scope: writableScope,
 				preset: {
 					name: preset.name,
-					headers:
-						parseMcpKeyValueText(
-							editingAuthPresetHeadersTexts[preset.name] ?? "",
-						) ?? null,
-					headersHelper:
-						editingAuthPresetHeadersHelpers[preset.name]?.trim() || null,
+					headers: hasEditedHeaders
+						? (parseMcpKeyValueText(
+								editingAuthPresetHeadersTexts[preset.name] ?? "",
+							) ?? null)
+						: undefined,
+					headersHelper: hasEditedHeadersHelper
+						? editingAuthPresetHeadersHelpers[preset.name]?.trim() || null
+						: undefined,
 				},
 			});
 			setServerMutationNotice(
@@ -1141,6 +1150,11 @@ export function ToolsRuntimeSection({
 							<div className="grid grid-cols-1 gap-2">
 								{authPresets.map((preset) => {
 									const writableScope = getWritableMcpScope(preset.scope);
+									const replaceHiddenHeaderValues =
+										editingAuthPresetReplaceHeaders[preset.name] === true;
+									const canEditHeaderValues =
+										(preset.headerKeys?.length ?? 0) === 0 ||
+										replaceHiddenHeaderValues;
 									return (
 										<div
 											key={preset.name}
@@ -1216,6 +1230,40 @@ export function ToolsRuntimeSection({
 																: "Save"}
 														</button>
 													</div>
+													{(preset.headerKeys?.length ?? 0) > 0 && (
+														<label className="text-xs text-text-muted inline-flex items-center gap-2">
+															<input
+																type="checkbox"
+																checked={replaceHiddenHeaderValues}
+																onChange={(event) => {
+																	const checked = event.target.checked;
+																	setEditingAuthPresetReplaceHeaders((prev) =>
+																		checked
+																			? {
+																					...prev,
+																					[preset.name]: true,
+																				}
+																			: Object.fromEntries(
+																					Object.entries(prev).filter(
+																						([key]) => key !== preset.name,
+																					),
+																				),
+																	);
+																	if (!checked) {
+																		setEditingAuthPresetHeadersTexts((prev) =>
+																			Object.fromEntries(
+																				Object.entries(prev).filter(
+																					([key]) => key !== preset.name,
+																				),
+																			),
+																		);
+																	}
+																}}
+																aria-label={`Replace hidden headers for auth preset ${preset.name}`}
+															/>
+															<span>Replace hidden header values</span>
+														</label>
+													)}
 													<textarea
 														value={
 															editingAuthPresetHeadersTexts[preset.name] ?? ""
@@ -1227,9 +1275,22 @@ export function ToolsRuntimeSection({
 															}))
 														}
 														placeholder="Headers (KEY=VALUE, one per line)"
+														disabled={!canEditHeaderValues}
 														aria-label={`Headers for auth preset ${preset.name}`}
 														className="min-h-[88px] bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
 													/>
+													<div className="text-[11px] text-text-muted">
+														Header values stay hidden.{" "}
+														{(preset.headerKeys?.length ?? 0) > 0 &&
+														!replaceHiddenHeaderValues
+															? 'Enable "Replace hidden header values" to edit them.'
+															: "Enter KEY=VALUE lines to replace them. Leave the field blank and save to clear them."}{" "}
+														Current keys:{" "}
+														{preset.headerKeys.length
+															? preset.headerKeys.join(", ")
+															: "none"}
+														.
+													</div>
 												</>
 											)}
 										</div>

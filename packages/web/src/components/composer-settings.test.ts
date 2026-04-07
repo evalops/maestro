@@ -162,6 +162,16 @@ function createSettings(apiClient: ApiClient): ComposerSettings {
 	return element;
 }
 
+function createDeferred<T>() {
+	let resolve!: (value: T | PromiseLike<T>) => void;
+	let reject!: (reason?: unknown) => void;
+	const promise = new Promise<T>((res, rej) => {
+		resolve = res;
+		reject = rej;
+	});
+	return { promise, resolve, reject };
+}
+
 async function waitForSettled(
 	element: ComposerSettings,
 	predicate: () => boolean,
@@ -271,6 +281,220 @@ describe("ComposerSettings MCP section", () => {
 		);
 	});
 
+	it("clears stale MCP resource and prompt output when reruns fail", async () => {
+		const apiClient = createApiClientMock();
+		(apiClient.readMcpResource as ReturnType<typeof vi.fn>)
+			.mockResolvedValueOnce({
+				contents: [
+					{
+						uri: "linear://workspace",
+						text: "workspace content",
+						mimeType: "text/plain",
+					},
+				],
+			})
+			.mockRejectedValueOnce(new Error("Resource read failed"));
+		(apiClient.getMcpPrompt as ReturnType<typeof vi.fn>)
+			.mockResolvedValueOnce({
+				description: "Summarize a Linear issue",
+				messages: [
+					{
+						role: "user",
+						content: "Summarize issue MAE-1",
+					},
+				],
+			})
+			.mockRejectedValueOnce(new Error("Prompt run failed"));
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Boolean(
+				element.shadowRoot?.querySelector(
+					'button[aria-label="Read resource for linear"]',
+				),
+			),
+		);
+
+		const readButton = element.shadowRoot?.querySelector(
+			'button[aria-label="Read resource for linear"]',
+		) as HTMLButtonElement | null;
+		const promptButton = element.shadowRoot?.querySelector(
+			'button[aria-label="Run prompt for linear"]',
+		) as HTMLButtonElement | null;
+		expect(readButton).not.toBeNull();
+		expect(promptButton).not.toBeNull();
+		if (!readButton || !promptButton) {
+			throw new Error("Expected MCP resource and prompt buttons");
+		}
+
+		readButton.click();
+		await waitForSettled(
+			element,
+			() =>
+				(element.shadowRoot?.textContent ?? "").includes("workspace content"),
+			30,
+		);
+		expect(element.shadowRoot?.textContent ?? "").toContain(
+			"workspace content",
+		);
+
+		readButton.click();
+		await waitForSettled(
+			element,
+			() =>
+				(element.shadowRoot?.textContent ?? "").includes(
+					"Resource read failed",
+				),
+			30,
+		);
+		const afterReadFailure = element.shadowRoot?.textContent ?? "";
+		expect(afterReadFailure).toContain("Resource read failed");
+		expect(afterReadFailure).not.toContain("workspace content");
+
+		promptButton.click();
+		await waitForSettled(
+			element,
+			() =>
+				(element.shadowRoot?.textContent ?? "").includes(
+					"Summarize issue MAE-1",
+				),
+			30,
+		);
+		expect(element.shadowRoot?.textContent ?? "").toContain(
+			"Summarize issue MAE-1",
+		);
+
+		promptButton.click();
+		await waitForSettled(
+			element,
+			() =>
+				(element.shadowRoot?.textContent ?? "").includes("Prompt run failed"),
+			30,
+		);
+		const afterPromptFailure = element.shadowRoot?.textContent ?? "";
+		expect(afterPromptFailure).toContain("Prompt run failed");
+		expect(afterPromptFailure).not.toContain("Summarize issue MAE-1");
+	});
+
+	it("keeps the latest MCP resource request marked loading while older reads finish", async () => {
+		const apiClient = createApiClientMock();
+		const linearRead = createDeferred<{
+			contents: Array<{ uri: string; text: string; mimeType: string }>;
+		}>();
+		const githubRead = createDeferred<{
+			contents: Array<{ uri: string; text: string; mimeType: string }>;
+		}>();
+		(apiClient.getMcpStatus as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+			authPresets: [],
+			servers: [
+				{
+					name: "linear",
+					connected: true,
+					scope: "local",
+					transport: "http",
+					resources: ["linear://workspace"],
+					prompts: [],
+				},
+				{
+					name: "github",
+					connected: true,
+					scope: "local",
+					transport: "http",
+					resources: ["github://repo"],
+					prompts: [],
+				},
+			],
+		});
+		(apiClient.readMcpResource as ReturnType<typeof vi.fn>).mockImplementation(
+			(server: string) =>
+				server === "linear" ? linearRead.promise : githubRead.promise,
+		);
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Boolean(
+				element.shadowRoot?.querySelector(
+					'button[aria-label="Read resource for github"]',
+				),
+			),
+		);
+
+		const linearButton = element.shadowRoot?.querySelector(
+			'button[aria-label="Read resource for linear"]',
+		) as HTMLButtonElement | null;
+		const githubButton = element.shadowRoot?.querySelector(
+			'button[aria-label="Read resource for github"]',
+		) as HTMLButtonElement | null;
+		expect(linearButton).not.toBeNull();
+		expect(githubButton).not.toBeNull();
+		if (!linearButton || !githubButton) {
+			throw new Error("Expected MCP resource buttons for both servers");
+		}
+
+		linearButton.click();
+		await waitForSettled(
+			element,
+			() =>
+				(apiClient.readMcpResource as ReturnType<typeof vi.fn>).mock.calls
+					.length === 1,
+			30,
+		);
+		githubButton.click();
+		await waitForSettled(
+			element,
+			() =>
+				(apiClient.readMcpResource as ReturnType<typeof vi.fn>).mock.calls
+					.length === 2,
+			30,
+		);
+
+		linearRead.resolve({
+			contents: [
+				{
+					uri: "linear://workspace",
+					text: "linear content",
+					mimeType: "text/plain",
+				},
+			],
+		});
+		await waitForSettled(
+			element,
+			() =>
+				(
+					element.shadowRoot?.querySelector(
+						'button[aria-label="Read resource for github"]',
+					) as HTMLButtonElement | null
+				)?.disabled === true,
+			30,
+		);
+
+		const githubButtonWhilePending = element.shadowRoot?.querySelector(
+			'button[aria-label="Read resource for github"]',
+		) as HTMLButtonElement | null;
+		expect(githubButtonWhilePending?.disabled).toBe(true);
+		expect(githubButtonWhilePending?.textContent).toContain("Loading...");
+
+		githubRead.resolve({
+			contents: [
+				{
+					uri: "github://repo",
+					text: "github content",
+					mimeType: "text/plain",
+				},
+			],
+		});
+		await waitForSettled(
+			element,
+			() =>
+				(
+					element.shadowRoot?.querySelector(
+						'button[aria-label="Read resource for github"]',
+					) as HTMLButtonElement | null
+				)?.disabled === false,
+			30,
+		);
+	});
+
 	it("adds an MCP auth preset and refreshes status", async () => {
 		const apiClient = createApiClientMock();
 		(apiClient.getMcpStatus as ReturnType<typeof vi.fn>)
@@ -344,6 +568,65 @@ describe("ComposerSettings MCP section", () => {
 			},
 		});
 		expect(apiClient.getMcpStatus).toHaveBeenCalledTimes(2);
+	});
+
+	it("preserves untouched MCP auth preset fields until replacement is explicit", async () => {
+		const apiClient = createApiClientMock();
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Boolean(
+				element.shadowRoot?.querySelector(".mcp-auth-preset-save-button"),
+			),
+		);
+
+		const saveButton = element.shadowRoot?.querySelector(
+			".mcp-auth-preset-save-button",
+		) as HTMLButtonElement | null;
+		expect(saveButton).not.toBeNull();
+		saveButton?.click();
+
+		await waitForSettled(
+			element,
+			() =>
+				(apiClient.updateMcpAuthPreset as ReturnType<typeof vi.fn>).mock.calls
+					.length > 0,
+			30,
+		);
+
+		const firstCall = (
+			apiClient.updateMcpAuthPreset as ReturnType<typeof vi.fn>
+		).mock.calls[0]?.[0];
+		expect(firstCall).toBeDefined();
+		expect(firstCall.preset.name).toBe("linear-auth");
+		expect(firstCall.preset.headers).toBeUndefined();
+		expect(firstCall.preset.headersHelper).toBeUndefined();
+
+		const replaceHeaders = element.shadowRoot?.querySelector(
+			'input[aria-label="Replace hidden headers for auth preset linear-auth"]',
+		) as HTMLInputElement | null;
+		expect(replaceHeaders).not.toBeNull();
+		if (!replaceHeaders) {
+			throw new Error("Expected auth preset replacement checkbox");
+		}
+		replaceHeaders.checked = true;
+		replaceHeaders.dispatchEvent(new Event("change", { bubbles: true }));
+
+		saveButton?.click();
+		await waitForSettled(
+			element,
+			() =>
+				(apiClient.updateMcpAuthPreset as ReturnType<typeof vi.fn>).mock.calls
+					.length > 1,
+			30,
+		);
+
+		const secondCall = (
+			apiClient.updateMcpAuthPreset as ReturnType<typeof vi.fn>
+		).mock.calls[1]?.[0];
+		expect(secondCall).toBeDefined();
+		expect(secondCall.preset.headers).toBeNull();
+		expect(secondCall.preset.headersHelper).toBeUndefined();
 	});
 
 	it("imports a registry entry and refreshes MCP status", async () => {

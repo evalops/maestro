@@ -4,8 +4,10 @@
 
 import {
 	formatMcpArgsText,
+	formatMcpPromptOutput,
 	formatMcpRegistryImportMessage,
 	formatMcpRegistryScopeLabel,
+	formatMcpResourceOutput,
 	formatMcpServerAddMessage,
 	formatMcpServerRemoveMessage,
 	formatMcpServerUpdateMessage,
@@ -26,10 +28,8 @@ import type {
 	McpAuthPresetRemoveResponse,
 	McpAuthPresetStatus,
 	McpOfficialRegistryEntry,
-	McpPromptResponse,
 	McpRegistryImportRequest,
 	McpRemoteTrust,
-	McpResourceReadResponse,
 	McpServerAddRequest,
 	McpServerConfigInput,
 	McpServerRemoveResponse,
@@ -528,6 +528,8 @@ export class ComposerSettings extends LitElement {
 	@state() private mcpEditingAuthPresets: Record<string, string> = {};
 	@state() private mcpEditingAuthPresetHeadersTexts: Record<string, string> =
 		{};
+	@state() private mcpEditingReplaceAuthPresetHeaders: Record<string, boolean> =
+		{};
 	@state() private mcpEditingAuthPresetHeadersHelpers: Record<string, string> =
 		{};
 	@state() private mcpEditingTimeouts: Record<string, string> = {};
@@ -834,44 +836,6 @@ export class ComposerSettings extends LitElement {
 		return parseMcpTimeoutText(text);
 	}
 
-	private formatMcpResourceOutput(result: McpResourceReadResponse): string {
-		if (result.contents.length === 0) {
-			return "No resource contents returned.";
-		}
-
-		return result.contents
-			.map((content) => {
-				const lines = [content.uri];
-				if (content.mimeType) {
-					lines.push(`mime: ${content.mimeType}`);
-				}
-				if (typeof content.text === "string") {
-					lines.push("", content.text);
-				} else if (typeof content.blob === "string") {
-					lines.push("", `[binary content: ${content.blob.length} chars]`);
-				} else {
-					lines.push("", "[empty content]");
-				}
-				return lines.join("\n");
-			})
-			.join("\n\n");
-	}
-
-	private formatMcpPromptOutput(result: McpPromptResponse): string {
-		const lines: string[] = [];
-		if (result.description) {
-			lines.push(result.description, "");
-		}
-		if (result.messages.length === 0) {
-			lines.push("No prompt messages returned.");
-			return lines.join("\n").trim();
-		}
-		for (const message of result.messages) {
-			lines.push(`${message.role}:`, message.content, "");
-		}
-		return lines.join("\n").trim();
-	}
-
 	private async readMcpResource(server: McpServerStatus, uri: string) {
 		this.mcpReadingResourceName = server.name;
 		this.mcpResourceErrors = Object.fromEntries(
@@ -879,13 +843,23 @@ export class ComposerSettings extends LitElement {
 				([key]) => key !== server.name,
 			),
 		);
+		this.mcpResourceOutputs = Object.fromEntries(
+			Object.entries(this.mcpResourceOutputs).filter(
+				([key]) => key !== server.name,
+			),
+		);
 		try {
 			const result = await this.apiClient.readMcpResource(server.name, uri);
 			this.mcpResourceOutputs = {
 				...this.mcpResourceOutputs,
-				[server.name]: this.formatMcpResourceOutput(result),
+				[server.name]: formatMcpResourceOutput(result),
 			};
 		} catch (error) {
+			this.mcpResourceOutputs = Object.fromEntries(
+				Object.entries(this.mcpResourceOutputs).filter(
+					([key]) => key !== server.name,
+				),
+			);
 			this.mcpResourceErrors = {
 				...this.mcpResourceErrors,
 				[server.name]:
@@ -894,7 +868,9 @@ export class ComposerSettings extends LitElement {
 						: "Failed to read MCP resource",
 			};
 		} finally {
-			this.mcpReadingResourceName = null;
+			if (this.mcpReadingResourceName === server.name) {
+				this.mcpReadingResourceName = null;
+			}
 		}
 	}
 
@@ -905,6 +881,11 @@ export class ComposerSettings extends LitElement {
 				([key]) => key !== server.name,
 			),
 		);
+		this.mcpPromptOutputs = Object.fromEntries(
+			Object.entries(this.mcpPromptOutputs).filter(
+				([key]) => key !== server.name,
+			),
+		);
 		try {
 			const args = this.parseMcpKeyValueText(
 				this.mcpPromptArgsText[server.name] ?? "",
@@ -912,16 +893,23 @@ export class ComposerSettings extends LitElement {
 			const result = await this.apiClient.getMcpPrompt(server.name, name, args);
 			this.mcpPromptOutputs = {
 				...this.mcpPromptOutputs,
-				[server.name]: this.formatMcpPromptOutput(result),
+				[server.name]: formatMcpPromptOutput(result),
 			};
 		} catch (error) {
+			this.mcpPromptOutputs = Object.fromEntries(
+				Object.entries(this.mcpPromptOutputs).filter(
+					([key]) => key !== server.name,
+				),
+			);
 			this.mcpPromptErrors = {
 				...this.mcpPromptErrors,
 				[server.name]:
 					error instanceof Error ? error.message : "Failed to run MCP prompt",
 			};
 		} finally {
-			this.mcpGettingPromptName = null;
+			if (this.mcpGettingPromptName === server.name) {
+				this.mcpGettingPromptName = null;
+			}
 		}
 	}
 
@@ -1037,12 +1025,27 @@ export class ComposerSettings extends LitElement {
 		this.mcpManagementError = null;
 		this.mcpManagementNotice = null;
 		try {
-			const headers =
-				this.parseMcpKeyValueText(
-					this.mcpEditingAuthPresetHeadersTexts[preset.name] ?? "",
-				) ?? null;
-			const headersHelper =
-				this.mcpEditingAuthPresetHeadersHelpers[preset.name]?.trim() || null;
+			const replacingHeaderValues =
+				this.mcpEditingReplaceAuthPresetHeaders[preset.name] === true;
+			const hasEditedHeaders =
+				replacingHeaderValues ||
+				((preset.headerKeys?.length ?? 0) === 0 &&
+					Object.prototype.hasOwnProperty.call(
+						this.mcpEditingAuthPresetHeadersTexts,
+						preset.name,
+					));
+			const hasEditedHeadersHelper = Object.prototype.hasOwnProperty.call(
+				this.mcpEditingAuthPresetHeadersHelpers,
+				preset.name,
+			);
+			const headers = hasEditedHeaders
+				? (this.parseMcpKeyValueText(
+						this.mcpEditingAuthPresetHeadersTexts[preset.name] ?? "",
+					) ?? null)
+				: undefined;
+			const headersHelper = hasEditedHeadersHelper
+				? this.mcpEditingAuthPresetHeadersHelpers[preset.name]?.trim() || null
+				: undefined;
 			const result = await this.apiClient.updateMcpAuthPreset({
 				name: preset.name,
 				scope,
@@ -1331,17 +1334,24 @@ export class ComposerSettings extends LitElement {
 						authPresets.length > 0
 							? html`
 								<div class="panel-grid" style="margin-bottom: 1rem;">
-									${authPresets.map((preset) => {
-										const writableScope = this.getWritableMcpScope(
-											preset.scope,
-										);
-										const editableHeadersText =
-											this.mcpEditingAuthPresetHeadersTexts[preset.name] ?? "";
-										const editableHeadersHelper =
-											this.mcpEditingAuthPresetHeadersHelpers[preset.name] ??
-											preset.headersHelper ??
-											"";
-										return html`
+										${authPresets.map((preset) => {
+											const writableScope = this.getWritableMcpScope(
+												preset.scope,
+											);
+											const replaceHiddenHeaderValues =
+												this.mcpEditingReplaceAuthPresetHeaders[preset.name] ===
+												true;
+											const canEditHeaderValues =
+												(preset.headerKeys?.length ?? 0) === 0 ||
+												replaceHiddenHeaderValues;
+											const editableHeadersText =
+												this.mcpEditingAuthPresetHeadersTexts[preset.name] ??
+												"";
+											const editableHeadersHelper =
+												this.mcpEditingAuthPresetHeadersHelpers[preset.name] ??
+												preset.headersHelper ??
+												"";
+											return html`
 											<div class="panel-card">
 												<div class="panel-card-header">
 													<div>
@@ -1415,37 +1425,93 @@ export class ComposerSettings extends LitElement {
 																			: "Save"
 																	}
 																</button>
-															</div>
-															<div class="control-row">
-																<textarea
-																	class="field-input"
-																	style="min-height: 5.5rem;"
-																	.placeholder=${"Headers (KEY=VALUE, one per line)"}
-																	.value=${editableHeadersText}
-																	aria-label=${`Headers for auth preset ${preset.name}`}
-																	@input=${(event: Event) => {
-																		this.mcpEditingAuthPresetHeadersTexts = {
-																			...this.mcpEditingAuthPresetHeadersTexts,
-																			[preset.name]: (
-																				event.target as HTMLTextAreaElement
-																			).value,
-																		};
-																	}}
-																></textarea>
-															</div>
-															<div class="panel-card-copy">
-																Header values stay hidden. Enter KEY=VALUE lines to replace them. Leave the field blank and save to clear them. Current keys: ${
-																	preset.headerKeys.length > 0
-																		? preset.headerKeys.join(", ")
-																		: "none"
-																}.
+																</div>
+																<div class="control-row">
+																	${
+																		(preset.headerKeys?.length ?? 0) > 0
+																			? html`
+																				<label class="panel-card-copy">
+																					<input
+																						type="checkbox"
+																						.checked=${replaceHiddenHeaderValues}
+																						aria-label=${`Replace hidden headers for auth preset ${preset.name}`}
+																						@change=${(event: Event) => {
+																							const checked = (
+																								event.target as HTMLInputElement
+																							).checked;
+																							this.mcpEditingReplaceAuthPresetHeaders =
+																								checked
+																									? {
+																											...this
+																												.mcpEditingReplaceAuthPresetHeaders,
+																											[preset.name]: true,
+																										}
+																									: Object.fromEntries(
+																											Object.entries(
+																												this
+																													.mcpEditingReplaceAuthPresetHeaders,
+																											).filter(
+																												([key]) =>
+																													key !== preset.name,
+																											),
+																										);
+																							if (!checked) {
+																								this.mcpEditingAuthPresetHeadersTexts =
+																									Object.fromEntries(
+																										Object.entries(
+																											this
+																												.mcpEditingAuthPresetHeadersTexts,
+																										).filter(
+																											([key]) =>
+																												key !== preset.name,
+																										),
+																									);
+																							}
+																						}}
+																					/>
+																					${" "}Replace hidden header values
+																				</label>
+																			`
+																			: ""
+																	}
+																</div>
+																<div class="control-row">
+																	<textarea
+																		class="field-input"
+																		style="min-height: 5.5rem;"
+																		.placeholder=${"Headers (KEY=VALUE, one per line)"}
+																		.value=${editableHeadersText}
+																		?disabled=${!canEditHeaderValues}
+																		aria-label=${`Headers for auth preset ${preset.name}`}
+																		@input=${(event: Event) => {
+																			this.mcpEditingAuthPresetHeadersTexts = {
+																				...this
+																					.mcpEditingAuthPresetHeadersTexts,
+																				[preset.name]: (
+																					event.target as HTMLTextAreaElement
+																				).value,
+																			};
+																		}}
+																	></textarea>
+																</div>
+																<div class="panel-card-copy">
+																	Header values stay hidden. ${
+																		(preset.headerKeys?.length ?? 0) > 0 &&
+																		!replaceHiddenHeaderValues
+																			? 'Enable "Replace hidden header values" to edit them.'
+																			: "Enter KEY=VALUE lines to replace them. Leave the field blank and save to clear them."
+																	} Current keys: ${
+																		preset.headerKeys.length > 0
+																			? preset.headerKeys.join(", ")
+																			: "none"
+																	}.
 															</div>
 														`
 														: ""
 												}
 											</div>
 										`;
-									})}
+										})}
 								</div>
 							`
 							: html`<div class="empty-state">No MCP auth presets configured</div>`
