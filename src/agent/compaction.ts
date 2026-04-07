@@ -862,106 +862,82 @@ function estimateHookContentTokens(
 	return Math.max(1, Math.ceil(JSON.stringify(content).length / 4));
 }
 
-function buildReadRestoreTruncationBlock(text: string): TextContent | null {
+function buildRestoreTruncationBlock(text: string): TextContent | null {
 	return estimateHookContentTokens([{ type: "text", text }]) > 0
 		? { type: "text", text }
 		: null;
+}
+
+function truncateRestoredHookBlocks(
+	content: (TextContent | ImageContent)[],
+	maxTokens: number,
+	options: {
+		textMarker: string;
+		imageMarker: string;
+	},
+): (TextContent | ImageContent)[] {
+	const restored: (TextContent | ImageContent)[] = [];
+	let usedTokens = 0;
+
+	for (const block of content) {
+		const blockTokens = estimateHookContentTokens([block]);
+		if (usedTokens + blockTokens <= maxTokens) {
+			restored.push(block);
+			usedTokens += blockTokens;
+			continue;
+		}
+
+		const remainingTokens = maxTokens - usedTokens;
+		if (remainingTokens <= 0) {
+			break;
+		}
+
+		if (block.type === "text") {
+			const charBudget = Math.max(
+				0,
+				remainingTokens * 4 - options.textMarker.length,
+			);
+			const truncatedText =
+				charBudget > 0
+					? `${block.text.slice(0, charBudget)}${options.textMarker}`
+					: options.textMarker;
+			const truncationBlock = buildRestoreTruncationBlock(truncatedText);
+			if (truncationBlock) {
+				restored.push(truncationBlock);
+			}
+			break;
+		}
+
+		const imageMarker = buildRestoreTruncationBlock(options.imageMarker);
+		if (imageMarker) {
+			restored.push(imageMarker);
+		}
+		break;
+	}
+
+	return restored;
 }
 
 function truncateReadRestoreBlocks(
 	content: (TextContent | ImageContent)[],
 	maxTokens: number,
 ): (TextContent | ImageContent)[] {
-	const restored: (TextContent | ImageContent)[] = [];
-	let usedTokens = 0;
-
-	for (const block of content) {
-		const blockTokens = estimateHookContentTokens([block]);
-		if (usedTokens + blockTokens <= maxTokens) {
-			restored.push(block);
-			usedTokens += blockTokens;
-			continue;
-		}
-
-		const remainingTokens = maxTokens - usedTokens;
-		if (remainingTokens <= 0) {
-			break;
-		}
-
-		if (block.type === "text") {
-			const charBudget = Math.max(
-				0,
-				remainingTokens * 4 - READ_RESTORE_TRUNCATION_MARKER.length,
-			);
-			const truncatedText =
-				charBudget > 0
-					? `${block.text.slice(0, charBudget)}${READ_RESTORE_TRUNCATION_MARKER}`
-					: READ_RESTORE_TRUNCATION_MARKER;
-			const truncationBlock = buildReadRestoreTruncationBlock(truncatedText);
-			if (truncationBlock) {
-				restored.push(truncationBlock);
-			}
-			break;
-		}
-
-		const imageMarker = buildReadRestoreTruncationBlock(
+	return truncateRestoredHookBlocks(content, maxTokens, {
+		textMarker: READ_RESTORE_TRUNCATION_MARKER,
+		imageMarker:
 			"[image omitted from restored read result due to compaction budget; use `read` on the path again if needed]",
-		);
-		if (imageMarker) {
-			restored.push(imageMarker);
-		}
-		break;
-	}
-
-	return restored;
+	});
 }
 
 function truncateSkillRestoreBlocks(
 	content: (TextContent | ImageContent)[],
 	maxTokens: number,
 ): (TextContent | ImageContent)[] {
-	const restored: (TextContent | ImageContent)[] = [];
-	let usedTokens = 0;
-
-	for (const block of content) {
-		const blockTokens = estimateHookContentTokens([block]);
-		if (usedTokens + blockTokens <= maxTokens) {
-			restored.push(block);
-			usedTokens += blockTokens;
-			continue;
-		}
-
-		const remainingTokens = maxTokens - usedTokens;
-		if (remainingTokens <= 0) {
-			break;
-		}
-
-		if (block.type === "text") {
-			const charBudget = Math.max(
-				0,
-				remainingTokens * 4 - SKILL_RESTORE_TRUNCATION_MARKER.length,
-			);
-			const truncatedText =
-				charBudget > 0
-					? `${block.text.slice(0, charBudget)}${SKILL_RESTORE_TRUNCATION_MARKER}`
-					: SKILL_RESTORE_TRUNCATION_MARKER;
-			const truncationBlock = buildReadRestoreTruncationBlock(truncatedText);
-			if (truncationBlock) {
-				restored.push(truncationBlock);
-			}
-			break;
-		}
-
-		const imageMarker = buildReadRestoreTruncationBlock(
+	return truncateRestoredHookBlocks(content, maxTokens, {
+		textMarker: SKILL_RESTORE_TRUNCATION_MARKER,
+		imageMarker:
 			"[image omitted from restored skill due to compaction budget; use the `Skill` tool again if needed]",
-		);
-		if (imageMarker) {
-			restored.push(imageMarker);
-		}
-		break;
-	}
-
-	return restored;
+	});
 }
 
 async function collectRecentReadRestoreMessages(

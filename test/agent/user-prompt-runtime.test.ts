@@ -605,6 +605,126 @@ describe("user prompt runtime", () => {
 		).toBe("Phase 3");
 	});
 
+	it("reruns compact SessionStart hooks during token-budget continuation recovery", async () => {
+		const overflowMessage =
+			"Anthropic rejected this request because the prompt exceeded 200,000 tokens. Use /compact to summarize prior messages or remove large attachments, then retry.";
+		let sessionStartInput: Record<string, unknown> | undefined;
+		let continuationCount = 0;
+
+		registerHook("SessionStart", {
+			type: "callback",
+			callback: async (input) => {
+				sessionStartInput = input as Record<string, unknown>;
+				return {
+					systemMessage: "Re-establish compacted continuation context.",
+					hookSpecificOutput: {
+						hookEventName: "SessionStart",
+						additionalContext: "Token budget continuation hook context",
+						initialUserMessage: "Token budget continuation hook prompt",
+					},
+				};
+			},
+		});
+
+		class BudgetOverflowTransport implements AgentTransport {
+			async *run(
+				messages: Message[],
+				userMessage: Message,
+				_config: AgentRunConfig,
+			): AsyncGenerator<AgentEvent, void, unknown> {
+				if (typeof userMessage.content === "string") {
+					const assistant = createAssistantMessageWithUsage("Phase 1", {
+						inputTokens: 50,
+						outputTokens: 200,
+						stopReason: "stop",
+					});
+					yield { type: "message_start", message: assistant };
+					yield { type: "message_end", message: assistant };
+					return;
+				}
+
+				continuationCount += 1;
+				if (continuationCount === 1) {
+					const assistant = {
+						...createAssistantMessage("Too much context"),
+						stopReason: "error" as const,
+						errorMessage: overflowMessage,
+					};
+					yield { type: "message_start", message: assistant };
+					yield { type: "message_end", message: assistant };
+					return;
+				}
+
+				const assistant = createAssistantMessageWithUsage("Phase 2", {
+					inputTokens: 40,
+					outputTokens: 750,
+					stopReason: "stop",
+				});
+				yield { type: "message_start", message: assistant };
+				yield { type: "message_end", message: assistant };
+			}
+		}
+
+		const agent = new Agent({
+			transport: new BudgetOverflowTransport(),
+			initialState: {
+				model: mockModel,
+				tools: [],
+				systemPrompt: "Base system prompt",
+			},
+		});
+		const appendMessage = vi.spyOn(agent, "appendMessage");
+		agent.replaceMessages(buildConversation(5));
+		vi.spyOn(agent, "generateSummary").mockResolvedValue(
+			createAssistantMessage("LLM summary"),
+		);
+		const sessionManager = {
+			getSessionId: () => "session-token-budget-overflow-compact",
+			buildSessionContext: () => ({
+				messageEntries: Array.from({ length: 50 }, (_, index) => ({
+					id: `entry-${index}`,
+				})),
+			}),
+			saveCompaction: vi.fn(),
+			saveMessage: vi.fn(),
+		};
+
+		await runUserPromptWithRecovery({
+			agent,
+			sessionManager: sessionManager as never,
+			cwd: "/tmp/token-budget-overflow-compact",
+			prompt: "Investigate this issue thoroughly +1k",
+			execute: () => agent.prompt("Investigate this issue thoroughly +1k"),
+		});
+
+		expect(sessionStartInput).toMatchObject({
+			hook_event_name: "SessionStart",
+			source: "compact",
+		});
+		expect(appendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				role: "hookMessage",
+				customType: "SessionStart",
+				content:
+					"SessionStart hook system guidance:\nRe-establish compacted continuation context.",
+			}),
+		);
+		expect(appendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				role: "hookMessage",
+				customType: "SessionStart",
+				content: "Token budget continuation hook context",
+			}),
+		);
+		expect(appendMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				role: "user",
+				content: "Token budget continuation hook prompt",
+			}),
+		);
+		expect(continuationCount).toBeGreaterThanOrEqual(2);
+	});
+
 	it("aborts token-budget continuations when the caller signal is canceled", async () => {
 		let continueSignal: AbortSignal | undefined;
 		let resolveContinuationStarted: (() => void) | undefined;
