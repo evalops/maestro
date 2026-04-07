@@ -30,7 +30,7 @@ import { handleAccessCommand } from "../access-command.js";
 import { handleAuditCommand } from "../audit-command.js";
 import { handlePiiCommand } from "../pii-command.js";
 import type { CommandExecutionContext } from "../types.js";
-import { isHelpRequest, parseSubcommand } from "./utils.js";
+import { createGroupedCommandHandler } from "./utils.js";
 
 export interface DiagCommandDeps {
 	handleStatus: () => void;
@@ -52,173 +52,148 @@ export interface DiagCommandDeps {
 }
 
 export function createDiagCommandHandler(deps: DiagCommandDeps) {
-	return async function handleDiagCommand(
-		ctx: CommandExecutionContext,
-	): Promise<void> {
-		const { subcommand, args, customContext } = parseSubcommand(ctx, "status");
-
-		switch (subcommand) {
-			case "status":
-			case "health":
-				deps.handleStatus();
-				break;
-
-			case "about":
-			case "version":
-			case "info":
-				deps.handleAbout();
-				break;
-
-			case "context":
-			case "tokens":
-				await deps.handleContext(ctx);
-				break;
-
-			case "stats":
-			case "overview":
-				await deps.handleStats(ctx);
-				break;
-
-			case "background":
-			case "bg":
-				deps.handleBackground(
-					customContext(
-						`/background ${args.slice(1).join(" ")}`,
-						args.slice(1).join(" "),
+	return createGroupedCommandHandler({
+		defaultSubcommand: "status",
+		showHelp: showDiagHelp,
+		routes: [
+			{
+				match: ["status", "health"],
+				execute: () => deps.handleStatus(),
+			},
+			{
+				match: ["about", "version", "info"],
+				execute: () => deps.handleAbout(),
+			},
+			{
+				match: ["context", "tokens"],
+				execute: ({ ctx }) => deps.handleContext(ctx),
+			},
+			{
+				match: ["stats", "overview"],
+				execute: ({ ctx }) => deps.handleStats(ctx),
+			},
+			{
+				match: ["background", "bg"],
+				execute: ({ customContext, restArgumentText }) =>
+					deps.handleBackground(
+						customContext(`/background ${restArgumentText}`, restArgumentText),
 					),
-				);
-				break;
-
-			case "lsp":
-				await deps.handleLsp(
-					customContext(
-						`/lsp ${args.slice(1).join(" ")}`,
-						args.slice(1).join(" "),
+			},
+			{
+				match: ["lsp"],
+				execute: ({ customContext, restArgumentText }) =>
+					deps.handleLsp(
+						customContext(`/lsp ${restArgumentText}`, restArgumentText),
 					),
-				);
-				break;
-
-			case "mcp":
-				deps.handleMcp(ctx);
-				break;
-
-			case "sources":
-			case "ctx":
-				await deps.handleSources(ctx);
-				break;
-
-			case "keys":
-			case "api":
-				deps.handleDiagnostics(customContext("/diag keys", "keys"));
-				break;
-
-			case "telemetry":
-			case "telem":
-				deps.handleTelemetry(
-					customContext(
-						`/telemetry ${args.slice(1).join(" ")}`,
-						args.slice(1).join(" "),
+			},
+			{
+				match: ["mcp"],
+				execute: ({ ctx }) => deps.handleMcp(ctx),
+			},
+			{
+				match: ["sources", "ctx"],
+				execute: ({ ctx }) => deps.handleSources(ctx),
+			},
+			{
+				match: ["keys", "api"],
+				execute: ({ customContext }) =>
+					deps.handleDiagnostics(customContext("/diag keys", "keys")),
+			},
+			{
+				match: ["telemetry", "telem"],
+				execute: ({ customContext, restArgumentText }) =>
+					deps.handleTelemetry(
+						customContext(`/telemetry ${restArgumentText}`, restArgumentText),
 					),
-				);
-				break;
-
-			case "training":
-			case "train":
-				deps.handleTraining(
-					customContext(
-						`/training ${args.slice(1).join(" ")}`,
-						args.slice(1).join(" "),
+			},
+			{
+				match: ["training", "train"],
+				execute: ({ customContext, restArgumentText }) =>
+					deps.handleTraining(
+						customContext(`/training ${restArgumentText}`, restArgumentText),
 					),
-				);
-				break;
-
-			case "otel":
-			case "opentelemetry":
-				deps.handleOtel(ctx);
-				break;
-
-			case "perf":
-			case "performance":
-				deps.handlePerf();
-				break;
-
-			case "config":
-			case "cfg":
-				await deps.handleConfig(ctx);
-				break;
-
-			case "pii":
-				handlePiiCommand({
-					...customContext(
-						`/pii ${args.slice(1).join(" ")}`.trim(),
-						args.slice(1).join(" "),
-					),
-					showInfo: deps.showInfo,
-				});
-				break;
-
-			case "access":
-				handleAccessCommand(
-					customContext(
-						`/access ${args.slice(1).join(" ")}`.trim(),
-						args.slice(1).join(" "),
-					),
-				);
-				break;
-
-			case "audit":
-				handleAuditCommand(
-					{
+			},
+			{
+				match: ["otel", "opentelemetry"],
+				execute: ({ ctx }) => deps.handleOtel(ctx),
+			},
+			{
+				match: ["perf", "performance"],
+				execute: () => deps.handlePerf(),
+			},
+			{
+				match: ["config", "cfg"],
+				execute: ({ ctx }) => deps.handleConfig(ctx),
+			},
+			{
+				match: ["pii"],
+				execute: ({ customContext, restArgumentText }) =>
+					handlePiiCommand({
 						...customContext(
-							`/audit ${args.slice(1).join(" ")}`.trim(),
-							args.slice(1).join(" "),
+							`/pii ${restArgumentText}`.trim(),
+							restArgumentText,
 						),
 						showInfo: deps.showInfo,
-					},
-					{ isDatabaseConfigured: deps.isDatabaseConfigured },
-				);
-				break;
-
-			case "bedrock":
-			case "aws": {
-				const status = getBedrockStatus();
-				const lines = [
-					"AWS Bedrock Status:",
-					`  Region: ${status.region}`,
-					`  Credentials: ${status.hasCredentials ? "Available" : "Not detected"}`,
-				];
-				if (status.credentialSources.length > 0) {
-					lines.push(`  Sources: ${status.credentialSources.join(", ")}`);
-				} else {
+					}),
+			},
+			{
+				match: ["access"],
+				execute: ({ customContext, restArgumentText }) =>
+					handleAccessCommand(
+						customContext(
+							`/access ${restArgumentText}`.trim(),
+							restArgumentText,
+						),
+					),
+			},
+			{
+				match: ["audit"],
+				execute: ({ customContext, restArgumentText }) =>
+					handleAuditCommand(
+						{
+							...customContext(
+								`/audit ${restArgumentText}`.trim(),
+								restArgumentText,
+							),
+							showInfo: deps.showInfo,
+						},
+						{ isDatabaseConfigured: deps.isDatabaseConfigured },
+					),
+			},
+			{
+				match: ["bedrock", "aws"],
+				execute: () => {
+					const status = getBedrockStatus();
+					const lines = [
+						"AWS Bedrock Status:",
+						`  Region: ${status.region}`,
+						`  Credentials: ${status.hasCredentials ? "Available" : "Not detected"}`,
+					];
+					if (status.credentialSources.length > 0) {
+						lines.push(`  Sources: ${status.credentialSources.join(", ")}`);
+					} else {
+						lines.push(
+							"  Sources: None detected (may use EC2/ECS instance metadata at runtime)",
+						);
+					}
+					lines.push("");
+					lines.push("Supported credential sources:");
 					lines.push(
-						"  Sources: None detected (may use EC2/ECS instance metadata at runtime)",
+						"  - AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (environment)",
 					);
-				}
-				lines.push("");
-				lines.push("Supported credential sources:");
-				lines.push(
-					"  - AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (environment)",
-				);
-				lines.push("  - AWS_PROFILE (~/.aws/credentials or SSO)");
-				lines.push("  - AWS_SSO_SESSION_NAME (SSO session)");
-				lines.push("  - AWS_WEB_IDENTITY_TOKEN_FILE (EKS IRSA)");
-				lines.push("  - AWS_CONTAINER_CREDENTIALS_* (ECS task role)");
-				lines.push(
-					"  - EC2 Instance Metadata Service (auto-detected at runtime)",
-				);
-				deps.showInfo(lines.join("\n"));
-				break;
-			}
-
-			default:
-				if (isHelpRequest(subcommand)) {
-					showDiagHelp(ctx);
-				} else {
-					// Pass through to original diag handler for unknown subcommands
-					deps.handleDiagnostics(ctx);
-				}
-		}
-	};
+					lines.push("  - AWS_PROFILE (~/.aws/credentials or SSO)");
+					lines.push("  - AWS_SSO_SESSION_NAME (SSO session)");
+					lines.push("  - AWS_WEB_IDENTITY_TOKEN_FILE (EKS IRSA)");
+					lines.push("  - AWS_CONTAINER_CREDENTIALS_* (ECS task role)");
+					lines.push(
+						"  - EC2 Instance Metadata Service (auto-detected at runtime)",
+					);
+					deps.showInfo(lines.join("\n"));
+				},
+			},
+		],
+		onUnknown: ({ ctx }) => deps.handleDiagnostics(ctx),
+	});
 }
 
 function showDiagHelp(ctx: CommandExecutionContext): void {

@@ -22,7 +22,7 @@ import {
 	getRecentEvents,
 } from "../../../telemetry/security-events.js";
 import type { CommandExecutionContext } from "../types.js";
-import { isHelpRequest, parseSubcommand } from "./utils.js";
+import { createGroupedCommandHandler } from "./utils.js";
 
 export interface SafetyCommandDeps {
 	handleApprovals: (ctx: CommandExecutionContext) => void;
@@ -37,56 +37,39 @@ export interface SafetyCommandDeps {
 }
 
 export function createSafetyCommandHandler(deps: SafetyCommandDeps) {
-	return async function handleSafetyCommand(
-		ctx: CommandExecutionContext,
-	): Promise<void> {
-		const { subcommand, rewriteContext } = parseSubcommand(ctx, "status");
-
-		switch (subcommand) {
-			case "status":
-			case "info":
-				showSafetyStatus(deps);
-				break;
-
-			case "approvals":
-			case "approval":
-			case "approve":
-				deps.handleApprovals(rewriteContext("approvals"));
-				break;
-
-			case "plan":
-			case "plan-mode":
-			case "planmode":
-				deps.handlePlanMode(rewriteContext("plan-mode"));
-				break;
-
-			case "guardian":
-			case "guard":
-			case "scan":
-				await deps.handleGuardian(rewriteContext("guardian"));
-				break;
-
-			case "events":
-			case "security":
-			case "logs":
-				showSecurityEvents(ctx, deps);
-				break;
-
-			case "threats":
-			case "threat":
-			case "advisory":
-				showThreatLevel(deps);
-				break;
-
-			default:
-				if (isHelpRequest(subcommand)) {
-					showSafetyHelp(ctx);
-				} else {
-					ctx.showError(`Unknown subcommand: ${subcommand}`);
-					showSafetyHelp(ctx);
-				}
-		}
-	};
+	return createGroupedCommandHandler({
+		defaultSubcommand: "status",
+		showHelp: showSafetyHelp,
+		routes: [
+			{
+				match: ["status", "info"],
+				execute: () => showSafetyStatus(deps),
+			},
+			{
+				match: ["approvals", "approval", "approve"],
+				execute: ({ rewriteContext }) =>
+					deps.handleApprovals(rewriteContext("approvals")),
+			},
+			{
+				match: ["plan", "plan-mode", "planmode"],
+				execute: ({ rewriteContext }) =>
+					deps.handlePlanMode(rewriteContext("plan-mode")),
+			},
+			{
+				match: ["guardian", "guard", "scan"],
+				execute: ({ rewriteContext }) =>
+					deps.handleGuardian(rewriteContext("guardian")),
+			},
+			{
+				match: ["events", "security", "logs"],
+				execute: ({ ctx }) => showSecurityEvents(ctx, deps),
+			},
+			{
+				match: ["threats", "threat", "advisory"],
+				execute: () => showThreatLevel(deps),
+			},
+		],
+	});
 }
 
 function showSafetyStatus(deps: SafetyCommandDeps): void {

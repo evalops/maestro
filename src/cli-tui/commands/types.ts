@@ -93,7 +93,7 @@ export interface CommandHandlers {
 	// Grouped command handlers
 	sessionCommand(context: CommandExecutionContext): void | Promise<void>;
 	diagCommand(context: CommandExecutionContext): void | Promise<void>;
-	uiCommand(context: CommandExecutionContext): void;
+	uiCommand(context: CommandExecutionContext): void | Promise<void>;
 	safetyCommand(context: CommandExecutionContext): void | Promise<void>;
 	gitCommand(context: CommandExecutionContext): void | Promise<void>;
 	authCommand(context: CommandExecutionContext): void | Promise<void>;

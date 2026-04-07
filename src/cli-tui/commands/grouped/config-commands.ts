@@ -13,7 +13,7 @@
  */
 
 import type { CommandExecutionContext } from "../types.js";
-import { isHelpRequest, parseSubcommand } from "./utils.js";
+import { createGroupedCommandHandler } from "./utils.js";
 
 export interface ConfigCommandDeps {
 	handleConfig: (ctx: CommandExecutionContext) => void | Promise<void>;
@@ -25,63 +25,41 @@ export interface ConfigCommandDeps {
 }
 
 export function createConfigCommandHandler(deps: ConfigCommandDeps) {
-	return async function handleConfigCommand(
-		ctx: CommandExecutionContext,
-	): Promise<void> {
-		const { subcommand, rewriteContext, customContext } = parseSubcommand(
-			ctx,
-			"validate",
-		);
-
-		switch (subcommand) {
-			case "validate":
-			case "check":
-			case "status":
-				await deps.handleConfig(ctx);
-				break;
-
-			case "import":
-			case "preset":
-			case "presets":
-				await deps.handleImport(rewriteContext("import"));
-				break;
-
-			case "framework":
-			case "fw":
-				await deps.handleFramework(rewriteContext("framework"));
-				break;
-
-			case "composer":
-			case "persona":
-			case "agent":
-				await deps.handleComposer(rewriteContext("composer"));
-				break;
-
-			case "init":
-			case "scaffold":
-			case "setup":
-				await deps.handleInit(rewriteContext("init"));
-				break;
-
-			case "sources":
-			case "providers":
-			case "env":
-			case "files":
-				// Pass to config handler with subcommand
-				await deps.handleConfig(
-					customContext(`/config ${subcommand}`, subcommand),
-				);
-				break;
-
-			default:
-				if (isHelpRequest(subcommand)) {
-					showConfigHelp(ctx);
-				} else {
-					ctx.showError(`Unknown subcommand: ${subcommand}`);
-					showConfigHelp(ctx);
-				}
-		}
-	};
+	return createGroupedCommandHandler({
+		defaultSubcommand: "validate",
+		showHelp: showConfigHelp,
+		routes: [
+			{
+				match: ["validate", "check", "status"],
+				execute: ({ ctx }) => deps.handleConfig(ctx),
+			},
+			{
+				match: ["import", "preset", "presets"],
+				execute: ({ rewriteContext }) =>
+					deps.handleImport(rewriteContext("import")),
+			},
+			{
+				match: ["framework", "fw"],
+				execute: ({ rewriteContext }) =>
+					deps.handleFramework(rewriteContext("framework")),
+			},
+			{
+				match: ["composer", "persona", "agent"],
+				execute: ({ rewriteContext }) =>
+					deps.handleComposer(rewriteContext("composer")),
+			},
+			{
+				match: ["init", "scaffold", "setup"],
+				execute: ({ rewriteContext }) =>
+					deps.handleInit(rewriteContext("init")),
+			},
+			{
+				match: ["sources", "providers", "env", "files"],
+				execute: ({ subcommand, customContext }) =>
+					deps.handleConfig(customContext(`/config ${subcommand}`, subcommand)),
+			},
+		],
+	});
 }
 
 function showConfigHelp(ctx: CommandExecutionContext): void {

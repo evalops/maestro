@@ -20,7 +20,7 @@
  */
 
 import type { CommandExecutionContext } from "../types.js";
-import { isHelpRequest, isSessionId, parseSubcommand } from "./utils.js";
+import { createGroupedCommandHandler, isSessionId } from "./utils.js";
 
 export interface SessionCommandDeps {
 	handleSessionInfo: (ctx: CommandExecutionContext) => void;
@@ -38,110 +38,102 @@ export interface SessionCommandDeps {
 }
 
 export function createSessionCommandHandler(deps: SessionCommandDeps) {
-	return async function handleSessionCommand(
-		ctx: CommandExecutionContext,
-	): Promise<void> {
-		const { subcommand, args, rewriteContext, customContext } = parseSubcommand(
-			ctx,
-			"info",
-		);
-
-		switch (subcommand) {
-			case "info":
-			case "status":
-				deps.handleSessionInfo(ctx);
-				break;
-
-			case "new":
-				await deps.handleNewChat();
-				break;
-
-			case "clear":
-				await deps.handleClear();
-				break;
-
-			case "list":
-			case "ls":
-			case "history":
-				await deps.handleSessionsList(rewriteContext("sessions list"));
-				break;
-
-			case "load":
-				await deps.handleSessionsList(
-					customContext(
-						`/sessions load ${args.slice(1).join(" ")}`,
-						`load ${args.slice(1).join(" ")}`,
+	return createGroupedCommandHandler({
+		defaultSubcommand: "info",
+		showHelp: showSessionHelp,
+		routes: [
+			{
+				match: ["info", "status"],
+				execute: ({ ctx }) => deps.handleSessionInfo(ctx),
+			},
+			{ match: ["new"], execute: () => deps.handleNewChat() },
+			{ match: ["clear"], execute: () => deps.handleClear() },
+			{
+				match: ["list", "ls", "history"],
+				execute: ({ rewriteContext }) =>
+					deps.handleSessionsList(rewriteContext("sessions list")),
+			},
+			{
+				match: ["load"],
+				execute: ({ customContext, restArgumentText }) =>
+					deps.handleSessionsList(
+						customContext(
+							`/sessions load ${restArgumentText}`,
+							`load ${restArgumentText}`.trim(),
+						),
 					),
-				);
-				break;
-
-			case "branch":
-				await deps.handleBranch(rewriteContext("branch"));
-				break;
-			case "tree":
-				await deps.handleTree(rewriteContext("tree"));
-				break;
-
-			case "queue":
-				await deps.handleQueue(rewriteContext("queue"));
-				break;
-
-			case "export":
-				await deps.handleExport(rewriteContext("export"));
-				break;
-
-			case "share":
-				await deps.handleShare(rewriteContext("share"));
-				break;
-
-			case "favorite":
-			case "fav":
-				await deps.handleSessionsList(
-					customContext("/sessions favorite", "favorite"),
-				);
-				break;
-
-			case "unfavorite":
-			case "unfav":
-				await deps.handleSessionsList(
-					customContext("/sessions unfavorite", "unfavorite"),
-				);
-				break;
-
-			case "summary":
-			case "summarize":
-				deps.handleSessionInfo(
-					customContext(
-						`/session summary ${args.slice(1).join(" ")}`,
-						`summary ${args.slice(1).join(" ")}`,
+			},
+			{
+				match: ["branch"],
+				execute: ({ rewriteContext }) =>
+					deps.handleBranch(rewriteContext("branch")),
+			},
+			{
+				match: ["tree"],
+				execute: ({ rewriteContext }) =>
+					deps.handleTree(rewriteContext("tree")),
+			},
+			{
+				match: ["queue"],
+				execute: ({ rewriteContext }) =>
+					deps.handleQueue(rewriteContext("queue")),
+			},
+			{
+				match: ["export"],
+				execute: ({ rewriteContext }) =>
+					deps.handleExport(rewriteContext("export")),
+			},
+			{
+				match: ["share"],
+				execute: ({ rewriteContext }) =>
+					deps.handleShare(rewriteContext("share")),
+			},
+			{
+				match: ["favorite", "fav"],
+				execute: ({ customContext }) =>
+					deps.handleSessionsList(
+						customContext("/sessions favorite", "favorite"),
 					),
+			},
+			{
+				match: ["unfavorite", "unfav"],
+				execute: ({ customContext }) =>
+					deps.handleSessionsList(
+						customContext("/sessions unfavorite", "unfavorite"),
+					),
+			},
+			{
+				match: ["summary", "summarize"],
+				execute: ({ customContext, restArgumentText }) =>
+					deps.handleSessionInfo(
+						customContext(
+							`/session summary ${restArgumentText}`.trim(),
+							`summary ${restArgumentText}`.trim(),
+						),
+					),
+			},
+			{
+				match: ["recover"],
+				execute: ({ rewriteContext }) =>
+					deps.handleRecover(rewriteContext("recover")),
+			},
+			{
+				match: ["cleanup", "prune"],
+				execute: ({ rewriteContext }) =>
+					deps.handleCleanup(rewriteContext("cleanup")),
+			},
+		],
+		onUnknown: async ({ ctx, subcommand, customContext }) => {
+			if (isSessionId(subcommand)) {
+				await deps.handleSessionsList(
+					customContext(`/sessions load ${subcommand}`, `load ${subcommand}`),
 				);
-				break;
-
-			case "recover":
-				await deps.handleRecover(rewriteContext("recover"));
-				break;
-
-			case "cleanup":
-			case "prune":
-				await deps.handleCleanup(rewriteContext("cleanup"));
-				break;
-
-			default:
-				if (isHelpRequest(subcommand)) {
-					showSessionHelp(ctx);
-				}
-				// If it looks like an ID, try to load it
-				else if (isSessionId(subcommand)) {
-					await deps.handleSessionsList(
-						customContext(`/sessions load ${subcommand}`, `load ${subcommand}`),
-					);
-				} else {
-					ctx.showError(`Unknown subcommand: ${subcommand}`);
-					showSessionHelp(ctx);
-				}
-		}
-	};
+				return;
+			}
+			ctx.showError(`Unknown subcommand: ${subcommand}`);
+			showSessionHelp(ctx);
+		},
+	});
 }
 
 function showSessionHelp(ctx: CommandExecutionContext): void {

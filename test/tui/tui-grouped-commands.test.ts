@@ -1161,6 +1161,48 @@ describe("Grouped Command Handlers", () => {
 			expect(subcommand).toBe("default");
 		});
 
+		it("createGroupedCommandHandler routes aliases declaratively", async () => {
+			const { createGroupedCommandHandler } = await import(
+				"../../src/cli-tui/commands/grouped/utils.js"
+			);
+
+			const execute = vi.fn();
+			const handler = createGroupedCommandHandler({
+				defaultSubcommand: "status",
+				showHelp: vi.fn(),
+				routes: [
+					{
+						match: ["status", "info"],
+						execute,
+					},
+				],
+			});
+
+			await handler(createMockContext("/group info", "info"));
+
+			expect(execute).toHaveBeenCalledTimes(1);
+			expect(execute.mock.calls[0]?.[0].subcommand).toBe("info");
+		});
+
+		it("createGroupedCommandHandler delegates unknown handling", async () => {
+			const { createGroupedCommandHandler } = await import(
+				"../../src/cli-tui/commands/grouped/utils.js"
+			);
+
+			const onUnknown = vi.fn();
+			const handler = createGroupedCommandHandler({
+				defaultSubcommand: "status",
+				showHelp: vi.fn(),
+				routes: [],
+				onUnknown,
+			});
+
+			await handler(createMockContext("/group custom", "custom"));
+
+			expect(onUnknown).toHaveBeenCalledTimes(1);
+			expect(onUnknown.mock.calls[0]?.[0].subcommand).toBe("custom");
+		});
+
 		it("isHelpRequest recognizes help aliases", async () => {
 			const { isHelpRequest } = await import(
 				"../../src/cli-tui/commands/grouped/utils.js"

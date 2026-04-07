@@ -192,7 +192,7 @@ export function createGroupedCommandHandlers(
 				showInfo: (msg: string) => context.showInfo(msg),
 				getUiState: () => deps.ui.getUiState(),
 			});
-			handler(context);
+			await handler(context);
 		},
 
 		async handleSafety(context: CommandExecutionContext): Promise<void> {

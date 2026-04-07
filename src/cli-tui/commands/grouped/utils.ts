@@ -26,6 +26,43 @@ export interface ParsedSubcommand {
 }
 
 /**
+ * Runtime context passed to declarative grouped command routes.
+ */
+export interface GroupedCommandRouteContext extends ParsedSubcommand {
+	ctx: CommandExecutionContext;
+	/** Arguments after the matched subcommand */
+	restArgs: string[];
+	/** Original argument text after the matched subcommand */
+	restArgumentText: string;
+	/** Show the grouped command help for the current command */
+	showHelp: () => void;
+}
+
+/**
+ * One grouped subcommand route, matched either by aliases or custom logic.
+ */
+export interface GroupedCommandRoute {
+	match: readonly string[] | ((context: GroupedCommandRouteContext) => boolean);
+	execute: (context: GroupedCommandRouteContext) => void | Promise<void>;
+}
+
+/**
+ * Declarative grouped command handler configuration.
+ */
+export interface GroupedCommandHandlerOptions {
+	defaultSubcommand: string;
+	routes: readonly GroupedCommandRoute[];
+	showHelp: (ctx: CommandExecutionContext) => void;
+	onUnknown?: (context: GroupedCommandRouteContext) => void | Promise<void>;
+}
+
+function isGroupedCommandAliasMatch(
+	match: GroupedCommandRoute["match"],
+): match is readonly string[] {
+	return Array.isArray(match);
+}
+
+/**
  * Parse subcommand arguments from a context with a default subcommand.
  *
  * @example
@@ -64,6 +101,49 @@ export function parseSubcommand(
 	});
 
 	return { subcommand, args, rewriteContext, customContext };
+}
+
+export function createGroupedCommandHandler({
+	defaultSubcommand,
+	routes,
+	showHelp,
+	onUnknown,
+}: GroupedCommandHandlerOptions) {
+	return async function handleGroupedCommand(
+		ctx: CommandExecutionContext,
+	): Promise<void> {
+		const parsed = parseSubcommand(ctx, defaultSubcommand);
+		const routeContext: GroupedCommandRouteContext = {
+			ctx,
+			...parsed,
+			restArgs: parsed.args.slice(1),
+			restArgumentText: parsed.args.slice(1).join(" "),
+			showHelp: () => showHelp(ctx),
+		};
+
+		if (isHelpRequest(routeContext.subcommand)) {
+			showHelp(ctx);
+			return;
+		}
+
+		const route = routes.find((candidate) =>
+			isGroupedCommandAliasMatch(candidate.match)
+				? matchesAlias(routeContext.subcommand, candidate.match)
+				: candidate.match(routeContext),
+		);
+		if (route) {
+			await route.execute(routeContext);
+			return;
+		}
+
+		if (onUnknown) {
+			await onUnknown(routeContext);
+			return;
+		}
+
+		ctx.showError(`Unknown subcommand: ${routeContext.subcommand}`);
+		showHelp(ctx);
+	};
 }
 
 /**
@@ -131,7 +211,7 @@ export interface SubcommandDef {
  * ```
  */
 export function createSubcommandCompletions(
-	subcommands: SubcommandDef[],
+	subcommands: readonly SubcommandDef[],
 ): (prefix: string) => AutocompleteItem[] | null {
 	return (prefix: string): AutocompleteItem[] | null => {
 		const lowerPrefix = prefix.toLowerCase().trim();

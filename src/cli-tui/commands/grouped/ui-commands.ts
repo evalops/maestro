@@ -14,7 +14,7 @@
  */
 
 import type { CommandExecutionContext } from "../types.js";
-import { isHelpRequest, parseSubcommand } from "./utils.js";
+import { createGroupedCommandHandler } from "./utils.js";
 
 export interface UiCommandDeps {
 	handleTheme: (ctx: CommandExecutionContext) => void;
@@ -32,62 +32,50 @@ export interface UiCommandDeps {
 }
 
 export function createUiCommandHandler(deps: UiCommandDeps) {
-	return function handleUiCommand(ctx: CommandExecutionContext): void {
-		const { subcommand, args, rewriteContext, customContext } = parseSubcommand(
-			ctx,
-			"status",
-		);
-
-		switch (subcommand) {
-			case "status":
-			case "info":
-				showUiStatus(deps);
-				break;
-
-			case "theme":
-			case "color":
-			case "colors":
-				deps.handleTheme(rewriteContext("theme"));
-				break;
-
-			case "clean":
-			case "dedup":
-				deps.handleClean(rewriteContext("clean"));
-				break;
-
-			case "footer":
-				deps.handleFooter(rewriteContext("footer"));
-				break;
-
-			case "alerts":
-			case "notifications":
-				// Rewrite to footer command
-				deps.handleFooter(
-					customContext(
-						`/footer ${args.slice(1).join(" ") || "history"}`,
-						args.slice(1).join(" ") || "history",
+	return createGroupedCommandHandler({
+		defaultSubcommand: "status",
+		showHelp: showUiHelp,
+		routes: [
+			{
+				match: ["status", "info"],
+				execute: () => showUiStatus(deps),
+			},
+			{
+				match: ["theme", "color", "colors"],
+				execute: ({ rewriteContext }) =>
+					deps.handleTheme(rewriteContext("theme")),
+			},
+			{
+				match: ["clean", "dedup"],
+				execute: ({ rewriteContext }) =>
+					deps.handleClean(rewriteContext("clean")),
+			},
+			{
+				match: ["footer"],
+				execute: ({ rewriteContext }) =>
+					deps.handleFooter(rewriteContext("footer")),
+			},
+			{
+				match: ["alerts", "notifications"],
+				execute: ({ customContext, restArgumentText }) =>
+					deps.handleFooter(
+						customContext(
+							`/footer ${restArgumentText || "history"}`,
+							restArgumentText || "history",
+						),
 					),
-				);
-				break;
-
-			case "zen":
-				deps.handleZen(rewriteContext("zen"));
-				break;
-
-			case "compact":
-			case "fold":
-				deps.handleCompactTools(rewriteContext("compact-tools"));
-				break;
-
-			default:
-				if (isHelpRequest(subcommand)) {
-					showUiHelp(ctx);
-				} else {
-					ctx.showError(`Unknown subcommand: ${subcommand}`);
-					showUiHelp(ctx);
-				}
-		}
-	};
+			},
+			{
+				match: ["zen"],
+				execute: ({ rewriteContext }) => deps.handleZen(rewriteContext("zen")),
+			},
+			{
+				match: ["compact", "fold"],
+				execute: ({ rewriteContext }) =>
+					deps.handleCompactTools(rewriteContext("compact-tools")),
+			},
+		],
+	});
 }
 
 function showUiStatus(deps: UiCommandDeps): void {

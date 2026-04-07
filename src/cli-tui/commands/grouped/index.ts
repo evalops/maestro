@@ -53,6 +53,7 @@ export {
 } from "./tools-commands.js";
 
 export {
+	createGroupedCommandHandler,
 	parseSubcommand,
 	isHelpRequest,
 	isNumericArg,
@@ -71,6 +72,9 @@ export {
 	UNDO_SUBCOMMANDS,
 	CONFIG_SUBCOMMANDS,
 	TOOLS_SUBCOMMANDS,
+	type GroupedCommandHandlerOptions,
+	type GroupedCommandRoute,
+	type GroupedCommandRouteContext,
 	type ParsedSubcommand,
 	type SubcommandDef,
 } from "./utils.js";

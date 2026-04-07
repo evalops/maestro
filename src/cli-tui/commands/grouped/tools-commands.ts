@@ -16,7 +16,7 @@
  */
 
 import type { CommandExecutionContext } from "../types.js";
-import { isHelpRequest, parseSubcommand } from "./utils.js";
+import { createGroupedCommandHandler } from "./utils.js";
 
 export interface ToolsCommandDeps {
 	handleTools: (ctx: CommandExecutionContext) => void | Promise<void>;
@@ -29,75 +29,59 @@ export interface ToolsCommandDeps {
 }
 
 export function createToolsCommandHandler(deps: ToolsCommandDeps) {
-	return async function handleToolsCommand(
-		ctx: CommandExecutionContext,
-	): Promise<void> {
-		const { subcommand, args, rewriteContext, customContext } = parseSubcommand(
-			ctx,
-			"list",
-		);
-
-		switch (subcommand) {
-			case "list":
-			case "all":
-			case "available":
-				await deps.handleTools(customContext("/tools list", "list"));
-				break;
-
-			case "failures":
-			case "errors":
-			case "failed":
-				await deps.handleTools(customContext("/tools failures", "failures"));
-				break;
-
-			case "clear":
-			case "reset":
-				await deps.handleTools(customContext("/tools clear", "clear"));
-				break;
-
-			case "mcp":
-			case "servers":
-				await deps.handleMcp(rewriteContext("mcp"));
-				break;
-
-			case "lsp":
-			case "language":
-				await deps.handleLsp(rewriteContext("lsp"));
-				break;
-
-			case "workflow":
-			case "workflows":
-			case "wf":
-				await deps.handleWorkflow(rewriteContext("workflow"));
-				break;
-
-			case "run":
-			case "script":
-			case "npm":
-				await deps.handleRun(rewriteContext("run"));
-				break;
-
-			case "commands":
-			case "cmd":
-			case "user":
-				await deps.handleCommands(rewriteContext("commands"));
-				break;
-
-			default:
-				if (isHelpRequest(subcommand)) {
-					showToolsHelp(ctx);
-				}
-				// If it looks like a script name, pass to run
-				else if (args[0] && !args[0].startsWith("-")) {
-					await deps.handleRun(
-						customContext(`/run ${ctx.argumentText}`, ctx.argumentText),
-					);
-				} else {
-					ctx.showError(`Unknown subcommand: ${subcommand}`);
-					showToolsHelp(ctx);
-				}
-		}
-	};
+	return createGroupedCommandHandler({
+		defaultSubcommand: "list",
+		showHelp: showToolsHelp,
+		routes: [
+			{
+				match: ["list", "all", "available"],
+				execute: ({ customContext }) =>
+					deps.handleTools(customContext("/tools list", "list")),
+			},
+			{
+				match: ["failures", "errors", "failed"],
+				execute: ({ customContext }) =>
+					deps.handleTools(customContext("/tools failures", "failures")),
+			},
+			{
+				match: ["clear", "reset"],
+				execute: ({ customContext }) =>
+					deps.handleTools(customContext("/tools clear", "clear")),
+			},
+			{
+				match: ["mcp", "servers"],
+				execute: ({ rewriteContext }) => deps.handleMcp(rewriteContext("mcp")),
+			},
+			{
+				match: ["lsp", "language"],
+				execute: ({ rewriteContext }) => deps.handleLsp(rewriteContext("lsp")),
+			},
+			{
+				match: ["workflow", "workflows", "wf"],
+				execute: ({ rewriteContext }) =>
+					deps.handleWorkflow(rewriteContext("workflow")),
+			},
+			{
+				match: ["run", "script", "npm"],
+				execute: ({ rewriteContext }) => deps.handleRun(rewriteContext("run")),
+			},
+			{
+				match: ["commands", "cmd", "user"],
+				execute: ({ rewriteContext }) =>
+					deps.handleCommands(rewriteContext("commands")),
+			},
+		],
+		onUnknown: async ({ ctx, subcommand, args, customContext }) => {
+			if (args[0] && !args[0].startsWith("-")) {
+				await deps.handleRun(
+					customContext(`/run ${ctx.argumentText}`, ctx.argumentText),
+				);
+				return;
+			}
+			ctx.showError(`Unknown subcommand: ${subcommand}`);
+			showToolsHelp(ctx);
+		},
+	});
 }
 
 function showToolsHelp(ctx: CommandExecutionContext): void {

@@ -11,7 +11,7 @@
  */
 
 import type { CommandExecutionContext } from "../types.js";
-import { isHelpRequest, parseSubcommand } from "./utils.js";
+import { createGroupedCommandHandler } from "./utils.js";
 
 export interface UsageCommandDeps {
 	handleCost: (ctx: CommandExecutionContext) => Promise<void> | void;
@@ -20,62 +20,46 @@ export interface UsageCommandDeps {
 }
 
 export function createUsageCommandHandler(deps: UsageCommandDeps) {
-	return async function handleUsageCommand(
-		ctx: CommandExecutionContext,
-	): Promise<void> {
-		const { subcommand, rewriteContext, customContext } = parseSubcommand(
-			ctx,
-			"overview",
-		);
-
-		switch (subcommand) {
-			case "overview":
-			case "summary":
-				// Show combined stats
-				await deps.handleStats(ctx);
-				break;
-
-			case "cost":
-			case "costs":
-			case "spend":
-				await deps.handleCost(rewriteContext("cost"));
-				break;
-
-			case "quota":
-			case "tokens":
-			case "limit":
-			case "limits":
-				await deps.handleQuota(rewriteContext("quota"));
-				break;
-
-			case "stats":
-			case "all":
-				await deps.handleStats(ctx);
-				break;
-
-			default:
-				if (isHelpRequest(subcommand)) {
-					showUsageHelp(ctx);
-				}
-				// Check if it's a cost subcommand
-				else if (
-					["breakdown", "clear", "week", "month", "day"].includes(subcommand)
-				) {
-					await deps.handleCost(
-						customContext(`/cost ${ctx.argumentText}`, ctx.argumentText),
-					);
-				}
-				// Check if it's a quota subcommand
-				else if (["detailed", "models", "alerts"].includes(subcommand)) {
-					await deps.handleQuota(
-						customContext(`/quota ${ctx.argumentText}`, ctx.argumentText),
-					);
-				} else {
-					ctx.showError(`Unknown subcommand: ${subcommand}`);
-					showUsageHelp(ctx);
-				}
-		}
-	};
+	return createGroupedCommandHandler({
+		defaultSubcommand: "overview",
+		showHelp: showUsageHelp,
+		routes: [
+			{
+				match: ["overview", "summary"],
+				execute: ({ ctx }) => deps.handleStats(ctx),
+			},
+			{
+				match: ["cost", "costs", "spend"],
+				execute: ({ rewriteContext }) =>
+					deps.handleCost(rewriteContext("cost")),
+			},
+			{
+				match: ["quota", "tokens", "limit", "limits"],
+				execute: ({ rewriteContext }) =>
+					deps.handleQuota(rewriteContext("quota")),
+			},
+			{
+				match: ["stats", "all"],
+				execute: ({ ctx }) => deps.handleStats(ctx),
+			},
+		],
+		onUnknown: async ({ ctx, subcommand, customContext }) => {
+			if (["breakdown", "clear", "week", "month", "day"].includes(subcommand)) {
+				await deps.handleCost(
+					customContext(`/cost ${ctx.argumentText}`, ctx.argumentText),
+				);
+				return;
+			}
+			if (["detailed", "models", "alerts"].includes(subcommand)) {
+				await deps.handleQuota(
+					customContext(`/quota ${ctx.argumentText}`, ctx.argumentText),
+				);
+				return;
+			}
+			ctx.showError(`Unknown subcommand: ${subcommand}`);
+			showUsageHelp(ctx);
+		},
+	});
 }
 
 function showUsageHelp(ctx: CommandExecutionContext): void {

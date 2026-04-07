@@ -12,7 +12,7 @@
  */
 
 import type { CommandExecutionContext } from "../types.js";
-import { isHelpRequest, isNumericArg, parseSubcommand } from "./utils.js";
+import { createGroupedCommandHandler, isNumericArg } from "./utils.js";
 
 export interface UndoCommandDeps {
 	handleUndo: (ctx: CommandExecutionContext) => Promise<void> | void;
@@ -27,69 +27,49 @@ export interface UndoCommandDeps {
 }
 
 export function createUndoCommandHandler(deps: UndoCommandDeps) {
-	return async function handleUndoCommand(
-		ctx: CommandExecutionContext,
-	): Promise<void> {
-		const { subcommand, args, rewriteContext, customContext } = parseSubcommand(
-			ctx,
-			"undo",
-		);
-
-		switch (subcommand) {
-			case "undo":
-			case "back":
-			case "revert":
-				await deps.handleUndo(ctx);
-				break;
-
-			case "checkpoint":
-			case "save":
-			case "snap":
-			case "snapshot":
-				await deps.handleCheckpoint(rewriteContext("checkpoint"));
-				break;
-
-			case "changes":
-			case "files":
-			case "tracked":
-				deps.handleChanges(
+	return createGroupedCommandHandler({
+		defaultSubcommand: "undo",
+		showHelp: showUndoHelp,
+		routes: [
+			{
+				match: ["undo", "back", "revert"],
+				execute: ({ ctx }) => deps.handleUndo(ctx),
+			},
+			{
+				match: ["checkpoint", "save", "snap", "snapshot"],
+				execute: ({ rewriteContext }) =>
+					deps.handleCheckpoint(rewriteContext("checkpoint")),
+			},
+			{
+				match: ["changes", "files", "tracked"],
+				execute: ({ customContext, restArgumentText }) =>
+					deps.handleChanges(
+						customContext(`/changes ${restArgumentText}`, restArgumentText),
+					),
+			},
+			{
+				match: ["history", "list", "status"],
+				execute: () => showUndoHistory(deps),
+			},
+		],
+		onUnknown: async ({ ctx, subcommand, args, customContext }) => {
+			if (isNumericArg(subcommand)) {
+				await deps.handleUndo(customContext(`/undo ${subcommand}`, subcommand));
+				return;
+			}
+			if (args[0] && !args[0].startsWith("-")) {
+				await deps.handleCheckpoint(
 					customContext(
-						`/changes ${args.slice(1).join(" ")}`,
-						args.slice(1).join(" "),
+						`/checkpoint restore ${ctx.argumentText}`,
+						`restore ${ctx.argumentText}`,
 					),
 				);
-				break;
-
-			case "history":
-			case "list":
-			case "status":
-				showUndoHistory(deps);
-				break;
-
-			default:
-				if (isHelpRequest(subcommand)) {
-					showUndoHelp(ctx);
-				}
-				// If argument is a number, treat as undo N
-				else if (isNumericArg(subcommand)) {
-					await deps.handleUndo(
-						customContext(`/undo ${subcommand}`, subcommand),
-					);
-				}
-				// If argument looks like a checkpoint name, treat as checkpoint restore
-				else if (args[0] && !args[0].startsWith("-")) {
-					await deps.handleCheckpoint(
-						customContext(
-							`/checkpoint restore ${ctx.argumentText}`,
-							`restore ${ctx.argumentText}`,
-						),
-					);
-				} else {
-					ctx.showError(`Unknown subcommand: ${subcommand}`);
-					showUndoHelp(ctx);
-				}
-		}
-	};
+				return;
+			}
+			ctx.showError(`Unknown subcommand: ${subcommand}`);
+			showUndoHelp(ctx);
+		},
+	});
 }
 
 function showUndoHistory(deps: UndoCommandDeps): void {

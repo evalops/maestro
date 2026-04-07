@@ -8,6 +8,7 @@ import {
 	GIT_SUBCOMMANDS,
 	SAFETY_SUBCOMMANDS,
 	SESSION_SUBCOMMANDS,
+	type SubcommandDef,
 	TOOLS_SUBCOMMANDS,
 	UI_SUBCOMMANDS,
 	UNDO_SUBCOMMANDS,
@@ -1074,7 +1075,7 @@ export function createCommandRegistry({
 		// GROUPED COMMANDS - Organize related commands under parent commands
 		// ═══════════════════════════════════════════════════════════════════
 
-		buildEntry(
+		buildGroupedEntry(
 			{
 				name: "ss",
 				description:
@@ -1090,14 +1091,12 @@ export function createCommandRegistry({
 					"/ss branch 2",
 					"/ss export",
 				],
-				getArgumentCompletions:
-					createSubcommandCompletions(SESSION_SUBCOMMANDS),
 			},
-			withArgs("ss"),
+			SESSION_SUBCOMMANDS,
 			handlers.sessionCommand,
 			createContext,
 		),
-		buildEntry(
+		buildGroupedEntry(
 			{
 				name: "diag",
 				description:
@@ -1112,13 +1111,12 @@ export function createCommandRegistry({
 					"/diag telemetry",
 					"/diag config",
 				],
-				getArgumentCompletions: createSubcommandCompletions(DIAG_SUBCOMMANDS),
 			},
-			withArgs("diag"),
+			DIAG_SUBCOMMANDS,
 			handlers.diagCommand,
 			createContext,
 		),
-		buildEntry(
+		buildGroupedEntry(
 			{
 				name: "ui",
 				description:
@@ -1126,13 +1124,12 @@ export function createCommandRegistry({
 				usage: "/ui [theme|clean|footer|alerts|zen|compact]",
 				tags: ["ui"],
 				examples: ["/ui", "/ui theme", "/ui zen on", "/ui compact off"],
-				getArgumentCompletions: createSubcommandCompletions(UI_SUBCOMMANDS),
 			},
-			withArgs("ui"),
+			UI_SUBCOMMANDS,
 			handlers.uiCommand,
 			createContext,
 		),
-		buildEntry(
+		buildGroupedEntry(
 			{
 				name: "safe",
 				description: "Safety settings: approvals, plan-mode, guardian",
@@ -1144,39 +1141,36 @@ export function createCommandRegistry({
 					"/safe plan on",
 					"/safe guardian run",
 				],
-				getArgumentCompletions: createSubcommandCompletions(SAFETY_SUBCOMMANDS),
 			},
-			withArgs("safe"),
+			SAFETY_SUBCOMMANDS,
 			handlers.safetyCommand,
 			createContext,
 		),
-		buildEntry(
+		buildGroupedEntry(
 			{
 				name: "git",
 				description: "Git operations: status, diff, review",
 				usage: "/git [status|diff <path>|review]",
 				tags: ["git"],
 				examples: ["/git", "/git diff src/index.ts", "/git review"],
-				getArgumentCompletions: createSubcommandCompletions(GIT_SUBCOMMANDS),
 			},
-			withArgs("git"),
+			GIT_SUBCOMMANDS,
 			handlers.gitCommand,
 			createContext,
 		),
-		buildEntry(
+		buildGroupedEntry(
 			{
 				name: "auth",
 				description: "Authentication: login, logout, status",
 				usage: "/auth [login|logout|status] [mode]",
 				tags: ["auth"],
 				examples: ["/auth", "/auth login pro", "/auth logout"],
-				getArgumentCompletions: createSubcommandCompletions(AUTH_SUBCOMMANDS),
 			},
-			withArgs("auth"),
+			AUTH_SUBCOMMANDS,
 			handlers.authCommand,
 			createContext,
 		),
-		buildEntry(
+		buildGroupedEntry(
 			{
 				name: "usage",
 				description: "Usage tracking: cost, quota, stats",
@@ -1187,13 +1181,12 @@ export function createCommandRegistry({
 					"/usage cost breakdown week",
 					"/usage quota detailed",
 				],
-				getArgumentCompletions: createSubcommandCompletions(USAGE_SUBCOMMANDS),
 			},
-			withArgs("usage"),
+			USAGE_SUBCOMMANDS,
 			handlers.usageCommand,
 			createContext,
 		),
-		buildEntry(
+		buildGroupedEntry(
 			{
 				name: "undo",
 				description: "Undo system: undo, checkpoint, changes, history",
@@ -1205,13 +1198,12 @@ export function createCommandRegistry({
 					"/undo checkpoint save before-refactor",
 					"/undo changes",
 				],
-				getArgumentCompletions: createSubcommandCompletions(UNDO_SUBCOMMANDS),
 			},
-			withArgs("undo"),
+			UNDO_SUBCOMMANDS,
 			handlers.undoCommand,
 			createContext,
 		),
-		buildEntry(
+		buildGroupedEntry(
 			{
 				name: "cfg",
 				description:
@@ -1225,13 +1217,12 @@ export function createCommandRegistry({
 					"/cfg framework react",
 					"/cfg composer code-reviewer",
 				],
-				getArgumentCompletions: createSubcommandCompletions(CONFIG_SUBCOMMANDS),
 			},
-			withArgs("cfg"),
+			CONFIG_SUBCOMMANDS,
 			handlers.configCommand,
 			createContext,
 		),
-		buildEntry(
+		buildGroupedEntry(
 			{
 				name: "tools",
 				description: "Tools: list, mcp, lsp, workflow, run, commands",
@@ -1245,9 +1236,8 @@ export function createCommandRegistry({
 					"/tools lsp status",
 					"/tools run test",
 				],
-				getArgumentCompletions: createSubcommandCompletions(TOOLS_SUBCOMMANDS),
 			},
-			withArgs("tools", ["t"]),
+			TOOLS_SUBCOMMANDS,
 			handlers.toolsCommand,
 			createContext,
 		),
@@ -1298,6 +1288,23 @@ function buildEntry(
 		execute: (input: string) =>
 			executeCommand(command, input, handler, createContext),
 	};
+}
+
+function buildGroupedEntry(
+	command: SlashCommand,
+	subcommands: readonly SubcommandDef[],
+	handler: (context: CommandExecutionContext) => void | Promise<void>,
+	createContext: CommandRegistryOptions["createContext"],
+): CommandEntry {
+	return buildEntry(
+		{
+			...command,
+			getArgumentCompletions: createSubcommandCompletions(subcommands),
+		},
+		withArgs(command.name, command.aliases),
+		handler,
+		createContext,
+	);
 }
 
 function executeCommand(

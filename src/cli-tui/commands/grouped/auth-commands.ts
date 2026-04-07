@@ -11,7 +11,7 @@
  */
 
 import type { CommandExecutionContext } from "../types.js";
-import { isHelpRequest, parseSubcommand } from "./utils.js";
+import { createGroupedCommandHandler } from "./utils.js";
 
 export interface AuthCommandDeps {
 	handleLogin: (ctx: CommandExecutionContext) => Promise<void> | void;
@@ -25,49 +25,39 @@ export interface AuthCommandDeps {
 }
 
 export function createAuthCommandHandler(deps: AuthCommandDeps) {
-	return async function handleAuthCommand(
-		ctx: CommandExecutionContext,
-	): Promise<void> {
-		const { subcommand, rewriteContext, customContext } = parseSubcommand(
-			ctx,
-			"status",
-		);
-
-		switch (subcommand) {
-			case "status":
-			case "info":
-			case "whoami":
-				showAuthStatus(deps);
-				break;
-
-			case "login":
-			case "signin":
-				await deps.handleLogin(rewriteContext("login"));
-				break;
-
-			case "logout":
-			case "signout":
-				await deps.handleLogout(rewriteContext("logout"));
-				break;
-
-			default:
-				if (isHelpRequest(subcommand)) {
-					showAuthHelp(ctx);
-				}
-				// If it looks like a login mode, pass to login
-				else if (
-					["pro", "console", "max"].includes(subcommand) ||
-					subcommand.includes(":")
-				) {
-					await deps.handleLogin(
-						customContext(`/login ${ctx.argumentText}`, ctx.argumentText),
-					);
-				} else {
-					ctx.showError(`Unknown subcommand: ${subcommand}`);
-					showAuthHelp(ctx);
-				}
-		}
-	};
+	return createGroupedCommandHandler({
+		defaultSubcommand: "status",
+		showHelp: showAuthHelp,
+		routes: [
+			{
+				match: ["status", "info", "whoami"],
+				execute: () => showAuthStatus(deps),
+			},
+			{
+				match: ["login", "signin"],
+				execute: ({ rewriteContext }) =>
+					deps.handleLogin(rewriteContext("login")),
+			},
+			{
+				match: ["logout", "signout"],
+				execute: ({ rewriteContext }) =>
+					deps.handleLogout(rewriteContext("logout")),
+			},
+		],
+		onUnknown: async ({ ctx, subcommand, customContext }) => {
+			if (
+				["pro", "console", "max"].includes(subcommand) ||
+				subcommand.includes(":")
+			) {
+				await deps.handleLogin(
+					customContext(`/login ${ctx.argumentText}`, ctx.argumentText),
+				);
+				return;
+			}
+			ctx.showError(`Unknown subcommand: ${subcommand}`);
+			showAuthHelp(ctx);
+		},
+	});
 }
 
 function showAuthStatus(deps: AuthCommandDeps): void {

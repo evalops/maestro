@@ -98,7 +98,7 @@ export interface CommandRegistryOptions {
 		context: CommandExecutionContext,
 	) => void | Promise<void>;
 	handleDiagCommand: (context: CommandExecutionContext) => void | Promise<void>;
-	handleUiCommand: (context: CommandExecutionContext) => void;
+	handleUiCommand: (context: CommandExecutionContext) => void | Promise<void>;
 	handleSafetyCommand: (
 		context: CommandExecutionContext,
 	) => void | Promise<void>;
