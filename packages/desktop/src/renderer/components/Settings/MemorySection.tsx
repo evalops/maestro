@@ -1,3 +1,8 @@
+import {
+	extractMemoryTags,
+	formatMemoryRelativeTime,
+	truncateMemoryText,
+} from "@evalops/contracts";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type {
 	MemoryEntry,
@@ -43,26 +48,6 @@ const EMPTY_STATS: MemoryStats = {
 	oldestEntry: null,
 	newestEntry: null,
 };
-
-function formatRelativeTime(timestamp: number | null | undefined): string {
-	if (!timestamp) return "Never";
-	const diff = Date.now() - timestamp;
-	if (diff < 60_000) return "just now";
-	if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
-	if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
-	return `${Math.floor(diff / 86_400_000)}d ago`;
-}
-
-function truncateText(text: string, maxLength: number): string {
-	if (text.length <= maxLength) return text;
-	return `${text.slice(0, maxLength - 3)}...`;
-}
-
-export function extractMemoryTags(content: string): string[] {
-	return Array.from(
-		new Set((content.match(/#(\w+)/g) ?? []).map((tag) => tag.slice(1))),
-	);
-}
 
 function getViewLabel(view: MemoryView): string {
 	switch (view.kind) {
@@ -227,7 +212,7 @@ export function MemorySection({
 				content,
 				tags.length ? tags : undefined,
 			);
-			const savedTopic = result.entry?.topic ?? topic.toLowerCase();
+			const savedTopic = result.entry?.topic ?? topic;
 			setStatusMessage(
 				result.message || `Memory saved to topic "${savedTopic}"`,
 			);
@@ -295,7 +280,7 @@ export function MemorySection({
 					<div className="text-xs text-text-muted text-right">
 						<div>Entries: {stats.totalEntries}</div>
 						<div>Topics: {stats.topics}</div>
-						<div>Newest: {formatRelativeTime(stats.newestEntry)}</div>
+						<div>Newest: {formatMemoryRelativeTime(stats.newestEntry)}</div>
 					</div>
 				</div>
 
@@ -384,7 +369,7 @@ export function MemorySection({
 											<div className="text-[11px] text-text-muted">
 												{topic.entryCount}{" "}
 												{topic.entryCount === 1 ? "entry" : "entries"} ·{" "}
-												{formatRelativeTime(topic.lastUpdated)}
+												{formatMemoryRelativeTime(topic.lastUpdated)}
 											</div>
 										</button>
 									))
@@ -461,7 +446,8 @@ export function MemorySection({
 													{entry.topic}
 												</div>
 												<div className="text-[11px] text-text-muted">
-													{entry.id} · {formatRelativeTime(entry.updatedAt)}
+													{entry.id} ·{" "}
+													{formatMemoryRelativeTime(entry.updatedAt)}
 												</div>
 											</div>
 											<button
@@ -475,7 +461,7 @@ export function MemorySection({
 											</button>
 										</div>
 										<div className="text-xs text-text-secondary whitespace-pre-wrap break-words">
-											{truncateText(entry.content, 240)}
+											{truncateMemoryText(entry.content, 240)}
 										</div>
 										{entry.tags && entry.tags.length > 0 && (
 											<div className="text-[11px] text-text-muted">

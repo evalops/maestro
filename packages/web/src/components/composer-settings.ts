@@ -3,6 +3,7 @@
  */
 
 import {
+	extractMemoryTags,
 	formatMcpArgsText,
 	formatMcpPromptOutput,
 	formatMcpRegistryImportMessage,
@@ -13,12 +14,14 @@ import {
 	formatMcpServerUpdateMessage,
 	formatMcpTimeoutText,
 	formatMcpTransportLabel,
+	formatMemoryRelativeTime,
 	getMcpRegistryEntryId,
 	getMcpRegistryUrlOptions,
 	getWritableMcpScope,
 	parseMcpArgsText,
 	parseMcpKeyValueText,
 	parseMcpTimeoutText,
+	truncateMemoryText,
 } from "@evalops/contracts";
 import type {
 	MemoryEntry,
@@ -45,11 +48,6 @@ import type {
 	UsageSummary,
 	WorkspaceStatus,
 } from "../services/api-client.js";
-import {
-	extractMemoryTags,
-	formatMemoryRelativeTime,
-	truncateMemoryText,
-} from "./memory-utils.js";
 
 type MemoryView =
 	| { kind: "recent" }

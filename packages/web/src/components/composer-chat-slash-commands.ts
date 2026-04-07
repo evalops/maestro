@@ -1,4 +1,9 @@
-import { parseKeyValueTokens } from "@evalops/contracts";
+import {
+	extractMemoryTags,
+	formatMemoryRelativeTime,
+	parseKeyValueTokens,
+	truncateMemoryText,
+} from "@evalops/contracts";
 import type {
 	ApiClient,
 	McpAuthPresetAddRequest,
@@ -14,11 +19,6 @@ import type {
 	McpServerRemoveResponse,
 	McpStatus,
 } from "../services/api-client.js";
-import {
-	extractMemoryTags,
-	formatMemoryRelativeTime,
-	truncateMemoryText,
-} from "./memory-utils.js";
 import {
 	WEB_SLASH_COMMANDS,
 	type WebSlashCommand,

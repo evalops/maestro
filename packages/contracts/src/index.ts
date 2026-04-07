@@ -48,6 +48,7 @@ export * from "./headless-protocol-schemas.generated.js";
 export * from "./key-value-tokens.js";
 export * from "./mcp-settings.js";
 export * from "./memory.js";
+export * from "./memory-utils.js";
 
 /**
  * Role of a message in the conversation.

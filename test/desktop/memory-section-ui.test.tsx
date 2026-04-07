@@ -183,7 +183,7 @@ describe("MemorySection UI", () => {
 			topicInput.value = "api-design";
 			topicInput.dispatchEvent(new Event("input", { bubbles: true }));
 			topicInput.dispatchEvent(new Event("change", { bubbles: true }));
-			contentInput.value = "Use REST conventions #rest";
+			contentInput.value = "Use REST conventions #rest #rest";
 			contentInput.dispatchEvent(new Event("input", { bubbles: true }));
 			contentInput.dispatchEvent(new Event("change", { bubbles: true }));
 			await flushAsyncWork(1);
@@ -196,7 +196,7 @@ describe("MemorySection UI", () => {
 
 		expect(props.onSaveMemory).toHaveBeenCalledWith(
 			"api-design",
-			"Use REST conventions #rest",
+			"Use REST conventions #rest #rest",
 			["rest"],
 		);
 		expect(container.textContent ?? "").toContain(
@@ -214,5 +214,68 @@ describe("MemorySection UI", () => {
 		});
 
 		expect(props.onDeleteMemory).toHaveBeenCalledWith("mem_topic");
+	});
+
+	it("preserves topic casing when save metadata omits the saved entry topic", async () => {
+		const props = createProps({
+			onSaveMemory: vi.fn().mockResolvedValue({
+				success: true,
+				message: "",
+			}),
+			onListMemoryTopic: vi.fn().mockResolvedValue({
+				topic: "API-Design",
+				memories: [],
+			}),
+		});
+		container = document.createElement("div");
+		document.body.appendChild(container);
+		root = createRoot(container);
+
+		await act(async () => {
+			root?.render(createElement(MemorySection, props));
+			await flushAsyncWork(4);
+		});
+
+		const topicInput = container.querySelector(
+			'input[aria-label="Memory topic"]',
+		) as HTMLInputElement | null;
+		const contentInput = container.querySelector(
+			'textarea[aria-label="Memory content"]',
+		) as HTMLTextAreaElement | null;
+		const saveButton = Array.from(container.querySelectorAll("button")).find(
+			(button) => button.textContent?.trim() === "Save memory",
+		) as HTMLButtonElement | undefined;
+
+		expect(topicInput).not.toBeNull();
+		expect(contentInput).not.toBeNull();
+		expect(saveButton).toBeDefined();
+
+		await act(async () => {
+			if (!topicInput || !contentInput) {
+				throw new Error("Expected memory inputs");
+			}
+			topicInput.value = "API-Design";
+			topicInput.dispatchEvent(new Event("input", { bubbles: true }));
+			topicInput.dispatchEvent(new Event("change", { bubbles: true }));
+			contentInput.value = "Preserve topic casing #rest";
+			contentInput.dispatchEvent(new Event("input", { bubbles: true }));
+			contentInput.dispatchEvent(new Event("change", { bubbles: true }));
+			await flushAsyncWork(1);
+		});
+
+		await act(async () => {
+			saveButton?.click();
+			await flushAsyncWork(4);
+		});
+
+		expect(props.onSaveMemory).toHaveBeenCalledWith(
+			"API-Design",
+			"Preserve topic casing #rest",
+			["rest"],
+		);
+		expect(props.onListMemoryTopic).toHaveBeenLastCalledWith("API-Design");
+		expect(container.textContent ?? "").toContain(
+			'Memory saved to topic "API-Design"',
+		);
 	});
 });
