@@ -592,7 +592,7 @@ pub fn build_command_registry() -> CommandRegistry {
                 let subcommand = parts
                     .first()
                     .map(|value| value.to_ascii_lowercase())
-                    .unwrap_or_else(String::new);
+                    .unwrap_or_default();
 
                 match subcommand.as_str() {
                     "" | "show" | "list" | "help" => {
@@ -1813,9 +1813,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn with_temp_keybindings_file<T>(body: impl FnOnce(&Path) -> T) -> T {
-        let _guard = keybindings_test_env_lock()
-            .lock()
-            .expect("keybindings env lock poisoned");
+        let _guard = keybindings_test_env_lock().blocking_lock();
         let temp = tempdir().expect("tempdir");
         let path = temp.path().join("keybindings.json");
         let previous = std::env::var_os("MAESTRO_KEYBINDINGS_FILE");

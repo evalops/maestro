@@ -2,11 +2,13 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 #[cfg(test)]
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 
 use crossterm::event::KeyCode;
 use serde::Deserialize;
 use serde_json::{json, Value};
+#[cfg(test)]
+use tokio::sync::Mutex;
 
 use crate::key_hints::{alt, ctrl, shift, KeyBinding};
 
