@@ -5,7 +5,7 @@
  * and filtering extensions, skills, prompts, and themes from:
  * - Local filesystem paths
  * - Git repositories
- * - npm packages (future)
+ * - npm packages
  */
 
 import { execFileSync } from "node:child_process";
@@ -232,6 +232,86 @@ describe("Maestro Packages", () => {
 				"# Deploy Skill\n",
 			);
 			commitGitRepoChanges(pkgDir, "add deploy skill");
+
+			const stalePackage = await loadPackage(sourceSpec);
+			expect(loadPackageResources(stalePackage).skills).toHaveLength(1);
+
+			refreshPackageSourceSync(parsePackageSource(sourceSpec));
+			const refreshedPackage = await loadPackage(sourceSpec);
+			const refreshedResources = loadPackageResources(refreshedPackage);
+			expect(refreshedResources.skills).toHaveLength(2);
+			expect(
+				refreshedResources.skills.some((path) => path.includes("deploy-skill")),
+			).toBe(true);
+		});
+
+		it("should load npm packages from a local source path", async () => {
+			const pkgDir = join(testDir, "npm-package");
+			mkdirSync(join(pkgDir, "skills", "review-skill"), { recursive: true });
+			writeFileSync(
+				join(pkgDir, "skills", "review-skill", "SKILL.md"),
+				"# Review Skill\nLoaded through npm.\n",
+			);
+			writeFileSync(
+				join(pkgDir, "package.json"),
+				JSON.stringify({
+					name: "@test/npm-package",
+					version: "1.0.0",
+					keywords: ["maestro-package"],
+					maestro: {
+						skills: ["./skills"],
+					},
+				}),
+			);
+
+			const pkg = await loadPackage(`npm:${pkgDir}`);
+			const resources = loadPackageResources(pkg);
+
+			expect(pkg.source.type).toBe("npm");
+			expect(pkg.path).toContain("node_modules");
+			expect(pkg.name).toBe("@test/npm-package");
+			expect(resources.skills).toHaveLength(1);
+			expect(resources.skills[0]).toContain("review-skill");
+		});
+
+		it("should refresh cached npm package tarballs when the source changes", async () => {
+			const pkgDir = join(testDir, "npm-refresh-package");
+			mkdirSync(join(pkgDir, "skills", "review-skill"), { recursive: true });
+			writeFileSync(
+				join(pkgDir, "skills", "review-skill", "SKILL.md"),
+				"# Review Skill\n",
+			);
+			writeFileSync(
+				join(pkgDir, "package.json"),
+				JSON.stringify({
+					name: "@test/npm-refresh-package",
+					version: "1.0.0",
+					keywords: ["maestro-package"],
+					maestro: {
+						skills: ["./skills"],
+					},
+				}),
+			);
+
+			const tarballName = execFileSync("npm", ["pack", "--silent"], {
+				cwd: pkgDir,
+				encoding: "utf8",
+			}).trim();
+			const tarballPath = join(pkgDir, tarballName);
+			const sourceSpec = `npm:${tarballPath}`;
+
+			const initialPackage = await loadPackage(sourceSpec);
+			expect(loadPackageResources(initialPackage).skills).toHaveLength(1);
+
+			mkdirSync(join(pkgDir, "skills", "deploy-skill"), { recursive: true });
+			writeFileSync(
+				join(pkgDir, "skills", "deploy-skill", "SKILL.md"),
+				"# Deploy Skill\n",
+			);
+			execFileSync("npm", ["pack", "--silent"], {
+				cwd: pkgDir,
+				encoding: "utf8",
+			});
 
 			const stalePackage = await loadPackage(sourceSpec);
 			expect(loadPackageResources(stalePackage).skills).toHaveLength(1);
