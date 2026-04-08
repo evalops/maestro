@@ -8,10 +8,12 @@
  * - npm packages (future)
  */
 
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	clearResolvedPackageSourceCache,
 	discoverPackage,
 	filterResources,
 	isValidMaestroPackage,
@@ -24,16 +26,26 @@ import {
 
 describe("Maestro Packages", () => {
 	let testDir: string;
+	let previousMaestroHome: string | undefined;
 
 	beforeEach(() => {
 		testDir = join(process.cwd(), ".test-packages");
+		previousMaestroHome = process.env.MAESTRO_HOME;
+		process.env.MAESTRO_HOME = join(testDir, ".maestro-home");
 		if (existsSync(testDir)) {
 			rmSync(testDir, { recursive: true, force: true });
 		}
 		mkdirSync(testDir, { recursive: true });
+		clearResolvedPackageSourceCache();
 	});
 
 	afterEach(() => {
+		if (previousMaestroHome === undefined) {
+			delete process.env.MAESTRO_HOME;
+		} else {
+			process.env.MAESTRO_HOME = previousMaestroHome;
+		}
+		clearResolvedPackageSourceCache();
 		if (existsSync(testDir)) {
 			rmSync(testDir, { recursive: true, force: true });
 		}
@@ -135,6 +147,35 @@ describe("Maestro Packages", () => {
 			expect(() => parsePackageSource("invalid::source")).toThrow(
 				"Invalid package source format",
 			);
+		});
+
+		it("should load git repositories from a local path", async () => {
+			const pkgDir = join(testDir, "git-package");
+			mkdirSync(join(pkgDir, "skills", "review-skill"), { recursive: true });
+			writeFileSync(
+				join(pkgDir, "skills", "review-skill", "SKILL.md"),
+				"# Review Skill\nReview package loaded from git.\n",
+			);
+			writeFileSync(
+				join(pkgDir, "package.json"),
+				JSON.stringify({
+					name: "@test/git-package",
+					version: "1.0.0",
+					keywords: ["maestro-package"],
+					maestro: {
+						skills: ["./skills"],
+					},
+				}),
+			);
+			createCommittedGitRepo(pkgDir);
+
+			const pkg = await loadPackage(`git:${pkgDir}`);
+			const resources = loadPackageResources(pkg);
+
+			expect(pkg.source.type).toBe("git");
+			expect(pkg.path).not.toBe(pkgDir);
+			expect(resources.skills).toHaveLength(1);
+			expect(resources.skills[0]).toContain("review-skill");
 		});
 	});
 
@@ -417,3 +458,26 @@ describe("Maestro Packages", () => {
 		});
 	});
 });
+
+function createCommittedGitRepo(dir: string): void {
+	execFileSync("git", ["init", "--initial-branch=main"], {
+		cwd: dir,
+		stdio: "ignore",
+	});
+	execFileSync("git", ["config", "user.email", "maestro@example.com"], {
+		cwd: dir,
+		stdio: "ignore",
+	});
+	execFileSync("git", ["config", "user.name", "Maestro Tests"], {
+		cwd: dir,
+		stdio: "ignore",
+	});
+	execFileSync("git", ["add", "."], {
+		cwd: dir,
+		stdio: "ignore",
+	});
+	execFileSync("git", ["commit", "-m", "initial"], {
+		cwd: dir,
+		stdio: "ignore",
+	});
+}

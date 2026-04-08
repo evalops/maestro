@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import {
 	mkdirSync,
 	mkdtempSync,
@@ -10,8 +11,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createPackageCommandHandler } from "../../../src/cli-tui/commands/package-handlers.js";
 import type { CommandExecutionContext } from "../../../src/cli-tui/commands/types.js";
+import { clearResolvedPackageSourceCache } from "../../../src/packages/index.js";
 
 const tempDirs: string[] = [];
+const originalMaestroHome = process.env.MAESTRO_HOME;
 
 function createTempDir(prefix: string): string {
 	const tempDir = mkdtempSync(join(tmpdir(), prefix));
@@ -34,6 +37,12 @@ function createContext(
 }
 
 afterEach(() => {
+	if (originalMaestroHome === undefined) {
+		delete process.env.MAESTRO_HOME;
+	} else {
+		process.env.MAESTRO_HOME = originalMaestroHome;
+	}
+	clearResolvedPackageSourceCache();
 	while (tempDirs.length > 0) {
 		const tempDir = tempDirs.pop();
 		if (tempDir) {
@@ -145,12 +154,28 @@ describe("package command", () => {
 		);
 	});
 
-	it("surfaces configured package inspection errors in list output", async () => {
+	it("lists configured git packages in command output", async () => {
 		const root = createTempDir("maestro-package-command-");
+		process.env.MAESTRO_HOME = join(root, ".maestro-home");
+		const packageDir = join(root, "vendor", "git-pack");
+		mkdirSync(join(packageDir, "skills", "git-skill"), { recursive: true });
 		mkdirSync(join(root, ".maestro"), { recursive: true });
 		writeFileSync(
+			join(packageDir, "package.json"),
+			JSON.stringify({
+				name: "@test/git-package",
+				version: "1.0.0",
+				keywords: ["maestro-package"],
+				maestro: {
+					skills: ["./skills"],
+				},
+			}),
+			"utf-8",
+		);
+		createCommittedGitRepo(packageDir);
+		writeFileSync(
 			join(root, ".maestro", "config.toml"),
-			'packages = ["git:github.com/evalops/maestro"]\n',
+			`packages = ["git:${packageDir}"]\n`,
 			"utf-8",
 		);
 
@@ -164,7 +189,7 @@ describe("package command", () => {
 		await handler(createContext("/package list"));
 
 		expect(addContent).toHaveBeenCalledWith(
-			expect.stringContaining("Git source resolution not yet implemented"),
+			expect.stringContaining("@test/git-package"),
 		);
 	});
 
@@ -306,21 +331,66 @@ describe("package command", () => {
 		);
 	});
 
-	it("surfaces unimplemented remote package resolution honestly", async () => {
+	it("inspects a git package source", async () => {
 		const root = createTempDir("maestro-package-command-");
-		const ctx = createContext(
-			"/package inspect git:github.com/evalops/maestro",
+		process.env.MAESTRO_HOME = join(root, ".maestro-home");
+		const packageDir = join(root, "git-source");
+		mkdirSync(join(packageDir, "skills", "git-skill"), { recursive: true });
+		writeFileSync(
+			join(packageDir, "package.json"),
+			JSON.stringify({
+				name: "@test/inspect-git-package",
+				version: "1.0.0",
+				keywords: ["maestro-package"],
+				maestro: {
+					skills: ["./skills"],
+				},
+			}),
+			"utf-8",
 		);
+		createCommittedGitRepo(packageDir);
+		const ctx = createContext(`/package inspect git:${packageDir}`);
+		const addContent = vi.fn();
 		const handler = createPackageCommandHandler({
 			cwd: root,
-			addContent: vi.fn(),
+			addContent,
 			requestRender: vi.fn(),
 		});
 
 		await handler(ctx);
 
-		expect(ctx.showError).toHaveBeenCalledWith(
-			expect.stringContaining("Git source resolution not yet implemented"),
+		expect(ctx.showError).not.toHaveBeenCalled();
+		expect(addContent).toHaveBeenCalledWith(
+			expect.stringContaining("Maestro Package Inspection:"),
+		);
+		expect(addContent).toHaveBeenCalledWith(
+			expect.stringContaining("Name: @test/inspect-git-package"),
+		);
+		expect(addContent).toHaveBeenCalledWith(
+			expect.stringContaining("Type: git"),
 		);
 	});
 });
+
+function createCommittedGitRepo(dir: string): void {
+	execFileSync("git", ["init", "--initial-branch=main"], {
+		cwd: dir,
+		stdio: "ignore",
+	});
+	execFileSync("git", ["config", "user.email", "maestro@example.com"], {
+		cwd: dir,
+		stdio: "ignore",
+	});
+	execFileSync("git", ["config", "user.name", "Maestro Tests"], {
+		cwd: dir,
+		stdio: "ignore",
+	});
+	execFileSync("git", ["add", "."], {
+		cwd: dir,
+		stdio: "ignore",
+	});
+	execFileSync("git", ["commit", "-m", "initial"], {
+		cwd: dir,
+		stdio: "ignore",
+	});
+}

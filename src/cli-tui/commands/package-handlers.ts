@@ -518,7 +518,6 @@ Sources:
   ./relative/path
   /absolute/path
   git:github.com/org/repo@ref
-  npm:@scope/name@version
 
 Alias: /plugin`,
 	);

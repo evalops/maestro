@@ -2966,8 +2966,8 @@ export function ToolsRuntimeSection({
 						<div>
 							<div className="text-text-primary font-medium">Add package</div>
 							<div className="text-xs text-text-muted">
-								Add a local path, git source, or npm package spec to local,
-								project, or user config.
+								Add a local path or git source to local, project, or user
+								config.
 							</div>
 						</div>
 						<form

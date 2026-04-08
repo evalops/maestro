@@ -1895,8 +1895,8 @@ export class ComposerSettings extends LitElement {
 						</div>
 						<div class="section-content">
 							<div class="panel-card-copy">
-								Add a local path, git source, or npm package spec to local,
-								project, or user config.
+								Add a local path or git source to local, project, or user
+								config.
 							</div>
 							<div class="control-row" style="margin-top: 0.75rem;">
 								<input

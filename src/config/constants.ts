@@ -170,6 +170,13 @@ export const PATHS = {
 	get TOOLS_DIR(): string {
 		return join(getComposerHome(), "tools");
 	},
+	/** Package cache directory */
+	get PACKAGE_CACHE_DIR(): string {
+		return (
+			resolveEnvPath(process.env.MAESTRO_PACKAGE_CACHE_DIR) ??
+			join(getComposerHome(), "packages")
+		);
+	},
 	/** Cost tracking database path */
 	get COST_DB(): string {
 		return (

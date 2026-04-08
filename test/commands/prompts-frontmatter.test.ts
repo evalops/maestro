@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import {
 	mkdirSync,
 	rmSync,
@@ -9,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { findPrompt, loadPrompts } from "../../src/commands/catalog.js";
+import { clearResolvedPackageSourceCache } from "../../src/packages/index.js";
 
 describe("commands/prompts frontmatter", () => {
 	const originalHome = process.env.HOME;
@@ -21,10 +23,12 @@ describe("commands/prompts frontmatter", () => {
 		process.env.HOME = homeDir;
 		mkdirSync(join(homeDir, ".maestro", "prompts"), { recursive: true });
 		mkdirSync(join(workspaceDir, ".maestro", "prompts"), { recursive: true });
+		clearResolvedPackageSourceCache();
 	});
 
 	afterEach(() => {
 		process.env.HOME = originalHome;
+		clearResolvedPackageSourceCache();
 		rmSync(homeDir, { recursive: true, force: true });
 		rmSync(workspaceDir, { recursive: true, force: true });
 	});
@@ -89,6 +93,45 @@ Draft the release note.
 		);
 	});
 
+	it("loads prompts from configured git packages", () => {
+		const repoDir = join(workspaceDir, "vendor", "prompt-pack-git");
+		const promptDir = join(repoDir, "prompts", "release-pack");
+		mkdirSync(promptDir, { recursive: true });
+		writeFileSync(
+			join(repoDir, "package.json"),
+			JSON.stringify({
+				name: "@test/prompt-pack-git",
+				version: "1.0.0",
+				keywords: ["maestro-package"],
+				maestro: {
+					prompts: ["./prompts"],
+				},
+			}),
+		);
+		writeFileSync(
+			join(promptDir, "prompt.md"),
+			`---
+name: git-release
+description: Prompt loaded from a git package
+---
+
+Draft the git-based release note.
+`,
+		);
+		createCommittedGitRepo(repoDir);
+		writeFileSync(
+			join(workspaceDir, ".maestro", "config.toml"),
+			`packages = ["git:${repoDir}"]\n`,
+		);
+
+		const prompts = loadPrompts(workspaceDir);
+
+		expect(findPrompt(prompts, "git-release")?.sourceType).toBe("project");
+		expect(findPrompt(prompts, "git-release")?.description).toBe(
+			"Prompt loaded from a git package",
+		);
+	});
+
 	it("reuses cached prompt catalogs until prompt files change", () => {
 		const promptPath = join(homeDir, ".maestro", "prompts", "review.md");
 		writeFileSync(
@@ -124,3 +167,26 @@ Review the PR.
 		expect(third[0]?.description).toBe("Updated description");
 	});
 });
+
+function createCommittedGitRepo(dir: string): void {
+	execFileSync("git", ["init", "--initial-branch=main"], {
+		cwd: dir,
+		stdio: "ignore",
+	});
+	execFileSync("git", ["config", "user.email", "maestro@example.com"], {
+		cwd: dir,
+		stdio: "ignore",
+	});
+	execFileSync("git", ["config", "user.name", "Maestro Tests"], {
+		cwd: dir,
+		stdio: "ignore",
+	});
+	execFileSync("git", ["add", "."], {
+		cwd: dir,
+		stdio: "ignore",
+	});
+	execFileSync("git", ["commit", "-m", "initial"], {
+		cwd: dir,
+		stdio: "ignore",
+	});
+}
