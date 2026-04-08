@@ -231,6 +231,7 @@ describe("getGitSnapshot", () => {
 
 			const snapshot = getGitSnapshot(dir);
 			const branch = getCurrentBranch(dir);
+			const defaultBranch = getDefaultBranch(dir) ?? "(unknown)";
 
 			expect(snapshot).toContain("# Repository Snapshot");
 			expect(snapshot).toContain(
@@ -238,7 +239,7 @@ describe("getGitSnapshot", () => {
 			);
 			expect(snapshot).toContain("Current branch:");
 			expect(snapshot).toContain(
-				`Main branch (usually the PR target): ${branch}`,
+				`Main branch (usually the PR target): ${defaultBranch}`,
 			);
 			expect(snapshot).toContain("Git user is configured for this repository.");
 			expect(snapshot).toContain("Working tree: dirty");
@@ -334,16 +335,18 @@ exit 1
 });
 
 describe("getDefaultBranch", () => {
-	it("returns unknown when origin/HEAD is unavailable", () => {
+	it("returns undefined when origin/HEAD and init.defaultBranch are unavailable", () => {
 		const dir = mkdtempSync(join(tmpdir(), "composer-git-default-branch-"));
 		const emptyGlobalConfig = join(dir, "global.gitconfig");
 		const originalGlobalConfig = process.env.GIT_CONFIG_GLOBAL;
+		const originalNoSystem = process.env.GIT_CONFIG_NOSYSTEM;
 
 		try {
 			initGitRepo(dir);
 			commitFile(dir, "tracked.txt", "tracked\n", "initial commit");
 			writeFileSync(emptyGlobalConfig, "");
 			process.env.GIT_CONFIG_GLOBAL = emptyGlobalConfig;
+			process.env.GIT_CONFIG_NOSYSTEM = "1";
 
 			expect(getDefaultBranch(dir)).toBeUndefined();
 		} finally {
@@ -351,6 +354,11 @@ describe("getDefaultBranch", () => {
 				Reflect.deleteProperty(process.env, "GIT_CONFIG_GLOBAL");
 			} else {
 				process.env.GIT_CONFIG_GLOBAL = originalGlobalConfig;
+			}
+			if (originalNoSystem === undefined) {
+				Reflect.deleteProperty(process.env, "GIT_CONFIG_NOSYSTEM");
+			} else {
+				process.env.GIT_CONFIG_NOSYSTEM = originalNoSystem;
 			}
 			rmSync(dir, { recursive: true, force: true });
 		}
