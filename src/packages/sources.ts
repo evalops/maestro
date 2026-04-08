@@ -4,7 +4,7 @@
  * Resolves package sources from various formats:
  * - local:./path or ./path (filesystem)
  * - git:github.com/user/repo@ref (git repository)
- * - npm:@scope/name@version (npm registry - future)
+ * - npm:@scope/name@version (npm registry)
  */
 
 import { execFileSync } from "node:child_process";
@@ -310,13 +310,60 @@ function resolveGitSourceSync(source: GitSource, cacheDir?: string): string {
 }
 
 /**
- * Resolve npm package source (future implementation)
+ * Resolve npm package source
  */
-function resolveNpmSource(source: NpmSource, _cacheDir?: string): string {
-	logger.warn("npm source resolution not yet implemented", { source });
-	throw new Error(
-		`npm source resolution not yet implemented: ${source.name}${source.version ? `@${source.version}` : ""}`,
+function resolveNpmSource(source: NpmSource, cacheDir?: string): string {
+	const cachePath = getCachedSourcePath(
+		"npm",
+		`${source.name}@${source.version ?? ""}`,
+		cacheDir,
 	);
+	const cachedPackagePath = detectInstalledNpmPackagePath(cachePath, source);
+	if (cachedPackagePath) {
+		return cachedPackagePath;
+	}
+
+	rmSync(cachePath, { recursive: true, force: true });
+	mkdirSync(getPackageCacheDir(cacheDir), { recursive: true });
+	mkdirSync(cachePath, { recursive: true });
+
+	const installSpec = source.version
+		? `${source.name}@${source.version}`
+		: source.name;
+
+	try {
+		runSyncCommand("npm", [
+			"install",
+			"--prefix",
+			cachePath,
+			"--no-save",
+			"--ignore-scripts",
+			"--no-package-lock",
+			"--no-audit",
+			"--no-fund",
+			"--install-links=false",
+			"--silent",
+			installSpec,
+		]);
+	} catch (error) {
+		rmSync(cachePath, { recursive: true, force: true });
+		throw error;
+	}
+
+	const resolvedPackagePath = detectInstalledNpmPackagePath(cachePath, source);
+	if (!resolvedPackagePath) {
+		rmSync(cachePath, { recursive: true, force: true });
+		throw new Error(
+			`npm install succeeded but did not materialize a package for ${installSpec}`,
+		);
+	}
+
+	logger.info("Resolved npm package source", {
+		name: source.name,
+		version: source.version,
+		path: resolvedPackagePath,
+	});
+	return resolvedPackagePath;
 }
 
 export function getPackageCacheDir(cacheDir?: string): string {
@@ -384,6 +431,59 @@ function normalizeGitCloneUrl(url: string): string {
 	}
 
 	return url;
+}
+
+function looksLikeRegistryPackageName(value: string): boolean {
+	return /^(?:@[^/]+\/)?[^/]+$/.test(value);
+}
+
+function getNodeModulesPackagePath(
+	cachePath: string,
+	packageName: string,
+): string {
+	return join(cachePath, "node_modules", ...packageName.split("/"));
+}
+
+function detectInstalledNpmPackageName(
+	cachePath: string,
+	source: NpmSource,
+): string | null {
+	if (looksLikeRegistryPackageName(source.name)) {
+		const directPath = getNodeModulesPackagePath(cachePath, source.name);
+		if (existsSync(directPath)) {
+			return source.name;
+		}
+	}
+
+	try {
+		const output = runSyncCommand("npm", [
+			"ls",
+			"--prefix",
+			cachePath,
+			"--json",
+			"--depth=0",
+		]);
+		const parsed = JSON.parse(output) as {
+			dependencies?: Record<string, unknown>;
+		};
+		const packageName = Object.keys(parsed.dependencies ?? {})[0];
+		return packageName ?? null;
+	} catch {
+		return null;
+	}
+}
+
+function detectInstalledNpmPackagePath(
+	cachePath: string,
+	source: NpmSource,
+): string | null {
+	const packageName = detectInstalledNpmPackageName(cachePath, source);
+	if (!packageName) {
+		return null;
+	}
+
+	const packagePath = getNodeModulesPackagePath(cachePath, packageName);
+	return existsSync(packagePath) ? packagePath : null;
 }
 
 function runSyncCommand(command: string, args: string[]): string {
