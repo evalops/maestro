@@ -91,6 +91,7 @@ export interface CommandHandlers {
 	mode(context: CommandExecutionContext): void;
 	prompts(context: CommandExecutionContext): void;
 	copy(context: CommandExecutionContext): void;
+	package(context: CommandExecutionContext): void | Promise<void>;
 }
 
 export interface CommandEntry {

@@ -16,6 +16,7 @@ import type { GroupedCommandHandlers } from "../commands/grouped-command-handler
 import { createHotkeysCommandHandler } from "../commands/hotkeys-command.js";
 import { handleLimitsCommand } from "../commands/limits-command.js";
 import { handleOtelCommand as otelHandler } from "../commands/otel-handlers.js";
+import { createPackageCommandHandler } from "../commands/package-handlers.js";
 import { handlePiiCommand } from "../commands/pii-command.js";
 import {
 	handleApprovalsCommand,
@@ -191,6 +192,12 @@ export function buildTuiCommandRegistryOptions(
 		hotkeys: (context) =>
 			createHotkeysCommandHandler({
 				showHotkeys: () => deps.getHotkeysView().handleHotkeysCommand(),
+			})(context),
+		package: (context) =>
+			createPackageCommandHandler({
+				cwd: process.cwd(),
+				addContent,
+				requestRender,
 			})(context),
 		config: (context) => deps.getConfigView().handleConfigCommand(context),
 		cost: (context) => deps.getCostView().handleCostCommand(context),

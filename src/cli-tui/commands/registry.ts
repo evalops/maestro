@@ -17,6 +17,7 @@ import {
 	createSubcommandCompletions,
 } from "./grouped/index.js";
 import { HOTKEYS_SUBCOMMANDS } from "./hotkeys-command.js";
+import { PACKAGE_SUBCOMMANDS } from "./package-handlers.js";
 import type {
 	CommandEntry,
 	CommandExecutionContext,
@@ -900,6 +901,25 @@ export function createCommandRegistry({
 			},
 			withArgs("hotkeys", ["keys", "shortcuts"]),
 			handlers.hotkeys,
+			createContext,
+		),
+		buildEntry(
+			{
+				name: "package",
+				description: "Inspect or validate Maestro package/plugin bundles",
+				usage: "/package [inspect|validate] <source>",
+				tags: ["tools", "config"],
+				aliases: ["plugin"],
+				examples: [
+					"/package inspect ./packages/my-pack",
+					"/package validate ./packages/my-pack",
+					"/plugin ./packages/my-pack",
+				],
+				getArgumentCompletions:
+					createSubcommandCompletions(PACKAGE_SUBCOMMANDS),
+			},
+			withArgs("package", ["plugin"]),
+			handlers.package,
 			createContext,
 		),
 		buildEntry(

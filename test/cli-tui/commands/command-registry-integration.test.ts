@@ -98,6 +98,7 @@ function createMockOptions(): CommandRegistryOptions & {
 		mode: noop,
 		prompts: noop,
 		copy: noop,
+		package: noop,
 	};
 	const groupedHandlers: GroupedCommandHandlers = {
 		session: vi.fn(),
@@ -224,6 +225,7 @@ describe("command-registry-integration", () => {
 			"footer",
 			"mode",
 			"prompts",
+			"package",
 			"composer",
 			"commands",
 			"clean",
@@ -286,6 +288,13 @@ describe("command-registry-integration", () => {
 			);
 			expect(mcpEntry).toBeDefined();
 			expect(mcpEntry!.command.name).toBe("mcp");
+		});
+
+		it("matches /package and /plugin aliases", () => {
+			expect(findMatchingEntry("/package validate ./pack")?.command.name).toBe(
+				"package",
+			);
+			expect(findMatchingEntry("/plugin ./pack")?.command.name).toBe("package");
 		});
 
 		it("matches alias commands", () => {
