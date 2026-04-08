@@ -14,6 +14,7 @@ concurrency:
 
 env:
   CI: true
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   NX_DAEMON: false
 
 jobs:
