@@ -52,6 +52,43 @@ Review the PR.
 		expect(findPrompt(prompts, "prr")?.name).toBe("pr-review");
 	});
 
+	it("loads prompts from configured packages relative to project config", () => {
+		const packageDir = join(workspaceDir, "vendor", "prompt-pack");
+		const promptDir = join(packageDir, "prompts", "release-pack");
+		mkdirSync(promptDir, { recursive: true });
+		writeFileSync(
+			join(packageDir, "package.json"),
+			JSON.stringify({
+				name: "@test/prompt-pack",
+				keywords: ["maestro-package"],
+				maestro: {
+					prompts: ["./prompts"],
+				},
+			}),
+		);
+		writeFileSync(
+			join(promptDir, "prompt.md"),
+			`---
+name: package-release
+description: Prompt loaded from a package
+---
+
+Draft the release note.
+`,
+		);
+		writeFileSync(
+			join(workspaceDir, ".maestro", "config.toml"),
+			'packages = ["../vendor/prompt-pack"]\n',
+		);
+
+		const prompts = loadPrompts(workspaceDir);
+
+		expect(findPrompt(prompts, "package-release")?.sourceType).toBe("project");
+		expect(findPrompt(prompts, "package-release")?.description).toBe(
+			"Prompt loaded from a package",
+		);
+	});
+
 	it("reuses cached prompt catalogs until prompt files change", () => {
 		const promptPath = join(homeDir, ".maestro", "prompts", "review.md");
 		writeFileSync(

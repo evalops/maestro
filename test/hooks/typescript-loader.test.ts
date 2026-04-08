@@ -99,4 +99,41 @@ describe("TypeScript hook loader", () => {
 			},
 		});
 	});
+
+	it("loads TypeScript hooks from configured package extensions", async () => {
+		testDir = mkdtempSync(join(tmpdir(), "composer-ts-hooks-"));
+		process.env.MAESTRO_HOME = join(testDir, ".maestro-home");
+
+		const packageDir = join(testDir, "vendor", "hook-pack");
+		const extensionDir = join(packageDir, "extensions", "package-hook");
+		mkdirSync(extensionDir, { recursive: true });
+		mkdirSync(join(testDir, ".maestro"), { recursive: true });
+		writeFileSync(
+			join(packageDir, "package.json"),
+			JSON.stringify({
+				name: "@test/hook-pack",
+				keywords: ["maestro-package"],
+				maestro: {
+					extensions: ["./extensions"],
+				},
+			}),
+		);
+		writeFileSync(
+			join(extensionDir, "session-start.ts"),
+			`export default function (pi) {
+  pi.on("SessionStart", async () => ({ continue: true }));
+}
+`,
+		);
+		writeFileSync(
+			join(testDir, ".maestro", "config.toml"),
+			'packages = ["../vendor/hook-pack"]\n',
+		);
+
+		const result = await discoverAndLoadTypeScriptHooks([], testDir);
+
+		expect(result.errors).toEqual([]);
+		expect(result.hooks).toHaveLength(1);
+		expect(result.hooks[0]?.resolvedPath).toContain("session-start.ts");
+	});
 });

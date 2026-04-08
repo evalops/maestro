@@ -31,9 +31,10 @@ import {
 	readSync,
 	statSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { Type } from "@sinclair/typebox";
 import { parse as parseTOML } from "smol-toml";
+import type { PackageSpec } from "../packages/types.js";
 import { createLogger } from "../utils/logger.js";
 import { compileTypeboxSchema } from "../utils/typebox-ajv.js";
 import { PATHS, getAgentDir } from "./constants.js";
@@ -215,8 +216,18 @@ export interface ComposerConfig {
 	instructions?: string;
 	experimental_instructions_file?: string;
 
+	// Packages
+	packages?: PackageSpec[];
+
 	// Trust
 	projects?: Record<string, { trust_level?: "trusted" | "untrusted" }>;
+}
+
+export interface ConfiguredPackageSpec {
+	spec: PackageSpec;
+	cwd: string;
+	scope: "user" | "project";
+	configPath: string;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -419,6 +430,20 @@ const ProfileConfigSchema = Type.Object(
 	{ additionalProperties: true },
 );
 
+const PackageSpecSchema = Type.Union([
+	Type.String(),
+	Type.Object(
+		{
+			source: Type.String(),
+			extensions: Type.Optional(Type.Array(Type.String())),
+			skills: Type.Optional(Type.Array(Type.String())),
+			prompts: Type.Optional(Type.Array(Type.String())),
+			themes: Type.Optional(Type.Array(Type.String())),
+		},
+		{ additionalProperties: true },
+	),
+]);
+
 const ComposerConfigSchema = Type.Object(
 	{
 		model: Type.Optional(Type.String()),
@@ -462,6 +487,7 @@ const ComposerConfigSchema = Type.Object(
 		),
 		instructions: Type.Optional(Type.String()),
 		experimental_instructions_file: Type.Optional(Type.String()),
+		packages: Type.Optional(Type.Array(PackageSpecSchema)),
 		projects: Type.Optional(
 			Type.Record(
 				Type.String(),
@@ -755,6 +781,24 @@ function parseConfigFile(path: string): ComposerConfig | null {
 	}
 }
 
+function extractConfiguredPackageSpecs(
+	config: ComposerConfig | null,
+	configPath: string,
+	scope: "user" | "project",
+): ConfiguredPackageSpec[] {
+	if (!config?.packages || config.packages.length === 0) {
+		return [];
+	}
+
+	const configDir = dirname(configPath);
+	return config.packages.map((spec) => ({
+		spec,
+		cwd: configDir,
+		scope,
+		configPath,
+	}));
+}
+
 /**
  * Apply environment variable overrides.
  */
@@ -919,6 +963,32 @@ export function loadConfig(
 	return config;
 }
 
+export function loadConfiguredPackageSpecs(
+	workspaceDir: string,
+): ConfiguredPackageSpec[] {
+	const globalPath = join(PATHS.MAESTRO_HOME, "config.toml");
+	const projectPath = join(workspaceDir, ".maestro", "config.toml");
+	const localPath = join(workspaceDir, ".maestro", "config.local.toml");
+
+	return [
+		...extractConfiguredPackageSpecs(
+			parseConfigFile(globalPath),
+			globalPath,
+			"user",
+		),
+		...extractConfiguredPackageSpecs(
+			parseConfigFile(projectPath),
+			projectPath,
+			"project",
+		),
+		...extractConfiguredPackageSpecs(
+			parseConfigFile(localPath),
+			localPath,
+			"project",
+		),
+	];
+}
+
 /**
  * Clear the configuration cache.
  */
@@ -970,6 +1040,11 @@ export function getConfigSummary(workspaceDir: string): string {
 	const profiles = getAvailableProfiles(workspaceDir);
 	if (profiles.length > 0) {
 		lines.push(`Available Profiles: ${profiles.join(", ")}`);
+	}
+
+	const packageCount = loadConfiguredPackageSpecs(workspaceDir).length;
+	if (packageCount > 0) {
+		lines.push(`Configured Packages: ${packageCount}`);
 	}
 
 	return lines.join("\n");

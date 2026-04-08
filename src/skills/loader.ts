@@ -21,6 +21,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PATHS } from "../config/constants.js";
+import { loadConfiguredPackageResources } from "../packages/runtime.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("skills:loader");
@@ -607,18 +608,39 @@ export function loadSkills(
 	const systemSkillsDir = includeSystem ? getSystemSkillsDir() : null;
 	const userSkillsDir = join(PATHS.MAESTRO_HOME, "skills");
 	const projectSkillsDir = join(workspaceDir, ".maestro", "skills");
+	const packageResources = loadConfiguredPackageResources(workspaceDir);
+	const userPackageSkillDirs = packageResources.skills.user;
+	const projectPackageSkillDirs = packageResources.skills.project;
 
 	logger.debug("Scanning for skills", {
 		systemSkillsDir: systemSkillsDir ?? "(disabled)",
 		userSkillsDir,
 		projectSkillsDir,
+		userPackageSkillDirs,
+		projectPackageSkillDirs,
 	});
 
 	const systemResult = systemSkillsDir
 		? scanSkillsDirectory(systemSkillsDir, "system")
 		: { skills: [], errors: [] };
-	const userResult = scanSkillsDirectory(userSkillsDir, "user");
-	const projectResult = scanSkillsDirectory(projectSkillsDir, "project");
+	const userResult = [...userPackageSkillDirs, userSkillsDir].reduce(
+		(result, dir) => {
+			const next = scanSkillsDirectory(dir, "user");
+			result.skills.push(...next.skills);
+			result.errors.push(...next.errors);
+			return result;
+		},
+		{ skills: [] as LoadedSkill[], errors: [] as SkillLoadError[] },
+	);
+	const projectResult = [...projectPackageSkillDirs, projectSkillsDir].reduce(
+		(result, dir) => {
+			const next = scanSkillsDirectory(dir, "project");
+			result.skills.push(...next.skills);
+			result.errors.push(...next.errors);
+			return result;
+		},
+		{ skills: [] as LoadedSkill[], errors: [] as SkillLoadError[] },
+	);
 
 	// Priority: project > user > system (last writer wins)
 	const skillMap = new Map<string, LoadedSkill>();
@@ -661,6 +683,8 @@ export function loadSkills(
 		system: systemResult.skills.length,
 		user: userResult.skills.length,
 		project: projectResult.skills.length,
+		userPackages: userPackageSkillDirs.length,
+		projectPackages: projectPackageSkillDirs.length,
 	});
 
 	return { skills: allSkills, errors: allErrors };

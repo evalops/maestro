@@ -13,6 +13,7 @@
 		"../../src/providers/**/*.ts",
 		"../../src/tools/**/*.ts",
 		"../../src/utils/**/*.ts",
+		"../../src/packages/**/*.ts",
 		"../../src/hooks/**/*.ts",
 		"../../src/theme/**/*.ts",
 		"../../src/safety/**/*.ts",

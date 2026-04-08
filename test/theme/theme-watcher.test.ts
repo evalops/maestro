@@ -11,16 +11,24 @@ import {
 describe("theme-watcher", () => {
 	let themesDir: string;
 	let previousThemesDir: string | undefined;
+	let previousMaestroHome: string | undefined;
 
 	beforeEach(() => {
 		themesDir = mkdtempSync(join(tmpdir(), "composer-theme-watcher-"));
 		previousThemesDir = process.env.MAESTRO_THEMES_DIR;
+		previousMaestroHome = process.env.MAESTRO_HOME;
 		process.env.MAESTRO_THEMES_DIR = themesDir;
+		process.env.MAESTRO_HOME = join(themesDir, ".maestro-home");
 	});
 
 	afterEach(() => {
 		stopThemeWatcher();
 		process.env.MAESTRO_THEMES_DIR = previousThemesDir ?? "";
+		if (previousMaestroHome === undefined) {
+			delete process.env.MAESTRO_HOME;
+		} else {
+			process.env.MAESTRO_HOME = previousMaestroHome;
+		}
 		rmSync(themesDir, { recursive: true, force: true });
 	});
 

@@ -17,14 +17,22 @@ function getResultText(result: { content: { type: string; text?: string }[] }) {
 describe("skills/tool", () => {
 	let testDir: string;
 	let skillsDir: string;
+	let previousMaestroHome: string | undefined;
 
 	beforeEach(() => {
 		testDir = join(tmpdir(), `composer-skills-tool-test-${Date.now()}`);
 		skillsDir = join(testDir, ".maestro", "skills");
+		previousMaestroHome = process.env.MAESTRO_HOME;
+		process.env.MAESTRO_HOME = join(testDir, ".maestro-home");
 		mkdirSync(skillsDir, { recursive: true });
 	});
 
 	afterEach(() => {
+		if (previousMaestroHome === undefined) {
+			delete process.env.MAESTRO_HOME;
+		} else {
+			process.env.MAESTRO_HOME = previousMaestroHome;
+		}
 		if (existsSync(testDir)) {
 			rmSync(testDir, { recursive: true, force: true });
 		}
