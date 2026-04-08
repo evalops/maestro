@@ -26,6 +26,9 @@ concurrency:
   group: github-agent
   cancel-in-progress: false
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   process-issue:
     # Run on labeled issues with 'composer-task' label
