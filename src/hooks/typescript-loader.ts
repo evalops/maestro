@@ -12,6 +12,7 @@ import { spawn } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { PATHS } from "../config/constants.js";
+import { loadConfiguredPackageResources } from "../packages/runtime.js";
 import { theme } from "../theme/theme.js";
 import { createLogger } from "../utils/logger.js";
 import { expandTildePath } from "../utils/path-expansion.js";
@@ -335,7 +336,8 @@ export async function discoverAndLoadTypeScriptHooks(
 	configuredPaths: string[],
 	cwd: string,
 ): Promise<{ hooks: LoadedTypeScriptHook[]; errors: string[] }> {
-	const errors: string[] = [];
+	const packageResources = loadConfiguredPackageResources(cwd);
+	const errors: string[] = [...packageResources.errors];
 	const hooks: LoadedTypeScriptHook[] = [];
 	const seenPaths = new Set<string>();
 
@@ -347,10 +349,19 @@ export async function discoverAndLoadTypeScriptHooks(
 	const projectHooksDir = join(cwd, ".maestro", "hooks");
 	const projectHookPaths = discoverHooksInDir(projectHooksDir);
 
-	// Combine all paths (global, project, configured)
+	const userPackageHookPaths = packageResources.extensions.user.flatMap((dir) =>
+		discoverHooksInDir(dir),
+	);
+	const projectPackageHookPaths = packageResources.extensions.project.flatMap(
+		(dir) => discoverHooksInDir(dir),
+	);
+
+	// Combine all paths (global, project, configured packages, explicit paths)
 	const allPaths = [
 		...globalHookPaths,
 		...projectHookPaths,
+		...userPackageHookPaths,
+		...projectPackageHookPaths,
 		...configuredPaths,
 	];
 

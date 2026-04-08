@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir } from "../config/constants.js";
+import { loadConfiguredPackageResources } from "../packages/runtime.js";
 import { createLogger } from "../utils/logger.js";
 import { resolveEnvPath } from "../utils/path-expansion.js";
 import { embeddedThemes } from "./embedded-themes.js";
@@ -81,9 +82,106 @@ export function getThemesDir(): string {
 	return path.resolve(getAgentDir(), "themes");
 }
 
-export function getAvailableThemes(): string[] {
+function getConfiguredThemeDirectories(workspaceDir: string): string[] {
+	const packageResources = loadConfiguredPackageResources(workspaceDir);
+	return [...packageResources.themes.user, ...packageResources.themes.project];
+}
+
+function getThemeNamesFromPackageDir(dir: string): string[] {
+	if (!fs.existsSync(dir)) {
+		return [];
+	}
+
+	try {
+		const stat = fs.statSync(dir);
+		if (!stat.isDirectory()) {
+			return [];
+		}
+	} catch {
+		return [];
+	}
+
+	const resourceName = path.basename(dir);
+	const matchingNamedFile = path.join(dir, `${resourceName}.json`);
+	if (fs.existsSync(matchingNamedFile)) {
+		return [resourceName];
+	}
+
+	const themeJsonFile = path.join(dir, "theme.json");
+	if (fs.existsSync(themeJsonFile)) {
+		return [resourceName];
+	}
+
+	try {
+		return fs
+			.readdirSync(dir)
+			.filter((file) => file.endsWith(".json"))
+			.map((file) => file.slice(0, -5));
+	} catch {
+		return [];
+	}
+}
+
+function resolveThemeFileFromPackageDir(
+	dir: string,
+	name: string,
+): string | null {
+	const namedFile = path.join(dir, `${name}.json`);
+	if (fs.existsSync(namedFile)) {
+		return namedFile;
+	}
+
+	const resourceName = path.basename(dir);
+	const themeJsonFile = path.join(dir, "theme.json");
+	if (resourceName === name && fs.existsSync(themeJsonFile)) {
+		return themeJsonFile;
+	}
+
+	return null;
+}
+
+export function resolveThemeFilePath(
+	name: string,
+	workspaceDir = process.cwd(),
+): string | null {
+	const projectThemeDirs =
+		loadConfiguredPackageResources(workspaceDir).themes.project;
+	for (const dir of [...projectThemeDirs].reverse()) {
+		const filePath = resolveThemeFileFromPackageDir(dir, name);
+		if (filePath) {
+			return filePath;
+		}
+	}
+
+	const themesDir = getThemesDir();
+	const homeThemePath = path.join(themesDir, `${name}.json`);
+	if (fs.existsSync(homeThemePath)) {
+		return homeThemePath;
+	}
+
+	const userThemeDirs =
+		loadConfiguredPackageResources(workspaceDir).themes.user;
+	for (const dir of [...userThemeDirs].reverse()) {
+		const filePath = resolveThemeFileFromPackageDir(dir, name);
+		if (filePath) {
+			return filePath;
+		}
+	}
+
+	return null;
+}
+
+export function getAvailableThemes(workspaceDir = process.cwd()): string[] {
 	const themes = new Set<string>(Object.keys(getBuiltinThemes()));
 	const themesDir = getThemesDir();
+	const configuredThemeDirs = getConfiguredThemeDirectories(workspaceDir);
+
+	for (const dir of configuredThemeDirs) {
+		for (const themeName of getThemeNamesFromPackageDir(dir)) {
+			themes.add(themeName);
+		}
+	}
+
 	if (fs.existsSync(themesDir)) {
 		const files = fs.readdirSync(themesDir);
 		for (const file of files) {
@@ -157,14 +255,16 @@ function normalizeThemeJson(raw: unknown): unknown {
 	return { ...raw, colors };
 }
 
-export function loadThemeJson(name: string): ThemeJson {
+export function loadThemeJson(
+	name: string,
+	workspaceDir = process.cwd(),
+): ThemeJson {
 	const builtinThemes = getBuiltinThemes();
 	if (name in builtinThemes) {
 		return builtinThemes[name]!;
 	}
-	const themesDir = getThemesDir();
-	const themePath = path.join(themesDir, `${name}.json`);
-	if (!fs.existsSync(themePath)) {
+	const themePath = resolveThemeFilePath(name, workspaceDir);
+	if (!themePath) {
 		throw new Error(`Theme not found: ${name}`);
 	}
 	const content = fs.readFileSync(themePath, "utf-8");

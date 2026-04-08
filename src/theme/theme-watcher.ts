@@ -1,6 +1,5 @@
 import * as fs from "node:fs";
-import * as path from "node:path";
-import { getThemesDir } from "./theme-loader.js";
+import { resolveThemeFilePath } from "./theme-loader.js";
 
 export interface ThemeWatcherCallbacks {
 	reloadTheme(name: string): void;
@@ -26,6 +25,7 @@ function clearWatcherTimers(): void {
 export function startThemeWatcher(
 	currentThemeName: string | undefined,
 	callbacks: ThemeWatcherCallbacks,
+	workspaceDir = process.cwd(),
 ): void {
 	// Stop existing watcher if any
 	stopThemeWatcher();
@@ -41,11 +41,10 @@ export function startThemeWatcher(
 		return;
 	}
 
-	const themesDir = getThemesDir();
-	const themeFile = path.join(themesDir, `${currentThemeName}.json`);
+	const themeFile = resolveThemeFilePath(currentThemeName, workspaceDir);
 
 	// Only watch if the file exists
-	if (!fs.existsSync(themeFile)) {
+	if (!themeFile || !fs.existsSync(themeFile)) {
 		return;
 	}
 

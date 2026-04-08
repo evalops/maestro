@@ -14,14 +14,22 @@ import {
 describe("skills/loader", () => {
 	let testDir: string;
 	let skillsDir: string;
+	let previousMaestroHome: string | undefined;
 
 	beforeEach(() => {
 		testDir = join(tmpdir(), `composer-skills-test-${Date.now()}`);
 		skillsDir = join(testDir, ".maestro", "skills");
+		previousMaestroHome = process.env.MAESTRO_HOME;
+		process.env.MAESTRO_HOME = join(testDir, ".maestro-home");
 		mkdirSync(skillsDir, { recursive: true });
 	});
 
 	afterEach(() => {
+		if (previousMaestroHome === undefined) {
+			delete process.env.MAESTRO_HOME;
+		} else {
+			process.env.MAESTRO_HOME = previousMaestroHome;
+		}
 		if (existsSync(testDir)) {
 			rmSync(testDir, { recursive: true, force: true });
 		}
@@ -224,6 +232,41 @@ Content for skill ${i}.
 			expect(skills).toHaveLength(3);
 			const names = skills.map((s) => s.name).sort();
 			expect(names).toEqual(["skill-1", "skill-2", "skill-3"]);
+		});
+
+		it("loads skills from configured packages relative to project config", () => {
+			const packageDir = join(testDir, "vendor", "skill-pack");
+			const packageSkillDir = join(packageDir, "skills", "package-skill");
+			mkdirSync(packageSkillDir, { recursive: true });
+			writeFileSync(
+				join(packageSkillDir, "SKILL.md"),
+				`---
+name: package-skill
+description: Skill loaded from a package
+---
+
+Package skill content.
+`,
+			);
+			writeFileSync(
+				join(packageDir, "package.json"),
+				JSON.stringify({
+					name: "@test/skill-pack",
+					keywords: ["maestro-package"],
+					maestro: {
+						skills: ["./skills"],
+					},
+				}),
+			);
+			writeFileSync(
+				join(testDir, ".maestro", "config.toml"),
+				'packages = ["../vendor/skill-pack"]\n',
+			);
+
+			const { skills } = loadSkills(testDir, { includeSystem: false });
+
+			expect(skills.map((skill) => skill.name)).toContain("package-skill");
+			expect(findSkill(skills, "package-skill")?.sourceType).toBe("project");
 		});
 	});
 

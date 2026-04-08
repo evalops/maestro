@@ -11,6 +11,7 @@ import {
 	getAvailableProfiles,
 	getConfigSummary,
 	loadConfig,
+	loadConfiguredPackageSpecs,
 	parseCliOverride,
 	resolvePromptLoadedProjectDocPaths,
 } from "../../src/config/toml-config.js";
@@ -19,12 +20,14 @@ describe("toml-config", () => {
 	let testDir: string;
 	let globalDir: string;
 	let projectDir: string;
+	let previousMaestroHome: string | undefined;
 
 	beforeEach(() => {
 		clearConfigCache();
 		testDir = join(tmpdir(), `composer-config-test-${Date.now()}`);
 		globalDir = join(testDir, "global", ".maestro");
 		projectDir = join(testDir, "project");
+		previousMaestroHome = process.env.MAESTRO_HOME;
 		mkdirSync(globalDir, { recursive: true });
 		mkdirSync(join(projectDir, ".maestro"), { recursive: true });
 	});
@@ -39,6 +42,11 @@ describe("toml-config", () => {
 		Reflect.deleteProperty(process.env, "MAESTRO_APPROVAL_POLICY");
 		Reflect.deleteProperty(process.env, "MAESTRO_SANDBOX_MODE");
 		Reflect.deleteProperty(process.env, "MAESTRO_PROFILE");
+		if (previousMaestroHome === undefined) {
+			Reflect.deleteProperty(process.env, "MAESTRO_HOME");
+		} else {
+			process.env.MAESTRO_HOME = previousMaestroHome;
+		}
 	});
 
 	describe("DEFAULT_CONFIG", () => {
@@ -368,6 +376,60 @@ model = "b"
 			expect(summary).toContain("Available Profiles:");
 			expect(summary).toContain("alpha");
 			expect(summary).toContain("beta");
+		});
+
+		it("includes configured package count when packages are declared", () => {
+			writeFileSync(
+				join(projectDir, ".maestro", "config.toml"),
+				'packages = ["../vendor/prompt-pack"]\n',
+			);
+
+			const summary = getConfigSummary(projectDir);
+			expect(summary).toContain("Configured Packages: 1");
+		});
+	});
+
+	describe("loadConfiguredPackageSpecs", () => {
+		it("resolves package specs relative to the config file that declared them", () => {
+			process.env.MAESTRO_HOME = globalDir;
+
+			writeFileSync(
+				join(globalDir, "config.toml"),
+				'packages = ["../global-pack"]\n',
+			);
+			writeFileSync(
+				join(projectDir, ".maestro", "config.toml"),
+				'packages = ["../project-pack"]\n',
+			);
+			writeFileSync(
+				join(projectDir, ".maestro", "config.local.toml"),
+				'packages = [{ source = "../local-pack", skills = ["local-skill"] }]\n',
+			);
+
+			const specs = loadConfiguredPackageSpecs(projectDir);
+
+			expect(specs).toHaveLength(3);
+			expect(specs[0]).toMatchObject({
+				spec: "../global-pack",
+				cwd: globalDir,
+				scope: "user",
+				configPath: join(globalDir, "config.toml"),
+			});
+			expect(specs[1]).toMatchObject({
+				spec: "../project-pack",
+				cwd: join(projectDir, ".maestro"),
+				scope: "project",
+				configPath: join(projectDir, ".maestro", "config.toml"),
+			});
+			expect(specs[2]).toMatchObject({
+				cwd: join(projectDir, ".maestro"),
+				scope: "project",
+				configPath: join(projectDir, ".maestro", "config.local.toml"),
+			});
+			expect(specs[2]?.spec).toEqual({
+				source: "../local-pack",
+				skills: ["local-skill"],
+			});
 		});
 	});
 

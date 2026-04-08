@@ -30,6 +30,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import { PATHS } from "../config/constants.js";
+import { loadConfiguredPackageResources } from "../packages/runtime.js";
 import { createLogger } from "../utils/logger.js";
 import { buildDirectoriesFingerprint } from "./filesystem-catalog-cache.js";
 
@@ -313,12 +314,22 @@ function scanPromptsDirectory(
  * @returns Array of loaded prompts (project prompts override user prompts by name)
  */
 export function loadPrompts(workspaceDir: string): PromptDefinition[] {
+	const packageResources = loadConfiguredPackageResources(workspaceDir);
 	const userPromptsDir = join(PATHS.MAESTRO_HOME, "prompts");
 	const userCommandsDir = join(PATHS.MAESTRO_HOME, "commands");
 	const projectPromptsDir = join(workspaceDir, ".maestro", "prompts");
 	const projectCommandsDir = join(workspaceDir, ".maestro", "commands");
+	const userPackagePromptDirs = packageResources.prompts.user;
+	const projectPackagePromptDirs = packageResources.prompts.project;
 	const signature = buildDirectoriesFingerprint(
-		[userCommandsDir, userPromptsDir, projectCommandsDir, projectPromptsDir],
+		[
+			...userPackagePromptDirs,
+			userCommandsDir,
+			userPromptsDir,
+			...projectPackagePromptDirs,
+			projectCommandsDir,
+			projectPromptsDir,
+		],
 		(entry) => entry.endsWith(".md"),
 	);
 
@@ -327,6 +338,8 @@ export function loadPrompts(workspaceDir: string): PromptDefinition[] {
 		projectPromptsDir,
 		userCommandsDir,
 		projectCommandsDir,
+		userPackagePromptDirs,
+		projectPackagePromptDirs,
 	});
 
 	const cached = promptCatalogCache.get(workspaceDir);
@@ -340,10 +353,16 @@ export function loadPrompts(workspaceDir: string): PromptDefinition[] {
 
 	// Commands dir first, prompts dir second (prompts override commands by name).
 	const userPrompts = [
+		...userPackagePromptDirs.flatMap((dir) =>
+			scanPromptsDirectory(dir, "user"),
+		),
 		...scanPromptsDirectory(userCommandsDir, "user"),
 		...scanPromptsDirectory(userPromptsDir, "user"),
 	];
 	const projectPrompts = [
+		...projectPackagePromptDirs.flatMap((dir) =>
+			scanPromptsDirectory(dir, "project"),
+		),
 		...scanPromptsDirectory(projectCommandsDir, "project"),
 		...scanPromptsDirectory(projectPromptsDir, "project"),
 	];

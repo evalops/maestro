@@ -14,6 +14,7 @@
 
 export {
 	loadConfig,
+	loadConfiguredPackageSpecs,
 	clearConfigCache,
 	getAvailableProfiles,
 	getConfigSummary,
@@ -24,6 +25,7 @@ export {
 	resolveProjectDocCandidateFilenames,
 	resolvePromptLoadedProjectDocPaths,
 	type ComposerConfig,
+	type ConfiguredPackageSpec,
 	type ApprovalPolicy,
 	type SandboxMode,
 	type ReasoningEffort,

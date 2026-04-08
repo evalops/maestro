@@ -32,6 +32,11 @@ export {
 	parsePackageSpec,
 } from "./loader.js";
 export {
+	loadConfiguredPackageResources,
+	type ConfiguredPackageRuntimeResources,
+	type ScopedPackageResourceDirectories,
+} from "./runtime.js";
+export {
 	formatPackageSource,
 	parsePackageSource,
 	resolvePackageSource,
