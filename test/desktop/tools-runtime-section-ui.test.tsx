@@ -244,6 +244,21 @@ function createProps(
 			localCount: 1,
 			remoteCount: 1,
 		}),
+		onSearchPackages: vi.fn().mockResolvedValue({
+			query: "",
+			entries: [
+				{
+					name: "@acme/maestro-memory-tools",
+					version: "1.2.3",
+					description: "Team memory helpers for Maestro",
+					keywords: ["maestro-package", "memory"],
+					links: {
+						npm: "https://www.npmjs.com/package/@acme/maestro-memory-tools",
+					},
+					installSource: "npm:@acme/maestro-memory-tools",
+				},
+			],
+		}),
 		onPrunePackageCache: vi.fn().mockResolvedValue({
 			cacheDir: "/repo/.maestro/packages",
 			removed: ["/repo/.maestro/packages/git-deadbeef"],
@@ -764,6 +779,74 @@ describe("ToolsRuntimeSection UI", () => {
 		expect(onPrunePackageCache).toHaveBeenCalledTimes(1);
 		expect(container.textContent ?? "").toContain(
 			"Pruned 1 unconfigured remote package caches.",
+		);
+	});
+
+	it("searches and adds discoverable packages from the settings panel", async () => {
+		const onSearchPackages = vi.fn().mockResolvedValue({
+			query: "memory",
+			entries: [
+				{
+					name: "@acme/maestro-memory-tools",
+					version: "1.2.3",
+					description: "Team memory helpers for Maestro",
+					keywords: ["maestro-package", "memory"],
+					links: {
+						npm: "https://www.npmjs.com/package/@acme/maestro-memory-tools",
+					},
+					installSource: "npm:@acme/maestro-memory-tools",
+				},
+			],
+		});
+		const onAddPackage = vi.fn().mockResolvedValue({
+			path: "/repo/.maestro/config.local.toml",
+			scope: "local",
+			spec: "npm:@acme/maestro-memory-tools",
+		});
+
+		const { container } = await renderSection({
+			onSearchPackages,
+			onAddPackage,
+		});
+
+		const searchInput = container.querySelector(
+			'input[aria-label="Package search"]',
+		) as HTMLInputElement | null;
+		const searchButton = container.querySelector(
+			".package-search-button",
+		) as HTMLButtonElement | null;
+		expect(searchInput).toBeTruthy();
+		expect(searchButton).toBeTruthy();
+
+		if (!searchInput || !searchButton) {
+			throw new Error("Expected package search controls");
+		}
+
+		await act(async () => {
+			setTextControlValue(searchInput, "memory");
+			searchButton.click();
+			await flushAsyncWork(3);
+		});
+
+		expect(onSearchPackages).toHaveBeenCalledWith("memory");
+		expect(container.textContent ?? "").toContain("@acme/maestro-memory-tools");
+
+		const addButton = container.querySelector(
+			".package-add-search-result-button",
+		) as HTMLButtonElement | null;
+		expect(addButton).toBeTruthy();
+
+		await act(async () => {
+			addButton?.click();
+			await flushAsyncWork(3);
+		});
+
+		expect(onAddPackage).toHaveBeenCalledWith({
+			source: "npm:@acme/maestro-memory-tools",
+			scope: "local",
+		});
+		expect(container.textContent ?? "").toContain(
+			'Added configured package "npm:@acme/maestro-memory-tools" to Local config.',
 		);
 	});
 });

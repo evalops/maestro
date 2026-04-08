@@ -51,6 +51,7 @@ import type {
 	PackageMutationRequest,
 	PackageRemoveResponse,
 	PackageScope,
+	PackageSearchResponse,
 	PackageStatusEntry,
 	PackageStatusResponse,
 } from "../../lib/api-client";
@@ -183,6 +184,7 @@ export interface ToolsRuntimeSectionProps {
 	onPrunePackageCache: () => Promise<PackageCachePruneResponse>;
 	onRefreshAllPackages: () => Promise<PackageBulkRefreshResponse>;
 	onRefreshPackage: (source: string) => Promise<PackageInspectResponse>;
+	onSearchPackages: (query: string) => Promise<PackageSearchResponse>;
 	onValidatePackage: (source: string) => Promise<PackageInspectResponse>;
 	onAddPackage: (input: PackageMutationRequest) => Promise<PackageAddResponse>;
 	onRemovePackage: (
@@ -539,6 +541,7 @@ export function ToolsRuntimeSection({
 	onPrunePackageCache,
 	onRefreshAllPackages,
 	onRefreshPackage,
+	onSearchPackages,
 	onValidatePackage,
 	onAddPackage,
 	onRemovePackage,
@@ -692,6 +695,17 @@ export function ToolsRuntimeSection({
 	const [pruningPackageCache, setPruningPackageCache] = useState(false);
 	const [packageNotice, setPackageNotice] = useState<string | null>(null);
 	const [packageError, setPackageError] = useState<string | null>(null);
+	const [packageSearchQuery, setPackageSearchQuery] = useState("");
+	const [packageSearchLoading, setPackageSearchLoading] = useState(false);
+	const [packageSearchError, setPackageSearchError] = useState<string | null>(
+		null,
+	);
+	const [packageSearchResults, setPackageSearchResults] = useState<
+		PackageSearchResponse["entries"]
+	>([]);
+	const [packageSearchAddingSource, setPackageSearchAddingSource] = useState<
+		string | null
+	>(null);
 	const [packagePreview, setPackagePreview] = useState<{
 		kind: "inspect" | "validate";
 		result: PackageInspectResponse;
@@ -775,6 +789,49 @@ export function ToolsRuntimeSection({
 			);
 		} finally {
 			setPackageAction((current) => (current === "add" ? null : current));
+		}
+	};
+
+	const handlePackageSearch = async () => {
+		setPackageSearchLoading(true);
+		setPackageSearchError(null);
+		try {
+			const result = await onSearchPackages(packageSearchQuery);
+			setPackageSearchResults(result.entries ?? []);
+		} catch (error) {
+			setPackageSearchResults([]);
+			setPackageSearchError(
+				error instanceof Error
+					? error.message
+					: "Failed to search package registry",
+			);
+		} finally {
+			setPackageSearchLoading(false);
+		}
+	};
+
+	const handleAddDiscoveredPackage = async (
+		entry: PackageSearchResponse["entries"][number],
+	) => {
+		setPackageSearchAddingSource(entry.installSource);
+		setPackageError(null);
+		setPackageNotice(null);
+		try {
+			const result = await onAddPackage({
+				source: entry.installSource,
+				scope: packageScope,
+			});
+			setPackageNotice(formatPackageAddNotice(result, entry.installSource));
+			setPackagePreview(null);
+			setPackageSource(entry.installSource);
+		} catch (error) {
+			setPackageError(
+				error instanceof Error ? error.message : "Failed to add package",
+			);
+		} finally {
+			setPackageSearchAddingSource((current) =>
+				current === entry.installSource ? null : current,
+			);
 		}
 	};
 
@@ -3087,6 +3144,86 @@ export function ToolsRuntimeSection({
 							No configured packages.
 						</div>
 					)}
+					<div className="rounded-lg border border-line-subtle/60 bg-bg-secondary/30 p-3 space-y-3">
+						<div>
+							<div className="text-text-primary font-medium">
+								Browse packages
+							</div>
+							<div className="text-xs text-text-muted">
+								Search npm for packages tagged with maestro-package.
+							</div>
+						</div>
+						<div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_auto] gap-2">
+							<input
+								type="text"
+								value={packageSearchQuery}
+								onChange={(event) => setPackageSearchQuery(event.target.value)}
+								placeholder="Search maestro packages"
+								aria-label="Package search"
+								className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+							/>
+							<button
+								type="button"
+								className="package-search-button px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-60"
+								onClick={() => void handlePackageSearch()}
+								disabled={packageSearchLoading}
+							>
+								{packageSearchLoading ? "Searching..." : "Search"}
+							</button>
+						</div>
+						{packageSearchError && (
+							<div className="rounded-lg border border-error/40 bg-error/10 px-3 py-2 text-xs text-error">
+								{packageSearchError}
+							</div>
+						)}
+						{packageSearchResults.length > 0 && (
+							<div className="grid grid-cols-1 gap-2">
+								{packageSearchResults.map((entry) => (
+									<div
+										key={entry.installSource}
+										className="rounded-lg border border-line-subtle/60 bg-bg-tertiary/30 p-3 space-y-2 text-[11px] text-text-muted"
+									>
+										<div className="flex items-start justify-between gap-3">
+											<div className="min-w-0 space-y-1">
+												<div className="text-text-primary font-medium">
+													{entry.name}
+												</div>
+												<div>{entry.version ?? "latest"}</div>
+											</div>
+											<div className="flex items-center gap-2">
+												<button
+													type="button"
+													className="package-use-search-result-button px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-secondary/60"
+													onClick={() => setPackageSource(entry.installSource)}
+												>
+													Use source
+												</button>
+												<button
+													type="button"
+													className="package-add-search-result-button px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-secondary/60 disabled:opacity-60"
+													onClick={() => void handleAddDiscoveredPackage(entry)}
+													disabled={
+														packageSearchAddingSource === entry.installSource
+													}
+												>
+													{packageSearchAddingSource === entry.installSource
+														? "Adding..."
+														: `Add to ${formatPackageScopeLabel(packageScope)}`}
+												</button>
+											</div>
+										</div>
+										{entry.description && <div>{entry.description}</div>}
+										<div className="break-all">
+											Install source: {entry.installSource}
+										</div>
+										{entry.keywords.length > 0 && (
+											<div>Keywords: {entry.keywords.join(", ")}</div>
+										)}
+									</div>
+								))}
+							</div>
+						)}
+					</div>
 					<div className="rounded-lg border border-line-subtle/60 bg-bg-secondary/30 p-3 space-y-3">
 						<div>
 							<div className="text-text-primary font-medium">Add package</div>

@@ -47,6 +47,7 @@ import type {
 	Model,
 	PackageInspectResponse,
 	PackageScope,
+	PackageSearchResponse,
 	PackageStatusResponse,
 	UsageSummary,
 	WorkspaceStatus,
@@ -587,6 +588,11 @@ export class ComposerSettings extends LitElement {
 	@state() private packagePruning = false;
 	@state() private packageError: string | null = null;
 	@state() private packageNotice: string | null = null;
+	@state() private packageSearchQuery = "";
+	@state() private packageSearchLoading = false;
+	@state() private packageSearchError: string | null = null;
+	@state() private packageSearchResults: PackageSearchResponse["entries"] = [];
+	@state() private packageSearchAddingSource: string | null = null;
 	@state() private packagePreview: {
 		kind: "inspect" | "validate";
 		result: PackageInspectResponse;
@@ -649,6 +655,7 @@ export class ComposerSettings extends LitElement {
 				mcpStatusResult,
 				packageStatusResult,
 				registryResult,
+				packageSearchResult,
 				memoryTopicsResult,
 				memoryStatsResult,
 				memoryRecentResult,
@@ -656,6 +663,7 @@ export class ComposerSettings extends LitElement {
 				this.apiClient.getMcpStatus(),
 				this.apiClient.getPackageStatus(),
 				this.apiClient.searchMcpRegistry(""),
+				this.apiClient.searchPackages(""),
 				this.apiClient.listMemoryTopics(this.activeMemorySessionId),
 				this.apiClient.getMemoryStats(this.activeMemorySessionId),
 				this.apiClient.getRecentMemories(12, this.activeMemorySessionId),
@@ -682,6 +690,17 @@ export class ComposerSettings extends LitElement {
 					registryResult.reason instanceof Error
 						? registryResult.reason.message
 						: "Failed to load official MCP registry";
+			}
+
+			if (packageSearchResult.status === "fulfilled") {
+				this.packageSearchResults = packageSearchResult.value.entries ?? [];
+				this.packageSearchError = null;
+			} else {
+				this.packageSearchResults = [];
+				this.packageSearchError =
+					packageSearchResult.reason instanceof Error
+						? packageSearchResult.reason.message
+						: "Failed to load package search results";
 			}
 
 			if (
@@ -910,6 +929,48 @@ export class ComposerSettings extends LitElement {
 		} finally {
 			if (this.packageAction === "add") {
 				this.packageAction = null;
+			}
+		}
+	}
+
+	private async searchPackages(query: string) {
+		this.packageSearchLoading = true;
+		this.packageSearchError = null;
+		try {
+			const result = await this.apiClient.searchPackages(query);
+			this.packageSearchResults = result.entries ?? [];
+		} catch (error) {
+			this.packageSearchResults = [];
+			this.packageSearchError =
+				error instanceof Error
+					? error.message
+					: "Failed to search package registry";
+		} finally {
+			this.packageSearchLoading = false;
+		}
+	}
+
+	private async addDiscoveredPackage(
+		entry: PackageSearchResponse["entries"][number],
+	) {
+		this.packageSearchAddingSource = entry.installSource;
+		this.packageError = null;
+		this.packageNotice = null;
+		try {
+			const result = await this.apiClient.addPackage({
+				source: entry.installSource,
+				scope: this.packageScope,
+			});
+			await this.refreshPackageStatus();
+			this.packageNotice = `Added configured package "${entry.installSource}" to ${this.formatMcpScopeLabel(result.scope)}.`;
+			this.packageSource = entry.installSource;
+			this.packagePreview = null;
+		} catch (error) {
+			this.packageError =
+				error instanceof Error ? error.message : "Failed to add package";
+		} finally {
+			if (this.packageSearchAddingSource === entry.installSource) {
+				this.packageSearchAddingSource = null;
 			}
 		}
 	}
@@ -2016,6 +2077,110 @@ export class ComposerSettings extends LitElement {
 							`
 							: html`<div class="empty-state">No configured packages</div>`
 					}
+					<div class="section" style="margin: 1rem 0 0;">
+						<div class="section-header">
+							<h3>Browse Packages</h3>
+						</div>
+						<div class="section-content">
+							<div class="panel-card-copy">
+								Search npm for packages tagged with
+								<code>maestro-package</code>.
+							</div>
+							<div class="control-row" style="margin-top: 0.75rem;">
+								<input
+									class="field-input"
+									type="text"
+									.placeholder=${"Search maestro packages"}
+									.value=${this.packageSearchQuery}
+									aria-label=${"Package search"}
+									@input=${(event: Event) => {
+										this.packageSearchQuery = (
+											event.target as HTMLInputElement
+										).value;
+									}}
+								/>
+								<button
+									class="action-btn package-search-button"
+									@click=${() => void this.searchPackages(this.packageSearchQuery)}
+									?disabled=${this.packageSearchLoading}
+								>
+									${this.packageSearchLoading ? "Searching..." : "Search"}
+								</button>
+							</div>
+							${
+								this.packageSearchError
+									? html`<div class="panel-feedback error">
+											${this.packageSearchError}
+										</div>`
+									: ""
+							}
+							${
+								this.packageSearchResults.length > 0
+									? html`
+										<div class="panel-grid" style="margin-top: 0.75rem;">
+											${this.packageSearchResults.map(
+												(entry) => html`
+													<div class="panel-card">
+														<div class="panel-card-header">
+															<div>
+																<div class="panel-card-title">
+																	${entry.name}
+																</div>
+																<div class="panel-card-copy">
+																	${entry.version ?? "latest"}
+																</div>
+															</div>
+															<div
+																style="display: flex; gap: 0.5rem; align-items: center;"
+															>
+																<button
+																	class="action-btn package-use-search-result-button"
+																	@click=${() => {
+																		this.packageSource = entry.installSource;
+																	}}
+																>
+																	Use source
+																</button>
+																<button
+																	class="action-btn package-add-search-result-button"
+																	@click=${() => void this.addDiscoveredPackage(entry)}
+																	?disabled=${this.packageSearchAddingSource === entry.installSource}
+																>
+																	${
+																		this.packageSearchAddingSource ===
+																		entry.installSource
+																			? "Adding..."
+																			: `Add to ${this.formatMcpScopeLabel(this.packageScope)}`
+																	}
+																</button>
+															</div>
+														</div>
+														${
+															entry.description
+																? html`<div class="panel-card-copy">
+																		${entry.description}
+																	</div>`
+																: ""
+														}
+														<div class="panel-card-copy">
+															Install source: ${entry.installSource}
+														</div>
+														${
+															entry.keywords.length > 0
+																? html`<div class="panel-card-copy">
+																		Keywords: ${entry.keywords.join(", ")}
+																	</div>`
+																: ""
+														}
+													</div>
+												`,
+											)}
+										</div>
+									`
+									: ""
+							}
+						</div>
+					</div>
 					<div class="section" style="margin: 1rem 0 0;">
 						<div class="section-header">
 							<h3>Add Package</h3>

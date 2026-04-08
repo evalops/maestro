@@ -50,6 +50,11 @@ export {
 	resolvePackageSourceSync,
 } from "./sources.js";
 export {
+	searchPackageRegistry,
+	type PackageSearchEntry,
+	type PackageSearchResponse,
+} from "./search.js";
+export {
 	refreshConfiguredRemotePackages,
 	type ConfiguredPackageRefreshReport,
 	type RefreshedConfiguredPackage,

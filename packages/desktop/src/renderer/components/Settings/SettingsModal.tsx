@@ -744,6 +744,10 @@ export function SettingsModal({
 		return await apiClient.inspectPackage(source);
 	};
 
+	const searchPackages = async (query: string) => {
+		return await apiClient.searchPackages(query);
+	};
+
 	const refreshPackage = async (
 		source: string,
 	): Promise<PackageInspectResponse> => {
@@ -1081,6 +1085,7 @@ export function SettingsModal({
 						onPrunePackageCache={prunePackageCache}
 						onRefreshAllPackages={refreshAllPackages}
 						onRefreshPackage={refreshPackage}
+						onSearchPackages={searchPackages}
 						onValidatePackage={validatePackage}
 						onAddPackage={addPackage}
 						onRemovePackage={removePackage}

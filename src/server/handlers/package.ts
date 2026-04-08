@@ -18,6 +18,7 @@ import {
 	pruneUnconfiguredRemotePackageCaches,
 	refreshConfiguredRemotePackages,
 } from "../../packages/maintenance.js";
+import { searchPackageRegistry } from "../../packages/search.js";
 import {
 	formatPackageSource,
 	parsePackageSource,
@@ -190,6 +191,13 @@ export async function handlePackageStatus(
 		const action = url.searchParams.get("action")?.toLowerCase() ?? "list";
 
 		if (req.method === "GET") {
+			if (action === "search") {
+				const query = url.searchParams.get("query")?.trim() ?? "";
+				const result = await searchPackageRegistry(query);
+				sendJson(res, 200, result, corsHeaders);
+				return;
+			}
+
 			if (action !== "list" && action !== "status") {
 				throw new ApiError(400, `Unknown package action: ${action}`);
 			}

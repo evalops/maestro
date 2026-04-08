@@ -31,6 +31,7 @@ function createContext(overrides: Partial<WebSlashCommandContext> = {}) {
 		getMcpStatus: vi.fn(),
 		getMcpPrompt: vi.fn(),
 		getPackageStatus: vi.fn(),
+		searchPackages: vi.fn(),
 		getPlan: vi.fn(),
 		getPreview: vi.fn(),
 		getQueueStatus: vi.fn(),
@@ -304,6 +305,39 @@ describe("executeWebSlashCommand", () => {
 				),
 			}),
 		]);
+	});
+
+	it("searches discoverable packages from the web slash command", async () => {
+		const { context, outputs, apiClient } = createContext();
+		apiClient.searchPackages.mockResolvedValue({
+			query: "memory",
+			entries: [
+				{
+					name: "@acme/maestro-memory-tools",
+					version: "1.2.3",
+					description: "Team memory helpers for Maestro",
+					keywords: ["maestro-package", "memory"],
+					links: {
+						npm: "https://www.npmjs.com/package/@acme/maestro-memory-tools",
+					},
+					installSource: "npm:@acme/maestro-memory-tools",
+				},
+			],
+		});
+
+		await executeWebSlashCommand("package", "search memory", context);
+
+		expect(apiClient.searchPackages).toHaveBeenCalledWith("memory");
+		expect(outputs).toEqual([
+			expect.objectContaining({
+				isError: false,
+				output: expect.stringContaining('Package search results for "memory":'),
+			}),
+		]);
+		expect(outputs[0]?.output).toContain("@acme/maestro-memory-tools@1.2.3");
+		expect(outputs[0]?.output).toContain(
+			"install: npm:@acme/maestro-memory-tools",
+		);
 	});
 
 	it("removes a configured package from the web slash command", async () => {

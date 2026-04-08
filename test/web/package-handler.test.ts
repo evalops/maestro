@@ -125,6 +125,7 @@ function commitGitRepoChanges(dir: string, message: string): void {
 describe("handlePackageStatus", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
+		vi.unstubAllGlobals();
 		if (originalMaestroHome === undefined) {
 			delete process.env.MAESTRO_HOME;
 		} else {
@@ -170,6 +171,57 @@ describe("handlePackageStatus", () => {
 							isMaestroPackage: true,
 						},
 					},
+				},
+			],
+		});
+	});
+
+	it("searches discoverable packages from the package handler", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue({
+				ok: true,
+				json: async () => ({
+					objects: [
+						{
+							package: {
+								name: "@acme/maestro-memory-tools",
+								version: "1.2.3",
+								description: "Team memory helpers for Maestro",
+								keywords: ["maestro-package", "memory"],
+								links: {
+									npm: "https://www.npmjs.com/package/@acme/maestro-memory-tools",
+								},
+							},
+						},
+					],
+				}),
+			}),
+		);
+
+		const req = makeReq("/api/package?action=search&query=memory");
+		const res = makeRes();
+
+		await handlePackageStatus(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			corsHeaders,
+		);
+
+		expect(res.statusCode).toBe(200);
+		expect(JSON.parse(res.body)).toEqual({
+			query: "memory",
+			entries: [
+				{
+					name: "@acme/maestro-memory-tools",
+					version: "1.2.3",
+					description: "Team memory helpers for Maestro",
+					keywords: ["maestro-package", "memory"],
+					date: undefined,
+					links: {
+						npm: "https://www.npmjs.com/package/@acme/maestro-memory-tools",
+					},
+					installSource: "npm:@acme/maestro-memory-tools",
 				},
 			],
 		});

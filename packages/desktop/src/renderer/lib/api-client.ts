@@ -288,6 +288,25 @@ export interface PackageAddResponse {
 	spec: string;
 }
 
+export interface PackageSearchEntry {
+	name: string;
+	version?: string;
+	description?: string;
+	keywords: string[];
+	date?: string;
+	links: {
+		npm?: string;
+		repository?: string;
+		homepage?: string;
+	};
+	installSource: string;
+}
+
+export interface PackageSearchResponse {
+	query: string;
+	entries: PackageSearchEntry[];
+}
+
 export interface PackageRemoveResponse {
 	path: string;
 	scope: PackageScope;
@@ -1325,6 +1344,17 @@ export class ApiClient {
 	// Packages
 	async getPackageStatus(): Promise<PackageStatusResponse> {
 		return await this.fetchJson<PackageStatusResponse>("/api/package");
+	}
+
+	async searchPackages(query = ""): Promise<PackageSearchResponse> {
+		const params = new URLSearchParams({ action: "search" });
+		const trimmedQuery = query.trim();
+		if (trimmedQuery.length > 0) {
+			params.set("query", trimmedQuery);
+		}
+		return await this.fetchJson<PackageSearchResponse>(
+			`/api/package?${params.toString()}`,
+		);
 	}
 
 	async inspectPackage(source: string): Promise<PackageInspectResponse> {

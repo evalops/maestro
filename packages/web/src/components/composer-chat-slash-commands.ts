@@ -25,6 +25,7 @@ import type {
 	PackageMutationRequest,
 	PackageRemoveResponse,
 	PackageScope,
+	PackageSearchResponse,
 	PackageStatusResponse,
 } from "../services/api-client.js";
 import {
@@ -51,6 +52,7 @@ type WebSlashCommandApiClient = Pick<
 	| "getMcpStatus"
 	| "getMcpPrompt"
 	| "getPackageStatus"
+	| "searchPackages"
 	| "getPlan"
 	| "getPreview"
 	| "getQueueStatus"
@@ -125,6 +127,7 @@ const MCP_AUTH_REMOVE_USAGE =
 const PACKAGE_ADD_USAGE = "/package add <source> [--scope local|project|user]";
 const PACKAGE_REMOVE_USAGE =
 	"/package remove <source> [--scope local|project|user]";
+const PACKAGE_SEARCH_USAGE = "/package search [query]";
 const PACKAGE_PRUNE_USAGE = "/package prune-cache";
 const PACKAGE_REFRESH_USAGE = "/package refresh [<source>|--all]";
 const PACKAGE_INSPECT_USAGE = "/package [inspect|validate] <source>";
@@ -764,6 +767,32 @@ function formatPackageCachePruneResult(
 	for (const removed of result.removed) {
 		lines.push(`  - ${removed}`);
 	}
+	return lines.join("\n");
+}
+
+function formatPackageSearchResult(result: PackageSearchResponse): string {
+	const lines = [
+		result.query
+			? `Package search results for "${result.query}":`
+			: "Featured Maestro packages:",
+	];
+
+	if (result.entries.length === 0) {
+		lines.push("  No matching Maestro packages found.");
+		return lines.join("\n");
+	}
+
+	for (const entry of result.entries) {
+		lines.push(`- ${entry.name}${entry.version ? `@${entry.version}` : ""}`);
+		if (entry.description) {
+			lines.push(`  ${entry.description}`);
+		}
+		lines.push(`  install: ${entry.installSource}`);
+		if (entry.keywords.length > 0) {
+			lines.push(`  keywords: ${entry.keywords.join(", ")}`);
+		}
+	}
+
 	return lines.join("\n");
 }
 
@@ -1886,6 +1915,15 @@ export async function executeWebSlashCommand(
 					break;
 				}
 
+				if (sub === "search") {
+					const query = args.replace(/^search\b/i, "").trim();
+					const result = await context.apiClient.searchPackages(query);
+					context.appendCommandOutput(
+						formatCommandCodeBlock(formatPackageSearchResult(result)),
+					);
+					break;
+				}
+
 				if (sub === "remove") {
 					if (!requireWritableSession("Package remove")) break;
 					const parsed = parsePackageMutationArgs(args, "remove");
@@ -1935,6 +1973,7 @@ export async function executeWebSlashCommand(
 							[
 								"/package",
 								"/package list",
+								PACKAGE_SEARCH_USAGE,
 								PACKAGE_ADD_USAGE,
 								PACKAGE_REMOVE_USAGE,
 								PACKAGE_PRUNE_USAGE,
@@ -1948,7 +1987,7 @@ export async function executeWebSlashCommand(
 				}
 
 				context.appendCommandOutput(
-					"Usage: /package [list|inspect <source>|validate <source>|add <source>|remove <source>|prune-cache|refresh [<source>|--all]]",
+					"Usage: /package [list|search [query]|inspect <source>|validate <source>|add <source>|remove <source>|prune-cache|refresh [<source>|--all]]",
 					true,
 				);
 				break;

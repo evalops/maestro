@@ -287,6 +287,21 @@ function createApiClientMock(): ApiClient {
 				},
 			],
 		}),
+		searchPackages: vi.fn().mockResolvedValue({
+			query: "",
+			entries: [
+				{
+					name: "@acme/maestro-memory-tools",
+					version: "1.2.3",
+					description: "Team memory helpers for Maestro",
+					keywords: ["maestro-package", "memory"],
+					links: {
+						npm: "https://www.npmjs.com/package/@acme/maestro-memory-tools",
+					},
+					installSource: "npm:@acme/maestro-memory-tools",
+				},
+			],
+		}),
 		inspectPackage: vi.fn().mockResolvedValue({
 			inspection: {
 				sourceSpec: "./packages/new-pack",
@@ -1673,6 +1688,78 @@ describe("ComposerSettings MCP section", () => {
 		expect(element.shadowRoot?.textContent ?? "").toContain(
 			'Added configured package "./packages/new-pack" to Project.',
 		);
+	});
+
+	it("searches and adds discoverable packages from settings", async () => {
+		const apiClient = createApiClientMock();
+		(apiClient.addPackage as ReturnType<typeof vi.fn>).mockResolvedValue({
+			path: "/repo/.maestro/config.toml",
+			scope: "local",
+			spec: "npm:@acme/maestro-memory-tools",
+		});
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			(element.shadowRoot?.textContent ?? "").includes("Browse Packages"),
+		);
+
+		const searchInput = element.shadowRoot?.querySelector(
+			'input[aria-label="Package search"]',
+		) as HTMLInputElement | null;
+		const searchButton = element.shadowRoot?.querySelector(
+			".package-search-button",
+		) as HTMLButtonElement | null;
+		expect(searchInput).not.toBeNull();
+		expect(searchButton).not.toBeNull();
+		if (!searchInput || !searchButton) {
+			throw new Error("Expected package search controls");
+		}
+
+		searchInput.value = "memory";
+		searchInput.dispatchEvent(new Event("input", { bubbles: true }));
+		searchButton.click();
+
+		await waitForSettled(
+			element,
+			() =>
+				(apiClient.searchPackages as ReturnType<typeof vi.fn>).mock.calls
+					.length > 1,
+		);
+
+		expect(apiClient.searchPackages).toHaveBeenLastCalledWith("memory");
+		expect(element.shadowRoot?.textContent ?? "").toContain(
+			"@acme/maestro-memory-tools",
+		);
+
+		const addButton = element.shadowRoot?.querySelector(
+			".package-add-search-result-button",
+		) as HTMLButtonElement | null;
+		expect(addButton).not.toBeNull();
+		addButton?.click();
+
+		await waitForSettled(
+			element,
+			() =>
+				(apiClient.addPackage as ReturnType<typeof vi.fn>).mock.calls.length >
+					0 &&
+				(
+					element.shadowRoot?.querySelector(
+						'input[aria-label="Package source"]',
+					) as HTMLInputElement | null
+				)?.value === "npm:@acme/maestro-memory-tools",
+		);
+
+		expect(apiClient.addPackage).toHaveBeenCalledWith({
+			source: "npm:@acme/maestro-memory-tools",
+			scope: "local",
+		});
+		expect(
+			(
+				element.shadowRoot?.querySelector(
+					'input[aria-label="Package source"]',
+				) as HTMLInputElement | null
+			)?.value,
+		).toBe("npm:@acme/maestro-memory-tools");
 	});
 
 	it("refreshes a configured git package and reloads package status", async () => {
