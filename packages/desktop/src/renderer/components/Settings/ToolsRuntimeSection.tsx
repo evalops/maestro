@@ -44,6 +44,13 @@ import type {
 	McpServerStatus,
 	McpServerUpdateRequest,
 	McpStatus,
+	PackageAddResponse,
+	PackageInspectResponse,
+	PackageMutationRequest,
+	PackageRemoveResponse,
+	PackageScope,
+	PackageStatusEntry,
+	PackageStatusResponse,
 } from "../../lib/api-client";
 
 export type LspAction = "start" | "stop" | "restart";
@@ -130,9 +137,11 @@ export interface ToolsRuntimeSectionProps {
 	onLspAction: (action: LspAction) => Promise<void> | void;
 	onDetectLsp: () => Promise<void> | void;
 	mcpStatus: McpStatus | null;
+	packageStatus: PackageStatusResponse | null;
 	expandedMcpServer: string | null;
 	onToggleMcpServer: (name: string) => void;
 	onRefreshMcpStatus: () => Promise<void> | void;
+	onRefreshPackageStatus: () => Promise<void> | void;
 	onSearchMcpRegistry: (query: string) => Promise<McpRegistrySearchResponse>;
 	onImportMcpRegistry: (
 		input: McpRegistryImportRequest,
@@ -168,6 +177,12 @@ export interface ToolsRuntimeSectionProps {
 		name: string,
 		args?: Record<string, string>,
 	) => Promise<McpPromptResponse>;
+	onInspectPackage: (source: string) => Promise<PackageInspectResponse>;
+	onValidatePackage: (source: string) => Promise<PackageInspectResponse>;
+	onAddPackage: (input: PackageMutationRequest) => Promise<PackageAddResponse>;
+	onRemovePackage: (
+		input: PackageMutationRequest,
+	) => Promise<PackageRemoveResponse>;
 	composerStatus: ComposerStatus | null;
 	selectedComposer: string;
 	onSelectedComposerChange: (name: string) => void;
@@ -182,6 +197,49 @@ function formatCountLabel(
 	plural: string,
 ): string {
 	return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function formatPackageFilters(
+	filters: PackageStatusEntry["filters"],
+): string | null {
+	if (!filters) {
+		return null;
+	}
+
+	const parts: string[] = [];
+	for (const key of ["extensions", "skills", "prompts", "themes"] as const) {
+		const values = filters[key];
+		if (values && values.length > 0) {
+			parts.push(`${key}=${values.join(",")}`);
+		}
+	}
+
+	return parts.length > 0 ? parts.join(" ") : null;
+}
+
+function formatPackageScopeLabel(scope: PackageScope): string {
+	return formatMcpScopeLabel(scope) ?? scope;
+}
+
+function formatPackagePreviewTitle(kind: "inspect" | "validate"): string {
+	return kind === "inspect" ? "Package inspection" : "Package validation";
+}
+
+function formatPackageAddNotice(
+	result: PackageAddResponse,
+	source: string,
+): string {
+	return `Added configured package "${source}" to ${formatPackageScopeLabel(result.scope)}.`;
+}
+
+function formatPackageRemoveNotice(
+	result: PackageRemoveResponse,
+	source: string,
+): string {
+	if (result.fallback) {
+		return `Removed configured package "${source}" from ${formatPackageScopeLabel(result.scope)}. Still configured in ${formatPackageScopeLabel(result.fallback.scope)}.`;
+	}
+	return `Removed configured package "${source}" from ${formatPackageScopeLabel(result.scope)}.`;
 }
 
 function formatMcpErrorLabel(error: string | undefined): string | null {
@@ -449,9 +507,11 @@ export function ToolsRuntimeSection({
 	onLspAction,
 	onDetectLsp,
 	mcpStatus,
+	packageStatus,
 	expandedMcpServer,
 	onToggleMcpServer,
 	onRefreshMcpStatus,
+	onRefreshPackageStatus,
 	onSearchMcpRegistry,
 	onImportMcpRegistry,
 	onAddMcpServer,
@@ -463,6 +523,10 @@ export function ToolsRuntimeSection({
 	onRemoveMcpAuthPreset,
 	onReadMcpResource,
 	onGetMcpPrompt,
+	onInspectPackage,
+	onValidatePackage,
+	onAddPackage,
+	onRemovePackage,
 	composerStatus,
 	selectedComposer,
 	onSelectedComposerChange,
@@ -481,6 +545,7 @@ export function ToolsRuntimeSection({
 			),
 		[mcpStatus, expandedMcpServer],
 	);
+	const packages = packageStatus?.packages ?? [];
 	const [registryQuery, setRegistryQuery] = useState("");
 	const [registryScope, setRegistryScope] =
 		useState<McpRegistryImportRequest["scope"]>("local");
@@ -597,6 +662,20 @@ export function ToolsRuntimeSection({
 	const [gettingPromptName, setGettingPromptName] = useState<string | null>(
 		null,
 	);
+	const [packageSource, setPackageSource] = useState("");
+	const [packageScope, setPackageScope] = useState<PackageScope>("local");
+	const [packageAction, setPackageAction] = useState<
+		"inspect" | "validate" | "add" | null
+	>(null);
+	const [removingPackageKey, setRemovingPackageKey] = useState<string | null>(
+		null,
+	);
+	const [packageNotice, setPackageNotice] = useState<string | null>(null);
+	const [packageError, setPackageError] = useState<string | null>(null);
+	const [packagePreview, setPackagePreview] = useState<{
+		kind: "inspect" | "validate";
+		result: PackageInspectResponse;
+	} | null>(null);
 	const [editingAuthPresetHeadersTexts, setEditingAuthPresetHeadersTexts] =
 		useState<Record<string, string>>({});
 	const [editingAuthPresetReplaceHeaders, setEditingAuthPresetReplaceHeaders] =
@@ -624,6 +703,80 @@ export function ToolsRuntimeSection({
 		[composerStatus, selectedComposer],
 	);
 	const authPresets = mcpStatus?.authPresets ?? [];
+
+	const handlePackagePreview = async (kind: "inspect" | "validate") => {
+		const source = packageSource.trim();
+		if (!source) {
+			setPackageError("Package source is required.");
+			setPackageNotice(null);
+			setPackagePreview(null);
+			return;
+		}
+
+		setPackageAction(kind);
+		setPackageError(null);
+		setPackageNotice(null);
+		setPackagePreview(null);
+		try {
+			const result =
+				kind === "inspect"
+					? await onInspectPackage(source)
+					: await onValidatePackage(source);
+			setPackagePreview({ kind, result });
+		} catch (error) {
+			setPackageError(
+				error instanceof Error ? error.message : "Failed to inspect package",
+			);
+		} finally {
+			setPackageAction((current) => (current === kind ? null : current));
+		}
+	};
+
+	const handlePackageSubmit = async (event: FormEvent<HTMLFormElement>) => {
+		event.preventDefault();
+		const source = packageSource.trim();
+		if (!source) {
+			setPackageError("Package source is required.");
+			setPackageNotice(null);
+			return;
+		}
+
+		setPackageAction("add");
+		setPackageError(null);
+		setPackageNotice(null);
+		try {
+			const result = await onAddPackage({ source, scope: packageScope });
+			setPackageNotice(formatPackageAddNotice(result, source));
+			setPackagePreview(null);
+			setPackageSource("");
+		} catch (error) {
+			setPackageError(
+				error instanceof Error ? error.message : "Failed to add package",
+			);
+		} finally {
+			setPackageAction((current) => (current === "add" ? null : current));
+		}
+	};
+
+	const handleRemovePackage = async (entry: PackageStatusEntry) => {
+		const key = `${entry.scope}:${entry.sourceSpec}`;
+		setRemovingPackageKey(key);
+		setPackageError(null);
+		setPackageNotice(null);
+		try {
+			const result = await onRemovePackage({
+				source: entry.sourceSpec,
+				scope: entry.scope,
+			});
+			setPackageNotice(formatPackageRemoveNotice(result, entry.sourceSpec));
+		} catch (error) {
+			setPackageError(
+				error instanceof Error ? error.message : "Failed to remove package",
+			);
+		} finally {
+			setRemovingPackageKey((current) => (current === key ? null : current));
+		}
+	};
 
 	const handleReadResource = async (server: McpServerViewModel) => {
 		const uri = selectedResourceUris[server.name] ?? server.resources[0] ?? "";
@@ -2719,6 +2872,205 @@ export function ToolsRuntimeSection({
 								{registryLoading
 									? "Loading official MCP registry..."
 									: "No official registry matches."}
+							</div>
+						)}
+					</div>
+				</div>
+
+				<div className="space-y-2">
+					<div className="flex items-center justify-between gap-4">
+						<div>
+							<div className="text-text-primary font-medium">Packages</div>
+							<div className="text-xs text-text-muted">
+								Slash command: /package
+							</div>
+						</div>
+						<button
+							type="button"
+							className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
+							onClick={onRefreshPackageStatus}
+						>
+							Refresh
+						</button>
+					</div>
+					{packages.length ? (
+						<div className="grid grid-cols-1 gap-2">
+							{packages.map((entry) => {
+								const entryKey = `${entry.scope}:${entry.sourceSpec}`;
+								const filters = formatPackageFilters(entry.filters);
+								const resourceSummary = entry.inspection?.resources
+									? `${entry.inspection.resources.extensions.length} ext · ${entry.inspection.resources.skills.length} skills · ${entry.inspection.resources.prompts.length} prompts · ${entry.inspection.resources.themes.length} themes`
+									: null;
+								return (
+									<div
+										key={entryKey}
+										className="rounded-lg border border-line-subtle/60 bg-bg-tertiary/30 p-3 space-y-2 text-[11px] text-text-muted"
+									>
+										<div className="flex items-start justify-between gap-3">
+											<div className="min-w-0 space-y-1">
+												<div className="text-text-primary font-medium">
+													{entry.inspection?.discovered?.name ??
+														entry.sourceSpec}
+												</div>
+												<div>{formatPackageScopeLabel(entry.scope)}</div>
+											</div>
+											<button
+												type="button"
+												className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-secondary/60 disabled:opacity-60"
+												onClick={() => void handleRemovePackage(entry)}
+												disabled={removingPackageKey === entryKey}
+											>
+												{removingPackageKey === entryKey
+													? "Removing..."
+													: "Remove"}
+											</button>
+										</div>
+										<div className="break-all">Source: {entry.sourceSpec}</div>
+										<div className="break-all">Config: {entry.configPath}</div>
+										{filters && <div>Filters: {filters}</div>}
+										{entry.inspection && (
+											<>
+												<div className="break-all">
+													Resolved: {entry.inspection.resolvedSource}
+												</div>
+												<div className="break-all">
+													Path: {entry.inspection.resolvedPath}
+												</div>
+												{resourceSummary && (
+													<div>Resources: {resourceSummary}</div>
+												)}
+											</>
+										)}
+										{entry.error && (
+											<div className="rounded-lg border border-error/40 bg-error/10 px-2.5 py-2 text-error">
+												{entry.error}
+											</div>
+										)}
+										{(entry.issues?.length ?? 0) > 0 && (
+											<div className="rounded-lg border border-warning/40 bg-warning/10 px-2.5 py-2 text-warning">
+												{entry.issues?.map((issue) => (
+													<div key={issue}>{issue}</div>
+												))}
+											</div>
+										)}
+									</div>
+								);
+							})}
+						</div>
+					) : (
+						<div className="text-xs text-text-muted">
+							No configured packages.
+						</div>
+					)}
+					<div className="rounded-lg border border-line-subtle/60 bg-bg-secondary/30 p-3 space-y-3">
+						<div>
+							<div className="text-text-primary font-medium">Add package</div>
+							<div className="text-xs text-text-muted">
+								Add a local path, git source, or npm package spec to local,
+								project, or user config.
+							</div>
+						</div>
+						<form
+							className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_auto_auto_auto] gap-2"
+							onSubmit={(event) => void handlePackageSubmit(event)}
+						>
+							<input
+								type="text"
+								value={packageSource}
+								onChange={(event) => setPackageSource(event.target.value)}
+								placeholder="./packages/my-pack"
+								aria-label="Package source"
+								className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+							/>
+							<select
+								value={packageScope}
+								onChange={(event) =>
+									setPackageScope(event.target.value as PackageScope)
+								}
+								aria-label="Package scope"
+								className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary"
+							>
+								<option value="local">Local config</option>
+								<option value="project">Project config</option>
+								<option value="user">User config</option>
+							</select>
+							<button
+								type="button"
+								className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-60"
+								onClick={() => void handlePackagePreview("inspect")}
+								disabled={
+									packageAction !== null || packageSource.trim().length === 0
+								}
+							>
+								{packageAction === "inspect" ? "Inspecting..." : "Inspect"}
+							</button>
+							<button
+								type="button"
+								className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-60"
+								onClick={() => void handlePackagePreview("validate")}
+								disabled={
+									packageAction !== null || packageSource.trim().length === 0
+								}
+							>
+								{packageAction === "validate" ? "Validating..." : "Validate"}
+							</button>
+							<button
+								type="submit"
+								className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-60"
+								disabled={
+									packageAction !== null || packageSource.trim().length === 0
+								}
+							>
+								{packageAction === "add" ? "Adding..." : "Add package"}
+							</button>
+						</form>
+						{packageError && (
+							<div className="rounded-lg border border-error/40 bg-error/10 px-3 py-2 text-xs text-error">
+								{packageError}
+							</div>
+						)}
+						{packageNotice && (
+							<div className="rounded-lg border border-success/30 bg-success/10 px-3 py-2 text-xs text-success">
+								{packageNotice}
+							</div>
+						)}
+						{packagePreview && (
+							<div className="rounded-lg border border-line-subtle/60 bg-bg-tertiary/30 p-3 space-y-2 text-[11px] text-text-muted">
+								<div className="text-text-primary font-medium">
+									{formatPackagePreviewTitle(packagePreview.kind)}
+								</div>
+								<div>Source: {packagePreview.result.inspection.sourceSpec}</div>
+								<div>
+									Resolved: {packagePreview.result.inspection.resolvedSource}
+								</div>
+								<div>Path: {packagePreview.result.inspection.resolvedPath}</div>
+								{packagePreview.result.inspection.discovered ? (
+									<>
+										<div>
+											Name: {packagePreview.result.inspection.discovered.name}
+										</div>
+										<div>
+											Maestro keyword:{" "}
+											{packagePreview.result.inspection.discovered
+												.isMaestroPackage
+												? "yes"
+												: "no"}
+										</div>
+									</>
+								) : (
+									<div>No valid package.json found.</div>
+								)}
+								{packagePreview.result.issues.length > 0 ? (
+									<div className="rounded-lg border border-warning/40 bg-warning/10 px-2.5 py-2 text-warning">
+										{packagePreview.result.issues.map((issue) => (
+											<div key={issue}>{issue}</div>
+										))}
+									</div>
+								) : packagePreview.kind === "validate" ? (
+									<div className="rounded-lg border border-success/30 bg-success/10 px-2.5 py-2 text-success">
+										Package validation passed.
+									</div>
+								) : null}
 							</div>
 						)}
 					</div>

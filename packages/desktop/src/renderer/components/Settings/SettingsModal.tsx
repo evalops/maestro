@@ -22,6 +22,11 @@ import {
 	type McpServerUpdateRequest,
 	type McpStatus,
 	type ModeStatus,
+	type PackageAddResponse,
+	type PackageInspectResponse,
+	type PackageMutationRequest,
+	type PackageRemoveResponse,
+	type PackageStatusResponse,
 	type PlanStatus,
 	type QueueMode,
 	type TelemetryStatus,
@@ -127,6 +132,8 @@ export function SettingsModal({
 	const [lspStatus, setLspStatus] = useState<LspStatus | null>(null);
 	const [lspDetections, setLspDetections] = useState<LspDetection[]>([]);
 	const [mcpStatus, setMcpStatus] = useState<McpStatus | null>(null);
+	const [packageStatus, setPackageStatus] =
+		useState<PackageStatusResponse | null>(null);
 	const [expandedMcpServer, setExpandedMcpServer] = useState<string | null>(
 		null,
 	);
@@ -177,6 +184,7 @@ export function SettingsModal({
 					apiClient.getBackgroundStatus(),
 					apiClient.getLspStatus(),
 					apiClient.getMcpStatus(),
+					apiClient.getPackageStatus(),
 					apiClient.getComposers(),
 				]);
 				if (!active) return;
@@ -194,6 +202,7 @@ export function SettingsModal({
 					backgroundRes,
 					lspRes,
 					mcpRes,
+					packageRes,
 					composerRes,
 				] = results;
 
@@ -236,6 +245,9 @@ export function SettingsModal({
 				}
 				if (mcpRes.status === "fulfilled") {
 					setMcpStatus(mcpRes.value);
+				}
+				if (packageRes.status === "fulfilled") {
+					setPackageStatus(packageRes.value);
 				}
 				if (composerRes.status === "fulfilled") {
 					setComposerStatus(composerRes.value);
@@ -709,8 +721,49 @@ export function SettingsModal({
 		}
 	};
 
+	const refreshPackageStatus = async () => {
+		try {
+			const status = await apiClient.getPackageStatus();
+			setPackageStatus(status);
+		} catch (err) {
+			setError(
+				err instanceof Error ? err.message : "Failed to load package status",
+			);
+		}
+	};
+
 	const toggleMcpServer = (name: string) => {
 		setExpandedMcpServer((prev) => (prev === name ? null : name));
+	};
+
+	const inspectPackage = async (
+		source: string,
+	): Promise<PackageInspectResponse> => {
+		return await apiClient.inspectPackage(source);
+	};
+
+	const validatePackage = async (
+		source: string,
+	): Promise<PackageInspectResponse> => {
+		return await apiClient.validatePackage(source);
+	};
+
+	const addPackage = async (
+		input: PackageMutationRequest,
+	): Promise<PackageAddResponse> => {
+		const result = await apiClient.addPackage(input);
+		const status = await apiClient.getPackageStatus();
+		setPackageStatus(status);
+		return result;
+	};
+
+	const removePackage = async (
+		input: PackageMutationRequest,
+	): Promise<PackageRemoveResponse> => {
+		const result = await apiClient.removePackage(input);
+		const status = await apiClient.getPackageStatus();
+		setPackageStatus(status);
+		return result;
 	};
 
 	const searchMcpRegistry = useCallback(async (query: string) => {
@@ -983,9 +1036,11 @@ export function SettingsModal({
 						onLspAction={handleLspAction}
 						onDetectLsp={detectLsp}
 						mcpStatus={mcpStatus}
+						packageStatus={packageStatus}
 						expandedMcpServer={expandedMcpServer}
 						onToggleMcpServer={toggleMcpServer}
 						onRefreshMcpStatus={refreshMcpStatus}
+						onRefreshPackageStatus={refreshPackageStatus}
 						onSearchMcpRegistry={searchMcpRegistry}
 						onImportMcpRegistry={importMcpRegistry}
 						onAddMcpServer={addMcpServer}
@@ -997,6 +1052,10 @@ export function SettingsModal({
 						onRemoveMcpAuthPreset={removeMcpAuthPreset}
 						onReadMcpResource={readMcpResource}
 						onGetMcpPrompt={getMcpPrompt}
+						onInspectPackage={inspectPackage}
+						onValidatePackage={validatePackage}
+						onAddPackage={addPackage}
+						onRemovePackage={removePackage}
 						composerStatus={composerStatus}
 						selectedComposer={selectedComposer}
 						onSelectedComposerChange={setSelectedComposer}

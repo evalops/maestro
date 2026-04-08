@@ -252,6 +252,102 @@ function createApiClientMock(): ApiClient {
 			decision: "approved",
 			projectApproval: "approved",
 		}),
+		getPackageStatus: vi.fn().mockResolvedValue({
+			packages: [
+				{
+					scope: "project",
+					configPath: "/repo/.maestro/config.toml",
+					sourceSpec: "./packages/example",
+					filters: { skills: ["tooling"] },
+					inspection: {
+						sourceSpec: "./packages/example",
+						resolvedSource: "./packages/example",
+						sourceType: "local",
+						resolvedPath: "/repo/packages/example",
+						discovered: {
+							name: "@acme/example",
+							version: "1.0.0",
+							isMaestroPackage: true,
+							hasManifest: true,
+							manifestPaths: {
+								skills: ["tooling"],
+								prompts: ["example"],
+							},
+							errors: [],
+						},
+						resources: {
+							extensions: [],
+							skills: ["tooling"],
+							prompts: ["example"],
+							themes: [],
+						},
+					},
+					issues: [],
+					error: null,
+				},
+			],
+		}),
+		inspectPackage: vi.fn().mockResolvedValue({
+			inspection: {
+				sourceSpec: "./packages/new-pack",
+				resolvedSource: "./packages/new-pack",
+				sourceType: "local",
+				resolvedPath: "/repo/packages/new-pack",
+				discovered: {
+					name: "@acme/new-pack",
+					version: "1.0.0",
+					isMaestroPackage: true,
+					hasManifest: true,
+					manifestPaths: {
+						skills: ["tooling"],
+					},
+					errors: [],
+				},
+				resources: {
+					extensions: [],
+					skills: ["tooling"],
+					prompts: [],
+					themes: [],
+				},
+			},
+			issues: [],
+		}),
+		validatePackage: vi.fn().mockResolvedValue({
+			inspection: {
+				sourceSpec: "./packages/new-pack",
+				resolvedSource: "./packages/new-pack",
+				sourceType: "local",
+				resolvedPath: "/repo/packages/new-pack",
+				discovered: {
+					name: "@acme/new-pack",
+					version: "1.0.0",
+					isMaestroPackage: true,
+					hasManifest: true,
+					manifestPaths: {
+						skills: ["tooling"],
+					},
+					errors: [],
+				},
+				resources: {
+					extensions: [],
+					skills: ["tooling"],
+					prompts: [],
+					themes: [],
+				},
+			},
+			issues: [],
+		}),
+		addPackage: vi.fn().mockResolvedValue({
+			path: "/repo/.maestro/config.toml",
+			scope: "project",
+			spec: "./packages/new-pack",
+		}),
+		removePackage: vi.fn().mockResolvedValue({
+			path: "/repo/.maestro/config.toml",
+			scope: "project",
+			removedCount: 1,
+			fallback: null,
+		}),
 	} as unknown as ApiClient;
 }
 
@@ -1266,17 +1362,19 @@ describe("ComposerSettings MCP section", () => {
 			),
 		);
 
-		expect(apiClient.addMcpServer).toHaveBeenCalledWith({
-			scope: "local",
-			server: {
-				name: "custom-docs",
-				transport: "http",
-				url: "https://docs.example.com/mcp",
-				headersHelper: "bun run scripts/mcp-headers.ts",
-				authPreset: "linear-auth",
-				timeout: 15000,
-			},
-		});
+		expect(apiClient.addMcpServer).toHaveBeenCalledWith(
+			expect.objectContaining({
+				scope: "local",
+				server: expect.objectContaining({
+					name: "custom-docs",
+					transport: "http",
+					url: "https://docs.example.com/mcp",
+					headersHelper: "bun run scripts/mcp-headers.ts",
+					authPreset: "linear-auth",
+					timeout: 15000,
+				}),
+			}),
+		);
 		expect(element.shadowRoot?.textContent ?? "").toContain(
 			"Added custom-docs to Local config via HTTP.",
 		);
@@ -1391,21 +1489,124 @@ describe("ComposerSettings MCP section", () => {
 			),
 		);
 
-		expect(apiClient.addMcpServer).toHaveBeenCalledWith({
-			scope: "local",
-			server: {
-				name: "filesystem",
-				transport: "stdio",
-				command: "npx",
-				args: ["-y", "@modelcontextprotocol/server-filesystem", "/repo"],
-				cwd: "/repo",
-				env: {
-					HOME: "/Users/demo",
-					TOKEN: "secret",
-				},
-				timeout: 30000,
+		expect(apiClient.addMcpServer).toHaveBeenCalledWith(
+			expect.objectContaining({
+				scope: "local",
+				server: expect.objectContaining({
+					name: "filesystem",
+					transport: "stdio",
+					command: "npx",
+					args: ["-y", "@modelcontextprotocol/server-filesystem", "/repo"],
+					cwd: "/repo",
+					env: {
+						HOME: "/Users/demo",
+						TOKEN: "secret",
+					},
+					timeout: 30000,
+				}),
+			}),
+		);
+	});
+
+	it("renders configured packages and manages package previews", async () => {
+		const apiClient = createApiClientMock();
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			(element.shadowRoot?.textContent ?? "").includes("Configured Packages"),
+		);
+
+		const initialText = element.shadowRoot?.textContent ?? "";
+		expect(initialText).toContain("Configured Packages");
+		expect(initialText).toContain("@acme/example");
+		expect(initialText).toContain("Source: ./packages/example");
+		expect(initialText).toContain(
+			"Resources: 0 ext · 1 skills · 1 prompts · 0 themes",
+		);
+
+		const sourceInput = element.shadowRoot?.querySelector(
+			'input[aria-label="Package source"]',
+		) as HTMLInputElement | null;
+		const scopeSelect = element.shadowRoot?.querySelector(
+			'select[aria-label="Package scope"]',
+		) as HTMLSelectElement | null;
+		const validateButton = element.shadowRoot?.querySelector(
+			".package-validate-button",
+		) as HTMLButtonElement | null;
+		const addButton = element.shadowRoot?.querySelector(
+			".package-add-button",
+		) as HTMLButtonElement | null;
+		expect(sourceInput).not.toBeNull();
+		expect(scopeSelect).not.toBeNull();
+		expect(validateButton).not.toBeNull();
+		expect(addButton).not.toBeNull();
+		if (!sourceInput || !scopeSelect || !validateButton || !addButton) {
+			throw new Error("Expected package settings inputs");
+		}
+
+		sourceInput.value = "./packages/new-pack";
+		sourceInput.dispatchEvent(new Event("input", { bubbles: true }));
+		scopeSelect.value = "project";
+		scopeSelect.dispatchEvent(new Event("change", { bubbles: true }));
+		await waitForSettled(
+			element,
+			() => {
+				const button = element.shadowRoot?.querySelector(
+					".package-validate-button",
+				) as HTMLButtonElement | null;
+				return Boolean(button && !button.disabled);
 			},
+			10,
+		);
+		const activeValidateButton = element.shadowRoot?.querySelector(
+			".package-validate-button",
+		) as HTMLButtonElement | null;
+		expect(activeValidateButton).not.toBeNull();
+		activeValidateButton?.click();
+
+		await waitForSettled(
+			element,
+			() =>
+				(apiClient.validatePackage as ReturnType<typeof vi.fn>).mock.calls
+					.length > 0,
+		);
+
+		expect(apiClient.validatePackage).toHaveBeenCalledWith(
+			"./packages/new-pack",
+		);
+		expect(element.shadowRoot?.textContent ?? "").toContain(
+			"Package validation passed.",
+		);
+
+		await waitForSettled(
+			element,
+			() => {
+				const button = element.shadowRoot?.querySelector(
+					".package-add-button",
+				) as HTMLButtonElement | null;
+				return Boolean(button && !button.disabled);
+			},
+			10,
+		);
+		const activeAddButton = element.shadowRoot?.querySelector(
+			".package-add-button",
+		) as HTMLButtonElement | null;
+		expect(activeAddButton).not.toBeNull();
+		activeAddButton?.click();
+
+		await waitForSettled(element, () =>
+			(element.shadowRoot?.textContent ?? "").includes(
+				'Added configured package "./packages/new-pack" to Project.',
+			),
+		);
+
+		expect(apiClient.addPackage).toHaveBeenCalledWith({
+			source: "./packages/new-pack",
+			scope: "project",
 		});
+		expect(element.shadowRoot?.textContent ?? "").toContain(
+			'Added configured package "./packages/new-pack" to Project.',
+		);
 	});
 
 	it("removes a writable MCP server and refreshes status", async () => {
