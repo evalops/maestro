@@ -72,6 +72,9 @@ function serializeConfiguredPackageReport(report: ConfiguredPackageReport) {
 		sourceSpec: report.sourceSpec,
 		filters: report.filters ?? null,
 		inspection: report.inspected ? serializeInspection(report.inspected) : null,
+		issues: report.inspected
+			? collectPackageValidationIssues(report.inspected)
+			: null,
 		error: report.error ?? null,
 	};
 }

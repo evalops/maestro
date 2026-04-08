@@ -271,6 +271,7 @@ export interface PackageStatusEntry {
 	sourceSpec: string;
 	filters: PackageResourceFilters | null;
 	inspection: PackageInspectionResult | null;
+	issues: string[] | null;
 	error: string | null;
 }
 

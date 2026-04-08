@@ -204,6 +204,76 @@ export interface LspDetections {
 	detections: Array<{ serverId: string; root: string }>;
 }
 
+export type PackageScope = "local" | "project" | "user";
+
+export interface PackageResourceFilters {
+	extensions?: string[];
+	skills?: string[];
+	prompts?: string[];
+	themes?: string[];
+}
+
+export interface PackageInspectionResult {
+	sourceSpec: string;
+	resolvedSource: string;
+	sourceType: "local" | "git" | "npm";
+	resolvedPath: string;
+	discovered: {
+		name: string;
+		version?: string;
+		isMaestroPackage: boolean;
+		hasManifest: boolean;
+		manifestPaths?: PackageResourceFilters | null;
+		errors: string[];
+	} | null;
+	resources: {
+		extensions: string[];
+		skills: string[];
+		prompts: string[];
+		themes: string[];
+	} | null;
+}
+
+export interface PackageStatusEntry {
+	scope: PackageScope;
+	configPath: string;
+	sourceSpec: string;
+	filters: PackageResourceFilters | null;
+	inspection: PackageInspectionResult | null;
+	issues: string[] | null;
+	error: string | null;
+}
+
+export interface PackageStatusResponse {
+	packages: PackageStatusEntry[];
+}
+
+export interface PackageInspectResponse {
+	inspection: PackageInspectionResult;
+	issues: string[];
+}
+
+export interface PackageMutationRequest {
+	source: string;
+	scope?: PackageScope;
+}
+
+export interface PackageAddResponse {
+	path: string;
+	scope: PackageScope;
+	spec: string;
+}
+
+export interface PackageRemoveResponse {
+	path: string;
+	scope: PackageScope;
+	removedCount: number;
+	fallback?: {
+		scope: PackageScope;
+		sourceSpec: string;
+	} | null;
+}
+
 export interface McpServerStatus {
 	name: string;
 	connected: boolean;
@@ -1214,6 +1284,45 @@ export class ApiClient {
 				action: "clear",
 				force,
 			},
+		);
+	}
+
+	// Packages
+	async getPackageStatus(): Promise<PackageStatusResponse> {
+		return await this.fetchJson<PackageStatusResponse>("/api/package");
+	}
+
+	async inspectPackage(source: string): Promise<PackageInspectResponse> {
+		return await this.fetchJsonRequest<PackageInspectResponse>(
+			"/api/package?action=inspect",
+			"POST",
+			{ source },
+		);
+	}
+
+	async validatePackage(source: string): Promise<PackageInspectResponse> {
+		return await this.fetchJsonRequest<PackageInspectResponse>(
+			"/api/package?action=validate",
+			"POST",
+			{ source },
+		);
+	}
+
+	async addPackage(input: PackageMutationRequest): Promise<PackageAddResponse> {
+		return await this.fetchJsonRequest<PackageAddResponse>(
+			"/api/package?action=add",
+			"POST",
+			input,
+		);
+	}
+
+	async removePackage(
+		input: PackageMutationRequest,
+	): Promise<PackageRemoveResponse> {
+		return await this.fetchJsonRequest<PackageRemoveResponse>(
+			"/api/package?action=remove",
+			"POST",
+			input,
 		);
 	}
 
