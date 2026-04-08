@@ -1,5 +1,6 @@
 import type { SlashCommand } from "@evalops/tui";
 import { parseCommandArguments, shouldShowHelp } from "./argument-parser.js";
+import type { GroupedCommandHandlers } from "./grouped-command-handlers.js";
 import {
 	ACCESS_SUBCOMMANDS,
 	AUTH_SUBCOMMANDS,
@@ -21,6 +22,12 @@ import type {
 	CommandExecutionContext,
 	CommandRegistryOptions,
 } from "./types.js";
+
+type GroupedCommandDefinition = {
+	command: SlashCommand;
+	subcommands: readonly SubcommandDef[];
+	handlerKey: keyof GroupedCommandHandlers;
+};
 
 const equals =
 	(name: string, aliases: string[] = []) =>
@@ -44,9 +51,169 @@ const matchDiagnostics = (input: string) =>
 const matchQuit = (input: string) =>
 	input === "/quit" || input === "/exit" || input === "/q";
 
+const GROUPED_COMMAND_DEFINITIONS: readonly GroupedCommandDefinition[] = [
+	{
+		command: {
+			name: "ss",
+			description:
+				"Session management: new, clear, list, load, branch, tree, export, share",
+			usage:
+				"/ss [new|clear|list|load <id>|branch <n>|tree|export|share|queue|info]",
+			tags: ["session"],
+			examples: [
+				"/ss",
+				"/ss new",
+				"/ss list",
+				"/ss load 3",
+				"/ss branch 2",
+				"/ss export",
+			],
+		},
+		subcommands: SESSION_SUBCOMMANDS,
+		handlerKey: "session",
+	},
+	{
+		command: {
+			name: "diag",
+			description:
+				"Diagnostics: status, about, context, stats, lsp, mcp, telemetry, config",
+			usage:
+				"/diag [status|about|context|stats|lsp|mcp|telemetry|training|config]",
+			tags: ["diagnostics"],
+			aliases: ["d", "diagnostics"],
+			examples: [
+				"/diag",
+				"/diag status",
+				"/diag lsp",
+				"/diag telemetry",
+				"/diag config",
+			],
+		},
+		subcommands: DIAG_SUBCOMMANDS,
+		handlerKey: "diag",
+	},
+	{
+		command: {
+			name: "ui",
+			description:
+				"UI settings: theme, clean, footer, alerts, zen, compact-tools",
+			usage: "/ui [theme|clean|footer|alerts|zen|compact]",
+			tags: ["ui"],
+			examples: ["/ui", "/ui theme", "/ui zen on", "/ui compact off"],
+		},
+		subcommands: UI_SUBCOMMANDS,
+		handlerKey: "ui",
+	},
+	{
+		command: {
+			name: "safe",
+			description: "Safety settings: approvals, plan-mode, guardian",
+			usage: "/safe [approvals|plan|guardian] [args]",
+			tags: ["safety"],
+			examples: [
+				"/safe",
+				"/safe approvals auto",
+				"/safe plan on",
+				"/safe guardian run",
+			],
+		},
+		subcommands: SAFETY_SUBCOMMANDS,
+		handlerKey: "safety",
+	},
+	{
+		command: {
+			name: "git",
+			description: "Git operations: status, diff, review",
+			usage: "/git [status|diff <path>|review]",
+			tags: ["git"],
+			examples: ["/git", "/git diff src/index.ts", "/git review"],
+		},
+		subcommands: GIT_SUBCOMMANDS,
+		handlerKey: "git",
+	},
+	{
+		command: {
+			name: "auth",
+			description: "Authentication: login, logout, status",
+			usage: "/auth [login|logout|status] [mode]",
+			tags: ["auth"],
+			examples: ["/auth", "/auth login pro", "/auth logout"],
+		},
+		subcommands: AUTH_SUBCOMMANDS,
+		handlerKey: "auth",
+	},
+	{
+		command: {
+			name: "usage",
+			description: "Usage tracking: cost, quota, stats",
+			usage: "/usage [cost|quota|stats] [args]",
+			tags: ["usage"],
+			examples: [
+				"/usage",
+				"/usage cost breakdown week",
+				"/usage quota detailed",
+			],
+		},
+		subcommands: USAGE_SUBCOMMANDS,
+		handlerKey: "usage",
+	},
+	{
+		command: {
+			name: "undo",
+			description: "Undo system: undo, checkpoint, changes, history",
+			usage: "/undo [<N>|checkpoint|changes|history] [args]",
+			tags: ["undo"],
+			examples: [
+				"/undo",
+				"/undo 3",
+				"/undo checkpoint save before-refactor",
+				"/undo changes",
+			],
+		},
+		subcommands: UNDO_SUBCOMMANDS,
+		handlerKey: "undo",
+	},
+	{
+		command: {
+			name: "cfg",
+			description: "Configuration: validate, import, framework, composer, init",
+			usage: "/cfg [validate|import|framework|composer|init] [args]",
+			tags: ["config"],
+			examples: [
+				"/cfg",
+				"/cfg validate",
+				"/cfg import factory",
+				"/cfg framework react",
+				"/cfg composer code-reviewer",
+			],
+		},
+		subcommands: CONFIG_SUBCOMMANDS,
+		handlerKey: "config",
+	},
+	{
+		command: {
+			name: "tools",
+			description: "Tools: list, mcp, lsp, workflow, run, commands",
+			usage: "/tools [list|mcp|lsp|workflow|run|commands] [args]",
+			tags: ["tools"],
+			aliases: ["t"],
+			examples: [
+				"/tools",
+				"/tools list",
+				"/tools mcp",
+				"/tools lsp status",
+				"/tools run test",
+			],
+		},
+		subcommands: TOOLS_SUBCOMMANDS,
+		handlerKey: "tools",
+	},
+];
+
 export function createCommandRegistry({
 	getRunScriptCompletions,
 	handlers,
+	getGroupedHandlers,
 	createContext,
 }: CommandRegistryOptions): CommandEntry[] {
 	const entries: CommandEntry[] = [
@@ -1083,177 +1250,7 @@ export function createCommandRegistry({
 			handlers.copy,
 			createContext,
 		),
-
-		// ═══════════════════════════════════════════════════════════════════
-		// GROUPED COMMANDS - Organize related commands under parent commands
-		// ═══════════════════════════════════════════════════════════════════
-
-		buildGroupedEntry(
-			{
-				name: "ss",
-				description:
-					"Session management: new, clear, list, load, branch, tree, export, share",
-				usage:
-					"/ss [new|clear|list|load <id>|branch <n>|tree|export|share|queue|info]",
-				tags: ["session"],
-				examples: [
-					"/ss",
-					"/ss new",
-					"/ss list",
-					"/ss load 3",
-					"/ss branch 2",
-					"/ss export",
-				],
-			},
-			SESSION_SUBCOMMANDS,
-			handlers.sessionCommand,
-			createContext,
-		),
-		buildGroupedEntry(
-			{
-				name: "diag",
-				description:
-					"Diagnostics: status, about, context, stats, lsp, mcp, telemetry, config",
-				usage:
-					"/diag [status|about|context|stats|lsp|mcp|telemetry|training|config]",
-				tags: ["diagnostics"],
-				examples: [
-					"/diag",
-					"/diag status",
-					"/diag lsp",
-					"/diag telemetry",
-					"/diag config",
-				],
-			},
-			DIAG_SUBCOMMANDS,
-			handlers.diagCommand,
-			createContext,
-		),
-		buildGroupedEntry(
-			{
-				name: "ui",
-				description:
-					"UI settings: theme, clean, footer, alerts, zen, compact-tools",
-				usage: "/ui [theme|clean|footer|alerts|zen|compact]",
-				tags: ["ui"],
-				examples: ["/ui", "/ui theme", "/ui zen on", "/ui compact off"],
-			},
-			UI_SUBCOMMANDS,
-			handlers.uiCommand,
-			createContext,
-		),
-		buildGroupedEntry(
-			{
-				name: "safe",
-				description: "Safety settings: approvals, plan-mode, guardian",
-				usage: "/safe [approvals|plan|guardian] [args]",
-				tags: ["safety"],
-				examples: [
-					"/safe",
-					"/safe approvals auto",
-					"/safe plan on",
-					"/safe guardian run",
-				],
-			},
-			SAFETY_SUBCOMMANDS,
-			handlers.safetyCommand,
-			createContext,
-		),
-		buildGroupedEntry(
-			{
-				name: "git",
-				description: "Git operations: status, diff, review",
-				usage: "/git [status|diff <path>|review]",
-				tags: ["git"],
-				examples: ["/git", "/git diff src/index.ts", "/git review"],
-			},
-			GIT_SUBCOMMANDS,
-			handlers.gitCommand,
-			createContext,
-		),
-		buildGroupedEntry(
-			{
-				name: "auth",
-				description: "Authentication: login, logout, status",
-				usage: "/auth [login|logout|status] [mode]",
-				tags: ["auth"],
-				examples: ["/auth", "/auth login pro", "/auth logout"],
-			},
-			AUTH_SUBCOMMANDS,
-			handlers.authCommand,
-			createContext,
-		),
-		buildGroupedEntry(
-			{
-				name: "usage",
-				description: "Usage tracking: cost, quota, stats",
-				usage: "/usage [cost|quota|stats] [args]",
-				tags: ["usage"],
-				examples: [
-					"/usage",
-					"/usage cost breakdown week",
-					"/usage quota detailed",
-				],
-			},
-			USAGE_SUBCOMMANDS,
-			handlers.usageCommand,
-			createContext,
-		),
-		buildGroupedEntry(
-			{
-				name: "undo",
-				description: "Undo system: undo, checkpoint, changes, history",
-				usage: "/undo [<N>|checkpoint|changes|history] [args]",
-				tags: ["undo"],
-				examples: [
-					"/undo",
-					"/undo 3",
-					"/undo checkpoint save before-refactor",
-					"/undo changes",
-				],
-			},
-			UNDO_SUBCOMMANDS,
-			handlers.undoCommand,
-			createContext,
-		),
-		buildGroupedEntry(
-			{
-				name: "cfg",
-				description:
-					"Configuration: validate, import, framework, composer, init",
-				usage: "/cfg [validate|import|framework|composer|init] [args]",
-				tags: ["config"],
-				examples: [
-					"/cfg",
-					"/cfg validate",
-					"/cfg import factory",
-					"/cfg framework react",
-					"/cfg composer code-reviewer",
-				],
-			},
-			CONFIG_SUBCOMMANDS,
-			handlers.configCommand,
-			createContext,
-		),
-		buildGroupedEntry(
-			{
-				name: "tools",
-				description: "Tools: list, mcp, lsp, workflow, run, commands",
-				usage: "/tools [list|mcp|lsp|workflow|run|commands] [args]",
-				tags: ["tools"],
-				aliases: ["t"],
-				examples: [
-					"/tools",
-					"/tools list",
-					"/tools mcp",
-					"/tools lsp status",
-					"/tools run test",
-				],
-			},
-			TOOLS_SUBCOMMANDS,
-			handlers.toolsCommand,
-			createContext,
-		),
+		...buildGroupedEntries(getGroupedHandlers, createContext),
 		buildEntry(
 			{
 				name: "toolhistory",
@@ -1289,6 +1286,15 @@ export function createCommandRegistry({
 	return entries;
 }
 
+function buildGroupedEntries(
+	getGroupedHandlers: CommandRegistryOptions["getGroupedHandlers"],
+	createContext: CommandRegistryOptions["createContext"],
+): CommandEntry[] {
+	return GROUPED_COMMAND_DEFINITIONS.map((definition) =>
+		buildGroupedEntry(definition, getGroupedHandlers, createContext),
+	);
+}
+
 function buildEntry(
 	command: SlashCommand,
 	matches: (input: string) => boolean,
@@ -1304,17 +1310,20 @@ function buildEntry(
 }
 
 function buildGroupedEntry(
-	command: SlashCommand,
-	subcommands: readonly SubcommandDef[],
-	handler: (context: CommandExecutionContext) => void | Promise<void>,
+	definition: GroupedCommandDefinition,
+	getGroupedHandlers: CommandRegistryOptions["getGroupedHandlers"],
 	createContext: CommandRegistryOptions["createContext"],
 ): CommandEntry {
+	const handler = (context: CommandExecutionContext) =>
+		getGroupedHandlers()[definition.handlerKey](context);
 	return buildEntry(
 		{
-			...command,
-			getArgumentCompletions: createSubcommandCompletions(subcommands),
+			...definition.command,
+			getArgumentCompletions: createSubcommandCompletions(
+				definition.subcommands,
+			),
 		},
-		withArgs(command.name, command.aliases),
+		withArgs(definition.command.name, definition.command.aliases),
 		handler,
 		createContext,
 	);

@@ -3,6 +3,7 @@ import type {
 	CommandArgumentDefinition,
 	SlashCommand,
 } from "@evalops/tui";
+import type { GroupedCommandHandlers } from "./grouped-command-handlers.js";
 
 export interface CommandExecutionContext<TArgs = Record<string, unknown>> {
 	command: SlashCommand;
@@ -90,17 +91,6 @@ export interface CommandHandlers {
 	mode(context: CommandExecutionContext): void;
 	prompts(context: CommandExecutionContext): void;
 	copy(context: CommandExecutionContext): void;
-	// Grouped command handlers
-	sessionCommand(context: CommandExecutionContext): void | Promise<void>;
-	diagCommand(context: CommandExecutionContext): void | Promise<void>;
-	uiCommand(context: CommandExecutionContext): void | Promise<void>;
-	safetyCommand(context: CommandExecutionContext): void | Promise<void>;
-	gitCommand(context: CommandExecutionContext): void | Promise<void>;
-	authCommand(context: CommandExecutionContext): void | Promise<void>;
-	usageCommand(context: CommandExecutionContext): void | Promise<void>;
-	undoCommand(context: CommandExecutionContext): void | Promise<void>;
-	configCommand(context: CommandExecutionContext): void | Promise<void>;
-	toolsCommand(context: CommandExecutionContext): void | Promise<void>;
 }
 
 export interface CommandEntry {
@@ -112,6 +102,7 @@ export interface CommandEntry {
 export interface CommandRegistryOptions {
 	getRunScriptCompletions: RunScriptCompletionProvider;
 	handlers: CommandHandlers;
+	getGroupedHandlers: () => GroupedCommandHandlers;
 	createContext: (input: {
 		command: SlashCommand;
 		rawInput: string;

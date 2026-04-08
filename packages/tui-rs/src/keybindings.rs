@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crossterm::event::KeyCode;
 use serde::Deserialize;
+use serde_json::{json, Value};
 
 use crate::key_hints::{alt, ctrl, shift, KeyBinding};
 
@@ -77,6 +78,50 @@ const RUST_TUI_KEYBINDING_ACTIONS: [RustTuiKeybindingAction; 4] = [
     RustTuiKeybindingAction::EditLastQueuedFollowUp,
 ];
 
+const TUI_KEYBINDING_ACTIONS: [&str; 7] = [
+    "cycle-model",
+    "toggle-tool-outputs",
+    "toggle-thinking-blocks",
+    "external-editor",
+    "suspend",
+    "command-palette",
+    "edit-last-follow-up",
+];
+
+const TUI_KEYBINDING_SHORTCUTS: [&str; 8] = [
+    "ctrl+g",
+    "ctrl+k",
+    "ctrl+o",
+    "ctrl+p",
+    "ctrl+t",
+    "ctrl+z",
+    "alt+up",
+    "shift+left",
+];
+
+#[derive(Debug, Clone)]
+struct KeybindingConfigIssue {
+    severity: &'static str,
+    message: String,
+}
+
+#[derive(Debug, Clone)]
+struct KeybindingConfigReport {
+    path: PathBuf,
+    exists: bool,
+    tui_requested_overrides: usize,
+    tui_active_overrides: usize,
+    rust_requested_overrides: usize,
+    rust_active_overrides: usize,
+    issues: Vec<KeybindingConfigIssue>,
+}
+
+#[derive(Debug, Clone)]
+pub struct InitializeKeybindingsResult {
+    pub path: PathBuf,
+    pub created: bool,
+}
+
 #[must_use]
 pub fn queued_follow_up_edit_binding_for_terminal_name(
     terminal_name: &str,
@@ -94,10 +139,29 @@ pub fn queued_follow_up_edit_binding_for_terminal_name(
 
 #[must_use]
 pub fn load_rust_tui_keybindings(terminal_name: &str, in_tmux: bool) -> RustTuiKeybindings {
-    let config_path = std::env::var_os("MAESTRO_KEYBINDINGS_FILE")
-        .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|home| home.join(".maestro").join("keybindings.json")));
+    let config_path = Some(keybindings_config_path());
     load_rust_tui_keybindings_from_path(config_path.as_deref(), terminal_name, in_tmux)
+}
+
+#[must_use]
+pub fn keybindings_config_path() -> PathBuf {
+    std::env::var_os("MAESTRO_KEYBINDINGS_FILE")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".maestro").join("keybindings.json")))
+        .unwrap_or_else(|| PathBuf::from("keybindings.json"))
+}
+
+pub fn initialize_keybindings_file(force: bool) -> Result<InitializeKeybindingsResult, String> {
+    let path = keybindings_config_path();
+    let created = initialize_keybindings_file_at_path(&path, force)?;
+    Ok(InitializeKeybindingsResult { path, created })
+}
+
+#[must_use]
+pub fn format_keybindings_config_report() -> String {
+    format_keybinding_config_report(&inspect_keybindings_config_at_path(
+        &keybindings_config_path(),
+    ))
 }
 
 fn load_rust_tui_keybindings_from_path(
@@ -146,6 +210,394 @@ fn load_rust_tui_keybindings_from_path(
     }
 
     shortcuts_to_bindings(&resolved)
+}
+
+fn tui_edit_last_follow_up_shortcut_from_env() -> &'static str {
+    let term_program = std::env::var("TERM_PROGRAM")
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if std::env::var_os("TMUX").is_some()
+        || matches!(
+            term_program.as_str(),
+            "tmux" | "apple_terminal" | "warp" | "warpterminal" | "vscode"
+        )
+    {
+        "shift+left"
+    } else {
+        "alt+up"
+    }
+}
+
+fn default_tui_shortcuts() -> HashMap<&'static str, &'static str> {
+    HashMap::from([
+        ("cycle-model", "ctrl+p"),
+        ("toggle-tool-outputs", "ctrl+o"),
+        ("toggle-thinking-blocks", "ctrl+t"),
+        ("external-editor", "ctrl+g"),
+        ("suspend", "ctrl+z"),
+        ("command-palette", "ctrl+k"),
+        (
+            "edit-last-follow-up",
+            tui_edit_last_follow_up_shortcut_from_env(),
+        ),
+    ])
+}
+
+fn default_rust_shortcuts() -> HashMap<&'static str, &'static str> {
+    let queued_follow_up =
+        match shortcut_for_binding(queued_follow_up_edit_binding_for_terminal_name(
+            &std::env::var("TERM_PROGRAM").unwrap_or_else(|_| "wezterm".to_string()),
+            std::env::var_os("TMUX").is_some(),
+        )) {
+            RustTuiKeybindingShortcut::CtrlP => "ctrl+p",
+            RustTuiKeybindingShortcut::CtrlO => "ctrl+o",
+            RustTuiKeybindingShortcut::CtrlT => "ctrl+t",
+            RustTuiKeybindingShortcut::AltUp => "alt+up",
+            RustTuiKeybindingShortcut::ShiftLeft => "shift+left",
+        };
+
+    HashMap::from([
+        ("command-palette", "ctrl+p"),
+        ("file-search", "ctrl+o"),
+        ("toggle-tool-outputs", "ctrl+t"),
+        ("edit-last-follow-up", queued_follow_up),
+    ])
+}
+
+fn normalize_name(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
+}
+
+fn normalize_shortcut_name(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase()
+}
+
+fn parse_string_overrides(
+    value: Option<&Value>,
+    section_name: &str,
+    supported_actions: &[&str],
+    supported_shortcuts: &[&str],
+    issues: &mut Vec<KeybindingConfigIssue>,
+) -> HashMap<String, String> {
+    let Some(value) = value else {
+        return HashMap::new();
+    };
+    let Some(object) = value.as_object() else {
+        issues.push(KeybindingConfigIssue {
+            severity: "error",
+            message: format!(
+                "\"{section_name}\" must be an object of action-to-shortcut overrides."
+            ),
+        });
+        return HashMap::new();
+    };
+
+    let action_set: HashSet<&str> = supported_actions.iter().copied().collect();
+    let shortcut_set: HashSet<&str> = supported_shortcuts.iter().copied().collect();
+    let mut overrides = HashMap::new();
+    for (raw_action, raw_shortcut) in object {
+        let action = normalize_name(raw_action);
+        if !action_set.contains(action.as_str()) {
+            issues.push(KeybindingConfigIssue {
+                severity: "error",
+                message: format!(
+                    "Unknown {section_name} keybinding action \"{raw_action}\". Supported actions: {}.",
+                    supported_actions.join(", ")
+                ),
+            });
+            continue;
+        }
+        let Some(raw_shortcut) = raw_shortcut.as_str() else {
+            issues.push(KeybindingConfigIssue {
+                severity: "error",
+                message: format!(
+                    "{section_name} action \"{action}\" must map to a shortcut string."
+                ),
+            });
+            continue;
+        };
+        let shortcut = normalize_shortcut_name(raw_shortcut);
+        if !shortcut_set.contains(shortcut.as_str()) {
+            issues.push(KeybindingConfigIssue {
+                severity: "error",
+                message: format!(
+                    "Unsupported {section_name} shortcut \"{raw_shortcut}\" for \"{action}\". Supported shortcuts: {}.",
+                    supported_shortcuts.join(", ")
+                ),
+            });
+            continue;
+        }
+        overrides.insert(action, shortcut);
+    }
+    overrides
+}
+
+fn collect_conflict_issues(
+    label: &str,
+    overrides: &HashMap<String, String>,
+    defaults: &HashMap<&'static str, &'static str>,
+) -> (Vec<KeybindingConfigIssue>, HashMap<String, String>) {
+    let mut resolved = defaults
+        .iter()
+        .map(|(action, shortcut)| ((*action).to_string(), (*shortcut).to_string()))
+        .collect::<HashMap<_, _>>();
+    for (action, shortcut) in overrides {
+        resolved.insert(action.clone(), shortcut.clone());
+    }
+
+    let mut issues = Vec::new();
+    let mut seen = HashSet::new();
+    let mut changed = true;
+    while changed {
+        changed = false;
+        let mut actions_by_shortcut: HashMap<String, Vec<String>> = HashMap::new();
+        for (action, shortcut) in &resolved {
+            actions_by_shortcut
+                .entry(shortcut.clone())
+                .or_default()
+                .push(action.clone());
+        }
+
+        for (shortcut, actions) in actions_by_shortcut {
+            if actions.len() < 2 {
+                continue;
+            }
+            for action in actions {
+                let Some(override_shortcut) = overrides.get(&action) else {
+                    continue;
+                };
+                let default_shortcut = defaults
+                    .get(action.as_str())
+                    .expect("default shortcut should exist for known action");
+                if override_shortcut == default_shortcut {
+                    continue;
+                }
+                let key = format!("{action}:{shortcut}");
+                if seen.insert(key) {
+                    let conflicts = resolved
+                        .iter()
+                        .filter_map(|(candidate, candidate_shortcut)| {
+                            (candidate_shortcut == &shortcut && candidate != &action)
+                                .then_some(candidate.clone())
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    issues.push(KeybindingConfigIssue {
+                        severity: "warning",
+                        message: format!(
+                            "{label} override \"{action}: {shortcut}\" conflicts with {conflicts} and falls back to {default_shortcut}."
+                        ),
+                    });
+                }
+                resolved.insert(action.clone(), (*default_shortcut).to_string());
+                changed = true;
+            }
+        }
+    }
+
+    (issues, resolved)
+}
+
+fn inspect_keybindings_config_at_path(path: &Path) -> KeybindingConfigReport {
+    if !path.exists() {
+        return KeybindingConfigReport {
+            path: path.to_path_buf(),
+            exists: false,
+            tui_requested_overrides: 0,
+            tui_active_overrides: 0,
+            rust_requested_overrides: 0,
+            rust_active_overrides: 0,
+            issues: Vec::new(),
+        };
+    }
+
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(_) => {
+            return KeybindingConfigReport {
+                path: path.to_path_buf(),
+                exists: true,
+                tui_requested_overrides: 0,
+                tui_active_overrides: 0,
+                rust_requested_overrides: 0,
+                rust_active_overrides: 0,
+                issues: vec![KeybindingConfigIssue {
+                    severity: "error",
+                    message: "Failed to read keybindings.json.".to_string(),
+                }],
+            }
+        }
+    };
+
+    let parsed = match serde_json::from_str::<Value>(&content) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            return KeybindingConfigReport {
+                path: path.to_path_buf(),
+                exists: true,
+                tui_requested_overrides: 0,
+                tui_active_overrides: 0,
+                rust_requested_overrides: 0,
+                rust_active_overrides: 0,
+                issues: vec![KeybindingConfigIssue {
+                    severity: "error",
+                    message: err.to_string(),
+                }],
+            }
+        }
+    };
+
+    let Some(root) = parsed.as_object() else {
+        return KeybindingConfigReport {
+            path: path.to_path_buf(),
+            exists: true,
+            tui_requested_overrides: 0,
+            tui_active_overrides: 0,
+            rust_requested_overrides: 0,
+            rust_active_overrides: 0,
+            issues: vec![KeybindingConfigIssue {
+                severity: "error",
+                message: "keybindings.json must contain a JSON object.".to_string(),
+            }],
+        };
+    };
+
+    let mut issues = Vec::new();
+    if root.get("version").and_then(Value::as_u64) != Some(1) {
+        issues.push(KeybindingConfigIssue {
+            severity: "error",
+            message: "keybindings.json must include \"version\": 1.".to_string(),
+        });
+    }
+
+    let tui_overrides = parse_string_overrides(
+        root.get("bindings"),
+        "TUI",
+        &TUI_KEYBINDING_ACTIONS,
+        &TUI_KEYBINDING_SHORTCUTS,
+        &mut issues,
+    );
+    let rust_overrides = parse_string_overrides(
+        root.get("rustBindings"),
+        "Rust TUI",
+        &[
+            "command-palette",
+            "file-search",
+            "toggle-tool-outputs",
+            "edit-last-follow-up",
+        ],
+        &["ctrl+p", "ctrl+o", "ctrl+t", "alt+up", "shift+left"],
+        &mut issues,
+    );
+
+    let tui_defaults = default_tui_shortcuts();
+    let rust_defaults = default_rust_shortcuts();
+    let (tui_conflicts, resolved_tui) =
+        collect_conflict_issues("TUI", &tui_overrides, &tui_defaults);
+    let (rust_conflicts, resolved_rust) =
+        collect_conflict_issues("Rust TUI", &rust_overrides, &rust_defaults);
+    issues.extend(tui_conflicts);
+    issues.extend(rust_conflicts);
+
+    let tui_active_overrides = tui_overrides
+        .iter()
+        .filter(|(action, shortcut)| resolved_tui.get(*action) == Some(*shortcut))
+        .count();
+    let rust_active_overrides = rust_overrides
+        .iter()
+        .filter(|(action, shortcut)| resolved_rust.get(*action) == Some(*shortcut))
+        .count();
+
+    KeybindingConfigReport {
+        path: path.to_path_buf(),
+        exists: true,
+        tui_requested_overrides: tui_overrides.len(),
+        tui_active_overrides,
+        rust_requested_overrides: rust_overrides.len(),
+        rust_active_overrides,
+        issues,
+    }
+}
+
+fn generate_keybindings_template() -> String {
+    let bindings = json!({
+        "cycle-model": "ctrl+p",
+        "toggle-tool-outputs": "ctrl+o",
+        "toggle-thinking-blocks": "ctrl+t",
+        "external-editor": "ctrl+g",
+        "suspend": "ctrl+z",
+        "command-palette": "ctrl+k",
+        "edit-last-follow-up": tui_edit_last_follow_up_shortcut_from_env(),
+    });
+    let rust_bindings = json!({
+        "command-palette": "ctrl+p",
+        "file-search": "ctrl+o",
+        "toggle-tool-outputs": "ctrl+t",
+        "edit-last-follow-up": default_rust_shortcuts()["edit-last-follow-up"],
+    });
+    format!(
+        "{}\n",
+        serde_json::to_string_pretty(&json!({
+            "$docs": "https://github.com/evalops/maestro",
+            "$comment": "Delete any entries you do not want to override, then run /hotkeys validate inside Maestro.",
+            "version": 1,
+            "bindings": bindings,
+            "rustBindings": rust_bindings,
+        }))
+        .expect("keybindings template should serialize")
+    )
+}
+
+fn initialize_keybindings_file_at_path(path: &Path, force: bool) -> Result<bool, String> {
+    if path.exists() && !force {
+        return Ok(false);
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    fs::write(path, generate_keybindings_template()).map_err(|err| err.to_string())?;
+    Ok(true)
+}
+
+fn format_keybinding_config_report(report: &KeybindingConfigReport) -> String {
+    let mut lines = vec!["Keyboard Shortcuts Config:".to_string()];
+    lines.push(format!("  Path: {}", report.path.display()));
+    lines.push(format!(
+        "  Status: {}",
+        if report.exists { "present" } else { "missing" }
+    ));
+    if !report.exists {
+        lines.push("  Hint: run /hotkeys init to create a starter file.".to_string());
+        return lines.join("\n");
+    }
+
+    lines.push(format!(
+        "  TUI overrides: {}/{} active",
+        report.tui_active_overrides, report.tui_requested_overrides
+    ));
+    lines.push(format!(
+        "  Rust TUI overrides: {}/{} active",
+        report.rust_active_overrides, report.rust_requested_overrides
+    ));
+    if report.issues.is_empty() {
+        lines.push("  Validation: OK".to_string());
+        return lines.join("\n");
+    }
+
+    lines.push(format!("  Issues: {}", report.issues.len()));
+    for issue in &report.issues {
+        lines.push(format!(
+            "  - {}: {}",
+            issue.severity.to_ascii_uppercase(),
+            issue.message
+        ));
+    }
+    lines.join("\n")
 }
 
 fn default_shortcuts(

@@ -2561,6 +2561,10 @@ Add the required fields and retry.",
                         self.command_palette.show();
                         self.active_modal = ActiveModal::CommandPalette;
                     }
+                    ModalType::ShortcutsHelp => {
+                        self.shortcuts_help.show();
+                        self.active_modal = ActiveModal::ShortcutsHelp;
+                    }
                     ModalType::Help => {
                         self.show_help();
                     }

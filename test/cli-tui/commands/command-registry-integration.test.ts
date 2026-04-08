@@ -1,5 +1,6 @@
 import type { SlashCommand } from "@evalops/tui";
 import { describe, expect, it, vi } from "vitest";
+import type { GroupedCommandHandlers } from "../../../src/cli-tui/commands/grouped-command-handlers.js";
 import type { CommandExecutionContext } from "../../../src/cli-tui/commands/types.js";
 import { buildCommandRegistry } from "../../../src/cli-tui/utils/commands/command-registry-builder.js";
 import type { CommandRegistryOptions } from "../../../src/cli-tui/utils/commands/command-registry-builder.js";
@@ -18,8 +19,22 @@ function createMockContext(
 	};
 }
 
-function createMockOptions(): CommandRegistryOptions {
+function createMockOptions(): CommandRegistryOptions & {
+	groupedHandlers: GroupedCommandHandlers;
+} {
 	const noop = vi.fn();
+	const groupedHandlers: GroupedCommandHandlers = {
+		session: vi.fn(),
+		diag: vi.fn(),
+		ui: vi.fn(),
+		safety: vi.fn(),
+		git: vi.fn(),
+		auth: vi.fn(),
+		usage: vi.fn(),
+		undo: vi.fn(),
+		config: vi.fn(),
+		tools: vi.fn(),
+	};
 	return {
 		getRunScriptCompletions: vi.fn(() => null),
 		createContext: vi.fn(
@@ -101,17 +116,8 @@ function createMockOptions(): CommandRegistryOptions {
 		handleMode: noop,
 		handlePrompts: noop,
 		handleCopy: noop,
-		// Grouped command handlers
-		handleSessionCommand: noop,
-		handleDiagCommand: noop,
-		handleUiCommand: noop,
-		handleSafetyCommand: noop,
-		handleGitCommand: noop,
-		handleAuthCommand: noop,
-		handleUsageCommand: noop,
-		handleUndoCommand: noop,
-		handleConfigCommand: noop,
-		handleToolsCommand: noop,
+		getGroupedHandlers: vi.fn(() => groupedHandlers),
+		groupedHandlers,
 	};
 }
 
@@ -340,26 +346,26 @@ describe("command-registry-integration", () => {
 			expect(opts.handleQuit).toHaveBeenCalled();
 		});
 
-		it("dispatches /ss to handleSessionCommand handler", () => {
+		it("keeps grouped handlers lazy until a grouped-only command executes", () => {
 			const opts = createMockOptions();
 			const { entries } = buildCommandRegistry(opts);
-			const ssEntry = entries.find((e) => e.matches("/ss"));
+			const safeEntry = entries.find((e) => e.matches("/safe"));
 
-			ssEntry!.execute("/ss");
+			expect(opts.getGroupedHandlers).not.toHaveBeenCalled();
+			safeEntry!.execute("/safe");
 
-			expect(opts.handleSessionCommand).toHaveBeenCalled();
+			expect(opts.getGroupedHandlers).toHaveBeenCalledTimes(1);
+			expect(opts.groupedHandlers.safety).toHaveBeenCalled();
 		});
 
-		it("dispatches /tools to handleToolsCommand handler", () => {
+		it("dispatches /cfg to the grouped config handler", () => {
 			const opts = createMockOptions();
 			const { entries } = buildCommandRegistry(opts);
-			const toolsEntry = entries.find(
-				(e) => e.matches("/tools") && e.command.name === "tools",
-			);
+			const configEntry = entries.find((e) => e.matches("/cfg"));
 
-			toolsEntry!.execute("/tools");
+			configEntry!.execute("/cfg");
 
-			expect(opts.handleToolsCommand).toHaveBeenCalled();
+			expect(opts.groupedHandlers.config).toHaveBeenCalled();
 		});
 
 		it("passes --help flag through to renderHelp", () => {

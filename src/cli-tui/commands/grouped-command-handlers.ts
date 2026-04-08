@@ -2,16 +2,16 @@ import { isDatabaseConfigured } from "../../db/client.js";
 import type { CommandExecutionContext } from "./types.js";
 
 export type GroupedCommandHandlers = {
-	handleSession(context: CommandExecutionContext): Promise<void>;
-	handleDiag(context: CommandExecutionContext): Promise<void>;
-	handleUi(context: CommandExecutionContext): Promise<void>;
-	handleSafety(context: CommandExecutionContext): Promise<void>;
-	handleGit(context: CommandExecutionContext): Promise<void>;
-	handleAuth(context: CommandExecutionContext): Promise<void>;
-	handleUsage(context: CommandExecutionContext): Promise<void>;
-	handleUndo(context: CommandExecutionContext): Promise<void>;
-	handleConfig(context: CommandExecutionContext): Promise<void>;
-	handleTools(context: CommandExecutionContext): Promise<void>;
+	session(context: CommandExecutionContext): Promise<void>;
+	diag(context: CommandExecutionContext): Promise<void>;
+	ui(context: CommandExecutionContext): Promise<void>;
+	safety(context: CommandExecutionContext): Promise<void>;
+	git(context: CommandExecutionContext): Promise<void>;
+	auth(context: CommandExecutionContext): Promise<void>;
+	usage(context: CommandExecutionContext): Promise<void>;
+	undo(context: CommandExecutionContext): Promise<void>;
+	config(context: CommandExecutionContext): Promise<void>;
+	tools(context: CommandExecutionContext): Promise<void>;
 };
 
 export type GroupedCommandDeps = {
@@ -117,7 +117,7 @@ export function createGroupedCommandHandlers(
 	deps: GroupedCommandDeps,
 ): GroupedCommandHandlers {
 	return {
-		async handleSession(context: CommandExecutionContext): Promise<void> {
+		async session(context: CommandExecutionContext): Promise<void> {
 			const { createSessionCommandHandler } = await import(
 				"./grouped/index.js"
 			);
@@ -147,7 +147,7 @@ export function createGroupedCommandHandlers(
 			await handler(context);
 		},
 
-		async handleDiag(context: CommandExecutionContext): Promise<void> {
+		async diag(context: CommandExecutionContext): Promise<void> {
 			const { createDiagCommandHandler } = await import("./grouped/index.js");
 			const handler = createDiagCommandHandler({
 				handleStatus: () => deps.diag.handleStatus(),
@@ -177,7 +177,7 @@ export function createGroupedCommandHandlers(
 			await handler(context);
 		},
 
-		async handleUi(context: CommandExecutionContext): Promise<void> {
+		async ui(context: CommandExecutionContext): Promise<void> {
 			const { createUiCommandHandler } = await import("./grouped/index.js");
 			const handler = createUiCommandHandler({
 				handleTheme: () => deps.ui.showTheme(),
@@ -195,7 +195,7 @@ export function createGroupedCommandHandlers(
 			await handler(context);
 		},
 
-		async handleSafety(context: CommandExecutionContext): Promise<void> {
+		async safety(context: CommandExecutionContext): Promise<void> {
 			const { createSafetyCommandHandler } = await import("./grouped/index.js");
 			const handler = createSafetyCommandHandler({
 				handleApprovals: async (ctx: CommandExecutionContext) =>
@@ -210,7 +210,7 @@ export function createGroupedCommandHandlers(
 			await handler(context);
 		},
 
-		async handleGit(context: CommandExecutionContext): Promise<void> {
+		async git(context: CommandExecutionContext): Promise<void> {
 			const { createGitCommandHandler } = await import("./grouped/index.js");
 			const handler = createGitCommandHandler({
 				handleDiff: async (ctx: CommandExecutionContext) =>
@@ -223,7 +223,7 @@ export function createGroupedCommandHandlers(
 			await handler(context);
 		},
 
-		async handleAuth(context: CommandExecutionContext): Promise<void> {
+		async auth(context: CommandExecutionContext): Promise<void> {
 			const { createAuthCommandHandler } = await import("./grouped/index.js");
 			const handler = createAuthCommandHandler({
 				handleLogin: async (ctx: CommandExecutionContext) =>
@@ -236,7 +236,7 @@ export function createGroupedCommandHandlers(
 			await handler(context);
 		},
 
-		async handleUsage(context: CommandExecutionContext): Promise<void> {
+		async usage(context: CommandExecutionContext): Promise<void> {
 			const { createUsageCommandHandler } = await import("./grouped/index.js");
 			const handler = createUsageCommandHandler({
 				handleCost: async (ctx: CommandExecutionContext) =>
@@ -249,7 +249,7 @@ export function createGroupedCommandHandlers(
 			await handler(context);
 		},
 
-		async handleUndo(context: CommandExecutionContext): Promise<void> {
+		async undo(context: CommandExecutionContext): Promise<void> {
 			const { createUndoCommandHandler } = await import("./grouped/index.js");
 			const handler = createUndoCommandHandler({
 				handleUndo: async (ctx: CommandExecutionContext) =>
@@ -264,7 +264,7 @@ export function createGroupedCommandHandlers(
 			await handler(context);
 		},
 
-		async handleConfig(context: CommandExecutionContext): Promise<void> {
+		async config(context: CommandExecutionContext): Promise<void> {
 			const { createConfigCommandHandler } = await import("./grouped/index.js");
 			const handler = createConfigCommandHandler({
 				handleConfig: async (ctx: CommandExecutionContext) =>
@@ -282,7 +282,7 @@ export function createGroupedCommandHandlers(
 			await handler(context);
 		},
 
-		async handleTools(context: CommandExecutionContext): Promise<void> {
+		async tools(context: CommandExecutionContext): Promise<void> {
 			const { createToolsCommandHandler } = await import("./grouped/index.js");
 			const handler = createToolsCommandHandler({
 				handleTools: async (ctx: CommandExecutionContext) =>

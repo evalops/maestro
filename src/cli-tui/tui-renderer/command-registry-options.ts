@@ -309,23 +309,6 @@ export function buildTuiCommandRegistryOptions(
 					showError: (msg) => context.showError(msg),
 				},
 			),
-		handleSessionCommand: (context) =>
-			deps.getGroupedHandlers().handleSession(context),
-		handleDiagCommand: (context) =>
-			deps.getGroupedHandlers().handleDiag(context),
-		handleUiCommand: (context) => deps.getGroupedHandlers().handleUi(context),
-		handleSafetyCommand: (context) =>
-			deps.getGroupedHandlers().handleSafety(context),
-		handleGitCommand: (context) => deps.getGroupedHandlers().handleGit(context),
-		handleAuthCommand: (context) =>
-			deps.getGroupedHandlers().handleAuth(context),
-		handleUsageCommand: (context) =>
-			deps.getGroupedHandlers().handleUsage(context),
-		handleUndoCommand: (context) =>
-			deps.getGroupedHandlers().handleUndo(context),
-		handleConfigCommand: (context) =>
-			deps.getGroupedHandlers().handleConfig(context),
-		handleToolsCommand: (context) =>
-			deps.getGroupedHandlers().handleTools(context),
+		getGroupedHandlers: () => deps.getGroupedHandlers(),
 	};
 }

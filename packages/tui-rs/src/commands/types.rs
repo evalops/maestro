@@ -424,6 +424,8 @@ pub enum ModalType {
     FileSearch,
     /// Command palette (searchable command list)
     CommandPalette,
+    /// Keyboard shortcuts help overlay
+    ShortcutsHelp,
     /// Help documentation viewer
     Help,
 }

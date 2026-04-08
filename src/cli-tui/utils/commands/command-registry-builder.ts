@@ -1,4 +1,5 @@
 import type { SlashCommand } from "@evalops/tui";
+import type { GroupedCommandHandlers } from "../../commands/grouped-command-handlers.js";
 import { createCommandRegistry } from "../../commands/registry.js";
 import type {
 	CommandEntry,
@@ -93,27 +94,7 @@ export interface CommandRegistryOptions {
 	handleMode: (context: CommandExecutionContext) => void;
 	handlePrompts: (context: CommandExecutionContext) => void;
 	handleCopy: (context: CommandExecutionContext) => void;
-	// Grouped command handlers
-	handleSessionCommand: (
-		context: CommandExecutionContext,
-	) => void | Promise<void>;
-	handleDiagCommand: (context: CommandExecutionContext) => void | Promise<void>;
-	handleUiCommand: (context: CommandExecutionContext) => void | Promise<void>;
-	handleSafetyCommand: (
-		context: CommandExecutionContext,
-	) => void | Promise<void>;
-	handleGitCommand: (context: CommandExecutionContext) => void | Promise<void>;
-	handleAuthCommand: (context: CommandExecutionContext) => void | Promise<void>;
-	handleUsageCommand: (
-		context: CommandExecutionContext,
-	) => void | Promise<void>;
-	handleUndoCommand: (context: CommandExecutionContext) => void | Promise<void>;
-	handleConfigCommand: (
-		context: CommandExecutionContext,
-	) => void | Promise<void>;
-	handleToolsCommand: (
-		context: CommandExecutionContext,
-	) => void | Promise<void>;
+	getGroupedHandlers: () => GroupedCommandHandlers;
 }
 
 export function buildCommandRegistry(opts: CommandRegistryOptions): {
@@ -194,18 +175,8 @@ export function buildCommandRegistry(opts: CommandRegistryOptions): {
 			mode: opts.handleMode,
 			prompts: opts.handlePrompts,
 			copy: opts.handleCopy,
-			// Grouped command handlers
-			sessionCommand: opts.handleSessionCommand,
-			diagCommand: opts.handleDiagCommand,
-			uiCommand: opts.handleUiCommand,
-			safetyCommand: opts.handleSafetyCommand,
-			gitCommand: opts.handleGitCommand,
-			authCommand: opts.handleAuthCommand,
-			usageCommand: opts.handleUsageCommand,
-			undoCommand: opts.handleUndoCommand,
-			configCommand: opts.handleConfigCommand,
-			toolsCommand: opts.handleToolsCommand,
 		},
+		getGroupedHandlers: opts.getGroupedHandlers,
 		createContext: opts.createContext,
 	});
 	return {

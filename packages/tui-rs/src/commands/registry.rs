@@ -80,6 +80,9 @@ use super::types::{
     ToolHistoryAction, UsageAction,
 };
 use crate::git;
+use crate::keybindings::{
+    format_keybindings_config_report, initialize_keybindings_file, keybindings_config_path,
+};
 use crate::lsp::max_diagnostics_per_file;
 use crate::state::QueueMode;
 use crate::tool_output::tool_output_limits;
@@ -575,6 +578,71 @@ pub fn build_command_registry() -> CommandRegistry {
             "Command to get help for",
         ))
         .usage("/help [command]"),
+    );
+
+    // Hotkeys command
+    registry.register(
+        Command::new(
+            "hotkeys",
+            "Show or manage keyboard shortcuts",
+            CommandCategory::Config,
+            Box::new(|ctx| {
+                let args = ctx.raw_args.trim();
+                let parts: Vec<&str> = args.split_whitespace().collect();
+                let subcommand = parts
+                    .first()
+                    .map(|value| value.to_ascii_lowercase())
+                    .unwrap_or_else(String::new);
+
+                match subcommand.as_str() {
+                    "" | "show" | "list" | "help" => {
+                        Ok(CommandOutput::OpenModal(ModalType::ShortcutsHelp))
+                    }
+                    "path" | "where" | "file" => {
+                        let path = keybindings_config_path();
+                        Ok(CommandOutput::Message(format!(
+                            "Keyboard shortcuts config:\n  Path: {}\n  Status: {}",
+                            path.display(),
+                            if path.exists() { "present" } else { "missing" }
+                        )))
+                    }
+                    "init" | "create" | "setup" => {
+                        let force = parts.iter().skip(1).any(|arg| *arg == "--force");
+                        match initialize_keybindings_file(force) {
+                            Ok(result) if result.created => Ok(CommandOutput::Message(format!(
+                                "Created keyboard shortcuts config at {}\nRun /hotkeys validate to verify the file after editing.",
+                                result.path.display()
+                            ))),
+                            Ok(result) => Err(
+                                CommandError::new(format!(
+                                    "Keybindings config already exists at {}.",
+                                    result.path.display()
+                                ))
+                                .with_hint(
+                                    "Re-run with /hotkeys init --force to overwrite it.",
+                                ),
+                            ),
+                            Err(err) => Err(CommandError::new(format!(
+                                "Failed to create keybindings config: {err}"
+                            ))),
+                        }
+                    }
+                    "validate" | "check" | "doctor" | "status" => {
+                        Ok(CommandOutput::Message(format_keybindings_config_report()))
+                    }
+                    _ => Err(
+                        CommandError::new(format!(
+                            "Unknown hotkeys subcommand: {}",
+                            subcommand
+                        ))
+                        .with_hint("Usage: /hotkeys [show|path|init|validate]"),
+                    ),
+                }
+            }),
+        )
+        .alias("keys")
+        .alias("shortcuts")
+        .usage("/hotkeys [show|path|init|validate]"),
     );
 
     // Clear command
@@ -1740,6 +1808,30 @@ fn truncate_text(text: &str, max_lines: usize, max_chars: usize) -> (String, boo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    use tempfile::tempdir;
+
+    fn keybindings_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn with_temp_keybindings_file<T>(body: impl FnOnce(&Path) -> T) -> T {
+        let _guard = keybindings_env_lock()
+            .lock()
+            .expect("keybindings env lock poisoned");
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("keybindings.json");
+        let previous = std::env::var_os("MAESTRO_KEYBINDINGS_FILE");
+        std::env::set_var("MAESTRO_KEYBINDINGS_FILE", &path);
+        let result = body(&path);
+        match previous {
+            Some(value) => std::env::set_var("MAESTRO_KEYBINDINGS_FILE", value),
+            None => std::env::remove_var("MAESTRO_KEYBINDINGS_FILE"),
+        }
+        result
+    }
 
     #[test]
     fn registry_register_and_get() {
@@ -1803,6 +1895,9 @@ mod tests {
     fn built_in_commands_exist() {
         let registry = build_command_registry();
         assert!(registry.get("help").is_some());
+        assert!(registry.get("hotkeys").is_some());
+        assert!(registry.get("keys").is_some());
+        assert!(registry.get("shortcuts").is_some());
         assert!(registry.get("theme").is_some());
         assert!(registry.get("model").is_some());
         assert!(registry.get("quit").is_some());
@@ -1814,6 +1909,67 @@ mod tests {
         assert!(registry.get("git").is_some());
         assert!(registry.get("diff").is_some());
         assert!(registry.get("review").is_some());
+    }
+
+    #[test]
+    fn hotkeys_command_opens_shortcuts_help_modal() {
+        let registry = build_command_registry();
+        let result = registry.execute("/hotkeys", "/tmp", None, None);
+
+        match result.expect("hotkeys command should succeed") {
+            CommandOutput::OpenModal(ModalType::ShortcutsHelp) => {}
+            other => panic!("expected shortcuts help modal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hotkeys_command_can_init_and_validate_keybindings_config() {
+        with_temp_keybindings_file(|path| {
+            let registry = build_command_registry();
+            let init_result = registry
+                .execute("/hotkeys init", "/tmp", None, None)
+                .expect("hotkeys init should succeed");
+            match init_result {
+                CommandOutput::Message(message) => {
+                    assert!(message.contains("Created keyboard shortcuts config at"));
+                }
+                other => panic!("expected init message, got {other:?}"),
+            }
+            assert!(path.exists(), "hotkeys init should create the config file");
+
+            let validate_result = registry
+                .execute("/hotkeys validate", "/tmp", None, None)
+                .expect("hotkeys validate should succeed");
+            match validate_result {
+                CommandOutput::Message(message) => {
+                    assert!(message.contains("Keyboard Shortcuts Config:"));
+                    assert!(message.contains("Status: present"));
+                    assert!(message.contains("Rust TUI overrides:"));
+                }
+                other => panic!("expected validation message, got {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn hotkeys_command_requires_force_to_overwrite_existing_config() {
+        with_temp_keybindings_file(|path| {
+            std::fs::write(path, r#"{"version":1,"bindings":{}}"#)
+                .expect("write keybindings config");
+            let registry = build_command_registry();
+            let err = registry
+                .execute("/hotkeys init", "/tmp", None, None)
+                .expect_err("init without force should fail when config exists");
+
+            assert_eq!(
+                err.message,
+                format!("Keybindings config already exists at {}.", path.display())
+            );
+            assert_eq!(
+                err.hint,
+                Some("Re-run with /hotkeys init --force to overwrite it.".to_string())
+            );
+        });
     }
 
     #[test]
