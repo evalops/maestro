@@ -906,12 +906,16 @@ export function createCommandRegistry({
 		buildEntry(
 			{
 				name: "package",
-				description: "Inspect or validate Maestro package/plugin bundles",
-				usage: "/package [list|inspect|validate] [source]",
+				description:
+					"Manage, inspect, or validate Maestro package/plugin bundles",
+				usage:
+					"/package [add|remove|list|inspect|validate] [source] [--scope ...]",
 				tags: ["tools", "config"],
 				aliases: ["plugin"],
 				examples: [
+					"/package add ./packages/my-pack",
 					"/package list",
+					"/package remove ./packages/my-pack",
 					"/package inspect ./packages/my-pack",
 					"/package validate ./packages/my-pack",
 					"/plugin ./packages/my-pack",

@@ -1,4 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -37,6 +43,64 @@ afterEach(() => {
 });
 
 describe("package command", () => {
+	it("adds a configured package to local config by default", async () => {
+		const root = createTempDir("maestro-package-command-");
+		mkdirSync(join(root, ".maestro"), { recursive: true });
+
+		const addContent = vi.fn();
+		const handler = createPackageCommandHandler({
+			cwd: root,
+			addContent,
+			requestRender: vi.fn(),
+		});
+
+		await handler(createContext("/package add ./vendor/pack"));
+
+		expect(addContent).toHaveBeenCalledWith(
+			expect.stringContaining('Added configured package "./vendor/pack"'),
+		);
+		expect(addContent).toHaveBeenCalledWith(
+			expect.stringContaining("scope: local"),
+		);
+		expect(
+			readFileSync(join(root, ".maestro", "config.local.toml"), "utf-8"),
+		).toContain("../vendor/pack");
+	});
+
+	it("removes a configured package and reports fallback scope", async () => {
+		const root = createTempDir("maestro-package-command-");
+		mkdirSync(join(root, ".maestro"), { recursive: true });
+		writeFileSync(
+			join(root, ".maestro", "config.toml"),
+			'packages = ["../vendor/pack"]\n',
+			"utf-8",
+		);
+		writeFileSync(
+			join(root, ".maestro", "config.local.toml"),
+			'packages = ["../vendor/pack"]\n',
+			"utf-8",
+		);
+
+		const addContent = vi.fn();
+		const handler = createPackageCommandHandler({
+			cwd: root,
+			addContent,
+			requestRender: vi.fn(),
+		});
+
+		await handler(createContext("/package remove ./vendor/pack"));
+
+		expect(addContent).toHaveBeenCalledWith(
+			expect.stringContaining('Removed configured package "./vendor/pack"'),
+		);
+		expect(addContent).toHaveBeenCalledWith(
+			expect.stringContaining("fallback: still configured in project"),
+		);
+		expect(
+			readFileSync(join(root, ".maestro", "config.local.toml"), "utf-8"),
+		).toBe("");
+	});
+
 	it("lists configured packages from project config", async () => {
 		const root = createTempDir("maestro-package-command-");
 		const packageDir = join(root, "vendor", "pack");

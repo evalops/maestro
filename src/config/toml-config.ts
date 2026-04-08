@@ -26,14 +26,21 @@
 import {
 	closeSync,
 	existsSync,
+	mkdirSync,
 	openSync,
 	readFileSync,
 	readSync,
 	statSync,
+	writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { Type } from "@sinclair/typebox";
-import { parse as parseTOML } from "smol-toml";
+import { parse as parseTOML, stringify as stringifyTOML } from "smol-toml";
+import { parsePackageSpec } from "../packages/loader.js";
+import {
+	formatPackageSource,
+	parsePackageSource,
+} from "../packages/sources.js";
 import type { PackageSpec } from "../packages/types.js";
 import { createLogger } from "../utils/logger.js";
 import { compileTypeboxSchema } from "../utils/typebox-ajv.js";
@@ -226,8 +233,22 @@ export interface ComposerConfig {
 export interface ConfiguredPackageSpec {
 	spec: PackageSpec;
 	cwd: string;
-	scope: "user" | "project";
+	scope: "user" | "project" | "local";
 	configPath: string;
+}
+
+export type WritablePackageScope = ConfiguredPackageSpec["scope"];
+
+export interface AddConfiguredPackageSpecOptions {
+	workspaceDir?: string;
+	scope: WritablePackageScope;
+	spec: PackageSpec;
+}
+
+export interface RemoveConfiguredPackageSpecOptions {
+	workspaceDir?: string;
+	scope?: WritablePackageScope;
+	spec: string;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -784,7 +805,7 @@ function parseConfigFile(path: string): ComposerConfig | null {
 function extractConfiguredPackageSpecs(
 	config: ComposerConfig | null,
 	configPath: string,
-	scope: "user" | "project",
+	scope: ConfiguredPackageSpec["scope"],
 ): ConfiguredPackageSpec[] {
 	if (!config?.packages || config.packages.length === 0) {
 		return [];
@@ -797,6 +818,232 @@ function extractConfiguredPackageSpecs(
 		scope,
 		configPath,
 	}));
+}
+
+function getUserConfigPath(): string {
+	return join(PATHS.MAESTRO_HOME, "config.toml");
+}
+
+export function getWritablePackageConfigPath(
+	scope: WritablePackageScope,
+	workspaceDir = process.cwd(),
+): string {
+	switch (scope) {
+		case "user":
+			return getUserConfigPath();
+		case "project":
+			return join(workspaceDir, ".maestro", "config.toml");
+		case "local":
+			return join(workspaceDir, ".maestro", "config.local.toml");
+	}
+}
+
+function readWritableComposerConfig(path: string): ComposerConfig {
+	if (!existsSync(path)) {
+		return {};
+	}
+
+	try {
+		const content = readFileSync(path, "utf-8");
+		const parsed = parseTOML(content);
+		if (!validateConfig(parsed)) {
+			const message =
+				validateConfig.errors
+					?.map(
+						(err) => `${err.instancePath || "/"} ${err.message ?? "invalid"}`,
+					)
+					.join("; ") ?? "Invalid config";
+			throw new Error(`Invalid config at ${path}: ${message}`);
+		}
+		return parsed as ComposerConfig;
+	} catch (error) {
+		if (error instanceof Error) {
+			throw error;
+		}
+		throw new Error(`Failed to parse config at ${path}: ${String(error)}`);
+	}
+}
+
+function writeComposerConfig(path: string, config: ComposerConfig): void {
+	mkdirSync(dirname(path), { recursive: true });
+	const rendered = stringifyTOML(config as Record<string, unknown>).trim();
+	writeFileSync(path, rendered ? `${rendered}\n` : "", "utf-8");
+	clearConfigCache();
+}
+
+function resolvePackageSpecIdentity(spec: PackageSpec, cwd: string): string {
+	const [sourceSpec] = parsePackageSpec(spec, cwd);
+	return formatPackageSource(parsePackageSource(sourceSpec, cwd));
+}
+
+function tryResolvePackageSourceIdentity(
+	sourceSpec: string,
+	cwd: string,
+): string | null {
+	try {
+		return formatPackageSource(parsePackageSource(sourceSpec, cwd));
+	} catch {
+		return null;
+	}
+}
+
+function normalizeRelativeLocalPackagePath(
+	configDir: string,
+	absolutePath: string,
+): string {
+	const relativePath = relative(configDir, absolutePath);
+	if (!relativePath || relativePath === ".") {
+		return "./";
+	}
+	if (relativePath.startsWith(".") || relativePath.startsWith("/")) {
+		return relativePath;
+	}
+	return `./${relativePath}`;
+}
+
+function normalizePackageSpecForStorage(
+	spec: PackageSpec,
+	configPath: string,
+	inputCwd: string,
+	scope: WritablePackageScope,
+): PackageSpec {
+	if (typeof spec === "string") {
+		return normalizePackageSourceForStorage(spec, configPath, inputCwd, scope);
+	}
+
+	return {
+		...spec,
+		source: normalizePackageSourceForStorage(
+			spec.source,
+			configPath,
+			inputCwd,
+			scope,
+		),
+	};
+}
+
+function normalizePackageSourceForStorage(
+	sourceSpec: string,
+	configPath: string,
+	inputCwd: string,
+	scope: WritablePackageScope,
+): string {
+	const source = parsePackageSource(sourceSpec, inputCwd);
+	if (source.type !== "local") {
+		return formatPackageSource(source);
+	}
+
+	if (scope === "user") {
+		return source.path;
+	}
+
+	return normalizeRelativeLocalPackagePath(dirname(configPath), source.path);
+}
+
+function doesConfiguredPackageMatch(
+	spec: PackageSpec,
+	configPath: string,
+	requestedSpec: string,
+	requestedCwd: string,
+): boolean {
+	const configDir = dirname(configPath);
+	const [rawSourceSpec] = parsePackageSpec(spec, configDir);
+	if (rawSourceSpec === requestedSpec) {
+		return true;
+	}
+
+	const requestedIdentity = tryResolvePackageSourceIdentity(
+		requestedSpec,
+		requestedCwd,
+	);
+	if (!requestedIdentity) {
+		return false;
+	}
+
+	return resolvePackageSpecIdentity(spec, configDir) === requestedIdentity;
+}
+
+function resolvePackageRemovalScope(
+	workspaceDir: string,
+	requestedSpec: string,
+): WritablePackageScope {
+	const matches = loadConfiguredPackageSpecs(workspaceDir).filter((entry) =>
+		doesConfiguredPackageMatch(
+			entry.spec,
+			entry.configPath,
+			requestedSpec,
+			workspaceDir,
+		),
+	);
+	for (const scope of ["local", "project", "user"] as const) {
+		if (matches.some((entry) => entry.scope === scope)) {
+			return scope;
+		}
+	}
+
+	throw new Error(`Configured package "${requestedSpec}" was not found.`);
+}
+
+export function addConfiguredPackageSpecToConfig(
+	options: AddConfiguredPackageSpecOptions,
+): { path: string; scope: WritablePackageScope; spec: PackageSpec } {
+	const workspaceDir = options.workspaceDir ?? process.cwd();
+	const path = getWritablePackageConfigPath(options.scope, workspaceDir);
+	const config = readWritableComposerConfig(path);
+	const configDir = dirname(path);
+	const requestedIdentity = resolvePackageSpecIdentity(
+		options.spec,
+		workspaceDir,
+	);
+	const existingPackages = [...(config.packages ?? [])];
+	const duplicate = existingPackages.find(
+		(spec) => resolvePackageSpecIdentity(spec, configDir) === requestedIdentity,
+	);
+	if (duplicate) {
+		const [sourceSpec] = parsePackageSpec(duplicate, configDir);
+		throw new Error(`Package "${sourceSpec}" already exists in ${path}.`);
+	}
+
+	const storedSpec = normalizePackageSpecForStorage(
+		options.spec,
+		path,
+		workspaceDir,
+		options.scope,
+	);
+	const nextConfig = structuredClone(config);
+	nextConfig.packages = [...existingPackages, storedSpec];
+	writeComposerConfig(path, nextConfig);
+	return { path, scope: options.scope, spec: storedSpec };
+}
+
+export function removeConfiguredPackageSpecFromConfig(
+	options: RemoveConfiguredPackageSpecOptions,
+): { path: string; scope: WritablePackageScope; removedCount: number } {
+	const workspaceDir = options.workspaceDir ?? process.cwd();
+	const scope =
+		options.scope ?? resolvePackageRemovalScope(workspaceDir, options.spec);
+	const path = getWritablePackageConfigPath(scope, workspaceDir);
+	const config = readWritableComposerConfig(path);
+	const existingPackages = [...(config.packages ?? [])];
+	const remainingPackages = existingPackages.filter(
+		(spec) =>
+			!doesConfiguredPackageMatch(spec, path, options.spec, workspaceDir),
+	);
+	const removedCount = existingPackages.length - remainingPackages.length;
+	if (removedCount === 0) {
+		throw new Error(
+			`Configured package "${options.spec}" was not found in ${path}.`,
+		);
+	}
+
+	const nextConfig = structuredClone(config);
+	if (remainingPackages.length > 0) {
+		nextConfig.packages = remainingPackages;
+	} else {
+		delete nextConfig.packages;
+	}
+	writeComposerConfig(path, nextConfig);
+	return { path, scope, removedCount };
 }
 
 /**
@@ -913,7 +1160,7 @@ export function loadConfig(
 	let config = { ...DEFAULT_CONFIG };
 
 	// Load global config
-	const globalPath = join(PATHS.MAESTRO_HOME, "config.toml");
+	const globalPath = getUserConfigPath();
 	const globalConfig = parseConfigFile(globalPath);
 	if (globalConfig) {
 		config = deepMerge(config, globalConfig);
@@ -966,7 +1213,7 @@ export function loadConfig(
 export function loadConfiguredPackageSpecs(
 	workspaceDir: string,
 ): ConfiguredPackageSpec[] {
-	const globalPath = join(PATHS.MAESTRO_HOME, "config.toml");
+	const globalPath = getUserConfigPath();
 	const projectPath = join(workspaceDir, ".maestro", "config.toml");
 	const localPath = join(workspaceDir, ".maestro", "config.local.toml");
 
@@ -984,7 +1231,7 @@ export function loadConfiguredPackageSpecs(
 		...extractConfiguredPackageSpecs(
 			parseConfigFile(localPath),
 			localPath,
-			"project",
+			"local",
 		),
 	];
 }
