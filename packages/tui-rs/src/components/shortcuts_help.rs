@@ -192,6 +192,21 @@ impl ShortcutsHelp {
         Self::new_with_binding_labels(labels)
     }
 
+    /// Refresh runtime binding labels while preserving modal state.
+    pub fn set_binding_labels(&mut self, labels: RustTuiKeybindingLabels) {
+        let visible = self.visible;
+        let scroll_offset = self.scroll_offset;
+        let filter = self.filter.clone();
+        let selected_category = self.selected_category;
+        let title = self.title.clone();
+        *self = Self::new_with_binding_labels(labels);
+        self.visible = visible;
+        self.scroll_offset = scroll_offset;
+        self.filter = filter;
+        self.selected_category = selected_category;
+        self.title = title;
+    }
+
     /// Create an empty shortcuts help
     #[must_use]
     pub fn empty() -> Self {
@@ -790,6 +805,29 @@ mod tests {
             .iter()
             .any(|shortcut| shortcut.keys == "Ctrl+T"
                 && shortcut.description == "Edit last queued follow-up"));
+    }
+
+    #[test]
+    fn test_set_binding_labels_preserves_visible_state() {
+        let mut help = ShortcutsHelp::new();
+        help.visible = true;
+        help.scroll_offset = 3;
+        help.filter = Some("queue".to_string());
+        help.selected_category = Some(ShortcutCategory::Input);
+        help.set_binding_labels(RustTuiKeybindingLabels {
+            command_palette: "Ctrl+O".to_string(),
+            file_search: "Ctrl+P".to_string(),
+            toggle_tool_outputs: "Shift+Left".to_string(),
+            edit_last_queued_follow_up: "Shift+Left".to_string(),
+        });
+
+        assert!(help.visible);
+        assert_eq!(help.scroll_offset, 3);
+        assert_eq!(help.filter.as_deref(), Some("queue"));
+        assert_eq!(help.selected_category, Some(ShortcutCategory::Input));
+        assert!(help.shortcuts.iter().any(|shortcut| {
+            shortcut.keys == "Ctrl+O" && shortcut.description == "Open command palette"
+        }));
     }
 
     #[test]

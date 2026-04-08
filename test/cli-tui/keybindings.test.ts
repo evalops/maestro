@@ -12,6 +12,17 @@ import {
 
 const tempDirs: string[] = [];
 
+function createIsolatedEnv(
+	overrides: NodeJS.ProcessEnv = {},
+): NodeJS.ProcessEnv {
+	const tempDir = mkdtempSync(join(tmpdir(), "maestro-keybindings-defaults-"));
+	tempDirs.push(tempDir);
+	return {
+		MAESTRO_KEYBINDINGS_FILE: join(tempDir, "missing-keybindings.json"),
+		...overrides,
+	} as NodeJS.ProcessEnv;
+}
+
 function createKeybindingsFile(bindings: Record<string, string>): string {
 	const tempDir = mkdtempSync(join(tmpdir(), "maestro-keybindings-test-"));
 	tempDirs.push(tempDir);
@@ -41,14 +52,18 @@ afterEach(() => {
 describe("tui keybindings", () => {
 	it("uses terminal-aware defaults for queued follow-up editing", () => {
 		expect(
-			getResolvedTuiKeybindings({
-				TERM_PROGRAM: "vscode",
-			} as NodeJS.ProcessEnv)["edit-last-follow-up"],
+			getResolvedTuiKeybindings(
+				createIsolatedEnv({
+					TERM_PROGRAM: "vscode",
+				}),
+			)["edit-last-follow-up"],
 		).toBe("shift+left");
 		expect(
-			getResolvedTuiKeybindings({
-				TERM_PROGRAM: "WezTerm",
-			} as NodeJS.ProcessEnv)["edit-last-follow-up"],
+			getResolvedTuiKeybindings(
+				createIsolatedEnv({
+					TERM_PROGRAM: "WezTerm",
+				}),
+			)["edit-last-follow-up"],
 		).toBe("alt+up");
 	});
 

@@ -7,6 +7,17 @@ import { resetTuiKeybindingConfigCache } from "../../src/cli-tui/keybindings.js"
 
 const tempDirs: string[] = [];
 
+function createIsolatedEnv(
+	overrides: NodeJS.ProcessEnv = {},
+): NodeJS.ProcessEnv {
+	const tempDir = mkdtempSync(join(tmpdir(), "maestro-hotkeys-defaults-"));
+	tempDirs.push(tempDir);
+	return {
+		MAESTRO_KEYBINDINGS_FILE: join(tempDir, "missing-keybindings.json"),
+		...overrides,
+	} as NodeJS.ProcessEnv;
+}
+
 function createKeybindingsFile(bindings: Record<string, string>): string {
 	const tempDir = mkdtempSync(join(tmpdir(), "maestro-hotkeys-test-"));
 	tempDirs.push(tempDir);
@@ -28,10 +39,10 @@ afterEach(() => {
 describe("buildHotkeysMarkdown", () => {
 	it("uses the terminal-aware queued follow-up edit binding label", () => {
 		expect(
-			buildHotkeysMarkdown({ TERM_PROGRAM: "vscode" } as NodeJS.ProcessEnv),
+			buildHotkeysMarkdown(createIsolatedEnv({ TERM_PROGRAM: "vscode" })),
 		).toContain("`Shift+Left` | Edit last queued follow-up");
 		expect(
-			buildHotkeysMarkdown({ TERM_PROGRAM: "WezTerm" } as NodeJS.ProcessEnv),
+			buildHotkeysMarkdown(createIsolatedEnv({ TERM_PROGRAM: "WezTerm" })),
 		).toContain("`Alt+Up` | Edit last queued follow-up");
 	});
 

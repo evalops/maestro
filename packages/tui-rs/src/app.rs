@@ -85,6 +85,7 @@ use crate::config_watcher::{ConfigEvent, ConfigWatcher, ConfigWatcherBuilder};
 use crate::files::get_workspace_files;
 use crate::git;
 use crate::keybindings::load_rust_tui_keybindings;
+use crate::keybindings::{is_keybindings_config_path, summarize_keybindings_config_issues};
 use crate::mcp::{
     append_mcp_prompt_summary, McpConfigScope, McpPrompt, McpRuntimeEvent, McpTransport,
 };
@@ -153,12 +154,14 @@ fn build_mcp_config_watcher() -> ConfigWatcher {
     if let Some(home) = dirs::home_dir() {
         builder = builder
             .watch(home.join(".composer").join("mcp.json"))
-            .watch(home.join(".composer").join("enterprise").join("mcp.json"));
+            .watch(home.join(".composer").join("enterprise").join("mcp.json"))
+            .watch(home.join(".maestro").join("keybindings.json"));
     }
 
     builder
         .watch(".composer/mcp.json")
         .watch(".composer/mcp.local.json")
+        .watch(crate::keybindings::keybindings_config_path())
         .build()
         .unwrap_or_default()
 }
@@ -585,6 +588,9 @@ pub struct App {
     /// Keyboard shortcut used to restore the last queued follow-up.
     queued_follow_up_edit_binding: crate::key_hints::KeyBinding,
 
+    /// Last surfaced keybinding config issue summary.
+    last_keybinding_issue_summary: Option<String>,
+
     /// Follow-up currently being edited out of the queue.
     editing_queued_follow_up: Option<QueuedPrompt>,
 
@@ -675,8 +681,12 @@ impl App {
         let keybindings =
             load_rust_tui_keybindings(&terminal_info.name, std::env::var_os("TMUX").is_some());
         let keybinding_labels = keybindings.labels();
+        let keybinding_issue_summary = summarize_keybindings_config_issues();
         state.queued_follow_up_edit_binding_label =
             keybinding_labels.edit_last_queued_follow_up.clone();
+        if let Some(summary) = &keybinding_issue_summary {
+            state.add_system_message(summary.clone());
+        }
 
         let loader = SkillLoader::new();
         let (loaded_skills, skill_load_errors) = loader.load_all_with_paths();
@@ -732,6 +742,7 @@ impl App {
             file_search_binding: keybindings.file_search,
             toggle_tool_outputs_binding: keybindings.toggle_tool_outputs,
             queued_follow_up_edit_binding: keybindings.edit_last_queued_follow_up,
+            last_keybinding_issue_summary: keybinding_issue_summary,
             editing_queued_follow_up: None,
             submit_queued_steering_after_interrupt: false,
             restore_queued_prompts_after_interrupt: false,
@@ -1486,11 +1497,45 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             {
                 self.refresh_mcp_badges_with_force(true).await;
             }
+            ConfigEvent::Changed(path)
+            | ConfigEvent::Created(path)
+            | ConfigEvent::Deleted(path)
+                if is_keybindings_config_path(&path) =>
+            {
+                self.reload_keybindings_from_config();
+            }
             ConfigEvent::Error(message) => {
                 self.state.status = Some(format!("Config watcher error: {message}"));
             }
             _ => {}
         }
+    }
+
+    fn apply_runtime_keybindings(&mut self, keybindings: crate::keybindings::RustTuiKeybindings) {
+        let labels = keybindings.labels();
+        self.state.queued_follow_up_edit_binding_label = labels.edit_last_queued_follow_up.clone();
+        self.shortcuts_help.set_binding_labels(labels);
+        self.command_palette_binding = keybindings.command_palette;
+        self.file_search_binding = keybindings.file_search;
+        self.toggle_tool_outputs_binding = keybindings.toggle_tool_outputs;
+        self.queued_follow_up_edit_binding = keybindings.edit_last_queued_follow_up;
+    }
+
+    fn reload_keybindings_from_config(&mut self) {
+        let terminal_info = crate::terminal_info::TerminalInfo::get();
+        let keybindings =
+            load_rust_tui_keybindings(&terminal_info.name, std::env::var_os("TMUX").is_some());
+        self.apply_runtime_keybindings(keybindings);
+
+        let next_issue_summary = summarize_keybindings_config_issues();
+        if let Some(summary) = &next_issue_summary {
+            if self.last_keybinding_issue_summary.as_ref() != Some(summary) {
+                self.state.status = Some(summary.clone());
+            }
+        } else if self.last_keybinding_issue_summary.is_some() {
+            self.state.status = Some("Keyboard shortcuts config reloaded cleanly.".to_string());
+        }
+        self.last_keybinding_issue_summary = next_issue_summary;
     }
 
     /// Handle an agent message (common for both backends)
@@ -4563,19 +4608,15 @@ fn policy_model_id(model: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
 
-    use crate::keybindings::queued_follow_up_edit_binding_for_terminal_name;
+    use crate::keybindings::{
+        keybindings_test_env_lock, queued_follow_up_edit_binding_for_terminal_name,
+    };
     use crate::state::QueueMode;
     use tempfile::tempdir;
 
-    fn keybindings_test_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
     fn acquire_keybindings_test_lock() -> std::sync::MutexGuard<'static, ()> {
-        keybindings_test_lock()
+        keybindings_test_env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
@@ -5783,6 +5824,33 @@ mod tests {
         }));
     }
 
+    #[test]
+    fn test_invalid_keybindings_config_surfaces_startup_warning() {
+        let _guard = acquire_keybindings_test_lock();
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("keybindings.json");
+        std::fs::write(
+            &config_path,
+            r#"{
+  "version": 1,
+  "rustBindings": {
+    "command-palette": "Ctrl+O",
+    "file-search": "Ctrl+O"
+  }
+}"#,
+        )
+        .expect("write keybindings");
+
+        std::env::set_var("MAESTRO_KEYBINDINGS_FILE", &config_path);
+        let app = new_test_app();
+        std::env::remove_var("MAESTRO_KEYBINDINGS_FILE");
+
+        let first = app.state.messages.first().expect("startup warning");
+        assert!(first
+            .content
+            .contains("Keyboard shortcuts config has 1 issue. Run /hotkeys validate."));
+    }
+
     #[tokio::test]
     async fn test_rebound_shortcuts_open_expected_modals() {
         let _guard = acquire_keybindings_test_lock();
@@ -5817,6 +5885,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_handle_config_event_reloads_keybindings() {
+        let _guard = acquire_keybindings_test_lock();
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("keybindings.json");
+        std::fs::write(
+            &config_path,
+            r#"{
+  "version": 1,
+  "rustBindings": {
+    "command-palette": "Ctrl+O",
+    "file-search": "Ctrl+P",
+    "toggle-tool-outputs": "Shift+Left"
+  }
+}"#,
+        )
+        .expect("write keybindings");
+
+        std::env::set_var("MAESTRO_KEYBINDINGS_FILE", &config_path);
+        let mut app = new_test_app();
+
+        std::fs::write(
+            &config_path,
+            r#"{
+  "version": 1,
+  "rustBindings": {
+    "command-palette": "Ctrl+P",
+    "file-search": "Ctrl+O",
+    "toggle-tool-outputs": "Ctrl+T",
+    "edit-last-follow-up": "Shift+Left"
+  }
+}"#,
+        )
+        .expect("rewrite keybindings");
+
+        app.handle_config_event(ConfigEvent::Changed(config_path.clone()))
+            .await;
+        std::env::remove_var("MAESTRO_KEYBINDINGS_FILE");
+
+        let expected_command_palette = crate::key_hints::ctrl(KeyCode::Char('p')).display();
+        let expected_file_search = crate::key_hints::ctrl(KeyCode::Char('o')).display();
+        let expected_toggle_tool_outputs = crate::key_hints::ctrl(KeyCode::Char('t')).display();
+        let expected_edit_last_follow_up = crate::key_hints::shift(KeyCode::Left).display();
+
+        assert_eq!(
+            app.command_palette_binding.display(),
+            expected_command_palette
+        );
+        assert_eq!(app.file_search_binding.display(), expected_file_search);
+        assert_eq!(
+            app.toggle_tool_outputs_binding.display(),
+            expected_toggle_tool_outputs
+        );
+        assert_eq!(
+            app.state.queued_follow_up_edit_binding_label,
+            expected_edit_last_follow_up
+        );
+
+        app.show_help();
+        let last = app.state.messages.last().expect("help message");
+        assert!(last
+            .content
+            .lines()
+            .any(|line| line.contains("Open command palette")
+                && line.contains(expected_command_palette.as_str())));
+        assert!(last
+            .content
+            .lines()
+            .any(|line| line.contains("Open file search")
+                && line.contains(expected_file_search.as_str())));
+    }
+
+    #[tokio::test]
     async fn test_tab_submits_when_idle_with_non_shell_input() {
         let mut app = new_test_app();
         app.state.set_input("ship it");
@@ -5834,6 +5974,7 @@ mod tests {
     #[tokio::test]
     async fn test_tab_does_not_submit_idle_shell_draft() {
         let mut app = new_test_app();
+        let initial_message_count = app.state.messages.len();
         app.state.set_input("!ls");
 
         app.handle_key(KeyCode::Tab, CrosstermModifiers::NONE)
@@ -5841,12 +5982,13 @@ mod tests {
             .unwrap();
 
         assert_eq!(app.state.input(), "!ls");
-        assert!(app.state.messages.is_empty());
+        assert_eq!(app.state.messages.len(), initial_message_count);
     }
 
     #[tokio::test]
     async fn test_tab_does_not_submit_idle_slash_draft_with_leading_space() {
         let mut app = new_test_app();
+        let initial_message_count = app.state.messages.len();
         app.state.set_input(" /help");
 
         app.handle_key(KeyCode::Tab, CrosstermModifiers::NONE)
@@ -5854,7 +5996,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(app.state.input(), " /help");
-        assert!(app.state.messages.is_empty());
+        assert_eq!(app.state.messages.len(), initial_message_count);
     }
 
     #[tokio::test]

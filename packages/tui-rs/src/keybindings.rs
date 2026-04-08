@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::{Mutex, OnceLock};
 
 use crossterm::event::KeyCode;
 use serde::Deserialize;
@@ -162,6 +164,27 @@ pub fn format_keybindings_config_report() -> String {
     format_keybinding_config_report(&inspect_keybindings_config_at_path(
         &keybindings_config_path(),
     ))
+}
+
+#[must_use]
+pub fn summarize_keybindings_config_issues() -> Option<String> {
+    summarize_keybindings_config_issues_at_path(&keybindings_config_path())
+}
+
+#[must_use]
+pub fn is_keybindings_config_path(path: &Path) -> bool {
+    let expected = keybindings_config_path();
+    let canonical_expected = expected.canonicalize().unwrap_or(expected.clone());
+    let canonical_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    canonical_path == canonical_expected
+        || path.file_name() == expected.file_name()
+        || path.file_name() == canonical_expected.file_name()
+}
+
+#[cfg(test)]
+pub(crate) fn keybindings_test_env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
 }
 
 fn load_rust_tui_keybindings_from_path(
@@ -600,6 +623,19 @@ fn format_keybinding_config_report(report: &KeybindingConfigReport) -> String {
     lines.join("\n")
 }
 
+fn summarize_keybindings_config_issues_at_path(path: &Path) -> Option<String> {
+    let report = inspect_keybindings_config_at_path(path);
+    if !report.exists || report.issues.is_empty() {
+        return None;
+    }
+
+    Some(format!(
+        "Keyboard shortcuts config has {} issue{}. Run /hotkeys validate.",
+        report.issues.len(),
+        if report.issues.len() == 1 { "" } else { "s" }
+    ))
+}
+
 fn default_shortcuts(
     terminal_name: &str,
     in_tmux: bool,
@@ -788,5 +824,27 @@ mod tests {
 
         assert_eq!(resolved.command_palette, ctrl(KeyCode::Char('p')));
         assert_eq!(resolved.file_search, ctrl(KeyCode::Char('o')));
+    }
+
+    #[test]
+    fn summarizes_keybinding_config_issues() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("keybindings.json");
+        fs::write(
+            &path,
+            r#"{
+  "version": 1,
+  "rustBindings": {
+    "command-palette": "Ctrl+O",
+    "file-search": "Ctrl+O"
+  }
+}"#,
+        )
+        .expect("write keybindings");
+
+        assert_eq!(
+            summarize_keybindings_config_issues_at_path(&path).as_deref(),
+            Some("Keyboard shortcuts config has 1 issue. Run /hotkeys validate.")
+        );
     }
 }

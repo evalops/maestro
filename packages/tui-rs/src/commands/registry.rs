@@ -1808,17 +1808,12 @@ fn truncate_text(text: &str, max_lines: usize, max_chars: usize) -> (String, boo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
 
+    use crate::keybindings::keybindings_test_env_lock;
     use tempfile::tempdir;
 
-    fn keybindings_env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
     fn with_temp_keybindings_file<T>(body: impl FnOnce(&Path) -> T) -> T {
-        let _guard = keybindings_env_lock()
+        let _guard = keybindings_test_env_lock()
             .lock()
             .expect("keybindings env lock poisoned");
         let temp = tempdir().expect("tempdir");

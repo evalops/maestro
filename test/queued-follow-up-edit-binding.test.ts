@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { resetTuiKeybindingConfigCache } from "../src/cli-tui/keybindings.js";
 import {
 	getQueuedFollowUpEditBinding,
@@ -10,40 +10,64 @@ import {
 	matchesQueuedFollowUpEditBinding,
 } from "../src/cli-tui/queue/queued-follow-up-edit-binding.js";
 
+const tempDirs: string[] = [];
+
+function createIsolatedEnv(
+	overrides: NodeJS.ProcessEnv = {},
+): NodeJS.ProcessEnv {
+	const tempDir = mkdtempSync(
+		join(tmpdir(), "maestro-queued-binding-defaults-"),
+	);
+	tempDirs.push(tempDir);
+	return {
+		MAESTRO_KEYBINDINGS_FILE: join(tempDir, "missing-keybindings.json"),
+		...overrides,
+	} as NodeJS.ProcessEnv;
+}
+
+afterEach(() => {
+	resetTuiKeybindingConfigCache();
+	while (tempDirs.length > 0) {
+		const tempDir = tempDirs.pop();
+		if (tempDir) {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	}
+});
+
 describe("queued follow-up edit binding", () => {
 	it("uses Shift+Left for tmux and terminals that swallow Alt+Up", () => {
-		expect(getQueuedFollowUpEditBinding({ TMUX: "1" })).toBe("shift+left");
+		expect(getQueuedFollowUpEditBinding(createIsolatedEnv({ TMUX: "1" }))).toBe(
+			"shift+left",
+		);
 		expect(
-			getQueuedFollowUpEditBinding({ TERM_PROGRAM: "Apple_Terminal" }),
+			getQueuedFollowUpEditBinding(
+				createIsolatedEnv({ TERM_PROGRAM: "Apple_Terminal" }),
+			),
 		).toBe("shift+left");
-		expect(getQueuedFollowUpEditBinding({ TERM_PROGRAM: "WarpTerminal" })).toBe(
-			"shift+left",
-		);
-		expect(getQueuedFollowUpEditBinding({ TERM_PROGRAM: "vscode" })).toBe(
-			"shift+left",
-		);
-		expect(getQueuedFollowUpEditBindingLabel({ TERM_PROGRAM: "vscode" })).toBe(
-			"Shift+Left",
-		);
+		expect(
+			getQueuedFollowUpEditBinding(
+				createIsolatedEnv({ TERM_PROGRAM: "WarpTerminal" }),
+			),
+		).toBe("shift+left");
+		expect(
+			getQueuedFollowUpEditBinding(
+				createIsolatedEnv({ TERM_PROGRAM: "vscode" }),
+			),
+		).toBe("shift+left");
+		expect(
+			getQueuedFollowUpEditBindingLabel(
+				createIsolatedEnv({ TERM_PROGRAM: "vscode" }),
+			),
+		).toBe("Shift+Left");
 	});
 
 	it("keeps Alt+Up everywhere else", () => {
-		expect(getQueuedFollowUpEditBinding({ TERM_PROGRAM: "WezTerm" })).toBe(
-			"alt+up",
-		);
-		expect(getQueuedFollowUpEditBindingLabel({ TERM_PROGRAM: "WezTerm" })).toBe(
-			"Alt+Up",
-		);
-		expect(
-			matchesQueuedFollowUpEditBinding("\x1b[1;3A", {
-				TERM_PROGRAM: "WezTerm",
-			}),
-		).toBe(true);
-		expect(
-			matchesQueuedFollowUpEditBinding("\x1b[1;2D", {
-				TERM_PROGRAM: "WezTerm",
-			}),
-		).toBe(false);
+		const env = createIsolatedEnv({ TERM_PROGRAM: "WezTerm" });
+		expect(getQueuedFollowUpEditBinding(env)).toBe("alt+up");
+		expect(getQueuedFollowUpEditBindingLabel(env)).toBe("Alt+Up");
+		expect(matchesQueuedFollowUpEditBinding("\x1b[1;3A", env)).toBe(true);
+		expect(matchesQueuedFollowUpEditBinding("\x1b[1;2D", env)).toBe(false);
 	});
 
 	it("uses the configured keybinding override when present", () => {
