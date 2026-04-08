@@ -14,6 +14,7 @@ import type { AppMessage } from "../agent/types.js";
 import { dispatchAgentNotification } from "../hooks/notification-hooks.js";
 import { createSessionHookService } from "../hooks/session-integration.js";
 import { mcpManager } from "../mcp/manager.js";
+import type { AutomaticMemoryExtractionCoordinator } from "../memory/auto-extraction.js";
 import type { RegisteredModel } from "../models/registry.js";
 import { checkSessionLimits } from "../safety/policy.js";
 import {
@@ -50,6 +51,7 @@ export function setupEventSubscriptions(params: {
 		startSession: (sessionId: string, modelId?: string) => void;
 		getSession: () => { sessionId: string; startedAt: Date } | null;
 	};
+	automaticMemoryExtraction?: AutomaticMemoryExtractionCoordinator;
 	/** Optional callback invoked on every turn completion (for perf aggregation). */
 	onTurnComplete?: (event: CanonicalTurnEvent) => void;
 }): EventSubscriptionsResult {
@@ -61,6 +63,7 @@ export function setupEventSubscriptions(params: {
 		tsHookCount,
 		cwd,
 		enterpriseContext,
+		automaticMemoryExtraction,
 	} = params;
 	const updateSessionSummary =
 		createRuntimeSessionSummaryUpdater(sessionManager);
@@ -133,6 +136,9 @@ export function setupEventSubscriptions(params: {
 		// Save messages on completion
 		if (event.type === "message_end") {
 			sessionManager.saveMessage(event.message);
+			if (event.message.role === "assistant") {
+				automaticMemoryExtraction?.schedule(sessionManager.getSessionFile());
+			}
 
 			// Check if we should initialize session now (after first user message)
 			if (sessionManager.shouldInitializeSession(agent.state.messages)) {

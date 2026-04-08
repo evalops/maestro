@@ -706,6 +706,7 @@ export class SessionManager {
 		meta: {
 			summary?: string;
 			resumeSummary?: string;
+			memoryExtractionHash?: string;
 			favorite?: boolean;
 			title?: string;
 			tags?: string[];
@@ -715,6 +716,7 @@ export class SessionManager {
 		if (
 			meta.summary === undefined &&
 			meta.resumeSummary === undefined &&
+			meta.memoryExtractionHash === undefined &&
 			meta.favorite === undefined &&
 			meta.title === undefined &&
 			meta.tags === undefined
@@ -812,6 +814,14 @@ export class SessionManager {
 		if (!target || !existsSync(target)) return;
 		this.appendSessionMetaEntry(target, { resumeSummary: trimmed });
 		this.syncSessionMemoryEntry(target);
+	}
+
+	saveSessionMemoryExtractionHash(hash: string, sessionPath?: string): void {
+		const trimmed = hash.trim();
+		if (!trimmed) return;
+		const target = sessionPath ?? this.sessionFile;
+		if (!target || !existsSync(target)) return;
+		this.appendSessionMetaEntry(target, { memoryExtractionHash: trimmed });
 	}
 
 	setSessionFavorite(sessionPath: string, favorite: boolean): void {

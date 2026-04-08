@@ -42,6 +42,7 @@ export interface SessionFileInfo {
 	messageCount: number;
 	summary?: string;
 	resumeSummary?: string;
+	memoryExtractionHash?: string;
 	title?: string;
 	tags?: string[];
 	favorite: boolean;
@@ -306,6 +307,7 @@ export function buildSessionFileInfo(
 	let created = stats.birthtime;
 	let summary: string | undefined;
 	let resumeSummary: string | undefined;
+	let memoryExtractionHash: string | undefined;
 	let title: string | undefined;
 	let tags: string[] | undefined;
 	let favorite = false;
@@ -336,6 +338,12 @@ export function buildSessionFileInfo(
 					entry.resumeSummary.trim()
 				) {
 					resumeSummary = entry.resumeSummary;
+				}
+				if (
+					typeof entry.memoryExtractionHash === "string" &&
+					entry.memoryExtractionHash.trim()
+				) {
+					memoryExtractionHash = entry.memoryExtractionHash;
 				}
 				if (typeof entry.title === "string" && entry.title.trim()) {
 					title = entry.title;
@@ -383,6 +391,7 @@ export function buildSessionFileInfo(
 		messageCount,
 		summary,
 		resumeSummary,
+		memoryExtractionHash,
 		title,
 		tags,
 		favorite,

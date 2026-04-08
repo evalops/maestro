@@ -5,6 +5,8 @@ import { DateTime } from "luxon";
 import type { AgentEvent, AppMessage } from "../../agent/types.js";
 import { runUserPromptWithRecovery } from "../../agent/user-prompt-runtime.js";
 import { withMcpPostKeepMessages } from "../../mcp/prompt-recovery.js";
+import { createAutomaticMemoryExtractionCoordinator } from "../../memory/auto-extraction.js";
+import type { RegisteredModel } from "../../models/registry.js";
 import { createRuntimeSessionSummaryUpdater } from "../../session/runtime-summary-updater.js";
 import { createLogger } from "../../utils/logger.js";
 import type { WebServerContext } from "../app-context.js";
@@ -470,6 +472,12 @@ async function executeAutomation(
 	let lastAssistantOutput: string | undefined;
 	const updateSessionSummary =
 		createRuntimeSessionSummaryUpdater(sessionManager);
+	const automaticMemoryExtraction = createAutomaticMemoryExtractionCoordinator({
+		createAgent: async () =>
+			context.createBackgroundAgent(agent.state.model as RegisteredModel),
+		getModel: () => agent.state.model,
+		sessionManager,
+	});
 
 	const unsubscribe = agent.subscribe((event: AgentEvent) => {
 		updateSessionSummary(event);
@@ -477,6 +485,7 @@ async function executeAutomation(
 		if (event.type === "message_end") {
 			sessionManager.saveMessage(event.message);
 			if (event.message.role === "assistant") {
+				automaticMemoryExtraction.schedule(sessionManager.getSessionFile());
 				lastAssistantOutput = extractTextFromMessage(event.message);
 			}
 		}
@@ -491,10 +500,12 @@ async function executeAutomation(
 			execute: () => agent.prompt(userInput),
 			getPostKeepMessages: withMcpPostKeepMessages(),
 		});
+		await automaticMemoryExtraction.flush();
 		await sessionManager.flush();
 		unsubscribe();
 		return { success: true, output: lastAssistantOutput, sessionId };
 	} catch (error) {
+		await automaticMemoryExtraction.flush();
 		await sessionManager.flush();
 		unsubscribe();
 		return {

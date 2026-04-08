@@ -71,6 +71,7 @@ export interface SessionMetaEntry {
 	timestamp: string;
 	summary?: string;
 	resumeSummary?: string;
+	memoryExtractionHash?: string;
 	favorite?: boolean;
 	title?: string;
 	tags?: string[];

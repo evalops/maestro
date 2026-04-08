@@ -161,4 +161,58 @@ describe("setupEventSubscriptions", () => {
 		]);
 		expect(sessionManager.updateSnapshot).toHaveBeenCalled();
 	});
+
+	it("schedules automatic durable memory extraction after assistant messages", async () => {
+		const agent = new MockAgent([]);
+		const sessionManager = createSessionManagerMock();
+		const automaticMemoryExtraction = {
+			schedule: vi.fn(),
+			flush: vi.fn(),
+		};
+
+		setupEventSubscriptions({
+			agent: agent as unknown as never,
+			sessionManager,
+			approvalMode: "prompt",
+			sandboxMode: undefined,
+			tsHookCount: 0,
+			cwd: "/tmp/project",
+			enterpriseContext: {
+				isEnterprise: () => false,
+				startSession: () => {},
+				getSession: () => null,
+			},
+			automaticMemoryExtraction,
+		});
+
+		await agent.emit({
+			type: "message_end",
+			message: {
+				role: "assistant",
+				content: [{ type: "text", text: "Done" }],
+				timestamp: Date.now(),
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "claude-sonnet-4-5-20250929",
+				stopReason: "stop",
+				usage: {
+					input: 1,
+					output: 1,
+					cacheRead: 0,
+					cacheWrite: 0,
+					cost: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						total: 0,
+					},
+				},
+			},
+		});
+
+		expect(automaticMemoryExtraction.schedule).toHaveBeenCalledWith(
+			"/tmp/session-123.jsonl",
+		);
+	});
 });

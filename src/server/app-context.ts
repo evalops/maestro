@@ -35,6 +35,7 @@ export interface WebServerServices {
 			toolRetryService?: ToolRetryService;
 		},
 	) => Promise<Agent>;
+	createBackgroundAgent: (model: RegisteredModel) => Promise<Agent>;
 	getRegisteredModel: (
 		input: string | null | undefined,
 	) => Promise<RegisteredModel>;

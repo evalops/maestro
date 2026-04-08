@@ -93,6 +93,7 @@ import {
 	ActionApprovalService,
 	type ApprovalMode,
 } from "./agent/action-approval.js";
+import { createBackgroundTextAgent } from "./agent/background-agent.js";
 import {
 	type Agent,
 	type Api,
@@ -136,6 +137,10 @@ import { loadRuntimeConfig } from "./config/runtime-config.js";
 import { loadEnv } from "./load-env.js";
 import { bootstrapLsp } from "./lsp/bootstrap.js";
 import { withMcpPostKeepMessages } from "./mcp/prompt-recovery.js";
+import {
+	createAutomaticMemoryExtractionCoordinator,
+	getMemoryExtractionSystemPrompt,
+} from "./memory/auto-extraction.js";
 import { ensureModelsLoaded } from "./models/builtin.js";
 import type { RegisteredModel } from "./models/registry.js";
 import { reloadModelConfig } from "./models/registry.js";
@@ -1186,6 +1191,17 @@ export async function main(args: string[]) {
 	const { setupEventSubscriptions } = await import(
 		"./bootstrap/event-subscriptions-setup.js"
 	);
+	const automaticMemoryExtraction = createAutomaticMemoryExtractionCoordinator({
+		createAgent: async () =>
+			createBackgroundTextAgent({
+				model: agent.state.model as Model<Api>,
+				systemPrompt: getMemoryExtractionSystemPrompt(),
+				cwd: process.cwd(),
+				getAuthContext: (provider) => requireCredential(provider, false),
+			}),
+		getModel: () => agent.state.model as Model<Api>,
+		sessionManager,
+	});
 	setupEventSubscriptions({
 		agent,
 		sessionManager,
@@ -1197,6 +1213,7 @@ export async function main(args: string[]) {
 		tsHookCount: tsHooks.length,
 		cwd: process.cwd(),
 		enterpriseContext,
+		automaticMemoryExtraction,
 	});
 
 	// ─────────────────────────────────────────────────────────────────────────────
@@ -1209,58 +1226,67 @@ export async function main(args: string[]) {
 	// 3. Interactive TUI: Full terminal interface
 	// 4. Exec mode: Non-interactive batch execution
 	// 5. Single-shot: Process CLI messages and exit
-	if (agentsInitPrompt) {
-		const cwd = process.cwd();
-		const targetPath = agentsInitPath ?? "AGENTS.md";
-		const displayPath =
-			targetPath.startsWith(cwd) && targetPath !== cwd
-				? `.${targetPath.slice(cwd.length)}`
-				: targetPath;
-		const runMode: Extract<Mode, "text" | "json"> =
-			mode === "rpc" || mode === "headless" ? "text" : mode;
-		console.log(chalk.green(`Drafting AGENTS.md at ${displayPath}...`));
-		await runSingleShotMode(agent, sessionManager, [agentsInitPrompt], runMode);
-		console.log(chalk.dim(`AGENTS.md generated at ${displayPath}`));
-	} else if (mode === "headless" || parsed.headless) {
-		// Headless mode - for native TUI communication
-		await runHeadlessMode(
-			agent,
-			sessionManager,
-			approvalService,
-			toolRetryService,
-		);
-	} else if (mode === "rpc") {
-		// RPC mode - headless operation
-		const { runRpcMode } = await import("./cli/rpc-mode.js");
-		await runRpcMode(agent, sessionManager);
-	} else if (isInteractive) {
-		// No messages and not RPC - use TUI
-		await runInteractiveMode(
-			agent,
-			sessionManager,
-			VERSION,
-			approvalService,
-			toolRetryService,
-			parsed.apiKey,
-			{
-				clientToolService: interactiveClientToolService,
-				modelScope: scopedModels,
-				startupChangelogSummary,
-				updateNotice,
-			},
-		);
-	} else if (parsed.command === "exec") {
-		await runExecCommand({
-			agent,
-			sessionManager,
-			prompts: parsed.messages,
-			jsonl: Boolean(parsed.execJson),
-			sandboxMode: sandboxMode,
-			outputSchema: parsed.execOutputSchema,
-			outputLastMessage: parsed.execOutputLast,
-		});
-	} else {
-		// CLI mode with messages
-		await runSingleShotMode(agent, sessionManager, parsed.messages, mode);
+	try {
+		if (agentsInitPrompt) {
+			const cwd = process.cwd();
+			const targetPath = agentsInitPath ?? "AGENTS.md";
+			const displayPath =
+				targetPath.startsWith(cwd) && targetPath !== cwd
+					? `.${targetPath.slice(cwd.length)}`
+					: targetPath;
+			const runMode: Extract<Mode, "text" | "json"> =
+				mode === "rpc" || mode === "headless" ? "text" : mode;
+			console.log(chalk.green(`Drafting AGENTS.md at ${displayPath}...`));
+			await runSingleShotMode(
+				agent,
+				sessionManager,
+				[agentsInitPrompt],
+				runMode,
+			);
+			console.log(chalk.dim(`AGENTS.md generated at ${displayPath}`));
+		} else if (mode === "headless" || parsed.headless) {
+			// Headless mode - for native TUI communication
+			await runHeadlessMode(
+				agent,
+				sessionManager,
+				approvalService,
+				toolRetryService,
+			);
+		} else if (mode === "rpc") {
+			// RPC mode - headless operation
+			const { runRpcMode } = await import("./cli/rpc-mode.js");
+			await runRpcMode(agent, sessionManager);
+		} else if (isInteractive) {
+			// No messages and not RPC - use TUI
+			await runInteractiveMode(
+				agent,
+				sessionManager,
+				VERSION,
+				approvalService,
+				toolRetryService,
+				parsed.apiKey,
+				{
+					clientToolService: interactiveClientToolService,
+					modelScope: scopedModels,
+					startupChangelogSummary,
+					updateNotice,
+				},
+			);
+		} else if (parsed.command === "exec") {
+			await runExecCommand({
+				agent,
+				sessionManager,
+				prompts: parsed.messages,
+				jsonl: Boolean(parsed.execJson),
+				sandboxMode: sandboxMode,
+				outputSchema: parsed.execOutputSchema,
+				outputLastMessage: parsed.execOutputLast,
+			});
+		} else {
+			// CLI mode with messages
+			await runSingleShotMode(agent, sessionManager, parsed.messages, mode);
+		}
+	} finally {
+		await automaticMemoryExtraction.flush();
 	}
 }

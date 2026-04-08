@@ -24,6 +24,7 @@
 export {
 	addMemory,
 	updateMemory,
+	upsertDurableMemory,
 	upsertScopedMemory,
 	deleteMemory,
 	deleteTopicMemories,

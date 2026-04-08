@@ -41,6 +41,10 @@ import { HeadlessUtilityCommandManager } from "../headless/utility-command-manag
 import { readWorkspaceFile } from "../headless/utility-file-read.js";
 import { searchWorkspaceFiles } from "../headless/utility-file-search.js";
 import { HeadlessUtilityFileWatchManager } from "../headless/utility-file-watch-manager.js";
+import {
+	type AutomaticMemoryExtractionCoordinator,
+	createAutomaticMemoryExtractionCoordinator,
+} from "../memory/auto-extraction.js";
 import type { RegisteredModel } from "../models/registry.js";
 import { checkSessionLimits } from "../safety/policy.js";
 import type { SessionManager } from "../session/manager.js";
@@ -429,7 +433,7 @@ type RuntimeOptions = {
 	approvalMode: ApprovalMode;
 	enableClientTools?: boolean;
 	client?: "vscode" | "jetbrains" | "conductor" | "generic";
-	context: Pick<WebServerContext, "createAgent">;
+	context: Pick<WebServerContext, "createAgent" | "createBackgroundAgent">;
 	sessionManager: SessionManager;
 };
 
@@ -540,12 +544,14 @@ export class HeadlessSessionRuntime {
 	private disposePromise: Promise<void> | null = null;
 	private updatedAt = Date.now();
 	private readonly updateSessionSummary: (event: AgentEvent) => void;
+	private readonly automaticMemoryExtraction: AutomaticMemoryExtractionCoordinator;
 
 	private constructor(
 		options: RuntimeOptions,
 		agent: Agent,
 		approvalService: ActionApprovalService,
 		toolRetryService: ToolRetryService,
+		automaticMemoryExtraction: AutomaticMemoryExtractionCoordinator,
 	) {
 		this.scopeKey = options.scope_key;
 		this.sessionId = options.session_id;
@@ -555,6 +561,7 @@ export class HeadlessSessionRuntime {
 		this.approvalService = approvalService;
 		this.toolRetryService = toolRetryService;
 		this.agent = agent;
+		this.automaticMemoryExtraction = automaticMemoryExtraction;
 		this.updateSessionSummary = createRuntimeSessionSummaryUpdater(
 			this.sessionManager,
 		);
@@ -608,11 +615,21 @@ export class HeadlessSessionRuntime {
 				includeConductorTools: options.client === "conductor",
 			},
 		);
+		const automaticMemoryExtraction =
+			createAutomaticMemoryExtractionCoordinator({
+				createAgent: async () =>
+					options.context.createBackgroundAgent(
+						agent.state.model as RegisteredModel,
+					),
+				getModel: () => agent.state.model,
+				sessionManager: options.sessionManager,
+			});
 		return new HeadlessSessionRuntime(
 			options,
 			agent,
 			approvalService,
 			toolRetryService,
+			automaticMemoryExtraction,
 		);
 	}
 
@@ -650,6 +667,7 @@ export class HeadlessSessionRuntime {
 			await this.utilityCommands.dispose();
 			this.fileWatches.dispose();
 			this.agent.abort();
+			await this.automaticMemoryExtraction.flush();
 			this.finalizeDisposal();
 		})();
 		this.disposePromise = disposePromise;
@@ -1863,6 +1881,11 @@ export class HeadlessSessionRuntime {
 
 		if (event.type === "message_end") {
 			this.sessionManager.saveMessage(event.message);
+			if (event.message.role === "assistant") {
+				this.automaticMemoryExtraction.schedule(
+					this.sessionManager.getSessionFile(),
+				);
+			}
 			if (
 				this.sessionManager.shouldInitializeSession(this.agent.state.messages)
 			) {
@@ -2092,7 +2115,7 @@ export type EnsureRuntimeOptions = {
 	enableClientTools?: boolean;
 	client?: "vscode" | "jetbrains" | "conductor" | "generic";
 	registerConnection?: boolean;
-	context: Pick<WebServerContext, "createAgent">;
+	context: Pick<WebServerContext, "createAgent" | "createBackgroundAgent">;
 	sessionManager: SessionManager;
 };
 
