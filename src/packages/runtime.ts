@@ -6,6 +6,7 @@ import {
 import { createLogger } from "../utils/logger.js";
 import { discoverPackage } from "./discovery.js";
 import { loadPackageResources, parsePackageSpec } from "./loader.js";
+import { scheduleConfiguredRemotePackageAutoSync } from "./maintenance.js";
 import { parsePackageSource, resolvePackageSourceSync } from "./sources.js";
 import type { LoadedPackage, PackageResources } from "./types.js";
 
@@ -127,6 +128,7 @@ function getRuntimePackageScope(scope: PackageScope): RuntimePackageScope {
 export function loadConfiguredPackageResources(
 	workspaceDir: string,
 ): ConfiguredPackageRuntimeResources {
+	void scheduleConfiguredRemotePackageAutoSync(workspaceDir);
 	const resources = createConfiguredPackageRuntimeResources();
 	const seen: Record<ResourceKind, Record<RuntimePackageScope, Set<string>>> = {
 		extensions: { user: new Set(), project: new Set() },

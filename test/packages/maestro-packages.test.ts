@@ -12,11 +12,13 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { addConfiguredPackageSpecToConfig } from "../../src/config/index.js";
 import {
 	clearResolvedPackageSourceCache,
 	discoverPackage,
 	filterResources,
 	isValidMaestroPackage,
+	loadConfiguredPackageResources,
 	loadPackage,
 	loadPackageResources,
 	matchesAnyPattern,
@@ -24,6 +26,25 @@ import {
 	parsePackageSpec,
 	refreshPackageSourceSync,
 } from "../../src/packages/index.js";
+import { clearConfiguredRemotePackageAutoSyncState } from "../../src/packages/maintenance.js";
+
+async function waitForCondition(
+	check: () => boolean,
+	timeoutMs = 2000,
+	intervalMs = 25,
+): Promise<void> {
+	const startedAt = Date.now();
+	while (Date.now() - startedAt < timeoutMs) {
+		if (check()) {
+			return;
+		}
+		await new Promise((resolvePromise) =>
+			setTimeout(resolvePromise, intervalMs),
+		);
+	}
+
+	throw new Error("Timed out waiting for package auto-sync to finish.");
+}
 
 describe("Maestro Packages", () => {
 	let testDir: string;
@@ -38,6 +59,7 @@ describe("Maestro Packages", () => {
 		}
 		mkdirSync(testDir, { recursive: true });
 		clearResolvedPackageSourceCache();
+		clearConfiguredRemotePackageAutoSyncState();
 	});
 
 	afterEach(() => {
@@ -47,6 +69,7 @@ describe("Maestro Packages", () => {
 			process.env.MAESTRO_HOME = previousMaestroHome;
 		}
 		clearResolvedPackageSourceCache();
+		clearConfiguredRemotePackageAutoSyncState();
 		if (existsSync(testDir)) {
 			rmSync(testDir, { recursive: true, force: true });
 		}
@@ -445,6 +468,60 @@ describe("Maestro Packages", () => {
 
 			const source2 = parsePackageSource("github.com/user/repo");
 			expect(source2.type).toBe("git");
+		});
+
+		it("automatically refreshes configured remote package caches in the background", async () => {
+			const pkgDir = join(testDir, "configured-git-package");
+			mkdirSync(join(pkgDir, "skills", "review-skill"), { recursive: true });
+			writeFileSync(
+				join(pkgDir, "skills", "review-skill", "SKILL.md"),
+				"# Review Skill\n",
+			);
+			writeFileSync(
+				join(pkgDir, "package.json"),
+				JSON.stringify({
+					name: "@test/configured-git-package",
+					version: "1.0.0",
+					keywords: ["maestro-package"],
+					maestro: {
+						skills: ["./skills"],
+					},
+				}),
+			);
+			createCommittedGitRepo(pkgDir);
+
+			addConfiguredPackageSpecToConfig({
+				workspaceDir: testDir,
+				scope: "local",
+				spec: `git:${pkgDir}`,
+			});
+
+			const initialResources = loadConfiguredPackageResources(testDir);
+			expect(initialResources.skills.project).toHaveLength(1);
+
+			mkdirSync(join(pkgDir, "skills", "deploy-skill"), { recursive: true });
+			writeFileSync(
+				join(pkgDir, "skills", "deploy-skill", "SKILL.md"),
+				"# Deploy Skill\n",
+			);
+			commitGitRepoChanges(pkgDir, "add deploy skill");
+
+			clearConfiguredRemotePackageAutoSyncState(testDir);
+			loadConfiguredPackageResources(testDir);
+
+			await waitForCondition(() =>
+				loadConfiguredPackageResources(testDir).skills.project.some((path) =>
+					path.includes("deploy-skill"),
+				),
+			);
+
+			const refreshedResources = loadConfiguredPackageResources(testDir);
+			expect(refreshedResources.skills.project).toHaveLength(2);
+			expect(
+				refreshedResources.skills.project.some((path) =>
+					path.includes("deploy-skill"),
+				),
+			).toBe(true);
 		});
 	});
 
