@@ -7,7 +7,11 @@
  * - npm:@scope/name@version (npm registry - future)
  */
 
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
+import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
 import type {
 	GitSource,
@@ -17,6 +21,7 @@ import type {
 } from "./types.js";
 
 const logger = createLogger("packages:sources");
+const resolvedPackageSourcePaths = new Map<string, string>();
 
 /**
  * Parse a package source string into structured format
@@ -156,14 +161,25 @@ export async function resolvePackageSource(
 	source: PackageSource,
 	cacheDir?: string,
 ): Promise<string> {
+	return resolvePackageSourceSync(source, cacheDir);
+}
+
+export function resolvePackageSourceSync(
+	source: PackageSource,
+	cacheDir?: string,
+): string {
 	switch (source.type) {
 		case "local":
 			return resolveLocalSource(source);
 		case "git":
-			return resolveGitSource(source, cacheDir);
+			return resolveGitSourceSync(source, cacheDir);
 		case "npm":
 			return resolveNpmSource(source, cacheDir);
 	}
+}
+
+export function clearResolvedPackageSourceCache(): void {
+	resolvedPackageSourcePaths.clear();
 }
 
 /**
@@ -174,42 +190,126 @@ function resolveLocalSource(source: LocalSource): string {
 }
 
 /**
- * Resolve git repository source (future implementation)
+ * Resolve git repository source
  */
-async function resolveGitSource(
-	source: GitSource,
-	_cacheDir?: string,
-): Promise<string> {
-	// TODO: Implement git cloning
-	// 1. Generate cache key from URL + ref
-	// 2. Check if already cloned in cache
-	// 3. If not, clone to cache directory
-	// 4. If ref specified, checkout ref
-	// 5. Return path to cloned directory
-
-	logger.warn("Git source resolution not yet implemented", { source });
-	throw new Error(
-		`Git source resolution not yet implemented: ${source.url}${source.ref ? `@${source.ref}` : ""}`,
+function resolveGitSourceSync(source: GitSource, cacheDir?: string): string {
+	const cachePath = getCachedSourcePath(
+		"git",
+		`${source.url}@${source.ref ?? ""}`,
+		cacheDir,
 	);
+	if (existsSync(join(cachePath, ".git"))) {
+		return cachePath;
+	}
+
+	rmSync(cachePath, { recursive: true, force: true });
+	mkdirSync(getPackageCacheDir(cacheDir), { recursive: true });
+	const cloneTarget = normalizeGitCloneUrl(source.url);
+	try {
+		if (source.ref) {
+			try {
+				runSyncCommand("git", [
+					"clone",
+					"--depth",
+					"1",
+					"--branch",
+					source.ref,
+					cloneTarget,
+					cachePath,
+				]);
+			} catch {
+				runSyncCommand("git", ["clone", cloneTarget, cachePath]);
+				runSyncCommand("git", ["-C", cachePath, "checkout", "-f", source.ref]);
+			}
+		} else {
+			runSyncCommand("git", ["clone", "--depth", "1", cloneTarget, cachePath]);
+		}
+	} catch (error) {
+		rmSync(cachePath, { recursive: true, force: true });
+		throw error;
+	}
+
+	logger.info("Resolved git package source", {
+		url: source.url,
+		ref: source.ref,
+		path: cachePath,
+	});
+	return cachePath;
 }
 
 /**
  * Resolve npm package source (future implementation)
  */
-async function resolveNpmSource(
-	source: NpmSource,
-	_cacheDir?: string,
-): Promise<string> {
-	// TODO: Implement npm package resolution
-	// 1. Generate cache key from name + version
-	// 2. Check if already installed in cache
-	// 3. If not, npm install to cache directory
-	// 4. Return path to installed package
-
+function resolveNpmSource(source: NpmSource, _cacheDir?: string): string {
 	logger.warn("npm source resolution not yet implemented", { source });
 	throw new Error(
 		`npm source resolution not yet implemented: ${source.name}${source.version ? `@${source.version}` : ""}`,
 	);
+}
+
+function getPackageCacheDir(cacheDir?: string): string {
+	return cacheDir ?? PATHS.PACKAGE_CACHE_DIR;
+}
+
+function getCachedSourcePath(
+	kind: "git" | "npm",
+	identity: string,
+	cacheDir?: string,
+): string {
+	const cacheKey = `${kind}:${identity}`;
+	const memoized = resolvedPackageSourcePaths.get(cacheKey);
+	if (memoized && existsSync(memoized)) {
+		return memoized;
+	}
+
+	const digest = createHash("sha256")
+		.update(cacheKey)
+		.digest("hex")
+		.slice(0, 16);
+	const resolvedPath = join(getPackageCacheDir(cacheDir), `${kind}-${digest}`);
+	resolvedPackageSourcePaths.set(cacheKey, resolvedPath);
+	return resolvedPath;
+}
+
+function normalizeGitCloneUrl(url: string): string {
+	if (
+		url.startsWith("http://") ||
+		url.startsWith("https://") ||
+		url.startsWith("ssh://") ||
+		url.startsWith("git@") ||
+		url.startsWith("/") ||
+		url.startsWith("./") ||
+		url.startsWith("../")
+	) {
+		return url;
+	}
+
+	if (
+		url.startsWith("github.com/") ||
+		url.startsWith("gitlab.com/") ||
+		url.startsWith("bitbucket.org/")
+	) {
+		return `https://${url}`;
+	}
+
+	return url;
+}
+
+function runSyncCommand(command: string, args: string[]): string {
+	try {
+		return execFileSync(command, args, {
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "pipe"],
+		}).trim();
+	} catch (error) {
+		const stderr =
+			error instanceof Error && "stderr" in error
+				? String((error as { stderr?: string | Buffer }).stderr ?? "").trim()
+				: "";
+		const message =
+			stderr || (error instanceof Error ? error.message : String(error));
+		throw new Error(`${command} ${args.join(" ")} failed: ${message}`);
+	}
 }
 
 /**

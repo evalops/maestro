@@ -37,9 +37,11 @@ export {
 	type ScopedPackageResourceDirectories,
 } from "./runtime.js";
 export {
+	clearResolvedPackageSourceCache,
 	formatPackageSource,
 	parsePackageSource,
 	resolvePackageSource,
+	resolvePackageSourceSync,
 } from "./sources.js";
 export type {
 	DiscoveredPackage,

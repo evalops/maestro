@@ -6,7 +6,7 @@ import {
 import { createLogger } from "../utils/logger.js";
 import { discoverPackage } from "./discovery.js";
 import { loadPackageResources, parsePackageSpec } from "./loader.js";
-import { parsePackageSource } from "./sources.js";
+import { parsePackageSource, resolvePackageSourceSync } from "./sources.js";
 import type { LoadedPackage, PackageResources } from "./types.js";
 
 const logger = createLogger("packages:runtime");
@@ -65,21 +65,16 @@ function reportConfiguredPackageErrorOnce(
 	});
 }
 
-function loadConfiguredLocalPackageResources(
+function loadConfiguredPackageResourcesEntry(
 	entry: ConfiguredPackageSpec,
 ): PackageResources {
 	const [sourceSpec, filters] = parsePackageSpec(entry.spec, entry.cwd);
 	const source = parsePackageSource(sourceSpec, entry.cwd);
+	const packagePath = resolvePackageSourceSync(source);
 
-	if (source.type !== "local") {
-		throw new Error(
-			`Configured runtime packages currently support only local sources: ${sourceSpec}`,
-		);
-	}
-
-	const discovered = discoverPackage(source.path);
+	const discovered = discoverPackage(packagePath);
 	if (!discovered) {
-		throw new Error(`No valid package found at: ${source.path}`);
+		throw new Error(`No valid package found at: ${packagePath}`);
 	}
 
 	if (!discovered.isMaestroPackage) {
@@ -102,7 +97,7 @@ function loadConfiguredLocalPackageResources(
 		name: discovered.packageJson.name,
 		version: discovered.packageJson.version,
 		source,
-		path: source.path,
+		path: packagePath,
 		manifest: discovered.packageJson.maestro,
 		filters,
 	};
@@ -142,7 +137,7 @@ export function loadConfiguredPackageResources(
 
 	for (const entry of loadConfiguredPackageSpecs(workspaceDir)) {
 		try {
-			const packageResources = loadConfiguredLocalPackageResources(entry);
+			const packageResources = loadConfiguredPackageResourcesEntry(entry);
 			const runtimeScope = getRuntimePackageScope(entry.scope);
 			for (const kind of RESOURCE_KINDS) {
 				addScopedDirectories(
