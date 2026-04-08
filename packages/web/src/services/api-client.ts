@@ -106,6 +106,7 @@ import type {
 	ComposerModel,
 	ComposerPlanActionResponse,
 	ComposerPlanStatusResponse,
+	ComposerProjectOnboardingState,
 	ComposerSession,
 	ComposerSessionSummary,
 	ComposerToolCall,
@@ -656,6 +657,7 @@ export interface WorkspaceStatus {
 		agentMd: boolean;
 		claudeMd: boolean;
 	};
+	onboarding?: ComposerProjectOnboardingState;
 	server: {
 		uptime: number;
 		version: string;
@@ -1690,6 +1692,13 @@ export class ApiClient {
 			console.error("Failed to fetch status:", e);
 			return null;
 		}
+	}
+
+	async markProjectOnboardingSeen(): Promise<void> {
+		await this.fetchJson<{ success: boolean }>(
+			"/api/status?action=mark-onboarding-seen",
+			this.buildJsonRequestInit("POST"),
+		);
 	}
 
 	/**

@@ -6,6 +6,7 @@
 
 import type {
 	ComposerMessage,
+	ComposerProjectOnboardingState,
 	ComposerToolCallContent,
 } from "@evalops/contracts";
 
@@ -103,10 +104,31 @@ export interface WorkspaceStatus {
 			total: number;
 		};
 	} | null;
+	context: {
+		agentMd: boolean;
+		claudeMd: boolean;
+	};
+	onboarding?: ComposerProjectOnboardingState;
 	server: {
 		uptime: number;
 		version: string;
+		staticCacheMaxAgeSeconds?: number;
 	};
+	database?: {
+		configured: boolean;
+		connected: boolean;
+	};
+	backgroundTasks?: unknown;
+	hooks?: {
+		asyncInFlight: number;
+		concurrency: {
+			max: number;
+			active: number;
+			queued: number;
+		};
+	};
+	lastUpdated?: number;
+	lastLatencyMs?: number;
 }
 
 export interface AutomationTask {

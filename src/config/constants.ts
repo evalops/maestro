@@ -106,6 +106,13 @@ export const PATHS = {
 			join(getComposerHome(), "mcp-project-approvals.json")
 		);
 	},
+	/** Project onboarding state */
+	get PROJECT_ONBOARDING_FILE(): string {
+		return (
+			resolveEnvPath(process.env.MAESTRO_PROJECT_ONBOARDING_FILE) ??
+			join(getComposerHome(), "project-onboarding.json")
+		);
+	},
 	/** Background task log directory */
 	get BACKGROUND_TASK_LOG_DIR(): string {
 		return join(getComposerHome(), "background-tasks");

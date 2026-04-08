@@ -4,9 +4,10 @@
  * Premium chat interface with elegant empty states and interactions.
  */
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useChat } from "../../hooks/useChat";
-import type { ThinkingLevel } from "../../lib/types";
+import { apiClient } from "../../lib/api-client";
+import type { ThinkingLevel, WorkspaceStatus } from "../../lib/types";
 import { InputArea } from "./InputArea";
 import { MessageList } from "./MessageList";
 
@@ -15,6 +16,7 @@ export interface ChatContainerProps {
 	showTimestamps?: boolean;
 	density?: "comfortable" | "compact";
 	thinkingLevel?: ThinkingLevel;
+	workspaceStatusPrefetch?: WorkspaceStatus | null;
 }
 
 export function ChatContainer({
@@ -22,10 +24,17 @@ export function ChatContainer({
 	showTimestamps = true,
 	density = "comfortable",
 	thinkingLevel = "off",
+	workspaceStatusPrefetch = null,
 }: ChatContainerProps) {
 	const messagesEndRef = useRef<HTMLDivElement>(null);
+	const [workspaceStatus, setWorkspaceStatus] =
+		useState<WorkspaceStatus | null>(workspaceStatusPrefetch);
 	const { messages, isLoading, error, runtimeStatus, sendMessage, clearError } =
 		useChat(sessionId ?? undefined, { thinkingLevel });
+	const onboardingSteps =
+		workspaceStatus?.onboarding?.steps.filter(
+			(step) => step.isEnabled && !step.isComplete,
+		) ?? [];
 
 	// Auto-scroll to bottom when new messages arrive
 	// biome-ignore lint/correctness/useExhaustiveDependencies: We intentionally scroll when messages change
@@ -34,6 +43,32 @@ export function ChatContainer({
 			messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
 		}
 	}, [messages]);
+
+	useEffect(() => {
+		setWorkspaceStatus(workspaceStatusPrefetch);
+	}, [workspaceStatusPrefetch]);
+
+	useEffect(() => {
+		if (workspaceStatusPrefetch !== null) {
+			return;
+		}
+		let cancelled = false;
+		void apiClient.getStatus().then((status) => {
+			if (!cancelled) {
+				setWorkspaceStatus(status);
+			}
+		});
+		return () => {
+			cancelled = true;
+		};
+	}, [workspaceStatusPrefetch]);
+
+	useEffect(() => {
+		if (onboardingSteps.length === 0) {
+			return;
+		}
+		void apiClient.markProjectOnboardingSeen().catch(() => {});
+	}, [onboardingSteps.length]);
 
 	const handleSendMessage = async (content: string) => {
 		if (!content.trim()) return;
@@ -65,6 +100,25 @@ export function ChatContainer({
 					<p className="text-sm text-text-secondary max-w-sm">
 						Start a new session to begin chatting with your AI assistant.
 					</p>
+					{onboardingSteps.length > 0 ? (
+						<div
+							className="mt-6 max-w-md rounded-2xl px-5 py-4 text-left"
+							style={{
+								background:
+									"linear-gradient(135deg, rgba(20, 184, 166, 0.08) 0%, rgba(245, 158, 11, 0.05) 100%)",
+								border: "1px solid rgba(20, 184, 166, 0.18)",
+							}}
+						>
+							<div className="text-xs font-semibold tracking-[0.18em] uppercase text-text-secondary mb-2">
+								Getting Started
+							</div>
+							<ul className="m-0 pl-5 text-sm text-text-primary space-y-2">
+								{onboardingSteps.map((step) => (
+									<li key={step.key}>{step.text}</li>
+								))}
+							</ul>
+						</div>
+					) : null}
 				</div>
 			</div>
 		);
@@ -125,6 +179,25 @@ export function ChatContainer({
 								Your AI coding assistant. Write code, debug issues, explain
 								concepts, or tackle any programming challenge.
 							</p>
+							{onboardingSteps.length > 0 ? (
+								<div
+									className="mb-10 w-full max-w-xl rounded-2xl px-5 py-4 text-left"
+									style={{
+										background:
+											"linear-gradient(135deg, rgba(20, 184, 166, 0.08) 0%, rgba(245, 158, 11, 0.05) 100%)",
+										border: "1px solid rgba(20, 184, 166, 0.18)",
+									}}
+								>
+									<div className="text-xs font-semibold tracking-[0.18em] uppercase text-text-secondary mb-2">
+										Getting Started
+									</div>
+									<ul className="m-0 pl-5 text-sm text-text-primary space-y-2">
+										{onboardingSteps.map((step) => (
+											<li key={step.key}>{step.text}</li>
+										))}
+									</ul>
+								</div>
+							) : null}
 
 							{/* Quick action chips */}
 							<div className="flex flex-wrap justify-center gap-3 max-w-xl">

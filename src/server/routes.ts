@@ -226,6 +226,14 @@ export function createRoutes(context: WebServerContext): Route[] {
 				}),
 		},
 		{
+			method: "POST",
+			path: "/api/status",
+			handler: (req, res) =>
+				handleStatus(req, res, corsHeaders, {
+					staticCacheMaxAge: context.staticMaxAge,
+				}),
+		},
+		{
 			method: "GET",
 			path: "/api/bridge/status",
 			handler: (req, res) => handleBridgeStatus(req, res, context),

@@ -7,6 +7,10 @@ import {
 	getAsyncHookCount,
 	getHookConcurrencySnapshot,
 } from "../../hooks/index.js";
+import {
+	getProjectOnboardingState,
+	markProjectOnboardingSeen,
+} from "../../onboarding/project-onboarding.js";
 import { backgroundTaskManager } from "../../tools/background-tasks.js";
 import { respondWithApiError, sendJson } from "../server-utils.js";
 
@@ -49,6 +53,7 @@ export function getStatusSnapshot(
 			agentMd: existsSync(join(cwd, "AGENT.md")),
 			claudeMd: existsSync(join(cwd, "CLAUDE.md")),
 		},
+		onboarding: getProjectOnboardingState(cwd),
 		server: {
 			uptime: process.uptime(),
 			version: process.version,
@@ -78,6 +83,16 @@ export function handleStatus(
 	options: { staticCacheMaxAge?: number } = {},
 ) {
 	try {
+		const method = (req.method ?? "GET").toUpperCase();
+		const url = new URL(req.url ?? "/api/status", "http://localhost");
+		const action = url.searchParams.get("action");
+
+		if (method === "POST" && action === "mark-onboarding-seen") {
+			markProjectOnboardingSeen(process.cwd());
+			sendJson(res, 200, { success: true }, cors, req);
+			return;
+		}
+
 		const status = getStatusSnapshot(options);
 		sendJson(res, 200, status, cors, req);
 	} catch (error) {

@@ -150,6 +150,14 @@ function truncateResumeSummary(summary: string, max = 140): string {
 	return `${summary.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
 }
 
+function getActiveProjectOnboardingSteps(status: WorkspaceStatus | null) {
+	return (
+		status?.onboarding?.steps.filter(
+			(step) => step.isEnabled && !step.isComplete,
+		) ?? []
+	);
+}
+
 export function hasAssistantMessageProgress(
 	message: AssistantMessageSnapshot,
 ): boolean {
@@ -1042,6 +1050,46 @@ export class ComposerChat extends LitElement {
 			color: var(--text-secondary, #a4a8ae);
 		}
 
+		.onboarding-callout {
+			width: 100%;
+			max-width: 800px;
+			margin-top: 0.5rem;
+			padding: 1rem 1.1rem;
+			background: linear-gradient(
+				135deg,
+				rgba(20, 184, 166, 0.08),
+				rgba(245, 158, 11, 0.05)
+			);
+			border: 1px solid rgba(20, 184, 166, 0.16);
+		}
+
+		.onboarding-callout h3 {
+			margin: 0 0 0.35rem 0;
+			font-family: var(--font-mono, monospace);
+			font-size: 0.7rem;
+			letter-spacing: 0.08em;
+			text-transform: uppercase;
+			color: var(--text-secondary, #a4a8ae);
+		}
+
+		.onboarding-callout p {
+			margin: 0 0 0.75rem 0;
+			font-size: 0.88rem;
+			color: var(--text-secondary, #a4a8ae);
+		}
+
+		.onboarding-list {
+			margin: 0;
+			padding-left: 1.1rem;
+			display: grid;
+			gap: 0.45rem;
+			color: var(--text-primary, #e8e9eb);
+		}
+
+		.onboarding-list code {
+			font-size: 0.85em;
+		}
+
 		/* Responsive */
 		@media (max-width: 768px) {
 			.workspace-panel {
@@ -1198,6 +1246,7 @@ export class ComposerChat extends LitElement {
 	private static DEFAULT_AVG_MESSAGE_HEIGHT = 120;
 	private static VIRTUALIZATION_MIN_MESSAGES = 120;
 	private static VIRTUAL_OVERSCAN = 6;
+	private onboardingImpressionRecorded = false;
 
 	private resetVirtualizationState(): void {
 		this.messageHeights.clear();
@@ -2518,6 +2567,22 @@ export class ComposerChat extends LitElement {
 				void this.loadApprovalModeStatus();
 			}
 		}
+
+		this.maybeRecordProjectOnboardingSeen();
+	}
+
+	private maybeRecordProjectOnboardingSeen(): void {
+		const shouldRecord =
+			!this.shareToken &&
+			this.messages.length === 0 &&
+			getActiveProjectOnboardingSteps(this.status).length > 0;
+		if (!shouldRecord || this.onboardingImpressionRecorded) {
+			return;
+		}
+		this.onboardingImpressionRecorded = true;
+		void this.apiClient.markProjectOnboardingSeen().catch(() => {
+			this.onboardingImpressionRecorded = false;
+		});
 	}
 
 	private hydrateDisplayPrefs() {
@@ -4161,6 +4226,7 @@ export class ComposerChat extends LitElement {
 			(this.approvalMode
 				? `Approval mode: ${this.approvalMode}`
 				: "Approval mode");
+		const onboardingSteps = getActiveProjectOnboardingSteps(this.status);
 		const showSessionGallery =
 			!isShared && this.messages.length === 0 && this.sessions.length > 0;
 		const hasMessages = this.messages.length > 0;
@@ -4547,6 +4613,21 @@ export class ComposerChat extends LitElement {
 											}
 										</div>
 									</div>
+									${
+										onboardingSteps.length > 0
+											? html`
+												<div class="onboarding-callout" aria-live="polite">
+													<h3>Getting Started</h3>
+													<p>Project setup still has a couple of missing pieces.</p>
+													<ul class="onboarding-list">
+														${onboardingSteps.map(
+															(step) => html`<li>${step.text}</li>`,
+														)}
+													</ul>
+												</div>
+											`
+											: ""
+									}
 									${
 										showSessionGallery
 											? html`

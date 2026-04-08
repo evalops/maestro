@@ -72,6 +72,43 @@ describe("desktop chat UI", () => {
 		expect(html).not.toContain("Welcome to Composer");
 	});
 
+	it("renders project onboarding guidance in the empty state", () => {
+		const html = renderToStaticMarkup(
+			<ChatContainer
+				sessionId={null}
+				workspaceStatusPrefetch={{
+					cwd: "/repo",
+					git: null,
+					context: { agentMd: false, claudeMd: false },
+					onboarding: {
+						shouldShow: true,
+						completed: false,
+						seenCount: 0,
+						steps: [
+							{
+								key: "workspace",
+								text: "Ask Maestro to create a new app or clone a repository.",
+								isComplete: true,
+								isEnabled: false,
+							},
+							{
+								key: "instructions",
+								text: "Run /init to scaffold AGENTS.md instructions for this project.",
+								isComplete: false,
+								isEnabled: true,
+							},
+						],
+					},
+					server: { uptime: 1, version: "v20.0.0" },
+				}}
+			/>,
+		);
+
+		expect(html).toContain("Getting Started");
+		expect(html).toContain("/init");
+		expect(html).toContain("AGENTS.md");
+	});
+
 	it("renders runtime status while the agent is working", () => {
 		useChatMock.mockReturnValue({
 			messages: [],

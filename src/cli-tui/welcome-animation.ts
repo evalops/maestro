@@ -10,6 +10,7 @@
  */
 
 import { Container, Text, visibleWidth } from "@evalops/tui";
+import type { ProjectOnboardingState } from "../onboarding/project-onboarding.js";
 import { theme } from "../theme/theme.js";
 import { getQueuedFollowUpEditBindingLabel } from "./queue/queued-follow-up-edit-binding.js";
 import { PANEL_WIDTHS } from "./utils/layout.js";
@@ -38,6 +39,7 @@ export class WelcomeAnimation extends Container {
 	private readonly textComponent: Text;
 	private readonly onRenderRequest?: () => void;
 	private modelName = "";
+	private onboardingState: ProjectOnboardingState | null = null;
 	private readonly animate: boolean;
 
 	constructor(
@@ -73,6 +75,11 @@ export class WelcomeAnimation extends Container {
 		this.modelName = modelName;
 	}
 
+	setProjectOnboarding(state: ProjectOnboardingState | null): void {
+		this.onboardingState = state;
+		this.updateFrame();
+	}
+
 	private updateFrame(): void {
 		const nowSeconds = Date.now() / 1000;
 
@@ -106,6 +113,7 @@ export class WelcomeAnimation extends Container {
 
 		// Shortcuts line - Claude Code style
 		const shortcutsLine = this.buildShortcutsLine();
+		const onboardingLines = this.buildOnboardingLines();
 
 		const lines = [
 			"",
@@ -116,7 +124,7 @@ export class WelcomeAnimation extends Container {
 			modelStatus ? centerLine(modelStatus) : "",
 			"",
 			centerLine(shortcutsLine),
-			"",
+			...(onboardingLines.length > 0 ? ["", ...onboardingLines, ""] : [""]),
 		].filter((line) => line !== undefined);
 
 		this.textComponent.setText(lines.join("\n"));
@@ -129,6 +137,23 @@ export class WelcomeAnimation extends Container {
 			return `${keyPart}${theme.fg("borderMuted", ":")}${descPart}`;
 		});
 		return parts.join(theme.fg("borderMuted", "  │  "));
+	}
+
+	private buildOnboardingLines(): string[] {
+		const steps =
+			this.onboardingState?.steps.filter(
+				(step) => step.isEnabled && !step.isComplete,
+			) ?? [];
+		if (steps.length === 0) {
+			return [];
+		}
+
+		return [
+			centerLine(theme.fg("muted", "Get Started")),
+			...steps
+				.slice(0, 2)
+				.map((step) => centerLine(theme.fg("dim", step.text))),
+		];
 	}
 }
 

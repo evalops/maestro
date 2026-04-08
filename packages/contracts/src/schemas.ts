@@ -880,6 +880,20 @@ export const ComposerUndoOperationResponseSchema = Type.Union([
 	ComposerUndoCheckpointListResponseSchema,
 ]);
 
+export const ComposerProjectOnboardingStepSchema = Type.Object({
+	key: Type.Union([Type.Literal("workspace"), Type.Literal("instructions")]),
+	text: Type.String(),
+	isComplete: Type.Boolean(),
+	isEnabled: Type.Boolean(),
+});
+
+export const ComposerProjectOnboardingStateSchema = Type.Object({
+	shouldShow: Type.Boolean(),
+	completed: Type.Boolean(),
+	seenCount: Type.Number(),
+	steps: Type.Array(ComposerProjectOnboardingStepSchema),
+});
+
 export const ComposerStatusResponseSchema = Type.Object({
 	cwd: Type.String(),
 	git: Type.Union([
@@ -899,6 +913,7 @@ export const ComposerStatusResponseSchema = Type.Object({
 		agentMd: Type.Boolean(),
 		claudeMd: Type.Boolean(),
 	}),
+	onboarding: Type.Optional(ComposerProjectOnboardingStateSchema),
 	server: Type.Object({
 		uptime: Type.Number(),
 		version: Type.String(),

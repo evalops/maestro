@@ -205,6 +205,44 @@ describe("contracts validators", () => {
 		expect(result.ok).toBe(true);
 	});
 
+	it("accepts status responses with onboarding guidance", () => {
+		const status = {
+			cwd: "/tmp/project",
+			git: null,
+			context: { agentMd: false, claudeMd: false },
+			onboarding: {
+				shouldShow: true,
+				completed: false,
+				seenCount: 1,
+				steps: [
+					{
+						key: "workspace",
+						text: "Ask Maestro to create a new app or clone a repository.",
+						isComplete: true,
+						isEnabled: false,
+					},
+					{
+						key: "instructions",
+						text: "Run /init to scaffold AGENTS.md instructions for this project.",
+						isComplete: false,
+						isEnabled: true,
+					},
+				],
+			},
+			server: { uptime: 1, version: "v20.0.0" },
+			database: { configured: false, connected: false },
+			backgroundTasks: null,
+			hooks: {
+				asyncInFlight: 0,
+				concurrency: { max: 0, active: 0, queued: 0 },
+			},
+			lastUpdated: 1,
+			lastLatencyMs: 1,
+		};
+		const result = validateSchema(ComposerStatusResponseSchema, status);
+		expect(result.ok).toBe(true);
+	});
+
 	it("accepts model responses for models and model selection", () => {
 		const model = {
 			id: "test-model",

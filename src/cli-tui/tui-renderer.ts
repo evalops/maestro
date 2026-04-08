@@ -176,6 +176,10 @@ import {
 import { WelcomeAnimation } from "./welcome-animation.js";
 
 import { areAnimationsDisabled } from "../config/env-vars.js";
+import {
+	getProjectOnboardingState,
+	markProjectOnboardingSeen,
+} from "../onboarding/project-onboarding.js";
 import type { UpdateCheckResult } from "../update/check.js";
 import { resolveEnvPath } from "../utils/path-expansion.js";
 import type { ClientToolController } from "./client-tools/client-tool-controller.js";
@@ -1297,10 +1301,15 @@ export class TuiRenderer {
 
 		// Show welcome animation initially (can be disabled in minimal mode)
 		if (!this.isMinimalMode() && !this.zenMode) {
+			const onboardingState = getProjectOnboardingState(process.cwd());
 			this.welcomeAnimation = new WelcomeAnimation(
 				() => this.ui.requestRender(),
 				{ animate: !this.shouldDisableAnimations() },
 			);
+			this.welcomeAnimation.setProjectOnboarding(onboardingState);
+			if (onboardingState.shouldShow) {
+				markProjectOnboardingSeen(process.cwd());
+			}
 			this.chatContainer.addChild(this.welcomeAnimation);
 		}
 

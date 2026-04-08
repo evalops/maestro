@@ -980,6 +980,20 @@ export type ComposerUndoOperationResponse =
 	  }
 	| { checkpoints: ComposerUndoCheckpoint[] };
 
+export interface ComposerProjectOnboardingStep {
+	key: "workspace" | "instructions";
+	text: string;
+	isComplete: boolean;
+	isEnabled: boolean;
+}
+
+export interface ComposerProjectOnboardingState {
+	shouldShow: boolean;
+	completed: boolean;
+	seenCount: number;
+	steps: ComposerProjectOnboardingStep[];
+}
+
 /**
  * Workspace status response payload.
  */
@@ -999,6 +1013,7 @@ export interface ComposerStatusResponse {
 		agentMd: boolean;
 		claudeMd: boolean;
 	};
+	onboarding?: ComposerProjectOnboardingState;
 	server: {
 		uptime: number;
 		version: string;

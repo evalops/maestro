@@ -807,6 +807,13 @@ export class ApiClient {
 		}
 	}
 
+	async markProjectOnboardingSeen(): Promise<void> {
+		await this.fetchJson<{ success: boolean }>(
+			"/api/status?action=mark-onboarding-seen",
+			this.buildJsonRequestInit("POST"),
+		);
+	}
+
 	// Approvals
 	async getApprovalMode(sessionId = "default"): Promise<ApprovalsStatus> {
 		return await this.fetchJson<ApprovalsStatus>(
