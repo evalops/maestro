@@ -16,13 +16,14 @@ describe("LoaderStageManager dreaming stage", () => {
 		vi.clearAllMocks();
 	});
 
-	function createManager() {
+	function createManager(selectDreamingHint?: () => string | null) {
 		const stageLabels: string[] = [];
 		const footerStages: Array<string | null> = [];
 		const hints: Array<string | null> = [];
 		const manager = new LoaderStageManager({
 			setFooterStage: (label) => footerStages.push(label),
 			setFooterHint: (hint) => hints.push(hint),
+			selectDreamingHint,
 			onStageChanged: (label) => stageLabels.push(label),
 			onProgressChanged: () => {},
 		});
@@ -37,6 +38,19 @@ describe("LoaderStageManager dreaming stage", () => {
 		expect(stageLabels.at(-1)).toBe(STAGE_DISPLAY_LABELS.dreaming);
 		expect(footerStages.at(-1)).toBe(STAGE_DISPLAY_LABELS.dreaming);
 		expect(hints.at(-1)).toBe("maestro is pondering a haiku…");
+	});
+
+	it("uses an adaptive tip when one is available", () => {
+		const { manager, stageLabels, footerStages, hints } = createManager(
+			() => "Use /memory to search and manage durable memory.",
+		);
+		manager.start();
+		vi.advanceTimersByTime(5100);
+		expect(stageLabels.at(-1)).toBe(STAGE_DISPLAY_LABELS.dreaming);
+		expect(footerStages.at(-1)).toBe(STAGE_DISPLAY_LABELS.dreaming);
+		expect(hints.at(-1)).toBe(
+			"Use /memory to search and manage durable memory.",
+		);
 	});
 
 	it("clears Dreaming state when progressing to a tool stage", () => {

@@ -1,6 +1,7 @@
 import type { Container } from "@evalops/tui";
 import { Loader, Spacer, type TUI } from "@evalops/tui";
 import type { FooterComponent } from "../footer.js";
+import { getLoaderTip } from "../tips/tip-scheduler.js";
 import {
 	STAGE_DISPLAY_LABELS,
 	detectStageKind,
@@ -35,6 +36,7 @@ export class LoaderView {
 				this.options.footer.setStage(label);
 			},
 			setFooterHint: (hint) => this.options.footer.setHint(hint),
+			selectDreamingHint: () => getLoaderTip(),
 			onStageChanged: (label, index, total) => {
 				this.handleStageChanged(label, index, total);
 			},

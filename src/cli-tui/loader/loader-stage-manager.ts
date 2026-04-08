@@ -13,6 +13,7 @@ interface LoaderStageEntry {
 interface LoaderStageManagerOptions {
 	setFooterStage: (label: string | null) => void;
 	setFooterHint?: (hint: string | null) => void;
+	selectDreamingHint?: () => string | null;
 	onStageChanged: (label: string, index: number, total: number) => void;
 	onProgressChanged: (value: number | null) => void;
 }
@@ -262,7 +263,9 @@ export class LoaderStageManager {
 			}
 			this.dreamingActive = true;
 			this.renameStage("planning", STAGE_DISPLAY_LABELS.dreaming);
-			this.options.setFooterHint?.(this.dreamingHint);
+			this.options.setFooterHint?.(
+				this.options.selectDreamingHint?.() ?? this.dreamingHint,
+			);
 		}, this.dreamingDelayMs);
 	}
 

@@ -138,6 +138,13 @@ export const PATHS = {
 			resolve(getAgentDir(), "command-prefs.json")
 		);
 	},
+	/** TUI tip history file path */
+	get TUI_TIP_HISTORY_FILE(): string {
+		return (
+			resolveEnvPath(process.env.MAESTRO_TUI_TIP_HISTORY_FILE) ??
+			join(getComposerHome(), "tips-history.json")
+		);
+	},
 	/** Bash history file path */
 	get BASH_HISTORY_FILE(): string {
 		return (
