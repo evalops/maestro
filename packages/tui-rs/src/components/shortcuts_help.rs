@@ -187,8 +187,10 @@ impl ShortcutsHelp {
     pub fn new_with_queue_binding_label(
         queued_follow_up_edit_binding_label: impl Into<String>,
     ) -> Self {
-        let mut labels = RustTuiKeybindingLabels::default();
-        labels.edit_last_queued_follow_up = queued_follow_up_edit_binding_label.into();
+        let labels = RustTuiKeybindingLabels {
+            edit_last_queued_follow_up: queued_follow_up_edit_binding_label.into(),
+            ..RustTuiKeybindingLabels::default()
+        };
         Self::new_with_binding_labels(labels)
     }
 

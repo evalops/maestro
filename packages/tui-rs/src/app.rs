@@ -4615,10 +4615,12 @@ mod tests {
     use crate::state::QueueMode;
     use tempfile::tempdir;
 
-    fn acquire_keybindings_test_lock() -> std::sync::MutexGuard<'static, ()> {
-        keybindings_test_env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    fn acquire_keybindings_test_lock() -> tokio::sync::MutexGuard<'static, ()> {
+        keybindings_test_env_lock().blocking_lock()
+    }
+
+    async fn acquire_keybindings_test_lock_async() -> tokio::sync::MutexGuard<'static, ()> {
+        keybindings_test_env_lock().lock().await
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -5853,7 +5855,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rebound_shortcuts_open_expected_modals() {
-        let _guard = acquire_keybindings_test_lock();
+        let _guard = acquire_keybindings_test_lock_async().await;
         let temp = tempdir().expect("tempdir");
         let config_path = temp.path().join("keybindings.json");
         std::fs::write(
@@ -5886,7 +5888,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_config_event_reloads_keybindings() {
-        let _guard = acquire_keybindings_test_lock();
+        let _guard = acquire_keybindings_test_lock_async().await;
         let temp = tempdir().expect("tempdir");
         let config_path = temp.path().join("keybindings.json");
         std::fs::write(
