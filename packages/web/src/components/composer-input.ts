@@ -3,7 +3,7 @@
  */
 
 import type { ComposerAttachment } from "@evalops/contracts";
-import { LitElement, css, html } from "lit";
+import { LitElement, type PropertyValues, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { ApiClient, type McpServerStatus } from "../services/api-client.js";
 import {
@@ -496,6 +496,58 @@ export class ComposerInput extends LitElement {
 			color: var(--text-secondary, #8b8d91);
 		}
 
+		.prompt-suggestion {
+			margin-bottom: 0.35rem;
+			padding: 0.6rem 0.75rem;
+			border: 1px solid var(--border-primary, #1e2023);
+			background: var(--bg-secondary, #161b22);
+			box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
+			border-radius: 4px;
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			gap: 0.75rem;
+			font-family: var(--font-mono, monospace);
+		}
+
+		.prompt-suggestion-copy {
+			display: flex;
+			flex-direction: column;
+			gap: 0.25rem;
+			min-width: 0;
+		}
+
+		.prompt-suggestion-label {
+			font-size: 0.62rem;
+			text-transform: uppercase;
+			letter-spacing: 0.12em;
+			color: var(--text-tertiary, #6b7280);
+		}
+
+		.prompt-suggestion-text {
+			font-size: 0.78rem;
+			line-height: 1.5;
+			color: var(--text-primary, #e8e9eb);
+		}
+
+		.prompt-suggestion-actions {
+			display: inline-flex;
+			align-items: center;
+			gap: 0.35rem;
+			flex-shrink: 0;
+		}
+
+		.prompt-suggestion-actions button {
+			padding: 0.38rem 0.65rem;
+			font-size: 0.6rem;
+		}
+
+		.prompt-suggestion-dismiss {
+			background: transparent;
+			border: 1px solid var(--border-primary, #1e2023);
+			color: var(--text-tertiary, #6b7280);
+		}
+
 		@media (max-width: 768px) {
 			textarea {
 				font-size: 16px;
@@ -516,6 +568,8 @@ export class ComposerInput extends LitElement {
 	@property({ attribute: false }) apiClient: ApiClient | null = null;
 	@property({ attribute: false }) slashCommands: WebSlashCommand[] =
 		WEB_SLASH_COMMANDS;
+	@property({ type: String }) promptSuggestion: string | null = null;
+	@property({ type: Boolean }) promptSuggestionLoading = false;
 	@state() private value = "";
 	@state() private showSuggestions = false;
 	@state() private suggestionIndex = 0;
@@ -532,6 +586,7 @@ export class ComposerInput extends LitElement {
 	@state() private mcpLoading = false;
 	@state() private mcpError: string | null = null;
 	@state() private toolPickerOpen = false;
+	@state() private dismissedPromptSuggestion: string | null = null;
 
 	private maxLength = 10000;
 	private allFiles: string[] = [];
@@ -555,6 +610,12 @@ export class ComposerInput extends LitElement {
 	override disconnectedCallback(): void {
 		this.stopVoiceRecognition();
 		super.disconnectedCallback();
+	}
+
+	protected override willUpdate(changed: PropertyValues<this>): void {
+		if (changed.has("promptSuggestion")) {
+			this.dismissedPromptSuggestion = null;
+		}
 	}
 
 	private getSpeechRecognitionCtor(): SpeechRecognitionConstructor | null {
@@ -1322,9 +1383,59 @@ export class ComposerInput extends LitElement {
 	override render() {
 		const charCount = this.value.length;
 		const showCount = charCount > this.maxLength * 0.5;
+		const promptSuggestion = this.promptSuggestion?.trim() || null;
+		const showPromptSuggestion =
+			!this.disabled &&
+			!this.value.trim() &&
+			(this.promptSuggestionLoading ||
+				(promptSuggestion &&
+					promptSuggestion !== this.dismissedPromptSuggestion));
 
 		return html`
 			<div class="input-container">
+				${
+					showPromptSuggestion
+						? html`
+							<div class="prompt-suggestion">
+								<div class="prompt-suggestion-copy">
+									<div class="prompt-suggestion-label">Suggested Next Prompt</div>
+									<div class="prompt-suggestion-text">
+										${
+											this.promptSuggestionLoading && !promptSuggestion
+												? "Generating a likely follow-up..."
+												: promptSuggestion
+										}
+									</div>
+								</div>
+								${
+									promptSuggestion
+										? html`
+											<div class="prompt-suggestion-actions">
+												<button
+													type="button"
+													@click=${() => {
+														this.setValue(promptSuggestion);
+													}}
+												>
+													Use
+												</button>
+												<button
+													type="button"
+													class="prompt-suggestion-dismiss"
+													@click=${() => {
+														this.dismissedPromptSuggestion = promptSuggestion;
+													}}
+												>
+													Dismiss
+												</button>
+											</div>
+										`
+										: null
+								}
+							</div>
+					  `
+						: null
+				}
 				${
 					this.slashHint
 						? html`

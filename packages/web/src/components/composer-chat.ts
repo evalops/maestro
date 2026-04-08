@@ -1168,6 +1168,8 @@ export class ComposerChat extends LitElement {
 	@state() private loading = false;
 	@state() private error: string | null = null;
 	@state() private runtimeStatus: string | null = null;
+	@state() private promptSuggestion: string | null = null;
+	@state() private promptSuggestionLoading = false;
 	@state() private currentModel = "";
 	@state() private theme: "dark" | "light" = "dark";
 	@state() private transportPreference: "auto" | "sse" | "ws" = "auto";
@@ -1247,6 +1249,7 @@ export class ComposerChat extends LitElement {
 	private apiClient!: ApiClient;
 	private approvalModeNoticeSessionId: string | null = null;
 	private approvalModeRequestId = 0;
+	private promptSuggestionRequestId = 0;
 	private artifactsPanelAttachmentsRequestId = 0;
 	private attachmentContentCache = new Map<string, string>();
 	private unsubscribeStore?: () => void;
@@ -2566,6 +2569,8 @@ export class ComposerChat extends LitElement {
 			this.resetPendingSessionRequestUiState();
 			if (this.currentSessionId) {
 				void this.refreshUiState(this.currentSessionId);
+			} else {
+				this.clearPromptSuggestion();
 			}
 			if (!this.shareToken) {
 				this.clearApprovalModeStatus();
@@ -2576,6 +2581,7 @@ export class ComposerChat extends LitElement {
 		if (changed.has("shareToken")) {
 			if (this.shareToken) {
 				this.clearApprovalModeStatus();
+				this.clearPromptSuggestion();
 			} else {
 				void this.loadApprovalModeStatus();
 			}
@@ -3189,6 +3195,7 @@ export class ComposerChat extends LitElement {
 
 	private async selectSession(sessionId: string) {
 		this.runtimeStatus = null;
+		this.clearPromptSuggestion();
 		try {
 			const session = await this.apiClient.getSession(sessionId);
 			if (!session || !session.id) {
@@ -3221,6 +3228,7 @@ export class ComposerChat extends LitElement {
 			this.requestUpdate(); // Force update
 			await this.updateComplete; // Wait for render
 			this.scrollToBottom({ force: true });
+			void this.refreshPromptSuggestion(this.messages);
 		} catch (e) {
 			console.error("Failed to load session:", e);
 			this.error = e instanceof Error ? e.message : "Failed to load session";
@@ -3235,6 +3243,7 @@ export class ComposerChat extends LitElement {
 			if (this.currentSessionId === sessionId) {
 				this.currentSessionId = null;
 				this.messages = [];
+				this.clearPromptSuggestion();
 				this.syncRenderWindowToBottom();
 				this.renderLimit = 200;
 				this.attachmentContentCache.clear();
@@ -3361,6 +3370,59 @@ export class ComposerChat extends LitElement {
 		return out;
 	}
 
+	private clearPromptSuggestion() {
+		this.promptSuggestionRequestId += 1;
+		this.promptSuggestion = null;
+		this.promptSuggestionLoading = false;
+	}
+
+	private shouldRequestPromptSuggestion(messages: Message[]): boolean {
+		const relevant = messages.filter(
+			(message) => message.role === "user" || message.role === "assistant",
+		);
+		const assistantCount = relevant.filter(
+			(message) => message.role === "assistant",
+		).length;
+		const lastMessage = relevant[relevant.length - 1];
+		return assistantCount >= 2 && lastMessage?.role === "assistant";
+	}
+
+	private async refreshPromptSuggestion(messages: Message[] = this.messages) {
+		if (this.shareToken) {
+			this.clearPromptSuggestion();
+			return;
+		}
+		const requestMessages = messages.filter((message) => !message.localOnly);
+		if (!this.shouldRequestPromptSuggestion(requestMessages)) {
+			this.clearPromptSuggestion();
+			return;
+		}
+
+		const requestId = ++this.promptSuggestionRequestId;
+		this.promptSuggestionLoading = true;
+		try {
+			const result = await this.apiClient.suggestPrompt({
+				model: this.currentModel || undefined,
+				messages: requestMessages,
+				sessionId: this.currentSessionId || undefined,
+			});
+			if (requestId !== this.promptSuggestionRequestId || this.shareToken) {
+				return;
+			}
+			this.promptSuggestion = result.suggestion;
+		} catch (error) {
+			if (requestId !== this.promptSuggestionRequestId) {
+				return;
+			}
+			this.promptSuggestion = null;
+			console.warn("Failed to refresh prompt suggestion", error);
+		} finally {
+			if (requestId === this.promptSuggestionRequestId) {
+				this.promptSuggestionLoading = false;
+			}
+		}
+	}
+
 	private async handleSubmit(
 		event: CustomEvent<{
 			text: string;
@@ -3376,6 +3438,7 @@ export class ComposerChat extends LitElement {
 		if ((!text && !attachments) || this.loading || !this.clientOnline) {
 			return;
 		}
+		this.clearPromptSuggestion();
 		this.lastSendFailed = null;
 		this.lastApiError = null;
 
@@ -3812,6 +3875,9 @@ export class ComposerChat extends LitElement {
 
 			// Refresh sessions list
 			await this.loadSessions();
+			if (!terminalStreamOutcome) {
+				void this.refreshPromptSuggestion(this.messages);
+			}
 		} catch (e) {
 			await recoverPendingSessionRequestsOnce();
 			if (sessionIdDuringStream) {
@@ -4778,6 +4844,8 @@ export class ComposerChat extends LitElement {
 					<composer-input
 						.apiClient=${this.apiClient}
 						.slashCommands=${this.slashCommands}
+						.promptSuggestion=${this.promptSuggestion}
+						.promptSuggestionLoading=${this.promptSuggestionLoading}
 						@submit=${this.handleSubmit}
 						@voice-error=${this.handleVoiceError}
 						?disabled=${this.loading || isShared}

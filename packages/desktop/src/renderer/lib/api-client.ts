@@ -5,6 +5,8 @@
  */
 
 import type {
+	ComposerMessage,
+	ComposerPromptSuggestionResponse,
 	MemoryEntry,
 	MemoryMutationResponse,
 	MemoryRecentResponse,
@@ -1065,6 +1067,17 @@ export class ApiClient {
 
 	async listModes(): Promise<ModeList> {
 		return await this.fetchJson<ModeList>("/api/mode?action=list");
+	}
+
+	async suggestPrompt(request: {
+		messages: ComposerMessage[];
+		model?: string;
+		sessionId?: string;
+	}): Promise<ComposerPromptSuggestionResponse> {
+		return await this.fetchJson("/api/prompt-suggestion", {
+			method: "POST",
+			body: JSON.stringify(request),
+		});
 	}
 
 	async setMode(mode: string): Promise<ModeStatus> {

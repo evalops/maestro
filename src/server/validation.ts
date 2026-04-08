@@ -8,6 +8,7 @@ import {
 	ComposerGuardianConfigRequestSchema,
 	ComposerModelSetSchema,
 	ComposerPlanRequestSchema,
+	ComposerPromptSuggestionRequestSchema,
 	ComposerUndoRequestSchema,
 } from "@evalops/contracts";
 import type { Static } from "@sinclair/typebox";
@@ -48,6 +49,12 @@ export type GuardianConfigRequestInput = Static<
 
 export const PlanRequestSchema = ComposerPlanRequestSchema;
 export type PlanRequestInput = Static<typeof PlanRequestSchema>;
+
+export const PromptSuggestionRequestSchema =
+	ComposerPromptSuggestionRequestSchema;
+export type PromptSuggestionRequestInput = Static<
+	typeof PromptSuggestionRequestSchema
+>;
 
 export const BackgroundUpdateRequestSchema =
 	ComposerBackgroundUpdateRequestSchema;

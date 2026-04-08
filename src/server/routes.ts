@@ -53,6 +53,7 @@ import { handlePackageStatus } from "./handlers/package.js";
 import { handlePlan } from "./handlers/plan.js";
 import { handlePolicyValidate } from "./handlers/policy.js";
 import { handlePreview } from "./handlers/preview.js";
+import { handlePromptSuggestion } from "./handlers/prompt-suggestion.js";
 import { handleQueue } from "./handlers/queue.js";
 import { handleQuota } from "./handlers/quota.js";
 import { handleReview } from "./handlers/review.js";
@@ -225,6 +226,11 @@ export function createRoutes(context: WebServerContext): Route[] {
 				handleStatus(req, res, corsHeaders, {
 					staticCacheMaxAge: context.staticMaxAge,
 				}),
+		},
+		{
+			method: "POST",
+			path: "/api/prompt-suggestion",
+			handler: (req, res) => handlePromptSuggestion(req, res, context),
 		},
 		{
 			method: "POST",

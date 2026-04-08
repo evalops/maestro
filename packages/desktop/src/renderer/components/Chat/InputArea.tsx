@@ -60,12 +60,16 @@ export interface InputAreaProps {
 	onSend: (content: string) => void;
 	disabled?: boolean;
 	placeholder?: string;
+	promptSuggestion?: string | null;
+	promptSuggestionLoading?: boolean;
 }
 
 export function InputArea({
 	onSend,
 	disabled = false,
 	placeholder = "Ask anything...",
+	promptSuggestion = null,
+	promptSuggestionLoading = false,
 }: InputAreaProps) {
 	const [value, setValue] = useState("");
 	const [isFocused, setIsFocused] = useState(false);
@@ -80,6 +84,9 @@ export function InputArea({
 	const [toolPickerOpen, setToolPickerOpen] = useState(false);
 	const [activeIndex, setActiveIndex] = useState(0);
 	const [cursorPos, setCursorPos] = useState(0);
+	const [dismissedPromptSuggestion, setDismissedPromptSuggestion] = useState<
+		string | null
+	>(null);
 
 	// Auto-resize textarea
 	const adjustHeight = useCallback(() => {
@@ -299,8 +306,73 @@ export function InputArea({
 		updateMentionState(target.value, nextCursor);
 	};
 
+	const visiblePromptSuggestion =
+		promptSuggestion?.trim() && promptSuggestion !== dismissedPromptSuggestion
+			? promptSuggestion.trim()
+			: null;
+	const showPromptSuggestion =
+		!disabled &&
+		!value.trim() &&
+		(promptSuggestionLoading || Boolean(visiblePromptSuggestion));
+
 	return (
 		<div className="space-y-3" ref={containerRef}>
+			{showPromptSuggestion && (
+				<div
+					className="flex items-center justify-between gap-3 rounded-2xl px-4 py-3"
+					style={{
+						background:
+							"linear-gradient(180deg, rgba(18, 24, 32, 0.92) 0%, rgba(16, 20, 28, 0.96) 100%)",
+						border: "1px solid rgba(20, 184, 166, 0.18)",
+						boxShadow: "0 10px 30px -18px rgba(0, 0, 0, 0.55)",
+					}}
+				>
+					<div className="min-w-0 space-y-1">
+						<div className="text-[10px] uppercase tracking-[0.2em] text-text-tertiary">
+							Suggested Next Prompt
+						</div>
+						<div className="text-sm text-text-primary leading-relaxed">
+							{promptSuggestionLoading && !visiblePromptSuggestion
+								? "Generating a likely follow-up..."
+								: visiblePromptSuggestion}
+						</div>
+					</div>
+					{visiblePromptSuggestion && (
+						<div className="flex items-center gap-2">
+							<button
+								type="button"
+								onClick={() => {
+									setValue(visiblePromptSuggestion);
+									setCursorPos(visiblePromptSuggestion.length);
+									requestAnimationFrame(() => {
+										const textarea = textareaRef.current;
+										if (!textarea) return;
+										textarea.focus();
+										textarea.setSelectionRange(
+											visiblePromptSuggestion.length,
+											visiblePromptSuggestion.length,
+										);
+									});
+								}}
+								className="px-3 py-1.5 rounded-xl text-[11px] font-mono uppercase tracking-[0.14em]
+									bg-accent/15 text-accent hover:bg-accent/20 transition-colors"
+							>
+								Use
+							</button>
+							<button
+								type="button"
+								onClick={() =>
+									setDismissedPromptSuggestion(visiblePromptSuggestion)
+								}
+								className="px-3 py-1.5 rounded-xl text-[11px] font-mono uppercase tracking-[0.14em]
+									border border-line-subtle/60 text-text-tertiary hover:text-text-secondary transition-colors"
+							>
+								Dismiss
+							</button>
+						</div>
+					)}
+				</div>
+			)}
 			{/* Input container with glow effect */}
 			<div className="input-area">
 				<div
