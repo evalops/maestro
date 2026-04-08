@@ -31,6 +31,10 @@ import { runUserPromptWithRecovery } from "../../agent/user-prompt-runtime.js";
 import { dispatchAgentNotification } from "../../hooks/notification-hooks.js";
 import { createSessionHookService } from "../../hooks/session-integration.js";
 import { withMcpPostKeepMessages } from "../../mcp/prompt-recovery.js";
+import {
+	createAutomaticMemoryConsolidationCoordinator,
+	getMemoryConsolidationSystemPrompt,
+} from "../../memory/auto-consolidation.js";
 import { createAutomaticMemoryExtractionCoordinator } from "../../memory/auto-extraction.js";
 import type { RegisteredModel } from "../../models/registry.js";
 import { createLogger } from "../../utils/logger.js";
@@ -547,11 +551,20 @@ export async function handleChat(
 		};
 		const updateSessionSummary =
 			createRuntimeSessionSummaryUpdater(sessionManager);
+		const automaticMemoryConsolidation =
+			createAutomaticMemoryConsolidationCoordinator({
+				createAgent: async () =>
+					createBackgroundAgent(agent.state.model as RegisteredModel, {
+						systemPrompt: getMemoryConsolidationSystemPrompt(),
+					}),
+				getModel: () => agent.state.model,
+			});
 		const automaticMemoryExtraction =
 			createAutomaticMemoryExtractionCoordinator({
 				createAgent: async () =>
 					createBackgroundAgent(agent.state.model as RegisteredModel),
 				getModel: () => agent.state.model,
+				onProcessed: () => automaticMemoryConsolidation.schedule(),
 				sessionManager,
 			});
 		const sessionHookService = createSessionHookService({
@@ -714,7 +727,8 @@ export async function handleChat(
 			unsubscribe();
 			unsubscribeMcpElicitationBridge();
 
-			// Flush any pending session writes
+			await automaticMemoryExtraction.flush();
+			await automaticMemoryConsolidation.flush();
 			await sessionManager.flush();
 
 			// Send final SSE events if connection is still open

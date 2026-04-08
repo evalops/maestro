@@ -520,10 +520,13 @@ async function createAgent(
 
 async function createBackgroundAgent(
 	registeredModel: RegisteredModel,
+	options?: {
+		systemPrompt?: string;
+	},
 ): Promise<Agent> {
 	return createBackgroundTextAgent({
 		model: registeredModel,
-		systemPrompt: getMemoryExtractionSystemPrompt(),
+		systemPrompt: options?.systemPrompt ?? getMemoryExtractionSystemPrompt(),
 		cwd: process.cwd(),
 		getAuthContext: async (provider: string) => authResolver(provider),
 	});

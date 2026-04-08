@@ -42,6 +42,11 @@ import { readWorkspaceFile } from "../headless/utility-file-read.js";
 import { searchWorkspaceFiles } from "../headless/utility-file-search.js";
 import { HeadlessUtilityFileWatchManager } from "../headless/utility-file-watch-manager.js";
 import {
+	type AutomaticMemoryConsolidationCoordinator,
+	createAutomaticMemoryConsolidationCoordinator,
+	getMemoryConsolidationSystemPrompt,
+} from "../memory/auto-consolidation.js";
+import {
 	type AutomaticMemoryExtractionCoordinator,
 	createAutomaticMemoryExtractionCoordinator,
 } from "../memory/auto-extraction.js";
@@ -544,6 +549,7 @@ export class HeadlessSessionRuntime {
 	private disposePromise: Promise<void> | null = null;
 	private updatedAt = Date.now();
 	private readonly updateSessionSummary: (event: AgentEvent) => void;
+	private readonly automaticMemoryConsolidation: AutomaticMemoryConsolidationCoordinator;
 	private readonly automaticMemoryExtraction: AutomaticMemoryExtractionCoordinator;
 
 	private constructor(
@@ -551,6 +557,7 @@ export class HeadlessSessionRuntime {
 		agent: Agent,
 		approvalService: ActionApprovalService,
 		toolRetryService: ToolRetryService,
+		automaticMemoryConsolidation: AutomaticMemoryConsolidationCoordinator,
 		automaticMemoryExtraction: AutomaticMemoryExtractionCoordinator,
 	) {
 		this.scopeKey = options.scope_key;
@@ -561,6 +568,7 @@ export class HeadlessSessionRuntime {
 		this.approvalService = approvalService;
 		this.toolRetryService = toolRetryService;
 		this.agent = agent;
+		this.automaticMemoryConsolidation = automaticMemoryConsolidation;
 		this.automaticMemoryExtraction = automaticMemoryExtraction;
 		this.updateSessionSummary = createRuntimeSessionSummaryUpdater(
 			this.sessionManager,
@@ -615,6 +623,17 @@ export class HeadlessSessionRuntime {
 				includeConductorTools: options.client === "conductor",
 			},
 		);
+		const automaticMemoryConsolidation =
+			createAutomaticMemoryConsolidationCoordinator({
+				createAgent: async () =>
+					options.context.createBackgroundAgent(
+						agent.state.model as RegisteredModel,
+						{
+							systemPrompt: getMemoryConsolidationSystemPrompt(),
+						},
+					),
+				getModel: () => agent.state.model,
+			});
 		const automaticMemoryExtraction =
 			createAutomaticMemoryExtractionCoordinator({
 				createAgent: async () =>
@@ -622,6 +641,7 @@ export class HeadlessSessionRuntime {
 						agent.state.model as RegisteredModel,
 					),
 				getModel: () => agent.state.model,
+				onProcessed: () => automaticMemoryConsolidation.schedule(),
 				sessionManager: options.sessionManager,
 			});
 		return new HeadlessSessionRuntime(
@@ -629,6 +649,7 @@ export class HeadlessSessionRuntime {
 			agent,
 			approvalService,
 			toolRetryService,
+			automaticMemoryConsolidation,
 			automaticMemoryExtraction,
 		);
 	}
@@ -668,6 +689,7 @@ export class HeadlessSessionRuntime {
 			this.fileWatches.dispose();
 			this.agent.abort();
 			await this.automaticMemoryExtraction.flush();
+			await this.automaticMemoryConsolidation.flush();
 			this.finalizeDisposal();
 		})();
 		this.disposePromise = disposePromise;

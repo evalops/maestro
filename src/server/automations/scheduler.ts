@@ -5,6 +5,10 @@ import { DateTime } from "luxon";
 import type { AgentEvent, AppMessage } from "../../agent/types.js";
 import { runUserPromptWithRecovery } from "../../agent/user-prompt-runtime.js";
 import { withMcpPostKeepMessages } from "../../mcp/prompt-recovery.js";
+import {
+	createAutomaticMemoryConsolidationCoordinator,
+	getMemoryConsolidationSystemPrompt,
+} from "../../memory/auto-consolidation.js";
 import { createAutomaticMemoryExtractionCoordinator } from "../../memory/auto-extraction.js";
 import type { RegisteredModel } from "../../models/registry.js";
 import { createRuntimeSessionSummaryUpdater } from "../../session/runtime-summary-updater.js";
@@ -472,10 +476,19 @@ async function executeAutomation(
 	let lastAssistantOutput: string | undefined;
 	const updateSessionSummary =
 		createRuntimeSessionSummaryUpdater(sessionManager);
+	const automaticMemoryConsolidation =
+		createAutomaticMemoryConsolidationCoordinator({
+			createAgent: async () =>
+				context.createBackgroundAgent(agent.state.model as RegisteredModel, {
+					systemPrompt: getMemoryConsolidationSystemPrompt(),
+				}),
+			getModel: () => agent.state.model,
+		});
 	const automaticMemoryExtraction = createAutomaticMemoryExtractionCoordinator({
 		createAgent: async () =>
 			context.createBackgroundAgent(agent.state.model as RegisteredModel),
 		getModel: () => agent.state.model,
+		onProcessed: () => automaticMemoryConsolidation.schedule(),
 		sessionManager,
 	});
 
@@ -501,11 +514,13 @@ async function executeAutomation(
 			getPostKeepMessages: withMcpPostKeepMessages(),
 		});
 		await automaticMemoryExtraction.flush();
+		await automaticMemoryConsolidation.flush();
 		await sessionManager.flush();
 		unsubscribe();
 		return { success: true, output: lastAssistantOutput, sessionId };
 	} catch (error) {
 		await automaticMemoryExtraction.flush();
+		await automaticMemoryConsolidation.flush();
 		await sessionManager.flush();
 		unsubscribe();
 		return {

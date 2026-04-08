@@ -138,6 +138,10 @@ import { loadEnv } from "./load-env.js";
 import { bootstrapLsp } from "./lsp/bootstrap.js";
 import { withMcpPostKeepMessages } from "./mcp/prompt-recovery.js";
 import {
+	createAutomaticMemoryConsolidationCoordinator,
+	getMemoryConsolidationSystemPrompt,
+} from "./memory/auto-consolidation.js";
+import {
 	createAutomaticMemoryExtractionCoordinator,
 	getMemoryExtractionSystemPrompt,
 } from "./memory/auto-extraction.js";
@@ -1191,6 +1195,17 @@ export async function main(args: string[]) {
 	const { setupEventSubscriptions } = await import(
 		"./bootstrap/event-subscriptions-setup.js"
 	);
+	const automaticMemoryConsolidation =
+		createAutomaticMemoryConsolidationCoordinator({
+			createAgent: async () =>
+				createBackgroundTextAgent({
+					model: agent.state.model as Model<Api>,
+					systemPrompt: getMemoryConsolidationSystemPrompt(),
+					cwd: process.cwd(),
+					getAuthContext: (provider) => requireCredential(provider, false),
+				}),
+			getModel: () => agent.state.model as Model<Api>,
+		});
 	const automaticMemoryExtraction = createAutomaticMemoryExtractionCoordinator({
 		createAgent: async () =>
 			createBackgroundTextAgent({
@@ -1200,6 +1215,7 @@ export async function main(args: string[]) {
 				getAuthContext: (provider) => requireCredential(provider, false),
 			}),
 		getModel: () => agent.state.model as Model<Api>,
+		onProcessed: () => automaticMemoryConsolidation.schedule(),
 		sessionManager,
 	});
 	setupEventSubscriptions({
@@ -1288,5 +1304,6 @@ export async function main(args: string[]) {
 		}
 	} finally {
 		await automaticMemoryExtraction.flush();
+		await automaticMemoryConsolidation.flush();
 	}
 }

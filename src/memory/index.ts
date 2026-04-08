@@ -23,7 +23,9 @@
 
 export {
 	addMemory,
+	applyAutoMemoryConsolidation,
 	updateMemory,
+	listAutoDurableMemories,
 	upsertDurableMemory,
 	upsertScopedMemory,
 	deleteMemory,

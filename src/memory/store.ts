@@ -102,6 +102,20 @@ function mergeTags(current?: string[], next?: string[]): string[] | undefined {
 	return Array.from(new Set(values)).sort();
 }
 
+function hasNormalizedTag(entry: MemoryEntry, tag: string): boolean {
+	return (entry.tags ?? []).some(
+		(entryTag) => entryTag.trim().toLowerCase() === tag,
+	);
+}
+
+function isAutoDurableMemoryEntry(entry: MemoryEntry): boolean {
+	return (
+		entry.sessionId === undefined &&
+		hasNormalizedTag(entry, "auto") &&
+		hasNormalizedTag(entry, "durable")
+	);
+}
+
 function matchesQueryOptions(
 	entry: MemoryEntry,
 	options?: MemoryQueryOptions,
@@ -216,6 +230,21 @@ export function upsertDurableMemory(
 	},
 ): { entry: MemoryEntry; created: boolean; updated: boolean } {
 	const store = loadStore();
+	const result = upsertDurableMemoryInStore(store, topic, content, options);
+	if (result.created || result.updated) {
+		saveStore(store);
+	}
+	return result;
+}
+
+function upsertDurableMemoryInStore(
+	store: MemoryStore,
+	topic: string,
+	content: string,
+	options?: {
+		tags?: string[];
+	},
+): { entry: MemoryEntry; created: boolean; updated: boolean } {
 	const normalizedTopic = normalizeTopic(topic);
 	const normalizedTags = normalizeTags(options?.tags);
 	const nextContent = content.replace(/\s+/g, " ").trim();
@@ -238,7 +267,6 @@ export function upsertDurableMemory(
 			updatedAt: now,
 		};
 		store.entries.push(entry);
-		saveStore(store);
 		return { entry, created: true, updated: false };
 	}
 
@@ -254,8 +282,72 @@ export function upsertDurableMemory(
 	existing.content = nextContent;
 	existing.tags = mergedTags;
 	existing.updatedAt = Date.now();
-	saveStore(store);
 	return { entry: existing, created: false, updated: true };
+}
+
+export function listAutoDurableMemories(): MemoryEntry[] {
+	const store = loadStore();
+	return store.entries
+		.filter((entry) => isAutoDurableMemoryEntry(entry))
+		.slice()
+		.sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+export function applyAutoMemoryConsolidation(plan: {
+	removeIds: string[];
+	upserts: Array<{
+		topic: string;
+		content: string;
+		tags?: string[];
+	}>;
+}): { removed: number; added: number; updated: number } {
+	const store = loadStore();
+	const eligibleIds = new Set(
+		store.entries
+			.filter((entry) => isAutoDurableMemoryEntry(entry))
+			.map((entry) => entry.id),
+	);
+	const removeIds = Array.from(
+		new Set(plan.removeIds.filter((id) => eligibleIds.has(id))),
+	);
+
+	let changed = false;
+	let removed = 0;
+	if (removeIds.length > 0) {
+		const removeSet = new Set(removeIds);
+		const before = store.entries.length;
+		store.entries = store.entries.filter((entry) => !removeSet.has(entry.id));
+		removed = before - store.entries.length;
+		changed = changed || removed > 0;
+	}
+
+	let added = 0;
+	let updated = 0;
+	for (const upsert of plan.upserts) {
+		const result = upsertDurableMemoryInStore(
+			store,
+			upsert.topic,
+			upsert.content,
+			{
+				tags: ["auto", "durable", "consolidated", ...(upsert.tags ?? [])],
+			},
+		);
+		if (result.created) {
+			added += 1;
+			changed = true;
+			continue;
+		}
+		if (result.updated) {
+			updated += 1;
+			changed = true;
+		}
+	}
+
+	if (changed) {
+		saveStore(store);
+	}
+
+	return { removed, added, updated };
 }
 
 /**

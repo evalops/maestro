@@ -4,7 +4,7 @@ import type { Agent, Api, Model, TextContent } from "../agent/index.js";
 import { buildSessionMemoryContent } from "../session/session-memory.js";
 import { safeJsonParse } from "../utils/json.js";
 import { createLogger } from "../utils/logger.js";
-import { upsertDurableMemory } from "./index.js";
+import { upsertDurableMemory } from "./store.js";
 
 const logger = createLogger("memory:auto-extraction");
 
@@ -71,6 +71,7 @@ export interface AutomaticMemoryExtractionCoordinator {
 interface AutomaticMemoryExtractionOptions {
 	createAgent: () => Promise<Agent>;
 	getModel: () => Model<Api>;
+	onProcessed?: () => void;
 	sessionManager: {
 		getSessionFile(): string | null | undefined;
 		flush(): Promise<void>;
@@ -239,24 +240,23 @@ export function createAutomaticMemoryExtractionCoordinator(
 			while (queuedSessionPath) {
 				const sessionPath = queuedSessionPath;
 				queuedSessionPath = null;
-				await options.sessionManager.flush();
-				const snapshot = buildSessionMemoryContent(sessionPath);
-				if (!snapshot) {
-					continue;
-				}
-				if (snapshot.assistantTurnCount < MIN_ASSISTANT_TURNS) {
-					continue;
-				}
-				if (snapshot.content.length < MIN_CONTENT_CHARS) {
-					continue;
-				}
-
-				const extractionHash = hashSessionMemory(snapshot.content);
-				if (snapshot.memoryExtractionHash === extractionHash) {
-					continue;
-				}
-
 				try {
+					await options.sessionManager.flush();
+					const snapshot = buildSessionMemoryContent(sessionPath);
+					if (!snapshot) {
+						continue;
+					}
+					if (snapshot.assistantTurnCount < MIN_ASSISTANT_TURNS) {
+						continue;
+					}
+					if (snapshot.content.length < MIN_CONTENT_CHARS) {
+						continue;
+					}
+
+					const extractionHash = hashSessionMemory(snapshot.content);
+					if (snapshot.memoryExtractionHash === extractionHash) {
+						continue;
+					}
 					const memories = await extractDurableMemories({
 						createAgent: options.createAgent,
 						sessionMemory: snapshot.content,
@@ -277,6 +277,7 @@ export function createAutomaticMemoryExtractionCoordinator(
 						extractionHash,
 						sessionPath,
 					);
+					options.onProcessed?.();
 					logger.info("Updated durable memories from session", {
 						sessionId: snapshot.sessionId,
 						model: options.getModel().id,
@@ -286,7 +287,7 @@ export function createAutomaticMemoryExtractionCoordinator(
 					});
 				} catch (error) {
 					logger.warn("Automatic durable memory extraction failed", {
-						sessionId: snapshot.sessionId,
+						sessionPath,
 						error: error instanceof Error ? error.message : String(error),
 					});
 				}

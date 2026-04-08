@@ -72,6 +72,52 @@ function writeSessionFile(path: string): void {
 	);
 }
 
+function writeMalformedSessionFile(path: string): void {
+	const now = new Date("2026-04-07T10:00:00.000Z").toISOString();
+	const entries = [
+		{
+			type: "session",
+			version: 2,
+			id: "session-bad",
+			timestamp: now,
+			cwd: "/tmp/project",
+			subject: "Malformed content",
+		},
+		{
+			type: "message",
+			id: "assistant-bad",
+			parentId: null,
+			timestamp: now,
+			message: {
+				role: "assistant",
+				timestamp: Date.parse(now),
+				api: "openai-responses",
+				provider: "openai",
+				model: "gpt-4o-mini",
+				stopReason: "stop",
+				usage: {
+					input: 1,
+					output: 1,
+					cacheRead: 0,
+					cacheWrite: 0,
+					cost: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						total: 0,
+					},
+				},
+			},
+		},
+	];
+	writeFileSync(
+		path,
+		`${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+		"utf8",
+	);
+}
+
 describe("automatic memory extraction", () => {
 	let maestroHome: string;
 	let sessionPath: string;
@@ -134,6 +180,7 @@ describe("automatic memory extraction", () => {
 					provider: "openai",
 					api: "openai-responses",
 				}) as never,
+			onProcessed: undefined,
 			sessionManager: {
 				getSessionFile: () => sessionPath,
 				flush: async () => {},
@@ -166,6 +213,91 @@ describe("automatic memory extraction", () => {
 		await coordinator.flush();
 
 		expect(promptCalls).toBe(1);
+	});
+
+	it("calls onProcessed after a successful extraction pass", async () => {
+		const { createAutomaticMemoryExtractionCoordinator } = await import(
+			"../../src/memory/auto-extraction.js"
+		);
+		const onProcessed = vi.fn();
+
+		const coordinator = createAutomaticMemoryExtractionCoordinator({
+			createAgent: async () => {
+				const fakeAgent = {
+					state: { messages: [] },
+					prompt: async () => {
+						fakeAgent.state.messages = [
+							{
+								role: "assistant",
+								content: [
+									{
+										type: "text",
+										text: JSON.stringify({
+											memories: [
+												{
+													topic: "team-preferences",
+													content: "Keep PRs focused.",
+												},
+											],
+										}),
+									},
+								],
+							},
+						];
+					},
+				};
+				return fakeAgent as never;
+			},
+			getModel: () =>
+				({
+					id: "gpt-4o-mini",
+					provider: "openai",
+					api: "openai-responses",
+				}) as never,
+			onProcessed,
+			sessionManager: {
+				getSessionFile: () => sessionPath,
+				flush: async () => {},
+				saveSessionMemoryExtractionHash: () => {},
+			},
+		});
+
+		coordinator.schedule(sessionPath);
+		await coordinator.flush();
+
+		expect(onProcessed).toHaveBeenCalledTimes(1);
+	});
+
+	it("swallows malformed session snapshot errors during flush", async () => {
+		const malformedSessionPath = join(maestroHome, "malformed-session.jsonl");
+		writeMalformedSessionFile(malformedSessionPath);
+		const { createAutomaticMemoryExtractionCoordinator } = await import(
+			"../../src/memory/auto-extraction.js"
+		);
+		const createAgent = vi.fn();
+
+		const coordinator = createAutomaticMemoryExtractionCoordinator({
+			createAgent: async () => {
+				createAgent();
+				throw new Error("should not reach extractor");
+			},
+			getModel: () =>
+				({
+					id: "gpt-4o-mini",
+					provider: "openai",
+					api: "openai-responses",
+				}) as never,
+			onProcessed: undefined,
+			sessionManager: {
+				getSessionFile: () => malformedSessionPath,
+				flush: async () => {},
+				saveSessionMemoryExtractionHash: () => {},
+			},
+		});
+
+		coordinator.schedule(malformedSessionPath);
+		await expect(coordinator.flush()).resolves.toBeUndefined();
+		expect(createAgent).not.toHaveBeenCalled();
 	});
 
 	it("exposes a non-empty extraction system prompt", async () => {

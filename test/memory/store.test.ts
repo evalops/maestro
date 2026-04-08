@@ -118,4 +118,91 @@ describe("memory store session scoping", () => {
 			}),
 		]);
 	});
+
+	it("lists only automatic durable global memories", async () => {
+		const memory = await import("../../src/memory/index.js");
+
+		memory.addMemory("manual-note", "Keep this manual note.", {
+			tags: ["durable"],
+		});
+		memory.addMemory("session-memory", "Session-only note.", {
+			sessionId: "sess_1",
+			tags: ["auto", "durable"],
+		});
+		const durable = memory.upsertDurableMemory(
+			"team-preferences",
+			"Keep PRs focused.",
+			{
+				tags: ["auto", "durable", "workflow"],
+			},
+		);
+
+		expect(memory.listAutoDurableMemories()).toEqual([
+			expect.objectContaining({
+				id: durable.entry.id,
+				topic: "team-preferences",
+				tags: ["auto", "durable", "workflow"],
+			}),
+		]);
+	});
+
+	it("applies automatic consolidation only to eligible auto durable memories", async () => {
+		const memory = await import("../../src/memory/index.js");
+
+		const first = memory.upsertDurableMemory(
+			"team-preferences",
+			"Keep PRs focused.",
+			{
+				tags: ["auto", "durable", "workflow"],
+			},
+		);
+		const second = memory.upsertDurableMemory(
+			"team-preferences",
+			"Land changes with green CI.",
+			{
+				tags: ["auto", "durable", "workflow"],
+			},
+		);
+		const protectedEntry = memory.addMemory(
+			"manual-note",
+			"Do not touch this.",
+			{
+				tags: ["manual"],
+			},
+		);
+
+		const result = memory.applyAutoMemoryConsolidation({
+			removeIds: [first.entry.id, protectedEntry.id],
+			upserts: [
+				{
+					topic: "team-preferences",
+					content: "Keep PRs focused and land them with green CI.",
+					tags: ["workflow"],
+				},
+			],
+		});
+
+		expect(result).toMatchObject({
+			removed: 1,
+			added: 1,
+			updated: 0,
+		});
+		expect(memory.getMemory(protectedEntry.id)).toEqual(
+			expect.objectContaining({
+				id: protectedEntry.id,
+				content: "Do not touch this.",
+			}),
+		);
+		expect(memory.listAutoDurableMemories()).toEqual([
+			expect.objectContaining({
+				id: second.entry.id,
+				content: "Land changes with green CI.",
+				tags: ["auto", "durable", "workflow"],
+			}),
+			expect.objectContaining({
+				content: "Keep PRs focused and land them with green CI.",
+				tags: ["auto", "durable", "consolidated", "workflow"],
+			}),
+		]);
+	});
 });
