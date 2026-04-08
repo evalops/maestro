@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import {
 	mkdirSync,
 	mkdtempSync,
@@ -91,6 +92,33 @@ function createMaestroPackage(root: string): string {
 		"utf-8",
 	);
 	return packageDir;
+}
+
+function createCommittedGitRepo(dir: string): void {
+	execFileSync("git", ["init", "--initial-branch=main"], {
+		cwd: dir,
+		stdio: "ignore",
+	});
+	execFileSync("git", ["config", "user.email", "maestro@example.com"], {
+		cwd: dir,
+		stdio: "ignore",
+	});
+	execFileSync("git", ["config", "user.name", "Maestro Tests"], {
+		cwd: dir,
+		stdio: "ignore",
+	});
+	commitGitRepoChanges(dir, "initial");
+}
+
+function commitGitRepoChanges(dir: string, message: string): void {
+	execFileSync("git", ["add", "."], {
+		cwd: dir,
+		stdio: "ignore",
+	});
+	execFileSync("git", ["commit", "-m", message], {
+		cwd: dir,
+		stdio: "ignore",
+	});
 }
 
 describe("handlePackageStatus", () => {
@@ -206,6 +234,79 @@ describe("handlePackageStatus", () => {
 				scope: "project",
 				sourceSpec: "../vendor/pack",
 			},
+		});
+	});
+
+	it("refreshes a configured git package source", async () => {
+		const root = createTempProject();
+		const packageDir = join(root, "vendor", "git-pack");
+		mkdirSync(join(packageDir, "skills", "pkg-skill"), { recursive: true });
+		writeFileSync(
+			join(packageDir, "skills", "pkg-skill", "SKILL.md"),
+			"# Package Skill\n",
+			"utf-8",
+		);
+		writeFileSync(
+			join(packageDir, "package.json"),
+			JSON.stringify({
+				name: "@test/git-package",
+				version: "1.0.0",
+				keywords: ["maestro-package"],
+				maestro: {
+					skills: ["./skills"],
+				},
+			}),
+			"utf-8",
+		);
+		createCommittedGitRepo(packageDir);
+		vi.spyOn(process, "cwd").mockReturnValue(root);
+
+		const inspectReq = makeReq("/api/package?action=inspect", {
+			method: "POST",
+			body: { source: `git:${packageDir}` },
+		});
+		const inspectRes = makeRes();
+		await handlePackageStatus(
+			inspectReq as unknown as IncomingMessage,
+			inspectRes as unknown as ServerResponse,
+			corsHeaders,
+		);
+		expect(inspectRes.statusCode).toBe(200);
+
+		mkdirSync(join(packageDir, "skills", "deploy-skill"), { recursive: true });
+		writeFileSync(
+			join(packageDir, "skills", "deploy-skill", "SKILL.md"),
+			"# Deploy Skill\n",
+			"utf-8",
+		);
+		commitGitRepoChanges(packageDir, "add deploy skill");
+
+		const refreshReq = makeReq("/api/package?action=refresh", {
+			method: "POST",
+			body: { source: `git:${packageDir}` },
+		});
+		const refreshRes = makeRes();
+
+		await handlePackageStatus(
+			refreshReq as unknown as IncomingMessage,
+			refreshRes as unknown as ServerResponse,
+			corsHeaders,
+		);
+
+		expect(refreshRes.statusCode).toBe(200);
+		expect(JSON.parse(refreshRes.body)).toMatchObject({
+			inspection: {
+				discovered: {
+					name: "@test/git-package",
+				},
+				resources: {
+					skills: expect.arrayContaining([
+						expect.stringContaining("deploy-skill"),
+						expect.stringContaining("pkg-skill"),
+					]),
+				},
+			},
+			issues: [],
 		});
 	});
 });

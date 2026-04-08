@@ -742,6 +742,15 @@ export function SettingsModal({
 		return await apiClient.inspectPackage(source);
 	};
 
+	const refreshPackage = async (
+		source: string,
+	): Promise<PackageInspectResponse> => {
+		const result = await apiClient.refreshPackage(source);
+		const status = await apiClient.getPackageStatus();
+		setPackageStatus(status);
+		return result;
+	};
+
 	const validatePackage = async (
 		source: string,
 	): Promise<PackageInspectResponse> => {
@@ -1053,6 +1062,7 @@ export function SettingsModal({
 						onReadMcpResource={readMcpResource}
 						onGetMcpPrompt={getMcpPrompt}
 						onInspectPackage={inspectPackage}
+						onRefreshPackage={refreshPackage}
 						onValidatePackage={validatePackage}
 						onAddPackage={addPackage}
 						onRemovePackage={removePackage}

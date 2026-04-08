@@ -22,6 +22,7 @@ import {
 	matchesAnyPattern,
 	parsePackageSource,
 	parsePackageSpec,
+	refreshPackageSourceSync,
 } from "../../src/packages/index.js";
 
 describe("Maestro Packages", () => {
@@ -176,6 +177,49 @@ describe("Maestro Packages", () => {
 			expect(pkg.path).not.toBe(pkgDir);
 			expect(resources.skills).toHaveLength(1);
 			expect(resources.skills[0]).toContain("review-skill");
+		});
+
+		it("should refresh cached git repositories when the source changes", async () => {
+			const pkgDir = join(testDir, "git-refresh-package");
+			mkdirSync(join(pkgDir, "skills", "review-skill"), { recursive: true });
+			writeFileSync(
+				join(pkgDir, "skills", "review-skill", "SKILL.md"),
+				"# Review Skill\n",
+			);
+			writeFileSync(
+				join(pkgDir, "package.json"),
+				JSON.stringify({
+					name: "@test/git-refresh-package",
+					version: "1.0.0",
+					keywords: ["maestro-package"],
+					maestro: {
+						skills: ["./skills"],
+					},
+				}),
+			);
+			createCommittedGitRepo(pkgDir);
+
+			const sourceSpec = `git:${pkgDir}`;
+			const initialPackage = await loadPackage(sourceSpec);
+			expect(loadPackageResources(initialPackage).skills).toHaveLength(1);
+
+			mkdirSync(join(pkgDir, "skills", "deploy-skill"), { recursive: true });
+			writeFileSync(
+				join(pkgDir, "skills", "deploy-skill", "SKILL.md"),
+				"# Deploy Skill\n",
+			);
+			commitGitRepoChanges(pkgDir, "add deploy skill");
+
+			const stalePackage = await loadPackage(sourceSpec);
+			expect(loadPackageResources(stalePackage).skills).toHaveLength(1);
+
+			refreshPackageSourceSync(parsePackageSource(sourceSpec));
+			const refreshedPackage = await loadPackage(sourceSpec);
+			const refreshedResources = loadPackageResources(refreshedPackage);
+			expect(refreshedResources.skills).toHaveLength(2);
+			expect(
+				refreshedResources.skills.some((path) => path.includes("deploy-skill")),
+			).toBe(true);
 		});
 	});
 
@@ -472,11 +516,15 @@ function createCommittedGitRepo(dir: string): void {
 		cwd: dir,
 		stdio: "ignore",
 	});
+	commitGitRepoChanges(dir, "initial");
+}
+
+function commitGitRepoChanges(dir: string, message: string): void {
 	execFileSync("git", ["add", "."], {
 		cwd: dir,
 		stdio: "ignore",
 	});
-	execFileSync("git", ["commit", "-m", "initial"], {
+	execFileSync("git", ["commit", "-m", message], {
 		cwd: dir,
 		stdio: "ignore",
 	});

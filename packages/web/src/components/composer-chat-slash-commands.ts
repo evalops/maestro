@@ -120,6 +120,7 @@ const MCP_AUTH_REMOVE_USAGE =
 const PACKAGE_ADD_USAGE = "/package add <source> [--scope local|project|user]";
 const PACKAGE_REMOVE_USAGE =
 	"/package remove <source> [--scope local|project|user]";
+const PACKAGE_REFRESH_USAGE = "/package refresh <source>";
 const PACKAGE_INSPECT_USAGE = "/package [inspect|validate] <source>";
 const MEMORY_USAGE =
 	"/memory [save <topic> <content>|search <query> [--session]|list [topic] [--session]|recent [N] [--session]|stats [--session]|delete <id|topic>|export [path]|import <path>|clear --force]";
@@ -693,6 +694,19 @@ function formatPackageRemoveResult(
 		);
 	} else {
 		lines.push("  status: removed from merged config");
+	}
+	return lines.join("\n");
+}
+
+function formatPackageRefreshResult(result: PackageInspectResponse): string {
+	const inspection = result.inspection;
+	const lines = ["Package refresh completed."];
+	lines.push(`  Source: ${inspection.sourceSpec}`);
+	lines.push(`  Resolved: ${inspection.resolvedSource}`);
+	lines.push(`  Type: ${inspection.sourceType}`);
+	lines.push(`  Path: ${inspection.resolvedPath}`);
+	if (inspection.discovered?.name) {
+		lines.push(`  Name: ${inspection.discovered.name}`);
 	}
 	return lines.join("\n");
 }
@@ -1832,6 +1846,20 @@ export async function executeWebSlashCommand(
 					break;
 				}
 
+				if (sub === "refresh") {
+					if (!requireWritableSession("Package refresh")) break;
+					const source = args.replace(/^refresh\b/i, "").trim();
+					if (!source) {
+						context.appendCommandOutput(PACKAGE_REFRESH_USAGE, true);
+						break;
+					}
+					const result = await context.apiClient.refreshPackage(source);
+					context.appendCommandOutput(
+						formatCommandCodeBlock(formatPackageRefreshResult(result)),
+					);
+					break;
+				}
+
 				if (["help", "-h", "--help", "?"].includes(sub)) {
 					context.appendCommandOutput(
 						formatCommandCodeBlock(
@@ -1840,6 +1868,7 @@ export async function executeWebSlashCommand(
 								"/package list",
 								PACKAGE_ADD_USAGE,
 								PACKAGE_REMOVE_USAGE,
+								PACKAGE_REFRESH_USAGE,
 								"/package inspect <source>",
 								"/package validate <source>",
 							].join("\n"),
@@ -1849,7 +1878,7 @@ export async function executeWebSlashCommand(
 				}
 
 				context.appendCommandOutput(
-					"Usage: /package [list|inspect <source>|validate <source>|add <source>|remove <source>]",
+					"Usage: /package [list|inspect <source>|validate <source>|add <source>|remove <source>|refresh <source>]",
 					true,
 				);
 				break;

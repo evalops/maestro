@@ -124,6 +124,127 @@ function createProps(
 				},
 			],
 		}),
+		packageStatus: {
+			packages: [
+				{
+					scope: "project",
+					configPath: "/repo/.maestro/config.toml",
+					sourceSpec: "./packages/example",
+					filters: null,
+					inspection: {
+						sourceSpec: "./packages/example",
+						resolvedSource: "./packages/example",
+						sourceType: "local",
+						resolvedPath: "/repo/packages/example",
+						discovered: {
+							name: "@acme/example",
+							version: "1.0.0",
+							isMaestroPackage: true,
+							hasManifest: true,
+							manifestPaths: {
+								skills: ["tooling"],
+							},
+							errors: [],
+						},
+						resources: {
+							extensions: [],
+							skills: ["tooling"],
+							prompts: [],
+							themes: [],
+						},
+					},
+					issues: [],
+					error: null,
+				},
+			],
+		},
+		onRefreshPackageStatus: vi.fn(),
+		onInspectPackage: vi.fn().mockResolvedValue({
+			inspection: {
+				sourceSpec: "./packages/example",
+				resolvedSource: "./packages/example",
+				sourceType: "local",
+				resolvedPath: "/repo/packages/example",
+				discovered: {
+					name: "@acme/example",
+					version: "1.0.0",
+					isMaestroPackage: true,
+					hasManifest: true,
+					manifestPaths: {
+						skills: ["tooling"],
+					},
+					errors: [],
+				},
+				resources: {
+					extensions: [],
+					skills: ["tooling"],
+					prompts: [],
+					themes: [],
+				},
+			},
+			issues: [],
+		}),
+		onRefreshPackage: vi.fn().mockResolvedValue({
+			inspection: {
+				sourceSpec: "./packages/example",
+				resolvedSource: "./packages/example",
+				sourceType: "local",
+				resolvedPath: "/repo/packages/example",
+				discovered: {
+					name: "@acme/example",
+					version: "1.0.1",
+					isMaestroPackage: true,
+					hasManifest: true,
+					manifestPaths: {
+						skills: ["tooling"],
+					},
+					errors: [],
+				},
+				resources: {
+					extensions: [],
+					skills: ["tooling", "deploy"],
+					prompts: [],
+					themes: [],
+				},
+			},
+			issues: [],
+		}),
+		onValidatePackage: vi.fn().mockResolvedValue({
+			inspection: {
+				sourceSpec: "./packages/example",
+				resolvedSource: "./packages/example",
+				sourceType: "local",
+				resolvedPath: "/repo/packages/example",
+				discovered: {
+					name: "@acme/example",
+					version: "1.0.0",
+					isMaestroPackage: true,
+					hasManifest: true,
+					manifestPaths: {
+						skills: ["tooling"],
+					},
+					errors: [],
+				},
+				resources: {
+					extensions: [],
+					skills: ["tooling"],
+					prompts: [],
+					themes: [],
+				},
+			},
+			issues: [],
+		}),
+		onAddPackage: vi.fn().mockResolvedValue({
+			path: "/repo/.maestro/config.toml",
+			scope: "project",
+			spec: "./packages/example",
+		}),
+		onRemovePackage: vi.fn().mockResolvedValue({
+			path: "/repo/.maestro/config.toml",
+			scope: "project",
+			removedCount: 1,
+			fallback: null,
+		}),
 		composerStatus: null,
 		selectedComposer: "",
 		onSelectedComposerChange: vi.fn(),
@@ -372,5 +493,87 @@ describe("ToolsRuntimeSection UI", () => {
 			name: "linear",
 			decision: "approved",
 		});
+	});
+
+	it("refreshes configured git packages from the settings panel", async () => {
+		const onRefreshPackage = vi.fn().mockResolvedValue({
+			inspection: {
+				sourceSpec: "git:github.com/acme/example@main",
+				resolvedSource: "git:github.com/acme/example@main",
+				sourceType: "git",
+				resolvedPath: "/repo/.maestro/packages/git-1234",
+				discovered: {
+					name: "@acme/example",
+					version: "1.0.1",
+					isMaestroPackage: true,
+					hasManifest: true,
+					manifestPaths: {
+						skills: ["tooling"],
+					},
+					errors: [],
+				},
+				resources: {
+					extensions: [],
+					skills: ["tooling", "deploy"],
+					prompts: [],
+					themes: [],
+				},
+			},
+			issues: [],
+		});
+		const { container } = await renderSection({
+			packageStatus: {
+				packages: [
+					{
+						scope: "project",
+						configPath: "/repo/.maestro/config.toml",
+						sourceSpec: "git:github.com/acme/example@main",
+						filters: null,
+						inspection: {
+							sourceSpec: "git:github.com/acme/example@main",
+							resolvedSource: "git:github.com/acme/example@main",
+							sourceType: "git",
+							resolvedPath: "/repo/.maestro/packages/git-1234",
+							discovered: {
+								name: "@acme/example",
+								version: "1.0.0",
+								isMaestroPackage: true,
+								hasManifest: true,
+								manifestPaths: {
+									skills: ["tooling"],
+								},
+								errors: [],
+							},
+							resources: {
+								extensions: [],
+								skills: ["tooling"],
+								prompts: [],
+								themes: [],
+							},
+						},
+						issues: [],
+						error: null,
+					},
+				],
+			},
+			onRefreshPackage,
+		});
+
+		const refreshButton = container.querySelector(
+			".package-refresh-button",
+		) as HTMLButtonElement | null;
+		expect(refreshButton).toBeDefined();
+
+		await act(async () => {
+			refreshButton?.click();
+			await flushAsyncWork(3);
+		});
+
+		expect(onRefreshPackage).toHaveBeenCalledWith(
+			"git:github.com/acme/example@main",
+		);
+		expect(container.textContent ?? "").toContain(
+			'Refreshed configured package "git:github.com/acme/example@main" from Project config.',
+		);
 	});
 });

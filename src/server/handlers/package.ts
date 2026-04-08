@@ -15,6 +15,7 @@ import {
 import {
 	formatPackageSource,
 	parsePackageSource,
+	refreshPackageSourceSync,
 } from "../../packages/sources.js";
 import { ApiError, respondWithApiError, sendJson } from "../server-utils.js";
 import { parseAndValidateJson } from "../validation.js";
@@ -30,7 +31,12 @@ const PackageSourceSchema = Type.Object({
 	scope: Type.Optional(WritablePackageScopeSchema),
 });
 
+const PackageRefreshSchema = Type.Object({
+	source: Type.String({ minLength: 1 }),
+});
+
 type PackageSourceInput = Static<typeof PackageSourceSchema>;
+type PackageRefreshInput = Static<typeof PackageRefreshSchema>;
 
 function getWritableScope(
 	scope: WritablePackageScope | undefined,
@@ -120,6 +126,22 @@ function findPackageFallback(
 	return null;
 }
 
+async function refreshPackageInspection(
+	sourceSpec: string,
+	projectRoot: string,
+): Promise<{
+	inspection: ReturnType<typeof serializeInspection>;
+	issues: string[];
+}> {
+	const parsedSource = parsePackageSource(sourceSpec, projectRoot);
+	refreshPackageSourceSync(parsedSource);
+	const inspected = await inspectPackageSource(sourceSpec, projectRoot);
+	return {
+		inspection: serializeInspection(inspected),
+		issues: collectPackageValidationIssues(inspected),
+	};
+}
+
 export async function handlePackageStatus(
 	req: IncomingMessage,
 	res: ServerResponse,
@@ -163,6 +185,19 @@ export async function handlePackageStatus(
 				},
 				corsHeaders,
 			);
+			return;
+		}
+
+		if (action === "refresh") {
+			const input = await parseAndValidateJson<PackageRefreshInput>(
+				req,
+				PackageRefreshSchema,
+			);
+			const refreshed = await refreshPackageInspection(
+				input.source,
+				projectRoot,
+			);
+			sendJson(res, 200, refreshed, corsHeaders);
 			return;
 		}
 

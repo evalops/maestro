@@ -49,6 +49,7 @@ function createContext(overrides: Partial<WebSlashCommandContext> = {}) {
 		listMemoryTopics: vi.fn(),
 		listQueue: vi.fn(),
 		readMcpResource: vi.fn(),
+		refreshPackage: vi.fn(),
 		removeMcpAuthPreset: vi.fn(),
 		removeMcpServer: vi.fn(),
 		removePackage: vi.fn(),
@@ -329,6 +330,50 @@ describe("executeWebSlashCommand", () => {
 				),
 			}),
 		]);
+	});
+
+	it("refreshes a configured package from the web slash command", async () => {
+		const { context, outputs, apiClient } = createContext();
+		apiClient.refreshPackage.mockResolvedValue({
+			inspection: {
+				sourceSpec: "git:github.com/acme/pack@main",
+				resolvedSource: "git:github.com/acme/pack@main",
+				sourceType: "git",
+				resolvedPath: "/repo/.maestro/packages/git-1234",
+				discovered: {
+					name: "@acme/pack",
+					version: "1.2.0",
+					isMaestroPackage: true,
+					hasManifest: true,
+					manifestPaths: { skills: ["./skills"] },
+					errors: [],
+				},
+				resources: {
+					extensions: [],
+					skills: ["/repo/.maestro/packages/git-1234/skills/pkg-skill"],
+					prompts: [],
+					themes: [],
+				},
+			},
+			issues: [],
+		});
+
+		await executeWebSlashCommand(
+			"package",
+			"refresh git:github.com/acme/pack@main",
+			context,
+		);
+
+		expect(apiClient.refreshPackage).toHaveBeenCalledWith(
+			"git:github.com/acme/pack@main",
+		);
+		expect(outputs).toEqual([
+			expect.objectContaining({
+				isError: false,
+				output: expect.stringContaining("Package refresh completed."),
+			}),
+		]);
+		expect(outputs[0]?.output).toContain("@acme/pack");
 	});
 
 	it("requires force before clearing memory from the web slash command", async () => {

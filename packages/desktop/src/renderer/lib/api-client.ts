@@ -1300,6 +1300,14 @@ export class ApiClient {
 		);
 	}
 
+	async refreshPackage(source: string): Promise<PackageInspectResponse> {
+		return await this.fetchJsonRequest<PackageInspectResponse>(
+			"/api/package?action=refresh",
+			"POST",
+			{ source },
+		);
+	}
+
 	async validatePackage(source: string): Promise<PackageInspectResponse> {
 		return await this.fetchJsonRequest<PackageInspectResponse>(
 			"/api/package?action=validate",

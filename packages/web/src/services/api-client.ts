@@ -2238,6 +2238,14 @@ export class ApiClient {
 		);
 	}
 
+	async refreshPackage(source: string): Promise<PackageInspectResponse> {
+		return await this.fetchJsonRequestWithFallback<PackageInspectResponse>(
+			"/api/package?action=refresh",
+			"POST",
+			{ source },
+		);
+	}
+
 	async validatePackage(source: string): Promise<PackageInspectResponse> {
 		return await this.fetchJsonRequestWithFallback<PackageInspectResponse>(
 			"/api/package?action=validate",

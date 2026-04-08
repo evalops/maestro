@@ -582,6 +582,7 @@ export class ComposerSettings extends LitElement {
 	@state() private packageScope: PackageScope = "local";
 	@state() private packageAction: "inspect" | "validate" | "add" | null = null;
 	@state() private packageRemovingKey: string | null = null;
+	@state() private packageRefreshingKey: string | null = null;
 	@state() private packageError: string | null = null;
 	@state() private packageNotice: string | null = null;
 	@state() private packagePreview: {
@@ -937,6 +938,28 @@ export class ComposerSettings extends LitElement {
 		}
 	}
 
+	private async refreshPackage(
+		entry: PackageStatusResponse["packages"][number],
+	) {
+		const key = `${entry.scope}:${entry.sourceSpec}`;
+		this.packageRefreshingKey = key;
+		this.packageError = null;
+		this.packageNotice = null;
+		try {
+			const result = await this.apiClient.refreshPackage(entry.sourceSpec);
+			await this.refreshPackageStatus();
+			this.packagePreview = { kind: "inspect", result };
+			this.packageNotice = `Refreshed configured package "${entry.sourceSpec}" from ${this.formatMcpScopeLabel(entry.scope)}.`;
+		} catch (error) {
+			this.packageError =
+				error instanceof Error ? error.message : "Failed to refresh package";
+		} finally {
+			if (this.packageRefreshingKey === key) {
+				this.packageRefreshingKey = null;
+			}
+		}
+	}
+
 	private async searchMcpRegistry(query: string) {
 		this.mcpRegistryLoading = true;
 		this.mcpRegistryError = null;
@@ -993,6 +1016,13 @@ export class ComposerSettings extends LitElement {
 		} finally {
 			this.mcpImportingId = null;
 		}
+	}
+
+	private canRefreshPackage(
+		entry: PackageStatusResponse["packages"][number],
+	): boolean {
+		const sourceType = entry.inspection?.sourceType;
+		return sourceType === "git" || sourceType === "npm";
 	}
 
 	private formatMcpAddMessage(
@@ -1828,17 +1858,38 @@ export class ComposerSettings extends LitElement {
 															${this.formatMcpScopeLabel(entry.scope)}
 														</div>
 													</div>
-													<button
-														class="action-btn"
-														@click=${() => void this.removePackage(entry)}
-														?disabled=${this.packageRemovingKey === entryKey}
+													<div
+														style="display: flex; gap: 0.5rem; align-items: center;"
 													>
 														${
-															this.packageRemovingKey === entryKey
-																? "Removing..."
-																: "Remove"
+															this.canRefreshPackage(entry)
+																? html`
+																	<button
+																		class="action-btn package-refresh-button"
+																		@click=${() => void this.refreshPackage(entry)}
+																		?disabled=${this.packageRefreshingKey === entryKey}
+																	>
+																		${
+																			this.packageRefreshingKey === entryKey
+																				? "Refreshing..."
+																				: "Refresh"
+																		}
+																	</button>
+																`
+																: ""
 														}
-													</button>
+														<button
+															class="action-btn"
+															@click=${() => void this.removePackage(entry)}
+															?disabled=${this.packageRemovingKey === entryKey}
+														>
+															${
+																this.packageRemovingKey === entryKey
+																	? "Removing..."
+																	: "Remove"
+															}
+														</button>
+													</div>
 												</div>
 												<div class="panel-card-copy">Source: ${entry.sourceSpec}</div>
 												<div class="panel-card-copy">Config: ${entry.configPath}</div>

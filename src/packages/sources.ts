@@ -164,6 +164,14 @@ export async function resolvePackageSource(
 	return resolvePackageSourceSync(source, cacheDir);
 }
 
+export function refreshPackageSourceSync(
+	source: PackageSource,
+	cacheDir?: string,
+): string {
+	clearCachedPackageSource(source, cacheDir);
+	return resolvePackageSourceSync(source, cacheDir);
+}
+
 export function resolvePackageSourceSync(
 	source: PackageSource,
 	cacheDir?: string,
@@ -180,6 +188,30 @@ export function resolvePackageSourceSync(
 
 export function clearResolvedPackageSourceCache(): void {
 	resolvedPackageSourcePaths.clear();
+}
+
+export function clearCachedPackageSource(
+	source: PackageSource,
+	cacheDir?: string,
+): { cleared: boolean; path: string | null } {
+	const remoteIdentity = getRemoteSourceIdentity(source);
+	if (!remoteIdentity) {
+		return { cleared: false, path: null };
+	}
+
+	const resolvedPath = getCachedSourcePath(
+		remoteIdentity.kind,
+		remoteIdentity.identity,
+		cacheDir,
+	);
+	const cacheKey = `${remoteIdentity.kind}:${remoteIdentity.identity}`;
+	const exists = existsSync(resolvedPath);
+	rmSync(resolvedPath, { recursive: true, force: true });
+	resolvedPackageSourcePaths.delete(cacheKey);
+	return {
+		cleared: exists,
+		path: resolvedPath,
+	};
 }
 
 /**
@@ -269,6 +301,25 @@ function getCachedSourcePath(
 	const resolvedPath = join(getPackageCacheDir(cacheDir), `${kind}-${digest}`);
 	resolvedPackageSourcePaths.set(cacheKey, resolvedPath);
 	return resolvedPath;
+}
+
+function getRemoteSourceIdentity(
+	source: PackageSource,
+): { kind: "git" | "npm"; identity: string } | null {
+	switch (source.type) {
+		case "local":
+			return null;
+		case "git":
+			return {
+				kind: "git",
+				identity: `${source.url}@${source.ref ?? ""}`,
+			};
+		case "npm":
+			return {
+				kind: "npm",
+				identity: `${source.name}@${source.version ?? ""}`,
+			};
+	}
 }
 
 function normalizeGitCloneUrl(url: string): string {

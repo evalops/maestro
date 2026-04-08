@@ -178,6 +178,7 @@ export interface ToolsRuntimeSectionProps {
 		args?: Record<string, string>,
 	) => Promise<McpPromptResponse>;
 	onInspectPackage: (source: string) => Promise<PackageInspectResponse>;
+	onRefreshPackage: (source: string) => Promise<PackageInspectResponse>;
 	onValidatePackage: (source: string) => Promise<PackageInspectResponse>;
 	onAddPackage: (input: PackageMutationRequest) => Promise<PackageAddResponse>;
 	onRemovePackage: (
@@ -240,6 +241,13 @@ function formatPackageRemoveNotice(
 		return `Removed configured package "${source}" from ${formatPackageScopeLabel(result.scope)}. Still configured in ${formatPackageScopeLabel(result.fallback.scope)}.`;
 	}
 	return `Removed configured package "${source}" from ${formatPackageScopeLabel(result.scope)}.`;
+}
+
+function canRefreshPackage(entry: PackageStatusEntry): boolean {
+	return (
+		entry.inspection?.sourceType === "git" ||
+		entry.inspection?.sourceType === "npm"
+	);
 }
 
 function formatMcpErrorLabel(error: string | undefined): string | null {
@@ -524,6 +532,7 @@ export function ToolsRuntimeSection({
 	onReadMcpResource,
 	onGetMcpPrompt,
 	onInspectPackage,
+	onRefreshPackage,
 	onValidatePackage,
 	onAddPackage,
 	onRemovePackage,
@@ -670,6 +679,9 @@ export function ToolsRuntimeSection({
 	const [removingPackageKey, setRemovingPackageKey] = useState<string | null>(
 		null,
 	);
+	const [refreshingPackageKey, setRefreshingPackageKey] = useState<
+		string | null
+	>(null);
 	const [packageNotice, setPackageNotice] = useState<string | null>(null);
 	const [packageError, setPackageError] = useState<string | null>(null);
 	const [packagePreview, setPackagePreview] = useState<{
@@ -775,6 +787,26 @@ export function ToolsRuntimeSection({
 			);
 		} finally {
 			setRemovingPackageKey((current) => (current === key ? null : current));
+		}
+	};
+
+	const handleRefreshPackage = async (entry: PackageStatusEntry) => {
+		const key = `${entry.scope}:${entry.sourceSpec}`;
+		setRefreshingPackageKey(key);
+		setPackageError(null);
+		setPackageNotice(null);
+		try {
+			const result = await onRefreshPackage(entry.sourceSpec);
+			setPackagePreview({ kind: "inspect", result });
+			setPackageNotice(
+				`Refreshed configured package "${entry.sourceSpec}" from ${formatPackageScopeLabel(entry.scope)}.`,
+			);
+		} catch (error) {
+			setPackageError(
+				error instanceof Error ? error.message : "Failed to refresh package",
+			);
+		} finally {
+			setRefreshingPackageKey((current) => (current === key ? null : current));
 		}
 	};
 
@@ -2914,16 +2946,30 @@ export function ToolsRuntimeSection({
 												</div>
 												<div>{formatPackageScopeLabel(entry.scope)}</div>
 											</div>
-											<button
-												type="button"
-												className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-secondary/60 disabled:opacity-60"
-												onClick={() => void handleRemovePackage(entry)}
-												disabled={removingPackageKey === entryKey}
-											>
-												{removingPackageKey === entryKey
-													? "Removing..."
-													: "Remove"}
-											</button>
+											<div className="flex items-center gap-2">
+												{canRefreshPackage(entry) && (
+													<button
+														type="button"
+														className="package-refresh-button px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-secondary/60 disabled:opacity-60"
+														onClick={() => void handleRefreshPackage(entry)}
+														disabled={refreshingPackageKey === entryKey}
+													>
+														{refreshingPackageKey === entryKey
+															? "Refreshing..."
+															: "Refresh"}
+													</button>
+												)}
+												<button
+													type="button"
+													className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-secondary/60 disabled:opacity-60"
+													onClick={() => void handleRemovePackage(entry)}
+													disabled={removingPackageKey === entryKey}
+												>
+													{removingPackageKey === entryKey
+														? "Removing..."
+														: "Remove"}
+												</button>
+											</div>
 										</div>
 										<div className="break-all">Source: {entry.sourceSpec}</div>
 										<div className="break-all">Config: {entry.configPath}</div>

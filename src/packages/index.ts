@@ -38,8 +38,10 @@ export {
 } from "./runtime.js";
 export {
 	clearResolvedPackageSourceCache,
+	clearCachedPackageSource,
 	formatPackageSource,
 	parsePackageSource,
+	refreshPackageSourceSync,
 	resolvePackageSource,
 	resolvePackageSourceSync,
 } from "./sources.js";

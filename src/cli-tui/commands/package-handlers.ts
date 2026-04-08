@@ -11,6 +11,7 @@ import {
 	formatPackageSource,
 	parsePackageSource,
 	parsePackageSpec,
+	refreshPackageSourceSync,
 } from "../../packages/index.js";
 import {
 	type ConfiguredPackageReport,
@@ -23,6 +24,7 @@ import { parseCommandArguments } from "../../tools/shell-utils.js";
 import type { CommandExecutionContext } from "./types.js";
 
 const PACKAGE_INSPECT_USAGE = "/package [inspect|validate] <source>";
+const PACKAGE_REFRESH_USAGE = "/package refresh <source>";
 const PACKAGE_ADD_USAGE = "/package add <source> [--scope local|project|user]";
 const PACKAGE_REMOVE_USAGE =
 	"/package remove <source> [--scope local|project|user]";
@@ -37,6 +39,7 @@ export const PACKAGE_SUBCOMMANDS = [
 	{ name: "add", description: "Add a Maestro package to config.toml" },
 	{ name: "list", description: "List configured Maestro packages" },
 	{ name: "remove", description: "Remove a Maestro package from config.toml" },
+	{ name: "refresh", description: "Refresh a configured remote package cache" },
 	{ name: "inspect", description: "Inspect a Maestro package source" },
 	{ name: "validate", description: "Validate a Maestro package source" },
 ] as const;
@@ -105,6 +108,16 @@ export function createPackageCommandHandler(deps: PackageCommandDeps) {
 				);
 				showPackageHelp(deps);
 			}
+			return;
+		}
+
+		if (subcommand === "refresh") {
+			if (tokens.length !== 2) {
+				ctx.showError(`Usage: ${PACKAGE_REFRESH_USAGE}`);
+				showPackageHelp(deps);
+				return;
+			}
+			await runPackageRefresh(tokens[1]!, deps, ctx);
 			return;
 		}
 
@@ -215,6 +228,23 @@ async function runPackageSubcommand(
 	}
 
 	publishOutput(deps, formatValidationSuccess(inspected, deps.cwd));
+}
+
+async function runPackageRefresh(
+	sourceSpec: string,
+	deps: PackageCommandDeps,
+	ctx: CommandExecutionContext,
+): Promise<void> {
+	try {
+		const source = parsePackageSource(sourceSpec, deps.cwd);
+		refreshPackageSourceSync(source);
+		const inspected = await inspectPackageSource(sourceSpec, deps.cwd);
+		publishOutput(deps, formatRefreshSuccess(inspected));
+	} catch (error) {
+		ctx.showError(
+			error instanceof Error ? error.message : "Failed to refresh package.",
+		);
+	}
 }
 
 function runPackageAdd(
@@ -441,6 +471,18 @@ function formatValidationSuccess(
 	return lines.join("\n");
 }
 
+function formatRefreshSuccess(inspected: InspectedPackage): string {
+	const lines = ["Package refresh completed."];
+	lines.push(`  Source: ${inspected.sourceSpec}`);
+	lines.push(`  Resolved: ${formatPackageSource(inspected.source)}`);
+	lines.push(`  Type: ${inspected.source.type}`);
+	lines.push(`  Path: ${inspected.resolvedPath}`);
+	if (inspected.discovered?.packageJson.name) {
+		lines.push(`  Name: ${inspected.discovered.packageJson.name}`);
+	}
+	return lines.join("\n");
+}
+
 function formatValidationFailure(
 	inspected: InspectedPackage,
 	issues: string[],
@@ -506,6 +548,7 @@ function showPackageHelp(deps: PackageCommandDeps): void {
   /package add <source>      Add a configured Maestro package
   /package list               List configured Maestro packages
   /package remove <source>   Remove a configured Maestro package
+  /package refresh <source>  Refresh a configured package cache
   /package inspect <source>   Inspect a Maestro package source
   /package validate <source>  Validate a Maestro package source
   /package <source>           Shorthand for inspect

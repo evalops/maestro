@@ -312,6 +312,31 @@ function createApiClientMock(): ApiClient {
 			},
 			issues: [],
 		}),
+		refreshPackage: vi.fn().mockResolvedValue({
+			inspection: {
+				sourceSpec: "./packages/new-pack",
+				resolvedSource: "./packages/new-pack",
+				sourceType: "git",
+				resolvedPath: "/repo/.maestro/packages/git-1234",
+				discovered: {
+					name: "@acme/new-pack",
+					version: "1.0.1",
+					isMaestroPackage: true,
+					hasManifest: true,
+					manifestPaths: {
+						skills: ["tooling"],
+					},
+					errors: [],
+				},
+				resources: {
+					extensions: [],
+					skills: ["tooling", "deploy"],
+					prompts: [],
+					themes: [],
+				},
+			},
+			issues: [],
+		}),
 		validatePackage: vi.fn().mockResolvedValue({
 			inspection: {
 				sourceSpec: "./packages/new-pack",
@@ -1606,6 +1631,128 @@ describe("ComposerSettings MCP section", () => {
 		});
 		expect(element.shadowRoot?.textContent ?? "").toContain(
 			'Added configured package "./packages/new-pack" to Project.',
+		);
+	});
+
+	it("refreshes a configured git package and reloads package status", async () => {
+		const apiClient = createApiClientMock();
+		(apiClient.getPackageStatus as ReturnType<typeof vi.fn>)
+			.mockResolvedValueOnce({
+				packages: [
+					{
+						scope: "project",
+						configPath: "/repo/.maestro/config.toml",
+						sourceSpec: "git:github.com/acme/example@main",
+						filters: null,
+						inspection: {
+							sourceSpec: "git:github.com/acme/example@main",
+							resolvedSource: "git:github.com/acme/example@main",
+							sourceType: "git",
+							resolvedPath: "/repo/.maestro/packages/git-1234",
+							discovered: {
+								name: "@acme/example",
+								version: "1.0.0",
+								isMaestroPackage: true,
+								hasManifest: true,
+								manifestPaths: {
+									skills: ["tooling"],
+								},
+								errors: [],
+							},
+							resources: {
+								extensions: [],
+								skills: ["tooling"],
+								prompts: [],
+								themes: [],
+							},
+						},
+						issues: [],
+						error: null,
+					},
+				],
+			})
+			.mockResolvedValueOnce({
+				packages: [
+					{
+						scope: "project",
+						configPath: "/repo/.maestro/config.toml",
+						sourceSpec: "git:github.com/acme/example@main",
+						filters: null,
+						inspection: {
+							sourceSpec: "git:github.com/acme/example@main",
+							resolvedSource: "git:github.com/acme/example@main",
+							sourceType: "git",
+							resolvedPath: "/repo/.maestro/packages/git-1234",
+							discovered: {
+								name: "@acme/example",
+								version: "1.0.1",
+								isMaestroPackage: true,
+								hasManifest: true,
+								manifestPaths: {
+									skills: ["tooling"],
+								},
+								errors: [],
+							},
+							resources: {
+								extensions: [],
+								skills: ["tooling", "deploy"],
+								prompts: [],
+								themes: [],
+							},
+						},
+						issues: [],
+						error: null,
+					},
+				],
+			});
+		(apiClient.refreshPackage as ReturnType<typeof vi.fn>).mockResolvedValue({
+			inspection: {
+				sourceSpec: "git:github.com/acme/example@main",
+				resolvedSource: "git:github.com/acme/example@main",
+				sourceType: "git",
+				resolvedPath: "/repo/.maestro/packages/git-1234",
+				discovered: {
+					name: "@acme/example",
+					version: "1.0.1",
+					isMaestroPackage: true,
+					hasManifest: true,
+					manifestPaths: {
+						skills: ["tooling"],
+					},
+					errors: [],
+				},
+				resources: {
+					extensions: [],
+					skills: ["tooling", "deploy"],
+					prompts: [],
+					themes: [],
+				},
+			},
+			issues: [],
+		});
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Boolean(element.shadowRoot?.querySelector(".package-refresh-button")),
+		);
+
+		const button = element.shadowRoot?.querySelector(
+			".package-refresh-button",
+		) as HTMLButtonElement | null;
+		expect(button).not.toBeNull();
+		button?.click();
+
+		await waitForSettled(element, () =>
+			(element.shadowRoot?.textContent ?? "").includes(
+				'Refreshed configured package "git:github.com/acme/example@main" from Project config.',
+			),
+		);
+
+		expect(apiClient.refreshPackage).toHaveBeenCalledWith(
+			"git:github.com/acme/example@main",
+		);
+		expect(element.shadowRoot?.textContent ?? "").toContain(
+			'Refreshed configured package "git:github.com/acme/example@main" from Project config.',
 		);
 	});
 

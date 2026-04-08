@@ -370,6 +370,58 @@ describe("package command", () => {
 			expect.stringContaining("Type: git"),
 		);
 	});
+
+	it("refreshes a cached git package source", async () => {
+		const root = createTempDir("maestro-package-command-");
+		process.env.MAESTRO_HOME = join(root, ".maestro-home");
+		const packageDir = join(root, "git-refresh-source");
+		mkdirSync(join(packageDir, "skills", "git-skill"), { recursive: true });
+		writeFileSync(
+			join(packageDir, "skills", "git-skill", "SKILL.md"),
+			"# Git Skill\n",
+			"utf-8",
+		);
+		writeFileSync(
+			join(packageDir, "package.json"),
+			JSON.stringify({
+				name: "@test/refresh-git-package",
+				version: "1.0.0",
+				keywords: ["maestro-package"],
+				maestro: {
+					skills: ["./skills"],
+				},
+			}),
+			"utf-8",
+		);
+		createCommittedGitRepo(packageDir);
+
+		const addContent = vi.fn();
+		const handler = createPackageCommandHandler({
+			cwd: root,
+			addContent,
+			requestRender: vi.fn(),
+		});
+
+		await handler(createContext(`/package inspect git:${packageDir}`));
+
+		mkdirSync(join(packageDir, "skills", "deploy-skill"), { recursive: true });
+		writeFileSync(
+			join(packageDir, "skills", "deploy-skill", "SKILL.md"),
+			"# Deploy Skill\n",
+			"utf-8",
+		);
+		commitGitRepoChanges(packageDir, "add deploy skill");
+
+		await handler(createContext(`/package refresh git:${packageDir}`));
+		await handler(createContext(`/package inspect git:${packageDir}`));
+
+		expect(addContent).toHaveBeenCalledWith(
+			expect.stringContaining("Package refresh completed."),
+		);
+		expect(addContent).toHaveBeenCalledWith(
+			expect.stringContaining("Skills: 2 (deploy-skill, git-skill)"),
+		);
+	});
 });
 
 function createCommittedGitRepo(dir: string): void {
@@ -385,11 +437,15 @@ function createCommittedGitRepo(dir: string): void {
 		cwd: dir,
 		stdio: "ignore",
 	});
+	commitGitRepoChanges(dir, "initial");
+}
+
+function commitGitRepoChanges(dir: string, message: string): void {
 	execFileSync("git", ["add", "."], {
 		cwd: dir,
 		stdio: "ignore",
 	});
-	execFileSync("git", ["commit", "-m", "initial"], {
+	execFileSync("git", ["commit", "-m", message], {
 		cwd: dir,
 		stdio: "ignore",
 	});
