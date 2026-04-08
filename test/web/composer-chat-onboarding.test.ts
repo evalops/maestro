@@ -96,5 +96,6 @@ describe("composer-chat onboarding empty state", () => {
 		expect(container.textContent ?? "").toContain(
 			"Run /init to scaffold AGENTS.md instructions for this project.",
 		);
+		expect(container.textContent ?? "").toContain("Run /init");
 	});
 });

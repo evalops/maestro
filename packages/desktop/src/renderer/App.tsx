@@ -206,9 +206,11 @@ export default function App() {
 					{activeView === "chat" ? (
 						<ChatContainer
 							sessionId={currentSessionId}
+							sessions={sessions}
 							showTimestamps={settings.showTimestamps}
 							density={settings.density}
 							thinkingLevel={settings.thinkingLevel}
+							onSessionSelect={handleSessionSelect}
 						/>
 					) : (
 						<AutomationsView

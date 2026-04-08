@@ -9,6 +9,10 @@
  * Design: "Precision Brutalism" - clean typography, purposeful animation
  */
 
+import {
+	getActiveComposerProjectOnboardingSteps,
+	getComposerProjectOnboardingActions,
+} from "@evalops/contracts";
 import { Container, Text, visibleWidth } from "@evalops/tui";
 import type { ProjectOnboardingState } from "../onboarding/project-onboarding.js";
 import { theme } from "../theme/theme.js";
@@ -140,10 +144,8 @@ export class WelcomeAnimation extends Container {
 	}
 
 	private buildOnboardingLines(): string[] {
-		const steps =
-			this.onboardingState?.steps.filter(
-				(step) => step.isEnabled && !step.isComplete,
-			) ?? [];
+		const steps = getActiveComposerProjectOnboardingSteps(this.onboardingState);
+		const actions = getComposerProjectOnboardingActions(this.onboardingState);
 		if (steps.length === 0) {
 			return [];
 		}
@@ -153,6 +155,18 @@ export class WelcomeAnimation extends Container {
 			...steps
 				.slice(0, 2)
 				.map((step) => centerLine(theme.fg("dim", step.text))),
+			...actions
+				.slice(0, 2)
+				.map((action) =>
+					centerLine(
+						theme.fg(
+							action.kind === "command" ? "muted" : "dim",
+							action.kind === "command"
+								? `Run ${action.value}`
+								: `Try ${action.label.toLowerCase()}`,
+						),
+					),
+				),
 		];
 	}
 }

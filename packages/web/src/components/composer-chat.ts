@@ -8,6 +8,13 @@ import type {
 	ComposerPendingClientToolRequest,
 	ComposerToolRetryRequest,
 } from "@evalops/contracts";
+import {
+	getActiveComposerProjectOnboardingSteps,
+	getComposerProjectOnboardingActions,
+	getComposerResumableSessions,
+	normalizeComposerResumeSummary,
+	truncateComposerResumeSummary,
+} from "@evalops/contracts";
 import { LitElement, type PropertyValues, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { parse as parsePartialJson } from "partial-json";
@@ -131,31 +138,6 @@ function getMessageTextContent(content: Message["content"]): string {
 	return content
 		.map((item) => (item?.type === "text" ? item.text : ""))
 		.join("");
-}
-
-function normalizeResumeSummary(
-	summary: string | null | undefined,
-): string | null {
-	if (typeof summary !== "string") {
-		return null;
-	}
-	const trimmed = summary.trim();
-	return trimmed.length > 0 ? trimmed : null;
-}
-
-function truncateResumeSummary(summary: string, max = 140): string {
-	if (summary.length <= max) {
-		return summary;
-	}
-	return `${summary.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
-}
-
-function getActiveProjectOnboardingSteps(status: WorkspaceStatus | null) {
-	return (
-		status?.onboarding?.steps.filter(
-			(step) => step.isEnabled && !step.isComplete,
-		) ?? []
-	);
 }
 
 export function hasAssistantMessageProgress(
@@ -1088,6 +1070,37 @@ export class ComposerChat extends LitElement {
 
 		.onboarding-list code {
 			font-size: 0.85em;
+		}
+
+		.onboarding-actions {
+			margin-top: 0.9rem;
+			display: flex;
+			flex-wrap: wrap;
+			gap: 0.65rem;
+		}
+
+		.onboarding-action {
+			background: var(--bg-elevated, #161719);
+			border: 1px solid rgba(20, 184, 166, 0.2);
+			color: var(--text-primary, #e8e9eb);
+			padding: 0.55rem 0.8rem;
+			font-family: var(--font-mono, monospace);
+			font-size: 0.72rem;
+			cursor: pointer;
+			transition: border-color 0.15s ease, background 0.15s ease;
+		}
+
+		.onboarding-action:hover {
+			border-color: rgba(20, 184, 166, 0.36);
+			background: var(--bg-surface, #1a1b1e);
+		}
+
+		.onboarding-action.command {
+			border-color: rgba(245, 158, 11, 0.22);
+		}
+
+		.onboarding-action.command:hover {
+			border-color: rgba(245, 158, 11, 0.38);
 		}
 
 		/* Responsive */
@@ -2575,7 +2588,8 @@ export class ComposerChat extends LitElement {
 		const shouldRecord =
 			!this.shareToken &&
 			this.messages.length === 0 &&
-			getActiveProjectOnboardingSteps(this.status).length > 0;
+			getActiveComposerProjectOnboardingSteps(this.status?.onboarding).length >
+				0;
 		if (!shouldRecord || this.onboardingImpressionRecorded) {
 			return;
 		}
@@ -3038,6 +3052,18 @@ export class ComposerChat extends LitElement {
 		}
 	}
 
+	private async submitEntryAction(value: string) {
+		await this.handleSubmit(
+			new CustomEvent("submit", {
+				detail: { text: value },
+			}) as CustomEvent<{
+				text: string;
+				retry?: boolean;
+				attachments?: Message["attachments"];
+			}>,
+		);
+	}
+
 	private async updateSessionMetadata(
 		sessionId: string,
 		updates: Partial<Pick<SessionSummary, "favorite" | "tags" | "title">>,
@@ -3182,10 +3208,12 @@ export class ComposerChat extends LitElement {
 			await this.updateComplete;
 			this.restorePendingSessionRequests(session);
 			await this.refreshUiState(session.id);
-			const resumeSummary = normalizeResumeSummary(session.resumeSummary);
+			const resumeSummary = normalizeComposerResumeSummary(
+				session.resumeSummary,
+			);
 			if (resumeSummary) {
 				this.showToast(
-					`Resume: ${truncateResumeSummary(resumeSummary)}`,
+					`Resume: ${truncateComposerResumeSummary(resumeSummary)}`,
 					"info",
 					2600,
 				);
@@ -4226,9 +4254,13 @@ export class ComposerChat extends LitElement {
 			(this.approvalMode
 				? `Approval mode: ${this.approvalMode}`
 				: "Approval mode");
-		const onboardingSteps = getActiveProjectOnboardingSteps(this.status);
-		const showSessionGallery =
-			!isShared && this.messages.length === 0 && this.sessions.length > 0;
+		const onboardingSteps = getActiveComposerProjectOnboardingSteps(
+			this.status?.onboarding,
+		);
+		const onboardingActions = getComposerProjectOnboardingActions(
+			this.status?.onboarding,
+		);
+		const showSessionGallery = !isShared && this.messages.length === 0;
 		const hasMessages = this.messages.length > 0;
 		const {
 			start: windowStart,
@@ -4298,7 +4330,12 @@ export class ComposerChat extends LitElement {
 						style="height: ${this.virtualPaddingBottom}px"
 					></div>`
 				: "";
-		const recentSessions = showSessionGallery ? this.sessions.slice(0, 8) : [];
+		const recentSessions = showSessionGallery
+			? getComposerResumableSessions(this.sessions, {
+					excludeSessionId: this.currentSessionId,
+					limit: 8,
+				})
+			: [];
 		const sessionLoading = this.loading && this.messages.length === 0;
 		const lastUpdated = this.status?.lastUpdated ?? null;
 
@@ -4624,12 +4661,35 @@ export class ComposerChat extends LitElement {
 															(step) => html`<li>${step.text}</li>`,
 														)}
 													</ul>
+													${
+														onboardingActions.length > 0
+															? html`
+																<div class="onboarding-actions">
+																	${onboardingActions.map(
+																		(action) => html`
+																			<button
+																				type="button"
+																				class="onboarding-action ${
+																					action.kind === "command"
+																						? "command"
+																						: ""
+																				}"
+																				@click=${() => void this.submitEntryAction(action.value)}
+																			>
+																				${action.label}
+																			</button>
+																		`,
+																	)}
+																</div>
+															`
+															: ""
+													}
 												</div>
 											`
 											: ""
 									}
 									${
-										showSessionGallery
+										showSessionGallery && recentSessions.length > 0
 											? html`
 											<div class="session-gallery" aria-live="polite">
 												<div class="session-gallery-header">
@@ -4653,10 +4713,12 @@ export class ComposerChat extends LitElement {
 																	<span>Updated ${this.formatSessionDate(session.updatedAt)}</span>
 																</div>
 																${
-																	normalizeResumeSummary(session.resumeSummary)
+																	normalizeComposerResumeSummary(
+																		session.resumeSummary,
+																	)
 																		? html`<div class="session-card-summary">
-																			${truncateResumeSummary(
-																				normalizeResumeSummary(
+																			${truncateComposerResumeSummary(
+																				normalizeComposerResumeSummary(
 																					session.resumeSummary,
 																				)!,
 																				110,

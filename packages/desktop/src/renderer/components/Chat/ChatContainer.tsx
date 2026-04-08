@@ -4,37 +4,58 @@
  * Premium chat interface with elegant empty states and interactions.
  */
 
+import {
+	getActiveComposerProjectOnboardingSteps,
+	getComposerProjectOnboardingActions,
+	getComposerResumableSessions,
+	normalizeComposerResumeSummary,
+	truncateComposerResumeSummary,
+} from "@evalops/contracts";
 import { useEffect, useRef, useState } from "react";
 import { useChat } from "../../hooks/useChat";
 import { apiClient } from "../../lib/api-client";
-import type { ThinkingLevel, WorkspaceStatus } from "../../lib/types";
+import type {
+	SessionSummary,
+	ThinkingLevel,
+	WorkspaceStatus,
+} from "../../lib/types";
 import { InputArea } from "./InputArea";
 import { MessageList } from "./MessageList";
 
 export interface ChatContainerProps {
 	sessionId: string | null;
+	sessions?: SessionSummary[];
 	showTimestamps?: boolean;
 	density?: "comfortable" | "compact";
 	thinkingLevel?: ThinkingLevel;
 	workspaceStatusPrefetch?: WorkspaceStatus | null;
+	onSessionSelect?: (sessionId: string) => void;
 }
 
 export function ChatContainer({
 	sessionId,
+	sessions = [],
 	showTimestamps = true,
 	density = "comfortable",
 	thinkingLevel = "off",
 	workspaceStatusPrefetch = null,
+	onSessionSelect,
 }: ChatContainerProps) {
 	const messagesEndRef = useRef<HTMLDivElement>(null);
 	const [workspaceStatus, setWorkspaceStatus] =
 		useState<WorkspaceStatus | null>(workspaceStatusPrefetch);
 	const { messages, isLoading, error, runtimeStatus, sendMessage, clearError } =
 		useChat(sessionId ?? undefined, { thinkingLevel });
-	const onboardingSteps =
-		workspaceStatus?.onboarding?.steps.filter(
-			(step) => step.isEnabled && !step.isComplete,
-		) ?? [];
+	const onboardingSteps = getActiveComposerProjectOnboardingSteps(
+		workspaceStatus?.onboarding,
+	);
+	const onboardingActions = getComposerProjectOnboardingActions(
+		workspaceStatus?.onboarding,
+	);
+	const recentSessions = getComposerResumableSessions(sessions, {
+		excludeSessionId: sessionId,
+		limit: 6,
+	});
 
 	// Auto-scroll to bottom when new messages arrive
 	// biome-ignore lint/correctness/useExhaustiveDependencies: We intentionally scroll when messages change
@@ -73,6 +94,27 @@ export function ChatContainer({
 	const handleSendMessage = async (content: string) => {
 		if (!content.trim()) return;
 		await sendMessage(content);
+	};
+
+	const formatSessionDate = (dateString: string) => {
+		const date = new Date(dateString);
+		const now = new Date();
+		const diff = now.getTime() - date.getTime();
+		const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+
+		if (days === 0) {
+			return "Today";
+		}
+		if (days === 1) {
+			return "Yesterday";
+		}
+		if (days < 7) {
+			return `${days}d ago`;
+		}
+		return date.toLocaleDateString(undefined, {
+			month: "short",
+			day: "numeric",
+		});
 	};
 
 	if (!sessionId) {
@@ -196,6 +238,72 @@ export function ChatContainer({
 											<li key={step.key}>{step.text}</li>
 										))}
 									</ul>
+									{onboardingActions.length > 0 ? (
+										<div className="mt-4 flex flex-wrap gap-3">
+											{onboardingActions.map((action) => (
+												<button
+													type="button"
+													key={action.id}
+													onClick={() => handleSendMessage(action.value)}
+													className="px-3.5 py-2 rounded-xl text-xs font-mono transition-colors"
+													style={{
+														background: "var(--bg-secondary)",
+														border:
+															action.kind === "command"
+																? "1px solid rgba(245, 158, 11, 0.24)"
+																: "1px solid rgba(20, 184, 166, 0.24)",
+														color: "var(--text-primary)",
+													}}
+												>
+													{action.label}
+												</button>
+											))}
+										</div>
+									) : null}
+								</div>
+							) : null}
+
+							{recentSessions.length > 0 && onSessionSelect ? (
+								<div className="mb-10 w-full max-w-3xl text-left">
+									<div className="text-xs font-semibold tracking-[0.18em] uppercase text-text-secondary mb-3">
+										Resume a Session
+									</div>
+									<div className="grid gap-3 md:grid-cols-2">
+										{recentSessions.map((session) => {
+											const resumeSummary = normalizeComposerResumeSummary(
+												session.resumeSummary,
+											);
+											return (
+												<button
+													type="button"
+													key={session.id}
+													onClick={() => onSessionSelect(session.id)}
+													className="rounded-2xl px-4 py-4 text-left transition-colors"
+													style={{
+														background: "var(--bg-secondary)",
+														border: "1px solid var(--border-subtle)",
+													}}
+												>
+													<div className="text-sm font-medium text-text-primary">
+														{session.title ||
+															`Session ${session.id.slice(0, 8)}`}
+													</div>
+													<div className="mt-1 text-[11px] text-text-muted">
+														{session.messageCount} msg · Updated{" "}
+														{formatSessionDate(session.updatedAt)}
+													</div>
+													{resumeSummary ? (
+														<div className="mt-2 text-xs leading-relaxed text-text-secondary">
+															{truncateComposerResumeSummary(
+																resumeSummary,
+																110,
+															)}
+														</div>
+													) : null}
+												</button>
+											);
+										})}
+									</div>
 								</div>
 							) : null}
 

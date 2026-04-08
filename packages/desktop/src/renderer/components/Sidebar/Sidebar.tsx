@@ -4,6 +4,10 @@
  * Premium session list with elegant interactions.
  */
 
+import {
+	normalizeComposerResumeSummary,
+	truncateComposerResumeSummary,
+} from "@evalops/contracts";
 import { useState } from "react";
 import type { SessionSummary } from "../../lib/types";
 
@@ -33,11 +37,19 @@ export function Sidebar({
 	const [searchQuery, setSearchQuery] = useState("");
 	const [hoveredSession, setHoveredSession] = useState<string | null>(null);
 
-	const filteredSessions = sessions.filter(
-		(session) =>
-			!searchQuery ||
-			session.title?.toLowerCase().includes(searchQuery.toLowerCase()),
-	);
+	const filteredSessions = sessions.filter((session) => {
+		if (!searchQuery) {
+			return true;
+		}
+		const normalizedQuery = searchQuery.toLowerCase();
+		const normalizedSummary = normalizeComposerResumeSummary(
+			session.resumeSummary,
+		)?.toLowerCase();
+		return (
+			session.title?.toLowerCase().includes(normalizedQuery) ||
+			normalizedSummary?.includes(normalizedQuery)
+		);
+	});
 
 	const formatDate = (dateString: string) => {
 		const date = new Date(dateString);
@@ -242,6 +254,16 @@ export function Sidebar({
 												</>
 											)}
 										</div>
+										{normalizeComposerResumeSummary(session.resumeSummary) ? (
+											<div className="mt-1 text-[11px] leading-relaxed text-text-muted">
+												{truncateComposerResumeSummary(
+													normalizeComposerResumeSummary(
+														session.resumeSummary,
+													)!,
+													96,
+												)}
+											</div>
+										) : null}
 									</div>
 
 									{/* Delete button */}

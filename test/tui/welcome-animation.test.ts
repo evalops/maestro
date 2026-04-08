@@ -29,5 +29,6 @@ describe("WelcomeAnimation", () => {
 		expect(output).toContain("Get Started");
 		expect(output).toContain("/init");
 		expect(output).toContain("AGENTS.md");
+		expect(output).toContain("Run /init");
 	});
 });

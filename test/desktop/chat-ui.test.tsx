@@ -107,6 +107,38 @@ describe("desktop chat UI", () => {
 		expect(html).toContain("Getting Started");
 		expect(html).toContain("/init");
 		expect(html).toContain("AGENTS.md");
+		expect(html).toContain("Run /init");
+	});
+
+	it("renders recent resumable sessions in the empty chat state", () => {
+		const html = renderToStaticMarkup(
+			<ChatContainer
+				sessionId="session-current"
+				sessions={[
+					{
+						id: "session-current",
+						title: "Current",
+						createdAt: "2026-04-08T00:00:00.000Z",
+						updatedAt: "2026-04-08T00:00:00.000Z",
+						messageCount: 0,
+					},
+					{
+						id: "session-previous",
+						title: "Earlier work",
+						createdAt: "2026-04-07T00:00:00.000Z",
+						updatedAt: "2026-04-07T00:00:00.000Z",
+						messageCount: 8,
+						resumeSummary: "Finish tightening the onboarding flow next.",
+					},
+				]}
+				onSessionSelect={() => {}}
+			/>,
+		);
+
+		expect(html).toContain("Resume a Session");
+		expect(html).toContain("Earlier work");
+		expect(html).toContain("Finish tightening the onboarding flow next.");
+		expect(html).not.toContain(">Current<");
 	});
 
 	it("renders runtime status while the agent is working", () => {

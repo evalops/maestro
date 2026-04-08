@@ -7,6 +7,7 @@
 import type {
 	ComposerMessage,
 	ComposerProjectOnboardingState,
+	ComposerSessionSummary,
 	ComposerToolCallContent,
 } from "@evalops/contracts";
 
@@ -46,13 +47,7 @@ export interface Model {
 	maxOutput?: number;
 }
 
-export interface SessionSummary {
-	id: string;
-	title?: string;
-	createdAt: string;
-	updatedAt?: string;
-	messageCount: number;
-}
+export type SessionSummary = ComposerSessionSummary;
 
 export interface Session extends SessionSummary {
 	messages: Message[];
