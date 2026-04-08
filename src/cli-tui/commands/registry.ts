@@ -909,13 +909,14 @@ export function createCommandRegistry({
 				description:
 					"Manage, inspect, or validate Maestro package/plugin bundles",
 				usage:
-					"/package [add|remove|refresh|list|inspect|validate] [source] [--scope ...]",
+					"/package [add|remove|prune-cache|refresh|list|inspect|validate] [source] [--scope ...]",
 				tags: ["tools", "config"],
 				aliases: ["plugin"],
 				examples: [
 					"/package add ./packages/my-pack",
 					"/package list",
 					"/package remove ./packages/my-pack",
+					"/package prune-cache",
 					"/package refresh git:github.com/org/my-pack@main",
 					"/package refresh --all",
 					"/package inspect ./packages/my-pack",

@@ -46,6 +46,7 @@ import type {
 	McpStatus,
 	PackageAddResponse,
 	PackageBulkRefreshResponse,
+	PackageCachePruneResponse,
 	PackageInspectResponse,
 	PackageMutationRequest,
 	PackageRemoveResponse,
@@ -179,6 +180,7 @@ export interface ToolsRuntimeSectionProps {
 		args?: Record<string, string>,
 	) => Promise<McpPromptResponse>;
 	onInspectPackage: (source: string) => Promise<PackageInspectResponse>;
+	onPrunePackageCache: () => Promise<PackageCachePruneResponse>;
 	onRefreshAllPackages: () => Promise<PackageBulkRefreshResponse>;
 	onRefreshPackage: (source: string) => Promise<PackageInspectResponse>;
 	onValidatePackage: (source: string) => Promise<PackageInspectResponse>;
@@ -534,6 +536,7 @@ export function ToolsRuntimeSection({
 	onReadMcpResource,
 	onGetMcpPrompt,
 	onInspectPackage,
+	onPrunePackageCache,
 	onRefreshAllPackages,
 	onRefreshPackage,
 	onValidatePackage,
@@ -686,6 +689,7 @@ export function ToolsRuntimeSection({
 		string | null
 	>(null);
 	const [refreshingAllPackages, setRefreshingAllPackages] = useState(false);
+	const [pruningPackageCache, setPruningPackageCache] = useState(false);
 	const [packageNotice, setPackageNotice] = useState<string | null>(null);
 	const [packageError, setPackageError] = useState<string | null>(null);
 	const [packagePreview, setPackagePreview] = useState<{
@@ -837,6 +841,29 @@ export function ToolsRuntimeSection({
 			);
 		} finally {
 			setRefreshingAllPackages(false);
+		}
+	};
+
+	const handlePrunePackageCache = async () => {
+		setPruningPackageCache(true);
+		setPackageError(null);
+		setPackageNotice(null);
+		try {
+			const result = await onPrunePackageCache();
+			setPackagePreview(null);
+			setPackageNotice(
+				result.removedCount > 0
+					? `Pruned ${result.removedCount} unconfigured remote package caches.`
+					: "No unconfigured remote package caches found.",
+			);
+		} catch (error) {
+			setPackageError(
+				error instanceof Error
+					? error.message
+					: "Failed to prune package cache",
+			);
+		} finally {
+			setPruningPackageCache(false);
 		}
 	};
 
@@ -2954,6 +2981,14 @@ export function ToolsRuntimeSection({
 								onClick={onRefreshPackageStatus}
 							>
 								Refresh
+							</button>
+							<button
+								type="button"
+								className="package-prune-cache-button px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-60"
+								onClick={() => void handlePrunePackageCache()}
+								disabled={pruningPackageCache}
+							>
+								{pruningPackageCache ? "Pruning cache..." : "Prune cache"}
 							</button>
 							{packages.some((entry) => canRefreshPackage(entry)) && (
 								<button

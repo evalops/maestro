@@ -10,7 +10,11 @@ import {
 } from "./inspection.js";
 import { parsePackageSpec } from "./loader.js";
 import {
+	clearCachedPackageSourcePath,
 	formatPackageSource,
+	getCachedRemotePackageSourcePath,
+	getPackageCacheDir,
+	listCachedRemotePackageSourcePaths,
 	parsePackageSource,
 	refreshPackageSourceSync,
 } from "./sources.js";
@@ -29,6 +33,13 @@ export interface ConfiguredPackageRefreshReport {
 	refreshed: RefreshedConfiguredPackage[];
 	localCount: number;
 	remoteCount: number;
+}
+
+export interface PackageCachePruneReport {
+	cacheDir: string;
+	removed: string[];
+	removedCount: number;
+	referencedCount: number;
 }
 
 interface RemoteRefreshTarget {
@@ -131,5 +142,32 @@ export async function refreshConfiguredRemotePackages(
 		refreshed,
 		localCount,
 		remoteCount: targets.length,
+	};
+}
+
+export function pruneUnconfiguredRemotePackageCaches(
+	workspaceDir: string,
+): PackageCachePruneReport {
+	const { targets } = collectRemoteRefreshTargets(workspaceDir);
+	const referencedPaths = new Set(
+		targets.map((target) => getCachedRemotePackageSourcePath(target.source)),
+	);
+	const cachedPaths = listCachedRemotePackageSourcePaths();
+	const removed: string[] = [];
+
+	for (const cachedPath of cachedPaths) {
+		if (referencedPaths.has(cachedPath)) {
+			continue;
+		}
+		if (clearCachedPackageSourcePath(cachedPath)) {
+			removed.push(cachedPath);
+		}
+	}
+
+	return {
+		cacheDir: getPackageCacheDir(),
+		removed,
+		removedCount: removed.length,
+		referencedCount: referencedPaths.size,
 	};
 }

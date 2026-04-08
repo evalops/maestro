@@ -13,7 +13,9 @@ import {
 	listConfiguredPackageReports,
 } from "../../packages/inspection.js";
 import {
+	type PackageCachePruneReport,
 	type RefreshedConfiguredPackage,
+	pruneUnconfiguredRemotePackageCaches,
 	refreshConfiguredRemotePackages,
 } from "../../packages/maintenance.js";
 import {
@@ -108,6 +110,15 @@ function serializeRefreshedConfiguredPackage(
 			: null,
 		issues: report.issues,
 		error: report.error,
+	};
+}
+
+function serializePackageCachePruneReport(report: PackageCachePruneReport) {
+	return {
+		cacheDir: report.cacheDir,
+		removed: report.removed,
+		removedCount: report.removedCount,
+		referencedCount: report.referencedCount,
 	};
 }
 
@@ -241,6 +252,12 @@ export async function handlePackageStatus(
 				},
 				corsHeaders,
 			);
+			return;
+		}
+
+		if (action === "prune-cache") {
+			const pruned = pruneUnconfiguredRemotePackageCaches(projectRoot);
+			sendJson(res, 200, serializePackageCachePruneReport(pruned), corsHeaders);
 			return;
 		}
 

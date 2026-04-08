@@ -20,6 +20,7 @@ import type {
 	McpStatus,
 	PackageAddResponse,
 	PackageBulkRefreshResponse,
+	PackageCachePruneResponse,
 	PackageInspectResponse,
 	PackageMutationRequest,
 	PackageRemoveResponse,
@@ -74,7 +75,9 @@ type WebSlashCommandApiClient = Pick<
 	| "removeMcpAuthPreset"
 	| "removeMcpServer"
 	| "removePackage"
+	| "prunePackageCache"
 	| "refreshAllPackages"
+	| "refreshPackage"
 	| "runScript"
 	| "saveMemory"
 	| "saveConfig"
@@ -122,6 +125,7 @@ const MCP_AUTH_REMOVE_USAGE =
 const PACKAGE_ADD_USAGE = "/package add <source> [--scope local|project|user]";
 const PACKAGE_REMOVE_USAGE =
 	"/package remove <source> [--scope local|project|user]";
+const PACKAGE_PRUNE_USAGE = "/package prune-cache";
 const PACKAGE_REFRESH_USAGE = "/package refresh [<source>|--all]";
 const PACKAGE_INSPECT_USAGE = "/package [inspect|validate] <source>";
 const MEMORY_USAGE =
@@ -743,6 +747,23 @@ function formatPackageBulkRefreshResult(
 		}
 	}
 
+	return lines.join("\n");
+}
+
+function formatPackageCachePruneResult(
+	result: PackageCachePruneResponse,
+): string {
+	const lines = ["Configured package cache prune completed."];
+	lines.push(`  Cache dir: ${result.cacheDir}`);
+	lines.push(`  Referenced cache entries: ${result.referencedCount}`);
+	lines.push(`  Removed cache entries: ${result.removedCount}`);
+	if (result.removed.length === 0) {
+		lines.push("  Result: No unconfigured remote package caches found.");
+		return lines.join("\n");
+	}
+	for (const removed of result.removed) {
+		lines.push(`  - ${removed}`);
+	}
 	return lines.join("\n");
 }
 
@@ -1881,6 +1902,15 @@ export async function executeWebSlashCommand(
 					break;
 				}
 
+				if (sub === "prune-cache") {
+					if (!requireWritableSession("Package cache prune")) break;
+					const result = await context.apiClient.prunePackageCache();
+					context.appendCommandOutput(
+						formatCommandCodeBlock(formatPackageCachePruneResult(result)),
+					);
+					break;
+				}
+
 				if (sub === "refresh") {
 					if (!requireWritableSession("Package refresh")) break;
 					const source = args.replace(/^refresh\b/i, "").trim();
@@ -1907,6 +1937,7 @@ export async function executeWebSlashCommand(
 								"/package list",
 								PACKAGE_ADD_USAGE,
 								PACKAGE_REMOVE_USAGE,
+								PACKAGE_PRUNE_USAGE,
 								PACKAGE_REFRESH_USAGE,
 								"/package inspect <source>",
 								"/package validate <source>",
@@ -1917,7 +1948,7 @@ export async function executeWebSlashCommand(
 				}
 
 				context.appendCommandOutput(
-					"Usage: /package [list|inspect <source>|validate <source>|add <source>|remove <source>|refresh <source>]",
+					"Usage: /package [list|inspect <source>|validate <source>|add <source>|remove <source>|prune-cache|refresh [<source>|--all]]",
 					true,
 				);
 				break;

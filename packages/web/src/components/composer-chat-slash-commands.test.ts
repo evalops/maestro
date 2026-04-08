@@ -49,6 +49,7 @@ function createContext(overrides: Partial<WebSlashCommandContext> = {}) {
 		listMemoryTopics: vi.fn(),
 		listQueue: vi.fn(),
 		readMcpResource: vi.fn(),
+		prunePackageCache: vi.fn(),
 		refreshAllPackages: vi.fn(),
 		refreshPackage: vi.fn(),
 		removeMcpAuthPreset: vi.fn(),
@@ -426,6 +427,30 @@ describe("executeWebSlashCommand", () => {
 		]);
 		expect(outputs[0]?.output).toContain("Remote packages: 1");
 		expect(outputs[0]?.output).toContain("@acme/pack");
+	});
+
+	it("prunes unconfigured remote package caches from the web slash command", async () => {
+		const { context, outputs, apiClient } = createContext();
+		apiClient.prunePackageCache.mockResolvedValue({
+			cacheDir: "/repo/.maestro/packages",
+			removed: ["/repo/.maestro/packages/git-deadbeef"],
+			removedCount: 1,
+			referencedCount: 2,
+		});
+
+		await executeWebSlashCommand("package", "prune-cache", context);
+
+		expect(apiClient.prunePackageCache).toHaveBeenCalledTimes(1);
+		expect(outputs).toEqual([
+			expect.objectContaining({
+				isError: false,
+				output: expect.stringContaining(
+					"Configured package cache prune completed.",
+				),
+			}),
+		]);
+		expect(outputs[0]?.output).toContain("Removed cache entries: 1");
+		expect(outputs[0]?.output).toContain("git-deadbeef");
 	});
 
 	it("requires force before clearing memory from the web slash command", async () => {

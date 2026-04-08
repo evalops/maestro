@@ -21,6 +21,8 @@ import {
 } from "../../packages/inspection.js";
 import {
 	type ConfiguredPackageRefreshReport,
+	type PackageCachePruneReport,
+	pruneUnconfiguredRemotePackageCaches,
 	refreshConfiguredRemotePackages,
 } from "../../packages/maintenance.js";
 import { refreshPackageSourceSync } from "../../packages/sources.js";
@@ -29,6 +31,7 @@ import type { CommandExecutionContext } from "./types.js";
 
 const PACKAGE_INSPECT_USAGE = "/package [inspect|validate] <source>";
 const PACKAGE_REFRESH_USAGE = "/package refresh [<source>|--all]";
+const PACKAGE_PRUNE_USAGE = "/package prune-cache";
 const PACKAGE_ADD_USAGE = "/package add <source> [--scope local|project|user]";
 const PACKAGE_REMOVE_USAGE =
 	"/package remove <source> [--scope local|project|user]";
@@ -43,6 +46,10 @@ export const PACKAGE_SUBCOMMANDS = [
 	{ name: "add", description: "Add a Maestro package to config.toml" },
 	{ name: "list", description: "List configured Maestro packages" },
 	{ name: "remove", description: "Remove a Maestro package from config.toml" },
+	{
+		name: "prune-cache",
+		description: "Prune unconfigured remote package caches",
+	},
 	{ name: "refresh", description: "Refresh a configured remote package cache" },
 	{ name: "inspect", description: "Inspect a Maestro package source" },
 	{ name: "validate", description: "Validate a Maestro package source" },
@@ -126,6 +133,16 @@ export function createPackageCommandHandler(deps: PackageCommandDeps) {
 			}
 			ctx.showError(`Usage: ${PACKAGE_REFRESH_USAGE}`);
 			showPackageHelp(deps);
+			return;
+		}
+
+		if (subcommand === "prune-cache") {
+			if (tokens.length !== 1) {
+				ctx.showError(`Usage: ${PACKAGE_PRUNE_USAGE}`);
+				showPackageHelp(deps);
+				return;
+			}
+			runPackagePruneCache(deps);
 			return;
 		}
 
@@ -273,6 +290,11 @@ async function runPackageRefreshAll(
 				: "Failed to refresh configured packages.",
 		);
 	}
+}
+
+function runPackagePruneCache(deps: PackageCommandDeps): void {
+	const result = pruneUnconfiguredRemotePackageCaches(deps.cwd);
+	publishOutput(deps, formatPruneCacheSuccess(result));
 }
 
 function runPackageAdd(
@@ -544,6 +566,21 @@ function formatRefreshAllSuccess(
 	return lines.join("\n");
 }
 
+function formatPruneCacheSuccess(report: PackageCachePruneReport): string {
+	const lines = ["Configured package cache prune completed."];
+	lines.push(`  Cache dir: ${report.cacheDir}`);
+	lines.push(`  Referenced cache entries: ${report.referencedCount}`);
+	lines.push(`  Removed cache entries: ${report.removedCount}`);
+	if (report.removed.length === 0) {
+		lines.push("  Result: No unconfigured remote package caches found.");
+		return lines.join("\n");
+	}
+	for (const removed of report.removed) {
+		lines.push(`  - ${removed}`);
+	}
+	return lines.join("\n");
+}
+
 function formatValidationFailure(
 	inspected: InspectedPackage,
 	issues: string[],
@@ -609,6 +646,7 @@ function showPackageHelp(deps: PackageCommandDeps): void {
   /package add <source>      Add a configured Maestro package
   /package list               List configured Maestro packages
   /package remove <source>   Remove a configured Maestro package
+  /package prune-cache       Remove cached remote packages not referenced by merged config
   /package refresh [source]  Refresh one or all configured remote package caches
   /package inspect <source>   Inspect a Maestro package source
   /package validate <source>  Validate a Maestro package source

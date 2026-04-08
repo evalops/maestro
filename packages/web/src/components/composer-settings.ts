@@ -584,6 +584,7 @@ export class ComposerSettings extends LitElement {
 	@state() private packageRemovingKey: string | null = null;
 	@state() private packageRefreshingKey: string | null = null;
 	@state() private packageRefreshingAll = false;
+	@state() private packagePruning = false;
 	@state() private packageError: string | null = null;
 	@state() private packageNotice: string | null = null;
 	@state() private packagePreview: {
@@ -983,6 +984,28 @@ export class ComposerSettings extends LitElement {
 					: "Failed to refresh configured packages";
 		} finally {
 			this.packageRefreshingAll = false;
+		}
+	}
+
+	private async prunePackageCache() {
+		this.packagePruning = true;
+		this.packageError = null;
+		this.packageNotice = null;
+		try {
+			const result = await this.apiClient.prunePackageCache();
+			await this.refreshPackageStatus();
+			this.packagePreview = null;
+			this.packageNotice =
+				result.removedCount > 0
+					? `Pruned ${result.removedCount} unconfigured remote package caches.`
+					: "No unconfigured remote package caches found.";
+		} catch (error) {
+			this.packageError =
+				error instanceof Error
+					? error.message
+					: "Failed to prune package cache";
+		} finally {
+			this.packagePruning = false;
 		}
 	}
 
@@ -1864,6 +1887,13 @@ export class ComposerSettings extends LitElement {
 							@click=${() => void this.refreshPackageStatus()}
 						>
 							Refresh
+						</button>
+						<button
+							class="action-btn"
+							@click=${() => void this.prunePackageCache()}
+							?disabled=${this.packagePruning}
+						>
+							${this.packagePruning ? "Pruning cache..." : "Prune cache"}
 						</button>
 						${
 							hasRefreshableEntries

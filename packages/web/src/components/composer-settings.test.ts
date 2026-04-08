@@ -372,6 +372,12 @@ function createApiClientMock(): ApiClient {
 			localCount: 1,
 			remoteCount: 1,
 		}),
+		prunePackageCache: vi.fn().mockResolvedValue({
+			cacheDir: "/repo/.maestro/packages",
+			removed: ["/repo/.maestro/packages/git-deadbeef"],
+			removedCount: 1,
+			referencedCount: 1,
+		}),
 		validatePackage: vi.fn().mockResolvedValue({
 			inspection: {
 				sourceSpec: "./packages/new-pack",
@@ -1935,6 +1941,34 @@ describe("ComposerSettings MCP section", () => {
 		expect(apiClient.refreshAllPackages).toHaveBeenCalledTimes(1);
 		expect(element.shadowRoot?.textContent ?? "").toContain(
 			"Refreshed 1 configured remote packages.",
+		);
+	});
+
+	it("prunes unconfigured remote package caches from settings", async () => {
+		const apiClient = createApiClientMock();
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Array.from(element.shadowRoot?.querySelectorAll("button") ?? []).some(
+				(candidate) => candidate.textContent?.trim() === "Prune cache",
+			),
+		);
+
+		const button = Array.from(
+			element.shadowRoot?.querySelectorAll("button") ?? [],
+		).find((candidate) => candidate.textContent?.trim() === "Prune cache");
+		expect(button).toBeTruthy();
+		(button as HTMLButtonElement).click();
+
+		await waitForSettled(element, () =>
+			(element.shadowRoot?.textContent ?? "").includes(
+				"Pruned 1 unconfigured remote package caches.",
+			),
+		);
+
+		expect(apiClient.prunePackageCache).toHaveBeenCalledTimes(1);
+		expect(element.shadowRoot?.textContent ?? "").toContain(
+			"Pruned 1 unconfigured remote package caches.",
 		);
 	});
 

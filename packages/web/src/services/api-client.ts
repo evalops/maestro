@@ -299,6 +299,13 @@ export interface PackageBulkRefreshResponse {
 	remoteCount: number;
 }
 
+export interface PackageCachePruneResponse {
+	cacheDir: string;
+	removed: string[];
+	removedCount: number;
+	referencedCount: number;
+}
+
 export interface PackageMutationRequest {
 	source: string;
 	scope?: PackageScope;
@@ -2264,6 +2271,14 @@ export class ApiClient {
 	async refreshAllPackages(): Promise<PackageBulkRefreshResponse> {
 		return await this.fetchJsonRequestWithFallback<PackageBulkRefreshResponse>(
 			"/api/package?action=refresh-all",
+			"POST",
+			{},
+		);
+	}
+
+	async prunePackageCache(): Promise<PackageCachePruneResponse> {
+		return await this.fetchJsonRequestWithFallback<PackageCachePruneResponse>(
+			"/api/package?action=prune-cache",
 			"POST",
 			{},
 		);

@@ -508,6 +508,77 @@ describe("package command", () => {
 			expect.stringContaining("@test/refresh-all-git-package"),
 		);
 	});
+
+	it("prunes cached remote package sources not referenced by merged config", async () => {
+		const root = createTempDir("maestro-package-command-");
+		process.env.MAESTRO_HOME = join(root, ".maestro-home");
+		const referencedRepo = join(root, "git-pack");
+		mkdirSync(join(referencedRepo, "skills", "git-skill"), { recursive: true });
+		writeFileSync(
+			join(referencedRepo, "skills", "git-skill", "SKILL.md"),
+			"# Git Skill\n",
+			"utf-8",
+		);
+		writeFileSync(
+			join(referencedRepo, "package.json"),
+			JSON.stringify({
+				name: "@test/referenced-package",
+				version: "1.0.0",
+				keywords: ["maestro-package"],
+				maestro: {
+					skills: ["./skills"],
+				},
+			}),
+			"utf-8",
+		);
+		createCommittedGitRepo(referencedRepo);
+
+		const orphanRepo = join(root, "orphan-pack");
+		mkdirSync(join(orphanRepo, "skills", "orphan-skill"), { recursive: true });
+		writeFileSync(
+			join(orphanRepo, "skills", "orphan-skill", "SKILL.md"),
+			"# Orphan Skill\n",
+			"utf-8",
+		);
+		writeFileSync(
+			join(orphanRepo, "package.json"),
+			JSON.stringify({
+				name: "@test/orphan-package",
+				version: "1.0.0",
+				keywords: ["maestro-package"],
+				maestro: {
+					skills: ["./skills"],
+				},
+			}),
+			"utf-8",
+		);
+		createCommittedGitRepo(orphanRepo);
+
+		mkdirSync(join(root, ".maestro"), { recursive: true });
+		writeFileSync(
+			join(root, ".maestro", "config.toml"),
+			`packages = ["git:${referencedRepo}"]\n`,
+			"utf-8",
+		);
+
+		const addContent = vi.fn();
+		const handler = createPackageCommandHandler({
+			cwd: root,
+			addContent,
+			requestRender: vi.fn(),
+		});
+
+		await handler(createContext(`/package inspect git:${referencedRepo}`));
+		await handler(createContext(`/package inspect git:${orphanRepo}`));
+		await handler(createContext("/package prune-cache"));
+
+		expect(addContent).toHaveBeenCalledWith(
+			expect.stringContaining("Configured package cache prune completed."),
+		);
+		expect(addContent).toHaveBeenCalledWith(
+			expect.stringContaining("Removed cache entries: 1"),
+		);
+	});
 });
 
 function createCommittedGitRepo(dir: string): void {

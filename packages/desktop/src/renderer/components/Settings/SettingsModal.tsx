@@ -24,6 +24,7 @@ import {
 	type ModeStatus,
 	type PackageAddResponse,
 	type PackageBulkRefreshResponse,
+	type PackageCachePruneResponse,
 	type PackageInspectResponse,
 	type PackageMutationRequest,
 	type PackageRemoveResponse,
@@ -759,6 +760,13 @@ export function SettingsModal({
 		return result;
 	};
 
+	const prunePackageCache = async (): Promise<PackageCachePruneResponse> => {
+		const result = await apiClient.prunePackageCache();
+		const status = await apiClient.getPackageStatus();
+		setPackageStatus(status);
+		return result;
+	};
+
 	const validatePackage = async (
 		source: string,
 	): Promise<PackageInspectResponse> => {
@@ -1070,6 +1078,7 @@ export function SettingsModal({
 						onReadMcpResource={readMcpResource}
 						onGetMcpPrompt={getMcpPrompt}
 						onInspectPackage={inspectPackage}
+						onPrunePackageCache={prunePackageCache}
 						onRefreshAllPackages={refreshAllPackages}
 						onRefreshPackage={refreshPackage}
 						onValidatePackage={validatePackage}

@@ -244,6 +244,12 @@ function createProps(
 			localCount: 1,
 			remoteCount: 1,
 		}),
+		onPrunePackageCache: vi.fn().mockResolvedValue({
+			cacheDir: "/repo/.maestro/packages",
+			removed: ["/repo/.maestro/packages/git-deadbeef"],
+			removedCount: 1,
+			referencedCount: 1,
+		}),
 		onValidatePackage: vi.fn().mockResolvedValue({
 			inspection: {
 				sourceSpec: "./packages/example",
@@ -730,6 +736,34 @@ describe("ToolsRuntimeSection UI", () => {
 		expect(onRefreshAllPackages).toHaveBeenCalledTimes(1);
 		expect(container.textContent ?? "").toContain(
 			"Refreshed 1 configured remote packages.",
+		);
+	});
+
+	it("prunes unconfigured remote package caches from the settings panel", async () => {
+		const onPrunePackageCache = vi.fn().mockResolvedValue({
+			cacheDir: "/repo/.maestro/packages",
+			removed: ["/repo/.maestro/packages/git-deadbeef"],
+			removedCount: 1,
+			referencedCount: 1,
+		});
+
+		const { container } = await renderSection({
+			onPrunePackageCache,
+		});
+
+		const pruneButton = container.querySelector(
+			".package-prune-cache-button",
+		) as HTMLButtonElement | null;
+		expect(pruneButton).toBeTruthy();
+
+		await act(async () => {
+			pruneButton?.click();
+			await flushAsyncWork(3);
+		});
+
+		expect(onPrunePackageCache).toHaveBeenCalledTimes(1);
+		expect(container.textContent ?? "").toContain(
+			"Pruned 1 unconfigured remote package caches.",
 		);
 	});
 });

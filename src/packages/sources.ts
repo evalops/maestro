@@ -9,7 +9,7 @@
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
@@ -190,6 +190,17 @@ export function clearResolvedPackageSourceCache(): void {
 	resolvedPackageSourcePaths.clear();
 }
 
+export function clearCachedPackageSourcePath(path: string): boolean {
+	const existed = existsSync(path);
+	rmSync(path, { recursive: true, force: true });
+	for (const [key, value] of resolvedPackageSourcePaths.entries()) {
+		if (value === path) {
+			resolvedPackageSourcePaths.delete(key);
+		}
+	}
+	return existed;
+}
+
 export function clearCachedPackageSource(
 	source: PackageSource,
 	cacheDir?: string,
@@ -212,6 +223,35 @@ export function clearCachedPackageSource(
 		cleared: exists,
 		path: resolvedPath,
 	};
+}
+
+export function getCachedRemotePackageSourcePath(
+	source: GitSource | NpmSource,
+	cacheDir?: string,
+): string {
+	const remoteIdentity = getRemoteSourceIdentity(source)!;
+	return getCachedSourcePath(
+		remoteIdentity.kind,
+		remoteIdentity.identity,
+		cacheDir,
+	);
+}
+
+export function listCachedRemotePackageSourcePaths(
+	cacheDir?: string,
+): string[] {
+	const root = getPackageCacheDir(cacheDir);
+	if (!existsSync(root)) {
+		return [];
+	}
+
+	return readdirSync(root, { withFileTypes: true })
+		.filter(
+			(entry) =>
+				entry.isDirectory() &&
+				(entry.name.startsWith("git-") || entry.name.startsWith("npm-")),
+		)
+		.map((entry) => join(root, entry.name));
 }
 
 /**
@@ -279,7 +319,7 @@ function resolveNpmSource(source: NpmSource, _cacheDir?: string): string {
 	);
 }
 
-function getPackageCacheDir(cacheDir?: string): string {
+export function getPackageCacheDir(cacheDir?: string): string {
 	return cacheDir ?? PATHS.PACKAGE_CACHE_DIR;
 }
 

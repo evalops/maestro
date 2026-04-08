@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { handlePackageStatus } from "../../src/server/handlers/package.js";
 
 const corsHeaders = { "Access-Control-Allow-Origin": "*" };
+const originalMaestroHome = process.env.MAESTRO_HOME;
 
 interface MockPassThrough extends PassThrough {
 	method: string;
@@ -124,6 +125,11 @@ function commitGitRepoChanges(dir: string, message: string): void {
 describe("handlePackageStatus", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
+		if (originalMaestroHome === undefined) {
+			delete process.env.MAESTRO_HOME;
+		} else {
+			process.env.MAESTRO_HOME = originalMaestroHome;
+		}
 		while (tempDirs.length > 0) {
 			const dir = tempDirs.pop();
 			if (dir) {
@@ -394,6 +400,90 @@ describe("handlePackageStatus", () => {
 					error: null,
 				},
 			],
+		});
+	});
+
+	it("prunes cached remote package sources not referenced by merged config", async () => {
+		const root = createTempProject();
+		process.env.MAESTRO_HOME = join(root, ".maestro-home");
+		const referencedRepo = join(root, "vendor", "git-pack");
+		mkdirSync(join(referencedRepo, "skills", "pkg-skill"), { recursive: true });
+		writeFileSync(
+			join(referencedRepo, "skills", "pkg-skill", "SKILL.md"),
+			"# Package Skill\n",
+			"utf-8",
+		);
+		writeFileSync(
+			join(referencedRepo, "package.json"),
+			JSON.stringify({
+				name: "@test/git-package",
+				version: "1.0.0",
+				keywords: ["maestro-package"],
+				maestro: {
+					skills: ["./skills"],
+				},
+			}),
+			"utf-8",
+		);
+		createCommittedGitRepo(referencedRepo);
+
+		const orphanRepo = join(root, "vendor", "orphan-pack");
+		mkdirSync(join(orphanRepo, "skills", "orphan-skill"), { recursive: true });
+		writeFileSync(
+			join(orphanRepo, "skills", "orphan-skill", "SKILL.md"),
+			"# Orphan Skill\n",
+			"utf-8",
+		);
+		writeFileSync(
+			join(orphanRepo, "package.json"),
+			JSON.stringify({
+				name: "@test/orphan-package",
+				version: "1.0.0",
+				keywords: ["maestro-package"],
+				maestro: {
+					skills: ["./skills"],
+				},
+			}),
+			"utf-8",
+		);
+		createCommittedGitRepo(orphanRepo);
+
+		mkdirSync(join(root, ".maestro"), { recursive: true });
+		writeFileSync(
+			join(root, ".maestro", "config.toml"),
+			`packages = ["git:${referencedRepo}"]\n`,
+			"utf-8",
+		);
+		vi.spyOn(process, "cwd").mockReturnValue(root);
+
+		for (const source of [`git:${referencedRepo}`, `git:${orphanRepo}`]) {
+			const inspectRes = makeRes();
+			await handlePackageStatus(
+				makeReq("/api/package?action=inspect", {
+					method: "POST",
+					body: { source },
+				}) as unknown as IncomingMessage,
+				inspectRes as unknown as ServerResponse,
+				corsHeaders,
+			);
+			expect(inspectRes.statusCode).toBe(200);
+		}
+
+		const pruneRes = makeRes();
+		await handlePackageStatus(
+			makeReq("/api/package?action=prune-cache", {
+				method: "POST",
+				body: {},
+			}) as unknown as IncomingMessage,
+			pruneRes as unknown as ServerResponse,
+			corsHeaders,
+		);
+
+		expect(pruneRes.statusCode).toBe(200);
+		expect(JSON.parse(pruneRes.body)).toMatchObject({
+			referencedCount: 1,
+			removedCount: 1,
+			removed: [expect.stringContaining("git-")],
 		});
 	});
 });
