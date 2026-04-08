@@ -291,6 +291,7 @@ describe("command-registry-integration", () => {
 		});
 
 		it("matches /package and /plugin aliases", () => {
+			expect(findMatchingEntry("/package list")?.command.name).toBe("package");
 			expect(findMatchingEntry("/package validate ./pack")?.command.name).toBe(
 				"package",
 			);

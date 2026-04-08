@@ -37,6 +37,73 @@ afterEach(() => {
 });
 
 describe("package command", () => {
+	it("lists configured packages from project config", async () => {
+		const root = createTempDir("maestro-package-command-");
+		const packageDir = join(root, "vendor", "pack");
+		mkdirSync(join(packageDir, "skills", "package-skill"), {
+			recursive: true,
+		});
+		mkdirSync(join(root, ".maestro"), { recursive: true });
+		writeFileSync(
+			join(packageDir, "package.json"),
+			JSON.stringify({
+				name: "@test/listed-package",
+				keywords: ["maestro-package"],
+				maestro: {
+					skills: ["./skills"],
+				},
+			}),
+			"utf-8",
+		);
+		writeFileSync(
+			join(root, ".maestro", "config.toml"),
+			'packages = [{ source = "../vendor/pack", skills = ["package-skill"] }]\n',
+			"utf-8",
+		);
+
+		const addContent = vi.fn();
+		const handler = createPackageCommandHandler({
+			cwd: root,
+			addContent,
+			requestRender: vi.fn(),
+		});
+
+		await handler(createContext("/package list"));
+
+		expect(addContent).toHaveBeenCalledWith(
+			expect.stringContaining("Configured Maestro Packages:"),
+		);
+		expect(addContent).toHaveBeenCalledWith(
+			expect.stringContaining("@test/listed-package"),
+		);
+		expect(addContent).toHaveBeenCalledWith(
+			expect.stringContaining("Filters: skills=package-skill"),
+		);
+	});
+
+	it("surfaces configured package inspection errors in list output", async () => {
+		const root = createTempDir("maestro-package-command-");
+		mkdirSync(join(root, ".maestro"), { recursive: true });
+		writeFileSync(
+			join(root, ".maestro", "config.toml"),
+			'packages = ["git:github.com/evalops/maestro"]\n',
+			"utf-8",
+		);
+
+		const addContent = vi.fn();
+		const handler = createPackageCommandHandler({
+			cwd: root,
+			addContent,
+			requestRender: vi.fn(),
+		});
+
+		await handler(createContext("/package list"));
+
+		expect(addContent).toHaveBeenCalledWith(
+			expect.stringContaining("Git source resolution not yet implemented"),
+		);
+	});
+
 	it("inspects a valid package from a quoted local path", async () => {
 		const root = createTempDir("maestro-package-command-");
 		const packageDir = join(root, "my package");

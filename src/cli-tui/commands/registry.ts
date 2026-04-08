@@ -907,10 +907,11 @@ export function createCommandRegistry({
 			{
 				name: "package",
 				description: "Inspect or validate Maestro package/plugin bundles",
-				usage: "/package [inspect|validate] <source>",
+				usage: "/package [list|inspect|validate] [source]",
 				tags: ["tools", "config"],
 				aliases: ["plugin"],
 				examples: [
+					"/package list",
 					"/package inspect ./packages/my-pack",
 					"/package validate ./packages/my-pack",
 					"/plugin ./packages/my-pack",
