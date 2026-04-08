@@ -774,9 +774,10 @@ export function createCommandRegistry({
 		buildEntry(
 			{
 				name: "memory",
-				description: "Cross-session memory for facts and learnings",
+				description:
+					"Cross-session and repo-scoped memory for facts and learnings",
 				usage:
-					"/memory [save|search|list|session|delete|stats|export|import|clear]",
+					"/memory [save|search|list|session|recent|team|delete|stats|export|import|clear]",
 				tags: ["memory", "session"],
 				arguments: [
 					{
@@ -789,12 +790,13 @@ export function createCommandRegistry({
 							"search",
 							"list",
 							"session",
+							"recent",
+							"team",
 							"delete",
 							"stats",
 							"export",
 							"import",
 							"clear",
-							"recent",
 						],
 					},
 				],
@@ -806,6 +808,8 @@ export function createCommandRegistry({
 					"/memory list",
 					"/memory list api-design",
 					"/memory session 5",
+					"/memory team",
+					"/memory team init",
 					"/memory stats",
 				],
 			},

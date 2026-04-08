@@ -14,6 +14,7 @@
 		"../../src/tools/**/*.ts",
 		"../../src/memory/relevant-recall.ts",
 		"../../src/memory/store.ts",
+		"../../src/memory/team-memory.ts",
 		"../../src/memory/types.ts",
 		"../../src/utils/**/*.ts",
 		"../../src/packages/**/*.ts",

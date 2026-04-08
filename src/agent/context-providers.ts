@@ -5,6 +5,7 @@ import {
 import { getLspConfig } from "../config/lsp-config.js";
 import { type IDEInfo, getPrimaryIDE } from "../ide/auto-connect.js";
 import { collectDiagnostics, getClients } from "../lsp/index.js";
+import { buildTeamMemoryPromptContext } from "../memory/team-memory.js";
 import { formatTaskFailures } from "../tools/background-tasks.js";
 import {
 	formatGoalSection,
@@ -189,6 +190,23 @@ export class FrameworkPreferenceContextSource implements AgentContextSource {
 		const info = getFrameworkSummary(pref.id);
 		if (!info) return null;
 		return `${info.summary} (source: ${pref.source})`;
+	}
+}
+
+export class TeamMemoryContextSource implements AgentContextSource {
+	name = "team-memory";
+
+	constructor(private readonly cwd: string = process.cwd()) {}
+
+	async getSystemPromptAdditions(): Promise<string | null> {
+		try {
+			return buildTeamMemoryPromptContext(this.cwd);
+		} catch (error) {
+			logger.warn("Failed to load team memory context", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return null;
+		}
 	}
 }
 

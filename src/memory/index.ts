@@ -42,6 +42,14 @@ export {
 } from "./store.js";
 
 export { buildRelevantMemoryPromptAddition } from "./relevant-recall.js";
+export {
+	assertTeamMemoryContentSafe,
+	buildTeamMemoryPromptContext,
+	ensureTeamMemoryEntrypoint,
+	getTeamMemoryLocation,
+	getTeamMemoryStatus,
+	isTeamMemoryFilePath,
+} from "./team-memory.js";
 
 export type {
 	MemoryEntry,
