@@ -45,6 +45,15 @@ export interface KeybindingConfigReport {
 	issues: KeybindingConfigIssue[];
 }
 
+export function summarizeKeybindingConfigIssues(
+	report: KeybindingConfigReport,
+): string | null {
+	if (!report.exists || report.issues.length === 0) {
+		return null;
+	}
+	return `Keyboard shortcuts config has ${report.issues.length} issue${report.issues.length === 1 ? "" : "s"}. Run /hotkeys validate.`;
+}
+
 type ParsedKeybindingConfig = {
 	version?: unknown;
 	bindings?: unknown;

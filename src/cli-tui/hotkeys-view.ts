@@ -2,7 +2,10 @@ import type { Container, TUI } from "@evalops/tui";
 import { Markdown, Spacer, Text } from "@evalops/tui";
 import chalk from "chalk";
 import { getMarkdownTheme } from "../theme/theme.js";
-import { inspectKeybindingConfig } from "./keybindings-config.js";
+import {
+	inspectKeybindingConfig,
+	summarizeKeybindingConfigIssues,
+} from "./keybindings-config.js";
 import {
 	getTuiKeybindingLabel,
 	getTuiKeybindingShortcut,
@@ -35,6 +38,9 @@ export function buildHotkeysMarkdown(
 		getTuiKeybindingShortcut("command-palette", env) === "ctrl+k"
 			? ""
 			: "| `Ctrl+K` | Delete to end of line |\n";
+	const validationLine = summarizeKeybindingConfigIssues(keybindingConfig)
+		? `Validation: ${keybindingConfig.issues.length} issue(s) detected. Run \`/hotkeys validate\` for details.`
+		: `Validation: ${keybindingConfig.exists ? "OK" : "config missing (run `/hotkeys init`)"}`;
 	return `
 **Navigation**
 | Key | Action |
@@ -93,6 +99,7 @@ ${ctrlKLine}| \`${commandPaletteBinding}\` | Command palette |
 | \`/hotkeys validate\` | Validate current overrides |
 
 Current config: \`${keybindingConfig.path}\` (${keybindingConfig.exists ? "present" : "missing"})
+${validationLine}
 `;
 }
 

@@ -77,4 +77,36 @@ describe("renderStartupAnnouncements", () => {
 		const output = stripAnsiSequences(container.render(120).join("\n"));
 		expect(output).toContain("Press Ctrl+K to cycle scoped models.");
 	});
+
+	it("surfaces invalid keybinding config health in startup announcements", () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "maestro-startup-test-"));
+		tempDirs.push(tempDir);
+		const filePath = join(tempDir, "keybindings.json");
+		writeFileSync(
+			filePath,
+			JSON.stringify({
+				version: 1,
+				bindings: {
+					"command-palette": "ctrl+p",
+				},
+			}),
+			"utf-8",
+		);
+		process.env.MAESTRO_KEYBINDINGS_FILE = filePath;
+		resetTuiKeybindingConfigCache();
+
+		const container = new Container();
+		const ui = { requestRender: vi.fn() } as unknown as TUI;
+
+		renderStartupAnnouncements({
+			container,
+			ui,
+			modelScope: [],
+		});
+
+		const output = stripAnsiSequences(container.render(120).join("\n"));
+		expect(output).toContain(
+			"Keyboard shortcuts config has 1 issue. Run /hotkeys validate.",
+		);
+	});
 });

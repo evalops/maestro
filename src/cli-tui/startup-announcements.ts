@@ -3,6 +3,10 @@ import chalk from "chalk";
 
 import type { RegisteredModel } from "../models/registry.js";
 import type { UpdateCheckResult } from "../update/check.js";
+import {
+	inspectKeybindingConfig,
+	summarizeKeybindingConfigIssues,
+} from "./keybindings-config.js";
 import { getTuiKeybindingLabel } from "./keybindings.js";
 import { formatLink } from "./utils/links.js";
 
@@ -84,6 +88,15 @@ export function renderStartupAnnouncements({
 		];
 		container.addChild(new Spacer(1));
 		container.addChild(new Text(scopeLines.join("\n"), 1, 0));
+		announced = true;
+	}
+
+	const keybindingWarning = summarizeKeybindingConfigIssues(
+		inspectKeybindingConfig(),
+	);
+	if (keybindingWarning) {
+		container.addChild(new Spacer(1));
+		container.addChild(new Text(chalk.hex("#f59e0b")(keybindingWarning), 1, 0));
 		announced = true;
 	}
 

@@ -89,6 +89,15 @@ import { ImportExportView } from "./import-view.js";
 import { InfoView } from "./info-view.js";
 import { InstructionPanelComponent } from "./instruction-panel.js";
 import type { InterruptController } from "./interrupt-controller.js";
+import {
+	type KeybindingConfigReport,
+	inspectKeybindingConfig,
+	summarizeKeybindingConfigIssues,
+} from "./keybindings-config.js";
+import {
+	startTuiKeybindingWatcher,
+	stopTuiKeybindingWatcher,
+} from "./keybindings-watcher.js";
 import { getTuiKeybindingLabel } from "./keybindings.js";
 import type { LoaderView } from "./loader/loader-view.js";
 import { LspView } from "./lsp-view.js";
@@ -447,6 +456,7 @@ export class TuiRenderer {
 	private compactionController!: CompactionController;
 	private slashHintController!: SlashHintController;
 	private customCommandsController?: CustomCommandsController;
+	private lastKeybindingIssueSummary: string | null = null;
 
 	constructor(
 		agent: Agent,
@@ -1329,17 +1339,12 @@ export class TuiRenderer {
 		this.refreshFooterHint();
 		this.ui.addChild(this.footer);
 		this.ui.setFocus(this.editor);
-		renderStartupAnnouncements({
-			container: this.startupContainer,
-			ui: this.ui,
-			updateNotice: this.updateNotice,
-			startupChangelog: this.startupChangelog,
-			startupChangelogSummary: this.startupChangelogSummary,
-			modelScope: this.modelScope,
-			onLayoutChange: () => {
-				this.viewportController.markStartupDirty();
-				this.updateScrollViewport();
-			},
+		this.renderStartupAnnouncementsBlock();
+		this.lastKeybindingIssueSummary = summarizeKeybindingConfigIssues(
+			inspectKeybindingConfig(),
+		);
+		startTuiKeybindingWatcher({
+			onReload: (report) => this.handleKeybindingConfigReload(report),
 		});
 
 		this.ui.start();
@@ -2633,6 +2638,7 @@ export class TuiRenderer {
 		this.slashHintController?.dispose();
 		this.loaderView.stop();
 		this.backgroundTasksController.stop();
+		stopTuiKeybindingWatcher();
 		// Clean up MCP and composer event listeners
 		this.mcpEventsController.stop();
 		if (this.isInitialized) {
@@ -2764,6 +2770,40 @@ export class TuiRenderer {
 	 */
 	scrollPageDown(): void {
 		this.scrollContainer.pageDown();
+		this.ui.requestRender();
+	}
+
+	private renderStartupAnnouncementsBlock(): void {
+		renderStartupAnnouncements({
+			container: this.startupContainer,
+			ui: this.ui,
+			updateNotice: this.updateNotice,
+			startupChangelog: this.startupChangelog,
+			startupChangelogSummary: this.startupChangelogSummary,
+			modelScope: this.modelScope,
+			onLayoutChange: () => {
+				this.viewportController.markStartupDirty();
+				this.updateScrollViewport();
+			},
+		});
+	}
+
+	private handleKeybindingConfigReload(report: KeybindingConfigReport): void {
+		const nextIssueSummary = summarizeKeybindingConfigIssues(report);
+		if (
+			nextIssueSummary &&
+			nextIssueSummary !== this.lastKeybindingIssueSummary
+		) {
+			this.notificationView.showToast(nextIssueSummary, "warn");
+		} else if (!nextIssueSummary && this.lastKeybindingIssueSummary) {
+			this.notificationView.showToast(
+				"Keyboard shortcuts config reloaded cleanly.",
+				"success",
+			);
+		}
+		this.lastKeybindingIssueSummary = nextIssueSummary;
+		this.refreshFooterHint();
+		this.renderStartupAnnouncementsBlock();
 		this.ui.requestRender();
 	}
 
