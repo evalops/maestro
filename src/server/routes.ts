@@ -8,6 +8,7 @@ import { handleApproval } from "./handlers/approval.js";
 import { handleApprovals } from "./handlers/approvals.js";
 import { handleAttachmentExtract } from "./handlers/attachments.js";
 import {
+	handleAutomationMagicDocs,
 	handleAutomationPreview,
 	handleAutomations,
 } from "./handlers/automations.js";
@@ -303,6 +304,11 @@ export function createRoutes(context: WebServerContext): Route[] {
 			method: "POST",
 			path: "/api/automations/preview",
 			handler: (req, res) => handleAutomationPreview(req, res, context),
+		},
+		{
+			method: "GET",
+			path: "/api/automations/magic-docs",
+			handler: (req, res) => handleAutomationMagicDocs(req, res, context),
 		},
 		{
 			method: "PATCH",

@@ -138,4 +138,31 @@ describe("desktop api client", () => {
 		expect(headers.get("x-composer-csrf")).toBe("maestro-desktop-csrf");
 		expect(headers.get("x-maestro-csrf")).toBe("maestro-desktop-csrf");
 	});
+
+	it("loads the Magic Docs automation template", async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			makeJsonResponse({
+				magicDocs: [
+					{
+						path: "docs/architecture.md",
+						title: "Architecture",
+					},
+				],
+				template: {
+					name: "Magic Docs Sync",
+					prompt: "Update the docs",
+					contextPaths: ["docs/architecture.md"],
+				},
+			}),
+		);
+		global.fetch = fetchMock;
+
+		const client = new ApiClient("http://localhost:8080");
+		const response = await client.getMagicDocsAutomationTemplate();
+
+		expect(fetchMock.mock.calls[0]?.[0]).toBe(
+			"http://localhost:8080/api/automations/magic-docs",
+		);
+		expect(response.template?.contextPaths).toEqual(["docs/architecture.md"]);
+	});
 });

@@ -503,6 +503,21 @@ export interface AutomationsResponse {
 	automations: AutomationTask[];
 }
 
+export interface MagicDocDefinition {
+	path: string;
+	title: string;
+	instructions?: string;
+}
+
+export interface MagicDocsAutomationTemplateResponse {
+	magicDocs: MagicDocDefinition[];
+	template: {
+		name: string;
+		prompt: string;
+		contextPaths: string[];
+	} | null;
+}
+
 export interface ComposerProfile {
 	name: string;
 	description?: string;
@@ -646,6 +661,12 @@ export class ApiClient {
 				error: parsedMessage,
 			};
 		}
+	}
+
+	async getMagicDocsAutomationTemplate(): Promise<MagicDocsAutomationTemplateResponse> {
+		return await this.fetchJson<MagicDocsAutomationTemplateResponse>(
+			"/api/automations/magic-docs",
+		);
 	}
 
 	// Models

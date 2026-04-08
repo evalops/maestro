@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ThinkingLevel } from "../../agent/types.js";
 import { createLogger } from "../../utils/logger.js";
 import type { WebServerContext } from "../app-context.js";
+import { buildMagicDocsAutomationTemplate } from "../automations/magic-docs.js";
 import {
 	getNextRunFromSchedule,
 	isValidTimezone,
@@ -431,6 +432,29 @@ export async function handleAutomationPreview(
 		);
 	} catch (error) {
 		logger.error("Automation preview error", error as Error);
+		respondWithApiError(res, error, 500, context.corsHeaders, req);
+	}
+}
+
+export async function handleAutomationMagicDocs(
+	req: IncomingMessage,
+	res: ServerResponse,
+	context: WebServerContext,
+) {
+	try {
+		if (req.method !== "GET") {
+			sendJson(res, 405, { error: "Method not allowed" }, context.corsHeaders);
+			return;
+		}
+
+		sendJson(
+			res,
+			200,
+			buildMagicDocsAutomationTemplate(process.cwd()),
+			context.corsHeaders,
+		);
+	} catch (error) {
+		logger.error("Automation Magic Docs handler error", error as Error);
 		respondWithApiError(res, error, 500, context.corsHeaders, req);
 	}
 }

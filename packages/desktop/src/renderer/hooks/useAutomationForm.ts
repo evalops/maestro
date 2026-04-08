@@ -24,6 +24,8 @@ export interface AutomationTemplate {
 	weeklyTime?: string;
 	weeklyDays?: number[];
 	thinkingLevel?: ThinkingLevel;
+	contextPaths?: string[];
+	contextFolders?: string[];
 }
 
 type UseAutomationFormOptions = {
@@ -215,9 +217,9 @@ export function useAutomationForm({
 			setTimezone(systemTimezone);
 			setSessionMode("reuse");
 			setSessionId(currentSessionId);
-			setContextPaths([]);
+			setContextPaths(template.contextPaths ?? []);
 			setContextInput("");
-			setContextFolders([]);
+			setContextFolders(template.contextFolders ?? []);
 			setContextFolderInput("");
 			setRunWindowEnabled(false);
 			setRunWindowStart("09:00");

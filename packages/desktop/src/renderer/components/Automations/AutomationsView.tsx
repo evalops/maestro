@@ -4,7 +4,10 @@ import {
 	useAutomationForm,
 } from "../../hooks/useAutomationForm";
 import { useAutomations } from "../../hooks/useAutomations";
-import { apiClient } from "../../lib/api-client";
+import {
+	type MagicDocsAutomationTemplateResponse,
+	apiClient,
+} from "../../lib/api-client";
 import type {
 	AutomationTask,
 	Model,
@@ -271,6 +274,10 @@ export function AutomationsView({
 	});
 	const [notificationsEnabled, setNotificationsEnabled] = useState(false);
 	const [toasts, setToasts] = useState<AutomationToast[]>([]);
+	const [magicDocsTemplate, setMagicDocsTemplate] =
+		useState<MagicDocsAutomationTemplateResponse | null>(null);
+	const [magicDocsLoading, setMagicDocsLoading] = useState(false);
+	const [magicDocsError, setMagicDocsError] = useState<string | null>(null);
 	const seenRunsRef = useRef<Record<string, string>>({});
 
 	const systemTimezone = useMemo(
@@ -321,6 +328,27 @@ export function AutomationsView({
 			clearInterval(interval);
 		};
 	}, []);
+
+	const loadMagicDocsTemplate = useCallback(async () => {
+		setMagicDocsLoading(true);
+		setMagicDocsError(null);
+		try {
+			const response = await apiClient.getMagicDocsAutomationTemplate();
+			setMagicDocsTemplate(response);
+			return response;
+		} catch (error) {
+			const message =
+				error instanceof Error ? error.message : "Failed to load Magic Docs.";
+			setMagicDocsError(message);
+			return null;
+		} finally {
+			setMagicDocsLoading(false);
+		}
+	}, []);
+
+	useEffect(() => {
+		void loadMagicDocsTemplate();
+	}, [loadMagicDocsTemplate]);
 
 	useEffect(() => {
 		if (!selectedId && automations.length > 0) {
@@ -440,6 +468,30 @@ export function AutomationsView({
 		const match = sessions.find((session) => session.id === sessionId);
 		return `Continue: ${match?.title || "Untitled session"}`;
 	}, [sessionId, sessionMode, sessions]);
+	const magicDocsCount = magicDocsTemplate?.magicDocs.length ?? 0;
+	const magicDocsSummary = magicDocsLoading
+		? "Scanning the workspace for `# MAGIC DOC:` files."
+		: magicDocsError
+			? magicDocsError
+			: magicDocsCount > 0
+				? `${magicDocsCount} Magic Doc${
+						magicDocsCount === 1 ? "" : "s"
+					} ready to sync.`
+				: "No Magic Docs found in this workspace.";
+	const handleApplyMagicDocsTemplate = useCallback(async () => {
+		const response = magicDocsTemplate ?? (await loadMagicDocsTemplate());
+		if (!response?.template) return;
+		handleApplyTemplate({
+			id: "magic-docs-sync",
+			name: response.template.name,
+			description: "Keep explicit Magic Docs up to date.",
+			prompt: response.template.prompt,
+			scheduleKind: "daily",
+			dailyTime: "10:00",
+			thinkingLevel: "low",
+			contextPaths: response.template.contextPaths,
+		});
+	}, [handleApplyTemplate, loadMagicDocsTemplate, magicDocsTemplate]);
 
 	return (
 		<div className="flex-1 overflow-hidden">
@@ -757,8 +809,54 @@ export function AutomationsView({
 												Start from a proven routine.
 											</div>
 										</div>
+										<button
+											type="button"
+											className="text-xs text-text-muted hover:text-text-primary"
+											onClick={() => void loadMagicDocsTemplate()}
+										>
+											Refresh Magic Docs
+										</button>
 									</div>
 									<div className="mt-3 grid gap-2 md:grid-cols-3">
+										<button
+											type="button"
+											className="rounded-xl border border-border-subtle bg-bg-secondary/40 px-3 py-3 text-left transition hover:border-border-default hover:bg-bg-secondary/70 disabled:cursor-not-allowed disabled:opacity-60"
+											onClick={() => void handleApplyMagicDocsTemplate()}
+											disabled={
+												magicDocsLoading || !magicDocsTemplate?.template
+											}
+										>
+											<div className="flex items-start justify-between gap-3">
+												<div>
+													<div className="text-sm font-semibold text-text-primary">
+														Magic Docs Sync
+													</div>
+													<div className="text-xs text-text-muted mt-1">
+														{magicDocsSummary}
+													</div>
+												</div>
+												<span className="badge bg-bg-tertiary text-text-secondary">
+													{magicDocsCount}
+												</span>
+											</div>
+											{magicDocsTemplate &&
+												magicDocsTemplate.magicDocs.length > 0 && (
+													<div className="mt-3 space-y-1 text-[11px] text-text-muted">
+														{magicDocsTemplate.magicDocs
+															.slice(0, 3)
+															.map((doc) => (
+																<div key={doc.path}>
+																	{doc.title} · {doc.path}
+																</div>
+															))}
+														{magicDocsTemplate.magicDocs.length > 3 && (
+															<div>
+																+{magicDocsTemplate.magicDocs.length - 3} more
+															</div>
+														)}
+													</div>
+												)}
+										</button>
 										{automationTemplates.map((template) => (
 											<button
 												key={template.id}
