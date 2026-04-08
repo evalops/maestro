@@ -84,6 +84,7 @@ use crate::components::{
 use crate::config_watcher::{ConfigEvent, ConfigWatcher, ConfigWatcherBuilder};
 use crate::files::get_workspace_files;
 use crate::git;
+use crate::keybindings::load_rust_tui_keybindings;
 use crate::mcp::{
     append_mcp_prompt_summary, McpConfigScope, McpPrompt, McpRuntimeEvent, McpTransport,
 };
@@ -144,30 +145,6 @@ struct PendingModelChange {
 #[derive(Debug, Clone, Copy)]
 struct QueuedPromptCursor {
     id: u64,
-}
-
-fn queued_follow_up_edit_binding_for_terminal_name(
-    terminal_name: &str,
-    in_tmux: bool,
-) -> crate::key_hints::KeyBinding {
-    if in_tmux || terminal_name.eq_ignore_ascii_case("tmux") {
-        return crate::key_hints::shift(KeyCode::Left);
-    }
-
-    match terminal_name.to_ascii_lowercase().as_str() {
-        "apple_terminal" | "warp" | "warpterminal" | "vscode" => {
-            crate::key_hints::shift(KeyCode::Left)
-        }
-        _ => crate::key_hints::alt(KeyCode::Up),
-    }
-}
-
-fn detect_queued_follow_up_edit_binding() -> crate::key_hints::KeyBinding {
-    let terminal_info = crate::terminal_info::TerminalInfo::get();
-    queued_follow_up_edit_binding_for_terminal_name(
-        &terminal_info.name,
-        std::env::var_os("TMUX").is_some(),
-    )
 }
 
 fn build_mcp_config_watcher() -> ConfigWatcher {
@@ -596,6 +573,15 @@ pub struct App {
     /// Cached git branch for session info updates.
     current_git_branch: Option<String>,
 
+    /// Keyboard shortcut used to open the command palette.
+    command_palette_binding: crate::key_hints::KeyBinding,
+
+    /// Keyboard shortcut used to open file search.
+    file_search_binding: crate::key_hints::KeyBinding,
+
+    /// Keyboard shortcut used to toggle tool output expansion.
+    toggle_tool_outputs_binding: crate::key_hints::KeyBinding,
+
     /// Keyboard shortcut used to restore the last queued follow-up.
     queued_follow_up_edit_binding: crate::key_hints::KeyBinding,
 
@@ -685,9 +671,12 @@ impl App {
         if let Some(mode) = queue_modes.follow_up_mode {
             state.follow_up_mode = mode;
         }
-        let queued_follow_up_edit_binding = detect_queued_follow_up_edit_binding();
-        let queued_follow_up_edit_binding_label = queued_follow_up_edit_binding.display();
-        state.queued_follow_up_edit_binding_label = queued_follow_up_edit_binding_label.clone();
+        let terminal_info = crate::terminal_info::TerminalInfo::get();
+        let keybindings =
+            load_rust_tui_keybindings(&terminal_info.name, std::env::var_os("TMUX").is_some());
+        let keybinding_labels = keybindings.labels();
+        state.queued_follow_up_edit_binding_label =
+            keybinding_labels.edit_last_queued_follow_up.clone();
 
         let loader = SkillLoader::new();
         let (loaded_skills, skill_load_errors) = loader.load_all_with_paths();
@@ -719,9 +708,7 @@ impl App {
             clipboard: ClipboardManager::new(),
             model_selector: ModelSelector::new(),
             theme_selector: ThemeSelector::new(),
-            shortcuts_help: ShortcutsHelp::new_with_queue_binding_label(
-                queued_follow_up_edit_binding_label,
-            ),
+            shortcuts_help: ShortcutsHelp::new_with_binding_labels(keybinding_labels),
             usage_tracker: crate::usage::UsageTracker::new(),
             prompt_history,
             tool_history: crate::tools::ToolHistory::default(),
@@ -741,7 +728,10 @@ impl App {
             config_watcher: build_mcp_config_watcher(),
             pending_model_change: None,
             current_git_branch: None,
-            queued_follow_up_edit_binding,
+            command_palette_binding: keybindings.command_palette,
+            file_search_binding: keybindings.file_search,
+            toggle_tool_outputs_binding: keybindings.toggle_tool_outputs,
+            queued_follow_up_edit_binding: keybindings.edit_last_queued_follow_up,
             editing_queued_follow_up: None,
             submit_queued_steering_after_interrupt: false,
             restore_queued_prompts_after_interrupt: false,
@@ -1846,6 +1836,23 @@ Add the required fields and retry.",
             return Ok(());
         }
 
+        if self.matches_binding(self.command_palette_binding, code, modifiers) {
+            self.command_palette.show();
+            self.active_modal = ActiveModal::CommandPalette;
+            return Ok(());
+        }
+        if self.matches_binding(self.file_search_binding, code, modifiers) {
+            self.file_search.show();
+            self.active_modal = ActiveModal::FileSearch;
+            return Ok(());
+        }
+        if !self.state.busy
+            && self.matches_binding(self.toggle_tool_outputs_binding, code, modifiers)
+        {
+            self.toggle_last_tool_call();
+            return Ok(());
+        }
+
         match code {
             // Quit
             KeyCode::Char('c') if ctrl => {
@@ -1886,16 +1893,6 @@ Add the required fields and retry.",
             }
 
             // Open modals
-            KeyCode::Char('p') if ctrl => {
-                // Command palette
-                self.command_palette.show();
-                self.active_modal = ActiveModal::CommandPalette;
-            }
-            KeyCode::Char('o') if ctrl => {
-                // File search
-                self.file_search.show();
-                self.active_modal = ActiveModal::FileSearch;
-            }
             KeyCode::Char('r') if ctrl && alt => {
                 // Session switcher
                 self.session_switcher.show();
@@ -1988,10 +1985,6 @@ Add the required fields and retry.",
             KeyCode::Char('G') if self.state.input().is_empty() => {
                 // Jump to bottom (newest messages)
                 self.state.scroll_offset = 0;
-            }
-            KeyCode::Char('t') if !self.state.busy && ctrl => {
-                // Ctrl+T: toggle last tool call expansion
-                self.toggle_last_tool_call();
             }
             KeyCode::Tab if !self.state.busy && self.state.input().is_empty() => {
                 // Tab: toggle thinking on last assistant message with thinking
@@ -3769,11 +3762,11 @@ Input:
 
 Toggle:
   Tab           Toggle thinking expansion (when input empty)
-  Ctrl+T        Toggle tool call expansion
+  {}        Toggle tool call expansion
 
 Modals:
-  Ctrl+P        Open command palette
-  Ctrl+O        Open file search
+  {}        Open command palette
+  {}        Open file search
   Ctrl+Alt+R    Open session switcher
 
 Session:
@@ -3796,7 +3789,10 @@ Slash Commands:
   /commands     Open command palette
   /quit         Exit
 ",
-            self.state.queued_follow_up_edit_binding_label
+            self.state.queued_follow_up_edit_binding_label,
+            self.toggle_tool_outputs_binding.display(),
+            self.command_palette_binding.display(),
+            self.file_search_binding.display()
         );
         self.state.add_system_message(help_text.trim().to_string());
     }
@@ -3984,6 +3980,15 @@ Slash Commands:
             .status
             .replace(format!("Editing queued follow-up #{}.", restored.id));
         Ok(true)
+    }
+
+    fn matches_binding(
+        &self,
+        binding: crate::key_hints::KeyBinding,
+        code: KeyCode,
+        modifiers: CrosstermModifiers,
+    ) -> bool {
+        binding.key == code && binding.modifiers == modifiers
     }
 
     fn capture_edited_queued_follow_up(&self) -> Option<QueuedPrompt> {
@@ -4554,7 +4559,22 @@ fn policy_model_id(model: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    use crate::keybindings::queued_follow_up_edit_binding_for_terminal_name;
     use crate::state::QueueMode;
+    use tempfile::tempdir;
+
+    fn keybindings_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn acquire_keybindings_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        keybindings_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     // ─────────────────────────────────────────────────────────────────────────
     // ActiveModal Tests
@@ -5720,6 +5740,76 @@ mod tests {
         let last = app.state.messages.last().expect("help message");
         assert!(last.content.contains("Maestro TUI - Keyboard Shortcuts"));
         assert!(!last.content.contains("Composer TUI - Keyboard Shortcuts"));
+    }
+
+    #[test]
+    fn test_show_help_uses_rebound_shortcut_labels() {
+        let _guard = acquire_keybindings_test_lock();
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("keybindings.json");
+        std::fs::write(
+            &config_path,
+            r#"{
+  "version": 1,
+  "rustBindings": {
+    "command-palette": "Ctrl+O",
+    "file-search": "Ctrl+P",
+    "toggle-tool-outputs": "Shift+Left"
+  }
+}"#,
+        )
+        .expect("write keybindings");
+
+        std::env::set_var("MAESTRO_KEYBINDINGS_FILE", &config_path);
+        let mut app = new_test_app();
+        app.show_help();
+        std::env::remove_var("MAESTRO_KEYBINDINGS_FILE");
+
+        let last = app.state.messages.last().expect("help message");
+        assert!(last
+            .content
+            .lines()
+            .any(|line| line.contains("Open command palette") && !line.contains("Ctrl+P")));
+        assert!(last
+            .content
+            .lines()
+            .any(|line| line.contains("Open file search") && !line.contains("Ctrl+O")));
+        assert!(last.content.lines().any(|line| {
+            line.contains("Toggle tool call expansion") && !line.contains("Ctrl+T")
+        }));
+    }
+
+    #[tokio::test]
+    async fn test_rebound_shortcuts_open_expected_modals() {
+        let _guard = acquire_keybindings_test_lock();
+        let temp = tempdir().expect("tempdir");
+        let config_path = temp.path().join("keybindings.json");
+        std::fs::write(
+            &config_path,
+            r#"{
+  "version": 1,
+  "rustBindings": {
+    "command-palette": "Ctrl+O",
+    "file-search": "Ctrl+P"
+  }
+}"#,
+        )
+        .expect("write keybindings");
+
+        std::env::set_var("MAESTRO_KEYBINDINGS_FILE", &config_path);
+        let mut app = new_test_app();
+        std::env::remove_var("MAESTRO_KEYBINDINGS_FILE");
+
+        app.handle_key(KeyCode::Char('o'), CrosstermModifiers::CONTROL)
+            .await
+            .expect("open command palette");
+        assert_eq!(app.active_modal, ActiveModal::CommandPalette);
+
+        app.active_modal = ActiveModal::None;
+        app.handle_key(KeyCode::Char('p'), CrosstermModifiers::CONTROL)
+            .await
+            .expect("open file search");
+        assert_eq!(app.active_modal, ActiveModal::FileSearch);
     }
 
     #[tokio::test]

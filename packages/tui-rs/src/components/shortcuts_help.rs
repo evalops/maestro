@@ -31,6 +31,8 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Padding, Row, Table, Widget},
 };
 
+use crate::keybindings::RustTuiKeybindingLabels;
+
 /// Categories for organizing keyboard shortcuts
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ShortcutCategory {
@@ -161,15 +163,12 @@ impl ShortcutsHelp {
     /// Create a new shortcuts help with default Composer shortcuts
     #[must_use]
     pub fn new() -> Self {
-        Self::new_with_queue_binding_label("Alt+Up")
+        Self::new_with_binding_labels(RustTuiKeybindingLabels::default())
     }
 
-    /// Create a new shortcuts help with a terminal-aware queued follow-up edit binding label.
+    /// Create a new shortcuts help with runtime binding labels.
     #[must_use]
-    pub fn new_with_queue_binding_label(
-        queued_follow_up_edit_binding_label: impl Into<String>,
-    ) -> Self {
-        let queued_follow_up_edit_binding_label = queued_follow_up_edit_binding_label.into();
+    pub fn new_with_binding_labels(labels: RustTuiKeybindingLabels) -> Self {
         let mut help = Self {
             shortcuts: Vec::new(),
             visible: false,
@@ -179,9 +178,18 @@ impl ShortcutsHelp {
             title: "Keyboard Shortcuts".to_string(),
         };
 
-        // Add default shortcuts
-        help.add_default_shortcuts(&queued_follow_up_edit_binding_label);
+        help.add_default_shortcuts(&labels);
         help
+    }
+
+    /// Create a new shortcuts help with a terminal-aware queued follow-up edit binding label.
+    #[must_use]
+    pub fn new_with_queue_binding_label(
+        queued_follow_up_edit_binding_label: impl Into<String>,
+    ) -> Self {
+        let mut labels = RustTuiKeybindingLabels::default();
+        labels.edit_last_queued_follow_up = queued_follow_up_edit_binding_label.into();
+        Self::new_with_binding_labels(labels)
     }
 
     /// Create an empty shortcuts help
@@ -198,7 +206,7 @@ impl ShortcutsHelp {
     }
 
     /// Add default Composer shortcuts
-    fn add_default_shortcuts(&mut self, queued_follow_up_edit_binding_label: &str) {
+    fn add_default_shortcuts(&mut self, labels: &RustTuiKeybindingLabels) {
         // Navigation
         self.add(Shortcut::new(
             ShortcutCategory::Navigation,
@@ -253,7 +261,7 @@ impl ShortcutsHelp {
         ));
         self.add(Shortcut::new(
             ShortcutCategory::Input,
-            queued_follow_up_edit_binding_label,
+            &labels.edit_last_queued_follow_up,
             "Edit last queued follow-up",
         ));
         self.add(Shortcut::new(
@@ -313,12 +321,12 @@ impl ShortcutsHelp {
         );
         self.add(Shortcut::new(
             ShortcutCategory::Commands,
-            "Ctrl+P",
+            &labels.command_palette,
             "Open command palette",
         ));
         self.add(Shortcut::new(
             ShortcutCategory::Commands,
-            "Ctrl+O",
+            &labels.file_search,
             "Open file search",
         ));
 
@@ -361,7 +369,7 @@ impl ShortcutsHelp {
         );
         self.add(Shortcut::new(
             ShortcutCategory::Tools,
-            "Ctrl+T",
+            &labels.toggle_tool_outputs,
             "Toggle last tool call expand",
         ));
         self.add(
@@ -691,6 +699,7 @@ impl ShortcutsHelpBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keybindings::RustTuiKeybindingLabels;
 
     #[test]
     fn test_shortcut_category_label() {
@@ -752,6 +761,35 @@ mod tests {
                 && shortcut.description == "Submit message / queue follow-up"
                 && shortcut.context_hint.as_deref() == Some("queues while running")
         }));
+    }
+
+    #[test]
+    fn test_shortcuts_help_uses_runtime_binding_labels() {
+        let help = ShortcutsHelp::new_with_binding_labels(RustTuiKeybindingLabels {
+            command_palette: "Ctrl+O".to_string(),
+            file_search: "Ctrl+P".to_string(),
+            toggle_tool_outputs: "Shift+Left".to_string(),
+            edit_last_queued_follow_up: "Ctrl+T".to_string(),
+        });
+
+        assert!(help
+            .shortcuts
+            .iter()
+            .any(|shortcut| shortcut.keys == "Ctrl+O"
+                && shortcut.description == "Open command palette"));
+        assert!(help.shortcuts.iter().any(
+            |shortcut| shortcut.keys == "Ctrl+P" && shortcut.description == "Open file search"
+        ));
+        assert!(help
+            .shortcuts
+            .iter()
+            .any(|shortcut| shortcut.keys == "Shift+Left"
+                && shortcut.description == "Toggle last tool call expand"));
+        assert!(help
+            .shortcuts
+            .iter()
+            .any(|shortcut| shortcut.keys == "Ctrl+T"
+                && shortcut.description == "Edit last queued follow-up"));
     }
 
     #[test]

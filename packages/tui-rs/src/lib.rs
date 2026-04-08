@@ -137,6 +137,9 @@ pub mod git;
 /// Shows available key bindings in the UI footer.
 pub mod key_hints;
 
+/// User-configurable Rust TUI keybinding loading and resolution.
+pub mod keybindings;
+
 /// Markdown rendering for terminal.
 /// Converts markdown to styled terminal output with syntax highlighting.
 pub mod markdown;
