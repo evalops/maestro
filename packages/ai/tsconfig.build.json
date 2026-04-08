@@ -15,6 +15,7 @@
 		"../../src/memory/relevant-recall.ts",
 		"../../src/memory/store.ts",
 		"../../src/memory/team-memory.ts",
+		"../../src/memory/team-memory-secret-scan.ts",
 		"../../src/memory/types.ts",
 		"../../src/utils/**/*.ts",
 		"../../src/packages/**/*.ts",

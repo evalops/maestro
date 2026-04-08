@@ -12,6 +12,7 @@ import { basename, dirname, join, resolve, sep } from "node:path";
 import { PATHS } from "../config/constants.js";
 import { scanOutboundSensitiveContent } from "../safety/outbound-secret-preflight.js";
 import { getGitRoot } from "../utils/git.js";
+import { scanTeamMemorySecrets } from "./team-memory-secret-scan.js";
 
 const TEAM_MEMORY_TEMPLATE = `# Team Memory
 
@@ -275,12 +276,16 @@ export function assertTeamMemoryContentSafe(
 	}
 
 	const scan = scanOutboundSensitiveContent(content);
-	if (scan.blockingFindings.length === 0) {
+	const curatedMatches = scanTeamMemorySecrets(content);
+	if (scan.blockingFindings.length === 0 && curatedMatches.length === 0) {
 		return;
 	}
 
 	const labels = Array.from(
-		new Set(scan.blockingFindings.map((finding) => finding.description)),
+		new Set([
+			...scan.blockingFindings.map((finding) => finding.description),
+			...curatedMatches.map((match) => match.label),
+		]),
 	).join(", ");
 	throw new Error(
 		`Potential secrets detected in team memory content (${labels}). Team memory files cannot store secrets.`,

@@ -98,4 +98,19 @@ describe("team memory", () => {
 			),
 		).toThrow("Potential secrets detected");
 	});
+
+	it("blocks curated fine-grained tokens in team-memory files", async () => {
+		initRepo(tempRoot);
+		const teamMemory = await import("../../src/memory/team-memory.js");
+
+		const location = teamMemory.ensureTeamMemoryEntrypoint(tempRoot)!;
+		const githubPat = `github_pat_${"a".repeat(82)}`;
+
+		expect(() =>
+			teamMemory.assertTeamMemoryContentSafe(
+				location.entrypoint,
+				`GitHub token: ${githubPat}`,
+			),
+		).toThrow("GitHub Fine-Grained PAT");
+	});
 });
