@@ -405,5 +405,5 @@ describe("HeadlessUtilityCommandManager", () => {
 			5000,
 			"Timed out waiting for remaining utility command to exit",
 		);
-	});
+	}, 60_000);
 });

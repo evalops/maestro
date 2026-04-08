@@ -262,6 +262,12 @@ describe("command-registry-integration", () => {
 			expect(thinkingEntry!.command.name).toBe("thinking");
 		});
 
+		it("matches /hotkeys subcommands with arguments", () => {
+			const hotkeysEntry = findMatchingEntry("/hotkeys validate");
+			expect(hotkeysEntry).toBeDefined();
+			expect(hotkeysEntry!.command.name).toBe("hotkeys");
+		});
+
 		it("matches /mcp subcommands with arguments", () => {
 			const mcpEntry = findMatchingEntry(
 				"/mcp add linear https://mcp.linear.app/mcp",

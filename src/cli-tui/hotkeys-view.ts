@@ -2,6 +2,7 @@ import type { Container, TUI } from "@evalops/tui";
 import { Markdown, Spacer, Text } from "@evalops/tui";
 import chalk from "chalk";
 import { getMarkdownTheme } from "../theme/theme.js";
+import { inspectKeybindingConfig } from "./keybindings-config.js";
 import {
 	getTuiKeybindingLabel,
 	getTuiKeybindingShortcut,
@@ -16,6 +17,7 @@ interface HotkeysViewOptions {
 export function buildHotkeysMarkdown(
 	env: NodeJS.ProcessEnv = process.env,
 ): string {
+	const keybindingConfig = inspectKeybindingConfig(env);
 	const queuedFollowUpEditBinding = getQueuedFollowUpEditBindingLabel(env);
 	const commandPaletteBinding = getTuiKeybindingLabel("command-palette", env);
 	const externalEditorBinding = getTuiKeybindingLabel("external-editor", env);
@@ -82,6 +84,15 @@ ${ctrlKLine}| \`${commandPaletteBinding}\` | Command palette |
 | \`@\` | File search / mention |
 | \`!\` | Run bash command |
 | \`Drop files\` | Attach files to message |
+
+**Customization**
+| Command | Purpose |
+|---------|---------|
+| \`/hotkeys path\` | Show the config file location |
+| \`/hotkeys init\` | Create a starter \`keybindings.json\` |
+| \`/hotkeys validate\` | Validate current overrides |
+
+Current config: \`${keybindingConfig.path}\` (${keybindingConfig.exists ? "present" : "missing"})
 `;
 }
 

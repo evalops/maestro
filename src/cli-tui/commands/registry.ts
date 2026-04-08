@@ -15,6 +15,7 @@ import {
 	USAGE_SUBCOMMANDS,
 	createSubcommandCompletions,
 } from "./grouped/index.js";
+import { HOTKEYS_SUBCOMMANDS } from "./hotkeys-command.js";
 import type {
 	CommandEntry,
 	CommandExecutionContext,
@@ -717,12 +718,20 @@ export function createCommandRegistry({
 		buildEntry(
 			{
 				name: "hotkeys",
-				description: "Show all keyboard shortcuts",
-				usage: "/hotkeys",
-				tags: ["help"],
+				description: "Show or manage keyboard shortcuts",
+				usage: "/hotkeys [show|path|init|validate]",
+				tags: ["help", "config"],
 				aliases: ["keys", "shortcuts"],
+				examples: [
+					"/hotkeys",
+					"/hotkeys path",
+					"/hotkeys init",
+					"/hotkeys validate",
+				],
+				getArgumentCompletions:
+					createSubcommandCompletions(HOTKEYS_SUBCOMMANDS),
 			},
-			equals("hotkeys", ["keys", "shortcuts"]),
+			withArgs("hotkeys", ["keys", "shortcuts"]),
 			handlers.hotkeys,
 			createContext,
 		),

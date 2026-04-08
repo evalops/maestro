@@ -13,6 +13,7 @@ import type { ChangelogView } from "../changelog-view.js";
 import { handleAccessCommand } from "../commands/access-command.js";
 import { handleAuditCommand } from "../commands/audit-command.js";
 import type { GroupedCommandHandlers } from "../commands/grouped-command-handlers.js";
+import { createHotkeysCommandHandler } from "../commands/hotkeys-command.js";
 import { handleLimitsCommand } from "../commands/limits-command.js";
 import { handleOtelCommand as otelHandler } from "../commands/otel-handlers.js";
 import { handlePiiCommand } from "../commands/pii-command.js";
@@ -188,7 +189,10 @@ export function buildTuiCommandRegistryOptions(
 		handleUpdate: (_context) => deps.getUpdateView().handleUpdateCommand(),
 		handleChangelog: (_context) =>
 			deps.getChangelogView().handleChangelogCommand(),
-		handleHotkeys: (_context) => deps.getHotkeysView().handleHotkeysCommand(),
+		handleHotkeys: (context) =>
+			createHotkeysCommandHandler({
+				showHotkeys: () => deps.getHotkeysView().handleHotkeysCommand(),
+			})(context),
 		handleConfig: (context) =>
 			deps.getConfigView().handleConfigCommand(context),
 		handleCost: (context) => deps.getCostView().handleCostCommand(context),

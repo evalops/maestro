@@ -74,6 +74,14 @@ const keybindingStoreCache = new Map<
 	StoredTuiKeybindingStore["bindings"]
 >();
 
+function normalizeActionName(value: string): string {
+	return value.trim().toLowerCase();
+}
+
+function normalizeShortcutName(value: string): string {
+	return value.replace(/\s+/g, "").toLowerCase();
+}
+
 function isTuiKeybindingAction(value: string): value is TuiKeybindingAction {
 	return TUI_KEYBINDING_ACTION_SET.has(value);
 }
@@ -140,9 +148,9 @@ function getCanonicalShortcutSequence(shortcut: TuiKeybindingShortcut): string {
 	return buildCtrlRawSequence(CTRL_SHORTCUT_LETTERS[shortcut]);
 }
 
-function getTuiKeybindingsFilePath(
+export function getTuiKeybindingsFilePath(
 	env: NodeJS.ProcessEnv = process.env,
-): string | null {
+): string {
 	if (env === process.env) {
 		return PATHS.TUI_KEYBINDINGS_FILE;
 	}
@@ -151,7 +159,9 @@ function getTuiKeybindingsFilePath(
 		return explicitPath;
 	}
 	const maestroHome = resolveEnvPath(env.MAESTRO_HOME);
-	return maestroHome ? join(maestroHome, "keybindings.json") : null;
+	return maestroHome
+		? join(maestroHome, "keybindings.json")
+		: PATHS.TUI_KEYBINDINGS_FILE;
 }
 
 function normalizeTuiKeybindingStore(raw: unknown): StoredTuiKeybindingStore {
@@ -173,12 +183,15 @@ function normalizeTuiKeybindingStore(raw: unknown): StoredTuiKeybindingStore {
 	const normalizedBindings: StoredTuiKeybindingStore["bindings"] = {};
 
 	for (const [action, shortcut] of Object.entries(bindings)) {
+		const normalizedAction = normalizeActionName(action);
+		const normalizedShortcut =
+			typeof shortcut === "string" ? normalizeShortcutName(shortcut) : shortcut;
 		if (
-			isTuiKeybindingAction(action) &&
-			typeof shortcut === "string" &&
-			isTuiKeybindingShortcut(shortcut)
+			isTuiKeybindingAction(normalizedAction) &&
+			typeof normalizedShortcut === "string" &&
+			isTuiKeybindingShortcut(normalizedShortcut)
 		) {
-			normalizedBindings[action] = shortcut;
+			normalizedBindings[normalizedAction] = normalizedShortcut;
 		}
 	}
 
@@ -192,10 +205,6 @@ function readTuiKeybindingOverrides(
 	env: NodeJS.ProcessEnv = process.env,
 ): StoredTuiKeybindingStore["bindings"] {
 	const filePath = getTuiKeybindingsFilePath(env);
-	if (!filePath) {
-		return EMPTY_TUI_KEYBINDING_STORE.bindings;
-	}
-
 	const cached = keybindingStoreCache.get(filePath);
 	if (cached) {
 		return cached;

@@ -60,4 +60,16 @@ describe("buildHotkeysMarkdown", () => {
 		expect(markdown).toContain("`Ctrl+K` | Cycle models");
 		expect(markdown).toContain("`Ctrl+K` | Delete to end of line");
 	});
+
+	it("includes keybinding management commands and config status", () => {
+		const markdown = buildHotkeysMarkdown();
+
+		expect(markdown).toContain(
+			"`/hotkeys path` | Show the config file location",
+		);
+		expect(markdown).toContain(
+			"`/hotkeys validate` | Validate current overrides",
+		);
+		expect(markdown).toContain("Current config:");
+	});
 });
