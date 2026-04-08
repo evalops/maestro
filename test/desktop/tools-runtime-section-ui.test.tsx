@@ -209,6 +209,41 @@ function createProps(
 			},
 			issues: [],
 		}),
+		onRefreshAllPackages: vi.fn().mockResolvedValue({
+			refreshed: [
+				{
+					source: "git:github.com/acme/example@main",
+					sourceType: "git",
+					scopes: ["project"],
+					inspection: {
+						sourceSpec: "git:github.com/acme/example@main",
+						resolvedSource: "git:github.com/acme/example@main",
+						sourceType: "git",
+						resolvedPath: "/repo/.maestro/packages/git-1234",
+						discovered: {
+							name: "@acme/example",
+							version: "1.0.1",
+							isMaestroPackage: true,
+							hasManifest: true,
+							manifestPaths: {
+								skills: ["tooling"],
+							},
+							errors: [],
+						},
+						resources: {
+							extensions: [],
+							skills: ["tooling", "deploy"],
+							prompts: [],
+							themes: [],
+						},
+					},
+					issues: [],
+					error: null,
+				},
+			],
+			localCount: 1,
+			remoteCount: 1,
+		}),
 		onValidatePackage: vi.fn().mockResolvedValue({
 			inspection: {
 				sourceSpec: "./packages/example",
@@ -574,6 +609,127 @@ describe("ToolsRuntimeSection UI", () => {
 		);
 		expect(container.textContent ?? "").toContain(
 			'Refreshed configured package "git:github.com/acme/example@main" from Project config.',
+		);
+	});
+
+	it("refreshes all configured remote packages from the settings panel", async () => {
+		const onRefreshAllPackages = vi.fn().mockResolvedValue({
+			refreshed: [
+				{
+					source: "git:github.com/acme/example@main",
+					sourceType: "git",
+					scopes: ["project"],
+					inspection: {
+						sourceSpec: "git:github.com/acme/example@main",
+						resolvedSource: "git:github.com/acme/example@main",
+						sourceType: "git",
+						resolvedPath: "/repo/.maestro/packages/git-1234",
+						discovered: {
+							name: "@acme/example",
+							version: "1.0.1",
+							isMaestroPackage: true,
+							hasManifest: true,
+							manifestPaths: {
+								skills: ["tooling"],
+							},
+							errors: [],
+						},
+						resources: {
+							extensions: [],
+							skills: ["tooling", "deploy"],
+							prompts: [],
+							themes: [],
+						},
+					},
+					issues: [],
+					error: null,
+				},
+			],
+			localCount: 1,
+			remoteCount: 1,
+		});
+
+		await renderSection({
+			packageStatus: {
+				packages: [
+					{
+						scope: "project",
+						configPath: "/repo/.maestro/config.toml",
+						sourceSpec: "./packages/example",
+						filters: null,
+						inspection: {
+							sourceSpec: "./packages/example",
+							resolvedSource: "./packages/example",
+							sourceType: "local",
+							resolvedPath: "/repo/packages/example",
+							discovered: {
+								name: "@acme/example",
+								version: "1.0.0",
+								isMaestroPackage: true,
+								hasManifest: true,
+								manifestPaths: {
+									skills: ["tooling"],
+								},
+								errors: [],
+							},
+							resources: {
+								extensions: [],
+								skills: ["tooling"],
+								prompts: [],
+								themes: [],
+							},
+						},
+						issues: [],
+						error: null,
+					},
+					{
+						scope: "project",
+						configPath: "/repo/.maestro/config.toml",
+						sourceSpec: "git:github.com/acme/example@main",
+						filters: null,
+						inspection: {
+							sourceSpec: "git:github.com/acme/example@main",
+							resolvedSource: "git:github.com/acme/example@main",
+							sourceType: "git",
+							resolvedPath: "/repo/.maestro/packages/git-1234",
+							discovered: {
+								name: "@acme/example",
+								version: "1.0.0",
+								isMaestroPackage: true,
+								hasManifest: true,
+								manifestPaths: {
+									skills: ["tooling"],
+								},
+								errors: [],
+							},
+							resources: {
+								extensions: [],
+								skills: ["tooling"],
+								prompts: [],
+								themes: [],
+							},
+						},
+						issues: [],
+						error: null,
+					},
+				],
+			},
+			onRefreshAllPackages,
+		});
+
+		const refreshButton = container.querySelector(
+			".package-refresh-all-button",
+		) as HTMLButtonElement | null;
+		expect(refreshButton).toBeTruthy();
+
+		await act(async () => {
+			refreshButton?.click();
+			await flushAsyncWork(3);
+		});
+
+		expect(onRefreshAllPackages).toHaveBeenCalledTimes(1);
+		expect(container.textContent ?? "").toContain(
+			"Refreshed 1 configured remote packages.",
 		);
 	});
 });

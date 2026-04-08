@@ -45,6 +45,11 @@ export {
 	resolvePackageSource,
 	resolvePackageSourceSync,
 } from "./sources.js";
+export {
+	refreshConfiguredRemotePackages,
+	type ConfiguredPackageRefreshReport,
+	type RefreshedConfiguredPackage,
+} from "./maintenance.js";
 export type {
 	DiscoveredPackage,
 	GitSource,

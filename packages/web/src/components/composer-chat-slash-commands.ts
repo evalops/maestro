@@ -19,6 +19,7 @@ import type {
 	McpServerRemoveResponse,
 	McpStatus,
 	PackageAddResponse,
+	PackageBulkRefreshResponse,
 	PackageInspectResponse,
 	PackageMutationRequest,
 	PackageRemoveResponse,
@@ -73,6 +74,7 @@ type WebSlashCommandApiClient = Pick<
 	| "removeMcpAuthPreset"
 	| "removeMcpServer"
 	| "removePackage"
+	| "refreshAllPackages"
 	| "runScript"
 	| "saveMemory"
 	| "saveConfig"
@@ -120,7 +122,7 @@ const MCP_AUTH_REMOVE_USAGE =
 const PACKAGE_ADD_USAGE = "/package add <source> [--scope local|project|user]";
 const PACKAGE_REMOVE_USAGE =
 	"/package remove <source> [--scope local|project|user]";
-const PACKAGE_REFRESH_USAGE = "/package refresh <source>";
+const PACKAGE_REFRESH_USAGE = "/package refresh [<source>|--all]";
 const PACKAGE_INSPECT_USAGE = "/package [inspect|validate] <source>";
 const MEMORY_USAGE =
 	"/memory [save <topic> <content>|search <query> [--session]|list [topic] [--session]|recent [N] [--session]|stats [--session]|delete <id|topic>|export [path]|import <path>|clear --force]";
@@ -708,6 +710,39 @@ function formatPackageRefreshResult(result: PackageInspectResponse): string {
 	if (inspection.discovered?.name) {
 		lines.push(`  Name: ${inspection.discovered.name}`);
 	}
+	return lines.join("\n");
+}
+
+function formatPackageBulkRefreshResult(
+	result: PackageBulkRefreshResponse,
+): string {
+	const lines = ["Configured package refresh completed."];
+	lines.push(`  Remote packages: ${result.remoteCount}`);
+	lines.push(`  Local packages skipped: ${result.localCount}`);
+
+	if (result.refreshed.length === 0) {
+		lines.push("  Result: No configured remote packages to refresh.");
+		return lines.join("\n");
+	}
+
+	for (const entry of result.refreshed) {
+		lines.push(`  - ${entry.source}`);
+		lines.push(`    Scopes: ${entry.scopes.join(", ")}`);
+		if (entry.error) {
+			lines.push(`    Error: ${entry.error}`);
+			continue;
+		}
+		if (entry.inspection) {
+			lines.push(`    Path: ${entry.inspection.resolvedPath}`);
+			if (entry.inspection.discovered?.name) {
+				lines.push(`    Name: ${entry.inspection.discovered.name}`);
+			}
+		}
+		if (entry.issues.length > 0) {
+			lines.push(`    Issues: ${entry.issues.join(" | ")}`);
+		}
+	}
+
 	return lines.join("\n");
 }
 
@@ -1849,8 +1884,12 @@ export async function executeWebSlashCommand(
 				if (sub === "refresh") {
 					if (!requireWritableSession("Package refresh")) break;
 					const source = args.replace(/^refresh\b/i, "").trim();
-					if (!source) {
-						context.appendCommandOutput(PACKAGE_REFRESH_USAGE, true);
+					if (!source || source === "--all" || source === "all") {
+						const result = await context.apiClient.refreshAllPackages();
+						context.appendCommandOutput(
+							formatCommandCodeBlock(formatPackageBulkRefreshResult(result)),
+							result.refreshed.some((entry) => Boolean(entry.error)),
+						);
 						break;
 					}
 					const result = await context.apiClient.refreshPackage(source);

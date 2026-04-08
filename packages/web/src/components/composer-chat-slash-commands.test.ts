@@ -49,6 +49,7 @@ function createContext(overrides: Partial<WebSlashCommandContext> = {}) {
 		listMemoryTopics: vi.fn(),
 		listQueue: vi.fn(),
 		readMcpResource: vi.fn(),
+		refreshAllPackages: vi.fn(),
 		refreshPackage: vi.fn(),
 		removeMcpAuthPreset: vi.fn(),
 		removeMcpServer: vi.fn(),
@@ -373,6 +374,57 @@ describe("executeWebSlashCommand", () => {
 				output: expect.stringContaining("Package refresh completed."),
 			}),
 		]);
+		expect(outputs[0]?.output).toContain("@acme/pack");
+	});
+
+	it("refreshes all configured remote packages from the web slash command", async () => {
+		const { context, outputs, apiClient } = createContext();
+		apiClient.refreshAllPackages.mockResolvedValue({
+			refreshed: [
+				{
+					source: "git:github.com/acme/pack@main",
+					sourceType: "git",
+					scopes: ["project"],
+					inspection: {
+						sourceSpec: "git:github.com/acme/pack@main",
+						resolvedSource: "git:github.com/acme/pack@main",
+						sourceType: "git",
+						resolvedPath: "/repo/.maestro/packages/git-1234",
+						discovered: {
+							name: "@acme/pack",
+							version: "1.2.1",
+							isMaestroPackage: true,
+							hasManifest: true,
+							manifestPaths: { skills: ["./skills"] },
+							errors: [],
+						},
+						resources: {
+							extensions: [],
+							skills: ["/repo/.maestro/packages/git-1234/skills/pkg-skill"],
+							prompts: [],
+							themes: [],
+						},
+					},
+					issues: [],
+					error: null,
+				},
+			],
+			localCount: 1,
+			remoteCount: 1,
+		});
+
+		await executeWebSlashCommand("package", "refresh --all", context);
+
+		expect(apiClient.refreshAllPackages).toHaveBeenCalledTimes(1);
+		expect(outputs).toEqual([
+			expect.objectContaining({
+				isError: false,
+				output: expect.stringContaining(
+					"Configured package refresh completed.",
+				),
+			}),
+		]);
+		expect(outputs[0]?.output).toContain("Remote packages: 1");
 		expect(outputs[0]?.output).toContain("@acme/pack");
 	});
 

@@ -917,6 +917,7 @@ export function createCommandRegistry({
 					"/package list",
 					"/package remove ./packages/my-pack",
 					"/package refresh git:github.com/org/my-pack@main",
+					"/package refresh --all",
 					"/package inspect ./packages/my-pack",
 					"/package validate ./packages/my-pack",
 					"/plugin ./packages/my-pack",

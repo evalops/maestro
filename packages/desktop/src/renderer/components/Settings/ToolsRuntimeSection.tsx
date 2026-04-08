@@ -45,6 +45,7 @@ import type {
 	McpServerUpdateRequest,
 	McpStatus,
 	PackageAddResponse,
+	PackageBulkRefreshResponse,
 	PackageInspectResponse,
 	PackageMutationRequest,
 	PackageRemoveResponse,
@@ -178,6 +179,7 @@ export interface ToolsRuntimeSectionProps {
 		args?: Record<string, string>,
 	) => Promise<McpPromptResponse>;
 	onInspectPackage: (source: string) => Promise<PackageInspectResponse>;
+	onRefreshAllPackages: () => Promise<PackageBulkRefreshResponse>;
 	onRefreshPackage: (source: string) => Promise<PackageInspectResponse>;
 	onValidatePackage: (source: string) => Promise<PackageInspectResponse>;
 	onAddPackage: (input: PackageMutationRequest) => Promise<PackageAddResponse>;
@@ -532,6 +534,7 @@ export function ToolsRuntimeSection({
 	onReadMcpResource,
 	onGetMcpPrompt,
 	onInspectPackage,
+	onRefreshAllPackages,
 	onRefreshPackage,
 	onValidatePackage,
 	onAddPackage,
@@ -682,6 +685,7 @@ export function ToolsRuntimeSection({
 	const [refreshingPackageKey, setRefreshingPackageKey] = useState<
 		string | null
 	>(null);
+	const [refreshingAllPackages, setRefreshingAllPackages] = useState(false);
 	const [packageNotice, setPackageNotice] = useState<string | null>(null);
 	const [packageError, setPackageError] = useState<string | null>(null);
 	const [packagePreview, setPackagePreview] = useState<{
@@ -807,6 +811,32 @@ export function ToolsRuntimeSection({
 			);
 		} finally {
 			setRefreshingPackageKey((current) => (current === key ? null : current));
+		}
+	};
+
+	const handleRefreshAllPackages = async () => {
+		setRefreshingAllPackages(true);
+		setPackageError(null);
+		setPackageNotice(null);
+		try {
+			const result = await onRefreshAllPackages();
+			const failureCount = result.refreshed.filter(
+				(entry) => entry.error,
+			).length;
+			setPackagePreview(null);
+			setPackageNotice(
+				failureCount > 0
+					? `Refreshed ${result.remoteCount - failureCount} configured remote packages. ${failureCount} failed.`
+					: `Refreshed ${result.remoteCount} configured remote packages.`,
+			);
+		} catch (error) {
+			setPackageError(
+				error instanceof Error
+					? error.message
+					: "Failed to refresh configured packages",
+			);
+		} finally {
+			setRefreshingAllPackages(false);
 		}
 	};
 
@@ -2917,13 +2947,27 @@ export function ToolsRuntimeSection({
 								Slash command: /package
 							</div>
 						</div>
-						<button
-							type="button"
-							className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
-							onClick={onRefreshPackageStatus}
-						>
-							Refresh
-						</button>
+						<div className="flex items-center gap-2">
+							<button
+								type="button"
+								className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
+								onClick={onRefreshPackageStatus}
+							>
+								Refresh
+							</button>
+							{packages.some((entry) => canRefreshPackage(entry)) && (
+								<button
+									type="button"
+									className="package-refresh-all-button px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-60"
+									onClick={() => void handleRefreshAllPackages()}
+									disabled={refreshingAllPackages}
+								>
+									{refreshingAllPackages
+										? "Refreshing remotes..."
+										: "Refresh remotes"}
+								</button>
+							)}
+						</div>
 					</div>
 					{packages.length ? (
 						<div className="grid grid-cols-1 gap-2">

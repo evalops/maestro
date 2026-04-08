@@ -284,6 +284,21 @@ export interface PackageInspectResponse {
 	issues: string[];
 }
 
+export interface PackageBulkRefreshEntry {
+	source: string;
+	sourceType: "git" | "npm";
+	scopes: PackageScope[];
+	inspection: PackageInspectionResult | null;
+	issues: string[];
+	error: string | null;
+}
+
+export interface PackageBulkRefreshResponse {
+	refreshed: PackageBulkRefreshEntry[];
+	localCount: number;
+	remoteCount: number;
+}
+
 export interface PackageMutationRequest {
 	source: string;
 	scope?: PackageScope;
@@ -2243,6 +2258,14 @@ export class ApiClient {
 			"/api/package?action=refresh",
 			"POST",
 			{ source },
+		);
+	}
+
+	async refreshAllPackages(): Promise<PackageBulkRefreshResponse> {
+		return await this.fetchJsonRequestWithFallback<PackageBulkRefreshResponse>(
+			"/api/package?action=refresh-all",
+			"POST",
+			{},
 		);
 	}
 

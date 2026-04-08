@@ -337,6 +337,41 @@ function createApiClientMock(): ApiClient {
 			},
 			issues: [],
 		}),
+		refreshAllPackages: vi.fn().mockResolvedValue({
+			refreshed: [
+				{
+					source: "git:github.com/acme/example@main",
+					sourceType: "git",
+					scopes: ["project"],
+					inspection: {
+						sourceSpec: "git:github.com/acme/example@main",
+						resolvedSource: "git:github.com/acme/example@main",
+						sourceType: "git",
+						resolvedPath: "/repo/.maestro/packages/git-1234",
+						discovered: {
+							name: "@acme/example",
+							version: "1.0.1",
+							isMaestroPackage: true,
+							hasManifest: true,
+							manifestPaths: {
+								skills: ["tooling"],
+							},
+							errors: [],
+						},
+						resources: {
+							extensions: [],
+							skills: ["tooling", "deploy"],
+							prompts: [],
+							themes: [],
+						},
+					},
+					issues: [],
+					error: null,
+				},
+			],
+			localCount: 1,
+			remoteCount: 1,
+		}),
 		validatePackage: vi.fn().mockResolvedValue({
 			inspection: {
 				sourceSpec: "./packages/new-pack",
@@ -1744,7 +1779,7 @@ describe("ComposerSettings MCP section", () => {
 
 		await waitForSettled(element, () =>
 			(element.shadowRoot?.textContent ?? "").includes(
-				'Refreshed configured package "git:github.com/acme/example@main" from Project config.',
+				'Refreshed configured package "git:github.com/acme/example@main" from Project.',
 			),
 		);
 
@@ -1752,7 +1787,154 @@ describe("ComposerSettings MCP section", () => {
 			"git:github.com/acme/example@main",
 		);
 		expect(element.shadowRoot?.textContent ?? "").toContain(
-			'Refreshed configured package "git:github.com/acme/example@main" from Project config.',
+			'Refreshed configured package "git:github.com/acme/example@main" from Project.',
+		);
+	});
+
+	it("refreshes all configured remote packages from settings", async () => {
+		const apiClient = createApiClientMock();
+		(apiClient.getPackageStatus as ReturnType<typeof vi.fn>)
+			.mockResolvedValueOnce({
+				packages: [
+					{
+						scope: "project",
+						configPath: "/repo/.maestro/config.toml",
+						sourceSpec: "./packages/example",
+						filters: null,
+						inspection: {
+							sourceSpec: "./packages/example",
+							resolvedSource: "./packages/example",
+							sourceType: "local",
+							resolvedPath: "/repo/packages/example",
+							discovered: {
+								name: "@acme/example",
+								version: "1.0.0",
+								isMaestroPackage: true,
+								hasManifest: true,
+								manifestPaths: { skills: ["tooling"] },
+								errors: [],
+							},
+							resources: {
+								extensions: [],
+								skills: ["tooling"],
+								prompts: [],
+								themes: [],
+							},
+						},
+						issues: [],
+						error: null,
+					},
+					{
+						scope: "project",
+						configPath: "/repo/.maestro/config.toml",
+						sourceSpec: "git:github.com/acme/example@main",
+						filters: null,
+						inspection: {
+							sourceSpec: "git:github.com/acme/example@main",
+							resolvedSource: "git:github.com/acme/example@main",
+							sourceType: "git",
+							resolvedPath: "/repo/.maestro/packages/git-1234",
+							discovered: {
+								name: "@acme/example",
+								version: "1.0.0",
+								isMaestroPackage: true,
+								hasManifest: true,
+								manifestPaths: { skills: ["tooling"] },
+								errors: [],
+							},
+							resources: {
+								extensions: [],
+								skills: ["tooling"],
+								prompts: [],
+								themes: [],
+							},
+						},
+						issues: [],
+						error: null,
+					},
+				],
+			})
+			.mockResolvedValueOnce({
+				packages: [
+					{
+						scope: "project",
+						configPath: "/repo/.maestro/config.toml",
+						sourceSpec: "./packages/example",
+						filters: null,
+						inspection: {
+							sourceSpec: "./packages/example",
+							resolvedSource: "./packages/example",
+							sourceType: "local",
+							resolvedPath: "/repo/packages/example",
+							discovered: {
+								name: "@acme/example",
+								version: "1.0.0",
+								isMaestroPackage: true,
+								hasManifest: true,
+								manifestPaths: { skills: ["tooling"] },
+								errors: [],
+							},
+							resources: {
+								extensions: [],
+								skills: ["tooling"],
+								prompts: [],
+								themes: [],
+							},
+						},
+						issues: [],
+						error: null,
+					},
+					{
+						scope: "project",
+						configPath: "/repo/.maestro/config.toml",
+						sourceSpec: "git:github.com/acme/example@main",
+						filters: null,
+						inspection: {
+							sourceSpec: "git:github.com/acme/example@main",
+							resolvedSource: "git:github.com/acme/example@main",
+							sourceType: "git",
+							resolvedPath: "/repo/.maestro/packages/git-1234",
+							discovered: {
+								name: "@acme/example",
+								version: "1.0.1",
+								isMaestroPackage: true,
+								hasManifest: true,
+								manifestPaths: { skills: ["tooling"] },
+								errors: [],
+							},
+							resources: {
+								extensions: [],
+								skills: ["tooling", "deploy"],
+								prompts: [],
+								themes: [],
+							},
+						},
+						issues: [],
+						error: null,
+					},
+				],
+			});
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Boolean(element.shadowRoot?.querySelector("button:nth-of-type(2)")),
+		);
+
+		const button = Array.from(
+			element.shadowRoot?.querySelectorAll("button") ?? [],
+		).find((candidate) => candidate.textContent?.trim() === "Refresh remotes");
+		expect(button).toBeTruthy();
+		(button as HTMLButtonElement).click();
+
+		await waitForSettled(element, () =>
+			(element.shadowRoot?.textContent ?? "").includes(
+				"Refreshed 1 configured remote packages.",
+			),
+		);
+
+		expect(apiClient.refreshAllPackages).toHaveBeenCalledTimes(1);
+		expect(element.shadowRoot?.textContent ?? "").toContain(
+			"Refreshed 1 configured remote packages.",
 		);
 	});
 

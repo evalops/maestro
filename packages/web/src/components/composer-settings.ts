@@ -583,6 +583,7 @@ export class ComposerSettings extends LitElement {
 	@state() private packageAction: "inspect" | "validate" | "add" | null = null;
 	@state() private packageRemovingKey: string | null = null;
 	@state() private packageRefreshingKey: string | null = null;
+	@state() private packageRefreshingAll = false;
 	@state() private packageError: string | null = null;
 	@state() private packageNotice: string | null = null;
 	@state() private packagePreview: {
@@ -957,6 +958,31 @@ export class ComposerSettings extends LitElement {
 			if (this.packageRefreshingKey === key) {
 				this.packageRefreshingKey = null;
 			}
+		}
+	}
+
+	private async refreshAllPackages() {
+		this.packageRefreshingAll = true;
+		this.packageError = null;
+		this.packageNotice = null;
+		try {
+			const result = await this.apiClient.refreshAllPackages();
+			await this.refreshPackageStatus();
+			this.packagePreview = null;
+			const failureCount = result.refreshed.filter(
+				(entry) => entry.error,
+			).length;
+			this.packageNotice =
+				failureCount > 0
+					? `Refreshed ${result.remoteCount - failureCount} configured remote packages. ${failureCount} failed.`
+					: `Refreshed ${result.remoteCount} configured remote packages.`;
+		} catch (error) {
+			this.packageError =
+				error instanceof Error
+					? error.message
+					: "Failed to refresh configured packages";
+		} finally {
+			this.packageRefreshingAll = false;
 		}
 	}
 
@@ -1818,6 +1844,9 @@ export class ComposerSettings extends LitElement {
 
 	private renderPackageSection() {
 		const entries = this.packageStatus?.packages ?? [];
+		const hasRefreshableEntries = entries.some((entry) =>
+			this.canRefreshPackage(entry),
+		);
 
 		return html`
 			<div class="section">
@@ -1836,6 +1865,23 @@ export class ComposerSettings extends LitElement {
 						>
 							Refresh
 						</button>
+						${
+							hasRefreshableEntries
+								? html`
+									<button
+										class="action-btn"
+										@click=${() => void this.refreshAllPackages()}
+										?disabled=${this.packageRefreshingAll}
+									>
+										${
+											this.packageRefreshingAll
+												? "Refreshing remotes..."
+												: "Refresh remotes"
+										}
+									</button>
+								`
+								: ""
+						}
 					</div>
 					${
 						entries.length > 0

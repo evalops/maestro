@@ -422,6 +422,92 @@ describe("package command", () => {
 			expect.stringContaining("Skills: 2 (deploy-skill, git-skill)"),
 		);
 	});
+
+	it("refreshes all configured remote package sources", async () => {
+		const root = createTempDir("maestro-package-command-");
+		process.env.MAESTRO_HOME = join(root, ".maestro-home");
+		const localPackageDir = join(root, "local-pack");
+		mkdirSync(join(localPackageDir, "skills", "local-skill"), {
+			recursive: true,
+		});
+		writeFileSync(
+			join(localPackageDir, "skills", "local-skill", "SKILL.md"),
+			"# Local Skill\n",
+			"utf-8",
+		);
+		writeFileSync(
+			join(localPackageDir, "package.json"),
+			JSON.stringify({
+				name: "@test/local-package",
+				version: "1.0.0",
+				keywords: ["maestro-package"],
+				maestro: {
+					skills: ["./skills"],
+				},
+			}),
+			"utf-8",
+		);
+		const gitPackageDir = join(root, "git-refresh-all-source");
+		mkdirSync(join(gitPackageDir, "skills", "git-skill"), { recursive: true });
+		writeFileSync(
+			join(gitPackageDir, "skills", "git-skill", "SKILL.md"),
+			"# Git Skill\n",
+			"utf-8",
+		);
+		writeFileSync(
+			join(gitPackageDir, "package.json"),
+			JSON.stringify({
+				name: "@test/refresh-all-git-package",
+				version: "1.0.0",
+				keywords: ["maestro-package"],
+				maestro: {
+					skills: ["./skills"],
+				},
+			}),
+			"utf-8",
+		);
+		createCommittedGitRepo(gitPackageDir);
+		mkdirSync(join(root, ".maestro"), { recursive: true });
+		writeFileSync(
+			join(root, ".maestro", "config.toml"),
+			`packages = ["./local-pack", "git:${gitPackageDir}"]\n`,
+			"utf-8",
+		);
+
+		const addContent = vi.fn();
+		const handler = createPackageCommandHandler({
+			cwd: root,
+			addContent,
+			requestRender: vi.fn(),
+		});
+
+		await handler(createContext(`/package inspect git:${gitPackageDir}`));
+
+		mkdirSync(join(gitPackageDir, "skills", "deploy-skill"), {
+			recursive: true,
+		});
+		writeFileSync(
+			join(gitPackageDir, "skills", "deploy-skill", "SKILL.md"),
+			"# Deploy Skill\n",
+			"utf-8",
+		);
+		commitGitRepoChanges(gitPackageDir, "add deploy skill");
+
+		await handler(createContext("/package refresh --all"));
+
+		expect(addContent).toHaveBeenCalledWith(
+			expect.stringContaining("Configured package refresh completed."),
+		);
+		expect(addContent).toHaveBeenCalledWith(
+			expect.stringContaining("Remote packages: 1"),
+		);
+		expect(addContent).toHaveBeenCalledWith(
+			expect.stringContaining("Local packages skipped: 1"),
+		);
+		expect(addContent).toHaveBeenCalledWith(
+			expect.stringContaining("@test/refresh-all-git-package"),
+		);
+	});
 });
 
 function createCommittedGitRepo(dir: string): void {

@@ -11,7 +11,6 @@ import {
 	formatPackageSource,
 	parsePackageSource,
 	parsePackageSpec,
-	refreshPackageSourceSync,
 } from "../../packages/index.js";
 import {
 	type ConfiguredPackageReport,
@@ -20,11 +19,16 @@ import {
 	inspectPackageSource,
 	listConfiguredPackageReports,
 } from "../../packages/inspection.js";
+import {
+	type ConfiguredPackageRefreshReport,
+	refreshConfiguredRemotePackages,
+} from "../../packages/maintenance.js";
+import { refreshPackageSourceSync } from "../../packages/sources.js";
 import { parseCommandArguments } from "../../tools/shell-utils.js";
 import type { CommandExecutionContext } from "./types.js";
 
 const PACKAGE_INSPECT_USAGE = "/package [inspect|validate] <source>";
-const PACKAGE_REFRESH_USAGE = "/package refresh <source>";
+const PACKAGE_REFRESH_USAGE = "/package refresh [<source>|--all]";
 const PACKAGE_ADD_USAGE = "/package add <source> [--scope local|project|user]";
 const PACKAGE_REMOVE_USAGE =
 	"/package remove <source> [--scope local|project|user]";
@@ -112,12 +116,16 @@ export function createPackageCommandHandler(deps: PackageCommandDeps) {
 		}
 
 		if (subcommand === "refresh") {
-			if (tokens.length !== 2) {
-				ctx.showError(`Usage: ${PACKAGE_REFRESH_USAGE}`);
-				showPackageHelp(deps);
+			if (tokens.length === 1 || isRefreshAllToken(tokens[1])) {
+				await runPackageRefreshAll(deps, ctx);
 				return;
 			}
-			await runPackageRefresh(tokens[1]!, deps, ctx);
+			if (tokens.length === 2) {
+				await runPackageRefresh(tokens[1]!, deps, ctx);
+				return;
+			}
+			ctx.showError(`Usage: ${PACKAGE_REFRESH_USAGE}`);
+			showPackageHelp(deps);
 			return;
 		}
 
@@ -145,6 +153,10 @@ function isHelpSubcommand(value: string): boolean {
 	return (
 		value === "help" || value === "?" || value === "--help" || value === "-h"
 	);
+}
+
+function isRefreshAllToken(value: string | undefined): boolean {
+	return value === "--all" || value === "all";
 }
 
 function parsePackageCommandTokens(rawInput: string): string[] {
@@ -243,6 +255,22 @@ async function runPackageRefresh(
 	} catch (error) {
 		ctx.showError(
 			error instanceof Error ? error.message : "Failed to refresh package.",
+		);
+	}
+}
+
+async function runPackageRefreshAll(
+	deps: PackageCommandDeps,
+	ctx: CommandExecutionContext,
+): Promise<void> {
+	try {
+		const refreshed = await refreshConfiguredRemotePackages(deps.cwd);
+		publishOutput(deps, formatRefreshAllSuccess(refreshed));
+	} catch (error) {
+		ctx.showError(
+			error instanceof Error
+				? error.message
+				: "Failed to refresh configured packages.",
 		);
 	}
 }
@@ -483,6 +511,39 @@ function formatRefreshSuccess(inspected: InspectedPackage): string {
 	return lines.join("\n");
 }
 
+function formatRefreshAllSuccess(
+	report: ConfiguredPackageRefreshReport,
+): string {
+	const lines = ["Configured package refresh completed."];
+	lines.push(`  Remote packages: ${report.remoteCount}`);
+	lines.push(`  Local packages skipped: ${report.localCount}`);
+
+	if (report.refreshed.length === 0) {
+		lines.push("  Result: No configured remote packages to refresh.");
+		return lines.join("\n");
+	}
+
+	for (const entry of report.refreshed) {
+		lines.push(`  - ${entry.source}`);
+		lines.push(`    Scopes: ${entry.scopes.join(", ")}`);
+		if (entry.error) {
+			lines.push(`    Error: ${entry.error}`);
+			continue;
+		}
+		if (entry.inspection) {
+			lines.push(`    Path: ${entry.inspection.resolvedPath}`);
+			if (entry.inspection.discovered?.packageJson.name) {
+				lines.push(`    Name: ${entry.inspection.discovered.packageJson.name}`);
+			}
+		}
+		if (entry.issues.length > 0) {
+			lines.push(`    Issues: ${entry.issues.join(" | ")}`);
+		}
+	}
+
+	return lines.join("\n");
+}
+
 function formatValidationFailure(
 	inspected: InspectedPackage,
 	issues: string[],
@@ -548,7 +609,7 @@ function showPackageHelp(deps: PackageCommandDeps): void {
   /package add <source>      Add a configured Maestro package
   /package list               List configured Maestro packages
   /package remove <source>   Remove a configured Maestro package
-  /package refresh <source>  Refresh a configured package cache
+  /package refresh [source]  Refresh one or all configured remote package caches
   /package inspect <source>   Inspect a Maestro package source
   /package validate <source>  Validate a Maestro package source
   /package <source>           Shorthand for inspect

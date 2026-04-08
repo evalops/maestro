@@ -309,4 +309,91 @@ describe("handlePackageStatus", () => {
 			issues: [],
 		});
 	});
+
+	it("refreshes all configured remote package sources", async () => {
+		const root = createTempProject();
+		createMaestroPackage(root);
+		const packageDir = join(root, "vendor", "git-pack");
+		mkdirSync(join(packageDir, "skills", "pkg-skill"), { recursive: true });
+		writeFileSync(
+			join(packageDir, "skills", "pkg-skill", "SKILL.md"),
+			"# Package Skill\n",
+			"utf-8",
+		);
+		writeFileSync(
+			join(packageDir, "package.json"),
+			JSON.stringify({
+				name: "@test/git-package",
+				version: "1.0.0",
+				keywords: ["maestro-package"],
+				maestro: {
+					skills: ["./skills"],
+				},
+			}),
+			"utf-8",
+		);
+		createCommittedGitRepo(packageDir);
+		mkdirSync(join(root, ".maestro"), { recursive: true });
+		writeFileSync(
+			join(root, ".maestro", "config.toml"),
+			`packages = ["../vendor/pack", "git:${packageDir}"]\n`,
+			"utf-8",
+		);
+		vi.spyOn(process, "cwd").mockReturnValue(root);
+
+		const inspectRes = makeRes();
+		await handlePackageStatus(
+			makeReq("/api/package?action=inspect", {
+				method: "POST",
+				body: { source: `git:${packageDir}` },
+			}) as unknown as IncomingMessage,
+			inspectRes as unknown as ServerResponse,
+			corsHeaders,
+		);
+		expect(inspectRes.statusCode).toBe(200);
+
+		mkdirSync(join(packageDir, "skills", "deploy-skill"), { recursive: true });
+		writeFileSync(
+			join(packageDir, "skills", "deploy-skill", "SKILL.md"),
+			"# Deploy Skill\n",
+			"utf-8",
+		);
+		commitGitRepoChanges(packageDir, "add deploy skill");
+
+		const refreshRes = makeRes();
+		await handlePackageStatus(
+			makeReq("/api/package?action=refresh-all", {
+				method: "POST",
+				body: {},
+			}) as unknown as IncomingMessage,
+			refreshRes as unknown as ServerResponse,
+			corsHeaders,
+		);
+
+		expect(refreshRes.statusCode).toBe(200);
+		expect(JSON.parse(refreshRes.body)).toMatchObject({
+			localCount: 1,
+			remoteCount: 1,
+			refreshed: [
+				{
+					source: `git:${packageDir}`,
+					sourceType: "git",
+					scopes: ["project"],
+					inspection: {
+						discovered: {
+							name: "@test/git-package",
+						},
+						resources: {
+							skills: expect.arrayContaining([
+								expect.stringContaining("deploy-skill"),
+								expect.stringContaining("pkg-skill"),
+							]),
+						},
+					},
+					issues: [],
+					error: null,
+				},
+			],
+		});
+	});
 });

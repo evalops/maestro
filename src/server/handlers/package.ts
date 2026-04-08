@@ -13,6 +13,10 @@ import {
 	listConfiguredPackageReports,
 } from "../../packages/inspection.js";
 import {
+	type RefreshedConfiguredPackage,
+	refreshConfiguredRemotePackages,
+} from "../../packages/maintenance.js";
+import {
 	formatPackageSource,
 	parsePackageSource,
 	refreshPackageSourceSync,
@@ -82,6 +86,28 @@ function serializeConfiguredPackageReport(report: ConfiguredPackageReport) {
 			? collectPackageValidationIssues(report.inspected)
 			: null,
 		error: report.error ?? null,
+	};
+}
+
+function serializeRefreshedConfiguredPackage(
+	report: RefreshedConfiguredPackage,
+): {
+	source: string;
+	sourceType: "git" | "npm";
+	scopes: WritablePackageScope[];
+	inspection: ReturnType<typeof serializeInspection> | null;
+	issues: string[];
+	error: string | null;
+} {
+	return {
+		source: report.source,
+		sourceType: report.sourceType,
+		scopes: report.scopes,
+		inspection: report.inspection
+			? serializeInspection(report.inspection)
+			: null,
+		issues: report.issues,
+		error: report.error,
 	};
 }
 
@@ -198,6 +224,23 @@ export async function handlePackageStatus(
 				projectRoot,
 			);
 			sendJson(res, 200, refreshed, corsHeaders);
+			return;
+		}
+
+		if (action === "refresh-all") {
+			const refreshed = await refreshConfiguredRemotePackages(projectRoot);
+			sendJson(
+				res,
+				200,
+				{
+					refreshed: refreshed.refreshed.map(
+						serializeRefreshedConfiguredPackage,
+					),
+					localCount: refreshed.localCount,
+					remoteCount: refreshed.remoteCount,
+				},
+				corsHeaders,
+			);
 			return;
 		}
 

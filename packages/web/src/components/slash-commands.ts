@@ -53,7 +53,7 @@ const BUILTIN_WEB_SLASH_COMMANDS: Array<Omit<WebSlashCommand, "source">> = [
 		name: "package",
 		description: "Manage and inspect configured Maestro packages",
 		usage:
-			"/package [list|inspect <source>|validate <source>|add <source>|remove <source>|refresh <source>]",
+			"/package [list|inspect <source>|validate <source>|add <source>|remove <source>|refresh [<source>|--all]]",
 		tags: ["tools", "config"],
 	},
 	{
