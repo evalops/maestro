@@ -13,6 +13,9 @@
  */
 
 export {
+	addConfiguredPackageSpecToConfig,
+	removeConfiguredPackageSpecFromConfig,
+	getWritablePackageConfigPath,
 	loadConfig,
 	loadConfiguredPackageSpecs,
 	clearConfigCache,
@@ -26,6 +29,7 @@ export {
 	resolvePromptLoadedProjectDocPaths,
 	type ComposerConfig,
 	type ConfiguredPackageSpec,
+	type WritablePackageScope,
 	type ApprovalPolicy,
 	type SandboxMode,
 	type ReasoningEffort,

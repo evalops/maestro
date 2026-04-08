@@ -15,6 +15,7 @@ const RESOURCE_KINDS = ["extensions", "skills", "prompts", "themes"] as const;
 
 type ResourceKind = (typeof RESOURCE_KINDS)[number];
 type PackageScope = ConfiguredPackageSpec["scope"];
+type RuntimePackageScope = Exclude<PackageScope, "local"> | "project";
 
 export interface ScopedPackageResourceDirectories {
 	user: string[];
@@ -124,11 +125,15 @@ function addScopedDirectories(
 	}
 }
 
+function getRuntimePackageScope(scope: PackageScope): RuntimePackageScope {
+	return scope === "user" ? "user" : "project";
+}
+
 export function loadConfiguredPackageResources(
 	workspaceDir: string,
 ): ConfiguredPackageRuntimeResources {
 	const resources = createConfiguredPackageRuntimeResources();
-	const seen: Record<ResourceKind, Record<PackageScope, Set<string>>> = {
+	const seen: Record<ResourceKind, Record<RuntimePackageScope, Set<string>>> = {
 		extensions: { user: new Set(), project: new Set() },
 		skills: { user: new Set(), project: new Set() },
 		prompts: { user: new Set(), project: new Set() },
@@ -138,10 +143,11 @@ export function loadConfiguredPackageResources(
 	for (const entry of loadConfiguredPackageSpecs(workspaceDir)) {
 		try {
 			const packageResources = loadConfiguredLocalPackageResources(entry);
+			const runtimeScope = getRuntimePackageScope(entry.scope);
 			for (const kind of RESOURCE_KINDS) {
 				addScopedDirectories(
-					resources[kind][entry.scope],
-					seen[kind][entry.scope],
+					resources[kind][runtimeScope],
+					seen[kind][runtimeScope],
 					packageResources[kind],
 				);
 			}

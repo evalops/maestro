@@ -1,18 +1,22 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { parse as parseTOML } from "smol-toml";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadProjectContextFiles } from "../../src/cli/system-prompt.js";
 import {
 	type ComposerConfig,
 	DEFAULT_CONFIG,
+	addConfiguredPackageSpecToConfig,
 	applyCliOverride,
 	clearConfigCache,
 	getAvailableProfiles,
 	getConfigSummary,
+	getWritablePackageConfigPath,
 	loadConfig,
 	loadConfiguredPackageSpecs,
 	parseCliOverride,
+	removeConfiguredPackageSpecFromConfig,
 	resolvePromptLoadedProjectDocPaths,
 } from "../../src/config/toml-config.js";
 
@@ -423,13 +427,106 @@ model = "b"
 			});
 			expect(specs[2]).toMatchObject({
 				cwd: join(projectDir, ".maestro"),
-				scope: "project",
+				scope: "local",
 				configPath: join(projectDir, ".maestro", "config.local.toml"),
 			});
 			expect(specs[2]?.spec).toEqual({
 				source: "../local-pack",
 				skills: ["local-skill"],
 			});
+		});
+	});
+
+	describe("configured package config writing", () => {
+		it("adds a local package to config.local.toml using a config-relative path", () => {
+			const result = addConfiguredPackageSpecToConfig({
+				workspaceDir: projectDir,
+				scope: "local",
+				spec: "./vendor/pack",
+			});
+
+			expect(result.path).toBe(
+				getWritablePackageConfigPath("local", projectDir),
+			);
+			expect(result.scope).toBe("local");
+			expect(result.spec).toBe("../vendor/pack");
+			expect(
+				parseTOML(readFileSync(result.path, "utf-8")) as ComposerConfig,
+			).toEqual({
+				packages: ["../vendor/pack"],
+			});
+		});
+
+		it("stores user-scoped local packages as absolute paths", () => {
+			process.env.MAESTRO_HOME = globalDir;
+
+			const result = addConfiguredPackageSpecToConfig({
+				workspaceDir: projectDir,
+				scope: "user",
+				spec: "./vendor/pack",
+			});
+
+			expect(result.path).toBe(join(globalDir, "config.toml"));
+			expect(result.spec).toBe(join(projectDir, "vendor", "pack"));
+			expect(
+				parseTOML(readFileSync(result.path, "utf-8")) as ComposerConfig,
+			).toEqual({
+				packages: [join(projectDir, "vendor", "pack")],
+			});
+		});
+
+		it("rejects duplicate configured package sources within the same file", () => {
+			addConfiguredPackageSpecToConfig({
+				workspaceDir: projectDir,
+				scope: "local",
+				spec: "./vendor/pack",
+			});
+
+			expect(() =>
+				addConfiguredPackageSpecToConfig({
+					workspaceDir: projectDir,
+					scope: "local",
+					spec: "local:./vendor/pack",
+				}),
+			).toThrow('Package "../vendor/pack" already exists');
+		});
+
+		it("removes a configured package from the highest-precedence matching scope", () => {
+			process.env.MAESTRO_HOME = globalDir;
+			writeFileSync(
+				join(globalDir, "config.toml"),
+				'packages = ["/global-pack"]\n',
+			);
+			writeFileSync(
+				join(projectDir, ".maestro", "config.toml"),
+				'packages = ["../vendor/pack"]\n',
+			);
+			writeFileSync(
+				join(projectDir, ".maestro", "config.local.toml"),
+				'packages = ["../vendor/pack"]\n',
+			);
+
+			const result = removeConfiguredPackageSpecFromConfig({
+				workspaceDir: projectDir,
+				spec: "./vendor/pack",
+			});
+
+			expect(result).toEqual({
+				path: join(projectDir, ".maestro", "config.local.toml"),
+				scope: "local",
+				removedCount: 1,
+			});
+			expect(readFileSync(result.path, "utf-8")).toBe("");
+			expect(loadConfiguredPackageSpecs(projectDir)).toMatchObject([
+				{
+					scope: "user",
+					spec: "/global-pack",
+				},
+				{
+					scope: "project",
+					spec: "../vendor/pack",
+				},
+			]);
 		});
 	});
 
