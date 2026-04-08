@@ -18,6 +18,12 @@ import type {
 	McpServerRemoveRequest,
 	McpServerRemoveResponse,
 	McpStatus,
+	PackageAddResponse,
+	PackageInspectResponse,
+	PackageMutationRequest,
+	PackageRemoveResponse,
+	PackageScope,
+	PackageStatusResponse,
 } from "../services/api-client.js";
 import {
 	WEB_SLASH_COMMANDS,
@@ -42,6 +48,7 @@ type WebSlashCommandApiClient = Pick<
 	| "getMemoryStats"
 	| "getMcpStatus"
 	| "getMcpPrompt"
+	| "getPackageStatus"
 	| "getPlan"
 	| "getPreview"
 	| "getQueueStatus"
@@ -53,16 +60,19 @@ type WebSlashCommandApiClient = Pick<
 	| "importMemory"
 	| "addMcpServer"
 	| "addMcpAuthPreset"
+	| "addPackage"
 	| "getStats"
 	| "getStatus"
 	| "getTelemetryStatus"
 	| "getUsage"
+	| "inspectPackage"
 	| "listBranchOptions"
 	| "listMemoryTopic"
 	| "listMemoryTopics"
 	| "listQueue"
 	| "removeMcpAuthPreset"
 	| "removeMcpServer"
+	| "removePackage"
 	| "runScript"
 	| "saveMemory"
 	| "saveConfig"
@@ -78,6 +88,7 @@ type WebSlashCommandApiClient = Pick<
 	| "updateMcpAuthPreset"
 	| "updateMcpServer"
 	| "updatePlan"
+	| "validatePackage"
 >;
 
 type CommandOutputAppender = (output: string, isError?: boolean) => void;
@@ -106,6 +117,10 @@ const MCP_AUTH_EDIT_USAGE =
 	"/mcp auth edit <name> [--scope local|project|user] [--header 'Name: value'] [--headers-helper <command>]";
 const MCP_AUTH_REMOVE_USAGE =
 	"/mcp auth remove <name> [--scope local|project|user]";
+const PACKAGE_ADD_USAGE = "/package add <source> [--scope local|project|user]";
+const PACKAGE_REMOVE_USAGE =
+	"/package remove <source> [--scope local|project|user]";
+const PACKAGE_INSPECT_USAGE = "/package [inspect|validate] <source>";
 const MEMORY_USAGE =
 	"/memory [save <topic> <content>|search <query> [--session]|list [topic] [--session]|recent [N] [--session]|stats [--session]|delete <id|topic>|export [path]|import <path>|clear --force]";
 
@@ -435,6 +450,251 @@ function tokenizeSlashArgs(input: string): string[] {
 	}
 
 	return tokens;
+}
+
+function isWritablePackageScope(value: string): value is PackageScope {
+	return value === "local" || value === "project" || value === "user";
+}
+
+function parsePackageMutationArgs(
+	args: string,
+	mode: "add" | "remove",
+):
+	| { ok: true; request: PackageMutationRequest }
+	| { ok: false; error: string } {
+	const tokens = tokenizeSlashArgs(args).slice(1);
+	let source: string | undefined;
+	let scope: PackageScope | undefined;
+
+	for (let index = 0; index < tokens.length; index += 1) {
+		const token = tokens[index]!;
+		if (token === "--scope" || token === "-s") {
+			const next = tokens[index + 1];
+			if (!next || !isWritablePackageScope(next)) {
+				return {
+					ok: false,
+					error: "Invalid package scope. Use local, project, or user.",
+				};
+			}
+			scope = next;
+			index += 1;
+			continue;
+		}
+
+		if (token.startsWith("-")) {
+			return { ok: false, error: `Unknown package option: ${token}` };
+		}
+
+		if (source) {
+			return {
+				ok: false,
+				error: mode === "add" ? PACKAGE_ADD_USAGE : PACKAGE_REMOVE_USAGE,
+			};
+		}
+
+		source = token;
+	}
+
+	if (!source) {
+		return {
+			ok: false,
+			error: mode === "add" ? PACKAGE_ADD_USAGE : PACKAGE_REMOVE_USAGE,
+		};
+	}
+
+	return { ok: true, request: { source, scope } };
+}
+
+function formatPackageFilters(
+	filters: PackageStatusResponse["packages"][number]["filters"],
+): string | null {
+	if (!filters) {
+		return null;
+	}
+
+	const parts: string[] = [];
+	for (const key of ["extensions", "skills", "prompts", "themes"] as const) {
+		const values = filters[key];
+		if (values && values.length > 0) {
+			parts.push(`${key}=${values.join(",")}`);
+		}
+	}
+
+	return parts.length > 0 ? parts.join(" ") : null;
+}
+
+function formatPackageResourceSummary(paths: string[]): string {
+	if (paths.length === 0) {
+		return "0";
+	}
+	return `${paths.length} (${paths.map((path) => path.split("/").pop() ?? path).join(", ")})`;
+}
+
+function formatPackageInspectionBlock(result: PackageInspectResponse): string {
+	const inspection = result.inspection;
+	const lines = ["Maestro Package Inspection:"];
+	lines.push(`  Source: ${inspection.sourceSpec}`);
+	lines.push(`  Resolved: ${inspection.resolvedSource}`);
+	lines.push(`  Type: ${inspection.sourceType}`);
+	lines.push(`  Path: ${inspection.resolvedPath}`);
+
+	if (!inspection.discovered) {
+		lines.push("  Result: No valid package.json found");
+		return lines.join("\n");
+	}
+
+	lines.push(`  Name: ${inspection.discovered.name}`);
+	if (inspection.discovered.version) {
+		lines.push(`  Version: ${inspection.discovered.version}`);
+	}
+	lines.push(
+		`  Maestro keyword: ${inspection.discovered.isMaestroPackage ? "yes" : "no"}`,
+	);
+	lines.push(
+		`  Manifest: ${inspection.discovered.hasManifest ? "present" : "missing"}`,
+	);
+
+	const manifest = inspection.discovered.manifestPaths;
+	if (manifest) {
+		lines.push("  Manifest paths:");
+		lines.push(
+			`    Extensions: ${manifest.extensions?.join(", ") || "(none)"}`,
+		);
+		lines.push(`    Skills: ${manifest.skills?.join(", ") || "(none)"}`);
+		lines.push(`    Prompts: ${manifest.prompts?.join(", ") || "(none)"}`);
+		lines.push(`    Themes: ${manifest.themes?.join(", ") || "(none)"}`);
+	}
+
+	if (result.issues.length > 0) {
+		lines.push("  Validation issues:");
+		for (const issue of result.issues) {
+			lines.push(`    - ${issue}`);
+		}
+	}
+
+	if (inspection.resources) {
+		lines.push("  Resources:");
+		lines.push(
+			`    Extensions: ${formatPackageResourceSummary(inspection.resources.extensions)}`,
+		);
+		lines.push(
+			`    Skills: ${formatPackageResourceSummary(inspection.resources.skills)}`,
+		);
+		lines.push(
+			`    Prompts: ${formatPackageResourceSummary(inspection.resources.prompts)}`,
+		);
+		lines.push(
+			`    Themes: ${formatPackageResourceSummary(inspection.resources.themes)}`,
+		);
+	}
+
+	return lines.join("\n");
+}
+
+function formatPackageStatusBlock(result: PackageStatusResponse): string {
+	if (result.packages.length === 0) {
+		return "No configured Maestro packages found in ~/.maestro/config.toml, .maestro/config.toml, or .maestro/config.local.toml.";
+	}
+
+	const lines = ["Configured Maestro Packages:"];
+	for (const [index, entry] of result.packages.entries()) {
+		lines.push(`${index + 1}. [${entry.scope}] ${entry.sourceSpec}`);
+		lines.push(`   Config: ${entry.configPath}`);
+
+		const filters = formatPackageFilters(entry.filters);
+		if (filters) {
+			lines.push(`   Filters: ${filters}`);
+		}
+
+		if (entry.error) {
+			lines.push(`   Error: ${entry.error}`);
+			continue;
+		}
+
+		if (!entry.inspection) {
+			lines.push("   Error: Failed to inspect configured package.");
+			continue;
+		}
+
+		lines.push(`   Resolved: ${entry.inspection.resolvedSource}`);
+		lines.push(`   Path: ${entry.inspection.resolvedPath}`);
+
+		if (!entry.inspection.discovered) {
+			lines.push("   Result: No valid package.json found");
+			continue;
+		}
+
+		lines.push(`   Name: ${entry.inspection.discovered.name}`);
+		lines.push(
+			`   Resources: extensions=${entry.inspection.resources?.extensions.length ?? 0}, skills=${entry.inspection.resources?.skills.length ?? 0}, prompts=${entry.inspection.resources?.prompts.length ?? 0}, themes=${entry.inspection.resources?.themes.length ?? 0}`,
+		);
+	}
+
+	return lines.join("\n");
+}
+
+function formatPackageValidationBlock(result: PackageInspectResponse): string {
+	if (result.issues.length === 0) {
+		const lines = ["Package validation passed."];
+		lines.push(
+			`  Name: ${result.inspection.discovered?.name ?? result.inspection.sourceSpec}`,
+		);
+		lines.push(`  Source: ${result.inspection.sourceSpec}`);
+		lines.push(`  Path: ${result.inspection.resolvedPath}`);
+		if (result.inspection.resources) {
+			lines.push("  Resources:");
+			lines.push(
+				`    Extensions: ${result.inspection.resources.extensions.length}`,
+			);
+			lines.push(`    Skills: ${result.inspection.resources.skills.length}`);
+			lines.push(`    Prompts: ${result.inspection.resources.prompts.length}`);
+			lines.push(`    Themes: ${result.inspection.resources.themes.length}`);
+		}
+		return lines.join("\n");
+	}
+
+	const lines = ["Package validation failed."];
+	lines.push(`  Source: ${result.inspection.sourceSpec}`);
+	lines.push(`  Path: ${result.inspection.resolvedPath}`);
+	for (const issue of result.issues) {
+		lines.push(`  - ${issue}`);
+	}
+	return lines.join("\n");
+}
+
+function formatPackageAddResult(
+	result: PackageAddResponse,
+	input: string,
+): string {
+	const lines = [
+		`Added configured package "${input}"`,
+		`  scope: ${result.scope}`,
+		`  path: ${result.path}`,
+	];
+	if (result.spec !== input) {
+		lines.push(`  stored: ${result.spec}`);
+	}
+	return lines.join("\n");
+}
+
+function formatPackageRemoveResult(
+	result: PackageRemoveResponse,
+	input: string,
+): string {
+	const lines = [
+		`Removed configured package "${input}"`,
+		`  scope: ${result.scope}`,
+		`  path: ${result.path}`,
+		`  removed: ${result.removedCount}`,
+	];
+	if (result.fallback) {
+		lines.push(
+			`  fallback: still configured in ${result.fallback.scope} (${result.fallback.sourceSpec})`,
+		);
+	} else {
+		lines.push("  status: removed from merged config");
+	}
+	return lines.join("\n");
 }
 
 function parseMcpPromptSlashArgs(tokens: string[]): {
@@ -1498,6 +1758,99 @@ export async function executeWebSlashCommand(
 				context.appendCommandOutput(
 					formatCommandCodeBlock(outputParts.join("\n")),
 					!result.success,
+				);
+				break;
+			}
+			case "package": {
+				const tokens = tokenizeSlashArgs(args);
+				const sub = tokens[0]?.toLowerCase() ?? "list";
+
+				if (["", "list", "status"].includes(sub)) {
+					const result = await context.apiClient.getPackageStatus();
+					context.appendCommandOutput(
+						formatCommandCodeBlock(formatPackageStatusBlock(result)),
+					);
+					break;
+				}
+
+				if (sub === "inspect") {
+					const source = args.replace(/^inspect\b/i, "").trim();
+					if (!source) {
+						context.appendCommandOutput(PACKAGE_INSPECT_USAGE, true);
+						break;
+					}
+					const result = await context.apiClient.inspectPackage(source);
+					context.appendCommandOutput(
+						formatCommandCodeBlock(formatPackageInspectionBlock(result)),
+					);
+					break;
+				}
+
+				if (sub === "validate") {
+					const source = args.replace(/^validate\b/i, "").trim();
+					if (!source) {
+						context.appendCommandOutput(PACKAGE_INSPECT_USAGE, true);
+						break;
+					}
+					const result = await context.apiClient.validatePackage(source);
+					context.appendCommandOutput(
+						formatCommandCodeBlock(formatPackageValidationBlock(result)),
+						result.issues.length > 0,
+					);
+					break;
+				}
+
+				if (sub === "add") {
+					if (!requireWritableSession("Package add")) break;
+					const parsed = parsePackageMutationArgs(args, "add");
+					if (!parsed.ok) {
+						context.appendCommandOutput(parsed.error, true);
+						break;
+					}
+					const result = await context.apiClient.addPackage(parsed.request);
+					context.appendCommandOutput(
+						formatCommandCodeBlock(
+							formatPackageAddResult(result, parsed.request.source),
+						),
+					);
+					break;
+				}
+
+				if (sub === "remove") {
+					if (!requireWritableSession("Package remove")) break;
+					const parsed = parsePackageMutationArgs(args, "remove");
+					if (!parsed.ok) {
+						context.appendCommandOutput(parsed.error, true);
+						break;
+					}
+					const result = await context.apiClient.removePackage(parsed.request);
+					context.appendCommandOutput(
+						formatCommandCodeBlock(
+							formatPackageRemoveResult(result, parsed.request.source),
+						),
+					);
+					break;
+				}
+
+				if (["help", "-h", "--help", "?"].includes(sub)) {
+					context.appendCommandOutput(
+						formatCommandCodeBlock(
+							[
+								"/package",
+								"/package list",
+								PACKAGE_ADD_USAGE,
+								PACKAGE_REMOVE_USAGE,
+								"/package inspect <source>",
+								"/package validate <source>",
+							].join("\n"),
+						),
+					);
+					break;
+				}
+
+				context.appendCommandOutput(
+					"Usage: /package [list|inspect <source>|validate <source>|add <source>|remove <source>]",
+					true,
 				);
 				break;
 			}
