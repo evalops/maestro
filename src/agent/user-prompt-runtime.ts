@@ -1,4 +1,5 @@
 import { createSessionHookService } from "../hooks/session-integration.js";
+import { buildRelevantMemoryPromptAddition } from "../memory/relevant-recall.js";
 import { createLogger } from "../utils/logger.js";
 import type { Agent } from "./agent.js";
 import { buildCompactionHookContext } from "./compaction-hooks.js";
@@ -45,6 +46,14 @@ function clearQueuedPromptInputs(agent: Agent): void {
 			clearQueuedPromptInputs?: () => void;
 		}
 	).clearQueuedPromptInputs?.();
+}
+
+function queueNextRunSystemPromptAddition(agent: Agent, text: string): void {
+	(
+		agent as Agent & {
+			queueNextRunSystemPromptAddition?: (text: string) => void;
+		}
+	).queueNextRunSystemPromptAddition?.(text);
 }
 
 function buildSessionStartHookContextMessage(text: string): HookMessage {
@@ -117,6 +126,20 @@ function buildPreMessageHookContextMessage(text: string): UserMessage {
 
 function buildPreMessageHookSystemGuidance(text: string): string {
 	return `PreMessage hook system guidance:\n${text}`;
+}
+
+function applyAutomaticMemoryRecall(params: {
+	agent: Agent;
+	sessionManager: PromptRuntimeSessionManager;
+	prompt: string;
+}): void {
+	const promptAddition = buildRelevantMemoryPromptAddition(params.prompt, {
+		sessionId: params.sessionManager.getSessionId?.(),
+	});
+	if (!promptAddition) {
+		return;
+	}
+	queueNextRunSystemPromptAddition(params.agent, promptAddition);
 }
 
 function extractAssistantText(message: AppMessage | undefined): string {
@@ -702,6 +725,7 @@ export async function runUserPromptWithRecovery(params: {
 		await applyUserPromptSubmitHooks(params);
 		throwIfAborted(params.signal);
 		await applyPreMessageHooks(params);
+		applyAutomaticMemoryRecall(params);
 		throwIfAborted(params.signal);
 		try {
 			await runWithPromptRecovery({

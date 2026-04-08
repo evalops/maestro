@@ -27,6 +27,7 @@ import {
 } from "../../src/agent/user-prompt-runtime.js";
 import { clearRegisteredHooks, registerHook } from "../../src/hooks/index.js";
 import type { PostMessageHookInput } from "../../src/hooks/types.js";
+import { addMemory } from "../../src/memory/index.js";
 
 const mockModel: Model<"openai-completions"> = {
 	id: "mock",
@@ -305,6 +306,74 @@ describe("user prompt runtime", () => {
 			timestamp: expect.any(Number),
 		});
 		expect(queueNextRunPromptOnlyMessage).not.toHaveBeenCalled();
+	});
+
+	it("injects automatic memory recall into the next run system prompt", async () => {
+		const originalMaestroHome = process.env.MAESTRO_HOME;
+		const memoryRoot = mkdtempSync(join(tmpdir(), "maestro-memory-runtime-"));
+		process.env.MAESTRO_HOME = join(memoryRoot, ".maestro-home");
+
+		try {
+			addMemory(
+				"api-design",
+				"Use cursor pagination for REST list endpoints and preserve retry backoff logic.",
+			);
+
+			const capturedRuns: Array<{
+				systemPrompt: string;
+			}> = [];
+
+			class CaptureTransport implements AgentTransport {
+				async *run(
+					_messages: Message[],
+					_userMessage: Message,
+					config: AgentRunConfig,
+				): AsyncGenerator<AgentEvent, void, unknown> {
+					capturedRuns.push({
+						systemPrompt: config.systemPrompt,
+					});
+					const assistant = createAssistantMessage("Memory recall applied");
+					yield { type: "message_start", message: assistant };
+					yield { type: "message_end", message: assistant };
+				}
+			}
+
+			const agent = new Agent({
+				transport: new CaptureTransport(),
+				initialState: {
+					model: mockModel,
+					tools: [],
+					systemPrompt: "Base system prompt",
+				},
+			});
+
+			await runUserPromptWithRecovery({
+				agent,
+				sessionManager: {
+					getSessionId: () => "session-memory-recall",
+				} as never,
+				cwd: "/tmp/memory-recall",
+				prompt: "Update the REST list endpoints to use cursor pagination",
+				execute: () =>
+					agent.prompt(
+						"Update the REST list endpoints to use cursor pagination",
+					),
+			});
+
+			expect(capturedRuns).toHaveLength(1);
+			expect(capturedRuns[0]?.systemPrompt).toContain(
+				"Automatic memory recall:",
+			);
+			expect(capturedRuns[0]?.systemPrompt).toContain("api-design");
+			expect(capturedRuns[0]?.systemPrompt).toContain("cursor pagination");
+		} finally {
+			if (originalMaestroHome === undefined) {
+				delete process.env.MAESTRO_HOME;
+			} else {
+				process.env.MAESTRO_HOME = originalMaestroHome;
+			}
+			rmSync(memoryRoot, { recursive: true, force: true });
+		}
 	});
 
 	it("combines multiple SessionStart initial user messages in hook order", async () => {

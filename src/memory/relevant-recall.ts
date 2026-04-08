@@ -1,0 +1,225 @@
+import { searchMemories } from "./store.js";
+import type { MemoryEntry, MemorySearchResult } from "./types.js";
+
+const MIN_TERM_LENGTH = 4;
+const MAX_TERMS = 6;
+const MAX_RESULTS = 4;
+const MAX_SEARCH_RESULTS_PER_TERM = 12;
+const MAX_ENTRY_CHARS = 220;
+
+const STOP_WORDS = new Set([
+	"about",
+	"after",
+	"again",
+	"along",
+	"also",
+	"because",
+	"before",
+	"being",
+	"build",
+	"change",
+	"check",
+	"create",
+	"debug",
+	"describe",
+	"doing",
+	"from",
+	"have",
+	"into",
+	"just",
+	"keep",
+	"make",
+	"need",
+	"only",
+	"please",
+	"remove",
+	"ship",
+	"show",
+	"some",
+	"that",
+	"them",
+	"then",
+	"this",
+	"through",
+	"update",
+	"used",
+	"using",
+	"want",
+	"what",
+	"when",
+	"with",
+	"work",
+	"would",
+]);
+
+interface ScoredMemoryCandidate {
+	entry: MemoryEntry;
+	score: number;
+	matchedTerms: Set<string>;
+}
+
+function normalizeMemoryContent(content: string): string {
+	return content
+		.replace(/^#\s*Session Memory\b/gi, "")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+function truncateMemoryContent(content: string, maxChars: number): string {
+	if (content.length <= maxChars) {
+		return content;
+	}
+	return `${content.slice(0, maxChars - 1).trimEnd()}…`;
+}
+
+function extractPromptTerms(prompt: string): string[] {
+	const normalized = prompt.toLowerCase().trim();
+	if (normalized.length < 12 || !/\s/.test(normalized)) {
+		return [];
+	}
+
+	const terms: string[] = [];
+	const seen = new Set<string>();
+	for (const match of normalized.matchAll(/[a-z0-9][a-z0-9_-]*/g)) {
+		const term = match[0];
+		if (
+			term.length < MIN_TERM_LENGTH ||
+			STOP_WORDS.has(term) ||
+			seen.has(term)
+		) {
+			continue;
+		}
+		seen.add(term);
+		terms.push(term);
+		if (terms.length >= MAX_TERMS) {
+			break;
+		}
+	}
+
+	return terms;
+}
+
+function shouldSkipSessionMemory(
+	entry: MemoryEntry,
+	currentSessionId: string | undefined,
+): boolean {
+	return (
+		entry.topic === "session-memory" && entry.sessionId !== currentSessionId
+	);
+}
+
+function getEntryBoost(
+	entry: MemoryEntry,
+	result: MemorySearchResult,
+	currentSessionId: string | undefined,
+): number {
+	let boost = 0;
+	if (entry.sessionId === currentSessionId) {
+		boost += 8;
+	}
+	if (
+		entry.topic === "session-memory" &&
+		entry.sessionId === currentSessionId
+	) {
+		boost += 3;
+	}
+	if (result.matchedOn === "topic") {
+		boost += 4;
+	} else if (result.matchedOn === "tag") {
+		boost += 2;
+	}
+	return boost;
+}
+
+function collectRelevantMemories(
+	prompt: string,
+	currentSessionId?: string,
+): ScoredMemoryCandidate[] {
+	const terms = extractPromptTerms(prompt);
+	if (terms.length === 0) {
+		return [];
+	}
+
+	const candidates = new Map<string, ScoredMemoryCandidate>();
+	for (const term of terms) {
+		const results = searchMemories(term, {
+			limit: MAX_SEARCH_RESULTS_PER_TERM,
+		});
+		for (const result of results) {
+			if (shouldSkipSessionMemory(result.entry, currentSessionId)) {
+				continue;
+			}
+
+			const existing = candidates.get(result.entry.id);
+			const boostedScore =
+				result.score + getEntryBoost(result.entry, result, currentSessionId);
+			if (existing) {
+				existing.score += boostedScore;
+				existing.matchedTerms.add(term);
+				continue;
+			}
+
+			candidates.set(result.entry.id, {
+				entry: result.entry,
+				score: boostedScore,
+				matchedTerms: new Set([term]),
+			});
+		}
+	}
+
+	return [...candidates.values()]
+		.map((candidate) => ({
+			...candidate,
+			score: candidate.score + candidate.matchedTerms.size * 2,
+		}))
+		.sort((left, right) => {
+			if (right.score !== left.score) {
+				return right.score - left.score;
+			}
+			return right.entry.updatedAt - left.entry.updatedAt;
+		})
+		.slice(0, MAX_RESULTS);
+}
+
+function formatMemoryLabel(
+	entry: MemoryEntry,
+	currentSessionId: string | undefined,
+): string {
+	if (entry.sessionId === currentSessionId) {
+		return `${entry.topic}; current session`;
+	}
+	if (entry.sessionId) {
+		return `${entry.topic}; prior session`;
+	}
+	return entry.topic;
+}
+
+export function buildRelevantMemoryPromptAddition(
+	prompt: string,
+	options?: {
+		sessionId?: string;
+	},
+): string | null {
+	const currentSessionId = options?.sessionId;
+	const candidates = collectRelevantMemories(prompt, currentSessionId);
+	if (candidates.length === 0) {
+		return null;
+	}
+
+	const lines = [
+		"Automatic memory recall:",
+		"Use these prior memories only if they materially help with the current request.",
+	];
+
+	for (const candidate of candidates) {
+		const normalizedContent = normalizeMemoryContent(candidate.entry.content);
+		if (!normalizedContent) {
+			continue;
+		}
+		lines.push(
+			`- [${formatMemoryLabel(candidate.entry, currentSessionId)}] ${truncateMemoryContent(normalizedContent, MAX_ENTRY_CHARS)}`,
+		);
+	}
+
+	return lines.length > 2 ? lines.join("\n") : null;
+}

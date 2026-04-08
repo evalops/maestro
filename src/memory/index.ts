@@ -41,6 +41,8 @@ export {
 	clearAllMemories,
 } from "./store.js";
 
+export { buildRelevantMemoryPromptAddition } from "./relevant-recall.js";
+
 export type {
 	MemoryEntry,
 	MemoryQueryOptions,
