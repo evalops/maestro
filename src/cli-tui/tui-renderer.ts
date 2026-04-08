@@ -89,6 +89,7 @@ import { ImportExportView } from "./import-view.js";
 import { InfoView } from "./info-view.js";
 import { InstructionPanelComponent } from "./instruction-panel.js";
 import type { InterruptController } from "./interrupt-controller.js";
+import { getTuiKeybindingLabel } from "./keybindings.js";
 import type { LoaderView } from "./loader/loader-view.js";
 import { LspView } from "./lsp-view.js";
 import type { MessageView } from "./message-view.js";
@@ -1879,7 +1880,9 @@ export class TuiRenderer {
 		const hintParts = [
 			`${chalk.gray("esc")} interrupt`,
 			`${chalk.gray("ctrl+c")} clear`,
-			`${chalk.gray("ctrl+k")} palette`,
+			`${chalk.gray(
+				getTuiKeybindingLabel("command-palette").toLowerCase(),
+			)} palette`,
 			`${chalk.gray("/help")} commands`,
 		];
 		const hints = hintParts.join(chalk.gray("  │  "));

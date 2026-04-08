@@ -3,6 +3,7 @@ import chalk from "chalk";
 
 import type { RegisteredModel } from "../models/registry.js";
 import type { UpdateCheckResult } from "../update/check.js";
+import { getTuiKeybindingLabel } from "./keybindings.js";
 import { formatLink } from "./utils/links.js";
 
 export type StartupAnnouncementsOptions = {
@@ -77,7 +78,9 @@ export function renderStartupAnnouncements({
 		const header = chalk.bold("Model scope");
 		const scopeLines = [
 			`${header}: ${names.join(", ")}`,
-			chalk.dim("Press Ctrl+P to cycle scoped models."),
+			chalk.dim(
+				`Press ${getTuiKeybindingLabel("cycle-model")} to cycle scoped models.`,
+			),
 		];
 		container.addChild(new Spacer(1));
 		container.addChild(new Text(scopeLines.join("\n"), 1, 0));

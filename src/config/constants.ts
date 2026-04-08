@@ -113,6 +113,13 @@ export const PATHS = {
 			join(getComposerHome(), "project-onboarding.json")
 		);
 	},
+	/** TUI keybinding overrides */
+	get TUI_KEYBINDINGS_FILE(): string {
+		return (
+			resolveEnvPath(process.env.MAESTRO_KEYBINDINGS_FILE) ??
+			join(getComposerHome(), "keybindings.json")
+		);
+	},
 	/** Background task log directory */
 	get BACKGROUND_TASK_LOG_DIR(): string {
 		return join(getComposerHome(), "background-tasks");

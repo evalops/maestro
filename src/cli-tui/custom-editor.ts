@@ -1,6 +1,6 @@
 import { Editor, KittyKeys, isCtrlD, isShiftTab } from "@evalops/tui";
 import { recordUserInteraction } from "../interaction/user-interaction.js";
-import { matchesQueuedFollowUpEditBinding } from "./queue/queued-follow-up-edit-binding.js";
+import { matchesTuiKeybinding } from "./keybindings.js";
 
 type CustomEditorBinding = {
 	description: string;
@@ -17,8 +17,8 @@ const CUSTOM_EDITOR_KEYMAP: CustomEditorBinding[] = [
 		handle: (editor) => editor.onTab?.() === true,
 	},
 	{
-		description: "Ctrl+P cycles models",
-		matches: (data) => data === "\x10",
+		description: "Cycles models",
+		matches: (data) => matchesTuiKeybinding("cycle-model", data),
 		when: (editor) => Boolean(editor.onCtrlP),
 		handle: (editor) => {
 			editor.onCtrlP?.();
@@ -26,8 +26,8 @@ const CUSTOM_EDITOR_KEYMAP: CustomEditorBinding[] = [
 		},
 	},
 	{
-		description: "Ctrl+O toggles tool output expansion",
-		matches: (data) => data === "\x0f",
+		description: "Toggles tool output expansion",
+		matches: (data) => matchesTuiKeybinding("toggle-tool-outputs", data),
 		when: (editor) => Boolean(editor.onCtrlO),
 		handle: (editor) => {
 			editor.onCtrlO?.();
@@ -35,8 +35,8 @@ const CUSTOM_EDITOR_KEYMAP: CustomEditorBinding[] = [
 		},
 	},
 	{
-		description: "Ctrl+T toggles thinking block visibility",
-		matches: (data) => data === "\x14",
+		description: "Toggles thinking block visibility",
+		matches: (data) => matchesTuiKeybinding("toggle-thinking-blocks", data),
 		when: (editor) => Boolean(editor.onCtrlT),
 		handle: (editor) => {
 			editor.onCtrlT?.();
@@ -44,8 +44,8 @@ const CUSTOM_EDITOR_KEYMAP: CustomEditorBinding[] = [
 		},
 	},
 	{
-		description: "Ctrl+G opens external editor",
-		matches: (data) => data === "\x07",
+		description: "Opens the external editor",
+		matches: (data) => matchesTuiKeybinding("external-editor", data),
 		when: (editor) => Boolean(editor.onCtrlG),
 		handle: (editor) => {
 			editor.onCtrlG?.();
@@ -53,8 +53,8 @@ const CUSTOM_EDITOR_KEYMAP: CustomEditorBinding[] = [
 		},
 	},
 	{
-		description: "Ctrl+Z suspends to background",
-		matches: (data) => data === "\x1a",
+		description: "Suspends to background",
+		matches: (data) => matchesTuiKeybinding("suspend", data),
 		when: (editor) => Boolean(editor.onCtrlZ),
 		handle: (editor) => {
 			editor.onCtrlZ?.();
@@ -112,10 +112,10 @@ const CUSTOM_EDITOR_KEYMAP: CustomEditorBinding[] = [
 		},
 	},
 	{
-		description: "Ctrl+K opens command palette",
-		matches: (data) => data === "\x0b",
+		description: "Opens the command palette",
+		matches: (data) => matchesTuiKeybinding("command-palette", data),
 		when: (editor) => Boolean(editor.onShortcut),
-		handle: (editor) => editor.onShortcut?.("ctrl+k") === true,
+		handle: (editor) => editor.onShortcut?.("command-palette") === true,
 	},
 	{
 		description: "@ triggers file search (only when not autocompleting)",
@@ -141,7 +141,7 @@ const CUSTOM_EDITOR_KEYMAP: CustomEditorBinding[] = [
 	},
 	{
 		description: "Edits queued follow-ups",
-		matches: (data) => matchesQueuedFollowUpEditBinding(data),
+		matches: (data) => matchesTuiKeybinding("edit-last-follow-up", data),
 		when: (editor) =>
 			Boolean(editor.onShortcut) && !editor.isShowingAutocomplete(),
 		handle: (editor) => editor.onShortcut?.("edit-last-follow-up") === true,

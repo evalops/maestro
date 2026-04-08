@@ -1,6 +1,7 @@
 import { Container, Spacer, type TUI, Text } from "@evalops/tui";
 import { theme } from "../../theme/theme.js";
 import { CustomEditor } from "../custom-editor.js";
+import { getTuiKeybindingLabel } from "../keybindings.js";
 import type { Modal } from "../modal-manager.js";
 import { openExternalEditor } from "../utils/external-editor.js";
 
@@ -60,7 +61,14 @@ export class HookInputModal extends Container implements Modal {
 		}
 		if (this.hasExternalEditor) {
 			this.addChild(
-				new Text(theme.fg("dim", "Ctrl+G opens external editor"), 1, 0),
+				new Text(
+					theme.fg(
+						"dim",
+						`${getTuiKeybindingLabel("external-editor")} opens external editor`,
+					),
+					1,
+					0,
+				),
 			);
 		}
 		if (options.placeholder) {

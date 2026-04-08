@@ -1,29 +1,13 @@
 import type { Component } from "@evalops/tui";
 import { visibleWidth } from "@evalops/tui";
 import { theme } from "../theme/theme.js";
+import {
+	getTuiKeybindingLabel,
+	getTuiKeybindingShortcut,
+} from "./keybindings.js";
 import { getQueuedFollowUpEditBindingLabel } from "./queue/queued-follow-up-edit-binding.js";
 
 export class InstructionPanelComponent implements Component {
-	private shortcuts = [
-		{ keys: "enter", desc: "send / steer" },
-		{ keys: "tab", desc: "send / queue" },
-		{
-			keys: getQueuedFollowUpEditBindingLabel().toLowerCase(),
-			desc: "edit queued follow-up",
-		},
-		{ keys: "esc", desc: "interrupt" },
-		{ keys: "ctrl+c", desc: "clear" },
-		{ keys: "ctrl+c×2", desc: "exit" },
-		{ keys: "ctrl+k", desc: "delete line" },
-		{ keys: "ctrl+g", desc: "external editor" },
-		{ keys: "ctrl+v", desc: "paste image" },
-		{ keys: "ctrl+z", desc: "suspend" },
-		{ keys: "shift+tab", desc: "thinking level" },
-		{ keys: "ctrl+p", desc: "cycle models" },
-		{ keys: "/ command", desc: "commands" },
-		{ keys: "drop", desc: "attach files" },
-	];
-
 	constructor(private readonly version: string) {}
 
 	render(width: number): string[] {
@@ -43,7 +27,7 @@ export class InstructionPanelComponent implements Component {
 		);
 		const keyWidth = Math.min(16, Math.max(10, Math.floor(innerWidth * 0.4)));
 		const descWidth = Math.max(8, innerWidth - keyWidth - 1);
-		const rows = this.shortcuts.map(({ keys, desc }) => {
+		const rows = this.buildShortcuts().map(({ keys, desc }) => {
 			const keyLabel = theme.bold(
 				theme.fg("accent", this.padText(keys, keyWidth)),
 			);
@@ -52,6 +36,48 @@ export class InstructionPanelComponent implements Component {
 		});
 		const bottom = theme.fg("borderAccent", `╰${"─".repeat(panelWidth - 2)}╯`);
 		return [top, titleLine, separator, ...rows, bottom];
+	}
+
+	private buildShortcuts(): Array<{ keys: string; desc: string }> {
+		const commandPaletteBinding =
+			getTuiKeybindingLabel("command-palette").toLowerCase();
+		const shortcuts = [
+			{ keys: "enter", desc: "send / steer" },
+			{ keys: "tab", desc: "send / queue" },
+			{
+				keys: getQueuedFollowUpEditBindingLabel().toLowerCase(),
+				desc: "edit queued follow-up",
+			},
+			{ keys: "esc", desc: "interrupt" },
+			{ keys: "ctrl+c", desc: "clear" },
+			{ keys: "ctrl+c×2", desc: "exit" },
+			{
+				keys: commandPaletteBinding,
+				desc: "command palette",
+			},
+			{
+				keys: getTuiKeybindingLabel("external-editor").toLowerCase(),
+				desc: "external editor",
+			},
+			{ keys: "ctrl+v", desc: "paste image" },
+			{
+				keys: getTuiKeybindingLabel("suspend").toLowerCase(),
+				desc: "suspend",
+			},
+			{ keys: "shift+tab", desc: "thinking level" },
+			{
+				keys: getTuiKeybindingLabel("cycle-model").toLowerCase(),
+				desc: "cycle models",
+			},
+			{ keys: "/ command", desc: "commands" },
+			{ keys: "drop", desc: "attach files" },
+		];
+
+		if (getTuiKeybindingShortcut("command-palette") !== "ctrl+k") {
+			shortcuts.splice(6, 0, { keys: "ctrl+k", desc: "delete line" });
+		}
+
+		return shortcuts;
 	}
 
 	private calculateWidth(terminalWidth: number): number {

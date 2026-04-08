@@ -76,7 +76,7 @@ export class EditorView {
 			this.options.onCtrlD?.();
 		};
 		editor.onShortcut = (shortcut) => {
-			if (shortcut === "ctrl+k") {
+			if (shortcut === "command-palette") {
 				this.options.showCommandPalette();
 				return true;
 			}

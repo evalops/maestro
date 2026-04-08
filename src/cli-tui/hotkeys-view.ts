@@ -2,6 +2,10 @@ import type { Container, TUI } from "@evalops/tui";
 import { Markdown, Spacer, Text } from "@evalops/tui";
 import chalk from "chalk";
 import { getMarkdownTheme } from "../theme/theme.js";
+import {
+	getTuiKeybindingLabel,
+	getTuiKeybindingShortcut,
+} from "./keybindings.js";
 import { getQueuedFollowUpEditBindingLabel } from "./queue/queued-follow-up-edit-binding.js";
 
 interface HotkeysViewOptions {
@@ -13,6 +17,22 @@ export function buildHotkeysMarkdown(
 	env: NodeJS.ProcessEnv = process.env,
 ): string {
 	const queuedFollowUpEditBinding = getQueuedFollowUpEditBindingLabel(env);
+	const commandPaletteBinding = getTuiKeybindingLabel("command-palette", env);
+	const externalEditorBinding = getTuiKeybindingLabel("external-editor", env);
+	const cycleModelBinding = getTuiKeybindingLabel("cycle-model", env);
+	const toggleThinkingBinding = getTuiKeybindingLabel(
+		"toggle-thinking-blocks",
+		env,
+	);
+	const toggleToolOutputsBinding = getTuiKeybindingLabel(
+		"toggle-tool-outputs",
+		env,
+	);
+	const suspendBinding = getTuiKeybindingLabel("suspend", env);
+	const ctrlKLine =
+		getTuiKeybindingShortcut("command-palette", env) === "ctrl+k"
+			? ""
+			: "| `Ctrl+K` | Delete to end of line |\n";
 	return `
 **Navigation**
 | Key | Action |
@@ -35,21 +55,21 @@ export function buildHotkeysMarkdown(
 | \`${queuedFollowUpEditBinding}\` | Edit last queued follow-up |
 | \`Ctrl+W\` / \`Option+Backspace\` | Delete word backwards |
 | \`Ctrl+U\` | Delete to start of line |
-| \`Ctrl+K\` | Delete to end of line / Command palette |
-| \`Ctrl+G\` | Edit message in external editor |
+${ctrlKLine}| \`${commandPaletteBinding}\` | Command palette |
+| \`${externalEditorBinding}\` | Edit message in external editor |
 | \`Ctrl+V\` | Paste image from clipboard |
 
 **Model & Thinking**
 | Key | Action |
 |-----|--------|
 | \`Shift+Tab\` | Cycle thinking level |
-| \`Ctrl+P\` | Cycle models |
-| \`Ctrl+T\` | Toggle thinking block visibility |
+| \`${cycleModelBinding}\` | Cycle models |
+| \`${toggleThinkingBinding}\` | Toggle thinking block visibility |
 
 **Tools & Output**
 | Key | Action |
 |-----|--------|
-| \`Ctrl+O\` | Toggle tool output expansion |
+| \`${toggleToolOutputsBinding}\` | Toggle tool output expansion |
 | \`Tab\` | Path completion / accept autocomplete |
 
 **Session**
@@ -57,7 +77,7 @@ export function buildHotkeysMarkdown(
 |-----|--------|
 | \`Escape\` | Cancel autocomplete / abort streaming |
 | \`Ctrl+C\` | Clear editor (first) / exit (second) |
-| \`Ctrl+Z\` | Suspend to background |
+| \`${suspendBinding}\` | Suspend to background |
 | \`/\` | Slash commands |
 | \`@\` | File search / mention |
 | \`!\` | Run bash command |
