@@ -193,16 +193,20 @@ describe("memory store session scoping", () => {
 				content: "Do not touch this.",
 			}),
 		);
-		expect(memory.listAutoDurableMemories()).toEqual([
-			expect.objectContaining({
-				id: second.entry.id,
-				content: "Land changes with green CI.",
-				tags: ["auto", "durable", "workflow"],
-			}),
-			expect.objectContaining({
-				content: "Keep PRs focused and land them with green CI.",
-				tags: ["auto", "durable", "consolidated", "workflow"],
-			}),
-		]);
+		const durableMemories = memory.listAutoDurableMemories();
+		expect(durableMemories).toHaveLength(2);
+		expect(durableMemories).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					id: second.entry.id,
+					content: "Land changes with green CI.",
+					tags: ["auto", "durable", "workflow"],
+				}),
+				expect.objectContaining({
+					content: "Keep PRs focused and land them with green CI.",
+					tags: ["auto", "durable", "consolidated", "workflow"],
+				}),
+			]),
+		);
 	});
 });

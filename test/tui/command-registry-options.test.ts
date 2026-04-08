@@ -233,78 +233,80 @@ describe("buildTuiCommandRegistryOptions", () => {
 		expect(deps.getRunCommandView).toHaveBeenCalledTimes(1);
 		expect(runCommandView.getRunScriptCompletions).toHaveBeenCalledTimes(1);
 
-		options.handleAbout(createCommandContext("/about"));
+		options.handlers.about(createCommandContext("/about"));
 		expect(deps.getAboutView).toHaveBeenCalledTimes(1);
 		expect(aboutView.handleAboutCommand).toHaveBeenCalledTimes(1);
 
-		options.handleConfig(createCommandContext("/config", "summary"));
+		options.handlers.config(createCommandContext("/config", "summary"));
 		expect(deps.getConfigView).toHaveBeenCalledTimes(1);
 		expect(configView.handleConfigCommand).toHaveBeenCalledTimes(1);
 
-		options.handleCost(createCommandContext("/cost", "today"));
+		options.handlers.cost(createCommandContext("/cost", "today"));
 		expect(deps.getCostView).toHaveBeenCalledTimes(1);
 		expect(costView.handleCostCommand).toHaveBeenCalledTimes(1);
 
-		await options.handleClear(createCommandContext("/clear"));
+		await options.handlers.clear(createCommandContext("/clear"));
 		expect(deps.getClearController).toHaveBeenCalledTimes(1);
 		expect(clearController.handleClearCommand).toHaveBeenCalledTimes(1);
 
-		options.handleRun(createCommandContext("/run test", "test"));
+		options.handlers.run(createCommandContext("/run test", "test"));
 		expect(deps.getRunCommandView).toHaveBeenCalledTimes(2);
 		expect(runCommandView.handleRunCommand).toHaveBeenCalledTimes(1);
 
-		options.handleTools(createCommandContext("/tools"));
+		options.handlers.tools(createCommandContext("/tools"));
 		expect(deps.getToolStatusView).toHaveBeenCalledTimes(1);
 		expect(toolStatusView.handleToolsCommand).toHaveBeenCalledTimes(1);
 
-		options.showStatus(createCommandContext("/status"));
+		options.handlers.status(createCommandContext("/status"));
 		expect(deps.getDiagnosticsView).toHaveBeenCalledTimes(1);
 		expect(diagnosticsView.handleStatusCommand).toHaveBeenCalledTimes(1);
 
-		await options.handleDiagnostics(createCommandContext("/diag"));
+		await options.handlers.diagnostics(createCommandContext("/diag"));
 		expect(deps.getDiagnosticsView).toHaveBeenCalledTimes(2);
 		expect(diagnosticsView.handleDiagnosticsCommand).toHaveBeenCalledTimes(1);
 
-		options.handleMention(createCommandContext("/mention src", "src"));
+		options.handlers.mention(createCommandContext("/mention src", "src"));
 		expect(deps.getFileSearchView).toHaveBeenCalledTimes(1);
 		expect(fileSearchView.handleMentionCommand).toHaveBeenCalledTimes(1);
 
-		options.handleQueue(createCommandContext("/queue"));
+		options.handlers.queue(createCommandContext("/queue"));
 		expect(deps.getQueuePanelController).toHaveBeenCalledTimes(1);
 		expect(queuePanelController.handleQueueCommand).toHaveBeenCalledTimes(1);
 
-		options.handleBranch(createCommandContext("/branch"));
+		options.handlers.branch(createCommandContext("/branch"));
 		expect(deps.getBranchController).toHaveBeenCalledTimes(1);
 		expect(branchController.handleBranchCommand).toHaveBeenCalledTimes(1);
 
-		await options.handleImportConfig(createCommandContext("/import", "config"));
+		await options.handlers.importConfig(
+			createCommandContext("/import", "config"),
+		);
 		expect(deps.getImportExportView).toHaveBeenCalledTimes(1);
 		expect(importExportView.handleImportCommand).toHaveBeenCalledTimes(1);
 
-		options.handleReport(createCommandContext("/report"));
+		options.handlers.report(createCommandContext("/report"));
 		expect(deps.getReportSelectorView).toHaveBeenCalledTimes(1);
 		expect(reportSelectorView.show).toHaveBeenCalledTimes(1);
 		expect(deps.getFeedbackView).not.toHaveBeenCalled();
 
-		options.handleReport(
+		options.handlers.report(
 			createCommandContext("/report bug", "bug", { type: "bug" }),
 		);
 		expect(deps.getFeedbackView).toHaveBeenCalledTimes(1);
 		expect(feedbackView.handleBugCommand).toHaveBeenCalledTimes(1);
 
-		options.handleCommands(createCommandContext("/commands", "list"));
+		options.handlers.commands(createCommandContext("/commands", "list"));
 		expect(deps.getCustomCommandsController).toHaveBeenCalledTimes(1);
 		expect(
 			customCommandsController.handleCommandsCommand,
 		).toHaveBeenCalledTimes(1);
 
-		options.handlePrompts(createCommandContext("/prompts", "list"));
+		options.handlers.prompts(createCommandContext("/prompts", "list"));
 		expect(deps.getCustomCommandsController).toHaveBeenCalledTimes(2);
 		expect(customCommandsController.handlePromptsCommand).toHaveBeenCalledTimes(
 			1,
 		);
 
-		options.showThinkingSelector(createCommandContext("/thinking"));
+		options.handlers.thinking(createCommandContext("/thinking"));
 		expect(deps.getThinkingSelectorView).toHaveBeenCalledTimes(1);
 		expect(thinkingSelectorView.show).toHaveBeenCalledTimes(1);
 

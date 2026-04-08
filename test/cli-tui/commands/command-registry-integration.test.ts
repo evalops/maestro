@@ -1,7 +1,10 @@
 import type { SlashCommand } from "@evalops/tui";
 import { describe, expect, it, vi } from "vitest";
 import type { GroupedCommandHandlers } from "../../../src/cli-tui/commands/grouped-command-handlers.js";
-import type { CommandExecutionContext } from "../../../src/cli-tui/commands/types.js";
+import type {
+	CommandExecutionContext,
+	CommandHandlers,
+} from "../../../src/cli-tui/commands/types.js";
 import { buildCommandRegistry } from "../../../src/cli-tui/utils/commands/command-registry-builder.js";
 import type { CommandRegistryOptions } from "../../../src/cli-tui/utils/commands/command-registry-builder.js";
 
@@ -23,6 +26,79 @@ function createMockOptions(): CommandRegistryOptions & {
 	groupedHandlers: GroupedCommandHandlers;
 } {
 	const noop = vi.fn();
+	const handlers: CommandHandlers = {
+		thinking: noop,
+		model: noop,
+		exportSession: noop,
+		shareSession: noop,
+		tools: noop,
+		toolHistory: noop,
+		skills: noop,
+		importConfig: noop,
+		session: noop,
+		sessions: noop,
+		report: noop,
+		about: noop,
+		history: noop,
+		clear: noop,
+		status: noop,
+		review: noop,
+		undoChanges: noop,
+		mention: noop,
+		access: noop,
+		pii: noop,
+		audit: noop,
+		limits: noop,
+		help: noop,
+		update: noop,
+		changelog: noop,
+		hotkeys: noop,
+		config: noop,
+		cost: noop,
+		quota: noop,
+		telemetry: noop,
+		otel: noop,
+		training: noop,
+		stats: noop,
+		plan: noop,
+		preview: noop,
+		run: noop,
+		ollama: noop,
+		diagnostics: noop,
+		background: noop,
+		compact: noop,
+		autocompact: noop,
+		footer: noop,
+		compactTools: noop,
+		steer: noop,
+		queue: noop,
+		branch: noop,
+		tree: noop,
+		quit: noop,
+		approvals: noop,
+		planMode: noop,
+		commands: noop,
+		newChat: noop,
+		initAgents: noop,
+		mcp: noop,
+		composer: noop,
+		login: noop,
+		logout: noop,
+		zen: noop,
+		context: noop,
+		lsp: noop,
+		theme: noop,
+		framework: noop,
+		clean: noop,
+		guardian: noop,
+		workflow: noop,
+		changes: noop,
+		checkpoint: noop,
+		memory: noop,
+		mode: noop,
+		prompts: noop,
+		copy: noop,
+	};
 	const groupedHandlers: GroupedCommandHandlers = {
 		session: vi.fn(),
 		diag: vi.fn(),
@@ -45,77 +121,7 @@ function createMockOptions(): CommandRegistryOptions & {
 				parsedArgs?: Record<string, unknown>;
 			}) => createMockContext(input.rawInput, input.argumentText),
 		),
-		showThinkingSelector: noop,
-		showModelSelector: noop,
-		showThemeSelector: noop,
-		handleExportSession: noop,
-		handleShareSession: noop,
-		handleTools: noop,
-		handleToolHistory: noop,
-		handleSkills: noop,
-		handleImportConfig: noop,
-		handleSession: noop,
-		handleSessions: noop,
-		handleAbout: noop,
-		handleHistory: noop,
-		handleClear: noop,
-		showStatus: noop,
-		handleReview: noop,
-		handleUndo: noop,
-		handleReport: noop,
-		handleMention: noop,
-		handleAccess: noop,
-		handlePii: noop,
-		handleAudit: noop,
-		handleLimits: noop,
-		showHelp: noop,
-		handleUpdate: noop,
-		handleChangelog: noop,
-		handleHotkeys: noop,
-		handleConfig: noop,
-		handleCost: noop,
-		handleQuota: noop,
-		handleTelemetry: noop,
-		handleOtel: noop,
-		handleTraining: noop,
-		handleStats: noop,
-		handlePlan: noop,
-		handlePreview: noop,
-		handleRun: noop,
-		handleOllama: noop,
-		handleDiagnostics: noop,
-		handleBackground: noop,
-		handleCompact: noop,
-		handleAutocompact: noop,
-		handleFooter: noop,
-		handleCompactTools: noop,
-		handleSteer: noop,
-		handleQueue: noop,
-		handleBranch: noop,
-		handleTree: noop,
-		handleCommands: noop,
-		handleQuit: noop,
-		handleApprovals: noop,
-		handlePlanMode: noop,
-		handleNewChat: noop,
-		handleInitAgents: noop,
-		handleMcp: noop,
-		handleComposer: noop,
-		handleLogin: noop,
-		handleLogout: noop,
-		handleZen: noop,
-		handleContext: noop,
-		handleLsp: noop,
-		handleFramework: noop,
-		handleClean: noop,
-		handleGuardian: noop,
-		handleWorkflow: noop,
-		handleChanges: noop,
-		handleCheckpoint: noop,
-		handleMemory: noop,
-		handleMode: noop,
-		handlePrompts: noop,
-		handleCopy: noop,
+		handlers,
 		getGroupedHandlers: vi.fn(() => groupedHandlers),
 		groupedHandlers,
 	};
@@ -323,7 +329,7 @@ describe("command-registry-integration", () => {
 
 			helpEntry!.execute("/help");
 
-			expect(opts.showHelp).toHaveBeenCalled();
+			expect(opts.handlers.help).toHaveBeenCalled();
 		});
 
 		it("dispatches /model to showModelSelector handler", () => {
@@ -333,7 +339,7 @@ describe("command-registry-integration", () => {
 
 			modelEntry!.execute("/model");
 
-			expect(opts.showModelSelector).toHaveBeenCalled();
+			expect(opts.handlers.model).toHaveBeenCalled();
 		});
 
 		it("dispatches /quit to handleQuit handler", () => {
@@ -343,7 +349,7 @@ describe("command-registry-integration", () => {
 
 			quitEntry!.execute("/quit");
 
-			expect(opts.handleQuit).toHaveBeenCalled();
+			expect(opts.handlers.quit).toHaveBeenCalled();
 		});
 
 		it("keeps grouped handlers lazy until a grouped-only command executes", () => {

@@ -21,7 +21,11 @@ import {
 	handleApprovalsCommand,
 	handlePlanModeCommand,
 } from "../commands/safety-handlers.js";
-import type { CommandExecutionContext } from "../commands/types.js";
+import type {
+	CommandExecutionContext,
+	CommandHandlers,
+	CommandRegistryOptions,
+} from "../commands/types.js";
 import {
 	handleCopyCommand,
 	handleInitCommand,
@@ -53,7 +57,6 @@ import type { TelemetryView } from "../status/telemetry-view.js";
 import type { TrainingView } from "../status/training-view.js";
 import type { ToolStatusView } from "../tool-status-view.js";
 import type { UpdateView } from "../update-view.js";
-import type { CommandRegistryOptions } from "../utils/commands/command-registry-builder.js";
 import type { BranchController } from "./branch-controller.js";
 import type { ClearController } from "./clear-controller.js";
 import type { CompactionController } from "./compaction-controller.js";
@@ -145,85 +148,79 @@ export function buildTuiCommandRegistryOptions(
 		deps.ui.requestRender();
 	};
 
-	return {
-		getRunScriptCompletions: (prefix) =>
-			deps.getRunCommandView().getRunScriptCompletions(prefix),
-		createContext: (ctx) => deps.createCommandContext(ctx),
-		showThinkingSelector: (_context) => deps.getThinkingSelectorView().show(),
-		showModelSelector: (_context) => deps.getModelSelectorView().show(),
-		showThemeSelector: (_context) => deps.getThemeSelectorView().show(),
-		handleExportSession: async (context) =>
+	const handlers: CommandHandlers = {
+		thinking: (_context) => deps.getThinkingSelectorView().show(),
+		model: (_context) => deps.getModelSelectorView().show(),
+		theme: (_context) => deps.getThemeSelectorView().show(),
+		exportSession: async (context) =>
 			deps.getImportExportView().handleExportCommand(context.rawInput),
-		handleShareSession: async (context) =>
+		shareSession: async (context) =>
 			deps.getImportExportView().handleShareCommand(context.rawInput),
-		handleTools: (context) =>
+		tools: (context) =>
 			deps.getToolStatusView().handleToolsCommand(context.rawInput),
-		handleToolHistory: (context) => deps.handleToolHistoryCommand(context),
-		handleSkills: (context) => deps.handleSkillsCommand(context),
-		handleImportConfig: (context) =>
+		toolHistory: (context) => deps.handleToolHistoryCommand(context),
+		skills: (context) => deps.handleSkillsCommand(context),
+		importConfig: (context) =>
 			deps.getImportExportView().handleImportCommand(context.rawInput),
-		handleSession: (context) =>
+		session: (context) =>
 			deps.sessionView.handleSessionCommand(context.rawInput),
-		handleSessions: (context) =>
+		sessions: (context) =>
 			deps.sessionView.handleSessionsCommand(context.rawInput),
-		handleReport: (context) =>
+		report: (context) =>
 			handleReportCommand(context, {
 				showBugReport: () => deps.getFeedbackView().handleBugCommand(),
 				showFeedback: () => deps.getFeedbackView().handleFeedbackCommand(),
 				showReportSelector: () => deps.getReportSelectorView().show(),
 			}),
-		handleAbout: (_context) => deps.getAboutView().handleAboutCommand(),
-		handleHistory: (context) => deps.handleHistoryCommand(context),
-		handleClear: async (_context) =>
+		about: (_context) => deps.getAboutView().handleAboutCommand(),
+		history: (context) => deps.handleHistoryCommand(context),
+		clear: async (_context) =>
 			await deps.getClearController().handleClearCommand(),
-		showStatus: (_context) => deps.getDiagnosticsView().handleStatusCommand(),
-		handleReview: (context) => deps.handleReviewCommand(context),
-		handleUndo: (context) => deps.handleEnhancedUndoCommand(context),
-		handleMention: (context) =>
+		status: (_context) => deps.getDiagnosticsView().handleStatusCommand(),
+		review: (context) => deps.handleReviewCommand(context),
+		undoChanges: (context) => deps.handleEnhancedUndoCommand(context),
+		mention: (context) =>
 			deps.getFileSearchView().handleMentionCommand(context.rawInput),
-		handleAccess: (context) => handleAccessCommand(context),
-		handlePii: (context) => handlePiiCommand(context),
-		handleAudit: (context) => handleAuditCommand(context),
-		handleLimits: (context) => handleLimitsCommand(context),
-		showHelp: (_context) => deps.getInfoView().showHelp(),
-		handleUpdate: (_context) => deps.getUpdateView().handleUpdateCommand(),
-		handleChangelog: (_context) =>
-			deps.getChangelogView().handleChangelogCommand(),
-		handleHotkeys: (context) =>
+		access: (context) => handleAccessCommand(context),
+		pii: (context) => handlePiiCommand(context),
+		audit: (context) => handleAuditCommand(context),
+		limits: (context) => handleLimitsCommand(context),
+		help: (_context) => deps.getInfoView().showHelp(),
+		update: (_context) => deps.getUpdateView().handleUpdateCommand(),
+		changelog: (_context) => deps.getChangelogView().handleChangelogCommand(),
+		hotkeys: (context) =>
 			createHotkeysCommandHandler({
 				showHotkeys: () => deps.getHotkeysView().handleHotkeysCommand(),
 			})(context),
-		handleConfig: (context) =>
-			deps.getConfigView().handleConfigCommand(context),
-		handleCost: (context) => deps.getCostView().handleCostCommand(context),
-		handleQuota: (context) => deps.getQuotaView().handleQuotaCommand(context),
-		handleTelemetry: (context) =>
+		config: (context) => deps.getConfigView().handleConfigCommand(context),
+		cost: (context) => deps.getCostView().handleCostCommand(context),
+		quota: (context) => deps.getQuotaView().handleQuotaCommand(context),
+		telemetry: (context) =>
 			deps.getTelemetryView().handleTelemetryCommand(context),
-		handleOtel: (_context) =>
+		otel: (_context) =>
 			otelHandler({
 				showInfo: (msg) => deps.notificationView.showInfo(msg),
 			}),
-		handleTraining: (context) =>
+		training: (context) =>
 			deps.getTrainingView().handleTrainingCommand(context),
-		handleStats: (context) => deps.handleStatsCommand(context),
-		handlePlan: (context) => {
+		stats: (context) => deps.handleStatsCommand(context),
+		plan: (context) => {
 			if (deps.planController) {
 				deps.planController.handlePlanCommand(context);
 				return;
 			}
 			context.showInfo("Plan panel is not available.");
 		},
-		handlePreview: (context) =>
-			deps.gitView.handlePreviewCommand(context.rawInput),
-		handleRun: (context) =>
+		preview: (context) => deps.gitView.handlePreviewCommand(context.rawInput),
+		run: (context) =>
 			deps.getRunCommandView().handleRunCommand(context.rawInput),
-		handleOllama: (context) =>
+		ollama: (context) =>
 			deps.getOllamaView().handleOllamaCommand(context.rawInput),
-		handleDiagnostics: (context) =>
+		diagnostics: (context) =>
 			deps.getDiagnosticsView().handleDiagnosticsCommand(context.rawInput),
-		handleBackground: (context) =>
+		background: (context) =>
 			deps.backgroundTasksController.handleBackgroundCommand(context),
-		handleCompact: (context) => {
+		compact: (context) => {
 			const customInstructions = context.rawInput
 				.replace(/^\/compact\s*/i, "")
 				.trim();
@@ -231,15 +228,14 @@ export function buildTuiCommandRegistryOptions(
 				customInstructions || undefined,
 			);
 		},
-		handleAutocompact: (context) =>
+		autocompact: (context) =>
 			deps.compactionController.handleAutocompactCommand(context.rawInput),
-		handleFooter: (context) => deps.handleFooterCommand(context),
-		handleCompactTools: (context) =>
-			deps.handleCompactToolsCommand(context.rawInput),
-		handleSteer: (context) => deps.handleSteerCommand(context),
-		handleCommands: (context) =>
+		footer: (context) => deps.handleFooterCommand(context),
+		compactTools: (context) => deps.handleCompactToolsCommand(context.rawInput),
+		steer: (context) => deps.handleSteerCommand(context),
+		commands: (context) =>
 			deps.getCustomCommandsController().handleCommandsCommand(context),
-		handleQueue: (context) => {
+		queue: (context) => {
 			const queuePanelController = deps.getQueuePanelController();
 			if (queuePanelController) {
 				queuePanelController.handleQueueCommand(context);
@@ -247,60 +243,58 @@ export function buildTuiCommandRegistryOptions(
 			}
 			context.showInfo("Prompt queue is not available.");
 		},
-		handleBranch: (context) =>
+		branch: (context) =>
 			deps.getBranchController().handleBranchCommand(context),
-		handleTree: (context) => deps.handleTreeCommand(context),
-		handleLogin: (context) =>
-			deps.oauthFlowController.handleLoginCommand(context.argumentText, (msg) =>
-				context.showError(msg),
-			),
-		handleLogout: (context) =>
-			deps.oauthFlowController.handleLogoutCommand(
-				context.argumentText,
-				(msg) => context.showError(msg),
-				(msg) => context.showInfo(msg),
-			),
-		handleQuit: (_context) => deps.onQuit(),
-		handleApprovals: (context) =>
+		tree: (context) => deps.handleTreeCommand(context),
+		quit: (_context) => deps.onQuit(),
+		approvals: (context) =>
 			handleApprovalsCommand(context, deps.approvalService, {
 				showToast: (msg, type) => deps.notificationView.showToast(msg, type),
 				refreshFooterHint: () => deps.refreshFooterHint(),
 				addContent,
 				requestRender,
 			}),
-		handlePlanMode: (context) =>
+		planMode: (context) =>
 			handlePlanModeCommand(context, {
 				showToast: (msg, type) => deps.notificationView.showToast(msg, type),
 				refreshFooterHint: () => deps.refreshFooterHint(),
 				addContent,
 				requestRender,
 			}),
-		handleNewChat: (context) => deps.handleNewChatCommand(context),
-		handleInitAgents: (context) =>
+		newChat: (context) => deps.handleNewChatCommand(context),
+		initAgents: (context) =>
 			handleInitCommand(context, {
 				showSuccess: (msg) => deps.notificationView.showToast(msg, "success"),
 				showError: (msg) => context.showError(msg),
 				addContent,
 				requestRender,
 			}),
-		handleMcp: (context) => deps.handleMcpCommand(context),
-		handleComposer: (context) => deps.handleComposerCommand(context),
-		handleZen: (context) => deps.uiStateController.handleZenCommand(context),
-		handleContext: (context) => deps.handleContextCommand(context),
-		handleLsp: (context) =>
-			deps.getLspView().handleLspCommand(context.rawInput),
-		handleFramework: (context) => deps.handleFrameworkCommand(context),
-		handleClean: (context) =>
-			deps.uiStateController.handleCleanCommand(context),
-		handleGuardian: (context) => deps.handleGuardianCommand(context),
-		handleWorkflow: (context) => deps.handleWorkflowCommand(context),
-		handleChanges: (context) => deps.handleChangesCommand(context),
-		handleCheckpoint: (context) => deps.handleCheckpointCommand(context),
-		handleMemory: (context) => deps.handleMemoryCommand(context),
-		handleMode: (context) => deps.handleModeCommand(context),
-		handlePrompts: (context) =>
+		mcp: (context) => deps.handleMcpCommand(context),
+		composer: (context) => deps.handleComposerCommand(context),
+		login: (context) =>
+			deps.oauthFlowController.handleLoginCommand(context.argumentText, (msg) =>
+				context.showError(msg),
+			),
+		logout: (context) =>
+			deps.oauthFlowController.handleLogoutCommand(
+				context.argumentText,
+				(msg) => context.showError(msg),
+				(msg) => context.showInfo(msg),
+			),
+		zen: (context) => deps.uiStateController.handleZenCommand(context),
+		context: (context) => deps.handleContextCommand(context),
+		lsp: (context) => deps.getLspView().handleLspCommand(context.rawInput),
+		framework: (context) => deps.handleFrameworkCommand(context),
+		clean: (context) => deps.uiStateController.handleCleanCommand(context),
+		guardian: (context) => deps.handleGuardianCommand(context),
+		workflow: (context) => deps.handleWorkflowCommand(context),
+		changes: (context) => deps.handleChangesCommand(context),
+		checkpoint: (context) => deps.handleCheckpointCommand(context),
+		memory: (context) => deps.handleMemoryCommand(context),
+		mode: (context) => deps.handleModeCommand(context),
+		prompts: (context) =>
 			deps.getCustomCommandsController().handlePromptsCommand(context),
-		handleCopy: (context) =>
+		copy: (context) =>
 			handleCopyCommand(
 				context,
 				{ getMessages: () => deps.getMessages() },
@@ -309,6 +303,13 @@ export function buildTuiCommandRegistryOptions(
 					showError: (msg) => context.showError(msg),
 				},
 			),
-		getGroupedHandlers: () => deps.getGroupedHandlers(),
+	};
+
+	return {
+		getRunScriptCompletions: (prefix) =>
+			deps.getRunCommandView().getRunScriptCompletions(prefix),
+		createContext: (ctx) => deps.createCommandContext(ctx),
+		handlers,
+		getGroupedHandlers: deps.getGroupedHandlers,
 	};
 }
