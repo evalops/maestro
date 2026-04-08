@@ -235,6 +235,75 @@ export interface AttachmentTextExtractionResponse {
 	cached?: boolean;
 }
 
+export type PackageScope = "local" | "project" | "user";
+
+export interface PackageResourceFilters {
+	extensions?: string[];
+	skills?: string[];
+	prompts?: string[];
+	themes?: string[];
+}
+
+export interface PackageInspectionResult {
+	sourceSpec: string;
+	resolvedSource: string;
+	sourceType: "local" | "git" | "npm";
+	resolvedPath: string;
+	discovered: {
+		name: string;
+		version?: string;
+		isMaestroPackage: boolean;
+		hasManifest: boolean;
+		manifestPaths?: PackageResourceFilters | null;
+		errors: string[];
+	} | null;
+	resources: {
+		extensions: string[];
+		skills: string[];
+		prompts: string[];
+		themes: string[];
+	} | null;
+}
+
+export interface PackageStatusEntry {
+	scope: PackageScope;
+	configPath: string;
+	sourceSpec: string;
+	filters: PackageResourceFilters | null;
+	inspection: PackageInspectionResult | null;
+	error: string | null;
+}
+
+export interface PackageStatusResponse {
+	packages: PackageStatusEntry[];
+}
+
+export interface PackageInspectResponse {
+	inspection: PackageInspectionResult;
+	issues: string[];
+}
+
+export interface PackageMutationRequest {
+	source: string;
+	scope?: PackageScope;
+}
+
+export interface PackageAddResponse {
+	path: string;
+	scope: PackageScope;
+	spec: string;
+}
+
+export interface PackageRemoveResponse {
+	path: string;
+	scope: PackageScope;
+	removedCount: number;
+	fallback?: {
+		scope: PackageScope;
+		sourceSpec: string;
+	} | null;
+}
+
 export interface McpToolDefinition {
 	name: string;
 	description?: string;
@@ -2151,6 +2220,47 @@ export class ApiClient {
 			throw new Error("Invalid plan action response payload");
 		}
 		return data;
+	}
+
+	// Packages
+	async getPackageStatus(): Promise<PackageStatusResponse> {
+		return (await this.fetchJsonWithFallback(
+			"/api/package",
+		)) as PackageStatusResponse;
+	}
+
+	async inspectPackage(source: string): Promise<PackageInspectResponse> {
+		return await this.fetchJsonRequestWithFallback<PackageInspectResponse>(
+			"/api/package?action=inspect",
+			"POST",
+			{ source },
+		);
+	}
+
+	async validatePackage(source: string): Promise<PackageInspectResponse> {
+		return await this.fetchJsonRequestWithFallback<PackageInspectResponse>(
+			"/api/package?action=validate",
+			"POST",
+			{ source },
+		);
+	}
+
+	async addPackage(input: PackageMutationRequest): Promise<PackageAddResponse> {
+		return await this.fetchJsonRequestWithFallback<PackageAddResponse>(
+			"/api/package?action=add",
+			"POST",
+			input,
+		);
+	}
+
+	async removePackage(
+		input: PackageMutationRequest,
+	): Promise<PackageRemoveResponse> {
+		return await this.fetchJsonRequestWithFallback<PackageRemoveResponse>(
+			"/api/package?action=remove",
+			"POST",
+			input,
+		);
 	}
 
 	// MCP

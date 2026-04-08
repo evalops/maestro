@@ -1,5 +1,4 @@
-import { existsSync, statSync } from "node:fs";
-import { basename, join, relative } from "node:path";
+import { basename, relative } from "node:path";
 import {
 	type ConfiguredPackageSpec,
 	type WritablePackageScope,
@@ -8,19 +7,18 @@ import {
 	removeConfiguredPackageSpecFromConfig,
 } from "../../config/index.js";
 import {
-	type DiscoveredPackage,
-	type MaestroManifest,
-	type PackageResources,
-	type PackageSource,
 	type ResourceFilters,
-	discoverPackage,
 	formatPackageSource,
-	loadPackage,
-	loadPackageResources,
 	parsePackageSource,
 	parsePackageSpec,
-	resolvePackageSource,
 } from "../../packages/index.js";
+import {
+	type ConfiguredPackageReport,
+	type InspectedPackage,
+	collectPackageValidationIssues,
+	inspectPackageSource,
+	listConfiguredPackageReports,
+} from "../../packages/inspection.js";
 import { parseCommandArguments } from "../../tools/shell-utils.js";
 import type { CommandExecutionContext } from "./types.js";
 
@@ -33,22 +31,6 @@ export interface PackageCommandDeps {
 	cwd: string;
 	addContent(content: string): void;
 	requestRender(): void;
-}
-
-interface InspectedPackage {
-	sourceSpec: string;
-	source: PackageSource;
-	resolvedPath: string;
-	discovered: DiscoveredPackage | null;
-	resources?: PackageResources;
-}
-
-interface ConfiguredPackageReport {
-	entry: ConfiguredPackageSpec;
-	sourceSpec: string;
-	filters?: ResourceFilters;
-	inspected?: InspectedPackage;
-	error?: string;
 }
 
 export const PACKAGE_SUBCOMMANDS = [
@@ -213,7 +195,7 @@ async function runPackageSubcommand(
 ): Promise<void> {
 	let inspected: InspectedPackage;
 	try {
-		inspected = await inspectPackage(sourceSpec, deps.cwd);
+		inspected = await inspectPackageSource(sourceSpec, deps.cwd);
 	} catch (error) {
 		ctx.showError(
 			error instanceof Error ? error.message : "Failed to inspect package.",
@@ -226,7 +208,7 @@ async function runPackageSubcommand(
 		return;
 	}
 
-	const issues = collectValidationIssues(inspected);
+	const issues = collectPackageValidationIssues(inspected);
 	if (issues.length > 0) {
 		publishOutput(deps, formatValidationFailure(inspected, issues, deps.cwd));
 		return;
@@ -282,85 +264,8 @@ function runPackageRemove(
 	publishOutput(deps, lines.join("\n"));
 }
 
-async function inspectPackage(
-	sourceSpec: string,
-	cwd: string,
-): Promise<InspectedPackage> {
-	const source = parsePackageSource(sourceSpec, cwd);
-	const resolvedPath = await resolvePackageSource(source);
-	const discovered = discoverPackage(resolvedPath);
-	const inspected: InspectedPackage = {
-		sourceSpec,
-		source,
-		resolvedPath,
-		discovered,
-	};
-
-	if (
-		discovered?.isMaestroPackage &&
-		(discovered.errors?.length ?? 0) === 0 &&
-		discovered.packageJson.maestro
-	) {
-		const loadedPackage = await loadPackage(sourceSpec, { cwd });
-		inspected.resources = loadPackageResources(loadedPackage);
-	}
-
-	return inspected;
-}
-
-function collectValidationIssues(inspected: InspectedPackage): string[] {
-	if (!inspected.discovered) {
-		return [`No valid package.json found at ${inspected.resolvedPath}.`];
-	}
-
-	const issues: string[] = [];
-	if (!inspected.discovered.isMaestroPackage) {
-		issues.push('Missing "maestro-package" keyword.');
-	}
-
-	for (const error of inspected.discovered.errors ?? []) {
-		issues.push(error);
-	}
-
-	const manifest = inspected.discovered.packageJson.maestro;
-	if (!manifest) {
-		issues.push('Missing "maestro" section in package.json.');
-		return issues;
-	}
-
-	issues.push(...collectManifestPathIssues(inspected.resolvedPath, manifest));
-	return issues;
-}
-
-function collectManifestPathIssues(
-	packagePath: string,
-	manifest: MaestroManifest,
-): string[] {
-	const issues: string[] = [];
-	for (const key of ["extensions", "skills", "prompts", "themes"] as const) {
-		const manifestPaths = manifest[key];
-		if (!Array.isArray(manifestPaths)) {
-			continue;
-		}
-
-		for (const manifestPath of manifestPaths) {
-			const absolutePath = join(packagePath, manifestPath);
-			if (!existsSync(absolutePath)) {
-				issues.push(`${key} path does not exist: ${manifestPath}`);
-				continue;
-			}
-
-			if (!statSync(absolutePath).isDirectory()) {
-				issues.push(`${key} path is not a directory: ${manifestPath}`);
-			}
-		}
-	}
-	return issues;
-}
-
 async function runPackageList(deps: PackageCommandDeps): Promise<void> {
-	const configured = loadConfiguredPackageSpecs(deps.cwd);
-	if (configured.length === 0) {
+	if (loadConfiguredPackageSpecs(deps.cwd).length === 0) {
 		publishOutput(
 			deps,
 			"No configured Maestro packages found in ~/.maestro/config.toml, .maestro/config.toml, or .maestro/config.local.toml.",
@@ -368,29 +273,7 @@ async function runPackageList(deps: PackageCommandDeps): Promise<void> {
 		return;
 	}
 
-	const reports: ConfiguredPackageReport[] = [];
-	for (const entry of configured) {
-		const [sourceSpec, filters] = parsePackageSpec(entry.spec, entry.cwd);
-		try {
-			reports.push({
-				entry,
-				sourceSpec,
-				filters,
-				inspected: await inspectPackage(sourceSpec, entry.cwd),
-			});
-		} catch (error) {
-			reports.push({
-				entry,
-				sourceSpec,
-				filters,
-				error:
-					error instanceof Error
-						? error.message
-						: "Failed to inspect configured package.",
-			});
-		}
-	}
-
+	const reports = await listConfiguredPackageReports(deps.cwd);
 	publishOutput(deps, formatConfiguredPackageList(reports, deps.cwd));
 }
 
@@ -468,7 +351,7 @@ function formatInspectReport(inspected: InspectedPackage, cwd: string): string {
 		lines.push(`    Themes: ${formatManifestPaths(manifest.themes)}`);
 	}
 
-	const issues = collectValidationIssues(inspected);
+	const issues = collectPackageValidationIssues(inspected);
 	if (issues.length > 0) {
 		lines.push("  Validation issues:");
 		for (const issue of issues) {

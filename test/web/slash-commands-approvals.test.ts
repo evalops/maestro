@@ -9,6 +9,7 @@ function createContext(
 ): WebSlashCommandContext {
 	return {
 		apiClient: {
+			addPackage: vi.fn(),
 			cancelQueuedPrompt: vi.fn(),
 			clearMemory: vi.fn(),
 			createBranch: vi.fn(),
@@ -21,6 +22,7 @@ function createContext(
 			getDiagnostics: vi.fn(),
 			getFiles: vi.fn(),
 			getMemoryStats: vi.fn(),
+			getPackageStatus: vi.fn(),
 			getPlan: vi.fn(),
 			getPreview: vi.fn(),
 			getQueueStatus: vi.fn(),
@@ -31,11 +33,13 @@ function createContext(
 			getStatus: vi.fn(),
 			getTelemetryStatus: vi.fn(),
 			getUsage: vi.fn(),
+			inspectPackage: vi.fn(),
 			listBranchOptions: vi.fn(),
 			listMemoryTopic: vi.fn(),
 			listMemoryTopics: vi.fn(),
 			listQueue: vi.fn(),
 			importMemory: vi.fn(),
+			removePackage: vi.fn(),
 			runScript: vi.fn(),
 			saveMemory: vi.fn(),
 			saveConfig: vi.fn(),
@@ -48,6 +52,7 @@ function createContext(
 			setTelemetry: vi.fn(),
 			setZenMode: vi.fn(),
 			updatePlan: vi.fn(),
+			validatePackage: vi.fn(),
 		},
 		appendCommandOutput: vi.fn(),
 		applyTheme: vi.fn(),

@@ -49,6 +49,7 @@ import { handleMemory } from "./handlers/memory.js";
 import { handleMode } from "./handlers/mode.js";
 import { handleModel, handleModels } from "./handlers/models.js";
 import { handleOllama } from "./handlers/ollama.js";
+import { handlePackageStatus } from "./handlers/package.js";
 import { handlePlan } from "./handlers/plan.js";
 import { handlePolicyValidate } from "./handlers/policy.js";
 import { handlePreview } from "./handlers/preview.js";
@@ -282,6 +283,16 @@ export function createRoutes(context: WebServerContext): Route[] {
 			method: "POST",
 			path: "/api/mcp",
 			handler: (req, res) => handleMcpStatus(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/package",
+			handler: (req, res) => handlePackageStatus(req, res, corsHeaders),
+		},
+		{
+			method: "POST",
+			path: "/api/package",
+			handler: (req, res) => handlePackageStatus(req, res, corsHeaders),
 		},
 		{
 			method: "GET",

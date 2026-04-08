@@ -15,6 +15,7 @@ function createContext(overrides: Partial<WebSlashCommandContext> = {}) {
 	const apiClient = {
 		addMcpAuthPreset: vi.fn(),
 		addMcpServer: vi.fn(),
+		addPackage: vi.fn(),
 		cancelQueuedPrompt: vi.fn(),
 		clearMemory: vi.fn(),
 		createBranch: vi.fn(),
@@ -29,6 +30,7 @@ function createContext(overrides: Partial<WebSlashCommandContext> = {}) {
 		getMemoryStats: vi.fn(),
 		getMcpStatus: vi.fn(),
 		getMcpPrompt: vi.fn(),
+		getPackageStatus: vi.fn(),
 		getPlan: vi.fn(),
 		getPreview: vi.fn(),
 		getQueueStatus: vi.fn(),
@@ -41,6 +43,7 @@ function createContext(overrides: Partial<WebSlashCommandContext> = {}) {
 		getStatus: vi.fn(),
 		getTelemetryStatus: vi.fn(),
 		getUsage: vi.fn(),
+		inspectPackage: vi.fn(),
 		listBranchOptions: vi.fn(),
 		listMemoryTopic: vi.fn(),
 		listMemoryTopics: vi.fn(),
@@ -48,6 +51,7 @@ function createContext(overrides: Partial<WebSlashCommandContext> = {}) {
 		readMcpResource: vi.fn(),
 		removeMcpAuthPreset: vi.fn(),
 		removeMcpServer: vi.fn(),
+		removePackage: vi.fn(),
 		runScript: vi.fn(),
 		saveMemory: vi.fn(),
 		saveConfig: vi.fn(),
@@ -63,6 +67,7 @@ function createContext(overrides: Partial<WebSlashCommandContext> = {}) {
 		updateMcpAuthPreset: vi.fn(),
 		updateMcpServer: vi.fn(),
 		updatePlan: vi.fn(),
+		validatePackage: vi.fn(),
 	};
 
 	const context: WebSlashCommandContext = {
@@ -226,6 +231,104 @@ describe("executeWebSlashCommand", () => {
 			["rest", "api"],
 			"session-1",
 		);
+	});
+
+	it("lists configured packages from the web slash command", async () => {
+		const { context, outputs, apiClient } = createContext();
+		apiClient.getPackageStatus.mockResolvedValue({
+			packages: [
+				{
+					scope: "local",
+					configPath: "/repo/.maestro/config.local.toml",
+					sourceSpec: "../vendor/pack",
+					filters: null,
+					error: null,
+					inspection: {
+						sourceSpec: "../vendor/pack",
+						resolvedSource: "local:/repo/vendor/pack",
+						sourceType: "local",
+						resolvedPath: "/repo/vendor/pack",
+						discovered: {
+							name: "@test/package",
+							version: "1.0.0",
+							isMaestroPackage: true,
+							hasManifest: true,
+							manifestPaths: { skills: ["./skills"] },
+							errors: [],
+						},
+						resources: {
+							extensions: [],
+							skills: ["/repo/vendor/pack/skills/pkg-skill"],
+							prompts: [],
+							themes: [],
+						},
+					},
+				},
+			],
+		});
+
+		await executeWebSlashCommand("package", "list", context);
+
+		expect(apiClient.getPackageStatus).toHaveBeenCalledOnce();
+		expect(outputs).toEqual([
+			expect.objectContaining({
+				isError: false,
+				output: expect.stringContaining("Configured Maestro Packages:"),
+			}),
+		]);
+		expect(outputs[0]?.output).toContain("@test/package");
+	});
+
+	it("adds a configured package from the web slash command", async () => {
+		const { context, outputs, apiClient } = createContext();
+		apiClient.addPackage.mockResolvedValue({
+			path: "/repo/.maestro/config.local.toml",
+			scope: "local",
+			spec: "../vendor/pack",
+		});
+
+		await executeWebSlashCommand("package", "add ./vendor/pack", context);
+
+		expect(apiClient.addPackage).toHaveBeenCalledWith({
+			source: "./vendor/pack",
+			scope: undefined,
+		});
+		expect(outputs).toEqual([
+			expect.objectContaining({
+				isError: false,
+				output: expect.stringContaining(
+					'Added configured package "./vendor/pack"',
+				),
+			}),
+		]);
+	});
+
+	it("removes a configured package from the web slash command", async () => {
+		const { context, outputs, apiClient } = createContext();
+		apiClient.removePackage.mockResolvedValue({
+			path: "/repo/.maestro/config.local.toml",
+			scope: "local",
+			removedCount: 1,
+			fallback: {
+				scope: "project",
+				sourceSpec: "../vendor/pack",
+			},
+		});
+
+		await executeWebSlashCommand("package", "remove ./vendor/pack", context);
+
+		expect(apiClient.removePackage).toHaveBeenCalledWith({
+			source: "./vendor/pack",
+			scope: undefined,
+		});
+		expect(outputs).toEqual([
+			expect.objectContaining({
+				isError: false,
+				output: expect.stringContaining(
+					"fallback: still configured in project",
+				),
+			}),
+		]);
 	});
 
 	it("requires force before clearing memory from the web slash command", async () => {

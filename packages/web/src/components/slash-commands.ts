@@ -50,6 +50,13 @@ const BUILTIN_WEB_SLASH_COMMANDS: Array<Omit<WebSlashCommand, "source">> = [
 		tags: ["tools"],
 	},
 	{
+		name: "package",
+		description: "Manage and inspect configured Maestro packages",
+		usage:
+			"/package [list|inspect <source>|validate <source>|add <source>|remove <source>]",
+		tags: ["tools", "config"],
+	},
+	{
 		name: "memory",
 		description: "Search and manage cross-session memory",
 		usage:
