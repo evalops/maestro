@@ -65,6 +65,8 @@ function collectRecentUserContext(
 export function buildSessionMemoryContent(sessionPath: string): {
 	content: string;
 	sessionId: string;
+	memoryExtractionHash?: string;
+	assistantTurnCount: number;
 } | null {
 	if (!existsSync(sessionPath)) {
 		return null;
@@ -129,6 +131,10 @@ export function buildSessionMemoryContent(sessionPath: string): {
 	return {
 		content: lines.join("\n").trim(),
 		sessionId: info.id,
+		memoryExtractionHash: info.memoryExtractionHash,
+		assistantTurnCount: info.messages.filter(
+			(message) => message.role === "assistant",
+		).length,
 	};
 }
 

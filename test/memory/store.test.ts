@@ -88,4 +88,34 @@ describe("memory store session scoping", () => {
 			}),
 		]);
 	});
+
+	it("upserts durable memories by normalized topic and content", async () => {
+		const memory = await import("../../src/memory/index.js");
+
+		const first = memory.upsertDurableMemory(
+			"Team-Preferences",
+			"Prefer focused PRs with green CI.",
+			{
+				tags: ["Review"],
+			},
+		);
+		const second = memory.upsertDurableMemory(
+			"team-preferences",
+			"Prefer   focused PRs with green CI.",
+			{
+				tags: ["durable", "review"],
+			},
+		);
+
+		expect(first.entry.id).toBe(second.entry.id);
+		expect(second.created).toBe(false);
+		expect(second.updated).toBe(true);
+		expect(memory.getTopicMemories("team-preferences")).toEqual([
+			expect.objectContaining({
+				id: first.entry.id,
+				content: "Prefer focused PRs with green CI.",
+				tags: ["durable", "review"],
+			}),
+		]);
+	});
 });

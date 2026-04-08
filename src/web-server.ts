@@ -16,6 +16,7 @@ import type {
 	ActionApprovalService,
 	ApprovalMode,
 } from "./agent/action-approval.js";
+import { createBackgroundTextAgent } from "./agent/background-agent.js";
 import {
 	BackgroundTaskContextSource,
 	CurrentDateContextSource,
@@ -41,6 +42,7 @@ import { bootstrapLsp } from "./lsp/bootstrap.js";
 import { loadMcpConfig, mcpManager } from "./mcp/index.js";
 import { prefetchOfficialMcpRegistry } from "./mcp/official-registry.js";
 import { getAllMcpTools } from "./mcp/tool-bridge.js";
+import { getMemoryExtractionSystemPrompt } from "./memory/auto-extraction.js";
 import type { RegisteredModel } from "./models/registry.js";
 import {
 	getFactoryDefaultModelSelection,
@@ -516,6 +518,17 @@ async function createAgent(
 	return agent;
 }
 
+async function createBackgroundAgent(
+	registeredModel: RegisteredModel,
+): Promise<Agent> {
+	return createBackgroundTextAgent({
+		model: registeredModel,
+		systemPrompt: getMemoryExtractionSystemPrompt(),
+		cwd: process.cwd(),
+		getAuthContext: async (provider: string) => authResolver(provider),
+	});
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const WEB_ROOT = join(__dirname, "../packages/web");
@@ -552,6 +565,7 @@ const context: WebServerContext = {
 	defaultProvider: DEFAULT_PROVIDER,
 	defaultModelId: DEFAULT_MODEL_ID,
 	createAgent,
+	createBackgroundAgent,
 	getRegisteredModel,
 	getCurrentSelection,
 	ensureCredential,

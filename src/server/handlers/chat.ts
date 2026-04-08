@@ -31,6 +31,8 @@ import { runUserPromptWithRecovery } from "../../agent/user-prompt-runtime.js";
 import { dispatchAgentNotification } from "../../hooks/notification-hooks.js";
 import { createSessionHookService } from "../../hooks/session-integration.js";
 import { withMcpPostKeepMessages } from "../../mcp/prompt-recovery.js";
+import { createAutomaticMemoryExtractionCoordinator } from "../../memory/auto-extraction.js";
+import type { RegisteredModel } from "../../models/registry.js";
 import { createLogger } from "../../utils/logger.js";
 
 const logger = createLogger("web:chat");
@@ -99,6 +101,7 @@ export async function handleChat(
 	// Destructure context for cleaner code
 	const {
 		createAgent,
+		createBackgroundAgent,
 		getRegisteredModel,
 		defaultApprovalMode,
 		acquireSse,
@@ -544,6 +547,13 @@ export async function handleChat(
 		};
 		const updateSessionSummary =
 			createRuntimeSessionSummaryUpdater(sessionManager);
+		const automaticMemoryExtraction =
+			createAutomaticMemoryExtractionCoordinator({
+				createAgent: async () =>
+					createBackgroundAgent(agent.state.model as RegisteredModel),
+				getModel: () => agent.state.model,
+				sessionManager,
+			});
 		const sessionHookService = createSessionHookService({
 			cwd: process.cwd(),
 			sessionId: sessionManager.getSessionId(),
@@ -609,6 +619,9 @@ export async function handleChat(
 			// Handle message completion - persist to session
 			if (event.type === "message_end") {
 				sessionManager.saveMessage(event.message);
+				if (event.message.role === "assistant") {
+					automaticMemoryExtraction.schedule(sessionManager.getSessionFile());
+				}
 				let initializationError: string | null = null;
 
 				// Auto-initialize session on first user message

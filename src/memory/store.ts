@@ -88,6 +88,20 @@ function normalizeTags(tags?: string[]): string[] | undefined {
 	return tags?.map((tag) => tag.toLowerCase().trim());
 }
 
+function normalizeContent(content: string): string {
+	return content.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function mergeTags(current?: string[], next?: string[]): string[] | undefined {
+	const values = [...(current ?? []), ...(next ?? [])]
+		.map((tag) => tag.trim().toLowerCase())
+		.filter(Boolean);
+	if (values.length === 0) {
+		return undefined;
+	}
+	return Array.from(new Set(values)).sort();
+}
+
 function matchesQueryOptions(
 	entry: MemoryEntry,
 	options?: MemoryQueryOptions,
@@ -192,6 +206,56 @@ export function upsertScopedMemory(
 	existing.updatedAt = Date.now();
 	saveStore(store);
 	return existing;
+}
+
+export function upsertDurableMemory(
+	topic: string,
+	content: string,
+	options?: {
+		tags?: string[];
+	},
+): { entry: MemoryEntry; created: boolean; updated: boolean } {
+	const store = loadStore();
+	const normalizedTopic = normalizeTopic(topic);
+	const normalizedTags = normalizeTags(options?.tags);
+	const nextContent = content.replace(/\s+/g, " ").trim();
+	const normalizedContent = normalizeContent(nextContent);
+	const existing = store.entries.find(
+		(entry) =>
+			entry.sessionId === undefined &&
+			entry.topic === normalizedTopic &&
+			normalizeContent(entry.content) === normalizedContent,
+	);
+
+	if (!existing) {
+		const now = Date.now();
+		const entry: MemoryEntry = {
+			id: generateId(),
+			topic: normalizedTopic,
+			content: nextContent,
+			tags: normalizedTags,
+			createdAt: now,
+			updatedAt: now,
+		};
+		store.entries.push(entry);
+		saveStore(store);
+		return { entry, created: true, updated: false };
+	}
+
+	const mergedTags = mergeTags(existing.tags, normalizedTags);
+	const tagsChanged =
+		(mergedTags?.length ?? 0) !== (existing.tags?.length ?? 0) ||
+		(mergedTags ?? []).some((tag, index) => existing.tags?.[index] !== tag);
+	const contentChanged = existing.content !== nextContent;
+	if (!tagsChanged && !contentChanged) {
+		return { entry: existing, created: false, updated: false };
+	}
+
+	existing.content = nextContent;
+	existing.tags = mergedTags;
+	existing.updatedAt = Date.now();
+	saveStore(store);
+	return { entry: existing, created: false, updated: true };
 }
 
 /**
