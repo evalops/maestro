@@ -361,6 +361,33 @@ export interface ComposerChatRequest {
 }
 
 /**
+ * Request payload for prompt suggestion generation.
+ *
+ * Sent to `POST /api/prompt-suggestion` to generate a likely next user prompt
+ * from the current conversation state.
+ */
+export interface ComposerPromptSuggestionRequest {
+	/** Optional model preference used to select a suggestion model. */
+	model?: string;
+	/** Conversation history to summarize into a likely next user prompt. */
+	messages: ComposerMessage[];
+	/** Optional session id for callers that want request correlation. */
+	sessionId?: string;
+}
+
+/**
+ * Response payload for prompt suggestion generation.
+ */
+export interface ComposerPromptSuggestionResponse {
+	/** Suggested next user prompt, or null when suggestion generation is suppressed. */
+	suggestion: string | null;
+	/** Optional suppression or filtering reason when no suggestion is returned. */
+	suppressedReason?: string;
+	/** Model used to generate the suggestion, when generation ran. */
+	model?: string;
+}
+
+/**
  * Summary metadata for a session (without full message history).
  *
  * Used in session list views for performance.

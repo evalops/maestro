@@ -107,6 +107,8 @@ import type {
 	ComposerPlanActionResponse,
 	ComposerPlanStatusResponse,
 	ComposerProjectOnboardingState,
+	ComposerPromptSuggestionRequest,
+	ComposerPromptSuggestionResponse,
 	ComposerSession,
 	ComposerSessionSummary,
 	ComposerToolCall,
@@ -2894,6 +2896,16 @@ export class ApiClient {
 	async suggestMode(task?: string): Promise<Record<string, unknown>> {
 		return await this.fetchJsonWithFallback(
 			`/api/mode?action=suggest${task ? `&task=${encodeURIComponent(task)}` : ""}`,
+		);
+	}
+
+	async suggestPrompt(
+		request: ComposerPromptSuggestionRequest,
+	): Promise<ComposerPromptSuggestionResponse> {
+		return await this.fetchJsonRequestWithFallback(
+			"/api/prompt-suggestion",
+			"POST",
+			request,
 		);
 	}
 

@@ -42,8 +42,11 @@ export function ChatContainer({
 	onSessionSelect,
 }: ChatContainerProps) {
 	const messagesEndRef = useRef<HTMLDivElement>(null);
+	const promptSuggestionRequestRef = useRef(0);
 	const [workspaceStatus, setWorkspaceStatus] =
 		useState<WorkspaceStatus | null>(workspaceStatusPrefetch);
+	const [promptSuggestion, setPromptSuggestion] = useState<string | null>(null);
+	const [promptSuggestionLoading, setPromptSuggestionLoading] = useState(false);
 	const { messages, isLoading, error, runtimeStatus, sendMessage, clearError } =
 		useChat(sessionId ?? undefined, { thinkingLevel });
 	const onboardingSteps = getActiveComposerProjectOnboardingSteps(
@@ -91,8 +94,62 @@ export function ChatContainer({
 		void apiClient.markProjectOnboardingSeen().catch(() => {});
 	}, [onboardingSteps.length]);
 
+	useEffect(() => {
+		if (!sessionId) {
+			promptSuggestionRequestRef.current += 1;
+			setPromptSuggestion(null);
+			setPromptSuggestionLoading(false);
+			return;
+		}
+		if (isLoading) {
+			return;
+		}
+
+		const relevantMessages = messages.filter(
+			(message) => message.role === "user" || message.role === "assistant",
+		);
+		const assistantCount = relevantMessages.filter(
+			(message) => message.role === "assistant",
+		).length;
+		const lastMessage = relevantMessages[relevantMessages.length - 1];
+		if (assistantCount < 2 || lastMessage?.role !== "assistant") {
+			promptSuggestionRequestRef.current += 1;
+			setPromptSuggestion(null);
+			setPromptSuggestionLoading(false);
+			return;
+		}
+
+		const requestId = ++promptSuggestionRequestRef.current;
+		setPromptSuggestionLoading(true);
+		void apiClient
+			.suggestPrompt({
+				messages,
+				sessionId,
+			})
+			.then((result) => {
+				if (requestId !== promptSuggestionRequestRef.current) {
+					return;
+				}
+				setPromptSuggestion(result.suggestion);
+			})
+			.catch(() => {
+				if (requestId !== promptSuggestionRequestRef.current) {
+					return;
+				}
+				setPromptSuggestion(null);
+			})
+			.finally(() => {
+				if (requestId === promptSuggestionRequestRef.current) {
+					setPromptSuggestionLoading(false);
+				}
+			});
+	}, [sessionId, messages, isLoading]);
+
 	const handleSendMessage = async (content: string) => {
 		if (!content.trim()) return;
+		promptSuggestionRequestRef.current += 1;
+		setPromptSuggestion(null);
+		setPromptSuggestionLoading(false);
 		await sendMessage(content);
 	};
 
@@ -513,7 +570,12 @@ export function ChatContainer({
 				}}
 			>
 				<div className="max-w-3xl mx-auto">
-					<InputArea onSend={handleSendMessage} disabled={isLoading} />
+					<InputArea
+						onSend={handleSendMessage}
+						disabled={isLoading}
+						promptSuggestion={promptSuggestion}
+						promptSuggestionLoading={promptSuggestionLoading}
+					/>
 				</div>
 			</div>
 		</div>

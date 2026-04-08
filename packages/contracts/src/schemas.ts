@@ -112,6 +112,18 @@ export const ComposerChatRequestSchema = Type.Object({
 	stream: Type.Optional(Type.Boolean()),
 });
 
+export const ComposerPromptSuggestionRequestSchema = Type.Object({
+	model: Type.Optional(Type.String()),
+	messages: Type.Array(ComposerMessageSchema),
+	sessionId: Type.Optional(Type.String()),
+});
+
+export const ComposerPromptSuggestionResponseSchema = Type.Object({
+	suggestion: Type.Union([Type.String(), Type.Null()]),
+	suppressedReason: Type.Optional(Type.String()),
+	model: Type.Optional(Type.String()),
+});
+
 export const ComposerModelSetSchema = Type.Object({
 	model: Type.String({ minLength: 1 }),
 });

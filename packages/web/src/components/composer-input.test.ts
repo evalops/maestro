@@ -187,4 +187,49 @@ describe("ComposerInput", () => {
 
 		assert.equal(event.detail.text, "spaces");
 	});
+
+	it("renders a prompt suggestion and inserts it when used", async () => {
+		element.promptSuggestion = "Add a regression test for this flow";
+		await element.updateComplete;
+
+		const suggestion = element.shadowRoot?.querySelector(
+			".prompt-suggestion-text",
+		);
+		const useButton = Array.from(
+			element.shadowRoot?.querySelectorAll(
+				".prompt-suggestion-actions button",
+			) ?? [],
+		).find((button) => button.textContent?.includes("Use")) as
+			| HTMLButtonElement
+			| undefined;
+
+		assert.ok(suggestion);
+		assert.include(
+			suggestion?.textContent || "",
+			"Add a regression test for this flow",
+		);
+		assert.ok(useButton);
+
+		useButton?.click();
+		await element.updateComplete;
+
+		const textarea = element.shadowRoot?.querySelector(
+			"textarea",
+		) as HTMLTextAreaElement;
+		assert.equal(textarea.value, "Add a regression test for this flow");
+	});
+
+	it("hides the prompt suggestion once the user starts typing", async () => {
+		element.promptSuggestion = "Add a regression test for this flow";
+		await element.updateComplete;
+
+		const textarea = element.shadowRoot?.querySelector(
+			"textarea",
+		) as HTMLTextAreaElement;
+		textarea.value = "Working on it";
+		textarea.dispatchEvent(new Event("input", { bubbles: true }));
+		await element.updateComplete;
+
+		assert.notOk(element.shadowRoot?.querySelector(".prompt-suggestion"));
+	});
 });
