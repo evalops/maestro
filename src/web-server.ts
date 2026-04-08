@@ -24,6 +24,7 @@ import {
 	GitSnapshotContextSource,
 	IDEContextSource,
 	LspContextSource,
+	TeamMemoryContextSource,
 	TodoContextSource,
 } from "./agent/context-providers.js";
 import { Agent, ProviderTransport } from "./agent/index.js";
@@ -508,6 +509,7 @@ async function createAgent(
 			new GitSnapshotContextSource(process.cwd()),
 			new LspContextSource(),
 			new FrameworkPreferenceContextSource(),
+			new TeamMemoryContextSource(process.cwd()),
 			new IDEContextSource(),
 		],
 	});

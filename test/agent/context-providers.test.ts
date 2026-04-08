@@ -1,3 +1,7 @@
+import { execSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
 	CurrentDateContextSource,
@@ -90,6 +94,67 @@ describe("CurrentDateContextSource", () => {
 			expect(result).toBe(`Today's date is ${expectedDate}.`);
 		} finally {
 			vi.useRealTimers();
+		}
+	});
+});
+
+describe("TeamMemoryContextSource", () => {
+	it("returns null when the cwd is not in a git repository", async () => {
+		vi.resetModules();
+		const tempRoot = mkdtempSync(join(tmpdir(), "maestro-team-memory-source-"));
+		const originalMaestroHome = process.env.MAESTRO_HOME;
+		process.env.MAESTRO_HOME = join(tempRoot, ".maestro-home");
+
+		try {
+			const { TeamMemoryContextSource } = await import(
+				"../../src/agent/context-providers.js"
+			);
+			const source = new TeamMemoryContextSource(tempRoot);
+			await expect(source.getSystemPromptAdditions()).resolves.toBeNull();
+		} finally {
+			if (originalMaestroHome === undefined) {
+				Reflect.deleteProperty(process.env, "MAESTRO_HOME");
+			} else {
+				process.env.MAESTRO_HOME = originalMaestroHome;
+			}
+			rmSync(tempRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("returns repo-scoped team memory context when initialized", async () => {
+		vi.resetModules();
+		const tempRoot = mkdtempSync(join(tmpdir(), "maestro-team-memory-source-"));
+		const originalMaestroHome = process.env.MAESTRO_HOME;
+		process.env.MAESTRO_HOME = join(tempRoot, ".maestro-home");
+		execSync("git init -q", { cwd: tempRoot, stdio: "ignore" });
+
+		try {
+			const [{ TeamMemoryContextSource }, teamMemory] = await Promise.all([
+				import("../../src/agent/context-providers.js"),
+				import("../../src/memory/team-memory.js"),
+			]);
+			const location = teamMemory.ensureTeamMemoryEntrypoint(tempRoot)!;
+			writeFileSync(
+				join(location.directory, "testing.md"),
+				"Keep MCP approvals explicit for repo-provided servers.",
+				"utf-8",
+			);
+
+			const source = new TeamMemoryContextSource(tempRoot);
+			const result = await source.getSystemPromptAdditions();
+
+			expect(result).toContain("# Team Memory");
+			expect(result).toContain("## testing.md");
+			expect(result).toContain(
+				"Keep MCP approvals explicit for repo-provided servers.",
+			);
+		} finally {
+			if (originalMaestroHome === undefined) {
+				Reflect.deleteProperty(process.env, "MAESTRO_HOME");
+			} else {
+				process.env.MAESTRO_HOME = originalMaestroHome;
+			}
+			rmSync(tempRoot, { recursive: true, force: true });
 		}
 	});
 });

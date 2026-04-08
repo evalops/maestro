@@ -1,3 +1,4 @@
+import { execSync } from "node:child_process";
 import {
 	existsSync,
 	mkdtempSync,
@@ -38,13 +39,21 @@ function getTextOutput(result: AgentToolResult<unknown>): string {
 
 describe("write tool", () => {
 	let testDir: string;
+	let originalMaestroHome: string | undefined;
 
 	beforeEach(() => {
 		testDir = mkdtempSync(join(tmpdir(), "write-tool-test-"));
+		originalMaestroHome = process.env.MAESTRO_HOME;
+		process.env.MAESTRO_HOME = join(testDir, ".maestro-home");
 		vi.clearAllMocks();
 	});
 
 	afterEach(() => {
+		if (originalMaestroHome === undefined) {
+			Reflect.deleteProperty(process.env, "MAESTRO_HOME");
+		} else {
+			process.env.MAESTRO_HOME = originalMaestroHome;
+		}
 		rmSync(testDir, { recursive: true, force: true });
 		// Clean up tilde expansion test file and its backup
 		const tildeTestFile = join(
@@ -152,6 +161,31 @@ describe("write tool", () => {
 
 			expect(result.isError).toBeFalsy();
 			expect(readFileSync(filePath, "utf-8")).toBe("In existing dir");
+		});
+	});
+
+	describe("team memory protection", () => {
+		it("blocks writing secrets into repo-scoped team memory", async () => {
+			execSync("git init -q", { cwd: testDir, stdio: "ignore" });
+			const originalCwd = process.cwd();
+			process.chdir(testDir);
+			const openAiKey = `sk-${"a".repeat(32)}`;
+
+			try {
+				const { ensureTeamMemoryEntrypoint } = await import(
+					"../../src/memory/team-memory.js"
+				);
+				const location = ensureTeamMemoryEntrypoint(testDir)!;
+
+				await expect(
+					writeTool.execute("write-team-memory-secret", {
+						path: location.entrypoint,
+						content: `OpenAI key: ${openAiKey}`,
+					}),
+				).rejects.toThrow("Team memory files cannot store secrets");
+			} finally {
+				process.chdir(originalCwd);
+			}
 		});
 	});
 

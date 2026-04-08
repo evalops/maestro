@@ -208,13 +208,35 @@ vi.mock("../../../src/memory/index.js", () => ({
 	importMemories: vi.fn(() => ({ added: 1, updated: 0, skipped: 0 })),
 	clearAllMemories: vi.fn(() => 5),
 	getRecentMemories: vi.fn(() => []),
+	getTeamMemoryStatus: vi.fn(() => ({
+		gitRoot: "/tmp/repo",
+		projectId: "project123",
+		projectName: "repo",
+		directory: "/tmp/.maestro-home/memory/projects/project123/team",
+		entrypoint: "/tmp/.maestro-home/memory/projects/project123/team/MEMORY.md",
+		exists: false,
+		fileCount: 0,
+		files: [],
+	})),
+	ensureTeamMemoryEntrypoint: vi.fn(() => ({
+		gitRoot: "/tmp/repo",
+		projectId: "project123",
+		projectName: "repo",
+		directory: "/tmp/.maestro-home/memory/projects/project123/team",
+		entrypoint: "/tmp/.maestro-home/memory/projects/project123/team/MEMORY.md",
+	})),
 }));
 
 import {
 	type MemoryRenderContext,
 	handleMemoryCommand,
 } from "../../../src/cli-tui/commands/memory-handlers.js";
-import { addMemory, searchMemories } from "../../../src/memory/index.js";
+import {
+	addMemory,
+	ensureTeamMemoryEntrypoint,
+	getTeamMemoryStatus,
+	searchMemories,
+} from "../../../src/memory/index.js";
 
 function createMemoryCtx(rawInput: string): MemoryRenderContext {
 	return {
@@ -295,6 +317,24 @@ describe("memory-handlers", () => {
 			handleMemoryCommand(ctx);
 			expect(ctx.addContent).toHaveBeenCalledWith(
 				expect.stringContaining("Memory Statistics"),
+			);
+		});
+
+		it("shows repo-scoped team memory status", () => {
+			const ctx = createMemoryCtx("/memory team");
+			handleMemoryCommand(ctx);
+			expect(getTeamMemoryStatus).toHaveBeenCalledWith("/tmp");
+			expect(ctx.addContent).toHaveBeenCalledWith(
+				expect.stringContaining("Team Memory"),
+			);
+		});
+
+		it("initializes repo-scoped team memory", () => {
+			const ctx = createMemoryCtx("/memory team init");
+			handleMemoryCommand(ctx);
+			expect(ensureTeamMemoryEntrypoint).toHaveBeenCalledWith("/tmp");
+			expect(ctx.showSuccess).toHaveBeenCalledWith(
+				expect.stringContaining("Team memory ready"),
 			);
 		});
 

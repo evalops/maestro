@@ -63,6 +63,7 @@ import {
 import { dirname, resolve as resolvePath } from "node:path";
 import { Type } from "@sinclair/typebox";
 import { collectDiagnostics } from "../lsp/index.js";
+import { assertTeamMemoryContentSafe } from "../memory/team-memory.js";
 import {
 	requirePlanCheck,
 	runValidatorsOnSuccess,
@@ -112,6 +113,8 @@ export const writeTool = createTool<typeof writeSchema, WriteToolDetails>({
 		{ signal, respond, sandbox },
 	) {
 		requirePlanCheck("write");
+		const absolutePath = resolvePath(expandUserPath(path));
+		assertTeamMemoryContentSafe(absolutePath, content);
 
 		// Use sandbox if available
 		if (sandbox) {
@@ -146,7 +149,6 @@ export const writeTool = createTool<typeof writeSchema, WriteToolDetails>({
 			}
 		}
 
-		const absolutePath = resolvePath(expandUserPath(path));
 		const dir = dirname(absolutePath);
 		const ensureNotAborted = () => {
 			if (signal?.aborted) {

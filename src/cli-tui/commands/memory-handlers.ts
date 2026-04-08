@@ -20,9 +20,11 @@ import {
 	clearAllMemories,
 	deleteMemory,
 	deleteTopicMemories,
+	ensureTeamMemoryEntrypoint,
 	exportMemories,
 	getRecentMemories,
 	getStats,
+	getTeamMemoryStatus,
 	getTopicMemories,
 	importMemories,
 	listTopics,
@@ -136,6 +138,9 @@ export function handleMemoryCommand(ctx: MemoryRenderContext): void {
 		case "stats":
 		case "status":
 			handleStats(ctx, args);
+			break;
+		case "team":
+			handleTeam(ctx, args);
 			break;
 		case "export":
 			handleExport(ctx, args[0]);
@@ -365,6 +370,62 @@ function handleExport(ctx: MemoryRenderContext, path?: string): void {
 	}
 }
 
+function handleTeam(ctx: MemoryRenderContext, args: string[]): void {
+	const action = args[0]?.toLowerCase() ?? "status";
+
+	if (action === "init" || action === "create") {
+		const location = ensureTeamMemoryEntrypoint(ctx.cwd);
+		if (!location) {
+			ctx.showError("Team memory is only available inside a git repository.");
+			return;
+		}
+		ctx.showSuccess(`Team memory ready at ${location.entrypoint}`);
+		return;
+	}
+
+	const status = getTeamMemoryStatus(ctx.cwd);
+	if (!status) {
+		ctx.showError("Team memory is only available inside a git repository.");
+		return;
+	}
+
+	if (action === "path") {
+		ctx.showInfo(`Team memory entrypoint: ${status.entrypoint}`);
+		return;
+	}
+
+	if (action !== "status" && action !== "list") {
+		ctx.showError("Usage: /memory team [status|path|init]");
+		return;
+	}
+
+	const lines = [
+		"Team Memory",
+		"",
+		`  Repo: ${chalk.cyan(status.projectName)}`,
+		`  Path: ${status.directory}`,
+		`  Status: ${status.exists ? chalk.green("initialized") : chalk.yellow("not initialized")}`,
+		`  Files: ${status.fileCount}`,
+	];
+
+	if (status.files.length > 0) {
+		lines.push("");
+		lines.push("Files");
+		for (const relativePath of status.files.slice(0, 12)) {
+			lines.push(`  ${chalk.dim("•")} ${relativePath}`);
+		}
+		if (status.files.length > 12) {
+			lines.push(chalk.dim(`  ... and ${status.files.length - 12} more`));
+		}
+	} else {
+		lines.push("");
+		lines.push(chalk.dim("Run /memory team init to create MEMORY.md."));
+	}
+
+	ctx.addContent(lines.join("\n"));
+	ctx.requestRender();
+}
+
 function handleImport(ctx: MemoryRenderContext, path?: string): void {
 	if (!path) {
 		ctx.showError("Usage: /memory import <path>");
@@ -448,6 +509,7 @@ function handleHelp(ctx: MemoryRenderContext): void {
 		"  /memory list --session          List current-session topics",
 		"  /memory session [N]             Show recent current-session memories",
 		"  /memory recent [N]              Show N most recent memories",
+		"  /memory team [status|path|init] Manage repo-scoped team memory",
 		"  /memory delete <id|topic>       Delete a memory or topic",
 		"  /memory stats                   Show memory statistics",
 		"  /memory export [path]           Export to JSON file",
@@ -460,6 +522,7 @@ function handleHelp(ctx: MemoryRenderContext): void {
 		"  /memory search REST --session",
 		"  /memory list api-design",
 		"  /memory session 5",
+		"  /memory team init",
 		"  /memory delete api-design",
 	];
 

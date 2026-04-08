@@ -42,6 +42,7 @@ import { access, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { resolve as resolvePath } from "node:path";
 import { Type } from "@sinclair/typebox";
 import { collectDiagnostics } from "../lsp/index.js";
+import { assertTeamMemoryContentSafe } from "../memory/team-memory.js";
 import {
 	requirePlanCheck,
 	runValidatorsOnSuccess,
@@ -347,6 +348,7 @@ If "not found", read file to check actual content.`,
 					normalizedNewContent,
 					document,
 				);
+				assertTeamMemoryContentSafe(absolutePath, newContent);
 				const diff = generateDiffString(originalContent, newContent);
 
 				if (!dryRun) {
@@ -387,6 +389,7 @@ If "not found", read file to check actual content.`,
 			document.normalized,
 		);
 		const newContent = restoreDocumentContent(normalizedNewContent, document);
+		assertTeamMemoryContentSafe(absolutePath, newContent);
 		const diff = generateDiffString(originalContent, newContent);
 
 		if (dryRun) {

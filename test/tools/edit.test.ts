@@ -1,3 +1,4 @@
+import { execSync } from "node:child_process";
 import {
 	existsSync,
 	mkdtempSync,
@@ -38,13 +39,21 @@ function getTextOutput(result: AgentToolResult<unknown>): string {
 
 describe("edit tool", () => {
 	let testDir: string;
+	let originalMaestroHome: string | undefined;
 
 	beforeEach(() => {
 		testDir = mkdtempSync(join(tmpdir(), "edit-tool-test-"));
+		originalMaestroHome = process.env.MAESTRO_HOME;
+		process.env.MAESTRO_HOME = join(testDir, ".maestro-home");
 		vi.clearAllMocks();
 	});
 
 	afterEach(() => {
+		if (originalMaestroHome === undefined) {
+			Reflect.deleteProperty(process.env, "MAESTRO_HOME");
+		} else {
+			process.env.MAESTRO_HOME = originalMaestroHome;
+		}
 		rmSync(testDir, { recursive: true, force: true });
 	});
 
@@ -255,6 +264,37 @@ describe("edit tool", () => {
 					occurrence: 2,
 				}),
 			).rejects.toThrow("Cannot use both");
+		});
+	});
+
+	describe("team memory protection", () => {
+		it("blocks editing repo-scoped team memory to include secrets", async () => {
+			execSync("git init -q", { cwd: testDir, stdio: "ignore" });
+			const originalCwd = process.cwd();
+			process.chdir(testDir);
+			const githubToken = `ghp_${"a".repeat(36)}`;
+
+			try {
+				const { ensureTeamMemoryEntrypoint } = await import(
+					"../../src/memory/team-memory.js"
+				);
+				const location = ensureTeamMemoryEntrypoint(testDir)!;
+				writeFileSync(
+					location.entrypoint,
+					"# Team Memory\n\nsafe content",
+					"utf-8",
+				);
+
+				await expect(
+					editTool.execute("edit-team-memory-secret", {
+						path: location.entrypoint,
+						oldText: "safe content",
+						newText: `GitHub token ${githubToken}`,
+					}),
+				).rejects.toThrow("Team memory files cannot store secrets");
+			} finally {
+				process.chdir(originalCwd);
+			}
 		});
 	});
 
