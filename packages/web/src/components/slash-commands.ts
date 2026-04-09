@@ -60,7 +60,7 @@ const BUILTIN_WEB_SLASH_COMMANDS: Array<Omit<WebSlashCommand, "source">> = [
 		name: "memory",
 		description: "Search and manage cross-session memory",
 		usage:
-			"/memory [save <topic> <content>|search <query> [--session]|list [topic] [--session]|recent [N] [--session]|stats [--session]|delete <id|topic>|export [path]|import <path>|clear --force]",
+			"/memory [save <topic> <content>|search <query> [--session]|list [topic] [--session]|recent [N] [--session]|stats [--session]|team [status|path|init]|delete <id|topic>|export [path]|import <path>|clear --force]",
 		tags: ["memory", "session"],
 	},
 	{

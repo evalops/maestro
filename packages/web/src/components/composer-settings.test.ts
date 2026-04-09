@@ -84,6 +84,19 @@ function createApiClientMock(): ApiClient {
 				newestEntry: Date.now(),
 			},
 		}),
+		getTeamMemoryStatus: vi.fn().mockResolvedValue({
+			available: true,
+			status: {
+				gitRoot: "/repo",
+				projectId: "proj123",
+				projectName: "maestro",
+				directory: "/repo/.maestro/team-memory",
+				entrypoint: "/repo/.maestro/team-memory/MEMORY.md",
+				exists: false,
+				fileCount: 0,
+				files: [],
+			},
+		}),
 		saveMemory: vi.fn().mockResolvedValue({
 			success: true,
 			message: 'Memory saved to topic "api-design"',
@@ -104,6 +117,20 @@ function createApiClientMock(): ApiClient {
 			success: true,
 			message: "Cleared 2 memories",
 			count: 2,
+		}),
+		initTeamMemory: vi.fn().mockResolvedValue({
+			success: true,
+			message: "Team memory ready at /repo/.maestro/team-memory/MEMORY.md",
+			status: {
+				gitRoot: "/repo",
+				projectId: "proj123",
+				projectName: "maestro",
+				directory: "/repo/.maestro/team-memory",
+				entrypoint: "/repo/.maestro/team-memory/MEMORY.md",
+				exists: true,
+				fileCount: 1,
+				files: ["MEMORY.md"],
+			},
 		}),
 		exportMemory: vi.fn(),
 		importMemory: vi.fn(),
@@ -840,6 +867,36 @@ describe("ComposerSettings MCP section", () => {
 		);
 
 		expect(apiClient.getRecentMemories).toHaveBeenLastCalledWith(12, undefined);
+	});
+
+	it("shows and initializes repo-scoped team memory from settings", async () => {
+		const apiClient = createApiClientMock();
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			(element.shadowRoot?.textContent ?? "").includes("Team memory"),
+		);
+
+		expect(element.shadowRoot?.textContent ?? "").toContain("not initialized");
+
+		const initButton = element.shadowRoot?.querySelector(
+			'button[aria-label="Initialize team memory"]',
+		) as HTMLButtonElement | null;
+		expect(initButton).not.toBeNull();
+		initButton?.click();
+
+		await waitForSettled(
+			element,
+			() =>
+				(apiClient.initTeamMemory as ReturnType<typeof vi.fn>).mock.calls
+					.length > 0,
+			30,
+		);
+
+		expect(apiClient.initTeamMemory).toHaveBeenCalledTimes(1);
+		expect(element.shadowRoot?.textContent ?? "").toContain(
+			"Team memory ready at /repo/.maestro/team-memory/MEMORY.md",
+		);
 	});
 
 	it("validates required structured MCP prompt arguments before running", async () => {

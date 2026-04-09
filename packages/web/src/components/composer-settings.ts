@@ -49,6 +49,7 @@ import type {
 	PackageScope,
 	PackageSearchResponse,
 	PackageStatusResponse,
+	TeamMemoryStatus,
 	UsageSummary,
 	WorkspaceStatus,
 } from "../services/api-client.js";
@@ -58,7 +59,14 @@ type MemoryView =
 	| { kind: "topic"; topic: string }
 	| { kind: "search"; query: string };
 
-type MemoryAction = "clear" | "delete" | "load" | "save" | "search" | null;
+type MemoryAction =
+	| "clear"
+	| "delete"
+	| "load"
+	| "save"
+	| "search"
+	| "team-init"
+	| null;
 
 const EMPTY_MEMORY_STATS: MemoryStats = {
 	totalEntries: 0,
@@ -609,6 +617,8 @@ export class ComposerSettings extends LitElement {
 	@state() private memoryPendingAction: MemoryAction = null;
 	@state() private memoryError: string | null = null;
 	@state() private memoryNotice: string | null = null;
+	@state() private teamMemoryAvailable = false;
+	@state() private teamMemoryStatus: TeamMemoryStatus | null = null;
 	@state() private selectedTab: "workspace" | "models" | "usage" = "workspace";
 
 	override async connectedCallback() {
@@ -659,6 +669,7 @@ export class ComposerSettings extends LitElement {
 				memoryTopicsResult,
 				memoryStatsResult,
 				memoryRecentResult,
+				teamMemoryStatusResult,
 			] = await Promise.allSettled([
 				this.apiClient.getMcpStatus(),
 				this.apiClient.getPackageStatus(),
@@ -667,6 +678,7 @@ export class ComposerSettings extends LitElement {
 				this.apiClient.listMemoryTopics(this.activeMemorySessionId),
 				this.apiClient.getMemoryStats(this.activeMemorySessionId),
 				this.apiClient.getRecentMemories(12, this.activeMemorySessionId),
+				this.apiClient.getTeamMemoryStatus(),
 			]);
 
 			if (mcpStatusResult.status === "fulfilled") {
@@ -726,6 +738,14 @@ export class ComposerSettings extends LitElement {
 					firstError.reason instanceof Error
 						? firstError.reason.message
 						: "Failed to load memory";
+			}
+
+			if (teamMemoryStatusResult.status === "fulfilled") {
+				this.teamMemoryAvailable = teamMemoryStatusResult.value.available;
+				this.teamMemoryStatus = teamMemoryStatusResult.value.status;
+			} else {
+				this.teamMemoryAvailable = false;
+				this.teamMemoryStatus = null;
 			}
 		} catch (e) {
 			this.error = e instanceof Error ? e.message : "Failed to load settings";
@@ -1701,6 +1721,12 @@ export class ComposerSettings extends LitElement {
 		this.memoryStats = statsResponse.stats ?? EMPTY_MEMORY_STATS;
 	}
 
+	private async refreshTeamMemoryStatus() {
+		const response = await this.apiClient.getTeamMemoryStatus();
+		this.teamMemoryAvailable = response.available;
+		this.teamMemoryStatus = response.status;
+	}
+
 	private async loadMemoryView(view: MemoryView) {
 		if (view.kind === "topic") {
 			const response = await this.apiClient.listMemoryTopic(
@@ -1732,6 +1758,7 @@ export class ComposerSettings extends LitElement {
 		try {
 			await this.refreshMemorySummary();
 			await this.loadMemoryView(this.memoryActiveView);
+			await this.refreshTeamMemoryStatus();
 		} catch (error) {
 			this.memoryError =
 				error instanceof Error ? error.message : "Failed to load memory";
@@ -1835,6 +1862,14 @@ export class ComposerSettings extends LitElement {
 			this.memoryActiveView = { kind: "recent" };
 			this.memoryEntries = [];
 			await this.refreshMemorySummary();
+		});
+	}
+
+	private async initTeamMemoryEntrypoint() {
+		await this.runMemoryAction("team-init", async () => {
+			const result = await this.apiClient.initTeamMemory();
+			this.memoryNotice = result.message || "Team memory initialized.";
+			await this.refreshTeamMemoryStatus();
 		});
 	}
 
@@ -2384,6 +2419,64 @@ export class ComposerSettings extends LitElement {
 							? html`<div class="panel-feedback success">${this.memoryNotice}</div>`
 							: ""
 					}
+					<div class="panel-card">
+						<div class="panel-card-header">
+							<div>
+								<div class="panel-card-title">Team memory</div>
+								<div class="panel-card-copy">
+									Repo-scoped durable notes loaded into prompt context.
+								</div>
+							</div>
+							${
+								this.teamMemoryAvailable &&
+								this.teamMemoryStatus &&
+								!this.teamMemoryStatus.exists
+									? html`
+										<button
+											class="action-btn"
+											aria-label=${"Initialize team memory"}
+											@click=${() => void this.initTeamMemoryEntrypoint()}
+											?disabled=${this.memoryLoading}
+										>
+											${
+												this.memoryPendingAction === "team-init"
+													? "Initializing..."
+													: "Initialize"
+											}
+										</button>
+									`
+									: ""
+							}
+						</div>
+						${
+							!this.teamMemoryAvailable || !this.teamMemoryStatus
+								? html`<div class="panel-card-copy">
+									Team memory is only available inside a git repository.
+								</div>`
+								: html`
+									<div class="panel-card-copy">
+										Repo: ${this.teamMemoryStatus.projectName}<br />
+										Entrypoint: ${this.teamMemoryStatus.entrypoint}<br />
+										Status:
+										${
+											this.teamMemoryStatus.exists
+												? "initialized"
+												: "not initialized"
+										}<br />
+										Files: ${this.teamMemoryStatus.fileCount}
+									</div>
+									${
+										this.teamMemoryStatus.files.length > 0
+											? html`<div class="panel-card-copy">
+												Files: ${this.teamMemoryStatus.files
+													.slice(0, 4)
+													.join(", ")}
+											</div>`
+											: ""
+									}
+								`
+						}
+					</div>
 					<div class="panel-grid">
 						<div class="panel-card">
 							<div class="panel-card-title">Save memory</div>

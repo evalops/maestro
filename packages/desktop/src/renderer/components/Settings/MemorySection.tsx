@@ -14,6 +14,9 @@ import type {
 	MemoryTopicResponse,
 	MemoryTopicSummary,
 	MemoryTopicsResponse,
+	TeamMemoryMutationResponse,
+	TeamMemoryStatus,
+	TeamMemoryStatusResponse,
 } from "../../lib/api-client";
 
 type MemoryView =
@@ -38,6 +41,8 @@ export interface MemorySectionProps {
 		sessionId?: string,
 	) => Promise<MemoryRecentResponse>;
 	onGetMemoryStats: (sessionId?: string) => Promise<MemoryStatsResponse>;
+	onGetTeamMemoryStatus: () => Promise<TeamMemoryStatusResponse>;
+	onInitTeamMemory: () => Promise<TeamMemoryMutationResponse>;
 	onSaveMemory: (
 		topic: string,
 		content: string,
@@ -76,6 +81,8 @@ export function MemorySection({
 	onSearchMemory,
 	onGetRecentMemories,
 	onGetMemoryStats,
+	onGetTeamMemoryStatus,
+	onInitTeamMemory,
 	onSaveMemory,
 	onDeleteMemory,
 	onClearMemory,
@@ -89,6 +96,9 @@ export function MemorySection({
 	const [saveContent, setSaveContent] = useState("");
 	const [clearConfirmed, setClearConfirmed] = useState(false);
 	const [sessionOnly, setSessionOnly] = useState(Boolean(sessionId));
+	const [teamMemoryAvailable, setTeamMemoryAvailable] = useState(false);
+	const [teamMemoryStatus, setTeamMemoryStatus] =
+		useState<TeamMemoryStatus | null>(null);
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -111,6 +121,12 @@ export function MemorySection({
 		setTopics(topicsResponse.topics ?? []);
 		setStats(statsResponse.stats ?? EMPTY_STATS);
 	}, [activeSessionId, onGetMemoryStats, onListMemoryTopics]);
+
+	const refreshTeamMemoryStatus = useCallback(async () => {
+		const response = await onGetTeamMemoryStatus();
+		setTeamMemoryAvailable(response.available);
+		setTeamMemoryStatus(response.status);
+	}, [onGetTeamMemoryStatus]);
 
 	const loadView = useCallback(
 		async (view: MemoryView) => {
@@ -156,16 +172,19 @@ export function MemorySection({
 			setLoading(true);
 			setError(null);
 			try {
-				const [topicsResponse, statsResponse, recentResponse] =
+				const [topicsResponse, statsResponse, recentResponse, teamResponse] =
 					await Promise.all([
 						onListMemoryTopics(activeSessionId),
 						onGetMemoryStats(activeSessionId),
 						onGetRecentMemories(12, activeSessionId),
+						onGetTeamMemoryStatus(),
 					]);
 				if (!active) return;
 				setTopics(topicsResponse.topics ?? []);
 				setStats(statsResponse.stats ?? EMPTY_STATS);
 				setEntries(recentResponse.memories ?? []);
+				setTeamMemoryAvailable(teamResponse.available);
+				setTeamMemoryStatus(teamResponse.status);
 			} catch (err) {
 				if (!active) return;
 				setError(err instanceof Error ? err.message : "Failed to load memory");
@@ -185,6 +204,7 @@ export function MemorySection({
 		activeSessionId,
 		onGetMemoryStats,
 		onGetRecentMemories,
+		onGetTeamMemoryStatus,
 		onListMemoryTopics,
 	]);
 
@@ -285,6 +305,14 @@ export function MemorySection({
 		});
 	}, [clearConfirmed, onClearMemory, refreshSummary, runAction]);
 
+	const handleInitTeamMemory = useCallback(async () => {
+		await runAction(async () => {
+			const result = await onInitTeamMemory();
+			setStatusMessage(result.message || "Team memory initialized.");
+			await refreshTeamMemoryStatus();
+		});
+	}, [onInitTeamMemory, refreshTeamMemoryStatus, runAction]);
+
 	const viewLabel = useMemo(() => getViewLabel(activeView), [activeView]);
 
 	return (
@@ -333,6 +361,54 @@ export function MemorySection({
 						{statusMessage}
 					</div>
 				)}
+
+				<div className="border border-line-subtle rounded-lg px-3 py-3 bg-bg-tertiary/30 space-y-2">
+					<div className="flex items-start justify-between gap-3">
+						<div>
+							<div className="text-xs font-semibold text-text-tertiary uppercase tracking-wide">
+								Team memory
+							</div>
+							<div className="text-[11px] text-text-muted">
+								Repo-scoped durable notes loaded into prompt context.
+							</div>
+						</div>
+						{teamMemoryAvailable &&
+							teamMemoryStatus &&
+							!teamMemoryStatus.exists && (
+								<button
+									type="button"
+									aria-label="Initialize team memory"
+									className="px-2 py-1 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-50"
+									onClick={handleInitTeamMemory}
+									disabled={loading}
+								>
+									Initialize
+								</button>
+							)}
+					</div>
+					{!teamMemoryAvailable || !teamMemoryStatus ? (
+						<div className="text-xs text-text-muted">
+							Team memory is only available inside a git repository.
+						</div>
+					) : (
+						<>
+							<div className="text-xs text-text-secondary">
+								<div>Repo: {teamMemoryStatus.projectName}</div>
+								<div>Entrypoint: {teamMemoryStatus.entrypoint}</div>
+								<div>
+									Status:{" "}
+									{teamMemoryStatus.exists ? "initialized" : "not initialized"}
+								</div>
+								<div>Files: {teamMemoryStatus.fileCount}</div>
+							</div>
+							{teamMemoryStatus.files.length > 0 && (
+								<div className="text-[11px] text-text-muted">
+									Files: {teamMemoryStatus.files.slice(0, 4).join(", ")}
+								</div>
+							)}
+						</>
+					)}
+				</div>
 
 				<div className="grid grid-cols-[220px,minmax(0,1fr)] gap-4">
 					<div className="space-y-4">

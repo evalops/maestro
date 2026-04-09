@@ -27,6 +27,7 @@ import type {
 	PackageScope,
 	PackageSearchResponse,
 	PackageStatusResponse,
+	TeamMemoryStatusResponse,
 } from "../services/api-client.js";
 import {
 	WEB_SLASH_COMMANDS,
@@ -49,6 +50,7 @@ type WebSlashCommandApiClient = Pick<
 	| "getDiagnostics"
 	| "getFiles"
 	| "getMemoryStats"
+	| "getTeamMemoryStatus"
 	| "getMcpStatus"
 	| "getMcpPrompt"
 	| "getPackageStatus"
@@ -62,6 +64,7 @@ type WebSlashCommandApiClient = Pick<
 	| "getRunScripts"
 	| "importMcpRegistry"
 	| "importMemory"
+	| "initTeamMemory"
 	| "addMcpServer"
 	| "addMcpAuthPreset"
 	| "addPackage"
@@ -132,7 +135,7 @@ const PACKAGE_PRUNE_USAGE = "/package prune-cache";
 const PACKAGE_REFRESH_USAGE = "/package refresh [<source>|--all]";
 const PACKAGE_INSPECT_USAGE = "/package [inspect|validate] <source>";
 const MEMORY_USAGE =
-	"/memory [save <topic> <content>|search <query> [--session]|list [topic] [--session]|recent [N] [--session]|stats [--session]|delete <id|topic>|export [path]|import <path>|clear --force]";
+	"/memory [save <topic> <content>|search <query> [--session]|list [topic] [--session]|recent [N] [--session]|stats [--session]|team [status|path|init]|delete <id|topic>|export [path]|import <path>|clear --force]";
 
 type MemoryEntry = {
 	id: string;
@@ -397,6 +400,37 @@ function formatMemoryStatsBlock(result: Record<string, unknown>): string {
 	if (typeof stats.newestEntry === "number") {
 		lines.push(`  Newest: ${formatMemoryRelativeTime(stats.newestEntry)}`);
 	}
+	return lines.join("\n");
+}
+
+function formatTeamMemoryStatusBlock(result: TeamMemoryStatusResponse): string {
+	if (!result.available || !result.status) {
+		return "Team memory is only available inside a git repository.";
+	}
+
+	const { status } = result;
+	const lines = [
+		"Team Memory",
+		"",
+		`  Repo: ${status.projectName}`,
+		`  Path: ${status.directory}`,
+		`  Entrypoint: ${status.entrypoint}`,
+		`  Status: ${status.exists ? "initialized" : "not initialized"}`,
+		`  Files: ${status.fileCount}`,
+	];
+
+	if (status.files.length > 0) {
+		lines.push("", "Files");
+		for (const relativePath of status.files.slice(0, 12)) {
+			lines.push(`  • ${relativePath}`);
+		}
+		if (status.files.length > 12) {
+			lines.push(`  ... and ${status.files.length - 12} more`);
+		}
+	} else {
+		lines.push("", "Run /memory team init to create MEMORY.md.");
+	}
+
 	return lines.join("\n");
 }
 
@@ -2267,6 +2301,7 @@ export async function executeWebSlashCommand(
 								"/memory list [topic] [--session]",
 								"/memory recent [N] [--session]",
 								"/memory stats [--session]",
+								"/memory team [status|path|init]",
 								"/memory delete <id|topic>",
 								"/memory export [path]",
 								"/memory import <path>",
@@ -2355,6 +2390,46 @@ export async function executeWebSlashCommand(
 						await context.apiClient.getMemoryStats(memorySessionId);
 					context.appendCommandOutput(
 						formatCommandCodeBlock(formatMemoryStatsBlock(result)),
+					);
+					break;
+				}
+
+				if (sub === "team") {
+					const action = scopedTokens[1]?.toLowerCase() ?? "status";
+					if (action === "init" || action === "create") {
+						if (!requireWritableSession("Team memory init")) break;
+						const result = await context.apiClient.initTeamMemory();
+						context.appendCommandOutput(
+							formatMemoryMutationMessage(
+								result,
+								result.message || "Team memory initialized.",
+							),
+						);
+						break;
+					}
+
+					const result = await context.apiClient.getTeamMemoryStatus();
+					if (action === "path") {
+						context.appendCommandOutput(
+							result.available && result.status
+								? `Team memory entrypoint: ${result.status.entrypoint}`
+								: "Team memory is only available inside a git repository.",
+							!result.available,
+						);
+						break;
+					}
+
+					if (action !== "status" && action !== "list") {
+						context.appendCommandOutput(
+							"Usage: /memory team [status|path|init]",
+							true,
+						);
+						break;
+					}
+
+					context.appendCommandOutput(
+						formatCommandCodeBlock(formatTeamMemoryStatusBlock(result)),
+						!result.available,
 					);
 					break;
 				}

@@ -61,3 +61,25 @@ export interface MemoryMutationResponse {
 		skipped: number;
 	};
 }
+
+export interface TeamMemoryStatus {
+	gitRoot: string;
+	projectId: string;
+	projectName: string;
+	directory: string;
+	entrypoint: string;
+	exists: boolean;
+	fileCount: number;
+	files: string[];
+}
+
+export interface TeamMemoryStatusResponse {
+	available: boolean;
+	status: TeamMemoryStatus | null;
+}
+
+export interface TeamMemoryMutationResponse {
+	success: boolean;
+	message: string;
+	status: TeamMemoryStatus;
+}

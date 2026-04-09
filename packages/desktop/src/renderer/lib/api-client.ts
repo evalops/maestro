@@ -17,6 +17,9 @@ import type {
 	MemoryTopicResponse,
 	MemoryTopicSummary,
 	MemoryTopicsResponse,
+	TeamMemoryMutationResponse,
+	TeamMemoryStatus,
+	TeamMemoryStatusResponse,
 } from "@evalops/contracts";
 import type {
 	AgentEvent,
@@ -564,6 +567,9 @@ export type {
 	MemoryTopicResponse,
 	MemoryTopicSummary,
 	MemoryTopicsResponse,
+	TeamMemoryMutationResponse,
+	TeamMemoryStatus,
+	TeamMemoryStatusResponse,
 };
 
 export interface AutomationCreateInput {
@@ -1274,6 +1280,12 @@ export class ApiClient {
 		);
 	}
 
+	async getTeamMemoryStatus(): Promise<TeamMemoryStatusResponse> {
+		return await this.fetchJson<TeamMemoryStatusResponse>(
+			"/api/memory?action=team",
+		);
+	}
+
 	async saveMemory(
 		topic: string,
 		content: string,
@@ -1337,6 +1349,16 @@ export class ApiClient {
 			{
 				action: "clear",
 				force,
+			},
+		);
+	}
+
+	async initTeamMemory(): Promise<TeamMemoryMutationResponse> {
+		return await this.fetchJsonRequest<TeamMemoryMutationResponse>(
+			"/api/memory",
+			"POST",
+			{
+				action: "team-init",
 			},
 		);
 	}
