@@ -83,6 +83,17 @@ describe("Built-in model registry", () => {
 		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/chat/completions");
 	});
 
+	it("includes EvalOps managed Fireworks models normalized to the gateway endpoint", () => {
+		const model = getModel(
+			"evalops-fireworks",
+			"accounts/fireworks/models/llama-v3p1-70b-instruct",
+		);
+		expect(model).toBeTruthy();
+		expect(model?.provider).toBe("evalops-fireworks");
+		expect(model?.api).toBe("openai-completions");
+		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/chat/completions");
+	});
+
 	it("includes EvalOps managed Google models normalized to the gateway endpoint", () => {
 		const model = getModel("evalops-google", "gemini-2.5-pro");
 		expect(model).toBeTruthy();

@@ -223,6 +223,47 @@ describe("handleConfigInit", () => {
 		);
 	});
 
+	it("writes managed fireworks config with the gateway preset", async () => {
+		process.argv = [
+			"node",
+			"maestro",
+			"config",
+			"init",
+			"--preset",
+			"evalops-fireworks",
+		];
+		process.env.MAESTRO_LLM_GATEWAY_URL = "http://gateway.example/v1";
+		answers.splice(0, answers.length, "n");
+
+		const { handleConfigInit } = await import(
+			"../../src/cli/commands/config.js"
+		);
+		await handleConfigInit();
+
+		const config = JSON.parse(
+			readFileSync(join(tempDir, ".maestro", "config.json"), "utf8"),
+		) as {
+			providers: Array<{
+				id: string;
+				baseUrl: string;
+				api: string;
+				models: Array<{ id: string }>;
+			}>;
+		};
+		const provider = config.providers[0];
+		expect(provider).toMatchObject({
+			id: "evalops-fireworks",
+			baseUrl: "http://gateway.example/v1",
+			api: "openai-completions",
+		});
+		expect(provider?.models[0]?.id).toBe(
+			"accounts/fireworks/models/llama-v3p1-70b-instruct",
+		);
+		expect(output.join("\n")).toContain(
+			"Managed gateway preset does not use a local API key",
+		);
+	});
+
 	it("writes managed google config with the gateway preset", async () => {
 		process.argv = [
 			"node",

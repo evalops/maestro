@@ -527,6 +527,51 @@ const DATABRICKS_OVERLAY = {
 	},
 } satisfies Record<string, Record<string, Model<Api>>>;
 
+// Manual overlay for direct Fireworks models (OpenAI-compatible API).
+const FIREWORKS_OVERLAY = {
+	fireworks: {
+		"accounts/fireworks/models/llama-v3p1-8b-instruct": {
+			id: "accounts/fireworks/models/llama-v3p1-8b-instruct",
+			name: "Fireworks Llama 3.1 8B Instruct",
+			api: "openai-completions",
+			provider: "fireworks",
+			baseUrl: "https://api.fireworks.ai/inference/v1",
+			reasoning: false,
+			toolUse: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128000,
+			maxTokens: 8192,
+		} as Model<"openai-completions">,
+		"accounts/fireworks/models/llama-v3p1-70b-instruct": {
+			id: "accounts/fireworks/models/llama-v3p1-70b-instruct",
+			name: "Fireworks Llama 3.1 70B Instruct",
+			api: "openai-completions",
+			provider: "fireworks",
+			baseUrl: "https://api.fireworks.ai/inference/v1",
+			reasoning: false,
+			toolUse: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128000,
+			maxTokens: 8192,
+		} as Model<"openai-completions">,
+		"accounts/fireworks/models/llama-v3p1-405b-instruct": {
+			id: "accounts/fireworks/models/llama-v3p1-405b-instruct",
+			name: "Fireworks Llama 3.1 405B Instruct",
+			api: "openai-completions",
+			provider: "fireworks",
+			baseUrl: "https://api.fireworks.ai/inference/v1",
+			reasoning: false,
+			toolUse: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128000,
+			maxTokens: 8192,
+		} as Model<"openai-completions">,
+	},
+} satisfies Record<string, Record<string, Model<Api>>>;
+
 const GITHUB_COPILOT_HEADERS = {
 	"User-Agent": "GitHubCopilotChat/0.35.0",
 	"Editor-Version": "vscode/1.107.0",
@@ -1466,6 +1511,7 @@ function convertGeneratedModels(): Record<string, Model<Api>[]> {
 		COHERE_OVERLAY,
 		XAI_OVERLAY,
 		DATABRICKS_OVERLAY,
+		FIREWORKS_OVERLAY,
 		GITHUB_COPILOT_OVERLAY,
 		GOOGLE_GEMINI_CLI_OVERLAY,
 		GOOGLE_ANTIGRAVITY_OVERLAY,
