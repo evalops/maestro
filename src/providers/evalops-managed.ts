@@ -45,6 +45,16 @@ export const EVALOPS_MANAGED_PROVIDER_DEFINITIONS: readonly EvalOpsManagedProvid
 			usesAnthropicOAuth: true,
 		},
 		{
+			allowedModelApis: ["openai-completions"],
+			api: "openai-completions",
+			defaultModel: "accounts/fireworks/models/llama-v3p1-70b-instruct",
+			id: "evalops-fireworks",
+			name: "EvalOps Managed Gateway (Fireworks)",
+			note: "Requires /login evalops and routes managed Fireworks chat completions through the gateway",
+			providerRefProvider: "fireworks",
+			sourceProvider: "fireworks",
+		},
+		{
 			allowedModelApis: ["google-generative-ai"],
 			api: "openai-completions",
 			defaultModel: "gemini-2.5-pro",
