@@ -188,6 +188,8 @@ Current managed provider aliases:
   - Groq chat-completions compatibility through the gateway
 - `evalops-perplexity`
   - Perplexity chat-completions compatibility through the gateway
+- `evalops-together`
+  - Together chat-completions compatibility through the gateway
 - `evalops-mistral`
   - Mistral chat-completions compatibility through the gateway
 - `evalops-xai`

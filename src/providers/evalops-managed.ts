@@ -108,6 +108,16 @@ export const EVALOPS_MANAGED_PROVIDER_DEFINITIONS: readonly EvalOpsManagedProvid
 		{
 			allowedModelApis: ["openai-completions"],
 			api: "openai-completions",
+			defaultModel: "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
+			id: "evalops-together",
+			name: "EvalOps Managed Gateway (Together)",
+			note: "Requires /login evalops and routes managed Together chat completions through the gateway",
+			providerRefProvider: "together",
+			sourceProvider: "together",
+		},
+		{
+			allowedModelApis: ["openai-completions"],
+			api: "openai-completions",
 			defaultModel: "mistral-large-latest",
 			id: "evalops-mistral",
 			name: "EvalOps Managed Gateway (Mistral)",
