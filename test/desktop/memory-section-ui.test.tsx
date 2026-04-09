@@ -78,6 +78,33 @@ function createProps(
 				newestEntry: now,
 			},
 		}),
+		onGetTeamMemoryStatus: vi.fn().mockResolvedValue({
+			available: true,
+			status: {
+				gitRoot: "/repo",
+				projectId: "proj123",
+				projectName: "maestro",
+				directory: "/repo/.maestro/team-memory",
+				entrypoint: "/repo/.maestro/team-memory/MEMORY.md",
+				exists: false,
+				fileCount: 0,
+				files: [],
+			},
+		}),
+		onInitTeamMemory: vi.fn().mockResolvedValue({
+			success: true,
+			message: "Team memory ready at /repo/.maestro/team-memory/MEMORY.md",
+			status: {
+				gitRoot: "/repo",
+				projectId: "proj123",
+				projectName: "maestro",
+				directory: "/repo/.maestro/team-memory",
+				entrypoint: "/repo/.maestro/team-memory/MEMORY.md",
+				exists: true,
+				fileCount: 1,
+				files: ["MEMORY.md"],
+			},
+		}),
 		onSaveMemory: vi.fn().mockResolvedValue({
 			success: true,
 			message: 'Memory saved to topic "api-design"',
@@ -160,6 +187,29 @@ describe("MemorySection UI", () => {
 			undefined,
 		);
 		expect(container.textContent ?? "").toContain("Topic-specific memory");
+	});
+
+	it("shows and initializes repo-scoped team memory", async () => {
+		const { props, container } = await renderSection();
+
+		expect(props.onGetTeamMemoryStatus).toHaveBeenCalledOnce();
+		expect(container.textContent ?? "").toContain("Team memory");
+		expect(container.textContent ?? "").toContain("not initialized");
+
+		const initButton = container.querySelector(
+			'button[aria-label="Initialize team memory"]',
+		) as HTMLButtonElement | null;
+		expect(initButton).not.toBeNull();
+
+		await act(async () => {
+			initButton?.click();
+			await flushAsyncWork(4);
+		});
+
+		expect(props.onInitTeamMemory).toHaveBeenCalledTimes(1);
+		expect(container.textContent ?? "").toContain(
+			"Team memory ready at /repo/.maestro/team-memory/MEMORY.md",
+		);
 	});
 
 	it("saves tagged memories and deletes entries from the current view", async () => {

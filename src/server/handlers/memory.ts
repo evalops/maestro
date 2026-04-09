@@ -7,9 +7,11 @@ import {
 	clearAllMemories,
 	deleteMemory,
 	deleteTopicMemories,
+	ensureTeamMemoryEntrypoint,
 	exportMemories,
 	getRecentMemories,
 	getStats,
+	getTeamMemoryStatus,
 	getTopicMemories,
 	importMemories,
 	listTopics,
@@ -61,11 +63,24 @@ export async function handleMemory(
 			} else if (action === "stats") {
 				const stats = getStats({ sessionId });
 				sendJson(res, 200, { stats }, corsHeaders);
+			} else if (action === "team") {
+				const status = getTeamMemoryStatus(process.cwd());
+				sendJson(
+					res,
+					200,
+					{
+						available: status !== null,
+						status,
+					},
+					corsHeaders,
+				);
 			} else {
 				sendJson(
 					res,
 					400,
-					{ error: "Invalid action. Use list, search, recent, or stats." },
+					{
+						error: "Invalid action. Use list, search, recent, stats, or team.",
+					},
 					corsHeaders,
 				);
 			}
@@ -227,13 +242,39 @@ export async function handleMemory(
 					},
 					corsHeaders,
 				);
+			} else if (action === "team-init") {
+				const status = ensureTeamMemoryEntrypoint(process.cwd());
+				if (!status) {
+					sendJson(
+						res,
+						400,
+						{ error: "Team memory is only available inside a git repository." },
+						corsHeaders,
+					);
+					return;
+				}
+				sendJson(
+					res,
+					200,
+					{
+						success: true,
+						message: `Team memory ready at ${status.entrypoint}`,
+						status: getTeamMemoryStatus(process.cwd()) ?? {
+							...status,
+							exists: true,
+							fileCount: 1,
+							files: ["MEMORY.md"],
+						},
+					},
+					corsHeaders,
+				);
 			} else {
 				sendJson(
 					res,
 					400,
 					{
 						error:
-							"Invalid action. Use save, delete, export, import, or clear.",
+							"Invalid action. Use save, delete, export, import, clear, or team-init.",
 					},
 					corsHeaders,
 				);

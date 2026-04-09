@@ -139,6 +139,55 @@ describe("desktop api client", () => {
 		expect(headers.get("x-maestro-csrf")).toBe("maestro-desktop-csrf");
 	});
 
+	it("loads repo-scoped team memory status", async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			makeJsonResponse({
+				available: true,
+				status: {
+					gitRoot: "/repo",
+					projectId: "proj123",
+					projectName: "maestro",
+					directory: "/repo/.maestro/team-memory",
+					entrypoint: "/repo/.maestro/team-memory/MEMORY.md",
+					exists: true,
+					fileCount: 1,
+					files: ["MEMORY.md"],
+				},
+			}),
+		);
+		global.fetch = fetchMock;
+
+		const client = new ApiClient("http://localhost:8080");
+		await client.getTeamMemoryStatus();
+
+		expect(fetchMock.mock.calls[0]?.[0]).toBe(
+			"http://localhost:8080/api/memory?action=team",
+		);
+	});
+
+	it("posts team memory initialization requests with csrf headers", async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			makeJsonResponse({
+				success: true,
+				message: "Team memory ready at /repo/.maestro/team-memory/MEMORY.md",
+			}),
+		);
+		global.fetch = fetchMock;
+
+		const client = new ApiClient("http://localhost:8080");
+		await client.initTeamMemory();
+
+		expect(fetchMock.mock.calls[0]?.[0]).toBe(
+			"http://localhost:8080/api/memory",
+		);
+		const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+		expect(init.method).toBe("POST");
+		expect(init.body).toBe(JSON.stringify({ action: "team-init" }));
+		const headers = new Headers(init.headers);
+		expect(headers.get("x-composer-csrf")).toBe("maestro-desktop-csrf");
+		expect(headers.get("x-maestro-csrf")).toBe("maestro-desktop-csrf");
+	});
+
 	it("loads the Magic Docs automation template", async () => {
 		const fetchMock = vi.fn().mockResolvedValue(
 			makeJsonResponse({

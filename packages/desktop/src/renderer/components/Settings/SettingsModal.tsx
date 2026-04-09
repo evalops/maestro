@@ -612,6 +612,14 @@ export function SettingsModal({
 		return await apiClient.getMemoryStats(targetSessionId);
 	}, []);
 
+	const getTeamMemoryStatus = useCallback(async () => {
+		return await apiClient.getTeamMemoryStatus();
+	}, []);
+
+	const initTeamMemory = useCallback(async () => {
+		return await apiClient.initTeamMemory();
+	}, []);
+
 	const saveMemory = useCallback(
 		async (
 			topic: string,
@@ -1033,6 +1041,8 @@ export function SettingsModal({
 						onSearchMemory={searchMemory}
 						onGetRecentMemories={getRecentMemories}
 						onGetMemoryStats={getMemoryStats}
+						onGetTeamMemoryStatus={getTeamMemoryStatus}
+						onInitTeamMemory={initTeamMemory}
 						onSaveMemory={saveMemory}
 						onDeleteMemory={deleteMemory}
 						onClearMemory={clearMemory}

@@ -28,6 +28,7 @@ function createContext(overrides: Partial<WebSlashCommandContext> = {}) {
 		getDiagnostics: vi.fn(),
 		getFiles: vi.fn(),
 		getMemoryStats: vi.fn(),
+		getTeamMemoryStatus: vi.fn(),
 		getMcpStatus: vi.fn(),
 		getMcpPrompt: vi.fn(),
 		getPackageStatus: vi.fn(),
@@ -40,6 +41,7 @@ function createContext(overrides: Partial<WebSlashCommandContext> = {}) {
 		getRunScripts: vi.fn(),
 		importMcpRegistry: vi.fn(),
 		importMemory: vi.fn(),
+		initTeamMemory: vi.fn(),
 		getStats: vi.fn(),
 		getStatus: vi.fn(),
 		getTelemetryStatus: vi.fn(),
@@ -548,6 +550,65 @@ describe("executeWebSlashCommand", () => {
 		]);
 		expect(outputs[0]?.output).toContain("api-design");
 		expect(outputs[0]?.output).toContain("Use REST conventions");
+	});
+
+	it("shows repo-scoped team memory status from the web slash command", async () => {
+		const { context, outputs, apiClient } = createContext();
+		apiClient.getTeamMemoryStatus.mockResolvedValue({
+			available: true,
+			status: {
+				gitRoot: "/repo",
+				projectId: "proj123",
+				projectName: "maestro",
+				directory: "/repo/.maestro/team-memory",
+				entrypoint: "/repo/.maestro/team-memory/MEMORY.md",
+				exists: true,
+				fileCount: 2,
+				files: ["MEMORY.md", "deploy.md"],
+			},
+		});
+
+		await executeWebSlashCommand("memory", "team", context);
+
+		expect(apiClient.getTeamMemoryStatus).toHaveBeenCalledTimes(1);
+		expect(outputs).toEqual([
+			expect.objectContaining({
+				isError: false,
+				output: expect.stringContaining("Team Memory"),
+			}),
+		]);
+		expect(outputs[0]?.output).toContain(
+			"/repo/.maestro/team-memory/MEMORY.md",
+		);
+		expect(outputs[0]?.output).toContain("deploy.md");
+	});
+
+	it("initializes repo-scoped team memory from the web slash command", async () => {
+		const { context, outputs, apiClient } = createContext();
+		apiClient.initTeamMemory.mockResolvedValue({
+			success: true,
+			message: "Team memory ready at /repo/.maestro/team-memory/MEMORY.md",
+			status: {
+				gitRoot: "/repo",
+				projectId: "proj123",
+				projectName: "maestro",
+				directory: "/repo/.maestro/team-memory",
+				entrypoint: "/repo/.maestro/team-memory/MEMORY.md",
+				exists: true,
+				fileCount: 1,
+				files: ["MEMORY.md"],
+			},
+		});
+
+		await executeWebSlashCommand("memory", "team init", context);
+
+		expect(apiClient.initTeamMemory).toHaveBeenCalledTimes(1);
+		expect(outputs).toEqual([
+			expect.objectContaining({
+				isError: false,
+				output: expect.stringContaining("Team memory ready"),
+			}),
+		]);
 	});
 
 	it("filters memory reads to the current session when requested", async () => {

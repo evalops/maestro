@@ -124,6 +124,9 @@ import type {
 	MemoryTopicResponse,
 	MemoryTopicSummary,
 	MemoryTopicsResponse,
+	TeamMemoryMutationResponse,
+	TeamMemoryStatus,
+	TeamMemoryStatusResponse,
 } from "@evalops/contracts";
 import {
 	getStoredComposerAccessToken,
@@ -142,6 +145,9 @@ export type {
 	MemoryTopicResponse,
 	MemoryTopicSummary,
 	MemoryTopicsResponse,
+	TeamMemoryMutationResponse,
+	TeamMemoryStatus,
+	TeamMemoryStatusResponse,
 };
 
 export type Message = ComposerMessage;
@@ -2867,6 +2873,10 @@ export class ApiClient {
 		);
 	}
 
+	async getTeamMemoryStatus(): Promise<TeamMemoryStatusResponse> {
+		return await this.fetchJsonWithFallback("/api/memory?action=team");
+	}
+
 	async saveMemory(
 		topic: string,
 		content: string,
@@ -2911,6 +2921,12 @@ export class ApiClient {
 		return await this.fetchJsonRequestWithFallback("/api/memory", "POST", {
 			action: "clear",
 			force,
+		});
+	}
+
+	async initTeamMemory(): Promise<TeamMemoryMutationResponse> {
+		return await this.fetchJsonRequestWithFallback("/api/memory", "POST", {
+			action: "team-init",
 		});
 	}
 

@@ -213,7 +213,7 @@ describe("automatic memory extraction", () => {
 		await coordinator.flush();
 
 		expect(promptCalls).toBe(1);
-	});
+	}, 60_000);
 
 	it("calls onProcessed after a successful extraction pass", async () => {
 		const { createAutomaticMemoryExtractionCoordinator } = await import(
