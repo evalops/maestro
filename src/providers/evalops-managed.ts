@@ -98,6 +98,16 @@ export const EVALOPS_MANAGED_PROVIDER_DEFINITIONS: readonly EvalOpsManagedProvid
 		{
 			allowedModelApis: ["openai-completions"],
 			api: "openai-completions",
+			defaultModel: "sonar",
+			id: "evalops-perplexity",
+			name: "EvalOps Managed Gateway (Perplexity)",
+			note: "Requires /login evalops and routes managed Perplexity chat completions through the gateway",
+			providerRefProvider: "perplexity",
+			sourceProvider: "perplexity",
+		},
+		{
+			allowedModelApis: ["openai-completions"],
+			api: "openai-completions",
 			defaultModel: "mistral-large-latest",
 			id: "evalops-mistral",
 			name: "EvalOps Managed Gateway (Mistral)",

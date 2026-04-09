@@ -572,6 +572,64 @@ const FIREWORKS_OVERLAY = {
 	},
 } satisfies Record<string, Record<string, Model<Api>>>;
 
+// Manual overlay for direct Perplexity models (OpenAI-compatible API).
+const PERPLEXITY_OVERLAY = {
+	perplexity: {
+		sonar: {
+			id: "sonar",
+			name: "Perplexity Sonar",
+			api: "openai-completions",
+			provider: "perplexity",
+			baseUrl: "https://api.perplexity.ai",
+			reasoning: false,
+			toolUse: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 127072,
+			maxTokens: 8000,
+		} as Model<"openai-completions">,
+		"sonar-pro": {
+			id: "sonar-pro",
+			name: "Perplexity Sonar Pro",
+			api: "openai-completions",
+			provider: "perplexity",
+			baseUrl: "https://api.perplexity.ai",
+			reasoning: false,
+			toolUse: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 127072,
+			maxTokens: 8000,
+		} as Model<"openai-completions">,
+		"sonar-reasoning-pro": {
+			id: "sonar-reasoning-pro",
+			name: "Perplexity Sonar Reasoning Pro",
+			api: "openai-completions",
+			provider: "perplexity",
+			baseUrl: "https://api.perplexity.ai",
+			reasoning: true,
+			toolUse: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 127072,
+			maxTokens: 8000,
+		} as Model<"openai-completions">,
+		"sonar-deep-research": {
+			id: "sonar-deep-research",
+			name: "Perplexity Sonar Deep Research",
+			api: "openai-completions",
+			provider: "perplexity",
+			baseUrl: "https://api.perplexity.ai",
+			reasoning: true,
+			toolUse: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 127072,
+			maxTokens: 8000,
+		} as Model<"openai-completions">,
+	},
+} satisfies Record<string, Record<string, Model<Api>>>;
+
 const GITHUB_COPILOT_HEADERS = {
 	"User-Agent": "GitHubCopilotChat/0.35.0",
 	"Editor-Version": "vscode/1.107.0",
@@ -1512,6 +1570,7 @@ function convertGeneratedModels(): Record<string, Model<Api>[]> {
 		XAI_OVERLAY,
 		DATABRICKS_OVERLAY,
 		FIREWORKS_OVERLAY,
+		PERPLEXITY_OVERLAY,
 		GITHUB_COPILOT_OVERLAY,
 		GOOGLE_GEMINI_CLI_OVERLAY,
 		GOOGLE_ANTIGRAVITY_OVERLAY,

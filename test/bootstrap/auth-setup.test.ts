@@ -191,6 +191,14 @@ describe("createAuthSetup", () => {
 		expect(allPlain).toContain("/login evalops");
 	});
 
+	it("buildMissingAuthLines reuses evalops login hint for managed Perplexity aliases", () => {
+		const result = createAuthSetup({ authMode: "auto" });
+		const lines = result.buildMissingAuthLines("evalops-perplexity");
+
+		const allPlain = lines.map((l) => l.plain).join("\n");
+		expect(allPlain).toContain("/login evalops");
+	});
+
 	it("buildMissingAuthLines reuses evalops login hint for managed Mistral aliases", () => {
 		const result = createAuthSetup({ authMode: "auto" });
 		const lines = result.buildMissingAuthLines("evalops-mistral");
