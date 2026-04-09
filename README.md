@@ -125,7 +125,7 @@ export GEMINI_API_KEY=...
 # Run /login and select "EvalOps Managed"
 # Required: export MAESTRO_EVALOPS_ORG_ID=org_...
 # Optional: export MAESTRO_IDENTITY_URL=https://identity.internal.evalops
-# Tokens are stored in ~/.maestro/oauth.json and refresh automatically
+# Tokens are stored in ~/.maestro/oauth.json, refresh automatically, and logout attempts remote refresh-token revocation
 # Optional managed runtime selection:
 #   export MAESTRO_EVALOPS_PROVIDER=openai|openrouter|anthropic
 #   export MAESTRO_EVALOPS_ENVIRONMENT=prod
