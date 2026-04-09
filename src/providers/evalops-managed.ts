@@ -68,6 +68,16 @@ export const EVALOPS_MANAGED_PROVIDER_DEFINITIONS: readonly EvalOpsManagedProvid
 		{
 			allowedModelApis: ["openai-completions"],
 			api: "openai-completions",
+			defaultModel: "databricks-meta-llama-3-3-70b-instruct",
+			id: "evalops-databricks",
+			name: "EvalOps Managed Gateway (Databricks)",
+			note: "Requires /login evalops and routes managed Databricks chat completions through the gateway",
+			providerRefProvider: "databricks",
+			sourceProvider: "databricks",
+		},
+		{
+			allowedModelApis: ["openai-completions"],
+			api: "openai-completions",
 			defaultModel: "mistral-large-latest",
 			id: "evalops-mistral",
 			name: "EvalOps Managed Gateway (Mistral)",
