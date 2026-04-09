@@ -133,13 +133,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function getNonEmptyString(value: unknown): string | undefined {
+	return typeof value === "string" && value.trim().length > 0
+		? value.trim()
+		: undefined;
+}
+
 function resolveEvalOpsOrganizationId(
 	metadata?: Record<string, unknown>,
 ): string | undefined {
-	const candidate =
-		typeof metadata?.organizationId === "string"
-			? metadata.organizationId
-			: undefined;
+	const candidate = getNonEmptyString(metadata?.organizationId);
 	if (candidate && candidate.trim().length > 0) {
 		return candidate.trim();
 	}
@@ -164,10 +167,7 @@ function resolveEvalOpsProviderRef(
 		? metadata.providerRef
 		: null;
 	const providerAlias = resolveEvalOpsProviderAlias(provider);
-	const metadataProvider =
-		typeof providerRef?.provider === "string" && providerRef.provider.trim()
-			? providerRef.provider.trim()
-			: undefined;
+	const metadataProvider = getNonEmptyString(providerRef?.provider);
 	const resolvedProvider =
 		providerAlias ??
 		metadataProvider ??
@@ -175,13 +175,24 @@ function resolveEvalOpsProviderRef(
 		process.env.MAESTRO_LLM_GATEWAY_PROVIDER?.trim() ??
 		"openai";
 	const environment =
-		typeof providerRef?.environment === "string" &&
-		providerRef.environment.trim()
-			? providerRef.environment.trim()
-			: process.env.MAESTRO_EVALOPS_ENVIRONMENT?.trim() ||
-				process.env.MAESTRO_LLM_GATEWAY_ENVIRONMENT?.trim() ||
-				"prod";
-	return { provider: resolvedProvider, environment };
+		getNonEmptyString(providerRef?.environment) ??
+		process.env.MAESTRO_EVALOPS_ENVIRONMENT?.trim() ??
+		process.env.MAESTRO_LLM_GATEWAY_ENVIRONMENT?.trim() ??
+		"prod";
+	const credentialName =
+		getNonEmptyString(providerRef?.credential_name) ??
+		process.env.MAESTRO_EVALOPS_CREDENTIAL_NAME?.trim() ??
+		process.env.MAESTRO_LLM_GATEWAY_CREDENTIAL_NAME?.trim();
+	const teamId =
+		getNonEmptyString(providerRef?.team_id) ??
+		process.env.MAESTRO_EVALOPS_TEAM_ID?.trim() ??
+		process.env.MAESTRO_LLM_GATEWAY_TEAM_ID?.trim();
+	return {
+		provider: resolvedProvider,
+		environment,
+		...(credentialName ? { credential_name: credentialName } : {}),
+		...(teamId ? { team_id: teamId } : {}),
+	};
 }
 
 function buildEvalOpsCredential(

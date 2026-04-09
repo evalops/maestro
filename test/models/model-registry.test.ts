@@ -50,4 +50,12 @@ describe("Built-in model registry", () => {
 		expect(model?.api).toBe("openai-responses");
 		expect(model?.baseUrl).toBe("https://api.groq.com/openai/v1/responses");
 	});
+
+	it("includes EvalOps managed OpenRouter models normalized to the gateway endpoint", () => {
+		const model = getModel("evalops-openrouter", "anthropic/claude-sonnet-4.5");
+		expect(model).toBeTruthy();
+		expect(model?.provider).toBe("evalops-openrouter");
+		expect(model?.api).toBe("openai-completions");
+		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/chat/completions");
+	});
 });
