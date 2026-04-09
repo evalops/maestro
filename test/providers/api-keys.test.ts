@@ -22,6 +22,9 @@ describe("api key provider families", () => {
 		expect(getEnvVarsForProvider("evalops-azure-openai")).toEqual([
 			"MAESTRO_EVALOPS_ACCESS_TOKEN",
 		]);
+		expect(getEnvVarsForProvider("evalops-cohere")).toEqual([
+			"MAESTRO_EVALOPS_ACCESS_TOKEN",
+		]);
 		expect(getEnvVarsForProvider("evalops-google")).toEqual([
 			"MAESTRO_EVALOPS_ACCESS_TOKEN",
 		]);
@@ -47,6 +50,14 @@ describe("api key provider families", () => {
 	it("resolves Azure managed alias credentials from MAESTRO_EVALOPS_ACCESS_TOKEN", () => {
 		process.env.MAESTRO_EVALOPS_ACCESS_TOKEN = "managed-token";
 		const credential = lookupApiKey("evalops-azure-openai");
+		expect(credential.key).toBe("managed-token");
+		expect(credential.envVar).toBe("MAESTRO_EVALOPS_ACCESS_TOKEN");
+		expect(credential.source).toBe("env");
+	});
+
+	it("resolves Cohere managed alias credentials from MAESTRO_EVALOPS_ACCESS_TOKEN", () => {
+		process.env.MAESTRO_EVALOPS_ACCESS_TOKEN = "managed-token";
+		const credential = lookupApiKey("evalops-cohere");
 		expect(credential.key).toBe("managed-token");
 		expect(credential.envVar).toBe("MAESTRO_EVALOPS_ACCESS_TOKEN");
 		expect(credential.source).toBe("env");
