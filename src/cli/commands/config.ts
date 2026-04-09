@@ -21,6 +21,10 @@ import { getHomeDir } from "../../utils/path-expansion.js";
 
 import type { Api } from "../../agent/types.js";
 import { getEnvVarsForProvider } from "../../providers/api-keys.js";
+import {
+	EVALOPS_MANAGED_PROVIDER_DEFINITIONS,
+	isEvalOpsManagedProvider,
+} from "../../providers/evalops-managed.js";
 
 type ProviderPreset = {
 	id: string;
@@ -35,9 +39,19 @@ type ProviderPreset = {
 	maxTokens?: number;
 };
 
-function isManagedGatewayPreset(providerId: string): boolean {
-	return providerId === "evalops" || providerId.startsWith("evalops-");
-}
+const MANAGED_GATEWAY_BASE_URL =
+	process.env.MAESTRO_LLM_GATEWAY_URL?.trim() || "http://127.0.0.1:8081/v1";
+
+const MANAGED_GATEWAY_PROVIDER_PRESETS: ProviderPreset[] =
+	EVALOPS_MANAGED_PROVIDER_DEFINITIONS.map((definition) => ({
+		id: definition.id,
+		name: definition.name,
+		api: definition.api,
+		defaultModel: definition.defaultModel,
+		baseUrl: MANAGED_GATEWAY_BASE_URL,
+		requiresApiKey: false,
+		note: definition.note,
+	}));
 
 export const PROVIDER_PRESETS: ProviderPreset[] = [
 	{
@@ -79,36 +93,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
 		apiKeyEnv: "OPENROUTER_API_KEY",
 		note: "Supports many upstreams; accepts OpenAI-compatible keys",
 	},
-	{
-		id: "evalops",
-		name: "EvalOps Managed Gateway (OpenAI Responses)",
-		api: "openai-responses",
-		defaultModel: "gpt-4o-mini",
-		baseUrl:
-			process.env.MAESTRO_LLM_GATEWAY_URL?.trim() || "http://127.0.0.1:8081/v1",
-		requiresApiKey: false,
-		note: "Requires /login evalops and routes managed OpenAI responses through the gateway",
-	},
-	{
-		id: "evalops-anthropic",
-		name: "EvalOps Managed Gateway (Anthropic Messages)",
-		api: "anthropic-messages",
-		defaultModel: "claude-sonnet-4-5",
-		baseUrl:
-			process.env.MAESTRO_LLM_GATEWAY_URL?.trim() || "http://127.0.0.1:8081/v1",
-		requiresApiKey: false,
-		note: "Requires /login evalops and routes managed Anthropic messages through the gateway",
-	},
-	{
-		id: "evalops-openrouter",
-		name: "EvalOps Managed Gateway (OpenRouter)",
-		api: "openai-completions",
-		defaultModel: "openai/o4-mini",
-		baseUrl:
-			process.env.MAESTRO_LLM_GATEWAY_URL?.trim() || "http://127.0.0.1:8081/v1",
-		requiresApiKey: false,
-		note: "Requires /login evalops and routes managed OpenRouter chat completions through the gateway",
-	},
+	...MANAGED_GATEWAY_PROVIDER_PRESETS,
 	{
 		id: "google-gemini",
 		name: "Google Gemini API",
@@ -670,7 +655,7 @@ export async function handleConfigInit(): Promise<void> {
 			}
 		} else {
 			useEnv = false;
-			const noKeyMessage = isManagedGatewayPreset(providerId)
+			const noKeyMessage = isEvalOpsManagedProvider(providerId)
 				? "\nManaged gateway preset does not use a local API key. Run /login evalops after setup."
 				: "\nLocal providers do not require API keys. Skipping step.";
 			console.log(chalk.dim(noKeyMessage));

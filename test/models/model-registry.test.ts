@@ -66,4 +66,44 @@ describe("Built-in model registry", () => {
 		expect(model?.api).toBe("anthropic-messages");
 		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/messages");
 	});
+
+	it("includes EvalOps managed Azure OpenAI models normalized to the gateway endpoint", () => {
+		const model = getModel("evalops-azure-openai", "gpt-4o");
+		expect(model).toBeTruthy();
+		expect(model?.provider).toBe("evalops-azure-openai");
+		expect(model?.api).toBe("openai-completions");
+		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/chat/completions");
+	});
+
+	it("includes EvalOps managed Google models normalized to the gateway endpoint", () => {
+		const model = getModel("evalops-google", "gemini-2.5-pro");
+		expect(model).toBeTruthy();
+		expect(model?.provider).toBe("evalops-google");
+		expect(model?.api).toBe("openai-completions");
+		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/chat/completions");
+	});
+
+	it("includes EvalOps managed Groq models normalized to the gateway endpoint", () => {
+		const model = getModel("evalops-groq", "llama-3.3-70b-versatile");
+		expect(model).toBeTruthy();
+		expect(model?.provider).toBe("evalops-groq");
+		expect(model?.api).toBe("openai-completions");
+		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/chat/completions");
+	});
+
+	it("includes EvalOps managed Mistral models normalized to the gateway endpoint", () => {
+		const model = getModel("evalops-mistral", "mistral-large-latest");
+		expect(model).toBeTruthy();
+		expect(model?.provider).toBe("evalops-mistral");
+		expect(model?.api).toBe("openai-completions");
+		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/chat/completions");
+	});
+
+	it("includes EvalOps managed xAI models normalized to the gateway endpoint", () => {
+		const model = getModel("evalops-xai", "grok-4-fast");
+		expect(model).toBeTruthy();
+		expect(model?.provider).toBe("evalops-xai");
+		expect(model?.api).toBe("openai-completions");
+		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/chat/completions");
+	});
 });

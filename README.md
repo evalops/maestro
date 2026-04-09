@@ -174,6 +174,16 @@ Current managed provider aliases:
 
 - `evalops`
   - OpenAI Responses compatibility through the gateway
+- `evalops-azure-openai`
+  - Azure OpenAI chat-completions compatibility through the gateway
+- `evalops-google`
+  - Google Gemini chat-completions compatibility through the gateway
+- `evalops-groq`
+  - Groq chat-completions compatibility through the gateway
+- `evalops-mistral`
+  - Mistral chat-completions compatibility through the gateway
+- `evalops-xai`
+  - xAI chat-completions compatibility through the gateway
 - `evalops-anthropic`
   - Anthropic Messages compatibility through the gateway
 - `evalops-openrouter`
@@ -200,7 +210,7 @@ In managed mode:
 - Maestro sends `provider_ref` metadata instead of a raw vendor key
 - the gateway resolves the provider ref through the access plane
 
-This is the intended path for org-managed Anthropic, OpenAI, and OpenRouter
+This is the intended path for org-managed Azure OpenAI, Google Gemini, Anthropic, OpenAI, and OpenRouter
 credentials.
 
 Example `~/.maestro/config.json` to add a short alias:

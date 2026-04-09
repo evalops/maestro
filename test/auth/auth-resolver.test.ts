@@ -223,6 +223,161 @@ describe("auth resolver", () => {
 		mockedLoadCreds.mockReset();
 	});
 
+	it("overrides stored EvalOps provider_ref for Azure OpenAI aliases", async () => {
+		const mockedGetToken = vi.mocked(getOAuthToken);
+		const mockedLoadCreds = vi.mocked(loadOAuthCredentials);
+		mockedGetToken.mockResolvedValue("evalops-token");
+		mockedLoadCreds.mockReturnValue({
+			type: "oauth",
+			access: "evalops-token",
+			refresh: "",
+			expires: Date.now() + 60_000,
+			metadata: {
+				organizationId: "org_evalops",
+				providerRef: {
+					provider: "openai",
+					environment: "prod",
+				},
+			},
+		});
+		const resolver = createAuthResolver({ mode: "auto" });
+		const credential = await resolver("evalops-azure-openai");
+		expect(credential).toBeDefined();
+		expect(credential?.type).toBe("api-key");
+		expect(credential?.requestBody).toEqual({
+			provider_ref: {
+				provider: "azure-openai",
+				environment: "prod",
+			},
+		});
+		mockedGetToken.mockReset();
+		mockedLoadCreds.mockReset();
+	});
+
+	it("overrides stored EvalOps provider_ref for Google aliases", async () => {
+		const mockedGetToken = vi.mocked(getOAuthToken);
+		const mockedLoadCreds = vi.mocked(loadOAuthCredentials);
+		mockedGetToken.mockResolvedValue("evalops-token");
+		mockedLoadCreds.mockReturnValue({
+			type: "oauth",
+			access: "evalops-token",
+			refresh: "",
+			expires: Date.now() + 60_000,
+			metadata: {
+				organizationId: "org_evalops",
+				providerRef: {
+					provider: "openai",
+					environment: "prod",
+				},
+			},
+		});
+		const resolver = createAuthResolver({ mode: "auto" });
+		const credential = await resolver("evalops-google");
+		expect(credential).toBeDefined();
+		expect(credential?.type).toBe("api-key");
+		expect(credential?.requestBody).toEqual({
+			provider_ref: {
+				provider: "google",
+				environment: "prod",
+			},
+		});
+		mockedGetToken.mockReset();
+		mockedLoadCreds.mockReset();
+	});
+
+	it("overrides stored EvalOps provider_ref for Groq aliases", async () => {
+		const mockedGetToken = vi.mocked(getOAuthToken);
+		const mockedLoadCreds = vi.mocked(loadOAuthCredentials);
+		mockedGetToken.mockResolvedValue("evalops-token");
+		mockedLoadCreds.mockReturnValue({
+			type: "oauth",
+			access: "evalops-token",
+			refresh: "",
+			expires: Date.now() + 60_000,
+			metadata: {
+				organizationId: "org_evalops",
+				providerRef: {
+					provider: "openai",
+					environment: "prod",
+				},
+			},
+		});
+		const resolver = createAuthResolver({ mode: "auto" });
+		const credential = await resolver("evalops-groq");
+		expect(credential).toBeDefined();
+		expect(credential?.type).toBe("api-key");
+		expect(credential?.requestBody).toEqual({
+			provider_ref: {
+				provider: "groq",
+				environment: "prod",
+			},
+		});
+		mockedGetToken.mockReset();
+		mockedLoadCreds.mockReset();
+	});
+
+	it("overrides stored EvalOps provider_ref for Mistral aliases", async () => {
+		const mockedGetToken = vi.mocked(getOAuthToken);
+		const mockedLoadCreds = vi.mocked(loadOAuthCredentials);
+		mockedGetToken.mockResolvedValue("evalops-token");
+		mockedLoadCreds.mockReturnValue({
+			type: "oauth",
+			access: "evalops-token",
+			refresh: "",
+			expires: Date.now() + 60_000,
+			metadata: {
+				organizationId: "org_evalops",
+				providerRef: {
+					provider: "openai",
+					environment: "prod",
+				},
+			},
+		});
+		const resolver = createAuthResolver({ mode: "auto" });
+		const credential = await resolver("evalops-mistral");
+		expect(credential).toBeDefined();
+		expect(credential?.type).toBe("api-key");
+		expect(credential?.requestBody).toEqual({
+			provider_ref: {
+				provider: "mistral",
+				environment: "prod",
+			},
+		});
+		mockedGetToken.mockReset();
+		mockedLoadCreds.mockReset();
+	});
+
+	it("overrides stored EvalOps provider_ref for xAI aliases", async () => {
+		const mockedGetToken = vi.mocked(getOAuthToken);
+		const mockedLoadCreds = vi.mocked(loadOAuthCredentials);
+		mockedGetToken.mockResolvedValue("evalops-token");
+		mockedLoadCreds.mockReturnValue({
+			type: "oauth",
+			access: "evalops-token",
+			refresh: "",
+			expires: Date.now() + 60_000,
+			metadata: {
+				organizationId: "org_evalops",
+				providerRef: {
+					provider: "openai",
+					environment: "prod",
+				},
+			},
+		});
+		const resolver = createAuthResolver({ mode: "auto" });
+		const credential = await resolver("evalops-xai");
+		expect(credential).toBeDefined();
+		expect(credential?.type).toBe("api-key");
+		expect(credential?.requestBody).toEqual({
+			provider_ref: {
+				provider: "xai",
+				environment: "prod",
+			},
+		});
+		mockedGetToken.mockReset();
+		mockedLoadCreds.mockReset();
+	});
+
 	it("adds optional credential_name and team_id from env to EvalOps provider_ref", async () => {
 		const mockedGetToken = vi.mocked(getOAuthToken);
 		const mockedLoadCreds = vi.mocked(loadOAuthCredentials);

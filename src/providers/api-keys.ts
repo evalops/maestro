@@ -60,6 +60,7 @@
 
 import { getCustomProviderMetadata } from "../models/registry.js";
 import { hasAwsCredentials } from "./aws-auth.js";
+import { isEvalOpsManagedProvider } from "./evalops-managed.js";
 
 export const envApiKeyMap = {
 	google: ["GEMINI_API_KEY"],
@@ -95,7 +96,7 @@ function getKnownProviderKey(provider: string): KnownProvider | undefined {
 	if (isKnownProvider(provider)) {
 		return provider;
 	}
-	if (provider.toLowerCase().startsWith("evalops-")) {
+	if (isEvalOpsManagedProvider(provider)) {
 		return "evalops";
 	}
 	return undefined;

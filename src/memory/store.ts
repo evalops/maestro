@@ -22,9 +22,15 @@ import type {
 
 const logger = createLogger("memory:store");
 
-const MEMORY_DIR = join(PATHS.MAESTRO_HOME, "memory");
-const STORE_FILE = join(MEMORY_DIR, "store.json");
 const CURRENT_VERSION = 1;
+
+function getMemoryDir(): string {
+	return join(PATHS.MAESTRO_HOME, "memory");
+}
+
+function getStoreFile(): string {
+	return join(getMemoryDir(), "store.json");
+}
 
 /**
  * Generate a unique memory ID.
@@ -37,8 +43,9 @@ function generateId(): string {
  * Ensure the memory directory exists.
  */
 function ensureDir(): void {
-	if (!existsSync(MEMORY_DIR)) {
-		mkdirSync(MEMORY_DIR, { recursive: true });
+	const memoryDir = getMemoryDir();
+	if (!existsSync(memoryDir)) {
+		mkdirSync(memoryDir, { recursive: true });
 	}
 }
 
@@ -47,13 +54,14 @@ function ensureDir(): void {
  */
 function loadStore(): MemoryStore {
 	ensureDir();
+	const storeFile = getStoreFile();
 
-	if (!existsSync(STORE_FILE)) {
+	if (!existsSync(storeFile)) {
 		return { entries: [], version: CURRENT_VERSION };
 	}
 
 	try {
-		const content = readFileSync(STORE_FILE, "utf-8");
+		const content = readFileSync(storeFile, "utf-8");
 		const store = JSON.parse(content) as MemoryStore;
 		return store;
 	} catch (error) {
@@ -69,9 +77,10 @@ function loadStore(): MemoryStore {
  */
 function saveStore(store: MemoryStore): void {
 	ensureDir();
+	const storeFile = getStoreFile();
 
 	try {
-		writeFileSync(STORE_FILE, JSON.stringify(store, null, 2), "utf-8");
+		writeFileSync(storeFile, JSON.stringify(store, null, 2), "utf-8");
 	} catch (error) {
 		logger.error(
 			"Failed to save memory store",

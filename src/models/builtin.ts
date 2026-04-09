@@ -1,4 +1,5 @@
 import type { Api, Model } from "../agent/types.js";
+import { EVALOPS_MANAGED_PROVIDER_DEFINITIONS } from "../providers/evalops-managed.js";
 import { MODELS as GENERATED_MODELS } from "./models.generated.js";
 import { normalizeModelBaseUrl } from "./url-normalize.js";
 
@@ -22,22 +23,39 @@ function getManagedGatewayBaseUrlForApi(api: Api): string {
 function cloneManagedGatewayModels(
 	models: Model<Api>[] | undefined,
 	targetProvider: string,
+	targetApi?: Api,
 ): Model<Api>[] {
 	if (!models || models.length === 0) {
 		return [];
 	}
 
-	return models.map(
-		(model) =>
-			({
+	return models.map((model) => {
+		const api = targetApi ?? model.api;
+		const normalizedModel = {
+			...model,
+			api,
+			provider: targetProvider,
+			baseUrl: normalizeModelBaseUrl({
 				...model,
+				api,
 				provider: targetProvider,
-				baseUrl: normalizeModelBaseUrl({
-					...model,
-					provider: targetProvider,
-					baseUrl: getManagedGatewayBaseUrlForApi(model.api),
-				}),
-			}) satisfies Model<Api>,
+				baseUrl: getManagedGatewayBaseUrlForApi(api),
+			}),
+		} satisfies Model<Api>;
+		return normalizedModel;
+	});
+}
+
+function cloneManagedGatewayModelsForApis(
+	models: Model<Api>[] | undefined,
+	targetProvider: string,
+	allowedApis: readonly Api[],
+	targetApi?: Api,
+): Model<Api>[] {
+	return cloneManagedGatewayModels(
+		models?.filter((model) => allowedApis.includes(model.api)),
+		targetProvider,
+		targetApi,
 	);
 }
 
@@ -1353,15 +1371,21 @@ function convertGeneratedModels(): Record<string, Model<Api>[]> {
 		}
 	}
 
-	converted.evalops = cloneManagedGatewayModels(converted.openai, "evalops");
-	converted["evalops-anthropic"] = cloneManagedGatewayModels(
-		converted.anthropic,
-		"evalops-anthropic",
-	);
-	converted["evalops-openrouter"] = cloneManagedGatewayModels(
-		converted.openrouter,
-		"evalops-openrouter",
-	);
+	for (const definition of EVALOPS_MANAGED_PROVIDER_DEFINITIONS) {
+		const sourceModels = converted[definition.sourceProvider];
+		converted[definition.id] = definition.allowedModelApis
+			? cloneManagedGatewayModelsForApis(
+					sourceModels,
+					definition.id,
+					definition.allowedModelApis,
+					definition.targetApi,
+				)
+			: cloneManagedGatewayModels(
+					sourceModels,
+					definition.id,
+					definition.targetApi,
+				);
+	}
 
 	return converted;
 }

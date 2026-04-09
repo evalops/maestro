@@ -53,6 +53,10 @@
 import { getOAuthToken } from "../oauth/index.js";
 import { loadOAuthCredentials } from "../oauth/storage.js";
 import { lookupApiKey } from "./api-keys.js";
+import {
+	getEvalOpsManagedProviderDefinition,
+	isEvalOpsManagedProvider,
+} from "./evalops-managed.js";
 import { getFreshOpenAIOAuthCredential } from "./openai-auth.js";
 
 export type AuthMode = "auto" | "api-key" | "claude";
@@ -115,22 +119,8 @@ function isGitHubCopilotProvider(provider: string): boolean {
 	return provider.toLowerCase() === "github-copilot";
 }
 
-function isEvalOpsProvider(provider: string): boolean {
-	const normalized = provider.toLowerCase();
-	return normalized === "evalops" || normalized.startsWith("evalops-");
-}
-
-function resolveEvalOpsProviderAlias(provider: string): string | undefined {
-	const normalized = provider.toLowerCase();
-	if (!normalized.startsWith("evalops-")) {
-		return undefined;
-	}
-	const alias = normalized.slice("evalops-".length).trim();
-	return alias.length > 0 ? alias : undefined;
-}
-
 function resolveEvalOpsCredentialType(provider: string): AuthCredentialType {
-	return resolveEvalOpsProviderAlias(provider) === "anthropic"
+	return getEvalOpsManagedProviderDefinition(provider)?.usesAnthropicOAuth
 		? "anthropic-oauth"
 		: "api-key";
 }
@@ -172,13 +162,18 @@ function resolveEvalOpsProviderRef(
 	const providerRef = isRecord(metadata?.providerRef)
 		? metadata.providerRef
 		: null;
-	const providerAlias = resolveEvalOpsProviderAlias(provider);
+	const definition = getEvalOpsManagedProviderDefinition(provider);
 	const metadataProvider = getNonEmptyString(providerRef?.provider);
-	const resolvedProvider =
-		providerAlias ??
-		metadataProvider ??
+	const configuredProvider =
 		process.env.MAESTRO_EVALOPS_PROVIDER?.trim() ??
-		process.env.MAESTRO_LLM_GATEWAY_PROVIDER?.trim() ??
+		process.env.MAESTRO_LLM_GATEWAY_PROVIDER?.trim();
+	const resolvedProvider =
+		(definition && definition.id !== "evalops"
+			? definition.providerRefProvider
+			: undefined) ??
+		metadataProvider ??
+		configuredProvider ??
+		definition?.providerRefProvider ??
 		"openai";
 	const environment =
 		getNonEmptyString(providerRef?.environment) ??
@@ -234,7 +229,7 @@ export function createAuthResolver(options: AuthResolverOptions): AuthResolver {
 		const normalizedProvider = provider.toLowerCase();
 
 		if (explicitKey) {
-			if (isEvalOpsProvider(provider)) {
+			if (isEvalOpsManagedProvider(provider)) {
 				return buildEvalOpsCredential(provider, explicitKey, "explicit");
 			}
 			return {
@@ -245,7 +240,7 @@ export function createAuthResolver(options: AuthResolverOptions): AuthResolver {
 			};
 		}
 
-		if (isEvalOpsProvider(provider) && options.mode !== "api-key") {
+		if (isEvalOpsManagedProvider(provider) && options.mode !== "api-key") {
 			const oauthToken = await getOAuthToken("evalops");
 			if (oauthToken) {
 				const credentials = loadOAuthCredentials("evalops");
@@ -352,7 +347,7 @@ export function createAuthResolver(options: AuthResolverOptions): AuthResolver {
 			if (lookup.source === "missing") {
 				return undefined;
 			}
-			if (isEvalOpsProvider(provider)) {
+			if (isEvalOpsManagedProvider(provider)) {
 				return buildEvalOpsCredential(
 					provider,
 					lookup.key,

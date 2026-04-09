@@ -144,4 +144,199 @@ describe("handleConfigInit", () => {
 			"Managed gateway preset does not use a local API key",
 		);
 	});
+
+	it("writes managed azure openai config with the gateway preset", async () => {
+		process.argv = [
+			"node",
+			"maestro",
+			"config",
+			"init",
+			"--preset",
+			"evalops-azure-openai",
+		];
+		process.env.MAESTRO_LLM_GATEWAY_URL = "http://gateway.example/v1";
+		answers.splice(0, answers.length, "n");
+
+		const { handleConfigInit } = await import(
+			"../../src/cli/commands/config.js"
+		);
+		await handleConfigInit();
+
+		const config = JSON.parse(
+			readFileSync(join(tempDir, ".maestro", "config.json"), "utf8"),
+		) as {
+			providers: Array<{
+				id: string;
+				baseUrl: string;
+				api: string;
+				models: Array<{ id: string }>;
+			}>;
+		};
+		const provider = config.providers[0];
+		expect(provider).toMatchObject({
+			id: "evalops-azure-openai",
+			baseUrl: "http://gateway.example/v1",
+			api: "openai-completions",
+		});
+		expect(provider?.models[0]?.id).toBe("gpt-4o");
+		expect(output.join("\n")).toContain(
+			"Managed gateway preset does not use a local API key",
+		);
+	});
+
+	it("writes managed google config with the gateway preset", async () => {
+		process.argv = [
+			"node",
+			"maestro",
+			"config",
+			"init",
+			"--preset",
+			"evalops-google",
+		];
+		process.env.MAESTRO_LLM_GATEWAY_URL = "http://gateway.example/v1";
+		answers.splice(0, answers.length, "n");
+
+		const { handleConfigInit } = await import(
+			"../../src/cli/commands/config.js"
+		);
+		await handleConfigInit();
+
+		const config = JSON.parse(
+			readFileSync(join(tempDir, ".maestro", "config.json"), "utf8"),
+		) as {
+			providers: Array<{
+				id: string;
+				baseUrl: string;
+				api: string;
+				models: Array<{ id: string }>;
+			}>;
+		};
+		const provider = config.providers[0];
+		expect(provider).toMatchObject({
+			id: "evalops-google",
+			baseUrl: "http://gateway.example/v1",
+			api: "openai-completions",
+		});
+		expect(provider?.models[0]?.id).toBe("gemini-2.5-pro");
+		expect(output.join("\n")).toContain(
+			"Managed gateway preset does not use a local API key",
+		);
+	});
+
+	it("writes managed groq config with the gateway preset", async () => {
+		process.argv = [
+			"node",
+			"maestro",
+			"config",
+			"init",
+			"--preset",
+			"evalops-groq",
+		];
+		process.env.MAESTRO_LLM_GATEWAY_URL = "http://gateway.example/v1";
+		answers.splice(0, answers.length, "n");
+
+		const { handleConfigInit } = await import(
+			"../../src/cli/commands/config.js"
+		);
+		await handleConfigInit();
+
+		const config = JSON.parse(
+			readFileSync(join(tempDir, ".maestro", "config.json"), "utf8"),
+		) as {
+			providers: Array<{
+				id: string;
+				baseUrl: string;
+				api: string;
+				models: Array<{ id: string }>;
+			}>;
+		};
+		const provider = config.providers[0];
+		expect(provider).toMatchObject({
+			id: "evalops-groq",
+			baseUrl: "http://gateway.example/v1",
+			api: "openai-completions",
+		});
+		expect(provider?.models[0]?.id).toBe("llama-3.3-70b-versatile");
+		expect(output.join("\n")).toContain(
+			"Managed gateway preset does not use a local API key",
+		);
+	});
+
+	it("writes managed mistral config with the gateway preset", async () => {
+		process.argv = [
+			"node",
+			"maestro",
+			"config",
+			"init",
+			"--preset",
+			"evalops-mistral",
+		];
+		process.env.MAESTRO_LLM_GATEWAY_URL = "http://gateway.example/v1";
+		answers.splice(0, answers.length, "n");
+
+		const { handleConfigInit } = await import(
+			"../../src/cli/commands/config.js"
+		);
+		await handleConfigInit();
+
+		const config = JSON.parse(
+			readFileSync(join(tempDir, ".maestro", "config.json"), "utf8"),
+		) as {
+			providers: Array<{
+				id: string;
+				baseUrl: string;
+				api: string;
+				models: Array<{ id: string }>;
+			}>;
+		};
+		const provider = config.providers[0];
+		expect(provider).toMatchObject({
+			id: "evalops-mistral",
+			baseUrl: "http://gateway.example/v1",
+			api: "openai-completions",
+		});
+		expect(provider?.models[0]?.id).toBe("mistral-large-latest");
+		expect(output.join("\n")).toContain(
+			"Managed gateway preset does not use a local API key",
+		);
+	});
+
+	it("writes managed xai config with the gateway preset", async () => {
+		process.argv = [
+			"node",
+			"maestro",
+			"config",
+			"init",
+			"--preset",
+			"evalops-xai",
+		];
+		process.env.MAESTRO_LLM_GATEWAY_URL = "http://gateway.example/v1";
+		answers.splice(0, answers.length, "n");
+
+		const { handleConfigInit } = await import(
+			"../../src/cli/commands/config.js"
+		);
+		await handleConfigInit();
+
+		const config = JSON.parse(
+			readFileSync(join(tempDir, ".maestro", "config.json"), "utf8"),
+		) as {
+			providers: Array<{
+				id: string;
+				baseUrl: string;
+				api: string;
+				models: Array<{ id: string }>;
+			}>;
+		};
+		const provider = config.providers[0];
+		expect(provider).toMatchObject({
+			id: "evalops-xai",
+			baseUrl: "http://gateway.example/v1",
+			api: "openai-completions",
+		});
+		expect(provider?.models[0]?.id).toBe("grok-4-fast");
+		expect(output.join("\n")).toContain(
+			"Managed gateway preset does not use a local API key",
+		);
+	});
 });
