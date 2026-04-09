@@ -47,6 +47,16 @@ export const EVALOPS_MANAGED_PROVIDER_DEFINITIONS: readonly EvalOpsManagedProvid
 		{
 			allowedModelApis: ["openai-completions"],
 			api: "openai-completions",
+			defaultModel: "command-a-03-2025",
+			id: "evalops-cohere",
+			name: "EvalOps Managed Gateway (Cohere)",
+			note: "Requires /login evalops and routes managed Cohere chat completions through the gateway",
+			providerRefProvider: "cohere",
+			sourceProvider: "cohere",
+		},
+		{
+			allowedModelApis: ["openai-completions"],
+			api: "openai-completions",
 			defaultModel: "accounts/fireworks/models/llama-v3p1-70b-instruct",
 			id: "evalops-fireworks",
 			name: "EvalOps Managed Gateway (Fireworks)",
@@ -74,6 +84,16 @@ export const EVALOPS_MANAGED_PROVIDER_DEFINITIONS: readonly EvalOpsManagedProvid
 			note: "Requires /login evalops and routes managed Groq chat completions through the gateway",
 			providerRefProvider: "groq",
 			sourceProvider: "groq",
+		},
+		{
+			allowedModelApis: ["openai-completions"],
+			api: "openai-completions",
+			defaultModel: "databricks-meta-llama-3-3-70b-instruct",
+			id: "evalops-databricks",
+			name: "EvalOps Managed Gateway (Databricks)",
+			note: "Requires /login evalops and routes managed Databricks chat completions through the gateway",
+			providerRefProvider: "databricks",
+			sourceProvider: "databricks",
 		},
 		{
 			allowedModelApis: ["openai-completions"],

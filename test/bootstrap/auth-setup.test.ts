@@ -151,6 +151,14 @@ describe("createAuthSetup", () => {
 		expect(allPlain).toContain("/login evalops");
 	});
 
+	it("buildMissingAuthLines reuses evalops login hint for managed Cohere aliases", () => {
+		const result = createAuthSetup({ authMode: "auto" });
+		const lines = result.buildMissingAuthLines("evalops-cohere");
+
+		const allPlain = lines.map((l) => l.plain).join("\n");
+		expect(allPlain).toContain("/login evalops");
+	});
+
 	it("buildMissingAuthLines reuses evalops login hint for managed Fireworks aliases", () => {
 		const result = createAuthSetup({ authMode: "auto" });
 		const lines = result.buildMissingAuthLines("evalops-fireworks");
@@ -170,6 +178,14 @@ describe("createAuthSetup", () => {
 	it("buildMissingAuthLines reuses evalops login hint for managed Groq aliases", () => {
 		const result = createAuthSetup({ authMode: "auto" });
 		const lines = result.buildMissingAuthLines("evalops-groq");
+
+		const allPlain = lines.map((l) => l.plain).join("\n");
+		expect(allPlain).toContain("/login evalops");
+	});
+
+	it("buildMissingAuthLines reuses evalops login hint for managed Databricks aliases", () => {
+		const result = createAuthSetup({ authMode: "auto" });
+		const lines = result.buildMissingAuthLines("evalops-databricks");
 
 		const allPlain = lines.map((l) => l.plain).join("\n");
 		expect(allPlain).toContain("/login evalops");

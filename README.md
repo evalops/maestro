@@ -176,10 +176,14 @@ Current managed provider aliases:
   - OpenAI Responses compatibility through the gateway
 - `evalops-azure-openai`
   - Azure OpenAI chat-completions compatibility through the gateway
+- `evalops-cohere`
+  - Cohere chat-completions compatibility through the gateway
 - `evalops-fireworks`
   - Fireworks chat-completions compatibility through the gateway
 - `evalops-google`
   - Google Gemini chat-completions compatibility through the gateway
+- `evalops-databricks`
+  - Databricks chat-completions compatibility through the gateway
 - `evalops-groq`
   - Groq chat-completions compatibility through the gateway
 - `evalops-mistral`

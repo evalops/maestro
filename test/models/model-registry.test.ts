@@ -75,6 +75,14 @@ describe("Built-in model registry", () => {
 		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/chat/completions");
 	});
 
+	it("includes EvalOps managed Cohere models normalized to the gateway endpoint", () => {
+		const model = getModel("evalops-cohere", "command-a-03-2025");
+		expect(model).toBeTruthy();
+		expect(model?.provider).toBe("evalops-cohere");
+		expect(model?.api).toBe("openai-completions");
+		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/chat/completions");
+	});
+
 	it("includes EvalOps managed Fireworks models normalized to the gateway endpoint", () => {
 		const model = getModel(
 			"evalops-fireworks",
@@ -98,6 +106,17 @@ describe("Built-in model registry", () => {
 		const model = getModel("evalops-groq", "llama-3.3-70b-versatile");
 		expect(model).toBeTruthy();
 		expect(model?.provider).toBe("evalops-groq");
+		expect(model?.api).toBe("openai-completions");
+		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/chat/completions");
+	});
+
+	it("includes EvalOps managed Databricks models normalized to the gateway endpoint", () => {
+		const model = getModel(
+			"evalops-databricks",
+			"databricks-meta-llama-3-3-70b-instruct",
+		);
+		expect(model).toBeTruthy();
+		expect(model?.provider).toBe("evalops-databricks");
 		expect(model?.api).toBe("openai-completions");
 		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/chat/completions");
 	});
