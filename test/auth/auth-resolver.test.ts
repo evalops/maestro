@@ -192,6 +192,41 @@ describe("auth resolver", () => {
 		mockedLoadCreds.mockReset();
 	});
 
+	it("adds optional credential_name and team_id from env to EvalOps provider_ref", async () => {
+		const mockedGetToken = vi.mocked(getOAuthToken);
+		const mockedLoadCreds = vi.mocked(loadOAuthCredentials);
+		process.env.MAESTRO_EVALOPS_CREDENTIAL_NAME = "primary";
+		process.env.MAESTRO_EVALOPS_TEAM_ID = "team_123";
+		mockedGetToken.mockResolvedValue("evalops-token");
+		mockedLoadCreds.mockReturnValue({
+			type: "oauth",
+			access: "evalops-token",
+			refresh: "",
+			expires: Date.now() + 60_000,
+			metadata: {
+				organizationId: "org_evalops",
+				providerRef: {
+					provider: "openrouter",
+					environment: "prod",
+				},
+			},
+		});
+		const resolver = createAuthResolver({ mode: "auto" });
+		const credential = await resolver("evalops-openrouter");
+		expect(credential?.requestBody).toEqual({
+			provider_ref: {
+				provider: "openrouter",
+				environment: "prod",
+				credential_name: "primary",
+				team_id: "team_123",
+			},
+		});
+		Reflect.deleteProperty(process.env, "MAESTRO_EVALOPS_CREDENTIAL_NAME");
+		Reflect.deleteProperty(process.env, "MAESTRO_EVALOPS_TEAM_ID");
+		mockedGetToken.mockReset();
+		mockedLoadCreds.mockReset();
+	});
+
 	it("reads env claude token ahead of file", async () => {
 		process.env.CLAUDE_CODE_TOKEN = "env-token";
 		const resolver = createAuthResolver({ mode: "claude" });

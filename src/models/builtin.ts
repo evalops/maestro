@@ -2,6 +2,36 @@ import type { Api, Model } from "../agent/types.js";
 import { MODELS as GENERATED_MODELS } from "./models.generated.js";
 import { normalizeModelBaseUrl } from "./url-normalize.js";
 
+const DEFAULT_MANAGED_GATEWAY_BASE_URL = "http://127.0.0.1:8081/v1";
+
+function getManagedGatewayBaseUrl(): string {
+	const configured = process.env.MAESTRO_LLM_GATEWAY_URL?.trim();
+	return configured || DEFAULT_MANAGED_GATEWAY_BASE_URL;
+}
+
+function cloneManagedGatewayModels(
+	models: Model<Api>[] | undefined,
+	targetProvider: string,
+): Model<Api>[] {
+	if (!models || models.length === 0) {
+		return [];
+	}
+
+	const managedBaseUrl = getManagedGatewayBaseUrl();
+	return models.map(
+		(model) =>
+			({
+				...model,
+				provider: targetProvider,
+				baseUrl: normalizeModelBaseUrl({
+					...model,
+					provider: targetProvider,
+					baseUrl: managedBaseUrl,
+				}),
+			}) satisfies Model<Api>,
+	);
+}
+
 // Manual overlay for Claude Opus 4.6 (not yet in models.dev registry)
 const ANTHROPIC_OPUS_46_OVERLAY = {
 	anthropic: {
@@ -1313,6 +1343,12 @@ function convertGeneratedModels(): Record<string, Model<Api>[]> {
 			}
 		}
 	}
+
+	converted.evalops = cloneManagedGatewayModels(converted.openai, "evalops");
+	converted["evalops-openrouter"] = cloneManagedGatewayModels(
+		converted.openrouter,
+		"evalops-openrouter",
+	);
 
 	return converted;
 }

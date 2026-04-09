@@ -26,6 +26,8 @@ interface IdentityStartResponse {
 interface EvalOpsProviderRef {
 	provider: string;
 	environment: string;
+	credential_name?: string;
+	team_id?: string;
 }
 
 interface EvalOpsCallbackResult {
@@ -67,6 +69,14 @@ function getOrganizationId(): string {
 }
 
 function getProviderRef(): EvalOpsProviderRef {
+	const credentialName = getEnvValue([
+		"MAESTRO_EVALOPS_CREDENTIAL_NAME",
+		"MAESTRO_LLM_GATEWAY_CREDENTIAL_NAME",
+	]);
+	const teamID = getEnvValue([
+		"MAESTRO_EVALOPS_TEAM_ID",
+		"MAESTRO_LLM_GATEWAY_TEAM_ID",
+	]);
 	return {
 		provider:
 			getEnvValue([
@@ -78,6 +88,8 @@ function getProviderRef(): EvalOpsProviderRef {
 				"MAESTRO_EVALOPS_ENVIRONMENT",
 				"MAESTRO_LLM_GATEWAY_ENVIRONMENT",
 			]) ?? DEFAULT_PROVIDER_REF_ENVIRONMENT,
+		...(credentialName ? { credential_name: credentialName } : {}),
+		...(teamID ? { team_id: teamID } : {}),
 	};
 }
 
