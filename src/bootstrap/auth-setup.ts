@@ -82,6 +82,8 @@ export function createAuthSetup(params: {
 		const push = (plain: string, colored?: string) => {
 			lines.push({ plain, colored: colored ?? plain });
 		};
+		const isEvalOpsManagedProvider =
+			providerName === "evalops" || providerName.startsWith("evalops-");
 		push(
 			`Error: No credentials found for provider "${providerName}"`,
 			chalk.red(`Error: No credentials found for provider "${providerName}"`),
@@ -92,7 +94,7 @@ export function createAuthSetup(params: {
 					? 'Run "maestro anthropic login" (claude) or use /login to authenticate before retrying.'
 					: providerName === "openai"
 						? 'Run "maestro openai login" or use /login to authenticate before retrying.'
-						: providerName === "evalops"
+						: isEvalOpsManagedProvider
 							? 'Run "/login evalops" after setting MAESTRO_EVALOPS_ORG_ID.'
 							: 'Run "/login" to authenticate before retrying.';
 			push(

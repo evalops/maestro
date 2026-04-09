@@ -116,7 +116,17 @@ function isGitHubCopilotProvider(provider: string): boolean {
 }
 
 function isEvalOpsProvider(provider: string): boolean {
-	return provider.toLowerCase() === "evalops";
+	const normalized = provider.toLowerCase();
+	return normalized === "evalops" || normalized.startsWith("evalops-");
+}
+
+function resolveEvalOpsProviderAlias(provider: string): string | undefined {
+	const normalized = provider.toLowerCase();
+	if (!normalized.startsWith("evalops-")) {
+		return undefined;
+	}
+	const alias = normalized.slice("evalops-".length).trim();
+	return alias.length > 0 ? alias : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -147,17 +157,23 @@ function resolveEvalOpsOrganizationId(
 }
 
 function resolveEvalOpsProviderRef(
+	provider: string,
 	metadata?: Record<string, unknown>,
 ): Record<string, string> {
 	const providerRef = isRecord(metadata?.providerRef)
 		? metadata.providerRef
 		: null;
-	const provider =
+	const providerAlias = resolveEvalOpsProviderAlias(provider);
+	const metadataProvider =
 		typeof providerRef?.provider === "string" && providerRef.provider.trim()
 			? providerRef.provider.trim()
-			: process.env.MAESTRO_EVALOPS_PROVIDER?.trim() ||
-				process.env.MAESTRO_LLM_GATEWAY_PROVIDER?.trim() ||
-				"openai";
+			: undefined;
+	const resolvedProvider =
+		providerAlias ??
+		metadataProvider ??
+		process.env.MAESTRO_EVALOPS_PROVIDER?.trim() ??
+		process.env.MAESTRO_LLM_GATEWAY_PROVIDER?.trim() ??
+		"openai";
 	const environment =
 		typeof providerRef?.environment === "string" &&
 		providerRef.environment.trim()
@@ -165,7 +181,7 @@ function resolveEvalOpsProviderRef(
 			: process.env.MAESTRO_EVALOPS_ENVIRONMENT?.trim() ||
 				process.env.MAESTRO_LLM_GATEWAY_ENVIRONMENT?.trim() ||
 				"prod";
-	return { provider, environment };
+	return { provider: resolvedProvider, environment };
 }
 
 function buildEvalOpsCredential(
@@ -190,7 +206,7 @@ function buildEvalOpsCredential(
 		},
 		metadata,
 		requestBody: {
-			provider_ref: resolveEvalOpsProviderRef(metadata),
+			provider_ref: resolveEvalOpsProviderRef(provider, metadata),
 		},
 	};
 }

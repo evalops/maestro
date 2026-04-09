@@ -17,6 +17,8 @@ vi.mock("node:readline/promises", () => ({
 describe("handleConfigInit", () => {
 	const originalCwd = process.cwd();
 	const originalLog = console.log;
+	const originalArgv = [...process.argv];
+	const originalGatewayUrl = process.env.MAESTRO_LLM_GATEWAY_URL;
 	let tempDir: string;
 	let output: string[];
 
@@ -27,6 +29,8 @@ describe("handleConfigInit", () => {
 		console.log = (...args: unknown[]) => {
 			output.push(args.map((arg) => String(arg)).join(" "));
 		};
+		process.argv = ["node", "maestro", "config", "init"];
+		Reflect.deleteProperty(process.env, "MAESTRO_LLM_GATEWAY_URL");
 		answers.splice(0, answers.length, "1", "1", "n");
 		questionMock.mockClear();
 		closeMock.mockClear();
@@ -35,6 +39,12 @@ describe("handleConfigInit", () => {
 	afterEach(() => {
 		process.chdir(originalCwd);
 		console.log = originalLog;
+		process.argv = [...originalArgv];
+		if (originalGatewayUrl === undefined) {
+			Reflect.deleteProperty(process.env, "MAESTRO_LLM_GATEWAY_URL");
+		} else {
+			process.env.MAESTRO_LLM_GATEWAY_URL = originalGatewayUrl;
+		}
 		rmSync(tempDir, { recursive: true, force: true });
 		vi.resetModules();
 	});
@@ -55,5 +65,44 @@ describe("handleConfigInit", () => {
 		expect(combined).not.toContain("Run: composer models list");
 		expect(combined).not.toContain('Start using: composer "your prompt"');
 		expect(closeMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("writes managed openrouter config with the gateway preset", async () => {
+		process.argv = [
+			"node",
+			"maestro",
+			"config",
+			"init",
+			"--preset",
+			"evalops-openrouter",
+		];
+		process.env.MAESTRO_LLM_GATEWAY_URL = "http://gateway.example/v1";
+		answers.splice(0, answers.length, "n");
+
+		const { handleConfigInit } = await import(
+			"../../src/cli/commands/config.js"
+		);
+		await handleConfigInit();
+
+		const config = JSON.parse(
+			readFileSync(join(tempDir, ".maestro", "config.json"), "utf8"),
+		) as {
+			providers: Array<{
+				id: string;
+				baseUrl: string;
+				api: string;
+				models: Array<{ id: string }>;
+			}>;
+		};
+		const provider = config.providers[0];
+		expect(provider).toMatchObject({
+			id: "evalops-openrouter",
+			baseUrl: "http://gateway.example/v1",
+			api: "openai-completions",
+		});
+		expect(provider?.models[0]?.id).toBe("openai/o4-mini");
+		expect(output.join("\n")).toContain(
+			"Managed gateway preset does not use a local API key",
+		);
 	});
 });

@@ -127,6 +127,14 @@ describe("createAuthSetup", () => {
 		expect(allPlain).toContain("login");
 	});
 
+	it("buildMissingAuthLines reuses evalops login hint for managed aliases", () => {
+		const result = createAuthSetup({ authMode: "auto" });
+		const lines = result.buildMissingAuthLines("evalops-openrouter");
+
+		const allPlain = lines.map((l) => l.plain).join("\n");
+		expect(allPlain).toContain("/login evalops");
+	});
+
 	it("buildMissingAuthLines includes env var hint", () => {
 		(getEnvVarsForProvider as ReturnType<typeof vi.fn>).mockReturnValueOnce([
 			"OPENAI_API_KEY",

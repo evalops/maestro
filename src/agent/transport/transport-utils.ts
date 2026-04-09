@@ -4,7 +4,7 @@
  * and PII policy formatting. Zero class coupling.
  */
 
-import { envApiKeyMap } from "../../providers/api-keys.js";
+import { getEnvVarsForProvider } from "../../providers/api-keys.js";
 import type { AuthCredential } from "../../providers/auth.js";
 import { sanitizeLogMessage } from "../../safety/context-firewall.js";
 import type { Clock } from "../../utils/clock.js";
@@ -75,7 +75,7 @@ export function extractTextFromContent(
 export function resolveEnvCredential(
 	provider: string,
 ): AuthCredential | undefined {
-	const vars = envApiKeyMap[provider as keyof typeof envApiKeyMap] ?? [];
+	const vars = getEnvVarsForProvider(provider);
 	for (const name of vars) {
 		const value = process.env[name];
 		if (!value) continue;

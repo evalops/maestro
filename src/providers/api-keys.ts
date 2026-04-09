@@ -91,6 +91,16 @@ export function isKnownProvider(value: string): value is KnownProvider {
 	return value in envApiKeyMap;
 }
 
+function getKnownProviderKey(provider: string): KnownProvider | undefined {
+	if (isKnownProvider(provider)) {
+		return provider;
+	}
+	if (provider.toLowerCase().startsWith("evalops-")) {
+		return "evalops";
+	}
+	return undefined;
+}
+
 export type ApiKeySource =
 	| "explicit"
 	| "env"
@@ -140,8 +150,9 @@ export function lookupApiKey(
 		};
 	}
 
-	if (isKnownProvider(provider)) {
-		for (const envVar of envApiKeyMap[provider]) {
+	const providerKey = getKnownProviderKey(provider);
+	if (providerKey) {
+		for (const envVar of envApiKeyMap[providerKey]) {
 			checkedEnvVars.push(envVar);
 			const envValue = process.env[envVar];
 			if (envValue) {
@@ -196,8 +207,9 @@ export function lookupApiKey(
 }
 
 export function getEnvVarsForProvider(provider: string): string[] {
-	if (isKnownProvider(provider)) {
-		return [...envApiKeyMap[provider]];
+	const providerKey = getKnownProviderKey(provider);
+	if (providerKey) {
+		return [...envApiKeyMap[providerKey]];
 	}
 	const customMeta = getCustomProviderMetadata(provider);
 	return customMeta?.apiKeyEnv ? [customMeta.apiKeyEnv] : [];

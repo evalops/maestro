@@ -35,6 +35,10 @@ type ProviderPreset = {
 	maxTokens?: number;
 };
 
+function isManagedGatewayPreset(providerId: string): boolean {
+	return providerId === "evalops" || providerId.startsWith("evalops-");
+}
+
 export const PROVIDER_PRESETS: ProviderPreset[] = [
 	{
 		id: "anthropic",
@@ -77,13 +81,23 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
 	},
 	{
 		id: "evalops",
-		name: "EvalOps Managed Gateway",
+		name: "EvalOps Managed Gateway (OpenAI Responses)",
 		api: "openai-responses",
 		defaultModel: "gpt-4o-mini",
 		baseUrl:
 			process.env.MAESTRO_LLM_GATEWAY_URL?.trim() || "http://127.0.0.1:8081/v1",
 		requiresApiKey: false,
-		note: "Requires /login evalops, MAESTRO_EVALOPS_ORG_ID, and MAESTRO_LLM_GATEWAY_URL if not using the default local port",
+		note: "Requires /login evalops and routes managed OpenAI responses through the gateway",
+	},
+	{
+		id: "evalops-openrouter",
+		name: "EvalOps Managed Gateway (OpenRouter)",
+		api: "openai-completions",
+		defaultModel: "openai/o4-mini",
+		baseUrl:
+			process.env.MAESTRO_LLM_GATEWAY_URL?.trim() || "http://127.0.0.1:8081/v1",
+		requiresApiKey: false,
+		note: "Requires /login evalops and routes managed OpenRouter chat completions through the gateway",
 	},
 	{
 		id: "google-gemini",
@@ -646,10 +660,9 @@ export async function handleConfigInit(): Promise<void> {
 			}
 		} else {
 			useEnv = false;
-			const noKeyMessage =
-				providerId === "evalops"
-					? "\nManaged gateway preset does not use a local API key. Run /login evalops after setup."
-					: "\nLocal providers do not require API keys. Skipping step.";
+			const noKeyMessage = isManagedGatewayPreset(providerId)
+				? "\nManaged gateway preset does not use a local API key. Run /login evalops after setup."
+				: "\nLocal providers do not require API keys. Skipping step.";
 			console.log(chalk.dim(noKeyMessage));
 		}
 
