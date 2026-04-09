@@ -186,6 +186,8 @@ Current managed provider aliases:
   - Databricks chat-completions compatibility through the gateway
 - `evalops-groq`
   - Groq chat-completions compatibility through the gateway
+- `evalops-together`
+  - Together chat-completions compatibility through the gateway
 - `evalops-mistral`
   - Mistral chat-completions compatibility through the gateway
 - `evalops-xai`

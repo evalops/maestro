@@ -121,6 +121,17 @@ describe("Built-in model registry", () => {
 		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/chat/completions");
 	});
 
+	it("includes EvalOps managed Together models normalized to the gateway endpoint", () => {
+		const model = getModel(
+			"evalops-together",
+			"meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
+		);
+		expect(model).toBeTruthy();
+		expect(model?.provider).toBe("evalops-together");
+		expect(model?.api).toBe("openai-completions");
+		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/chat/completions");
+	});
+
 	it("includes EvalOps managed Mistral models normalized to the gateway endpoint", () => {
 		const model = getModel("evalops-mistral", "mistral-large-latest");
 		expect(model).toBeTruthy();
