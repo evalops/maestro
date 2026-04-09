@@ -99,6 +99,17 @@ describe("Built-in model registry", () => {
 		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/chat/completions");
 	});
 
+	it("includes EvalOps managed Databricks models normalized to the gateway endpoint", () => {
+		const model = getModel(
+			"evalops-databricks",
+			"databricks-meta-llama-3-3-70b-instruct",
+		);
+		expect(model).toBeTruthy();
+		expect(model?.provider).toBe("evalops-databricks");
+		expect(model?.api).toBe("openai-completions");
+		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/chat/completions");
+	});
+
 	it("includes EvalOps managed Mistral models normalized to the gateway endpoint", () => {
 		const model = getModel("evalops-mistral", "mistral-large-latest");
 		expect(model).toBeTruthy();
