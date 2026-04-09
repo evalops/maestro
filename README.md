@@ -164,6 +164,45 @@ Use `maestro config init` for interactive provider setup, or `--provider` and `-
 
 **GitHub Copilot:** after `/login github-copilot`, select models via `/model` (provider `github-copilot`) or run `maestro --provider github-copilot --model <id>`.
 
+### Managed EvalOps Gateway
+
+Maestro also supports a managed control-plane path through EvalOps. In this
+mode, Maestro authenticates with `/login evalops` and sends provider refs to
+`llm-gateway` instead of using raw vendor keys directly.
+
+Current managed provider aliases:
+
+- `evalops`
+  - OpenAI Responses compatibility through the gateway
+- `evalops-anthropic`
+  - Anthropic Messages compatibility through the gateway
+- `evalops-openrouter`
+  - OpenRouter chat-completions compatibility through the gateway
+
+Typical setup:
+
+```bash
+export MAESTRO_EVALOPS_ORG_ID=org_123
+export MAESTRO_LLM_GATEWAY_URL=http://127.0.0.1:8081/v1
+maestro config init --preset evalops-anthropic
+```
+
+Then authenticate:
+
+```bash
+/login evalops
+```
+
+In managed mode:
+
+- Maestro sends `Authorization: Bearer <EvalOps token>` to the gateway
+- Maestro includes `X-Organization-ID`
+- Maestro sends `provider_ref` metadata instead of a raw vendor key
+- the gateway resolves the provider ref through the access plane
+
+This is the intended path for org-managed Anthropic, OpenAI, and OpenRouter
+credentials.
+
 Example `~/.maestro/config.json` to add a short alias:
 
 ```json

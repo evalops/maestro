@@ -9,6 +9,16 @@ function getManagedGatewayBaseUrl(): string {
 	return configured || DEFAULT_MANAGED_GATEWAY_BASE_URL;
 }
 
+function getManagedGatewayBaseUrlForApi(api: Api): string {
+	const managedBaseUrl = getManagedGatewayBaseUrl();
+	if (api !== "anthropic-messages") {
+		return managedBaseUrl;
+	}
+	return managedBaseUrl.endsWith("/v1")
+		? managedBaseUrl.slice(0, -"/v1".length)
+		: managedBaseUrl;
+}
+
 function cloneManagedGatewayModels(
 	models: Model<Api>[] | undefined,
 	targetProvider: string,
@@ -17,7 +27,6 @@ function cloneManagedGatewayModels(
 		return [];
 	}
 
-	const managedBaseUrl = getManagedGatewayBaseUrl();
 	return models.map(
 		(model) =>
 			({
@@ -26,7 +35,7 @@ function cloneManagedGatewayModels(
 				baseUrl: normalizeModelBaseUrl({
 					...model,
 					provider: targetProvider,
-					baseUrl: managedBaseUrl,
+					baseUrl: getManagedGatewayBaseUrlForApi(model.api),
 				}),
 			}) satisfies Model<Api>,
 	);
@@ -1345,6 +1354,10 @@ function convertGeneratedModels(): Record<string, Model<Api>[]> {
 	}
 
 	converted.evalops = cloneManagedGatewayModels(converted.openai, "evalops");
+	converted["evalops-anthropic"] = cloneManagedGatewayModels(
+		converted.anthropic,
+		"evalops-anthropic",
+	);
 	converted["evalops-openrouter"] = cloneManagedGatewayModels(
 		converted.openrouter,
 		"evalops-openrouter",

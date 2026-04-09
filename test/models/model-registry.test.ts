@@ -58,4 +58,12 @@ describe("Built-in model registry", () => {
 		expect(model?.api).toBe("openai-completions");
 		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/chat/completions");
 	});
+
+	it("includes EvalOps managed Anthropic models normalized to the gateway endpoint", () => {
+		const model = getModel("evalops-anthropic", "claude-sonnet-4-5");
+		expect(model).toBeTruthy();
+		expect(model?.provider).toBe("evalops-anthropic");
+		expect(model?.api).toBe("anthropic-messages");
+		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/messages");
+	});
 });

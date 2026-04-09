@@ -90,6 +90,16 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
 		note: "Requires /login evalops and routes managed OpenAI responses through the gateway",
 	},
 	{
+		id: "evalops-anthropic",
+		name: "EvalOps Managed Gateway (Anthropic Messages)",
+		api: "anthropic-messages",
+		defaultModel: "claude-sonnet-4-5",
+		baseUrl:
+			process.env.MAESTRO_LLM_GATEWAY_URL?.trim() || "http://127.0.0.1:8081/v1",
+		requiresApiKey: false,
+		note: "Requires /login evalops and routes managed Anthropic messages through the gateway",
+	},
+	{
 		id: "evalops-openrouter",
 		name: "EvalOps Managed Gateway (OpenRouter)",
 		api: "openai-completions",

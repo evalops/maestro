@@ -129,6 +129,12 @@ function resolveEvalOpsProviderAlias(provider: string): string | undefined {
 	return alias.length > 0 ? alias : undefined;
 }
 
+function resolveEvalOpsCredentialType(provider: string): AuthCredentialType {
+	return resolveEvalOpsProviderAlias(provider) === "anthropic"
+		? "anthropic-oauth"
+		: "api-key";
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -209,7 +215,7 @@ function buildEvalOpsCredential(
 	return {
 		provider,
 		token,
-		type: "api-key",
+		type: resolveEvalOpsCredentialType(provider),
 		source,
 		envVar,
 		headers: {
