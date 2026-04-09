@@ -205,6 +205,28 @@ describe("OpenAI Responses SDK streaming", () => {
 		);
 	});
 
+	it("merges provider-specific request body fields into responses requests", async () => {
+		for await (const _ of streamResponsesApiSdk(responsesModel, baseContext, {
+			apiKey: "k",
+			requestBody: {
+				provider_ref: {
+					provider: "openai",
+					environment: "prod",
+				},
+			},
+		})) {
+			// drain
+		}
+
+		const params = openaiMock.getLastParams() as {
+			provider_ref?: Record<string, string>;
+		};
+		expect(params.provider_ref).toEqual({
+			provider: "openai",
+			environment: "prod",
+		});
+	});
+
 	it("adds tool result images as follow-up user content when supported", async () => {
 		const modelWithImages: Model<"openai-responses"> = {
 			...responsesModel,

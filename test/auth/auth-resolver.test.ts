@@ -127,6 +127,41 @@ describe("auth resolver", () => {
 		mockedLoadCreds.mockReset();
 	});
 
+	it("uses EvalOps OAuth token with org header and provider_ref", async () => {
+		const mockedGetToken = vi.mocked(getOAuthToken);
+		const mockedLoadCreds = vi.mocked(loadOAuthCredentials);
+		mockedGetToken.mockResolvedValue("evalops-token");
+		mockedLoadCreds.mockReturnValue({
+			type: "oauth",
+			access: "evalops-token",
+			refresh: "",
+			expires: Date.now() + 60_000,
+			metadata: {
+				organizationId: "org_evalops",
+				providerRef: {
+					provider: "openai",
+					environment: "prod",
+				},
+			},
+		});
+		const resolver = createAuthResolver({ mode: "auto" });
+		const credential = await resolver("evalops");
+		expect(credential).toBeDefined();
+		expect(credential?.token).toBe("evalops-token");
+		expect(credential?.source).toBe("evalops_oauth_file");
+		expect(credential?.headers).toEqual({
+			"X-Organization-ID": "org_evalops",
+		});
+		expect(credential?.requestBody).toEqual({
+			provider_ref: {
+				provider: "openai",
+				environment: "prod",
+			},
+		});
+		mockedGetToken.mockReset();
+		mockedLoadCreds.mockReset();
+	});
+
 	it("reads env claude token ahead of file", async () => {
 		process.env.CLAUDE_CODE_TOKEN = "env-token";
 		const resolver = createAuthResolver({ mode: "claude" });

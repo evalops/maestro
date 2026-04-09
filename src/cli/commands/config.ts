@@ -76,6 +76,16 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
 		note: "Supports many upstreams; accepts OpenAI-compatible keys",
 	},
 	{
+		id: "evalops",
+		name: "EvalOps Managed Gateway",
+		api: "openai-responses",
+		defaultModel: "gpt-4o-mini",
+		baseUrl:
+			process.env.MAESTRO_LLM_GATEWAY_URL?.trim() || "http://127.0.0.1:8081/v1",
+		requiresApiKey: false,
+		note: "Requires /login evalops, MAESTRO_EVALOPS_ORG_ID, and MAESTRO_LLM_GATEWAY_URL if not using the default local port",
+	},
+	{
 		id: "google-gemini",
 		name: "Google Gemini API",
 		api: "google-generative-ai",
@@ -636,9 +646,11 @@ export async function handleConfigInit(): Promise<void> {
 			}
 		} else {
 			useEnv = false;
-			console.log(
-				chalk.dim("\nLocal providers do not require API keys. Skipping step."),
-			);
+			const noKeyMessage =
+				providerId === "evalops"
+					? "\nManaged gateway preset does not use a local API key. Run /login evalops after setup."
+					: "\nLocal providers do not require API keys. Skipping step.";
+			console.log(chalk.dim(noKeyMessage));
 		}
 
 		// Step 3: Use file references for prompts

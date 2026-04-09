@@ -31,6 +31,7 @@
  * | custom_env          | Env var from custom provider config      |
  * | anthropic_oauth_env | Anthropic OAuth token from env           |
  * | anthropic_oauth_file| Anthropic OAuth from stored credentials  |
+ * | evalops_oauth_file  | EvalOps managed OAuth from stored credentials |
  * | openai_oauth_file   | OpenAI OAuth from stored credentials     |
  * | google_oauth_file   | Google OAuth from stored credentials     |
  *
@@ -65,6 +66,7 @@ export type AuthCredentialSource =
 	| "custom_env"
 	| "anthropic_oauth_env"
 	| "anthropic_oauth_file"
+	| "evalops_oauth_file"
 	| "openai_oauth_file"
 	| "google_oauth_file"
 	| "github_copilot_oauth_file";
@@ -75,7 +77,9 @@ export interface AuthCredential {
 	type: AuthCredentialType;
 	source: AuthCredentialSource;
 	envVar?: string;
+	headers?: Record<string, string>;
 	metadata?: Record<string, unknown>;
+	requestBody?: Record<string, unknown>;
 }
 
 export interface AuthResolverOptions {
@@ -111,18 +115,114 @@ function isGitHubCopilotProvider(provider: string): boolean {
 	return provider.toLowerCase() === "github-copilot";
 }
 
+function isEvalOpsProvider(provider: string): boolean {
+	return provider.toLowerCase() === "evalops";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function resolveEvalOpsOrganizationId(
+	metadata?: Record<string, unknown>,
+): string | undefined {
+	const candidate =
+		typeof metadata?.organizationId === "string"
+			? metadata.organizationId
+			: undefined;
+	if (candidate && candidate.trim().length > 0) {
+		return candidate.trim();
+	}
+	for (const envVar of [
+		"MAESTRO_EVALOPS_ORG_ID",
+		"EVALOPS_ORGANIZATION_ID",
+		"MAESTRO_ENTERPRISE_ORG_ID",
+	]) {
+		const value = process.env[envVar]?.trim();
+		if (value) {
+			return value;
+		}
+	}
+	return undefined;
+}
+
+function resolveEvalOpsProviderRef(
+	metadata?: Record<string, unknown>,
+): Record<string, string> {
+	const providerRef = isRecord(metadata?.providerRef)
+		? metadata.providerRef
+		: null;
+	const provider =
+		typeof providerRef?.provider === "string" && providerRef.provider.trim()
+			? providerRef.provider.trim()
+			: process.env.MAESTRO_EVALOPS_PROVIDER?.trim() ||
+				process.env.MAESTRO_LLM_GATEWAY_PROVIDER?.trim() ||
+				"openai";
+	const environment =
+		typeof providerRef?.environment === "string" &&
+		providerRef.environment.trim()
+			? providerRef.environment.trim()
+			: process.env.MAESTRO_EVALOPS_ENVIRONMENT?.trim() ||
+				process.env.MAESTRO_LLM_GATEWAY_ENVIRONMENT?.trim() ||
+				"prod";
+	return { provider, environment };
+}
+
+function buildEvalOpsCredential(
+	provider: string,
+	token: string,
+	source: AuthCredentialSource,
+	metadata?: Record<string, unknown>,
+	envVar?: string,
+): AuthCredential | undefined {
+	const organizationId = resolveEvalOpsOrganizationId(metadata);
+	if (!organizationId) {
+		return undefined;
+	}
+	return {
+		provider,
+		token,
+		type: "api-key",
+		source,
+		envVar,
+		headers: {
+			"X-Organization-ID": organizationId,
+		},
+		metadata,
+		requestBody: {
+			provider_ref: resolveEvalOpsProviderRef(metadata),
+		},
+	};
+}
+
 export function createAuthResolver(options: AuthResolverOptions): AuthResolver {
 	const explicitKey = options.explicitApiKey?.trim();
 	return async (provider: string): Promise<AuthCredential | undefined> => {
 		const normalizedProvider = provider.toLowerCase();
 
 		if (explicitKey) {
+			if (isEvalOpsProvider(provider)) {
+				return buildEvalOpsCredential(provider, explicitKey, "explicit");
+			}
 			return {
 				provider,
 				token: explicitKey,
 				type: "api-key",
 				source: "explicit",
 			};
+		}
+
+		if (isEvalOpsProvider(provider) && options.mode !== "api-key") {
+			const oauthToken = await getOAuthToken("evalops");
+			if (oauthToken) {
+				const credentials = loadOAuthCredentials("evalops");
+				return buildEvalOpsCredential(
+					provider,
+					oauthToken,
+					"evalops_oauth_file",
+					credentials?.metadata,
+				);
+			}
 		}
 
 		// Handle OpenAI Auth
@@ -218,6 +318,15 @@ export function createAuthResolver(options: AuthResolverOptions): AuthResolver {
 		if (lookup.key) {
 			if (lookup.source === "missing") {
 				return undefined;
+			}
+			if (isEvalOpsProvider(provider)) {
+				return buildEvalOpsCredential(
+					provider,
+					lookup.key,
+					lookup.source,
+					undefined,
+					lookup.envVar,
+				);
 			}
 			return {
 				provider,

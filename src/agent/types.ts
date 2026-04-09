@@ -1403,6 +1403,8 @@ export interface StreamOptions {
 	apiKey?: string;
 	/** Additional headers to include in requests */
 	headers?: Record<string, string>;
+	/** Additional request body fields for provider-specific extensions */
+	requestBody?: Record<string, unknown>;
 	/** Authentication type for the request */
 	authType?: "api-key" | "anthropic-oauth";
 	/** Optional Anthropic API-side task budget for the current turn */

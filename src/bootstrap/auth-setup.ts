@@ -92,7 +92,9 @@ export function createAuthSetup(params: {
 					? 'Run "maestro anthropic login" (claude) or use /login to authenticate before retrying.'
 					: providerName === "openai"
 						? 'Run "maestro openai login" or use /login to authenticate before retrying.'
-						: 'Run "/login" to authenticate before retrying.';
+						: providerName === "evalops"
+							? 'Run "/login evalops" after setting MAESTRO_EVALOPS_ORG_ID.'
+							: 'Run "/login" to authenticate before retrying.';
 			push(
 				`${loginHint} Or provide an API key for the selected provider.`,
 				chalk.dim(

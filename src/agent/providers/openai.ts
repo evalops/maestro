@@ -903,6 +903,9 @@ export async function* streamOpenAI(
 			requestBody.reasoning_effort = effort;
 		}
 	}
+	if (options.requestBody) {
+		Object.assign(requestBody, options.requestBody);
+	}
 
 	const headers: Record<string, string> = {
 		"Content-Type": "application/json",

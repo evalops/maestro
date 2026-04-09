@@ -5,6 +5,7 @@ import {
 	migrateAnthropicCredentials,
 	refreshAnthropicToken,
 } from "./anthropic.js";
+import { loginEvalOps, refreshEvalOpsToken } from "./evalops.js";
 import {
 	loginGitHubCopilot,
 	migrateGitHubCopilotCredentials,
@@ -39,6 +40,7 @@ export type { OAuthCredentials } from "./storage.js";
 
 export type SupportedOAuthProvider =
 	| "anthropic"
+	| "evalops"
 	| "openai"
 	| "github-copilot"
 	| "google-gemini-cli"
@@ -60,6 +62,12 @@ export function getOAuthProviders(): OAuthProviderInfo[] {
 			id: "anthropic",
 			name: "Anthropic",
 			description: "Claude Pro/Max subscription",
+			available: true,
+		},
+		{
+			id: "evalops",
+			name: "EvalOps Managed",
+			description: "Identity-backed managed gateway access",
 			available: true,
 		},
 		{
@@ -125,6 +133,9 @@ export async function login(
 		case "openai":
 			await loginOpenAI(options.onAuthUrl, options.onStatus);
 			break;
+		case "evalops":
+			await loginEvalOps(options.onAuthUrl, options.onStatus);
+			break;
 		case "google-gemini-cli":
 			await loginGoogleGeminiCli(options.onAuthUrl, options.onStatus);
 			break;
@@ -176,6 +187,9 @@ export async function refreshToken(
 				credentials.refresh,
 				credentials.metadata,
 			);
+			break;
+		case "evalops":
+			newCredentials = await refreshEvalOpsToken();
 			break;
 		case "google-gemini-cli":
 			newCredentials = await refreshGoogleGeminiCliToken(

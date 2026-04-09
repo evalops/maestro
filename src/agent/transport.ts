@@ -365,8 +365,12 @@ export class ProviderTransport implements AgentTransport {
 
 		const trainingHeaders = getTrainingHeaders();
 		const headers =
-			trainingHeaders || model.headers
-				? { ...(model.headers ?? {}), ...(trainingHeaders ?? {}) }
+			trainingHeaders || model.headers || credential?.headers
+				? {
+						...(model.headers ?? {}),
+						...(trainingHeaders ?? {}),
+						...(credential?.headers ?? {}),
+					}
 				: undefined;
 
 		const streamOptions = {
@@ -375,6 +379,7 @@ export class ProviderTransport implements AgentTransport {
 			signal,
 			authType: credential?.type ?? "api-key",
 			headers,
+			requestBody: credential?.requestBody,
 			taskBudget: cfg.taskBudget,
 		};
 

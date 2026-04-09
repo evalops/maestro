@@ -264,6 +264,7 @@ export class ModelSelectorComponent extends Container {
 		if (model.isLocal) return { usable: true };
 		const oauthProviders = new Set<SupportedOAuthProvider>([
 			"anthropic",
+			"evalops",
 			"openai",
 			"github-copilot",
 			"google-gemini-cli",

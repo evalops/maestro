@@ -160,6 +160,9 @@ export async function* streamResponsesApiSdk(
 		}
 		// type: "text" is the default, no need to set
 	}
+	if (options.requestBody) {
+		Object.assign(params, options.requestBody);
+	}
 
 	// For reasoning models, include encrypted_content to enable multi-turn conversations
 	// This is required for stateless usage of the Responses API with reasoning items

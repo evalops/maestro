@@ -107,12 +107,25 @@ describe("OAuth Storage", () => {
 });
 
 describe("OAuth Index", () => {
+	const originalEvalOpsOrgId = process.env.MAESTRO_EVALOPS_ORG_ID;
+	const originalEvalOpsOrganizationId = process.env.EVALOPS_ORGANIZATION_ID;
+
 	beforeEach(() => {
 		process.env.MAESTRO_AGENT_DIR = join(testDir, "agent");
 		mkdirSync(testDir, { recursive: true });
 	});
 
 	afterEach(() => {
+		if (originalEvalOpsOrgId === undefined) {
+			Reflect.deleteProperty(process.env, "MAESTRO_EVALOPS_ORG_ID");
+		} else {
+			process.env.MAESTRO_EVALOPS_ORG_ID = originalEvalOpsOrgId;
+		}
+		if (originalEvalOpsOrganizationId === undefined) {
+			Reflect.deleteProperty(process.env, "EVALOPS_ORGANIZATION_ID");
+		} else {
+			process.env.EVALOPS_ORGANIZATION_ID = originalEvalOpsOrganizationId;
+		}
 		if (existsSync(testDir)) {
 			rmSync(testDir, { recursive: true, force: true });
 		}
@@ -122,8 +135,9 @@ describe("OAuth Index", () => {
 		it("should return all supported providers", () => {
 			const providers = getOAuthProviders();
 
-			expect(providers).toHaveLength(5);
+			expect(providers).toHaveLength(6);
 			expect(providers.map((p) => p.id)).toContain("anthropic");
+			expect(providers.map((p) => p.id)).toContain("evalops");
 			expect(providers.map((p) => p.id)).toContain("openai");
 			expect(providers.map((p) => p.id)).toContain("github-copilot");
 			expect(providers.map((p) => p.id)).toContain("google-gemini-cli");
@@ -142,6 +156,7 @@ describe("OAuth Index", () => {
 	describe("hasOAuthCredentials", () => {
 		it("should return false when no credentials exist", () => {
 			expect(hasOAuthCredentials("anthropic")).toBe(false);
+			expect(hasOAuthCredentials("evalops")).toBe(false);
 			expect(hasOAuthCredentials("openai")).toBe(false);
 			expect(hasOAuthCredentials("github-copilot")).toBe(false);
 			expect(hasOAuthCredentials("google-gemini-cli")).toBe(false);
@@ -230,6 +245,17 @@ describe("OAuth Index", () => {
 					// No onDeviceCode provided
 				}),
 			).rejects.toThrow("GitHub Copilot requires onDeviceCode callback");
+		});
+
+		it("should require an org id for evalops login", async () => {
+			Reflect.deleteProperty(process.env, "MAESTRO_EVALOPS_ORG_ID");
+			Reflect.deleteProperty(process.env, "EVALOPS_ORGANIZATION_ID");
+			await expect(
+				login("evalops", {
+					onAuthUrl: vi.fn(),
+					onStatus: vi.fn(),
+				}),
+			).rejects.toThrow("MAESTRO_EVALOPS_ORG_ID");
 		});
 	});
 });

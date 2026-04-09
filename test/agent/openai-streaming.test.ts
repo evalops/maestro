@@ -141,6 +141,35 @@ describe("OpenAI streaming", () => {
 		expect(body.store).toBeUndefined();
 	});
 
+	it("merges provider-specific request body fields into chat completions", async () => {
+		const lines = [
+			'data: {"choices":[{"finish_reason":"stop"}]}\n',
+			"data: [DONE]\n",
+		];
+
+		const mockResponse = new Response(makeStream(lines), { status: 200 });
+		mockFetch.mockResolvedValue(mockResponse);
+
+		for await (const _ of streamOpenAI(completionsModel, baseContext, {
+			apiKey: "k",
+			requestBody: {
+				provider_ref: {
+					provider: "openai",
+					environment: "prod",
+				},
+			},
+		})) {
+			// consume stream
+		}
+
+		const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+		const body = JSON.parse(init.body as string);
+		expect(body.provider_ref).toEqual({
+			provider: "openai",
+			environment: "prod",
+		});
+	});
+
 	it("sends tool stubs for tool history and forwards tool result images", async () => {
 		const lines = [
 			'data: {"choices":[{"finish_reason":"stop"}]}\n',
