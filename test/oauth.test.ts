@@ -109,6 +109,7 @@ describe("OAuth Storage", () => {
 describe("OAuth Index", () => {
 	const originalEvalOpsOrgId = process.env.MAESTRO_EVALOPS_ORG_ID;
 	const originalEvalOpsOrganizationId = process.env.EVALOPS_ORGANIZATION_ID;
+	const originalFetch = global.fetch;
 
 	beforeEach(() => {
 		process.env.MAESTRO_AGENT_DIR = join(testDir, "agent");
@@ -126,6 +127,9 @@ describe("OAuth Index", () => {
 		} else {
 			process.env.EVALOPS_ORGANIZATION_ID = originalEvalOpsOrganizationId;
 		}
+		global.fetch = originalFetch;
+		vi.restoreAllMocks();
+		vi.unstubAllGlobals();
 		if (existsSync(testDir)) {
 			rmSync(testDir, { recursive: true, force: true });
 		}
@@ -224,6 +228,72 @@ describe("OAuth Index", () => {
 			const token = await getOAuthToken("anthropic");
 			expect(token).toBeNull();
 			expect(hasOAuthCredentials("anthropic")).toBe(false);
+		});
+
+		it("should refresh EvalOps credentials when the access token expires", async () => {
+			const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+			const refreshExpiresAt = new Date(
+				Date.now() + 7 * 24 * 60 * 60 * 1000,
+			).toISOString();
+			const fetchMock = vi.fn().mockResolvedValue(
+				new Response(
+					JSON.stringify({
+						access_token: "new-evalops-access",
+						expires_at: expiresAt,
+						organization_id: "org_123",
+						refresh_expires_at: refreshExpiresAt,
+						refresh_token: "new-evalops-refresh",
+						scopes: ["llm_gateway:invoke"],
+						token_type: "Bearer",
+					}),
+					{
+						status: 200,
+						headers: { "Content-Type": "application/json" },
+					},
+				),
+			);
+			vi.stubGlobal("fetch", fetchMock);
+
+			saveOAuthCredentials("evalops", {
+				type: "oauth",
+				access: "expired-access",
+				refresh: "old-evalops-refresh",
+				expires: Date.now() - 1000,
+				metadata: {
+					identityBaseUrl: "https://identity.evalops.test",
+					organizationId: "org_123",
+					providerRef: {
+						provider: "openai",
+						environment: "prod",
+					},
+					scopes: ["llm_gateway:invoke"],
+				},
+			});
+
+			const token = await getOAuthToken("evalops");
+			expect(token).toBe("new-evalops-access");
+
+			const saved = loadOAuthCredentials("evalops");
+			expect(saved).not.toBeNull();
+			expect(saved?.access).toBe("new-evalops-access");
+			expect(saved?.refresh).toBe("new-evalops-refresh");
+			expect(saved?.metadata?.organizationId).toBe("org_123");
+			expect(saved?.metadata?.refreshExpiresAt).toBeTypeOf("number");
+			expect(saved?.metadata?.providerRef).toEqual({
+				provider: "openai",
+				environment: "prod",
+			});
+
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			const [url, init] = fetchMock.mock.calls[0] ?? [];
+			expect(url).toBe("https://identity.evalops.test/v1/tokens/refresh");
+			expect(init?.method).toBe("POST");
+			expect(init?.headers).toEqual({
+				"Content-Type": "application/json",
+			});
+			expect(init?.body).toBe(
+				JSON.stringify({ refresh_token: "old-evalops-refresh" }),
+			);
 		});
 	});
 

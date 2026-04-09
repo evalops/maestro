@@ -189,7 +189,10 @@ export async function refreshToken(
 			);
 			break;
 		case "evalops":
-			newCredentials = await refreshEvalOpsToken();
+			newCredentials = await refreshEvalOpsToken(
+				credentials.refresh,
+				credentials.metadata,
+			);
 			break;
 		case "google-gemini-cli":
 			newCredentials = await refreshGoogleGeminiCliToken(

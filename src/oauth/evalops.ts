@@ -23,6 +23,16 @@ interface IdentityStartResponse {
 	error?: string;
 }
 
+interface IdentityRefreshResponse {
+	access_token?: string;
+	error?: string;
+	expires_at?: string;
+	organization_id?: string;
+	refresh_expires_at?: string;
+	refresh_token?: string;
+	scopes?: unknown;
+}
+
 interface EvalOpsProviderRef {
 	provider: string;
 	environment: string;
@@ -34,6 +44,8 @@ interface EvalOpsCallbackResult {
 	accessToken: string;
 	expiresAt: number;
 	organizationId: string;
+	refreshExpiresAt?: number;
+	refreshToken?: string;
 	scopes: string[];
 }
 
@@ -94,12 +106,19 @@ function getProviderRef(): EvalOpsProviderRef {
 }
 
 function parseExpiresAt(value: string | null): number {
+	return parseTimestamp(value, "expires_at");
+}
+
+function parseTimestamp(
+	value: string | null | undefined,
+	fieldName: string,
+): number {
 	if (!value) {
-		throw new Error("Missing expires_at in EvalOps callback");
+		throw new Error(`Missing ${fieldName} in EvalOps response`);
 	}
 	const expiresAt = Date.parse(value);
 	if (Number.isNaN(expiresAt)) {
-		throw new Error(`Invalid expires_at in EvalOps callback: ${value}`);
+		throw new Error(`Invalid ${fieldName} in EvalOps response: ${value}`);
 	}
 	return expiresAt;
 }
@@ -112,6 +131,42 @@ function parseScopes(value: string | null): string[] {
 		.split(" ")
 		.map((entry) => entry.trim())
 		.filter((entry) => entry.length > 0);
+}
+
+function parseScopesPayload(value: unknown): string[] {
+	if (!Array.isArray(value)) {
+		return [];
+	}
+	return value
+		.filter((entry): entry is string => typeof entry === "string")
+		.map((entry) => entry.trim())
+		.filter((entry) => entry.length > 0);
+}
+
+function getMetadataString(
+	metadata: Record<string, unknown> | undefined,
+	key: string,
+): string | undefined {
+	const value = metadata?.[key];
+	return typeof value === "string" && value.trim().length > 0
+		? value
+		: undefined;
+}
+
+function getMetadataNumber(
+	metadata: Record<string, unknown> | undefined,
+	key: string,
+): number | undefined {
+	const value = metadata?.[key];
+	return typeof value === "number" && Number.isFinite(value)
+		? value
+		: undefined;
+}
+
+function getMetadataScopes(
+	metadata: Record<string, unknown> | undefined,
+): string[] {
+	return parseScopesPayload(metadata?.scopes);
 }
 
 async function startCallbackServer(): Promise<{
@@ -164,6 +219,13 @@ async function startCallbackServer(): Promise<{
 				const expiresAt = parseExpiresAt(
 					requestUrl.searchParams.get("expires_at"),
 				);
+				const refreshToken =
+					requestUrl.searchParams.get("refresh_token")?.trim() || undefined;
+				const refreshExpiresAtValue =
+					requestUrl.searchParams.get("refresh_expires_at");
+				const refreshExpiresAt = refreshExpiresAtValue
+					? parseTimestamp(refreshExpiresAtValue, "refresh_expires_at")
+					: undefined;
 				const scopes = parseScopes(requestUrl.searchParams.get("scope"));
 
 				res.writeHead(200, { "Content-Type": "text/html" });
@@ -174,6 +236,8 @@ async function startCallbackServer(): Promise<{
 					accessToken,
 					expiresAt,
 					organizationId,
+					refreshExpiresAt,
+					refreshToken,
 					scopes,
 				});
 			} catch (error) {
@@ -280,12 +344,15 @@ export async function loginEvalOps(
 		const credentials: OAuthCredentials = {
 			type: "oauth",
 			access: result.accessToken,
-			refresh: "",
+			refresh: result.refreshToken ?? "",
 			expires: result.expiresAt,
 			metadata: {
 				identityBaseUrl,
 				organizationId: result.organizationId,
 				providerRef,
+				...(result.refreshExpiresAt
+					? { refreshExpiresAt: result.refreshExpiresAt }
+					: {}),
 				scopes: result.scopes,
 			},
 		};
@@ -300,8 +367,60 @@ export async function loginEvalOps(
 	}
 }
 
-export async function refreshEvalOpsToken(): Promise<OAuthCredentials> {
-	throw new Error(
-		"EvalOps managed tokens do not support refresh yet. Run /login evalops again.",
-	);
+export async function refreshEvalOpsToken(
+	refreshToken: string,
+	metadata?: Record<string, unknown>,
+): Promise<OAuthCredentials> {
+	if (!refreshToken) {
+		throw new Error("EvalOps refresh token missing. Run /login evalops again.");
+	}
+
+	const identityBaseUrl =
+		getMetadataString(metadata, "identityBaseUrl") ?? getIdentityBaseUrl();
+	const response = await fetch(`${identityBaseUrl}/v1/tokens/refresh`, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ refresh_token: refreshToken }),
+	});
+
+	let payload: IdentityRefreshResponse | undefined;
+	try {
+		payload = (await response.json()) as IdentityRefreshResponse;
+	} catch {
+		// Ignore JSON parse failure and surface a generic error below.
+	}
+
+	if (!response.ok || !payload?.access_token || !payload.expires_at) {
+		throw new Error(payload?.error ?? "EvalOps token refresh failed");
+	}
+
+	const expires = parseTimestamp(payload.expires_at, "expires_at");
+	const nextRefreshToken =
+		typeof payload.refresh_token === "string" &&
+		payload.refresh_token.trim().length > 0
+			? payload.refresh_token
+			: refreshToken;
+	const scopes = parseScopesPayload(payload.scopes);
+	const refreshExpiresAt =
+		payload.refresh_expires_at != null
+			? parseTimestamp(payload.refresh_expires_at, "refresh_expires_at")
+			: getMetadataNumber(metadata, "refreshExpiresAt");
+
+	return {
+		type: "oauth",
+		access: payload.access_token,
+		refresh: nextRefreshToken,
+		expires,
+		metadata: {
+			...metadata,
+			identityBaseUrl,
+			organizationId:
+				typeof payload.organization_id === "string" &&
+				payload.organization_id.length > 0
+					? payload.organization_id
+					: getMetadataString(metadata, "organizationId"),
+			...(refreshExpiresAt ? { refreshExpiresAt } : {}),
+			scopes: scopes.length > 0 ? scopes : getMetadataScopes(metadata),
+		},
+	};
 }
