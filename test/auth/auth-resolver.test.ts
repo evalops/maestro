@@ -409,6 +409,37 @@ describe("auth resolver", () => {
 		mockedLoadCreds.mockReset();
 	});
 
+	it("overrides stored EvalOps provider_ref for Perplexity aliases", async () => {
+		const mockedGetToken = vi.mocked(getOAuthToken);
+		const mockedLoadCreds = vi.mocked(loadOAuthCredentials);
+		mockedGetToken.mockResolvedValue("evalops-token");
+		mockedLoadCreds.mockReturnValue({
+			type: "oauth",
+			access: "evalops-token",
+			refresh: "",
+			expires: Date.now() + 60_000,
+			metadata: {
+				organizationId: "org_evalops",
+				providerRef: {
+					provider: "openai",
+					environment: "prod",
+				},
+			},
+		});
+		const resolver = createAuthResolver({ mode: "auto" });
+		const credential = await resolver("evalops-perplexity");
+		expect(credential).toBeDefined();
+		expect(credential?.type).toBe("api-key");
+		expect(credential?.requestBody).toEqual({
+			provider_ref: {
+				provider: "perplexity",
+				environment: "prod",
+			},
+		});
+		mockedGetToken.mockReset();
+		mockedLoadCreds.mockReset();
+	});
+
 	it("overrides stored EvalOps provider_ref for Together aliases", async () => {
 		const mockedGetToken = vi.mocked(getOAuthToken);
 		const mockedLoadCreds = vi.mocked(loadOAuthCredentials);
