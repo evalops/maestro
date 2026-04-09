@@ -194,6 +194,7 @@ function handleSave(
 	const entry = addMemory(topic, content, {
 		tags,
 		sessionId: ctx.sessionId,
+		cwd: ctx.cwd,
 	});
 
 	ctx.showSuccess(`Memory saved to topic "${topic}" (${entry.id})`);

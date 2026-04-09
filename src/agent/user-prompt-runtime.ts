@@ -132,9 +132,11 @@ function applyAutomaticMemoryRecall(params: {
 	agent: Agent;
 	sessionManager: PromptRuntimeSessionManager;
 	prompt: string;
+	cwd: string;
 }): void {
 	const promptAddition = buildRelevantMemoryPromptAddition(params.prompt, {
 		sessionId: params.sessionManager.getSessionId?.(),
+		cwd: params.cwd,
 	});
 	if (!promptAddition) {
 		return;

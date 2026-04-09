@@ -266,6 +266,7 @@ export function createAutomaticMemoryExtractionCoordinator(
 					for (const memory of memories) {
 						const result = upsertDurableMemory(memory.topic, memory.content, {
 							tags: ["auto", "durable", ...(memory.tags ?? [])],
+							cwd: snapshot.cwd,
 						});
 						if (result.created) {
 							added += 1;

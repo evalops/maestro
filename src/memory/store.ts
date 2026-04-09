@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
+import { getMemoryProjectScope } from "./team-memory.js";
 import type {
 	MemoryEntry,
 	MemoryQueryOptions,
@@ -126,6 +127,12 @@ function matchesQueryOptions(
 	) {
 		return false;
 	}
+	if (
+		options?.projectId !== undefined &&
+		entry.projectId !== options.projectId
+	) {
+		return false;
+	}
 	return true;
 }
 
@@ -145,10 +152,12 @@ export function addMemory(
 	options?: {
 		tags?: string[];
 		sessionId?: string;
+		cwd?: string;
 	},
 ): MemoryEntry {
 	const store = loadStore();
 	const now = Date.now();
+	const projectScope = options?.cwd ? getMemoryProjectScope(options.cwd) : null;
 
 	const entry: MemoryEntry = {
 		id: generateId(),
@@ -156,6 +165,8 @@ export function addMemory(
 		content,
 		tags: normalizeTags(options?.tags),
 		sessionId: options?.sessionId,
+		projectId: projectScope?.projectId,
+		projectName: projectScope?.projectName,
 		createdAt: now,
 		updatedAt: now,
 	};
@@ -177,16 +188,19 @@ export function upsertScopedMemory(
 	options: {
 		sessionId?: string;
 		tags?: string[];
+		cwd?: string;
 	},
 ): MemoryEntry {
 	const store = loadStore();
 	const normalizedTopic = normalizeTopic(topic);
 	const normalizedTags = normalizeTags(options.tags);
+	const projectScope = options.cwd ? getMemoryProjectScope(options.cwd) : null;
 	const existing = store.entries
 		.filter(
 			(entry) =>
 				entry.topic === normalizedTopic &&
-				entry.sessionId === options.sessionId,
+				entry.sessionId === options.sessionId &&
+				entry.projectId === projectScope?.projectId,
 		)
 		.sort((a, b) => b.updatedAt - a.updatedAt)[0];
 
@@ -198,6 +212,8 @@ export function upsertScopedMemory(
 			content,
 			tags: normalizedTags,
 			sessionId: options.sessionId,
+			projectId: projectScope?.projectId,
+			projectName: projectScope?.projectName,
 			createdAt: now,
 			updatedAt: now,
 		};
@@ -208,15 +224,20 @@ export function upsertScopedMemory(
 
 	const nextTags = normalizedTags ?? [];
 	const previousTags = existing.tags ?? [];
+	const projectChanged =
+		existing.projectId !== projectScope?.projectId ||
+		existing.projectName !== projectScope?.projectName;
 	const tagsChanged =
 		nextTags.length !== previousTags.length ||
 		nextTags.some((tag, index) => previousTags[index] !== tag);
-	if (existing.content === content && !tagsChanged) {
+	if (existing.content === content && !tagsChanged && !projectChanged) {
 		return existing;
 	}
 
 	existing.content = content;
 	existing.tags = normalizedTags;
+	existing.projectId = projectScope?.projectId;
+	existing.projectName = projectScope?.projectName;
 	existing.updatedAt = Date.now();
 	saveStore(store);
 	return existing;
@@ -227,6 +248,7 @@ export function upsertDurableMemory(
 	content: string,
 	options?: {
 		tags?: string[];
+		cwd?: string;
 	},
 ): { entry: MemoryEntry; created: boolean; updated: boolean } {
 	const store = loadStore();
@@ -243,16 +265,29 @@ function upsertDurableMemoryInStore(
 	content: string,
 	options?: {
 		tags?: string[];
+		cwd?: string;
+		projectId?: string;
+		projectName?: string;
 	},
 ): { entry: MemoryEntry; created: boolean; updated: boolean } {
 	const normalizedTopic = normalizeTopic(topic);
 	const normalizedTags = normalizeTags(options?.tags);
 	const nextContent = content.replace(/\s+/g, " ").trim();
 	const normalizedContent = normalizeContent(nextContent);
+	const projectScope =
+		options?.projectId !== undefined
+			? {
+					projectId: options.projectId,
+					projectName: options.projectName,
+				}
+			: options?.cwd
+				? getMemoryProjectScope(options.cwd)
+				: null;
 	const existing = store.entries.find(
 		(entry) =>
 			entry.sessionId === undefined &&
 			entry.topic === normalizedTopic &&
+			entry.projectId === projectScope?.projectId &&
 			normalizeContent(entry.content) === normalizedContent,
 	);
 
@@ -263,6 +298,8 @@ function upsertDurableMemoryInStore(
 			topic: normalizedTopic,
 			content: nextContent,
 			tags: normalizedTags,
+			projectId: projectScope?.projectId,
+			projectName: projectScope?.projectName,
 			createdAt: now,
 			updatedAt: now,
 		};
@@ -271,24 +308,42 @@ function upsertDurableMemoryInStore(
 	}
 
 	const mergedTags = mergeTags(existing.tags, normalizedTags);
+	const projectChanged =
+		existing.projectId !== projectScope?.projectId ||
+		existing.projectName !== projectScope?.projectName;
 	const tagsChanged =
 		(mergedTags?.length ?? 0) !== (existing.tags?.length ?? 0) ||
 		(mergedTags ?? []).some((tag, index) => existing.tags?.[index] !== tag);
 	const contentChanged = existing.content !== nextContent;
-	if (!tagsChanged && !contentChanged) {
+	if (!tagsChanged && !contentChanged && !projectChanged) {
 		return { entry: existing, created: false, updated: false };
 	}
 
 	existing.content = nextContent;
 	existing.tags = mergedTags;
+	existing.projectId = projectScope?.projectId;
+	existing.projectName = projectScope?.projectName;
 	existing.updatedAt = Date.now();
 	return { entry: existing, created: false, updated: true };
 }
 
-export function listAutoDurableMemories(): MemoryEntry[] {
+export function listAutoDurableMemories(options?: {
+	projectId?: string | null;
+}): MemoryEntry[] {
 	const store = loadStore();
 	return store.entries
-		.filter((entry) => isAutoDurableMemoryEntry(entry))
+		.filter((entry) => {
+			if (!isAutoDurableMemoryEntry(entry)) {
+				return false;
+			}
+			if (!options || !("projectId" in options)) {
+				return true;
+			}
+			if (options.projectId === null) {
+				return entry.projectId === undefined;
+			}
+			return entry.projectId === options.projectId;
+		})
 		.slice()
 		.sort((a, b) => b.updatedAt - a.updatedAt);
 }
@@ -300,11 +355,19 @@ export function applyAutoMemoryConsolidation(plan: {
 		content: string;
 		tags?: string[];
 	}>;
+	options?: {
+		projectId?: string;
+		projectName?: string;
+	};
 }): { removed: number; added: number; updated: number } {
 	const store = loadStore();
 	const eligibleIds = new Set(
 		store.entries
-			.filter((entry) => isAutoDurableMemoryEntry(entry))
+			.filter(
+				(entry) =>
+					isAutoDurableMemoryEntry(entry) &&
+					entry.projectId === plan.options?.projectId,
+			)
 			.map((entry) => entry.id),
 	);
 	const removeIds = Array.from(
@@ -330,6 +393,8 @@ export function applyAutoMemoryConsolidation(plan: {
 			upsert.content,
 			{
 				tags: ["auto", "durable", "consolidated", ...(upsert.tags ?? [])],
+				projectId: plan.options?.projectId,
+				projectName: plan.options?.projectName,
 			},
 		);
 		if (result.created) {

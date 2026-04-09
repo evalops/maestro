@@ -1,3 +1,4 @@
+import { execSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -5,11 +6,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 describe("memory store session scoping", () => {
 	let maestroHome: string;
+	let tempRepos: string[];
 	let originalMaestroHome: string | undefined;
 
 	beforeEach(() => {
 		originalMaestroHome = process.env.MAESTRO_HOME;
 		maestroHome = mkdtempSync(join(tmpdir(), "maestro-memory-store-"));
+		tempRepos = [];
 		process.env.MAESTRO_HOME = maestroHome;
 		vi.resetModules();
 	});
@@ -21,7 +24,20 @@ describe("memory store session scoping", () => {
 			process.env.MAESTRO_HOME = originalMaestroHome;
 		}
 		rmSync(maestroHome, { recursive: true, force: true });
+		for (const repo of tempRepos) {
+			rmSync(repo, { recursive: true, force: true });
+		}
 	});
+
+	function createGitRepo(prefix: string): string {
+		const root = mkdtempSync(join(tmpdir(), prefix));
+		tempRepos.push(root);
+		execSync("git init -b main", {
+			cwd: root,
+			stdio: "ignore",
+		});
+		return root;
+	}
 
 	it("filters queries by session id", async () => {
 		const memory = await import("../../src/memory/index.js");
@@ -208,5 +224,96 @@ describe("memory store session scoping", () => {
 				}),
 			]),
 		);
+	});
+
+	it("preserves project scope when consolidation upserts omit project name", async () => {
+		const memory = await import("../../src/memory/index.js");
+		const now = Date.now();
+		const legacyScopedEntry = {
+			id: "mem_legacy_scoped",
+			topic: "team-preferences",
+			content: "Keep PRs focused.",
+			tags: ["auto", "durable", "workflow"],
+			projectId: "project_123",
+			createdAt: now,
+			updatedAt: now,
+		};
+
+		memory.importMemories({
+			version: 1,
+			entries: [legacyScopedEntry],
+		});
+
+		const result = memory.applyAutoMemoryConsolidation({
+			removeIds: [legacyScopedEntry.id],
+			upserts: [
+				{
+					topic: "team-preferences",
+					content: "Keep PRs focused and land them with green CI.",
+					tags: ["workflow"],
+				},
+			],
+			options: {
+				projectId: legacyScopedEntry.projectId,
+			},
+		});
+
+		expect(result).toMatchObject({
+			removed: 1,
+			added: 1,
+			updated: 0,
+		});
+		expect(
+			memory.listAutoDurableMemories({
+				projectId: legacyScopedEntry.projectId,
+			}),
+		).toEqual([
+			expect.objectContaining({
+				content: "Keep PRs focused and land them with green CI.",
+				projectId: legacyScopedEntry.projectId,
+				tags: ["auto", "durable", "consolidated", "workflow"],
+			}),
+		]);
+		expect(memory.listAutoDurableMemories({ projectId: null })).toEqual([]);
+	});
+
+	it("stores and filters repo-scoped memories independently", async () => {
+		const memory = await import("../../src/memory/index.js");
+		const repoA = createGitRepo("maestro-memory-repo-a-");
+		const repoB = createGitRepo("maestro-memory-repo-b-");
+
+		memory.addMemory("workflow", "Repo A note", { cwd: repoA });
+		memory.addMemory("workflow", "Repo B note", { cwd: repoB });
+
+		const repoAProjectId = memory.getMemoryProjectScope(repoA)?.projectId;
+		const repoBProjectId = memory.getMemoryProjectScope(repoB)?.projectId;
+
+		expect(repoAProjectId).toBeTruthy();
+		expect(repoBProjectId).toBeTruthy();
+		expect(repoAProjectId).not.toBe(repoBProjectId);
+		expect(
+			memory.searchMemories("note", {
+				projectId: repoAProjectId,
+			}),
+		).toEqual([
+			expect.objectContaining({
+				entry: expect.objectContaining({
+					content: "Repo A note",
+					projectId: repoAProjectId,
+				}),
+			}),
+		]);
+		expect(
+			memory.searchMemories("note", {
+				projectId: repoBProjectId,
+			}),
+		).toEqual([
+			expect.objectContaining({
+				entry: expect.objectContaining({
+					content: "Repo B note",
+					projectId: repoBProjectId,
+				}),
+			}),
+		]);
 	});
 });

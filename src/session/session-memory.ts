@@ -65,6 +65,7 @@ function collectRecentUserContext(
 export function buildSessionMemoryContent(sessionPath: string): {
 	content: string;
 	sessionId: string;
+	cwd?: string;
 	memoryExtractionHash?: string;
 	assistantTurnCount: number;
 } | null {
@@ -131,6 +132,7 @@ export function buildSessionMemoryContent(sessionPath: string): {
 	return {
 		content: lines.join("\n").trim(),
 		sessionId: info.id,
+		cwd: info.cwd,
 		memoryExtractionHash: info.memoryExtractionHash,
 		assistantTurnCount: info.messages.filter(
 			(message) => message.role === "assistant",
@@ -147,5 +149,6 @@ export function syncSessionMemory(sessionPath: string): MemoryEntry | null {
 	return upsertScopedMemory(SESSION_MEMORY_TOPIC, built.content, {
 		sessionId: built.sessionId,
 		tags: ["session", "summary"],
+		cwd: built.cwd,
 	});
 }

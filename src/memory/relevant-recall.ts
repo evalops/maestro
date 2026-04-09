@@ -1,4 +1,5 @@
 import { searchMemories } from "./store.js";
+import { getMemoryProjectScope } from "./team-memory.js";
 import type { MemoryEntry, MemorySearchResult } from "./types.js";
 
 const MIN_TERM_LENGTH = 4;
@@ -102,7 +103,15 @@ function extractPromptTerms(prompt: string): string[] {
 function shouldSkipSessionMemory(
 	entry: MemoryEntry,
 	currentSessionId: string | undefined,
+	currentProjectId: string | undefined,
 ): boolean {
+	if (
+		currentProjectId &&
+		entry.projectId &&
+		entry.projectId !== currentProjectId
+	) {
+		return true;
+	}
 	return (
 		entry.topic === "session-memory" && entry.sessionId !== currentSessionId
 	);
@@ -112,12 +121,17 @@ function getEntryBoost(
 	entry: MemoryEntry,
 	result: MemorySearchResult,
 	currentSessionId: string | undefined,
+	currentProjectId: string | undefined,
 ): number {
 	let boost = 0;
-	if (entry.sessionId === currentSessionId) {
+	if (currentSessionId && entry.sessionId === currentSessionId) {
 		boost += 8;
 	}
+	if (currentProjectId && entry.projectId === currentProjectId) {
+		boost += 6;
+	}
 	if (
+		currentSessionId &&
 		entry.topic === "session-memory" &&
 		entry.sessionId === currentSessionId
 	) {
@@ -134,6 +148,7 @@ function getEntryBoost(
 function collectRelevantMemories(
 	prompt: string,
 	currentSessionId?: string,
+	currentProjectId?: string,
 ): ScoredMemoryCandidate[] {
 	const terms = extractPromptTerms(prompt);
 	if (terms.length === 0) {
@@ -146,13 +161,20 @@ function collectRelevantMemories(
 			limit: MAX_SEARCH_RESULTS_PER_TERM,
 		});
 		for (const result of results) {
-			if (shouldSkipSessionMemory(result.entry, currentSessionId)) {
+			if (
+				shouldSkipSessionMemory(
+					result.entry,
+					currentSessionId,
+					currentProjectId,
+				)
+			) {
 				continue;
 			}
 
 			const existing = candidates.get(result.entry.id);
 			const boostedScore =
-				result.score + getEntryBoost(result.entry, result, currentSessionId);
+				result.score +
+				getEntryBoost(result.entry, result, currentSessionId, currentProjectId);
 			if (existing) {
 				existing.score += boostedScore;
 				existing.matchedTerms.add(term);
@@ -184,9 +206,13 @@ function collectRelevantMemories(
 function formatMemoryLabel(
 	entry: MemoryEntry,
 	currentSessionId: string | undefined,
+	currentProjectId: string | undefined,
 ): string {
-	if (entry.sessionId === currentSessionId) {
+	if (currentSessionId && entry.sessionId === currentSessionId) {
 		return `${entry.topic}; current session`;
+	}
+	if (currentProjectId && entry.projectId === currentProjectId) {
+		return `${entry.topic}; current repo`;
 	}
 	if (entry.sessionId) {
 		return `${entry.topic}; prior session`;
@@ -198,10 +224,18 @@ export function buildRelevantMemoryPromptAddition(
 	prompt: string,
 	options?: {
 		sessionId?: string;
+		cwd?: string;
 	},
 ): string | null {
 	const currentSessionId = options?.sessionId;
-	const candidates = collectRelevantMemories(prompt, currentSessionId);
+	const currentProjectId = options?.cwd
+		? (getMemoryProjectScope(options.cwd)?.projectId ?? undefined)
+		: undefined;
+	const candidates = collectRelevantMemories(
+		prompt,
+		currentSessionId,
+		currentProjectId,
+	);
 	if (candidates.length === 0) {
 		return null;
 	}
@@ -217,7 +251,7 @@ export function buildRelevantMemoryPromptAddition(
 			continue;
 		}
 		lines.push(
-			`- [${formatMemoryLabel(candidate.entry, currentSessionId)}] ${truncateMemoryContent(normalizedContent, MAX_ENTRY_CHARS)}`,
+			`- [${formatMemoryLabel(candidate.entry, currentSessionId, currentProjectId)}] ${truncateMemoryContent(normalizedContent, MAX_ENTRY_CHARS)}`,
 		);
 	}
 

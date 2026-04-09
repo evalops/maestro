@@ -1,9 +1,10 @@
+import { execSync } from "node:child_process";
 import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-function writeSessionFile(path: string): void {
+function writeSessionFile(path: string, cwd: string): void {
 	const now = new Date("2026-04-07T10:00:00.000Z").toISOString();
 	const entries = [
 		{
@@ -11,7 +12,7 @@ function writeSessionFile(path: string): void {
 			version: 2,
 			id: "session-123",
 			timestamp: now,
-			cwd: "/tmp/project",
+			cwd,
 			subject: "Tighten repo workflows",
 		},
 		{
@@ -120,15 +121,21 @@ function writeMalformedSessionFile(path: string): void {
 
 describe("automatic memory extraction", () => {
 	let maestroHome: string;
+	let repoRoot: string;
 	let sessionPath: string;
 	let originalMaestroHome: string | undefined;
 
 	beforeEach(() => {
 		originalMaestroHome = process.env.MAESTRO_HOME;
 		maestroHome = mkdtempSync(join(tmpdir(), "maestro-auto-memory-"));
+		repoRoot = mkdtempSync(join(tmpdir(), "maestro-auto-memory-repo-"));
+		execSync("git init -b main", {
+			cwd: repoRoot,
+			stdio: "ignore",
+		});
 		process.env.MAESTRO_HOME = maestroHome;
 		sessionPath = join(maestroHome, "session.jsonl");
-		writeSessionFile(sessionPath);
+		writeSessionFile(sessionPath, repoRoot);
 		vi.resetModules();
 	});
 
@@ -138,6 +145,7 @@ describe("automatic memory extraction", () => {
 		} else {
 			process.env.MAESTRO_HOME = originalMaestroHome;
 		}
+		rmSync(repoRoot, { recursive: true, force: true });
 		rmSync(maestroHome, { recursive: true, force: true });
 	});
 
@@ -205,6 +213,8 @@ describe("automatic memory extraction", () => {
 		expect(memory.getTopicMemories("team-preferences")).toEqual([
 			expect.objectContaining({
 				content: "Keep pull requests focused and land them with green CI.",
+				projectName: expect.any(String),
+				projectId: expect.any(String),
 				tags: ["auto", "durable", "review", "workflow"],
 			}),
 		]);

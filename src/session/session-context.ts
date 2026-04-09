@@ -36,6 +36,7 @@ import { isSessionTreeEntry, tryParseSessionEntry } from "./types.js";
 
 export interface SessionFileInfo {
 	id: string;
+	cwd?: string;
 	subject?: string;
 	created: Date;
 	messages: AppMessage[];
@@ -303,6 +304,7 @@ export function buildSessionFileInfo(
 	migrateToCurrentVersion(entries);
 
 	let sessionId = "";
+	let cwd: string | undefined;
 	let subject: string | undefined;
 	let created = stats.birthtime;
 	let summary: string | undefined;
@@ -319,6 +321,9 @@ export function buildSessionFileInfo(
 				if (!sessionId) {
 					sessionId = entry.id;
 					created = new Date(entry.timestamp);
+				}
+				if (typeof entry.cwd === "string" && entry.cwd.trim()) {
+					cwd = entry.cwd;
 				}
 				if (typeof entry.subject === "string" && entry.subject) {
 					subject = entry.subject;
@@ -385,6 +390,7 @@ export function buildSessionFileInfo(
 
 	return {
 		id: sessionId || "unknown",
+		cwd,
 		subject,
 		created,
 		messages: normalizedMessages,

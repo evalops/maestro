@@ -117,6 +117,7 @@ export async function handleMemory(
 				const entry = addMemory(data.topic, data.content, {
 					tags: data.tags,
 					sessionId: data.sessionId,
+					cwd: process.cwd(),
 				});
 				sendJson(
 					res,

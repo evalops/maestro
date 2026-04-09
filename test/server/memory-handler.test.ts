@@ -148,6 +148,7 @@ describe("handleMemory", () => {
 			"api-design",
 			"Use REST conventions",
 			{
+				cwd: process.cwd(),
 				tags: ["rest"],
 				sessionId: "sess_123",
 			},

@@ -46,6 +46,7 @@ export {
 	assertTeamMemoryContentSafe,
 	buildTeamMemoryPromptContext,
 	ensureTeamMemoryEntrypoint,
+	getMemoryProjectScope,
 	getTeamMemoryLocation,
 	getTeamMemoryStatus,
 	isTeamMemoryFilePath,

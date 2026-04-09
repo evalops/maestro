@@ -17,6 +17,7 @@ import {
 	applyAutoMemoryConsolidation,
 	listAutoDurableMemories,
 } from "./store.js";
+import type { MemoryEntry } from "./types.js";
 
 const logger = createLogger("memory:auto-consolidation");
 
@@ -55,9 +56,15 @@ const MAX_UPSERTS =
 		10,
 	) || 16;
 
+interface ConsolidationScopeState {
+	lastConsolidatedAt?: number;
+	lastSourceHash?: string;
+}
+
 interface ConsolidationState {
 	lastConsolidatedAt?: number;
 	lastSourceHash?: string;
+	scopes?: Record<string, ConsolidationScopeState>;
 }
 
 interface ConsolidationPlan {
@@ -67,6 +74,13 @@ interface ConsolidationPlan {
 		content: string;
 		tags?: string[];
 	}>;
+}
+
+interface ScopedMemoryGroup {
+	key: string;
+	projectId?: string;
+	projectName?: string;
+	memories: MemoryEntry[];
 }
 
 interface ConsolidationPayload {
@@ -125,6 +139,46 @@ function loadState(): ConsolidationState {
 		});
 		return {};
 	}
+}
+
+function getScopeState(
+	state: ConsolidationState,
+	scopeKey: string,
+): ConsolidationScopeState {
+	if (scopeKey === "__global__") {
+		return (
+			state.scopes?.[scopeKey] ?? {
+				lastConsolidatedAt: state.lastConsolidatedAt,
+				lastSourceHash: state.lastSourceHash,
+			}
+		);
+	}
+	return state.scopes?.[scopeKey] ?? {};
+}
+
+function setScopeState(
+	state: ConsolidationState,
+	scopeKey: string,
+	scopeState: ConsolidationScopeState,
+): ConsolidationState {
+	if (scopeKey === "__global__") {
+		return {
+			...state,
+			lastConsolidatedAt: scopeState.lastConsolidatedAt,
+			lastSourceHash: scopeState.lastSourceHash,
+			scopes: {
+				...(state.scopes ?? {}),
+				[scopeKey]: scopeState,
+			},
+		};
+	}
+	return {
+		...state,
+		scopes: {
+			...(state.scopes ?? {}),
+			[scopeKey]: scopeState,
+		},
+	};
 }
 
 function saveState(state: ConsolidationState): void {
@@ -216,6 +270,32 @@ function buildConsolidationPrompt(
 		);
 	}
 	return lines.join("\n");
+}
+
+function groupScopedMemories(memories: MemoryEntry[]): ScopedMemoryGroup[] {
+	const groups = new Map<string, ScopedMemoryGroup>();
+	for (const memory of memories) {
+		const key = memory.projectId ?? "__global__";
+		const existing = groups.get(key);
+		if (existing) {
+			existing.memories.push(memory);
+			continue;
+		}
+		groups.set(key, {
+			key,
+			projectId: memory.projectId,
+			projectName: memory.projectName,
+			memories: [memory],
+		});
+	}
+
+	return [...groups.values()].sort((left, right) => {
+		const leftName = left.projectName ?? "";
+		const rightName = right.projectName ?? "";
+		return (
+			leftName.localeCompare(rightName) || left.key.localeCompare(right.key)
+		);
+	});
 }
 
 function extractAssistantText(agent: Agent): string {
@@ -328,52 +408,72 @@ export function createAutomaticMemoryConsolidationCoordinator(
 		running = (async () => {
 			while (scheduled) {
 				scheduled = false;
-				const state = loadState();
+				let state = loadState();
 				const now = Date.now();
-				if (
-					state.lastConsolidatedAt &&
-					now - state.lastConsolidatedAt <
-						MIN_HOURS_BETWEEN_RUNS * 60 * 60 * 1000
-				) {
-					continue;
-				}
+				const groups = groupScopedMemories(listAutoDurableMemories());
+				for (const group of groups) {
+					const memories = group.memories.slice(0, MAX_INPUT_MEMORIES);
+					if (memories.length < MIN_AUTO_MEMORIES) {
+						continue;
+					}
 
-				const memories = listAutoDurableMemories().slice(0, MAX_INPUT_MEMORIES);
-				if (memories.length < MIN_AUTO_MEMORIES) {
-					continue;
-				}
-				const sourceHash = computeSourceHash(memories);
-				if (state.lastSourceHash === sourceHash) {
-					continue;
-				}
-				if (!tryAcquireLock()) {
-					continue;
-				}
+					const scopeState = getScopeState(state, group.key);
+					if (
+						scopeState.lastConsolidatedAt &&
+						now - scopeState.lastConsolidatedAt <
+							MIN_HOURS_BETWEEN_RUNS * 60 * 60 * 1000
+					) {
+						continue;
+					}
 
-				try {
-					const plan = await consolidateMemories({
-						createAgent: options.createAgent,
-						memories,
-					});
-					const result = applyAutoMemoryConsolidation(plan);
-					const finalizedHash = computeSourceHash(listAutoDurableMemories());
-					saveState({
-						lastConsolidatedAt: now,
-						lastSourceHash: finalizedHash,
-					});
-					logger.info("Consolidated automatic durable memories", {
-						model: options.getModel().id,
-						sourceCount: memories.length,
-						removed: result.removed,
-						added: result.added,
-						updated: result.updated,
-					});
-				} catch (error) {
-					logger.warn("Automatic durable memory consolidation failed", {
-						error: error instanceof Error ? error.message : String(error),
-					});
-				} finally {
-					releaseLock();
+					const sourceHash = computeSourceHash(memories);
+					if (scopeState.lastSourceHash === sourceHash) {
+						continue;
+					}
+					if (!tryAcquireLock()) {
+						continue;
+					}
+
+					try {
+						const plan = await consolidateMemories({
+							createAgent: options.createAgent,
+							memories,
+						});
+						const result = applyAutoMemoryConsolidation({
+							...plan,
+							options: {
+								projectId: group.projectId,
+								projectName: group.projectName,
+							},
+						});
+						const finalizedHash = computeSourceHash(
+							listAutoDurableMemories({
+								projectId: group.projectId ?? null,
+							}).slice(0, MAX_INPUT_MEMORIES),
+						);
+						state = setScopeState(state, group.key, {
+							lastConsolidatedAt: now,
+							lastSourceHash: finalizedHash,
+						});
+						saveState(state);
+						logger.info("Consolidated automatic durable memories", {
+							model: options.getModel().id,
+							projectId: group.projectId,
+							projectName: group.projectName,
+							sourceCount: memories.length,
+							removed: result.removed,
+							added: result.added,
+							updated: result.updated,
+						});
+					} catch (error) {
+						logger.warn("Automatic durable memory consolidation failed", {
+							projectId: group.projectId,
+							projectName: group.projectName,
+							error: error instanceof Error ? error.message : String(error),
+						});
+					} finally {
+						releaseLock();
+					}
 				}
 			}
 		})().finally(() => {

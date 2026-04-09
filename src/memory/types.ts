@@ -15,6 +15,10 @@ export interface MemoryEntry {
 	tags?: string[];
 	/** Session ID where this was created */
 	sessionId?: string;
+	/** Repo/project scope identifier when the memory is tied to a git repo */
+	projectId?: string;
+	/** Human-readable repo/project name for scoped memories */
+	projectName?: string;
 	/** Timestamp of creation */
 	createdAt: number;
 	/** Timestamp of last update */
@@ -36,6 +40,7 @@ export interface MemorySearchResult {
 
 export interface MemoryQueryOptions {
 	sessionId?: string;
+	projectId?: string;
 }
 
 export interface MemorySearchOptions extends MemoryQueryOptions {

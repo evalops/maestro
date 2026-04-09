@@ -35,6 +35,11 @@ export interface TeamMemoryLocation {
 	entrypoint: string;
 }
 
+export interface MemoryProjectScope {
+	projectId: string;
+	projectName: string;
+}
+
 export interface TeamMemoryStatus extends TeamMemoryLocation {
 	exists: boolean;
 	fileCount: number;
@@ -205,6 +210,20 @@ export function getTeamMemoryLocation(
 		projectName: basename(normalizedRoot),
 		directory,
 		entrypoint: join(directory, TEAM_MEMORY_ENTRYPOINT),
+	};
+}
+
+export function getMemoryProjectScope(
+	cwd: string = process.cwd(),
+): MemoryProjectScope | null {
+	const location = getTeamMemoryLocation(cwd);
+	if (!location) {
+		return null;
+	}
+
+	return {
+		projectId: location.projectId,
+		projectName: location.projectName,
 	};
 }
 

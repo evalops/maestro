@@ -1,10 +1,12 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { execSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 describe("automatic memory consolidation", () => {
 	let maestroHome: string;
+	let tempRepos: string[];
 	let originalMaestroHome: string | undefined;
 	let originalMinMemories: string | undefined;
 	let originalMinHours: string | undefined;
@@ -14,6 +16,7 @@ describe("automatic memory consolidation", () => {
 		originalMinMemories = process.env.MAESTRO_MEMORY_CONSOLIDATION_MIN_MEMORIES;
 		originalMinHours = process.env.MAESTRO_MEMORY_CONSOLIDATION_MIN_HOURS;
 		maestroHome = mkdtempSync(join(tmpdir(), "maestro-auto-consolidation-"));
+		tempRepos = [];
 		process.env.MAESTRO_HOME = maestroHome;
 		process.env.MAESTRO_MEMORY_CONSOLIDATION_MIN_MEMORIES = "1";
 		process.env.MAESTRO_MEMORY_CONSOLIDATION_MIN_HOURS = "0";
@@ -44,7 +47,20 @@ describe("automatic memory consolidation", () => {
 			process.env.MAESTRO_MEMORY_CONSOLIDATION_MIN_HOURS = originalMinHours;
 		}
 		rmSync(maestroHome, { recursive: true, force: true });
+		for (const repo of tempRepos) {
+			rmSync(repo, { recursive: true, force: true });
+		}
 	});
+
+	function createGitRepo(prefix: string): string {
+		const repoRoot = mkdtempSync(join(tmpdir(), prefix));
+		tempRepos.push(repoRoot);
+		execSync("git init -b main", {
+			cwd: repoRoot,
+			stdio: "ignore",
+		});
+		return repoRoot;
+	}
 
 	it("consolidates auto durable memories and remembers the final source hash", async () => {
 		const memory = await import("../../src/memory/index.js");
@@ -132,5 +148,171 @@ describe("automatic memory consolidation", () => {
 		expect(getMemoryConsolidationSystemPrompt()).toContain(
 			"consolidate automatic durable memories",
 		);
+	});
+
+	it("consolidates automatic durable memories per repo scope", async () => {
+		const memory = await import("../../src/memory/index.js");
+		const { createAutomaticMemoryConsolidationCoordinator } = await import(
+			"../../src/memory/auto-consolidation.js"
+		);
+		const repoA = createGitRepo("maestro-consolidation-repo-a-");
+		const repoB = createGitRepo("maestro-consolidation-repo-b-");
+
+		const repoAFirst = memory.upsertDurableMemory("deploy", "Repo A first.", {
+			cwd: repoA,
+			tags: ["auto", "durable", "workflow"],
+		});
+		const repoASecond = memory.upsertDurableMemory("deploy", "Repo A second.", {
+			cwd: repoA,
+			tags: ["auto", "durable", "workflow"],
+		});
+		const repoBFirst = memory.upsertDurableMemory("deploy", "Repo B first.", {
+			cwd: repoB,
+			tags: ["auto", "durable", "workflow"],
+		});
+		const repoBSecond = memory.upsertDurableMemory("deploy", "Repo B second.", {
+			cwd: repoB,
+			tags: ["auto", "durable", "workflow"],
+		});
+
+		let promptCalls = 0;
+		const coordinator = createAutomaticMemoryConsolidationCoordinator({
+			createAgent: async () => {
+				promptCalls += 1;
+				const fakeAgent = {
+					state: { messages: [] },
+					prompt: async (prompt: string) => {
+						const removeIds = prompt.includes("Repo A")
+							? [repoAFirst.entry.id, repoASecond.entry.id]
+							: [repoBFirst.entry.id, repoBSecond.entry.id];
+						const content = prompt.includes("Repo A")
+							? "Repo A canonical."
+							: "Repo B canonical.";
+						fakeAgent.state.messages = [
+							{
+								role: "assistant",
+								content: [
+									{
+										type: "text",
+										text: JSON.stringify({
+											removeIds,
+											upserts: [
+												{
+													topic: "deploy",
+													content,
+													tags: ["workflow"],
+												},
+											],
+										}),
+									},
+								],
+							},
+						];
+					},
+				};
+				return fakeAgent as never;
+			},
+			getModel: () =>
+				({
+					id: "gpt-4o-mini",
+					provider: "openai",
+					api: "openai-responses",
+				}) as never,
+		});
+
+		coordinator.schedule();
+		await coordinator.flush();
+
+		expect(promptCalls).toBe(2);
+		expect(
+			memory.listAutoDurableMemories({
+				projectId: memory.getMemoryProjectScope(repoA)?.projectId,
+			}),
+		).toEqual([
+			expect.objectContaining({
+				content: "Repo A canonical.",
+				projectName: expect.any(String),
+			}),
+		]);
+		expect(
+			memory.listAutoDurableMemories({
+				projectId: memory.getMemoryProjectScope(repoB)?.projectId,
+			}),
+		).toEqual([
+			expect.objectContaining({
+				content: "Repo B canonical.",
+				projectName: expect.any(String),
+			}),
+		]);
+	});
+
+	it("preserves legacy global consolidation state after a project-scoped run", async () => {
+		process.env.MAESTRO_MEMORY_CONSOLIDATION_MIN_HOURS = "24";
+		vi.resetModules();
+
+		const memory = await import("../../src/memory/index.js");
+		const { createAutomaticMemoryConsolidationCoordinator } = await import(
+			"../../src/memory/auto-consolidation.js"
+		);
+		const repo = createGitRepo("maestro-consolidation-repo-");
+		const memoryDir = join(maestroHome, "memory");
+		mkdirSync(memoryDir, { recursive: true });
+		writeFileSync(
+			join(memoryDir, "consolidation-state.json"),
+			JSON.stringify({
+				lastConsolidatedAt: Date.now(),
+				lastSourceHash: "legacy-global-hash",
+			}),
+			"utf8",
+		);
+
+		memory.upsertDurableMemory("global", "Global memory.", {
+			tags: ["auto", "durable", "workflow"],
+		});
+		memory.upsertDurableMemory("repo", "Repo memory.", {
+			cwd: repo,
+			tags: ["auto", "durable", "workflow"],
+		});
+
+		let promptCalls = 0;
+		const coordinator = createAutomaticMemoryConsolidationCoordinator({
+			createAgent: async () => {
+				promptCalls += 1;
+				const fakeAgent = {
+					state: { messages: [] },
+					prompt: async () => {
+						fakeAgent.state.messages = [
+							{
+								role: "assistant",
+								content: [
+									{
+										type: "text",
+										text: JSON.stringify({
+											removeIds: [],
+											upserts: [],
+										}),
+									},
+								],
+							},
+						];
+					},
+				};
+				return fakeAgent as never;
+			},
+			getModel: () =>
+				({
+					id: "gpt-4o-mini",
+					provider: "openai",
+					api: "openai-responses",
+				}) as never,
+		});
+
+		coordinator.schedule();
+		await coordinator.flush();
+		expect(promptCalls).toBe(1);
+
+		coordinator.schedule();
+		await coordinator.flush();
+		expect(promptCalls).toBe(1);
 	});
 });
