@@ -75,6 +75,14 @@ describe("Built-in model registry", () => {
 		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/chat/completions");
 	});
 
+	it("includes EvalOps managed Cohere models normalized to the gateway endpoint", () => {
+		const model = getModel("evalops-cohere", "command-a-03-2025");
+		expect(model).toBeTruthy();
+		expect(model?.provider).toBe("evalops-cohere");
+		expect(model?.api).toBe("openai-completions");
+		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/chat/completions");
+	});
+
 	it("includes EvalOps managed Google models normalized to the gateway endpoint", () => {
 		const model = getModel("evalops-google", "gemini-2.5-pro");
 		expect(model).toBeTruthy();

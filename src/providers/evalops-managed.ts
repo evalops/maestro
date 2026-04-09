@@ -45,6 +45,16 @@ export const EVALOPS_MANAGED_PROVIDER_DEFINITIONS: readonly EvalOpsManagedProvid
 			usesAnthropicOAuth: true,
 		},
 		{
+			allowedModelApis: ["openai-completions"],
+			api: "openai-completions",
+			defaultModel: "command-a-03-2025",
+			id: "evalops-cohere",
+			name: "EvalOps Managed Gateway (Cohere)",
+			note: "Requires /login evalops and routes managed Cohere chat completions through the gateway",
+			providerRefProvider: "cohere",
+			sourceProvider: "cohere",
+		},
+		{
 			allowedModelApis: ["google-generative-ai"],
 			api: "openai-completions",
 			defaultModel: "gemini-2.5-pro",

@@ -410,6 +410,25 @@ const XAI_OVERLAY = {
 	},
 } satisfies Record<string, Record<string, Model<Api>>>;
 
+// Manual overlay for direct Cohere chat-completions models.
+const COHERE_OVERLAY = {
+	cohere: {
+		"command-a-03-2025": {
+			id: "command-a-03-2025",
+			name: "Command A",
+			api: "openai-completions",
+			provider: "cohere",
+			baseUrl: "https://api.cohere.com/compatibility/v1",
+			reasoning: false,
+			toolUse: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 256000,
+			maxTokens: 8192,
+		} as Model<"openai-completions">,
+	},
+} satisfies Record<string, Record<string, Model<Api>>>;
+
 // Manual overlay for Databricks serving endpoints exposed through an
 // OpenAI-compatible chat completions surface.
 const DATABRICKS_OVERLAY = {
@@ -1444,6 +1463,7 @@ function convertGeneratedModels(): Record<string, Model<Api>[]> {
 		GROQ_RESPONSES_OVERLAY,
 		OPENAI_CODEX_OVERLAY,
 		OPENAI_GPT52_OVERLAY,
+		COHERE_OVERLAY,
 		XAI_OVERLAY,
 		DATABRICKS_OVERLAY,
 		GITHUB_COPILOT_OVERLAY,
