@@ -28,7 +28,7 @@ WORKDIR /app
 
 # contracts build generates Rust protocol files and formats with rustfmt
 RUN apk add --no-cache python3 make g++ git nodejs && \
-    wget -qO- https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal && \
+    wget -qO- https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal -c rustfmt && \
     ln -s /root/.cargo/bin/rustfmt /usr/local/bin/rustfmt
 
 COPY --from=deps /app/node_modules ./node_modules
