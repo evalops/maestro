@@ -184,6 +184,8 @@ Current managed provider aliases:
   - Google Gemini chat-completions compatibility through the gateway
 - `evalops-databricks`
   - Databricks chat-completions compatibility through the gateway
+- `evalops-deepseek`
+  - DeepSeek chat-completions compatibility through the gateway
 - `evalops-groq`
   - Groq chat-completions compatibility through the gateway
 - `evalops-perplexity`

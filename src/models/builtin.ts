@@ -527,6 +527,38 @@ const DATABRICKS_OVERLAY = {
 	},
 } satisfies Record<string, Record<string, Model<Api>>>;
 
+// Manual overlay for direct DeepSeek models (OpenAI-compatible API).
+const DEEPSEEK_OVERLAY = {
+	deepseek: {
+		"deepseek-r1": {
+			id: "deepseek-r1",
+			name: "DeepSeek R1",
+			api: "openai-completions",
+			provider: "deepseek",
+			baseUrl: "https://api.deepseek.com/v1",
+			reasoning: true,
+			toolUse: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 64000,
+			maxTokens: 8192,
+		} as Model<"openai-completions">,
+		"deepseek-v3.2": {
+			id: "deepseek-v3.2",
+			name: "DeepSeek V3.2",
+			api: "openai-completions",
+			provider: "deepseek",
+			baseUrl: "https://api.deepseek.com/v1",
+			reasoning: false,
+			toolUse: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 163840,
+			maxTokens: 8192,
+		} as Model<"openai-completions">,
+	},
+} satisfies Record<string, Record<string, Model<Api>>>;
+
 // Manual overlay for direct Fireworks models (OpenAI-compatible API).
 const FIREWORKS_OVERLAY = {
 	fireworks: {
@@ -1653,6 +1685,7 @@ function convertGeneratedModels(): Record<string, Model<Api>[]> {
 		COHERE_OVERLAY,
 		XAI_OVERLAY,
 		DATABRICKS_OVERLAY,
+		DEEPSEEK_OVERLAY,
 		FIREWORKS_OVERLAY,
 		PERPLEXITY_OVERLAY,
 		TOGETHER_OVERLAY,
