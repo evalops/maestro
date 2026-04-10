@@ -176,6 +176,8 @@ Current managed provider aliases:
   - OpenAI Responses compatibility through the gateway
 - `evalops-azure-openai`
   - Azure OpenAI chat-completions compatibility through the gateway
+- `evalops-cerebras`
+  - Cerebras chat-completions compatibility through the gateway
 - `evalops-cohere`
   - Cohere chat-completions compatibility through the gateway
 - `evalops-fireworks`
