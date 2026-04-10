@@ -27,7 +27,7 @@ RUN bun install --no-frozen-lockfile
 FROM oven/bun:1.3-alpine AS builder
 WORKDIR /app
 
-RUN apk add --no-cache python3 make g++ git nodejs
+RUN apk add --no-cache python3 make g++ git nodejs rust cargo
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
