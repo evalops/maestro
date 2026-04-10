@@ -4,7 +4,6 @@
 FROM oven/bun:1.3-alpine AS deps
 WORKDIR /app
 
-# Native build tools for better-sqlite3, bcrypt, tree-sitter
 RUN apk add --no-cache python3 make g++ git
 
 COPY package.json bun.lockb ./
@@ -27,7 +26,10 @@ RUN bun install --no-frozen-lockfile
 FROM oven/bun:1.3-alpine AS builder
 WORKDIR /app
 
-RUN apk add --no-cache python3 make g++ git nodejs rust cargo
+# contracts build generates Rust protocol files and formats with rustfmt
+RUN apk add --no-cache python3 make g++ git nodejs && \
+    wget -qO- https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal && \
+    ln -s /root/.cargo/bin/rustfmt /usr/local/bin/rustfmt
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
@@ -44,12 +46,10 @@ RUN apk add --no-cache tini git && \
     addgroup --system --gid 1001 appgroup && \
     adduser --system --uid 1001 appuser
 
-# Runtime artifacts
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/skills ./skills
-# Workspace packages needed at runtime
 COPY --from=builder /app/packages/contracts/dist ./packages/contracts/dist
 COPY --from=builder /app/packages/contracts/package.json ./packages/contracts/
 COPY --from=builder /app/packages/tui/dist ./packages/tui/dist
