@@ -98,6 +98,16 @@ export const EVALOPS_MANAGED_PROVIDER_DEFINITIONS: readonly EvalOpsManagedProvid
 		{
 			allowedModelApis: ["openai-completions"],
 			api: "openai-completions",
+			defaultModel: "deepseek-v3.2",
+			id: "evalops-deepseek",
+			name: "EvalOps Managed Gateway (DeepSeek)",
+			note: "Requires /login evalops and routes managed DeepSeek chat completions through the gateway",
+			providerRefProvider: "deepseek",
+			sourceProvider: "deepseek",
+		},
+		{
+			allowedModelApis: ["openai-completions"],
+			api: "openai-completions",
 			defaultModel: "sonar",
 			id: "evalops-perplexity",
 			name: "EvalOps Managed Gateway (Perplexity)",
