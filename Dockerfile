@@ -9,7 +9,6 @@ RUN apk add --no-cache python3 make g++ git
 
 COPY package.json bun.lockb ./
 COPY packages/ai/package.json packages/ai/
-COPY packages/ambient-agent-rs/package.json packages/ambient-agent-rs/
 COPY packages/contracts/package.json packages/contracts/
 COPY packages/core/package.json packages/core/
 COPY packages/github-agent/package.json packages/github-agent/
@@ -18,10 +17,10 @@ COPY packages/governance-mcp-server/package.json packages/governance-mcp-server/
 COPY packages/slack-agent/package.json packages/slack-agent/
 COPY packages/slack-agent-ui/package.json packages/slack-agent-ui/
 COPY packages/tui/package.json packages/tui/
-COPY packages/tui-rs/package.json packages/tui-rs/
 COPY packages/web/package.json packages/web/
 
-# Note: desktop, jetbrains-plugin, vscode-extension excluded via .dockerignore
+# ambient-agent-rs and tui-rs are pure Rust (no package.json)
+# desktop, jetbrains-plugin, vscode-extension excluded via .dockerignore
 RUN bun install --no-frozen-lockfile
 
 # ---------- builder ----------
