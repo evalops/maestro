@@ -12,19 +12,17 @@ COPY packages/ai/package.json packages/ai/
 COPY packages/ambient-agent-rs/package.json packages/ambient-agent-rs/
 COPY packages/contracts/package.json packages/contracts/
 COPY packages/core/package.json packages/core/
-COPY packages/desktop/package.json packages/desktop/
 COPY packages/github-agent/package.json packages/github-agent/
 COPY packages/governance/package.json packages/governance/
 COPY packages/governance-mcp-server/package.json packages/governance-mcp-server/
-COPY packages/jetbrains-plugin/package.json packages/jetbrains-plugin/
 COPY packages/slack-agent/package.json packages/slack-agent/
 COPY packages/slack-agent-ui/package.json packages/slack-agent-ui/
 COPY packages/tui/package.json packages/tui/
 COPY packages/tui-rs/package.json packages/tui-rs/
-COPY packages/vscode-extension/package.json packages/vscode-extension/
 COPY packages/web/package.json packages/web/
 
-RUN bun install --frozen-lockfile
+# Note: desktop, jetbrains-plugin, vscode-extension excluded via .dockerignore
+RUN bun install --no-frozen-lockfile
 
 # ---------- builder ----------
 FROM oven/bun:1.3-alpine AS builder
