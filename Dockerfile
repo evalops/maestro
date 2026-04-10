@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ---------- deps ----------
-FROM oven/bun:1.1-alpine AS deps
+FROM oven/bun:1.3-alpine AS deps
 WORKDIR /app
 
 # Native build tools for better-sqlite3, bcrypt, tree-sitter
@@ -16,7 +16,7 @@ COPY packages/ai/package.json packages/ai/
 RUN bun install --frozen-lockfile
 
 # ---------- builder ----------
-FROM oven/bun:1.1-alpine AS builder
+FROM oven/bun:1.3-alpine AS builder
 WORKDIR /app
 
 RUN apk add --no-cache python3 make g++ git nodejs
