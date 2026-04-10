@@ -1,32 +1,30 @@
 # syntax=docker/dockerfile:1
 
 # ---------- deps ----------
-FROM node:22-alpine AS deps
+FROM oven/bun:1.1-alpine AS deps
 WORKDIR /app
 
 # Native build tools for better-sqlite3, bcrypt, tree-sitter
-RUN apk add --no-cache python3 make g++
+RUN apk add --no-cache python3 make g++ git
 
-# Copy lockfiles and package manifests for all workspaces
-COPY package.json package-lock.json ./
+COPY package.json bun.lockb ./
 COPY packages/contracts/package.json packages/contracts/
 COPY packages/tui/package.json packages/tui/
 COPY packages/web/package.json packages/web/
+COPY packages/ai/package.json packages/ai/
 
-RUN npm ci --ignore-scripts && \
-    npm rebuild better-sqlite3 bcrypt
+RUN bun install --frozen-lockfile
 
 # ---------- builder ----------
-FROM node:22-alpine AS builder
+FROM oven/bun:1.1-alpine AS builder
 WORKDIR /app
 
-RUN apk add --no-cache python3 make g++
+RUN apk add --no-cache python3 make g++ git nodejs
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-# Build workspace packages then the main app
-RUN npm run build:all
+RUN bun run build:all
 
 # ---------- runner ----------
 FROM node:22-alpine AS runner
@@ -50,6 +48,8 @@ COPY --from=builder /app/packages/tui/dist ./packages/tui/dist
 COPY --from=builder /app/packages/tui/package.json ./packages/tui/
 COPY --from=builder /app/packages/web/dist ./packages/web/dist
 COPY --from=builder /app/packages/web/package.json ./packages/web/
+COPY --from=builder /app/packages/ai/dist ./packages/ai/dist
+COPY --from=builder /app/packages/ai/package.json ./packages/ai/
 
 USER appuser
 
