@@ -34,6 +34,9 @@ RUN apk add --no-cache python3 make g++ git nodejs && \
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
+# Write lockfile hash stamp so ensure-deps.js skips re-install
+RUN node -e "const c=require('crypto'),f=require('fs');const h=c.createHash('sha256').update(f.readFileSync('bun.lockb')).digest('hex');f.mkdirSync('node_modules',{recursive:true});f.writeFileSync('node_modules/.bun-lockb.sha256',h);"
+
 RUN bun run build:all
 
 # ---------- runner ----------
