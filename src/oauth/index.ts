@@ -5,7 +5,11 @@ import {
 	migrateAnthropicCredentials,
 	refreshAnthropicToken,
 } from "./anthropic.js";
-import { loginEvalOps, refreshEvalOpsToken } from "./evalops.js";
+import {
+	loginEvalOps,
+	refreshEvalOpsToken,
+	revokeEvalOpsToken,
+} from "./evalops.js";
 import {
 	loginGitHubCopilot,
 	migrateGitHubCopilotCredentials,
@@ -159,6 +163,17 @@ export async function login(
  * Logout from OAuth provider
  */
 export async function logout(provider: SupportedOAuthProvider): Promise<void> {
+	const credentials = loadOAuthCredentials(provider);
+	if (provider === "evalops" && credentials?.refresh) {
+		try {
+			await revokeEvalOpsToken(credentials.refresh, credentials.metadata);
+		} catch (error) {
+			logger.warn("Failed to revoke EvalOps refresh token during logout", {
+				error: error instanceof Error ? error.message : String(error),
+				provider,
+			});
+		}
+	}
 	removeOAuthCredentials(provider);
 }
 

@@ -195,6 +195,66 @@ describe("OAuth Index", () => {
 
 			expect(hasOAuthCredentials("anthropic")).toBe(false);
 		});
+
+		it("should revoke EvalOps credentials before removing them", async () => {
+			const fetchMock = vi.fn().mockResolvedValue(
+				new Response(JSON.stringify({ revoked: true }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+			);
+			vi.stubGlobal("fetch", fetchMock);
+
+			saveOAuthCredentials("evalops", {
+				type: "oauth",
+				access: "evalops-access",
+				refresh: "evalops-refresh",
+				expires: Date.now() + 3600000,
+				metadata: {
+					identityBaseUrl: "https://identity.evalops.test",
+					organizationId: "org_123",
+				},
+			});
+
+			await logout("evalops");
+
+			expect(hasOAuthCredentials("evalops")).toBe(false);
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			const [url, init] = fetchMock.mock.calls[0] ?? [];
+			expect(url).toBe("https://identity.evalops.test/v1/tokens/revoke");
+			expect(init?.method).toBe("POST");
+			expect(init?.headers).toEqual({
+				"Content-Type": "application/json",
+			});
+			expect(init?.body).toBe(
+				JSON.stringify({ refresh_token: "evalops-refresh" }),
+			);
+		});
+
+		it("should still remove EvalOps credentials when revoke fails", async () => {
+			const fetchMock = vi.fn().mockResolvedValue(
+				new Response(JSON.stringify({ error: "upstream_error" }), {
+					status: 502,
+					headers: { "Content-Type": "application/json" },
+				}),
+			);
+			vi.stubGlobal("fetch", fetchMock);
+
+			saveOAuthCredentials("evalops", {
+				type: "oauth",
+				access: "evalops-access",
+				refresh: "evalops-refresh",
+				expires: Date.now() + 3600000,
+				metadata: {
+					identityBaseUrl: "https://identity.evalops.test",
+				},
+			});
+
+			await logout("evalops");
+
+			expect(hasOAuthCredentials("evalops")).toBe(false);
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+		});
 	});
 
 	describe("getOAuthToken", () => {

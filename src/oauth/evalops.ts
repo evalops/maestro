@@ -33,6 +33,11 @@ interface IdentityRefreshResponse {
 	scopes?: unknown;
 }
 
+interface IdentityRevokeResponse {
+	error?: string;
+	revoked?: boolean;
+}
+
 interface EvalOpsProviderRef {
 	provider: string;
 	environment: string;
@@ -423,4 +428,32 @@ export async function refreshEvalOpsToken(
 			scopes: scopes.length > 0 ? scopes : getMetadataScopes(metadata),
 		},
 	};
+}
+
+export async function revokeEvalOpsToken(
+	refreshToken: string,
+	metadata?: Record<string, unknown>,
+): Promise<void> {
+	if (!refreshToken) {
+		return;
+	}
+
+	const identityBaseUrl =
+		getMetadataString(metadata, "identityBaseUrl") ?? getIdentityBaseUrl();
+	const response = await fetch(`${identityBaseUrl}/v1/tokens/revoke`, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ refresh_token: refreshToken }),
+	});
+
+	let payload: IdentityRevokeResponse | undefined;
+	try {
+		payload = (await response.json()) as IdentityRevokeResponse;
+	} catch {
+		// Ignore JSON parse failure and surface a generic error below.
+	}
+
+	if (!response.ok) {
+		throw new Error(payload?.error ?? "EvalOps token revoke failed");
+	}
 }
