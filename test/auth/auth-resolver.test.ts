@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getOAuthToken } from "../../src/oauth/index.js";
 import { loadOAuthCredentials } from "../../src/oauth/storage.js";
 import { createAuthResolver } from "../../src/providers/auth.js";
-import { EVALOPS_MANAGED_PROVIDER_DEFINITIONS } from "../../src/providers/evalops-managed.js";
 import { getFreshOpenAIOAuthCredential } from "../../src/providers/openai-auth.js";
+import { managedGatewayAliasDefinitions } from "../testing/evalops-managed.js";
 
 vi.mock("../../src/providers/openai-auth.js", () => ({
 	getFreshOpenAIOAuthCredential: vi.fn(),
@@ -16,11 +16,6 @@ vi.mock("../../src/oauth/index.js", () => ({
 vi.mock("../../src/oauth/storage.js", () => ({
 	loadOAuthCredentials: vi.fn(),
 }));
-
-const managedGatewayAliasDefinitions =
-	EVALOPS_MANAGED_PROVIDER_DEFINITIONS.filter(
-		(definition) => definition.id !== "evalops",
-	);
 
 describe("auth resolver", () => {
 	const originalAnthropic = process.env.ANTHROPIC_API_KEY;

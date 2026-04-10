@@ -2,12 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { EVALOPS_MANAGED_PROVIDER_DEFINITIONS } from "../../src/providers/evalops-managed.js";
-
-const managedGatewayPresetDefinitions =
-	EVALOPS_MANAGED_PROVIDER_DEFINITIONS.filter(
-		(definition) => definition.id !== "evalops",
-	);
+import { managedGatewayAliasDefinitions } from "../testing/evalops-managed.js";
 
 const answers = ["1", "1", "n"];
 const questionMock = vi.fn(async () => answers.shift() ?? "");
@@ -100,7 +95,7 @@ describe("handleConfigInit", () => {
 		expect(closeMock).toHaveBeenCalledTimes(1);
 	});
 
-	for (const definition of managedGatewayPresetDefinitions) {
+	for (const definition of managedGatewayAliasDefinitions) {
 		it(`writes ${definition.id} config with the gateway preset`, async () => {
 			const provider = await initManagedGatewayPreset(definition.id);
 

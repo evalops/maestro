@@ -3,13 +3,7 @@ import {
 	getEnvVarsForProvider,
 	lookupApiKey,
 } from "../../src/providers/api-keys.js";
-import { EVALOPS_MANAGED_PROVIDER_DEFINITIONS } from "../../src/providers/evalops-managed.js";
-
-const apiKeyManagedGatewayAliasDefinitions =
-	EVALOPS_MANAGED_PROVIDER_DEFINITIONS.filter(
-		(definition) =>
-			definition.id !== "evalops" && !definition.usesAnthropicOAuth,
-	);
+import { apiKeyManagedGatewayAliasDefinitions } from "../testing/evalops-managed.js";
 
 describe("api key provider families", () => {
 	const originalEvalOpsAccessToken = process.env.MAESTRO_EVALOPS_ACCESS_TOKEN;

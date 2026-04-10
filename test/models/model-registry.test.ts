@@ -1,11 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { getModel } from "../../src/models/builtin.js";
-import { EVALOPS_MANAGED_PROVIDER_DEFINITIONS } from "../../src/providers/evalops-managed.js";
-
-const managedGatewayAliasDefinitions =
-	EVALOPS_MANAGED_PROVIDER_DEFINITIONS.filter(
-		(definition) => definition.id !== "evalops",
-	);
+import {
+	expectedManagedGatewayModelAPI,
+	expectedManagedGatewayModelBaseURL,
+	managedGatewayAliasDefinitions,
+} from "../testing/evalops-managed.js";
 
 describe("Built-in model registry", () => {
 	it("includes OpenRouter models wired to OpenAI-compatible endpoints", () => {
@@ -59,20 +58,12 @@ describe("Built-in model registry", () => {
 
 	for (const definition of managedGatewayAliasDefinitions) {
 		it(`includes ${definition.name} models normalized to the gateway endpoint`, () => {
-			const expectedAPI =
-				definition.id === "evalops-openrouter"
-					? "openai-responses"
-					: definition.api;
 			const model = getModel(definition.id, definition.defaultModel);
 			expect(model).toBeTruthy();
 			expect(model?.provider).toBe(definition.id);
-			expect(model?.api).toBe(expectedAPI);
+			expect(model?.api).toBe(expectedManagedGatewayModelAPI(definition));
 			expect(model?.baseUrl).toBe(
-				expectedAPI === "anthropic-messages"
-					? "http://127.0.0.1:8081/v1/messages"
-					: expectedAPI === "openai-responses"
-						? "http://127.0.0.1:8081/v1/responses"
-						: "http://127.0.0.1:8081/v1/chat/completions",
+				expectedManagedGatewayModelBaseURL(definition),
 			);
 		});
 	}

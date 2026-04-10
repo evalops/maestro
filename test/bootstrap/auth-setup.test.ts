@@ -30,12 +30,7 @@ import {
 import { getCustomProviderMetadata } from "../../src/models/registry.js";
 import { getEnvVarsForProvider } from "../../src/providers/api-keys.js";
 import { createAuthResolver } from "../../src/providers/auth.js";
-import { EVALOPS_MANAGED_PROVIDER_DEFINITIONS } from "../../src/providers/evalops-managed.js";
-
-const managedGatewayAliasDefinitions =
-	EVALOPS_MANAGED_PROVIDER_DEFINITIONS.filter(
-		(definition) => definition.id !== "evalops",
-	);
+import { managedGatewayAliasDefinitions } from "../testing/evalops-managed.js";
 
 describe("validateCodexFlags", () => {
 	const originalEnv = process.env.CODEX_API_KEY;
