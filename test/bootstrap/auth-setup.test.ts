@@ -159,6 +159,14 @@ describe("createAuthSetup", () => {
 		expect(allPlain).toContain("/login evalops");
 	});
 
+	it("buildMissingAuthLines reuses evalops login hint for managed Cerebras aliases", () => {
+		const result = createAuthSetup({ authMode: "auto" });
+		const lines = result.buildMissingAuthLines("evalops-cerebras");
+
+		const allPlain = lines.map((l) => l.plain).join("\n");
+		expect(allPlain).toContain("/login evalops");
+	});
+
 	it("buildMissingAuthLines reuses evalops login hint for managed Fireworks aliases", () => {
 		const result = createAuthSetup({ authMode: "auto" });
 		const lines = result.buildMissingAuthLines("evalops-fireworks");

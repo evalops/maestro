@@ -57,6 +57,16 @@ export const EVALOPS_MANAGED_PROVIDER_DEFINITIONS: readonly EvalOpsManagedProvid
 		{
 			allowedModelApis: ["openai-completions"],
 			api: "openai-completions",
+			defaultModel: "gpt-oss-120b",
+			id: "evalops-cerebras",
+			name: "EvalOps Managed Gateway (Cerebras)",
+			note: "Requires /login evalops and routes managed Cerebras chat completions through the gateway",
+			providerRefProvider: "cerebras",
+			sourceProvider: "cerebras",
+		},
+		{
+			allowedModelApis: ["openai-completions"],
+			api: "openai-completions",
 			defaultModel: "accounts/fireworks/models/llama-v3p1-70b-instruct",
 			id: "evalops-fireworks",
 			name: "EvalOps Managed Gateway (Fireworks)",

@@ -83,6 +83,14 @@ describe("Built-in model registry", () => {
 		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/chat/completions");
 	});
 
+	it("includes EvalOps managed Cerebras models normalized to the gateway endpoint", () => {
+		const model = getModel("evalops-cerebras", "gpt-oss-120b");
+		expect(model).toBeTruthy();
+		expect(model?.provider).toBe("evalops-cerebras");
+		expect(model?.api).toBe("openai-completions");
+		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/chat/completions");
+	});
+
 	it("includes EvalOps managed Fireworks models normalized to the gateway endpoint", () => {
 		const model = getModel(
 			"evalops-fireworks",
