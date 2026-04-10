@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getOAuthToken } from "../../src/oauth/index.js";
 import { loadOAuthCredentials } from "../../src/oauth/storage.js";
 import { createAuthResolver } from "../../src/providers/auth.js";
+import { EVALOPS_MANAGED_PROVIDER_DEFINITIONS } from "../../src/providers/evalops-managed.js";
 import { getFreshOpenAIOAuthCredential } from "../../src/providers/openai-auth.js";
 
 vi.mock("../../src/providers/openai-auth.js", () => ({
@@ -15,6 +16,11 @@ vi.mock("../../src/oauth/index.js", () => ({
 vi.mock("../../src/oauth/storage.js", () => ({
 	loadOAuthCredentials: vi.fn(),
 }));
+
+const managedGatewayAliasDefinitions =
+	EVALOPS_MANAGED_PROVIDER_DEFINITIONS.filter(
+		(definition) => definition.id !== "evalops",
+	);
 
 describe("auth resolver", () => {
 	const originalAnthropic = process.env.ANTHROPIC_API_KEY;
@@ -51,6 +57,23 @@ describe("auth resolver", () => {
 		}
 		vi.clearAllMocks();
 	});
+
+	function mockEvalOpsManagedOAuthState() {
+		vi.mocked(getOAuthToken).mockResolvedValue("evalops-token");
+		vi.mocked(loadOAuthCredentials).mockReturnValue({
+			type: "oauth",
+			access: "evalops-token",
+			refresh: "",
+			expires: Date.now() + 60_000,
+			metadata: {
+				organizationId: "org_evalops",
+				providerRef: {
+					provider: "openai",
+					environment: "prod",
+				},
+			},
+		});
+	}
 
 	it("prefers explicit API key when provided", async () => {
 		const resolver = createAuthResolver({
@@ -162,438 +185,23 @@ describe("auth resolver", () => {
 		mockedLoadCreds.mockReset();
 	});
 
-	it("overrides stored EvalOps provider_ref when using an evalops provider alias", async () => {
-		const mockedGetToken = vi.mocked(getOAuthToken);
-		const mockedLoadCreds = vi.mocked(loadOAuthCredentials);
-		mockedGetToken.mockResolvedValue("evalops-token");
-		mockedLoadCreds.mockReturnValue({
-			type: "oauth",
-			access: "evalops-token",
-			refresh: "",
-			expires: Date.now() + 60_000,
-			metadata: {
-				organizationId: "org_evalops",
-				providerRef: {
-					provider: "openai",
+	for (const definition of managedGatewayAliasDefinitions) {
+		it(`overrides stored EvalOps provider_ref for ${definition.id}`, async () => {
+			mockEvalOpsManagedOAuthState();
+			const resolver = createAuthResolver({ mode: "auto" });
+			const credential = await resolver(definition.id);
+			expect(credential).toBeDefined();
+			expect(credential?.type).toBe(
+				definition.usesAnthropicOAuth ? "anthropic-oauth" : "api-key",
+			);
+			expect(credential?.requestBody).toEqual({
+				provider_ref: {
+					provider: definition.providerRefProvider,
 					environment: "prod",
 				},
-			},
+			});
 		});
-		const resolver = createAuthResolver({ mode: "auto" });
-		const credential = await resolver("evalops-openrouter");
-		expect(credential).toBeDefined();
-		expect(credential?.requestBody).toEqual({
-			provider_ref: {
-				provider: "openrouter",
-				environment: "prod",
-			},
-		});
-		mockedGetToken.mockReset();
-		mockedLoadCreds.mockReset();
-	});
-
-	it("overrides stored EvalOps provider_ref for Cerebras aliases", async () => {
-		const mockedGetToken = vi.mocked(getOAuthToken);
-		const mockedLoadCreds = vi.mocked(loadOAuthCredentials);
-		mockedGetToken.mockResolvedValue("evalops-token");
-		mockedLoadCreds.mockReturnValue({
-			type: "oauth",
-			access: "evalops-token",
-			refresh: "",
-			expires: Date.now() + 60_000,
-			metadata: {
-				organizationId: "org_evalops",
-				providerRef: {
-					provider: "openai",
-					environment: "prod",
-				},
-			},
-		});
-		const resolver = createAuthResolver({ mode: "auto" });
-		const credential = await resolver("evalops-cerebras");
-		expect(credential).toBeDefined();
-		expect(credential?.type).toBe("api-key");
-		expect(credential?.requestBody).toEqual({
-			provider_ref: {
-				provider: "cerebras",
-				environment: "prod",
-			},
-		});
-		mockedGetToken.mockReset();
-		mockedLoadCreds.mockReset();
-	});
-
-	it("uses anthropic oauth auth type for managed EvalOps anthropic aliases", async () => {
-		const mockedGetToken = vi.mocked(getOAuthToken);
-		const mockedLoadCreds = vi.mocked(loadOAuthCredentials);
-		mockedGetToken.mockResolvedValue("evalops-token");
-		mockedLoadCreds.mockReturnValue({
-			type: "oauth",
-			access: "evalops-token",
-			refresh: "",
-			expires: Date.now() + 60_000,
-			metadata: {
-				organizationId: "org_evalops",
-				providerRef: {
-					provider: "openai",
-					environment: "prod",
-				},
-			},
-		});
-		const resolver = createAuthResolver({ mode: "auto" });
-		const credential = await resolver("evalops-anthropic");
-		expect(credential).toBeDefined();
-		expect(credential?.type).toBe("anthropic-oauth");
-		expect(credential?.requestBody).toEqual({
-			provider_ref: {
-				provider: "anthropic",
-				environment: "prod",
-			},
-		});
-		mockedGetToken.mockReset();
-		mockedLoadCreds.mockReset();
-	});
-
-	it("overrides stored EvalOps provider_ref for Azure OpenAI aliases", async () => {
-		const mockedGetToken = vi.mocked(getOAuthToken);
-		const mockedLoadCreds = vi.mocked(loadOAuthCredentials);
-		mockedGetToken.mockResolvedValue("evalops-token");
-		mockedLoadCreds.mockReturnValue({
-			type: "oauth",
-			access: "evalops-token",
-			refresh: "",
-			expires: Date.now() + 60_000,
-			metadata: {
-				organizationId: "org_evalops",
-				providerRef: {
-					provider: "openai",
-					environment: "prod",
-				},
-			},
-		});
-		const resolver = createAuthResolver({ mode: "auto" });
-		const credential = await resolver("evalops-azure-openai");
-		expect(credential).toBeDefined();
-		expect(credential?.type).toBe("api-key");
-		expect(credential?.requestBody).toEqual({
-			provider_ref: {
-				provider: "azure-openai",
-				environment: "prod",
-			},
-		});
-		mockedGetToken.mockReset();
-		mockedLoadCreds.mockReset();
-	});
-
-	it("overrides stored EvalOps provider_ref for Cohere aliases", async () => {
-		const mockedGetToken = vi.mocked(getOAuthToken);
-		const mockedLoadCreds = vi.mocked(loadOAuthCredentials);
-		mockedGetToken.mockResolvedValue("evalops-token");
-		mockedLoadCreds.mockReturnValue({
-			type: "oauth",
-			access: "evalops-token",
-			refresh: "",
-			expires: Date.now() + 60_000,
-			metadata: {
-				organizationId: "org_evalops",
-				providerRef: {
-					provider: "openai",
-					environment: "prod",
-				},
-			},
-		});
-		const resolver = createAuthResolver({ mode: "auto" });
-		const credential = await resolver("evalops-cohere");
-		expect(credential).toBeDefined();
-		expect(credential?.type).toBe("api-key");
-		expect(credential?.requestBody).toEqual({
-			provider_ref: {
-				provider: "cohere",
-				environment: "prod",
-			},
-		});
-		mockedGetToken.mockReset();
-		mockedLoadCreds.mockReset();
-	});
-
-	it("overrides stored EvalOps provider_ref for Fireworks aliases", async () => {
-		const mockedGetToken = vi.mocked(getOAuthToken);
-		const mockedLoadCreds = vi.mocked(loadOAuthCredentials);
-		mockedGetToken.mockResolvedValue("evalops-token");
-		mockedLoadCreds.mockReturnValue({
-			type: "oauth",
-			access: "evalops-token",
-			refresh: "",
-			expires: Date.now() + 60_000,
-			metadata: {
-				organizationId: "org_evalops",
-				providerRef: {
-					provider: "openai",
-					environment: "prod",
-				},
-			},
-		});
-		const resolver = createAuthResolver({ mode: "auto" });
-		const credential = await resolver("evalops-fireworks");
-		expect(credential).toBeDefined();
-		expect(credential?.type).toBe("api-key");
-		expect(credential?.requestBody).toEqual({
-			provider_ref: {
-				provider: "fireworks",
-				environment: "prod",
-			},
-		});
-		mockedGetToken.mockReset();
-		mockedLoadCreds.mockReset();
-	});
-
-	it("overrides stored EvalOps provider_ref for Google aliases", async () => {
-		const mockedGetToken = vi.mocked(getOAuthToken);
-		const mockedLoadCreds = vi.mocked(loadOAuthCredentials);
-		mockedGetToken.mockResolvedValue("evalops-token");
-		mockedLoadCreds.mockReturnValue({
-			type: "oauth",
-			access: "evalops-token",
-			refresh: "",
-			expires: Date.now() + 60_000,
-			metadata: {
-				organizationId: "org_evalops",
-				providerRef: {
-					provider: "openai",
-					environment: "prod",
-				},
-			},
-		});
-		const resolver = createAuthResolver({ mode: "auto" });
-		const credential = await resolver("evalops-google");
-		expect(credential).toBeDefined();
-		expect(credential?.type).toBe("api-key");
-		expect(credential?.requestBody).toEqual({
-			provider_ref: {
-				provider: "google",
-				environment: "prod",
-			},
-		});
-		mockedGetToken.mockReset();
-		mockedLoadCreds.mockReset();
-	});
-
-	it("overrides stored EvalOps provider_ref for Groq aliases", async () => {
-		const mockedGetToken = vi.mocked(getOAuthToken);
-		const mockedLoadCreds = vi.mocked(loadOAuthCredentials);
-		mockedGetToken.mockResolvedValue("evalops-token");
-		mockedLoadCreds.mockReturnValue({
-			type: "oauth",
-			access: "evalops-token",
-			refresh: "",
-			expires: Date.now() + 60_000,
-			metadata: {
-				organizationId: "org_evalops",
-				providerRef: {
-					provider: "openai",
-					environment: "prod",
-				},
-			},
-		});
-		const resolver = createAuthResolver({ mode: "auto" });
-		const credential = await resolver("evalops-groq");
-		expect(credential).toBeDefined();
-		expect(credential?.type).toBe("api-key");
-		expect(credential?.requestBody).toEqual({
-			provider_ref: {
-				provider: "groq",
-				environment: "prod",
-			},
-		});
-		mockedGetToken.mockReset();
-		mockedLoadCreds.mockReset();
-	});
-
-	it("overrides stored EvalOps provider_ref for Databricks aliases", async () => {
-		const mockedGetToken = vi.mocked(getOAuthToken);
-		const mockedLoadCreds = vi.mocked(loadOAuthCredentials);
-		mockedGetToken.mockResolvedValue("evalops-token");
-		mockedLoadCreds.mockReturnValue({
-			type: "oauth",
-			access: "evalops-token",
-			refresh: "",
-			expires: Date.now() + 60_000,
-			metadata: {
-				organizationId: "org_evalops",
-				providerRef: {
-					provider: "openai",
-					environment: "prod",
-				},
-			},
-		});
-		const resolver = createAuthResolver({ mode: "auto" });
-		const credential = await resolver("evalops-databricks");
-		expect(credential).toBeDefined();
-		expect(credential?.type).toBe("api-key");
-		expect(credential?.requestBody).toEqual({
-			provider_ref: {
-				provider: "databricks",
-				environment: "prod",
-			},
-		});
-		mockedGetToken.mockReset();
-		mockedLoadCreds.mockReset();
-	});
-
-	it("overrides stored EvalOps provider_ref for DeepSeek aliases", async () => {
-		const mockedGetToken = vi.mocked(getOAuthToken);
-		const mockedLoadCreds = vi.mocked(loadOAuthCredentials);
-		mockedGetToken.mockResolvedValue("evalops-token");
-		mockedLoadCreds.mockReturnValue({
-			type: "oauth",
-			access: "evalops-token",
-			refresh: "",
-			expires: Date.now() + 60_000,
-			metadata: {
-				organizationId: "org_evalops",
-				providerRef: {
-					provider: "openai",
-					environment: "prod",
-				},
-			},
-		});
-		const resolver = createAuthResolver({ mode: "auto" });
-		const credential = await resolver("evalops-deepseek");
-		expect(credential).toBeDefined();
-		expect(credential?.type).toBe("api-key");
-		expect(credential?.requestBody).toEqual({
-			provider_ref: {
-				provider: "deepseek",
-				environment: "prod",
-			},
-		});
-		mockedGetToken.mockReset();
-		mockedLoadCreds.mockReset();
-	});
-
-	it("overrides stored EvalOps provider_ref for Perplexity aliases", async () => {
-		const mockedGetToken = vi.mocked(getOAuthToken);
-		const mockedLoadCreds = vi.mocked(loadOAuthCredentials);
-		mockedGetToken.mockResolvedValue("evalops-token");
-		mockedLoadCreds.mockReturnValue({
-			type: "oauth",
-			access: "evalops-token",
-			refresh: "",
-			expires: Date.now() + 60_000,
-			metadata: {
-				organizationId: "org_evalops",
-				providerRef: {
-					provider: "openai",
-					environment: "prod",
-				},
-			},
-		});
-		const resolver = createAuthResolver({ mode: "auto" });
-		const credential = await resolver("evalops-perplexity");
-		expect(credential).toBeDefined();
-		expect(credential?.type).toBe("api-key");
-		expect(credential?.requestBody).toEqual({
-			provider_ref: {
-				provider: "perplexity",
-				environment: "prod",
-			},
-		});
-		mockedGetToken.mockReset();
-		mockedLoadCreds.mockReset();
-	});
-
-	it("overrides stored EvalOps provider_ref for Together aliases", async () => {
-		const mockedGetToken = vi.mocked(getOAuthToken);
-		const mockedLoadCreds = vi.mocked(loadOAuthCredentials);
-		mockedGetToken.mockResolvedValue("evalops-token");
-		mockedLoadCreds.mockReturnValue({
-			type: "oauth",
-			access: "evalops-token",
-			refresh: "",
-			expires: Date.now() + 60_000,
-			metadata: {
-				organizationId: "org_evalops",
-				providerRef: {
-					provider: "openai",
-					environment: "prod",
-				},
-			},
-		});
-		const resolver = createAuthResolver({ mode: "auto" });
-		const credential = await resolver("evalops-together");
-		expect(credential).toBeDefined();
-		expect(credential?.type).toBe("api-key");
-		expect(credential?.requestBody).toEqual({
-			provider_ref: {
-				provider: "together",
-				environment: "prod",
-			},
-		});
-		mockedGetToken.mockReset();
-		mockedLoadCreds.mockReset();
-	});
-
-	it("overrides stored EvalOps provider_ref for Mistral aliases", async () => {
-		const mockedGetToken = vi.mocked(getOAuthToken);
-		const mockedLoadCreds = vi.mocked(loadOAuthCredentials);
-		mockedGetToken.mockResolvedValue("evalops-token");
-		mockedLoadCreds.mockReturnValue({
-			type: "oauth",
-			access: "evalops-token",
-			refresh: "",
-			expires: Date.now() + 60_000,
-			metadata: {
-				organizationId: "org_evalops",
-				providerRef: {
-					provider: "openai",
-					environment: "prod",
-				},
-			},
-		});
-		const resolver = createAuthResolver({ mode: "auto" });
-		const credential = await resolver("evalops-mistral");
-		expect(credential).toBeDefined();
-		expect(credential?.type).toBe("api-key");
-		expect(credential?.requestBody).toEqual({
-			provider_ref: {
-				provider: "mistral",
-				environment: "prod",
-			},
-		});
-		mockedGetToken.mockReset();
-		mockedLoadCreds.mockReset();
-	});
-
-	it("overrides stored EvalOps provider_ref for xAI aliases", async () => {
-		const mockedGetToken = vi.mocked(getOAuthToken);
-		const mockedLoadCreds = vi.mocked(loadOAuthCredentials);
-		mockedGetToken.mockResolvedValue("evalops-token");
-		mockedLoadCreds.mockReturnValue({
-			type: "oauth",
-			access: "evalops-token",
-			refresh: "",
-			expires: Date.now() + 60_000,
-			metadata: {
-				organizationId: "org_evalops",
-				providerRef: {
-					provider: "openai",
-					environment: "prod",
-				},
-			},
-		});
-		const resolver = createAuthResolver({ mode: "auto" });
-		const credential = await resolver("evalops-xai");
-		expect(credential).toBeDefined();
-		expect(credential?.type).toBe("api-key");
-		expect(credential?.requestBody).toEqual({
-			provider_ref: {
-				provider: "xai",
-				environment: "prod",
-			},
-		});
-		mockedGetToken.mockReset();
-		mockedLoadCreds.mockReset();
-	});
+	}
 
 	it("adds optional credential_name and team_id from env to EvalOps provider_ref", async () => {
 		const mockedGetToken = vi.mocked(getOAuthToken);

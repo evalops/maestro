@@ -3,6 +3,13 @@ import {
 	getEnvVarsForProvider,
 	lookupApiKey,
 } from "../../src/providers/api-keys.js";
+import { EVALOPS_MANAGED_PROVIDER_DEFINITIONS } from "../../src/providers/evalops-managed.js";
+
+const apiKeyManagedGatewayAliasDefinitions =
+	EVALOPS_MANAGED_PROVIDER_DEFINITIONS.filter(
+		(definition) =>
+			definition.id !== "evalops" && !definition.usesAnthropicOAuth,
+	);
 
 describe("api key provider families", () => {
 	const originalEvalOpsAccessToken = process.env.MAESTRO_EVALOPS_ACCESS_TOKEN;
@@ -16,148 +23,20 @@ describe("api key provider families", () => {
 	});
 
 	it("maps managed evalops provider aliases to evalops env vars", () => {
-		expect(getEnvVarsForProvider("evalops-openrouter")).toEqual([
-			"MAESTRO_EVALOPS_ACCESS_TOKEN",
-		]);
-		expect(getEnvVarsForProvider("evalops-azure-openai")).toEqual([
-			"MAESTRO_EVALOPS_ACCESS_TOKEN",
-		]);
-		expect(getEnvVarsForProvider("evalops-cerebras")).toEqual([
-			"MAESTRO_EVALOPS_ACCESS_TOKEN",
-		]);
-		expect(getEnvVarsForProvider("evalops-cohere")).toEqual([
-			"MAESTRO_EVALOPS_ACCESS_TOKEN",
-		]);
-		expect(getEnvVarsForProvider("evalops-fireworks")).toEqual([
-			"MAESTRO_EVALOPS_ACCESS_TOKEN",
-		]);
-		expect(getEnvVarsForProvider("evalops-google")).toEqual([
-			"MAESTRO_EVALOPS_ACCESS_TOKEN",
-		]);
-		expect(getEnvVarsForProvider("evalops-groq")).toEqual([
-			"MAESTRO_EVALOPS_ACCESS_TOKEN",
-		]);
-		expect(getEnvVarsForProvider("evalops-databricks")).toEqual([
-			"MAESTRO_EVALOPS_ACCESS_TOKEN",
-		]);
-		expect(getEnvVarsForProvider("evalops-deepseek")).toEqual([
-			"MAESTRO_EVALOPS_ACCESS_TOKEN",
-		]);
-		expect(getEnvVarsForProvider("evalops-perplexity")).toEqual([
-			"MAESTRO_EVALOPS_ACCESS_TOKEN",
-		]);
-		expect(getEnvVarsForProvider("evalops-together")).toEqual([
-			"MAESTRO_EVALOPS_ACCESS_TOKEN",
-		]);
-		expect(getEnvVarsForProvider("evalops-mistral")).toEqual([
-			"MAESTRO_EVALOPS_ACCESS_TOKEN",
-		]);
-		expect(getEnvVarsForProvider("evalops-xai")).toEqual([
-			"MAESTRO_EVALOPS_ACCESS_TOKEN",
-		]);
+		for (const definition of apiKeyManagedGatewayAliasDefinitions) {
+			expect(getEnvVarsForProvider(definition.id)).toEqual([
+				"MAESTRO_EVALOPS_ACCESS_TOKEN",
+			]);
+		}
 	});
 
-	it("resolves evalops alias credentials from MAESTRO_EVALOPS_ACCESS_TOKEN", () => {
-		process.env.MAESTRO_EVALOPS_ACCESS_TOKEN = "managed-token";
-		const credential = lookupApiKey("evalops-openrouter");
-		expect(credential.key).toBe("managed-token");
-		expect(credential.envVar).toBe("MAESTRO_EVALOPS_ACCESS_TOKEN");
-		expect(credential.source).toBe("env");
-	});
-
-	it("resolves Azure managed alias credentials from MAESTRO_EVALOPS_ACCESS_TOKEN", () => {
-		process.env.MAESTRO_EVALOPS_ACCESS_TOKEN = "managed-token";
-		const credential = lookupApiKey("evalops-azure-openai");
-		expect(credential.key).toBe("managed-token");
-		expect(credential.envVar).toBe("MAESTRO_EVALOPS_ACCESS_TOKEN");
-		expect(credential.source).toBe("env");
-	});
-
-	it("resolves Cerebras managed alias credentials from MAESTRO_EVALOPS_ACCESS_TOKEN", () => {
-		process.env.MAESTRO_EVALOPS_ACCESS_TOKEN = "managed-token";
-		const credential = lookupApiKey("evalops-cerebras");
-		expect(credential.key).toBe("managed-token");
-		expect(credential.envVar).toBe("MAESTRO_EVALOPS_ACCESS_TOKEN");
-		expect(credential.source).toBe("env");
-	});
-
-	it("resolves Cohere managed alias credentials from MAESTRO_EVALOPS_ACCESS_TOKEN", () => {
-		process.env.MAESTRO_EVALOPS_ACCESS_TOKEN = "managed-token";
-		const credential = lookupApiKey("evalops-cohere");
-		expect(credential.key).toBe("managed-token");
-		expect(credential.envVar).toBe("MAESTRO_EVALOPS_ACCESS_TOKEN");
-		expect(credential.source).toBe("env");
-	});
-
-	it("resolves Fireworks managed alias credentials from MAESTRO_EVALOPS_ACCESS_TOKEN", () => {
-		process.env.MAESTRO_EVALOPS_ACCESS_TOKEN = "managed-token";
-		const credential = lookupApiKey("evalops-fireworks");
-		expect(credential.key).toBe("managed-token");
-		expect(credential.envVar).toBe("MAESTRO_EVALOPS_ACCESS_TOKEN");
-		expect(credential.source).toBe("env");
-	});
-
-	it("resolves Google managed alias credentials from MAESTRO_EVALOPS_ACCESS_TOKEN", () => {
-		process.env.MAESTRO_EVALOPS_ACCESS_TOKEN = "managed-token";
-		const credential = lookupApiKey("evalops-google");
-		expect(credential.key).toBe("managed-token");
-		expect(credential.envVar).toBe("MAESTRO_EVALOPS_ACCESS_TOKEN");
-		expect(credential.source).toBe("env");
-	});
-
-	it("resolves Groq managed alias credentials from MAESTRO_EVALOPS_ACCESS_TOKEN", () => {
-		process.env.MAESTRO_EVALOPS_ACCESS_TOKEN = "managed-token";
-		const credential = lookupApiKey("evalops-groq");
-		expect(credential.key).toBe("managed-token");
-		expect(credential.envVar).toBe("MAESTRO_EVALOPS_ACCESS_TOKEN");
-		expect(credential.source).toBe("env");
-	});
-
-	it("resolves Databricks managed alias credentials from MAESTRO_EVALOPS_ACCESS_TOKEN", () => {
-		process.env.MAESTRO_EVALOPS_ACCESS_TOKEN = "managed-token";
-		const credential = lookupApiKey("evalops-databricks");
-		expect(credential.key).toBe("managed-token");
-		expect(credential.envVar).toBe("MAESTRO_EVALOPS_ACCESS_TOKEN");
-		expect(credential.source).toBe("env");
-	});
-
-	it("resolves DeepSeek managed alias credentials from MAESTRO_EVALOPS_ACCESS_TOKEN", () => {
-		process.env.MAESTRO_EVALOPS_ACCESS_TOKEN = "managed-token";
-		const credential = lookupApiKey("evalops-deepseek");
-		expect(credential.key).toBe("managed-token");
-		expect(credential.envVar).toBe("MAESTRO_EVALOPS_ACCESS_TOKEN");
-		expect(credential.source).toBe("env");
-	});
-
-	it("resolves Perplexity managed alias credentials from MAESTRO_EVALOPS_ACCESS_TOKEN", () => {
-		process.env.MAESTRO_EVALOPS_ACCESS_TOKEN = "managed-token";
-		const credential = lookupApiKey("evalops-perplexity");
-		expect(credential.key).toBe("managed-token");
-		expect(credential.envVar).toBe("MAESTRO_EVALOPS_ACCESS_TOKEN");
-		expect(credential.source).toBe("env");
-	});
-
-	it("resolves Together managed alias credentials from MAESTRO_EVALOPS_ACCESS_TOKEN", () => {
-		process.env.MAESTRO_EVALOPS_ACCESS_TOKEN = "managed-token";
-		const credential = lookupApiKey("evalops-together");
-		expect(credential.key).toBe("managed-token");
-		expect(credential.envVar).toBe("MAESTRO_EVALOPS_ACCESS_TOKEN");
-		expect(credential.source).toBe("env");
-	});
-
-	it("resolves Mistral managed alias credentials from MAESTRO_EVALOPS_ACCESS_TOKEN", () => {
-		process.env.MAESTRO_EVALOPS_ACCESS_TOKEN = "managed-token";
-		const credential = lookupApiKey("evalops-mistral");
-		expect(credential.key).toBe("managed-token");
-		expect(credential.envVar).toBe("MAESTRO_EVALOPS_ACCESS_TOKEN");
-		expect(credential.source).toBe("env");
-	});
-
-	it("resolves xAI managed alias credentials from MAESTRO_EVALOPS_ACCESS_TOKEN", () => {
-		process.env.MAESTRO_EVALOPS_ACCESS_TOKEN = "managed-token";
-		const credential = lookupApiKey("evalops-xai");
-		expect(credential.key).toBe("managed-token");
-		expect(credential.envVar).toBe("MAESTRO_EVALOPS_ACCESS_TOKEN");
-		expect(credential.source).toBe("env");
-	});
+	for (const definition of apiKeyManagedGatewayAliasDefinitions) {
+		it(`resolves ${definition.id} credentials from MAESTRO_EVALOPS_ACCESS_TOKEN`, () => {
+			process.env.MAESTRO_EVALOPS_ACCESS_TOKEN = "managed-token";
+			const credential = lookupApiKey(definition.id);
+			expect(credential.key).toBe("managed-token");
+			expect(credential.envVar).toBe("MAESTRO_EVALOPS_ACCESS_TOKEN");
+			expect(credential.source).toBe("env");
+		});
+	}
 });

@@ -30,6 +30,12 @@ import {
 import { getCustomProviderMetadata } from "../../src/models/registry.js";
 import { getEnvVarsForProvider } from "../../src/providers/api-keys.js";
 import { createAuthResolver } from "../../src/providers/auth.js";
+import { EVALOPS_MANAGED_PROVIDER_DEFINITIONS } from "../../src/providers/evalops-managed.js";
+
+const managedGatewayAliasDefinitions =
+	EVALOPS_MANAGED_PROVIDER_DEFINITIONS.filter(
+		(definition) => definition.id !== "evalops",
+	);
 
 describe("validateCodexFlags", () => {
 	const originalEnv = process.env.CODEX_API_KEY;
@@ -127,117 +133,15 @@ describe("createAuthSetup", () => {
 		expect(allPlain).toContain("login");
 	});
 
-	it("buildMissingAuthLines reuses evalops login hint for managed aliases", () => {
-		const result = createAuthSetup({ authMode: "auto" });
-		const lines = result.buildMissingAuthLines("evalops-openrouter");
+	for (const definition of managedGatewayAliasDefinitions) {
+		it(`buildMissingAuthLines reuses evalops login hint for ${definition.id}`, () => {
+			const result = createAuthSetup({ authMode: "auto" });
+			const lines = result.buildMissingAuthLines(definition.id);
 
-		const allPlain = lines.map((l) => l.plain).join("\n");
-		expect(allPlain).toContain("/login evalops");
-	});
-
-	it("buildMissingAuthLines reuses evalops login hint for managed anthropic aliases", () => {
-		const result = createAuthSetup({ authMode: "auto" });
-		const lines = result.buildMissingAuthLines("evalops-anthropic");
-
-		const allPlain = lines.map((l) => l.plain).join("\n");
-		expect(allPlain).toContain("/login evalops");
-	});
-
-	it("buildMissingAuthLines reuses evalops login hint for managed Azure aliases", () => {
-		const result = createAuthSetup({ authMode: "auto" });
-		const lines = result.buildMissingAuthLines("evalops-azure-openai");
-
-		const allPlain = lines.map((l) => l.plain).join("\n");
-		expect(allPlain).toContain("/login evalops");
-	});
-
-	it("buildMissingAuthLines reuses evalops login hint for managed Cohere aliases", () => {
-		const result = createAuthSetup({ authMode: "auto" });
-		const lines = result.buildMissingAuthLines("evalops-cohere");
-
-		const allPlain = lines.map((l) => l.plain).join("\n");
-		expect(allPlain).toContain("/login evalops");
-	});
-
-	it("buildMissingAuthLines reuses evalops login hint for managed Cerebras aliases", () => {
-		const result = createAuthSetup({ authMode: "auto" });
-		const lines = result.buildMissingAuthLines("evalops-cerebras");
-
-		const allPlain = lines.map((l) => l.plain).join("\n");
-		expect(allPlain).toContain("/login evalops");
-	});
-
-	it("buildMissingAuthLines reuses evalops login hint for managed Fireworks aliases", () => {
-		const result = createAuthSetup({ authMode: "auto" });
-		const lines = result.buildMissingAuthLines("evalops-fireworks");
-
-		const allPlain = lines.map((l) => l.plain).join("\n");
-		expect(allPlain).toContain("/login evalops");
-	});
-
-	it("buildMissingAuthLines reuses evalops login hint for managed Google aliases", () => {
-		const result = createAuthSetup({ authMode: "auto" });
-		const lines = result.buildMissingAuthLines("evalops-google");
-
-		const allPlain = lines.map((l) => l.plain).join("\n");
-		expect(allPlain).toContain("/login evalops");
-	});
-
-	it("buildMissingAuthLines reuses evalops login hint for managed Groq aliases", () => {
-		const result = createAuthSetup({ authMode: "auto" });
-		const lines = result.buildMissingAuthLines("evalops-groq");
-
-		const allPlain = lines.map((l) => l.plain).join("\n");
-		expect(allPlain).toContain("/login evalops");
-	});
-
-	it("buildMissingAuthLines reuses evalops login hint for managed Databricks aliases", () => {
-		const result = createAuthSetup({ authMode: "auto" });
-		const lines = result.buildMissingAuthLines("evalops-databricks");
-
-		const allPlain = lines.map((l) => l.plain).join("\n");
-		expect(allPlain).toContain("/login evalops");
-	});
-
-	it("buildMissingAuthLines reuses evalops login hint for managed DeepSeek aliases", () => {
-		const result = createAuthSetup({ authMode: "auto" });
-		const lines = result.buildMissingAuthLines("evalops-deepseek");
-
-		const allPlain = lines.map((l) => l.plain).join("\n");
-		expect(allPlain).toContain("/login evalops");
-	});
-
-	it("buildMissingAuthLines reuses evalops login hint for managed Perplexity aliases", () => {
-		const result = createAuthSetup({ authMode: "auto" });
-		const lines = result.buildMissingAuthLines("evalops-perplexity");
-
-		const allPlain = lines.map((l) => l.plain).join("\n");
-		expect(allPlain).toContain("/login evalops");
-	});
-
-	it("buildMissingAuthLines reuses evalops login hint for managed Together aliases", () => {
-		const result = createAuthSetup({ authMode: "auto" });
-		const lines = result.buildMissingAuthLines("evalops-together");
-
-		const allPlain = lines.map((l) => l.plain).join("\n");
-		expect(allPlain).toContain("/login evalops");
-	});
-
-	it("buildMissingAuthLines reuses evalops login hint for managed Mistral aliases", () => {
-		const result = createAuthSetup({ authMode: "auto" });
-		const lines = result.buildMissingAuthLines("evalops-mistral");
-
-		const allPlain = lines.map((l) => l.plain).join("\n");
-		expect(allPlain).toContain("/login evalops");
-	});
-
-	it("buildMissingAuthLines reuses evalops login hint for managed xAI aliases", () => {
-		const result = createAuthSetup({ authMode: "auto" });
-		const lines = result.buildMissingAuthLines("evalops-xai");
-
-		const allPlain = lines.map((l) => l.plain).join("\n");
-		expect(allPlain).toContain("/login evalops");
-	});
+			const allPlain = lines.map((l) => l.plain).join("\n");
+			expect(allPlain).toContain("/login evalops");
+		});
+	}
 
 	it("buildMissingAuthLines includes env var hint", () => {
 		(getEnvVarsForProvider as ReturnType<typeof vi.fn>).mockReturnValueOnce([

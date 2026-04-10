@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { getModel } from "../../src/models/builtin.js";
+import { EVALOPS_MANAGED_PROVIDER_DEFINITIONS } from "../../src/providers/evalops-managed.js";
+
+const managedGatewayAliasDefinitions =
+	EVALOPS_MANAGED_PROVIDER_DEFINITIONS.filter(
+		(definition) => definition.id !== "evalops",
+	);
 
 describe("Built-in model registry", () => {
 	it("includes OpenRouter models wired to OpenAI-compatible endpoints", () => {
@@ -51,124 +57,23 @@ describe("Built-in model registry", () => {
 		expect(model?.baseUrl).toBe("https://api.groq.com/openai/v1/responses");
 	});
 
-	it("includes EvalOps managed OpenRouter models normalized to the gateway endpoint", () => {
-		const model = getModel("evalops-openrouter", "anthropic/claude-sonnet-4.5");
-		expect(model).toBeTruthy();
-		expect(model?.provider).toBe("evalops-openrouter");
-		expect(model?.api).toBe("openai-completions");
-		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/chat/completions");
-	});
-
-	it("includes EvalOps managed Anthropic models normalized to the gateway endpoint", () => {
-		const model = getModel("evalops-anthropic", "claude-sonnet-4-5");
-		expect(model).toBeTruthy();
-		expect(model?.provider).toBe("evalops-anthropic");
-		expect(model?.api).toBe("anthropic-messages");
-		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/messages");
-	});
-
-	it("includes EvalOps managed Azure OpenAI models normalized to the gateway endpoint", () => {
-		const model = getModel("evalops-azure-openai", "gpt-4o");
-		expect(model).toBeTruthy();
-		expect(model?.provider).toBe("evalops-azure-openai");
-		expect(model?.api).toBe("openai-completions");
-		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/chat/completions");
-	});
-
-	it("includes EvalOps managed Cohere models normalized to the gateway endpoint", () => {
-		const model = getModel("evalops-cohere", "command-a-03-2025");
-		expect(model).toBeTruthy();
-		expect(model?.provider).toBe("evalops-cohere");
-		expect(model?.api).toBe("openai-completions");
-		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/chat/completions");
-	});
-
-	it("includes EvalOps managed Cerebras models normalized to the gateway endpoint", () => {
-		const model = getModel("evalops-cerebras", "gpt-oss-120b");
-		expect(model).toBeTruthy();
-		expect(model?.provider).toBe("evalops-cerebras");
-		expect(model?.api).toBe("openai-completions");
-		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/chat/completions");
-	});
-
-	it("includes EvalOps managed Fireworks models normalized to the gateway endpoint", () => {
-		const model = getModel(
-			"evalops-fireworks",
-			"accounts/fireworks/models/llama-v3p1-70b-instruct",
-		);
-		expect(model).toBeTruthy();
-		expect(model?.provider).toBe("evalops-fireworks");
-		expect(model?.api).toBe("openai-completions");
-		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/chat/completions");
-	});
-
-	it("includes EvalOps managed Google models normalized to the gateway endpoint", () => {
-		const model = getModel("evalops-google", "gemini-2.5-pro");
-		expect(model).toBeTruthy();
-		expect(model?.provider).toBe("evalops-google");
-		expect(model?.api).toBe("openai-completions");
-		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/chat/completions");
-	});
-
-	it("includes EvalOps managed Groq models normalized to the gateway endpoint", () => {
-		const model = getModel("evalops-groq", "llama-3.3-70b-versatile");
-		expect(model).toBeTruthy();
-		expect(model?.provider).toBe("evalops-groq");
-		expect(model?.api).toBe("openai-completions");
-		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/chat/completions");
-	});
-
-	it("includes EvalOps managed Databricks models normalized to the gateway endpoint", () => {
-		const model = getModel(
-			"evalops-databricks",
-			"databricks-meta-llama-3-3-70b-instruct",
-		);
-		expect(model).toBeTruthy();
-		expect(model?.provider).toBe("evalops-databricks");
-		expect(model?.api).toBe("openai-completions");
-		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/chat/completions");
-	});
-
-	it("includes EvalOps managed DeepSeek models normalized to the gateway endpoint", () => {
-		const model = getModel("evalops-deepseek", "deepseek-v3.2");
-		expect(model).toBeTruthy();
-		expect(model?.provider).toBe("evalops-deepseek");
-		expect(model?.api).toBe("openai-completions");
-		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/chat/completions");
-	});
-
-	it("includes EvalOps managed Perplexity models normalized to the gateway endpoint", () => {
-		const model = getModel("evalops-perplexity", "sonar");
-		expect(model).toBeTruthy();
-		expect(model?.provider).toBe("evalops-perplexity");
-		expect(model?.api).toBe("openai-completions");
-		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/chat/completions");
-	});
-
-	it("includes EvalOps managed Together models normalized to the gateway endpoint", () => {
-		const model = getModel(
-			"evalops-together",
-			"meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
-		);
-		expect(model).toBeTruthy();
-		expect(model?.provider).toBe("evalops-together");
-		expect(model?.api).toBe("openai-completions");
-		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/chat/completions");
-	});
-
-	it("includes EvalOps managed Mistral models normalized to the gateway endpoint", () => {
-		const model = getModel("evalops-mistral", "mistral-large-latest");
-		expect(model).toBeTruthy();
-		expect(model?.provider).toBe("evalops-mistral");
-		expect(model?.api).toBe("openai-completions");
-		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/chat/completions");
-	});
-
-	it("includes EvalOps managed xAI models normalized to the gateway endpoint", () => {
-		const model = getModel("evalops-xai", "grok-4-fast");
-		expect(model).toBeTruthy();
-		expect(model?.provider).toBe("evalops-xai");
-		expect(model?.api).toBe("openai-completions");
-		expect(model?.baseUrl).toBe("http://127.0.0.1:8081/v1/chat/completions");
-	});
+	for (const definition of managedGatewayAliasDefinitions) {
+		it(`includes ${definition.name} models normalized to the gateway endpoint`, () => {
+			const expectedAPI =
+				definition.id === "evalops-openrouter"
+					? "openai-responses"
+					: definition.api;
+			const model = getModel(definition.id, definition.defaultModel);
+			expect(model).toBeTruthy();
+			expect(model?.provider).toBe(definition.id);
+			expect(model?.api).toBe(expectedAPI);
+			expect(model?.baseUrl).toBe(
+				expectedAPI === "anthropic-messages"
+					? "http://127.0.0.1:8081/v1/messages"
+					: expectedAPI === "openai-responses"
+						? "http://127.0.0.1:8081/v1/responses"
+						: "http://127.0.0.1:8081/v1/chat/completions",
+			);
+		});
+	}
 });
