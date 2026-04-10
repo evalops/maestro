@@ -227,6 +227,27 @@ In managed mode:
 This is the intended path for org-managed Azure OpenAI, Google Gemini, Anthropic, OpenAI, and OpenRouter
 credentials.
 
+### Durable Memory Service
+
+Maestro can also mirror automatic durable memories to the shared EvalOps
+`memory` service and use that service for prompt-time durable recall while still
+keeping local session-memory snapshots.
+
+Typical setup:
+
+```bash
+export MAESTRO_MEMORY_BASE=http://127.0.0.1:8082
+export MAESTRO_EVALOPS_ORG_ID=org_123
+/login evalops
+```
+
+Optional overrides:
+
+- `MAESTRO_MEMORY_ACCESS_TOKEN`
+  - explicit bearer token for the memory service instead of reusing EvalOps OAuth
+- `MAESTRO_MEMORY_TEAM_ID`
+  - scopes durable memories to a team when the service expects team-level writes
+
 Example `~/.maestro/config.json` to add a short alias:
 
 ```json

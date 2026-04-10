@@ -13,6 +13,7 @@ import type { Agent, Api, Model, TextContent } from "../agent/index.js";
 import { PATHS } from "../config/constants.js";
 import { safeJsonParse } from "../utils/json.js";
 import { createLogger } from "../utils/logger.js";
+import { applyRemoteAutoMemoryConsolidation } from "./service-client.js";
 import {
 	applyAutoMemoryConsolidation,
 	listAutoDurableMemories,
@@ -439,6 +440,16 @@ export function createAutomaticMemoryConsolidationCoordinator(
 							createAgent: options.createAgent,
 							memories,
 						});
+						const remoteResult = await applyRemoteAutoMemoryConsolidation({
+							removeEntries: memories.filter((memory) =>
+								plan.removeIds.includes(memory.id),
+							),
+							upserts: plan.upserts,
+							options: {
+								projectId: group.projectId,
+								projectName: group.projectName,
+							},
+						});
 						const result = applyAutoMemoryConsolidation({
 							...plan,
 							options: {
@@ -464,6 +475,9 @@ export function createAutomaticMemoryConsolidationCoordinator(
 							removed: result.removed,
 							added: result.added,
 							updated: result.updated,
+							remoteRemoved: remoteResult?.removed,
+							remoteAdded: remoteResult?.added,
+							remoteUpdated: remoteResult?.updated,
 						});
 					} catch (error) {
 						logger.warn("Automatic durable memory consolidation failed", {

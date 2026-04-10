@@ -48,6 +48,9 @@
  * - MAESTRO_SESSION_DIR - Custom session storage directory
  * - MAESTRO_SESSION_SCOPE - Scope sessions by auth subject (auth|true|1)
  * - MAESTRO_MULTI_USER - Alias for MAESTRO_SESSION_SCOPE
+ * - MAESTRO_MEMORY_BASE - Durable memory service base URL
+ * - MAESTRO_MEMORY_ACCESS_TOKEN - Override bearer token for durable memory service
+ * - MAESTRO_MEMORY_TEAM_ID - Optional team scope for durable memory service
  * - MAESTRO_SHARED_MEMORY_BASE - Shared memory base URL (Cloudflare Durable Objects worker)
  * - MAESTRO_SHARED_MEMORY_API_KEY - API key for shared memory service
  * - MAESTRO_SHARED_MEMORY_SESSION_ID - Override session ID for shared memory sync
@@ -109,6 +112,9 @@ export const ENV_VARS = {
 	SESSION_DIR: "MAESTRO_SESSION_DIR",
 	SESSION_SCOPE: "MAESTRO_SESSION_SCOPE",
 	MULTI_USER: "MAESTRO_MULTI_USER",
+	MEMORY_BASE: "MAESTRO_MEMORY_BASE",
+	MEMORY_ACCESS_TOKEN: "MAESTRO_MEMORY_ACCESS_TOKEN",
+	MEMORY_TEAM_ID: "MAESTRO_MEMORY_TEAM_ID",
 	SHARED_MEMORY_BASE: "MAESTRO_SHARED_MEMORY_BASE",
 	SHARED_MEMORY_API_KEY: "MAESTRO_SHARED_MEMORY_API_KEY",
 	SHARED_MEMORY_SESSION_ID: "MAESTRO_SHARED_MEMORY_SESSION_ID",

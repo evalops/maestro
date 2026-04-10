@@ -150,6 +150,95 @@ describe("automatic memory consolidation", () => {
 		);
 	});
 
+	it("mirrors consolidation plans to the remote memory service", async () => {
+		const applyRemoteAutoMemoryConsolidation = vi.fn().mockResolvedValue({
+			removed: 2,
+			added: 1,
+			updated: 0,
+		});
+		vi.doMock("../../src/memory/service-client.js", () => ({
+			applyRemoteAutoMemoryConsolidation,
+		}));
+
+		const memory = await import("../../src/memory/index.js");
+		const { createAutomaticMemoryConsolidationCoordinator } = await import(
+			"../../src/memory/auto-consolidation.js"
+		);
+
+		const first = memory.upsertDurableMemory(
+			"team-preferences",
+			"Keep PRs focused.",
+			{
+				tags: ["auto", "durable", "workflow"],
+			},
+		);
+		const second = memory.upsertDurableMemory(
+			"team-preferences",
+			"Land changes with green CI.",
+			{
+				tags: ["auto", "durable", "workflow"],
+			},
+		);
+
+		const coordinator = createAutomaticMemoryConsolidationCoordinator({
+			createAgent: async () => {
+				const fakeAgent = {
+					state: { messages: [] },
+					prompt: async () => {
+						fakeAgent.state.messages = [
+							{
+								role: "assistant",
+								content: [
+									{
+										type: "text",
+										text: JSON.stringify({
+											removeIds: [first.entry.id, second.entry.id],
+											upserts: [
+												{
+													topic: "team-preferences",
+													content:
+														"Keep PRs focused and land them with green CI.",
+													tags: ["workflow"],
+												},
+											],
+										}),
+									},
+								],
+							},
+						];
+					},
+				};
+				return fakeAgent as never;
+			},
+			getModel: () =>
+				({
+					id: "gpt-4o-mini",
+					provider: "openai",
+					api: "openai-responses",
+				}) as never,
+		});
+
+		coordinator.schedule();
+		await coordinator.flush();
+
+		expect(applyRemoteAutoMemoryConsolidation).toHaveBeenCalledWith(
+			expect.objectContaining({
+				removeEntries: expect.arrayContaining([
+					expect.objectContaining({ content: "Keep PRs focused." }),
+					expect.objectContaining({
+						content: "Land changes with green CI.",
+					}),
+				]),
+				upserts: expect.arrayContaining([
+					expect.objectContaining({
+						topic: "team-preferences",
+						content: "Keep PRs focused and land them with green CI.",
+					}),
+				]),
+			}),
+		);
+	});
+
 	it("consolidates automatic durable memories per repo scope", async () => {
 		const memory = await import("../../src/memory/index.js");
 		const { createAutomaticMemoryConsolidationCoordinator } = await import(

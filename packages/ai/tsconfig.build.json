@@ -13,6 +13,7 @@
 		"../../src/providers/**/*.ts",
 		"../../src/tools/**/*.ts",
 		"../../src/memory/relevant-recall.ts",
+		"../../src/memory/service-client.ts",
 		"../../src/memory/store.ts",
 		"../../src/memory/team-memory.ts",
 		"../../src/memory/team-memory-secret-scan.ts",

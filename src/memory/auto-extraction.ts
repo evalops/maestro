@@ -4,6 +4,7 @@ import type { Agent, Api, Model, TextContent } from "../agent/index.js";
 import { buildSessionMemoryContent } from "../session/session-memory.js";
 import { safeJsonParse } from "../utils/json.js";
 import { createLogger } from "../utils/logger.js";
+import { upsertRemoteDurableMemory } from "./service-client.js";
 import { upsertDurableMemory } from "./store.js";
 
 const logger = createLogger("memory:auto-extraction");
@@ -263,7 +264,30 @@ export function createAutomaticMemoryExtractionCoordinator(
 					});
 					let added = 0;
 					let updated = 0;
+					let remoteAdded = 0;
+					let remoteUpdated = 0;
 					for (const memory of memories) {
+						try {
+							const remoteResult = await upsertRemoteDurableMemory(
+								memory.topic,
+								memory.content,
+								{
+									tags: ["auto", "durable", ...(memory.tags ?? [])],
+									cwd: snapshot.cwd,
+								},
+							);
+							if (remoteResult?.created) {
+								remoteAdded += 1;
+							} else if (remoteResult?.updated) {
+								remoteUpdated += 1;
+							}
+						} catch (error) {
+							logger.warn("Failed to mirror durable memory to remote service", {
+								sessionId: snapshot.sessionId,
+								topic: memory.topic,
+								error: error instanceof Error ? error.message : String(error),
+							});
+						}
 						const result = upsertDurableMemory(memory.topic, memory.content, {
 							tags: ["auto", "durable", ...(memory.tags ?? [])],
 							cwd: snapshot.cwd,
@@ -285,6 +309,8 @@ export function createAutomaticMemoryExtractionCoordinator(
 						added,
 						updated,
 						extracted: memories.length,
+						remoteAdded,
+						remoteUpdated,
 					});
 				} catch (error) {
 					logger.warn("Automatic durable memory extraction failed", {

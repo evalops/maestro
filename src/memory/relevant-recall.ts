@@ -1,3 +1,4 @@
+import { recallRemoteDurableMemories } from "./service-client.js";
 import { searchMemories } from "./store.js";
 import { getMemoryProjectScope } from "./team-memory.js";
 import type { MemoryEntry, MemorySearchResult } from "./types.js";
@@ -149,6 +150,9 @@ function collectRelevantMemories(
 	prompt: string,
 	currentSessionId?: string,
 	currentProjectId?: string,
+	options?: {
+		includeDurableLocalEntries?: boolean;
+	},
 ): ScoredMemoryCandidate[] {
 	const terms = extractPromptTerms(prompt);
 	if (terms.length === 0) {
@@ -161,6 +165,12 @@ function collectRelevantMemories(
 			limit: MAX_SEARCH_RESULTS_PER_TERM,
 		});
 		for (const result of results) {
+			if (
+				options?.includeDurableLocalEntries === false &&
+				result.entry.topic !== "session-memory"
+			) {
+				continue;
+			}
 			if (
 				shouldSkipSessionMemory(
 					result.entry,
@@ -203,6 +213,58 @@ function collectRelevantMemories(
 		.slice(0, MAX_RESULTS);
 }
 
+function collectMatchedTerms(entry: MemoryEntry, terms: string[]): Set<string> {
+	const haystack = [entry.topic, entry.content, ...(entry.tags ?? [])]
+		.join(" ")
+		.toLowerCase();
+	return new Set(terms.filter((term) => haystack.includes(term)));
+}
+
+async function collectRemoteRelevantMemories(
+	prompt: string,
+	options?: {
+		cwd?: string;
+		currentProjectId?: string;
+		currentProjectName?: string;
+	},
+): Promise<ScoredMemoryCandidate[] | null> {
+	const terms = extractPromptTerms(prompt);
+	if (terms.length === 0) {
+		return [];
+	}
+
+	const results = await recallRemoteDurableMemories(prompt, {
+		cwd: options?.cwd,
+		limit: MAX_RESULTS,
+	});
+	if (results === null) {
+		return null;
+	}
+
+	return results
+		.map((result) => {
+			const entry: MemoryEntry = {
+				...result.entry,
+				projectId: options?.currentProjectId ?? result.entry.projectId,
+				projectName: options?.currentProjectName ?? result.entry.projectName,
+			};
+			const matchedTerms = collectMatchedTerms(entry, terms);
+			return {
+				entry,
+				score: result.score * 10 + matchedTerms.size * 2 + 6,
+				matchedTerms,
+			};
+		})
+		.filter((candidate) => candidate.matchedTerms.size > 0)
+		.sort((left, right) => {
+			if (right.score !== left.score) {
+				return right.score - left.score;
+			}
+			return right.entry.updatedAt - left.entry.updatedAt;
+		})
+		.slice(0, MAX_RESULTS);
+}
+
 function formatMemoryLabel(
 	entry: MemoryEntry,
 	currentSessionId: string | undefined,
@@ -236,6 +298,59 @@ export function buildRelevantMemoryPromptAddition(
 		currentSessionId,
 		currentProjectId,
 	);
+	if (candidates.length === 0) {
+		return null;
+	}
+
+	const lines = [
+		"Automatic memory recall:",
+		"Use these prior memories only if they materially help with the current request.",
+	];
+
+	for (const candidate of candidates) {
+		const normalizedContent = normalizeMemoryContent(candidate.entry.content);
+		if (!normalizedContent) {
+			continue;
+		}
+		lines.push(
+			`- [${formatMemoryLabel(candidate.entry, currentSessionId, currentProjectId)}] ${truncateMemoryContent(normalizedContent, MAX_ENTRY_CHARS)}`,
+		);
+	}
+
+	return lines.length > 2 ? lines.join("\n") : null;
+}
+
+export async function buildRelevantMemoryPromptAdditionAsync(
+	prompt: string,
+	options?: {
+		sessionId?: string;
+		cwd?: string;
+	},
+): Promise<string | null> {
+	const currentSessionId = options?.sessionId;
+	const currentProjectScope = options?.cwd
+		? getMemoryProjectScope(options.cwd)
+		: null;
+	const currentProjectId = currentProjectScope?.projectId;
+	const currentProjectName = currentProjectScope?.projectName;
+	const remoteCandidates = await collectRemoteRelevantMemories(prompt, {
+		cwd: options?.cwd,
+		currentProjectId,
+		currentProjectName,
+	});
+	const candidates = [
+		...collectRelevantMemories(prompt, currentSessionId, currentProjectId, {
+			includeDurableLocalEntries: remoteCandidates === null,
+		}),
+		...(remoteCandidates ?? []),
+	]
+		.sort((left, right) => {
+			if (right.score !== left.score) {
+				return right.score - left.score;
+			}
+			return right.entry.updatedAt - left.entry.updatedAt;
+		})
+		.slice(0, MAX_RESULTS);
 	if (candidates.length === 0) {
 		return null;
 	}

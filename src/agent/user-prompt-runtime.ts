@@ -1,5 +1,5 @@
 import { createSessionHookService } from "../hooks/session-integration.js";
-import { buildRelevantMemoryPromptAddition } from "../memory/relevant-recall.js";
+import { buildRelevantMemoryPromptAdditionAsync } from "../memory/relevant-recall.js";
 import { createLogger } from "../utils/logger.js";
 import type { Agent } from "./agent.js";
 import { buildCompactionHookContext } from "./compaction-hooks.js";
@@ -128,16 +128,19 @@ function buildPreMessageHookSystemGuidance(text: string): string {
 	return `PreMessage hook system guidance:\n${text}`;
 }
 
-function applyAutomaticMemoryRecall(params: {
+async function applyAutomaticMemoryRecall(params: {
 	agent: Agent;
 	sessionManager: PromptRuntimeSessionManager;
 	prompt: string;
 	cwd: string;
-}): void {
-	const promptAddition = buildRelevantMemoryPromptAddition(params.prompt, {
-		sessionId: params.sessionManager.getSessionId?.(),
-		cwd: params.cwd,
-	});
+}): Promise<void> {
+	const promptAddition = await buildRelevantMemoryPromptAdditionAsync(
+		params.prompt,
+		{
+			sessionId: params.sessionManager.getSessionId?.(),
+			cwd: params.cwd,
+		},
+	);
 	if (!promptAddition) {
 		return;
 	}
@@ -727,7 +730,7 @@ export async function runUserPromptWithRecovery(params: {
 		await applyUserPromptSubmitHooks(params);
 		throwIfAborted(params.signal);
 		await applyPreMessageHooks(params);
-		applyAutomaticMemoryRecall(params);
+		await applyAutomaticMemoryRecall(params);
 		throwIfAborted(params.signal);
 		try {
 			await runWithPromptRecovery({

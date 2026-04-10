@@ -101,6 +101,9 @@ export function printHelp(version: string) {
   MAESTRO_TUI_MINIMAL    - Set to 1/true to disable animations and reduce TUI effects (SSH-friendly)
   MAESTRO_TUI_TOOL_MAX_CHARS - Max chars shown per tool output panel (0 = unlimited)
   MAESTRO_TUI_TOOL_MAX_LINES - Max lines shown per tool output panel (0 = unlimited)
+  MAESTRO_MEMORY_BASE - Durable memory service base URL
+  MAESTRO_MEMORY_ACCESS_TOKEN - Override bearer token for durable memory service
+  MAESTRO_MEMORY_TEAM_ID - Optional team scope for durable memory service
   MAESTRO_SHARED_MEMORY_BASE - Shared memory base URL (Cloudflare Durable Objects worker)
   MAESTRO_SHARED_MEMORY_API_KEY - API key for shared memory service
   CODING_AGENT_DIR        - Legacy session directory override (fallback)`,

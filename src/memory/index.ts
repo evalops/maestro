@@ -41,7 +41,10 @@ export {
 	clearAllMemories,
 } from "./store.js";
 
-export { buildRelevantMemoryPromptAddition } from "./relevant-recall.js";
+export {
+	buildRelevantMemoryPromptAddition,
+	buildRelevantMemoryPromptAdditionAsync,
+} from "./relevant-recall.js";
 export {
 	assertTeamMemoryContentSafe,
 	buildTeamMemoryPromptContext,

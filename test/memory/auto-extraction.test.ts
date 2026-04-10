@@ -278,6 +278,81 @@ describe("automatic memory extraction", () => {
 		expect(onProcessed).toHaveBeenCalledTimes(1);
 	});
 
+	it("mirrors extracted durable memories to the remote memory service", async () => {
+		const upsertRemoteDurableMemory = vi.fn().mockResolvedValue({
+			created: true,
+			updated: false,
+			entry: {
+				id: "mem_remote_1",
+				topic: "team-preferences",
+				content: "Keep PRs focused.",
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+			},
+		});
+		vi.doMock("../../src/memory/service-client.js", () => ({
+			upsertRemoteDurableMemory,
+		}));
+
+		const { createAutomaticMemoryExtractionCoordinator } = await import(
+			"../../src/memory/auto-extraction.js"
+		);
+
+		const coordinator = createAutomaticMemoryExtractionCoordinator({
+			createAgent: async () => {
+				const fakeAgent = {
+					state: { messages: [] },
+					prompt: async () => {
+						fakeAgent.state.messages = [
+							{
+								role: "assistant",
+								content: [
+									{
+										type: "text",
+										text: JSON.stringify({
+											memories: [
+												{
+													topic: "team-preferences",
+													content: "Keep PRs focused.",
+													tags: ["workflow"],
+												},
+											],
+										}),
+									},
+								],
+							},
+						];
+					},
+				};
+				return fakeAgent as never;
+			},
+			getModel: () =>
+				({
+					id: "gpt-4o-mini",
+					provider: "openai",
+					api: "openai-responses",
+				}) as never,
+			onProcessed: undefined,
+			sessionManager: {
+				getSessionFile: () => sessionPath,
+				flush: async () => {},
+				saveSessionMemoryExtractionHash: () => {},
+			},
+		});
+
+		coordinator.schedule(sessionPath);
+		await coordinator.flush();
+
+		expect(upsertRemoteDurableMemory).toHaveBeenCalledWith(
+			"team-preferences",
+			"Keep PRs focused.",
+			{
+				tags: ["auto", "durable", "workflow"],
+				cwd: repoRoot,
+			},
+		);
+	});
+
 	it("swallows malformed session snapshot errors during flush", async () => {
 		const malformedSessionPath = join(maestroHome, "malformed-session.jsonl");
 		writeMalformedSessionFile(malformedSessionPath);

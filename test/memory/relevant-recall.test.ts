@@ -2,13 +2,16 @@ import { execSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	addMemory,
 	getMemoryProjectScope,
 	upsertScopedMemory,
 } from "../../src/memory/index.js";
-import { buildRelevantMemoryPromptAddition } from "../../src/memory/relevant-recall.js";
+import {
+	buildRelevantMemoryPromptAddition,
+	buildRelevantMemoryPromptAdditionAsync,
+} from "../../src/memory/relevant-recall.js";
 
 describe("relevant memory recall", () => {
 	let tempRoot: string;
@@ -23,6 +26,11 @@ describe("relevant memory recall", () => {
 	});
 
 	afterEach(() => {
+		Reflect.deleteProperty(process.env, "MAESTRO_MEMORY_BASE");
+		Reflect.deleteProperty(process.env, "MAESTRO_MEMORY_ACCESS_TOKEN");
+		Reflect.deleteProperty(process.env, "MAESTRO_EVALOPS_ORG_ID");
+		vi.unstubAllGlobals();
+		vi.restoreAllMocks();
 		if (originalMaestroHome === undefined) {
 			delete process.env.MAESTRO_HOME;
 		} else {
@@ -114,5 +122,67 @@ describe("relevant memory recall", () => {
 		expect(getMemoryProjectScope(repoA)?.projectId).not.toBe(
 			getMemoryProjectScope(repoB)?.projectId,
 		);
+	});
+
+	it("merges local session memory with remote durable recall", async () => {
+		const repoRoot = createGitRepo("maestro-recall-remote-");
+		upsertScopedMemory(
+			"session-memory",
+			"# Session Memory\nKeep the retry backoff logic intact.",
+			{ sessionId: "sess-current", cwd: repoRoot },
+		);
+		process.env.MAESTRO_MEMORY_BASE = "https://memory.test";
+		process.env.MAESTRO_MEMORY_ACCESS_TOKEN = "memory-token";
+		process.env.MAESTRO_EVALOPS_ORG_ID = "org_123";
+
+		const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+			const url = typeof input === "string" ? input : input.toString();
+			if (url.endsWith("/v1/memories/recall")) {
+				return new Response(
+					JSON.stringify({
+						query: "Keep the retry backoff logic and preserve focused PRs",
+						total: 1,
+						memories: [
+							{
+								id: "mem_remote_1",
+								organization_id: "org_123",
+								type: "project",
+								content:
+									"Keep pull requests focused and land them with green CI.",
+								repository: getMemoryProjectScope(repoRoot)?.projectId,
+								agent: "maestro",
+								score: 0.82,
+								tags: [
+									"auto",
+									"durable",
+									"workflow",
+									"source:maestro",
+									"maestro-kind:durable-memory",
+									"maestro-topic:team-preferences",
+								],
+								created_at: "2026-04-09T00:00:00.000Z",
+								updated_at: "2026-04-09T00:10:00.000Z",
+							},
+						],
+					}),
+					{ status: 200 },
+				);
+			}
+			throw new Error(`Unexpected request: ${url}`);
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		const addition = await buildRelevantMemoryPromptAdditionAsync(
+			"Keep the retry backoff logic and preserve focused PRs",
+			{
+				sessionId: "sess-current",
+				cwd: repoRoot,
+			},
+		);
+
+		expect(addition).toContain("current session");
+		expect(addition).toContain("retry backoff logic");
+		expect(addition).toContain("team-preferences");
+		expect(addition).toContain("green CI");
 	});
 });
