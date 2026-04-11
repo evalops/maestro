@@ -43,6 +43,10 @@ import {
 	ComposerChatApprovals,
 } from "./composer-chat-approvals.js";
 import {
+	type ComposerChatClientRequestState,
+	ComposerChatClientRequests,
+} from "./composer-chat-client-requests.js";
+import {
 	buildComposerChatViewport,
 	renderComposerChatMessagePane,
 } from "./composer-chat-message-pane.js";
@@ -91,20 +95,6 @@ function coerceToolArgsRecord(args: unknown): Record<string, unknown> {
 		return {};
 	}
 	return args as Record<string, unknown>;
-}
-
-function isUserInputRequest(
-	request: Pick<ComposerPendingClientToolRequest, "kind" | "toolName">,
-): boolean {
-	return request.kind === "user_input" || request.toolName === "ask_user";
-}
-
-function isMcpElicitationRequest(
-	request: Pick<ComposerPendingClientToolRequest, "kind" | "toolName">,
-): boolean {
-	return (
-		request.kind === "mcp_elicitation" || request.toolName === "mcp_elicitation"
-	);
 }
 
 function getOptionalStringArg(
@@ -1186,6 +1176,38 @@ export class ComposerChat extends LitElement {
 		}),
 		(message, type, duration) => this.showToast(message, type, duration),
 	);
+	private readonly clientRequests = new ComposerChatClientRequests(
+		() => this.apiClient,
+		() => ({
+			pendingToolRetryQueue: this.pendingToolRetryQueue,
+			toolRetrySubmitting: this.toolRetrySubmitting,
+			pendingMcpElicitationQueue: this.pendingMcpElicitationQueue,
+			mcpElicitationSubmitting: this.mcpElicitationSubmitting,
+			pendingUserInputQueue: this.pendingUserInputQueue,
+			userInputSubmitting: this.userInputSubmitting,
+		}),
+		(state: Partial<ComposerChatClientRequestState>) => {
+			if (state.pendingToolRetryQueue !== undefined) {
+				this.pendingToolRetryQueue = state.pendingToolRetryQueue;
+			}
+			if (state.toolRetrySubmitting !== undefined) {
+				this.toolRetrySubmitting = state.toolRetrySubmitting;
+			}
+			if (state.pendingMcpElicitationQueue !== undefined) {
+				this.pendingMcpElicitationQueue = state.pendingMcpElicitationQueue;
+			}
+			if (state.mcpElicitationSubmitting !== undefined) {
+				this.mcpElicitationSubmitting = state.mcpElicitationSubmitting;
+			}
+			if (state.pendingUserInputQueue !== undefined) {
+				this.pendingUserInputQueue = state.pendingUserInputQueue;
+			}
+			if (state.userInputSubmitting !== undefined) {
+				this.userInputSubmitting = state.userInputSubmitting;
+			}
+		},
+		(message, type, duration) => this.showToast(message, type, duration),
+	);
 	private promptSuggestionRequestId = 0;
 	private artifactsPanelAttachmentsRequestId = 0;
 	private attachmentContentCache = new Map<string, string>();
@@ -1635,94 +1657,40 @@ export class ComposerChat extends LitElement {
 	}
 
 	private enqueueToolRetryRequest(request: ComposerToolRetryRequest) {
-		if (this.pendingToolRetryQueue.some((entry) => entry.id === request.id)) {
-			return;
-		}
-		this.pendingToolRetryQueue = [...this.pendingToolRetryQueue, request];
+		this.clientRequests.enqueueToolRetryRequest(request);
 	}
 
 	private clearToolRetryRequest(requestId: string) {
-		this.pendingToolRetryQueue = this.pendingToolRetryQueue.filter(
-			(request) => request.id !== requestId,
-		);
+		this.clientRequests.clearToolRetryRequest(requestId);
 	}
 
 	private enqueueMcpElicitationRequest(
 		request: ComposerPendingClientToolRequest,
 	) {
-		const existingIndex = this.pendingMcpElicitationQueue.findIndex(
-			(entry) => entry.toolCallId === request.toolCallId,
-		);
-		if (existingIndex < 0) {
-			this.pendingMcpElicitationQueue = [
-				...this.pendingMcpElicitationQueue,
-				request,
-			];
-			return;
-		}
-		const nextQueue = [...this.pendingMcpElicitationQueue];
-		nextQueue[existingIndex] = request;
-		this.pendingMcpElicitationQueue = nextQueue;
+		this.clientRequests.enqueueMcpElicitationRequest(request);
 	}
 
 	private clearMcpElicitationRequest(toolCallId: string) {
-		this.pendingMcpElicitationQueue = this.pendingMcpElicitationQueue.filter(
-			(request) => request.toolCallId !== toolCallId,
-		);
+		this.clientRequests.clearMcpElicitationRequest(toolCallId);
 	}
 
 	private enqueueUserInputRequest(request: ComposerPendingClientToolRequest) {
-		const existingIndex = this.pendingUserInputQueue.findIndex(
-			(entry) => entry.toolCallId === request.toolCallId,
-		);
-		if (existingIndex < 0) {
-			this.pendingUserInputQueue = [...this.pendingUserInputQueue, request];
-			return;
-		}
-		const nextQueue = [...this.pendingUserInputQueue];
-		nextQueue[existingIndex] = request;
-		this.pendingUserInputQueue = nextQueue;
+		this.clientRequests.enqueueUserInputRequest(request);
 	}
 
 	private clearUserInputRequest(toolCallId: string) {
-		this.pendingUserInputQueue = this.pendingUserInputQueue.filter(
-			(request) => request.toolCallId !== toolCallId,
-		);
+		this.clientRequests.clearUserInputRequest(toolCallId);
 	}
 
 	private resetPendingSessionRequestUiState() {
 		this.approvals.resetPendingRequests();
-		this.pendingToolRetryQueue = [];
-		this.toolRetrySubmitting = false;
-		this.pendingMcpElicitationQueue = [];
-		this.mcpElicitationSubmitting = false;
-		this.pendingUserInputQueue = [];
-		this.userInputSubmitting = false;
+		this.clientRequests.resetPendingRequests();
 	}
 
 	private restorePendingSessionRequests(session: Session) {
 		this.approvals.restorePendingRequests(session);
-		this.pendingToolRetryQueue = Array.isArray(session.pendingToolRetryRequests)
-			? [...session.pendingToolRetryRequests]
-			: [];
-		this.toolRetrySubmitting = false;
-
-		const pendingClientToolRequests = Array.isArray(
-			session.pendingClientToolRequests,
-		)
-			? [...session.pendingClientToolRequests]
-			: [];
-		this.pendingMcpElicitationQueue = pendingClientToolRequests.filter(
-			isMcpElicitationRequest,
-		);
-		this.mcpElicitationSubmitting = false;
-		this.pendingUserInputQueue =
-			pendingClientToolRequests.filter(isUserInputRequest);
-		this.userInputSubmitting = false;
-		const replayableClientToolRequests = pendingClientToolRequests.filter(
-			(request) =>
-				!isUserInputRequest(request) && !isMcpElicitationRequest(request),
-		);
+		const replayableClientToolRequests =
+			this.clientRequests.restorePendingRequests(session);
 		if (replayableClientToolRequests.length === 0) {
 			return;
 		}
@@ -1958,35 +1926,7 @@ export class ComposerChat extends LitElement {
 		action: "retry" | "skip" | "abort",
 		requestId?: string,
 	) {
-		if (!requestId || this.toolRetrySubmitting) {
-			return;
-		}
-
-		this.toolRetrySubmitting = true;
-
-		try {
-			await this.apiClient.submitToolRetryDecision({ requestId, action });
-			this.clearToolRetryRequest(requestId);
-			this.showToast(
-				action === "retry"
-					? "Retry submitted"
-					: action === "skip"
-						? "Retry skipped"
-						: "Retry aborted",
-				action === "abort" ? "info" : "success",
-				1500,
-			);
-		} catch (error) {
-			this.showToast(
-				error instanceof Error
-					? error.message
-					: "Failed to submit retry decision",
-				"error",
-				2200,
-			);
-		} finally {
-			this.toolRetrySubmitting = false;
-		}
+		await this.clientRequests.submitToolRetryDecision(action, requestId);
 	}
 
 	private async submitUserInputResponse(
@@ -1994,44 +1934,11 @@ export class ComposerChat extends LitElement {
 		toolCallId?: string,
 		isError = false,
 	) {
-		const trimmedResponse = responseText?.trim();
-		if (!toolCallId || this.userInputSubmitting) {
-			return;
-		}
-		if (!trimmedResponse) {
-			this.showToast(
-				"Select an option or enter a custom response",
-				"info",
-				1800,
-			);
-			return;
-		}
-
-		this.userInputSubmitting = true;
-
-		try {
-			await this.apiClient.sendClientToolResult({
-				toolCallId,
-				content: [{ type: "text", text: trimmedResponse }],
-				isError,
-			});
-			this.clearUserInputRequest(toolCallId);
-			this.showToast(
-				isError ? "Input request cancelled" : "Input submitted",
-				isError ? "info" : "success",
-				1500,
-			);
-		} catch (error) {
-			this.showToast(
-				error instanceof Error
-					? error.message
-					: "Failed to submit input response",
-				"error",
-				2200,
-			);
-		} finally {
-			this.userInputSubmitting = false;
-		}
+		await this.clientRequests.submitUserInputResponse(
+			responseText,
+			toolCallId,
+			isError,
+		);
 	}
 
 	private async submitMcpElicitationResponse(
@@ -2039,47 +1946,11 @@ export class ComposerChat extends LitElement {
 		action: "accept" | "decline" | "cancel" = "cancel",
 		content?: Record<string, string | number | boolean | string[]>,
 	) {
-		if (!toolCallId || this.mcpElicitationSubmitting) {
-			return;
-		}
-
-		this.mcpElicitationSubmitting = true;
-
-		try {
-			await this.apiClient.sendClientToolResult({
-				toolCallId,
-				content: [
-					{
-						type: "text",
-						text: JSON.stringify({
-							action,
-							...(action === "accept" && content ? { content } : {}),
-						}),
-					},
-				],
-				isError: false,
-			});
-			this.clearMcpElicitationRequest(toolCallId);
-			this.showToast(
-				action === "accept"
-					? "MCP input submitted"
-					: action === "decline"
-						? "MCP request declined"
-						: "MCP request cancelled",
-				action === "accept" ? "success" : "info",
-				1500,
-			);
-		} catch (error) {
-			this.showToast(
-				error instanceof Error
-					? error.message
-					: "Failed to submit MCP response",
-				"error",
-				2200,
-			);
-		} finally {
-			this.mcpElicitationSubmitting = false;
-		}
+		await this.clientRequests.submitMcpElicitationResponse(
+			toolCallId,
+			action,
+			content,
+		);
 	}
 
 	private getShareTokenFromLocation(): string | null {
