@@ -44,6 +44,11 @@ import { dataStore } from "../services/data-store.js";
 import { formatWebRuntimeStatus } from "../services/runtime-status.js";
 import { summarizeWebToolCalls } from "../services/tool-summary.js";
 import "./command-drawer.js";
+import {
+	type ComposerApprovalStatusUpdate,
+	type ComposerChatApprovalState,
+	ComposerChatApprovals,
+} from "./composer-chat-approvals.js";
 import { executeWebSlashCommand } from "./composer-chat-slash-commands.js";
 import {
 	WEB_SLASH_COMMANDS,
@@ -1247,8 +1252,34 @@ export class ComposerChat extends LitElement {
 	private static REDUCED_MOTION_KEY = "composer_reduced_motion";
 
 	private apiClient!: ApiClient;
-	private approvalModeNoticeSessionId: string | null = null;
-	private approvalModeRequestId = 0;
+	private readonly approvals = new ComposerChatApprovals(
+		() => this.apiClient,
+		() => ({
+			pendingApprovalQueue: this.pendingApprovalQueue,
+			approvalSubmitting: this.approvalSubmitting,
+			approvalMode: this.approvalMode,
+			approvalModeNotice: this.approvalModeNotice,
+		}),
+		(state: Partial<ComposerChatApprovalState>) => {
+			if (state.pendingApprovalQueue !== undefined) {
+				this.pendingApprovalQueue = state.pendingApprovalQueue;
+			}
+			if (state.approvalSubmitting !== undefined) {
+				this.approvalSubmitting = state.approvalSubmitting;
+			}
+			if (state.approvalMode !== undefined) {
+				this.approvalMode = state.approvalMode;
+			}
+			if (state.approvalModeNotice !== undefined) {
+				this.approvalModeNotice = state.approvalModeNotice;
+			}
+		},
+		() => ({
+			currentSessionId: this.currentSessionId,
+			shareToken: this.shareToken,
+		}),
+		(message, type, duration) => this.showToast(message, type, duration),
+	);
 	private promptSuggestionRequestId = 0;
 	private artifactsPanelAttachmentsRequestId = 0;
 	private attachmentContentCache = new Map<string, string>();
@@ -1690,16 +1721,11 @@ export class ComposerChat extends LitElement {
 	};
 
 	private enqueueApprovalRequest(request: ComposerActionApprovalRequest) {
-		if (this.pendingApprovalQueue.some((entry) => entry.id === request.id)) {
-			return;
-		}
-		this.pendingApprovalQueue = [...this.pendingApprovalQueue, request];
+		this.approvals.enqueueRequest(request);
 	}
 
 	private clearApprovalRequest(requestId: string) {
-		this.pendingApprovalQueue = this.pendingApprovalQueue.filter(
-			(request) => request.id !== requestId,
-		);
+		this.approvals.clearRequest(requestId);
 	}
 
 	private enqueueToolRetryRequest(request: ComposerToolRetryRequest) {
@@ -1759,8 +1785,7 @@ export class ComposerChat extends LitElement {
 	}
 
 	private resetPendingSessionRequestUiState() {
-		this.pendingApprovalQueue = [];
-		this.approvalSubmitting = false;
+		this.approvals.resetPendingRequests();
 		this.pendingToolRetryQueue = [];
 		this.toolRetrySubmitting = false;
 		this.pendingMcpElicitationQueue = [];
@@ -1770,10 +1795,7 @@ export class ComposerChat extends LitElement {
 	}
 
 	private restorePendingSessionRequests(session: Session) {
-		this.pendingApprovalQueue = Array.isArray(session.pendingApprovalRequests)
-			? [...session.pendingApprovalRequests]
-			: [];
-		this.approvalSubmitting = false;
+		this.approvals.restorePendingRequests(session);
 		this.pendingToolRetryQueue = Array.isArray(session.pendingToolRetryRequests)
 			? [...session.pendingToolRetryRequests]
 			: [];
@@ -1959,11 +1981,11 @@ export class ComposerChat extends LitElement {
 	}
 
 	private handleApproveRequest = (e: CustomEvent<{ requestId?: string }>) => {
-		void this.submitApprovalDecision("approved", e.detail?.requestId);
+		this.approvals.handleApproveRequest(e);
 	};
 
 	private handleDenyRequest = (e: CustomEvent<{ requestId?: string }>) => {
-		void this.submitApprovalDecision("denied", e.detail?.requestId);
+		this.approvals.handleDenyRequest(e);
 	};
 
 	private handleRetryRequest = (e: CustomEvent<{ requestId?: string }>) => {
@@ -2023,31 +2045,7 @@ export class ComposerChat extends LitElement {
 		decision: "approved" | "denied",
 		requestId?: string,
 	) {
-		if (!requestId || this.approvalSubmitting) {
-			return;
-		}
-
-		this.approvalSubmitting = true;
-
-		try {
-			await this.apiClient.submitApprovalDecision({ requestId, decision });
-			this.clearApprovalRequest(requestId);
-			this.showToast(
-				decision === "approved" ? "Approval submitted" : "Denial submitted",
-				decision === "approved" ? "success" : "info",
-				1500,
-			);
-		} catch (error) {
-			this.showToast(
-				error instanceof Error
-					? error.message
-					: "Failed to submit approval decision",
-				"error",
-				2200,
-			);
-		} finally {
-			this.approvalSubmitting = false;
-		}
+		await this.approvals.submitDecision(decision, requestId);
 	}
 
 	private async submitToolRetryDecision(
@@ -3093,74 +3091,17 @@ export class ComposerChat extends LitElement {
 	}
 
 	private clearApprovalModeStatus() {
-		this.approvalModeRequestId += 1;
-		this.approvalMode = null;
-		this.approvalModeNotice = null;
-		this.approvalModeNoticeSessionId = null;
+		this.approvals.clearModeStatus();
 	}
 
-	private updateApprovalModeStatus(options: {
-		mode: ComposerApprovalMode;
-		message?: string;
-		notify?: boolean;
-		sessionId?: string | null;
-	}) {
-		const sessionId = options.sessionId ?? this.getApprovalModeSessionId();
-		if (this.shareToken || sessionId !== this.getApprovalModeSessionId()) {
-			return;
-		}
-		this.approvalModeRequestId += 1;
-		const note =
-			typeof options.message === "string" &&
-			options.message.includes("server default is stricter")
-				? options.message
-				: null;
-
-		this.approvalMode = options.mode;
-		this.approvalModeNotice = note;
-		this.approvalModeNoticeSessionId = sessionId;
-
-		if (options.notify && options.message) {
-			this.showToast(options.message, note ? "info" : "success", 2200);
-		}
+	private updateApprovalModeStatus(options: ComposerApprovalStatusUpdate) {
+		this.approvals.updateModeStatus(options);
 	}
 
 	private async loadApprovalModeStatus(
 		sessionId = this.getApprovalModeSessionId(),
 	) {
-		if (this.shareToken) {
-			this.clearApprovalModeStatus();
-			return;
-		}
-		const requestId = ++this.approvalModeRequestId;
-
-		try {
-			const status = await this.apiClient.getApprovalMode(sessionId);
-			if (
-				requestId !== this.approvalModeRequestId ||
-				this.shareToken ||
-				sessionId !== this.getApprovalModeSessionId()
-			) {
-				return;
-			}
-			this.approvalMode = status.mode;
-			if (this.approvalModeNoticeSessionId !== sessionId) {
-				this.approvalModeNotice = null;
-				this.approvalModeNoticeSessionId = sessionId;
-			}
-		} catch (e) {
-			if (
-				requestId !== this.approvalModeRequestId ||
-				this.shareToken ||
-				sessionId !== this.getApprovalModeSessionId()
-			) {
-				return;
-			}
-			this.approvalMode = null;
-			this.approvalModeNotice = null;
-			this.approvalModeNoticeSessionId = sessionId;
-			console.warn("Failed to load approval mode", e);
-		}
+		await this.approvals.loadModeStatus(sessionId);
 	}
 
 	private async refreshArtifactsPanelAttachments() {
@@ -4309,17 +4250,8 @@ export class ComposerChat extends LitElement {
 		const taskRunning = taskHealth?.running ?? 0;
 		const taskFailed = taskHealth?.failed ?? 0;
 		const isShared = Boolean(this.shareToken);
-		const approvalPillClass =
-			this.approvalMode === "auto"
-				? "success"
-				: this.approvalMode === "fail"
-					? "error"
-					: "warning";
-		const approvalTitle =
-			this.approvalModeNotice ??
-			(this.approvalMode
-				? `Approval mode: ${this.approvalMode}`
-				: "Approval mode");
+		const approvalPillClass = this.approvals.getApprovalPillClass();
+		const approvalTitle = this.approvals.getApprovalTitle();
 		const onboardingSteps = getActiveComposerProjectOnboardingSteps(
 			this.status?.onboarding,
 		);
@@ -4420,7 +4352,7 @@ export class ComposerChat extends LitElement {
 					: latency > 400
 						? "ok"
 						: "fast";
-		const activeApprovalRequest = this.pendingApprovalQueue[0] ?? null;
+		const activeApprovalRequest = this.approvals.getActiveRequest();
 		const activeToolRetryRequest =
 			activeApprovalRequest === null
 				? (this.pendingToolRetryQueue[0] ?? null)
