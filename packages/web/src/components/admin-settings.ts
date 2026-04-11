@@ -23,6 +23,7 @@ import { AdminAuditTab } from "./admin-audit-tab.js";
 import { AdminDirectoriesTab } from "./admin-directories-tab.js";
 import { AdminModelsTab } from "./admin-models-tab.js";
 import { AdminPolicyTab } from "./admin-policy-tab.js";
+import { AdminSecurityTab } from "./admin-security-tab.js";
 import { AdminUsersTab } from "./admin-users-tab.js";
 
 type AdminTab =
@@ -956,6 +957,7 @@ export class AdminSettings extends LitElement {
 	private readonly modelsTab: AdminModelsTab;
 	private readonly policyTab: AdminPolicyTab;
 	private readonly usersTab: AdminUsersTab;
+	private readonly securityTab: AdminSecurityTab;
 	private alertRefreshInterval: ReturnType<typeof setInterval> | null = null;
 
 	constructor() {
@@ -1004,6 +1006,32 @@ export class AdminSettings extends LitElement {
 			(value) => this.formatDate(value),
 			[],
 			[],
+		);
+		this.securityTab = new AdminSecurityTab(
+			this,
+			() => this.api,
+			() => ({
+				orgSettings: this.orgSettings,
+				piiPatterns: this.piiPatterns,
+				auditRetention: this.auditRetention,
+				webhookUrls: this.webhookUrls,
+			}),
+			(state) => {
+				if (state.orgSettings !== undefined) {
+					this.orgSettings = state.orgSettings;
+				}
+				if (state.piiPatterns !== undefined) {
+					this.piiPatterns = state.piiPatterns;
+				}
+				if (state.auditRetention !== undefined) {
+					this.auditRetention = state.auditRetention;
+				}
+				if (state.webhookUrls !== undefined) {
+					this.webhookUrls = state.webhookUrls;
+				}
+				this.requestUpdate();
+			},
+			(message, type) => this.showToast(message, type),
 		);
 	}
 
@@ -1113,11 +1141,7 @@ export class AdminSettings extends LitElement {
 					break;
 				}
 				case "security": {
-					const settings = await this.api.getOrgSettings().catch(() => null);
-					this.orgSettings = settings;
-					this.piiPatterns = settings?.piiPatterns?.join("\n") || "";
-					this.auditRetention = settings?.auditRetentionDays || 90;
-					this.webhookUrls = settings?.alertWebhooks?.join("\n") || "";
+					await this.securityTab.load();
 					break;
 				}
 				case "audit": {
@@ -1236,58 +1260,6 @@ export class AdminSettings extends LitElement {
 
 	async handleInviteUser() {
 		await this.usersTab.handleInviteUser();
-	}
-
-	// Security settings actions
-	private async handleSavePiiSettings() {
-		try {
-			const patterns = this.piiPatterns
-				.split("\n")
-				.map((p) => p.trim())
-				.filter(Boolean);
-			await this.api.updateOrgSettings({
-				piiRedactionEnabled: true,
-				piiPatterns: patterns,
-			});
-			this.showToast("PII settings saved", "success");
-		} catch (e) {
-			this.showToast(
-				e instanceof Error ? e.message : "Failed to save settings",
-				"error",
-			);
-		}
-	}
-
-	private async handleSaveRetention() {
-		try {
-			await this.api.updateOrgSettings({
-				auditRetentionDays: this.auditRetention,
-			});
-			this.showToast("Retention settings saved", "success");
-		} catch (e) {
-			this.showToast(
-				e instanceof Error ? e.message : "Failed to save settings",
-				"error",
-			);
-		}
-	}
-
-	private async handleSaveWebhooks() {
-		try {
-			const webhooks = this.webhookUrls
-				.split("\n")
-				.map((u) => u.trim())
-				.filter(Boolean);
-			await this.api.updateOrgSettings({
-				alertWebhooks: webhooks,
-			});
-			this.showToast("Webhooks saved", "success");
-		} catch (e) {
-			this.showToast(
-				e instanceof Error ? e.message : "Failed to save webhooks",
-				"error",
-			);
-		}
 	}
 
 	// Alert actions
@@ -1556,84 +1528,7 @@ export class AdminSettings extends LitElement {
 			);
 		}
 
-		if (this.tabLoading) {
-			return html`<div class="tab-loading"><span class="spinner"></span>Loading security settings...</div>`;
-		}
-
-		return html`
-			<div class="section">
-				<div class="section-header">
-					<h3>PII Detection Settings</h3>
-				</div>
-				<div class="section-content">
-					<div class="form-group">
-						<label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
-							<input type="checkbox" ?checked=${this.orgSettings?.piiRedactionEnabled ?? true} />
-							<span>Enable PII auto-detection and redaction</span>
-						</label>
-					</div>
-					<div class="form-group">
-						<label class="form-label">Custom PII Patterns (one regex per line)</label>
-						<textarea
-							class="form-input"
-							rows="4"
-							placeholder="EMP-\\d{6}
-INTERNAL-[A-Z]{3}-\\d{4}"
-							.value=${this.piiPatterns}
-							@input=${(e: Event) => {
-								this.piiPatterns = (e.target as HTMLTextAreaElement).value;
-							}}
-						></textarea>
-					</div>
-					<button class="btn btn-primary" @click=${this.handleSavePiiSettings}>Save Settings</button>
-				</div>
-			</div>
-
-			<div class="section">
-				<div class="section-header">
-					<h3>Audit Retention</h3>
-				</div>
-				<div class="section-content">
-					<div class="form-group">
-						<label class="form-label">Retention Period (days)</label>
-						<input
-							type="number"
-							class="form-input"
-							min="30"
-							max="365"
-							.value=${String(this.auditRetention)}
-							@input=${(e: Event) => {
-								this.auditRetention =
-									Number.parseInt((e.target as HTMLInputElement).value, 10) ||
-									90;
-							}}
-						/>
-					</div>
-					<button class="btn btn-primary" @click=${this.handleSaveRetention}>Update</button>
-				</div>
-			</div>
-
-			<div class="section">
-				<div class="section-header">
-					<h3>Alert Webhooks</h3>
-				</div>
-				<div class="section-content">
-					<div class="form-group">
-						<label class="form-label">Webhook URLs (one per line)</label>
-						<textarea
-							class="form-input"
-							rows="3"
-							placeholder="https://hooks.slack.com/services/..."
-							.value=${this.webhookUrls}
-							@input=${(e: Event) => {
-								this.webhookUrls = (e.target as HTMLTextAreaElement).value;
-							}}
-						></textarea>
-					</div>
-					<button class="btn btn-primary" @click=${this.handleSaveWebhooks}>Save Webhooks</button>
-				</div>
-			</div>
-		`;
+		return this.securityTab.render(this.tabLoading);
 	}
 
 	private renderAuditTab() {
