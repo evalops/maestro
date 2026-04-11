@@ -12,17 +12,16 @@ import {
 	type DirectoryRule,
 	type EnterpriseApiClient,
 	type ModelApproval,
-	type OrgMember,
 	type OrgUsageSummary,
 	type Organization,
 	type OrganizationSettings,
-	type Role,
 	type UsageQuota,
 	type User,
 	getEnterpriseApi,
 } from "../services/enterprise-api.js";
 import { AdminAuditTab } from "./admin-audit-tab.js";
 import { AdminPolicyTab } from "./admin-policy-tab.js";
+import { AdminUsersTab } from "./admin-users-tab.js";
 
 type AdminTab =
 	| "overview"
@@ -935,8 +934,6 @@ export class AdminSettings extends LitElement {
 	private readonly sessionTrend = [
 		18, 24, 31, 28, 35, 42, 38, 45, 41, 52, 48, 58, 54, 62,
 	];
-	@state() private members: OrgMember[] = [];
-	@state() private roles: Role[] = [];
 	@state() private alerts: Alert[] = [];
 	@state() private modelApprovals: ModelApproval[] = [];
 	@state() private directoryRules: DirectoryRule[] = [];
@@ -945,11 +942,8 @@ export class AdminSettings extends LitElement {
 	// UI states
 	@state() private toast: Toast | null = null;
 	@state() private confirmDialog: ConfirmDialog | null = null;
-	@state() private userSearch = "";
 
 	// Form states - initialized from defaults
-	@state() private inviteEmail = "";
-	@state() private inviteRoleId = "developer";
 	@state() private newRulePattern = "";
 	@state() private newRuleAccess: "allow" | "deny" = "allow";
 	@state() private newRuleDescription = "";
@@ -960,6 +954,7 @@ export class AdminSettings extends LitElement {
 	private api: EnterpriseApiClient;
 	private readonly auditTab: AdminAuditTab;
 	private readonly policyTab: AdminPolicyTab;
+	private readonly usersTab: AdminUsersTab;
 	private alertRefreshInterval: ReturnType<typeof setInterval> | null = null;
 
 	constructor() {
@@ -978,6 +973,48 @@ export class AdminSettings extends LitElement {
 			() => this.apiClient,
 			(message, type) => this.showToast(message, type),
 		);
+		this.usersTab = new AdminUsersTab(
+			this,
+			() => this.api,
+			(message, type) => this.showToast(message, type),
+			(options) => this.showConfirm(options),
+			(value) => this.formatNumber(value),
+			(value) => this.formatDate(value),
+			[],
+			[],
+		);
+	}
+
+	get members() {
+		return this.usersTab.getMembers();
+	}
+
+	set members(value) {
+		this.usersTab.setMembers(value);
+	}
+
+	get roles() {
+		return this.usersTab.getRoles();
+	}
+
+	set roles(value) {
+		this.usersTab.setRoles(value);
+	}
+
+	get inviteEmail() {
+		return this.usersTab.getInviteEmail();
+	}
+
+	set inviteEmail(value) {
+		this.usersTab.setInviteEmail(value);
+	}
+
+	get inviteRoleId() {
+		return this.usersTab.getInviteRoleId();
+	}
+
+	set inviteRoleId(value) {
+		this.usersTab.setInviteRoleId(value);
 	}
 
 	override async connectedCallback() {
@@ -1042,18 +1079,7 @@ export class AdminSettings extends LitElement {
 		try {
 			switch (tab) {
 				case "users": {
-					const [membersRes, rolesRes] = await Promise.all([
-						this.api.getOrgMembers().catch(() => ({ members: [] })),
-						this.api.getRoles().catch(() => ({ roles: [] })),
-					]);
-					this.members = membersRes.members;
-					this.roles = rolesRes.roles;
-					if (
-						this.roles.length > 0 &&
-						!this.roles.some((role) => role.id === this.inviteRoleId)
-					) {
-						this.inviteRoleId = this.roles[0]?.id ?? "";
-					}
+					await this.usersTab.load();
 					break;
 				}
 				case "models": {
@@ -1190,48 +1216,8 @@ export class AdminSettings extends LitElement {
 		}
 	}
 
-	// User management actions
-	private async handleInviteUser() {
-		const hasSelectedRole = this.roles.some(
-			(role) => role.id === this.inviteRoleId,
-		);
-
-		if (!this.inviteEmail || !this.inviteRoleId || !hasSelectedRole) {
-			this.showToast("Please enter email and select a role", "error");
-			return;
-		}
-
-		try {
-			await this.api.inviteUser(this.inviteEmail, this.inviteRoleId);
-			this.showToast(`Invited ${this.inviteEmail}`, "success");
-			this.inviteEmail = "";
-			await this.loadTabData("users");
-		} catch (e) {
-			this.showToast(
-				e instanceof Error ? e.message : "Failed to invite user",
-				"error",
-			);
-		}
-	}
-
-	private confirmRemoveMember(member: OrgMember) {
-		this.showConfirm({
-			title: "Remove Team Member",
-			message: `Are you sure you want to remove ${member.user.name || member.user.email} from the organization? This action cannot be undone.`,
-			confirmText: "Remove",
-			onConfirm: async () => {
-				try {
-					await this.api.removeMember(member.userId);
-					this.showToast("Member removed", "success");
-					await this.loadTabData("users");
-				} catch (e) {
-					this.showToast(
-						e instanceof Error ? e.message : "Failed to remove member",
-						"error",
-					);
-				}
-			},
-		});
+	async handleInviteUser() {
+		await this.usersTab.handleInviteUser();
 	}
 
 	// Model approval actions
@@ -1380,16 +1366,6 @@ export class AdminSettings extends LitElement {
 		} catch (e) {
 			this.showToast("Failed to resolve alert", "error");
 		}
-	}
-
-	private get filteredMembers(): OrgMember[] {
-		if (!this.userSearch) return this.members;
-		const search = this.userSearch.toLowerCase();
-		return this.members.filter(
-			(member) =>
-				member.user.name?.toLowerCase().includes(search) ||
-				member.user.email?.toLowerCase().includes(search),
-		);
 	}
 
 	private renderSparkline(
@@ -1604,144 +1580,7 @@ export class AdminSettings extends LitElement {
 			);
 		}
 
-		if (this.tabLoading) {
-			return html`<div class="tab-loading"><span class="spinner"></span>Loading users...</div>`;
-		}
-
-		const filteredMembers = this.filteredMembers;
-		const canInvite = this.roles.length > 0;
-
-		return html`
-			<div class="section">
-				<div class="section-header">
-					<h3>Invite New User</h3>
-				</div>
-				<div class="section-content">
-					<div style="display: flex; gap: 0.75rem; align-items: flex-end;">
-						<div class="form-group" style="flex: 1; margin-bottom: 0;">
-							<label class="form-label">Email Address</label>
-							<input
-								type="email"
-								class="form-input"
-								placeholder="user@example.com"
-								.value=${this.inviteEmail}
-								@input=${(e: Event) => {
-									this.inviteEmail = (e.target as HTMLInputElement).value;
-								}}
-							/>
-						</div>
-						<div class="form-group" style="width: 180px; margin-bottom: 0;">
-							<label class="form-label">Role</label>
-							<select
-								class="form-input"
-								?disabled=${!canInvite}
-								.value=${this.inviteRoleId}
-								@change=${(e: Event) => {
-									this.inviteRoleId = (e.target as HTMLSelectElement).value;
-								}}
-							>
-								${this.roles.map((role) => html`<option value=${role.id}>${role.name}</option>`)}
-							</select>
-						</div>
-						<button class="btn btn-primary" ?disabled=${!canInvite} @click=${this.handleInviteUser}>Invite</button>
-					</div>
-					${
-						canInvite
-							? ""
-							: html`<div class="empty-state" style="padding: 1rem 0 0;">No roles available. Please wait for roles to load before inviting users.</div>`
-					}
-				</div>
-			</div>
-
-			<div class="section">
-				<div class="section-header">
-					<h3>Team Members (${this.members.length})</h3>
-				</div>
-				<div class="section-content">
-					<input
-						type="text"
-						class="search-input"
-						placeholder="Search by name or email..."
-						.value=${this.userSearch}
-						@input=${(e: Event) => {
-							this.userSearch = (e.target as HTMLInputElement).value;
-						}}
-					/>
-					${
-						filteredMembers.length > 0
-							? html`
-							<table class="data-table">
-								<thead>
-									<tr>
-										<th>User</th>
-										<th>Role</th>
-										<th>Token Usage</th>
-										<th>Joined</th>
-										<th>Actions</th>
-									</tr>
-								</thead>
-								<tbody>
-									${filteredMembers.map(
-										(member) => html`
-											<tr>
-												<td>
-													<strong>${member.user.name}</strong><br />
-													<span style="color: var(--text-tertiary); font-size: 0.75rem;">
-														${member.user.email}
-													</span>
-												</td>
-												<td>
-													<span class="badge info">${member.role.name}</span>
-												</td>
-												<td>
-													${this.formatNumber(member.tokenUsed)}
-													${member.tokenQuota ? `/ ${this.formatNumber(member.tokenQuota)}` : ""}
-												</td>
-												<td>${this.formatDate(member.joinedAt)}</td>
-												<td>
-													<div class="action-row">
-														<button class="btn btn-sm btn-danger" @click=${() => this.confirmRemoveMember(member)}>Remove</button>
-													</div>
-												</td>
-											</tr>
-										`,
-									)}
-								</tbody>
-							</table>
-						`
-							: html`<div class="empty-state">${this.userSearch ? "No matching members found" : "No team members found"}</div>`
-					}
-				</div>
-			</div>
-
-			<div class="section">
-				<div class="section-header">
-					<h3>Available Roles</h3>
-				</div>
-				<div class="section-content" style="padding: 0;">
-					<table class="data-table">
-						<thead>
-							<tr>
-								<th>Role</th>
-								<th>Description</th>
-								<th>Type</th>
-							</tr>
-						</thead>
-						<tbody>
-							${this.roles.map(
-								(role) => html`
-									<tr>
-										<td><span class="badge info">${role.name}</span></td>
-										<td>${role.description || "-"}</td>
-										<td>${role.isSystem ? "System" : "Custom"}</td>
-									</tr>
-								`,
-							)}
-						</tbody>
-					</table>
-				</div>
-			</div>
-		`;
+		return this.usersTab.render(this.tabLoading);
 	}
 
 	private renderModelsTab() {
