@@ -20,6 +20,7 @@ import {
 	getEnterpriseApi,
 } from "../services/enterprise-api.js";
 import { AdminAuditTab } from "./admin-audit-tab.js";
+import { AdminModelsTab } from "./admin-models-tab.js";
 import { AdminPolicyTab } from "./admin-policy-tab.js";
 import { AdminUsersTab } from "./admin-users-tab.js";
 
@@ -953,6 +954,7 @@ export class AdminSettings extends LitElement {
 
 	private api: EnterpriseApiClient;
 	private readonly auditTab: AdminAuditTab;
+	private readonly modelsTab: AdminModelsTab;
 	private readonly policyTab: AdminPolicyTab;
 	private readonly usersTab: AdminUsersTab;
 	private alertRefreshInterval: ReturnType<typeof setInterval> | null = null;
@@ -967,6 +969,17 @@ export class AdminSettings extends LitElement {
 			(value) => this.formatDate(value),
 			(status) => this.getStatusBadgeClass(status),
 			[],
+		);
+		this.modelsTab = new AdminModelsTab(
+			this,
+			() => this.api,
+			() => this.modelApprovals,
+			(approvals) => {
+				this.modelApprovals = approvals;
+			},
+			(message, type) => this.showToast(message, type),
+			(value) => this.formatNumber(value),
+			(status) => this.getStatusBadgeClass(status),
 		);
 		this.policyTab = new AdminPolicyTab(
 			this,
@@ -1083,10 +1096,7 @@ export class AdminSettings extends LitElement {
 					break;
 				}
 				case "models": {
-					const approvalsRes = await this.api
-						.getModelApprovals()
-						.catch(() => null);
-					this.modelApprovals = approvalsRes?.approvals ?? [];
+					await this.modelsTab.load();
 					break;
 				}
 				case "directories": {
@@ -1218,33 +1228,6 @@ export class AdminSettings extends LitElement {
 
 	async handleInviteUser() {
 		await this.usersTab.handleInviteUser();
-	}
-
-	// Model approval actions
-	private async handleApproveModel(modelId: string) {
-		try {
-			await this.api.approveModel(modelId);
-			this.showToast("Model approved", "success");
-			await this.loadTabData("models");
-		} catch (e) {
-			this.showToast(
-				e instanceof Error ? e.message : "Failed to approve model",
-				"error",
-			);
-		}
-	}
-
-	private async handleDenyModel(modelId: string) {
-		try {
-			await this.api.denyModel(modelId);
-			this.showToast("Model denied", "success");
-			await this.loadTabData("models");
-		} catch (e) {
-			this.showToast(
-				e instanceof Error ? e.message : "Failed to deny model",
-				"error",
-			);
-		}
 	}
 
 	// Directory rule actions
@@ -1590,76 +1573,7 @@ export class AdminSettings extends LitElement {
 			);
 		}
 
-		if (this.tabLoading) {
-			return html`<div class="tab-loading"><span class="spinner"></span>Loading models...</div>`;
-		}
-
-		return html`
-			<div class="section">
-				<div class="section-header">
-					<h3>Model Approvals</h3>
-					<span style="font-size: 0.75rem; color: var(--text-tertiary);">
-						Control which models users can access
-					</span>
-				</div>
-				<div class="section-content" style="padding: 0;">
-					${
-						this.modelApprovals.length > 0
-							? html`
-							<table class="data-table">
-								<thead>
-									<tr>
-										<th>Model</th>
-										<th>Provider</th>
-										<th>Status</th>
-										<th>Usage</th>
-										<th>Limits</th>
-										<th>Actions</th>
-									</tr>
-								</thead>
-								<tbody>
-									${this.modelApprovals.map(
-										(approval) => html`
-											<tr>
-												<td><code>${approval.modelId}</code></td>
-												<td>${approval.provider}</td>
-												<td>
-													<span class="badge ${this.getStatusBadgeClass(approval.status)}">
-														${approval.status}
-													</span>
-												</td>
-												<td>
-													${this.formatNumber(approval.tokenUsed)} tokens
-													${approval.spendUsed ? `/ $${(approval.spendUsed / 100).toFixed(2)}` : ""}
-												</td>
-												<td>
-													${approval.tokenLimit ? `${this.formatNumber(approval.tokenLimit)} tokens` : ""}
-													${approval.spendLimit ? `$${(approval.spendLimit / 100).toFixed(2)}` : ""}
-													${!approval.tokenLimit && !approval.spendLimit ? "None" : ""}
-												</td>
-												<td>
-													${
-														approval.status === "pending"
-															? html`
-															<div class="action-row">
-																<button class="btn btn-sm btn-primary" @click=${() => this.handleApproveModel(approval.modelId)}>Approve</button>
-																<button class="btn btn-sm btn-danger" @click=${() => this.handleDenyModel(approval.modelId)}>Deny</button>
-															</div>
-														`
-															: html`<span class="badge ${this.getStatusBadgeClass(approval.status)}">${approval.status}</span>`
-													}
-												</td>
-											</tr>
-										`,
-									)}
-								</tbody>
-							</table>
-						`
-							: html`<div class="empty-state">No model approvals configured</div>`
-					}
-				</div>
-			</div>
-		`;
+		return this.modelsTab.render(this.tabLoading);
 	}
 
 	private renderDirectoriesTab() {
