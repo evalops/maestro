@@ -20,6 +20,7 @@ import {
 	getEnterpriseApi,
 } from "../services/enterprise-api.js";
 import { AdminAuditTab } from "./admin-audit-tab.js";
+import { AdminDirectoriesTab } from "./admin-directories-tab.js";
 import { AdminModelsTab } from "./admin-models-tab.js";
 import { AdminPolicyTab } from "./admin-policy-tab.js";
 import { AdminUsersTab } from "./admin-users-tab.js";
@@ -945,15 +946,13 @@ export class AdminSettings extends LitElement {
 	@state() private confirmDialog: ConfirmDialog | null = null;
 
 	// Form states - initialized from defaults
-	@state() private newRulePattern = "";
-	@state() private newRuleAccess: "allow" | "deny" = "allow";
-	@state() private newRuleDescription = "";
 	@state() private piiPatterns = "";
 	@state() private auditRetention = 90;
 	@state() private webhookUrls = "";
 
 	private api: EnterpriseApiClient;
 	private readonly auditTab: AdminAuditTab;
+	private readonly directoriesTab: AdminDirectoriesTab;
 	private readonly modelsTab: AdminModelsTab;
 	private readonly policyTab: AdminPolicyTab;
 	private readonly usersTab: AdminUsersTab;
@@ -969,6 +968,16 @@ export class AdminSettings extends LitElement {
 			(value) => this.formatDate(value),
 			(status) => this.getStatusBadgeClass(status),
 			[],
+		);
+		this.directoriesTab = new AdminDirectoriesTab(
+			this,
+			() => this.api,
+			() => this.directoryRules,
+			(rules) => {
+				this.directoryRules = rules;
+			},
+			(message, type) => this.showToast(message, type),
+			(options) => this.showConfirm(options),
 		);
 		this.modelsTab = new AdminModelsTab(
 			this,
@@ -1100,8 +1109,7 @@ export class AdminSettings extends LitElement {
 					break;
 				}
 				case "directories": {
-					const rulesRes = await this.api.getDirectoryRules().catch(() => null);
-					this.directoryRules = rulesRes?.rules ?? [];
+					await this.directoriesTab.load();
 					break;
 				}
 				case "security": {
@@ -1228,51 +1236,6 @@ export class AdminSettings extends LitElement {
 
 	async handleInviteUser() {
 		await this.usersTab.handleInviteUser();
-	}
-
-	// Directory rule actions
-	private async handleAddDirectoryRule() {
-		if (!this.newRulePattern) {
-			this.showToast("Please enter a pattern", "error");
-			return;
-		}
-
-		try {
-			await this.api.createDirectoryRule({
-				pattern: this.newRulePattern,
-				isAllowed: this.newRuleAccess === "allow",
-				description: this.newRuleDescription || undefined,
-			});
-			this.showToast("Rule created", "success");
-			this.newRulePattern = "";
-			this.newRuleDescription = "";
-			await this.loadTabData("directories");
-		} catch (e) {
-			this.showToast(
-				e instanceof Error ? e.message : "Failed to create rule",
-				"error",
-			);
-		}
-	}
-
-	private confirmDeleteRule(rule: DirectoryRule) {
-		this.showConfirm({
-			title: "Delete Directory Rule",
-			message: `Are you sure you want to delete the rule for "${rule.pattern}"?`,
-			confirmText: "Delete",
-			onConfirm: async () => {
-				try {
-					await this.api.deleteDirectoryRule(rule.id);
-					this.showToast("Rule deleted", "success");
-					await this.loadTabData("directories");
-				} catch (e) {
-					this.showToast(
-						e instanceof Error ? e.message : "Failed to delete rule",
-						"error",
-					);
-				}
-			},
-		});
 	}
 
 	// Security settings actions
@@ -1583,107 +1546,7 @@ export class AdminSettings extends LitElement {
 			);
 		}
 
-		if (this.tabLoading) {
-			return html`<div class="tab-loading"><span class="spinner"></span>Loading directory rules...</div>`;
-		}
-
-		return html`
-			<div class="section">
-				<div class="section-header">
-					<h3>Add Directory Rule</h3>
-				</div>
-				<div class="section-content">
-					<div style="display: grid; grid-template-columns: 1fr 140px 1fr auto; gap: 0.75rem; align-items: flex-end;">
-						<div class="form-group" style="margin-bottom: 0;">
-							<label class="form-label">Pattern (glob syntax)</label>
-							<input
-								type="text"
-								class="form-input"
-								placeholder="/app/src/**"
-								.value=${this.newRulePattern}
-								@input=${(e: Event) => {
-									this.newRulePattern = (e.target as HTMLInputElement).value;
-								}}
-							/>
-						</div>
-						<div class="form-group" style="margin-bottom: 0;">
-							<label class="form-label">Access</label>
-							<select
-								class="form-input"
-								.value=${this.newRuleAccess}
-								@change=${(e: Event) => {
-									this.newRuleAccess = (e.target as HTMLSelectElement).value as
-										| "allow"
-										| "deny";
-								}}
-							>
-								<option value="allow">Allow</option>
-								<option value="deny">Deny</option>
-							</select>
-						</div>
-						<div class="form-group" style="margin-bottom: 0;">
-							<label class="form-label">Description (optional)</label>
-							<input
-								type="text"
-								class="form-input"
-								placeholder="Allow access to source files"
-								.value=${this.newRuleDescription}
-								@input=${(e: Event) => {
-									this.newRuleDescription = (
-										e.target as HTMLInputElement
-									).value;
-								}}
-							/>
-						</div>
-						<button class="btn btn-primary" @click=${this.handleAddDirectoryRule}>Add Rule</button>
-					</div>
-				</div>
-			</div>
-
-			<div class="section">
-				<div class="section-header">
-					<h3>Directory Access Rules (${this.directoryRules.length})</h3>
-				</div>
-				<div class="section-content" style="padding: 0;">
-					${
-						this.directoryRules.length > 0
-							? html`
-							<table class="data-table">
-								<thead>
-									<tr>
-										<th>Pattern</th>
-										<th>Access</th>
-										<th>Priority</th>
-										<th>Description</th>
-										<th>Actions</th>
-									</tr>
-								</thead>
-								<tbody>
-									${this.directoryRules.map(
-										(rule) => html`
-											<tr>
-												<td><code>${rule.pattern}</code></td>
-												<td>
-													<span class="badge ${rule.isAllowed ? "success" : "error"}">
-														${rule.isAllowed ? "Allow" : "Deny"}
-													</span>
-												</td>
-												<td>${rule.priority}</td>
-												<td>${rule.description || "-"}</td>
-												<td>
-													<button class="btn btn-sm btn-danger" @click=${() => this.confirmDeleteRule(rule)}>Delete</button>
-												</td>
-											</tr>
-										`,
-									)}
-								</tbody>
-							</table>
-						`
-							: html`<div class="empty-state">No directory rules configured</div>`
-					}
-				</div>
-			</div>
-		`;
+		return this.directoriesTab.render(this.tabLoading);
 	}
 
 	private renderSecurityTab() {
