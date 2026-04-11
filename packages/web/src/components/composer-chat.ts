@@ -17,11 +17,8 @@ import {
 } from "@evalops/contracts";
 import { LitElement, type PropertyValues, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import { parse as parsePartialJson } from "partial-json";
 import {
-	type AgentEvent,
 	ApiClient,
-	type ComposerToolCall,
 	type McpPromptResponse,
 	type McpResourceReadResponse,
 	type McpServerStatus,
@@ -41,7 +38,6 @@ import {
 	reconstructArtifactsFromMessages,
 } from "../services/artifacts.js";
 import { dataStore } from "../services/data-store.js";
-import { formatWebRuntimeStatus } from "../services/runtime-status.js";
 import { summarizeWebToolCalls } from "../services/tool-summary.js";
 import "./command-drawer.js";
 import {
@@ -50,6 +46,12 @@ import {
 	ComposerChatApprovals,
 } from "./composer-chat-approvals.js";
 import { executeWebSlashCommand } from "./composer-chat-slash-commands.js";
+import {
+	ComposerChatStreamState,
+	type MessageWithThinking,
+	type UiMessage,
+	hasAssistantMessageProgress,
+} from "./composer-chat-stream-state.js";
 import {
 	WEB_SLASH_COMMANDS,
 	type WebSlashCommand,
@@ -83,82 +85,6 @@ const USAGE_CACHE_KEY = "composer_usage_cache";
 const MODEL_OVERRIDE_KEY = "composer_model_override";
 const THEME_KEY = "composer_theme";
 const TRANSPORT_KEY = "composer_transport";
-
-const parseToolCallArgs = (
-	raw: string,
-): Record<string, unknown> | undefined => {
-	if (!raw || raw.trim() === "") return undefined;
-	try {
-		const parsed = JSON.parse(raw) as unknown;
-		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-			return parsed as Record<string, unknown>;
-		}
-		return undefined;
-	} catch {
-		try {
-			const parsed = parsePartialJson(raw) as unknown;
-			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-				return parsed as Record<string, unknown>;
-			}
-		} catch {
-			// ignore partial parse errors during streaming
-		}
-		return undefined;
-	}
-};
-
-interface ExtendedToolCall extends ComposerToolCall {
-	startTime?: number;
-	endTime?: number;
-	argsTruncated?: boolean;
-	displayName?: string;
-	summaryLabel?: string;
-}
-
-interface ActiveToolInfo {
-	name: string;
-	args: unknown;
-	index: number;
-	argsTruncated?: boolean;
-}
-
-/** Extended message type with thinking support for streaming */
-interface MessageWithThinking extends Message {
-	thinking?: string;
-}
-
-type UiMessage = Omit<Message, "tools"> & {
-	tools?: ExtendedToolCall[];
-	localOnly?: boolean;
-};
-
-type AssistantMessageSnapshot = Pick<Message, "content"> & {
-	tools?: unknown[];
-	thinking?: string;
-};
-
-function getMessageTextContent(content: Message["content"]): string {
-	if (typeof content === "string") return content;
-	if (!Array.isArray(content)) return "";
-	return content
-		.map((item) => (item?.type === "text" ? item.text : ""))
-		.join("");
-}
-
-export function hasAssistantMessageProgress(
-	message: AssistantMessageSnapshot,
-): boolean {
-	if (getMessageTextContent(message.content).trim().length > 0) {
-		return true;
-	}
-	if (
-		typeof message.thinking === "string" &&
-		message.thinking.trim().length > 0
-	) {
-		return true;
-	}
-	return Array.isArray(message.tools) && message.tools.length > 0;
-}
 
 function coerceToolArgsRecord(args: unknown): Record<string, unknown> {
 	if (!args || typeof args !== "object" || Array.isArray(args)) {
@@ -443,26 +369,6 @@ function formatMcpPrompt(
 		lines.push("");
 	}
 	return lines.join("\n").trimEnd();
-}
-
-export function getTerminalStreamOutcome(
-	event: AgentEvent,
-): { message: string; type: "error" | "info" } | null {
-	switch (event.type) {
-		case "error":
-			return {
-				message: event.message?.trim() || "Failed to complete request",
-				type: "error",
-			};
-		case "aborted":
-			return { message: "Request aborted", type: "info" };
-		case "agent_end":
-			return event.aborted
-				? { message: "Request aborted", type: "info" }
-				: null;
-		default:
-			return null;
-	}
 }
 
 @customElement("composer-chat")
@@ -3431,14 +3337,6 @@ export class ComposerChat extends LitElement {
 		this.lastMessagesLength = this.messages.length;
 		this.scrollToBottom({ force: true });
 
-		// Track active tool calls
-		const activeTools = new Map<string, ActiveToolInfo>();
-		const toolCallJsonById = new Map<string, string>();
-		const toolCallArgsById = new Map<string, Record<string, unknown>>();
-		const thinkingBlocks = new Map<number, string>();
-		let currentThinkingIndex: number | null = null;
-		let terminalStreamOutcome: ReturnType<typeof getTerminalStreamOutcome> =
-			null;
 		let sessionIdDuringStream: string | null = this.currentSessionId;
 		let recoveredPendingSessionRequests = false;
 		const recoverPendingSessionRequestsOnce = async () => {
@@ -3467,331 +3365,41 @@ export class ComposerChat extends LitElement {
 				messages: requestMessages,
 				sessionId: this.currentSessionId || undefined,
 			});
+			const streamState = new ComposerChatStreamState(assistantMessage, {
+				commitMessages: () => {
+					this.messages = [...this.messages];
+				},
+				setRuntimeStatus: (status) => {
+					this.runtimeStatus = status;
+				},
+				onSessionUpdate: (sessionId) => {
+					sessionIdDuringStream = sessionId;
+					this.currentSessionId = sessionId;
+					this.requestUpdate();
+					void this.refreshUiState(sessionId);
+				},
+				enqueueApprovalRequest: (request) => {
+					this.enqueueApprovalRequest(request);
+				},
+				clearApprovalRequest: (requestId) => {
+					this.clearApprovalRequest(requestId);
+				},
+				enqueueToolRetryRequest: (request) => {
+					this.enqueueToolRetryRequest(request);
+				},
+				clearToolRetryRequest: (requestId) => {
+					this.clearToolRetryRequest(requestId);
+				},
+				handleClientToolRequest: async (toolCallId, toolName, args) => {
+					await this.handleClientToolRequest(toolCallId, toolName, args);
+				},
+			});
 
 			for await (const agentEvent of stream) {
-				// Handle different event types
-				switch (agentEvent.type) {
-					case "session_update":
-						if (agentEvent.sessionId) {
-							sessionIdDuringStream = agentEvent.sessionId;
-							this.currentSessionId = agentEvent.sessionId;
-							this.requestUpdate();
-							void this.refreshUiState(agentEvent.sessionId);
-						}
-						break;
-					case "message_update":
-						if (agentEvent.assistantMessageEvent) {
-							const msgEvent = agentEvent.assistantMessageEvent;
-
-							// Text deltas
-							if (msgEvent.type === "text_delta") {
-								if (typeof assistantMessage.content !== "string") {
-									assistantMessage.content = this.coerceMessageContent(
-										assistantMessage.content,
-									);
-								}
-								assistantMessage.content += msgEvent.delta;
-								this.messages = [...this.messages];
-							}
-
-							// Thinking deltas
-							else if (msgEvent.type === "thinking_start") {
-								currentThinkingIndex = msgEvent.contentIndex;
-								thinkingBlocks.set(msgEvent.contentIndex, "");
-							} else if (
-								msgEvent.type === "thinking_delta" &&
-								currentThinkingIndex !== null
-							) {
-								const current = thinkingBlocks.get(currentThinkingIndex) || "";
-								thinkingBlocks.set(
-									currentThinkingIndex,
-									current + msgEvent.delta,
-								);
-								assistantMessage.thinking = Array.from(
-									thinkingBlocks.values(),
-								).join("\n\n");
-								this.messages = [...this.messages];
-							} else if (msgEvent.type === "thinking_end") {
-								currentThinkingIndex = null;
-							}
-
-							// Tool call tracking
-							else if (msgEvent.type === "toolcall_start") {
-								const partial = Array.isArray(msgEvent.partial?.content)
-									? msgEvent.partial?.content[msgEvent.contentIndex]
-									: undefined;
-								const slimArgs =
-									msgEvent.toolCallArgs &&
-									typeof msgEvent.toolCallArgs === "object" &&
-									!Array.isArray(msgEvent.toolCallArgs)
-										? (msgEvent.toolCallArgs as Record<string, unknown>)
-										: undefined;
-								const argsTruncated = Boolean(msgEvent.toolCallArgsTruncated);
-								const toolCallId =
-									partial?.type === "toolCall"
-										? partial.id
-										: msgEvent.toolCallId;
-								if (toolCallId) {
-									if (slimArgs) {
-										toolCallArgsById.set(toolCallId, slimArgs);
-									}
-									const args =
-										partial?.type === "toolCall"
-											? (partial.arguments ?? {})
-											: (slimArgs ?? toolCallArgsById.get(toolCallId) ?? {});
-									const name =
-										partial?.type === "toolCall"
-											? partial.name || "tool"
-											: msgEvent.toolCallName || "tool";
-									if (!assistantMessage.tools) assistantMessage.tools = [];
-									const existingIndex = assistantMessage.tools.findIndex(
-										(t) => t.toolCallId === toolCallId,
-									);
-									const entry: ExtendedToolCall = {
-										toolCallId,
-										name,
-										status: "pending",
-										args,
-										argsTruncated,
-										startTime: Date.now(),
-									};
-									if (existingIndex >= 0) {
-										assistantMessage.tools[existingIndex] = {
-											...assistantMessage.tools[existingIndex],
-											...entry,
-										};
-									} else {
-										assistantMessage.tools.push(entry);
-									}
-									activeTools.set(toolCallId, {
-										name,
-										args,
-										index:
-											existingIndex >= 0
-												? existingIndex
-												: assistantMessage.tools.length - 1,
-										argsTruncated,
-									});
-									this.messages = [...this.messages];
-								}
-							} else if (msgEvent.type === "toolcall_delta") {
-								const partial = Array.isArray(msgEvent.partial?.content)
-									? msgEvent.partial?.content[msgEvent.contentIndex]
-									: undefined;
-								const slimArgs =
-									msgEvent.toolCallArgs &&
-									typeof msgEvent.toolCallArgs === "object" &&
-									!Array.isArray(msgEvent.toolCallArgs)
-										? (msgEvent.toolCallArgs as Record<string, unknown>)
-										: undefined;
-								const argsTruncated = Boolean(msgEvent.toolCallArgsTruncated);
-								const toolCallId =
-									partial?.type === "toolCall"
-										? partial.id
-										: msgEvent.toolCallId;
-								if (toolCallId) {
-									let args: Record<string, unknown>;
-									if (partial?.type === "toolCall") {
-										args = partial.arguments ?? {};
-									} else if (slimArgs) {
-										toolCallArgsById.set(toolCallId, slimArgs);
-										args = slimArgs;
-									} else if (argsTruncated) {
-										args = toolCallArgsById.get(toolCallId) ?? {};
-									} else {
-										const current = toolCallJsonById.get(toolCallId) ?? "";
-										const next = current + msgEvent.delta;
-										toolCallJsonById.set(toolCallId, next);
-										const parsed = parseToolCallArgs(next);
-										if (parsed) {
-											toolCallArgsById.set(toolCallId, parsed);
-											args = parsed;
-										} else {
-											args = toolCallArgsById.get(toolCallId) ?? {};
-										}
-									}
-									if (!assistantMessage.tools) assistantMessage.tools = [];
-									const existingIndex = assistantMessage.tools.findIndex(
-										(t) => t.toolCallId === toolCallId,
-									);
-									if (existingIndex >= 0) {
-										const existingTool = assistantMessage.tools[existingIndex]!;
-										assistantMessage.tools[existingIndex] = {
-											...existingTool,
-											args,
-											status: "pending",
-											argsTruncated:
-												existingTool.argsTruncated || argsTruncated,
-										};
-									} else {
-										assistantMessage.tools.push({
-											toolCallId,
-											name:
-												partial?.type === "toolCall"
-													? partial.name || "tool"
-													: msgEvent.toolCallName || "tool",
-											status: "pending",
-											args,
-											argsTruncated,
-										});
-									}
-									activeTools.set(toolCallId, {
-										name:
-											partial?.type === "toolCall"
-												? partial.name || "tool"
-												: msgEvent.toolCallName || "tool",
-										args,
-										index:
-											existingIndex >= 0
-												? existingIndex
-												: assistantMessage.tools.length - 1,
-										argsTruncated,
-									});
-									this.messages = [...this.messages];
-								}
-							} else if (msgEvent.type === "toolcall_end") {
-								const toolCall = msgEvent.toolCall;
-								toolCallJsonById.delete(toolCall.id);
-								toolCallArgsById.delete(toolCall.id);
-								if (!assistantMessage.tools) assistantMessage.tools = [];
-								const existingIndex = assistantMessage.tools.findIndex(
-									(t) => t.toolCallId === toolCall.id,
-								);
-								const extendedTool: ExtendedToolCall = {
-									toolCallId: toolCall.id,
-									name: toolCall.name,
-									status: "pending",
-									args: toolCall.arguments,
-									argsTruncated: false,
-								};
-								if (existingIndex >= 0) {
-									assistantMessage.tools[existingIndex] = {
-										...assistantMessage.tools[existingIndex],
-										...extendedTool,
-									};
-								} else {
-									assistantMessage.tools.push(extendedTool);
-								}
-								activeTools.set(toolCall.id, {
-									name: toolCall.name,
-									args: toolCall.arguments,
-									index:
-										existingIndex >= 0
-											? existingIndex
-											: assistantMessage.tools.length - 1,
-								});
-								this.messages = [...this.messages];
-							}
-						}
-						break;
-
-					case "tool_execution_start": {
-						// Update tool status to running
-						const toolInfo = activeTools.get(agentEvent.toolCallId);
-						if (toolInfo && assistantMessage.tools) {
-							const tool = assistantMessage.tools[
-								toolInfo.index
-							] as ExtendedToolCall;
-							tool.status = "running";
-							tool.startTime = Date.now();
-							tool.displayName = agentEvent.displayName ?? tool.displayName;
-							tool.summaryLabel = agentEvent.summaryLabel ?? tool.summaryLabel;
-							this.messages = [...this.messages];
-						}
-						break;
-					}
-
-					case "tool_execution_update": {
-						const toolInfo = activeTools.get(agentEvent.toolCallId);
-						if (toolInfo && assistantMessage.tools) {
-							const tool = assistantMessage.tools[
-								toolInfo.index
-							] as ExtendedToolCall;
-							tool.result = agentEvent.partialResult;
-							tool.displayName = agentEvent.displayName ?? tool.displayName;
-							tool.summaryLabel = agentEvent.summaryLabel ?? tool.summaryLabel;
-							this.messages = [...this.messages];
-						}
-						break;
-					}
-
-					case "tool_execution_end": {
-						// Update tool with result
-						const completedTool = activeTools.get(agentEvent.toolCallId);
-						if (completedTool && assistantMessage.tools) {
-							const tool = assistantMessage.tools[
-								completedTool.index
-							] as ExtendedToolCall;
-							tool.status = agentEvent.isError ? "error" : "completed";
-							tool.result = agentEvent.result;
-							tool.endTime = Date.now();
-							tool.displayName = agentEvent.displayName ?? tool.displayName;
-							tool.summaryLabel = agentEvent.summaryLabel ?? tool.summaryLabel;
-							this.messages = [...this.messages];
-						}
-						activeTools.delete(agentEvent.toolCallId);
-						break;
-					}
-
-					case "status":
-					case "compaction":
-					case "tool_batch_summary": {
-						const nextRuntimeStatus = formatWebRuntimeStatus(agentEvent);
-						if (nextRuntimeStatus) {
-							this.runtimeStatus = nextRuntimeStatus;
-						}
-						break;
-					}
-
-					case "action_approval_required": {
-						this.enqueueApprovalRequest(agentEvent.request);
-						break;
-					}
-
-					case "action_approval_resolved": {
-						this.clearApprovalRequest(agentEvent.request.id);
-						break;
-					}
-
-					case "tool_retry_required": {
-						this.enqueueToolRetryRequest(agentEvent.request);
-						break;
-					}
-
-					case "tool_retry_resolved": {
-						this.clearToolRetryRequest(agentEvent.request.id);
-						break;
-					}
-
-					case "client_tool_request": {
-						await this.handleClientToolRequest(
-							agentEvent.toolCallId,
-							agentEvent.toolName,
-							agentEvent.args,
-						);
-						break;
-					}
-
-					case "message_end":
-						// Finalize assistant message
-						if (agentEvent.message.role === "assistant") {
-							assistantMessage.timestamp = new Date().toISOString();
-							this.messages = [...this.messages];
-						}
-						break;
-
-					case "error":
-					case "aborted":
-						terminalStreamOutcome = getTerminalStreamOutcome(agentEvent);
-						break;
-
-					case "agent_end":
-						terminalStreamOutcome ??= getTerminalStreamOutcome(agentEvent);
-						break;
-				}
-
+				await streamState.handleEvent(agentEvent);
 				if (this.autoScroll) this.scrollToBottom();
 			}
+			const terminalStreamOutcome = streamState.getOutcome();
 
 			if (terminalStreamOutcome) {
 				if (terminalStreamOutcome.type === "error") {
