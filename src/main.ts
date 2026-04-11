@@ -728,6 +728,26 @@ export async function main(args: string[]) {
 		return;
 	}
 
+	if (parsed.command === "export") {
+		const { handleExportCommand } = await import(
+			"./cli/commands/session-transfer.js"
+		);
+		await handleExportCommand(
+			parsed.messages[0],
+			parsed.messages[1],
+			parsed.exportFormat,
+		);
+		return;
+	}
+
+	if (parsed.command === "import") {
+		const { handleImportCommand } = await import(
+			"./cli/commands/session-transfer.js"
+		);
+		await handleImportCommand(parsed.messages[0]);
+		return;
+	}
+
 	if (parsed.command === "memory") {
 		const { handleMemoryCommand } = await import("./cli/commands/memory.js");
 		await handleMemoryCommand(parsed.subcommand, parsed.messages);

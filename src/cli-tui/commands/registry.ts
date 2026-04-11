@@ -485,8 +485,8 @@ export function createCommandRegistry({
 		buildEntry(
 			{
 				name: "export",
-				description: "Export session to HTML or text",
-				usage: "/export [path] [html|text]",
+				description: "Export session to HTML, text, or jsonl",
+				usage: "/export [path] [html|text|jsonl]",
 				tags: ["session", "sharing"],
 				aliases: ["e"],
 			},
@@ -513,8 +513,8 @@ export function createCommandRegistry({
 		buildEntry(
 			{
 				name: "import",
-				description: "Import configuration (e.g. Factory presets)",
-				usage: "/import factory",
+				description: "Import configuration or portable session files",
+				usage: "/import factory | /import session <file.jsonl>",
 				tags: ["config"],
 			},
 			withArgs("import"),

@@ -161,6 +161,38 @@ describe("SessionManager - Deferred Session Creation", () => {
 		});
 	});
 
+	describe("Portable session import", () => {
+		it("imports jsonl sessions into the current workspace directory", async () => {
+			const sessionManager = new SessionManager(false);
+			const state = createMockState();
+			const userMessage = createUserMessage("Carry this session elsewhere");
+			const assistantMessage = createAssistantMessage(
+				"Portable session payload ready",
+			);
+			state.messages.push(userMessage);
+			sessionManager.saveMessage(userMessage);
+			sessionManager.startSession(state);
+			sessionManager.saveMessage(assistantMessage);
+			await sessionManager.flush();
+
+			const originalId = sessionManager.getSessionId();
+			const originalFile = sessionManager.getSessionFile();
+			const imported = sessionManager.importSessionJsonl(originalFile);
+
+			expect(existsSync(imported.sessionFile)).toBe(true);
+			expect(imported.sessionId).not.toBe(originalId);
+
+			const restored = new SessionManager(false, imported.sessionFile);
+			expect(restored.getSessionId()).toBe(imported.sessionId);
+			expect(restored.loadMessages()).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ role: "user" }),
+					expect.objectContaining({ role: "assistant" }),
+				]),
+			);
+		});
+	});
+
 	afterEach(() => {
 		// Restore original state
 		process.chdir(originalCwd);

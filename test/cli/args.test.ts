@@ -29,4 +29,27 @@ describe("parseArgs", () => {
 			"--task-budget requires a value",
 		);
 	});
+
+	it("parses export commands and formats", () => {
+		expect(
+			parseArgs([
+				"export",
+				"session-123",
+				"./session.jsonl",
+				"--format",
+				"jsonl",
+			]),
+		).toMatchObject({
+			command: "export",
+			messages: ["session-123", "./session.jsonl"],
+			exportFormat: "jsonl",
+		});
+	});
+
+	it("parses import commands", () => {
+		expect(parseArgs(["import", "./session.jsonl"])).toMatchObject({
+			command: "import",
+			messages: ["./session.jsonl"],
+		});
+	});
 });

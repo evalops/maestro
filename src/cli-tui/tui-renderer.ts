@@ -1361,6 +1361,8 @@ export class TuiRenderer {
 			applyLoadedSessionContext: () => this.applyLoadedSessionContext(),
 			recordShareArtifact: (filePath) =>
 				this.sessionContext.recordShareArtifact(filePath),
+			loadImportedSession: (sessionFile) =>
+				this.loadImportedSession(sessionFile),
 		});
 		return this.importExportView;
 	}
@@ -2519,6 +2521,21 @@ export class TuiRenderer {
 
 	private applyLoadedSessionContext(): void {
 		this.sessionStateController.applyLoadedSessionContext();
+	}
+
+	private loadImportedSession(sessionFile: string): void {
+		this.sessionManager.setSessionFile(sessionFile);
+		this.applyLoadedSessionContext();
+		const loadedMessages = this.sessionManager.loadMessages();
+		this.sessionStateController.resetConversation(
+			loadedMessages,
+			undefined,
+			formatLoadedSessionToast({
+				id: this.sessionManager.getSessionId(),
+				messageCount: loadedMessages.length,
+			}),
+			{ preserveSession: true, persistMessages: false },
+		);
 	}
 
 	private isMinimalMode(): boolean {

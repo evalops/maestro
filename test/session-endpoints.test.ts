@@ -1,4 +1,7 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	handleSessionExport,
@@ -14,6 +17,8 @@ function makeTestAnthropicToken(): string {
 		"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-abcdefghijklmAA",
 	].join("");
 }
+
+let jsonlExportPath = "";
 
 function createMockSessionManager() {
 	return {
@@ -97,7 +102,13 @@ function createMockSessionManager() {
 			}),
 		deleteSession: vi.fn().mockResolvedValue(undefined),
 		getSessionFileById: vi.fn().mockImplementation((id: string) => {
-			return id === "not-found" ? null : `/sessions/${id}.jsonl`;
+			if (id === "not-found") {
+				return null;
+			}
+			if (id === "test-session-1") {
+				return jsonlExportPath;
+			}
+			return `/sessions/${id}.jsonl`;
 		}),
 		setSessionFavorite: vi.fn(),
 		setSessionTitle: vi.fn(),
@@ -178,6 +189,13 @@ describe("Session Endpoints", () => {
 		vi.clearAllMocks();
 		// Disable strict session access for tests (sessions without ownership info)
 		process.env.MAESTRO_STRICT_SESSION_ACCESS = "false";
+		const tempDir = mkdtempSync(join(tmpdir(), "maestro-session-export-"));
+		jsonlExportPath = join(tempDir, "session-test-session-1.jsonl");
+		writeFileSync(
+			jsonlExportPath,
+			'{"type":"session","id":"test-session-1","version":2}\n',
+			"utf8",
+		);
 	});
 
 	afterEach(() => {
@@ -607,6 +625,53 @@ describe("Session Export", () => {
 			expect(headers["Content-Disposition"]).toContain(
 				"session-test-session-1.txt",
 			);
+		});
+
+		it("should export session as jsonl", async () => {
+			const req = createMockRequest("POST", { format: "jsonl" });
+			const { res, getHeaders } = createMockResponse();
+
+			await handleSessionExport(
+				req,
+				res,
+				{ id: "test-session-1" },
+				corsHeaders,
+			);
+
+			const headers = getHeaders();
+			expect(headers["Content-Type"]).toBe("application/x-ndjson");
+			expect(headers["Content-Disposition"]).toContain(
+				"session-test-session-1.jsonl",
+			);
+		});
+
+		it("blocks jsonl export when raw session entries contain sensitive content", async () => {
+			writeFileSync(
+				jsonlExportPath,
+				`${JSON.stringify({
+					type: "session",
+					id: "test-session-1",
+					timestamp: "2024-01-01T00:00:00Z",
+					cwd: process.cwd(),
+					version: 2,
+					systemPrompt: `use token ${makeTestAnthropicToken()}`,
+				})}\n`,
+				"utf8",
+			);
+			const req = createMockRequest("POST", { format: "jsonl" });
+			const { res, getBody, getStatus } = createMockResponse();
+
+			await handleSessionExport(
+				req,
+				res,
+				{ id: "test-session-1" },
+				corsHeaders,
+			);
+
+			expect(getStatus()).toBe(409);
+			expect(getBody()).toMatchObject({
+				code: "sensitive_content_detected",
+			});
 		});
 
 		it("should return 404 for non-existent session", async () => {

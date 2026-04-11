@@ -87,7 +87,13 @@ export function printHelp(version: string) {
   maestro --continue "What did we discuss?"
 
   # Use different model
-  maestro --provider openai --model gpt-4o-mini "Help me refactor this code"`,
+  maestro --provider openai --model gpt-4o-mini "Help me refactor this code"
+
+  # Export a portable session log
+  maestro export <session-id> ./session.jsonl --format jsonl
+
+  # Import a portable session log into this workspace
+  maestro import ./session.jsonl`,
 	)}`;
 	const env = `${sectionHeading("Environment Variables:")}${muted(
 		`  GEMINI_API_KEY          - Google Gemini API key
@@ -126,6 +132,14 @@ export function printHelp(version: string) {
 
   # Use a custom port
   maestro web --port 3000`,
+	)}`;
+	const portabilitySection = `${sectionHeading("Session Portability")}${muted(
+		`  maestro export <session-id> [output-path] --format jsonl
+  maestro import <file.jsonl>
+
+  Notes:
+    - export currently supports jsonl for full-fidelity session transfer
+    - import restores the session into the current workspace session directory`,
 	)}`;
 	const memorySection = `${sectionHeading("maestro memory")}${muted(
 		`  maestro memory [status]         Show shared memory service status
@@ -176,6 +190,7 @@ export function printHelp(version: string) {
 			env,
 			execSection,
 			webSection,
+			portabilitySection,
 			memorySection,
 			sessionsSection,
 			sessionsDiscovery,

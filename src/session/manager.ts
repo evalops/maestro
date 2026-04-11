@@ -1208,6 +1208,55 @@ export class SessionManager {
 		};
 	}
 
+	importSessionJsonl(sourcePath: string): {
+		sessionFile: string;
+		sessionId: string;
+	} {
+		const resolvedSource = resolve(sourcePath);
+		if (!existsSync(resolvedSource)) {
+			throw new Error(`Session file not found: ${resolvedSource}`);
+		}
+
+		const entries = safeReadSessionEntries(resolvedSource);
+		migrateToCurrentVersion(entries);
+		if (entries.length === 0) {
+			throw new Error("Imported session file is empty or unreadable.");
+		}
+
+		const headerIndex = entries.findIndex((entry) => entry.type === "session");
+		if (headerIndex < 0) {
+			throw new Error("Imported session file is missing a session header.");
+		}
+
+		const header = entries[headerIndex] as SessionHeaderEntry;
+		let sessionId = header.id?.trim() || uuidv4();
+		if (this.catalog.getSessionFileById(sessionId)) {
+			sessionId = uuidv4();
+		}
+
+		const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+		const targetFile = join(this.sessionDir, `${timestamp}_${sessionId}.jsonl`);
+		const importedHeader: SessionHeaderEntry = {
+			...header,
+			id: sessionId,
+			subject: undefined,
+		};
+		const importedEntries = entries.map((entry, index) =>
+			index === headerIndex ? importedHeader : entry,
+		);
+
+		writeFileSync(
+			targetFile,
+			`${importedEntries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+			"utf8",
+		);
+
+		return {
+			sessionFile: targetFile,
+			sessionId,
+		};
+	}
+
 	/**
 	 * Delete a session
 	 */

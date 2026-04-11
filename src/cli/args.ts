@@ -46,6 +46,7 @@ export interface Args {
 	readonly?: boolean;
 	/** Composer profile to activate on startup */
 	composer?: string;
+	exportFormat?: string;
 }
 
 const COMMANDS = new Set([
@@ -59,6 +60,8 @@ const COMMANDS = new Set([
 	"openai",
 	"hooks",
 	"memory",
+	"export",
+	"import",
 ]);
 const SUBCOMMAND_COMMANDS = new Set([
 	"config",
@@ -198,6 +201,8 @@ export function parseArgs(args: string[]): Args {
 			result.readonly = true;
 		} else if (arg === "--composer" && i + 1 < args.length) {
 			result.composer = args[++i];
+		} else if (arg === "--format" && i + 1 < args.length) {
+			result.exportFormat = args[++i];
 		} else if (arg === "--profile" && i + 1 < args.length) {
 			result.profile = args[++i];
 		} else if (arg === "--config" && i + 1 < args.length) {

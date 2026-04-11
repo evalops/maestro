@@ -1,4 +1,9 @@
-import { createReadStream, writeFileSync } from "node:fs";
+import {
+	copyFileSync,
+	createReadStream,
+	existsSync,
+	writeFileSync,
+} from "node:fs";
 import { createRequire } from "node:module";
 import { basename, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -835,6 +840,27 @@ export async function exportSessionToText(
 	}
 
 	writeFileSync(resolvedOutputPath, output.join("\n"), "utf-8");
+	return resolvedOutputPath;
+}
+
+export async function exportSessionToJsonl(
+	sessionManager: SessionManager,
+	outputPath?: string,
+): Promise<string> {
+	await sessionManager.flush();
+	const sessionFile = sessionManager.getSessionFile();
+	if (!sessionFile || !existsSync(sessionFile)) {
+		throw new Error("No persisted session is available to export.");
+	}
+
+	const resolvedOutputPath = (() => {
+		if (outputPath) {
+			return outputPath;
+		}
+		return basename(sessionFile);
+	})();
+
+	copyFileSync(sessionFile, resolvedOutputPath);
 	return resolvedOutputPath;
 }
 

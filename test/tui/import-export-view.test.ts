@@ -34,9 +34,15 @@ const buildAgent = (): Agent =>
 
 const buildView = (overrides: Partial<SessionManager> = {}) => {
 	const agent = buildAgent();
+	const loadImportedSession = vi.fn();
+	const showInfoMessage = vi.fn();
 	const sessionManager = {
 		flush: vi.fn().mockResolvedValue(undefined),
 		getSessionFile: vi.fn().mockReturnValue("/tmp/session.jsonl"),
+		importSessionJsonl: vi.fn().mockReturnValue({
+			sessionFile: "/tmp/imported.jsonl",
+			sessionId: "imported-1",
+		}),
 		...overrides,
 	} as SessionManager;
 	const chatEntries: unknown[] = [];
@@ -56,11 +62,18 @@ const buildView = (overrides: Partial<SessionManager> = {}) => {
 		sessionManager,
 		chatContainer,
 		ui,
-		showInfoMessage: vi.fn(),
+		showInfoMessage,
 		applyLoadedSessionContext: vi.fn(),
 		recordShareArtifact: vi.fn(),
+		loadImportedSession,
 	});
-	return { view, sessionManager, chatEntries };
+	return {
+		view,
+		sessionManager,
+		chatEntries,
+		loadImportedSession,
+		showInfoMessage,
+	};
 };
 
 describe("ImportExportView.handleExportCommand", () => {
@@ -156,5 +169,34 @@ describe("ImportExportView.handleExportCommand", () => {
 		const defaultPath = htmlSpy.mock.calls[0]?.[2];
 		expect(defaultPath).toContain("maestro-share-");
 		expect(defaultPath).not.toContain("composer-share-");
+	});
+
+	it("exports jsonl when requested", async () => {
+		const tmp = mkdtempSync(join(tmpdir(), "export-test-"));
+		const targetPath = join(tmp, "portable", "session.jsonl");
+		const jsonlSpy = vi
+			.spyOn(exporter, "exportSessionToJsonl")
+			.mockResolvedValue(targetPath);
+		spies.push(jsonlSpy);
+		const { view, sessionManager } = buildView();
+		await view.handleExportCommand(`/export jsonl ${targetPath}`);
+		expect(jsonlSpy).toHaveBeenCalledTimes(1);
+		expect(jsonlSpy.mock.calls[0]?.[0]).toBe(sessionManager);
+		expect(jsonlSpy.mock.calls[0]?.[1]).toBe(targetPath);
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	it("imports a portable session file and loads it", () => {
+		const tmp = mkdtempSync(join(tmpdir(), "import-test-"));
+		const sourcePath = join(tmp, "portable-session.jsonl");
+		const { view, sessionManager, loadImportedSession, showInfoMessage } =
+			buildView();
+		view.handleImportCommand(`/import session ${sourcePath}`);
+		expect(sessionManager.importSessionJsonl).toHaveBeenCalledWith(sourcePath);
+		expect(loadImportedSession).toHaveBeenCalledWith("/tmp/imported.jsonl");
+		expect(showInfoMessage).toHaveBeenCalledWith(
+			expect.stringContaining("Imported session imported-1"),
+		);
+		rmSync(tmp, { recursive: true, force: true });
 	});
 });

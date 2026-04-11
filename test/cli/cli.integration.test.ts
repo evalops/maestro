@@ -1,9 +1,16 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import {
+	copyFileSync,
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearRegisteredHooks, registerHook } from "../../src/hooks/index.js";
 import { main } from "../../src/main.js";
+import { SessionManager } from "../../src/session/manager.js";
 
 interface MockAgentState {
 	model?: unknown;
@@ -342,6 +349,41 @@ describe("CLI integration", () => {
 		expect(exitCodes).toEqual([0]);
 		expect(output.some((line) => line.includes("anthropic"))).toBe(true);
 		exitSpy.mockRestore();
+	});
+
+	it("exports a saved session as portable jsonl", async () => {
+		await main(["hello"]);
+		const sessionManager = new SessionManager(false);
+		const [session] = await sessionManager.listSessions();
+		expect(session).toBeDefined();
+
+		const outputPath = join(tempAgentDir, "portable-session.jsonl");
+		output = [];
+
+		await main(["export", session!.id, outputPath, "--format", "jsonl"]);
+
+		expect(existsSync(outputPath)).toBe(true);
+		expect(readFileSync(outputPath, "utf8")).toContain('"type":"session"');
+		expect(output.join("\n")).toContain(`Exported session ${session!.id}`);
+	});
+
+	it("imports a portable jsonl session log", async () => {
+		await main(["hello"]);
+		const sessionManager = new SessionManager(false);
+		const [session] = await sessionManager.listSessions();
+		expect(session).toBeDefined();
+		const sessionFile = sessionManager.getSessionFileById(session!.id);
+		expect(sessionFile).toBeTruthy();
+
+		const portablePath = join(tempAgentDir, "portable-import.jsonl");
+		copyFileSync(sessionFile!, portablePath);
+		output = [];
+
+		await main(["import", portablePath]);
+
+		const importedSessions = await new SessionManager(false).listSessions();
+		expect(importedSessions.length).toBeGreaterThan(1);
+		expect(output.join("\n")).toContain("Imported session");
 	});
 
 	it("prints maestro version output", async () => {

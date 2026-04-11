@@ -77,7 +77,7 @@ export interface SessionShareOptions {
 }
 
 export interface SessionExportFormat {
-	format: "json" | "markdown" | "text";
+	format: "json" | "jsonl" | "markdown" | "text";
 }
 
 // ============================================================================

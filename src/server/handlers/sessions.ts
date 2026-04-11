@@ -34,6 +34,7 @@
  * @module web/handlers/sessions
  */
 import crypto from "node:crypto";
+import { readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type {
 	ComposerPendingClientToolRequest,
@@ -44,6 +45,7 @@ import {
 	scanOutboundSensitiveContent,
 	summarizeOutboundSensitiveFindings,
 } from "../../safety/outbound-secret-preflight.js";
+import { safeReadSessionEntries } from "../../session/session-context.js";
 import { createLogger } from "../../utils/logger.js";
 import { getAuthSubject } from "../authz.js";
 import { serverRequestManager } from "../server-request-manager.js";
@@ -824,11 +826,31 @@ export async function handleSessionExport(
 		>(req);
 		const format = options.format || "json";
 		const messages = session.messages || [];
+		const jsonlEntries =
+			format === "jsonl"
+				? (() => {
+						const sessionFile = sessionManager.getSessionFileById(sessionId);
+						if (!sessionFile) {
+							sendJson(
+								res,
+								404,
+								{ error: "Session file not found" },
+								cors,
+								req,
+							);
+							return null;
+						}
+						return safeReadSessionEntries(sessionFile);
+					})()
+				: undefined;
+		if (format === "jsonl" && !jsonlEntries) {
+			return;
+		}
 
 		if (!options.allowSensitiveContent) {
 			const scan = scanOutboundSensitiveContent({
 				title: session.title,
-				messages,
+				messages: format === "jsonl" ? jsonlEntries : messages,
 			});
 			if (scan.blockingFindings.length > 0) {
 				sendSensitiveContentBlockedResponse(
@@ -847,6 +869,17 @@ export async function handleSessionExport(
 		let filename: string;
 
 		switch (format) {
+			case "jsonl": {
+				const sessionFile = sessionManager.getSessionFileById(sessionId);
+				if (!sessionFile) {
+					sendJson(res, 404, { error: "Session file not found" }, cors, req);
+					return;
+				}
+				content = readFileSync(sessionFile, "utf8");
+				contentType = "application/x-ndjson";
+				filename = `session-${sessionId}.jsonl`;
+				break;
+			}
 			case "markdown":
 				content = exportToMarkdown(session, messages);
 				contentType = "text/markdown";

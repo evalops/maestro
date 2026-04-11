@@ -14,7 +14,11 @@ import { Spacer, Text } from "@evalops/tui";
 import chalk from "chalk";
 import type { Agent } from "../agent/agent.js";
 import { PATHS } from "../config/constants.js";
-import { exportSessionToHtml, exportSessionToText } from "../export-html.js";
+import {
+	exportSessionToHtml,
+	exportSessionToJsonl,
+	exportSessionToText,
+} from "../export-html.js";
 import { importFactoryConfig } from "../factory/index.js";
 import { reloadModelConfig } from "../models/registry.js";
 import type { SessionManager } from "../session/manager.js";
@@ -31,6 +35,7 @@ interface ImportExportViewOptions {
 	showInfoMessage: (message: string) => void;
 	applyLoadedSessionContext: () => void;
 	recordShareArtifact: (filePath: string) => void;
+	loadImportedSession?: (sessionFile: string) => void;
 }
 
 export class ImportExportView {
@@ -53,17 +58,28 @@ export class ImportExportView {
 		return isAbsolute(expanded) ? expanded : resolve(process.cwd(), expanded);
 	}
 
-	private resolveExportPath(input: string): string {
+	private resolveAllowedPath(
+		input: string,
+		action: "Export" | "Import",
+	): string {
 		const expanded = this.expandPath(input);
 		const resolvedPath = normalize(resolve(expanded));
 		if (!this.isAllowedExportPath(resolvedPath)) {
 			throw new Error(
-				`Export path must be inside one of: ${this.allowedExportRoots.join(
+				`${action} path must be inside one of: ${this.allowedExportRoots.join(
 					", ",
 				)}.`,
 			);
 		}
 		return resolvedPath;
+	}
+
+	private resolveExportPath(input: string): string {
+		return this.resolveAllowedPath(input, "Export");
+	}
+
+	private resolveImportPath(input: string): string {
+		return this.resolveAllowedPath(input, "Import");
 	}
 
 	private isAllowedExportPath(targetPath: string): boolean {
@@ -81,7 +97,7 @@ export class ImportExportView {
 		if (tokens[0]?.startsWith("/")) {
 			tokens.shift();
 		}
-		let mode: "html" | "text" = "html";
+		let mode: "html" | "text" | "jsonl" = "html";
 		let outputToken: string | undefined;
 		for (const token of tokens) {
 			const normalized = token.toLowerCase();
@@ -91,6 +107,10 @@ export class ImportExportView {
 			}
 			if (normalized === "text" || normalized === "lite") {
 				mode = "text";
+				continue;
+			}
+			if (normalized === "jsonl") {
+				mode = "jsonl";
 				continue;
 			}
 			if (!outputToken) {
@@ -106,18 +126,27 @@ export class ImportExportView {
 				mkdirSync(dirname(outputPath), { recursive: true });
 			}
 			let filePath: string;
-			if (mode === "text") {
-				filePath = await exportSessionToText(
-					this.options.sessionManager,
-					this.options.agent.state,
-					outputPath,
-				);
-			} else {
-				filePath = await exportSessionToHtml(
-					this.options.sessionManager,
-					this.options.agent.state,
-					outputPath,
-				);
+			switch (mode) {
+				case "text":
+					filePath = await exportSessionToText(
+						this.options.sessionManager,
+						this.options.agent.state,
+						outputPath,
+					);
+					break;
+				case "jsonl":
+					filePath = await exportSessionToJsonl(
+						this.options.sessionManager,
+						outputPath,
+					);
+					break;
+				default:
+					filePath = await exportSessionToHtml(
+						this.options.sessionManager,
+						this.options.agent.state,
+						outputPath,
+					);
+					break;
 			}
 
 			this.options.chatContainer.addChild(new Spacer(1));
@@ -140,7 +169,9 @@ export class ImportExportView {
 		const parts = text.trim().split(/\s+/);
 		const source = parts[1]?.toLowerCase();
 		if (!source || source === "help") {
-			this.options.showInfoMessage("Usage: /import factory");
+			this.options.showInfoMessage(
+				"Usage: /import factory | /import session <file.jsonl>",
+			);
 			return;
 		}
 		if (source === "factory") {
@@ -159,8 +190,31 @@ export class ImportExportView {
 			}
 			return;
 		}
+		if (source === "session") {
+			const sourcePath = parts.slice(2).join(" ").trim();
+			if (!sourcePath) {
+				this.options.showInfoMessage("Usage: /import session <file.jsonl>");
+				return;
+			}
+			try {
+				const resolvedPath = this.resolveImportPath(sourcePath);
+				const imported =
+					this.options.sessionManager.importSessionJsonl(resolvedPath);
+				this.options.loadImportedSession?.(imported.sessionFile);
+				this.options.showInfoMessage(
+					`Imported session ${imported.sessionId} from ${resolvedPath}.`,
+				);
+			} catch (error) {
+				const message =
+					error instanceof Error ? error.message : String(error ?? "unknown");
+				this.options.showInfoMessage(
+					chalk.red(`Session import failed: ${message}`),
+				);
+			}
+			return;
+		}
 		this.options.showInfoMessage(
-			`Unknown import source "${source}". Supported sources: factory`,
+			`Unknown import source "${source}". Supported sources: factory, session`,
 		);
 	}
 
