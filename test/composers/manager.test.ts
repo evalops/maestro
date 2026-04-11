@@ -131,4 +131,60 @@ describe("ComposerManager", () => {
 			available: [createComposer()],
 		});
 	});
+
+	it("reapplies active composer tool filters when base tools change", () => {
+		const agent = createAgentStub();
+		const manager = new ComposerManager();
+		manager.initialize(
+			agent,
+			"Base prompt",
+			[
+				{
+					name: "read",
+					description: "Read files",
+					parameters: {} as never,
+					execute: vi.fn(),
+				},
+			],
+			"/workspace",
+		);
+
+		expect(manager.activate("reviewer", "/workspace")).toBe(true);
+		expect(agent.setTools).toHaveBeenLastCalledWith(
+			expect.arrayContaining([expect.objectContaining({ name: "read" })]),
+		);
+
+		const updatedBaseTools = [
+			{
+				name: "read",
+				description: "Read files",
+				parameters: {} as never,
+				execute: vi.fn(),
+			},
+			{
+				name: "diff",
+				description: "Inspect changes",
+				parameters: {} as never,
+				execute: vi.fn(),
+			},
+			{
+				name: "write",
+				description: "Write files",
+				parameters: {} as never,
+				execute: vi.fn(),
+			},
+		];
+
+		manager.updateBaseTools(updatedBaseTools);
+
+		expect(agent.setTools).toHaveBeenLastCalledWith(
+			expect.arrayContaining([
+				expect.objectContaining({ name: "read" }),
+				expect.objectContaining({ name: "diff" }),
+			]),
+		);
+		expect(agent.setTools).toHaveBeenLastCalledWith(
+			expect.not.arrayContaining([expect.objectContaining({ name: "write" })]),
+		);
+	});
 });

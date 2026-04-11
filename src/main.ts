@@ -1035,15 +1035,12 @@ export async function main(args: string[]) {
 		);
 		process.exit(1);
 	}
-	const { allTools, baseTools, sandbox, sandboxMode } = toolsResult;
+	const { allTools, sandbox, sandboxMode } = toolsResult;
 	const useInteractiveClientTools = Boolean(interactiveClientToolService);
 	const replaceAskUserTool = <T extends typeof allTools>(tools: T): T =>
 		tools.map((tool) =>
 			tool.name === "ask_user" ? askUserClientTool : tool,
 		) as T;
-	const configuredBaseTools = useInteractiveClientTools
-		? replaceAskUserTool(baseTools)
-		: baseTools;
 	const configuredAllTools = useInteractiveClientTools
 		? replaceAskUserTool(allTools)
 		: allTools;
@@ -1108,6 +1105,7 @@ export async function main(args: string[]) {
 		agent,
 		sessionManager,
 		cwd: process.cwd(),
+		baseTools: configuredAllTools,
 	});
 
 	// ─────────────────────────────────────────────────────────────────────────────
@@ -1118,7 +1116,7 @@ export async function main(args: string[]) {
 	const { initializeMcpServers } = await import("./bootstrap/mcp-setup.js");
 	initializeMcpServers({
 		agent,
-		baseTools: configuredBaseTools,
+		baseTools: configuredAllTools,
 		cwd: process.cwd(),
 	});
 	logStartupPhase("mcp.bootstrap_queued", mcpInitStartedAt);

@@ -5,22 +5,41 @@
  * at runtime via the HookAPI.registerTool() method.
  */
 
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Type } from "@sinclair/typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentTool } from "../src/agent/types.js";
 import {
-	type HookAPI,
+	applyExtensionToolState,
 	clearLoadedTypeScriptHooks,
+	discoverAndLoadTypeScriptHooks,
+	executeTypeScriptHooks,
 	getExtensionRegisteredTools,
 } from "../src/hooks/index.js";
+import type { SessionStartHookInput } from "../src/hooks/types.js";
 
 describe("Extension Tool Registration", () => {
+	let testDir: string;
+	let previousMaestroHome: string | undefined;
+
 	beforeEach(() => {
 		clearLoadedTypeScriptHooks();
+		testDir = mkdtempSync(join(tmpdir(), "maestro-extension-tools-"));
+		previousMaestroHome = process.env.MAESTRO_HOME;
+		process.env.MAESTRO_HOME = join(testDir, ".maestro-home");
+		mkdirSync(join(testDir, ".maestro", "hooks"), { recursive: true });
 	});
 
 	afterEach(() => {
 		clearLoadedTypeScriptHooks();
+		rmSync(testDir, { recursive: true, force: true });
+		if (previousMaestroHome === undefined) {
+			delete process.env.MAESTRO_HOME;
+		} else {
+			process.env.MAESTRO_HOME = previousMaestroHome;
+		}
 	});
 
 	describe("registerTool()", () => {
@@ -206,15 +225,103 @@ describe("Extension Tool Registration", () => {
 			expect(tools).toEqual([]);
 		});
 
-		// TODO: Implement in Phase 1 when registerTool() is added to HookAPI
-		// This test will be enabled once tool registration is fully implemented
-		it.skip("should return all registered tools from all extensions", () => {
-			// Placeholder for future implementation
-			// Will test:
-			// 1. Load multiple extensions that register tools
-			// 2. Call getExtensionRegisteredTools()
-			// 3. Verify all tools are returned with correct namespacing
-			expect(true).toBe(true);
+		it("returns namespaced tools loaded from TypeScript hooks", async () => {
+			writeFileSync(
+				join(testDir, ".maestro", "hooks", "custom-tools.ts"),
+				`export default function (pi) {
+  pi.registerTool({
+    name: "custom_search",
+    description: "Search custom database",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string" },
+      },
+      required: ["query"],
+    },
+    execute: async (_toolCallId, params) => ({
+      content: [{ type: "text", text: "Search results for: " + params.query }],
+    }),
+  });
+}
+`,
+			);
+
+			await discoverAndLoadTypeScriptHooks([], testDir);
+
+			expect(getExtensionRegisteredTools()).toEqual([
+				expect.objectContaining({
+					name: "hook__custom_tools__custom_search",
+					label: "custom_search",
+					description: "Search custom database",
+				}),
+			]);
+		});
+
+		it("supports runtime registration and active tool filtering from hook handlers", async () => {
+			writeFileSync(
+				join(testDir, ".maestro", "hooks", "runtime-tools.ts"),
+				`export default function (pi) {
+  pi.on("SessionStart", async () => {
+    pi.registerTool({
+      name: "runtime_search",
+      description: "Search after startup",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string" },
+        },
+        required: ["query"],
+      },
+      execute: async (_toolCallId, params) => ({
+        content: [{ type: "text", text: "Runtime result: " + params.query }],
+      }),
+    });
+    pi.setActiveTools(["read", "runtime_search"]);
+    return { continue: true };
+  });
+}
+`,
+			);
+
+			await discoverAndLoadTypeScriptHooks([], testDir);
+
+			const baseTools: AgentTool[] = [
+				{
+					name: "read",
+					description: "Read files",
+					parameters: Type.Object({}),
+					execute: async () => ({ content: [] }),
+				},
+				{
+					name: "write",
+					description: "Write files",
+					parameters: Type.Object({}),
+					execute: async () => ({ content: [] }),
+				},
+			];
+
+			expect(
+				applyExtensionToolState(baseTools).map((tool) => tool.name),
+			).toEqual(["read", "write"]);
+
+			const input: SessionStartHookInput = {
+				hook_event_name: "SessionStart",
+				cwd: testDir,
+				timestamp: new Date().toISOString(),
+				source: "cli",
+			};
+			await executeTypeScriptHooks("SessionStart", input);
+
+			expect(getExtensionRegisteredTools()).toEqual([
+				expect.objectContaining({
+					name: "hook__runtime_tools__runtime_search",
+					label: "runtime_search",
+				}),
+			]);
+			expect(
+				applyExtensionToolState(baseTools).map((tool) => tool.name),
+			).toEqual(["read", "hook__runtime_tools__runtime_search"]);
 		});
 	});
 
@@ -262,8 +369,7 @@ describe("Extension Tool Registration", () => {
 		});
 
 		it("should reject tool names with invalid characters", () => {
-			// Valid tool names: alphanumeric, underscores, hyphens, colons
-			// Colons are allowed for namespacing (e.g., "ext:myextension:tool")
+			// Valid tool names: alphanumeric, underscores, hyphens
 			// Invalid: spaces, slashes, empty strings
 			const invalidNames = ["tool with spaces", "tool/with/slashes", ""];
 
@@ -274,17 +380,7 @@ describe("Extension Tool Registration", () => {
 		});
 
 		it("should accept valid tool names", () => {
-			// Valid formats:
-			// - Simple names: "my_tool", "tool-123", "CustomTool"
-			// - Namespaced with colons: "ext:myextension:read" (preferred for extensions)
-			// - Namespaced with underscores: "ext_myextension_read" (alternative)
-			const validNames = [
-				"my_tool",
-				"tool-123",
-				"CustomTool",
-				"ext:myextension:read", // Preferred namespacing convention
-				"ext_myextension_read",
-			];
+			const validNames = ["my_tool", "tool-123", "CustomTool"];
 
 			for (const name of validNames) {
 				const isValid = /^[a-z0-9_:-]+$/i.test(name);

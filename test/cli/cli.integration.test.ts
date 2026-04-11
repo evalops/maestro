@@ -8,6 +8,7 @@ import { main } from "../../src/main.js";
 interface MockAgentState {
 	model?: unknown;
 	thinkingLevel?: string;
+	tools?: unknown[];
 	messages: Array<{
 		role: string;
 		content: Array<{ type: string; text: string }>;
@@ -123,6 +124,10 @@ vi.mock("../../src/agent/agent.js", async () => {
 
 		setThinkingLevel(level: string) {
 			this.state.thinkingLevel = level;
+		}
+
+		setTools(tools: unknown[]) {
+			this.state.tools = [...tools];
 		}
 
 		queueNextRunSystemPromptAddition(text: string) {

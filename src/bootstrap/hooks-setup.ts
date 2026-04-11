@@ -7,7 +7,7 @@
  * @module bootstrap/hooks-setup
  */
 
-import type { Agent } from "../agent/index.js";
+import type { Agent, AgentTool } from "../agent/index.js";
 import type { LoadedTypeScriptHook } from "../hooks/types.js";
 import {
 	discoverAndLoadTypeScriptHooks,
@@ -15,8 +15,10 @@ import {
 	setGlobalCwd,
 	setGlobalSendHandler,
 	setGlobalSendMessageHandler,
+	setGlobalToolsetChangeHandler,
 } from "../hooks/typescript-loader.js";
 import type { SessionManager } from "../session/manager.js";
+import { syncRuntimeToolset } from "./runtime-toolset.js";
 
 export interface HooksSetupResult {
 	tsHooks: LoadedTypeScriptHook[];
@@ -30,8 +32,9 @@ export async function initializeTypeScriptHooks(params: {
 	agent: Agent;
 	sessionManager: SessionManager;
 	cwd: string;
+	baseTools: AgentTool[];
 }): Promise<HooksSetupResult> {
-	const { agent, sessionManager, cwd } = params;
+	const { agent, sessionManager, cwd, baseTools } = params;
 
 	setGlobalCwd(cwd);
 	const { hooks: tsHooks, errors: tsHookErrors } =
@@ -113,6 +116,12 @@ export async function initializeTypeScriptHooks(params: {
 			);
 		}
 	});
+
+	setGlobalToolsetChangeHandler(() => {
+		syncRuntimeToolset(agent, baseTools);
+	});
+
+	syncRuntimeToolset(agent, baseTools);
 
 	return { tsHooks, tsHookErrors };
 }

@@ -227,11 +227,13 @@ export {
 	getGlobalSendHandler,
 	setGlobalSendMessageHandler,
 	setGlobalAppendEntryHandler,
+	setGlobalToolsetChangeHandler,
 	setGlobalUIContext,
 	setGlobalCwd,
 	setGlobalSessionFile,
 	clearLoadedTypeScriptHooks,
 	getExtensionRegisteredTools,
+	applyExtensionToolState,
 } from "./typescript-loader.js";
 
 // UI context exports

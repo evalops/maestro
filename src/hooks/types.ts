@@ -7,6 +7,7 @@
 
 import type { Component, TUI } from "@evalops/tui";
 import type {
+	AgentTool,
 	HookMessage,
 	ToolCall,
 	ToolResultMessage,
@@ -1246,6 +1247,20 @@ export interface HookAPI {
 		name: string,
 		options: { description?: string; handler: RegisteredCommand["handler"] },
 	): void;
+
+	/**
+	 * Register or replace a custom tool exposed to the agent at runtime.
+	 *
+	 * Tool names are automatically namespaced to avoid collisions with built-ins.
+	 */
+	registerTool(tool: AgentTool): void;
+
+	/**
+	 * Restrict the active tool list for this extension.
+	 *
+	 * Pass `null` to clear the extension's restriction.
+	 */
+	setActiveTools(toolNames: string[] | null): void;
 }
 
 /**
@@ -1270,6 +1285,10 @@ export interface LoadedTypeScriptHook {
 	messageRenderers: Map<string, HookMessageRenderer>;
 	/** Registered commands */
 	commands: Map<string, RegisteredCommand>;
+	/** Registered extension tools keyed by their original, un-namespaced name */
+	registeredTools: Map<string, AgentTool>;
+	/** Optional active-tool restriction patterns for this hook */
+	activeTools: string[] | null;
 	/** Send handler setter */
 	setSendHandler: (handler: HookSendHandler) => void;
 	/** Send message handler setter */

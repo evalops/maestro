@@ -8,11 +8,11 @@
  */
 
 import type { Agent, AgentTool } from "../agent/index.js";
-import { composerManager } from "../composers/index.js";
 import { loadMcpConfig } from "../mcp/config.js";
 import { mcpManager } from "../mcp/manager.js";
 import { prefetchOfficialMcpRegistry } from "../mcp/official-registry.js";
 import { getAllMcpTools } from "../mcp/tool-bridge.js";
+import { syncRuntimeToolset } from "./runtime-toolset.js";
 
 /**
  * Load MCP config and initialize servers with event listeners
@@ -41,9 +41,7 @@ export function initializeMcpServers(params: {
 	mcpManager.on("connected", () => {
 		const mcpTools = getAllMcpTools();
 		if (mcpTools.length > 0) {
-			const updatedTools = [...baseTools, ...mcpTools];
-			agent.setTools(updatedTools);
-			composerManager.updateBaseTools(updatedTools);
+			syncRuntimeToolset(agent, baseTools, mcpTools);
 		}
 	});
 
@@ -55,9 +53,7 @@ export function initializeMcpServers(params: {
 		toolsChangedTimeout = setTimeout(() => {
 			toolsChangedTimeout = null;
 			const mcpTools = getAllMcpTools();
-			const updatedTools = [...baseTools, ...mcpTools];
-			agent.setTools(updatedTools);
-			composerManager.updateBaseTools(updatedTools);
+			syncRuntimeToolset(agent, baseTools, mcpTools);
 		}, 100);
 	});
 

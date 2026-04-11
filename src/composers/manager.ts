@@ -104,15 +104,37 @@ export class ComposerManager extends EventEmitter {
 		this.state.available = loadComposers(projectRoot).map(cloneComposer);
 	}
 
+	private resolveComposerTools(composer: LoadedComposer): AgentTool[] {
+		let newTools = this.baseTools;
+
+		if (composer.tools && composer.tools.length > 0) {
+			const allowedSet = new Set(composer.tools);
+			newTools = newTools.filter((tool) => allowedSet.has(tool.name));
+		}
+
+		if (composer.denyTools && composer.denyTools.length > 0) {
+			const denySet = new Set(composer.denyTools);
+			newTools = newTools.filter((tool) => !denySet.has(tool.name));
+		}
+
+		return newTools;
+	}
+
 	/**
 	 * Update base tools without re-initializing (preserves active composer state)
 	 */
 	updateBaseTools(tools: AgentTool[]): void {
 		this.baseTools = tools;
-		// If no composer is active, also update the agent's tools
-		if (!this.state.active && this.agent) {
-			this.agent.setTools(tools);
+		if (!this.agent) {
+			return;
 		}
+
+		if (this.state.active) {
+			this.agent.setTools(this.resolveComposerTools(this.state.active));
+			return;
+		}
+
+		this.agent.setTools(tools);
 	}
 
 	/**
@@ -260,24 +282,9 @@ export class ComposerManager extends EventEmitter {
 			newSystemPrompt = this.baseSystemPrompt;
 		}
 
-		// Filter tools based on whitelist and blocklist
-		let newTools = this.baseTools;
-
-		// Apply whitelist if specified (only allow listed tools)
-		if (composer.tools && composer.tools.length > 0) {
-			const allowedSet = new Set(composer.tools);
-			newTools = newTools.filter((t) => allowedSet.has(t.name));
-		}
-
-		// Apply blocklist if specified (remove denied tools)
-		if (composer.denyTools && composer.denyTools.length > 0) {
-			const denySet = new Set(composer.denyTools);
-			newTools = newTools.filter((t) => !denySet.has(t.name));
-		}
-
 		// Apply changes to agent
 		this.agent.setSystemPrompt(newSystemPrompt);
-		this.agent.setTools(newTools);
+		this.agent.setTools(this.resolveComposerTools(composer));
 
 		// Change model if specified
 		// Supports formats: "provider/modelId", "modelId" (searches all providers), or alias

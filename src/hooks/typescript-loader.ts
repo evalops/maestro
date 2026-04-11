@@ -10,7 +10,9 @@
 
 import { spawn } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, isAbsolute, join, resolve } from "node:path";
+import { minimatch } from "minimatch";
+import type { AgentTool } from "../agent/types.js";
 import { PATHS } from "../config/constants.js";
 import { loadConfiguredPackageResources } from "../packages/runtime.js";
 import { theme } from "../theme/theme.js";
@@ -55,6 +57,7 @@ function normalizeUnicodeSpaces(str: string): string {
 let globalSendHandler: HookSendHandler | null = null;
 let globalSendMessageHandler: HookSendMessageHandler | null = null;
 let globalAppendEntryHandler: HookAppendEntryHandler | null = null;
+let globalToolsetChangeHandler: (() => void) | null = null;
 
 /**
  * Global UI context - set by the mode (TUI, RPC, etc.)
@@ -63,6 +66,49 @@ let globalUIContext: HookUIContext | null = null;
 let globalHasUI = false;
 let globalCwd = process.cwd();
 let globalSessionFile: string | null = null;
+
+const HOOK_TOOL_NAMESPACE_PREFIX = "hook__";
+
+function sanitizeHookNameSegment(value: string): string {
+	return (
+		value
+			.trim()
+			.toLowerCase()
+			.replace(/[^a-z0-9_]+/g, "_")
+			.replace(/^_+|_+$/g, "") || "hook"
+	);
+}
+
+function buildHookToolName(hookPath: string, toolName: string): string {
+	return [
+		HOOK_TOOL_NAMESPACE_PREFIX,
+		sanitizeHookNameSegment(basename(hookPath, ".ts")),
+		"__",
+		sanitizeHookNameSegment(toolName),
+	].join("");
+}
+
+function normalizeActiveToolNames(toolNames: string[] | null): string[] | null {
+	if (toolNames === null) {
+		return null;
+	}
+	return [...new Set(toolNames.map((name) => name.trim()).filter(Boolean))];
+}
+
+function matchesToolPattern(
+	pattern: string,
+	toolName: string,
+	aliases: string[] = [],
+): boolean {
+	const candidates = [toolName, ...aliases];
+	return candidates.some((candidate) =>
+		minimatch(candidate, pattern, { nocase: false }),
+	);
+}
+
+function notifyToolsetChanged(): void {
+	globalToolsetChangeHandler?.();
+}
 
 /**
  * Expand ~ to home directory in paths.
@@ -246,6 +292,9 @@ async function loadTypeScriptHook(
 		let localAppendEntryHandler: HookAppendEntryHandler | null = null;
 		const messageRenderers = new Map<string, HookMessageRenderer>();
 		const commands = new Map<string, RegisteredCommand>();
+		const registeredTools = new Map<string, AgentTool>();
+		let activeTools: string[] | null = null;
+		let hookRef: LoadedTypeScriptHook | null = null;
 
 		const api: HookAPI = {
 			on<E extends HookEventType>(
@@ -291,6 +340,22 @@ async function loadTypeScriptHook(
 			registerCommand(name, options): void {
 				commands.set(name, { name, ...options });
 			},
+			registerTool(tool): void {
+				const namespacedName = buildHookToolName(resolvedPath, tool.name);
+				registeredTools.set(tool.name, {
+					...tool,
+					name: namespacedName,
+					label: tool.label ?? tool.name,
+				});
+				notifyToolsetChanged();
+			},
+			setActiveTools(toolNames): void {
+				activeTools = normalizeActiveToolNames(toolNames);
+				if (hookRef) {
+					hookRef.activeTools = activeTools;
+				}
+				notifyToolsetChanged();
+			},
 		};
 
 		// Call the factory to register handlers
@@ -302,6 +367,8 @@ async function loadTypeScriptHook(
 			handlers,
 			messageRenderers,
 			commands,
+			registeredTools,
+			activeTools,
 			setSendHandler: (handler: HookSendHandler) => {
 				localSendHandler = handler;
 			},
@@ -312,6 +379,7 @@ async function loadTypeScriptHook(
 				localAppendEntryHandler = handler;
 			},
 		};
+		hookRef = hook;
 
 		logger.debug("Loaded TypeScript hook", {
 			path: resolvedPath,
@@ -540,6 +608,16 @@ export function setGlobalAppendEntryHandler(
 }
 
 /**
+ * Set the global callback used to recompute the runtime tool list after
+ * extension tool registration changes.
+ */
+export function setGlobalToolsetChangeHandler(
+	handler: (() => void) | null,
+): void {
+	globalToolsetChangeHandler = handler;
+}
+
+/**
  * Set the global UI context for interactive hooks.
  */
 export function setGlobalUIContext(
@@ -575,12 +653,57 @@ export function clearLoadedTypeScriptHooks(): void {
  * Get all tools registered by extensions.
  *
  * @returns Array of registered tools from all loaded extensions
- *
- * TODO: Implement tool registration in HookAPI and LoadedTypeScriptHook
- * This is a stub for test compatibility - will be implemented in Phase 1.
  */
-// biome-ignore format: multiline import type syntax is invalid here in TypeScript
-export function getExtensionRegisteredTools(): import("../agent/types.js").AgentTool[] {
-	// Stub implementation - returns empty array until tool registration is implemented
-	return [];
+export function getExtensionRegisteredTools(): AgentTool[] {
+	const tools: AgentTool[] = [];
+	for (const hook of loadedHooks) {
+		for (const tool of hook.registeredTools.values()) {
+			tools.push(tool);
+		}
+	}
+	return tools;
+}
+
+/**
+ * Apply the current extension tool registration/filter state to a base tool list.
+ */
+export function applyExtensionToolState(baseTools: AgentTool[]): AgentTool[] {
+	const combinedTools = new Map<
+		string,
+		{ tool: AgentTool; aliases: string[] }
+	>();
+
+	for (const tool of baseTools) {
+		combinedTools.set(tool.name, {
+			tool,
+			aliases: tool.label ? [tool.label] : [],
+		});
+	}
+
+	for (const hook of loadedHooks) {
+		for (const [originalName, tool] of hook.registeredTools) {
+			combinedTools.set(tool.name, {
+				tool,
+				aliases: [originalName, ...(tool.label ? [tool.label] : [])],
+			});
+		}
+	}
+
+	const activeFilters = loadedHooks
+		.map((hook) => hook.activeTools)
+		.filter((patterns): patterns is string[] => patterns !== null);
+
+	if (activeFilters.length === 0) {
+		return Array.from(combinedTools.values(), ({ tool }) => tool);
+	}
+
+	return Array.from(combinedTools.values())
+		.filter(({ tool, aliases }) =>
+			activeFilters.every((patterns) =>
+				patterns.some((pattern) =>
+					matchesToolPattern(pattern, tool.name, aliases),
+				),
+			),
+		)
+		.map(({ tool }) => tool);
 }
