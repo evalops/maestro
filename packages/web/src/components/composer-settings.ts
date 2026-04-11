@@ -846,7 +846,11 @@ export class ComposerSettings extends LitElement {
 	}
 
 	private formatMcpScopeLabel(
-		scope: McpRegistryImportRequest["scope"],
+		scope:
+			| McpRegistryImportRequest["scope"]
+			| McpAuthPresetStatus["scope"]
+			| McpServerStatus["scope"]
+			| undefined,
 	): string {
 		return formatMcpRegistryScopeLabel(scope);
 	}

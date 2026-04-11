@@ -1137,13 +1137,16 @@ export class ApiClient {
 		return await this.createObjectUrlFromResponse(response);
 	}
 
-	private async fetchJsonWithFallback(path: string, init?: RequestInit) {
+	private async fetchJsonWithFallback<T = unknown>(
+		path: string,
+		init?: RequestInit,
+	): Promise<T> {
 		const requestInit = this.buildRequestInit(init);
 		let lastError: unknown;
 		for (const base of this.fallbackBases) {
 			try {
 				const res = await fetch(`${base}${path}`, requestInit);
-				return await safeJson(res);
+				return (await safeJson(res)) as T;
 			} catch (e) {
 				lastError = e;
 				if (isNonRetriableClientError(e)) {
@@ -1665,7 +1668,9 @@ export class ApiClient {
 	 */
 	async getModels(): Promise<Model[]> {
 		try {
-			const data = await this.fetchJsonWithFallback("/api/models");
+			const data = await this.fetchJsonWithFallback<{ models?: Model[] }>(
+				"/api/models",
+			);
 			if (VALIDATE_API_RESPONSES && !isComposerModelListResponse(data)) {
 				throw new Error("Invalid models response payload");
 			}
@@ -1708,7 +1713,9 @@ export class ApiClient {
 	 */
 	async getFiles(options: { throwOnError?: boolean } = {}): Promise<string[]> {
 		try {
-			const data = await this.fetchJsonWithFallback("/api/files");
+			const data = await this.fetchJsonWithFallback<{ files?: string[] }>(
+				"/api/files",
+			);
 			if (VALIDATE_API_RESPONSES && !isComposerFilesResponse(data)) {
 				throw new Error("Invalid files response payload");
 			}
@@ -1727,7 +1734,9 @@ export class ApiClient {
 	 */
 	async getCommands(): Promise<CommandDefinition[]> {
 		try {
-			const data = await this.fetchJsonWithFallback("/api/commands");
+			const data = await this.fetchJsonWithFallback<{
+				commands?: CommandDefinition[];
+			}>("/api/commands");
 			if (VALIDATE_API_RESPONSES && !isComposerCommandListResponse(data)) {
 				throw new Error("Invalid commands response payload");
 			}
@@ -1786,7 +1795,9 @@ export class ApiClient {
 	 */
 	async getSessions(): Promise<SessionSummary[]> {
 		try {
-			const data = await this.fetchJsonWithFallback("/api/sessions");
+			const data = await this.fetchJsonWithFallback<{
+				sessions?: SessionSummary[];
+			}>("/api/sessions");
 			if (VALIDATE_API_RESPONSES && !isComposerSessionListResponse(data)) {
 				throw new Error("Invalid sessions response payload");
 			}
@@ -1814,7 +1825,7 @@ export class ApiClient {
 	}
 
 	async markProjectOnboardingSeen(): Promise<void> {
-		await this.fetchJson<{ success: boolean }>(
+		await this.fetchJsonWithFallback<{ success: boolean }>(
 			"/api/status?action=mark-onboarding-seen",
 			this.buildJsonRequestInit("POST"),
 		);
@@ -1825,7 +1836,9 @@ export class ApiClient {
 	 */
 	async getUsage(): Promise<UsageSummary | null> {
 		try {
-			const data = await this.fetchJsonWithFallback("/api/usage");
+			const data = await this.fetchJsonWithFallback<{
+				summary?: UsageSummary | null;
+			}>("/api/usage");
 			if (VALIDATE_API_RESPONSES && !isComposerUsageResponse(data)) {
 				throw new Error("Invalid usage response payload");
 			}

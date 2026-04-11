@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { type ReactElement, useEffect, useMemo, useState } from "react";
 import {
 	BrowserRouter,
 	NavLink,
@@ -286,7 +286,7 @@ function buildNav(teamId: string | null) {
 	const items: Array<{
 		to: string;
 		label: string;
-		icon: JSX.Element;
+		icon: ReactElement;
 	}> = [];
 
 	if (teamId) {

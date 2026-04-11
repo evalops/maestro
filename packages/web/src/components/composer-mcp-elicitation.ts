@@ -181,7 +181,7 @@ function parseFieldDefinition(
 				description,
 				defaultValue:
 					typeof value.default === "string" ? value.default : undefined,
-				options: (value.oneOf as Array<Record<string, string>>).map(
+				options: (value.oneOf as Array<{ const: string; title: string }>).map(
 					(entry) => ({
 						value: entry.const,
 						label: entry.title,
@@ -263,12 +263,15 @@ function parseFieldDefinition(
 						: undefined,
 				minItems: getOptionalNumber(value, "minItems"),
 				maxItems: getOptionalNumber(value, "maxItems"),
-				options: (value.items.anyOf as Array<Record<string, string>>).map(
-					(entry) => ({
-						value: entry.const,
-						label: entry.title,
-					}),
-				),
+				options: (
+					value.items.anyOf as Array<{
+						const: string;
+						title: string;
+					}>
+				).map((entry) => ({
+					value: entry.const,
+					label: entry.title,
+				})),
 			};
 		}
 	}

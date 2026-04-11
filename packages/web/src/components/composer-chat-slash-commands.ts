@@ -18,6 +18,12 @@ import type {
 	McpServerRemoveRequest,
 	McpServerRemoveResponse,
 	McpStatus,
+	MemoryMutationResponse,
+	MemoryRecentResponse,
+	MemorySearchResponse,
+	MemoryStatsResponse,
+	MemoryTopicResponse,
+	MemoryTopicsResponse,
 	PackageAddResponse,
 	PackageBulkRefreshResponse,
 	PackageCachePruneResponse,
@@ -27,6 +33,7 @@ import type {
 	PackageScope,
 	PackageSearchResponse,
 	PackageStatusResponse,
+	TeamMemoryMutationResponse,
 	TeamMemoryStatusResponse,
 } from "../services/api-client.js";
 import {
@@ -295,7 +302,7 @@ function parseMemorySearchResult(value: unknown): MemorySearchResult | null {
 	};
 }
 
-function formatMemoryTopicsBlock(result: Record<string, unknown>): string {
+function formatMemoryTopicsBlock(result: MemoryTopicsResponse): string {
 	const topics = Array.isArray(result.topics)
 		? result.topics
 				.map(parseMemoryTopicSummary)
@@ -316,7 +323,7 @@ function formatMemoryTopicsBlock(result: Record<string, unknown>): string {
 
 function formatMemoryTopicEntriesBlock(
 	topic: string,
-	result: Record<string, unknown>,
+	result: MemoryTopicResponse,
 ): string {
 	const memories = Array.isArray(result.memories)
 		? result.memories
@@ -342,7 +349,7 @@ function formatMemoryTopicEntriesBlock(
 
 function formatMemorySearchResultsBlock(
 	query: string,
-	result: Record<string, unknown>,
+	result: MemorySearchResponse,
 ): string {
 	const results = Array.isArray(result.results)
 		? result.results
@@ -366,7 +373,7 @@ function formatMemorySearchResultsBlock(
 	return lines.join("\n");
 }
 
-function formatRecentMemoriesBlock(result: Record<string, unknown>): string {
+function formatRecentMemoriesBlock(result: MemoryRecentResponse): string {
 	const memories = Array.isArray(result.memories)
 		? result.memories
 				.map(parseMemoryEntry)
@@ -385,15 +392,11 @@ function formatRecentMemoriesBlock(result: Record<string, unknown>): string {
 	return lines.join("\n");
 }
 
-function formatMemoryStatsBlock(result: Record<string, unknown>): string {
-	const stats = isRecord(result.stats) ? result.stats : {};
+function formatMemoryStatsBlock(result: MemoryStatsResponse): string {
+	const stats = result.stats;
 	const lines = ["Memory Statistics", ""];
-	lines.push(
-		`  Total entries: ${typeof stats.totalEntries === "number" ? stats.totalEntries : 0}`,
-	);
-	lines.push(
-		`  Topics: ${typeof stats.topics === "number" ? stats.topics : 0}`,
-	);
+	lines.push(`  Total entries: ${stats.totalEntries}`);
+	lines.push(`  Topics: ${stats.topics}`);
 	if (typeof stats.oldestEntry === "number") {
 		lines.push(`  Oldest: ${formatMemoryRelativeTime(stats.oldestEntry)}`);
 	}
@@ -435,7 +438,7 @@ function formatTeamMemoryStatusBlock(result: TeamMemoryStatusResponse): string {
 }
 
 function formatMemoryMutationMessage(
-	result: Record<string, unknown>,
+	result: MemoryMutationResponse | TeamMemoryMutationResponse,
 	fallback: string,
 ): string {
 	return typeof result.message === "string" && result.message.length > 0
@@ -2084,6 +2087,13 @@ export async function executeWebSlashCommand(
 					}
 					if (parsedPromptArgs.error) {
 						context.appendCommandOutput(parsedPromptArgs.error, true);
+						break;
+					}
+					if (!server) {
+						context.appendCommandOutput(
+							"Usage: /mcp prompts <server> [prompt] [KEY=value ...]",
+							true,
+						);
 						break;
 					}
 					const result = await context.apiClient.getMcpPrompt(

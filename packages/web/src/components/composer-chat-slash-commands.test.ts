@@ -90,6 +90,7 @@ function createContext(overrides: Partial<WebSlashCommandContext> = {}) {
 		openCommandDrawer: vi.fn(),
 		openModelSelector: vi.fn(),
 		selectSession: vi.fn().mockResolvedValue(undefined),
+		setApprovalModeStatus: vi.fn(),
 		setCleanMode: vi.fn(),
 		setCurrentModel: vi.fn(),
 		setFooterMode: vi.fn(),

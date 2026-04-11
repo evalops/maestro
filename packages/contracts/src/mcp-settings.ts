@@ -86,9 +86,13 @@ export function formatMcpTransportLabel(
 }
 
 export function formatMcpRegistryScopeLabel(
-	scope: McpWritableScope | undefined,
+	scope: McpScope | undefined,
 ): string {
 	switch (scope) {
+		case "enterprise":
+			return "Enterprise";
+		case "plugin":
+			return "Plugin";
 		case "project":
 			return "Project";
 		case "user":

@@ -540,6 +540,8 @@ export class ComposerMessage extends LitElement {
 		toolCallId?: string;
 		name: string;
 		status: string;
+		displayName?: string;
+		summaryLabel?: string;
 		args?: Record<string, unknown>;
 		argsTruncated?: boolean;
 		result?: unknown;

@@ -1157,7 +1157,7 @@ function prepareRequestBody(
 	supportsGzip: boolean,
 	apiKey?: string,
 	requestId?: string,
-): { body: Buffer | string; headers: Headers } {
+): { body: string | Uint8Array; headers: Headers } {
 	const shrunk = shrinkValue(payload) as Record<string, JsonValue>;
 	let candidate = shrunk;
 	let json = JSON.stringify(candidate);
@@ -1178,7 +1178,10 @@ function prepareRequestBody(
 		const zipped = gzipSync(Buffer.from(json));
 		headers.set("Content-Encoding", "gzip");
 		queueStats.gzipRequests += 1;
-		return { body: zipped, headers };
+		return {
+			body: new Uint8Array(zipped.buffer, zipped.byteOffset, zipped.byteLength),
+			headers,
+		};
 	} catch {
 		return { body: json, headers };
 	}

@@ -3322,7 +3322,7 @@ export class ComposerChat extends LitElement {
 						att.id,
 					)
 				: await this.apiClient.getSessionAttachmentContentBase64(
-						sessionId,
+						sessionId!,
 						att.id,
 					);
 			this.attachmentContentCache.set(att.id, base64);
@@ -3376,7 +3376,7 @@ export class ComposerChat extends LitElement {
 		this.promptSuggestionLoading = false;
 	}
 
-	private shouldRequestPromptSuggestion(messages: Message[]): boolean {
+	private shouldRequestPromptSuggestion(messages: UiMessage[]): boolean {
 		const relevant = messages.filter(
 			(message) => message.role === "user" || message.role === "assistant",
 		);
@@ -3387,7 +3387,7 @@ export class ComposerChat extends LitElement {
 		return assistantCount >= 2 && lastMessage?.role === "assistant";
 	}
 
-	private async refreshPromptSuggestion(messages: Message[] = this.messages) {
+	private async refreshPromptSuggestion(messages: UiMessage[] = this.messages) {
 		if (this.shareToken) {
 			this.clearPromptSuggestion();
 			return;
@@ -4131,11 +4131,11 @@ export class ComposerChat extends LitElement {
 				argRecord.args &&
 				typeof argRecord.args === "object" &&
 				!Array.isArray(argRecord.args)
-					? Object.fromEntries(
+					? (Object.fromEntries(
 							Object.entries(argRecord.args as Record<string, unknown>).filter(
 								([, value]) => typeof value === "string",
 							),
-						)
+						) as Record<string, string>)
 					: undefined;
 			if (!server || !name) {
 				return {
