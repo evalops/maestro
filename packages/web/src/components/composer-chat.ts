@@ -10,8 +10,6 @@ import type {
 } from "@evalops/contracts";
 import {
 	getActiveComposerProjectOnboardingSteps,
-	getComposerProjectOnboardingActions,
-	getComposerResumableSessions,
 	normalizeComposerResumeSummary,
 	truncateComposerResumeSummary,
 } from "@evalops/contracts";
@@ -38,17 +36,19 @@ import {
 	reconstructArtifactsFromMessages,
 } from "../services/artifacts.js";
 import { dataStore } from "../services/data-store.js";
-import { summarizeWebToolCalls } from "../services/tool-summary.js";
 import "./command-drawer.js";
 import {
 	type ComposerApprovalStatusUpdate,
 	type ComposerChatApprovalState,
 	ComposerChatApprovals,
 } from "./composer-chat-approvals.js";
+import {
+	buildComposerChatViewport,
+	renderComposerChatMessagePane,
+} from "./composer-chat-message-pane.js";
 import { executeWebSlashCommand } from "./composer-chat-slash-commands.js";
 import {
 	ComposerChatStreamState,
-	type MessageWithThinking,
 	type UiMessage,
 	hasAssistantMessageProgress,
 } from "./composer-chat-stream-state.js";
@@ -3793,18 +3793,6 @@ export class ComposerChat extends LitElement {
 		});
 	}
 
-	private formatSessionDate(date: string): string {
-		const d = new Date(date);
-		const now = new Date();
-		const diff = now.getTime() - d.getTime();
-		const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-
-		if (days === 0) return "Today";
-		if (days === 1) return "Yesterday";
-		if (days < 7) return `${days} days ago`;
-		return d.toLocaleDateString();
-	}
-
 	private refreshStatus() {
 		const now = Date.now();
 		if (now < this.nextRefreshAllowed) {
@@ -3860,89 +3848,16 @@ export class ComposerChat extends LitElement {
 		const isShared = Boolean(this.shareToken);
 		const approvalPillClass = this.approvals.getApprovalPillClass();
 		const approvalTitle = this.approvals.getApprovalTitle();
-		const onboardingSteps = getActiveComposerProjectOnboardingSteps(
-			this.status?.onboarding,
-		);
-		const onboardingActions = getComposerProjectOnboardingActions(
-			this.status?.onboarding,
-		);
-		const showSessionGallery = !isShared && this.messages.length === 0;
-		const hasMessages = this.messages.length > 0;
-		const {
-			start: windowStart,
-			end: windowEnd,
-			total: totalMessages,
-		} = this.getRenderWindow();
-		const visibleMessages = this.messages.slice(windowStart, windowEnd);
-		const shouldVirtualize =
-			windowEnd - windowStart >= ComposerChat.VIRTUALIZATION_MIN_MESSAGES;
-		const resolvedVirtualStart =
-			this.virtualStartIndex >= windowStart &&
-			this.virtualStartIndex < windowEnd
-				? this.virtualStartIndex
-				: windowStart;
-		const resolvedVirtualEnd =
-			this.virtualEndIndex > resolvedVirtualStart &&
-			this.virtualEndIndex <= windowEnd
-				? this.virtualEndIndex
-				: windowEnd;
-		const virtualStartLocal = Math.max(0, resolvedVirtualStart - windowStart);
-		const virtualEndLocal = Math.max(
-			virtualStartLocal,
-			resolvedVirtualEnd - windowStart,
-		);
-		const virtualMessages = shouldVirtualize
-			? visibleMessages.slice(virtualStartLocal, virtualEndLocal)
-			: visibleMessages;
-		const visibleCount = visibleMessages.length;
-		const hiddenOldCount = windowStart;
-		const hiddenNewCount = totalMessages - windowEnd;
-		const renderedMessages = virtualMessages.map((msg, idx) => {
-			const globalIndex = shouldVirtualize
-				? resolvedVirtualStart + idx
-				: windowStart + idx;
-			const isStreaming =
-				this.loading &&
-				globalIndex === this.messages.length - 1 &&
-				msg.role === "assistant";
-			return html`
-				<composer-message
-					data-index=${globalIndex}
-					role=${msg.role}
-					content=${msg.content}
-					timestamp=${msg.timestamp || ""}
-					.attachments=${msg.attachments || []}
-					.thinking=${(msg as MessageWithThinking).thinking || ""}
-					.tools=${msg.tools || []}
-					.toolSummaryLabels=${summarizeWebToolCalls(msg.tools || [])}
-					.cleanMode=${this.cleanMode}
-					.streaming=${isStreaming}
-					.compact=${this.compactMode}
-					.reducedMotion=${this.reducedMotion}
-				></composer-message>
-			`;
+		const { start: windowStart, end: windowEnd } = this.getRenderWindow();
+		const viewport = buildComposerChatViewport(this.messages, {
+			windowStart,
+			windowEnd,
+			virtualStartIndex: this.virtualStartIndex,
+			virtualEndIndex: this.virtualEndIndex,
+			virtualPaddingTop: this.virtualPaddingTop,
+			virtualPaddingBottom: this.virtualPaddingBottom,
+			virtualizationMinMessages: ComposerChat.VIRTUALIZATION_MIN_MESSAGES,
 		});
-		const topSpacer =
-			shouldVirtualize && this.virtualPaddingTop > 0
-				? html`<div
-						class="virtual-spacer"
-						style="height: ${this.virtualPaddingTop}px"
-					></div>`
-				: "";
-		const bottomSpacer =
-			shouldVirtualize && this.virtualPaddingBottom > 0
-				? html`<div
-						class="virtual-spacer"
-						style="height: ${this.virtualPaddingBottom}px"
-					></div>`
-				: "";
-		const recentSessions = showSessionGallery
-			? getComposerResumableSessions(this.sessions, {
-					excludeSessionId: this.currentSessionId,
-					limit: 8,
-				})
-			: [];
-		const sessionLoading = this.loading && this.messages.length === 0;
 		const lastUpdated = this.status?.lastUpdated ?? null;
 
 		const healthClass = !isOnline
@@ -4205,178 +4120,30 @@ export class ComposerChat extends LitElement {
 					class="messages ${this.compactMode ? "compact" : ""}"
 					@open-artifact=${this.handleOpenArtifact}
 				>
-						${
-							this.messages.length === 0
-								? html`
-									<div class="empty-state">
-										${
-											sessionLoading
-												? html`<div class="loading">Loading session...</div>`
-												: ""
-										}
-										<div class="workspace-panel">
-										<div class="panel-section">
-											<h3>Workspace</h3>
-											<div class="panel-item active">
-												<span>►</span>${cwd}
-											</div>
-											<div class="panel-item">
-												<span>GIT:</span>${gitBranch}
-											</div>
-											<div class="panel-item">
-												<span>FILES:</span>${gitSummary}
-											</div>
-										</div>
-											<div class="panel-section">
-												<h3>Model</h3>
-												<div class="panel-item active">
-													<span>►</span>${this.currentModel}
-												</div>
-												<div class="panel-item">
-												<span>CTX:</span>${this.currentModelTokens ?? "loading…"}
-												</div>
-												<div class="panel-item">
-													<span>MODE:</span>streaming
-												</div>
-											</div>
-										<div class="panel-section">
-											<h3>Session</h3>
-											<div class="panel-item">
-												<span>ID:</span>${this.currentSessionId?.slice(0, 8) || "new"}
-											</div>
-											<div class="panel-item">
-												<span>MSGS:</span>0
-											</div>
-											${
-												totalCost
-													? html`<div class="panel-item">
-														<span>COST:</span>${totalCost}
-													</div>`
-													: ""
-											}
-										</div>
-									</div>
-									${
-										onboardingSteps.length > 0
-											? html`
-												<div class="onboarding-callout" aria-live="polite">
-													<h3>Getting Started</h3>
-													<p>Project setup still has a couple of missing pieces.</p>
-													<ul class="onboarding-list">
-														${onboardingSteps.map(
-															(step) => html`<li>${step.text}</li>`,
-														)}
-													</ul>
-													${
-														onboardingActions.length > 0
-															? html`
-																<div class="onboarding-actions">
-																	${onboardingActions.map(
-																		(action) => html`
-																			<button
-																				type="button"
-																				class="onboarding-action ${
-																					action.kind === "command"
-																						? "command"
-																						: ""
-																				}"
-																				@click=${() => void this.submitEntryAction(action.value)}
-																			>
-																				${action.label}
-																			</button>
-																		`,
-																	)}
-																</div>
-															`
-															: ""
-													}
-												</div>
-											`
-											: ""
-									}
-									${
-										showSessionGallery && recentSessions.length > 0
-											? html`
-											<div class="session-gallery" aria-live="polite">
-												<div class="session-gallery-header">
-													<h3>Resume a Session</h3>
-													<span>Select a recent Composer run to continue.</span>
-												</div>
-												<div class="session-grid">
-													${recentSessions.map(
-														(session) => html`
-															<button
-																type="button"
-																class="session-card"
-																@click=${() => this.selectSession(session.id)}
-															>
-																<div class="session-card-title">
-																	${session.title || `Session ${session.id?.slice(0, 8) || ""}`}
-																</div>
-																<div class="session-card-meta">
-																	<span>${session.messageCount || 0} msgs</span>
-																	<span>•</span>
-																	<span>Updated ${this.formatSessionDate(session.updatedAt)}</span>
-																</div>
-																${
-																	normalizeComposerResumeSummary(
-																		session.resumeSummary,
-																	)
-																		? html`<div class="session-card-summary">
-																			${truncateComposerResumeSummary(
-																				normalizeComposerResumeSummary(
-																					session.resumeSummary,
-																				)!,
-																				110,
-																			)}
-																		</div>`
-																		: ""
-																}
-															</button>
-													`,
-													)}
-												</div>
-											</div>
-										`
-											: ""
-									}
-								</div>
-						  `
-								: html`
-												${
-													hiddenOldCount > 0
-														? html`
-																<div class="history-truncation" data-history-truncation>
-																	Showing ${visibleCount} of ${totalMessages}${
-																		hiddenNewCount > 0
-																			? ` (+${hiddenNewCount} newer hidden)`
-																			: ""
-																	}.
-															<button
-																class="history-btn"
-																@click=${this.loadEarlierMessages}
-																?disabled=${this.loadingEarlier}
-															>
-																${this.loadingEarlier ? "Loading..." : "Load earlier"}
-															</button>
-																</div>
-															`
-														: ""
-												}
-												${topSpacer}
-												${renderedMessages}
-												${bottomSpacer}
-												${
-													this.unseenMessages > 0
-														? html`
-															<button class="jump-latest" @click=${this.jumpToLatest}>
-																${this.unseenMessages} new message${this.unseenMessages === 1 ? "" : "s"} — Jump to latest
-													</button>
-												`
-														: ""
-												}
-									`
-						}
+					${renderComposerChatMessagePane({
+						messages: this.messages,
+						loading: this.loading,
+						loadingEarlier: this.loadingEarlier,
+						unseenMessages: this.unseenMessages,
+						compactMode: this.compactMode,
+						cleanMode: this.cleanMode,
+						reducedMotion: this.reducedMotion,
+						isShared,
+						cwd,
+						gitBranch,
+						gitSummary,
+						currentModel: this.currentModel,
+						currentModelTokens: this.currentModelTokens,
+						currentSessionId: this.currentSessionId,
+						totalCost,
+						status: this.status,
+						sessions: this.sessions,
+						viewport,
+						onSubmitEntryAction: (value) => void this.submitEntryAction(value),
+						onSelectSession: (sessionId) => void this.selectSession(sessionId),
+						onLoadEarlierMessages: () => void this.loadEarlierMessages(),
+						onJumpToLatest: this.jumpToLatest,
+					})}
 					${this.loading ? html`<div class="loading">Processing...</div>` : ""}
 				</div>
 
