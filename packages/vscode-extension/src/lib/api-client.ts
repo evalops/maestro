@@ -94,7 +94,17 @@ function parseSseEvents(buffer: string): {
 async function safeJson(response: Response) {
 	const contentType = response.headers.get("content-type") || "";
 	if (!response.ok) {
-		throw new Error(`API error: ${response.status} ${response.statusText}`);
+		const messagePrefix = `API error: ${response.status} ${response.statusText}`;
+		if (contentType.includes("application/json")) {
+			const payload = (await response.json().catch(() => null)) as {
+				error?: string;
+			} | null;
+			throw new Error(payload?.error || messagePrefix);
+		}
+		const text = await response.text().catch(() => "");
+		throw new Error(
+			text ? `${messagePrefix} - ${text.slice(0, 120)}` : messagePrefix,
+		);
 	}
 	if (!contentType.includes("application/json")) {
 		const text = await response.text();
@@ -142,15 +152,66 @@ export class ApiClient {
 		this.baseUrl = baseUrl.replace(/\/$/, "");
 	}
 
-	// ... existing methods ...
+	private buildRequestInit(
+		init?: RequestInit,
+		headerOptions?: HeaderOptions,
+	): RequestInit {
+		const headers = new Headers(init?.headers);
+		for (const [key, value] of Object.entries(
+			createRequestHeaders(headerOptions),
+		)) {
+			headers.set(key, value);
+		}
+		return {
+			...init,
+			headers,
+		};
+	}
+
+	private buildJsonRequestInit(
+		method: "POST" | "PATCH" | "PUT" | "DELETE",
+		body?: unknown,
+		headerOptions?: HeaderOptions,
+	): RequestInit {
+		return this.buildRequestInit(
+			{
+				method,
+				headers:
+					body !== undefined ? { "Content-Type": "application/json" } : {},
+				...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+			},
+			headerOptions,
+		);
+	}
+
+	private async fetchJson<T>(
+		path: string,
+		init?: RequestInit,
+		headerOptions?: HeaderOptions,
+	): Promise<T> {
+		const response = await fetch(
+			`${this.baseUrl}${path}`,
+			this.buildRequestInit(init, headerOptions),
+		);
+		return (await safeJson(response)) as T;
+	}
+
+	private async fetchJsonRequest<T>(
+		path: string,
+		method: "POST" | "PATCH" | "PUT" | "DELETE",
+		body?: unknown,
+		headerOptions?: HeaderOptions,
+	): Promise<T> {
+		return await this.fetchJson<T>(
+			path,
+			this.buildJsonRequestInit(method, body, headerOptions),
+		);
+	}
 
 	async getCommands(): Promise<CommandDefinition[]> {
-		const response = await fetch(`${this.baseUrl}/api/commands`, {
-			headers: createRequestHeaders(),
-		});
-		const data = (await safeJson(response)) as {
+		const data = await this.fetchJson<{
 			commands: CommandDefinition[];
-		};
+		}>("/api/commands");
 		return data.commands || [];
 	}
 
@@ -161,18 +222,19 @@ export class ApiClient {
 		request: ChatRequest,
 		signal?: AbortSignal,
 	): AsyncGenerator<AgentEvent, void, unknown> {
-		const response = await fetch(`${this.baseUrl}/api/chat`, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				...createRequestHeaders({
+		const response = await fetch(
+			`${this.baseUrl}/api/chat`,
+			this.buildRequestInit(
+				{
+					...this.buildJsonRequestInit("POST", { ...request, stream: true }),
+					signal,
+				},
+				{
 					includeClientTools: true,
 					includeSlimEvents: true,
-				}),
-			},
-			body: JSON.stringify({ ...request, stream: true }),
-			signal,
-		});
+				},
+			),
+		);
 
 		if (!response.ok) {
 			throw new Error(`API error: ${response.statusText}`);
@@ -229,10 +291,7 @@ export class ApiClient {
 
 	async getModels(): Promise<Model[]> {
 		try {
-			const res = await fetch(`${this.baseUrl}/api/models`, {
-				headers: createRequestHeaders(),
-			});
-			const data = (await safeJson(res)) as { models: Model[] };
+			const data = await this.fetchJson<{ models: Model[] }>("/api/models");
 			return data.models || [];
 		} catch (e) {
 			console.error("Failed to fetch models:", e);
@@ -241,49 +300,28 @@ export class ApiClient {
 	}
 
 	async createSession(title?: string): Promise<Session> {
-		const response = await fetch(`${this.baseUrl}/api/sessions`, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				...createRequestHeaders(),
-			},
-			body: JSON.stringify({ title }),
+		return await this.fetchJsonRequest<Session>("/api/sessions", "POST", {
+			title,
 		});
-		return (await safeJson(response)) as Session;
 	}
 
 	async listSessions(): Promise<SessionSummary[]> {
-		const response = await fetch(`${this.baseUrl}/api/sessions`, {
-			headers: createRequestHeaders(),
-		});
-		const data = (await safeJson(response)) as { sessions: SessionSummary[] };
+		const data = await this.fetchJson<{ sessions: SessionSummary[] }>(
+			"/api/sessions",
+		);
 		return data.sessions || [];
 	}
 
 	async getSession(id: string): Promise<Session> {
-		const response = await fetch(`${this.baseUrl}/api/sessions/${id}`, {
-			headers: createRequestHeaders(),
-		});
-		return (await safeJson(response)) as Session;
+		return await this.fetchJson<Session>(`/api/sessions/${id}`);
 	}
 
 	async submitApproval(requestId: string, decision: "approved" | "denied") {
-		const response = await fetch(`${this.baseUrl}/api/chat/approval`, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				...createRequestHeaders(),
-			},
-			body: JSON.stringify({ requestId, decision }),
-		});
-		if (!response.ok) {
-			const error = await safeJson(response);
-			throw new Error(
-				(error as { error?: string })?.error ||
-					`Request failed with status ${response.status}`,
-			);
-		}
-		return safeJson(response);
+		return await this.fetchJsonRequest<{ ok?: boolean }>(
+			"/api/chat/approval",
+			"POST",
+			{ requestId, decision },
+		);
 	}
 
 	async submitClientToolResult(
@@ -291,24 +329,10 @@ export class ApiClient {
 		content: Array<{ type: string; text?: string; [key: string]: unknown }>,
 		isError: boolean,
 	) {
-		const response = await fetch(
-			`${this.baseUrl}/api/chat/client-tool-result`,
-			{
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					...createRequestHeaders(),
-				},
-				body: JSON.stringify({ toolCallId, content, isError }),
-			},
+		return await this.fetchJsonRequest<{ ok?: boolean }>(
+			"/api/chat/client-tool-result",
+			"POST",
+			{ toolCallId, content, isError },
 		);
-		if (!response.ok) {
-			const error = await safeJson(response);
-			throw new Error(
-				(error as { error?: string })?.error ||
-					`Request failed with status ${response.status}`,
-			);
-		}
-		return safeJson(response);
 	}
 }

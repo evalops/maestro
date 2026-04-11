@@ -65,4 +65,19 @@ describe("vscode api client", () => {
 		expect(headers.get("x-composer-client")).toBe("vscode");
 		expect(headers.get("x-maestro-client")).toBe("vscode");
 	});
+
+	it("surfaces JSON API errors for approval writes", async () => {
+		global.fetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ error: "approval rejected" }), {
+				status: 400,
+				statusText: "Bad Request",
+				headers: { "content-type": "application/json" },
+			}),
+		);
+
+		const client = new ApiClient("http://localhost:8080");
+		await expect(client.submitApproval("approval-1", "denied")).rejects.toThrow(
+			"approval rejected",
+		);
+	});
 });
