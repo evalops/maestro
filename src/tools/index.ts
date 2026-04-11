@@ -27,6 +27,7 @@
  * **Git & GitHub:**
  * - diff: Git diff inspection
  * - gh_pr/gh_issue/gh_repo: GitHub CLI integration
+ * - pipeline_*: Pipeline CRM integration
  *
  * **AI & Automation:**
  * - oracle: Sub-agent for complex reasoning
@@ -69,6 +70,12 @@ import { writeTool } from "./write.js";
 
 // GitHub CLI integration (requires gh CLI installed)
 import { ghIssueTool, ghPrTool, ghRepoTool } from "./gh.js";
+import {
+	pipelineCreateSignalTool,
+	pipelineLogActivityTool,
+	pipelineSearchContactsTool,
+	pipelineSearchDealsTool,
+} from "./pipeline.js";
 
 // Search tools
 import { parallelRipgrepTool } from "./parallel-ripgrep.js";
@@ -128,6 +135,12 @@ export { websearchTool } from "./websearch.js";
 export { writeTool } from "./write.js";
 export { statusTool } from "./status.js";
 export { ghIssueTool, ghPrTool, ghRepoTool } from "./gh.js";
+export {
+	pipelineCreateSignalTool,
+	pipelineLogActivityTool,
+	pipelineSearchContactsTool,
+	pipelineSearchDealsTool,
+} from "./pipeline.js";
 export { ensureTool, getToolPath } from "./tools-manager.js";
 export { conductorClientTools } from "./conductor-client.js";
 
@@ -174,6 +187,11 @@ export const codingTools = [
 	ghPrTool,
 	ghIssueTool,
 	ghRepoTool,
+	// CRM tools
+	pipelineSearchContactsTool,
+	pipelineSearchDealsTool,
+	pipelineCreateSignalTool,
+	pipelineLogActivityTool,
 ];
 
 /**
@@ -205,6 +223,10 @@ export const toolRegistry: Record<string, (typeof codingTools)[number]> = {
 	gh_pr: ghPrTool,
 	gh_issue: ghIssueTool,
 	gh_repo: ghRepoTool,
+	pipeline_search_contacts: pipelineSearchContactsTool,
+	pipeline_search_deals: pipelineSearchDealsTool,
+	pipeline_create_signal: pipelineCreateSignalTool,
+	pipeline_log_activity: pipelineLogActivityTool,
 };
 
 // Re-export tool name constants

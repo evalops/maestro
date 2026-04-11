@@ -26,7 +26,11 @@
 				"status",
 				"gh_pr",
 				"gh_issue",
-				"gh_repo"
+				"gh_repo",
+				"pipeline_search_contacts",
+				"pipeline_search_deals",
+				"pipeline_create_signal",
+				"pipeline_log_activity"
 			],
 			"registryNames": [
 				"ask_user",
@@ -44,6 +48,10 @@
 				"notebook_edit",
 				"oracle",
 				"parallel_ripgrep",
+				"pipeline_create_signal",
+				"pipeline_log_activity",
+				"pipeline_search_contacts",
+				"pipeline_search_deals",
 				"read",
 				"search",
 				"status",
@@ -59,7 +67,7 @@
 		"kind": "apiTools",
 		"judgeRubric": "The API tools endpoint should enumerate the coding tools completely and report the correct coding count.",
 		"expected": {
-			"codingCount": 22,
+			"codingCount": 26,
 			"codingNames": [
 				"ask_user",
 				"background_tasks",
@@ -76,6 +84,10 @@
 				"notebook_edit",
 				"oracle",
 				"parallel_ripgrep",
+				"pipeline_create_signal",
+				"pipeline_log_activity",
+				"pipeline_search_contacts",
+				"pipeline_search_deals",
 				"read",
 				"search",
 				"status",

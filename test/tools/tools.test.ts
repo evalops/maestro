@@ -1715,6 +1715,10 @@ describe("codingTools bundle", () => {
 			"gh_pr",
 			"gh_issue",
 			"gh_repo",
+			"pipeline_search_contacts",
+			"pipeline_search_deals",
+			"pipeline_create_signal",
+			"pipeline_log_activity",
 		]);
 	});
 });

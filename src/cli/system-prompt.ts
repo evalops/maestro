@@ -42,6 +42,14 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
 	gh_pr: "Manage GitHub Pull Requests using gh CLI",
 	gh_issue: "Manage GitHub Issues using gh CLI",
 	gh_repo: "Manage GitHub Repositories using gh CLI",
+	pipeline_search_contacts:
+		"Search Pipeline CRM contacts through the internal evalops Pipeline service. Requires PIPELINE_API_URL and PIPELINE_SERVICE_TOKEN.",
+	pipeline_search_deals:
+		"Search Pipeline CRM deals through the internal evalops Pipeline service. Requires PIPELINE_API_URL and PIPELINE_SERVICE_TOKEN.",
+	pipeline_create_signal:
+		"Create a signal in Pipeline CRM through the internal evalops Pipeline service. Requires PIPELINE_API_URL and PIPELINE_SERVICE_TOKEN.",
+	pipeline_log_activity:
+		"Log a customer, deal, or company activity in Pipeline CRM through the internal evalops Pipeline service. Requires PIPELINE_API_URL and PIPELINE_SERVICE_TOKEN.",
 };
 
 function buildToolsSection(toolNames: string[]): string {
@@ -426,6 +434,10 @@ const DEFAULT_TOOL_NAMES = [
 	"gh_pr",
 	"gh_issue",
 	"gh_repo",
+	"pipeline_search_contacts",
+	"pipeline_search_deals",
+	"pipeline_create_signal",
+	"pipeline_log_activity",
 ];
 
 export function buildSystemPrompt(
