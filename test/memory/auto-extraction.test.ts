@@ -290,8 +290,12 @@ describe("automatic memory extraction", () => {
 				updatedAt: Date.now(),
 			},
 		});
-		vi.doMock("../../src/memory/service-client.js", () => ({
-			upsertRemoteDurableMemory,
+		vi.doMock("../../src/memory/backend.js", () => ({
+			getDurableMemoryBackend: () => ({
+				upsertDurableMemory: upsertRemoteDurableMemory,
+				recallDurableMemories: vi.fn(),
+				applyAutoMemoryConsolidation: vi.fn(),
+			}),
 		}));
 
 		const { createAutomaticMemoryExtractionCoordinator } = await import(

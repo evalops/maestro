@@ -12,6 +12,7 @@
 		"../../src/models/**/*.ts",
 		"../../src/providers/**/*.ts",
 		"../../src/tools/**/*.ts",
+		"../../src/memory/backend.ts",
 		"../../src/memory/relevant-recall.ts",
 		"../../src/memory/service-client.ts",
 		"../../src/memory/store.ts",

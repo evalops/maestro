@@ -1,4 +1,4 @@
-import { recallRemoteDurableMemories } from "./service-client.js";
+import { getDurableMemoryBackend } from "./backend.js";
 import { searchMemories } from "./store.js";
 import { getMemoryProjectScope } from "./team-memory.js";
 import type { MemoryEntry, MemorySearchResult } from "./types.js";
@@ -233,10 +233,13 @@ async function collectRemoteRelevantMemories(
 		return [];
 	}
 
-	const results = await recallRemoteDurableMemories(prompt, {
-		cwd: options?.cwd,
-		limit: MAX_RESULTS,
-	});
+	const results = await getDurableMemoryBackend().recallDurableMemories(
+		prompt,
+		{
+			cwd: options?.cwd,
+			limit: MAX_RESULTS,
+		},
+	);
 	if (results === null) {
 		return null;
 	}

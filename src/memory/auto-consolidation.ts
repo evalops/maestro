@@ -13,7 +13,7 @@ import type { Agent, Api, Model, TextContent } from "../agent/index.js";
 import { PATHS } from "../config/constants.js";
 import { safeJsonParse } from "../utils/json.js";
 import { createLogger } from "../utils/logger.js";
-import { applyRemoteAutoMemoryConsolidation } from "./service-client.js";
+import { getDurableMemoryBackend } from "./backend.js";
 import {
 	applyAutoMemoryConsolidation,
 	listAutoDurableMemories,
@@ -440,16 +440,17 @@ export function createAutomaticMemoryConsolidationCoordinator(
 							createAgent: options.createAgent,
 							memories,
 						});
-						const remoteResult = await applyRemoteAutoMemoryConsolidation({
-							removeEntries: memories.filter((memory) =>
-								plan.removeIds.includes(memory.id),
-							),
-							upserts: plan.upserts,
-							options: {
-								projectId: group.projectId,
-								projectName: group.projectName,
-							},
-						});
+						const remoteResult =
+							await getDurableMemoryBackend().applyAutoMemoryConsolidation({
+								removeEntries: memories.filter((memory) =>
+									plan.removeIds.includes(memory.id),
+								),
+								upserts: plan.upserts,
+								options: {
+									projectId: group.projectId,
+									projectName: group.projectName,
+								},
+							});
 						const result = applyAutoMemoryConsolidation({
 							...plan,
 							options: {

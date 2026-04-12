@@ -156,8 +156,12 @@ describe("automatic memory consolidation", () => {
 			added: 1,
 			updated: 0,
 		});
-		vi.doMock("../../src/memory/service-client.js", () => ({
-			applyRemoteAutoMemoryConsolidation,
+		vi.doMock("../../src/memory/backend.js", () => ({
+			getDurableMemoryBackend: () => ({
+				upsertDurableMemory: vi.fn(),
+				recallDurableMemories: vi.fn(),
+				applyAutoMemoryConsolidation: applyRemoteAutoMemoryConsolidation,
+			}),
 		}));
 
 		const memory = await import("../../src/memory/index.js");

@@ -70,6 +70,15 @@ export const deterministicEvalScenarioVerifications = [
 		],
 		expectedRegex: "\\[shared-memory-integration-evals\\] \\d+/\\d+ passed",
 	},
+	{
+		name: "memory backend eval suite",
+		expectedCommand: [
+			"bunx",
+			"tsx",
+			"scripts/evals/run-memory-backend-evals.ts",
+		],
+		expectedRegex: "\\[memory-backend-evals\\] \\d+/\\d+ passed",
+	},
 ];
 
 export const liveEvalEntrypointVerifications = [

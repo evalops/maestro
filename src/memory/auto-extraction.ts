@@ -4,7 +4,7 @@ import type { Agent, Api, Model, TextContent } from "../agent/index.js";
 import { buildSessionMemoryContent } from "../session/session-memory.js";
 import { safeJsonParse } from "../utils/json.js";
 import { createLogger } from "../utils/logger.js";
-import { upsertRemoteDurableMemory } from "./service-client.js";
+import { getDurableMemoryBackend } from "./backend.js";
 import { upsertDurableMemory } from "./store.js";
 
 const logger = createLogger("memory:auto-extraction");
@@ -266,16 +266,18 @@ export function createAutomaticMemoryExtractionCoordinator(
 					let updated = 0;
 					let remoteAdded = 0;
 					let remoteUpdated = 0;
+					const durableMemoryBackend = getDurableMemoryBackend();
 					for (const memory of memories) {
 						try {
-							const remoteResult = await upsertRemoteDurableMemory(
-								memory.topic,
-								memory.content,
-								{
-									tags: ["auto", "durable", ...(memory.tags ?? [])],
-									cwd: snapshot.cwd,
-								},
-							);
+							const remoteResult =
+								await durableMemoryBackend.upsertDurableMemory(
+									memory.topic,
+									memory.content,
+									{
+										tags: ["auto", "durable", ...(memory.tags ?? [])],
+										cwd: snapshot.cwd,
+									},
+								);
 							if (remoteResult?.created) {
 								remoteAdded += 1;
 							} else if (remoteResult?.updated) {
