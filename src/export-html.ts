@@ -125,8 +125,12 @@ async function streamPortableEntries(
 			if (!trimmed) {
 				continue;
 			}
-			const entry = JSON.parse(trimmed) as SessionEntry;
-			await onEntry(entry);
+			try {
+				const entry = JSON.parse(trimmed) as SessionEntry;
+				await onEntry(entry);
+			} catch {
+				// Ignore malformed lines so partial or truncated session files remain exportable.
+			}
 		}
 	} finally {
 		rl.close();

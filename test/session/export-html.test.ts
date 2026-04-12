@@ -260,4 +260,19 @@ describe("exporters", () => {
 		expect(exported).not.toContain("sk-ant-abcdefghijklmnopqrstuvwxyz123456");
 		expect(exported).toContain("[REDACTED:api_key:");
 	});
+
+	it("ignores malformed lines in portable exports", async () => {
+		const sessionFile = createTempSessionFile(
+			`${sessionJson.trim()}\n{"type":"message","message":{"role":"user"\n`,
+		);
+		const manager = new SessionManager(false, sessionFile);
+		const jsonPath = join(dirname(sessionFile), "portable.json");
+		const outputPath = await exportSessionToJson(manager, jsonPath);
+		const exported = JSON.parse(readFileSync(outputPath, "utf8")) as {
+			entries: Array<{ type: string }>;
+		};
+		expect(exported.entries.some((entry) => entry.type === "session")).toBe(
+			true,
+		);
+	});
 });
