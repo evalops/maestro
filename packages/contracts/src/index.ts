@@ -45,6 +45,7 @@
 
 export * from "./headless-protocol-generated.js";
 export * from "./headless-protocol-schemas.generated.js";
+export * as headlessProto from "./proto/maestro/v1/headless_pb.js";
 export * from "./key-value-tokens.js";
 export * from "./mcp-settings.js";
 export * from "./memory.js";

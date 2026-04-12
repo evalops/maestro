@@ -9,6 +9,7 @@ import "google/protobuf/struct.proto";
 // This mirrors the current message surface closely enough for code generation and
 // cross-language drift checks, while the live runtime continues to use the
 // existing JSON transport until follow-up slices migrate the transport layer.
+// protocol-version: 2026-04-02
 
 enum ServerRequestType {
   SERVER_REQUEST_TYPE_UNSPECIFIED = 0;
