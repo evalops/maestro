@@ -3,32 +3,27 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const manifestPath = resolve(
-	rootDir,
-	"packages/contracts/src/headless-protocol.manifest.json",
-);
 const protoPath = resolve(rootDir, "proto/maestro/v1/headless.proto");
+const payloadManifestPath = resolve(
+	rootDir,
+	"packages/contracts/src/headless-protocol-payloads.manifest.json",
+);
 
-const manifestToEnum = {
-	serverRequestTypes: "ServerRequestType",
-	serverRequestResolutions: "ServerRequestResolution",
-	serverRequestResolvedBy: "ServerRequestResolvedBy",
-	toolRetryDecisionActions: "ToolRetryDecisionAction",
-	connectionRoles: "ConnectionRole",
-	notificationTypes: "NotificationType",
-	thinkingLevels: "ThinkingLevel",
-	approvalModes: "ApprovalMode",
-	errorTypes: "ErrorType",
-	utilityOperations: "UtilityOperation",
-	utilityCommandStreams: "UtilityCommandStream",
-	utilityCommandShellModes: "UtilityCommandShellMode",
-	utilityCommandTerminalModes: "UtilityCommandTerminalMode",
-	utilityFileWatchChangeTypes: "UtilityFileWatchChangeType",
-};
-
-const manifestToEnvelope = {
-	toAgentMessageTypes: "ToAgentEnvelope",
-	fromAgentMessageTypes: "FromAgentEnvelope",
+const protoToExportKey = {
+	ServerRequestType: "headlessServerRequestTypes",
+	ServerRequestResolution: "headlessServerRequestResolutions",
+	ServerRequestResolvedBy: "headlessServerRequestResolvedBy",
+	ToolRetryDecisionAction: "headlessToolRetryDecisionActions",
+	ConnectionRole: "headlessConnectionRoles",
+	NotificationType: "headlessNotificationTypes",
+	ThinkingLevel: "headlessThinkingLevels",
+	ApprovalMode: "headlessApprovalModes",
+	ErrorType: "headlessErrorTypes",
+	UtilityOperation: "headlessUtilityOperations",
+	UtilityCommandStream: "headlessUtilityCommandStreams",
+	UtilityCommandShellMode: "headlessUtilityCommandShellModes",
+	UtilityCommandTerminalMode: "headlessUtilityCommandTerminalModes",
+	UtilityFileWatchChangeType: "headlessUtilityFileWatchChangeTypes",
 };
 
 function toEnumPrefix(enumName) {
@@ -98,51 +93,69 @@ function parseOneofFields(source, messageName) {
 	return values;
 }
 
-async function main() {
-	const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-	const protoSource = await readFile(protoPath, "utf8");
-	const protoEnums = parseProtoEnums(protoSource);
-	const protoVersion = parseProtoVersion(protoSource);
-	const mismatches = [];
-
-	if (manifest.protocolVersion !== protoVersion) {
-		mismatches.push(
-			`protocolVersion: manifest=${manifest.protocolVersion} proto=${protoVersion}`,
-		);
+function collectEnumRefs(schema, refs = new Set()) {
+	if (!schema || typeof schema !== "object") {
+		return refs;
 	}
-
-	for (const [manifestKey, enumName] of Object.entries(manifestToEnum)) {
-		const manifestValues = manifest[manifestKey];
-		const protoValues = protoEnums.get(enumName);
-		if (!Array.isArray(manifestValues)) {
-			throw new Error(`Manifest key ${manifestKey} is not an array`);
+	if (schema.kind === "enumRef" && typeof schema.name === "string") {
+		refs.add(schema.name);
+		return refs;
+	}
+	if (schema.kind === "object") {
+		for (const value of Object.values(schema.properties ?? {})) {
+			collectEnumRefs(value, refs);
 		}
-		if (!protoValues) {
+		return refs;
+	}
+	if (schema.kind === "array") {
+		return collectEnumRefs(schema.items, refs);
+	}
+	if (schema.kind === "record") {
+		return collectEnumRefs(schema.value, refs);
+	}
+	if (schema.kind === "union") {
+		for (const variant of schema.variants ?? []) {
+			collectEnumRefs(variant, refs);
+		}
+	}
+	return refs;
+}
+
+async function main() {
+	const protoSource = await readFile(protoPath, "utf8");
+	const payloadManifest = JSON.parse(await readFile(payloadManifestPath, "utf8"));
+	const protoEnums = parseProtoEnums(protoSource);
+	parseProtoVersion(protoSource);
+
+	for (const enumName of Object.keys(protoToExportKey)) {
+		if (!protoEnums.has(enumName)) {
 			throw new Error(`Missing enum ${enumName} in proto/maestro/v1/headless.proto`);
 		}
-		if (JSON.stringify(manifestValues) !== JSON.stringify(protoValues)) {
-			mismatches.push(
-				`${manifestKey}: manifest=${JSON.stringify(manifestValues)} proto=${JSON.stringify(protoValues)}`,
-			);
+	}
+
+	parseOneofFields(protoSource, "ToAgentEnvelope");
+	parseOneofFields(protoSource, "FromAgentEnvelope");
+
+	const knownEnumRefs = new Set(Object.values(protoToExportKey));
+	const sections = [
+		payloadManifest.namedSchemas ?? {},
+		payloadManifest.toAgentSchemas ?? {},
+		payloadManifest.fromAgentSchemas ?? {},
+		payloadManifest.runtimeSchemas ?? {},
+	];
+	const referencedEnumRefs = new Set();
+	for (const section of sections) {
+		for (const schema of Object.values(section)) {
+			collectEnumRefs(schema, referencedEnumRefs);
 		}
 	}
 
-	for (const [manifestKey, messageName] of Object.entries(manifestToEnvelope)) {
-		const manifestValues = manifest[manifestKey];
-		const protoValues = parseOneofFields(protoSource, messageName);
-		if (!Array.isArray(manifestValues)) {
-			throw new Error(`Manifest key ${manifestKey} is not an array`);
-		}
-		if (JSON.stringify(manifestValues) !== JSON.stringify(protoValues)) {
-			mismatches.push(
-				`${manifestKey}: manifest=${JSON.stringify(manifestValues)} proto=${JSON.stringify(protoValues)}`,
-			);
-		}
-	}
-
-	if (mismatches.length > 0) {
+	const unknownEnumRefs = Array.from(referencedEnumRefs).filter(
+		(name) => !knownEnumRefs.has(name),
+	);
+	if (unknownEnumRefs.length > 0) {
 		throw new Error(
-			`Headless protocol manifest is out of sync with proto:\n${mismatches.join("\n")}`,
+			`Headless payload manifest references unknown enum exports: ${unknownEnumRefs.join(", ")}`,
 		);
 	}
 }
