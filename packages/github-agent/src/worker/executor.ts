@@ -15,6 +15,7 @@ import type { GitHubApiClient } from "../github/client.js";
 import type { GitHubReporter, TaskProgress } from "../github/reporter.js";
 import type { MemoryStore } from "../memory/store.js";
 import type { AgentConfig, Task, TaskResult } from "../types.js";
+import { buildGitHubTaskEnvironment } from "./evalops.js";
 
 export interface ExecutorOptions {
 	config: AgentConfig;
@@ -64,13 +65,19 @@ export class TaskExecutor {
 
 			// Step 2: Build the prompt
 			const prompt = this.buildPrompt(task);
+			const composerEnv = await buildGitHubTaskEnvironment(
+				task,
+				this.config,
+				process.env,
+				(message) => this.log(`[executor] ${message}`),
+			);
 
 			// Step 3: Run composer exec
 			type ComposerResult = Awaited<ReturnType<typeof this.runComposer>>;
 			let composerResultTemp: ComposerResult | null = null;
 			await this.runStep(task, progress, "composer", async () => {
 				this.log("[executor] Running composer...");
-				composerResultTemp = await this.runComposer(prompt);
+				composerResultTemp = await this.runComposer(prompt, composerEnv);
 
 				if (!composerResultTemp.success) {
 					throw new Error(`Composer failed: ${composerResultTemp.error}`);
@@ -202,7 +209,10 @@ export class TaskExecutor {
 		return lines.join("\n");
 	}
 
-	private async runComposer(prompt: string): Promise<{
+	private async runComposer(
+		prompt: string,
+		envOverride?: Record<string, string>,
+	): Promise<{
 		success: boolean;
 		error?: string;
 		tokensUsed?: number;
@@ -212,7 +222,7 @@ export class TaskExecutor {
 			const args = ["exec", "--full-auto", "--json", prompt];
 			const composerBin = process.env.MAESTRO_BIN || "maestro";
 
-			const env = { ...process.env };
+			const env = envOverride ? { ...envOverride } : { ...process.env };
 			if (this.config.maxTokensPerTask && !env.MAESTRO_MAX_OUTPUT_TOKENS) {
 				env.MAESTRO_MAX_OUTPUT_TOKENS = String(this.config.maxTokensPerTask);
 			}
@@ -369,7 +379,9 @@ export class TaskExecutor {
 		}
 	}
 
-	private async runSelfReview(): Promise<void> {
+	private async runSelfReview(
+		envOverride?: Record<string, string>,
+	): Promise<void> {
 		// Get the diff
 		const diff = await this.runCommand("git", ["diff", this.config.baseBranch]);
 
@@ -396,7 +408,7 @@ Here's the diff:
 ${diff}
 `;
 
-		const result = await this.runComposer(reviewPrompt);
+		const result = await this.runComposer(reviewPrompt, envOverride);
 		if (!result.success) {
 			throw new Error(`Self-review failed: ${result.error}`);
 		}
