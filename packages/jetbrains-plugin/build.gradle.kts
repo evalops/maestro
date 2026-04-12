@@ -1,13 +1,17 @@
+import com.google.protobuf.gradle.id
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 
 plugins {
     id("java")
+    id("com.google.protobuf") version "0.9.6"
     id("org.jetbrains.kotlin.jvm") version "1.9.25"
     id("org.jetbrains.intellij.platform") version "2.2.1"
 }
 
 group = "com.evalops"
 version = "0.10.0"
+
+val protobufVersion = "4.31.1"
 
 repositories {
     mavenCentral()
@@ -32,6 +36,8 @@ dependencies {
 
     // JSON serialization
     implementation("com.google.code.gson:gson:2.11.0")
+    implementation("com.google.protobuf:protobuf-java:$protobufVersion")
+    implementation("com.google.protobuf:protobuf-kotlin:$protobufVersion")
 
     // Note: Kotlin coroutines are bundled with IntelliJ Platform - do not add explicitly
 
@@ -40,8 +46,30 @@ dependencies {
     testImplementation("io.mockk:mockk:1.13.10")
 }
 
+sourceSets {
+    named("main") {
+        proto {
+            srcDir("../../proto")
+            include("maestro/v1/headless.proto")
+        }
+    }
+}
+
 kotlin {
     jvmToolchain(21)
+}
+
+protobuf {
+    protoc {
+        artifact = "com.google.protobuf:protoc:$protobufVersion"
+    }
+    generateProtoTasks {
+        ofSourceSet("main").forEach { task ->
+            task.builtins {
+                id("kotlin")
+            }
+        }
+    }
 }
 
 // Kotlin stdlib is handled via gradle.properties (kotlin.stdlib.default.dependency=false)
@@ -106,8 +134,25 @@ intellijPlatform {
 }
 
 tasks {
+    val verifyHeadlessProtoKotlinGeneration by registering {
+        dependsOn("generateProto")
+
+        doLast {
+            val generatedFile = layout.buildDirectory.file(
+                "generated/sources/proto/main/kotlin/maestro/v1/HelloMessageKt.kt",
+            ).get().asFile
+            check(generatedFile.exists()) {
+                "Expected generated Kotlin protobuf at ${generatedFile.path}"
+            }
+        }
+    }
+
     test {
         useJUnitPlatform()
+    }
+
+    check {
+        dependsOn(verifyHeadlessProtoKotlinGeneration)
     }
 
     wrapper {

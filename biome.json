@@ -9,6 +9,7 @@
 			".external",
 			"src/models/models.generated.ts",
 			"packages/slack-agent-ui/.dev-data",
+			"packages/jetbrains-plugin/build",
 			"packages/vscode-extension/media",
 			"packages/tui-rs/target",
 			"packages/desktop/dist-electron",
