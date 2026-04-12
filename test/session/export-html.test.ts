@@ -71,6 +71,41 @@ const secretSessionJson = `
 {"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Stored apiKey=sk-ant-abcdefghijklmnopqrstuvwxyz123456"}],"api":"anthropic-messages","provider":"anthropic","model":"claude-3","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":9}}
 `;
 
+const largeArraySessionJson = (() => {
+	const content = Array.from({ length: 105 }, (_, index) => ({
+		type: "text",
+		text: `line-${index}`,
+	}));
+	return [
+		'{"type":"session","id":"session-4","timestamp":"2024-04-01T00:00:00.000Z","cwd":"/repo","model":"anthropic/claude-3","thinkingLevel":"low","systemPrompt":"Persisted system","tools":[]}',
+		JSON.stringify({
+			type: "message",
+			message: {
+				role: "assistant",
+				content,
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "claude-3",
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					cost: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						total: 0,
+					},
+				},
+				stopReason: "stop",
+				timestamp: 10,
+			},
+		}),
+	].join("\n");
+})();
+
 describe("exporters", () => {
 	it("includes tool result renderables", () => {
 		const messages = sessionJson
@@ -259,6 +294,29 @@ describe("exporters", () => {
 		const exported = readFileSync(outputPath, "utf8");
 		expect(exported).not.toContain("sk-ant-abcdefghijklmnopqrstuvwxyz123456");
 		expect(exported).toContain("[REDACTED:api_key:");
+	});
+
+	it("preserves full arrays when redacting portable exports", async () => {
+		const sessionFile = createTempSessionFile(largeArraySessionJson);
+		const manager = new SessionManager(false, sessionFile);
+		const jsonPath = join(dirname(sessionFile), "portable.json");
+		const outputPath = await exportSessionToJson(manager, jsonPath, {
+			redactSecrets: true,
+		});
+		const exported = JSON.parse(readFileSync(outputPath, "utf8")) as {
+			entries: Array<{
+				type: string;
+				message?: { content?: Array<{ type: string; text: string }> };
+			}>;
+		};
+		const messageEntry = exported.entries.find(
+			(entry) => entry.type === "message",
+		);
+		expect(messageEntry?.message?.content).toHaveLength(105);
+		expect(messageEntry?.message?.content?.[104]).toEqual({
+			type: "text",
+			text: "line-104",
+		});
 	});
 
 	it("ignores malformed lines in portable exports", async () => {

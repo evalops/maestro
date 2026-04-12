@@ -106,6 +106,7 @@ function sanitizeEntryForPortableExport(entry: SessionEntry): SessionEntry {
 		redactSecrets: true,
 		vaultCredentials: false,
 		maxStringLength: Number.MAX_SAFE_INTEGER,
+		maxArrayLength: Number.MAX_SAFE_INTEGER,
 		truncateLargeBlobs: false,
 	}) as SessionEntry;
 }
@@ -125,12 +126,14 @@ async function streamPortableEntries(
 			if (!trimmed) {
 				continue;
 			}
+			let entry: SessionEntry;
 			try {
-				const entry = JSON.parse(trimmed) as SessionEntry;
-				await onEntry(entry);
+				entry = JSON.parse(trimmed) as SessionEntry;
 			} catch {
 				// Ignore malformed lines so partial or truncated session files remain exportable.
+				continue;
 			}
+			await onEntry(entry);
 		}
 	} finally {
 		rl.close();
