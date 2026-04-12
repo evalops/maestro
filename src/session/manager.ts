@@ -1432,11 +1432,7 @@ export class SessionManager {
 		while (pending.size > 0) {
 			let progressed = false;
 			for (const [sessionId, session] of pending) {
-				if (
-					session.parentSessionId &&
-					pending.has(session.parentSessionId) &&
-					!importedIds.has(session.parentSessionId)
-				) {
+				if (session.parentSessionId && pending.has(session.parentSessionId)) {
 					continue;
 				}
 				ordered.push(session);
