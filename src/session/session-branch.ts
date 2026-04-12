@@ -24,6 +24,7 @@ import { CURRENT_SESSION_VERSION } from "./types.js";
 
 export interface BranchFromLeafContext {
 	sessionDir: string;
+	sessionId: string;
 	sessionFile: string;
 	branch: SessionTreeEntry[];
 	context: SessionContextSnapshot;
@@ -33,6 +34,7 @@ export interface BranchFromLeafContext {
 
 export interface BranchFromStateContext {
 	sessionDir: string;
+	sessionId: string;
 	sessionFile: string;
 	lastModelMetadata?: SessionModelMetadata;
 }
@@ -71,6 +73,7 @@ export function createBranchedSessionFromLeaf(
 		systemPrompt: ctx.header?.systemPrompt,
 		tools: ctx.header?.tools,
 		branchedFrom: ctx.sessionFile,
+		parentSession: ctx.sessionId,
 	};
 
 	const pathEntryIds = new Set(pathWithoutLabels.map((e) => e.id));
@@ -136,6 +139,7 @@ export function createBranchedSessionFromState(
 			modelMetadata: ctx.lastModelMetadata,
 			thinkingLevel: state.thinkingLevel,
 			branchedFrom: ctx.sessionFile,
+			parentSession: ctx.sessionId,
 		};
 		appendFileSync(tempFile, `${JSON.stringify(entry)}\n`);
 

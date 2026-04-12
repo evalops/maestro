@@ -448,6 +448,36 @@ describe("CLI integration", () => {
 		expect(output.join("\n")).toContain("Imported session");
 	});
 
+	it("exports and imports portable json bundles with branched sessions", async () => {
+		await main(["hello"]);
+		const sessionManager = new SessionManager(false);
+		const [session] = await sessionManager.listSessions();
+		expect(session).toBeDefined();
+		const sessionFile = sessionManager.getSessionFileById(session!.id);
+		expect(sessionFile).toBeTruthy();
+
+		const branchManager = new SessionManager(false, sessionFile!);
+		const branchLeafId = branchManager.getLeafId();
+		expect(branchLeafId).toBeTruthy();
+		branchManager.createBranchedSession(branchLeafId!);
+
+		const portablePath = join(tempAgentDir, "portable-tree.json");
+		output = [];
+		await main(["export", session!.id, portablePath, "--format", "json"]);
+
+		const exported = JSON.parse(readFileSync(portablePath, "utf8")) as {
+			sessions: Array<{ sessionId: string }>;
+		};
+		expect(exported.sessions).toHaveLength(2);
+
+		output = [];
+		await main(["import", portablePath]);
+
+		const importedSessions = await new SessionManager(false).listSessions();
+		expect(importedSessions.length).toBe(4);
+		expect(output.join("\n")).toContain("Imported 2 sessions");
+	});
+
 	it("prints maestro version output", async () => {
 		const exitCodes: number[] = [];
 		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {

@@ -72,7 +72,9 @@ export async function handleImportCommand(sourcePath?: string): Promise<void> {
 
 	console.log(
 		chalk.green(
-			`Imported session ${imported.sessionId} from ${resolve(sourcePath)}.`,
+			imported.importedCount > 1
+				? `Imported ${imported.importedCount} sessions from ${resolve(sourcePath)}. Active session: ${imported.sessionId}.`
+				: `Imported session ${imported.sessionId} from ${resolve(sourcePath)}.`,
 		),
 	);
 	console.log(chalk.dim(`Stored at ${imported.sessionFile}`));

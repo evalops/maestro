@@ -7,10 +7,12 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AgentState } from "../../src/agent/types.js";
+import { exportSessionToJson } from "../../src/export-html.js";
 import { SessionManager } from "../../src/session/manager.js";
+import type { SessionHeaderEntry } from "../../src/session/types.js";
 
 // Helper to create a minimal agent state
 function createMockState(): AgentState {
@@ -72,6 +74,21 @@ function createAssistantMessage(text: string) {
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
 	};
+}
+
+function readSessionHeader(filePath: string): SessionHeaderEntry {
+	const header = readFileSync(filePath, "utf8")
+		.trim()
+		.split("\n")
+		.filter(Boolean)
+		.map((line) => JSON.parse(line))
+		.find((entry) => entry.type === "session") as
+		| SessionHeaderEntry
+		| undefined;
+	if (!header) {
+		throw new Error(`Missing session header in ${filePath}`);
+	}
+	return header;
 }
 
 describe("SessionManager - Deferred Session Creation", () => {
@@ -245,6 +262,71 @@ describe("SessionManager - Deferred Session Creation", () => {
 					expect.objectContaining({ role: "assistant" }),
 				]),
 			);
+		});
+
+		it("exports and imports bundled session trees for branched sessions", async () => {
+			const sessionManager = new SessionManager(false);
+			const state = createMockState();
+			const userMessage = createUserMessage("Root session message");
+			const assistantMessage = createAssistantMessage("Root assistant reply");
+			state.messages.push(userMessage, assistantMessage);
+			sessionManager.saveMessage(userMessage);
+			sessionManager.startSession(state);
+			sessionManager.saveMessage(assistantMessage);
+			await sessionManager.flush();
+
+			const rootSessionId = sessionManager.getSessionId();
+			const rootSessionFile = sessionManager.getSessionFile();
+			const branchFile = sessionManager.createBranchedSession(state, 1);
+			const branchHeader = readSessionHeader(branchFile);
+			expect(branchHeader.parentSession).toBe(rootSessionId);
+			expect(branchHeader.branchedFrom).toBe(rootSessionFile);
+
+			const portablePath = join(testDir, "portable-session-tree.json");
+			await exportSessionToJson(sessionManager, portablePath);
+			const exported = JSON.parse(readFileSync(portablePath, "utf8")) as {
+				sessionId: string;
+				sessions: Array<{
+					sessionId: string;
+					parentSessionId?: string | null;
+					entries: Array<{ type: string }>;
+				}>;
+			};
+			expect(exported.sessionId).toBe(rootSessionId);
+			expect(exported.sessions).toHaveLength(2);
+			expect(
+				exported.sessions.find(
+					(session) => session.sessionId === rootSessionId,
+				),
+			).toBeDefined();
+			expect(
+				exported.sessions.find(
+					(session) => session.parentSessionId === rootSessionId,
+				),
+			).toBeDefined();
+
+			const imported = sessionManager.importPortableSession(portablePath);
+			expect(imported.importedCount).toBe(2);
+
+			const importedRootFile = sessionManager.getSessionFileById(
+				imported.sessionId,
+			);
+			expect(importedRootFile).toBeTruthy();
+			const importedRootHeader = readSessionHeader(importedRootFile!);
+			expect(importedRootHeader.parentSession).toBeUndefined();
+			expect(importedRootHeader.branchedFrom).toBeUndefined();
+
+			const sessionDir = dirname(rootSessionFile);
+			const importedChildFile = readdirSync(sessionDir)
+				.map((fileName) => join(sessionDir, fileName))
+				.find(
+					(filePath) =>
+						readSessionHeader(filePath).parentSession === imported.sessionId,
+				);
+			expect(importedChildFile).toBeTruthy();
+			const importedChildHeader = readSessionHeader(importedChildFile!);
+			expect(importedChildHeader.parentSession).toBe(imported.sessionId);
+			expect(importedChildHeader.branchedFrom).toBe(importedRootFile);
 		});
 	});
 

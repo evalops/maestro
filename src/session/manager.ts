@@ -92,6 +92,35 @@ export interface SessionManagerOptions {
 const logger = createLogger("session-manager");
 const PORTABLE_SESSION_EXPORT_FORMAT = "maestro-session-export.v1";
 
+interface PortableSessionBundle {
+	format: string;
+	exportedAt: string;
+	sessionId?: string;
+	entries?: SessionEntry[];
+	sessions?: PortableSessionExportSession[];
+}
+
+export interface PortableSessionExportSession {
+	sessionId: string;
+	parentSessionId?: string;
+	sessionFile: string;
+	entries?: SessionEntry[];
+}
+
+export interface PortableSessionImportResult {
+	sessionFile: string;
+	sessionId: string;
+	importedCount: number;
+}
+
+interface PortableSessionExportRecord {
+	sessionId: string;
+	sessionFile: string;
+	timestamp: string;
+	parentSessionId?: string;
+	parentSessionFile?: string;
+}
+
 // Re-export SessionModelMetadata for backward compatibility
 export type { SessionModelMetadata } from "./metadata-cache.js";
 
@@ -906,6 +935,80 @@ export class SessionManager {
 		return this.sessionFile;
 	}
 
+	getPortableSessionBundle(): {
+		selectedSessionId: string;
+		sessions: PortableSessionExportSession[];
+	} {
+		const records = this.buildPortableSessionRecords();
+		const byFile = new Map(
+			records.map((record) => [resolve(record.sessionFile), record]),
+		);
+		const selected = byFile.get(resolve(this.sessionFile));
+		if (!selected) {
+			return {
+				selectedSessionId: this.sessionId,
+				sessions: [
+					{
+						sessionId: this.sessionId,
+						sessionFile: this.sessionFile,
+					},
+				],
+			};
+		}
+
+		const byId = new Map(records.map((record) => [record.sessionId, record]));
+		const parentToChildren = new Map<string, PortableSessionExportRecord[]>();
+		for (const record of records) {
+			if (!record.parentSessionId) {
+				continue;
+			}
+			const children = parentToChildren.get(record.parentSessionId) ?? [];
+			children.push(record);
+			parentToChildren.set(record.parentSessionId, children);
+		}
+		for (const children of parentToChildren.values()) {
+			children.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+		}
+
+		let root = selected;
+		const visited = new Set<string>();
+		while (root.parentSessionId && !visited.has(root.sessionId)) {
+			visited.add(root.sessionId);
+			const parent = byId.get(root.parentSessionId);
+			if (!parent) {
+				break;
+			}
+			root = parent;
+		}
+
+		const ordered: PortableSessionExportSession[] = [];
+		const queue: PortableSessionExportRecord[] = [root];
+		const enqueued = new Set<string>([root.sessionId]);
+		while (queue.length > 0) {
+			const current = queue.shift();
+			if (!current) {
+				continue;
+			}
+			ordered.push({
+				sessionId: current.sessionId,
+				parentSessionId: current.parentSessionId,
+				sessionFile: current.sessionFile,
+			});
+			for (const child of parentToChildren.get(current.sessionId) ?? []) {
+				if (enqueued.has(child.sessionId)) {
+					continue;
+				}
+				enqueued.add(child.sessionId);
+				queue.push(child);
+			}
+		}
+
+		return {
+			selectedSessionId: selected.sessionId,
+			sessions: ordered,
+		};
+	}
+
 	getLeafId(): string | null {
 		return this.leafId;
 	}
@@ -1129,6 +1232,7 @@ export class SessionManager {
 	private createBranchedSessionFromLeaf(leafId: string): string {
 		return createBranchedSessionFromLeafFn(leafId, {
 			sessionDir: this.sessionDir,
+			sessionId: this.sessionId,
 			sessionFile: this.sessionFile,
 			branch: this.getBranch(leafId),
 			context: this.buildSessionContext(leafId),
@@ -1143,6 +1247,7 @@ export class SessionManager {
 	): string {
 		return createBranchedSessionFromStateFn(state, branchFromIndex, {
 			sessionDir: this.sessionDir,
+			sessionId: this.sessionId,
 			sessionFile: this.sessionFile,
 			lastModelMetadata: this.lastModelMetadata,
 		});
@@ -1211,10 +1316,7 @@ export class SessionManager {
 		};
 	}
 
-	importSessionJsonl(sourcePath: string): {
-		sessionFile: string;
-		sessionId: string;
-	} {
+	importSessionJsonl(sourcePath: string): PortableSessionImportResult {
 		const resolvedSource = resolve(sourcePath);
 		if (!existsSync(resolvedSource)) {
 			throw new Error(`Session file not found: ${resolvedSource}`);
@@ -1227,6 +1329,7 @@ export class SessionManager {
 	importPortableSession(sourcePath: string): {
 		sessionFile: string;
 		sessionId: string;
+		importedCount: number;
 	} {
 		const resolvedSource = resolve(sourcePath);
 		if (!existsSync(resolvedSource)) {
@@ -1235,8 +1338,16 @@ export class SessionManager {
 
 		const extension = extname(resolvedSource).toLowerCase();
 		if (extension === ".json") {
-			const entries = this.readPortableJsonEntries(resolvedSource);
-			return this.importPortableEntries(entries);
+			const portableExport = this.readPortableJsonExport(resolvedSource);
+			if (portableExport.sessions?.length) {
+				return this.importPortableSessionBundle(portableExport);
+			}
+			if (portableExport.entries) {
+				return this.importPortableEntries(portableExport.entries);
+			}
+			throw new Error(
+				"Portable session export is missing both entries and sessions.",
+			);
 		}
 
 		const entries = safeReadSessionEntries(resolvedSource);
@@ -1260,10 +1371,9 @@ export class SessionManager {
 		return this.catalog.pruneSessions();
 	}
 
-	private importPortableEntries(entries: SessionEntry[]): {
-		sessionFile: string;
-		sessionId: string;
-	} {
+	private importPortableEntries(
+		entries: SessionEntry[],
+	): PortableSessionImportResult {
 		migrateToCurrentVersion(entries);
 		if (entries.length === 0) {
 			throw new Error("Imported session file is empty or unreadable.");
@@ -1300,10 +1410,115 @@ export class SessionManager {
 		return {
 			sessionFile: targetFile,
 			sessionId,
+			importedCount: 1,
 		};
 	}
 
-	private readPortableJsonEntries(sourcePath: string): SessionEntry[] {
+	private importPortableSessionBundle(
+		portableExport: PortableSessionBundle,
+	): PortableSessionImportResult {
+		const sessions = portableExport.sessions;
+		if (!sessions?.length) {
+			throw new Error("Portable session export is missing bundled sessions.");
+		}
+
+		const pending = new Map(
+			sessions.map((session) => [session.sessionId, session]),
+		);
+		const importedIds = new Map<string, string>();
+		const importedFiles = new Map<string, string>();
+		const ordered: PortableSessionExportSession[] = [];
+
+		while (pending.size > 0) {
+			let progressed = false;
+			for (const [sessionId, session] of pending) {
+				if (
+					session.parentSessionId &&
+					pending.has(session.parentSessionId) &&
+					!importedIds.has(session.parentSessionId)
+				) {
+					continue;
+				}
+				ordered.push(session);
+				pending.delete(sessionId);
+				progressed = true;
+			}
+			if (!progressed) {
+				ordered.push(...pending.values());
+				pending.clear();
+			}
+		}
+
+		for (const session of ordered) {
+			const entries = session.entries ? [...session.entries] : [];
+			migrateToCurrentVersion(entries);
+			if (entries.length === 0) {
+				throw new Error(
+					`Bundled session ${session.sessionId} is empty or unreadable.`,
+				);
+			}
+			const headerIndex = entries.findIndex(
+				(entry) => entry.type === "session",
+			);
+			if (headerIndex < 0) {
+				throw new Error(
+					`Bundled session ${session.sessionId} is missing a session header.`,
+				);
+			}
+
+			const header = entries[headerIndex] as SessionHeaderEntry;
+			let importedSessionId = header.id?.trim() || uuidv4();
+			if (this.catalog.getSessionFileById(importedSessionId)) {
+				importedSessionId = uuidv4();
+			}
+			const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+			const targetFile = join(
+				this.sessionDir,
+				`${timestamp}_${importedSessionId}.jsonl`,
+			);
+			const importedParentSessionId = session.parentSessionId
+				? importedIds.get(session.parentSessionId)
+				: undefined;
+			const importedHeader: SessionHeaderEntry = {
+				...header,
+				id: importedSessionId,
+				subject: undefined,
+				parentSession: importedParentSessionId,
+				branchedFrom: session.parentSessionId
+					? importedFiles.get(session.parentSessionId)
+					: undefined,
+			};
+			const importedEntries = entries.map((entry, index) =>
+				index === headerIndex ? importedHeader : entry,
+			);
+
+			writeFileSync(
+				targetFile,
+				`${importedEntries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+				"utf8",
+			);
+			importedIds.set(session.sessionId, importedSessionId);
+			importedFiles.set(session.sessionId, targetFile);
+		}
+
+		const selectedSourceSessionId =
+			portableExport.sessionId ?? sessions[0]?.sessionId;
+		const selectedSessionId =
+			(selectedSourceSessionId
+				? importedIds.get(selectedSourceSessionId)
+				: undefined) ?? importedIds.get(sessions[0]!.sessionId)!;
+		const selectedSessionFile =
+			importedFiles.get(selectedSourceSessionId ?? sessions[0]!.sessionId) ??
+			importedFiles.get(sessions[0]!.sessionId)!;
+
+		return {
+			sessionFile: selectedSessionFile,
+			sessionId: selectedSessionId,
+			importedCount: ordered.length,
+		};
+	}
+
+	private readPortableJsonExport(sourcePath: string): PortableSessionBundle {
 		let parsed: unknown;
 		try {
 			parsed = JSON.parse(readFileSync(sourcePath, "utf8"));
@@ -1319,7 +1534,9 @@ export class SessionManager {
 
 		const portableExport = parsed as {
 			format?: unknown;
+			sessionId?: unknown;
 			entries?: unknown;
+			sessions?: unknown;
 		};
 		const format =
 			typeof portableExport.format === "string"
@@ -1331,21 +1548,123 @@ export class SessionManager {
 			);
 		}
 
+		const parseEntries = (entries: unknown[], path: string): SessionEntry[] =>
+			entries.map((entry, index) => {
+				const parsedEntry = tryParseSessionEntry(JSON.stringify(entry));
+				if (!parsedEntry) {
+					throw new Error(
+						`${path} contains an invalid entry at index ${index}.`,
+					);
+				}
+				return parsedEntry;
+			});
+
 		const entries = Array.isArray(portableExport.entries)
-			? portableExport.entries
+			? parseEntries(portableExport.entries, "Portable session export")
 			: undefined;
-		if (!entries) {
-			throw new Error("Portable session export is missing an entries array.");
+		const sessions = Array.isArray(portableExport.sessions)
+			? portableExport.sessions.map((session, index) => {
+					if (
+						!session ||
+						typeof session !== "object" ||
+						Array.isArray(session)
+					) {
+						throw new Error(
+							`Portable session export contains an invalid bundled session at index ${index}.`,
+						);
+					}
+					const parsedSession = session as {
+						sessionId?: unknown;
+						parentSessionId?: unknown;
+						entries?: unknown;
+					};
+					if (typeof parsedSession.sessionId !== "string") {
+						throw new Error(
+							`Portable session export is missing a sessionId for bundled session ${index}.`,
+						);
+					}
+					if (!Array.isArray(parsedSession.entries)) {
+						throw new Error(
+							`Portable session export is missing entries for bundled session ${parsedSession.sessionId}.`,
+						);
+					}
+					return {
+						sessionId: parsedSession.sessionId,
+						parentSessionId:
+							typeof parsedSession.parentSessionId === "string"
+								? parsedSession.parentSessionId
+								: undefined,
+						sessionFile: join(
+							this.sessionDir,
+							`${parsedSession.sessionId}.jsonl`,
+						),
+						entries: parseEntries(
+							parsedSession.entries,
+							`Bundled session ${parsedSession.sessionId}`,
+						),
+					} satisfies PortableSessionExportSession;
+				})
+			: undefined;
+
+		if (!entries && !sessions?.length) {
+			throw new Error(
+				"Portable session export is missing both entries and bundled sessions.",
+			);
 		}
 
-		return entries.map((entry, index) => {
-			const parsedEntry = tryParseSessionEntry(JSON.stringify(entry));
-			if (!parsedEntry) {
-				throw new Error(
-					`Portable session export contains an invalid entry at index ${index}.`,
-				);
+		return {
+			format,
+			exportedAt:
+				typeof (portableExport as { exportedAt?: unknown }).exportedAt ===
+				"string"
+					? (portableExport as { exportedAt: string }).exportedAt
+					: new Date().toISOString(),
+			sessionId:
+				typeof portableExport.sessionId === "string"
+					? portableExport.sessionId
+					: undefined,
+			entries,
+			sessions,
+		};
+	}
+
+	private buildPortableSessionRecords(): PortableSessionExportRecord[] {
+		const records: PortableSessionExportRecord[] = [];
+		const filePaths = readdirSync(this.sessionDir)
+			.filter((fileName) => fileName.endsWith(".jsonl"))
+			.map((fileName) => resolve(join(this.sessionDir, fileName)));
+
+		for (const filePath of filePaths) {
+			const entries = safeReadSessionEntries(filePath);
+			const header = entries.find((entry) => entry.type === "session") as
+				| SessionHeaderEntry
+				| undefined;
+			if (!header?.id) {
+				continue;
 			}
-			return parsedEntry;
-		});
+			records.push({
+				sessionId: header.id,
+				sessionFile: filePath,
+				timestamp: header.timestamp,
+				parentSessionId: header.parentSession,
+				parentSessionFile: header.branchedFrom
+					? resolve(header.branchedFrom)
+					: undefined,
+			});
+		}
+
+		const byPath = new Map(
+			records.map((record) => [resolve(record.sessionFile), record]),
+		);
+		for (const record of records) {
+			if (!record.parentSessionId && record.parentSessionFile) {
+				record.parentSessionId = byPath.get(
+					resolve(record.parentSessionFile),
+				)?.sessionId;
+			}
+		}
+
+		records.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+		return records;
 	}
 }
