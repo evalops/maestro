@@ -16,6 +16,7 @@ import type { Agent } from "../agent/agent.js";
 import { PATHS } from "../config/constants.js";
 import {
 	exportSessionToHtml,
+	exportSessionToJson,
 	exportSessionToJsonl,
 	exportSessionToText,
 } from "../export-html.js";
@@ -97,7 +98,7 @@ export class ImportExportView {
 		if (tokens[0]?.startsWith("/")) {
 			tokens.shift();
 		}
-		let mode: "html" | "text" | "jsonl" = "html";
+		let mode: "html" | "text" | "json" | "jsonl" = "html";
 		let outputToken: string | undefined;
 		for (const token of tokens) {
 			const normalized = token.toLowerCase();
@@ -111,6 +112,10 @@ export class ImportExportView {
 			}
 			if (normalized === "jsonl") {
 				mode = "jsonl";
+				continue;
+			}
+			if (normalized === "json") {
+				mode = "json";
 				continue;
 			}
 			if (!outputToken) {
@@ -136,6 +141,12 @@ export class ImportExportView {
 					break;
 				case "jsonl":
 					filePath = await exportSessionToJsonl(
+						this.options.sessionManager,
+						outputPath,
+					);
+					break;
+				case "json":
+					filePath = await exportSessionToJson(
 						this.options.sessionManager,
 						outputPath,
 					);
@@ -170,7 +181,7 @@ export class ImportExportView {
 		const source = parts[1]?.toLowerCase();
 		if (!source || source === "help") {
 			this.options.showInfoMessage(
-				"Usage: /import factory | /import session <file.jsonl>",
+				"Usage: /import factory | /import session <file.json|file.jsonl>",
 			);
 			return;
 		}
@@ -193,13 +204,15 @@ export class ImportExportView {
 		if (source === "session") {
 			const sourcePath = parts.slice(2).join(" ").trim();
 			if (!sourcePath) {
-				this.options.showInfoMessage("Usage: /import session <file.jsonl>");
+				this.options.showInfoMessage(
+					"Usage: /import session <file.json|file.jsonl>",
+				);
 				return;
 			}
 			try {
 				const resolvedPath = this.resolveImportPath(sourcePath);
 				const imported =
-					this.options.sessionManager.importSessionJsonl(resolvedPath);
+					this.options.sessionManager.importPortableSession(resolvedPath);
 				this.options.loadImportedSession?.(imported.sessionFile);
 				this.options.showInfoMessage(
 					`Imported session ${imported.sessionId} from ${resolvedPath}.`,

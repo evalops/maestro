@@ -1,4 +1,11 @@
-import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	readdirSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -178,6 +185,54 @@ describe("SessionManager - Deferred Session Creation", () => {
 			const originalId = sessionManager.getSessionId();
 			const originalFile = sessionManager.getSessionFile();
 			const imported = sessionManager.importSessionJsonl(originalFile);
+
+			expect(existsSync(imported.sessionFile)).toBe(true);
+			expect(imported.sessionId).not.toBe(originalId);
+
+			const restored = new SessionManager(false, imported.sessionFile);
+			expect(restored.getSessionId()).toBe(imported.sessionId);
+			expect(restored.loadMessages()).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ role: "user" }),
+					expect.objectContaining({ role: "assistant" }),
+				]),
+			);
+		});
+
+		it("imports portable JSON session exports into the current workspace directory", async () => {
+			const sessionManager = new SessionManager(false);
+			const state = createMockState();
+			const userMessage = createUserMessage(
+				"Carry this JSON session elsewhere",
+			);
+			const assistantMessage = createAssistantMessage(
+				"Portable JSON session payload ready",
+			);
+			state.messages.push(userMessage);
+			sessionManager.saveMessage(userMessage);
+			sessionManager.startSession(state);
+			sessionManager.saveMessage(assistantMessage);
+			await sessionManager.flush();
+
+			const originalId = sessionManager.getSessionId();
+			const originalFile = sessionManager.getSessionFile();
+			const entries = readFileSync(originalFile, "utf8")
+				.trim()
+				.split("\n")
+				.filter(Boolean)
+				.map((line) => JSON.parse(line));
+			const portablePath = join(testDir, "portable-session.json");
+			writeFileSync(
+				portablePath,
+				JSON.stringify({
+					format: "maestro-session-export.v1",
+					exportedAt: new Date().toISOString(),
+					entries,
+				}),
+				"utf8",
+			);
+
+			const imported = sessionManager.importPortableSession(portablePath);
 
 			expect(existsSync(imported.sessionFile)).toBe(true);
 			expect(imported.sessionId).not.toBe(originalId);

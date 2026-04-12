@@ -736,6 +736,7 @@ export async function main(args: string[]) {
 			parsed.messages[0],
 			parsed.messages[1],
 			parsed.exportFormat,
+			{ redactSecrets: parsed.redactSecrets },
 		);
 		return;
 	}

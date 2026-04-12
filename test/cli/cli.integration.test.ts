@@ -4,6 +4,7 @@ import {
 	mkdtempSync,
 	readFileSync,
 	rmSync,
+	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -367,6 +368,35 @@ describe("CLI integration", () => {
 		expect(output.join("\n")).toContain(`Exported session ${session!.id}`);
 	});
 
+	it("exports a saved session as portable json with secret redaction", async () => {
+		await main(["apiKey=sk-ant-abcdefghijklmnopqrstuvwxyz123456"]);
+		const sessionManager = new SessionManager(false);
+		const [session] = await sessionManager.listSessions();
+		expect(session).toBeDefined();
+
+		const outputPath = join(tempAgentDir, "portable-session.json");
+		output = [];
+
+		await main([
+			"export",
+			session!.id,
+			outputPath,
+			"--format",
+			"json",
+			"--redact-secrets",
+		]);
+
+		expect(existsSync(outputPath)).toBe(true);
+		const exported = JSON.parse(readFileSync(outputPath, "utf8")) as {
+			format: string;
+			entries: Array<unknown>;
+		};
+		const serialized = JSON.stringify(exported);
+		expect(exported.format).toBe("maestro-session-export.v1");
+		expect(serialized).not.toContain("sk-ant-abcdefghijklmnopqrstuvwxyz123456");
+		expect(serialized).toContain("[REDACTED:api_key:");
+	});
+
 	it("imports a portable jsonl session log", async () => {
 		await main(["hello"]);
 		const sessionManager = new SessionManager(false);
@@ -377,6 +407,38 @@ describe("CLI integration", () => {
 
 		const portablePath = join(tempAgentDir, "portable-import.jsonl");
 		copyFileSync(sessionFile!, portablePath);
+		output = [];
+
+		await main(["import", portablePath]);
+
+		const importedSessions = await new SessionManager(false).listSessions();
+		expect(importedSessions.length).toBeGreaterThan(1);
+		expect(output.join("\n")).toContain("Imported session");
+	});
+
+	it("imports a portable json session export", async () => {
+		await main(["hello"]);
+		const sessionManager = new SessionManager(false);
+		const [session] = await sessionManager.listSessions();
+		expect(session).toBeDefined();
+		const sessionFile = sessionManager.getSessionFileById(session!.id);
+		expect(sessionFile).toBeTruthy();
+
+		const portablePath = join(tempAgentDir, "portable-import.json");
+		const entries = readFileSync(sessionFile!, "utf8")
+			.trim()
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => JSON.parse(line));
+		writeFileSync(
+			portablePath,
+			JSON.stringify({
+				format: "maestro-session-export.v1",
+				exportedAt: new Date().toISOString(),
+				entries,
+			}),
+			"utf8",
+		);
 		output = [];
 
 		await main(["import", portablePath]);

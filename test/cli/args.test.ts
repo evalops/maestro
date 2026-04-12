@@ -35,14 +35,16 @@ describe("parseArgs", () => {
 			parseArgs([
 				"export",
 				"session-123",
-				"./session.jsonl",
+				"./session.json",
 				"--format",
-				"jsonl",
+				"json",
+				"--redact-secrets",
 			]),
 		).toMatchObject({
 			command: "export",
-			messages: ["session-123", "./session.jsonl"],
-			exportFormat: "jsonl",
+			messages: ["session-123", "./session.json"],
+			exportFormat: "json",
+			redactSecrets: true,
 		});
 	});
 

@@ -92,8 +92,11 @@ export function printHelp(version: string) {
   # Export a portable session log
   maestro export <session-id> ./session.jsonl --format jsonl
 
+  # Export a portable JSON archive with secret redaction
+  maestro export <session-id> ./session.json --format json --redact-secrets
+
   # Import a portable session log into this workspace
-  maestro import ./session.jsonl`,
+  maestro import ./session.json`,
 	)}`;
 	const env = `${sectionHeading("Environment Variables:")}${muted(
 		`  GEMINI_API_KEY          - Google Gemini API key
@@ -134,11 +137,13 @@ export function printHelp(version: string) {
   maestro web --port 3000`,
 	)}`;
 	const portabilitySection = `${sectionHeading("Session Portability")}${muted(
-		`  maestro export <session-id> [output-path] --format jsonl
-  maestro import <file.jsonl>
+		`  maestro export <session-id> [output-path] --format json|jsonl [--redact-secrets]
+  maestro import <file.json|file.jsonl>
 
   Notes:
-    - export currently supports jsonl for full-fidelity session transfer
+    - json preserves the full session in a portable wrapper object
+    - jsonl preserves the append-only session log verbatim unless redaction is requested
+    - --redact-secrets scrubs detected credentials from exported payloads
     - import restores the session into the current workspace session directory`,
 	)}`;
 	const memorySection = `${sectionHeading("maestro memory")}${muted(

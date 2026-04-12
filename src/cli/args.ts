@@ -47,6 +47,7 @@ export interface Args {
 	/** Composer profile to activate on startup */
 	composer?: string;
 	exportFormat?: string;
+	redactSecrets?: boolean;
 }
 
 const COMMANDS = new Set([
@@ -203,6 +204,8 @@ export function parseArgs(args: string[]): Args {
 			result.composer = args[++i];
 		} else if (arg === "--format" && i + 1 < args.length) {
 			result.exportFormat = args[++i];
+		} else if (arg === "--redact-secrets") {
+			result.redactSecrets = true;
 		} else if (arg === "--profile" && i + 1 < args.length) {
 			result.profile = args[++i];
 		} else if (arg === "--config" && i + 1 < args.length) {
