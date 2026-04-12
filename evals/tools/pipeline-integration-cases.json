@@ -1,0 +1,180 @@
+[
+  {
+    "name": "pipeline contacts use bearer auth and query filters",
+    "kind": "searchContacts",
+    "params": {
+      "query": "Jane",
+      "stage": "qualified",
+      "limit": 5
+    },
+    "response": {
+      "body": {
+        "items": [
+          {
+            "id": "contact-1",
+            "first_name": "Jane",
+            "last_name": "Smith",
+            "email": "jane@acme.com",
+            "title": "VP Engineering",
+            "stage": "qualified"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/contacts?name=Jane&stage=qualified&limit=5",
+        "authorization": "Bearer pipeline-eval-token",
+        "contentType": "application/json",
+        "hasIdempotencyKey": false,
+        "body": null
+      },
+      "result": {
+        "text": "Found 1 Pipeline contact.\n- Jane Smith • jane@acme.com • VP Engineering • qualified",
+        "details": {
+          "count": 1,
+          "contacts": [
+            {
+              "id": "contact-1",
+              "name": "Jane Smith",
+              "email": "jane@acme.com",
+              "stage": "qualified"
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "name": "pipeline deals encode structured filters",
+    "kind": "searchDeals",
+    "params": {
+      "stage": "proposal",
+      "companyId": "company-1"
+    },
+    "response": {
+      "body": {
+        "items": [
+          {
+            "id": "deal-1",
+            "title": "Acme Renewal",
+            "stage": "proposal",
+            "value": 250000,
+            "currency": "USD",
+            "company_id": "company-1"
+          }
+        ]
+      }
+    },
+    "expected": {
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/deals?stage=proposal&company_id=company-1&limit=10",
+        "authorization": "Bearer pipeline-eval-token",
+        "contentType": "application/json",
+        "hasIdempotencyKey": false,
+        "body": null
+      },
+      "result": {
+        "text": "Found 1 Pipeline deal.\n- Acme Renewal • proposal • USD 250000",
+        "details": {
+          "count": 1,
+          "deals": [
+            {
+              "id": "deal-1",
+              "title": "Acme Renewal",
+              "stage": "proposal",
+              "companyId": "company-1"
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "name": "pipeline signals merge summary into signal data",
+    "kind": "createSignal",
+    "params": {
+      "ownerType": "company",
+      "ownerId": "company-1",
+      "signalType": "product_release",
+      "source": "maestro",
+      "summary": "Feature X shipped for Acme",
+      "data": {
+        "release": "Feature X"
+      }
+    },
+    "response": {
+      "body": {
+        "id": "signal-1"
+      }
+    },
+    "expected": {
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/signals",
+        "authorization": "Bearer pipeline-eval-token",
+        "contentType": "application/json",
+        "hasIdempotencyKey": true,
+        "body": {
+          "owner_type": "company",
+          "owner_id": "company-1",
+          "signal_type": "product_release",
+          "source": "maestro",
+          "data": {
+            "summary": "Feature X shipped for Acme",
+            "release": "Feature X"
+          }
+        }
+      },
+      "result": {
+        "text": "Created Pipeline signal signal-1 for company company-1.",
+        "details": {
+          "id": "signal-1"
+        }
+      }
+    }
+  },
+  {
+    "name": "pipeline activity defaults direction to outbound",
+    "kind": "logActivity",
+    "params": {
+      "ownerType": "contact",
+      "ownerId": "contact-1",
+      "activityType": "email_sent",
+      "channel": "email",
+      "subject": "Feature X shipped",
+      "body": "Relevant for Acme renewal"
+    },
+    "response": {
+      "body": {
+        "id": "activity-1"
+      }
+    },
+    "expected": {
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/activities",
+        "authorization": "Bearer pipeline-eval-token",
+        "contentType": "application/json",
+        "hasIdempotencyKey": true,
+        "body": {
+          "owner_type": "contact",
+          "owner_id": "contact-1",
+          "activity_type": "email_sent",
+          "channel": "email",
+          "direction": "outbound",
+          "subject": "Feature X shipped",
+          "body": "Relevant for Acme renewal"
+        }
+      },
+      "result": {
+        "text": "Logged Pipeline activity activity-1 for contact contact-1.",
+        "details": {
+          "id": "activity-1"
+        }
+      }
+    }
+  }
+]

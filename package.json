@@ -36,6 +36,8 @@
     "format": "biome format .",
     "check": "npm run lint && npm run check --workspaces --if-present && tsc -p tsconfig.build.json --noEmit",
     "evals": "npm run build && node scripts/run-evals.js",
+    "evals:pipeline-tool-integration": "bun run build && bunx tsx scripts/evals/run-pipeline-tool-integration-evals.ts",
+    "evals:shared-memory-integration": "bun run build && bunx tsx scripts/evals/run-shared-memory-integration-evals.ts",
     "evals:openrouter-live-smoke": "bun run build && bunx tsx scripts/evals/run-openrouter-live-smoke.ts",
     "evals:openrouter-approvals-judge": "bun run build && bunx tsx scripts/evals/run-openrouter-approvals-judge-evals.ts",
     "evals:openrouter-tool-surface-judge": "bun run build && bunx tsx scripts/evals/run-openrouter-tool-surface-judge-evals.ts",

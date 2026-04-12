@@ -52,9 +52,37 @@ export const deterministicEvalScenarioVerifications = [
 		],
 		expectedRegex: "\\[tool-surface-smoke-evals\\] \\d+/\\d+ passed",
 	},
+	{
+		name: "pipeline tool integration eval suite",
+		expectedCommand: [
+			"bunx",
+			"tsx",
+			"scripts/evals/run-pipeline-tool-integration-evals.ts",
+		],
+		expectedRegex: "\\[pipeline-tool-integration-evals\\] \\d+/\\d+ passed",
+	},
+	{
+		name: "shared memory integration eval suite",
+		expectedCommand: [
+			"bunx",
+			"tsx",
+			"scripts/evals/run-shared-memory-integration-evals.ts",
+		],
+		expectedRegex: "\\[shared-memory-integration-evals\\] \\d+/\\d+ passed",
+	},
 ];
 
 export const liveEvalEntrypointVerifications = [
+	{
+		scriptName: "evals:pipeline-tool-integration",
+		targetName: "evals:pipeline-tool-integration",
+		runnerPath: "scripts/evals/run-pipeline-tool-integration-evals.ts",
+	},
+	{
+		scriptName: "evals:shared-memory-integration",
+		targetName: "evals:shared-memory-integration",
+		runnerPath: "scripts/evals/run-shared-memory-integration-evals.ts",
+	},
 	{
 		scriptName: "evals:openrouter-live-smoke",
 		targetName: "evals:openrouter-live-smoke",

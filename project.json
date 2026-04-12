@@ -55,6 +55,20 @@
 				"forwardAllArgs": true
 			}
 		},
+		"evals:pipeline-tool-integration": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "bun run evals:pipeline-tool-integration",
+				"forwardAllArgs": true
+			}
+		},
+		"evals:shared-memory-integration": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "bun run evals:shared-memory-integration",
+				"forwardAllArgs": true
+			}
+		},
 		"evals:openrouter-live-smoke": {
 			"executor": "nx:run-commands",
 			"options": {

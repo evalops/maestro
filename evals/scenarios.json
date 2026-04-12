@@ -271,5 +271,23 @@
             "scripts/evals/run-tool-surface-smoke-evals.ts"
         ],
         "expectedRegex": "\\[tool-surface-smoke-evals\\] \\d+/\\d+ passed"
+    },
+    {
+        "name": "pipeline tool integration eval suite",
+        "command": [
+            "bunx",
+            "tsx",
+            "scripts/evals/run-pipeline-tool-integration-evals.ts"
+        ],
+        "expectedRegex": "\\[pipeline-tool-integration-evals\\] \\d+/\\d+ passed"
+    },
+    {
+        "name": "shared memory integration eval suite",
+        "command": [
+            "bunx",
+            "tsx",
+            "scripts/evals/run-shared-memory-integration-evals.ts"
+        ],
+        "expectedRegex": "\\[shared-memory-integration-evals\\] \\d+/\\d+ passed"
     }
 ]

@@ -1,0 +1,273 @@
+[
+	{
+		"name": "sync endpoint batches state and event",
+		"updates": [
+			{
+				"sessionId": "session-sync",
+				"state": {
+					"topic": "renewal-risk",
+					"owner": "alex"
+				}
+			},
+			{
+				"sessionId": "session-sync",
+				"event": {
+					"type": "pipeline.reviewed",
+					"payload": {
+						"score": 91,
+						"status": "watch"
+					}
+				}
+			}
+		],
+		"responses": [
+			{
+				"status": 200,
+				"body": {
+					"supports_sync": true,
+					"supports_gzip": false,
+					"max_body_bytes": 1048576,
+					"max_events_batch": 50,
+					"max_event_payload_bytes": 65536,
+					"max_event_type_length": 128,
+					"max_event_id_length": 128
+				}
+			},
+			{
+				"status": 200
+			}
+		],
+		"expected": {
+			"requests": [
+				{
+					"method": "GET",
+					"path": "/capabilities",
+					"authorization": "Bearer shared-memory-eval-token",
+					"hasRequestId": true
+				},
+				{
+					"method": "PATCH",
+					"path": "/sessions/session-sync/sync",
+					"authorization": "Bearer shared-memory-eval-token",
+					"contentType": "application/json; charset=utf-8",
+					"hasRequestId": true,
+					"body": {
+						"state": {
+							"maestro": {
+								"topic": "renewal-risk",
+								"owner": "alex",
+								"source": "maestro"
+							}
+						},
+						"events": [
+							{
+								"type": "pipeline.reviewed",
+								"actor": "maestro",
+								"payload": {
+									"score": 91,
+									"status": "watch",
+									"source": "maestro"
+								}
+							}
+						]
+					}
+				}
+			]
+		}
+	},
+	{
+		"name": "sync 405 falls back to state and events endpoints",
+		"updates": [
+			{
+				"sessionId": "session-fallback",
+				"state": {
+					"stage": "negotiation"
+				}
+			},
+			{
+				"sessionId": "session-fallback",
+				"event": {
+					"type": "deal.updated",
+					"payload": {
+						"field": "amount",
+						"value": 42000
+					}
+				}
+			}
+		],
+		"responses": [
+			{
+				"status": 200,
+				"body": {
+					"supports_sync": true,
+					"supports_gzip": false,
+					"max_body_bytes": 1048576,
+					"max_events_batch": 50,
+					"max_event_payload_bytes": 65536,
+					"max_event_type_length": 128,
+					"max_event_id_length": 128
+				}
+			},
+			{
+				"status": 405
+			},
+			{
+				"status": 200
+			},
+			{
+				"status": 200
+			}
+		],
+		"expected": {
+			"requests": [
+				{
+					"method": "GET",
+					"path": "/capabilities"
+				},
+				{
+					"method": "PATCH",
+					"path": "/sessions/session-fallback/sync"
+				},
+				{
+					"method": "PATCH",
+					"path": "/sessions/session-fallback/state",
+					"body": {
+						"state": {
+							"maestro": {
+								"stage": "negotiation",
+								"source": "maestro"
+							}
+						}
+					}
+				},
+				{
+					"method": "POST",
+					"path": "/sessions/session-fallback/events",
+					"body": {
+						"type": "deal.updated",
+						"actor": "maestro",
+						"payload": {
+							"field": "amount",
+							"value": 42000,
+							"source": "maestro"
+						}
+					}
+				}
+			]
+		}
+	},
+	{
+		"name": "session override routes sync and event ids through the override session",
+		"config": {
+			"sessionIdOverride": "shared-session"
+		},
+		"updates": [
+			{
+				"sessionId": "session-original",
+				"event": {
+					"type": "assistant.summary",
+					"payload": {
+						"turn": 3,
+						"status": "complete"
+					}
+				}
+			}
+		],
+		"responses": [
+			{
+				"status": 200,
+				"body": {
+					"supports_sync": true,
+					"supports_gzip": false,
+					"max_body_bytes": 1048576,
+					"max_events_batch": 50,
+					"max_event_payload_bytes": 65536,
+					"max_event_type_length": 128,
+					"max_event_id_length": 128
+				}
+			},
+			{
+				"status": 200
+			}
+		],
+		"expected": {
+			"requests": [
+				{
+					"method": "GET",
+					"path": "/capabilities"
+				},
+				{
+					"method": "PATCH",
+					"path": "/sessions/shared-session/sync",
+					"firstEventIdPrefixMatches": true,
+					"body": {
+						"events": [
+							{
+								"type": "assistant.summary",
+								"actor": "maestro",
+								"payload": {
+									"turn": 3,
+									"status": "complete",
+									"source": "maestro"
+								}
+							}
+						]
+					}
+				}
+			]
+		}
+	},
+	{
+		"name": "sync request gzips large payloads when capabilities allow it",
+		"updates": [
+			{
+				"sessionId": "session-gzip",
+				"state": {
+					"summary": "compressed",
+					"transcript": {
+						"$repeat": "long shared memory content ",
+						"count": 80
+					}
+				}
+			}
+		],
+		"responses": [
+			{
+				"status": 200,
+				"body": {
+					"supports_sync": true,
+					"supports_gzip": true,
+					"max_body_bytes": 1048576,
+					"max_events_batch": 50,
+					"max_event_payload_bytes": 65536,
+					"max_event_type_length": 128,
+					"max_event_id_length": 128
+				}
+			},
+			{
+				"status": 200
+			}
+		],
+		"expected": {
+			"requests": [
+				{
+					"method": "GET",
+					"path": "/capabilities"
+				},
+				{
+					"method": "PATCH",
+					"path": "/sessions/session-gzip/sync",
+					"contentEncoding": "gzip",
+					"body": {
+						"state": {
+							"maestro": {
+								"summary": "compressed",
+								"source": "maestro"
+							}
+						}
+					}
+				}
+			]
+		}
+	}
+]
