@@ -17,10 +17,11 @@
 	"files": ["dist"],
 	"scripts": {
 		"clean": "node ../../scripts/clean-paths.js dist ../../tmp/tsbuildinfo/contracts.tsbuildinfo",
-		"build": "node ../../scripts/headless-protocol-codegen.mjs && node ../../scripts/clean-paths.js dist ../../tmp/tsbuildinfo/contracts.tsbuildinfo && node ../../scripts/ensure-dir.js ../../tmp/tsbuildinfo && tsc -p tsconfig.build.json",
-		"dev": "node ../../scripts/headless-protocol-codegen.mjs && node ../../scripts/ensure-dir.js ../../tmp/tsbuildinfo && tsc -p tsconfig.build.json --watch --preserveWatchOutput"
+		"build": "node ../../scripts/headless-protocol-codegen.mjs && (cd ../.. && bun run generate:headless-proto:buf) && node ../../scripts/clean-paths.js dist ../../tmp/tsbuildinfo/contracts.tsbuildinfo && node ../../scripts/ensure-dir.js ../../tmp/tsbuildinfo && tsc -p tsconfig.build.json",
+		"dev": "node ../../scripts/headless-protocol-codegen.mjs && (cd ../.. && bun run generate:headless-proto:buf) && node ../../scripts/ensure-dir.js ../../tmp/tsbuildinfo && tsc -p tsconfig.build.json --watch --preserveWatchOutput"
 	},
 	"dependencies": {
+		"@bufbuild/protobuf": "^2.11.0",
 		"@sinclair/typebox": "^0.34.0"
 	},
 	"keywords": ["maestro", "contracts", "evalops"],

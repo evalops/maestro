@@ -50,6 +50,7 @@ export * from "./mcp-settings.js";
 export * from "./memory.js";
 export * from "./memory-utils.js";
 export * from "./onboarding-utils.js";
+export * from "./proto/maestro/v1/headless_pb.js";
 
 /**
  * Role of a message in the conversation.
