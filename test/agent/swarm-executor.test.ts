@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { spawnMock } = vi.hoisted(() => ({
+const {
+	buildEvalOpsDelegationEnvironmentMock,
+	issueEvalOpsDelegationTokenMock,
+	spawnMock,
+} = vi.hoisted(() => ({
+	buildEvalOpsDelegationEnvironmentMock: vi.fn(),
+	issueEvalOpsDelegationTokenMock: vi.fn(),
 	spawnMock: vi.fn(),
 }));
 
@@ -12,8 +18,16 @@ vi.mock("node:child_process", () => ({
 	spawn: spawnMock,
 }));
 
+vi.mock("../../src/oauth/index.js", () => ({
+	buildEvalOpsDelegationEnvironment: buildEvalOpsDelegationEnvironmentMock,
+	issueEvalOpsDelegationToken: issueEvalOpsDelegationTokenMock,
+}));
+
 import { SwarmExecutor } from "../../src/agent/swarm/executor.js";
 import type { SwarmConfig } from "../../src/agent/swarm/types.js";
+
+const PARENT_ACCESS_VALUE = "parent-test";
+const DELEGATED_ACCESS_VALUE = "child-test";
 
 function createMockChildProcess(
 	output: string,
@@ -77,13 +91,43 @@ function createMultiTaskConfig(
 	};
 }
 
+function createDeferredPromise<T>() {
+	let resolve!: (value: T) => void;
+	let reject!: (reason?: unknown) => void;
+	const promise = new Promise<T>((res, rej) => {
+		resolve = res;
+		reject = rej;
+	});
+	return { promise, resolve, reject };
+}
+
+async function waitForSpawn(): Promise<void> {
+	await vi.waitFor(() => {
+		expect(spawnMock).toHaveBeenCalled();
+	});
+}
+
 describe("SwarmExecutor", () => {
 	beforeEach(() => {
+		buildEvalOpsDelegationEnvironmentMock.mockReset();
+		buildEvalOpsDelegationEnvironmentMock.mockImplementation((result) => ({
+			MAESTRO_EVALOPS_ACCESS_TOKEN: result.token,
+			MAESTRO_EVALOPS_ORG_ID: result.organizationId,
+			MAESTRO_EVALOPS_PROVIDER: result.providerRef.provider,
+			MAESTRO_EVALOPS_ENVIRONMENT: result.providerRef.environment,
+		}));
+		issueEvalOpsDelegationTokenMock.mockReset();
+		issueEvalOpsDelegationTokenMock.mockRejectedValue(
+			new Error(
+				"EvalOps delegation requires a valid access token. Run /login evalops first.",
+			),
+		);
 		spawnMock.mockReset();
 	});
 
 	afterEach(() => {
 		vi.useRealTimers();
+		vi.unstubAllEnvs();
 	});
 
 	it("spawns the maestro CLI for teammate tasks", async () => {
@@ -91,7 +135,7 @@ describe("SwarmExecutor", () => {
 
 		const executor = new SwarmExecutor(createConfig());
 		void executor.execute();
-		await Promise.resolve();
+		await waitForSpawn();
 
 		expect(spawnMock).toHaveBeenCalledWith(
 			"maestro",
@@ -135,7 +179,7 @@ describe("SwarmExecutor", () => {
 			createConfig({ model: "claude-sonnet-4-5-20250929" }),
 		);
 		void executor.execute();
-		await Promise.resolve();
+		await waitForSpawn();
 
 		expect(spawnMock).toHaveBeenCalledWith(
 			"maestro",
@@ -147,6 +191,178 @@ describe("SwarmExecutor", () => {
 				expect.stringContaining("swarm-task-task-1.md"),
 			]),
 			expect.any(Object),
+		);
+	});
+
+	it("injects delegated EvalOps auth into teammate subprocesses when available", async () => {
+		issueEvalOpsDelegationTokenMock.mockResolvedValue({
+			agentId: "agent_teammate",
+			expiresAt: Date.now() + 60_000,
+			organizationId: "org_evalops",
+			providerRef: {
+				provider: "gateway",
+				environment: "prod",
+			},
+			runId: "swarm-1:task-1",
+			scopesDenied: [],
+			scopesGranted: ["models:invoke"],
+			scopesRequested: [],
+			token: DELEGATED_ACCESS_VALUE,
+			tokenType: "Bearer",
+		});
+		spawnMock.mockReturnValue(createMockChildProcess("done"));
+		vi.stubEnv("MAESTRO_EVALOPS_ACCESS_TOKEN", PARENT_ACCESS_VALUE);
+		vi.stubEnv("MAESTRO_EVALOPS_ORG_ID", "org_evalops");
+
+		const executor = new SwarmExecutor(createConfig());
+		void executor.execute();
+		await waitForSpawn();
+
+		expect(issueEvalOpsDelegationTokenMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				agentId: expect.any(String),
+				agentType: "swarm_teammate",
+				capabilities: ["swarm_task"],
+				runId: expect.stringContaining(":task-1"),
+				surface: "maestro-swarm",
+				token: PARENT_ACCESS_VALUE,
+				ttlSeconds: 60,
+			}),
+		);
+		expect(spawnMock).toHaveBeenCalledWith(
+			"maestro",
+			expect.any(Array),
+			expect.objectContaining({
+				env: expect.objectContaining({
+					MAESTRO_EVALOPS_ACCESS_TOKEN: DELEGATED_ACCESS_VALUE,
+					MAESTRO_EVALOPS_ORG_ID: "org_evalops",
+					MAESTRO_EVALOPS_PROVIDER: "gateway",
+					MAESTRO_EVALOPS_ENVIRONMENT: "prod",
+					MAESTRO_SWARM_MODE: "1",
+				}),
+			}),
+		);
+	});
+
+	it("starts teammate delegation in parallel instead of serializing spawn setup", async () => {
+		const firstDelegation = createDeferredPromise<{
+			agentId: string;
+			expiresAt: number;
+			organizationId: string;
+			providerRef: { provider: string; environment: string };
+			runId: string;
+			scopesDenied: string[];
+			scopesGranted: string[];
+			scopesRequested: string[];
+			token: string;
+			tokenType: string;
+		}>();
+		const secondDelegation = createDeferredPromise<{
+			agentId: string;
+			expiresAt: number;
+			organizationId: string;
+			providerRef: { provider: string; environment: string };
+			runId: string;
+			scopesDenied: string[];
+			scopesGranted: string[];
+			scopesRequested: string[];
+			token: string;
+			tokenType: string;
+		}>();
+		issueEvalOpsDelegationTokenMock
+			.mockImplementationOnce(() => firstDelegation.promise)
+			.mockImplementationOnce(() => secondDelegation.promise);
+		spawnMock
+			.mockReturnValueOnce(createMockChildProcess("done", 0, "manual"))
+			.mockReturnValueOnce(createMockChildProcess("done", 0, "manual"));
+		vi.stubEnv("MAESTRO_EVALOPS_ACCESS_TOKEN", PARENT_ACCESS_VALUE);
+		vi.stubEnv("MAESTRO_EVALOPS_ORG_ID", "org_evalops");
+
+		const executor = new SwarmExecutor(
+			createMultiTaskConfig(
+				[
+					{ id: "task-1", prompt: "First task" },
+					{ id: "task-2", prompt: "Second task" },
+				],
+				{ teammateCount: 2 },
+			),
+		);
+		const execution = executor.execute();
+
+		await vi.waitFor(() => {
+			expect(issueEvalOpsDelegationTokenMock).toHaveBeenCalledTimes(2);
+		});
+		expect(spawnMock).not.toHaveBeenCalled();
+
+		firstDelegation.resolve({
+			agentId: "agent-1",
+			expiresAt: Date.now() + 60_000,
+			organizationId: "org_evalops",
+			providerRef: {
+				provider: "gateway",
+				environment: "prod",
+			},
+			runId: "swarm-1:task-1",
+			scopesDenied: [],
+			scopesGranted: ["models:invoke"],
+			scopesRequested: [],
+			token: "child-1",
+			tokenType: "Bearer",
+		});
+		secondDelegation.resolve({
+			agentId: "agent-2",
+			expiresAt: Date.now() + 60_000,
+			organizationId: "org_evalops",
+			providerRef: {
+				provider: "gateway",
+				environment: "prod",
+			},
+			runId: "swarm-1:task-2",
+			scopesDenied: [],
+			scopesGranted: ["models:invoke"],
+			scopesRequested: [],
+			token: "child-2",
+			tokenType: "Bearer",
+		});
+
+		await vi.waitFor(() => {
+			expect(spawnMock).toHaveBeenCalledTimes(2);
+		});
+
+		for (const result of spawnMock.mock.results) {
+			result.value.emit("close", 0);
+		}
+
+		const result = await execution;
+		expect(result.status).toBe("completed");
+		expect(Array.from(result.completedTasks)).toEqual(
+			expect.arrayContaining(["task-1", "task-2"]),
+		);
+	});
+
+	it("falls back to inherited auth when EvalOps delegation fails", async () => {
+		issueEvalOpsDelegationTokenMock.mockRejectedValue(
+			new Error("identity_unavailable"),
+		);
+		spawnMock.mockReturnValue(createMockChildProcess("done"));
+		vi.stubEnv("MAESTRO_EVALOPS_ACCESS_TOKEN", PARENT_ACCESS_VALUE);
+		vi.stubEnv("MAESTRO_EVALOPS_ORG_ID", "org_evalops");
+
+		const executor = new SwarmExecutor(createConfig());
+		void executor.execute();
+		await waitForSpawn();
+
+		expect(buildEvalOpsDelegationEnvironmentMock).not.toHaveBeenCalled();
+		expect(spawnMock).toHaveBeenCalledWith(
+			"maestro",
+			expect.any(Array),
+			expect.objectContaining({
+				env: expect.objectContaining({
+					MAESTRO_EVALOPS_ACCESS_TOKEN: PARENT_ACCESS_VALUE,
+					MAESTRO_EVALOPS_ORG_ID: "org_evalops",
+					MAESTRO_SWARM_MODE: "1",
+				}),
+			}),
 		);
 	});
 
@@ -187,7 +403,7 @@ describe("SwarmExecutor", () => {
 
 		const executor = new SwarmExecutor(createConfig());
 		const execution = executor.execute();
-		await Promise.resolve();
+		await waitForSpawn();
 
 		executor.cancel();
 		proc.emit("close", 143);
@@ -208,7 +424,7 @@ describe("SwarmExecutor", () => {
 
 		const executor = new SwarmExecutor(createConfig({ id: taskId }));
 		const execution = executor.execute();
-		await Promise.resolve();
+		await waitForSpawn();
 
 		expect(existsSync(tempFile)).toBe(true);
 
@@ -236,7 +452,7 @@ describe("SwarmExecutor", () => {
 		);
 
 		const execution = executor.execute();
-		await Promise.resolve();
+		await waitForSpawn();
 		try {
 			firstProc.emit("error", new Error("spawn failed"));
 
@@ -259,7 +475,7 @@ describe("SwarmExecutor", () => {
 
 		const executor = new SwarmExecutor(createConfig());
 		const execution = executor.execute();
-		await Promise.resolve();
+		await waitForSpawn();
 
 		executor.cancel();
 
@@ -270,6 +486,60 @@ describe("SwarmExecutor", () => {
 		expect(result.teammates[0]!.currentTask).toBeUndefined();
 	});
 
+	it("does not spawn a teammate after cancellation during async delegation setup", async () => {
+		const delegation = createDeferredPromise<{
+			agentId: string;
+			expiresAt: number;
+			organizationId: string;
+			providerRef: { provider: string; environment: string };
+			runId: string;
+			scopesDenied: string[];
+			scopesGranted: string[];
+			scopesRequested: string[];
+			token: string;
+			tokenType: string;
+		}>();
+		const taskId = "task-cancelled-before-spawn";
+		const tempFile = join(tmpdir(), `swarm-task-${taskId}.md`);
+		rmSync(tempFile, { force: true });
+
+		issueEvalOpsDelegationTokenMock.mockImplementation(
+			() => delegation.promise,
+		);
+		const executor = new SwarmExecutor(createConfig({ id: taskId }));
+		const execution = executor.execute();
+
+		await vi.waitFor(() => {
+			expect(issueEvalOpsDelegationTokenMock).toHaveBeenCalledTimes(1);
+		});
+		expect(existsSync(tempFile)).toBe(true);
+
+		executor.cancel();
+		delegation.resolve({
+			agentId: "agent-cancelled",
+			expiresAt: Date.now() + 60_000,
+			organizationId: "org_evalops",
+			providerRef: {
+				provider: "gateway",
+				environment: "prod",
+			},
+			runId: "swarm-1:task-cancelled-before-spawn",
+			scopesDenied: [],
+			scopesGranted: ["models:invoke"],
+			scopesRequested: [],
+			token: DELEGATED_ACCESS_VALUE,
+			tokenType: "Bearer",
+		});
+
+		const result = await execution;
+		expect(spawnMock).not.toHaveBeenCalled();
+		expect(result.status).toBe("cancelled");
+		expect(result.activeTasks.size).toBe(0);
+		expect(result.teammates[0]!.status).toBe("cancelled");
+		expect(result.teammates[0]!.currentTask).toBeUndefined();
+		expect(existsSync(tempFile)).toBe(false);
+	});
+
 	it("keeps teammate temp prompt files inside the system temp directory", async () => {
 		spawnMock.mockReturnValue(createMockChildProcess("done"));
 
@@ -277,7 +547,7 @@ describe("SwarmExecutor", () => {
 			createConfig({ id: "../../swarm-path-traversal" }),
 		);
 		void executor.execute();
-		await Promise.resolve();
+		await waitForSpawn();
 
 		const [, args] = spawnMock.mock.calls[0] as [string, string[]];
 		const tempFile = args.at(-1)!;

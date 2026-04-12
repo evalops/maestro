@@ -11,6 +11,10 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import {
+	buildEvalOpsDelegationEnvironment,
+	issueEvalOpsDelegationToken,
+} from "../../oauth/index.js";
 import { createLogger } from "../../utils/logger.js";
 import type {
 	SwarmConfig,
@@ -190,6 +194,14 @@ export class SwarmExecutor {
 			}
 		}
 
+		for (const teammate of this.state.teammates) {
+			if (teammate.status === "running" || teammate.currentTask) {
+				teammate.status = "cancelled";
+				teammate.currentTask = undefined;
+				teammate.completedAt = Date.now();
+			}
+		}
+
 		this.state.activeTasks.clear();
 		this.processes.clear();
 		logger.info("Swarm cancelled", { swarmId: this.state.id });
@@ -273,6 +285,7 @@ export class SwarmExecutor {
 		const idleTeammates = this.state.teammates.filter(
 			(t) => t.status === "pending" || t.status === "completed",
 		);
+		const spawnPromises: Promise<void>[] = [];
 
 		for (const teammate of idleTeammates) {
 			const task = this.getNextTask();
@@ -301,7 +314,11 @@ export class SwarmExecutor {
 			});
 
 			// Spawn the agent process
-			this.spawnTeammate(teammate, task);
+			spawnPromises.push(this.spawnTeammate(teammate, task));
+		}
+
+		if (spawnPromises.length > 0) {
+			await Promise.all(spawnPromises);
 		}
 	}
 
@@ -327,7 +344,61 @@ export class SwarmExecutor {
 	/**
 	 * Spawn a subprocess agent for a teammate.
 	 */
-	private spawnTeammate(teammate: SwarmTeammate, task: SwarmTask): void {
+	private async buildTeammateEnv(
+		teammate: SwarmTeammate,
+		task: SwarmTask,
+	): Promise<Record<string, string>> {
+		const baseEnv: Record<string, string> = {
+			...process.env,
+			MAESTRO_SWARM_MODE: "1",
+			MAESTRO_SWARM_ID: this.state.id,
+			MAESTRO_TEAMMATE_ID: teammate.id,
+		};
+
+		try {
+			const delegation = await issueEvalOpsDelegationToken({
+				agentId: teammate.id,
+				agentType: "swarm_teammate",
+				capabilities: ["swarm_task"],
+				runId: `${this.state.id}:${task.id}`,
+				surface: "maestro-swarm",
+				token: process.env.MAESTRO_EVALOPS_ACCESS_TOKEN,
+				ttlSeconds: Math.max(
+					60,
+					Math.ceil(
+						(this.state.config.taskTimeout ?? DEFAULT_TASK_TIMEOUT_MS) / 1000,
+					),
+				),
+			});
+			return {
+				...baseEnv,
+				...buildEvalOpsDelegationEnvironment(delegation),
+			};
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			if (
+				message.includes("Run /login evalops first") ||
+				message.includes("EvalOps login requires")
+			) {
+				return baseEnv;
+			}
+			logger.warn(
+				"Failed to issue delegated EvalOps token for swarm teammate; using inherited auth",
+				{
+					error: message,
+					swarmId: this.state.id,
+					taskId: task.id,
+					teammateId: teammate.id,
+				},
+			);
+			return baseEnv;
+		}
+	}
+
+	private async spawnTeammate(
+		teammate: SwarmTeammate,
+		task: SwarmTask,
+	): Promise<void> {
 		const tmpFile = join(tmpdir(), toSafeTaskTempBasename(task.id));
 
 		// Build prompt for the teammate
@@ -354,16 +425,39 @@ export class SwarmExecutor {
 			"exec",
 			tmpFile,
 		];
+		const env = await this.buildTeammateEnv(teammate, task);
+
+		if (
+			this.state.status !== "running" ||
+			this.abortController.signal.aborted
+		) {
+			try {
+				unlinkSync(tmpFile);
+			} catch {
+				// Ignore cleanup errors
+			}
+
+			this.state.activeTasks.delete(task.id);
+			teammate.currentTask = undefined;
+			teammate.completedAt = Date.now();
+
+			if (teammate.status !== "cancelled") {
+				teammate.status =
+					this.state.status === "failed" ? "failed" : "cancelled";
+			}
+
+			this.emit({
+				type: "teammate_complete",
+				swarmId: this.state.id,
+				teammate,
+			});
+			return;
+		}
 
 		const proc = spawn("maestro", args, {
 			cwd: this.state.config.cwd,
 			stdio: ["pipe", "pipe", "pipe"],
-			env: {
-				...process.env,
-				MAESTRO_SWARM_MODE: "1",
-				MAESTRO_SWARM_ID: this.state.id,
-				MAESTRO_TEAMMATE_ID: teammate.id,
-			},
+			env,
 		});
 
 		teammate.pid = proc.pid;
