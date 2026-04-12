@@ -1082,6 +1082,13 @@ impl SupervisorBuilder {
         self
     }
 
+    /// Add an environment variable for spawned local agents.
+    #[must_use]
+    pub fn env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.config.transport.env.push((key.into(), value.into()));
+        self
+    }
+
     /// Set max reconnection attempts
     #[must_use]
     pub fn max_reconnect_attempts(mut self, attempts: u32) -> Self {
@@ -2049,6 +2056,7 @@ mod tests {
         let supervisor = SupervisorBuilder::new()
             .cli_path("/usr/bin/composer")
             .cwd("/home/user/project")
+            .env("MAESTRO_EVALOPS_ACCESS_TOKEN", "delegated-token")
             .max_reconnect_attempts(10)
             .auto_reconnect(false)
             .build();
@@ -2056,6 +2064,13 @@ mod tests {
         assert!(!supervisor.is_connected());
         assert_eq!(supervisor.health(), HealthStatus::Unknown);
         assert!(supervisor.state().model.is_none());
+        assert_eq!(
+            supervisor.config.transport.env,
+            vec![(
+                "MAESTRO_EVALOPS_ACCESS_TOKEN".to_string(),
+                "delegated-token".to_string(),
+            )]
+        );
     }
 
     #[test]

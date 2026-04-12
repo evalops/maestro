@@ -5,7 +5,11 @@ import {
 	createServer,
 } from "node:http";
 import { createLogger } from "../utils/logger.js";
-import { type OAuthCredentials, saveOAuthCredentials } from "./storage.js";
+import {
+	type OAuthCredentials,
+	loadOAuthCredentials,
+	saveOAuthCredentials,
+} from "./storage.js";
 
 const logger = createLogger("oauth:evalops");
 
@@ -38,7 +42,19 @@ interface IdentityRevokeResponse {
 	revoked?: boolean;
 }
 
-interface EvalOpsProviderRef {
+interface IdentityDelegationResponse {
+	agent_id?: string;
+	error?: string;
+	expires_at?: string;
+	run_id?: string;
+	scopes_denied?: unknown;
+	scopes_granted?: unknown;
+	scopes_requested?: unknown;
+	token?: string;
+	token_type?: string;
+}
+
+export interface EvalOpsProviderRef {
 	provider: string;
 	environment: string;
 	credential_name?: string;
@@ -52,6 +68,31 @@ interface EvalOpsCallbackResult {
 	refreshExpiresAt?: number;
 	refreshToken?: string;
 	scopes: string[];
+}
+
+export interface EvalOpsDelegationTokenRequest {
+	agentId: string;
+	agentType: string;
+	capabilities?: string[];
+	metadata?: Record<string, unknown>;
+	runId: string;
+	scopes?: string[];
+	surface: string;
+	token?: string;
+	ttlSeconds?: number;
+}
+
+export interface EvalOpsDelegationTokenResult {
+	agentId: string;
+	expiresAt: number;
+	organizationId: string;
+	providerRef: EvalOpsProviderRef;
+	runId: string;
+	scopesDenied: string[];
+	scopesGranted: string[];
+	scopesRequested: string[];
+	token: string;
+	tokenType: string;
 }
 
 function getEnvValue(names: string[]): string | undefined {
@@ -148,6 +189,10 @@ function parseScopesPayload(value: unknown): string[] {
 		.filter((entry) => entry.length > 0);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function getMetadataString(
 	metadata: Record<string, unknown> | undefined,
 	key: string,
@@ -172,6 +217,146 @@ function getMetadataScopes(
 	metadata: Record<string, unknown> | undefined,
 ): string[] {
 	return parseScopesPayload(metadata?.scopes);
+}
+
+function resolveProviderRef(
+	metadata: Record<string, unknown> | undefined,
+): EvalOpsProviderRef {
+	const fallback = getProviderRef();
+	const providerRef = isRecord(metadata?.providerRef)
+		? metadata.providerRef
+		: undefined;
+	return {
+		provider: getMetadataString(providerRef, "provider") ?? fallback.provider,
+		environment:
+			getMetadataString(providerRef, "environment") ?? fallback.environment,
+		...(getMetadataString(providerRef, "credential_name")
+			? {
+					credential_name: getMetadataString(providerRef, "credential_name"),
+				}
+			: fallback.credential_name
+				? { credential_name: fallback.credential_name }
+				: {}),
+		...(getMetadataString(providerRef, "team_id")
+			? { team_id: getMetadataString(providerRef, "team_id") }
+			: fallback.team_id
+				? { team_id: fallback.team_id }
+				: {}),
+	};
+}
+
+function resolveStoredEvalOpsMetadata(
+	metadata?: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+	if (metadata) {
+		return metadata;
+	}
+	const stored = loadOAuthCredentials("evalops");
+	return stored?.metadata;
+}
+
+function resolveDelegationOrganizationId(
+	metadata: Record<string, unknown> | undefined,
+): string {
+	return getMetadataString(metadata, "organizationId") ?? getOrganizationId();
+}
+
+async function getFreshEvalOpsAccessToken(
+	metadata?: Record<string, unknown>,
+): Promise<string | null> {
+	const credentials = loadOAuthCredentials("evalops");
+	if (!credentials) {
+		return null;
+	}
+	if (Date.now() < credentials.expires - 60_000) {
+		return credentials.access;
+	}
+	const refreshed = await refreshEvalOpsToken(
+		credentials.refresh,
+		metadata ?? credentials.metadata,
+	);
+	saveOAuthCredentials("evalops", refreshed);
+	return refreshed.access;
+}
+
+export function buildEvalOpsDelegationEnvironment(
+	result: Pick<
+		EvalOpsDelegationTokenResult,
+		"organizationId" | "providerRef" | "token"
+	>,
+): Record<string, string> {
+	return {
+		MAESTRO_EVALOPS_ACCESS_TOKEN: result.token,
+		MAESTRO_EVALOPS_ORG_ID: result.organizationId,
+		MAESTRO_EVALOPS_PROVIDER: result.providerRef.provider,
+		MAESTRO_EVALOPS_ENVIRONMENT: result.providerRef.environment,
+		...(result.providerRef.credential_name
+			? {
+					MAESTRO_EVALOPS_CREDENTIAL_NAME: result.providerRef.credential_name,
+				}
+			: {}),
+		...(result.providerRef.team_id
+			? { MAESTRO_EVALOPS_TEAM_ID: result.providerRef.team_id }
+			: {}),
+	};
+}
+
+export async function issueEvalOpsDelegationToken(
+	request: EvalOpsDelegationTokenRequest,
+): Promise<EvalOpsDelegationTokenResult> {
+	const metadata = resolveStoredEvalOpsMetadata(request.metadata);
+	const identityBaseUrl =
+		getMetadataString(metadata, "identityBaseUrl") ?? getIdentityBaseUrl();
+	const token = request.token ?? (await getFreshEvalOpsAccessToken(metadata));
+	if (!token) {
+		throw new Error(
+			"EvalOps delegation requires a valid access token. Run /login evalops first.",
+		);
+	}
+	const response = await fetch(`${identityBaseUrl}/v1/delegation-tokens`, {
+		method: "POST",
+		headers: {
+			Authorization: `Bearer ${token}`,
+			"Content-Type": "application/json",
+		},
+		body: JSON.stringify({
+			agent_id: request.agentId,
+			agent_type: request.agentType,
+			...(request.capabilities?.length
+				? { capabilities: request.capabilities }
+				: {}),
+			run_id: request.runId,
+			...(request.scopes?.length ? { scopes: request.scopes } : {}),
+			surface: request.surface,
+			...(request.ttlSeconds ? { ttl_seconds: request.ttlSeconds } : {}),
+		}),
+	});
+
+	let payload: IdentityDelegationResponse | undefined;
+	try {
+		payload = (await response.json()) as IdentityDelegationResponse;
+	} catch {
+		// Ignore JSON parse failure and fall back to a generic error below.
+	}
+
+	if (!response.ok || !payload?.token || !payload.expires_at) {
+		throw new Error(
+			payload?.error ?? "EvalOps delegation token request failed",
+		);
+	}
+
+	return {
+		agentId: payload.agent_id ?? request.agentId,
+		expiresAt: parseTimestamp(payload.expires_at, "expires_at"),
+		organizationId: resolveDelegationOrganizationId(metadata),
+		providerRef: resolveProviderRef(metadata),
+		runId: payload.run_id ?? request.runId,
+		scopesDenied: parseScopesPayload(payload.scopes_denied),
+		scopesGranted: parseScopesPayload(payload.scopes_granted),
+		scopesRequested: parseScopesPayload(payload.scopes_requested),
+		token: payload.token,
+		tokenType: payload.token_type ?? "Bearer",
+	};
 }
 
 async function startCallbackServer(): Promise<{

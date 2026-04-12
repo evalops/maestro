@@ -9,9 +9,11 @@ process.env.MAESTRO_AGENT_DIR = join(testDir, "agent");
 
 import {
 	type SupportedOAuthProvider,
+	buildEvalOpsDelegationEnvironment,
 	getOAuthProviders,
 	getOAuthToken,
 	hasOAuthCredentials,
+	issueEvalOpsDelegationToken,
 	login,
 	logout,
 } from "../src/oauth/index.js";
@@ -21,6 +23,8 @@ import {
 	removeOAuthCredentials,
 	saveOAuthCredentials,
 } from "../src/oauth/storage.js";
+
+const TEST_DELEGATED_ACCESS_VALUE = "child-test";
 
 describe("OAuth Storage", () => {
 	beforeEach(() => {
@@ -354,6 +358,122 @@ describe("OAuth Index", () => {
 			expect(init?.body).toBe(
 				JSON.stringify({ refresh_token: "old-evalops-refresh" }),
 			);
+		});
+	});
+
+	describe("EvalOps delegation tokens", () => {
+		it("issues a narrowed delegation token from stored EvalOps credentials", async () => {
+			const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+			const fetchMock = vi.fn().mockResolvedValue(
+				new Response(
+					JSON.stringify({
+						agent_id: "agent-child-1",
+						expires_at: expiresAt,
+						run_id: "run-child-1",
+						scopes_denied: ["admin:all"],
+						scopes_granted: ["llm_gateway:invoke", "memory:write"],
+						scopes_requested: [
+							"llm_gateway:invoke",
+							"memory:write",
+							"admin:all",
+						],
+						token: TEST_DELEGATED_ACCESS_VALUE,
+						token_type: "Bearer",
+					}),
+					{
+						status: 201,
+						headers: { "Content-Type": "application/json" },
+					},
+				),
+			);
+			vi.stubGlobal("fetch", fetchMock);
+
+			saveOAuthCredentials("evalops", {
+				type: "oauth",
+				access: "parent-access-token",
+				refresh: "parent-refresh-token",
+				expires: Date.now() + 60 * 60 * 1000,
+				metadata: {
+					identityBaseUrl: "https://identity.evalops.test",
+					organizationId: "org_123",
+					providerRef: {
+						provider: "openai",
+						environment: "prod",
+						credential_name: "managed-openai",
+						team_id: "team_456",
+					},
+				},
+			});
+
+			const result = await issueEvalOpsDelegationToken({
+				agentId: "agent-child-1",
+				agentType: "coder",
+				capabilities: ["write", "bash"],
+				runId: "run-child-1",
+				scopes: ["llm_gateway:invoke", "memory:write", "admin:all"],
+				surface: "maestro-subagent",
+				ttlSeconds: 900,
+			});
+
+			expect(result).toEqual({
+				agentId: "agent-child-1",
+				expiresAt: Date.parse(expiresAt),
+				organizationId: "org_123",
+				providerRef: {
+					provider: "openai",
+					environment: "prod",
+					credential_name: "managed-openai",
+					team_id: "team_456",
+				},
+				runId: "run-child-1",
+				scopesDenied: ["admin:all"],
+				scopesGranted: ["llm_gateway:invoke", "memory:write"],
+				scopesRequested: ["llm_gateway:invoke", "memory:write", "admin:all"],
+				token: TEST_DELEGATED_ACCESS_VALUE,
+				tokenType: "Bearer",
+			});
+
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			const [url, init] = fetchMock.mock.calls[0] ?? [];
+			expect(url).toBe("https://identity.evalops.test/v1/delegation-tokens");
+			expect(init?.method).toBe("POST");
+			expect(init?.headers).toEqual({
+				Authorization: "Bearer parent-access-token",
+				"Content-Type": "application/json",
+			});
+			expect(init?.body).toBe(
+				JSON.stringify({
+					agent_id: "agent-child-1",
+					agent_type: "coder",
+					capabilities: ["write", "bash"],
+					run_id: "run-child-1",
+					scopes: ["llm_gateway:invoke", "memory:write", "admin:all"],
+					surface: "maestro-subagent",
+					ttl_seconds: 900,
+				}),
+			);
+		});
+
+		it("materializes child environment overrides for delegated EvalOps auth", () => {
+			const env = buildEvalOpsDelegationEnvironment({
+				organizationId: "org_123",
+				providerRef: {
+					provider: "openai",
+					environment: "prod",
+					credential_name: "managed-openai",
+					team_id: "team_456",
+				},
+				token: TEST_DELEGATED_ACCESS_VALUE,
+			});
+
+			expect(env).toEqual({
+				MAESTRO_EVALOPS_ACCESS_TOKEN: TEST_DELEGATED_ACCESS_VALUE,
+				MAESTRO_EVALOPS_CREDENTIAL_NAME: "managed-openai",
+				MAESTRO_EVALOPS_ENVIRONMENT: "prod",
+				MAESTRO_EVALOPS_ORG_ID: "org_123",
+				MAESTRO_EVALOPS_PROVIDER: "openai",
+				MAESTRO_EVALOPS_TEAM_ID: "team_456",
+			});
 		});
 	});
 

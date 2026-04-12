@@ -6,6 +6,8 @@ import {
 	refreshAnthropicToken,
 } from "./anthropic.js";
 import {
+	buildEvalOpsDelegationEnvironment,
+	issueEvalOpsDelegationToken,
 	loginEvalOps,
 	refreshEvalOpsToken,
 	revokeEvalOpsToken,
@@ -41,6 +43,7 @@ const logger = createLogger("oauth");
 // Re-export for convenience
 export { listOAuthProvidersFromStorage as listOAuthProviders };
 export type { OAuthCredentials } from "./storage.js";
+export { buildEvalOpsDelegationEnvironment, issueEvalOpsDelegationToken };
 
 export type SupportedOAuthProvider =
 	| "anthropic"
