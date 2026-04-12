@@ -6,6 +6,10 @@ import { join } from "node:path";
 import { Type } from "@sinclair/typebox";
 import type { Static } from "@sinclair/typebox";
 import { getRegisteredModels } from "../models/registry.js";
+import {
+	buildEvalOpsDelegationEnvironment,
+	issueEvalOpsDelegationToken,
+} from "../oauth/index.js";
 import { createTool } from "./tool-dsl.js";
 import { readOnlyToolNames } from "./tool-names.js";
 
@@ -48,7 +52,7 @@ export const oracleTool = createTool<typeof oracleSchema, OracleToolDetails>({
 	description:
 		"Summon the Seer - a mystical systems advisor that foresees consequences of complex engineering decisions. Ideal for architecture reviews, deep debugging, and strategic guidance.",
 	schema: oracleSchema,
-	async run(params, { respond, signal }) {
+	async run(params, { respond, signal, toolCallId }) {
 		const { task, context, files, model: modelOverride } = params;
 		const model = selectOracleModel(modelOverride);
 
@@ -105,6 +109,8 @@ Always flag uncertainties, assumptions, or blind spots so the summoner knows whe
 		};
 
 		try {
+			const env = await buildOracleEnv(toolCallId);
+
 			// Spawn Seer subagent with read-only tools and reasoning model
 			const args = [
 				"--read-only",
@@ -125,6 +131,7 @@ Always flag uncertainties, assumptions, or blind spots so the summoner knows whe
 				}
 
 				const seer = spawn("maestro", args, {
+					env,
 					stdio: ["pipe", "pipe", "pipe"],
 				});
 
@@ -210,6 +217,39 @@ Always flag uncertainties, assumptions, or blind spots so the summoner knows whe
 		}
 	},
 });
+
+async function buildOracleEnv(
+	toolCallId: string,
+): Promise<Record<string, string | undefined>> {
+	const baseEnv = { ...process.env };
+
+	try {
+		const delegation = await issueEvalOpsDelegationToken({
+			agentId: toolCallId,
+			agentType: "oracle_seer",
+			capabilities: ["oracle_read_only"],
+			runId: toolCallId,
+			surface: "maestro-oracle",
+			token: process.env.MAESTRO_EVALOPS_ACCESS_TOKEN,
+			ttlSeconds: Math.max(60, Math.ceil(ORACLE_TIMEOUT_MS / 1000)),
+		});
+
+		return {
+			...baseEnv,
+			...buildEvalOpsDelegationEnvironment(delegation),
+		};
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		if (
+			message.includes("Run /login evalops first") ||
+			message.includes("EvalOps login requires")
+		) {
+			return baseEnv;
+		}
+
+		return baseEnv;
+	}
+}
 
 function selectOracleModel(inputOverride?: string): string {
 	const envOverride = process.env.MAESTRO_ORACLE_MODEL?.trim();
