@@ -5,10 +5,12 @@ on:
     branches: [main]
     paths:
       - "packages/tui-rs/**"
+      - "proto/maestro/v1/headless.proto"
       - ".github/workflows/rust.yml"
   pull_request:
     paths:
       - "packages/tui-rs/**"
+      - "proto/maestro/v1/headless.proto"
       - ".github/workflows/rust.yml"
 
 permissions:

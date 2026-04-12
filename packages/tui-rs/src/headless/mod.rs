@@ -199,6 +199,7 @@ mod async_transport;
 mod framing;
 mod generated_protocol;
 mod messages;
+mod proto;
 mod remote_transport;
 mod session;
 mod supervisor;
@@ -224,6 +225,7 @@ pub use messages::{
     StreamingResponse, ThinkingLevel, ToAgentMessage, TokenUsage, ToolResult,
     UtilityCommandShellMode, UtilityCommandStream, UtilityOperation, HEADLESS_PROTOCOL_VERSION,
 };
+pub use proto::maestro::v1 as proto_types;
 
 // Sync transport
 pub use transport::{AgentTransport, AgentTransportBuilder, TransportConfig, TransportError};
