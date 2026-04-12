@@ -50,7 +50,7 @@ Choose your interface:
 | [Slack Bot](packages/slack-agent/README.md) | Deployable Slack bot with Docker sandbox isolation |
 | [GitHub Agent](packages/github-agent/README.md) | Label-driven issue work and PR creation |
 | [Ambient Agent](docs/design/AMBIENT_AGENT.md) | Long-running daemon for repository monitoring and PR generation |
-| Headless | Scriptable automation for CI/CD and evaluation pipelines |
+| Headless | [Scriptable automation for CI/CD and evaluation pipelines](docs/protocols/headless.md) |
 
 ### Who It's For
 

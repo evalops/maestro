@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -51,6 +51,14 @@ function assistantMessage(
 describe("headless protocol helpers", () => {
 	it("exports a concrete protocol version", () => {
 		expect(HEADLESS_PROTOCOL_VERSION).toBe(headlessProtocolVersion);
+	});
+
+	it("documents the current protocol version in the reference doc", async () => {
+		const doc = await readFile(
+			new URL("../../docs/protocols/headless.md", import.meta.url),
+			"utf-8",
+		);
+		expect(doc).toContain(`Current version: \`${HEADLESS_PROTOCOL_VERSION}\``);
 	});
 
 	it("classifies cancellation-like errors", () => {

@@ -18,6 +18,7 @@ Use this index to jump to the right guide quickly and see how the pieces connect
 - [Sessions](SESSIONS.md) — session formats, storage locations, and management commands.
 - [Prompt Queue](PROMPT_QUEUE.md) — queue lifecycle, prioritization, and diagnostics hooks.
 - [MCP Guide](MCP_GUIDE.md) — Model Context Protocol setup and usage.
+- [Headless Protocol Reference](protocols/headless.md) — versioned JSON-over-stdio contract for Chat, TUIs, and other embedders.
 
 ## Architecture & Patterns
 - [Architecture Diagram](ARCHITECTURE_DIAGRAM.md) — high-level system layout.
