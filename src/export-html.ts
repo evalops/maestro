@@ -21,7 +21,11 @@ import {
 	isRenderableUserMessage,
 } from "./conversation/render-model.js";
 import { sanitizePayload } from "./safety/context-firewall.js";
-import type { SessionHeaderEntry, SessionManager } from "./session/manager.js";
+import type {
+	PortableSessionExportSession,
+	SessionHeaderEntry,
+	SessionManager,
+} from "./session/manager.js";
 import type { SessionEntry } from "./session/types.js";
 import { getHomeDir } from "./utils/path-expansion.js";
 
@@ -139,6 +143,24 @@ async function streamPortableEntries(
 		rl.close();
 		stream.close();
 	}
+}
+
+async function writePortableEntryArray(
+	stream: ReturnType<typeof createWriteStream>,
+	sessionFile: string,
+	options: PortableExportOptions = {},
+): Promise<void> {
+	stream.write("[");
+	let wroteEntry = false;
+	await streamPortableEntries(sessionFile, async (entry) => {
+		const exportedEntry = options.redactSecrets
+			? sanitizeEntryForPortableExport(entry)
+			: entry;
+		stream.write(wroteEntry ? "," : "");
+		stream.write(JSON.stringify(exportedEntry));
+		wroteEntry = true;
+	});
+	stream.write("]");
 }
 
 /**
@@ -963,23 +985,36 @@ export async function exportSessionToJson(
 		return `${sessionBasename}.json`;
 	})();
 
+	const portableBundle = sessionManager.getPortableSessionBundle();
+
 	await withSessionWriter(resolvedOutputPath, async (stream) => {
 		stream.write(
-			`{"format":"maestro-session-export.v1","exportedAt":${JSON.stringify(new Date().toISOString())},"entries":[`,
+			`{"format":"maestro-session-export.v1","exportedAt":${JSON.stringify(new Date().toISOString())},"sessionId":${JSON.stringify(portableBundle.selectedSessionId)},"entries":`,
 		);
-		let wroteEntry = false;
-		await streamPortableEntries(sessionFile, async (entry) => {
-			const exportedEntry = options.redactSecrets
-				? sanitizeEntryForPortableExport(entry)
-				: entry;
-			stream.write(wroteEntry ? "," : "");
-			stream.write(JSON.stringify(exportedEntry));
-			wroteEntry = true;
-		});
+		await writePortableEntryArray(stream, sessionFile, options);
+		stream.write(',"sessions":[');
+		let wroteSession = false;
+		for (const session of portableBundle.sessions) {
+			stream.write(wroteSession ? "," : "");
+			await writePortableSession(stream, session, options);
+			wroteSession = true;
+		}
 		stream.write("]}\n");
 	});
 
 	return resolvedOutputPath;
+}
+
+async function writePortableSession(
+	stream: ReturnType<typeof createWriteStream>,
+	session: PortableSessionExportSession,
+	options: PortableExportOptions = {},
+): Promise<void> {
+	stream.write(
+		`{"sessionId":${JSON.stringify(session.sessionId)},"parentSessionId":${JSON.stringify(session.parentSessionId ?? null)},"entries":`,
+	);
+	await writePortableEntryArray(stream, session.sessionFile, options);
+	stream.write("}");
 }
 
 function formatMessageAsText(
