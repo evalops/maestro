@@ -18,6 +18,14 @@ Root builds (`npm run build` or `npm run build:all`) also run the same headless
 protocol codegen step before TypeScript compilation, so local builds do not rely
 on a separate manual generation command.
 
+The repository also now carries a bootstrap protobuf schema for the headless
+protocol at `proto/maestro/v1/headless.proto`. Buf generation writes the
+checked-in TypeScript descriptors to
+`packages/contracts/src/proto/maestro/v1/headless_pb.ts`, and the package root
+re-exports those generated schemas for follow-up transport and multi-language
+work. This slice does not replace the live JSON protocol yet; it establishes the
+protobuf source of truth alongside the existing runtime surface.
+
 ## Usage
 
 ```ts
