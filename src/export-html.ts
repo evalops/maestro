@@ -1,6 +1,7 @@
 import {
 	copyFileSync,
 	createReadStream,
+	createWriteStream,
 	existsSync,
 	writeFileSync,
 } from "node:fs";
@@ -19,7 +20,9 @@ import {
 	isRenderableToolResultMessage,
 	isRenderableUserMessage,
 } from "./conversation/render-model.js";
+import { sanitizePayload } from "./safety/context-firewall.js";
 import type { SessionHeaderEntry, SessionManager } from "./session/manager.js";
+import type { SessionEntry } from "./session/types.js";
 import { getHomeDir } from "./utils/path-expansion.js";
 
 const normalizeForCompare = (value: string): string =>
@@ -34,6 +37,10 @@ const VERSION = packageJson.version ?? "unknown";
 interface SessionFileParseResult {
 	header: SessionHeaderEntry | null;
 	messages: AppMessage[];
+}
+
+interface PortableExportOptions {
+	redactSecrets?: boolean;
 }
 
 async function parseSessionFile(
@@ -70,6 +77,61 @@ async function parseSessionFile(
 		stream.close();
 	}
 	return { header, messages };
+}
+
+async function withSessionWriter(
+	outputPath: string,
+	write: (stream: ReturnType<typeof createWriteStream>) => Promise<void>,
+): Promise<void> {
+	const stream = createWriteStream(outputPath, { encoding: "utf8" });
+	try {
+		await write(stream);
+		await new Promise<void>((resolvePromise, reject) => {
+			stream.end((error?: Error | null) => {
+				if (error) {
+					reject(error);
+					return;
+				}
+				resolvePromise();
+			});
+		});
+	} catch (error) {
+		stream.destroy();
+		throw error;
+	}
+}
+
+function sanitizeEntryForPortableExport(entry: SessionEntry): SessionEntry {
+	return sanitizePayload(entry, {
+		redactSecrets: true,
+		vaultCredentials: false,
+		maxStringLength: Number.MAX_SAFE_INTEGER,
+		truncateLargeBlobs: false,
+	}) as SessionEntry;
+}
+
+async function streamPortableEntries(
+	sessionFile: string,
+	onEntry: (entry: SessionEntry) => Promise<void> | void,
+): Promise<void> {
+	const stream = createReadStream(sessionFile, { encoding: "utf8" });
+	const rl = createInterface({
+		input: stream,
+		crlfDelay: Number.POSITIVE_INFINITY,
+	});
+	try {
+		for await (const line of rl) {
+			const trimmed = line.trim();
+			if (!trimmed) {
+				continue;
+			}
+			const entry = JSON.parse(trimmed) as SessionEntry;
+			await onEntry(entry);
+		}
+	} finally {
+		rl.close();
+		stream.close();
+	}
 }
 
 /**
@@ -846,6 +908,7 @@ export async function exportSessionToText(
 export async function exportSessionToJsonl(
 	sessionManager: SessionManager,
 	outputPath?: string,
+	options: PortableExportOptions = {},
 ): Promise<string> {
 	await sessionManager.flush();
 	const sessionFile = sessionManager.getSessionFile();
@@ -860,7 +923,55 @@ export async function exportSessionToJsonl(
 		return basename(sessionFile);
 	})();
 
+	if (options.redactSecrets) {
+		await withSessionWriter(resolvedOutputPath, async (stream) => {
+			await streamPortableEntries(sessionFile, async (entry) => {
+				const sanitized = sanitizeEntryForPortableExport(entry);
+				stream.write(`${JSON.stringify(sanitized)}\n`);
+			});
+		});
+		return resolvedOutputPath;
+	}
+
 	copyFileSync(sessionFile, resolvedOutputPath);
+	return resolvedOutputPath;
+}
+
+export async function exportSessionToJson(
+	sessionManager: SessionManager,
+	outputPath?: string,
+	options: PortableExportOptions = {},
+): Promise<string> {
+	await sessionManager.flush();
+	const sessionFile = sessionManager.getSessionFile();
+	if (!sessionFile || !existsSync(sessionFile)) {
+		throw new Error("No persisted session is available to export.");
+	}
+
+	const resolvedOutputPath = (() => {
+		if (outputPath) {
+			return outputPath;
+		}
+		const sessionBasename = basename(sessionFile, ".jsonl");
+		return `${sessionBasename}.json`;
+	})();
+
+	await withSessionWriter(resolvedOutputPath, async (stream) => {
+		stream.write(
+			`{"format":"maestro-session-export.v1","exportedAt":${JSON.stringify(new Date().toISOString())},"entries":[`,
+		);
+		let wroteEntry = false;
+		await streamPortableEntries(sessionFile, async (entry) => {
+			const exportedEntry = options.redactSecrets
+				? sanitizeEntryForPortableExport(entry)
+				: entry;
+			stream.write(wroteEntry ? "," : "");
+			stream.write(JSON.stringify(exportedEntry));
+			wroteEntry = true;
+		});
+		stream.write("]}\n");
+	});
+
 	return resolvedOutputPath;
 }
 

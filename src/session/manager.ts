@@ -13,11 +13,12 @@ import {
 	appendFileSync,
 	existsSync,
 	mkdirSync,
+	readFileSync,
 	readdirSync,
 	statSync,
 	writeFileSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { extname, join, resolve } from "node:path";
 import { v4 as uuidv4 } from "uuid";
 import type {
 	AgentState,
@@ -78,6 +79,7 @@ import {
 	type SessionTreeNode,
 	type ThinkingLevelChangeEntry,
 	isSessionTreeEntry,
+	tryParseSessionEntry,
 } from "./types.js";
 
 export interface SessionManagerOptions {
@@ -88,6 +90,7 @@ export interface SessionManagerOptions {
 }
 
 const logger = createLogger("session-manager");
+const PORTABLE_SESSION_EXPORT_FORMAT = "maestro-session-export.v1";
 
 // Re-export SessionModelMetadata for backward compatibility
 export type { SessionModelMetadata } from "./metadata-cache.js";
@@ -1218,6 +1221,49 @@ export class SessionManager {
 		}
 
 		const entries = safeReadSessionEntries(resolvedSource);
+		return this.importPortableEntries(entries);
+	}
+
+	importPortableSession(sourcePath: string): {
+		sessionFile: string;
+		sessionId: string;
+	} {
+		const resolvedSource = resolve(sourcePath);
+		if (!existsSync(resolvedSource)) {
+			throw new Error(`Session file not found: ${resolvedSource}`);
+		}
+
+		const extension = extname(resolvedSource).toLowerCase();
+		if (extension === ".json") {
+			const entries = this.readPortableJsonEntries(resolvedSource);
+			return this.importPortableEntries(entries);
+		}
+
+		const entries = safeReadSessionEntries(resolvedSource);
+		return this.importPortableEntries(entries);
+	}
+
+	/**
+	 * Delete a session
+	 */
+	async deleteSession(sessionId: string): Promise<void> {
+		this.catalog.deleteSession(sessionId);
+	}
+
+	/**
+	 * Prune old sessions based on configured limits.
+	 * Removes sessions that exceed MAX_SESSIONS count or MAX_SESSION_AGE_DAYS.
+	 * Favorites are never pruned.
+	 * Returns the number of sessions removed.
+	 */
+	pruneSessions(): { removed: number; errors: number } {
+		return this.catalog.pruneSessions();
+	}
+
+	private importPortableEntries(entries: SessionEntry[]): {
+		sessionFile: string;
+		sessionId: string;
+	} {
 		migrateToCurrentVersion(entries);
 		if (entries.length === 0) {
 			throw new Error("Imported session file is empty or unreadable.");
@@ -1257,20 +1303,49 @@ export class SessionManager {
 		};
 	}
 
-	/**
-	 * Delete a session
-	 */
-	async deleteSession(sessionId: string): Promise<void> {
-		this.catalog.deleteSession(sessionId);
-	}
+	private readPortableJsonEntries(sourcePath: string): SessionEntry[] {
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(readFileSync(sourcePath, "utf8"));
+		} catch (error) {
+			throw new Error(
+				`Portable session export is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
 
-	/**
-	 * Prune old sessions based on configured limits.
-	 * Removes sessions that exceed MAX_SESSIONS count or MAX_SESSION_AGE_DAYS.
-	 * Favorites are never pruned.
-	 * Returns the number of sessions removed.
-	 */
-	pruneSessions(): { removed: number; errors: number } {
-		return this.catalog.pruneSessions();
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+			throw new Error("Portable session export must be a JSON object.");
+		}
+
+		const portableExport = parsed as {
+			format?: unknown;
+			entries?: unknown;
+		};
+		const format =
+			typeof portableExport.format === "string"
+				? portableExport.format
+				: undefined;
+		if (format !== PORTABLE_SESSION_EXPORT_FORMAT) {
+			throw new Error(
+				`Portable session export format must be ${PORTABLE_SESSION_EXPORT_FORMAT}.`,
+			);
+		}
+
+		const entries = Array.isArray(portableExport.entries)
+			? portableExport.entries
+			: undefined;
+		if (!entries) {
+			throw new Error("Portable session export is missing an entries array.");
+		}
+
+		return entries.map((entry, index) => {
+			const parsedEntry = tryParseSessionEntry(JSON.stringify(entry));
+			if (!parsedEntry) {
+				throw new Error(
+					`Portable session export contains an invalid entry at index ${index}.`,
+				);
+			}
+			return parsedEntry;
+		});
 	}
 }

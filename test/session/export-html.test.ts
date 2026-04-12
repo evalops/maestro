@@ -10,6 +10,8 @@ const normalizeWhitespace = (input: string): string =>
 	input.replace(/\s+/g, " ").trim();
 import {
 	exportSessionToHtml,
+	exportSessionToJson,
+	exportSessionToJsonl,
 	exportSessionToText,
 } from "../../src/export-html.js";
 import { SessionManager } from "../../src/session/manager.js";
@@ -61,6 +63,12 @@ const richSessionJson = `
 {"type":"message","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Reviewing screenshot"},{"type":"text","text":"Scanning files"},{"type":"toolCall","id":"tool-2","name":"read","arguments":{"path":"src/export-html.ts"}},{"type":"toolCall","id":"tool-3","name":"bash","arguments":{"command":"npm run test"}}],"api":"anthropic-messages","provider":"anthropic","model":"claude-3","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"toolUse","timestamp":5}}
 {"type":"message","message":{"role":"toolResult","toolCallId":"tool-2","toolName":"read","content":[{"type":"text","text":"// file contents"}],"isError":false,"timestamp":6}}
 {"type":"message","message":{"role":"toolResult","toolCallId":"tool-3","toolName":"bash","content":[{"type":"text","text":"All tests passing"},{"type":"image","mimeType":"image/png","data":"image-bytes"}],"isError":false,"timestamp":7}}
+`;
+
+const secretSessionJson = `
+{"type":"session","id":"session-3","timestamp":"2024-03-01T00:00:00.000Z","cwd":"/repo","model":"anthropic/claude-3","thinkingLevel":"low","systemPrompt":"Persisted system","tools":[]}
+{"type":"message","message":{"role":"user","content":"apiKey=sk-ant-abcdefghijklmnopqrstuvwxyz123456","timestamp":8}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Stored apiKey=sk-ant-abcdefghijklmnopqrstuvwxyz123456"}],"api":"anthropic-messages","provider":"anthropic","model":"claude-3","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":9}}
 `;
 
 describe("exporters", () => {
@@ -224,5 +232,32 @@ describe("exporters", () => {
 		} as unknown as SessionManager;
 		await exportSessionToText(manager, buildAgentState());
 		expect(flushSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("exports a portable JSON wrapper", async () => {
+		const sessionFile = createTempSessionFile(sessionJson);
+		const manager = new SessionManager(false, sessionFile);
+		const jsonPath = join(dirname(sessionFile), "portable.json");
+		const outputPath = await exportSessionToJson(manager, jsonPath);
+		const exported = JSON.parse(readFileSync(outputPath, "utf8")) as {
+			format: string;
+			exportedAt: string;
+			entries: Array<{ type: string }>;
+		};
+		expect(exported.format).toBe("maestro-session-export.v1");
+		expect(exported.exportedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+		expect(exported.entries[0]?.type).toBe("session");
+	});
+
+	it("redacts secrets in portable JSONL exports", async () => {
+		const sessionFile = createTempSessionFile(secretSessionJson);
+		const manager = new SessionManager(false, sessionFile);
+		const jsonlPath = join(dirname(sessionFile), "portable.jsonl");
+		const outputPath = await exportSessionToJsonl(manager, jsonlPath, {
+			redactSecrets: true,
+		});
+		const exported = readFileSync(outputPath, "utf8");
+		expect(exported).not.toContain("sk-ant-abcdefghijklmnopqrstuvwxyz123456");
+		expect(exported).toContain("[REDACTED:api_key:");
 	});
 });

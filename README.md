@@ -269,8 +269,8 @@ Every operation is exposed as an explicit slash command. Type `/help` for the fu
 | `/help` | List all available commands |
 | `/new` | Start a fresh session |
 | `/clear` | Clear context and restart |
-| `/export [file] [html|text|jsonl]` | Export session to HTML, text, or JSONL |
-| `/import session <file.jsonl>` | Import a portable JSONL session into the current workspace |
+| `/export [file] [html|text|json|jsonl]` | Export session to HTML, text, JSON, or JSONL |
+| `/import session <file.json\|file.jsonl>` | Import a portable JSON or JSONL session into the current workspace |
 | `/quit` | Exit (or Ctrl+C twice) |
 | `/session` | Session info, favorites, and summaries |
 | `/sessions` | List/load saved sessions |
@@ -583,8 +583,8 @@ The `Update Nix Hash` workflow runs on pushes to `main` that touch `bun.lockb`, 
 |---------|-------------|
 | `/model` | Switch models (interactive) |
 | `/thinking` | Adjust reasoning level |
-| `/export [file] [html|text|jsonl]` | Export to HTML, text, or JSONL |
-| `/import session <file.jsonl>` | Import a portable JSONL session |
+| `/export [file] [html|text|json|jsonl]` | Export to HTML, text, JSON, or JSONL |
+| `/import session <file.json\|file.jsonl>` | Import a portable JSON or JSONL session |
 | `/help` | List commands |
 | `/session` | Session info/favorites/summary |
 | `/sessions` | List/load sessions |
@@ -728,6 +728,7 @@ New commands/features should include tests in `test/`.
 Sessions are JSONL in `~/.maestro/agent/sessions/`. Use:
 - `maestro --no-session` for fresh starts
 - `/export session-archive.jsonl jsonl` to preserve the full append-only session log
+- `/export session-archive.json json` for a portable wrapped archive
 
 ---
 

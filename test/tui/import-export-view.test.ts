@@ -39,7 +39,7 @@ const buildView = (overrides: Partial<SessionManager> = {}) => {
 	const sessionManager = {
 		flush: vi.fn().mockResolvedValue(undefined),
 		getSessionFile: vi.fn().mockReturnValue("/tmp/session.jsonl"),
-		importSessionJsonl: vi.fn().mockReturnValue({
+		importPortableSession: vi.fn().mockReturnValue({
 			sessionFile: "/tmp/imported.jsonl",
 			sessionId: "imported-1",
 		}),
@@ -186,13 +186,30 @@ describe("ImportExportView.handleExportCommand", () => {
 		rmSync(tmp, { recursive: true, force: true });
 	});
 
+	it("exports json when requested", async () => {
+		const tmp = mkdtempSync(join(tmpdir(), "export-test-"));
+		const targetPath = join(tmp, "portable", "session.json");
+		const jsonSpy = vi
+			.spyOn(exporter, "exportSessionToJson")
+			.mockResolvedValue(targetPath);
+		spies.push(jsonSpy);
+		const { view, sessionManager } = buildView();
+		await view.handleExportCommand(`/export json ${targetPath}`);
+		expect(jsonSpy).toHaveBeenCalledTimes(1);
+		expect(jsonSpy.mock.calls[0]?.[0]).toBe(sessionManager);
+		expect(jsonSpy.mock.calls[0]?.[1]).toBe(targetPath);
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
 	it("imports a portable session file and loads it", () => {
 		const tmp = mkdtempSync(join(tmpdir(), "import-test-"));
-		const sourcePath = join(tmp, "portable-session.jsonl");
+		const sourcePath = join(tmp, "portable-session.json");
 		const { view, sessionManager, loadImportedSession, showInfoMessage } =
 			buildView();
 		view.handleImportCommand(`/import session ${sourcePath}`);
-		expect(sessionManager.importSessionJsonl).toHaveBeenCalledWith(sourcePath);
+		expect(sessionManager.importPortableSession).toHaveBeenCalledWith(
+			sourcePath,
+		);
 		expect(loadImportedSession).toHaveBeenCalledWith("/tmp/imported.jsonl");
 		expect(showInfoMessage).toHaveBeenCalledWith(
 			expect.stringContaining("Imported session imported-1"),
