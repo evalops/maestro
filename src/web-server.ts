@@ -37,6 +37,7 @@ import {
 } from "./checkpoints/index.js";
 import { buildSystemPrompt } from "./cli/system-prompt.js";
 import { composerManager } from "./composers/index.js";
+import { resolveDefaultApprovalMode } from "./config/default-approval-mode.js";
 import { initLifecycle, shutdownLifecycle } from "./lifecycle.js";
 import { loadEnv } from "./load-env.js";
 import { bootstrapLsp } from "./lsp/bootstrap.js";
@@ -174,18 +175,6 @@ function registerCrashHandlers() {
 	});
 }
 
-function normalizeApprovalMode(value?: string | null): ApprovalMode {
-	const normalized = value?.trim().toLowerCase();
-	if (
-		normalized === "auto" ||
-		normalized === "prompt" ||
-		normalized === "fail"
-	) {
-		return normalized;
-	}
-	return "prompt";
-}
-
 function normalizeAuthMode(value?: string | null): AuthMode {
 	const normalized = value?.trim().toLowerCase();
 	if (
@@ -211,9 +200,10 @@ const PROD_PROFILE =
 	PROFILE === "secure" ||
 	PROFILE === "hardened";
 
-const DEFAULT_APPROVAL_MODE = normalizeApprovalMode(
-	process.env.MAESTRO_APPROVAL_MODE ?? (PROD_PROFILE ? "fail" : null),
-);
+const DEFAULT_APPROVAL_MODE = resolveDefaultApprovalMode({
+	profile: PROFILE,
+	explicitApprovalMode: process.env.MAESTRO_APPROVAL_MODE,
+});
 const AUTH_MODE = normalizeAuthMode(process.env.MAESTRO_AUTH_MODE);
 const WEB_API_KEY = process.env.MAESTRO_WEB_API_KEY?.trim() || null;
 const requireKeyEnv = process.env.MAESTRO_WEB_REQUIRE_KEY;
