@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { getModel } from "../../src/models/builtin.js";
+import { writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { resetFeatureFlagCacheForTests } from "../../src/config/feature-flags.js";
+import { getModel, getProviders } from "../../src/models/builtin.js";
 import {
 	expectedManagedGatewayModelAPI,
 	expectedManagedGatewayModelBaseURL,
@@ -7,6 +11,11 @@ import {
 } from "../testing/evalops-managed.js";
 
 describe("Built-in model registry", () => {
+	afterEach(() => {
+		Reflect.deleteProperty(process.env, "EVALOPS_FEATURE_FLAGS_PATH");
+		resetFeatureFlagCacheForTests();
+	});
+
 	it("includes OpenRouter models wired to OpenAI-compatible endpoints", () => {
 		const model = getModel("openrouter", "anthropic/claude-sonnet-4.5");
 		expect(model).toBeTruthy();
@@ -67,4 +76,27 @@ describe("Built-in model registry", () => {
 			);
 		});
 	}
+
+	it("drops managed gateway providers when the kill switch is enabled", () => {
+		const path = join(
+			tmpdir(),
+			`maestro-model-flags-${Date.now()}-${Math.random()}.json`,
+		);
+		writeFileSync(
+			path,
+			JSON.stringify({
+				flags: [
+					{
+						key: "platform.kill_switches.maestro.evalops_managed",
+						enabled: true,
+					},
+				],
+			}),
+		);
+		process.env.EVALOPS_FEATURE_FLAGS_PATH = path;
+		resetFeatureFlagCacheForTests();
+
+		expect(getProviders()).not.toContain("evalops");
+		expect(getModel("evalops", "gpt-4o-mini")).toBeNull();
+	});
 });

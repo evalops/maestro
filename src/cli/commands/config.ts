@@ -22,7 +22,7 @@ import { getHomeDir } from "../../utils/path-expansion.js";
 import type { Api } from "../../agent/types.js";
 import { getEnvVarsForProvider } from "../../providers/api-keys.js";
 import {
-	EVALOPS_MANAGED_PROVIDER_DEFINITIONS,
+	getEvalOpsManagedProviderDefinitions,
 	isEvalOpsManagedProvider,
 } from "../../providers/evalops-managed.js";
 
@@ -39,131 +39,137 @@ type ProviderPreset = {
 	maxTokens?: number;
 };
 
-const MANAGED_GATEWAY_BASE_URL =
-	process.env.MAESTRO_LLM_GATEWAY_URL?.trim() || "http://127.0.0.1:8081/v1";
+function getManagedGatewayBaseUrl(): string {
+	return (
+		process.env.MAESTRO_LLM_GATEWAY_URL?.trim() || "http://127.0.0.1:8081/v1"
+	);
+}
 
-const MANAGED_GATEWAY_PROVIDER_PRESETS: ProviderPreset[] =
-	EVALOPS_MANAGED_PROVIDER_DEFINITIONS.map((definition) => ({
+function getManagedGatewayProviderPresets(): ProviderPreset[] {
+	return getEvalOpsManagedProviderDefinitions().map((definition) => ({
 		id: definition.id,
 		name: definition.name,
 		api: definition.api,
 		defaultModel: definition.defaultModel,
-		baseUrl: MANAGED_GATEWAY_BASE_URL,
+		baseUrl: getManagedGatewayBaseUrl(),
 		requiresApiKey: false,
 		note: definition.note,
 	}));
+}
 
-export const PROVIDER_PRESETS: ProviderPreset[] = [
-	{
-		id: "anthropic",
-		name: "Anthropic (Claude)",
-		api: "anthropic-messages",
-		defaultModel: "claude-opus-4-6",
-		baseUrl: "https://api.anthropic.com",
-		requiresApiKey: true,
-		apiKeyEnv: "ANTHROPIC_API_KEY",
-		contextWindow: 1000000,
-		maxTokens: 128000,
-	},
-	{
-		id: "openai",
-		name: "OpenAI (Responses)",
-		api: "openai-responses",
-		defaultModel: "gpt-4o-mini",
-		baseUrl: "https://api.openai.com/v1",
-		requiresApiKey: true,
-		apiKeyEnv: "OPENAI_API_KEY",
-	},
-	{
-		id: "groq",
-		name: "Groq",
-		api: "openai-completions",
-		defaultModel: "llama-3.3-70b-versatile",
-		baseUrl: "https://api.groq.com/openai/v1",
-		requiresApiKey: true,
-		apiKeyEnv: "GROQ_API_KEY",
-	},
-	{
-		id: "openrouter",
-		name: "OpenRouter",
-		api: "openai-completions",
-		defaultModel: "openai/o4-mini",
-		baseUrl: "https://openrouter.ai/api/v1",
-		requiresApiKey: true,
-		apiKeyEnv: "OPENROUTER_API_KEY",
-		note: "Supports many upstreams; accepts OpenAI-compatible keys",
-	},
-	...MANAGED_GATEWAY_PROVIDER_PRESETS,
-	{
-		id: "google-gemini",
-		name: "Google Gemini API",
-		api: "google-generative-ai",
-		defaultModel: "gemini-2.0-flash",
-		baseUrl: "https://generativelanguage.googleapis.com/v1beta",
-		requiresApiKey: true,
-		apiKeyEnv: "GEMINI_API_KEY",
-	},
-	{
-		id: "google-gemini-cli",
-		name: "Google Gemini CLI (Cloud Code Assist)",
-		api: "google-gemini-cli",
-		defaultModel: "gemini-2.5-flash",
-		baseUrl: "https://cloudcode-pa.googleapis.com",
-		requiresApiKey: false,
-		note: "Requires OAuth via /login (token includes projectId)",
-	},
-	{
-		id: "google-antigravity",
-		name: "Google Antigravity (Sandbox)",
-		api: "google-gemini-cli",
-		defaultModel: "gemini-3-pro-high",
-		baseUrl: "https://daily-cloudcode-pa.sandbox.googleapis.com",
-		requiresApiKey: false,
-		note: "Requires OAuth via /login (token includes projectId)",
-	},
-	{
-		id: "vertex-ai",
-		name: "Google Vertex AI (Claude/Gemini)",
-		api: "anthropic-messages",
-		defaultModel: "claude-3-7-sonnet@20250219",
-		baseUrl: "https://us-central1-aiplatform.googleapis.com/v1beta1",
-		requiresApiKey: false,
-		note: "Uses ADC; set GOOGLE_APPLICATION_CREDENTIALS or gcloud login",
-	},
-	{
-		id: "bedrock",
-		name: "AWS Bedrock",
-		api: "openai-completions",
-		defaultModel: "anthropic.claude-3-7-sonnet-20250219-v1:0",
-		requiresApiKey: false,
-		note: "Uses AWS credentials + region envs",
-	},
-	{
-		id: "mistral",
-		name: "Mistral",
-		api: "openai-completions",
-		defaultModel: "mistral-large-latest",
-		baseUrl: "https://api.mistral.ai/v1",
-		requiresApiKey: true,
-		apiKeyEnv: "MISTRAL_API_KEY",
-	},
-	{
-		id: "lmstudio",
-		name: "LM Studio (local)",
-		api: "openai-responses",
-		defaultModel: "lmstudio/gemma-3n",
-		baseUrl: "http://127.0.0.1:1234/v1",
-		requiresApiKey: false,
-	},
-	{
-		id: "ollama",
-		name: "Ollama (local)",
-		api: "openai-responses",
-		defaultModel: "ollama/llama3.2",
-		baseUrl: "http://localhost:11434/v1",
-		requiresApiKey: false,
-	},
-];
+export function getProviderPresets(): ProviderPreset[] {
+	return [
+		{
+			id: "anthropic",
+			name: "Anthropic (Claude)",
+			api: "anthropic-messages",
+			defaultModel: "claude-opus-4-6",
+			baseUrl: "https://api.anthropic.com",
+			requiresApiKey: true,
+			apiKeyEnv: "ANTHROPIC_API_KEY",
+			contextWindow: 1000000,
+			maxTokens: 128000,
+		},
+		{
+			id: "openai",
+			name: "OpenAI (Responses)",
+			api: "openai-responses",
+			defaultModel: "gpt-4o-mini",
+			baseUrl: "https://api.openai.com/v1",
+			requiresApiKey: true,
+			apiKeyEnv: "OPENAI_API_KEY",
+		},
+		{
+			id: "groq",
+			name: "Groq",
+			api: "openai-completions",
+			defaultModel: "llama-3.3-70b-versatile",
+			baseUrl: "https://api.groq.com/openai/v1",
+			requiresApiKey: true,
+			apiKeyEnv: "GROQ_API_KEY",
+		},
+		{
+			id: "openrouter",
+			name: "OpenRouter",
+			api: "openai-completions",
+			defaultModel: "openai/o4-mini",
+			baseUrl: "https://openrouter.ai/api/v1",
+			requiresApiKey: true,
+			apiKeyEnv: "OPENROUTER_API_KEY",
+			note: "Supports many upstreams; accepts OpenAI-compatible keys",
+		},
+		...getManagedGatewayProviderPresets(),
+		{
+			id: "google-gemini",
+			name: "Google Gemini API",
+			api: "google-generative-ai",
+			defaultModel: "gemini-2.0-flash",
+			baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+			requiresApiKey: true,
+			apiKeyEnv: "GEMINI_API_KEY",
+		},
+		{
+			id: "google-gemini-cli",
+			name: "Google Gemini CLI (Cloud Code Assist)",
+			api: "google-gemini-cli",
+			defaultModel: "gemini-2.5-flash",
+			baseUrl: "https://cloudcode-pa.googleapis.com",
+			requiresApiKey: false,
+			note: "Requires OAuth via /login (token includes projectId)",
+		},
+		{
+			id: "google-antigravity",
+			name: "Google Antigravity (Sandbox)",
+			api: "google-gemini-cli",
+			defaultModel: "gemini-3-pro-high",
+			baseUrl: "https://daily-cloudcode-pa.sandbox.googleapis.com",
+			requiresApiKey: false,
+			note: "Requires OAuth via /login (token includes projectId)",
+		},
+		{
+			id: "vertex-ai",
+			name: "Google Vertex AI (Claude/Gemini)",
+			api: "anthropic-messages",
+			defaultModel: "claude-3-7-sonnet@20250219",
+			baseUrl: "https://us-central1-aiplatform.googleapis.com/v1beta1",
+			requiresApiKey: false,
+			note: "Uses ADC; set GOOGLE_APPLICATION_CREDENTIALS or gcloud login",
+		},
+		{
+			id: "bedrock",
+			name: "AWS Bedrock",
+			api: "openai-completions",
+			defaultModel: "anthropic.claude-3-7-sonnet-20250219-v1:0",
+			requiresApiKey: false,
+			note: "Uses AWS credentials + region envs",
+		},
+		{
+			id: "mistral",
+			name: "Mistral",
+			api: "openai-completions",
+			defaultModel: "mistral-large-latest",
+			baseUrl: "https://api.mistral.ai/v1",
+			requiresApiKey: true,
+			apiKeyEnv: "MISTRAL_API_KEY",
+		},
+		{
+			id: "lmstudio",
+			name: "LM Studio (local)",
+			api: "openai-responses",
+			defaultModel: "lmstudio/gemma-3n",
+			baseUrl: "http://127.0.0.1:1234/v1",
+			requiresApiKey: false,
+		},
+		{
+			id: "ollama",
+			name: "Ollama (local)",
+			api: "openai-responses",
+			defaultModel: "ollama/llama3.2",
+			baseUrl: "http://localhost:11434/v1",
+			requiresApiKey: false,
+		},
+	];
+}
 
 export interface ConfigShowRenderOptions {
 	hierarchy: string[];
@@ -548,6 +554,8 @@ export async function handleConfigInit(): Promise<void> {
 	});
 
 	try {
+		const providerPresets = getProviderPresets();
+
 		// Determine config location
 		const configDir = join(process.cwd(), ".maestro");
 		const configPath = join(configDir, "config.json");
@@ -577,14 +585,14 @@ export async function handleConfigInit(): Promise<void> {
 
 		// Step 1: Choose provider
 		console.log(`\n${badge("1. Choose your provider", undefined, "info")}`);
-		PROVIDER_PRESETS.forEach((preset, idx) => {
+		providerPresets.forEach((preset, idx) => {
 			const note = preset.note ? chalk.dim(` — ${preset.note}`) : "";
 			console.log(`  ${idx + 1}) ${preset.name}${note}`);
 		});
 
 		let preset: ProviderPreset | undefined;
 		if (presetId) {
-			const found = PROVIDER_PRESETS.find(
+			const found = providerPresets.find(
 				(p) => p.id.toLowerCase() === presetId.toLowerCase(),
 			);
 			if (!found) {
@@ -601,18 +609,18 @@ export async function handleConfigInit(): Promise<void> {
 
 		if (!preset) {
 			const providerChoice = await rl.question(
-				chalk.cyan(`\nProvider (1-${PROVIDER_PRESETS.length}): `),
+				chalk.cyan(`\nProvider (1-${providerPresets.length}): `),
 			);
 
 			const presetIndex =
 				Number.parseInt(providerChoice.trim(), 10) - 1 >= 0 &&
-				Number.parseInt(providerChoice.trim(), 10) - 1 < PROVIDER_PRESETS.length
+				Number.parseInt(providerChoice.trim(), 10) - 1 < providerPresets.length
 					? Number.parseInt(providerChoice.trim(), 10) - 1
 					: 0;
-			preset = PROVIDER_PRESETS[presetIndex] ?? PROVIDER_PRESETS[0];
+			preset = providerPresets[presetIndex] ?? providerPresets[0];
 		}
 
-		// At this point preset is guaranteed to be defined because PROVIDER_PRESETS is non-empty
+		// At this point preset is guaranteed to be defined because providerPresets is non-empty
 		if (!preset) {
 			throw new Error("No provider presets available");
 		}

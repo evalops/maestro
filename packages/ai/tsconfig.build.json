@@ -28,6 +28,7 @@
 		"../../src/interaction/**/*.ts",
 		"../../src/config/constants.ts",
 		"../../src/config/env-vars.ts",
+		"../../src/config/feature-flags.ts",
 		"../../src/config/firewall-config.ts",
 		"../../src/config/framework.ts",
 		"../../src/config/index.ts",

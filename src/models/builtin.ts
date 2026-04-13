@@ -1,5 +1,8 @@
 import type { Api, Model } from "../agent/types.js";
-import { EVALOPS_MANAGED_PROVIDER_DEFINITIONS } from "../providers/evalops-managed.js";
+import {
+	getEvalOpsManagedProviderDefinitions,
+	isEvalOpsManagedGatewayEnabled,
+} from "../providers/evalops-managed.js";
 import { MODELS as GENERATED_MODELS } from "./models.generated.js";
 import { normalizeModelBaseUrl } from "./url-normalize.js";
 
@@ -1615,6 +1618,7 @@ const BEDROCK_OVERLAY = {
 
 // Cached converted models (built lazily on first access)
 let BUILTIN_MODELS: Record<string, Model<Api>[]> | null = null;
+let BUILTIN_MODELS_MANAGED_GATEWAY_ENABLED: boolean | null = null;
 const CODEX_MODEL_PATTERN = /codex/i;
 
 // Map provider names from models.dev to our internal names
@@ -1713,7 +1717,7 @@ function convertGeneratedModels(): Record<string, Model<Api>[]> {
 		}
 	}
 
-	for (const definition of EVALOPS_MANAGED_PROVIDER_DEFINITIONS) {
+	for (const definition of getEvalOpsManagedProviderDefinitions()) {
 		const sourceModels = converted[definition.sourceProvider];
 		converted[definition.id] = definition.allowedModelApis
 			? cloneManagedGatewayModelsForApis(
@@ -1739,6 +1743,7 @@ function convertGeneratedModels(): Record<string, Model<Api>[]> {
 export async function ensureModelsLoaded(): Promise<void> {
 	if (BUILTIN_MODELS !== null) return;
 	BUILTIN_MODELS = convertGeneratedModels();
+	BUILTIN_MODELS_MANAGED_GATEWAY_ENABLED = isEvalOpsManagedGatewayEnabled();
 }
 
 /**
@@ -1752,8 +1757,13 @@ export function areModelsLoaded(): boolean {
  * Get models, converting them lazily if needed
  */
 function getBuiltinModels(): Record<string, Model<Api>[]> {
-	if (BUILTIN_MODELS === null) {
+	const managedGatewayEnabled = isEvalOpsManagedGatewayEnabled();
+	if (
+		BUILTIN_MODELS === null ||
+		BUILTIN_MODELS_MANAGED_GATEWAY_ENABLED !== managedGatewayEnabled
+	) {
 		BUILTIN_MODELS = convertGeneratedModels();
+		BUILTIN_MODELS_MANAGED_GATEWAY_ENABLED = managedGatewayEnabled;
 	}
 	return BUILTIN_MODELS;
 }

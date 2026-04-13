@@ -227,6 +227,14 @@ In managed mode:
 This is the intended path for org-managed Azure OpenAI, Google Gemini, Anthropic, OpenAI, and OpenRouter
 credentials.
 
+Dynamic config:
+
+- `EVALOPS_FEATURE_FLAGS_PATH`
+  - optional path to the shared `config/v1.FeatureFlagSnapshot` protojson
+- `platform.kill_switches.maestro.evalops_managed`
+  - when enabled, Maestro hides the EvalOps managed presets and rejects
+    `/login evalops`
+
 ### Durable Memory Service
 
 Maestro can also mirror automatic durable memories to the shared EvalOps

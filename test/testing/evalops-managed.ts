@@ -1,10 +1,10 @@
 import {
-	EVALOPS_MANAGED_PROVIDER_DEFINITIONS,
+	ALL_EVALOPS_MANAGED_PROVIDER_DEFINITIONS,
 	type EvalOpsManagedProviderDefinition,
 } from "../../src/providers/evalops-managed.js";
 
 export const managedGatewayAliasDefinitions: readonly EvalOpsManagedProviderDefinition[] =
-	EVALOPS_MANAGED_PROVIDER_DEFINITIONS.filter(
+	ALL_EVALOPS_MANAGED_PROVIDER_DEFINITIONS.filter(
 		(definition) => definition.id !== "evalops",
 	);
 

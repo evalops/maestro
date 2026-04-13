@@ -1,4 +1,8 @@
 import type { AnthropicLoginMode } from "../providers/anthropic-auth.js";
+import {
+	assertEvalOpsManagedGatewayEnabled,
+	isEvalOpsManagedGatewayEnabled,
+} from "../providers/evalops-managed.js";
 import { createLogger } from "../utils/logger.js";
 import {
 	loginAnthropic,
@@ -75,7 +79,7 @@ export function getOAuthProviders(): OAuthProviderInfo[] {
 			id: "evalops",
 			name: "EvalOps Managed",
 			description: "Identity-backed managed gateway access",
-			available: true,
+			available: isEvalOpsManagedGatewayEnabled(),
 		},
 		{
 			id: "openai",
@@ -141,6 +145,7 @@ export async function login(
 			await loginOpenAI(options.onAuthUrl, options.onStatus);
 			break;
 		case "evalops":
+			assertEvalOpsManagedGatewayEnabled();
 			await loginEvalOps(options.onAuthUrl, options.onStatus);
 			break;
 		case "google-gemini-cli":

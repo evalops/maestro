@@ -1,4 +1,8 @@
+import { writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resetFeatureFlagCacheForTests } from "../../src/config/feature-flags.js";
 import { getOAuthToken } from "../../src/oauth/index.js";
 import { loadOAuthCredentials } from "../../src/oauth/storage.js";
 import { createAuthResolver } from "../../src/providers/auth.js";
@@ -50,6 +54,8 @@ describe("auth resolver", () => {
 		} else {
 			process.env.CODEX_API_KEY = originalCodex;
 		}
+		Reflect.deleteProperty(process.env, "EVALOPS_FEATURE_FLAGS_PATH");
+		resetFeatureFlagCacheForTests();
 		vi.clearAllMocks();
 	});
 
@@ -178,6 +184,33 @@ describe("auth resolver", () => {
 		});
 		mockedGetToken.mockReset();
 		mockedLoadCreds.mockReset();
+	});
+
+	it("fails closed for evalops providers when the kill switch is enabled", async () => {
+		const path = join(
+			tmpdir(),
+			`maestro-auth-flags-${Date.now()}-${Math.random()}.json`,
+		);
+		writeFileSync(
+			path,
+			JSON.stringify({
+				flags: [
+					{
+						key: "platform.kill_switches.maestro.evalops_managed",
+						enabled: true,
+					},
+				],
+			}),
+		);
+		process.env.EVALOPS_FEATURE_FLAGS_PATH = path;
+		resetFeatureFlagCacheForTests();
+
+		const resolver = createAuthResolver({
+			mode: "auto",
+			explicitApiKey: "cli-key",
+		});
+
+		await expect(resolver("evalops")).resolves.toBeUndefined();
 	});
 
 	for (const definition of managedGatewayAliasDefinitions) {

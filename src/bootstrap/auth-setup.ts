@@ -16,7 +16,11 @@ import {
 	type AuthMode,
 	createAuthResolver,
 } from "../providers/auth.js";
-import { isEvalOpsManagedProvider } from "../providers/evalops-managed.js";
+import {
+	isEvalOpsManagedGatewayEnabled,
+	isEvalOpsManagedProvider,
+	isKnownEvalOpsManagedProvider,
+} from "../providers/evalops-managed.js";
 
 /** A plain + colored error line for terminal display. */
 export interface AuthLine {
@@ -93,9 +97,12 @@ export function createAuthSetup(params: {
 					? 'Run "maestro anthropic login" (claude) or use /login to authenticate before retrying.'
 					: providerName === "openai"
 						? 'Run "maestro openai login" or use /login to authenticate before retrying.'
-						: isEvalOpsManagedProvider(providerName)
-							? 'Run "/login evalops" after setting MAESTRO_EVALOPS_ORG_ID.'
-							: 'Run "/login" to authenticate before retrying.';
+						: isKnownEvalOpsManagedProvider(providerName) &&
+								!isEvalOpsManagedGatewayEnabled()
+							? "EvalOps managed gateway access is currently disabled by dynamic config."
+							: isEvalOpsManagedProvider(providerName)
+								? 'Run "/login evalops" after setting MAESTRO_EVALOPS_ORG_ID.'
+								: 'Run "/login" to authenticate before retrying.';
 			push(
 				`${loginHint} Or provide an API key for the selected provider.`,
 				chalk.dim(

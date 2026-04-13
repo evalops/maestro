@@ -1,4 +1,8 @@
 import type { Api } from "../agent/types.js";
+import {
+	MAESTRO_EVALOPS_MANAGED_KILL_SWITCH,
+	isFeatureFlagEnabled,
+} from "../config/feature-flags.js";
 
 export type EvalOpsManagedProviderDefinition = {
 	allowedModelApis?: readonly Api[];
@@ -13,7 +17,7 @@ export type EvalOpsManagedProviderDefinition = {
 	usesAnthropicOAuth?: boolean;
 };
 
-export const EVALOPS_MANAGED_PROVIDER_DEFINITIONS: readonly EvalOpsManagedProviderDefinition[] =
+export const ALL_EVALOPS_MANAGED_PROVIDER_DEFINITIONS: readonly EvalOpsManagedProviderDefinition[] =
 	[
 		{
 			api: "openai-responses",
@@ -167,18 +171,45 @@ export const EVALOPS_MANAGED_PROVIDER_DEFINITIONS: readonly EvalOpsManagedProvid
 	] as const;
 
 const managedProvidersByID = new Map<string, EvalOpsManagedProviderDefinition>(
-	EVALOPS_MANAGED_PROVIDER_DEFINITIONS.map((definition) => [
+	ALL_EVALOPS_MANAGED_PROVIDER_DEFINITIONS.map((definition) => [
 		definition.id,
 		definition,
 	]),
 );
 
+export function isEvalOpsManagedGatewayEnabled(): boolean {
+	return !isFeatureFlagEnabled(MAESTRO_EVALOPS_MANAGED_KILL_SWITCH);
+}
+
+export function getEvalOpsManagedProviderDefinitions(): readonly EvalOpsManagedProviderDefinition[] {
+	return isEvalOpsManagedGatewayEnabled()
+		? ALL_EVALOPS_MANAGED_PROVIDER_DEFINITIONS
+		: [];
+}
+
+export function isKnownEvalOpsManagedProvider(provider: string): boolean {
+	return managedProvidersByID.has(provider.toLowerCase().trim());
+}
+
 export function getEvalOpsManagedProviderDefinition(
 	provider: string,
 ): EvalOpsManagedProviderDefinition | undefined {
+	if (!isEvalOpsManagedGatewayEnabled()) {
+		return undefined;
+	}
 	return managedProvidersByID.get(provider.toLowerCase().trim());
 }
 
 export function isEvalOpsManagedProvider(provider: string): boolean {
 	return getEvalOpsManagedProviderDefinition(provider) !== undefined;
+}
+
+export function assertEvalOpsManagedGatewayEnabled(): void {
+	if (isEvalOpsManagedGatewayEnabled()) {
+		return;
+	}
+
+	throw new Error(
+		"EvalOps managed gateway access is currently disabled by dynamic config.",
+	);
 }

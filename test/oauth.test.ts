@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const testDir = join(tmpdir(), `composer-oauth-test-${Date.now()}`);
 process.env.MAESTRO_AGENT_DIR = join(testDir, "agent");
 
+import { resetFeatureFlagCacheForTests } from "../src/config/feature-flags.js";
 import {
 	type SupportedOAuthProvider,
 	buildEvalOpsDelegationEnvironment,
@@ -113,6 +114,7 @@ describe("OAuth Storage", () => {
 describe("OAuth Index", () => {
 	const originalEvalOpsOrgId = process.env.MAESTRO_EVALOPS_ORG_ID;
 	const originalEvalOpsOrganizationId = process.env.EVALOPS_ORGANIZATION_ID;
+	const originalFeatureFlagsPath = process.env.EVALOPS_FEATURE_FLAGS_PATH;
 	const originalFetch = global.fetch;
 
 	beforeEach(() => {
@@ -131,6 +133,12 @@ describe("OAuth Index", () => {
 		} else {
 			process.env.EVALOPS_ORGANIZATION_ID = originalEvalOpsOrganizationId;
 		}
+		if (originalFeatureFlagsPath === undefined) {
+			Reflect.deleteProperty(process.env, "EVALOPS_FEATURE_FLAGS_PATH");
+		} else {
+			process.env.EVALOPS_FEATURE_FLAGS_PATH = originalFeatureFlagsPath;
+		}
+		resetFeatureFlagCacheForTests();
 		global.fetch = originalFetch;
 		vi.restoreAllMocks();
 		vi.unstubAllGlobals();
@@ -158,6 +166,28 @@ describe("OAuth Index", () => {
 			for (const provider of providers) {
 				expect(provider.available).toBe(true);
 			}
+		});
+
+		it("marks evalops unavailable when the kill switch is enabled", () => {
+			const path = join(testDir, "flags.json");
+			writeFileSync(
+				path,
+				JSON.stringify({
+					flags: [
+						{
+							key: "platform.kill_switches.maestro.evalops_managed",
+							enabled: true,
+						},
+					],
+				}),
+			);
+			process.env.EVALOPS_FEATURE_FLAGS_PATH = path;
+			resetFeatureFlagCacheForTests();
+
+			const providers = getOAuthProviders();
+			expect(providers.find((provider) => provider.id === "evalops")).toEqual(
+				expect.objectContaining({ available: false }),
+			);
 		});
 	});
 
@@ -358,6 +388,33 @@ describe("OAuth Index", () => {
 			expect(init?.body).toBe(
 				JSON.stringify({ refresh_token: "old-evalops-refresh" }),
 			);
+		});
+	});
+
+	describe("login", () => {
+		it("rejects evalops login when the managed gateway kill switch is enabled", async () => {
+			const path = join(testDir, "flags.json");
+			writeFileSync(
+				path,
+				JSON.stringify({
+					flags: [
+						{
+							key: "platform.kill_switches.maestro.evalops_managed",
+							enabled: true,
+						},
+					],
+				}),
+			);
+			process.env.EVALOPS_FEATURE_FLAGS_PATH = path;
+			process.env.MAESTRO_EVALOPS_ORG_ID = "org_123";
+			resetFeatureFlagCacheForTests();
+
+			await expect(
+				login("evalops", {
+					onAuthUrl: () => {},
+					onStatus: () => {},
+				}),
+			).rejects.toThrow(/disabled by dynamic config/);
 		});
 	});
 

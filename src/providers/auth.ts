@@ -55,7 +55,9 @@ import { loadOAuthCredentials } from "../oauth/storage.js";
 import { lookupApiKey } from "./api-keys.js";
 import {
 	getEvalOpsManagedProviderDefinition,
+	isEvalOpsManagedGatewayEnabled,
 	isEvalOpsManagedProvider,
+	isKnownEvalOpsManagedProvider,
 } from "./evalops-managed.js";
 import { getFreshOpenAIOAuthCredential } from "./openai-auth.js";
 
@@ -226,6 +228,13 @@ function buildEvalOpsCredential(
 export function createAuthResolver(options: AuthResolverOptions): AuthResolver {
 	const explicitKey = options.explicitApiKey?.trim();
 	return async (provider: string): Promise<AuthCredential | undefined> => {
+		if (
+			isKnownEvalOpsManagedProvider(provider) &&
+			!isEvalOpsManagedGatewayEnabled()
+		) {
+			return undefined;
+		}
+
 		const normalizedProvider = provider.toLowerCase();
 
 		if (explicitKey) {
