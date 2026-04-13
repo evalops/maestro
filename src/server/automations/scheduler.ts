@@ -4,6 +4,10 @@ import { relative, resolve } from "node:path";
 import { DateTime } from "luxon";
 import type { AgentEvent, AppMessage } from "../../agent/types.js";
 import { runUserPromptWithRecovery } from "../../agent/user-prompt-runtime.js";
+import {
+	MAESTRO_AUTONOMOUS_ACTIONS_KILL_SWITCH,
+	areAutonomousActionsDisabled,
+} from "../../config/feature-flags.js";
 import { withMcpPostKeepMessages } from "../../mcp/prompt-recovery.js";
 import {
 	createAutomaticMemoryConsolidationCoordinator,
@@ -68,9 +72,27 @@ const MAX_RUN_HISTORY =
 
 let schedulerInterval: ReturnType<typeof setInterval> | null = null;
 const runningTaskIds = new Set<string>();
+let autonomousActionsKillSwitchLogged = false;
+
+function autonomousActionsDisabled(): boolean {
+	const disabled = areAutonomousActionsDisabled();
+	if (disabled && !autonomousActionsKillSwitchLogged) {
+		logger.warn("Automation scheduler disabled by feature flag", {
+			flag: MAESTRO_AUTONOMOUS_ACTIONS_KILL_SWITCH,
+		});
+		autonomousActionsKillSwitchLogged = true;
+	} else if (!disabled && autonomousActionsKillSwitchLogged) {
+		logger.info("Automation scheduler re-enabled after feature flag cleared", {
+			flag: MAESTRO_AUTONOMOUS_ACTIONS_KILL_SWITCH,
+		});
+		autonomousActionsKillSwitchLogged = false;
+	}
+	return disabled;
+}
 
 export function startAutomationScheduler(context: WebServerContext): void {
 	if (schedulerInterval) return;
+	if (autonomousActionsDisabled()) return;
 
 	const tick = () => {
 		void checkAutomations(context);
@@ -294,6 +316,10 @@ function computeNextAfterSkip(
 }
 
 async function checkAutomations(context: WebServerContext): Promise<void> {
+	if (autonomousActionsDisabled()) {
+		return;
+	}
+
 	const state = loadAutomationState();
 	let touched = false;
 	const now = Date.now();
