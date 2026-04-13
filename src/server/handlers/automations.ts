@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ThinkingLevel } from "../../agent/types.js";
+import { areAutonomousActionsDisabled } from "../../config/feature-flags.js";
 import { createLogger } from "../../utils/logger.js";
 import type { WebServerContext } from "../app-context.js";
 import { buildMagicDocsAutomationTemplate } from "../automations/magic-docs.js";
@@ -146,6 +147,19 @@ export async function handleAutomations(
 
 		if (req.method === "POST") {
 			if (params?.id) {
+				if (areAutonomousActionsDisabled()) {
+					sendJson(
+						res,
+						503,
+						{
+							error: "service_disabled",
+							message: "Autonomous actions are temporarily disabled",
+						},
+						context.corsHeaders,
+					);
+					return;
+				}
+
 				// Run automation
 				const automation = await runAutomationById(
 					params.id,

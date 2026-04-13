@@ -1,8 +1,13 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import * as featureFlags from "../../src/config/feature-flags.js";
 import * as magicDocs from "../../src/server/automations/magic-docs.js";
-import { handleAutomationMagicDocs } from "../../src/server/handlers/automations.js";
+import * as scheduler from "../../src/server/automations/scheduler.js";
+import {
+	handleAutomationMagicDocs,
+	handleAutomations,
+} from "../../src/server/handlers/automations.js";
 
 const corsHeaders = { "Access-Control-Allow-Origin": "*" };
 
@@ -118,5 +123,37 @@ describe("handleAutomationMagicDocs", () => {
 		expect(JSON.parse(res.body)).toEqual({
 			error: "Method not allowed",
 		});
+	});
+});
+
+describe("handleAutomations", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it("returns 503 when autonomous actions are disabled", async () => {
+		vi.spyOn(featureFlags, "areAutonomousActionsDisabled").mockReturnValue(
+			true,
+		);
+		const runSpy = vi.spyOn(scheduler, "runAutomationById");
+
+		const req = makeReq("/api/automations/automation-1/run", {
+			method: "POST",
+		});
+		const res = makeRes();
+
+		await handleAutomations(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			{ corsHeaders } as never,
+			{ id: "automation-1" },
+		);
+
+		expect(res.statusCode).toBe(503);
+		expect(JSON.parse(res.body)).toEqual({
+			error: "service_disabled",
+			message: "Autonomous actions are temporarily disabled",
+		});
+		expect(runSpy).not.toHaveBeenCalled();
 	});
 });
