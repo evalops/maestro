@@ -9,6 +9,10 @@ import {
 	isOpenTelemetryEnabled,
 } from "./opentelemetry.js";
 import {
+	hasRemoteMeterDestination,
+	mirrorCanonicalTurnEventToMeter,
+} from "./telemetry/meter-service-client.js";
+import {
 	type CanonicalTurnEvent,
 	setDefaultTelemetryRecorder,
 } from "./telemetry/wide-events.js";
@@ -197,7 +201,9 @@ const shouldEnableTelemetry = (): boolean => {
 	if (flag === "1" || flag === "true") {
 		return true;
 	}
-	return Boolean(telemetryEndpointEnv || telemetryFileEnv);
+	return Boolean(
+		telemetryEndpointEnv || telemetryFileEnv || hasRemoteMeterDestination(),
+	);
 };
 const initialTelemetryEnabled = shouldEnableTelemetry();
 let telemetryEnabled = initialTelemetryEnabled;
@@ -243,6 +249,8 @@ export function getTelemetryStatus(): TelemetryStatus {
 		reason = "sampling=0";
 	} else if (telemetryEndpointEnv) {
 		reason = "endpoint";
+	} else if (hasRemoteMeterDestination()) {
+		reason = "meter";
 	} else if (telemetryFileEnv || baseEnabled) {
 		reason = "file";
 	}
@@ -272,6 +280,14 @@ export function setTelemetryRuntimeOverride(
 	telemetryOverride = enabled;
 	telemetryOverrideReason = reason;
 	telemetryEnabled = enabled === null ? initialTelemetryEnabled : enabled;
+}
+
+function isCanonicalTurnTelemetryEvent(
+	event: TelemetryEvent,
+): event is CanonicalTurnEvent {
+	return (
+		event.type === "canonical-turn" && "model" in event && "tokens" in event
+	);
 }
 
 async function writeToFile(payload: string) {
@@ -452,6 +468,10 @@ function recordOpenTelemetrySpan(event: TelemetryEvent): void {
 async function persistTelemetry(event: TelemetryEvent) {
 	const payload = JSON.stringify(event);
 	const tasks: Promise<void>[] = [];
+
+	if (isCanonicalTurnTelemetryEvent(event)) {
+		tasks.push(mirrorCanonicalTurnEventToMeter(event).then(() => undefined));
+	}
 
 	if (telemetryEndpointEnv) {
 		tasks.push(postToEndpoint(payload));
