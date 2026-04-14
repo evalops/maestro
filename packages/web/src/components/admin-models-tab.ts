@@ -114,8 +114,12 @@ export class AdminModelsTab {
 				return "Approved";
 			case "denied":
 				return "Denied";
-			default:
+			case "pending":
 				return "Pending";
+			default: {
+				const exhaustive: never = status;
+				return exhaustive;
+			}
 		}
 	};
 
