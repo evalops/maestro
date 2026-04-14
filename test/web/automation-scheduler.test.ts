@@ -11,7 +11,7 @@ describe("startAutomationScheduler", () => {
 		vi.restoreAllMocks();
 	});
 
-	it("does not start when autonomous actions are disabled", () => {
+	it("keeps polling when autonomous actions are disabled", () => {
 		vi.spyOn(featureFlags, "areAutonomousActionsDisabled").mockReturnValue(
 			true,
 		);
@@ -19,6 +19,6 @@ describe("startAutomationScheduler", () => {
 
 		startAutomationScheduler({} as never);
 
-		expect(setIntervalSpy).not.toHaveBeenCalled();
+		expect(setIntervalSpy).toHaveBeenCalledTimes(1);
 	});
 });

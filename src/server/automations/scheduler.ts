@@ -92,9 +92,11 @@ function autonomousActionsDisabled(): boolean {
 
 export function startAutomationScheduler(context: WebServerContext): void {
 	if (schedulerInterval) return;
-	if (autonomousActionsDisabled()) return;
 
 	const tick = () => {
+		if (autonomousActionsDisabled()) {
+			return;
+		}
 		void checkAutomations(context);
 	};
 
