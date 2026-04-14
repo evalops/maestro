@@ -121,4 +121,35 @@ describe("AdminModelsTab", () => {
 			{ message: "Model denied", type: "success" },
 		]);
 	});
+
+	it("renders auto-approved models with a human-readable status label", async () => {
+		const element = await fixture<TestAdminModelsHost>(
+			html`<test-admin-models-host></test-admin-models-host>`,
+		);
+		element.approvals = [
+			{
+				id: "approval-1",
+				orgId: "org-1",
+				modelId: "gpt-5.4-mini",
+				provider: "openai",
+				status: "auto_approved",
+				tokenUsed: 1200,
+				spendUsed: 150,
+			},
+		];
+		await element.load();
+		await element.updateComplete;
+
+		const text = element.shadowRoot?.textContent ?? "";
+		const buttons = Array.from(
+			element.shadowRoot?.querySelectorAll("button") ?? [],
+		) as HTMLButtonElement[];
+
+		assert.include(text, "Auto-approved");
+		assert.notInclude(text, "auto_approved");
+		assert.deepEqual(
+			buttons.map((button) => button.textContent?.trim()).filter(Boolean),
+			[],
+		);
+	});
 });

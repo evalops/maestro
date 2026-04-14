@@ -67,7 +67,7 @@ export class AdminModelsTab {
 													<td>${approval.provider}</td>
 													<td>
 														<span class="badge ${this.getStatusBadgeClass(approval.status)}">
-															${approval.status}
+															${this.formatStatusLabel(approval.status)}
 														</span>
 													</td>
 													<td>
@@ -88,7 +88,7 @@ export class AdminModelsTab {
 																		<button class="btn btn-sm btn-danger" @click=${() => this.handleDenyModel(approval.modelId)}>Deny</button>
 																	</div>
 																`
-																: html`<span class="badge ${this.getStatusBadgeClass(approval.status)}">${approval.status}</span>`
+																: html`<span class="badge ${this.getStatusBadgeClass(approval.status)}">${this.formatStatusLabel(approval.status)}</span>`
 														}
 													</td>
 												</tr>
@@ -103,6 +103,21 @@ export class AdminModelsTab {
 			</div>
 		`;
 	}
+
+	private readonly formatStatusLabel = (
+		status: ModelApproval["status"],
+	): string => {
+		switch (status) {
+			case "auto_approved":
+				return "Auto-approved";
+			case "approved":
+				return "Approved";
+			case "denied":
+				return "Denied";
+			default:
+				return "Pending";
+		}
+	};
 
 	private readonly handleApproveModel = async (modelId: string) => {
 		try {
