@@ -1,0 +1,54 @@
+{
+	"name": "vscode-extension",
+	"projectType": "application",
+	"root": "packages/vscode-extension",
+	"sourceRoot": "packages/vscode-extension/src",
+	"targets": {
+		"build": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "cd packages/vscode-extension && bun run build",
+				"forwardAllArgs": true
+			},
+			"dependsOn": ["^build"]
+		},
+		"check": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "cd packages/vscode-extension && bun run check",
+				"forwardAllArgs": true
+			}
+		},
+		"test": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "cd packages/vscode-extension && bun run test",
+				"forwardAllArgs": true
+			}
+		},
+		"package": {
+			"executor": "nx:run-commands",
+			"outputs": ["{projectRoot}/*.vsix"],
+			"options": {
+				"command": "cd packages/vscode-extension && bun run package",
+				"forwardAllArgs": true
+			},
+			"dependsOn": ["build"]
+		},
+		"publish": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "cd packages/vscode-extension && bun run publish",
+				"forwardAllArgs": true
+			},
+			"dependsOn": ["package"]
+		},
+		"clean": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "cd packages/vscode-extension && bun run clean",
+				"forwardAllArgs": true
+			}
+		}
+	}
+}

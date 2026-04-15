@@ -1,0 +1,252 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Semver (with or without leading v) to release"
+        required: true
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  validate-trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+    steps:
+      - id: check
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_VERSION: ${{ github.event.inputs.version || '' }}
+          REF_VALUE: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            if [[ -z "${DISPATCH_VERSION}" ]]; then
+              echo "No version provided for workflow_dispatch; skipping release workflow."
+              echo "should_run=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          elif [[ ! "${REF_VALUE}" =~ ^refs/tags/v ]]; then
+            echo "No semver tag detected (ref=${REF_VALUE}); skipping release workflow."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "should_run=true" >> "$GITHUB_OUTPUT"
+
+  skip-when-no-tag:
+    if: ${{ needs.validate-trigger.outputs.should_run == 'false' }}
+    needs: validate-trigger
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Skip release workflow
+        run: |
+          echo "Release workflow skipped."
+
+  prepare:
+    if: ${{ needs.validate-trigger.outputs.should_run == 'true' }}
+    needs: validate-trigger
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      release_tag: ${{ steps.meta.outputs.release_tag }}
+      release_version: ${{ steps.meta.outputs.release_version }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - id: meta
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_VERSION: ${{ github.event.inputs.version || '' }}
+          REF_NAME_VALUE: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            RAW_TAG="${DISPATCH_VERSION}"
+          else
+            RAW_TAG="${REF_NAME_VALUE}"
+          fi
+
+          if [[ -z "$RAW_TAG" ]]; then
+            echo "::error::Release version is required" >&2
+            exit 1
+          fi
+
+          if [[ "$RAW_TAG" != v* ]]; then
+            RAW_TAG="v${RAW_TAG}"
+          fi
+
+          if ! [[ "$RAW_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Release tag must follow semver (vX.Y.Z)" >&2
+            exit 1
+          fi
+
+          VERSION="${RAW_TAG#v}"
+
+          echo "release_tag=$RAW_TAG" >> "$GITHUB_OUTPUT"
+          echo "release_version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Create tag from workflow dispatch
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.meta.outputs.release_tag }}"
+          git fetch --tags --force
+          if git rev-parse "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "::error::Tag ${TAG} already exists" >&2
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+
+  quality-gate:
+    if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            chunkIndex: 1
+          - os: ubuntu-latest
+            chunkIndex: 2
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.release_tag }}
+
+      - uses: ./.github/actions/setup-bun-nx
+        with:
+          ensure-ripgrep: "true"
+
+      - run: bun run bun:lint
+      - run: bun run bun:test
+      - run: bun run build
+      - name: Run evals chunk
+        env:
+          MAESTRO_EVAL_CHUNK_COUNT: 2
+          MAESTRO_EVAL_CHUNK_INDEX: ${{ matrix.chunkIndex }}
+        run: bun run bun:evals
+
+  publish:
+    if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}
+    needs:
+      - prepare
+      - quality-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.release_tag }}
+
+      - uses: ./.github/actions/setup-bun-nx
+      - run: bun run build
+      - name: Generate version metadata
+        run: node scripts/create-version-json.js
+
+      - id: pack
+        run: |
+          set -euo pipefail
+          PACK_JSON=$(npm pack --json)
+          echo "$PACK_JSON"
+          FILE=$(echo "$PACK_JSON" | jq -r '.[0].filename')
+          echo "tarball=$FILE" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: npm-tarball-${{ needs.prepare.outputs.release_tag }}
+          path: ${{ steps.pack.outputs.tarball }}
+
+      - name: Publish to npm
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$NPM_TOKEN" ]; then
+            echo "NPM_TOKEN secret not configured; skipping npm publish"
+            exit 0
+          fi
+          printf "//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n" > "$HOME/.npmrc"
+          npm publish "${{ steps.pack.outputs.tarball }}" --access public
+
+      - name: Sync Hopper version metadata
+        env:
+          HOPPER_PUSH_TOKEN: ${{ secrets.HOPPER_PUSH_TOKEN }}
+          HOPPER_REPOSITORY: ${{ vars.HOPPER_REPOSITORY }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$HOPPER_PUSH_TOKEN" ]; then
+            echo "HOPPER_PUSH_TOKEN secret missing; skipping Hopper sync."
+            exit 0
+          fi
+
+          repo="${HOPPER_REPOSITORY:-evalops/hopper}"
+          workdir=$(mktemp -d)
+          trap 'rm -rf "$workdir"' EXIT
+
+          gh auth setup-git
+          gh auth status
+          gh auth refresh --hostname github.com --scopes repo || true
+
+          gh api user >/dev/null || {
+            echo "gh auth not configured; initializing with provided token"
+            export GH_TOKEN="$HOPPER_PUSH_TOKEN"
+          }
+
+          git clone "https://x-access-token:${HOPPER_PUSH_TOKEN}@github.com/${repo}.git" "$workdir"
+          pushd "$workdir" >/dev/null
+          git fetch origin main
+          git checkout main
+          git pull --ff-only origin main || git pull --rebase origin main
+
+          mkdir -p public/composer
+          cp "$GITHUB_WORKSPACE/dist/version.json" "public/composer/version.json"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if git status --short | grep -q "composer"; then
+            git add public/composer/version.json
+            git commit -m "chore: update composer version to v${RELEASE_VERSION}"
+            git push origin HEAD
+          else
+            echo "No changes to Hopper repository."
+          fi
+
+          popd >/dev/null
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda # v2.2.1
+        with:
+          tag_name: ${{ needs.prepare.outputs.release_tag }}
+          name: Composer CLI ${{ needs.prepare.outputs.release_version }}
+          generate_release_notes: true
+          files: ${{ steps.pack.outputs.tarball }}

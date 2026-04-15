@@ -1,0 +1,192 @@
+name: vscode-extension
+
+on:
+  push:
+    tags:
+      - "vscode-v*.*.*"
+  pull_request:
+    paths:
+      - "packages/vscode-extension/**"
+      - ".github/workflows/vscode-extension.yml"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Extension version (without leading v, e.g., 0.10.0)"
+        required: false
+      publish:
+        description: "Publish to VS Code Marketplace"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      vsix_name: ${{ steps.package.outputs.vsix_name }}
+      vsix_sha256: ${{ steps.package.outputs.vsix_sha256 }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Determine and validate version
+        id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_VERSION: ${{ github.event.inputs.version || '' }}
+          REF_VALUE: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" && -n "${DISPATCH_VERSION}" ]]; then
+            VERSION="${DISPATCH_VERSION}"
+          elif [[ "${REF_VALUE}" =~ ^refs/tags/vscode-v ]]; then
+            VERSION="${REF_NAME#vscode-v}"
+          else
+            VERSION=$(jq -r '.version' packages/vscode-extension/package.json)
+          fi
+          
+          # Validate semver format
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]]; then
+            echo "::error::Invalid version format: $VERSION (must be semver)"
+            exit 1
+          fi
+          
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Determined version: $VERSION"
+
+      - uses: ./.github/actions/setup-bun-nx
+
+      - name: Build extension (includes dependencies via Nx)
+        run: npx nx run vscode-extension:build
+
+      - name: Run tests
+        run: npx nx run vscode-extension:test
+
+      - name: Type check
+        run: npx nx run vscode-extension:check
+
+      - name: Package VSIX
+        id: package
+        working-directory: packages/vscode-extension
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          VSIX_NAME="composer-${VERSION}.vsix"
+          
+          # Package with version override (no package.json mutation)
+          npx @vscode/vsce@3.2.1 package --no-dependencies --out "$VSIX_NAME"
+          
+          # Generate checksum for integrity verification
+          VSIX_SHA256=$(sha256sum "$VSIX_NAME" | cut -d' ' -f1)
+          
+          echo "vsix_name=$VSIX_NAME" >> "$GITHUB_OUTPUT"
+          echo "vsix_sha256=$VSIX_SHA256" >> "$GITHUB_OUTPUT"
+          echo "Packaged: $VSIX_NAME (sha256: $VSIX_SHA256)"
+          ls -la "$VSIX_NAME"
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: vscode-extension-${{ steps.version.outputs.version }}
+          path: packages/vscode-extension/*.vsix
+          if-no-files-found: error
+
+  publish:
+    if: |
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/vscode-v')) ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == true)
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: ./.github/actions/setup-bun-nx
+        with:
+          cache-nx: "false"
+
+      - name: Download VSIX artifact
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: vscode-extension-${{ needs.build.outputs.version }}
+          path: packages/vscode-extension
+
+      - name: Verify artifact integrity
+        working-directory: packages/vscode-extension
+        run: |
+          set -euo pipefail
+          VSIX_FILE="${{ needs.build.outputs.vsix_name }}"
+          EXPECTED_SHA="${{ needs.build.outputs.vsix_sha256 }}"
+          ACTUAL_SHA=$(sha256sum "$VSIX_FILE" | cut -d' ' -f1)
+          
+          if [[ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]]; then
+            echo "::error::Artifact integrity check failed!"
+            echo "Expected: $EXPECTED_SHA"
+            echo "Actual:   $ACTUAL_SHA"
+            exit 1
+          fi
+          echo "Artifact integrity verified: $VSIX_FILE"
+
+      - name: Publish to VS Code Marketplace
+        working-directory: packages/vscode-extension
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_VALUE: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          VSIX_FILE="${{ needs.build.outputs.vsix_name }}"
+
+          if [[ -z "${VSCE_PAT:-}" ]]; then
+            if [[ "${EVENT_NAME}" == "push" && "${REF_VALUE}" =~ ^refs/tags/vscode-v ]]; then
+              echo "::error::VSCE_PAT secret required for tag releases"
+              exit 1
+            fi
+            echo "::warning::VSCE_PAT not configured; skipping VS Code Marketplace publish"
+            exit 0
+          fi
+          
+          echo "Publishing $VSIX_FILE to VS Code Marketplace..."
+          npx @vscode/vsce@3.2.1 publish --packagePath "$VSIX_FILE"
+
+      - name: Publish to Open VSX Registry
+        working-directory: packages/vscode-extension
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: |
+          set -euo pipefail
+          VSIX_FILE="${{ needs.build.outputs.vsix_name }}"
+          
+          if [[ -z "${OVSX_PAT:-}" ]]; then
+            echo "::warning::OVSX_PAT not configured; skipping Open VSX publish"
+            exit 0
+          fi
+          
+          echo "Publishing $VSIX_FILE to Open VSX Registry..."
+          npx ovsx@0.9.5 publish "$VSIX_FILE"
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/vscode-v')
+        uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda # v2.2.1
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: VS Code Extension ${{ needs.build.outputs.version }}
+          generate_release_notes: true
+          files: packages/vscode-extension/${{ needs.build.outputs.vsix_name }}

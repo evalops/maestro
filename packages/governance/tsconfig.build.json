@@ -1,0 +1,15 @@
+{
+	"extends": "../../tsconfig.base.json",
+	"compilerOptions": {
+		"outDir": "./dist",
+		"rootDir": "../../",
+		"composite": true,
+		"tsBuildInfoFile": "../../tmp/tsbuildinfo/governance.tsbuildinfo"
+	},
+	"include": ["src/**/*.ts", "../../src/**/*.ts"],
+	"exclude": ["node_modules", "dist"],
+	"references": [
+		{ "path": "../contracts/tsconfig.build.json" },
+		{ "path": "../tui/tsconfig.build.json" }
+	]
+}

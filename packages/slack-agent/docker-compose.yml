@@ -1,0 +1,61 @@
+# Slack Agent Docker Compose Configuration
+# Usage: docker compose up -d
+
+services:
+  sandbox:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: slack-agent-sandbox
+    restart: unless-stopped
+    volumes:
+      # Mount workspace directory
+      - ./data:/workspace:rw
+    # Resource limits for safety
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+    # Read-only root filesystem with specific writable paths
+    read_only: true
+    tmpfs:
+      - /tmp:size=512M,mode=1777
+      - /home/agent:size=256M,mode=755
+    # Network isolation (optional - uncomment for stricter security)
+    # network_mode: none
+    healthcheck:
+      test: ["CMD", "test", "-d", "/workspace"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  # Optional: Run the slack-agent alongside the sandbox
+  # Uncomment and configure with your tokens
+  # agent:
+  #   image: node:20-slim
+  #   container_name: slack-agent
+  #   depends_on:
+  #     sandbox:
+  #       condition: service_healthy
+  #   environment:
+  #     - SLACK_APP_TOKEN=${SLACK_APP_TOKEN}
+  #     - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
+  #     - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+  #   volumes:
+  #     - ./dist:/app:ro
+  #     - ./data:/data:rw
+  #   working_dir: /app
+  #   command: ["node", "main.js", "--sandbox=docker:slack-agent-sandbox", "/data"]
+  #   network_mode: host  # Needed for Docker socket access
+
+networks:
+  default:
+    name: slack-agent-network

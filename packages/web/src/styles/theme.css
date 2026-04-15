@@ -1,0 +1,269 @@
+/**
+ * Composer Web UI Theme - Control Room Design System
+ * Inspired by mission control centers and financial terminals
+ */
+
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=DM+Sans:wght@400;500;600;700&display=swap");
+
+:root {
+	/* ============================================================
+	   CONTROL ROOM - Core Color Palette
+	   ============================================================ */
+
+	/* Backgrounds - Deep, layered darks */
+	--bg-deep: #08090a;
+	--bg-primary: #0c0d0f;
+	--bg-secondary: #111214;
+	--bg-elevated: #161719;
+	--bg-surface: #1a1b1e;
+	--bg-panel: #1e1f22;
+
+	/* Borders - Subtle separation */
+	--border-subtle: #141517;
+	--border-primary: #1e2023;
+	--border-secondary: #282a2e;
+	--border-hover: #3a3d42;
+
+	/* Text - High contrast hierarchy */
+	--text-primary: #e8e9eb;
+	--text-secondary: #8b8d91;
+	--text-tertiary: #5c5e62;
+	--text-muted: #3d3f43;
+
+	/* Accent - Amber/Gold (primary action color) */
+	--accent-amber: #d4a012;
+	--accent-amber-hover: #e5b015;
+	--accent-amber-dim: rgba(212, 160, 18, 0.12);
+	--accent-amber-glow: rgba(212, 160, 18, 0.25);
+
+	/* Status Colors */
+	--accent-green: #22c55e;
+	--accent-green-dim: rgba(34, 197, 94, 0.12);
+	--accent-red: #ef4444;
+	--accent-red-dim: rgba(239, 68, 68, 0.12);
+	--accent-blue: #3b82f6;
+	--accent-blue-dim: rgba(59, 130, 246, 0.12);
+	--accent-yellow: #eab308;
+	--accent-yellow-dim: rgba(234, 179, 8, 0.12);
+
+	/* Legacy compatibility mappings */
+	--bg-tertiary: var(--bg-elevated);
+	--border-color: var(--border-primary);
+	--accent-color: var(--accent-amber);
+	--accent-hover: var(--accent-amber-hover);
+	--success-color: var(--accent-green);
+	--warning-color: var(--accent-yellow);
+	--error-color: var(--accent-red);
+	--info-color: var(--accent-blue);
+
+	/* ============================================================
+	   Typography
+	   ============================================================ */
+
+	--font-display: "DM Sans", system-ui, -apple-system, sans-serif;
+	--font-mono: "JetBrains Mono", "SF Mono", "Menlo", "Monaco", monospace;
+	--font-sans: var(--font-display);
+
+	/* ============================================================
+	   Spacing & Sizing
+	   ============================================================ */
+
+	--control-icon-size: 32px;
+	--control-icon-font-size: 0.9rem;
+	--control-hover-bg: var(--accent-amber-dim);
+	--radius-sm: 0;
+	--radius-md: 2px;
+	--radius-lg: 4px;
+
+	/* ============================================================
+	   Shadows
+	   ============================================================ */
+
+	--shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+	--shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+	--shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+	--shadow-glow: 0 0 20px var(--accent-amber-glow);
+
+	/* ============================================================
+	   Syntax Highlighting - Muted, professional
+	   ============================================================ */
+
+	--syntax-keyword: #c586c0;
+	--syntax-string: #ce9178;
+	--syntax-number: #b5cea8;
+	--syntax-comment: #5c6370;
+	--syntax-function: var(--accent-amber);
+	--syntax-variable: #9cdcfe;
+	--syntax-operator: #d4d4d4;
+	--syntax-class: #4ec9b0;
+}
+
+:root[data-theme="light"] {
+	/* ============================================================
+	   CONTROL ROOM - Light Variant
+	   ============================================================ */
+
+	/* Backgrounds - Soft, layered lights */
+	--bg-deep: #f2f4f8;
+	--bg-primary: #f8fafc;
+	--bg-secondary: #eef2f6;
+	--bg-elevated: #ffffff;
+	--bg-surface: #ffffff;
+	--bg-panel: #e9edf2;
+
+	/* Borders - Gentle separation */
+	--border-subtle: #e2e8f0;
+	--border-primary: #d5dbe3;
+	--border-secondary: #c7d0da;
+	--border-hover: #aab4bf;
+
+	/* Text - Darkened for light background */
+	--text-primary: #1f2933;
+	--text-secondary: #4b5563;
+	--text-tertiary: #6b7280;
+	--text-muted: #94a3b8;
+
+	/* Accent - Amber/Gold (primary action color) */
+	--accent-amber: #c07a12;
+	--accent-amber-hover: #d58b18;
+	--accent-amber-dim: rgba(208, 133, 18, 0.16);
+	--accent-amber-glow: rgba(208, 133, 18, 0.28);
+
+	/* Status Colors */
+	--accent-green: #059669;
+	--accent-green-dim: rgba(5, 150, 105, 0.12);
+	--accent-red: #dc2626;
+	--accent-red-dim: rgba(220, 38, 38, 0.12);
+	--accent-blue: #2563eb;
+	--accent-blue-dim: rgba(37, 99, 235, 0.12);
+	--accent-yellow: #ca8a04;
+	--accent-yellow-dim: rgba(202, 138, 4, 0.12);
+
+	/* Shadows */
+	--shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.08);
+	--shadow-md: 0 6px 14px rgba(15, 23, 42, 0.12);
+	--shadow-lg: 0 12px 28px rgba(15, 23, 42, 0.16);
+	--shadow-glow: 0 0 16px rgba(208, 133, 18, 0.24);
+
+	/* Syntax Highlighting - Light-friendly */
+	--syntax-keyword: #1d4ed8;
+	--syntax-string: #b45309;
+	--syntax-number: #0f766e;
+	--syntax-comment: #94a3b8;
+	--syntax-function: #b45309;
+	--syntax-variable: #0ea5e9;
+	--syntax-operator: #111827;
+	--syntax-class: #047857;
+}
+
+/* ============================================================
+   Global Resets & Base Styles
+   ============================================================ */
+
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+
+html {
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+	text-rendering: optimizeLegibility;
+}
+
+::selection {
+	background: var(--accent-amber-dim);
+	color: var(--accent-amber);
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+	width: 8px;
+	height: 8px;
+}
+
+::-webkit-scrollbar-track {
+	background: var(--bg-deep);
+}
+
+::-webkit-scrollbar-thumb {
+	background: var(--border-secondary);
+	border-radius: 0;
+}
+
+::-webkit-scrollbar-thumb:hover {
+	background: var(--border-hover);
+}
+
+/* ============================================================
+   Code Highlighting Styles
+   ============================================================ */
+
+.hljs {
+	display: block;
+	overflow-x: auto;
+	padding: 1.25rem;
+	background: var(--bg-deep);
+	color: var(--text-primary);
+	font-family: var(--font-mono);
+	font-size: 0.8rem;
+	line-height: 1.6;
+	border: 1px solid var(--border-primary);
+}
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-section,
+.hljs-link {
+	color: var(--syntax-keyword);
+}
+
+.hljs-string,
+.hljs-title,
+.hljs-name,
+.hljs-type,
+.hljs-attribute,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-addition,
+.hljs-variable,
+.hljs-template-tag,
+.hljs-template-variable {
+	color: var(--syntax-string);
+}
+
+.hljs-comment,
+.hljs-quote,
+.hljs-deletion,
+.hljs-meta {
+	color: var(--syntax-comment);
+	font-style: italic;
+}
+
+.hljs-number,
+.hljs-regexp,
+.hljs-selector-id,
+.hljs-selector-class,
+.hljs-builtin-name {
+	color: var(--syntax-number);
+}
+
+.hljs-function,
+.hljs-title.function_ {
+	color: var(--syntax-function);
+}
+
+.hljs-params,
+.hljs-attr {
+	color: var(--syntax-variable);
+}
+
+.hljs-emphasis {
+	font-style: italic;
+}
+
+.hljs-strong {
+	font-weight: bold;
+}

@@ -1,0 +1,55 @@
+{
+	"name": "@evalops/governance-mcp-server",
+	"version": "0.10.0",
+	"description": "MCP server exposing governance tools (firewall, policy, credential scanning) to any MCP-compatible agent.",
+	"type": "module",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"bin": {
+		"governance-mcp-server": "./dist/main.js"
+	},
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"default": "./dist/index.js"
+		}
+	},
+	"files": ["dist", "README.md"],
+	"scripts": {
+		"clean": "node ../../scripts/clean-paths.js dist ../../tmp/tsbuildinfo/governance-mcp-server.tsbuildinfo",
+		"build": "node ../../scripts/clean-paths.js dist ../../tmp/tsbuildinfo/governance-mcp-server.tsbuildinfo && node ../../scripts/ensure-dir.js ../../tmp/tsbuildinfo && tsc -p tsconfig.build.json",
+		"dev": "node ../../scripts/ensure-dir.js ../../tmp/tsbuildinfo && tsc -p tsconfig.build.json --watch --preserveWatchOutput",
+		"check": "node ../../scripts/ensure-dir.js ../../tmp/tsbuildinfo && tsc -p tsconfig.build.json --noEmit",
+		"test": "vitest --run --passWithNoTests",
+		"prepublishOnly": "npm run clean && npm run build"
+	},
+	"keywords": [
+		"governance",
+		"mcp",
+		"server",
+		"safety",
+		"firewall",
+		"policy",
+		"evalops"
+	],
+	"author": "EvalOps",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/evalops/composer.git",
+		"directory": "packages/governance-mcp-server"
+	},
+	"engines": {
+		"node": ">=20.0.0"
+	},
+	"dependencies": {
+		"@evalops/governance": "workspace:*",
+		"@modelcontextprotocol/sdk": "^1.25.2",
+		"zod": "^4.3.5"
+	},
+	"devDependencies": {
+		"@types/node": "^24.10.7",
+		"typescript": "^5.9.3",
+		"vitest": "^4.0.7"
+	}
+}

@@ -1,0 +1,33 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`buildConfigShowSections > handles empty collections 1`] = `
+"Configuration Inspection
+
+
+Config Sources
+
+No providers configured"
+`;
+
+exports[`buildConfigShowSections > produces snapshot for populated inspection 1`] = `
+"Configuration Inspection
+
+
+Config Sources
+  • present ~/.maestro/config.json
+    missing /etc/composer/config.json
+
+Providers (1)
+  anthropic (2 models)   ·   API key: env:ANTHROPIC_API_KEY   ·   enabled
+     Anthropic
+     Base URL: https://api.anthropic.com
+     Options: {"region":"us"}
+       • claude-3 [thinking]
+       • claude-3-haiku
+
+File References (1)
+  present ~/project/prompts/system.md (2.0 KB)
+
+Environment Variables (1)
+  missing ANTHROPIC_API_KEY: (not set)"
+`;

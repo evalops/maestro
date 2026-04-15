@@ -1,0 +1,48 @@
+{
+	"extends": "nx/presets/npm.json",
+	"cli": {
+		"packageManager": "npm"
+	},
+	"npmScope": "maestro",
+	"tasksRunnerOptions": {
+		"default": {
+			"runner": "nx/tasks-runners/default",
+			"options": {
+				"cacheableOperations": ["build", "test", "lint", "evals"],
+				"parallel": true
+			}
+		}
+	},
+	"targetDefaults": {
+		"build": {
+			"dependsOn": ["^build"],
+			"outputs": ["{projectRoot}/dist"]
+		},
+		"test": {
+			"dependsOn": ["^build"]
+		},
+		"lint": {
+			"dependsOn": []
+		},
+		"evals": {
+			"dependsOn": ["build"]
+		}
+	},
+	"projects": {
+		"maestro": {
+			"tags": []
+		},
+		"maestro-web": {
+			"tags": []
+		},
+		"tui": {
+			"tags": []
+		},
+		"vscode-extension": {
+			"tags": []
+		},
+		"slack-agent-ui": {
+			"tags": []
+		}
+	}
+}

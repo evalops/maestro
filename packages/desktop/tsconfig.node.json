@@ -1,0 +1,11 @@
+{
+	"extends": "./tsconfig.json",
+	"compilerOptions": {
+		"composite": true,
+		"module": "ESNext",
+		"moduleResolution": "bundler",
+		"types": ["node"],
+		"lib": ["ES2022"]
+	},
+	"include": ["vite.config.ts", "electron.vite.config.ts"]
+}

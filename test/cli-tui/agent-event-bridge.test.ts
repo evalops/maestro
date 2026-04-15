@@ -1,0 +1,175 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const telemetryMocks = vi.hoisted(() => ({
+	recordSessionStart: vi.fn(),
+	recordTokenUsage: vi.fn(),
+}));
+
+vi.mock("../../src/telemetry.js", () => ({
+	recordSessionStart: telemetryMocks.recordSessionStart,
+	recordTokenUsage: telemetryMocks.recordTokenUsage,
+}));
+
+import type { AgentEvent, AgentState } from "../../src/agent/types.js";
+import { AgentEventBridge } from "../../src/cli-tui/tui-renderer/agent-event-bridge.js";
+
+function createState(): AgentState {
+	return {
+		steeringMode: "all",
+		followUpMode: "all",
+		queueMode: "all",
+		messages: [
+			{
+				role: "assistant",
+				content: [{ type: "text", text: "done" }],
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "claude-sonnet-4",
+				stopReason: "stop",
+				timestamp: Date.now(),
+				usage: {
+					input: 100,
+					output: 50,
+					cacheRead: 0,
+					cacheWrite: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+			},
+		],
+		systemPrompt: "resolved prompt",
+		promptMetadata: {
+			name: "maestro-system",
+			label: "production",
+			surface: "maestro",
+			version: 9,
+			versionId: "ver_9",
+			hash: "hash_123",
+			source: "service",
+		},
+		model: {
+			provider: "anthropic",
+			id: "claude-sonnet-4",
+			contextWindow: 200000,
+			name: "Claude Sonnet 4",
+			api: "anthropic-messages",
+			baseUrl: "https://api.anthropic.com/v1/messages",
+			reasoning: false,
+			input: ["text", "image"],
+			cost: {
+				input: 0.003,
+				output: 0.015,
+				cacheRead: 0.0003,
+				cacheWrite: 0.00375,
+			},
+			maxTokens: 8192,
+		},
+		tools: [],
+		thinkingLevel: "off",
+		isStreaming: false,
+		streamMessage: null,
+		pendingToolCalls: new Map(),
+	};
+}
+
+describe("AgentEventBridge prompt telemetry", () => {
+	beforeEach(() => {
+		telemetryMocks.recordSessionStart.mockReset();
+		telemetryMocks.recordTokenUsage.mockReset();
+	});
+
+	it("includes prompt metadata in session start telemetry", async () => {
+		const bridge = new AgentEventBridge({
+			deps: {
+				agent: {} as never,
+				sessionManager: {
+					getSessionId: () => "session-123",
+				} as never,
+				sessionRecoveryManager: {
+					getCurrentBackup: () => null,
+					startSession: vi.fn(),
+					updateMessages: vi.fn(),
+				} as never,
+				autoRetryController: { checkAndRetry: vi.fn() } as never,
+				interruptController: { clear: vi.fn() } as never,
+				footer: { updateState: vi.fn() } as never,
+				agentEventRouter: { handle: vi.fn() } as never,
+			},
+			callbacks: {
+				ensureInitialized: async () => {},
+				handleApprovalRequired: vi.fn(),
+				handleApprovalResolved: vi.fn(),
+				handleToolRetryRequired: vi.fn(),
+				handleToolRetryResolved: vi.fn(),
+				setAgentRunning: vi.fn(),
+				maybeShowContextWarning: vi.fn(),
+				setCurrentModelMetadata: vi.fn(),
+			},
+		});
+
+		await bridge.handleEvent(
+			{ type: "agent_start" } as AgentEvent,
+			createState(),
+		);
+
+		expect(telemetryMocks.recordSessionStart).toHaveBeenCalledWith(
+			"session-123",
+			{
+				model: "anthropic/claude-sonnet-4",
+				provider: "anthropic",
+				prompt_version: 9,
+				prompt_hash: "hash_123",
+			},
+		);
+	});
+
+	it("includes prompt metadata in token usage telemetry", async () => {
+		const bridge = new AgentEventBridge({
+			deps: {
+				agent: {} as never,
+				sessionManager: {
+					getSessionId: () => "session-123",
+				} as never,
+				sessionRecoveryManager: {
+					getCurrentBackup: () => ({}),
+					startSession: vi.fn(),
+					updateMessages: vi.fn(),
+				} as never,
+				autoRetryController: { checkAndRetry: vi.fn() } as never,
+				interruptController: { clear: vi.fn() } as never,
+				footer: { updateState: vi.fn() } as never,
+				agentEventRouter: { handle: vi.fn() } as never,
+			},
+			callbacks: {
+				ensureInitialized: async () => {},
+				handleApprovalRequired: vi.fn(),
+				handleApprovalResolved: vi.fn(),
+				handleToolRetryRequired: vi.fn(),
+				handleToolRetryResolved: vi.fn(),
+				setAgentRunning: vi.fn(),
+				maybeShowContextWarning: vi.fn(),
+				setCurrentModelMetadata: vi.fn(),
+			},
+		});
+
+		await bridge.handleEvent(
+			{ type: "agent_end" } as AgentEvent,
+			createState(),
+		);
+
+		expect(telemetryMocks.recordTokenUsage).toHaveBeenCalledWith(
+			"session-123",
+			{
+				input: 100,
+				output: 50,
+				cacheRead: 0,
+				cacheWrite: 0,
+			},
+			{
+				model: "anthropic/claude-sonnet-4",
+				provider: "anthropic",
+				prompt_version: 9,
+				prompt_hash: "hash_123",
+			},
+		);
+	});
+});

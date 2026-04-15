@@ -1,0 +1,727 @@
+//! MCP Protocol Types and Messages
+//!
+//! This module defines the JSON-RPC based protocol for MCP communication.
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+pub const MCP_TOOLS_LIST_CHANGED_METHOD: &str = "notifications/tools/list_changed";
+pub const MCP_RESOURCES_LIST_CHANGED_METHOD: &str = "notifications/resources/list_changed";
+pub const MCP_PROMPTS_LIST_CHANGED_METHOD: &str = "notifications/prompts/list_changed";
+pub const MCP_PROGRESS_METHOD: &str = "notifications/progress";
+pub const MCP_LOG_MESSAGE_METHOD: &str = "notifications/message";
+
+/// JSON-RPC request message
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpRequest {
+    /// JSON-RPC version (always "2.0")
+    pub jsonrpc: String,
+    /// Request ID for correlation
+    pub id: u64,
+    /// Method name
+    pub method: String,
+    /// Method parameters
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<Value>,
+}
+
+impl McpRequest {
+    /// Create a new request
+    pub fn new(id: u64, method: impl Into<String>, params: Option<Value>) -> Self {
+        Self {
+            jsonrpc: "2.0".to_string(),
+            id,
+            method: method.into(),
+            params,
+        }
+    }
+
+    /// Create an initialize request
+    #[must_use]
+    pub fn initialize(id: u64, client_info: &ClientInfo) -> Self {
+        Self::new(
+            id,
+            "initialize",
+            Some(serde_json::json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {
+                    "tools": {}
+                },
+                "clientInfo": client_info
+            })),
+        )
+    }
+
+    /// Create a tools/list request
+    #[must_use]
+    pub fn list_tools(id: u64) -> Self {
+        Self::new(id, "tools/list", None)
+    }
+
+    /// Create a tools/call request
+    #[must_use]
+    pub fn call_tool(id: u64, name: &str, arguments: Value) -> Self {
+        Self::new(
+            id,
+            "tools/call",
+            Some(serde_json::json!({
+                "name": name,
+                "arguments": arguments
+            })),
+        )
+    }
+
+    /// Create a resources/list request
+    #[must_use]
+    pub fn list_resources(id: u64) -> Self {
+        Self::new(id, "resources/list", None)
+    }
+
+    /// Create a resources/read request
+    #[must_use]
+    pub fn read_resource(id: u64, uri: &str) -> Self {
+        Self::new(
+            id,
+            "resources/read",
+            Some(serde_json::json!({
+                "uri": uri
+            })),
+        )
+    }
+
+    /// Create a prompts/list request
+    #[must_use]
+    pub fn list_prompts(id: u64) -> Self {
+        Self::new(id, "prompts/list", None)
+    }
+
+    /// Create a prompts/get request
+    #[must_use]
+    pub fn get_prompt(id: u64, name: &str, arguments: Option<Value>) -> Self {
+        let params = match arguments {
+            Some(args) => serde_json::json!({
+                "name": name,
+                "arguments": args
+            }),
+            None => serde_json::json!({
+                "name": name
+            }),
+        };
+        Self::new(id, "prompts/get", Some(params))
+    }
+}
+
+/// JSON-RPC response message
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpResponse {
+    /// JSON-RPC version
+    pub jsonrpc: String,
+    /// Request ID for correlation
+    pub id: Option<u64>,
+    /// Successful result
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<Value>,
+    /// Error response
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<McpError>,
+}
+
+impl McpResponse {
+    /// Check if this is an error response
+    #[must_use]
+    pub fn is_error(&self) -> bool {
+        self.error.is_some()
+    }
+
+    /// Get the result as a specific type
+    pub fn result_as<T: for<'de> Deserialize<'de>>(&self) -> Result<T, String> {
+        match &self.result {
+            Some(v) => serde_json::from_value(v.clone())
+                .map_err(|e| format!("Failed to deserialize result: {e}")),
+            None => Err("No result in response".to_string()),
+        }
+    }
+}
+
+/// JSON-RPC notification message
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpNotification {
+    /// JSON-RPC version
+    pub jsonrpc: String,
+    /// Notification method
+    pub method: String,
+    /// Optional notification params
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<Value>,
+}
+
+impl McpNotification {
+    #[must_use]
+    pub fn is_list_changed_notification(&self) -> bool {
+        self.is_tools_list_changed()
+            || self.is_resources_list_changed()
+            || self.is_prompts_list_changed()
+    }
+
+    #[must_use]
+    pub fn is_tools_list_changed(&self) -> bool {
+        self.method == MCP_TOOLS_LIST_CHANGED_METHOD
+    }
+
+    #[must_use]
+    pub fn is_resources_list_changed(&self) -> bool {
+        self.method == MCP_RESOURCES_LIST_CHANGED_METHOD
+    }
+
+    #[must_use]
+    pub fn is_prompts_list_changed(&self) -> bool {
+        self.method == MCP_PROMPTS_LIST_CHANGED_METHOD
+    }
+
+    #[must_use]
+    pub fn is_progress_notification(&self) -> bool {
+        self.method == MCP_PROGRESS_METHOD
+    }
+
+    #[must_use]
+    pub fn is_log_message_notification(&self) -> bool {
+        self.method == MCP_LOG_MESSAGE_METHOD
+    }
+
+    #[must_use]
+    pub fn progress_params(&self) -> Option<McpProgressNotificationParams> {
+        if !self.is_progress_notification() {
+            return None;
+        }
+
+        self.params
+            .as_ref()
+            .and_then(|params| serde_json::from_value(params.clone()).ok())
+    }
+
+    #[must_use]
+    pub fn log_message_params(&self) -> Option<McpLoggingMessageNotificationParams> {
+        if !self.is_log_message_notification() {
+            return None;
+        }
+
+        self.params
+            .as_ref()
+            .and_then(|params| serde_json::from_value(params.clone()).ok())
+    }
+}
+
+/// JSON-RPC message received from an MCP server.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum McpIncomingMessage {
+    Notification(McpNotification),
+    Response(McpResponse),
+}
+
+/// JSON-RPC error
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpError {
+    /// Error code
+    pub code: i32,
+    /// Error message
+    pub message: String,
+    /// Additional error data
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
+}
+
+impl std::fmt::Display for McpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "MCP error {}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for McpError {}
+
+/// Parameters for an MCP progress notification.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpProgressNotificationParams {
+    /// Progress token associated with the request.
+    #[serde(default)]
+    pub progress_token: Value,
+    /// Current progress value.
+    pub progress: f64,
+    /// Optional total for percentage-based progress.
+    #[serde(default)]
+    pub total: Option<f64>,
+    /// Optional progress message.
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+/// Parameters for an MCP logging notification.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct McpLoggingMessageNotificationParams {
+    /// Logging severity from the server.
+    pub level: String,
+    /// Optional logger name.
+    #[serde(default)]
+    pub logger: Option<String>,
+    /// Logged payload.
+    #[serde(default)]
+    pub data: Value,
+}
+
+/// Client information sent during initialization
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientInfo {
+    /// Client name
+    pub name: String,
+    /// Client version
+    pub version: String,
+}
+
+impl Default for ClientInfo {
+    fn default() -> Self {
+        Self {
+            name: "maestro-tui".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+        }
+    }
+}
+
+/// Server information received during initialization
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerInfo {
+    /// Server name
+    pub name: String,
+    /// Server version
+    #[serde(default)]
+    pub version: Option<String>,
+}
+
+/// Initialize response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InitializeResult {
+    /// Protocol version
+    pub protocol_version: String,
+    /// Server capabilities
+    #[serde(default)]
+    pub capabilities: ServerCapabilities,
+    /// Server info
+    #[serde(default)]
+    pub server_info: Option<ServerInfo>,
+}
+
+/// Server capabilities
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ServerCapabilities {
+    /// Tool capabilities
+    #[serde(default)]
+    pub tools: Option<Value>,
+    /// Prompt capabilities
+    #[serde(default)]
+    pub prompts: Option<Value>,
+    /// Resource capabilities
+    #[serde(default)]
+    pub resources: Option<Value>,
+}
+
+/// MCP Tool definition
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpTool {
+    /// Tool name
+    pub name: String,
+    /// Tool description
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Input schema (JSON Schema)
+    #[serde(default)]
+    pub input_schema: Option<Value>,
+    /// Optional tool annotations (read-only, destructive, etc.)
+    #[serde(default)]
+    pub annotations: Option<McpToolAnnotations>,
+}
+
+/// MCP tool annotations
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct McpToolAnnotations {
+    #[serde(default, rename = "readOnlyHint")]
+    pub read_only_hint: Option<bool>,
+    #[serde(default)]
+    pub destructive_hint: Option<bool>,
+    #[serde(default)]
+    pub idempotent_hint: Option<bool>,
+    #[serde(default)]
+    pub open_world_hint: Option<bool>,
+}
+
+impl McpTool {
+    /// Convert to our internal Tool type
+    #[must_use]
+    pub fn to_tool(&self, server_name: &str) -> crate::ai::Tool {
+        let prefixed_name = format!("mcp__{}__{}", sanitize_mcp_name(server_name), self.name);
+        let description = self.description.clone().unwrap_or_default();
+
+        let mut tool = crate::ai::Tool::new(&prefixed_name, &description);
+        if let Some(schema) = &self.input_schema {
+            tool = tool.with_schema(schema.clone());
+        }
+        tool
+    }
+}
+
+fn sanitize_mcp_name(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// Tools list response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolsListResult {
+    /// Available tools
+    pub tools: Vec<McpTool>,
+}
+
+/// MCP resource definition
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpResource {
+    pub uri: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default, rename = "mimeType")]
+    pub mime_type: Option<String>,
+}
+
+/// Resources list response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourcesListResult {
+    pub resources: Vec<McpResource>,
+}
+
+/// MCP prompt definition
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpPromptArgument {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub required: bool,
+}
+
+/// MCP prompt definition
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpPrompt {
+    pub name: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub arguments: Option<Vec<McpPromptArgument>>,
+}
+
+/// Prompts list response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptsListResult {
+    pub prompts: Vec<McpPrompt>,
+}
+
+/// Prompt message content
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum McpPromptContent {
+    /// Plain string content
+    Text(String),
+    /// Structured content (e.g., type/text blocks)
+    Structured(McpPromptContentBlock),
+    /// Any other content shape
+    Other(Value),
+}
+
+impl McpPromptContent {
+    #[must_use]
+    pub fn as_text(&self) -> Option<&str> {
+        match self {
+            Self::Text(text) => Some(text.as_str()),
+            Self::Structured(block) => block.text.as_deref(),
+            Self::Other(_) => None,
+        }
+    }
+}
+
+/// Structured prompt content block
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpPromptContentBlock {
+    #[serde(rename = "type")]
+    pub content_type: String,
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub data: Option<String>,
+    #[serde(default, rename = "mimeType")]
+    pub mime_type: Option<String>,
+}
+
+/// Prompt message
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpPromptMessage {
+    pub role: String,
+    pub content: McpPromptContent,
+}
+
+/// Prompt get response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptGetResult {
+    #[serde(default)]
+    pub description: Option<String>,
+    pub messages: Vec<McpPromptMessage>,
+}
+
+/// Resource content
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpResourceContent {
+    pub uri: String,
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default, rename = "mimeType")]
+    pub mime_type: Option<String>,
+}
+
+/// Resource read response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceReadResult {
+    pub contents: Vec<McpResourceContent>,
+}
+
+/// Tool call result
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpToolResult {
+    /// Result content
+    pub content: Vec<McpContent>,
+    /// Whether the tool call was an error
+    #[serde(default, rename = "isError")]
+    pub is_error: bool,
+}
+
+impl McpToolResult {
+    /// Convert to a string representation
+    #[must_use]
+    pub fn as_string(&self) -> String {
+        self.content
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+impl std::fmt::Display for McpToolResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_string())
+    }
+}
+
+/// Content in tool results
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum McpContent {
+    /// Text content
+    Text {
+        /// The text
+        text: String,
+    },
+    /// Image content
+    Image {
+        /// Base64 encoded image data
+        data: String,
+        /// MIME type
+        #[serde(rename = "mimeType")]
+        mime_type: String,
+    },
+    /// Resource reference
+    Resource {
+        /// Resource URI
+        uri: String,
+        /// MIME type
+        #[serde(rename = "mimeType", default)]
+        mime_type: Option<String>,
+        /// Optional text content
+        #[serde(default)]
+        text: Option<String>,
+    },
+}
+
+impl std::fmt::Display for McpContent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            McpContent::Text { text } => write!(f, "{text}"),
+            McpContent::Image { mime_type, .. } => write!(f, "[Image: {mime_type}]"),
+            McpContent::Resource { uri, .. } => write!(f, "[Resource: {uri}]"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_request_serialize() {
+        let req = McpRequest::new(1, "test", None);
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"jsonrpc\":\"2.0\""));
+        assert!(json.contains("\"id\":1"));
+        assert!(json.contains("\"method\":\"test\""));
+    }
+
+    #[test]
+    fn test_request_initialize() {
+        let req = McpRequest::initialize(1, &ClientInfo::default());
+        assert_eq!(req.method, "initialize");
+        assert!(req.params.is_some());
+        let params = req.params.expect("initialize params");
+        assert_eq!(params["clientInfo"]["name"], "maestro-tui");
+        assert_ne!(params["clientInfo"]["name"], "composer-tui");
+    }
+
+    #[test]
+    fn test_request_list_tools() {
+        let req = McpRequest::list_tools(2);
+        assert_eq!(req.method, "tools/list");
+        assert!(req.params.is_none());
+    }
+
+    #[test]
+    fn test_request_call_tool() {
+        let req = McpRequest::call_tool(3, "my_tool", serde_json::json!({"arg": "value"}));
+        assert_eq!(req.method, "tools/call");
+        assert!(req.params.is_some());
+    }
+
+    #[test]
+    fn test_response_deserialize_result() {
+        let json = r#"{"jsonrpc":"2.0","id":1,"result":{"key":"value"}}"#;
+        let resp: McpResponse = serde_json::from_str(json).unwrap();
+        assert!(!resp.is_error());
+        assert!(resp.result.is_some());
+    }
+
+    #[test]
+    fn test_response_deserialize_error() {
+        let json =
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"Invalid request"}}"#;
+        let resp: McpResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.is_error());
+        assert_eq!(resp.error.as_ref().unwrap().code, -32600);
+    }
+
+    #[test]
+    fn test_incoming_message_deserialize_notification() {
+        let json = r#"{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}"#;
+        let message: McpIncomingMessage = serde_json::from_str(json).unwrap();
+        match message {
+            McpIncomingMessage::Notification(notification) => {
+                assert!(notification.is_tools_list_changed());
+                assert!(notification.is_list_changed_notification());
+            }
+            McpIncomingMessage::Response(_) => panic!("expected notification"),
+        }
+    }
+
+    #[test]
+    fn test_progress_notification_params() {
+        let json = r#"{
+            "jsonrpc":"2.0",
+            "method":"notifications/progress",
+            "params":{"progressToken":"abc","progress":4,"total":10,"message":"Indexing"}
+        }"#;
+        let message: McpIncomingMessage = serde_json::from_str(json).unwrap();
+        match message {
+            McpIncomingMessage::Notification(notification) => {
+                assert!(notification.is_progress_notification());
+                let params = notification.progress_params().expect("progress params");
+                assert_eq!(params.progress_token, Value::String("abc".to_string()));
+                assert!((params.progress - 4.0).abs() < f64::EPSILON);
+                assert_eq!(params.total, Some(10.0));
+                assert_eq!(params.message.as_deref(), Some("Indexing"));
+            }
+            McpIncomingMessage::Response(_) => panic!("expected notification"),
+        }
+    }
+
+    #[test]
+    fn test_log_message_notification_params() {
+        let json = r#"{
+            "jsonrpc":"2.0",
+            "method":"notifications/message",
+            "params":{"level":"warning","logger":"mcp","data":{"detail":"slow"}}
+        }"#;
+        let message: McpIncomingMessage = serde_json::from_str(json).unwrap();
+        match message {
+            McpIncomingMessage::Notification(notification) => {
+                assert!(notification.is_log_message_notification());
+                let params = notification.log_message_params().expect("logging params");
+                assert_eq!(params.level, "warning");
+                assert_eq!(params.logger.as_deref(), Some("mcp"));
+                assert_eq!(params.data["detail"], Value::String("slow".to_string()));
+            }
+            McpIncomingMessage::Response(_) => panic!("expected notification"),
+        }
+    }
+
+    #[test]
+    fn test_mcp_tool_to_tool() {
+        let mcp_tool = McpTool {
+            name: "test_tool".to_string(),
+            description: Some("A test tool".to_string()),
+            input_schema: Some(serde_json::json!({"type": "object"})),
+            annotations: None,
+        };
+        let tool = mcp_tool.to_tool("myserver");
+        assert_eq!(tool.name, "mcp__myserver__test_tool");
+        assert_eq!(tool.description, "A test tool");
+    }
+
+    #[test]
+    fn test_mcp_content_text() {
+        let content = McpContent::Text {
+            text: "Hello".to_string(),
+        };
+        assert_eq!(content.to_string(), "Hello");
+    }
+
+    #[test]
+    fn test_mcp_tool_result() {
+        let result = McpToolResult {
+            content: vec![
+                McpContent::Text {
+                    text: "Line 1".to_string(),
+                },
+                McpContent::Text {
+                    text: "Line 2".to_string(),
+                },
+            ],
+            is_error: false,
+        };
+        assert_eq!(result.as_string(), "Line 1\nLine 2");
+    }
+}

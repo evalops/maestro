@@ -1,0 +1,211 @@
+[package]
+name = "maestro-tui"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Native terminal UI renderer for Maestro"
+
+[[bin]]
+name = "maestro-tui"
+path = "src/main.rs"
+
+[lib]
+name = "maestro_tui"
+path = "src/lib.rs"
+
+[dependencies]
+# Terminal handling
+crossterm = { version = "0.28", features = ["bracketed-paste", "event-stream"] }
+ratatui = { version = "0.29", features = ["unstable-widget-ref"] }
+
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "sync", "signal", "fs", "process"] }
+tokio-stream = "0.1"
+tokio-util = "0.7"
+futures = "0.3"
+
+# HTTP client for AI APIs
+reqwest = { version = "0.12", features = ["json", "stream"] }
+
+# Serialization for IPC
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+prost = "0.14"
+prost-types = "0.14"
+
+# SSE streaming for OpenAI Responses API
+eventsource-stream = "0.2"
+pin-project-lite = "0.2"
+
+# Utilities
+unicode-width = "0.2"
+textwrap = "0.16"
+anyhow = "1"
+thiserror = "2"
+once_cell = "1"
+uuid = { version = "1", features = ["v4"] }
+clap = { version = "4", features = ["derive"] }
+glob = "0.3"
+regex = "1"
+dirs = "6"
+toml = "0.8"
+libc = "0.2"
+rayon = "1.10"
+zip = "2"
+pdf-extract = "0.7"
+urlencoding = "2"
+
+# Markdown parsing
+pulldown-cmark = "0.12"
+
+# Syntax highlighting for code blocks
+syntect = { version = "5", default-features = false, features = ["default-syntaxes", "default-themes", "parsing", "regex-fancy"] }
+
+# Diff generation
+similar = "2"
+
+# Random selection for tooltips
+rand = "0.9"
+
+# URL parsing for file:// paths
+url = "2"
+
+# Shell escaping/unescaping
+shlex = "1"
+
+# Base64 encoding for images
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+
+# Terminal color detection
+supports-color = "3"
+
+# Date/time handling
+chrono = "0.4"
+
+# YAML parsing for skill files
+serde_yaml = "0.9"
+
+# Clipboard support (optional)
+arboard = { version = "3", optional = true }
+
+# Lua scripting for hooks (optional)
+# Uses vendored Lua to avoid system dependency
+# "send" feature makes Lua thread-safe (uses Arc instead of Rc)
+mlua = { version = "0.10", features = ["lua54", "serialize", "vendored", "send"], optional = true }
+
+# WASM runtime for hook plugins (optional)
+wasmtime = { version = "36", optional = true }
+
+# File watching for hot reload
+notify = { version = "7", optional = true }
+
+# Linux sandboxing (Landlock + seccomp)
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4"
+seccompiler = "0.4"
+
+[features]
+default = []
+clipboard = ["arboard"]
+# Hook backends
+lua = ["mlua"]
+wasm = ["wasmtime"]
+hot-reload = ["notify"]
+# Enable all hook features
+hooks-full = ["lua", "wasm", "hot-reload"]
+
+[dev-dependencies]
+pretty_assertions = "1"
+tempfile = "3"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[build-dependencies]
+prost-build = "0.14"
+protoc-bin-vendored = "3"
+
+[[bench]]
+name = "hooks_bench"
+harness = false
+
+[[bench]]
+name = "batch_bench"
+harness = false
+
+[[bench]]
+name = "indexer_bench"
+harness = false
+
+[[bench]]
+name = "mcp_bench"
+harness = false
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
+# Clippy lint configuration - enable pedantic with targeted allowances
+[lints.clippy]
+# Enable pedantic lints for code quality
+pedantic = { level = "warn", priority = -1 }
+
+# Allow common patterns that are intentional in this codebase
+unused_async = "allow"                  # Async functions for interface consistency
+missing_errors_doc = "allow"            # Not all error conditions need docs
+missing_panics_doc = "allow"            # Not all panics need docs
+cast_possible_truncation = "allow"      # Often unavoidable in systems code
+cast_precision_loss = "allow"           # Acceptable for display/UI calculations
+cast_sign_loss = "allow"                # Used intentionally in many places
+cast_lossless = "allow"                 # Allow explicit casts for clarity
+must_use_candidate = "allow"            # Too noisy for all builder patterns
+doc_markdown = "allow"                  # Too picky about formatting
+module_name_repetitions = "allow"       # Common Rust naming pattern
+similar_names = "allow"                 # Often intentional (e.g., tx/rx)
+too_many_lines = "allow"                # Subjective limit
+struct_excessive_bools = "allow"        # Sometimes needed for state machines
+items_after_statements = "allow"        # Useful for local helpers
+wildcard_imports = "allow"              # Used for re-exports
+match_same_arms = "allow"               # Sometimes clearer than combining
+needless_pass_by_value = "allow"        # Interface consistency
+redundant_closure_for_method_calls = "allow" # Sometimes clearer
+uninlined_format_args = "allow"         # Older Rust style is still readable
+if_not_else = "allow"                   # Sometimes clearer to negate
+single_match_else = "allow"             # Sometimes clearer than if-let
+return_self_not_must_use = "allow"      # Builder patterns returning Self
+format_push_string = "allow"            # push_str(&format!()) is readable
+unnecessary_wraps = "allow"             # Sometimes for API consistency
+option_if_let_else = "allow"            # match is often clearer
+match_wildcard_for_single_variants = "allow" # Future-proofing matches
+ref_option_ref = "allow"                # &Option<T> is sometimes cleaner
+trivially_copy_pass_by_ref = "allow"    # Sometimes clearer to pass by ref
+fn_params_excessive_bools = "allow"     # UI functions often have many flags
+large_futures = "allow"                 # TUI app naturally has large futures
+iter_without_into_iter = "allow"        # Not always needed
+unused_self = "allow"                   # Sometimes for method consistency
+option_option = "allow"                 # Sometimes needed for optional Option
+manual_let_else = "allow"               # match is often clearer
+significant_drop_tightening = "allow"   # Sometimes clearer to drop earlier
+map_unwrap_or = "allow"                 # Sometimes clearer than map+unwrap_or_else
+implicit_hasher = "allow"               # Not generalizing over hashers is fine
+struct_field_names = "allow"            # prefix/postfix patterns are OK
+many_single_char_names = "allow"        # Short names in math/UI code
+assigning_clones = "allow"              # Sometimes clearer than clone_from
+case_sensitive_file_extension_comparisons = "allow" # Platform-specific code
+cast_possible_wrap = "allow"            # Necessary for libc interop
+needless_continue = "allow"             # Sometimes improves readability
+if_then_some_else_none = "allow"        # Sometimes clearer than bool::then
+ref_option = "allow"                    # &Option<T> is sometimes appropriate
+default_trait_access = "allow"          # Type::default() is clear enough
+used_underscore_binding = "allow"       # Sometimes used for side effects
+match_bool = "allow"                    # if-else is sometimes clearer than match
+missing_fields_in_debug = "allow"       # Some fields can't be debugged (closures)
+naive_bytecount = "allow"               # bytecount crate not worth adding
+doc_link_with_quotes = "allow"          # Quotes in doc examples are OK
+comparison_chain = "allow"              # if-else chains are often clearer
+large_stack_arrays = "allow"            # Test fixtures may use large arrays
+
+[lints.rust]
+# Unsafe code is allowed only for low-level system operations
+# (libc process management, Darwin APIs, pointer arithmetic)
+# Each unsafe block should have a SAFETY comment explaining why it's safe

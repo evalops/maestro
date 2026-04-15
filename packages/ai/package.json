@@ -1,0 +1,137 @@
+{
+	"name": "@evalops/ai",
+	"version": "0.10.0",
+	"description": "Shared Maestro AI SDK (models, transport, and agent event stream facade).",
+	"type": "module",
+	"main": "./dist/packages/ai/src/index.js",
+	"types": "./dist/packages/ai/src/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/packages/ai/src/index.d.ts",
+			"default": "./dist/packages/ai/src/index.js"
+		},
+		"./agent": {
+			"types": "./dist/packages/ai/src/agent/index.d.ts",
+			"default": "./dist/packages/ai/src/agent/index.js"
+		},
+		"./transport": {
+			"types": "./dist/packages/ai/src/transport.d.ts",
+			"default": "./dist/packages/ai/src/transport.js"
+		},
+		"./types": {
+			"types": "./dist/packages/ai/src/types.d.ts",
+			"default": "./dist/packages/ai/src/types.js"
+		},
+		"./models": {
+			"types": "./dist/packages/ai/src/models.d.ts",
+			"default": "./dist/packages/ai/src/models.js"
+		},
+		"./tools": {
+			"types": "./dist/packages/ai/src/tools/index.d.ts",
+			"default": "./dist/packages/ai/src/tools/index.js"
+		},
+		"./tools/background": {
+			"types": "./dist/packages/ai/src/tools/background/index.d.ts",
+			"default": "./dist/packages/ai/src/tools/background/index.js"
+		},
+		"./hooks": {
+			"types": "./dist/packages/ai/src/hooks/index.d.ts",
+			"default": "./dist/packages/ai/src/hooks/index.js"
+		},
+		"./sandbox": {
+			"types": "./dist/packages/ai/src/sandbox/index.d.ts",
+			"default": "./dist/packages/ai/src/sandbox/index.js"
+		},
+		"./runtime": {
+			"types": "./dist/packages/ai/src/runtime/index.d.ts",
+			"default": "./dist/packages/ai/src/runtime/index.js"
+		},
+		"./runtime/background-settings": {
+			"types": "./dist/packages/ai/src/runtime/background-settings.d.ts",
+			"default": "./dist/packages/ai/src/runtime/background-settings.js"
+		},
+		"./telemetry": {
+			"types": "./dist/packages/ai/src/telemetry/index.d.ts",
+			"default": "./dist/packages/ai/src/telemetry/index.js"
+		},
+		"./oauth": {
+			"types": "./dist/packages/ai/src/oauth/index.d.ts",
+			"default": "./dist/packages/ai/src/oauth/index.js"
+		},
+		"./guardian": {
+			"types": "./dist/packages/ai/src/guardian/index.d.ts",
+			"default": "./dist/packages/ai/src/guardian/index.js"
+		},
+		"./config": {
+			"types": "./dist/packages/ai/src/config/index.d.ts",
+			"default": "./dist/packages/ai/src/config/index.js"
+		},
+		"./config/constants": {
+			"types": "./dist/packages/ai/src/config/constants.d.ts",
+			"default": "./dist/packages/ai/src/config/constants.js"
+		},
+		"./config/framework": {
+			"types": "./dist/packages/ai/src/config/framework.d.ts",
+			"default": "./dist/packages/ai/src/config/framework.js"
+		},
+		"./config/lsp-config": {
+			"types": "./dist/packages/ai/src/config/lsp-config.d.ts",
+			"default": "./dist/packages/ai/src/config/lsp-config.js"
+		},
+		"./config/firewall-config": {
+			"types": "./dist/packages/ai/src/config/firewall-config.d.ts",
+			"default": "./dist/packages/ai/src/config/firewall-config.js"
+		},
+		"./config/toml-config": {
+			"types": "./dist/packages/ai/src/config/toml-config.d.ts",
+			"default": "./dist/packages/ai/src/config/toml-config.js"
+		},
+		"./errors": {
+			"types": "./dist/packages/ai/src/errors/index.d.ts",
+			"default": "./dist/packages/ai/src/errors/index.js"
+		},
+		"./lsp": {
+			"types": "./dist/packages/ai/src/lsp/index.d.ts",
+			"default": "./dist/packages/ai/src/lsp/index.js"
+		},
+		"./ide": {
+			"types": "./dist/packages/ai/src/ide/index.d.ts",
+			"default": "./dist/packages/ai/src/ide/index.js"
+		},
+		"./training": {
+			"types": "./dist/packages/ai/src/training.d.ts",
+			"default": "./dist/packages/ai/src/training.js"
+		}
+	},
+	"files": ["dist", "README.md"],
+	"scripts": {
+		"clean": "node ../../scripts/clean-paths.js dist ../../tmp/tsbuildinfo/ai.tsbuildinfo",
+		"build": "node ../../scripts/clean-paths.js dist ../../tmp/tsbuildinfo/ai.tsbuildinfo && node ../../scripts/ensure-dir.js ../../tmp/tsbuildinfo && tsc -p tsconfig.build.json",
+		"dev": "node ../../scripts/ensure-dir.js ../../tmp/tsbuildinfo && tsc -p tsconfig.build.json --watch --preserveWatchOutput",
+		"check": "node ../../scripts/ensure-dir.js ../../tmp/tsbuildinfo && tsc -p tsconfig.build.json --noEmit",
+		"test": "vitest --run --passWithNoTests",
+		"prepublishOnly": "npm run clean && npm run build"
+	},
+	"keywords": ["ai", "llm", "agent", "streaming", "maestro"],
+	"author": "EvalOps",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/evalops/maestro.git",
+		"directory": "packages/ai"
+	},
+	"engines": {
+		"node": ">=20.0.0"
+	},
+	"dependencies": {
+		"@evalops/contracts": "^0.10.0",
+		"@evalops/tui": "^0.10.0",
+		"@google/genai": "^1.29.1",
+		"@sinclair/typebox": "^0.34.0"
+	},
+	"devDependencies": {
+		"@types/node": "^24.10.7",
+		"typescript": "^5.9.3",
+		"vitest": "^4.0.7"
+	}
+}

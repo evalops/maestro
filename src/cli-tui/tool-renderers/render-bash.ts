@@ -1,0 +1,118 @@
+import { theme } from "../../theme/theme.js";
+import {
+	buildCollapsedSummary,
+	clampAnsiLines,
+	clampToolOutput,
+	formatDetailSections,
+	formatSection,
+	formatShellSnippet,
+	formatToolOutputTruncation,
+	summarizeLines,
+} from "../utils/tool-text-utils.js";
+import { formatHeadline, renderCard, statusGlyph } from "./render-style.js";
+import type { ToolRenderArgs, ToolRenderer } from "./types.js";
+
+export class BashRenderer implements ToolRenderer {
+	render(context: ToolRenderArgs): string {
+		const args = context.result
+			? context.args
+			: (context.partialArgs ?? context.args);
+		const command =
+			typeof args?.command === "string"
+				? args.command
+				: String(args?.command ?? "");
+		const commandLines = formatShellSnippet(command ? `$ ${command}` : "$ ...");
+		const sections: string[] = [];
+		const status: "success" | "error" | "pending" =
+			context.result?.isError === true
+				? "error"
+				: context.result
+					? "success"
+					: "pending";
+		const headline = `${statusGlyph(status)} ${formatHeadline("bash", command || "command")}`;
+
+		// Command section (always show)
+		if (commandLines.length) {
+			sections.push(commandLines.join("\n"));
+		}
+
+		if (context.collapsed) {
+			const summarySource = context.result
+				? this.getTextOutput(context)
+				: command;
+			const summary = buildCollapsedSummary(summarySource);
+			const body = sections.length
+				? `${sections[0]}\n${theme.fg("dim", summary)}`
+				: theme.fg("dim", summary);
+			return `${headline}\n${renderCard(body.split("\n"))}`;
+		}
+
+		if (context.result) {
+			const rawOutput = this.getTextOutput(context).trim();
+			const clamped = clampToolOutput(rawOutput);
+			const output = clamped.text;
+			const banner = formatToolOutputTruncation(clamped);
+			if (output) {
+				const { lines, remaining } = summarizeLines(output, 5);
+				const terminalWidth = process.stdout.columns ?? 80;
+				const maxWidth = Math.max(48, Math.min(120, terminalWidth - 8));
+				const dimmed = clampAnsiLines(
+					lines.map((line) => theme.fg("dim", line)),
+					maxWidth,
+				);
+				sections.push(dimmed.join("\n"));
+				if (remaining > 0) {
+					sections.push(theme.fg("dim", `... (${remaining} more lines)`));
+				}
+				if (banner) {
+					sections.push(theme.fg("dim", banner));
+				}
+			} else if (banner) {
+				sections.push(theme.fg("dim", banner));
+			}
+		}
+
+		if (!context.collapsed) {
+			const detailSections = formatDetailSections(context.result?.details, {
+				excludeKeys: ["command", "output"],
+			});
+			sections.push(...detailSections);
+		}
+
+		if (sections.length === 0) {
+			return `${headline}\n${renderCard([theme.fg("dim", "waiting for output...")])}`;
+		}
+
+		return `${headline}\n${renderCard(
+			sections
+				.filter(Boolean)
+				.flatMap((block) => block.split("\n"))
+				.map((line) => line),
+		)}`;
+	}
+
+	private getTextOutput(context: ToolRenderArgs): string {
+		if (!context.result) return "";
+		const { content } = context.result;
+		if (typeof content === "string") {
+			return content;
+		}
+		const blocks = Array.isArray(content) ? content : [];
+		const textBlocks = blocks.filter(
+			(c): c is { type: "text"; text: string } => c.type === "text",
+		);
+		const imageBlocks = blocks.filter(
+			(c): c is { type: "image"; mimeType: string; data: string } =>
+				c.type === "image",
+		);
+
+		let output = textBlocks.map((c) => c.text).join("\n");
+		if (imageBlocks.length > 0) {
+			const imageIndicators = imageBlocks
+				.map((img) => `[Image: ${img.mimeType}]`)
+				.join("\n");
+			output = output ? `${output}\n${imageIndicators}` : imageIndicators;
+		}
+		return output;
+	}
+}

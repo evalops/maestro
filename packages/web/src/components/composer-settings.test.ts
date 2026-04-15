@@ -1,0 +1,2618 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ApiClient } from "../services/api-client.js";
+import "./composer-settings.js";
+import type { ComposerSettings } from "./composer-settings.js";
+
+function createApiClientMock(): ApiClient {
+	return {
+		getStatus: vi.fn().mockResolvedValue({
+			cwd: "/repo",
+			git: null,
+			context: { agentMd: true, claudeMd: false },
+			server: { uptime: 120, version: "v1.0.0" },
+		}),
+		getModels: vi.fn().mockResolvedValue([
+			{
+				id: "gpt-5-mini",
+				name: "GPT-5 Mini",
+				provider: "openai",
+			},
+		]),
+		getUsage: vi.fn().mockResolvedValue({
+			totalCost: 0,
+			totalTokens: 0,
+			totalRequests: 0,
+			byProvider: {},
+			byModel: {},
+		}),
+		listMemoryTopics: vi.fn().mockResolvedValue({
+			topics: [
+				{
+					name: "api-design",
+					entryCount: 1,
+					lastUpdated: Date.now(),
+				},
+			],
+		}),
+		listMemoryTopic: vi.fn().mockResolvedValue({
+			topic: "api-design",
+			memories: [
+				{
+					id: "mem_topic",
+					topic: "api-design",
+					content: "Topic-specific memory",
+					createdAt: Date.now(),
+					updatedAt: Date.now(),
+					tags: ["rest"],
+				},
+			],
+		}),
+		searchMemory: vi.fn().mockResolvedValue({
+			query: "REST",
+			results: [
+				{
+					entry: {
+						id: "mem_search",
+						topic: "api-design",
+						content: "Search result memory",
+						createdAt: Date.now(),
+						updatedAt: Date.now(),
+						tags: ["rest"],
+					},
+					score: 4.2,
+					matchedOn: "content",
+				},
+			],
+		}),
+		getRecentMemories: vi.fn().mockResolvedValue({
+			memories: [
+				{
+					id: "mem_recent",
+					topic: "general",
+					content: "Recent memory",
+					createdAt: Date.now(),
+					updatedAt: Date.now(),
+					tags: ["note"],
+				},
+			],
+		}),
+		getMemoryStats: vi.fn().mockResolvedValue({
+			stats: {
+				totalEntries: 2,
+				topics: 2,
+				oldestEntry: Date.now() - 1_000,
+				newestEntry: Date.now(),
+			},
+		}),
+		getTeamMemoryStatus: vi.fn().mockResolvedValue({
+			available: true,
+			status: {
+				gitRoot: "/repo",
+				projectId: "proj123",
+				projectName: "maestro",
+				directory: "/repo/.maestro/team-memory",
+				entrypoint: "/repo/.maestro/team-memory/MEMORY.md",
+				exists: false,
+				fileCount: 0,
+				files: [],
+			},
+		}),
+		saveMemory: vi.fn().mockResolvedValue({
+			success: true,
+			message: 'Memory saved to topic "api-design"',
+			entry: {
+				id: "mem_saved",
+				topic: "api-design",
+				content: "Use REST conventions #rest",
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+				tags: ["rest"],
+			},
+		}),
+		deleteMemory: vi.fn().mockResolvedValue({
+			success: true,
+			message: "Memory mem_topic deleted",
+		}),
+		clearMemory: vi.fn().mockResolvedValue({
+			success: true,
+			message: "Cleared 2 memories",
+			count: 2,
+		}),
+		initTeamMemory: vi.fn().mockResolvedValue({
+			success: true,
+			message: "Team memory ready at /repo/.maestro/team-memory/MEMORY.md",
+			status: {
+				gitRoot: "/repo",
+				projectId: "proj123",
+				projectName: "maestro",
+				directory: "/repo/.maestro/team-memory",
+				entrypoint: "/repo/.maestro/team-memory/MEMORY.md",
+				exists: true,
+				fileCount: 1,
+				files: ["MEMORY.md"],
+			},
+		}),
+		exportMemory: vi.fn(),
+		importMemory: vi.fn(),
+		getMcpStatus: vi.fn().mockResolvedValue({
+			authPresets: [
+				{
+					name: "linear-auth",
+					scope: "local",
+					headerKeys: ["Authorization"],
+					headersHelper: "bun run scripts/mcp-headers.ts",
+				},
+			],
+			servers: [
+				{
+					name: "linear",
+					connected: true,
+					scope: "local",
+					transport: "http",
+					remoteTrust: "official",
+					remoteHost: "mcp.linear.app",
+					authPreset: "linear-auth",
+					resources: ["linear://workspace"],
+					prompts: ["summarize-issue"],
+					promptDetails: [
+						{
+							name: "summarize-issue",
+							title: "Summarize Issue",
+							description: "Summarize a Linear issue",
+							arguments: [
+								{
+									name: "ISSUE",
+									description: "Issue identifier",
+									required: true,
+								},
+							],
+						},
+					],
+				},
+			],
+		}),
+		readMcpResource: vi.fn().mockResolvedValue({
+			contents: [
+				{
+					uri: "linear://workspace",
+					text: "workspace content",
+					mimeType: "text/plain",
+				},
+			],
+		}),
+		getMcpPrompt: vi.fn().mockResolvedValue({
+			description: "Summarize a Linear issue",
+			messages: [
+				{
+					role: "user",
+					content: "Summarize issue MAE-1",
+				},
+			],
+		}),
+		searchMcpRegistry: vi.fn().mockResolvedValue({
+			query: "",
+			entries: [
+				{
+					displayName: "Linear",
+					slug: "linear",
+					oneLiner: "Track issues and projects.",
+					transport: "http",
+					authorName: "Linear",
+					toolCount: 12,
+					promptCount: 2,
+					urlOptions: [
+						{
+							url: "https://mcp.linear.app/mcp",
+							label: "Production",
+						},
+					],
+				},
+			],
+		}),
+		importMcpRegistry: vi.fn().mockResolvedValue({
+			name: "linear",
+			scope: "local",
+			path: "/repo/.maestro/mcp.json",
+			entry: {
+				displayName: "Linear",
+			},
+			server: {
+				transport: "http",
+				url: "https://mcp.linear.app/mcp",
+			},
+		}),
+		addMcpServer: vi.fn().mockResolvedValue({
+			name: "custom-docs",
+			scope: "local",
+			path: "/repo/.maestro/mcp.json",
+			server: {
+				name: "custom-docs",
+				transport: "http",
+				url: "https://docs.example.com/mcp",
+			},
+		}),
+		addMcpAuthPreset: vi.fn().mockResolvedValue({
+			name: "new-auth",
+			scope: "local",
+			path: "/repo/.maestro/mcp.json",
+			preset: {
+				name: "new-auth",
+				headers: {
+					Authorization: "Bearer token",
+				},
+			},
+		}),
+		updateMcpAuthPreset: vi.fn().mockResolvedValue({
+			name: "linear-auth",
+			scope: "local",
+			path: "/repo/.maestro/mcp.local.json",
+			preset: {
+				name: "linear-auth",
+				headersHelper: "bun run scripts/updated-headers.ts",
+			},
+		}),
+		removeMcpAuthPreset: vi.fn().mockResolvedValue({
+			name: "linear-auth",
+			scope: "local",
+			path: "/repo/.maestro/mcp.local.json",
+			fallback: null,
+		}),
+		removeMcpServer: vi.fn().mockResolvedValue({
+			name: "linear",
+			scope: "local",
+			path: "/repo/.maestro/mcp.local.json",
+			fallback: null,
+		}),
+		updateMcpServer: vi.fn().mockResolvedValue({
+			name: "linear",
+			scope: "local",
+			path: "/repo/.maestro/mcp.local.json",
+			server: {
+				name: "linear",
+				transport: "sse",
+				url: "https://mcp.linear.app/sse",
+			},
+		}),
+		setMcpProjectApproval: vi.fn().mockResolvedValue({
+			name: "linear",
+			scope: "project",
+			decision: "approved",
+			projectApproval: "approved",
+		}),
+		getPackageStatus: vi.fn().mockResolvedValue({
+			packages: [
+				{
+					scope: "project",
+					configPath: "/repo/.maestro/config.toml",
+					sourceSpec: "./packages/example",
+					filters: { skills: ["tooling"] },
+					inspection: {
+						sourceSpec: "./packages/example",
+						resolvedSource: "./packages/example",
+						sourceType: "local",
+						resolvedPath: "/repo/packages/example",
+						discovered: {
+							name: "@acme/example",
+							version: "1.0.0",
+							isMaestroPackage: true,
+							hasManifest: true,
+							manifestPaths: {
+								skills: ["tooling"],
+								prompts: ["example"],
+							},
+							errors: [],
+						},
+						resources: {
+							extensions: [],
+							skills: ["tooling"],
+							prompts: ["example"],
+							themes: [],
+						},
+					},
+					issues: [],
+					error: null,
+				},
+			],
+		}),
+		searchPackages: vi.fn().mockResolvedValue({
+			query: "",
+			entries: [
+				{
+					name: "@acme/maestro-memory-tools",
+					version: "1.2.3",
+					description: "Team memory helpers for Maestro",
+					keywords: ["maestro-package", "memory"],
+					links: {
+						npm: "https://www.npmjs.com/package/@acme/maestro-memory-tools",
+					},
+					installSource: "npm:@acme/maestro-memory-tools",
+				},
+			],
+		}),
+		inspectPackage: vi.fn().mockResolvedValue({
+			inspection: {
+				sourceSpec: "./packages/new-pack",
+				resolvedSource: "./packages/new-pack",
+				sourceType: "local",
+				resolvedPath: "/repo/packages/new-pack",
+				discovered: {
+					name: "@acme/new-pack",
+					version: "1.0.0",
+					isMaestroPackage: true,
+					hasManifest: true,
+					manifestPaths: {
+						skills: ["tooling"],
+					},
+					errors: [],
+				},
+				resources: {
+					extensions: [],
+					skills: ["tooling"],
+					prompts: [],
+					themes: [],
+				},
+			},
+			issues: [],
+		}),
+		refreshPackage: vi.fn().mockResolvedValue({
+			inspection: {
+				sourceSpec: "./packages/new-pack",
+				resolvedSource: "./packages/new-pack",
+				sourceType: "git",
+				resolvedPath: "/repo/.maestro/packages/git-1234",
+				discovered: {
+					name: "@acme/new-pack",
+					version: "1.0.1",
+					isMaestroPackage: true,
+					hasManifest: true,
+					manifestPaths: {
+						skills: ["tooling"],
+					},
+					errors: [],
+				},
+				resources: {
+					extensions: [],
+					skills: ["tooling", "deploy"],
+					prompts: [],
+					themes: [],
+				},
+			},
+			issues: [],
+		}),
+		refreshAllPackages: vi.fn().mockResolvedValue({
+			refreshed: [
+				{
+					source: "git:github.com/acme/example@main",
+					sourceType: "git",
+					scopes: ["project"],
+					inspection: {
+						sourceSpec: "git:github.com/acme/example@main",
+						resolvedSource: "git:github.com/acme/example@main",
+						sourceType: "git",
+						resolvedPath: "/repo/.maestro/packages/git-1234",
+						discovered: {
+							name: "@acme/example",
+							version: "1.0.1",
+							isMaestroPackage: true,
+							hasManifest: true,
+							manifestPaths: {
+								skills: ["tooling"],
+							},
+							errors: [],
+						},
+						resources: {
+							extensions: [],
+							skills: ["tooling", "deploy"],
+							prompts: [],
+							themes: [],
+						},
+					},
+					issues: [],
+					error: null,
+				},
+			],
+			localCount: 1,
+			remoteCount: 1,
+		}),
+		prunePackageCache: vi.fn().mockResolvedValue({
+			cacheDir: "/repo/.maestro/packages",
+			removed: ["/repo/.maestro/packages/git-deadbeef"],
+			removedCount: 1,
+			referencedCount: 1,
+		}),
+		validatePackage: vi.fn().mockResolvedValue({
+			inspection: {
+				sourceSpec: "./packages/new-pack",
+				resolvedSource: "./packages/new-pack",
+				sourceType: "local",
+				resolvedPath: "/repo/packages/new-pack",
+				discovered: {
+					name: "@acme/new-pack",
+					version: "1.0.0",
+					isMaestroPackage: true,
+					hasManifest: true,
+					manifestPaths: {
+						skills: ["tooling"],
+					},
+					errors: [],
+				},
+				resources: {
+					extensions: [],
+					skills: ["tooling"],
+					prompts: [],
+					themes: [],
+				},
+			},
+			issues: [],
+		}),
+		addPackage: vi.fn().mockResolvedValue({
+			path: "/repo/.maestro/config.toml",
+			scope: "project",
+			spec: "./packages/new-pack",
+		}),
+		removePackage: vi.fn().mockResolvedValue({
+			path: "/repo/.maestro/config.toml",
+			scope: "project",
+			removedCount: 1,
+			fallback: null,
+		}),
+	} as unknown as ApiClient;
+}
+
+function createSettings(
+	apiClient: ApiClient,
+	options?: { currentSessionId?: string | null },
+): ComposerSettings {
+	const element = document.createElement(
+		"composer-settings",
+	) as ComposerSettings;
+	element.apiClient = apiClient;
+	element.currentSessionId = options?.currentSessionId ?? null;
+	document.body.append(element);
+	return element;
+}
+
+function createDeferred<T>() {
+	let resolve!: (value: T | PromiseLike<T>) => void;
+	let reject!: (reason?: unknown) => void;
+	const promise = new Promise<T>((res, rej) => {
+		resolve = res;
+		reject = rej;
+	});
+	return { promise, resolve, reject };
+}
+
+async function waitForSettled(
+	element: ComposerSettings,
+	predicate: () => boolean,
+	attempts = 20,
+) {
+	for (let attempt = 0; attempt < attempts; attempt += 1) {
+		await Promise.resolve();
+		await element.updateComplete;
+		if (predicate()) {
+			return;
+		}
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+	throw new Error("Timed out waiting for composer settings to settle");
+}
+
+afterEach(() => {
+	document.body.replaceChildren();
+});
+
+describe("ComposerSettings MCP section", () => {
+	it("renders configured MCP servers and official registry results", async () => {
+		const apiClient = createApiClientMock();
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			(element.shadowRoot?.textContent ?? "").includes("Configured Servers"),
+		);
+
+		expect(apiClient.searchMcpRegistry).toHaveBeenCalledWith("");
+		const text = element.shadowRoot?.textContent ?? "";
+		expect(text).toContain("Configured Servers");
+		expect(text).toContain("linear");
+		expect(text).toContain("Official Registry");
+		expect(text).toContain("Track issues and projects.");
+		expect(text).toContain("Official remote");
+		expect(text).toContain("Auth Presets");
+		expect(text).toContain("linear-auth");
+		expect(text).toContain("Auth preset: linear-auth");
+	});
+
+	it("reads MCP resources and runs MCP prompts from settings", async () => {
+		const apiClient = createApiClientMock();
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Boolean(
+				element.shadowRoot?.querySelector(
+					'button[aria-label="Read resource for linear"]',
+				),
+			),
+		);
+
+		const readButton = element.shadowRoot?.querySelector(
+			'button[aria-label="Read resource for linear"]',
+		) as HTMLButtonElement | null;
+		expect(readButton).not.toBeNull();
+		readButton?.dispatchEvent(new Event("click", { bubbles: true }));
+
+		await waitForSettled(
+			element,
+			() =>
+				(apiClient.readMcpResource as ReturnType<typeof vi.fn>).mock.calls
+					.length > 0,
+		);
+
+		expect(apiClient.readMcpResource).toHaveBeenCalledWith(
+			"linear",
+			"linear://workspace",
+		);
+		expect(element.shadowRoot?.textContent ?? "").toContain(
+			"workspace content",
+		);
+
+		const promptArgs = element.shadowRoot?.querySelector(
+			'input[aria-label="Prompt argument ISSUE for linear"]',
+		) as HTMLInputElement | null;
+		expect(promptArgs).not.toBeNull();
+		if (!promptArgs) {
+			throw new Error("Expected MCP prompt argument input");
+		}
+		promptArgs.value = "MAE-1";
+		promptArgs.dispatchEvent(new Event("input", { bubbles: true }));
+
+		const runButton = element.shadowRoot?.querySelector(
+			'button[aria-label="Run prompt for linear"]',
+		) as HTMLButtonElement | null;
+		expect(runButton).not.toBeNull();
+		runButton?.dispatchEvent(new Event("click", { bubbles: true }));
+
+		await waitForSettled(
+			element,
+			() =>
+				(apiClient.getMcpPrompt as ReturnType<typeof vi.fn>).mock.calls.length >
+				0,
+		);
+
+		expect(apiClient.getMcpPrompt).toHaveBeenCalledWith(
+			"linear",
+			"summarize-issue",
+			{
+				ISSUE: "MAE-1",
+			},
+		);
+		expect(element.shadowRoot?.textContent ?? "").toContain(
+			"Summarize issue MAE-1",
+		);
+	});
+
+	it("renders memory summary and switches to topic-specific memories", async () => {
+		const apiClient = createApiClientMock();
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Boolean(
+				element.shadowRoot?.querySelector(
+					'button[aria-label="Show memories for topic api-design"]',
+				),
+			),
+		);
+
+		const text = element.shadowRoot?.textContent ?? "";
+		expect(text).toContain("Cross-session memory");
+		expect(text).toContain("Entries: 2");
+		expect(text).toContain("Recent memory");
+
+		const topicButton = element.shadowRoot?.querySelector(
+			'button[aria-label="Show memories for topic api-design"]',
+		) as HTMLButtonElement | null;
+		expect(topicButton).not.toBeNull();
+		topicButton?.click();
+
+		await waitForSettled(
+			element,
+			() =>
+				(apiClient.listMemoryTopic as ReturnType<typeof vi.fn>).mock.calls
+					.length > 0,
+			30,
+		);
+
+		expect(apiClient.listMemoryTopic).toHaveBeenCalledWith(
+			"api-design",
+			undefined,
+		);
+		expect(element.shadowRoot?.textContent ?? "").toContain(
+			"Topic-specific memory",
+		);
+	});
+
+	it("saves and deletes memory entries from settings", async () => {
+		const apiClient = createApiClientMock();
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Boolean(
+				element.shadowRoot?.querySelector('input[aria-label="Memory topic"]'),
+			),
+		);
+
+		const topicInput = element.shadowRoot?.querySelector(
+			'input[aria-label="Memory topic"]',
+		) as HTMLInputElement | null;
+		const contentInput = element.shadowRoot?.querySelector(
+			'textarea[aria-label="Memory content"]',
+		) as HTMLTextAreaElement | null;
+		const saveButton = element.shadowRoot?.querySelector(
+			".memory-save-button",
+		) as HTMLButtonElement | null;
+		expect(topicInput).not.toBeNull();
+		expect(contentInput).not.toBeNull();
+		expect(saveButton).not.toBeNull();
+		if (!topicInput || !contentInput || !saveButton) {
+			throw new Error("Expected memory save controls");
+		}
+
+		topicInput.value = "api-design";
+		topicInput.dispatchEvent(new Event("input", { bubbles: true }));
+		contentInput.value = "Use REST conventions #rest";
+		contentInput.dispatchEvent(new Event("input", { bubbles: true }));
+		saveButton.click();
+
+		await waitForSettled(
+			element,
+			() =>
+				(apiClient.saveMemory as ReturnType<typeof vi.fn>).mock.calls.length >
+				0,
+			30,
+		);
+
+		expect(apiClient.saveMemory).toHaveBeenCalledWith(
+			"api-design",
+			"Use REST conventions #rest",
+			["rest"],
+			undefined,
+		);
+		expect(element.shadowRoot?.textContent ?? "").toContain(
+			'Memory saved to topic "api-design"',
+		);
+
+		await waitForSettled(
+			element,
+			() =>
+				Boolean(
+					element.shadowRoot?.querySelector(
+						'button[aria-label="Delete memory mem_topic"]',
+					),
+				),
+			30,
+		);
+
+		const deleteButton = element.shadowRoot?.querySelector(
+			'button[aria-label="Delete memory mem_topic"]',
+		) as HTMLButtonElement | null;
+		expect(deleteButton).not.toBeNull();
+		deleteButton?.click();
+
+		await waitForSettled(
+			element,
+			() =>
+				(apiClient.deleteMemory as ReturnType<typeof vi.fn>).mock.calls.length >
+				0,
+			30,
+		);
+
+		expect(apiClient.deleteMemory).toHaveBeenCalledWith("mem_topic");
+	});
+
+	it("keeps the save button label during non-save memory actions", async () => {
+		const apiClient = createApiClientMock();
+		const deleteDeferred = createDeferred<{
+			success: boolean;
+			message: string;
+		}>();
+		(apiClient.deleteMemory as ReturnType<typeof vi.fn>).mockReturnValueOnce(
+			deleteDeferred.promise,
+		);
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Boolean(
+				element.shadowRoot?.querySelector(
+					'button[aria-label="Delete memory mem_recent"]',
+				),
+			),
+		);
+
+		const deleteButton = element.shadowRoot?.querySelector(
+			'button[aria-label="Delete memory mem_recent"]',
+		) as HTMLButtonElement | null;
+		const saveButton = element.shadowRoot?.querySelector(
+			".memory-save-button",
+		) as HTMLButtonElement | null;
+		expect(deleteButton).not.toBeNull();
+		expect(saveButton).not.toBeNull();
+		if (!deleteButton || !saveButton) {
+			throw new Error("Expected memory action buttons");
+		}
+
+		deleteButton.click();
+		await Promise.resolve();
+		await element.updateComplete;
+
+		expect(apiClient.deleteMemory).toHaveBeenCalledWith("mem_recent");
+		expect(saveButton.textContent?.trim()).toBe("Save memory");
+		expect(saveButton.disabled).toBe(true);
+
+		deleteDeferred.resolve({
+			success: true,
+			message: "Memory mem_recent deleted",
+		});
+		await waitForSettled(
+			element,
+			() =>
+				(element.shadowRoot?.textContent ?? "").includes(
+					"Memory mem_recent deleted",
+				),
+			30,
+		);
+	});
+
+	it("preserves topic casing when save metadata omits the saved entry topic", async () => {
+		const apiClient = createApiClientMock();
+		(apiClient.saveMemory as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+			success: true,
+			message: "",
+		});
+		(apiClient.listMemoryTopic as ReturnType<typeof vi.fn>).mockResolvedValue({
+			topic: "API-Design",
+			memories: [],
+		});
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Boolean(
+				element.shadowRoot?.querySelector('input[aria-label="Memory topic"]'),
+			),
+		);
+
+		const topicInput = element.shadowRoot?.querySelector(
+			'input[aria-label="Memory topic"]',
+		) as HTMLInputElement | null;
+		const contentInput = element.shadowRoot?.querySelector(
+			'textarea[aria-label="Memory content"]',
+		) as HTMLTextAreaElement | null;
+		const saveButton = element.shadowRoot?.querySelector(
+			".memory-save-button",
+		) as HTMLButtonElement | null;
+		expect(topicInput).not.toBeNull();
+		expect(contentInput).not.toBeNull();
+		expect(saveButton).not.toBeNull();
+		if (!topicInput || !contentInput || !saveButton) {
+			throw new Error("Expected memory save controls");
+		}
+
+		topicInput.value = "API-Design";
+		topicInput.dispatchEvent(new Event("input", { bubbles: true }));
+		contentInput.value = "Preserve topic casing #rest";
+		contentInput.dispatchEvent(new Event("input", { bubbles: true }));
+		saveButton.click();
+
+		await waitForSettled(
+			element,
+			() =>
+				(apiClient.saveMemory as ReturnType<typeof vi.fn>).mock.calls.length >
+				0,
+			30,
+		);
+		await waitForSettled(
+			element,
+			() =>
+				(apiClient.listMemoryTopic as ReturnType<typeof vi.fn>).mock.calls.some(
+					([topic]) => topic === "API-Design",
+				),
+			30,
+		);
+
+		expect(apiClient.saveMemory).toHaveBeenCalledWith(
+			"API-Design",
+			"Preserve topic casing #rest",
+			["rest"],
+			undefined,
+		);
+		expect(apiClient.listMemoryTopic).toHaveBeenLastCalledWith(
+			"API-Design",
+			undefined,
+		);
+		expect(element.shadowRoot?.textContent ?? "").toContain(
+			'Memory saved to topic "API-Design"',
+		);
+	});
+
+	it("scopes memory settings to the current session when enabled", async () => {
+		const apiClient = createApiClientMock();
+		const element = createSettings(apiClient, { currentSessionId: "sess_123" });
+
+		await waitForSettled(element, () =>
+			Boolean(
+				element.shadowRoot?.querySelector(
+					'input[aria-label="Show current session memories only"]',
+				),
+			),
+		);
+
+		expect(apiClient.listMemoryTopics).toHaveBeenCalledWith("sess_123");
+		expect(apiClient.getRecentMemories).toHaveBeenCalledWith(12, "sess_123");
+		expect(element.shadowRoot?.textContent ?? "").toContain(
+			"Current-session memory",
+		);
+
+		const scopeToggle = element.shadowRoot?.querySelector(
+			'input[aria-label="Show current session memories only"]',
+		) as HTMLInputElement | null;
+		expect(scopeToggle).not.toBeNull();
+		scopeToggle?.click();
+
+		await waitForSettled(
+			element,
+			() =>
+				(
+					apiClient.listMemoryTopics as ReturnType<typeof vi.fn>
+				).mock.calls.some((args) => args[0] === undefined),
+			30,
+		);
+
+		expect(apiClient.getRecentMemories).toHaveBeenLastCalledWith(12, undefined);
+	});
+
+	it("shows and initializes repo-scoped team memory from settings", async () => {
+		const apiClient = createApiClientMock();
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			(element.shadowRoot?.textContent ?? "").includes("Team memory"),
+		);
+
+		expect(element.shadowRoot?.textContent ?? "").toContain("not initialized");
+
+		const initButton = element.shadowRoot?.querySelector(
+			'button[aria-label="Initialize team memory"]',
+		) as HTMLButtonElement | null;
+		expect(initButton).not.toBeNull();
+		initButton?.click();
+
+		await waitForSettled(
+			element,
+			() =>
+				(apiClient.initTeamMemory as ReturnType<typeof vi.fn>).mock.calls
+					.length > 0,
+			30,
+		);
+
+		expect(apiClient.initTeamMemory).toHaveBeenCalledTimes(1);
+		expect(element.shadowRoot?.textContent ?? "").toContain(
+			"Team memory ready at /repo/.maestro/team-memory/MEMORY.md",
+		);
+	});
+
+	it("validates required structured MCP prompt arguments before running", async () => {
+		const apiClient = createApiClientMock();
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Boolean(
+				element.shadowRoot?.querySelector(
+					'button[aria-label="Run prompt for linear"]',
+				),
+			),
+		);
+
+		const runButton = element.shadowRoot?.querySelector(
+			'button[aria-label="Run prompt for linear"]',
+		) as HTMLButtonElement | null;
+		expect(runButton).not.toBeNull();
+		runButton?.dispatchEvent(new Event("click", { bubbles: true }));
+
+		await waitForSettled(
+			element,
+			() =>
+				(element.shadowRoot?.textContent ?? "").includes(
+					'Missing required prompt argument "ISSUE".',
+				),
+			30,
+		);
+
+		expect(apiClient.getMcpPrompt).not.toHaveBeenCalled();
+	});
+
+	it("approves pending project MCP servers from settings", async () => {
+		const apiClient = createApiClientMock();
+		(apiClient.getMcpStatus as ReturnType<typeof vi.fn>)
+			.mockResolvedValueOnce({
+				authPresets: [],
+				servers: [
+					{
+						name: "repo-linear",
+						connected: false,
+						scope: "project",
+						transport: "http",
+						projectApproval: "pending",
+						resources: [],
+						prompts: [],
+					},
+				],
+			})
+			.mockResolvedValue({
+				authPresets: [],
+				servers: [
+					{
+						name: "repo-linear",
+						connected: true,
+						scope: "project",
+						transport: "http",
+						projectApproval: "approved",
+						resources: [],
+						prompts: [],
+					},
+				],
+			});
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Boolean(
+				Array.from(element.shadowRoot?.querySelectorAll("button") ?? []).find(
+					(button) => button.textContent?.trim() === "Approve",
+				),
+			),
+		);
+
+		const approveButton = Array.from(
+			element.shadowRoot?.querySelectorAll("button") ?? [],
+		).find((button) => button.textContent?.trim() === "Approve");
+		expect(approveButton).toBeDefined();
+		approveButton?.dispatchEvent(new Event("click", { bubbles: true }));
+
+		await waitForSettled(
+			element,
+			() =>
+				(apiClient.setMcpProjectApproval as ReturnType<typeof vi.fn>).mock.calls
+					.length > 0,
+			30,
+		);
+		await waitForSettled(
+			element,
+			() =>
+				(apiClient.getMcpStatus as ReturnType<typeof vi.fn>).mock.calls
+					.length >= 2,
+			30,
+		);
+
+		expect(apiClient.setMcpProjectApproval).toHaveBeenCalledWith({
+			name: "repo-linear",
+			decision: "approved",
+		});
+		expect(
+			(apiClient.getMcpStatus as ReturnType<typeof vi.fn>).mock.calls.length,
+		).toBeGreaterThanOrEqual(2);
+	});
+
+	it("clears stale MCP resource and prompt output when reruns fail", async () => {
+		const apiClient = createApiClientMock();
+		(apiClient.readMcpResource as ReturnType<typeof vi.fn>)
+			.mockResolvedValueOnce({
+				contents: [
+					{
+						uri: "linear://workspace",
+						text: "workspace content",
+						mimeType: "text/plain",
+					},
+				],
+			})
+			.mockRejectedValueOnce(new Error("Resource read failed"));
+		(apiClient.getMcpPrompt as ReturnType<typeof vi.fn>)
+			.mockResolvedValueOnce({
+				description: "Summarize a Linear issue",
+				messages: [
+					{
+						role: "user",
+						content: "Summarize issue MAE-1",
+					},
+				],
+			})
+			.mockRejectedValueOnce(new Error("Prompt run failed"));
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Boolean(
+				element.shadowRoot?.querySelector(
+					'button[aria-label="Read resource for linear"]',
+				),
+			),
+		);
+
+		const readButton = element.shadowRoot?.querySelector(
+			'button[aria-label="Read resource for linear"]',
+		) as HTMLButtonElement | null;
+		const promptButton = element.shadowRoot?.querySelector(
+			'button[aria-label="Run prompt for linear"]',
+		) as HTMLButtonElement | null;
+		const promptArgumentInput = element.shadowRoot?.querySelector(
+			'input[aria-label="Prompt argument ISSUE for linear"]',
+		) as HTMLInputElement | null;
+		expect(readButton).not.toBeNull();
+		expect(promptButton).not.toBeNull();
+		expect(promptArgumentInput).not.toBeNull();
+		if (!readButton || !promptButton || !promptArgumentInput) {
+			throw new Error("Expected MCP resource and prompt buttons");
+		}
+
+		readButton.click();
+		await waitForSettled(
+			element,
+			() =>
+				(element.shadowRoot?.textContent ?? "").includes("workspace content"),
+			30,
+		);
+		expect(element.shadowRoot?.textContent ?? "").toContain(
+			"workspace content",
+		);
+
+		readButton.click();
+		await waitForSettled(
+			element,
+			() =>
+				(element.shadowRoot?.textContent ?? "").includes(
+					"Resource read failed",
+				),
+			30,
+		);
+		const afterReadFailure = element.shadowRoot?.textContent ?? "";
+		expect(afterReadFailure).toContain("Resource read failed");
+		expect(afterReadFailure).not.toContain("workspace content");
+
+		promptArgumentInput.value = "MAE-1";
+		promptArgumentInput.dispatchEvent(new Event("input", { bubbles: true }));
+		promptButton.click();
+		await waitForSettled(
+			element,
+			() =>
+				(element.shadowRoot?.textContent ?? "").includes(
+					"Summarize issue MAE-1",
+				),
+			30,
+		);
+		expect(element.shadowRoot?.textContent ?? "").toContain(
+			"Summarize issue MAE-1",
+		);
+
+		promptArgumentInput.value = "MAE-1";
+		promptArgumentInput.dispatchEvent(new Event("input", { bubbles: true }));
+		promptButton.click();
+		await waitForSettled(
+			element,
+			() =>
+				(element.shadowRoot?.textContent ?? "").includes("Prompt run failed"),
+			30,
+		);
+		const afterPromptFailure = element.shadowRoot?.textContent ?? "";
+		expect(afterPromptFailure).toContain("Prompt run failed");
+		expect(afterPromptFailure).not.toContain("Summarize issue MAE-1");
+	});
+
+	it("keeps the latest MCP resource request marked loading while older reads finish", async () => {
+		const apiClient = createApiClientMock();
+		const linearRead = createDeferred<{
+			contents: Array<{ uri: string; text: string; mimeType: string }>;
+		}>();
+		const githubRead = createDeferred<{
+			contents: Array<{ uri: string; text: string; mimeType: string }>;
+		}>();
+		(apiClient.getMcpStatus as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+			authPresets: [],
+			servers: [
+				{
+					name: "linear",
+					connected: true,
+					scope: "local",
+					transport: "http",
+					resources: ["linear://workspace"],
+					prompts: [],
+				},
+				{
+					name: "github",
+					connected: true,
+					scope: "local",
+					transport: "http",
+					resources: ["github://repo"],
+					prompts: [],
+				},
+			],
+		});
+		(apiClient.readMcpResource as ReturnType<typeof vi.fn>).mockImplementation(
+			(server: string) =>
+				server === "linear" ? linearRead.promise : githubRead.promise,
+		);
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Boolean(
+				element.shadowRoot?.querySelector(
+					'button[aria-label="Read resource for github"]',
+				),
+			),
+		);
+
+		const linearButton = element.shadowRoot?.querySelector(
+			'button[aria-label="Read resource for linear"]',
+		) as HTMLButtonElement | null;
+		const githubButton = element.shadowRoot?.querySelector(
+			'button[aria-label="Read resource for github"]',
+		) as HTMLButtonElement | null;
+		expect(linearButton).not.toBeNull();
+		expect(githubButton).not.toBeNull();
+		if (!linearButton || !githubButton) {
+			throw new Error("Expected MCP resource buttons for both servers");
+		}
+
+		linearButton.click();
+		await waitForSettled(
+			element,
+			() =>
+				(apiClient.readMcpResource as ReturnType<typeof vi.fn>).mock.calls
+					.length === 1,
+			30,
+		);
+		githubButton.click();
+		await waitForSettled(
+			element,
+			() =>
+				(apiClient.readMcpResource as ReturnType<typeof vi.fn>).mock.calls
+					.length === 2,
+			30,
+		);
+
+		linearRead.resolve({
+			contents: [
+				{
+					uri: "linear://workspace",
+					text: "linear content",
+					mimeType: "text/plain",
+				},
+			],
+		});
+		await waitForSettled(
+			element,
+			() =>
+				(
+					element.shadowRoot?.querySelector(
+						'button[aria-label="Read resource for github"]',
+					) as HTMLButtonElement | null
+				)?.disabled === true,
+			30,
+		);
+
+		const githubButtonWhilePending = element.shadowRoot?.querySelector(
+			'button[aria-label="Read resource for github"]',
+		) as HTMLButtonElement | null;
+		expect(githubButtonWhilePending?.disabled).toBe(true);
+		expect(githubButtonWhilePending?.textContent).toContain("Loading...");
+
+		githubRead.resolve({
+			contents: [
+				{
+					uri: "github://repo",
+					text: "github content",
+					mimeType: "text/plain",
+				},
+			],
+		});
+		await waitForSettled(
+			element,
+			() =>
+				(
+					element.shadowRoot?.querySelector(
+						'button[aria-label="Read resource for github"]',
+					) as HTMLButtonElement | null
+				)?.disabled === false,
+			30,
+		);
+	});
+
+	it("adds an MCP auth preset and refreshes status", async () => {
+		const apiClient = createApiClientMock();
+		(apiClient.getMcpStatus as ReturnType<typeof vi.fn>)
+			.mockResolvedValueOnce({ authPresets: [], servers: [] })
+			.mockResolvedValueOnce({
+				authPresets: [
+					{
+						name: "new-auth",
+						scope: "local",
+						headerKeys: ["Authorization"],
+					},
+				],
+				servers: [],
+			});
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Boolean(element.shadowRoot?.querySelector(".mcp-auth-preset-add-button")),
+		);
+
+		const nameInput = element.shadowRoot?.querySelector(
+			'input[aria-label="MCP auth preset name"]',
+		) as HTMLInputElement | null;
+		const headersInput = element.shadowRoot?.querySelector(
+			'textarea[aria-label="MCP auth preset headers"]',
+		) as HTMLTextAreaElement | null;
+		expect(nameInput).not.toBeNull();
+		expect(headersInput).not.toBeNull();
+		if (!nameInput || !headersInput) {
+			throw new Error("Expected auth preset inputs");
+		}
+
+		nameInput.value = "new-auth";
+		nameInput.dispatchEvent(new Event("input", { bubbles: true }));
+		headersInput.value = "Authorization=Bearer token";
+		headersInput.dispatchEvent(new Event("input", { bubbles: true }));
+
+		await waitForSettled(
+			element,
+			() => {
+				const button = element.shadowRoot?.querySelector(
+					".mcp-auth-preset-add-button",
+				) as HTMLButtonElement | null;
+				return Boolean(button && !button.disabled);
+			},
+			20,
+		);
+
+		const addButton = element.shadowRoot?.querySelector(
+			".mcp-auth-preset-add-button",
+		) as HTMLButtonElement | null;
+		expect(addButton).not.toBeNull();
+		addButton?.click();
+
+		await waitForSettled(
+			element,
+			() =>
+				(apiClient.addMcpAuthPreset as ReturnType<typeof vi.fn>).mock.calls
+					.length > 0,
+			30,
+		);
+
+		expect(apiClient.addMcpAuthPreset).toHaveBeenCalledWith({
+			scope: "local",
+			preset: {
+				name: "new-auth",
+				headers: {
+					Authorization: "Bearer token",
+				},
+				headersHelper: null,
+			},
+		});
+		expect(apiClient.getMcpStatus).toHaveBeenCalledTimes(2);
+	});
+
+	it("preserves untouched MCP auth preset fields until replacement is explicit", async () => {
+		const apiClient = createApiClientMock();
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Boolean(
+				element.shadowRoot?.querySelector(".mcp-auth-preset-save-button"),
+			),
+		);
+
+		const saveButton = element.shadowRoot?.querySelector(
+			".mcp-auth-preset-save-button",
+		) as HTMLButtonElement | null;
+		expect(saveButton).not.toBeNull();
+		saveButton?.click();
+
+		await waitForSettled(
+			element,
+			() =>
+				(apiClient.updateMcpAuthPreset as ReturnType<typeof vi.fn>).mock.calls
+					.length > 0,
+			30,
+		);
+
+		const firstCall = (
+			apiClient.updateMcpAuthPreset as ReturnType<typeof vi.fn>
+		).mock.calls[0]?.[0];
+		expect(firstCall).toBeDefined();
+		expect(firstCall.preset.name).toBe("linear-auth");
+		expect(firstCall.preset.headers).toBeUndefined();
+		expect(firstCall.preset.headersHelper).toBeUndefined();
+
+		const replaceHeaders = element.shadowRoot?.querySelector(
+			'input[aria-label="Replace hidden headers for auth preset linear-auth"]',
+		) as HTMLInputElement | null;
+		expect(replaceHeaders).not.toBeNull();
+		if (!replaceHeaders) {
+			throw new Error("Expected auth preset replacement checkbox");
+		}
+		replaceHeaders.checked = true;
+		replaceHeaders.dispatchEvent(new Event("change", { bubbles: true }));
+
+		saveButton?.click();
+		await waitForSettled(
+			element,
+			() =>
+				(apiClient.updateMcpAuthPreset as ReturnType<typeof vi.fn>).mock.calls
+					.length > 1,
+			30,
+		);
+
+		const secondCall = (
+			apiClient.updateMcpAuthPreset as ReturnType<typeof vi.fn>
+		).mock.calls[1]?.[0];
+		expect(secondCall).toBeDefined();
+		expect(secondCall.preset.headers).toBeNull();
+		expect(secondCall.preset.headersHelper).toBeUndefined();
+	});
+
+	it("imports a registry entry and refreshes MCP status", async () => {
+		const apiClient = createApiClientMock();
+		(apiClient.getMcpStatus as ReturnType<typeof vi.fn>)
+			.mockResolvedValueOnce({ servers: [] })
+			.mockResolvedValueOnce({
+				servers: [
+					{
+						name: "linear",
+						connected: true,
+						transport: "http",
+						remoteTrust: "official",
+					},
+				],
+			});
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Boolean(element.shadowRoot?.querySelector(".mcp-import-button")),
+		);
+
+		const button = element.shadowRoot?.querySelector(
+			".mcp-import-button",
+		) as HTMLButtonElement | null;
+		expect(button).not.toBeNull();
+		button?.click();
+
+		await waitForSettled(element, () =>
+			(element.shadowRoot?.textContent ?? "").includes(
+				"Imported linear into Local config via HTTP.",
+			),
+		);
+
+		expect(apiClient.importMcpRegistry).toHaveBeenCalledWith({
+			query: "linear",
+			name: undefined,
+			scope: "local",
+			url: "https://mcp.linear.app/mcp",
+		});
+		expect(apiClient.getMcpStatus).toHaveBeenCalledTimes(2);
+		expect(element.shadowRoot?.textContent ?? "").toContain(
+			"Imported linear into Local config via HTTP.",
+		);
+	});
+
+	it("adds a custom remote MCP server and refreshes status", async () => {
+		const apiClient = createApiClientMock();
+		(apiClient.getMcpStatus as ReturnType<typeof vi.fn>)
+			.mockResolvedValueOnce({
+				authPresets: [
+					{
+						name: "linear-auth",
+						scope: "local",
+						headerKeys: ["Authorization"],
+					},
+				],
+				servers: [],
+			})
+			.mockResolvedValueOnce({
+				authPresets: [
+					{
+						name: "linear-auth",
+						scope: "local",
+						headerKeys: ["Authorization"],
+					},
+				],
+				servers: [
+					{
+						name: "custom-docs",
+						connected: true,
+						scope: "project",
+						transport: "http",
+						remoteTrust: "custom",
+						authPreset: "linear-auth",
+					},
+				],
+			});
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Boolean(element.shadowRoot?.querySelector(".mcp-custom-add-button")),
+		);
+
+		const nameInput = element.shadowRoot?.querySelector(
+			'input[placeholder="Server name"]',
+		) as HTMLInputElement | null;
+		const urlInput = element.shadowRoot?.querySelector(
+			'input[placeholder="https://example.com/mcp"]',
+		) as HTMLInputElement | null;
+		const headersHelperInput = element.shadowRoot?.querySelector(
+			'input[aria-label="Custom MCP server headers helper"]',
+		) as HTMLInputElement | null;
+		const authPresetSelect = element.shadowRoot?.querySelector(
+			'select[aria-label="Custom MCP server auth preset"]',
+		) as HTMLSelectElement | null;
+		const timeoutInput = element.shadowRoot?.querySelector(
+			'input[aria-label="Custom MCP server timeout"]',
+		) as HTMLInputElement | null;
+		expect(nameInput).not.toBeNull();
+		expect(urlInput).not.toBeNull();
+		expect(headersHelperInput).not.toBeNull();
+		expect(authPresetSelect).not.toBeNull();
+		expect(timeoutInput).not.toBeNull();
+		if (
+			!nameInput ||
+			!urlInput ||
+			!headersHelperInput ||
+			!authPresetSelect ||
+			!timeoutInput
+		) {
+			throw new Error("Expected MCP custom remote inputs");
+		}
+		nameInput.value = "custom-docs";
+		nameInput.dispatchEvent(new Event("input", { bubbles: true }));
+		urlInput.value = "https://docs.example.com/mcp";
+		urlInput.dispatchEvent(new Event("input", { bubbles: true }));
+		headersHelperInput.value = "bun run scripts/mcp-headers.ts";
+		headersHelperInput.dispatchEvent(new Event("input", { bubbles: true }));
+		authPresetSelect.value = "linear-auth";
+		authPresetSelect.dispatchEvent(new Event("change", { bubbles: true }));
+		timeoutInput.value = "15000";
+		timeoutInput.dispatchEvent(new Event("input", { bubbles: true }));
+		await waitForSettled(
+			element,
+			() => {
+				const button = element.shadowRoot?.querySelector(
+					".mcp-custom-add-button",
+				) as HTMLButtonElement | null;
+				return Boolean(button && !button.disabled);
+			},
+			10,
+		);
+
+		const button = element.shadowRoot?.querySelector(
+			".mcp-custom-add-button",
+		) as HTMLButtonElement | null;
+		expect(button).not.toBeNull();
+		button?.click();
+
+		await waitForSettled(element, () =>
+			(element.shadowRoot?.textContent ?? "").includes(
+				"Added custom-docs to Local config via HTTP.",
+			),
+		);
+
+		expect(apiClient.addMcpServer).toHaveBeenCalledWith(
+			expect.objectContaining({
+				scope: "local",
+				server: expect.objectContaining({
+					name: "custom-docs",
+					transport: "http",
+					url: "https://docs.example.com/mcp",
+					headersHelper: "bun run scripts/mcp-headers.ts",
+					authPreset: "linear-auth",
+					timeout: 15000,
+				}),
+			}),
+		);
+		expect(element.shadowRoot?.textContent ?? "").toContain(
+			"Added custom-docs to Local config via HTTP.",
+		);
+	});
+
+	it("adds a custom stdio MCP server and refreshes status", async () => {
+		const apiClient = createApiClientMock();
+		(apiClient.addMcpServer as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+			name: "filesystem",
+			scope: "local",
+			path: "/repo/.maestro/mcp.json",
+			server: {
+				name: "filesystem",
+				transport: "stdio",
+				command: "npx",
+				args: ["-y", "@modelcontextprotocol/server-filesystem", "/repo"],
+				cwd: "/repo",
+			},
+		});
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Boolean(element.shadowRoot?.querySelector(".mcp-custom-add-button")),
+		);
+
+		const nameInput = element.shadowRoot?.querySelector(
+			'input[placeholder="Server name"]',
+		) as HTMLInputElement | null;
+		expect(nameInput).not.toBeNull();
+		if (!nameInput) {
+			throw new Error("Expected MCP custom server name input");
+		}
+		nameInput.value = "filesystem";
+		nameInput.dispatchEvent(new Event("input", { bubbles: true }));
+
+		const transportSelect = element.shadowRoot?.querySelector(
+			'select[aria-label="Custom MCP server transport"]',
+		) as HTMLSelectElement | null;
+		expect(transportSelect).not.toBeNull();
+		transportSelect!.value = "stdio";
+		transportSelect!.dispatchEvent(new Event("change", { bubbles: true }));
+
+		await waitForSettled(element, () =>
+			Boolean(
+				element.shadowRoot?.querySelector(
+					'input[aria-label="Custom MCP server command"]',
+				),
+			),
+		);
+
+		const commandInput = element.shadowRoot?.querySelector(
+			'input[aria-label="Custom MCP server command"]',
+		) as HTMLInputElement | null;
+		const argsInput = element.shadowRoot?.querySelector(
+			'textarea[aria-label="Custom MCP server arguments"]',
+		) as HTMLTextAreaElement | null;
+		const cwdInput = element.shadowRoot?.querySelector(
+			'input[aria-label="Custom MCP server working directory"]',
+		) as HTMLInputElement | null;
+		const envInput = element.shadowRoot?.querySelector(
+			'textarea[aria-label="Custom MCP server environment variables"]',
+		) as HTMLTextAreaElement | null;
+		const timeoutInput = element.shadowRoot?.querySelector(
+			'input[aria-label="Custom MCP server timeout"]',
+		) as HTMLInputElement | null;
+		expect(commandInput).not.toBeNull();
+		expect(argsInput).not.toBeNull();
+		expect(cwdInput).not.toBeNull();
+		expect(envInput).not.toBeNull();
+		expect(timeoutInput).not.toBeNull();
+		if (
+			!commandInput ||
+			!argsInput ||
+			!cwdInput ||
+			!envInput ||
+			!timeoutInput
+		) {
+			throw new Error("Expected MCP custom stdio inputs");
+		}
+
+		commandInput.value = "npx";
+		commandInput.dispatchEvent(new Event("input", { bubbles: true }));
+		argsInput.value = "-y\n@modelcontextprotocol/server-filesystem\n/repo";
+		argsInput.dispatchEvent(new Event("input", { bubbles: true }));
+		cwdInput.value = "/repo";
+		cwdInput.dispatchEvent(new Event("input", { bubbles: true }));
+		envInput.value = "HOME=/Users/demo\nTOKEN=secret";
+		envInput.dispatchEvent(new Event("input", { bubbles: true }));
+		timeoutInput.value = "30000";
+		timeoutInput.dispatchEvent(new Event("input", { bubbles: true }));
+
+		await waitForSettled(
+			element,
+			() => {
+				const button = element.shadowRoot?.querySelector(
+					".mcp-custom-add-button",
+				) as HTMLButtonElement | null;
+				return Boolean(button && !button.disabled);
+			},
+			10,
+		);
+
+		const button = element.shadowRoot?.querySelector(
+			".mcp-custom-add-button",
+		) as HTMLButtonElement | null;
+		expect(button).not.toBeNull();
+		button?.click();
+
+		await waitForSettled(element, () =>
+			(element.shadowRoot?.textContent ?? "").includes(
+				"Added filesystem to Local config via stdio.",
+			),
+		);
+
+		expect(apiClient.addMcpServer).toHaveBeenCalledWith(
+			expect.objectContaining({
+				scope: "local",
+				server: expect.objectContaining({
+					name: "filesystem",
+					transport: "stdio",
+					command: "npx",
+					args: ["-y", "@modelcontextprotocol/server-filesystem", "/repo"],
+					cwd: "/repo",
+					env: {
+						HOME: "/Users/demo",
+						TOKEN: "secret",
+					},
+					timeout: 30000,
+				}),
+			}),
+		);
+	});
+
+	it("renders configured packages and manages package previews", async () => {
+		const apiClient = createApiClientMock();
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			(element.shadowRoot?.textContent ?? "").includes("Configured Packages"),
+		);
+
+		const initialText = element.shadowRoot?.textContent ?? "";
+		expect(initialText).toContain("Configured Packages");
+		expect(initialText).toContain("@acme/example");
+		expect(initialText).toContain("Source: ./packages/example");
+		expect(initialText).toContain(
+			"Resources: 0 ext · 1 skills · 1 prompts · 0 themes",
+		);
+
+		const sourceInput = element.shadowRoot?.querySelector(
+			'input[aria-label="Package source"]',
+		) as HTMLInputElement | null;
+		const scopeSelect = element.shadowRoot?.querySelector(
+			'select[aria-label="Package scope"]',
+		) as HTMLSelectElement | null;
+		const validateButton = element.shadowRoot?.querySelector(
+			".package-validate-button",
+		) as HTMLButtonElement | null;
+		const addButton = element.shadowRoot?.querySelector(
+			".package-add-button",
+		) as HTMLButtonElement | null;
+		expect(sourceInput).not.toBeNull();
+		expect(scopeSelect).not.toBeNull();
+		expect(validateButton).not.toBeNull();
+		expect(addButton).not.toBeNull();
+		if (!sourceInput || !scopeSelect || !validateButton || !addButton) {
+			throw new Error("Expected package settings inputs");
+		}
+
+		sourceInput.value = "./packages/new-pack";
+		sourceInput.dispatchEvent(new Event("input", { bubbles: true }));
+		scopeSelect.value = "project";
+		scopeSelect.dispatchEvent(new Event("change", { bubbles: true }));
+		await waitForSettled(
+			element,
+			() => {
+				const button = element.shadowRoot?.querySelector(
+					".package-validate-button",
+				) as HTMLButtonElement | null;
+				return Boolean(button && !button.disabled);
+			},
+			10,
+		);
+		const activeValidateButton = element.shadowRoot?.querySelector(
+			".package-validate-button",
+		) as HTMLButtonElement | null;
+		expect(activeValidateButton).not.toBeNull();
+		activeValidateButton?.click();
+
+		await waitForSettled(
+			element,
+			() =>
+				(apiClient.validatePackage as ReturnType<typeof vi.fn>).mock.calls
+					.length > 0,
+		);
+
+		expect(apiClient.validatePackage).toHaveBeenCalledWith(
+			"./packages/new-pack",
+		);
+		expect(element.shadowRoot?.textContent ?? "").toContain(
+			"Package validation passed.",
+		);
+
+		await waitForSettled(
+			element,
+			() => {
+				const button = element.shadowRoot?.querySelector(
+					".package-add-button",
+				) as HTMLButtonElement | null;
+				return Boolean(button && !button.disabled);
+			},
+			10,
+		);
+		const activeAddButton = element.shadowRoot?.querySelector(
+			".package-add-button",
+		) as HTMLButtonElement | null;
+		expect(activeAddButton).not.toBeNull();
+		activeAddButton?.click();
+
+		await waitForSettled(element, () =>
+			(element.shadowRoot?.textContent ?? "").includes(
+				'Added configured package "./packages/new-pack" to Project.',
+			),
+		);
+
+		expect(apiClient.addPackage).toHaveBeenCalledWith({
+			source: "./packages/new-pack",
+			scope: "project",
+		});
+		expect(element.shadowRoot?.textContent ?? "").toContain(
+			'Added configured package "./packages/new-pack" to Project.',
+		);
+	});
+
+	it("searches and adds discoverable packages from settings", async () => {
+		const apiClient = createApiClientMock();
+		(apiClient.addPackage as ReturnType<typeof vi.fn>).mockResolvedValue({
+			path: "/repo/.maestro/config.toml",
+			scope: "local",
+			spec: "npm:@acme/maestro-memory-tools",
+		});
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			(element.shadowRoot?.textContent ?? "").includes("Browse Packages"),
+		);
+
+		const searchInput = element.shadowRoot?.querySelector(
+			'input[aria-label="Package search"]',
+		) as HTMLInputElement | null;
+		const searchButton = element.shadowRoot?.querySelector(
+			".package-search-button",
+		) as HTMLButtonElement | null;
+		expect(searchInput).not.toBeNull();
+		expect(searchButton).not.toBeNull();
+		if (!searchInput || !searchButton) {
+			throw new Error("Expected package search controls");
+		}
+
+		searchInput.value = "memory";
+		searchInput.dispatchEvent(new Event("input", { bubbles: true }));
+		searchButton.click();
+
+		await waitForSettled(
+			element,
+			() =>
+				(apiClient.searchPackages as ReturnType<typeof vi.fn>).mock.calls
+					.length > 1,
+		);
+
+		expect(apiClient.searchPackages).toHaveBeenLastCalledWith("memory");
+		expect(element.shadowRoot?.textContent ?? "").toContain(
+			"@acme/maestro-memory-tools",
+		);
+
+		const addButton = element.shadowRoot?.querySelector(
+			".package-add-search-result-button",
+		) as HTMLButtonElement | null;
+		expect(addButton).not.toBeNull();
+		addButton?.click();
+
+		await waitForSettled(
+			element,
+			() =>
+				(apiClient.addPackage as ReturnType<typeof vi.fn>).mock.calls.length >
+					0 &&
+				(
+					element.shadowRoot?.querySelector(
+						'input[aria-label="Package source"]',
+					) as HTMLInputElement | null
+				)?.value === "npm:@acme/maestro-memory-tools",
+		);
+
+		expect(apiClient.addPackage).toHaveBeenCalledWith({
+			source: "npm:@acme/maestro-memory-tools",
+			scope: "local",
+		});
+		expect(
+			(
+				element.shadowRoot?.querySelector(
+					'input[aria-label="Package source"]',
+				) as HTMLInputElement | null
+			)?.value,
+		).toBe("npm:@acme/maestro-memory-tools");
+	});
+
+	it("refreshes a configured git package and reloads package status", async () => {
+		const apiClient = createApiClientMock();
+		(apiClient.getPackageStatus as ReturnType<typeof vi.fn>)
+			.mockResolvedValueOnce({
+				packages: [
+					{
+						scope: "project",
+						configPath: "/repo/.maestro/config.toml",
+						sourceSpec: "git:github.com/acme/example@main",
+						filters: null,
+						inspection: {
+							sourceSpec: "git:github.com/acme/example@main",
+							resolvedSource: "git:github.com/acme/example@main",
+							sourceType: "git",
+							resolvedPath: "/repo/.maestro/packages/git-1234",
+							discovered: {
+								name: "@acme/example",
+								version: "1.0.0",
+								isMaestroPackage: true,
+								hasManifest: true,
+								manifestPaths: {
+									skills: ["tooling"],
+								},
+								errors: [],
+							},
+							resources: {
+								extensions: [],
+								skills: ["tooling"],
+								prompts: [],
+								themes: [],
+							},
+						},
+						issues: [],
+						error: null,
+					},
+				],
+			})
+			.mockResolvedValueOnce({
+				packages: [
+					{
+						scope: "project",
+						configPath: "/repo/.maestro/config.toml",
+						sourceSpec: "git:github.com/acme/example@main",
+						filters: null,
+						inspection: {
+							sourceSpec: "git:github.com/acme/example@main",
+							resolvedSource: "git:github.com/acme/example@main",
+							sourceType: "git",
+							resolvedPath: "/repo/.maestro/packages/git-1234",
+							discovered: {
+								name: "@acme/example",
+								version: "1.0.1",
+								isMaestroPackage: true,
+								hasManifest: true,
+								manifestPaths: {
+									skills: ["tooling"],
+								},
+								errors: [],
+							},
+							resources: {
+								extensions: [],
+								skills: ["tooling", "deploy"],
+								prompts: [],
+								themes: [],
+							},
+						},
+						issues: [],
+						error: null,
+					},
+				],
+			});
+		(apiClient.refreshPackage as ReturnType<typeof vi.fn>).mockResolvedValue({
+			inspection: {
+				sourceSpec: "git:github.com/acme/example@main",
+				resolvedSource: "git:github.com/acme/example@main",
+				sourceType: "git",
+				resolvedPath: "/repo/.maestro/packages/git-1234",
+				discovered: {
+					name: "@acme/example",
+					version: "1.0.1",
+					isMaestroPackage: true,
+					hasManifest: true,
+					manifestPaths: {
+						skills: ["tooling"],
+					},
+					errors: [],
+				},
+				resources: {
+					extensions: [],
+					skills: ["tooling", "deploy"],
+					prompts: [],
+					themes: [],
+				},
+			},
+			issues: [],
+		});
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Boolean(element.shadowRoot?.querySelector(".package-refresh-button")),
+		);
+
+		const button = element.shadowRoot?.querySelector(
+			".package-refresh-button",
+		) as HTMLButtonElement | null;
+		expect(button).not.toBeNull();
+		button?.click();
+
+		await waitForSettled(element, () =>
+			(element.shadowRoot?.textContent ?? "").includes(
+				'Refreshed configured package "git:github.com/acme/example@main" from Project.',
+			),
+		);
+
+		expect(apiClient.refreshPackage).toHaveBeenCalledWith(
+			"git:github.com/acme/example@main",
+		);
+		expect(element.shadowRoot?.textContent ?? "").toContain(
+			'Refreshed configured package "git:github.com/acme/example@main" from Project.',
+		);
+	});
+
+	it("refreshes all configured remote packages from settings", async () => {
+		const apiClient = createApiClientMock();
+		(apiClient.getPackageStatus as ReturnType<typeof vi.fn>)
+			.mockResolvedValueOnce({
+				packages: [
+					{
+						scope: "project",
+						configPath: "/repo/.maestro/config.toml",
+						sourceSpec: "./packages/example",
+						filters: null,
+						inspection: {
+							sourceSpec: "./packages/example",
+							resolvedSource: "./packages/example",
+							sourceType: "local",
+							resolvedPath: "/repo/packages/example",
+							discovered: {
+								name: "@acme/example",
+								version: "1.0.0",
+								isMaestroPackage: true,
+								hasManifest: true,
+								manifestPaths: { skills: ["tooling"] },
+								errors: [],
+							},
+							resources: {
+								extensions: [],
+								skills: ["tooling"],
+								prompts: [],
+								themes: [],
+							},
+						},
+						issues: [],
+						error: null,
+					},
+					{
+						scope: "project",
+						configPath: "/repo/.maestro/config.toml",
+						sourceSpec: "git:github.com/acme/example@main",
+						filters: null,
+						inspection: {
+							sourceSpec: "git:github.com/acme/example@main",
+							resolvedSource: "git:github.com/acme/example@main",
+							sourceType: "git",
+							resolvedPath: "/repo/.maestro/packages/git-1234",
+							discovered: {
+								name: "@acme/example",
+								version: "1.0.0",
+								isMaestroPackage: true,
+								hasManifest: true,
+								manifestPaths: { skills: ["tooling"] },
+								errors: [],
+							},
+							resources: {
+								extensions: [],
+								skills: ["tooling"],
+								prompts: [],
+								themes: [],
+							},
+						},
+						issues: [],
+						error: null,
+					},
+				],
+			})
+			.mockResolvedValueOnce({
+				packages: [
+					{
+						scope: "project",
+						configPath: "/repo/.maestro/config.toml",
+						sourceSpec: "./packages/example",
+						filters: null,
+						inspection: {
+							sourceSpec: "./packages/example",
+							resolvedSource: "./packages/example",
+							sourceType: "local",
+							resolvedPath: "/repo/packages/example",
+							discovered: {
+								name: "@acme/example",
+								version: "1.0.0",
+								isMaestroPackage: true,
+								hasManifest: true,
+								manifestPaths: { skills: ["tooling"] },
+								errors: [],
+							},
+							resources: {
+								extensions: [],
+								skills: ["tooling"],
+								prompts: [],
+								themes: [],
+							},
+						},
+						issues: [],
+						error: null,
+					},
+					{
+						scope: "project",
+						configPath: "/repo/.maestro/config.toml",
+						sourceSpec: "git:github.com/acme/example@main",
+						filters: null,
+						inspection: {
+							sourceSpec: "git:github.com/acme/example@main",
+							resolvedSource: "git:github.com/acme/example@main",
+							sourceType: "git",
+							resolvedPath: "/repo/.maestro/packages/git-1234",
+							discovered: {
+								name: "@acme/example",
+								version: "1.0.1",
+								isMaestroPackage: true,
+								hasManifest: true,
+								manifestPaths: { skills: ["tooling"] },
+								errors: [],
+							},
+							resources: {
+								extensions: [],
+								skills: ["tooling", "deploy"],
+								prompts: [],
+								themes: [],
+							},
+						},
+						issues: [],
+						error: null,
+					},
+				],
+			});
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Boolean(element.shadowRoot?.querySelector("button:nth-of-type(2)")),
+		);
+
+		const button = Array.from(
+			element.shadowRoot?.querySelectorAll("button") ?? [],
+		).find((candidate) => candidate.textContent?.trim() === "Refresh remotes");
+		expect(button).toBeTruthy();
+		(button as HTMLButtonElement).click();
+
+		await waitForSettled(element, () =>
+			(element.shadowRoot?.textContent ?? "").includes(
+				"Refreshed 1 configured remote packages.",
+			),
+		);
+
+		expect(apiClient.refreshAllPackages).toHaveBeenCalledTimes(1);
+		expect(element.shadowRoot?.textContent ?? "").toContain(
+			"Refreshed 1 configured remote packages.",
+		);
+	});
+
+	it("prunes unconfigured remote package caches from settings", async () => {
+		const apiClient = createApiClientMock();
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Array.from(element.shadowRoot?.querySelectorAll("button") ?? []).some(
+				(candidate) => candidate.textContent?.trim() === "Prune cache",
+			),
+		);
+
+		const button = Array.from(
+			element.shadowRoot?.querySelectorAll("button") ?? [],
+		).find((candidate) => candidate.textContent?.trim() === "Prune cache");
+		expect(button).toBeTruthy();
+		(button as HTMLButtonElement).click();
+
+		await waitForSettled(element, () =>
+			(element.shadowRoot?.textContent ?? "").includes(
+				"Pruned 1 unconfigured remote package caches.",
+			),
+		);
+
+		expect(apiClient.prunePackageCache).toHaveBeenCalledTimes(1);
+		expect(element.shadowRoot?.textContent ?? "").toContain(
+			"Pruned 1 unconfigured remote package caches.",
+		);
+	});
+
+	it("removes a writable MCP server and refreshes status", async () => {
+		const apiClient = createApiClientMock();
+		(apiClient.getMcpStatus as ReturnType<typeof vi.fn>)
+			.mockResolvedValueOnce({
+				servers: [
+					{
+						name: "linear",
+						connected: true,
+						scope: "local",
+						transport: "http",
+						remoteTrust: "official",
+					},
+				],
+			})
+			.mockResolvedValueOnce({ servers: [] });
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Boolean(element.shadowRoot?.querySelector(".mcp-remove-button")),
+		);
+
+		const button = element.shadowRoot?.querySelector(
+			".mcp-remove-button",
+		) as HTMLButtonElement | null;
+		expect(button).not.toBeNull();
+		button?.click();
+
+		await waitForSettled(element, () =>
+			(element.shadowRoot?.textContent ?? "").includes(
+				"Removed linear from Local config.",
+			),
+		);
+
+		expect(apiClient.removeMcpServer).toHaveBeenCalledWith({
+			name: "linear",
+			scope: "local",
+		});
+	});
+
+	it("updates a writable MCP remote server and refreshes status", async () => {
+		const apiClient = createApiClientMock();
+		(apiClient.getMcpStatus as ReturnType<typeof vi.fn>)
+			.mockResolvedValueOnce({
+				servers: [
+					{
+						name: "linear",
+						connected: true,
+						scope: "local",
+						transport: "http",
+						remoteTrust: "official",
+						remoteUrl: "https://mcp.linear.app/mcp",
+						headerKeys: ["Authorization"],
+						headersHelper: "bun run scripts/mcp-headers.ts",
+						timeout: 20000,
+					},
+				],
+			})
+			.mockResolvedValueOnce({
+				servers: [
+					{
+						name: "linear",
+						connected: true,
+						scope: "local",
+						transport: "sse",
+						remoteTrust: "official",
+						remoteUrl: "https://mcp.linear.app/sse",
+						headersHelper: "bun run scripts/new-headers.ts",
+						timeout: 15000,
+					},
+				],
+			});
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Boolean(
+				element.shadowRoot?.querySelector(
+					'input[aria-label="Remote URL for linear"]',
+				),
+			),
+		);
+
+		const urlInput = element.shadowRoot?.querySelector(
+			'input[aria-label="Remote URL for linear"]',
+		) as HTMLInputElement | null;
+		expect(urlInput).not.toBeNull();
+		if (!urlInput) {
+			throw new Error("Expected MCP edit URL input");
+		}
+		urlInput.value = "https://mcp.linear.app/sse";
+		urlInput.dispatchEvent(new Event("input", { bubbles: true }));
+
+		const transportSelect = element.shadowRoot?.querySelector(
+			'select[aria-label="Remote transport for linear"]',
+		) as HTMLSelectElement | null;
+		const headersHelperInput = element.shadowRoot?.querySelector(
+			'input[aria-label="Headers helper for linear"]',
+		) as HTMLInputElement | null;
+		const headersInput = element.shadowRoot?.querySelector(
+			'textarea[aria-label="Headers for linear"]',
+		) as HTMLTextAreaElement | null;
+		const replaceHeadersInput = element.shadowRoot?.querySelector(
+			'input[aria-label="Replace hidden headers for linear"]',
+		) as HTMLInputElement | null;
+		const timeoutInput = element.shadowRoot?.querySelector(
+			'input[aria-label="Timeout for linear"]',
+		) as HTMLInputElement | null;
+		expect(transportSelect).not.toBeNull();
+		expect(headersHelperInput).not.toBeNull();
+		expect(headersInput).not.toBeNull();
+		expect(replaceHeadersInput).not.toBeNull();
+		expect(timeoutInput).not.toBeNull();
+		expect(headersInput?.disabled).toBe(true);
+		transportSelect!.value = "sse";
+		transportSelect!.dispatchEvent(new Event("change", { bubbles: true }));
+		headersHelperInput!.value = "bun run scripts/new-headers.ts";
+		headersHelperInput!.dispatchEvent(new Event("input", { bubbles: true }));
+		replaceHeadersInput!.click();
+		await waitForSettled(element, () => headersInput!.disabled === false);
+		expect(headersInput!.disabled).toBe(false);
+		headersInput!.value = "Authorization=Bearer token\nX-Org=acme";
+		headersInput!.dispatchEvent(new Event("input", { bubbles: true }));
+		timeoutInput!.value = "15000";
+		timeoutInput!.dispatchEvent(new Event("input", { bubbles: true }));
+
+		const button = element.shadowRoot?.querySelector(
+			".mcp-update-button",
+		) as HTMLButtonElement | null;
+		expect(button).not.toBeNull();
+		button?.click();
+
+		await waitForSettled(element, () =>
+			(element.shadowRoot?.textContent ?? "").includes(
+				"Updated linear in Local config via SSE.",
+			),
+		);
+
+		expect(apiClient.updateMcpServer).toHaveBeenCalledWith({
+			name: "linear",
+			scope: "local",
+			server: {
+				name: "linear",
+				transport: "sse",
+				url: "https://mcp.linear.app/sse",
+				headers: {
+					Authorization: "Bearer token",
+					"X-Org": "acme",
+				},
+				headersHelper: "bun run scripts/new-headers.ts",
+				authPreset: null,
+				timeout: 15000,
+			},
+		});
+	});
+
+	it("updates a writable MCP stdio server and refreshes status", async () => {
+		const apiClient = createApiClientMock();
+		(apiClient.getMcpStatus as ReturnType<typeof vi.fn>)
+			.mockResolvedValueOnce({
+				servers: [
+					{
+						name: "filesystem",
+						connected: true,
+						scope: "local",
+						transport: "stdio",
+						command: "npx",
+						args: ["-y", "@modelcontextprotocol/server-filesystem", "/repo"],
+						cwd: "/repo",
+						envKeys: ["HOME", "TOKEN"],
+						timeout: 30000,
+					},
+				],
+			})
+			.mockResolvedValueOnce({
+				servers: [
+					{
+						name: "filesystem",
+						connected: true,
+						scope: "local",
+						transport: "stdio",
+						command: "bunx",
+						args: [
+							"-y",
+							"@modelcontextprotocol/server-filesystem",
+							"/workspace",
+						],
+						cwd: "/workspace",
+						envKeys: ["HOME", "TOKEN"],
+						timeout: 45000,
+					},
+				],
+			});
+		(
+			apiClient.updateMcpServer as ReturnType<typeof vi.fn>
+		).mockResolvedValueOnce({
+			name: "filesystem",
+			scope: "local",
+			path: "/repo/.maestro/mcp.local.json",
+			server: {
+				name: "filesystem",
+				transport: "stdio",
+				command: "bunx",
+				args: ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
+				cwd: "/workspace",
+				timeout: 45000,
+			},
+		});
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Boolean(
+				element.shadowRoot?.querySelector(
+					'input[aria-label="Command for filesystem"]',
+				),
+			),
+		);
+
+		const commandInput = element.shadowRoot?.querySelector(
+			'input[aria-label="Command for filesystem"]',
+		) as HTMLInputElement | null;
+		const argsInput = element.shadowRoot?.querySelector(
+			'textarea[aria-label="Arguments for filesystem"]',
+		) as HTMLTextAreaElement | null;
+		const envInput = element.shadowRoot?.querySelector(
+			'textarea[aria-label="Environment variables for filesystem"]',
+		) as HTMLTextAreaElement | null;
+		const replaceEnvInput = element.shadowRoot?.querySelector(
+			'input[aria-label="Replace hidden environment variables for filesystem"]',
+		) as HTMLInputElement | null;
+		const cwdInput = element.shadowRoot?.querySelector(
+			'input[aria-label="Working directory for filesystem"]',
+		) as HTMLInputElement | null;
+		const timeoutInput = element.shadowRoot?.querySelector(
+			'input[aria-label="Timeout for filesystem"]',
+		) as HTMLInputElement | null;
+		expect(commandInput).not.toBeNull();
+		expect(argsInput).not.toBeNull();
+		expect(envInput).not.toBeNull();
+		expect(replaceEnvInput).not.toBeNull();
+		expect(cwdInput).not.toBeNull();
+		expect(timeoutInput).not.toBeNull();
+		if (
+			!commandInput ||
+			!argsInput ||
+			!envInput ||
+			!replaceEnvInput ||
+			!cwdInput ||
+			!timeoutInput
+		) {
+			throw new Error("Expected MCP stdio edit inputs");
+		}
+
+		commandInput.value = "bunx";
+		commandInput.dispatchEvent(new Event("input", { bubbles: true }));
+		argsInput.value = "-y\n@modelcontextprotocol/server-filesystem\n/workspace";
+		argsInput.dispatchEvent(new Event("input", { bubbles: true }));
+		expect(envInput.disabled).toBe(true);
+		replaceEnvInput.click();
+		await waitForSettled(element, () => envInput.disabled === false);
+		expect(envInput.disabled).toBe(false);
+		envInput.value = "HOME=/Users/demo\nTOKEN=rotated";
+		envInput.dispatchEvent(new Event("input", { bubbles: true }));
+		cwdInput.value = "/workspace";
+		cwdInput.dispatchEvent(new Event("input", { bubbles: true }));
+		timeoutInput.value = "45000";
+		timeoutInput.dispatchEvent(new Event("input", { bubbles: true }));
+
+		const button = Array.from(
+			element.shadowRoot?.querySelectorAll(".mcp-update-button") ?? [],
+		)[0] as HTMLButtonElement | undefined;
+		expect(button).toBeDefined();
+		button?.click();
+
+		await waitForSettled(element, () =>
+			(element.shadowRoot?.textContent ?? "").includes(
+				"Updated filesystem in Local config via stdio.",
+			),
+		);
+
+		expect(apiClient.updateMcpServer).toHaveBeenCalledWith({
+			name: "filesystem",
+			scope: "local",
+			server: {
+				name: "filesystem",
+				transport: "stdio",
+				command: "bunx",
+				args: ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
+				cwd: "/workspace",
+				env: {
+					HOME: "/Users/demo",
+					TOKEN: "rotated",
+				},
+				timeout: 45000,
+			},
+		});
+	});
+
+	it("clears optional MCP remote edit fields when they are blanked", async () => {
+		const apiClient = createApiClientMock();
+		(apiClient.getMcpStatus as ReturnType<typeof vi.fn>)
+			.mockResolvedValueOnce({
+				servers: [
+					{
+						name: "linear",
+						connected: true,
+						scope: "local",
+						transport: "http",
+						remoteTrust: "official",
+						remoteUrl: "https://mcp.linear.app/mcp",
+						headerKeys: ["Authorization"],
+						headersHelper: "bun run scripts/mcp-headers.ts",
+						timeout: 20000,
+					},
+				],
+			})
+			.mockResolvedValueOnce({
+				servers: [
+					{
+						name: "linear",
+						connected: true,
+						scope: "local",
+						transport: "http",
+						remoteTrust: "official",
+						remoteUrl: "https://mcp.linear.app/mcp",
+					},
+				],
+			});
+		(
+			apiClient.updateMcpServer as ReturnType<typeof vi.fn>
+		).mockResolvedValueOnce({
+			name: "linear",
+			scope: "local",
+			path: "/repo/.maestro/mcp.local.json",
+			server: {
+				name: "linear",
+				transport: "http",
+				url: "https://mcp.linear.app/mcp",
+			},
+		});
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Boolean(
+				element.shadowRoot?.querySelector(
+					'input[aria-label="Remote URL for linear"]',
+				),
+			),
+		);
+
+		const headersHelperInput = element.shadowRoot?.querySelector(
+			'input[aria-label="Headers helper for linear"]',
+		) as HTMLInputElement | null;
+		const headersInput = element.shadowRoot?.querySelector(
+			'textarea[aria-label="Headers for linear"]',
+		) as HTMLTextAreaElement | null;
+		const replaceHeadersInput = element.shadowRoot?.querySelector(
+			'input[aria-label="Replace hidden headers for linear"]',
+		) as HTMLInputElement | null;
+		const timeoutInput = element.shadowRoot?.querySelector(
+			'input[aria-label="Timeout for linear"]',
+		) as HTMLInputElement | null;
+		const button = element.shadowRoot?.querySelector(
+			".mcp-update-button",
+		) as HTMLButtonElement | null;
+		expect(headersHelperInput).not.toBeNull();
+		expect(headersInput).not.toBeNull();
+		expect(replaceHeadersInput).not.toBeNull();
+		expect(timeoutInput).not.toBeNull();
+		expect(button).not.toBeNull();
+		if (
+			!headersHelperInput ||
+			!headersInput ||
+			!replaceHeadersInput ||
+			!timeoutInput ||
+			!button
+		) {
+			throw new Error("Expected MCP remote edit inputs");
+		}
+
+		headersHelperInput.value = "";
+		headersHelperInput.dispatchEvent(new Event("input", { bubbles: true }));
+		replaceHeadersInput.click();
+		headersInput.value = "";
+		headersInput.dispatchEvent(new Event("input", { bubbles: true }));
+		timeoutInput.value = "";
+		timeoutInput.dispatchEvent(new Event("input", { bubbles: true }));
+		button.click();
+
+		await waitForSettled(element, () =>
+			(element.shadowRoot?.textContent ?? "").includes(
+				"Updated linear in Local config via HTTP.",
+			),
+		);
+
+		expect(apiClient.updateMcpServer).toHaveBeenCalledWith({
+			name: "linear",
+			scope: "local",
+			server: {
+				name: "linear",
+				transport: "http",
+				url: "https://mcp.linear.app/mcp",
+				headers: null,
+				headersHelper: null,
+				authPreset: null,
+				timeout: null,
+			},
+		});
+	});
+
+	it("preserves hidden remote headers unless replacement is enabled", async () => {
+		const apiClient = createApiClientMock();
+		(apiClient.getMcpStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
+			servers: [
+				{
+					name: "linear",
+					connected: true,
+					scope: "local",
+					transport: "http",
+					remoteTrust: "official",
+					remoteUrl: "https://mcp.linear.app/mcp",
+					headerKeys: ["Authorization"],
+					headersHelper: "bun run scripts/mcp-headers.ts",
+					timeout: 20000,
+				},
+			],
+		});
+		(
+			apiClient.updateMcpServer as ReturnType<typeof vi.fn>
+		).mockResolvedValueOnce({
+			name: "linear",
+			scope: "local",
+			path: "/repo/.maestro/mcp.local.json",
+			server: {
+				name: "linear",
+				transport: "sse",
+				url: "https://mcp.linear.app/sse",
+				headersHelper: "bun run scripts/mcp-headers.ts",
+				timeout: 15000,
+			},
+		});
+		const element = createSettings(apiClient);
+
+		await waitForSettled(element, () =>
+			Boolean(
+				element.shadowRoot?.querySelector(
+					'input[aria-label="Remote URL for linear"]',
+				),
+			),
+		);
+
+		const urlInput = element.shadowRoot?.querySelector(
+			'input[aria-label="Remote URL for linear"]',
+		) as HTMLInputElement | null;
+		const transportSelect = element.shadowRoot?.querySelector(
+			'select[aria-label="Remote transport for linear"]',
+		) as HTMLSelectElement | null;
+		const timeoutInput = element.shadowRoot?.querySelector(
+			'input[aria-label="Timeout for linear"]',
+		) as HTMLInputElement | null;
+		const headersInput = element.shadowRoot?.querySelector(
+			'textarea[aria-label="Headers for linear"]',
+		) as HTMLTextAreaElement | null;
+		const button = element.shadowRoot?.querySelector(
+			".mcp-update-button",
+		) as HTMLButtonElement | null;
+		expect(urlInput).not.toBeNull();
+		expect(transportSelect).not.toBeNull();
+		expect(timeoutInput).not.toBeNull();
+		expect(headersInput?.disabled).toBe(true);
+		expect(button).not.toBeNull();
+		if (!urlInput || !transportSelect || !timeoutInput || !button) {
+			throw new Error("Expected MCP remote edit inputs");
+		}
+
+		urlInput.value = "https://mcp.linear.app/sse";
+		urlInput.dispatchEvent(new Event("input", { bubbles: true }));
+		transportSelect.value = "sse";
+		transportSelect.dispatchEvent(new Event("change", { bubbles: true }));
+		timeoutInput.value = "15000";
+		timeoutInput.dispatchEvent(new Event("input", { bubbles: true }));
+		button.click();
+
+		await waitForSettled(element, () =>
+			(element.shadowRoot?.textContent ?? "").includes(
+				"Updated linear in Local config via SSE.",
+			),
+		);
+
+		expect(apiClient.updateMcpServer).toHaveBeenCalledWith({
+			name: "linear",
+			scope: "local",
+			server: {
+				name: "linear",
+				transport: "sse",
+				url: "https://mcp.linear.app/sse",
+				authPreset: null,
+				timeout: 15000,
+			},
+		});
+	});
+});

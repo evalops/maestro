@@ -1,0 +1,338 @@
+/**
+ * Plan Parser
+ *
+ * Parses markdown plan files into structured tasks for swarm execution.
+ * Supports various markdown formats for task lists.
+ */
+
+import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { createLogger } from "../../utils/logger.js";
+import type { ParsedPlan, SwarmTask } from "./types.js";
+
+const logger = createLogger("agent:swarm:plan-parser");
+
+/**
+ * Task item extracted from markdown.
+ */
+interface RawTask {
+	text: string;
+	completed: boolean;
+	indent: number;
+	lineNumber: number;
+}
+
+/**
+ * Parse a plan file into structured tasks.
+ */
+export function parsePlanFile(filePath: string): ParsedPlan {
+	const content = readFileSync(filePath, "utf-8");
+	return parsePlanContent(content);
+}
+
+/**
+ * Parse plan content (markdown string) into structured tasks.
+ */
+export function parsePlanContent(content: string): ParsedPlan {
+	const lines = content.split("\n");
+	const rawTasks: RawTask[] = [];
+	let title = "Implementation Plan";
+
+	// Extract title from first H1
+	for (const line of lines) {
+		const h1Match = line.match(/^#\s+(?:Plan:\s*)?(.+)$/);
+		if (h1Match?.[1]) {
+			title = h1Match[1].trim();
+			break;
+		}
+	}
+
+	// Extract tasks from checkbox items and numbered lists
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
+		if (!line) continue;
+
+		// Match checkbox items: - [ ] task or - [x] task
+		const checkboxMatch = line.match(/^(\s*)[-*]\s*\[([ xX])\]\s*(.+)$/);
+		if (
+			checkboxMatch?.[1] !== undefined &&
+			checkboxMatch[2] &&
+			checkboxMatch[3]
+		) {
+			rawTasks.push({
+				text: checkboxMatch[3].trim(),
+				completed: checkboxMatch[2].toLowerCase() === "x",
+				indent: checkboxMatch[1].length,
+				lineNumber: i + 1,
+			});
+			continue;
+		}
+
+		// Match numbered list items: 1. task or 1) task
+		const numberedMatch = line.match(/^(\s*)\d+[.)]\s+(.+)$/);
+		if (numberedMatch?.[1] !== undefined && numberedMatch[2]) {
+			// Skip if it's a sub-item description
+			const text = numberedMatch[2].trim();
+			if (
+				!text.startsWith("**") &&
+				!text.match(/^[A-Z].*:$/) &&
+				text.length > 10
+			) {
+				rawTasks.push({
+					text,
+					completed: false,
+					indent: numberedMatch[1].length,
+					lineNumber: i + 1,
+				});
+			}
+			continue;
+		}
+
+		// Match bullet items that look like tasks (starts with verb or "Add/Create/Implement")
+		const bulletMatch = line.match(/^(\s*)[-*]\s+(.+)$/);
+		if (bulletMatch?.[1] !== undefined && bulletMatch[2]) {
+			const text = bulletMatch[2].trim();
+			const isTask = isLikelyTask(text);
+			if (isTask && !text.startsWith("[") && text.length > 10) {
+				rawTasks.push({
+					text,
+					completed: false,
+					indent: bulletMatch[1].length,
+					lineNumber: i + 1,
+				});
+			}
+		}
+	}
+
+	// Convert raw tasks to SwarmTasks (incomplete only)
+	const incompleteTasks = rawTasks.filter((t) => !t.completed);
+	const tasks = incompleteTasks.map((raw, index) =>
+		convertToSwarmTask(raw, index, rawTasks),
+	);
+
+	// Build mapping from raw task index -> full task ID (only for incomplete tasks).
+	const rawIndexByLine = new Map<number, number>();
+	for (const [rawIndex, raw] of rawTasks.entries()) {
+		rawIndexByLine.set(raw.lineNumber, rawIndex);
+	}
+
+	const rawIndexToFullId = new Map<number, string>();
+	for (const [incompleteIndex, raw] of incompleteTasks.entries()) {
+		const rawIndex =
+			rawIndexByLine.get(raw.lineNumber) ?? rawTasks.indexOf(raw);
+		const task = tasks[incompleteIndex];
+		if (task) {
+			rawIndexToFullId.set(rawIndex, task.id);
+		}
+	}
+
+	// Resolve dependencies to full IDs so executor checks work.
+	// Dependencies refer to task numbers in the full raw list; if a dependency
+	// points to a completed task, it's considered already satisfied and skipped.
+	for (const [incompleteIndex, raw] of incompleteTasks.entries()) {
+		const currentRawIndex =
+			rawIndexByLine.get(raw.lineNumber) ?? rawTasks.indexOf(raw);
+		const baseDeps = extractDependencies(raw.text, currentRawIndex, rawTasks);
+		if (baseDeps.length === 0) continue;
+
+		const depRawIndices = baseDeps
+			.map((dep) => Number.parseInt(dep.replace(/^task-/, ""), 10) - 1)
+			.filter((idx) => idx >= 0);
+
+		const fullDeps = depRawIndices
+			.map((idx) => rawIndexToFullId.get(idx))
+			.filter((dep): dep is string => Boolean(dep));
+
+		const task = tasks[incompleteIndex];
+		if (fullDeps.length > 0 && task) {
+			task.dependsOn = fullDeps;
+		}
+	}
+
+	logger.debug("Parsed plan", {
+		title,
+		totalRawTasks: rawTasks.length,
+		incompleteTasks: tasks.length,
+	});
+
+	return {
+		title,
+		tasks,
+		content,
+	};
+}
+
+/**
+ * Check if text looks like a task (starts with action verb).
+ */
+function isLikelyTask(text: string): boolean {
+	const actionVerbs = [
+		"add",
+		"create",
+		"implement",
+		"update",
+		"modify",
+		"change",
+		"fix",
+		"remove",
+		"delete",
+		"refactor",
+		"extract",
+		"move",
+		"rename",
+		"write",
+		"build",
+		"configure",
+		"setup",
+		"set up",
+		"install",
+		"integrate",
+		"connect",
+		"test",
+		"verify",
+		"validate",
+		"check",
+		"ensure",
+		"make",
+		"define",
+		"declare",
+		"export",
+		"import",
+	];
+
+	const lowerText = text.toLowerCase();
+	return actionVerbs.some(
+		(verb) => lowerText.startsWith(verb) || lowerText.startsWith(`${verb} `),
+	);
+}
+
+/**
+ * Convert a raw task to a SwarmTask.
+ */
+function convertToSwarmTask(
+	raw: RawTask,
+	index: number,
+	allTasks: RawTask[],
+): SwarmTask {
+	const task: SwarmTask = {
+		id: `task-${index + 1}-${randomUUID().slice(0, 8)}`,
+		prompt: raw.text,
+		priority: allTasks.length - index, // Earlier tasks have higher priority
+	};
+
+	// Extract file references from the task text
+	const files = extractFileReferences(raw.text);
+	if (files.length > 0) {
+		task.files = files;
+	}
+
+	return task;
+}
+
+/**
+ * Extract file path references from task text.
+ */
+function extractFileReferences(text: string): string[] {
+	const files: string[] = [];
+
+	// Match quoted paths
+	const quotedMatches = text.matchAll(/["'`]([^"'`]+\.[a-z]+)["'`]/gi);
+	for (const match of quotedMatches) {
+		const captured = match[1];
+		if (captured) {
+			files.push(captured);
+		}
+	}
+
+	// Match backtick code spans with paths
+	const codeMatches = text.matchAll(/`([^`]+\.[a-z]+)`/gi);
+	for (const match of codeMatches) {
+		const captured = match[1];
+		if (captured && !files.includes(captured)) {
+			files.push(captured);
+		}
+	}
+
+	// Match common file patterns
+	const pathMatches = text.matchAll(
+		/\b((?:src|lib|test|tests|packages?)\/[^\s,)]+\.[a-z]+)\b/gi,
+	);
+	for (const match of pathMatches) {
+		const captured = match[1];
+		if (captured && !files.includes(captured)) {
+			files.push(captured);
+		}
+	}
+
+	return files;
+}
+
+/**
+ * Extract task dependencies from text.
+ */
+function extractDependencies(
+	text: string,
+	currentIndex: number,
+	allTasks: RawTask[],
+): string[] {
+	const deps: string[] = [];
+	const lowerText = text.toLowerCase();
+
+	// Check for "after" references
+	const afterMatch = lowerText.match(/after\s+(?:task\s+)?(\d+)/);
+	if (afterMatch?.[1]) {
+		const depIndex = Number.parseInt(afterMatch[1], 10) - 1;
+		if (depIndex >= 0 && depIndex < currentIndex) {
+			deps.push(`task-${depIndex + 1}`);
+		}
+	}
+
+	// Check for "depends on" references
+	const dependsMatch = lowerText.match(/depends\s+on\s+(?:task\s+)?(\d+)/);
+	if (dependsMatch?.[1]) {
+		const depIndex = Number.parseInt(dependsMatch[1], 10) - 1;
+		if (depIndex >= 0 && depIndex < currentIndex) {
+			deps.push(`task-${depIndex + 1}`);
+		}
+	}
+
+	return deps;
+}
+
+/**
+ * Generate a plan markdown template.
+ */
+export function generatePlanTemplate(name: string, tasks: string[]): string {
+	const timestamp = new Date().toISOString();
+	let content = `# Plan: ${name}\n\n`;
+	content += `Created: ${timestamp}\n\n`;
+	content += "## Tasks\n\n";
+
+	for (let i = 0; i < tasks.length; i++) {
+		content += `- [ ] ${tasks[i]}\n`;
+	}
+
+	content += "\n## Notes\n\n";
+	content += "<!-- Add any additional notes or context here -->\n";
+
+	return content;
+}
+
+/**
+ * Update a plan file by marking tasks as complete.
+ */
+export function markTasksComplete(
+	content: string,
+	completedTaskTexts: string[],
+): string {
+	let updated = content;
+
+	for (const taskText of completedTaskTexts) {
+		// Escape special regex characters in task text
+		const escaped = taskText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+		const pattern = new RegExp(`^(\\s*[-*]\\s*)\\[ \\](\\s*${escaped})`, "gm");
+		updated = updated.replace(pattern, "$1[x]$2");
+	}
+
+	return updated;
+}

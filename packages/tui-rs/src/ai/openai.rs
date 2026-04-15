@@ -1,0 +1,2296 @@
+//! `OpenAI` API Client
+//!
+//! Implements streaming communication with `OpenAI`'s APIs, supporting two different endpoints:
+//!
+//! # API Endpoints
+//!
+//! ## Chat Completions API (`/v1/chat/completions`)
+//!
+//! Used by standard models like GPT-4o, GPT-4 Turbo, o1-preview, o1-mini:
+//!
+//! - Request format: Array of messages with role/content
+//! - Streaming: Line-based SSE with `data:` prefix
+//! - Tool calls: Accumulated in delta events, sent in completion
+//! - Special marker: `data: [DONE]` signals end of stream
+//!
+//! ## Responses API (`/v1/responses`)
+//!
+//! Used by advanced models like gpt-5.1-codex-max, gpt-5.1-codex-lite, o3:
+//!
+//! - Request format: Array of `ResponseItems` (messages, function calls, outputs)
+//! - Streaming: Structured SSE with distinct event types
+//! - Tool calls: Sent as separate `function_call` items
+//! - Reasoning: Native reasoning/thinking support with encrypted content
+//! - Schema restrictions: No oneOf/anyOf/allOf at top level
+//!
+//! Note: Responses API models may require `ChatGPT` Plus authentication.
+//!
+//! # Rust Concepts
+//!
+//! ## Two SSE Parsing Strategies
+//!
+//! This module demonstrates two approaches to parsing Server-Sent Events:
+//!
+//! ### 1. Manual Line-Based Parsing (Chat Completions)
+//!
+//! ```rust,ignore
+//! let mut buffer = String::new();
+//! while let Some(chunk) = stream.next().await {
+//!     buffer.push_str(&String::from_utf8_lossy(&chunk?));
+//!     while let Some(pos) = buffer.find('\n') {
+//!         let line = buffer[..pos].trim();
+//!         // Process line...
+//!     }
+//! }
+//! ```
+//!
+//! Advantages: Simple, full control, minimal dependencies.
+//!
+//! ### 2. eventsource-stream Crate (Responses API)
+//!
+//! ```rust,ignore
+//! let mut sse_stream = stream
+//!     .map(|result| result.map_err(std::io::Error::other))
+//!     .eventsource();
+//! while let Some(event_result) = sse_stream.next().await {
+//!     // event_result contains parsed SSE event
+//! }
+//! ```
+//!
+//! Advantages: Handles reconnection, proper SSE spec compliance.
+//!
+//! ## Pattern Matching for API Selection
+//!
+//! Uses `str::starts_with` and `str::contains` for model detection:
+//!
+//! ```rust,ignore
+//! fn uses_responses_api(model: &str) -> bool {
+//!     model.contains("codex") || model.starts_with("gpt-5") || model.starts_with("o3")
+//! }
+//! ```
+//!
+//! ## Function Composition
+//!
+//! The module uses helper functions to organize complex logic:
+//!
+//! - `classify_error()`: Maps API errors to retry strategies
+//! - `extract_function_call()`: Parses function call items
+//! - `filter_responses_api_tools()`: Removes incompatible tool schemas
+//! - `parse_retry_after()`: Extracts retry duration from error messages
+//!
+//! ## Error Classification for Retries
+//!
+//! The `ApiError` enum classifies errors into categories:
+//!
+//! - `ContextWindowExceeded`: Fatal, need to reduce input
+//! - `QuotaExceeded`: Fatal, billing issue
+//! - `RateLimited`: Retryable with delay
+//! - `Retryable`: Temporary failures (server overload)
+//! - `Fatal`: Authentication, invalid requests
+//!
+//! # Example: Model-Specific Behavior
+//!
+//! ```rust,ignore
+//! let body = if uses_responses_api(&config.model) {
+//!     self.build_responses_request_body(messages, config)
+//! } else {
+//!     self.build_chat_request_body(messages, config)
+//! };
+//! ```
+//!
+//! This demonstrates runtime polymorphism without trait objects - the decision
+//! is made at runtime but with zero-cost static dispatch.
+
+use anyhow::{Context, Result};
+use eventsource_stream::Eventsource;
+use futures::StreamExt;
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
+
+use super::client::{AiClient, AiProvider};
+use super::types::{
+    ContentBlock, ImageSource, Message, MessageContent, RequestConfig, Role, StreamEvent, Tool,
+};
+
+/// SSE event structure for Responses API (matches `OpenAI`'s format)
+///
+/// # Serde Field Attributes
+///
+/// - `#[serde(rename = "type")]`: Map Rust field `kind` to JSON field `type`
+///   (avoiding Rust keyword)
+/// - `#[serde(default)]`: Use default value (None) if field is missing
+/// - `#[allow(dead_code)]`: Suppress warnings for fields reserved for future use
+///
+/// # Event Types
+///
+/// The Responses API emits many event types:
+///
+/// - `response.created`: Initial response metadata
+/// - `response.output_item.added`: New output item started
+/// - `response.output_text.delta`: Incremental text content
+/// - `response.function_call_arguments.delta`: Incremental tool arguments
+/// - `response.reasoning_text.delta`: Thinking/reasoning content
+/// - `response.completed`: Response finished successfully
+/// - `response.failed`: Error occurred
+#[derive(Debug, Deserialize)]
+struct ResponsesSseEvent {
+    /// Event type (e.g., "response.created", "`response.output_text.delta`")
+    #[serde(rename = "type")]
+    kind: String,
+    /// Response metadata (present in some events)
+    #[serde(default)]
+    response: Option<serde_json::Value>,
+    /// Output item data (present in item-related events)
+    #[serde(default)]
+    item: Option<serde_json::Value>,
+    /// Delta content (text, reasoning, or arguments)
+    #[serde(default)]
+    delta: Option<String>,
+    /// Index of the content part within the output item (for multi-part content)
+    #[serde(default)]
+    #[allow(dead_code)] // Reserved for future multi-part content support
+    content_index: Option<i64>,
+    /// Index for reasoning summaries (reserved for future use)
+    #[serde(default)]
+    #[allow(dead_code)] // Reserved for future reasoning summary support
+    summary_index: Option<i64>,
+    /// Index of the output item in the response
+    #[serde(default)]
+    output_index: Option<i64>,
+}
+
+/// Error classification for retry logic
+///
+/// This enum categorizes API errors to determine the appropriate retry strategy.
+/// It's used internally by error handling logic to decide whether to retry,
+/// wait, or fail immediately.
+///
+/// # Design Pattern
+///
+/// This is the "parse, don't validate" pattern - instead of checking error
+/// strings repeatedly, we parse once into a structured type that encodes
+/// the retry decision.
+#[derive(Debug, Clone)]
+pub enum ApiError {
+    /// Context window exceeded - fatal, need to reduce input
+    ///
+    /// This error means the conversation history is too long. The client
+    /// should truncate messages or use a model with a larger context window.
+    ContextWindowExceeded,
+
+    /// Quota exceeded - fatal, billing issue
+    ///
+    /// The API key has exceeded its usage quota. This requires manual
+    /// intervention (upgrading plan, adding billing info).
+    QuotaExceeded,
+
+    /// Rate limited - retryable with delay
+    ///
+    /// Too many requests in a short time. Should retry after the specified
+    /// duration (or a default backoff if not specified).
+    RateLimited {
+        retry_after: Option<std::time::Duration>,
+    },
+
+    /// Generic retryable error
+    ///
+    /// Temporary server issues (overloaded, maintenance). Should retry
+    /// with exponential backoff.
+    Retryable { message: String },
+
+    /// Fatal error
+    ///
+    /// Permanent failures (invalid API key, bad request, model not found).
+    /// Retrying won't help - the request needs to be fixed.
+    Fatal { message: String },
+}
+
+/// Extract function call from a `ResponseItem`
+///
+/// # Pattern: Option Chaining
+///
+/// This function uses the `?` operator with `Option` to short-circuit if any
+/// field is missing. This is more concise than nested `if let` or `match`:
+///
+/// ```rust,ignore
+/// let item_type = item.get("type")?.as_str()?;  // Returns None if missing
+/// ```
+///
+/// # Returns
+///
+/// `Some((call_id, name, arguments))` if this is a `function_call` item,
+/// `None` otherwise.
+fn extract_function_call(item: &serde_json::Value) -> Option<(String, String, serde_json::Value)> {
+    let item_type = item.get("type")?.as_str()?;
+    if item_type != "function_call" {
+        return None;
+    }
+
+    let call_id = item.get("call_id")?.as_str()?.to_string();
+    let name = item.get("name")?.as_str()?.to_string();
+    let arguments = item.get("arguments")?;
+    if !matches!(arguments, serde_json::Value::String(_)) {
+        let kind = match arguments {
+            serde_json::Value::Null => "null",
+            serde_json::Value::Bool(_) => "bool",
+            serde_json::Value::Number(_) => "number",
+            serde_json::Value::String(_) => "string",
+            serde_json::Value::Array(_) => "array",
+            serde_json::Value::Object(_) => "object",
+        };
+        eprintln!(
+            "[openai] function_call.arguments was {kind}; expected string (call_id={call_id}, name={name})"
+        );
+    }
+    let arguments_value = match arguments {
+        serde_json::Value::String(raw) => {
+            serde_json::from_str(raw).unwrap_or_else(|_| serde_json::json!({}))
+        }
+        serde_json::Value::Null => serde_json::json!({}),
+        other => other.clone(),
+    };
+
+    Some((call_id, name, arguments_value))
+}
+
+/// Check if an error message indicates context window overflow.
+///
+/// This function detects context overflow errors from multiple LLM providers
+/// by checking for known error message patterns.
+///
+/// # Supported Providers
+///
+/// - **Anthropic**: "prompt is too long: X tokens > Y maximum"
+/// - **`OpenAI`**: "exceeds the context window"
+/// - **Google Gemini**: "input token count exceeds the maximum"
+/// - **xAI (Grok)**: "maximum prompt length is X but request contains Y"
+/// - **Groq**: "reduce the length of the messages"
+/// - **Cerebras/Mistral**: 400/413 status code (no body)
+/// - **`OpenRouter`**: "maximum context length is X tokens"
+/// - **llama.cpp**: "exceeds the available context size"
+/// - **LM Studio**: "greater than the context length"
+///
+/// # Returns
+///
+/// `true` if the message indicates a context overflow error.
+pub fn is_context_overflow_error(message: &str) -> bool {
+    let lower = message.to_lowercase();
+
+    // Provider-specific patterns
+    if lower.contains("prompt is too long")
+        || lower.contains("exceeds the context window")
+        || (lower.contains("input token count") && lower.contains("exceeds the maximum"))
+        || (lower.contains("maximum prompt length is") && lower.contains("contains"))
+        || lower.contains("reduce the length of the messages")
+        || lower.contains("maximum context length is")
+        || lower.contains("exceeds the available context size")
+        || lower.contains("greater than the context length")
+    {
+        return true;
+    }
+
+    // Generic fallback patterns
+    if lower.contains("context length exceeded")
+        || lower.contains("too many tokens")
+        || lower.contains("token limit exceeded")
+        || (lower.contains("context window") && lower.contains("exceeded"))
+        || (lower.contains("maximum") && lower.contains("tokens") && lower.contains("exceeded"))
+    {
+        return true;
+    }
+
+    // Cerebras and Mistral return 400/413 with no body
+    // Match patterns like "400 status code (no body)" or "413 (no body)"
+    if (lower.contains("400") || lower.contains("413")) && lower.contains("(no body)") {
+        return true;
+    }
+
+    false
+}
+
+/// Classify API error for retry logic
+///
+/// # Strategy
+///
+/// 1. Check for context overflow first (most important for agent loop)
+/// 2. Check error code (most reliable)
+/// 3. Fall back to error type
+/// 4. Check message for keywords ("overloaded", "temporarily")
+///
+/// # Pattern: Early Returns
+///
+/// Uses pattern matching with early returns for clarity:
+///
+/// ```rust,ignore
+/// match code {
+///     Some("rate_limit_exceeded") => return ApiError::RateLimited { ... },
+///     Some("invalid_api_key") => return ApiError::Fatal { ... },
+///     _ => { /* continue checking */ }
+/// }
+/// ```
+///
+/// This is more readable than deeply nested if/else chains.
+fn classify_error(error: &serde_json::Value) -> ApiError {
+    let code = error.get("code").and_then(|c| c.as_str());
+    let error_type = error.get("type").and_then(|t| t.as_str());
+    let message = error
+        .get("message")
+        .and_then(|m| m.as_str())
+        .unwrap_or("Unknown error")
+        .to_string();
+
+    // Check for context overflow first (may not have a specific error code)
+    if is_context_overflow_error(&message) {
+        return ApiError::ContextWindowExceeded;
+    }
+
+    match code {
+        Some("context_length_exceeded") => ApiError::ContextWindowExceeded,
+        Some("insufficient_quota") => ApiError::QuotaExceeded,
+        Some("rate_limit_exceeded") => {
+            // Try to parse retry-after from message
+            let retry_after = parse_retry_after(&message);
+            ApiError::RateLimited { retry_after }
+        }
+        // Fatal errors that should not be retried
+        Some("invalid_api_key" | "model_not_found" | "invalid_request_error") => {
+            ApiError::Fatal { message }
+        }
+        _ => {
+            // Check error type for additional classification
+            match error_type {
+                Some("authentication_error" | "permission_error") => ApiError::Fatal { message },
+                Some("server_error" | "service_unavailable") => ApiError::Retryable { message },
+                _ => {
+                    // Default: check if message suggests retryable
+                    if message.contains("overloaded") || message.contains("temporarily") {
+                        ApiError::Retryable { message }
+                    } else {
+                        ApiError::Fatal { message }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Parse retry-after duration from error message
+fn parse_retry_after(message: &str) -> Option<std::time::Duration> {
+    // Pattern: "try again in X.XXs" or "try again in X seconds"
+    let lower = message.to_lowercase();
+    if let Some(pos) = lower.find("try again in") {
+        let after = &lower[pos + 13..];
+        // Try to parse number
+        let num_str: String = after
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
+        if let Ok(num) = num_str.parse::<f64>() {
+            // Check unit
+            let rest = &after[num_str.len()..].trim_start();
+            if rest.starts_with("ms") {
+                return Some(std::time::Duration::from_millis(num as u64));
+            }
+            // Assume seconds
+            return Some(std::time::Duration::from_secs_f64(num));
+        }
+    }
+    None
+}
+
+/// Check if a tool schema has incompatible constructs for Responses API
+///
+/// The Responses API has stricter schema requirements than Chat Completions.
+/// It doesn't support JSON Schema combinators at the top level:
+///
+/// - `oneOf`: Union types (A OR B)
+/// - `anyOf`: Any of multiple schemas
+/// - `allOf`: Intersection types (A AND B)
+/// - `not`: Negation
+/// - `enum`: Top-level enums
+///
+/// These are often used in complex tool schemas but must be avoided for
+/// Responses API compatibility. Consider simplifying schemas or using
+/// Chat Completions API instead.
+///
+/// # Pattern: Object Introspection
+///
+/// Uses `as_object()` to check if JSON value is an object, then checks
+/// for specific keys:
+///
+/// ```rust,ignore
+/// if let Some(obj) = schema.as_object() {
+///     obj.contains_key("oneOf") || obj.contains_key("anyOf")
+/// }
+/// ```
+fn has_incompatible_schema(schema: &serde_json::Value) -> bool {
+    if let Some(obj) = schema.as_object() {
+        obj.contains_key("oneOf")
+            || obj.contains_key("anyOf")
+            || obj.contains_key("allOf")
+            || obj.contains_key("not")
+            // Top-level enum is also problematic
+            || obj.contains_key("enum")
+    } else {
+        false
+    }
+}
+
+/// Filter tools to only include those compatible with Responses API
+fn filter_responses_api_tools(tools: &[Tool]) -> Vec<Tool> {
+    tools
+        .iter()
+        .filter(|tool| {
+            // Tool must have a name
+            if tool.name.trim().is_empty() {
+                return false;
+            }
+            // Check schema compatibility
+            !has_incompatible_schema(&tool.input_schema)
+        })
+        .cloned()
+        .collect()
+}
+
+/// Extract text from a `ResponseItem` (Message type with `output_text` content)
+fn extract_text_from_item(item: &serde_json::Value) -> Option<String> {
+    let item_type = item.get("type")?.as_str()?;
+    if item_type != "message" {
+        return None;
+    }
+
+    let content = item.get("content")?.as_array()?;
+    let mut text = String::new();
+    for part in content {
+        if let Some(part_type) = part.get("type").and_then(|v| v.as_str()) {
+            if part_type == "output_text" {
+                if let Some(t) = part.get("text").and_then(|v| v.as_str()) {
+                    text.push_str(t);
+                }
+            }
+        }
+    }
+
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+/// Returns true if the model uses the Responses API (vs Chat Completions)
+fn uses_responses_api(model: &str) -> bool {
+    // Codex models and gpt-5.x models use the Responses API
+    model.contains("codex") || model.starts_with("gpt-5") || model.starts_with("o3")
+}
+
+/// Check if this is a Mistral model (requires special tool ID handling)
+///
+/// Mistral API has specific requirements:
+/// - Tool call IDs must be exactly 9 alphanumeric characters
+/// - Tool results must include the `name` field
+fn is_mistral_model(model: &str, base_url: Option<&str>) -> bool {
+    let model_lower = model.to_lowercase();
+    if model_lower.contains("mistral")
+        || model_lower.contains("mixtral")
+        || model_lower.contains("codestral")
+        || model_lower.contains("pixtral")
+    {
+        return true;
+    }
+    if let Some(url) = base_url {
+        if url.contains("mistral.ai") {
+            return true;
+        }
+    }
+    false
+}
+
+/// Check if this is a Groq-hosted model
+///
+/// Groq provides fast inference using their LPU (Language Processing Unit).
+/// They host models like Llama, Mixtral, Gemma, `DeepSeek`, and Qwen.
+/// Groq uses OpenAI-compatible API format with no special handling required.
+fn is_groq_model(model: &str, base_url: Option<&str>) -> bool {
+    let model_lower = model.to_lowercase();
+    // Explicit groq/ prefix
+    if model_lower.starts_with("groq/") {
+        return true;
+    }
+    // Check base URL
+    if let Some(url) = base_url {
+        if url.contains("groq.com") {
+            return true;
+        }
+    }
+    // Llama models are commonly hosted on Groq
+    if model_lower.starts_with("llama-") || model_lower.starts_with("llama3") {
+        return true;
+    }
+    // DeepSeek and Qwen models
+    if model_lower.contains("deepseek") || model_lower.contains("qwen") {
+        return true;
+    }
+    false
+}
+
+/// Normalize a tool call ID for Mistral compatibility.
+///
+/// Mistral requires tool IDs to be exactly 9 alphanumeric characters.
+/// This function:
+/// - Removes non-alphanumeric characters
+/// - Pads with zeros if too short
+/// - Truncates if too long
+fn normalize_mistral_tool_id(id: &str) -> String {
+    // Remove non-alphanumeric characters
+    let normalized: String = id.chars().filter(|c| c.is_alphanumeric()).collect();
+
+    // Ensure exactly 9 characters
+    if normalized.len() < 9 {
+        format!("{normalized:0<9}")
+    } else if normalized.len() > 9 {
+        normalized[..9].to_string()
+    } else {
+        normalized
+    }
+}
+
+/// Get the appropriate API URL for the model
+fn api_url_for_model(model: &str) -> &'static str {
+    if uses_responses_api(model) {
+        "https://api.openai.com/v1/responses"
+    } else {
+        "https://api.openai.com/v1/chat/completions"
+    }
+}
+
+/// `OpenAI` API client
+///
+/// Handles communication with `OpenAI`'s APIs (Chat Completions and Responses).
+/// Automatically selects the appropriate API endpoint based on model name.
+/// Also supports Mistral API through OpenAI-compatible endpoint with special
+/// tool ID handling.
+///
+/// # Thread Safety
+///
+/// Like `AnthropicClient`, this implements `Send + Sync` for safe concurrent use.
+/// The `reqwest::Client` is internally synchronized and benefits from connection
+/// pooling when reused across requests.
+pub struct OpenAiClient {
+    /// Reusable HTTP client with connection pooling
+    client: reqwest::Client,
+    /// API key for authentication (via Authorization: Bearer header)
+    api_key: String,
+    /// Optional base URL override (for Mistral or other OpenAI-compatible APIs)
+    base_url: Option<String>,
+}
+
+impl OpenAiClient {
+    /// Create a new `OpenAI` client
+    pub fn new(api_key: impl Into<String>) -> Result<Self> {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(300))
+            .build()
+            .context("Failed to create HTTP client")?;
+
+        Ok(Self {
+            client,
+            api_key: api_key.into(),
+            base_url: None,
+        })
+    }
+
+    /// Create a new client with a custom base URL (for Mistral or other providers)
+    pub fn with_base_url(api_key: impl Into<String>, base_url: impl Into<String>) -> Result<Self> {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(300))
+            .build()
+            .context("Failed to create HTTP client")?;
+
+        Ok(Self {
+            client,
+            api_key: api_key.into(),
+            base_url: Some(base_url.into()),
+        })
+    }
+
+    /// Create a new client from environment variable
+    pub fn from_env() -> Result<Self> {
+        let api_key = std::env::var("OPENAI_API_KEY")
+            .context("OPENAI_API_KEY environment variable not set")?;
+        Self::new(api_key)
+    }
+
+    /// Create a new Mistral client from environment variable
+    pub fn mistral_from_env() -> Result<Self> {
+        let api_key = std::env::var("MISTRAL_API_KEY")
+            .context("MISTRAL_API_KEY environment variable not set")?;
+        Self::with_base_url(api_key, "https://api.mistral.ai/v1")
+    }
+
+    /// Create a new Groq client from environment variable
+    ///
+    /// Groq provides fast inference for open models like Llama, Mixtral, and Gemma.
+    /// Uses OpenAI-compatible API format.
+    pub fn groq_from_env() -> Result<Self> {
+        let api_key =
+            std::env::var("GROQ_API_KEY").context("GROQ_API_KEY environment variable not set")?;
+        Self::with_base_url(api_key, "https://api.groq.com/openai/v1")
+    }
+
+    /// Build request headers
+    fn headers(&self) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", self.api_key))
+                .unwrap_or_else(|_| HeaderValue::from_static("")),
+        );
+        headers
+    }
+
+    /// Convert internal messages to `OpenAI` format
+    ///
+    /// When `is_mistral` is true, applies Mistral-specific transformations:
+    /// - Tool call IDs are normalized to 9 alphanumeric characters
+    /// - Tool results include the `name` field (required by Mistral)
+    fn convert_messages(
+        &self,
+        messages: &[Message],
+        is_mistral: bool,
+        tool_id_to_name: &std::collections::HashMap<String, String>,
+    ) -> Vec<OpenAiMessage> {
+        messages
+            .iter()
+            .filter_map(|msg| {
+                let role = match msg.role {
+                    Role::User => "user",
+                    Role::Assistant => "assistant",
+                    Role::System => "system",
+                };
+
+                // Convert content
+                match &msg.content {
+                    MessageContent::Text(text) => Some(OpenAiMessage {
+                        role: role.to_string(),
+                        content: Some(OpenAiContent::Text(text.clone())),
+                        tool_calls: None,
+                        tool_call_id: None,
+                        name: None,
+                    }),
+                    MessageContent::Blocks(blocks) => {
+                        // Handle tool results specially
+                        if let Some(ContentBlock::ToolResult {
+                            tool_use_id,
+                            content,
+                            ..
+                        }) = blocks.first()
+                        {
+                            let normalized_id = if is_mistral {
+                                normalize_mistral_tool_id(tool_use_id)
+                            } else {
+                                tool_use_id.clone()
+                            };
+
+                            // Mistral requires the tool name in tool results
+                            let name = if is_mistral {
+                                tool_id_to_name.get(tool_use_id).cloned()
+                            } else {
+                                None
+                            };
+
+                            return Some(OpenAiMessage {
+                                role: "tool".to_string(),
+                                content: Some(OpenAiContent::Text(content.clone())),
+                                tool_calls: None,
+                                tool_call_id: Some(normalized_id),
+                                name,
+                            });
+                        }
+
+                        // Convert blocks to OpenAI content parts
+                        let parts: Vec<OpenAiContentPart> = blocks
+                            .iter()
+                            .filter_map(|block| match block {
+                                ContentBlock::Text { text } => {
+                                    Some(OpenAiContentPart::Text { text: text.clone() })
+                                }
+                                ContentBlock::Image { source } => match source {
+                                    ImageSource::Url { url } => Some(OpenAiContentPart::ImageUrl {
+                                        image_url: ImageUrlData {
+                                            url: url.clone(),
+                                            detail: None,
+                                        },
+                                    }),
+                                    ImageSource::Base64 { media_type, data } => {
+                                        Some(OpenAiContentPart::ImageUrl {
+                                            image_url: ImageUrlData {
+                                                url: format!("data:{media_type};base64,{data}"),
+                                                detail: None,
+                                            },
+                                        })
+                                    }
+                                },
+                                ContentBlock::ToolUse { id, name, input } => {
+                                    // This would be in assistant message
+                                    Some(OpenAiContentPart::Text {
+                                        text: format!(
+                                            "Tool call: {} ({}): {}",
+                                            name,
+                                            id,
+                                            serde_json::to_string(input).unwrap_or_default()
+                                        ),
+                                    })
+                                }
+                                _ => None,
+                            })
+                            .collect();
+
+                        if parts.is_empty() {
+                            None
+                        } else if parts.len() == 1 {
+                            if let OpenAiContentPart::Text { text } = &parts[0] {
+                                Some(OpenAiMessage {
+                                    role: role.to_string(),
+                                    content: Some(OpenAiContent::Text(text.clone())),
+                                    tool_calls: None,
+                                    tool_call_id: None,
+                                    name: None,
+                                })
+                            } else {
+                                Some(OpenAiMessage {
+                                    role: role.to_string(),
+                                    content: Some(OpenAiContent::Parts(parts)),
+                                    tool_calls: None,
+                                    tool_call_id: None,
+                                    name: None,
+                                })
+                            }
+                        } else {
+                            Some(OpenAiMessage {
+                                role: role.to_string(),
+                                content: Some(OpenAiContent::Parts(parts)),
+                                tool_calls: None,
+                                tool_call_id: None,
+                                name: None,
+                            })
+                        }
+                    }
+                }
+            })
+            .collect()
+    }
+
+    /// Build a mapping from tool call IDs to tool names from the message history.
+    /// This is needed for Mistral which requires the tool name in tool results.
+    fn build_tool_id_to_name_map(
+        messages: &[Message],
+    ) -> std::collections::HashMap<String, String> {
+        let mut map = std::collections::HashMap::new();
+        for msg in messages {
+            if let MessageContent::Blocks(blocks) = &msg.content {
+                for block in blocks {
+                    if let ContentBlock::ToolUse { id, name, .. } = block {
+                        map.insert(id.clone(), name.clone());
+                    }
+                }
+            }
+        }
+        map
+    }
+
+    /// Convert internal tools to `OpenAI` format
+    fn convert_tools(&self, tools: &[Tool]) -> Vec<OpenAiTool> {
+        tools
+            .iter()
+            .map(|tool| OpenAiTool {
+                tool_type: "function".to_string(),
+                function: OpenAiFunction {
+                    name: tool.name.clone(),
+                    description: Some(tool.description.clone()),
+                    parameters: Some(tool.input_schema.clone()),
+                },
+            })
+            .collect()
+    }
+
+    /// Build the request body for Chat Completions API
+    fn build_chat_request_body(
+        &self,
+        messages: &[Message],
+        config: &RequestConfig,
+    ) -> serde_json::Value {
+        // Check if this is a Mistral model (needs special tool handling)
+        let is_mistral = is_mistral_model(&config.model, self.base_url.as_deref());
+        // Check if this is a Groq model (may need parameter adjustments)
+        let is_groq = is_groq_model(&config.model, self.base_url.as_deref());
+
+        // Build tool ID to name mapping for Mistral
+        let tool_id_to_name = if is_mistral {
+            Self::build_tool_id_to_name_map(messages)
+        } else {
+            std::collections::HashMap::new()
+        };
+
+        let openai_messages = self.convert_messages(messages, is_mistral, &tool_id_to_name);
+
+        let mut body = serde_json::json!({
+            "model": config.model,
+            "max_tokens": config.max_tokens,
+            "messages": openai_messages,
+            "stream": true,
+            "stream_options": {
+                "include_usage": true
+            },
+            // Nudge model to actually choose a tool when tools are present
+            "tool_choice": if config.tools.is_empty() { serde_json::json!("none") } else { serde_json::json!("auto") }
+        });
+
+        // Only add parallel_tool_calls for providers that support it
+        // Groq doesn't support this parameter, Mistral ignores it
+        if !is_groq {
+            body["parallel_tool_calls"] = serde_json::json!(true);
+        }
+
+        // Add system message if provided
+        if let Some(system) = &config.system {
+            // Prepend system message
+            if let Some(msgs) = body["messages"].as_array_mut() {
+                msgs.insert(
+                    0,
+                    serde_json::json!({
+                        "role": "system",
+                        "content": system
+                    }),
+                );
+            }
+        }
+
+        if let Some(temp) = config.temperature {
+            body["temperature"] = serde_json::json!(temp);
+        }
+
+        if !config.tools.is_empty() {
+            body["tools"] = serde_json::json!(self.convert_tools(&config.tools));
+        }
+
+        // GPT-5.1 supports reasoning_effort for adaptive thinking
+        if let Some(thinking) = &config.thinking {
+            // Map thinking budget to reasoning effort
+            let effort = if thinking.budget_tokens > 10000 {
+                "high"
+            } else if thinking.budget_tokens > 3000 {
+                "medium"
+            } else {
+                "low"
+            };
+            body["reasoning_effort"] = serde_json::json!(effort);
+        }
+
+        body
+    }
+
+    /// Build the request body for Responses API (gpt-5.1-codex-* models)
+    fn build_responses_request_body(
+        &self,
+        messages: &[Message],
+        config: &RequestConfig,
+    ) -> serde_json::Value {
+        // Convert messages to Responses API format
+        // The input array contains ResponseItems, which can be messages, function calls, or function outputs
+        let mut input: Vec<serde_json::Value> = Vec::new();
+
+        for msg in messages {
+            match msg.role {
+                Role::System => continue, // System goes in instructions
+                Role::User => {
+                    // User messages use "input_text" content type
+                    match &msg.content {
+                        MessageContent::Text(text) => {
+                            input.push(serde_json::json!({
+                                "type": "message",
+                                "role": "user",
+                                "content": [{
+                                    "type": "input_text",
+                                    "text": text
+                                }]
+                            }));
+                        }
+                        MessageContent::Blocks(blocks) => {
+                            // Check if this is tool results (they go as separate items, not in a message)
+                            let mut has_tool_results = false;
+                            for block in blocks {
+                                if let ContentBlock::ToolResult {
+                                    tool_use_id,
+                                    content,
+                                    is_error: _,
+                                } = block
+                                {
+                                    has_tool_results = true;
+                                    // The Responses API expects output as a plain string for success
+                                    // Format: { type: "function_call_output", call_id: "...", output: "..." }
+                                    input.push(serde_json::json!({
+                                        "type": "function_call_output",
+                                        "call_id": tool_use_id,
+                                        "output": content
+                                    }));
+                                }
+                            }
+
+                            // If not tool results, treat as regular user message
+                            if !has_tool_results {
+                                let content: Vec<serde_json::Value> = blocks
+                                    .iter()
+                                    .filter_map(|block| match block {
+                                        ContentBlock::Text { text } => Some(serde_json::json!({
+                                            "type": "input_text",
+                                            "text": text
+                                        })),
+                                        _ => None,
+                                    })
+                                    .collect();
+
+                                if !content.is_empty() {
+                                    input.push(serde_json::json!({
+                                        "type": "message",
+                                        "role": "user",
+                                        "content": content
+                                    }));
+                                }
+                            }
+                        }
+                    }
+                }
+                Role::Assistant => {
+                    // Assistant messages use "output_text" content type
+                    // Tool calls go as separate "function_call" items
+                    match &msg.content {
+                        MessageContent::Text(text) => {
+                            input.push(serde_json::json!({
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{
+                                    "type": "output_text",
+                                    "text": text
+                                }]
+                            }));
+                        }
+                        MessageContent::Blocks(blocks) => {
+                            // First, collect any text content into a message
+                            let text_content: Vec<serde_json::Value> = blocks
+                                .iter()
+                                .filter_map(|block| match block {
+                                    ContentBlock::Text { text } => Some(serde_json::json!({
+                                        "type": "output_text",
+                                        "text": text
+                                    })),
+                                    _ => None,
+                                })
+                                .collect();
+
+                            if !text_content.is_empty() {
+                                input.push(serde_json::json!({
+                                    "type": "message",
+                                    "role": "assistant",
+                                    "content": text_content
+                                }));
+                            }
+
+                            // Then, add tool calls as separate items
+                            for block in blocks {
+                                if let ContentBlock::ToolUse {
+                                    id,
+                                    name,
+                                    input: args,
+                                } = block
+                                {
+                                    input.push(serde_json::json!({
+                                        "type": "function_call",
+                                        "call_id": id,
+                                        "name": name,
+                                        "arguments": serde_json::to_string(args).unwrap_or_default()
+                                    }));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut body = serde_json::json!({
+            "model": config.model,
+            "input": input,
+            "stream": true,
+            "parallel_tool_calls": true,
+            // Tell the model tools are available and should be used when appropriate
+            "tool_choice": if config.tools.is_empty() { serde_json::json!("none") } else { serde_json::json!("auto") },
+        });
+
+        // Add instructions (system prompt)
+        if let Some(system) = &config.system {
+            body["instructions"] = serde_json::json!(system);
+        }
+
+        // Add tools (filtered for Responses API compatibility)
+        if !config.tools.is_empty() {
+            let compatible_tools = filter_responses_api_tools(&config.tools);
+            if !compatible_tools.is_empty() {
+                let tools: Vec<serde_json::Value> = compatible_tools
+                    .iter()
+                    .map(|tool| {
+                        serde_json::json!({
+                            "type": "function",
+                            "name": tool.name,
+                            "description": tool.description,
+                            "strict": false,
+                            "parameters": tool.input_schema
+                        })
+                    })
+                    .collect();
+                body["tools"] = serde_json::json!(tools);
+            }
+        }
+
+        // Add reasoning configuration
+        // Codex models do reasoning by default, we need to include the content to see it
+        if let Some(thinking) = &config.thinking {
+            let effort = if thinking.budget_tokens > 10000 {
+                "high"
+            } else if thinking.budget_tokens > 3000 {
+                "medium"
+            } else {
+                "low"
+            };
+            body["reasoning"] = serde_json::json!({
+                "effort": effort,
+                "summary": "auto"  // Request reasoning summaries
+            });
+        }
+
+        // Always include reasoning content for visibility
+        // This enables streaming of reasoning text (only encrypted_content is valid)
+        body["include"] = serde_json::json!(["reasoning.encrypted_content"]);
+
+        body
+    }
+
+    /// Build the appropriate request body based on model
+    fn build_request_body(
+        &self,
+        messages: &[Message],
+        config: &RequestConfig,
+    ) -> serde_json::Value {
+        if uses_responses_api(&config.model) {
+            self.build_responses_request_body(messages, config)
+        } else {
+            self.build_chat_request_body(messages, config)
+        }
+    }
+}
+
+impl AiClient for OpenAiClient {
+    fn provider(&self) -> AiProvider {
+        AiProvider::OpenAI
+    }
+
+    async fn stream(
+        &self,
+        messages: &[Message],
+        config: &RequestConfig,
+    ) -> Result<mpsc::UnboundedReceiver<StreamEvent>> {
+        let (tx, rx) = mpsc::unbounded_channel();
+
+        // Build request body
+        let body = self.build_request_body(messages, config);
+
+        // Get the appropriate API URL for this model
+        let api_url = api_url_for_model(&config.model);
+
+        // Make request
+        let response = self
+            .client
+            .post(api_url)
+            .headers(self.headers())
+            .json(&body)
+            .send()
+            .await
+            .context("Failed to send request to OpenAI API")?;
+
+        // Check for errors
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            let _ = tx.send(StreamEvent::Error {
+                message: format!("API error {status}: {error_text}"),
+            });
+            return Ok(rx);
+        }
+
+        // Spawn task to process SSE stream
+        let model = config.model.clone();
+        let is_responses_api = uses_responses_api(&config.model);
+
+        if is_responses_api {
+            // Use eventsource-stream for proper SSE parsing (Responses API)
+            let stream = response.bytes_stream();
+            tokio::spawn(async move {
+                let mut sse_stream = stream
+                    .map(|result| result.map_err(std::io::Error::other))
+                    .eventsource();
+
+                let mut content_started = false;
+                let mut received_streaming_text = false; // Track if we got text via streaming deltas
+                let mut tool_call_index = 1; // Start at 1, reserve 0 for text content
+
+                while let Some(event_result) = sse_stream.next().await {
+                    match event_result {
+                        Ok(sse) => {
+                            // Parse the SSE data as JSON
+                            let event: ResponsesSseEvent = match serde_json::from_str(&sse.data) {
+                                Ok(e) => e,
+                                Err(_) => continue,
+                            };
+
+                            match event.kind.as_str() {
+                                "response.created" => {
+                                    if let Some(resp) = &event.response {
+                                        if let Some(id) = resp.get("id").and_then(|v| v.as_str()) {
+                                            let _ = tx.send(StreamEvent::MessageStart {
+                                                id: id.to_string(),
+                                                model: model.clone(),
+                                            });
+                                        }
+                                    }
+                                }
+                                // Reasoning/thinking events - stream as thinking deltas
+                                "response.reasoning_summary_text.delta"
+                                | "response.reasoning_text.delta" => {
+                                    if let Some(delta) = &event.delta {
+                                        let _ = tx.send(StreamEvent::ThinkingDelta {
+                                            index: 0,
+                                            thinking: delta.clone(),
+                                        });
+                                    }
+                                }
+                                "response.output_item.added" | "response.content_part.added" => {
+                                    // Check if this is a message item (not reasoning)
+                                    if let Some(item) = &event.item {
+                                        let item_type = item.get("type").and_then(|v| v.as_str());
+                                        if item_type == Some("message") && !content_started {
+                                            content_started = true;
+                                            let _ = tx.send(StreamEvent::ContentBlockStart {
+                                                index: 0,
+                                                block: ContentBlock::Text {
+                                                    text: String::new(),
+                                                },
+                                            });
+                                        }
+                                    }
+                                }
+                                "response.output_item.done" => {
+                                    if let Some(item) = &event.item {
+                                        // Check if this is a function call
+                                        if let Some((call_id, name, arguments)) =
+                                            extract_function_call(item)
+                                        {
+                                            // Emit tool use block
+                                            let tool_index = tool_call_index;
+                                            tool_call_index += 1;
+
+                                            let _ = tx.send(StreamEvent::ContentBlockStart {
+                                                index: tool_index,
+                                                block: ContentBlock::ToolUse {
+                                                    id: call_id.clone(),
+                                                    name: name.clone(),
+                                                    input: arguments.clone(),
+                                                },
+                                            });
+
+                                            let _ = tx.send(StreamEvent::ContentBlockStop {
+                                                index: tool_index,
+                                                thinking_signature: None,
+                                            });
+                                        }
+                                        // Only extract text as fallback if we didn't receive streaming deltas
+                                        else if !received_streaming_text {
+                                            if let Some(text) = extract_text_from_item(item) {
+                                                if !content_started {
+                                                    content_started = true;
+                                                    let _ =
+                                                        tx.send(StreamEvent::ContentBlockStart {
+                                                            index: 0,
+                                                            block: ContentBlock::Text {
+                                                                text: String::new(),
+                                                            },
+                                                        });
+                                                }
+                                                let _ = tx.send(StreamEvent::TextDelta {
+                                                    index: 0,
+                                                    text,
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                                // Handle streaming function call arguments
+                                "response.function_call_arguments.delta" => {
+                                    if let Some(delta) = &event.delta {
+                                        // Get or create tool call index
+                                        let idx = event.output_index.unwrap_or(0) as usize;
+                                        let tool_idx = idx + 1; // Reserve 0 for text
+
+                                        let _ = tx.send(StreamEvent::InputJsonDelta {
+                                            index: tool_idx,
+                                            partial_json: delta.clone(),
+                                        });
+                                    }
+                                }
+                                "response.output_text.delta" => {
+                                    received_streaming_text = true; // Mark that we're receiving streaming text
+                                    if !content_started {
+                                        content_started = true;
+                                        let _ = tx.send(StreamEvent::ContentBlockStart {
+                                            index: 0,
+                                            block: ContentBlock::Text {
+                                                text: String::new(),
+                                            },
+                                        });
+                                    }
+                                    if let Some(delta) = &event.delta {
+                                        let _ = tx.send(StreamEvent::TextDelta {
+                                            index: 0,
+                                            text: delta.clone(),
+                                        });
+                                    }
+                                }
+                                "response.output_text.done" => {
+                                    // Text content finished - but don't stop yet, more might come
+                                }
+                                "response.completed" => {
+                                    // Now close the content block
+                                    if content_started {
+                                        let _ = tx.send(StreamEvent::ContentBlockStop {
+                                            index: 0,
+                                            thinking_signature: None,
+                                        });
+                                    }
+                                    // Extract usage from response if present
+                                    if let Some(resp) = &event.response {
+                                        if let Some(usage) = resp.get("usage") {
+                                            let input = usage
+                                                .get("input_tokens")
+                                                .and_then(serde_json::Value::as_u64)
+                                                .unwrap_or(0);
+                                            let output = usage
+                                                .get("output_tokens")
+                                                .and_then(serde_json::Value::as_u64)
+                                                .unwrap_or(0);
+                                            // Extract cached tokens from input_tokens_details
+                                            let cache_read = usage
+                                                .get("input_tokens_details")
+                                                .and_then(|d| d.get("cached_tokens"))
+                                                .and_then(serde_json::Value::as_u64);
+                                            // Extract reasoning tokens from output_tokens_details
+                                            let _reasoning_tokens = usage
+                                                .get("output_tokens_details")
+                                                .and_then(|d| d.get("reasoning_tokens"))
+                                                .and_then(serde_json::Value::as_u64);
+                                            let _ = tx.send(StreamEvent::Usage {
+                                                input_tokens: input,
+                                                output_tokens: output,
+                                                cache_read_tokens: cache_read,
+                                                cache_creation_tokens: None,
+                                            });
+                                        }
+                                    }
+                                    let _ = tx.send(StreamEvent::MessageStop { stop_reason: None });
+                                    return;
+                                }
+                                "response.failed" => {
+                                    // Classify the error for proper handling
+                                    let (error_msg, _api_error) = if let Some(resp) =
+                                        &event.response
+                                    {
+                                        if let Some(error) = resp.get("error") {
+                                            let classified = classify_error(error);
+                                            let msg = match &classified {
+                                                ApiError::ContextWindowExceeded => {
+                                                    "Context window exceeded - message too long"
+                                                        .to_string()
+                                                }
+                                                ApiError::QuotaExceeded => {
+                                                    "API quota exceeded - check your billing"
+                                                        .to_string()
+                                                }
+                                                ApiError::RateLimited { retry_after } => {
+                                                    if let Some(delay) = retry_after {
+                                                        format!(
+                                                            "Rate limited - retry after {delay:?}"
+                                                        )
+                                                    } else {
+                                                        "Rate limited - please try again"
+                                                            .to_string()
+                                                    }
+                                                }
+                                                ApiError::Retryable { message } => message.clone(),
+                                                ApiError::Fatal { message } => message.clone(),
+                                            };
+                                            (msg, Some(classified))
+                                        } else {
+                                            ("Unknown error".to_string(), None)
+                                        }
+                                    } else {
+                                        ("Unknown error".to_string(), None)
+                                    };
+
+                                    let _ = tx.send(StreamEvent::Error { message: error_msg });
+                                    return;
+                                }
+                                _ => {
+                                    // Unknown event type, ignore
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            let _ = tx.send(StreamEvent::Error {
+                                message: format!("SSE stream error: {e}"),
+                            });
+                            return;
+                        }
+                    }
+                }
+
+                // Stream ended without response.completed
+                let _ = tx.send(StreamEvent::MessageStop { stop_reason: None });
+            });
+        } else {
+            // Chat Completions API - uses simpler line-based SSE
+            let mut stream = response.bytes_stream();
+            tokio::spawn(async move {
+                let mut buffer = String::new();
+                let mut message_id = String::new();
+                let mut current_tool_calls: Vec<ToolCallAccumulator> = Vec::new();
+                let mut content_started = false;
+
+                while let Some(chunk) = stream.next().await {
+                    match chunk {
+                        Ok(bytes) => {
+                            buffer.push_str(&String::from_utf8_lossy(&bytes));
+
+                            // Process complete SSE lines
+                            while let Some(pos) = buffer.find('\n') {
+                                let line = buffer[..pos].trim().to_string();
+                                buffer = buffer[pos + 1..].to_string();
+
+                                if line.is_empty() {
+                                    continue;
+                                }
+
+                                if line == "data: [DONE]" {
+                                    // Flush any completed tool calls
+                                    for (idx, call) in current_tool_calls.iter().enumerate() {
+                                        if !call.name.is_empty()
+                                            && !call.arguments.trim().is_empty()
+                                        {
+                                            let block_idx = idx + 1; // reserve 0 for text
+                                            let _ = tx.send(StreamEvent::ContentBlockStart {
+                                                index: block_idx,
+                                                block: ContentBlock::ToolUse {
+                                                    id: call.id.clone(),
+                                                    name: call.name.clone(),
+                                                    input: serde_json::from_str(&call.arguments)
+                                                        .unwrap_or(serde_json::json!({})),
+                                                },
+                                            });
+                                            let _ = tx.send(StreamEvent::InputJsonDelta {
+                                                index: block_idx,
+                                                partial_json: call.arguments.clone(),
+                                            });
+                                            let _ = tx.send(StreamEvent::ContentBlockStop {
+                                                index: block_idx,
+                                                thinking_signature: None,
+                                            });
+                                        }
+                                    }
+                                    let _ = tx.send(StreamEvent::MessageStop { stop_reason: None });
+                                    return;
+                                }
+
+                                if let Some(data) = line.strip_prefix("data: ") {
+                                    if let Ok(chunk) = serde_json::from_str::<OpenAiChunk>(data) {
+                                        if message_id.is_empty() {
+                                            message_id = chunk.id.clone();
+                                            let _ = tx.send(StreamEvent::MessageStart {
+                                                id: chunk.id.clone(),
+                                                model: model.clone(),
+                                            });
+                                        }
+
+                                        for choice in &chunk.choices {
+                                            if let Some(content) = &choice.delta.content {
+                                                if !content_started {
+                                                    content_started = true;
+                                                    let _ =
+                                                        tx.send(StreamEvent::ContentBlockStart {
+                                                            index: 0,
+                                                            block: ContentBlock::Text {
+                                                                text: String::new(),
+                                                            },
+                                                        });
+                                                }
+                                                let _ = tx.send(StreamEvent::TextDelta {
+                                                    index: 0,
+                                                    text: content.clone(),
+                                                });
+                                            }
+
+                                            if let Some(tool_calls) = &choice.delta.tool_calls {
+                                                for tc in tool_calls {
+                                                    let idx = tc.index.unwrap_or(0);
+
+                                                    while current_tool_calls.len() <= idx {
+                                                        current_tool_calls.push(
+                                                            ToolCallAccumulator {
+                                                                id: String::new(),
+                                                                name: String::new(),
+                                                                arguments: String::new(),
+                                                            },
+                                                        );
+                                                    }
+
+                                                    if let Some(id) = &tc.id {
+                                                        current_tool_calls[idx].id = id.clone();
+                                                    }
+                                                    if let Some(func) = &tc.function {
+                                                        if let Some(name) = &func.name {
+                                                            current_tool_calls[idx].name =
+                                                                name.clone();
+                                                        }
+                                                        if let Some(args) = &func.arguments {
+                                                            current_tool_calls[idx]
+                                                                .arguments
+                                                                .push_str(args);
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            if choice.finish_reason.is_some() {
+                                                if content_started && current_tool_calls.is_empty()
+                                                {
+                                                    let _ =
+                                                        tx.send(StreamEvent::ContentBlockStop {
+                                                            index: 0,
+                                                            thinking_signature: None,
+                                                        });
+                                                }
+                                                // On tool_calls finish, flush completed tool calls
+                                                if choice.finish_reason.as_deref()
+                                                    == Some("tool_calls")
+                                                {
+                                                    for (idx, call) in
+                                                        current_tool_calls.iter().enumerate()
+                                                    {
+                                                        if call.name.is_empty()
+                                                            || call.arguments.trim().is_empty()
+                                                        {
+                                                            continue;
+                                                        }
+                                                        let block_idx = idx + 1; // reserve 0 for text
+                                                        let _ = tx.send(
+                                                            StreamEvent::ContentBlockStart {
+                                                                index: block_idx,
+                                                                block: ContentBlock::ToolUse {
+                                                                    id: call.id.clone(),
+                                                                    name: call.name.clone(),
+                                                                    input: serde_json::from_str(
+                                                                        &call.arguments,
+                                                                    )
+                                                                    .unwrap_or(
+                                                                        serde_json::json!({}),
+                                                                    ),
+                                                                },
+                                                            },
+                                                        );
+                                                        let _ =
+                                                            tx.send(StreamEvent::InputJsonDelta {
+                                                                index: block_idx,
+                                                                partial_json: call
+                                                                    .arguments
+                                                                    .clone(),
+                                                            });
+                                                        let _ = tx.send(
+                                                            StreamEvent::ContentBlockStop {
+                                                                index: block_idx,
+                                                                thinking_signature: None,
+                                                            },
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        if let Some(usage) = &chunk.usage {
+                                            let _ = tx.send(StreamEvent::Usage {
+                                                input_tokens: usage.prompt_tokens.unwrap_or(0),
+                                                output_tokens: usage.completion_tokens.unwrap_or(0),
+                                                cache_read_tokens: usage
+                                                    .prompt_tokens_details
+                                                    .as_ref()
+                                                    .and_then(|d| d.cached_tokens),
+                                                cache_creation_tokens: None,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            let _ = tx.send(StreamEvent::Error {
+                                message: format!("Stream error: {e}"),
+                            });
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+
+        Ok(rx)
+    }
+}
+
+// ============================================================================
+// OpenAI API Types
+// ============================================================================
+//
+// These types represent the OpenAI Chat Completions API request/response format.
+// They use serde for serialization (requests) and deserialization (responses).
+//
+// # Serde Serialization Attributes
+//
+// - `#[serde(skip_serializing_if = "Option::is_none")]`: Omit null fields from JSON
+// - `#[serde(untagged)]`: Serialize enum as the inner type (no type field)
+// - `#[serde(tag = "type")]`: Add a type discriminator field for enums
+
+/// Message in `OpenAI` format (role + content)
+///
+/// # Serde Conditional Serialization
+///
+/// Fields marked with `skip_serializing_if` are omitted from JSON if None:
+///
+/// ```rust,ignore
+/// #[serde(skip_serializing_if = "Option::is_none")]
+/// tool_calls: Option<Vec<OpenAiToolCall>>,
+/// ```
+///
+/// This generates cleaner JSON - `{"role": "user", "content": "Hi"}` instead
+/// of `{"role": "user", "content": "Hi", "tool_calls": null}`.
+#[derive(Debug, Serialize)]
+struct OpenAiMessage {
+    role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<OpenAiContent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<OpenAiToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<String>,
+    /// Tool name - required by Mistral for tool results
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+}
+
+/// Content can be either simple text or structured parts
+///
+/// # Serde Untagged Enum
+///
+/// The `#[serde(untagged)]` attribute means this enum serializes without
+/// a type discriminator. Instead, serde tries each variant in order:
+///
+/// ```json
+/// "Hello"                              -> Text("Hello")
+/// [{"type": "text", "text": "Hi"}]     -> Parts([...])
+/// ```
+///
+/// This matches `OpenAI`'s API which accepts both formats.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum OpenAiContent {
+    Text(String),
+    Parts(Vec<OpenAiContentPart>),
+}
+
+/// Content part (text or image) in a multi-part message
+///
+/// # Serde Tagged Enum
+///
+/// Unlike `OpenAiContent` (untagged), this uses `tag = "type"` to add
+/// a discriminator field:
+///
+/// ```json
+/// {"type": "text", "text": "Hello"}
+/// {"type": "image_url", "image_url": {"url": "..."}}
+/// ```
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum OpenAiContentPart {
+    Text { text: String },
+    ImageUrl { image_url: ImageUrlData },
+}
+
+#[derive(Debug, Serialize)]
+struct ImageUrlData {
+    url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAiTool {
+    #[serde(rename = "type")]
+    tool_type: String,
+    function: OpenAiFunction,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAiFunction {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parameters: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct OpenAiToolCall {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    index: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    function: Option<OpenAiFunctionCall>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct OpenAiFunctionCall {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    arguments: Option<String>,
+}
+
+// Streaming response types
+#[derive(Debug, Deserialize)]
+struct OpenAiChunk {
+    id: String,
+    #[allow(dead_code)]
+    object: String,
+    #[allow(dead_code)]
+    created: u64,
+    #[allow(dead_code)]
+    model: String,
+    choices: Vec<OpenAiChoice>,
+    #[serde(default)]
+    usage: Option<OpenAiUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiChoice {
+    #[allow(dead_code)]
+    index: usize,
+    delta: OpenAiDelta,
+    #[serde(default)]
+    finish_reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiDelta {
+    /// Role of the message (typically "assistant" for streaming responses)
+    #[serde(default)]
+    #[allow(dead_code)] // Part of API structure, role is implicit in streaming context
+    role: Option<String>,
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    tool_calls: Option<Vec<OpenAiToolCall>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiUsage {
+    prompt_tokens: Option<u64>,
+    completion_tokens: Option<u64>,
+    #[serde(default)]
+    prompt_tokens_details: Option<PromptTokensDetails>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PromptTokensDetails {
+    cached_tokens: Option<u64>,
+}
+
+/// Accumulator for building tool calls from streaming deltas
+///
+/// # Problem
+///
+/// In Chat Completions API, tool calls arrive as incremental deltas:
+///
+/// ```json
+/// {"index": 0, "id": "call_123"}
+/// {"index": 0, "function": {"name": "read"}}
+/// {"index": 0, "function": {"arguments": "{\"pa"}}
+/// {"index": 0, "function": {"arguments": "th\":"}}
+/// {"index": 0, "function": {"arguments": "\"/tmp\""}}
+/// {"index": 0, "function": {"arguments": "}"}}
+/// ```
+///
+/// # Solution
+///
+/// This struct accumulates the fragments into complete tool calls.
+/// We maintain a `Vec<ToolCallAccumulator>` indexed by the `index` field,
+/// appending to the appropriate accumulator as deltas arrive.
+///
+/// Once the stream completes, we serialize the complete tool calls.
+struct ToolCallAccumulator {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_provider_detection() {
+        assert_eq!(
+            AiProvider::from_model("gpt-5.1-codex-max"),
+            AiProvider::OpenAI
+        );
+        assert_eq!(AiProvider::from_model("gpt-4o"), AiProvider::OpenAI);
+        assert_eq!(
+            AiProvider::from_model("claude-opus-4-5-20251101"),
+            AiProvider::Anthropic
+        );
+        assert_eq!(
+            AiProvider::from_model("claude-sonnet-4-5"),
+            AiProvider::Anthropic
+        );
+    }
+
+    #[test]
+    fn test_uses_responses_api() {
+        // gpt-5.1-codex-* should use Responses API
+        assert!(uses_responses_api("gpt-5.1-codex-max"));
+        assert!(uses_responses_api("gpt-5.1-codex-lite"));
+        // o3 models use Responses API
+        assert!(uses_responses_api("o3"));
+        assert!(uses_responses_api("o3-mini"));
+        // Other models should not
+        assert!(!uses_responses_api("gpt-4o"));
+        assert!(!uses_responses_api("gpt-4-turbo"));
+        assert!(!uses_responses_api("o1"));
+    }
+
+    #[test]
+    fn test_api_url_selection() {
+        // Responses API models go to /v1/responses
+        assert_eq!(
+            api_url_for_model("gpt-5.1-codex-max"),
+            "https://api.openai.com/v1/responses"
+        );
+        // Chat Completions models go to /v1/chat/completions
+        assert_eq!(
+            api_url_for_model("gpt-4o"),
+            "https://api.openai.com/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn test_has_incompatible_schema() {
+        // Simple schema is compatible
+        let simple = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"}
+            }
+        });
+        assert!(!has_incompatible_schema(&simple));
+
+        // oneOf is incompatible
+        let one_of = serde_json::json!({
+            "oneOf": [
+                {"type": "string"},
+                {"type": "number"}
+            ]
+        });
+        assert!(has_incompatible_schema(&one_of));
+
+        // anyOf is incompatible
+        let any_of = serde_json::json!({
+            "anyOf": [
+                {"type": "string"},
+                {"type": "number"}
+            ]
+        });
+        assert!(has_incompatible_schema(&any_of));
+
+        // allOf is incompatible
+        let all_of = serde_json::json!({
+            "allOf": [
+                {"type": "object"},
+                {"properties": {"x": {"type": "number"}}}
+            ]
+        });
+        assert!(has_incompatible_schema(&all_of));
+
+        // Top-level enum is incompatible
+        let top_enum = serde_json::json!({
+            "enum": ["a", "b", "c"]
+        });
+        assert!(has_incompatible_schema(&top_enum));
+    }
+
+    #[test]
+    fn test_filter_responses_api_tools() {
+        let tools = vec![
+            Tool::new("read", "Read a file").with_schema(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"}
+                }
+            })),
+            Tool::new("", "Empty name tool") // Should be filtered out
+                .with_schema(serde_json::json!({})),
+            Tool::new("bad", "Has oneOf").with_schema(serde_json::json!({
+                "oneOf": [{"type": "string"}, {"type": "number"}]
+            })),
+        ];
+
+        let filtered = filter_responses_api_tools(&tools);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name, "read");
+    }
+
+    #[test]
+    fn test_extract_function_call() {
+        // Valid function call
+        let valid = serde_json::json!({
+            "type": "function_call",
+            "call_id": "call_123",
+            "name": "read",
+            "arguments": "{\"path\": \"/tmp/test.txt\"}"
+        });
+        let result = extract_function_call(&valid);
+        assert!(result.is_some());
+        let (call_id, name, args) = result.unwrap();
+        assert_eq!(call_id, "call_123");
+        assert_eq!(name, "read");
+        assert_eq!(args, serde_json::json!({ "path": "/tmp/test.txt" }));
+
+        // Arguments can arrive as an object
+        let object_args = serde_json::json!({
+            "type": "function_call",
+            "call_id": "call_456",
+            "name": "read",
+            "arguments": { "path": "/tmp/other.txt" }
+        });
+        let result = extract_function_call(&object_args);
+        assert!(result.is_some());
+        let (_, _, args) = result.unwrap();
+        assert_eq!(args, serde_json::json!({ "path": "/tmp/other.txt" }));
+
+        // Invalid JSON strings fall back to empty object
+        let invalid_args = serde_json::json!({
+            "type": "function_call",
+            "call_id": "call_789",
+            "name": "read",
+            "arguments": "{not-json}"
+        });
+        let result = extract_function_call(&invalid_args);
+        assert!(result.is_some());
+        let (_, _, args) = result.unwrap();
+        assert_eq!(args, serde_json::json!({}));
+
+        // Null arguments are treated as empty object
+        let null_args = serde_json::json!({
+            "type": "function_call",
+            "call_id": "call_999",
+            "name": "read",
+            "arguments": null
+        });
+        let result = extract_function_call(&null_args);
+        assert!(result.is_some());
+        let (_, _, args) = result.unwrap();
+        assert_eq!(args, serde_json::json!({}));
+
+        // Not a function call
+        let message = serde_json::json!({
+            "type": "message",
+            "content": "Hello"
+        });
+        assert!(extract_function_call(&message).is_none());
+
+        // Missing fields
+        let incomplete = serde_json::json!({
+            "type": "function_call",
+            "name": "read"
+        });
+        assert!(extract_function_call(&incomplete).is_none());
+    }
+
+    #[test]
+    fn test_extract_text_from_item() {
+        // Message with output_text content
+        let msg = serde_json::json!({
+            "type": "message",
+            "content": [
+                {
+                    "type": "output_text",
+                    "text": "Hello, world!"
+                }
+            ]
+        });
+        let text = extract_text_from_item(&msg);
+        assert_eq!(text, Some("Hello, world!".to_string()));
+
+        // Message with no content
+        let empty = serde_json::json!({
+            "type": "message",
+            "content": []
+        });
+        assert!(extract_text_from_item(&empty).is_none());
+
+        // Not a message
+        let other = serde_json::json!({
+            "type": "function_call"
+        });
+        assert!(extract_text_from_item(&other).is_none());
+    }
+
+    #[test]
+    fn test_classify_error() {
+        // Context length exceeded
+        let ctx_error = serde_json::json!({
+            "code": "context_length_exceeded",
+            "message": "Maximum context length exceeded"
+        });
+        match classify_error(&ctx_error) {
+            ApiError::ContextWindowExceeded => {}
+            _ => panic!("Expected ContextWindowExceeded"),
+        }
+
+        // Quota exceeded
+        let quota_error = serde_json::json!({
+            "code": "insufficient_quota",
+            "message": "You exceeded your quota"
+        });
+        match classify_error(&quota_error) {
+            ApiError::QuotaExceeded => {}
+            _ => panic!("Expected QuotaExceeded"),
+        }
+
+        // Rate limited
+        let rate_error = serde_json::json!({
+            "code": "rate_limit_exceeded",
+            "message": "Rate limit exceeded"
+        });
+        match classify_error(&rate_error) {
+            ApiError::RateLimited { .. } => {}
+            _ => panic!("Expected RateLimited"),
+        }
+
+        // Unknown error without retryable keywords is Fatal
+        let generic = serde_json::json!({
+            "code": "something_else",
+            "message": "Something went wrong"
+        });
+        match classify_error(&generic) {
+            ApiError::Fatal { message } => {
+                assert_eq!(message, "Something went wrong");
+            }
+            _ => panic!("Expected Fatal for unknown errors"),
+        }
+
+        // Error with "temporarily" keyword is Retryable
+        let temp_error = serde_json::json!({
+            "code": "some_error",
+            "message": "The service is temporarily unavailable"
+        });
+        match classify_error(&temp_error) {
+            ApiError::Retryable { .. } => {}
+            _ => panic!("Expected Retryable for temporary errors"),
+        }
+
+        // Error with "overloaded" keyword is Retryable
+        let overload_error = serde_json::json!({
+            "code": "some_error",
+            "message": "Server is overloaded, please retry"
+        });
+        match classify_error(&overload_error) {
+            ApiError::Retryable { .. } => {}
+            _ => panic!("Expected Retryable for overload errors"),
+        }
+
+        // Server error type is Retryable
+        let server_error = serde_json::json!({
+            "type": "server_error",
+            "message": "Internal server error"
+        });
+        match classify_error(&server_error) {
+            ApiError::Retryable { .. } => {}
+            _ => panic!("Expected Retryable for server errors"),
+        }
+
+        // Authentication error is Fatal
+        let auth_error = serde_json::json!({
+            "type": "authentication_error",
+            "message": "Invalid API key"
+        });
+        match classify_error(&auth_error) {
+            ApiError::Fatal { .. } => {}
+            _ => panic!("Expected Fatal for auth errors"),
+        }
+
+        // Invalid API key is Fatal
+        let invalid_key = serde_json::json!({
+            "code": "invalid_api_key",
+            "message": "Provided API key is invalid"
+        });
+        match classify_error(&invalid_key) {
+            ApiError::Fatal { .. } => {}
+            _ => panic!("Expected Fatal for invalid API key"),
+        }
+    }
+
+    #[test]
+    fn test_parse_retry_after() {
+        // Seconds
+        let secs = parse_retry_after("Please try again in 30s");
+        assert!(secs.is_some());
+        assert_eq!(secs.unwrap(), std::time::Duration::from_secs(30));
+
+        // Milliseconds
+        let ms = parse_retry_after("Try again in 500ms");
+        assert!(ms.is_some());
+        assert_eq!(ms.unwrap(), std::time::Duration::from_millis(500));
+
+        // Float seconds
+        let float = parse_retry_after("try again in 2.5s");
+        assert!(float.is_some());
+        assert_eq!(float.unwrap(), std::time::Duration::from_secs_f64(2.5));
+
+        // No retry-after info
+        let none = parse_retry_after("Rate limit exceeded");
+        assert!(none.is_none());
+    }
+
+    #[test]
+    fn test_responses_sse_event_parsing() {
+        // Test parsing response.created event
+        let created_data = r#"{"type":"response.created","response":{"id":"resp_123"}}"#;
+        let event: ResponsesSseEvent = serde_json::from_str(created_data).unwrap();
+        assert_eq!(event.kind, "response.created");
+        assert!(event.response.is_some());
+        let resp = event.response.unwrap();
+        assert_eq!(resp.get("id").unwrap().as_str().unwrap(), "resp_123");
+
+        // Test parsing output_text.delta event
+        let delta_data = r#"{"type":"response.output_text.delta","delta":"Hello"}"#;
+        let event: ResponsesSseEvent = serde_json::from_str(delta_data).unwrap();
+        assert_eq!(event.kind, "response.output_text.delta");
+        assert_eq!(event.delta, Some("Hello".to_string()));
+
+        // Test parsing output_item.done event
+        let done_data =
+            r#"{"type":"response.output_item.done","item":{"type":"message","content":[]}}"#;
+        let event: ResponsesSseEvent = serde_json::from_str(done_data).unwrap();
+        assert_eq!(event.kind, "response.output_item.done");
+        assert!(event.item.is_some());
+    }
+
+    #[test]
+    fn test_responses_sse_event_defaults() {
+        // Missing optional fields should default to None
+        let minimal = r#"{"type":"response.created"}"#;
+        let event: ResponsesSseEvent = serde_json::from_str(minimal).unwrap();
+        assert_eq!(event.kind, "response.created");
+        assert!(event.response.is_none());
+        assert!(event.item.is_none());
+        assert!(event.delta.is_none());
+        assert!(event.output_index.is_none());
+    }
+
+    #[test]
+    fn test_is_context_overflow_error() {
+        // Anthropic pattern
+        assert!(is_context_overflow_error(
+            "prompt is too long: 213462 tokens > 200000 maximum"
+        ));
+
+        // OpenAI pattern
+        assert!(is_context_overflow_error(
+            "Your input exceeds the context window of this model"
+        ));
+
+        // Google Gemini pattern
+        assert!(is_context_overflow_error(
+            "The input token count (1196265) exceeds the maximum number of tokens allowed (1048575)"
+        ));
+
+        // xAI (Grok) pattern
+        assert!(is_context_overflow_error(
+            "This model's maximum prompt length is 131072 but the request contains 537812 tokens"
+        ));
+
+        // Groq pattern
+        assert!(is_context_overflow_error(
+            "Please reduce the length of the messages or completion"
+        ));
+
+        // OpenRouter pattern
+        assert!(is_context_overflow_error(
+            "This endpoint's maximum context length is 128000 tokens"
+        ));
+
+        // llama.cpp pattern
+        assert!(is_context_overflow_error(
+            "the request exceeds the available context size"
+        ));
+
+        // LM Studio pattern
+        assert!(is_context_overflow_error(
+            "tokens to keep from the initial prompt is greater than the context length"
+        ));
+
+        // Cerebras/Mistral 400 status code
+        assert!(is_context_overflow_error("400 status code (no body)"));
+        assert!(is_context_overflow_error("413 (no body)"));
+
+        // Generic patterns
+        assert!(is_context_overflow_error("context length exceeded"));
+        assert!(is_context_overflow_error("too many tokens in request"));
+        assert!(is_context_overflow_error("token limit exceeded"));
+
+        // Non-overflow errors should return false
+        assert!(!is_context_overflow_error("Rate limit exceeded"));
+        assert!(!is_context_overflow_error("Invalid API key"));
+        assert!(!is_context_overflow_error("Server error"));
+    }
+
+    #[test]
+    fn test_is_mistral_model() {
+        // Mistral models by name
+        assert!(is_mistral_model("mistral-large", None));
+        assert!(is_mistral_model("mistral-small", None));
+        assert!(is_mistral_model("mixtral-8x7b", None));
+        assert!(is_mistral_model("codestral", None));
+        assert!(is_mistral_model("pixtral-12b", None));
+
+        // Case insensitive
+        assert!(is_mistral_model("Mistral-Large", None));
+        assert!(is_mistral_model("MIXTRAL-8x22b", None));
+
+        // By base URL
+        assert!(is_mistral_model(
+            "some-model",
+            Some("https://api.mistral.ai/v1")
+        ));
+
+        // Non-Mistral models
+        assert!(!is_mistral_model("gpt-4o", None));
+        assert!(!is_mistral_model("claude-opus-4-5", None));
+        assert!(!is_mistral_model("llama-3.1", None));
+    }
+
+    #[test]
+    fn test_is_groq_model() {
+        // Explicit groq/ prefix
+        assert!(is_groq_model("groq/llama-3.1-70b", None));
+        assert!(is_groq_model("groq/mixtral-8x7b", None));
+
+        // By base URL
+        assert!(is_groq_model(
+            "some-model",
+            Some("https://api.groq.com/openai/v1")
+        ));
+
+        // Llama models
+        assert!(is_groq_model("llama-3.1-70b-versatile", None));
+        assert!(is_groq_model("llama3-8b-8192", None));
+        assert!(is_groq_model("llama-guard-3-8b", None));
+
+        // DeepSeek models
+        assert!(is_groq_model("deepseek-r1-distill-llama-70b", None));
+
+        // Qwen models
+        assert!(is_groq_model("qwen-2.5-coder-32b", None));
+
+        // Case insensitive
+        assert!(is_groq_model("Llama-3.1-8B", None));
+        assert!(is_groq_model("GROQ/llama", None));
+
+        // Non-Groq models
+        assert!(!is_groq_model("gpt-4o", None));
+        assert!(!is_groq_model("claude-opus-4-5", None));
+        assert!(!is_groq_model("gemini-pro", None));
+    }
+
+    #[test]
+    fn test_normalize_mistral_tool_id() {
+        // Already valid 9-char alphanumeric
+        assert_eq!(normalize_mistral_tool_id("abcdefghi"), "abcdefghi");
+
+        // Too short - should pad with zeros
+        assert_eq!(normalize_mistral_tool_id("abc"), "abc000000");
+        assert_eq!(normalize_mistral_tool_id("a"), "a00000000");
+
+        // Too long - should truncate
+        assert_eq!(normalize_mistral_tool_id("abcdefghijklm"), "abcdefghi");
+
+        // Contains non-alphanumeric - should remove them
+        assert_eq!(normalize_mistral_tool_id("call_abc123"), "callabc12");
+        assert_eq!(normalize_mistral_tool_id("a-b-c-d-e"), "abcde0000");
+
+        // UUID-like IDs
+        assert_eq!(
+            normalize_mistral_tool_id("550e8400-e29b-41d4-a716-446655440000"),
+            "550e8400e"
+        );
+    }
+
+    #[test]
+    fn test_classify_error_with_overflow_patterns() {
+        // Test that classify_error detects overflow from message patterns
+        // even without the specific error code
+
+        // Anthropic-style message without code
+        let anthropic_overflow = serde_json::json!({
+            "message": "prompt is too long: 213462 tokens > 200000 maximum"
+        });
+        match classify_error(&anthropic_overflow) {
+            ApiError::ContextWindowExceeded => {}
+            _ => panic!("Expected ContextWindowExceeded"),
+        }
+
+        // OpenRouter-style message
+        let openrouter_overflow = serde_json::json!({
+            "message": "This endpoint's maximum context length is 128000 tokens"
+        });
+        match classify_error(&openrouter_overflow) {
+            ApiError::ContextWindowExceeded => {}
+            _ => panic!("Expected ContextWindowExceeded"),
+        }
+
+        // Cerebras/Mistral 400 with no body
+        let status_overflow = serde_json::json!({
+            "message": "400 status code (no body)"
+        });
+        match classify_error(&status_overflow) {
+            ApiError::ContextWindowExceeded => {}
+            _ => panic!("Expected ContextWindowExceeded"),
+        }
+    }
+}

@@ -1,0 +1,26 @@
+{
+	"name": "@evalops/memory",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"sideEffects": false,
+	"exports": {
+		".": {
+			"types": "./gen/proto/dist/memory/v1/memory_pb.d.ts",
+			"import": "./gen/proto/dist/memory/v1/memory_pb.js"
+		},
+		"./memory/v1/memory_pb": {
+			"types": "./gen/proto/dist/memory/v1/memory_pb.d.ts",
+			"import": "./gen/proto/dist/memory/v1/memory_pb.js"
+		},
+		"./client": {
+			"types": "./dist/client.d.ts",
+			"import": "./dist/client.js"
+		},
+		"./package.json": "./package.json"
+	},
+	"types": "./gen/proto/dist/memory/v1/memory_pb.d.ts",
+	"dependencies": {
+		"@bufbuild/protobuf": "^2.11.0"
+	}
+}

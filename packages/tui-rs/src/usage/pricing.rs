@@ -1,0 +1,368 @@
+//! Model pricing configuration
+//!
+//! Provides per-model token pricing for cost estimation.
+
+use std::collections::HashMap;
+
+/// Pricing tier for a model
+#[derive(Debug, Clone, Copy)]
+pub struct PricingTier {
+    /// Cost per 1M input tokens in USD
+    pub input_per_million: f64,
+    /// Cost per 1M output tokens in USD
+    pub output_per_million: f64,
+    /// Cost per 1M cached read tokens (typically discounted)
+    pub cache_read_per_million: f64,
+    /// Cost per 1M cached write tokens
+    pub cache_write_per_million: f64,
+}
+
+impl PricingTier {
+    /// Create a new pricing tier
+    #[must_use]
+    pub const fn new(input: f64, output: f64, cache_read: f64, cache_write: f64) -> Self {
+        Self {
+            input_per_million: input,
+            output_per_million: output,
+            cache_read_per_million: cache_read,
+            cache_write_per_million: cache_write,
+        }
+    }
+
+    /// Create tier with just input/output pricing (cache = 0)
+    #[must_use]
+    pub const fn simple(input: f64, output: f64) -> Self {
+        Self::new(input, output, 0.0, 0.0)
+    }
+
+    /// Calculate cost for given token counts
+    #[must_use]
+    pub fn calculate_cost(
+        &self,
+        input_tokens: u64,
+        output_tokens: u64,
+        cache_read_tokens: u64,
+        cache_write_tokens: u64,
+    ) -> f64 {
+        let input_cost = (input_tokens as f64 / 1_000_000.0) * self.input_per_million;
+        let output_cost = (output_tokens as f64 / 1_000_000.0) * self.output_per_million;
+        let cache_read_cost =
+            (cache_read_tokens as f64 / 1_000_000.0) * self.cache_read_per_million;
+        let cache_write_cost =
+            (cache_write_tokens as f64 / 1_000_000.0) * self.cache_write_per_million;
+
+        input_cost + output_cost + cache_read_cost + cache_write_cost
+    }
+}
+
+impl Default for PricingTier {
+    fn default() -> Self {
+        // Default to Claude Sonnet 4 pricing
+        Self::new(3.0, 15.0, 0.30, 3.75)
+    }
+}
+
+/// Model pricing database
+#[derive(Debug, Clone)]
+pub struct ModelPricing {
+    /// Map of model name patterns to pricing tiers
+    tiers: HashMap<String, PricingTier>,
+    /// Default tier for unknown models
+    default_tier: PricingTier,
+}
+
+impl ModelPricing {
+    /// Create a new model pricing database
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            tiers: HashMap::new(),
+            default_tier: PricingTier::default(),
+        }
+    }
+
+    /// Add a pricing tier for a model pattern
+    pub fn add_tier(&mut self, pattern: impl Into<String>, tier: PricingTier) {
+        self.tiers.insert(pattern.into(), tier);
+    }
+
+    /// Set the default tier for unknown models
+    pub fn set_default(&mut self, tier: PricingTier) {
+        self.default_tier = tier;
+    }
+
+    /// Get pricing for a model (matches by prefix)
+    #[must_use]
+    pub fn get_tier(&self, model: &str) -> &PricingTier {
+        // Try exact match first
+        if let Some(tier) = self.tiers.get(model) {
+            return tier;
+        }
+
+        // Try prefix matching (longest match wins to prefer specific tiers)
+        let mut best_match: Option<(&str, &PricingTier)> = None;
+        for (pattern, tier) in &self.tiers {
+            if model.starts_with(pattern.as_str()) || pattern.starts_with(model) {
+                match best_match {
+                    None => best_match = Some((pattern.as_str(), tier)),
+                    Some((best_pattern, _)) if pattern.len() > best_pattern.len() => {
+                        best_match = Some((pattern.as_str(), tier));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if let Some((_, tier)) = best_match {
+            return tier;
+        }
+
+        // Check for common model families (e.g., provider/model-id strings)
+        let model_lower = model.to_lowercase();
+        let mut best_family_match: Option<(&str, &PricingTier)> = None;
+        for (pattern, tier) in &self.tiers {
+            let pattern_lower = pattern.to_lowercase();
+            if model_lower.contains(&pattern_lower) || pattern_lower.contains(&model_lower) {
+                match best_family_match {
+                    None => best_family_match = Some((pattern.as_str(), tier)),
+                    Some((best_pattern, _)) if pattern.len() > best_pattern.len() => {
+                        best_family_match = Some((pattern.as_str(), tier));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if let Some((_, tier)) = best_family_match {
+            return tier;
+        }
+
+        &self.default_tier
+    }
+
+    /// Calculate cost for a model with given token counts
+    #[must_use]
+    pub fn calculate_cost(
+        &self,
+        model: &str,
+        input_tokens: u64,
+        output_tokens: u64,
+        cache_read_tokens: u64,
+        cache_write_tokens: u64,
+    ) -> f64 {
+        self.get_tier(model).calculate_cost(
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+        )
+    }
+}
+
+impl Default for ModelPricing {
+    fn default() -> Self {
+        let mut pricing = Self::new();
+
+        // Anthropic Claude models
+        // Claude Opus 4.6 ($5/$25 per M tokens)
+        pricing.add_tier("claude-opus-4-6", PricingTier::new(5.0, 25.0, 0.50, 6.25));
+        // Claude Opus 4.5 ($5/$25 per M tokens)
+        pricing.add_tier("claude-opus-4-5", PricingTier::new(5.0, 25.0, 0.50, 6.25));
+        // Claude Opus 4.0 ($15/$75 per M tokens)
+        pricing.add_tier("claude-opus-4", PricingTier::new(15.0, 75.0, 1.50, 18.75));
+        pricing.add_tier("claude-4-opus", PricingTier::new(15.0, 75.0, 1.50, 18.75));
+
+        // Claude Sonnet 4
+        pricing.add_tier("claude-sonnet-4", PricingTier::new(3.0, 15.0, 0.30, 3.75));
+        pricing.add_tier("claude-4-sonnet", PricingTier::new(3.0, 15.0, 0.30, 3.75));
+
+        // Claude 3.5 Sonnet
+        pricing.add_tier("claude-3-5-sonnet", PricingTier::new(3.0, 15.0, 0.30, 3.75));
+        pricing.add_tier("claude-3.5-sonnet", PricingTier::new(3.0, 15.0, 0.30, 3.75));
+
+        // Claude 3.5 Haiku
+        pricing.add_tier("claude-3-5-haiku", PricingTier::new(0.80, 4.0, 0.08, 1.0));
+        pricing.add_tier("claude-3.5-haiku", PricingTier::new(0.80, 4.0, 0.08, 1.0));
+
+        // Claude 3 Opus
+        pricing.add_tier("claude-3-opus", PricingTier::new(15.0, 75.0, 1.50, 18.75));
+
+        // Claude 3 Sonnet
+        pricing.add_tier("claude-3-sonnet", PricingTier::new(3.0, 15.0, 0.30, 3.75));
+
+        // Claude 3 Haiku
+        pricing.add_tier("claude-3-haiku", PricingTier::new(0.25, 1.25, 0.03, 0.30));
+
+        // OpenAI GPT models
+        pricing.add_tier("gpt-4o", PricingTier::simple(2.50, 10.0));
+        pricing.add_tier("gpt-4o-mini", PricingTier::simple(0.15, 0.60));
+        pricing.add_tier("gpt-4-turbo", PricingTier::simple(10.0, 30.0));
+        pricing.add_tier("gpt-4", PricingTier::simple(30.0, 60.0));
+        pricing.add_tier("gpt-3.5-turbo", PricingTier::simple(0.50, 1.50));
+        pricing.add_tier("o1-preview", PricingTier::simple(15.0, 60.0));
+        pricing.add_tier("o1-mini", PricingTier::simple(1.10, 4.40));
+        pricing.add_tier("o1", PricingTier::simple(15.0, 60.0));
+        pricing.add_tier("o3-mini", PricingTier::simple(1.10, 4.40));
+        pricing.add_tier("o3", PricingTier::simple(2.0, 8.0));
+
+        // Google Gemini models
+        pricing.add_tier("gemini-2.0-flash", PricingTier::simple(0.10, 0.40));
+        pricing.add_tier("gemini-1.5-pro", PricingTier::simple(1.25, 5.0));
+        pricing.add_tier("gemini-1.5-flash", PricingTier::simple(0.075, 0.30));
+        pricing.add_tier("gemini-pro", PricingTier::simple(0.50, 1.50));
+
+        // Groq (inference provider - typically cheaper)
+        pricing.add_tier("llama-3.3-70b", PricingTier::simple(0.59, 0.79));
+        pricing.add_tier("llama-3.1-70b", PricingTier::simple(0.59, 0.79));
+        pricing.add_tier("llama-3.1-8b", PricingTier::simple(0.05, 0.08));
+        pricing.add_tier("mixtral-8x7b", PricingTier::simple(0.24, 0.24));
+
+        // DeepSeek
+        pricing.add_tier("deepseek-chat", PricingTier::simple(0.14, 0.28));
+        pricing.add_tier("deepseek-coder", PricingTier::simple(0.14, 0.28));
+        pricing.add_tier("deepseek-reasoner", PricingTier::simple(0.55, 2.19));
+
+        pricing
+    }
+}
+
+/// Global default pricing database
+pub static DEFAULT_PRICING: std::sync::LazyLock<ModelPricing> =
+    std::sync::LazyLock::new(ModelPricing::default);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pricing_tier_calculation() {
+        let tier = PricingTier::new(3.0, 15.0, 0.30, 3.75);
+
+        // 1000 input tokens = $0.003
+        let cost = tier.calculate_cost(1000, 0, 0, 0);
+        assert!((cost - 0.003).abs() < 0.0001);
+
+        // 1000 output tokens = $0.015
+        let cost = tier.calculate_cost(0, 1000, 0, 0);
+        assert!((cost - 0.015).abs() < 0.0001);
+
+        // Combined
+        let cost = tier.calculate_cost(1000, 500, 0, 0);
+        assert!((cost - 0.0105).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_model_pricing_lookup() {
+        let pricing = ModelPricing::default();
+
+        // Exact match
+        let tier = pricing.get_tier("claude-3-5-sonnet");
+        assert!((tier.input_per_million - 3.0).abs() < 0.01);
+
+        // Prefix match
+        let tier = pricing.get_tier("claude-3-5-sonnet-20241022");
+        assert!((tier.input_per_million - 3.0).abs() < 0.01);
+
+        // GPT model exact match
+        let tier = pricing.get_tier("gpt-4o");
+        assert!((tier.input_per_million - 2.50).abs() < 0.01);
+
+        // GPT model with suffix (falls through to default since "gpt-4o-2024" doesn't start with "gpt-4o")
+        // This tests that the lookup handles model versions
+        let tier = pricing.get_tier("gpt-4-turbo");
+        assert!((tier.input_per_million - 10.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_haiku_vs_opus_pricing() {
+        let pricing = ModelPricing::default();
+
+        let haiku = pricing.get_tier("claude-3-haiku");
+        let opus = pricing.get_tier("claude-3-opus");
+
+        // Opus should be significantly more expensive
+        assert!(opus.input_per_million > haiku.input_per_million * 10.0);
+    }
+
+    #[test]
+    fn test_cost_calculation() {
+        let pricing = ModelPricing::default();
+
+        // Typical conversation: 2000 input, 500 output with Sonnet 4
+        let cost = pricing.calculate_cost("claude-sonnet-4", 2000, 500, 0, 0);
+        // 2000 * 3.0/1M + 500 * 15.0/1M = 0.006 + 0.0075 = 0.0135
+        assert!((cost - 0.0135).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_cache_pricing() {
+        let pricing = ModelPricing::default();
+
+        // With cache hits, cost should be lower
+        let no_cache = pricing.calculate_cost("claude-sonnet-4", 10000, 1000, 0, 0);
+        let with_cache = pricing.calculate_cost("claude-sonnet-4", 2000, 1000, 8000, 0);
+
+        // Cache reads at 0.30/M vs input at 3.0/M
+        assert!(with_cache < no_cache);
+    }
+
+    #[test]
+    fn test_opus_4_6_pricing_is_specific() {
+        let pricing = ModelPricing::default();
+
+        // Exact model ID
+        let tier = pricing.get_tier("claude-opus-4-6");
+        assert!((tier.input_per_million - 5.0).abs() < 0.01);
+        assert!((tier.output_per_million - 25.0).abs() < 0.01);
+
+        // Versioned suffix should match the 4.5 tier (not generic 4.x pricing)
+        let tier = pricing.get_tier("claude-opus-4-5-20251101");
+        assert!((tier.input_per_million - 5.0).abs() < 0.01);
+
+        // provider/model-id format should match the specific tier
+        let tier = pricing.get_tier("anthropic/claude-opus-4-6");
+        assert!((tier.input_per_million - 5.0).abs() < 0.01);
+
+        // Extra suffix variants should still match the specific tier
+        let tier = pricing.get_tier("claude-opus-4-6-thinking");
+        assert!((tier.input_per_million - 5.0).abs() < 0.01);
+
+        // The generic Opus 4 tier should remain $15/$75
+        let tier = pricing.get_tier("claude-opus-4-20250514");
+        assert!((tier.input_per_million - 15.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_longest_prefix_wins() {
+        // Verifies that longest-match-wins is deterministic regardless of
+        // HashMap iteration order. Run 50 times to catch nondeterminism.
+        for _ in 0..50 {
+            let pricing = ModelPricing::default();
+
+            // "claude-opus-4-6" (len 16) must beat "claude-opus-4" (len 13)
+            let tier = pricing.get_tier("claude-opus-4-6");
+            assert!(
+                (tier.input_per_million - 5.0).abs() < 0.01,
+                "Opus 4.6 got ${}/M instead of $5/M — prefix match is nondeterministic",
+                tier.input_per_million
+            );
+
+            // "claude-opus-4-5-20251101" should match "claude-opus-4-5" (len 15)
+            // not "claude-opus-4" (len 13)
+            let tier = pricing.get_tier("claude-opus-4-5-20251101");
+            assert!(
+                (tier.input_per_million - 5.0).abs() < 0.01,
+                "Opus 4.5 versioned got ${}/M instead of $5/M",
+                tier.input_per_million
+            );
+
+            // "claude-3-5-haiku-20250101" should match "claude-3-5-haiku" (len 16)
+            // not "claude-3-5" which doesn't exist, but shouldn't match
+            // "claude-3-haiku" (len 14) either
+            let tier = pricing.get_tier("claude-3-5-haiku-20250101");
+            assert!(
+                (tier.input_per_million - 0.80).abs() < 0.01,
+                "Haiku 3.5 versioned got ${}/M instead of $0.80/M",
+                tier.input_per_million
+            );
+        }
+    }
+}

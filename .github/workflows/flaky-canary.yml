@@ -1,0 +1,101 @@
+name: flaky-canary
+
+on:
+  schedule:
+    # Daily at 04:00 UTC
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CI: true
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  NX_DAEMON: false
+
+jobs:
+  canary:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository with retry
+        env:
+          CHECKOUT_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          cd "$GITHUB_WORKSPACE"
+          git remote add origin "https://x-access-token:${CHECKOUT_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+          for attempt in 1 2 3 4; do
+            echo "Checkout attempt ${attempt}"
+            if git -c gc.auto=0 fetch --depth=1 --no-tags origin "${GITHUB_REF}"; then
+              git checkout --force --detach FETCH_HEAD
+              git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git"
+              exit 0
+            fi
+
+            if [[ "${attempt}" -eq 4 ]]; then
+              echo "::error::Unable to fetch ${GITHUB_REF} after repeated attempts"
+              exit 1
+            fi
+
+            sleep $((2 ** attempt))
+          done
+
+      - uses: ./.github/actions/setup-bun-nx
+
+      - name: Run flake-prone tests twice
+        run: |
+          set -euo pipefail
+
+          files=(
+            test/tools/inline-tools.test.ts
+            test/tools/inline-tools-epipe.test.ts
+            test/tools/background-tasks.test.ts
+            test/tools/tools.test.ts
+            test/agent/auto-compaction.test.ts
+          )
+
+          statuses=()
+          for i in 1 2; do
+            echo "=== Run ${i} ==="
+            set +e
+            bunx vitest --run "${files[@]}" 2>&1 | tee "flaky-canary-run-${i}.log"
+            status="${PIPESTATUS[0]}"
+            set -e
+            statuses+=("$status")
+          done
+
+          s1="${statuses[0]}"
+          s2="${statuses[1]}"
+
+          if [[ "$s1" -eq 0 && "$s2" -eq 0 ]]; then
+            echo "✅ flake-prone tests passed twice"
+            exit 0
+          fi
+
+          if [[ "$s1" -ne 0 && "$s2" -ne 0 ]]; then
+            echo "::error::flake-prone tests failed twice (consistent failure)"
+            exit 1
+          fi
+
+          echo "::error::flake-prone tests were flaky (one pass, one fail)"
+          exit 1
+
+      - name: Upload logs (on failure)
+        if: failure()
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: flaky-canary-logs-${{ github.run_id }}
+          path: flaky-canary-run-*.log
+          if-no-files-found: ignore

@@ -1,0 +1,37 @@
+{
+	"$schema": "https://biomejs.dev/schemas/1.9.3/schema.json",
+	"files": {
+		"include": ["src", "test", "packages", "docs"],
+		"ignore": [
+			"dist",
+			"dist-electron",
+			"node_modules",
+			".external",
+			"src/models/models.generated.ts",
+			"packages/slack-agent-ui/.dev-data",
+			"packages/jetbrains-plugin/build",
+			"packages/vscode-extension/media",
+			"packages/tui-rs/target",
+			"packages/desktop/dist-electron",
+			"packages/desktop/release"
+		]
+	},
+	"formatter": {
+		"enabled": true
+	},
+	"linter": {
+		"enabled": true,
+		"rules": {
+			"suspicious": {
+				"noConsole": "off",
+				"noExplicitAny": "error"
+			},
+			"performance": {
+				"noDelete": "off"
+			},
+			"style": {
+				"noNonNullAssertion": "off"
+			}
+		}
+	}
+}

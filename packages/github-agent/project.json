@@ -1,0 +1,31 @@
+{
+	"name": "github-agent",
+	"$schema": "../../node_modules/nx/schemas/project-schema.json",
+	"sourceRoot": "packages/github-agent/src",
+	"projectType": "library",
+	"targets": {
+		"build": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "bun run build",
+				"cwd": "packages/github-agent"
+			},
+			"dependsOn": ["^build"]
+		},
+		"test": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "bun run test",
+				"cwd": "packages/github-agent"
+			}
+		},
+		"check": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "bun run check",
+				"cwd": "packages/github-agent"
+			}
+		}
+	},
+	"tags": ["scope:github-agent", "type:agent"]
+}

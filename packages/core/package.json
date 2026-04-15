@@ -1,0 +1,71 @@
+{
+	"name": "@evalops/maestro-core",
+	"version": "0.1.0",
+	"description": "Maestro agent loop, transport, types, and sandbox primitives — the engine behind all Maestro interfaces",
+	"type": "module",
+	"main": "./dist/packages/core/src/index.js",
+	"types": "./dist/packages/core/src/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/packages/core/src/index.d.ts",
+			"default": "./dist/packages/core/src/index.js"
+		},
+		"./sandbox": {
+			"types": "./dist/packages/core/src/sandbox/index.d.ts",
+			"default": "./dist/packages/core/src/sandbox/index.js"
+		},
+		"./swarm": {
+			"types": "./dist/packages/core/src/swarm/index.d.ts",
+			"default": "./dist/packages/core/src/swarm/index.js"
+		}
+	},
+	"files": ["dist/packages/core"],
+	"keywords": ["maestro", "agent", "ai", "sdk", "sandbox", "daytona"],
+	"license": "Apache-2.0",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/evalops/maestro.git",
+		"directory": "packages/core"
+	},
+	"scripts": {
+		"build": "tsc -p tsconfig.build.json",
+		"clean": "rm -rf dist"
+	},
+	"dependencies": {
+		"@aws-sdk/client-bedrock-runtime": "^3.966.0",
+		"@daytonaio/sdk": "^0.155.0",
+		"@google/genai": "^1.35.0",
+		"@opentelemetry/api": "^1.9.0",
+		"@opentelemetry/auto-instrumentations-node": "^0.67.3",
+		"@opentelemetry/resources": "^2.4.0",
+		"@opentelemetry/sdk-node": "0.210.0",
+		"@opentelemetry/semantic-conventions": "^1.38.0",
+		"@sinclair/typebox": "^0.34.47",
+		"ajv": "^8.17.1",
+		"ajv-formats": "^3.0.1",
+		"chalk": "^5.5.0",
+		"google-auth-library": "^9.0.0",
+		"jsonc-parser": "^3.3.1",
+		"jszip": "^3.10.1",
+		"mammoth": "^1.11.0",
+		"minimatch": "^10.1.1",
+		"openai": "^6.16.0",
+		"partial-json": "^0.1.7",
+		"pdf-parse": "^2.4.5",
+		"smol-toml": "^1.5.2",
+		"uuid": "^13.0.0",
+		"vscode-jsonrpc": "^8.2.0",
+		"xlsx": "^0.18.5"
+	},
+	"peerDependencies": {
+		"@evalops/tui": "workspace:*"
+	},
+	"peerDependenciesMeta": {
+		"@evalops/tui": {
+			"optional": true
+		}
+	},
+	"devDependencies": {
+		"typescript": "^5.0.0"
+	}
+}

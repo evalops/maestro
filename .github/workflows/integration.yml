@@ -1,0 +1,74 @@
+name: integration
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/server/**"
+      - "src/db/**"
+      - "test/web/**"
+      - "docker-compose.yml"
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+    paths:
+      - "src/server/**"
+      - "src/db/**"
+      - "test/web/**"
+      - "docker-compose.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  integration-tests:
+    if: ${{ github.event_name != 'pull_request' || !contains(github.event.pull_request.labels.*.name, 'skip-integration') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 3
+
+      postgres:
+        image: postgres:16-alpine
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_USER: maestro
+          POSTGRES_PASSWORD: maestro
+          POSTGRES_DB: maestro
+        options: >-
+          --health-cmd "pg_isready -U maestro"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 3
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: ./.github/actions/setup-bun-nx
+
+      - name: Build contracts
+        run: npx nx run contracts:build
+
+      - name: Run integration tests
+        env:
+          MAESTRO_REDIS_URL: redis://localhost:6379
+          MAESTRO_DATABASE_URL: postgresql://localhost:5432/maestro?user=maestro&password=maestro
+        run: |
+          # Run all web tests with Redis and PostgreSQL available
+          # Redis tests will use actual Redis instead of skipping
+          bunx vitest run test/web/ --reporter=verbose

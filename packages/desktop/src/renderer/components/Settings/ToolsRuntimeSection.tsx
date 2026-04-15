@@ -1,0 +1,3402 @@
+import {
+	formatMcpArgsText,
+	formatMcpConfigScopeLabel,
+	formatMcpKeyValueText,
+	formatMcpRegistryImportMessage,
+	formatMcpRegistryScopeLabel,
+	formatMcpServerAddMessage,
+	formatMcpServerRemoveMessage,
+	formatMcpServerUpdateMessage,
+	formatMcpTimeoutText,
+	formatMcpTransportLabel,
+	formatMcpPromptOutput as formatSharedMcpPromptOutput,
+	formatMcpResourceOutput as formatSharedMcpResourceOutput,
+	getMcpRegistryEntryId,
+	getMcpRegistryUrlOptions,
+	getWritableMcpScope,
+	parseMcpArgsText,
+	parseMcpKeyValueText,
+	parseMcpTimeoutText,
+} from "@evalops/contracts";
+import { type FormEvent, useEffect, useMemo, useState } from "react";
+import type {
+	ComposerProfile,
+	ComposerStatus,
+	LspStatus,
+	McpAuthPresetAddRequest,
+	McpAuthPresetMutationResponse,
+	McpAuthPresetRemoveRequest,
+	McpAuthPresetRemoveResponse,
+	McpAuthPresetStatus,
+	McpAuthPresetUpdateRequest,
+	McpOfficialRegistryEntry,
+	McpProjectApprovalResponse,
+	McpPromptDefinition,
+	McpPromptResponse,
+	McpRegistryImportRequest,
+	McpRegistryImportResponse,
+	McpRegistrySearchResponse,
+	McpResourceReadResponse,
+	McpServerAddRequest,
+	McpServerMutationResponse,
+	McpServerRemoveRequest,
+	McpServerRemoveResponse,
+	McpServerStatus,
+	McpServerUpdateRequest,
+	McpStatus,
+	PackageAddResponse,
+	PackageBulkRefreshResponse,
+	PackageCachePruneResponse,
+	PackageInspectResponse,
+	PackageMutationRequest,
+	PackageRemoveResponse,
+	PackageScope,
+	PackageSearchResponse,
+	PackageStatusEntry,
+	PackageStatusResponse,
+} from "../../lib/api-client";
+
+export type LspAction = "start" | "stop" | "restart";
+
+export interface LspDetection {
+	serverId: string;
+	root: string;
+}
+
+export interface LspServerViewModel {
+	id: string;
+	summary: string;
+}
+
+export interface LspViewModel {
+	enabledLabel: string;
+	autostartLabel: string;
+	serverCount: number;
+	servers: LspServerViewModel[];
+	detectionsLabel: string;
+}
+
+export interface McpServerViewModel {
+	name: string;
+	summary: string;
+	isExpanded: boolean;
+	connectionLabel: string;
+	transport: McpServerStatus["transport"];
+	writableScope: McpRegistryImportRequest["scope"] | null;
+	sourceLabel: string | null;
+	transportLabel: string | null;
+	remoteTrustLabel: string | null;
+	projectApproval: McpServerStatus["projectApproval"] | null;
+	projectApprovalLabel: string | null;
+	errorLabel: string | null;
+	command: string | null;
+	args: string[];
+	cwd: string | null;
+	envKeys: string[];
+	remoteHost: string | null;
+	remoteUrl: string | null;
+	headerKeys: string[];
+	headersHelper: string | null;
+	authPreset: string | null;
+	timeout: number | null;
+	officialRegistryName: string | null;
+	officialRegistryDirectoryUrl: string | null;
+	officialRegistryDocumentationUrl: string | null;
+	officialRegistryAuthor: string | null;
+	officialRegistryPermissions: string | null;
+	toolCount: number;
+	tools: Array<{ name: string; description?: string }>;
+	toolDetailsLabel: string | null;
+	resources: string[];
+	prompts: string[];
+	promptDetails: McpPromptDefinition[];
+}
+
+export interface McpRegistryEntryViewModel {
+	id: string;
+	importQuery: string;
+	title: string;
+	description: string | null;
+	summary: string | null;
+	transportLabel: string | null;
+	countsLabel: string | null;
+	authorLabel: string | null;
+	permissionsLabel: string | null;
+	directoryUrl: string | null;
+	documentationUrl: string | null;
+	urlOptions: Array<{ url: string; label: string }>;
+	defaultUrl: string | null;
+}
+
+export interface ComposerProfilesViewModel {
+	options: ComposerProfile[];
+	activeLabel: string;
+	canActivate: boolean;
+}
+
+export interface ToolsRuntimeSectionProps {
+	lspStatus: LspStatus | null;
+	lspDetections: LspDetection[];
+	onLspAction: (action: LspAction) => Promise<void> | void;
+	onDetectLsp: () => Promise<void> | void;
+	mcpStatus: McpStatus | null;
+	packageStatus: PackageStatusResponse | null;
+	expandedMcpServer: string | null;
+	onToggleMcpServer: (name: string) => void;
+	onRefreshMcpStatus: () => Promise<void> | void;
+	onRefreshPackageStatus: () => Promise<void> | void;
+	onSearchMcpRegistry: (query: string) => Promise<McpRegistrySearchResponse>;
+	onImportMcpRegistry: (
+		input: McpRegistryImportRequest,
+	) => Promise<McpRegistryImportResponse>;
+	onAddMcpServer: (
+		input: McpServerAddRequest,
+	) => Promise<McpServerMutationResponse>;
+	onAddMcpAuthPreset: (
+		input: McpAuthPresetAddRequest,
+	) => Promise<McpAuthPresetMutationResponse>;
+	onUpdateMcpServer: (
+		input: McpServerUpdateRequest,
+	) => Promise<McpServerMutationResponse>;
+	onUpdateMcpAuthPreset: (
+		input: McpAuthPresetUpdateRequest,
+	) => Promise<McpAuthPresetMutationResponse>;
+	onRemoveMcpServer: (
+		input: McpServerRemoveRequest,
+	) => Promise<McpServerRemoveResponse>;
+	onSetMcpProjectApproval: (input: {
+		name: string;
+		decision: "approved" | "denied";
+	}) => Promise<McpProjectApprovalResponse>;
+	onRemoveMcpAuthPreset: (
+		input: McpAuthPresetRemoveRequest,
+	) => Promise<McpAuthPresetRemoveResponse>;
+	onReadMcpResource: (
+		server: string,
+		uri: string,
+	) => Promise<McpResourceReadResponse>;
+	onGetMcpPrompt: (
+		server: string,
+		name: string,
+		args?: Record<string, string>,
+	) => Promise<McpPromptResponse>;
+	onInspectPackage: (source: string) => Promise<PackageInspectResponse>;
+	onPrunePackageCache: () => Promise<PackageCachePruneResponse>;
+	onRefreshAllPackages: () => Promise<PackageBulkRefreshResponse>;
+	onRefreshPackage: (source: string) => Promise<PackageInspectResponse>;
+	onSearchPackages: (query: string) => Promise<PackageSearchResponse>;
+	onValidatePackage: (source: string) => Promise<PackageInspectResponse>;
+	onAddPackage: (input: PackageMutationRequest) => Promise<PackageAddResponse>;
+	onRemovePackage: (
+		input: PackageMutationRequest,
+	) => Promise<PackageRemoveResponse>;
+	composerStatus: ComposerStatus | null;
+	selectedComposer: string;
+	onSelectedComposerChange: (name: string) => void;
+	onRefreshComposers: () => Promise<void> | void;
+	onActivateComposer: () => Promise<void> | void;
+	onDeactivateComposer: () => Promise<void> | void;
+}
+
+function formatCountLabel(
+	count: number,
+	singular: string,
+	plural: string,
+): string {
+	return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function formatPackageFilters(
+	filters: PackageStatusEntry["filters"],
+): string | null {
+	if (!filters) {
+		return null;
+	}
+
+	const parts: string[] = [];
+	for (const key of ["extensions", "skills", "prompts", "themes"] as const) {
+		const values = filters[key];
+		if (values && values.length > 0) {
+			parts.push(`${key}=${values.join(",")}`);
+		}
+	}
+
+	return parts.length > 0 ? parts.join(" ") : null;
+}
+
+function formatPackageScopeLabel(scope: PackageScope): string {
+	return formatMcpScopeLabel(scope) ?? scope;
+}
+
+function formatPackagePreviewTitle(kind: "inspect" | "validate"): string {
+	return kind === "inspect" ? "Package inspection" : "Package validation";
+}
+
+function formatPackageAddNotice(
+	result: PackageAddResponse,
+	source: string,
+): string {
+	return `Added configured package "${source}" to ${formatPackageScopeLabel(result.scope)}.`;
+}
+
+function formatPackageRemoveNotice(
+	result: PackageRemoveResponse,
+	source: string,
+): string {
+	if (result.fallback) {
+		return `Removed configured package "${source}" from ${formatPackageScopeLabel(result.scope)}. Still configured in ${formatPackageScopeLabel(result.fallback.scope)}.`;
+	}
+	return `Removed configured package "${source}" from ${formatPackageScopeLabel(result.scope)}.`;
+}
+
+function canRefreshPackage(entry: PackageStatusEntry): boolean {
+	return (
+		entry.inspection?.sourceType === "git" ||
+		entry.inspection?.sourceType === "npm"
+	);
+}
+
+function formatMcpErrorLabel(error: string | undefined): string | null {
+	if (typeof error !== "string") {
+		return null;
+	}
+
+	return error.trim() || "Connection failed.";
+}
+
+function formatMcpTrustLabel(
+	trust: McpServerStatus["remoteTrust"],
+): string | null {
+	switch (trust) {
+		case "official":
+			return "Official remote";
+		case "custom":
+			return "Custom remote";
+		case "unknown":
+			return "Unverified remote";
+		default:
+			return null;
+	}
+}
+
+function formatMcpProjectApprovalLabel(
+	projectApproval: McpServerStatus["projectApproval"],
+): string | null {
+	switch (projectApproval) {
+		case "pending":
+			return "Pending approval";
+		case "approved":
+			return "Approved locally";
+		case "denied":
+			return "Denied locally";
+		default:
+			return null;
+	}
+}
+
+function formatMcpConnectionLabel(server: McpServerStatus): string {
+	switch (server.projectApproval) {
+		case "pending":
+			return "Pending approval";
+		case "denied":
+			return "Denied";
+		default:
+			return server.connected ? "Connected" : "Offline";
+	}
+}
+
+export function formatMcpResourceReadResult(
+	result: McpResourceReadResponse,
+): string {
+	return formatSharedMcpResourceOutput(result);
+}
+
+export function formatMcpPromptResult(result: McpPromptResponse): string {
+	return formatSharedMcpPromptOutput(result);
+}
+
+export function getMcpPromptArgumentValueKey(
+	serverName: string,
+	promptName: string,
+	argumentName: string,
+): string {
+	return `${serverName}::${promptName}::${argumentName}`;
+}
+
+export {
+	formatMcpArgsText,
+	formatMcpKeyValueText,
+	formatMcpRegistryImportMessage,
+	formatMcpServerAddMessage,
+	formatMcpServerRemoveMessage,
+	formatMcpServerUpdateMessage,
+	formatMcpTimeoutText,
+	getMcpRegistryEntryId,
+	parseMcpArgsText,
+	parseMcpKeyValueText,
+	parseMcpTimeoutText,
+};
+
+const formatMcpScopeLabel = formatMcpConfigScopeLabel;
+
+export function buildLspViewModel(
+	status: LspStatus | null,
+	detections: LspDetection[],
+): LspViewModel {
+	const servers = status?.servers ?? [];
+
+	return {
+		enabledLabel: status?.enabled ? "Yes" : "No",
+		autostartLabel: status?.autostart ? "Yes" : "No",
+		serverCount: servers.length,
+		servers: servers.map((server) => ({
+			id: server.id,
+			summary: `${server.fileCount} files · ${server.diagnosticCount} diag`,
+		})),
+		detectionsLabel: detections
+			.map((detection) => detection.serverId)
+			.join(", "),
+	};
+}
+
+export function buildMcpServerViewModel(
+	server: McpServerStatus,
+	expandedServer: string | null,
+): McpServerViewModel {
+	const tools = Array.isArray(server.tools) ? server.tools : [];
+	const toolCount = Array.isArray(server.tools)
+		? server.tools.length
+		: (server.tools ?? 0);
+	const resources = server.resources ?? [];
+	const prompts = server.prompts ?? [];
+	const sourceLabel = formatMcpScopeLabel(server.scope);
+	const transportLabel = formatMcpTransportLabel(server.transport);
+	const remoteTrustLabel = formatMcpTrustLabel(server.remoteTrust);
+	const projectApprovalLabel = formatMcpProjectApprovalLabel(
+		server.projectApproval,
+	);
+	const connectionLabel = formatMcpConnectionLabel(server);
+	const summaryParts = [
+		connectionLabel,
+		sourceLabel,
+		transportLabel ? `via ${transportLabel}` : null,
+		formatCountLabel(toolCount, "tool", "tools"),
+		formatCountLabel(resources.length, "resource", "resources"),
+		formatCountLabel(prompts.length, "prompt", "prompts"),
+	].filter((part): part is string => Boolean(part));
+
+	return {
+		name: server.name,
+		summary: summaryParts.join(" · "),
+		isExpanded: expandedServer === server.name,
+		connectionLabel,
+		transport: server.transport,
+		writableScope: getWritableMcpScope(server.scope),
+		sourceLabel,
+		transportLabel,
+		remoteTrustLabel,
+		projectApproval: server.projectApproval ?? null,
+		projectApprovalLabel,
+		errorLabel:
+			server.projectApproval === "pending" ||
+			server.projectApproval === "denied"
+				? null
+				: formatMcpErrorLabel(server.error),
+		command: server.command?.trim() || null,
+		args: Array.isArray(server.args) ? server.args : [],
+		cwd: server.cwd?.trim() || null,
+		envKeys: Array.isArray(server.envKeys) ? server.envKeys : [],
+		remoteHost: server.remoteHost?.trim() || null,
+		remoteUrl: server.remoteUrl?.trim() || null,
+		headerKeys: Array.isArray(server.headerKeys) ? server.headerKeys : [],
+		headersHelper: server.headersHelper?.trim() || null,
+		authPreset: server.authPreset?.trim() || null,
+		timeout: typeof server.timeout === "number" ? server.timeout : null,
+		officialRegistryName: server.officialRegistry?.displayName?.trim() || null,
+		officialRegistryDirectoryUrl:
+			server.officialRegistry?.directoryUrl?.trim() || null,
+		officialRegistryDocumentationUrl:
+			server.officialRegistry?.documentationUrl?.trim() || null,
+		officialRegistryAuthor: server.officialRegistry?.authorName?.trim() || null,
+		officialRegistryPermissions:
+			server.officialRegistry?.permissions?.trim() || null,
+		toolCount,
+		tools,
+		toolDetailsLabel:
+			tools.length > 0
+				? null
+				: toolCount > 0
+					? `${toolCount} tools reported (details unavailable).`
+					: "No tools reported.",
+		resources,
+		prompts,
+		promptDetails: server.promptDetails ?? [],
+	};
+}
+
+export function buildMcpRegistryEntryViewModel(
+	entry: McpOfficialRegistryEntry,
+	fallbackIndex = 0,
+): McpRegistryEntryViewModel {
+	const transportLabel = formatMcpTransportLabel(entry.transport);
+	const counts = [
+		typeof entry.toolCount === "number"
+			? formatCountLabel(entry.toolCount, "tool", "tools")
+			: null,
+		typeof entry.promptCount === "number"
+			? formatCountLabel(entry.promptCount, "prompt", "prompts")
+			: null,
+	].filter((part): part is string => Boolean(part));
+	const normalizedUrlOptions = getMcpRegistryUrlOptions(entry);
+	const fallbackUrl = entry.url?.trim() || null;
+	const importQuery =
+		entry.slug?.trim() ||
+		entry.serverName?.trim() ||
+		entry.displayName?.trim() ||
+		fallbackUrl ||
+		`entry-${fallbackIndex}`;
+	const title =
+		entry.displayName?.trim() ||
+		entry.serverName?.trim() ||
+		entry.slug?.trim() ||
+		fallbackUrl ||
+		"Unnamed registry entry";
+	const summaryParts = [
+		transportLabel ? `via ${transportLabel}` : null,
+		entry.authorName?.trim() ? `by ${entry.authorName.trim()}` : null,
+		counts.length > 0 ? counts.join(" · ") : null,
+	].filter((part): part is string => Boolean(part));
+
+	return {
+		id: getMcpRegistryEntryId(entry, fallbackIndex),
+		importQuery,
+		title,
+		description: entry.oneLiner?.trim() || null,
+		summary: summaryParts.length > 0 ? summaryParts.join(" · ") : null,
+		transportLabel,
+		countsLabel: counts.length > 0 ? counts.join(" · ") : null,
+		authorLabel: entry.authorName?.trim() || null,
+		permissionsLabel: entry.permissions?.trim() || null,
+		directoryUrl: entry.directoryUrl?.trim() || null,
+		documentationUrl: entry.documentationUrl?.trim() || null,
+		urlOptions: normalizedUrlOptions,
+		defaultUrl: normalizedUrlOptions[0]?.url ?? null,
+	};
+}
+
+export function buildComposerProfilesViewModel(
+	status: ComposerStatus | null,
+	selectedComposer: string,
+): ComposerProfilesViewModel {
+	return {
+		options: status?.composers ?? [],
+		activeLabel: status?.active?.name ?? "none",
+		canActivate: Boolean(selectedComposer),
+	};
+}
+
+export function resolveComposerSelection(
+	status: ComposerStatus | null,
+	currentSelection: string,
+): string {
+	if (!status) {
+		return currentSelection;
+	}
+
+	const activeName = status.active?.name;
+	if (activeName) {
+		return activeName;
+	}
+
+	if (!currentSelection && status.composers.length > 0) {
+		return status.composers[0].name;
+	}
+
+	return currentSelection;
+}
+
+export function ToolsRuntimeSection({
+	lspStatus,
+	lspDetections,
+	onLspAction,
+	onDetectLsp,
+	mcpStatus,
+	packageStatus,
+	expandedMcpServer,
+	onToggleMcpServer,
+	onRefreshMcpStatus,
+	onRefreshPackageStatus,
+	onSearchMcpRegistry,
+	onImportMcpRegistry,
+	onAddMcpServer,
+	onAddMcpAuthPreset,
+	onUpdateMcpServer,
+	onUpdateMcpAuthPreset,
+	onRemoveMcpServer,
+	onSetMcpProjectApproval,
+	onRemoveMcpAuthPreset,
+	onReadMcpResource,
+	onGetMcpPrompt,
+	onInspectPackage,
+	onPrunePackageCache,
+	onRefreshAllPackages,
+	onRefreshPackage,
+	onSearchPackages,
+	onValidatePackage,
+	onAddPackage,
+	onRemovePackage,
+	composerStatus,
+	selectedComposer,
+	onSelectedComposerChange,
+	onRefreshComposers,
+	onActivateComposer,
+	onDeactivateComposer,
+}: ToolsRuntimeSectionProps) {
+	const lsp = useMemo(
+		() => buildLspViewModel(lspStatus, lspDetections),
+		[lspStatus, lspDetections],
+	);
+	const mcpServers = useMemo(
+		() =>
+			(mcpStatus?.servers ?? []).map((server) =>
+				buildMcpServerViewModel(server, expandedMcpServer),
+			),
+		[mcpStatus, expandedMcpServer],
+	);
+	const packages = packageStatus?.packages ?? [];
+	const [registryQuery, setRegistryQuery] = useState("");
+	const [registryScope, setRegistryScope] =
+		useState<McpRegistryImportRequest["scope"]>("local");
+	const [registryEntries, setRegistryEntries] = useState<
+		McpOfficialRegistryEntry[]
+	>([]);
+	const [registryLoading, setRegistryLoading] = useState(false);
+	const [registryImportingId, setRegistryImportingId] = useState<string | null>(
+		null,
+	);
+	const [registryError, setRegistryError] = useState<string | null>(null);
+	const [registryNotice, setRegistryNotice] = useState<string | null>(null);
+	const [registryNames, setRegistryNames] = useState<Record<string, string>>(
+		{},
+	);
+	const [registrySelectedUrls, setRegistrySelectedUrls] = useState<
+		Record<string, string>
+	>({});
+	const [customServerName, setCustomServerName] = useState("");
+	const [customServerCommand, setCustomServerCommand] = useState("");
+	const [customServerArgsText, setCustomServerArgsText] = useState("");
+	const [customServerCwd, setCustomServerCwd] = useState("");
+	const [customServerEnvText, setCustomServerEnvText] = useState("");
+	const [customServerUrl, setCustomServerUrl] = useState("");
+	const [customServerHeadersText, setCustomServerHeadersText] = useState("");
+	const [customServerHeadersHelper, setCustomServerHeadersHelper] =
+		useState("");
+	const [customServerAuthPreset, setCustomServerAuthPreset] = useState("");
+	const [customServerTimeoutText, setCustomServerTimeoutText] = useState("");
+	const [customServerTransport, setCustomServerTransport] = useState<
+		"stdio" | "http" | "sse"
+	>("http");
+	const [customServerScope, setCustomServerScope] =
+		useState<McpRegistryImportRequest["scope"]>("local");
+	const [authPresetName, setAuthPresetName] = useState("");
+	const [authPresetHeadersText, setAuthPresetHeadersText] = useState("");
+	const [authPresetHeadersHelper, setAuthPresetHeadersHelper] = useState("");
+	const [authPresetScope, setAuthPresetScope] =
+		useState<McpRegistryImportRequest["scope"]>("local");
+	const [serverMutationError, setServerMutationError] = useState<string | null>(
+		null,
+	);
+	const [serverMutationNotice, setServerMutationNotice] = useState<
+		string | null
+	>(null);
+	const [customServerSubmitting, setCustomServerSubmitting] = useState(false);
+	const [authPresetSubmitting, setAuthPresetSubmitting] = useState(false);
+	const [removingServerName, setRemovingServerName] = useState<string | null>(
+		null,
+	);
+	const [removingAuthPresetName, setRemovingAuthPresetName] = useState<
+		string | null
+	>(null);
+	const [projectApprovalMutation, setProjectApprovalMutation] = useState<{
+		name: string;
+		decision: "approved" | "denied";
+	} | null>(null);
+	const [editingServerUrls, setEditingServerUrls] = useState<
+		Record<string, string>
+	>({});
+	const [editingServerCommands, setEditingServerCommands] = useState<
+		Record<string, string>
+	>({});
+	const [editingServerArgsText, setEditingServerArgsText] = useState<
+		Record<string, string>
+	>({});
+	const [editingServerCwds, setEditingServerCwds] = useState<
+		Record<string, string>
+	>({});
+	const [editingServerEnvTexts, setEditingServerEnvTexts] = useState<
+		Record<string, string>
+	>({});
+	const [editingServerReplaceEnv, setEditingServerReplaceEnv] = useState<
+		Record<string, boolean>
+	>({});
+	const [editingServerHeadersHelpers, setEditingServerHeadersHelpers] =
+		useState<Record<string, string>>({});
+	const [editingServerAuthPresets, setEditingServerAuthPresets] = useState<
+		Record<string, string>
+	>({});
+	const [editingServerHeadersTexts, setEditingServerHeadersTexts] = useState<
+		Record<string, string>
+	>({});
+	const [editingServerReplaceHeaders, setEditingServerReplaceHeaders] =
+		useState<Record<string, boolean>>({});
+	const [editingServerTimeouts, setEditingServerTimeouts] = useState<
+		Record<string, string>
+	>({});
+	const [selectedResourceUris, setSelectedResourceUris] = useState<
+		Record<string, string>
+	>({});
+	const [selectedPromptNames, setSelectedPromptNames] = useState<
+		Record<string, string>
+	>({});
+	const [promptArgsTexts, setPromptArgsTexts] = useState<
+		Record<string, string>
+	>({});
+	const [promptArgumentValues, setPromptArgumentValues] = useState<
+		Record<string, string>
+	>({});
+	const [resourceOutputs, setResourceOutputs] = useState<
+		Record<string, string>
+	>({});
+	const [promptOutputs, setPromptOutputs] = useState<Record<string, string>>(
+		{},
+	);
+	const [resourceErrors, setResourceErrors] = useState<Record<string, string>>(
+		{},
+	);
+	const [promptErrors, setPromptErrors] = useState<Record<string, string>>({});
+	const [readingResourceName, setReadingResourceName] = useState<string | null>(
+		null,
+	);
+	const [gettingPromptName, setGettingPromptName] = useState<string | null>(
+		null,
+	);
+	const [packageSource, setPackageSource] = useState("");
+	const [packageScope, setPackageScope] = useState<PackageScope>("local");
+	const [packageAction, setPackageAction] = useState<
+		"inspect" | "validate" | "add" | null
+	>(null);
+	const [removingPackageKey, setRemovingPackageKey] = useState<string | null>(
+		null,
+	);
+	const [refreshingPackageKey, setRefreshingPackageKey] = useState<
+		string | null
+	>(null);
+	const [refreshingAllPackages, setRefreshingAllPackages] = useState(false);
+	const [pruningPackageCache, setPruningPackageCache] = useState(false);
+	const [packageNotice, setPackageNotice] = useState<string | null>(null);
+	const [packageError, setPackageError] = useState<string | null>(null);
+	const [packageSearchQuery, setPackageSearchQuery] = useState("");
+	const [packageSearchLoading, setPackageSearchLoading] = useState(false);
+	const [packageSearchError, setPackageSearchError] = useState<string | null>(
+		null,
+	);
+	const [packageSearchResults, setPackageSearchResults] = useState<
+		PackageSearchResponse["entries"]
+	>([]);
+	const [packageSearchAddingSource, setPackageSearchAddingSource] = useState<
+		string | null
+	>(null);
+	const [packagePreview, setPackagePreview] = useState<{
+		kind: "inspect" | "validate";
+		result: PackageInspectResponse;
+	} | null>(null);
+	const [editingAuthPresetHeadersTexts, setEditingAuthPresetHeadersTexts] =
+		useState<Record<string, string>>({});
+	const [editingAuthPresetReplaceHeaders, setEditingAuthPresetReplaceHeaders] =
+		useState<Record<string, boolean>>({});
+	const [editingAuthPresetHeadersHelpers, setEditingAuthPresetHeadersHelpers] =
+		useState<Record<string, string>>({});
+	const [editingServerTransports, setEditingServerTransports] = useState<
+		Record<string, "stdio" | "http" | "sse">
+	>({});
+	const [updatingServerName, setUpdatingServerName] = useState<string | null>(
+		null,
+	);
+	const [updatingAuthPresetName, setUpdatingAuthPresetName] = useState<
+		string | null
+	>(null);
+	const registryResults = useMemo(
+		() =>
+			registryEntries.map((entry, index) =>
+				buildMcpRegistryEntryViewModel(entry, index),
+			),
+		[registryEntries],
+	);
+	const composers = useMemo(
+		() => buildComposerProfilesViewModel(composerStatus, selectedComposer),
+		[composerStatus, selectedComposer],
+	);
+	const authPresets = mcpStatus?.authPresets ?? [];
+
+	const handlePackagePreview = async (kind: "inspect" | "validate") => {
+		const source = packageSource.trim();
+		if (!source) {
+			setPackageError("Package source is required.");
+			setPackageNotice(null);
+			setPackagePreview(null);
+			return;
+		}
+
+		setPackageAction(kind);
+		setPackageError(null);
+		setPackageNotice(null);
+		setPackagePreview(null);
+		try {
+			const result =
+				kind === "inspect"
+					? await onInspectPackage(source)
+					: await onValidatePackage(source);
+			setPackagePreview({ kind, result });
+		} catch (error) {
+			setPackageError(
+				error instanceof Error ? error.message : "Failed to inspect package",
+			);
+		} finally {
+			setPackageAction((current) => (current === kind ? null : current));
+		}
+	};
+
+	const handlePackageSubmit = async (event: FormEvent<HTMLFormElement>) => {
+		event.preventDefault();
+		const source = packageSource.trim();
+		if (!source) {
+			setPackageError("Package source is required.");
+			setPackageNotice(null);
+			return;
+		}
+
+		setPackageAction("add");
+		setPackageError(null);
+		setPackageNotice(null);
+		try {
+			const result = await onAddPackage({ source, scope: packageScope });
+			setPackageNotice(formatPackageAddNotice(result, source));
+			setPackagePreview(null);
+			setPackageSource("");
+		} catch (error) {
+			setPackageError(
+				error instanceof Error ? error.message : "Failed to add package",
+			);
+		} finally {
+			setPackageAction((current) => (current === "add" ? null : current));
+		}
+	};
+
+	const handlePackageSearch = async () => {
+		setPackageSearchLoading(true);
+		setPackageSearchError(null);
+		try {
+			const result = await onSearchPackages(packageSearchQuery);
+			setPackageSearchResults(result.entries ?? []);
+		} catch (error) {
+			setPackageSearchResults([]);
+			setPackageSearchError(
+				error instanceof Error
+					? error.message
+					: "Failed to search package registry",
+			);
+		} finally {
+			setPackageSearchLoading(false);
+		}
+	};
+
+	const handleAddDiscoveredPackage = async (
+		entry: PackageSearchResponse["entries"][number],
+	) => {
+		setPackageSearchAddingSource(entry.installSource);
+		setPackageError(null);
+		setPackageNotice(null);
+		try {
+			const result = await onAddPackage({
+				source: entry.installSource,
+				scope: packageScope,
+			});
+			setPackageNotice(formatPackageAddNotice(result, entry.installSource));
+			setPackagePreview(null);
+			setPackageSource(entry.installSource);
+		} catch (error) {
+			setPackageError(
+				error instanceof Error ? error.message : "Failed to add package",
+			);
+		} finally {
+			setPackageSearchAddingSource((current) =>
+				current === entry.installSource ? null : current,
+			);
+		}
+	};
+
+	const handleRemovePackage = async (entry: PackageStatusEntry) => {
+		const key = `${entry.scope}:${entry.sourceSpec}`;
+		setRemovingPackageKey(key);
+		setPackageError(null);
+		setPackageNotice(null);
+		try {
+			const result = await onRemovePackage({
+				source: entry.sourceSpec,
+				scope: entry.scope,
+			});
+			setPackageNotice(formatPackageRemoveNotice(result, entry.sourceSpec));
+		} catch (error) {
+			setPackageError(
+				error instanceof Error ? error.message : "Failed to remove package",
+			);
+		} finally {
+			setRemovingPackageKey((current) => (current === key ? null : current));
+		}
+	};
+
+	const handleRefreshPackage = async (entry: PackageStatusEntry) => {
+		const key = `${entry.scope}:${entry.sourceSpec}`;
+		setRefreshingPackageKey(key);
+		setPackageError(null);
+		setPackageNotice(null);
+		try {
+			const result = await onRefreshPackage(entry.sourceSpec);
+			setPackagePreview({ kind: "inspect", result });
+			setPackageNotice(
+				`Refreshed configured package "${entry.sourceSpec}" from ${formatPackageScopeLabel(entry.scope)}.`,
+			);
+		} catch (error) {
+			setPackageError(
+				error instanceof Error ? error.message : "Failed to refresh package",
+			);
+		} finally {
+			setRefreshingPackageKey((current) => (current === key ? null : current));
+		}
+	};
+
+	const handleRefreshAllPackages = async () => {
+		setRefreshingAllPackages(true);
+		setPackageError(null);
+		setPackageNotice(null);
+		try {
+			const result = await onRefreshAllPackages();
+			const failureCount = result.refreshed.filter(
+				(entry) => entry.error,
+			).length;
+			setPackagePreview(null);
+			setPackageNotice(
+				failureCount > 0
+					? `Refreshed ${result.remoteCount - failureCount} configured remote packages. ${failureCount} failed.`
+					: `Refreshed ${result.remoteCount} configured remote packages.`,
+			);
+		} catch (error) {
+			setPackageError(
+				error instanceof Error
+					? error.message
+					: "Failed to refresh configured packages",
+			);
+		} finally {
+			setRefreshingAllPackages(false);
+		}
+	};
+
+	const handlePrunePackageCache = async () => {
+		setPruningPackageCache(true);
+		setPackageError(null);
+		setPackageNotice(null);
+		try {
+			const result = await onPrunePackageCache();
+			setPackagePreview(null);
+			setPackageNotice(
+				result.removedCount > 0
+					? `Pruned ${result.removedCount} unconfigured remote package caches.`
+					: "No unconfigured remote package caches found.",
+			);
+		} catch (error) {
+			setPackageError(
+				error instanceof Error
+					? error.message
+					: "Failed to prune package cache",
+			);
+		} finally {
+			setPruningPackageCache(false);
+		}
+	};
+
+	const handleReadResource = async (server: McpServerViewModel) => {
+		const uri = selectedResourceUris[server.name] ?? server.resources[0] ?? "";
+		if (!uri) {
+			return;
+		}
+
+		setReadingResourceName(server.name);
+		setResourceErrors((prev) =>
+			Object.fromEntries(
+				Object.entries(prev).filter(([key]) => key !== server.name),
+			),
+		);
+		setResourceOutputs((prev) =>
+			Object.fromEntries(
+				Object.entries(prev).filter(([key]) => key !== server.name),
+			),
+		);
+		try {
+			const result = await onReadMcpResource(server.name, uri);
+			setResourceOutputs((prev) => ({
+				...prev,
+				[server.name]: formatMcpResourceReadResult(result),
+			}));
+		} catch (error) {
+			setResourceOutputs((prev) =>
+				Object.fromEntries(
+					Object.entries(prev).filter(([key]) => key !== server.name),
+				),
+			);
+			setResourceErrors((prev) => ({
+				...prev,
+				[server.name]:
+					error instanceof Error
+						? error.message
+						: "Failed to read MCP resource",
+			}));
+		} finally {
+			setReadingResourceName((current) =>
+				current === server.name ? null : current,
+			);
+		}
+	};
+
+	const handleGetPrompt = async (server: McpServerViewModel) => {
+		const promptName =
+			selectedPromptNames[server.name] ?? server.prompts[0] ?? "";
+		if (!promptName) {
+			return;
+		}
+
+		setGettingPromptName(server.name);
+		setPromptErrors((prev) =>
+			Object.fromEntries(
+				Object.entries(prev).filter(([key]) => key !== server.name),
+			),
+		);
+		setPromptOutputs((prev) =>
+			Object.fromEntries(
+				Object.entries(prev).filter(([key]) => key !== server.name),
+			),
+		);
+		try {
+			const selectedPrompt = server.promptDetails.find(
+				(prompt) => prompt.name === promptName,
+			);
+			const args =
+				selectedPrompt && (selectedPrompt.arguments?.length ?? 0) > 0
+					? (() => {
+							const entries = (selectedPrompt.arguments ?? []).flatMap(
+								(argument) => {
+									const key = getMcpPromptArgumentValueKey(
+										server.name,
+										promptName,
+										argument.name,
+									);
+									const value = promptArgumentValues[key]?.trim() ?? "";
+									if (argument.required && value.length === 0) {
+										throw new Error(
+											`Missing required prompt argument "${argument.name}".`,
+										);
+									}
+									return value.length > 0
+										? ([[argument.name, value]] as const)
+										: [];
+								},
+							);
+							return entries.length > 0
+								? Object.fromEntries(entries)
+								: undefined;
+						})()
+					: parseMcpKeyValueText(promptArgsTexts[server.name] ?? "");
+			const result = await onGetMcpPrompt(server.name, promptName, args);
+			setPromptOutputs((prev) => ({
+				...prev,
+				[server.name]: formatMcpPromptResult(result),
+			}));
+		} catch (error) {
+			setPromptOutputs((prev) =>
+				Object.fromEntries(
+					Object.entries(prev).filter(([key]) => key !== server.name),
+				),
+			);
+			setPromptErrors((prev) => ({
+				...prev,
+				[server.name]:
+					error instanceof Error ? error.message : "Failed to run MCP prompt",
+			}));
+		} finally {
+			setGettingPromptName((current) =>
+				current === server.name ? null : current,
+			);
+		}
+	};
+
+	useEffect(() => {
+		let active = true;
+
+		const loadRegistry = async () => {
+			setRegistryLoading(true);
+			setRegistryError(null);
+			try {
+				const result = await onSearchMcpRegistry("");
+				if (!active) {
+					return;
+				}
+				setRegistryEntries(result.entries ?? []);
+			} catch (error) {
+				if (!active) {
+					return;
+				}
+				setRegistryError(
+					error instanceof Error
+						? error.message
+						: "Failed to load official MCP registry",
+				);
+			} finally {
+				if (active) {
+					setRegistryLoading(false);
+				}
+			}
+		};
+
+		void loadRegistry();
+
+		return () => {
+			active = false;
+		};
+	}, [onSearchMcpRegistry]);
+
+	const runRegistrySearch = async (query: string) => {
+		setRegistryLoading(true);
+		setRegistryError(null);
+		setRegistryNotice(null);
+		try {
+			const result = await onSearchMcpRegistry(query);
+			setRegistryEntries(result.entries ?? []);
+		} catch (error) {
+			setRegistryEntries([]);
+			setRegistryError(
+				error instanceof Error
+					? error.message
+					: "Failed to search the official MCP registry",
+			);
+		} finally {
+			setRegistryLoading(false);
+		}
+	};
+
+	const handleRegistrySearchSubmit = (event: FormEvent<HTMLFormElement>) => {
+		event.preventDefault();
+		void runRegistrySearch(registryQuery);
+	};
+
+	const handleRegistryImport = async (
+		entry: McpRegistryEntryViewModel,
+	): Promise<void> => {
+		setRegistryImportingId(entry.id);
+		setRegistryError(null);
+		setRegistryNotice(null);
+		try {
+			const customName = registryNames[entry.id]?.trim() || undefined;
+			const selectedUrl =
+				registrySelectedUrls[entry.id]?.trim() || entry.defaultUrl || undefined;
+			const result = await onImportMcpRegistry({
+				query: entry.importQuery,
+				scope: registryScope,
+				name: customName,
+				url: selectedUrl,
+			});
+			setRegistryNotice(formatMcpRegistryImportMessage(result));
+			setRegistryNames((prev) => ({ ...prev, [entry.id]: "" }));
+		} catch (error) {
+			setRegistryError(
+				error instanceof Error
+					? error.message
+					: "Failed to import MCP registry entry",
+			);
+		} finally {
+			setRegistryImportingId(null);
+		}
+	};
+
+	const handleCustomServerSubmit = async (
+		event: FormEvent<HTMLFormElement>,
+	): Promise<void> => {
+		event.preventDefault();
+		setCustomServerSubmitting(true);
+		setServerMutationError(null);
+		setServerMutationNotice(null);
+		try {
+			const result = await onAddMcpServer({
+				scope: customServerScope,
+				server: {
+					name: customServerName.trim(),
+					transport: customServerTransport,
+					command:
+						customServerTransport === "stdio"
+							? customServerCommand.trim()
+							: undefined,
+					args:
+						customServerTransport === "stdio"
+							? parseMcpArgsText(customServerArgsText)
+							: undefined,
+					cwd:
+						customServerTransport === "stdio"
+							? customServerCwd.trim() || undefined
+							: undefined,
+					env:
+						customServerTransport === "stdio"
+							? parseMcpKeyValueText(customServerEnvText)
+							: undefined,
+					url:
+						customServerTransport === "stdio"
+							? undefined
+							: customServerUrl.trim(),
+					headers:
+						customServerTransport === "stdio"
+							? undefined
+							: parseMcpKeyValueText(customServerHeadersText),
+					headersHelper:
+						customServerTransport === "stdio"
+							? undefined
+							: customServerHeadersHelper.trim() || undefined,
+					authPreset:
+						customServerTransport === "stdio"
+							? undefined
+							: customServerAuthPreset || undefined,
+					timeout: parseMcpTimeoutText(customServerTimeoutText),
+				},
+			});
+			setServerMutationNotice(formatMcpServerAddMessage(result));
+			setCustomServerName("");
+			setCustomServerCommand("");
+			setCustomServerArgsText("");
+			setCustomServerCwd("");
+			setCustomServerEnvText("");
+			setCustomServerUrl("");
+			setCustomServerHeadersText("");
+			setCustomServerHeadersHelper("");
+			setCustomServerAuthPreset("");
+			setCustomServerTimeoutText("");
+			setCustomServerTransport("http");
+		} catch (error) {
+			setServerMutationError(
+				error instanceof Error ? error.message : "Failed to add MCP server",
+			);
+		} finally {
+			setCustomServerSubmitting(false);
+		}
+	};
+
+	const handleAuthPresetSubmit = async (
+		event: FormEvent<HTMLFormElement>,
+	): Promise<void> => {
+		event.preventDefault();
+		setAuthPresetSubmitting(true);
+		setServerMutationError(null);
+		setServerMutationNotice(null);
+		try {
+			const result = await onAddMcpAuthPreset({
+				scope: authPresetScope,
+				preset: {
+					name: authPresetName.trim(),
+					headers: parseMcpKeyValueText(authPresetHeadersText) ?? null,
+					headersHelper: authPresetHeadersHelper.trim() || null,
+				},
+			});
+			setServerMutationNotice(
+				`Added auth preset ${result.name} to ${formatMcpRegistryScopeLabel(result.scope)}.`,
+			);
+			setAuthPresetName("");
+			setAuthPresetHeadersText("");
+			setAuthPresetHeadersHelper("");
+		} catch (error) {
+			setServerMutationError(
+				error instanceof Error
+					? error.message
+					: "Failed to add MCP auth preset",
+			);
+		} finally {
+			setAuthPresetSubmitting(false);
+		}
+	};
+
+	const handleUpdateAuthPreset = async (
+		preset: McpAuthPresetStatus,
+	): Promise<void> => {
+		const writableScope = getWritableMcpScope(preset.scope);
+		if (!writableScope) {
+			return;
+		}
+		setUpdatingAuthPresetName(preset.name);
+		setServerMutationError(null);
+		setServerMutationNotice(null);
+		try {
+			const replacingHeaderValues =
+				editingAuthPresetReplaceHeaders[preset.name] === true;
+			const hasEditedHeaders =
+				replacingHeaderValues ||
+				((preset.headerKeys?.length ?? 0) === 0 &&
+					Object.prototype.hasOwnProperty.call(
+						editingAuthPresetHeadersTexts,
+						preset.name,
+					));
+			const hasEditedHeadersHelper = Object.prototype.hasOwnProperty.call(
+				editingAuthPresetHeadersHelpers,
+				preset.name,
+			);
+			const result = await onUpdateMcpAuthPreset({
+				name: preset.name,
+				scope: writableScope,
+				preset: {
+					name: preset.name,
+					headers: hasEditedHeaders
+						? (parseMcpKeyValueText(
+								editingAuthPresetHeadersTexts[preset.name] ?? "",
+							) ?? null)
+						: undefined,
+					headersHelper: hasEditedHeadersHelper
+						? editingAuthPresetHeadersHelpers[preset.name]?.trim() || null
+						: undefined,
+				},
+			});
+			setServerMutationNotice(
+				`Saved auth preset ${result.name} in ${formatMcpRegistryScopeLabel(result.scope)}.`,
+			);
+		} catch (error) {
+			setServerMutationError(
+				error instanceof Error
+					? error.message
+					: "Failed to update MCP auth preset",
+			);
+		} finally {
+			setUpdatingAuthPresetName(null);
+		}
+	};
+
+	const handleRemoveAuthPreset = async (
+		preset: McpAuthPresetStatus,
+	): Promise<void> => {
+		const writableScope = getWritableMcpScope(preset.scope);
+		if (!writableScope) {
+			return;
+		}
+		setRemovingAuthPresetName(preset.name);
+		setServerMutationError(null);
+		setServerMutationNotice(null);
+		try {
+			const result = await onRemoveMcpAuthPreset({
+				name: preset.name,
+				scope: writableScope,
+			});
+			setServerMutationNotice(
+				result.fallback
+					? `Removed auth preset ${result.name} from ${formatMcpRegistryScopeLabel(result.scope)}. ${result.fallback.name} from ${formatMcpRegistryScopeLabel(result.fallback.scope ?? "local")} is now active.`
+					: `Removed auth preset ${result.name} from ${formatMcpRegistryScopeLabel(result.scope)}.`,
+			);
+		} catch (error) {
+			setServerMutationError(
+				error instanceof Error
+					? error.message
+					: "Failed to remove MCP auth preset",
+			);
+		} finally {
+			setRemovingAuthPresetName(null);
+		}
+	};
+
+	const handleRemoveServer = async (
+		server: McpServerViewModel,
+	): Promise<void> => {
+		if (!server.writableScope) {
+			return;
+		}
+		setRemovingServerName(server.name);
+		setServerMutationError(null);
+		setServerMutationNotice(null);
+		try {
+			const result = await onRemoveMcpServer({
+				name: server.name,
+				scope: server.writableScope,
+			});
+			setServerMutationNotice(formatMcpServerRemoveMessage(result));
+		} catch (error) {
+			setServerMutationError(
+				error instanceof Error ? error.message : "Failed to remove MCP server",
+			);
+		} finally {
+			setRemovingServerName(null);
+		}
+	};
+
+	const handleSetProjectApproval = async (
+		server: McpServerViewModel,
+		decision: "approved" | "denied",
+	): Promise<void> => {
+		if (!server.projectApproval) {
+			return;
+		}
+		setProjectApprovalMutation({ name: server.name, decision });
+		setServerMutationError(null);
+		setServerMutationNotice(null);
+		try {
+			const result = await onSetMcpProjectApproval({
+				name: server.name,
+				decision,
+			});
+			setServerMutationNotice(
+				result.projectApproval === "approved"
+					? `Approved project MCP server ${result.name}.`
+					: `Denied project MCP server ${result.name}.`,
+			);
+		} catch (error) {
+			setServerMutationError(
+				error instanceof Error
+					? error.message
+					: "Failed to update MCP project approval",
+			);
+		} finally {
+			setProjectApprovalMutation((current) =>
+				current?.name === server.name ? null : current,
+			);
+		}
+	};
+
+	const handleUpdateServer = async (
+		server: McpServerViewModel,
+	): Promise<void> => {
+		if (!server.writableScope || !server.transport) {
+			return;
+		}
+		setUpdatingServerName(server.name);
+		setServerMutationError(null);
+		setServerMutationNotice(null);
+		try {
+			const hasEditedArgs = Object.prototype.hasOwnProperty.call(
+				editingServerArgsText,
+				server.name,
+			);
+			const hasEditedCwd = Object.prototype.hasOwnProperty.call(
+				editingServerCwds,
+				server.name,
+			);
+			const replacingEnvValues = editingServerReplaceEnv[server.name] === true;
+			const replacingHeaderValues =
+				editingServerReplaceHeaders[server.name] === true;
+			const hasEditedEnv =
+				replacingEnvValues ||
+				(server.envKeys.length === 0 &&
+					Object.prototype.hasOwnProperty.call(
+						editingServerEnvTexts,
+						server.name,
+					));
+			const hasEditedHeaders =
+				replacingHeaderValues ||
+				(server.headerKeys.length === 0 &&
+					Object.prototype.hasOwnProperty.call(
+						editingServerHeadersTexts,
+						server.name,
+					));
+			const hasEditedHeadersHelper = Object.prototype.hasOwnProperty.call(
+				editingServerHeadersHelpers,
+				server.name,
+			);
+			const hasEditedTimeout = Object.prototype.hasOwnProperty.call(
+				editingServerTimeouts,
+				server.name,
+			);
+			const editableAuthPreset =
+				editingServerAuthPresets[server.name] ?? server.authPreset ?? "";
+			const serverInput: McpServerUpdateRequest["server"] =
+				server.transport === "stdio"
+					? {
+							name: server.name,
+							transport: "stdio",
+							command:
+								editingServerCommands[server.name]?.trim() ||
+								server.command ||
+								"",
+							args: hasEditedArgs
+								? (parseMcpArgsText(editingServerArgsText[server.name] ?? "") ??
+									null)
+								: undefined,
+							cwd: hasEditedCwd
+								? editingServerCwds[server.name]?.trim() || null
+								: undefined,
+							env: hasEditedEnv
+								? (parseMcpKeyValueText(
+										editingServerEnvTexts[server.name] ?? "",
+									) ?? null)
+								: undefined,
+							timeout: hasEditedTimeout
+								? (parseMcpTimeoutText(
+										editingServerTimeouts[server.name] ?? "",
+									) ?? null)
+								: undefined,
+						}
+					: {
+							name: server.name,
+							transport:
+								editingServerTransports[server.name] ??
+								(server.transport === "sse" ? "sse" : "http"),
+							url:
+								editingServerUrls[server.name]?.trim() ||
+								server.remoteUrl ||
+								"",
+							headers: hasEditedHeaders
+								? (parseMcpKeyValueText(
+										editingServerHeadersTexts[server.name] ?? "",
+									) ?? null)
+								: undefined,
+							headersHelper: hasEditedHeadersHelper
+								? editingServerHeadersHelpers[server.name]?.trim() || null
+								: undefined,
+							authPreset: editableAuthPreset.trim() || null,
+							timeout: hasEditedTimeout
+								? (parseMcpTimeoutText(
+										editingServerTimeouts[server.name] ?? "",
+									) ?? null)
+								: undefined,
+						};
+			const result = await onUpdateMcpServer({
+				name: server.name,
+				scope: server.writableScope,
+				server: serverInput,
+			});
+			setServerMutationNotice(formatMcpServerUpdateMessage(result));
+		} catch (error) {
+			setServerMutationError(
+				error instanceof Error ? error.message : "Failed to update MCP server",
+			);
+		} finally {
+			setUpdatingServerName(null);
+		}
+	};
+
+	return (
+		<section className="border border-line-subtle rounded-xl overflow-hidden">
+			<div className="px-4 py-2 text-xs font-semibold text-text-tertiary border-b border-line-subtle uppercase tracking-wide">
+				Tools & Runtime
+			</div>
+			<div className="p-4 space-y-5">
+				<div className="space-y-2">
+					<div className="flex items-center justify-between gap-4">
+						<div>
+							<div className="text-text-primary font-medium">LSP servers</div>
+							<div className="text-xs text-text-muted">Slash command: /lsp</div>
+						</div>
+						<div className="flex items-center gap-2">
+							<button
+								type="button"
+								className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
+								onClick={() => onLspAction("start")}
+							>
+								Start
+							</button>
+							<button
+								type="button"
+								className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
+								onClick={() => onLspAction("stop")}
+							>
+								Stop
+							</button>
+							<button
+								type="button"
+								className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
+								onClick={() => onLspAction("restart")}
+							>
+								Restart
+							</button>
+							<button
+								type="button"
+								className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
+								onClick={onDetectLsp}
+							>
+								Detect
+							</button>
+						</div>
+					</div>
+					<div className="text-xs text-text-muted">
+						Enabled: {lsp.enabledLabel} · Autostart: {lsp.autostartLabel} ·
+						Servers: {lsp.serverCount}
+					</div>
+					{lsp.servers.length ? (
+						<div className="grid grid-cols-1 gap-2">
+							{lsp.servers.map((server) => (
+								<div
+									key={server.id}
+									className="flex items-center justify-between text-xs text-text-muted"
+								>
+									<span>{server.id}</span>
+									<span>{server.summary}</span>
+								</div>
+							))}
+						</div>
+					) : (
+						<div className="text-xs text-text-muted">
+							No active LSP servers.
+						</div>
+					)}
+					{lsp.detectionsLabel && (
+						<div className="text-xs text-text-muted">
+							Detected: {lsp.detectionsLabel}
+						</div>
+					)}
+				</div>
+
+				<div className="space-y-2">
+					<div className="flex items-center justify-between gap-4">
+						<div>
+							<div className="text-text-primary font-medium">MCP servers</div>
+							<div className="text-xs text-text-muted">Slash command: /mcp</div>
+						</div>
+						<button
+							type="button"
+							className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
+							onClick={onRefreshMcpStatus}
+						>
+							Refresh
+						</button>
+					</div>
+					<div className="rounded-lg border border-line-subtle/60 bg-bg-secondary/40 px-3 py-3 space-y-2">
+						<div className="text-text-primary font-medium">Auth presets</div>
+						<div className="text-xs text-text-muted">
+							Reusable hidden headers/helpers for remote MCP servers.
+						</div>
+						{authPresets.length ? (
+							<div className="grid grid-cols-1 gap-2">
+								{authPresets.map((preset) => {
+									const writableScope = getWritableMcpScope(preset.scope);
+									const replaceHiddenHeaderValues =
+										editingAuthPresetReplaceHeaders[preset.name] === true;
+									const canEditHeaderValues =
+										(preset.headerKeys?.length ?? 0) === 0 ||
+										replaceHiddenHeaderValues;
+									return (
+										<div
+											key={preset.name}
+											className="rounded-lg border border-line-subtle/60 bg-bg-tertiary/30 px-2.5 py-2 space-y-2 text-[11px] text-text-muted"
+										>
+											<div className="flex items-center justify-between gap-2">
+												<div>
+													<div className="text-text-primary">{preset.name}</div>
+													<div>
+														{formatMcpScopeLabel(preset.scope) ??
+															"Merged config"}
+													</div>
+												</div>
+												{writableScope && (
+													<button
+														type="button"
+														className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-secondary/60 disabled:opacity-60"
+														onClick={() => void handleRemoveAuthPreset(preset)}
+														disabled={removingAuthPresetName === preset.name}
+													>
+														{removingAuthPresetName === preset.name
+															? "Removing..."
+															: "Remove"}
+													</button>
+												)}
+											</div>
+											<div>
+												{preset.headersHelper && (
+													<div
+														className="truncate"
+														title={preset.headersHelper}
+													>
+														Headers helper: {preset.headersHelper}
+													</div>
+												)}
+												<div title={preset.headerKeys.join(", ")}>
+													Header keys:{" "}
+													{preset.headerKeys.length
+														? preset.headerKeys.join(", ")
+														: "none"}
+												</div>
+											</div>
+											{writableScope && (
+												<>
+													<div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_auto] gap-2">
+														<input
+															type="text"
+															value={
+																editingAuthPresetHeadersHelpers[preset.name] ??
+																preset.headersHelper ??
+																""
+															}
+															onChange={(event) =>
+																setEditingAuthPresetHeadersHelpers((prev) => ({
+																	...prev,
+																	[preset.name]: event.target.value,
+																}))
+															}
+															placeholder="Headers helper (optional)"
+															aria-label={`Headers helper for auth preset ${preset.name}`}
+															className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+														/>
+														<button
+															type="button"
+															className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-60"
+															onClick={() =>
+																void handleUpdateAuthPreset(preset)
+															}
+															disabled={updatingAuthPresetName === preset.name}
+														>
+															{updatingAuthPresetName === preset.name
+																? "Saving..."
+																: "Save"}
+														</button>
+													</div>
+													{(preset.headerKeys?.length ?? 0) > 0 && (
+														<label className="text-xs text-text-muted inline-flex items-center gap-2">
+															<input
+																type="checkbox"
+																checked={replaceHiddenHeaderValues}
+																onChange={(event) => {
+																	const checked = event.target.checked;
+																	setEditingAuthPresetReplaceHeaders((prev) =>
+																		checked
+																			? {
+																					...prev,
+																					[preset.name]: true,
+																				}
+																			: Object.fromEntries(
+																					Object.entries(prev).filter(
+																						([key]) => key !== preset.name,
+																					),
+																				),
+																	);
+																	if (!checked) {
+																		setEditingAuthPresetHeadersTexts((prev) =>
+																			Object.fromEntries(
+																				Object.entries(prev).filter(
+																					([key]) => key !== preset.name,
+																				),
+																			),
+																		);
+																	}
+																}}
+																aria-label={`Replace hidden headers for auth preset ${preset.name}`}
+															/>
+															<span>Replace hidden header values</span>
+														</label>
+													)}
+													<textarea
+														value={
+															editingAuthPresetHeadersTexts[preset.name] ?? ""
+														}
+														onChange={(event) =>
+															setEditingAuthPresetHeadersTexts((prev) => ({
+																...prev,
+																[preset.name]: event.target.value,
+															}))
+														}
+														placeholder="Headers (KEY=VALUE, one per line)"
+														disabled={!canEditHeaderValues}
+														aria-label={`Headers for auth preset ${preset.name}`}
+														className="min-h-[88px] bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+													/>
+													<div className="text-[11px] text-text-muted">
+														Header values stay hidden.{" "}
+														{(preset.headerKeys?.length ?? 0) > 0 &&
+														!replaceHiddenHeaderValues
+															? 'Enable "Replace hidden header values" to edit them.'
+															: "Enter KEY=VALUE lines to replace them. Leave the field blank and save to clear them."}{" "}
+														Current keys:{" "}
+														{preset.headerKeys.length
+															? preset.headerKeys.join(", ")
+															: "none"}
+														.
+													</div>
+												</>
+											)}
+										</div>
+									);
+								})}
+							</div>
+						) : (
+							<div className="text-xs text-text-muted">
+								No MCP auth presets configured.
+							</div>
+						)}
+						<form
+							className="grid grid-cols-1 gap-2"
+							onSubmit={handleAuthPresetSubmit}
+						>
+							<input
+								type="text"
+								value={authPresetName}
+								onChange={(event) => setAuthPresetName(event.target.value)}
+								placeholder="Preset name"
+								aria-label="MCP auth preset name"
+								className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+							/>
+							<input
+								type="text"
+								value={authPresetHeadersHelper}
+								onChange={(event) =>
+									setAuthPresetHeadersHelper(event.target.value)
+								}
+								placeholder="Headers helper (optional)"
+								aria-label="MCP auth preset headers helper"
+								className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+							/>
+							<textarea
+								value={authPresetHeadersText}
+								onChange={(event) =>
+									setAuthPresetHeadersText(event.target.value)
+								}
+								placeholder="Headers (KEY=VALUE, one per line)"
+								aria-label="MCP auth preset headers"
+								className="min-h-[88px] bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+							/>
+							<div className="flex items-center gap-2">
+								<select
+									value={authPresetScope}
+									onChange={(event) =>
+										setAuthPresetScope(
+											event.target.value as McpRegistryImportRequest["scope"],
+										)
+									}
+									aria-label="MCP auth preset scope"
+									className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary"
+								>
+									<option value="local">Local config</option>
+									<option value="project">Project config</option>
+									<option value="user">User config</option>
+								</select>
+								<button
+									type="submit"
+									className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-60"
+									disabled={
+										authPresetSubmitting ||
+										authPresetName.trim().length === 0 ||
+										(authPresetHeadersHelper.trim().length === 0 &&
+											authPresetHeadersText.trim().length === 0)
+									}
+								>
+									{authPresetSubmitting ? "Adding..." : "Add preset"}
+								</button>
+							</div>
+						</form>
+					</div>
+					{mcpServers.length ? (
+						<div className="grid grid-cols-1 gap-2">
+							{mcpServers.map((server) => (
+								<div
+									key={server.name}
+									className="rounded-lg border border-line-subtle/60 bg-bg-tertiary/30"
+								>
+									{(() => {
+										const replaceHiddenEnvValues =
+											editingServerReplaceEnv[server.name] === true;
+										const replaceHiddenHeaderValues =
+											editingServerReplaceHeaders[server.name] === true;
+										const canEditEnvValues =
+											server.envKeys.length === 0 || replaceHiddenEnvValues;
+										const canEditHeaderValues =
+											server.headerKeys.length === 0 ||
+											replaceHiddenHeaderValues;
+										const selectedResourceUri =
+											selectedResourceUris[server.name] ??
+											server.resources[0] ??
+											"";
+										const selectedPromptName =
+											selectedPromptNames[server.name] ??
+											server.prompts[0] ??
+											"";
+										const selectedPromptDetail =
+											server.promptDetails.find(
+												(prompt) => prompt.name === selectedPromptName,
+											) ?? null;
+										const promptArgsText = promptArgsTexts[server.name] ?? "";
+										const resourceOutput = resourceOutputs[server.name] ?? "";
+										const promptOutput = promptOutputs[server.name] ?? "";
+										const resourceError = resourceErrors[server.name] ?? null;
+										const promptError = promptErrors[server.name] ?? null;
+										return (
+											<>
+												<div className="flex items-center gap-2 px-3 py-2">
+													<button
+														type="button"
+														className="flex-1 flex items-center justify-between text-xs text-text-muted"
+														onClick={() => onToggleMcpServer(server.name)}
+													>
+														<span className="text-text-primary">
+															{server.name}
+														</span>
+														<span>{server.summary}</span>
+													</button>
+													{server.writableScope && (
+														<button
+															type="button"
+															className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-secondary/60 disabled:opacity-60"
+															onClick={() => void handleRemoveServer(server)}
+															disabled={removingServerName === server.name}
+														>
+															{removingServerName === server.name
+																? "Removing..."
+																: "Remove"}
+														</button>
+													)}
+												</div>
+												{server.isExpanded && (
+													<div className="border-t border-line-subtle/60 px-3 py-2 space-y-2 text-[11px] text-text-muted">
+														{(server.sourceLabel ||
+															server.transportLabel ||
+															server.remoteTrustLabel ||
+															server.projectApprovalLabel) && (
+															<div className="flex flex-wrap gap-1">
+																{server.sourceLabel && (
+																	<span className="px-2 py-0.5 rounded-full border border-line-subtle/60 bg-bg-secondary/60 text-text-secondary">
+																		{server.sourceLabel}
+																	</span>
+																)}
+																{server.transportLabel && (
+																	<span className="px-2 py-0.5 rounded-full border border-line-subtle/60 bg-bg-secondary/60 text-text-secondary">
+																		{server.transportLabel}
+																	</span>
+																)}
+																{server.remoteTrustLabel && (
+																	<span className="px-2 py-0.5 rounded-full border border-line-subtle/60 bg-bg-secondary/60 text-text-secondary">
+																		{server.remoteTrustLabel}
+																	</span>
+																)}
+																{server.projectApprovalLabel && (
+																	<span className="px-2 py-0.5 rounded-full border border-line-subtle/60 bg-bg-secondary/60 text-text-secondary">
+																		{server.projectApprovalLabel}
+																	</span>
+																)}
+															</div>
+														)}
+														{server.projectApproval && (
+															<div className="rounded-lg border border-line-subtle/60 bg-bg-secondary/50 px-2.5 py-2 space-y-2">
+																<div className="text-text-primary">
+																	Project approval:{" "}
+																	{server.projectApprovalLabel}
+																</div>
+																<div>
+																	Repo-provided MCP servers stay disconnected
+																	until they are approved locally.
+																</div>
+																<div className="flex flex-wrap gap-2">
+																	{server.projectApproval !== "approved" && (
+																		<button
+																			type="button"
+																			className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-60"
+																			onClick={() =>
+																				void handleSetProjectApproval(
+																					server,
+																					"approved",
+																				)
+																			}
+																			disabled={
+																				projectApprovalMutation?.name ===
+																				server.name
+																			}
+																		>
+																			{projectApprovalMutation?.name ===
+																				server.name &&
+																			projectApprovalMutation.decision ===
+																				"approved"
+																				? "Approving..."
+																				: "Approve"}
+																		</button>
+																	)}
+																	{server.projectApproval !== "denied" && (
+																		<button
+																			type="button"
+																			className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-60"
+																			onClick={() =>
+																				void handleSetProjectApproval(
+																					server,
+																					"denied",
+																				)
+																			}
+																			disabled={
+																				projectApprovalMutation?.name ===
+																				server.name
+																			}
+																		>
+																			{projectApprovalMutation?.name ===
+																				server.name &&
+																			projectApprovalMutation.decision ===
+																				"denied"
+																				? "Denying..."
+																				: "Deny"}
+																		</button>
+																	)}
+																</div>
+															</div>
+														)}
+														{server.errorLabel && (
+															<div className="rounded-lg border border-error/40 bg-error/10 px-2.5 py-2 text-error">
+																{server.errorLabel}
+															</div>
+														)}
+														{(server.remoteHost || server.remoteUrl) && (
+															<div className="space-y-1">
+																{server.remoteHost && (
+																	<div>Host: {server.remoteHost}</div>
+																)}
+																{server.remoteUrl && (
+																	<div
+																		className="truncate"
+																		title={server.remoteUrl}
+																	>
+																		URL: {server.remoteUrl}
+																	</div>
+																)}
+															</div>
+														)}
+														{(server.command ||
+															server.cwd ||
+															server.args.length > 0) && (
+															<div className="space-y-1">
+																{server.command && (
+																	<div>Command: {server.command}</div>
+																)}
+																{server.args.length > 0 && (
+																	<div title={server.args.join(" ")}>
+																		Args: {server.args.join(" ")}
+																	</div>
+																)}
+																{server.cwd && (
+																	<div className="truncate" title={server.cwd}>
+																		CWD: {server.cwd}
+																	</div>
+																)}
+															</div>
+														)}
+														{(server.timeout ||
+															server.headersHelper ||
+															server.authPreset ||
+															server.envKeys.length > 0 ||
+															server.headerKeys.length > 0) && (
+															<div className="space-y-1">
+																{server.timeout && (
+																	<div>Timeout: {server.timeout} ms</div>
+																)}
+																{server.authPreset && (
+																	<div>Auth preset: {server.authPreset}</div>
+																)}
+																{server.headersHelper && (
+																	<div
+																		className="truncate"
+																		title={server.headersHelper}
+																	>
+																		Headers helper: {server.headersHelper}
+																	</div>
+																)}
+																{server.envKeys.length > 0 && (
+																	<div title={server.envKeys.join(", ")}>
+																		Env keys: {server.envKeys.join(", ")}
+																	</div>
+																)}
+																{server.headerKeys.length > 0 && (
+																	<div title={server.headerKeys.join(", ")}>
+																		Header keys: {server.headerKeys.join(", ")}
+																	</div>
+																)}
+															</div>
+														)}
+														{server.officialRegistryName && (
+															<div className="rounded-lg border border-line-subtle/60 bg-bg-secondary/50 px-2.5 py-2 space-y-1">
+																<div className="text-text-primary">
+																	Official registry:{" "}
+																	{server.officialRegistryName}
+																</div>
+																{server.officialRegistryAuthor && (
+																	<div>
+																		Author: {server.officialRegistryAuthor}
+																	</div>
+																)}
+																{server.officialRegistryPermissions && (
+																	<div>
+																		Permissions:{" "}
+																		{server.officialRegistryPermissions}
+																	</div>
+																)}
+																{(server.officialRegistryDirectoryUrl ||
+																	server.officialRegistryDocumentationUrl) && (
+																	<div className="flex flex-wrap gap-3">
+																		{server.officialRegistryDirectoryUrl && (
+																			<a
+																				href={
+																					server.officialRegistryDirectoryUrl
+																				}
+																				target="_blank"
+																				rel="noreferrer"
+																				className="text-accent hover:underline"
+																			>
+																				Directory
+																			</a>
+																		)}
+																		{server.officialRegistryDocumentationUrl && (
+																			<a
+																				href={
+																					server.officialRegistryDocumentationUrl
+																				}
+																				target="_blank"
+																				rel="noreferrer"
+																				className="text-accent hover:underline"
+																			>
+																				Docs
+																			</a>
+																		)}
+																	</div>
+																)}
+															</div>
+														)}
+														{server.writableScope && server.remoteUrl && (
+															<div className="rounded-lg border border-line-subtle/60 bg-bg-secondary/40 px-2.5 py-2 space-y-2">
+																<div className="text-text-primary">
+																	Edit remote
+																</div>
+																<div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_140px_auto] gap-2">
+																	<input
+																		type="url"
+																		value={
+																			editingServerUrls[server.name] ??
+																			server.remoteUrl
+																		}
+																		onChange={(event) =>
+																			setEditingServerUrls((prev) => ({
+																				...prev,
+																				[server.name]: event.target.value,
+																			}))
+																		}
+																		placeholder="https://example.com/mcp"
+																		aria-label={`Remote URL for ${server.name}`}
+																		className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+																	/>
+																	<select
+																		value={
+																			editingServerTransports[server.name] ??
+																			(server.transport === "sse"
+																				? "sse"
+																				: "http")
+																		}
+																		onChange={(event) =>
+																			setEditingServerTransports((prev) => ({
+																				...prev,
+																				[server.name]: event.target.value as
+																					| "http"
+																					| "sse",
+																			}))
+																		}
+																		aria-label={`Remote transport for ${server.name}`}
+																		className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary"
+																	>
+																		<option value="http">HTTP</option>
+																		<option value="sse">SSE</option>
+																	</select>
+																	<select
+																		value={
+																			editingServerAuthPresets[server.name] ??
+																			server.authPreset ??
+																			""
+																		}
+																		onChange={(event) =>
+																			setEditingServerAuthPresets((prev) => ({
+																				...prev,
+																				[server.name]: event.target.value,
+																			}))
+																		}
+																		aria-label={`Auth preset for ${server.name}`}
+																		className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary"
+																	>
+																		<option value="">No auth preset</option>
+																		{authPresets.map((preset) => (
+																			<option
+																				key={preset.name}
+																				value={preset.name}
+																			>
+																				{preset.name}
+																			</option>
+																		))}
+																	</select>
+																	<button
+																		type="button"
+																		className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-60"
+																		onClick={() =>
+																			void handleUpdateServer(server)
+																		}
+																		disabled={
+																			updatingServerName === server.name
+																		}
+																	>
+																		{updatingServerName === server.name
+																			? "Saving..."
+																			: "Save"}
+																	</button>
+																</div>
+																<div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_180px] gap-2">
+																	<input
+																		type="text"
+																		value={
+																			editingServerHeadersHelpers[
+																				server.name
+																			] ??
+																			server.headersHelper ??
+																			""
+																		}
+																		onChange={(event) =>
+																			setEditingServerHeadersHelpers(
+																				(prev) => ({
+																					...prev,
+																					[server.name]: event.target.value,
+																				}),
+																			)
+																		}
+																		placeholder="Headers helper (optional)"
+																		aria-label={`Headers helper for ${server.name}`}
+																		className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+																	/>
+																	<input
+																		type="number"
+																		min="1"
+																		value={
+																			editingServerTimeouts[server.name] ??
+																			formatMcpTimeoutText(server.timeout)
+																		}
+																		onChange={(event) =>
+																			setEditingServerTimeouts((prev) => ({
+																				...prev,
+																				[server.name]: event.target.value,
+																			}))
+																		}
+																		placeholder="Timeout (ms)"
+																		aria-label={`Timeout for ${server.name}`}
+																		className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+																	/>
+																</div>
+																{server.headerKeys.length > 0 && (
+																	<label className="flex items-center gap-2 text-xs text-text-muted">
+																		<input
+																			type="checkbox"
+																			checked={replaceHiddenHeaderValues}
+																			onChange={(event) => {
+																				const checked = event.target.checked;
+																				setEditingServerReplaceHeaders(
+																					(prev) =>
+																						checked
+																							? { ...prev, [server.name]: true }
+																							: Object.fromEntries(
+																									Object.entries(prev).filter(
+																										([key]) =>
+																											key !== server.name,
+																									),
+																								),
+																				);
+																				if (!checked) {
+																					setEditingServerHeadersTexts((prev) =>
+																						Object.fromEntries(
+																							Object.entries(prev).filter(
+																								([key]) => key !== server.name,
+																							),
+																						),
+																					);
+																				}
+																			}}
+																			aria-label={`Replace hidden headers for ${server.name}`}
+																		/>
+																		<span>Replace hidden header values</span>
+																	</label>
+																)}
+																<textarea
+																	value={
+																		editingServerHeadersTexts[server.name] ?? ""
+																	}
+																	disabled={!canEditHeaderValues}
+																	onChange={(event) =>
+																		setEditingServerHeadersTexts((prev) => ({
+																			...prev,
+																			[server.name]: event.target.value,
+																		}))
+																	}
+																	placeholder="Headers (KEY=VALUE, one per line)"
+																	aria-label={`Headers for ${server.name}`}
+																	className="min-h-[88px] bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+																/>
+																<div>
+																	{server.headerKeys.length > 0
+																		? replaceHiddenHeaderValues
+																			? `Header values stay hidden. Enter KEY=VALUE lines to replace them. Leave the field blank and save to clear them. Current keys: ${server.headerKeys.join(", ")}.`
+																			: `Header values stay hidden and will be preserved unless you enable replacement. Current keys: ${server.headerKeys.join(", ")}.`
+																		: "Enter KEY=VALUE lines to set headers for this server."}{" "}
+																	Delete optional values like timeout or headers
+																	helper, or select "No auth preset", then save
+																	to clear them.
+																</div>
+																<div>
+																	Edits apply to the{" "}
+																	{formatMcpRegistryScopeLabel(
+																		server.writableScope,
+																	)}{" "}
+																	config file.
+																</div>
+															</div>
+														)}
+														{server.writableScope &&
+															server.transport === "stdio" && (
+																<div className="rounded-lg border border-line-subtle/60 bg-bg-secondary/40 px-2.5 py-2 space-y-2">
+																	<div className="text-text-primary">
+																		Edit stdio
+																	</div>
+																	<div className="grid grid-cols-1 gap-2">
+																		<input
+																			type="text"
+																			value={
+																				editingServerCommands[server.name] ??
+																				server.command ??
+																				""
+																			}
+																			onChange={(event) =>
+																				setEditingServerCommands((prev) => ({
+																					...prev,
+																					[server.name]: event.target.value,
+																				}))
+																			}
+																			placeholder="Command"
+																			aria-label={`Command for ${server.name}`}
+																			className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+																		/>
+																		<textarea
+																			value={
+																				editingServerArgsText[server.name] ??
+																				formatMcpArgsText(server.args)
+																			}
+																			onChange={(event) =>
+																				setEditingServerArgsText((prev) => ({
+																					...prev,
+																					[server.name]: event.target.value,
+																				}))
+																			}
+																			placeholder={"Arguments (one per line)"}
+																			aria-label={`Arguments for ${server.name}`}
+																			className="min-h-[88px] bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+																		/>
+																		<textarea
+																			value={
+																				editingServerEnvTexts[server.name] ?? ""
+																			}
+																			disabled={!canEditEnvValues}
+																			onChange={(event) =>
+																				setEditingServerEnvTexts((prev) => ({
+																					...prev,
+																					[server.name]: event.target.value,
+																				}))
+																			}
+																			placeholder={
+																				"Env vars (KEY=VALUE, one per line)"
+																			}
+																			aria-label={`Environment variables for ${server.name}`}
+																			className="min-h-[88px] bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+																		/>
+																		<div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_180px_auto] gap-2">
+																			<input
+																				type="text"
+																				value={
+																					editingServerCwds[server.name] ??
+																					server.cwd ??
+																					""
+																				}
+																				onChange={(event) =>
+																					setEditingServerCwds((prev) => ({
+																						...prev,
+																						[server.name]: event.target.value,
+																					}))
+																				}
+																				placeholder="Working directory (optional)"
+																				aria-label={`Working directory for ${server.name}`}
+																				className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+																			/>
+																			<input
+																				type="number"
+																				min="1"
+																				value={
+																					editingServerTimeouts[server.name] ??
+																					formatMcpTimeoutText(server.timeout)
+																				}
+																				onChange={(event) =>
+																					setEditingServerTimeouts((prev) => ({
+																						...prev,
+																						[server.name]: event.target.value,
+																					}))
+																				}
+																				placeholder="Timeout (ms)"
+																				aria-label={`Timeout for ${server.name}`}
+																				className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+																			/>
+																			<button
+																				type="button"
+																				className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-60"
+																				onClick={() =>
+																					void handleUpdateServer(server)
+																				}
+																				disabled={
+																					updatingServerName === server.name ||
+																					(
+																						editingServerCommands[
+																							server.name
+																						] ??
+																						server.command ??
+																						""
+																					).trim().length === 0
+																				}
+																			>
+																				{updatingServerName === server.name
+																					? "Saving..."
+																					: "Save"}
+																			</button>
+																		</div>
+																	</div>
+																	{server.envKeys.length > 0 && (
+																		<label className="flex items-center gap-2 text-xs text-text-muted">
+																			<input
+																				type="checkbox"
+																				checked={replaceHiddenEnvValues}
+																				onChange={(event) => {
+																					const checked = event.target.checked;
+																					setEditingServerReplaceEnv((prev) =>
+																						checked
+																							? { ...prev, [server.name]: true }
+																							: Object.fromEntries(
+																									Object.entries(prev).filter(
+																										([key]) =>
+																											key !== server.name,
+																									),
+																								),
+																					);
+																					if (!checked) {
+																						setEditingServerEnvTexts((prev) =>
+																							Object.fromEntries(
+																								Object.entries(prev).filter(
+																									([key]) =>
+																										key !== server.name,
+																								),
+																							),
+																						);
+																					}
+																				}}
+																				aria-label={`Replace hidden environment variables for ${server.name}`}
+																			/>
+																			<span>
+																				Replace hidden environment values
+																			</span>
+																		</label>
+																	)}
+																	<div>
+																		{server.envKeys.length > 0
+																			? replaceHiddenEnvValues
+																				? `Env values stay hidden. Enter KEY=VALUE lines to replace them. Leave the field blank and save to clear them. Current keys: ${server.envKeys.join(", ")}.`
+																				: `Env values stay hidden and will be preserved unless you enable replacement. Current keys: ${server.envKeys.join(", ")}.`
+																			: "Enter KEY=VALUE lines to set environment variables for this server."}{" "}
+																		Delete optional values like args, cwd, env
+																		vars, or timeout, then save, to clear them.
+																	</div>
+																	<div>
+																		Edits apply to the{" "}
+																		{formatMcpRegistryScopeLabel(
+																			server.writableScope,
+																		)}{" "}
+																		config file.
+																	</div>
+																</div>
+															)}
+														{server.tools.length > 0 ? (
+															<div>
+																<div className="text-text-tertiary uppercase tracking-wide text-[10px] mb-1">
+																	Tools
+																</div>
+																<div className="flex flex-wrap gap-1">
+																	{server.tools.map((tool) => (
+																		<span
+																			key={`${server.name}:${tool.name}`}
+																			className="px-2 py-0.5 rounded-full border border-line-subtle/60 bg-bg-secondary/60 text-text-secondary"
+																			title={tool.description}
+																		>
+																			{tool.name}
+																		</span>
+																	))}
+																</div>
+															</div>
+														) : (
+															<div>{server.toolDetailsLabel}</div>
+														)}
+														<div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+															<div className="rounded-lg border border-line-subtle/60 bg-bg-secondary/40 px-2.5 py-2 space-y-2">
+																<div className="text-text-tertiary uppercase tracking-wide text-[10px]">
+																	Resources
+																</div>
+																{server.resources.length ? (
+																	<>
+																		<select
+																			value={selectedResourceUri}
+																			onChange={(event) =>
+																				setSelectedResourceUris((prev) => ({
+																					...prev,
+																					[server.name]: event.target.value,
+																				}))
+																			}
+																			aria-label={`MCP resource for ${server.name}`}
+																			className="w-full bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary"
+																		>
+																			{server.resources.map((resource) => (
+																				<option
+																					key={`${server.name}:${resource}`}
+																					value={resource}
+																				>
+																					{resource}
+																				</option>
+																			))}
+																		</select>
+																		<button
+																			type="button"
+																			className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-60"
+																			onClick={() =>
+																				void handleReadResource(server)
+																			}
+																			disabled={
+																				readingResourceName === server.name ||
+																				!selectedResourceUri
+																			}
+																		>
+																			{readingResourceName === server.name
+																				? "Loading..."
+																				: "Read resource"}
+																		</button>
+																		{resourceError && (
+																			<div className="rounded-lg border border-error/40 bg-error/10 px-2.5 py-2 text-error">
+																				{resourceError}
+																			</div>
+																		)}
+																		{resourceOutput && (
+																			<pre className="whitespace-pre-wrap break-words rounded-lg border border-line-subtle/60 bg-bg-tertiary/40 px-2.5 py-2 text-[11px] text-text-secondary">
+																				{resourceOutput}
+																			</pre>
+																		)}
+																	</>
+																) : (
+																	<div>None</div>
+																)}
+															</div>
+															<div className="rounded-lg border border-line-subtle/60 bg-bg-secondary/40 px-2.5 py-2 space-y-2">
+																<div className="text-text-tertiary uppercase tracking-wide text-[10px]">
+																	Prompts
+																</div>
+																{server.prompts.length ? (
+																	<>
+																		<select
+																			value={selectedPromptName}
+																			onChange={(event) =>
+																				setSelectedPromptNames((prev) => ({
+																					...prev,
+																					[server.name]: event.target.value,
+																				}))
+																			}
+																			aria-label={`MCP prompt for ${server.name}`}
+																			className="w-full bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary"
+																		>
+																			{server.prompts.map((prompt) => {
+																				const promptDetail =
+																					server.promptDetails.find(
+																						(detail) => detail.name === prompt,
+																					);
+																				return (
+																					<option
+																						key={`${server.name}:${prompt}`}
+																						value={prompt}
+																					>
+																						{promptDetail?.title ?? prompt}
+																					</option>
+																				);
+																			})}
+																		</select>
+																		{selectedPromptDetail?.description && (
+																			<div className="text-text-muted">
+																				{selectedPromptDetail.description}
+																			</div>
+																		)}
+																		{(selectedPromptDetail?.arguments?.length ??
+																			0) > 0 ? (
+																			<div className="grid grid-cols-1 gap-2">
+																				{(
+																					selectedPromptDetail?.arguments ?? []
+																				).map((argument) => {
+																					const argumentKey =
+																						getMcpPromptArgumentValueKey(
+																							server.name,
+																							selectedPromptName,
+																							argument.name,
+																						);
+																					return (
+																						<label
+																							key={argumentKey}
+																							className="grid grid-cols-1 gap-1"
+																						>
+																							<span className="text-text-muted">
+																								{argument.name}
+																								{argument.required
+																									? " (required)"
+																									: ""}
+																							</span>
+																							<input
+																								type="text"
+																								value={
+																									promptArgumentValues[
+																										argumentKey
+																									] ?? ""
+																								}
+																								onChange={(event) =>
+																									setPromptArgumentValues(
+																										(prev) => ({
+																											...prev,
+																											[argumentKey]:
+																												event.target.value,
+																										}),
+																									)
+																								}
+																								placeholder={
+																									argument.description ??
+																									argument.name
+																								}
+																								aria-label={`Prompt argument ${argument.name} for ${server.name}`}
+																								className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+																							/>
+																							{argument.description && (
+																								<span className="text-text-muted">
+																									{argument.description}
+																								</span>
+																							)}
+																						</label>
+																					);
+																				})}
+																			</div>
+																		) : selectedPromptDetail ? null : (
+																			<textarea
+																				value={promptArgsText}
+																				onChange={(event) =>
+																					setPromptArgsTexts((prev) => ({
+																						...prev,
+																						[server.name]: event.target.value,
+																					}))
+																				}
+																				placeholder="Prompt args (KEY=VALUE, one per line)"
+																				aria-label={`Prompt arguments for ${server.name}`}
+																				className="min-h-[88px] bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+																			/>
+																		)}
+																		<button
+																			type="button"
+																			className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-60"
+																			onClick={() =>
+																				void handleGetPrompt(server)
+																			}
+																			disabled={
+																				gettingPromptName === server.name ||
+																				!selectedPromptName
+																			}
+																		>
+																			{gettingPromptName === server.name
+																				? "Running..."
+																				: "Run prompt"}
+																		</button>
+																		{promptError && (
+																			<div className="rounded-lg border border-error/40 bg-error/10 px-2.5 py-2 text-error">
+																				{promptError}
+																			</div>
+																		)}
+																		{promptOutput && (
+																			<pre className="whitespace-pre-wrap break-words rounded-lg border border-line-subtle/60 bg-bg-tertiary/40 px-2.5 py-2 text-[11px] text-text-secondary">
+																				{promptOutput}
+																			</pre>
+																		)}
+																	</>
+																) : (
+																	<div>None</div>
+																)}
+															</div>
+														</div>
+													</div>
+												)}
+											</>
+										);
+									})()}
+								</div>
+							))}
+						</div>
+					) : (
+						<div className="text-xs text-text-muted">
+							No MCP servers configured.
+						</div>
+					)}
+					<div className="rounded-lg border border-line-subtle/60 bg-bg-secondary/30 p-3 space-y-3">
+						<div>
+							<div className="text-text-primary font-medium">Custom server</div>
+							<div className="text-xs text-text-muted">
+								Add a stdio command or arbitrary HTTP/SSE MCP endpoint to local,
+								project, or user config.
+							</div>
+						</div>
+						<form
+							className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-2"
+							onSubmit={(event) => void handleCustomServerSubmit(event)}
+						>
+							<input
+								type="text"
+								value={customServerName}
+								onChange={(event) => setCustomServerName(event.target.value)}
+								placeholder="Server name"
+								aria-label="Custom MCP server name"
+								className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+							/>
+							<select
+								value={customServerTransport}
+								onChange={(event) =>
+									setCustomServerTransport(
+										event.target.value as "stdio" | "http" | "sse",
+									)
+								}
+								aria-label="Custom MCP server transport"
+								className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary"
+							>
+								<option value="stdio">stdio</option>
+								<option value="http">HTTP</option>
+								<option value="sse">SSE</option>
+							</select>
+							{customServerTransport === "stdio" ? (
+								<>
+									<input
+										type="text"
+										value={customServerCommand}
+										onChange={(event) =>
+											setCustomServerCommand(event.target.value)
+										}
+										placeholder="Command"
+										aria-label="Custom MCP server command"
+										className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+									/>
+									<textarea
+										value={customServerArgsText}
+										onChange={(event) =>
+											setCustomServerArgsText(event.target.value)
+										}
+										placeholder={"Arguments (one per line)"}
+										aria-label="Custom MCP server arguments"
+										className="min-h-[88px] bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+									/>
+									<input
+										type="text"
+										value={customServerCwd}
+										onChange={(event) => setCustomServerCwd(event.target.value)}
+										placeholder="Working directory (optional)"
+										aria-label="Custom MCP server working directory"
+										className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+									/>
+									<textarea
+										value={customServerEnvText}
+										onChange={(event) =>
+											setCustomServerEnvText(event.target.value)
+										}
+										placeholder={"Env vars (KEY=VALUE, one per line)"}
+										aria-label="Custom MCP server environment variables"
+										className="min-h-[88px] bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+									/>
+								</>
+							) : (
+								<>
+									<input
+										type="url"
+										value={customServerUrl}
+										onChange={(event) => setCustomServerUrl(event.target.value)}
+										placeholder="https://example.com/mcp"
+										aria-label="Custom MCP server URL"
+										className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+									/>
+									<input
+										type="text"
+										value={customServerHeadersHelper}
+										onChange={(event) =>
+											setCustomServerHeadersHelper(event.target.value)
+										}
+										placeholder="Headers helper (optional)"
+										aria-label="Custom MCP server headers helper"
+										className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+									/>
+									<select
+										value={customServerAuthPreset}
+										onChange={(event) =>
+											setCustomServerAuthPreset(event.target.value)
+										}
+										aria-label="Custom MCP server auth preset"
+										className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary"
+									>
+										<option value="">No auth preset</option>
+										{authPresets.map((preset) => (
+											<option key={preset.name} value={preset.name}>
+												{preset.name}
+											</option>
+										))}
+									</select>
+									<textarea
+										value={customServerHeadersText}
+										onChange={(event) =>
+											setCustomServerHeadersText(event.target.value)
+										}
+										placeholder={"Headers (KEY=VALUE, one per line)"}
+										aria-label="Custom MCP server headers"
+										className="min-h-[88px] bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+									/>
+								</>
+							)}
+							<div className="flex items-center gap-2">
+								<select
+									value={customServerScope}
+									onChange={(event) =>
+										setCustomServerScope(
+											event.target.value as McpRegistryImportRequest["scope"],
+										)
+									}
+									aria-label="Custom MCP server scope"
+									className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary"
+								>
+									<option value="local">Local config</option>
+									<option value="project">Project config</option>
+									<option value="user">User config</option>
+								</select>
+								<input
+									type="number"
+									min="1"
+									value={customServerTimeoutText}
+									onChange={(event) =>
+										setCustomServerTimeoutText(event.target.value)
+									}
+									placeholder="Timeout (ms)"
+									aria-label="Custom MCP server timeout"
+									className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+								/>
+								<button
+									type="submit"
+									className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-60"
+									disabled={
+										customServerSubmitting ||
+										customServerName.trim().length === 0 ||
+										(customServerTransport === "stdio"
+											? customServerCommand.trim().length === 0
+											: customServerUrl.trim().length === 0)
+									}
+								>
+									{customServerSubmitting ? "Adding..." : "Add server"}
+								</button>
+							</div>
+						</form>
+						{serverMutationError && (
+							<div className="rounded-lg border border-error/40 bg-error/10 px-3 py-2 text-xs text-error">
+								{serverMutationError}
+							</div>
+						)}
+						{serverMutationNotice && (
+							<div className="rounded-lg border border-success/30 bg-success/10 px-3 py-2 text-xs text-success">
+								{serverMutationNotice}
+							</div>
+						)}
+					</div>
+					<div className="rounded-lg border border-line-subtle/60 bg-bg-secondary/30 p-3 space-y-3">
+						<div className="flex items-center justify-between gap-4">
+							<div>
+								<div className="text-text-primary font-medium">
+									Official registry
+								</div>
+								<div className="text-xs text-text-muted">
+									Search known remote MCP servers and import them without
+									memorizing ids.
+								</div>
+							</div>
+							<button
+								type="button"
+								className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-60"
+								onClick={() => {
+									setRegistryQuery("");
+									void runRegistrySearch("");
+								}}
+								disabled={registryLoading}
+							>
+								Top picks
+							</button>
+						</div>
+						<form
+							className="flex flex-wrap items-center gap-2"
+							onSubmit={handleRegistrySearchSubmit}
+						>
+							<input
+								type="text"
+								value={registryQuery}
+								onChange={(event) => setRegistryQuery(event.target.value)}
+								placeholder="Search official MCP registry"
+								aria-label="Search official MCP registry"
+								className="flex-1 min-w-[220px] bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+							/>
+							<select
+								value={registryScope}
+								onChange={(event) =>
+									setRegistryScope(
+										event.target.value as McpRegistryImportRequest["scope"],
+									)
+								}
+								aria-label="Select MCP import scope"
+								className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary"
+							>
+								<option value="local">Local config</option>
+								<option value="project">Project config</option>
+								<option value="user">User config</option>
+							</select>
+							<button
+								type="submit"
+								className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-60"
+								disabled={registryLoading}
+							>
+								{registryLoading ? "Searching..." : "Search"}
+							</button>
+						</form>
+						<div className="text-[11px] text-text-muted">
+							Imports target the {formatMcpRegistryScopeLabel(registryScope)}{" "}
+							config by default.
+						</div>
+						{registryError && (
+							<div className="rounded-lg border border-error/40 bg-error/10 px-3 py-2 text-xs text-error">
+								{registryError}
+							</div>
+						)}
+						{registryNotice && (
+							<div className="rounded-lg border border-success/30 bg-success/10 px-3 py-2 text-xs text-success">
+								{registryNotice}
+							</div>
+						)}
+						{registryResults.length > 0 ? (
+							<div className="grid grid-cols-1 gap-2">
+								{registryResults.map((entry) => {
+									const selectedUrl =
+										registrySelectedUrls[entry.id] || entry.defaultUrl || "";
+									return (
+										<div
+											key={entry.id}
+											className="rounded-lg border border-line-subtle/60 bg-bg-tertiary/30 p-3 space-y-2"
+										>
+											<div className="flex items-start justify-between gap-4">
+												<div className="min-w-0 space-y-1">
+													<div className="text-text-primary font-medium">
+														{entry.title}
+													</div>
+													{entry.description && (
+														<div className="text-xs text-text-muted">
+															{entry.description}
+														</div>
+													)}
+													{entry.summary && (
+														<div className="text-[11px] text-text-muted">
+															{entry.summary}
+														</div>
+													)}
+												</div>
+												<button
+													type="button"
+													className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-60"
+													onClick={() => void handleRegistryImport(entry)}
+													disabled={
+														registryImportingId !== null &&
+														registryImportingId !== entry.id
+													}
+												>
+													{registryImportingId === entry.id
+														? "Importing..."
+														: "Import"}
+												</button>
+											</div>
+											<div className="flex flex-wrap gap-1">
+												{entry.transportLabel && (
+													<span className="px-2 py-0.5 rounded-full border border-line-subtle/60 bg-bg-secondary/60 text-text-secondary text-[11px]">
+														{entry.transportLabel}
+													</span>
+												)}
+												{entry.countsLabel && (
+													<span className="px-2 py-0.5 rounded-full border border-line-subtle/60 bg-bg-secondary/60 text-text-secondary text-[11px]">
+														{entry.countsLabel}
+													</span>
+												)}
+												{entry.authorLabel && (
+													<span className="px-2 py-0.5 rounded-full border border-line-subtle/60 bg-bg-secondary/60 text-text-secondary text-[11px]">
+														by {entry.authorLabel}
+													</span>
+												)}
+											</div>
+											<div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-2">
+												<input
+													type="text"
+													value={registryNames[entry.id] ?? ""}
+													onChange={(event) =>
+														setRegistryNames((prev) => ({
+															...prev,
+															[entry.id]: event.target.value,
+														}))
+													}
+													placeholder="Name override (optional)"
+													aria-label={`Name override for ${entry.title}`}
+													className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+												/>
+												{entry.urlOptions.length > 1 ? (
+													<select
+														value={selectedUrl}
+														onChange={(event) =>
+															setRegistrySelectedUrls((prev) => ({
+																...prev,
+																[entry.id]: event.target.value,
+															}))
+														}
+														aria-label={`Endpoint for ${entry.title}`}
+														className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary"
+													>
+														{entry.urlOptions.map((option) => (
+															<option key={option.url} value={option.url}>
+																{option.label}
+															</option>
+														))}
+													</select>
+												) : (
+													<div
+														className="truncate rounded-lg border border-line-subtle/60 bg-bg-secondary/40 px-3 py-2 text-[11px] text-text-muted"
+														title={selectedUrl || undefined}
+													>
+														{selectedUrl ||
+															"Default endpoint provided by registry"}
+													</div>
+												)}
+											</div>
+											{entry.permissionsLabel && (
+												<div className="text-[11px] text-text-muted">
+													Permissions: {entry.permissionsLabel}
+												</div>
+											)}
+											{(entry.directoryUrl || entry.documentationUrl) && (
+												<div className="flex flex-wrap gap-3 text-[11px]">
+													{entry.directoryUrl && (
+														<a
+															href={entry.directoryUrl}
+															target="_blank"
+															rel="noreferrer"
+															className="text-accent hover:underline"
+														>
+															Directory
+														</a>
+													)}
+													{entry.documentationUrl && (
+														<a
+															href={entry.documentationUrl}
+															target="_blank"
+															rel="noreferrer"
+															className="text-accent hover:underline"
+														>
+															Docs
+														</a>
+													)}
+												</div>
+											)}
+										</div>
+									);
+								})}
+							</div>
+						) : (
+							<div className="text-xs text-text-muted">
+								{registryLoading
+									? "Loading official MCP registry..."
+									: "No official registry matches."}
+							</div>
+						)}
+					</div>
+				</div>
+
+				<div className="space-y-2">
+					<div className="flex items-center justify-between gap-4">
+						<div>
+							<div className="text-text-primary font-medium">Packages</div>
+							<div className="text-xs text-text-muted">
+								Slash command: /package
+							</div>
+						</div>
+						<div className="flex items-center gap-2">
+							<button
+								type="button"
+								className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
+								onClick={onRefreshPackageStatus}
+							>
+								Refresh
+							</button>
+							<button
+								type="button"
+								className="package-prune-cache-button px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-60"
+								onClick={() => void handlePrunePackageCache()}
+								disabled={pruningPackageCache}
+							>
+								{pruningPackageCache ? "Pruning cache..." : "Prune cache"}
+							</button>
+							{packages.some((entry) => canRefreshPackage(entry)) && (
+								<button
+									type="button"
+									className="package-refresh-all-button px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-60"
+									onClick={() => void handleRefreshAllPackages()}
+									disabled={refreshingAllPackages}
+								>
+									{refreshingAllPackages
+										? "Refreshing remotes..."
+										: "Refresh remotes"}
+								</button>
+							)}
+						</div>
+					</div>
+					{packages.length ? (
+						<div className="grid grid-cols-1 gap-2">
+							{packages.map((entry) => {
+								const entryKey = `${entry.scope}:${entry.sourceSpec}`;
+								const filters = formatPackageFilters(entry.filters);
+								const resourceSummary = entry.inspection?.resources
+									? `${entry.inspection.resources.extensions.length} ext · ${entry.inspection.resources.skills.length} skills · ${entry.inspection.resources.prompts.length} prompts · ${entry.inspection.resources.themes.length} themes`
+									: null;
+								return (
+									<div
+										key={entryKey}
+										className="rounded-lg border border-line-subtle/60 bg-bg-tertiary/30 p-3 space-y-2 text-[11px] text-text-muted"
+									>
+										<div className="flex items-start justify-between gap-3">
+											<div className="min-w-0 space-y-1">
+												<div className="text-text-primary font-medium">
+													{entry.inspection?.discovered?.name ??
+														entry.sourceSpec}
+												</div>
+												<div>{formatPackageScopeLabel(entry.scope)}</div>
+											</div>
+											<div className="flex items-center gap-2">
+												{canRefreshPackage(entry) && (
+													<button
+														type="button"
+														className="package-refresh-button px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-secondary/60 disabled:opacity-60"
+														onClick={() => void handleRefreshPackage(entry)}
+														disabled={refreshingPackageKey === entryKey}
+													>
+														{refreshingPackageKey === entryKey
+															? "Refreshing..."
+															: "Refresh"}
+													</button>
+												)}
+												<button
+													type="button"
+													className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-secondary/60 disabled:opacity-60"
+													onClick={() => void handleRemovePackage(entry)}
+													disabled={removingPackageKey === entryKey}
+												>
+													{removingPackageKey === entryKey
+														? "Removing..."
+														: "Remove"}
+												</button>
+											</div>
+										</div>
+										<div className="break-all">Source: {entry.sourceSpec}</div>
+										<div className="break-all">Config: {entry.configPath}</div>
+										{filters && <div>Filters: {filters}</div>}
+										{entry.inspection && (
+											<>
+												<div className="break-all">
+													Resolved: {entry.inspection.resolvedSource}
+												</div>
+												<div className="break-all">
+													Path: {entry.inspection.resolvedPath}
+												</div>
+												{resourceSummary && (
+													<div>Resources: {resourceSummary}</div>
+												)}
+											</>
+										)}
+										{entry.error && (
+											<div className="rounded-lg border border-error/40 bg-error/10 px-2.5 py-2 text-error">
+												{entry.error}
+											</div>
+										)}
+										{(entry.issues?.length ?? 0) > 0 && (
+											<div className="rounded-lg border border-warning/40 bg-warning/10 px-2.5 py-2 text-warning">
+												{entry.issues?.map((issue) => (
+													<div key={issue}>{issue}</div>
+												))}
+											</div>
+										)}
+									</div>
+								);
+							})}
+						</div>
+					) : (
+						<div className="text-xs text-text-muted">
+							No configured packages.
+						</div>
+					)}
+					<div className="rounded-lg border border-line-subtle/60 bg-bg-secondary/30 p-3 space-y-3">
+						<div>
+							<div className="text-text-primary font-medium">
+								Browse packages
+							</div>
+							<div className="text-xs text-text-muted">
+								Search npm for packages tagged with maestro-package.
+							</div>
+						</div>
+						<div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_auto] gap-2">
+							<input
+								type="text"
+								value={packageSearchQuery}
+								onChange={(event) => setPackageSearchQuery(event.target.value)}
+								placeholder="Search maestro packages"
+								aria-label="Package search"
+								className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+							/>
+							<button
+								type="button"
+								className="package-search-button px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-60"
+								onClick={() => void handlePackageSearch()}
+								disabled={packageSearchLoading}
+							>
+								{packageSearchLoading ? "Searching..." : "Search"}
+							</button>
+						</div>
+						{packageSearchError && (
+							<div className="rounded-lg border border-error/40 bg-error/10 px-3 py-2 text-xs text-error">
+								{packageSearchError}
+							</div>
+						)}
+						{packageSearchResults.length > 0 && (
+							<div className="grid grid-cols-1 gap-2">
+								{packageSearchResults.map((entry) => (
+									<div
+										key={entry.installSource}
+										className="rounded-lg border border-line-subtle/60 bg-bg-tertiary/30 p-3 space-y-2 text-[11px] text-text-muted"
+									>
+										<div className="flex items-start justify-between gap-3">
+											<div className="min-w-0 space-y-1">
+												<div className="text-text-primary font-medium">
+													{entry.name}
+												</div>
+												<div>{entry.version ?? "latest"}</div>
+											</div>
+											<div className="flex items-center gap-2">
+												<button
+													type="button"
+													className="package-use-search-result-button px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-secondary/60"
+													onClick={() => setPackageSource(entry.installSource)}
+												>
+													Use source
+												</button>
+												<button
+													type="button"
+													className="package-add-search-result-button px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-secondary/60 disabled:opacity-60"
+													onClick={() => void handleAddDiscoveredPackage(entry)}
+													disabled={
+														packageSearchAddingSource === entry.installSource
+													}
+												>
+													{packageSearchAddingSource === entry.installSource
+														? "Adding..."
+														: `Add to ${formatPackageScopeLabel(packageScope)}`}
+												</button>
+											</div>
+										</div>
+										{entry.description && <div>{entry.description}</div>}
+										<div className="break-all">
+											Install source: {entry.installSource}
+										</div>
+										{entry.keywords.length > 0 && (
+											<div>Keywords: {entry.keywords.join(", ")}</div>
+										)}
+									</div>
+								))}
+							</div>
+						)}
+					</div>
+					<div className="rounded-lg border border-line-subtle/60 bg-bg-secondary/30 p-3 space-y-3">
+						<div>
+							<div className="text-text-primary font-medium">Add package</div>
+							<div className="text-xs text-text-muted">
+								Add a local path or git source to local, project, or user
+								config.
+							</div>
+						</div>
+						<form
+							className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_auto_auto_auto] gap-2"
+							onSubmit={(event) => void handlePackageSubmit(event)}
+						>
+							<input
+								type="text"
+								value={packageSource}
+								onChange={(event) => setPackageSource(event.target.value)}
+								placeholder="./packages/my-pack"
+								aria-label="Package source"
+								className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary placeholder:text-text-muted"
+							/>
+							<select
+								value={packageScope}
+								onChange={(event) =>
+									setPackageScope(event.target.value as PackageScope)
+								}
+								aria-label="Package scope"
+								className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary"
+							>
+								<option value="local">Local config</option>
+								<option value="project">Project config</option>
+								<option value="user">User config</option>
+							</select>
+							<button
+								type="button"
+								className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-60"
+								onClick={() => void handlePackagePreview("inspect")}
+								disabled={
+									packageAction !== null || packageSource.trim().length === 0
+								}
+							>
+								{packageAction === "inspect" ? "Inspecting..." : "Inspect"}
+							</button>
+							<button
+								type="button"
+								className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-60"
+								onClick={() => void handlePackagePreview("validate")}
+								disabled={
+									packageAction !== null || packageSource.trim().length === 0
+								}
+							>
+								{packageAction === "validate" ? "Validating..." : "Validate"}
+							</button>
+							<button
+								type="submit"
+								className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-60"
+								disabled={
+									packageAction !== null || packageSource.trim().length === 0
+								}
+							>
+								{packageAction === "add" ? "Adding..." : "Add package"}
+							</button>
+						</form>
+						{packageError && (
+							<div className="rounded-lg border border-error/40 bg-error/10 px-3 py-2 text-xs text-error">
+								{packageError}
+							</div>
+						)}
+						{packageNotice && (
+							<div className="rounded-lg border border-success/30 bg-success/10 px-3 py-2 text-xs text-success">
+								{packageNotice}
+							</div>
+						)}
+						{packagePreview && (
+							<div className="rounded-lg border border-line-subtle/60 bg-bg-tertiary/30 p-3 space-y-2 text-[11px] text-text-muted">
+								<div className="text-text-primary font-medium">
+									{formatPackagePreviewTitle(packagePreview.kind)}
+								</div>
+								<div>Source: {packagePreview.result.inspection.sourceSpec}</div>
+								<div>
+									Resolved: {packagePreview.result.inspection.resolvedSource}
+								</div>
+								<div>Path: {packagePreview.result.inspection.resolvedPath}</div>
+								{packagePreview.result.inspection.discovered ? (
+									<>
+										<div>
+											Name: {packagePreview.result.inspection.discovered.name}
+										</div>
+										<div>
+											Maestro keyword:{" "}
+											{packagePreview.result.inspection.discovered
+												.isMaestroPackage
+												? "yes"
+												: "no"}
+										</div>
+									</>
+								) : (
+									<div>No valid package.json found.</div>
+								)}
+								{packagePreview.result.issues.length > 0 ? (
+									<div className="rounded-lg border border-warning/40 bg-warning/10 px-2.5 py-2 text-warning">
+										{packagePreview.result.issues.map((issue) => (
+											<div key={issue}>{issue}</div>
+										))}
+									</div>
+								) : packagePreview.kind === "validate" ? (
+									<div className="rounded-lg border border-success/30 bg-success/10 px-2.5 py-2 text-success">
+										Package validation passed.
+									</div>
+								) : null}
+							</div>
+						)}
+					</div>
+				</div>
+
+				<div className="space-y-2">
+					<div className="flex items-center justify-between gap-4">
+						<div>
+							<div className="text-text-primary font-medium">
+								Composer profiles
+							</div>
+							<div className="text-xs text-text-muted">
+								Slash command: /composer
+							</div>
+						</div>
+						<div className="flex items-center gap-2">
+							<button
+								type="button"
+								className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
+								onClick={onRefreshComposers}
+							>
+								Refresh
+							</button>
+						</div>
+					</div>
+					<div className="flex items-center justify-between gap-4">
+						<select
+							value={selectedComposer}
+							onChange={(event) => onSelectedComposerChange(event.target.value)}
+							className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary w-64"
+						>
+							{composers.options.length ? (
+								composers.options.map((composer) => (
+									<option key={composer.name} value={composer.name}>
+										{composer.name}
+									</option>
+								))
+							) : (
+								<option value="">No profiles</option>
+							)}
+						</select>
+						<div className="flex items-center gap-2">
+							<button
+								type="button"
+								className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
+								onClick={onActivateComposer}
+								disabled={!composers.canActivate}
+							>
+								Activate
+							</button>
+							<button
+								type="button"
+								className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
+								onClick={onDeactivateComposer}
+							>
+								Deactivate
+							</button>
+						</div>
+					</div>
+					<div className="text-xs text-text-muted">
+						Active: {composers.activeLabel}
+					</div>
+				</div>
+			</div>
+		</section>
+	);
+}
