@@ -5,6 +5,11 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import {
+	getNpmCommand,
+	getNpxCommand,
+	runInstalledPackageAudit,
+} from "./install-smoke-utils.js";
 import { getPackageMetadata } from "./package-metadata.js";
 
 const tarballArg = process.argv[2];
@@ -34,8 +39,8 @@ if (tarballSizeBytes > maxTarballSizeBytes) {
 
 const { version, cliCommand } = getPackageMetadata();
 const tempDir = mkdtempSync(join(tmpdir(), "maestro-pack-smoke-"));
-const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
-const npxCommand = process.platform === "win32" ? "npx.cmd" : "npx";
+const npmCommand = getNpmCommand();
+const npxCommand = getNpxCommand();
 
 try {
 	execFileSync(npmCommand, ["init", "-y"], {
@@ -45,6 +50,9 @@ try {
 	execFileSync(npmCommand, ["install", tarballPath], {
 		cwd: tempDir,
 		stdio: "inherit",
+	});
+	runInstalledPackageAudit(tempDir, {
+		label: tarballPath,
 	});
 	const output = execFileSync(npxCommand, [cliCommand, "--version"], {
 		cwd: tempDir,

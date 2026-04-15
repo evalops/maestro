@@ -9,6 +9,7 @@
     "scripts/check-headless-proto-generated.mjs",
     "scripts/generate-openapi.ts",
     "scripts/headless-protocol-codegen.mjs",
+    "scripts/install-smoke-utils.js",
     "scripts/package-metadata.js",
     "scripts/release-readiness.js",
     "scripts/send-release-notification.mjs",
