@@ -12,6 +12,7 @@ import {
 	getWorkspacePackages,
 	loadRootPackage,
 	readPackageJson,
+	shouldManagePackageLock,
 	syncInternalDependencies,
 	verifyAlignedVersions,
 	writePackageJson,
@@ -57,7 +58,7 @@ function updateChangelog(newVersion) {
 	}
 }
 
-function updatePackageLock(newVersion) {
+function updatePackageLock() {
 	try {
 		// Update package-lock.json
 		execSync("npm install --package-lock-only", { stdio: "inherit" });
@@ -151,7 +152,11 @@ function main() {
 		syncPackageMetadata();
 
 		// Update package-lock.json
-		updatePackageLock(newVersion);
+		if (shouldManagePackageLock(rootPkg)) {
+			updatePackageLock();
+		} else {
+			console.log("📦 Skipped package-lock.json update for workspace-only repo");
+		}
 	} catch (error) {
 		console.error("⚠️  Version bump failed, restoring package.json files");
 		restoreBackups(backups);

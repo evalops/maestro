@@ -27,19 +27,19 @@
 		"@evalops/contracts": "^0.10.6",
 		"docx-preview": "^0.3.7",
 		"dompurify": "^3.3.0",
+		"exceljs": "^4.4.0",
 		"highlight.js": "^11.10.0",
 		"lit": "^3.2.1",
 		"marked": "^17.0.0",
 		"partial-json": "^0.1.7",
-		"pdfjs-dist": "^5.4.449",
-		"xlsx": "^0.18.5"
+		"pdfjs-dist": "^5.4.449"
 	},
 	"devDependencies": {
 		"@open-wc/testing": "^4.0.0",
 		"@types/node": "^24.10.7",
 		"happy-dom": "^20.0.11",
 		"typescript": "^5.9.3",
-		"vite": "^6.0.3",
+		"vite": "^7.3.2",
 		"vitest": "^4.0.7"
 	}
 }
