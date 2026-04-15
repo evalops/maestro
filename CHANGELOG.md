@@ -8,6 +8,20 @@ versioning when releases are cut.
 
 
 
+
+## [0.10.5] - 2026-04-15
+
+### Added
+
+### Changed
+
+- Tightened shared Bun cache keying in CI and release workflows to use exact, versioned cache hits instead of broad fallback restores.
+
+### Fixed
+
+- Prevented stale Bun cache restores on Linux release runners from causing `bun install --frozen-lockfile` to rewrite state and fail the publish pipeline.
+
+
 ## [0.10.4] - 2026-04-15
 
 ### Added
