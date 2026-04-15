@@ -1,6 +1,6 @@
 {
 	"name": "@evalops/maestro-web",
-	"version": "0.10.4",
+	"version": "0.10.5",
 	"description": "Web UI for Maestro - Browser-based AI coding assistant interface",
 	"type": "module",
 	"main": "./dist/index.js",
@@ -24,7 +24,7 @@
 		"directory": "packages/web"
 	},
 	"dependencies": {
-		"@evalops/contracts": "^0.10.4",
+		"@evalops/contracts": "^0.10.5",
 		"docx-preview": "^0.3.7",
 		"dompurify": "^3.3.0",
 		"highlight.js": "^11.10.0",

@@ -3,7 +3,7 @@
 	"displayName": "Maestro",
 	"description": "Use Maestro's deterministic AI assistant inside VS Code.",
 	"publisher": "evalops",
-	"version": "0.10.4",
+	"version": "0.10.5",
 	"license": "MIT",
 	"type": "commonjs",
 	"main": "./dist/extension.js",
@@ -139,7 +139,7 @@
 		"test": "vitest --run"
 	},
 	"dependencies": {
-		"@evalops/contracts": "^0.10.4"
+		"@evalops/contracts": "^0.10.5"
 	},
 	"devDependencies": {
 		"@types/node": "^24.10.7",
