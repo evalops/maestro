@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -105,6 +105,11 @@ async function waitForSpawn(): Promise<void> {
 	await vi.waitFor(() => {
 		expect(spawnMock).toHaveBeenCalled();
 	});
+}
+
+function getSpawnedTempFile(): string {
+	const [, args] = spawnMock.mock.calls.at(-1) as [string, string[]];
+	return args.at(-1)!;
 }
 
 describe("SwarmExecutor", () => {
@@ -416,9 +421,6 @@ describe("SwarmExecutor", () => {
 
 	it("cleans up teammate temp files and task state when the subprocess errors", async () => {
 		const taskId = "task-error";
-		const tempFile = join(tmpdir(), `swarm-task-${taskId}.md`);
-		rmSync(tempFile, { force: true });
-
 		const proc = createMockChildProcess("", 1, "manual");
 		spawnMock.mockReturnValue(proc);
 
@@ -426,6 +428,7 @@ describe("SwarmExecutor", () => {
 		const execution = executor.execute();
 		await waitForSpawn();
 
+		const tempFile = getSpawnedTempFile();
 		expect(existsSync(tempFile)).toBe(true);
 
 		proc.emit("error", new Error("spawn failed"));
@@ -500,8 +503,6 @@ describe("SwarmExecutor", () => {
 			tokenType: string;
 		}>();
 		const taskId = "task-cancelled-before-spawn";
-		const tempFile = join(tmpdir(), `swarm-task-${taskId}.md`);
-		rmSync(tempFile, { force: true });
 
 		issueEvalOpsDelegationTokenMock.mockImplementation(
 			() => delegation.promise,
@@ -512,7 +513,14 @@ describe("SwarmExecutor", () => {
 		await vi.waitFor(() => {
 			expect(issueEvalOpsDelegationTokenMock).toHaveBeenCalledTimes(1);
 		});
-		expect(existsSync(tempFile)).toBe(true);
+		const [{ runId }] = issueEvalOpsDelegationTokenMock.mock.calls[0] as [
+			{ runId: string },
+		];
+		const spawnedTempFile = join(
+			tmpdir(),
+			`${runId.split(":")[0]}-swarm-task-${taskId}.md`,
+		);
+		expect(existsSync(spawnedTempFile)).toBe(true);
 
 		executor.cancel();
 		delegation.resolve({
@@ -537,7 +545,7 @@ describe("SwarmExecutor", () => {
 		expect(result.activeTasks.size).toBe(0);
 		expect(result.teammates[0]!.status).toBe("cancelled");
 		expect(result.teammates[0]!.currentTask).toBeUndefined();
-		expect(existsSync(tempFile)).toBe(false);
+		expect(existsSync(spawnedTempFile)).toBe(false);
 	});
 
 	it("keeps teammate temp prompt files inside the system temp directory", async () => {
@@ -552,6 +560,6 @@ describe("SwarmExecutor", () => {
 		const [, args] = spawnMock.mock.calls[0] as [string, string[]];
 		const tempFile = args.at(-1)!;
 		expect(tempFile.startsWith(tmpdir())).toBe(true);
-		expect(basename(tempFile)).toBe("swarm-task-swarm-path-traversal.md");
+		expect(basename(tempFile)).toContain("swarm-task-swarm-path-traversal.md");
 	});
 });

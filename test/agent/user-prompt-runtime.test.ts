@@ -1400,10 +1400,13 @@ describe("user prompt runtime", () => {
 		const overflowMessage =
 			"Anthropic rejected this request because the prompt exceeded 200,000 tokens. Use /compact to summarize prior messages or remove large attachments, then retry.";
 		const planDir = mkdtempSync(join(tmpdir(), "maestro-plan-compaction-"));
+		const maestroHome = mkdtempSync(join(tmpdir(), "maestro-home-compaction-"));
 		const previousPlanDir = process.env.MAESTRO_PLAN_DIR;
 		const previousPlanFile = process.env.MAESTRO_PLAN_FILE;
+		const previousMaestroHome = process.env.MAESTRO_HOME;
 		process.env.MAESTRO_PLAN_DIR = planDir;
 		process.env.MAESTRO_PLAN_FILE = join(planDir, "active-plan.md");
+		process.env.MAESTRO_HOME = maestroHome;
 
 		try {
 			enterPlanMode({ name: "Compaction test plan" });
@@ -1517,7 +1520,13 @@ describe("user prompt runtime", () => {
 			} else {
 				process.env.MAESTRO_PLAN_FILE = previousPlanFile;
 			}
+			if (previousMaestroHome === undefined) {
+				delete process.env.MAESTRO_HOME;
+			} else {
+				process.env.MAESTRO_HOME = previousMaestroHome;
+			}
 			rmSync(planDir, { recursive: true, force: true });
+			rmSync(maestroHome, { recursive: true, force: true });
 		}
 	});
 

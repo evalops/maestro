@@ -161,11 +161,7 @@ jobs:
         with:
           ensure-ripgrep: "true"
 
-      - run: bun run bun:lint
-      - run: npm run clean && npm run build:all
-      - run: npm run verify:runtime-deps
-      - run: bun run openapi:generate
-      - run: bun run bun:test
+      - run: npm run release:check
       - name: Run evals chunk
         env:
           MAESTRO_EVAL_CHUNK_COUNT: 2
