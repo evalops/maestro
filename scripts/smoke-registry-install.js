@@ -5,6 +5,11 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+	getNpmCommand,
+	getNpxCommand,
+	runInstalledPackageAudit,
+} from "./install-smoke-utils.js";
 import { getPackageMetadata } from "./package-metadata.js";
 
 function parseArgs(argv) {
@@ -41,8 +46,8 @@ const cliCommand = overrides.cliCommand || defaults.cliCommand;
 const name = overrides.packageName || defaults.name;
 const version = overrides.version || defaults.version;
 const packageSpec = `${name}@${version}`;
-const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
-const npxCommand = process.platform === "win32" ? "npx.cmd" : "npx";
+const npmCommand = getNpmCommand();
+const npxCommand = getNpxCommand();
 const maxAttempts = Number.parseInt(
 	process.env.MAESTRO_REGISTRY_POLL_ATTEMPTS ?? "24",
 	10,
@@ -101,6 +106,9 @@ async function main() {
 		execFileSync(npmCommand, ["install", packageSpec], {
 			cwd: tempDir,
 			stdio: "inherit",
+		});
+		runInstalledPackageAudit(tempDir, {
+			label: packageSpec,
 		});
 
 		const versionOutput = execFileSync(npxCommand, [cliCommand, "--version"], {
