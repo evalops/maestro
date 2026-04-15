@@ -64,79 +64,21 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     outputs:
-      release_tag: ${{ steps.meta.outputs.release_tag }}
-      release_version: ${{ steps.meta.outputs.release_version }}
+      release_tag: ${{ steps.release.outputs.release_tag }}
+      release_version: ${{ steps.release.outputs.release_version }}
+      package_name: ${{ steps.release.outputs.package_name }}
+      package_version: ${{ steps.release.outputs.package_version }}
+      canonical_package_name: ${{ steps.release.outputs.canonical_package_name }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
-      - id: meta
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          DISPATCH_VERSION: ${{ github.event.inputs.version || '' }}
-          REF_NAME_VALUE: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-
-          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
-            RAW_TAG="${DISPATCH_VERSION}"
-          else
-            RAW_TAG="${REF_NAME_VALUE}"
-          fi
-
-          if [[ -z "$RAW_TAG" ]]; then
-            echo "::error::Release version is required" >&2
-            exit 1
-          fi
-
-          if [[ "$RAW_TAG" != v* ]]; then
-            RAW_TAG="v${RAW_TAG}"
-          fi
-
-          if ! [[ "$RAW_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::Release tag must follow semver (vX.Y.Z)" >&2
-            exit 1
-          fi
-
-          VERSION="${RAW_TAG#v}"
-
-          echo "release_tag=$RAW_TAG" >> "$GITHUB_OUTPUT"
-          echo "release_version=$VERSION" >> "$GITHUB_OUTPUT"
-
-      - id: tag-state
-        run: |
-          set -euo pipefail
-          TAG="${{ steps.meta.outputs.release_tag }}"
-          git fetch --tags --force
-          if git rev-parse "refs/tags/${TAG}" >/dev/null 2>&1; then
-            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Create tag from workflow dispatch
-        if: github.event_name == 'workflow_dispatch' && steps.tag-state.outputs.tag_exists != 'true'
-        run: |
-          set -euo pipefail
-          TAG="${{ steps.meta.outputs.release_tag }}"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" -m "Release $TAG"
-          git push origin "$TAG"
-
-      - name: Verify release version matches package.json
-        run: |
-          set -euo pipefail
-          TAG="${{ steps.meta.outputs.release_tag }}"
-          EXPECTED_VERSION="${{ steps.meta.outputs.release_version }}"
-          PACKAGE_VERSION=$(
-            git show "${TAG}:package.json" | python3 -c 'import json, sys; print(json.load(sys.stdin)["version"])'
-          )
-          if [[ "${PACKAGE_VERSION}" != "${EXPECTED_VERSION}" ]]; then
-            echo "::error::package.json version ${PACKAGE_VERSION} does not match release version ${EXPECTED_VERSION}" >&2
-            exit 1
-          fi
+      - id: release
+        uses: ./.github/actions/release-context
+        with:
+          requested-version: ${{ github.event.inputs.version || github.ref_name }}
+          create-tag-if-missing: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
 
   quality-gate:
     if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}
@@ -323,50 +265,14 @@ jobs:
           fetch-depth: 0
           ref: ${{ needs.prepare.outputs.release_tag }}
 
-      - id: status
-        env:
-          QUALITY_GATE_RESULT: ${{ needs.quality-gate.result }}
-          PUBLISH_RESULT: ${{ needs.publish.result }}
-          CANARY_RESULT: ${{ needs.post-publish-canary.result }}
-        run: |
-          set -euo pipefail
-          status="success"
-          for result in "$QUALITY_GATE_RESULT" "$PUBLISH_RESULT" "$CANARY_RESULT"; do
-            case "$result" in
-              success)
-                ;;
-              failure)
-                status="failure"
-                break
-                ;;
-              cancelled)
-                status="cancelled"
-                break
-                ;;
-              skipped)
-                status="skipped"
-                break
-                ;;
-              *)
-                status="$result"
-                break
-                ;;
-            esac
-          done
-          echo "status=$status" >> "$GITHUB_OUTPUT"
-
-      - id: package
-        run: |
-          set -euo pipefail
-          package_name=$(node -p "require('./package.json').name")
-          echo "name=$package_name" >> "$GITHUB_OUTPUT"
-
       - name: Notify release channel
         continue-on-error: true
-        env:
-          RELEASE_STATUS: ${{ steps.status.outputs.status }}
-          RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
-          RELEASE_PACKAGE_NAME: ${{ steps.package.outputs.name }}
-          RELEASE_PACKAGE_VERSION: ${{ needs.prepare.outputs.release_version }}
-          SLACK_RELEASE_WEBHOOK_URL: ${{ secrets.SLACK_RELEASE_WEBHOOK_URL }}
-        run: node scripts/send-release-notification.mjs
+        uses: ./.github/actions/release-notify
+        with:
+          quality-gate-result: ${{ needs.quality-gate.result }}
+          publish-result: ${{ needs.publish.result }}
+          canary-result: ${{ needs.post-publish-canary.result }}
+          release-version: ${{ needs.prepare.outputs.release_version }}
+          package-name: ${{ needs.prepare.outputs.package_name }}
+          package-version: ${{ needs.prepare.outputs.package_version }}
+          webhook-url: ${{ secrets.SLACK_RELEASE_WEBHOOK_URL }}

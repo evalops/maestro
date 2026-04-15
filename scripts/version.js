@@ -161,6 +161,13 @@ function main() {
 			console.log("🧭 Skipped package metadata sync (script missing)");
 		}
 
+		if (hasScript(rootPkg, "cutover:check")) {
+			execSync("npm run cutover:check", { stdio: "inherit" });
+			console.log("🚚 Verified package cutover readiness");
+		} else {
+			console.log("🚚 Skipped package cutover readiness check (script missing)");
+		}
+
 		// Update package-lock.json
 		if (shouldManagePackageLock(rootPkg)) {
 			updatePackageLock();

@@ -1,0 +1,129 @@
+name: Release Context
+description: Resolve release tag, version, and package metadata from the checked-out repo.
+
+inputs:
+  requested-version:
+    description: Release version or tag to resolve.
+    required: false
+    default: ""
+  fallback-to-package-version:
+    description: Use the current package.json version when no explicit version is provided.
+    required: false
+    default: "false"
+  create-tag-if-missing:
+    description: Create and push the resolved tag when it does not already exist.
+    required: false
+    default: "false"
+
+outputs:
+  release_tag:
+    description: Normalized semver tag, including leading v.
+    value: ${{ steps.context.outputs.release_tag }}
+  release_version:
+    description: Semver release version without the leading v.
+    value: ${{ steps.context.outputs.release_version }}
+  package_name:
+    description: Current published package name from package.json.
+    value: ${{ steps.context.outputs.package_name }}
+  package_version:
+    description: Current package version from package.json.
+    value: ${{ steps.context.outputs.package_version }}
+  cli_command:
+    description: Declared CLI command from package.json bin map.
+    value: ${{ steps.context.outputs.cli_command }}
+  canonical_package_name:
+    description: Canonical package name once npm scope recovery is complete.
+    value: ${{ steps.context.outputs.canonical_package_name }}
+  package_aliases_json:
+    description: JSON array of recognized package-name aliases.
+    value: ${{ steps.context.outputs.package_aliases_json }}
+  tag_exists:
+    description: Whether the resolved tag already exists in git.
+    value: ${{ steps.context.outputs.tag_exists }}
+
+runs:
+  using: composite
+  steps:
+    - name: Fetch tags
+      shell: bash
+      run: git fetch --tags --force
+
+    - id: context
+      shell: bash
+      env:
+        MAESTRO_RELEASE_REQUESTED_VERSION: ${{ inputs.requested-version }}
+        MAESTRO_RELEASE_FALLBACK_TO_PACKAGE_VERSION: ${{ inputs.fallback-to-package-version }}
+      run: |
+        node --input-type=module <<'EOF' >> "$GITHUB_OUTPUT"
+        import { execFileSync } from "node:child_process";
+        import { pathToFileURL } from "node:url";
+
+        const modulePath = pathToFileURL(
+          `${process.env.GITHUB_ACTION_PATH}/../../../scripts/package-metadata.js`,
+        );
+        const { getPackageMetadata } = await import(modulePath.href);
+        const metadata = getPackageMetadata();
+        const requestedVersion =
+          (process.env.MAESTRO_RELEASE_REQUESTED_VERSION ?? "").trim();
+        const fallbackToPackageVersion =
+          (process.env.MAESTRO_RELEASE_FALLBACK_TO_PACKAGE_VERSION ?? "false") ===
+          "true";
+        const sourceVersion =
+          requestedVersion || (fallbackToPackageVersion ? metadata.version : "");
+
+        if (!sourceVersion) {
+          throw new Error("No release version provided to release-context.");
+        }
+
+        const releaseTag = sourceVersion.startsWith("v")
+          ? sourceVersion
+          : `v${sourceVersion}`;
+
+        if (!/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(releaseTag)) {
+          throw new Error(
+            `Release tag must follow semver (vX.Y.Z), received: ${releaseTag}`,
+          );
+        }
+
+        const releaseVersion = releaseTag.slice(1);
+        if (releaseVersion !== metadata.version) {
+          throw new Error(
+            `package.json version ${metadata.version} does not match release version ${releaseVersion}`,
+          );
+        }
+
+        let tagExists = false;
+        try {
+          execFileSync("git", ["rev-parse", `refs/tags/${releaseTag}`], {
+            stdio: "ignore",
+          });
+          tagExists = true;
+        } catch {
+          tagExists = false;
+        }
+
+        const outputs = {
+          release_tag: releaseTag,
+          release_version: releaseVersion,
+          package_name: metadata.name,
+          package_version: metadata.version,
+          cli_command: metadata.cliCommand,
+          canonical_package_name: metadata.canonicalPackageName,
+          package_aliases_json: JSON.stringify(metadata.packageAliases),
+          tag_exists: String(tagExists),
+        };
+
+        for (const [key, value] of Object.entries(outputs)) {
+          process.stdout.write(`${key}=${value}\n`);
+        }
+        EOF
+
+    - name: Create missing tag
+      if: ${{ inputs.create-tag-if-missing == 'true' && steps.context.outputs.tag_exists != 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git tag -a "${{ steps.context.outputs.release_tag }}" -m "Release ${{ steps.context.outputs.release_tag }}"
+        git push origin "${{ steps.context.outputs.release_tag }}"

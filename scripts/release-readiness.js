@@ -57,6 +57,7 @@ function runPackSmoke() {
 
 function runCiChecks() {
 	maybeRunScript("metadata:check");
+	maybeRunScript("cutover:check");
 	run("bun run bun:lint");
 	run("npm run build");
 	run("npm run verify:runtime-deps");
@@ -65,6 +66,7 @@ function runCiChecks() {
 
 function runReleaseChecks() {
 	maybeRunScript("metadata:check");
+	maybeRunScript("cutover:check");
 	run("bun run bun:lint");
 	run("npm run clean && npm run build:all");
 	run("npm run verify:runtime-deps");

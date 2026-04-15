@@ -1,0 +1,65 @@
+name: verify-published-package
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_name:
+        description: Optional package name override.
+        required: false
+        default: ""
+        type: string
+      version:
+        description: Optional version override.
+        required: false
+        default: ""
+        type: string
+      cli_command:
+        description: Optional CLI command override.
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.inputs.package_name || github.event.inputs.version || github.ref }}
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - id: defaults
+        run: |
+          set -euo pipefail
+          {
+            echo "package_name=$(node -p 'require(\"./package.json\").name')"
+            echo "version=$(node -p 'require(\"./package.json\").version')"
+            echo "cli_command=$(node -p 'Object.keys(require(\"./package.json\").bin)[0]')"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Verify published package from npm
+        env:
+          PACKAGE_NAME: ${{ github.event.inputs.package_name || steps.defaults.outputs.package_name }}
+          PACKAGE_VERSION: ${{ github.event.inputs.version || steps.defaults.outputs.version }}
+          CLI_COMMAND: ${{ github.event.inputs.cli_command || steps.defaults.outputs.cli_command }}
+        run: |
+          set -euo pipefail
+          node scripts/smoke-registry-install.js \
+            --package "$PACKAGE_NAME" \
+            --version "$PACKAGE_VERSION" \
+            --cli-command "$CLI_COMMAND"

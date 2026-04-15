@@ -79,7 +79,10 @@
     "smoke:registry": "node scripts/smoke-registry-install.js",
     "metadata:sync": "node scripts/sync-package-metadata.js",
     "metadata:check": "node scripts/sync-package-metadata.js --check",
+    "cutover:check": "node scripts/check-package-cutover-readiness.js",
     "verify:runtime-deps": "node scripts/check-runtime-deps.js",
+    "release:verify:published": "node scripts/smoke-registry-install.js",
+    "release:deprecate": "node scripts/deprecate-release.js",
     "factory:import": "npm run build && node dist/scripts/import-factory-config.js",
     "factory:export": "npm run build && node dist/scripts/export-factory-config.js",
     "version:patch": "node scripts/version.js patch",
@@ -200,6 +203,13 @@
   ],
   "author": "EvalOps",
   "license": "BUSL-1.1",
+  "maestro": {
+    "canonicalPackageName": "@evalops/maestro",
+    "packageAliases": [
+      "@evalops-jh/maestro",
+      "@evalops/maestro"
+    ]
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/evalops/maestro.git"
