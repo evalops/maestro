@@ -14,7 +14,7 @@ const RENDERERS: Record<string, new () => ToolRenderer> = {
 	edit: EditRenderer,
 };
 
-export { ToolRenderer, ToolRenderArgs } from "./types.js";
+export type { ToolRenderer, ToolRenderArgs } from "./types.js";
 
 export function createToolRenderer(toolName: string): ToolRenderer {
 	const key = toolName.toLowerCase();
