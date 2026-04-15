@@ -55,18 +55,14 @@ runs:
       uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
       with:
         path: ~/.bun/install/cache
-        key: ${{ runner.os }}-bun-${{ hashFiles('bun.lockb') }}
-        restore-keys: |
-          ${{ runner.os }}-bun-
+        key: ${{ runner.os }}-bun-v2-${{ inputs.bun-version }}-${{ hashFiles('bun.lockb') }}
 
     - name: Cache Bun (GitHub)
       if: ${{ inputs.cache-bun == 'true' && !(startsWith(runner.name, 'blacksmith-') || env.BLACKSMITH_ACTIONS_RESULTS_URL != '') }}
       uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
       with:
         path: ~/.bun/install/cache
-        key: ${{ runner.os }}-bun-${{ hashFiles('bun.lockb') }}
-        restore-keys: |
-          ${{ runner.os }}-bun-
+        key: ${{ runner.os }}-bun-v2-${{ inputs.bun-version }}-${{ hashFiles('bun.lockb') }}
 
     - name: Cache Nx (Blacksmith)
       if: ${{ inputs.cache-nx == 'true' && (startsWith(runner.name, 'blacksmith-') || env.BLACKSMITH_ACTIONS_RESULTS_URL != '') }}
