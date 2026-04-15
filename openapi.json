@@ -1,7 +1,7 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "Composer Web API",
+    "title": "Maestro Web API",
     "version": "0.10.6",
     "description": "Auto-generated from src/web-server.ts routes. Components seeded from runtime schemas."
   },

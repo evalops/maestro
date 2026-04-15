@@ -32,6 +32,12 @@ function runPackSmoke() {
 		console.log("Skipping packed CLI smoke test (script missing)");
 		return;
 	}
+	if (!shouldManagePackageLock(rootPackage)) {
+		console.log(
+			"Skipping packed CLI smoke test (package is not npm-installable from a tarball in this repo)",
+		);
+		return;
+	}
 
 	const tarball = execSync("npm pack --silent", { encoding: "utf8" })
 		.trim()
@@ -54,6 +60,7 @@ function runCiChecks() {
 	run("bun run bun:lint");
 	run("npm run build");
 	run("npm run verify:runtime-deps");
+	maybeRunScript("openapi:check");
 }
 
 function runReleaseChecks() {
@@ -61,9 +68,7 @@ function runReleaseChecks() {
 	run("bun run bun:lint");
 	run("npm run clean && npm run build:all");
 	run("npm run verify:runtime-deps");
-	if (hasScript("openapi:generate")) {
-		run("bun run openapi:generate");
-	}
+	maybeRunScript("openapi:check");
 	run("bun run bun:test");
 	if (shouldManagePackageLock(rootPackage)) {
 		run("npx -y -p node@22 -p npm@11.11.0 npm audit --audit-level=high");

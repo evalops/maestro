@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import ts from "typescript";
 import {
 	ComposerChatRequestSchema as ChatRequestSchema,
@@ -44,6 +45,8 @@ import {
 	ComposerUsageResponseSchema,
 } from "../packages/contracts/src/schemas.js";
 let version = "0.0.0";
+const checkOnly = process.argv.includes("--check");
+const outputPath = resolve(process.cwd(), "openapi.json");
 try {
 	const pkg = JSON.parse(readFileSync("package.json", "utf8"));
 	version = pkg.version ?? version;
@@ -842,7 +845,7 @@ function buildSpec(routes: Route[]) {
 	return {
 		openapi: "3.1.0",
 		info: {
-			title: "Composer Web API",
+			title: "Maestro Web API",
 			version,
 			description:
 				"Auto-generated from src/web-server.ts routes. Components seeded from runtime schemas.",
@@ -856,11 +859,25 @@ function buildSpec(routes: Route[]) {
 function main() {
 	const routes = extractRoutes("src/server/routes.ts");
 	const spec = buildSpec(routes);
+	const rendered = JSON.stringify(spec, null, 2);
 	try {
-		writeFileSync("openapi.json", JSON.stringify(spec, null, 2), "utf8");
-		console.log(`Generated openapi.json with ${routes.length} routes.`);
+		if (checkOnly) {
+			const current = readFileSync(outputPath, "utf8");
+			if (current !== rendered) {
+				console.error(`OpenAPI spec is out of date: ${outputPath}`);
+				process.exitCode = 1;
+				return;
+			}
+			console.log(`OpenAPI spec is in sync (${routes.length} routes).`);
+			return;
+		}
+		writeFileSync(outputPath, rendered, "utf8");
+		console.log(`Generated ${outputPath} with ${routes.length} routes.`);
 	} catch (err) {
-		console.error("Failed to write openapi.json", err);
+		console.error(
+			checkOnly ? "Failed to verify openapi.json" : "Failed to write openapi.json",
+			err,
+		);
 		process.exitCode = 1;
 	}
 }
