@@ -1,5 +1,5 @@
+import ExcelJS from "exceljs";
 import { describe, expect, it } from "vitest";
-import * as XLSX from "xlsx";
 import { extractDocumentText } from "../src/utils/document-extractor.js";
 
 describe("extractDocumentText", () => {
@@ -15,16 +15,11 @@ describe("extractDocumentText", () => {
 	});
 
 	it("extracts xlsx files into tab-separated text", async () => {
-		const wb = XLSX.utils.book_new();
-		const ws = XLSX.utils.aoa_to_sheet([
-			["Name", "Age"],
-			["Alice", 30],
-		]);
-		XLSX.utils.book_append_sheet(wb, ws, "People");
-		const buffer = XLSX.write(wb, {
-			type: "buffer",
-			bookType: "xlsx",
-		}) as Buffer;
+		const workbook = new ExcelJS.Workbook();
+		const worksheet = workbook.addWorksheet("People");
+		worksheet.addRow(["Name", "Age"]);
+		worksheet.addRow(["Alice", 30]);
+		const buffer = Buffer.from(await workbook.xlsx.writeBuffer());
 
 		const out = await extractDocumentText({
 			buffer,

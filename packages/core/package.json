@@ -54,8 +54,7 @@
 		"pdf-parse": "^2.4.5",
 		"smol-toml": "^1.5.2",
 		"uuid": "^13.0.0",
-		"vscode-jsonrpc": "^8.2.0",
-		"xlsx": "^0.18.5"
+		"vscode-jsonrpc": "^8.2.0"
 	},
 	"peerDependencies": {
 		"@evalops/tui": "^0.10.6"

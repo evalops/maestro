@@ -1,7 +1,7 @@
+import ExcelJS from "exceljs";
 import JSZip from "jszip";
 import mammoth from "mammoth";
 import { PDFParse } from "pdf-parse";
-import * as XLSX from "xlsx";
 
 export type ExtractedDocumentFormat =
 	| "pdf"
@@ -25,8 +25,12 @@ export interface ExtractDocumentOutput {
 	sizeBytes: number;
 }
 
+type ExcelWorkbookLoadInput = Parameters<ExcelJS.Workbook["xlsx"]["load"]>[0];
+
 const DEFAULT_MAX_CHARS = 200_000;
 const MAX_INPUT_BYTES = 50 * 1024 * 1024;
+const XLSX_MIME =
+	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
 function clampText(
 	text: string,
@@ -50,14 +54,7 @@ function detectFormat(
 		lowerName.endsWith(".docx")
 	)
 		return "docx";
-	if (
-		type ===
-			"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
-		type === "application/vnd.ms-excel" ||
-		lowerName.endsWith(".xlsx") ||
-		lowerName.endsWith(".xls")
-	)
-		return "xlsx";
+	if (type === XLSX_MIME || lowerName.endsWith(".xlsx")) return "xlsx";
 	if (
 		type ===
 			"application/vnd.openxmlformats-officedocument.presentationml.presentation" ||
@@ -85,6 +82,23 @@ function detectFormat(
 	if (textExtensions.some((ext) => lowerName.endsWith(ext))) return "text";
 
 	return "unknown";
+}
+
+function worksheetToRows(worksheet: ExcelJS.Worksheet): string[][] {
+	const rows: string[][] = [];
+	worksheet.eachRow({ includeEmpty: false }, (row) => {
+		const cells: string[] = [];
+		for (let column = 1; column <= row.cellCount; column++) {
+			cells.push((row.getCell(column).text || "").trim());
+		}
+		while (cells.length > 0 && cells[cells.length - 1] === "") {
+			cells.pop();
+		}
+		if (cells.some((value) => value !== "")) {
+			rows.push(cells);
+		}
+	});
+	return rows;
 }
 
 async function extractPptxText(buffer: Buffer): Promise<string> {
@@ -164,15 +178,15 @@ export async function extractDocumentText(
 			break;
 		}
 		case "xlsx": {
-			const workbook = XLSX.read(buffer, { type: "buffer" });
+			const workbook = new ExcelJS.Workbook();
+			await workbook.xlsx.load(buffer as unknown as ExcelWorkbookLoadInput);
 			const parts: string[] = [];
-			for (const name of workbook.SheetNames || []) {
-				const sheet = workbook.Sheets[name];
-				if (!sheet) continue;
-				const csv = XLSX.utils.sheet_to_csv(sheet, { FS: "\t" });
-				const normalized = (csv || "").trim();
-				if (!normalized) continue;
-				parts.push(`# Sheet: ${name}\n${normalized}`);
+			for (const worksheet of workbook.worksheets) {
+				const rows = worksheetToRows(worksheet);
+				if (rows.length === 0) continue;
+				parts.push(
+					`# Sheet: ${worksheet.name}\n${rows.map((row) => row.join("\t")).join("\n")}`,
+				);
 			}
 			extractedText = parts.join("\n\n");
 			break;

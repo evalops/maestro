@@ -1,5 +1,6 @@
 import type { ComposerAttachment } from "@evalops/contracts";
 import DOMPurify from "dompurify";
+import type ExcelJS from "exceljs";
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
@@ -7,11 +8,14 @@ import type { ApiClient } from "../services/api-client.js";
 import { isValidBase64, normalizeBase64 } from "./base64-utils.js";
 
 type PdfjsModule = typeof import("pdfjs-dist");
-type XlsxModule = typeof import("xlsx");
+type ExcelJsModule = typeof import("exceljs");
 type DocxPreviewModule = typeof import("docx-preview");
+type ExcelWorkbookLoadInput = Parameters<
+	import("exceljs").Workbook["xlsx"]["load"]
+>[0];
 
 let cachedPdfjs: PdfjsModule | null = null;
-let cachedXlsx: XlsxModule | null = null;
+let cachedExcelJs: ExcelJsModule | null = null;
 let cachedDocxPreview: DocxPreviewModule | null = null;
 
 async function loadPdfjs(): Promise<PdfjsModule> {
@@ -25,11 +29,11 @@ async function loadPdfjs(): Promise<PdfjsModule> {
 	return cachedPdfjs;
 }
 
-async function loadXlsx(): Promise<XlsxModule> {
-	if (!cachedXlsx) {
-		cachedXlsx = await import("xlsx");
+async function loadExcelJs(): Promise<ExcelJsModule> {
+	if (!cachedExcelJs) {
+		cachedExcelJs = await import("exceljs");
 	}
-	return cachedXlsx;
+	return cachedExcelJs;
 }
 
 async function loadDocxPreview(): Promise<DocxPreviewModule> {
@@ -79,6 +83,46 @@ function formatBytes(bytes: number): string {
 		unit++;
 	}
 	return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
+function escapeHtml(value: string): string {
+	return value
+		.replaceAll("&", "&amp;")
+		.replaceAll("<", "&lt;")
+		.replaceAll(">", "&gt;")
+		.replaceAll('"', "&quot;")
+		.replaceAll("'", "&#39;");
+}
+
+function worksheetToRows(worksheet: ExcelJS.Worksheet): string[][] {
+	const rows: string[][] = [];
+	worksheet.eachRow({ includeEmpty: false }, (row) => {
+		const cells: string[] = [];
+		for (let column = 1; column <= row.cellCount; column++) {
+			cells.push((row.getCell(column).text || "").trim());
+		}
+		while (cells.length > 0 && cells[cells.length - 1] === "") {
+			cells.pop();
+		}
+		if (cells.some((value) => value !== "")) {
+			rows.push(cells);
+		}
+	});
+	return rows;
+}
+
+function worksheetToHtml(worksheet: ExcelJS.Worksheet): string {
+	const rows = worksheetToRows(worksheet);
+	if (rows.length === 0) {
+		return '<div class="notice">This sheet is empty.</div>';
+	}
+
+	return `<table><tbody>${rows
+		.map(
+			(row) =>
+				`<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`,
+		)
+		.join("")}</tbody></table>`;
 }
 
 function parsePptxSlides(extractedText: string): Array<{
@@ -418,13 +462,7 @@ export class ComposerAttachmentViewer extends LitElement {
 		if (type === "application/pdf" || name.endsWith(".pdf")) return "pdf";
 		if (type.includes("wordprocessingml") || name.endsWith(".docx"))
 			return "docx";
-		if (
-			type.includes("spreadsheetml") ||
-			type.includes("ms-excel") ||
-			name.endsWith(".xlsx") ||
-			name.endsWith(".xls")
-		)
-			return "xlsx";
+		if (type.includes("spreadsheetml") || name.endsWith(".xlsx")) return "xlsx";
 		if (type.includes("presentationml") || name.endsWith(".pptx"))
 			return "pptx";
 		if (this.isTextLike(att)) return "text";
@@ -815,21 +853,28 @@ export class ComposerAttachmentViewer extends LitElement {
 		bytes: Uint8Array,
 		token: number,
 	): Promise<void> {
-		const XLSX = await loadXlsx();
-		const workbook = XLSX.read(bytes, { type: "array" });
+		const ExcelJS = await loadExcelJs();
+		const workbook = new ExcelJS.Workbook();
+		const arrayBuffer = bytes.buffer.slice(
+			bytes.byteOffset,
+			bytes.byteOffset + bytes.byteLength,
+		);
+		await workbook.xlsx.load(arrayBuffer as unknown as ExcelWorkbookLoadInput);
 		if (token !== this.renderToken) return;
 
-		const sheetNames = Array.isArray(workbook.SheetNames)
-			? workbook.SheetNames.filter((s) => typeof s === "string")
-			: [];
+		const sheetNames = workbook.worksheets
+			.map((worksheet) => worksheet.name)
+			.filter((name) => typeof name === "string" && name.length > 0);
 		this.xlsxSheetNames = sheetNames;
 		if (this.xlsxActiveSheet >= sheetNames.length) {
 			this.xlsxActiveSheet = 0;
 		}
 
 		const activeName = sheetNames[this.xlsxActiveSheet];
-		const sheet = activeName ? workbook.Sheets[activeName] : undefined;
-		const htmlString = sheet ? XLSX.utils.sheet_to_html(sheet) : "";
+		const sheet = activeName
+			? workbook.worksheets.find((worksheet) => worksheet.name === activeName)
+			: undefined;
+		const htmlString = sheet ? worksheetToHtml(sheet) : "";
 		const sanitized = DOMPurify.sanitize(htmlString, {
 			USE_PROFILES: { html: true },
 		});

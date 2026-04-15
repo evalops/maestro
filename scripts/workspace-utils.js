@@ -71,6 +71,16 @@ export function loadRootPackage() {
 	return parseJsonFile(packagePath);
 }
 
+function hasWorkspaceProtocolDependency(section) {
+	if (!section || typeof section !== "object") {
+		return false;
+	}
+
+	return Object.values(section).some(
+		(value) => typeof value === "string" && value.startsWith("workspace:"),
+	);
+}
+
 function getWorkspaceGlobs(rootPackage) {
 	if (!rootPackage.workspaces) {
 		throw new Error("No workspaces defined in package.json");
@@ -174,4 +184,18 @@ export function verifyAlignedVersions(packages, expectedVersion) {
 
 export function getRootPackagePath() {
 	return getRootContext().packagePath;
+}
+
+export function shouldManagePackageLock(rootPackage) {
+	const { rootDir } = getRootContext();
+	if (!existsSync(join(rootDir, "package-lock.json"))) {
+		return false;
+	}
+
+	return ![
+		rootPackage.dependencies,
+		rootPackage.devDependencies,
+		rootPackage.peerDependencies,
+		rootPackage.optionalDependencies,
+	].some(hasWorkspaceProtocolDependency);
 }

@@ -111,7 +111,7 @@ export const extractDocumentTool = createTool<
 
 		if (!extracted.extractedText && extracted.format === "unknown") {
 			throw new Error(
-				"Unsupported document format. Supported: PDF (.pdf), Word (.docx), Excel (.xlsx/.xls), PowerPoint (.pptx), and common text files.",
+				"Unsupported document format. Supported: PDF (.pdf), Word (.docx), Excel (.xlsx), PowerPoint (.pptx), and common text files.",
 			);
 		}
 
