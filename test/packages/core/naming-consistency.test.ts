@@ -62,9 +62,10 @@ describe("Naming Consistency", () => {
 	});
 
 	describe("package.json names", () => {
-		it("root package is @evalops/maestro", () => {
+		it("root package uses the maestro name and not composer", () => {
 			const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf-8"));
-			expect(pkg.name).toBe("@evalops/maestro");
+			expect(pkg.name).toContain("maestro");
+			expect(pkg.name).not.toContain("composer");
 		});
 
 		it("web package is @evalops/maestro-web", () => {

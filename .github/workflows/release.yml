@@ -162,7 +162,8 @@ jobs:
           ensure-ripgrep: "true"
 
       - run: bun run bun:lint
-      - run: bun run build
+      - run: npm run build:all
+      - run: bun run openapi:generate
       - run: bun run bun:test
       - name: Run evals chunk
         env:
@@ -196,7 +197,7 @@ jobs:
             exit 1
           fi
 
-      - run: bun run build
+      - run: npm run build:all
       - name: Generate version metadata
         run: node scripts/create-version-json.js
 

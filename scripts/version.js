@@ -68,6 +68,16 @@ function updatePackageLock(newVersion) {
 	}
 }
 
+function updateOpenApiSpec() {
+	try {
+		execSync("npm run openapi:generate", { stdio: "inherit" });
+		console.log("📘 Updated openapi.json");
+	} catch (error) {
+		const reason = error instanceof Error ? error.message : "unknown error";
+		throw new Error(`Failed to update openapi.json: ${reason}`);
+	}
+}
+
 function restoreBackups(backups) {
 	for (const backup of backups) {
 		writePackageJson(backup.path, backup.original);
@@ -123,6 +133,9 @@ function main() {
 
 		// Update changelog
 		updateChangelog(newVersion);
+
+		// Update OpenAPI spec
+		updateOpenApiSpec();
 
 		// Update package-lock.json
 		updatePackageLock(newVersion);
