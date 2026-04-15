@@ -4,6 +4,19 @@ All notable changes to this project will be documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/) and adheres to semantic
 versioning when releases are cut.
 
+
+## [0.10.1] - 2026-04-15
+
+### Changed
+
+- Switched npm release automation for `@evalops-jh/maestro` to GitHub trusted publishing via OIDC.
+
+### Fixed
+
+- Replaced published `workspace:*` internal dependency specifiers with concrete package versions in release manifests.
+- Removed the need for a stored GitHub Actions npm token during package publication.
+
+
 ## Unreleased
 
 ### Added
