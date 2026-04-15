@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <!-- Main gradient - obsidian noir matching desktop theme -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0c0c12"/>
+      <stop offset="50%" style="stop-color:#06060a"/>
+      <stop offset="100%" style="stop-color:#020204"/>
+    </linearGradient>
+
+    <!-- Accent gradient - teal matching desktop theme -->
+    <linearGradient id="accentGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#2dd4bf"/>
+      <stop offset="50%" style="stop-color:#14b8a6"/>
+      <stop offset="100%" style="stop-color:#0d9488"/>
+    </linearGradient>
+
+    <!-- Glow gradient -->
+    <linearGradient id="glowGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#2dd4bf;stop-opacity:0.9"/>
+      <stop offset="100%" style="stop-color:#14b8a6;stop-opacity:0.5"/>
+    </linearGradient>
+
+    <!-- Radial glow for center -->
+    <radialGradient id="centerGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" style="stop-color:#14b8a6;stop-opacity:0.15"/>
+      <stop offset="100%" style="stop-color:#14b8a6;stop-opacity:0"/>
+    </radialGradient>
+
+    <!-- Shadow filter -->
+    <filter id="shadow" x="-50%" y="-50%" width="200%" height="200%">
+      <feDropShadow dx="0" dy="8" stdDeviation="24" flood-color="#14b8a6" flood-opacity="0.4"/>
+    </filter>
+
+    <!-- Outer glow for the symbol -->
+    <filter id="outerGlow" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur stdDeviation="16" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background with rounded corners (macOS style) -->
+  <rect width="1024" height="1024" rx="224" fill="url(#bgGrad)"/>
+
+  <!-- Subtle border -->
+  <rect width="1024" height="1024" rx="224" fill="none" stroke="#1c1c24" stroke-width="2"/>
+
+  <!-- Center glow -->
+  <ellipse cx="512" cy="512" rx="320" ry="320" fill="url(#centerGlow)"/>
+
+  <!-- Decorative corner accents -->
+  <g stroke="url(#accentGrad)" stroke-width="8" stroke-linecap="round" opacity="0.4">
+    <path d="M96 224 L96 96 L224 96" fill="none"/>
+    <path d="M928 224 L928 96 L800 96" fill="none"/>
+    <path d="M96 800 L96 928 L224 928" fill="none"/>
+    <path d="M928 800 L928 928 L800 928" fill="none"/>
+  </g>
+
+  <!-- Main symbol group centered -->
+  <g filter="url(#outerGlow)" transform="translate(512, 512)">
+    <!-- Outer layers arc - representing composition -->
+    <path d="M 64 -256 A 256 256 0 1 0 64 256"
+          fill="none"
+          stroke="url(#accentGrad)"
+          stroke-width="48"
+          stroke-linecap="round"
+          opacity="0.95"/>
+
+    <!-- Inner bracket - code aesthetic -->
+    <path d="M -64 -160 L -128 -160 L -128 160 L -64 160"
+          fill="none"
+          stroke="url(#glowGrad)"
+          stroke-width="24"
+          stroke-linecap="round"
+          stroke-linejoin="round"/>
+
+    <!-- Cursor/caret element -->
+    <rect x="-32" y="-112" width="24" height="224" rx="12" fill="#14b8a6" opacity="0.95"/>
+
+    <!-- Data flow dots -->
+    <circle cx="160" cy="-128" r="24" fill="#2dd4bf" opacity="0.8"/>
+    <circle cx="208" cy="0" r="20" fill="#14b8a6" opacity="0.7"/>
+    <circle cx="160" cy="128" r="24" fill="#0d9488" opacity="0.8"/>
+  </g>
+
+  <!-- Subtle bottom highlight -->
+  <rect x="256" y="944" width="512" height="16" rx="8" fill="url(#accentGrad)" opacity="0.25"/>
+</svg>

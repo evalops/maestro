@@ -1,0 +1,1239 @@
+//! # TOML-based Configuration System with Profiles
+//!
+//! Ported from OpenAI Codex (MIT License) config pattern.
+//!
+//! ## Rust Concept: Configuration Loading
+//!
+//! This module demonstrates several important Rust patterns:
+//!
+//! 1. **Serde Serialization**: Using `#[derive(Serialize, Deserialize)]` to
+//!    automatically convert between TOML files and Rust structs.
+//!
+//! 2. **Global Mutable State**: Using `Lazy<RwLock<T>>` for a thread-safe
+//!    configuration cache that can be read from anywhere.
+//!
+//! 3. **Option-heavy Structs**: Using `Option<T>` for every field allows
+//!    partial configuration - only specified fields override defaults.
+//!
+//! 4. **Deep Merging**: Implementing layered configuration where multiple
+//!    sources combine into a final configuration.
+//!
+//! ## Configuration Sources (in order of precedence)
+//!
+//! 1. CLI flags (--model, --config key=value)
+//! 2. Environment variables (MAESTRO_*)
+//! 3. Active profile settings
+//! 4. Project config.toml (.composer/config.toml)
+//! 5. Global config.toml (~/.composer/config.toml)
+//! 6. Built-in defaults (DEFAULT_CONFIG)
+//!
+//! ## Example config.toml
+//!
+//! ```toml
+//! model = "claude-3-opus"
+//! model_provider = "anthropic"
+//! approval_policy = "on-failure"
+//!
+//! [profiles.fast]
+//! model = "claude-3-haiku"
+//!
+//! [mcp_servers.context7]
+//! command = "npx"
+//! args = ["-y", "@upstash/context7-mcp"]
+//! ```
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IMPORTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// `once_cell::Lazy` provides lazy initialization for static values.
+// The value is computed on first access and cached for subsequent accesses.
+// This is Rust's solution to the "static initialization order" problem.
+
+use serde::{Deserialize, Serialize};
+// Serde is Rust's standard serialization framework.
+// `Serialize` allows converting structs to formats like JSON, TOML
+// `Deserialize` allows parsing formats into structs
+// Derive macros auto-generate the implementation based on struct fields.
+
+use std::collections::HashMap;
+// HashMap is Rust's hash table implementation, similar to:
+// - JavaScript: Object or Map
+// - Python: dict
+// - Java: HashMap
+
+use std::env;
+// Environment variable access
+
+use std::fs;
+// Filesystem operations (read, write files)
+
+use std::path::{Path, PathBuf};
+// `Path` is a borrowed path (like &str for strings)
+// `PathBuf` is an owned path (like String for strings)
+
+use std::sync::RwLock;
+// RwLock allows multiple readers OR one writer at a time.
+// This is thread-safe: multiple threads can read config simultaneously,
+// but only one can update it. `Mutex` would only allow one accessor at a time.
+
+// ─────────────────────────────────────────────────────────────
+// Configuration Types
+// ─────────────────────────────────────────────────────────────
+//
+// Rust Concept: Serde Attributes
+//
+// Serde provides attributes to customize serialization:
+//
+// - `#[serde(rename_all = "kebab-case")]`: Converts PascalCase to kebab-case
+//   So `OnFailure` becomes "on-failure" in TOML/JSON
+//
+// - `#[serde(rename = "foo")]`: Renames a specific field/variant
+//
+// - `#[serde(flatten)]`: Merges fields from a nested struct into the parent
+//
+// - `#[serde(untagged)]`: For enums, tries each variant in order without
+//   looking for a type tag (useful for flexible input formats)
+
+/// Approval policy for tool execution.
+///
+/// Controls when the user is asked to approve tool execution.
+/// Lower values are more permissive; higher values are safer.
+///
+/// # Rust Concept: Enum with Serde
+///
+/// `#[serde(rename_all = "kebab-case")]` transforms variant names:
+/// - `Untrusted` -> "untrusted"
+/// - `OnFailure` -> "on-failure"
+/// - `OnRequest` -> "on-request"
+/// - `Never` -> "never"
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ApprovalPolicy {
+    /// Ask for approval on all tool calls (safest)
+    #[default]
+    Untrusted,
+    /// Only ask when a tool fails
+    OnFailure,
+    /// Ask when the model requests it
+    OnRequest,
+    /// Never ask - auto-approve everything (dangerous!)
+    Never,
+}
+
+impl ApprovalPolicy {
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "untrusted" => Some(Self::Untrusted),
+            "on-failure" => Some(Self::OnFailure),
+            "on-request" => Some(Self::OnRequest),
+            "never" => Some(Self::Never),
+            _ => None,
+        }
+    }
+}
+
+/// Sandbox execution mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum SandboxMode {
+    ReadOnly,
+    #[default]
+    WorkspaceWrite,
+    DangerFullAccess,
+}
+
+impl SandboxMode {
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "read-only" => Some(Self::ReadOnly),
+            "workspace-write" => Some(Self::WorkspaceWrite),
+            "danger-full-access" => Some(Self::DangerFullAccess),
+            _ => None,
+        }
+    }
+}
+
+/// Model reasoning effort level
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningEffort {
+    Minimal,
+    Low,
+    #[default]
+    Medium,
+    High,
+}
+
+/// Reasoning summary mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningSummary {
+    #[default]
+    Auto,
+    Concise,
+    Detailed,
+    None,
+}
+
+/// Model output verbosity
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelVerbosity {
+    Low,
+    #[default]
+    Medium,
+    High,
+}
+
+/// Wire API format
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum WireApi {
+    #[default]
+    Chat,
+    Responses,
+}
+
+/// Model provider configuration
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ModelProviderConfig {
+    pub name: Option<String>,
+    pub base_url: Option<String>,
+    pub env_key: Option<String>,
+    pub wire_api: Option<WireApi>,
+    pub query_params: Option<HashMap<String, String>>,
+    pub http_headers: Option<HashMap<String, String>>,
+    pub env_http_headers: Option<HashMap<String, String>>,
+    pub request_max_retries: Option<u32>,
+    pub stream_max_retries: Option<u32>,
+    pub stream_idle_timeout_ms: Option<u64>,
+}
+
+/// MCP server configuration
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct McpServerConfig {
+    pub command: Option<String>,
+    pub args: Option<Vec<String>>,
+    pub env: Option<HashMap<String, String>>,
+    pub cwd: Option<String>,
+    pub url: Option<String>,
+    pub bearer_token_env_var: Option<String>,
+    pub http_headers: Option<HashMap<String, String>>,
+    pub env_http_headers: Option<HashMap<String, String>>,
+    pub enabled: Option<bool>,
+    pub startup_timeout_sec: Option<u32>,
+    pub tool_timeout_sec: Option<u32>,
+    pub enabled_tools: Option<Vec<String>>,
+    pub disabled_tools: Option<Vec<String>>,
+}
+
+/// Features configuration
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FeaturesConfig {
+    pub web_search_request: Option<bool>,
+    pub view_image_tool: Option<bool>,
+    pub ghost_commit: Option<bool>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, bool>,
+}
+
+/// Tools configuration
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ToolsConfig {
+    pub web_search: Option<bool>,
+    pub view_image: Option<bool>,
+}
+
+/// OTLP HTTP exporter configuration
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OtlpHttpConfig {
+    pub endpoint: String,
+    pub protocol: Option<String>,
+    pub headers: Option<HashMap<String, String>>,
+}
+
+/// OTLP gRPC exporter configuration
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OtlpGrpcConfig {
+    pub endpoint: String,
+    pub headers: Option<HashMap<String, String>>,
+}
+
+/// OTEL exporter type
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OtelExporter {
+    None,
+    #[serde(rename = "otlp-http")]
+    OtlpHttp(OtlpHttpConfig),
+    #[serde(rename = "otlp-grpc")]
+    OtlpGrpc(OtlpGrpcConfig),
+}
+
+/// OTEL configuration
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OtelConfig {
+    pub environment: Option<String>,
+    pub exporter: Option<OtelExporter>,
+    pub log_user_prompt: Option<bool>,
+}
+
+/// History persistence mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum HistoryPersistence {
+    #[default]
+    SaveAll,
+    None,
+}
+
+impl HistoryPersistence {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_lowercase().as_str() {
+            "none" => Some(Self::None),
+            "save-all" | "save_all" | "saveall" | "all" => Some(Self::SaveAll),
+            _ => None,
+        }
+    }
+}
+
+/// History configuration
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HistoryConfig {
+    pub persistence: Option<HistoryPersistence>,
+    pub max_bytes: Option<usize>,
+}
+
+/// Notifications setting (bool or list of event types)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum NotificationsSetting {
+    Enabled(bool),
+    Events(Vec<String>),
+}
+
+impl Default for NotificationsSetting {
+    fn default() -> Self {
+        Self::Enabled(true)
+    }
+}
+
+/// TUI configuration
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TuiConfig {
+    pub notifications: Option<NotificationsSetting>,
+    pub animations: Option<bool>,
+}
+
+/// Shell environment inheritance mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ShellInherit {
+    #[default]
+    All,
+    Core,
+    None,
+}
+
+/// Shell environment policy
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ShellEnvironmentPolicy {
+    pub inherit: Option<ShellInherit>,
+    pub ignore_default_excludes: Option<bool>,
+    pub exclude: Option<Vec<String>>,
+    pub set: Option<HashMap<String, String>>,
+    pub include_only: Option<Vec<String>>,
+}
+
+/// Sandbox workspace write configuration
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SandboxWorkspaceWriteConfig {
+    pub writable_roots: Option<Vec<String>>,
+    pub network_access: Option<bool>,
+    pub exclude_tmpdir_env_var: Option<bool>,
+    pub exclude_slash_tmp: Option<bool>,
+}
+
+/// File opener application
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum FileOpener {
+    #[default]
+    Vscode,
+    VscodeInsiders,
+    Windsurf,
+    Cursor,
+    None,
+}
+
+/// Project trust level
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TrustLevel {
+    Trusted,
+    #[default]
+    Untrusted,
+}
+
+/// Project-specific settings
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ProjectSettings {
+    pub trust_level: Option<TrustLevel>,
+}
+
+/// Profile configuration (subset of main config)
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ProfileConfig {
+    pub model: Option<String>,
+    pub model_provider: Option<String>,
+    pub approval_policy: Option<ApprovalPolicy>,
+    pub sandbox_mode: Option<SandboxMode>,
+    pub model_reasoning_effort: Option<ReasoningEffort>,
+    pub model_reasoning_summary: Option<ReasoningSummary>,
+    pub model_verbosity: Option<ModelVerbosity>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, toml::Value>,
+}
+
+/// Main Composer configuration
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ComposerConfig {
+    // Model settings
+    pub model: Option<String>,
+    pub model_provider: Option<String>,
+    pub model_context_window: Option<usize>,
+    pub model_reasoning_effort: Option<ReasoningEffort>,
+    pub model_reasoning_summary: Option<ReasoningSummary>,
+    pub model_verbosity: Option<ModelVerbosity>,
+    pub model_supports_reasoning_summaries: Option<bool>,
+
+    // Execution environment
+    pub approval_policy: Option<ApprovalPolicy>,
+    pub sandbox_mode: Option<SandboxMode>,
+    pub sandbox_workspace_write: Option<SandboxWorkspaceWriteConfig>,
+    pub shell_environment_policy: Option<ShellEnvironmentPolicy>,
+
+    // Providers
+    pub model_providers: Option<HashMap<String, ModelProviderConfig>>,
+
+    // MCP
+    pub mcp_servers: Option<HashMap<String, McpServerConfig>>,
+
+    // Features
+    pub features: Option<FeaturesConfig>,
+    pub tools: Option<ToolsConfig>,
+
+    // Observability
+    pub otel: Option<OtelConfig>,
+    pub notify: Option<Vec<String>>,
+    pub hide_agent_reasoning: Option<bool>,
+    pub show_raw_agent_reasoning: Option<bool>,
+
+    // History
+    pub history: Option<HistoryConfig>,
+
+    // TUI
+    pub tui: Option<TuiConfig>,
+
+    // Project docs
+    pub project_doc_max_bytes: Option<usize>,
+    pub project_doc_fallback_filenames: Option<Vec<String>>,
+
+    // Profiles
+    pub profile: Option<String>,
+    pub profiles: Option<HashMap<String, ProfileConfig>>,
+
+    // File opener
+    pub file_opener: Option<FileOpener>,
+
+    // Instructions
+    pub instructions: Option<String>,
+    pub experimental_instructions_file: Option<String>,
+
+    // Trust
+    pub projects: Option<HashMap<String, ProjectSettings>>,
+}
+
+// ─────────────────────────────────────────────────────────────
+// Default Configuration
+// ─────────────────────────────────────────────────────────────
+
+/// Default configuration values
+pub static DEFAULT_CONFIG: std::sync::LazyLock<ComposerConfig> =
+    std::sync::LazyLock::new(|| ComposerConfig {
+        model: Some("claude-sonnet-4-20250514".to_string()),
+        model_provider: Some("anthropic".to_string()),
+        approval_policy: Some(ApprovalPolicy::Untrusted),
+        sandbox_mode: Some(SandboxMode::WorkspaceWrite),
+        model_reasoning_effort: Some(ReasoningEffort::Medium),
+        features: Some(FeaturesConfig {
+            view_image_tool: Some(true),
+            ..Default::default()
+        }),
+        history: Some(HistoryConfig {
+            persistence: Some(HistoryPersistence::SaveAll),
+            ..Default::default()
+        }),
+        tui: Some(TuiConfig {
+            notifications: Some(NotificationsSetting::Enabled(true)),
+            animations: Some(true),
+        }),
+        file_opener: Some(FileOpener::Vscode),
+        project_doc_max_bytes: Some(32 * 1024),
+        project_doc_fallback_filenames: Some(vec!["CLAUDE.md".to_string()]),
+        ..Default::default()
+    });
+
+// ─────────────────────────────────────────────────────────────
+// Configuration Cache
+// ─────────────────────────────────────────────────────────────
+//
+// Rust Concept: Global Mutable State
+//
+// Rust normally doesn't allow global mutable state because it's unsafe
+// in concurrent programs. However, sometimes we need it (like caching).
+//
+// The pattern used here:
+// 1. `static` - a global variable that exists for the program lifetime
+// 2. `Lazy<T>` - delays initialization until first access
+// 3. `RwLock<T>` - provides thread-safe access (multiple readers OR one writer)
+//
+// Accessing the cache:
+// - `CONFIG_CACHE.read().unwrap()` - get a read lock (shared)
+// - `CONFIG_CACHE.write().unwrap()` - get a write lock (exclusive)
+//
+// The `.unwrap()` panics if the lock is poisoned (a thread panicked while
+// holding it). In practice, this is rare and indicates a serious bug.
+
+/// Internal cache structure to avoid re-parsing config files.
+struct ConfigCache {
+    /// Cached configuration (None if not yet loaded)
+    config: Option<ComposerConfig>,
+    /// The workspace directory this config was loaded for
+    workspace_dir: Option<PathBuf>,
+    /// The profile name that was active when cached
+    profile_name: Option<String>,
+}
+
+/// Global configuration cache.
+///
+/// # Rust Concept: Static with Lazy Initialization
+///
+/// `static` variables in Rust must be `Sync` (safe to share between threads).
+/// `Lazy<RwLock<T>>` satisfies this:
+/// - `Lazy` ensures thread-safe initialization
+/// - `RwLock` provides thread-safe access
+///
+/// The `|| { ... }` is a closure that creates the initial value.
+static CONFIG_CACHE: std::sync::LazyLock<RwLock<ConfigCache>> = std::sync::LazyLock::new(|| {
+    RwLock::new(ConfigCache {
+        config: None,
+        workspace_dir: None,
+        profile_name: None,
+    })
+});
+
+/// Clear the configuration cache.
+///
+/// Used primarily in tests to ensure a fresh config load.
+pub fn clear_config_cache() {
+    // `.write()` acquires an exclusive write lock
+    // Use `unwrap_or_else` to recover from poisoned locks
+    let mut cache = CONFIG_CACHE
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    cache.config = None;
+    cache.workspace_dir = None;
+    cache.profile_name = None;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Configuration Loading
+// ─────────────────────────────────────────────────────────────
+
+/// Deep merge two configurations, with source values overwriting target values
+fn deep_merge(target: &mut ComposerConfig, source: &ComposerConfig) {
+    // Simple fields - source overwrites if present
+    if source.model.is_some() {
+        target.model = source.model.clone();
+    }
+    if source.model_provider.is_some() {
+        target.model_provider = source.model_provider.clone();
+    }
+    if source.model_context_window.is_some() {
+        target.model_context_window = source.model_context_window;
+    }
+    if source.model_reasoning_effort.is_some() {
+        target.model_reasoning_effort = source.model_reasoning_effort;
+    }
+    if source.model_reasoning_summary.is_some() {
+        target.model_reasoning_summary = source.model_reasoning_summary;
+    }
+    if source.model_verbosity.is_some() {
+        target.model_verbosity = source.model_verbosity;
+    }
+    if source.model_supports_reasoning_summaries.is_some() {
+        target.model_supports_reasoning_summaries = source.model_supports_reasoning_summaries;
+    }
+    if source.approval_policy.is_some() {
+        target.approval_policy = source.approval_policy;
+    }
+    if source.sandbox_mode.is_some() {
+        target.sandbox_mode = source.sandbox_mode;
+    }
+    if source.profile.is_some() {
+        target.profile = source.profile.clone();
+    }
+    if source.file_opener.is_some() {
+        target.file_opener = source.file_opener;
+    }
+    if source.instructions.is_some() {
+        target.instructions = source.instructions.clone();
+    }
+    if source.experimental_instructions_file.is_some() {
+        target.experimental_instructions_file = source.experimental_instructions_file.clone();
+    }
+    if source.project_doc_max_bytes.is_some() {
+        target.project_doc_max_bytes = source.project_doc_max_bytes;
+    }
+    if source.hide_agent_reasoning.is_some() {
+        target.hide_agent_reasoning = source.hide_agent_reasoning;
+    }
+    if source.show_raw_agent_reasoning.is_some() {
+        target.show_raw_agent_reasoning = source.show_raw_agent_reasoning;
+    }
+
+    // Arrays - source replaces entirely
+    if source.notify.is_some() {
+        target.notify = source.notify.clone();
+    }
+    if source.project_doc_fallback_filenames.is_some() {
+        target.project_doc_fallback_filenames = source.project_doc_fallback_filenames.clone();
+    }
+
+    // Nested objects - merge recursively
+    if let Some(source_features) = &source.features {
+        let target_features = target.features.get_or_insert_with(Default::default);
+        if source_features.web_search_request.is_some() {
+            target_features.web_search_request = source_features.web_search_request;
+        }
+        if source_features.view_image_tool.is_some() {
+            target_features.view_image_tool = source_features.view_image_tool;
+        }
+        if source_features.ghost_commit.is_some() {
+            target_features.ghost_commit = source_features.ghost_commit;
+        }
+        target_features.extra.extend(source_features.extra.clone());
+    }
+
+    if let Some(source_tools) = &source.tools {
+        let target_tools = target.tools.get_or_insert_with(Default::default);
+        if source_tools.web_search.is_some() {
+            target_tools.web_search = source_tools.web_search;
+        }
+        if source_tools.view_image.is_some() {
+            target_tools.view_image = source_tools.view_image;
+        }
+    }
+
+    if let Some(source_history) = &source.history {
+        let target_history = target.history.get_or_insert_with(Default::default);
+        if source_history.persistence.is_some() {
+            target_history.persistence = source_history.persistence;
+        }
+        if source_history.max_bytes.is_some() {
+            target_history.max_bytes = source_history.max_bytes;
+        }
+    }
+
+    if let Some(source_tui) = &source.tui {
+        let target_tui = target.tui.get_or_insert_with(Default::default);
+        if source_tui.notifications.is_some() {
+            target_tui.notifications = source_tui.notifications.clone();
+        }
+        if source_tui.animations.is_some() {
+            target_tui.animations = source_tui.animations;
+        }
+    }
+
+    if let Some(source_otel) = &source.otel {
+        let target_otel = target.otel.get_or_insert_with(Default::default);
+        if source_otel.environment.is_some() {
+            target_otel.environment = source_otel.environment.clone();
+        }
+        if source_otel.exporter.is_some() {
+            target_otel.exporter = source_otel.exporter.clone();
+        }
+        if source_otel.log_user_prompt.is_some() {
+            target_otel.log_user_prompt = source_otel.log_user_prompt;
+        }
+    }
+
+    if let Some(source_shell) = &source.shell_environment_policy {
+        let target_shell = target
+            .shell_environment_policy
+            .get_or_insert_with(Default::default);
+        if source_shell.inherit.is_some() {
+            target_shell.inherit = source_shell.inherit;
+        }
+        if source_shell.ignore_default_excludes.is_some() {
+            target_shell.ignore_default_excludes = source_shell.ignore_default_excludes;
+        }
+        if source_shell.exclude.is_some() {
+            target_shell.exclude = source_shell.exclude.clone();
+        }
+        if source_shell.set.is_some() {
+            target_shell.set = source_shell.set.clone();
+        }
+        if source_shell.include_only.is_some() {
+            target_shell.include_only = source_shell.include_only.clone();
+        }
+    }
+
+    if let Some(source_sandbox) = &source.sandbox_workspace_write {
+        let target_sandbox = target
+            .sandbox_workspace_write
+            .get_or_insert_with(Default::default);
+        if source_sandbox.writable_roots.is_some() {
+            target_sandbox.writable_roots = source_sandbox.writable_roots.clone();
+        }
+        if source_sandbox.network_access.is_some() {
+            target_sandbox.network_access = source_sandbox.network_access;
+        }
+        if source_sandbox.exclude_tmpdir_env_var.is_some() {
+            target_sandbox.exclude_tmpdir_env_var = source_sandbox.exclude_tmpdir_env_var;
+        }
+        if source_sandbox.exclude_slash_tmp.is_some() {
+            target_sandbox.exclude_slash_tmp = source_sandbox.exclude_slash_tmp;
+        }
+    }
+
+    // Maps - merge by key
+    if let Some(source_providers) = &source.model_providers {
+        let target_providers = target.model_providers.get_or_insert_with(HashMap::new);
+        for (key, value) in source_providers {
+            target_providers.insert(key.clone(), value.clone());
+        }
+    }
+
+    if let Some(source_servers) = &source.mcp_servers {
+        let target_servers = target.mcp_servers.get_or_insert_with(HashMap::new);
+        for (key, value) in source_servers {
+            target_servers.insert(key.clone(), value.clone());
+        }
+    }
+
+    if let Some(source_profiles) = &source.profiles {
+        let target_profiles = target.profiles.get_or_insert_with(HashMap::new);
+        for (key, value) in source_profiles {
+            target_profiles.insert(key.clone(), value.clone());
+        }
+    }
+
+    if let Some(source_projects) = &source.projects {
+        let target_projects = target.projects.get_or_insert_with(HashMap::new);
+        for (key, value) in source_projects {
+            target_projects.insert(key.clone(), value.clone());
+        }
+    }
+}
+
+/// Parse a TOML configuration file
+fn parse_config_file(path: &Path) -> Option<ComposerConfig> {
+    if !path.exists() {
+        return None;
+    }
+
+    let content = match fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Failed to read config file {}: {e}", path.display());
+            return None;
+        }
+    };
+
+    match toml::from_str(&content) {
+        Ok(config) => Some(config),
+        Err(e) => {
+            eprintln!("Failed to parse config file {}: {e}", path.display());
+            None
+        }
+    }
+}
+
+/// Apply environment variable overrides
+fn apply_env_overrides(config: &mut ComposerConfig) {
+    // MAESTRO_MODEL
+    if let Ok(model) = env::var("MAESTRO_MODEL") {
+        config.model = Some(model);
+    }
+
+    // MAESTRO_MODEL_PROVIDER
+    if let Ok(provider) = env::var("MAESTRO_MODEL_PROVIDER") {
+        config.model_provider = Some(provider);
+    }
+
+    // MAESTRO_APPROVAL_POLICY
+    if let Ok(policy) = env::var("MAESTRO_APPROVAL_POLICY") {
+        if let Some(p) = ApprovalPolicy::parse(&policy) {
+            config.approval_policy = Some(p);
+        }
+    }
+
+    // MAESTRO_SANDBOX_MODE
+    if let Ok(mode) = env::var("MAESTRO_SANDBOX_MODE") {
+        if let Some(m) = SandboxMode::parse(&mode) {
+            config.sandbox_mode = Some(m);
+        }
+    }
+
+    // MAESTRO_PROFILE
+    if let Ok(profile) = env::var("MAESTRO_PROFILE") {
+        config.profile = Some(profile);
+    }
+
+    // MAESTRO_HISTORY_PERSISTENCE
+    if let Ok(persistence) = env::var("MAESTRO_HISTORY_PERSISTENCE") {
+        if let Some(parsed) = HistoryPersistence::parse(&persistence) {
+            let history = config.history.get_or_insert_with(Default::default);
+            history.persistence = Some(parsed);
+        }
+    }
+
+    // MAESTRO_HISTORY_MAX_BYTES
+    if let Ok(max_bytes) = env::var("MAESTRO_HISTORY_MAX_BYTES") {
+        if let Ok(parsed) = max_bytes.trim().parse::<usize>() {
+            let history = config.history.get_or_insert_with(Default::default);
+            history.max_bytes = Some(parsed);
+        }
+    }
+}
+
+/// Apply profile settings to configuration
+fn apply_profile(config: &mut ComposerConfig, profile_name: &str) {
+    let profile = if let Some(profiles) = &config.profiles {
+        if let Some(p) = profiles.get(profile_name) {
+            p.clone()
+        } else {
+            eprintln!("Profile not found: {profile_name}");
+            return;
+        }
+    } else {
+        eprintln!("No profiles defined");
+        return;
+    };
+
+    // Apply profile fields
+    if profile.model.is_some() {
+        config.model = profile.model;
+    }
+    if profile.model_provider.is_some() {
+        config.model_provider = profile.model_provider;
+    }
+    if profile.approval_policy.is_some() {
+        config.approval_policy = profile.approval_policy;
+    }
+    if profile.sandbox_mode.is_some() {
+        config.sandbox_mode = profile.sandbox_mode;
+    }
+    if profile.model_reasoning_effort.is_some() {
+        config.model_reasoning_effort = profile.model_reasoning_effort;
+    }
+    if profile.model_reasoning_summary.is_some() {
+        config.model_reasoning_summary = profile.model_reasoning_summary;
+    }
+    if profile.model_verbosity.is_some() {
+        config.model_verbosity = profile.model_verbosity;
+    }
+}
+
+/// Load configuration from files and environment.
+///
+/// This is the main entry point for loading configuration. It implements
+/// the layered configuration model, merging sources in order of precedence.
+///
+/// # Arguments
+///
+/// * `workspace_dir` - The current workspace directory (used for .composer/config.toml)
+/// * `profile_name` - Optional profile name to activate (overrides config file's profile)
+///
+/// # Returns
+///
+/// A fully merged `ComposerConfig` with all overrides applied.
+///
+/// # Rust Concept: Caching with `RwLock`
+///
+/// Configuration loading is expensive (file I/O, parsing). We cache the result
+/// and only reload if the workspace or profile changes.
+///
+/// The `{ ... }` block creates a temporary scope. The read lock is released
+/// when `cache` goes out of scope at the end of the block. This allows us
+/// to acquire a write lock later without deadlock.
+pub fn load_config(workspace_dir: &Path, profile_name: Option<&str>) -> ComposerConfig {
+    // Check cache - use a block to limit the scope of the read lock
+    {
+        let cache = CONFIG_CACHE
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Return cached config if it matches the requested parameters
+        if cache.config.is_some()
+            && cache.workspace_dir.as_deref() == Some(workspace_dir)
+            && cache.profile_name.as_deref() == profile_name
+        {
+            // Clone the config because we can't return a reference to cached data
+            // (the lock would be released when we return)
+            return cache.config.clone().unwrap();
+        }
+    } // Read lock is released here
+
+    // Start with defaults
+    let mut config = DEFAULT_CONFIG.clone();
+
+    // Load global config
+    if let Some(home) = dirs::home_dir() {
+        let global_path = home.join(".composer").join("config.toml");
+        if let Some(global_config) = parse_config_file(&global_path) {
+            deep_merge(&mut config, &global_config);
+        }
+    }
+
+    // Load project config
+    let project_path = workspace_dir.join(".composer").join("config.toml");
+    if let Some(project_config) = parse_config_file(&project_path) {
+        deep_merge(&mut config, &project_config);
+    }
+
+    // Apply environment overrides
+    apply_env_overrides(&mut config);
+
+    // Determine active profile
+    let active_profile = profile_name
+        .map(String::from)
+        .or_else(|| config.profile.clone());
+    if let Some(ref profile) = active_profile {
+        apply_profile(&mut config, profile);
+    }
+
+    // Cache the result
+    {
+        let mut cache = CONFIG_CACHE
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cache.config = Some(config.clone());
+        cache.workspace_dir = Some(workspace_dir.to_path_buf());
+        cache.profile_name = profile_name.map(String::from);
+    }
+
+    config
+}
+
+/// Load configuration with CLI overrides
+#[must_use]
+pub fn load_config_with_overrides(
+    workspace_dir: &Path,
+    profile_name: Option<&str>,
+    cli_overrides: ComposerConfig,
+) -> ComposerConfig {
+    let mut config = load_config(workspace_dir, profile_name);
+    deep_merge(&mut config, &cli_overrides);
+    config
+}
+
+// ─────────────────────────────────────────────────────────────
+// Utility Functions
+// ─────────────────────────────────────────────────────────────
+
+/// Get the list of available profiles
+#[must_use]
+pub fn get_available_profiles(workspace_dir: &Path) -> Vec<String> {
+    let config = load_config(workspace_dir, None);
+    match config.profiles {
+        Some(profiles) => profiles.keys().cloned().collect(),
+        None => Vec::new(),
+    }
+}
+
+/// Get a summary of the current configuration for display
+#[must_use]
+pub fn get_config_summary(workspace_dir: &Path) -> String {
+    let config = load_config(workspace_dir, None);
+    let mut lines = Vec::new();
+
+    lines.push("Current Configuration".to_string());
+    lines.push("─".repeat(40));
+    lines.push(format!(
+        "Model: {}",
+        config.model.as_deref().unwrap_or("default")
+    ));
+    lines.push(format!(
+        "Provider: {}",
+        config.model_provider.as_deref().unwrap_or("anthropic")
+    ));
+    lines.push(format!(
+        "Approval Policy: {:?}",
+        config.approval_policy.unwrap_or_default()
+    ));
+    lines.push(format!(
+        "Sandbox Mode: {:?}",
+        config.sandbox_mode.unwrap_or_default()
+    ));
+
+    if let Some(ref profile) = config.profile {
+        lines.push(format!("Active Profile: {profile}"));
+    }
+
+    let profiles = get_available_profiles(workspace_dir);
+    if !profiles.is_empty() {
+        lines.push(format!("Available Profiles: {}", profiles.join(", ")));
+    }
+
+    lines.join("\n")
+}
+
+/// Parse a CLI config override in the format "key=value"
+#[must_use]
+pub fn parse_cli_override(override_str: &str) -> Option<(String, toml::Value)> {
+    let eq_index = override_str.find('=')?;
+    if eq_index == 0 {
+        return None;
+    }
+
+    let key = override_str[..eq_index].trim().to_string();
+    let value_str = override_str[eq_index + 1..].trim();
+
+    // Try to parse as TOML value
+    let toml_str = format!("value = {value_str}");
+    if let Ok(table) = toml::from_str::<toml::Table>(&toml_str) {
+        let value = table.get("value")?.clone();
+        Some((key, value))
+    } else {
+        // Treat as string, removing surrounding quotes if present
+        let mut v = value_str.to_string();
+        if (v.starts_with('"') && v.ends_with('"')) || (v.starts_with('\'') && v.ends_with('\'')) {
+            v = v[1..v.len() - 1].to_string();
+        }
+        Some((key, toml::Value::String(v)))
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// TESTS
+// ─────────────────────────────────────────────────────────────
+//
+// Rust Concept: Unit Testing
+//
+// Tests in Rust are typically in a `mod tests` block at the end of the file.
+//
+// Key testing patterns:
+// - `#[cfg(test)]`: Only compile this module when running tests
+// - `use super::*`: Import everything from the parent module
+// - `#[test]`: Mark a function as a test
+// - `assert_eq!(a, b)`: Panic if a != b (test fails)
+// - `assert!(condition)`: Panic if condition is false
+//
+// Run tests with: `cargo test`
+// Run specific test: `cargo test test_name`
+// Run with output: `cargo test -- --nocapture`
+
+#[cfg(test)]
+mod tests {
+    use super::*; // Import everything from parent (config) module
+    use std::env;
+    use tempfile::TempDir; // Creates temporary directories that auto-cleanup
+
+    #[test]
+    fn test_default_config() {
+        let config = DEFAULT_CONFIG.clone();
+        assert_eq!(config.model.as_deref(), Some("claude-sonnet-4-20250514"));
+        assert_eq!(config.model_provider.as_deref(), Some("anthropic"));
+        assert_eq!(config.approval_policy, Some(ApprovalPolicy::Untrusted));
+        assert_eq!(config.sandbox_mode, Some(SandboxMode::WorkspaceWrite));
+    }
+
+    #[test]
+    fn test_load_project_config() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_dir = temp_dir.path().join(".composer");
+        fs::create_dir_all(&config_dir).unwrap();
+
+        let config_path = config_dir.join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+model = "gpt-4o"
+model_provider = "openai"
+approval_policy = "on-request"
+"#,
+        )
+        .unwrap();
+
+        clear_config_cache();
+        let config = load_config(temp_dir.path(), None);
+        assert_eq!(config.model.as_deref(), Some("gpt-4o"));
+        assert_eq!(config.model_provider.as_deref(), Some("openai"));
+        assert_eq!(config.approval_policy, Some(ApprovalPolicy::OnRequest));
+    }
+
+    #[test]
+    fn test_profiles() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_dir = temp_dir.path().join(".composer");
+        fs::create_dir_all(&config_dir).unwrap();
+
+        let config_path = config_dir.join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+model = "default-model"
+profile = "fast"
+
+[profiles.fast]
+model = "fast-model"
+model_reasoning_effort = "low"
+
+[profiles.powerful]
+model = "powerful-model"
+model_reasoning_effort = "high"
+"#,
+        )
+        .unwrap();
+
+        clear_config_cache();
+        let config = load_config(temp_dir.path(), None);
+        assert_eq!(config.model.as_deref(), Some("fast-model"));
+        assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::Low));
+
+        // Test profile override
+        clear_config_cache();
+        let config = load_config(temp_dir.path(), Some("powerful"));
+        assert_eq!(config.model.as_deref(), Some("powerful-model"));
+        assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::High));
+    }
+
+    #[test]
+    fn test_env_overrides() {
+        let temp_dir = TempDir::new().unwrap();
+
+        clear_config_cache();
+        env::set_var("MAESTRO_MODEL", "env-model");
+        env::set_var("MAESTRO_MODEL_PROVIDER", "env-provider");
+
+        let config = load_config(temp_dir.path(), None);
+        assert_eq!(config.model.as_deref(), Some("env-model"));
+        assert_eq!(config.model_provider.as_deref(), Some("env-provider"));
+
+        env::remove_var("MAESTRO_MODEL");
+        env::remove_var("MAESTRO_MODEL_PROVIDER");
+    }
+
+    #[test]
+    fn test_parse_cli_override() {
+        let (key, value) = parse_cli_override("model=gpt-4o").unwrap();
+        assert_eq!(key, "model");
+        assert_eq!(value.as_str(), Some("gpt-4o"));
+
+        let (key, value) = parse_cli_override("features.web_search=true").unwrap();
+        assert_eq!(key, "features.web_search");
+        assert_eq!(value.as_bool(), Some(true));
+
+        let (key, value) = parse_cli_override("max_bytes=65536").unwrap();
+        assert_eq!(key, "max_bytes");
+        assert_eq!(value.as_integer(), Some(65536));
+
+        assert!(parse_cli_override("invalid").is_none());
+        assert!(parse_cli_override("=value").is_none());
+    }
+
+    #[test]
+    fn test_get_available_profiles() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_dir = temp_dir.path().join(".composer");
+        fs::create_dir_all(&config_dir).unwrap();
+
+        fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[profiles.alpha]
+model = "a"
+
+[profiles.beta]
+model = "b"
+"#,
+        )
+        .unwrap();
+
+        clear_config_cache();
+        let profiles = get_available_profiles(temp_dir.path());
+        assert!(profiles.contains(&"alpha".to_string()));
+        assert!(profiles.contains(&"beta".to_string()));
+        assert_eq!(profiles.len(), 2);
+    }
+
+    #[test]
+    fn test_mcp_server_config() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_dir = temp_dir.path().join(".composer");
+        fs::create_dir_all(&config_dir).unwrap();
+
+        fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[mcp_servers.context7]
+command = "npx"
+args = ["-y", "@upstash/context7-mcp"]
+enabled = true
+startup_timeout_sec = 30
+"#,
+        )
+        .unwrap();
+
+        clear_config_cache();
+        let config = load_config(temp_dir.path(), None);
+        let server = config
+            .mcp_servers
+            .as_ref()
+            .unwrap()
+            .get("context7")
+            .unwrap();
+        assert_eq!(server.command.as_deref(), Some("npx"));
+        let expected_args: Vec<String> =
+            vec!["-y".to_string(), "@upstash/context7-mcp".to_string()];
+        assert_eq!(server.args, Some(expected_args));
+        assert_eq!(server.enabled, Some(true));
+        assert_eq!(server.startup_timeout_sec, Some(30));
+    }
+
+    #[test]
+    fn test_shell_environment_policy() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_dir = temp_dir.path().join(".composer");
+        fs::create_dir_all(&config_dir).unwrap();
+
+        fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[shell_environment_policy]
+inherit = "core"
+exclude = ["SECRET_KEY", "API_TOKEN"]
+
+[shell_environment_policy.set]
+NODE_ENV = "development"
+"#,
+        )
+        .unwrap();
+
+        clear_config_cache();
+        let config = load_config(temp_dir.path(), None);
+        let policy = config.shell_environment_policy.as_ref().unwrap();
+        assert_eq!(policy.inherit, Some(ShellInherit::Core));
+        let expected_exclude: Vec<String> = vec!["SECRET_KEY".to_string(), "API_TOKEN".to_string()];
+        assert_eq!(policy.exclude, Some(expected_exclude));
+        assert_eq!(
+            policy.set.as_ref().unwrap().get("NODE_ENV"),
+            Some(&"development".to_string())
+        );
+    }
+}

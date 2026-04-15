@@ -1,0 +1,51 @@
+{
+	"name": "@evalops/github-agent",
+	"version": "0.10.0",
+	"description": "Autonomous GitHub agent - Maestro building Maestro",
+	"type": "module",
+	"bin": {
+		"github-agent": "dist/main.js"
+	},
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"files": ["dist", "README.md"],
+	"scripts": {
+		"clean": "node ../../scripts/clean-paths.js dist tsconfig.build.tsbuildinfo",
+		"build": "node ../../scripts/clean-paths.js dist tsconfig.build.tsbuildinfo && tsc -b tsconfig.build.json && bun build ./src/index.ts --target node --packages external --outfile dist/index.js && bun build ./src/main.ts --target node --packages external --outfile dist/main.js && chmod +x dist/main.js",
+		"dev": "tsc -b tsconfig.build.json --watch --preserveWatchOutput",
+		"check": "tsc -b tsconfig.build.json --pretty false",
+		"test": "vitest --run",
+		"prepublishOnly": "npm run clean && npm run build"
+	},
+	"keywords": [
+		"github",
+		"agent",
+		"ai",
+		"autonomous",
+		"maestro",
+		"self-improving"
+	],
+	"author": "EvalOps",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/evalops/maestro.git",
+		"directory": "packages/github-agent"
+	},
+	"engines": {
+		"node": ">=20.0.0"
+	},
+	"dependencies": {
+		"@octokit/rest": "^21.0.0",
+		"@octokit/webhooks": "^13.0.0",
+		"@sinclair/typebox": "^0.34.0",
+		"chalk": "^5.5.0",
+		"luxon": "^3.5.0"
+	},
+	"devDependencies": {
+		"@types/luxon": "^3.4.2",
+		"@types/node": "^24.10.7",
+		"typescript": "^5.9.3",
+		"vitest": "^4.0.7"
+	}
+}

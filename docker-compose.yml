@@ -1,0 +1,44 @@
+# Development services for Maestro
+# Start with: docker compose up -d
+#
+# Services:
+#   - redis: Rate limiting and caching (port 6379)
+#   - postgres: Database (port 5432)
+#
+# Set environment variables:
+#   MAESTRO_REDIS_URL=redis://localhost:6379
+#   MAESTRO_DATABASE_URL=postgresql://localhost:5432/maestro?user=maestro&password=maestro
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: maestro
+      POSTGRES_PASSWORD: maestro
+      POSTGRES_DB: maestro
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U maestro"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  redis_data:
+  postgres_data:

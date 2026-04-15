@@ -1,0 +1,194 @@
+[
+	{
+		"name": "tool registry stays aligned with the coding tool bundle",
+		"kind": "registry",
+		"judgeRubric": "The coding tool bundle and the tool registry should expose the same expected default tools without missing critical coding entries.",
+		"expected": {
+			"codingToolNames": [
+				"read",
+				"list",
+				"oracle",
+				"find",
+				"extract_document",
+				"search",
+				"parallel_ripgrep",
+				"diff",
+				"bash",
+				"background_tasks",
+				"edit",
+				"write",
+				"notebook_edit",
+				"todo",
+				"ask_user",
+				"websearch",
+				"codesearch",
+				"webfetch",
+				"status",
+				"gh_pr",
+				"gh_issue",
+				"gh_repo",
+				"pipeline_search_contacts",
+				"pipeline_search_deals",
+				"pipeline_create_signal",
+				"pipeline_log_activity"
+			],
+			"registryNames": [
+				"ask_user",
+				"background_tasks",
+				"bash",
+				"codesearch",
+				"diff",
+				"edit",
+				"extract_document",
+				"find",
+				"gh_issue",
+				"gh_pr",
+				"gh_repo",
+				"list",
+				"notebook_edit",
+				"oracle",
+				"parallel_ripgrep",
+				"pipeline_create_signal",
+				"pipeline_log_activity",
+				"pipeline_search_contacts",
+				"pipeline_search_deals",
+				"read",
+				"search",
+				"status",
+				"todo",
+				"webfetch",
+				"websearch",
+				"write"
+			]
+		}
+	},
+	{
+		"name": "the api tools list exposes every coding tool",
+		"kind": "apiTools",
+		"judgeRubric": "The API tools endpoint should enumerate the coding tools completely and report the correct coding count.",
+		"expected": {
+			"codingCount": 26,
+			"codingNames": [
+				"ask_user",
+				"background_tasks",
+				"bash",
+				"codesearch",
+				"diff",
+				"edit",
+				"extract_document",
+				"find",
+				"gh_issue",
+				"gh_pr",
+				"gh_repo",
+				"list",
+				"notebook_edit",
+				"oracle",
+				"parallel_ripgrep",
+				"pipeline_create_signal",
+				"pipeline_log_activity",
+				"pipeline_search_contacts",
+				"pipeline_search_deals",
+				"read",
+				"search",
+				"status",
+				"todo",
+				"webfetch",
+				"websearch",
+				"write"
+			]
+		}
+	},
+	{
+		"name": "find discovers nested glob matches",
+		"kind": "find",
+		"judgeRubric": "The find tool should return both matching files, including the nested path, for the requested glob.",
+		"expected": {
+			"matches": ["alpha.ts", "nested/beta.ts"]
+		}
+	},
+	{
+		"name": "extract_document reads a local smoke fixture",
+		"kind": "extractDocument",
+		"judgeRubric": "extract_document should preserve the text payload, recognize the text format, and report the downloaded filename.",
+		"expected": {
+			"text": "Composer extract document smoke test",
+			"format": "text",
+			"fileName": "fixture.txt"
+		}
+	},
+	{
+		"name": "parallel_ripgrep merges overlapping pattern ranges",
+		"kind": "parallelRipgrep",
+		"judgeRubric": "parallel_ripgrep should detect both search patterns across the matching files and report the merged range metadata.",
+		"expected": {
+			"rangeCount": 2,
+			"files": ["alpha.ts", "gamma.ts"],
+			"patterns": ["alpha", "beta"]
+		}
+	},
+	{
+		"name": "background_tasks can start, inspect, and stop a process",
+		"kind": "backgroundTasks",
+		"judgeRubric": "background_tasks should start a process, list it as active, surface startup or keepalive logs, and stop it cleanly.",
+		"expected": {
+			"started": true,
+			"listed": true,
+			"logsContainReady": true,
+			"stopped": true
+		}
+	},
+	{
+		"name": "notebook_edit creates and replaces notebook content",
+		"kind": "notebookEdit",
+		"judgeRubric": "notebook_edit should create a notebook, replace the first cell, and persist the updated markdown cell content.",
+		"expected": {
+			"totalCells": 1,
+			"cellType": "markdown",
+			"source": "## Updated"
+		}
+	},
+	{
+		"name": "ask_user returns a pending questionnaire payload",
+		"kind": "askUser",
+		"judgeRubric": "ask_user should return a pending questionnaire with one user-visible question instead of silently succeeding.",
+		"expected": {
+			"status": "pending",
+			"questionCount": 1,
+			"textIncludesQuestion": true
+		}
+	},
+	{
+		"name": "status summarizes git porcelain output",
+		"kind": "status",
+		"judgeRubric": "status should surface the dirty file count and branch context for a repository with one untracked file.",
+		"expected": {
+			"fileCount": 1,
+			"branchPresent": true,
+			"textIncludesFiles": true
+		}
+	},
+	{
+		"name": "websearch fails clearly without an EXA key",
+		"kind": "websearchMissingKey",
+		"judgeRubric": "websearch should fail fast with a clear EXA API key requirement instead of returning a vague or unrelated error.",
+		"expected": {
+			"error": "EXA_API_KEY environment variable is required. Get your key at https://dashboard.exa.ai/api-keys"
+		}
+	},
+	{
+		"name": "codesearch fails clearly without an EXA key",
+		"kind": "codesearchMissingKey",
+		"judgeRubric": "codesearch should fail fast with a clear EXA API key requirement instead of returning a vague or unrelated error.",
+		"expected": {
+			"error": "EXA_API_KEY environment variable is required. Get your key at https://dashboard.exa.ai/api-keys"
+		}
+	},
+	{
+		"name": "webfetch fails clearly without an EXA key",
+		"kind": "webfetchMissingKey",
+		"judgeRubric": "webfetch should fail fast with a clear EXA API key requirement instead of returning a vague or unrelated error.",
+		"expected": {
+			"error": "EXA_API_KEY environment variable is required. Get your key at https://dashboard.exa.ai/api-keys"
+		}
+	}
+]

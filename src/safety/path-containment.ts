@@ -1,0 +1,242 @@
+import { existsSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import { getFirewallConfig } from "../config/firewall-config.js";
+
+/**
+ * Protected system paths that should never be modified.
+ *
+ * Note: /var/folders (macOS temp) and /tmp are allowed through containment checks
+ * before system path blocking is applied.
+ */
+const LINUX_SYSTEM_PATHS = [
+	"/etc",
+	"/usr",
+	"/var",
+	"/run",
+	"/boot",
+	"/sys",
+	"/proc",
+	"/dev",
+	"/bin",
+	"/sbin",
+	"/lib",
+	"/lib64",
+	"/opt",
+];
+
+const MAC_SYSTEM_PATHS = [
+	"/etc",
+	"/usr",
+	"/var",
+	"/System",
+	"/Library",
+	"/private/etc",
+	"/private/var",
+	"/bin",
+	"/sbin",
+	"/dev",
+];
+
+const WINDOWS_SYSTEM_PATHS = [
+	process.env.SystemRoot ?? "C:\\Windows",
+	process.env.ProgramFiles ?? "C:\\Program Files",
+	process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)",
+];
+
+const SYSTEM_PATHS = (() => {
+	switch (process.platform) {
+		case "darwin":
+			return MAC_SYSTEM_PATHS;
+		case "win32":
+			return WINDOWS_SYSTEM_PATHS;
+		default:
+			return LINUX_SYSTEM_PATHS;
+	}
+})();
+const SYSTEM_PATHS_REAL = SYSTEM_PATHS.map((sysPath) => {
+	if (!isAbsolute(sysPath)) {
+		return sysPath;
+	}
+	try {
+		return realpathSync(sysPath);
+	} catch {
+		return sysPath;
+	}
+});
+const SYSTEM_PATHS_ALL = Array.from(
+	new Set([...SYSTEM_PATHS, ...SYSTEM_PATHS_REAL]),
+);
+const SYSTEM_PATHS_ALL_NORMALIZED =
+	process.platform === "win32"
+		? SYSTEM_PATHS_ALL.map((sysPath) => sysPath.toLowerCase())
+		: SYSTEM_PATHS_ALL;
+const MAC_USER_PATHS = [
+	"/Users",
+	"/home",
+	"/System/Volumes/Data/Users",
+	"/System/Volumes/Data/home",
+];
+
+function isPathInside(root: string, target: string): boolean {
+	return (
+		target === root ||
+		target.startsWith(`${root}/`) ||
+		target.startsWith(`${root}\\`)
+	);
+}
+
+export interface SafePathSummary {
+	workspaceRoot: string;
+	workspaceRootReal: string;
+	tempDir: string;
+	tempDirReal: string;
+	trustedPaths: string[];
+	trustedPathsReal: string[];
+}
+
+export function getSystemPaths(): string[] {
+	return [...SYSTEM_PATHS];
+}
+
+export function isSystemPath(filePath: string): boolean {
+	const normalized = resolve(filePath);
+	const realPath = resolveRealPath(normalized) ?? normalized;
+	const normalizedPath =
+		process.platform === "win32" ? normalized.toLowerCase() : normalized;
+	const realPathNormalized =
+		process.platform === "win32" ? realPath.toLowerCase() : realPath;
+	if (process.platform === "darwin") {
+		for (const root of MAC_USER_PATHS) {
+			if (
+				isPathInside(root, normalizedPath) ||
+				isPathInside(root, realPathNormalized)
+			) {
+				return false;
+			}
+		}
+	}
+	return SYSTEM_PATHS_ALL_NORMALIZED.some((sysPath) => {
+		return (
+			isPathInside(sysPath, normalizedPath) ||
+			isPathInside(sysPath, realPathNormalized)
+		);
+	});
+}
+
+export function getSafePathSummary(): SafePathSummary {
+	const workspaceRoot = resolve(process.cwd());
+	let workspaceRootReal = workspaceRoot;
+	try {
+		workspaceRootReal = realpathSync(workspaceRoot);
+	} catch {
+		// Keep logical workspace root if realpath fails.
+	}
+	const tempDir = tmpdir();
+	let tempDirReal = tempDir;
+	try {
+		tempDirReal = realpathSync(tempDir);
+	} catch {
+		// Keep logical temp path if realpath fails.
+	}
+	const config = getFirewallConfig();
+	const trustedPaths = (config.containment?.trustedPaths ?? []).map((path) =>
+		resolve(path),
+	);
+	const trustedPathsReal = trustedPaths.map((path) => {
+		try {
+			return realpathSync(path);
+		} catch {
+			return path;
+		}
+	});
+	return {
+		workspaceRoot,
+		workspaceRootReal,
+		tempDir,
+		tempDirReal,
+		trustedPaths,
+		trustedPathsReal,
+	};
+}
+
+function resolveRealPath(filePath: string): string | null {
+	let current = filePath;
+	const suffix: string[] = [];
+
+	while (true) {
+		if (existsSync(current)) {
+			try {
+				const realBase = realpathSync(current);
+				if (suffix.length === 0) {
+					return realBase;
+				}
+				return resolve(realBase, ...suffix.reverse());
+			} catch {
+				return null;
+			}
+		}
+
+		const parent = dirname(current);
+		if (parent === current) {
+			return null;
+		}
+		suffix.push(basename(current));
+		current = parent;
+	}
+}
+
+function isWithin(root: string, target: string): boolean {
+	const isWindows = process.platform === "win32";
+	const rootPath = isWindows ? root.toLowerCase() : root;
+	const targetPath = isWindows ? target.toLowerCase() : target;
+	const rel = relative(rootPath, targetPath);
+	return !rel.startsWith("..") && !isAbsolute(rel);
+}
+
+export function getSafePathMatch(
+	filePath: string,
+	summary: SafePathSummary = getSafePathSummary(),
+): "workspace" | "temp" | "trusted" | null {
+	const resolvedPath = resolve(filePath);
+	const realFilePath = resolveRealPath(resolvedPath) ?? resolvedPath;
+
+	const isInsideWorkspace =
+		isWithin(summary.workspaceRoot, resolvedPath) &&
+		isWithin(summary.workspaceRootReal, realFilePath);
+
+	// File may not exist yet; realFilePath falls back to logical path.
+	const tempRoots = new Set([summary.tempDirReal]);
+	if (process.platform !== "win32") {
+		const tmpReal = resolveRealPath("/tmp");
+		if (tmpReal) {
+			tempRoots.add(tmpReal);
+		}
+	}
+	const isInsideTemp = Array.from(tempRoots).some((root) =>
+		isWithin(root, realFilePath),
+	);
+
+	if (isInsideWorkspace) {
+		return "workspace";
+	}
+	if (isInsideTemp) {
+		return "temp";
+	}
+
+	for (const [index, trustedPath] of summary.trustedPaths.entries()) {
+		const trustedReal = summary.trustedPathsReal[index] ?? trustedPath;
+		if (
+			isWithin(trustedPath, resolvedPath) &&
+			isWithin(trustedReal, realFilePath)
+		) {
+			return "trusted";
+		}
+	}
+
+	return null;
+}
+
+export function isContainedInWorkspace(filePath: string): boolean {
+	return getSafePathMatch(filePath) !== null;
+}

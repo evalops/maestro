@@ -1,0 +1,134 @@
+[
+	{
+		"name": "status falls back to the server default approval mode",
+		"kind": "status",
+		"judgeRubric": "A fresh session with no stored override should report the server default approval mode and list the available approval modes.",
+		"defaultApprovalMode": "fail",
+		"sessionId": "fresh-session",
+		"expected": {
+			"mode": "fail",
+			"availableModes": ["auto", "prompt", "fail"]
+		}
+	},
+	{
+		"name": "status clamps a stored session mode to the stricter server default",
+		"kind": "status",
+		"judgeRubric": "When a stored approval override is less strict than the server default, the status response must report the stricter effective mode instead of the raw stored value.",
+		"defaultApprovalMode": "fail",
+		"sessionId": "stored-session",
+		"storedMode": "auto",
+		"expected": {
+			"mode": "fail"
+		}
+	},
+	{
+		"name": "update uses the query session id when the request body omits it",
+		"kind": "update",
+		"judgeRubric": "A POST approval update should apply the requested mode to the query-string sessionId when the request body omits sessionId, return success, and leave the default session unchanged.",
+		"defaultApprovalMode": "auto",
+		"querySessionId": "query-session",
+		"body": {
+			"mode": "fail"
+		},
+		"expected": {
+			"response": {
+				"mode": "fail",
+				"success": true
+			},
+			"targetStatus": {
+				"mode": "fail"
+			},
+			"defaultStatus": {
+				"mode": "auto"
+			}
+		}
+	},
+	{
+		"name": "update clamps a looser body mode to the stricter server default",
+		"kind": "update",
+		"judgeRubric": "If the request body asks for a less restrictive mode than the server default, the persisted session mode and response should remain at the stricter default.",
+		"defaultApprovalMode": "fail",
+		"querySessionId": "query-session",
+		"body": {
+			"mode": "auto"
+		},
+		"expected": {
+			"response": {
+				"mode": "fail",
+				"success": true
+			},
+			"targetStatus": {
+				"mode": "fail"
+			},
+			"defaultStatus": {
+				"mode": "fail"
+			}
+		}
+	},
+	{
+		"name": "update prefers the body session id over the query string",
+		"kind": "update",
+		"judgeRubric": "If both body and query sessionId values are present, the body sessionId must win and only that target session should reflect the updated approval mode.",
+		"defaultApprovalMode": "prompt",
+		"querySessionId": "query-session",
+		"body": {
+			"mode": "fail",
+			"sessionId": "body-session"
+		},
+		"expected": {
+			"response": {
+				"mode": "fail",
+				"success": true
+			},
+			"targetStatus": {
+				"mode": "fail"
+			},
+			"defaultStatus": {
+				"mode": "prompt"
+			}
+		}
+	},
+	{
+		"name": "request resolution uses the stored session approval mode when no header is set",
+		"kind": "resolve",
+		"judgeRubric": "Request-time approval resolution should use a stored session mode when no explicit header override is present.",
+		"defaultApprovalMode": "prompt",
+		"sessionId": "resolve-session",
+		"storedMode": "fail",
+		"expected": {
+			"effectiveApproval": "fail"
+		}
+	},
+	{
+		"name": "request resolution lets an explicit header override the stored session mode",
+		"kind": "resolve",
+		"judgeRubric": "An explicit approval header must override any stored session mode for the current request.",
+		"defaultApprovalMode": "prompt",
+		"sessionId": "resolve-session",
+		"storedMode": "fail",
+		"headerApprovalMode": "prompt",
+		"expected": {
+			"effectiveApproval": "prompt"
+		}
+	},
+	{
+		"name": "request resolution honors an auto header override",
+		"kind": "resolve",
+		"judgeRubric": "The resolver must not let an explicit auto header override relax a stricter server default.",
+		"defaultApprovalMode": "fail",
+		"headerApprovalMode": "auto",
+		"expected": {
+			"effectiveApproval": "fail"
+		}
+	},
+	{
+		"name": "request resolution falls back to the server default when no session mode exists",
+		"kind": "resolve",
+		"judgeRubric": "If there is no stored session override and no header override, request resolution should fall back to the server default approval mode.",
+		"defaultApprovalMode": "prompt",
+		"sessionId": "missing-session",
+		"expected": {
+			"effectiveApproval": "prompt"
+		}
+	}
+]

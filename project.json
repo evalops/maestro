@@ -1,0 +1,94 @@
+{
+	"name": "maestro",
+	"projectType": "application",
+	"root": ".",
+	"sourceRoot": "src",
+	"implicitDependencies": ["maestro-web", "tui", "@evalops/ai", "contracts"],
+	"targets": {
+		"build": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "bun run build",
+				"forwardAllArgs": true
+			}
+		},
+		"build:all": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "bun run build:all",
+				"forwardAllArgs": true
+			}
+		},
+		"verify-build": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "bun run verify-build",
+				"forwardAllArgs": true
+			}
+		},
+		"smoke": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "bun run smoke",
+				"forwardAllArgs": true
+			}
+		},
+		"lint": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "bun run bun:lint",
+				"forwardAllArgs": true
+			}
+		},
+		"test": {
+			"executor": "nx:run-commands",
+			"dependsOn": ["build"],
+			"options": {
+				"command": "bun run bun:test",
+				"forwardAllArgs": true
+			}
+		},
+		"evals": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "bun run bun:evals",
+				"forwardAllArgs": true
+			}
+		},
+		"evals:pipeline-tool-integration": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "bun run evals:pipeline-tool-integration",
+				"forwardAllArgs": true
+			}
+		},
+		"evals:shared-memory-integration": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "bun run evals:shared-memory-integration",
+				"forwardAllArgs": true
+			}
+		},
+		"evals:openrouter-live-smoke": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "bun run evals:openrouter-live-smoke",
+				"forwardAllArgs": true
+			}
+		},
+		"evals:openrouter-approvals-judge": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "bun run evals:openrouter-approvals-judge",
+				"forwardAllArgs": true
+			}
+		},
+		"evals:openrouter-tool-surface-judge": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "bun run evals:openrouter-tool-surface-judge",
+				"forwardAllArgs": true
+			}
+		}
+	}
+}

@@ -1,0 +1,222 @@
+// @vitest-environment happy-dom
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { ComposerChat } from "../../packages/web/src/components/composer-chat.js";
+
+type ComposerChatMcpInternals = {
+	apiClient: {
+		chatWithEvents: ReturnType<typeof vi.fn>;
+		createSession: ReturnType<typeof vi.fn>;
+		sendClientToolResult: ReturnType<typeof vi.fn>;
+		getMcpStatus: ReturnType<typeof vi.fn>;
+		readMcpResource: ReturnType<typeof vi.fn>;
+	};
+	clientOnline: boolean;
+	loadSessions: ReturnType<typeof vi.fn>;
+	scrollToBottom: ReturnType<typeof vi.fn>;
+	showToast: ReturnType<typeof vi.fn>;
+	refreshUiState: ReturnType<typeof vi.fn>;
+	requestUpdate: ReturnType<typeof vi.fn>;
+	updateComplete: Promise<void>;
+	handleSubmit: (event: CustomEvent<{ text: string }>) => Promise<void>;
+};
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
+
+describe("composer-chat MCP client tools", () => {
+	it("resolves advertised MCP client tools through the web API client", async () => {
+		const stream = async function* () {
+			yield {
+				type: "client_tool_request",
+				toolCallId: "call_servers",
+				toolName: "list_mcp_servers",
+				args: {},
+			};
+			yield {
+				type: "client_tool_request",
+				toolCallId: "call_tools",
+				toolName: "list_mcp_tools",
+				args: { server: "docs" },
+			};
+			yield {
+				type: "client_tool_request",
+				toolCallId: "call_resources",
+				toolName: "list_mcp_resources",
+				args: {},
+			};
+			yield {
+				type: "client_tool_request",
+				toolCallId: "call_read",
+				toolName: "read_mcp_resource",
+				args: { server: "docs", uri: "memo://guide" },
+			};
+			yield {
+				type: "client_tool_request",
+				toolCallId: "call_prompts",
+				toolName: "list_mcp_prompts",
+				args: { server: "docs" },
+			};
+			yield {
+				type: "client_tool_request",
+				toolCallId: "call_prompt",
+				toolName: "get_mcp_prompt",
+				args: {
+					server: "docs",
+					name: "summarize",
+					args: { topic: "MCP" },
+				},
+			};
+			yield {
+				type: "message_end",
+				message: { role: "assistant" },
+			};
+		};
+
+		const element = new ComposerChat() as unknown as ComposerChatMcpInternals;
+		element.apiClient = {
+			chatWithEvents: vi.fn().mockReturnValue(stream()),
+			createSession: vi.fn().mockResolvedValue({
+				id: "session-mcp",
+				messages: [],
+			}),
+			sendClientToolResult: vi.fn().mockResolvedValue(undefined),
+			getMcpStatus: vi.fn().mockResolvedValue({
+				servers: [
+					{
+						name: "docs",
+						connected: true,
+						transport: "stdio",
+						scope: "project",
+						tools: [{ name: "search_docs", description: "Search docs" }],
+						resources: ["memo://guide"],
+						prompts: ["summarize"],
+						promptDetails: [
+							{
+								name: "summarize",
+								title: "Summarize docs",
+								description: "Summarize the selected documentation",
+								arguments: [
+									{
+										name: "topic",
+										description: "Topic to summarize",
+										required: true,
+									},
+								],
+							},
+						],
+					},
+					{
+						name: "notes",
+						connected: true,
+						transport: "stdio",
+						scope: "global",
+						tools: [],
+						resources: ["memo://notes"],
+						prompts: [],
+					},
+					{
+						name: "broken",
+						connected: false,
+						transport: "http",
+						tools: [],
+						resources: [],
+						prompts: [],
+						error: "offline",
+					},
+				],
+			}),
+			readMcpResource: vi.fn().mockResolvedValue({
+				contents: [{ uri: "memo://guide", text: "Guide body" }],
+			}),
+			getMcpPrompt: vi.fn().mockResolvedValue({
+				description: "Summarize docs",
+				messages: [{ role: "user", content: "Summarize MCP" }],
+			}),
+		};
+		element.clientOnline = true;
+		element.loadSessions = vi.fn().mockResolvedValue(undefined);
+		element.scrollToBottom = vi.fn();
+		element.showToast = vi.fn();
+		element.refreshUiState = vi.fn().mockResolvedValue(undefined);
+		element.requestUpdate = vi.fn();
+		Object.defineProperty(element, "updateComplete", {
+			configurable: true,
+			value: Promise.resolve(),
+		});
+
+		await element.handleSubmit(
+			new CustomEvent("submit", { detail: { text: "Hello" } }),
+		);
+
+		expect(element.apiClient.sendClientToolResult).toHaveBeenCalledTimes(6);
+		const results = element.apiClient.sendClientToolResult.mock.calls.map(
+			([payload]) => payload,
+		);
+
+		expect(results[0]).toMatchObject({
+			toolCallId: "call_servers",
+			isError: false,
+		});
+		expect(results[0]?.content?.[0]?.text).toContain("# MCP Servers");
+		expect(results[0]?.content?.[0]?.text).toContain("docs");
+		expect(results[0]?.content?.[0]?.text).toContain("broken");
+		expect(results[0]?.content?.[0]?.text).toContain("offline");
+
+		expect(results[1]).toMatchObject({
+			toolCallId: "call_tools",
+			isError: false,
+		});
+		expect(results[1]?.content?.[0]?.text).toContain("# Available MCP Tools");
+		expect(results[1]?.content?.[0]?.text).toContain("search_docs");
+
+		expect(results[2]).toMatchObject({
+			toolCallId: "call_resources",
+			isError: false,
+		});
+		expect(results[2]?.content?.[0]?.text).toContain(
+			"# Available MCP Resources",
+		);
+		expect(results[2]?.content?.[0]?.text).toContain("## docs");
+		expect(results[2]?.content?.[0]?.text).toContain("memo://guide");
+		expect(results[2]?.content?.[0]?.text).toContain("## notes");
+		expect(results[2]?.content?.[0]?.text).toContain("memo://notes");
+
+		expect(results[3]).toMatchObject({
+			toolCallId: "call_read",
+			isError: false,
+		});
+		expect(results[3]?.content?.[0]?.text).toContain("Guide body");
+		expect(element.apiClient.readMcpResource).toHaveBeenCalledWith(
+			"docs",
+			"memo://guide",
+		);
+
+		expect(results[4]).toMatchObject({
+			toolCallId: "call_prompts",
+			isError: false,
+		});
+		expect(results[4]?.content?.[0]?.text).toContain("# Available MCP Prompts");
+		expect(results[4]?.content?.[0]?.text).toContain("summarize");
+		expect(results[4]?.content?.[0]?.text).toContain("Title: Summarize docs");
+		expect(results[4]?.content?.[0]?.text).toContain(
+			"Args: topic (required): Topic to summarize",
+		);
+
+		expect(results[5]).toMatchObject({
+			toolCallId: "call_prompt",
+			isError: false,
+		});
+		expect(results[5]?.content?.[0]?.text).toContain("Prompt: summarize");
+		expect(results[5]?.content?.[0]?.text).toContain(
+			"Description: Summarize docs",
+		);
+		expect(results[5]?.content?.[0]?.text).toContain("[user]");
+		expect(results[5]?.content?.[0]?.text).toContain("Summarize MCP");
+		expect(element.apiClient.getMcpPrompt).toHaveBeenCalledWith(
+			"docs",
+			"summarize",
+			{ topic: "MCP" },
+		);
+	});
+});

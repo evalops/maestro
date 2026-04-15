@@ -1,0 +1,339 @@
+//! Git utilities
+//!
+//! This module provides lightweight git repository introspection by spawning the `git`
+//! command-line tool. It's designed for status bar integration and repository context,
+//! not for complex git operations.
+//!
+//! # Implementation Strategy
+//!
+//! Rather than using a git library like `git2` (libgit2 bindings), this module shells
+//! out to the `git` command. This approach:
+//!
+//! - Reduces binary size (no libgit2 dependency)
+//! - Works with any git version installed on the system
+//! - Avoids version compatibility issues with git repositories
+//! - Simplifies the build process (no CMake, no vendored C code)
+//!
+//! The trade-off is slightly higher latency (~5-10ms per git command) which is acceptable
+//! for infrequent status bar updates.
+//!
+//! # Functions
+//!
+//! - `current_branch`: Get branch name or detached HEAD commit hash
+//! - `is_git_repo`: Check if a directory is in a git repository
+//! - `repo_root`: Get the repository root directory path
+//! - `get_status`: Get counts of staged/modified/untracked files
+//!
+//! # Example
+//!
+//! ```no_run
+//! use std::env;
+//! use maestro_tui::git::{is_git_repo, current_branch, get_status};
+//!
+//! let cwd = env::current_dir().unwrap();
+//! if is_git_repo(&cwd) {
+//!     if let Some(branch) = current_branch(&cwd) {
+//!         println!("On branch: {}", branch);
+//!     }
+//!     if let Some(status) = get_status(&cwd) {
+//!         if let Some(summary) = status.short_status() {
+//!             println!("Status: {}", summary);
+//!         }
+//!     }
+//! }
+//! ```
+
+use std::path::Path;
+use std::process::Command;
+
+/// Get the current git branch name, if in a git repository
+#[must_use]
+pub fn current_branch(cwd: &Path) -> Option<String> {
+    // Run `git rev-parse --abbrev-ref HEAD` to get the current branch
+    let output = Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+
+    if output.status.success() {
+        let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !branch.is_empty() && branch != "HEAD" {
+            Some(branch)
+        } else {
+            // Detached HEAD state - get the short commit hash
+            short_commit_hash(cwd).map(|hash| format!("({hash})"))
+        }
+    } else {
+        None
+    }
+}
+
+/// Get the short commit hash (for detached HEAD state)
+fn short_commit_hash(cwd: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+
+    if output.status.success() {
+        let hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if hash.is_empty() {
+            None
+        } else {
+            Some(hash)
+        }
+    } else {
+        None
+    }
+}
+
+/// Check if a directory is inside a git repository
+#[must_use]
+pub fn is_git_repo(cwd: &Path) -> bool {
+    Command::new("git")
+        .args(["rev-parse", "--git-dir"])
+        .current_dir(cwd)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Get the repository root directory
+#[must_use]
+pub fn repo_root(cwd: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+
+    if output.status.success() {
+        let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if root.is_empty() {
+            None
+        } else {
+            Some(root)
+        }
+    } else {
+        None
+    }
+}
+
+/// Get git status summary (for status bar)
+#[derive(Debug, Clone, Default)]
+pub struct GitStatus {
+    /// Number of staged files
+    pub staged: usize,
+    /// Number of modified files
+    pub modified: usize,
+    /// Number of untracked files
+    pub untracked: usize,
+}
+
+impl GitStatus {
+    /// Check if the working tree is clean
+    #[must_use]
+    pub fn is_clean(&self) -> bool {
+        self.staged == 0 && self.modified == 0 && self.untracked == 0
+    }
+
+    /// Get a short status string (e.g., "+2 ~3 ?1")
+    #[must_use]
+    pub fn short_status(&self) -> Option<String> {
+        if self.is_clean() {
+            return None;
+        }
+        let mut parts = Vec::new();
+        if self.staged > 0 {
+            parts.push(format!("+{}", self.staged));
+        }
+        if self.modified > 0 {
+            parts.push(format!("~{}", self.modified));
+        }
+        if self.untracked > 0 {
+            parts.push(format!("?{}", self.untracked));
+        }
+        Some(parts.join(" "))
+    }
+}
+
+/// Get git status counts
+#[must_use]
+pub fn get_status(cwd: &Path) -> Option<GitStatus> {
+    let output = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut status = GitStatus::default();
+
+    for line in stdout.lines() {
+        if line.len() < 2 {
+            continue;
+        }
+        let xy = &line[0..2];
+        let x = xy.chars().next().unwrap_or(' ');
+        let y = xy.chars().nth(1).unwrap_or(' ');
+
+        // X = staged, Y = unstaged/modified
+        if x != ' ' && x != '?' {
+            status.staged += 1;
+        }
+        if y != ' ' && y != '?' {
+            status.modified += 1;
+        }
+        if x == '?' && y == '?' {
+            status.untracked += 1;
+        }
+    }
+
+    Some(status)
+}
+
+/// Get a short git status summary (`git status -sb`).
+pub fn status_short(cwd: &Path) -> Result<String, String> {
+    let output = Command::new("git")
+        .args(["status", "-sb"])
+        .current_dir(cwd)
+        .output()
+        .map_err(|err| format!("Failed to run git status: {err}"))?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if stderr.is_empty() {
+            "git status failed".to_string()
+        } else {
+            stderr
+        })
+    }
+}
+
+/// Get git diff output for the working tree (optionally scoped to a path).
+pub fn diff(cwd: &Path, path: Option<&str>) -> Result<String, String> {
+    let mut cmd = Command::new("git");
+    cmd.arg("diff");
+    if let Some(path) = path {
+        if !path.trim().is_empty() {
+            cmd.arg("--").arg(path);
+        }
+    }
+    let output = cmd
+        .current_dir(cwd)
+        .output()
+        .map_err(|err| format!("Failed to run git diff: {err}"))?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if stderr.is_empty() {
+            "git diff failed".to_string()
+        } else {
+            stderr
+        })
+    }
+}
+
+/// Get git diff --stat output (staged or unstaged).
+pub fn diff_stat(cwd: &Path, staged: bool) -> Result<String, String> {
+    let mut cmd = Command::new("git");
+    cmd.arg("diff");
+    if staged {
+        cmd.arg("--cached");
+    }
+    cmd.arg("--stat");
+    let output = cmd
+        .current_dir(cwd)
+        .output()
+        .map_err(|err| format!("Failed to run git diff --stat: {err}"))?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if stderr.is_empty() {
+            "git diff --stat failed".to_string()
+        } else {
+            stderr
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+
+    #[test]
+    fn test_current_branch_in_repo() {
+        // This test assumes we're running in the composer repo
+        let cwd = env::current_dir().unwrap();
+        let branch = current_branch(&cwd);
+        // Should get a branch name (or None if not in git repo)
+        if is_git_repo(&cwd) {
+            assert!(branch.is_some());
+            let branch = branch.unwrap();
+            assert!(!branch.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_current_branch_not_a_repo() {
+        // /tmp is unlikely to be a git repo
+        let branch = current_branch(Path::new("/tmp"));
+        // May or may not be None depending on if /tmp is somehow a git repo
+        // Just ensure no panic
+        let _ = branch;
+    }
+
+    #[test]
+    fn test_is_git_repo() {
+        let cwd = env::current_dir().unwrap();
+        // Should be true if running in the composer repo
+        let is_repo = is_git_repo(&cwd);
+        // Just check it returns a bool without panic
+        let _ = is_repo;
+    }
+
+    #[test]
+    fn test_repo_root() {
+        let cwd = env::current_dir().unwrap();
+        if is_git_repo(&cwd) {
+            let root = repo_root(&cwd);
+            assert!(root.is_some());
+        }
+    }
+
+    #[test]
+    fn test_git_status() {
+        let cwd = env::current_dir().unwrap();
+        if is_git_repo(&cwd) {
+            let status = get_status(&cwd);
+            assert!(status.is_some());
+        }
+    }
+
+    #[test]
+    fn test_git_status_short() {
+        let status = GitStatus {
+            staged: 2,
+            modified: 3,
+            untracked: 1,
+        };
+        assert_eq!(status.short_status(), Some("+2 ~3 ?1".to_string()));
+
+        let clean = GitStatus::default();
+        assert!(clean.is_clean());
+        assert_eq!(clean.short_status(), None);
+    }
+}

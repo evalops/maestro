@@ -1,0 +1,16 @@
+#!/bin/sh
+# Note: husky runs hooks with sh, so we exec bash for full functionality
+exec bash -euo pipefail -c '
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+# Keep Rust TUI formatting consistent with CI when Cargo is available.
+if command -v cargo >/dev/null 2>&1; then
+	cargo fmt --manifest-path "$ROOT/packages/tui-rs/Cargo.toml" -- --check
+fi
+
+# Run Composer Guardian (secrets + CI hygiene) before heavier tasks.
+bash "$ROOT/scripts/guardian.sh" --trigger pre-commit
+
+bun run bun:lint && bun run build && bun run bun:compile
+'

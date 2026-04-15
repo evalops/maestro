@@ -1,0 +1,67 @@
+name: actionlint
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/**"
+      - ".github/actions/**"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/**"
+      - ".github/actions/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  actionlint:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0 (tag v5)
+        with:
+          go-version: "stable"
+          cache: false
+
+      - name: Cache Go (Blacksmith)
+        if: ${{ startsWith(runner.name, 'blacksmith-') || env.BLACKSMITH_ACTIONS_RESULTS_URL != '' }}
+        uses: useblacksmith/cache@71c7c918062ba3861252d84b07fe5ab2a6b467a6 # v5
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-actionlint-${{ hashFiles('.github/workflows/actionlint.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-go-actionlint-
+
+      - name: Cache Go (GitHub)
+        if: ${{ !(startsWith(runner.name, 'blacksmith-') || env.BLACKSMITH_ACTIONS_RESULTS_URL != '') }}
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-actionlint-${{ hashFiles('.github/workflows/actionlint.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-go-actionlint-
+
+      - name: Install actionlint
+        run: |
+          set -euo pipefail
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.9
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Run actionlint
+        run: actionlint -shellcheck= -pyflakes=

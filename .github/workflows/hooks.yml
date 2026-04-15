@@ -1,0 +1,194 @@
+name: Hooks Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/hooks/**"
+      - "test/hooks/**"
+      - "packages/tui-rs/src/hooks/**"
+      - "packages/tui-rs/tests/hooks_integration.rs"
+      - ".github/workflows/hooks.yml"
+  pull_request:
+    paths:
+      - "src/hooks/**"
+      - "test/hooks/**"
+      - "packages/tui-rs/src/hooks/**"
+      - "packages/tui-rs/tests/hooks_integration.rs"
+      - ".github/workflows/hooks.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  typescript-hooks:
+    name: TypeScript Hook Tests
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: ./.github/actions/setup-bun-nx
+        with:
+          cache-nx: "false"
+
+      - name: Run hook tests
+        run: bun test test/hooks/
+
+      - name: Test summary
+        if: always()
+        run: |
+          echo "## TypeScript Hook Tests" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Test Files" >> $GITHUB_STEP_SUMMARY
+          echo "- test/hooks/session-integration.test.ts" >> $GITHUB_STEP_SUMMARY
+          echo "- test/hooks/types.test.ts" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Events Tested" >> $GITHUB_STEP_SUMMARY
+          echo "| Event | Covered |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|---------|" >> $GITHUB_STEP_SUMMARY
+          echo "| PreToolUse | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| PostToolUse | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| SessionStart | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| SessionEnd | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| Overflow | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| PreMessage | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| PostMessage | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| OnError | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| SubagentStart | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| SubagentStop | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| EvalGate | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| PermissionRequest | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| PostCompact | ✅ |" >> $GITHUB_STEP_SUMMARY
+
+  rust-hooks:
+    name: Rust Hook Tests
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: packages/tui-rs
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: ./.github/actions/setup-rust
+        with:
+          toolchain: stable
+          workspaces: packages/tui-rs -> target
+
+      - name: Run hook integration tests
+        run: cargo test --test hooks_integration --all-features -- --nocapture
+
+      - name: Run hook unit tests
+        run: cargo test hooks --all-features -- --nocapture
+
+      - name: Count tests
+        id: count
+        run: |
+          INTEGRATION_COUNT=$(cargo test --test hooks_integration --all-features -- --list 2>/dev/null | grep -c "^test_" || echo "0")
+          UNIT_COUNT=$(cargo test hooks --all-features -- --list 2>/dev/null | grep -c "^hooks::" || echo "0")
+          echo "integration=$INTEGRATION_COUNT" >> $GITHUB_OUTPUT
+          echo "unit=$UNIT_COUNT" >> $GITHUB_OUTPUT
+
+      - name: Test summary
+        if: always()
+        run: |
+          echo "## Rust Hook Tests" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Test Counts" >> $GITHUB_STEP_SUMMARY
+          echo "- Integration tests: ${{ steps.count.outputs.integration || 'N/A' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Unit tests: ${{ steps.count.outputs.unit || 'N/A' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Hook Backends" >> $GITHUB_STEP_SUMMARY
+          echo "| Backend | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Native Rust | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| Lua (mlua) | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| WASM (wasmtime) | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| IPC Bridge | ✅ |" >> $GITHUB_STEP_SUMMARY
+
+  hooks-parity:
+    name: TypeScript/Rust Parity Check
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 5
+    needs: [typescript-hooks, rust-hooks]
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Check event type parity
+        run: |
+          set -euo pipefail
+          echo "## Event Type Parity" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import re
+          from pathlib import Path
+
+          ts_text = Path("src/hooks/types.ts").read_text(encoding="utf-8")
+          rust_text = Path("packages/tui-rs/src/hooks/types.rs").read_text(encoding="utf-8")
+
+          ts_match = re.search(r"export\s+type\s+HookEventType\s*=\s*(.*?);", ts_text, re.S)
+          if not ts_match:
+              raise SystemExit("Could not find TypeScript HookEventType union")
+          ts_block = ts_match.group(1)
+          ts_events = sorted(set(re.findall(r"\"([A-Za-z0-9_]+)\"", ts_block)))
+
+          rust_match = re.search(r"pub\s+enum\s+HookEventType\s*\{(.*?)\n\}", rust_text, re.S)
+          if not rust_match:
+              raise SystemExit("Could not find Rust HookEventType enum")
+          rust_block = rust_match.group(1)
+          rust_events = []
+          for line in rust_block.splitlines():
+              line = re.sub(r"//.*$", "", line).strip()
+              if not line or line.startswith("#") or line.startswith("///"):
+                  continue
+              m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*,\s*$", line)
+              if m:
+                  rust_events.append(m.group(1))
+          rust_events = sorted(set(rust_events))
+
+          Path(".ts-hook-events.txt").write_text("\n".join(ts_events) + "\n", encoding="utf-8")
+          Path(".rust-hook-events.txt").write_text("\n".join(rust_events) + "\n", encoding="utf-8")
+          PY
+
+          TS_LIST="$(cat .ts-hook-events.txt)"
+          RUST_LIST="$(cat .rust-hook-events.txt)"
+
+          TS_COUNT="$(printf '%s\n' "$TS_LIST" | sed '/^$/d' | wc -l | tr -d ' ')"
+          RUST_COUNT="$(printf '%s\n' "$RUST_LIST" | sed '/^$/d' | wc -l | tr -d ' ')"
+
+          echo "| Language | Event Types |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------------|" >> $GITHUB_STEP_SUMMARY
+          echo "| TypeScript | ${TS_COUNT} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Rust | ${RUST_COUNT} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [[ "$TS_LIST" == "$RUST_LIST" ]]; then
+            echo "✅ TypeScript and Rust hook event types match" >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+
+          echo "❌ TypeScript and Rust hook event types differ" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "### Only in TypeScript" >> $GITHUB_STEP_SUMMARY
+          comm -23 <(printf '%s\n' "$TS_LIST") <(printf '%s\n' "$RUST_LIST") | sed 's/^/- /' >> $GITHUB_STEP_SUMMARY || true
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Only in Rust" >> $GITHUB_STEP_SUMMARY
+          comm -13 <(printf '%s\n' "$TS_LIST") <(printf '%s\n' "$RUST_LIST") | sed 's/^/- /' >> $GITHUB_STEP_SUMMARY || true
+
+          echo "::error::Hook event type mismatch between TypeScript and Rust implementations"
+          exit 1

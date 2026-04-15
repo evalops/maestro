@@ -1,0 +1,152 @@
+{
+	"name": "maestro-vscode",
+	"displayName": "Maestro",
+	"description": "Use Maestro's deterministic AI assistant inside VS Code.",
+	"publisher": "evalops",
+	"version": "0.10.0",
+	"license": "MIT",
+	"type": "commonjs",
+	"main": "./dist/extension.js",
+	"icon": "media/icon.png",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/evalops/maestro.git",
+		"directory": "packages/vscode-extension"
+	},
+	"homepage": "https://github.com/evalops/maestro#readme",
+	"bugs": {
+		"url": "https://github.com/evalops/maestro/issues"
+	},
+	"engines": {
+		"vscode": "^1.90.0"
+	},
+	"categories": ["Machine Learning", "Chat", "Programming Languages"],
+	"activationEvents": [
+		"onView:composer.chatView",
+		"onCommand:composer.openPanel",
+		"onCommand:composer.openDocs"
+	],
+	"contributes": {
+		"viewsContainers": {
+			"activitybar": [
+				{
+					"id": "composer-sidebar",
+					"title": "Maestro",
+					"icon": "$(hubot)"
+				}
+			]
+		},
+		"views": {
+			"composer-sidebar": [
+				{
+					"type": "webview",
+					"id": "composer.chatView",
+					"name": "Chat"
+				}
+			]
+		},
+		"commands": [
+			{
+				"command": "composer.openPanel",
+				"title": "Maestro: Open Assistant Panel",
+				"category": "Maestro"
+			},
+			{
+				"command": "composer.openDocs",
+				"title": "Maestro: Open Documentation",
+				"category": "Maestro"
+			},
+			{
+				"command": "composer.clearChat",
+				"title": "Clear Chat",
+				"category": "Maestro",
+				"icon": "$(clear-all)"
+			},
+			{
+				"command": "composer.switchSession",
+				"title": "Switch Session",
+				"category": "Maestro",
+				"icon": "$(history)"
+			},
+			{
+				"command": "composer.addToContext",
+				"title": "Add File to Context",
+				"category": "Maestro",
+				"icon": "$(pin)"
+			},
+			{
+				"command": "composer.removeFromContext",
+				"title": "Remove File from Context",
+				"category": "Maestro",
+				"icon": "$(close)"
+			},
+			{
+				"command": "composer.showCommandPicker",
+				"title": "Run Command",
+				"category": "Maestro",
+				"icon": "$(terminal)"
+			}
+		],
+		"menus": {
+			"view/title": [
+				{
+					"command": "composer.showCommandPicker",
+					"when": "view == composer.chatView",
+					"group": "navigation@1"
+				},
+				{
+					"command": "composer.switchSession",
+					"when": "view == composer.chatView",
+					"group": "navigation@2"
+				},
+				{
+					"command": "composer.clearChat",
+					"when": "view == composer.chatView",
+					"group": "navigation@3"
+				}
+			],
+			"editor/title/context": [
+				{
+					"command": "composer.addToContext",
+					"group": "navigation"
+				}
+			]
+		},
+		"configuration": {
+			"title": "Maestro",
+			"properties": {
+				"composer.apiEndpoint": {
+					"type": "string",
+					"default": "http://localhost:8080",
+					"description": "URL of the Maestro API server"
+				},
+				"composer.model": {
+					"type": "string",
+					"default": "claude-sonnet-4-5",
+					"description": "Model ID to use for chat generation"
+				}
+			}
+		}
+	},
+	"scripts": {
+		"clean": "node ../../scripts/clean-paths.js dist out && node ../../scripts/clean-vsix.js",
+		"build": "node ../../scripts/clean-paths.js dist && tsc -p tsconfig.json",
+		"watch": "tsc -p tsconfig.json --watch --preserveWatchOutput",
+		"prepackage": "bun run build",
+		"package": "npx @vscode/vsce package --no-dependencies --out composer-$npm_package_version.vsix",
+		"publish": "npx @vscode/vsce publish --no-dependencies",
+		"check": "tsc --noEmit",
+		"test": "vitest --run"
+	},
+	"dependencies": {
+		"@evalops/contracts": "workspace:*"
+	},
+	"devDependencies": {
+		"@types/node": "^24.10.7",
+		"@types/vscode": "^1.90.0",
+		"@vscode/test-electron": "^2.3.0",
+		"@vscode/vsce": "^3.2.1",
+		"typescript": "^5.9.3",
+		"vitest": "^4.0.7"
+	}
+}

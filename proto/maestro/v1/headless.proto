@@ -1,0 +1,555 @@
+syntax = "proto3";
+
+package maestro.v1;
+
+import "google/protobuf/struct.proto";
+
+// Bootstrap protobuf schema for the headless protocol.
+//
+// This mirrors the current message surface closely enough for code generation and
+// cross-language drift checks, while the live runtime continues to use the
+// existing JSON transport until follow-up slices migrate the transport layer.
+// protocol-version: 2026-04-02
+
+enum ServerRequestType {
+  SERVER_REQUEST_TYPE_UNSPECIFIED = 0;
+  SERVER_REQUEST_TYPE_APPROVAL = 1;
+  SERVER_REQUEST_TYPE_CLIENT_TOOL = 2;
+  SERVER_REQUEST_TYPE_MCP_ELICITATION = 3;
+  SERVER_REQUEST_TYPE_USER_INPUT = 4;
+  SERVER_REQUEST_TYPE_TOOL_RETRY = 5;
+}
+
+enum ServerRequestResolution {
+  SERVER_REQUEST_RESOLUTION_UNSPECIFIED = 0;
+  SERVER_REQUEST_RESOLUTION_APPROVED = 1;
+  SERVER_REQUEST_RESOLUTION_DENIED = 2;
+  SERVER_REQUEST_RESOLUTION_COMPLETED = 3;
+  SERVER_REQUEST_RESOLUTION_FAILED = 4;
+  SERVER_REQUEST_RESOLUTION_ANSWERED = 5;
+  SERVER_REQUEST_RESOLUTION_RETRIED = 6;
+  SERVER_REQUEST_RESOLUTION_SKIPPED = 7;
+  SERVER_REQUEST_RESOLUTION_ABORTED = 8;
+  SERVER_REQUEST_RESOLUTION_CANCELLED = 9;
+}
+
+enum ServerRequestResolvedBy {
+  SERVER_REQUEST_RESOLVED_BY_UNSPECIFIED = 0;
+  SERVER_REQUEST_RESOLVED_BY_USER = 1;
+  SERVER_REQUEST_RESOLVED_BY_POLICY = 2;
+  SERVER_REQUEST_RESOLVED_BY_CLIENT = 3;
+  SERVER_REQUEST_RESOLVED_BY_RUNTIME = 4;
+}
+
+enum ToolRetryDecisionAction {
+  TOOL_RETRY_DECISION_ACTION_UNSPECIFIED = 0;
+  TOOL_RETRY_DECISION_ACTION_RETRY = 1;
+  TOOL_RETRY_DECISION_ACTION_SKIP = 2;
+  TOOL_RETRY_DECISION_ACTION_ABORT = 3;
+}
+
+enum ConnectionRole {
+  CONNECTION_ROLE_UNSPECIFIED = 0;
+  CONNECTION_ROLE_VIEWER = 1;
+  CONNECTION_ROLE_CONTROLLER = 2;
+}
+
+enum NotificationType {
+  NOTIFICATION_TYPE_UNSPECIFIED = 0;
+  NOTIFICATION_TYPE_STATUS = 1;
+  NOTIFICATION_TYPE_HEARTBEAT = 2;
+  NOTIFICATION_TYPE_CONNECTION_INFO = 3;
+  NOTIFICATION_TYPE_COMPACTION = 4;
+}
+
+enum ThinkingLevel {
+  THINKING_LEVEL_UNSPECIFIED = 0;
+  THINKING_LEVEL_OFF = 1;
+  THINKING_LEVEL_MINIMAL = 2;
+  THINKING_LEVEL_LOW = 3;
+  THINKING_LEVEL_MEDIUM = 4;
+  THINKING_LEVEL_HIGH = 5;
+  THINKING_LEVEL_ULTRA = 6;
+}
+
+enum ApprovalMode {
+  APPROVAL_MODE_UNSPECIFIED = 0;
+  APPROVAL_MODE_AUTO = 1;
+  APPROVAL_MODE_PROMPT = 2;
+  APPROVAL_MODE_FAIL = 3;
+}
+
+enum ErrorType {
+  ERROR_TYPE_UNSPECIFIED = 0;
+  ERROR_TYPE_TRANSIENT = 1;
+  ERROR_TYPE_FATAL = 2;
+  ERROR_TYPE_TOOL = 3;
+  ERROR_TYPE_CANCELLED = 4;
+  ERROR_TYPE_PROTOCOL = 5;
+}
+
+enum UtilityOperation {
+  UTILITY_OPERATION_UNSPECIFIED = 0;
+  UTILITY_OPERATION_COMMAND_EXEC = 1;
+  UTILITY_OPERATION_FILE_SEARCH = 2;
+  UTILITY_OPERATION_FILE_WATCH = 3;
+  UTILITY_OPERATION_FILE_READ = 4;
+}
+
+enum UtilityCommandStream {
+  UTILITY_COMMAND_STREAM_UNSPECIFIED = 0;
+  UTILITY_COMMAND_STREAM_STDOUT = 1;
+  UTILITY_COMMAND_STREAM_STDERR = 2;
+}
+
+enum UtilityCommandShellMode {
+  UTILITY_COMMAND_SHELL_MODE_UNSPECIFIED = 0;
+  UTILITY_COMMAND_SHELL_MODE_SHELL = 1;
+  UTILITY_COMMAND_SHELL_MODE_DIRECT = 2;
+}
+
+enum UtilityCommandTerminalMode {
+  UTILITY_COMMAND_TERMINAL_MODE_UNSPECIFIED = 0;
+  UTILITY_COMMAND_TERMINAL_MODE_PIPE = 1;
+  UTILITY_COMMAND_TERMINAL_MODE_PTY = 2;
+}
+
+enum UtilityFileWatchChangeType {
+  UTILITY_FILE_WATCH_CHANGE_TYPE_UNSPECIFIED = 0;
+  UTILITY_FILE_WATCH_CHANGE_TYPE_CREATE = 1;
+  UTILITY_FILE_WATCH_CHANGE_TYPE_MODIFY = 2;
+  UTILITY_FILE_WATCH_CHANGE_TYPE_DELETE = 3;
+  UTILITY_FILE_WATCH_CHANGE_TYPE_RENAME = 4;
+}
+
+message ClientInfo {
+  string name = 1;
+  optional string version = 2;
+}
+
+message ClientCapabilities {
+  repeated ServerRequestType server_requests = 1;
+  repeated UtilityOperation utility_operations = 2;
+  optional bool raw_agent_events = 3;
+}
+
+message ToolResponseResult {
+  bool success = 1;
+  string output = 2;
+  optional string error = 3;
+}
+
+message TextContent {
+  string text = 1;
+}
+
+message ImageContent {
+  string data = 1;
+  string mime_type = 2;
+}
+
+message ContentBlock {
+  oneof content {
+    TextContent text = 1;
+    ImageContent image = 2;
+  }
+}
+
+message ResponseUsage {
+  uint32 input_tokens = 1;
+  uint32 output_tokens = 2;
+  uint32 cache_read_tokens = 3;
+  uint32 cache_write_tokens = 4;
+  uint32 total_tokens = 5;
+  double total_cost_usd = 6;
+  string model_id = 7;
+  string provider = 8;
+}
+
+message ToolsSummary {
+  repeated string tools_used = 1;
+  uint32 calls_succeeded = 2;
+  uint32 calls_failed = 3;
+  repeated string summary_labels = 4;
+}
+
+message UtilityFileSearchMatch {
+  string path = 1;
+  double score = 2;
+}
+
+message ConnectionState {
+  string connection_id = 1;
+  ConnectionRole role = 2;
+  optional string client_protocol_version = 3;
+  ClientInfo client_info = 4;
+  ClientCapabilities capabilities = 5;
+  repeated NotificationType opt_out_notifications = 6;
+  uint32 subscription_count = 7;
+  uint32 attached_subscription_count = 8;
+  bool controller_lease_granted = 9;
+  optional string lease_expires_at = 10;
+}
+
+message HelloMessage {
+  optional string protocol_version = 1;
+  ClientInfo client_info = 2;
+  ClientCapabilities capabilities = 3;
+  optional ConnectionRole role = 4;
+  repeated NotificationType opt_out_notifications = 5;
+}
+
+message InitMessage {
+  optional string system_prompt = 1;
+  optional string append_system_prompt = 2;
+  optional ThinkingLevel thinking_level = 3;
+  optional ApprovalMode approval_mode = 4;
+}
+
+message PromptMessage {
+  string content = 1;
+  repeated string attachments = 2;
+}
+
+message InterruptMessage {}
+
+message ToolResponseMessage {
+  string call_id = 1;
+  bool approved = 2;
+  ToolResponseResult result = 3;
+}
+
+message ClientToolResultMessage {
+  string call_id = 1;
+  repeated ContentBlock content = 2;
+  bool is_error = 3;
+}
+
+message ServerRequestResponseMessage {
+  string request_id = 1;
+  ServerRequestType request_type = 2;
+  optional bool approved = 3;
+  ToolResponseResult result = 4;
+  optional ToolRetryDecisionAction decision_action = 5;
+  optional string reason = 6;
+  repeated ContentBlock content = 7;
+  optional bool is_error = 8;
+}
+
+message UtilityCommandStartMessage {
+  string command_id = 1;
+  string command = 2;
+  optional string cwd = 3;
+  map<string, string> env = 4;
+  optional UtilityCommandShellMode shell_mode = 5;
+  optional UtilityCommandTerminalMode terminal_mode = 6;
+  optional bool allow_stdin = 7;
+  optional uint32 columns = 8;
+  optional uint32 rows = 9;
+}
+
+message UtilityCommandTerminateMessage {
+  string command_id = 1;
+  optional bool force = 2;
+}
+
+message UtilityCommandStdinMessage {
+  string command_id = 1;
+  string content = 2;
+  optional bool eof = 3;
+}
+
+message UtilityCommandResizeMessage {
+  string command_id = 1;
+  uint32 columns = 2;
+  uint32 rows = 3;
+}
+
+message UtilityFileSearchMessage {
+  string search_id = 1;
+  string query = 2;
+  optional string cwd = 3;
+  optional uint32 limit = 4;
+}
+
+message UtilityFileReadMessage {
+  string read_id = 1;
+  string path = 2;
+  optional string cwd = 3;
+  optional uint32 offset = 4;
+  optional uint32 limit = 5;
+}
+
+message UtilityFileWatchStartMessage {
+  string watch_id = 1;
+  optional string root_dir = 2;
+  repeated string include_patterns = 3;
+  repeated string exclude_patterns = 4;
+  optional uint32 debounce_ms = 5;
+}
+
+message UtilityFileWatchStopMessage {
+  string watch_id = 1;
+}
+
+message CancelMessage {}
+
+message ShutdownMessage {}
+
+message ReadyMessage {
+  string protocol_version = 1;
+  string model = 2;
+  string provider = 3;
+  optional string session_id = 4;
+}
+
+message ResponseStartMessage {
+  string response_id = 1;
+}
+
+message ResponseChunkMessage {
+  string response_id = 1;
+  string content = 2;
+  bool is_thinking = 3;
+}
+
+message ResponseEndMessage {
+  string response_id = 1;
+  ResponseUsage usage = 2;
+  ToolsSummary tools_summary = 3;
+  uint32 duration_ms = 4;
+  optional uint32 ttft_ms = 5;
+}
+
+message ToolCallMessage {
+  string call_id = 1;
+  string tool = 2;
+  google.protobuf.Value args = 3;
+  bool requires_approval = 4;
+}
+
+message ToolStartMessage {
+  string call_id = 1;
+}
+
+message ToolOutputMessage {
+  string call_id = 1;
+  string content = 2;
+}
+
+message ToolEndMessage {
+  string call_id = 1;
+  bool success = 2;
+}
+
+message ClientToolRequestMessage {
+  string call_id = 1;
+  string tool = 2;
+  google.protobuf.Value args = 3;
+}
+
+message ServerRequestMessage {
+  string request_id = 1;
+  ServerRequestType request_type = 2;
+  string call_id = 3;
+  string tool = 4;
+  optional string display_name = 5;
+  optional string summary_label = 6;
+  optional string action_description = 7;
+  google.protobuf.Value args = 8;
+  string reason = 9;
+}
+
+message ServerRequestResolvedMessage {
+  string request_id = 1;
+  ServerRequestType request_type = 2;
+  string call_id = 3;
+  ServerRequestResolution resolution = 4;
+  optional string reason = 5;
+  ServerRequestResolvedBy resolved_by = 6;
+}
+
+message UtilityCommandStartedMessage {
+  string command_id = 1;
+  string command = 2;
+  optional string cwd = 3;
+  UtilityCommandShellMode shell_mode = 4;
+  UtilityCommandTerminalMode terminal_mode = 5;
+  optional uint32 pid = 6;
+  optional uint32 columns = 7;
+  optional uint32 rows = 8;
+  optional string owner_connection_id = 9;
+}
+
+message UtilityCommandResizedMessage {
+  string command_id = 1;
+  uint32 columns = 2;
+  uint32 rows = 3;
+}
+
+message UtilityCommandOutputMessage {
+  string command_id = 1;
+  UtilityCommandStream stream = 2;
+  string content = 3;
+}
+
+message UtilityCommandExitedMessage {
+  string command_id = 1;
+  bool success = 2;
+  optional int32 exit_code = 3;
+  optional string signal = 4;
+  optional string reason = 5;
+}
+
+message UtilityFileSearchResultsMessage {
+  string search_id = 1;
+  string query = 2;
+  string cwd = 3;
+  repeated UtilityFileSearchMatch results = 4;
+  bool truncated = 5;
+}
+
+message UtilityFileReadResultMessage {
+  string read_id = 1;
+  string path = 2;
+  string relative_path = 3;
+  string cwd = 4;
+  string content = 5;
+  uint32 start_line = 6;
+  uint32 end_line = 7;
+  uint32 total_lines = 8;
+  bool truncated = 9;
+}
+
+message UtilityFileWatchStartedMessage {
+  string watch_id = 1;
+  string root_dir = 2;
+  repeated string include_patterns = 3;
+  repeated string exclude_patterns = 4;
+  uint32 debounce_ms = 5;
+  optional string owner_connection_id = 6;
+}
+
+message UtilityFileWatchEventMessage {
+  string watch_id = 1;
+  UtilityFileWatchChangeType change_type = 2;
+  string path = 3;
+  string relative_path = 4;
+  uint64 timestamp = 5;
+  bool is_directory = 6;
+}
+
+message UtilityFileWatchStoppedMessage {
+  string watch_id = 1;
+  optional string reason = 2;
+}
+
+message ErrorMessage {
+  optional string request_id = 1;
+  string message = 2;
+  bool fatal = 3;
+  ErrorType error_type = 4;
+}
+
+message StatusMessage {
+  string message = 1;
+}
+
+message CompactionMessage {
+  string summary = 1;
+  uint32 first_kept_entry_index = 2;
+  uint32 tokens_before = 3;
+  bool auto = 4;
+  optional string custom_instructions = 5;
+  string timestamp = 6;
+}
+
+message SessionInfoMessage {
+  optional string session_id = 1;
+  string cwd = 2;
+  optional string git_branch = 3;
+}
+
+message HelloOkMessage {
+  string protocol_version = 1;
+  optional string connection_id = 2;
+  optional string client_protocol_version = 3;
+  ClientInfo client_info = 4;
+  ClientCapabilities capabilities = 5;
+  repeated NotificationType opt_out_notifications = 6;
+  optional ConnectionRole role = 7;
+  optional string controller_connection_id = 8;
+  optional string lease_expires_at = 9;
+}
+
+message ConnectionInfoMessage {
+  optional string connection_id = 1;
+  optional string client_protocol_version = 2;
+  ClientInfo client_info = 3;
+  ClientCapabilities capabilities = 4;
+  repeated NotificationType opt_out_notifications = 5;
+  optional ConnectionRole role = 6;
+  optional uint32 connection_count = 7;
+  optional string controller_connection_id = 8;
+  optional string lease_expires_at = 9;
+  repeated ConnectionState connections = 10;
+}
+
+message RawAgentEventMessage {
+  string event_type = 1;
+  google.protobuf.Value event = 2;
+}
+
+message ToAgentEnvelope {
+  oneof payload {
+    HelloMessage hello = 1;
+    InitMessage init = 2;
+    PromptMessage prompt = 3;
+    InterruptMessage interrupt = 4;
+    ToolResponseMessage tool_response = 5;
+    ClientToolResultMessage client_tool_result = 6;
+    ServerRequestResponseMessage server_request_response = 7;
+    UtilityCommandStartMessage utility_command_start = 8;
+    UtilityCommandTerminateMessage utility_command_terminate = 9;
+    UtilityCommandStdinMessage utility_command_stdin = 10;
+    UtilityCommandResizeMessage utility_command_resize = 11;
+    UtilityFileSearchMessage utility_file_search = 12;
+    UtilityFileReadMessage utility_file_read = 13;
+    UtilityFileWatchStartMessage utility_file_watch_start = 14;
+    UtilityFileWatchStopMessage utility_file_watch_stop = 15;
+    CancelMessage cancel = 16;
+    ShutdownMessage shutdown = 17;
+  }
+}
+
+message FromAgentEnvelope {
+  oneof payload {
+    HelloOkMessage hello_ok = 1;
+    ReadyMessage ready = 2;
+    ResponseStartMessage response_start = 3;
+    ResponseChunkMessage response_chunk = 4;
+    ResponseEndMessage response_end = 5;
+    ToolCallMessage tool_call = 6;
+    ToolStartMessage tool_start = 7;
+    ToolOutputMessage tool_output = 8;
+    ToolEndMessage tool_end = 9;
+    ClientToolRequestMessage client_tool_request = 10;
+    ServerRequestMessage server_request = 11;
+    ServerRequestResolvedMessage server_request_resolved = 12;
+    RawAgentEventMessage raw_agent_event = 13;
+    UtilityCommandStartedMessage utility_command_started = 14;
+    UtilityCommandResizedMessage utility_command_resized = 15;
+    UtilityCommandOutputMessage utility_command_output = 16;
+    UtilityCommandExitedMessage utility_command_exited = 17;
+    UtilityFileSearchResultsMessage utility_file_search_results = 18;
+    UtilityFileReadResultMessage utility_file_read_result = 19;
+    UtilityFileWatchStartedMessage utility_file_watch_started = 20;
+    UtilityFileWatchEventMessage utility_file_watch_event = 21;
+    UtilityFileWatchStoppedMessage utility_file_watch_stopped = 22;
+    ErrorMessage error = 23;
+    StatusMessage status = 24;
+    CompactionMessage compaction = 25;
+    SessionInfoMessage session_info = 26;
+    ConnectionInfoMessage connection_info = 27;
+  }
+}

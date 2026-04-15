@@ -1,0 +1,711 @@
+/**
+ * OpenAI Responses API implementation using the official SDK
+ *
+ * This replaces the raw SSE parsing with proper typed events from the SDK.
+ */
+
+import OpenAI from "openai";
+import type {
+	ResponseFunctionToolCall,
+	ResponseOutputMessage,
+	ResponseReasoningItem,
+} from "openai/resources/responses/responses.js";
+import { normalizeLLMBaseUrl } from "../../models/url-normalize.js";
+import {
+	isStreamIdleTimeoutError,
+	withAbortableIdleTimeout,
+} from "../../providers/stream-idle-timeout.js";
+import { createLogger } from "../../utils/logger.js";
+import { mapThinkingLevelToOpenAIEffort } from "../thinking-level-mapper.js";
+import type {
+	AssistantMessage,
+	AssistantMessageEvent,
+	Context,
+	Model,
+	TextContent,
+	ThinkingContent,
+	ToolCall,
+} from "../types.js";
+import type { OpenAIOptions } from "./openai-shared.js";
+import { filterResponsesApiTools } from "./openai-shared.js";
+import { sanitizeSurrogates } from "./sanitize-unicode.js";
+import { createToolArgumentNormalizer, isRecord } from "./tool-arguments.js";
+import { transformMessages } from "./transform-messages.js";
+
+const logger = createLogger("agent:providers:openai-responses");
+const toolArgumentNormalizer = createToolArgumentNormalizer({
+	logger,
+	providerLabel: "OpenAI Responses",
+});
+
+/**
+ * Stream responses from OpenAI Responses API using the official SDK
+ */
+export async function* streamResponsesApiSdk(
+	model: Model<"openai-responses">,
+	context: Context,
+	options: OpenAIOptions,
+): AsyncGenerator<AssistantMessageEvent, void, unknown> {
+	if (!options.apiKey) {
+		throw new Error("OpenAI API key is required");
+	}
+
+	const baseUrl = normalizeLLMBaseUrl(model.baseUrl, model.provider, model.api);
+	const headers = options.headers ? { ...options.headers } : {};
+	if (model.provider === "github-copilot") {
+		const messages = context.messages ?? [];
+		const lastMessage = messages[messages.length - 1];
+		const isAgentCall = lastMessage ? lastMessage.role !== "user" : false;
+		headers["X-Initiator"] = isAgentCall ? "agent" : "user";
+	}
+
+	const client = new OpenAI({
+		apiKey: options.apiKey,
+		baseURL: baseUrl.replace("/responses", ""), // SDK adds the endpoint
+		dangerouslyAllowBrowser: true,
+		defaultHeaders: Object.keys(headers).length > 0 ? headers : undefined,
+	});
+
+	// Build input messages
+	const input = buildInput(context, model, options);
+
+	// Filter and convert tools
+	const validTools = context.tools
+		? filterResponsesApiTools(context.tools)
+		: [];
+
+	if (context.tools && validTools.length < context.tools.length) {
+		const filtered = context.tools.filter(
+			(t) => !validTools.some((v) => v.name === t.name),
+		);
+		logger.warn(
+			"Some tools filtered out due to Responses API schema limitations",
+			{
+				filteredTools: filtered.map((t) => t.name),
+				reason:
+					"Responses API does not support oneOf/anyOf/allOf/enum/not in tool schemas",
+			},
+		);
+	}
+
+	// Build request params
+	const params: OpenAI.Responses.ResponseCreateParamsStreaming = {
+		model: model.id,
+		input,
+		stream: true,
+	};
+
+	if (validTools.length > 0) {
+		params.tools = validTools.map((tool) => ({
+			type: "function" as const,
+			name: tool.name,
+			description: tool.description,
+			parameters: tool.parameters as Record<string, unknown>,
+			strict: null,
+		}));
+	}
+
+	if (options.toolChoice && validTools.length > 0) {
+		params.tool_choice =
+			typeof options.toolChoice === "string"
+				? options.toolChoice
+				: {
+						type: "function",
+						name: options.toolChoice.function.name,
+					};
+	}
+
+	if (options.maxTokens) {
+		params.max_output_tokens = options.maxTokens;
+	}
+
+	if (options.temperature !== undefined) {
+		params.temperature = options.temperature;
+	}
+
+	const summary = options.reasoningSummary;
+	const shouldIncludeSummary = summary !== undefined && summary !== null;
+
+	if (model.reasoning && (options.reasoningEffort || shouldIncludeSummary)) {
+		// Use unified thinking level mapper for reasoning effort
+		const effort = options.reasoningEffort
+			? (mapThinkingLevelToOpenAIEffort(options.reasoningEffort) ?? "medium")
+			: "medium";
+		if (shouldIncludeSummary) {
+			params.reasoning = { effort, summary };
+		} else {
+			params.reasoning = { effort };
+		}
+	}
+
+	// Add structured outputs via text.format (Responses API format)
+	if (options.responseFormat) {
+		if (options.responseFormat.type === "json_schema") {
+			params.text = {
+				format: {
+					type: "json_schema",
+					name: options.responseFormat.json_schema.name,
+					schema: options.responseFormat.json_schema.schema as Record<
+						string,
+						unknown
+					>,
+					strict: options.responseFormat.json_schema.strict ?? true,
+					description: options.responseFormat.json_schema.description,
+				},
+			};
+		} else if (options.responseFormat.type === "json_object") {
+			params.text = {
+				format: { type: "json_object" },
+			};
+		}
+		// type: "text" is the default, no need to set
+	}
+	if (options.requestBody) {
+		Object.assign(params, options.requestBody);
+	}
+
+	// For reasoning models, include encrypted_content to enable multi-turn conversations
+	// This is required for stateless usage of the Responses API with reasoning items
+	if (model.reasoning) {
+		params.include = ["reasoning.encrypted_content"];
+	}
+
+	// Initialize output
+	const output: AssistantMessage = {
+		role: "assistant",
+		content: [],
+		api: "openai-responses",
+		provider: model.provider,
+		model: model.id,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+		timestamp: Date.now(),
+	};
+
+	yield { type: "start", partial: output };
+
+	// Track current items and blocks
+	let currentItem:
+		| ResponseReasoningItem
+		| ResponseOutputMessage
+		| ResponseFunctionToolCall
+		| null = null;
+	let currentBlock:
+		| ThinkingContent
+		| TextContent
+		| (ToolCall & { partialJson: string })
+		| null = null;
+	const blockIndex = () => output.content.length - 1;
+
+	try {
+		const stream = await client.responses.create(params, {
+			signal: options.signal,
+		});
+
+		// Wrap stream with idle timeout detection
+		const timedStream = withAbortableIdleTimeout(stream, {
+			provider: model.provider,
+			signal: options.signal,
+		});
+
+		for await (const event of timedStream) {
+			// Handle output item start
+			if (event.type === "response.output_item.added") {
+				const item = event.item;
+				if (item.type === "reasoning") {
+					currentItem = item;
+					currentBlock = { type: "thinking", thinking: "" };
+					output.content.push(currentBlock);
+					yield {
+						type: "thinking_start",
+						contentIndex: blockIndex(),
+						partial: output,
+					};
+				} else if (item.type === "message") {
+					currentItem = item;
+					currentBlock = { type: "text", text: "" };
+					output.content.push(currentBlock);
+					yield {
+						type: "text_start",
+						contentIndex: blockIndex(),
+						partial: output,
+					};
+				} else if (item.type === "function_call") {
+					currentItem = item;
+					const normalized = toolArgumentNormalizer.normalizeWithPartialJson(
+						item.arguments,
+						{
+							callId: item.call_id,
+							name: item.name,
+							stage: "start",
+						},
+						{ expectString: true },
+					);
+					currentBlock = {
+						type: "toolCall",
+						id: `${item.call_id}|${item.id}`,
+						name: item.name,
+						arguments: normalized.arguments,
+						partialJson: normalized.partialJson,
+					};
+					output.content.push(currentBlock);
+					yield {
+						type: "toolcall_start",
+						contentIndex: blockIndex(),
+						partial: output,
+					};
+				}
+			}
+			// Handle reasoning summary deltas
+			else if (event.type === "response.reasoning_summary_part.added") {
+				if (
+					currentItem &&
+					currentItem.type === "reasoning" &&
+					currentBlock &&
+					currentBlock.type === "thinking"
+				) {
+					currentItem.summary = currentItem.summary || [];
+					currentItem.summary.push(event.part);
+				}
+			} else if (event.type === "response.reasoning_summary_text.delta") {
+				if (
+					currentItem &&
+					currentItem.type === "reasoning" &&
+					currentBlock &&
+					currentBlock.type === "thinking"
+				) {
+					currentItem.summary = currentItem.summary || [];
+					const lastPart = currentItem.summary[currentItem.summary.length - 1];
+					if (lastPart && typeof lastPart.text === "string") {
+						lastPart.text += event.delta;
+						currentBlock.thinking += event.delta;
+						yield {
+							type: "thinking_delta",
+							contentIndex: blockIndex(),
+							delta: event.delta,
+							partial: output,
+						};
+					}
+				}
+			} else if (event.type === "response.reasoning_summary_part.done") {
+				if (
+					currentItem &&
+					currentItem.type === "reasoning" &&
+					currentBlock &&
+					currentBlock.type === "thinking"
+				) {
+					currentItem.summary = currentItem.summary || [];
+					const lastPart = currentItem.summary[currentItem.summary.length - 1];
+					if (lastPart && typeof lastPart.text === "string") {
+						lastPart.text += "\n\n";
+						currentBlock.thinking += "\n\n";
+						yield {
+							type: "thinking_delta",
+							contentIndex: blockIndex(),
+							delta: "\n\n",
+							partial: output,
+						};
+					}
+				}
+			}
+			// Handle text deltas
+			else if (event.type === "response.output_text.delta") {
+				if (
+					currentItem &&
+					currentItem.type === "message" &&
+					currentBlock &&
+					currentBlock.type === "text"
+				) {
+					currentBlock.text += event.delta;
+					yield {
+						type: "text_delta",
+						contentIndex: blockIndex(),
+						delta: event.delta,
+						partial: output,
+					};
+				}
+			}
+			// Handle function call argument deltas
+			else if (event.type === "response.function_call_arguments.delta") {
+				if (
+					currentItem &&
+					currentItem.type === "function_call" &&
+					currentBlock &&
+					currentBlock.type === "toolCall"
+				) {
+					currentBlock.partialJson += event.delta;
+					currentBlock.arguments = toolArgumentNormalizer.parseFromString(
+						currentBlock.partialJson,
+						{
+							callId: currentItem.call_id,
+							name: currentItem.name,
+							stage: "delta",
+						},
+						{ logInvalid: false },
+					);
+					yield {
+						type: "toolcall_delta",
+						contentIndex: blockIndex(),
+						delta: event.delta,
+						partial: output,
+					};
+				}
+			}
+			// Handle output item completion
+			else if (event.type === "response.output_item.done") {
+				const item = event.item;
+
+				if (
+					item.type === "reasoning" &&
+					currentBlock &&
+					currentBlock.type === "thinking"
+				) {
+					const summaryText =
+						item.summary?.map((s) => s.text).join("\n\n") || "";
+					if (!currentBlock.thinking && summaryText) {
+						currentBlock.thinking = summaryText;
+					}
+					// Store the full reasoning item so we can send it back verbatim
+					// This is required for reasoning models like codex
+					currentBlock.thinkingSignature = JSON.stringify(item);
+					yield {
+						type: "thinking_end",
+						contentIndex: blockIndex(),
+						content: currentBlock.thinking,
+						partial: output,
+					};
+					currentBlock = null;
+				} else if (
+					item.type === "message" &&
+					currentBlock &&
+					currentBlock.type === "text"
+				) {
+					currentBlock.text = item.content
+						.map((c) =>
+							c.type === "output_text"
+								? c.text
+								: (c as { refusal?: string }).refusal || "",
+						)
+						.join("");
+					yield {
+						type: "text_end",
+						contentIndex: blockIndex(),
+						content: currentBlock.text,
+						partial: output,
+					};
+					currentBlock = null;
+				} else if (item.type === "function_call") {
+					const finalArguments =
+						typeof item.arguments === "string"
+							? toolArgumentNormalizer.parseFromString(
+									item.arguments,
+									{
+										callId: item.call_id,
+										name: item.name,
+										stage: "done",
+									},
+									{ logInvalid: true },
+								)
+							: isRecord(item.arguments)
+								? item.arguments
+								: {};
+					const toolCall: ToolCall = {
+						type: "toolCall",
+						id: `${item.call_id}|${item.id}`,
+						name: item.name,
+						arguments: finalArguments,
+					};
+					yield {
+						type: "toolcall_end",
+						contentIndex: blockIndex(),
+						toolCall,
+						partial: output,
+					};
+					currentBlock = null;
+				}
+				currentItem = null;
+			}
+			// Handle completion
+			else if (event.type === "response.completed") {
+				const response = event.response;
+				if (response?.usage) {
+					const cachedTokens =
+						response.usage.input_tokens_details?.cached_tokens || 0;
+					output.usage = {
+						input: (response.usage.input_tokens || 0) - cachedTokens,
+						output: response.usage.output_tokens || 0,
+						cacheRead: cachedTokens,
+						cacheWrite: 0,
+						cost: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							total: 0,
+						},
+					};
+					// Calculate costs
+					if (model.cost) {
+						output.usage.cost = {
+							input: (output.usage.input / 1_000_000) * model.cost.input,
+							output: (output.usage.output / 1_000_000) * model.cost.output,
+							cacheRead:
+								(output.usage.cacheRead / 1_000_000) * model.cost.cacheRead,
+							cacheWrite: 0,
+							total: 0,
+						};
+						output.usage.cost.total =
+							output.usage.cost.input +
+							output.usage.cost.output +
+							output.usage.cost.cacheRead;
+					}
+				}
+				// Map status to stop reason
+				output.stopReason = mapStopReason(response?.status);
+				if (
+					output.content.some((b) => b.type === "toolCall") &&
+					output.stopReason === "stop"
+				) {
+					output.stopReason = "toolUse";
+				}
+			}
+			// Handle errors
+			else if (event.type === "error") {
+				throw new Error(`OpenAI Error ${event.code}: ${event.message}`);
+			} else if (event.type === "response.failed") {
+				throw new Error("OpenAI request failed");
+			}
+		}
+
+		yield {
+			type: "done",
+			reason: output.stopReason as "stop" | "length" | "toolUse",
+			message: output,
+		};
+	} catch (error: unknown) {
+		if (error instanceof Error && error.name === "AbortError") {
+			output.stopReason = "aborted";
+			yield { type: "error", reason: "aborted", error: output };
+		} else if (isStreamIdleTimeoutError(error)) {
+			// Re-throw idle timeout errors so caller can retry
+			throw error;
+		} else {
+			output.stopReason = "error";
+			output.errorMessage =
+				error instanceof Error ? error.message : String(error);
+			yield { type: "error", reason: "error", error: output };
+		}
+	}
+}
+
+function buildInput(
+	context: Context,
+	model: Model<"openai-responses">,
+	options: OpenAIOptions,
+): OpenAI.Responses.ResponseInput {
+	const input: OpenAI.Responses.ResponseInput = [];
+	const transformedMessages = transformMessages(context.messages, model);
+	let msgIndex = 0;
+
+	// System prompt
+	if (context.systemPrompt) {
+		const role = model.reasoning ? "developer" : "system";
+		input.push({
+			role,
+			content: sanitizeSurrogates(context.systemPrompt),
+		});
+	}
+	if (
+		model.reasoning &&
+		!options.reasoningEffort &&
+		options.reasoningSummary === undefined &&
+		model.id.startsWith("gpt-5")
+	) {
+		input.push({
+			role: "developer",
+			content: [
+				{
+					type: "input_text",
+					text: "# Juice: 0 !important",
+				},
+			],
+		});
+	}
+
+	// Messages
+	for (const msg of transformedMessages) {
+		if (msg.role === "user") {
+			const content: OpenAI.Responses.ResponseInputContent[] = [];
+			// Handle string content
+			if (typeof msg.content === "string") {
+				content.push({
+					type: "input_text",
+					text: sanitizeSurrogates(msg.content),
+				});
+			} else {
+				// Handle array content
+				for (const block of msg.content) {
+					if (block.type === "text") {
+						content.push({
+							type: "input_text",
+							text: sanitizeSurrogates(block.text),
+						});
+					} else if (block.type === "image") {
+						content.push({
+							type: "input_image",
+							image_url: `data:${block.mimeType};base64,${block.data}`,
+							detail: "auto",
+						});
+					}
+				}
+			}
+			const filteredContent = model.input.includes("image")
+				? content
+				: content.filter((block) => block.type !== "input_image");
+			if (filteredContent.length === 0) {
+				continue;
+			}
+			input.push({ role: "user", content: filteredContent });
+		} else if (msg.role === "assistant") {
+			// Don't include thinking/toolCall if the message was aborted or errored
+			// Reasoning items require their following function_call, so skip both
+			const isIncomplete =
+				msg.stopReason === "error" || msg.stopReason === "aborted";
+
+			// Reasoning items can ONLY be followed by function_call, not by message
+			// So only include reasoning if there are valid tool calls in this message
+			const hasToolCalls = msg.content.some((b) => b.type === "toolCall");
+			const canIncludeReasoning = hasToolCalls && !isIncomplete;
+
+			for (const block of msg.content) {
+				if (block.type === "text") {
+					let msgId = block.textSignature;
+					if (!msgId) {
+						msgId = `msg_${msgIndex}`;
+					} else if (msgId.length > 64) {
+						msgId = `msg_${shortHash(msgId)}`;
+					}
+					input.push({
+						type: "message",
+						role: "assistant",
+						content: [
+							{
+								type: "output_text",
+								text: sanitizeSurrogates(block.text),
+								annotations: [],
+							},
+						],
+						status: "completed",
+						id: msgId,
+					});
+				} else if (block.type === "thinking" && canIncludeReasoning) {
+					// For reasoning models, include reasoning items ONLY when followed by function_call
+					// The API rejects reasoning items that aren't followed by their function_call
+					if (block.thinkingSignature) {
+						const reasoningItem = JSON.parse(block.thinkingSignature);
+						input.push(reasoningItem);
+					}
+				} else if (block.type === "toolCall" && !isIncomplete) {
+					const id = block.id.includes("|")
+						? block.id.split("|")[1]!
+						: block.id;
+					const callId = block.id.includes("|")
+						? block.id.split("|")[0]!
+						: block.id;
+					input.push({
+						type: "function_call",
+						id,
+						call_id: callId,
+						name: block.name,
+						arguments: JSON.stringify(block.arguments),
+					});
+				}
+			}
+		} else if (msg.role === "toolResult") {
+			const textResult = msg.content
+				.filter((c) => c.type === "text")
+				.map((c) => (c as { text: string }).text)
+				.join("\n");
+
+			const callId = msg.toolCallId.includes("|")
+				? msg.toolCallId.split("|")[0]!
+				: msg.toolCallId;
+
+			const hasImages = msg.content.some((c) => c.type === "image");
+			const outputText =
+				textResult || (hasImages ? "(see attached image)" : "(empty result)");
+
+			input.push({
+				type: "function_call_output",
+				call_id: callId,
+				output: sanitizeSurrogates(outputText),
+			});
+
+			if (hasImages && model.input.includes("image")) {
+				const contentParts: OpenAI.Responses.ResponseInputContent[] = [
+					{
+						type: "input_text",
+						text: "Attached image(s) from tool result:",
+					},
+				];
+				for (const block of msg.content) {
+					if (block.type === "image") {
+						contentParts.push({
+							type: "input_image",
+							image_url: `data:${block.mimeType};base64,${block.data}`,
+							detail: "auto",
+						});
+					}
+				}
+				input.push({ role: "user", content: contentParts });
+			}
+		}
+		msgIndex++;
+	}
+
+	return input;
+}
+
+/** Fast deterministic hash to shorten long strings. */
+function shortHash(str: string): string {
+	let h1 = 0xdeadbeef;
+	let h2 = 0x41c6ce57;
+	for (let i = 0; i < str.length; i++) {
+		const ch = str.charCodeAt(i);
+		h1 = Math.imul(h1 ^ ch, 2654435761);
+		h2 = Math.imul(h2 ^ ch, 1597334677);
+	}
+	h1 =
+		Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^
+		Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+	h2 =
+		Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^
+		Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+	return (h2 >>> 0).toString(36) + (h1 >>> 0).toString(36);
+}
+
+function mapStopReason(
+	status: OpenAI.Responses.ResponseStatus | undefined,
+): "stop" | "length" | "toolUse" | "error" {
+	if (!status) return "stop";
+	switch (status) {
+		case "completed":
+			return "stop";
+		case "incomplete":
+			return "length";
+		case "failed":
+		case "cancelled":
+			return "error";
+		case "in_progress":
+		case "queued":
+			return "stop";
+		default:
+			return "stop";
+	}
+}

@@ -1,0 +1,58 @@
+{
+	"name": "@evalops/tui",
+	"version": "0.10.0",
+	"description": "Terminal UI library with differential rendering for Maestro",
+	"type": "module",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		},
+		"./testing": {
+			"types": "./dist/testing/index.d.ts",
+			"import": "./dist/testing/index.js"
+		}
+	},
+	"files": ["dist", "README.md"],
+	"scripts": {
+		"clean": "node ../../scripts/clean-paths.js dist ../../tmp/tsbuildinfo/tui.tsbuildinfo",
+		"build": "node ../../scripts/clean-paths.js dist ../../tmp/tsbuildinfo/tui.tsbuildinfo && node ../../scripts/ensure-dir.js ../../tmp/tsbuildinfo && tsc -p tsconfig.build.json",
+		"dev": "node ../../scripts/ensure-dir.js ../../tmp/tsbuildinfo && tsc -p tsconfig.build.json --watch --preserveWatchOutput",
+		"check": "node ../../scripts/ensure-dir.js ../../tmp/tsbuildinfo && tsc -p tsconfig.build.json --noEmit",
+		"test": "vitest --run",
+		"prepublishOnly": "npm run clean && npm run build"
+	},
+	"keywords": [
+		"tui",
+		"terminal",
+		"ui",
+		"text-editor",
+		"differential-rendering",
+		"typescript",
+		"cli",
+		"maestro"
+	],
+	"author": "EvalOps",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/evalops/maestro.git",
+		"directory": "packages/tui"
+	},
+	"engines": {
+		"node": ">=20.0.0"
+	},
+	"dependencies": {
+		"chalk": "^5.5.0",
+		"marked": "^17.0.0",
+		"string-width": "^8.1.0"
+	},
+	"devDependencies": {
+		"@types/node": "^24.10.7",
+		"@xterm/headless": "^5.5.0",
+		"typescript": "^5.9.3",
+		"vitest": "^4.0.7"
+	}
+}

@@ -1,0 +1,62 @@
+name: evals
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  run-evals:
+    if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'run-evals') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: blacksmith-4vcpu-ubuntu-2404
+            chunkIndex: 1
+          - os: blacksmith-4vcpu-ubuntu-2404
+            chunkIndex: 2
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: ./.github/actions/setup-bun-nx
+        with:
+          ensure-ripgrep: "true"
+
+      - name: Cache pip (GitHub)
+        if: ${{ !(startsWith(runner.name, 'blacksmith-') || env.BLACKSMITH_ACTIONS_RESULTS_URL != '') }}
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('.github/workflows/evals.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install Semgrep CLI
+        run: python3 -m pip install --user "semgrep==1.144.0" && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Composer Guardian
+        run: bash scripts/guardian.sh --all --trigger ci
+      - run: npx nx run maestro:build:all
+      - run: npx nx run maestro:lint
+      - name: Run tests
+        timeout-minutes: 3
+        run: bunx vitest --run --reporter=verbose --no-file-parallelism --shard=${{ matrix.chunkIndex }}/2
+      - name: Run evals chunk
+        timeout-minutes: 45
+        env:
+          MAESTRO_EVAL_CHUNK_COUNT: 2
+          MAESTRO_EVAL_CHUNK_INDEX: ${{ matrix.chunkIndex }}
+        run: npx nx run maestro:evals

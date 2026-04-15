@@ -1,0 +1,136 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Debug Composer CLI",
+      "skipFiles": ["<node_internals>/**"],
+      "program": "${workspaceFolder}/dist/cli.js",
+      "preLaunchTask": "npm: build",
+      "outFiles": ["${workspaceFolder}/dist/**/*.js"],
+      "sourceMaps": true,
+      "console": "integratedTerminal",
+      "env": {
+        "NODE_ENV": "development"
+      }
+    },
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Debug Composer with Args",
+      "skipFiles": ["<node_internals>/**"],
+      "program": "${workspaceFolder}/dist/cli.js",
+      "args": ["${input:prompt}"],
+      "preLaunchTask": "npm: build",
+      "outFiles": ["${workspaceFolder}/dist/**/*.js"],
+      "sourceMaps": true,
+      "console": "integratedTerminal",
+      "env": {
+        "NODE_ENV": "development"
+      }
+    },
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Debug with TypeScript (tsx)",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["tsx", "${workspaceFolder}/src/cli.ts"],
+      "skipFiles": ["<node_internals>/**", "**/node_modules/**"],
+      "console": "integratedTerminal",
+      "env": {
+        "NODE_ENV": "development"
+      }
+    },
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Debug Current Test File",
+      "skipFiles": ["<node_internals>/**"],
+      "program": "${workspaceFolder}/node_modules/vitest/vitest.mjs",
+      "args": ["run", "${file}"],
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Debug All Tests",
+      "skipFiles": ["<node_internals>/**"],
+      "program": "${workspaceFolder}/node_modules/vitest/vitest.mjs",
+      "args": ["run"],
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Debug Evals",
+      "skipFiles": ["<node_internals>/**"],
+      "program": "${workspaceFolder}/scripts/run-evals.js",
+      "preLaunchTask": "npm: build",
+      "outFiles": ["${workspaceFolder}/dist/**/*.js"],
+      "console": "integratedTerminal"
+    },
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Debug No Session Mode",
+      "skipFiles": ["<node_internals>/**"],
+      "program": "${workspaceFolder}/dist/cli.js",
+      "args": ["--no-session", "${input:prompt}"],
+      "preLaunchTask": "npm: build",
+      "outFiles": ["${workspaceFolder}/dist/**/*.js"],
+      "sourceMaps": true,
+      "console": "integratedTerminal"
+    },
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Debug with Specific Model",
+      "skipFiles": ["<node_internals>/**"],
+      "program": "${workspaceFolder}/dist/cli.js",
+      "args": [
+        "--provider",
+        "${input:provider}",
+        "--model",
+        "${input:model}",
+        "${input:prompt}"
+      ],
+      "preLaunchTask": "npm: build",
+      "outFiles": ["${workspaceFolder}/dist/**/*.js"],
+      "sourceMaps": true,
+      "console": "integratedTerminal"
+    }
+  ],
+  "inputs": [
+    {
+      "id": "prompt",
+      "type": "promptString",
+      "description": "Enter your prompt for Composer",
+      "default": "Hello, Composer!"
+    },
+    {
+      "id": "provider",
+      "type": "pickString",
+      "description": "Select AI provider",
+      "options": [
+        "anthropic",
+        "openai",
+        "google",
+        "groq",
+        "cerebras",
+        "xai",
+        "openrouter",
+        "zai"
+      ],
+      "default": "anthropic"
+    },
+    {
+      "id": "model",
+      "type": "promptString",
+      "description": "Enter model name",
+      "default": "claude-sonnet-4-5"
+    }
+  ]
+}

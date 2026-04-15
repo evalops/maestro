@@ -1,0 +1,45 @@
+# Source files (not needed in extension)
+src/**
+scripts/**
+**/*.ts
+!dist/**/*.d.ts
+
+# Config files
+.gitignore
+.eslintrc*
+.prettierrc*
+tsconfig.json
+tsconfig.*.json
+biome.json
+project.json
+vitest.config.*
+
+# Build artifacts
+*.vsix
+out/**
+
+# Test files
+**/*.test.js
+**/*.test.ts
+**/*.test.d.ts
+**/*.test.js.map
+**/*.test.d.ts.map
+**/*.spec.js
+**/*.spec.ts
+**/*.spec.d.ts
+**/test/**
+**/__tests__/**
+dist/**/*.test.*
+
+# Development files
+.vscode/**
+.vscode-test/**
+node_modules/**
+
+# Documentation (keep README for marketplace)
+CHANGELOG.md
+CONTRIBUTING.md
+docs/**
+
+# Source maps (optional - remove for smaller package)
+**/*.map

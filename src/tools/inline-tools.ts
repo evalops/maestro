@@ -1,0 +1,563 @@
+/**
+ * Inline Tool Definitions - Load custom tools from .maestro/tools.json
+ *
+ * Allows users to define shell-based tools without requiring full MCP server setup.
+ * Tools receive parameters as JSON via stdin and return results via stdout.
+ *
+ * ## Configuration
+ *
+ * Project-level: `.maestro/tools.json`
+ * User-level: `~/.maestro/tools.json`
+ *
+ * Project tools override user tools with the same name.
+ *
+ * ## Format
+ *
+ * ```json
+ * {
+ *   "tools": [
+ *     {
+ *       "name": "deploy",
+ *       "description": "Deploy to an environment",
+ *       "command": "./scripts/deploy.sh",
+ *       "parameters": {
+ *         "environment": {
+ *           "type": "string",
+ *           "enum": ["staging", "prod"],
+ *           "description": "Target environment"
+ *         }
+ *       }
+ *     }
+ *   ]
+ * }
+ * ```
+ *
+ * @module tools/inline-tools
+ */
+
+import { spawn } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { type TSchema, Type } from "@sinclair/typebox";
+import type { AgentTool, ToolAnnotations } from "../agent/types.js";
+import { PATHS } from "../config/constants.js";
+import { createLogger } from "../utils/logger.js";
+import { expandTildePath } from "../utils/path-expansion.js";
+import { resolveShellEnvironment } from "../utils/shell-env.js";
+import { createTool } from "./tool-dsl.js";
+
+const logger = createLogger("inline-tools");
+
+// Output buffer limit (40KB) to prevent memory exhaustion from verbose inline tools.
+const MAX_INLINE_BUFFER = 40 * 1024;
+
+/**
+ * JSON Schema parameter definition (simplified subset)
+ */
+interface InlineParameterDef {
+	type: "string" | "number" | "integer" | "boolean" | "array" | "object";
+	description?: string;
+	enum?: (string | number)[];
+	default?: unknown;
+	items?: InlineParameterDef;
+}
+
+/**
+ * Inline tool definition from .maestro/tools.json
+ */
+interface InlineToolDef {
+	name: string;
+	description: string;
+	command: string;
+	cwd?: string;
+	env?: Record<string, string>;
+	parameters?: Record<string, InlineParameterDef>;
+	timeout?: number;
+	/** Tool behavior hints */
+	annotations?: {
+		readOnly?: boolean;
+		destructive?: boolean;
+		requiresApproval?: boolean;
+	};
+}
+
+/**
+ * Configuration file format
+ */
+interface InlineToolsConfig {
+	tools: InlineToolDef[];
+}
+
+/**
+ * Convert a parameter definition to a TypeBox schema
+ */
+function parameterToTypeBox(name: string, param: InlineParameterDef): TSchema {
+	const options: Record<string, unknown> = {};
+	if (param.description) {
+		options.description = param.description;
+	}
+	if (param.default !== undefined) {
+		options.default = param.default;
+	}
+
+	switch (param.type) {
+		case "string":
+			if (param.enum) {
+				return Type.Union(
+					param.enum.map((v) => Type.Literal(v as string)),
+					options,
+				);
+			}
+			return Type.String(options);
+		case "number":
+			return Type.Number(options);
+		case "integer":
+			return Type.Integer(options);
+		case "boolean":
+			return Type.Boolean(options);
+		case "array":
+			if (param.items) {
+				return Type.Array(
+					parameterToTypeBox(`${name}[]`, param.items),
+					options,
+				);
+			}
+			return Type.Array(Type.Unknown(), options);
+		case "object":
+			return Type.Object({}, options);
+		default:
+			return Type.Unknown(options);
+	}
+}
+
+/**
+ * Build a TypeBox schema from inline tool parameters
+ */
+function buildSchema(parameters?: Record<string, InlineParameterDef>): TSchema {
+	if (!parameters || Object.keys(parameters).length === 0) {
+		return Type.Object({});
+	}
+
+	const properties: Record<string, TSchema> = {};
+	const required: string[] = [];
+
+	for (const [name, param] of Object.entries(parameters)) {
+		properties[name] = parameterToTypeBox(name, param);
+		// Parameters without defaults are required
+		if (param.default === undefined) {
+			required.push(name);
+		}
+	}
+
+	return Type.Object(properties, { required });
+}
+
+/**
+ * Execute a command with parameters passed via stdin
+ */
+async function executeCommand(
+	command: string,
+	params: Record<string, unknown>,
+	options: {
+		cwd?: string;
+		env?: Record<string, string>;
+		timeout?: number;
+		signal?: AbortSignal;
+	},
+): Promise<{
+	stdout: string;
+	stderr: string;
+	exitCode: number;
+	stdoutTruncated: boolean;
+	stderrTruncated: boolean;
+}> {
+	return new Promise((resolvePromise, rejectPromise) => {
+		const cwd = options.cwd
+			? resolve(expandTildePath(options.cwd))
+			: process.cwd();
+		const timeout = options.timeout ?? 120000; // 2 minute default
+
+		const env = resolveShellEnvironment(options.env, {
+			workspaceDir: process.cwd(),
+		});
+
+		// Spawn the command in shell mode for compatibility
+		const child = spawn(command, [], {
+			shell: true,
+			cwd,
+			env,
+			stdio: ["pipe", "pipe", "pipe"],
+		});
+
+		let stdout = "";
+		let stderr = "";
+		let stdoutTruncated = false;
+		let stderrTruncated = false;
+		let killed = false;
+		let settled = false;
+
+		const resolveOnce = (value: {
+			stdout: string;
+			stderr: string;
+			exitCode: number;
+			stdoutTruncated: boolean;
+			stderrTruncated: boolean;
+		}) => {
+			if (settled) {
+				return;
+			}
+			settled = true;
+			resolvePromise(value);
+		};
+
+		const rejectOnce = (error: Error) => {
+			if (settled) {
+				return;
+			}
+			settled = true;
+			rejectPromise(error);
+		};
+
+		// Handle timeout
+		const timeoutId = setTimeout(() => {
+			killed = true;
+			child.kill("SIGTERM");
+			rejectOnce(new Error(`Command timed out after ${timeout}ms`));
+		}, timeout);
+
+		// Handle abort signal
+		if (options.signal) {
+			options.signal.addEventListener("abort", () => {
+				killed = true;
+				child.kill("SIGTERM");
+				clearTimeout(timeoutId);
+				rejectOnce(new Error("Command aborted"));
+			});
+		}
+
+		child.stdout?.on("data", (data) => {
+			if (stdout.length < MAX_INLINE_BUFFER) {
+				stdout += data.toString();
+				if (stdout.length > MAX_INLINE_BUFFER) {
+					stdout = stdout.slice(0, MAX_INLINE_BUFFER);
+					stdoutTruncated = true;
+				}
+			} else {
+				stdoutTruncated = true;
+			}
+		});
+
+		child.stderr?.on("data", (data) => {
+			if (stderr.length < MAX_INLINE_BUFFER) {
+				stderr += data.toString();
+				if (stderr.length > MAX_INLINE_BUFFER) {
+					stderr = stderr.slice(0, MAX_INLINE_BUFFER);
+					stderrTruncated = true;
+				}
+			} else {
+				stderrTruncated = true;
+			}
+		});
+
+		child.on("error", (error) => {
+			clearTimeout(timeoutId);
+			rejectOnce(error);
+		});
+
+		child.on("close", (code) => {
+			clearTimeout(timeoutId);
+			if (!killed) {
+				resolveOnce({
+					stdout,
+					stderr,
+					exitCode: code ?? 0,
+					stdoutTruncated,
+					stderrTruncated,
+				});
+			}
+		});
+
+		// Send parameters as JSON via stdin
+		const input = JSON.stringify(params);
+		if (child.stdin) {
+			child.stdin.on("error", (error) => {
+				// If the child exits quickly (e.g. `exit 1`), stdin may be closed before
+				// we can write. Treat EPIPE as non-fatal and rely on the exit code.
+				if (
+					error &&
+					typeof error === "object" &&
+					"code" in error &&
+					(error as { code?: string }).code === "EPIPE"
+				) {
+					return;
+				}
+				clearTimeout(timeoutId);
+				rejectOnce(error instanceof Error ? error : new Error(String(error)));
+			});
+
+			child.stdin.write(input, (err) => {
+				if (!err) {
+					return;
+				}
+				if (
+					typeof err === "object" &&
+					err !== null &&
+					"code" in err &&
+					(err as { code?: string }).code === "EPIPE"
+				) {
+					return;
+				}
+				clearTimeout(timeoutId);
+				rejectOnce(err instanceof Error ? err : new Error(String(err)));
+			});
+			child.stdin.end();
+		}
+	});
+}
+
+/**
+ * Create an AgentTool from an inline tool definition
+ */
+function createInlineTool(def: InlineToolDef): AgentTool {
+	const schema = buildSchema(def.parameters);
+
+	// Map annotations to tool annotations
+	const annotations: ToolAnnotations | undefined = def.annotations
+		? {
+				readOnlyHint: def.annotations.readOnly,
+				destructiveHint: def.annotations.destructive,
+			}
+		: undefined;
+
+	return createTool({
+		name: def.name,
+		label: def.name,
+		description: def.description,
+		schema,
+		annotations,
+		toolType: "shell",
+		run: async (params, context) => {
+			try {
+				const result = await executeCommand(
+					def.command,
+					params as Record<string, unknown>,
+					{
+						cwd: def.cwd,
+						env: def.env,
+						timeout: def.timeout,
+						signal: context.signal,
+					},
+				);
+
+				const truncationMessages: string[] = [];
+				if (result.stdoutTruncated) {
+					const displayedKB = Math.round(MAX_INLINE_BUFFER / 1024);
+					truncationMessages.push(
+						`stdout exceeded ${displayedKB}KB limit and was truncated`,
+					);
+				}
+				if (result.stderrTruncated) {
+					const displayedKB = Math.round(MAX_INLINE_BUFFER / 1024);
+					truncationMessages.push(
+						`stderr exceeded ${displayedKB}KB limit and was truncated`,
+					);
+				}
+				const truncationNotice =
+					truncationMessages.length > 0
+						? `Warning: Output truncated: ${truncationMessages.join(
+								"; ",
+							)}. Consider piping output to a file or using head/tail.`
+						: "";
+
+				if (result.exitCode !== 0) {
+					const baseError =
+						result.stderr.trim() || `Exit code: ${result.exitCode}`;
+					const errorMsg = truncationNotice
+						? `${baseError}\n\n${truncationNotice}`
+						: baseError;
+					return context.respond.error(
+						`Command failed: ${errorMsg}\n\nStdout:\n${result.stdout}`,
+					);
+				}
+
+				// Return stdout as the result
+				const output = result.stdout.trim();
+				if (result.stderr.trim()) {
+					const combined = output
+						? `${output}\n\n[stderr]: ${result.stderr.trim()}`
+						: `[stderr]: ${result.stderr.trim()}`;
+					return context.respond.text(
+						truncationNotice ? `${combined}\n\n${truncationNotice}` : combined,
+					);
+				}
+				if (truncationNotice) {
+					const text = output
+						? `${output}\n\n${truncationNotice}`
+						: truncationNotice;
+					return context.respond.text(text);
+				}
+				return context.respond.text(output || "(no output)");
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				return context.respond.error(`Failed to execute command: ${message}`);
+			}
+		},
+	}) as AgentTool;
+}
+
+/**
+ * Load inline tools configuration from a file
+ */
+function loadConfigFile(filePath: string): InlineToolsConfig | null {
+	if (!existsSync(filePath)) {
+		return null;
+	}
+
+	try {
+		const contents = readFileSync(filePath, "utf8");
+		const config = JSON.parse(contents) as InlineToolsConfig;
+
+		// Basic validation
+		if (!config.tools || !Array.isArray(config.tools)) {
+			logger.warn("Invalid inline tools config: missing 'tools' array", {
+				filePath,
+			});
+			return null;
+		}
+
+		return config;
+	} catch (error) {
+		logger.error(
+			"Failed to load inline tools config",
+			error instanceof Error ? error : undefined,
+			{ filePath },
+		);
+		return null;
+	}
+}
+
+/**
+ * Validate an inline tool definition
+ */
+function validateToolDef(def: InlineToolDef, source: string): string[] {
+	const errors: string[] = [];
+
+	if (!def.name || typeof def.name !== "string") {
+		errors.push(`Tool missing required 'name' field in ${source}`);
+	} else if (!/^[a-z][a-z0-9_-]*$/i.test(def.name)) {
+		errors.push(
+			`Invalid tool name '${def.name}' in ${source}: must start with letter and contain only letters, numbers, underscores, hyphens`,
+		);
+	}
+
+	if (!def.description || typeof def.description !== "string") {
+		errors.push(
+			`Tool '${def.name}' missing required 'description' in ${source}`,
+		);
+	}
+
+	if (!def.command || typeof def.command !== "string") {
+		errors.push(`Tool '${def.name}' missing required 'command' in ${source}`);
+	}
+
+	return errors;
+}
+
+/**
+ * Load all inline tools from project and user configuration files
+ *
+ * @param projectDir - Project directory (defaults to cwd)
+ * @returns Array of AgentTools created from inline definitions
+ */
+export function loadInlineTools(projectDir?: string): AgentTool[] {
+	const cwd = projectDir ?? process.cwd();
+	const tools: AgentTool[] = [];
+	const loadedNames = new Set<string>();
+
+	// Load project-level config first (higher priority)
+	const projectConfigPath = join(cwd, ".maestro", "tools.json");
+	const projectConfig = loadConfigFile(projectConfigPath);
+
+	if (projectConfig) {
+		for (const def of projectConfig.tools) {
+			const errors = validateToolDef(def, projectConfigPath);
+			if (errors.length > 0) {
+				for (const error of errors) {
+					logger.warn(error);
+				}
+				continue;
+			}
+
+			try {
+				const tool = createInlineTool(def);
+				tools.push(tool);
+				loadedNames.add(def.name);
+				logger.debug("Loaded inline tool", {
+					name: def.name,
+					source: "project",
+				});
+			} catch (error) {
+				logger.error(
+					`Failed to create inline tool '${def.name}'`,
+					error instanceof Error ? error : undefined,
+				);
+			}
+		}
+	}
+
+	// Load user-level config (lower priority, skip if name already loaded)
+	const userConfigPath = join(PATHS.MAESTRO_HOME, "tools.json");
+	const userConfig = loadConfigFile(userConfigPath);
+
+	if (userConfig) {
+		for (const def of userConfig.tools) {
+			// Skip if project already defined a tool with this name
+			if (loadedNames.has(def.name)) {
+				logger.debug("Skipping user tool (overridden by project)", {
+					name: def.name,
+				});
+				continue;
+			}
+
+			const errors = validateToolDef(def, userConfigPath);
+			if (errors.length > 0) {
+				for (const error of errors) {
+					logger.warn(error);
+				}
+				continue;
+			}
+
+			try {
+				const tool = createInlineTool(def);
+				tools.push(tool);
+				loadedNames.add(def.name);
+				logger.debug("Loaded inline tool", { name: def.name, source: "user" });
+			} catch (error) {
+				logger.error(
+					`Failed to create inline tool '${def.name}'`,
+					error instanceof Error ? error : undefined,
+				);
+			}
+		}
+	}
+
+	if (tools.length > 0) {
+		logger.info("Loaded inline tools", { count: tools.length });
+	}
+
+	return tools;
+}
+
+/**
+ * Get the paths where inline tools config files are expected
+ */
+export function getInlineToolsConfigPaths(projectDir?: string): {
+	project: string;
+	user: string;
+} {
+	const cwd = projectDir ?? process.cwd();
+	return {
+		project: join(cwd, ".maestro", "tools.json"),
+		user: join(PATHS.MAESTRO_HOME, "tools.json"),
+	};
+}
