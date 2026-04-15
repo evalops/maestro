@@ -1,6 +1,6 @@
 {
 	"name": "@evalops/github-agent",
-	"version": "0.10.2",
+	"version": "0.10.3",
 	"description": "Autonomous GitHub agent - Maestro building Maestro",
 	"type": "module",
 	"bin": {

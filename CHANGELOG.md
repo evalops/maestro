@@ -6,6 +6,18 @@ versioning when releases are cut.
 
 
 
+
+## [0.10.3] - 2026-04-15
+
+### Added
+
+### Changed
+
+### Fixed
+
+- Treat `tree-sitter` and `tree-sitter-bash` as optional install-time dependencies so Linux/Node 24 consumers can install Maestro even when native parser bindings are unavailable.
+
+
 ## [0.10.2] - 2026-04-15
 
 ### Added
