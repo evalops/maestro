@@ -391,6 +391,45 @@ function createErrorAssistantMessage(
 	};
 }
 
+function configureIsolatedPlanEnvironment(
+	workspaceDir: string,
+	planDir: string,
+	planFile?: string,
+): () => void {
+	const previousPlanDir = process.env.MAESTRO_PLAN_DIR;
+	const previousPlanFile = process.env.MAESTRO_PLAN_FILE;
+	const previousMaestroHome = process.env.MAESTRO_HOME;
+
+	process.env.MAESTRO_HOME = join(workspaceDir, ".maestro-home");
+	process.env.MAESTRO_PLAN_DIR = planDir;
+	if (planFile === undefined) {
+		delete process.env.MAESTRO_PLAN_FILE;
+	} else {
+		process.env.MAESTRO_PLAN_FILE = planFile;
+	}
+	clearConfigCache();
+
+	return () => {
+		clearPlanModeState();
+		if (previousPlanDir === undefined) {
+			delete process.env.MAESTRO_PLAN_DIR;
+		} else {
+			process.env.MAESTRO_PLAN_DIR = previousPlanDir;
+		}
+		if (previousPlanFile === undefined) {
+			delete process.env.MAESTRO_PLAN_FILE;
+		} else {
+			process.env.MAESTRO_PLAN_FILE = previousPlanFile;
+		}
+		if (previousMaestroHome === undefined) {
+			delete process.env.MAESTRO_HOME;
+		} else {
+			process.env.MAESTRO_HOME = previousMaestroHome;
+		}
+		clearConfigCache();
+	};
+}
+
 /** Build a conversation with the given number of turn pairs (user + assistant). */
 function buildConversation(turns: number): AppMessage[] {
 	const messages: AppMessage[] = [];
@@ -1884,12 +1923,12 @@ describe("performCompaction", () => {
 		const originalCwd = process.cwd();
 		const workspaceDir = mkdtempSync(join(tmpdir(), "maestro-plan-read-"));
 		const planDir = join(workspaceDir, ".maestro", "plans");
-		const previousPlanDir = process.env.MAESTRO_PLAN_DIR;
-		const previousPlanFile = process.env.MAESTRO_PLAN_FILE;
 		process.chdir(workspaceDir);
-		process.env.MAESTRO_PLAN_DIR = planDir;
-		process.env.MAESTRO_PLAN_FILE = join(planDir, "tracked-plan.md");
-		clearConfigCache();
+		const restorePlanEnvironment = configureIsolatedPlanEnvironment(
+			workspaceDir,
+			planDir,
+			join(planDir, "tracked-plan.md"),
+		);
 
 		try {
 			const state = enterPlanMode({ name: "Tracked plan" });
@@ -1931,19 +1970,8 @@ describe("performCompaction", () => {
 				}),
 			);
 		} finally {
-			clearPlanModeState();
-			if (previousPlanDir === undefined) {
-				delete process.env.MAESTRO_PLAN_DIR;
-			} else {
-				process.env.MAESTRO_PLAN_DIR = previousPlanDir;
-			}
-			if (previousPlanFile === undefined) {
-				delete process.env.MAESTRO_PLAN_FILE;
-			} else {
-				process.env.MAESTRO_PLAN_FILE = previousPlanFile;
-			}
+			restorePlanEnvironment();
 			process.chdir(originalCwd);
-			clearConfigCache();
 			rmSync(workspaceDir, { recursive: true, force: true });
 		}
 	});
@@ -1952,12 +1980,12 @@ describe("performCompaction", () => {
 		const originalCwd = process.cwd();
 		const workspaceDir = mkdtempSync(join(tmpdir(), "maestro-plan-repeat-"));
 		const planDir = join(workspaceDir, ".maestro", "plans");
-		const previousPlanDir = process.env.MAESTRO_PLAN_DIR;
-		const previousPlanFile = process.env.MAESTRO_PLAN_FILE;
 		process.chdir(workspaceDir);
-		process.env.MAESTRO_PLAN_DIR = planDir;
-		process.env.MAESTRO_PLAN_FILE = join(planDir, "tracked-plan.md");
-		clearConfigCache();
+		const restorePlanEnvironment = configureIsolatedPlanEnvironment(
+			workspaceDir,
+			planDir,
+			join(planDir, "tracked-plan.md"),
+		);
 
 		try {
 			const state = enterPlanMode({ name: "Repeated plan" });
@@ -2009,19 +2037,8 @@ Current plan contents:
 				"Stale snapshot",
 			);
 		} finally {
-			clearPlanModeState();
-			if (previousPlanDir === undefined) {
-				delete process.env.MAESTRO_PLAN_DIR;
-			} else {
-				process.env.MAESTRO_PLAN_DIR = previousPlanDir;
-			}
-			if (previousPlanFile === undefined) {
-				delete process.env.MAESTRO_PLAN_FILE;
-			} else {
-				process.env.MAESTRO_PLAN_FILE = previousPlanFile;
-			}
+			restorePlanEnvironment();
 			process.chdir(originalCwd);
-			clearConfigCache();
 			rmSync(workspaceDir, { recursive: true, force: true });
 		}
 	});
@@ -2030,12 +2047,12 @@ Current plan contents:
 		const originalCwd = process.cwd();
 		const workspaceDir = mkdtempSync(join(tmpdir(), "maestro-plan-tail-"));
 		const planDir = join(workspaceDir, ".maestro", "plans");
-		const previousPlanDir = process.env.MAESTRO_PLAN_DIR;
-		const previousPlanFile = process.env.MAESTRO_PLAN_FILE;
 		process.chdir(workspaceDir);
-		process.env.MAESTRO_PLAN_DIR = planDir;
-		process.env.MAESTRO_PLAN_FILE = join(planDir, "tracked-plan.md");
-		clearConfigCache();
+		const restorePlanEnvironment = configureIsolatedPlanEnvironment(
+			workspaceDir,
+			planDir,
+			join(planDir, "tracked-plan.md"),
+		);
 
 		try {
 			const state = enterPlanMode({ name: "Tail plan" });
@@ -2087,19 +2104,8 @@ Current plan contents:
 				"Stale kept-tail snapshot",
 			);
 		} finally {
-			clearPlanModeState();
-			if (previousPlanDir === undefined) {
-				delete process.env.MAESTRO_PLAN_DIR;
-			} else {
-				process.env.MAESTRO_PLAN_DIR = previousPlanDir;
-			}
-			if (previousPlanFile === undefined) {
-				delete process.env.MAESTRO_PLAN_FILE;
-			} else {
-				process.env.MAESTRO_PLAN_FILE = previousPlanFile;
-			}
+			restorePlanEnvironment();
 			process.chdir(originalCwd);
-			clearConfigCache();
 			rmSync(workspaceDir, { recursive: true, force: true });
 		}
 	});
@@ -2110,11 +2116,11 @@ Current plan contents:
 			join(tmpdir(), "maestro-plan-path-change-"),
 		);
 		const planDir = join(workspaceDir, ".maestro", "plans");
-		const previousPlanDir = process.env.MAESTRO_PLAN_DIR;
-		const previousPlanFile = process.env.MAESTRO_PLAN_FILE;
 		process.chdir(workspaceDir);
-		process.env.MAESTRO_PLAN_DIR = planDir;
-		clearConfigCache();
+		const restorePlanEnvironment = configureIsolatedPlanEnvironment(
+			workspaceDir,
+			planDir,
+		);
 
 		try {
 			const oldState = enterPlanMode({ name: "Old plan" });
@@ -2187,19 +2193,8 @@ Current plan contents:
 				}),
 			);
 		} finally {
-			clearPlanModeState();
-			if (previousPlanDir === undefined) {
-				delete process.env.MAESTRO_PLAN_DIR;
-			} else {
-				process.env.MAESTRO_PLAN_DIR = previousPlanDir;
-			}
-			if (previousPlanFile === undefined) {
-				delete process.env.MAESTRO_PLAN_FILE;
-			} else {
-				process.env.MAESTRO_PLAN_FILE = previousPlanFile;
-			}
+			restorePlanEnvironment();
 			process.chdir(originalCwd);
-			clearConfigCache();
 			rmSync(workspaceDir, { recursive: true, force: true });
 		}
 	});

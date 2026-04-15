@@ -168,9 +168,10 @@ function main() {
 	console.log(`  1. Review CHANGELOG.md and add your changes`);
 	console.log(`  2. git add .`);
 	console.log(`  3. git commit -m "Release v${newVersion}"`);
-	console.log(`  4. git tag v${newVersion}`);
-	console.log(`  5. git push origin main --tags`);
-	console.log(`  6. Verify the GitHub release workflow publishes v${newVersion}`);
+	console.log(`  4. git push origin <branch>`);
+	console.log(`  5. Open and merge a PR into main`);
+	console.log(`  6. Verify the tag-release workflow creates v${newVersion}`);
+	console.log(`  7. Verify the GitHub release workflow publishes v${newVersion}`);
 }
 
 main();

@@ -399,7 +399,10 @@ export class SwarmExecutor {
 		teammate: SwarmTeammate,
 		task: SwarmTask,
 	): Promise<void> {
-		const tmpFile = join(tmpdir(), toSafeTaskTempBasename(task.id));
+		const tmpFile = join(
+			tmpdir(),
+			`${this.state.id}-${toSafeTaskTempBasename(task.id)}`,
+		);
 
 		// Build prompt for the teammate
 		let prompt = `# Swarm Task: ${task.id}\n\n`;

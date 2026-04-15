@@ -1,6 +1,7 @@
 import {
 	existsSync,
 	mkdirSync,
+	mkdtempSync,
 	readFileSync,
 	rmSync,
 	writeFileSync,
@@ -105,8 +106,7 @@ describe("Session Migration", () => {
 		originalEnv = process.env.MAESTRO_AGENT_DIR;
 
 		// Create isolated test directory
-		testDir = join(tmpdir(), `composer-migration-test-${Date.now()}`);
-		mkdirSync(testDir, { recursive: true });
+		testDir = mkdtempSync(join(tmpdir(), "composer-migration-test-"));
 		process.env.MAESTRO_AGENT_DIR = testDir;
 
 		// Change to test directory so session path is computed correctly
