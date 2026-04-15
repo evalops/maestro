@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Version bumping script for Composer CLI
+ * Version bumping script for Maestro.
  * Usage:
  *   npm run version:patch
  *   npm run version:minor
@@ -89,6 +89,10 @@ function syncPackageMetadata() {
 	}
 }
 
+function hasScript(rootPkg, scriptName) {
+	return typeof rootPkg.scripts?.[scriptName] === "string";
+}
+
 function restoreBackups(backups) {
 	for (const backup of backups) {
 		writePackageJson(backup.path, backup.original);
@@ -145,11 +149,17 @@ function main() {
 		// Update changelog
 		updateChangelog(newVersion);
 
-		// Update OpenAPI spec
-		updateOpenApiSpec();
+		if (hasScript(rootPkg, "openapi:generate")) {
+			updateOpenApiSpec();
+		} else {
+			console.log("📘 Skipped openapi.json update (script missing)");
+		}
 
-		// Sync user-facing install metadata
-		syncPackageMetadata();
+		if (hasScript(rootPkg, "metadata:sync")) {
+			syncPackageMetadata();
+		} else {
+			console.log("🧭 Skipped package metadata sync (script missing)");
+		}
 
 		// Update package-lock.json
 		if (shouldManagePackageLock(rootPkg)) {
@@ -169,9 +179,9 @@ function main() {
 	console.log(`  2. git add .`);
 	console.log(`  3. git commit -m "Release v${newVersion}"`);
 	console.log(`  4. git push origin <branch>`);
-	console.log(`  5. Open and merge a PR into main`);
+	console.log(`  5. Open and merge a PR into main, or use the version-bump workflow next time`);
 	console.log(`  6. Verify the tag-release workflow creates v${newVersion}`);
-	console.log(`  7. Verify the GitHub release workflow publishes v${newVersion}`);
+	console.log(`  7. Verify the release workflow handles v${newVersion}`);
 }
 
 main();

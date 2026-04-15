@@ -1,0 +1,19 @@
+{
+  "files": [
+    ".github/actions/setup-bun-nx/action.yml",
+    ".github/workflows/tag-release.yml",
+    ".github/workflows/version-bump.yml",
+    "scripts/check-headless-proto-generated.mjs",
+    "scripts/generate-openapi.ts",
+    "scripts/headless-protocol-codegen.mjs",
+    "scripts/package-metadata.js",
+    "scripts/release-readiness.js",
+    "scripts/send-release-notification.mjs",
+    "scripts/smoke-packed-cli.js",
+    "scripts/sync-package-metadata.js",
+    "scripts/sync-release-mirror.mjs",
+    "scripts/version.js",
+    "scripts/workspace-utils.js",
+    "src/package-metadata.ts"
+  ]
+}

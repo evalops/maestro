@@ -282,3 +282,91 @@ jobs:
           name: Maestro ${{ needs.prepare.outputs.release_version }}
           generate_release_notes: true
           files: ${{ steps.pack.outputs.tarball }}
+
+  post-publish-canary:
+    if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}
+    needs:
+      - prepare
+      - publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.release_tag }}
+
+      - name: Setup Node for npm canary
+        uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Verify published package from npm
+        run: node scripts/smoke-registry-install.js
+
+  notify:
+    if: ${{ always() && needs.validate-trigger.outputs.should_run == 'true' && needs.prepare.result == 'success' }}
+    needs:
+      - validate-trigger
+      - prepare
+      - quality-gate
+      - publish
+      - post-publish-canary
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.release_tag }}
+
+      - id: status
+        env:
+          QUALITY_GATE_RESULT: ${{ needs.quality-gate.result }}
+          PUBLISH_RESULT: ${{ needs.publish.result }}
+          CANARY_RESULT: ${{ needs.post-publish-canary.result }}
+        run: |
+          set -euo pipefail
+          status="success"
+          for result in "$QUALITY_GATE_RESULT" "$PUBLISH_RESULT" "$CANARY_RESULT"; do
+            case "$result" in
+              success)
+                ;;
+              failure)
+                status="failure"
+                break
+                ;;
+              cancelled)
+                status="cancelled"
+                break
+                ;;
+              skipped)
+                status="skipped"
+                break
+                ;;
+              *)
+                status="$result"
+                break
+                ;;
+            esac
+          done
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+
+      - id: package
+        run: |
+          set -euo pipefail
+          package_name=$(node -p "require('./package.json').name")
+          echo "name=$package_name" >> "$GITHUB_OUTPUT"
+
+      - name: Notify release channel
+        continue-on-error: true
+        env:
+          RELEASE_STATUS: ${{ steps.status.outputs.status }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
+          RELEASE_PACKAGE_NAME: ${{ steps.package.outputs.name }}
+          RELEASE_PACKAGE_VERSION: ${{ needs.prepare.outputs.release_version }}
+          SLACK_RELEASE_WEBHOOK_URL: ${{ secrets.SLACK_RELEASE_WEBHOOK_URL }}
+        run: node scripts/send-release-notification.mjs
