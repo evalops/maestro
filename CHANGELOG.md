@@ -5,6 +5,16 @@ follows [Keep a Changelog](https://keepachangelog.com/) and adheres to semantic
 versioning when releases are cut.
 
 
+
+## [0.10.2] - 2026-04-15
+
+### Added
+
+### Changed
+
+### Fixed
+
+
 ## [0.10.1] - 2026-04-15
 
 ### Changed
