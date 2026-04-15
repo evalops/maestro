@@ -12,7 +12,6 @@ on:
 
 permissions:
   contents: write
-  packages: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -220,9 +219,7 @@ jobs:
           name: npm-tarball-${{ needs.prepare.outputs.release_tag }}
           path: ${{ steps.pack.outputs.tarball }}
 
-      - name: Publish to npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Publish to npm with trusted publishing
         run: |
           set -euo pipefail
           npm publish "${{ steps.pack.outputs.tarball }}" --access public --provenance
