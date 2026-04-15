@@ -139,7 +139,7 @@ function main() {
 	console.log(`  3. git commit -m "Release v${newVersion}"`);
 	console.log(`  4. git tag v${newVersion}`);
 	console.log(`  5. git push origin main --tags`);
-	console.log(`  6. npm publish`);
+	console.log(`  6. Verify the GitHub release workflow publishes v${newVersion}`);
 }
 
 main();
