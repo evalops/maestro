@@ -27,6 +27,8 @@ jobs:
           fetch-depth: 0
 
       - uses: ./.github/actions/setup-bun-nx
+        with:
+          ensure-ripgrep: "true"
 
       - name: Lint
         run: bun run bun:lint
@@ -57,6 +59,8 @@ jobs:
           fetch-depth: 0
 
       - uses: ./.github/actions/setup-bun-nx
+        with:
+          ensure-ripgrep: "true"
 
       - name: Build all packages
         run: npm run build:all
