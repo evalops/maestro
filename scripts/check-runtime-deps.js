@@ -59,8 +59,18 @@ function getPackageName(specifier) {
 /**
  * @param {string} code
  */
+function stripComments(code) {
+	return code
+		.replace(/\/\*[\s\S]*?\*\//g, "")
+		.replace(/^\s*\/\/.*$/gm, "");
+}
+
+/**
+ * @param {string} code
+ */
 function extractSpecifiers(code) {
 	const specifiers = new Set();
+	const normalizedCode = stripComments(code);
 	const patterns = [
 		/^\s*import\s+type\s+[^\n"'`]*?\sfrom\s+["'`]([^"'`]+)["'`]/gm,
 		/^\s*import\s+[^\n"'`]*?\sfrom\s+["'`]([^"'`]+)["'`]/gm,
@@ -72,7 +82,7 @@ function extractSpecifiers(code) {
 
 	for (const pattern of patterns) {
 		let match;
-		while ((match = pattern.exec(code)) !== null) {
+		while ((match = pattern.exec(normalizedCode)) !== null) {
 			const specifier = match[1];
 			if (specifier) {
 				specifiers.add(specifier);
