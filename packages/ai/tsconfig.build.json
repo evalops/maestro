@@ -44,6 +44,7 @@
 		"../../src/telemetry/**/*.ts",
 		"../../src/telemetry.ts",
 		"../../src/opentelemetry.ts",
+		"../../src/package-metadata.ts",
 		"../../src/training.ts",
 		"../../src/mcp/elicitation.ts",
 		"../../src/guardian/**/*.ts",

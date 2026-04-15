@@ -5,7 +5,6 @@ import {
 	existsSync,
 	writeFileSync,
 } from "node:fs";
-import { createRequire } from "node:module";
 import { basename, join } from "node:path";
 import { createInterface } from "node:readline";
 import type { AgentState, AppMessage } from "./agent/types.js";
@@ -20,6 +19,7 @@ import {
 	isRenderableToolResultMessage,
 	isRenderableUserMessage,
 } from "./conversation/render-model.js";
+import { getPackageVersion } from "./package-metadata.js";
 import { sanitizePayload } from "./safety/context-firewall.js";
 import type {
 	PortableSessionExportSession,
@@ -32,11 +32,7 @@ import { getHomeDir } from "./utils/path-expansion.js";
 const normalizeForCompare = (value: string): string =>
 	process.platform === "win32" ? value.toLowerCase() : value;
 
-// Get version from package.json without import assertions (Node16 compatible)
-const packageJson = createRequire(import.meta.url)("../package.json") as {
-	version?: string;
-};
-const VERSION = packageJson.version ?? "unknown";
+const VERSION = getPackageVersion();
 
 interface SessionFileParseResult {
 	header: SessionHeaderEntry | null;

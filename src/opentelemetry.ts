@@ -1,4 +1,3 @@
-import { createRequire } from "node:module";
 import {
 	DiagConsoleLogger,
 	DiagLogLevel,
@@ -13,6 +12,7 @@ import {
 	SEMRESATTRS_SERVICE_NAME,
 	SEMRESATTRS_SERVICE_VERSION,
 } from "@opentelemetry/semantic-conventions";
+import { getPackageVersion } from "./package-metadata.js";
 
 let sdkStartPromise: Promise<void> | null = null;
 let sdkStarted = false;
@@ -27,15 +27,7 @@ const packageVersion = (() => {
 		if (cached) {
 			return cached;
 		}
-		try {
-			const packageJson = createRequire(import.meta.url)("../package.json") as {
-				version?: string;
-			};
-			const version = packageJson.version;
-			cached = typeof version === "string" ? version : "unknown";
-		} catch (error) {
-			cached = process.env.MAESTRO_VERSION ?? "unknown";
-		}
+		cached = getPackageVersion();
 		return cached;
 	};
 })();
