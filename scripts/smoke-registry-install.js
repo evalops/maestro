@@ -7,7 +7,39 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getPackageMetadata } from "./package-metadata.js";
 
-const { cliCommand, name, version } = getPackageMetadata();
+function parseArgs(argv) {
+	/** @type {{packageName: string; version: string; cliCommand: string}} */
+	const options = {
+		packageName: "",
+		version: "",
+		cliCommand: "",
+	};
+
+	for (let index = 0; index < argv.length; index += 1) {
+		const arg = argv[index];
+		switch (arg) {
+			case "--package":
+				options.packageName = argv[++index] ?? "";
+				break;
+			case "--version":
+				options.version = argv[++index] ?? "";
+				break;
+			case "--cli-command":
+				options.cliCommand = argv[++index] ?? "";
+				break;
+			default:
+				throw new Error(`Unknown argument: ${arg}`);
+		}
+	}
+
+	return options;
+}
+
+const defaults = getPackageMetadata();
+const overrides = parseArgs(process.argv.slice(2));
+const cliCommand = overrides.cliCommand || defaults.cliCommand;
+const name = overrides.packageName || defaults.name;
+const version = overrides.version || defaults.version;
 const packageSpec = `${name}@${version}`;
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 const npxCommand = process.platform === "win32" ? "npx.cmd" : "npx";

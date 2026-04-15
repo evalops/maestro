@@ -1,8 +1,11 @@
 {
   "files": [
+    ".github/actions/release-context/action.yml",
+    ".github/actions/release-notify/action.yml",
     ".github/actions/setup-bun-nx/action.yml",
     ".github/workflows/tag-release.yml",
     ".github/workflows/version-bump.yml",
+    "scripts/check-package-cutover-readiness.js",
     "scripts/check-headless-proto-generated.mjs",
     "scripts/generate-openapi.ts",
     "scripts/headless-protocol-codegen.mjs",

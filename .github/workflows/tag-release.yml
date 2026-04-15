@@ -24,39 +24,16 @@ jobs:
         with:
           fetch-depth: 0
 
-      - id: version
-        run: |
-          set -euo pipefail
-          VERSION=$(node -p "require('./package.json').version")
-          TAG="v${VERSION}"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-
-      - id: tag-state
-        run: |
-          set -euo pipefail
-          TAG="${{ steps.version.outputs.tag }}"
-          git fetch --tags --force
-          if git rev-parse "refs/tags/${TAG}" >/dev/null 2>&1; then
-            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Create missing semver tag
-        if: steps.tag-state.outputs.tag_exists != 'true'
-        run: |
-          set -euo pipefail
-          TAG="${{ steps.version.outputs.tag }}"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" -m "Release $TAG" "$GITHUB_SHA"
-          git push origin "$TAG"
+      - id: release
+        uses: ./.github/actions/release-context
+        with:
+          fallback-to-package-version: "true"
+          create-tag-if-missing: "true"
 
       - name: Summarize tag status
         run: |
-          if [[ "${{ steps.tag-state.outputs.tag_exists }}" == "true" ]]; then
-            echo "Semver tag ${{ steps.version.outputs.tag }} already exists."
+          if [[ "${{ steps.release.outputs.tag_exists }}" == "true" ]]; then
+            echo "Semver tag ${{ steps.release.outputs.release_tag }} already exists."
           else
-            echo "Created semver tag ${{ steps.version.outputs.tag }}."
+            echo "Created semver tag ${{ steps.release.outputs.release_tag }}."
           fi

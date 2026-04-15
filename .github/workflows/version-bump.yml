@@ -50,12 +50,13 @@ jobs:
           BUMP_TYPE: ${{ github.event.inputs.bump_type }}
         run: npm run "version:${BUMP_TYPE}"
 
+      - id: release
+        uses: ./.github/actions/release-context
+        with:
+          fallback-to-package-version: "true"
+
       - id: version
-        run: |
-          set -euo pipefail
-          VERSION=$(node -p "require('./package.json').version")
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "branch=release/v${VERSION}" >> "$GITHUB_OUTPUT"
+        run: echo "branch=release/v${{ steps.release.outputs.release_version }}" >> "$GITHUB_OUTPUT"
 
       - name: Commit release branch
         env:
@@ -72,7 +73,7 @@ jobs:
           fi
           git switch -c "$RELEASE_BRANCH"
           git add .
-          git commit -m "Release v${{ steps.version.outputs.version }}"
+          git commit -m "Release v${{ steps.release.outputs.release_version }}"
           git push --set-upstream origin "$RELEASE_BRANCH"
 
       - name: Open or reuse release PR
@@ -80,7 +81,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BASE_REF: ${{ github.event.inputs.base_ref || 'main' }}
           RELEASE_BRANCH: ${{ steps.version.outputs.branch }}
-          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_VERSION: ${{ steps.release.outputs.release_version }}
         run: |
           set -euo pipefail
           pr_body=$(cat <<EOF

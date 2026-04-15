@@ -4,7 +4,7 @@
 
 - `main` is the release source of truth.
 - The public repo owns npm publishing.
-- The release workflow publishes `@evalops-jh/maestro` through npm trusted publishing.
+- The release workflow currently publishes `@evalops-jh/maestro`; the cutover target is `@evalops/maestro`.
 
 ## Automated Flow
 
@@ -21,8 +21,25 @@
   Runs the shared CI-mode release checks used by PR validation.
 - `npm run release:check`
   Runs the full release gate locally, including build, runtime-dependency verification, npm audit, and packed CLI smoke test.
+- `npm run cutover:check`
+  Verifies that root package names and install commands stay centralized in the approved cutover-aware files.
 
 ## PR Automation
 
 - Repos are configured for GitHub-side auto-merge and automatic branch deletion on merge.
 - Use `gh pr merge <pr> --auto --merge --repo evalops/maestro` to avoid local worktree branch-switch issues.
+
+## Namespace Cutover
+
+- The current published package name comes from `package.json:name`.
+- The long-term package target lives in `package.json:maestro.canonicalPackageName`.
+- Keep README, JetBrains plugin docs, SDK docs, and release ops text in sync with `npm run metadata:sync`.
+- Run `npm run cutover:check` before changing package names or install instructions.
+- Use `.github/workflows/verify-published-package.yml` for a manual npm verification run against either the current package metadata or an override package/version during scope recovery.
+
+## Rollback And Deprecation
+
+- Verify a published package manually with `npm run release:verify:published -- --package <name> --version <version>`.
+- Deprecate a bad version or temporary package path from a logged-in machine with `npm run release:deprecate -- --range <version-or-range>`.
+- Add `--replacement-package @evalops/maestro` when retiring the temporary namespace, or provide `--message` for a custom rollback notice.
+- Use `--dry-run` first to inspect the exact `npm deprecate` command before making registry changes.

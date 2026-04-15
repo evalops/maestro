@@ -31,7 +31,7 @@ We follow a 90-day coordinated disclosure window. If you report a vulnerability,
 
 This policy applies to the Maestro codebase and its official packages:
 
-- `@evalops/maestro` and all `@evalops/*` packages
+- `@evalops-jh/maestro` and all `@evalops/*` packages
 - Official Docker images (`ghcr.io/evalops/maestro`)
 - The Maestro VS Code extension and JetBrains plugin
 

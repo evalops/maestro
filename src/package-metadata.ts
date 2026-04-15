@@ -4,6 +4,10 @@ type RootPackageMetadata = {
 	name?: string;
 	version?: string;
 	bin?: Record<string, string>;
+	maestro?: {
+		canonicalPackageName?: string;
+		packageAliases?: string[];
+	};
 };
 
 let cachedPackageMetadata: RootPackageMetadata | null = null;
@@ -32,7 +36,34 @@ export function getPackageVersion(): string {
 }
 
 export function getPackageName(): string {
-	return loadPackageMetadata().name ?? "@evalops/maestro";
+	const metadata = loadPackageMetadata();
+	return (
+		process.env.MAESTRO_PACKAGE_NAME ??
+		metadata.name ??
+		metadata.maestro?.canonicalPackageName ??
+		"@evalops/maestro"
+	);
+}
+
+export function getCanonicalPackageName(): string {
+	const metadata = loadPackageMetadata();
+	return metadata.maestro?.canonicalPackageName ?? getPackageName();
+}
+
+export function getPackageAliases(): string[] {
+	const metadata = loadPackageMetadata();
+	return Array.from(
+		new Set([
+			getPackageName(),
+			getCanonicalPackageName(),
+			...(Array.isArray(metadata.maestro?.packageAliases)
+				? metadata.maestro.packageAliases.filter(
+						(alias): alias is string =>
+							typeof alias === "string" && alias.trim().length > 0,
+					)
+				: []),
+		]),
+	);
 }
 
 export function getCliCommand(): string {
@@ -43,6 +74,7 @@ export function getCliCommand(): string {
 
 export function getGlobalInstallCommand(
 	packageManager: "npm" | "bun" = "npm",
+	packageName = getPackageName(),
 ): string {
-	return `${packageManager} install -g ${getPackageName()}`;
+	return `${packageManager} install -g ${packageName}`;
 }

@@ -5,9 +5,17 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { getGlobalInstallCommand, getPackageMetadata } from "./package-metadata.js";
 
 const checkOnly = process.argv.includes("--check");
-const { name, cliCommand } = getPackageMetadata();
+const { name, cliCommand, canonicalPackageName } = getPackageMetadata();
 const npmInstall = getGlobalInstallCommand("npm");
 const bunInstall = getGlobalInstallCommand("bun");
+const publishedPackageSummary =
+	name === canonicalPackageName
+		? `- The release workflow currently publishes \`${name}\`.`
+		: `- The release workflow currently publishes \`${name}\`; the cutover target is \`${canonicalPackageName}\`.`;
+const internalPublishedPackageSummary =
+	name === canonicalPackageName
+		? `- The public npm package currently resolves to \`${name}\`.`
+		: `- The public npm package currently resolves to \`${name}\`; the cutover target is \`${canonicalPackageName}\`.`;
 
 /**
  * @param {string} content
@@ -75,6 +83,55 @@ const targets = [
 				"JetBrains plugin XML web command",
 			);
 			return next;
+		},
+	},
+	{
+		path: "SECURITY.md",
+		transform(content) {
+			return replaceRequired(
+				content,
+				/^- `[^`]+` and all `@evalops\/\*` packages$/m,
+				`- \`${name}\` and all \`@evalops/*\` packages`,
+				"Security policy package scope",
+			);
+		},
+	},
+	{
+		path: "docs/TOOLS_REFERENCE.md",
+		transform(content) {
+			let next = replaceRequired(
+				content,
+				/exported from `[^`]+`:/,
+				`exported from \`${name}\`:`,
+				"Tools reference SDK package sentence",
+			);
+			next = replaceRequired(
+				next,
+				/from '[^']+';/,
+				`from '${name}';`,
+				"Tools reference SDK package import",
+			);
+			return next;
+		},
+	},
+	{
+		path: "docs/release-ops.md",
+		transform(content) {
+			if (content.includes("The internal repo does not publish npm packages.")) {
+				return replaceRequired(
+					content,
+					/- The public repo owns npm publishing and trusted publishing setup\.\n(?:- The public npm package currently resolves to `[^`]+`(?:; the cutover target is `[^`]+`)?\.\n)?/,
+					`- The public repo owns npm publishing and trusted publishing setup.\n${internalPublishedPackageSummary}\n`,
+					"Internal release ops package summary",
+				);
+			}
+
+			return replaceRequired(
+				content,
+				/- The release workflow (?:publishes|currently publishes) `[^`]+`(?: through npm trusted publishing)?(?:; the cutover target is `[^`]+`)?\.$/m,
+				publishedPackageSummary,
+				"Release ops package summary",
+			);
 		},
 	},
 	{
