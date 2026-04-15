@@ -1,6 +1,6 @@
 {
 	"name": "@evalops/contracts",
-	"version": "0.10.5",
+	"version": "0.10.6",
 	"description": "Shared Maestro contracts for frontend/backend integration",
 	"type": "module",
 	"main": "./dist/index.js",

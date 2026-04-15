@@ -4,10 +4,18 @@ All notable changes to this project will be documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/) and adheres to semantic
 versioning when releases are cut.
 
+## [0.10.6] - 2026-04-15
 
+### Added
 
+### Changed
 
+- Rebundled Google provider runtime dependencies into the built CLI and provider artifacts so installs no longer need the Google SDKs as direct runtime package requirements.
 
+### Fixed
+
+- Removed the unused root `better-sqlite3` dependency from the published package and eliminated the remaining install-time deprecation warnings from `prebuild-install` and `node-domexception`.
+- Hardened runtime dependency verification so bundled code comments do not produce false positives during release validation.
 
 ## [0.10.5] - 2026-04-15
 
