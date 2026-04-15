@@ -78,6 +78,16 @@ function updateOpenApiSpec() {
 	}
 }
 
+function syncPackageMetadata() {
+	try {
+		execSync("npm run metadata:sync", { stdio: "inherit" });
+		console.log("🧭 Synced package metadata");
+	} catch (error) {
+		const reason = error instanceof Error ? error.message : "unknown error";
+		throw new Error(`Failed to sync package metadata: ${reason}`);
+	}
+}
+
 function restoreBackups(backups) {
 	for (const backup of backups) {
 		writePackageJson(backup.path, backup.original);
@@ -136,6 +146,9 @@ function main() {
 
 		// Update OpenAPI spec
 		updateOpenApiSpec();
+
+		// Sync user-facing install metadata
+		syncPackageMetadata();
 
 		// Update package-lock.json
 		updatePackageLock(newVersion);

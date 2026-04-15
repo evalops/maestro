@@ -1,6 +1,7 @@
 import type { Container, TUI } from "@evalops/tui";
 import { Spacer, Text } from "@evalops/tui";
 import chalk from "chalk";
+import { getGlobalInstallCommand } from "../package-metadata.js";
 import { type UpdateCheckResult, checkForUpdate } from "../update/check.js";
 
 interface UpdateViewOptions {
@@ -45,7 +46,7 @@ export class UpdateView {
 				`v${latestVersion} available (current v${currentVersion})`,
 			);
 			instructions = `${chalk.dim("Update with")} ${chalk.cyan(
-				"npm install -g @evalops-jh/maestro",
+				getGlobalInstallCommand("npm"),
 			)}`;
 		} else {
 			summary = chalk.hex("#38bdf8")(

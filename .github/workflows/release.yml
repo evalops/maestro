@@ -162,7 +162,8 @@ jobs:
           ensure-ripgrep: "true"
 
       - run: bun run bun:lint
-      - run: npm run build:all
+      - run: npm run clean && npm run build:all
+      - run: npm run verify:runtime-deps
       - run: bun run openapi:generate
       - run: bun run bun:test
       - name: Run evals chunk
@@ -178,6 +179,7 @@ jobs:
       - quality-gate
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    environment: npm-release
     permissions:
       contents: write
       id-token: write
@@ -197,7 +199,8 @@ jobs:
             exit 1
           fi
 
-      - run: npm run build:all
+      - run: npm run clean && npm run build:all
+      - run: npm run verify:runtime-deps
       - name: Generate version metadata
         run: node scripts/create-version-json.js
 
@@ -214,6 +217,9 @@ jobs:
           echo "$PACK_JSON"
           FILE=$(echo "$PACK_JSON" | jq -r '.[0].filename')
           echo "tarball=$FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke-test packed CLI
+        run: node scripts/smoke-packed-cli.js "${{ steps.pack.outputs.tarball }}"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -277,6 +283,6 @@ jobs:
         uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda # v2.2.1
         with:
           tag_name: ${{ needs.prepare.outputs.release_tag }}
-          name: Composer CLI ${{ needs.prepare.outputs.release_version }}
+          name: Maestro ${{ needs.prepare.outputs.release_version }}
           generate_release_notes: true
           files: ${{ steps.pack.outputs.tarball }}

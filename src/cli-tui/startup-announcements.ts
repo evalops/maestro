@@ -2,6 +2,7 @@ import { type Container, Spacer, type TUI, Text } from "@evalops/tui";
 import chalk from "chalk";
 
 import type { RegisteredModel } from "../models/registry.js";
+import { getGlobalInstallCommand } from "../package-metadata.js";
 import type { UpdateCheckResult } from "../update/check.js";
 import {
 	inspectKeybindingConfig,
@@ -44,7 +45,7 @@ export function renderStartupAnnouncements({
 		);
 		const currentLine = chalk.dim(`Current version: v${current}`);
 		const installLine = `${chalk.dim("Update with")} ${chalk.cyan(
-			"npm install -g @evalops-jh/maestro",
+			getGlobalInstallCommand("npm"),
 		)}`;
 		const noteLine = notes ? chalk.dim(notes) : null;
 		const sourceLine = source

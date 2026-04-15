@@ -146,6 +146,7 @@ import { ensureModelsLoaded } from "./models/builtin.js";
 import type { RegisteredModel } from "./models/registry.js";
 import { reloadModelConfig } from "./models/registry.js";
 import { initOpenTelemetry } from "./opentelemetry.js";
+import { getPackageVersion } from "./package-metadata.js";
 import { resolveMaestroSystemPrompt } from "./prompts/system-prompt.js";
 import type { AuthMode } from "./providers/auth.js";
 import { AgentRuntimeController } from "./runtime/agent-runtime.js";
@@ -158,15 +159,7 @@ import { SessionManager } from "./session/manager.js";
 import { askUserClientTool } from "./tools/ask-user-client.js";
 import type { UpdateCheckResult } from "./update/check.js";
 import { isInsideGitRepository } from "./utils/git.js";
-/**
- * Load version from package.json at runtime.
- * Uses Node's createRequire for compatibility with ESM imports
- * (avoids experimental import assertions syntax).
- */
-const packageJson = createRequire(import.meta.url)("../package.json") as {
-	version?: string;
-};
-const VERSION = packageJson.version ?? "unknown";
+const VERSION = getPackageVersion();
 
 let enterpriseCleanupRegistered = false;
 let checkpointCleanupRegistered = false;

@@ -39,7 +39,7 @@ This plugin supports all JetBrains IDEs based on IntelliJ Platform 2024.3+:
 npm install -g @evalops-jh/maestro
 
 # Start the web server
-composer web
+maestro web
 ```
 
 The server will start on `http://localhost:8080` by default.
