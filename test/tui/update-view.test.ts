@@ -1,7 +1,12 @@
+import { readFileSync } from "node:fs";
 import { Container, type TUI } from "@evalops/tui";
 import { describe, expect, it, vi } from "vitest";
 import { UpdateView } from "../../src/cli-tui/update-view.js";
 import { stripAnsiSequences } from "../../src/cli-tui/utils/text-formatting.js";
+
+const rootPackageName = JSON.parse(
+	readFileSync(new URL("../../package.json", import.meta.url), "utf-8"),
+).name as string;
 
 describe("UpdateView", () => {
 	it("renders Maestro update instructions when an update is available", async () => {
@@ -22,7 +27,7 @@ describe("UpdateView", () => {
 		await view.handleUpdateCommand();
 
 		const output = stripAnsiSequences(container.render(120).join("\n"));
-		expect(output).toContain("npm install -g @evalops/maestro");
+		expect(output).toContain(`npm install -g ${rootPackageName}`);
 		expect(output).not.toContain("@evalops/composer");
 	});
 });

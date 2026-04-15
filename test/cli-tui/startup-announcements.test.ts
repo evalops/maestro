@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Container, type TUI } from "@evalops/tui";
@@ -8,6 +8,9 @@ import { renderStartupAnnouncements } from "../../src/cli-tui/startup-announceme
 import { stripAnsiSequences } from "../../src/cli-tui/utils/text-formatting.js";
 
 const tempDirs: string[] = [];
+const rootPackageName = JSON.parse(
+	readFileSync(new URL("../../package.json", import.meta.url), "utf-8"),
+).name as string;
 
 function renderAnnouncements(): string {
 	const container = new Container();
@@ -43,7 +46,7 @@ describe("renderStartupAnnouncements", () => {
 	it("renders the Maestro package name in update instructions", () => {
 		const output = renderAnnouncements();
 
-		expect(output).toContain("npm install -g @evalops/maestro");
+		expect(output).toContain(`npm install -g ${rootPackageName}`);
 		expect(output).not.toContain("@evalops/composer");
 	});
 
