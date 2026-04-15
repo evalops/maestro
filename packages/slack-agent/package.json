@@ -1,6 +1,6 @@
 {
 	"name": "@evalops/slack-agent",
-	"version": "0.10.1",
+	"version": "0.10.2",
 	"description": "Slack bot agent with Docker sandbox support for Maestro",
 	"type": "module",
 	"bin": {
@@ -30,7 +30,7 @@
 	},
 	"dependencies": {
 		"@daytonaio/sdk": "^0.139.0",
-		"@evalops/ai": "^0.10.1",
+		"@evalops/ai": "^0.10.2",
 		"@sinclair/typebox": "^0.34.0",
 		"@slack/socket-mode": "^2.0.0",
 		"@slack/web-api": "^7.0.0",
