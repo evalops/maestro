@@ -7,6 +7,22 @@ versioning when releases are cut.
 
 
 
+
+## [0.10.4] - 2026-04-15
+
+### Added
+
+### Changed
+
+- Updated GitHub Actions pins to current Node 24-compatible releases and replaced the deprecated cache action in shared CI/release setup.
+- Refreshed direct runtime dependencies including `glob`, `otplib`, `@google/genai`, `google-auth-library`, and `better-sqlite3`.
+
+### Fixed
+
+- Migrated TOTP generation and verification to `otplib` v13 while preserving Maestro's existing 6-digit, 30-second, one-step drift behavior.
+- Removed the package's direct install-time deprecation warnings from outdated `glob` and `otplib` releases.
+
+
 ## [0.10.3] - 2026-04-15
 
 ### Added
