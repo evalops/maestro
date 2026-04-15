@@ -113,6 +113,43 @@ describe("OpenAI streaming", () => {
 		expect(toolEnd.toolCall.arguments).toEqual({ path: "/tmp/test.txt" });
 	});
 
+	it("preserves tool calls when text arrives before tool calls (Completions API)", async () => {
+		const lines = [
+			'data: {"choices":[{"delta":{"content":"I\\u2019ll read the file first."}}]}\n',
+			'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read","arguments":"{\\"path\\":"}}]}}]}\n',
+			'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"/tmp/test.txt\\"}"}}]}}]}\n',
+			'data: {"choices":[{"finish_reason":"tool_calls"}]}\n',
+			"data: [DONE]\n",
+		];
+
+		const mockResponse = new Response(makeStream(lines), { status: 200 });
+		mockFetch.mockResolvedValue(mockResponse);
+
+		const events: AssistantMessageEvent[] = [];
+		for await (const ev of streamOpenAI(completionsModel, baseContext, {
+			apiKey: "k",
+		})) {
+			events.push(ev);
+		}
+
+		const textDelta = events.find((ev) => ev.type === "text_delta") as Extract<
+			AssistantMessageEvent,
+			{ type: "text_delta" }
+		>;
+		const toolStart = events.find(
+			(ev) => ev.type === "toolcall_start",
+		) as Extract<AssistantMessageEvent, { type: "toolcall_start" }>;
+		const toolEnd = events.find((ev) => ev.type === "toolcall_end") as Extract<
+			AssistantMessageEvent,
+			{ type: "toolcall_end" }
+		>;
+
+		expect(textDelta.delta).toBe("I’ll read the file first.");
+		expect(toolStart.contentIndex).toBe(1);
+		expect(toolEnd.toolCall.name).toBe("read");
+		expect(toolEnd.toolCall.arguments).toEqual({ path: "/tmp/test.txt" });
+	});
+
 	it("uses max_tokens for OpenAI-compatible vendors", async () => {
 		const lines = [
 			'data: {"choices":[{"finish_reason":"stop"}]}\n',

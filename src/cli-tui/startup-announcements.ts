@@ -44,7 +44,7 @@ export function renderStartupAnnouncements({
 		);
 		const currentLine = chalk.dim(`Current version: v${current}`);
 		const installLine = `${chalk.dim("Update with")} ${chalk.cyan(
-			"npm install -g @evalops/maestro",
+			"npm install -g @evalops-jh/maestro",
 		)}`;
 		const noteLine = notes ? chalk.dim(notes) : null;
 		const sourceLine = source

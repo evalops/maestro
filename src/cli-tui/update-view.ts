@@ -45,7 +45,7 @@ export class UpdateView {
 				`v${latestVersion} available (current v${currentVersion})`,
 			);
 			instructions = `${chalk.dim("Update with")} ${chalk.cyan(
-				"npm install -g @evalops/maestro",
+				"npm install -g @evalops-jh/maestro",
 			)}`;
 		} else {
 			summary = chalk.hex("#38bdf8")(

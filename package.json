@@ -1,5 +1,5 @@
 {
-  "name": "@evalops/maestro",
+  "name": "@evalops-jh/maestro",
   "description": "Maestro by EvalOps - Deterministic coding agent with TUI/CLI and Web UI for AI-assisted development",
   "version": "0.10.0",
   "private": false,

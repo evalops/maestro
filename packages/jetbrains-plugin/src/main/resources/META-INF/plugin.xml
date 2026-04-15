@@ -18,7 +18,7 @@
     </ul>
     <h3>Getting Started</h3>
     <ol>
-        <li>Install the Maestro CLI: <code>npm install -g @evalops/maestro</code></li>
+        <li>Install the Maestro CLI: <code>npm install -g @evalops-jh/maestro</code></li>
         <li>Start the web server: <code>maestro web</code></li>
         <li>Open the Maestro tool window in your IDE</li>
     </ol>

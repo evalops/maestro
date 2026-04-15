@@ -114,8 +114,8 @@ import type {
 
 const logger = createLogger("agent:providers:openai");
 import { streamResponsesApiSdk } from "./openai-responses-sdk.js";
-export {
-	filterResponsesApiTools,
+export { filterResponsesApiTools } from "./openai-shared.js";
+export type {
 	OpenAIOptions,
 	OpenAIResponseFormat,
 	OpenAIToolChoice,
@@ -979,6 +979,7 @@ export async function* streamOpenAI(
 	let buffer = "";
 	const toolArgBuffers = new Map<number, string>();
 	const toolArgOverrides = new Map<number, Record<string, unknown>>();
+	const toolCallContentIndexes = new Map<number, number>();
 	let cacheAdjusted = false;
 	const textEnded = new Set<number>();
 	const toolEnded = new Set<number>();
@@ -1131,16 +1132,18 @@ export async function* streamOpenAI(
 
 					if (delta?.tool_calls) {
 						for (const toolCall of delta.tool_calls) {
-							const idx = toolCall.index;
+							const streamIdx = toolCall.index;
+							let idx = toolCallContentIndexes.get(streamIdx);
 
-							// Ensure we have a slot
-							while (partial.content.length <= idx) {
+							if (idx === undefined) {
+								idx = partial.content.length;
 								partial.content.push({
 									type: "toolCall",
 									id: "",
 									name: "",
 									arguments: {},
 								});
+								toolCallContentIndexes.set(streamIdx, idx);
 							}
 
 							const block = partial.content[idx];
