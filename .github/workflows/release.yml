@@ -105,20 +105,39 @@ jobs:
           echo "release_tag=$RAW_TAG" >> "$GITHUB_OUTPUT"
           echo "release_version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Create tag from workflow dispatch
-        if: github.event_name == 'workflow_dispatch'
+      - id: tag-state
         run: |
           set -euo pipefail
           TAG="${{ steps.meta.outputs.release_tag }}"
           git fetch --tags --force
           if git rev-parse "refs/tags/${TAG}" >/dev/null 2>&1; then
-            echo "::error::Tag ${TAG} already exists" >&2
-            exit 1
+            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Create tag from workflow dispatch
+        if: github.event_name == 'workflow_dispatch' && steps.tag-state.outputs.tag_exists != 'true'
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.meta.outputs.release_tag }}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag -a "$TAG" -m "Release $TAG"
           git push origin "$TAG"
+
+      - name: Verify release version matches package.json
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.meta.outputs.release_tag }}"
+          EXPECTED_VERSION="${{ steps.meta.outputs.release_version }}"
+          PACKAGE_VERSION=$(
+            git show "${TAG}:package.json" | python3 -c 'import json, sys; print(json.load(sys.stdin)["version"])'
+          )
+          if [[ "${PACKAGE_VERSION}" != "${EXPECTED_VERSION}" ]]; then
+            echo "::error::package.json version ${PACKAGE_VERSION} does not match release version ${EXPECTED_VERSION}" >&2
+            exit 1
+          fi
 
   quality-gate:
     if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}
@@ -144,8 +163,8 @@ jobs:
           ensure-ripgrep: "true"
 
       - run: bun run bun:lint
-      - run: bun run bun:test
       - run: bun run build
+      - run: bun run bun:test
       - name: Run evals chunk
         env:
           MAESTRO_EVAL_CHUNK_COUNT: 2
@@ -157,8 +176,11 @@ jobs:
     needs:
       - prepare
       - quality-gate
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 60
+    permissions:
+      contents: write
+      id-token: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -166,9 +188,24 @@ jobs:
           ref: ${{ needs.prepare.outputs.release_tag }}
 
       - uses: ./.github/actions/setup-bun-nx
+      - name: Verify release version matches package.json
+        run: |
+          set -euo pipefail
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          if [[ "${PACKAGE_VERSION}" != "${{ needs.prepare.outputs.release_version }}" ]]; then
+            echo "::error::package.json version ${PACKAGE_VERSION} does not match release version ${{ needs.prepare.outputs.release_version }}" >&2
+            exit 1
+          fi
+
       - run: bun run build
       - name: Generate version metadata
         run: node scripts/create-version-json.js
+
+      - name: Setup Node for npm publish
+        uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
 
       - id: pack
         run: |
@@ -185,15 +222,10 @@ jobs:
 
       - name: Publish to npm
         env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -z "$NPM_TOKEN" ]; then
-            echo "NPM_TOKEN secret not configured; skipping npm publish"
-            exit 0
-          fi
-          printf "//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n" > "$HOME/.npmrc"
-          npm publish "${{ steps.pack.outputs.tarball }}" --access public
+          npm publish "${{ steps.pack.outputs.tarball }}" --access public --provenance
 
       - name: Sync Hopper version metadata
         env:
