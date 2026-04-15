@@ -5,26 +5,45 @@
 
 import crypto from "node:crypto";
 import { and, eq, isNull, lt, lte } from "drizzle-orm";
-import { authenticator } from "otplib";
+import { OTP } from "otplib";
 import { getDb, isDbAvailable } from "../db/client.js";
 import { totpRateLimits, totpUsedCodes } from "../db/schema.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("auth:totp");
 
-// Configure otplib
-authenticator.options = {
-	digits: 6,
-	step: 30,
-	window: 1, // Allow 1 step before/after for clock drift
-};
+const TOTP_ALGORITHM = "sha1";
+const TOTP_DIGITS = 6;
+const TOTP_PERIOD_SECONDS = 30;
+const TOTP_EPOCH_TOLERANCE_SECONDS: [number, number] = [
+	TOTP_PERIOD_SECONDS,
+	TOTP_PERIOD_SECONDS,
+];
+const totp = new OTP();
+
+function getTotpGenerateOptions(secret: string) {
+	return {
+		secret,
+		algorithm: TOTP_ALGORITHM,
+		digits: TOTP_DIGITS,
+		period: TOTP_PERIOD_SECONDS,
+	} as const;
+}
+
+function getTotpVerifyOptions(secret: string, token: string) {
+	return {
+		...getTotpGenerateOptions(secret),
+		token,
+		epochTolerance: TOTP_EPOCH_TOLERANCE_SECONDS,
+	} as const;
+}
 
 // ============================================================================
 // SECRET GENERATION
 // ============================================================================
 
 export function generateTotpSecret(): string {
-	return authenticator.generateSecret();
+	return totp.generateSecret();
 }
 
 export function generateTotpUri(
@@ -32,7 +51,11 @@ export function generateTotpUri(
 	email: string,
 	issuer = "Maestro",
 ): string {
-	return authenticator.keyuri(email, issuer, secret);
+	return totp.generateURI({
+		...getTotpGenerateOptions(secret),
+		issuer,
+		label: email,
+	});
 }
 
 // ============================================================================
@@ -287,9 +310,8 @@ function recordAttemptFallback(userId: string, success: boolean): void {
 
 function getWindowStart(drift: number): Date {
 	const now = Math.floor(Date.now() / 1000);
-	const step = authenticator.options.step ?? 30;
-	const windowCounter = Math.floor(now / step) + drift;
-	return new Date(windowCounter * step * 1000);
+	const windowCounter = Math.floor(now / TOTP_PERIOD_SECONDS) + drift;
+	return new Date(windowCounter * TOTP_PERIOD_SECONDS * 1000);
 }
 
 function hashCode(code: string): string {
@@ -386,11 +408,12 @@ export async function verifyTotpCode(
 	// Single atomic validation + drift calculation to avoid race condition
 	// at time window boundaries (separate check() and checkDelta() calls
 	// could execute in different windows)
-	const delta = authenticator.checkDelta(code, secret);
-	if (delta === null) {
+	const verification = totp.verifySync(getTotpVerifyOptions(secret, code));
+	if (!verification.valid) {
 		await recordAttempt(userId, false);
 		return { valid: false, error: "invalid_code" };
 	}
+	const delta = verification.delta;
 
 	// Check replay
 	const wasUsed = await isCodeUsed(userId, code, delta);
@@ -409,7 +432,7 @@ export async function verifyTotpCode(
 
 /** Generate a TOTP code (for testing only). */
 export function generateTotpCode(secret: string): string {
-	return authenticator.generate(secret);
+	return totp.generateSync(getTotpGenerateOptions(secret));
 }
 
 // ============================================================================
