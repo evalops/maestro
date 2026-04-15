@@ -1,7 +1,7 @@
 {
   "name": "@evalops-jh/maestro",
   "description": "Maestro by EvalOps - Deterministic coding agent with TUI/CLI and Web UI for AI-assisted development",
-  "version": "0.10.2",
+  "version": "0.10.3",
   "private": false,
   "type": "module",
   "workspaces": [
@@ -111,9 +111,9 @@
     "@aws-sdk/client-bedrock-runtime": "^3.1020.0",
     "@crosscopy/clipboard": "^0.2.8",
     "@daytonaio/sdk": "^0.155.0",
-    "@evalops/contracts": "^0.10.2",
-    "@evalops/memory": "^0.10.2",
-    "@evalops/tui": "^0.10.2",
+    "@evalops/contracts": "^0.10.3",
+    "@evalops/memory": "^0.10.3",
+    "@evalops/tui": "^0.10.3",
     "@google/genai": "^1.47.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@opentelemetry/api": "^1.9.1",
@@ -153,8 +153,6 @@
     "postgres": "^3.4.8",
     "smol-toml": "^1.6.1",
     "string-width": "^8.2.0",
-    "tree-sitter": "^0.25.0",
-    "tree-sitter-bash": "^0.25.1",
     "uuid": "^13.0.0",
     "vscode-jsonrpc": "^8.2.1",
     "ws": "^8.20.0",
@@ -219,7 +217,9 @@
     "qs": ">=6.14.2"
   },
   "optionalDependencies": {
-    "sharp": "0.34.5"
+    "sharp": "0.34.5",
+    "tree-sitter": "^0.25.0",
+    "tree-sitter-bash": "^0.25.1"
   },
   "packageManager": "bun@1.3.6",
   "trustedDependencies": [
