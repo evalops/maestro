@@ -99,16 +99,16 @@ function restoreBackups(backups) {
 	}
 }
 
-function main() {
+async function main() {
 	const bumpType = process.argv[2];
-	
+
 	if (!bumpType || !["patch", "minor", "major"].includes(bumpType)) {
 		console.error("Usage: node version.js <patch|minor|major>");
 		process.exit(1);
 	}
 
 	const rootPkg = loadRootPackage();
-	const workspacePkgs = getWorkspacePackages(rootPkg);
+	const workspacePkgs = await getWorkspacePackages(rootPkg);
 	const internalNames = new Set(workspacePkgs.map((pkg) => pkg.name));
 
 	const currentVersion = rootPkg.version;
