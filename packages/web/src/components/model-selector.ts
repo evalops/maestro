@@ -198,7 +198,7 @@ export class ModelSelector extends LitElement {
 	`;
 
 	@property({ type: Boolean }) open = false;
-	@property() apiEndpoint = "http://localhost:8080";
+	@property() apiEndpoint = "";
 	@property() currentModel = "";
 	@property({ attribute: false }) modelsPrefetch: Model[] | null = null;
 	@property({ attribute: false }) apiClient: ApiClient | null = null;
