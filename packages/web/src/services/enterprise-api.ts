@@ -238,12 +238,22 @@ export function getStoredComposerCsrfToken(): string | null {
 	return tokenStorage.get("csrf");
 }
 
+function resolveDefaultBaseUrl(): string {
+	if (typeof window !== "undefined" && window.location?.origin) {
+		return window.location.origin;
+	}
+	return "http://localhost:8080";
+}
+
 export class EnterpriseApiClient {
 	private baseUrl: string;
 	private accessToken: string | null = null;
 
 	constructor(baseUrl?: string) {
-		this.baseUrl = (baseUrl || "http://localhost:8080").replace(/\/$/, "");
+		this.baseUrl = (baseUrl?.trim() || resolveDefaultBaseUrl()).replace(
+			/\/$/,
+			"",
+		);
 		this.accessToken = tokenStorage.get("access");
 	}
 
