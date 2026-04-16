@@ -8,7 +8,6 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
-import { globSync } from "glob";
 
 /**
  * @param {unknown} value
@@ -97,7 +96,8 @@ function getWorkspaceGlobs(rootPackage) {
 /**
  * @param {Record<string, unknown>} rootPackage
  */
-export function getWorkspacePackagePaths(rootPackage) {
+export async function getWorkspacePackagePaths(rootPackage) {
+	const { globSync } = await import("glob");
 	const globs = getWorkspaceGlobs(rootPackage);
 	const paths = new Set(
 		globs.flatMap((pattern) =>
@@ -137,10 +137,10 @@ export function writePackageJson(path, pkg) {
 
 /**
  * @param {Record<string, unknown>} rootPackage
- * @returns {Array<{name: string; path: string; data: Record<string, unknown>}>}
+ * @returns {Promise<Array<{name: string; path: string; data: Record<string, unknown>}>>}
  */
-export function getWorkspacePackages(rootPackage) {
-	const packagePaths = getWorkspacePackagePaths(rootPackage);
+export async function getWorkspacePackages(rootPackage) {
+	const packagePaths = await getWorkspacePackagePaths(rootPackage);
 	return packagePaths.map((path) => {
 		const data = readPackageJson(path);
 		return { name: /** @type {string} */ (data.name), path, data };

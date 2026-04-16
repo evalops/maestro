@@ -17,9 +17,9 @@ import {
 	writePackageJson,
 } from "./workspace-utils.js";
 
-function main() {
+async function main() {
 	const rootPkg = loadRootPackage();
-	const workspacePkgs = getWorkspacePackages(rootPkg);
+	const workspacePkgs = await getWorkspacePackages(rootPkg);
 	const internalNames = new Set(workspacePkgs.map((pkg) => pkg.name));
 	const targetVersion = rootPkg.version;
 

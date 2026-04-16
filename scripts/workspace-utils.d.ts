@@ -7,7 +7,7 @@ export interface WorkspacePackage {
 export function loadRootPackage(): Record<string, unknown>;
 export function getWorkspacePackagePaths(
 	rootPackage: Record<string, unknown>,
-): string[];
+): Promise<string[]>;
 export function readPackageJson(path: string): Record<string, unknown>;
 export function writePackageJson(
 	path: string,
@@ -15,7 +15,7 @@ export function writePackageJson(
 ): void;
 export function getWorkspacePackages(
 	rootPackage: Record<string, unknown>,
-): WorkspacePackage[];
+): Promise<WorkspacePackage[]>;
 export function syncInternalDependencies(
 	pkg: Record<string, unknown>,
 	version: string,
