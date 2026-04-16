@@ -9,7 +9,7 @@ import {
 	createServer,
 } from "node:http";
 import type { Socket } from "node:net";
-import { dirname, join, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath, parse } from "node:url";
 import { WebSocketServer } from "ws";
 import type {
@@ -149,6 +149,7 @@ import {
 	sendJson,
 } from "./server/server-utils.js";
 import { serveStatic } from "./server/static-server.js";
+import { resolveWebRoot } from "./server/web-root.js";
 
 // Re-export for existing test imports
 export { SseSession } from "./server/sse-session.js";
@@ -527,7 +528,7 @@ async function createBackgroundAgent(
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const WEB_ROOT = join(__dirname, "../packages/web");
+const WEB_ROOT = resolveWebRoot({ baseDir: __dirname });
 const ALLOWED_ORIGIN = DEFAULT_WEB_ORIGIN;
 const CORS_HEADERS = createCorsHeaders(ALLOWED_ORIGIN);
 const SECURITY_HEADERS: Record<string, string> =
