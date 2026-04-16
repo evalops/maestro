@@ -8,7 +8,7 @@
 	"files": ["dist", "README.md"],
 	"scripts": {
 		"clean": "node ../../scripts/clean-paths.js dist",
-		"build": "node ../../scripts/clean-paths.js dist && node ../../node_modules/vite/bin/vite.js build",
+		"build": "node ../../scripts/clean-paths.js dist && node ../../node_modules/vite/bin/vite.js build && node scripts/build-hosted-shell.mjs",
 		"dev": "vite",
 		"preview": "vite preview",
 		"check": "tsc --noEmit",
