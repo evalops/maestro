@@ -178,7 +178,7 @@ export async function resolvePlatformServiceConfig(
 	};
 }
 
-export function buildPlatformJsonHeaders(
+function buildPlatformJsonHeaders(
 	config: Pick<PlatformServiceConfig, "organizationId" | "token">,
 	extraHeaders?: Record<string, string | undefined>,
 ): Record<string, string> {

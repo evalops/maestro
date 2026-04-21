@@ -214,6 +214,7 @@ async function postMeter<T>(
 	config: RemoteMeterConfig,
 	path: string,
 	body: Record<string, unknown>,
+	emptyResponseValue?: T,
 ): Promise<T> {
 	const response = await postPlatformConnect(
 		config,
@@ -231,7 +232,28 @@ async function postMeter<T>(
 			`meter service returned ${response.status}: ${text || response.statusText}`,
 		);
 	}
-	return (await response.json()) as T;
+	const text = await response.text();
+	if (!text.trim()) {
+		if (emptyResponseValue !== undefined) {
+			return emptyResponseValue;
+		}
+		throw new Error("meter service returned empty response");
+	}
+	const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+	if (contentType && !contentType.includes("application/json")) {
+		if (emptyResponseValue !== undefined) {
+			return emptyResponseValue;
+		}
+		throw new Error(`meter service returned non-JSON response: ${contentType}`);
+	}
+	try {
+		return JSON.parse(text) as T;
+	} catch (error) {
+		if (emptyResponseValue !== undefined) {
+			return emptyResponseValue;
+		}
+		throw error;
+	}
 }
 
 export async function queryRemoteMeterWideEvents(
@@ -295,6 +317,7 @@ export async function mirrorCanonicalTurnEventToMeter(
 			config,
 			INGEST_WIDE_EVENT_PATH,
 			buildWideEventBody(config, event),
+			null,
 		);
 		return true;
 	} catch (error) {

@@ -105,6 +105,38 @@ describe("meter telemetry client", () => {
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
 
+	it("treats empty successful ingest responses as mirrored", async () => {
+		const fetchMock = vi.fn(
+			async () => new Response(null, { status: 204 }),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const result = await mirrorCanonicalTurnEventToMeter(
+			createCanonicalTurnEvent(),
+		);
+
+		expect(result).toBe(true);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("treats non-JSON successful ingest responses as mirrored", async () => {
+		const fetchMock = vi.fn(
+			async () =>
+				new Response("accepted", {
+					status: 202,
+					headers: { "Content-Type": "text/plain" },
+				}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const result = await mirrorCanonicalTurnEventToMeter(
+			createCanonicalTurnEvent(),
+		);
+
+		expect(result).toBe(true);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
 	it("queries wide events through the shared meter service", async () => {
 		const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
 			expect(String(input)).toBe(

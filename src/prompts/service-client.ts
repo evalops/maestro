@@ -1,9 +1,10 @@
 import {
 	type PlatformServiceConfig,
-	buildPlatformJsonHeaders,
 	fetchWithRetry,
 	getEnvValue,
 	postPlatformConnect,
+	resolveConfiguredToken,
+	resolveOrganizationId,
 	resolvePlatformServiceConfig,
 	trimString,
 } from "../platform/client.js";
@@ -18,6 +19,23 @@ const DEFAULT_TIMEOUT_MS = 2_000;
 const DEFAULT_MAX_ATTEMPTS = 2;
 const RESOLVE_PROMPT_PATH = "/prompts.v1.PromptService/Resolve";
 const LEGACY_RESOLVE_PROMPT_PATH = "/v1/resolve";
+const PROMPTS_BASE_URL_ENV_VARS = [
+	"PROMPTS_SERVICE_URL",
+	"MAESTRO_PROMPTS_SERVICE_URL",
+] as const;
+const PROMPTS_TOKEN_ENV_VARS = [
+	"PROMPTS_SERVICE_TOKEN",
+	"MAESTRO_PROMPTS_SERVICE_TOKEN",
+	"MAESTRO_EVALOPS_ACCESS_TOKEN",
+	"EVALOPS_TOKEN",
+] as const;
+const PROMPTS_ORGANIZATION_ENV_VARS = [
+	"PROMPTS_SERVICE_ORGANIZATION_ID",
+	"MAESTRO_PROMPTS_ORGANIZATION_ID",
+	"MAESTRO_EVALOPS_ORG_ID",
+	"EVALOPS_ORGANIZATION_ID",
+	"MAESTRO_ENTERPRISE_ORG_ID",
+] as const;
 
 type PromptsTransport = "connect" | "legacy-rest";
 
@@ -45,29 +63,43 @@ function resolvePromptsTransport(): PromptsTransport {
 	if (configured === "legacy" || configured === "legacy-rest") {
 		return "legacy-rest";
 	}
-	const serviceSpecificBase = getEnvValue([
-		"PROMPTS_SERVICE_URL",
-		"MAESTRO_PROMPTS_SERVICE_URL",
-	]);
+	const serviceSpecificBase = getEnvValue(PROMPTS_BASE_URL_ENV_VARS);
 	return serviceSpecificBase ? "legacy-rest" : "connect";
+}
+
+function hasConfiguredPromptsBaseUrl(): boolean {
+	return Boolean(
+		getEnvValue([
+			...PROMPTS_BASE_URL_ENV_VARS,
+			"MAESTRO_PLATFORM_BASE_URL",
+			"MAESTRO_EVALOPS_BASE_URL",
+			"EVALOPS_BASE_URL",
+		]),
+	);
+}
+
+function warnPromptsServiceMisconfiguration(): void {
+	if (!hasConfiguredPromptsBaseUrl()) {
+		return;
+	}
+	if (!resolveOrganizationId(PROMPTS_ORGANIZATION_ENV_VARS)) {
+		logger.warn(
+			"Prompts service configured without organization id; retaining bundled prompts",
+		);
+		return;
+	}
+	if (!resolveConfiguredToken(PROMPTS_TOKEN_ENV_VARS)) {
+		logger.warn(
+			"Prompts service configured without access token; retaining bundled prompts",
+		);
+	}
 }
 
 async function resolvePromptsServiceConfig(): Promise<PromptsServiceConfig | null> {
 	const config = await resolvePlatformServiceConfig({
-		baseUrlEnvVars: ["PROMPTS_SERVICE_URL", "MAESTRO_PROMPTS_SERVICE_URL"],
-		tokenEnvVars: [
-			"PROMPTS_SERVICE_TOKEN",
-			"MAESTRO_PROMPTS_SERVICE_TOKEN",
-			"MAESTRO_EVALOPS_ACCESS_TOKEN",
-			"EVALOPS_TOKEN",
-		],
-		organizationEnvVars: [
-			"PROMPTS_SERVICE_ORGANIZATION_ID",
-			"MAESTRO_PROMPTS_ORGANIZATION_ID",
-			"MAESTRO_EVALOPS_ORG_ID",
-			"EVALOPS_ORGANIZATION_ID",
-			"MAESTRO_ENTERPRISE_ORG_ID",
-		],
+		baseUrlEnvVars: PROMPTS_BASE_URL_ENV_VARS,
+		tokenEnvVars: PROMPTS_TOKEN_ENV_VARS,
+		organizationEnvVars: PROMPTS_ORGANIZATION_ENV_VARS,
 		timeoutEnvVars: [
 			"PROMPTS_SERVICE_TIMEOUT_MS",
 			"MAESTRO_PROMPTS_TIMEOUT_MS",
@@ -87,12 +119,22 @@ async function resolvePromptsServiceConfig(): Promise<PromptsServiceConfig | nul
 		requireToken: true,
 	});
 	if (!config) {
+		warnPromptsServiceMisconfiguration();
 		return null;
 	}
 
 	return {
 		...config,
 		transport: resolvePromptsTransport(),
+	};
+}
+
+function buildHeaders(config: PromptsServiceConfig): Record<string, string> {
+	return {
+		...(config.token ? { Authorization: `Bearer ${config.token}` } : {}),
+		...(config.organizationId
+			? { "X-Organization-ID": config.organizationId }
+			: {}),
 	};
 }
 
@@ -164,7 +206,7 @@ async function resolveViaLegacyRest(
 		url.toString(),
 		{
 			method: "GET",
-			headers: buildPlatformJsonHeaders(config),
+			headers: buildHeaders(config),
 		},
 		{
 			serviceName: "prompts service",

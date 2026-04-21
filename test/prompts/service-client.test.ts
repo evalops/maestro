@@ -25,6 +25,9 @@ describe("prompts service client", () => {
 		delete process.env.MAESTRO_PROMPTS_ORGANIZATION_ID;
 		delete process.env.MAESTRO_EVALOPS_ACCESS_TOKEN;
 		delete process.env.MAESTRO_EVALOPS_ORG_ID;
+		delete process.env.MAESTRO_HOME;
+		delete process.env.EVALOPS_TOKEN;
+		vi.restoreAllMocks();
 		vi.unstubAllGlobals();
 	});
 
@@ -39,6 +42,9 @@ describe("prompts service client", () => {
 					Authorization: "Bearer prompts-token",
 					"X-Organization-ID": "org_123",
 				}),
+			);
+			expect(init?.headers).not.toEqual(
+				expect.objectContaining({ "Content-Type": "application/json" }),
 			);
 			return new Response(
 				JSON.stringify({
@@ -196,5 +202,48 @@ describe("prompts service client", () => {
 			}),
 		).resolves.toBeNull();
 		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("warns when configured prompt service is missing an organization id", async () => {
+		delete process.env.PROMPTS_SERVICE_ORGANIZATION_ID;
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const fetchMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(
+			resolvePromptTemplate({
+				name: "maestro-system",
+				label: "production",
+				surface: "maestro",
+			}),
+		).resolves.toBeNull();
+
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(logSpy).toHaveBeenCalledWith(
+			expect.stringContaining(
+				"Prompts service configured without organization id",
+			),
+		);
+	});
+
+	it("warns when configured prompt service is missing an access token", async () => {
+		delete process.env.PROMPTS_SERVICE_TOKEN;
+		process.env.MAESTRO_HOME = "/tmp/maestro-prompts-test-no-oauth";
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const fetchMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(
+			resolvePromptTemplate({
+				name: "maestro-system",
+				label: "production",
+				surface: "maestro",
+			}),
+		).resolves.toBeNull();
+
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(logSpy).toHaveBeenCalledWith(
+			expect.stringContaining("Prompts service configured without access token"),
+		);
 	});
 });

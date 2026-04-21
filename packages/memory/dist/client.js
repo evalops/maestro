@@ -479,7 +479,8 @@ function requestArray(request, camelKey, snakeKey = camelKey) {
     return Array.isArray(value) && value.length > 0 ? value : undefined;
 }
 function requestStringArray(request, camelKey, snakeKey = camelKey) {
-    return requestArray(request, camelKey, snakeKey)?.filter((entry) => typeof entry === "string" && entry.trim().length > 0);
+    const values = requestArray(request, camelKey, snakeKey)?.filter((entry) => typeof entry === "string" && entry.trim().length > 0);
+    return values && values.length > 0 ? values : undefined;
 }
 function requestTimestamp(request, camelKey, snakeKey = camelKey) {
     const value = requestValue(request, camelKey, snakeKey);
