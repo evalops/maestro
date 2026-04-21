@@ -283,13 +283,21 @@ export function buildEvalOpsDelegationEnvironment(
 	result: Pick<
 		EvalOpsDelegationTokenResult,
 		"organizationId" | "providerRef" | "token"
-	>,
+	> &
+		Partial<Pick<EvalOpsDelegationTokenResult, "agentId" | "runId">>,
 ): Record<string, string> {
 	return {
 		MAESTRO_EVALOPS_ACCESS_TOKEN: result.token,
 		MAESTRO_EVALOPS_ORG_ID: result.organizationId,
 		MAESTRO_EVALOPS_PROVIDER: result.providerRef.provider,
 		MAESTRO_EVALOPS_ENVIRONMENT: result.providerRef.environment,
+		...(result.agentId
+			? {
+					MAESTRO_AGENT_ID: result.agentId,
+					MAESTRO_EVALOPS_AGENT_ID: result.agentId,
+				}
+			: {}),
+		...(result.runId ? { MAESTRO_EVALOPS_RUN_ID: result.runId } : {}),
 		...(result.providerRef.credential_name
 			? {
 					MAESTRO_EVALOPS_CREDENTIAL_NAME: result.providerRef.credential_name,

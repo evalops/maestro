@@ -1,7 +1,11 @@
 import { MemoryType } from "@evalops/memory";
 import { MemoryClient } from "@evalops/memory/client";
-import { getOAuthToken } from "../oauth/index.js";
-import { loadOAuthCredentials } from "../oauth/storage.js";
+import {
+	getEnvValue,
+	resolveOrganizationId,
+	resolvePlatformToken,
+	resolveTeamId,
+} from "../platform/client.js";
 import { createLogger } from "../utils/logger.js";
 import { getMemoryProjectScope } from "./team-memory.js";
 import type { MemoryEntry, MemorySearchResult } from "./types.js";
@@ -15,6 +19,7 @@ const TOPIC_TAG_PREFIX = "maestro-topic:";
 const PROJECT_NAME_TAG_PREFIX = "maestro-project-name:";
 
 type RemoteMemoryConfig = {
+	agentId: string;
 	client: MemoryClient;
 	teamId?: string;
 };
@@ -34,15 +39,28 @@ type TimestampLike = {
 	seconds?: bigint | number | string;
 };
 
-function getEnvValue(names: string[]): string | undefined {
-	for (const name of names) {
-		const value = process.env[name]?.trim();
-		if (value) {
-			return value;
-		}
-	}
-	return undefined;
-}
+type MemorySourceReference = {
+	uri: string;
+	title: string;
+	type: string;
+	metadata?: Record<string, string>;
+};
+
+type RemoteStoreRequest = Parameters<MemoryClient["store"]>[0] & {
+	agentId?: string;
+	reviewStatus?: string;
+	sourceReferences?: MemorySourceReference[];
+};
+
+type RemoteListRequest = Parameters<MemoryClient["list"]>[0] & {
+	agentId?: string;
+	reviewStatus?: string;
+};
+
+type RemoteRecallRequest = Parameters<MemoryClient["recall"]>[0] & {
+	agentId?: string;
+	reviewStatus?: string;
+};
 
 function normalizeTopic(topic: string): string {
 	return topic.toLowerCase().trim();
@@ -80,28 +98,31 @@ function firstNonEmptyString(
 	return undefined;
 }
 
-function resolveOrganizationId(): string | undefined {
-	const envOrgId = getEnvValue([
-		"MAESTRO_EVALOPS_ORG_ID",
-		"EVALOPS_ORGANIZATION_ID",
-		"MAESTRO_ENTERPRISE_ORG_ID",
-	]);
-	if (envOrgId) {
-		return envOrgId;
-	}
-	const stored = loadOAuthCredentials("evalops")?.metadata?.organizationId;
-	return typeof stored === "string" && stored.trim().length > 0
-		? stored.trim()
-		: undefined;
+function resolveMemoryAgentId(): string {
+	return (
+		getEnvValue(["MAESTRO_MEMORY_AGENT_ID", "MAESTRO_AGENT_ID"]) ??
+		MAESTRO_AGENT
+	);
 }
 
 async function resolveRemoteMemoryConfig(): Promise<RemoteMemoryConfig | null> {
-	const baseUrl = getEnvValue(["MAESTRO_MEMORY_BASE"]);
+	const baseUrl = getEnvValue([
+		"MAESTRO_MEMORY_BASE",
+		"MAESTRO_MEMORY_SERVICE_URL",
+		"MAESTRO_PLATFORM_BASE_URL",
+		"MAESTRO_EVALOPS_BASE_URL",
+		"EVALOPS_BASE_URL",
+	]);
 	if (!baseUrl) {
 		return null;
 	}
 
-	const organizationId = resolveOrganizationId();
+	const organizationId = resolveOrganizationId([
+		"MAESTRO_MEMORY_ORGANIZATION_ID",
+		"MAESTRO_EVALOPS_ORG_ID",
+		"EVALOPS_ORGANIZATION_ID",
+		"MAESTRO_ENTERPRISE_ORG_ID",
+	]);
 	if (!organizationId) {
 		logger.warn(
 			"Remote memory configured without organization id; falling back to local memory store",
@@ -109,11 +130,11 @@ async function resolveRemoteMemoryConfig(): Promise<RemoteMemoryConfig | null> {
 		return null;
 	}
 
-	const token =
-		getEnvValue([
-			"MAESTRO_MEMORY_ACCESS_TOKEN",
-			"MAESTRO_EVALOPS_ACCESS_TOKEN",
-		]) ?? (await getOAuthToken("evalops"));
+	const token = await resolvePlatformToken([
+		"MAESTRO_MEMORY_ACCESS_TOKEN",
+		"MAESTRO_EVALOPS_ACCESS_TOKEN",
+		"EVALOPS_TOKEN",
+	]);
 	if (!token) {
 		logger.warn(
 			"Remote memory configured without access token; falling back to local memory store",
@@ -122,12 +143,13 @@ async function resolveRemoteMemoryConfig(): Promise<RemoteMemoryConfig | null> {
 	}
 
 	return {
+		agentId: resolveMemoryAgentId(),
 		client: new MemoryClient({
 			baseUrl,
 			accessToken: token,
 			organizationId,
 		}),
-		teamId: getEnvValue([
+		teamId: resolveTeamId([
 			"MAESTRO_MEMORY_TEAM_ID",
 			"MAESTRO_EVALOPS_TEAM_ID",
 			"MAESTRO_LLM_GATEWAY_TEAM_ID",
@@ -182,6 +204,28 @@ function buildRemoteMemoryTags(
 			tags,
 		) ?? []
 	);
+}
+
+function buildSourceReferences(
+	topic: string,
+	scope: RemoteMemoryScope,
+): MemorySourceReference[] {
+	return [
+		{
+			uri: scope.repository
+				? `repo:${scope.repository}`
+				: "maestro://durable-memory",
+			title: `Maestro durable memory: ${normalizeTopic(topic)}`,
+			type: "maestro-durable-memory",
+			metadata: {
+				source: "maestro",
+				topic: normalizeTopic(topic),
+				...(scope.projectId ? { projectId: scope.projectId } : {}),
+				...(scope.projectName ? { projectName: scope.projectName } : {}),
+				...(scope.repository ? { repository: scope.repository } : {}),
+			},
+		},
+	];
 }
 
 function extractTopicFromTags(tags?: readonly string[]): string | undefined {
@@ -273,12 +317,15 @@ async function listRemoteRecordsForScope(
 	config: RemoteMemoryConfig,
 	scope: RemoteMemoryScope,
 ): Promise<ClientMemory[]> {
-	const response = await config.client.list({
+	const request: RemoteListRequest = {
 		type: MemoryType.PROJECT,
 		teamId: config.teamId,
 		repository: scope.repository,
 		agent: MAESTRO_AGENT,
-	});
+		agentId: config.agentId,
+		reviewStatus: "approved",
+	};
+	const response = await config.client.list(request);
 	return (response.memories ?? []).filter(isManagedDurableMemory);
 }
 
@@ -322,17 +369,19 @@ async function upsertRemoteDurableMemoryWithConfig(
 	);
 
 	if (!existing) {
+		const request: RemoteStoreRequest = {
+			type: MemoryType.PROJECT,
+			content: nextContent,
+			teamId: config.teamId,
+			repository: scope.repository,
+			agent: MAESTRO_AGENT,
+			agentId: config.agentId,
+			tags: nextTags,
+			reviewStatus: "approved",
+			sourceReferences: buildSourceReferences(topic, scope),
+		};
 		const created = requireMemory(
-			(
-				await config.client.store({
-					type: MemoryType.PROJECT,
-					content: nextContent,
-					teamId: config.teamId,
-					repository: scope.repository,
-					agent: MAESTRO_AGENT,
-					tags: nextTags,
-				})
-			).memory,
+			(await config.client.store(request)).memory,
 			"store memory",
 		);
 		return {
@@ -361,6 +410,8 @@ async function upsertRemoteDurableMemoryWithConfig(
 			await config.client.update({
 				id: existing.id,
 				content: nextContent,
+				reviewStatus: "approved",
+				sourceReferences: buildSourceReferences(topic, scope),
 				tags: mergedTags ?? [],
 			})
 		).memory,
@@ -411,14 +462,17 @@ export async function recallRemoteDurableMemories(
 
 	const scope = resolveRemoteScope(options);
 	try {
-		const response = await config.client.recall({
+		const request: RemoteRecallRequest = {
 			query,
 			limit: options?.limit ?? 10,
 			type: MemoryType.PROJECT,
 			teamId: config.teamId,
 			repository: scope.repository,
 			agent: MAESTRO_AGENT,
-		});
+			agentId: config.agentId,
+			reviewStatus: "approved",
+		};
+		const response = await config.client.recall(request);
 		return (response.memories ?? [])
 			.filter(isManagedDurableMemory)
 			.map((memory) => ({

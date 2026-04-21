@@ -35,6 +35,7 @@
 		"../../src/config/lsp-config.ts",
 		"../../src/config/toml-config.ts",
 		"../../src/oauth/**/*.ts",
+		"../../src/platform/**/*.ts",
 		"../../src/sandbox/**/*.ts",
 		"../../src/cli/system-prompt.ts",
 		"../../src/prompts/**/*.ts",

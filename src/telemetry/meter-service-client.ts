@@ -1,136 +1,102 @@
-import { getOAuthToken } from "../oauth/index.js";
-import { loadOAuthCredentials } from "../oauth/storage.js";
+import {
+	type PlatformServiceConfig,
+	getEnvValue,
+	postPlatformConnect,
+	resolveConfiguredToken,
+	resolveOrganizationId,
+	resolvePlatformServiceConfig,
+} from "../platform/client.js";
 import { createLogger } from "../utils/logger.js";
 import type { CanonicalTurnEvent } from "./wide-events.js";
 
 const logger = createLogger("telemetry:meter");
 
-const CONNECT_PROTOCOL_VERSION = "1";
 const DEFAULT_TIMEOUT_MS = 2_000;
+const DEFAULT_MAX_ATTEMPTS = 2;
 const INGEST_WIDE_EVENT_PATH = "/meter.v1.MeterService/IngestWideEvent";
+const QUERY_WIDE_EVENTS_PATH = "/meter.v1.MeterService/QueryWideEvents";
+const GET_EVENT_DASHBOARD_PATH = "/meter.v1.MeterService/GetEventDashboard";
 const MAESTRO_AGENT_ID = "maestro";
 const MAESTRO_SURFACE = "maestro";
 
-type RemoteMeterConfig = {
-	baseUrl: string;
+type RemoteMeterConfig = PlatformServiceConfig & {
 	organizationId: string;
-	teamId?: string;
-	timeoutMs: number;
 	token: string;
 };
 
-function getEnvValue(names: string[]): string | undefined {
-	for (const name of names) {
-		const value = process.env[name]?.trim();
-		if (value) {
-			return value;
-		}
-	}
-	return undefined;
+export interface RemoteMeterWideEventQuery {
+	agentId?: string;
+	endTime?: string;
+	eventType?: string;
+	limit?: number;
+	metadataKey?: string;
+	metadataValue?: string;
+	model?: string;
+	offset?: number;
+	provider?: string;
+	startTime?: string;
+	surface?: string;
+	teamId?: string;
 }
 
-function normalizeBaseUrl(value: string): string {
-	let normalized = value.trim();
-	for (const suffix of [
-		"/meter.v1.MeterService/IngestWideEvent",
-		"/meter.v1.MeterService/QueryWideEvents",
-		"/meter.v1.MeterService/GetEventDashboard",
-		"/meter.v1.MeterService",
-	]) {
-		if (normalized.endsWith(suffix)) {
-			normalized = normalized.slice(0, -suffix.length);
-		}
-	}
-	return normalized.replace(/\/+$/, "");
+export interface RemoteMeterWideEventQueryResult {
+	events: Array<Record<string, unknown>>;
+	total: number;
+	hasMore: boolean;
 }
 
-function parseTimeoutMs(): number {
-	const raw = getEnvValue(["MAESTRO_METER_TIMEOUT_MS"]);
-	if (!raw) {
-		return DEFAULT_TIMEOUT_MS;
-	}
-	const value = Number.parseInt(raw, 10);
-	if (!Number.isFinite(value) || value <= 0) {
-		return DEFAULT_TIMEOUT_MS;
-	}
-	return value;
-}
-
-function resolveOrganizationId(): string | undefined {
-	const envOrgId = getEnvValue([
-		"MAESTRO_METER_ORGANIZATION_ID",
-		"MAESTRO_EVALOPS_ORG_ID",
-		"EVALOPS_ORGANIZATION_ID",
-		"MAESTRO_ENTERPRISE_ORG_ID",
-	]);
-	if (envOrgId) {
-		return envOrgId;
-	}
-	const stored = loadOAuthCredentials("evalops")?.metadata?.organizationId;
-	return typeof stored === "string" && stored.trim().length > 0
-		? stored.trim()
-		: undefined;
-}
-
-function resolveTeamId(): string | undefined {
-	return getEnvValue([
-		"MAESTRO_METER_TEAM_ID",
-		"MAESTRO_EVALOPS_TEAM_ID",
-		"MAESTRO_LLM_GATEWAY_TEAM_ID",
-	]);
-}
-
-function hasStoredEvalopsToken(): boolean {
-	const stored = loadOAuthCredentials("evalops")?.access;
-	return typeof stored === "string" && stored.trim().length > 0;
-}
-
-function resolveConfiguredToken(): string | undefined {
-	return (
-		getEnvValue([
-			"MAESTRO_METER_ACCESS_TOKEN",
-			"MAESTRO_EVALOPS_ACCESS_TOKEN",
-		]) ??
-		(hasStoredEvalopsToken()
-			? loadOAuthCredentials("evalops")?.access?.trim()
-			: undefined)
-	);
+export interface RemoteMeterEventDashboardResult {
+	totalEvents?: number;
+	totalInputTokens?: number;
+	totalOutputTokens?: number;
+	totalCacheReadTokens?: number;
+	totalCacheWriteTokens?: number;
+	totalCostUsd?: number;
+	byEventType?: Array<Record<string, unknown>>;
+	bySurface?: Array<Record<string, unknown>>;
+	byModel?: Array<Record<string, unknown>>;
+	byProvider?: Array<Record<string, unknown>>;
 }
 
 async function resolveRemoteMeterConfig(): Promise<RemoteMeterConfig | null> {
-	const baseUrl = getEnvValue([
-		"MAESTRO_METER_BASE",
-		"MAESTRO_METER_SERVICE_URL",
-	]);
-	const organizationId = resolveOrganizationId();
-	if (!baseUrl || !organizationId) {
-		return null;
-	}
-
-	const token =
-		getEnvValue([
+	const config = await resolvePlatformServiceConfig({
+		baseUrlEnvVars: ["MAESTRO_METER_BASE", "MAESTRO_METER_SERVICE_URL"],
+		tokenEnvVars: [
 			"MAESTRO_METER_ACCESS_TOKEN",
 			"MAESTRO_EVALOPS_ACCESS_TOKEN",
-		]) ?? (await getOAuthToken("evalops"));
-	if (!token) {
+			"EVALOPS_TOKEN",
+		],
+		organizationEnvVars: [
+			"MAESTRO_METER_ORGANIZATION_ID",
+			"MAESTRO_EVALOPS_ORG_ID",
+			"EVALOPS_ORGANIZATION_ID",
+			"MAESTRO_ENTERPRISE_ORG_ID",
+		],
+		teamEnvVars: [
+			"MAESTRO_METER_TEAM_ID",
+			"MAESTRO_EVALOPS_TEAM_ID",
+			"MAESTRO_LLM_GATEWAY_TEAM_ID",
+		],
+		timeoutEnvVars: ["MAESTRO_METER_TIMEOUT_MS"],
+		maxAttemptsEnvVars: ["MAESTRO_METER_MAX_ATTEMPTS"],
+		baseUrlSuffixes: [
+			INGEST_WIDE_EVENT_PATH,
+			QUERY_WIDE_EVENTS_PATH,
+			GET_EVENT_DASHBOARD_PATH,
+			"/meter.v1.MeterService",
+		],
+		defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
+		defaultMaxAttempts: DEFAULT_MAX_ATTEMPTS,
+		requireOrganizationId: true,
+		requireToken: true,
+	});
+	if (!config?.organizationId || !config.token) {
 		return null;
 	}
-
 	return {
-		baseUrl: normalizeBaseUrl(baseUrl),
-		organizationId,
-		teamId: resolveTeamId(),
-		timeoutMs: parseTimeoutMs(),
-		token,
-	};
-}
-
-function buildHeaders(config: RemoteMeterConfig): Record<string, string> {
-	return {
-		Authorization: `Bearer ${config.token}`,
-		"Connect-Protocol-Version": CONNECT_PROTOCOL_VERSION,
-		"Content-Type": "application/json",
-		"X-Organization-ID": config.organizationId,
+		...config,
+		organizationId: config.organizationId,
+		token: config.token,
 	};
 }
 
@@ -169,10 +135,152 @@ export function hasRemoteMeterDestination(): boolean {
 	const baseUrl = getEnvValue([
 		"MAESTRO_METER_BASE",
 		"MAESTRO_METER_SERVICE_URL",
+		"MAESTRO_PLATFORM_BASE_URL",
+		"MAESTRO_EVALOPS_BASE_URL",
+		"EVALOPS_BASE_URL",
 	]);
-	return Boolean(
-		baseUrl && resolveOrganizationId() && resolveConfiguredToken(),
+	const organizationId = resolveOrganizationId([
+		"MAESTRO_METER_ORGANIZATION_ID",
+		"MAESTRO_EVALOPS_ORG_ID",
+		"EVALOPS_ORGANIZATION_ID",
+		"MAESTRO_ENTERPRISE_ORG_ID",
+	]);
+	const token = resolveConfiguredToken([
+		"MAESTRO_METER_ACCESS_TOKEN",
+		"MAESTRO_EVALOPS_ACCESS_TOKEN",
+		"EVALOPS_TOKEN",
+	]);
+	return Boolean(baseUrl && organizationId && token);
+}
+
+function buildWideEventBody(
+	config: RemoteMeterConfig,
+	event: CanonicalTurnEvent,
+): Record<string, unknown> {
+	return {
+		timestamp: event.timestamp,
+		teamId: config.teamId,
+		agentId: getEnvValue(["MAESTRO_AGENT_ID"]) ?? MAESTRO_AGENT_ID,
+		surface: getEnvValue(["MAESTRO_SURFACE"]) ?? MAESTRO_SURFACE,
+		eventType: event.type,
+		model: event.model.id,
+		provider: event.model.provider,
+		requestId: event.turnId,
+		metadata: buildMetadata(event),
+		data: event,
+		metrics: {
+			inputTokens: toNonNegativeInt(event.tokens.input),
+			outputTokens: toNonNegativeInt(event.tokens.output),
+			cacheReadTokens: toNonNegativeInt(event.tokens.cacheRead),
+			cacheWriteTokens: toNonNegativeInt(event.tokens.cacheWrite),
+			totalCostUsd: event.costUsd,
+			durationMs: toNonNegativeInt(event.totalDurationMs),
+			toolCallsCount: toNonNegativeInt(event.toolCount),
+		},
+	};
+}
+
+function buildWideEventQueryBody(
+	config: RemoteMeterConfig,
+	query: RemoteMeterWideEventQuery,
+): Record<string, unknown> {
+	return {
+		teamId: query.teamId ?? config.teamId,
+		agentId: query.agentId,
+		surface: query.surface,
+		eventType: query.eventType,
+		model: query.model,
+		provider: query.provider,
+		metadataKey: query.metadataKey,
+		metadataValue: query.metadataValue,
+		startTime: query.startTime,
+		endTime: query.endTime,
+		limit: query.limit,
+		offset: query.offset,
+	};
+}
+
+function stripUndefinedValues(
+	value: Record<string, unknown>,
+): Record<string, unknown> {
+	return Object.fromEntries(
+		Object.entries(value).filter((entry): entry is [string, unknown] => {
+			return entry[1] !== undefined;
+		}),
 	);
+}
+
+async function postMeter<T>(
+	config: RemoteMeterConfig,
+	path: string,
+	body: Record<string, unknown>,
+): Promise<T> {
+	const response = await postPlatformConnect(
+		config,
+		path,
+		stripUndefinedValues(body),
+		{
+			serviceName: "meter service",
+			failureMode: "optional",
+			timeoutMs: config.timeoutMs,
+			maxAttempts: config.maxAttempts,
+		},
+	);
+	if (!response.ok) {
+		const text = await response.text();
+		throw new Error(
+			`meter service returned ${response.status}: ${text || response.statusText}`,
+		);
+	}
+	return (await response.json()) as T;
+}
+
+export async function queryRemoteMeterWideEvents(
+	query: RemoteMeterWideEventQuery = {},
+): Promise<RemoteMeterWideEventQueryResult | null> {
+	const config = await resolveRemoteMeterConfig();
+	if (!config) {
+		return null;
+	}
+
+	try {
+		return await postMeter<RemoteMeterWideEventQueryResult>(
+			config,
+			QUERY_WIDE_EVENTS_PATH,
+			buildWideEventQueryBody(config, query),
+		);
+	} catch (error) {
+		logger.debug("Failed to query meter wide events", {
+			error: error instanceof Error ? error.message : String(error),
+			agentId: query.agentId,
+			surface: query.surface,
+		});
+		return null;
+	}
+}
+
+export async function getRemoteMeterEventDashboard(
+	query: RemoteMeterWideEventQuery = {},
+): Promise<RemoteMeterEventDashboardResult | null> {
+	const config = await resolveRemoteMeterConfig();
+	if (!config) {
+		return null;
+	}
+
+	try {
+		return await postMeter<RemoteMeterEventDashboardResult>(
+			config,
+			GET_EVENT_DASHBOARD_PATH,
+			buildWideEventQueryBody(config, query),
+		);
+	} catch (error) {
+		logger.debug("Failed to fetch meter event dashboard", {
+			error: error instanceof Error ? error.message : String(error),
+			agentId: query.agentId,
+			surface: query.surface,
+		});
+		return null;
+	}
 }
 
 export async function mirrorCanonicalTurnEventToMeter(
@@ -184,38 +292,11 @@ export async function mirrorCanonicalTurnEventToMeter(
 	}
 
 	try {
-		const response = await fetch(`${config.baseUrl}${INGEST_WIDE_EVENT_PATH}`, {
-			method: "POST",
-			headers: buildHeaders(config),
-			body: JSON.stringify({
-				timestamp: event.timestamp,
-				teamId: config.teamId,
-				agentId: MAESTRO_AGENT_ID,
-				surface: MAESTRO_SURFACE,
-				eventType: event.type,
-				model: event.model.id,
-				provider: event.model.provider,
-				requestId: event.turnId,
-				metadata: buildMetadata(event),
-				data: event,
-				metrics: {
-					inputTokens: toNonNegativeInt(event.tokens.input),
-					outputTokens: toNonNegativeInt(event.tokens.output),
-					cacheReadTokens: toNonNegativeInt(event.tokens.cacheRead),
-					cacheWriteTokens: toNonNegativeInt(event.tokens.cacheWrite),
-					totalCostUsd: event.costUsd,
-					durationMs: toNonNegativeInt(event.totalDurationMs),
-					toolCallsCount: toNonNegativeInt(event.toolCount),
-				},
-			}),
-			signal: AbortSignal.timeout(config.timeoutMs),
-		});
-		if (!response.ok) {
-			const text = await response.text();
-			throw new Error(
-				`meter service returned ${response.status}: ${text || response.statusText}`,
-			);
-		}
+		await postMeter(
+			config,
+			INGEST_WIDE_EVENT_PATH,
+			buildWideEventBody(config, event),
+		);
 		return true;
 	} catch (error) {
 		logger.debug(
