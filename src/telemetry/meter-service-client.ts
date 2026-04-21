@@ -6,6 +6,12 @@ import {
 	resolveOrganizationId,
 	resolvePlatformServiceConfig,
 } from "../platform/client.js";
+import {
+	PLATFORM_CONNECT_METHODS,
+	PLATFORM_CONNECT_SERVICES,
+	platformConnectMethodPath,
+	platformConnectServicePath,
+} from "../platform/core-services.js";
 import { createLogger } from "../utils/logger.js";
 import type { CanonicalTurnEvent } from "./wide-events.js";
 
@@ -13,9 +19,15 @@ const logger = createLogger("telemetry:meter");
 
 const DEFAULT_TIMEOUT_MS = 2_000;
 const DEFAULT_MAX_ATTEMPTS = 2;
-const INGEST_WIDE_EVENT_PATH = "/meter.v1.MeterService/IngestWideEvent";
-const QUERY_WIDE_EVENTS_PATH = "/meter.v1.MeterService/QueryWideEvents";
-const GET_EVENT_DASHBOARD_PATH = "/meter.v1.MeterService/GetEventDashboard";
+const INGEST_WIDE_EVENT_PATH = platformConnectMethodPath(
+	PLATFORM_CONNECT_METHODS.meter.ingestWideEvent,
+);
+const QUERY_WIDE_EVENTS_PATH = platformConnectMethodPath(
+	PLATFORM_CONNECT_METHODS.meter.queryWideEvents,
+);
+const GET_EVENT_DASHBOARD_PATH = platformConnectMethodPath(
+	PLATFORM_CONNECT_METHODS.meter.getEventDashboard,
+);
 const MAESTRO_AGENT_ID = "maestro";
 const MAESTRO_SURFACE = "maestro";
 
@@ -83,7 +95,7 @@ async function resolveRemoteMeterConfig(): Promise<RemoteMeterConfig | null> {
 			INGEST_WIDE_EVENT_PATH,
 			QUERY_WIDE_EVENTS_PATH,
 			GET_EVENT_DASHBOARD_PATH,
-			"/meter.v1.MeterService",
+			platformConnectServicePath(PLATFORM_CONNECT_SERVICES.meter),
 		],
 		defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
 		defaultMaxAttempts: DEFAULT_MAX_ATTEMPTS,

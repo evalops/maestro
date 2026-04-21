@@ -7,6 +7,12 @@ import {
 	resolvePlatformServiceConfig,
 	trimString,
 } from "../platform/client.js";
+import {
+	PLATFORM_CONNECT_METHODS,
+	PLATFORM_CONNECT_SERVICES,
+	platformConnectMethodPath,
+	platformConnectServicePath,
+} from "../platform/core-services.js";
 import { createLogger } from "../utils/logger.js";
 import type {
 	ResolvePromptTemplateInput,
@@ -16,7 +22,9 @@ import type {
 const logger = createLogger("prompts:service");
 const DEFAULT_TIMEOUT_MS = 2_000;
 const DEFAULT_MAX_ATTEMPTS = 2;
-const RESOLVE_PROMPT_PATH = "/prompts.v1.PromptService/Resolve";
+const RESOLVE_PROMPT_PATH = platformConnectMethodPath(
+	PLATFORM_CONNECT_METHODS.prompts.resolve,
+);
 const LEGACY_RESOLVE_PROMPT_PATH = "/v1/resolve";
 const PROMPTS_BASE_URL_ENV_VARS = [
 	"PROMPTS_SERVICE_URL",
@@ -108,7 +116,7 @@ async function resolvePromptsServiceConfig(): Promise<PromptsServiceConfig | nul
 		baseUrlSuffixes: [
 			RESOLVE_PROMPT_PATH,
 			LEGACY_RESOLVE_PROMPT_PATH,
-			"/prompts.v1.PromptService",
+			platformConnectServicePath(PLATFORM_CONNECT_SERVICES.prompts),
 		],
 		defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
 		defaultMaxAttempts: DEFAULT_MAX_ATTEMPTS,
