@@ -5,8 +5,6 @@ export const CONNECT_PROTOCOL_VERSION = "1";
 export const DEFAULT_PLATFORM_TIMEOUT_MS = 2_000;
 export const DEFAULT_PLATFORM_MAX_ATTEMPTS = 2;
 
-export type DownstreamFailureMode = "optional" | "required";
-
 export interface PlatformServiceConfig {
 	baseUrl: string;
 	token?: string;
@@ -35,7 +33,6 @@ export interface ResolvePlatformServiceConfigOptions {
 
 export interface PlatformRequestOptions {
 	serviceName: string;
-	failureMode: DownstreamFailureMode;
 	timeoutMs: number;
 	maxAttempts?: number;
 	signal?: AbortSignal;
@@ -210,7 +207,7 @@ export function buildPlatformConnectHeaders(
 	});
 }
 
-async function fetchWithRetry(
+export async function fetchWithRetry(
 	url: string,
 	init: RequestInit,
 	options: PlatformRequestOptions,

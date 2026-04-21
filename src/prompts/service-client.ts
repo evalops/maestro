@@ -1,6 +1,7 @@
 import {
 	type PlatformServiceConfig,
 	buildPlatformJsonHeaders,
+	fetchWithRetry,
 	getEnvValue,
 	postPlatformConnect,
 	resolvePlatformServiceConfig,
@@ -131,7 +132,6 @@ async function resolveViaPlatformConnect(
 		},
 		{
 			serviceName: "prompts service",
-			failureMode: "optional",
 			timeoutMs: config.timeoutMs,
 			maxAttempts: config.maxAttempts,
 		},
@@ -160,11 +160,18 @@ async function resolveViaLegacyRest(
 		url.searchParams.set("surface", trimString(input.surface)!);
 	}
 
-	const response = await fetch(url, {
-		method: "GET",
-		headers: buildPlatformJsonHeaders(config),
-		signal: AbortSignal.timeout(config.timeoutMs),
-	});
+	const response = await fetchWithRetry(
+		url.toString(),
+		{
+			method: "GET",
+			headers: buildPlatformJsonHeaders(config),
+		},
+		{
+			serviceName: "prompts service",
+			timeoutMs: config.timeoutMs,
+			maxAttempts: config.maxAttempts,
+		},
+	);
 	if (response.status === 404) {
 		return null;
 	}

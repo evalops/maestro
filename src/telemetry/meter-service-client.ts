@@ -221,7 +221,6 @@ async function postMeter<T>(
 		stripUndefinedValues(body),
 		{
 			serviceName: "meter service",
-			failureMode: "optional",
 			timeoutMs: config.timeoutMs,
 			maxAttempts: config.maxAttempts,
 		},
