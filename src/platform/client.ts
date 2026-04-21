@@ -156,7 +156,7 @@ export async function resolvePlatformServiceConfig(
 	}
 
 	const token = await resolvePlatformToken(options.tokenEnvVars);
-	if (!token && options.requireToken === true) {
+	if (!token && options.requireToken !== false) {
 		return null;
 	}
 
@@ -237,24 +237,6 @@ async function fetchWithRetry(
 	throw lastError instanceof Error
 		? lastError
 		: new Error(`${options.serviceName} request failed`);
-}
-
-export async function postPlatformJson(
-	config: PlatformServiceConfig,
-	path: string,
-	body: Record<string, unknown>,
-	options: PlatformRequestOptions,
-	headers?: Record<string, string | undefined>,
-): Promise<Response> {
-	return fetchWithRetry(
-		`${config.baseUrl}${path}`,
-		{
-			method: "POST",
-			headers: buildPlatformJsonHeaders(config, headers),
-			body: JSON.stringify(body),
-		},
-		options,
-	);
 }
 
 export async function postPlatformConnect(
