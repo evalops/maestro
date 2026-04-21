@@ -4,12 +4,25 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { recallRemoteDurableMemories } from "../../src/memory/service-client.js";
+import {
+	PLATFORM_CONNECT_METHODS,
+	PLATFORM_HTTP_ROUTES,
+	platformConnectMethodPath,
+} from "../../src/platform/core-services.js";
 import { resolvePromptTemplate } from "../../src/prompts/service-client.js";
 import {
 	hasRemoteMeterDestination,
 	mirrorCanonicalTurnEventToMeter,
 } from "../../src/telemetry/meter-service-client.js";
 import { TurnCollector } from "../../src/telemetry/wide-events.js";
+
+const PROMPTS_RESOLVE_PATH = platformConnectMethodPath(
+	PLATFORM_CONNECT_METHODS.prompts.resolve,
+);
+const METER_INGEST_WIDE_EVENT_PATH = platformConnectMethodPath(
+	PLATFORM_CONNECT_METHODS.meter.ingestWideEvent,
+);
+const MEMORY_RECALL_PATH = PLATFORM_HTTP_ROUTES.memory.recall;
 
 type CapturedRequest = {
 	body?: Record<string, unknown>;
@@ -111,7 +124,7 @@ describe("Platform core service integration smoke", () => {
 				};
 				requests.push(request);
 
-				if (parsed.pathname === "/prompts.v1.PromptService/Resolve") {
+				if (parsed.pathname === PROMPTS_RESOLVE_PATH) {
 					return new Response(
 						JSON.stringify({
 							version: {
@@ -124,7 +137,7 @@ describe("Platform core service integration smoke", () => {
 					);
 				}
 
-				if (parsed.pathname === "/v1/memories/recall") {
+				if (parsed.pathname === MEMORY_RECALL_PATH) {
 					return new Response(
 						JSON.stringify({
 							query: request.body?.query,
@@ -152,7 +165,7 @@ describe("Platform core service integration smoke", () => {
 					);
 				}
 
-				if (parsed.pathname === "/meter.v1.MeterService/IngestWideEvent") {
+				if (parsed.pathname === METER_INGEST_WIDE_EVENT_PATH) {
 					return new Response(null, { status: 204 });
 				}
 
@@ -196,14 +209,13 @@ describe("Platform core service integration smoke", () => {
 		).resolves.toBe(true);
 
 		const promptRequest = requests.find(
-			(request) => request.pathname === "/prompts.v1.PromptService/Resolve",
+			(request) => request.pathname === PROMPTS_RESOLVE_PATH,
 		);
 		const memoryRequest = requests.find(
-			(request) => request.pathname === "/v1/memories/recall",
+			(request) => request.pathname === MEMORY_RECALL_PATH,
 		);
 		const meterRequest = requests.find(
-			(request) =>
-				request.pathname === "/meter.v1.MeterService/IngestWideEvent",
+			(request) => request.pathname === METER_INGEST_WIDE_EVENT_PATH,
 		);
 
 		expect(promptRequest).toMatchObject({
