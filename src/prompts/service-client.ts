@@ -171,6 +171,7 @@ async function resolveViaPlatformConnect(
 		{
 			name,
 			label: trimString(input.label) ?? "production",
+			surface: trimString(input.surface),
 		},
 		{
 			serviceName: "prompts service",
