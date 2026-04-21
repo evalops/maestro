@@ -3,7 +3,6 @@ import {
 	fetchWithRetry,
 	getEnvValue,
 	postPlatformConnect,
-	resolveConfiguredToken,
 	resolveOrganizationId,
 	resolvePlatformServiceConfig,
 	trimString,
@@ -88,11 +87,9 @@ function warnPromptsServiceMisconfiguration(): void {
 		);
 		return;
 	}
-	if (!resolveConfiguredToken(PROMPTS_TOKEN_ENV_VARS)) {
-		logger.warn(
-			"Prompts service configured without access token; retaining bundled prompts",
-		);
-	}
+	logger.warn(
+		"Prompts service configured without access token; retaining bundled prompts",
+	);
 }
 
 async function resolvePromptsServiceConfig(): Promise<PromptsServiceConfig | null> {
