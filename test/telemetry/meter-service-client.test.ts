@@ -106,9 +106,7 @@ describe("meter telemetry client", () => {
 	});
 
 	it("treats empty successful ingest responses as mirrored", async () => {
-		const fetchMock = vi.fn(
-			async () => new Response(null, { status: 204 }),
-		);
+		const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
 		vi.stubGlobal("fetch", fetchMock);
 
 		const result = await mirrorCanonicalTurnEventToMeter(

@@ -243,7 +243,9 @@ describe("prompts service client", () => {
 
 		expect(fetchMock).not.toHaveBeenCalled();
 		expect(logSpy).toHaveBeenCalledWith(
-			expect.stringContaining("Prompts service configured without access token"),
+			expect.stringContaining(
+				"Prompts service configured without access token",
+			),
 		);
 	});
 });
