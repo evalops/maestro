@@ -3,9 +3,9 @@ import {
 	fetchWithRetry,
 	getEnvValue,
 	postPlatformConnect,
-	resolveConfiguredToken,
 	resolveOrganizationId,
 	resolvePlatformServiceConfig,
+	resolvePlatformToken,
 	trimString,
 } from "../platform/client.js";
 import { createLogger } from "../utils/logger.js";
@@ -78,7 +78,7 @@ function hasConfiguredPromptsBaseUrl(): boolean {
 	);
 }
 
-function warnPromptsServiceMisconfiguration(): void {
+async function warnPromptsServiceMisconfiguration(): Promise<void> {
 	if (!hasConfiguredPromptsBaseUrl()) {
 		return;
 	}
@@ -88,7 +88,7 @@ function warnPromptsServiceMisconfiguration(): void {
 		);
 		return;
 	}
-	if (!resolveConfiguredToken(PROMPTS_TOKEN_ENV_VARS)) {
+	if (!(await resolvePlatformToken(PROMPTS_TOKEN_ENV_VARS))) {
 		logger.warn(
 			"Prompts service configured without access token; retaining bundled prompts",
 		);
@@ -119,7 +119,7 @@ async function resolvePromptsServiceConfig(): Promise<PromptsServiceConfig | nul
 		requireToken: true,
 	});
 	if (!config) {
-		warnPromptsServiceMisconfiguration();
+		await warnPromptsServiceMisconfiguration();
 		return null;
 	}
 
