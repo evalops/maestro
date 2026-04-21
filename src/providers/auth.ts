@@ -198,6 +198,36 @@ function resolveEvalOpsProviderRef(
 	};
 }
 
+function resolveEvalOpsRequestMetadata(
+	metadata?: Record<string, unknown>,
+): Record<string, string> {
+	return Object.fromEntries(
+		Object.entries({
+			agent_id:
+				getNonEmptyString(metadata?.agentId) ??
+				getNonEmptyString(metadata?.agent_id) ??
+				process.env.MAESTRO_EVALOPS_AGENT_ID?.trim() ??
+				process.env.MAESTRO_AGENT_ID?.trim(),
+			run_id:
+				getNonEmptyString(metadata?.runId) ??
+				getNonEmptyString(metadata?.run_id) ??
+				process.env.MAESTRO_EVALOPS_RUN_ID?.trim(),
+			session_id:
+				getNonEmptyString(metadata?.sessionId) ??
+				getNonEmptyString(metadata?.session_id) ??
+				process.env.MAESTRO_SESSION_ID?.trim(),
+			surface:
+				getNonEmptyString(metadata?.surface) ??
+				process.env.MAESTRO_EVALOPS_SURFACE?.trim() ??
+				process.env.MAESTRO_SURFACE?.trim() ??
+				"maestro",
+		}).filter(
+			(entry): entry is [string, string] =>
+				typeof entry[1] === "string" && entry[1].trim().length > 0,
+		),
+	);
+}
+
 function buildEvalOpsCredential(
 	provider: string,
 	token: string,
@@ -220,6 +250,7 @@ function buildEvalOpsCredential(
 		},
 		metadata,
 		requestBody: {
+			metadata: resolveEvalOpsRequestMetadata(metadata),
 			provider_ref: resolveEvalOpsProviderRef(provider, metadata),
 		},
 	};

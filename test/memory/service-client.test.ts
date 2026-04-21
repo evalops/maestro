@@ -22,6 +22,7 @@ describe("memory service client", () => {
 	afterEach(() => {
 		Reflect.deleteProperty(process.env, "MAESTRO_MEMORY_BASE");
 		Reflect.deleteProperty(process.env, "MAESTRO_MEMORY_ACCESS_TOKEN");
+		Reflect.deleteProperty(process.env, "MAESTRO_MEMORY_AGENT_ID");
 		Reflect.deleteProperty(process.env, "MAESTRO_EVALOPS_ORG_ID");
 		Reflect.deleteProperty(process.env, "MAESTRO_MEMORY_TEAM_ID");
 		vi.unstubAllGlobals();
@@ -79,10 +80,23 @@ describe("memory service client", () => {
 		);
 
 		expect(requests[0]?.url).toContain("/v1/memories?");
+		expect(requests[0]?.url).toContain("agent_id=maestro");
+		expect(requests[0]?.url).toContain("review_status=approved");
 		expect(requests[1]?.method).toBe("POST");
 		const createBody = JSON.parse(String(requests[1]?.body));
 		expect(createBody.repository).toBeTruthy();
 		expect(createBody.agent).toBe("maestro");
+		expect(createBody.agent_id).toBe("maestro");
+		expect(createBody.review_status).toBe("approved");
+		expect(createBody.source_references).toEqual([
+			expect.objectContaining({
+				type: "maestro-durable-memory",
+				metadata: expect.objectContaining({
+					source: "maestro",
+					topic: "team-preferences",
+				}),
+			}),
+		]);
 		expect(createBody.tags).toEqual(
 			expect.arrayContaining([
 				"auto",
@@ -105,9 +119,15 @@ describe("memory service client", () => {
 	});
 
 	it("updates matching remote durable memories when metadata changes", async () => {
+		const requests: Array<{ body?: string; method?: string; url: string }> = [];
 		const fetchMock = vi.fn(
 			async (input: RequestInfo | URL, init?: RequestInit) => {
 				const url = typeof input === "string" ? input : input.toString();
+				requests.push({
+					url,
+					method: init?.method,
+					body: typeof init?.body === "string" ? init.body : undefined,
+				});
 				if (url.includes("/v1/memories?")) {
 					return new Response(
 						JSON.stringify({
@@ -170,6 +190,19 @@ describe("memory service client", () => {
 		);
 
 		expect(fetchMock).toHaveBeenCalledTimes(2);
+		const updateBody = JSON.parse(String(requests[1]?.body));
+		expect(updateBody.review_status).toBe("approved");
+		expect(updateBody.source_references).toEqual([
+			expect.objectContaining({
+				type: "maestro-durable-memory",
+				metadata: expect.objectContaining({
+					projectId: "repo_123",
+					projectName: "maestro",
+					source: "maestro",
+					topic: "team-preferences",
+				}),
+			}),
+		]);
 		expect(result).toMatchObject({
 			created: false,
 			updated: true,
@@ -183,9 +216,15 @@ describe("memory service client", () => {
 	});
 
 	it("recalls remote durable memories for the current repository scope", async () => {
+		const requests: Array<{ body?: string; method?: string; url: string }> = [];
 		const fetchMock = vi.fn(
 			async (input: RequestInfo | URL, init?: RequestInit) => {
 				const url = typeof input === "string" ? input : input.toString();
+				requests.push({
+					url,
+					method: init?.method,
+					body: typeof init?.body === "string" ? init.body : undefined,
+				});
 				if (url.endsWith("/v1/memories/recall")) {
 					const body = JSON.parse(String(init?.body));
 					return new Response(
@@ -235,6 +274,9 @@ describe("memory service client", () => {
 		);
 
 		expect(fetchMock).toHaveBeenCalledTimes(1);
+		const recallBody = JSON.parse(String(requests[0]?.body));
+		expect(recallBody.agent_id).toBe("maestro");
+		expect(recallBody.review_status).toBe("approved");
 		expect(results).toEqual([
 			expect.objectContaining({
 				score: 0.73,

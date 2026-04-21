@@ -55,6 +55,12 @@ describe("auth resolver", () => {
 			process.env.CODEX_API_KEY = originalCodex;
 		}
 		Reflect.deleteProperty(process.env, "EVALOPS_FEATURE_FLAGS_PATH");
+		Reflect.deleteProperty(process.env, "MAESTRO_AGENT_ID");
+		Reflect.deleteProperty(process.env, "MAESTRO_EVALOPS_AGENT_ID");
+		Reflect.deleteProperty(process.env, "MAESTRO_EVALOPS_RUN_ID");
+		Reflect.deleteProperty(process.env, "MAESTRO_EVALOPS_SURFACE");
+		Reflect.deleteProperty(process.env, "MAESTRO_SESSION_ID");
+		Reflect.deleteProperty(process.env, "MAESTRO_SURFACE");
 		resetFeatureFlagCacheForTests();
 		vi.clearAllMocks();
 	});
@@ -177,6 +183,9 @@ describe("auth resolver", () => {
 			"X-Organization-ID": "org_evalops",
 		});
 		expect(credential?.requestBody).toEqual({
+			metadata: {
+				surface: "maestro",
+			},
 			provider_ref: {
 				provider: "openai",
 				environment: "prod",
@@ -223,6 +232,9 @@ describe("auth resolver", () => {
 				definition.usesAnthropicOAuth ? "anthropic-oauth" : "api-key",
 			);
 			expect(credential?.requestBody).toEqual({
+				metadata: {
+					surface: "maestro",
+				},
 				provider_ref: {
 					provider: definition.providerRefProvider,
 					environment: "prod",
@@ -253,6 +265,9 @@ describe("auth resolver", () => {
 		const resolver = createAuthResolver({ mode: "auto" });
 		const credential = await resolver("evalops-openrouter");
 		expect(credential?.requestBody).toEqual({
+			metadata: {
+				surface: "maestro",
+			},
 			provider_ref: {
 				provider: "openrouter",
 				environment: "prod",
@@ -262,6 +277,47 @@ describe("auth resolver", () => {
 		});
 		Reflect.deleteProperty(process.env, "MAESTRO_EVALOPS_CREDENTIAL_NAME");
 		Reflect.deleteProperty(process.env, "MAESTRO_EVALOPS_TEAM_ID");
+		mockedGetToken.mockReset();
+		mockedLoadCreds.mockReset();
+	});
+
+	it("passes EvalOps managed request metadata for LLM gateway attribution", async () => {
+		const mockedGetToken = vi.mocked(getOAuthToken);
+		const mockedLoadCreds = vi.mocked(loadOAuthCredentials);
+		process.env.MAESTRO_AGENT_ID = "agent_cli";
+		process.env.MAESTRO_EVALOPS_RUN_ID = "run_123";
+		process.env.MAESTRO_SESSION_ID = "session_456";
+		process.env.MAESTRO_SURFACE = "cli";
+		mockedGetToken.mockResolvedValue("evalops-token");
+		mockedLoadCreds.mockReturnValue({
+			type: "oauth",
+			access: "evalops-token",
+			refresh: "",
+			expires: Date.now() + 60_000,
+			metadata: {
+				organizationId: "org_evalops",
+				providerRef: {
+					provider: "openai",
+					environment: "prod",
+				},
+			},
+		});
+
+		const resolver = createAuthResolver({ mode: "auto" });
+		const credential = await resolver("evalops");
+
+		expect(credential?.requestBody).toEqual({
+			metadata: {
+				agent_id: "agent_cli",
+				run_id: "run_123",
+				session_id: "session_456",
+				surface: "cli",
+			},
+			provider_ref: {
+				provider: "openai",
+				environment: "prod",
+			},
+		});
 		mockedGetToken.mockReset();
 		mockedLoadCreds.mockReset();
 	});

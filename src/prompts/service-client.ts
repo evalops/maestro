@@ -1,5 +1,12 @@
-import { getOAuthToken } from "../oauth/index.js";
-import { loadOAuthCredentials } from "../oauth/storage.js";
+import {
+	type PlatformServiceConfig,
+	fetchWithRetry,
+	getEnvValue,
+	postPlatformConnect,
+	resolveOrganizationId,
+	resolvePlatformServiceConfig,
+	trimString,
+} from "../platform/client.js";
 import { createLogger } from "../utils/logger.js";
 import type {
 	ResolvePromptTemplateInput,
@@ -8,13 +15,32 @@ import type {
 
 const logger = createLogger("prompts:service");
 const DEFAULT_TIMEOUT_MS = 2_000;
+const DEFAULT_MAX_ATTEMPTS = 2;
+const RESOLVE_PROMPT_PATH = "/prompts.v1.PromptService/Resolve";
+const LEGACY_RESOLVE_PROMPT_PATH = "/v1/resolve";
+const PROMPTS_BASE_URL_ENV_VARS = [
+	"PROMPTS_SERVICE_URL",
+	"MAESTRO_PROMPTS_SERVICE_URL",
+] as const;
+const PROMPTS_TOKEN_ENV_VARS = [
+	"PROMPTS_SERVICE_TOKEN",
+	"MAESTRO_PROMPTS_SERVICE_TOKEN",
+	"MAESTRO_EVALOPS_ACCESS_TOKEN",
+	"EVALOPS_TOKEN",
+] as const;
+const PROMPTS_ORGANIZATION_ENV_VARS = [
+	"PROMPTS_SERVICE_ORGANIZATION_ID",
+	"MAESTRO_PROMPTS_ORGANIZATION_ID",
+	"MAESTRO_EVALOPS_ORG_ID",
+	"EVALOPS_ORGANIZATION_ID",
+	"MAESTRO_ENTERPRISE_ORG_ID",
+] as const;
 
-interface PromptsServiceConfig {
-	serviceUrl: string;
-	serviceToken?: string;
-	organizationId: string;
-	timeoutMs: number;
-}
+type PromptsTransport = "connect" | "legacy-rest";
+
+type PromptsServiceConfig = PlatformServiceConfig & {
+	transport: PromptsTransport;
+};
 
 interface ResolveVersionPayload {
 	id?: string;
@@ -26,75 +52,86 @@ interface ResolveResponse {
 	version?: ResolveVersionPayload;
 }
 
-function trimString(value: string | undefined): string | undefined {
-	const trimmed = value?.trim();
-	return trimmed ? trimmed : undefined;
-}
-
-function normalizeBaseUrl(baseUrl: string): string {
-	return baseUrl.replace(/\/+$/, "");
-}
-
-function resolveOrganizationId(): string | undefined {
-	const envOrgId =
-		trimString(process.env.PROMPTS_SERVICE_ORGANIZATION_ID) ??
-		trimString(process.env.MAESTRO_EVALOPS_ORG_ID) ??
-		trimString(process.env.EVALOPS_ORGANIZATION_ID) ??
-		trimString(process.env.MAESTRO_ENTERPRISE_ORG_ID);
-	if (envOrgId) {
-		return envOrgId;
+function resolvePromptsTransport(): PromptsTransport {
+	const configured = trimString(
+		process.env.PROMPTS_SERVICE_TRANSPORT,
+	)?.toLowerCase();
+	if (configured === "connect" || configured === "platform") {
+		return "connect";
 	}
-	const stored = loadOAuthCredentials("evalops")?.metadata?.organizationId;
-	return typeof stored === "string" && stored.trim().length > 0
-		? stored.trim()
-		: undefined;
+	if (configured === "legacy" || configured === "legacy-rest") {
+		return "legacy-rest";
+	}
+	const serviceSpecificBase = getEnvValue(PROMPTS_BASE_URL_ENV_VARS);
+	return serviceSpecificBase ? "legacy-rest" : "connect";
+}
+
+function hasConfiguredPromptsBaseUrl(): boolean {
+	return Boolean(
+		getEnvValue([
+			...PROMPTS_BASE_URL_ENV_VARS,
+			"MAESTRO_PLATFORM_BASE_URL",
+			"MAESTRO_EVALOPS_BASE_URL",
+			"EVALOPS_BASE_URL",
+		]),
+	);
+}
+
+function warnPromptsServiceMisconfiguration(): void {
+	if (!hasConfiguredPromptsBaseUrl()) {
+		return;
+	}
+	if (!resolveOrganizationId(PROMPTS_ORGANIZATION_ENV_VARS)) {
+		logger.warn(
+			"Prompts service configured without organization id; retaining bundled prompts",
+		);
+		return;
+	}
+	logger.warn(
+		"Prompts service configured without access token; retaining bundled prompts",
+	);
 }
 
 async function resolvePromptsServiceConfig(): Promise<PromptsServiceConfig | null> {
-	const serviceUrl = trimString(process.env.PROMPTS_SERVICE_URL);
-	if (!serviceUrl) {
+	const config = await resolvePlatformServiceConfig({
+		baseUrlEnvVars: PROMPTS_BASE_URL_ENV_VARS,
+		tokenEnvVars: PROMPTS_TOKEN_ENV_VARS,
+		organizationEnvVars: PROMPTS_ORGANIZATION_ENV_VARS,
+		timeoutEnvVars: [
+			"PROMPTS_SERVICE_TIMEOUT_MS",
+			"MAESTRO_PROMPTS_TIMEOUT_MS",
+		],
+		maxAttemptsEnvVars: [
+			"PROMPTS_SERVICE_MAX_ATTEMPTS",
+			"MAESTRO_PROMPTS_MAX_ATTEMPTS",
+		],
+		baseUrlSuffixes: [
+			RESOLVE_PROMPT_PATH,
+			LEGACY_RESOLVE_PROMPT_PATH,
+			"/prompts.v1.PromptService",
+		],
+		defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
+		defaultMaxAttempts: DEFAULT_MAX_ATTEMPTS,
+		requireOrganizationId: true,
+		requireToken: true,
+	});
+	if (!config) {
+		warnPromptsServiceMisconfiguration();
 		return null;
 	}
-
-	const organizationId = resolveOrganizationId();
-	if (!organizationId) {
-		logger.warn(
-			"Prompts service configured without organization id; retaining bundled system prompt",
-		);
-		return null;
-	}
-
-	const serviceToken =
-		trimString(process.env.PROMPTS_SERVICE_TOKEN) ??
-		trimString(process.env.MAESTRO_EVALOPS_ACCESS_TOKEN) ??
-		(await getOAuthToken("evalops"));
-	if (!serviceToken) {
-		logger.warn(
-			"Prompts service configured without access token; retaining bundled system prompt",
-		);
-		return null;
-	}
-
-	const timeoutMs = Number.parseInt(
-		process.env.PROMPTS_SERVICE_TIMEOUT_MS ?? "",
-		10,
-	);
 
 	return {
-		serviceUrl: normalizeBaseUrl(serviceUrl),
-		serviceToken,
-		organizationId,
-		timeoutMs:
-			Number.isFinite(timeoutMs) && timeoutMs > 0
-				? timeoutMs
-				: DEFAULT_TIMEOUT_MS,
+		...config,
+		transport: resolvePromptsTransport(),
 	};
 }
 
 function buildHeaders(config: PromptsServiceConfig): Record<string, string> {
 	return {
-		Authorization: `Bearer ${config.serviceToken}`,
-		"X-Organization-ID": config.organizationId,
+		...(config.token ? { Authorization: `Bearer ${config.token}` } : {}),
+		...(config.organizationId
+			? { "X-Organization-ID": config.organizationId }
+			: {}),
 	};
 }
 
@@ -120,6 +157,72 @@ function normalizeResolvedPrompt(
 	};
 }
 
+async function resolveViaPlatformConnect(
+	config: PromptsServiceConfig,
+	input: ResolvePromptTemplateInput,
+	name: string,
+): Promise<ResolveResponse | null> {
+	const response = await postPlatformConnect(
+		config,
+		RESOLVE_PROMPT_PATH,
+		{
+			name,
+			label: trimString(input.label) ?? "production",
+		},
+		{
+			serviceName: "prompts service",
+			timeoutMs: config.timeoutMs,
+			maxAttempts: config.maxAttempts,
+		},
+	);
+	if (response.status === 404) {
+		return null;
+	}
+	if (!response.ok) {
+		const text = await response.text();
+		throw new Error(
+			`prompts service returned ${response.status}: ${text || response.statusText}`,
+		);
+	}
+	return (await response.json()) as ResolveResponse;
+}
+
+async function resolveViaLegacyRest(
+	config: PromptsServiceConfig,
+	input: ResolvePromptTemplateInput,
+	name: string,
+): Promise<ResolveResponse | null> {
+	const url = new URL(LEGACY_RESOLVE_PROMPT_PATH, config.baseUrl);
+	url.searchParams.set("name", name);
+	url.searchParams.set("env", trimString(input.label) ?? "production");
+	if (trimString(input.surface)) {
+		url.searchParams.set("surface", trimString(input.surface)!);
+	}
+
+	const response = await fetchWithRetry(
+		url.toString(),
+		{
+			method: "GET",
+			headers: buildHeaders(config),
+		},
+		{
+			serviceName: "prompts service",
+			timeoutMs: config.timeoutMs,
+			maxAttempts: config.maxAttempts,
+		},
+	);
+	if (response.status === 404) {
+		return null;
+	}
+	if (!response.ok) {
+		const text = await response.text();
+		throw new Error(
+			`prompts service returned ${response.status}: ${text || response.statusText}`,
+		);
+	}
+	return (await response.json()) as ResolveResponse;
+}
+
 export async function resolvePromptTemplate(
 	input: ResolvePromptTemplateInput,
 ): Promise<ResolvedPromptTemplate | null> {
@@ -134,32 +237,15 @@ export async function resolvePromptTemplate(
 			return null;
 		}
 
-		const url = new URL("/v1/resolve", config.serviceUrl);
-		url.searchParams.set("name", name);
-		url.searchParams.set("env", trimString(input.label) ?? "production");
-		if (trimString(input.surface)) {
-			url.searchParams.set("surface", trimString(input.surface)!);
-		}
-
-		const response = await fetch(url, {
-			method: "GET",
-			headers: buildHeaders(config),
-			signal: AbortSignal.timeout(config.timeoutMs),
-		});
-		if (response.status === 404) {
+		const payload =
+			config.transport === "connect"
+				? await resolveViaPlatformConnect(config, input, name)
+				: await resolveViaLegacyRest(config, input, name);
+		if (!payload) {
 			return null;
 		}
-		if (!response.ok) {
-			const text = await response.text();
-			throw new Error(
-				`prompts service returned ${response.status}: ${text || response.statusText}`,
-			);
-		}
 
-		return normalizeResolvedPrompt(
-			input,
-			(await response.json()) as ResolveResponse,
-		);
+		return normalizeResolvedPrompt(input, payload);
 	} catch (error) {
 		logger.warn("Failed to resolve prompt template; retaining bundled prompt", {
 			error: error instanceof Error ? error.message : String(error),
