@@ -4,6 +4,19 @@ All notable changes to this project will be documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/) and adheres to semantic
 versioning when releases are cut.
 
+
+## [0.10.7] - 2026-04-22
+
+### Added
+
+- Added an npm token fallback for the release workflow while the `@evalops/maestro`
+  trusted publisher is configured.
+
+### Changed
+
+- Moved the public package namespace from `@evalops-jh/maestro` to
+  `@evalops/maestro` and updated install references.
+
 ## [0.10.6] - 2026-04-15
 
 ### Added

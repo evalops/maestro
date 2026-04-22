@@ -33,13 +33,13 @@ This README is intentionally short. Use it to get running, then jump into the do
 ### Bun (recommended)
 
 ```bash
-bun install -g @evalops-jh/maestro
+bun install -g @evalops/maestro
 ```
 
 ### npm
 
 ```bash
-npm install -g @evalops-jh/maestro
+npm install -g @evalops/maestro
 ```
 
 ### Nix

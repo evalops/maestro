@@ -4,7 +4,7 @@
 
 - `main` is the release source of truth.
 - The public repo owns npm publishing.
-- The release workflow currently publishes `@evalops-jh/maestro`; the cutover target is `@evalops/maestro`.
+- The release workflow currently publishes `@evalops/maestro`.
 
 ## Automated Flow
 
@@ -36,6 +36,9 @@
 - Keep README, JetBrains plugin docs, SDK docs, and release ops text in sync with `npm run metadata:sync`.
 - Run `npm run cutover:check` before changing package names or install instructions.
 - Use `.github/workflows/verify-published-package.yml` for a manual npm verification run against either the current package metadata or an override package/version during scope recovery.
+- npm publishing uses GitHub OIDC trusted publishing when npm has the
+  `evalops/maestro` release workflow configured; the EvalOps org `NPM_TOKEN`
+  secret remains a temporary fallback during the scope cutover.
 
 ## Rollback And Deprecation
 

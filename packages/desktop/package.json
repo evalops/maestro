@@ -1,6 +1,6 @@
 {
 	"name": "@evalops/maestro-desktop",
-	"version": "0.10.6",
+	"version": "0.10.7",
 	"description": "Maestro Desktop - Beautiful Electron app for AI-assisted development",
 	"type": "module",
 	"main": "dist-electron/main/index.js",
@@ -36,7 +36,7 @@
 		"directory": "packages/desktop"
 	},
 	"dependencies": {
-		"@evalops/contracts": "^0.10.6",
+		"@evalops/contracts": "^0.10.7",
 		"electron-store": "^10.0.1",
 		"electron-updater": "^6.3.9"
 	},

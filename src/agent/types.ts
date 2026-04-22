@@ -428,7 +428,7 @@ export type Message = UserMessage | AssistantMessage | ToolResultMessage;
  *
  * @example
  * ```typescript
- * declare module "@evalops-jh/maestro" {
+ * declare module "@evalops/maestro" {
  *   interface CustomAgentMessages {
  *     notification: { role: "notification"; text: string; timestamp: number };
  *   }

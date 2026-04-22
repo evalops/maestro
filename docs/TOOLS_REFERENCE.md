@@ -106,7 +106,7 @@ export const myTool = createTool({
 
 ## SDK Tool Types
 
-For external SDK consumers, tool input schemas are exported from `@evalops-jh/maestro`:
+For external SDK consumers, tool input schemas are exported from `@evalops/maestro`:
 
 ```typescript
 import {
@@ -118,7 +118,7 @@ import {
   getToolSchema,
   type ReadInput,
   type EditInput,
-} from '@evalops-jh/maestro';
+} from '@evalops/maestro';
 
 // Get schema at runtime
 const schema = getToolSchema('read');
