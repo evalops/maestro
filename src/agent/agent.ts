@@ -81,6 +81,7 @@
  */
 
 import { validate as uuidValidate } from "uuid";
+import { sanitizePayload } from "../safety/context-firewall.js";
 import {
 	recordMaestroToolCallAttempt,
 	recordMaestroToolCallCompleted,
@@ -1847,6 +1848,10 @@ export class Agent {
 	private handleToolExecutionStart(
 		event: Extract<AgentEvent, { type: "tool_execution_start" }>,
 	): void {
+		const safeArguments = sanitizePayload(event.args) as Record<
+			string,
+			unknown
+		>;
 		const tool = this._state.tools.find(
 			(candidate) => candidate.name === event.toolName,
 		);
@@ -1866,7 +1871,7 @@ export class Agent {
 		recordMaestroToolCallAttempt({
 			tool_call_id: event.toolCallId,
 			tool_name: event.toolName,
-			safe_arguments: event.args,
+			safe_arguments: safeArguments,
 			correlation: {
 				session_id: this._state.session?.id,
 				agent_run_step_id: event.toolCallId,

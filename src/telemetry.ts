@@ -516,6 +516,14 @@ export function getBackgroundTaskHistory(
 		.map((entry) => cloneBackgroundTaskTelemetry(entry));
 }
 
+async function awaitEventBusTaskSafely(task: Promise<void>): Promise<void> {
+	try {
+		await task;
+	} catch (_error) {
+		// Audit-bus publishing must never affect the local agent runtime.
+	}
+}
+
 export async function recordTelemetry(event: TelemetryEvent): Promise<void> {
 	const openTelemetryEnabled = isOpenTelemetryEnabled();
 	if (openTelemetryEnabled) {
@@ -525,12 +533,12 @@ export async function recordTelemetry(event: TelemetryEvent): Promise<void> {
 
 	const legacyEnabled = telemetryEnabled && samplingRate > 0;
 	if (!legacyEnabled) {
-		await eventBusTask;
+		await awaitEventBusTaskSafely(eventBusTask);
 		return;
 	}
 
 	if (samplingRate < 1 && Math.random() > samplingRate) {
-		await eventBusTask;
+		await awaitEventBusTaskSafely(eventBusTask);
 		return;
 	}
 
