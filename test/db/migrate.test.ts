@@ -59,7 +59,7 @@ describe("migrate", () => {
 	it("marks the initial migration applied instead of replaying existing schema", async () => {
 		const applied = await migrate();
 
-		expect(applied).toBe(3);
+		expect(applied).toBe(4);
 		expect(
 			mocks.queries.some((query) =>
 				query.includes('CREATE TYPE "public"."alert_severity"'),
@@ -77,6 +77,13 @@ describe("migrate", () => {
 				query.includes('CREATE TABLE IF NOT EXISTS "shared_sessions"'),
 			),
 		).toBe(true);
+		expect(
+			mocks.queries.some((query) =>
+				query.includes(
+					'ALTER TABLE "permissions" ADD COLUMN IF NOT EXISTS "action"',
+				),
+			),
+		).toBe(true);
 	});
 
 	it("also backfills the shared session migration when that table already exists", async () => {
@@ -84,7 +91,7 @@ describe("migrate", () => {
 
 		const applied = await migrate();
 
-		expect(applied).toBe(2);
+		expect(applied).toBe(3);
 		expect(
 			mocks.queries.some((query) =>
 				query.includes('CREATE TABLE IF NOT EXISTS "shared_sessions"'),

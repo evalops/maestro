@@ -70,6 +70,42 @@ describe("database migration files", () => {
 		expect(repairSql).not.toMatch(/\bDELETE\s+FROM\b/i);
 	});
 
+	it("includes an idempotent repair migration for legacy RBAC table shape", () => {
+		const journal = JSON.parse(
+			readFileSync(join(migrationsDir, "meta", "_journal.json"), "utf-8"),
+		) as MigrationJournal;
+		const tags = journal.entries.map((entry) => entry.tag);
+
+		expect(tags).toContain("0004_reconcile_legacy_rbac_tables");
+		expect(tags.indexOf("0004_reconcile_legacy_rbac_tables")).toBeGreaterThan(
+			tags.indexOf("0003_ensure_runtime_identity_tables"),
+		);
+
+		const repairSql = readFileSync(
+			join(migrationsDir, "0004_reconcile_legacy_rbac_tables.sql"),
+			"utf-8",
+		);
+
+		expect(repairSql).toContain(
+			'ALTER TABLE "permissions" ADD COLUMN IF NOT EXISTS "action"',
+		);
+		expect(repairSql).toContain(
+			'CREATE UNIQUE INDEX IF NOT EXISTS "permission_resource_action_idx"',
+		);
+		expect(repairSql).toContain(
+			'ALTER TABLE "roles" ADD COLUMN IF NOT EXISTS "org_id"',
+		);
+		expect(repairSql).toContain(
+			'CREATE UNIQUE INDEX IF NOT EXISTS "role_system_name_idx"',
+		);
+		expect(repairSql).toContain(
+			'CREATE UNIQUE INDEX IF NOT EXISTS "role_permission_pk"',
+		);
+		expect(repairSql).toContain("--> statement-breakpoint");
+		expect(repairSql).not.toMatch(/\bDROP\s+TABLE\b/i);
+		expect(repairSql).not.toMatch(/\bDELETE\s+FROM\b/i);
+	});
+
 	it("copies SQL migrations into the runtime Docker image", () => {
 		const dockerfile = readFileSync(dockerfilePath, "utf-8");
 
