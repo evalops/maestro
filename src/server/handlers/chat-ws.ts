@@ -767,29 +767,6 @@ export function handleChatWebSocket(
 					if (event.message.role === "assistant") {
 						automaticMemoryExtraction.schedule(sessionManager.getSessionFile());
 					}
-					if (sessionManager.shouldInitializeSession(agent.state.messages)) {
-						void initializeSessionIfNeeded()
-							.then((initializationError) => {
-								if (initializationError) {
-									wsSession.sendEvent({
-										type: "error",
-										message: `[Policy] ${initializationError}`,
-									});
-									wsSession.end();
-								}
-							})
-							.catch((error) => {
-								logger.warn("Failed to initialize session", {
-									error: error instanceof Error ? error.message : String(error),
-								});
-								wsSession.sendEvent({
-									type: "error",
-									message: "[Policy] Failed to initialize session",
-								});
-								wsSession.end();
-							});
-					}
-
 					sessionManager.updateSnapshot(
 						agent.state,
 						toSessionModelMetadata(registeredModel),

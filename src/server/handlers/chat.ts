@@ -642,30 +642,6 @@ export async function handleChat(
 				if (event.message.role === "assistant") {
 					automaticMemoryExtraction.schedule(sessionManager.getSessionFile());
 				}
-				// Auto-initialize session on first user message
-				if (sessionManager.shouldInitializeSession(agent.state.messages)) {
-					void initializeSessionIfNeeded()
-						.then((initializationError) => {
-							if (initializationError) {
-								sendSSE(sseSession, {
-									type: "error",
-									message: `[Policy] ${initializationError}`,
-								});
-								sseSession.end();
-							}
-						})
-						.catch((error) => {
-							logger.warn("Failed to initialize session", {
-								error: error instanceof Error ? error.message : String(error),
-							});
-							sendSSE(sseSession, {
-								type: "error",
-								message: "[Policy] Failed to initialize session",
-							});
-							sseSession.end();
-						});
-				}
-
 				// Update session snapshot on every event
 				sessionManager.updateSnapshot(
 					agent.state,
