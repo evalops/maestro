@@ -29,6 +29,13 @@
 			"when": 1776800459000,
 			"tag": "0003_ensure_runtime_identity_tables",
 			"breakpoints": true
+		},
+		{
+			"idx": 4,
+			"version": "7",
+			"when": 1776800460000,
+			"tag": "0004_reconcile_legacy_rbac_tables",
+			"breakpoints": true
 		}
 	]
 }
