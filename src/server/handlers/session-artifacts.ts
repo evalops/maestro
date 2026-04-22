@@ -16,7 +16,7 @@ import {
 	sendJson,
 } from "../server-utils.js";
 import {
-	createSessionManagerForRequest,
+	createWebSessionManagerForRequest,
 	resolveSessionScope,
 } from "../session-scope.js";
 import { convertAppMessagesToComposer } from "../session-serialization.js";
@@ -236,7 +236,7 @@ async function loadComposerMessages(
 	req: IncomingMessage,
 	sessionId: string,
 ): Promise<ComposerMessage[]> {
-	const sessionManager = createSessionManagerForRequest(req, true);
+	const sessionManager = createWebSessionManagerForRequest(req, true);
 	const session = await sessionManager.loadSession(sessionId);
 	if (!session) {
 		throw new ApiError(404, "Session not found");

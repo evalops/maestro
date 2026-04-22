@@ -5,6 +5,7 @@
 
 import { relations } from "drizzle-orm";
 import {
+	bigserial,
 	boolean,
 	index,
 	integer,
@@ -17,6 +18,7 @@ import {
 	uuid,
 	varchar,
 } from "drizzle-orm/pg-core";
+import type { SessionModelMetadata } from "../session/types.js";
 
 // ============================================================================
 // ENUMS
@@ -328,6 +330,80 @@ export type MessageMetadata = {
 	piiRedacted?: boolean;
 	redactedFields?: string[];
 };
+
+// ============================================================================
+// HOSTED WEB SESSIONS
+// ============================================================================
+
+export const hostedSessions = pgTable(
+	"hosted_sessions",
+	{
+		sessionId: varchar("session_id", { length: 128 }).primaryKey(),
+		scope: text("scope").notNull(),
+		subject: text("subject"),
+		title: varchar("title", { length: 255 }),
+		summary: text("summary"),
+		resumeSummary: text("resume_summary"),
+		memoryExtractionHash: varchar("memory_extraction_hash", { length: 64 }),
+		favorite: boolean("favorite").default(false).notNull(),
+		tags: jsonb("tags").$type<string[]>(),
+		cwd: text("cwd"),
+		model: varchar("model", { length: 255 }),
+		thinkingLevel: varchar("thinking_level", { length: 50 }),
+		systemPrompt: text("system_prompt"),
+		promptMetadata: jsonb("prompt_metadata").$type<unknown>(),
+		modelMetadata: jsonb("model_metadata").$type<SessionModelMetadata>(),
+		tools: jsonb("tools").$type<unknown[]>(),
+		messageCount: integer("message_count").default(0).notNull(),
+		createdAt: timestamp("created_at", { withTimezone: true })
+			.defaultNow()
+			.notNull(),
+		updatedAt: timestamp("updated_at", { withTimezone: true })
+			.defaultNow()
+			.notNull(),
+		deletedAt: timestamp("deleted_at", { withTimezone: true }),
+	},
+	(table) => ({
+		scopeUpdatedIdx: index("hosted_session_scope_updated_idx").on(
+			table.scope,
+			table.updatedAt,
+		),
+		scopeSessionIdx: uniqueIndex("hosted_session_scope_id_idx").on(
+			table.scope,
+			table.sessionId,
+		),
+		subjectUpdatedIdx: index("hosted_session_subject_updated_idx").on(
+			table.subject,
+			table.updatedAt,
+		),
+	}),
+);
+
+export const hostedSessionEntries = pgTable(
+	"hosted_session_entries",
+	{
+		id: uuid("id").primaryKey().defaultRandom(),
+		sessionId: varchar("session_id", { length: 128 })
+			.notNull()
+			.references(() => hostedSessions.sessionId, { onDelete: "cascade" }),
+		sequence: bigserial("sequence", { mode: "number" }).notNull(),
+		entryType: varchar("entry_type", { length: 64 }).notNull(),
+		entryId: varchar("entry_id", { length: 128 }),
+		entry: jsonb("entry").$type<unknown>().notNull(),
+		createdAt: timestamp("created_at", { withTimezone: true })
+			.defaultNow()
+			.notNull(),
+	},
+	(table) => ({
+		sessionSequenceIdx: uniqueIndex(
+			"hosted_session_entry_session_sequence_idx",
+		).on(table.sessionId, table.sequence),
+		sessionEntryTypeIdx: index("hosted_session_entry_type_idx").on(
+			table.sessionId,
+			table.entryType,
+		),
+	}),
+);
 
 // ============================================================================
 // AUDIT LOGS

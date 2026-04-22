@@ -36,6 +36,13 @@
 			"when": 1776800460000,
 			"tag": "0004_reconcile_legacy_rbac_tables",
 			"breakpoints": true
+		},
+		{
+			"idx": 5,
+			"version": "7",
+			"when": 1776800461000,
+			"tag": "0005_hosted_session_storage",
+			"breakpoints": true
 		}
 	]
 }

@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { getAuthSubject, requireApiAuth } from "../authz.js";
 import { respondWithApiError, sendJson } from "../server-utils.js";
-import { createSessionManagerForRequest } from "../session-scope.js";
+import { createWebSessionManagerForRequest } from "../session-scope.js";
 import { redactPii } from "../utils/redact.js";
 import { checkSessionRateLimitAsync } from "../utils/session-rate-limit.js";
 import {
@@ -86,24 +86,13 @@ export async function handleContext(
 			sendJson(res, 429, { error: "Too many context requests" }, corsHeaders);
 			return;
 		}
-		const sessionManager = createSessionManagerForRequest(req, false);
-		const sessionFile = sessionManager.getSessionFileById(sessionId);
-		if (!sessionFile) {
-			sendJson(
-				res,
-				404,
-				{ error: `Session not found: ${sessionId}` },
-				corsHeaders,
-			);
-			return;
-		}
-
+		const sessionManager = createWebSessionManagerForRequest(req, false);
 		const session = await sessionManager.loadSession(sessionId);
 		if (!session) {
 			sendJson(
 				res,
 				404,
-				{ error: "Session file exists but could not be loaded" },
+				{ error: `Session not found: ${sessionId}` },
 				corsHeaders,
 			);
 			return;

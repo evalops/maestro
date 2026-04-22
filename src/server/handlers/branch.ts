@@ -3,8 +3,9 @@ import { type Static, Type } from "@sinclair/typebox";
 import { isUserMessage } from "../../agent/type-guards.js";
 import type { UserMessageWithAttachments } from "../../agent/types.js";
 import { getAuthSubject, requireApiAuth, requireCsrf } from "../authz.js";
+import { isHostedSessionManager } from "../hosted-session-manager.js";
 import { respondWithApiError, sendJson } from "../server-utils.js";
-import { createSessionManagerForRequest } from "../session-scope.js";
+import { createWebSessionManagerForRequest } from "../session-scope.js";
 import { checkSessionRateLimitAsync } from "../utils/session-rate-limit.js";
 import { parseAndValidateJson } from "../validation.js";
 
@@ -82,24 +83,13 @@ export async function handleBranch(
 					return;
 				}
 
-				const sessionManager = createSessionManagerForRequest(req, false);
-				const sessionFile = sessionManager.getSessionFileById(sessionId);
-				if (!sessionFile) {
-					sendJson(
-						res,
-						404,
-						{ error: `Session not found: ${sessionId}` },
-						corsHeaders,
-					);
-					return;
-				}
-
+				const sessionManager = createWebSessionManagerForRequest(req, false);
 				const session = await sessionManager.loadSession(sessionId);
 				if (!session) {
 					sendJson(
 						res,
 						404,
-						{ error: "Session file exists but could not be loaded" },
+						{ error: `Session not found: ${sessionId}` },
 						corsHeaders,
 					);
 					return;
@@ -152,24 +142,13 @@ export async function handleBranch(
 				return;
 			}
 
-			const sessionManager = createSessionManagerForRequest(req, false);
-			const sessionFile = sessionManager.getSessionFileById(data.sessionId);
-			if (!sessionFile) {
-				sendJson(
-					res,
-					404,
-					{ error: `Session not found: ${data.sessionId}` },
-					corsHeaders,
-				);
-				return;
-			}
-
+			const sessionManager = createWebSessionManagerForRequest(req, false);
 			const session = await sessionManager.loadSession(data.sessionId);
 			if (!session) {
 				sendJson(
 					res,
 					404,
-					{ error: "Session file exists but could not be loaded" },
+					{ error: `Session not found: ${data.sessionId}` },
 					corsHeaders,
 				);
 				return;
@@ -241,7 +220,21 @@ export async function handleBranch(
 				return;
 			}
 
-			sessionManager.setSessionFile(sessionFile);
+			if (isHostedSessionManager(sessionManager)) {
+				await sessionManager.resumeSession(data.sessionId);
+			} else {
+				const sessionFile = sessionManager.getSessionFileById(data.sessionId);
+				if (!sessionFile) {
+					sendJson(
+						res,
+						404,
+						{ error: `Session not found: ${data.sessionId}` },
+						corsHeaders,
+					);
+					return;
+				}
+				sessionManager.setSessionFile(sessionFile);
+			}
 			const modelKey = sessionManager.loadModel();
 			const thinkingLevel = sessionManager.loadThinkingLevel();
 			const messages = session.messages.slice(0, targetIndex);
@@ -293,14 +286,23 @@ export async function handleBranch(
 				pendingToolCalls: Map<string, { toolName: string }>;
 			};
 
-			const newSessionFile = sessionManager.createBranchedSession(
-				agentState,
-				targetIndex,
-			);
-
-			const sessionManager2 = createSessionManagerForRequest(req, false);
-			sessionManager2.setSessionFile(newSessionFile);
-			const newSessionId = sessionManager2.getSessionId();
+			let newSessionId: string;
+			let newSessionFile: string;
+			if (isHostedSessionManager(sessionManager)) {
+				newSessionId = await sessionManager.createBranchedSessionFromState(
+					agentState,
+					targetIndex,
+				);
+				newSessionFile = `db:${newSessionId}`;
+			} else {
+				newSessionFile = sessionManager.createBranchedSession(
+					agentState,
+					targetIndex,
+				);
+				const sessionManager2 = createWebSessionManagerForRequest(req, false);
+				sessionManager2.setSessionFile(newSessionFile);
+				newSessionId = sessionManager2.getSessionId();
+			}
 
 			sendJson(
 				res,

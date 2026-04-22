@@ -50,8 +50,6 @@ function getComposerTextContent(content: ComposerMessage["content"]): string {
 		.join("");
 }
 
-// SessionManager type import for annotations, value import for instantiation
-import type { SessionManager } from "../../session/manager.js";
 import { toSessionModelMetadata } from "../../session/manager.js";
 import { createRuntimeSessionSummaryUpdater } from "../../session/runtime-summary-updater.js";
 import { recordSseSkip } from "../../telemetry.js";
@@ -65,6 +63,7 @@ import { publishArtifactUpdate } from "../artifacts-live-reload.js";
 import { getAuthSubject } from "../authz.js";
 import { getAgentCircuitBreaker } from "../circuit-breaker.js";
 import { clientToolService } from "../client-tools-service.js";
+import { isHostedSessionManager } from "../hosted-session-manager.js";
 import { serverRequestManager } from "../server-request-manager.js";
 import {
 	ApiError,
@@ -73,7 +72,7 @@ import {
 	sendJson,
 } from "../server-utils.js";
 import { startSessionWithPolicy } from "../session-initialization.js";
-import { createSessionManagerForRequest } from "../session-scope.js";
+import { createWebSessionManagerForRequest } from "../session-scope.js";
 import { convertComposerMessagesToApp } from "../session-serialization.js";
 import { SseSession, sendSSE, sendSessionUpdate } from "../sse-session.js";
 import { ServerRequestToolRetryService } from "../tool-retry-service.js";
@@ -255,16 +254,24 @@ export async function handleChat(
 
 		// ===== Phase 3: Session and Agent Setup =====
 		// Create session manager (false = don't auto-initialize from disk)
-		const sessionManager = createSessionManagerForRequest(req, false);
+		const sessionManager = createWebSessionManagerForRequest(req, false);
 		const subject = getAuthSubject(req);
 
 		// Resume existing session if sessionId provided
 		let existingSessionLoaded = false;
 		if (chatReq.sessionId) {
-			const sessionFile = sessionManager.getSessionFileById(chatReq.sessionId);
-			if (sessionFile) {
-				sessionManager.setSessionFile(sessionFile);
-				existingSessionLoaded = true;
+			if (isHostedSessionManager(sessionManager)) {
+				existingSessionLoaded = await sessionManager.resumeSession(
+					chatReq.sessionId,
+				);
+			} else {
+				const sessionFile = sessionManager.getSessionFileById(
+					chatReq.sessionId,
+				);
+				if (sessionFile) {
+					sessionManager.setSessionFile(sessionFile);
+					existingSessionLoaded = true;
+				}
 			}
 		}
 
@@ -380,11 +387,11 @@ export async function handleChat(
 		// Pre-load enterprise context for session tracking
 		const { enterpriseContext } = await import("../../enterprise/context.js");
 
-		const initializeSessionIfNeeded = (): string | null => {
+		const initializeSessionIfNeeded = async (): Promise<string | null> => {
 			if (existingSessionLoaded || sessionManager.isInitialized()) {
 				return null;
 			}
-			const initializationError = startSessionWithPolicy({
+			const initializationError = await startSessionWithPolicy({
 				agent,
 				enterpriseContext,
 				logger,
@@ -403,7 +410,7 @@ export async function handleChat(
 			return null;
 		};
 
-		const initializationError = initializeSessionIfNeeded();
+		const initializationError = await initializeSessionIfNeeded();
 		if (initializationError) {
 			sendSSE(sseSession, {
 				type: "error",
@@ -635,24 +642,6 @@ export async function handleChat(
 				if (event.message.role === "assistant") {
 					automaticMemoryExtraction.schedule(sessionManager.getSessionFile());
 				}
-				let initializationError: string | null = null;
-
-				// Auto-initialize session on first user message
-				if (sessionManager.shouldInitializeSession(agent.state.messages)) {
-					initializationError = startSessionWithPolicy({
-						agent,
-						enterpriseContext,
-						logger,
-						modelId: registeredModel.id,
-						onSessionReady: (sessionId) => {
-							sendSessionUpdate(sseSession, sessionId);
-							sseSession.setContext({ sessionId });
-						},
-						sessionManager,
-						subject,
-					});
-				}
-
 				// Update session snapshot on every event
 				sessionManager.updateSnapshot(
 					agent.state,
@@ -671,13 +660,6 @@ export async function handleChat(
 					},
 				);
 
-				if (initializationError) {
-					sendSSE(sseSession, {
-						type: "error",
-						message: `[Policy] ${initializationError}`,
-					});
-					sseSession.end();
-				}
 				return;
 			}
 

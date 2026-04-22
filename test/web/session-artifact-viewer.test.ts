@@ -8,6 +8,9 @@ vi.mock("../../src/server/session-scope.js", () => ({
 	createSessionManagerForRequest: vi.fn(() => ({
 		loadSession: mockLoadSession,
 	})),
+	createWebSessionManagerForRequest: vi.fn(() => ({
+		loadSession: mockLoadSession,
+	})),
 	resolveSessionScope: vi.fn(() => "scope-1"),
 }));
 

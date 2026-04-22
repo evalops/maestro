@@ -34,10 +34,11 @@ import { publishArtifactUpdate } from "../artifacts-live-reload.js";
 import { getAuthSubject } from "../authz.js";
 import { getAgentCircuitBreaker } from "../circuit-breaker.js";
 import { clientToolService } from "../client-tools-service.js";
+import { isHostedSessionManager } from "../hosted-session-manager.js";
 import { serverRequestManager } from "../server-request-manager.js";
 import { getRequestHeader } from "../server-utils.js";
 import { startSessionWithPolicy } from "../session-initialization.js";
-import { createSessionManagerForRequest } from "../session-scope.js";
+import { createWebSessionManagerForRequest } from "../session-scope.js";
 import { convertComposerMessagesToApp } from "../session-serialization.js";
 import type { SseContext, SseSkipListener } from "../sse-session.js";
 import { ServerRequestToolRetryService } from "../tool-retry-service.js";
@@ -396,16 +397,22 @@ export function handleChatWebSocket(
 				}
 			}
 
-			const sessionManager = createSessionManagerForRequest(req, false);
+			const sessionManager = createWebSessionManagerForRequest(req, false);
 			const subject = getAuthSubject(req);
 			let existingSessionLoaded = false;
 			if (chatReq.sessionId) {
-				const sessionFile = sessionManager.getSessionFileById(
-					chatReq.sessionId,
-				);
-				if (sessionFile) {
-					sessionManager.setSessionFile(sessionFile);
-					existingSessionLoaded = true;
+				if (isHostedSessionManager(sessionManager)) {
+					existingSessionLoaded = await sessionManager.resumeSession(
+						chatReq.sessionId,
+					);
+				} else {
+					const sessionFile = sessionManager.getSessionFileById(
+						chatReq.sessionId,
+					);
+					if (sessionFile) {
+						sessionManager.setSessionFile(sessionFile);
+						existingSessionLoaded = true;
+					}
 				}
 			}
 
@@ -501,11 +508,11 @@ export function handleChatWebSocket(
 			const wsSession = new WsSession(ws, undefined, { requestId, modelKey });
 			const { enterpriseContext } = await import("../../enterprise/context.js");
 
-			const initializeSessionIfNeeded = (): string | null => {
+			const initializeSessionIfNeeded = async (): Promise<string | null> => {
 				if (existingSessionLoaded || sessionManager.isInitialized()) {
 					return null;
 				}
-				const initializationError = startSessionWithPolicy({
+				const initializationError = await startSessionWithPolicy({
 					agent,
 					enterpriseContext,
 					logger,
@@ -524,7 +531,7 @@ export function handleChatWebSocket(
 				return null;
 			};
 
-			const initializationError = initializeSessionIfNeeded();
+			const initializationError = await initializeSessionIfNeeded();
 			if (initializationError) {
 				wsSession.sendEvent({
 					type: "error",
@@ -760,23 +767,6 @@ export function handleChatWebSocket(
 					if (event.message.role === "assistant") {
 						automaticMemoryExtraction.schedule(sessionManager.getSessionFile());
 					}
-					let initializationError: string | null = null;
-
-					if (sessionManager.shouldInitializeSession(agent.state.messages)) {
-						initializationError = startSessionWithPolicy({
-							agent,
-							enterpriseContext,
-							logger,
-							modelId: registeredModel.id,
-							onSessionReady: (sessionId) => {
-								wsSession.sendSessionUpdate(sessionId);
-								wsSession.setContext({ sessionId });
-							},
-							sessionManager,
-							subject,
-						});
-					}
-
 					sessionManager.updateSnapshot(
 						agent.state,
 						toSessionModelMetadata(registeredModel),
@@ -794,13 +784,6 @@ export function handleChatWebSocket(
 						},
 					);
 
-					if (initializationError) {
-						wsSession.sendEvent({
-							type: "error",
-							message: `[Policy] ${initializationError}`,
-						});
-						wsSession.end();
-					}
 					return;
 				}
 
