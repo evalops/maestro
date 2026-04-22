@@ -39,6 +39,14 @@ interface LoggerConfig {
 	output?: (entry: LogEntry) => void;
 }
 
+const originalConsole = {
+	log: console.log.bind(console),
+	info: console.info.bind(console),
+	warn: console.warn.bind(console),
+	error: console.error.bind(console),
+	debug: console.debug.bind(console),
+};
+
 const LOG_LEVELS: Record<LogLevel, number> = {
 	debug: 0,
 	info: 1,
@@ -276,7 +284,9 @@ export function redirectLoggerToFile(filePath?: string): void {
  * output) has been configured; otherwise console.* would route back to the
  * console-backed logger output and recurse.
  */
-export function redirectConsoleToLogger(): void {
+export function redirectConsoleToLogger(options?: {
+	preserveErrorStderr?: boolean;
+}): void {
 	console.log = (...args: unknown[]) => {
 		logger.info(args.map(String).join(" "));
 	};
@@ -287,6 +297,10 @@ export function redirectConsoleToLogger(): void {
 		logger.warn(args.map(String).join(" "));
 	};
 	console.error = (...args: unknown[]) => {
+		if (options?.preserveErrorStderr) {
+			originalConsole.error(...args);
+			return;
+		}
 		// Preserve first Error stack if present
 		const maybeError = args.find((a) => a instanceof Error) as
 			| Error

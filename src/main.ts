@@ -458,17 +458,9 @@ export async function main(args: string[]) {
 		return;
 	}
 
-	const runtimeConfig = loadRuntimeConfig(parsed, process.cwd());
-	const reasoningSummary =
-		runtimeConfig.config.model_supports_reasoning_summaries === false
-			? undefined
-			: runtimeConfig.config.model_reasoning_summary === "none"
-				? null
-				: runtimeConfig.config.model_reasoning_summary;
-
 	// If we're about to enter interactive TUI mode (no prompt messages and not RPC/exec),
 	// or headless mode (stdout is JSON-only), redirect all logging/console output to a file.
-	// This must run before model loading to catch any early warnings.
+	// This must run before config/model loading to catch any early warnings.
 	const isLikelyInteractiveTui =
 		!parsed.messages.length &&
 		(parsed.mode === "text" || parsed.mode === undefined) &&
@@ -482,10 +474,37 @@ export async function main(args: string[]) {
 			pipeProcessEventsToLogger,
 		} = await import("./utils/logger.js");
 		redirectLoggerToFile();
-		redirectConsoleToLogger();
-		redirectStderrToLogger();
+		redirectConsoleToLogger({ preserveErrorStderr: isHeadlessMode });
+		if (!isHeadlessMode) {
+			redirectStderrToLogger();
+		}
 		pipeProcessEventsToLogger();
 	}
+
+	const runtimeConfig = loadRuntimeConfig(parsed, process.cwd());
+	const reasoningSummary =
+		runtimeConfig.config.model_supports_reasoning_summaries === false
+			? undefined
+			: runtimeConfig.config.model_reasoning_summary === "none"
+				? null
+				: runtimeConfig.config.model_reasoning_summary;
+	const exitWithStartupError = (error: unknown): never => {
+		const message = error instanceof Error ? error.message : String(error);
+		if (isHeadlessMode) {
+			process.stdout.write(
+				`${JSON.stringify({
+					type: "error",
+					message: `Headless startup failed: ${message}`,
+					fatal: true,
+					error_type: "fatal",
+				})}\n`,
+			);
+			process.stderr.write(`${message}\n`);
+		} else {
+			console.error(chalk.red(message));
+		}
+		process.exit(1);
+	};
 
 	const startupProfilingEnabled = process.env.MAESTRO_STARTUP_PROFILE === "1";
 	const logStartupPhase = (label: string, startedAt: number) => {
@@ -581,10 +600,7 @@ export async function main(args: string[]) {
 	try {
 		validateCodexFlags(args, parsed.command);
 	} catch (error) {
-		console.error(
-			chalk.red(error instanceof Error ? error.message : String(error)),
-		);
-		process.exit(1);
+		exitWithStartupError(error);
 	}
 
 	const { requireCredential } = createAuthSetup({
@@ -594,24 +610,18 @@ export async function main(args: string[]) {
 
 	if (parsed.command === "exec") {
 		if (parsed.execFullAuto && parsed.execReadOnly) {
-			console.error(
-				chalk.red(
-					"Cannot combine --full-auto with --read-only in maestro exec.",
-				),
+			exitWithStartupError(
+				"Cannot combine --full-auto with --read-only in maestro exec.",
 			);
-			process.exit(1);
 		}
 	}
 
 	// Validate sandbox mode (applies to both exec and interactive modes)
 	const validSandboxModes = ["docker", "local", "none"];
 	if (parsed.sandbox && !validSandboxModes.includes(parsed.sandbox)) {
-		console.error(
-			chalk.red(
-				`Unknown sandbox mode "${parsed.sandbox}". Supported: ${validSandboxModes.join(", ")}`,
-			),
+		exitWithStartupError(
+			`Unknown sandbox mode "${parsed.sandbox}". Supported: ${validSandboxModes.join(", ")}`,
 		);
-		process.exit(1);
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────────
@@ -942,7 +952,7 @@ export async function main(args: string[]) {
 	// PHASE 8: Model Resolution
 	// ─────────────────────────────────────────────────────────────────────────────
 
-	let model: Model<Api>;
+	let model!: Model<Api>;
 	try {
 		const { resolveModelFromArgs } = await import(
 			"./bootstrap/model-resolution-setup.js"
@@ -954,10 +964,7 @@ export async function main(args: string[]) {
 		});
 		model = resolved.model;
 	} catch (error) {
-		console.error(
-			chalk.red(error instanceof Error ? error.message : String(error)),
-		);
-		process.exit(1);
+		exitWithStartupError(error);
 	}
 	// ─────────────────────────────────────────────────────────────────────────────
 	// PHASE 9: System Prompt and Tool Configuration
@@ -1027,7 +1034,7 @@ export async function main(args: string[]) {
 	// PHASE 10: Tool Registry and Sandbox Setup
 	// ─────────────────────────────────────────────────────────────────────────────
 
-	let toolsResult: Awaited<
+	let toolsResult!: Awaited<
 		ReturnType<
 			typeof import("./bootstrap/tools-setup.js").createToolsAndSandbox
 		>
@@ -1042,10 +1049,7 @@ export async function main(args: string[]) {
 			cwd: process.cwd(),
 		});
 	} catch (error) {
-		console.error(
-			chalk.red(error instanceof Error ? error.message : String(error)),
-		);
-		process.exit(1);
+		exitWithStartupError(error);
 	}
 	const { allTools, sandbox, sandboxMode } = toolsResult;
 	const useInteractiveClientTools = Boolean(interactiveClientToolService);

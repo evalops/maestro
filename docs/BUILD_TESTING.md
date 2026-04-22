@@ -50,6 +50,8 @@ Tests for the compiled binary (`dist/maestro-bun`):
 End-to-end CLI functionality tests:
 - `--help` command works
 - `--version` command works
+- `--headless` emits only protocol JSON on stdout and completes a `hello`
+  startup handshake
 - Help output contains expected content
 - File existence checks
 - File content validation (shebang, size)
@@ -62,7 +64,20 @@ End-to-end CLI functionality tests:
 
 **Run:** `bun run smoke` or `node scripts/smoke-cli.js`
 
-### 5. Build Verification Script (`scripts/verify-build.ts`)
+Run only the headless stdio regression smoke with
+`bun run smoke:headless` after `bun run build`.
+
+### 5. Headless Responsiveness Harness (`scripts/headless-responsiveness-harness.js`)
+
+The responsiveness harness is a lightweight signal for hosted-runner behavior.
+It exercises an in-process mock runner and the built headless CLI, then emits
+machine-readable JSON with startup, hello, prompt, event, and drain timings.
+Use it for ADR evidence and gateway/substrate comparisons; correctness gates
+belong in the headless protocol and smoke tests.
+
+**Run:** `bun run headless:responsiveness` after `bun run build`
+
+### 6. Build Verification Script (`scripts/verify-build.ts`)
 
 Comprehensive build verification script that runs all checks:
 - Critical files verification
@@ -78,7 +93,7 @@ Comprehensive build verification script that runs all checks:
 - `VERIFY_PACKAGES=1 bun run verify-build` (includes package verification)
 - `npx nx run maestro:verify-build` (Nx target wrapper)
 
-### 6. Platform SDK Contract Smoke (`scripts/check-platform-sdk-contract.ts`)
+### 7. Platform SDK Contract Smoke (`scripts/check-platform-sdk-contract.ts`)
 
 Cross-repo smoke test for the generated Platform TypeScript SDK before
 `@evalops/sdk-ts` is available from npm. The script packs `gen/ts` from a

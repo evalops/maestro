@@ -87,6 +87,19 @@ export function parseArgs(args: string[]): Args {
 			result.help = true;
 		} else if (arg === "--version" || arg === "-v") {
 			result.version = true;
+		} else if (arg?.startsWith("--mode=")) {
+			const mode = arg.slice("--mode=".length);
+			if (
+				mode === "text" ||
+				mode === "json" ||
+				mode === "rpc" ||
+				mode === "headless"
+			) {
+				result.mode = mode;
+				if (mode === "headless") {
+					result.headless = true;
+				}
+			}
 		} else if (arg === "--mode" && i + 1 < args.length) {
 			const mode = args[++i];
 			if (
@@ -96,6 +109,9 @@ export function parseArgs(args: string[]): Args {
 				mode === "headless"
 			) {
 				result.mode = mode;
+				if (mode === "headless") {
+					result.headless = true;
+				}
 			}
 		} else if (arg === "--headless") {
 			result.headless = true;

@@ -12,6 +12,11 @@ const commands = [
 		cmd: "node",
 		args: ["dist/cli.js", "--version"],
 	},
+	{
+		name: "headless",
+		cmd: "node",
+		args: ["scripts/smoke-headless.js"],
+	},
 ];
 
 let hadError = false;
