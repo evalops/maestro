@@ -729,7 +729,8 @@ export function handleChatWebSocket(
 				},
 			);
 
-			const unsubscribe = agent.subscribe(async (event: AgentEvent) => {
+			let pendingEventHandling: Promise<void> = Promise.resolve();
+			const processAgentEvent = async (event: AgentEvent): Promise<void> => {
 				updateSessionSummary(event);
 
 				wsSession.sendEvent(maybeSlimEvent(event));
@@ -827,6 +828,17 @@ export function handleChatWebSocket(
 						logger,
 					},
 				);
+			};
+			const unsubscribe = agent.subscribe((event: AgentEvent) => {
+				pendingEventHandling = pendingEventHandling
+					.then(() => processAgentEvent(event))
+					.catch((error) => {
+						logger.error(
+							"Chat websocket event handler error",
+							error instanceof Error ? error : new Error(String(error)),
+							{ sessionId: sessionManager.getSessionId?.() },
+						);
+					});
 			});
 
 			const cleanup = async (aborted = false) => {
@@ -834,10 +846,11 @@ export function handleChatWebSocket(
 				cleanedUp = true;
 				unsubscribe();
 				unsubscribeMcpElicitationBridge();
+				await pendingEventHandling;
 				await automaticMemoryExtraction.flush();
 				await automaticMemoryConsolidation.flush();
 				await sessionManager.flush();
-				if (aborted) {
+				if (aborted && ws.readyState === 1) {
 					wsSession.sendAborted();
 				}
 				wsSession.end();

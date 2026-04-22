@@ -601,7 +601,8 @@ export async function handleChat(
 			},
 		);
 
-		const unsubscribe = agent.subscribe(async (event: AgentEvent) => {
+		let pendingEventHandling: Promise<void> = Promise.resolve();
+		const processAgentEvent = async (event: AgentEvent): Promise<void> => {
 			updateSessionSummary(event);
 
 			// Forward event to client
@@ -705,6 +706,17 @@ export async function handleChat(
 					logger,
 				},
 			);
+		};
+		const unsubscribe = agent.subscribe((event: AgentEvent) => {
+			pendingEventHandling = pendingEventHandling
+				.then(() => processAgentEvent(event))
+				.catch((error) => {
+					logger.error(
+						"Chat SSE event handler error",
+						error instanceof Error ? error : new Error(String(error)),
+						{ sessionId: sessionManager.getSessionId?.() },
+					);
+				});
 		});
 
 		// ===== Phase 6: Connection Close Handling =====
@@ -733,6 +745,7 @@ export async function handleChat(
 			res.off("close", handleConnectionClose);
 			unsubscribe();
 			unsubscribeMcpElicitationBridge();
+			await pendingEventHandling;
 
 			await automaticMemoryExtraction.flush();
 			await automaticMemoryConsolidation.flush();
@@ -773,13 +786,14 @@ export async function handleChat(
 					breaker.execute(() => agent.prompt(userInput, attachmentsToSend)),
 				getPostKeepMessages: withMcpPostKeepMessages(),
 			});
-
+			await pendingEventHandling;
 			// Send completion signal if connection is still open
 			if (!res.writableEnded) {
 				sseSession.sendDone();
 			}
 		} catch (error) {
 			// Log and forward errors to client
+			await pendingEventHandling;
 			logger.error(
 				"Agent prompt error",
 				error instanceof Error ? error : undefined,

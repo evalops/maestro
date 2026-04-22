@@ -1,5 +1,11 @@
 import { EventEmitter } from "node:events";
-import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	readdirSync,
+	writeFileSync,
+} from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,6 +26,7 @@ import { handleClientToolResult } from "../../src/server/handlers/client-tools.j
 import { handleSessions } from "../../src/server/handlers/sessions.js";
 import { handleToolRetry } from "../../src/server/handlers/tool-retry.js";
 import { serverRequestManager } from "../../src/server/server-request-manager.js";
+import { SessionManager } from "../../src/session/manager.js";
 
 const mockModel: RegisteredModel = {
 	id: "claude-sonnet-4-5",
@@ -110,6 +117,26 @@ function findJsonlFiles(dir: string): string[] {
 		}
 	}
 	return files;
+}
+
+function writeLegacySessionWithoutHeader(rootDir: string): string {
+	const sessionDir = join(rootDir, "agent", "sessions");
+	mkdirSync(sessionDir, { recursive: true });
+	writeFileSync(
+		join(sessionDir, "legacy.jsonl"),
+		`${JSON.stringify({
+			type: "message",
+			id: "legacy-msg",
+			parentId: null,
+			timestamp: new Date().toISOString(),
+			message: {
+				role: "user",
+				content: "legacy prompt",
+				timestamp: Date.now(),
+			},
+		})}\n`,
+	);
+	return "unknown";
 }
 
 interface MockPassThrough extends PassThrough {
@@ -681,6 +708,118 @@ describe("handleChat", () => {
 		expect(res.body).toContain("Use Zod");
 	});
 
+	it("waits for async session initialization before sending SSE done", async () => {
+		const composerHome = mkdtempSync(join(tmpdir(), "composer-home-"));
+		vi.stubEnv("MAESTRO_HOME", composerHome);
+		const sessionId = writeLegacySessionWithoutHeader(composerHome);
+		const originalCountActiveSessions = (
+			SessionManager.prototype as SessionManager & {
+				countActiveSessions?: (since: Date) => Promise<number>;
+			}
+		).countActiveSessions;
+		(
+			SessionManager.prototype as SessionManager & {
+				countActiveSessions?: (since: Date) => Promise<number>;
+			}
+		).countActiveSessions = async () => {
+			await new Promise((resolve) => setTimeout(resolve, 25));
+			return 0;
+		};
+
+		try {
+			const req = new PassThrough() as MockPassThrough;
+			req.method = "POST";
+			req.url = "/api/chat";
+			req.headers = {};
+			req.end(
+				JSON.stringify({
+					sessionId,
+					messages: [{ role: "user", content: "continue" }],
+				}),
+			);
+
+			const res = makeRes();
+			const context: Partial<WebServerContext> = {
+				createAgent: async () => {
+					type EventCallback = (e: unknown) => void;
+					let subscriber: EventCallback | undefined;
+					const state = {
+						systemPrompt: "",
+						model: mockModel,
+						thinkingLevel: "off",
+						tools: [],
+						messages: [] as unknown[],
+						isStreaming: false,
+						streamMessage: null,
+						pendingToolCalls: new Map(),
+					};
+					return {
+						state,
+						subscribe: (fn: EventCallback) => {
+							subscriber = fn;
+							return () => {
+								subscriber = undefined;
+							};
+						},
+						replaceMessages: () => {},
+						clearMessages: () => {},
+						prompt: async () => {
+							const userMessage = {
+								role: "user",
+								content: "continue",
+								timestamp: Date.now(),
+							};
+							const assistantMessage = {
+								role: "assistant",
+								content: [{ type: "text", text: "ready" }],
+								api: mockModel.api,
+								provider: mockModel.provider,
+								model: mockModel.id,
+								usage: {
+									input: 1,
+									output: 1,
+									cacheRead: 0,
+									cacheWrite: 0,
+									cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+								},
+								stopReason: "stop",
+								timestamp: Date.now(),
+							};
+							state.messages = [userMessage, assistantMessage];
+							subscriber?.({
+								type: "message_end",
+								message: assistantMessage,
+							});
+						},
+						abort: () => {},
+					} as unknown as Agent;
+				},
+				getRegisteredModel: async () => mockModel,
+				defaultApprovalMode: "prompt",
+				defaultProvider: "anthropic",
+				defaultModelId: mockModel.id,
+				corsHeaders: cors,
+			};
+
+			await handleChat(
+				req as unknown as IncomingMessage,
+				res as unknown as ServerResponse,
+				context as WebServerContext,
+			);
+
+			expect(res.body).toContain('"type":"session_update"');
+			expect(res.body.indexOf('"type":"session_update"')).toBeLessThan(
+				res.body.indexOf("[DONE]"),
+			);
+		} finally {
+			(
+				SessionManager.prototype as SessionManager & {
+					countActiveSessions?: (since: Date) => Promise<number>;
+				}
+			).countActiveSessions = originalCountActiveSessions;
+		}
+	});
+
 	it("bridges MCP elicitation requests to SSE clients and persists them in the session payload", async () => {
 		const req = new PassThrough() as MockPassThrough;
 		req.method = "POST";
@@ -1022,6 +1161,129 @@ describe("handleChat", () => {
 			payload.includes('"type":"done"'),
 		);
 		expect(serverRequestManager.listPending()).toEqual([]);
+	});
+
+	it("waits for async session initialization before sending websocket done", async () => {
+		const composerHome = mkdtempSync(join(tmpdir(), "composer-home-"));
+		vi.stubEnv("MAESTRO_HOME", composerHome);
+		const sessionId = writeLegacySessionWithoutHeader(composerHome);
+		const originalCountActiveSessions = (
+			SessionManager.prototype as SessionManager & {
+				countActiveSessions?: (since: Date) => Promise<number>;
+			}
+		).countActiveSessions;
+		(
+			SessionManager.prototype as SessionManager & {
+				countActiveSessions?: (since: Date) => Promise<number>;
+			}
+		).countActiveSessions = async () => {
+			await new Promise((resolve) => setTimeout(resolve, 25));
+			return 0;
+		};
+
+		try {
+			const req = new PassThrough() as MockPassThrough;
+			req.method = "GET";
+			req.url = "/api/chat/ws";
+			req.headers = { host: "localhost" };
+			const ws = new MockWebSocket();
+
+			const context: Partial<WebServerContext> = {
+				createAgent: async () => {
+					type EventCallback = (e: unknown) => void;
+					let subscriber: EventCallback | undefined;
+					const state = {
+						systemPrompt: "",
+						model: mockModel,
+						thinkingLevel: "off",
+						tools: [],
+						messages: [] as unknown[],
+						isStreaming: false,
+						streamMessage: null,
+						pendingToolCalls: new Map(),
+					};
+					return {
+						state,
+						subscribe: (fn: EventCallback) => {
+							subscriber = fn;
+							return () => {
+								subscriber = undefined;
+							};
+						},
+						replaceMessages: () => {},
+						clearMessages: () => {},
+						prompt: async () => {
+							const userMessage = {
+								role: "user",
+								content: "continue",
+								timestamp: Date.now(),
+							};
+							const assistantMessage = {
+								role: "assistant",
+								content: [{ type: "text", text: "ready" }],
+								api: mockModel.api,
+								provider: mockModel.provider,
+								model: mockModel.id,
+								usage: {
+									input: 1,
+									output: 1,
+									cacheRead: 0,
+									cacheWrite: 0,
+									cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+								},
+								stopReason: "stop",
+								timestamp: Date.now(),
+							};
+							state.messages = [userMessage, assistantMessage];
+							subscriber?.({
+								type: "message_end",
+								message: assistantMessage,
+							});
+						},
+						abort: () => {},
+					} as unknown as Agent;
+				},
+				getRegisteredModel: async () => mockModel,
+				defaultApprovalMode: "prompt",
+				defaultProvider: "anthropic",
+				defaultModelId: mockModel.id,
+				corsHeaders: cors,
+			};
+
+			handleChatWebSocket(
+				ws as unknown as Parameters<typeof handleChatWebSocket>[0],
+				req as unknown as IncomingMessage,
+				context as WebServerContext,
+			);
+
+			ws.emit(
+				"message",
+				JSON.stringify({
+					sessionId,
+					messages: [{ role: "user", content: "continue" }],
+				}),
+			);
+
+			await waitForWebSocketMessage(ws, (payload) =>
+				payload.includes('"type":"done"'),
+			);
+
+			const sessionUpdateIndex = ws.sent.findIndex((payload) =>
+				payload.includes('"type":"session_update"'),
+			);
+			const doneIndex = ws.sent.findIndex((payload) =>
+				payload.includes('"type":"done"'),
+			);
+
+			expect(sessionUpdateIndex).toBeGreaterThanOrEqual(0);
+			expect(doneIndex).toBeGreaterThan(sessionUpdateIndex);
+		} finally {
+			(
+				SessionManager.prototype as SessionManager & {
+					countActiveSessions?: (since: Date) => Promise<number>;
+				}
+			).countActiveSessions = originalCountActiveSessions;
+		}
 	});
 
 	it("creates a recoverable session before first-turn approval requests over websocket", async () => {
