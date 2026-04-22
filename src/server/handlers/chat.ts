@@ -601,7 +601,7 @@ export async function handleChat(
 			},
 		);
 
-		const unsubscribe = agent.subscribe(async (event: AgentEvent) => {
+		const unsubscribe = agent.subscribe((event: AgentEvent) => {
 			updateSessionSummary(event);
 
 			// Forward event to client
@@ -642,22 +642,28 @@ export async function handleChat(
 				if (event.message.role === "assistant") {
 					automaticMemoryExtraction.schedule(sessionManager.getSessionFile());
 				}
-				let initializationError: string | null = null;
-
 				// Auto-initialize session on first user message
 				if (sessionManager.shouldInitializeSession(agent.state.messages)) {
-					initializationError = await startSessionWithPolicy({
-						agent,
-						enterpriseContext,
-						logger,
-						modelId: registeredModel.id,
-						onSessionReady: (sessionId) => {
-							sendSessionUpdate(sseSession, sessionId);
-							sseSession.setContext({ sessionId });
-						},
-						sessionManager,
-						subject,
-					});
+					void initializeSessionIfNeeded()
+						.then((initializationError) => {
+							if (initializationError) {
+								sendSSE(sseSession, {
+									type: "error",
+									message: `[Policy] ${initializationError}`,
+								});
+								sseSession.end();
+							}
+						})
+						.catch((error) => {
+							logger.warn("Failed to initialize session", {
+								error: error instanceof Error ? error.message : String(error),
+							});
+							sendSSE(sseSession, {
+								type: "error",
+								message: "[Policy] Failed to initialize session",
+							});
+							sseSession.end();
+						});
 				}
 
 				// Update session snapshot on every event
@@ -678,13 +684,6 @@ export async function handleChat(
 					},
 				);
 
-				if (initializationError) {
-					sendSSE(sseSession, {
-						type: "error",
-						message: `[Policy] ${initializationError}`,
-					});
-					sseSession.end();
-				}
 				return;
 			}
 
