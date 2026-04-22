@@ -490,6 +490,7 @@ export async function main(args: string[]) {
 				: runtimeConfig.config.model_reasoning_summary;
 	const exitWithStartupError = (error: unknown): never => {
 		const message = error instanceof Error ? error.message : String(error);
+		const stack = error instanceof Error ? error.stack : undefined;
 		if (isHeadlessMode) {
 			process.stdout.write(
 				`${JSON.stringify({
@@ -499,7 +500,7 @@ export async function main(args: string[]) {
 					error_type: "fatal",
 				})}\n`,
 			);
-			process.stderr.write(`${message}\n`);
+			process.stderr.write(`${stack ?? message}\n`);
 		} else {
 			console.error(chalk.red(message));
 		}
