@@ -14,6 +14,10 @@ import type { AdaptiveThresholds } from "../../safety/adaptive-thresholds.js";
 import { METRICS } from "../../safety/adaptive-thresholds.js";
 import type { SafetyMiddleware } from "../../safety/safety-middleware.js";
 import type { WorkflowStateTracker } from "../../safety/workflow-state.js";
+import {
+	recordMaestroApprovalHit,
+	recordMaestroFirewallBlock,
+} from "../../telemetry/maestro-event-bus.js";
 import { trackToolBlocked } from "../../telemetry/security-events.js";
 import type { Clock } from "../../utils/clock.js";
 import { createLogger } from "../../utils/logger.js";
@@ -487,6 +491,23 @@ export async function* evaluateToolSafety(
 		const firewallBlockedEvents = recordEvents(
 			emitToolResult(blockedResult, toolCall, true),
 		);
+		const sanitizedFirewallArgs = safetyMiddleware.sanitizeForLogging(
+			effectiveToolCall.arguments as Record<string, unknown>,
+		);
+		recordMaestroFirewallBlock({
+			rule_id: verdict.ruleId,
+			operation: toolCall.name,
+			target:
+				typeof sanitizedFirewallArgs.command === "string"
+					? sanitizedFirewallArgs.command
+					: toolCall.name,
+			reason: verdict.reason,
+			context: sanitizedFirewallArgs,
+			correlation: {
+				session_id: cfg.session?.id,
+				agent_run_step_id: toolCall.id,
+			},
+		});
 		for (const event of firewallBlockedEvents) {
 			yield event;
 		}
@@ -575,6 +596,26 @@ export async function* evaluateToolSafety(
 			if (shouldEmitEvents) {
 				yield recordEvent({ type: "action_approval_required", request });
 			}
+			recordMaestroApprovalHit({
+				approval_request_id: request.id,
+				action: request.actionDescription,
+				command:
+					typeof sanitizedApprovalArgs.command === "string"
+						? sanitizedApprovalArgs.command
+						: undefined,
+				decision_mode: "MAESTRO_DECISION_MODE_REQUIRE_APPROVAL",
+				reason: request.reason,
+				context: {
+					tool_name: request.toolName,
+					display_name: request.displayName,
+					summary_label: request.summaryLabel,
+					args: sanitizedApprovalArgs,
+				},
+				correlation: {
+					session_id: cfg.session?.id,
+					agent_run_step_id: toolCall.id,
+				},
+			});
 
 			const decision = await approvalService.requestApproval(request, signal);
 			if (shouldEmitEvents) {

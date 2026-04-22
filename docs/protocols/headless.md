@@ -267,5 +267,25 @@ Supported `error_type` values:
   integrations. `tool_call` / `tool_response` remains for legacy approval
   compatibility.
 
+## Platform Event Bus
+
+Managed EvalOps deployments can mirror the headless runtime surface onto the
+shared platform event bus without enabling user training telemetry. Set
+`MAESTRO_EVENT_BUS_URL` or `EVALOPS_NATS_URL` to publish typed CloudEvents to
+JetStream subjects that match platform's `maestro.*` event catalog.
+
+The shared publisher lives in `@evalops/ai/telemetry` and currently emits:
+
+- `maestro.sessions.session.started|suspended|resumed|closed`
+- `maestro.events.approval_hit`
+- `maestro.events.sandbox_violation`
+- `maestro.events.firewall_block`
+- `maestro.events.tool_call.attempted|completed`
+
+`MAESTRO_TELEMETRY` continues to control local training and diagnostic
+telemetry. Audit-bus publishing is controlled separately with
+`MAESTRO_EVENT_BUS`; set it to `0` or `false` to suppress bus writes even when
+managed EvalOps routing is active.
+
 For the larger remote-attach and control-plane architecture, see the companion
 design document: [docs/design/HEADLESS_CONTROL_PLANE.md](../design/HEADLESS_CONTROL_PLANE.md).

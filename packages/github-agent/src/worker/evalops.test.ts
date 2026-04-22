@@ -43,7 +43,17 @@ describe("buildGitHubTaskEnvironment", () => {
 		expect(fetchMock).not.toHaveBeenCalled();
 		expect(env).toMatchObject({
 			PATH: "/usr/bin",
+			MAESTRO_AGENT_ID: "github_issue_worker",
+			MAESTRO_AGENT_RUN_ID: "task-123",
+			MAESTRO_EVENT_BUS_ATTR_SOURCE_ISSUE: "42",
+			MAESTRO_EVENT_BUS_ATTR_TASK_ID: "task-123",
+			MAESTRO_EVENT_BUS_ATTR_TASK_TYPE: "issue",
+			MAESTRO_EVENT_BUS_SOURCE: "maestro.github-agent",
 			MAESTRO_MAX_OUTPUT_TOKENS: "500000",
+			MAESTRO_REQUEST_ID: "github:issue:42",
+			MAESTRO_RUNTIME_MODE: "headless",
+			MAESTRO_SESSION_ID: "task-123",
+			MAESTRO_SURFACE: "github-agent",
 		});
 	});
 
@@ -91,12 +101,22 @@ describe("buildGitHubTaskEnvironment", () => {
 			ttl_seconds: 3600,
 		});
 		expect(env).toMatchObject({
+			MAESTRO_AGENT_ID: "github_review_worker",
+			MAESTRO_AGENT_RUN_ID: "task-456",
 			MAESTRO_EVALOPS_ACCESS_TOKEN: "delegated-token",
 			MAESTRO_EVALOPS_ORG_ID: "org_123",
 			MAESTRO_EVALOPS_PROVIDER: "anthropic",
 			MAESTRO_EVALOPS_ENVIRONMENT: "staging",
 			MAESTRO_EVALOPS_CREDENTIAL_NAME: "team-shared",
+			MAESTRO_EVENT_BUS_ATTR_SOURCE_ISSUE: "42",
+			MAESTRO_EVENT_BUS_ATTR_TASK_ID: "task-456",
+			MAESTRO_EVENT_BUS_ATTR_TASK_TYPE: "pr-review",
+			MAESTRO_EVENT_BUS_SOURCE: "maestro.github-agent",
 			MAESTRO_MAX_OUTPUT_TOKENS: "500000",
+			MAESTRO_REQUEST_ID: "github:pr-review:42",
+			MAESTRO_RUNTIME_MODE: "headless",
+			MAESTRO_SESSION_ID: "task-456",
+			MAESTRO_SURFACE: "github-agent",
 			PATH: "/usr/bin",
 		});
 	});
@@ -122,9 +142,19 @@ describe("buildGitHubTaskEnvironment", () => {
 		);
 
 		expect(env).toMatchObject({
+			MAESTRO_AGENT_ID: "github_issue_worker",
+			MAESTRO_AGENT_RUN_ID: "task-123",
 			MAESTRO_EVALOPS_ACCESS_TOKEN: "parent-token",
 			MAESTRO_EVALOPS_ORG_ID: "org_123",
+			MAESTRO_EVENT_BUS_ATTR_SOURCE_ISSUE: "42",
+			MAESTRO_EVENT_BUS_ATTR_TASK_ID: "task-123",
+			MAESTRO_EVENT_BUS_ATTR_TASK_TYPE: "issue",
+			MAESTRO_EVENT_BUS_SOURCE: "maestro.github-agent",
 			MAESTRO_MAX_OUTPUT_TOKENS: "500000",
+			MAESTRO_REQUEST_ID: "github:issue:42",
+			MAESTRO_RUNTIME_MODE: "headless",
+			MAESTRO_SESSION_ID: "task-123",
+			MAESTRO_SURFACE: "github-agent",
 			PATH: "/usr/bin",
 		});
 		expect(warnings).toEqual([

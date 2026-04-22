@@ -8,6 +8,7 @@ import {
 	initOpenTelemetry,
 	isOpenTelemetryEnabled,
 } from "./opentelemetry.js";
+import { mirrorTelemetryToMaestroEventBus } from "./telemetry/maestro-event-bus.js";
 import {
 	hasRemoteMeterDestination,
 	mirrorCanonicalTurnEventToMeter,
@@ -520,18 +521,21 @@ export async function recordTelemetry(event: TelemetryEvent): Promise<void> {
 	if (openTelemetryEnabled) {
 		recordOpenTelemetrySpan(event);
 	}
+	const eventBusTask = mirrorTelemetryToMaestroEventBus(event);
 
 	const legacyEnabled = telemetryEnabled && samplingRate > 0;
 	if (!legacyEnabled) {
+		await eventBusTask;
 		return;
 	}
 
 	if (samplingRate < 1 && Math.random() > samplingRate) {
+		await eventBusTask;
 		return;
 	}
 
 	try {
-		await persistTelemetry(event);
+		await Promise.all([persistTelemetry(event), eventBusTask]);
 	} catch (_error) {
 		// Ignore telemetry persistence failures
 	}

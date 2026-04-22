@@ -4,6 +4,7 @@ const DEFAULT_IDENTITY_URL = "http://127.0.0.1:8080";
 const DEFAULT_PROVIDER_REF_PROVIDER = "openai";
 const DEFAULT_PROVIDER_REF_ENVIRONMENT = "prod";
 const DEFAULT_DELEGATION_TTL_SECONDS = 60 * 60;
+const GITHUB_AGENT_EVENT_BUS_SOURCE = "maestro.github-agent";
 
 interface EvalOpsProviderRef {
 	provider: string;
@@ -101,6 +102,26 @@ function buildEvalOpsDelegationEnvironment(
 	};
 }
 
+function buildGitHubTaskRuntimeEnvironment(task: Task): Record<string, string> {
+	return {
+		MAESTRO_SURFACE: "github-agent",
+		MAESTRO_RUNTIME_MODE: "headless",
+		MAESTRO_EVENT_BUS_SOURCE: GITHUB_AGENT_EVENT_BUS_SOURCE,
+		MAESTRO_AGENT_ID: getAgentType(task),
+		MAESTRO_AGENT_RUN_ID: task.id,
+		MAESTRO_SESSION_ID: task.id,
+		MAESTRO_REQUEST_ID:
+			task.sourceIssue === undefined
+				? task.id
+				: `github:${task.type}:${task.sourceIssue}`,
+		MAESTRO_EVENT_BUS_ATTR_TASK_TYPE: task.type,
+		MAESTRO_EVENT_BUS_ATTR_TASK_ID: task.id,
+		...(task.sourceIssue === undefined
+			? {}
+			: { MAESTRO_EVENT_BUS_ATTR_SOURCE_ISSUE: String(task.sourceIssue) }),
+	};
+}
+
 function getAgentType(task: Task): string {
 	switch (task.type) {
 		case "issue":
@@ -133,7 +154,10 @@ export async function buildGitHubTaskEnvironment(
 	env: NodeJS.ProcessEnv = process.env,
 	onWarning?: (message: string) => void,
 ): Promise<Record<string, string>> {
-	const baseEnv = cloneEnv(env);
+	const baseEnv = {
+		...cloneEnv(env),
+		...buildGitHubTaskRuntimeEnvironment(task),
+	};
 	if (config.maxTokensPerTask && !baseEnv.MAESTRO_MAX_OUTPUT_TOKENS) {
 		baseEnv.MAESTRO_MAX_OUTPUT_TOKENS = String(config.maxTokensPerTask);
 	}
