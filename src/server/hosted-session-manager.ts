@@ -228,8 +228,35 @@ export class HostedSessionManager {
 		return true;
 	}
 
-	loadAllSessions(): SessionMetadata[] {
-		return [];
+	async loadAllSessions(): Promise<SessionMetadata[]> {
+		await this.flush();
+		const rows = await getDb()
+			.select()
+			.from(hostedSessions)
+			.where(
+				and(
+					eq(hostedSessions.scope, this.scope),
+					isNull(hostedSessions.deletedAt),
+				),
+			)
+			.orderBy(desc(hostedSessions.updatedAt));
+
+		return rows.map((row) => ({
+			path: `db:${row.sessionId}`,
+			id: row.sessionId,
+			subject: row.subject ?? undefined,
+			created: row.createdAt,
+			modified: row.updatedAt,
+			size: 0,
+			messageCount: row.messageCount,
+			firstMessage:
+				row.title ?? row.summary ?? row.resumeSummary ?? "(database session)",
+			summary:
+				row.summary ?? row.resumeSummary ?? row.title ?? "(database session)",
+			resumeSummary: row.resumeSummary ?? undefined,
+			favorite: row.favorite,
+			allMessagesText: "",
+		}));
 	}
 
 	async countActiveSessions(since: Date): Promise<number> {

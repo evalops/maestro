@@ -10,6 +10,7 @@ import {
 	handleSharedSession,
 } from "../src/server/handlers/sessions.js";
 import { serverRequestManager } from "../src/server/server-request-manager.js";
+import * as sessionScope from "../src/server/session-scope.js";
 
 function makeTestAnthropicToken(): string {
 	return [
@@ -681,6 +682,40 @@ describe("Session Export", () => {
 			await handleSessionExport(req, res, { id: "not-found" }, corsHeaders);
 
 			expect(getStatus()).toBe(404);
+		});
+
+		it("returns 404 when hosted jsonl entries disappear before export", async () => {
+			const req = createMockRequest("POST", { format: "jsonl" });
+			const { res, getStatus, getBody } = createMockResponse();
+			const createManager = vi
+				.spyOn(sessionScope, "createWebSessionManagerForRequest")
+				.mockReturnValue({
+					storageKind: "database",
+					loadSession: vi.fn().mockResolvedValueOnce({
+						id: "test-session-1",
+						title: "Test Session 1",
+						createdAt: "2024-01-01T00:00:00Z",
+						updatedAt: "2024-01-02T00:00:00Z",
+						messageCount: 2,
+						favorite: false,
+						messages: [],
+					}),
+					loadEntries: vi.fn().mockResolvedValueOnce(null),
+				} as ReturnType<typeof sessionScope.createWebSessionManagerForRequest>);
+
+			try {
+				await handleSessionExport(
+					req,
+					res,
+					{ id: "test-session-1" },
+					corsHeaders,
+				);
+			} finally {
+				createManager.mockRestore();
+			}
+
+			expect(getStatus()).toBe(404);
+			expect(getBody()).toEqual({ error: "Session not found" });
 		});
 
 		it("should default to JSON format", async () => {

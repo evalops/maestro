@@ -46,7 +46,6 @@ import {
 	summarizeOutboundSensitiveFindings,
 } from "../../safety/outbound-secret-preflight.js";
 import { safeReadSessionEntries } from "../../session/session-context.js";
-import type { SessionEntry } from "../../session/types.js";
 import { createLogger } from "../../utils/logger.js";
 import { getAuthSubject } from "../authz.js";
 import { isHostedSessionManager } from "../hosted-session-manager.js";
@@ -832,32 +831,44 @@ export async function handleSessionExport(
 		>(req);
 		const format = options.format || "json";
 		const messages = session.messages || [];
-		let jsonlEntries: SessionEntry[] | null | undefined = undefined;
-		let jsonlSessionFile: string | null = null;
-		if (format === "jsonl") {
+		const jsonlEntries =
+			format === "jsonl"
+				? (() => {
+						if (isHostedSessionManager(sessionManager)) {
+							return undefined;
+						}
+						const sessionFile = sessionManager.getSessionFileById(sessionId);
+						if (!sessionFile) {
+							sendJson(
+								res,
+								404,
+								{ error: "Session file not found" },
+								cors,
+								req,
+							);
+							return null;
+						}
+						return safeReadSessionEntries(sessionFile);
+					})()
+				: undefined;
+		const hostedJsonlEntries =
+			format === "jsonl" && isHostedSessionManager(sessionManager)
+				? await sessionManager.loadEntries(sessionId)
+				: undefined;
+		if (format === "jsonl" && !jsonlEntries && !hostedJsonlEntries) {
 			if (isHostedSessionManager(sessionManager)) {
-				jsonlEntries = await sessionManager.loadEntries(sessionId);
-				if (!jsonlEntries) {
-					sendJson(res, 404, { error: "Session not found" }, cors, req);
-					return;
-				}
-			} else {
-				jsonlSessionFile = sessionManager.getSessionFileById(sessionId);
-				if (!jsonlSessionFile) {
-					sendJson(res, 404, { error: "Session file not found" }, cors, req);
-					return;
-				}
-				jsonlEntries = safeReadSessionEntries(jsonlSessionFile);
-				if (!jsonlEntries) {
-					return;
-				}
+				sendJson(res, 404, { error: "Session not found" }, cors, req);
 			}
+			return;
 		}
 
 		if (!options.allowSensitiveContent) {
 			const scan = scanOutboundSensitiveContent({
 				title: session.title,
-				messages: format === "jsonl" ? (jsonlEntries ?? []) : messages,
+				messages:
+					format === "jsonl"
+						? (jsonlEntries ?? hostedJsonlEntries ?? [])
+						: messages,
 			});
 			if (scan.blockingFindings.length > 0) {
 				sendSensitiveContentBlockedResponse(
@@ -877,14 +888,15 @@ export async function handleSessionExport(
 
 		switch (format) {
 			case "jsonl": {
-				if (isHostedSessionManager(sessionManager)) {
-					content = `${(jsonlEntries ?? []).map((entry) => JSON.stringify(entry)).join("\n")}\n`;
+				if (hostedJsonlEntries) {
+					content = `${hostedJsonlEntries.map((entry) => JSON.stringify(entry)).join("\n")}\n`;
 				} else {
-					if (!jsonlSessionFile) {
+					const sessionFile = sessionManager.getSessionFileById(sessionId);
+					if (!sessionFile) {
 						sendJson(res, 404, { error: "Session file not found" }, cors, req);
 						return;
 					}
-					content = readFileSync(jsonlSessionFile, "utf8");
+					content = readFileSync(sessionFile, "utf8");
 				}
 				contentType = "application/x-ndjson";
 				filename = `session-${sessionId}.jsonl`;

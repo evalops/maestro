@@ -768,22 +768,6 @@ export function handleChatWebSocket(
 					if (event.message.role === "assistant") {
 						automaticMemoryExtraction.schedule(sessionManager.getSessionFile());
 					}
-					let initializationError: string | null = null;
-
-					if (sessionManager.shouldInitializeSession(agent.state.messages)) {
-						initializationError = await startSessionWithPolicy({
-							agent,
-							enterpriseContext,
-							logger,
-							modelId: registeredModel.id,
-							onSessionReady: (sessionId) => {
-								wsSession.sendSessionUpdate(sessionId);
-								wsSession.setContext({ sessionId });
-							},
-							sessionManager,
-							subject,
-						});
-					}
 
 					sessionManager.updateSnapshot(
 						agent.state,
@@ -802,12 +786,40 @@ export function handleChatWebSocket(
 						},
 					);
 
-					if (initializationError) {
-						wsSession.sendEvent({
-							type: "error",
-							message: `[Policy] ${initializationError}`,
-						});
-						wsSession.end();
+					if (sessionManager.shouldInitializeSession(agent.state.messages)) {
+						void startSessionWithPolicy({
+							agent,
+							enterpriseContext,
+							logger,
+							modelId: registeredModel.id,
+							onSessionReady: (sessionId) => {
+								wsSession.sendSessionUpdate(sessionId);
+								wsSession.setContext({ sessionId });
+							},
+							sessionManager,
+							subject,
+						})
+							.then((initializationError) => {
+								if (!initializationError) {
+									return;
+								}
+								wsSession.sendEvent({
+									type: "error",
+									message: `[Policy] ${initializationError}`,
+								});
+								wsSession.end();
+							})
+							.catch((error) => {
+								logger.error(
+									"Failed to initialize websocket session after message",
+									error instanceof Error ? error : new Error(String(error)),
+								);
+								wsSession.sendEvent({
+									type: "error",
+									message: "Failed to initialize session",
+								});
+								wsSession.end();
+							});
 					}
 					return;
 				}

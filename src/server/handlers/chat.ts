@@ -644,8 +644,6 @@ export async function handleChat(
 					automaticMemoryExtraction.schedule(sessionManager.getSessionFile());
 				}
 				let initializationError: string | null = null;
-
-				// Auto-initialize session on first user message
 				if (sessionManager.shouldInitializeSession(agent.state.messages)) {
 					initializationError = await startSessionWithPolicy({
 						agent,

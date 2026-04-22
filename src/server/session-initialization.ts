@@ -4,7 +4,9 @@ import { checkSessionLimits } from "../safety/policy.js";
 type SessionState = Parameters<SessionInitializationManager["startSession"]>[0];
 
 export interface SessionInitializationManager {
-	loadAllSessions(): Array<{ modified: Date }>;
+	loadAllSessions():
+		| Array<{ modified: Date }>
+		| Promise<Array<{ modified: Date }>>;
 	countActiveSessions?(since: Date): Promise<number>;
 	startSession(state: AgentSessionState, options?: { subject?: string }): void;
 	getSessionId(): string;
@@ -63,7 +65,7 @@ export async function startSessionWithPolicy(params: {
 		if (sessionManager.countActiveSessions) {
 			activeCount = await sessionManager.countActiveSessions(activeSince);
 		} else {
-			const sessions = sessionManager.loadAllSessions();
+			const sessions = await Promise.resolve(sessionManager.loadAllSessions());
 			activeCount = sessions.filter(
 				(session) => session.modified.getTime() >= activeSince.getTime(),
 			).length;

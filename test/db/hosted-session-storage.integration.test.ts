@@ -200,6 +200,14 @@ describeDb("hosted session database storage", () => {
 		).resolves.toBe(1);
 
 		const sessionId = manager.getSessionId();
+		const sessionMetadata = await manager.loadAllSessions();
+		expect(sessionMetadata).toHaveLength(1);
+		expect(sessionMetadata[0]).toMatchObject({
+			id: sessionId,
+			path: `db:${sessionId}`,
+			messageCount: 2,
+		});
+		expect(sessionMetadata[0]?.modified).toBeInstanceOf(Date);
 		const loaded = await manager.loadSession(sessionId);
 		expect(loaded).toMatchObject({
 			id: sessionId,
