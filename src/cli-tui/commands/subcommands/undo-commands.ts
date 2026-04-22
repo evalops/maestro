@@ -1,5 +1,5 @@
 /**
- * Grouped /undo command handler.
+ * Command-suite /undo handler.
  *
  * Combines: /undo, /checkpoint, /changes
  *
@@ -12,13 +12,12 @@
  */
 
 import type { CommandExecutionContext } from "../types.js";
-import { createGroupedCommandHandler, isNumericArg } from "./utils.js";
+import { createSubcommandHandler, isNumericArg } from "./utils.js";
 
 export interface UndoCommandDeps {
 	handleUndo: (ctx: CommandExecutionContext) => Promise<void> | void;
 	handleCheckpoint: (ctx: CommandExecutionContext) => Promise<void> | void;
 	handleChanges: (ctx: CommandExecutionContext) => void;
-	showInfo: (message: string) => void;
 	getUndoState: () => {
 		canUndo: boolean;
 		undoCount: number;
@@ -27,7 +26,7 @@ export interface UndoCommandDeps {
 }
 
 export function createUndoCommandHandler(deps: UndoCommandDeps) {
-	return createGroupedCommandHandler({
+	return createSubcommandHandler({
 		defaultSubcommand: "undo",
 		showHelp: showUndoHelp,
 		routes: [
@@ -49,7 +48,7 @@ export function createUndoCommandHandler(deps: UndoCommandDeps) {
 			},
 			{
 				match: ["history", "list", "status"],
-				execute: () => showUndoHistory(deps),
+				execute: ({ ctx }) => showUndoHistory(ctx, deps),
 			},
 		],
 		onUnknown: async ({ ctx, subcommand, args, customContext }) => {
@@ -72,14 +71,17 @@ export function createUndoCommandHandler(deps: UndoCommandDeps) {
 	});
 }
 
-function showUndoHistory(deps: UndoCommandDeps): void {
+function showUndoHistory(
+	ctx: CommandExecutionContext,
+	deps: UndoCommandDeps,
+): void {
 	const state = deps.getUndoState();
 	const checkpointList =
 		state.checkpoints.length > 0
 			? state.checkpoints.map((c) => `  - ${c}`).join("\n")
 			: "  (none)";
 
-	deps.showInfo(`Undo Status:
+	ctx.showInfo(`Undo Status:
   Can Undo: ${state.canUndo ? "yes" : "no"} (${state.undoCount} tracked changes)
 
 Checkpoints:

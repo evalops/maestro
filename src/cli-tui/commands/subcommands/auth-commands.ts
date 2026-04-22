@@ -12,7 +12,7 @@
  */
 
 import type { CommandExecutionContext } from "../types.js";
-import { createGroupedCommandHandler } from "./utils.js";
+import { createSubcommandHandler } from "./utils.js";
 
 export interface AuthCommandDeps {
 	handleLogin: (ctx: CommandExecutionContext) => Promise<void> | void;
@@ -20,7 +20,6 @@ export interface AuthCommandDeps {
 	handleSourceOfTruthPolicy?: (
 		ctx: CommandExecutionContext,
 	) => Promise<void> | void;
-	showInfo: (message: string) => void;
 	getAuthState: () => {
 		authenticated: boolean;
 		provider?: string;
@@ -29,13 +28,13 @@ export interface AuthCommandDeps {
 }
 
 export function createAuthCommandHandler(deps: AuthCommandDeps) {
-	return createGroupedCommandHandler({
+	return createSubcommandHandler({
 		defaultSubcommand: "status",
 		showHelp: showAuthHelp,
 		routes: [
 			{
 				match: ["status", "info", "whoami"],
-				execute: () => showAuthStatus(deps),
+				execute: ({ ctx }) => showAuthStatus(ctx, deps),
 			},
 			{
 				match: ["login", "signin"],
@@ -81,17 +80,20 @@ export function createAuthCommandHandler(deps: AuthCommandDeps) {
 	});
 }
 
-function showAuthStatus(deps: AuthCommandDeps): void {
+function showAuthStatus(
+	ctx: CommandExecutionContext,
+	deps: AuthCommandDeps,
+): void {
 	const state = deps.getAuthState();
 	if (state.authenticated) {
-		deps.showInfo(`Authentication Status:
+		ctx.showInfo(`Authentication Status:
   Authenticated: yes
   Provider: ${state.provider || "unknown"}
   Mode: ${state.mode || "unknown"}
 
 Use /auth logout to sign out.`);
 	} else {
-		deps.showInfo(`Authentication Status:
+		ctx.showInfo(`Authentication Status:
   Authenticated: no
 
 Use /auth login to authenticate with Claude Pro/Max.`);

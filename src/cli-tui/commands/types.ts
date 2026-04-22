@@ -3,7 +3,7 @@ import type {
 	CommandArgumentDefinition,
 	SlashCommand,
 } from "@evalops/tui";
-import type { GroupedCommandHandlers } from "./grouped-command-handlers.js";
+import type { CommandSuiteHandlers } from "./command-suite-handlers.js";
 
 export interface CommandExecutionContext<TArgs = Record<string, unknown>> {
 	command: SlashCommand;
@@ -103,7 +103,7 @@ export interface CommandEntry {
 export interface CommandRegistryOptions {
 	getRunScriptCompletions: RunScriptCompletionProvider;
 	handlers: CommandHandlers;
-	getGroupedHandlers: () => GroupedCommandHandlers;
+	getCommandSuiteHandlers: () => CommandSuiteHandlers;
 	createContext: (input: {
 		command: SlashCommand;
 		rawInput: string;

@@ -1,5 +1,5 @@
 /**
- * Grouped /diag command handler.
+ * Command-suite /diag handler.
  *
  * Combines: /status, /about, /context, /stats, /background, /diag,
  *           /telemetry, /training, /otel, /lsp, /mcp, /config
@@ -30,7 +30,7 @@ import { handleAccessCommand } from "../access-command.js";
 import { handleAuditCommand } from "../audit-command.js";
 import { handlePiiCommand } from "../pii-command.js";
 import type { CommandExecutionContext } from "../types.js";
-import { createGroupedCommandHandler } from "./utils.js";
+import { createSubcommandHandler } from "./utils.js";
 
 export interface DiagCommandDeps {
 	handleStatus: () => void;
@@ -47,12 +47,11 @@ export interface DiagCommandDeps {
 	handleMcp: (ctx: CommandExecutionContext) => void;
 	handleSources: (ctx: CommandExecutionContext) => void | Promise<void>;
 	handlePerf: () => void;
-	showInfo: (message: string) => void;
 	isDatabaseConfigured: () => boolean;
 }
 
 export function createDiagCommandHandler(deps: DiagCommandDeps) {
-	return createGroupedCommandHandler({
+	return createSubcommandHandler({
 		defaultSubcommand: "status",
 		showHelp: showDiagHelp,
 		routes: [
@@ -133,7 +132,6 @@ export function createDiagCommandHandler(deps: DiagCommandDeps) {
 							`/pii ${restArgumentText}`.trim(),
 							restArgumentText,
 						),
-						showInfo: deps.showInfo,
 					}),
 			},
 			{
@@ -155,14 +153,13 @@ export function createDiagCommandHandler(deps: DiagCommandDeps) {
 								`/audit ${restArgumentText}`.trim(),
 								restArgumentText,
 							),
-							showInfo: deps.showInfo,
 						},
 						{ isDatabaseConfigured: deps.isDatabaseConfigured },
 					),
 			},
 			{
 				match: ["bedrock", "aws"],
-				execute: () => {
+				execute: ({ ctx }) => {
 					const status = getBedrockStatus();
 					const lines = [
 						"AWS Bedrock Status:",
@@ -188,7 +185,7 @@ export function createDiagCommandHandler(deps: DiagCommandDeps) {
 					lines.push(
 						"  - EC2 Instance Metadata Service (auto-detected at runtime)",
 					);
-					deps.showInfo(lines.join("\n"));
+					ctx.showInfo(lines.join("\n"));
 				},
 			},
 		],

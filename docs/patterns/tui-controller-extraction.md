@@ -31,9 +31,9 @@ src/cli-tui/
     ├── otel-handlers.ts         # /otel
     ├── mcp-handlers.ts          # /mcp
     ├── composer-handlers.ts     # /composer config
-    └── grouped/                 # Grouped command handlers
-        ├── session-commands.ts  # /sess subcommands
-        ├── diag-commands.ts     # /dx subcommands
+    └── subcommands/             # Command suite handlers
+        ├── session-commands.ts  # /ss subcommands
+        ├── diag-commands.ts     # /diag subcommands
         └── ...
 ```
 

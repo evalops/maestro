@@ -6,8 +6,8 @@ import {
 import { resetTuiKeybindingConfigCache } from "../keybindings.js";
 import {
 	type SubcommandDef,
-	createGroupedCommandHandler,
-} from "./grouped/utils.js";
+	createSubcommandHandler,
+} from "./subcommands/utils.js";
 import type { CommandExecutionContext } from "./types.js";
 
 export const HOTKEYS_SUBCOMMANDS: SubcommandDef[] = [
@@ -22,7 +22,7 @@ export interface HotkeysCommandDeps {
 }
 
 export function createHotkeysCommandHandler(deps: HotkeysCommandDeps) {
-	return createGroupedCommandHandler({
+	return createSubcommandHandler({
 		defaultSubcommand: "show",
 		showHelp: showHotkeysHelp,
 		routes: [

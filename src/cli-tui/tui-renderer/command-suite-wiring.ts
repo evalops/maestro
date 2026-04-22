@@ -1,14 +1,14 @@
 /**
- * GroupedHandlersWiring — Builds the GroupedCommandDeps object that wires
- * TuiRenderer's sub-controllers/views to the grouped command handler system.
+ * CommandSuiteWiring — Builds the command suite dependency map that wires
+ * TuiRenderer's sub-controllers/views to parent command handlers.
  *
- * No own state. Pure mapping from TuiRenderer-level refs to GroupedCommandDeps.
+ * No own state. Pure mapping from TuiRenderer-level refs to CommandSuiteDeps.
  */
 
 import {
-	type GroupedCommandHandlers,
-	createGroupedCommandHandlers,
-} from "../commands/grouped-command-handlers.js";
+	type CommandSuiteHandlers,
+	createCommandSuiteHandlers,
+} from "../commands/command-suite-handlers.js";
 import { handleOtelCommand as otelHandler } from "../commands/otel-handlers.js";
 import {
 	type ApprovalService,
@@ -22,7 +22,7 @@ import type { DelegatingCommandHandlerMap } from "./delegating-command-handlers.
 
 // ─── Dependency Interface ────────────────────────────────────────────────────
 
-export interface GroupedWiringDeps {
+export interface CommandSuiteWiringDeps {
 	/** Delegating command handler map (guardian, workflow, undo, etc.). */
 	delegatingHandlers: DelegatingCommandHandlerMap;
 	/** Notification view for toasts and errors. */
@@ -126,11 +126,11 @@ export interface GroupedWiringDeps {
 // ─── Factory ─────────────────────────────────────────────────────────────────
 
 /**
- * Build grouped command handlers from TuiRenderer-level references.
+ * Build command suite handlers from TuiRenderer-level references.
  */
-export function buildGroupedCommandHandlers(
-	deps: GroupedWiringDeps,
-): GroupedCommandHandlers {
+export function buildCommandSuiteHandlers(
+	deps: CommandSuiteWiringDeps,
+): CommandSuiteHandlers {
 	/** Shared rendering callbacks for safety commands. */
 	const safetyCallbacks = () => ({
 		showToast: (msg: string, type: "success" | "info") =>
@@ -140,7 +140,7 @@ export function buildGroupedCommandHandlers(
 		requestRender: () => deps.requestRender(),
 	});
 
-	return createGroupedCommandHandlers({
+	return createCommandSuiteHandlers({
 		session: {
 			handleNewChat: (ctx) => deps.handleNewChatCommand(ctx),
 			handleClear: () => deps.handleClearCommand(),

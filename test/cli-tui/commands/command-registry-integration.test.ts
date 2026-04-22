@@ -1,6 +1,6 @@
 import type { SlashCommand } from "@evalops/tui";
 import { describe, expect, it, vi } from "vitest";
-import type { GroupedCommandHandlers } from "../../../src/cli-tui/commands/grouped-command-handlers.js";
+import type { CommandSuiteHandlers } from "../../../src/cli-tui/commands/command-suite-handlers.js";
 import type {
 	CommandExecutionContext,
 	CommandHandlers,
@@ -23,7 +23,7 @@ function createMockContext(
 }
 
 function createMockOptions(): CommandRegistryOptions & {
-	groupedHandlers: GroupedCommandHandlers;
+	commandSuiteHandlers: CommandSuiteHandlers;
 } {
 	const noop = vi.fn();
 	const handlers: CommandHandlers = {
@@ -100,7 +100,7 @@ function createMockOptions(): CommandRegistryOptions & {
 		copy: noop,
 		package: noop,
 	};
-	const groupedHandlers: GroupedCommandHandlers = {
+	const commandSuiteHandlers: CommandSuiteHandlers = {
 		session: vi.fn(),
 		diag: vi.fn(),
 		ui: vi.fn(),
@@ -123,8 +123,8 @@ function createMockOptions(): CommandRegistryOptions & {
 			}) => createMockContext(input.rawInput, input.argumentText),
 		),
 		handlers,
-		getGroupedHandlers: vi.fn(() => groupedHandlers),
-		groupedHandlers,
+		getCommandSuiteHandlers: vi.fn(() => commandSuiteHandlers),
+		commandSuiteHandlers,
 	};
 }
 
@@ -239,7 +239,7 @@ describe("command-registry-integration", () => {
 			"training",
 			"compact-tools",
 			"alerts",
-			// Grouped
+			// Command suites
 			"ss",
 			"ui",
 			"safe",
@@ -365,26 +365,26 @@ describe("command-registry-integration", () => {
 			expect(opts.handlers.quit).toHaveBeenCalled();
 		});
 
-		it("keeps grouped handlers lazy until a grouped-only command executes", () => {
+		it("keeps command suite handlers lazy until a suite command executes", () => {
 			const opts = createMockOptions();
 			const { entries } = buildCommandRegistry(opts);
 			const safeEntry = entries.find((e) => e.matches("/safe"));
 
-			expect(opts.getGroupedHandlers).not.toHaveBeenCalled();
+			expect(opts.getCommandSuiteHandlers).not.toHaveBeenCalled();
 			safeEntry!.execute("/safe");
 
-			expect(opts.getGroupedHandlers).toHaveBeenCalledTimes(1);
-			expect(opts.groupedHandlers.safety).toHaveBeenCalled();
+			expect(opts.getCommandSuiteHandlers).toHaveBeenCalledTimes(1);
+			expect(opts.commandSuiteHandlers.safety).toHaveBeenCalled();
 		});
 
-		it("dispatches /cfg to the grouped config handler", () => {
+		it("dispatches /cfg to the command suite config handler", () => {
 			const opts = createMockOptions();
 			const { entries } = buildCommandRegistry(opts);
 			const configEntry = entries.find((e) => e.matches("/cfg"));
 
 			configEntry!.execute("/cfg");
 
-			expect(opts.groupedHandlers.config).toHaveBeenCalled();
+			expect(opts.commandSuiteHandlers.config).toHaveBeenCalled();
 		});
 
 		it("passes --help flag through to renderHelp", () => {
@@ -422,7 +422,7 @@ describe("command-registry-integration", () => {
 		const opts = createMockOptions();
 		const { commands } = buildCommandRegistry(opts);
 		const names = commands.map((c) => c.name);
-		// The registry intentionally has "diag" and "undo" as both standalone and grouped
+		// The registry intentionally has "diag" and "undo" as both standalone and suite commands
 		// so we check that the duplication is known and limited
 		const nameCounts = new Map<string, number>();
 		for (const name of names) {
@@ -430,7 +430,7 @@ describe("command-registry-integration", () => {
 		}
 		for (const [name, count] of nameCounts) {
 			if (name === "diag" || name === "undo") {
-				// These have both standalone and grouped entries
+				// These have both standalone and command suite entries
 				expect(count).toBeLessThanOrEqual(2);
 			} else {
 				expect(count).toBe(1);

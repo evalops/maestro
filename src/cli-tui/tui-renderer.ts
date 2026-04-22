@@ -72,7 +72,7 @@ import type { BackgroundTasksController } from "./background/background-tasks-co
 import { BashModeView } from "./bash-mode-view.js";
 import { ChangelogView } from "./changelog-view.js";
 import { formatCommandHelp } from "./commands/argument-parser.js";
-import type { GroupedCommandHandlers } from "./commands/grouped-command-handlers.js";
+import type { CommandSuiteHandlers } from "./commands/command-suite-handlers.js";
 import type {
 	CommandEntry,
 	CommandExecutionContext,
@@ -148,6 +148,7 @@ import {
 } from "./tui-renderer/attachment-controller.js";
 import { buildTuiCommandRegistryOptions } from "./tui-renderer/command-registry-options.js";
 import { buildTuiCommandRegistry } from "./tui-renderer/command-registry.js";
+import { buildCommandSuiteHandlers } from "./tui-renderer/command-suite-wiring.js";
 import {
 	type DelegatingCommandHandlerMap,
 	createDelegatingCommandHandlers,
@@ -156,7 +157,6 @@ import {
 	type FooterHintsController,
 	createFooterHintsController,
 } from "./tui-renderer/footer-hints-controller.js";
-import { buildGroupedCommandHandlers } from "./tui-renderer/grouped-handlers-wiring.js";
 import {
 	type HistoryController,
 	createHistoryController,
@@ -448,7 +448,7 @@ export class TuiRenderer {
 	private interruptController!: InterruptController;
 	private pasteHandler!: PasteHandler;
 	private miscHandlers!: MiscHandlers;
-	private groupedHandlers?: GroupedCommandHandlers;
+	private commandSuiteHandlers?: CommandSuiteHandlers;
 	private uiStateController!: UiStateController;
 	private quickSettingsController!: QuickSettingsController;
 	private branchController?: BranchController;
@@ -1175,7 +1175,7 @@ export class TuiRenderer {
 					this.delegatingHandlers.handleMemoryCommand(context),
 				handleModeCommand: (context) =>
 					this.delegatingHandlers.handleModeCommand(context),
-				getGroupedHandlers: () => this.getGroupedHandlers(),
+				getCommandSuiteHandlers: () => this.getCommandSuiteHandlers(),
 				refreshFooterHint: () => this.refreshFooterHint(),
 				onQuit: () => {
 					this.stop();
@@ -2547,9 +2547,9 @@ export class TuiRenderer {
 		this.notificationView.showInfo(formatPerfReport(snap));
 	}
 
-	private getGroupedHandlers(): GroupedCommandHandlers {
-		if (!this.groupedHandlers) {
-			this.groupedHandlers = buildGroupedCommandHandlers({
+	private getCommandSuiteHandlers(): CommandSuiteHandlers {
+		if (!this.commandSuiteHandlers) {
+			this.commandSuiteHandlers = buildCommandSuiteHandlers({
 				delegatingHandlers: this.delegatingHandlers,
 				notificationView: this.notificationView,
 				approvalService: this.approvalService,
@@ -2654,7 +2654,7 @@ export class TuiRenderer {
 					this.getCustomCommandsController().handleCommandsCommand(ctx),
 			});
 		}
-		return this.groupedHandlers;
+		return this.commandSuiteHandlers;
 	}
 
 	stop(): void {

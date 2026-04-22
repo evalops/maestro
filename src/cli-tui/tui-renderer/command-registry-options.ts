@@ -12,7 +12,7 @@ import type { BackgroundTasksController } from "../background/background-tasks-c
 import type { ChangelogView } from "../changelog-view.js";
 import { handleAccessCommand } from "../commands/access-command.js";
 import { handleAuditCommand } from "../commands/audit-command.js";
-import type { GroupedCommandHandlers } from "../commands/grouped-command-handlers.js";
+import type { CommandSuiteHandlers } from "../commands/command-suite-handlers.js";
 import { createHotkeysCommandHandler } from "../commands/hotkeys-command.js";
 import { handleLimitsCommand } from "../commands/limits-command.js";
 import { handleOtelCommand as otelHandler } from "../commands/otel-handlers.js";
@@ -132,7 +132,7 @@ export interface TuiCommandRegistryDeps {
 	handleCheckpointCommand: (context: CommandExecutionContext) => void;
 	handleMemoryCommand: (context: CommandExecutionContext) => void;
 	handleModeCommand: (context: CommandExecutionContext) => void;
-	getGroupedHandlers: () => GroupedCommandHandlers;
+	getCommandSuiteHandlers: () => CommandSuiteHandlers;
 	refreshFooterHint: () => void;
 	onQuit: () => void;
 }
@@ -317,6 +317,6 @@ export function buildTuiCommandRegistryOptions(
 			deps.getRunCommandView().getRunScriptCompletions(prefix),
 		createContext: (ctx) => deps.createCommandContext(ctx),
 		handlers,
-		getGroupedHandlers: deps.getGroupedHandlers,
+		getCommandSuiteHandlers: deps.getCommandSuiteHandlers,
 	};
 }

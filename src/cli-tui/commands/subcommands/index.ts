@@ -1,5 +1,5 @@
 /**
- * Grouped command handlers.
+ * Subcommand suite handlers.
  *
  * These handlers organize related commands under parent commands
  * with subcommands, reducing the total number of top-level commands.
@@ -53,7 +53,7 @@ export {
 } from "./tools-commands.js";
 
 export {
-	createGroupedCommandHandler,
+	createSubcommandHandler,
 	parseSubcommand,
 	isHelpRequest,
 	isNumericArg,
@@ -72,9 +72,9 @@ export {
 	UNDO_SUBCOMMANDS,
 	CONFIG_SUBCOMMANDS,
 	TOOLS_SUBCOMMANDS,
-	type GroupedCommandHandlerOptions,
-	type GroupedCommandRoute,
-	type GroupedCommandRouteContext,
+	type SubcommandHandlerOptions,
+	type SubcommandRoute,
+	type SubcommandRouteContext,
 	type ParsedSubcommand,
 	type SubcommandDef,
 } from "./utils.js";

@@ -254,7 +254,7 @@ export class UiStateController {
 	// ─── Aggregated State ────────────────────────────────────────────────────
 
 	/**
-	 * Get the current UI state for display or grouped command handlers
+	 * Get the current UI state for display or command suite handlers
 	 */
 	getState(): {
 		zenMode: boolean;

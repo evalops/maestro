@@ -14,7 +14,7 @@
  */
 
 import type { CommandExecutionContext } from "../types.js";
-import { createGroupedCommandHandler } from "./utils.js";
+import { createSubcommandHandler } from "./utils.js";
 
 export interface UiCommandDeps {
 	handleTheme: (ctx: CommandExecutionContext) => void;
@@ -22,7 +22,6 @@ export interface UiCommandDeps {
 	handleFooter: (ctx: CommandExecutionContext) => void;
 	handleZen: (ctx: CommandExecutionContext) => void;
 	handleCompactTools: (ctx: CommandExecutionContext) => void;
-	showInfo: (message: string) => void;
 	getUiState: () => {
 		zenMode: boolean;
 		cleanMode: string;
@@ -32,13 +31,13 @@ export interface UiCommandDeps {
 }
 
 export function createUiCommandHandler(deps: UiCommandDeps) {
-	return createGroupedCommandHandler({
+	return createSubcommandHandler({
 		defaultSubcommand: "status",
 		showHelp: showUiHelp,
 		routes: [
 			{
 				match: ["status", "info"],
-				execute: () => showUiStatus(deps),
+				execute: ({ ctx }) => showUiStatus(ctx, deps),
 			},
 			{
 				match: ["theme", "color", "colors"],
@@ -78,9 +77,9 @@ export function createUiCommandHandler(deps: UiCommandDeps) {
 	});
 }
 
-function showUiStatus(deps: UiCommandDeps): void {
+function showUiStatus(ctx: CommandExecutionContext, deps: UiCommandDeps): void {
 	const state = deps.getUiState();
-	deps.showInfo(`UI Settings:
+	ctx.showInfo(`UI Settings:
   Zen Mode: ${state.zenMode ? "on" : "off"}
   Clean Mode: ${state.cleanMode}
   Footer: ${state.footerMode}

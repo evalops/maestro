@@ -2,7 +2,7 @@ import {
 	BUILT_IN_PII_PATTERNS,
 	PiiDetector,
 } from "../../security/pii-detector.js";
-import { isHelpRequest } from "./grouped/utils.js";
+import { isHelpRequest } from "./subcommands/utils.js";
 import type { CommandExecutionContext } from "./types.js";
 
 const PII_USAGE = [

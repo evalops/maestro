@@ -11,7 +11,7 @@
  */
 
 import type { CommandExecutionContext } from "../types.js";
-import { createGroupedCommandHandler } from "./utils.js";
+import { createSubcommandHandler } from "./utils.js";
 
 export interface UsageCommandDeps {
 	handleCost: (ctx: CommandExecutionContext) => Promise<void> | void;
@@ -20,7 +20,7 @@ export interface UsageCommandDeps {
 }
 
 export function createUsageCommandHandler(deps: UsageCommandDeps) {
-	return createGroupedCommandHandler({
+	return createSubcommandHandler({
 		defaultSubcommand: "overview",
 		showHelp: showUsageHelp,
 		routes: [

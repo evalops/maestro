@@ -13,7 +13,7 @@
  */
 
 import type { CommandExecutionContext } from "../types.js";
-import { createGroupedCommandHandler } from "./utils.js";
+import { createSubcommandHandler } from "./utils.js";
 
 export interface ConfigCommandDeps {
 	handleConfig: (ctx: CommandExecutionContext) => void | Promise<void>;
@@ -21,11 +21,10 @@ export interface ConfigCommandDeps {
 	handleFramework: (ctx: CommandExecutionContext) => void | Promise<void>;
 	handleComposer: (ctx: CommandExecutionContext) => void | Promise<void>;
 	handleInit: (ctx: CommandExecutionContext) => void | Promise<void>;
-	showInfo: (message: string) => void;
 }
 
 export function createConfigCommandHandler(deps: ConfigCommandDeps) {
-	return createGroupedCommandHandler({
+	return createSubcommandHandler({
 		defaultSubcommand: "validate",
 		showHelp: showConfigHelp,
 		routes: [
