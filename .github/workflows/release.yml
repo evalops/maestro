@@ -167,12 +167,47 @@ jobs:
       - name: Publish to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_PUBLISH_AUTH_MODE: ${{ vars.NPM_PUBLISH_AUTH_MODE || 'auto' }}
         run: |
           set -euo pipefail
-          if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
+          publish_with_token() {
+            if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+              echo "::error::NPM_PUBLISH_AUTH_MODE=token requires the NPM_TOKEN secret."
+              exit 1
+            fi
+
+            echo "Publishing with NPM_TOKEN fallback."
             printf "//registry.npmjs.org/:_authToken=%s\n" "$NODE_AUTH_TOKEN" > ~/.npmrc
-          fi
-          npm publish "${{ steps.pack.outputs.tarball }}" --access public --provenance
+            npm publish "${{ steps.pack.outputs.tarball }}" --access public --provenance
+          }
+
+          publish_with_trusted_publisher() {
+            echo "Publishing with npm trusted publishing."
+            unset NODE_AUTH_TOKEN
+            rm -f ~/.npmrc
+            npm publish "${{ steps.pack.outputs.tarball }}" --access public
+          }
+
+          case "${NPM_PUBLISH_AUTH_MODE}" in
+            auto|"")
+              if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
+                echo "NPM_TOKEN is present; using token fallback. Set NPM_PUBLISH_AUTH_MODE=trusted after npm trust is configured."
+                publish_with_token
+              else
+                publish_with_trusted_publisher
+              fi
+              ;;
+            token)
+              publish_with_token
+              ;;
+            trusted)
+              publish_with_trusted_publisher
+              ;;
+            *)
+              echo "::error::Unsupported NPM_PUBLISH_AUTH_MODE '${NPM_PUBLISH_AUTH_MODE}'. Use auto, token, or trusted."
+              exit 1
+              ;;
+          esac
 
       - name: Sync Hopper version metadata
         env:
