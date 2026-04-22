@@ -10,6 +10,7 @@ export const PLATFORM_CONNECT_SERVICES = {
 	llmGateway: "llmgateway.v1.GatewayService",
 	meter: "meter.v1.MeterService",
 	prompts: "prompts.v1.PromptService",
+	remoteRunner: "remoterunner.v1.RemoteRunnerService",
 } as const;
 
 export const PLATFORM_CONNECT_METHODS = {
@@ -111,6 +112,44 @@ export const PLATFORM_CONNECT_METHODS = {
 		resolve: {
 			service: PLATFORM_CONNECT_SERVICES.prompts,
 			method: "Resolve",
+		},
+	},
+	remoteRunner: {
+		createRunnerSession: {
+			service: PLATFORM_CONNECT_SERVICES.remoteRunner,
+			method: "CreateRunnerSession",
+		},
+		extendRunnerSession: {
+			service: PLATFORM_CONNECT_SERVICES.remoteRunner,
+			method: "ExtendRunnerSession",
+		},
+		getRunnerSession: {
+			service: PLATFORM_CONNECT_SERVICES.remoteRunner,
+			method: "GetRunnerSession",
+		},
+		getStatus: {
+			service: PLATFORM_CONNECT_SERVICES.remoteRunner,
+			method: "GetStatus",
+		},
+		listRunnerSessionEvents: {
+			service: PLATFORM_CONNECT_SERVICES.remoteRunner,
+			method: "ListRunnerSessionEvents",
+		},
+		listRunnerSessions: {
+			service: PLATFORM_CONNECT_SERVICES.remoteRunner,
+			method: "ListRunnerSessions",
+		},
+		mintAttachToken: {
+			service: PLATFORM_CONNECT_SERVICES.remoteRunner,
+			method: "MintAttachToken",
+		},
+		revokeAttachToken: {
+			service: PLATFORM_CONNECT_SERVICES.remoteRunner,
+			method: "RevokeAttachToken",
+		},
+		stopRunnerSession: {
+			service: PLATFORM_CONNECT_SERVICES.remoteRunner,
+			method: "StopRunnerSession",
 		},
 	},
 } as const;

@@ -65,4 +65,23 @@ describe("parseArgs", () => {
 			messages: ["./session.jsonl"],
 		});
 	});
+
+	it("preserves remote command-group arguments for the remote handler", () => {
+		expect(
+			parseArgs([
+				"remote",
+				"start",
+				"--workspace",
+				"ws_123",
+				"--repo",
+				"evalops/foo",
+				"--json",
+			]),
+		).toMatchObject({
+			command: "remote",
+			subcommand: "start",
+			commandArgs: ["--workspace", "ws_123", "--repo", "evalops/foo", "--json"],
+			messages: [],
+		});
+	});
 });
