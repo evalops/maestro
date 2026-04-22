@@ -5,7 +5,7 @@ import {
 	TOOL_CONFIG,
 } from "../../config/constants.js";
 import { getToolOutputLimits } from "../utils/tool-text-utils.js";
-import { isHelpRequest } from "./grouped/utils.js";
+import { isHelpRequest } from "./subcommands/utils.js";
 import type { CommandExecutionContext } from "./types.js";
 
 type LimitSection = {

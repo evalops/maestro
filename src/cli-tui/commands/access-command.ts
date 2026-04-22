@@ -6,7 +6,7 @@ import {
 	isSystemPath,
 } from "../../safety/path-containment.js";
 import { expandUserPath } from "../../utils/path-validation.js";
-import { isHelpRequest } from "./grouped/utils.js";
+import { isHelpRequest } from "./subcommands/utils.js";
 import type { CommandExecutionContext } from "./types.js";
 
 const ACCESS_USAGE = [

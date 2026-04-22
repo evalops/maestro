@@ -16,7 +16,7 @@ function createMockContext(
 	};
 }
 
-describe("Grouped Command Handlers", () => {
+describe("Subcommand Suite Handlers", () => {
 	beforeEach(() => {
 		vi.useRealTimers();
 	});
@@ -24,7 +24,7 @@ describe("Grouped Command Handlers", () => {
 	describe("SessionCommandHandler", () => {
 		it("routes 'new' subcommand to handleNewChat", async () => {
 			const { createSessionCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/session-commands.js"
+				"../../src/cli-tui/commands/subcommands/session-commands.js"
 			);
 
 			const deps = {
@@ -51,7 +51,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("awaits async new-chat handlers", async () => {
 			const { createSessionCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/session-commands.js"
+				"../../src/cli-tui/commands/subcommands/session-commands.js"
 			);
 
 			let finished = false;
@@ -80,7 +80,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("routes 'clear' subcommand to handleClear", async () => {
 			const { createSessionCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/session-commands.js"
+				"../../src/cli-tui/commands/subcommands/session-commands.js"
 			);
 
 			const deps = {
@@ -107,7 +107,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("routes 'list' subcommand to handleSessionsList", async () => {
 			const { createSessionCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/session-commands.js"
+				"../../src/cli-tui/commands/subcommands/session-commands.js"
 			);
 
 			const deps = {
@@ -134,7 +134,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("defaults to 'info' when no subcommand provided", async () => {
 			const { createSessionCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/session-commands.js"
+				"../../src/cli-tui/commands/subcommands/session-commands.js"
 			);
 
 			const deps = {
@@ -161,7 +161,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("shows help on 'help' subcommand", async () => {
 			const { createSessionCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/session-commands.js"
+				"../../src/cli-tui/commands/subcommands/session-commands.js"
 			);
 
 			const deps = {
@@ -210,7 +210,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("routes 'status' to handleStatus", async () => {
 			const { createDiagCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/diag-commands.js"
+				"../../src/cli-tui/commands/subcommands/diag-commands.js"
 			);
 
 			const deps = createDiagDeps();
@@ -224,7 +224,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("routes 'stats' to handleStats (not handleStatus)", async () => {
 			const { createDiagCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/diag-commands.js"
+				"../../src/cli-tui/commands/subcommands/diag-commands.js"
 			);
 
 			const deps = createDiagDeps();
@@ -239,7 +239,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("routes 'telemetry' to handleTelemetry", async () => {
 			const { createDiagCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/diag-commands.js"
+				"../../src/cli-tui/commands/subcommands/diag-commands.js"
 			);
 
 			const deps = createDiagDeps();
@@ -253,7 +253,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("routes 'lsp' to handleLsp", async () => {
 			const { createDiagCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/diag-commands.js"
+				"../../src/cli-tui/commands/subcommands/diag-commands.js"
 			);
 
 			const deps = createDiagDeps();
@@ -267,7 +267,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("routes 'mcp' to handleMcp", async () => {
 			const { createDiagCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/diag-commands.js"
+				"../../src/cli-tui/commands/subcommands/diag-commands.js"
 			);
 
 			const deps = createDiagDeps();
@@ -281,7 +281,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("defaults to 'status' when no subcommand provided", async () => {
 			const { createDiagCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/diag-commands.js"
+				"../../src/cli-tui/commands/subcommands/diag-commands.js"
 			);
 
 			const deps = createDiagDeps();
@@ -295,7 +295,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("shows audit info when database not configured", async () => {
 			const { createDiagCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/diag-commands.js"
+				"../../src/cli-tui/commands/subcommands/diag-commands.js"
 			);
 
 			const deps = createDiagDeps();
@@ -305,7 +305,7 @@ describe("Grouped Command Handlers", () => {
 
 			await handler(ctx);
 
-			expect(deps.showInfo).toHaveBeenCalledWith(
+			expect(ctx.showInfo).toHaveBeenCalledWith(
 				expect.stringContaining("Enterprise feature"),
 			);
 		});
@@ -329,7 +329,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("routes 'theme' to handleTheme", async () => {
 			const { createUiCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/ui-commands.js"
+				"../../src/cli-tui/commands/subcommands/ui-commands.js"
 			);
 
 			const deps = createUiDeps();
@@ -343,7 +343,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("routes 'zen' to handleZen", async () => {
 			const { createUiCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/ui-commands.js"
+				"../../src/cli-tui/commands/subcommands/ui-commands.js"
 			);
 
 			const deps = createUiDeps();
@@ -357,7 +357,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("shows UI status when no subcommand provided", async () => {
 			const { createUiCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/ui-commands.js"
+				"../../src/cli-tui/commands/subcommands/ui-commands.js"
 			);
 
 			const deps = createUiDeps();
@@ -366,14 +366,14 @@ describe("Grouped Command Handlers", () => {
 
 			handler(ctx);
 
-			expect(deps.showInfo).toHaveBeenCalledWith(
+			expect(ctx.showInfo).toHaveBeenCalledWith(
 				expect.stringContaining("UI Settings:"),
 			);
 		});
 
 		it("shows error for unknown subcommand", async () => {
 			const { createUiCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/ui-commands.js"
+				"../../src/cli-tui/commands/subcommands/ui-commands.js"
 			);
 
 			const deps = createUiDeps();
@@ -403,7 +403,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("routes 'approvals' to handleApprovals", async () => {
 			const { createSafetyCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/safety-commands.js"
+				"../../src/cli-tui/commands/subcommands/safety-commands.js"
 			);
 
 			const deps = createSafetyDeps();
@@ -417,7 +417,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("routes 'plan' to handlePlanMode", async () => {
 			const { createSafetyCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/safety-commands.js"
+				"../../src/cli-tui/commands/subcommands/safety-commands.js"
 			);
 
 			const deps = createSafetyDeps();
@@ -431,7 +431,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("routes 'guardian' to handleGuardian", async () => {
 			const { createSafetyCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/safety-commands.js"
+				"../../src/cli-tui/commands/subcommands/safety-commands.js"
 			);
 
 			const deps = createSafetyDeps();
@@ -445,7 +445,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("shows safety status when no subcommand provided", async () => {
 			const { createSafetyCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/safety-commands.js"
+				"../../src/cli-tui/commands/subcommands/safety-commands.js"
 			);
 
 			const deps = createSafetyDeps();
@@ -454,7 +454,7 @@ describe("Grouped Command Handlers", () => {
 
 			await handler(ctx);
 
-			expect(deps.showInfo).toHaveBeenCalledWith(
+			expect(ctx.showInfo).toHaveBeenCalledWith(
 				expect.stringContaining("Safety Settings:"),
 			);
 		});
@@ -470,7 +470,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("routes 'diff' to handleDiff", async () => {
 			const { createGitCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/git-commands.js"
+				"../../src/cli-tui/commands/subcommands/git-commands.js"
 			);
 
 			const deps = createGitDeps();
@@ -487,7 +487,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("routes 'review' to handleReview", async () => {
 			const { createGitCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/git-commands.js"
+				"../../src/cli-tui/commands/subcommands/git-commands.js"
 			);
 
 			const deps = createGitDeps();
@@ -501,7 +501,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("treats path-like argument as diff", async () => {
 			const { createGitCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/git-commands.js"
+				"../../src/cli-tui/commands/subcommands/git-commands.js"
 			);
 
 			const deps = createGitDeps();
@@ -529,7 +529,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("routes 'login' to handleLogin", async () => {
 			const { createAuthCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/auth-commands.js"
+				"../../src/cli-tui/commands/subcommands/auth-commands.js"
 			);
 
 			const deps = createAuthDeps();
@@ -543,7 +543,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("routes 'logout' to handleLogout", async () => {
 			const { createAuthCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/auth-commands.js"
+				"../../src/cli-tui/commands/subcommands/auth-commands.js"
 			);
 
 			const deps = createAuthDeps();
@@ -557,7 +557,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("shows authenticated status", async () => {
 			const { createAuthCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/auth-commands.js"
+				"../../src/cli-tui/commands/subcommands/auth-commands.js"
 			);
 
 			const deps = createAuthDeps();
@@ -571,14 +571,14 @@ describe("Grouped Command Handlers", () => {
 
 			await handler(ctx);
 
-			expect(deps.showInfo).toHaveBeenCalledWith(
+			expect(ctx.showInfo).toHaveBeenCalledWith(
 				expect.stringContaining("Authenticated: yes"),
 			);
 		});
 
 		it("shows unauthenticated status", async () => {
 			const { createAuthCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/auth-commands.js"
+				"../../src/cli-tui/commands/subcommands/auth-commands.js"
 			);
 
 			const deps = createAuthDeps();
@@ -590,14 +590,14 @@ describe("Grouped Command Handlers", () => {
 
 			await handler(ctx);
 
-			expect(deps.showInfo).toHaveBeenCalledWith(
+			expect(ctx.showInfo).toHaveBeenCalledWith(
 				expect.stringContaining("Authenticated: no"),
 			);
 		});
 
 		it("routes 'source-of-truth' to connector policy handler", async () => {
 			const { createAuthCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/auth-commands.js"
+				"../../src/cli-tui/commands/subcommands/auth-commands.js"
 			);
 
 			const deps = createAuthDeps();
@@ -627,7 +627,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("routes 'cost' to handleCost", async () => {
 			const { createUsageCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/usage-commands.js"
+				"../../src/cli-tui/commands/subcommands/usage-commands.js"
 			);
 
 			const deps = createUsageDeps();
@@ -641,7 +641,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("routes 'quota' to handleQuota", async () => {
 			const { createUsageCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/usage-commands.js"
+				"../../src/cli-tui/commands/subcommands/usage-commands.js"
 			);
 
 			const deps = createUsageDeps();
@@ -655,7 +655,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("routes 'stats' to handleStats", async () => {
 			const { createUsageCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/usage-commands.js"
+				"../../src/cli-tui/commands/subcommands/usage-commands.js"
 			);
 
 			const deps = createUsageDeps();
@@ -669,7 +669,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("defaults to stats on empty subcommand", async () => {
 			const { createUsageCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/usage-commands.js"
+				"../../src/cli-tui/commands/subcommands/usage-commands.js"
 			);
 
 			const deps = createUsageDeps();
@@ -697,7 +697,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("routes 'undo' to handleUndo", async () => {
 			const { createUndoCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/undo-commands.js"
+				"../../src/cli-tui/commands/subcommands/undo-commands.js"
 			);
 
 			const deps = createUndoDeps();
@@ -711,7 +711,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("routes numeric argument to handleUndo", async () => {
 			const { createUndoCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/undo-commands.js"
+				"../../src/cli-tui/commands/subcommands/undo-commands.js"
 			);
 
 			const deps = createUndoDeps();
@@ -725,7 +725,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("routes 'checkpoint' to handleCheckpoint", async () => {
 			const { createUndoCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/undo-commands.js"
+				"../../src/cli-tui/commands/subcommands/undo-commands.js"
 			);
 
 			const deps = createUndoDeps();
@@ -742,7 +742,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("routes 'changes' to handleChanges", async () => {
 			const { createUndoCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/undo-commands.js"
+				"../../src/cli-tui/commands/subcommands/undo-commands.js"
 			);
 
 			const deps = createUndoDeps();
@@ -756,7 +756,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("shows history with checkpoint list", async () => {
 			const { createUndoCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/undo-commands.js"
+				"../../src/cli-tui/commands/subcommands/undo-commands.js"
 			);
 
 			const deps = createUndoDeps();
@@ -765,7 +765,7 @@ describe("Grouped Command Handlers", () => {
 
 			await handler(ctx);
 
-			expect(deps.showInfo).toHaveBeenCalledWith(
+			expect(ctx.showInfo).toHaveBeenCalledWith(
 				expect.stringContaining("before-refactor"),
 			);
 		});
@@ -774,7 +774,7 @@ describe("Grouped Command Handlers", () => {
 	describe("Context Rewriting", () => {
 		it("session handler rewrites context for branch subcommand", async () => {
 			const { createSessionCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/session-commands.js"
+				"../../src/cli-tui/commands/subcommands/session-commands.js"
 			);
 
 			const deps = {
@@ -804,7 +804,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("diag handler rewrites context for background subcommand", async () => {
 			const { createDiagCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/diag-commands.js"
+				"../../src/cli-tui/commands/subcommands/diag-commands.js"
 			);
 
 			const deps = {
@@ -838,7 +838,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("undo handler rewrites context for checkpoint subcommand", async () => {
 			const { createUndoCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/undo-commands.js"
+				"../../src/cli-tui/commands/subcommands/undo-commands.js"
 			);
 
 			const deps = {
@@ -871,7 +871,7 @@ describe("Grouped Command Handlers", () => {
 	describe("Alias Support", () => {
 		it("session handler supports 'ls' alias for list", async () => {
 			const { createSessionCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/session-commands.js"
+				"../../src/cli-tui/commands/subcommands/session-commands.js"
 			);
 
 			const deps = {
@@ -898,7 +898,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("diag handler supports 'health' alias for status", async () => {
 			const { createDiagCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/diag-commands.js"
+				"../../src/cli-tui/commands/subcommands/diag-commands.js"
 			);
 
 			const deps = {
@@ -929,7 +929,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("ui handler supports 'color' alias for theme", async () => {
 			const { createUiCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/ui-commands.js"
+				"../../src/cli-tui/commands/subcommands/ui-commands.js"
 			);
 
 			const deps = {
@@ -957,7 +957,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("safety handler supports 'approve' alias for approvals", async () => {
 			const { createSafetyCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/safety-commands.js"
+				"../../src/cli-tui/commands/subcommands/safety-commands.js"
 			);
 
 			const deps = {
@@ -982,7 +982,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("auth handler supports 'signin' alias for login", async () => {
 			const { createAuthCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/auth-commands.js"
+				"../../src/cli-tui/commands/subcommands/auth-commands.js"
 			);
 
 			const deps = {
@@ -1006,7 +1006,7 @@ describe("Grouped Command Handlers", () => {
 	describe("Async Handler Support", () => {
 		it("awaits async stats handler", async () => {
 			const { createDiagCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/diag-commands.js"
+				"../../src/cli-tui/commands/subcommands/diag-commands.js"
 			);
 
 			let resolved = false;
@@ -1041,7 +1041,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("awaits async config handler", async () => {
 			const { createDiagCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/diag-commands.js"
+				"../../src/cli-tui/commands/subcommands/diag-commands.js"
 			);
 
 			let resolved = false;
@@ -1078,7 +1078,7 @@ describe("Grouped Command Handlers", () => {
 	describe("Intelligent Fallbacks", () => {
 		it("session handler treats numeric input as session load", async () => {
 			const { createSessionCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/session-commands.js"
+				"../../src/cli-tui/commands/subcommands/session-commands.js"
 			);
 
 			const deps = {
@@ -1107,7 +1107,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("git handler treats path-like input as diff", async () => {
 			const { createGitCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/git-commands.js"
+				"../../src/cli-tui/commands/subcommands/git-commands.js"
 			);
 
 			const deps = {
@@ -1130,7 +1130,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("auth handler treats 'pro' as login mode", async () => {
 			const { createAuthCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/auth-commands.js"
+				"../../src/cli-tui/commands/subcommands/auth-commands.js"
 			);
 
 			const deps = {
@@ -1154,7 +1154,7 @@ describe("Grouped Command Handlers", () => {
 	describe("Shared Utilities", () => {
 		it("parseSubcommand extracts subcommand and provides rewriteContext", async () => {
 			const { parseSubcommand } = await import(
-				"../../src/cli-tui/commands/grouped/utils.js"
+				"../../src/cli-tui/commands/subcommands/utils.js"
 			);
 
 			const ctx = createMockContext("/test foo bar baz", "foo bar baz");
@@ -1175,7 +1175,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("parseSubcommand uses default when argumentText is empty", async () => {
 			const { parseSubcommand } = await import(
-				"../../src/cli-tui/commands/grouped/utils.js"
+				"../../src/cli-tui/commands/subcommands/utils.js"
 			);
 
 			const ctx = createMockContext("/test", "");
@@ -1184,13 +1184,13 @@ describe("Grouped Command Handlers", () => {
 			expect(subcommand).toBe("default");
 		});
 
-		it("createGroupedCommandHandler routes aliases declaratively", async () => {
-			const { createGroupedCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/utils.js"
+		it("createSubcommandHandler routes aliases declaratively", async () => {
+			const { createSubcommandHandler } = await import(
+				"../../src/cli-tui/commands/subcommands/utils.js"
 			);
 
 			const execute = vi.fn();
-			const handler = createGroupedCommandHandler({
+			const handler = createSubcommandHandler({
 				defaultSubcommand: "status",
 				showHelp: vi.fn(),
 				routes: [
@@ -1207,13 +1207,13 @@ describe("Grouped Command Handlers", () => {
 			expect(execute.mock.calls[0]?.[0].subcommand).toBe("info");
 		});
 
-		it("createGroupedCommandHandler delegates unknown handling", async () => {
-			const { createGroupedCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/utils.js"
+		it("createSubcommandHandler delegates unknown handling", async () => {
+			const { createSubcommandHandler } = await import(
+				"../../src/cli-tui/commands/subcommands/utils.js"
 			);
 
 			const onUnknown = vi.fn();
-			const handler = createGroupedCommandHandler({
+			const handler = createSubcommandHandler({
 				defaultSubcommand: "status",
 				showHelp: vi.fn(),
 				routes: [],
@@ -1228,7 +1228,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("isHelpRequest recognizes help aliases", async () => {
 			const { isHelpRequest } = await import(
-				"../../src/cli-tui/commands/grouped/utils.js"
+				"../../src/cli-tui/commands/subcommands/utils.js"
 			);
 
 			expect(isHelpRequest("help")).toBe(true);
@@ -1240,7 +1240,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("isNumericArg validates numeric strings", async () => {
 			const { isNumericArg } = await import(
-				"../../src/cli-tui/commands/grouped/utils.js"
+				"../../src/cli-tui/commands/subcommands/utils.js"
 			);
 
 			expect(isNumericArg("123")).toBe(true);
@@ -1252,7 +1252,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("isSessionId validates session IDs", async () => {
 			const { isSessionId } = await import(
-				"../../src/cli-tui/commands/grouped/utils.js"
+				"../../src/cli-tui/commands/subcommands/utils.js"
 			);
 
 			expect(isSessionId("abc123")).toBe(true);
@@ -1265,7 +1265,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("matchesAlias checks against alias arrays", async () => {
 			const { matchesAlias, COMMON_ALIASES } = await import(
-				"../../src/cli-tui/commands/grouped/utils.js"
+				"../../src/cli-tui/commands/subcommands/utils.js"
 			);
 
 			expect(matchesAlias("status", COMMON_ALIASES.status)).toBe(true);
@@ -1279,7 +1279,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("createSubcommandCompletions returns matching completions", async () => {
 			const { createSubcommandCompletions } = await import(
-				"../../src/cli-tui/commands/grouped/utils.js"
+				"../../src/cli-tui/commands/subcommands/utils.js"
 			);
 
 			const completions = createSubcommandCompletions([
@@ -1323,7 +1323,7 @@ describe("Grouped Command Handlers", () => {
 				UNDO_SUBCOMMANDS,
 				CONFIG_SUBCOMMANDS,
 				TOOLS_SUBCOMMANDS,
-			} = await import("../../src/cli-tui/commands/grouped/utils.js");
+			} = await import("../../src/cli-tui/commands/subcommands/utils.js");
 
 			// Check each array has entries with required fields
 			expect(SESSION_SUBCOMMANDS.length).toBeGreaterThan(5);
@@ -1348,7 +1348,7 @@ describe("Grouped Command Handlers", () => {
 	describe("ConfigCommandHandler", () => {
 		it("routes 'validate' to handleConfig", async () => {
 			const { createConfigCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/config-commands.js"
+				"../../src/cli-tui/commands/subcommands/config-commands.js"
 			);
 
 			const deps = {
@@ -1370,7 +1370,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("routes 'import' to handleImport", async () => {
 			const { createConfigCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/config-commands.js"
+				"../../src/cli-tui/commands/subcommands/config-commands.js"
 			);
 
 			const deps = {
@@ -1392,7 +1392,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("routes 'framework' to handleFramework", async () => {
 			const { createConfigCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/config-commands.js"
+				"../../src/cli-tui/commands/subcommands/config-commands.js"
 			);
 
 			const deps = {
@@ -1416,7 +1416,7 @@ describe("Grouped Command Handlers", () => {
 	describe("ToolsCommandHandler", () => {
 		it("routes 'list' to handleTools", async () => {
 			const { createToolsCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/tools-commands.js"
+				"../../src/cli-tui/commands/subcommands/tools-commands.js"
 			);
 
 			const deps = {
@@ -1439,7 +1439,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("routes 'mcp' to handleMcp", async () => {
 			const { createToolsCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/tools-commands.js"
+				"../../src/cli-tui/commands/subcommands/tools-commands.js"
 			);
 
 			const deps = {
@@ -1462,7 +1462,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("routes 'run' to handleRun", async () => {
 			const { createToolsCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/tools-commands.js"
+				"../../src/cli-tui/commands/subcommands/tools-commands.js"
 			);
 
 			const deps = {
@@ -1485,7 +1485,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("treats unknown subcommand as script name for run", async () => {
 			const { createToolsCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/tools-commands.js"
+				"../../src/cli-tui/commands/subcommands/tools-commands.js"
 			);
 
 			const deps = {
@@ -1510,7 +1510,7 @@ describe("Grouped Command Handlers", () => {
 	describe("Error Paths and Help", () => {
 		it("shows help for unknown subcommand in session handler", async () => {
 			const { createSessionCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/session-commands.js"
+				"../../src/cli-tui/commands/subcommands/session-commands.js"
 			);
 
 			const deps = {
@@ -1540,7 +1540,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("shows help for --help flag in any handler", async () => {
 			const { createDiagCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/diag-commands.js"
+				"../../src/cli-tui/commands/subcommands/diag-commands.js"
 			);
 
 			const deps = {
@@ -1572,7 +1572,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("shows help for ? in any handler", async () => {
 			const { createUiCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/ui-commands.js"
+				"../../src/cli-tui/commands/subcommands/ui-commands.js"
 			);
 
 			const deps = {
@@ -1602,7 +1602,7 @@ describe("Grouped Command Handlers", () => {
 	describe("Alias Support", () => {
 		it("cfg 'fw' routes to framework", async () => {
 			const { createConfigCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/config-commands.js"
+				"../../src/cli-tui/commands/subcommands/config-commands.js"
 			);
 
 			const deps = {
@@ -1624,7 +1624,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("diag 'bg' routes to background", async () => {
 			const { createDiagCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/diag-commands.js"
+				"../../src/cli-tui/commands/subcommands/diag-commands.js"
 			);
 
 			const deps = {
@@ -1655,7 +1655,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("ui 'dedup' routes to clean", async () => {
 			const { createUiCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/ui-commands.js"
+				"../../src/cli-tui/commands/subcommands/ui-commands.js"
 			);
 
 			const deps = {
@@ -1683,7 +1683,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("safe 'guard' routes to guardian", async () => {
 			const { createSafetyCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/safety-commands.js"
+				"../../src/cli-tui/commands/subcommands/safety-commands.js"
 			);
 
 			const deps = {
@@ -1708,7 +1708,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("git 'd' routes to diff", async () => {
 			const { createGitCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/git-commands.js"
+				"../../src/cli-tui/commands/subcommands/git-commands.js"
 			);
 
 			const deps = {
@@ -1728,7 +1728,7 @@ describe("Grouped Command Handlers", () => {
 
 		it("usage 'spend' routes to cost", async () => {
 			const { createUsageCommandHandler } = await import(
-				"../../src/cli-tui/commands/grouped/usage-commands.js"
+				"../../src/cli-tui/commands/subcommands/usage-commands.js"
 			);
 
 			const deps = {

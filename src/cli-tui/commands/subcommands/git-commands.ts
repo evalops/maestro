@@ -11,17 +11,16 @@
  */
 
 import type { CommandExecutionContext } from "../types.js";
-import { createGroupedCommandHandler } from "./utils.js";
+import { createSubcommandHandler } from "./utils.js";
 
 export interface GitCommandDeps {
 	handleDiff: (ctx: CommandExecutionContext) => Promise<void> | void;
 	handleReview: (ctx: CommandExecutionContext) => void;
-	showInfo: (message: string) => void;
 	runGitCommand: (cmd: string) => Promise<string>;
 }
 
 export function createGitCommandHandler(deps: GitCommandDeps) {
-	return createGroupedCommandHandler({
+	return createSubcommandHandler({
 		defaultSubcommand: "status",
 		showHelp: showGitHelp,
 		routes: [

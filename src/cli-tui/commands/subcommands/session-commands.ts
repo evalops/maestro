@@ -20,11 +20,11 @@
  */
 
 import type { CommandExecutionContext } from "../types.js";
-import { createGroupedCommandHandler, isSessionId } from "./utils.js";
+import { createSubcommandHandler, isSessionId } from "./utils.js";
 
 export interface SessionCommandDeps {
 	handleSessionInfo: (ctx: CommandExecutionContext) => void;
-	handleNewChat: () => void | Promise<void>;
+	handleNewChat: (ctx: CommandExecutionContext) => void | Promise<void>;
 	handleClear: () => Promise<void> | void;
 	handleSessionsList: (ctx: CommandExecutionContext) => Promise<void> | void;
 	handleBranch: (ctx: CommandExecutionContext) => Promise<void> | void;
@@ -34,11 +34,10 @@ export interface SessionCommandDeps {
 	handleShare: (ctx: CommandExecutionContext) => Promise<void> | void;
 	handleRecover: (ctx: CommandExecutionContext) => Promise<void> | void;
 	handleCleanup: (ctx: CommandExecutionContext) => Promise<void> | void;
-	showInfo: (message: string) => void;
 }
 
 export function createSessionCommandHandler(deps: SessionCommandDeps) {
-	return createGroupedCommandHandler({
+	return createSubcommandHandler({
 		defaultSubcommand: "info",
 		showHelp: showSessionHelp,
 		routes: [
@@ -46,7 +45,7 @@ export function createSessionCommandHandler(deps: SessionCommandDeps) {
 				match: ["info", "status"],
 				execute: ({ ctx }) => deps.handleSessionInfo(ctx),
 			},
-			{ match: ["new"], execute: () => deps.handleNewChat() },
+			{ match: ["new"], execute: ({ ctx }) => deps.handleNewChat(ctx) },
 			{ match: ["clear"], execute: () => deps.handleClear() },
 			{
 				match: ["list", "ls", "history"],

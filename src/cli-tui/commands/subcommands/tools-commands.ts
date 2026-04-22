@@ -16,7 +16,7 @@
  */
 
 import type { CommandExecutionContext } from "../types.js";
-import { createGroupedCommandHandler } from "./utils.js";
+import { createSubcommandHandler } from "./utils.js";
 
 export interface ToolsCommandDeps {
 	handleTools: (ctx: CommandExecutionContext) => void | Promise<void>;
@@ -25,11 +25,10 @@ export interface ToolsCommandDeps {
 	handleWorkflow: (ctx: CommandExecutionContext) => void | Promise<void>;
 	handleRun: (ctx: CommandExecutionContext) => void | Promise<void>;
 	handleCommands: (ctx: CommandExecutionContext) => void | Promise<void>;
-	showInfo: (message: string) => void;
 }
 
 export function createToolsCommandHandler(deps: ToolsCommandDeps) {
-	return createGroupedCommandHandler({
+	return createSubcommandHandler({
 		defaultSubcommand: "list",
 		showHelp: showToolsHelp,
 		routes: [

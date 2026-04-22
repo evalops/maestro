@@ -1,5 +1,5 @@
 import { isDatabaseConfigured } from "../../db/client.js";
-import { isHelpRequest } from "./grouped/utils.js";
+import { isHelpRequest } from "./subcommands/utils.js";
 import type { CommandExecutionContext } from "./types.js";
 
 const AUDIT_USAGE = [

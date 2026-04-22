@@ -1,6 +1,8 @@
 import type { SlashCommand } from "@evalops/tui";
 import { parseCommandArguments, shouldShowHelp } from "./argument-parser.js";
-import type { GroupedCommandHandlers } from "./grouped-command-handlers.js";
+import type { CommandSuiteHandlers } from "./command-suite-handlers.js";
+import { HOTKEYS_SUBCOMMANDS } from "./hotkeys-command.js";
+import { PACKAGE_SUBCOMMANDS } from "./package-handlers.js";
 import {
 	ACCESS_SUBCOMMANDS,
 	AUTH_SUBCOMMANDS,
@@ -15,19 +17,17 @@ import {
 	UNDO_SUBCOMMANDS,
 	USAGE_SUBCOMMANDS,
 	createSubcommandCompletions,
-} from "./grouped/index.js";
-import { HOTKEYS_SUBCOMMANDS } from "./hotkeys-command.js";
-import { PACKAGE_SUBCOMMANDS } from "./package-handlers.js";
+} from "./subcommands/index.js";
 import type {
 	CommandEntry,
 	CommandExecutionContext,
 	CommandRegistryOptions,
 } from "./types.js";
 
-type GroupedCommandDefinition = {
+type CommandSuiteDefinition = {
 	command: SlashCommand;
 	subcommands: readonly SubcommandDef[];
-	handlerKey: keyof GroupedCommandHandlers;
+	handlerKey: keyof CommandSuiteHandlers;
 };
 
 const equals =
@@ -52,7 +52,7 @@ const matchDiagnostics = (input: string) =>
 const matchQuit = (input: string) =>
 	input === "/quit" || input === "/exit" || input === "/q";
 
-const GROUPED_COMMAND_DEFINITIONS: readonly GroupedCommandDefinition[] = [
+const COMMAND_SUITE_DEFINITIONS: readonly CommandSuiteDefinition[] = [
 	{
 		command: {
 			name: "ss",
@@ -219,7 +219,7 @@ const GROUPED_COMMAND_DEFINITIONS: readonly GroupedCommandDefinition[] = [
 export function createCommandRegistry({
 	getRunScriptCompletions,
 	handlers,
-	getGroupedHandlers,
+	getCommandSuiteHandlers,
 	createContext,
 }: CommandRegistryOptions): CommandEntry[] {
 	const entries: CommandEntry[] = [
@@ -511,7 +511,7 @@ export function createCommandRegistry({
 			createContext,
 		),
 		// ═══════════════════════════════════════════════════════════════════
-		// STANDALONE COMMANDS - These are also available as grouped subcommands
+		// STANDALONE COMMANDS - These are also available through subcommand suites
 		// (e.g., /import is also /cfg import, /mcp is also /tools mcp)
 		// Keep for backwards compatibility and discoverability
 		// ═══════════════════════════════════════════════════════════════════
@@ -1287,7 +1287,7 @@ export function createCommandRegistry({
 			handlers.copy,
 			createContext,
 		),
-		...buildGroupedEntries(getGroupedHandlers, createContext),
+		...buildCommandSuiteEntries(getCommandSuiteHandlers, createContext),
 		buildEntry(
 			{
 				name: "toolhistory",
@@ -1323,12 +1323,12 @@ export function createCommandRegistry({
 	return entries;
 }
 
-function buildGroupedEntries(
-	getGroupedHandlers: CommandRegistryOptions["getGroupedHandlers"],
+function buildCommandSuiteEntries(
+	getCommandSuiteHandlers: CommandRegistryOptions["getCommandSuiteHandlers"],
 	createContext: CommandRegistryOptions["createContext"],
 ): CommandEntry[] {
-	return GROUPED_COMMAND_DEFINITIONS.map((definition) =>
-		buildGroupedEntry(definition, getGroupedHandlers, createContext),
+	return COMMAND_SUITE_DEFINITIONS.map((definition) =>
+		buildCommandSuiteEntry(definition, getCommandSuiteHandlers, createContext),
 	);
 }
 
@@ -1346,13 +1346,13 @@ function buildEntry(
 	};
 }
 
-function buildGroupedEntry(
-	definition: GroupedCommandDefinition,
-	getGroupedHandlers: CommandRegistryOptions["getGroupedHandlers"],
+function buildCommandSuiteEntry(
+	definition: CommandSuiteDefinition,
+	getCommandSuiteHandlers: CommandRegistryOptions["getCommandSuiteHandlers"],
 	createContext: CommandRegistryOptions["createContext"],
 ): CommandEntry {
 	const handler = (context: CommandExecutionContext) =>
-		getGroupedHandlers()[definition.handlerKey](context);
+		getCommandSuiteHandlers()[definition.handlerKey](context);
 	return buildEntry(
 		{
 			...definition.command,

@@ -149,7 +149,7 @@ private wrapCache = new Map<number, Map<string, string[]>>();
 | `tui-renderer.ts` | Main orchestrator (~2,550 LOC) |
 | `tui-renderer/*.ts` | Extracted controllers + setup modules |
 | `commands/` | Slash command handling + extracted handlers |
-| `commands/grouped/` | Grouped subcommand handlers (/sess, /dx, etc.) |
+| `commands/subcommands/` | Command suite subcommand handlers (`/ss`, `/diag`, etc.) |
 | `selectors/` | Modal selection UIs (theme, model, etc.) |
 | `session/` | Session management views |
 | `approval/` | Tool approval modal |
@@ -288,7 +288,7 @@ handleTheme(context: CommandExecutionContext) {
 
 Commands support:
 - Arguments with validation
-- Grouped subcommands (`/sess new`, `/sess list`)
+- Command suite subcommands (`/ss new`, `/ss list`)
 - Autocomplete
 - Help generation
 
@@ -374,8 +374,8 @@ tui.setFocus(selectList);   // Modal mode: selector has focus
 | `otel-handlers.ts` | /otel command handler |
 | `mcp-handlers.ts` | /mcp command handler |
 | `composer-handlers.ts` | /composer config handler |
-| `grouped/session-commands.ts` | /sess subcommand routing |
-| `grouped/diag-commands.ts` | /dx subcommand routing |
+| `subcommands/session-commands.ts` | `/ss` subcommand routing |
+| `subcommands/diag-commands.ts` | `/diag` subcommand routing |
 
 ## Performance Characteristics
 

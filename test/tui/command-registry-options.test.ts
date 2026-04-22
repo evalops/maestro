@@ -144,7 +144,7 @@ function createDeps() {
 		handleCheckpointCommand: vi.fn(),
 		handleMemoryCommand: vi.fn(),
 		handleModeCommand: vi.fn(),
-		getGroupedHandlers: vi.fn(
+		getCommandSuiteHandlers: vi.fn(
 			() =>
 				({
 					session: vi.fn(),
@@ -157,7 +157,7 @@ function createDeps() {
 					undo: vi.fn(),
 					config: vi.fn(),
 					tools: vi.fn(),
-				}) as TuiCommandRegistryDeps["getGroupedHandlers"] extends () => infer T
+				}) as TuiCommandRegistryDeps["getCommandSuiteHandlers"] extends () => infer T
 					? T
 					: never,
 		),
@@ -205,7 +205,7 @@ describe("buildTuiCommandRegistryOptions", () => {
 		expect(deps.getClearController).not.toHaveBeenCalled();
 		expect(deps.getCustomCommandsController).not.toHaveBeenCalled();
 		expect(deps.getBranchController).not.toHaveBeenCalled();
-		expect(deps.getGroupedHandlers).not.toHaveBeenCalled();
+		expect(deps.getCommandSuiteHandlers).not.toHaveBeenCalled();
 	});
 
 	it("resolves lazy views only when the matching command runs", async () => {
@@ -310,7 +310,7 @@ describe("buildTuiCommandRegistryOptions", () => {
 		expect(deps.getThinkingSelectorView).toHaveBeenCalledTimes(1);
 		expect(thinkingSelectorView.show).toHaveBeenCalledTimes(1);
 
-		expect(options.getGroupedHandlers()).toBeDefined();
-		expect(deps.getGroupedHandlers).toHaveBeenCalledTimes(1);
+		expect(options.getCommandSuiteHandlers()).toBeDefined();
+		expect(deps.getCommandSuiteHandlers).toHaveBeenCalledTimes(1);
 	});
 });

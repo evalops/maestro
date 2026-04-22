@@ -254,7 +254,7 @@ handleMyCommand: (context: CommandExecutionContext) => void;
 handleMyCommand: (context) => this.doSomething(),
 ```
 
-**Grouped commands** (e.g., `/ss`, `/diag`, `/cfg`, `/tools`) route subcommands through a single handler factory in `src/cli-tui/commands/grouped/`. **Selector commands** (e.g., `/model`, `/theme`) push a modal via `modalManager.push(component)`.
+**Command suites** (e.g., `/ss`, `/diag`, `/cfg`, `/tools`) route subcommands through dedicated handlers in `src/cli-tui/commands/subcommands/`. **Selector commands** (e.g., `/model`, `/theme`) push a modal via `modalManager.push(component)`.
 
 ---
 
@@ -336,7 +336,7 @@ Quick reference for "where do I change X?"
 | **Add a context source** | Implement `AgentContextSource`, register in `AgentContextManager` |
 | **Add a TUI modal/selector** | Component in `src/cli-tui/selectors/`, view wrapper, init in `TuiRenderer`, push via `modalManager` |
 | **Add a lifecycle hook** | Define event in hook types, emit from agent/tool executor, document in hooks config |
-| **Add a grouped subcommand** | Handler in `src/cli-tui/commands/grouped/`, subcommand constant, wire in parent factory |
+| **Add a suite subcommand** | Handler in `src/cli-tui/commands/subcommands/`, subcommand constant, wire in parent factory |
 | **Fix terminal rendering** | Check if fix belongs in `packages/tui` (library), `src/cli-tui` (app), or `packages/tui-rs` (Rust) |
 | **Add a web API endpoint** | Route in `src/server/`, handler using shared Agent, update `packages/web/` if UI needed |
 | **Run tests** | `npx nx run maestro:test --skip-nx-cache` (full) or `bunx vitest --run -t "name"` (targeted) |

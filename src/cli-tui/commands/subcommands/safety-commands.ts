@@ -22,13 +22,12 @@ import {
 	getRecentEvents,
 } from "../../../telemetry/security-events.js";
 import type { CommandExecutionContext } from "../types.js";
-import { createGroupedCommandHandler } from "./utils.js";
+import { createSubcommandHandler } from "./utils.js";
 
 export interface SafetyCommandDeps {
 	handleApprovals: (ctx: CommandExecutionContext) => void;
 	handlePlanMode: (ctx: CommandExecutionContext) => void;
 	handleGuardian: (ctx: CommandExecutionContext) => Promise<void> | void;
-	showInfo: (message: string) => void;
 	getSafetyState: () => {
 		approvalMode: string;
 		planMode: boolean;
@@ -37,13 +36,13 @@ export interface SafetyCommandDeps {
 }
 
 export function createSafetyCommandHandler(deps: SafetyCommandDeps) {
-	return createGroupedCommandHandler({
+	return createSubcommandHandler({
 		defaultSubcommand: "status",
 		showHelp: showSafetyHelp,
 		routes: [
 			{
 				match: ["status", "info"],
-				execute: () => showSafetyStatus(deps),
+				execute: ({ ctx }) => showSafetyStatus(ctx, deps),
 			},
 			{
 				match: ["approvals", "approval", "approve"],
@@ -62,19 +61,22 @@ export function createSafetyCommandHandler(deps: SafetyCommandDeps) {
 			},
 			{
 				match: ["events", "security", "logs"],
-				execute: ({ ctx }) => showSecurityEvents(ctx, deps),
+				execute: ({ ctx }) => showSecurityEvents(ctx),
 			},
 			{
 				match: ["threats", "threat", "advisory"],
-				execute: () => showThreatLevel(deps),
+				execute: ({ ctx }) => showThreatLevel(ctx),
 			},
 		],
 	});
 }
 
-function showSafetyStatus(deps: SafetyCommandDeps): void {
+function showSafetyStatus(
+	ctx: CommandExecutionContext,
+	deps: SafetyCommandDeps,
+): void {
 	const state = deps.getSafetyState();
-	deps.showInfo(`Safety Settings:
+	ctx.showInfo(`Safety Settings:
   Approval Mode: ${state.approvalMode}
   Plan Mode: ${state.planMode ? "on" : "off"}
   Guardian: ${state.guardianEnabled ? "enabled" : "disabled"}
@@ -116,10 +118,7 @@ function formatEvent(event: SecurityEvent): string {
 /**
  * Show recent security events
  */
-function showSecurityEvents(
-	ctx: CommandExecutionContext,
-	deps: SafetyCommandDeps,
-): void {
+function showSecurityEvents(ctx: CommandExecutionContext): void {
 	// Parse limit from arguments
 	const args = ctx.argumentText.split(/\s+/).filter(Boolean);
 	const subArg = args[1]; // Skip "events" subcommand
@@ -129,7 +128,7 @@ function showSecurityEvents(
 	const stats = getEventStats();
 
 	if (events.length === 0) {
-		deps.showInfo(`Security Events:
+		ctx.showInfo(`Security Events:
   No security events recorded in this session.
 
   Stats: 0 total events
@@ -143,7 +142,7 @@ function showSecurityEvents(
 		.map((e) => `  ${formatEvent(e)}`)
 		.join("\n");
 
-	deps.showInfo(`Security Events (last ${events.length}):
+	ctx.showInfo(`Security Events (last ${events.length}):
 ${eventLines}
 
 Stats:
@@ -156,7 +155,7 @@ Use /safety threats for threat assessment.`);
 /**
  * Show threat level and advisories
  */
-function showThreatLevel(deps: SafetyCommandDeps): void {
+function showThreatLevel(ctx: CommandExecutionContext): void {
 	const advisor = new SecurityAdvisor({ enableRealtime: false });
 	const threat = advisor.getThreatLevel();
 	const advisories = advisor.analyze();
@@ -184,6 +183,6 @@ function showThreatLevel(deps: SafetyCommandDeps): void {
 
 	output += "\nUse /safety events [N] to see recent events.";
 
-	deps.showInfo(output);
+	ctx.showInfo(output);
 	advisor.dispose();
 }

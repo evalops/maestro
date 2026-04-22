@@ -1,8 +1,8 @@
 /**
- * Shared utilities for grouped command handlers.
+ * Shared utilities for subcommand suite handlers.
  *
  * Provides consistent argument parsing and context rewriting
- * across all grouped command implementations.
+ * across all subcommand suite implementations.
  */
 
 import type { AutocompleteItem } from "@evalops/tui";
@@ -26,38 +26,38 @@ export interface ParsedSubcommand {
 }
 
 /**
- * Runtime context passed to declarative grouped command routes.
+ * Runtime context passed to declarative subcommand suite routes.
  */
-export interface GroupedCommandRouteContext extends ParsedSubcommand {
+export interface SubcommandRouteContext extends ParsedSubcommand {
 	ctx: CommandExecutionContext;
 	/** Arguments after the matched subcommand */
 	restArgs: string[];
 	/** Original argument text after the matched subcommand */
 	restArgumentText: string;
-	/** Show the grouped command help for the current command */
+	/** Show the subcommand suite help for the current command */
 	showHelp: () => void;
 }
 
 /**
- * One grouped subcommand route, matched either by aliases or custom logic.
+ * One subcommand route, matched either by aliases or custom logic.
  */
-export interface GroupedCommandRoute {
-	match: readonly string[] | ((context: GroupedCommandRouteContext) => boolean);
-	execute: (context: GroupedCommandRouteContext) => void | Promise<void>;
+export interface SubcommandRoute {
+	match: readonly string[] | ((context: SubcommandRouteContext) => boolean);
+	execute: (context: SubcommandRouteContext) => void | Promise<void>;
 }
 
 /**
- * Declarative grouped command handler configuration.
+ * Declarative subcommand suite handler configuration.
  */
-export interface GroupedCommandHandlerOptions {
+export interface SubcommandHandlerOptions {
 	defaultSubcommand: string;
-	routes: readonly GroupedCommandRoute[];
+	routes: readonly SubcommandRoute[];
 	showHelp: (ctx: CommandExecutionContext) => void;
-	onUnknown?: (context: GroupedCommandRouteContext) => void | Promise<void>;
+	onUnknown?: (context: SubcommandRouteContext) => void | Promise<void>;
 }
 
-function isGroupedCommandAliasMatch(
-	match: GroupedCommandRoute["match"],
+function isSubcommandAliasMatch(
+	match: SubcommandRoute["match"],
 ): match is readonly string[] {
 	return Array.isArray(match);
 }
@@ -103,17 +103,17 @@ export function parseSubcommand(
 	return { subcommand, args, rewriteContext, customContext };
 }
 
-export function createGroupedCommandHandler({
+export function createSubcommandHandler({
 	defaultSubcommand,
 	routes,
 	showHelp,
 	onUnknown,
-}: GroupedCommandHandlerOptions) {
-	return async function handleGroupedCommand(
+}: SubcommandHandlerOptions) {
+	return async function handleSubcommand(
 		ctx: CommandExecutionContext,
 	): Promise<void> {
 		const parsed = parseSubcommand(ctx, defaultSubcommand);
-		const routeContext: GroupedCommandRouteContext = {
+		const routeContext: SubcommandRouteContext = {
 			ctx,
 			...parsed,
 			restArgs: parsed.args.slice(1),
@@ -127,7 +127,7 @@ export function createGroupedCommandHandler({
 		}
 
 		const route = routes.find((candidate) =>
-			isGroupedCommandAliasMatch(candidate.match)
+			isSubcommandAliasMatch(candidate.match)
 				? matchesAlias(routeContext.subcommand, candidate.match)
 				: candidate.match(routeContext),
 		);
@@ -198,7 +198,7 @@ export interface SubcommandDef {
 }
 
 /**
- * Create an autocomplete provider for grouped command subcommands.
+ * Create an autocomplete provider for command suite subcommands.
  *
  * @example
  * ```ts
@@ -243,7 +243,7 @@ export function createSubcommandCompletions(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Predefined subcommand completions for grouped commands
+// Predefined subcommand completions for command suites
 // ═══════════════════════════════════════════════════════════════════════════
 
 export const SESSION_SUBCOMMANDS: SubcommandDef[] = [
