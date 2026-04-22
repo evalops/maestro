@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Maestro Web API",
-    "version": "0.10.7",
+    "version": "0.10.8",
     "description": "Auto-generated from src/web-server.ts routes. Components seeded from runtime schemas."
   },
   "servers": [
