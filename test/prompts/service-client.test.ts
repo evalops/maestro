@@ -141,6 +141,7 @@ describe("prompts service client", () => {
 			expect(JSON.parse(String(init?.body ?? "{}"))).toEqual({
 				name: "maestro-system",
 				label: "production",
+				surface: "maestro",
 			});
 			return new Response(
 				JSON.stringify({

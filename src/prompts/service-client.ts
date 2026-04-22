@@ -5,6 +5,7 @@ import {
 	postPlatformConnect,
 	resolveOrganizationId,
 	resolvePlatformServiceConfig,
+	resolvePlatformToken,
 	trimString,
 } from "../platform/client.js";
 import {
@@ -85,7 +86,7 @@ function hasConfiguredPromptsBaseUrl(): boolean {
 	);
 }
 
-function warnPromptsServiceMisconfiguration(): void {
+async function warnPromptsServiceMisconfiguration(): Promise<void> {
 	if (!hasConfiguredPromptsBaseUrl()) {
 		return;
 	}
@@ -95,9 +96,11 @@ function warnPromptsServiceMisconfiguration(): void {
 		);
 		return;
 	}
-	logger.warn(
-		"Prompts service configured without access token; retaining bundled prompts",
-	);
+	if (!(await resolvePlatformToken(PROMPTS_TOKEN_ENV_VARS))) {
+		logger.warn(
+			"Prompts service configured without access token; retaining bundled prompts",
+		);
+	}
 }
 
 async function resolvePromptsServiceConfig(): Promise<PromptsServiceConfig | null> {
@@ -124,7 +127,7 @@ async function resolvePromptsServiceConfig(): Promise<PromptsServiceConfig | nul
 		requireToken: true,
 	});
 	if (!config) {
-		warnPromptsServiceMisconfiguration();
+		await warnPromptsServiceMisconfiguration();
 		return null;
 	}
 
@@ -176,6 +179,7 @@ async function resolveViaPlatformConnect(
 		{
 			name,
 			label: trimString(input.label) ?? "production",
+			surface: trimString(input.surface),
 		},
 		{
 			serviceName: "prompts service",
