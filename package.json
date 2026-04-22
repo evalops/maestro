@@ -39,6 +39,7 @@
     "verify:headless-proto:sync": "node scripts/verify-headless-proto-sync.mjs",
     "lint:headless-proto": "buf lint && bun run verify:headless-proto:sync && bun run check:headless-proto:generated",
     "lint:evals": "bun run lint:headless-proto && node scripts/verify-evals.js && node scripts/verify-tool-versions.js && node scripts/validate-system-paths.js && node scripts/validate-package-boundaries.js && node scripts/sync-package-metadata.js --check && node scripts/headless-protocol-codegen.mjs --check",
+    "platform:sdk-smoke": "tsx scripts/check-platform-sdk-contract.ts",
     "format": "biome format .",
     "check": "npm run lint && npm run check --workspaces --if-present && tsc -p tsconfig.build.json --noEmit",
     "evals": "npm run build && node scripts/run-evals.js",
