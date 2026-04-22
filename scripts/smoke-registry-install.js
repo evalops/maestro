@@ -49,7 +49,7 @@ const packageSpec = `${name}@${version}`;
 const npmCommand = getNpmCommand();
 const npxCommand = getNpxCommand();
 const maxAttempts = Number.parseInt(
-	process.env.MAESTRO_REGISTRY_POLL_ATTEMPTS ?? "24",
+	process.env.MAESTRO_REGISTRY_POLL_ATTEMPTS ?? "120",
 	10,
 );
 const pollDelayMs = Number.parseInt(

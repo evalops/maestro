@@ -252,6 +252,9 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       - name: Verify published package from npm
+        env:
+          MAESTRO_REGISTRY_POLL_ATTEMPTS: "120"
+          MAESTRO_REGISTRY_POLL_DELAY_MS: "5000"
         run: node scripts/smoke-registry-install.js
 
   notify:
