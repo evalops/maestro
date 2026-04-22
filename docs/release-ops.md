@@ -40,8 +40,8 @@
   `evalops/maestro` release workflow configured; the EvalOps org `NPM_TOKEN`
   secret remains a temporary fallback during the scope cutover.
 - `NPM_PUBLISH_AUTH_MODE` controls the release publish path:
-  - `auto` keeps the migration fallback, using `NPM_TOKEN` when present and
-    trusted publishing otherwise.
+  - `auto` tries npm trusted publishing first, then falls back to `NPM_TOKEN`
+    if the npm-side trusted publisher is not configured yet.
   - `trusted` ignores `NPM_TOKEN` and forces npm trusted publishing.
   - `token` requires `NPM_TOKEN` and keeps the legacy fallback explicit.
 - After `npm trust github @evalops/maestro --repo evalops/maestro --file release.yml --env npm-release --yes` succeeds and one release verifies, set

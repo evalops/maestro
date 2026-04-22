@@ -170,15 +170,17 @@ jobs:
           NPM_PUBLISH_AUTH_MODE: ${{ vars.NPM_PUBLISH_AUTH_MODE || 'auto' }}
         run: |
           set -euo pipefail
+          NPM_TOKEN_FALLBACK="${NODE_AUTH_TOKEN:-}"
+
           publish_with_token() {
-            if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            if [ -z "${NPM_TOKEN_FALLBACK:-}" ]; then
               echo "::error::NPM_PUBLISH_AUTH_MODE=token requires the NPM_TOKEN secret."
               exit 1
             fi
 
             echo "Publishing with NPM_TOKEN fallback."
-            printf "//registry.npmjs.org/:_authToken=%s\n" "$NODE_AUTH_TOKEN" > ~/.npmrc
-            npm publish "${{ steps.pack.outputs.tarball }}" --access public --provenance
+            printf "//registry.npmjs.org/:_authToken=%s\n" "$NPM_TOKEN_FALLBACK" > ~/.npmrc
+            NODE_AUTH_TOKEN="$NPM_TOKEN_FALLBACK" npm publish "${{ steps.pack.outputs.tarball }}" --access public --provenance
           }
 
           publish_with_trusted_publisher() {
@@ -190,12 +192,20 @@ jobs:
 
           case "${NPM_PUBLISH_AUTH_MODE}" in
             auto|"")
-              if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
-                echo "NPM_TOKEN is present; using token fallback. Set NPM_PUBLISH_AUTH_MODE=trusted after npm trust is configured."
-                publish_with_token
-              else
-                publish_with_trusted_publisher
+              echo "Attempting npm trusted publishing first; NPM_TOKEN is only a fallback."
+              trusted_status=0
+              publish_with_trusted_publisher || trusted_status=$?
+              if [ "$trusted_status" -eq 0 ]; then
+                exit 0
               fi
+
+              if [ -z "${NPM_TOKEN_FALLBACK:-}" ]; then
+                echo "::error::Trusted publishing failed and no NPM_TOKEN fallback is configured."
+                exit "$trusted_status"
+              fi
+
+              echo "::warning::Trusted publishing failed; falling back to NPM_TOKEN. Set NPM_PUBLISH_AUTH_MODE=trusted after npm trust is verified."
+              publish_with_token
               ;;
             token)
               publish_with_token
