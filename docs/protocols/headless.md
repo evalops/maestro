@@ -8,6 +8,8 @@ Transport rules:
 - stdin carries one JSON object per line into Maestro
 - stdout emits one JSON object per line back to the client
 - stderr is diagnostics only and is not part of the protocol contract
+- startup failures should emit a fatal `error` protocol message on stdout when
+  the headless transport has been requested, with human diagnostics on stderr
 
 ## Compatibility
 

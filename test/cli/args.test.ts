@@ -30,6 +30,17 @@ describe("parseArgs", () => {
 		);
 	});
 
+	it("treats --mode headless forms as headless invocations", () => {
+		expect(parseArgs(["--mode", "headless"])).toMatchObject({
+			mode: "headless",
+			headless: true,
+		});
+		expect(parseArgs(["--mode=headless"])).toMatchObject({
+			mode: "headless",
+			headless: true,
+		});
+	});
+
 	it("parses export commands and formats", () => {
 		expect(
 			parseArgs([

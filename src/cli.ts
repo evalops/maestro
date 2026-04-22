@@ -24,6 +24,43 @@ process.emit = ((event: string | symbol, ...args: unknown[]) => {
 	return originalEmit(event, ...args);
 }) as typeof process.emit;
 
+function isHeadlessInvocation(args: string[]): boolean {
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i];
+		if (arg === "--headless") {
+			return true;
+		}
+		if (arg === "--mode" && args[i + 1] === "headless") {
+			return true;
+		}
+		if (
+			arg?.startsWith("--mode=") &&
+			arg.slice("--mode=".length) === "headless"
+		) {
+			return true;
+		}
+	}
+	return false;
+}
+
+function emitHeadlessStartupError(error: unknown): void {
+	const message = error instanceof Error ? error.message : String(error);
+	const stack = error instanceof Error ? error.stack : undefined;
+	try {
+		process.stdout.write(
+			`${JSON.stringify({
+				type: "error",
+				message: `Headless startup failed: ${message}`,
+				fatal: true,
+				error_type: "fatal",
+			})}\n`,
+		);
+	} catch {
+		// If stdout is unavailable there is no protocol channel left to use.
+	}
+	process.stderr.write(`${stack ?? message}\n`);
+}
+
 const run = async () => {
 	try {
 		// Prefer the TypeScript entry when running under Bun during development,
@@ -44,7 +81,11 @@ const run = async () => {
 		const { main } = await loadMain();
 		await main(process.argv.slice(2));
 	} catch (err) {
-		console.error(err);
+		if (isHeadlessInvocation(process.argv.slice(2))) {
+			emitHeadlessStartupError(err);
+		} else {
+			console.error(err);
+		}
 		process.exit(1);
 	}
 };
