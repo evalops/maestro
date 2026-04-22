@@ -1,24 +1,22 @@
 import { randomUUID } from "node:crypto";
 import type { JetStreamClient, NatsConnection } from "nats";
+import {
+	MaestroBusEventType,
+	getMaestroBusEventCatalogEntry,
+} from "./maestro-event-catalog.js";
+
+export {
+	MAESTRO_BUS_EVENT_CATALOG,
+	MAESTRO_BUS_EVENT_TYPES,
+	MaestroBusEventType,
+	getMaestroBusEventCatalogEntry,
+	isMaestroBusEventType,
+	listMaestroBusEventCatalog,
+	type MaestroBusEventCatalogEntry,
+	type MaestroBusEventCategory,
+} from "./maestro-event-catalog.js";
 
 type Env = NodeJS.ProcessEnv;
-
-export enum MaestroBusEventType {
-	SessionStarted = "maestro.sessions.session.started",
-	SessionSuspended = "maestro.sessions.session.suspended",
-	SessionResumed = "maestro.sessions.session.resumed",
-	SessionClosed = "maestro.sessions.session.closed",
-	ApprovalHit = "maestro.events.approval_hit",
-	SandboxViolation = "maestro.events.sandbox_violation",
-	FirewallBlock = "maestro.events.firewall_block",
-	ToolCallAttempted = "maestro.events.tool_call.attempted",
-	ToolCallCompleted = "maestro.events.tool_call.completed",
-	PromptVariantSelected = "maestro.events.prompt_variant.selected",
-	SkillInvoked = "maestro.events.skill.invoked",
-	SkillSucceeded = "maestro.events.skill.succeeded",
-	SkillFailed = "maestro.events.skill.failed",
-	EvalScored = "maestro.events.eval.scored",
-}
 
 export type MaestroSurface =
 	| "MAESTRO_SURFACE_CLI"
@@ -608,64 +606,6 @@ function normalizeTime(value: string | Date | undefined): string {
 	return value ?? new Date().toISOString();
 }
 
-function dataSchemaFor(type: MaestroBusEventType): string {
-	switch (type) {
-		case MaestroBusEventType.SessionStarted:
-		case MaestroBusEventType.SessionSuspended:
-		case MaestroBusEventType.SessionResumed:
-		case MaestroBusEventType.SessionClosed:
-			return "buf.build/evalops/proto/maestro.v1.MaestroSession";
-		case MaestroBusEventType.ApprovalHit:
-			return "buf.build/evalops/proto/maestro.v1.ApprovalHit";
-		case MaestroBusEventType.SandboxViolation:
-			return "buf.build/evalops/proto/maestro.v1.SandboxViolation";
-		case MaestroBusEventType.FirewallBlock:
-			return "buf.build/evalops/proto/maestro.v1.FirewallBlock";
-		case MaestroBusEventType.ToolCallAttempted:
-			return "buf.build/evalops/proto/maestro.v1.ToolCallAttempt";
-		case MaestroBusEventType.ToolCallCompleted:
-			return "buf.build/evalops/proto/maestro.v1.ToolCallResult";
-		case MaestroBusEventType.PromptVariantSelected:
-			return "buf.build/evalops/proto/maestro.v1.PromptVariantSelected";
-		case MaestroBusEventType.SkillInvoked:
-			return "buf.build/evalops/proto/maestro.v1.SkillInvocation";
-		case MaestroBusEventType.SkillSucceeded:
-		case MaestroBusEventType.SkillFailed:
-			return "buf.build/evalops/proto/maestro.v1.SkillOutcome";
-		case MaestroBusEventType.EvalScored:
-			return "buf.build/evalops/proto/maestro.v1.MaestroEvalScore";
-	}
-}
-
-function protoAnyTypeFor(type: MaestroBusEventType): string {
-	switch (type) {
-		case MaestroBusEventType.SessionStarted:
-		case MaestroBusEventType.SessionSuspended:
-		case MaestroBusEventType.SessionResumed:
-		case MaestroBusEventType.SessionClosed:
-			return "type.googleapis.com/maestro.v1.MaestroSession";
-		case MaestroBusEventType.ApprovalHit:
-			return "type.googleapis.com/maestro.v1.ApprovalHit";
-		case MaestroBusEventType.SandboxViolation:
-			return "type.googleapis.com/maestro.v1.SandboxViolation";
-		case MaestroBusEventType.FirewallBlock:
-			return "type.googleapis.com/maestro.v1.FirewallBlock";
-		case MaestroBusEventType.ToolCallAttempted:
-			return "type.googleapis.com/maestro.v1.ToolCallAttempt";
-		case MaestroBusEventType.ToolCallCompleted:
-			return "type.googleapis.com/maestro.v1.ToolCallResult";
-		case MaestroBusEventType.PromptVariantSelected:
-			return "type.googleapis.com/maestro.v1.PromptVariantSelected";
-		case MaestroBusEventType.SkillInvoked:
-			return "type.googleapis.com/maestro.v1.SkillInvocation";
-		case MaestroBusEventType.SkillSucceeded:
-		case MaestroBusEventType.SkillFailed:
-			return "type.googleapis.com/maestro.v1.SkillOutcome";
-		case MaestroBusEventType.EvalScored:
-			return "type.googleapis.com/maestro.v1.MaestroEvalScore";
-	}
-}
-
 export function buildMaestroCloudEvent<TData extends Record<string, unknown>>(
 	type: MaestroBusEventType,
 	data: TData,
@@ -680,7 +620,7 @@ export function buildMaestroCloudEvent<TData extends Record<string, unknown>>(
 		"correlation" in data && data.correlation ? data.correlation : correlation;
 	const typedData = {
 		...data,
-		"@type": protoAnyTypeFor(type),
+		"@type": getMaestroBusEventCatalogEntry(type).protoAnyType,
 		correlation: dataCorrelation,
 	} as TData & { "@type": string };
 
@@ -694,7 +634,9 @@ export function buildMaestroCloudEvent<TData extends Record<string, unknown>>(
 		data_content_type: "application/protobuf",
 		tenant_id: options.tenantId ?? config.tenantId,
 		data: typedData,
-		extensions: { dataschema: dataSchemaFor(type) },
+		extensions: {
+			dataschema: getMaestroBusEventCatalogEntry(type).dataSchema,
+		},
 	};
 }
 

@@ -38,9 +38,14 @@ export {
 
 export {
 	MaestroBusEventType,
+	MAESTRO_BUS_EVENT_CATALOG,
+	MAESTRO_BUS_EVENT_TYPES,
 	buildMaestroCloudEvent,
 	closeMaestroEventBusTransport,
+	getMaestroBusEventCatalogEntry,
 	getMaestroEventBusStatus,
+	isMaestroBusEventType,
+	listMaestroBusEventCatalog,
 	publishMaestroCloudEvent,
 	recordMaestroApprovalHit,
 	recordMaestroFirewallBlock,
@@ -52,6 +57,8 @@ export {
 	type ApprovalHitEventData,
 	type FirewallBlockEventData,
 	type MaestroCloudEvent,
+	type MaestroBusEventCatalogEntry,
+	type MaestroBusEventCategory,
 	type MaestroCloseReason,
 	type MaestroCorrelation,
 	type MaestroDecisionMode,

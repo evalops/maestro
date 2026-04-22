@@ -283,6 +283,9 @@ The shared publisher lives in `@evalops/ai/telemetry` and currently emits:
 - `maestro.events.sandbox_violation`
 - `maestro.events.firewall_block`
 - `maestro.events.tool_call.attempted|completed`
+- `maestro.events.prompt_variant.selected`
+- `maestro.events.skill.invoked|succeeded|failed`
+- `maestro.events.eval.scored`
 
 `MAESTRO_TELEMETRY` continues to control local training and diagnostic
 telemetry. Audit-bus publishing is controlled separately with
