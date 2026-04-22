@@ -43,6 +43,11 @@ describe("Platform core service contract names", () => {
 		).toBe("/connectors.v1.ConnectorService/ListConnections");
 		expect(
 			platformConnectMethodPath(
+				PLATFORM_CONNECT_METHODS.connectors.setSourceOfTruthPolicy,
+			),
+		).toBe("/connectors.v1.ConnectorService/SetSourceOfTruthPolicy");
+		expect(
+			platformConnectMethodPath(
 				PLATFORM_CONNECT_METHODS.llmGateway.createMessage,
 			),
 		).toBe("/llmgateway.v1.GatewayService/CreateMessage");

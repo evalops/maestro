@@ -60,6 +60,10 @@ export const PLATFORM_CONNECT_METHODS = {
 			service: PLATFORM_CONNECT_SERVICES.connectors,
 			method: "RevokeConnection",
 		},
+		setSourceOfTruthPolicy: {
+			service: PLATFORM_CONNECT_SERVICES.connectors,
+			method: "SetSourceOfTruthPolicy",
+		},
 	},
 	governance: {
 		evaluateAction: {
