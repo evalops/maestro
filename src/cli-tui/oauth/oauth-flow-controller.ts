@@ -255,6 +255,86 @@ export class OAuthFlowController {
 		this.oauthLogoutView.show();
 	}
 
+	/**
+	 * Handle the /auth source-of-truth command.
+	 */
+	async handleSourceOfTruthPolicyCommand(
+		argumentText: string,
+		showError: (msg: string) => void,
+		showInfo: (msg: string) => void,
+	): Promise<void> {
+		const args = argumentText.trim().split(/\s+/).filter(Boolean);
+		const usage =
+			"Usage: /auth source-of-truth <provider> <area> [fallbackConnectionId]\n" +
+			"       /auth source-of-truth clear <provider>\n" +
+			"Areas: analytics, billing, crm, hris, support";
+		if (
+			args.length === 0 ||
+			["help", "?", "-h", "--help"].includes(args[0]?.toLowerCase() ?? "")
+		) {
+			showInfo(usage);
+			return;
+		}
+
+		const subcommand = args[0]?.toLowerCase();
+		try {
+			if (["clear", "unset", "remove"].includes(subcommand ?? "")) {
+				const provider = args[1];
+				if (!provider || args.length > 2) {
+					showError(usage);
+					return;
+				}
+				const { clearOAuthProviderSourceOfTruthPolicy } = await import(
+					"../../oauth/connectors.js"
+				);
+				const cleared = clearOAuthProviderSourceOfTruthPolicy(provider);
+				showInfo(
+					cleared
+						? `Source-of-truth policy metadata cleared for ${provider}.`
+						: `No source-of-truth policy metadata was set for ${provider}.`,
+				);
+				return;
+			}
+
+			const provider = args[0];
+			const area = args[1];
+			const fallbackConnectionId = args[2];
+			if (!provider || !area || args.length > 3) {
+				showError(usage);
+				return;
+			}
+
+			const { configureOAuthProviderSourceOfTruthPolicy } = await import(
+				"../../oauth/connectors.js"
+			);
+			const configured = await configureOAuthProviderSourceOfTruthPolicy(
+				provider,
+				{ area, fallbackConnectionId },
+			);
+			const details = [
+				`Source-of-truth policy metadata configured for ${configured.provider}.`,
+				`Area: ${configured.area}`,
+				...(configured.fallbackConnectionId
+					? [`Fallback connection: ${configured.fallbackConnectionId}`]
+					: []),
+				...(configured.connectorConnectionId
+					? [`Connector connection: ${configured.connectorConnectionId}`]
+					: []),
+				...(configured.primaryConnectionId
+					? [`Platform primary connection: ${configured.primaryConnectionId}`]
+					: [
+							"Platform policy will sync when the connector service integration is configured and reachable.",
+						]),
+				...(configured.workspaceId
+					? [`Workspace: ${configured.workspaceId}`]
+					: []),
+			];
+			showInfo(details.join("\n"));
+		} catch (error) {
+			showError(error instanceof Error ? error.message : String(error));
+		}
+	}
+
 	private async performOAuthLogin(
 		providerId: SupportedOAuthProvider,
 		mode: string,

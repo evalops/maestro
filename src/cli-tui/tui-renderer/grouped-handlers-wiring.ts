@@ -99,6 +99,11 @@ export interface GroupedWiringDeps {
 		showError: (msg: string) => void,
 		showInfo: (msg: string) => void,
 	) => void | Promise<void>;
+	handleAuthSourceOfTruthCommand: (
+		argumentText: string,
+		showError: (msg: string) => void,
+		showInfo: (msg: string) => void,
+	) => void | Promise<void>;
 	getAuthState: () => {
 		authenticated: boolean;
 		provider?: string;
@@ -207,6 +212,12 @@ export function buildGroupedCommandHandlers(
 				deps.handleLoginCommand(ctx.argumentText, (msg) => ctx.showError(msg)),
 			handleLogout: (ctx) =>
 				deps.handleLogoutCommand(
+					ctx.argumentText,
+					(msg) => ctx.showError(msg),
+					(msg) => ctx.showInfo(msg),
+				),
+			handleSourceOfTruthPolicy: (ctx) =>
+				deps.handleAuthSourceOfTruthCommand(
 					ctx.argumentText,
 					(msg) => ctx.showError(msg),
 					(msg) => ctx.showInfo(msg),

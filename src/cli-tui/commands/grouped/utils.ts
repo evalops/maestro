@@ -399,6 +399,11 @@ export const AUTH_SUBCOMMANDS: SubcommandDef[] = [
 	},
 	{ name: "login", description: "Authenticate", aliases: ["signin"] },
 	{ name: "logout", description: "Remove credentials", aliases: ["signout"] },
+	{
+		name: "source-of-truth",
+		description: "Set connector source-of-truth policy",
+		aliases: ["sot", "policy"],
+	},
 ];
 
 export const USAGE_SUBCOMMANDS: SubcommandDef[] = [
