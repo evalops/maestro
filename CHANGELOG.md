@@ -5,6 +5,17 @@ follows [Keep a Changelog](https://keepachangelog.com/) and adheres to semantic
 versioning when releases are cut.
 
 
+
+## [0.10.8] - 2026-04-22
+
+### Changed
+
+- Bumped OpenTelemetry runtime instrumentation packages to clear the release audit gate.
+
+### Fixed
+
+- Forced transitive Hono installs to the patched JSX SSR handling release.
+
 ## [0.10.7] - 2026-04-22
 
 ### Added
