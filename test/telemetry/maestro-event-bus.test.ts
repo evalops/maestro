@@ -1,16 +1,43 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const { connectMock } = vi.hoisted(() => ({
+	connectMock: vi.fn(),
+}));
+
+vi.mock("nats", () => ({
+	StringCodec: () => ({
+		encode: (value: string) => value,
+	}),
+	connect: connectMock,
+}));
 import {
 	MaestroBusEventType,
+	type MaestroTelemetryMirrorEvent,
 	buildMaestroCloudEvent,
 	closeMaestroEventBusTransport,
 	getMaestroEventBusStatus,
+	mirrorTelemetryToMaestroEventBus,
 	publishMaestroCloudEvent,
 	resolveMaestroEventBusConfig,
 	setMaestroEventBusTransportForTests,
 } from "../../src/telemetry/maestro-event-bus.js";
 
 describe("maestro event bus", () => {
+	const originalEventBusFlag = process.env.MAESTRO_EVENT_BUS;
+	const originalAgentRunId = process.env.MAESTRO_AGENT_RUN_ID;
+
 	afterEach(async () => {
+		if (originalEventBusFlag === undefined) {
+			delete process.env.MAESTRO_EVENT_BUS;
+		} else {
+			process.env.MAESTRO_EVENT_BUS = originalEventBusFlag;
+		}
+		if (originalAgentRunId === undefined) {
+			delete process.env.MAESTRO_AGENT_RUN_ID;
+		} else {
+			process.env.MAESTRO_AGENT_RUN_ID = originalAgentRunId;
+		}
+		connectMock.mockReset();
 		setMaestroEventBusTransportForTests(undefined);
 		await closeMaestroEventBusTransport();
 	});
@@ -138,6 +165,89 @@ describe("maestro event bus", () => {
 				decision_mode: "MAESTRO_DECISION_MODE_REQUIRE_APPROVAL",
 			},
 		});
+	});
+
+	it("preserves agent run correlation when mirrored metadata omits it", async () => {
+		process.env.MAESTRO_EVENT_BUS = "true";
+		process.env.MAESTRO_AGENT_RUN_ID = "run_env";
+		const published: Array<{ subject: string; payload: string }> = [];
+		setMaestroEventBusTransportForTests({
+			async publish(subject, payload) {
+				published.push({ subject, payload });
+			},
+		});
+
+		await mirrorTelemetryToMaestroEventBus({
+			type: "tool-execution",
+			timestamp: "2026-04-22T16:00:00.000Z",
+			toolName: "bash",
+			success: true,
+			durationMs: 25,
+			metadata: {
+				sessionId: "session_meta",
+			},
+		} as MaestroTelemetryMirrorEvent);
+
+		expect(published).toHaveLength(1);
+		expect(JSON.parse(published[0]?.payload ?? "{}")).toMatchObject({
+			data: {
+				correlation: {
+					session_id: "session_meta",
+					agent_run_id: "run_env",
+				},
+			},
+		});
+	});
+
+	it("retries NATS connection after an initial failure", async () => {
+		const publishMock = vi.fn().mockResolvedValue(undefined);
+		connectMock.mockImplementationOnce(async () => {
+			throw new Error("nats unavailable");
+		});
+		connectMock.mockResolvedValue({
+			jetstream: () => ({
+				publish: publishMock,
+			}),
+			drain: vi.fn().mockResolvedValue(undefined),
+		});
+
+		await publishMaestroCloudEvent(
+			MaestroBusEventType.ApprovalHit,
+			{
+				correlation: {
+					workspace_id: "workspace_123",
+					session_id: "session_123",
+				},
+				action: "Run shell command",
+				decision_mode: "MAESTRO_DECISION_MODE_REQUIRE_APPROVAL",
+				occurred_at: "2026-04-22T16:00:00.000Z",
+			},
+			{
+				env: { MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222" },
+				eventId: "event_3",
+				time: "2026-04-22T16:00:00.000Z",
+			},
+		);
+		await publishMaestroCloudEvent(
+			MaestroBusEventType.ApprovalHit,
+			{
+				correlation: {
+					workspace_id: "workspace_123",
+					session_id: "session_123",
+				},
+				action: "Run shell command",
+				decision_mode: "MAESTRO_DECISION_MODE_REQUIRE_APPROVAL",
+				occurred_at: "2026-04-22T16:00:01.000Z",
+			},
+			{
+				env: { MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222" },
+				eventId: "event_4",
+				time: "2026-04-22T16:00:01.000Z",
+			},
+		);
+
+		expect(connectMock).toHaveBeenCalledTimes(2);
+		expect(publishMock).toHaveBeenCalledTimes(1);
 	});
 
 	it("reports missing NATS URL separately from disabled bus state", () => {
