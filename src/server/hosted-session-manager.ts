@@ -25,11 +25,24 @@ import {
 	type SessionTreeEntry,
 	isSessionHeaderEntry,
 	isSessionTreeEntry,
-	tryParseSessionEntry,
 } from "../session/types.js";
 import { queueSharedMemoryUpdate } from "../shared-memory/client.js";
 
 type SessionRow = typeof hostedSessions.$inferSelect;
+type PendingWriteFailure = {
+	version: number;
+	error: unknown;
+};
+
+function asStoredSessionEntry(value: unknown): SessionEntry | null {
+	if (!value || typeof value !== "object") {
+		return null;
+	}
+	if (typeof (value as { type?: unknown }).type !== "string") {
+		return null;
+	}
+	return value as SessionEntry;
+}
 
 export interface HostedSessionMetadataUpdate {
 	title?: string;
@@ -47,7 +60,10 @@ export class HostedSessionManager {
 	private byId: Map<string, SessionTreeEntry> = new Map();
 	private leafId: string | null = null;
 	private sessionInitialized = false;
-	private writeChain: Promise<unknown> = Promise.resolve();
+	private writeChain: Promise<void> = Promise.resolve();
+	private writeVersion = 0;
+	private reportedWriteFailureVersion = 0;
+	private writeFailures: PendingWriteFailure[] = [];
 	private snapshot?: AgentState;
 	private lastModelMetadata?: SessionModelMetadata;
 
@@ -73,10 +89,13 @@ export class HostedSessionManager {
 	}
 
 	private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+		const version = ++this.writeVersion;
 		const result = this.writeChain.then(operation, operation);
 		this.writeChain = result.then(
 			() => undefined,
-			() => undefined,
+			(error) => {
+				this.writeFailures.push({ version, error });
+			},
 		);
 		return result;
 	}
@@ -172,9 +191,12 @@ export class HostedSessionManager {
 		return row ?? null;
 	}
 
-	async loadEntries(sessionId: string): Promise<SessionEntry[] | null> {
-		const row = await this.loadRow(sessionId);
-		if (!row) {
+	async loadEntries(
+		sessionId: string,
+		row?: SessionRow | null,
+	): Promise<SessionEntry[] | null> {
+		const sessionRow = row ?? (await this.loadRow(sessionId));
+		if (!sessionRow) {
 			return null;
 		}
 		const rows = await getDb()
@@ -185,7 +207,7 @@ export class HostedSessionManager {
 
 		const entries: SessionEntry[] = [];
 		for (const row of rows) {
-			const entry = tryParseSessionEntry(JSON.stringify(row.entry));
+			const entry = asStoredSessionEntry(row.entry);
 			if (entry) {
 				entries.push(entry);
 			}
@@ -199,7 +221,7 @@ export class HostedSessionManager {
 		if (!row) {
 			return false;
 		}
-		const entries = (await this.loadEntries(sessionId)) ?? [];
+		const entries = (await this.loadEntries(sessionId, row)) ?? [];
 		this.sessionId = row.sessionId;
 		this.entries = entries;
 		this.rebuildIndex(entries);
@@ -230,7 +252,7 @@ export class HostedSessionManager {
 		offset?: number;
 	}): Promise<SessionSummary[]> {
 		await this.flush();
-		const rows = await getDb()
+		const baseQuery = getDb()
 			.select()
 			.from(hostedSessions)
 			.where(
@@ -239,9 +261,13 @@ export class HostedSessionManager {
 					isNull(hostedSessions.deletedAt),
 				),
 			)
-			.orderBy(desc(hostedSessions.updatedAt))
-			.limit(options?.limit ?? 500)
-			.offset(options?.offset ?? 0);
+			.orderBy(desc(hostedSessions.updatedAt));
+		const rows =
+			typeof options?.limit === "number"
+				? await baseQuery.limit(options.limit).offset(options.offset ?? 0)
+				: typeof options?.offset === "number"
+					? await baseQuery.offset(options.offset)
+					: await baseQuery;
 
 		return rows.map((row) => ({
 			id: row.sessionId,
@@ -273,7 +299,7 @@ export class HostedSessionManager {
 		if (!row) {
 			return null;
 		}
-		const entries = (await this.loadEntries(sessionId)) ?? [];
+		const entries = (await this.loadEntries(sessionId, row)) ?? [];
 		const context = buildSessionContextFromEntries(entries);
 		const extractedById = new Map<string, string>();
 		for (const entry of entries) {
@@ -771,7 +797,21 @@ export class HostedSessionManager {
 	}
 
 	async flush(): Promise<void> {
-		await this.writeChain;
+		const targetVersion = this.writeVersion;
+		const chain = this.writeChain;
+		await chain;
+
+		const failure = this.writeFailures.find(
+			({ version }) =>
+				version > this.reportedWriteFailureVersion && version <= targetVersion,
+		);
+		this.reportedWriteFailureVersion = targetVersion;
+		this.writeFailures = this.writeFailures.filter(
+			({ version }) => version > targetVersion,
+		);
+		if (failure) {
+			throw failure.error;
+		}
 	}
 }
 
