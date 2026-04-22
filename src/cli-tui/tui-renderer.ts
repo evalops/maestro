@@ -2634,6 +2634,12 @@ export class TuiRenderer {
 						showError,
 						showInfo,
 					),
+				handleAuthSourceOfTruthCommand: (argumentText, showError, showInfo) =>
+					this.oauthFlowController.handleSourceOfTruthPolicyCommand(
+						argumentText,
+						showError,
+						showInfo,
+					),
 				getAuthState: () => this.getActualAuthState(),
 				handleCostCommand: (ctx) => this.getCostView().handleCostCommand(ctx),
 				handleQuotaCommand: (ctx) =>
