@@ -34,8 +34,14 @@ if (unknown.length > 0) {
 }
 
 const apply = args.includes("--apply");
+const dryRun = args.includes("--dry-run");
 const list = args.includes("--list");
 const otp = readValueFlag("--otp") ?? process.env.NPM_OTP ?? null;
+
+if (apply && dryRun) {
+	console.error("Cannot combine --apply with --dry-run. Omit --apply to preview only.");
+	process.exit(2);
+}
 
 const npmArgs = ["--yes", config.npmPackage, "trust"];
 
