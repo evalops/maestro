@@ -1,6 +1,9 @@
 import type { SlashCommand } from "@evalops/tui";
 import { describe, expect, it, vi } from "vitest";
-import type { CommandSuiteHandlers } from "../../../src/cli-tui/commands/command-suite-handlers.js";
+import {
+	type CommandSuiteHandlers,
+	CommandSuiteKey,
+} from "../../../src/cli-tui/commands/command-suite-handlers.js";
 import type {
 	CommandExecutionContext,
 	CommandHandlers,
@@ -101,16 +104,16 @@ function createMockOptions(): CommandRegistryOptions & {
 		package: noop,
 	};
 	const commandSuiteHandlers: CommandSuiteHandlers = {
-		session: vi.fn(),
-		diag: vi.fn(),
-		ui: vi.fn(),
-		safety: vi.fn(),
-		git: vi.fn(),
-		auth: vi.fn(),
-		usage: vi.fn(),
-		undo: vi.fn(),
-		config: vi.fn(),
-		tools: vi.fn(),
+		[CommandSuiteKey.Session]: vi.fn(),
+		[CommandSuiteKey.Diag]: vi.fn(),
+		[CommandSuiteKey.Ui]: vi.fn(),
+		[CommandSuiteKey.Safety]: vi.fn(),
+		[CommandSuiteKey.Git]: vi.fn(),
+		[CommandSuiteKey.Auth]: vi.fn(),
+		[CommandSuiteKey.Usage]: vi.fn(),
+		[CommandSuiteKey.Undo]: vi.fn(),
+		[CommandSuiteKey.Config]: vi.fn(),
+		[CommandSuiteKey.Tools]: vi.fn(),
 	};
 	return {
 		getRunScriptCompletions: vi.fn(() => null),
@@ -374,7 +377,9 @@ describe("command-registry-integration", () => {
 			safeEntry!.execute("/safe");
 
 			expect(opts.getCommandSuiteHandlers).toHaveBeenCalledTimes(1);
-			expect(opts.commandSuiteHandlers.safety).toHaveBeenCalled();
+			expect(
+				opts.commandSuiteHandlers[CommandSuiteKey.Safety],
+			).toHaveBeenCalled();
 		});
 
 		it("dispatches /cfg to the command suite config handler", () => {
@@ -384,7 +389,9 @@ describe("command-registry-integration", () => {
 
 			configEntry!.execute("/cfg");
 
-			expect(opts.commandSuiteHandlers.config).toHaveBeenCalled();
+			expect(
+				opts.commandSuiteHandlers[CommandSuiteKey.Config],
+			).toHaveBeenCalled();
 		});
 
 		it("passes --help flag through to renderHelp", () => {

@@ -1,6 +1,9 @@
 import type { SlashCommand } from "@evalops/tui";
 import { parseCommandArguments, shouldShowHelp } from "./argument-parser.js";
-import type { CommandSuiteHandlers } from "./command-suite-handlers.js";
+import {
+	type CommandSuiteHandlers,
+	CommandSuiteKey,
+} from "./command-suite-handlers.js";
 import { HOTKEYS_SUBCOMMANDS } from "./hotkeys-command.js";
 import { PACKAGE_SUBCOMMANDS } from "./package-handlers.js";
 import {
@@ -27,7 +30,7 @@ import type {
 type CommandSuiteDefinition = {
 	command: SlashCommand;
 	subcommands: readonly SubcommandDef[];
-	handlerKey: keyof CommandSuiteHandlers;
+	handlerKey: CommandSuiteKey;
 };
 
 const equals =
@@ -71,7 +74,7 @@ const COMMAND_SUITE_DEFINITIONS: readonly CommandSuiteDefinition[] = [
 			],
 		},
 		subcommands: SESSION_SUBCOMMANDS,
-		handlerKey: "session",
+		handlerKey: CommandSuiteKey.Session,
 	},
 	{
 		command: {
@@ -91,7 +94,7 @@ const COMMAND_SUITE_DEFINITIONS: readonly CommandSuiteDefinition[] = [
 			],
 		},
 		subcommands: DIAG_SUBCOMMANDS,
-		handlerKey: "diag",
+		handlerKey: CommandSuiteKey.Diag,
 	},
 	{
 		command: {
@@ -103,7 +106,7 @@ const COMMAND_SUITE_DEFINITIONS: readonly CommandSuiteDefinition[] = [
 			examples: ["/ui", "/ui theme", "/ui zen on", "/ui compact off"],
 		},
 		subcommands: UI_SUBCOMMANDS,
-		handlerKey: "ui",
+		handlerKey: CommandSuiteKey.Ui,
 	},
 	{
 		command: {
@@ -119,7 +122,7 @@ const COMMAND_SUITE_DEFINITIONS: readonly CommandSuiteDefinition[] = [
 			],
 		},
 		subcommands: SAFETY_SUBCOMMANDS,
-		handlerKey: "safety",
+		handlerKey: CommandSuiteKey.Safety,
 	},
 	{
 		command: {
@@ -130,7 +133,7 @@ const COMMAND_SUITE_DEFINITIONS: readonly CommandSuiteDefinition[] = [
 			examples: ["/git", "/git diff src/index.ts", "/git review"],
 		},
 		subcommands: GIT_SUBCOMMANDS,
-		handlerKey: "git",
+		handlerKey: CommandSuiteKey.Git,
 	},
 	{
 		command: {
@@ -146,7 +149,7 @@ const COMMAND_SUITE_DEFINITIONS: readonly CommandSuiteDefinition[] = [
 			],
 		},
 		subcommands: AUTH_SUBCOMMANDS,
-		handlerKey: "auth",
+		handlerKey: CommandSuiteKey.Auth,
 	},
 	{
 		command: {
@@ -161,7 +164,7 @@ const COMMAND_SUITE_DEFINITIONS: readonly CommandSuiteDefinition[] = [
 			],
 		},
 		subcommands: USAGE_SUBCOMMANDS,
-		handlerKey: "usage",
+		handlerKey: CommandSuiteKey.Usage,
 	},
 	{
 		command: {
@@ -177,7 +180,7 @@ const COMMAND_SUITE_DEFINITIONS: readonly CommandSuiteDefinition[] = [
 			],
 		},
 		subcommands: UNDO_SUBCOMMANDS,
-		handlerKey: "undo",
+		handlerKey: CommandSuiteKey.Undo,
 	},
 	{
 		command: {
@@ -194,7 +197,7 @@ const COMMAND_SUITE_DEFINITIONS: readonly CommandSuiteDefinition[] = [
 			],
 		},
 		subcommands: CONFIG_SUBCOMMANDS,
-		handlerKey: "config",
+		handlerKey: CommandSuiteKey.Config,
 	},
 	{
 		command: {
@@ -212,7 +215,7 @@ const COMMAND_SUITE_DEFINITIONS: readonly CommandSuiteDefinition[] = [
 			],
 		},
 		subcommands: TOOLS_SUBCOMMANDS,
-		handlerKey: "tools",
+		handlerKey: CommandSuiteKey.Tools,
 	},
 ];
 

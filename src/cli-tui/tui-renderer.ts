@@ -72,7 +72,6 @@ import type { BackgroundTasksController } from "./background/background-tasks-co
 import { BashModeView } from "./bash-mode-view.js";
 import { ChangelogView } from "./changelog-view.js";
 import { formatCommandHelp } from "./commands/argument-parser.js";
-import type { CommandSuiteHandlers } from "./commands/command-suite-handlers.js";
 import type {
 	CommandEntry,
 	CommandExecutionContext,
@@ -148,7 +147,6 @@ import {
 } from "./tui-renderer/attachment-controller.js";
 import { buildTuiCommandRegistryOptions } from "./tui-renderer/command-registry-options.js";
 import { buildTuiCommandRegistry } from "./tui-renderer/command-registry.js";
-import { buildCommandSuiteHandlers } from "./tui-renderer/command-suite-wiring.js";
 import {
 	type DelegatingCommandHandlerMap,
 	createDelegatingCommandHandlers,
@@ -448,7 +446,6 @@ export class TuiRenderer {
 	private interruptController!: InterruptController;
 	private pasteHandler!: PasteHandler;
 	private miscHandlers!: MiscHandlers;
-	private commandSuiteHandlers?: CommandSuiteHandlers;
 	private uiStateController!: UiStateController;
 	private quickSettingsController!: QuickSettingsController;
 	private branchController?: BranchController;
@@ -1175,7 +1172,34 @@ export class TuiRenderer {
 					this.delegatingHandlers.handleMemoryCommand(context),
 				handleModeCommand: (context) =>
 					this.delegatingHandlers.handleModeCommand(context),
-				getCommandSuiteHandlers: () => this.getCommandSuiteHandlers(),
+				commandSuite: {
+					getUiState: () => ({
+						...this.uiStateController.getState(),
+						compactTools: this.toolOutputView?.isCompact() ?? false,
+					}),
+					getAuthState: () => this.getActualAuthState(),
+					handleSessionRecoverCommand: (context) =>
+						this.sessionStateController.handleSessionRecoverCommand(context),
+					handleSessionCleanupCommand: (context) => {
+						const result = this.sessionManager.pruneSessions();
+						if (result.removed === 0) {
+							context.showInfo("No sessions to prune.");
+							return;
+						}
+						context.showInfo(
+							`Pruned ${result.removed} session(s).${result.errors > 0 ? ` ${result.errors} error(s).` : ""}`,
+						);
+					},
+					handleSourcesCommand: (context) =>
+						this.delegatingHandlers.handleSourcesCommand(context),
+					handlePerfCommand: () => this.showPerfReport(),
+					handleAuthSourceOfTruthCommand: (argumentText, showError, showInfo) =>
+						this.oauthFlowController.handleSourceOfTruthPolicyCommand(
+							argumentText,
+							showError,
+							showInfo,
+						),
+				},
 				refreshFooterHint: () => this.refreshFooterHint(),
 				onQuit: () => {
 					this.stop();
@@ -2545,116 +2569,6 @@ export class TuiRenderer {
 	private showPerfReport(): void {
 		const snap = this.perfCollector.snapshot();
 		this.notificationView.showInfo(formatPerfReport(snap));
-	}
-
-	private getCommandSuiteHandlers(): CommandSuiteHandlers {
-		if (!this.commandSuiteHandlers) {
-			this.commandSuiteHandlers = buildCommandSuiteHandlers({
-				delegatingHandlers: this.delegatingHandlers,
-				notificationView: this.notificationView,
-				approvalService: this.approvalService,
-				requestRender: () => this.ui.requestRender(),
-				refreshFooterHint: () => this.refreshFooterHint(),
-				addSpacedText: (text) => {
-					this.chatContainer.addChild(new Spacer(1));
-					this.chatContainer.addChild(new Text(text, 1, 0));
-				},
-				handleNewChatCommand: (ctx) =>
-					this.sessionStateController.handleNewChatCommand(ctx),
-				handleClearCommand: () =>
-					this.getClearController().handleClearCommand(),
-				handleSessionCommand: (rawInput) =>
-					this.sessionView.handleSessionCommand(rawInput),
-				handleSessionsCommand: (rawInput) =>
-					this.sessionView.handleSessionsCommand(rawInput),
-				handleBranchCommand: (ctx) =>
-					this.getBranchController().handleBranchCommand(ctx),
-				showTree: () => this.getTreeSelectorView().show(),
-				handleQueueCommand: (ctx) => {
-					const queuePanelController = this.getQueuePanelController();
-					if (queuePanelController) {
-						queuePanelController.handleQueueCommand(ctx);
-						return;
-					}
-					ctx.showInfo("Prompt queue is not available.");
-				},
-				handleExportCommand: (rawInput) =>
-					this.getImportExportView().handleExportCommand(rawInput),
-				handleShareCommand: (rawInput) =>
-					this.getImportExportView().handleShareCommand(rawInput),
-				handleSessionRecoverCommand: (ctx) =>
-					this.sessionStateController.handleSessionRecoverCommand(ctx),
-				handleSessionCleanupCommand: (ctx) => {
-					const result = this.sessionManager.pruneSessions();
-					if (result.removed === 0) {
-						ctx.showInfo("No sessions to prune.");
-					} else {
-						ctx.showInfo(
-							`Pruned ${result.removed} session(s).${result.errors > 0 ? ` ${result.errors} error(s).` : ""}`,
-						);
-					}
-				},
-				handleStatusCommand: () =>
-					this.getDiagnosticsView().handleStatusCommand(),
-				handleAboutCommand: () => this.getAboutView().handleAboutCommand(),
-				handleContextCommand: (ctx) => this.handleContextCommand(ctx),
-				handleStatsCommand: (ctx) => this.handleStatsCommand(ctx),
-				handleBackgroundCommand: (ctx) =>
-					this.backgroundTasksController.handleBackgroundCommand(ctx),
-				handleDiagnosticsCommand: (rawInput) =>
-					this.getDiagnosticsView().handleDiagnosticsCommand(rawInput),
-				handleTelemetryCommand: (ctx) =>
-					this.getTelemetryView().handleTelemetryCommand(ctx),
-				handleTrainingCommand: (ctx) =>
-					this.getTrainingView().handleTrainingCommand(ctx),
-				handleConfigCommand: (ctx) =>
-					this.getConfigView().handleConfigCommand(ctx),
-				handleLspCommand: (rawInput) =>
-					this.getLspView().handleLspCommand(rawInput),
-				handlePerfCommand: () => this.showPerfReport(),
-				showTheme: () => this.getThemeSelectorView().show(),
-				handleCleanCommand: (ctx) =>
-					this.uiStateController.handleCleanCommand(ctx),
-				handleFooterCommand: (ctx) => this.handleFooterCommand(ctx),
-				handleZenCommand: (ctx) => this.uiStateController.handleZenCommand(ctx),
-				handleCompactToolsCommand: (ctx) =>
-					this.handleCompactToolsCommand(ctx.rawInput),
-				getUiState: () => ({
-					...this.uiStateController.getState(),
-					compactTools: this.toolOutputView?.isCompact() ?? false,
-				}),
-				handleDiffCommand: (rawInput) =>
-					this.gitView.handlePreviewCommand(rawInput),
-				handleReviewCommand: (ctx) => this.handleReviewCommand(ctx),
-				handleLoginCommand: (argumentText, showError) =>
-					this.oauthFlowController.handleLoginCommand(argumentText, showError),
-				handleLogoutCommand: (argumentText, showError, showInfo) =>
-					this.oauthFlowController.handleLogoutCommand(
-						argumentText,
-						showError,
-						showInfo,
-					),
-				handleAuthSourceOfTruthCommand: (argumentText, showError, showInfo) =>
-					this.oauthFlowController.handleSourceOfTruthPolicyCommand(
-						argumentText,
-						showError,
-						showInfo,
-					),
-				getAuthState: () => this.getActualAuthState(),
-				handleCostCommand: (ctx) => this.getCostView().handleCostCommand(ctx),
-				handleQuotaCommand: (ctx) =>
-					this.getQuotaView().handleQuotaCommand(ctx),
-				handleImportCommand: (rawInput) =>
-					this.getImportExportView().handleImportCommand(rawInput),
-				handleToolsCommand: (rawInput) =>
-					this.getToolStatusView().handleToolsCommand(rawInput),
-				handleRunCommand: (rawInput) =>
-					this.getRunCommandView().handleRunCommand(rawInput),
-				handleCommandsCommand: (ctx) =>
-					this.getCustomCommandsController().handleCommandsCommand(ctx),
-			});
-		}
-		return this.commandSuiteHandlers;
 	}
 
 	stop(): void {
