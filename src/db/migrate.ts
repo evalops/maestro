@@ -35,6 +35,15 @@ interface MigrationRecord {
 	applied_at: Date;
 }
 
+function firstRow(results: unknown): Record<string, unknown> | null {
+	const rows = Array.from(results as Iterable<Record<string, unknown>>);
+	return rows[0] ?? null;
+}
+
+function sqlBoolean(value: unknown): boolean {
+	return value === true || value === "true" || value === 1 || value === "1";
+}
+
 /**
  * Get the list of migrations from the journal
  */
@@ -129,6 +138,68 @@ async function markMigrationApplied(tag: string): Promise<void> {
 	`);
 }
 
+async function tableExists(tableName: string): Promise<boolean> {
+	const db = getDb();
+
+	const result = await db.execute(sql`
+		SELECT to_regclass(${`public.${tableName}`}) IS NOT NULL AS exists
+	`);
+
+	return sqlBoolean(firstRow(result)?.exists);
+}
+
+async function enumTypeExists(typeName: string): Promise<boolean> {
+	const db = getDb();
+
+	const result = await db.execute(sql`
+		SELECT EXISTS (
+			SELECT 1
+			FROM pg_type t
+			JOIN pg_namespace n ON n.oid = t.typnamespace
+			WHERE n.nspname = 'public' AND t.typname = ${typeName}
+		) AS exists
+	`);
+
+	return sqlBoolean(firstRow(result)?.exists);
+}
+
+async function initialSchemaExists(): Promise<boolean> {
+	return (
+		(await enumTypeExists("alert_severity")) ||
+		(await tableExists("organizations")) ||
+		(await tableExists("users"))
+	);
+}
+
+async function reconcileLegacyMigrationRecords(
+	migrationEntries: MigrationJournal["entries"],
+	appliedMigrations: Set<string>,
+): Promise<void> {
+	for (const entry of migrationEntries) {
+		if (appliedMigrations.has(entry.tag)) {
+			continue;
+		}
+
+		let alreadyPresent = false;
+		if (entry.tag === "0000_initial") {
+			alreadyPresent = await initialSchemaExists();
+		} else if (entry.tag === "0001_shared_sessions") {
+			alreadyPresent = await tableExists("shared_sessions");
+		}
+
+		if (!alreadyPresent) {
+			continue;
+		}
+
+		logger.warn(
+			"Detected existing schema for untracked migration; marking as applied",
+			{ tag: entry.tag },
+		);
+		await markMigrationApplied(entry.tag);
+		appliedMigrations.add(entry.tag);
+	}
+}
+
 /**
  * Remove a migration from the applied list (for rollback)
  */
@@ -175,6 +246,7 @@ export async function migrate(): Promise<number> {
 	await ensureMigrationsTable();
 	const appliedMigrations = await getAppliedMigrations();
 	const migrationEntries = getMigrationEntries();
+	await reconcileLegacyMigrationRecords(migrationEntries, appliedMigrations);
 
 	let applied = 0;
 
