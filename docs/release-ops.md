@@ -44,7 +44,11 @@
     if the npm-side trusted publisher is not configured yet.
   - `trusted` ignores `NPM_TOKEN` and forces npm trusted publishing.
   - `token` requires `NPM_TOKEN` and keeps the legacy fallback explicit.
-- After `npm trust github @evalops/maestro --repo evalops/maestro --file release.yml --env npm-release --yes` succeeds and one release verifies, set
+- Run `npm run release:trust` for a dry run of the npm trusted-publisher
+  configuration. Use `npm run release:trust -- --apply --otp=<code>` to write
+  the `@evalops/maestro` trusted publisher for `evalops/maestro`,
+  `.github/workflows/release.yml`, and the `npm-release` environment.
+- After the trusted-publisher write succeeds and one release verifies, set
   `NPM_PUBLISH_AUTH_MODE=trusted` in the `npm-release` environment and remove
   the release-scoped `NPM_TOKEN`.
 

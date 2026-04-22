@@ -84,6 +84,7 @@
     "verify:runtime-deps": "node scripts/check-runtime-deps.js",
     "release:verify:published": "node scripts/smoke-registry-install.js",
     "release:deprecate": "node scripts/deprecate-release.js",
+    "release:trust": "node scripts/configure-npm-trusted-publisher.mjs",
     "factory:import": "npm run build && node dist/scripts/import-factory-config.js",
     "factory:export": "npm run build && node dist/scripts/export-factory-config.js",
     "version:patch": "node scripts/version.js patch",
