@@ -538,7 +538,7 @@ async function createNatsTransport(
 		password: config.natsPassword,
 	});
 	if (!natsTransportPromise) {
-		natsTransportPromise = (async () => {
+		const pendingTransport = (async () => {
 			const nats = await import("nats");
 			const codec = nats.StringCodec();
 			const connection: NatsConnection = await nats.connect({
@@ -561,6 +561,13 @@ async function createNatsTransport(
 				},
 			};
 		})();
+		const trackedTransport = pendingTransport.catch((error) => {
+			if (natsTransportPromise === trackedTransport) {
+				natsTransportPromise = undefined;
+			}
+			throw error;
+		});
+		natsTransportPromise = trackedTransport;
 	}
 	const resolved = await natsTransportPromise;
 	if (resolved.key === key) return resolved.transport;
@@ -580,12 +587,19 @@ function mergeCorrelation(
 	base: MaestroCorrelation,
 	overrides?: Partial<MaestroCorrelation>,
 ): MaestroCorrelation {
+	const definedOverrides = Object.fromEntries(
+		Object.entries(overrides ?? {}).filter(([, value]) => value !== undefined),
+	) as Partial<MaestroCorrelation>;
+	const attributes = {
+		...base.attributes,
+		...definedOverrides.attributes,
+	};
 	return {
 		...base,
-		...overrides,
-		workspace_id: overrides?.workspace_id ?? base.workspace_id,
-		session_id: overrides?.session_id ?? base.session_id,
-		attributes: { ...base.attributes, ...overrides?.attributes },
+		...definedOverrides,
+		workspace_id: definedOverrides.workspace_id ?? base.workspace_id,
+		session_id: definedOverrides.session_id ?? base.session_id,
+		attributes: Object.keys(attributes).length > 0 ? attributes : undefined,
 	};
 }
 

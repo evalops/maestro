@@ -73,6 +73,35 @@ describe("maestro event bus", () => {
 		expect(event.data.tool_call_id).toBe("tool_1");
 	});
 
+	it("does not let undefined correlation overrides erase env defaults", () => {
+		const event = buildMaestroCloudEvent(
+			MaestroBusEventType.ToolCallCompleted,
+			{
+				tool_call_id: "tool_1",
+				status: "MAESTRO_TOOL_CALL_STATUS_SUCCEEDED",
+				completed_at: "2026-04-22T16:00:00.000Z",
+			},
+			{
+				env: {
+					MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222",
+					MAESTRO_EVALOPS_WORKSPACE_ID: "workspace_123",
+					MAESTRO_SESSION_ID: "session_123",
+					MAESTRO_AGENT_RUN_ID: "agent_run_123",
+				},
+				correlation: {
+					agent_run_id: undefined,
+					agent_run_step_id: undefined,
+				},
+			},
+		);
+
+		expect(event.data.correlation).toMatchObject({
+			workspace_id: "workspace_123",
+			session_id: "session_123",
+			agent_run_id: "agent_run_123",
+		});
+	});
+
 	it("publishes to the CloudEvent type subject", async () => {
 		const published: Array<{ subject: string; payload: string }> = [];
 		setMaestroEventBusTransportForTests({
