@@ -78,6 +78,15 @@ Comprehensive build verification script that runs all checks:
 - `VERIFY_PACKAGES=1 bun run verify-build` (includes package verification)
 - `npx nx run maestro:verify-build` (Nx target wrapper)
 
+### 6. Platform SDK Contract Smoke (`scripts/check-platform-sdk-contract.ts`)
+
+Cross-repo smoke test for the generated Platform TypeScript SDK before
+`@evalops/sdk-ts` is available from npm. The script packs `gen/ts` from a
+Platform checkout, runs Platform's SDK package smoke test, installs the tarball,
+and verifies Maestro's core service paths against the generated descriptors.
+
+**Run:** `MAESTRO_PLATFORM_REPO=/path/to/platform npm run platform:sdk-smoke`
+
 ## Usage
 
 ### Local Development
