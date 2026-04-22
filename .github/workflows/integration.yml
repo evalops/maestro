@@ -75,4 +75,4 @@ jobs:
         run: |
           # Run web tests plus production-schema database regressions with
           # Redis and PostgreSQL available.
-          bunx vitest run test/web/ test/db/legacy-rbac-migration.integration.test.ts --reporter=verbose
+          bunx vitest run test/web/ test/db/legacy-rbac-migration.integration.test.ts test/db/hosted-session-storage.integration.test.ts --reporter=verbose

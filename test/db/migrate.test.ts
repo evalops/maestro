@@ -59,7 +59,7 @@ describe("migrate", () => {
 	it("marks the initial migration applied instead of replaying existing schema", async () => {
 		const applied = await migrate();
 
-		expect(applied).toBe(4);
+		expect(applied).toBe(5);
 		expect(
 			mocks.queries.some((query) =>
 				query.includes('CREATE TYPE "public"."alert_severity"'),
@@ -91,7 +91,7 @@ describe("migrate", () => {
 
 		const applied = await migrate();
 
-		expect(applied).toBe(3);
+		expect(applied).toBe(4);
 		expect(
 			mocks.queries.some((query) =>
 				query.includes('CREATE TABLE IF NOT EXISTS "shared_sessions"'),

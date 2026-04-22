@@ -5,7 +5,7 @@ import {
 	respondWithApiError,
 	sendJson,
 } from "../server-utils.js";
-import { createSessionManagerForRequest } from "../session-scope.js";
+import { createWebSessionManagerForRequest } from "../session-scope.js";
 
 const sessionIdPattern = /^[a-zA-Z0-9._-]+$/;
 const attachmentIdPattern = /^[a-zA-Z0-9._-]+$/;
@@ -64,7 +64,7 @@ export async function handleSessionAttachment(
 	params: { id: string; attachmentId: string },
 	cors: Record<string, string>,
 ) {
-	const sessionManager = createSessionManagerForRequest(req, true);
+	const sessionManager = createWebSessionManagerForRequest(req, true);
 
 	try {
 		if (req.method !== "GET") {
@@ -125,7 +125,7 @@ export async function handleSessionAttachmentExtract(
 	params: { id: string; attachmentId: string },
 	cors: Record<string, string>,
 ) {
-	const sessionManager = createSessionManagerForRequest(req, true);
+	const sessionManager = createWebSessionManagerForRequest(req, true);
 
 	try {
 		if (req.method !== "POST") {

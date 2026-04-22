@@ -1,8 +1,27 @@
 import type { EnterpriseSession } from "../enterprise/context.js";
 import { checkSessionLimits } from "../safety/policy.js";
-import type { SessionManager } from "../session/manager.js";
 
-type SessionState = Parameters<SessionManager["startSession"]>[0];
+type SessionState = Parameters<SessionInitializationManager["startSession"]>[0];
+
+export interface SessionInitializationManager {
+	loadAllSessions(): Array<{ modified: Date }>;
+	countActiveSessions?(since: Date): Promise<number>;
+	startSession(state: AgentSessionState, options?: { subject?: string }): void;
+	getSessionId(): string;
+}
+
+type AgentSessionState = {
+	messages: unknown[];
+	model: unknown;
+	thinkingLevel: unknown;
+	systemPrompt: string;
+	promptMetadata?: unknown;
+	tools: Array<{
+		name: string;
+		label?: string;
+		description?: string;
+	}>;
+};
 
 export interface SessionInitializationAgent {
 	state: SessionState;
@@ -19,15 +38,15 @@ export interface SessionInitializationLogger {
 	warn(message: string, context: Record<string, unknown>): void;
 }
 
-export function startSessionWithPolicy(params: {
+export async function startSessionWithPolicy(params: {
 	agent: SessionInitializationAgent;
 	enterpriseContext: SessionInitializationEnterpriseContext;
 	logger: SessionInitializationLogger;
 	modelId: string;
 	onSessionReady: (sessionId: string) => void;
-	sessionManager: SessionManager;
+	sessionManager: SessionInitializationManager;
 	subject?: string;
-}): string | null {
+}): Promise<string | null> {
 	const {
 		agent,
 		enterpriseContext,
@@ -40,10 +59,15 @@ export function startSessionWithPolicy(params: {
 
 	let activeCount: number | undefined;
 	try {
-		const sessions = sessionManager.loadAllSessions();
-		activeCount = sessions.filter(
-			(session) => Date.now() - session.modified.getTime() < 60 * 60 * 1000,
-		).length;
+		const activeSince = new Date(Date.now() - 60 * 60 * 1000);
+		if (sessionManager.countActiveSessions) {
+			activeCount = await sessionManager.countActiveSessions(activeSince);
+		} else {
+			const sessions = sessionManager.loadAllSessions();
+			activeCount = sessions.filter(
+				(session) => session.modified.getTime() >= activeSince.getTime(),
+			).length;
+		}
 	} catch (error) {
 		logger.warn("Failed to count active sessions", {
 			error: error instanceof Error ? error.message : String(error),

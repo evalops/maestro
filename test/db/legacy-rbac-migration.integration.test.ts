@@ -132,7 +132,7 @@ describeDb("legacy RBAC migration integration", () => {
 			"../../src/rbac/permissions.js"
 		);
 
-		await expect(migrate()).resolves.toBe(1);
+		await expect(migrate()).resolves.toBe(2);
 		await expect(seedPermissions()).resolves.toBeUndefined();
 		await expect(seedPermissions()).resolves.toBeUndefined();
 
@@ -143,6 +143,9 @@ describeDb("legacy RBAC migration integration", () => {
 			`;
 			expect(applied.map((row) => row.tag)).toContain(
 				"0004_reconcile_legacy_rbac_tables",
+			);
+			expect(applied.map((row) => row.tag)).toContain(
+				"0005_hosted_session_storage",
 			);
 
 			const columnState = await verify<

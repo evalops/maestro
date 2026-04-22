@@ -46,8 +46,10 @@ import {
 	summarizeOutboundSensitiveFindings,
 } from "../../safety/outbound-secret-preflight.js";
 import { safeReadSessionEntries } from "../../session/session-context.js";
+import type { SessionEntry } from "../../session/types.js";
 import { createLogger } from "../../utils/logger.js";
 import { getAuthSubject } from "../authz.js";
+import { isHostedSessionManager } from "../hosted-session-manager.js";
 import { serverRequestManager } from "../server-request-manager.js";
 import {
 	buildContentDisposition,
@@ -56,8 +58,8 @@ import {
 	sendJson,
 } from "../server-utils.js";
 import {
-	createSessionManagerForRequest,
-	createSessionManagerForScope,
+	createWebSessionManagerForRequest,
+	createWebSessionManagerForScope,
 	decodeScopedSessionId,
 	encodeScopedSessionId,
 	resolveSessionScope,
@@ -337,7 +339,7 @@ export async function handleSessions(
 	params: { id?: string },
 	cors: Record<string, string>,
 ) {
-	const sessionManager = createSessionManagerForRequest(req, true);
+	const sessionManager = createWebSessionManagerForRequest(req, true);
 	const sessionId = params.id;
 	const url = new URL(req.url || "/api/sessions", "http://localhost");
 	const limitParam = url.searchParams.get("limit");
@@ -470,21 +472,25 @@ export async function handleSessions(
 				return;
 			}
 
-			const sessionPath = sessionManager.getSessionFileById(sessionId);
-			if (!sessionPath) {
-				sendJson(res, 404, { error: "Session file not found" }, cors, req);
-				return;
-			}
+			if (isHostedSessionManager(sessionManager)) {
+				await sessionManager.updateSessionMetadata(sessionId, updates);
+			} else {
+				const sessionPath = sessionManager.getSessionFileById(sessionId);
+				if (!sessionPath) {
+					sendJson(res, 404, { error: "Session file not found" }, cors, req);
+					return;
+				}
 
-			// Apply updates - SessionManager supports favorite, title, and tags via meta entries
-			if (updates.favorite !== undefined) {
-				sessionManager.setSessionFavorite(sessionPath, updates.favorite);
-			}
-			if (updates.title !== undefined) {
-				sessionManager.setSessionTitle(sessionPath, updates.title);
-			}
-			if (updates.tags !== undefined) {
-				sessionManager.setSessionTags(sessionPath, updates.tags);
+				// Apply updates - SessionManager supports favorite, title, and tags via meta entries
+				if (updates.favorite !== undefined) {
+					sessionManager.setSessionFavorite(sessionPath, updates.favorite);
+				}
+				if (updates.title !== undefined) {
+					sessionManager.setSessionTitle(sessionPath, updates.title);
+				}
+				if (updates.tags !== undefined) {
+					sessionManager.setSessionTags(sessionPath, updates.tags);
+				}
 			}
 
 			// Return the updated values directly (writes are applied synchronously to the file)
@@ -554,7 +560,7 @@ export async function handleSessionShare(
 	params: { id: string },
 	cors: Record<string, string>,
 ) {
-	const sessionManager = createSessionManagerForRequest(req, true);
+	const sessionManager = createWebSessionManagerForRequest(req, true);
 	const sessionId = params.id;
 
 	try {
@@ -679,7 +685,7 @@ export async function handleSharedSession(
 		}
 
 		const { scope, sessionId } = decodeScopedSessionId(resolvedSessionId);
-		const sessionManager = createSessionManagerForScope(scope, true);
+		const sessionManager = createWebSessionManagerForScope(scope, true);
 		const session = await sessionManager.loadSession(sessionId);
 		if (!session) {
 			sendJson(res, 404, { error: "Session not found" }, cors, req);
@@ -744,7 +750,7 @@ export async function handleSharedSessionAttachment(
 		}
 
 		const { scope, sessionId } = decodeScopedSessionId(resolvedSessionId);
-		const sessionManager = createSessionManagerForScope(scope, true);
+		const sessionManager = createWebSessionManagerForScope(scope, true);
 		const session = await sessionManager.loadSession(sessionId);
 		if (!session) {
 			sendJson(res, 404, { error: "Session not found" }, cors, req);
@@ -788,7 +794,7 @@ export async function handleSessionExport(
 	params: { id: string },
 	cors: Record<string, string>,
 ) {
-	const sessionManager = createSessionManagerForRequest(req, true);
+	const sessionManager = createWebSessionManagerForRequest(req, true);
 	const sessionId = params.id;
 
 	try {
@@ -826,31 +832,32 @@ export async function handleSessionExport(
 		>(req);
 		const format = options.format || "json";
 		const messages = session.messages || [];
-		const jsonlEntries =
-			format === "jsonl"
-				? (() => {
-						const sessionFile = sessionManager.getSessionFileById(sessionId);
-						if (!sessionFile) {
-							sendJson(
-								res,
-								404,
-								{ error: "Session file not found" },
-								cors,
-								req,
-							);
-							return null;
-						}
-						return safeReadSessionEntries(sessionFile);
-					})()
-				: undefined;
-		if (format === "jsonl" && !jsonlEntries) {
-			return;
+		let jsonlEntries: SessionEntry[] | null | undefined = undefined;
+		let jsonlSessionFile: string | null = null;
+		if (format === "jsonl") {
+			if (isHostedSessionManager(sessionManager)) {
+				jsonlEntries = await sessionManager.loadEntries(sessionId);
+				if (!jsonlEntries) {
+					sendJson(res, 404, { error: "Session not found" }, cors, req);
+					return;
+				}
+			} else {
+				jsonlSessionFile = sessionManager.getSessionFileById(sessionId);
+				if (!jsonlSessionFile) {
+					sendJson(res, 404, { error: "Session file not found" }, cors, req);
+					return;
+				}
+				jsonlEntries = safeReadSessionEntries(jsonlSessionFile);
+				if (!jsonlEntries) {
+					return;
+				}
+			}
 		}
 
 		if (!options.allowSensitiveContent) {
 			const scan = scanOutboundSensitiveContent({
 				title: session.title,
-				messages: format === "jsonl" ? jsonlEntries : messages,
+				messages: format === "jsonl" ? (jsonlEntries ?? []) : messages,
 			});
 			if (scan.blockingFindings.length > 0) {
 				sendSensitiveContentBlockedResponse(
@@ -870,12 +877,15 @@ export async function handleSessionExport(
 
 		switch (format) {
 			case "jsonl": {
-				const sessionFile = sessionManager.getSessionFileById(sessionId);
-				if (!sessionFile) {
-					sendJson(res, 404, { error: "Session file not found" }, cors, req);
-					return;
+				if (isHostedSessionManager(sessionManager)) {
+					content = `${(jsonlEntries ?? []).map((entry) => JSON.stringify(entry)).join("\n")}\n`;
+				} else {
+					if (!jsonlSessionFile) {
+						sendJson(res, 404, { error: "Session file not found" }, cors, req);
+						return;
+					}
+					content = readFileSync(jsonlSessionFile, "utf8");
 				}
-				content = readFileSync(sessionFile, "utf8");
 				contentType = "application/x-ndjson";
 				filename = `session-${sessionId}.jsonl`;
 				break;

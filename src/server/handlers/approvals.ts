@@ -8,7 +8,7 @@ import {
 } from "../approval-mode-store.js";
 import { getAuthSubject } from "../authz.js";
 import { ApiError, sendJson } from "../server-utils.js";
-import { createSessionManagerForRequest } from "../session-scope.js";
+import { createWebSessionManagerForRequest } from "../session-scope.js";
 import {
 	type ApprovalsUpdateRequestInput,
 	ApprovalsUpdateRequestSchema,
@@ -46,18 +46,10 @@ async function ensureApprovalSessionAccess(
 		return null;
 	}
 
-	const sessionManager = createSessionManagerForRequest(req, false);
-	const sessionFile = sessionManager.getSessionFileById(sessionId);
-	if (!sessionFile) {
-		return null;
-	}
-
+	const sessionManager = createWebSessionManagerForRequest(req, false);
 	const session = await sessionManager.loadSession(sessionId);
 	if (!session) {
-		return {
-			statusCode: 404,
-			error: "Session file exists but could not be loaded",
-		};
+		return null;
 	}
 
 	if (!verifySessionOwnership(session, subject)) {
