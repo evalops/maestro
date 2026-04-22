@@ -1,6 +1,11 @@
 import type { SlashCommand } from "@evalops/tui";
 import { describe, expect, it, vi } from "vitest";
 import {
+	POST_SUITE_COMMAND_CATALOG,
+	PRIMARY_COMMAND_CATALOG,
+} from "../../../src/cli-tui/commands/command-catalog.js";
+import { COMMAND_SUITE_DEFINITIONS } from "../../../src/cli-tui/commands/command-suite-catalog.js";
+import {
 	type CommandSuiteHandlers,
 	CommandSuiteKey,
 } from "../../../src/cli-tui/commands/command-suite-handlers.js";
@@ -138,6 +143,43 @@ describe("command-registry-integration", () => {
 
 		expect(entries.length).toBeGreaterThan(0);
 		expect(commands.length).toBe(entries.length);
+	});
+
+	it("keeps command suite catalog aligned with enum order", () => {
+		const keys = COMMAND_SUITE_DEFINITIONS.map((definition) => definition.key);
+
+		expect(keys).toEqual([
+			CommandSuiteKey.Session,
+			CommandSuiteKey.Diag,
+			CommandSuiteKey.Ui,
+			CommandSuiteKey.Safety,
+			CommandSuiteKey.Git,
+			CommandSuiteKey.Auth,
+			CommandSuiteKey.Usage,
+			CommandSuiteKey.Undo,
+			CommandSuiteKey.Config,
+			CommandSuiteKey.Tools,
+		]);
+		expect(new Set(keys).size).toBe(keys.length);
+		for (const definition of COMMAND_SUITE_DEFINITIONS) {
+			expect(definition.command.name).toBeTruthy();
+			expect(definition.subcommands.length).toBeGreaterThan(0);
+		}
+	});
+
+	it("keeps top-level command catalogs unique and ordered around suites", () => {
+		const catalogNames = [
+			...PRIMARY_COMMAND_CATALOG.map((definition) => definition.command.name),
+			...POST_SUITE_COMMAND_CATALOG.map(
+				(definition) => definition.command.name,
+			),
+		];
+
+		expect(new Set(catalogNames).size).toBe(catalogNames.length);
+		expect(PRIMARY_COMMAND_CATALOG.at(-1)?.command.name).toBe("copy");
+		expect(
+			POST_SUITE_COMMAND_CATALOG.map((definition) => definition.command.name),
+		).toEqual(["toolhistory", "skills"]);
 	});
 
 	it("uses maestro descriptions for guardian, about, and config", () => {
@@ -380,6 +422,19 @@ describe("command-registry-integration", () => {
 			expect(
 				opts.commandSuiteHandlers[CommandSuiteKey.Safety],
 			).toHaveBeenCalled();
+		});
+
+		it("dispatches /ss to the command suite session handler", () => {
+			const opts = createMockOptions();
+			const { entries } = buildCommandRegistry(opts);
+			const sessionSuiteEntry = entries.find((e) => e.matches("/ss"));
+
+			sessionSuiteEntry!.execute("/ss");
+
+			expect(
+				opts.commandSuiteHandlers[CommandSuiteKey.Session],
+			).toHaveBeenCalled();
+			expect(opts.handlers.sessions).not.toHaveBeenCalled();
 		});
 
 		it("dispatches /cfg to the command suite config handler", () => {
