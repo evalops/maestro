@@ -81,6 +81,10 @@
  */
 
 import { validate as uuidValidate } from "uuid";
+import {
+	recordMaestroToolCallAttempt,
+	recordMaestroToolCallCompleted,
+} from "../telemetry/maestro-event-bus.js";
 import { createLogger } from "../utils/logger.js";
 import {
 	describeToolActivity,
@@ -1859,6 +1863,15 @@ export class Agent {
 			displayName,
 			summaryLabel,
 		});
+		recordMaestroToolCallAttempt({
+			tool_call_id: event.toolCallId,
+			tool_name: event.toolName,
+			safe_arguments: event.args,
+			correlation: {
+				session_id: this._state.session?.id,
+				agent_run_step_id: event.toolCallId,
+			},
+		});
 		this.emitStatus(describeToolActivity(event.toolName, event.args, tool), {
 			kind: "tool_execution_summary",
 			toolCallId: event.toolCallId,
@@ -1922,6 +1935,22 @@ export class Agent {
 			...event,
 			displayName: pending?.displayName,
 			summaryLabel: pending?.summaryLabel,
+		});
+		recordMaestroToolCallCompleted({
+			tool_call_id: event.toolCallId,
+			status: event.isError
+				? "MAESTRO_TOOL_CALL_STATUS_FAILED"
+				: "MAESTRO_TOOL_CALL_STATUS_SUCCEEDED",
+			error_message: event.isError
+				? event.result.content
+						.map((part) => (part.type === "text" ? part.text : ""))
+						.filter(Boolean)
+						.join("\n")
+				: undefined,
+			correlation: {
+				session_id: this._state.session?.id,
+				agent_run_step_id: event.toolCallId,
+			},
 		});
 		if (!pending) {
 			return;
