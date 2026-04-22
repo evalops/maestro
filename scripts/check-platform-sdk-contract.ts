@@ -227,6 +227,43 @@ async function assertMemoryContract(
 	}
 }
 
+async function assertIdentityContract(
+	importPackageModule: (specifier: string) => Promise<Record<string, unknown>>,
+): Promise<void> {
+	const imported = await importPackageModule("identity/v1/tokens_pb");
+	const service = imported.TokenService as SdkService | undefined;
+	if (!service) {
+		throw new Error("identity/v1/tokens_pb is missing TokenService");
+	}
+	if (service.typeName !== "identity.v1.TokenService") {
+		throw new Error(
+			`identity token service drifted: SDK exposes ${service.typeName}`,
+		);
+	}
+	const methodNames = new Set(
+		(service.methods || []).map((method) => method.name),
+	);
+	for (const method of [
+		"Introspect",
+		"IssueServiceToken",
+		"IssueAgentToken",
+		"IssueDelegationToken",
+	]) {
+		if (!methodNames.has(method)) {
+			throw new Error(
+				`identity token service drifted: SDK does not expose ${method}`,
+			);
+		}
+	}
+	if (
+		PLATFORM_HTTP_ROUTES.identity.delegationTokens !== "/v1/delegation-tokens"
+	) {
+		throw new Error(
+			`identity delegation route drifted: ${PLATFORM_HTTP_ROUTES.identity.delegationTokens}`,
+		);
+	}
+}
+
 async function main(): Promise<void> {
 	const platformRepo = resolvePlatformRepo();
 	const sdkDir = join(platformRepo, "gen", "ts");
@@ -256,6 +293,7 @@ async function main(): Promise<void> {
 		const { importPackageModule } = installPackedSdk(tempDir, tarball);
 		await assertConnectContracts(importPackageModule);
 		await assertMemoryContract(importPackageModule);
+		await assertIdentityContract(importPackageModule);
 		console.log(
 			`Validated Maestro Platform SDK contract against ${platformRepo}`,
 		);

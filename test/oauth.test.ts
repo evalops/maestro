@@ -114,8 +114,11 @@ describe("OAuth Storage", () => {
 describe("OAuth Index", () => {
 	const originalEvalOpsOrgId = process.env.MAESTRO_EVALOPS_ORG_ID;
 	const originalEvalOpsOrganizationId = process.env.EVALOPS_ORGANIZATION_ID;
+	const originalEvalOpsIdentityUrl = process.env.EVALOPS_IDENTITY_URL;
 	const originalFeatureFlagsPath = process.env.EVALOPS_FEATURE_FLAGS_PATH;
 	const originalFetch = global.fetch;
+	const originalIdentityUrl = process.env.MAESTRO_IDENTITY_URL;
+	const originalPlatformBaseUrl = process.env.MAESTRO_PLATFORM_BASE_URL;
 
 	beforeEach(() => {
 		process.env.MAESTRO_AGENT_DIR = join(testDir, "agent");
@@ -133,14 +136,30 @@ describe("OAuth Index", () => {
 		} else {
 			process.env.EVALOPS_ORGANIZATION_ID = originalEvalOpsOrganizationId;
 		}
+		if (originalEvalOpsIdentityUrl === undefined) {
+			Reflect.deleteProperty(process.env, "EVALOPS_IDENTITY_URL");
+		} else {
+			process.env.EVALOPS_IDENTITY_URL = originalEvalOpsIdentityUrl;
+		}
 		if (originalFeatureFlagsPath === undefined) {
 			Reflect.deleteProperty(process.env, "EVALOPS_FEATURE_FLAGS_PATH");
 		} else {
 			process.env.EVALOPS_FEATURE_FLAGS_PATH = originalFeatureFlagsPath;
 		}
+		if (originalIdentityUrl === undefined) {
+			Reflect.deleteProperty(process.env, "MAESTRO_IDENTITY_URL");
+		} else {
+			process.env.MAESTRO_IDENTITY_URL = originalIdentityUrl;
+		}
+		if (originalPlatformBaseUrl === undefined) {
+			Reflect.deleteProperty(process.env, "MAESTRO_PLATFORM_BASE_URL");
+		} else {
+			process.env.MAESTRO_PLATFORM_BASE_URL = originalPlatformBaseUrl;
+		}
 		resetFeatureFlagCacheForTests();
 		global.fetch = originalFetch;
 		vi.restoreAllMocks();
+		vi.unstubAllEnvs();
 		vi.unstubAllGlobals();
 		if (existsSync(testDir)) {
 			rmSync(testDir, { recursive: true, force: true });
@@ -509,6 +528,63 @@ describe("OAuth Index", () => {
 					ttl_seconds: 900,
 				}),
 			);
+		});
+
+		it("uses the shared Platform base URL when no identity-specific base is configured", async () => {
+			const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+			const fetchMock = vi.fn().mockResolvedValue(
+				new Response(
+					JSON.stringify({
+						agent_id: "agent-child-1",
+						expires_at: expiresAt,
+						run_id: "run-child-1",
+						scopes_granted: ["llm_gateway:invoke"],
+						scopes_requested: ["llm_gateway:invoke"],
+						token: TEST_DELEGATED_ACCESS_VALUE,
+						token_type: "Bearer",
+					}),
+					{
+						status: 201,
+						headers: { "Content-Type": "application/json" },
+					},
+				),
+			);
+			vi.stubGlobal("fetch", fetchMock);
+			vi.stubEnv("MAESTRO_IDENTITY_URL", "");
+			vi.stubEnv("EVALOPS_IDENTITY_URL", "");
+			vi.stubEnv("MAESTRO_PLATFORM_BASE_URL", "https://platform.evalops.test/");
+
+			saveOAuthCredentials("evalops", {
+				type: "oauth",
+				access: "parent-access-token",
+				refresh: "parent-refresh-token",
+				expires: Date.now() + 60 * 60 * 1000,
+				metadata: {
+					organizationId: "org_123",
+					providerRef: {
+						provider: "openai",
+						environment: "prod",
+					},
+				},
+			});
+
+			await expect(
+				issueEvalOpsDelegationToken({
+					agentId: "agent-child-1",
+					agentType: "coder",
+					runId: "run-child-1",
+					scopes: ["llm_gateway:invoke"],
+					surface: "maestro-subagent",
+				}),
+			).resolves.toEqual(
+				expect.objectContaining({
+					token: TEST_DELEGATED_ACCESS_VALUE,
+				}),
+			);
+
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			const [url] = fetchMock.mock.calls[0] ?? [];
+			expect(url).toBe("https://platform.evalops.test/v1/delegation-tokens");
 		});
 
 		it("materializes child environment overrides for delegated EvalOps auth", () => {

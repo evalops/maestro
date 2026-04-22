@@ -112,6 +112,12 @@ export const PLATFORM_CONNECT_METHODS = {
 } as const;
 
 export const PLATFORM_HTTP_ROUTES = {
+	identity: {
+		authGoogleStart: "/v1/auth/google/start",
+		tokenRefresh: "/v1/tokens/refresh",
+		tokenRevoke: "/v1/tokens/revoke",
+		delegationTokens: "/v1/delegation-tokens",
+	},
 	memory: {
 		recall: "/v1/memories/recall",
 	},
