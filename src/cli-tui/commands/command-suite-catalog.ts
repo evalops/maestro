@@ -14,11 +14,22 @@ import {
 	USAGE_SUBCOMMANDS,
 } from "./subcommands/index.js";
 
-export type CommandSuiteDefinition = {
+type CommandSuiteRuntimeFields = {
 	key: CommandSuiteKey;
-	command: SlashCommand;
 	subcommands: readonly SubcommandDef[];
 };
+
+type CommandSuiteMetadata = Omit<
+	SlashCommand,
+	"name" | "getArgumentCompletions"
+>;
+
+export type CommandSuiteDefinition = CommandSuiteMetadata &
+	CommandSuiteRuntimeFields & {
+		name: SlashCommand["name"];
+	};
+
+type CommandSuiteCatalogEntry = Omit<CommandSuiteDefinition, "key">;
 
 const COMMAND_SUITE_ORDER = [
 	CommandSuiteKey.Session,
@@ -33,12 +44,9 @@ const COMMAND_SUITE_ORDER = [
 	CommandSuiteKey.Tools,
 ] as const;
 
-const COMMAND_SUITE_CATALOG: Record<
-	CommandSuiteKey,
-	Omit<CommandSuiteDefinition, "key">
-> = {
-	[CommandSuiteKey.Session]: {
-		command: {
+const COMMAND_SUITE_CATALOG: Record<CommandSuiteKey, CommandSuiteCatalogEntry> =
+	{
+		[CommandSuiteKey.Session]: {
 			name: "ss",
 			description:
 				"Session management: new, clear, list, load, branch, tree, export, share",
@@ -53,11 +61,9 @@ const COMMAND_SUITE_CATALOG: Record<
 				"/ss branch 2",
 				"/ss export",
 			],
+			subcommands: SESSION_SUBCOMMANDS,
 		},
-		subcommands: SESSION_SUBCOMMANDS,
-	},
-	[CommandSuiteKey.Diag]: {
-		command: {
+		[CommandSuiteKey.Diag]: {
 			name: "diag",
 			description:
 				"Diagnostics: status, about, context, stats, lsp, mcp, telemetry, config",
@@ -72,22 +78,18 @@ const COMMAND_SUITE_CATALOG: Record<
 				"/diag telemetry",
 				"/diag config",
 			],
+			subcommands: DIAG_SUBCOMMANDS,
 		},
-		subcommands: DIAG_SUBCOMMANDS,
-	},
-	[CommandSuiteKey.Ui]: {
-		command: {
+		[CommandSuiteKey.Ui]: {
 			name: "ui",
 			description:
 				"UI settings: theme, clean, footer, alerts, zen, compact-tools",
 			usage: "/ui [theme|clean|footer|alerts|zen|compact]",
 			tags: ["ui"],
 			examples: ["/ui", "/ui theme", "/ui zen on", "/ui compact off"],
+			subcommands: UI_SUBCOMMANDS,
 		},
-		subcommands: UI_SUBCOMMANDS,
-	},
-	[CommandSuiteKey.Safety]: {
-		command: {
+		[CommandSuiteKey.Safety]: {
 			name: "safe",
 			description: "Safety settings: approvals, plan-mode, guardian",
 			usage: "/safe [approvals|plan|guardian] [args]",
@@ -98,21 +100,17 @@ const COMMAND_SUITE_CATALOG: Record<
 				"/safe plan on",
 				"/safe guardian run",
 			],
+			subcommands: SAFETY_SUBCOMMANDS,
 		},
-		subcommands: SAFETY_SUBCOMMANDS,
-	},
-	[CommandSuiteKey.Git]: {
-		command: {
+		[CommandSuiteKey.Git]: {
 			name: "git",
 			description: "Git operations: status, diff, review",
 			usage: "/git [status|diff <path>|review]",
 			tags: ["git"],
 			examples: ["/git", "/git diff src/index.ts", "/git review"],
+			subcommands: GIT_SUBCOMMANDS,
 		},
-		subcommands: GIT_SUBCOMMANDS,
-	},
-	[CommandSuiteKey.Auth]: {
-		command: {
+		[CommandSuiteKey.Auth]: {
 			name: "auth",
 			description: "Authentication: login, logout, status, source-of-truth",
 			usage: "/auth [login|logout|status|source-of-truth] [provider] [area]",
@@ -123,11 +121,9 @@ const COMMAND_SUITE_CATALOG: Record<
 				"/auth logout",
 				"/auth source-of-truth openai analytics",
 			],
+			subcommands: AUTH_SUBCOMMANDS,
 		},
-		subcommands: AUTH_SUBCOMMANDS,
-	},
-	[CommandSuiteKey.Usage]: {
-		command: {
+		[CommandSuiteKey.Usage]: {
 			name: "usage",
 			description: "Usage tracking: cost, quota, stats",
 			usage: "/usage [cost|quota|stats] [args]",
@@ -137,11 +133,9 @@ const COMMAND_SUITE_CATALOG: Record<
 				"/usage cost breakdown week",
 				"/usage quota detailed",
 			],
+			subcommands: USAGE_SUBCOMMANDS,
 		},
-		subcommands: USAGE_SUBCOMMANDS,
-	},
-	[CommandSuiteKey.Undo]: {
-		command: {
+		[CommandSuiteKey.Undo]: {
 			name: "undo",
 			description: "Undo system: undo, checkpoint, changes, history",
 			usage: "/undo [<N>|checkpoint|changes|history] [args]",
@@ -152,11 +146,9 @@ const COMMAND_SUITE_CATALOG: Record<
 				"/undo checkpoint save before-refactor",
 				"/undo changes",
 			],
+			subcommands: UNDO_SUBCOMMANDS,
 		},
-		subcommands: UNDO_SUBCOMMANDS,
-	},
-	[CommandSuiteKey.Config]: {
-		command: {
+		[CommandSuiteKey.Config]: {
 			name: "cfg",
 			description: "Configuration: validate, import, framework, composer, init",
 			usage: "/cfg [validate|import|framework|composer|init] [args]",
@@ -168,11 +160,9 @@ const COMMAND_SUITE_CATALOG: Record<
 				"/cfg framework react",
 				"/cfg composer code-reviewer",
 			],
+			subcommands: CONFIG_SUBCOMMANDS,
 		},
-		subcommands: CONFIG_SUBCOMMANDS,
-	},
-	[CommandSuiteKey.Tools]: {
-		command: {
+		[CommandSuiteKey.Tools]: {
 			name: "tools",
 			description: "Tools: list, mcp, lsp, workflow, run, commands",
 			usage: "/tools [list|mcp|lsp|workflow|run|commands] [args]",
@@ -185,10 +175,9 @@ const COMMAND_SUITE_CATALOG: Record<
 				"/tools lsp status",
 				"/tools run test",
 			],
+			subcommands: TOOLS_SUBCOMMANDS,
 		},
-		subcommands: TOOLS_SUBCOMMANDS,
-	},
-};
+	};
 
 export const COMMAND_SUITE_DEFINITIONS: readonly CommandSuiteDefinition[] =
 	COMMAND_SUITE_ORDER.map((key) => ({
