@@ -7,6 +7,7 @@
  *   /auth                 - Show auth status
  *   /auth login [mode]    - Authenticate (pro|console|provider:mode)
  *   /auth logout [provider] - Remove credentials
+ *   /auth source-of-truth <provider> <area> [fallbackConnectionId] - Set connector policy
  *   /auth status          - Show current auth state
  */
 
@@ -16,6 +17,9 @@ import { createGroupedCommandHandler } from "./utils.js";
 export interface AuthCommandDeps {
 	handleLogin: (ctx: CommandExecutionContext) => Promise<void> | void;
 	handleLogout: (ctx: CommandExecutionContext) => Promise<void> | void;
+	handleSourceOfTruthPolicy?: (
+		ctx: CommandExecutionContext,
+	) => Promise<void> | void;
 	showInfo: (message: string) => void;
 	getAuthState: () => {
 		authenticated: boolean;
@@ -42,6 +46,23 @@ export function createAuthCommandHandler(deps: AuthCommandDeps) {
 				match: ["logout", "signout"],
 				execute: ({ rewriteContext }) =>
 					deps.handleLogout(rewriteContext("logout")),
+			},
+			{
+				match: ["source-of-truth", "sot", "policy"],
+				execute: ({ ctx, customContext, restArgumentText }) => {
+					if (!deps.handleSourceOfTruthPolicy) {
+						ctx.showError(
+							"Source-of-truth policy management is not available in this session.",
+						);
+						return;
+					}
+					return deps.handleSourceOfTruthPolicy(
+						customContext(
+							`/auth source-of-truth ${restArgumentText}`.trim(),
+							restArgumentText,
+						),
+					);
+				},
 			},
 		],
 		onUnknown: async ({ ctx, subcommand, customContext }) => {
@@ -85,6 +106,11 @@ function showAuthHelp(ctx: CommandExecutionContext): void {
                          - console: Anthropic Console
                          - provider:mode (e.g., anthropic:pro)
   /auth logout [provider] Remove credentials
+  /auth source-of-truth <provider> <area> [fallbackConnectionId]
+                         Set connector source-of-truth policy metadata
+                         Areas: analytics, billing, crm, hris, support
+  /auth source-of-truth clear <provider>
+                         Remove local policy metadata
   /auth status           Show current auth state
 
 Direct shortcuts still work: /login, /logout`);

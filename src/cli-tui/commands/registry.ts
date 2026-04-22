@@ -135,10 +135,15 @@ const GROUPED_COMMAND_DEFINITIONS: readonly GroupedCommandDefinition[] = [
 	{
 		command: {
 			name: "auth",
-			description: "Authentication: login, logout, status",
-			usage: "/auth [login|logout|status] [mode]",
+			description: "Authentication: login, logout, status, source-of-truth",
+			usage: "/auth [login|logout|status|source-of-truth] [provider] [area]",
 			tags: ["auth"],
-			examples: ["/auth", "/auth login pro", "/auth logout"],
+			examples: [
+				"/auth",
+				"/auth login pro",
+				"/auth logout",
+				"/auth source-of-truth openai analytics",
+			],
 		},
 		subcommands: AUTH_SUBCOMMANDS,
 		handlerKey: "auth",

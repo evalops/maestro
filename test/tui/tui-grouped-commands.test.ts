@@ -518,6 +518,7 @@ describe("Grouped Command Handlers", () => {
 		const createAuthDeps = () => ({
 			handleLogin: vi.fn(),
 			handleLogout: vi.fn(),
+			handleSourceOfTruthPolicy: vi.fn(),
 			showInfo: vi.fn(),
 			getAuthState: vi.fn().mockReturnValue({
 				authenticated: false,
@@ -591,6 +592,28 @@ describe("Grouped Command Handlers", () => {
 
 			expect(deps.showInfo).toHaveBeenCalledWith(
 				expect.stringContaining("Authenticated: no"),
+			);
+		});
+
+		it("routes 'source-of-truth' to connector policy handler", async () => {
+			const { createAuthCommandHandler } = await import(
+				"../../src/cli-tui/commands/grouped/auth-commands.js"
+			);
+
+			const deps = createAuthDeps();
+			const handler = createAuthCommandHandler(deps);
+			const ctx = createMockContext(
+				"/auth source-of-truth openai analytics",
+				"source-of-truth openai analytics",
+			);
+
+			await handler(ctx);
+
+			expect(deps.handleSourceOfTruthPolicy).toHaveBeenCalledWith(
+				expect.objectContaining({
+					rawInput: "/auth source-of-truth openai analytics",
+					argumentText: "openai analytics",
+				}),
 			);
 		});
 	});

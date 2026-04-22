@@ -29,6 +29,7 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  MAESTRO_INTEGRATION_POSTGRES_PASSWORD: maestro
 
 jobs:
   integration-tests:
@@ -52,7 +53,7 @@ jobs:
           - 5432:5432
         env:
           POSTGRES_USER: maestro
-          POSTGRES_PASSWORD: maestro
+          POSTGRES_PASSWORD: ${{ env.MAESTRO_INTEGRATION_POSTGRES_PASSWORD }}
           POSTGRES_DB: maestro
         options: >-
           --health-cmd "pg_isready -U maestro"
@@ -71,7 +72,7 @@ jobs:
       - name: Run integration tests
         env:
           MAESTRO_REDIS_URL: redis://localhost:6379
-          MAESTRO_DATABASE_URL: postgresql://maestro:maestro@localhost:5432/maestro
+          MAESTRO_DATABASE_URL: postgresql://maestro:${{ env.MAESTRO_INTEGRATION_POSTGRES_PASSWORD }}@localhost:5432/maestro
         run: |
           # Run web tests plus production-schema database regressions with
           # Redis and PostgreSQL available.

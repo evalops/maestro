@@ -75,6 +75,9 @@ export type GroupedCommandDeps = {
 	auth: {
 		handleLogin: (ctx: CommandExecutionContext) => void | Promise<void>;
 		handleLogout: (ctx: CommandExecutionContext) => void | Promise<void>;
+		handleSourceOfTruthPolicy: (
+			ctx: CommandExecutionContext,
+		) => void | Promise<void>;
 		getAuthState: () => {
 			authenticated: boolean;
 			provider?: string;
@@ -230,6 +233,8 @@ export function createGroupedCommandHandlers(
 					deps.auth.handleLogin(ctx),
 				handleLogout: async (ctx: CommandExecutionContext) =>
 					deps.auth.handleLogout(ctx),
+				handleSourceOfTruthPolicy: async (ctx: CommandExecutionContext) =>
+					deps.auth.handleSourceOfTruthPolicy(ctx),
 				showInfo: (msg: string) => context.showInfo(msg),
 				getAuthState: () => deps.auth.getAuthState(),
 			});
