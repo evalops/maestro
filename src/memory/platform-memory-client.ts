@@ -496,8 +496,8 @@ function getArrayField(value: unknown, key: string): unknown[] {
 }
 
 function getNumberField(value: unknown, key: string): number | undefined {
-	const number = getNumberValue(asRecord(value)[key]);
-	return number === 0 ? undefined : number;
+	const field = asRecord(value)[key];
+	return typeof field === "number" && Number.isFinite(field) ? field : undefined;
 }
 
 function getStringValue(value: unknown): string {
