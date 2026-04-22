@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
+import { getPackageMetadata } from "./package-metadata.js";
+
+const { name: packageName } = getPackageMetadata();
 
 const config = {
-	packageName: "@evalops/maestro",
+	packageName,
 	repository: "evalops/maestro",
 	workflowFile: "release.yml",
 	environment: "npm-release",
