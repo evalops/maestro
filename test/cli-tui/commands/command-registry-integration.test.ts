@@ -1,6 +1,7 @@
 import type { SlashCommand } from "@evalops/tui";
 import { describe, expect, it, vi } from "vitest";
 import {
+	CommandMatchKind,
 	POST_SUITE_COMMAND_CATALOG,
 	PRIMARY_COMMAND_CATALOG,
 } from "../../../src/cli-tui/commands/command-catalog.js";
@@ -162,24 +163,36 @@ describe("command-registry-integration", () => {
 		]);
 		expect(new Set(keys).size).toBe(keys.length);
 		for (const definition of COMMAND_SUITE_DEFINITIONS) {
-			expect(definition.command.name).toBeTruthy();
+			expect("command" in definition).toBe(false);
+			expect(definition.name).toBeTruthy();
 			expect(definition.subcommands.length).toBeGreaterThan(0);
 		}
 	});
 
 	it("keeps top-level command catalogs unique and ordered around suites", () => {
 		const catalogNames = [
-			...PRIMARY_COMMAND_CATALOG.map((definition) => definition.command.name),
-			...POST_SUITE_COMMAND_CATALOG.map(
-				(definition) => definition.command.name,
-			),
+			...PRIMARY_COMMAND_CATALOG.map((definition) => definition.name),
+			...POST_SUITE_COMMAND_CATALOG.map((definition) => definition.name),
 		];
 
 		expect(new Set(catalogNames).size).toBe(catalogNames.length);
-		expect(PRIMARY_COMMAND_CATALOG.at(-1)?.command.name).toBe("copy");
+		expect(PRIMARY_COMMAND_CATALOG.at(-1)?.name).toBe("copy");
 		expect(
-			POST_SUITE_COMMAND_CATALOG.map((definition) => definition.command.name),
+			POST_SUITE_COMMAND_CATALOG.map((definition) => definition.name),
 		).toEqual(["toolhistory", "skills"]);
+	});
+
+	it("keeps top-level command catalogs as flat registry specs", () => {
+		const matchKinds = new Set(Object.values(CommandMatchKind));
+		for (const definition of [
+			...PRIMARY_COMMAND_CATALOG,
+			...POST_SUITE_COMMAND_CATALOG,
+		]) {
+			expect("command" in definition).toBe(false);
+			expect(definition.name).toBeTruthy();
+			expect(definition.handlerKey).toBeTruthy();
+			expect(matchKinds.has(definition.matchKind)).toBe(true);
+		}
 	});
 
 	it("uses maestro descriptions for guardian, about, and config", () => {
