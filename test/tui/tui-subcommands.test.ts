@@ -465,7 +465,6 @@ describe("Subcommand Suite Handlers", () => {
 			handleDiff: vi.fn(),
 			handleReview: vi.fn(),
 			showInfo: vi.fn(),
-			runGitCommand: vi.fn().mockResolvedValue(""),
 		});
 
 		it("routes 'diff' to handleDiff", async () => {
@@ -1114,7 +1113,6 @@ describe("Subcommand Suite Handlers", () => {
 				handleDiff: vi.fn(),
 				handleReview: vi.fn(),
 				showInfo: vi.fn(),
-				runGitCommand: vi.fn().mockResolvedValue(""),
 			};
 
 			const handler = createGitCommandHandler(deps);
@@ -1715,7 +1713,6 @@ describe("Subcommand Suite Handlers", () => {
 				handleDiff: vi.fn(),
 				handleReview: vi.fn(),
 				showInfo: vi.fn(),
-				runGitCommand: vi.fn(),
 			};
 
 			const handler = createGitCommandHandler(deps);

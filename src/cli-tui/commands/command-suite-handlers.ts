@@ -13,17 +13,18 @@ import {
 } from "./subcommands/index.js";
 import type { CommandExecutionContext } from "./types.js";
 
-export type CommandSuiteKey =
-	| "session"
-	| "diag"
-	| "ui"
-	| "safety"
-	| "git"
-	| "auth"
-	| "usage"
-	| "undo"
-	| "config"
-	| "tools";
+export enum CommandSuiteKey {
+	Session = "session",
+	Diag = "diag",
+	Ui = "ui",
+	Safety = "safety",
+	Git = "git",
+	Auth = "auth",
+	Usage = "usage",
+	Undo = "undo",
+	Config = "config",
+	Tools = "tools",
+}
 
 export type CommandSuiteHandlers = Record<
 	CommandSuiteKey,
@@ -31,7 +32,7 @@ export type CommandSuiteHandlers = Record<
 >;
 
 export type CommandSuiteDeps = {
-	session: {
+	[CommandSuiteKey.Session]: {
 		handleNewChat: (ctx: CommandExecutionContext) => void | Promise<void>;
 		handleClear: () => void | Promise<void>;
 		handleSessionInfo: (ctx: CommandExecutionContext) => void | Promise<void>;
@@ -44,7 +45,7 @@ export type CommandSuiteDeps = {
 		handleRecover: (ctx: CommandExecutionContext) => void | Promise<void>;
 		handleCleanup: (ctx: CommandExecutionContext) => void | Promise<void>;
 	};
-	diag: {
+	[CommandSuiteKey.Diag]: {
 		handleStatus: () => void | Promise<void>;
 		handleAbout: () => void | Promise<void>;
 		handleContext: (ctx: CommandExecutionContext) => void | Promise<void>;
@@ -60,7 +61,7 @@ export type CommandSuiteDeps = {
 		handleSources: (ctx: CommandExecutionContext) => void | Promise<void>;
 		handlePerf: () => void | Promise<void>;
 	};
-	ui: {
+	[CommandSuiteKey.Ui]: {
 		showTheme: () => void | Promise<void>;
 		handleClean: (ctx: CommandExecutionContext) => void | Promise<void>;
 		handleFooter: (ctx: CommandExecutionContext) => void | Promise<void>;
@@ -73,7 +74,7 @@ export type CommandSuiteDeps = {
 			compactTools: boolean;
 		};
 	};
-	safety: {
+	[CommandSuiteKey.Safety]: {
 		handleApprovals: (ctx: CommandExecutionContext) => void | Promise<void>;
 		handlePlanMode: (ctx: CommandExecutionContext) => void | Promise<void>;
 		handleGuardian: (ctx: CommandExecutionContext) => void | Promise<void>;
@@ -83,12 +84,11 @@ export type CommandSuiteDeps = {
 			guardianEnabled: boolean;
 		};
 	};
-	git: {
+	[CommandSuiteKey.Git]: {
 		handleDiff: (ctx: CommandExecutionContext) => void | Promise<void>;
 		handleReview: (ctx: CommandExecutionContext) => void | Promise<void>;
-		runGitCommand: (cmd: string) => Promise<string>;
 	};
-	auth: {
+	[CommandSuiteKey.Auth]: {
 		handleLogin: (ctx: CommandExecutionContext) => void | Promise<void>;
 		handleLogout: (ctx: CommandExecutionContext) => void | Promise<void>;
 		handleSourceOfTruthPolicy: (
@@ -100,12 +100,12 @@ export type CommandSuiteDeps = {
 			mode?: string;
 		};
 	};
-	usage: {
+	[CommandSuiteKey.Usage]: {
 		handleCost: (ctx: CommandExecutionContext) => void | Promise<void>;
 		handleQuota: (ctx: CommandExecutionContext) => void | Promise<void>;
 		handleStats: (ctx: CommandExecutionContext) => void | Promise<void>;
 	};
-	undo: {
+	[CommandSuiteKey.Undo]: {
 		handleUndo: (ctx: CommandExecutionContext) => void | Promise<void>;
 		handleCheckpoint: (ctx: CommandExecutionContext) => void | Promise<void>;
 		handleChanges: (ctx: CommandExecutionContext) => void | Promise<void>;
@@ -115,14 +115,14 @@ export type CommandSuiteDeps = {
 			checkpoints: string[];
 		};
 	};
-	config: {
+	[CommandSuiteKey.Config]: {
 		handleConfig: (ctx: CommandExecutionContext) => void | Promise<void>;
 		handleImport: (ctx: CommandExecutionContext) => void | Promise<void>;
 		handleFramework: (ctx: CommandExecutionContext) => void | Promise<void>;
 		handleComposer: (ctx: CommandExecutionContext) => void | Promise<void>;
 		handleInit: (ctx: CommandExecutionContext) => void | Promise<void>;
 	};
-	tools: {
+	[CommandSuiteKey.Tools]: {
 		handleTools: (ctx: CommandExecutionContext) => void | Promise<void>;
 		handleMcp: (ctx: CommandExecutionContext) => void | Promise<void>;
 		handleLsp: (ctx: CommandExecutionContext) => void | Promise<void>;
@@ -135,88 +135,97 @@ export type CommandSuiteDeps = {
 export function createCommandSuiteHandlers(
 	deps: CommandSuiteDeps,
 ): CommandSuiteHandlers {
+	const session = deps[CommandSuiteKey.Session];
+	const diag = deps[CommandSuiteKey.Diag];
+	const ui = deps[CommandSuiteKey.Ui];
+	const safety = deps[CommandSuiteKey.Safety];
+	const git = deps[CommandSuiteKey.Git];
+	const auth = deps[CommandSuiteKey.Auth];
+	const usage = deps[CommandSuiteKey.Usage];
+	const undo = deps[CommandSuiteKey.Undo];
+	const config = deps[CommandSuiteKey.Config];
+	const tools = deps[CommandSuiteKey.Tools];
+
 	return {
-		session: createSessionCommandHandler({
-			handleNewChat: (ctx) => deps.session.handleNewChat(ctx),
-			handleClear: () => deps.session.handleClear(),
-			handleSessionInfo: (ctx) => deps.session.handleSessionInfo(ctx),
-			handleSessionsList: (ctx) => deps.session.handleSessionsList(ctx),
-			handleBranch: (ctx) => deps.session.handleBranch(ctx),
-			handleTree: (ctx) => deps.session.handleTree(ctx),
-			handleQueue: (ctx) => deps.session.handleQueue(ctx),
-			handleExport: (ctx) => deps.session.handleExport(ctx),
-			handleShare: (ctx) => deps.session.handleShare(ctx),
-			handleRecover: (ctx) => deps.session.handleRecover(ctx),
-			handleCleanup: (ctx) => deps.session.handleCleanup(ctx),
+		[CommandSuiteKey.Session]: createSessionCommandHandler({
+			handleNewChat: (ctx) => session.handleNewChat(ctx),
+			handleClear: () => session.handleClear(),
+			handleSessionInfo: (ctx) => session.handleSessionInfo(ctx),
+			handleSessionsList: (ctx) => session.handleSessionsList(ctx),
+			handleBranch: (ctx) => session.handleBranch(ctx),
+			handleTree: (ctx) => session.handleTree(ctx),
+			handleQueue: (ctx) => session.handleQueue(ctx),
+			handleExport: (ctx) => session.handleExport(ctx),
+			handleShare: (ctx) => session.handleShare(ctx),
+			handleRecover: (ctx) => session.handleRecover(ctx),
+			handleCleanup: (ctx) => session.handleCleanup(ctx),
 		}),
-		diag: createDiagCommandHandler({
-			handleStatus: () => deps.diag.handleStatus(),
-			handleAbout: () => deps.diag.handleAbout(),
-			handleContext: (ctx) => deps.diag.handleContext(ctx),
-			handleStats: (ctx) => deps.diag.handleStats(ctx),
-			handleBackground: (ctx) => deps.diag.handleBackground(ctx),
-			handleDiagnostics: (ctx) => deps.diag.handleDiagnostics(ctx),
-			handleTelemetry: (ctx) => deps.diag.handleTelemetry(ctx),
-			handleTraining: (ctx) => deps.diag.handleTraining(ctx),
-			handleOtel: (ctx) => deps.diag.handleOtel(ctx),
-			handleConfig: (ctx) => deps.diag.handleConfig(ctx),
-			handleLsp: (ctx) => deps.diag.handleLsp(ctx),
-			handleMcp: (ctx) => deps.diag.handleMcp(ctx),
-			handleSources: (ctx) => deps.diag.handleSources(ctx),
-			handlePerf: () => deps.diag.handlePerf(),
+		[CommandSuiteKey.Diag]: createDiagCommandHandler({
+			handleStatus: () => diag.handleStatus(),
+			handleAbout: () => diag.handleAbout(),
+			handleContext: (ctx) => diag.handleContext(ctx),
+			handleStats: (ctx) => diag.handleStats(ctx),
+			handleBackground: (ctx) => diag.handleBackground(ctx),
+			handleDiagnostics: (ctx) => diag.handleDiagnostics(ctx),
+			handleTelemetry: (ctx) => diag.handleTelemetry(ctx),
+			handleTraining: (ctx) => diag.handleTraining(ctx),
+			handleOtel: (ctx) => diag.handleOtel(ctx),
+			handleConfig: (ctx) => diag.handleConfig(ctx),
+			handleLsp: (ctx) => diag.handleLsp(ctx),
+			handleMcp: (ctx) => diag.handleMcp(ctx),
+			handleSources: (ctx) => diag.handleSources(ctx),
+			handlePerf: () => diag.handlePerf(),
 			isDatabaseConfigured: () => isDatabaseConfigured(),
 		}),
-		ui: createUiCommandHandler({
-			handleTheme: () => deps.ui.showTheme(),
-			handleClean: (ctx) => deps.ui.handleClean(ctx),
-			handleFooter: (ctx) => deps.ui.handleFooter(ctx),
-			handleZen: (ctx) => deps.ui.handleZen(ctx),
-			handleCompactTools: (ctx) => deps.ui.handleCompactTools(ctx),
-			getUiState: () => deps.ui.getUiState(),
+		[CommandSuiteKey.Ui]: createUiCommandHandler({
+			handleTheme: () => ui.showTheme(),
+			handleClean: (ctx) => ui.handleClean(ctx),
+			handleFooter: (ctx) => ui.handleFooter(ctx),
+			handleZen: (ctx) => ui.handleZen(ctx),
+			handleCompactTools: (ctx) => ui.handleCompactTools(ctx),
+			getUiState: () => ui.getUiState(),
 		}),
-		safety: createSafetyCommandHandler({
-			handleApprovals: (ctx) => deps.safety.handleApprovals(ctx),
-			handlePlanMode: (ctx) => deps.safety.handlePlanMode(ctx),
-			handleGuardian: (ctx) => deps.safety.handleGuardian(ctx),
-			getSafetyState: () => deps.safety.getSafetyState(),
+		[CommandSuiteKey.Safety]: createSafetyCommandHandler({
+			handleApprovals: (ctx) => safety.handleApprovals(ctx),
+			handlePlanMode: (ctx) => safety.handlePlanMode(ctx),
+			handleGuardian: (ctx) => safety.handleGuardian(ctx),
+			getSafetyState: () => safety.getSafetyState(),
 		}),
-		git: createGitCommandHandler({
-			handleDiff: (ctx) => deps.git.handleDiff(ctx),
-			handleReview: (ctx) => deps.git.handleReview(ctx),
-			runGitCommand: (cmd) => deps.git.runGitCommand(cmd),
+		[CommandSuiteKey.Git]: createGitCommandHandler({
+			handleDiff: (ctx) => git.handleDiff(ctx),
+			handleReview: (ctx) => git.handleReview(ctx),
 		}),
-		auth: createAuthCommandHandler({
-			handleLogin: (ctx) => deps.auth.handleLogin(ctx),
-			handleLogout: (ctx) => deps.auth.handleLogout(ctx),
-			handleSourceOfTruthPolicy: (ctx) =>
-				deps.auth.handleSourceOfTruthPolicy(ctx),
-			getAuthState: () => deps.auth.getAuthState(),
+		[CommandSuiteKey.Auth]: createAuthCommandHandler({
+			handleLogin: (ctx) => auth.handleLogin(ctx),
+			handleLogout: (ctx) => auth.handleLogout(ctx),
+			handleSourceOfTruthPolicy: (ctx) => auth.handleSourceOfTruthPolicy(ctx),
+			getAuthState: () => auth.getAuthState(),
 		}),
-		usage: createUsageCommandHandler({
-			handleCost: (ctx) => deps.usage.handleCost(ctx),
-			handleQuota: (ctx) => deps.usage.handleQuota(ctx),
-			handleStats: (ctx) => deps.usage.handleStats(ctx),
+		[CommandSuiteKey.Usage]: createUsageCommandHandler({
+			handleCost: (ctx) => usage.handleCost(ctx),
+			handleQuota: (ctx) => usage.handleQuota(ctx),
+			handleStats: (ctx) => usage.handleStats(ctx),
 		}),
-		undo: createUndoCommandHandler({
-			handleUndo: (ctx) => deps.undo.handleUndo(ctx),
-			handleCheckpoint: (ctx) => deps.undo.handleCheckpoint(ctx),
-			handleChanges: (ctx) => deps.undo.handleChanges(ctx),
-			getUndoState: () => deps.undo.getUndoState(),
+		[CommandSuiteKey.Undo]: createUndoCommandHandler({
+			handleUndo: (ctx) => undo.handleUndo(ctx),
+			handleCheckpoint: (ctx) => undo.handleCheckpoint(ctx),
+			handleChanges: (ctx) => undo.handleChanges(ctx),
+			getUndoState: () => undo.getUndoState(),
 		}),
-		config: createConfigCommandHandler({
-			handleConfig: (ctx) => deps.config.handleConfig(ctx),
-			handleImport: (ctx) => deps.config.handleImport(ctx),
-			handleFramework: (ctx) => deps.config.handleFramework(ctx),
-			handleComposer: (ctx) => deps.config.handleComposer(ctx),
-			handleInit: (ctx) => deps.config.handleInit(ctx),
+		[CommandSuiteKey.Config]: createConfigCommandHandler({
+			handleConfig: (ctx) => config.handleConfig(ctx),
+			handleImport: (ctx) => config.handleImport(ctx),
+			handleFramework: (ctx) => config.handleFramework(ctx),
+			handleComposer: (ctx) => config.handleComposer(ctx),
+			handleInit: (ctx) => config.handleInit(ctx),
 		}),
-		tools: createToolsCommandHandler({
-			handleTools: (ctx) => deps.tools.handleTools(ctx),
-			handleMcp: (ctx) => deps.tools.handleMcp(ctx),
-			handleLsp: (ctx) => deps.tools.handleLsp(ctx),
-			handleWorkflow: (ctx) => deps.tools.handleWorkflow(ctx),
-			handleRun: (ctx) => deps.tools.handleRun(ctx),
-			handleCommands: (ctx) => deps.tools.handleCommands(ctx),
+		[CommandSuiteKey.Tools]: createToolsCommandHandler({
+			handleTools: (ctx) => tools.handleTools(ctx),
+			handleMcp: (ctx) => tools.handleMcp(ctx),
+			handleLsp: (ctx) => tools.handleLsp(ctx),
+			handleWorkflow: (ctx) => tools.handleWorkflow(ctx),
+			handleRun: (ctx) => tools.handleRun(ctx),
+			handleCommands: (ctx) => tools.handleCommands(ctx),
 		}),
 	};
 }

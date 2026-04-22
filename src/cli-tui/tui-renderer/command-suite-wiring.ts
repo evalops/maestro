@@ -1,221 +1,159 @@
 /**
- * CommandSuiteWiring — Builds the command suite dependency map that wires
- * TuiRenderer's sub-controllers/views to parent command handlers.
- *
- * No own state. Pure mapping from TuiRenderer-level refs to CommandSuiteDeps.
+ * CommandSuiteWiring adapts top-level command handlers into parent command
+ * suites such as /ss, /diag, /cfg, and /tools.
  */
 
 import {
 	type CommandSuiteHandlers,
+	CommandSuiteKey,
 	createCommandSuiteHandlers,
 } from "../commands/command-suite-handlers.js";
-import { handleOtelCommand as otelHandler } from "../commands/otel-handlers.js";
-import {
-	type ApprovalService,
-	handleApprovalsCommand,
-	handlePlanModeCommand,
-} from "../commands/safety-handlers.js";
-import type { CommandExecutionContext } from "../commands/types.js";
-import { handleInitCommand } from "../commands/utility-handlers.js";
-import type { NotificationView } from "../notification-view.js";
-import type { DelegatingCommandHandlerMap } from "./delegating-command-handlers.js";
+import type {
+	CommandExecutionContext,
+	CommandHandlers,
+} from "../commands/types.js";
 
-// ─── Dependency Interface ────────────────────────────────────────────────────
+type SuiteHandlerKey =
+	| "about"
+	| "approvals"
+	| "background"
+	| "branch"
+	| "changes"
+	| "checkpoint"
+	| "clean"
+	| "clear"
+	| "commands"
+	| "compactTools"
+	| "composer"
+	| "config"
+	| "context"
+	| "cost"
+	| "diagnostics"
+	| "exportSession"
+	| "footer"
+	| "framework"
+	| "guardian"
+	| "importConfig"
+	| "initAgents"
+	| "login"
+	| "logout"
+	| "lsp"
+	| "mcp"
+	| "newChat"
+	| "otel"
+	| "planMode"
+	| "preview"
+	| "quota"
+	| "queue"
+	| "review"
+	| "run"
+	| "session"
+	| "sessions"
+	| "shareSession"
+	| "stats"
+	| "status"
+	| "telemetry"
+	| "theme"
+	| "training"
+	| "tree"
+	| "tools"
+	| "undoChanges"
+	| "workflow"
+	| "zen";
 
-export interface CommandSuiteWiringDeps {
-	/** Delegating command handler map (guardian, workflow, undo, etc.). */
-	delegatingHandlers: DelegatingCommandHandlerMap;
-	/** Notification view for toasts and errors. */
-	notificationView: NotificationView;
-	/** Approval service for safety commands. */
-	approvalService: ApprovalService;
-	/** Request a TUI render cycle. */
-	requestRender: () => void;
-	/** Refresh footer hints. */
-	refreshFooterHint: () => void;
-	/** Add a spaced text component to the chat container. */
-	addSpacedText: (text: string) => void;
+export type CommandSuiteBaseHandlers = Pick<CommandHandlers, SuiteHandlerKey>;
 
-	// ── Session ──
-	handleNewChatCommand: (ctx: CommandExecutionContext) => void | Promise<void>;
-	handleClearCommand: () => void | Promise<void>;
-	handleSessionCommand: (rawInput: string) => void | Promise<void>;
-	handleSessionsCommand: (rawInput: string) => void | Promise<void>;
-	handleBranchCommand: (ctx: CommandExecutionContext) => void | Promise<void>;
-	showTree: () => void;
-	handleQueueCommand: ((ctx: CommandExecutionContext) => void) | null;
-	handleExportCommand: (rawInput: string) => void | Promise<void>;
-	handleShareCommand: (rawInput: string) => void | Promise<void>;
-	handleSessionRecoverCommand: (
-		ctx: CommandExecutionContext,
-	) => void | Promise<void>;
-	handleSessionCleanupCommand: (
-		ctx: CommandExecutionContext,
-	) => void | Promise<void>;
-
-	// ── Diag ──
-	handleStatusCommand: () => void | Promise<void>;
-	handleAboutCommand: () => void | Promise<void>;
-	handleContextCommand: (ctx: CommandExecutionContext) => void | Promise<void>;
-	handleStatsCommand: (ctx: CommandExecutionContext) => void | Promise<void>;
-	handleBackgroundCommand: (
-		ctx: CommandExecutionContext,
-	) => void | Promise<void>;
-	handleDiagnosticsCommand: (rawInput: string) => void | Promise<void>;
-	handleTelemetryCommand: (
-		ctx: CommandExecutionContext,
-	) => void | Promise<void>;
-	handleTrainingCommand: (ctx: CommandExecutionContext) => void | Promise<void>;
-	handleConfigCommand: (ctx: CommandExecutionContext) => void | Promise<void>;
-	handleLspCommand: (rawInput: string) => void | Promise<void>;
-	handlePerfCommand: () => void;
-
-	// ── UI ──
-	showTheme: () => void;
-	handleCleanCommand: (ctx: CommandExecutionContext) => void | Promise<void>;
-	handleFooterCommand: (ctx: CommandExecutionContext) => void | Promise<void>;
-	handleZenCommand: (ctx: CommandExecutionContext) => void | Promise<void>;
-	handleCompactToolsCommand: (
-		ctx: CommandExecutionContext,
-	) => void | Promise<void>;
+export interface CommandSuiteRuntimeDeps {
 	getUiState: () => {
 		zenMode: boolean;
 		cleanMode: string;
 		footerMode: string;
 		compactTools: boolean;
 	};
-
-	// ── Git ──
-	handleDiffCommand: (rawInput: string) => void | Promise<void>;
-	handleReviewCommand: (ctx: CommandExecutionContext) => void | Promise<void>;
-
-	// ── Auth ──
-	handleLoginCommand: (
-		argumentText: string,
-		showError: (msg: string) => void,
-	) => void | Promise<void>;
-	handleLogoutCommand: (
-		argumentText: string,
-		showError: (msg: string) => void,
-		showInfo: (msg: string) => void,
-	) => void | Promise<void>;
-	handleAuthSourceOfTruthCommand: (
-		argumentText: string,
-		showError: (msg: string) => void,
-		showInfo: (msg: string) => void,
-	) => void | Promise<void>;
 	getAuthState: () => {
 		authenticated: boolean;
 		provider?: string;
 		mode?: string;
 	};
-
-	// ── Usage ──
-	handleCostCommand: (ctx: CommandExecutionContext) => void | Promise<void>;
-	handleQuotaCommand: (ctx: CommandExecutionContext) => void | Promise<void>;
-
-	// ── Config ──
-	handleImportCommand: (rawInput: string) => void | Promise<void>;
-
-	// ── Tools ──
-	handleToolsCommand: (rawInput: string) => void | Promise<void>;
-	handleRunCommand: (rawInput: string) => void | Promise<void>;
-	handleCommandsCommand: (ctx: CommandExecutionContext) => void | Promise<void>;
+	handleSessionRecoverCommand: (
+		ctx: CommandExecutionContext,
+	) => void | Promise<void>;
+	handleSessionCleanupCommand: (
+		ctx: CommandExecutionContext,
+	) => void | Promise<void>;
+	handleSourcesCommand: (ctx: CommandExecutionContext) => void | Promise<void>;
+	handlePerfCommand: () => void | Promise<void>;
+	handleAuthSourceOfTruthCommand: (
+		argumentText: string,
+		showError: (msg: string) => void,
+		showInfo: (msg: string) => void,
+	) => void | Promise<void>;
 }
 
-// ─── Factory ─────────────────────────────────────────────────────────────────
+export interface CommandSuiteWiringDeps extends CommandSuiteRuntimeDeps {
+	handlers: CommandSuiteBaseHandlers;
+}
 
-/**
- * Build command suite handlers from TuiRenderer-level references.
- */
 export function buildCommandSuiteHandlers(
 	deps: CommandSuiteWiringDeps,
 ): CommandSuiteHandlers {
-	/** Shared rendering callbacks for safety commands. */
-	const safetyCallbacks = () => ({
-		showToast: (msg: string, type: "success" | "info") =>
-			deps.notificationView.showToast(msg, type),
-		refreshFooterHint: () => deps.refreshFooterHint(),
-		addContent: (text: string) => deps.addSpacedText(text),
-		requestRender: () => deps.requestRender(),
-	});
+	const { handlers } = deps;
 
 	return createCommandSuiteHandlers({
-		session: {
-			handleNewChat: (ctx) => deps.handleNewChatCommand(ctx),
-			handleClear: () => deps.handleClearCommand(),
-			handleSessionInfo: (ctx) => deps.handleSessionCommand(ctx.rawInput),
-			handleSessionsList: (ctx) => deps.handleSessionsCommand(ctx.rawInput),
-			handleBranch: (ctx) => deps.handleBranchCommand(ctx),
-			handleTree: () => deps.showTree(),
-			handleQueue: (ctx) => {
-				if (deps.handleQueueCommand) {
-					deps.handleQueueCommand(ctx);
-					return;
-				}
-				ctx.showInfo("Prompt queue is not available.");
-			},
-			handleExport: (ctx) => deps.handleExportCommand(ctx.rawInput),
-			handleShare: (ctx) => deps.handleShareCommand(ctx.rawInput),
+		[CommandSuiteKey.Session]: {
+			handleNewChat: (ctx) => handlers.newChat(ctx),
+			handleClear: () => handlers.clear(commandContext("/clear")),
+			handleSessionInfo: (ctx) => handlers.session(ctx),
+			handleSessionsList: (ctx) => handlers.sessions(ctx),
+			handleBranch: (ctx) => handlers.branch(ctx),
+			handleTree: (ctx) => handlers.tree(ctx),
+			handleQueue: (ctx) => handlers.queue(ctx),
+			handleExport: (ctx) => handlers.exportSession(ctx),
+			handleShare: (ctx) => handlers.shareSession(ctx),
 			handleRecover: (ctx) => deps.handleSessionRecoverCommand(ctx),
 			handleCleanup: (ctx) => deps.handleSessionCleanupCommand(ctx),
 		},
-		diag: {
-			handleStatus: () => deps.handleStatusCommand(),
-			handleAbout: () => deps.handleAboutCommand(),
-			handleContext: (ctx) => deps.handleContextCommand(ctx),
-			handleStats: (ctx) => deps.handleStatsCommand(ctx),
-			handleBackground: (ctx) => deps.handleBackgroundCommand(ctx),
-			handleDiagnostics: (ctx) => deps.handleDiagnosticsCommand(ctx.rawInput),
-			handleTelemetry: (ctx) => deps.handleTelemetryCommand(ctx),
-			handleTraining: (ctx) => deps.handleTrainingCommand(ctx),
-			handleOtel: () =>
-				otelHandler({
-					showInfo: (msg) => deps.notificationView.showInfo(msg),
-				}),
-			handleConfig: (ctx) => deps.handleConfigCommand(ctx),
-			handleLsp: (ctx) => deps.handleLspCommand(ctx.rawInput),
-			handleMcp: (ctx) => deps.delegatingHandlers.handleMcpCommand(ctx),
-			handleSources: (ctx) => deps.delegatingHandlers.handleSourcesCommand(ctx),
+		[CommandSuiteKey.Diag]: {
+			handleStatus: () => handlers.status(commandContext("/status")),
+			handleAbout: () => handlers.about(commandContext("/about")),
+			handleContext: (ctx) => handlers.context(ctx),
+			handleStats: (ctx) => handlers.stats(ctx),
+			handleBackground: (ctx) => handlers.background(ctx),
+			handleDiagnostics: (ctx) => handlers.diagnostics(ctx),
+			handleTelemetry: (ctx) => handlers.telemetry(ctx),
+			handleTraining: (ctx) => handlers.training(ctx),
+			handleOtel: (ctx) => handlers.otel(ctx),
+			handleConfig: (ctx) => handlers.config(ctx),
+			handleLsp: (ctx) => handlers.lsp(ctx),
+			handleMcp: (ctx) => handlers.mcp(ctx),
+			handleSources: (ctx) => deps.handleSourcesCommand(ctx),
 			handlePerf: () => deps.handlePerfCommand(),
 		},
-		ui: {
-			showTheme: () => deps.showTheme(),
-			handleClean: (ctx) => deps.handleCleanCommand(ctx),
-			handleFooter: (ctx) => deps.handleFooterCommand(ctx),
-			handleZen: (ctx) => deps.handleZenCommand(ctx),
-			handleCompactTools: (ctx) => deps.handleCompactToolsCommand(ctx),
+		[CommandSuiteKey.Ui]: {
+			showTheme: () => handlers.theme(commandContext("/theme")),
+			handleClean: (ctx) => handlers.clean(ctx),
+			handleFooter: (ctx) => handlers.footer(ctx),
+			handleZen: (ctx) => handlers.zen(ctx),
+			handleCompactTools: (ctx) => handlers.compactTools(ctx),
 			getUiState: () => deps.getUiState(),
 		},
-		safety: {
-			handleApprovals: (ctx) =>
-				handleApprovalsCommand(ctx, deps.approvalService, safetyCallbacks()),
-			handlePlanMode: (ctx) => handlePlanModeCommand(ctx, safetyCallbacks()),
-			handleGuardian: (ctx) =>
-				deps.delegatingHandlers.handleGuardianCommand(ctx),
+		[CommandSuiteKey.Safety]: {
+			handleApprovals: (ctx) => handlers.approvals(ctx),
+			handlePlanMode: (ctx) => handlers.planMode(ctx),
+			handleGuardian: (ctx) => handlers.guardian(ctx),
 			getSafetyState: () => ({
 				approvalMode: process.env.MAESTRO_APPROVALS ?? "prompt",
 				planMode: process.env.MAESTRO_PLAN_MODE === "1",
 				guardianEnabled: true,
 			}),
 		},
-		git: {
-			handleDiff: (ctx) => deps.handleDiffCommand(ctx.rawInput),
-			handleReview: (ctx) => deps.handleReviewCommand(ctx),
-			runGitCommand: async (cmd: string) => {
-				const { execSync } = await import("node:child_process");
-				return execSync(cmd, { encoding: "utf-8" });
-			},
+		[CommandSuiteKey.Git]: {
+			handleDiff: (ctx) => handlers.preview(ctx),
+			handleReview: (ctx) => handlers.review(ctx),
 		},
-		auth: {
-			handleLogin: (ctx) =>
-				deps.handleLoginCommand(ctx.argumentText, (msg) => ctx.showError(msg)),
-			handleLogout: (ctx) =>
-				deps.handleLogoutCommand(
-					ctx.argumentText,
-					(msg) => ctx.showError(msg),
-					(msg) => ctx.showInfo(msg),
-				),
+		[CommandSuiteKey.Auth]: {
+			handleLogin: (ctx) => handlers.login(ctx),
+			handleLogout: (ctx) => handlers.logout(ctx),
 			handleSourceOfTruthPolicy: (ctx) =>
 				deps.handleAuthSourceOfTruthCommand(
 					ctx.argumentText,
@@ -224,46 +162,46 @@ export function buildCommandSuiteHandlers(
 				),
 			getAuthState: () => deps.getAuthState(),
 		},
-		usage: {
-			handleCost: (ctx) => deps.handleCostCommand(ctx),
-			handleQuota: (ctx) => deps.handleQuotaCommand(ctx),
-			handleStats: (ctx) => deps.handleStatsCommand(ctx),
+		[CommandSuiteKey.Usage]: {
+			handleCost: (ctx) => handlers.cost(ctx),
+			handleQuota: (ctx) => handlers.quota(ctx),
+			handleStats: (ctx) => handlers.stats(ctx),
 		},
-		undo: {
-			handleUndo: (ctx) =>
-				deps.delegatingHandlers.handleEnhancedUndoCommand(ctx),
-			handleCheckpoint: (ctx) =>
-				deps.delegatingHandlers.handleCheckpointCommand(ctx),
-			handleChanges: (ctx) => deps.delegatingHandlers.handleChangesCommand(ctx),
+		[CommandSuiteKey.Undo]: {
+			handleUndo: (ctx) => handlers.undoChanges(ctx),
+			handleCheckpoint: (ctx) => handlers.checkpoint(ctx),
+			handleChanges: (ctx) => handlers.changes(ctx),
 			getUndoState: () => ({
 				canUndo: true,
 				undoCount: 0,
 				checkpoints: [],
 			}),
 		},
-		config: {
-			handleConfig: (ctx) => deps.handleConfigCommand(ctx),
-			handleImport: (ctx) => deps.handleImportCommand(ctx.rawInput),
-			handleFramework: (ctx) =>
-				deps.delegatingHandlers.handleFrameworkCommand(ctx),
-			handleComposer: (ctx) =>
-				deps.delegatingHandlers.handleComposerCommand(ctx),
-			handleInit: (ctx) =>
-				handleInitCommand(ctx, {
-					showSuccess: (msg) => deps.notificationView.showToast(msg, "success"),
-					showError: (msg) => ctx.showError(msg),
-					addContent: (text) => deps.addSpacedText(text),
-					requestRender: () => deps.requestRender(),
-				}),
+		[CommandSuiteKey.Config]: {
+			handleConfig: (ctx) => handlers.config(ctx),
+			handleImport: (ctx) => handlers.importConfig(ctx),
+			handleFramework: (ctx) => handlers.framework(ctx),
+			handleComposer: (ctx) => handlers.composer(ctx),
+			handleInit: (ctx) => handlers.initAgents(ctx),
 		},
-		tools: {
-			handleTools: (ctx) => deps.handleToolsCommand(ctx.rawInput),
-			handleMcp: (ctx) => deps.delegatingHandlers.handleMcpCommand(ctx),
-			handleLsp: (ctx) => deps.handleLspCommand(ctx.rawInput),
-			handleWorkflow: (ctx) =>
-				deps.delegatingHandlers.handleWorkflowCommand(ctx),
-			handleRun: (ctx) => deps.handleRunCommand(ctx.rawInput),
-			handleCommands: (ctx) => deps.handleCommandsCommand(ctx),
+		[CommandSuiteKey.Tools]: {
+			handleTools: (ctx) => handlers.tools(ctx),
+			handleMcp: (ctx) => handlers.mcp(ctx),
+			handleLsp: (ctx) => handlers.lsp(ctx),
+			handleWorkflow: (ctx) => handlers.workflow(ctx),
+			handleRun: (ctx) => handlers.run(ctx),
+			handleCommands: (ctx) => handlers.commands(ctx),
 		},
 	});
+}
+
+function commandContext(rawInput: string): CommandExecutionContext {
+	return {
+		command: { name: rawInput.replace(/^\//, ""), description: "" },
+		rawInput,
+		argumentText: "",
+		showInfo: () => undefined,
+		showError: () => undefined,
+		renderHelp: () => undefined,
+	};
 }

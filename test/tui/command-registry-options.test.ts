@@ -75,6 +75,7 @@ function createDeps() {
 		oauthFlowController: {
 			handleLoginCommand: vi.fn(),
 			handleLogoutCommand: vi.fn(),
+			handleSourceOfTruthPolicyCommand: vi.fn(),
 		},
 		approvalService: {} as TuiCommandRegistryDeps["approvalService"],
 		notificationView: {
@@ -144,23 +145,20 @@ function createDeps() {
 		handleCheckpointCommand: vi.fn(),
 		handleMemoryCommand: vi.fn(),
 		handleModeCommand: vi.fn(),
-		getCommandSuiteHandlers: vi.fn(
-			() =>
-				({
-					session: vi.fn(),
-					diag: vi.fn(),
-					ui: vi.fn(),
-					safety: vi.fn(),
-					git: vi.fn(),
-					auth: vi.fn(),
-					usage: vi.fn(),
-					undo: vi.fn(),
-					config: vi.fn(),
-					tools: vi.fn(),
-				}) as TuiCommandRegistryDeps["getCommandSuiteHandlers"] extends () => infer T
-					? T
-					: never,
-		),
+		commandSuite: {
+			getUiState: vi.fn(() => ({
+				zenMode: false,
+				cleanMode: "off",
+				footerMode: "auto",
+				compactTools: false,
+			})),
+			getAuthState: vi.fn(() => ({ authenticated: false })),
+			handleSessionRecoverCommand: vi.fn(),
+			handleSessionCleanupCommand: vi.fn(),
+			handleSourcesCommand: vi.fn(),
+			handlePerfCommand: vi.fn(),
+			handleAuthSourceOfTruthCommand: vi.fn(),
+		},
 		refreshFooterHint: vi.fn(),
 		onQuit: vi.fn(),
 	} as unknown as TuiCommandRegistryDeps;
@@ -205,7 +203,8 @@ describe("buildTuiCommandRegistryOptions", () => {
 		expect(deps.getClearController).not.toHaveBeenCalled();
 		expect(deps.getCustomCommandsController).not.toHaveBeenCalled();
 		expect(deps.getBranchController).not.toHaveBeenCalled();
-		expect(deps.getCommandSuiteHandlers).not.toHaveBeenCalled();
+		expect(deps.commandSuite.getUiState).not.toHaveBeenCalled();
+		expect(deps.commandSuite.getAuthState).not.toHaveBeenCalled();
 	});
 
 	it("resolves lazy views only when the matching command runs", async () => {
@@ -310,7 +309,8 @@ describe("buildTuiCommandRegistryOptions", () => {
 		expect(deps.getThinkingSelectorView).toHaveBeenCalledTimes(1);
 		expect(thinkingSelectorView.show).toHaveBeenCalledTimes(1);
 
-		expect(options.getCommandSuiteHandlers()).toBeDefined();
-		expect(deps.getCommandSuiteHandlers).toHaveBeenCalledTimes(1);
+		const commandSuiteHandlers = options.getCommandSuiteHandlers();
+		expect(commandSuiteHandlers).toBeDefined();
+		expect(options.getCommandSuiteHandlers()).toBe(commandSuiteHandlers);
 	});
 });

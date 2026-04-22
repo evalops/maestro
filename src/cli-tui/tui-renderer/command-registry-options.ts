@@ -12,7 +12,6 @@ import type { BackgroundTasksController } from "../background/background-tasks-c
 import type { ChangelogView } from "../changelog-view.js";
 import { handleAccessCommand } from "../commands/access-command.js";
 import { handleAuditCommand } from "../commands/audit-command.js";
-import type { CommandSuiteHandlers } from "../commands/command-suite-handlers.js";
 import { createHotkeysCommandHandler } from "../commands/hotkeys-command.js";
 import { handleLimitsCommand } from "../commands/limits-command.js";
 import { handleOtelCommand as otelHandler } from "../commands/otel-handlers.js";
@@ -60,6 +59,10 @@ import type { ToolStatusView } from "../tool-status-view.js";
 import type { UpdateView } from "../update-view.js";
 import type { BranchController } from "./branch-controller.js";
 import type { ClearController } from "./clear-controller.js";
+import {
+	type CommandSuiteRuntimeDeps,
+	buildCommandSuiteHandlers,
+} from "./command-suite-wiring.js";
 import type { CompactionController } from "./compaction-controller.js";
 import type { CustomCommandsController } from "./custom-commands-controller.js";
 import type { UiStateController } from "./ui-state-controller.js";
@@ -132,7 +135,7 @@ export interface TuiCommandRegistryDeps {
 	handleCheckpointCommand: (context: CommandExecutionContext) => void;
 	handleMemoryCommand: (context: CommandExecutionContext) => void;
 	handleModeCommand: (context: CommandExecutionContext) => void;
-	getCommandSuiteHandlers: () => CommandSuiteHandlers;
+	commandSuite: CommandSuiteRuntimeDeps;
 	refreshFooterHint: () => void;
 	onQuit: () => void;
 }
@@ -311,12 +314,21 @@ export function buildTuiCommandRegistryOptions(
 				},
 			),
 	};
+	let commandSuiteHandlers: ReturnType<
+		typeof buildCommandSuiteHandlers
+	> | null = null;
 
 	return {
 		getRunScriptCompletions: (prefix) =>
 			deps.getRunCommandView().getRunScriptCompletions(prefix),
 		createContext: (ctx) => deps.createCommandContext(ctx),
 		handlers,
-		getCommandSuiteHandlers: deps.getCommandSuiteHandlers,
+		getCommandSuiteHandlers: () => {
+			commandSuiteHandlers ??= buildCommandSuiteHandlers({
+				handlers,
+				...deps.commandSuite,
+			});
+			return commandSuiteHandlers;
+		},
 	};
 }
