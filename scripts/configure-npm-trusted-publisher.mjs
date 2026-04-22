@@ -41,6 +41,16 @@ const dryRun = args.includes("--dry-run");
 const list = args.includes("--list");
 const otp = readValueFlag("--otp") ?? process.env.NPM_OTP ?? null;
 
+if (list && (apply || dryRun)) {
+	const conflictingFlags = [apply ? "--apply" : null, dryRun ? "--dry-run" : null]
+		.filter(Boolean)
+		.join(" and ");
+	console.error(
+		`Cannot combine --list with ${conflictingFlags}. Use --list by itself to inspect npm trust config.`,
+	);
+	process.exit(2);
+}
+
 if (apply && dryRun) {
 	console.error("Cannot combine --apply with --dry-run. Omit --apply to preview only.");
 	process.exit(2);
