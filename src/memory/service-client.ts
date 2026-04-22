@@ -1,5 +1,3 @@
-import { MemoryType } from "@evalops/memory";
-import { MemoryClient } from "@evalops/memory/client";
 import {
 	getEnvValue,
 	resolveOrganizationId,
@@ -7,6 +5,7 @@ import {
 	resolveTeamId,
 } from "../platform/client.js";
 import { createLogger } from "../utils/logger.js";
+import { MemoryClient, MemoryType } from "./platform-memory-client.js";
 import { getMemoryProjectScope } from "./team-memory.js";
 import type { MemoryEntry, MemorySearchResult } from "./types.js";
 
