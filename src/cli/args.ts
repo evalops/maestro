@@ -23,6 +23,8 @@ export interface Args {
 	safeMode?: boolean;
 	command?: string;
 	subcommand?: string;
+	/** Raw arguments owned by command-group handlers. */
+	commandArgs?: string[];
 	approvalMode?: "auto" | "prompt" | "fail";
 	authMode?: "auto" | "api-key" | "claude";
 	force?: boolean;
@@ -61,6 +63,7 @@ const COMMANDS = new Set([
 	"openai",
 	"hooks",
 	"memory",
+	"remote",
 	"export",
 	"import",
 ]);
@@ -73,6 +76,7 @@ const SUBCOMMAND_COMMANDS = new Set([
 	"openai",
 	"hooks",
 	"memory",
+	"remote",
 ]);
 
 export function parseArgs(args: string[]): Args {
@@ -243,6 +247,10 @@ export function parseArgs(args: string[]): Args {
 				) {
 					result.subcommand = nextArg;
 					i++;
+				}
+				if (arg === "remote") {
+					result.commandArgs = args.slice(i + 1);
+					break;
 				}
 			} else {
 				result.messages.push(arg);

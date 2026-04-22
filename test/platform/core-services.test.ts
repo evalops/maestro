@@ -51,6 +51,21 @@ describe("Platform core service contract names", () => {
 				PLATFORM_CONNECT_METHODS.llmGateway.createMessage,
 			),
 		).toBe("/llmgateway.v1.GatewayService/CreateMessage");
+		expect(
+			platformConnectMethodPath(
+				PLATFORM_CONNECT_METHODS.remoteRunner.createRunnerSession,
+			),
+		).toBe("/remoterunner.v1.RemoteRunnerService/CreateRunnerSession");
+		expect(
+			platformConnectMethodPath(
+				PLATFORM_CONNECT_METHODS.remoteRunner.mintAttachToken,
+			),
+		).toBe("/remoterunner.v1.RemoteRunnerService/MintAttachToken");
+		expect(
+			platformConnectMethodPath(
+				PLATFORM_CONNECT_METHODS.remoteRunner.getStatus,
+			),
+		).toBe("/remoterunner.v1.RemoteRunnerService/GetStatus");
 	});
 
 	it("keeps durable memory on the existing HTTP JSON route", () => {

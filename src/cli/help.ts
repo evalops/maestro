@@ -96,7 +96,10 @@ export function printHelp(version: string) {
   maestro export <session-id> ./session.json --format json --redact-secrets
 
   # Import a portable session log into this workspace
-  maestro import ./session.json`,
+  maestro import ./session.json
+
+  # Start a hosted EvalOps runner session
+  maestro remote start --workspace ws_123 --repo evalops/foo --branch main --ttl 90m`,
 	)}`;
 	const env = `${sectionHeading("Environment Variables:")}${muted(
 		`  GEMINI_API_KEY          - Google Gemini API key
@@ -115,6 +118,10 @@ export function printHelp(version: string) {
   MAESTRO_MEMORY_TEAM_ID - Optional team scope for durable memory service
   MAESTRO_SHARED_MEMORY_BASE - Shared memory base URL (Cloudflare Durable Objects worker)
   MAESTRO_SHARED_MEMORY_API_KEY - API key for shared memory service
+  MAESTRO_REMOTE_RUNNER_URL - Hosted runner control-plane URL (default: https://runner.evalops.dev)
+  MAESTRO_REMOTE_RUNNER_TOKEN - Hosted runner bearer token override
+  MAESTRO_REMOTE_RUNNER_ORG_ID - EvalOps organization id for hosted runner sessions
+  MAESTRO_REMOTE_RUNNER_WORKSPACE_ID - EvalOps workspace id for hosted runner sessions
   CODING_AGENT_DIR        - Legacy session directory override (fallback)`,
 	)}`;
 	const execSection = `${sectionHeading("maestro exec")}${muted(
@@ -152,6 +159,13 @@ export function printHelp(version: string) {
   maestro memory audit <id> [n]   Show recent sync audit entries
   maestro memory export <id>      Export metrics log as JSONL
   maestro memory watch [id] [ms]  Poll status/metrics continuously`,
+	)}`;
+	const remoteSection = `${sectionHeading("maestro remote")}${muted(
+		`  maestro remote start --workspace <id> --repo <repo> --branch <branch> [--ttl 90m]
+  maestro remote list --workspace <id> [--state running]
+  maestro remote attach <session-id> [--verify]
+  maestro remote extend <session-id> --ttl 2h
+  maestro remote stop <session-id> [--reason <text>]`,
 	)}`;
 	const sessionsSection = `${sectionHeading("Session Metadata")}${muted(
 		`  /session favorite|unfavorite      Toggle favorite for current session
@@ -197,6 +211,7 @@ export function printHelp(version: string) {
 			webSection,
 			portabilitySection,
 			memorySection,
+			remoteSection,
 			sessionsSection,
 			sessionsDiscovery,
 			`${sectionHeading("Tips")}${badge(

@@ -757,6 +757,12 @@ export async function main(args: string[]) {
 		return;
 	}
 
+	if (parsed.command === "remote") {
+		const { handleRemoteCommand } = await import("./cli/commands/remote.js");
+		await handleRemoteCommand(parsed.subcommand, parsed.commandArgs ?? []);
+		return;
+	}
+
 	if (parsed.command === "anthropic") {
 		const { handleAnthropicCommand } = await import(
 			"./cli/commands/anthropic.js"
