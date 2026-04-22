@@ -236,7 +236,7 @@ jobs:
       - prepare
       - publish
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -252,6 +252,9 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       - name: Verify published package from npm
+        env:
+          MAESTRO_REGISTRY_POLL_ATTEMPTS: "120"
+          MAESTRO_REGISTRY_POLL_DELAY_MS: "5000"
         run: node scripts/smoke-registry-install.js
 
   notify:
