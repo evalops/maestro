@@ -36,7 +36,7 @@ This plugin supports all JetBrains IDEs based on IntelliJ Platform 2024.3+:
 
 ```bash
 # Install Maestro CLI
-npm install -g @evalops-jh/maestro
+npm install -g @evalops/maestro
 
 # Start the web server
 maestro web

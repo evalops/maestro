@@ -164,9 +164,14 @@ jobs:
           name: npm-tarball-${{ needs.prepare.outputs.release_tag }}
           path: ${{ steps.pack.outputs.tarball }}
 
-      - name: Publish to npm with trusted publishing
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
+          if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
+            printf "//registry.npmjs.org/:_authToken=%s\n" "$NODE_AUTH_TOKEN" > ~/.npmrc
+          fi
           npm publish "${{ steps.pack.outputs.tarball }}" --access public --provenance
 
       - name: Sync Hopper version metadata

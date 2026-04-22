@@ -1,6 +1,6 @@
 {
 	"name": "@evalops/maestro-core",
-	"version": "0.10.6",
+	"version": "0.10.7",
 	"description": "Maestro agent loop, transport, types, and sandbox primitives — the engine behind all Maestro interfaces",
 	"type": "module",
 	"main": "./dist/packages/core/src/index.js",
@@ -57,7 +57,7 @@
 		"vscode-jsonrpc": "^8.2.0"
 	},
 	"peerDependencies": {
-		"@evalops/tui": "^0.10.6"
+		"@evalops/tui": "^0.10.7"
 	},
 	"peerDependenciesMeta": {
 		"@evalops/tui": {

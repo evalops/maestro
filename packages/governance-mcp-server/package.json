@@ -1,6 +1,6 @@
 {
 	"name": "@evalops/governance-mcp-server",
-	"version": "0.10.6",
+	"version": "0.10.7",
 	"description": "MCP server exposing governance tools (firewall, policy, credential scanning) to any MCP-compatible agent.",
 	"type": "module",
 	"main": "./dist/index.js",
@@ -43,7 +43,7 @@
 		"node": ">=20.0.0"
 	},
 	"dependencies": {
-		"@evalops/governance": "^0.10.6",
+		"@evalops/governance": "^0.10.7",
 		"@modelcontextprotocol/sdk": "^1.25.2",
 		"zod": "^4.3.5"
 	},
