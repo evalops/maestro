@@ -31,6 +31,8 @@
  * ### API Configuration
  * - MAESTRO_API_KEY_HELPER_TTL_MS - Cache TTL for API key helpers
  * - MAESTRO_SKIP_AUTH - Skip authentication (for testing)
+ * - MAESTRO_IDENTITY_URL - Override EvalOps identity base URL
+ * - MAESTRO_PLATFORM_BASE_URL - Shared EvalOps Platform base URL for core services
  *
  * ### Network Configuration
  * - MAESTRO_HTTP_PROXY - HTTP proxy URL
@@ -95,6 +97,8 @@ export const ENV_VARS = {
 	SKIP_AUTH: "MAESTRO_SKIP_AUTH",
 	SKIP_BEDROCK_AUTH: "MAESTRO_SKIP_BEDROCK_AUTH",
 	SKIP_VERTEX_AUTH: "MAESTRO_SKIP_VERTEX_AUTH",
+	IDENTITY_URL: "MAESTRO_IDENTITY_URL",
+	PLATFORM_BASE_URL: "MAESTRO_PLATFORM_BASE_URL",
 
 	// Network configuration
 	HTTP_PROXY: "MAESTRO_HTTP_PROXY",

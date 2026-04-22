@@ -51,4 +51,17 @@ describe("Platform core service contract names", () => {
 	it("keeps durable memory on the existing HTTP JSON route", () => {
 		expect(PLATFORM_HTTP_ROUTES.memory.recall).toBe("/v1/memories/recall");
 	});
+
+	it("pins identity HTTP routes used by EvalOps login and delegation", () => {
+		expect(PLATFORM_HTTP_ROUTES.identity.authGoogleStart).toBe(
+			"/v1/auth/google/start",
+		);
+		expect(PLATFORM_HTTP_ROUTES.identity.tokenRefresh).toBe(
+			"/v1/tokens/refresh",
+		);
+		expect(PLATFORM_HTTP_ROUTES.identity.tokenRevoke).toBe("/v1/tokens/revoke");
+		expect(PLATFORM_HTTP_ROUTES.identity.delegationTokens).toBe(
+			"/v1/delegation-tokens",
+		);
+	});
 });

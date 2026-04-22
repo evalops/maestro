@@ -4,6 +4,7 @@ import {
 	type ServerResponse,
 	createServer,
 } from "node:http";
+import { PLATFORM_HTTP_ROUTES } from "../platform/core-services.js";
 import { createLogger } from "../utils/logger.js";
 import {
 	type OAuthCredentials,
@@ -18,6 +19,15 @@ const CALLBACK_PATH = "/auth/callback/evalops";
 const CALLBACK_ORIGIN = `http://127.0.0.1:${CALLBACK_PORT}`;
 const CALLBACK_URI = `${CALLBACK_ORIGIN}${CALLBACK_PATH}`;
 const DEFAULT_IDENTITY_URL = "http://127.0.0.1:8080";
+const IDENTITY_BASE_URL_ENV_VARS = [
+	"MAESTRO_IDENTITY_URL",
+	"EVALOPS_IDENTITY_URL",
+] as const;
+const SHARED_PLATFORM_BASE_URL_ENV_VARS = [
+	"MAESTRO_PLATFORM_BASE_URL",
+	"MAESTRO_EVALOPS_BASE_URL",
+	"EVALOPS_BASE_URL",
+] as const;
 const DEFAULT_PROVIDER_REF_PROVIDER = "openai";
 const DEFAULT_PROVIDER_REF_ENVIRONMENT = "prod";
 const REQUIRED_SCOPE = "llm_gateway:invoke";
@@ -105,11 +115,27 @@ function getEnvValue(names: string[]): string | undefined {
 	return undefined;
 }
 
+function normalizeIdentityBaseUrl(
+	baseUrl: string,
+	suffixes: readonly string[] = [],
+): string {
+	let normalized = baseUrl.trim().replace(/\/+$/u, "");
+	for (const suffix of suffixes) {
+		if (normalized.endsWith(suffix)) {
+			normalized = normalized.slice(0, -suffix.length).replace(/\/+$/u, "");
+		}
+	}
+	return normalized;
+}
+
 function getIdentityBaseUrl(): string {
-	return (
-		getEnvValue(["MAESTRO_IDENTITY_URL", "EVALOPS_IDENTITY_URL"]) ??
-		DEFAULT_IDENTITY_URL
-	).replace(/\/+$/, "");
+	return normalizeIdentityBaseUrl(
+		getEnvValue([
+			...IDENTITY_BASE_URL_ENV_VARS,
+			...SHARED_PLATFORM_BASE_URL_ENV_VARS,
+		]) ?? DEFAULT_IDENTITY_URL,
+		Object.values(PLATFORM_HTTP_ROUTES.identity),
+	);
 }
 
 function getOrganizationId(): string {
@@ -321,24 +347,27 @@ export async function issueEvalOpsDelegationToken(
 			"EvalOps delegation requires a valid access token. Run /login evalops first.",
 		);
 	}
-	const response = await fetch(`${identityBaseUrl}/v1/delegation-tokens`, {
-		method: "POST",
-		headers: {
-			Authorization: `Bearer ${token}`,
-			"Content-Type": "application/json",
+	const response = await fetch(
+		`${identityBaseUrl}${PLATFORM_HTTP_ROUTES.identity.delegationTokens}`,
+		{
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${token}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				agent_id: request.agentId,
+				agent_type: request.agentType,
+				...(request.capabilities?.length
+					? { capabilities: request.capabilities }
+					: {}),
+				run_id: request.runId,
+				...(request.scopes?.length ? { scopes: request.scopes } : {}),
+				surface: request.surface,
+				...(request.ttlSeconds ? { ttl_seconds: request.ttlSeconds } : {}),
+			}),
 		},
-		body: JSON.stringify({
-			agent_id: request.agentId,
-			agent_type: request.agentType,
-			...(request.capabilities?.length
-				? { capabilities: request.capabilities }
-				: {}),
-			run_id: request.runId,
-			...(request.scopes?.length ? { scopes: request.scopes } : {}),
-			surface: request.surface,
-			...(request.ttlSeconds ? { ttl_seconds: request.ttlSeconds } : {}),
-		}),
-	});
+	);
 
 	let payload: IdentityDelegationResponse | undefined;
 	try {
@@ -480,17 +509,20 @@ async function startIdentityLogin(
 	onStatus?: (status: string) => void,
 ): Promise<string> {
 	onStatus?.("Requesting EvalOps managed login URL...");
-	const response = await fetch(`${identityBaseUrl}/v1/auth/google/start`, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({
-			redirect_uri: CALLBACK_URI,
-			response_mode: "query",
-			organization_id: organizationId,
-			prompt: "select_account",
-			scopes: [REQUIRED_SCOPE],
-		}),
-	});
+	const response = await fetch(
+		`${identityBaseUrl}${PLATFORM_HTTP_ROUTES.identity.authGoogleStart}`,
+		{
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				redirect_uri: CALLBACK_URI,
+				response_mode: "query",
+				organization_id: organizationId,
+				prompt: "select_account",
+				scopes: [REQUIRED_SCOPE],
+			}),
+		},
+	);
 
 	let payload: IdentityStartResponse | undefined;
 	try {
@@ -575,11 +607,14 @@ export async function refreshEvalOpsToken(
 
 	const identityBaseUrl =
 		getMetadataString(metadata, "identityBaseUrl") ?? getIdentityBaseUrl();
-	const response = await fetch(`${identityBaseUrl}/v1/tokens/refresh`, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ refresh_token: refreshToken }),
-	});
+	const response = await fetch(
+		`${identityBaseUrl}${PLATFORM_HTTP_ROUTES.identity.tokenRefresh}`,
+		{
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ refresh_token: refreshToken }),
+		},
+	);
 
 	let payload: IdentityRefreshResponse | undefined;
 	try {
@@ -633,11 +668,14 @@ export async function revokeEvalOpsToken(
 
 	const identityBaseUrl =
 		getMetadataString(metadata, "identityBaseUrl") ?? getIdentityBaseUrl();
-	const response = await fetch(`${identityBaseUrl}/v1/tokens/revoke`, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ refresh_token: refreshToken }),
-	});
+	const response = await fetch(
+		`${identityBaseUrl}${PLATFORM_HTTP_ROUTES.identity.tokenRevoke}`,
+		{
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ refresh_token: refreshToken }),
+		},
+	);
 
 	let payload: IdentityRevokeResponse | undefined;
 	try {
