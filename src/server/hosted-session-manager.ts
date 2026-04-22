@@ -25,11 +25,20 @@ import {
 	type SessionTreeEntry,
 	isSessionHeaderEntry,
 	isSessionTreeEntry,
-	tryParseSessionEntry,
 } from "../session/types.js";
 import { queueSharedMemoryUpdate } from "../shared-memory/client.js";
 
 type SessionRow = typeof hostedSessions.$inferSelect;
+
+function parseSessionEntryValue(value: unknown): SessionEntry | null {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return null;
+	}
+	if (typeof (value as { type?: unknown }).type !== "string") {
+		return null;
+	}
+	return value as SessionEntry;
+}
 
 export interface HostedSessionMetadataUpdate {
 	title?: string;
@@ -48,6 +57,8 @@ export class HostedSessionManager {
 	private leafId: string | null = null;
 	private sessionInitialized = false;
 	private writeChain: Promise<unknown> = Promise.resolve();
+	private hasWriteError = false;
+	private writeError: unknown;
 	private snapshot?: AgentState;
 	private lastModelMetadata?: SessionModelMetadata;
 
@@ -72,13 +83,17 @@ export class HostedSessionManager {
 		};
 	}
 
-	private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+	private enqueue(operation: () => Promise<void>): void {
 		const result = this.writeChain.then(operation, operation);
 		this.writeChain = result.then(
 			() => undefined,
-			() => undefined,
+			(error) => {
+				if (!this.hasWriteError) {
+					this.writeError = error;
+					this.hasWriteError = true;
+				}
+			},
 		);
-		return result;
 	}
 
 	private rebuildIndex(entries: SessionEntry[]): void {
@@ -139,7 +154,7 @@ export class HostedSessionManager {
 			"id" in entry && typeof entry.id === "string" ? entry.id : undefined;
 		const messageCount = this.currentMessageCount();
 
-		void this.enqueue(async () => {
+		this.enqueue(async () => {
 			await this.ensureSessionRow(sessionId, { messageCount });
 			await getDb().insert(hostedSessionEntries).values({
 				sessionId,
@@ -172,11 +187,9 @@ export class HostedSessionManager {
 		return row ?? null;
 	}
 
-	async loadEntries(sessionId: string): Promise<SessionEntry[] | null> {
-		const row = await this.loadRow(sessionId);
-		if (!row) {
-			return null;
-		}
+	private async loadEntriesForSession(
+		sessionId: string,
+	): Promise<SessionEntry[]> {
 		const rows = await getDb()
 			.select({ entry: hostedSessionEntries.entry })
 			.from(hostedSessionEntries)
@@ -185,12 +198,20 @@ export class HostedSessionManager {
 
 		const entries: SessionEntry[] = [];
 		for (const row of rows) {
-			const entry = tryParseSessionEntry(JSON.stringify(row.entry));
+			const entry = parseSessionEntryValue(row.entry);
 			if (entry) {
 				entries.push(entry);
 			}
 		}
 		return entries;
+	}
+
+	async loadEntries(sessionId: string): Promise<SessionEntry[] | null> {
+		const row = await this.loadRow(sessionId);
+		if (!row) {
+			return null;
+		}
+		return this.loadEntriesForSession(sessionId);
 	}
 
 	async resumeSession(sessionId: string): Promise<boolean> {
@@ -199,7 +220,7 @@ export class HostedSessionManager {
 		if (!row) {
 			return false;
 		}
-		const entries = (await this.loadEntries(sessionId)) ?? [];
+		const entries = await this.loadEntriesForSession(sessionId);
 		this.sessionId = row.sessionId;
 		this.entries = entries;
 		this.rebuildIndex(entries);
@@ -230,7 +251,7 @@ export class HostedSessionManager {
 		offset?: number;
 	}): Promise<SessionSummary[]> {
 		await this.flush();
-		const rows = await getDb()
+		let query = getDb()
 			.select()
 			.from(hostedSessions)
 			.where(
@@ -240,8 +261,14 @@ export class HostedSessionManager {
 				),
 			)
 			.orderBy(desc(hostedSessions.updatedAt))
-			.limit(options?.limit ?? 500)
-			.offset(options?.offset ?? 0);
+			.$dynamic();
+		if (typeof options?.limit === "number") {
+			query = query.limit(options.limit);
+		}
+		if (typeof options?.offset === "number") {
+			query = query.offset(options.offset);
+		}
+		const rows = await query;
 
 		return rows.map((row) => ({
 			id: row.sessionId,
@@ -273,7 +300,7 @@ export class HostedSessionManager {
 		if (!row) {
 			return null;
 		}
-		const entries = (await this.loadEntries(sessionId)) ?? [];
+		const entries = await this.loadEntriesForSession(sessionId);
 		const context = buildSessionContextFromEntries(entries);
 		const extractedById = new Map<string, string>();
 		for (const entry of entries) {
@@ -322,16 +349,13 @@ export class HostedSessionManager {
 		this.entries = [];
 		this.rebuildIndex([]);
 		const now = new Date();
-		await this.enqueue(() =>
-			this.ensureSessionRow(this.sessionId, {
-				title: options?.title,
-				favorite: false,
-				messageCount: 0,
-				createdAt: now,
-				updatedAt: now,
-			}),
-		);
-		await this.flush();
+		await this.ensureSessionRow(this.sessionId, {
+			title: options?.title,
+			favorite: false,
+			messageCount: 0,
+			createdAt: now,
+			updatedAt: now,
+		});
 		return {
 			id: this.sessionId,
 			title: options?.title,
@@ -598,7 +622,7 @@ export class HostedSessionManager {
 			? sessionRef.slice("db:".length)
 			: sessionRef;
 		if (targetSessionId && targetSessionId !== this.sessionId) {
-			void this.enqueue(async () => {
+			this.enqueue(async () => {
 				await getDb().insert(hostedSessionEntries).values({
 					sessionId: targetSessionId,
 					entryType: entry.type,
@@ -630,7 +654,7 @@ export class HostedSessionManager {
 			summary: trimmed,
 		};
 		this.appendEntry(entry);
-		void this.enqueue(async () => {
+		this.enqueue(async () => {
 			await getDb()
 				.update(hostedSessions)
 				.set({ summary: trimmed, updatedAt: new Date() })
@@ -653,7 +677,7 @@ export class HostedSessionManager {
 			resumeSummary: trimmed,
 		};
 		this.appendEntry(entry);
-		void this.enqueue(async () => {
+		this.enqueue(async () => {
 			await getDb()
 				.update(hostedSessions)
 				.set({ resumeSummary: trimmed, updatedAt: new Date() })
@@ -676,7 +700,7 @@ export class HostedSessionManager {
 			memoryExtractionHash: trimmed,
 		};
 		this.appendEntry(entry);
-		void this.enqueue(async () => {
+		this.enqueue(async () => {
 			await getDb()
 				.update(hostedSessions)
 				.set({ memoryExtractionHash: trimmed, updatedAt: new Date() })
@@ -772,6 +796,12 @@ export class HostedSessionManager {
 
 	async flush(): Promise<void> {
 		await this.writeChain;
+		if (this.hasWriteError) {
+			const error = this.writeError;
+			this.writeError = undefined;
+			this.hasWriteError = false;
+			throw error;
+		}
 	}
 }
 

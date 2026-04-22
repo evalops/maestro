@@ -255,4 +255,64 @@ describeDb("hosted session database storage", () => {
 			await verify.end();
 		}
 	});
+
+	it("does not truncate unbounded hosted session listings", async () => {
+		const { migrate } = await import("../../src/db/migrate.js");
+		await expect(migrate()).resolves.toBe(6);
+		const { getDb } = await import("../../src/db/client.js");
+		const { hostedSessions } = await import("../../src/db/schema.js");
+		const { HostedSessionManager } = await import(
+			"../../src/server/hosted-session-manager.js"
+		);
+
+		const now = Date.now();
+		await getDb()
+			.insert(hostedSessions)
+			.values(
+				Array.from({ length: 501 }, (_, index) => {
+					const timestamp = new Date(now - index * 1000);
+					return {
+						sessionId: `bulk-session-${index}`,
+						scope: "auth",
+						subject: "key:test-subject",
+						title: `Bulk session ${index}`,
+						cwd: process.cwd(),
+						messageCount: index,
+						createdAt: timestamp,
+						updatedAt: timestamp,
+					};
+				}),
+			);
+
+		const manager = new HostedSessionManager({
+			scope: "auth",
+			subject: "key:test-subject",
+		});
+		await expect(manager.listSessions()).resolves.toHaveLength(501);
+		await expect(
+			manager.listSessions({ limit: 25, offset: 500 }),
+		).resolves.toHaveLength(1);
+	});
+
+	it("surfaces queued database write failures on flush", async () => {
+		const { migrate } = await import("../../src/db/migrate.js");
+		await expect(migrate()).resolves.toBe(6);
+		const { createWebSessionManagerForRequest } = await import(
+			"../../src/server/session-scope.js"
+		);
+
+		const verify = postgres(databaseUrl, { max: 1 });
+		try {
+			await verify`DROP TABLE hosted_session_entries`;
+		} finally {
+			await verify.end();
+		}
+
+		const req = createScopedRequest("production-identity-token");
+		const manager = createWebSessionManagerForRequest(req, false);
+		manager.startSession(createMockState(), { subject: "key:test-subject" });
+
+		await expect(manager.flush()).rejects.toThrow(/hosted_session_entries/);
+		await expect(manager.flush()).resolves.toBeUndefined();
+	});
 });
