@@ -1096,6 +1096,7 @@ async function collectRecentSkillRestoreMessages(
 					? details.name
 					: extractSkillRestoreName(message.content);
 			content = message.content;
+			skillMetadata = getSkillArtifactMetadataFromDetails(message.details);
 		}
 
 		if (!skillName || !content || seenSkillNames.has(skillName)) {

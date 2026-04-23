@@ -131,6 +131,44 @@ describe("meter telemetry client", () => {
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
 
+	it("keeps skill metadata arrays positionally aligned", async () => {
+		const event = {
+			...createCanonicalTurnEvent(),
+			skillMetadata: [
+				{
+					name: "incident-review",
+					artifactId: "skill_remote_1",
+					version: "3",
+					hash: "hash_skill_123",
+					source: "service",
+				},
+				{
+					name: "local-debug",
+					version: "1",
+					hash: "hash_skill_456",
+					source: "filesystem",
+				},
+			],
+		};
+		const fetchMock = vi.fn(async (_input: unknown, init?: RequestInit) => {
+			expect(JSON.parse(String(init?.body ?? "{}")).metadata).toMatchObject({
+				skillNames: "incident-review,local-debug",
+				skillArtifactIds: "skill_remote_1,",
+				skillVersions: "3,1",
+				skillHashes: "hash_skill_123,hash_skill_456",
+				skillSources: "service,filesystem",
+			});
+			return new Response(JSON.stringify({ event: { id: "wide_event_1" } }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(mirrorCanonicalTurnEventToMeter(event)).resolves.toBe(true);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
 	it.each([
 		"/meter.v1.MeterService/QueryWideEvents",
 		"/meter.v1.MeterService/GetEventDashboard",

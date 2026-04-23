@@ -2276,7 +2276,7 @@ export class Agent {
 
 		const baseTurnStatus = options.aborted
 			? "aborted"
-			: this._state.error
+			: this._state.error !== undefined
 				? "error"
 				: undefined;
 

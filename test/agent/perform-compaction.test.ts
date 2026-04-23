@@ -267,13 +267,18 @@ function createActiveSkillHookMessage(name = "debug"): AppMessage {
 function createRestoredSkillHookMessage(
 	name = "reviewer",
 	content = "# Skill: reviewer\n\n> Review specialist\n\n## Instructions\n\nInspect the diff for regressions.",
+	skillMetadata?: Record<string, unknown>,
 ): AppMessage {
 	return {
 		role: "hookMessage",
 		customType: "skill",
 		content: [{ type: "text", text: content.replaceAll("reviewer", name) }],
 		display: false,
-		details: { name, source: "tool" },
+		details: {
+			name,
+			source: "tool",
+			...(skillMetadata ? { skillMetadata } : {}),
+		},
 		timestamp: Date.now(),
 	};
 }
@@ -2289,6 +2294,48 @@ Current plan contents:
 		expect(JSON.stringify(restoredSkillMessages[0]?.content)).toContain(
 			"Inspect the diff for regressions.",
 		);
+	});
+
+	it("preserves restored tool skill metadata across repeated compactions", async () => {
+		const messages = buildConversation(10);
+		messages.splice(
+			2,
+			0,
+			createRestoredSkillHookMessage(
+				"reviewer",
+				"# Skill: reviewer\n\n> Review specialist\n\n## Instructions\n\nInspect the diff for regressions.",
+				{
+					name: "reviewer",
+					artifactId: "skill_remote_reviewer",
+					version: "2",
+					hash: "hash_reviewer",
+					source: "service",
+				},
+			),
+		);
+		const agent = createMockAgentWithoutAppendMessage(messages);
+		const sessionManager = createMockSessionManager();
+
+		const result = await performCompaction({ agent, sessionManager });
+
+		expect(result.success).toBe(true);
+		const restoredSkillMessage = getReplacedMessages(agent).find(
+			(message) =>
+				message.role === "hookMessage" && message.customType === "skill",
+		);
+		expect(restoredSkillMessage).toMatchObject({
+			details: {
+				name: "reviewer",
+				source: "tool",
+				skillMetadata: {
+					name: "reviewer",
+					artifactId: "skill_remote_reviewer",
+					version: "2",
+					hash: "hash_reviewer",
+					source: "service",
+				},
+			},
+		});
 	});
 
 	it("refreshes stale kept-tail tool skill context across repeated compactions", async () => {

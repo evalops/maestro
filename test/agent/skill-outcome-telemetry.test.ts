@@ -154,6 +154,7 @@ class SkillSelectionTransport implements AgentTransport {
 			toolExecutionId: string;
 			skillMetadata: SkillArtifactMetadata;
 		}> = [],
+		private readonly failureMessage = "turn blew up",
 	) {}
 
 	async *continue(): AsyncGenerator<AgentEvent, void, unknown> {}
@@ -253,7 +254,7 @@ class SkillSelectionTransport implements AgentTransport {
 		}
 
 		if (this.shouldFailAfterSelection) {
-			throw new Error("turn blew up");
+			throw new Error(this.failureMessage);
 		}
 
 		const finalMessage = createAssistantTextMessage("Done");
@@ -538,6 +539,43 @@ describe("skill outcome telemetry", () => {
 					name: "incident-review",
 					artifactId: "skill_remote_1",
 				},
+			},
+		});
+	});
+
+	it("publishes failed skill outcomes for empty error messages", async () => {
+		const published: Array<{ subject: string; payload: string }> = [];
+		process.env.MAESTRO_EVENT_BUS_URL = "nats://bus.example:4222";
+		setMaestroEventBusTransportForTests({
+			async publish(subject, payload) {
+				published.push({ subject, payload });
+			},
+		});
+
+		const agent = new Agent({
+			transport: new SkillSelectionTransport(true, false, [], ""),
+			initialState: {
+				model: mockModel,
+				tools: [],
+				session: {
+					id: "session_123",
+					startedAt: new Date("2026-04-23T18:00:00.000Z"),
+				},
+			},
+		});
+
+		await expect(
+			agent.prompt("load the incident review skill"),
+		).rejects.toThrow(Error);
+
+		const skillOutcome = published
+			.map(({ payload }) => JSON.parse(payload))
+			.find((payload) => payload.type === "maestro.events.skill.failed");
+		expect(skillOutcome).toMatchObject({
+			data: {
+				turn_status: "error",
+				error_category: "runtime",
+				error_message: "",
 			},
 		});
 	});
