@@ -231,7 +231,7 @@ export function applyHostedRunnerEnvironment(config: HostedRunnerConfig): void {
 	process.env.MAESTRO_RUNNER_SESSION_ID = config.runnerSessionId;
 	process.env.MAESTRO_WORKSPACE_ROOT = config.workspaceRoot;
 	process.env.MAESTRO_PROFILE ??= "hosted-runner";
-	process.env.MAESTRO_WEB_REQUIRE_KEY ??= "0";
+	process.env.MAESTRO_WEB_REQUIRE_KEY ??= "1";
 	process.env.MAESTRO_WEB_REQUIRE_REDIS ??= "0";
 	process.env.MAESTRO_WEB_REQUIRE_CSRF ??= "0";
 	process.env.MAESTRO_AGENT_DIR ??= resolve(
