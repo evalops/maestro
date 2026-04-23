@@ -108,4 +108,42 @@ describe("JsonlEventWriter adapter", () => {
 		emitUserTurn(writer, nextTurnId, "hello");
 		expect(stream.chunks.join("")).toMatchSnapshot();
 	});
+
+	it("includes governed tool metadata in tool results", () => {
+		adapter.handle({
+			type: "tool_execution_end",
+			toolCallId: "call-governed",
+			toolName: "bash",
+			result: {
+				...toolResult,
+				toolCallId: "call-governed",
+				toolName: "bash",
+				isError: true,
+			},
+			isError: true,
+			errorCode: "governance_denied",
+			approvalRequestId: "approval-123",
+			governedOutcome: "denied",
+		});
+
+		expect(JSON.parse(stream.chunks[0] ?? "{}")).toEqual({
+			type: "item",
+			subtype: "tool_result",
+			timestamp: "2025-01-01T00:00:00.000Z",
+			data: {
+				toolCallId: "call-governed",
+				toolName: "bash",
+				result: {
+					...toolResult,
+					toolCallId: "call-governed",
+					toolName: "bash",
+					isError: true,
+				},
+				isError: true,
+				errorCode: "governance_denied",
+				approvalRequestId: "approval-123",
+				governedOutcome: "denied",
+			},
+		});
+	});
 });

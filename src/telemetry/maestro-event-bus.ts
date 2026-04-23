@@ -172,6 +172,8 @@ export interface ToolCallResultEventData extends Record<string, unknown> {
 	correlation: MaestroCorrelation;
 	tool_call_id: string;
 	tool_execution_id?: string;
+	approval_request_id?: string;
+	governed_outcome?: string;
 	status: MaestroToolCallStatus;
 	duration?: string;
 	safe_output?: Record<string, unknown>;
@@ -276,6 +278,8 @@ export interface RecordMaestroToolCallAttemptInput {
 export interface RecordMaestroToolCallCompletedInput {
 	tool_call_id: string;
 	tool_execution_id?: string;
+	approval_request_id?: string;
+	governed_outcome?: string;
 	status: MaestroToolCallStatus;
 	duration?: string;
 	safe_output?: Record<string, unknown>;
@@ -870,6 +874,8 @@ export function recordMaestroToolCallCompleted(
 			),
 			tool_call_id: event.tool_call_id,
 			tool_execution_id: event.tool_execution_id,
+			approval_request_id: event.approval_request_id,
+			governed_outcome: event.governed_outcome,
 			status: event.status,
 			duration: event.duration,
 			safe_output: event.safe_output,

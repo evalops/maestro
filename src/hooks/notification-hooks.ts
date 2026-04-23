@@ -48,6 +48,9 @@ export interface NotificationPayload {
 	lastAssistantMessage?: string;
 	toolName?: string;
 	toolResult?: string;
+	toolErrorCode?: string;
+	approvalRequestId?: string;
+	governedOutcome?: string;
 	error?: string;
 }
 
@@ -401,6 +404,9 @@ export function createNotificationFromAgentEvent(
 				type: "tool-execution",
 				toolName: event.toolName,
 				toolResult: extractToolResultText(event.result),
+				toolErrorCode: event.errorCode,
+				approvalRequestId: event.approvalRequestId,
+				governedOutcome: event.governedOutcome,
 			};
 
 		case "error":

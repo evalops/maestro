@@ -126,13 +126,10 @@ export class TurnTracker {
 
 			case "tool_execution_end":
 				if (this.currentTurn && "toolCallId" in event) {
-					const success = !("error" in event) || !event.error;
-					const errorCode =
-						"error" in event && event.error
-							? typeof event.error === "string"
-								? event.error.slice(0, 50)
-								: "error"
-							: undefined;
+					const success = !event.isError;
+					const errorCode = event.isError
+						? (event.errorCode?.slice(0, 50) ?? "error")
+						: undefined;
 					const outputSize =
 						"output" in event && typeof event.output === "string"
 							? event.output.length

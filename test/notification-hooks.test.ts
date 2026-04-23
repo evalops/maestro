@@ -271,6 +271,9 @@ describe("Notification Hooks", () => {
 					type: "tool_execution_end",
 					toolCallId: "call-123",
 					toolName: "bash",
+					errorCode: "governance_denied",
+					approvalRequestId: "approval-123",
+					governedOutcome: "denied",
 					result: {
 						role: "toolResult",
 						toolCallId: "call-123",
@@ -288,6 +291,9 @@ describe("Notification Hooks", () => {
 			expect(payload?.type).toBe("tool-execution");
 			expect(payload?.toolName).toBe("bash");
 			expect(payload?.toolResult).toBe("Command output here");
+			expect(payload?.toolErrorCode).toBe("governance_denied");
+			expect(payload?.approvalRequestId).toBe("approval-123");
+			expect(payload?.governedOutcome).toBe("denied");
 		});
 
 		it("should create payload for error event", async () => {

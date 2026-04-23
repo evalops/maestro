@@ -108,6 +108,50 @@ import type {
 	ToolResultMessage,
 } from "./types.js";
 
+type GovernedToolOutcome =
+	| "approval_required"
+	| "approval_pending"
+	| "authentication_required"
+	| "denied"
+	| "rate_limited";
+
+function getGovernedToolResultEventMetadata(details: unknown): {
+	errorCode?: string;
+	approvalRequestId?: string;
+	governedOutcome?: GovernedToolOutcome;
+} {
+	if (!details || typeof details !== "object") {
+		return {};
+	}
+
+	const governedOutcome = (details as { governedOutcome?: unknown })
+		.governedOutcome;
+	if (!governedOutcome || typeof governedOutcome !== "object") {
+		return {};
+	}
+
+	const normalized = governedOutcome as Record<string, unknown>;
+	const classification =
+		typeof normalized.classification === "string"
+			? (normalized.classification as GovernedToolOutcome)
+			: undefined;
+	const errorCode =
+		typeof normalized.code === "string" && normalized.code.trim().length > 0
+			? normalized.code.trim()
+			: classification;
+	const approvalRequestId =
+		typeof normalized.approvalRequestId === "string" &&
+		normalized.approvalRequestId.trim().length > 0
+			? normalized.approvalRequestId.trim()
+			: undefined;
+
+	return {
+		errorCode,
+		approvalRequestId,
+		governedOutcome: classification,
+	};
+}
+
 // Re-export types for backward compatibility
 export type {
 	SessionTokenCounter,
@@ -690,19 +734,28 @@ export class ProviderTransport implements AgentTransport {
 						toolExecutionId?: string;
 						approvalRequestId?: string;
 					},
-				): AgentEvent[] => [
-					{ type: "message_start", message } as AgentEvent,
-					{ type: "message_end", message } as AgentEvent,
-					{
-						type: "tool_execution_end",
-						toolCallId: toolCall.id,
-						toolExecutionId: metadata?.toolExecutionId,
-						approvalRequestId: metadata?.approvalRequestId,
-						toolName: toolCall.name,
-						result: message,
-						isError,
-					} as AgentEvent,
-				];
+				): AgentEvent[] => {
+					const governedMetadata = getGovernedToolResultEventMetadata(
+						message.details,
+					);
+					return [
+						{ type: "message_start", message } as AgentEvent,
+						{ type: "message_end", message } as AgentEvent,
+						{
+							type: "tool_execution_end",
+							toolCallId: toolCall.id,
+							toolExecutionId: metadata?.toolExecutionId,
+							approvalRequestId:
+								metadata?.approvalRequestId ??
+								governedMetadata.approvalRequestId,
+							errorCode: governedMetadata.errorCode,
+							governedOutcome: governedMetadata.governedOutcome,
+							toolName: toolCall.name,
+							result: message,
+							isError,
+						} as AgentEvent,
+					];
+				};
 				const emitToolResult = (
 					message: ToolResultMessage,
 					toolCall: ToolCall,
