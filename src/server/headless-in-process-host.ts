@@ -4,6 +4,7 @@ import type {
 	EnsureRuntimeOptions,
 	HeadlessAttachedSubscription,
 	HeadlessRuntimeConnectionClosedSnapshot,
+	HeadlessRuntimeHeartbeatSnapshot,
 	HeadlessRuntimeService,
 	HeadlessRuntimeSnapshot,
 	HeadlessRuntimeStreamEnvelope,
@@ -20,6 +21,13 @@ export interface HeadlessInProcessSendOptions {
 }
 
 export interface HeadlessInProcessDisconnectOptions {
+	scopeKey: string;
+	sessionId: string;
+	connectionId?: string | null;
+	subscriptionId?: string | null;
+}
+
+export interface HeadlessInProcessHeartbeatOptions {
 	scopeKey: string;
 	sessionId: string;
 	connectionId?: string | null;
@@ -106,6 +114,18 @@ export class HeadlessInProcessHost {
 			options.scopeKey,
 			options.sessionId,
 		).disconnectConnection({
+			connectionId: options.connectionId,
+			subscriptionId: options.subscriptionId,
+		});
+	}
+
+	heartbeat(
+		options: HeadlessInProcessHeartbeatOptions,
+	): HeadlessRuntimeHeartbeatSnapshot {
+		return this.getRuntime(
+			options.scopeKey,
+			options.sessionId,
+		).heartbeatConnection({
 			connectionId: options.connectionId,
 			subscriptionId: options.subscriptionId,
 		});
