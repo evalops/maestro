@@ -1183,7 +1183,9 @@ function defineHeadlessRuntimeConformanceSuite(
 					},
 					{ role: "controller", subscriptionId: controller.subscription_id },
 				),
-			).rejects.toThrow(/outside|Access denied|Path is outside/);
+			).rejects.toThrow(
+				/outside|Access denied|Path is outside|escapes hosted workspace/,
+			);
 			stream.close();
 		});
 
