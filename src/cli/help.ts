@@ -99,7 +99,10 @@ export function printHelp(version: string) {
   maestro import ./session.json
 
   # Start a hosted EvalOps runner session
-  maestro remote start --workspace ws_123 --repo evalops/foo --branch main --ttl 90m`,
+  maestro remote start --workspace ws_123 --repo evalops/foo --branch main --ttl 90m
+
+  # Run a single-session hosted runtime pod entrypoint
+  maestro hosted-runner --runner-session-id mrs_abc --workspace-root /workspace --listen 0.0.0.0:8080`,
 	)}`;
 	const env = `${sectionHeading("Environment Variables:")}${muted(
 		`  GEMINI_API_KEY          - Google Gemini API key
@@ -167,6 +170,12 @@ export function printHelp(version: string) {
   maestro remote extend <session-id> --ttl 2h
   maestro remote stop <session-id> [--reason <text>]`,
 	)}`;
+	const hostedRunnerSection = `${sectionHeading("maestro hosted-runner")}${muted(
+		`  maestro hosted-runner --runner-session-id <id> --workspace-root <path> [--listen 0.0.0.0:8080]
+
+  Env mode:
+    MAESTRO_RUNNER_SESSION_ID=mrs_abc MAESTRO_WORKSPACE_ROOT=/workspace maestro hosted-runner`,
+	)}`;
 	const sessionsSection = `${sectionHeading("Session Metadata")}${muted(
 		`  /session favorite|unfavorite      Toggle favorite for current session
   /session summary "<text>"         Save a manual summary for current session
@@ -212,6 +221,7 @@ export function printHelp(version: string) {
 			portabilitySection,
 			memorySection,
 			remoteSection,
+			hostedRunnerSection,
 			sessionsSection,
 			sessionsDiscovery,
 			`${sectionHeading("Tips")}${badge(

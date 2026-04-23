@@ -59,6 +59,7 @@ const COMMANDS = new Set([
 	"agents",
 	"exec",
 	"web",
+	"hosted-runner",
 	"anthropic",
 	"openai",
 	"hooks",
@@ -248,7 +249,7 @@ export function parseArgs(args: string[]): Args {
 					result.subcommand = nextArg;
 					i++;
 				}
-				if (arg === "remote") {
+				if (arg === "remote" || arg === "hosted-runner") {
 					result.commandArgs = args.slice(i + 1);
 					break;
 				}

@@ -17,6 +17,7 @@ import {
 	encodeHeadlessPtyHelperConfig,
 	getHeadlessPtyPythonCommand,
 } from "./pty-helper.js";
+import { resolveHostedWorkspacePath } from "./workspace-root.js";
 
 export interface HeadlessUtilityCommandStartRequest {
 	command_id: string;
@@ -195,12 +196,16 @@ export class HeadlessUtilityCommandManager {
 			request.cwd,
 			request.env,
 		);
+		const commandCwd =
+			resolveHostedWorkspacePath(resolvedCwd) ??
+			resolveHostedWorkspacePath(process.cwd()) ??
+			resolvedCwd;
 		const env = request.env ? { ...process.env, ...request.env } : process.env;
 
 		if (terminalMode === "pty") {
 			await this.startPtyCommand({
 				...request,
-				cwd: resolvedCwd,
+				cwd: commandCwd,
 				shell_mode: shellMode,
 				terminal_mode: terminalMode,
 				allow_stdin: allowStdin,
@@ -218,7 +223,7 @@ export class HeadlessUtilityCommandManager {
 		if (shellMode === "shell") {
 			const { shell, args } = getShellConfig();
 			child = spawn(shell, [...args, request.command], {
-				cwd: resolvedCwd,
+				cwd: commandCwd,
 				env,
 				stdio: [allowStdin ? "pipe" : "ignore", "pipe", "pipe"],
 			});
@@ -228,7 +233,7 @@ export class HeadlessUtilityCommandManager {
 				throw new Error("Command must contain an executable to run");
 			}
 			child = spawn(parsed[0]!, parsed.slice(1), {
-				cwd: resolvedCwd,
+				cwd: commandCwd,
 				env,
 				stdio: [allowStdin ? "pipe" : "ignore", "pipe", "pipe"],
 			});
@@ -237,7 +242,7 @@ export class HeadlessUtilityCommandManager {
 		const active: ActiveCommand = {
 			child,
 			command: request.command,
-			cwd: resolvedCwd,
+			cwd: commandCwd,
 			shell_mode: shellMode,
 			terminal_mode: terminalMode,
 			allow_stdin: allowStdin,
@@ -249,7 +254,7 @@ export class HeadlessUtilityCommandManager {
 			type: "started",
 			command_id: request.command_id,
 			command: request.command,
-			cwd: resolvedCwd,
+			cwd: commandCwd,
 			shell_mode: shellMode,
 			terminal_mode: terminalMode,
 			pid: child.pid ?? undefined,

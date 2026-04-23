@@ -1,5 +1,6 @@
 import { basename, resolve } from "node:path";
 import { getWorkspaceFiles } from "../utils/workspace-files.js";
+import { resolveHostedWorkspacePath } from "./workspace-root.js";
 
 export interface HeadlessUtilityFileSearchRequest {
 	query: string;
@@ -92,7 +93,7 @@ function scorePathMatch(path: string, normalizedQuery: string): number {
 export function searchWorkspaceFiles(
 	request: HeadlessUtilityFileSearchRequest,
 ): HeadlessUtilityFileSearchResult {
-	const cwd = resolve(request.cwd ?? process.cwd());
+	const cwd = resolveHostedWorkspacePath(request.cwd) ?? resolve(process.cwd());
 	const query = request.query.trim();
 	const limit = Math.max(
 		1,

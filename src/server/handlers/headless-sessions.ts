@@ -277,6 +277,54 @@ function getScopeKey(req: IncomingMessage): string {
 	return getAuthSubject(req);
 }
 
+function ensureHostedRunnerCanUseSession(
+	context: WebServerContext,
+	requestedSessionId: string | undefined,
+): void {
+	const hostedRunner = context.hostedRunner;
+	if (!hostedRunner) {
+		return;
+	}
+	const activeSessionId =
+		hostedRunner.activeMaestroSessionId ??
+		hostedRunner.configuredMaestroSessionId;
+	if (!activeSessionId) {
+		return;
+	}
+	if (!requestedSessionId) {
+		throw new ApiError(
+			409,
+			`Hosted runner is already bound to Maestro session ${activeSessionId}`,
+		);
+	}
+	if (requestedSessionId !== activeSessionId) {
+		throw new ApiError(
+			409,
+			`Hosted runner is bound to Maestro session ${activeSessionId}`,
+		);
+	}
+}
+
+function claimHostedRunnerSession(
+	context: WebServerContext,
+	sessionId: string,
+): void {
+	const hostedRunner = context.hostedRunner;
+	if (!hostedRunner) {
+		return;
+	}
+	const activeSessionId =
+		hostedRunner.activeMaestroSessionId ??
+		hostedRunner.configuredMaestroSessionId;
+	if (activeSessionId && activeSessionId !== sessionId) {
+		throw new ApiError(
+			409,
+			`Hosted runner is bound to Maestro session ${activeSessionId}`,
+		);
+	}
+	hostedRunner.activeMaestroSessionId = sessionId;
+}
+
 function rethrowHeadlessMessageError(error: unknown): never {
 	if (!(error instanceof Error)) {
 		throw error;
@@ -325,6 +373,7 @@ async function ensureRuntime(
 	const sessionManager = createSessionManagerForRequest(req, false);
 	const role = getHeadlessRole(req, input.role);
 	const requestedSessionId = input.sessionId?.trim() || undefined;
+	ensureHostedRunnerCanUseSession(context, requestedSessionId);
 	if (requestedSessionId) {
 		const sessionFile = sessionManager.getSessionFileById(requestedSessionId);
 		if (!sessionFile) {
@@ -373,7 +422,7 @@ async function ensureRuntime(
 		defaultApprovalMode: context.defaultApprovalMode,
 	});
 
-	return context.headlessRuntimeService.ensureRuntime({
+	const runtime = await context.headlessRuntimeService.ensureRuntime({
 		scope_key: getScopeKey(req),
 		sessionId: requestedSessionId,
 		subject,
@@ -397,6 +446,10 @@ async function ensureRuntime(
 		context,
 		sessionManager,
 	});
+	if (context.hostedRunner) {
+		claimHostedRunnerSession(context, runtime.getSnapshot().session_id);
+	}
+	return runtime;
 }
 
 async function ensureConnection(
@@ -448,6 +501,9 @@ function getRuntime(
 	);
 	if (!runtime) {
 		throw new ApiError(404, "Headless session not found");
+	}
+	if (context.hostedRunner) {
+		claimHostedRunnerSession(context, runtime.getSnapshot().session_id);
 	}
 	return runtime;
 }

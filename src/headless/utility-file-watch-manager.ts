@@ -6,6 +6,7 @@ import {
 	FileWatcher,
 	type FileWatcherConfig,
 } from "../tools/file-watcher.js";
+import { resolveHostedWorkspacePath } from "./workspace-root.js";
 
 export interface HeadlessUtilityFileWatchStartRequest {
 	watch_id: string;
@@ -121,7 +122,8 @@ export class HeadlessUtilityFileWatchManager {
 			throw new Error(`Utility file watch already exists: ${request.watch_id}`);
 		}
 
-		const rootDir = resolve(request.root_dir ?? process.cwd());
+		const rootDir =
+			resolveHostedWorkspacePath(request.root_dir) ?? resolve(process.cwd());
 		const debounceMs = Math.max(0, request.debounce_ms ?? DEFAULT_DEBOUNCE_MS);
 		if (!existsSync(rootDir)) {
 			throw new Error(

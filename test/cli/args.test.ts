@@ -84,4 +84,29 @@ describe("parseArgs", () => {
 			messages: [],
 		});
 	});
+
+	it("preserves hosted-runner arguments for the hosted entrypoint", () => {
+		expect(
+			parseArgs([
+				"hosted-runner",
+				"--runner-session-id",
+				"mrs_123",
+				"--workspace-root",
+				"/workspace",
+				"--listen",
+				"0.0.0.0:8080",
+			]),
+		).toMatchObject({
+			command: "hosted-runner",
+			commandArgs: [
+				"--runner-session-id",
+				"mrs_123",
+				"--workspace-root",
+				"/workspace",
+				"--listen",
+				"0.0.0.0:8080",
+			],
+			messages: [],
+		});
+	});
 });

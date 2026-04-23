@@ -110,7 +110,8 @@ export function createRoutes(context: WebServerContext): Route[] {
 		{
 			method: "GET",
 			path: "/readyz",
-			handler: (req, res) => handleReadyz(req, res, corsHeaders),
+			handler: (req, res) =>
+				handleReadyz(req, res, corsHeaders, context.hostedRunner),
 		},
 		{
 			method: "POST",
