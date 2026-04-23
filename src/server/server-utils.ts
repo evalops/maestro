@@ -13,6 +13,7 @@ export class ApiError extends StatusError {
 		public statusCode: number,
 		message: string,
 		details: Record<string, unknown>[] = [],
+		public errorType?: string,
 	) {
 		let code = Code.UNKNOWN;
 		switch (statusCode) {
@@ -315,6 +316,10 @@ export function respondWithApiError(
 		{
 			error: status.message,
 			code: Code[status.code],
+			error_type:
+				error instanceof ApiError && error.errorType
+					? error.errorType
+					: undefined,
 			details: status.details.length ? status.details : undefined,
 			maestro: isComposerError(error)
 				? {

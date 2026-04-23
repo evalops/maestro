@@ -33,6 +33,7 @@ import {
 	handleHeadlessSessionDisconnect,
 	handleHeadlessSessionEvents,
 	handleHeadlessSessionMessage,
+	handleHeadlessSessionState,
 	handleHeadlessSessionSubscribe,
 	handleHeadlessSessionUnsubscribe,
 } from "../../src/server/handlers/headless-sessions.js";
@@ -42,7 +43,10 @@ import {
 	type HeadlessRuntimeStreamEnvelope,
 } from "../../src/server/headless-runtime-service.js";
 import { serverRequestManager } from "../../src/server/server-request-manager.js";
-import { ApiError } from "../../src/server/server-utils.js";
+import {
+	ApiError,
+	respondWithApiError,
+} from "../../src/server/server-utils.js";
 import { createSessionManagerForRequest } from "../../src/server/session-scope.js";
 import { ServerRequestToolRetryService } from "../../src/server/tool-retry-service.js";
 import { SessionManager } from "../../src/session/manager.js";
@@ -2838,6 +2842,144 @@ describe("headless session handlers", () => {
 		} finally {
 			await rm(hostedWorkspaceRoot, { recursive: true, force: true });
 			await rm(requestedWorkspaceRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("returns structured runtime owner errors for hosted session mismatches", async () => {
+		const workspaceRoot = await mkdtemp(
+			join(tmpdir(), "maestro-headless-hosted-owner-"),
+		);
+		try {
+			const context = createContext({
+				hostedRunner: {
+					enabled: true,
+					runnerSessionId: "mrs_test",
+					ownerInstanceId: "pod-a",
+					workspaceRoot,
+					workspaceId: "ws_1",
+					agentRunId: "run_1",
+					activeMaestroSessionId: "session_owner",
+				},
+			});
+			const req = createJsonRequest("POST", "/api/headless/sessions", {
+				model: TEST_MODEL.id,
+				sessionId: "session_other",
+			});
+			const res = new MockResponse();
+			res.req = req;
+
+			let caught: unknown;
+			try {
+				await handleHeadlessSessionCreate(
+					req,
+					res as unknown as ServerResponse,
+					context,
+				);
+			} catch (error) {
+				caught = error;
+			}
+
+			expect(caught).toBeInstanceOf(ApiError);
+			expect((caught as ApiError).errorType).toBe("runtime_owned_elsewhere");
+
+			const errorRes = new MockResponse();
+			errorRes.req = req;
+			respondWithApiError(
+				errorRes as unknown as ServerResponse,
+				caught,
+				500,
+				{},
+				req,
+			);
+
+			expect(errorRes.statusCode).toBe(409);
+			expect(JSON.parse(errorRes.body)).toMatchObject({
+				error: "Hosted runner is bound to Maestro session session_owner",
+				code: "ALREADY_EXISTS",
+				error_type: "runtime_owned_elsewhere",
+				details: [
+					{
+						reason: "runtime_owned_elsewhere",
+						domain: "maestro.hosted_runner",
+						metadata: {
+							runner_session_id: "mrs_test",
+							owner_instance_id: "pod-a",
+							workspace_id: "ws_1",
+							agent_run_id: "run_1",
+							maestro_session_id: "session_owner",
+							requested_maestro_session_id: "session_other",
+						},
+					},
+				],
+			});
+		} finally {
+			await rm(workspaceRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("reports runtime owner errors before local runtime lookup", async () => {
+		const workspaceRoot = await mkdtemp(
+			join(tmpdir(), "maestro-headless-hosted-owner-"),
+		);
+		try {
+			const context = createContext({
+				hostedRunner: {
+					enabled: true,
+					runnerSessionId: "mrs_test",
+					ownerInstanceId: "pod-a",
+					workspaceRoot,
+					activeMaestroSessionId: "session_owner",
+				},
+			});
+			const req = createJsonRequest(
+				"GET",
+				"/api/headless/sessions/session_other/state",
+			);
+			const res = new MockResponse();
+			res.req = req;
+
+			let caught: unknown;
+			try {
+				handleHeadlessSessionState(
+					req,
+					res as unknown as ServerResponse,
+					context,
+					{
+						id: "session_other",
+					},
+				);
+			} catch (error) {
+				caught = error;
+			}
+
+			expect(caught).toBeInstanceOf(ApiError);
+
+			const errorRes = new MockResponse();
+			errorRes.req = req;
+			respondWithApiError(
+				errorRes as unknown as ServerResponse,
+				caught,
+				500,
+				{},
+				req,
+			);
+
+			expect(errorRes.statusCode).toBe(409);
+			expect(JSON.parse(errorRes.body)).toMatchObject({
+				error_type: "runtime_owned_elsewhere",
+				details: [
+					{
+						reason: "runtime_owned_elsewhere",
+						metadata: {
+							owner_instance_id: "pod-a",
+							maestro_session_id: "session_owner",
+							requested_maestro_session_id: "session_other",
+						},
+					},
+				],
+			});
+		} finally {
+			await rm(workspaceRoot, { recursive: true, force: true });
 		}
 	});
 
