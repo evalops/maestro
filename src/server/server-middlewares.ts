@@ -2,15 +2,11 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { parse } from "node:url";
 import { createLogger } from "../utils/logger.js";
 import { getArtifactAccessGrantFromRequest } from "./artifact-access.js";
+import { checkApiAuth } from "./authz.js";
 import { isOverloaded, logRequest } from "./logger.js";
 import type { Middleware } from "./middleware.js";
 import type { RateLimiter, TieredRateLimiter } from "./rate-limiter.js";
-import {
-	authenticateRequest,
-	getRequestHeader,
-	secureCompare,
-	sendJson,
-} from "./server-utils.js";
+import { getRequestHeader, secureCompare, sendJson } from "./server-utils.js";
 
 const logger = createLogger("middleware:ip-access");
 
@@ -207,9 +203,11 @@ export function createAuthMiddleware(
 	corsHeaders: Record<string, string>,
 	requireApiKey = false,
 ): Middleware {
-	return (req, res, next) => {
+	return async (req, res, next) => {
 		const pathname = getPathname(req);
-		if (pathname.startsWith("/api")) {
+		const requiresAuthBoundary =
+			pathname.startsWith("/api") || pathname === "/debug/z";
+		if (requiresAuthBoundary) {
 			const missingKey = !apiKey || apiKey.length === 0;
 
 			// No key provided
@@ -228,14 +226,36 @@ export function createAuthMiddleware(
 					return;
 				}
 				// Requirement off and no key: allow through.
+				const auth = await checkApiAuth(req);
+				if (!auth.ok) {
+					sendJson(
+						res,
+						401,
+						{ error: auth.error || "Unauthorized" },
+						corsHeaders,
+						req,
+					);
+					return;
+				}
 				return next();
 			}
 
 			// Key provided: validate it.
-			if (getArtifactAccessGrantFromRequest(req)) {
+			if (
+				pathname.startsWith("/api") &&
+				getArtifactAccessGrantFromRequest(req)
+			) {
 				return next();
 			}
-			if (!authenticateRequest(req, res, corsHeaders, apiKey)) {
+			const auth = await checkApiAuth(req);
+			if (!auth.ok) {
+				sendJson(
+					res,
+					401,
+					{ error: auth.error || "Unauthorized" },
+					corsHeaders,
+					req,
+				);
 				return;
 			}
 		}
