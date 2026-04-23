@@ -17,7 +17,7 @@ import {
 	encodeHeadlessPtyHelperConfig,
 	getHeadlessPtyPythonCommand,
 } from "./pty-helper.js";
-import { resolveHostedWorkspacePath } from "./workspace-root.js";
+import { resolveWorkspacePath } from "./workspace-root.js";
 
 export interface HeadlessUtilityCommandStartRequest {
 	command_id: string;
@@ -167,6 +167,7 @@ export class HeadlessUtilityCommandManager {
 
 	constructor(
 		private readonly emit: (event: HeadlessUtilityCommandEvent) => void,
+		private readonly workspaceRoot?: string,
 	) {}
 
 	snapshot(): HeadlessUtilityCommandSnapshot[] {
@@ -197,9 +198,10 @@ export class HeadlessUtilityCommandManager {
 			request.env,
 		);
 		const commandCwd =
-			resolveHostedWorkspacePath(resolvedCwd) ??
-			resolveHostedWorkspacePath(process.cwd()) ??
-			resolvedCwd;
+			resolveWorkspacePath(resolvedCwd, this.workspaceRoot) ??
+			resolveWorkspacePath(undefined, this.workspaceRoot) ??
+			resolvedCwd ??
+			process.cwd();
 		const env = request.env ? { ...process.env, ...request.env } : process.env;
 
 		if (terminalMode === "pty") {

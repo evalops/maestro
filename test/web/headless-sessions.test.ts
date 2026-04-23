@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { realpathSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
@@ -2759,6 +2760,85 @@ describe("headless session handlers", () => {
 				includeConductorTools: false,
 			}),
 		);
+	});
+
+	it("uses an explicit workspace root for agent creation and session state", async () => {
+		const workspaceRoot = await mkdtemp(
+			join(tmpdir(), "maestro-headless-workspace-root-"),
+		);
+		try {
+			const createAgent = vi.fn().mockResolvedValue(new FakeAgent());
+			const context = createContext({ createAgent });
+			const req = createJsonRequest("POST", "/api/headless/sessions", {
+				model: TEST_MODEL.id,
+				workspaceRoot,
+			});
+			const res = new MockResponse();
+			res.req = req;
+
+			await handleHeadlessSessionCreate(
+				req,
+				res as unknown as ServerResponse,
+				context,
+			);
+
+			const resolvedWorkspaceRoot = realpathSync(workspaceRoot);
+			expect(createAgent).toHaveBeenCalledWith(
+				TEST_MODEL,
+				"off",
+				"prompt",
+				expect.objectContaining({
+					cwd: resolvedWorkspaceRoot,
+				}),
+			);
+			expect(JSON.parse(res.body)).toMatchObject({
+				state: {
+					cwd: resolvedWorkspaceRoot,
+				},
+			});
+		} finally {
+			await rm(workspaceRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("rejects explicit workspace roots that do not match the hosted runner root", async () => {
+		const hostedWorkspaceRoot = await mkdtemp(
+			join(tmpdir(), "maestro-headless-hosted-root-"),
+		);
+		const requestedWorkspaceRoot = await mkdtemp(
+			join(tmpdir(), "maestro-headless-requested-root-"),
+		);
+		try {
+			const context = createContext({
+				hostedRunner: {
+					enabled: true,
+					runnerSessionId: "mrs_test",
+					workspaceRoot: hostedWorkspaceRoot,
+				},
+			});
+			const req = createJsonRequest("POST", "/api/headless/sessions", {
+				model: TEST_MODEL.id,
+				workspaceRoot: requestedWorkspaceRoot,
+			});
+			const res = new MockResponse();
+			res.req = req;
+
+			await expect(
+				handleHeadlessSessionCreate(
+					req,
+					res as unknown as ServerResponse,
+					context,
+				),
+			).rejects.toMatchObject({
+				statusCode: 409,
+				message: `workspaceRoot must match hosted runner workspace root: ${realpathSync(
+					hostedWorkspaceRoot,
+				)}`,
+			});
+		} finally {
+			await rm(hostedWorkspaceRoot, { recursive: true, force: true });
+			await rm(requestedWorkspaceRoot, { recursive: true, force: true });
+		}
 	});
 
 	it("enables client ask_user routing when user_input capability is negotiated", async () => {

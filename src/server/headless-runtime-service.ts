@@ -41,6 +41,7 @@ import { HeadlessUtilityCommandManager } from "../headless/utility-command-manag
 import { readWorkspaceFile } from "../headless/utility-file-read.js";
 import { searchWorkspaceFiles } from "../headless/utility-file-search.js";
 import { HeadlessUtilityFileWatchManager } from "../headless/utility-file-watch-manager.js";
+import { getHostedWorkspaceRoot } from "../headless/workspace-root.js";
 import {
 	type AutomaticMemoryConsolidationCoordinator,
 	createAutomaticMemoryConsolidationCoordinator,
@@ -504,6 +505,7 @@ type RuntimeOptions = {
 	scope_key: string;
 	session_id: string;
 	subject?: string;
+	workspaceRoot?: string;
 	clientProtocolVersion?: string;
 	clientInfo?: HeadlessClientInfo;
 	capabilities?: HeadlessClientCapabilities;
@@ -529,11 +531,47 @@ export class HeadlessSessionRuntime {
 	private readonly subject?: string;
 	private readonly sessionId: string;
 	private readonly scopeKey: string;
+	private readonly workspaceRoot?: string;
 	private readonly publishedServerRequestIds = new Set<string>();
 	private readonly suppressedApprovalResolutionIds = new Set<string>();
 	private readonly unsubscribeServerRequestEvents: () => void;
-	private readonly utilityCommands = new HeadlessUtilityCommandManager(
-		(event) => {
+	private readonly utilityCommands: HeadlessUtilityCommandManager;
+	private readonly fileWatches: HeadlessUtilityFileWatchManager;
+	private readonly subscribers = new Map<string, HeadlessSubscriberMailbox>();
+	private readonly connections = new Map<string, HeadlessConnectionRecord>();
+	private controllerConnectionId: string | null = null;
+	private lastInit: HeadlessInitMessage | null = null;
+	private running = false;
+	private disposed = false;
+	private disposePromise: Promise<void> | null = null;
+	private readonly startedAt = Date.now();
+	private updatedAt = Date.now();
+	private runCount = 0;
+	private errorCount = 0;
+	private toolExecutionCount = 0;
+	private toolErrorCount = 0;
+	private readonly updateSessionSummary: (event: AgentEvent) => void;
+	private readonly automaticMemoryConsolidation: AutomaticMemoryConsolidationCoordinator;
+	private readonly automaticMemoryExtraction: AutomaticMemoryExtractionCoordinator;
+
+	private constructor(
+		options: RuntimeOptions,
+		agent: Agent,
+		approvalService: ActionApprovalService,
+		toolRetryService: ToolRetryService,
+		automaticMemoryConsolidation: AutomaticMemoryConsolidationCoordinator,
+		automaticMemoryExtraction: AutomaticMemoryExtractionCoordinator,
+	) {
+		this.scopeKey = options.scope_key;
+		this.sessionId = options.session_id;
+		this.sessionManager = options.sessionManager;
+		this.registeredModel = options.registeredModel;
+		this.subject = options.subject;
+		this.workspaceRoot = options.workspaceRoot ?? getHostedWorkspaceRoot();
+		this.approvalService = approvalService;
+		this.toolRetryService = toolRetryService;
+		this.agent = agent;
+		this.utilityCommands = new HeadlessUtilityCommandManager((event) => {
 			switch (event.type) {
 				case "started":
 					this.publish({
@@ -578,10 +616,8 @@ export class HeadlessSessionRuntime {
 					});
 					return;
 			}
-		},
-	);
-	private readonly fileWatches = new HeadlessUtilityFileWatchManager(
-		(event) => {
+		}, this.workspaceRoot);
+		this.fileWatches = new HeadlessUtilityFileWatchManager((event) => {
 			switch (event.type) {
 				case "started":
 					this.publish({
@@ -613,41 +649,7 @@ export class HeadlessSessionRuntime {
 					});
 					return;
 			}
-		},
-	);
-	private readonly subscribers = new Map<string, HeadlessSubscriberMailbox>();
-	private readonly connections = new Map<string, HeadlessConnectionRecord>();
-	private controllerConnectionId: string | null = null;
-	private lastInit: HeadlessInitMessage | null = null;
-	private running = false;
-	private disposed = false;
-	private disposePromise: Promise<void> | null = null;
-	private readonly startedAt = Date.now();
-	private updatedAt = Date.now();
-	private runCount = 0;
-	private errorCount = 0;
-	private toolExecutionCount = 0;
-	private toolErrorCount = 0;
-	private readonly updateSessionSummary: (event: AgentEvent) => void;
-	private readonly automaticMemoryConsolidation: AutomaticMemoryConsolidationCoordinator;
-	private readonly automaticMemoryExtraction: AutomaticMemoryExtractionCoordinator;
-
-	private constructor(
-		options: RuntimeOptions,
-		agent: Agent,
-		approvalService: ActionApprovalService,
-		toolRetryService: ToolRetryService,
-		automaticMemoryConsolidation: AutomaticMemoryConsolidationCoordinator,
-		automaticMemoryExtraction: AutomaticMemoryExtractionCoordinator,
-	) {
-		this.scopeKey = options.scope_key;
-		this.sessionId = options.session_id;
-		this.sessionManager = options.sessionManager;
-		this.registeredModel = options.registeredModel;
-		this.subject = options.subject;
-		this.approvalService = approvalService;
-		this.toolRetryService = toolRetryService;
-		this.agent = agent;
+		}, this.workspaceRoot);
 		this.automaticMemoryConsolidation = automaticMemoryConsolidation;
 		this.automaticMemoryExtraction = automaticMemoryExtraction;
 		this.updateSessionSummary = createRuntimeSessionSummaryUpdater(
@@ -661,7 +663,12 @@ export class HeadlessSessionRuntime {
 		this.publish(
 			this.translator.buildReadyMessage(this.agent, this.sessionManager),
 		);
-		this.publish(this.translator.buildSessionInfoMessage(this.sessionManager));
+		this.publish(
+			this.translator.buildSessionInfoMessage(
+				this.sessionManager,
+				this.workspaceRoot ?? process.cwd(),
+			),
+		);
 		this.unsubscribeServerRequestEvents = serverRequestManager.subscribe(
 			(event) => {
 				this.handleServerRequestEvent(event);
@@ -672,6 +679,7 @@ export class HeadlessSessionRuntime {
 	static async create(
 		options: RuntimeOptions,
 	): Promise<HeadlessSessionRuntime> {
+		const workspaceRoot = options.workspaceRoot ?? getHostedWorkspaceRoot();
 		const negotiatedServerRequests =
 			options.capabilities?.server_requests ?? [];
 		const needsScopedClientToolService =
@@ -691,6 +699,7 @@ export class HeadlessSessionRuntime {
 			options.thinkingLevel,
 			options.approvalMode,
 			{
+				cwd: workspaceRoot,
 				approvalService,
 				toolRetryService,
 				enableClientTools: options.enableClientTools,
@@ -709,6 +718,7 @@ export class HeadlessSessionRuntime {
 					options.context.createBackgroundAgent(
 						agent.state.model as RegisteredModel,
 						{
+							cwd: workspaceRoot,
 							systemPrompt: getMemoryConsolidationSystemPrompt(),
 						},
 					),
@@ -719,13 +729,17 @@ export class HeadlessSessionRuntime {
 				createAgent: async () =>
 					options.context.createBackgroundAgent(
 						agent.state.model as RegisteredModel,
+						{ cwd: workspaceRoot },
 					),
 				getModel: () => agent.state.model,
 				onProcessed: () => automaticMemoryConsolidation.schedule(),
 				sessionManager: options.sessionManager,
 			});
 		return new HeadlessSessionRuntime(
-			options,
+			{
+				...options,
+				workspaceRoot,
+			},
 			agent,
 			approvalService,
 			toolRetryService,
@@ -1898,6 +1912,7 @@ export class HeadlessSessionRuntime {
 					const result = searchWorkspaceFiles({
 						query: msg.query,
 						cwd: msg.cwd,
+						workspaceRoot: this.workspaceRoot,
 						limit: msg.limit,
 					});
 					this.publish({
@@ -1920,6 +1935,7 @@ export class HeadlessSessionRuntime {
 					const result = await readWorkspaceFile({
 						path: msg.path,
 						cwd: msg.cwd,
+						workspaceRoot: this.workspaceRoot,
 						offset: msg.offset,
 						limit: msg.limit,
 					});
@@ -1975,7 +1991,7 @@ export class HeadlessSessionRuntime {
 			await runUserPromptWithRecovery({
 				agent: this.agent,
 				sessionManager: this.sessionManager,
-				cwd: process.cwd(),
+				cwd: this.workspaceRoot ?? process.cwd(),
 				prompt: content,
 				attachmentCount: attachments?.length ?? 0,
 				attachmentNames: attachments?.map((attachment) => attachment.fileName),
@@ -2345,6 +2361,7 @@ export type EnsureRuntimeOptions = {
 	scope_key: string;
 	sessionId?: string;
 	subject?: string;
+	workspaceRoot?: string;
 	clientProtocolVersion?: string;
 	clientInfo?: HeadlessClientInfo;
 	capabilities?: HeadlessClientCapabilities;
@@ -2385,6 +2402,7 @@ export class HeadlessRuntimeService {
 			scope_key: options.scope_key,
 			session_id: sessionId,
 			subject: options.subject,
+			workspaceRoot: options.workspaceRoot,
 			clientProtocolVersion: options.clientProtocolVersion,
 			clientInfo: options.clientInfo,
 			capabilities: options.capabilities,

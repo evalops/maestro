@@ -238,13 +238,16 @@ export function validatePathSync(path: string, baseDir?: string): string {
 /**
  * Check if a path is within the current working directory
  */
-export function isWithinCwd(path: string): boolean {
+export function isWithinCwd(
+	path: string,
+	cwd: string = process.cwd(),
+): boolean {
 	const normalizedPath = normalizePath(path);
-	const cwd = process.cwd();
+	const normalizedCwd = normalizePath(cwd);
 	const isWindows = process.platform === "win32";
 
 	const pathCheck = isWindows ? normalizedPath.toLowerCase() : normalizedPath;
-	const cwdCheck = isWindows ? cwd.toLowerCase() : cwd;
+	const cwdCheck = isWindows ? normalizedCwd.toLowerCase() : normalizedCwd;
 
 	return pathCheck.startsWith(cwdCheck + sep) || pathCheck === cwdCheck;
 }
