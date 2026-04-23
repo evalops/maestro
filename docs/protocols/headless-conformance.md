@@ -8,10 +8,10 @@ implementation detail.
 The executable suite starts in
 [`test/headless/runtime-conformance.test.ts`](../../test/headless/runtime-conformance.test.ts).
 It defines a small runtime adapter, then runs the same scenarios against the
-current TypeScript in-process host. Rust now has a hosted-runner library surface
-under `maestro_tui::hosted_runner::start_hosted_runner`; the next adapter should
-drive the same operations over its HTTP/SSE endpoints without changing the
-scenario body.
+current TypeScript in-process host. It also includes an opt-in Rust adapter that
+spawns `hosted_runner_conformance_fixture` and drives
+`maestro_tui::hosted_runner::start_hosted_runner_with_message_executor` through
+the external HTTP/SSE endpoints.
 
 The provider-neutral hosted runner shape that these scenarios protect is defined
 in [Hosted Runner Contract](./hosted-runner-contract.md).
@@ -20,6 +20,12 @@ Local command:
 
 ```bash
 npm run test -- test/headless/runtime-conformance.test.ts
+```
+
+Rust hosted-runner wire check:
+
+```bash
+MAESTRO_RUST_HOSTED_CONFORMANCE=1 npm run test -- test/headless/runtime-conformance.test.ts
 ```
 
 ## Contract Areas
@@ -56,9 +62,11 @@ A conforming adapter should expose these operations:
 - trigger deterministic approval/request fixtures for server-request coverage
 
 The TypeScript adapter uses `HeadlessInProcessHost` to avoid HTTP server
-bookkeeping. The Rust adapter should drive
-`maestro_tui::hosted_runner::start_hosted_runner` so this suite verifies true wire
-behavior rather than Rust internals.
+bookkeeping. The Rust adapter uses a deterministic fixture binary so the shared
+suite verifies true wire behavior rather than Rust internals. The fixture
+handles prompts and approvals deterministically while Maestro's Rust server owns
+leases, replay, SSE, snapshots, workspace utilities, heartbeat, and disconnect
+semantics.
 
 ## Reference Patterns
 
