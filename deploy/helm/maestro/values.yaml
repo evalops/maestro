@@ -1,5 +1,11 @@
 replicaCount: 1
 
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  automountServiceAccountToken: false
+
 headlessRuntime:
   routing:
     # single-replica keeps headless runtime ownership, SSE replay, connection
@@ -17,6 +23,59 @@ service:
   type: ClusterIP
   port: 8080
 
+podAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1001
+  runAsGroup: 1001
+  seccompProfile:
+    type: RuntimeDefault
+
+writableTmp:
+  enabled: true
+  sizeLimit: 1Gi
+  mountPath: /tmp
+
+terminationGracePeriodSeconds: 45
+
+startupProbe:
+  httpGet:
+    path: /health
+    port: http
+  failureThreshold: 18
+  periodSeconds: 5
+
+gracefulShutdown:
+  enabled: true
+  preStop:
+    exec:
+      command:
+        - /bin/sh
+        - -c
+        - sleep 5
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
 resources:
   requests:
     cpu: 500m
@@ -26,7 +85,10 @@ resources:
     memory: 2Gi
 
 env:
+  HOME: "/tmp"
   IDENTITY_URL: ""
   KEYS_URL: ""
   LLM_GATEWAY_URL: ""
   MEMORY_URL: ""
+  TMPDIR: "/tmp"
+  XDG_CACHE_HOME: "/tmp/.cache"
