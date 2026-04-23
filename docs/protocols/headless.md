@@ -96,15 +96,18 @@ snapshot manifest. The manifest directory comes from `--snapshot-root`,
   "status": "drained",
   "manifest_path": "/workspace/.maestro/runner-snapshots/mrs_123-2026-04-23T00_00_00_000Z.json",
   "manifest": {
-    "manifest_version": "evalops.remote-runner.snapshot-manifest.v1",
+    "protocol_version": "evalops.remote-runner.snapshot-manifest.v1",
     "runner_session_id": "mrs_123",
-    "owner_instance_id": "pod_123",
+    "workspace_id": "workspace_123",
+    "agent_run_id": "run_123",
     "maestro_session_id": "session_123",
     "workspace_root": "/workspace",
     "runtime": {
       "flush_status": "completed",
       "session_id": "session_123",
-      "session_file": "/workspace/.maestro/agent/sessions/session.jsonl"
+      "session_file": "/workspace/.maestro/agent/sessions/session.jsonl",
+      "protocol_version": "2026-04-02",
+      "cursor": 42
     },
     "workspace_export": {
       "mode": "local_path_contract",

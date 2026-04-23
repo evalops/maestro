@@ -46,6 +46,8 @@ The first conformance tranche covers:
 - approval server request emission and protocol response resolution
 - hosted workspace-root enforcement for file reads
 - hosted utility command/search/watch lifecycle
+- hosted drain/snapshot handoff, including manifest export paths and post-drain
+  mutation rejection
 - disconnect behavior that clears subscriptions and controller leases without
   destroying the runtime state
 
@@ -65,6 +67,8 @@ A conforming adapter should expose these operations:
 - disconnect a connection or subscription
 - replay events from a cursor or return a reset snapshot for gaps
 - trigger deterministic approval/request fixtures for server-request coverage
+- drain hosted runtimes into a provider-neutral snapshot manifest when the
+  adapter exposes hosted lifecycle hooks
 
 The TypeScript adapter uses `HeadlessInProcessHost` to avoid HTTP server
 bookkeeping. The Rust adapter uses a deterministic fixture binary so the shared

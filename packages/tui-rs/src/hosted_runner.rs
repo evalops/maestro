@@ -944,6 +944,7 @@ impl SharedRunner {
     fn snapshot(&self, state: &RunnerState) -> RuntimeSnapshot {
         let agent_state = self.message_executor.state().ok().flatten();
         let agent_state = agent_state.as_ref();
+        let host_ready = state.ready && !state.draining;
         let controller_subscription_id = state
             .controller_connection_id
             .as_ref()
@@ -1089,15 +1090,20 @@ impl SharedRunner {
                 last_error_type: agent_state
                     .and_then(|state| state.last_error_type)
                     .map(|error_type| json_string_value(&error_type)),
-                last_status: agent_state
-                    .and_then(|state| state.last_status.clone())
-                    .or_else(|| state.last_status.clone()),
+                last_status: if host_ready {
+                    agent_state
+                        .and_then(|state| state.last_status.clone())
+                        .or_else(|| state.last_status.clone())
+                } else {
+                    state
+                        .last_status
+                        .clone()
+                        .or_else(|| agent_state.and_then(|state| state.last_status.clone()))
+                },
                 last_response_duration_ms: agent_state
                     .and_then(|state| state.last_response_duration_ms),
                 last_ttft_ms: agent_state.and_then(|state| state.last_ttft_ms),
-                is_ready: agent_state
-                    .map(|state| state.is_ready)
-                    .unwrap_or(state.ready && !state.draining),
+                is_ready: host_ready && agent_state.map(|state| state.is_ready).unwrap_or(true),
                 is_responding: agent_state
                     .map(|state| state.is_responding)
                     .unwrap_or(false),
@@ -1460,7 +1466,7 @@ async fn handle_drain(shared: SharedRunner, input: DrainRequest) -> HostedResult
         }
     }
 
-    let manifest_path = write_snapshot_manifest(&shared, &input).await?;
+    let (manifest_path, manifest) = write_snapshot_manifest(&shared, &input).await?;
     {
         let mut state = shared.state.lock().expect("hosted runner state poisoned");
         state.draining = true;
@@ -1477,6 +1483,7 @@ async fn handle_drain(shared: SharedRunner, input: DrainRequest) -> HostedResult
             "requested_by": input.requested_by,
             "reason": input.reason,
             "manifest_path": manifest_path.to_string_lossy(),
+            "manifest": manifest,
         }),
     )
 }
@@ -2282,7 +2289,7 @@ fn handle_file_watch_stop(shared: SharedRunner, watch_id: String) -> HostedResul
 async fn write_snapshot_manifest(
     shared: &SharedRunner,
     input: &DrainRequest,
-) -> HostedResult<PathBuf> {
+) -> HostedResult<(PathBuf, serde_json::Value)> {
     let root = shared.config.snapshot_root.clone().unwrap_or_else(|| {
         shared
             .config
@@ -2303,6 +2310,48 @@ async fn write_snapshot_manifest(
         (state.session_id.clone(), shared.snapshot(&state))
     };
     let has_runtime_activity = snapshot.cursor > 0;
+    let export_paths = input
+        .export_paths
+        .clone()
+        .unwrap_or_else(|| vec![".".to_string()]);
+    let mut workspace_export_paths = Vec::with_capacity(export_paths.len());
+    for export_path in &export_paths {
+        let resolved_path = resolve_workspace_path(
+            &shared.config.workspace_root,
+            None,
+            Some(export_path.as_str()),
+        )?;
+        let metadata = tokio::fs::metadata(&resolved_path).await.ok();
+        let path_type = metadata
+            .as_ref()
+            .map(|metadata| {
+                if metadata.is_dir() {
+                    "directory"
+                } else if metadata.is_file() {
+                    "file"
+                } else {
+                    "other"
+                }
+            })
+            .unwrap_or("missing");
+        let relative_path = resolved_path
+            .strip_prefix(&shared.config.workspace_root)
+            .ok()
+            .and_then(|path| {
+                if path.as_os_str().is_empty() {
+                    Some(".".to_string())
+                } else {
+                    path.to_str().map(ToOwned::to_owned)
+                }
+            })
+            .unwrap_or_else(|| export_path.clone());
+        workspace_export_paths.push(json!({
+            "input": export_path,
+            "path": resolved_path,
+            "relative_path": relative_path,
+            "type": path_type,
+        }));
+    }
     let body = json!({
         "protocol_version": HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION,
         "runner_session_id": shared.config.runner_session_id,
@@ -2329,14 +2378,18 @@ async fn write_snapshot_manifest(
                 None
             },
         },
+        "workspace_export": {
+            "mode": "local_path_contract",
+            "paths": workspace_export_paths,
+        },
         "snapshot": snapshot,
     });
-    let body = serde_json::to_vec_pretty(&body)
+    let body_bytes = serde_json::to_vec_pretty(&body)
         .map_err(|error| HostedError::new(500, "runtime_failed", error.to_string()))?;
-    tokio::fs::write(&path, body)
+    tokio::fs::write(&path, body_bytes)
         .await
         .map_err(|error| HostedError::new(500, "runtime_failed", error.to_string()))?;
-    Ok(path)
+    Ok((path, body))
 }
 
 fn safe_manifest_component(value: &str) -> String {
@@ -3020,6 +3073,24 @@ mod tests {
         assert_eq!(drain["status"], "drained");
         let manifest_path = drain["manifest_path"].as_str().expect("manifest path");
         assert!(Path::new(manifest_path).exists());
+        let manifest: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(manifest_path).expect("manifest contents"),
+        )
+        .expect("manifest json");
+        assert_eq!(drain["manifest"], manifest);
+        assert_eq!(
+            manifest["protocol_version"],
+            HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION
+        );
+        assert_eq!(manifest["workspace_export"]["mode"], "local_path_contract");
+        assert_eq!(
+            manifest["workspace_export"]["paths"][0]["relative_path"],
+            "."
+        );
+        assert_eq!(
+            manifest["workspace_export"]["paths"][0]["type"],
+            "directory"
+        );
 
         let post_drain_identity: HostedRunnerIdentity = client
             .get(format!(
@@ -3035,6 +3106,20 @@ mod tests {
         assert!(!post_drain_identity.ready);
         assert!(post_drain_identity.draining);
 
+        let post_drain_state: serde_json::Value = client
+            .get(format!(
+                "{}/api/headless/sessions/sess_test/state",
+                handle.base_url()
+            ))
+            .send()
+            .await
+            .expect("state response")
+            .json()
+            .await
+            .expect("state json");
+        assert_eq!(post_drain_state["state"]["is_ready"], false);
+        assert_eq!(post_drain_state["state"]["last_status"], "Drained");
+
         let attach = client
             .post(format!("{}/api/headless/connections", handle.base_url()))
             .json(&json!({"sessionId": "sess_test", "role": "controller"}))
@@ -3048,6 +3133,7 @@ mod tests {
     #[tokio::test]
     async fn drain_manifest_records_runtime_cursor_after_activity() {
         let workspace = tempdir().expect("workspace");
+        std::fs::write(workspace.path().join("notes.md"), "notes").expect("workspace file");
         let handle = start_hosted_runner(test_config(workspace.path().to_path_buf()))
             .await
             .expect("start hosted runner");
@@ -3088,7 +3174,7 @@ mod tests {
                 "{}/.well-known/evalops/remote-runner/drain",
                 handle.base_url()
             ))
-            .json(&json!({"reason": "cursor-check"}))
+            .json(&json!({"reason": "cursor-check", "export_paths": ["notes.md"]}))
             .send()
             .await
             .expect("drain response")
@@ -3106,6 +3192,16 @@ mod tests {
             HEADLESS_PROTOCOL_VERSION
         );
         assert!(manifest["runtime"]["cursor"].as_u64().unwrap_or_default() >= 2);
+        assert_eq!(drain["manifest"], manifest);
+        assert_eq!(
+            manifest["workspace_export"]["paths"][0]["input"],
+            "notes.md"
+        );
+        assert_eq!(
+            manifest["workspace_export"]["paths"][0]["relative_path"],
+            "notes.md"
+        );
+        assert_eq!(manifest["workspace_export"]["paths"][0]["type"], "file");
 
         handle.shutdown().await;
     }

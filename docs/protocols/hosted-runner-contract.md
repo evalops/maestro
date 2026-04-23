@@ -172,14 +172,18 @@ The Rust crate exposes a first hosted-runner library surface through
 runtime for tests and local adapters, exposes the identity/readiness/drain
 contract, serves the replayable headless attach endpoints, enforces
 workspace-root containment for file, watch, and command utility operations, and
-writes the local drain manifest. It deliberately keeps provider scheduling and
-artifact upload out of Rust; Platform still owns those concerns.
+writes the local drain manifest with the requested workspace export paths. It
+deliberately keeps provider scheduling and artifact upload out of Rust;
+Platform still owns those concerns.
 
 The Rust surface now has an opt-in hosted conformance adapter. The adapter
 spawns a deterministic fixture binary, attaches over HTTP/SSE, and exercises the
 same shared scenarios as the TypeScript in-process host while the Rust server
 owns leases, replay, snapshots, workspace utilities, heartbeat, and disconnect
-behavior. It is not yet the final `maestro hosted-runner` CLI wrapper.
+behavior. The required hosted adapter also covers the drain handoff shape:
+manifest response, persisted snapshot file, export-path recording, and
+post-drain mutation rejection. It is not yet the final `maestro hosted-runner`
+CLI wrapper.
 
 ## Error Vocabulary
 
