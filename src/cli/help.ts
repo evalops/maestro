@@ -98,8 +98,8 @@ export function printHelp(version: string) {
   # Import a portable session log into this workspace
   maestro import ./session.json
 
-  # Start a hosted EvalOps runner session
-  maestro remote start --workspace ws_123 --repo evalops/foo --branch main --ttl 90m
+  # Start a hosted EvalOps runner session and wait for attach readiness
+  maestro remote start --workspace ws_123 --repo evalops/foo --branch main --ttl 90m --wait --verify
 
   # Run a single-session hosted runtime pod entrypoint
   maestro hosted-runner --runner-session-id mrs_abc --workspace-root /workspace --listen 0.0.0.0:8080
@@ -170,9 +170,9 @@ export function printHelp(version: string) {
   maestro memory watch [id] [ms]  Poll status/metrics continuously`,
 	)}`;
 	const remoteSection = `${sectionHeading("maestro remote")}${muted(
-		`  maestro remote start --workspace <id> --repo <repo> --branch <branch> [--ttl 90m]
+		`  maestro remote start --workspace <id> --repo <repo> --branch <branch> [--ttl 90m] [--wait] [--verify]
   maestro remote list --workspace <id> [--state running]
-  maestro remote attach <session-id> [--verify]
+  maestro remote attach <session-id> [--verify] [--print-env]
   maestro remote extend <session-id> --ttl 2h
   maestro remote stop <session-id> [--reason <text>]`,
 	)}`;

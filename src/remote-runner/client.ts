@@ -18,6 +18,8 @@ import { fetchDownstream } from "../utils/downstream-http.js";
 export const DEFAULT_REMOTE_RUNNER_BASE_URL = "https://runner.evalops.dev";
 const DEFAULT_TIMEOUT_MS = 5_000;
 const DEFAULT_MAX_ATTEMPTS = 2;
+export const DEFAULT_REMOTE_RUNNER_WAIT_TIMEOUT_MS = 5 * 60 * 1000;
+export const DEFAULT_REMOTE_RUNNER_WAIT_POLL_INTERVAL_MS = 5_000;
 
 const CREATE_RUNNER_SESSION_PATH = platformConnectMethodPath(
 	PLATFORM_CONNECT_METHODS.remoteRunner.createRunnerSession,
@@ -243,6 +245,34 @@ export interface RemoteRunnerStatus {
 	service?: string;
 	workspaceId?: string;
 	downstreamPolicy?: string;
+}
+
+export interface WaitForRunnerSessionReadyOptions
+	extends RemoteRunnerClientOptions {
+	timeoutMs?: number;
+	pollIntervalMs?: number;
+}
+
+export class WaitForRunnerSessionReadyError extends Error {
+	readonly code: "timeout" | "terminal_state";
+	readonly elapsedMs: number;
+	readonly attempts: number;
+	readonly session?: RunnerSession;
+
+	constructor(input: {
+		message: string;
+		code: "timeout" | "terminal_state";
+		elapsedMs: number;
+		attempts: number;
+		session?: RunnerSession;
+	}) {
+		super(input.message);
+		this.name = "WaitForRunnerSessionReadyError";
+		this.code = input.code;
+		this.elapsedMs = input.elapsedMs;
+		this.attempts = input.attempts;
+		this.session = input.session;
+	}
 }
 
 function firstString(
@@ -500,6 +530,35 @@ function normalizeState(
 		throw new Error(`Unknown runner session state: ${state}`);
 	}
 	return matched;
+}
+
+function stateMatches(
+	state: RunnerSessionState | string | undefined,
+	expected: readonly RunnerSessionState[],
+): boolean {
+	if (!state) {
+		return false;
+	}
+	try {
+		return expected.includes(normalizeState(state));
+	} catch {
+		return false;
+	}
+}
+
+function describeState(state: RunnerSessionState | string | undefined): string {
+	return (
+		state
+			?.replace(/^RUNNER_SESSION_STATE_/u, "")
+			.toLowerCase()
+			.replaceAll("_", "-") ?? "unknown"
+	);
+}
+
+function waitDelay(ms: number): Promise<void> {
+	return new Promise((resolve) => {
+		setTimeout(resolve, ms);
+	});
 }
 
 function normalizeConfig(
@@ -869,6 +928,83 @@ export async function getRemoteRunnerStatus(
 			),
 		}),
 	);
+}
+
+export async function waitForRunnerSessionReady(
+	sessionId: string,
+	options: WaitForRunnerSessionReadyOptions = {},
+): Promise<{
+	session: RunnerSession;
+	attempts: number;
+	elapsedMs: number;
+}> {
+	const timeoutMs = options.timeoutMs ?? DEFAULT_REMOTE_RUNNER_WAIT_TIMEOUT_MS;
+	const pollIntervalMs =
+		options.pollIntervalMs ?? DEFAULT_REMOTE_RUNNER_WAIT_POLL_INTERVAL_MS;
+	if (!Number.isFinite(timeoutMs) || timeoutMs < 1) {
+		throw new Error("Remote runner wait timeout must be at least 1ms");
+	}
+	if (!Number.isFinite(pollIntervalMs) || pollIntervalMs < 0) {
+		throw new Error("Remote runner poll interval must be 0ms or greater");
+	}
+
+	const readyStates = [
+		RUNNER_SESSION_STATES.RUNNING,
+		RUNNER_SESSION_STATES.IDLE,
+	] as const;
+	const terminalStates = [
+		RUNNER_SESSION_STATES.STOPPED,
+		RUNNER_SESSION_STATES.EXPIRED,
+		RUNNER_SESSION_STATES.FAILED,
+		RUNNER_SESSION_STATES.LOST,
+	] as const;
+
+	const startedAt = Date.now();
+	let attempts = 0;
+	let lastSession: RunnerSession | undefined;
+
+	while (true) {
+		attempts += 1;
+		lastSession = await getRunnerSession(sessionId, options);
+		const elapsedMs = Date.now() - startedAt;
+
+		if (stateMatches(lastSession.state, readyStates)) {
+			return {
+				session: lastSession,
+				attempts,
+				elapsedMs,
+			};
+		}
+
+		if (stateMatches(lastSession.state, terminalStates)) {
+			const stopReason = lastSession.stopReason?.trim();
+			throw new WaitForRunnerSessionReadyError({
+				message: stopReason
+					? `Remote runner session ${sessionId} entered terminal state ${describeState(lastSession.state)}: ${stopReason}`
+					: `Remote runner session ${sessionId} entered terminal state ${describeState(lastSession.state)}`,
+				code: "terminal_state",
+				elapsedMs,
+				attempts,
+				session: lastSession,
+			});
+		}
+
+		if (elapsedMs >= timeoutMs) {
+			throw new WaitForRunnerSessionReadyError({
+				message: `Timed out after ${timeoutMs}ms waiting for remote runner session ${sessionId} to become ready (last state: ${describeState(lastSession.state)})`,
+				code: "timeout",
+				elapsedMs,
+				attempts,
+				session: lastSession,
+			});
+		}
+
+		const remainingMs = timeoutMs - elapsedMs;
+		const sleepMs = Math.min(pollIntervalMs, remainingMs);
+		if (sleepMs > 0) {
+			await waitDelay(sleepMs);
+		}
+	}
 }
 
 export async function verifyRunnerHeadlessAttach(input: {
