@@ -446,7 +446,9 @@ async function ensureRuntime(
 		context,
 		sessionManager,
 	});
-	claimHostedRunnerSession(context, runtime.getSnapshot().session_id);
+	if (context.hostedRunner) {
+		claimHostedRunnerSession(context, runtime.getSnapshot().session_id);
+	}
 	return runtime;
 }
 
@@ -500,7 +502,9 @@ function getRuntime(
 	if (!runtime) {
 		throw new ApiError(404, "Headless session not found");
 	}
-	claimHostedRunnerSession(context, runtime.getSnapshot().session_id);
+	if (context.hostedRunner) {
+		claimHostedRunnerSession(context, runtime.getSnapshot().session_id);
+	}
 	return runtime;
 }
 
