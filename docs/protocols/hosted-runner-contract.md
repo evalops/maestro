@@ -170,10 +170,13 @@ POST /.well-known/evalops/remote-runner/drain
 The manifest protocol is
 `evalops.remote-runner.snapshot-manifest.v1`. Both Rust-hosted and
 TypeScript-hosted drain paths write this same local manifest envelope, including
-the runtime flush status, workspace export contract, and headless runtime
-snapshot. Maestro does not upload to GCS, S3, Modal storage, Daytona storage, or
-any other provider store. Upload, retention, workspace artifact hydration, and
-choosing which manifest should be restored are Platform responsibilities.
+the runtime flush status, workspace export contract, headless runtime snapshot,
+and `retention_policy` metadata describing visibility and redaction classes.
+Maestro does not upload to GCS, S3, Modal storage, Daytona storage, or any
+other provider store. Upload, retention, workspace artifact hydration, and
+choosing which manifest should be restored are Platform responsibilities. See
+[Hosted Runner Retention](./hosted-runner-retention.md) for the policy rules
+that travel with the manifest.
 
 ## Rust Hosted Surface
 
@@ -333,6 +336,7 @@ startup and transport details should vary.
 
 - [Headless protocol reference](./headless.md)
 - [Headless runtime conformance](./headless-conformance.md)
+- [Hosted runner retention](./hosted-runner-retention.md)
 - [Kubernetes node isolation and NodeRestriction](https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#node-isolation-restriction)
 - [GKE Sandbox with gVisor](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/sandbox-pods)
 - [GKE Workload Identity Federation](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/workload-identity)

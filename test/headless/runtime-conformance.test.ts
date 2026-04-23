@@ -1478,6 +1478,16 @@ function defineHeadlessRuntimeConformanceSuite(
 				maestro_session_id: "sess_conformance",
 				reason: "conformance_stop",
 				requested_by: "runtime-conformance",
+				retention_policy: {
+					policy_version: "evalops.remote-runner.retention.v1",
+					managed_by: "platform",
+					visibility: {
+						control_plane_metadata: "operator",
+						workspace_export: "tenant",
+						runtime_snapshot: "internal",
+						runtime_logs: "operator",
+					},
+				},
 			});
 			const runtimeManifest = manifest.runtime as {
 				cursor?: number;

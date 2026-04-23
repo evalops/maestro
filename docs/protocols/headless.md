@@ -24,6 +24,7 @@ Source of truth:
 - runtime message shapes: [src/cli/headless-protocol.ts](../../src/cli/headless-protocol.ts)
 - transport implementation: [src/cli/headless.ts](../../src/cli/headless.ts)
 - hosted runner contract: [docs/protocols/hosted-runner-contract.md](./hosted-runner-contract.md)
+- hosted runner retention: [docs/protocols/hosted-runner-retention.md](./hosted-runner-retention.md)
 - conformance suite: [docs/protocols/headless-conformance.md](./headless-conformance.md)
 
 Compatibility expectations:
@@ -123,6 +124,29 @@ snapshot manifest. The manifest directory comes from `--snapshot-root`,
         }
       ]
     },
+    "retention_policy": {
+      "policy_version": "evalops.remote-runner.retention.v1",
+      "managed_by": "platform",
+      "visibility": {
+        "control_plane_metadata": "operator",
+        "workspace_export": "tenant",
+        "runtime_snapshot": "internal",
+        "runtime_logs": "operator"
+      },
+      "redaction": {
+        "required_before_external_persistence": [
+          "runtime_snapshot",
+          "runtime_logs"
+        ],
+        "forbidden_plaintext": [
+          "provider_credentials",
+          "tool_secrets",
+          "attach_tokens",
+          "artifact_access_tokens",
+          "raw_environment"
+        ]
+      }
+    },
     "snapshot": {
       "protocolVersion": "2026-04-02",
       "session_id": "session_123",
@@ -154,7 +178,8 @@ but runtime flush failed before completion. Platform should treat the manifest
 as a partial handoff record, stop sending attach traffic, and decide whether to
 retry drain or terminate the pod. Maestro does not upload to GCS or require a
 Cloud Storage mount; Platform/deploy own artifact upload, retention, and any
-future resume controller behavior.
+future resume controller behavior. The visibility and redaction rules for those
+uploaded artifacts live in [Hosted Runner Retention](./hosted-runner-retention.md).
 
 The runtime flush status is the field that controls restore readiness:
 `completed` is attachable, `failed` is an interrupted restore, and `skipped`
