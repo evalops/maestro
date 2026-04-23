@@ -2,6 +2,10 @@ import { readFile } from "node:fs/promises";
 import { relative, resolve } from "node:path";
 import { isProbablyBinary } from "../utils/file-content.js";
 import { validatePath } from "../utils/path-validation.js";
+import {
+	assertWithinHostedWorkspaceRoot,
+	resolveHostedWorkspacePath,
+} from "./workspace-root.js";
 
 export interface HeadlessUtilityFileReadRequest {
 	path: string;
@@ -44,7 +48,7 @@ function toLines(text: string): string[] {
 export async function readWorkspaceFile(
 	request: HeadlessUtilityFileReadRequest,
 ): Promise<HeadlessUtilityFileReadResult> {
-	const cwd = resolve(request.cwd ?? process.cwd());
+	const cwd = resolveHostedWorkspacePath(request.cwd) ?? resolve(process.cwd());
 	const offset = Math.max(1, request.offset ?? 1);
 	const limit = Math.max(
 		1,
@@ -57,6 +61,7 @@ export async function readWorkspaceFile(
 		mustBeReadable: true,
 		maxSize: MAX_FILE_BYTES,
 	});
+	assertWithinHostedWorkspaceRoot(validatedPath);
 	const buffer = await readFile(validatedPath);
 	if (isProbablyBinary(buffer)) {
 		throw new Error(

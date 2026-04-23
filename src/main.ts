@@ -440,6 +440,18 @@ export async function main(args: string[]) {
 		process.exit(1);
 	}
 
+	// Handle `maestro hosted-runner` before importing web-server so hosted
+	// defaults are visible to its module-level runtime profile.
+	if (parsed.command === "hosted-runner") {
+		const { handleHostedRunnerCommand } = await import(
+			"./cli/commands/hosted-runner.js"
+		);
+		await handleHostedRunnerCommand(parsed.commandArgs ?? [], {
+			defaultPort: parsed.port,
+		});
+		return;
+	}
+
 	// Handle `maestro web` early exit (start the bundled web server + UI).
 	if (parsed.command === "web") {
 		if (parsed.messages.length > 0) {

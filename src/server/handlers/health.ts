@@ -1,9 +1,11 @@
+import { stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
 	isDatabaseConfigured,
 	isDbAvailable,
 	testConnection,
 } from "../../db/client.js";
+import type { HostedRunnerContext } from "../app-context.js";
 import { sendJson } from "../server-utils.js";
 
 export interface HealthCheckResult {
@@ -13,22 +15,80 @@ export interface HealthCheckResult {
 			status: "up" | "down" | "unconfigured";
 			latencyMs?: number;
 		};
+		hostedRunner?: {
+			status: "ready" | "draining" | "unavailable";
+			runnerSessionId: string;
+			workspaceRoot: string;
+			workspaceId?: string;
+			agentRunId?: string;
+			maestroSessionId?: string;
+			error?: string;
+		};
 	};
 	timestamp: number;
 }
+
+type HostedRunnerHealthCheck = NonNullable<
+	HealthCheckResult["checks"]["hostedRunner"]
+>;
 
 export async function handleReadyz(
 	req: IncomingMessage,
 	res: ServerResponse,
 	cors: Record<string, string>,
+	hostedRunner?: HostedRunnerContext,
 ): Promise<void> {
-	const result = await runHealthChecks();
+	const result = await runHealthChecks({ hostedRunner });
 
 	const httpStatus = result.status === "unhealthy" ? 503 : 200;
 	sendJson(res, httpStatus, result, cors, req);
 }
 
-export async function runHealthChecks(): Promise<HealthCheckResult> {
+async function checkHostedRunnerWorkspace(
+	hostedRunner: HostedRunnerContext,
+): Promise<HostedRunnerHealthCheck> {
+	const base = {
+		runnerSessionId: hostedRunner.runnerSessionId,
+		workspaceRoot: hostedRunner.workspaceRoot,
+		workspaceId: hostedRunner.workspaceId,
+		agentRunId: hostedRunner.agentRunId,
+		maestroSessionId:
+			hostedRunner.activeMaestroSessionId ??
+			hostedRunner.configuredMaestroSessionId,
+	};
+	if (hostedRunner.draining) {
+		return {
+			...base,
+			status: "draining",
+		};
+	}
+	try {
+		const stats = await stat(hostedRunner.workspaceRoot);
+		if (!stats.isDirectory()) {
+			return {
+				...base,
+				status: "unavailable",
+				error: "workspace root is not a directory",
+			};
+		}
+		return {
+			...base,
+			status: "ready",
+		};
+	} catch (error) {
+		return {
+			...base,
+			status: "unavailable",
+			error: error instanceof Error ? error.message : String(error),
+		};
+	}
+}
+
+export async function runHealthChecks(
+	options: {
+		hostedRunner?: HostedRunnerContext;
+	} = {},
+): Promise<HealthCheckResult> {
 	const checks: HealthCheckResult["checks"] = {
 		database: { status: "unconfigured" },
 	};
@@ -52,6 +112,16 @@ export async function runHealthChecks(): Promise<HealthCheckResult> {
 		} else {
 			checks.database.status = "down";
 			overallStatus = "degraded";
+		}
+	}
+
+	if (options.hostedRunner) {
+		const hostedRunnerCheck = await checkHostedRunnerWorkspace(
+			options.hostedRunner,
+		);
+		checks.hostedRunner = hostedRunnerCheck;
+		if (hostedRunnerCheck.status !== "ready") {
+			overallStatus = "unhealthy";
 		}
 	}
 

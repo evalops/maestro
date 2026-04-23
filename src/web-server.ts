@@ -59,7 +59,10 @@ import {
 } from "./providers/auth.js";
 import { registerBackgroundTaskShutdownHooks } from "./runtime/background-task-hooks.js";
 import { configureSafeMode } from "./safety/safe-mode.js";
-import type { WebServerContext } from "./server/app-context.js";
+import type {
+	HostedRunnerContext,
+	WebServerContext,
+} from "./server/app-context.js";
 import { recordApiRequest } from "./telemetry.js";
 import { artifactsClientTool } from "./tools/artifacts-client.js";
 import { askUserClientTool } from "./tools/ask-user-client.js";
@@ -716,7 +719,19 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 	});
 }
 
-export async function startWebServer(port = 8080) {
+export interface StartWebServerOptions {
+	host?: string;
+	hostedRunner?: HostedRunnerContext;
+}
+
+export async function startWebServer(
+	port = 8080,
+	options: StartWebServerOptions = {},
+) {
+	if (options.hostedRunner) {
+		context.hostedRunner = options.hostedRunner;
+	}
+
 	registerCrashHandlers();
 	await reloadModelConfig();
 	await initLifecycle();
@@ -854,19 +869,37 @@ export async function startWebServer(port = 8080) {
 		});
 	});
 
-	server.listen(port, () => {
+	const onListening = () => {
 		logStartup(port);
+		if (context.hostedRunner) {
+			logger.info("Hosted runner mode enabled", {
+				runnerSessionId: context.hostedRunner.runnerSessionId,
+				workspaceRoot: context.hostedRunner.workspaceRoot,
+				workspaceId: context.hostedRunner.workspaceId,
+				agentRunId: context.hostedRunner.agentRunId,
+				listenHost: options.host,
+				listenPort: port,
+			});
+		}
 		startStatsCollection();
-	});
+	};
+	if (options.host) {
+		server.listen(port, options.host, onListening);
+	} else {
+		server.listen(port, onListening);
+	}
 
 	// Don't register signal handlers in test mode - vitest manages process lifecycle
 	const isTestMode =
 		process.env.VITEST === "true" || process.env.NODE_ENV === "test";
 	if (!isTestMode) {
-		process.on("SIGINT", async () => {
+		const beginShutdown = async (signal: NodeJS.Signals) => {
 			if (shuttingDown) return;
 			shuttingDown = true;
-			logger.info("SIGINT received. Starting graceful shutdown...");
+			if (context.hostedRunner) {
+				context.hostedRunner.draining = true;
+			}
+			logger.info(`${signal} received. Starting graceful shutdown...`);
 			stopStatsCollection();
 			disposeCheckpointService();
 			// End enterprise session if initialized
@@ -906,6 +939,12 @@ export async function startWebServer(port = 8080) {
 				logger.info("No active requests. Exiting.");
 				process.exit(0);
 			}
+		};
+		process.on("SIGINT", () => {
+			void beginShutdown("SIGINT");
+		});
+		process.on("SIGTERM", () => {
+			void beginShutdown("SIGTERM");
 		});
 	}
 

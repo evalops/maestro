@@ -17,6 +17,21 @@ export interface WebServerConfig {
 	defaultApprovalMode: ApprovalMode;
 	defaultProvider: string;
 	defaultModelId: string;
+	hostedRunner?: HostedRunnerContext;
+}
+
+export interface HostedRunnerContext {
+	enabled: true;
+	runnerSessionId: string;
+	workspaceRoot: string;
+	listenHost?: string;
+	listenPort?: number;
+	workspaceId?: string;
+	agentRunId?: string;
+	attachAudience?: string;
+	configuredMaestroSessionId?: string;
+	activeMaestroSessionId?: string;
+	draining?: boolean;
 }
 
 export interface WebServerServices {
