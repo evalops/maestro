@@ -406,7 +406,6 @@ async function createAgent(
 	thinkingLevel: ThinkingLevel = "off",
 	approvalMode: ApprovalMode = DEFAULT_APPROVAL_MODE,
 	options?: {
-		cwd?: string;
 		enableClientTools?: boolean;
 		useClientAskUser?: boolean;
 		includeVscodeTools?: boolean;
@@ -417,7 +416,6 @@ async function createAgent(
 		toolRetryService?: ToolRetryService;
 	},
 ): Promise<Agent> {
-	const cwd = options?.cwd ?? process.cwd();
 	const sessionTokenCounter = async (sessionId: string) => {
 		try {
 			const { isDatabaseConfigured } = await getDbModule();
@@ -458,7 +456,6 @@ async function createAgent(
 
 	const transport = new ProviderTransport({
 		getAuthContext: async (provider: string) => authResolver(provider),
-		cwd,
 		approvalService:
 			options?.approvalService ?? new WebActionApprovalService(approvalMode),
 		toolRetryService: options?.toolRetryService,
@@ -511,16 +508,16 @@ async function createAgent(
 			new TodoContextSource(),
 			new BackgroundTaskContextSource(),
 			new CurrentDateContextSource(),
-			new GitSnapshotContextSource(cwd),
-			new LspContextSource(cwd),
+			new GitSnapshotContextSource(process.cwd()),
+			new LspContextSource(),
 			new FrameworkPreferenceContextSource(),
-			new TeamMemoryContextSource(cwd),
+			new TeamMemoryContextSource(process.cwd()),
 			new IDEContextSource(),
 		],
 	});
 
 	// Initialize composer manager for this agent (enables sub-agents/composers)
-	composerManager.initialize(agent, systemPrompt, tools, cwd);
+	composerManager.initialize(agent, systemPrompt, tools, process.cwd());
 
 	return agent;
 }
@@ -528,14 +525,13 @@ async function createAgent(
 async function createBackgroundAgent(
 	registeredModel: RegisteredModel,
 	options?: {
-		cwd?: string;
 		systemPrompt?: string;
 	},
 ): Promise<Agent> {
 	return createBackgroundTextAgent({
 		model: registeredModel,
 		systemPrompt: options?.systemPrompt ?? getMemoryExtractionSystemPrompt(),
-		cwd: options?.cwd ?? process.cwd(),
+		cwd: process.cwd(),
 		getAuthContext: async (provider: string) => authResolver(provider),
 	});
 }

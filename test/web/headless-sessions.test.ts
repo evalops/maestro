@@ -1,5 +1,4 @@
 import { EventEmitter } from "node:events";
-import { realpathSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
@@ -43,10 +42,7 @@ import {
 	type HeadlessRuntimeStreamEnvelope,
 } from "../../src/server/headless-runtime-service.js";
 import { serverRequestManager } from "../../src/server/server-request-manager.js";
-import {
-	ApiError,
-	respondWithApiError,
-} from "../../src/server/server-utils.js";
+import { ApiError } from "../../src/server/server-utils.js";
 import { createSessionManagerForRequest } from "../../src/server/session-scope.js";
 import { ServerRequestToolRetryService } from "../../src/server/tool-retry-service.js";
 import { SessionManager } from "../../src/session/manager.js";
@@ -1568,6 +1564,37 @@ describe("headless session handlers", () => {
 		);
 	});
 
+	it("rejects hosted runner reads for sessions outside the bound session", () => {
+		const context = createContext({
+			hostedRunner: {
+				enabled: true,
+				runnerSessionId: "runner_1",
+				workspaceRoot: process.cwd(),
+				configuredMaestroSessionId: "sess_bound",
+			},
+		});
+		const req = createJsonRequest(
+			"GET",
+			"/api/headless/sessions/sess_other/state",
+		);
+		const res = new MockResponse();
+		res.req = req;
+
+		expect(() =>
+			handleHeadlessSessionState(
+				req,
+				res as unknown as ServerResponse,
+				context,
+				{ id: "sess_other" },
+			),
+		).toThrow(
+			expect.objectContaining({
+				statusCode: 409,
+				message: "Hosted runner is bound to Maestro session sess_bound",
+			}),
+		);
+	});
+
 	it("reuses an existing explicit connection when the caller provides connectionId", async () => {
 		const fakeAgent = new FakeAgent();
 		const context = createContext({
@@ -2764,223 +2791,6 @@ describe("headless session handlers", () => {
 				includeConductorTools: false,
 			}),
 		);
-	});
-
-	it("uses an explicit workspace root for agent creation and session state", async () => {
-		const workspaceRoot = await mkdtemp(
-			join(tmpdir(), "maestro-headless-workspace-root-"),
-		);
-		try {
-			const createAgent = vi.fn().mockResolvedValue(new FakeAgent());
-			const context = createContext({ createAgent });
-			const req = createJsonRequest("POST", "/api/headless/sessions", {
-				model: TEST_MODEL.id,
-				workspaceRoot,
-			});
-			const res = new MockResponse();
-			res.req = req;
-
-			await handleHeadlessSessionCreate(
-				req,
-				res as unknown as ServerResponse,
-				context,
-			);
-
-			const resolvedWorkspaceRoot = realpathSync(workspaceRoot);
-			expect(createAgent).toHaveBeenCalledWith(
-				TEST_MODEL,
-				"off",
-				"prompt",
-				expect.objectContaining({
-					cwd: resolvedWorkspaceRoot,
-				}),
-			);
-			expect(JSON.parse(res.body)).toMatchObject({
-				state: {
-					cwd: resolvedWorkspaceRoot,
-				},
-			});
-		} finally {
-			await rm(workspaceRoot, { recursive: true, force: true });
-		}
-	});
-
-	it("rejects explicit workspace roots that do not match the hosted runner root", async () => {
-		const hostedWorkspaceRoot = await mkdtemp(
-			join(tmpdir(), "maestro-headless-hosted-root-"),
-		);
-		const requestedWorkspaceRoot = await mkdtemp(
-			join(tmpdir(), "maestro-headless-requested-root-"),
-		);
-		try {
-			const context = createContext({
-				hostedRunner: {
-					enabled: true,
-					runnerSessionId: "mrs_test",
-					workspaceRoot: hostedWorkspaceRoot,
-				},
-			});
-			const req = createJsonRequest("POST", "/api/headless/sessions", {
-				model: TEST_MODEL.id,
-				workspaceRoot: requestedWorkspaceRoot,
-			});
-			const res = new MockResponse();
-			res.req = req;
-
-			await expect(
-				handleHeadlessSessionCreate(
-					req,
-					res as unknown as ServerResponse,
-					context,
-				),
-			).rejects.toMatchObject({
-				statusCode: 409,
-				message: `workspaceRoot must match hosted runner workspace root: ${realpathSync(
-					hostedWorkspaceRoot,
-				)}`,
-			});
-		} finally {
-			await rm(hostedWorkspaceRoot, { recursive: true, force: true });
-			await rm(requestedWorkspaceRoot, { recursive: true, force: true });
-		}
-	});
-
-	it("returns structured runtime owner errors for hosted session mismatches", async () => {
-		const workspaceRoot = await mkdtemp(
-			join(tmpdir(), "maestro-headless-hosted-owner-"),
-		);
-		try {
-			const context = createContext({
-				hostedRunner: {
-					enabled: true,
-					runnerSessionId: "mrs_test",
-					ownerInstanceId: "pod-a",
-					workspaceRoot,
-					workspaceId: "ws_1",
-					agentRunId: "run_1",
-					activeMaestroSessionId: "session_owner",
-				},
-			});
-			const req = createJsonRequest("POST", "/api/headless/sessions", {
-				model: TEST_MODEL.id,
-				sessionId: "session_other",
-			});
-			const res = new MockResponse();
-			res.req = req;
-
-			let caught: unknown;
-			try {
-				await handleHeadlessSessionCreate(
-					req,
-					res as unknown as ServerResponse,
-					context,
-				);
-			} catch (error) {
-				caught = error;
-			}
-
-			expect(caught).toBeInstanceOf(ApiError);
-			expect((caught as ApiError).errorType).toBe("runtime_owned_elsewhere");
-
-			const errorRes = new MockResponse();
-			errorRes.req = req;
-			respondWithApiError(
-				errorRes as unknown as ServerResponse,
-				caught,
-				500,
-				{},
-				req,
-			);
-
-			expect(errorRes.statusCode).toBe(409);
-			expect(JSON.parse(errorRes.body)).toMatchObject({
-				error: "Hosted runner is bound to Maestro session session_owner",
-				code: "ALREADY_EXISTS",
-				error_type: "runtime_owned_elsewhere",
-				details: [
-					{
-						reason: "runtime_owned_elsewhere",
-						domain: "maestro.hosted_runner",
-						metadata: {
-							runner_session_id: "mrs_test",
-							owner_instance_id: "pod-a",
-							workspace_id: "ws_1",
-							agent_run_id: "run_1",
-							maestro_session_id: "session_owner",
-							requested_maestro_session_id: "session_other",
-						},
-					},
-				],
-			});
-		} finally {
-			await rm(workspaceRoot, { recursive: true, force: true });
-		}
-	});
-
-	it("reports runtime owner errors before local runtime lookup", async () => {
-		const workspaceRoot = await mkdtemp(
-			join(tmpdir(), "maestro-headless-hosted-owner-"),
-		);
-		try {
-			const context = createContext({
-				hostedRunner: {
-					enabled: true,
-					runnerSessionId: "mrs_test",
-					ownerInstanceId: "pod-a",
-					workspaceRoot,
-					activeMaestroSessionId: "session_owner",
-				},
-			});
-			const req = createJsonRequest(
-				"GET",
-				"/api/headless/sessions/session_other/state",
-			);
-			const res = new MockResponse();
-			res.req = req;
-
-			let caught: unknown;
-			try {
-				handleHeadlessSessionState(
-					req,
-					res as unknown as ServerResponse,
-					context,
-					{
-						id: "session_other",
-					},
-				);
-			} catch (error) {
-				caught = error;
-			}
-
-			expect(caught).toBeInstanceOf(ApiError);
-
-			const errorRes = new MockResponse();
-			errorRes.req = req;
-			respondWithApiError(
-				errorRes as unknown as ServerResponse,
-				caught,
-				500,
-				{},
-				req,
-			);
-
-			expect(errorRes.statusCode).toBe(409);
-			expect(JSON.parse(errorRes.body)).toMatchObject({
-				error_type: "runtime_owned_elsewhere",
-				details: [
-					{
-						reason: "runtime_owned_elsewhere",
-						metadata: {
-							owner_instance_id: "pod-a",
-							maestro_session_id: "session_owner",
-							requested_maestro_session_id: "session_other",
-						},
-					},
-				],
-			});
-		} finally {
-			await rm(workspaceRoot, { recursive: true, force: true });
-		}
 	});
 
 	it("enables client ask_user routing when user_input capability is negotiated", async () => {

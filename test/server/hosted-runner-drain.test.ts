@@ -15,7 +15,6 @@ import {
 } from "../../src/cli/headless-protocol.js";
 import type { HostedRunnerContext } from "../../src/server/app-context.js";
 import {
-	HOSTED_RUNNER_RETENTION_POLICY_VERSION,
 	HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION,
 	drainHostedRunner,
 } from "../../src/server/handlers/hosted-runner-drain.js";
@@ -123,29 +122,6 @@ describe("hosted runner drain", () => {
 				protocol_version: HEADLESS_PROTOCOL_VERSION,
 				cursor: 7,
 			},
-			retention_policy: {
-				policy_version: HOSTED_RUNNER_RETENTION_POLICY_VERSION,
-				managed_by: "platform",
-				visibility: {
-					control_plane_metadata: "operator",
-					workspace_export: "tenant",
-					runtime_snapshot: "internal",
-					runtime_logs: "operator",
-				},
-				redaction: {
-					required_before_external_persistence: [
-						"runtime_snapshot",
-						"runtime_logs",
-					],
-					forbidden_plaintext: [
-						"provider_credentials",
-						"tool_secrets",
-						"attach_tokens",
-						"artifact_access_tokens",
-						"raw_environment",
-					],
-				},
-			},
 			snapshot,
 		});
 		expect(result?.manifest).not.toHaveProperty("manifest_version");
@@ -250,10 +226,6 @@ describe("hosted runner drain", () => {
 					is_ready: false,
 					last_status: "Drain skipped: no runtime activity was available",
 				},
-			},
-			retention_policy: {
-				policy_version: HOSTED_RUNNER_RETENTION_POLICY_VERSION,
-				managed_by: "platform",
 			},
 		});
 	});

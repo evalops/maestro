@@ -86,6 +86,60 @@ describe("platform-backed action approval service", () => {
 		});
 	});
 
+	it("exposes remote approval registration metadata while the request is pending", async () => {
+		const fetchMock = vi.fn(async (url: string | URL | Request) => {
+			const href = String(url);
+			if (href.endsWith("/approvals.v1.ApprovalService/RequestApproval")) {
+				return new Response(
+					JSON.stringify({ approvalRequest: { id: "remote-approval-2" } }),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			}
+			if (href.endsWith("/approvals.v1.ApprovalService/ResolveApproval")) {
+				return new Response(JSON.stringify({}), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+			return new Response("not found", { status: 404 });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		const service = new PlatformBackedActionApprovalService("prompt", {
+			sessionIdProvider: "session-2",
+			approvalsServiceConfig: {
+				baseUrl: "https://platform.test",
+				maxAttempts: 1,
+				timeoutMs: 500,
+				workspaceId: "workspace-1",
+			},
+		});
+
+		const approval = service.requestApproval({
+			...approvalRequest,
+			id: "approval-2",
+		});
+
+		await expect(
+			service.waitForPendingApprovalRegistration("approval-2"),
+		).resolves.toEqual({
+			remoteApprovalRequestId: "remote-approval-2",
+		});
+		expect(service.getPendingApprovalRegistration("approval-2")).toEqual({
+			remoteApprovalRequestId: "remote-approval-2",
+		});
+
+		expect(service.approve("approval-2", "approved")).toBe(true);
+		await expect(approval).resolves.toEqual({
+			approved: true,
+			reason: "approved",
+			resolvedBy: "user",
+		});
+		expect(
+			service.getPendingApprovalRegistration("approval-2"),
+		).toBeUndefined();
+	});
+
 	it("falls back to local prompt approvals when platform registration fails open", async () => {
 		const fetchMock = vi.fn(
 			async () => new Response("unavailable", { status: 503 }),

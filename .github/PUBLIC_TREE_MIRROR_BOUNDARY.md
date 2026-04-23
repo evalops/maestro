@@ -1,9 +1,9 @@
 # Public Tree Mirror Boundary
 
-The sanitized public-tree mirror is the long-term source-control contract
+The sanitized public-tree mirror is the source-control contract
 between `evalops/maestro-internal` and `evalops/maestro`. This document tracks
-the files and directories that still require special handling before the
-public-tree mirror can become the default sync path on every push to `main`.
+the files and directories that still require special handling while the
+public-tree mirror runs on every push to internal `main`.
 
 Related:
 
@@ -67,32 +67,31 @@ against an existing checkout without destroying local state.
 
 ## Validation Path
 
-`sync-public-release-mirror` now previews the public-tree mirror on every push
-to `main` by running:
+`sync-public-release-mirror` prepares the public-tree mirror on every push to
+internal `main` by running:
 
 ```sh
 node scripts/prepare-public-release-mirror.mjs \
-  --check \
-  --report /tmp/public-tree-mirror-report.json \
   --source "$PWD" \
   --target /path/to/evalops/maestro
 ```
 
-That preview does not mutate the public checkout. It produces a report listing:
+The workflow first runs the same command in `--check` mode to write a step
+summary, then mutates a public checkout, pushes `sync/public-release-mirror`,
+and opens or updates the stable public mirror PR. The report lists:
 
 - files that would be copied or updated
 - stale files that would be deleted
 - the resolved public package name
 
 The workflow writes those counts and a sample file list to the GitHub step
-summary so the migration can be tracked without opening a sync PR every time.
+summary so each sync PR shows the size and shape of the public-tree update.
 
-## Exit Criteria For Defaulting To Public-Tree
+## Operating Rules
 
-The push-default path can switch from `manifest` to `public-tree` once:
-
-1. The public-owned boundary above has been reduced to intentional exceptions.
-2. The preview diff is small enough to be reviewable and expected on normal
-   internal `main` changes.
-3. Public CI and trusted-publishing workflows are preserved by policy rather
-   than by cautionary manual backports.
+1. Land public-facing source changes in `evalops/maestro-internal` first.
+2. Let the `sync-public-release-mirror` workflow update the stable public PR.
+3. Keep public-owned CI and trusted-publishing workflows excluded from the
+   generated tree unless ownership deliberately moves back into internal.
+4. Treat a failed mirror sync as a release-blocking bridge failure; do not
+   backfill public directly except for emergency recovery.

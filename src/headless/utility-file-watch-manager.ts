@@ -6,7 +6,7 @@ import {
 	FileWatcher,
 	type FileWatcherConfig,
 } from "../tools/file-watcher.js";
-import { resolveWorkspacePath } from "./workspace-root.js";
+import { resolveHostedWorkspacePath } from "./workspace-root.js";
 
 export interface HeadlessUtilityFileWatchStartRequest {
 	watch_id: string;
@@ -89,7 +89,6 @@ export class HeadlessUtilityFileWatchManager {
 		private readonly emit: (
 			event: HeadlessUtilityFileWatchManagerEvent,
 		) => void,
-		private readonly workspaceRoot?: string,
 	) {}
 
 	snapshot(): HeadlessUtilityFileWatchSnapshot[] {
@@ -124,9 +123,7 @@ export class HeadlessUtilityFileWatchManager {
 		}
 
 		const rootDir =
-			resolveWorkspacePath(request.root_dir, this.workspaceRoot) ??
-			resolveWorkspacePath(undefined, this.workspaceRoot) ??
-			resolve(process.cwd());
+			resolveHostedWorkspacePath(request.root_dir) ?? resolve(process.cwd());
 		const debounceMs = Math.max(0, request.debounce_ms ?? DEFAULT_DEBOUNCE_MS);
 		if (!existsSync(rootDir)) {
 			throw new Error(

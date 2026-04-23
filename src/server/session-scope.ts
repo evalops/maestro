@@ -7,7 +7,7 @@ import {
 	sanitizeSessionScope,
 } from "../session/scope.js";
 import { getArtifactAccessGrantFromRequest } from "./artifact-access.js";
-import { getAuthScopeKey, getAuthSubject } from "./authz.js";
+import { getAuthSubject } from "./authz.js";
 import { HostedSessionManager } from "./hosted-session-manager.js";
 import { getRequestToken } from "./server-utils.js";
 
@@ -31,9 +31,9 @@ export function resolveSessionScope(req: IncomingMessage): string | null {
 		return artifactAccess.scope ?? null;
 	}
 	if (!getRequestToken(req)) return null;
-	const scopeKey = getAuthScopeKey(req);
-	if (!scopeKey) return null;
-	return sanitizeSessionScope(scopeKey) || null;
+	const subject = getAuthSubject(req);
+	if (!subject) return null;
+	return sanitizeSessionScope(subject) || null;
 }
 
 export function createSessionManagerForRequest(

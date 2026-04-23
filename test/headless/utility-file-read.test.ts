@@ -1,4 +1,3 @@
-import { realpathSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -56,35 +55,6 @@ describe("readWorkspaceFile", () => {
 		} finally {
 			await rm(rootDir, { recursive: true, force: true });
 			await rm(outsideDir, { recursive: true, force: true });
-		}
-	});
-
-	it("defaults reads to the explicit workspace root", async () => {
-		const workspaceRoot = await mkdtemp(
-			join(tmpdir(), "maestro-headless-root-read-"),
-		);
-		try {
-			const filePath = join(workspaceRoot, "notes.txt");
-			await writeFile(filePath, "alpha\nbeta\n", "utf8");
-			const resolvedWorkspaceRoot = realpathSync(workspaceRoot);
-
-			const result = await readWorkspaceFile({
-				path: "notes.txt",
-				workspaceRoot,
-			});
-
-			expect(result).toEqual({
-				path: realpathSync(filePath),
-				relative_path: "notes.txt",
-				cwd: resolvedWorkspaceRoot,
-				content: "alpha\nbeta",
-				start_line: 1,
-				end_line: 2,
-				total_lines: 2,
-				truncated: false,
-			});
-		} finally {
-			await rm(workspaceRoot, { recursive: true, force: true });
 		}
 	});
 });

@@ -205,54 +205,32 @@ export function createAuthMiddleware(
 ): Middleware {
 	return async (req, res, next) => {
 		const pathname = getPathname(req);
-		const requiresAuthBoundary =
-			pathname.startsWith("/api") || pathname === "/debug/z";
-		if (requiresAuthBoundary) {
+		if (pathname.startsWith("/api") || pathname.startsWith("/debug")) {
 			const missingKey = !apiKey || apiKey.length === 0;
 
-			// No key provided
-			if (missingKey) {
-				if (requireApiKey) {
-					sendJson(
-						res,
-						401,
-						{
-							error:
-								"MAESTRO_WEB_API_KEY is required for all API requests. Set the environment variable or disable requirement explicitly with MAESTRO_WEB_REQUIRE_KEY=0 for local testing only.",
-						},
-						corsHeaders,
-						req,
-					);
-					return;
-				}
-				// Requirement off and no key: allow through.
-				const auth = await checkApiAuth(req);
-				if (!auth.ok) {
-					sendJson(
-						res,
-						401,
-						{ error: auth.error || "Unauthorized" },
-						corsHeaders,
-						req,
-					);
-					return;
-				}
-				return next();
+			if (missingKey && requireApiKey) {
+				sendJson(
+					res,
+					401,
+					{
+						error:
+							"MAESTRO_WEB_API_KEY is required for all API requests. Set the environment variable or disable requirement explicitly with MAESTRO_WEB_REQUIRE_KEY=0 for local testing only.",
+					},
+					corsHeaders,
+					req,
+				);
+				return;
 			}
 
-			// Key provided: validate it.
-			if (
-				pathname.startsWith("/api") &&
-				getArtifactAccessGrantFromRequest(req)
-			) {
+			if (getArtifactAccessGrantFromRequest(req)) {
 				return next();
 			}
-			const auth = await checkApiAuth(req);
+			const auth = await checkApiAuth(req, { apiKey });
 			if (!auth.ok) {
 				sendJson(
 					res,
 					401,
-					{ error: auth.error || "Unauthorized" },
+					{ error: auth.error ?? "Unauthorized" },
 					corsHeaders,
 					req,
 				);

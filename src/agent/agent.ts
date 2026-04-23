@@ -148,6 +148,23 @@ type ToolEvaluationSummary = {
 	assertionCount?: number;
 };
 
+type SkillEvaluationFailure = {
+	toolCallId: string;
+	toolExecutionId?: string;
+	toolName?: string;
+	score?: number;
+	threshold?: number;
+	rationale?: string;
+	assertionCount?: number;
+};
+
+type CurrentTurnSkillSelection = {
+	skillMetadata: SkillArtifactMetadata;
+	toolCallId: string;
+	toolExecutionId?: string;
+	evaluationFailure?: SkillEvaluationFailure;
+};
+
 function getToolEvaluationSummary(
 	details: unknown,
 ): ToolEvaluationSummary | undefined {
@@ -198,6 +215,35 @@ function getToolEvaluationSummary(
 	}
 
 	return Object.keys(summary).length > 0 ? summary : undefined;
+}
+
+function isFailedToolEvaluation(summary: ToolEvaluationSummary): boolean {
+	if (summary.passed === false) {
+		return true;
+	}
+	return (
+		typeof summary.score === "number" &&
+		typeof summary.threshold === "number" &&
+		summary.score < summary.threshold
+	);
+}
+
+function buildEvaluationFailureMessage(
+	failure: SkillEvaluationFailure,
+): string | undefined {
+	if (failure.rationale) {
+		return failure.rationale;
+	}
+	if (
+		typeof failure.score === "number" &&
+		typeof failure.threshold === "number"
+	) {
+		return `Eval score ${failure.score} below threshold ${failure.threshold}`;
+	}
+	if (typeof failure.score === "number") {
+		return `Eval score ${failure.score} did not pass`;
+	}
+	return "Selected skill failed evaluation";
 }
 
 /**
@@ -576,13 +622,10 @@ export class Agent {
 	private withheldRecoverableLengthMessages: AssistantMessage[] = [];
 	private pendingMergedRecoverableTurnEnd?: AssistantMessage;
 	private diagnosticRepairAttempts = new Map<string, number>();
+	private currentTurnEvaluationFailure?: SkillEvaluationFailure;
 	private currentTurnSkillSelections = new Map<
 		string,
-		{
-			skillMetadata: SkillArtifactMetadata;
-			toolCallId: string;
-			toolExecutionId?: string;
-		}
+		CurrentTurnSkillSelection
 	>();
 
 	/**
@@ -970,6 +1013,7 @@ export class Agent {
 			this.withheldRecoverableLengthMessages = [];
 		}
 		this._partialAccepted = null;
+		this.currentTurnEvaluationFailure = undefined;
 		this.currentTurnSkillSelections.clear();
 	}
 
@@ -1382,6 +1426,7 @@ export class Agent {
 		this.pendingMergedRecoverableTurnEnd = undefined;
 		this.currentTaskBudget = undefined;
 		this.diagnosticRepairAttempts.clear();
+		this.currentTurnEvaluationFailure = undefined;
 		this.currentTurnSkillSelections.clear();
 		// Note: Do NOT clear listeners - they contain the TUI subscription
 		// and must persist across resets for UI updates to work
@@ -2147,7 +2192,28 @@ export class Agent {
 		if (!key) {
 			return;
 		}
-		this.currentTurnSkillSelections.set(key, selection);
+		const existing = this.currentTurnSkillSelections.get(key);
+		this.currentTurnSkillSelections.set(key, {
+			...existing,
+			...selection,
+			evaluationFailure: existing?.evaluationFailure,
+		});
+	}
+
+	private getCurrentTurnSkillSelectionForEvaluation(
+		event: Extract<AgentEvent, { type: "tool_execution_end" }>,
+	): CurrentTurnSkillSelection | undefined {
+		if (event.skillMetadata) {
+			return this.currentTurnSkillSelections.get(
+				this.buildSkillSelectionKey(event.skillMetadata),
+			);
+		}
+		if (this.currentTurnSkillSelections.size === 1) {
+			for (const selection of this.currentTurnSkillSelections.values()) {
+				return selection;
+			}
+		}
+		return undefined;
 	}
 
 	private publishCurrentTurnEvalScores(
@@ -2159,6 +2225,26 @@ export class Agent {
 		}
 
 		const scoredAt = new Date(event.result.timestamp).toISOString();
+		const failedEvaluation = isFailedToolEvaluation(evaluation)
+			? {
+					toolCallId: event.toolCallId,
+					toolExecutionId: event.toolExecutionId,
+					toolName: event.toolName,
+					score: evaluation.score,
+					threshold: evaluation.threshold,
+					rationale: evaluation.rationale,
+					assertionCount: evaluation.assertionCount,
+				}
+			: undefined;
+		const evaluationTarget = failedEvaluation
+			? this.getCurrentTurnSkillSelectionForEvaluation(event)
+			: undefined;
+		if (failedEvaluation) {
+			this.currentTurnEvaluationFailure = failedEvaluation;
+		}
+		if (failedEvaluation && evaluationTarget) {
+			evaluationTarget.evaluationFailure = failedEvaluation;
+		}
 		for (const selection of this.currentTurnSkillSelections.values()) {
 			recordMaestroEvalScored({
 				prompt_metadata: this._state.promptMetadata,
@@ -2188,24 +2274,49 @@ export class Agent {
 			return;
 		}
 
-		const turnStatus = options.aborted
+		const baseTurnStatus = options.aborted
 			? "aborted"
 			: this._state.error
 				? "error"
-				: "success";
-		const errorMessage = options.aborted
-			? "Operation aborted"
-			: this._state.error;
+				: undefined;
 
 		for (const selection of this.currentTurnSkillSelections.values()) {
+			const evaluationFailure = selection.evaluationFailure;
+			const turnStatus =
+				baseTurnStatus ??
+				(evaluationFailure || this.currentTurnEvaluationFailure
+					? "evaluation_failed"
+					: "success");
+			const outcomeEvaluationFailure =
+				evaluationFailure ?? this.currentTurnEvaluationFailure;
+			const errorMessage =
+				turnStatus === "aborted"
+					? "Operation aborted"
+					: turnStatus === "error"
+						? this._state.error
+						: turnStatus === "evaluation_failed" && outcomeEvaluationFailure
+							? buildEvaluationFailureMessage(outcomeEvaluationFailure)
+							: undefined;
 			recordMaestroSkillOutcome({
 				prompt_metadata: this._state.promptMetadata,
 				skill_metadata: selection.skillMetadata,
 				tool_call_id: selection.toolCallId,
 				tool_execution_id: selection.toolExecutionId,
 				turn_status: turnStatus,
-				error_category: turnStatus === "success" ? undefined : "runtime",
-				error_message: turnStatus === "success" ? undefined : errorMessage,
+				error_category:
+					turnStatus === "success"
+						? undefined
+						: turnStatus === "evaluation_failed"
+							? "evaluation"
+							: "runtime",
+				error_message: errorMessage,
+				evaluation_tool_name: evaluationFailure?.toolName,
+				evaluation_tool_call_id: evaluationFailure?.toolCallId,
+				evaluation_tool_execution_id: evaluationFailure?.toolExecutionId,
+				evaluation_score: evaluationFailure?.score,
+				evaluation_threshold: evaluationFailure?.threshold,
+				evaluation_assertion_count: evaluationFailure?.assertionCount,
+				evaluation_rationale: evaluationFailure?.rationale,
 				stop_reason: options.stopReason,
 				correlation: {
 					session_id: this._state.session?.id,
@@ -2213,6 +2324,7 @@ export class Agent {
 			});
 		}
 
+		this.currentTurnEvaluationFailure = undefined;
 		this.currentTurnSkillSelections.clear();
 	}
 

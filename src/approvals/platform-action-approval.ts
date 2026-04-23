@@ -20,6 +20,10 @@ type RemoteApprovalRegistration = {
 	requestId: string;
 };
 
+export interface PendingApprovalRegistration {
+	remoteApprovalRequestId?: string;
+}
+
 export interface PlatformBackedActionApprovalOptions {
 	sessionIdProvider?: SessionIdProvider;
 	approvalsServiceConfig?: ApprovalsServiceConfig | false;
@@ -30,6 +34,14 @@ const logger = createLogger("approvals:platform-action-approval");
 export class PlatformBackedActionApprovalService extends ActionApprovalService {
 	private readonly sessionIdProvider?: SessionIdProvider;
 	private readonly approvalsServiceConfig?: ApprovalsServiceConfig | false;
+	private readonly pendingApprovalRegistrations = new Map<
+		string,
+		PendingApprovalRegistration
+	>();
+	private readonly pendingApprovalRegistrationWaiters = new Map<
+		string,
+		Array<(registration: PendingApprovalRegistration | null) => void>
+	>();
 
 	constructor(
 		mode?: ApprovalMode,
@@ -53,9 +65,13 @@ export class PlatformBackedActionApprovalService extends ActionApprovalService {
 			? await this.requestRemoteApproval(request, sessionId, signal)
 			: { remote: null };
 		if ("decision" in remoteRegistration) {
+			this.publishPendingApprovalRegistration(request.id, null);
 			return remoteRegistration.decision;
 		}
 
+		this.publishPendingApprovalRegistration(request.id, {
+			remoteApprovalRequestId: remoteRegistration.remote?.requestId,
+		});
 		this.onPendingApprovalRegistered(sessionId, request);
 		try {
 			const decision = await super.requestApproval(request, signal);
@@ -68,8 +84,31 @@ export class PlatformBackedActionApprovalService extends ActionApprovalService {
 			}
 			return decision;
 		} finally {
+			this.publishPendingApprovalRegistration(request.id, null);
 			this.onPendingApprovalSettled(request);
 		}
+	}
+
+	getPendingApprovalRegistration(
+		requestId: string,
+	): PendingApprovalRegistration | undefined {
+		return this.pendingApprovalRegistrations.get(requestId);
+	}
+
+	waitForPendingApprovalRegistration(
+		requestId: string,
+	): Promise<PendingApprovalRegistration | null> {
+		const existing = this.pendingApprovalRegistrations.get(requestId);
+		if (existing) {
+			return Promise.resolve(existing);
+		}
+
+		return new Promise((resolve) => {
+			const waiters =
+				this.pendingApprovalRegistrationWaiters.get(requestId) ?? [];
+			waiters.push(resolve);
+			this.pendingApprovalRegistrationWaiters.set(requestId, waiters);
+		});
 	}
 
 	protected onPendingApprovalRegistered(
@@ -78,6 +117,26 @@ export class PlatformBackedActionApprovalService extends ActionApprovalService {
 	): void {}
 
 	protected onPendingApprovalSettled(_request: ActionApprovalRequest): void {}
+
+	private publishPendingApprovalRegistration(
+		requestId: string,
+		registration: PendingApprovalRegistration | null,
+	): void {
+		if (registration) {
+			this.pendingApprovalRegistrations.set(requestId, registration);
+		} else {
+			this.pendingApprovalRegistrations.delete(requestId);
+		}
+
+		const waiters = this.pendingApprovalRegistrationWaiters.get(requestId);
+		if (!waiters) {
+			return;
+		}
+		this.pendingApprovalRegistrationWaiters.delete(requestId);
+		for (const resolve of waiters) {
+			resolve(registration);
+		}
+	}
 
 	private getSessionId(): string | undefined {
 		if (typeof this.sessionIdProvider === "function") {

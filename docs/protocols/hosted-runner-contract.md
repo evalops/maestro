@@ -92,15 +92,6 @@ The response is intentionally sparse:
 If Platform expects an owner generation, it must compare
 `owner_instance_id` before proxying attach traffic.
 
-The Maestro Helm chart defaults to `replicaCount=1` with
-`headlessRuntime.routing.mode=single-replica` because the TypeScript
-web/headless runtime keeps session ownership, connection leases, event replay,
-and utility operation state in-process. A chart render with `replicaCount > 1`
-must declare either `headlessRuntime.routing.mode=sticky-session` for ingress
-affinity on `/api/headless/*` and `/api/chat/ws`, or
-`headlessRuntime.routing.mode=durable-owner` for a gateway backed by durable
-runtime-owner records.
-
 ## Attach Surface
 
 All providers expose the same HTTP headless surface:
@@ -179,13 +170,10 @@ POST /.well-known/evalops/remote-runner/drain
 The manifest protocol is
 `evalops.remote-runner.snapshot-manifest.v1`. Both Rust-hosted and
 TypeScript-hosted drain paths write this same local manifest envelope, including
-the runtime flush status, workspace export contract, headless runtime snapshot,
-and `retention_policy` metadata describing visibility and redaction classes.
-Maestro does not upload to GCS, S3, Modal storage, Daytona storage, or any
-other provider store. Upload, retention, workspace artifact hydration, and
-choosing which manifest should be restored are Platform responsibilities. See
-[Hosted Runner Retention](./hosted-runner-retention.md) for the policy rules
-that travel with the manifest.
+the runtime flush status, workspace export contract, and headless runtime
+snapshot. Maestro does not upload to GCS, S3, Modal storage, Daytona storage, or
+any other provider store. Upload, retention, workspace artifact hydration, and
+choosing which manifest should be restored are Platform responsibilities.
 
 ## Rust Hosted Surface
 
@@ -243,14 +231,6 @@ gateway or attach boundary:
 Retryable HTTP failures should use `503` and `Retry-After` where they pass
 through HTTP. Permanent authorization and owner failures should not be retried
 without a fresh attach token or a new runtime owner.
-
-Hosted runner ownership failures should include a machine-readable
-`runtime_owned_elsewhere` code in the JSON error body. TypeScript web-hosted
-runners expose it as `error_type` and a `google.rpc.ErrorInfo` detail with
-`reason=runtime_owned_elsewhere`, plus routing metadata such as
-`runner_session_id`, `owner_instance_id`, `maestro_session_id`, and
-`requested_maestro_session_id`. Gateways and clients must key off that code
-rather than matching human error text.
 
 ## Provider Notes
 
@@ -353,7 +333,6 @@ startup and transport details should vary.
 
 - [Headless protocol reference](./headless.md)
 - [Headless runtime conformance](./headless-conformance.md)
-- [Hosted runner retention](./hosted-runner-retention.md)
 - [Kubernetes node isolation and NodeRestriction](https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#node-isolation-restriction)
 - [GKE Sandbox with gVisor](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/sandbox-pods)
 - [GKE Workload Identity Federation](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/workload-identity)

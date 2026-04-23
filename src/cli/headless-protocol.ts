@@ -1144,10 +1144,10 @@ export class HeadlessProtocolTranslator {
 
 	buildSessionInfoMessage(
 		sessionManager: SessionManager,
-		cwd: string = process.cwd(),
 	): HeadlessSessionInfoMessage {
-		const gitBranch = isInsideGitRepository(cwd)
-			? (getCurrentBranch(cwd) ?? null)
+		const cwd = process.cwd();
+		const gitBranch = isInsideGitRepository()
+			? (getCurrentBranch() ?? null)
 			: null;
 		return {
 			type: "session_info",

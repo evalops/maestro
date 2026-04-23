@@ -7,7 +7,6 @@ import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import type { IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SignJWT } from "jose";
 import postgres from "postgres";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentState, AppMessage } from "../../src/agent/types.js";
@@ -96,25 +95,6 @@ function createScopedRequest(token: string): IncomingMessage {
 		headers: { authorization: `Bearer ${token}` },
 		socket: { remoteAddress: "127.0.0.1" },
 	} as unknown as IncomingMessage;
-}
-
-async function createJwtToken(
-	secret: string,
-	claims: {
-		sub: string;
-		workspaceId: string;
-		orgId?: string;
-		jti?: string;
-	},
-): Promise<string> {
-	return new SignJWT({
-		workspace_id: claims.workspaceId,
-		...(claims.orgId ? { org_id: claims.orgId } : {}),
-		...(claims.jti ? { jti: claims.jti } : {}),
-	})
-		.setProtectedHeader({ alg: "HS256" })
-		.setSubject(claims.sub)
-		.sign(new TextEncoder().encode(secret));
 }
 
 function countJsonlFiles(root: string): number {
@@ -275,81 +255,6 @@ describeDb("hosted session database storage", () => {
 		} finally {
 			await verify.end();
 		}
-	});
-
-	it("reuses hosted database sessions across JWT rotation within the same workspace", async () => {
-		process.env.MAESTRO_JWT_SECRET = "test-jwt-secret-should-be-long-enough";
-
-		const { migrate } = await import("../../src/db/migrate.js");
-		await expect(migrate()).resolves.toBe(7);
-
-		const { checkApiAuth } = await import("../../src/server/authz.js");
-		const { createWebSessionManagerForRequest } = await import(
-			"../../src/server/session-scope.js"
-		);
-		const { isHostedSessionManager } = await import(
-			"../../src/server/hosted-session-manager.js"
-		);
-
-		const tokenA = await createJwtToken(process.env.MAESTRO_JWT_SECRET!, {
-			sub: "user-123",
-			workspaceId: "workspace-7",
-			orgId: "org-9",
-			jti: "jwt-a",
-		});
-		const tokenB = await createJwtToken(process.env.MAESTRO_JWT_SECRET!, {
-			sub: "user-123",
-			workspaceId: "workspace-7",
-			orgId: "org-9",
-			jti: "jwt-b",
-		});
-		const tokenOtherWorkspace = await createJwtToken(
-			process.env.MAESTRO_JWT_SECRET!,
-			{
-				sub: "user-123",
-				workspaceId: "workspace-99",
-				orgId: "org-9",
-				jti: "jwt-c",
-			},
-		);
-
-		const requestA = createScopedRequest(tokenA);
-		const requestB = createScopedRequest(tokenB);
-		const requestOtherWorkspace = createScopedRequest(tokenOtherWorkspace);
-
-		await expect(checkApiAuth(requestA)).resolves.toMatchObject({ ok: true });
-		await expect(checkApiAuth(requestB)).resolves.toMatchObject({ ok: true });
-		await expect(checkApiAuth(requestOtherWorkspace)).resolves.toMatchObject({
-			ok: true,
-		});
-
-		const managerA = createWebSessionManagerForRequest(requestA, false);
-		expect(isHostedSessionManager(managerA)).toBe(true);
-		const state = createMockState([
-			userMessage("Keep this hosted session scoped to the verified workspace."),
-		]);
-		managerA.startSession(state, { subject: "user:user-123" });
-		await managerA.flush();
-		const sessionId = managerA.getSessionId();
-
-		const managerB = createWebSessionManagerForRequest(requestB, false);
-		expect(isHostedSessionManager(managerB)).toBe(true);
-		if (!isHostedSessionManager(managerB)) {
-			throw new Error("expected hosted session manager");
-		}
-		await expect(managerB.resumeSession(sessionId)).resolves.toBe(true);
-
-		const managerOtherWorkspace = createWebSessionManagerForRequest(
-			requestOtherWorkspace,
-			false,
-		);
-		expect(isHostedSessionManager(managerOtherWorkspace)).toBe(true);
-		if (!isHostedSessionManager(managerOtherWorkspace)) {
-			throw new Error("expected hosted session manager");
-		}
-		await expect(managerOtherWorkspace.resumeSession(sessionId)).resolves.toBe(
-			false,
-		);
 	});
 
 	it("emits prompt selection telemetry for hosted session starts", async () => {

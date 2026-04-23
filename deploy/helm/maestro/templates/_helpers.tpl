@@ -42,34 +42,24 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 Service account name
 */}}
 {{- define "maestro.serviceAccountName" -}}
-{{- if and .Values.serviceAccount .Values.serviceAccount.name }}
+{{- if .Values.serviceAccount }}
+{{- if .Values.serviceAccount.name }}
 {{- .Values.serviceAccount.name }}
+{{- else }}
+{{- include "maestro.fullname" . }}
+{{- end }}
 {{- else }}
 {{- include "maestro.fullname" . }}
 {{- end }}
 {{- end }}
 
 {{/*
-Validate process-local headless runtime routing before rendering workload
-resources. Multi-replica web/headless deployments need sticky sessions or a
-durable owner router; otherwise clients can land on a pod that does not own the
-runtime state for /api/headless/* or /api/chat/ws.
+Reject unsafe multi-replica defaults while headless runtime state is in-process.
 */}}
 {{- define "maestro.validateHeadlessRuntimeRouting" -}}
-{{- $autoscaling := default dict (get .Values "autoscaling") -}}
-{{- $autoscalingEnabled := default false (get $autoscaling "enabled") -}}
 {{- $replicas := int (default 1 .Values.replicaCount) -}}
-{{- if $autoscalingEnabled -}}
-{{- $replicas = int (default 1 (get $autoscaling "maxReplicas")) -}}
-{{- end -}}
-{{- $headlessRuntime := default dict (get .Values "headlessRuntime") -}}
-{{- $routing := default dict (get $headlessRuntime "routing") -}}
-{{- $routingMode := default "single-replica" (get $routing "mode") -}}
-{{- $validModes := list "single-replica" "sticky-session" "durable-owner" -}}
-{{- if not (has $routingMode $validModes) -}}
-{{- fail (printf "headlessRuntime.routing.mode must be one of %s, got %q" (join ", " $validModes) $routingMode) -}}
-{{- end -}}
-{{- if and (gt $replicas 1) (eq $routingMode "single-replica") -}}
-{{- fail "replicaCount or autoscaling.maxReplicas > 1 requires headlessRuntime.routing.mode to be sticky-session or durable-owner so /api/headless/* and /api/chat/ws stay on the owning runtime pod" -}}
+{{- $mode := default "inProcess" .Values.headlessRuntimeRouting.mode -}}
+{{- if and (gt $replicas 1) (eq $mode "inProcess") -}}
+{{- fail "Maestro headless runtime state is in-process; set replicaCount to 1 or configure durable owner routing before using multiple replicas" -}}
 {{- end -}}
 {{- end }}

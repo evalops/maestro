@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	PathValidationError,
 	expandUserPath,
+	isWithinCwd,
 	validatePath,
 } from "../../src/utils/path-validation.js";
 
@@ -98,5 +99,14 @@ describe("validatePath with allowedExtensions", () => {
 			expect(msg).not.toContain(".git/");
 			expect(msg).not.toMatch(/extension not allowed: \.git/i);
 		}
+	});
+});
+
+describe("isWithinCwd", () => {
+	it("normalizes cwd before comparing normalized paths", () => {
+		vi.spyOn(process, "cwd").mockReturnValue("/tmp/project/../project");
+
+		expect(isWithinCwd("/tmp/project/file.txt")).toBe(true);
+		expect(isWithinCwd("/tmp/other/file.txt")).toBe(false);
 	});
 });

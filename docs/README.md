@@ -20,7 +20,6 @@ Use this index to jump to the right guide quickly and see how the pieces connect
 - [MCP Guide](MCP_GUIDE.md) — Model Context Protocol setup and usage.
 - [Headless Protocol Reference](protocols/headless.md) — versioned JSON-over-stdio contract for Chat, TUIs, and other embedders.
 - [Hosted Runner Contract](protocols/hosted-runner-contract.md) — provider-neutral runtime contract for account-scoped remote Maestro sessions.
-- [Hosted Runner Retention](protocols/hosted-runner-retention.md) — visibility, redaction, and persistence rules for hosted-runner drain artifacts.
 
 ## Architecture & Patterns
 - [Architecture Diagram](ARCHITECTURE_DIAGRAM.md) — high-level system layout.

@@ -234,6 +234,7 @@ export type MaestroSkillOutcomeStatus =
 	| "success"
 	| "error"
 	| "aborted"
+	| "evaluation_failed"
 	| "rate_limited";
 
 export interface SkillOutcomeEventData extends Record<string, unknown> {
@@ -245,6 +246,13 @@ export interface SkillOutcomeEventData extends Record<string, unknown> {
 	turn_status: MaestroSkillOutcomeStatus;
 	error_category?: string;
 	error_message?: string;
+	evaluation_tool_name?: string;
+	evaluation_tool_call_id?: string;
+	evaluation_tool_execution_id?: string;
+	evaluation_score?: number;
+	evaluation_threshold?: number;
+	evaluation_assertion_count?: number;
+	evaluation_rationale?: string;
 	stop_reason?: string;
 	outcome_at: string;
 }
@@ -376,6 +384,13 @@ export interface RecordMaestroSkillOutcomeInput {
 	turn_status: MaestroSkillOutcomeStatus;
 	error_category?: string;
 	error_message?: string;
+	evaluation_tool_name?: string;
+	evaluation_tool_call_id?: string;
+	evaluation_tool_execution_id?: string;
+	evaluation_score?: number;
+	evaluation_threshold?: number;
+	evaluation_assertion_count?: number;
+	evaluation_rationale?: string;
 	stop_reason?: string;
 	correlation?: Partial<MaestroCorrelation>;
 	outcome_at?: string;
@@ -1060,6 +1075,13 @@ export function recordMaestroSkillOutcome(
 			turn_status: event.turn_status,
 			error_category: event.error_category,
 			error_message: event.error_message,
+			evaluation_tool_name: event.evaluation_tool_name,
+			evaluation_tool_call_id: event.evaluation_tool_call_id,
+			evaluation_tool_execution_id: event.evaluation_tool_execution_id,
+			evaluation_score: event.evaluation_score,
+			evaluation_threshold: event.evaluation_threshold,
+			evaluation_assertion_count: event.evaluation_assertion_count,
+			evaluation_rationale: event.evaluation_rationale,
 			stop_reason: event.stop_reason,
 			outcome_at: outcomeAt,
 		},

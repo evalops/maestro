@@ -1,6 +1,3 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 describe("HeadlessUtilityFileWatchManager", () => {
@@ -79,37 +76,6 @@ describe("HeadlessUtilityFileWatchManager", () => {
 		);
 		expect(manager.snapshot()).toEqual([]);
 		expect(events).toEqual([]);
-	});
-
-	it("rejects watch roots outside the session workspace root", async () => {
-		const workspaceRoot = await mkdtemp(
-			join(tmpdir(), "maestro-headless-watch-root-"),
-		);
-		const outsideRoot = await mkdtemp(
-			join(tmpdir(), "maestro-headless-watch-outside-"),
-		);
-		try {
-			const events: Array<{ type: string; watch_id: string }> = [];
-			const { HeadlessUtilityFileWatchManager } = await import(
-				"../../src/headless/utility-file-watch-manager.js"
-			);
-
-			const manager = new HeadlessUtilityFileWatchManager((event) => {
-				events.push({ type: event.type, watch_id: event.watch_id });
-			}, workspaceRoot);
-
-			await expect(
-				manager.start({
-					watch_id: "outside_root",
-					root_dir: outsideRoot,
-				}),
-			).rejects.toThrow(/outside workspace root/);
-			expect(manager.snapshot()).toEqual([]);
-			expect(events).toEqual([]);
-		} finally {
-			await rm(workspaceRoot, { recursive: true, force: true });
-			await rm(outsideRoot, { recursive: true, force: true });
-		}
 	});
 
 	it("disposes only file watches owned by a closing connection", async () => {

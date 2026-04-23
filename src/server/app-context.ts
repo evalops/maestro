@@ -42,7 +42,6 @@ export interface WebServerServices {
 		thinking: ThinkingLevel,
 		approval: ApprovalMode,
 		options?: {
-			cwd?: string;
 			enableClientTools?: boolean;
 			useClientAskUser?: boolean;
 			includeVscodeTools?: boolean;
@@ -56,7 +55,6 @@ export interface WebServerServices {
 	createBackgroundAgent: (
 		model: RegisteredModel,
 		options?: {
-			cwd?: string;
 			systemPrompt?: string;
 		},
 	) => Promise<Agent>;

@@ -22,33 +22,7 @@ export const HOSTED_RUNNER_DRAIN_PROTOCOL_VERSION =
 export const HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION =
 	"evalops.remote-runner.snapshot-manifest.v1";
 
-export const HOSTED_RUNNER_RETENTION_POLICY_VERSION =
-	"evalops.remote-runner.retention.v1";
-
 type SnapshotManifestStatus = "drained" | "interrupted";
-
-export interface HostedRunnerRetentionPolicy {
-	policy_version: typeof HOSTED_RUNNER_RETENTION_POLICY_VERSION;
-	managed_by: "platform";
-	visibility: {
-		control_plane_metadata: "operator";
-		workspace_export: "tenant";
-		runtime_snapshot: "internal";
-		runtime_logs: "operator";
-	};
-	redaction: {
-		required_before_external_persistence: Array<
-			"runtime_snapshot" | "runtime_logs"
-		>;
-		forbidden_plaintext: Array<
-			| "provider_credentials"
-			| "tool_secrets"
-			| "attach_tokens"
-			| "artifact_access_tokens"
-			| "raw_environment"
-		>;
-	};
-}
 
 export interface HostedRunnerDrainInput {
 	reason?: string;
@@ -94,7 +68,6 @@ export interface HostedRunnerSnapshotManifest {
 		paths: HostedRunnerWorkspaceExportPath[];
 	};
 	snapshot: HeadlessRuntimeSnapshot;
-	retention_policy: HostedRunnerRetentionPolicy;
 	git?: {
 		commit?: string;
 		branch?: string;
@@ -324,32 +297,6 @@ function buildHostedRunnerSnapshot(
 	};
 }
 
-function buildHostedRunnerRetentionPolicy(): HostedRunnerRetentionPolicy {
-	return {
-		policy_version: HOSTED_RUNNER_RETENTION_POLICY_VERSION,
-		managed_by: "platform",
-		visibility: {
-			control_plane_metadata: "operator",
-			workspace_export: "tenant",
-			runtime_snapshot: "internal",
-			runtime_logs: "operator",
-		},
-		redaction: {
-			required_before_external_persistence: [
-				"runtime_snapshot",
-				"runtime_logs",
-			],
-			forbidden_plaintext: [
-				"provider_credentials",
-				"tool_secrets",
-				"attach_tokens",
-				"artifact_access_tokens",
-				"raw_environment",
-			],
-		},
-	};
-}
-
 export async function drainHostedRunner(
 	input: HostedRunnerDrainInput,
 	options: DrainHostedRunnerOptions,
@@ -446,7 +393,6 @@ export async function drainHostedRunner(
 			paths: exportPaths,
 		},
 		snapshot,
-		retention_policy: buildHostedRunnerRetentionPolicy(),
 		...(git ? { git } : {}),
 	};
 

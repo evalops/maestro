@@ -43,6 +43,7 @@ export {
 	getProjectMcpServerApprovalStatus,
 	setProjectMcpServerApprovalDecision,
 } from "./project-approvals.js";
+export { getPlatformMcpPluginServers } from "./platform-plugin.js";
 export type {
 	McpAuthPresetConfig,
 	McpAuthPresetStatus,

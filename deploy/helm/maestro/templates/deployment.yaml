@@ -1,4 +1,4 @@
-{{- include "maestro.validateHeadlessRuntimeRouting" . }}
+{{- include "maestro.validateHeadlessRuntimeRouting" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -6,9 +6,7 @@ metadata:
   labels:
     {{- include "maestro.labels" . | nindent 4 }}
 spec:
-  {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
-  {{- end }}
   selector:
     matchLabels:
       {{- include "maestro.selectorLabels" . | nindent 6 }}
@@ -16,34 +14,12 @@ spec:
     metadata:
       labels:
         {{- include "maestro.selectorLabels" . | nindent 8 }}
-      {{- with .Values.podAnnotations }}
-      annotations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
     spec:
       serviceAccountName: {{ include "maestro.serviceAccountName" . }}
-      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
-      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
-      {{- with .Values.podSecurityContext }}
-      securityContext:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- if .Values.writableTmp.enabled }}
-      volumes:
-        - name: tmp
-          emptyDir:
-            {{- if .Values.writableTmp.sizeLimit }}
-            sizeLimit: {{ .Values.writableTmp.sizeLimit }}
-            {{- end }}
-      {{- end }}
       containers:
         - name: {{ .Chart.Name }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          {{- with .Values.securityContext }}
-          securityContext:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.service.port }}
@@ -57,15 +33,6 @@ spec:
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- end }}
-          {{- if .Values.writableTmp.enabled }}
-          volumeMounts:
-            - name: tmp
-              mountPath: {{ .Values.writableTmp.mountPath }}
-          {{- end }}
-          {{- with .Values.startupProbe }}
-          startupProbe:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
           livenessProbe:
             httpGet:
               path: /health
@@ -78,10 +45,5 @@ spec:
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10
-          {{- if .Values.gracefulShutdown.enabled }}
-          lifecycle:
-            preStop:
-              {{- toYaml .Values.gracefulShutdown.preStop | nindent 14 }}
-          {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
