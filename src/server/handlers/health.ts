@@ -18,6 +18,7 @@ export interface HealthCheckResult {
 		hostedRunner?: {
 			status: "ready" | "draining" | "unavailable";
 			runnerSessionId: string;
+			ownerInstanceId?: string;
 			workspaceRoot: string;
 			workspaceId?: string;
 			agentRunId?: string;
@@ -28,7 +29,7 @@ export interface HealthCheckResult {
 	timestamp: number;
 }
 
-type HostedRunnerHealthCheck = NonNullable<
+export type HostedRunnerHealthCheck = NonNullable<
 	HealthCheckResult["checks"]["hostedRunner"]
 >;
 
@@ -44,11 +45,12 @@ export async function handleReadyz(
 	sendJson(res, httpStatus, result, cors, req);
 }
 
-async function checkHostedRunnerWorkspace(
+export async function checkHostedRunnerReadiness(
 	hostedRunner: HostedRunnerContext,
 ): Promise<HostedRunnerHealthCheck> {
 	const base = {
 		runnerSessionId: hostedRunner.runnerSessionId,
+		ownerInstanceId: hostedRunner.ownerInstanceId,
 		workspaceRoot: hostedRunner.workspaceRoot,
 		workspaceId: hostedRunner.workspaceId,
 		agentRunId: hostedRunner.agentRunId,
@@ -116,7 +118,7 @@ export async function runHealthChecks(
 	}
 
 	if (options.hostedRunner) {
-		const hostedRunnerCheck = await checkHostedRunnerWorkspace(
+		const hostedRunnerCheck = await checkHostedRunnerReadiness(
 			options.hostedRunner,
 		);
 		checks.hostedRunner = hostedRunnerCheck;

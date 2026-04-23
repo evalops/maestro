@@ -25,6 +25,7 @@ describe("runHealthChecks", () => {
 			hostedRunner: {
 				enabled: true,
 				runnerSessionId: "mrs_123",
+				ownerInstanceId: "pod_123",
 				workspaceRoot,
 				workspaceId: "ws_123",
 				activeMaestroSessionId: "session_123",
@@ -34,6 +35,7 @@ describe("runHealthChecks", () => {
 		expect(result.checks.hostedRunner).toMatchObject({
 			status: "ready",
 			runnerSessionId: "mrs_123",
+			ownerInstanceId: "pod_123",
 			workspaceRoot,
 			workspaceId: "ws_123",
 			maestroSessionId: "session_123",

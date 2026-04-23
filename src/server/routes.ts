@@ -43,6 +43,10 @@ import {
 	handleHeadlessSessionUnsubscribe,
 } from "./handlers/headless-sessions.js";
 import { handleReadyz } from "./handlers/health.js";
+import {
+	HOSTED_RUNNER_IDENTITY_PATH,
+	handleHostedRunnerIdentity,
+} from "./handlers/hosted-runner-identity.js";
 import { handleLsp } from "./handlers/lsp.js";
 import { handleMcpStatus } from "./handlers/mcp.js";
 import { handleMemory } from "./handlers/memory.js";
@@ -112,6 +116,12 @@ export function createRoutes(context: WebServerContext): Route[] {
 			path: "/readyz",
 			handler: (req, res) =>
 				handleReadyz(req, res, corsHeaders, context.hostedRunner),
+		},
+		{
+			method: "GET",
+			path: HOSTED_RUNNER_IDENTITY_PATH,
+			handler: (req, res) =>
+				handleHostedRunnerIdentity(req, res, corsHeaders, context.hostedRunner),
 		},
 		{
 			method: "POST",
