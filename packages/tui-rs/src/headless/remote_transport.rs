@@ -1477,6 +1477,10 @@ fn classify_remote_status(
 ) -> (bool, RemoteErrorKind) {
     let trimmed_body = body.trim();
 
+    if body_has_remote_error_code(trimmed_body, "runtime_owned_elsewhere") {
+        return (false, RemoteErrorKind::OwnershipConflict);
+    }
+
     if trimmed_body.contains("Headless connection not found") {
         return (
             !matches!(kind, RemoteRequestKind::Bootstrap),
@@ -1540,6 +1544,26 @@ fn classify_remote_status(
         ),
     };
     (retryable, RemoteErrorKind::Other)
+}
+
+fn body_has_remote_error_code(body: &str, expected: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+        return false;
+    };
+    if value.get("error_type").and_then(|value| value.as_str()) == Some(expected) {
+        return true;
+    }
+    if value.get("code").and_then(|value| value.as_str()) == Some(expected) {
+        return true;
+    }
+    value
+        .get("details")
+        .and_then(|value| value.as_array())
+        .is_some_and(|details| {
+            details.iter().any(|detail| {
+                detail.get("reason").and_then(|value| value.as_str()) == Some(expected)
+            })
+        })
 }
 
 async fn response_status_error(
@@ -2910,6 +2934,26 @@ mod tests {
                 r#"{"error":"Controller lease is already held by another connection"}"#,
             ),
             (false, RemoteErrorKind::ControllerLeaseConflict)
+        );
+    }
+
+    #[test]
+    fn retryability_classifies_structured_runtime_owner_mismatches() {
+        assert_eq!(
+            classify_remote_status(
+                StatusCode::CONFLICT,
+                RemoteRequestKind::Subscribe,
+                r#"{"error":"Hosted runner is bound to Maestro session sess_owner","code":"ALREADY_EXISTS","error_type":"runtime_owned_elsewhere"}"#,
+            ),
+            (false, RemoteErrorKind::OwnershipConflict)
+        );
+        assert_eq!(
+            classify_remote_status(
+                StatusCode::CONFLICT,
+                RemoteRequestKind::Heartbeat,
+                r#"{"error":"Hosted runner is bound to Maestro session sess_owner","code":"ALREADY_EXISTS","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"runtime_owned_elsewhere","domain":"maestro.hosted_runner","metadata":{"owner_instance_id":"pod-a","maestro_session_id":"sess_owner"}}]}"#,
+            ),
+            (false, RemoteErrorKind::OwnershipConflict)
         );
     }
 

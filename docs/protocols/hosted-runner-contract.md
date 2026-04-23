@@ -235,6 +235,14 @@ Retryable HTTP failures should use `503` and `Retry-After` where they pass
 through HTTP. Permanent authorization and owner failures should not be retried
 without a fresh attach token or a new runtime owner.
 
+Hosted runner ownership failures should include a machine-readable
+`runtime_owned_elsewhere` code in the JSON error body. TypeScript web-hosted
+runners expose it as `error_type` and a `google.rpc.ErrorInfo` detail with
+`reason=runtime_owned_elsewhere`, plus routing metadata such as
+`runner_session_id`, `owner_instance_id`, `maestro_session_id`, and
+`requested_maestro_session_id`. Gateways and clients must key off that code
+rather than matching human error text.
+
 ## Provider Notes
 
 These notes are intentionally non-contractual. They describe useful provider

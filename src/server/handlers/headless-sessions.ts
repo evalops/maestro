@@ -279,6 +279,38 @@ function getScopeKey(req: IncomingMessage): string {
 	return getAuthScopeKey(req);
 }
 
+function hostedRunnerOwnershipError(
+	context: WebServerContext,
+	message: string,
+	metadata: Record<string, string | undefined>,
+): ApiError {
+	const hostedRunner = context.hostedRunner;
+	const detailMetadata: Record<string, string> = {};
+	for (const [key, value] of Object.entries({
+		runner_session_id: hostedRunner?.runnerSessionId,
+		owner_instance_id: hostedRunner?.ownerInstanceId,
+		workspace_id: hostedRunner?.workspaceId,
+		agent_run_id: hostedRunner?.agentRunId,
+		...metadata,
+	})) {
+		if (value) {
+			detailMetadata[key] = value;
+		}
+	}
+	return new ApiError(
+		409,
+		message,
+		[
+			{
+				reason: "runtime_owned_elsewhere",
+				domain: "maestro.hosted_runner",
+				metadata: detailMetadata,
+			},
+		],
+		"runtime_owned_elsewhere",
+	);
+}
+
 function ensureHostedRunnerCanUseSession(
 	context: WebServerContext,
 	requestedSessionId: string | undefined,
@@ -294,15 +326,22 @@ function ensureHostedRunnerCanUseSession(
 		return;
 	}
 	if (!requestedSessionId) {
-		throw new ApiError(
-			409,
+		throw hostedRunnerOwnershipError(
+			context,
 			`Hosted runner is already bound to Maestro session ${activeSessionId}`,
+			{
+				maestro_session_id: activeSessionId,
+			},
 		);
 	}
 	if (requestedSessionId !== activeSessionId) {
-		throw new ApiError(
-			409,
+		throw hostedRunnerOwnershipError(
+			context,
 			`Hosted runner is bound to Maestro session ${activeSessionId}`,
+			{
+				maestro_session_id: activeSessionId,
+				requested_maestro_session_id: requestedSessionId,
+			},
 		);
 	}
 }
@@ -319,9 +358,13 @@ function claimHostedRunnerSession(
 		hostedRunner.activeMaestroSessionId ??
 		hostedRunner.configuredMaestroSessionId;
 	if (activeSessionId && activeSessionId !== sessionId) {
-		throw new ApiError(
-			409,
+		throw hostedRunnerOwnershipError(
+			context,
 			`Hosted runner is bound to Maestro session ${activeSessionId}`,
+			{
+				maestro_session_id: activeSessionId,
+				requested_maestro_session_id: sessionId,
+			},
 		);
 	}
 	hostedRunner.activeMaestroSessionId = sessionId;
@@ -544,6 +587,7 @@ function getRuntime(
 	if (!sessionId) {
 		throw new ApiError(400, "Missing headless session id");
 	}
+	ensureHostedRunnerCanUseSession(context, sessionId);
 	const runtime = context.headlessRuntimeService.getRuntime(
 		getScopeKey(req),
 		sessionId,
