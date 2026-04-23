@@ -30,7 +30,7 @@ use crate::headless::messages::{
     UtilityCommandStream, UtilityCommandTerminalMode, UtilityFileSearchMatch, UtilityOperation,
     HEADLESS_PROTOCOL_VERSION,
 };
-use crate::headless::{AgentSupervisor, AsyncTransportError};
+use crate::headless::{AgentState, AgentSupervisor, AsyncTransportError};
 
 pub const HOSTED_RUNNER_IDENTITY_PATH: &str = "/.well-known/evalops/remote-runner/identity";
 pub const HOSTED_RUNNER_DRAIN_PATH: &str = "/.well-known/evalops/remote-runner/drain";
@@ -664,6 +664,10 @@ pub trait HostedRunnerHeadlessMessageExecutor: Send + Sync {
     fn drain(&self) -> Result<Vec<FromAgentMessage>, HostedRunnerError> {
         Ok(Vec::new())
     }
+
+    fn state(&self) -> Result<Option<AgentState>, HostedRunnerError> {
+        Ok(None)
+    }
 }
 
 #[derive(Clone)]
@@ -721,6 +725,14 @@ impl HostedRunnerHeadlessMessageExecutor for AgentSupervisorHostedRunnerMessageE
             .map_err(|_| HostedRunnerError::internal("agent supervisor mutex poisoned"))?;
         Ok(supervisor.drain_available_agent_messages())
     }
+
+    fn state(&self) -> Result<Option<AgentState>, HostedRunnerError> {
+        let supervisor = self
+            .supervisor
+            .lock()
+            .map_err(|_| HostedRunnerError::internal("agent supervisor mutex poisoned"))?;
+        Ok(Some(supervisor.state().clone()))
+    }
 }
 
 #[derive(Debug, Default)]
@@ -759,6 +771,10 @@ fn hosted_hello_ok_for_context(context: &HostedRunnerHeadlessMessageContext) -> 
 
 fn hosted_runner_error_from_async_transport(error: AsyncTransportError) -> HostedRunnerError {
     HostedRunnerError::runtime_not_ready(format!("agent supervisor is not ready: {error}"))
+}
+
+fn json_value<T: Serialize>(value: &T) -> serde_json::Value {
+    serde_json::to_value(value).unwrap_or(serde_json::Value::Null)
 }
 
 struct HttpRequest {
@@ -875,6 +891,8 @@ impl SharedRunner {
     }
 
     fn snapshot(&self, state: &RunnerState) -> RuntimeSnapshot {
+        let agent_state = self.message_executor.state().ok().flatten();
+        let agent_state = agent_state.as_ref();
         let controller_subscription_id = state
             .controller_connection_id
             .as_ref()
@@ -928,6 +946,12 @@ impl SharedRunner {
                 }
             })
             .collect();
+        let protocol_version = agent_state
+            .and_then(|state| state.protocol_version.clone())
+            .unwrap_or_else(|| HEADLESS_PROTOCOL_VERSION.to_string());
+        let git_branch = agent_state
+            .and_then(|state| state.git_branch.clone())
+            .or_else(|| crate::git::current_branch(&self.config.workspace_root));
 
         RuntimeSnapshot {
             protocol_version: HEADLESS_PROTOCOL_VERSION.to_string(),
@@ -935,44 +959,96 @@ impl SharedRunner {
             cursor: state.cursor,
             last_init: state.last_init.clone(),
             state: RuntimeStateSnapshot {
-                protocol_version: Some(HEADLESS_PROTOCOL_VERSION.to_string()),
+                protocol_version: Some(protocol_version),
                 client_protocol_version: preferred_connection
-                    .and_then(|connection| connection.client_protocol_version.clone()),
+                    .and_then(|connection| connection.client_protocol_version.clone())
+                    .or_else(|| {
+                        agent_state.and_then(|state| state.client_protocol_version.clone())
+                    }),
                 client_info: preferred_connection
-                    .and_then(|connection| connection.client_info.clone()),
+                    .and_then(|connection| connection.client_info.clone())
+                    .or_else(|| agent_state.and_then(|state| state.client_info.clone())),
                 capabilities: preferred_connection
-                    .and_then(|connection| connection.capabilities.clone()),
-                opt_out_notifications: preferred_connection.and_then(|connection| {
-                    (!connection.opt_out_notifications.is_empty())
-                        .then(|| connection.opt_out_notifications.clone())
-                }),
-                connection_role: preferred_connection.map(|connection| connection.role),
+                    .and_then(|connection| connection.capabilities.clone())
+                    .or_else(|| agent_state.and_then(|state| state.capabilities.clone())),
+                opt_out_notifications: preferred_connection
+                    .and_then(|connection| {
+                        (!connection.opt_out_notifications.is_empty())
+                            .then(|| connection.opt_out_notifications.clone())
+                    })
+                    .or_else(|| agent_state.and_then(|state| state.opt_out_notifications.clone())),
+                connection_role: preferred_connection
+                    .map(|connection| connection.role)
+                    .or_else(|| agent_state.and_then(|state| state.connection_role)),
                 connection_count: state.connections.len(),
                 subscriber_count: state.subscriptions.len(),
                 controller_subscription_id,
                 controller_connection_id: state.controller_connection_id.clone(),
                 connections,
-                model: Some("rust-hosted-runner".to_string()),
-                provider: Some("rust".to_string()),
-                session_id: Some(state.session_id.clone()),
-                cwd: Some(self.config.workspace_root.to_string_lossy().to_string()),
-                git_branch: None,
-                current_response: None,
-                pending_approvals: Vec::new(),
-                pending_client_tools: Vec::new(),
-                pending_user_inputs: Vec::new(),
-                pending_tool_retries: Vec::new(),
-                tracked_tools: Vec::new(),
-                active_tools: Vec::new(),
+                model: agent_state
+                    .and_then(|state| state.model.clone())
+                    .or_else(|| Some("rust-hosted-runner".to_string())),
+                provider: agent_state
+                    .and_then(|state| state.provider.clone())
+                    .or_else(|| Some("rust".to_string())),
+                session_id: agent_state
+                    .and_then(|state| state.session_id.clone())
+                    .or_else(|| Some(state.session_id.clone())),
+                cwd: agent_state
+                    .and_then(|state| state.cwd.clone())
+                    .or_else(|| Some(self.config.workspace_root.to_string_lossy().to_string())),
+                git_branch,
+                current_response: agent_state
+                    .and_then(|state| state.current_response.as_ref())
+                    .map(json_value),
+                pending_approvals: agent_state
+                    .map(|state| state.pending_approvals.iter().map(json_value).collect())
+                    .unwrap_or_default(),
+                pending_client_tools: agent_state
+                    .map(|state| state.pending_client_tools.iter().map(json_value).collect())
+                    .unwrap_or_default(),
+                pending_user_inputs: agent_state
+                    .map(|state| state.pending_user_inputs.iter().map(json_value).collect())
+                    .unwrap_or_default(),
+                pending_tool_retries: agent_state
+                    .map(|state| state.pending_tool_retries.iter().map(json_value).collect())
+                    .unwrap_or_default(),
+                tracked_tools: agent_state
+                    .map(|state| state.tracked_tools.values().map(json_value).collect())
+                    .unwrap_or_default(),
+                active_tools: agent_state
+                    .map(|state| {
+                        state
+                            .active_tools
+                            .values()
+                            .map(|tool| {
+                                json!({
+                                    "call_id": tool.call_id,
+                                    "tool": tool.tool,
+                                    "output": tool.output,
+                                })
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
                 active_utility_commands: state.active_utility_commands.values().cloned().collect(),
                 active_file_watches: state.active_file_watches.values().cloned().collect(),
-                last_error: None,
-                last_error_type: None,
-                last_status: state.last_status.clone(),
-                last_response_duration_ms: None,
-                last_ttft_ms: None,
-                is_ready: state.ready && !state.draining,
-                is_responding: false,
+                last_error: agent_state.and_then(|state| state.last_error.clone()),
+                last_error_type: agent_state
+                    .and_then(|state| state.last_error_type)
+                    .map(|error_type| format!("{error_type:?}")),
+                last_status: agent_state
+                    .and_then(|state| state.last_status.clone())
+                    .or_else(|| state.last_status.clone()),
+                last_response_duration_ms: agent_state
+                    .and_then(|state| state.last_response_duration_ms),
+                last_ttft_ms: agent_state.and_then(|state| state.last_ttft_ms),
+                is_ready: agent_state
+                    .map(|state| state.is_ready)
+                    .unwrap_or(state.ready && !state.draining),
+                is_responding: agent_state
+                    .map(|state| state.is_responding)
+                    .unwrap_or(false),
             },
         }
     }
@@ -2639,6 +2715,35 @@ mod tests {
         }
     }
 
+    struct StatefulRuntimeExecutor {
+        state: Mutex<AgentState>,
+    }
+
+    impl StatefulRuntimeExecutor {
+        fn new(state: AgentState) -> Self {
+            Self {
+                state: Mutex::new(state),
+            }
+        }
+    }
+
+    impl HostedRunnerHeadlessMessageExecutor for StatefulRuntimeExecutor {
+        fn execute(
+            &self,
+            _context: &HostedRunnerHeadlessMessageContext,
+            _message: ToAgentMessage,
+        ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
+            Ok(HostedRunnerHeadlessMessageResult::runtime_handled(
+                Vec::new(),
+                "accepted by stateful runtime",
+            ))
+        }
+
+        fn state(&self) -> Result<Option<AgentState>, HostedRunnerError> {
+            Ok(Some(self.state.lock().expect("state").clone()))
+        }
+    }
+
     fn test_config(workspace_root: PathBuf) -> HostedRunnerConfig {
         HostedRunnerConfig {
             runner_session_id: "mrs_test".to_string(),
@@ -2981,6 +3086,109 @@ mod tests {
         assert!(event_text.contains("\"type\":\"response_chunk\""));
         assert!(event_text.contains("\"content\":\"runtime: hello\""));
         assert!(event_text.contains("\"type\":\"response_end\""));
+
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn state_snapshot_merges_supervisor_agent_state_with_hosted_connections() {
+        let workspace = tempdir().expect("workspace");
+        let mut current_response =
+            crate::headless::StreamingResponse::new("resp-state-1".to_string());
+        current_response.append("working on hosted state", false);
+        let supervisor_state = AgentState {
+            model: Some("gpt-5.4".to_string()),
+            provider: Some("openai".to_string()),
+            session_id: Some("supervisor-session-1".to_string()),
+            cwd: Some("/runtime/workspace".to_string()),
+            git_branch: Some("feature/runtime-state".to_string()),
+            current_response: Some(current_response),
+            pending_approvals: vec![crate::headless::PendingApproval {
+                call_id: "call-1".to_string(),
+                request_id: Some("approval-1".to_string()),
+                tool: "bash".to_string(),
+                args: json!({"cmd": "cargo test"}),
+            }],
+            last_status: Some("thinking".to_string()),
+            is_ready: true,
+            is_responding: true,
+            ..AgentState::default()
+        };
+        let handle = start_hosted_runner_with_message_executor(
+            test_config(workspace.path().to_path_buf()),
+            Arc::new(StatefulRuntimeExecutor::new(supervisor_state)),
+        )
+        .await
+        .expect("start hosted runner");
+        let client = reqwest::Client::new();
+
+        let controller: serde_json::Value = client
+            .post(format!("{}/api/headless/connections", handle.base_url()))
+            .json(&json!({
+                "sessionId": "sess_test",
+                "connectionId": "conn_state",
+                "role": "controller"
+            }))
+            .send()
+            .await
+            .expect("controller response")
+            .json()
+            .await
+            .expect("controller json");
+        assert_eq!(controller["snapshot"]["state"]["model"], "gpt-5.4");
+        assert_eq!(controller["snapshot"]["state"]["connection_count"], 1);
+
+        let subscribe: serde_json::Value = client
+            .post(format!(
+                "{}/api/headless/sessions/sess_test/subscribe",
+                handle.base_url()
+            ))
+            .json(&json!({"connectionId": "conn_state", "role": "controller"}))
+            .send()
+            .await
+            .expect("subscribe response")
+            .json()
+            .await
+            .expect("subscribe json");
+        assert_eq!(
+            subscribe["snapshot"]["state"]["controller_connection_id"],
+            "conn_state"
+        );
+        assert!(subscribe["snapshot"]["state"]["controller_subscription_id"]
+            .as_str()
+            .is_some());
+
+        let state: serde_json::Value = client
+            .get(format!(
+                "{}/api/headless/sessions/sess_test/state",
+                handle.base_url()
+            ))
+            .send()
+            .await
+            .expect("state response")
+            .json()
+            .await
+            .expect("state json");
+        assert_eq!(state["state"]["model"], "gpt-5.4");
+        assert_eq!(state["state"]["provider"], "openai");
+        assert_eq!(state["state"]["session_id"], "supervisor-session-1");
+        assert_eq!(state["state"]["cwd"], "/runtime/workspace");
+        assert_eq!(state["state"]["git_branch"], "feature/runtime-state");
+        assert_eq!(
+            state["state"]["current_response"]["response_id"],
+            "resp-state-1"
+        );
+        assert_eq!(state["state"]["pending_approvals"][0]["call_id"], "call-1");
+        assert_eq!(state["state"]["last_status"], "thinking");
+        assert_eq!(state["state"]["is_ready"], true);
+        assert_eq!(state["state"]["is_responding"], true);
+        assert_eq!(state["state"]["connection_count"], 1);
+        assert_eq!(state["state"]["subscriber_count"], 1);
+        assert_eq!(state["state"]["controller_connection_id"], "conn_state");
+        assert_eq!(
+            state["state"]["connections"][0]["controller_lease_granted"],
+            true
+        );
 
         handle.shutdown().await;
     }
