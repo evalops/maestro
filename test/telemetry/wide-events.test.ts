@@ -137,6 +137,36 @@ describe("TurnCollector", () => {
 		});
 	});
 
+	it("records selected skill artifact identity on canonical turn events", () => {
+		const collector = new TurnCollector("session-123", 1);
+
+		collector.recordSkillMetadata({
+			name: "incident-review",
+			artifactId: "skill_remote_1",
+			version: "3",
+			hash: "hash_skill_123",
+			source: "service",
+			scope: "workspace",
+		});
+
+		const event = collector.complete(
+			"success",
+			{ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			0,
+		);
+
+		expect(event.skillMetadata).toEqual([
+			{
+				name: "incident-review",
+				artifactId: "skill_remote_1",
+				version: "3",
+				hash: "hash_skill_123",
+				source: "service",
+				scope: "workspace",
+			},
+		]);
+	});
+
 	it("records error details", () => {
 		const collector = new TurnCollector("session-123", 1);
 

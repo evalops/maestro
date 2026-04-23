@@ -68,6 +68,10 @@ import {
 	applyWorkflowStateHooks,
 	isWorkflowTrackedTool,
 } from "../safety/workflow-state.js";
+import {
+	type SkillArtifactMetadata,
+	getSkillArtifactMetadataFromDetails,
+} from "../skills/artifact-metadata.js";
 import { getOptimalConcurrency } from "../tools/parallel-execution.js";
 import { trackUsage } from "../tracking/cost-tracker.js";
 import { getTrainingHeaders } from "../training.js";
@@ -149,6 +153,14 @@ function getGovernedToolResultEventMetadata(details: unknown): {
 		errorCode,
 		approvalRequestId,
 		governedOutcome: classification,
+	};
+}
+
+function getSkillToolResultEventMetadata(details: unknown): {
+	skillMetadata?: SkillArtifactMetadata;
+} {
+	return {
+		skillMetadata: getSkillArtifactMetadataFromDetails(details),
 	};
 }
 
@@ -738,6 +750,9 @@ export class ProviderTransport implements AgentTransport {
 					const governedMetadata = getGovernedToolResultEventMetadata(
 						message.details,
 					);
+					const skillMetadata = getSkillToolResultEventMetadata(
+						message.details,
+					).skillMetadata;
 					return [
 						{ type: "message_start", message } as AgentEvent,
 						{ type: "message_end", message } as AgentEvent,
@@ -750,6 +765,7 @@ export class ProviderTransport implements AgentTransport {
 								governedMetadata.approvalRequestId,
 							errorCode: governedMetadata.errorCode,
 							governedOutcome: governedMetadata.governedOutcome,
+							skillMetadata,
 							toolName: toolCall.name,
 							result: message,
 							isError,

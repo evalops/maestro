@@ -22,6 +22,13 @@ function createCanonicalTurnEvent() {
 			hash: "hash_123",
 			source: "service",
 		})
+		.recordSkillMetadata({
+			name: "incident-review",
+			artifactId: "skill_remote_1",
+			version: "3",
+			hash: "hash_skill_123",
+			source: "service",
+		})
 		.setSandboxMode("docker")
 		.setApprovalMode("auto")
 		.setMcpServers(["context7"]);
@@ -94,6 +101,11 @@ describe("meter telemetry client", () => {
 					promptVersionId: "ver_9",
 					promptHash: "hash_123",
 					promptSource: "service",
+					skillNames: "incident-review",
+					skillArtifactIds: "skill_remote_1",
+					skillVersions: "3",
+					skillHashes: "hash_skill_123",
+					skillSources: "service",
 				},
 				data: event,
 				metrics: {

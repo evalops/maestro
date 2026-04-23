@@ -141,6 +141,7 @@ export class TurnTracker {
 						outputSize,
 						errorCode,
 					);
+					this.currentTurn.recordSkillMetadata(event.skillMetadata);
 				}
 				break;
 

@@ -489,4 +489,105 @@ describe("TurnTracker", () => {
 			source: "service",
 		});
 	});
+
+	it("attaches skill artifact identity to completed turns", () => {
+		let listener: ((event: AgentEvent) => void) | undefined;
+		const agent = {
+			state: {
+				messages: [],
+				error: undefined,
+				model: {
+					id: "test-model",
+					provider: "anthropic",
+				},
+				thinkingLevel: "off",
+			},
+			subscribe: (fn: (event: AgentEvent) => void) => {
+				listener = fn;
+				return () => {
+					listener = undefined;
+				};
+			},
+		} as unknown as Agent;
+
+		let completed:
+			| {
+					skillMetadata?: Array<{
+						name: string;
+						artifactId?: string;
+						source: string;
+					}>;
+			  }
+			| undefined;
+		const tracker = new TurnTracker(agent, {
+			sessionId: "session-skill-metadata",
+			onTurnComplete: (event) => {
+				completed = {
+					skillMetadata: event.skillMetadata,
+				};
+			},
+		});
+
+		const assistantMessage: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "done" }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet-4-20250514",
+			usage: {
+				input: 10,
+				output: 5,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		};
+
+		listener?.({ type: "agent_start" });
+		listener?.({
+			type: "tool_execution_start",
+			toolCallId: "call-skill",
+			toolName: "Skill",
+			args: { skill: "incident-review" },
+		});
+		listener?.({
+			type: "tool_execution_end",
+			toolCallId: "call-skill",
+			toolName: "Skill",
+			skillMetadata: {
+				name: "incident-review",
+				artifactId: "skill_remote_1",
+				hash: "hash_skill_123",
+				source: "service",
+			},
+			result: {
+				role: "toolResult",
+				toolCallId: "call-skill",
+				toolName: "Skill",
+				content: [{ type: "text", text: "# Skill: incident-review" }],
+				isError: false,
+				timestamp: Date.now(),
+			},
+			isError: false,
+		});
+		listener?.({ type: "message_start", message: assistantMessage });
+		listener?.({ type: "message_end", message: assistantMessage });
+		listener?.({
+			type: "agent_end",
+			messages: [assistantMessage],
+			stopReason: "stop",
+		});
+
+		tracker.dispose();
+
+		expect(completed?.skillMetadata).toEqual([
+			expect.objectContaining({
+				name: "incident-review",
+				artifactId: "skill_remote_1",
+				source: "service",
+			}),
+		]);
+	});
 });

@@ -88,6 +88,16 @@ function trimRecord(
 	);
 }
 
+function joinMetadataValues(
+	values: Array<string | undefined> | undefined,
+): string | undefined {
+	if (!values) {
+		return undefined;
+	}
+	const filtered = values.map((value) => value?.trim()).filter(Boolean);
+	return filtered.length > 0 ? filtered.join(",") : undefined;
+}
+
 function toNonNegativeInt(value: number | undefined): number {
 	if (typeof value !== "number" || !Number.isFinite(value)) {
 		return 0;
@@ -116,6 +126,21 @@ function buildMetadata(event: CanonicalTurnEvent): Record<string, string> {
 		promptVersionId: event.promptMetadata?.versionId,
 		promptHash: event.promptMetadata?.hash,
 		promptSource: event.promptMetadata?.source,
+		skillNames: joinMetadataValues(
+			event.skillMetadata?.map((skill) => skill.name),
+		),
+		skillArtifactIds: joinMetadataValues(
+			event.skillMetadata?.map((skill) => skill.artifactId),
+		),
+		skillVersions: joinMetadataValues(
+			event.skillMetadata?.map((skill) => skill.version),
+		),
+		skillHashes: joinMetadataValues(
+			event.skillMetadata?.map((skill) => skill.hash),
+		),
+		skillSources: joinMetadataValues(
+			event.skillMetadata?.map((skill) => skill.source),
+		),
 	});
 }
 

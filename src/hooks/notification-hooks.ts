@@ -25,6 +25,7 @@ import { join } from "node:path";
 import type { AgentEvent, AppMessage } from "../agent/types.js";
 import { PATHS } from "../config/constants.js";
 import { getTimeSinceLastUserInteraction } from "../interaction/user-interaction.js";
+import type { SkillArtifactMetadata } from "../skills/artifact-metadata.js";
 import { createLogger } from "../utils/logger.js";
 import type { SessionHookService } from "./session-integration.js";
 
@@ -51,6 +52,7 @@ export interface NotificationPayload {
 	toolErrorCode?: string;
 	approvalRequestId?: string;
 	governedOutcome?: string;
+	skillMetadata?: SkillArtifactMetadata;
 	error?: string;
 }
 
@@ -407,6 +409,7 @@ export function createNotificationFromAgentEvent(
 				toolErrorCode: event.errorCode,
 				approvalRequestId: event.approvalRequestId,
 				governedOutcome: event.governedOutcome,
+				skillMetadata: event.skillMetadata,
 			};
 
 		case "error":

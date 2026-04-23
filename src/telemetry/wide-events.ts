@@ -14,6 +14,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { PromptMetadata } from "../prompts/types.js";
+import type { SkillArtifactMetadata } from "../skills/artifact-metadata.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -69,6 +70,7 @@ export interface CanonicalTurnEvent {
 	// ─── Model Context ──────────────────────────────────────────────────────
 	model: ModelInfo;
 	promptMetadata?: PromptMetadata;
+	skillMetadata?: SkillArtifactMetadata[];
 
 	// ─── Timing ─────────────────────────────────────────────────────────────
 	totalDurationMs: number;
@@ -185,6 +187,7 @@ export class TurnCollector {
 		thinkingLevel: "off",
 	};
 	private promptMetadata?: PromptMetadata;
+	private readonly skillMetadata = new Map<string, SkillArtifactMetadata>();
 	private tools: Map<
 		string,
 		{ name: string; callId: string; startTime: number; inputSizeBytes?: number }
@@ -231,6 +234,26 @@ export class TurnCollector {
 
 	setPromptMetadata(promptMetadata: PromptMetadata | undefined): this {
 		this.promptMetadata = promptMetadata;
+		return this;
+	}
+
+	recordSkillMetadata(skillMetadata: SkillArtifactMetadata | undefined): this {
+		if (!skillMetadata) {
+			return this;
+		}
+		const key = [
+			skillMetadata.artifactId,
+			skillMetadata.source,
+			skillMetadata.name,
+			skillMetadata.version,
+			skillMetadata.hash,
+		]
+			.filter(Boolean)
+			.join(":");
+		if (!key) {
+			return this;
+		}
+		this.skillMetadata.set(key, skillMetadata);
 		return this;
 	}
 
@@ -384,6 +407,10 @@ export class TurnCollector {
 			// Model
 			model: this.model,
 			promptMetadata: this.promptMetadata,
+			skillMetadata:
+				this.skillMetadata.size > 0
+					? [...this.skillMetadata.values()]
+					: undefined,
 
 			// Timing
 			totalDurationMs: Math.round(totalDurationMs),

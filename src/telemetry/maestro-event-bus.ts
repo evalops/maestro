@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { JetStreamClient, NatsConnection } from "nats";
 import type { PromptMetadata } from "../prompts/types.js";
+import type { SkillArtifactMetadata } from "../skills/artifact-metadata.js";
 import {
 	MaestroBusEventType,
 	getMaestroBusEventCatalogEntry,
@@ -157,6 +158,7 @@ export interface ToolCallAttemptEventData extends Record<string, unknown> {
 	tool_call_id: string;
 	tool_execution_id?: string;
 	prompt_metadata?: PromptMetadata;
+	skill_metadata?: SkillArtifactMetadata;
 	tool_namespace?: string;
 	tool_name: string;
 	tool_version?: string;
@@ -175,6 +177,7 @@ export interface ToolCallResultEventData extends Record<string, unknown> {
 	tool_call_id: string;
 	tool_execution_id?: string;
 	prompt_metadata?: PromptMetadata;
+	skill_metadata?: SkillArtifactMetadata;
 	approval_request_id?: string;
 	governed_outcome?: string;
 	status: MaestroToolCallStatus;
@@ -271,6 +274,7 @@ export interface RecordMaestroToolCallAttemptInput {
 	tool_call_id: string;
 	tool_execution_id?: string;
 	prompt_metadata?: PromptMetadata;
+	skill_metadata?: SkillArtifactMetadata;
 	tool_namespace?: string;
 	tool_name: string;
 	tool_version?: string;
@@ -290,6 +294,7 @@ export interface RecordMaestroToolCallCompletedInput {
 	tool_call_id: string;
 	tool_execution_id?: string;
 	prompt_metadata?: PromptMetadata;
+	skill_metadata?: SkillArtifactMetadata;
 	approval_request_id?: string;
 	governed_outcome?: string;
 	status: MaestroToolCallStatus;
@@ -865,6 +870,7 @@ export function recordMaestroToolCallAttempt(
 			tool_call_id: event.tool_call_id,
 			tool_execution_id: event.tool_execution_id,
 			prompt_metadata: event.prompt_metadata,
+			skill_metadata: event.skill_metadata,
 			tool_namespace: event.tool_namespace,
 			tool_name: event.tool_name,
 			tool_version: event.tool_version,
@@ -895,6 +901,7 @@ export function recordMaestroToolCallCompleted(
 			tool_call_id: event.tool_call_id,
 			tool_execution_id: event.tool_execution_id,
 			prompt_metadata: event.prompt_metadata,
+			skill_metadata: event.skill_metadata,
 			approval_request_id: event.approval_request_id,
 			governed_outcome: event.governed_outcome,
 			status: event.status,
