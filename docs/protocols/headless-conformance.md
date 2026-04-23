@@ -8,7 +8,7 @@ implementation detail.
 The executable suite starts in
 [`test/headless/runtime-conformance.test.ts`](../../test/headless/runtime-conformance.test.ts).
 It defines a small runtime adapter, then runs the same scenarios against the
-current TypeScript in-process host. It also includes an opt-in Rust adapter that
+current TypeScript in-process host. It also includes a Rust adapter that
 spawns `hosted_runner_conformance_fixture` and drives
 `maestro_tui::hosted_runner::start_hosted_runner_with_message_executor` through
 the external HTTP/SSE endpoints.
@@ -28,6 +28,11 @@ Rust hosted-runner wire check:
 MAESTRO_RUST_HOSTED_CONFORMANCE=1 npm run test -- test/headless/runtime-conformance.test.ts
 ```
 
+CI runs the Rust-hosted command as the dedicated
+`rust-hosted-conformance` job. The environment flag remains the local switch
+that chooses whether this file runs only the TypeScript in-process adapter or
+also starts the Rust fixture.
+
 ## Contract Areas
 
 The first conformance tranche covers:
@@ -44,9 +49,9 @@ The first conformance tranche covers:
 - disconnect behavior that clears subscriptions and controller leases without
   destroying the runtime state
 
-These cases intentionally avoid external model calls. They use a deterministic
-fake agent and local scratch workspaces so CI can run them as protocol tests,
-not as provider integration tests.
+These cases intentionally avoid external model calls. They use deterministic
+fake/fixture agents and local scratch workspaces so CI can run them as protocol
+tests, not as provider integration tests.
 
 ## Adapter Expectations
 

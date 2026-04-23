@@ -282,8 +282,8 @@ Every hosted runner implementation should satisfy the shared conformance suite:
 npm run test -- test/headless/runtime-conformance.test.ts
 ```
 
-Rust hosted-runner wire parity is opt-in while the fixture compiles the Rust
-crate:
+Rust hosted-runner wire parity is enforced by the dedicated
+`rust-hosted-conformance` CI job. Run the same gate locally with:
 
 ```bash
 MAESTRO_RUST_HOSTED_CONFORMANCE=1 npm run test -- test/headless/runtime-conformance.test.ts
