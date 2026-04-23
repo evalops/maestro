@@ -5,19 +5,25 @@
 //! This module keeps the Rust runtime aligned with the TypeScript host contract
 //! without baking GKE, Daytona, Modal, or other substrate details into Maestro.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 
-use chrono::{DateTime, SecondsFormat, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, SecondsFormat, Utc};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::sync::CancellationToken;
+
+use crate::headless::{
+    ClientCapabilities, ClientInfo, ConnectionRole, ServerRequestType, UtilityOperation,
+    HEADLESS_PROTOCOL_VERSION,
+};
 
 pub const HOSTED_RUNNER_IDENTITY_PATH: &str = "/.well-known/evalops/remote-runner/identity";
 pub const HOSTED_RUNNER_DRAIN_PATH: &str = "/.well-known/evalops/remote-runner/drain";
@@ -30,8 +36,12 @@ pub const HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION: &str =
 const DEFAULT_LISTEN_PORT: u16 = 8080;
 const MAX_HTTP_HEADER_BYTES: usize = 64 * 1024;
 const MAX_HTTP_BODY_BYTES: usize = 1024 * 1024;
+const HEADLESS_CONNECTIONS_PATH: &str = "/api/headless/connections";
+const HEADLESS_SESSIONS_PREFIX: &str = "/api/headless/sessions/";
+const HEADLESS_HEARTBEAT_INTERVAL_MS: u64 = 15_000;
+const HEADLESS_CONNECTION_IDLE_MS: i64 = (HEADLESS_HEARTBEAT_INTERVAL_MS as i64) * 3;
 
-const HEADLESS_PATH_PREFIXES: &[&str] = &["/api/headless/connections", "/api/headless/sessions/"];
+const HEADLESS_PATH_PREFIXES: &[&str] = &[HEADLESS_CONNECTIONS_PATH, HEADLESS_SESSIONS_PREFIX];
 
 /// Resolved hosted-runner configuration passed by Platform/deploy.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -178,15 +188,29 @@ struct HostedRunnerRuntimeInner {
     config: HostedRunnerConfig,
     ready: bool,
     draining: bool,
+    headless_session_id: String,
+    headless_connections: HashMap<String, HostedRunnerHeadlessConnectionRecord>,
+    controller_connection_id: Option<String>,
+    next_connection_sequence: u64,
+    next_subscription_sequence: u64,
 }
 
 impl HostedRunnerRuntime {
     pub fn new(config: HostedRunnerConfig) -> Self {
+        let headless_session_id = config
+            .maestro_session_id
+            .clone()
+            .unwrap_or_else(|| config.runner_session_id.clone());
         Self {
             inner: Arc::new(Mutex::new(HostedRunnerRuntimeInner {
                 config,
                 ready: true,
                 draining: false,
+                headless_session_id,
+                headless_connections: HashMap::new(),
+                controller_connection_id: None,
+                next_connection_sequence: 1,
+                next_subscription_sequence: 1,
             })),
         }
     }
@@ -356,6 +380,51 @@ impl HostedRunnerRuntime {
                     "code": "bad_request"
                 }),
             ),
+            ("POST", HEADLESS_CONNECTIONS_PATH) => match parse_headless_body::<
+                HostedRunnerHeadlessConnectionInput,
+            >(body, "headless connection")
+            {
+                Ok(input) => self
+                    .register_headless_connection(input)
+                    .map(|snapshot| HostedRunnerHttpResponse::json(200, json!(snapshot)))
+                    .unwrap_or_else(HostedRunnerHttpResponse::from_error),
+                Err(error) => HostedRunnerHttpResponse::from_error(error),
+            },
+            (_, HEADLESS_CONNECTIONS_PATH) => method_not_allowed(),
+            _ if path.starts_with(HEADLESS_SESSIONS_PREFIX) => {
+                match parse_headless_session_route(path) {
+                    Some((session_id, "subscribe")) if method == "POST" => self
+                        .subscribe_headless_session(session_id, body)
+                        .map(|snapshot| HostedRunnerHttpResponse::json(200, json!(snapshot)))
+                        .unwrap_or_else(HostedRunnerHttpResponse::from_error),
+                    Some((_session_id, "subscribe")) => method_not_allowed(),
+                    Some((session_id, "heartbeat")) if method == "POST" => self
+                        .heartbeat_headless_session(session_id, body)
+                        .map(|snapshot| HostedRunnerHttpResponse::json(200, json!(snapshot)))
+                        .unwrap_or_else(HostedRunnerHttpResponse::from_error),
+                    Some((_session_id, "heartbeat")) => method_not_allowed(),
+                    Some((session_id, "disconnect")) if method == "POST" => self
+                        .disconnect_headless_session(session_id, body)
+                        .map(|snapshot| HostedRunnerHttpResponse::json(200, json!(snapshot)))
+                        .unwrap_or_else(HostedRunnerHttpResponse::from_error),
+                    Some((_session_id, "disconnect")) => method_not_allowed(),
+                    Some((session_id, "state")) if method == "GET" => self
+                        .headless_session_state(session_id)
+                        .map(|snapshot| HostedRunnerHttpResponse::json(200, json!(snapshot)))
+                        .unwrap_or_else(HostedRunnerHttpResponse::from_error),
+                    Some((_session_id, "state")) => method_not_allowed(),
+                    Some((_session_id, "events" | "message" | "messages")) => {
+                        unsupported_headless_runtime_response()
+                    }
+                    _ => HostedRunnerHttpResponse::json(
+                        404,
+                        json!({
+                            "error": "not_found",
+                            "code": "not_found"
+                        }),
+                    ),
+                }
+            }
             _ if is_headless_path(path) => HostedRunnerHttpResponse::json(
                 501,
                 json!({
@@ -368,11 +437,597 @@ impl HostedRunnerRuntime {
                 404,
                 json!({
                     "error": "not_found",
-                    "code": "bad_request"
+                    "code": "not_found"
                 }),
             ),
         }
     }
+
+    fn register_headless_connection(
+        &self,
+        input: HostedRunnerHeadlessConnectionInput,
+    ) -> Result<HostedRunnerHeadlessConnectionSnapshot, HostedRunnerError> {
+        let mut inner = self.inner.lock().expect("hosted runner mutex poisoned");
+        let connection_id = ensure_headless_connection(&mut inner, input)?;
+        Ok(inner.headless_connection_snapshot(&connection_id))
+    }
+
+    fn subscribe_headless_session(
+        &self,
+        session_id: &str,
+        body: Option<&str>,
+    ) -> Result<HostedRunnerHeadlessSubscriptionSnapshot, HostedRunnerError> {
+        let input =
+            parse_headless_body::<HostedRunnerHeadlessConnectionInput>(body, "headless subscribe")?;
+        let mut inner = self.inner.lock().expect("hosted runner mutex poisoned");
+        inner.ensure_headless_session(session_id)?;
+        let connection_id = ensure_headless_connection(&mut inner, input)?;
+        let subscription_id = inner.next_subscription_id();
+        let connection = inner
+            .headless_connections
+            .get_mut(&connection_id)
+            .ok_or_else(|| HostedRunnerError::not_found("headless connection not found"))?;
+        connection.subscription_ids.insert(subscription_id.clone());
+        Ok(inner.headless_subscription_snapshot(&connection_id, &subscription_id))
+    }
+
+    fn heartbeat_headless_session(
+        &self,
+        session_id: &str,
+        body: Option<&str>,
+    ) -> Result<HostedRunnerHeadlessHeartbeatSnapshot, HostedRunnerError> {
+        let input = parse_headless_body::<HostedRunnerHeadlessConnectionReferenceInput>(
+            body,
+            "headless heartbeat",
+        )?;
+        let mut inner = self.inner.lock().expect("hosted runner mutex poisoned");
+        inner.ensure_headless_session(session_id)?;
+        let connection_id = inner.resolve_connection_reference(&input)?;
+        let now = Utc::now();
+        let connection = inner
+            .headless_connections
+            .get_mut(&connection_id)
+            .ok_or_else(|| HostedRunnerError::not_found("headless connection not found"))?;
+        connection.last_seen_at = now;
+        Ok(inner.headless_heartbeat_snapshot(&connection_id))
+    }
+
+    fn disconnect_headless_session(
+        &self,
+        session_id: &str,
+        body: Option<&str>,
+    ) -> Result<HostedRunnerHeadlessDisconnectSnapshot, HostedRunnerError> {
+        let input = parse_headless_body::<HostedRunnerHeadlessConnectionReferenceInput>(
+            body,
+            "headless disconnect",
+        )?;
+        let mut inner = self.inner.lock().expect("hosted runner mutex poisoned");
+        inner.ensure_headless_session(session_id)?;
+        let connection_id = inner.resolve_connection_reference(&input)?;
+        let Some(connection) = inner.headless_connections.remove(&connection_id) else {
+            return Err(HostedRunnerError::not_found(
+                "headless connection not found",
+            ));
+        };
+        if inner.controller_connection_id() == Some(connection_id.as_str()) {
+            inner.clear_controller_connection();
+        }
+        let mut disconnected_subscription_ids =
+            connection.subscription_ids.into_iter().collect::<Vec<_>>();
+        disconnected_subscription_ids.sort();
+        Ok(HostedRunnerHeadlessDisconnectSnapshot {
+            success: true,
+            connection_id,
+            controller_connection_id: inner.controller_connection_id().map(str::to_string),
+            disconnected_subscription_ids,
+        })
+    }
+
+    fn headless_session_state(
+        &self,
+        session_id: &str,
+    ) -> Result<HostedRunnerHeadlessRuntimeSnapshot, HostedRunnerError> {
+        let inner = self.inner.lock().expect("hosted runner mutex poisoned");
+        inner.ensure_headless_session(session_id)?;
+        Ok(inner.headless_runtime_snapshot(None))
+    }
+}
+
+#[derive(Debug, Clone)]
+struct HostedRunnerHeadlessConnectionRecord {
+    id: String,
+    role: ConnectionRole,
+    client_protocol_version: Option<String>,
+    client_info: Option<ClientInfo>,
+    capabilities: Option<ClientCapabilities>,
+    opt_out_notifications: Option<Vec<String>>,
+    subscription_ids: HashSet<String>,
+    last_seen_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct HostedRunnerHeadlessConnectionInput {
+    #[serde(rename = "protocolVersion", alias = "protocol_version", default)]
+    protocol_version: Option<String>,
+    #[serde(rename = "clientInfo", alias = "client_info", default)]
+    client_info: Option<ClientInfo>,
+    #[serde(rename = "sessionId", alias = "session_id", default)]
+    session_id: Option<String>,
+    #[serde(rename = "connectionId", alias = "connection_id", default)]
+    connection_id: Option<String>,
+    #[serde(default)]
+    capabilities: Option<HostedRunnerClientCapabilities>,
+    #[serde(
+        rename = "optOutNotifications",
+        alias = "opt_out_notifications",
+        default
+    )]
+    opt_out_notifications: Vec<String>,
+    #[serde(default)]
+    role: Option<ConnectionRole>,
+    #[serde(rename = "takeControl", alias = "take_control", default)]
+    take_control: bool,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct HostedRunnerClientCapabilities {
+    #[serde(rename = "serverRequests", alias = "server_requests", default)]
+    server_requests: Vec<ServerRequestType>,
+    #[serde(rename = "utilityOperations", alias = "utility_operations", default)]
+    utility_operations: Vec<UtilityOperation>,
+    #[serde(rename = "rawAgentEvents", alias = "raw_agent_events", default)]
+    raw_agent_events: Option<bool>,
+}
+
+impl HostedRunnerClientCapabilities {
+    fn into_client_capabilities(self) -> Option<ClientCapabilities> {
+        let has_capabilities = !self.server_requests.is_empty()
+            || !self.utility_operations.is_empty()
+            || self.raw_agent_events.is_some();
+        has_capabilities.then(|| ClientCapabilities {
+            server_requests: (!self.server_requests.is_empty()).then_some(self.server_requests),
+            utility_operations: (!self.utility_operations.is_empty())
+                .then_some(self.utility_operations),
+            raw_agent_events: self.raw_agent_events,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct HostedRunnerHeadlessConnectionReferenceInput {
+    #[serde(rename = "connectionId", alias = "connection_id", default)]
+    connection_id: Option<String>,
+    #[serde(rename = "subscriptionId", alias = "subscription_id", default)]
+    subscription_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostedRunnerHeadlessRuntimeSnapshot {
+    #[serde(rename = "protocolVersion")]
+    pub protocol_version: String,
+    pub session_id: String,
+    pub cursor: u64,
+    pub state: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostedRunnerHeadlessConnectionState {
+    pub connection_id: String,
+    pub role: ConnectionRole,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_protocol_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_info: Option<ClientInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<ClientCapabilities>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opt_out_notifications: Option<Vec<String>>,
+    pub subscription_count: usize,
+    pub attached_subscription_count: usize,
+    pub controller_lease_granted: bool,
+    pub lease_expires_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostedRunnerHeadlessConnectionSnapshot {
+    pub session_id: String,
+    pub connection_id: String,
+    pub role: ConnectionRole,
+    pub controller_lease_granted: bool,
+    pub controller_connection_id: Option<String>,
+    pub lease_expires_at: String,
+    pub heartbeat_interval_ms: u64,
+    pub snapshot: HostedRunnerHeadlessRuntimeSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostedRunnerHeadlessSubscriptionSnapshot {
+    pub connection_id: String,
+    pub subscription_id: String,
+    pub opt_out_notifications: Option<Vec<String>>,
+    pub role: ConnectionRole,
+    pub controller_lease_granted: bool,
+    pub controller_subscription_id: Option<String>,
+    pub controller_connection_id: Option<String>,
+    pub lease_expires_at: String,
+    pub heartbeat_interval_ms: u64,
+    pub snapshot: HostedRunnerHeadlessRuntimeSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostedRunnerHeadlessHeartbeatSnapshot {
+    pub connection_id: String,
+    pub controller_lease_granted: bool,
+    pub controller_connection_id: Option<String>,
+    pub lease_expires_at: String,
+    pub heartbeat_interval_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostedRunnerHeadlessDisconnectSnapshot {
+    pub success: bool,
+    pub connection_id: String,
+    pub controller_connection_id: Option<String>,
+    pub disconnected_subscription_ids: Vec<String>,
+}
+
+impl HostedRunnerRuntimeInner {
+    fn ensure_attachable(&self) -> Result<(), HostedRunnerError> {
+        if self.draining {
+            return Err(HostedRunnerError::runtime_not_ready(
+                "hosted runner is draining",
+            ));
+        }
+        if !self.ready {
+            return Err(HostedRunnerError::runtime_not_ready(
+                "hosted runner is not ready",
+            ));
+        }
+        Ok(())
+    }
+
+    fn ensure_headless_session(&self, session_id: &str) -> Result<(), HostedRunnerError> {
+        if session_id == self.headless_session_id {
+            Ok(())
+        } else {
+            Err(HostedRunnerError::not_found(format!(
+                "headless session not found: {session_id}"
+            )))
+        }
+    }
+
+    fn next_connection_id(&mut self) -> String {
+        let id = format!("hconn_{}", self.next_connection_sequence);
+        self.next_connection_sequence += 1;
+        id
+    }
+
+    fn next_subscription_id(&mut self) -> String {
+        let id = format!("hsub_{}", self.next_subscription_sequence);
+        self.next_subscription_sequence += 1;
+        id
+    }
+
+    fn controller_connection_id(&self) -> Option<&str> {
+        self.controller_connection_id
+            .as_deref()
+            .filter(|id| self.headless_connections.contains_key(*id))
+    }
+
+    fn clear_controller_connection(&mut self) {
+        self.controller_connection_id = None;
+    }
+
+    fn connection_lease_expires_at(connection: &HostedRunnerHeadlessConnectionRecord) -> String {
+        format_timestamp(
+            connection.last_seen_at + ChronoDuration::milliseconds(HEADLESS_CONNECTION_IDLE_MS),
+        )
+    }
+
+    fn controller_subscription_id(&self) -> Option<String> {
+        let controller_id = self.controller_connection_id()?;
+        self.headless_connections
+            .get(controller_id)
+            .and_then(|connection| connection.subscription_ids.iter().next().cloned())
+    }
+
+    fn connection_states(&self) -> Vec<HostedRunnerHeadlessConnectionState> {
+        let controller_id = self.controller_connection_id();
+        let mut states = self
+            .headless_connections
+            .values()
+            .map(|connection| HostedRunnerHeadlessConnectionState {
+                connection_id: connection.id.clone(),
+                role: connection.role,
+                client_protocol_version: connection.client_protocol_version.clone(),
+                client_info: connection.client_info.clone(),
+                capabilities: connection.capabilities.clone(),
+                opt_out_notifications: connection.opt_out_notifications.clone(),
+                subscription_count: connection.subscription_ids.len(),
+                attached_subscription_count: connection.subscription_ids.len(),
+                controller_lease_granted: controller_id == Some(connection.id.as_str()),
+                lease_expires_at: Some(Self::connection_lease_expires_at(connection)),
+            })
+            .collect::<Vec<_>>();
+        states.sort_by(|left, right| left.connection_id.cmp(&right.connection_id));
+        states
+    }
+
+    fn preferred_connection(
+        &self,
+        connection_id: Option<&str>,
+    ) -> Option<&HostedRunnerHeadlessConnectionRecord> {
+        connection_id
+            .and_then(|id| self.headless_connections.get(id))
+            .or_else(|| {
+                self.controller_connection_id()
+                    .and_then(|id| self.headless_connections.get(id))
+            })
+            .or_else(|| self.headless_connections.values().next())
+    }
+
+    fn headless_runtime_snapshot(
+        &self,
+        connection_id: Option<&str>,
+    ) -> HostedRunnerHeadlessRuntimeSnapshot {
+        let preferred = self.preferred_connection(connection_id);
+        let subscriber_count = self
+            .headless_connections
+            .values()
+            .map(|connection| connection.subscription_ids.len())
+            .sum::<usize>();
+        let git_branch =
+            collect_git_state(&self.config.workspace_root).and_then(|state| state.branch);
+        HostedRunnerHeadlessRuntimeSnapshot {
+            protocol_version: HEADLESS_PROTOCOL_VERSION.to_string(),
+            session_id: self.headless_session_id.clone(),
+            cursor: 0,
+            state: json!({
+                "protocol_version": HEADLESS_PROTOCOL_VERSION,
+                "client_protocol_version": preferred.and_then(|connection| connection.client_protocol_version.clone()),
+                "client_info": preferred.and_then(|connection| connection.client_info.clone()),
+                "capabilities": preferred.and_then(|connection| connection.capabilities.clone()),
+                "opt_out_notifications": preferred.and_then(|connection| connection.opt_out_notifications.clone()),
+                "connection_role": preferred.map(|connection| connection.role),
+                "connection_count": self.headless_connections.len(),
+                "subscriber_count": subscriber_count,
+                "controller_subscription_id": self.controller_subscription_id(),
+                "controller_connection_id": self.controller_connection_id(),
+                "connections": self.connection_states(),
+                "session_id": self.headless_session_id.clone(),
+                "cwd": self.config.workspace_root.display().to_string(),
+                "git_branch": git_branch,
+                "is_ready": self.ready && !self.draining,
+                "is_responding": false
+            }),
+        }
+    }
+
+    fn headless_connection_snapshot(
+        &self,
+        connection_id: &str,
+    ) -> HostedRunnerHeadlessConnectionSnapshot {
+        let connection = self
+            .headless_connections
+            .get(connection_id)
+            .expect("headless connection exists");
+        HostedRunnerHeadlessConnectionSnapshot {
+            session_id: self.headless_session_id.clone(),
+            connection_id: connection.id.clone(),
+            role: connection.role,
+            controller_lease_granted: self.controller_connection_id()
+                == Some(connection.id.as_str()),
+            controller_connection_id: self.controller_connection_id().map(str::to_string),
+            lease_expires_at: Self::connection_lease_expires_at(connection),
+            heartbeat_interval_ms: HEADLESS_HEARTBEAT_INTERVAL_MS,
+            snapshot: self.headless_runtime_snapshot(Some(connection_id)),
+        }
+    }
+
+    fn headless_subscription_snapshot(
+        &self,
+        connection_id: &str,
+        subscription_id: &str,
+    ) -> HostedRunnerHeadlessSubscriptionSnapshot {
+        let connection = self
+            .headless_connections
+            .get(connection_id)
+            .expect("headless connection exists");
+        HostedRunnerHeadlessSubscriptionSnapshot {
+            connection_id: connection.id.clone(),
+            subscription_id: subscription_id.to_string(),
+            opt_out_notifications: connection.opt_out_notifications.clone(),
+            role: connection.role,
+            controller_lease_granted: self.controller_connection_id()
+                == Some(connection.id.as_str()),
+            controller_subscription_id: self.controller_subscription_id(),
+            controller_connection_id: self.controller_connection_id().map(str::to_string),
+            lease_expires_at: Self::connection_lease_expires_at(connection),
+            heartbeat_interval_ms: HEADLESS_HEARTBEAT_INTERVAL_MS,
+            snapshot: self.headless_runtime_snapshot(Some(connection_id)),
+        }
+    }
+
+    fn headless_heartbeat_snapshot(
+        &self,
+        connection_id: &str,
+    ) -> HostedRunnerHeadlessHeartbeatSnapshot {
+        let connection = self
+            .headless_connections
+            .get(connection_id)
+            .expect("headless connection exists");
+        HostedRunnerHeadlessHeartbeatSnapshot {
+            connection_id: connection.id.clone(),
+            controller_lease_granted: self.controller_connection_id()
+                == Some(connection.id.as_str()),
+            controller_connection_id: self.controller_connection_id().map(str::to_string),
+            lease_expires_at: Self::connection_lease_expires_at(connection),
+            heartbeat_interval_ms: HEADLESS_HEARTBEAT_INTERVAL_MS,
+        }
+    }
+
+    fn resolve_connection_reference(
+        &self,
+        input: &HostedRunnerHeadlessConnectionReferenceInput,
+    ) -> Result<String, HostedRunnerError> {
+        if let Some(connection_id) = input.connection_id.as_deref() {
+            let connection_id = validate_headless_id(connection_id, "connectionId")?;
+            if self.headless_connections.contains_key(&connection_id) {
+                return Ok(connection_id);
+            }
+        }
+        if let Some(subscription_id) = input.subscription_id.as_deref() {
+            let subscription_id = validate_headless_id(subscription_id, "subscriptionId")?;
+            for connection in self.headless_connections.values() {
+                if connection.subscription_ids.contains(&subscription_id) {
+                    return Ok(connection.id.clone());
+                }
+            }
+        }
+        Err(HostedRunnerError::not_found(
+            "headless connection not found",
+        ))
+    }
+}
+
+fn ensure_headless_connection(
+    inner: &mut HostedRunnerRuntimeInner,
+    input: HostedRunnerHeadlessConnectionInput,
+) -> Result<String, HostedRunnerError> {
+    inner.ensure_attachable()?;
+    let requested_session_id = input
+        .session_id
+        .as_deref()
+        .unwrap_or(&inner.headless_session_id);
+    inner.ensure_headless_session(requested_session_id)?;
+
+    let role = input.role.unwrap_or(ConnectionRole::Controller);
+    let capabilities = input
+        .capabilities
+        .and_then(HostedRunnerClientCapabilities::into_client_capabilities);
+    validate_headless_capabilities(role, capabilities.as_ref())?;
+
+    let requested_connection_id = match input.connection_id {
+        Some(connection_id) => {
+            let connection_id = validate_headless_id(&connection_id, "connectionId")?;
+            if !inner.headless_connections.contains_key(&connection_id) {
+                return Err(HostedRunnerError::not_found(
+                    "headless connection not found",
+                ));
+            }
+            Some(connection_id)
+        }
+        None => None,
+    };
+
+    if let Some(existing) = requested_connection_id
+        .as_deref()
+        .and_then(|connection_id| inner.headless_connections.get(connection_id))
+    {
+        if existing.role != role {
+            return Err(HostedRunnerError::bad_request(
+                "headless connection role does not match existing connection",
+            ));
+        }
+    }
+
+    let existing_controller_id = inner.controller_connection_id().map(str::to_string);
+    if role == ConnectionRole::Controller
+        && existing_controller_id
+            .as_deref()
+            .is_some_and(|controller_id| requested_connection_id.as_deref() != Some(controller_id))
+        && !input.take_control
+    {
+        return Err(HostedRunnerError::lease_conflict(
+            "Controller lease is already held by another connection",
+        ));
+    }
+
+    let connection_id = requested_connection_id.unwrap_or_else(|| inner.next_connection_id());
+    let now = Utc::now();
+    let opt_out_notifications =
+        (!input.opt_out_notifications.is_empty()).then_some(input.opt_out_notifications);
+    let connection = inner
+        .headless_connections
+        .entry(connection_id.clone())
+        .or_insert_with(|| HostedRunnerHeadlessConnectionRecord {
+            id: connection_id.clone(),
+            role,
+            client_protocol_version: None,
+            client_info: None,
+            capabilities: None,
+            opt_out_notifications: None,
+            subscription_ids: HashSet::new(),
+            last_seen_at: now,
+        });
+    connection.client_protocol_version = input.protocol_version.or_else(|| {
+        connection
+            .client_protocol_version
+            .clone()
+            .or_else(|| Some(HEADLESS_PROTOCOL_VERSION.to_string()))
+    });
+    connection.client_info = input.client_info.or_else(|| connection.client_info.clone());
+    connection.capabilities = capabilities.or_else(|| connection.capabilities.clone());
+    connection.opt_out_notifications =
+        opt_out_notifications.or_else(|| connection.opt_out_notifications.clone());
+    connection.last_seen_at = now;
+
+    if role == ConnectionRole::Controller {
+        inner.controller_connection_id = Some(connection_id.clone());
+    }
+
+    Ok(connection_id)
+}
+
+fn validate_headless_capabilities(
+    role: ConnectionRole,
+    capabilities: Option<&ClientCapabilities>,
+) -> Result<(), HostedRunnerError> {
+    let Some(capabilities) = capabilities else {
+        return Ok(());
+    };
+    if role == ConnectionRole::Viewer {
+        if capabilities
+            .server_requests
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .any(|request| {
+                matches!(
+                    request,
+                    ServerRequestType::ClientTool
+                        | ServerRequestType::UserInput
+                        | ServerRequestType::ToolRetry
+                )
+            })
+        {
+            return Err(HostedRunnerError::bad_request(
+                "viewer headless connections cannot negotiate mutating server requests",
+            ));
+        }
+        if capabilities
+            .utility_operations
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .any(|operation| matches!(operation, UtilityOperation::CommandExec))
+        {
+            return Err(HostedRunnerError::bad_request(
+                "viewer headless connections cannot negotiate command execution",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_headless_id(value: &str, field: &str) -> Result<String, HostedRunnerError> {
+    let value = value.trim();
+    if value.is_empty() || value.contains('\0') {
+        return Err(HostedRunnerError::bad_request(format!(
+            "{field} must be a non-empty string"
+        )));
+    }
+    Ok(value.to_string())
 }
 
 /// Serve the hosted-runner identity/drain surface on an existing TCP listener.
@@ -678,7 +1333,9 @@ impl HostedRunnerHttpResponse {
 pub enum HostedRunnerErrorCode {
     InvalidConfig,
     BadRequest,
+    NotFound,
     RuntimeNotReady,
+    LeaseConflict,
     WorkspaceViolation,
     UnsupportedCapability,
     Internal,
@@ -689,7 +1346,9 @@ impl HostedRunnerErrorCode {
         match self {
             Self::InvalidConfig => "invalid_config",
             Self::BadRequest => "bad_request",
+            Self::NotFound => "not_found",
             Self::RuntimeNotReady => "runtime_not_ready",
+            Self::LeaseConflict => "controller_lease_held",
             Self::WorkspaceViolation => "workspace_violation",
             Self::UnsupportedCapability => "unsupported_capability",
             Self::Internal => "internal_error",
@@ -719,8 +1378,16 @@ impl HostedRunnerError {
         Self::new(HostedRunnerErrorCode::BadRequest, message)
     }
 
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self::new(HostedRunnerErrorCode::NotFound, message)
+    }
+
     pub fn runtime_not_ready(message: impl Into<String>) -> Self {
         Self::new(HostedRunnerErrorCode::RuntimeNotReady, message)
+    }
+
+    pub fn lease_conflict(message: impl Into<String>) -> Self {
+        Self::new(HostedRunnerErrorCode::LeaseConflict, message)
     }
 
     pub fn workspace_violation(message: impl Into<String>) -> Self {
@@ -736,7 +1403,9 @@ impl HostedRunnerError {
             HostedRunnerErrorCode::InvalidConfig
             | HostedRunnerErrorCode::BadRequest
             | HostedRunnerErrorCode::WorkspaceViolation => 400,
+            HostedRunnerErrorCode::NotFound => 404,
             HostedRunnerErrorCode::RuntimeNotReady => 503,
+            HostedRunnerErrorCode::LeaseConflict => 409,
             HostedRunnerErrorCode::UnsupportedCapability => 501,
             HostedRunnerErrorCode::Internal => 500,
         }
@@ -876,6 +1545,50 @@ fn non_empty(value: String, field: &str) -> Result<String, HostedRunnerError> {
         )));
     }
     Ok(value)
+}
+
+fn parse_headless_body<T: DeserializeOwned>(
+    body: Option<&str>,
+    label: &str,
+) -> Result<T, HostedRunnerError> {
+    let body = body
+        .map(str::trim)
+        .filter(|body| !body.is_empty())
+        .unwrap_or("{}");
+    serde_json::from_str::<T>(body).map_err(|error| {
+        HostedRunnerError::bad_request(format!("invalid {label} JSON body: {error}"))
+    })
+}
+
+fn parse_headless_session_route(path: &str) -> Option<(&str, &str)> {
+    let path = path.split('?').next().unwrap_or(path);
+    let suffix = path.strip_prefix(HEADLESS_SESSIONS_PREFIX)?;
+    let (session_id, action) = suffix.split_once('/')?;
+    if session_id.is_empty() || action.is_empty() || action.contains('/') {
+        return None;
+    }
+    Some((session_id, action))
+}
+
+fn method_not_allowed() -> HostedRunnerHttpResponse {
+    HostedRunnerHttpResponse::json(
+        405,
+        json!({
+            "error": "method_not_allowed",
+            "code": "bad_request"
+        }),
+    )
+}
+
+fn unsupported_headless_runtime_response() -> HostedRunnerHttpResponse {
+    HostedRunnerHttpResponse::json(
+        501,
+        json!({
+            "error": "headless runtime message and event streaming are not implemented in Rust yet",
+            "code": "unsupported_capability",
+            "capability": "headless_runtime_stream"
+        }),
+    )
 }
 
 fn parse_drain_body(body: Option<&str>) -> Result<HostedRunnerDrainInput, HostedRunnerError> {
@@ -1305,12 +2018,104 @@ mod tests {
     }
 
     #[test]
-    fn request_handler_marks_headless_host_routes_as_unsupported_for_now() {
+    fn request_handler_tracks_headless_controller_viewer_leases() {
         let (_temp_dir, runtime) = runtime();
-        let response = runtime.handle_request("POST", "/api/headless/connections", Some("{}"));
-        assert_eq!(response.status, 501);
-        assert_eq!(response.body["code"], "unsupported_capability");
-        assert_eq!(response.body["capability"], "headless_http_host");
+
+        let controller = runtime.handle_request(
+            "POST",
+            "/api/headless/connections",
+            Some(
+                &json!({
+                    "protocolVersion": HEADLESS_PROTOCOL_VERSION,
+                    "clientInfo": {"name": "maestro-controller", "version": "test"},
+                    "role": "controller",
+                    "capabilities": {
+                        "serverRequests": ["approval", "tool_retry"],
+                        "utilityOperations": ["command_exec"]
+                    },
+                    "optOutNotifications": ["heartbeat"]
+                })
+                .to_string(),
+            ),
+        );
+        assert_eq!(controller.status, 200);
+        assert_eq!(controller.body["session_id"], "maestro-session-1");
+        assert_eq!(controller.body["connection_id"], "hconn_1");
+        assert_eq!(controller.body["role"], "controller");
+        assert_eq!(controller.body["controller_lease_granted"], true);
+        assert_eq!(controller.body["controller_connection_id"], "hconn_1");
+
+        let viewer = runtime.handle_request(
+            "POST",
+            "/api/headless/connections",
+            Some(
+                &json!({
+                    "role": "viewer",
+                    "capabilities": {
+                        "serverRequests": ["approval"],
+                        "utilityOperations": ["file_read", "file_search"]
+                    }
+                })
+                .to_string(),
+            ),
+        );
+        assert_eq!(viewer.status, 200);
+        assert_eq!(viewer.body["connection_id"], "hconn_2");
+        assert_eq!(viewer.body["role"], "viewer");
+        assert_eq!(viewer.body["controller_lease_granted"], false);
+        assert_eq!(viewer.body["controller_connection_id"], "hconn_1");
+
+        let rejected_viewer = runtime.handle_request(
+            "POST",
+            "/api/headless/connections",
+            Some(
+                &json!({
+                    "role": "viewer",
+                    "capabilities": {
+                        "utilityOperations": ["command_exec"]
+                    }
+                })
+                .to_string(),
+            ),
+        );
+        assert_eq!(rejected_viewer.status, 400);
+        assert_eq!(rejected_viewer.body["code"], "bad_request");
+
+        let conflict = runtime.handle_request(
+            "POST",
+            "/api/headless/connections",
+            Some(r#"{"role":"controller"}"#),
+        );
+        assert_eq!(conflict.status, 409);
+        assert_eq!(conflict.body["code"], "controller_lease_held");
+
+        let takeover = runtime.handle_request(
+            "POST",
+            "/api/headless/connections",
+            Some(r#"{"role":"controller","takeControl":true}"#),
+        );
+        assert_eq!(takeover.status, 200);
+        assert_eq!(takeover.body["connection_id"], "hconn_3");
+        assert_eq!(takeover.body["controller_lease_granted"], true);
+        assert_eq!(takeover.body["controller_connection_id"], "hconn_3");
+
+        let state = runtime.handle_request(
+            "GET",
+            "/api/headless/sessions/maestro-session-1/state",
+            None,
+        );
+        assert_eq!(state.status, 200);
+        assert_eq!(state.body["session_id"], "maestro-session-1");
+        assert_eq!(state.body["state"]["connection_count"], 3);
+        assert_eq!(state.body["state"]["controller_connection_id"], "hconn_3");
+
+        let message = runtime.handle_request(
+            "POST",
+            "/api/headless/sessions/maestro-session-1/messages",
+            Some("{}"),
+        );
+        assert_eq!(message.status, 501);
+        assert_eq!(message.body["capability"], "headless_runtime_stream");
     }
 
     #[tokio::test]
@@ -1366,7 +2171,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn http_listener_reports_headless_routes_as_unsupported() {
+    async fn http_listener_serves_headless_lease_routes() {
         let (_temp_dir, runtime) = runtime();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -1377,16 +2182,79 @@ mod tests {
             shutdown.clone(),
         ));
 
-        let response = reqwest::Client::new()
+        let client = reqwest::Client::new();
+        let connection = client
             .post(format!("http://{address}/api/headless/connections"))
+            .json(&json!({
+                "protocolVersion": HEADLESS_PROTOCOL_VERSION,
+                "role": "controller",
+                "capabilities": {
+                    "serverRequests": ["approval", "tool_retry"],
+                    "utilityOperations": ["command_exec"]
+                }
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(connection.status(), reqwest::StatusCode::OK);
+        let connection = connection.json::<Value>().await.unwrap();
+        assert_eq!(connection["connection_id"], "hconn_1");
+        assert_eq!(connection["controller_lease_granted"], true);
+
+        let subscribe = client
+            .post(format!(
+                "http://{address}/api/headless/sessions/maestro-session-1/subscribe"
+            ))
+            .json(&json!({
+                "connectionId": "hconn_1",
+                "role": "controller"
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(subscribe.status(), reqwest::StatusCode::OK);
+        let subscribe = subscribe.json::<Value>().await.unwrap();
+        assert_eq!(subscribe["subscription_id"], "hsub_1");
+        assert_eq!(subscribe["controller_connection_id"], "hconn_1");
+        assert_eq!(subscribe["snapshot"]["state"]["subscriber_count"], 1);
+
+        let heartbeat = client
+            .post(format!(
+                "http://{address}/api/headless/sessions/maestro-session-1/heartbeat"
+            ))
+            .json(&json!({
+                "connectionId": "hconn_1",
+                "subscriptionId": "hsub_1"
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(heartbeat.status(), reqwest::StatusCode::OK);
+        let heartbeat = heartbeat.json::<Value>().await.unwrap();
+        assert_eq!(heartbeat["controller_lease_granted"], true);
+
+        let state = client
+            .get(format!(
+                "http://{address}/api/headless/sessions/maestro-session-1/state"
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(state.status(), reqwest::StatusCode::OK);
+        let state = state.json::<Value>().await.unwrap();
+        assert_eq!(state["state"]["controller_subscription_id"], "hsub_1");
+
+        let unsupported = client
+            .post(format!(
+                "http://{address}/api/headless/sessions/maestro-session-1/messages"
+            ))
             .json(&json!({}))
             .send()
             .await
             .unwrap();
-        assert_eq!(response.status(), reqwest::StatusCode::NOT_IMPLEMENTED);
-        let body = response.json::<Value>().await.unwrap();
-        assert_eq!(body["code"], "unsupported_capability");
-        assert_eq!(body["capability"], "headless_http_host");
+        assert_eq!(unsupported.status(), reqwest::StatusCode::NOT_IMPLEMENTED);
+        let unsupported = unsupported.json::<Value>().await.unwrap();
+        assert_eq!(unsupported["capability"], "headless_runtime_stream");
 
         shutdown.cancel();
         server.await.unwrap().unwrap();
