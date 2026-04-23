@@ -1,15 +1,282 @@
 import type { Tool as McpTool } from "@modelcontextprotocol/sdk/types.js";
 import { type TSchema, Type } from "@sinclair/typebox";
 import type { AgentTool } from "../agent/types.js";
+import {
+	trackToolApprovalRequired,
+	trackToolBlocked,
+} from "../telemetry/security-events.js";
 import { createTool } from "../tools/tool-dsl.js";
 import { mcpManager } from "./manager.js";
-import { buildMcpToolName, parseMcpToolName } from "./names.js";
+import type { McpToolCallResult } from "./manager.js";
+import { buildMcpToolName } from "./names.js";
 
 interface McpToolDetails {
 	server: string;
 	tool: string;
 	content: unknown[];
+	structuredContent?: unknown;
 	isError?: boolean;
+	governedOutcome?: McpGovernedOutcome;
+}
+
+interface McpGovernedOutcome {
+	classification:
+		| "approval_required"
+		| "approval_pending"
+		| "authentication_required"
+		| "denied"
+		| "rate_limited";
+	decision?: string;
+	riskLevel?: string;
+	reasons?: string[];
+	approvalRequestId?: string;
+	matchedRules?: string[];
+	message?: string;
+	code?: string;
+	state?: string;
+	retryAfterMs?: number;
+	retryAfterSeconds?: number;
+}
+
+function normalizeObject(value: unknown): Record<string, unknown> | null {
+	return value && typeof value === "object" && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: null;
+}
+
+function firstString(
+	value: Record<string, unknown>,
+	...keys: string[]
+): string | undefined {
+	for (const key of keys) {
+		const candidate = value[key];
+		if (typeof candidate === "string" && candidate.trim().length > 0) {
+			return candidate.trim();
+		}
+	}
+	return undefined;
+}
+
+function firstNumber(
+	value: Record<string, unknown>,
+	...keys: string[]
+): number | undefined {
+	for (const key of keys) {
+		const candidate = value[key];
+		if (typeof candidate === "number" && Number.isFinite(candidate)) {
+			return candidate;
+		}
+		if (typeof candidate === "string" && candidate.trim().length > 0) {
+			const parsed = Number(candidate);
+			if (Number.isFinite(parsed)) {
+				return parsed;
+			}
+		}
+	}
+	return undefined;
+}
+
+function toStringArray(value: unknown): string[] | undefined {
+	if (!Array.isArray(value)) {
+		return undefined;
+	}
+	const entries = value
+		.filter((item): item is string => typeof item === "string")
+		.map((item) => item.trim())
+		.filter(Boolean);
+	return entries.length > 0 ? entries : undefined;
+}
+
+function extractMcpTextContent(
+	content: McpToolCallResult["content"],
+): string | undefined {
+	const text = content
+		.filter((item) => item.type === "text" && typeof item.text === "string")
+		.map((item) => item.text as string)
+		.join("\n")
+		.trim();
+	return text.length > 0 ? text : undefined;
+}
+
+function parseJsonObjectFromText(
+	text: string | undefined,
+): Record<string, unknown> | null {
+	if (!text) {
+		return null;
+	}
+	const trimmed = text.trim();
+	if (!(trimmed.startsWith("{") && trimmed.endsWith("}"))) {
+		return null;
+	}
+	try {
+		return normalizeObject(JSON.parse(trimmed));
+	} catch {
+		return null;
+	}
+}
+
+function resolveGovernedPayload(
+	result: McpToolCallResult,
+): Record<string, unknown> | null {
+	return (
+		normalizeObject(result.structuredContent) ??
+		parseJsonObjectFromText(extractMcpTextContent(result.content))
+	);
+}
+
+function classifyGovernedOutcome(
+	payload: Record<string, unknown> | null,
+): McpGovernedOutcome | undefined {
+	if (!payload) {
+		return undefined;
+	}
+
+	const decision = firstString(payload, "decision")?.toLowerCase();
+	const code = firstString(payload, "code", "error_code")?.toLowerCase();
+	const state = firstString(payload, "state")?.toLowerCase();
+	const status = firstNumber(payload, "status", "status_code");
+	const approvalRequestId = firstString(
+		payload,
+		"approval_id",
+		"approvalId",
+		"approval_request_id",
+		"approvalRequestId",
+	);
+	const reasons = toStringArray(payload.reasons);
+	const matchedRules = toStringArray(
+		payload.matched_rules ?? payload.matchedRules,
+	);
+	const outcome: Omit<McpGovernedOutcome, "classification"> = {
+		decision,
+		riskLevel: firstString(payload, "risk_level", "riskLevel"),
+		reasons,
+		approvalRequestId,
+		matchedRules,
+		message: firstString(payload, "message", "detail", "error"),
+		code,
+		state,
+		retryAfterMs: firstNumber(payload, "retry_after_ms", "retryAfterMs"),
+		retryAfterSeconds: firstNumber(
+			payload,
+			"retry_after_seconds",
+			"retryAfterSeconds",
+		),
+	};
+
+	if (decision === "require_approval" || code?.includes("approval_required")) {
+		return { classification: "approval_required", ...outcome };
+	}
+	if (state === "pending" && approvalRequestId) {
+		return { classification: "approval_pending", ...outcome };
+	}
+	if (
+		code?.includes("rate_limit") ||
+		code?.includes("too_many_requests") ||
+		status === 429
+	) {
+		return { classification: "rate_limited", ...outcome };
+	}
+	if (
+		code?.includes("authentication_required") ||
+		code?.includes("unauthorized") ||
+		status === 401
+	) {
+		return { classification: "authentication_required", ...outcome };
+	}
+	if (
+		decision === "deny" ||
+		code?.includes("denied") ||
+		code?.includes("forbidden") ||
+		status === 403
+	) {
+		return { classification: "denied", ...outcome };
+	}
+	return undefined;
+}
+
+function formatGovernedOutcomeSummary(
+	outcome: McpGovernedOutcome | undefined,
+): string | undefined {
+	if (!outcome) {
+		return undefined;
+	}
+
+	const lines: string[] = [];
+	switch (outcome.classification) {
+		case "approval_required":
+			lines.push("Approval required.");
+			break;
+		case "approval_pending":
+			lines.push("Approval pending.");
+			break;
+		case "authentication_required":
+			lines.push("Authentication required.");
+			break;
+		case "rate_limited":
+			lines.push("Rate limit reached.");
+			break;
+		case "denied":
+			lines.push("Action denied.");
+			break;
+	}
+
+	if (outcome.message) {
+		lines.push(outcome.message);
+	}
+	if (outcome.reasons?.length) {
+		lines.push(`Reasons: ${outcome.reasons.join("; ")}`);
+	}
+	if (outcome.approvalRequestId) {
+		lines.push(`Approval request: ${outcome.approvalRequestId}`);
+	}
+	if (outcome.state && outcome.classification !== "approval_pending") {
+		lines.push(`State: ${outcome.state}`);
+	}
+	if (outcome.riskLevel) {
+		lines.push(`Risk level: ${outcome.riskLevel}`);
+	}
+	if (typeof outcome.retryAfterSeconds === "number") {
+		lines.push(`Retry after: ${outcome.retryAfterSeconds} seconds`);
+	} else if (typeof outcome.retryAfterMs === "number") {
+		lines.push(`Retry after: ${outcome.retryAfterMs} ms`);
+	}
+
+	return lines.join("\n");
+}
+
+function emitGovernedOutcomeTelemetry(
+	toolName: string,
+	outcome: McpGovernedOutcome | undefined,
+): void {
+	if (!outcome) {
+		return;
+	}
+
+	const reason =
+		outcome.message ??
+		outcome.reasons?.join("; ") ??
+		outcome.code ??
+		"policy event";
+
+	if (
+		outcome.classification === "approval_required" ||
+		outcome.classification === "approval_pending"
+	) {
+		trackToolApprovalRequired({
+			toolName,
+			reason,
+			source: "policy",
+		});
+		return;
+	}
+
+	trackToolBlocked({
+		toolName,
+		reason,
+		source: "policy",
+		severity:
+			outcome.classification === "authentication_required" ? "medium" : "high",
+	});
 }
 
 function convertJsonSchemaToTypebox(schema: unknown): TSchema {
@@ -90,19 +357,26 @@ export function createMcpToolWrapper(serverName: string, mcpTool: McpTool) {
 				mcpTool.name,
 				params as Record<string, unknown>,
 			);
+			const governedOutcome = classifyGovernedOutcome(
+				resolveGovernedPayload(result),
+			);
+			emitGovernedOutcomeTelemetry(mcpTool.name, governedOutcome);
 
-			const textContent = result.content
-				.filter((c) => c.type === "text" && typeof c.text === "string")
-				.map((c) => c.text as string)
-				.join("\n");
+			const output =
+				formatGovernedOutcomeSummary(governedOutcome) ??
+				extractMcpTextContent(result.content) ??
+				JSON.stringify(result.structuredContent ?? result.content, null, 2);
 
-			const output = textContent || JSON.stringify(result.content, null, 2);
-
-			return respond.text(output).detail({
+			const response = result.isError
+				? respond.error(output)
+				: respond.text(output);
+			return response.detail({
 				server: serverName,
 				tool: mcpTool.name,
 				content: result.content,
+				structuredContent: result.structuredContent,
 				isError: result.isError,
+				governedOutcome,
 			});
 		},
 	});

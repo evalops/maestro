@@ -92,6 +92,7 @@ export interface McpToolCallResult {
 		data?: string;
 		mimeType?: string;
 	}>;
+	structuredContent?: unknown;
 	isError?: boolean;
 }
 
@@ -973,6 +974,8 @@ export class McpClientManager extends EventEmitter {
 
 		return {
 			content,
+			structuredContent:
+				"structuredContent" in result ? result.structuredContent : undefined,
 			isError: typeof result.isError === "boolean" ? result.isError : undefined,
 		};
 	}
