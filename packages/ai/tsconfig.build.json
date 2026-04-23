@@ -41,6 +41,7 @@
 		"../../src/sandbox/**/*.ts",
 		"../../src/cli/system-prompt.ts",
 		"../../src/prompts/**/*.ts",
+		"../../src/skills/**/*.ts",
 		"../../src/session/metadata-cache.ts",
 		"../../src/session/types.ts",
 		"../../src/runtime/background-settings.ts",
