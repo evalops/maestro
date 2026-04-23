@@ -479,7 +479,10 @@
 			"properties": {
 				"type": { "kind": "literal", "value": "tool_end" },
 				"call_id": { "kind": "string" },
-				"success": { "kind": "boolean" }
+				"success": { "kind": "boolean" },
+				"error_code": { "kind": "string", "optional": true },
+				"approval_request_id": { "kind": "string", "optional": true },
+				"governed_outcome": { "kind": "string", "optional": true }
 			}
 		},
 		"HeadlessClientToolRequestMessageSchema": {

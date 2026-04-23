@@ -413,6 +413,9 @@ export const HeadlessToolEndMessageSchema = Type.Object(
 		type: Type.Literal("tool_end"),
 		call_id: Type.String(),
 		success: Type.Boolean(),
+		error_code: Type.Optional(Type.String()),
+		approval_request_id: Type.Optional(Type.String()),
+		governed_outcome: Type.Optional(Type.String()),
 	},
 	{ additionalProperties: false },
 );

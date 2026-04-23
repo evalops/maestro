@@ -304,4 +304,107 @@ describe("TurnTracker", () => {
 			costUsd: 1.1,
 		});
 	});
+
+	it("records governed tool failure codes on completed turns", () => {
+		let listener: ((event: AgentEvent) => void) | undefined;
+		const agent = {
+			state: {
+				messages: [],
+				error: undefined,
+				model: {
+					id: "test-model",
+					provider: "anthropic",
+				},
+				thinkingLevel: "off",
+			},
+			subscribe: (fn: (event: AgentEvent) => void) => {
+				listener = fn;
+				return () => {
+					listener = undefined;
+				};
+			},
+		} as unknown as Agent;
+
+		let completed:
+			| {
+					tools: Array<{
+						name: string;
+						callId: string;
+						success: boolean;
+						errorCode?: string;
+					}>;
+					toolFailureCount: number;
+			  }
+			| undefined;
+		const tracker = new TurnTracker(agent, {
+			sessionId: "session-governed-tool",
+			onTurnComplete: (event) => {
+				completed = {
+					tools: event.tools,
+					toolFailureCount: event.toolFailureCount,
+				};
+			},
+		});
+
+		const assistantMessage: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "done" }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet-4-20250514",
+			usage: {
+				input: 10,
+				output: 5,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		};
+
+		listener?.({ type: "agent_start" });
+		listener?.({
+			type: "tool_execution_start",
+			toolCallId: "call-governed",
+			toolName: "bash",
+			args: { command: "rm -rf /tmp/demo" },
+		});
+		listener?.({
+			type: "tool_execution_end",
+			toolCallId: "call-governed",
+			toolName: "bash",
+			result: {
+				role: "toolResult",
+				toolCallId: "call-governed",
+				toolName: "bash",
+				content: [{ type: "text", text: "Denied by policy" }],
+				isError: true,
+				timestamp: Date.now(),
+			},
+			isError: true,
+			errorCode: "governance_denied",
+			governedOutcome: "denied",
+			approvalRequestId: "approval-123",
+		});
+		listener?.({ type: "message_start", message: assistantMessage });
+		listener?.({ type: "message_end", message: assistantMessage });
+		listener?.({
+			type: "agent_end",
+			messages: [assistantMessage],
+			stopReason: "stop",
+		});
+
+		tracker.dispose();
+
+		expect(completed?.tools).toEqual([
+			expect.objectContaining({
+				name: "bash",
+				callId: "call-governed",
+				success: false,
+				errorCode: "governance_denied",
+			}),
+		]);
+		expect(completed?.toolFailureCount).toBe(1);
+	});
 });

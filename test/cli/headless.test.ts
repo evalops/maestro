@@ -196,6 +196,41 @@ describe("headless protocol helpers", () => {
 		]);
 	});
 
+	it("translates governed tool failures into enriched tool_end messages", () => {
+		const translator = new HeadlessProtocolTranslator();
+		const messages = translator.handleAgentEvent({
+			type: "tool_execution_end",
+			toolCallId: "call_123",
+			toolName: "bash",
+			result: {
+				role: "toolResult",
+				toolCallId: "call_123",
+				toolName: "bash",
+				content: [{ type: "text", text: "Denied by policy" }],
+				isError: true,
+				timestamp: Date.now(),
+			},
+			isError: true,
+			errorCode: "governance_denied",
+			approvalRequestId: "approval-123",
+			governedOutcome: "denied",
+		});
+
+		expect(messages).toEqual([
+			{
+				type: "tool_end",
+				call_id: "call_123",
+				success: false,
+				error_code: "governance_denied",
+				approval_request_id: "approval-123",
+				governed_outcome: "denied",
+			},
+		]);
+		for (const message of messages) {
+			expect(Value.Check(HeadlessFromAgentMessageSchema, message)).toBe(true);
+		}
+	});
+
 	it("translates approval requests into legacy and server_request messages", () => {
 		const translator = new HeadlessProtocolTranslator();
 		expect(

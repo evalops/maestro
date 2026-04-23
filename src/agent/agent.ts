@@ -1986,6 +1986,9 @@ export class Agent {
 			status: event.isError
 				? "MAESTRO_TOOL_CALL_STATUS_FAILED"
 				: "MAESTRO_TOOL_CALL_STATUS_SUCCEEDED",
+			approval_request_id: event.approvalRequestId,
+			governed_outcome: event.governedOutcome,
+			error_code: event.errorCode,
 			error_message: event.isError
 				? event.result.content
 						.map((part) => (part.type === "text" ? part.text : ""))

@@ -286,6 +286,9 @@ export interface HeadlessToolEndMessage {
 	type: "tool_end";
 	call_id: string;
 	success: boolean;
+	error_code?: string;
+	approval_request_id?: string;
+	governed_outcome?: string;
 }
 
 export interface HeadlessClientToolRequestMessage {
@@ -1009,6 +1012,13 @@ export class HeadlessProtocolTranslator {
 						type: "tool_end",
 						call_id: event.toolCallId,
 						success: !event.isError,
+						...(event.errorCode ? { error_code: event.errorCode } : {}),
+						...(event.approvalRequestId
+							? { approval_request_id: event.approvalRequestId }
+							: {}),
+						...(event.governedOutcome
+							? { governed_outcome: event.governedOutcome }
+							: {}),
 					},
 				];
 			case "tool_batch_summary": {

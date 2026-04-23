@@ -1123,6 +1123,15 @@ export type AgentEvent =
 			toolExecutionId?: string;
 			/** Optional approval request identifier correlated to Platform ToolExecution */
 			approvalRequestId?: string;
+			/** Optional stable error or outcome code for telemetry and clients */
+			errorCode?: string;
+			/** Optional governed outcome classification surfaced by the tool result */
+			governedOutcome?:
+				| "approval_required"
+				| "approval_pending"
+				| "authentication_required"
+				| "denied"
+				| "rate_limited";
 			/** Name of the tool */
 			toolName: string;
 			/** Optional human-facing label for live UI */

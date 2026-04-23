@@ -191,16 +191,26 @@ export function createAgentJsonlAdapter(
 					break;
 				}
 				case "tool_execution_end": {
+					const data: Record<string, unknown> = {
+						toolCallId: event.toolCallId,
+						toolName: event.toolName,
+						result: event.result,
+						isError: event.isError,
+					};
+					if (event.errorCode) {
+						data.errorCode = event.errorCode;
+					}
+					if (event.approvalRequestId) {
+						data.approvalRequestId = event.approvalRequestId;
+					}
+					if (event.governedOutcome) {
+						data.governedOutcome = event.governedOutcome;
+					}
 					writer.emit({
 						type: "item",
 						subtype: "tool_result",
 						timestamp: now(),
-						data: {
-							toolCallId: event.toolCallId,
-							toolName: event.toolName,
-							result: event.result,
-							isError: event.isError,
-						},
+						data,
 					});
 					break;
 				}
