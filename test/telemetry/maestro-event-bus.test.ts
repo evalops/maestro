@@ -5,6 +5,7 @@ import {
 	closeMaestroEventBusTransport,
 	getMaestroEventBusStatus,
 	publishMaestroCloudEvent,
+	recordMaestroEvalScored,
 	recordMaestroPromptVariantSelected,
 	recordMaestroSkillInvoked,
 	recordMaestroSkillOutcome,
@@ -231,6 +232,71 @@ describe("maestro event bus", () => {
 				tool_call_id: "tool_skill_1",
 				turn_status: "error",
 				error_message: "turn failed",
+				skill_metadata: {
+					name: "incident-review",
+					artifactId: "skill_remote_1",
+					source: "service",
+				},
+			},
+		});
+	});
+
+	it("publishes eval scored CloudEvents with prompt and skill identity", async () => {
+		const published: Array<{ subject: string; payload: string }> = [];
+		setMaestroEventBusTransportForTests({
+			async publish(subject, payload) {
+				published.push({ subject, payload });
+			},
+		});
+
+		recordMaestroEvalScored({
+			tool_call_id: "tool_eval_1",
+			tool_execution_id: "exec_eval_1",
+			tool_name: "Bash",
+			score: 0.82,
+			threshold: 0.9,
+			passed: false,
+			rationale: "formatting checks failed",
+			assertion_count: 1,
+			prompt_metadata: {
+				name: "maestro-system",
+				label: "prod",
+				surface: "maestro",
+				version: 9,
+				versionId: "ver_9",
+				hash: "hash_prompt_123",
+				source: "service",
+			},
+			skill_metadata: {
+				name: "incident-review",
+				artifactId: "skill_remote_1",
+				version: "3",
+				hash: "hash_skill_123",
+				source: "service",
+			},
+			scored_at: "2026-04-23T18:15:00.000Z",
+			env: { MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222" },
+		});
+
+		await Promise.resolve();
+
+		expect(published).toHaveLength(1);
+		expect(JSON.parse(published[0]?.payload ?? "{}")).toMatchObject({
+			type: "maestro.events.eval.scored",
+			data: {
+				tool_call_id: "tool_eval_1",
+				tool_execution_id: "exec_eval_1",
+				tool_name: "Bash",
+				score: 0.82,
+				threshold: 0.9,
+				passed: false,
+				rationale: "formatting checks failed",
+				assertion_count: 1,
+				prompt_metadata: {
+					name: "maestro-system",
+					versionId: "ver_9",
+					source: "service",
+				},
 				skill_metadata: {
 					name: "incident-review",
 					artifactId: "skill_remote_1",

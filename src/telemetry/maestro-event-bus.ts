@@ -249,6 +249,21 @@ export interface SkillOutcomeEventData extends Record<string, unknown> {
 	outcome_at: string;
 }
 
+export interface EvalScoredEventData extends Record<string, unknown> {
+	correlation: MaestroCorrelation;
+	prompt_metadata?: PromptMetadata;
+	skill_metadata?: SkillArtifactMetadata;
+	tool_call_id: string;
+	tool_execution_id?: string;
+	tool_name?: string;
+	score?: number;
+	threshold?: number;
+	passed?: boolean;
+	rationale?: string;
+	assertion_count?: number;
+	scored_at: string;
+}
+
 export interface MaestroEventBusTransport {
 	publish(subject: string, payload: string): Promise<void>;
 	close?(): Promise<void>;
@@ -364,6 +379,22 @@ export interface RecordMaestroSkillOutcomeInput {
 	stop_reason?: string;
 	correlation?: Partial<MaestroCorrelation>;
 	outcome_at?: string;
+	env?: Env;
+}
+
+export interface RecordMaestroEvalScoredInput {
+	prompt_metadata?: PromptMetadata;
+	skill_metadata?: SkillArtifactMetadata;
+	tool_call_id: string;
+	tool_execution_id?: string;
+	tool_name?: string;
+	score?: number;
+	threshold?: number;
+	passed?: boolean;
+	rationale?: string;
+	assertion_count?: number;
+	correlation?: Partial<MaestroCorrelation>;
+	scored_at?: string;
 	env?: Env;
 }
 
@@ -1033,6 +1064,33 @@ export function recordMaestroSkillOutcome(
 			outcome_at: outcomeAt,
 		},
 		{ env: event.env, time: outcomeAt },
+	);
+}
+
+export function recordMaestroEvalScored(
+	event: RecordMaestroEvalScoredInput,
+): void {
+	const scoredAt = event.scored_at ?? new Date().toISOString();
+	void publishMaestroCloudEvent<EvalScoredEventData>(
+		MaestroBusEventType.EvalScored,
+		{
+			correlation: mergeCorrelation(
+				resolveMaestroEventBusConfig(event.env).defaultCorrelation,
+				event.correlation,
+			),
+			prompt_metadata: event.prompt_metadata,
+			skill_metadata: event.skill_metadata,
+			tool_call_id: event.tool_call_id,
+			tool_execution_id: event.tool_execution_id,
+			tool_name: event.tool_name,
+			score: event.score,
+			threshold: event.threshold,
+			passed: event.passed,
+			rationale: event.rationale,
+			assertion_count: event.assertion_count,
+			scored_at: scoredAt,
+		},
+		{ env: event.env, time: scoredAt },
 	);
 }
 
