@@ -52,3 +52,23 @@ Service account name
 {{- include "maestro.fullname" . }}
 {{- end }}
 {{- end }}
+
+{{/*
+Validate process-local headless runtime routing before rendering workload
+resources. Multi-replica web/headless deployments need sticky sessions or a
+durable owner router; otherwise clients can land on a pod that does not own the
+runtime state for /api/headless/* or /api/chat/ws.
+*/}}
+{{- define "maestro.validateHeadlessRuntimeRouting" -}}
+{{- $replicas := int (default 1 .Values.replicaCount) -}}
+{{- $headlessRuntime := default dict (get .Values "headlessRuntime") -}}
+{{- $routing := default dict (get $headlessRuntime "routing") -}}
+{{- $routingMode := default "single-replica" (get $routing "mode") -}}
+{{- $validModes := list "single-replica" "sticky-session" "durable-owner" -}}
+{{- if not (has $routingMode $validModes) -}}
+{{- fail (printf "headlessRuntime.routing.mode must be one of %s, got %q" (join ", " $validModes) $routingMode) -}}
+{{- end -}}
+{{- if and (gt $replicas 1) (eq $routingMode "single-replica") -}}
+{{- fail "replicaCount > 1 requires headlessRuntime.routing.mode to be sticky-session or durable-owner so /api/headless/* and /api/chat/ws stay on the owning runtime pod" -}}
+{{- end -}}
+{{- end }}
