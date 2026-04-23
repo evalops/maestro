@@ -12,6 +12,7 @@ interface HostedRunnerOptions {
 
 export interface HostedRunnerConfig {
 	runnerSessionId: string;
+	ownerInstanceId?: string;
 	workspaceRoot: string;
 	host?: string;
 	port: number;
@@ -29,6 +30,7 @@ const HOSTED_RUNNER_USAGE = `maestro hosted-runner [options]
 
 Options:
   --runner-session-id <id>  Platform remote-runner session id (required)
+  --owner-instance-id <id>  Platform runtime owner generation for attach fencing
   --workspace-root <path>   Workspace root mounted into the runtime pod (required)
   --listen <host:port>      Address to bind, for example 0.0.0.0:8080
   --host <host>             Bind host when --listen is not used
@@ -41,6 +43,7 @@ Options:
 
 Environment:
   MAESTRO_RUNNER_SESSION_ID, REMOTE_RUNNER_SESSION_ID
+  MAESTRO_REMOTE_RUNNER_OWNER_INSTANCE_ID, REMOTE_RUNNER_OWNER_INSTANCE_ID
   MAESTRO_WORKSPACE_ROOT
   MAESTRO_HOSTED_RUNNER_LISTEN, MAESTRO_HOSTED_RUNNER_HOST, MAESTRO_HOSTED_RUNNER_PORT, PORT
   MAESTRO_REMOTE_RUNNER_WORKSPACE_ID, MAESTRO_AGENT_RUN_ID, MAESTRO_SESSION_ID
@@ -203,6 +206,12 @@ export async function resolveHostedRunnerConfig(
 
 	return {
 		runnerSessionId,
+		ownerInstanceId:
+			getLastFlag(parsed, "owner-instance-id") ??
+			getEnvValue(env, [
+				"MAESTRO_REMOTE_RUNNER_OWNER_INSTANCE_ID",
+				"REMOTE_RUNNER_OWNER_INSTANCE_ID",
+			]),
 		workspaceRoot: await resolveWorkspaceRoot(
 			getLastFlag(parsed, "workspace-root") ??
 				getEnvValue(env, ["MAESTRO_WORKSPACE_ROOT", "WORKSPACE_ROOT"]),
@@ -230,6 +239,11 @@ export function applyHostedRunnerEnvironment(config: HostedRunnerConfig): void {
 	process.env.MAESTRO_HOSTED_RUNNER_MODE = "1";
 	process.env.MAESTRO_RUNNER_SESSION_ID = config.runnerSessionId;
 	process.env.MAESTRO_WORKSPACE_ROOT = config.workspaceRoot;
+	if (config.ownerInstanceId) {
+		process.env.MAESTRO_REMOTE_RUNNER_OWNER_INSTANCE_ID =
+			config.ownerInstanceId;
+		process.env.REMOTE_RUNNER_OWNER_INSTANCE_ID = config.ownerInstanceId;
+	}
 	process.env.MAESTRO_PROFILE ??= "hosted-runner";
 	process.env.MAESTRO_WEB_REQUIRE_KEY ??= "0";
 	process.env.MAESTRO_WEB_REQUIRE_REDIS ??= "0";
@@ -260,6 +274,7 @@ export function toHostedRunnerContext(
 	return {
 		enabled: true,
 		runnerSessionId: config.runnerSessionId,
+		ownerInstanceId: config.ownerInstanceId,
 		workspaceRoot: config.workspaceRoot,
 		listenHost: config.host,
 		listenPort: config.port,

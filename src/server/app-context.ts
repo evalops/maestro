@@ -23,6 +23,7 @@ export interface WebServerConfig {
 export interface HostedRunnerContext {
 	enabled: true;
 	runnerSessionId: string;
+	ownerInstanceId?: string;
 	workspaceRoot: string;
 	listenHost?: string;
 	listenPort?: number;

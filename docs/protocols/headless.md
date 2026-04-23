@@ -30,6 +30,38 @@ Compatibility expectations:
 - reject unknown message `type` values unless your client intentionally ignores them
 - compare `protocol_version` during handshake when you require exact compatibility
 
+## Hosted Remote-Runner Identity
+
+When Maestro runs through `maestro hosted-runner`, the HTTP server exposes a
+Platform attach-fencing endpoint:
+
+```http
+GET /.well-known/evalops/remote-runner/identity
+```
+
+The endpoint returns only runtime identity needed by Platform's headless
+gateway:
+
+```json
+{
+  "protocol_version": "evalops.remote-runner.identity.v1",
+  "runner_session_id": "mrs_123",
+  "owner_instance_id": "pod_123",
+  "ready": true,
+  "draining": false
+}
+```
+
+`runner_session_id` comes from `--runner-session-id`, `MAESTRO_RUNNER_SESSION_ID`,
+or `REMOTE_RUNNER_SESSION_ID`. `owner_instance_id` comes from
+`--owner-instance-id`, `MAESTRO_REMOTE_RUNNER_OWNER_INSTANCE_ID`, or
+`REMOTE_RUNNER_OWNER_INSTANCE_ID`.
+
+This surface intentionally omits workspace, organization, user, token, and
+prompt metadata. Platform compares the returned session and owner generation
+with the control-plane session before proxying attach traffic. `ready=false` or
+`draining=true` means the runtime should not receive new attach requests yet.
+
 ## Handshake
 
 Typical controller flow:
