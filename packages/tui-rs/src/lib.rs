@@ -83,6 +83,9 @@ pub mod files;
 /// JSON-based IPC protocol for communicating with the Node.js agent.
 pub mod headless;
 
+/// Hosted runner contract primitives for Platform-managed Maestro runtimes.
+pub mod hosted_runner;
+
 /// Message protocol definitions.
 /// Type definitions for messages exchanged between Rust and Node.js.
 pub mod protocol;

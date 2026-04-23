@@ -204,6 +204,11 @@ naive_bytecount = "allow"               # bytecount crate not worth adding
 doc_link_with_quotes = "allow"          # Quotes in doc examples are OK
 comparison_chain = "allow"              # if-else chains are often clearer
 large_stack_arrays = "allow"            # Test fixtures may use large arrays
+duration_suboptimal_units = "allow"     # Newer Clippy flags existing readable test durations
+collapsible_match = "allow"             # Newer Clippy style lint on established match shapes
+unnecessary_sort_by = "allow"           # Existing code uses explicit descending comparators
+unnecessary_min_or_max = "allow"        # Existing numeric guard style is intentionally explicit
+useless_conversion = "allow"            # Existing iterator chains favor explicit conversion
 
 [lints.rust]
 # Unsafe code is allowed only for low-level system operations
