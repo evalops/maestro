@@ -23,6 +23,7 @@ Source of truth:
 - generated constants: [packages/contracts/src/headless-protocol-generated.ts](../../packages/contracts/src/headless-protocol-generated.ts)
 - runtime message shapes: [src/cli/headless-protocol.ts](../../src/cli/headless-protocol.ts)
 - transport implementation: [src/cli/headless.ts](../../src/cli/headless.ts)
+- hosted runner contract: [docs/protocols/hosted-runner-contract.md](./hosted-runner-contract.md)
 - conformance suite: [docs/protocols/headless-conformance.md](./headless-conformance.md)
 
 Compatibility expectations:

@@ -12,6 +12,9 @@ current TypeScript in-process host. A future Rust-hosted runner should add an
 adapter that drives the same operations over HTTP/SSE, stdio, or another
 transport without changing the scenario body.
 
+The provider-neutral hosted runner shape that these scenarios protect is defined
+in [Hosted Runner Contract](./hosted-runner-contract.md).
+
 Local command:
 
 ```bash
@@ -30,6 +33,7 @@ The first conformance tranche covers:
 - cursor replay ordering and reset snapshots for replay gaps
 - approval server request emission and protocol response resolution
 - hosted workspace-root enforcement for file reads
+- hosted utility command/search/watch lifecycle
 - disconnect behavior that clears subscriptions and controller leases without
   destroying the runtime state
 
