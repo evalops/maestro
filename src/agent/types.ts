@@ -1102,6 +1102,8 @@ export type AgentEvent =
 			type: "tool_execution_start";
 			/** Tool call identifier */
 			toolCallId: string;
+			/** Optional Platform ToolExecution identifier */
+			toolExecutionId?: string;
 			/** Name of the tool */
 			toolName: string;
 			/** Optional human-facing label for live UI */
@@ -1116,6 +1118,10 @@ export type AgentEvent =
 			type: "tool_execution_end";
 			/** Tool call identifier */
 			toolCallId: string;
+			/** Optional Platform ToolExecution identifier */
+			toolExecutionId?: string;
+			/** Optional approval request identifier correlated to Platform ToolExecution */
+			approvalRequestId?: string;
 			/** Name of the tool */
 			toolName: string;
 			/** Optional human-facing label for live UI */

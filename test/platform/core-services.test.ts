@@ -66,6 +66,21 @@ describe("Platform core service contract names", () => {
 				PLATFORM_CONNECT_METHODS.remoteRunner.getStatus,
 			),
 		).toBe("/remoterunner.v1.RemoteRunnerService/GetStatus");
+		expect(
+			platformConnectMethodPath(
+				PLATFORM_CONNECT_METHODS.toolexecution.executeTool,
+			),
+		).toBe("/toolexecution.v1.ToolExecutionService/ExecuteTool");
+		expect(
+			platformConnectMethodPath(
+				PLATFORM_CONNECT_METHODS.toolexecution.resumeToolExecution,
+			),
+		).toBe("/toolexecution.v1.ToolExecutionService/ResumeToolExecution");
+		expect(
+			platformConnectMethodPath(
+				PLATFORM_CONNECT_METHODS.toolexecution.recordToolExecutionOutput,
+			),
+		).toBe("/toolexecution.v1.ToolExecutionService/RecordToolExecutionOutput");
 	});
 
 	it("keeps durable memory on the existing HTTP JSON route", () => {

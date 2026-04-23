@@ -1865,6 +1865,7 @@ export class Agent {
 		});
 		recordMaestroToolCallAttempt({
 			tool_call_id: event.toolCallId,
+			tool_execution_id: event.toolExecutionId,
 			tool_name: event.toolName,
 			safe_arguments: event.args,
 			correlation: {
@@ -1938,6 +1939,7 @@ export class Agent {
 		});
 		recordMaestroToolCallCompleted({
 			tool_call_id: event.toolCallId,
+			tool_execution_id: event.toolExecutionId,
 			status: event.isError
 				? "MAESTRO_TOOL_CALL_STATUS_FAILED"
 				: "MAESTRO_TOOL_CALL_STATUS_SUCCEEDED",

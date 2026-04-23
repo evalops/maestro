@@ -36,6 +36,11 @@ import type {
 	ToolCall,
 	ToolResultMessage,
 } from "../types.js";
+import type {
+	PlatformToolExecutionBridge,
+	ToolExecutionBridgeInput,
+	ToolExecutionBridgePlan,
+} from "./tool-execution-bridge.js";
 import {
 	type ToolAuditLogger,
 	buildPiiPolicyResult,
@@ -58,6 +63,7 @@ export type ToolSafetyVerdict =
 			toolDef: AgentTool;
 			events: AgentEvent[];
 			sanitizedExecutionArgs: Record<string, unknown>;
+			toolExecutionBridgePlan?: ToolExecutionBridgePlan;
 	  };
 
 export interface ToolSafetyContext {
@@ -73,6 +79,7 @@ export interface ToolSafetyContext {
 	adaptiveThresholds: AdaptiveThresholds;
 	auditLogger?: ToolAuditLogger;
 	approvalService?: ActionApprovalService;
+	toolExecutionBridge?: PlatformToolExecutionBridge;
 	hookService?: {
 		runPreToolUseHooks: (
 			toolCall: ToolCall,
@@ -106,6 +113,10 @@ export interface ToolSafetyContext {
 		message: ToolResultMessage,
 		toolCall: ToolCall,
 		isError: boolean,
+		metadata?: {
+			toolExecutionId?: string;
+			approvalRequestId?: string;
+		},
 	) => AgentEvent[];
 }
 
@@ -285,6 +296,7 @@ export async function* evaluateToolSafety(
 		workflowState,
 		auditLogger,
 		approvalService,
+		toolExecutionBridge,
 		hookService,
 		firewall,
 		emitToolResult,
@@ -450,6 +462,11 @@ export async function* evaluateToolSafety(
 	// 4. Firewall evaluation
 	const workflowSnapshot = workflowState.snapshot();
 	const toolDef = tools.find((t) => t.name === effectiveToolCall.name);
+	const describeArgs = (args: Record<string, unknown>) => ({
+		displayName: describeToolDisplayName(toolCall.name, args, toolDef),
+		summaryLabel: summarizeToolUse(toolCall.name, args, toolDef),
+		actionDescription: describeToolActivity(toolCall.name, args, toolDef),
+	});
 	const verdict = await firewall.evaluate({
 		toolName: effectiveToolCall.name,
 		args: effectiveToolCall.arguments,
@@ -539,13 +556,108 @@ export async function* evaluateToolSafety(
 		};
 	}
 
+	if (!toolDef) {
+		const errorResult: ToolResultMessage = {
+			role: "toolResult",
+			toolCallId: toolCall.id,
+			toolName: toolCall.name,
+			content: [
+				{
+					type: "text",
+					text: `Error: Tool "${toolCall.name}" not found`,
+				},
+			],
+			isError: true,
+			timestamp: clock.now(),
+		};
+		const errorEvents = recordEvents(
+			emitToolResult(errorResult, toolCall, true),
+		);
+		for (const event of errorEvents) {
+			yield event;
+		}
+		return {
+			verdict: { outcome: "blocked", events },
+			rateLimitUpdate: rateLimitResult.updatedState,
+		};
+	}
+
+	let toolExecutionBridgePlan: ToolExecutionBridgePlan | undefined;
+	let platformApprovalRequest:
+		| import("../action-approval.js").ActionApprovalRequest
+		| undefined;
+	let platformApprovalResolved = false;
+	const bridgeArgs = safetyMiddleware.sanitizeForLogging(
+		effectiveToolCall.arguments as Record<string, unknown>,
+	);
+	const bridgeInput: ToolExecutionBridgeInput = {
+		cfg,
+		toolCall,
+		toolDef,
+		sanitizedArgs: bridgeArgs,
+		...describeArgs(bridgeArgs),
+	};
+	if (toolExecutionBridge) {
+		const bridgeResult = await toolExecutionBridge.prepare(bridgeInput, signal);
+		switch (bridgeResult.status) {
+			case "observe":
+			case "allow":
+				toolExecutionBridgePlan = bridgeResult.plan;
+				break;
+			case "wait_approval":
+				toolExecutionBridgePlan = bridgeResult.plan;
+				platformApprovalRequest = bridgeResult.request;
+				approvalAllowed = false;
+				approvalReason = bridgeResult.request.reason;
+				break;
+			case "deny": {
+				await logToolExecutionAudit(
+					auditLogger,
+					effectiveToolCall.name,
+					bridgeArgs,
+					"denied",
+					0,
+					bridgeResult.reason,
+				);
+				const deniedResult: ToolResultMessage = {
+					role: "toolResult",
+					toolCallId: toolCall.id,
+					toolName: toolCall.name,
+					content: [{ type: "text", text: bridgeResult.reason }],
+					isError: true,
+					timestamp: clock.now(),
+				};
+				const deniedEvents = recordEvents(
+					emitToolResult(deniedResult, toolCall, true, {
+						toolExecutionId: bridgeResult.plan?.metadata.toolExecutionId,
+						approvalRequestId: bridgeResult.plan?.metadata.approvalRequestId,
+					}),
+				);
+				for (const event of deniedEvents) {
+					yield event;
+				}
+				return {
+					verdict: { outcome: "blocked", events },
+					rateLimitUpdate: rateLimitResult.updatedState,
+				};
+			}
+			default:
+				break;
+		}
+	}
+
 	// 6. Approval flow
-	if (verdict.action === "require_approval") {
+	if (verdict.action === "require_approval" || platformApprovalRequest) {
+		const localApprovalReason =
+			verdict.action === "require_approval" ? verdict.reason : undefined;
 		let permissionHookMadeDecision = false;
 		if (hookService?.runPermissionRequestHooks) {
 			const permissionHookResult = await hookService.runPermissionRequestHooks(
 				effectiveToolCall,
-				verdict.reason ?? approvalReason ?? "Approval required",
+				platformApprovalRequest?.reason ??
+					localApprovalReason ??
+					approvalReason ??
+					"Approval required",
 				signal,
 			);
 			if (permissionHookResult.updatedInput) {
@@ -567,38 +679,57 @@ export async function* evaluateToolSafety(
 			}
 		}
 
+		if (
+			permissionHookMadeDecision &&
+			toolExecutionBridge &&
+			platformApprovalRequest &&
+			toolExecutionBridgePlan?.kind === "governed"
+		) {
+			const resolution = await toolExecutionBridge.resolveApproval(
+				bridgeInput,
+				toolExecutionBridgePlan,
+				{
+					approved: approvalAllowed,
+					reason: approvalReason,
+					resolvedBy: "policy",
+				},
+				signal,
+			);
+			platformApprovalResolved = true;
+			toolExecutionBridgePlan = resolution.plan;
+			if (resolution.status === "deny") {
+				approvalAllowed = false;
+				approvalReason = resolution.reason;
+			} else {
+				approvalAllowed = true;
+				approvalReason = undefined;
+			}
+		}
+
 		if (approvalService && !permissionHookMadeDecision) {
 			const sanitizedApprovalArgs = safetyMiddleware.sanitizeForLogging(
 				effectiveToolCall.arguments as Record<string, unknown>,
 			);
-			const request = {
-				id: toolCall.id,
-				toolName: toolCall.name,
-				displayName: describeToolDisplayName(
-					toolCall.name,
-					sanitizedApprovalArgs,
-					toolDef,
-				),
-				summaryLabel: summarizeToolUse(
-					toolCall.name,
-					sanitizedApprovalArgs,
-					toolDef,
-				),
-				actionDescription: describeToolActivity(
-					toolCall.name,
-					sanitizedApprovalArgs,
-					toolDef,
-				),
-				args: sanitizedApprovalArgs,
-				reason: verdict.reason ?? "Approval required",
-			};
+			const request =
+				platformApprovalRequest ??
+				({
+					id: toolCall.id,
+					toolName: toolCall.name,
+					...describeArgs(sanitizedApprovalArgs),
+					args: sanitizedApprovalArgs,
+					reason: localApprovalReason ?? "Approval required",
+				} satisfies import("../action-approval.js").ActionApprovalRequest);
 			const shouldEmitEvents = approvalService.requiresUserInteraction();
 			if (shouldEmitEvents) {
 				yield recordEvent({ type: "action_approval_required", request });
 			}
 			recordMaestroApprovalHit({
-				approval_request_id: request.id,
-				action: request.actionDescription,
+				approval_request_id:
+					platformApprovalRequest?.id ??
+					toolExecutionBridgePlan?.metadata.approvalRequestId ??
+					request.id,
+				action:
+					request.actionDescription ?? request.summaryLabel ?? request.toolName,
 				command:
 					typeof sanitizedApprovalArgs.command === "string"
 						? sanitizedApprovalArgs.command
@@ -626,14 +757,58 @@ export async function* evaluateToolSafety(
 				});
 			}
 
+			if (
+				toolExecutionBridge &&
+				platformApprovalRequest &&
+				toolExecutionBridgePlan?.kind === "governed"
+			) {
+				const resolution = await toolExecutionBridge.resolveApproval(
+					bridgeInput,
+					toolExecutionBridgePlan,
+					decision,
+					signal,
+				);
+				platformApprovalResolved = true;
+				toolExecutionBridgePlan = resolution.plan;
+				if (resolution.status === "deny") {
+					approvalAllowed = false;
+					approvalReason = resolution.reason;
+				} else {
+					approvalAllowed = true;
+					approvalReason = undefined;
+				}
+			}
+
 			if (!decision.approved) {
 				approvalAllowed = false;
-				approvalReason = decision.reason ?? verdict.reason;
+				approvalReason = decision.reason ?? localApprovalReason;
 			}
 		}
 	}
 
 	if (!approvalAllowed) {
+		if (
+			toolExecutionBridge &&
+			platformApprovalRequest &&
+			toolExecutionBridgePlan?.kind === "governed" &&
+			!platformApprovalResolved
+		) {
+			const resolution = await toolExecutionBridge.resolveApproval(
+				bridgeInput,
+				toolExecutionBridgePlan,
+				{
+					approved: false,
+					reason: approvalReason ?? "Approval denied",
+					resolvedBy: "policy",
+				},
+				signal,
+			);
+			toolExecutionBridgePlan = resolution.plan;
+			approvalReason =
+				resolution.status === "deny"
+					? resolution.reason
+					: (approvalReason ?? "Approval denied");
+		}
 		await logToolExecutionAudit(
 			auditLogger,
 			effectiveToolCall.name,
@@ -653,7 +828,10 @@ export async function* evaluateToolSafety(
 			timestamp: clock.now(),
 		};
 		const deniedEvents = recordEvents(
-			emitToolResult(deniedResult, toolCall, true),
+			emitToolResult(deniedResult, toolCall, true, {
+				toolExecutionId: toolExecutionBridgePlan?.metadata.toolExecutionId,
+				approvalRequestId: toolExecutionBridgePlan?.metadata.approvalRequestId,
+			}),
 		);
 		for (const event of deniedEvents) {
 			yield event;
@@ -664,34 +842,7 @@ export async function* evaluateToolSafety(
 		};
 	}
 
-	// 7. Tool lookup
-	if (!toolDef) {
-		const errorResult: ToolResultMessage = {
-			role: "toolResult",
-			toolCallId: toolCall.id,
-			toolName: toolCall.name,
-			content: [
-				{
-					type: "text",
-					text: `Error: Tool "${toolCall.name}" not found`,
-				},
-			],
-			isError: true,
-			timestamp: clock.now(),
-		};
-		const errorEvents = recordEvents(
-			emitToolResult(errorResult, toolCall, true),
-		);
-		for (const event of errorEvents) {
-			yield event;
-		}
-		return {
-			verdict: { outcome: "blocked", events },
-			rateLimitUpdate: rateLimitResult.updatedState,
-		};
-	}
-
-	// 8. Argument validation
+	// 7. Argument validation
 	let validatedArgs: Record<string, unknown>;
 	try {
 		const rawArgs = validateToolArguments(toolDef, effectiveToolCall);
@@ -734,6 +885,7 @@ export async function* evaluateToolSafety(
 			toolDef,
 			events,
 			sanitizedExecutionArgs,
+			...(toolExecutionBridgePlan ? { toolExecutionBridgePlan } : {}),
 		},
 		rateLimitUpdate: rateLimitResult.updatedState,
 	};

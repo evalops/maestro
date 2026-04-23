@@ -6,9 +6,15 @@ import {
 	MAESTRO_AUTONOMOUS_ACTIONS_KILL_SWITCH,
 	MAESTRO_DRAFT_AND_CONFIRM_DEFAULT_FLAG,
 	MAESTRO_EVALOPS_MANAGED_KILL_SWITCH,
+	MAESTRO_PLATFORM_RUNTIME_AGENT_RUNTIME_OBSERVE_FLAG,
+	MAESTRO_PLATFORM_RUNTIME_BRIDGE_KILL_SWITCH,
+	MAESTRO_PLATFORM_RUNTIME_TOOL_EXECUTION_BRIDGE_FLAG,
 	areAutonomousActionsDisabled,
 	isDraftAndConfirmDefaultEnabled,
 	isFeatureFlagEnabled,
+	isPlatformRuntimeBridgeDisabled,
+	isPlatformRuntimeObserveEnabled,
+	isPlatformToolExecutionBridgeEnabled,
 	resetFeatureFlagCacheForTests,
 } from "../../src/config/feature-flags.js";
 
@@ -87,5 +93,52 @@ describe("feature flags", () => {
 		process.env.EVALOPS_FEATURE_FLAGS_PATH = path;
 
 		expect(isDraftAndConfirmDefaultEnabled()).toBe(true);
+	});
+
+	it("detects the platform runtime observe and tool execution bridge flags", () => {
+		const path = join(
+			tmpdir(),
+			`maestro-feature-flags-${Date.now()}-${Math.random()}.json`,
+		);
+		writeFileSync(
+			path,
+			JSON.stringify({
+				flags: [
+					{
+						key: MAESTRO_PLATFORM_RUNTIME_AGENT_RUNTIME_OBSERVE_FLAG,
+						enabled: true,
+					},
+					{
+						key: MAESTRO_PLATFORM_RUNTIME_TOOL_EXECUTION_BRIDGE_FLAG,
+						enabled: true,
+					},
+				],
+			}),
+		);
+		process.env.EVALOPS_FEATURE_FLAGS_PATH = path;
+
+		expect(isPlatformRuntimeObserveEnabled()).toBe(true);
+		expect(isPlatformToolExecutionBridgeEnabled()).toBe(true);
+	});
+
+	it("detects the platform runtime bridge kill switch", () => {
+		const path = join(
+			tmpdir(),
+			`maestro-feature-flags-${Date.now()}-${Math.random()}.json`,
+		);
+		writeFileSync(
+			path,
+			JSON.stringify({
+				flags: [
+					{
+						key: MAESTRO_PLATFORM_RUNTIME_BRIDGE_KILL_SWITCH,
+						enabled: true,
+					},
+				],
+			}),
+		);
+		process.env.EVALOPS_FEATURE_FLAGS_PATH = path;
+
+		expect(isPlatformRuntimeBridgeDisabled()).toBe(true);
 	});
 });
