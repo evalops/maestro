@@ -36,16 +36,22 @@ export {
 	type SandboxViolationTelemetry,
 } from "../telemetry.js";
 
+// Maestro event bus catalog shared with the public mirror.
 export {
-	MaestroBusEventType,
 	MAESTRO_BUS_EVENT_CATALOG,
 	MAESTRO_BUS_EVENT_TYPES,
-	buildMaestroCloudEvent,
-	closeMaestroEventBusTransport,
+	MaestroBusEventType,
 	getMaestroBusEventCatalogEntry,
-	getMaestroEventBusStatus,
 	isMaestroBusEventType,
 	listMaestroBusEventCatalog,
+	type MaestroBusEventCatalogEntry,
+	type MaestroBusEventCategory,
+} from "./maestro-event-catalog.js";
+
+export {
+	buildMaestroCloudEvent,
+	closeMaestroEventBusTransport,
+	getMaestroEventBusStatus,
 	publishMaestroCloudEvent,
 	recordMaestroApprovalHit,
 	recordMaestroFirewallBlock,
@@ -57,8 +63,6 @@ export {
 	type ApprovalHitEventData,
 	type FirewallBlockEventData,
 	type MaestroCloudEvent,
-	type MaestroBusEventCatalogEntry,
-	type MaestroBusEventCategory,
 	type MaestroCloseReason,
 	type MaestroCorrelation,
 	type MaestroDecisionMode,

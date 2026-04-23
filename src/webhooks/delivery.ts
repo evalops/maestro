@@ -17,12 +17,14 @@ import {
 	webhookDeliveries,
 } from "../db/schema.js";
 import { decryptOrgSettings } from "../db/settings-encryption.js";
+import { fetchDownstream } from "../utils/downstream-http.js";
 import { createLogger } from "../utils/logger.js";
 
 // Unique identifier for this process instance
 const INSTANCE_ID = `${process.pid}-${crypto.randomUUID().slice(0, 8)}`;
 
 const logger = createLogger("webhooks:delivery");
+const WEBHOOK_DOWNSTREAM_MAX_ATTEMPTS = 1;
 
 // ============================================================================
 // TYPES
@@ -154,17 +156,21 @@ async function deliverHttp(
 	const headers = buildWebhookDeliveryHeaders(signature);
 
 	try {
-		const controller = new AbortController();
-		const timeout = setTimeout(() => controller.abort(), timeoutMs);
-
-		const response = await fetch(url, {
-			method: "POST",
-			headers,
-			body: payload,
-			signal: controller.signal,
-		});
-
-		clearTimeout(timeout);
+		const response = await fetchDownstream(
+			url,
+			{
+				method: "POST",
+				headers,
+				body: payload,
+			},
+			{
+				serviceName: "webhook endpoint",
+				failureMode: "optional",
+				timeoutMs,
+				// The database queue owns webhook retry accounting.
+				maxAttempts: WEBHOOK_DOWNSTREAM_MAX_ATTEMPTS,
+			},
+		);
 
 		const responseTimeMs = Date.now() - startTime;
 
@@ -184,14 +190,6 @@ async function deliverHttp(
 		};
 	} catch (error) {
 		const responseTimeMs = Date.now() - startTime;
-
-		if (error instanceof Error && error.name === "AbortError") {
-			return {
-				success: false,
-				responseTimeMs,
-				error: "Request timeout",
-			};
-		}
 
 		return {
 			success: false,

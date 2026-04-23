@@ -53,6 +53,7 @@ pub struct HostedRunnerConfig {
     pub bind_addr: SocketAddr,
     pub owner_instance_id: Option<String>,
     pub snapshot_root: Option<PathBuf>,
+    pub restore_manifest_path: Option<PathBuf>,
     pub workspace_id: Option<String>,
     pub agent_run_id: Option<String>,
     pub maestro_session_id: Option<String>,
@@ -102,6 +103,17 @@ impl HostedRunnerConfig {
             .as_deref(),
             &workspace_root,
         );
+        let restore_manifest_path = resolve_optional_config_path(
+            first_env(
+                env,
+                &[
+                    "MAESTRO_REMOTE_RUNNER_RESTORE_MANIFEST",
+                    "REMOTE_RUNNER_RESTORE_MANIFEST",
+                ],
+            )
+            .as_deref(),
+            &workspace_root,
+        );
 
         Ok(Self {
             runner_session_id: non_empty(runner_session_id, "runner_session_id")?,
@@ -115,6 +127,7 @@ impl HostedRunnerConfig {
                 ],
             ),
             snapshot_root: Some(snapshot_root),
+            restore_manifest_path,
             workspace_id: first_env(
                 env,
                 &["MAESTRO_REMOTE_RUNNER_WORKSPACE_ID", "MAESTRO_WORKSPACE_ID"],
@@ -139,6 +152,7 @@ impl HostedRunnerConfig {
                 .expect("default hosted runner bind address is valid"),
             owner_instance_id: None,
             snapshot_root: None,
+            restore_manifest_path: None,
             workspace_id: None,
             agent_run_id: None,
             maestro_session_id: None,
@@ -161,6 +175,12 @@ impl HostedRunnerConfig {
     #[must_use]
     pub fn with_snapshot_root(mut self, snapshot_root: impl Into<PathBuf>) -> Self {
         self.snapshot_root = Some(snapshot_root.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_restore_manifest_path(mut self, restore_manifest_path: impl Into<PathBuf>) -> Self {
+        self.restore_manifest_path = Some(restore_manifest_path.into());
         self
     }
 
@@ -318,6 +338,16 @@ fn resolve_snapshot_root(path: Option<&str>, workspace_root: &Path) -> PathBuf {
     let Some(path) = path.map(str::trim).filter(|path| !path.is_empty()) else {
         return workspace_root.join(".maestro").join("runner-snapshots");
     };
+    resolve_config_path(path, workspace_root)
+}
+
+fn resolve_optional_config_path(path: Option<&str>, workspace_root: &Path) -> Option<PathBuf> {
+    path.map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(|path| resolve_config_path(path, workspace_root))
+}
+
+fn resolve_config_path(path: &str, workspace_root: &Path) -> PathBuf {
     let path = PathBuf::from(path);
     if path.is_absolute() {
         path
@@ -390,6 +420,9 @@ struct RunnerState {
     cursor: u64,
     last_init: Option<InitConfig>,
     last_status: Option<String>,
+    last_error: Option<String>,
+    last_error_type: Option<String>,
+    restored_snapshot: Option<RuntimeSnapshot>,
     controller_connection_id: Option<String>,
     connections: HashMap<String, ConnectionRecord>,
     subscriptions: HashMap<String, SubscriptionRecord>,
@@ -463,6 +496,17 @@ impl From<&InitConfig> for RuntimeInitSnapshot {
     }
 }
 
+impl RuntimeInitSnapshot {
+    fn to_init_config(&self) -> Option<InitConfig> {
+        (self.message_type == "init").then(|| InitConfig {
+            system_prompt: self.system_prompt.clone(),
+            append_system_prompt: self.append_system_prompt.clone(),
+            thinking_level: self.thinking_level,
+            approval_mode: self.approval_mode,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RuntimeStateSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -515,6 +559,119 @@ struct RuntimeStateSnapshot {
     last_ttft_ms: Option<u64>,
     is_ready: bool,
     is_responding: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SnapshotManifest {
+    protocol_version: String,
+    runner_session_id: String,
+    workspace_id: Option<String>,
+    agent_run_id: Option<String>,
+    maestro_session_id: String,
+    reason: Option<String>,
+    requested_by: Option<String>,
+    created_at: String,
+    workspace_root: PathBuf,
+    runtime: RuntimeFlushManifest,
+    workspace_export: WorkspaceExportManifest,
+    snapshot: RuntimeSnapshot,
+}
+
+impl SnapshotManifest {
+    fn validate_for_workspace(&self, workspace_root: &Path) -> HostedResult<()> {
+        if self.protocol_version != HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION {
+            return Err(HostedError::new(
+                400,
+                "invalid_snapshot_manifest",
+                format!(
+                    "unsupported snapshot manifest protocol version: {}",
+                    self.protocol_version
+                ),
+            ));
+        }
+        if self.workspace_export.mode != "local_path_contract" {
+            return Err(HostedError::new(
+                400,
+                "invalid_snapshot_manifest",
+                format!(
+                    "unsupported workspace export mode: {}",
+                    self.workspace_export.mode
+                ),
+            ));
+        }
+        for path in &self.workspace_export.paths {
+            let _ =
+                resolve_workspace_path(workspace_root, None, Some(path.relative_path.as_str()))?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RuntimeFlushStatus {
+    Completed,
+    #[serde(alias = "interrupted")]
+    Failed,
+    Skipped,
+}
+
+impl RuntimeFlushStatus {
+    fn is_completed(self) -> bool {
+        matches!(self, Self::Completed)
+    }
+
+    fn restore_last_status(self) -> &'static str {
+        match self {
+            Self::Completed => "Restored from snapshot",
+            Self::Failed => "Restore interrupted before runtime flush completed",
+            Self::Skipped => "Restore incomplete: runtime flush skipped",
+        }
+    }
+
+    fn restore_last_error(self, error: Option<&str>) -> Option<String> {
+        if self.is_completed() {
+            return None;
+        }
+        error
+            .map(str::trim)
+            .filter(|error| !error.is_empty())
+            .map(ToOwned::to_owned)
+            .or_else(|| {
+                Some(match self {
+                    Self::Completed => unreachable!("completed restore has no restore error"),
+                    Self::Failed => "runtime flush failed before restore".to_string(),
+                    Self::Skipped => {
+                        "runtime flush was skipped; no runtime activity was persisted".to_string()
+                    }
+                })
+            })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RuntimeFlushManifest {
+    flush_status: RuntimeFlushStatus,
+    error: Option<String>,
+    session_id: String,
+    session_file: Option<PathBuf>,
+    protocol_version: Option<String>,
+    cursor: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WorkspaceExportManifest {
+    mode: String,
+    paths: Vec<WorkspaceExportPathManifest>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WorkspaceExportPathManifest {
+    input: String,
+    path: PathBuf,
+    relative_path: String,
+    #[serde(rename = "type")]
+    path_type: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -836,6 +993,7 @@ struct HttpRequest {
     body: Vec<u8>,
 }
 
+#[derive(Debug)]
 struct HostedError {
     status: u16,
     code: &'static str,
@@ -866,11 +1024,16 @@ pub async fn start_hosted_runner_with_message_executor(
 
     let mut config = config;
     config.workspace_root = workspace_root;
+    let restore_manifest = load_restore_manifest(&config).await?;
     let listener = TcpListener::bind(config.bind_addr).await?;
     let local_addr = listener.local_addr()?;
     let shutdown = CancellationToken::new();
     let server_shutdown = shutdown.clone();
-    let shared = SharedRunner::new_with_message_executor(config, message_executor);
+    let shared = SharedRunner::new_with_message_executor_and_restore(
+        config,
+        message_executor,
+        restore_manifest,
+    );
     let task = tokio::spawn(async move {
         serve(listener, shared, server_shutdown).await;
     });
@@ -885,27 +1048,69 @@ pub async fn start_hosted_runner_with_message_executor(
 impl SharedRunner {
     #[cfg(test)]
     fn new(config: HostedRunnerConfig) -> Self {
-        Self::new_with_message_executor(config, Arc::new(TransportOnlyHostedRunnerMessageExecutor))
+        Self::new_with_message_executor_and_restore(
+            config,
+            Arc::new(TransportOnlyHostedRunnerMessageExecutor),
+            None,
+        )
     }
 
-    fn new_with_message_executor(
+    fn new_with_message_executor_and_restore(
         config: HostedRunnerConfig,
         message_executor: Arc<dyn HostedRunnerHeadlessMessageExecutor>,
+        restore_manifest: Option<SnapshotManifest>,
     ) -> Self {
         let session_id = config
             .maestro_session_id
             .clone()
+            .or_else(|| {
+                restore_manifest
+                    .as_ref()
+                    .map(|manifest| manifest.maestro_session_id.clone())
+            })
             .unwrap_or_else(|| config.runner_session_id.clone());
         let (events, _) = broadcast::channel(MAX_EVENTS);
-        Self {
+        let restored_snapshot = restore_manifest
+            .as_ref()
+            .map(|manifest| manifest.snapshot.clone());
+        let restored_cursor = restore_manifest
+            .as_ref()
+            .and_then(|manifest| manifest.runtime.cursor)
+            .or_else(|| restored_snapshot.as_ref().map(|snapshot| snapshot.cursor));
+        let last_init = restored_snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.last_init.as_ref())
+            .and_then(RuntimeInitSnapshot::to_init_config);
+        let restore_status = restore_manifest
+            .as_ref()
+            .map(|manifest| manifest.runtime.flush_status);
+        let restore_ready = restore_status
+            .map(RuntimeFlushStatus::is_completed)
+            .unwrap_or(true);
+        let restore_last_error = restore_manifest.as_ref().and_then(|manifest| {
+            manifest
+                .runtime
+                .flush_status
+                .restore_last_error(manifest.runtime.error.as_deref())
+        });
+        let restore_last_error_type = restore_last_error.as_ref().map(|_| "protocol".to_string());
+        let shared = Self {
             config: Arc::new(config),
             state: Arc::new(Mutex::new(RunnerState {
-                ready: true,
+                ready: restore_ready,
                 draining: false,
                 session_id,
-                cursor: 0,
-                last_init: None,
-                last_status: Some("Ready".to_string()),
+                cursor: restored_cursor.unwrap_or(0),
+                last_init,
+                last_status: Some(
+                    restore_status
+                        .map(RuntimeFlushStatus::restore_last_status)
+                        .unwrap_or("Ready")
+                        .to_string(),
+                ),
+                last_error: restore_last_error,
+                last_error_type: restore_last_error_type,
+                restored_snapshot,
                 controller_connection_id: None,
                 connections: HashMap::new(),
                 subscriptions: HashMap::new(),
@@ -915,7 +1120,13 @@ impl SharedRunner {
             })),
             events,
             message_executor,
+        };
+        if restore_manifest.is_some() {
+            let envelope = shared.reset_envelope("restored_from_snapshot");
+            let mut state = shared.state.lock().expect("hosted runner state poisoned");
+            state.envelopes.push_back(envelope);
         }
+        shared
     }
 
     fn identity(&self) -> HostedRunnerIdentity {
@@ -944,6 +1155,12 @@ impl SharedRunner {
     fn snapshot(&self, state: &RunnerState) -> RuntimeSnapshot {
         let agent_state = self.message_executor.state().ok().flatten();
         let agent_state = agent_state.as_ref();
+        let restored_state = state
+            .restored_snapshot
+            .as_ref()
+            .map(|snapshot| &snapshot.state);
+        let prefer_restored_host_state = state.restored_snapshot.is_some();
+        let host_ready = state.ready && !state.draining;
         let controller_subscription_id = state
             .controller_connection_id
             .as_ref()
@@ -999,9 +1216,11 @@ impl SharedRunner {
             .collect();
         let protocol_version = agent_state
             .and_then(|state| state.protocol_version.clone())
+            .or_else(|| restored_state.and_then(|state| state.protocol_version.clone()))
             .unwrap_or_else(|| HEADLESS_PROTOCOL_VERSION.to_string());
         let git_branch = agent_state
             .and_then(|state| state.git_branch.clone())
+            .or_else(|| restored_state.and_then(|state| state.git_branch.clone()))
             .or_else(|| crate::git::current_branch(&self.config.workspace_root));
 
         RuntimeSnapshot {
@@ -1013,24 +1232,31 @@ impl SharedRunner {
                 protocol_version: Some(protocol_version),
                 client_protocol_version: preferred_connection
                     .and_then(|connection| connection.client_protocol_version.clone())
+                    .or_else(|| agent_state.and_then(|state| state.client_protocol_version.clone()))
                     .or_else(|| {
-                        agent_state.and_then(|state| state.client_protocol_version.clone())
+                        restored_state.and_then(|state| state.client_protocol_version.clone())
                     }),
                 client_info: preferred_connection
                     .and_then(|connection| connection.client_info.clone())
-                    .or_else(|| agent_state.and_then(|state| state.client_info.clone())),
+                    .or_else(|| agent_state.and_then(|state| state.client_info.clone()))
+                    .or_else(|| restored_state.and_then(|state| state.client_info.clone())),
                 capabilities: preferred_connection
                     .and_then(|connection| connection.capabilities.clone())
-                    .or_else(|| agent_state.and_then(|state| state.capabilities.clone())),
+                    .or_else(|| agent_state.and_then(|state| state.capabilities.clone()))
+                    .or_else(|| restored_state.and_then(|state| state.capabilities.clone())),
                 opt_out_notifications: preferred_connection
                     .and_then(|connection| {
                         (!connection.opt_out_notifications.is_empty())
                             .then(|| connection.opt_out_notifications.clone())
                     })
-                    .or_else(|| agent_state.and_then(|state| state.opt_out_notifications.clone())),
+                    .or_else(|| agent_state.and_then(|state| state.opt_out_notifications.clone()))
+                    .or_else(|| {
+                        restored_state.and_then(|state| state.opt_out_notifications.clone())
+                    }),
                 connection_role: preferred_connection
                     .map(|connection| connection.role)
-                    .or_else(|| agent_state.and_then(|state| state.connection_role)),
+                    .or_else(|| agent_state.and_then(|state| state.connection_role))
+                    .or_else(|| restored_state.and_then(|state| state.connection_role)),
                 connection_count: state.connections.len(),
                 subscriber_count: state.subscriptions.len(),
                 controller_subscription_id,
@@ -1038,35 +1264,51 @@ impl SharedRunner {
                 connections,
                 model: agent_state
                     .and_then(|state| state.model.clone())
+                    .or_else(|| restored_state.and_then(|state| state.model.clone()))
                     .or_else(|| Some("rust-hosted-runner".to_string())),
                 provider: agent_state
                     .and_then(|state| state.provider.clone())
+                    .or_else(|| restored_state.and_then(|state| state.provider.clone()))
                     .or_else(|| Some("rust".to_string())),
-                session_id: agent_state
-                    .and_then(|state| state.session_id.clone())
-                    .or_else(|| Some(state.session_id.clone())),
+                session_id: if prefer_restored_host_state {
+                    Some(state.session_id.clone())
+                } else {
+                    agent_state
+                        .and_then(|state| state.session_id.clone())
+                        .or_else(|| restored_state.and_then(|state| state.session_id.clone()))
+                        .or_else(|| Some(state.session_id.clone()))
+                },
                 cwd: agent_state
                     .and_then(|state| state.cwd.clone())
+                    .or_else(|| restored_state.and_then(|state| state.cwd.clone()))
                     .or_else(|| Some(self.config.workspace_root.to_string_lossy().to_string())),
                 git_branch,
                 current_response: agent_state
                     .and_then(|state| state.current_response.as_ref())
-                    .map(json_value),
+                    .map(json_value)
+                    .or_else(|| restored_state.and_then(|state| state.current_response.clone())),
                 pending_approvals: agent_state
                     .map(|state| state.pending_approvals.iter().map(json_value).collect())
+                    .or_else(|| restored_state.map(|state| state.pending_approvals.clone()))
                     .unwrap_or_default(),
                 pending_client_tools: agent_state
                     .map(|state| state.pending_client_tools.iter().map(json_value).collect())
+                    .or_else(|| restored_state.map(|state| state.pending_client_tools.clone()))
                     .unwrap_or_default(),
-                pending_mcp_elicitations: Vec::new(),
+                pending_mcp_elicitations: restored_state
+                    .map(|state| state.pending_mcp_elicitations.clone())
+                    .unwrap_or_default(),
                 pending_user_inputs: agent_state
                     .map(|state| state.pending_user_inputs.iter().map(json_value).collect())
+                    .or_else(|| restored_state.map(|state| state.pending_user_inputs.clone()))
                     .unwrap_or_default(),
                 pending_tool_retries: agent_state
                     .map(|state| state.pending_tool_retries.iter().map(json_value).collect())
+                    .or_else(|| restored_state.map(|state| state.pending_tool_retries.clone()))
                     .unwrap_or_default(),
                 tracked_tools: agent_state
                     .map(|state| state.tracked_tools.values().map(json_value).collect())
+                    .or_else(|| restored_state.map(|state| state.tracked_tools.clone()))
                     .unwrap_or_default(),
                 active_tools: agent_state
                     .map(|state| {
@@ -1082,24 +1324,71 @@ impl SharedRunner {
                             })
                             .collect()
                     })
+                    .or_else(|| restored_state.map(|state| state.active_tools.clone()))
                     .unwrap_or_default(),
                 active_utility_commands: state.active_utility_commands.values().cloned().collect(),
                 active_file_watches: state.active_file_watches.values().cloned().collect(),
-                last_error: agent_state.and_then(|state| state.last_error.clone()),
-                last_error_type: agent_state
-                    .and_then(|state| state.last_error_type)
-                    .map(|error_type| json_string_value(&error_type)),
-                last_status: agent_state
-                    .and_then(|state| state.last_status.clone())
-                    .or_else(|| state.last_status.clone()),
+                last_error: if host_ready {
+                    agent_state
+                        .and_then(|state| state.last_error.clone())
+                        .or_else(|| state.last_error.clone())
+                        .or_else(|| restored_state.and_then(|state| state.last_error.clone()))
+                } else {
+                    state
+                        .last_error
+                        .clone()
+                        .or_else(|| agent_state.and_then(|state| state.last_error.clone()))
+                        .or_else(|| restored_state.and_then(|state| state.last_error.clone()))
+                },
+                last_error_type: if host_ready {
+                    agent_state
+                        .and_then(|state| state.last_error_type)
+                        .map(|error_type| json_string_value(&error_type))
+                        .or_else(|| state.last_error_type.clone())
+                        .or_else(|| restored_state.and_then(|state| state.last_error_type.clone()))
+                } else {
+                    state
+                        .last_error_type
+                        .clone()
+                        .or_else(|| {
+                            agent_state
+                                .and_then(|state| state.last_error_type)
+                                .map(|error_type| json_string_value(&error_type))
+                        })
+                        .or_else(|| restored_state.and_then(|state| state.last_error_type.clone()))
+                },
+                last_status: if host_ready && prefer_restored_host_state {
+                    state
+                        .last_status
+                        .clone()
+                        .or_else(|| agent_state.and_then(|state| state.last_status.clone()))
+                        .or_else(|| restored_state.and_then(|state| state.last_status.clone()))
+                } else if host_ready {
+                    agent_state
+                        .and_then(|state| state.last_status.clone())
+                        .or_else(|| state.last_status.clone())
+                        .or_else(|| restored_state.and_then(|state| state.last_status.clone()))
+                } else {
+                    state
+                        .last_status
+                        .clone()
+                        .or_else(|| agent_state.and_then(|state| state.last_status.clone()))
+                        .or_else(|| restored_state.and_then(|state| state.last_status.clone()))
+                },
                 last_response_duration_ms: agent_state
-                    .and_then(|state| state.last_response_duration_ms),
-                last_ttft_ms: agent_state.and_then(|state| state.last_ttft_ms),
-                is_ready: agent_state
-                    .map(|state| state.is_ready)
-                    .unwrap_or(state.ready && !state.draining),
+                    .and_then(|state| state.last_response_duration_ms)
+                    .or_else(|| restored_state.and_then(|state| state.last_response_duration_ms)),
+                last_ttft_ms: agent_state
+                    .and_then(|state| state.last_ttft_ms)
+                    .or_else(|| restored_state.and_then(|state| state.last_ttft_ms)),
+                is_ready: host_ready
+                    && agent_state
+                        .map(|state| state.is_ready)
+                        .or_else(|| restored_state.map(|state| state.is_ready))
+                        .unwrap_or(true),
                 is_responding: agent_state
                     .map(|state| state.is_responding)
+                    .or_else(|| restored_state.map(|state| state.is_responding))
                     .unwrap_or(false),
             },
         }
@@ -1460,7 +1749,7 @@ async fn handle_drain(shared: SharedRunner, input: DrainRequest) -> HostedResult
         }
     }
 
-    let manifest_path = write_snapshot_manifest(&shared, &input).await?;
+    let (manifest_path, manifest) = write_snapshot_manifest(&shared, &input).await?;
     {
         let mut state = shared.state.lock().expect("hosted runner state poisoned");
         state.draining = true;
@@ -1477,6 +1766,7 @@ async fn handle_drain(shared: SharedRunner, input: DrainRequest) -> HostedResult
             "requested_by": input.requested_by,
             "reason": input.reason,
             "manifest_path": manifest_path.to_string_lossy(),
+            "manifest": manifest,
         }),
     )
 }
@@ -2282,7 +2572,7 @@ fn handle_file_watch_stop(shared: SharedRunner, watch_id: String) -> HostedResul
 async fn write_snapshot_manifest(
     shared: &SharedRunner,
     input: &DrainRequest,
-) -> HostedResult<PathBuf> {
+) -> HostedResult<(PathBuf, serde_json::Value)> {
     let root = shared.config.snapshot_root.clone().unwrap_or_else(|| {
         shared
             .config
@@ -2303,40 +2593,137 @@ async fn write_snapshot_manifest(
         (state.session_id.clone(), shared.snapshot(&state))
     };
     let has_runtime_activity = snapshot.cursor > 0;
-    let body = json!({
-        "protocol_version": HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION,
-        "runner_session_id": shared.config.runner_session_id,
-        "workspace_id": shared.config.workspace_id,
-        "agent_run_id": shared.config.agent_run_id,
-        "maestro_session_id": maestro_session_id.clone(),
-        "reason": input.reason,
-        "requested_by": input.requested_by,
-        "created_at": Utc::now().to_rfc3339(),
-        "workspace_root": shared.config.workspace_root,
-        "runtime": {
-            "flush_status": if has_runtime_activity { "completed" } else { "skipped" },
-            "error": null,
-            "session_id": maestro_session_id,
-            "session_file": null,
-            "protocol_version": if has_runtime_activity {
-                Some(HEADLESS_PROTOCOL_VERSION)
+    let export_paths = input
+        .export_paths
+        .clone()
+        .unwrap_or_else(|| vec![".".to_string()]);
+    let mut workspace_export_paths = Vec::with_capacity(export_paths.len());
+    for export_path in &export_paths {
+        let resolved_path = resolve_workspace_path(
+            &shared.config.workspace_root,
+            None,
+            Some(export_path.as_str()),
+        )?;
+        let metadata = tokio::fs::metadata(&resolved_path).await.ok();
+        let path_type = metadata
+            .as_ref()
+            .map(|metadata| {
+                if metadata.is_dir() {
+                    "directory"
+                } else if metadata.is_file() {
+                    "file"
+                } else {
+                    "other"
+                }
+            })
+            .unwrap_or("missing");
+        let relative_path = resolved_path
+            .strip_prefix(&shared.config.workspace_root)
+            .ok()
+            .and_then(|path| {
+                if path.as_os_str().is_empty() {
+                    Some(".".to_string())
+                } else {
+                    path.to_str().map(ToOwned::to_owned)
+                }
+            })
+            .unwrap_or_else(|| export_path.clone());
+        workspace_export_paths.push(WorkspaceExportPathManifest {
+            input: export_path.clone(),
+            path: resolved_path,
+            relative_path,
+            path_type: path_type.to_string(),
+        });
+    }
+    let manifest = SnapshotManifest {
+        protocol_version: HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION.to_string(),
+        runner_session_id: shared.config.runner_session_id.clone(),
+        workspace_id: shared.config.workspace_id.clone(),
+        agent_run_id: shared.config.agent_run_id.clone(),
+        maestro_session_id: maestro_session_id.clone(),
+        reason: input.reason.clone(),
+        requested_by: input.requested_by.clone(),
+        created_at: Utc::now().to_rfc3339(),
+        workspace_root: shared.config.workspace_root.clone(),
+        runtime: RuntimeFlushManifest {
+            flush_status: if has_runtime_activity {
+                RuntimeFlushStatus::Completed
             } else {
-                None
+                RuntimeFlushStatus::Skipped
             },
-            "cursor": if has_runtime_activity {
-                Some(snapshot.cursor)
-            } else {
-                None
-            },
+            error: None,
+            session_id: maestro_session_id,
+            session_file: None,
+            protocol_version: has_runtime_activity.then(|| HEADLESS_PROTOCOL_VERSION.to_string()),
+            cursor: has_runtime_activity.then_some(snapshot.cursor),
         },
-        "snapshot": snapshot,
-    });
-    let body = serde_json::to_vec_pretty(&body)
+        workspace_export: WorkspaceExportManifest {
+            mode: "local_path_contract".to_string(),
+            paths: workspace_export_paths,
+        },
+        snapshot,
+    };
+    let body_bytes = serde_json::to_vec_pretty(&manifest)
         .map_err(|error| HostedError::new(500, "runtime_failed", error.to_string()))?;
-    tokio::fs::write(&path, body)
+    let manifest = parse_snapshot_manifest_bytes(&body_bytes, &shared.config.workspace_root)
+        .map_err(|error| HostedError::new(500, "runtime_failed", error.message))?;
+    let body = serde_json::to_value(&manifest)
+        .map_err(|error| HostedError::new(500, "runtime_failed", error.to_string()))?;
+    tokio::fs::write(&path, body_bytes)
         .await
         .map_err(|error| HostedError::new(500, "runtime_failed", error.to_string()))?;
-    Ok(path)
+    Ok((path, body))
+}
+
+fn parse_snapshot_manifest_bytes(
+    bytes: &[u8],
+    workspace_root: &Path,
+) -> HostedResult<SnapshotManifest> {
+    let manifest = serde_json::from_slice::<SnapshotManifest>(bytes).map_err(|error| {
+        HostedError::new(
+            400,
+            "invalid_snapshot_manifest",
+            format!("invalid snapshot manifest json: {error}"),
+        )
+    })?;
+    let workspace_root = workspace_root.canonicalize().map_err(|error| {
+        HostedError::new(
+            400,
+            "invalid_snapshot_manifest",
+            format!("invalid restore workspace root: {error}"),
+        )
+    })?;
+    manifest.validate_for_workspace(&workspace_root)?;
+    Ok(manifest)
+}
+
+async fn load_restore_manifest(
+    config: &HostedRunnerConfig,
+) -> io::Result<Option<SnapshotManifest>> {
+    let Some(path) = &config.restore_manifest_path else {
+        return Ok(None);
+    };
+    let path = if path.is_absolute() {
+        path.clone()
+    } else {
+        config.workspace_root.join(path)
+    };
+    let bytes = tokio::fs::read(&path).await.map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("failed to read hosted runner restore manifest: {error}"),
+        )
+    })?;
+    parse_snapshot_manifest_bytes(&bytes, &config.workspace_root)
+        .map(Some)
+        .map_err(hosted_error_to_io)
+}
+
+fn hosted_error_to_io(error: HostedError) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("{}: {}", error.code, error.message),
+    )
 }
 
 fn safe_manifest_component(value: &str) -> String {
@@ -2838,6 +3225,7 @@ mod tests {
             bind_addr: "127.0.0.1:0".parse().expect("bind addr"),
             owner_instance_id: Some("owner_test".to_string()),
             snapshot_root: None,
+            restore_manifest_path: None,
             workspace_id: Some("ws_test".to_string()),
             agent_run_id: Some("run_test".to_string()),
             maestro_session_id: Some("sess_test".to_string()),
@@ -2906,6 +3294,10 @@ mod tests {
             "MAESTRO_REMOTE_RUNNER_SNAPSHOT_ROOT".to_string(),
             ".snapshots".to_string(),
         );
+        env.insert(
+            "MAESTRO_REMOTE_RUNNER_RESTORE_MANIFEST".to_string(),
+            ".snapshots/restore.json".to_string(),
+        );
 
         let config = HostedRunnerConfig::from_env_map(&env).expect("config");
         assert_eq!(config.runner_session_id, "mrs_123");
@@ -2927,6 +3319,17 @@ mod tests {
             )
         );
         assert_eq!(config.workspace_id.as_deref(), Some("workspace_1"));
+        assert_eq!(
+            config.restore_manifest_path.as_deref(),
+            Some(
+                workspace
+                    .path()
+                    .canonicalize()
+                    .unwrap()
+                    .join(".snapshots/restore.json")
+                    .as_path()
+            )
+        );
     }
 
     #[test]
@@ -2968,13 +3371,20 @@ mod tests {
             .await
             .expect("events response");
         assert_eq!(events_response.status(), StatusCode::OK);
-        let chunk =
-            tokio::time::timeout(std::time::Duration::from_secs(1), events_response.chunk())
-                .await
-                .expect("event chunk timeout")
-                .expect("event chunk read")
-                .expect("event chunk");
-        let event_text = String::from_utf8_lossy(&chunk);
+        let event_text = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            let mut event_text = String::new();
+            while !event_text.contains(r#""reason":"replay_gap""#) {
+                let chunk = events_response
+                    .chunk()
+                    .await
+                    .expect("event chunk read")
+                    .expect("event chunk");
+                event_text.push_str(&String::from_utf8_lossy(&chunk));
+            }
+            event_text
+        })
+        .await
+        .expect("event chunk timeout");
         assert!(event_text.contains(r#""type":"reset""#));
         assert!(event_text.contains(r#""reason":"replay_gap""#));
 
@@ -3020,6 +3430,29 @@ mod tests {
         assert_eq!(drain["status"], "drained");
         let manifest_path = drain["manifest_path"].as_str().expect("manifest path");
         assert!(Path::new(manifest_path).exists());
+        let manifest_bytes = std::fs::read(manifest_path).expect("manifest contents");
+        let typed_manifest = parse_snapshot_manifest_bytes(&manifest_bytes, workspace.path())
+            .expect("typed manifest");
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&manifest_bytes).expect("manifest json");
+        assert_eq!(drain["manifest"], manifest);
+        assert_eq!(
+            typed_manifest.protocol_version,
+            HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION
+        );
+        assert_eq!(
+            manifest["protocol_version"],
+            HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION
+        );
+        assert_eq!(manifest["workspace_export"]["mode"], "local_path_contract");
+        assert_eq!(
+            manifest["workspace_export"]["paths"][0]["relative_path"],
+            "."
+        );
+        assert_eq!(
+            manifest["workspace_export"]["paths"][0]["type"],
+            "directory"
+        );
 
         let post_drain_identity: HostedRunnerIdentity = client
             .get(format!(
@@ -3035,6 +3468,20 @@ mod tests {
         assert!(!post_drain_identity.ready);
         assert!(post_drain_identity.draining);
 
+        let post_drain_state: serde_json::Value = client
+            .get(format!(
+                "{}/api/headless/sessions/sess_test/state",
+                handle.base_url()
+            ))
+            .send()
+            .await
+            .expect("state response")
+            .json()
+            .await
+            .expect("state json");
+        assert_eq!(post_drain_state["state"]["is_ready"], false);
+        assert_eq!(post_drain_state["state"]["last_status"], "Drained");
+
         let attach = client
             .post(format!("{}/api/headless/connections", handle.base_url()))
             .json(&json!({"sessionId": "sess_test", "role": "controller"}))
@@ -3048,6 +3495,7 @@ mod tests {
     #[tokio::test]
     async fn drain_manifest_records_runtime_cursor_after_activity() {
         let workspace = tempdir().expect("workspace");
+        std::fs::write(workspace.path().join("notes.md"), "notes").expect("workspace file");
         let handle = start_hosted_runner(test_config(workspace.path().to_path_buf()))
             .await
             .expect("start hosted runner");
@@ -3088,7 +3536,7 @@ mod tests {
                 "{}/.well-known/evalops/remote-runner/drain",
                 handle.base_url()
             ))
-            .json(&json!({"reason": "cursor-check"}))
+            .json(&json!({"reason": "cursor-check", "export_paths": ["notes.md"]}))
             .send()
             .await
             .expect("drain response")
@@ -3096,18 +3544,476 @@ mod tests {
             .await
             .expect("drain json");
         let manifest_path = drain["manifest_path"].as_str().expect("manifest path");
-        let manifest: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(manifest_path).expect("manifest contents"),
-        )
-        .expect("manifest json");
+        let manifest_bytes = std::fs::read(manifest_path).expect("manifest contents");
+        let typed_manifest = parse_snapshot_manifest_bytes(&manifest_bytes, workspace.path())
+            .expect("typed manifest");
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&manifest_bytes).expect("manifest json");
         assert_eq!(manifest["runtime"]["flush_status"], "completed");
+        assert_eq!(
+            typed_manifest.runtime.flush_status,
+            RuntimeFlushStatus::Completed
+        );
         assert_eq!(
             manifest["runtime"]["protocol_version"],
             HEADLESS_PROTOCOL_VERSION
         );
         assert!(manifest["runtime"]["cursor"].as_u64().unwrap_or_default() >= 2);
+        assert_eq!(drain["manifest"], manifest);
+        assert_eq!(
+            manifest["workspace_export"]["paths"][0]["input"],
+            "notes.md"
+        );
+        assert_eq!(
+            manifest["workspace_export"]["paths"][0]["relative_path"],
+            "notes.md"
+        );
+        assert_eq!(manifest["workspace_export"]["paths"][0]["type"], "file");
+        let mut escaped_manifest = manifest.clone();
+        escaped_manifest["workspace_export"]["paths"][0]["relative_path"] = json!("../secret.txt");
+        let escaped_bytes = serde_json::to_vec(&escaped_manifest).expect("escaped manifest json");
+        let error =
+            parse_snapshot_manifest_bytes(&escaped_bytes, workspace.path()).expect_err("escape");
+        assert_eq!(error.code, "workspace_violation");
 
         handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn restore_manifest_seeds_runtime_state_and_replay_marker() {
+        let workspace = tempdir().expect("workspace");
+        let handle = start_hosted_runner(test_config(workspace.path().to_path_buf()))
+            .await
+            .expect("start hosted runner");
+        let client = reqwest::Client::new();
+
+        let connection: serde_json::Value = client
+            .post(format!("{}/api/headless/connections", handle.base_url()))
+            .json(&json!({
+                "sessionId": "sess_test",
+                "connectionId": "conn_restore",
+                "role": "controller"
+            }))
+            .send()
+            .await
+            .expect("connection response")
+            .json()
+            .await
+            .expect("connection json");
+        assert_eq!(connection["connection_id"], "conn_restore");
+
+        let message: serde_json::Value = client
+            .post(format!(
+                "{}/api/headless/sessions/sess_test/messages",
+                handle.base_url()
+            ))
+            .header("x-maestro-headless-connection-id", "conn_restore")
+            .json(&json!({"type": "prompt", "content": "before restore"}))
+            .send()
+            .await
+            .expect("message response")
+            .json()
+            .await
+            .expect("message json");
+        assert!(message["cursor"].as_u64().unwrap_or_default() > 0);
+
+        let drain: serde_json::Value = client
+            .post(format!(
+                "{}/.well-known/evalops/remote-runner/drain",
+                handle.base_url()
+            ))
+            .json(&json!({"reason": "restore-check"}))
+            .send()
+            .await
+            .expect("drain response")
+            .json()
+            .await
+            .expect("drain json");
+        let manifest_path = PathBuf::from(drain["manifest_path"].as_str().expect("manifest path"));
+        let restored_cursor = drain["manifest"]["runtime"]["cursor"]
+            .as_u64()
+            .expect("manifest cursor");
+        handle.shutdown().await;
+
+        let mut restore_config = test_config(workspace.path().to_path_buf());
+        restore_config.runner_session_id = "mrs_restored".to_string();
+        restore_config.maestro_session_id = None;
+        restore_config.restore_manifest_path = Some(manifest_path);
+        let restored = start_hosted_runner(restore_config)
+            .await
+            .expect("start restored hosted runner");
+
+        let identity: HostedRunnerIdentity = client
+            .get(format!(
+                "{}/.well-known/evalops/remote-runner/identity",
+                restored.base_url()
+            ))
+            .send()
+            .await
+            .expect("identity response")
+            .json()
+            .await
+            .expect("identity json");
+        assert_eq!(identity.runner_session_id, "mrs_restored");
+        assert!(identity.ready);
+        assert!(!identity.draining);
+
+        let state: serde_json::Value = client
+            .get(format!(
+                "{}/api/headless/sessions/sess_test/state",
+                restored.base_url()
+            ))
+            .send()
+            .await
+            .expect("state response")
+            .json()
+            .await
+            .expect("state json");
+        assert_eq!(state["session_id"], "sess_test");
+        assert_eq!(state["cursor"], restored_cursor);
+        assert_eq!(state["state"]["last_status"], "Restored from snapshot");
+        assert_eq!(state["state"]["is_ready"], true);
+
+        let mut events_response = client
+            .get(format!(
+                "{}/api/headless/sessions/sess_test/events?cursor=0",
+                restored.base_url()
+            ))
+            .send()
+            .await
+            .expect("events response");
+        assert_eq!(events_response.status(), StatusCode::OK);
+        let event_text = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            let mut event_text = String::new();
+            while !event_text.contains(r#""reason":"restored_from_snapshot""#) {
+                let chunk = events_response
+                    .chunk()
+                    .await
+                    .expect("event chunk read")
+                    .expect("event chunk");
+                event_text.push_str(&String::from_utf8_lossy(&chunk));
+            }
+            event_text
+        })
+        .await
+        .expect("event chunk timeout");
+        assert!(event_text.contains(r#""type":"reset""#));
+        assert!(event_text.contains(r#""reason":"restored_from_snapshot""#));
+        assert!(event_text.contains("Restored from snapshot"));
+
+        let subscription: serde_json::Value = client
+            .post(format!(
+                "{}/api/headless/sessions/sess_test/subscribe",
+                restored.base_url()
+            ))
+            .json(&json!({"role": "controller"}))
+            .send()
+            .await
+            .expect("subscribe response")
+            .json()
+            .await
+            .expect("subscribe json");
+        assert_eq!(subscription["controller_lease_granted"], true);
+        assert_eq!(subscription["snapshot"]["session_id"], "sess_test");
+
+        restored.shutdown().await;
+    }
+
+    #[test]
+    fn snapshot_manifest_parser_accepts_typescript_hosted_shape() {
+        let workspace = tempdir().expect("workspace");
+        let readme_path = workspace.path().join("README.md");
+        std::fs::write(&readme_path, "# workspace\n").expect("workspace file");
+        let manifest = json!({
+            "protocol_version": HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION,
+            "runner_session_id": "mrs_ts",
+            "workspace_id": "ws_ts",
+            "agent_run_id": "run_ts",
+            "maestro_session_id": "session_ts",
+            "reason": "ttl_expired",
+            "requested_by": "platform",
+            "created_at": "2026-04-23T00:00:00.000Z",
+            "workspace_root": workspace.path(),
+            "runtime": {
+                "flush_status": "completed",
+                "session_id": "session_ts",
+                "session_file": workspace.path().join(".maestro/sessions/session.jsonl"),
+                "protocol_version": HEADLESS_PROTOCOL_VERSION,
+                "cursor": 7
+            },
+            "workspace_export": {
+                "mode": "local_path_contract",
+                "paths": [{
+                    "input": "README.md",
+                    "path": readme_path,
+                    "relative_path": "README.md",
+                    "type": "file"
+                }]
+            },
+            "snapshot": {
+                "protocolVersion": HEADLESS_PROTOCOL_VERSION,
+                "session_id": "session_ts",
+                "cursor": 7,
+                "last_init": null,
+                "state": {
+                    "protocol_version": HEADLESS_PROTOCOL_VERSION,
+                    "connection_count": 0,
+                    "subscriber_count": 0,
+                    "connections": [],
+                    "model": "gpt-5.4",
+                    "provider": "openai",
+                    "session_id": "session_ts",
+                    "cwd": workspace.path(),
+                    "pending_approvals": [],
+                    "pending_client_tools": [],
+                    "pending_mcp_elicitations": [],
+                    "pending_user_inputs": [],
+                    "pending_tool_retries": [],
+                    "tracked_tools": [],
+                    "active_tools": [],
+                    "active_utility_commands": [],
+                    "active_file_watches": [],
+                    "last_status": "Ready",
+                    "is_ready": true,
+                    "is_responding": false
+                }
+            }
+        });
+        let bytes = serde_json::to_vec(&manifest).expect("manifest json");
+        let parsed =
+            parse_snapshot_manifest_bytes(&bytes, workspace.path()).expect("typed manifest");
+
+        assert_eq!(
+            parsed.protocol_version,
+            HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION
+        );
+        assert_eq!(parsed.runtime.flush_status, RuntimeFlushStatus::Completed);
+        assert_eq!(parsed.snapshot.session_id, "session_ts");
+        assert_eq!(parsed.snapshot.cursor, 7);
+        assert_eq!(parsed.workspace_export.paths[0].relative_path, "README.md");
+    }
+
+    #[tokio::test]
+    async fn failed_restore_manifest_stays_not_ready_and_rejects_attach() {
+        let workspace = tempdir().expect("workspace");
+        let handle = start_hosted_runner(test_config(workspace.path().to_path_buf()))
+            .await
+            .expect("start hosted runner");
+        let client = reqwest::Client::new();
+
+        let connection: serde_json::Value = client
+            .post(format!("{}/api/headless/connections", handle.base_url()))
+            .json(&json!({
+                "sessionId": "sess_test",
+                "connectionId": "conn_partial_restore",
+                "role": "controller"
+            }))
+            .send()
+            .await
+            .expect("connection response")
+            .json()
+            .await
+            .expect("connection json");
+        assert_eq!(connection["connection_id"], "conn_partial_restore");
+
+        let message: serde_json::Value = client
+            .post(format!(
+                "{}/api/headless/sessions/sess_test/messages",
+                handle.base_url()
+            ))
+            .header("x-maestro-headless-connection-id", "conn_partial_restore")
+            .json(&json!({"type": "prompt", "content": "before interrupted restore"}))
+            .send()
+            .await
+            .expect("message response")
+            .json()
+            .await
+            .expect("message json");
+        assert!(message["cursor"].as_u64().unwrap_or_default() > 0);
+
+        let drain: serde_json::Value = client
+            .post(format!(
+                "{}/.well-known/evalops/remote-runner/drain",
+                handle.base_url()
+            ))
+            .json(&json!({"reason": "preempted"}))
+            .send()
+            .await
+            .expect("drain response")
+            .json()
+            .await
+            .expect("drain json");
+        let manifest_path = PathBuf::from(drain["manifest_path"].as_str().expect("manifest path"));
+        let restored_cursor = drain["manifest"]["runtime"]["cursor"]
+            .as_u64()
+            .expect("manifest cursor");
+        let mut partial_manifest = drain["manifest"].clone();
+        partial_manifest["runtime"]["flush_status"] = json!("failed");
+        partial_manifest["runtime"]["error"] = json!("flush timed out");
+        tokio::fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&partial_manifest).expect("manifest json"),
+        )
+        .await
+        .expect("write partial manifest");
+        handle.shutdown().await;
+
+        let mut restore_config = test_config(workspace.path().to_path_buf());
+        restore_config.runner_session_id = "mrs_partial_restored".to_string();
+        restore_config.maestro_session_id = None;
+        restore_config.restore_manifest_path = Some(manifest_path);
+        let restored = start_hosted_runner(restore_config)
+            .await
+            .expect("start restored hosted runner");
+
+        let identity: HostedRunnerIdentity = client
+            .get(format!(
+                "{}/.well-known/evalops/remote-runner/identity",
+                restored.base_url()
+            ))
+            .send()
+            .await
+            .expect("identity response")
+            .json()
+            .await
+            .expect("identity json");
+        assert_eq!(identity.runner_session_id, "mrs_partial_restored");
+        assert!(!identity.ready);
+        assert!(!identity.draining);
+
+        let state: serde_json::Value = client
+            .get(format!(
+                "{}/api/headless/sessions/sess_test/state",
+                restored.base_url()
+            ))
+            .send()
+            .await
+            .expect("state response")
+            .json()
+            .await
+            .expect("state json");
+        assert_eq!(state["session_id"], "sess_test");
+        assert_eq!(state["cursor"], restored_cursor);
+        assert_eq!(
+            state["state"]["last_status"],
+            "Restore interrupted before runtime flush completed"
+        );
+        assert_eq!(state["state"]["last_error"], "flush timed out");
+        assert_eq!(state["state"]["last_error_type"], "protocol");
+        assert_eq!(state["state"]["is_ready"], false);
+
+        let ready = client
+            .get(format!("{}/readyz", restored.base_url()))
+            .send()
+            .await
+            .expect("ready response");
+        assert_eq!(ready.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let attach = client
+            .post(format!("{}/api/headless/connections", restored.base_url()))
+            .json(&json!({"sessionId": "sess_test", "role": "controller"}))
+            .send()
+            .await
+            .expect("attach response");
+        assert_eq!(attach.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let mut events_response = client
+            .get(format!(
+                "{}/api/headless/sessions/sess_test/events?cursor=0",
+                restored.base_url()
+            ))
+            .send()
+            .await
+            .expect("events response");
+        assert_eq!(events_response.status(), StatusCode::OK);
+        let event_text = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            let mut event_text = String::new();
+            while !event_text.contains(r#""reason":"restored_from_snapshot""#) {
+                let chunk = events_response
+                    .chunk()
+                    .await
+                    .expect("event chunk read")
+                    .expect("event chunk");
+                event_text.push_str(&String::from_utf8_lossy(&chunk));
+            }
+            event_text
+        })
+        .await
+        .expect("event chunk timeout");
+        assert!(event_text.contains(r#""type":"reset""#));
+        assert!(event_text.contains("Restore interrupted before runtime flush completed"));
+
+        restored.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn skipped_restore_manifest_stays_not_ready() {
+        let workspace = tempdir().expect("workspace");
+        let handle = start_hosted_runner(test_config(workspace.path().to_path_buf()))
+            .await
+            .expect("start hosted runner");
+        let client = reqwest::Client::new();
+
+        let drain: serde_json::Value = client
+            .post(format!(
+                "{}/.well-known/evalops/remote-runner/drain",
+                handle.base_url()
+            ))
+            .json(&json!({"reason": "empty-runtime"}))
+            .send()
+            .await
+            .expect("drain response")
+            .json()
+            .await
+            .expect("drain json");
+        assert_eq!(drain["manifest"]["runtime"]["flush_status"], "skipped");
+        let manifest_path = PathBuf::from(drain["manifest_path"].as_str().expect("manifest path"));
+        handle.shutdown().await;
+
+        let mut restore_config = test_config(workspace.path().to_path_buf());
+        restore_config.runner_session_id = "mrs_skipped_restored".to_string();
+        restore_config.maestro_session_id = None;
+        restore_config.restore_manifest_path = Some(manifest_path);
+        let restored = start_hosted_runner(restore_config)
+            .await
+            .expect("start restored hosted runner");
+
+        let identity: HostedRunnerIdentity = client
+            .get(format!(
+                "{}/.well-known/evalops/remote-runner/identity",
+                restored.base_url()
+            ))
+            .send()
+            .await
+            .expect("identity response")
+            .json()
+            .await
+            .expect("identity json");
+        assert!(!identity.ready);
+
+        let state: serde_json::Value = client
+            .get(format!(
+                "{}/api/headless/sessions/sess_test/state",
+                restored.base_url()
+            ))
+            .send()
+            .await
+            .expect("state response")
+            .json()
+            .await
+            .expect("state json");
+        assert_eq!(
+            state["state"]["last_status"],
+            "Restore incomplete: runtime flush skipped"
+        );
+        assert_eq!(
+            state["state"]["last_error"],
+            "runtime flush was skipped; no runtime activity was persisted"
+        );
+        assert_eq!(state["state"]["last_error_type"], "protocol");
+        assert_eq!(state["state"]["is_ready"], false);
+
+        restored.shutdown().await;
     }
 
     #[tokio::test]

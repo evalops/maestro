@@ -1,10 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { Type } from "@sinclair/typebox";
+import { fetchDownstream } from "../utils/downstream-http.js";
 import { createTool } from "./tool-dsl.js";
+
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+const DEFAULT_MAX_ATTEMPTS = 2;
 
 interface PipelineConfig {
 	apiUrl: string;
 	token: string;
+	timeoutMs: number;
+	maxAttempts: number;
 }
 
 interface PipelineContact {
@@ -67,20 +73,27 @@ function getPipelineConfig(): PipelineConfig | null {
 	}
 	return {
 		apiUrl: apiUrl.replace(/\/+$/, ""),
+		maxAttempts: parsePositiveInt(
+			process.env.PIPELINE_API_MAX_ATTEMPTS,
+			DEFAULT_MAX_ATTEMPTS,
+		),
+		timeoutMs: parsePositiveInt(
+			process.env.PIPELINE_API_TIMEOUT_MS,
+			DEFAULT_REQUEST_TIMEOUT_MS,
+		),
 		token,
 	};
+}
+
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+	const parsed = Number.parseInt(value ?? "", 10);
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function createMissingConfigError(): Error {
 	return new Error(
 		"Pipeline CRM is not configured. Set PIPELINE_API_URL and PIPELINE_SERVICE_TOKEN.",
 	);
-}
-
-function buildRequestSignal(signal?: AbortSignal): AbortSignal {
-	return signal
-		? AbortSignal.any([signal, AbortSignal.timeout(30_000)])
-		: AbortSignal.timeout(30_000);
 }
 
 async function pipelineFetch<T>(
@@ -93,16 +106,26 @@ async function pipelineFetch<T>(
 		headers?: Record<string, string>;
 	} = {},
 ): Promise<T> {
-	const response = await fetch(`${config.apiUrl}${path}`, {
-		method,
-		headers: {
-			Authorization: `Bearer ${config.token}`,
-			"Content-Type": "application/json",
-			...options.headers,
+	const response = await fetchDownstream(
+		`${config.apiUrl}${path}`,
+		{
+			method,
+			headers: {
+				Authorization: `Bearer ${config.token}`,
+				"Content-Type": "application/json",
+				...options.headers,
+			},
+			body:
+				options.body === undefined ? undefined : JSON.stringify(options.body),
+			signal: options.signal,
 		},
-		body: options.body === undefined ? undefined : JSON.stringify(options.body),
-		signal: buildRequestSignal(options.signal),
-	});
+		{
+			serviceName: "Pipeline API",
+			failureMode: "required",
+			timeoutMs: config.timeoutMs,
+			maxAttempts: config.maxAttempts,
+		},
+	);
 
 	if (!response.ok) {
 		const body = await response.text();

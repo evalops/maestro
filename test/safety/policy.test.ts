@@ -16,6 +16,7 @@ vi.mock("node:fs", async (importOriginal) => {
 	return {
 		...actual,
 		existsSync: vi.fn(),
+		lstatSync: vi.fn(),
 		readFileSync: vi.fn(),
 		watch: vi.fn(),
 	};
@@ -25,42 +26,74 @@ vi.mock("node:os", () => ({
 }));
 
 const POLICY_PATH = join("/mock-home", ".maestro", "policy.json");
+const WORKSPACE_POLICY_PATH = join("/workspace", ".maestro", "workspace.toml");
 
 const mockExistsSync = vi.mocked(fs.existsSync);
+const mockLstatSync = vi.mocked(fs.lstatSync);
 const mockReadFileSync = vi.mocked(fs.readFileSync);
 const mockWatch = vi.mocked(fs.watch);
 const originalHome = process.env.HOME;
 const originalUserProfile = process.env.USERPROFILE;
+let cwdSpy: ReturnType<typeof vi.spyOn> | undefined;
+
+function mockFileStats(): fs.Stats {
+	return {
+		isFile: () => true,
+	} as unknown as fs.Stats;
+}
+
+function setupPolicies({
+	user = null,
+	workspace = null,
+}: {
+	user?: object | null;
+	workspace?: string | null;
+}) {
+	const files = new Map<string, string>();
+	if (user !== null) {
+		files.set(POLICY_PATH, JSON.stringify(user));
+	}
+	if (workspace !== null) {
+		files.set(WORKSPACE_POLICY_PATH, workspace);
+	}
+
+	mockExistsSync.mockImplementation((path) => files.has(String(path)));
+	mockLstatSync.mockImplementation((path) => {
+		if (!files.has(String(path))) {
+			throw new Error("ENOENT");
+		}
+		return mockFileStats();
+	});
+	mockReadFileSync.mockImplementation((path) => files.get(String(path)) ?? "");
+	mockWatch.mockReturnValue({
+		unref: () => {},
+		close: () => {},
+	} as unknown as ReturnType<typeof fs.watch>);
+}
 
 function setupPolicy(policy: object | null) {
-	if (policy === null) {
-		mockExistsSync.mockImplementation(() => false);
-	} else {
-		mockExistsSync.mockImplementation((path) => path === POLICY_PATH);
-		mockReadFileSync.mockImplementation((path) => {
-			if (path === POLICY_PATH) return JSON.stringify(policy);
-			return "";
-		});
-		mockWatch.mockReturnValue({
-			unref: () => {},
-			close: () => {},
-		} as unknown as ReturnType<typeof fs.watch>);
-	}
+	setupPolicies({ user: policy });
 }
 
 function clearPolicyCache() {
 	mockExistsSync.mockImplementation(() => false);
+	mockLstatSync.mockImplementation(() => {
+		throw new Error("ENOENT");
+	});
 	checkPolicy({ toolName: "test", args: {} } as ActionApprovalContext);
 }
 
 describe("Enterprise Policy Enforcement", () => {
 	beforeEach(() => {
 		vi.resetAllMocks();
+		cwdSpy = vi.spyOn(process, "cwd").mockReturnValue("/workspace");
 		process.env.HOME = "/mock-home";
 		process.env.USERPROFILE = "/mock-home";
 		clearPolicyCache();
 	});
 	afterEach(() => {
+		cwdSpy?.mockRestore();
+		cwdSpy = undefined;
 		if (originalHome === undefined) {
 			Reflect.deleteProperty(process.env, "HOME");
 		} else {
@@ -804,7 +837,140 @@ describe("Enterprise Policy Enforcement", () => {
 		});
 	});
 
+	describe("Workspace Policy", () => {
+		it("enforces workspace.toml controls when no user policy exists", async () => {
+			setupPolicies({
+				workspace: `
+allowed_models = ["gpt-4*"]
+blocked_tools = ["bash"]
+file_boundaries = ["/workspace/**"]
+required_skills = ["security-review"]
+max_tokens_per_session = 1000
+`,
+			});
+
+			expect(checkModelPolicy("gpt-4o").allowed).toBe(true);
+			expect(checkModelPolicy("claude-3-opus").allowed).toBe(false);
+			expect(getPolicyLimits()).toEqual({ maxTokensPerSession: 1000 });
+			expect(getCurrentPolicy()?.skills).toEqual({
+				required: ["security-review"],
+			});
+
+			const blockedTool = await checkPolicy({
+				toolName: "bash",
+				args: {},
+			} as ActionApprovalContext);
+			expect(blockedTool.allowed).toBe(false);
+			expect(blockedTool.reason).toContain("explicitly blocked");
+
+			const blockedPath = await checkPolicy({
+				toolName: "read",
+				args: { path: "/etc/passwd" },
+			} as ActionApprovalContext);
+			expect(blockedPath.allowed).toBe(false);
+			expect(blockedPath.reason).toContain("not in the allowed paths list");
+		});
+
+		it("applies the workspace layer as the stricter policy over user policy", async () => {
+			setupPolicies({
+				user: {
+					models: { allowed: ["claude-*", "gpt-*"] },
+					tools: { blocked: ["write"] },
+					limits: { maxTokensPerSession: 5000 },
+				},
+				workspace: `
+allowed_models = ["gpt-4*"]
+blocked_tools = ["bash"]
+max_tokens_per_session = 1000
+`,
+			});
+
+			expect(checkModelPolicy("claude-3-opus").allowed).toBe(false);
+			expect(checkModelPolicy("gpt-3.5-turbo").allowed).toBe(false);
+			expect(checkModelPolicy("gpt-4o").allowed).toBe(true);
+			expect(getPolicyLimits()).toEqual({ maxTokensPerSession: 1000 });
+
+			const userBlockedTool = await checkPolicy({
+				toolName: "write",
+				args: {},
+			} as ActionApprovalContext);
+			expect(userBlockedTool.allowed).toBe(false);
+			expect(userBlockedTool.reason).toContain("explicitly blocked");
+
+			const workspaceBlockedTool = await checkPolicy({
+				toolName: "bash",
+				args: {},
+			} as ActionApprovalContext);
+			expect(workspaceBlockedTool.allowed).toBe(false);
+			expect(workspaceBlockedTool.reason).toContain("explicitly blocked");
+		});
+
+		it("supports a nested [policy] table in workspace.toml", () => {
+			setupPolicies({
+				workspace: `
+[policy]
+allowed_models = ["gpt-5*"]
+blocked_models = ["gpt-5-test"]
+`,
+			});
+
+			expect(checkModelPolicy("gpt-5-main").allowed).toBe(true);
+			expect(checkModelPolicy("gpt-5-test").allowed).toBe(false);
+		});
+
+		it("fails closed when workspace.toml is invalid", async () => {
+			setupPolicies({
+				workspace: "allowed_models = [",
+			});
+
+			const result = await checkPolicy({
+				toolName: "read",
+				args: {},
+			} as ActionApprovalContext);
+			expect(result.allowed).toBe(false);
+			expect(result.reason).toContain("Enterprise policy error");
+		});
+	});
+
 	describe("Edge Cases", () => {
+		it("fails closed when policy context is missing toolName", async () => {
+			setupPolicy({ tools: { blocked: ["bash"] } });
+			const result = await checkPolicy({
+				args: {},
+			} as unknown as ActionApprovalContext);
+			expect(result.allowed).toBe(false);
+			expect(result.reason).toContain("toolName");
+		});
+
+		it("fails closed when policy context is missing args", async () => {
+			setupPolicy({ tools: { blocked: ["bash"] } });
+			const result = await checkPolicy({
+				toolName: "read",
+			} as unknown as ActionApprovalContext);
+			expect(result.allowed).toBe(false);
+			expect(result.reason).toContain("args");
+		});
+
+		it("fails closed when organization-bound policy lacks user org context", async () => {
+			setupPolicy({ orgId: "org-a" });
+			const result = await checkPolicy({
+				toolName: "read",
+				args: {},
+			} as ActionApprovalContext);
+			expect(result.allowed).toBe(false);
+			expect(result.reason).toContain("requires user organization context");
+		});
+
+		it("fails closed when session duration policy lacks session context", async () => {
+			setupPolicy({ limits: { maxSessionDurationMinutes: 30 } });
+			const result = await checkPolicy({
+				toolName: "read",
+				args: {},
+			} as ActionApprovalContext);
+			expect(result.allowed).toBe(false);
+			expect(result.reason).toContain("requires session start context");
+		});
+
 		it("handles empty args object", async () => {
 			setupPolicy({ paths: { blocked: ["/etc/**"] } });
 			const result = await checkPolicy({
@@ -825,6 +991,12 @@ describe("Enterprise Policy Enforcement", () => {
 
 		it("handles invalid JSON in policy file (fail-closed)", async () => {
 			mockExistsSync.mockImplementation((path) => path === POLICY_PATH);
+			mockLstatSync.mockImplementation((path) => {
+				if (path !== POLICY_PATH) {
+					throw new Error("ENOENT");
+				}
+				return mockFileStats();
+			});
 			mockReadFileSync.mockImplementation(() => "not valid json");
 			mockWatch.mockReturnValue({
 				unref: () => {},
@@ -842,6 +1014,12 @@ describe("Enterprise Policy Enforcement", () => {
 
 		it("handles policy schema validation errors (fail-closed)", async () => {
 			mockExistsSync.mockImplementation((path) => path === POLICY_PATH);
+			mockLstatSync.mockImplementation((path) => {
+				if (path !== POLICY_PATH) {
+					throw new Error("ENOENT");
+				}
+				return mockFileStats();
+			});
 			mockReadFileSync.mockImplementation(() =>
 				JSON.stringify({ tools: { allowed: "not-an-array" } }),
 			);

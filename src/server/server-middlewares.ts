@@ -1,11 +1,16 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { parse } from "node:url";
 import { createLogger } from "../utils/logger.js";
 import { getArtifactAccessGrantFromRequest } from "./artifact-access.js";
-import { checkApiAuth, isApiAuthConfigured } from "./authz.js";
-import { isOverloaded } from "./logger.js";
+import { isOverloaded, logRequest } from "./logger.js";
 import type { Middleware } from "./middleware.js";
 import type { RateLimiter, TieredRateLimiter } from "./rate-limiter.js";
-import { getRequestHeader, secureCompare, sendJson } from "./server-utils.js";
+import {
+	authenticateRequest,
+	getRequestHeader,
+	secureCompare,
+	sendJson,
+} from "./server-utils.js";
 
 const logger = createLogger("middleware:ip-access");
 
@@ -20,14 +25,6 @@ function getPathname(req: IncomingMessage): string {
 	}
 }
 
-function isPublicApiPath(pathname: string): boolean {
-	return (
-		pathname === "/api/auth/login" ||
-		pathname === "/api/auth/register" ||
-		pathname.startsWith("/api/sessions/shared/")
-	);
-}
-
 export function createLoadSheddingMiddleware(
 	corsHeaders: Record<string, string>,
 ): Middleware {
@@ -39,6 +36,7 @@ export function createLoadSheddingMiddleware(
 		if (
 			isOverloaded() &&
 			pathname !== "/healthz" &&
+			pathname !== "/readyz" &&
 			pathname !== "/api/metrics"
 		) {
 			// Drop non-critical traffic
@@ -205,46 +203,43 @@ export function createCorsMiddleware(
 }
 
 export function createAuthMiddleware(
-	_apiKey: string | null,
+	apiKey: string | null,
 	corsHeaders: Record<string, string>,
 	requireApiKey = false,
 ): Middleware {
-	return async (req, res, next) => {
+	return (req, res, next) => {
 		const pathname = getPathname(req);
-		if (!pathname.startsWith("/api") || isPublicApiPath(pathname)) {
-			return next();
-		}
+		if (pathname.startsWith("/api")) {
+			const missingKey = !apiKey || apiKey.length === 0;
 
-		if (getArtifactAccessGrantFromRequest(req)) {
-			return next();
-		}
+			// No key provided
+			if (missingKey) {
+				if (requireApiKey) {
+					sendJson(
+						res,
+						401,
+						{
+							error:
+								"MAESTRO_WEB_API_KEY is required for all API requests. Set the environment variable or disable requirement explicitly with MAESTRO_WEB_REQUIRE_KEY=0 for local testing only.",
+						},
+						corsHeaders,
+						req,
+					);
+					return;
+				}
+				// Requirement off and no key: allow through.
+				return next();
+			}
 
-		const auth = await checkApiAuth(req);
-		if (auth.ok) {
-			return next();
+			// Key provided: validate it.
+			if (getArtifactAccessGrantFromRequest(req)) {
+				return next();
+			}
+			if (!authenticateRequest(req, res, corsHeaders, apiKey)) {
+				return;
+			}
 		}
-
-		if (requireApiKey && !isApiAuthConfigured()) {
-			sendJson(
-				res,
-				401,
-				{
-					error:
-						"Protected API routes require configured authentication. Set MAESTRO_WEB_API_KEY, MAESTRO_AUTH_SHARED_SECRET, or MAESTRO_JWT_* for hosted deployments, or disable the requirement explicitly with MAESTRO_WEB_REQUIRE_KEY=0 for local-only testing.",
-				},
-				corsHeaders,
-				req,
-			);
-			return;
-		}
-
-		sendJson(
-			res,
-			401,
-			{ error: auth.error || "Unauthorized" },
-			corsHeaders,
-			req,
-		);
+		return next();
 	};
 }
 
@@ -262,10 +257,7 @@ export function createCsrfMiddleware(
 			return next();
 		}
 		const pathname = getPathname(req);
-		if (!pathname.startsWith("/api") || isPublicApiPath(pathname)) {
-			return next();
-		}
-		if (req.headers.authorization?.trim().startsWith("Bearer ")) {
+		if (!pathname.startsWith("/api")) {
 			return next();
 		}
 		const value = getRequestHeader(

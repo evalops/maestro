@@ -109,4 +109,18 @@ describe("parseArgs", () => {
 			messages: [],
 		});
 	});
+
+	it("parses stats commands", () => {
+		expect(parseArgs(["stats"])).toMatchObject({
+			command: "stats",
+		});
+		expect(parseArgs(["stats", "month"])).toMatchObject({
+			command: "stats",
+			subcommand: "month",
+		});
+		expect(parseArgs(["stats", "--session", "session-123"])).toMatchObject({
+			command: "stats",
+			session: "session-123",
+		});
+	});
 });

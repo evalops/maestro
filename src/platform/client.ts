@@ -1,11 +1,13 @@
 import { getOAuthToken } from "../oauth/index.js";
 import { loadOAuthCredentials } from "../oauth/storage.js";
+import {
+	type DownstreamFailureMode,
+	fetchDownstream,
+} from "../utils/downstream-http.js";
 
 export const CONNECT_PROTOCOL_VERSION = "1";
 export const DEFAULT_PLATFORM_TIMEOUT_MS = 2_000;
 export const DEFAULT_PLATFORM_MAX_ATTEMPTS = 2;
-
-export type DownstreamFailureMode = "required" | "optional";
 
 export interface PlatformServiceConfig {
 	baseUrl: string;
@@ -35,7 +37,7 @@ export interface ResolvePlatformServiceConfigOptions {
 
 export interface PlatformRequestOptions {
 	serviceName: string;
-	failureMode?: DownstreamFailureMode;
+	failureMode: DownstreamFailureMode;
 	timeoutMs: number;
 	maxAttempts?: number;
 	signal?: AbortSignal;
@@ -210,35 +212,6 @@ export function buildPlatformConnectHeaders(
 	});
 }
 
-export async function fetchWithRetry(
-	url: string,
-	init: RequestInit,
-	options: PlatformRequestOptions,
-): Promise<Response> {
-	const maxAttempts = Math.max(1, options.maxAttempts ?? 1);
-	let lastError: unknown;
-	for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-		try {
-			const response = await fetch(url, {
-				...init,
-				signal:
-					options.signal ?? AbortSignal.timeout(Math.max(1, options.timeoutMs)),
-			});
-			if (response.status < 500 || attempt === maxAttempts) {
-				return response;
-			}
-		} catch (error) {
-			lastError = error;
-			if (attempt === maxAttempts) {
-				break;
-			}
-		}
-	}
-	throw lastError instanceof Error
-		? lastError
-		: new Error(`${options.serviceName} request failed`);
-}
-
 export async function postPlatformConnect(
 	config: PlatformServiceConfig,
 	path: string,
@@ -246,13 +219,19 @@ export async function postPlatformConnect(
 	options: PlatformRequestOptions,
 	headers?: Record<string, string | undefined>,
 ): Promise<Response> {
-	return fetchWithRetry(
+	return fetchDownstream(
 		`${config.baseUrl}${path}`,
 		{
 			method: "POST",
 			headers: buildPlatformConnectHeaders(config, headers),
 			body: JSON.stringify(body),
+			signal: options.signal,
 		},
-		options,
+		{
+			serviceName: options.serviceName,
+			failureMode: options.failureMode,
+			timeoutMs: options.timeoutMs,
+			maxAttempts: options.maxAttempts,
+		},
 	);
 }

@@ -1,4 +1,10 @@
-import { existsSync, mkdirSync, rmSync, utimesSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	rmSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -192,6 +198,77 @@ describe("SessionCatalog", () => {
 		expect(loaded?.messages.map((message) => message.role)).toEqual([
 			"user",
 			"assistant",
+		]);
+	});
+
+	it("loads legacy sessions with string assistant content", () => {
+		const sessionDir = join(testDir, "sessions");
+		mkdirSync(sessionDir, { recursive: true });
+		const timestamp = new Date("2026-01-01T00:00:00.000Z");
+		const sessionFile = join(sessionDir, "legacy-session.jsonl");
+		const usage = {
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+		const entries = [
+			{
+				type: "session",
+				version: 2,
+				id: "legacy-session",
+				timestamp: timestamp.toISOString(),
+				cwd: testDir,
+			},
+			{
+				type: "message",
+				id: "user-1",
+				parentId: null,
+				timestamp: timestamp.toISOString(),
+				message: {
+					role: "user",
+					content: "legacy user prompt",
+					timestamp: timestamp.getTime(),
+				},
+			},
+			{
+				type: "message",
+				id: "assistant-1",
+				parentId: "user-1",
+				timestamp: timestamp.toISOString(),
+				message: {
+					role: "assistant",
+					content: "legacy assistant reply",
+					api: "anthropic-messages",
+					provider: "anthropic",
+					model: "claude-sonnet-4",
+					stopReason: "stop",
+					timestamp: timestamp.getTime(),
+					usage,
+				},
+			},
+		];
+		writeFileSync(
+			sessionFile,
+			`${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+		);
+
+		const catalog = createCatalog(sessionDir);
+
+		expect(catalog.loadAllSessions()).toEqual([
+			expect.objectContaining({
+				id: "legacy-session",
+				firstMessage: "legacy user prompt",
+				allMessagesText: expect.stringContaining("legacy assistant reply"),
+				messageCount: 2,
+			}),
+		]);
+		expect(catalog.listSessions()).toEqual([
+			expect.objectContaining({
+				id: "legacy-session",
+				messageCount: 2,
+			}),
 		]);
 	});
 

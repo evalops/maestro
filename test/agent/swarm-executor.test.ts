@@ -516,11 +516,11 @@ describe("SwarmExecutor", () => {
 		const [{ runId }] = issueEvalOpsDelegationTokenMock.mock.calls[0] as [
 			{ runId: string },
 		];
-		const spawnedTempFile = join(
+		const tempFile = join(
 			tmpdir(),
 			`${runId.split(":")[0]}-swarm-task-${taskId}.md`,
 		);
-		expect(existsSync(spawnedTempFile)).toBe(true);
+		expect(existsSync(tempFile)).toBe(true);
 
 		executor.cancel();
 		delegation.resolve({
@@ -545,7 +545,7 @@ describe("SwarmExecutor", () => {
 		expect(result.activeTasks.size).toBe(0);
 		expect(result.teammates[0]!.status).toBe("cancelled");
 		expect(result.teammates[0]!.currentTask).toBeUndefined();
-		expect(existsSync(spawnedTempFile)).toBe(false);
+		expect(existsSync(tempFile)).toBe(false);
 	});
 
 	it("keeps teammate temp prompt files inside the system temp directory", async () => {

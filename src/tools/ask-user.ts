@@ -8,6 +8,29 @@
 import { type Static, Type } from "@sinclair/typebox";
 import { createTool } from "./tool-dsl.js";
 
+export const askUserOptionPreviewSchema = Type.Object({
+	kind: Type.Union(
+		[Type.Literal("markdown"), Type.Literal("text"), Type.Literal("diff")],
+		{
+			description:
+				"Preview format. Raw HTML is intentionally unsupported; use markdown, text, or diff.",
+		},
+	),
+	title: Type.Optional(
+		Type.String({
+			description: "Optional short preview title.",
+			minLength: 1,
+			maxLength: 80,
+		}),
+	),
+	body: Type.String({
+		description:
+			"Preview content shown with the option. Keep it focused; large artifacts should be summarized.",
+		minLength: 1,
+		maxLength: 12_000,
+	}),
+});
+
 export const questionOptionSchema = Type.Object({
 	label: Type.String({
 		description:
@@ -21,6 +44,7 @@ export const questionOptionSchema = Type.Object({
 		minLength: 1,
 		maxLength: 200,
 	}),
+	preview: Type.Optional(askUserOptionPreviewSchema),
 });
 
 export const questionSchema = Type.Object({
@@ -60,6 +84,7 @@ export const askUserSchema = Type.Object({
 });
 
 export type QuestionOption = Static<typeof questionOptionSchema>;
+export type AskUserOptionPreview = Static<typeof askUserOptionPreviewSchema>;
 export type Question = Static<typeof questionSchema>;
 export type AskUserInput = Static<typeof askUserSchema>;
 
@@ -90,6 +115,11 @@ export function formatQuestionsForDisplay(questions: Question[]): string {
 			lines.push(
 				`  ${marker} ${optIndex + 1}. **${opt.label}**: ${opt.description}`,
 			);
+			if (opt.preview) {
+				const title = opt.preview.title ? `: ${opt.preview.title}` : "";
+				lines.push(`     Preview (${opt.preview.kind}${title})`);
+				lines.push(...formatPreviewBodyForDisplay(opt.preview.body));
+			}
 		}
 		lines.push(
 			`  ${q.multiSelect ? "☐" : "○"} ${q.options.length + 1}. **Other**: Provide custom answer`,
@@ -100,6 +130,16 @@ export function formatQuestionsForDisplay(questions: Question[]): string {
 	}
 
 	return lines.join("\n");
+}
+
+function formatPreviewBodyForDisplay(body: string): string[] {
+	const lines = body.split(/\r?\n/);
+	const visibleLines = lines.slice(0, 12);
+	const formatted = visibleLines.map((line) => `       ${line}`);
+	if (lines.length > visibleLines.length) {
+		formatted.push("       ...");
+	}
+	return formatted;
 }
 
 /**
@@ -163,10 +203,12 @@ Parameters:
   - question: The full question text
   - header: Short label (max 12 chars) like "Library", "Approach"
   - options: 2-4 choices with label and description
+  - options[].preview: Optional markdown/text/diff preview for concrete artifacts
   - multiSelect: Allow multiple selections (default: false)
 
 An "Other" option is automatically added to allow custom input.
-Users can respond with option numbers, labels, or free text.`,
+Users can respond with option numbers, labels, or free text.
+Preview HTML is not supported; use markdown, text, or diff so clients can render previews safely.`,
 	schema: askUserSchema,
 
 	// This tool requires special handling - the TUI will intercept it

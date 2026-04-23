@@ -41,7 +41,7 @@
 	},
 	"dependencies": {
 		"@evalops/contracts": "^0.10.8",
-		"@evalops/tui": "^0.10.8",
+		"@evalops/tui": "workspace:*",
 		"@sinclair/typebox": "^0.34.0"
 	},
 	"devDependencies": {

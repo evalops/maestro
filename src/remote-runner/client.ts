@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
 	type PlatformServiceConfig,
-	fetchWithRetry,
 	getEnvValue,
 	normalizeBaseUrl,
 	postPlatformConnect,
@@ -14,6 +13,7 @@ import {
 	platformConnectMethodPath,
 	platformConnectServicePath,
 } from "../platform/core-services.js";
+import { fetchDownstream } from "../utils/downstream-http.js";
 
 export const DEFAULT_REMOTE_RUNNER_BASE_URL = "https://runner.evalops.dev";
 const DEFAULT_TIMEOUT_MS = 5_000;
@@ -579,6 +579,7 @@ async function postRemoteRunner<T>(
 		stripUndefinedValues(body),
 		{
 			serviceName: "remote runner service",
+			failureMode: "required",
 			timeoutMs: config.timeoutMs,
 			maxAttempts: config.maxAttempts,
 		},
@@ -911,7 +912,7 @@ export async function verifyRunnerHeadlessAttach(input: {
 			],
 		},
 	};
-	const response = await fetchWithRetry(
+	const response = await fetchDownstream(
 		`${input.gatewayBaseUrl}/api/headless/connections`,
 		{
 			method: "POST",
@@ -920,6 +921,7 @@ export async function verifyRunnerHeadlessAttach(input: {
 		},
 		{
 			serviceName: "remote runner headless gateway",
+			failureMode: "required",
 			timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
 			maxAttempts: 1,
 		},
@@ -938,7 +940,7 @@ export async function verifyRunnerHeadlessAttach(input: {
 	const connectionId = firstString(payload, "connection_id", "connectionId");
 	const runtimeSessionId = firstString(payload, "session_id", "sessionId");
 	if (connectionId || runtimeSessionId) {
-		void fetchWithRetry(
+		void fetchDownstream(
 			`${input.gatewayBaseUrl}/api/headless/sessions/${encodeURIComponent(
 				runtimeSessionId ?? input.sessionId,
 			)}/disconnect`,
@@ -949,6 +951,7 @@ export async function verifyRunnerHeadlessAttach(input: {
 			},
 			{
 				serviceName: "remote runner headless gateway",
+				failureMode: "required",
 				timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
 				maxAttempts: 1,
 			},

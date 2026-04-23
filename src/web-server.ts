@@ -63,6 +63,7 @@ import type {
 	HostedRunnerContext,
 	WebServerContext,
 } from "./server/app-context.js";
+import { createWorkspaceConfigMiddleware } from "./services/workspace-config/middleware.js";
 import { recordApiRequest } from "./telemetry.js";
 import { artifactsClientTool } from "./tools/artifacts-client.js";
 import { askUserClientTool } from "./tools/ask-user-client.js";
@@ -76,6 +77,12 @@ import { javascriptReplClientTool } from "./tools/javascript-repl-client.js";
 import { createLogger } from "./utils/logger.js";
 
 const logger = createLogger("web-server");
+
+interface StartWebServerOptions {
+	host?: string;
+	hostedRunner?: HostedRunnerContext;
+	skipStartupMigration?: boolean;
+}
 
 const getAuditModule = (() => {
 	let promise: Promise<
@@ -696,6 +703,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 			createCorsMiddleware(CORS_HEADERS),
 			createAuthMiddleware(WEB_API_KEY, CORS_HEADERS, REQUIRE_WEB_API_KEY),
 			createCsrfMiddleware(CSRF_TOKEN, CORS_HEADERS, REQUIRE_CSRF),
+			createWorkspaceConfigMiddleware(CORS_HEADERS),
 			createRouterMiddleware(router),
 		]);
 
@@ -719,11 +727,6 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 	});
 }
 
-export interface StartWebServerOptions {
-	host?: string;
-	hostedRunner?: HostedRunnerContext;
-}
-
 export async function startWebServer(
 	port = 8080,
 	options: StartWebServerOptions = {},
@@ -733,6 +736,13 @@ export async function startWebServer(
 	}
 
 	registerCrashHandlers();
+	if (!options.skipStartupMigration) {
+		const { migrate } = await import("./db/migrate.js");
+		const applied = await migrate();
+		if (applied > 0) {
+			logger.info("Startup database migrations completed", { count: applied });
+		}
+	}
 	await reloadModelConfig();
 	await initLifecycle();
 	startAutomationScheduler(context);

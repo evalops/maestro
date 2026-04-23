@@ -3,7 +3,12 @@ import { mkdir, realpath, stat, writeFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
+import {
+	HEADLESS_PROTOCOL_VERSION,
+	createHeadlessRuntimeState,
+} from "../../cli/headless-protocol.js";
 import type { HostedRunnerContext, WebServerContext } from "../app-context.js";
+import type { HeadlessRuntimeSnapshot } from "../headless-runtime-service.js";
 import { ApiError, readJsonBody, sendJson } from "../server-utils.js";
 
 const execFileAsync = promisify(execFile);
@@ -30,35 +35,30 @@ export interface HostedRunnerRuntimeDrainResult {
 	sessionFile?: string;
 	protocolVersion?: string;
 	cursor?: number;
+	snapshot?: HeadlessRuntimeSnapshot;
 }
 
 export interface HostedRunnerWorkspaceExportPath {
 	input: string;
 	path: string;
 	relative_path: string;
-	type: "file" | "directory";
+	type: "file" | "directory" | "other";
 }
 
 export interface HostedRunnerSnapshotManifest {
-	manifest_version: typeof HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION;
-	protocol_version: typeof HOSTED_RUNNER_DRAIN_PROTOCOL_VERSION;
-	status: SnapshotManifestStatus;
+	protocol_version: typeof HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION;
 	runner_session_id: string;
-	owner_instance_id?: string;
 	workspace_id?: string;
 	agent_run_id?: string;
-	maestro_session_id?: string;
-	workspace_root: string;
-	snapshot_root: string;
-	snapshot_path: string;
-	requested_at: string;
-	completed_at: string;
-	stop_reason: string;
+	maestro_session_id: string;
+	reason?: string;
 	requested_by?: string;
+	created_at: string;
+	workspace_root: string;
 	runtime: {
 		flush_status: "completed" | "failed" | "skipped";
 		error?: string;
-		session_id?: string;
+		session_id: string;
 		session_file?: string;
 		protocol_version?: string;
 		cursor?: number;
@@ -67,6 +67,7 @@ export interface HostedRunnerSnapshotManifest {
 		mode: "local_path_contract";
 		paths: HostedRunnerWorkspaceExportPath[];
 	};
+	snapshot: HeadlessRuntimeSnapshot;
 	git?: {
 		commit?: string;
 		branch?: string;
@@ -76,6 +77,9 @@ export interface HostedRunnerSnapshotManifest {
 
 export interface HostedRunnerDrainResult {
 	status: SnapshotManifestStatus;
+	runner_session_id: string;
+	reason?: string;
+	requested_by?: string;
 	manifest_path: string;
 	manifest: HostedRunnerSnapshotManifest;
 }
@@ -213,7 +217,11 @@ async function resolveWorkspaceExportPaths(
 			input,
 			path: realPath,
 			relative_path: relative(workspaceRoot, realPath) || ".",
-			type: pathStat.isDirectory() ? "directory" : "file",
+			type: pathStat.isDirectory()
+				? "directory"
+				: pathStat.isFile()
+					? "file"
+					: "other",
 		});
 	}
 	return paths;
@@ -257,6 +265,38 @@ async function collectGitState(
 	};
 }
 
+function buildHostedRunnerSnapshot(
+	sessionId: string,
+	workspaceRoot: string,
+	runtime: HostedRunnerSnapshotManifest["runtime"],
+): HeadlessRuntimeSnapshot {
+	const state = createHeadlessRuntimeState();
+	state.protocol_version =
+		runtime.protocol_version ?? HEADLESS_PROTOCOL_VERSION;
+	state.session_id = sessionId;
+	state.cwd = workspaceRoot;
+	state.provider = "typescript";
+	state.model = "typescript-hosted-runner";
+	state.is_ready = runtime.flush_status === "completed";
+	state.last_status =
+		runtime.flush_status === "completed"
+			? "Drained"
+			: runtime.flush_status === "failed"
+				? "Drain interrupted before runtime flush completed"
+				: "Drain skipped: no runtime activity was available";
+	if (runtime.error) {
+		state.last_error = runtime.error;
+		state.last_error_type = "protocol";
+	}
+	return {
+		protocolVersion: runtime.protocol_version ?? HEADLESS_PROTOCOL_VERSION,
+		session_id: sessionId,
+		cursor: runtime.cursor ?? 0,
+		last_init: null,
+		state,
+	};
+}
+
 export async function drainHostedRunner(
 	input: HostedRunnerDrainInput,
 	options: DrainHostedRunnerOptions,
@@ -268,7 +308,6 @@ export async function drainHostedRunner(
 
 	hostedRunner.draining = true;
 	const requestedAt = (options.now?.() ?? new Date()).toISOString();
-	const stopReason = input.reason ?? "platform_requested_drain";
 	const workspaceRoot = await resolveWorkspaceRoot(hostedRunner);
 	const snapshotRoot = resolve(
 		workspaceRoot,
@@ -281,16 +320,23 @@ export async function drainHostedRunner(
 	const activeSessionId =
 		hostedRunner.activeMaestroSessionId ??
 		hostedRunner.configuredMaestroSessionId;
+	const maestroSessionId = activeSessionId ?? hostedRunner.runnerSessionId;
 
 	let status: SnapshotManifestStatus = "drained";
 	let runtime: HostedRunnerSnapshotManifest["runtime"] = {
 		flush_status: "skipped",
-		...(activeSessionId ? { session_id: activeSessionId } : {}),
+		session_id: maestroSessionId,
 	};
+	let runtimeSnapshot: HeadlessRuntimeSnapshot | undefined;
 
 	if (activeSessionId && options.drainRuntime) {
 		try {
 			const runtimeResult = await options.drainRuntime(activeSessionId);
+			const runtimeProtocolVersion =
+				runtimeResult?.protocolVersion ??
+				runtimeResult?.snapshot?.protocolVersion;
+			const runtimeCursor =
+				runtimeResult?.cursor ?? runtimeResult?.snapshot?.cursor;
 			runtime = runtimeResult
 				? {
 						flush_status: "completed",
@@ -298,17 +344,16 @@ export async function drainHostedRunner(
 						...(runtimeResult.sessionFile
 							? { session_file: runtimeResult.sessionFile }
 							: {}),
-						...(runtimeResult.protocolVersion
-							? { protocol_version: runtimeResult.protocolVersion }
+						...(runtimeProtocolVersion
+							? { protocol_version: runtimeProtocolVersion }
 							: {}),
-						...(runtimeResult.cursor !== undefined
-							? { cursor: runtimeResult.cursor }
-							: {}),
+						...(runtimeCursor !== undefined ? { cursor: runtimeCursor } : {}),
 					}
 				: {
 						flush_status: "skipped",
 						session_id: activeSessionId,
 					};
+			runtimeSnapshot = runtimeResult?.snapshot;
 		} catch (error) {
 			status = "interrupted";
 			runtime = {
@@ -324,35 +369,30 @@ export async function drainHostedRunner(
 		snapshotRoot,
 		safeManifestFileName(hostedRunner.runnerSessionId, requestedAt),
 	);
-	const completedAt = (options.now?.() ?? new Date()).toISOString();
 	const git = await collectGitState(workspaceRoot);
+	const snapshot =
+		runtimeSnapshot ??
+		buildHostedRunnerSnapshot(maestroSessionId, workspaceRoot, runtime);
 	const manifest: HostedRunnerSnapshotManifest = {
-		manifest_version: HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION,
-		protocol_version: HOSTED_RUNNER_DRAIN_PROTOCOL_VERSION,
-		status,
+		protocol_version: HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION,
 		runner_session_id: hostedRunner.runnerSessionId,
-		...(hostedRunner.ownerInstanceId
-			? { owner_instance_id: hostedRunner.ownerInstanceId }
-			: {}),
 		...(hostedRunner.workspaceId
 			? { workspace_id: hostedRunner.workspaceId }
 			: {}),
 		...(hostedRunner.agentRunId
 			? { agent_run_id: hostedRunner.agentRunId }
 			: {}),
-		...(activeSessionId ? { maestro_session_id: activeSessionId } : {}),
-		workspace_root: workspaceRoot,
-		snapshot_root: snapshotRoot,
-		snapshot_path: snapshotPath,
-		requested_at: requestedAt,
-		completed_at: completedAt,
-		stop_reason: stopReason,
+		maestro_session_id: maestroSessionId,
+		...(input.reason ? { reason: input.reason } : {}),
 		...(input.requestedBy ? { requested_by: input.requestedBy } : {}),
+		created_at: requestedAt,
+		workspace_root: workspaceRoot,
 		runtime,
 		workspace_export: {
 			mode: "local_path_contract",
 			paths: exportPaths,
 		},
+		snapshot,
 		...(git ? { git } : {}),
 	};
 
@@ -364,6 +404,9 @@ export async function drainHostedRunner(
 
 	return {
 		status,
+		runner_session_id: hostedRunner.runnerSessionId,
+		...(input.reason ? { reason: input.reason } : {}),
+		...(input.requestedBy ? { requested_by: input.requestedBy } : {}),
 		manifest_path: snapshotPath,
 		manifest,
 	};
@@ -386,6 +429,7 @@ async function drainActiveRuntime(
 		sessionFile,
 		protocolVersion: snapshot.protocolVersion,
 		cursor: snapshot.cursor,
+		snapshot,
 	};
 }
 
@@ -421,6 +465,9 @@ export async function handleHostedRunnerDrain(
 		{
 			protocol_version: HOSTED_RUNNER_DRAIN_PROTOCOL_VERSION,
 			status: result.status,
+			runner_session_id: result.runner_session_id,
+			requested_by: result.requested_by,
+			reason: result.reason,
 			manifest_path: result.manifest_path,
 			manifest: result.manifest,
 		},

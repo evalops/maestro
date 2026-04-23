@@ -82,7 +82,15 @@ describe("ask-user tool", () => {
 					question: "Test question?",
 					header: "Test",
 					options: [
-						{ label: "Option 1", description: "Description 1" },
+						{
+							label: "Option 1",
+							description: "Description 1",
+							preview: {
+								kind: "diff" as const,
+								title: "Small patch",
+								body: "diff --git a/file.ts b/file.ts\n+change",
+							},
+						},
 						{ label: "Option 2", description: "Description 2" },
 					],
 				},
@@ -96,6 +104,60 @@ describe("ask-user tool", () => {
 			};
 			expect(details.questions).toEqual(questions);
 			expect(details.status).toBe("pending");
+		});
+
+		it("rejects unsupported preview kinds", async () => {
+			await expect(
+				askUserTool.execute("ask-invalid-preview", {
+					questions: [
+						{
+							question: "Which preview should we show?",
+							header: "Preview",
+							options: [
+								{
+									label: "HTML",
+									description: "Unsupported raw HTML preview",
+									preview: {
+										kind: "html",
+										body: "<div>Unsafe</div>",
+									},
+								},
+								{
+									label: "Text",
+									description: "Safe text preview",
+								},
+							],
+						},
+					],
+				}),
+			).rejects.toThrow(/Validation failed/);
+		});
+
+		it("rejects empty preview bodies", async () => {
+			await expect(
+				askUserTool.execute("ask-empty-preview", {
+					questions: [
+						{
+							question: "Which preview should we show?",
+							header: "Preview",
+							options: [
+								{
+									label: "Empty",
+									description: "Empty preview body",
+									preview: {
+										kind: "text",
+										body: "",
+									},
+								},
+								{
+									label: "Text",
+									description: "Safe text preview",
+								},
+							],
+						},
+					],
+				}),
+			).rejects.toThrow(/Validation failed/);
 		});
 	});
 
@@ -184,6 +246,32 @@ describe("formatQuestionsForDisplay", () => {
 		expect(formatted).toContain("2.");
 		expect(formatted).toContain("Option A");
 		expect(formatted).toContain("Option B");
+	});
+
+	it("includes option previews when present", () => {
+		const questions: Question[] = [
+			{
+				question: "Which patch?",
+				header: "Patch",
+				options: [
+					{
+						label: "Adapter",
+						description: "Keep the API stable.",
+						preview: {
+							kind: "diff",
+							title: "Adapter patch",
+							body: "diff --git a/src/tool.ts b/src/tool.ts\n+export const x = 1;",
+						},
+					},
+					{ label: "Rewrite", description: "Replace the module." },
+				],
+			},
+		];
+
+		const formatted = formatQuestionsForDisplay(questions);
+
+		expect(formatted).toContain("Preview (diff: Adapter patch)");
+		expect(formatted).toContain("diff --git a/src/tool.ts b/src/tool.ts");
 	});
 
 	it("adds Other option after defined options", () => {

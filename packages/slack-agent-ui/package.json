@@ -1,6 +1,6 @@
 {
 	"name": "@evalops/slack-agent-ui",
-	"version": "0.10.8",
+	"version": "0.1.0",
 	"description": "Web UI for Slack Agent - Dashboard gallery, connector management, OAuth flows",
 	"type": "module",
 	"private": true,

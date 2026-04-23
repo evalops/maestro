@@ -249,6 +249,73 @@ export interface RenderableImageContent {
 	data: string;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isAssistantContentBlock(
+	value: unknown,
+): value is AssistantMessage["content"][number] {
+	if (!isRecord(value)) {
+		return false;
+	}
+
+	switch (value.type) {
+		case "text":
+			return typeof value.text === "string";
+		case "thinking":
+			return typeof value.thinking === "string";
+		case "toolCall":
+			return (
+				typeof value.id === "string" &&
+				typeof value.name === "string" &&
+				isRecord(value.arguments)
+			);
+		default:
+			return false;
+	}
+}
+
+function normalizeAssistantContent(
+	content: unknown,
+): AssistantMessage["content"] {
+	if (typeof content === "string") {
+		return content.trim() ? [{ type: "text", text: content }] : [];
+	}
+	if (!Array.isArray(content)) {
+		return [];
+	}
+	return content.filter(isAssistantContentBlock);
+}
+
+function isToolResultContentBlock(
+	value: unknown,
+): value is ToolResultMessage["content"][number] {
+	if (!isRecord(value)) {
+		return false;
+	}
+
+	if (value.type === "text") {
+		return typeof value.text === "string";
+	}
+	if (value.type === "image") {
+		return typeof value.data === "string" && typeof value.mimeType === "string";
+	}
+	return false;
+}
+
+function normalizeToolResultContent(
+	content: unknown,
+): ToolResultMessage["content"] {
+	if (typeof content === "string") {
+		return content.trim() ? [{ type: "text", text: content }] : [];
+	}
+	if (!Array.isArray(content)) {
+		return [];
+	}
+	return content.filter(isToolResultContentBlock);
+}
+
 function collapseProgressiveBlocks(blocks: string[]): {
 	blocks: string[];
 	collapsed: boolean;
@@ -339,7 +406,7 @@ export function toRenderableAssistantMessage(
 		});
 	};
 
-	for (const content of message.content) {
+	for (const content of normalizeAssistantContent(message.content)) {
 		if (content.type === "text" && content.text.trim()) {
 			const { text, changed } = cleanText(content.text.trim());
 			textBlocks.push(text);
@@ -390,7 +457,7 @@ export function toRenderableToolResultMessage(
 	message: ToolResultMessage,
 ): RenderableToolResultMessage {
 	const textContent = extractTextFromToolResult(message);
-	const images = message.content
+	const images = normalizeToolResultContent(message.content)
 		.filter((content) => content.type === "image")
 		.map((content) => ({
 			mimeType: content.mimeType,
@@ -505,7 +572,7 @@ function extractTextFromUserContent(
 }
 
 function extractTextFromToolResult(message: ToolResultMessage): string {
-	return message.content
+	return normalizeToolResultContent(message.content)
 		.filter((content) => content.type === "text")
 		.map((content) => content.text)
 		.join("\n")

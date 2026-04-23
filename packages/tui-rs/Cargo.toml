@@ -19,7 +19,7 @@ crossterm = { version = "0.28", features = ["bracketed-paste", "event-stream"] }
 ratatui = { version = "0.29", features = ["unstable-widget-ref"] }
 
 # Async runtime
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "sync", "signal", "fs", "process", "net"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "sync", "signal", "fs", "process"] }
 tokio-stream = "0.1"
 tokio-util = "0.7"
 futures = "0.3"
@@ -204,11 +204,6 @@ naive_bytecount = "allow"               # bytecount crate not worth adding
 doc_link_with_quotes = "allow"          # Quotes in doc examples are OK
 comparison_chain = "allow"              # if-else chains are often clearer
 large_stack_arrays = "allow"            # Test fixtures may use large arrays
-duration_suboptimal_units = "allow"     # Newer Clippy flags existing readable test durations
-collapsible_match = "allow"             # Newer Clippy style lint on established match shapes
-unnecessary_sort_by = "allow"           # Existing code uses explicit descending comparators
-unnecessary_min_or_max = "allow"        # Existing numeric guard style is intentionally explicit
-useless_conversion = "allow"            # Existing iterator chains favor explicit conversion
 
 [lints.rust]
 # Unsafe code is allowed only for low-level system operations

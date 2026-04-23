@@ -24,6 +24,10 @@ src/cli-tui/
 │   ├── quick-settings-controller.ts # Quick settings panel
 │   └── *-setup.ts               # Initialization helpers
 └── commands/                    # Handler modules
+    ├── command-catalog.ts        # Standalone command metadata
+    ├── command-suite-catalog.ts  # Parent command-suite metadata
+    ├── command-suite-handlers.ts # Command-suite subcommand routing
+    ├── subcommands/              # Shared subcommand definitions
     ├── safety-handlers.ts       # /approvals, /plan
     ├── utility-handlers.ts      # /copy, /init, /report
     ├── guardian-handlers.ts     # /guardian
@@ -31,10 +35,6 @@ src/cli-tui/
     ├── otel-handlers.ts         # /otel
     ├── mcp-handlers.ts          # /mcp
     ├── composer-handlers.ts     # /composer config
-    └── subcommands/             # Command suite handlers
-        ├── session-commands.ts  # /ss subcommands
-        ├── diag-commands.ts     # /diag subcommands
-        └── ...
 ```
 
 ## Two Extraction Approaches
@@ -263,7 +263,7 @@ private handleNewChatCommand(ctx) {
 
 - `src/cli-tui/tui-renderer.ts` - Main orchestrator
 - `src/cli-tui/commands/types.ts` - CommandExecutionContext definition
-- `src/cli-tui/utils/commands/command-registry-builder.ts` - Registry builder
+- `src/cli-tui/utils/commands/command-registry-builder.ts` - Thin wrapper over the catalog-backed registry
 - `docs/TUI_ARCHITECTURE.md` - Overall TUI architecture
 
 ## Future Work

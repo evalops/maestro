@@ -341,6 +341,28 @@ export type TodoInput = Static<typeof TodoInputSchema>;
 // Ask User Tool
 // ============================================================================
 
+export const AskUserOptionPreviewSchema = Type.Object({
+	kind: Type.Union(
+		[Type.Literal("markdown"), Type.Literal("text"), Type.Literal("diff")],
+		{
+			description:
+				"Preview format. Raw HTML is intentionally unsupported; use markdown, text, or diff.",
+		},
+	),
+	title: Type.Optional(
+		Type.String({
+			description: "Optional short preview title.",
+			minLength: 1,
+			maxLength: 80,
+		}),
+	),
+	body: Type.String({
+		description: "Preview content shown with the option.",
+		minLength: 1,
+		maxLength: 12_000,
+	}),
+});
+
 export const QuestionOptionSchema = Type.Object({
 	label: Type.String({
 		description: "Display text for this option (1-5 words)",
@@ -352,6 +374,7 @@ export const QuestionOptionSchema = Type.Object({
 		minLength: 1,
 		maxLength: 200,
 	}),
+	preview: Type.Optional(AskUserOptionPreviewSchema),
 });
 
 export const QuestionSchema = Type.Object({
@@ -387,6 +410,7 @@ export const AskUserInputSchema = Type.Object({
 });
 
 export type AskUserQuestionOption = Static<typeof QuestionOptionSchema>;
+export type AskUserOptionPreview = Static<typeof AskUserOptionPreviewSchema>;
 export type AskUserQuestion = Static<typeof QuestionSchema>;
 export type AskUserInput = Static<typeof AskUserInputSchema>;
 

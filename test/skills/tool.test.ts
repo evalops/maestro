@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resetSkillsDownstreamForTests } from "../../src/skills/service-client.js";
 import { createSkillTool } from "../../src/skills/tool.js";
 
 /**
@@ -28,11 +29,13 @@ describe("skills/tool", () => {
 	});
 
 	afterEach(() => {
+		resetSkillsDownstreamForTests();
 		if (previousMaestroHome === undefined) {
 			delete process.env.MAESTRO_HOME;
 		} else {
 			process.env.MAESTRO_HOME = previousMaestroHome;
 		}
+		vi.unstubAllGlobals();
 		if (existsSync(testDir)) {
 			rmSync(testDir, { recursive: true, force: true });
 		}
@@ -87,6 +90,62 @@ ${content}
 			expect(text).toContain("First skill");
 			expect(text).toContain("Second skill");
 		});
+
+		it("includes skills from the configured skills service", async () => {
+			const fetchMock = vi.fn().mockResolvedValue(
+				new Response(
+					JSON.stringify({
+						skills: [
+							{
+								id: "remote-1",
+								workspaceId: "workspace-1",
+								name: "incident-review",
+								description: "Review incident reports",
+								scope: "SKILL_SCOPE_WORKSPACE",
+								content: "Summarize impact and remediation.",
+								currentVersion: 3,
+								tags: ["ops", "incidents"],
+							},
+						],
+						total: 1,
+					}),
+					{ status: 200 },
+				),
+			);
+			vi.stubGlobal("fetch", fetchMock);
+
+			const tool = createSkillTool(testDir, {
+				includeSystem: false,
+				skillsService: {
+					baseUrl: "https://skills.test/",
+					maxAttempts: 1,
+					timeoutMs: 500,
+					token: "skills-token",
+					workspaceId: "workspace-1",
+				},
+			});
+			const result = await tool.execute("test-service-list", { skill: "list" });
+			const text = getResultText(result);
+
+			expect(text).toContain("Available Skills (1)");
+			expect(text).toContain("incident-review");
+			expect(text).toContain("(service)");
+			expect(text).toContain("[ops, incidents]");
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+			expect(url).toBe("https://skills.test/skills.v1.SkillService/List");
+			expect(init.headers).toMatchObject({
+				Authorization: "Bearer skills-token",
+				"Connect-Protocol-Version": "1",
+				"Content-Type": "application/json",
+				"X-Surface": "maestro",
+			});
+			expect(JSON.parse(String(init.body))).toMatchObject({
+				workspaceId: "workspace-1",
+				limit: 100,
+				offset: 0,
+			});
+		});
 	});
 
 	describe("execute - load skill", () => {
@@ -134,6 +193,181 @@ ${content}
 
 			expect(result.isError).toBe(true);
 			expect(text).toContain("skill name is required");
+		});
+
+		it("loads skill instructions from the configured skills service", async () => {
+			const fetchMock = vi.fn().mockResolvedValue(
+				new Response(
+					JSON.stringify({
+						skills: [
+							{
+								id: "remote-1",
+								workspaceId: "workspace-1",
+								name: "incident-review",
+								description: "Review incident reports",
+								scope: "SKILL_SCOPE_WORKSPACE",
+								content: "Summarize impact and remediation.",
+							},
+						],
+						total: 1,
+					}),
+					{ status: 200 },
+				),
+			);
+			vi.stubGlobal("fetch", fetchMock);
+
+			const tool = createSkillTool(testDir, {
+				includeSystem: false,
+				skillsService: {
+					baseUrl: "https://skills.test",
+					maxAttempts: 1,
+					timeoutMs: 500,
+					workspaceId: "workspace-1",
+				},
+			});
+			const result = await tool.execute("test-service-load", {
+				skill: "incident-review",
+			});
+			const text = getResultText(result);
+
+			expect(result.isError).toBeUndefined();
+			expect(text).toContain("# Skill: incident-review");
+			expect(text).toContain("> Review incident reports");
+			expect(text).toContain("Summarize impact and remediation.");
+		});
+
+		it("falls back to local skills when the optional skills service fails", async () => {
+			createTestSkill("local-only", "Local skill", "Local instructions.");
+			const fetchMock = vi
+				.fn()
+				.mockRejectedValue(new Error("connection refused"));
+			vi.stubGlobal("fetch", fetchMock);
+
+			const tool = createSkillTool(testDir, {
+				includeSystem: false,
+				skillsService: {
+					baseUrl: "https://skills.test",
+					maxAttempts: 1,
+					timeoutMs: 500,
+					workspaceId: "workspace-1",
+				},
+			});
+			const result = await tool.execute("test-service-fallback", {
+				skill: "local-only",
+			});
+			const text = getResultText(result);
+
+			expect(result.isError).toBeUndefined();
+			expect(text).toContain("# Skill: local-only");
+			expect(text).toContain("Local instructions.");
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+		});
+
+		it("reports an error when the required skills service fails", async () => {
+			const fetchMock = vi
+				.fn()
+				.mockRejectedValue(new Error("connection refused"));
+			vi.stubGlobal("fetch", fetchMock);
+
+			const tool = createSkillTool(testDir, {
+				includeSystem: false,
+				skillsService: {
+					baseUrl: "https://skills.test",
+					maxAttempts: 1,
+					required: true,
+					timeoutMs: 500,
+					workspaceId: "workspace-1",
+				},
+			});
+			const result = await tool.execute("test-service-required", {
+				skill: "list",
+			});
+			const text = getResultText(result);
+
+			expect(result.isError).toBe(true);
+			expect(text).toContain("Skills service unavailable");
+		});
+
+		it("retries after a required skills service failure", async () => {
+			createTestSkill("local-only", "Local skill", "Local instructions.");
+			const fetchMock = vi
+				.fn()
+				.mockRejectedValueOnce(new Error("connection refused"))
+				.mockResolvedValueOnce(
+					new Response(
+						JSON.stringify({
+							skills: [],
+							total: 0,
+						}),
+						{ status: 200 },
+					),
+				);
+			vi.stubGlobal("fetch", fetchMock);
+
+			const tool = createSkillTool(testDir, {
+				includeSystem: false,
+				skillsService: {
+					baseUrl: "https://skills.test",
+					maxAttempts: 1,
+					required: true,
+					timeoutMs: 500,
+					workspaceId: "workspace-1",
+				},
+			});
+
+			const firstResult = await tool.execute("test-service-required-retry-1", {
+				skill: "list",
+			});
+			const secondResult = await tool.execute("test-service-required-retry-2", {
+				skill: "list",
+			});
+			const firstText = getResultText(firstResult);
+			const secondText = getResultText(secondResult);
+
+			expect(firstResult.isError).toBe(true);
+			expect(firstText).toContain("Skills service unavailable");
+			expect(secondResult.isError).toBeUndefined();
+			expect(secondText).toContain("local-only");
+			expect(fetchMock).toHaveBeenCalledTimes(2);
+		});
+
+		it("opens the configured circuit after optional skills service failures", async () => {
+			createTestSkill("local-only", "Local skill", "Local instructions.");
+			const fetchMock = vi.fn(
+				async () => new Response("unavailable", { status: 503 }),
+			);
+			vi.stubGlobal("fetch", fetchMock);
+			const skillsService = {
+				baseUrl: "https://skills.test",
+				circuitFailureThreshold: 1,
+				circuitResetTimeoutMs: 60_000,
+				circuitSuccessThreshold: 1,
+				maxAttempts: 1,
+				timeoutMs: 500,
+				workspaceId: "workspace-1",
+			};
+
+			const firstTool = createSkillTool(testDir, {
+				includeSystem: false,
+				skillsService,
+			});
+			const secondTool = createSkillTool(testDir, {
+				includeSystem: false,
+				skillsService,
+			});
+
+			const firstResult = await firstTool.execute("test-service-circuit-1", {
+				skill: "list",
+			});
+			const secondResult = await secondTool.execute("test-service-circuit-2", {
+				skill: "list",
+			});
+
+			expect(firstResult.isError).toBeUndefined();
+			expect(secondResult.isError).toBeUndefined();
+			expect(getResultText(firstResult)).toContain("local-only");
+			expect(getResultText(secondResult)).toContain("local-only");
+			expect(fetchMock).toHaveBeenCalledTimes(1);
 		});
 	});
 

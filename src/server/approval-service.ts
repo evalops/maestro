@@ -1,43 +1,38 @@
-import {
-	type ActionApprovalDecision,
-	type ActionApprovalRequest,
-	ActionApprovalService,
+import type {
+	ActionApprovalRequest,
+	ApprovalMode,
 } from "../agent/action-approval.js";
+import {
+	PlatformBackedActionApprovalService,
+	type SessionIdProvider,
+} from "../approvals/platform-action-approval.js";
+import type { ApprovalsServiceConfig } from "../approvals/service-client.js";
 import { serverRequestManager } from "./server-request-manager.js";
 
-type SessionIdProvider = string | (() => string | undefined);
-
-export class ServerRequestActionApprovalService extends ActionApprovalService {
+export class ServerRequestActionApprovalService extends PlatformBackedActionApprovalService {
 	constructor(
-		mode?: ConstructorParameters<typeof ActionApprovalService>[0],
-		private readonly sessionIdProvider?: SessionIdProvider,
+		mode?: ApprovalMode,
+		sessionIdProvider?: SessionIdProvider,
+		approvalsServiceConfig?: ApprovalsServiceConfig | false,
 	) {
-		super(mode);
+		super(mode, { sessionIdProvider, approvalsServiceConfig });
 	}
 
-	override async requestApproval(
+	protected override onPendingApprovalRegistered(
+		sessionId: string | undefined,
 		request: ActionApprovalRequest,
-		signal?: AbortSignal,
-	): Promise<ActionApprovalDecision> {
-		if (this.requiresUserInteraction()) {
-			serverRequestManager.registerApproval({
-				sessionId: this.getSessionId(),
-				request,
-				service: this,
-			});
-		}
-		try {
-			return await super.requestApproval(request, signal);
-		} finally {
-			serverRequestManager.unregister(request.id);
-		}
+	): void {
+		serverRequestManager.registerApproval({
+			sessionId,
+			request,
+			service: this,
+		});
 	}
 
-	private getSessionId(): string | undefined {
-		if (typeof this.sessionIdProvider === "function") {
-			return this.sessionIdProvider();
-		}
-		return this.sessionIdProvider;
+	protected override onPendingApprovalSettled(
+		request: ActionApprovalRequest,
+	): void {
+		serverRequestManager.unregister(request.id);
 	}
 }
 

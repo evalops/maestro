@@ -1,11 +1,13 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { getRegisteredModels } from "../../models/registry.js";
 import type { RegisteredModel } from "../../models/registry.js";
+import { evaluateModelPolicy } from "../../services/workspace-config/policy.js";
 import type { WebServerContext } from "../app-context.js";
 import {
 	determineModelSelection,
 	getRegisteredModelOrThrow,
 } from "../model-selection.js";
+import { getWorkspaceConfigContext } from "../request-context.js";
 import { respondWithApiError, sendJson } from "../server-utils.js";
 import {
 	type ModelSetInput,
@@ -114,6 +116,24 @@ export async function handleModel(
 			defaults.modelId,
 		);
 		const registeredModel = getRegisteredModelOrThrow(selection);
+		const violation = evaluateModelPolicy(getWorkspaceConfigContext()?.config, {
+			provider: registeredModel.provider,
+			modelId: registeredModel.id,
+		});
+		if (violation) {
+			sendJson(
+				res,
+				403,
+				{
+					error: violation.message,
+					code: violation.code,
+					workspaceId: violation.workspaceId,
+				},
+				cors,
+				req,
+			);
+			return;
+		}
 		await ensureCredential(registeredModel.provider);
 		if (onSelect) onSelect(registeredModel);
 		respondWithModel(res, registeredModel, cors, req);

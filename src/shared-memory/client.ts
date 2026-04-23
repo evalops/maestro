@@ -8,6 +8,7 @@ import {
 	scanOutboundSensitiveContent,
 	summarizeOutboundSensitiveFindings,
 } from "../safety/outbound-secret-preflight.js";
+import { fetchDownstream } from "../utils/downstream-http.js";
 import { createLogger } from "../utils/logger.js";
 import { DEFAULT_CAPABILITIES, SHARED_MEMORY_CONFIG } from "./contract.js";
 
@@ -105,6 +106,8 @@ const STATE_TRIM_KEYS = [
 	"body",
 ];
 const REQUEST_ID_PREFIX = "maestro";
+const CAPABILITIES_MAX_ATTEMPTS = 2;
+const SYNC_MAX_ATTEMPTS = 1;
 const instanceId = randomUUID();
 
 const pendingBySession = new Map<string, PendingSession>();
@@ -277,25 +280,24 @@ function buildHeaders(apiKey?: string, requestId?: string): Headers {
 }
 
 async function safeFetch(url: string, init: RequestInit): Promise<void> {
-	const controller = new AbortController();
-	const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-	try {
-		const response = await fetch(url, { ...init, signal: controller.signal });
-		if (!response.ok) {
-			const message = await response.text().catch(() => "");
-			const retryAfterMs = parseRetryAfterMs(response);
-			const requestId = response.headers.get("x-request-id") ?? undefined;
-			throw new SharedMemoryError(
-				message
-					? `Shared memory error: ${response.status} ${message}`
-					: `Shared memory error: ${response.status}`,
-				response.status,
-				retryAfterMs ?? undefined,
-				requestId ?? undefined,
-			);
-		}
-	} finally {
-		clearTimeout(timeout);
+	const response = await fetchDownstream(url, init, {
+		serviceName: "shared memory service",
+		failureMode: "optional",
+		timeoutMs: REQUEST_TIMEOUT_MS,
+		maxAttempts: SYNC_MAX_ATTEMPTS,
+	});
+	if (!response.ok) {
+		const message = await response.text().catch(() => "");
+		const retryAfterMs = parseRetryAfterMs(response);
+		const requestId = response.headers.get("x-request-id") ?? undefined;
+		throw new SharedMemoryError(
+			message
+				? `Shared memory error: ${response.status} ${message}`
+				: `Shared memory error: ${response.status}`,
+			response.status,
+			retryAfterMs ?? undefined,
+			requestId ?? undefined,
+		);
 	}
 }
 
@@ -425,14 +427,23 @@ async function getCapabilities(
 	};
 
 	capabilitiesPromise = (async () => {
-		const controller = new AbortController();
-		const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 		try {
-			const response = await fetch(`${config.baseUrl}/capabilities`, {
-				method: "GET",
-				headers: buildHeaders(config.apiKey, nextRequestId(REQUEST_ID_PREFIX)),
-				signal: controller.signal,
-			});
+			const response = await fetchDownstream(
+				`${config.baseUrl}/capabilities`,
+				{
+					method: "GET",
+					headers: buildHeaders(
+						config.apiKey,
+						nextRequestId(REQUEST_ID_PREFIX),
+					),
+				},
+				{
+					serviceName: "shared memory service",
+					failureMode: "optional",
+					timeoutMs: REQUEST_TIMEOUT_MS,
+					maxAttempts: CAPABILITIES_MAX_ATTEMPTS,
+				},
+			);
 			if (!response.ok) {
 				if (response.status === 404 || response.status === 405) {
 					return { ...fallback, supportsSync: false };
@@ -481,8 +492,6 @@ async function getCapabilities(
 			};
 		} catch {
 			return fallback;
-		} finally {
-			clearTimeout(timeout);
 		}
 	})();
 

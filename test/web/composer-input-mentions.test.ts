@@ -88,7 +88,7 @@ describe("composer-input mention lookup", () => {
 			.toContain("Couldn't load files");
 	});
 
-	it("does not refetch on every keystroke after a failed file lookup", async () => {
+	it("retries file mentions after a failed file lookup", async () => {
 		const el = document.createElement("composer-input") as HTMLElement & {
 			apiClient: {
 				getFiles: ReturnType<typeof vi.fn>;
@@ -97,7 +97,10 @@ describe("composer-input mention lookup", () => {
 		};
 
 		el.apiClient = {
-			getFiles: vi.fn().mockRejectedValue(new Error("request failed")),
+			getFiles: vi
+				.fn()
+				.mockRejectedValueOnce(new Error("request failed"))
+				.mockResolvedValueOnce(["README.md", "src/index.ts"]),
 		};
 
 		document.body.appendChild(el);
@@ -123,9 +126,16 @@ describe("composer-input mention lookup", () => {
 		textarea.value = "@read";
 		textarea.setSelectionRange(textarea.value.length, textarea.value.length);
 		textarea.dispatchEvent(new Event("input", { bubbles: true }));
-		await el.updateComplete;
 
-		expect(el.apiClient.getFiles).toHaveBeenCalledTimes(1);
+		await expect
+			.poll(() =>
+				Array.from(
+					el.shadowRoot?.querySelectorAll(".suggestion-item") ?? [],
+				).map((node) => node.textContent?.trim()),
+			)
+			.toEqual(["README.md"]);
+
+		expect(el.apiClient.getFiles).toHaveBeenCalledTimes(2);
 	});
 
 	it("loads MCP tools into the picker and inserts the canonical tool mention", async () => {

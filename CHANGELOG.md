@@ -4,8 +4,6 @@ All notable changes to this project will be documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/) and adheres to semantic
 versioning when releases are cut.
 
-
-
 ## [0.10.8] - 2026-04-22
 
 ### Changed
@@ -30,8 +28,6 @@ versioning when releases are cut.
 
 ## [0.10.6] - 2026-04-15
 
-### Added
-
 ### Changed
 
 - Rebundled Google provider runtime dependencies into the built CLI and provider artifacts so installs no longer need the Google SDKs as direct runtime package requirements.
@@ -43,8 +39,6 @@ versioning when releases are cut.
 
 ## [0.10.5] - 2026-04-15
 
-### Added
-
 ### Changed
 
 - Tightened shared Bun cache keying in CI and release workflows to use exact, versioned cache hits instead of broad fallback restores.
@@ -53,10 +47,7 @@ versioning when releases are cut.
 
 - Prevented stale Bun cache restores on Linux release runners from causing `bun install --frozen-lockfile` to rewrite state and fail the publish pipeline.
 
-
 ## [0.10.4] - 2026-04-15
-
-### Added
 
 ### Changed
 
@@ -68,26 +59,17 @@ versioning when releases are cut.
 - Migrated TOTP generation and verification to `otplib` v13 while preserving Maestro's existing 6-digit, 30-second, one-step drift behavior.
 - Removed the package's direct install-time deprecation warnings from outdated `glob` and `otplib` releases.
 
-
 ## [0.10.3] - 2026-04-15
-
-### Added
-
-### Changed
 
 ### Fixed
 
 - Treat `tree-sitter` and `tree-sitter-bash` as optional install-time dependencies so Linux/Node 24 consumers can install Maestro even when native parser bindings are unavailable.
 
-
 ## [0.10.2] - 2026-04-15
-
-### Added
-
-### Changed
 
 ### Fixed
 
+- Cut the follow-up release after the initial trusted publishing migration.
 
 ## [0.10.1] - 2026-04-15
 
@@ -99,7 +81,6 @@ versioning when releases are cut.
 
 - Replaced published `workspace:*` internal dependency specifiers with concrete package versions in release manifests.
 - Removed the need for a stored GitHub Actions npm token during package publication.
-
 
 ## Unreleased
 
@@ -128,6 +109,8 @@ versioning when releases are cut.
 - **BREAKING**: Rate limiting now uses `socket.remoteAddress` by default instead of `X-Forwarded-For`. Deployments behind reverse proxies (nginx, CloudFlare, load balancers) must set `MAESTRO_TRUST_PROXY=true` to correctly identify client IPs.
 - Enabled strict `noExplicitAny` linting rule in biome.json (changed from warn to error).
 - Standardized `@sinclair/typebox` dependency to `^0.34.0` across all packages.
+- Updated GitHub Actions pins to current Node 24-compatible releases and replaced the deprecated cache action in shared CI/release setup.
+- Refreshed direct runtime dependencies including `glob`, `otplib`, `@google/genai`, and `better-sqlite3`.
 
 ### Deprecated
 
@@ -161,6 +144,9 @@ The following APIs are deprecated and will be removed in a future release:
 - Improved X-Forwarded-For parsing to read from right-to-left, preventing IP spoofing attacks.
 - Added IPv6 normalization for consistent rate limiting (strips `::ffff:` prefix from IPv4-mapped addresses).
 - Added validation for empty X-Forwarded-For headers to prevent grouping under empty string.
+- Treat `tree-sitter` and `tree-sitter-bash` as optional install-time dependencies so Linux/Node 24 users can install Maestro even when native parser bindings are unavailable.
+- Migrated TOTP generation and verification to `otplib` v13 while preserving Maestro's existing 6-digit, 30-second, one-step drift behavior.
+- Rebundled Google provider runtime dependencies into the built CLI/provider artifacts and removed the unused root `better-sqlite3` dependency to keep installs quieter and the published runtime surface tighter.
 
 ## 0.10.0 – 2025-11-18
 

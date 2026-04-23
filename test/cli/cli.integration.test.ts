@@ -255,6 +255,8 @@ describe("CLI integration", () => {
 	const originalOpenAI = process.env.OPENAI_API_KEY;
 	const originalClaude = process.env.CLAUDE_CODE_TOKEN;
 	const originalAnthropicOAuthFile = process.env.ANTHROPIC_OAUTH_FILE;
+	const originalSharedMemoryBase = process.env.MAESTRO_SHARED_MEMORY_BASE;
+	const originalSharedMemoryApiKey = process.env.MAESTRO_SHARED_MEMORY_API_KEY;
 	const originalLog = console.log;
 	const originalError = console.error;
 	const originalStdoutWrite = process.stdout.write;
@@ -309,6 +311,16 @@ describe("CLI integration", () => {
 			Reflect.deleteProperty(process.env, "ANTHROPIC_OAUTH_FILE");
 		} else {
 			process.env.ANTHROPIC_OAUTH_FILE = originalAnthropicOAuthFile;
+		}
+		if (originalSharedMemoryBase === undefined) {
+			Reflect.deleteProperty(process.env, "MAESTRO_SHARED_MEMORY_BASE");
+		} else {
+			process.env.MAESTRO_SHARED_MEMORY_BASE = originalSharedMemoryBase;
+		}
+		if (originalSharedMemoryApiKey === undefined) {
+			Reflect.deleteProperty(process.env, "MAESTRO_SHARED_MEMORY_API_KEY");
+		} else {
+			process.env.MAESTRO_SHARED_MEMORY_API_KEY = originalSharedMemoryApiKey;
 		}
 		if (originalAgentDir === undefined) {
 			Reflect.deleteProperty(process.env, "MAESTRO_AGENT_DIR");
@@ -796,6 +808,50 @@ describe("CLI integration", () => {
 		expect(combined).toContain("Session id required.");
 		expect(combined).not.toContain("MAESTRO_SHARED_MEMORY_BASE is not set");
 		exitSpy.mockRestore();
+	});
+
+	it("retries transient shared memory status failures", async () => {
+		process.env.MAESTRO_SHARED_MEMORY_BASE = "http://shared-memory.test/";
+		process.env.MAESTRO_SHARED_MEMORY_API_KEY = "memory-key";
+		let calls = 0;
+		const fetchMock = vi.fn(async (_input: unknown, init?: RequestInit) => {
+			expect(init?.headers).toBeInstanceOf(Headers);
+			expect((init?.headers as Headers).get("Authorization")).toBe(
+				"Bearer memory-key",
+			);
+			calls += 1;
+			if (calls === 1) {
+				return new Response("unavailable", {
+					status: 503,
+					headers: { "Retry-After-Ms": "1" },
+				});
+			}
+			return new Response(
+				JSON.stringify({
+					status: "ok",
+					now: "2026-04-20T00:00:00.000Z",
+					capabilities: {
+						supports_sync: true,
+						supports_gzip: true,
+						max_body_bytes: 1024,
+						max_events_batch: 10,
+					},
+				}),
+				{ status: 200, headers: { "Content-Type": "application/json" } },
+			);
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		const { handleMemoryCommand } = await import(
+			"../../src/cli/commands/memory.js"
+		);
+		await handleMemoryCommand("status", []);
+
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		const combined = output.join("\n");
+		expect(combined).toContain("Shared Memory");
+		expect(combined).toContain("Status: ok");
+		expect(combined).toContain("max_body");
 	});
 
 	it("prints maestro config help for unknown config subcommand", async () => {

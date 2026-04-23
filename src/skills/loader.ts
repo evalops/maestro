@@ -78,8 +78,8 @@ export interface SkillDefinition {
 export interface LoadedSkill extends SkillDefinition {
 	/** Source directory path */
 	sourcePath: string;
-	/** Source type: 'user', 'project', or 'system' */
-	sourceType: "user" | "project" | "system";
+	/** Source type: 'user', 'project', 'system', or 'service' */
+	sourceType: "user" | "project" | "system" | "service";
 	/** Full markdown content (without frontmatter) */
 	content: string;
 	/** List of bundled resource files */
@@ -816,6 +816,7 @@ export function skillsToPrompt(skills: LoadedSkill[]): string {
  */
 export function formatSkillListItem(skill: LoadedSkill): string {
 	const sourceLabels: Record<LoadedSkill["sourceType"], string> = {
+		service: "(service)",
 		system: "(system)",
 		user: "(user)",
 		project: "(project)",

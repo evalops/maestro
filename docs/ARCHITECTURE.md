@@ -220,9 +220,9 @@ All surfaces share the Agent core via different integration patterns:
 
 ## Slash Command System
 
-Commands follow a 4-file registration pattern. This ceremony exists because the typed registry is shared across surfaces and prevents runtime drift between command definitions and handler implementations. Each file has a single responsibility:
+Commands are split into a flat metadata catalog and a command-suite catalog. This keeps command definitions declarative while still giving handlers typed runtime dependencies.
 
-### 1. Define handler type (`src/cli-tui/commands/types.ts`)
+### 1. Define or reuse the handler contract (`src/cli-tui/commands/types.ts`)
 
 ```typescript
 export interface CommandHandlers {
@@ -230,31 +230,46 @@ export interface CommandHandlers {
 }
 ```
 
-### 2. Register command (`src/cli-tui/commands/registry.ts`)
+### 2. Add standalone command metadata (`src/cli-tui/commands/command-catalog.ts`)
 
 ```typescript
-buildEntry(
-  { name: "mycommand", description: "...", usage: "/mycommand [args]", tags: ["ui"] },
-  withArgs("mycommand"),  // or equals("mycommand") for no-args commands
-  handlers.myCommand,
-  createContext,
-),
+withArgs("mycommand", "myCommand", {
+  description: "...",
+  usage: "/mycommand [args]",
+  tags: ["ui"],
+});
 ```
 
-### 3. Add builder option (`src/cli-tui/utils/commands/command-registry-builder.ts`)
+The adapter in `command-registry-adapter.ts` turns catalog metadata into executable registry entries and handles help, argument parsing, completions, aliases, and command rewrites.
+
+### 3. Add command-suite metadata when a parent command owns subcommands
 
 ```typescript
-// Add to CommandRegistryOptions interface + wire in buildCommandRegistry()
-handleMyCommand: (context: CommandExecutionContext) => void;
+// command-suite-catalog.ts
+{
+  name: "ops",
+  description: "Operational commands",
+  usage: "/ops [status|restart]",
+  subcommands: OPS_SUBCOMMANDS,
+}
+
+// subcommands/ops-commands.ts
+export const OPS_SUBCOMMANDS: SubcommandDef[] = [
+  { name: "status", description: "Show service status" },
+];
 ```
 
-### 4. Wire handler (`src/cli-tui/tui-renderer.ts`)
+Command-suite handlers live in `command-suite-handlers.ts` and are wired to the existing top-level handlers through `tui-renderer/command-suite-wiring.ts`.
+
+### 4. Wire runtime dependencies (`src/cli-tui/tui-renderer/command-registry-options.ts`)
 
 ```typescript
-handleMyCommand: (context) => this.doSomething(),
+handlers: {
+  myCommand: (context) => this.doSomething(context),
+},
 ```
 
-**Command suites** (e.g., `/ss`, `/diag`, `/cfg`, `/tools`) route subcommands through dedicated handlers in `src/cli-tui/commands/subcommands/`. **Selector commands** (e.g., `/model`, `/theme`) push a modal via `modalManager.push(component)`.
+**Command suites** (e.g., `/ss`, `/diag`, `/ui`, `/tools`) share subcommand definitions in `src/cli-tui/commands/subcommands/` and route through `CommandSuiteHandlers`. **Selector commands** (e.g., `/model`, `/theme`) still push a modal via `modalManager.push(component)`.
 
 ---
 
@@ -329,14 +344,14 @@ Quick reference for "where do I change X?"
 
 | Task | Files to touch |
 |------|----------------|
-| **Add a slash command** | `commands/types.ts` → `commands/registry.ts` → `command-registry-builder.ts` → `tui-renderer.ts` |
+| **Add a slash command** | `commands/types.ts` → `commands/command-catalog.ts` → handler module → `tui-renderer/command-registry-options.ts` |
+| **Add a command-suite subcommand** | `commands/subcommands/*.ts` → `commands/command-suite-handlers.ts` → `tui-renderer/command-suite-wiring.ts` |
 | **Add a built-in tool** | Create in `src/tools/`, register in tool list, add test in `test/tools/` |
 | **Add an MCP server** | `~/.maestro/mcp.json` or `.maestro/mcp.json` — tools auto-register as `mcp__<server>__<tool>` |
 | **Add a provider** | Transport adapter in `packages/ai/`, model entries in registry, compat flags if needed |
 | **Add a context source** | Implement `AgentContextSource`, register in `AgentContextManager` |
 | **Add a TUI modal/selector** | Component in `src/cli-tui/selectors/`, view wrapper, init in `TuiRenderer`, push via `modalManager` |
 | **Add a lifecycle hook** | Define event in hook types, emit from agent/tool executor, document in hooks config |
-| **Add a suite subcommand** | Handler in `src/cli-tui/commands/subcommands/`, subcommand constant, wire in parent factory |
 | **Fix terminal rendering** | Check if fix belongs in `packages/tui` (library), `src/cli-tui` (app), or `packages/tui-rs` (Rust) |
 | **Add a web API endpoint** | Route in `src/server/`, handler using shared Agent, update `packages/web/` if UI needed |
 | **Run tests** | `npx nx run maestro:test --skip-nx-cache` (full) or `bunx vitest --run -t "name"` (targeted) |

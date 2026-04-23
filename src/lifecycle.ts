@@ -10,7 +10,7 @@ import {
 	warmUserRevocationCache,
 } from "./auth/token-revocation.js";
 import { cleanupRateLimits, cleanupUsedCodes } from "./auth/totp.js";
-import { isDatabaseConfigured, isDbAvailable } from "./db/client.js";
+import { isDbAvailable } from "./db/client.js";
 import { initEncryption, isEncryptionEnabled } from "./db/encryption.js";
 import { migrate } from "./db/migrate.js";
 import { registerGauge } from "./server/logger.js";
@@ -211,7 +211,7 @@ export async function initLifecycle(): Promise<void> {
 	}
 
 	// Run database migrations
-	if (isDatabaseConfigured()) {
+	if (isDbAvailable()) {
 		try {
 			const migrationsApplied = await migrate();
 			if (migrationsApplied > 0) {

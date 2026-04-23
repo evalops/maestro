@@ -61,8 +61,8 @@ describe("The Law of Broken Windows (Tool Diagnostics)", () => {
 		// absolute path used in tools
 		const absolutePath = resolve(filePath);
 
-		// Mock diagnostics return
-		mockCollectDiagnostics.mockResolvedValue({
+		// Baseline is clean, then the write introduces a diagnostic.
+		mockCollectDiagnostics.mockResolvedValueOnce({}).mockResolvedValueOnce({
 			[absolutePath]: [
 				{
 					message: "Expected expression",
@@ -106,7 +106,8 @@ describe("The Law of Broken Windows (Tool Diagnostics)", () => {
 		const absolutePath = resolve(filePath);
 		writeFileSync(filePath, "const x = 1;");
 
-		mockCollectDiagnostics.mockResolvedValue({
+		// Baseline is clean, then the edit introduces a diagnostic.
+		mockCollectDiagnostics.mockResolvedValueOnce({}).mockResolvedValueOnce({
 			[absolutePath]: [
 				{
 					message: "Type error",

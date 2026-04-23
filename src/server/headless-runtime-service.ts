@@ -106,6 +106,81 @@ export interface HeadlessRuntimeSnapshot {
 	state: HeadlessRuntimeState;
 }
 
+export type FleetAgentHealth = "healthy" | "degraded" | "unhealthy" | "idle";
+
+export interface FleetProcessResources {
+	memoryRssBytes: number;
+	heapUsedBytes: number;
+	heapTotalBytes: number;
+	cpuUserMicros: number;
+	cpuSystemMicros: number;
+	uptimeSeconds: number;
+}
+
+export interface FleetAgentTaskSummary {
+	total: number;
+	activeTools: number;
+	utilityCommands: number;
+	fileWatches: number;
+	pendingApprovals: number;
+	pendingClientTools: number;
+	pendingMcpElicitations: number;
+	pendingUserInputs: number;
+	pendingToolRetries: number;
+}
+
+export interface FleetAgentResourceUtilization {
+	connections: number;
+	subscribers: number;
+	activeTasks: number;
+}
+
+export interface FleetAgentErrorStats {
+	errors: number;
+	toolErrors: number;
+	runs: number;
+	toolExecutions: number;
+	errorRate: number;
+}
+
+export interface FleetAgentInstance {
+	instanceId: string;
+	sessionId: string;
+	scopeKey: string;
+	model?: string;
+	provider?: string;
+	cwd?: string;
+	gitBranch?: string | null;
+	health: FleetAgentHealth;
+	status: string;
+	isReady: boolean;
+	isResponding: boolean;
+	activeTasks: FleetAgentTaskSummary;
+	resourceUtilization: FleetAgentResourceUtilization;
+	errorStats: FleetAgentErrorStats;
+	lastError?: string;
+	lastStatus?: string;
+	lastResponseDurationMs?: number;
+	lastTtftMs?: number;
+	startedAt: string;
+	updatedAt: string;
+}
+
+export interface FleetDashboardSnapshot {
+	generatedAt: string;
+	summary: {
+		totalInstances: number;
+		healthyInstances: number;
+		degradedInstances: number;
+		unhealthyInstances: number;
+		idleInstances: number;
+		activeTasks: number;
+		errorRate: number;
+	};
+	process: FleetProcessResources;
+	instances: FleetAgentInstance[];
+}
+
 export interface HeadlessRuntimeSnapshotEnvelope {
 	type: "snapshot";
 	snapshot: HeadlessRuntimeSnapshot;
@@ -124,7 +199,7 @@ export interface HeadlessRuntimeHeartbeatEnvelope {
 
 export interface HeadlessRuntimeResetEnvelope {
 	type: "reset";
-	reason: "lagged" | "replay_gap";
+	reason: "lagged" | "replay_gap" | "restored_from_snapshot";
 	snapshot: HeadlessRuntimeSnapshot;
 }
 
@@ -547,7 +622,12 @@ export class HeadlessSessionRuntime {
 	private running = false;
 	private disposed = false;
 	private disposePromise: Promise<void> | null = null;
+	private readonly startedAt = Date.now();
 	private updatedAt = Date.now();
+	private runCount = 0;
+	private errorCount = 0;
+	private toolExecutionCount = 0;
+	private toolErrorCount = 0;
 	private readonly updateSessionSummary: (event: AgentEvent) => void;
 	private readonly automaticMemoryConsolidation: AutomaticMemoryConsolidationCoordinator;
 	private readonly automaticMemoryExtraction: AutomaticMemoryExtractionCoordinator;
@@ -754,6 +834,120 @@ export class HeadlessSessionRuntime {
 
 	getSessionFile(): string {
 		return this.sessionManager.getSessionFile();
+	}
+
+	getFleetAgentInstance(now = Date.now()): FleetAgentInstance {
+		const snapshot = this.getSnapshot();
+		const state = snapshot.state;
+		const activeTasks = this.getFleetTaskSummary(state);
+		const health = this.getFleetHealth(state, activeTasks);
+		const errorStats = this.getFleetErrorStats();
+
+		return {
+			instanceId: this.key(),
+			sessionId: this.sessionId,
+			scopeKey: this.scopeKey,
+			...(state.model ? { model: state.model } : {}),
+			...(state.provider ? { provider: state.provider } : {}),
+			...(state.cwd ? { cwd: state.cwd } : {}),
+			...(state.git_branch !== undefined
+				? { gitBranch: state.git_branch }
+				: {}),
+			health,
+			status: this.getFleetStatusLabel(state, health, activeTasks),
+			isReady: state.is_ready,
+			isResponding: state.is_responding,
+			activeTasks,
+			resourceUtilization: {
+				connections: state.connection_count,
+				subscribers: state.subscriber_count,
+				activeTasks: activeTasks.total,
+			},
+			errorStats,
+			...(state.last_error ? { lastError: state.last_error } : {}),
+			...(state.last_status ? { lastStatus: state.last_status } : {}),
+			...(state.last_response_duration_ms !== undefined
+				? { lastResponseDurationMs: state.last_response_duration_ms }
+				: {}),
+			...(state.last_ttft_ms !== undefined
+				? { lastTtftMs: state.last_ttft_ms }
+				: {}),
+			startedAt: new Date(this.startedAt).toISOString(),
+			updatedAt: new Date(Math.min(this.updatedAt, now)).toISOString(),
+		};
+	}
+
+	private getFleetTaskSummary(
+		state: HeadlessRuntimeState,
+	): FleetAgentTaskSummary {
+		const summary = {
+			activeTools: state.active_tools.length,
+			utilityCommands: state.active_utility_commands.length,
+			fileWatches: state.active_file_watches.length,
+			pendingApprovals: state.pending_approvals.length,
+			pendingClientTools: state.pending_client_tools.length,
+			pendingMcpElicitations: state.pending_mcp_elicitations.length,
+			pendingUserInputs: state.pending_user_inputs.length,
+			pendingToolRetries: state.pending_tool_retries.length,
+		};
+		return {
+			...summary,
+			total: Object.values(summary).reduce((sum, value) => sum + value, 0),
+		};
+	}
+
+	private getFleetHealth(
+		state: HeadlessRuntimeState,
+		activeTasks: FleetAgentTaskSummary,
+	): FleetAgentHealth {
+		if (this.disposed) {
+			return "unhealthy";
+		}
+		if (state.last_error) {
+			return state.is_responding ? "degraded" : "unhealthy";
+		}
+		if (!state.is_ready) {
+			return "degraded";
+		}
+		if (!state.is_responding && activeTasks.total === 0) {
+			return "idle";
+		}
+		return "healthy";
+	}
+
+	private getFleetStatusLabel(
+		state: HeadlessRuntimeState,
+		health: FleetAgentHealth,
+		activeTasks: FleetAgentTaskSummary,
+	): string {
+		if (state.last_error) {
+			return state.last_error;
+		}
+		if (state.last_status) {
+			return state.last_status;
+		}
+		if (state.is_responding) {
+			return "Responding";
+		}
+		if (activeTasks.total > 0) {
+			return `${activeTasks.total} active task${activeTasks.total === 1 ? "" : "s"}`;
+		}
+		return health === "idle" ? "Idle" : "Ready";
+	}
+
+	private getFleetErrorStats(): FleetAgentErrorStats {
+		const totalErrors = this.errorCount + this.toolErrorCount;
+		const totalOperations = this.runCount + this.toolExecutionCount;
+		return {
+			errors: this.errorCount,
+			toolErrors: this.toolErrorCount,
+			runs: this.runCount,
+			toolExecutions: this.toolExecutionCount,
+			errorRate:
+				totalOperations > 0
+					? Number((totalErrors / totalOperations).toFixed(4))
+					: 0,
+		};
 	}
 
 	replayFrom(cursor: number): HeadlessRuntimeStreamEnvelope[] | null {
@@ -1872,7 +2066,27 @@ export class HeadlessSessionRuntime {
 		}
 	}
 
+	private recordFleetEvent(event: AgentEvent): void {
+		switch (event.type) {
+			case "agent_end":
+				this.runCount += 1;
+				if (event.aborted || event.stopReason === "error") {
+					this.errorCount += 1;
+				}
+				return;
+			case "tool_execution_end":
+				this.toolExecutionCount += 1;
+				if (event.isError) {
+					this.toolErrorCount += 1;
+				}
+				return;
+			default:
+				return;
+		}
+	}
+
 	private handleAgentEvent(event: AgentEvent): void {
+		this.recordFleetEvent(event);
 		this.updateSessionSummary(event);
 
 		if (
@@ -2221,6 +2435,64 @@ export class HeadlessRuntimeService {
 			}
 		}
 		return undefined;
+	}
+
+	getFleetDashboardSnapshot(): FleetDashboardSnapshot {
+		const now = Date.now();
+		const memory = process.memoryUsage();
+		const cpu = process.cpuUsage();
+		const processResources: FleetProcessResources = {
+			memoryRssBytes: memory.rss,
+			heapUsedBytes: memory.heapUsed,
+			heapTotalBytes: memory.heapTotal,
+			cpuUserMicros: cpu.user,
+			cpuSystemMicros: cpu.system,
+			uptimeSeconds: Math.round(process.uptime()),
+		};
+		const instances = Array.from(this.runtimes.values())
+			.filter((runtime) => !runtime.isDisposed())
+			.map((runtime) => runtime.getFleetAgentInstance(now))
+			.sort((left, right) => left.instanceId.localeCompare(right.instanceId));
+		const activeTasks = instances.reduce(
+			(sum, instance) => sum + instance.activeTasks.total,
+			0,
+		);
+		const totalOperations = instances.reduce(
+			(sum, instance) =>
+				sum + instance.errorStats.runs + instance.errorStats.toolExecutions,
+			0,
+		);
+		const totalErrors = instances.reduce(
+			(sum, instance) =>
+				sum + instance.errorStats.errors + instance.errorStats.toolErrors,
+			0,
+		);
+
+		return {
+			generatedAt: new Date(now).toISOString(),
+			process: processResources,
+			summary: {
+				totalInstances: instances.length,
+				healthyInstances: instances.filter(
+					(instance) => instance.health === "healthy",
+				).length,
+				degradedInstances: instances.filter(
+					(instance) => instance.health === "degraded",
+				).length,
+				unhealthyInstances: instances.filter(
+					(instance) => instance.health === "unhealthy",
+				).length,
+				idleInstances: instances.filter(
+					(instance) => instance.health === "idle",
+				).length,
+				activeTasks,
+				errorRate:
+					totalOperations > 0
+						? Number((totalErrors / totalOperations).toFixed(4))
+						: 0,
+			},
+			instances,
+		};
 	}
 
 	private async cleanup(): Promise<void> {

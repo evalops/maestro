@@ -36,40 +36,6 @@ type RemoteMeterConfig = PlatformServiceConfig & {
 	token: string;
 };
 
-export interface RemoteMeterWideEventQuery {
-	agentId?: string;
-	endTime?: string;
-	eventType?: string;
-	limit?: number;
-	metadataKey?: string;
-	metadataValue?: string;
-	model?: string;
-	offset?: number;
-	provider?: string;
-	startTime?: string;
-	surface?: string;
-	teamId?: string;
-}
-
-export interface RemoteMeterWideEventQueryResult {
-	events: Array<Record<string, unknown>>;
-	total: number;
-	hasMore: boolean;
-}
-
-export interface RemoteMeterEventDashboardResult {
-	totalEvents?: number;
-	totalInputTokens?: number;
-	totalOutputTokens?: number;
-	totalCacheReadTokens?: number;
-	totalCacheWriteTokens?: number;
-	totalCostUsd?: number;
-	byEventType?: Array<Record<string, unknown>>;
-	bySurface?: Array<Record<string, unknown>>;
-	byModel?: Array<Record<string, unknown>>;
-	byProvider?: Array<Record<string, unknown>>;
-}
-
 async function resolveRemoteMeterConfig(): Promise<RemoteMeterConfig | null> {
 	const config = await resolvePlatformServiceConfig({
 		baseUrlEnvVars: ["MAESTRO_METER_BASE", "MAESTRO_METER_SERVICE_URL"],
@@ -192,26 +158,6 @@ function buildWideEventBody(
 	};
 }
 
-function buildWideEventQueryBody(
-	config: RemoteMeterConfig,
-	query: RemoteMeterWideEventQuery,
-): Record<string, unknown> {
-	return {
-		teamId: query.teamId ?? config.teamId,
-		agentId: query.agentId,
-		surface: query.surface,
-		eventType: query.eventType,
-		model: query.model,
-		provider: query.provider,
-		metadataKey: query.metadataKey,
-		metadataValue: query.metadataValue,
-		startTime: query.startTime,
-		endTime: query.endTime,
-		limit: query.limit,
-		offset: query.offset,
-	};
-}
-
 function stripUndefinedValues(
 	value: Record<string, unknown>,
 ): Record<string, unknown> {
@@ -234,6 +180,7 @@ async function postMeter<T>(
 		stripUndefinedValues(body),
 		{
 			serviceName: "meter service",
+			failureMode: "optional",
 			timeoutMs: config.timeoutMs,
 			maxAttempts: config.maxAttempts,
 		},
@@ -265,54 +212,6 @@ async function postMeter<T>(
 			return emptyResponseValue;
 		}
 		throw error;
-	}
-}
-
-export async function queryRemoteMeterWideEvents(
-	query: RemoteMeterWideEventQuery = {},
-): Promise<RemoteMeterWideEventQueryResult | null> {
-	const config = await resolveRemoteMeterConfig();
-	if (!config) {
-		return null;
-	}
-
-	try {
-		return await postMeter<RemoteMeterWideEventQueryResult>(
-			config,
-			QUERY_WIDE_EVENTS_PATH,
-			buildWideEventQueryBody(config, query),
-		);
-	} catch (error) {
-		logger.debug("Failed to query meter wide events", {
-			error: error instanceof Error ? error.message : String(error),
-			agentId: query.agentId,
-			surface: query.surface,
-		});
-		return null;
-	}
-}
-
-export async function getRemoteMeterEventDashboard(
-	query: RemoteMeterWideEventQuery = {},
-): Promise<RemoteMeterEventDashboardResult | null> {
-	const config = await resolveRemoteMeterConfig();
-	if (!config) {
-		return null;
-	}
-
-	try {
-		return await postMeter<RemoteMeterEventDashboardResult>(
-			config,
-			GET_EVENT_DASHBOARD_PATH,
-			buildWideEventQueryBody(config, query),
-		);
-	} catch (error) {
-		logger.debug("Failed to fetch meter event dashboard", {
-			error: error instanceof Error ? error.message : String(error),
-			agentId: query.agentId,
-			surface: query.surface,
-		});
-		return null;
 	}
 }
 

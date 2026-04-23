@@ -15,6 +15,7 @@ import "./components/composer-thinking.js";
 import "./components/composer-approval.js";
 import "./components/composer-user-input.js";
 import "./components/admin-settings.js";
+import "./components/fleet-dashboard.js";
 import "./components/composer-sandboxed-iframe.js";
 import "./components/composer-artifacts-panel.js";
 import "./components/composer-attachment-viewer.js";
@@ -30,6 +31,7 @@ export { ComposerThinking } from "./components/composer-thinking.js";
 export { ComposerApproval } from "./components/composer-approval.js";
 export { ComposerUserInput } from "./components/composer-user-input.js";
 export { AdminSettings } from "./components/admin-settings.js";
+export { FleetDashboard } from "./components/fleet-dashboard.js";
 export { ComposerSandboxedIframe } from "./components/composer-sandboxed-iframe.js";
 export { ComposerArtifactsPanel } from "./components/composer-artifacts-panel.js";
 export { ComposerAttachmentViewer } from "./components/composer-attachment-viewer.js";
@@ -67,4 +69,7 @@ export type {
 	SlackUser,
 	SlackUsageSummary,
 	SlackAuditLogEntry,
+	FleetAgentHealth,
+	FleetAgentInstance,
+	FleetDashboardResponse,
 } from "./services/enterprise-api.js";

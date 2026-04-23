@@ -81,7 +81,7 @@ bun run version:major    # 0.10.0 -> 1.0.0
 ```
 
 These scripts automatically:
-- Update package.json and package-lock.json
+- Update package.json files and `bun.lockb`
 - Create CHANGELOG.md entry with timestamp
 - Provide next-step instructions for git tag and npm publish
 

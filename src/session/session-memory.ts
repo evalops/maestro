@@ -62,6 +62,13 @@ function collectRecentUserContext(
 	return lines;
 }
 
+function hasMessageContent(content: unknown): boolean {
+	if (typeof content === "string") {
+		return content.trim().length > 0;
+	}
+	return Array.isArray(content) && content.length > 0;
+}
+
 export function buildSessionMemoryContent(sessionPath: string): {
 	content: string;
 	sessionId: string;
@@ -135,7 +142,8 @@ export function buildSessionMemoryContent(sessionPath: string): {
 		cwd: info.cwd,
 		memoryExtractionHash: info.memoryExtractionHash,
 		assistantTurnCount: info.messages.filter(
-			(message) => message.role === "assistant",
+			(message) =>
+				message.role === "assistant" && hasMessageContent(message.content),
 		).length,
 	};
 }

@@ -99,6 +99,79 @@ export interface Alert {
 	createdAt: string;
 }
 
+export type FleetAgentHealth = "healthy" | "degraded" | "unhealthy" | "idle";
+
+export interface FleetAgentTaskSummary {
+	total: number;
+	activeTools: number;
+	utilityCommands: number;
+	fileWatches: number;
+	pendingApprovals: number;
+	pendingClientTools: number;
+	pendingMcpElicitations: number;
+	pendingUserInputs: number;
+	pendingToolRetries: number;
+}
+
+export interface FleetAgentResourceUtilization {
+	connections: number;
+	subscribers: number;
+	activeTasks: number;
+}
+
+export interface FleetAgentErrorStats {
+	errors: number;
+	toolErrors: number;
+	runs: number;
+	toolExecutions: number;
+	errorRate: number;
+}
+
+export interface FleetAgentInstance {
+	instanceId: string;
+	sessionId: string;
+	scopeKey: string;
+	model?: string;
+	provider?: string;
+	cwd?: string;
+	gitBranch?: string | null;
+	health: FleetAgentHealth;
+	status: string;
+	isReady: boolean;
+	isResponding: boolean;
+	activeTasks: FleetAgentTaskSummary;
+	resourceUtilization: FleetAgentResourceUtilization;
+	errorStats: FleetAgentErrorStats;
+	lastError?: string;
+	lastStatus?: string;
+	lastResponseDurationMs?: number;
+	lastTtftMs?: number;
+	startedAt: string;
+	updatedAt: string;
+}
+
+export interface FleetDashboardResponse {
+	generatedAt: string;
+	summary: {
+		totalInstances: number;
+		healthyInstances: number;
+		degradedInstances: number;
+		unhealthyInstances: number;
+		idleInstances: number;
+		activeTasks: number;
+		errorRate: number;
+	};
+	process: {
+		memoryRssBytes: number;
+		heapUsedBytes: number;
+		heapTotalBytes: number;
+		cpuUserMicros: number;
+		cpuSystemMicros: number;
+		uptimeSeconds: number;
+	};
+	instances: FleetAgentInstance[];
+}
+
 export interface ModelApproval {
 	id: string;
 	orgId: string;
@@ -238,22 +311,12 @@ export function getStoredComposerCsrfToken(): string | null {
 	return tokenStorage.get("csrf");
 }
 
-function resolveDefaultBaseUrl(): string {
-	if (typeof window !== "undefined" && window.location?.origin) {
-		return window.location.origin;
-	}
-	return "http://localhost:8080";
-}
-
 export class EnterpriseApiClient {
 	private baseUrl: string;
 	private accessToken: string | null = null;
 
 	constructor(baseUrl?: string) {
-		this.baseUrl = (baseUrl?.trim() || resolveDefaultBaseUrl()).replace(
-			/\/$/,
-			"",
-		);
+		this.baseUrl = (baseUrl || "http://localhost:8080").replace(/\/$/, "");
 		this.accessToken = tokenStorage.get("access");
 	}
 
@@ -380,6 +443,13 @@ export class EnterpriseApiClient {
 
 	async getAlerts(): Promise<{ alerts: Alert[] }> {
 		const response = await fetch(`${this.baseUrl}/api/alerts`, {
+			headers: this.headers,
+		});
+		return safeJson(response);
+	}
+
+	async getFleetStatus(): Promise<FleetDashboardResponse> {
+		const response = await fetch(`${this.baseUrl}/api/fleet`, {
 			headers: this.headers,
 		});
 		return safeJson(response);

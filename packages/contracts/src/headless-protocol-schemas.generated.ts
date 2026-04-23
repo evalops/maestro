@@ -893,7 +893,11 @@ export const HeadlessRuntimeHeartbeatEnvelopeSchema = Type.Object(
 export const HeadlessRuntimeResetEnvelopeSchema = Type.Object(
 	{
 		type: Type.Literal("reset"),
-		reason: Type.Union([Type.Literal("lagged"), Type.Literal("replay_gap")]),
+		reason: Type.Union([
+			Type.Literal("lagged"),
+			Type.Literal("replay_gap"),
+			Type.Literal("restored_from_snapshot"),
+		]),
 		snapshot: HeadlessRuntimeSnapshotSchema,
 	},
 	{ additionalProperties: false },

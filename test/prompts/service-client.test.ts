@@ -8,7 +8,6 @@ describe("prompts service client", () => {
 		process.env.PROMPTS_SERVICE_TOKEN = "prompts-token";
 		process.env.PROMPTS_SERVICE_ORGANIZATION_ID = "org_123";
 		process.env.PROMPTS_SERVICE_TIMEOUT_MS = "2400";
-		process.env.PROMPTS_SERVICE_MAX_ATTEMPTS = "2";
 		vi.unstubAllGlobals();
 	});
 
@@ -17,7 +16,6 @@ describe("prompts service client", () => {
 		delete process.env.PROMPTS_SERVICE_TOKEN;
 		delete process.env.PROMPTS_SERVICE_ORGANIZATION_ID;
 		delete process.env.PROMPTS_SERVICE_TIMEOUT_MS;
-		delete process.env.PROMPTS_SERVICE_MAX_ATTEMPTS;
 		delete process.env.PROMPTS_SERVICE_TRANSPORT;
 		delete process.env.MAESTRO_PLATFORM_BASE_URL;
 		delete process.env.MAESTRO_PROMPTS_SERVICE_URL;
@@ -78,44 +76,6 @@ describe("prompts service client", () => {
 		});
 	});
 
-	it("retries legacy REST prompt resolution based on configured attempts", async () => {
-		const fetchMock = vi
-			.fn<Parameters<typeof fetch>, ReturnType<typeof fetch>>()
-			.mockRejectedValueOnce(new Error("temporary network failure"))
-			.mockResolvedValueOnce(
-				new Response(
-					JSON.stringify({
-						version: {
-							id: "ver_retry_8",
-							version: 8,
-							content: "Resolved after retry",
-						},
-					}),
-					{
-						status: 200,
-						headers: { "Content-Type": "application/json" },
-					},
-				),
-			);
-		vi.stubGlobal("fetch", fetchMock);
-
-		const result = await resolvePromptTemplate({
-			name: "maestro-system",
-			label: "production",
-			surface: "maestro",
-		});
-
-		expect(fetchMock).toHaveBeenCalledTimes(2);
-		expect(result).toEqual({
-			name: "maestro-system",
-			label: "production",
-			surface: "maestro",
-			version: 8,
-			versionId: "ver_retry_8",
-			content: "Resolved after retry",
-		});
-	});
-
 	it("resolves prompt versions through the shared Platform Connect endpoint", async () => {
 		delete process.env.PROMPTS_SERVICE_URL;
 		delete process.env.PROMPTS_SERVICE_TOKEN;
@@ -141,7 +101,6 @@ describe("prompts service client", () => {
 			expect(JSON.parse(String(init?.body ?? "{}"))).toEqual({
 				name: "maestro-system",
 				label: "production",
-				surface: "maestro",
 			});
 			return new Response(
 				JSON.stringify({

@@ -62,7 +62,15 @@ import {
 } from "node:fs/promises";
 import { dirname, resolve as resolvePath } from "node:path";
 import { Type } from "@sinclair/typebox";
-import { collectDiagnostics } from "../lsp/index.js";
+import {
+	captureDiagnosticBaseline,
+	collectDiagnosticDelta,
+} from "../lsp/diagnostic-deltas.js";
+import {
+	type DiagnosticDeltaToolSummary,
+	buildDiagnosticDeltaToolSummary,
+	formatDiagnosticDeltaForToolOutput,
+} from "../lsp/diagnostic-repair.js";
 import { assertTeamMemoryContentSafe } from "../memory/team-memory.js";
 import {
 	requirePlanCheck,
@@ -99,6 +107,7 @@ type WriteToolDetails = {
 	diff?: string;
 	backupPath?: string;
 	validators?: ValidatorRunResult[];
+	diagnosticDelta?: DiagnosticDeltaToolSummary;
 	mode?: "sandbox";
 };
 
@@ -174,6 +183,9 @@ export const writeTool = createTool<typeof writeSchema, WriteToolDetails>({
 
 		ensureNotAborted();
 
+		const diagnosticBaseline = await captureDiagnosticBaseline(absolutePath);
+		ensureNotAborted();
+
 		let movedToBackup = false;
 		if (previousExists && backup && previousContent !== null) {
 			backupPath = `${absolutePath}.bak`;
@@ -209,16 +221,24 @@ export const writeTool = createTool<typeof writeSchema, WriteToolDetails>({
 
 		let validatorSummaries: ValidatorRunResult[] | undefined;
 		let linterOutput = "";
+		let diagnosticDeltaSummary: DiagnosticDeltaToolSummary | undefined;
 		try {
-			const lspDiagnostics = await collectDiagnostics();
-			const fileDiagnostics = lspDiagnostics[absolutePath] || [];
-			if (fileDiagnostics.length > 0) {
-				linterOutput = formatLspDiagnostics(path, fileDiagnostics);
+			const diagnosticDelta = await collectDiagnosticDelta(diagnosticBaseline);
+			diagnosticDeltaSummary = buildDiagnosticDeltaToolSummary({
+				file: absolutePath,
+				displayPath: path,
+				result: diagnosticDelta,
+			});
+			const visibleDiagnostics = diagnosticDelta.usedDelta
+				? diagnosticDelta.newDiagnostics
+				: diagnosticDelta.fileDiagnostics;
+			if (visibleDiagnostics.length > 0) {
+				linterOutput = formatLspDiagnostics(path, visibleDiagnostics);
 			}
 
 			validatorSummaries = await runValidatorsOnSuccess(
 				[absolutePath],
-				lspDiagnostics,
+				diagnosticDelta.validatorDiagnostics,
 			);
 		} catch (validatorError) {
 			if (movedToBackup && backupPath) {
@@ -248,6 +268,14 @@ export const writeTool = createTool<typeof writeSchema, WriteToolDetails>({
 		if (linterOutput) {
 			summaryLines.push(linterOutput);
 		}
+		if (diagnosticDeltaSummary) {
+			const diagnosticDeltaOutput = formatDiagnosticDeltaForToolOutput(
+				diagnosticDeltaSummary,
+			);
+			if (diagnosticDeltaOutput) {
+				summaryLines.push(diagnosticDeltaOutput);
+			}
+		}
 
 		return respond.text(summaryLines.join("\n")).detail({
 			previousExists,
@@ -255,6 +283,7 @@ export const writeTool = createTool<typeof writeSchema, WriteToolDetails>({
 			diff,
 			backupPath,
 			validators: validatorSummaries,
+			diagnosticDelta: diagnosticDeltaSummary,
 		});
 	},
 });

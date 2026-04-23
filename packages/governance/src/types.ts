@@ -161,6 +161,35 @@ export interface GovernanceEngineConfig {
 	enableSequenceAnalysis?: boolean;
 	/** Whether to enable context firewall (default: true) */
 	enableContextFirewall?: boolean;
+	/**
+	 * Optional governance service delegation. When omitted, environment variables
+	 * such as GOVERNANCE_SERVICE_URL can enable the remote service. Set to false
+	 * to force local evaluation.
+	 */
+	service?:
+		| false
+		| {
+				/** Base URL for governance.v1.GovernanceService. */
+				baseUrl?: string;
+				/** Optional bearer token for service auth. */
+				token?: string;
+				/** Workspace or organization scope used by governance policies. */
+				workspaceId?: string;
+				/** Agent identifier sent to the service (default: maestro). */
+				agentId?: string;
+				/** Request timeout in milliseconds. */
+				timeoutMs?: number;
+				/** Total downstream attempts for transient failures. */
+				maxAttempts?: number;
+				/** Failures before the governance service circuit opens. */
+				circuitFailureThreshold?: number;
+				/** Milliseconds before retrying an opened service circuit. */
+				circuitResetTimeoutMs?: number;
+				/** Successes needed to close a half-open service circuit. */
+				circuitSuccessThreshold?: number;
+				/** Block on service failure instead of falling back locally. */
+				required?: boolean;
+		  };
 	/** Callback for audit events */
 	onAuditEvent?: (event: GovernanceAuditEvent) => void;
 }

@@ -104,6 +104,33 @@ describe("AgentContextManager", () => {
 		});
 	});
 
+	it("clears session-scoped cached sources for post-compaction recompute", async () => {
+		const load = vi
+			.fn<() => Promise<string | null>>()
+			.mockResolvedValueOnce("before-compaction")
+			.mockResolvedValueOnce("after-compaction");
+		const manager = new AgentContextManager();
+		manager.addSource({
+			name: "stable",
+			cacheScope: "session",
+			getSystemPromptAdditions: () => load(),
+		});
+
+		const first = await manager.getCombinedSystemPromptWithStatus();
+		const cleared = manager.clearSessionCache();
+		const second = await manager.getCombinedSystemPromptWithStatus();
+
+		expect(first.prompt).toBe("before-compaction");
+		expect(cleared).toBe(1);
+		expect(second.prompt).toBe("after-compaction");
+		expect(second.sourceStatuses[0]).toMatchObject({
+			name: "stable",
+			status: "success",
+			cached: false,
+		});
+		expect(load).toHaveBeenCalledTimes(2);
+	});
+
 	it("caches null results for session-scoped sources", async () => {
 		const load = vi.fn(async () => null);
 		const manager = new AgentContextManager();

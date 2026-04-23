@@ -1,5 +1,5 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -133,6 +133,22 @@ interface SendOptions {
 	subscriptionId?: string | null;
 }
 
+interface HostedDrainRequest {
+	reason?: string;
+	requested_by?: string;
+	export_paths?: string[];
+}
+
+interface HostedDrainResult {
+	protocol_version: string;
+	status: string;
+	runner_session_id: string;
+	requested_by?: string | null;
+	reason?: string | null;
+	manifest_path: string;
+	manifest?: Record<string, unknown>;
+}
+
 interface RuntimeConformanceAdapter {
 	readonly label: string;
 	readonly workspaceRoot: string;
@@ -165,6 +181,8 @@ interface RuntimeConformanceAdapter {
 	requestApproval(
 		request: ActionApprovalRequest,
 	): Promise<ActionApprovalDecision>;
+	drain?(request: HostedDrainRequest): Promise<HostedDrainResult>;
+	restoreFromDrain?(drain: HostedDrainResult): Promise<HeadlessRuntimeSnapshot>;
 	close(): Promise<void>;
 }
 
@@ -641,6 +659,45 @@ class RustHostedHttpConformanceAdapter implements RuntimeConformanceAdapter {
 		throw new Error("Timed out waiting for Rust conformance approval");
 	}
 
+	async drain(request: HostedDrainRequest): Promise<HostedDrainResult> {
+		const response = await this.postJson<HostedDrainResult>(
+			"/.well-known/evalops/remote-runner/drain",
+			request,
+		);
+		if (!response.manifest) {
+			response.manifest = JSON.parse(
+				await readFile(response.manifest_path, "utf8"),
+			) as Record<string, unknown>;
+		}
+		return response;
+	}
+
+	async restoreFromDrain(
+		drain: HostedDrainResult,
+	): Promise<HeadlessRuntimeSnapshot> {
+		for (const stream of this.streams) {
+			stream.close();
+		}
+		this.streams.clear();
+		this.subscriptions.clear();
+		this.latestControllerSubscriptionId = null;
+		this.pendingApprovalRequest = null;
+		if (this.child) {
+			await stopFixture(this.child);
+			this.child = null;
+		}
+		const manifest = drain.manifest as
+			| { maestro_session_id?: string }
+			| undefined;
+		await this.startFixture({
+			restoreManifestPath: drain.manifest_path,
+			restoredSessionId: manifest?.maestro_session_id ?? this.sessionId,
+			runnerSessionId: "mrs_conformance_restored",
+			maestroSessionId: null,
+		});
+		return await this.fetchState();
+	}
+
 	async close(): Promise<void> {
 		for (const stream of this.streams) {
 			stream.close();
@@ -658,15 +715,32 @@ class RustHostedHttpConformanceAdapter implements RuntimeConformanceAdapter {
 		);
 	}
 
-	private async startFixture(): Promise<void> {
+	private async startFixture(
+		options: {
+			restoreManifestPath?: string;
+			restoredSessionId?: string;
+			runnerSessionId?: string;
+			maestroSessionId?: string | null;
+		} = {},
+	): Promise<void> {
 		const env = { ...process.env };
 		delete env.PORT;
-		env.MAESTRO_RUNNER_SESSION_ID = "mrs_conformance";
-		env.MAESTRO_SESSION_ID = this.sessionId;
+		env.MAESTRO_RUNNER_SESSION_ID =
+			options.runnerSessionId ?? "mrs_conformance";
+		if (options.maestroSessionId === null) {
+			delete env.MAESTRO_SESSION_ID;
+		} else {
+			env.MAESTRO_SESSION_ID = options.maestroSessionId ?? this.sessionId;
+		}
 		env.MAESTRO_WORKSPACE_ROOT = this.workspaceRoot;
 		env.MAESTRO_HOSTED_RUNNER_LISTEN = `127.0.0.1:${await findAvailableTcpPort()}`;
 		env.MAESTRO_REMOTE_RUNNER_WORKSPACE_ID = "ws_conformance";
 		env.MAESTRO_AGENT_RUN_ID = "run_conformance";
+		if (options.restoreManifestPath) {
+			env.MAESTRO_REMOTE_RUNNER_RESTORE_MANIFEST = options.restoreManifestPath;
+		} else {
+			delete env.MAESTRO_REMOTE_RUNNER_RESTORE_MANIFEST;
+		}
 		const child = spawn(
 			"cargo",
 			["run", "--quiet", "--bin", "hosted_runner_conformance_fixture"],
@@ -679,7 +753,7 @@ class RustHostedHttpConformanceAdapter implements RuntimeConformanceAdapter {
 		this.child = child;
 		const startup = await readFixtureStartup(child);
 		this.baseUrl = startup.baseUrl;
-		this.sessionId = startup.sessionId;
+		this.sessionId = options.restoredSessionId ?? startup.sessionId;
 	}
 
 	private async fetchState(): Promise<HeadlessRuntimeSnapshot> {
@@ -1183,9 +1257,7 @@ function defineHeadlessRuntimeConformanceSuite(
 					},
 					{ role: "controller", subscriptionId: controller.subscription_id },
 				),
-			).rejects.toThrow(
-				/outside|Access denied|Path is outside|escapes hosted workspace/,
-			);
+			).rejects.toThrow(/outside|Access denied|Path is outside/);
 			stream.close();
 		});
 
@@ -1351,6 +1423,167 @@ function defineHeadlessRuntimeConformanceSuite(
 				},
 			});
 			stream.close();
+		});
+
+		it("drains hosted runners into a manifest and rejects new mutations", async () => {
+			const runtime = await start();
+			if (!runtime.drain) {
+				expect(runtime.label).toBe("typescript-in-process");
+				return;
+			}
+
+			const controller = await runtime.subscribe({ role: "controller" });
+			const stream = await runtime.attachStream({
+				role: "viewer",
+				cursor: null,
+			});
+			expect((await readNextEnvelope(stream)).type).toBe("snapshot");
+
+			await runtime.send(
+				{ type: "prompt", content: "before hosted drain" },
+				{ role: "controller", subscriptionId: controller.subscription_id },
+			);
+			await vi.waitFor(async () => {
+				expect(
+					(await runtime.replayFrom(0))?.some((entry) => {
+						return (
+							entry.type === "message" &&
+							entry.message.type === "status" &&
+							entry.message.message === "Prompt: before hosted drain"
+						);
+					}),
+				).toBe(true);
+			});
+
+			const drain = await runtime.drain({
+				reason: "conformance_stop",
+				requested_by: "runtime-conformance",
+				export_paths: ["notes.md"],
+			});
+			expect(drain).toMatchObject({
+				protocol_version: "evalops.remote-runner.drain.v1",
+				status: "drained",
+				runner_session_id: "mrs_conformance",
+				requested_by: "runtime-conformance",
+				reason: "conformance_stop",
+				manifest_path: expect.stringContaining("mrs_conformance"),
+			});
+			expect(drain.manifest).toBeDefined();
+			const manifest = drain.manifest as Record<string, unknown>;
+			expect(manifest).toMatchObject({
+				protocol_version: "evalops.remote-runner.snapshot-manifest.v1",
+				runner_session_id: "mrs_conformance",
+				workspace_id: "ws_conformance",
+				agent_run_id: "run_conformance",
+				maestro_session_id: "sess_conformance",
+				reason: "conformance_stop",
+				requested_by: "runtime-conformance",
+			});
+			const runtimeManifest = manifest.runtime as {
+				cursor?: number;
+				flush_status?: string;
+				protocol_version?: string;
+				session_id?: string;
+			};
+			expect(runtimeManifest).toMatchObject({
+				flush_status: "completed",
+				protocol_version: HEADLESS_PROTOCOL_VERSION,
+				session_id: "sess_conformance",
+			});
+			expect(runtimeManifest.cursor).toBeGreaterThan(0);
+			const snapshot = manifest.snapshot as HeadlessRuntimeSnapshot;
+			expectRuntimeSnapshot(snapshot);
+			expect(snapshot.cursor).toBeGreaterThan(0);
+			const workspaceExport = manifest.workspace_export as {
+				mode?: string;
+				paths?: Array<Record<string, unknown>>;
+			};
+			expect(workspaceExport).toMatchObject({
+				mode: "local_path_contract",
+			});
+			expect(workspaceExport.paths).toContainEqual(
+				expect.objectContaining({
+					input: "notes.md",
+					relative_path: "notes.md",
+					type: "file",
+				}),
+			);
+
+			const drainedSnapshot = await readUntil(
+				stream,
+				(envelope) =>
+					envelope.type === "snapshot" &&
+					envelope.snapshot.state.last_status === "Drained",
+			);
+			for (const envelope of drainedSnapshot) {
+				expectStreamEnvelope(envelope);
+			}
+			expect(drainedSnapshot.at(-1)).toMatchObject({
+				type: "snapshot",
+				snapshot: {
+					state: {
+						is_ready: false,
+						last_status: "Drained",
+					},
+				},
+			});
+
+			await expect(
+				runtime.send(
+					{ type: "prompt", content: "after hosted drain" },
+					{ role: "controller", subscriptionId: controller.subscription_id },
+				),
+			).rejects.toThrow(/runtime_not_ready|draining|not ready/);
+			await expect(runtime.subscribe({ role: "viewer" })).rejects.toThrow(
+				/runtime_not_ready|draining|not ready|not accepting new attachments/,
+			);
+			stream.close();
+
+			if (!runtime.restoreFromDrain) {
+				return;
+			}
+			const restored = await runtime.restoreFromDrain(drain);
+			expectRuntimeSnapshot(restored);
+			expect(restored.session_id).toBe("sess_conformance");
+			expect(restored.cursor).toBe(runtimeManifest.cursor);
+			expect(restored.state.last_status).toBe("Restored from snapshot");
+			expect(restored.state.is_ready).toBe(true);
+
+			const restoredStream = await runtime.attachStream({
+				role: "viewer",
+				cursor: 0,
+			});
+			const restoredReset = await readNextEnvelope(restoredStream);
+			expectStreamEnvelope(restoredReset);
+			expect(restoredReset).toMatchObject({
+				type: "reset",
+				reason: "restored_from_snapshot",
+				snapshot: {
+					session_id: "sess_conformance",
+					cursor: runtimeManifest.cursor,
+					state: {
+						last_status: "Restored from snapshot",
+					},
+				},
+			});
+			restoredStream.close();
+
+			const restoredController = await runtime.subscribe({
+				role: "controller",
+			});
+			expect(restoredController.controller_lease_granted).toBe(true);
+			const afterRestore = await runtime.send(
+				{ type: "prompt", content: "after hosted restore" },
+				{
+					role: "controller",
+					subscriptionId: restoredController.subscription_id,
+				},
+			);
+			expect(afterRestore.session_id).toBe("sess_conformance");
+			expect(afterRestore.cursor).toBeGreaterThan(runtimeManifest.cursor ?? 0);
+			expect(afterRestore.state.last_status).toBe(
+				"Prompt: after hosted restore",
+			);
 		});
 
 		it("disconnects subscriptions and clears controller leases without destroying the runtime", async () => {

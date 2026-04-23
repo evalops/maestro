@@ -20,6 +20,7 @@
  */
 
 export { GovernanceEngine } from "./engine.js";
+export type { GovernanceServiceConfig } from "./service-client.js";
 export type {
 	GovernanceAuditEvent,
 	GovernanceCommandAnalysis,

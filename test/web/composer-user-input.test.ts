@@ -33,6 +33,11 @@ describe("composer-user-input", () => {
 							{
 								label: "Zod",
 								description: "Use Zod schemas",
+								preview: {
+									kind: "diff",
+									title: "Zod patch",
+									body: 'diff --git a/package.json b/package.json\n+"zod": "latest"',
+								},
 							},
 							{
 								label: "Valibot",
@@ -52,6 +57,8 @@ describe("composer-user-input", () => {
 		expect(text).toContain("Input 1 of 2");
 		expect(text).toContain("1 more input request waiting");
 		expect(text).toContain("Which schema library should we use?");
+		expect(text).toContain("Zod patch");
+		expect(text).toContain("diff --git a/package.json b/package.json");
 		expect(text).toContain("Other");
 	});
 
@@ -181,5 +188,54 @@ describe("composer-user-input", () => {
 			'input.other-input[data-question-index="0"]',
 		) as HTMLInputElement | null;
 		expect(restoredOtherInput?.value).toBe("Custom schema");
+	});
+
+	it("ignores malformed option preview payloads", async () => {
+		const el = document.createElement("composer-user-input") as HTMLElement & {
+			request: {
+				toolCallId: string;
+				toolName: string;
+				args: Record<string, unknown>;
+				kind: "user_input";
+			};
+			updateComplete?: Promise<void>;
+		};
+
+		el.request = {
+			toolCallId: "call-user-input-3",
+			toolName: "ask_user",
+			kind: "user_input",
+			args: {
+				questions: [
+					{
+						header: "Stack",
+						question: "Which schema library should we use?",
+						options: [
+							{
+								label: "Zod",
+								description: "Use Zod schemas",
+								preview: {
+									kind: "html",
+									title: "Unsupported",
+									body: "<div>raw html</div>",
+								},
+							},
+							{
+								label: "Valibot",
+								description: "Use Valibot schemas",
+							},
+						],
+					},
+				],
+			},
+		};
+
+		document.body.appendChild(el);
+		await el.updateComplete;
+
+		const text = (el.shadowRoot?.textContent ?? "").replace(/\s+/g, " ");
+		expect(text).toContain("Zod");
+		expect(text).not.toContain("raw html");
+		expect(el.shadowRoot?.querySelector(".option-preview")).toBeNull();
 	});
 });

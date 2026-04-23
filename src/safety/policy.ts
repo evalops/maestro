@@ -7,8 +7,10 @@
  *
  * ## Policy File Location
  *
- * Policies are loaded from `~/.maestro/policy.json`. This file is typically
- * deployed by enterprise IT and should be protected with appropriate permissions.
+ * Policies are loaded from `~/.maestro/policy.json` and
+ * `.maestro/workspace.toml` in the current workspace. The global JSON file is
+ * typically deployed by enterprise IT and should be protected with appropriate
+ * permissions. Workspace TOML applies a stricter project-specific layer.
  *
  * ## Policy Structure
  *
@@ -40,6 +42,9 @@
  *   }
  * }
  * ```
+ *
+ * Workspace policies use TOML keys such as `allowed_models`, `blocked_tools`,
+ * `file_boundaries`, and `max_tokens_per_session`.
  *
  * ## Rule Evaluation
  *
@@ -96,8 +101,9 @@ import {
 	readFileSync,
 	watch,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { Type } from "@sinclair/typebox";
+import { parse as parseTOML } from "smol-toml";
 import type { ActionApprovalContext } from "../agent/action-approval.js";
 import { PATHS } from "../config/constants.js";
 import { extractDependencies } from "../utils/dependency-extractor.js";
@@ -147,6 +153,12 @@ export interface EnterprisePolicy {
 		allowed?: string[];
 		/** Blacklist of blocked model patterns */
 		blocked?: string[];
+	};
+
+	/** Required skill names for workspace-controlled workflows */
+	skills?: {
+		/** Skills that must be available for this workspace */
+		required?: string[];
 	};
 
 	/** File system path restrictions */
@@ -206,6 +218,11 @@ const PolicySchema = Type.Object({
 			blocked: Type.Optional(Type.Array(Type.String())),
 		}),
 	),
+	skills: Type.Optional(
+		Type.Object({
+			required: Type.Optional(Type.Array(Type.String())),
+		}),
+	),
 	paths: Type.Optional(
 		Type.Object({
 			allowed: Type.Optional(Type.Array(Type.String())),
@@ -231,73 +248,586 @@ const PolicySchema = Type.Object({
 
 const validatePolicy = compileTypeboxSchema(PolicySchema);
 
-const getPolicyPath = (): string => join(PATHS.MAESTRO_HOME, "policy.json");
+type PolicyFormat = "json" | "toml";
+type PolicyScope = "user" | "workspace";
+type UnknownRecord = Record<string, unknown>;
+
+interface PolicySource {
+	path: string;
+	format: PolicyFormat;
+	scope: PolicyScope;
+}
+
+const getUserPolicyPath = (): string => join(PATHS.MAESTRO_HOME, "policy.json");
+const isPolicyFile = (path: string): boolean => {
+	if (!existsSync(path)) return false;
+	try {
+		return lstatSync(path).isFile();
+	} catch {
+		return false;
+	}
+};
+
+const getWorkspacePolicyPath = (): string | null => {
+	let current = resolve(process.cwd());
+	while (true) {
+		const candidate = join(current, ".maestro", "workspace.toml");
+		if (isPolicyFile(candidate)) {
+			return candidate;
+		}
+		const parent = dirname(current);
+		if (parent === current) {
+			return null;
+		}
+		current = parent;
+	}
+};
 
 let cachedPolicy: EnterprisePolicy | null = null;
-let policyWatcher: FSWatcher | undefined;
+let cachedPolicyKey: string | null = null;
+let cachedPolicyLayers: EnterprisePolicy[] = [];
+let policyWatchers: FSWatcher[] = [];
 
-function startPolicyWatcher() {
-	if (policyWatcher) return;
+function isRecord(value: unknown): value is UnknownRecord {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
-	try {
-		const policyPath = getPolicyPath();
-		// Only watch if the file exists
-		if (!existsSync(policyPath)) return;
+function getPolicySources(): PolicySource[] {
+	const sources: PolicySource[] = [];
+	const userPolicyPath = getUserPolicyPath();
+	if (isPolicyFile(userPolicyPath)) {
+		sources.push({ path: userPolicyPath, format: "json", scope: "user" });
+	}
 
-		policyWatcher = watch(policyPath, (eventType) => {
-			if (eventType === "rename") {
-				// File deleted or renamed
-				cachedPolicy = null;
-				if (!existsSync(policyPath)) {
-					policyWatcher?.close();
-					policyWatcher = undefined;
-				}
-			} else if (eventType === "change") {
-				// File modified - invalidate cache so next loadPolicy() reloads
-				// We don't proactively reload here to avoid race conditions with partial writes
-				cachedPolicy = null;
-			}
+	const workspacePolicyPath = getWorkspacePolicyPath();
+	if (workspacePolicyPath) {
+		sources.push({
+			path: workspacePolicyPath,
+			format: "toml",
+			scope: "workspace",
 		});
-		// Prevent the watcher from keeping the process alive
-		policyWatcher.unref();
-	} catch (error) {
-		// Ignore watcher errors (e.g. system limit reached)
-		// We fall back to standard caching behavior
+	}
+	return sources;
+}
+
+function getPolicyCacheKey(sources: PolicySource[]): string {
+	return sources
+		.map((source) => `${source.scope}:${source.format}:${source.path}`)
+		.join("|");
+}
+
+function closePolicyWatchers() {
+	for (const watcher of policyWatchers) {
+		watcher.close();
+	}
+	policyWatchers = [];
+}
+
+function startPolicyWatchers(sources: PolicySource[]) {
+	if (policyWatchers.length > 0) return;
+
+	for (const source of sources) {
+		try {
+			// Only watch if the file exists
+			if (!isPolicyFile(source.path)) continue;
+
+			const watcher = watch(source.path, (eventType) => {
+				if (eventType === "rename") {
+					// File deleted or renamed
+					cachedPolicy = null;
+					cachedPolicyKey = null;
+					if (!isPolicyFile(source.path)) {
+						closePolicyWatchers();
+					}
+				} else if (eventType === "change") {
+					// File modified - invalidate cache so next loadPolicy() reloads
+					// We don't proactively reload here to avoid race conditions with partial writes
+					cachedPolicy = null;
+					cachedPolicyKey = null;
+				}
+			});
+			// Prevent the watcher from keeping the process alive
+			watcher.unref();
+			policyWatchers.push(watcher);
+		} catch (error) {
+			// Ignore watcher errors (e.g. system limit reached)
+			// We fall back to standard caching behavior
+		}
 	}
 }
 
-export function loadPolicy(force = false): EnterprisePolicy | null {
-	const policyPath = getPolicyPath();
-	// Check if file exists first - if not, clear cache and return null
-	if (!existsSync(policyPath)) {
-		cachedPolicy = null;
-		if (policyWatcher) {
-			policyWatcher.close();
-			policyWatcher = undefined;
+function readStringArray(
+	source: UnknownRecord,
+	key: string,
+): string[] | undefined {
+	if (!(key in source)) return undefined;
+
+	const value = source[key];
+	if (
+		!Array.isArray(value) ||
+		!value.every((entry) => typeof entry === "string")
+	) {
+		throw new Error(
+			`Workspace policy key "${key}" must be an array of strings`,
+		);
+	}
+	return value;
+}
+
+function readOptionalString(
+	source: UnknownRecord,
+	key: string,
+): string | undefined {
+	if (!(key in source)) return undefined;
+
+	const value = source[key];
+	if (typeof value !== "string") {
+		throw new Error(`Workspace policy key "${key}" must be a string`);
+	}
+	return value;
+}
+
+function readOptionalNumber(
+	source: UnknownRecord,
+	key: string,
+): number | undefined {
+	if (!(key in source)) return undefined;
+
+	const value = source[key];
+	if (typeof value !== "number") {
+		throw new Error(`Workspace policy key "${key}" must be a number`);
+	}
+	return value;
+}
+
+function readOptionalBoolean(
+	source: UnknownRecord,
+	key: string,
+): boolean | undefined {
+	if (!(key in source)) return undefined;
+
+	const value = source[key];
+	if (typeof value !== "boolean") {
+		throw new Error(`Workspace policy key "${key}" must be a boolean`);
+	}
+	return value;
+}
+
+function readOptionalRecord(
+	source: UnknownRecord,
+	key: string,
+): UnknownRecord | undefined {
+	if (!(key in source)) return undefined;
+
+	const value = source[key];
+	if (!isRecord(value)) {
+		throw new Error(`Workspace policy key "${key}" must be a table`);
+	}
+	return value;
+}
+
+function selectWorkspacePolicyRoot(parsed: unknown): UnknownRecord {
+	if (!isRecord(parsed)) {
+		throw new Error("Workspace policy must be a TOML table");
+	}
+
+	const nestedPolicy = parsed.policy;
+	if (nestedPolicy === undefined) {
+		return parsed;
+	}
+	if (!isRecord(nestedPolicy)) {
+		throw new Error('Workspace policy key "policy" must be a table');
+	}
+	return nestedPolicy;
+}
+
+function getWorkspaceStringArray(
+	source: UnknownRecord,
+	tableName: string,
+	tableKey: string,
+	flatKey: string,
+): string[] | undefined {
+	const flatValue = readStringArray(source, flatKey);
+	if (flatValue !== undefined) return flatValue;
+
+	const table = readOptionalRecord(source, tableName);
+	return table ? readStringArray(table, tableKey) : undefined;
+}
+
+function mapWorkspacePolicy(parsed: unknown): EnterprisePolicy {
+	const source = selectWorkspacePolicyRoot(parsed);
+	const policy: EnterprisePolicy = {};
+
+	const orgId = readOptionalString(source, "org_id");
+	if (orgId !== undefined) {
+		policy.orgId = orgId;
+	}
+
+	const allowedTools = getWorkspaceStringArray(
+		source,
+		"tools",
+		"allowed",
+		"allowed_tools",
+	);
+	const blockedTools = getWorkspaceStringArray(
+		source,
+		"tools",
+		"blocked",
+		"blocked_tools",
+	);
+	if (allowedTools !== undefined || blockedTools !== undefined) {
+		policy.tools = {
+			...(allowedTools !== undefined ? { allowed: allowedTools } : {}),
+			...(blockedTools !== undefined ? { blocked: blockedTools } : {}),
+		};
+	}
+
+	const allowedModels = getWorkspaceStringArray(
+		source,
+		"models",
+		"allowed",
+		"allowed_models",
+	);
+	const blockedModels = getWorkspaceStringArray(
+		source,
+		"models",
+		"blocked",
+		"blocked_models",
+	);
+	if (allowedModels !== undefined || blockedModels !== undefined) {
+		policy.models = {
+			...(allowedModels !== undefined ? { allowed: allowedModels } : {}),
+			...(blockedModels !== undefined ? { blocked: blockedModels } : {}),
+		};
+	}
+
+	const fileBoundaries = getWorkspaceStringArray(
+		source,
+		"paths",
+		"allowed",
+		"file_boundaries",
+	);
+	const blockedPaths = getWorkspaceStringArray(
+		source,
+		"paths",
+		"blocked",
+		"blocked_paths",
+	);
+	if (fileBoundaries !== undefined || blockedPaths !== undefined) {
+		policy.paths = {
+			...(fileBoundaries !== undefined ? { allowed: fileBoundaries } : {}),
+			...(blockedPaths !== undefined ? { blocked: blockedPaths } : {}),
+		};
+	}
+
+	const allowedDependencies = getWorkspaceStringArray(
+		source,
+		"dependencies",
+		"allowed",
+		"allowed_dependencies",
+	);
+	const blockedDependencies = getWorkspaceStringArray(
+		source,
+		"dependencies",
+		"blocked",
+		"blocked_dependencies",
+	);
+	if (allowedDependencies !== undefined || blockedDependencies !== undefined) {
+		policy.dependencies = {
+			...(allowedDependencies !== undefined
+				? { allowed: allowedDependencies }
+				: {}),
+			...(blockedDependencies !== undefined
+				? { blocked: blockedDependencies }
+				: {}),
+		};
+	}
+
+	const requiredSkills = getWorkspaceStringArray(
+		source,
+		"skills",
+		"required",
+		"required_skills",
+	);
+	if (requiredSkills !== undefined) {
+		policy.skills = { required: requiredSkills };
+	}
+
+	const network = readOptionalRecord(source, "network");
+	if (network) {
+		const allowedHosts = readStringArray(network, "allowed_hosts");
+		const blockedHosts = readStringArray(network, "blocked_hosts");
+		const blockLocalhost = readOptionalBoolean(network, "block_localhost");
+		const blockPrivateIPs = readOptionalBoolean(network, "block_private_ips");
+		if (
+			allowedHosts !== undefined ||
+			blockedHosts !== undefined ||
+			blockLocalhost !== undefined ||
+			blockPrivateIPs !== undefined
+		) {
+			policy.network = {
+				...(allowedHosts !== undefined ? { allowedHosts } : {}),
+				...(blockedHosts !== undefined ? { blockedHosts } : {}),
+				...(blockLocalhost !== undefined ? { blockLocalhost } : {}),
+				...(blockPrivateIPs !== undefined ? { blockPrivateIPs } : {}),
+			};
 		}
+	}
+
+	const maxTokensPerSession = readOptionalNumber(
+		source,
+		"max_tokens_per_session",
+	);
+	const maxSessionDurationMinutes = readOptionalNumber(
+		source,
+		"max_session_duration_minutes",
+	);
+	const maxConcurrentSessions = readOptionalNumber(
+		source,
+		"max_concurrent_sessions",
+	);
+	if (
+		maxTokensPerSession !== undefined ||
+		maxSessionDurationMinutes !== undefined ||
+		maxConcurrentSessions !== undefined
+	) {
+		policy.limits = {
+			...(maxTokensPerSession !== undefined ? { maxTokensPerSession } : {}),
+			...(maxSessionDurationMinutes !== undefined
+				? { maxSessionDurationMinutes }
+				: {}),
+			...(maxConcurrentSessions !== undefined ? { maxConcurrentSessions } : {}),
+		};
+	}
+
+	return policy;
+}
+
+function uniqueUnion(
+	left: string[] | undefined,
+	right: string[] | undefined,
+): string[] | undefined {
+	const values = [...(left ?? []), ...(right ?? [])];
+	return values.length > 0 ? [...new Set(values)] : undefined;
+}
+
+function minPositiveNumber(
+	left: number | undefined,
+	right: number | undefined,
+): number | undefined {
+	const values = [left, right].filter(
+		(value): value is number => value !== undefined && value > 0,
+	);
+	if (values.length === 0) {
+		return left ?? right;
+	}
+	return Math.min(...values);
+}
+
+function mergeAllowedBlockedPolicy(
+	userPolicy: { allowed?: string[]; blocked?: string[] } | undefined,
+	workspacePolicy: { allowed?: string[]; blocked?: string[] } | undefined,
+): { allowed?: string[]; blocked?: string[] } | undefined {
+	const allowed = workspacePolicy?.allowed ?? userPolicy?.allowed;
+	const blocked = uniqueUnion(userPolicy?.blocked, workspacePolicy?.blocked);
+	if (allowed === undefined && blocked === undefined) return undefined;
+	return {
+		...(allowed !== undefined ? { allowed } : {}),
+		...(blocked !== undefined ? { blocked } : {}),
+	};
+}
+
+function mergeNetworkPolicy(
+	userPolicy: EnterprisePolicy["network"],
+	workspacePolicy: EnterprisePolicy["network"],
+): EnterprisePolicy["network"] {
+	const allowedHosts =
+		workspacePolicy?.allowedHosts ?? userPolicy?.allowedHosts;
+	const blockedHosts = uniqueUnion(
+		userPolicy?.blockedHosts,
+		workspacePolicy?.blockedHosts,
+	);
+	const blockLocalhost =
+		userPolicy?.blockLocalhost === true ||
+		workspacePolicy?.blockLocalhost === true;
+	const blockPrivateIPs =
+		userPolicy?.blockPrivateIPs === true ||
+		workspacePolicy?.blockPrivateIPs === true;
+
+	if (
+		allowedHosts === undefined &&
+		blockedHosts === undefined &&
+		!blockLocalhost &&
+		!blockPrivateIPs
+	) {
+		return undefined;
+	}
+
+	return {
+		...(allowedHosts !== undefined ? { allowedHosts } : {}),
+		...(blockedHosts !== undefined ? { blockedHosts } : {}),
+		...(blockLocalhost ? { blockLocalhost } : {}),
+		...(blockPrivateIPs ? { blockPrivateIPs } : {}),
+	};
+}
+
+function mergePolicyLimits(
+	userPolicy: EnterprisePolicy["limits"],
+	workspacePolicy: EnterprisePolicy["limits"],
+): EnterprisePolicy["limits"] {
+	const maxTokensPerSession = minPositiveNumber(
+		userPolicy?.maxTokensPerSession,
+		workspacePolicy?.maxTokensPerSession,
+	);
+	const maxSessionDurationMinutes = minPositiveNumber(
+		userPolicy?.maxSessionDurationMinutes,
+		workspacePolicy?.maxSessionDurationMinutes,
+	);
+	const maxConcurrentSessions = minPositiveNumber(
+		userPolicy?.maxConcurrentSessions,
+		workspacePolicy?.maxConcurrentSessions,
+	);
+
+	if (
+		maxTokensPerSession === undefined &&
+		maxSessionDurationMinutes === undefined &&
+		maxConcurrentSessions === undefined
+	) {
+		return undefined;
+	}
+
+	return {
+		...(maxTokensPerSession !== undefined ? { maxTokensPerSession } : {}),
+		...(maxSessionDurationMinutes !== undefined
+			? { maxSessionDurationMinutes }
+			: {}),
+		...(maxConcurrentSessions !== undefined ? { maxConcurrentSessions } : {}),
+	};
+}
+
+function mergePolicies(
+	userPolicy: EnterprisePolicy | null,
+	workspacePolicy: EnterprisePolicy | null,
+): EnterprisePolicy | null {
+	if (!userPolicy) return workspacePolicy;
+	if (!workspacePolicy) return userPolicy;
+
+	const policy: EnterprisePolicy = {
+		...(userPolicy.orgId || workspacePolicy.orgId
+			? { orgId: workspacePolicy.orgId ?? userPolicy.orgId }
+			: {}),
+	};
+
+	const tools = mergeAllowedBlockedPolicy(
+		userPolicy.tools,
+		workspacePolicy.tools,
+	);
+	if (tools) policy.tools = tools;
+
+	const dependencies = mergeAllowedBlockedPolicy(
+		userPolicy.dependencies,
+		workspacePolicy.dependencies,
+	);
+	if (dependencies) policy.dependencies = dependencies;
+
+	const models = mergeAllowedBlockedPolicy(
+		userPolicy.models,
+		workspacePolicy.models,
+	);
+	if (models) policy.models = models;
+
+	const paths = mergeAllowedBlockedPolicy(
+		userPolicy.paths,
+		workspacePolicy.paths,
+	);
+	if (paths) policy.paths = paths;
+
+	const requiredSkills = uniqueUnion(
+		userPolicy.skills?.required,
+		workspacePolicy.skills?.required,
+	);
+	if (requiredSkills) {
+		policy.skills = { required: requiredSkills };
+	}
+
+	const network = mergeNetworkPolicy(
+		userPolicy.network,
+		workspacePolicy.network,
+	);
+	if (network) policy.network = network;
+
+	const limits = mergePolicyLimits(userPolicy.limits, workspacePolicy.limits);
+	if (limits) policy.limits = limits;
+
+	return policy;
+}
+
+function validateLoadedPolicy(policy: EnterprisePolicy, sourcePath: string) {
+	if (!validatePolicy(policy)) {
+		throw new Error(
+			`Invalid schema in ${sourcePath}: ${validatePolicy.errors?.map((e) => e.message).join(", ")}`,
+		);
+	}
+}
+
+function loadPolicySource(source: PolicySource): EnterprisePolicy {
+	const raw = readFileSync(source.path, "utf8");
+	if (source.format === "json") {
+		const result = safeJsonParse<EnterprisePolicy>(raw);
+		if (!result.success) {
+			throw new Error(
+				`JSON parse error in ${source.path}: ${result.error.message}`,
+			);
+		}
+		validateLoadedPolicy(result.data, source.path);
+		return result.data;
+	}
+
+	const workspacePolicy = mapWorkspacePolicy(parseTOML(raw));
+	validateLoadedPolicy(workspacePolicy, source.path);
+	return workspacePolicy;
+}
+
+export function loadPolicy(force = false): EnterprisePolicy | null {
+	const sources = getPolicySources();
+	// Check if file exists first - if not, clear cache and return null
+	if (sources.length === 0) {
+		cachedPolicy = null;
+		cachedPolicyKey = null;
+		cachedPolicyLayers = [];
+		closePolicyWatchers();
 		return null;
 	}
 
-	if (cachedPolicy && !force) {
+	const policyKey = getPolicyCacheKey(sources);
+	if (cachedPolicy && cachedPolicyKey === policyKey && !force) {
 		return cachedPolicy;
 	}
 
 	try {
-		const raw = readFileSync(policyPath, "utf8");
-		const result = safeJsonParse<EnterprisePolicy>(raw);
-		if (result.success) {
-			if (!validatePolicy(result.data)) {
-				// Invalid schema - throw to block access (fail closed)
-				throw new Error(
-					`Invalid schema: ${validatePolicy.errors?.map((e) => e.message).join(", ")}`,
-				);
-			}
-			cachedPolicy = result.data;
-			startPolicyWatcher();
-			return cachedPolicy;
+		if (cachedPolicyKey !== policyKey) {
+			closePolicyWatchers();
 		}
-		// Parse error - throw to block access (fail closed)
-		throw new Error(`JSON parse error: ${result.error.message}`);
+
+		let userPolicy: EnterprisePolicy | null = null;
+		let workspacePolicy: EnterprisePolicy | null = null;
+
+		for (const source of sources) {
+			const loadedPolicy = loadPolicySource(source);
+			if (source.scope === "user") {
+				userPolicy = loadedPolicy;
+			} else {
+				workspacePolicy = loadedPolicy;
+			}
+		}
+
+		cachedPolicy = mergePolicies(userPolicy, workspacePolicy);
+		cachedPolicyLayers = [userPolicy, workspacePolicy].filter(
+			(policy): policy is EnterprisePolicy => policy !== null,
+		);
+		cachedPolicyKey = policyKey;
+		startPolicyWatchers(sources);
+		return cachedPolicy;
 	} catch (error) {
 		logger.error(
 			"Critical: Failed to load enterprise policy",
@@ -332,6 +862,80 @@ function getCommandArg(context: ActionApprovalContext): string | null {
 	return getStringArg(context, "command");
 }
 
+function getEffectivePolicyLayers(
+	policy: EnterprisePolicy,
+): EnterprisePolicy[] {
+	return cachedPolicyLayers.length > 0 ? cachedPolicyLayers : [policy];
+}
+
+function hasOwnKey(value: object, key: PropertyKey): boolean {
+	return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+	return typeof value === "string" && value.trim().length > 0;
+}
+
+function hasActiveDurationLimit(policy: EnterprisePolicy): boolean {
+	const duration = policy.limits?.maxSessionDurationMinutes;
+	return (
+		typeof duration === "number" && Number.isFinite(duration) && duration > 0
+	);
+}
+
+function validatePolicyContext(
+	policy: EnterprisePolicy,
+	context: ActionApprovalContext,
+): { allowed: false; reason: string } | null {
+	if (!isNonEmptyString(context.toolName)) {
+		return {
+			allowed: false,
+			reason: "Policy evaluation context is missing required field: toolName.",
+		};
+	}
+
+	if (!hasOwnKey(context, "args")) {
+		return {
+			allowed: false,
+			reason: "Policy evaluation context is missing required field: args.",
+		};
+	}
+
+	if (context.user) {
+		if (!isNonEmptyString(context.user.orgId)) {
+			return {
+				allowed: false,
+				reason:
+					"Policy evaluation context has invalid user context: missing organization id.",
+			};
+		}
+	}
+
+	if (
+		isNonEmptyString(policy.orgId) &&
+		!isNonEmptyString(context.user?.orgId)
+	) {
+		return {
+			allowed: false,
+			reason:
+				"Organization-bound policy requires user organization context. Access blocked.",
+		};
+	}
+
+	if (hasActiveDurationLimit(policy)) {
+		const startedAt = context.session?.startedAt;
+		if (!(startedAt instanceof Date) || !Number.isFinite(startedAt.getTime())) {
+			return {
+				allowed: false,
+				reason:
+					"Session duration policy requires session start context. Access blocked.",
+			};
+		}
+	}
+
+	return null;
+}
+
 export async function checkPolicy(context: ActionApprovalContext): Promise<{
 	allowed: boolean;
 	reason?: string;
@@ -348,6 +952,28 @@ export async function checkPolicy(context: ActionApprovalContext): Promise<{
 
 	if (!policy) {
 		return { allowed: true };
+	}
+
+	for (const policyLayer of getEffectivePolicyLayers(policy)) {
+		const result = await checkPolicyLayer(policyLayer, context);
+		if (!result.allowed) {
+			return result;
+		}
+	}
+
+	return { allowed: true };
+}
+
+async function checkPolicyLayer(
+	policy: EnterprisePolicy,
+	context: ActionApprovalContext,
+): Promise<{
+	allowed: boolean;
+	reason?: string;
+}> {
+	const contextValidation = validatePolicyContext(policy, context);
+	if (contextValidation) {
+		return contextValidation;
 	}
 
 	// 0. Organization Context Check
@@ -510,11 +1136,21 @@ export function checkModelPolicy(modelId: string): {
 		};
 	}
 
-	if (!policy?.models) {
+	if (!policy) {
 		return { allowed: true };
 	}
 
-	return checkModelAccess(modelId, policy.models);
+	for (const policyLayer of getEffectivePolicyLayers(policy)) {
+		if (!policyLayer.models) {
+			continue;
+		}
+		const result = checkModelAccess(modelId, policyLayer.models);
+		if (!result.allowed) {
+			return result;
+		}
+	}
+
+	return { allowed: true };
 }
 
 /**

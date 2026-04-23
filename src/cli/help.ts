@@ -102,7 +102,13 @@ export function printHelp(version: string) {
   maestro remote start --workspace ws_123 --repo evalops/foo --branch main --ttl 90m
 
   # Run a single-session hosted runtime pod entrypoint
-  maestro hosted-runner --runner-session-id mrs_abc --workspace-root /workspace --listen 0.0.0.0:8080`,
+  maestro hosted-runner --runner-session-id mrs_abc --workspace-root /workspace --listen 0.0.0.0:8080
+
+  # Show usage analytics for the last 7 days
+  maestro stats
+
+  # Show usage analytics for one session
+  maestro stats --session <session-id>`,
 	)}`;
 	const env = `${sectionHeading("Environment Variables:")}${muted(
 		`  GEMINI_API_KEY          - Google Gemini API key

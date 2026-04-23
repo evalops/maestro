@@ -312,7 +312,7 @@ export class OAuthFlowController {
 				{ area, fallbackConnectionId },
 			);
 			const details = [
-				`Source-of-truth policy metadata configured for ${configured.provider}.`,
+				`Source-of-truth policy configured for ${configured.provider}.`,
 				`Area: ${configured.area}`,
 				...(configured.fallbackConnectionId
 					? [`Fallback connection: ${configured.fallbackConnectionId}`]
@@ -323,7 +323,7 @@ export class OAuthFlowController {
 				...(configured.primaryConnectionId
 					? [`Platform primary connection: ${configured.primaryConnectionId}`]
 					: [
-							"Platform policy will sync when the connector service integration is configured and reachable.",
+							"Platform policy will sync when the connector service is configured and reachable.",
 						]),
 				...(configured.workspaceId
 					? [`Workspace: ${configured.workspaceId}`]

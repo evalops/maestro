@@ -66,6 +66,11 @@ import {
 	tokenizeSimple,
 	unwrapShellCommand,
 } from "./bash-safety-analyzer.js";
+import {
+	type ActionFirewallGovernanceServiceConfig,
+	evaluateActionWithActionFirewallGovernanceService,
+	resolveActionFirewallGovernanceServiceConfig,
+} from "./governance-service-client.js";
 import { isContainedInWorkspace, isSystemPath } from "./path-containment.js";
 import { checkPolicy } from "./policy.js";
 import { RuleCache } from "./rule-cache.js";
@@ -687,10 +692,19 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 
 export class ActionFirewall {
 	private semanticJudge?: SemanticJudge;
+	private readonly governanceService:
+		| ActionFirewallGovernanceServiceConfig
+		| false
+		| undefined;
 
 	constructor(
 		private readonly rules: ActionFirewallRule[] = defaultFirewallRules,
-	) {}
+		options?: {
+			governanceService?: ActionFirewallGovernanceServiceConfig | false;
+		},
+	) {
+		this.governanceService = options?.governanceService;
+	}
 
 	setSemanticJudge(judge: SemanticJudge) {
 		this.semanticJudge = judge;
@@ -699,46 +713,57 @@ export class ActionFirewall {
 	async evaluate(
 		context: ActionApprovalContext,
 	): Promise<ActionFirewallVerdict> {
-		for (const rule of this.rules) {
-			const evaluation: RuleOutcome = rule.evaluate
-				? await rule.evaluate(context)
-				: (await rule.match?.(context))
-					? {
-							allowed: false,
-							reason:
-								(await rule.reason?.(context)) ??
-								`Action matched rule: ${rule.description}`,
-						}
-					: { allowed: true };
+		const governanceServiceVerdict =
+			await this.evaluateWithGovernanceService(context);
+		if (governanceServiceVerdict?.action === "block") {
+			return governanceServiceVerdict;
+		}
+		if (governanceServiceVerdict?.action === "require_approval") {
+			return governanceServiceVerdict;
+		}
 
-			if (!evaluation.allowed) {
-				const action = rule.action ?? "require_approval";
-				const reason =
-					evaluation.reason ??
-					`Action matched rule: ${rule.description ?? rule.name}`;
-				const remediation =
-					evaluation.remediation ?? (await rule.remediation?.(context));
-				const ruleId =
-					(rule as { id?: string }).id ?? rule.name ?? "unknown-rule";
+		if (!governanceServiceVerdict) {
+			for (const rule of this.rules) {
+				const evaluation: RuleOutcome = rule.evaluate
+					? await rule.evaluate(context)
+					: (await rule.match?.(context))
+						? {
+								allowed: false,
+								reason:
+									(await rule.reason?.(context)) ??
+									`Action matched rule: ${rule.description}`,
+							}
+						: { allowed: true };
 
-				if (action === "allow") {
-					return { action: "allow" };
-				}
+				if (!evaluation.allowed) {
+					const action = rule.action ?? "require_approval";
+					const reason =
+						evaluation.reason ??
+						`Action matched rule: ${rule.description ?? rule.name}`;
+					const remediation =
+						evaluation.remediation ?? (await rule.remediation?.(context));
+					const ruleId =
+						(rule as { id?: string }).id ?? rule.name ?? "unknown-rule";
 
-				if (action === "block") {
+					if (action === "allow") {
+						return { action: "allow" };
+					}
+
+					if (action === "block") {
+						return {
+							action,
+							ruleId,
+							reason,
+							remediation,
+						};
+					}
+
 					return {
 						action,
 						ruleId,
 						reason,
-						remediation,
 					};
 				}
-
-				return {
-					action,
-					ruleId,
-					reason,
-				};
 			}
 		}
 
@@ -769,6 +794,43 @@ export class ActionFirewall {
 		}
 
 		return { action: "allow" };
+	}
+
+	private async evaluateWithGovernanceService(
+		context: ActionApprovalContext,
+	): Promise<ActionFirewallVerdict | null> {
+		const config = resolveActionFirewallGovernanceServiceConfig(
+			this.governanceService,
+			context,
+		);
+		if (!config) {
+			return null;
+		}
+
+		try {
+			const verdict = await evaluateActionWithActionFirewallGovernanceService(
+				config,
+				context,
+			);
+			return verdict;
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			if (config.failureMode === "required") {
+				return {
+					action: "block",
+					ruleId: "governance-service-unavailable",
+					reason: `Governance service unavailable: ${message}`,
+				};
+			}
+			logger.warn(
+				"Failed to evaluate action with governance service; falling back to local firewall rules",
+				{
+					error: message,
+					toolName: context.toolName,
+				},
+			);
+			return null;
+		}
 	}
 }
 

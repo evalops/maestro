@@ -1,11 +1,29 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../../src/db/client.js", () => ({
+	getDb: vi.fn(),
+	isDbAvailable: () => false,
+}));
+
 import {
 	buildWebhookDeliveryHeaders,
+	queueWebhook,
 	signPayload,
 	verifySignature,
 } from "../../src/webhooks/delivery.js";
 
+const fetchMock = vi.fn();
+
 describe("Webhook Delivery", () => {
+	beforeEach(() => {
+		fetchMock.mockReset();
+		vi.stubGlobal("fetch", fetchMock);
+	});
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
 	describe("signPayload", () => {
 		const secret = "test-webhook-secret-32-chars-min";
 
@@ -171,6 +189,64 @@ describe("Webhook Delivery", () => {
 			expect(headers["X-Composer-Signature"]).toBe("sig-123");
 			expect(headers["X-Maestro-Signature"]).toBe("sig-123");
 			expect(headers["Content-Type"]).toBe("application/json");
+		});
+	});
+
+	describe("queueWebhook immediate delivery", () => {
+		it("posts webhooks through the shared downstream fetch wrapper", async () => {
+			fetchMock.mockResolvedValue(new Response("", { status: 202 }));
+
+			await queueWebhook({
+				orgId: "org-1",
+				url: "https://webhooks.test/events",
+				signingSecret: "test-webhook-secret-32-chars-min",
+				payload: {
+					event: "alert.permission_denial_spike",
+					timestamp: "2026-04-20T12:00:00.000Z",
+					data: { severity: "high" },
+				},
+			});
+
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+			expect(url).toBe("https://webhooks.test/events");
+			expect(init).toMatchObject({
+				method: "POST",
+				headers: expect.objectContaining({
+					"Content-Type": "application/json",
+					"User-Agent": "Maestro-Webhooks/1.0",
+				}),
+				body: JSON.stringify({
+					event: "alert.permission_denial_spike",
+					timestamp: "2026-04-20T12:00:00.000Z",
+					data: { severity: "high" },
+				}),
+			});
+			expect(
+				(init.headers as Record<string, string>)["X-Maestro-Signature"],
+			).toMatch(/^t=\d+,v1=[a-f0-9]+$/);
+			expect(init.signal).toBeInstanceOf(AbortSignal);
+		});
+
+		it("leaves webhook retry accounting to the queue", async () => {
+			fetchMock.mockResolvedValue(
+				new Response("temporary failure", {
+					status: 503,
+					statusText: "Service Unavailable",
+				}),
+			);
+
+			await queueWebhook({
+				orgId: "org-1",
+				url: "https://webhooks.test/events",
+				payload: {
+					event: "alert.permission_denial_spike",
+					timestamp: "2026-04-20T12:00:00.000Z",
+					data: { severity: "high" },
+				},
+			});
+
+			expect(fetchMock).toHaveBeenCalledTimes(1);
 		});
 	});
 });

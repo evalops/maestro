@@ -82,9 +82,15 @@
 
 import { validate as uuidValidate } from "uuid";
 import {
+	buildDiagnosticRepairFollowUpMessage,
+	getDiagnosticDeltaFromToolResult,
+	hasDiagnosticRepairOptOut,
+} from "../lsp/diagnostic-repair.js";
+import {
 	recordMaestroToolCallAttempt,
 	recordMaestroToolCallCompleted,
 } from "../telemetry/maestro-event-bus.js";
+import { createQueryProfilerFromEnv } from "../utils/checkpoint-profiler.js";
 import { createLogger } from "../utils/logger.js";
 import {
 	describeToolActivity,
@@ -505,6 +511,7 @@ export class Agent {
 	private withheldRecoverableOverflowError?: AssistantMessage;
 	private withheldRecoverableLengthMessages: AssistantMessage[] = [];
 	private pendingMergedRecoverableTurnEnd?: AssistantMessage;
+	private diagnosticRepairAttempts = new Map<string, number>();
 
 	/**
 	 * Creates a new Agent instance.
@@ -872,10 +879,15 @@ export class Agent {
 	 * This is useful before starting a fresh run, or after operations like
 	 * compaction that rewrite history while the agent is otherwise idle.
 	 */
-	clearTransientRunState(): void {
+	clearTransientRunState(options?: {
+		clearSessionContextCache?: boolean;
+	}): void {
 		this._state.isStreaming = false;
 		this._state.streamMessage = null;
 		this._state.pendingToolCalls.clear();
+		if (options?.clearSessionContextCache) {
+			this.contextManager.clearSessionCache();
+		}
 		this.activeToolBatchIds = null;
 		this.completedToolBatch = [];
 		this.promptOnlyQueue = [];
@@ -1296,6 +1308,7 @@ export class Agent {
 		this.withheldRecoverableLengthMessages = [];
 		this.pendingMergedRecoverableTurnEnd = undefined;
 		this.currentTaskBudget = undefined;
+		this.diagnosticRepairAttempts.clear();
 		// Note: Do NOT clear listeners - they contain the TUI subscription
 		// and must persist across resets for UI updates to work
 	}
@@ -1480,6 +1493,9 @@ export class Agent {
 			);
 		}
 
+		const queryProfiler = createQueryProfilerFromEnv();
+		queryProfiler.checkpoint("input:received");
+
 		this.clearTransientRunState();
 
 		// Set up running prompt tracking
@@ -1515,6 +1531,9 @@ export class Agent {
 				this._state.messages,
 			);
 			const messagesToSend = this.buildProviderMessages(transformedMessages);
+			queryProfiler.checkpoint("context:loaded", {
+				messages: messagesToSend.length,
+			});
 
 			// Determine reasoning level
 			const level = this._state.thinkingLevel;
@@ -1541,6 +1560,9 @@ export class Agent {
 					stack: error instanceof Error ? error.stack : undefined,
 				});
 			}
+			queryProfiler.checkpoint("prompt:assembled", {
+				system_bytes: systemPrompt.length,
+			});
 
 			const runConfig = {
 				systemPrompt,
@@ -1558,7 +1580,11 @@ export class Agent {
 				temperature: this._state.temperature,
 				topP: this._state.topP,
 				taskBudget: this.currentTaskBudget,
+				queryProfiler,
 			};
+			queryProfiler.checkpoint("tools:prepared", {
+				tools: this._state.tools.length,
+			});
 
 			for await (const event of this.transport.run(
 				messagesToSend, // Include userMessage in messages array
@@ -1608,9 +1634,11 @@ export class Agent {
 		} catch (error: unknown) {
 			if (error instanceof Error && error.name === "AbortError") {
 				aborted = true;
+				queryProfiler.terminal("turn:aborted");
 			} else {
 				this._state.error =
 					error instanceof Error ? error.message : String(error);
+				queryProfiler.terminal("turn:error");
 				throw error;
 			}
 		} finally {
@@ -1671,6 +1699,9 @@ export class Agent {
 			throw new Error("No messages to continue from");
 		}
 
+		const queryProfiler = createQueryProfilerFromEnv();
+		queryProfiler.checkpoint("input:received", { continuation: true });
+
 		this.clearTransientRunState();
 
 		// Set up running prompt tracking
@@ -1702,6 +1733,9 @@ export class Agent {
 				transformedMessages,
 				continuationPrompt,
 			);
+			queryProfiler.checkpoint("context:loaded", {
+				messages: providerMessages.length,
+			});
 
 			// Determine reasoning level
 			const level = this._state.thinkingLevel;
@@ -1728,6 +1762,9 @@ export class Agent {
 					error: error instanceof Error ? error.message : String(error),
 				});
 			}
+			queryProfiler.checkpoint("prompt:assembled", {
+				system_bytes: systemPrompt.length,
+			});
 
 			// Create a synthetic continuation trigger message
 			// This signals to the transport that we want the model to continue responding
@@ -1760,7 +1797,11 @@ export class Agent {
 				topP: this._state.topP,
 				taskBudget: this.currentTaskBudget,
 				emitUserMessageEnd: false,
+				queryProfiler,
 			};
+			queryProfiler.checkpoint("tools:prepared", {
+				tools: this._state.tools.length,
+			});
 
 			for await (const event of this.transport.run(
 				providerMessages,
@@ -1810,9 +1851,11 @@ export class Agent {
 		} catch (error: unknown) {
 			if (error instanceof Error && error.name === "AbortError") {
 				aborted = true;
+				queryProfiler.terminal("turn:aborted");
 			} else {
 				this._state.error =
 					error instanceof Error ? error.message : String(error);
+				queryProfiler.terminal("turn:error");
 				throw error;
 			}
 		} finally {
@@ -1954,6 +1997,7 @@ export class Agent {
 				agent_run_step_id: event.toolCallId,
 			},
 		});
+		this.handleDiagnosticDeltaToolResult(event);
 		if (!pending) {
 			return;
 		}
@@ -1971,6 +2015,98 @@ export class Agent {
 			this.activeToolBatchIds = null;
 			this.emitToolBatchSummary();
 		}
+	}
+
+	private handleDiagnosticDeltaToolResult(
+		event: Extract<AgentEvent, { type: "tool_execution_end" }>,
+	): void {
+		const summary = getDiagnosticDeltaFromToolResult(event.result);
+		if (!summary) {
+			return;
+		}
+		if (summary.introducedCount === 0 && summary.repairedCount === 0) {
+			return;
+		}
+
+		const repairKey = [event.toolName, summary.file, summary.fingerprint].join(
+			":",
+		);
+		const nextAttempt = (this.diagnosticRepairAttempts.get(repairKey) ?? 0) + 1;
+		const hasPendingUserInput =
+			this.steeringQueue.length > 0 || this.followUpQueue.length > 0;
+		const hasOptOut = hasDiagnosticRepairOptOut(this._state.messages);
+		const canAutoFollowUp =
+			!event.isError &&
+			summary.repair.shouldFollowUp &&
+			!hasPendingUserInput &&
+			!hasOptOut &&
+			nextAttempt <= summary.repair.maxAttempts;
+
+		const reason = !summary.repair.shouldFollowUp
+			? summary.repair.reason
+			: event.isError
+				? "Tool call failed; leaving diagnostics in the tool result."
+				: hasPendingUserInput
+					? "Queued user input exists; not adding an automatic diagnostic repair turn."
+					: hasOptOut
+						? "User asked Maestro not to continue or repair automatically."
+						: nextAttempt > summary.repair.maxAttempts
+							? "Automatic diagnostic repair attempt limit reached."
+							: "Queued a bounded diagnostic repair follow-up.";
+
+		if (summary.repair.shouldFollowUp) {
+			this.diagnosticRepairAttempts.set(repairKey, nextAttempt);
+		}
+
+		this.emit({
+			type: "diagnostic_delta",
+			toolCallId: event.toolCallId,
+			toolName: event.toolName,
+			file: summary.file,
+			displayPath: summary.displayPath,
+			usedDelta: summary.usedDelta,
+			introducedCount: summary.introducedCount,
+			repairedCount: summary.repairedCount,
+			remainingCount: summary.remainingCount,
+			fingerprint: summary.fingerprint,
+			repairAttempt: summary.repair.shouldFollowUp ? nextAttempt : undefined,
+			maxRepairAttempts: summary.repair.shouldFollowUp
+				? summary.repair.maxAttempts
+				: undefined,
+			willAutoFollowUp: canAutoFollowUp,
+			reason,
+		});
+
+		if (!canAutoFollowUp) {
+			return;
+		}
+
+		this.enqueueFollowUpMessageSync(
+			buildDiagnosticRepairFollowUpMessage({
+				summary,
+				toolName: event.toolName,
+				toolCallId: event.toolCallId,
+				attempt: nextAttempt,
+			}),
+			"front",
+		);
+	}
+
+	private enqueueFollowUpMessageSync(
+		message: AppMessage,
+		position: "front" | "back" = "back",
+	): void {
+		const queued: QueuedMessage<AppMessage> = {
+			id: this.nextQueuedMessageId++,
+			createdAt: Date.now(),
+			original: message,
+			llm: message as Message,
+		};
+		if (position === "front") {
+			this.followUpQueue.unshift(queued);
+			return;
+		}
+		this.followUpQueue.push(queued);
 	}
 
 	private primeToolBatch(message: AppMessage): void {

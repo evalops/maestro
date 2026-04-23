@@ -7,10 +7,6 @@ vi.mock("../../src/db/client.js", () => ({
 	getDb: vi.fn(),
 }));
 
-vi.mock("../../src/db/migrate.js", () => ({
-	migrate: vi.fn(() => Promise.resolve(0)),
-}));
-
 vi.mock("../../src/audit/integrity.js", () => ({
 	warmHashCache: vi.fn(() => Promise.resolve(0)),
 }));
@@ -37,8 +33,7 @@ import {
 	warmUserRevocationCache,
 } from "../../src/auth/token-revocation.js";
 import { cleanupRateLimits, cleanupUsedCodes } from "../../src/auth/totp.js";
-import { isDatabaseConfigured, isDbAvailable } from "../../src/db/client.js";
-import { migrate } from "../../src/db/migrate.js";
+import { isDbAvailable } from "../../src/db/client.js";
 import {
 	initLifecycle,
 	shutdownLifecycle,
@@ -96,15 +91,6 @@ describe("Lifecycle", () => {
 	});
 
 	describe("initLifecycle", () => {
-		it("runs migrations when the database is configured", async () => {
-			vi.mocked(isDatabaseConfigured).mockReturnValue(true);
-			vi.mocked(isDbAvailable).mockReturnValue(false);
-
-			await initLifecycle();
-
-			expect(migrate).toHaveBeenCalledOnce();
-		});
-
 		it("should initialize all services", async () => {
 			vi.mocked(isDbAvailable).mockReturnValue(true);
 

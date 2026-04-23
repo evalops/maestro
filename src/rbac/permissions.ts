@@ -3,7 +3,7 @@
  * Defines resources, actions, and permission checking logic
  */
 
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { getDb } from "../db/client.js";
 import {
 	orgMemberships,
@@ -315,64 +315,40 @@ export async function seedPermissions(): Promise<void> {
 		}
 
 		for (const roleData of Object.values(SYSTEM_ROLES)) {
-			let role = await db.query.roles.findFirst({
-				where: and(
-					eq(roles.name, roleData.name),
-					eq(roles.isSystem, true),
-					isNull(roles.orgId),
-				),
-			});
+			const [role] = await db
+				.insert(roles)
+				.values({
+					orgId: null,
+					name: roleData.name,
+					description: roleData.description,
+					isSystem: true,
+				})
+				.onConflictDoNothing()
+				.returning();
 
-			if (!role) {
-				const [createdRole] = await db
-					.insert(roles)
-					.values({
-						orgId: null,
-						name: roleData.name,
-						description: roleData.description,
-						isSystem: true,
-					})
-					.onConflictDoNothing()
-					.returning();
-
-				role =
-					createdRole ??
-					(await db.query.roles.findFirst({
+			if (role) {
+				// For each permission defined in the role, find the exact matching permission record
+				for (const rolePerm of roleData.permissions) {
+					const perm = await db.query.permissions.findFirst({
 						where: and(
-							eq(roles.name, roleData.name),
-							eq(roles.isSystem, true),
-							isNull(roles.orgId),
+							eq(permissions.resource, rolePerm.resource),
+							eq(permissions.action, rolePerm.action),
 						),
-					}));
-			}
+					});
 
-			if (!role) {
-				throw new Error(
-					`Failed to create or load system role: ${roleData.name}`,
-				);
-			}
-
-			// For each permission defined in the role, find the exact matching permission record.
-			for (const rolePerm of roleData.permissions) {
-				const perm = await db.query.permissions.findFirst({
-					where: and(
-						eq(permissions.resource, rolePerm.resource),
-						eq(permissions.action, rolePerm.action),
-					),
-				});
-
-				if (perm) {
-					await db
-						.insert(rolePermissions)
-						.values({
-							roleId: role.id,
-							permissionId: perm.id,
-						})
-						.onConflictDoNothing();
+					if (perm) {
+						await db
+							.insert(rolePermissions)
+							.values({
+								roleId: role.id,
+								permissionId: perm.id,
+							})
+							.onConflictDoNothing();
+					}
 				}
-			}
 
-			logger.info(`System role ready: ${roleData.name}`);
+				logger.info(`Created system role: ${roleData.name}`);
+			}
 		}
 
 		logger.info("Permission seeding completed");

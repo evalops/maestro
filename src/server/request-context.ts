@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
+import type { WorkspaceConfigRequestContext } from "../services/workspace-config/types.js";
 
 export interface RequestContext {
 	requestId: string;
@@ -8,6 +9,7 @@ export interface RequestContext {
 	startTime: number;
 	method: string;
 	url: string;
+	workspaceConfig?: WorkspaceConfigRequestContext;
 }
 
 export const requestContextStorage = new AsyncLocalStorage<RequestContext>();
@@ -98,4 +100,19 @@ export function getTraceParentHeader(): string | undefined {
 
 export function getRequestContext(): RequestContext | undefined {
 	return requestContextStorage.getStore();
+}
+
+export function setWorkspaceConfigContext(
+	workspaceConfig: WorkspaceConfigRequestContext,
+): void {
+	const store = requestContextStorage.getStore();
+	if (store) {
+		store.workspaceConfig = workspaceConfig;
+	}
+}
+
+export function getWorkspaceConfigContext():
+	| WorkspaceConfigRequestContext
+	| undefined {
+	return requestContextStorage.getStore()?.workspaceConfig;
 }
