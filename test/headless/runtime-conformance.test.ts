@@ -652,6 +652,167 @@ function defineHeadlessRuntimeConformanceSuite(
 			stream.close();
 		});
 
+		it("streams utility command, file search, and file watch lifecycle events", async () => {
+			const runtime = await start();
+			process.env.MAESTRO_HOSTED_RUNNER_MODE = "1";
+			process.env.MAESTRO_WORKSPACE_ROOT = runtime.workspaceRoot;
+
+			const controller = runtime.subscribe({ role: "controller" });
+			const stream = runtime.attachStream({ role: "viewer", cursor: null });
+			expect((await readNextEnvelope(stream)).type).toBe("snapshot");
+
+			const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(
+				"process.stdout.write('utility ok'); setTimeout(() => process.exit(0), 50)",
+			)}`;
+			const commandSnapshot = await runtime.send(
+				{
+					type: "utility_command_start",
+					command_id: "cmd_conformance",
+					command,
+					cwd: runtime.workspaceRoot,
+					shell_mode: "direct",
+				},
+				{ role: "controller", subscriptionId: controller.subscription_id },
+			);
+			expect(commandSnapshot.state.active_utility_commands).toContainEqual(
+				expect.objectContaining({
+					command_id: "cmd_conformance",
+					owner_connection_id: controller.connection_id,
+				}),
+			);
+
+			const commandEnvelopes = await readUntil(
+				stream,
+				(envelope) =>
+					envelope.type === "message" &&
+					envelope.message.type === "utility_command_exited" &&
+					envelope.message.command_id === "cmd_conformance",
+			);
+			for (const envelope of commandEnvelopes) {
+				expectStreamEnvelope(envelope);
+			}
+			expect(commandEnvelopes).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						type: "message",
+						message: expect.objectContaining({
+							type: "utility_command_started",
+							command_id: "cmd_conformance",
+							owner_connection_id: controller.connection_id,
+						}),
+					}),
+					expect.objectContaining({
+						type: "message",
+						message: expect.objectContaining({
+							type: "utility_command_output",
+							command_id: "cmd_conformance",
+							stream: "stdout",
+							content: "utility ok",
+						}),
+					}),
+					expect.objectContaining({
+						type: "message",
+						message: expect.objectContaining({
+							type: "utility_command_exited",
+							command_id: "cmd_conformance",
+							success: true,
+							exit_code: 0,
+						}),
+					}),
+				]),
+			);
+
+			await runtime.send(
+				{
+					type: "utility_file_search",
+					search_id: "search_notes",
+					query: "notes",
+					cwd: runtime.workspaceRoot,
+					limit: 5,
+				},
+				{ role: "controller", subscriptionId: controller.subscription_id },
+			);
+			const searchEnvelopes = await readUntil(
+				stream,
+				(envelope) =>
+					envelope.type === "message" &&
+					envelope.message.type === "utility_file_search_results" &&
+					envelope.message.search_id === "search_notes",
+			);
+			expect(searchEnvelopes.at(-1)).toMatchObject({
+				type: "message",
+				message: {
+					type: "utility_file_search_results",
+					search_id: "search_notes",
+					query: "notes",
+				},
+			});
+			const searchResult = searchEnvelopes.at(-1);
+			expect(
+				searchResult?.type === "message" &&
+					searchResult.message.type === "utility_file_search_results" &&
+					searchResult.message.results.some((result) =>
+						result.path.endsWith("notes.md"),
+					),
+			).toBe(true);
+
+			const watchSnapshot = await runtime.send(
+				{
+					type: "utility_file_watch_start",
+					watch_id: "watch_conformance",
+					root_dir: runtime.workspaceRoot,
+					debounce_ms: 0,
+				},
+				{ role: "controller", subscriptionId: controller.subscription_id },
+			);
+			expect(watchSnapshot.state.active_file_watches).toContainEqual(
+				expect.objectContaining({
+					watch_id: "watch_conformance",
+					owner_connection_id: controller.connection_id,
+				}),
+			);
+			const watchStarted = await readUntil(
+				stream,
+				(envelope) =>
+					envelope.type === "message" &&
+					envelope.message.type === "utility_file_watch_started" &&
+					envelope.message.watch_id === "watch_conformance",
+			);
+			expect(watchStarted.at(-1)).toMatchObject({
+				type: "message",
+				message: {
+					type: "utility_file_watch_started",
+					watch_id: "watch_conformance",
+					owner_connection_id: controller.connection_id,
+				},
+			});
+
+			const watchStoppedSnapshot = await runtime.send(
+				{
+					type: "utility_file_watch_stop",
+					watch_id: "watch_conformance",
+				},
+				{ role: "controller", subscriptionId: controller.subscription_id },
+			);
+			expect(watchStoppedSnapshot.state.active_file_watches).toEqual([]);
+			const watchStopped = await readUntil(
+				stream,
+				(envelope) =>
+					envelope.type === "message" &&
+					envelope.message.type === "utility_file_watch_stopped" &&
+					envelope.message.watch_id === "watch_conformance",
+			);
+			expect(watchStopped.at(-1)).toMatchObject({
+				type: "message",
+				message: {
+					type: "utility_file_watch_stopped",
+					watch_id: "watch_conformance",
+					reason: "Stopped by controller",
+				},
+			});
+			stream.close();
+		});
+
 		it("disconnects subscriptions and clears controller leases without destroying the runtime", async () => {
 			const runtime = await start();
 			const controller = runtime.subscribe({ role: "controller" });
