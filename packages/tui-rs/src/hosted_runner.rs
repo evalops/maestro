@@ -270,6 +270,10 @@ impl HostedRunnerRuntime {
         requested_at: DateTime<Utc>,
         completed_at: DateTime<Utc>,
     ) -> Result<HostedRunnerDrainResult, HostedRunnerError> {
+        let stop_reason = input
+            .reason
+            .clone()
+            .unwrap_or_else(|| "platform_requested_drain".to_string());
         {
             let mut inner = self.inner.lock().expect("hosted runner mutex poisoned");
             inner.draining = true;
@@ -290,13 +294,10 @@ impl HostedRunnerRuntime {
             &config.runner_session_id,
             &requested_at_string,
         ));
-        let runtime = HostedRunnerManifestRuntime {
-            flush_status: RuntimeFlushStatus::Skipped,
-            error: None,
-            session_id: config.maestro_session_id.clone(),
-            session_file: None,
-            protocol_version: None,
-            cursor: None,
+        let runtime = {
+            let mut inner = self.inner.lock().expect("hosted runner mutex poisoned");
+            inner.publish_drain_status_if_active(&stop_reason);
+            inner.drain_manifest_runtime()
         };
         let manifest = HostedRunnerSnapshotManifest {
             manifest_version: HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION.to_string(),
@@ -312,9 +313,7 @@ impl HostedRunnerRuntime {
             snapshot_path: snapshot_path.display().to_string(),
             requested_at: requested_at_string,
             completed_at: completed_at_string,
-            stop_reason: input
-                .reason
-                .unwrap_or_else(|| "platform_requested_drain".to_string()),
+            stop_reason,
             requested_by: input.requested_by,
             runtime,
             workspace_export: HostedRunnerWorkspaceExport {
@@ -592,6 +591,7 @@ impl HostedRunnerRuntime {
 
         let mut inner = self.inner.lock().expect("hosted runner mutex poisoned");
         inner.ensure_headless_session(session_id)?;
+        inner.ensure_attachable()?;
         let connection_id = inner.resolve_connection_reference(&reference)?;
         inner.ensure_controller_message_connection(
             &connection_id,
@@ -839,6 +839,40 @@ impl HostedRunnerRuntimeInner {
         let cursor = self.allocate_headless_cursor();
         self.push_headless_event(HostedRunnerHeadlessStreamEnvelope::Message { cursor, message });
         cursor
+    }
+
+    fn has_headless_runtime_activity(&self) -> bool {
+        !self.headless_connections.is_empty() || self.current_headless_cursor() > 0
+    }
+
+    fn publish_drain_status_if_active(&mut self, stop_reason: &str) {
+        if !self.has_headless_runtime_activity() {
+            return;
+        }
+        let message = FromAgentMessage::Status {
+            message: format!("Hosted runner is draining: {stop_reason}"),
+        };
+        self.publish_headless_message(json!(message));
+    }
+
+    fn drain_manifest_runtime(&self) -> HostedRunnerManifestRuntime {
+        let has_activity = self.has_headless_runtime_activity();
+        HostedRunnerManifestRuntime {
+            flush_status: if has_activity {
+                RuntimeFlushStatus::Completed
+            } else {
+                RuntimeFlushStatus::Skipped
+            },
+            error: None,
+            session_id: self.config.maestro_session_id.clone().or_else(|| {
+                has_activity
+                    .then(|| self.headless_session_id.clone())
+                    .filter(|session_id| !session_id.is_empty())
+            }),
+            session_file: None,
+            protocol_version: has_activity.then(|| HEADLESS_PROTOCOL_VERSION.to_string()),
+            cursor: has_activity.then(|| self.current_headless_cursor()),
+        }
     }
 
     fn controller_connection_id(&self) -> Option<&str> {
@@ -2298,6 +2332,16 @@ mod tests {
         assert_eq!(result.manifest.stop_reason, "ttl_expired");
         assert_eq!(result.manifest.requested_by.as_deref(), Some("platform"));
         assert_eq!(
+            result.manifest.runtime.flush_status,
+            RuntimeFlushStatus::Skipped
+        );
+        assert_eq!(
+            result.manifest.runtime.session_id.as_deref(),
+            Some("maestro-session-1")
+        );
+        assert_eq!(result.manifest.runtime.protocol_version, None);
+        assert_eq!(result.manifest.runtime.cursor, None);
+        assert_eq!(
             result.manifest.workspace_export.paths[0].relative_path,
             "file.txt"
         );
@@ -2339,6 +2383,102 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.code, HostedRunnerErrorCode::WorkspaceViolation);
         assert!(runtime.is_draining());
+    }
+
+    #[test]
+    fn drain_blocks_headless_messages_and_records_runtime_cursor() {
+        let (_temp_dir, runtime) = runtime();
+        let controller = runtime.handle_request(
+            "POST",
+            "/api/headless/connections",
+            Some(
+                &json!({
+                    "protocolVersion": HEADLESS_PROTOCOL_VERSION,
+                    "role": "controller"
+                })
+                .to_string(),
+            ),
+        );
+        assert_eq!(controller.status, 200);
+
+        let subscribe = runtime.handle_request(
+            "POST",
+            "/api/headless/sessions/maestro-session-1/subscribe",
+            Some(r#"{"connectionId":"hconn_1","role":"controller"}"#),
+        );
+        assert_eq!(subscribe.status, 200);
+
+        let mut headers = HashMap::new();
+        headers.insert(
+            "x-maestro-headless-connection-id".to_string(),
+            "hconn_1".to_string(),
+        );
+        headers.insert(
+            "x-maestro-headless-subscriber-id".to_string(),
+            "hsub_1".to_string(),
+        );
+        let hello = runtime.handle_request_with_headers(
+            "POST",
+            "/api/headless/sessions/maestro-session-1/messages",
+            Some(r#"{"type":"hello"}"#),
+            &headers,
+        );
+        assert_eq!(hello.status, 200);
+        assert_eq!(hello.body["cursor"], 1);
+
+        let requested_at = DateTime::parse_from_rfc3339("2026-04-23T13:00:00.000Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let completed_at = DateTime::parse_from_rfc3339("2026-04-23T13:00:00.500Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let result = runtime
+            .drain_at(
+                HostedRunnerDrainInput {
+                    reason: Some("budget_exhausted".to_string()),
+                    requested_by: Some("platform".to_string()),
+                    export_paths: Some(vec![".".to_string()]),
+                },
+                requested_at,
+                completed_at,
+            )
+            .unwrap();
+        assert_eq!(
+            result.manifest.runtime.flush_status,
+            RuntimeFlushStatus::Completed
+        );
+        assert_eq!(
+            result.manifest.runtime.session_id.as_deref(),
+            Some("maestro-session-1")
+        );
+        assert_eq!(
+            result.manifest.runtime.protocol_version.as_deref(),
+            Some(HEADLESS_PROTOCOL_VERSION)
+        );
+        assert_eq!(result.manifest.runtime.cursor, Some(2));
+
+        let blocked = runtime.handle_request_with_headers(
+            "POST",
+            "/api/headless/sessions/maestro-session-1/messages",
+            Some(r#"{"type":"prompt","content":"after drain"}"#),
+            &headers,
+        );
+        assert_eq!(blocked.status, 503);
+        assert_eq!(blocked.body["code"], "runtime_not_ready");
+
+        let events = runtime.handle_request(
+            "GET",
+            "/api/headless/sessions/maestro-session-1/events?cursor=1&subscriptionId=hsub_1",
+            None,
+        );
+        assert_eq!(events.status, 200);
+        assert_eq!(events.body[0]["type"], "message");
+        assert_eq!(events.body[0]["cursor"], 2);
+        assert_eq!(events.body[0]["message"]["type"], "status");
+        assert!(events.body[0]["message"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("budget_exhausted"));
     }
 
     #[test]
