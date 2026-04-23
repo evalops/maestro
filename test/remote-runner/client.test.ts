@@ -6,6 +6,7 @@ import {
 	listRunnerSessions,
 	mintRunnerAttachToken,
 	verifyRunnerHeadlessAttach,
+	waitForRunnerSessionReady,
 } from "../../src/remote-runner/client.js";
 
 type CapturedRequest = {
@@ -32,9 +33,11 @@ function parseRequestBody(
 
 describe("remote runner client", () => {
 	let requests: CapturedRequest[];
+	let getRunnerSessionResponses: Array<Record<string, unknown>>;
 
 	beforeEach(() => {
 		requests = [];
+		getRunnerSessionResponses = [];
 		for (const name of [
 			"MAESTRO_REMOTE_RUNNER_URL",
 			"REMOTE_RUNNER_SERVICE_URL",
@@ -75,6 +78,25 @@ describe("remote runner client", () => {
 					url,
 				};
 				requests.push(request);
+
+				if (
+					parsed.pathname ===
+					"/remoterunner.v1.RemoteRunnerService/GetRunnerSession"
+				) {
+					const next =
+						getRunnerSessionResponses.shift() ??
+						({
+							session: {
+								id: request.body?.sessionId ?? "mrs_get_1",
+								workspaceId: "ws_evalops",
+								state: RUNNER_SESSION_STATES.RUNNING,
+							},
+						} satisfies Record<string, unknown>);
+					return new Response(JSON.stringify(next), {
+						status: 200,
+						headers: { "Content-Type": "application/json" },
+					});
+				}
 
 				if (
 					parsed.pathname ===
@@ -165,6 +187,7 @@ describe("remote runner client", () => {
 	});
 
 	afterEach(() => {
+		vi.useRealTimers();
 		vi.unstubAllEnvs();
 		vi.unstubAllGlobals();
 	});
@@ -296,5 +319,95 @@ describe("remote runner client", () => {
 				role: "controller",
 			}),
 		});
+	});
+
+	it("waits for runner sessions to become ready", async () => {
+		getRunnerSessionResponses.push(
+			{
+				session: {
+					id: "mrs_wait_1",
+					workspaceId: "ws_evalops",
+					state: RUNNER_SESSION_STATES.REQUESTED,
+				},
+			},
+			{
+				session: {
+					id: "mrs_wait_1",
+					workspaceId: "ws_evalops",
+					state: RUNNER_SESSION_STATES.PROVISIONING,
+				},
+			},
+			{
+				session: {
+					id: "mrs_wait_1",
+					workspaceId: "ws_evalops",
+					state: RUNNER_SESSION_STATES.RUNNING,
+				},
+			},
+		);
+
+		await expect(
+			waitForRunnerSessionReady("mrs_wait_1", {
+				pollIntervalMs: 0,
+				timeoutMs: 10_000,
+			}),
+		).resolves.toMatchObject({
+			session: {
+				id: "mrs_wait_1",
+				state: RUNNER_SESSION_STATES.RUNNING,
+			},
+			attempts: 3,
+		});
+	});
+
+	it("fails fast when the runner session enters a terminal state", async () => {
+		getRunnerSessionResponses.push({
+			session: {
+				id: "mrs_wait_failed",
+				workspaceId: "ws_evalops",
+				state: RUNNER_SESSION_STATES.FAILED,
+				stopReason: "image pull backoff",
+			},
+		});
+
+		await expect(
+			waitForRunnerSessionReady("mrs_wait_failed", {
+				pollIntervalMs: 0,
+				timeoutMs: 10_000,
+			}),
+		).rejects.toThrow(
+			"Remote runner session mrs_wait_failed entered terminal state failed: image pull backoff",
+		);
+	});
+
+	it("times out when the runner session never becomes ready", async () => {
+		vi.useFakeTimers();
+		getRunnerSessionResponses.push(
+			{
+				session: {
+					id: "mrs_wait_timeout",
+					workspaceId: "ws_evalops",
+					state: RUNNER_SESSION_STATES.REQUESTED,
+				},
+			},
+			{
+				session: {
+					id: "mrs_wait_timeout",
+					workspaceId: "ws_evalops",
+					state: RUNNER_SESSION_STATES.REQUESTED,
+				},
+			},
+		);
+
+		const waitPromise = waitForRunnerSessionReady("mrs_wait_timeout", {
+			pollIntervalMs: 5,
+			timeoutMs: 5,
+		});
+		const assertion = expect(waitPromise).rejects.toThrow(
+			"Timed out after 5ms waiting for remote runner session mrs_wait_timeout to become ready",
+		);
+		await vi.advanceTimersByTimeAsync(5);
+		await assertion;
+		vi.useRealTimers();
 	});
 });

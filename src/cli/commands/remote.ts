@@ -2,6 +2,12 @@ import { headlessProtocolVersion } from "@evalops/contracts";
 import chalk from "chalk";
 import { getPackageVersion } from "../../package-metadata.js";
 import {
+	attachToRemoteRunnerSession,
+	shouldUseInteractiveRemoteAttach,
+} from "../../remote-runner/attach-client.js";
+import {
+	DEFAULT_REMOTE_RUNNER_WAIT_POLL_INTERVAL_MS,
+	DEFAULT_REMOTE_RUNNER_WAIT_TIMEOUT_MS,
 	RUNNER_ATTACH_ROLES,
 	type RunnerAttachRole,
 	type RunnerSession,
@@ -18,6 +24,7 @@ import {
 	revokeRunnerAttachToken,
 	stopRunnerSession,
 	verifyRunnerHeadlessAttach,
+	waitForRunnerSessionReady,
 } from "../../remote-runner/client.js";
 
 type RemoteFlagValue = true | string;
@@ -30,15 +37,17 @@ interface RemoteCommandOptions {
 const REMOTE_USAGE = `maestro remote <command> [options]
 
 Commands:
-  start --workspace <id> --repo <repo> --branch <branch> [--ttl 90m] [--profile standard]
+  start --workspace <id> --repo <repo> --branch <branch> [--ttl 90m] [--profile standard] [--wait] [--wait-timeout 5m] [--poll-interval 5s] [--verify]
   list --workspace <id> [--state running] [--limit 20]
   status --workspace <id>
+  get <session-id>
   events <session-id> [--after <sequence>] [--limit 50]
   extend <session-id> --ttl 2h [--idle-ttl 30m]
   stop <session-id> [--reason <text>]
-  attach <session-id> [--role controller] [--ttl 30m] [--verify]
+  attach <session-id> [--role controller] [--ttl 30m] [--verify] [--print-env]
   attach-token <session-id> [--role viewer] [--ttl 30m] [--json]
   revoke-token <session-id> <token-id>
+  target <session-id>
 
 Shared options:
   --base-url <url>       Remote runner URL (defaults to https://runner.evalops.dev)
@@ -170,6 +179,55 @@ function parseOptionalDurationMinutes(
 	return parseRemoteDurationMinutes(raw, 0);
 }
 
+function parseWaitDurationMs(
+	raw: string | undefined,
+	fallback: number,
+): number {
+	if (!raw) {
+		return fallback;
+	}
+	const value = raw.trim().toLowerCase();
+	const match = value.match(
+		/^(\d+(?:\.\d+)?)(ms|msec|millisecond|milliseconds|s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)?$/u,
+	);
+	if (!match) {
+		throw new Error(
+			`Invalid wait duration "${raw}". Use values like 5s, 30s, 5m, or 1h.`,
+		);
+	}
+	const amount = Number(match[1]);
+	const unit = match[2] ?? "s";
+	let milliseconds = amount * 1000;
+	if (unit === "ms" || unit === "msec" || unit.startsWith("millisecond")) {
+		milliseconds = amount;
+	} else if (unit.startsWith("m") && unit !== "ms" && unit !== "msec") {
+		milliseconds = amount * 60 * 1000;
+	} else if (unit.startsWith("h")) {
+		milliseconds = amount * 60 * 60 * 1000;
+	}
+	if (!Number.isFinite(milliseconds) || milliseconds < 1) {
+		throw new Error(
+			`Invalid wait duration "${raw}". Duration must resolve to at least 1ms.`,
+		);
+	}
+	return Math.round(milliseconds);
+}
+
+function formatElapsedMs(rawMs: number | undefined): string {
+	if (!rawMs || rawMs < 1000) {
+		return `${rawMs ?? 0}ms`;
+	}
+	if (rawMs < 60_000) {
+		return `${(rawMs / 1000).toFixed(rawMs % 1000 === 0 ? 0 : 1)}s`;
+	}
+	const minutes = rawMs / 60_000;
+	if (rawMs < 60 * 60_000) {
+		return `${minutes.toFixed(rawMs % 60_000 === 0 ? 0 : 1)}m`;
+	}
+	const hours = rawMs / (60 * 60_000);
+	return `${hours.toFixed(rawMs % (60 * 60_000) === 0 ? 0 : 1)}h`;
+}
+
 function parseMetadata(
 	values: readonly string[],
 ): Record<string, unknown> | undefined {
@@ -235,6 +293,20 @@ function roleValues(options: RemoteCommandOptions): RunnerAttachRole[] {
 		}
 		return value;
 	});
+}
+
+function attachConnectionRole(
+	options: RemoteCommandOptions,
+): "viewer" | "controller" {
+	return roleValues(options).every(
+		(role) => role === RUNNER_ATTACH_ROLES.VIEWER,
+	)
+		? "viewer"
+		: "controller";
+}
+
+function shouldWaitForStart(options: RemoteCommandOptions): boolean {
+	return hasFlag(options, "wait") || hasFlag(options, "verify");
 }
 
 function printJson(value: unknown): void {
@@ -379,15 +451,94 @@ async function handleStart(options: RemoteCommandOptions): Promise<void> {
 		},
 		clientOptions(options),
 	);
+	let waitResult:
+		| {
+				session: RunnerSession;
+				attempts: number;
+				elapsedMs: number;
+		  }
+		| undefined;
+	let attachResult:
+		| {
+				gatewayBaseUrl: string;
+				token: { id: string; expiresAt?: string };
+				tokenSecret: string;
+				verified?: Record<string, unknown>;
+		  }
+		| undefined;
+	if (shouldWaitForStart(options)) {
+		waitResult = await waitForRunnerSessionReady(result.session.id, {
+			...clientOptions(options),
+			timeoutMs: parseWaitDurationMs(
+				getFlag(options, "wait-timeout"),
+				DEFAULT_REMOTE_RUNNER_WAIT_TIMEOUT_MS,
+			),
+			pollIntervalMs: parseWaitDurationMs(
+				getFlag(options, "poll-interval"),
+				DEFAULT_REMOTE_RUNNER_WAIT_POLL_INTERVAL_MS,
+			),
+		});
+	}
+	if (hasFlag(options, "verify")) {
+		const minted = await mintRunnerAttachToken(
+			{
+				sessionId: result.session.id,
+				roles: roleValues(options),
+				ttlMinutes: parseRemoteDurationMinutes(
+					getFlag(options, "attach-ttl"),
+					30,
+				),
+			},
+			clientOptions(options),
+		);
+		attachResult = {
+			gatewayBaseUrl: minted.gatewayBaseUrl,
+			token: minted.token,
+			tokenSecret: minted.tokenSecret,
+			verified: await verifyRunnerHeadlessAttach({
+				gatewayBaseUrl: minted.gatewayBaseUrl,
+				tokenId: minted.token.id,
+				tokenSecret: minted.tokenSecret,
+				sessionId: result.session.id,
+				protocolVersion: headlessProtocolVersion,
+				clientVersion: getPackageVersion(),
+				takeControl: hasFlag(options, "take-control"),
+			}),
+		};
+	}
 	if (jsonFlag(options)) {
-		printJson(result);
+		printJson({
+			created: result,
+			wait: waitResult,
+			attach: attachResult,
+		});
 		return;
 	}
-	printSession(result.session);
+	printSession(waitResult?.session ?? result.session);
+	if (waitResult) {
+		console.log(
+			chalk.dim(
+				`  ready:     ${formatElapsedMs(waitResult.elapsedMs)} (${waitResult.attempts} checks)`,
+			),
+		);
+	}
 	if (result.replayed) {
 		console.log(chalk.dim("  replayed:  existing idempotent request"));
 	}
 	console.log("");
+	if (attachResult) {
+		printAttachInstructions({
+			sessionId: result.session.id,
+			gatewayBaseUrl: attachResult.gatewayBaseUrl,
+			tokenId: attachResult.token.id,
+			tokenSecret: attachResult.tokenSecret,
+			expiresAt: attachResult.token.expiresAt,
+			json: false,
+			showSecret: hasFlag(options, "show-secret"),
+			verified: attachResult.verified,
+		});
+		return;
+	}
 	console.log(chalk.dim(`Attach: maestro remote attach ${result.session.id}`));
 }
 
@@ -530,6 +681,26 @@ async function mintAttach(options: RemoteCommandOptions) {
 async function handleAttach(options: RemoteCommandOptions): Promise<void> {
 	const sessionId = options.positionals[0];
 	const minted = await mintAttach(options);
+	if (
+		shouldUseInteractiveRemoteAttach({
+			json: jsonFlag(options),
+			printEnv: hasFlag(options, "print-env"),
+			stdinIsTTY: Boolean(process.stdin.isTTY),
+			stdoutIsTTY: Boolean(process.stdout.isTTY),
+		})
+	) {
+		await attachToRemoteRunnerSession({
+			sessionId: sessionId!,
+			gatewayBaseUrl: minted.gatewayBaseUrl,
+			tokenId: minted.token.id,
+			tokenSecret: minted.tokenSecret,
+			role: attachConnectionRole(options),
+			protocolVersion: headlessProtocolVersion,
+			clientVersion: getPackageVersion(),
+			takeControl: hasFlag(options, "take-control"),
+		});
+		return;
+	}
 	let verified: Record<string, unknown> | undefined;
 	if (hasFlag(options, "verify")) {
 		verified = await verifyRunnerHeadlessAttach({
