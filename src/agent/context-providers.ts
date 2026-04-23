@@ -112,6 +112,8 @@ export class CurrentDateContextSource implements AgentContextSource {
 export class LspContextSource implements AgentContextSource {
 	name = "lsp";
 
+	constructor(private readonly cwd: string = process.cwd()) {}
+
 	async getSystemPromptAdditions(): Promise<string | null> {
 		try {
 			// Check if we have any active clients
@@ -127,7 +129,7 @@ export class LspContextSource implements AgentContextSource {
 
 			for (const [file, diagnostics] of Object.entries(allDiagnostics)) {
 				// Validate that the file path is within the workspace for security
-				if (!isWithinCwd(file)) {
+				if (!isWithinCwd(file, this.cwd)) {
 					continue;
 				}
 

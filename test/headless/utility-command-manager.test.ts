@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { getHeadlessPtyPythonCommand } from "../../src/headless/pty-helper.js";
@@ -219,6 +222,30 @@ describe("HeadlessUtilityCommandManager", () => {
 
 		await manager.terminate("cmd_pipe_only");
 		await waitForExit(events as Array<{ type: string }>);
+	});
+
+	it("rejects command cwd values outside the session workspace root", async () => {
+		const workspaceRoot = await mkdtemp(
+			join(tmpdir(), "maestro-headless-command-root-"),
+		);
+		const outsideRoot = await mkdtemp(
+			join(tmpdir(), "maestro-headless-command-outside-"),
+		);
+		try {
+			manager = new HeadlessUtilityCommandManager(() => {}, workspaceRoot);
+
+			await expect(
+				manager.start({
+					command_id: "cmd_outside_root",
+					command: `"${process.execPath}" -e "process.stdout.write('nope')"`,
+					shell_mode: "direct",
+					cwd: outsideRoot,
+				}),
+			).rejects.toThrow(/outside workspace root/);
+		} finally {
+			await rm(workspaceRoot, { recursive: true, force: true });
+			await rm(outsideRoot, { recursive: true, force: true });
+		}
 	});
 
 	it.skipIf(!supportsPty)(

@@ -14,6 +14,61 @@ export function getHostedWorkspaceRoot(env = process.env): string | undefined {
 	return root ? resolve(root) : undefined;
 }
 
+export function getEffectiveWorkspaceRoot(
+	workspaceRoot?: string,
+	env = process.env,
+): string | undefined {
+	const explicitRoot = workspaceRoot?.trim();
+	if (explicitRoot) {
+		return resolve(explicitRoot);
+	}
+	return getHostedWorkspaceRoot(env);
+}
+
+export function resolveExistingWorkspaceRoot(
+	workspaceRoot?: string,
+	env = process.env,
+): string | undefined {
+	const effectiveRoot = getEffectiveWorkspaceRoot(workspaceRoot, env);
+	return effectiveRoot ? realpathSync(effectiveRoot) : undefined;
+}
+
+export function assertWithinWorkspaceRoot(
+	path: string,
+	workspaceRoot?: string,
+	env = process.env,
+): string {
+	const effectiveRoot = getEffectiveWorkspaceRoot(workspaceRoot, env);
+	if (!effectiveRoot) {
+		return resolve(path);
+	}
+
+	const resolvedWorkspaceRoot = realpathSync(effectiveRoot);
+	const resolvedPath = realpathSync(resolve(path));
+	if (!isInsidePath(resolvedWorkspaceRoot, resolvedPath)) {
+		throw new Error(`Path is outside workspace root: ${resolvedPath}`);
+	}
+	return resolvedPath;
+}
+
+export function resolveWorkspacePath(
+	path: string | undefined,
+	workspaceRoot?: string,
+	env = process.env,
+): string | undefined {
+	const effectiveRoot = getEffectiveWorkspaceRoot(workspaceRoot, env);
+	if (!effectiveRoot) {
+		return path ? resolve(path) : undefined;
+	}
+
+	const candidate = path
+		? isAbsolute(path)
+			? resolve(path)
+			: resolve(effectiveRoot, path)
+		: effectiveRoot;
+	return assertWithinWorkspaceRoot(candidate, workspaceRoot, env);
+}
+
 export function assertWithinHostedWorkspaceRoot(
 	path: string,
 	env = process.env,

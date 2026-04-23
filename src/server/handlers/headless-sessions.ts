@@ -13,6 +13,7 @@ import {
 import { type Static, type TSchema, Type } from "@sinclair/typebox";
 import type { ThinkingLevel } from "../../agent/types.js";
 import type { HeadlessToAgentMessage } from "../../cli/headless-protocol.js";
+import { resolveExistingWorkspaceRoot } from "../../headless/workspace-root.js";
 import type { WebServerContext } from "../app-context.js";
 import {
 	normalizeApprovalMode,
@@ -61,6 +62,7 @@ const HeadlessCreateBaseProperties = {
 			version: Type.Optional(Type.String()),
 		}),
 	),
+	workspaceRoot: Type.Optional(Type.String()),
 	model: Type.Optional(Type.String()),
 	enableClientTools: Type.Optional(Type.Boolean()),
 	capabilities: Type.Optional(
@@ -325,6 +327,48 @@ function claimHostedRunnerSession(
 	hostedRunner.activeMaestroSessionId = sessionId;
 }
 
+function resolveRuntimeWorkspaceRoot(
+	context: WebServerContext,
+	workspaceRoot: string | undefined,
+): string | undefined {
+	const requestedRoot = workspaceRoot?.trim() || undefined;
+	const hostedRoot = context.hostedRunner?.workspaceRoot?.trim() || undefined;
+
+	let resolvedRequestedRoot: string | undefined;
+	if (requestedRoot) {
+		try {
+			resolvedRequestedRoot = resolveExistingWorkspaceRoot(requestedRoot);
+		} catch {
+			throw new ApiError(400, `workspaceRoot not found: ${requestedRoot}`);
+		}
+	}
+
+	let resolvedHostedRoot: string | undefined;
+	if (hostedRoot) {
+		try {
+			resolvedHostedRoot = resolveExistingWorkspaceRoot(hostedRoot);
+		} catch {
+			throw new ApiError(
+				500,
+				`Hosted runner workspace root is unavailable: ${hostedRoot}`,
+			);
+		}
+	}
+
+	if (
+		resolvedRequestedRoot &&
+		resolvedHostedRoot &&
+		resolvedRequestedRoot !== resolvedHostedRoot
+	) {
+		throw new ApiError(
+			409,
+			`workspaceRoot must match hosted runner workspace root: ${resolvedHostedRoot}`,
+		);
+	}
+
+	return resolvedHostedRoot ?? resolvedRequestedRoot;
+}
+
 function rethrowHeadlessMessageError(error: unknown): never {
 	if (!(error instanceof Error)) {
 		throw error;
@@ -373,6 +417,10 @@ async function ensureRuntime(
 	const sessionManager = createSessionManagerForRequest(req, false);
 	const role = getHeadlessRole(req, input.role);
 	const requestedSessionId = input.sessionId?.trim() || undefined;
+	const workspaceRoot = resolveRuntimeWorkspaceRoot(
+		context,
+		input.workspaceRoot,
+	);
 	ensureHostedRunnerCanUseSession(context, requestedSessionId);
 	if (requestedSessionId) {
 		const sessionFile = sessionManager.getSessionFileById(requestedSessionId);
@@ -426,6 +474,7 @@ async function ensureRuntime(
 		scope_key: getScopeKey(req),
 		sessionId: requestedSessionId,
 		subject,
+		workspaceRoot,
 		clientProtocolVersion: input.protocolVersion,
 		clientInfo: input.clientInfo,
 		capabilities: input.capabilities
