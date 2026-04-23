@@ -39,6 +39,7 @@ pub const HOSTED_RUNNER_IDENTITY_PROTOCOL_VERSION: &str = "evalops.remote-runner
 pub const HOSTED_RUNNER_DRAIN_PROTOCOL_VERSION: &str = "evalops.remote-runner.drain.v1";
 pub const HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION: &str =
     "evalops.remote-runner.snapshot-manifest.v1";
+pub const HOSTED_RUNNER_RETENTION_POLICY_VERSION: &str = "evalops.remote-runner.retention.v1";
 
 const DEFAULT_LISTEN_HOST: &str = "0.0.0.0";
 const DEFAULT_LISTEN_PORT: u16 = 8080;
@@ -575,6 +576,8 @@ struct SnapshotManifest {
     runtime: RuntimeFlushManifest,
     workspace_export: WorkspaceExportManifest,
     snapshot: RuntimeSnapshot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    retention_policy: Option<RetentionPolicyManifest>,
 }
 
 impl SnapshotManifest {
@@ -604,6 +607,54 @@ impl SnapshotManifest {
                 resolve_workspace_path(workspace_root, None, Some(path.relative_path.as_str()))?;
         }
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RetentionPolicyManifest {
+    policy_version: String,
+    managed_by: String,
+    visibility: RetentionPolicyVisibility,
+    redaction: RetentionPolicyRedaction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RetentionPolicyVisibility {
+    control_plane_metadata: String,
+    workspace_export: String,
+    runtime_snapshot: String,
+    runtime_logs: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RetentionPolicyRedaction {
+    required_before_external_persistence: Vec<String>,
+    forbidden_plaintext: Vec<String>,
+}
+
+fn default_retention_policy_manifest() -> RetentionPolicyManifest {
+    RetentionPolicyManifest {
+        policy_version: HOSTED_RUNNER_RETENTION_POLICY_VERSION.to_string(),
+        managed_by: "platform".to_string(),
+        visibility: RetentionPolicyVisibility {
+            control_plane_metadata: "operator".to_string(),
+            workspace_export: "tenant".to_string(),
+            runtime_snapshot: "internal".to_string(),
+            runtime_logs: "operator".to_string(),
+        },
+        redaction: RetentionPolicyRedaction {
+            required_before_external_persistence: vec![
+                "runtime_snapshot".to_string(),
+                "runtime_logs".to_string(),
+            ],
+            forbidden_plaintext: vec![
+                "provider_credentials".to_string(),
+                "tool_secrets".to_string(),
+                "attach_tokens".to_string(),
+                "artifact_access_tokens".to_string(),
+                "raw_environment".to_string(),
+            ],
+        },
     }
 }
 
@@ -2662,6 +2713,7 @@ async fn write_snapshot_manifest(
             paths: workspace_export_paths,
         },
         snapshot,
+        retention_policy: Some(default_retention_policy_manifest()),
     };
     let body_bytes = serde_json::to_vec_pretty(&manifest)
         .map_err(|error| HostedError::new(500, "runtime_failed", error.to_string()))?;
@@ -3453,6 +3505,14 @@ mod tests {
             manifest["workspace_export"]["paths"][0]["type"],
             "directory"
         );
+        assert_eq!(
+            manifest["retention_policy"]["policy_version"],
+            HOSTED_RUNNER_RETENTION_POLICY_VERSION
+        );
+        assert_eq!(
+            manifest["retention_policy"]["visibility"]["runtime_snapshot"],
+            "internal"
+        );
 
         let post_drain_identity: HostedRunnerIdentity = client
             .get(format!(
@@ -3569,6 +3629,10 @@ mod tests {
             "notes.md"
         );
         assert_eq!(manifest["workspace_export"]["paths"][0]["type"], "file");
+        assert_eq!(
+            manifest["retention_policy"]["redaction"]["required_before_external_persistence"],
+            json!(["runtime_snapshot", "runtime_logs"])
+        );
         let mut escaped_manifest = manifest.clone();
         escaped_manifest["workspace_export"]["paths"][0]["relative_path"] = json!("../secret.txt");
         let escaped_bytes = serde_json::to_vec(&escaped_manifest).expect("escaped manifest json");
@@ -3750,6 +3814,29 @@ mod tests {
                     "type": "file"
                 }]
             },
+            "retention_policy": {
+                "policy_version": HOSTED_RUNNER_RETENTION_POLICY_VERSION,
+                "managed_by": "platform",
+                "visibility": {
+                    "control_plane_metadata": "operator",
+                    "workspace_export": "tenant",
+                    "runtime_snapshot": "internal",
+                    "runtime_logs": "operator"
+                },
+                "redaction": {
+                    "required_before_external_persistence": [
+                        "runtime_snapshot",
+                        "runtime_logs"
+                    ],
+                    "forbidden_plaintext": [
+                        "provider_credentials",
+                        "tool_secrets",
+                        "attach_tokens",
+                        "artifact_access_tokens",
+                        "raw_environment"
+                    ]
+                }
+            },
             "snapshot": {
                 "protocolVersion": HEADLESS_PROTOCOL_VERSION,
                 "session_id": "session_ts",
@@ -3788,6 +3875,14 @@ mod tests {
             HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION
         );
         assert_eq!(parsed.runtime.flush_status, RuntimeFlushStatus::Completed);
+        assert_eq!(
+            parsed
+                .retention_policy
+                .as_ref()
+                .expect("retention policy")
+                .policy_version,
+            HOSTED_RUNNER_RETENTION_POLICY_VERSION
+        );
         assert_eq!(parsed.snapshot.session_id, "session_ts");
         assert_eq!(parsed.snapshot.cursor, 7);
         assert_eq!(parsed.workspace_export.paths[0].relative_path, "README.md");
