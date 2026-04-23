@@ -47,6 +47,33 @@ jobs:
           path: nx-tests-attempt-*.log
           if-no-files-found: ignore
 
+  rust-hosted-conformance:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: ./.github/actions/setup-rust
+        with:
+          toolchain: stable
+          workspaces: packages/tui-rs -> target
+
+      - uses: ./.github/actions/setup-bun-nx
+        with:
+          ensure-ripgrep: "true"
+
+      - name: Build workspace packages
+        run: npm run build
+
+      - name: Build Rust conformance fixture
+        working-directory: packages/tui-rs
+        run: cargo build --bin hosted_runner_conformance_fixture
+
+      - name: Rust-hosted headless conformance
+        env:
+          MAESTRO_RUST_HOSTED_CONFORMANCE: "1"
+        run: npm run test -- test/headless/runtime-conformance.test.ts
+
   coverage-scope:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
