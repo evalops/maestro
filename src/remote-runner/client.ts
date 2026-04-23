@@ -248,7 +248,8 @@ export interface RemoteRunnerStatus {
 }
 
 export interface WaitForRunnerSessionReadyOptions
-	extends RemoteRunnerClientOptions {
+	extends Omit<RemoteRunnerClientOptions, "timeoutMs"> {
+	requestTimeoutMs?: number;
 	timeoutMs?: number;
 	pollIntervalMs?: number;
 }
@@ -947,6 +948,16 @@ export async function waitForRunnerSessionReady(
 	if (!Number.isFinite(pollIntervalMs) || pollIntervalMs < 0) {
 		throw new Error("Remote runner poll interval must be 0ms or greater");
 	}
+	const {
+		pollIntervalMs: _pollIntervalMs,
+		requestTimeoutMs,
+		timeoutMs: _waitTimeoutMs,
+		...requestOptions
+	} = options;
+	const getSessionOptions: RemoteRunnerClientOptions = {
+		...requestOptions,
+		...(requestTimeoutMs !== undefined ? { timeoutMs: requestTimeoutMs } : {}),
+	};
 
 	const readyStates = [
 		RUNNER_SESSION_STATES.RUNNING,
@@ -965,7 +976,7 @@ export async function waitForRunnerSessionReady(
 
 	while (true) {
 		attempts += 1;
-		lastSession = await getRunnerSession(sessionId, options);
+		lastSession = await getRunnerSession(sessionId, getSessionOptions);
 		const elapsedMs = Date.now() - startedAt;
 
 		if (stateMatches(lastSession.state, readyStates)) {

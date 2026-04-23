@@ -240,7 +240,7 @@ async function verifyJwt(token: string): Promise<JWTPayload | null> {
 			});
 			payload = verified.payload;
 		}
-		if (!payload.sub) return null;
+		if (typeof payload.sub !== "string" || !payload.sub.trim()) return null;
 		// basic exp/nbf checks handled by jose
 		return payload;
 	} catch {
@@ -274,7 +274,7 @@ export async function checkApiAuth(
 		);
 		return { ok: true, principal: principal ?? undefined };
 	}
-	if (jwtPayload?.sub) {
+	if (jwtPayload) {
 		const principal = setVerifiedRequestPrincipal(
 			req,
 			createJwtPrincipal(jwtPayload),
