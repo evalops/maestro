@@ -1,4 +1,12 @@
-replicaCount: 2
+replicaCount: 1
+
+headlessRuntime:
+  routing:
+    # single-replica keeps headless runtime ownership, SSE replay, connection
+    # leases, and utility state local to one Maestro pod. Use sticky-session
+    # only when ingress pins /api/headless/* and /api/chat/ws to one pod, or
+    # durable-owner when Platform routes by a durable runtime-owner record.
+    mode: single-replica
 
 image:
   repository: ghcr.io/evalops/maestro

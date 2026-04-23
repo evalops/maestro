@@ -92,6 +92,15 @@ The response is intentionally sparse:
 If Platform expects an owner generation, it must compare
 `owner_instance_id` before proxying attach traffic.
 
+The Maestro Helm chart defaults to `replicaCount=1` with
+`headlessRuntime.routing.mode=single-replica` because the TypeScript
+web/headless runtime keeps session ownership, connection leases, event replay,
+and utility operation state in-process. A chart render with `replicaCount > 1`
+must declare either `headlessRuntime.routing.mode=sticky-session` for ingress
+affinity on `/api/headless/*` and `/api/chat/ws`, or
+`headlessRuntime.routing.mode=durable-owner` for a gateway backed by durable
+runtime-owner records.
+
 ## Attach Surface
 
 All providers expose the same HTTP headless surface:
