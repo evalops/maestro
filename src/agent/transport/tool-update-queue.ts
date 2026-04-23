@@ -13,6 +13,8 @@ import type { AgentEvent, ToolCall, ToolResultMessage } from "../types.js";
 export interface ToolExecutionOutcome {
 	message: ToolResultMessage;
 	isError: boolean;
+	toolExecutionId?: string;
+	approvalRequestId?: string;
 }
 
 export interface PendingExecution {

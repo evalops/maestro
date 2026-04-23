@@ -11,6 +11,7 @@ export const PLATFORM_CONNECT_SERVICES = {
 	meter: "meter.v1.MeterService",
 	prompts: "prompts.v1.PromptService",
 	remoteRunner: "remoterunner.v1.RemoteRunnerService",
+	toolexecution: "toolexecution.v1.ToolExecutionService",
 } as const;
 
 export const PLATFORM_CONNECT_METHODS = {
@@ -150,6 +151,28 @@ export const PLATFORM_CONNECT_METHODS = {
 		stopRunnerSession: {
 			service: PLATFORM_CONNECT_SERVICES.remoteRunner,
 			method: "StopRunnerSession",
+		},
+	},
+	toolexecution: {
+		executeTool: {
+			service: PLATFORM_CONNECT_SERVICES.toolexecution,
+			method: "ExecuteTool",
+		},
+		getToolExecution: {
+			service: PLATFORM_CONNECT_SERVICES.toolexecution,
+			method: "GetToolExecution",
+		},
+		listToolExecutions: {
+			service: PLATFORM_CONNECT_SERVICES.toolexecution,
+			method: "ListToolExecutions",
+		},
+		recordToolExecutionOutput: {
+			service: PLATFORM_CONNECT_SERVICES.toolexecution,
+			method: "RecordToolExecutionOutput",
+		},
+		resumeToolExecution: {
+			service: PLATFORM_CONNECT_SERVICES.toolexecution,
+			method: "ResumeToolExecution",
 		},
 	},
 } as const;

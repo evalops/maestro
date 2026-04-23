@@ -27,6 +27,12 @@ import type {
 	ToolCall,
 	ToolResultMessage,
 } from "../types.js";
+import {
+	type ObserveToolExecutionPlan,
+	type PlatformToolExecutionBridge,
+	type ToolExecutionBridgePlan,
+	buildObservedResultMetadata,
+} from "./tool-execution-bridge.js";
 import type {
 	ToolExecutionOutcome,
 	ToolUpdateQueue,
@@ -60,6 +66,8 @@ export interface ToolExecutionContext {
 	toolRetryService?: ToolRetryService;
 	toolRetryConfig?: ToolRetryConfig;
 	clientToolService?: ClientToolExecutionService;
+	toolExecutionBridge?: PlatformToolExecutionBridge;
+	toolExecutionBridgePlan?: ToolExecutionBridgePlan;
 	// Concurrency
 	toolUpdateQueue: ToolUpdateQueue;
 	/** Pre-created client tool execution promise (if applicable) */
@@ -260,6 +268,8 @@ export function createToolExecutionPromise(
 		toolRetryService,
 		toolRetryConfig,
 		clientToolService,
+		toolExecutionBridge,
+		toolExecutionBridgePlan,
 	} = ctx;
 
 	const startTime = clock.now();
@@ -538,9 +548,19 @@ export function createToolExecutionPromise(
 				}
 			}
 
+			const observed =
+				toolExecutionBridge && toolExecutionBridgePlan?.kind === "observe"
+					? await toolExecutionBridge.recordObservation(
+							toolExecutionBridgePlan as ObserveToolExecutionPlan,
+							toolResultMsg,
+							signal,
+						)
+					: undefined;
+
 			return {
 				message: toolResultMsg,
 				isError: toolResultMsg.isError,
+				...buildObservedResultMetadata(toolExecutionBridgePlan, observed),
 			};
 		} catch (error: unknown) {
 			if (error instanceof Error && error.name === "AbortError") {
@@ -593,9 +613,19 @@ export function createToolExecutionPromise(
 				}
 			}
 
+			const observed =
+				toolExecutionBridge && toolExecutionBridgePlan?.kind === "observe"
+					? await toolExecutionBridge.recordObservation(
+							toolExecutionBridgePlan as ObserveToolExecutionPlan,
+							toolResultMsg,
+							signal,
+						)
+					: undefined;
+
 			return {
 				message: toolResultMsg,
 				isError: true,
+				...buildObservedResultMetadata(toolExecutionBridgePlan, observed),
 			};
 		}
 	})();

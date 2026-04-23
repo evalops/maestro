@@ -24,8 +24,14 @@ export const MAESTRO_EVALOPS_MANAGED_KILL_SWITCH =
 	"platform.kill_switches.maestro.evalops_managed";
 export const MAESTRO_AUTONOMOUS_ACTIONS_KILL_SWITCH =
 	"platform.kill_switches.maestro.autonomous_actions";
+export const MAESTRO_PLATFORM_RUNTIME_BRIDGE_KILL_SWITCH =
+	"platform.kill_switches.maestro.platform_runtime_bridge";
 export const MAESTRO_DRAFT_AND_CONFIRM_DEFAULT_FLAG =
 	"maestro.agent_authority.draft_and_confirm_default";
+export const MAESTRO_PLATFORM_RUNTIME_AGENT_RUNTIME_OBSERVE_FLAG =
+	"maestro.platform_runtime.agent_runtime_observe";
+export const MAESTRO_PLATFORM_RUNTIME_TOOL_EXECUTION_BRIDGE_FLAG =
+	"maestro.platform_runtime.tool_execution_bridge";
 
 function getFeatureFlagsPath(): string | undefined {
 	const configured = process.env.EVALOPS_FEATURE_FLAGS_PATH?.trim();
@@ -89,6 +95,22 @@ export function areAutonomousActionsDisabled(): boolean {
 
 export function isDraftAndConfirmDefaultEnabled(): boolean {
 	return isFeatureFlagEnabled(MAESTRO_DRAFT_AND_CONFIRM_DEFAULT_FLAG);
+}
+
+export function isPlatformRuntimeBridgeDisabled(): boolean {
+	return isFeatureFlagEnabled(MAESTRO_PLATFORM_RUNTIME_BRIDGE_KILL_SWITCH);
+}
+
+export function isPlatformRuntimeObserveEnabled(): boolean {
+	return isFeatureFlagEnabled(
+		MAESTRO_PLATFORM_RUNTIME_AGENT_RUNTIME_OBSERVE_FLAG,
+	);
+}
+
+export function isPlatformToolExecutionBridgeEnabled(): boolean {
+	return isFeatureFlagEnabled(
+		MAESTRO_PLATFORM_RUNTIME_TOOL_EXECUTION_BRIDGE_FLAG,
+	);
 }
 
 export function resetFeatureFlagCacheForTests(): void {

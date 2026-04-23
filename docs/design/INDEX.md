@@ -24,6 +24,7 @@ This directory contains detailed design documentation for each major feature and
 | Document | Description |
 |----------|-------------|
 | [Safety & Firewall System](SAFETY_FIREWALL.md) | Rule-based safety enforcement, dangerous command detection |
+| [Platform ToolExecution Bridge](PLATFORM_TOOL_EXECUTION_BRIDGE.md) | Shared policy, approval, and audit bridge for Maestro tool calls |
 | [Enterprise RBAC & Audit](ENTERPRISE_RBAC.md) | Role-based access control, audit logging, and multi-tenancy |
 
 ## Supporting Systems

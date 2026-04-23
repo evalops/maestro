@@ -75,6 +75,10 @@ import type { ActionApprovalService } from "./action-approval.js";
 import { getStoredCredentials } from "./keys.js";
 import type { ToolRetryConfig, ToolRetryService } from "./tool-retry.js";
 import { createProviderStream } from "./transport/create-provider-stream.js";
+import {
+	type PlatformToolExecutionBridge,
+	getDefaultPlatformToolExecutionBridge,
+} from "./transport/tool-execution-bridge.js";
 import { createToolExecutionPromise } from "./transport/tool-execution.js";
 import {
 	type ToolSafetyVerdict,
@@ -142,6 +146,8 @@ export interface ProviderTransportOptions {
 	sessionTokenCounter?: SessionTokenCounter;
 	/** Audit logger for sensitive tool execution events */
 	auditLogger?: ToolAuditLogger;
+	/** Optional Platform ToolExecution bridge override */
+	platformToolExecutionBridge?: PlatformToolExecutionBridge | false;
 }
 
 /**
@@ -667,12 +673,18 @@ export class ProviderTransport implements AgentTransport {
 					toolCall: ToolCall,
 					message: ToolResultMessage,
 					isError: boolean,
+					metadata?: {
+						toolExecutionId?: string;
+						approvalRequestId?: string;
+					},
 				): AgentEvent[] => [
 					{ type: "message_start", message } as AgentEvent,
 					{ type: "message_end", message } as AgentEvent,
 					{
 						type: "tool_execution_end",
 						toolCallId: toolCall.id,
+						toolExecutionId: metadata?.toolExecutionId,
+						approvalRequestId: metadata?.approvalRequestId,
 						toolName: toolCall.name,
 						result: message,
 						isError,
@@ -682,6 +694,10 @@ export class ProviderTransport implements AgentTransport {
 					message: ToolResultMessage,
 					toolCall: ToolCall,
 					isError: boolean,
+					metadata?: {
+						toolExecutionId?: string;
+						approvalRequestId?: string;
+					},
 				) => {
 					try {
 						applyWorkflowStateHooks({
@@ -691,7 +707,7 @@ export class ProviderTransport implements AgentTransport {
 							isError,
 						});
 						toolResults.push(message);
-						return buildExecutionEvents(toolCall, message, isError);
+						return buildExecutionEvents(toolCall, message, isError, metadata);
 					} catch (error) {
 						if (error instanceof WorkflowStateError) {
 							const workflowErrorResult: ToolResultMessage = {
@@ -703,7 +719,12 @@ export class ProviderTransport implements AgentTransport {
 								timestamp: this.clock.now(),
 							};
 							toolResults.push(workflowErrorResult);
-							return buildExecutionEvents(toolCall, workflowErrorResult, true);
+							return buildExecutionEvents(
+								toolCall,
+								workflowErrorResult,
+								true,
+								metadata,
+							);
 						}
 						throw error;
 					}
@@ -756,6 +777,10 @@ export class ProviderTransport implements AgentTransport {
 								outcome.message,
 								next.execution.toolCall,
 								outcome.isError,
+								{
+									toolExecutionId: outcome.toolExecutionId,
+									approvalRequestId: outcome.approvalRequestId,
+								},
 							),
 						);
 						await checkSteering();
@@ -789,6 +814,11 @@ export class ProviderTransport implements AgentTransport {
 						adaptiveThresholds: this.adaptiveThresholds,
 						auditLogger: this.auditLogger,
 						approvalService: this.options.approvalService,
+						toolExecutionBridge:
+							this.options.platformToolExecutionBridge === false
+								? undefined
+								: (this.options.platformToolExecutionBridge ??
+									getDefaultPlatformToolExecutionBridge()),
 						hookService,
 						firewall,
 						rateLimitState: {
@@ -879,6 +909,12 @@ export class ProviderTransport implements AgentTransport {
 						toolRetryService: this.options.toolRetryService,
 						toolRetryConfig: this.options.toolRetryConfig,
 						clientToolService: this.options.clientToolService,
+						toolExecutionBridge:
+							this.options.platformToolExecutionBridge === false
+								? undefined
+								: (this.options.platformToolExecutionBridge ??
+									getDefaultPlatformToolExecutionBridge()),
+						toolExecutionBridgePlan: safetyVerdict.toolExecutionBridgePlan,
 						toolUpdateQueue,
 						clientToolExecPromise,
 					});
@@ -911,6 +947,10 @@ export class ProviderTransport implements AgentTransport {
 						outcome.message,
 						next.execution.toolCall,
 						outcome.isError,
+						{
+							toolExecutionId: outcome.toolExecutionId,
+							approvalRequestId: outcome.approvalRequestId,
+						},
 					)) {
 						yield event;
 					}
