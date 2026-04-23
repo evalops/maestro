@@ -18,7 +18,7 @@ import {
 	normalizeApprovalMode,
 	resolveApprovalModeForRequest,
 } from "../approval-mode-store.js";
-import { getAuthSubject } from "../authz.js";
+import { getAuthScopeKey, getAuthSubject } from "../authz.js";
 import type {
 	HeadlessRuntimeConnectionSnapshot,
 	HeadlessRuntimeHeartbeatSnapshot,
@@ -274,7 +274,7 @@ function parseOptOutNotifications(
 }
 
 function getScopeKey(req: IncomingMessage): string {
-	return getAuthSubject(req);
+	return getAuthScopeKey(req);
 }
 
 function ensureHostedRunnerCanUseSession(
