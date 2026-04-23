@@ -1988,6 +1988,7 @@ export class Agent {
 			status: event.isError
 				? "MAESTRO_TOOL_CALL_STATUS_FAILED"
 				: "MAESTRO_TOOL_CALL_STATUS_SUCCEEDED",
+			skill_metadata: event.skillMetadata,
 			approval_request_id: event.approvalRequestId,
 			governed_outcome: event.governedOutcome,
 			error_code: event.errorCode,

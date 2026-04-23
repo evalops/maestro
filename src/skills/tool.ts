@@ -8,6 +8,7 @@
 import { Type } from "@sinclair/typebox";
 import type { AgentTool, AgentToolResult } from "../agent/types.js";
 import { createLogger } from "../utils/logger.js";
+import { buildSkillArtifactMetadata } from "./artifact-metadata.js";
 import {
 	type LoadedSkill,
 	findSkill,
@@ -192,6 +193,9 @@ Available skills can be listed by calling this tool with skill="list".`,
 
 			return {
 				content: [{ type: "text", text }],
+				details: {
+					skillMetadata: buildSkillArtifactMetadata(skill),
+				},
 			};
 		},
 	};

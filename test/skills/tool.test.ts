@@ -155,12 +155,28 @@ ${content}
 			const tool = createSkillTool(testDir, { includeSystem: false });
 			const result = await tool.execute("test-3", { skill: "my-skill" });
 			const text = getResultText(result);
+			const skillMetadata = (
+				result.details as
+					| {
+							skillMetadata?: {
+								name: string;
+								hash: string;
+								source: string;
+							};
+					  }
+					| undefined
+			)?.skillMetadata;
 
 			expect(result.isError).toBeUndefined();
 			expect(text).toContain("# Skill: my-skill");
 			expect(text).toContain("> Test skill");
 			expect(text).toContain("# Instructions");
 			expect(text).toContain("Do this.");
+			expect(skillMetadata).toMatchObject({
+				name: "my-skill",
+				source: "project",
+			});
+			expect(skillMetadata?.hash).toMatch(/^[a-f0-9]{64}$/u);
 		});
 
 		it("loads skill case-insensitively", async () => {
@@ -229,11 +245,30 @@ ${content}
 				skill: "incident-review",
 			});
 			const text = getResultText(result);
+			const skillMetadata = (
+				result.details as
+					| {
+							skillMetadata?: {
+								name: string;
+								artifactId?: string;
+								version?: string;
+								source: string;
+								scope?: string;
+							};
+					  }
+					| undefined
+			)?.skillMetadata;
 
 			expect(result.isError).toBeUndefined();
 			expect(text).toContain("# Skill: incident-review");
 			expect(text).toContain("> Review incident reports");
 			expect(text).toContain("Summarize impact and remediation.");
+			expect(skillMetadata).toMatchObject({
+				name: "incident-review",
+				artifactId: "remote-1",
+				source: "service",
+				scope: "workspace",
+			});
 		});
 
 		it("falls back to local skills when the optional skills service fails", async () => {

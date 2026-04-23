@@ -33,6 +33,7 @@
 
 import type { TSchema } from "@sinclair/typebox";
 import type { PromptMetadata } from "../prompts/types.js";
+import type { SkillArtifactMetadata } from "../skills/artifact-metadata.js";
 import type { CheckpointProfiler } from "../utils/checkpoint-profiler.js";
 import type {
 	ActionApprovalDecision,
@@ -1132,6 +1133,8 @@ export type AgentEvent =
 				| "authentication_required"
 				| "denied"
 				| "rate_limited";
+			/** Optional selected skill artifact metadata surfaced by the tool result */
+			skillMetadata?: SkillArtifactMetadata;
 			/** Name of the tool */
 			toolName: string;
 			/** Optional human-facing label for live UI */

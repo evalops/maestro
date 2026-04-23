@@ -146,4 +146,48 @@ describe("JsonlEventWriter adapter", () => {
 			},
 		});
 	});
+
+	it("includes selected skill metadata in tool results", () => {
+		adapter.handle({
+			type: "tool_execution_end",
+			toolCallId: "call-skill",
+			toolName: "Skill",
+			result: {
+				...toolResult,
+				toolCallId: "call-skill",
+				toolName: "Skill",
+			},
+			isError: false,
+			skillMetadata: {
+				name: "incident-review",
+				artifactId: "skill_remote_1",
+				version: "3",
+				hash: "hash_skill_123",
+				source: "service",
+			},
+		});
+
+		expect(JSON.parse(stream.chunks[0] ?? "{}")).toEqual({
+			type: "item",
+			subtype: "tool_result",
+			timestamp: "2025-01-01T00:00:00.000Z",
+			data: {
+				toolCallId: "call-skill",
+				toolName: "Skill",
+				result: {
+					...toolResult,
+					toolCallId: "call-skill",
+					toolName: "Skill",
+				},
+				isError: false,
+				skillMetadata: {
+					name: "incident-review",
+					artifactId: "skill_remote_1",
+					version: "3",
+					hash: "hash_skill_123",
+					source: "service",
+				},
+			},
+		});
+	});
 });

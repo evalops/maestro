@@ -40,6 +40,7 @@ import {
 	resolvePromptLoadedProjectDocPaths,
 } from "../config/index.js";
 import type { SessionEntry } from "../session/types.js";
+import { getSkillArtifactMetadataFromDetails } from "../skills/artifact-metadata.js";
 import { readTool } from "../tools/read.js";
 import { createLogger } from "../utils/logger.js";
 import { expandUserPath } from "../utils/path-validation.js";
@@ -1059,6 +1060,7 @@ async function collectRecentSkillRestoreMessages(
 
 		let skillName: string | null = null;
 		let content: (TextContent | ImageContent)[] | null = null;
+		let skillMetadata: ReturnType<typeof getSkillArtifactMetadataFromDetails>;
 
 		if (
 			message.role === "toolResult" &&
@@ -1070,6 +1072,7 @@ async function collectRecentSkillRestoreMessages(
 				message.content,
 				SKILL_RESTORE_MAX_TOKENS_PER_SKILL,
 			);
+			skillMetadata = getSkillArtifactMetadataFromDetails(message.details);
 		} else if (
 			message.role === "hookMessage" &&
 			message.customType === "skill" &&
@@ -1124,7 +1127,11 @@ async function collectRecentSkillRestoreMessages(
 				"skill",
 				content,
 				false,
-				{ name: skillName, source: "tool" },
+				{
+					name: skillName,
+					source: "tool",
+					skillMetadata,
+				},
 				new Date().toISOString(),
 			),
 		);

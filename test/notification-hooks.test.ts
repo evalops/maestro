@@ -274,6 +274,12 @@ describe("Notification Hooks", () => {
 					errorCode: "governance_denied",
 					approvalRequestId: "approval-123",
 					governedOutcome: "denied",
+					skillMetadata: {
+						name: "incident-review",
+						artifactId: "skill_remote_1",
+						hash: "hash_skill_123",
+						source: "service",
+					},
 					result: {
 						role: "toolResult",
 						toolCallId: "call-123",
@@ -294,6 +300,12 @@ describe("Notification Hooks", () => {
 			expect(payload?.toolErrorCode).toBe("governance_denied");
 			expect(payload?.approvalRequestId).toBe("approval-123");
 			expect(payload?.governedOutcome).toBe("denied");
+			expect(payload?.skillMetadata).toEqual({
+				name: "incident-review",
+				artifactId: "skill_remote_1",
+				hash: "hash_skill_123",
+				source: "service",
+			});
 		});
 
 		it("should create payload for error event", async () => {

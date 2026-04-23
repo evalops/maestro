@@ -6,6 +6,7 @@ import {
 	getMaestroEventBusStatus,
 	publishMaestroCloudEvent,
 	recordMaestroPromptVariantSelected,
+	recordMaestroToolCallCompleted,
 	resolveMaestroEventBusConfig,
 	setMaestroEventBusTransportForTests,
 } from "../../src/telemetry/maestro-event-bus.js";
@@ -115,6 +116,45 @@ describe("maestro event bus", () => {
 					source: "service",
 				},
 				selected_at: "2026-04-23T17:00:00.000Z",
+			},
+		});
+	});
+
+	it("publishes tool completion CloudEvents with selected skill identity", async () => {
+		const published: Array<{ subject: string; payload: string }> = [];
+		setMaestroEventBusTransportForTests({
+			async publish(subject, payload) {
+				published.push({ subject, payload });
+			},
+		});
+
+		recordMaestroToolCallCompleted({
+			tool_call_id: "tool_1",
+			status: "MAESTRO_TOOL_CALL_STATUS_SUCCEEDED",
+			skill_metadata: {
+				name: "incident-review",
+				artifactId: "skill_remote_1",
+				version: "3",
+				hash: "hash_skill_123",
+				source: "service",
+			},
+			completed_at: "2026-04-23T18:00:00.000Z",
+			env: { MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222" },
+		});
+
+		await Promise.resolve();
+
+		expect(published).toHaveLength(1);
+		expect(JSON.parse(published[0]?.payload ?? "{}")).toMatchObject({
+			type: "maestro.events.tool_call.completed",
+			data: {
+				tool_call_id: "tool_1",
+				skill_metadata: {
+					name: "incident-review",
+					artifactId: "skill_remote_1",
+					version: "3",
+					source: "service",
+				},
 			},
 		});
 	});

@@ -206,6 +206,9 @@ export function createAgentJsonlAdapter(
 					if (event.governedOutcome) {
 						data.governedOutcome = event.governedOutcome;
 					}
+					if (event.skillMetadata) {
+						data.skillMetadata = event.skillMetadata;
+					}
 					writer.emit({
 						type: "item",
 						subtype: "tool_result",
