@@ -221,6 +221,34 @@ export interface PromptVariantSelectedEventData
 	selected_at: string;
 }
 
+export interface SkillInvocationEventData extends Record<string, unknown> {
+	correlation: MaestroCorrelation;
+	prompt_metadata?: PromptMetadata;
+	skill_metadata: SkillArtifactMetadata;
+	tool_call_id: string;
+	tool_execution_id?: string;
+	invoked_at: string;
+}
+
+export type MaestroSkillOutcomeStatus =
+	| "success"
+	| "error"
+	| "aborted"
+	| "rate_limited";
+
+export interface SkillOutcomeEventData extends Record<string, unknown> {
+	correlation: MaestroCorrelation;
+	prompt_metadata?: PromptMetadata;
+	skill_metadata: SkillArtifactMetadata;
+	tool_call_id?: string;
+	tool_execution_id?: string;
+	turn_status: MaestroSkillOutcomeStatus;
+	error_category?: string;
+	error_message?: string;
+	stop_reason?: string;
+	outcome_at: string;
+}
+
 export interface MaestroEventBusTransport {
 	publish(subject: string, payload: string): Promise<void>;
 	close?(): Promise<void>;
@@ -312,6 +340,30 @@ export interface RecordMaestroPromptVariantSelectedInput {
 	prompt_metadata: PromptMetadata;
 	correlation?: Partial<MaestroCorrelation>;
 	selected_at?: string;
+	env?: Env;
+}
+
+export interface RecordMaestroSkillInvokedInput {
+	prompt_metadata?: PromptMetadata;
+	skill_metadata: SkillArtifactMetadata;
+	tool_call_id: string;
+	tool_execution_id?: string;
+	correlation?: Partial<MaestroCorrelation>;
+	invoked_at?: string;
+	env?: Env;
+}
+
+export interface RecordMaestroSkillOutcomeInput {
+	prompt_metadata?: PromptMetadata;
+	skill_metadata: SkillArtifactMetadata;
+	tool_call_id?: string;
+	tool_execution_id?: string;
+	turn_status: MaestroSkillOutcomeStatus;
+	error_category?: string;
+	error_message?: string;
+	stop_reason?: string;
+	correlation?: Partial<MaestroCorrelation>;
+	outcome_at?: string;
 	env?: Env;
 }
 
@@ -931,6 +983,56 @@ export function recordMaestroPromptVariantSelected(
 			selected_at: selectedAt,
 		},
 		{ env: event.env, time: selectedAt },
+	);
+}
+
+export function recordMaestroSkillInvoked(
+	event: RecordMaestroSkillInvokedInput,
+): void {
+	const invokedAt = event.invoked_at ?? new Date().toISOString();
+	void publishMaestroCloudEvent<SkillInvocationEventData>(
+		MaestroBusEventType.SkillInvoked,
+		{
+			correlation: mergeCorrelation(
+				resolveMaestroEventBusConfig(event.env).defaultCorrelation,
+				event.correlation,
+			),
+			prompt_metadata: event.prompt_metadata,
+			skill_metadata: event.skill_metadata,
+			tool_call_id: event.tool_call_id,
+			tool_execution_id: event.tool_execution_id,
+			invoked_at: invokedAt,
+		},
+		{ env: event.env, time: invokedAt },
+	);
+}
+
+export function recordMaestroSkillOutcome(
+	event: RecordMaestroSkillOutcomeInput,
+): void {
+	const outcomeAt = event.outcome_at ?? new Date().toISOString();
+	const eventType =
+		event.turn_status === "success"
+			? MaestroBusEventType.SkillSucceeded
+			: MaestroBusEventType.SkillFailed;
+	void publishMaestroCloudEvent<SkillOutcomeEventData>(
+		eventType,
+		{
+			correlation: mergeCorrelation(
+				resolveMaestroEventBusConfig(event.env).defaultCorrelation,
+				event.correlation,
+			),
+			prompt_metadata: event.prompt_metadata,
+			skill_metadata: event.skill_metadata,
+			tool_call_id: event.tool_call_id,
+			tool_execution_id: event.tool_execution_id,
+			turn_status: event.turn_status,
+			error_category: event.error_category,
+			error_message: event.error_message,
+			stop_reason: event.stop_reason,
+			outcome_at: outcomeAt,
+		},
+		{ env: event.env, time: outcomeAt },
 	);
 }
 

@@ -6,6 +6,8 @@ import {
 	getMaestroEventBusStatus,
 	publishMaestroCloudEvent,
 	recordMaestroPromptVariantSelected,
+	recordMaestroSkillInvoked,
+	recordMaestroSkillOutcome,
 	recordMaestroToolCallCompleted,
 	resolveMaestroEventBusConfig,
 	setMaestroEventBusTransportForTests,
@@ -153,6 +155,85 @@ describe("maestro event bus", () => {
 					name: "incident-review",
 					artifactId: "skill_remote_1",
 					version: "3",
+					source: "service",
+				},
+			},
+		});
+	});
+
+	it("publishes skill invocation CloudEvents with selected skill identity", async () => {
+		const published: Array<{ subject: string; payload: string }> = [];
+		setMaestroEventBusTransportForTests({
+			async publish(subject, payload) {
+				published.push({ subject, payload });
+			},
+		});
+
+		recordMaestroSkillInvoked({
+			tool_call_id: "tool_skill_1",
+			skill_metadata: {
+				name: "incident-review",
+				artifactId: "skill_remote_1",
+				version: "3",
+				hash: "hash_skill_123",
+				source: "service",
+			},
+			invoked_at: "2026-04-23T18:05:00.000Z",
+			env: { MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222" },
+		});
+
+		await Promise.resolve();
+
+		expect(published).toHaveLength(1);
+		expect(JSON.parse(published[0]?.payload ?? "{}")).toMatchObject({
+			type: "maestro.events.skill.invoked",
+			data: {
+				tool_call_id: "tool_skill_1",
+				skill_metadata: {
+					name: "incident-review",
+					artifactId: "skill_remote_1",
+					version: "3",
+					source: "service",
+				},
+			},
+		});
+	});
+
+	it("publishes skill outcome CloudEvents for failed turns", async () => {
+		const published: Array<{ subject: string; payload: string }> = [];
+		setMaestroEventBusTransportForTests({
+			async publish(subject, payload) {
+				published.push({ subject, payload });
+			},
+		});
+
+		recordMaestroSkillOutcome({
+			tool_call_id: "tool_skill_1",
+			skill_metadata: {
+				name: "incident-review",
+				artifactId: "skill_remote_1",
+				version: "3",
+				hash: "hash_skill_123",
+				source: "service",
+			},
+			turn_status: "error",
+			error_message: "turn failed",
+			outcome_at: "2026-04-23T18:10:00.000Z",
+			env: { MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222" },
+		});
+
+		await Promise.resolve();
+
+		expect(published).toHaveLength(1);
+		expect(JSON.parse(published[0]?.payload ?? "{}")).toMatchObject({
+			type: "maestro.events.skill.failed",
+			data: {
+				tool_call_id: "tool_skill_1",
+				turn_status: "error",
+				error_message: "turn failed",
+				skill_metadata: {
+					name: "incident-review",
+					artifactId: "skill_remote_1",
 					source: "service",
 				},
 			},

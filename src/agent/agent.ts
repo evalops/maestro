@@ -86,7 +86,10 @@ import {
 	getDiagnosticDeltaFromToolResult,
 	hasDiagnosticRepairOptOut,
 } from "../lsp/diagnostic-repair.js";
+import type { SkillArtifactMetadata } from "../skills/artifact-metadata.js";
 import {
+	recordMaestroSkillInvoked,
+	recordMaestroSkillOutcome,
 	recordMaestroToolCallAttempt,
 	recordMaestroToolCallCompleted,
 } from "../telemetry/maestro-event-bus.js";
@@ -512,6 +515,14 @@ export class Agent {
 	private withheldRecoverableLengthMessages: AssistantMessage[] = [];
 	private pendingMergedRecoverableTurnEnd?: AssistantMessage;
 	private diagnosticRepairAttempts = new Map<string, number>();
+	private currentTurnSkillSelections = new Map<
+		string,
+		{
+			skillMetadata: SkillArtifactMetadata;
+			toolCallId: string;
+			toolExecutionId?: string;
+		}
+	>();
 
 	/**
 	 * Creates a new Agent instance.
@@ -898,6 +909,7 @@ export class Agent {
 			this.withheldRecoverableLengthMessages = [];
 		}
 		this._partialAccepted = null;
+		this.currentTurnSkillSelections.clear();
 	}
 
 	setRecoverableOverflowErrorSuppression(enabled: boolean): void {
@@ -1309,6 +1321,7 @@ export class Agent {
 		this.pendingMergedRecoverableTurnEnd = undefined;
 		this.currentTaskBudget = undefined;
 		this.diagnosticRepairAttempts.clear();
+		this.currentTurnSkillSelections.clear();
 		// Note: Do NOT clear listeners - they contain the TUI subscription
 		// and must persist across resets for UI updates to work
 	}
@@ -1659,6 +1672,10 @@ export class Agent {
 
 			const partialAccepted = this._partialAccepted;
 			this._partialAccepted = null;
+			this.publishCurrentTurnSkillOutcomes({
+				aborted,
+				stopReason: lastStopReason,
+			});
 
 			this.emit({
 				type: "agent_end",
@@ -1876,6 +1893,10 @@ export class Agent {
 
 			const partialAccepted = this._partialAccepted;
 			this._partialAccepted = null;
+			this.publishCurrentTurnSkillOutcomes({
+				aborted,
+				stopReason: lastStopReason,
+			});
 
 			this.emit({
 				type: "agent_end",
@@ -2003,6 +2024,26 @@ export class Agent {
 				agent_run_step_id: event.toolCallId,
 			},
 		});
+		if (event.skillMetadata) {
+			this.recordCurrentTurnSkillSelection({
+				skillMetadata: event.skillMetadata,
+				toolCallId: event.toolCallId,
+				toolExecutionId: event.toolExecutionId,
+			});
+			if (event.toolName === "Skill") {
+				recordMaestroSkillInvoked({
+					prompt_metadata: this._state.promptMetadata,
+					skill_metadata: event.skillMetadata,
+					tool_call_id: event.toolCallId,
+					tool_execution_id: event.toolExecutionId,
+					correlation: {
+						session_id: this._state.session?.id,
+						agent_run_step_id: event.toolCallId,
+					},
+					invoked_at: new Date(event.result.timestamp).toISOString(),
+				});
+			}
+		}
 		this.handleDiagnosticDeltaToolResult(event);
 		if (!pending) {
 			return;
@@ -2021,6 +2062,66 @@ export class Agent {
 			this.activeToolBatchIds = null;
 			this.emitToolBatchSummary();
 		}
+	}
+
+	private buildSkillSelectionKey(skillMetadata: SkillArtifactMetadata): string {
+		return [
+			skillMetadata.artifactId,
+			skillMetadata.source,
+			skillMetadata.name,
+			skillMetadata.version,
+			skillMetadata.hash,
+		]
+			.filter(Boolean)
+			.join(":");
+	}
+
+	private recordCurrentTurnSkillSelection(selection: {
+		skillMetadata: SkillArtifactMetadata;
+		toolCallId: string;
+		toolExecutionId?: string;
+	}): void {
+		const key = this.buildSkillSelectionKey(selection.skillMetadata);
+		if (!key) {
+			return;
+		}
+		this.currentTurnSkillSelections.set(key, selection);
+	}
+
+	private publishCurrentTurnSkillOutcomes(options: {
+		aborted: boolean;
+		stopReason?: StopReason;
+	}): void {
+		if (this.currentTurnSkillSelections.size === 0) {
+			return;
+		}
+
+		const turnStatus = options.aborted
+			? "aborted"
+			: this._state.error
+				? "error"
+				: "success";
+		const errorMessage = options.aborted
+			? "Operation aborted"
+			: this._state.error;
+
+		for (const selection of this.currentTurnSkillSelections.values()) {
+			recordMaestroSkillOutcome({
+				prompt_metadata: this._state.promptMetadata,
+				skill_metadata: selection.skillMetadata,
+				tool_call_id: selection.toolCallId,
+				tool_execution_id: selection.toolExecutionId,
+				turn_status: turnStatus,
+				error_category: turnStatus === "success" ? undefined : "runtime",
+				error_message: turnStatus === "success" ? undefined : errorMessage,
+				stop_reason: options.stopReason,
+				correlation: {
+					session_id: this._state.session?.id,
+				},
+			});
+		}
+
+		this.currentTurnSkillSelections.clear();
 	}
 
 	private handleDiagnosticDeltaToolResult(
