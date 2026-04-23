@@ -88,6 +88,7 @@ import {
 } from "../lsp/diagnostic-repair.js";
 import type { SkillArtifactMetadata } from "../skills/artifact-metadata.js";
 import {
+	recordMaestroEvalScored,
 	recordMaestroSkillInvoked,
 	recordMaestroSkillOutcome,
 	recordMaestroToolCallAttempt,
@@ -138,6 +139,66 @@ import type {
 } from "./types.js";
 
 const logger = createLogger("agent");
+
+type ToolEvaluationSummary = {
+	score?: number;
+	threshold?: number;
+	passed?: boolean;
+	rationale?: string;
+	assertionCount?: number;
+};
+
+function getToolEvaluationSummary(
+	details: unknown,
+): ToolEvaluationSummary | undefined {
+	if (!details || typeof details !== "object" || Array.isArray(details)) {
+		return undefined;
+	}
+
+	const normalized = details as {
+		evaluation?: unknown;
+		assertions?: unknown;
+	};
+	if (
+		!normalized.evaluation ||
+		typeof normalized.evaluation !== "object" ||
+		Array.isArray(normalized.evaluation)
+	) {
+		return undefined;
+	}
+
+	const evaluation = normalized.evaluation as Record<string, unknown>;
+	const summary: ToolEvaluationSummary = {};
+	if (
+		typeof evaluation.score === "number" &&
+		Number.isFinite(evaluation.score)
+	) {
+		summary.score = evaluation.score;
+	}
+	if (
+		typeof evaluation.threshold === "number" &&
+		Number.isFinite(evaluation.threshold)
+	) {
+		summary.threshold = evaluation.threshold;
+	}
+	if (typeof evaluation.passed === "boolean") {
+		summary.passed = evaluation.passed;
+	}
+	if (
+		typeof evaluation.rationale === "string" &&
+		evaluation.rationale.trim().length > 0
+	) {
+		summary.rationale = evaluation.rationale.trim();
+	}
+	if (
+		Array.isArray(normalized.assertions) &&
+		normalized.assertions.length > 0
+	) {
+		summary.assertionCount = normalized.assertions.length;
+	}
+
+	return Object.keys(summary).length > 0 ? summary : undefined;
+}
 
 /**
  * Default message transformer that converts app messages to LLM-ready format.
@@ -2044,6 +2105,7 @@ export class Agent {
 				});
 			}
 		}
+		this.publishCurrentTurnEvalScores(event);
 		this.handleDiagnosticDeltaToolResult(event);
 		if (!pending) {
 			return;
@@ -2086,6 +2148,36 @@ export class Agent {
 			return;
 		}
 		this.currentTurnSkillSelections.set(key, selection);
+	}
+
+	private publishCurrentTurnEvalScores(
+		event: Extract<AgentEvent, { type: "tool_execution_end" }>,
+	): void {
+		const evaluation = getToolEvaluationSummary(event.result.details);
+		if (!evaluation || this.currentTurnSkillSelections.size === 0) {
+			return;
+		}
+
+		const scoredAt = new Date(event.result.timestamp).toISOString();
+		for (const selection of this.currentTurnSkillSelections.values()) {
+			recordMaestroEvalScored({
+				prompt_metadata: this._state.promptMetadata,
+				skill_metadata: selection.skillMetadata,
+				tool_call_id: event.toolCallId,
+				tool_execution_id: event.toolExecutionId,
+				tool_name: event.toolName,
+				score: evaluation.score,
+				threshold: evaluation.threshold,
+				passed: evaluation.passed,
+				rationale: evaluation.rationale,
+				assertion_count: evaluation.assertionCount,
+				correlation: {
+					session_id: this._state.session?.id,
+					agent_run_step_id: event.toolCallId,
+				},
+				scored_at: scoredAt,
+			});
+		}
 	}
 
 	private publishCurrentTurnSkillOutcomes(options: {
