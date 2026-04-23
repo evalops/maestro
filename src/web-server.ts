@@ -875,6 +875,7 @@ export async function startWebServer(
 			logger.info("Hosted runner mode enabled", {
 				runnerSessionId: context.hostedRunner.runnerSessionId,
 				workspaceRoot: context.hostedRunner.workspaceRoot,
+				snapshotRoot: context.hostedRunner.snapshotRoot,
 				workspaceId: context.hostedRunner.workspaceId,
 				agentRunId: context.hostedRunner.agentRunId,
 				listenHost: options.host,

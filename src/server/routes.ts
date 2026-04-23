@@ -44,6 +44,10 @@ import {
 } from "./handlers/headless-sessions.js";
 import { handleReadyz } from "./handlers/health.js";
 import {
+	HOSTED_RUNNER_DRAIN_PATH,
+	handleHostedRunnerDrain,
+} from "./handlers/hosted-runner-drain.js";
+import {
 	HOSTED_RUNNER_IDENTITY_PATH,
 	handleHostedRunnerIdentity,
 } from "./handlers/hosted-runner-identity.js";
@@ -122,6 +126,11 @@ export function createRoutes(context: WebServerContext): Route[] {
 			path: HOSTED_RUNNER_IDENTITY_PATH,
 			handler: (req, res) =>
 				handleHostedRunnerIdentity(req, res, corsHeaders, context.hostedRunner),
+		},
+		{
+			method: "POST",
+			path: HOSTED_RUNNER_DRAIN_PATH,
+			handler: (req, res) => handleHostedRunnerDrain(req, res, context),
 		},
 		{
 			method: "POST",

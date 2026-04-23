@@ -20,6 +20,7 @@ export interface HealthCheckResult {
 			runnerSessionId: string;
 			ownerInstanceId?: string;
 			workspaceRoot: string;
+			snapshotRoot?: string;
 			workspaceId?: string;
 			agentRunId?: string;
 			maestroSessionId?: string;
@@ -52,6 +53,9 @@ export async function checkHostedRunnerReadiness(
 		runnerSessionId: hostedRunner.runnerSessionId,
 		ownerInstanceId: hostedRunner.ownerInstanceId,
 		workspaceRoot: hostedRunner.workspaceRoot,
+		...(hostedRunner.snapshotRoot
+			? { snapshotRoot: hostedRunner.snapshotRoot }
+			: {}),
 		workspaceId: hostedRunner.workspaceId,
 		agentRunId: hostedRunner.agentRunId,
 		maestroSessionId:

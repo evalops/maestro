@@ -62,6 +62,70 @@ prompt metadata. Platform compares the returned session and owner generation
 with the control-plane session before proxying attach traffic. `ready=false` or
 `draining=true` means the runtime should not receive new attach requests yet.
 
+## Hosted Remote-Runner Drain
+
+Hosted runner mode also exposes a local drain/snapshot hook for Platform:
+
+```http
+POST /.well-known/evalops/remote-runner/drain
+```
+
+The request body is optional:
+
+```json
+{
+  "reason": "ttl_expired",
+  "requested_by": "platform",
+  "export_paths": ["."]
+}
+```
+
+The endpoint immediately marks the runtime as draining, stops active headless
+runtime work, flushes Maestro session and memory state, validates every
+`export_paths` entry stays inside the hosted workspace root, and writes a
+snapshot manifest. The manifest directory comes from `--snapshot-root`,
+`MAESTRO_REMOTE_RUNNER_SNAPSHOT_ROOT`, or
+`REMOTE_RUNNER_SNAPSHOT_ROOT`; the default is
+`.maestro/runner-snapshots` under the workspace root.
+
+```json
+{
+  "protocol_version": "evalops.remote-runner.drain.v1",
+  "status": "drained",
+  "manifest_path": "/workspace/.maestro/runner-snapshots/mrs_123-2026-04-23T00_00_00_000Z.json",
+  "manifest": {
+    "manifest_version": "evalops.remote-runner.snapshot-manifest.v1",
+    "runner_session_id": "mrs_123",
+    "owner_instance_id": "pod_123",
+    "maestro_session_id": "session_123",
+    "workspace_root": "/workspace",
+    "runtime": {
+      "flush_status": "completed",
+      "session_id": "session_123",
+      "session_file": "/workspace/.maestro/agent/sessions/session.jsonl"
+    },
+    "workspace_export": {
+      "mode": "local_path_contract",
+      "paths": [
+        {
+          "input": ".",
+          "path": "/workspace",
+          "relative_path": ".",
+          "type": "directory"
+        }
+      ]
+    }
+  }
+}
+```
+
+`status=interrupted` means Maestro entered draining mode and wrote a manifest,
+but runtime flush failed before completion. Platform should treat the manifest
+as a partial handoff record, stop sending attach traffic, and decide whether to
+retry drain or terminate the pod. Maestro does not upload to GCS or require a
+Cloud Storage mount; Platform/deploy own artifact upload, retention, and any
+future resume controller behavior.
+
 ## Handshake
 
 Typical controller flow:

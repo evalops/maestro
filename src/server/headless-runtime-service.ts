@@ -690,6 +690,7 @@ export class HeadlessSessionRuntime {
 			this.agent.abort();
 			await this.automaticMemoryExtraction.flush();
 			await this.automaticMemoryConsolidation.flush();
+			await this.sessionManager.flush();
 			this.finalizeDisposal();
 		})();
 		this.disposePromise = disposePromise;
@@ -749,6 +750,10 @@ export class HeadlessSessionRuntime {
 		};
 		assertHeadlessRuntimeSnapshot(snapshot, "headless runtime snapshot");
 		return snapshot;
+	}
+
+	getSessionFile(): string {
+		return this.sessionManager.getSessionFile();
 	}
 
 	replayFrom(cursor: number): HeadlessRuntimeStreamEnvelope[] | null {
@@ -2207,6 +2212,15 @@ export class HeadlessRuntimeService {
 			return undefined;
 		}
 		return runtime;
+	}
+
+	getRuntimeBySessionId(sessionId: string): HeadlessSessionRuntime | undefined {
+		for (const runtime of this.runtimes.values()) {
+			if (!runtime.isDisposed() && runtime.id() === sessionId) {
+				return runtime;
+			}
+		}
+		return undefined;
 	}
 
 	private async cleanup(): Promise<void> {
