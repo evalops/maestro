@@ -94,8 +94,8 @@ function joinMetadataValues(
 	if (!values) {
 		return undefined;
 	}
-	const normalized = values.map((value) => value?.trim() ?? "");
-	return normalized.some(Boolean) ? normalized.join(",") : undefined;
+	const joined = values.map((value) => value?.trim() ?? "");
+	return joined.some(Boolean) ? joined.join(",") : undefined;
 }
 
 function toNonNegativeInt(value: number | undefined): number {

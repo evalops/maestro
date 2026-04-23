@@ -40,6 +40,12 @@ export interface ActionApprovalRequest {
 	args: unknown;
 	/** Human-readable reason why approval is required */
 	reason: string;
+	/** Optional Platform correlation for shared approval and audit surfaces */
+	platform?: {
+		source: "approvals_service" | "tool_execution";
+		toolExecutionId?: string;
+		approvalRequestId?: string;
+	};
 }
 
 /**

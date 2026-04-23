@@ -513,6 +513,13 @@ function waitApprovalRequest(
 			execution.approvalWait?.reason ??
 			execution.errorMessage ??
 			"Approval required by Platform ToolExecution",
+		platform: {
+			source: "tool_execution",
+			toolExecutionId: execution.id ?? plan.metadata.toolExecutionId,
+			approvalRequestId:
+				execution.approvalWait?.approvalRequestId ??
+				plan.metadata.approvalRequestId,
+		},
 	};
 }
 

@@ -20,6 +20,7 @@ Use this index to jump to the right guide quickly and see how the pieces connect
 - [MCP Guide](MCP_GUIDE.md) — Model Context Protocol setup and usage.
 - [Headless Protocol Reference](protocols/headless.md) — versioned JSON-over-stdio contract for Chat, TUIs, and other embedders.
 - [Hosted Runner Contract](protocols/hosted-runner-contract.md) — provider-neutral runtime contract for account-scoped remote Maestro sessions.
+- [Pending Request Contract](protocols/pending-requests.md) — unified session projection for approvals, user input, MCP elicitations, tool retries, and Platform waits.
 
 ## Architecture & Patterns
 - [Architecture Diagram](ARCHITECTURE_DIAGRAM.md) — high-level system layout.

@@ -566,16 +566,22 @@ describe("skill outcome telemetry", () => {
 
 		await expect(
 			agent.prompt("load the incident review skill"),
-		).rejects.toThrow(Error);
+		).rejects.toThrow(/^$/);
 
-		const skillOutcome = published
-			.map(({ payload }) => JSON.parse(payload))
-			.find((payload) => payload.type === "maestro.events.skill.failed");
-		expect(skillOutcome).toMatchObject({
+		const payloads = published.map(({ payload }) => JSON.parse(payload));
+		expect(
+			payloads.find(
+				(payload) => payload.type === "maestro.events.skill.failed",
+			),
+		).toMatchObject({
 			data: {
+				tool_call_id: "tool-skill-1",
 				turn_status: "error",
 				error_category: "runtime",
-				error_message: "",
+				skill_metadata: {
+					name: "incident-review",
+					artifactId: "skill_remote_1",
+				},
 			},
 		});
 	});

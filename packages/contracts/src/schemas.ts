@@ -290,6 +290,15 @@ export const ComposerAssistantMessageEventSchema = Type.Union([
 	}),
 ]);
 
+export const ComposerPendingRequestPlatformRefSchema = Type.Object({
+	source: Type.Union([
+		Type.Literal("approvals_service"),
+		Type.Literal("tool_execution"),
+	]),
+	toolExecutionId: Type.Optional(Type.String()),
+	approvalRequestId: Type.Optional(Type.String()),
+});
+
 export const ComposerActionApprovalRequestSchema = Type.Object({
 	id: Type.String(),
 	toolName: Type.String(),
@@ -298,6 +307,7 @@ export const ComposerActionApprovalRequestSchema = Type.Object({
 	actionDescription: Type.Optional(Type.String()),
 	args: Type.Unknown(),
 	reason: Type.String(),
+	platform: Type.Optional(ComposerPendingRequestPlatformRefSchema),
 });
 
 export const ComposerActionApprovalDecisionSchema = Type.Object({
@@ -318,6 +328,31 @@ export const ComposerPendingClientToolRequestSchema = Type.Object({
 		]),
 	),
 	reason: Type.Optional(Type.String()),
+});
+
+export const ComposerPendingRequestSchema = Type.Object({
+	id: Type.String(),
+	kind: Type.Union([
+		Type.Literal("approval"),
+		Type.Literal("client_tool"),
+		Type.Literal("mcp_elicitation"),
+		Type.Literal("user_input"),
+		Type.Literal("tool_retry"),
+	]),
+	status: Type.Literal("pending"),
+	visibility: Type.Literal("user"),
+	sessionId: Type.Optional(Type.String()),
+	toolCallId: Type.String(),
+	toolName: Type.String(),
+	displayName: Type.Optional(Type.String()),
+	summaryLabel: Type.Optional(Type.String()),
+	actionDescription: Type.Optional(Type.String()),
+	args: Type.Unknown(),
+	reason: Type.String(),
+	createdAt: Type.String(),
+	expiresAt: Type.Optional(Type.String()),
+	source: Type.Union([Type.Literal("local"), Type.Literal("platform")]),
+	platform: Type.Optional(ComposerPendingRequestPlatformRefSchema),
 });
 
 export const ComposerToolRetryRequestSchema = Type.Object({
@@ -364,6 +399,7 @@ export const ComposerSessionSchema = Type.Object({
 	pendingToolRetryRequests: Type.Optional(
 		Type.Array(ComposerToolRetryRequestSchema),
 	),
+	pendingRequests: Type.Optional(Type.Array(ComposerPendingRequestSchema)),
 });
 
 export const ComposerAgentEventSchema = Type.Union([

@@ -1158,7 +1158,23 @@ describe("handleChat", () => {
 
 		expect(sessionRes.statusCode).toBe(200);
 		expect(sessionRes.body).toContain('"pendingApprovalRequests"');
+		expect(sessionRes.body).toContain('"pendingRequests"');
 		expect(sessionRes.body).toContain('"toolName":"bash"');
+		expect(JSON.parse(sessionRes.body)).toMatchObject({
+			pendingRequests: [
+				{
+					id: pendingRequest.id,
+					kind: "approval",
+					status: "pending",
+					visibility: "user",
+					source: "local",
+					toolCallId: pendingRequest.callId,
+					toolName: "bash",
+					createdAt: expect.any(String),
+					expiresAt: expect.any(String),
+				},
+			],
+		});
 
 		const approvalReq = new PassThrough() as MockPassThrough;
 		approvalReq.method = "POST";

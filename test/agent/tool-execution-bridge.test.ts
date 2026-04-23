@@ -365,6 +365,11 @@ describe("tool execution bridge", () => {
 			request: {
 				id: "approval_1",
 				reason: "manager approval required",
+				platform: {
+					source: "tool_execution",
+					toolExecutionId: "texec_wait_1",
+					approvalRequestId: "approval_1",
+				},
 			},
 		});
 		if (prepared.status !== "wait_approval") {
