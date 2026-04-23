@@ -364,6 +364,45 @@ pub async fn codesearch(args: Value) -> ToolResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    fn exa_api_key_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct ExaApiKeyGuard<'a> {
+        _guard: MutexGuard<'a, ()>,
+        original: Option<String>,
+    }
+
+    impl ExaApiKeyGuard<'_> {
+        fn apply(value: Option<&str>) -> Self {
+            let guard = exa_api_key_test_lock().lock().unwrap();
+            let original = std::env::var("EXA_API_KEY").ok();
+
+            if let Some(value) = value {
+                std::env::set_var("EXA_API_KEY", value);
+            } else {
+                std::env::remove_var("EXA_API_KEY");
+            }
+
+            Self {
+                _guard: guard,
+                original,
+            }
+        }
+    }
+
+    impl Drop for ExaApiKeyGuard<'_> {
+        fn drop(&mut self) {
+            if let Some(value) = &self.original {
+                std::env::set_var("EXA_API_KEY", value);
+            } else {
+                std::env::remove_var("EXA_API_KEY");
+            }
+        }
+    }
 
     // ========================================================================
     // normalize_cost_dollars Tests
@@ -511,34 +550,19 @@ mod tests {
 
     #[test]
     fn test_get_exa_api_key_not_set() {
-        // Temporarily unset the key if it exists
-        let original = std::env::var("EXA_API_KEY").ok();
-        std::env::remove_var("EXA_API_KEY");
+        let _env = ExaApiKeyGuard::apply(None);
 
         let result = get_exa_api_key();
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("EXA_API_KEY"));
-
-        // Restore if it was set
-        if let Some(key) = original {
-            std::env::set_var("EXA_API_KEY", key);
-        }
     }
 
     #[test]
     fn test_get_exa_api_key_set() {
-        let original = std::env::var("EXA_API_KEY").ok();
-        std::env::set_var("EXA_API_KEY", "test-key-123");
+        let _env = ExaApiKeyGuard::apply(Some("test-key-123"));
 
         let result = get_exa_api_key();
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "test-key-123");
-
-        // Restore original state
-        if let Some(key) = original {
-            std::env::set_var("EXA_API_KEY", key);
-        } else {
-            std::env::remove_var("EXA_API_KEY");
-        }
     }
 }

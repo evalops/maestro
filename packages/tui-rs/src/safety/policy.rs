@@ -507,10 +507,8 @@ fn extract_file_paths(tool_name: &str, args: &serde_json::Value) -> Vec<String> 
     for key in path_keys {
         if let Some(value) = map.get(key) {
             match value {
-                serde_json::Value::String(text) => {
-                    if !text.is_empty() {
-                        paths.push(text.clone());
-                    }
+                serde_json::Value::String(text) if !text.is_empty() => {
+                    paths.push(text.clone());
                 }
                 serde_json::Value::Array(items) => {
                     for item in items {

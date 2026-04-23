@@ -98,10 +98,13 @@ All providers expose the same HTTP headless surface:
 - `POST /api/headless/connections`
 - `POST /api/headless/sessions/:id/subscribe`
 - `GET /api/headless/sessions/:id/events`
-- `POST /api/headless/sessions/:id/message`
+- `POST /api/headless/sessions/:id/messages`
 - `POST /api/headless/sessions/:id/heartbeat`
 - `POST /api/headless/sessions/:id/disconnect`
 - `GET /api/headless/sessions/:id/state`
+
+Runtimes may keep `/api/headless/sessions/:id/message` as a compatibility
+alias, but new Rust and Platform code should use `/messages`.
 
 The event stream is replayable by cursor. Clients that fall behind receive a
 reset snapshot. This mirrors the reference remote-session pattern: durable
@@ -161,6 +164,19 @@ The manifest protocol is
 `evalops.remote-runner.snapshot-manifest.v1`. Maestro writes a local manifest;
 it does not upload to GCS, S3, Modal storage, Daytona storage, or any other
 provider store. Upload and retention are Platform responsibilities.
+
+## Rust Hosted Surface
+
+The Rust crate exposes a first hosted-runner library surface through
+`maestro_tui::hosted_runner::start_hosted_runner`. It binds a single-session HTTP
+runtime for tests and local adapters, exposes the identity/readiness/drain
+contract, serves the replayable headless attach endpoints, enforces
+workspace-root containment for file, watch, and command utility operations, and
+writes the local drain manifest. It deliberately keeps provider scheduling and
+artifact upload out of Rust; Platform still owns those concerns.
+
+The current Rust surface is meant to unblock the real Rust-hosted conformance
+adapter. It is not yet the final `maestro hosted-runner` CLI wrapper.
 
 ## Error Vocabulary
 
@@ -268,10 +284,11 @@ roles, explicit controller takeover, cursor replay/reset, approval request and
 response resolution, workspace-root file-read enforcement, utility
 command/search/watch lifecycle, and disconnect cleanup.
 
-The current adapter targets the TypeScript in-process host. A Rust-hosted
-runner adapter should drive the same scenarios through the real external
-surface. The scenario body must remain shared; only adapter startup and
-transport details should vary.
+The current TypeScript adapter targets the in-process host. The Rust-hosted
+adapter should drive the same scenarios through
+`maestro_tui::hosted_runner::start_hosted_runner` and the external HTTP/SSE surface.
+The scenario body must remain shared; only adapter startup and transport
+details should vary.
 
 ## References
 

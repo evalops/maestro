@@ -198,7 +198,7 @@
 mod async_transport;
 mod framing;
 mod generated_protocol;
-mod messages;
+pub(crate) mod messages;
 mod proto;
 mod remote_transport;
 mod session;

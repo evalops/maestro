@@ -356,7 +356,7 @@ pub struct Toast {
 }
 
 impl Toast {
-    pub const DEFAULT_DURATION: Duration = Duration::from_millis(2000);
+    pub const DEFAULT_DURATION: Duration = Duration::from_secs(2);
 
     pub fn new(message: impl Into<String>, level: NotificationLevel) -> Self {
         Self {

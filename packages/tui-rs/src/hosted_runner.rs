@@ -1,30 +1,36 @@
-//! Hosted runner contract primitives.
+//! Single-session hosted runner HTTP surface for Platform-managed runtimes.
 //!
-//! Platform-created Maestro runners expose a small provider-neutral surface:
-//! identity/readiness, drain snapshots, and the shared headless attach routes.
-//! This module keeps the Rust runtime aligned with the TypeScript host contract
-//! without baking GKE, Daytona, Modal, or other substrate details into Maestro.
+//! This module is the Rust-owned counterpart to Maestro's TypeScript hosted
+//! runner server. It intentionally exposes the same provider-neutral HTTP
+//! contract so Platform and conformance tests can target a Rust runtime without
+//! routing through the Node web server.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::ffi::OsString;
 use std::fs;
 use std::io;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Duration as ChronoDuration, SecondsFormat, Utc};
-use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::process::Command;
+use tokio::sync::broadcast;
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
-use crate::headless::{
-    AgentSupervisor, AsyncTransportError, ClientCapabilities, ClientInfo, ConnectionRole,
-    FromAgentMessage, ServerRequestType, ToAgentMessage, UtilityOperation,
+use crate::headless::messages::{
+    ClientCapabilities, ClientInfo, ConnectionRole, ConnectionState, FromAgentMessage, InitConfig,
+    ServerRequestType, ThinkingLevel, ToAgentMessage, UtilityCommandShellMode,
+    UtilityCommandStream, UtilityCommandTerminalMode, UtilityFileSearchMatch, UtilityOperation,
     HEADLESS_PROTOCOL_VERSION,
 };
+use crate::headless::{AgentSupervisor, AsyncTransportError};
 
 pub const HOSTED_RUNNER_IDENTITY_PATH: &str = "/.well-known/evalops/remote-runner/identity";
 pub const HOSTED_RUNNER_DRAIN_PATH: &str = "/.well-known/evalops/remote-runner/drain";
@@ -34,26 +40,19 @@ pub const HOSTED_RUNNER_DRAIN_PROTOCOL_VERSION: &str = "evalops.remote-runner.dr
 pub const HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION: &str =
     "evalops.remote-runner.snapshot-manifest.v1";
 
+const DEFAULT_LISTEN_HOST: &str = "0.0.0.0";
 const DEFAULT_LISTEN_PORT: u16 = 8080;
-const MAX_HTTP_HEADER_BYTES: usize = 64 * 1024;
-const MAX_HTTP_BODY_BYTES: usize = 1024 * 1024;
-const HEADLESS_CONNECTIONS_PATH: &str = "/api/headless/connections";
-const HEADLESS_SESSIONS_PREFIX: &str = "/api/headless/sessions/";
-const HEADLESS_HEARTBEAT_INTERVAL_MS: u64 = 15_000;
-const HEADLESS_CONNECTION_IDLE_MS: i64 = (HEADLESS_HEARTBEAT_INTERVAL_MS as i64) * 3;
-const MAX_HEADLESS_REPLAY_EVENTS: usize = 128;
+const DEFAULT_HEARTBEAT_INTERVAL_MS: u64 = 15_000;
+const CONNECTION_IDLE_MS: i64 = (DEFAULT_HEARTBEAT_INTERVAL_MS as i64) * 3;
+const MAX_EVENTS: usize = 1024;
 
-const HEADLESS_PATH_PREFIXES: &[&str] = &[HEADLESS_CONNECTIONS_PATH, HEADLESS_SESSIONS_PREFIX];
-
-/// Resolved hosted-runner configuration passed by Platform/deploy.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct HostedRunnerConfig {
     pub runner_session_id: String,
-    pub owner_instance_id: Option<String>,
     pub workspace_root: PathBuf,
-    pub snapshot_root: PathBuf,
-    pub host: Option<String>,
-    pub port: u16,
+    pub bind_addr: SocketAddr,
+    pub owner_instance_id: Option<String>,
+    pub snapshot_root: Option<PathBuf>,
     pub workspace_id: Option<String>,
     pub agent_run_id: Option<String>,
     pub maestro_session_id: Option<String>,
@@ -61,31 +60,22 @@ pub struct HostedRunnerConfig {
 }
 
 impl HostedRunnerConfig {
-    /// Resolve configuration from the current process environment.
-    pub fn from_env() -> Result<Self, HostedRunnerError> {
+    pub fn from_env() -> Result<Self, HostedRunnerConfigError> {
         let env = std::env::vars().collect::<HashMap<_, _>>();
         Self::from_env_map(&env)
     }
 
-    /// Resolve configuration from an explicit environment map.
-    ///
-    /// This mirrors the TypeScript `maestro hosted-runner` contract so tests
-    /// and future Rust entrypoints can share the same env names.
-    pub fn from_env_map(env: &HashMap<String, String>) -> Result<Self, HostedRunnerError> {
+    pub fn from_env_map(env: &HashMap<String, String>) -> Result<Self, HostedRunnerConfigError> {
         let runner_session_id = first_env(
             env,
             &["MAESTRO_RUNNER_SESSION_ID", "REMOTE_RUNNER_SESSION_ID"],
         )
         .ok_or_else(|| {
-            HostedRunnerError::invalid_config(
-                "maestro hosted-runner requires MAESTRO_RUNNER_SESSION_ID",
-            )
+            HostedRunnerConfigError::new("maestro hosted-runner requires MAESTRO_RUNNER_SESSION_ID")
         })?;
-
-        let workspace_root = resolve_workspace_root(
+        let workspace_root = resolve_config_workspace_root(
             first_env(env, &["MAESTRO_WORKSPACE_ROOT", "WORKSPACE_ROOT"]).as_deref(),
         )?;
-
         let listen = parse_listen(env_value(env, "MAESTRO_HOSTED_RUNNER_LISTEN").as_deref())?;
         let hosted_runner_port =
             parse_optional_port(env_value(env, "MAESTRO_HOSTED_RUNNER_PORT").as_deref())
@@ -96,7 +86,11 @@ impl HostedRunnerConfig {
             .or(hosted_runner_port)
             .or(port_env)
             .unwrap_or(DEFAULT_LISTEN_PORT);
-
+        let host = listen
+            .host
+            .or_else(|| env_value(env, "MAESTRO_HOSTED_RUNNER_HOST"))
+            .unwrap_or_else(|| DEFAULT_LISTEN_HOST.to_string());
+        let bind_addr = resolve_bind_addr(&host, port)?;
         let snapshot_root = resolve_snapshot_root(
             first_env(
                 env,
@@ -110,7 +104,9 @@ impl HostedRunnerConfig {
         );
 
         Ok(Self {
-            runner_session_id,
+            runner_session_id: non_empty(runner_session_id, "runner_session_id")?,
+            workspace_root,
+            bind_addr,
             owner_instance_id: first_env(
                 env,
                 &[
@@ -118,12 +114,7 @@ impl HostedRunnerConfig {
                     "REMOTE_RUNNER_OWNER_INSTANCE_ID",
                 ],
             ),
-            workspace_root,
-            snapshot_root,
-            host: listen
-                .host
-                .or_else(|| env_value(env, "MAESTRO_HOSTED_RUNNER_HOST")),
-            port,
+            snapshot_root: Some(snapshot_root),
             workspace_id: first_env(
                 env,
                 &["MAESTRO_REMOTE_RUNNER_WORKSPACE_ID", "MAESTRO_WORKSPACE_ID"],
@@ -134,19 +125,20 @@ impl HostedRunnerConfig {
         })
     }
 
-    /// Build a config directly for tests or embedding.
     pub fn new(
         runner_session_id: impl Into<String>,
         workspace_root: impl AsRef<Path>,
-    ) -> Result<Self, HostedRunnerError> {
-        let workspace_root = resolve_workspace_root(Some(path_to_str(workspace_root.as_ref())?))?;
+    ) -> Result<Self, HostedRunnerConfigError> {
         Ok(Self {
             runner_session_id: non_empty(runner_session_id.into(), "runner_session_id")?,
+            workspace_root: resolve_config_workspace_root(Some(path_to_str(
+                workspace_root.as_ref(),
+            )?))?,
+            bind_addr: format!("{DEFAULT_LISTEN_HOST}:{DEFAULT_LISTEN_PORT}")
+                .parse()
+                .expect("default hosted runner bind address is valid"),
             owner_instance_id: None,
-            snapshot_root: workspace_root.join(".maestro").join("runner-snapshots"),
-            workspace_root,
-            host: None,
-            port: DEFAULT_LISTEN_PORT,
+            snapshot_root: None,
             workspace_id: None,
             agent_run_id: None,
             maestro_session_id: None,
@@ -154,601 +146,465 @@ impl HostedRunnerConfig {
         })
     }
 
+    #[must_use]
+    pub fn with_bind_addr(mut self, bind_addr: SocketAddr) -> Self {
+        self.bind_addr = bind_addr;
+        self
+    }
+
+    #[must_use]
     pub fn with_owner_instance_id(mut self, owner_instance_id: impl Into<String>) -> Self {
         self.owner_instance_id = Some(owner_instance_id.into());
         self
     }
 
+    #[must_use]
     pub fn with_snapshot_root(mut self, snapshot_root: impl Into<PathBuf>) -> Self {
-        self.snapshot_root = snapshot_root.into();
+        self.snapshot_root = Some(snapshot_root.into());
         self
     }
 
+    #[must_use]
     pub fn with_workspace_id(mut self, workspace_id: impl Into<String>) -> Self {
         self.workspace_id = Some(workspace_id.into());
         self
     }
 
+    #[must_use]
     pub fn with_agent_run_id(mut self, agent_run_id: impl Into<String>) -> Self {
         self.agent_run_id = Some(agent_run_id.into());
         self
     }
 
+    #[must_use]
     pub fn with_maestro_session_id(mut self, maestro_session_id: impl Into<String>) -> Self {
         self.maestro_session_id = Some(maestro_session_id.into());
         self
     }
 }
 
-#[derive(Clone)]
-pub struct HostedRunnerRuntime {
-    inner: Arc<Mutex<HostedRunnerRuntimeInner>>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostedRunnerConfigError {
+    message: String,
 }
 
-struct HostedRunnerRuntimeInner {
-    config: HostedRunnerConfig,
-    ready: bool,
-    draining: bool,
-    headless_session_id: String,
-    headless_connections: HashMap<String, HostedRunnerHeadlessConnectionRecord>,
-    controller_connection_id: Option<String>,
-    next_connection_sequence: u64,
-    next_subscription_sequence: u64,
-    headless_events: Vec<HostedRunnerHeadlessStreamEnvelope>,
-    next_headless_cursor: u64,
+impl HostedRunnerConfigError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for HostedRunnerConfigError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for HostedRunnerConfigError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedListen {
+    host: Option<String>,
+    port: Option<u16>,
+}
+
+fn first_env(env: &HashMap<String, String>, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| env_value(env, key))
+}
+
+fn env_value(env: &HashMap<String, String>, key: &str) -> Option<String> {
+    env.get(key).map(|value| value.trim()).and_then(|value| {
+        if value.is_empty() {
+            None
+        } else {
+            Some(value.to_string())
+        }
+    })
+}
+
+fn parse_listen(value: Option<&str>) -> Result<ParsedListen, HostedRunnerConfigError> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(ParsedListen {
+            host: None,
+            port: None,
+        });
+    };
+    if value.chars().all(|char| char.is_ascii_digit()) {
+        return Ok(ParsedListen {
+            host: None,
+            port: Some(parse_port(value, "MAESTRO_HOSTED_RUNNER_LISTEN")?),
+        });
+    }
+    let Some((host, port)) = value.rsplit_once(':') else {
+        return Err(HostedRunnerConfigError::new(
+            "MAESTRO_HOSTED_RUNNER_LISTEN must be <host:port> or <port>",
+        ));
+    };
+    if host.trim().is_empty() || port.trim().is_empty() {
+        return Err(HostedRunnerConfigError::new(
+            "MAESTRO_HOSTED_RUNNER_LISTEN must be <host:port> or <port>",
+        ));
+    }
+    Ok(ParsedListen {
+        host: Some(host.trim().to_string()),
+        port: Some(parse_port(port.trim(), "MAESTRO_HOSTED_RUNNER_LISTEN")?),
+    })
+}
+
+fn parse_optional_port(value: Option<&str>) -> Option<Result<u16, HostedRunnerConfigError>> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| parse_port(value, "hosted runner port"))
+}
+
+fn parse_port(value: &str, label: &str) -> Result<u16, HostedRunnerConfigError> {
+    if !value.chars().all(|char| char.is_ascii_digit()) {
+        return Err(HostedRunnerConfigError::new(format!(
+            "{label} must be a TCP port between 1 and 65535"
+        )));
+    }
+    let port = value.parse::<u32>().map_err(|_| {
+        HostedRunnerConfigError::new(format!("{label} must be a TCP port between 1 and 65535"))
+    })?;
+    if !(1..=65535).contains(&port) {
+        return Err(HostedRunnerConfigError::new(format!(
+            "{label} must be a TCP port between 1 and 65535"
+        )));
+    }
+    Ok(port as u16)
+}
+
+fn resolve_bind_addr(host: &str, port: u16) -> Result<SocketAddr, HostedRunnerConfigError> {
+    format!("{host}:{port}")
+        .to_socket_addrs()
+        .map_err(|error| {
+            HostedRunnerConfigError::new(format!(
+                "hosted runner listen address is invalid: {error}"
+            ))
+        })?
+        .next()
+        .ok_or_else(|| HostedRunnerConfigError::new("hosted runner listen address is invalid"))
+}
+
+fn resolve_config_workspace_root(path: Option<&str>) -> Result<PathBuf, HostedRunnerConfigError> {
+    let path = path
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| {
+            HostedRunnerConfigError::new("maestro hosted-runner requires MAESTRO_WORKSPACE_ROOT")
+        })?;
+    let workspace_root = fs::canonicalize(Path::new(path)).map_err(|error| {
+        HostedRunnerConfigError::new(format!(
+            "hosted runner workspace root is unavailable: {error}"
+        ))
+    })?;
+    let metadata = fs::metadata(&workspace_root).map_err(|error| {
+        HostedRunnerConfigError::new(format!(
+            "hosted runner workspace root is unavailable: {error}"
+        ))
+    })?;
+    if !metadata.is_dir() {
+        return Err(HostedRunnerConfigError::new(
+            "hosted runner workspace root is not a directory",
+        ));
+    }
+    Ok(workspace_root)
+}
+
+fn resolve_snapshot_root(path: Option<&str>, workspace_root: &Path) -> PathBuf {
+    let Some(path) = path.map(str::trim).filter(|path| !path.is_empty()) else {
+        return workspace_root.join(".maestro").join("runner-snapshots");
+    };
+    let path = PathBuf::from(path);
+    if path.is_absolute() {
+        path
+    } else {
+        workspace_root.join(path)
+    }
+}
+
+fn path_to_str(path: &Path) -> Result<&str, HostedRunnerConfigError> {
+    path.to_str()
+        .ok_or_else(|| HostedRunnerConfigError::new("path must be valid UTF-8"))
+}
+
+fn non_empty(value: String, field: &str) -> Result<String, HostedRunnerConfigError> {
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        return Err(HostedRunnerConfigError::new(format!(
+            "{field} must not be empty"
+        )));
+    }
+    Ok(value)
+}
+
+#[derive(Debug)]
+pub struct HostedRunnerHandle {
+    local_addr: SocketAddr,
+    shutdown: CancellationToken,
+    task: JoinHandle<()>,
+}
+
+impl HostedRunnerHandle {
+    #[must_use]
+    pub fn local_addr(&self) -> SocketAddr {
+        self.local_addr
+    }
+
+    #[must_use]
+    pub fn base_url(&self) -> String {
+        format!("http://{}", self.local_addr)
+    }
+
+    pub async fn shutdown(self) {
+        self.shutdown.cancel();
+        let _ = self.task.await;
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HostedRunnerIdentity {
+    pub protocol_version: String,
+    pub runner_session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_instance_id: Option<String>,
+    pub ready: bool,
+    pub draining: bool,
+}
+
+#[derive(Clone)]
+struct SharedRunner {
+    config: Arc<HostedRunnerConfig>,
+    state: Arc<Mutex<RunnerState>>,
+    events: broadcast::Sender<StreamEnvelope>,
     message_executor: Arc<dyn HostedRunnerHeadlessMessageExecutor>,
 }
 
-impl std::fmt::Debug for HostedRunnerRuntime {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("HostedRunnerRuntime")
-            .field("config", &self.config())
-            .field("draining", &self.is_draining())
-            .finish_non_exhaustive()
-    }
+struct RunnerState {
+    ready: bool,
+    draining: bool,
+    session_id: String,
+    cursor: u64,
+    last_init: Option<InitConfig>,
+    last_status: Option<String>,
+    controller_connection_id: Option<String>,
+    connections: HashMap<String, ConnectionRecord>,
+    subscriptions: HashMap<String, SubscriptionRecord>,
+    active_utility_commands: HashMap<String, ActiveUtilityCommandSnapshot>,
+    active_file_watches: HashMap<String, ActiveFileWatchSnapshot>,
+    envelopes: VecDeque<StreamEnvelope>,
 }
 
-impl HostedRunnerRuntime {
-    pub fn new(config: HostedRunnerConfig) -> Self {
-        Self::new_with_message_executor(config, Arc::new(TransportOnlyHostedRunnerMessageExecutor))
-    }
-
-    pub fn new_with_message_executor(
-        config: HostedRunnerConfig,
-        message_executor: Arc<dyn HostedRunnerHeadlessMessageExecutor>,
-    ) -> Self {
-        let headless_session_id = config
-            .maestro_session_id
-            .clone()
-            .unwrap_or_else(|| config.runner_session_id.clone());
-        Self {
-            inner: Arc::new(Mutex::new(HostedRunnerRuntimeInner {
-                config,
-                ready: true,
-                draining: false,
-                headless_session_id,
-                headless_connections: HashMap::new(),
-                controller_connection_id: None,
-                next_connection_sequence: 1,
-                next_subscription_sequence: 1,
-                headless_events: Vec::new(),
-                next_headless_cursor: 1,
-                message_executor,
-            })),
-        }
-    }
-
-    pub fn config(&self) -> HostedRunnerConfig {
-        self.inner
-            .lock()
-            .expect("hosted runner mutex poisoned")
-            .config
-            .clone()
-    }
-
-    pub fn set_ready(&self, ready: bool) {
-        self.inner
-            .lock()
-            .expect("hosted runner mutex poisoned")
-            .ready = ready;
-    }
-
-    pub fn is_draining(&self) -> bool {
-        self.inner
-            .lock()
-            .expect("hosted runner mutex poisoned")
-            .draining
-    }
-
-    pub fn identity(&self) -> Result<HostedRunnerIdentity, HostedRunnerError> {
-        let inner = self.inner.lock().expect("hosted runner mutex poisoned");
-        let owner_instance_id = inner.config.owner_instance_id.clone().ok_or_else(|| {
-            HostedRunnerError::runtime_not_ready("hosted runner identity unavailable")
-        })?;
-        Ok(HostedRunnerIdentity {
-            protocol_version: HOSTED_RUNNER_IDENTITY_PROTOCOL_VERSION.to_string(),
-            runner_session_id: inner.config.runner_session_id.clone(),
-            owner_instance_id,
-            ready: inner.ready && !inner.draining,
-            draining: inner.draining,
-        })
-    }
-
-    pub fn drain(
-        &self,
-        input: HostedRunnerDrainInput,
-    ) -> Result<HostedRunnerDrainResult, HostedRunnerError> {
-        let requested_at = Utc::now();
-        self.drain_at(input, requested_at, Utc::now())
-    }
-
-    pub fn drain_at(
-        &self,
-        input: HostedRunnerDrainInput,
-        requested_at: DateTime<Utc>,
-        completed_at: DateTime<Utc>,
-    ) -> Result<HostedRunnerDrainResult, HostedRunnerError> {
-        let stop_reason = input
-            .reason
-            .clone()
-            .unwrap_or_else(|| "platform_requested_drain".to_string());
-        {
-            let mut inner = self.inner.lock().expect("hosted runner mutex poisoned");
-            inner.draining = true;
-        }
-
-        let config = self.config();
-        let workspace_root = resolve_workspace_root(Some(path_to_str(&config.workspace_root)?))?;
-        let export_paths = resolve_workspace_export_paths(&workspace_root, input.export_paths())?;
-        fs::create_dir_all(&config.snapshot_root).map_err(|error| {
-            HostedRunnerError::internal(format!(
-                "failed to create hosted runner snapshot root: {error}"
-            ))
-        })?;
-
-        let requested_at_string = format_timestamp(requested_at);
-        let completed_at_string = format_timestamp(completed_at);
-        let snapshot_path = config.snapshot_root.join(safe_manifest_file_name(
-            &config.runner_session_id,
-            &requested_at_string,
-        ));
-        let runtime = {
-            let mut inner = self.inner.lock().expect("hosted runner mutex poisoned");
-            inner.publish_drain_status_if_active(&stop_reason);
-            inner.drain_manifest_runtime()
-        };
-        let manifest = HostedRunnerSnapshotManifest {
-            manifest_version: HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION.to_string(),
-            protocol_version: HOSTED_RUNNER_DRAIN_PROTOCOL_VERSION.to_string(),
-            status: SnapshotManifestStatus::Drained,
-            runner_session_id: config.runner_session_id,
-            owner_instance_id: config.owner_instance_id,
-            workspace_id: config.workspace_id,
-            agent_run_id: config.agent_run_id,
-            maestro_session_id: config.maestro_session_id,
-            workspace_root: workspace_root.display().to_string(),
-            snapshot_root: config.snapshot_root.display().to_string(),
-            snapshot_path: snapshot_path.display().to_string(),
-            requested_at: requested_at_string,
-            completed_at: completed_at_string,
-            stop_reason,
-            requested_by: input.requested_by,
-            runtime,
-            workspace_export: HostedRunnerWorkspaceExport {
-                mode: "local_path_contract".to_string(),
-                paths: export_paths,
-            },
-            git: collect_git_state(&workspace_root),
-        };
-
-        let manifest_json = serde_json::to_string_pretty(&manifest)
-            .map_err(|error| HostedRunnerError::internal(error.to_string()))?;
-        fs::write(&snapshot_path, format!("{manifest_json}\n")).map_err(|error| {
-            HostedRunnerError::internal(format!(
-                "failed to write hosted runner snapshot manifest: {error}"
-            ))
-        })?;
-
-        Ok(HostedRunnerDrainResult {
-            status: SnapshotManifestStatus::Drained,
-            manifest_path: snapshot_path,
-            manifest,
-        })
-    }
-
-    /// Handle a contract route without committing to a specific Rust HTTP stack.
-    ///
-    /// A future axum/hyper entrypoint can adapt real requests to this function,
-    /// while conformance tests can already exercise the protocol shape.
-    pub fn handle_request(
-        &self,
-        method: &str,
-        path: &str,
-        body: Option<&str>,
-    ) -> HostedRunnerHttpResponse {
-        self.handle_request_with_headers(method, path, body, &HashMap::new())
-    }
-
-    fn handle_request_with_headers(
-        &self,
-        method: &str,
-        path: &str,
-        body: Option<&str>,
-        headers: &HashMap<String, String>,
-    ) -> HostedRunnerHttpResponse {
-        let route_path = http_route_path(path);
-        match (method, route_path) {
-            ("GET", HOSTED_RUNNER_IDENTITY_PATH) => self
-                .identity()
-                .map(|identity| HostedRunnerHttpResponse::json(200, json!(identity)))
-                .unwrap_or_else(HostedRunnerHttpResponse::from_error),
-            (_, HOSTED_RUNNER_IDENTITY_PATH) => HostedRunnerHttpResponse::json(
-                405,
-                json!({
-                    "error": "method_not_allowed",
-                    "code": "bad_request"
-                }),
-            ),
-            ("POST", HOSTED_RUNNER_DRAIN_PATH) => match parse_drain_body(body) {
-                Ok(input) => self
-                    .drain(input)
-                    .map(|result| {
-                        HostedRunnerHttpResponse::json(
-                            200,
-                            json!({
-                                "protocol_version": HOSTED_RUNNER_DRAIN_PROTOCOL_VERSION,
-                                "status": result.status,
-                                "manifest_path": result.manifest_path,
-                                "manifest": result.manifest
-                            }),
-                        )
-                    })
-                    .unwrap_or_else(HostedRunnerHttpResponse::from_error),
-                Err(error) => HostedRunnerHttpResponse::from_error(error),
-            },
-            (_, HOSTED_RUNNER_DRAIN_PATH) => HostedRunnerHttpResponse::json(
-                405,
-                json!({
-                    "error": "method_not_allowed",
-                    "code": "bad_request"
-                }),
-            ),
-            ("POST", HEADLESS_CONNECTIONS_PATH) => match parse_headless_body::<
-                HostedRunnerHeadlessConnectionInput,
-            >(body, "headless connection")
-            {
-                Ok(input) => self
-                    .register_headless_connection(input)
-                    .map(|snapshot| HostedRunnerHttpResponse::json(200, json!(snapshot)))
-                    .unwrap_or_else(HostedRunnerHttpResponse::from_error),
-                Err(error) => HostedRunnerHttpResponse::from_error(error),
-            },
-            (_, HEADLESS_CONNECTIONS_PATH) => method_not_allowed(),
-            _ if route_path.starts_with(HEADLESS_SESSIONS_PREFIX) => {
-                match parse_headless_session_route(route_path) {
-                    Some((session_id, "subscribe")) if method == "POST" => self
-                        .subscribe_headless_session(session_id, body)
-                        .map(|snapshot| HostedRunnerHttpResponse::json(200, json!(snapshot)))
-                        .unwrap_or_else(HostedRunnerHttpResponse::from_error),
-                    Some((_session_id, "subscribe")) => method_not_allowed(),
-                    Some((session_id, "heartbeat")) if method == "POST" => self
-                        .heartbeat_headless_session(session_id, body)
-                        .map(|snapshot| HostedRunnerHttpResponse::json(200, json!(snapshot)))
-                        .unwrap_or_else(HostedRunnerHttpResponse::from_error),
-                    Some((_session_id, "heartbeat")) => method_not_allowed(),
-                    Some((session_id, "disconnect")) if method == "POST" => self
-                        .disconnect_headless_session(session_id, body)
-                        .map(|snapshot| HostedRunnerHttpResponse::json(200, json!(snapshot)))
-                        .unwrap_or_else(HostedRunnerHttpResponse::from_error),
-                    Some((_session_id, "disconnect")) => method_not_allowed(),
-                    Some((session_id, "state")) if method == "GET" => self
-                        .headless_session_state(session_id)
-                        .map(|snapshot| HostedRunnerHttpResponse::json(200, json!(snapshot)))
-                        .unwrap_or_else(HostedRunnerHttpResponse::from_error),
-                    Some((_session_id, "state")) => method_not_allowed(),
-                    Some((session_id, "events")) if method == "GET" => self
-                        .headless_session_events(session_id, path)
-                        .map(|events| HostedRunnerHttpResponse::event_stream(json!(events)))
-                        .unwrap_or_else(HostedRunnerHttpResponse::from_error),
-                    Some((_session_id, "events")) => method_not_allowed(),
-                    Some((session_id, "message" | "messages")) if method == "POST" => self
-                        .post_headless_session_message(session_id, body, headers)
-                        .map(|result| HostedRunnerHttpResponse::json(200, result))
-                        .unwrap_or_else(HostedRunnerHttpResponse::from_error),
-                    Some((_session_id, "message" | "messages")) => method_not_allowed(),
-                    _ => HostedRunnerHttpResponse::json(
-                        404,
-                        json!({
-                            "error": "not_found",
-                            "code": "not_found"
-                        }),
-                    ),
-                }
-            }
-            _ if is_headless_path(route_path) => HostedRunnerHttpResponse::json(
-                501,
-                json!({
-                    "error": "headless host surface not implemented in Rust yet",
-                    "code": "unsupported_capability",
-                    "capability": "headless_http_host"
-                }),
-            ),
-            _ => HostedRunnerHttpResponse::json(
-                404,
-                json!({
-                    "error": "not_found",
-                    "code": "not_found"
-                }),
-            ),
-        }
-    }
-
-    fn register_headless_connection(
-        &self,
-        input: HostedRunnerHeadlessConnectionInput,
-    ) -> Result<HostedRunnerHeadlessConnectionSnapshot, HostedRunnerError> {
-        let mut inner = self.inner.lock().expect("hosted runner mutex poisoned");
-        let connection_id = ensure_headless_connection(&mut inner, input)?;
-        Ok(inner.headless_connection_snapshot(&connection_id))
-    }
-
-    fn subscribe_headless_session(
-        &self,
-        session_id: &str,
-        body: Option<&str>,
-    ) -> Result<HostedRunnerHeadlessSubscriptionSnapshot, HostedRunnerError> {
-        let input =
-            parse_headless_body::<HostedRunnerHeadlessConnectionInput>(body, "headless subscribe")?;
-        let mut inner = self.inner.lock().expect("hosted runner mutex poisoned");
-        inner.ensure_headless_session(session_id)?;
-        let connection_id = ensure_headless_connection(&mut inner, input)?;
-        let subscription_id = inner.next_subscription_id();
-        let connection = inner
-            .headless_connections
-            .get_mut(&connection_id)
-            .ok_or_else(|| HostedRunnerError::not_found("headless connection not found"))?;
-        connection.subscription_ids.insert(subscription_id.clone());
-        Ok(inner.headless_subscription_snapshot(&connection_id, &subscription_id))
-    }
-
-    fn heartbeat_headless_session(
-        &self,
-        session_id: &str,
-        body: Option<&str>,
-    ) -> Result<HostedRunnerHeadlessHeartbeatSnapshot, HostedRunnerError> {
-        let input = parse_headless_body::<HostedRunnerHeadlessConnectionReferenceInput>(
-            body,
-            "headless heartbeat",
-        )?;
-        let mut inner = self.inner.lock().expect("hosted runner mutex poisoned");
-        inner.ensure_headless_session(session_id)?;
-        let connection_id = inner.resolve_connection_reference(&input)?;
-        let now = Utc::now();
-        let connection = inner
-            .headless_connections
-            .get_mut(&connection_id)
-            .ok_or_else(|| HostedRunnerError::not_found("headless connection not found"))?;
-        connection.last_seen_at = now;
-        Ok(inner.headless_heartbeat_snapshot(&connection_id))
-    }
-
-    fn disconnect_headless_session(
-        &self,
-        session_id: &str,
-        body: Option<&str>,
-    ) -> Result<HostedRunnerHeadlessDisconnectSnapshot, HostedRunnerError> {
-        let input = parse_headless_body::<HostedRunnerHeadlessConnectionReferenceInput>(
-            body,
-            "headless disconnect",
-        )?;
-        let mut inner = self.inner.lock().expect("hosted runner mutex poisoned");
-        inner.ensure_headless_session(session_id)?;
-        let connection_id = inner.resolve_connection_reference(&input)?;
-        let Some(connection) = inner.headless_connections.remove(&connection_id) else {
-            return Err(HostedRunnerError::not_found(
-                "headless connection not found",
-            ));
-        };
-        if inner.controller_connection_id() == Some(connection_id.as_str()) {
-            inner.clear_controller_connection();
-        }
-        let mut disconnected_subscription_ids =
-            connection.subscription_ids.into_iter().collect::<Vec<_>>();
-        disconnected_subscription_ids.sort();
-        Ok(HostedRunnerHeadlessDisconnectSnapshot {
-            success: true,
-            connection_id,
-            controller_connection_id: inner.controller_connection_id().map(str::to_string),
-            disconnected_subscription_ids,
-        })
-    }
-
-    fn headless_session_state(
-        &self,
-        session_id: &str,
-    ) -> Result<HostedRunnerHeadlessRuntimeSnapshot, HostedRunnerError> {
-        let inner = self.inner.lock().expect("hosted runner mutex poisoned");
-        inner.ensure_headless_session(session_id)?;
-        Ok(inner.headless_runtime_snapshot(None))
-    }
-
-    fn headless_session_events(
-        &self,
-        session_id: &str,
-        path: &str,
-    ) -> Result<Vec<HostedRunnerHeadlessStreamEnvelope>, HostedRunnerError> {
-        let cursor = parse_optional_query_u64(path, "cursor")?;
-        let subscription_id = query_value(path, "subscriptionId")
-            .or_else(|| query_value(path, "subscription_id"))
-            .map(|value| validate_headless_id(&value, "subscriptionId"))
-            .transpose()?;
-
-        let connection_id = {
-            let inner = self.inner.lock().expect("hosted runner mutex poisoned");
-            inner.ensure_headless_session(session_id)?;
-            subscription_id
-                .as_deref()
-                .map(|subscription_id| inner.resolve_subscription(subscription_id))
-                .transpose()?
-        };
-        self.publish_drained_headless_runtime_messages(session_id)?;
-
-        let inner = self.inner.lock().expect("hosted runner mutex poisoned");
-        inner.ensure_headless_session(session_id)?;
-        Ok(inner.headless_stream_events(cursor, connection_id.as_deref()))
-    }
-
-    fn post_headless_session_message(
-        &self,
-        session_id: &str,
-        body: Option<&str>,
-        headers: &HashMap<String, String>,
-    ) -> Result<Value, HostedRunnerError> {
-        let message = parse_headless_message_body(body)?;
-        let to_agent_message =
-            serde_json::from_value::<ToAgentMessage>(message.clone()).map_err(|error| {
-                HostedRunnerError::bad_request(format!(
-                    "invalid headless message JSON body: {error}"
-                ))
-            })?;
-        let reference = headless_connection_reference_from_headers(headers);
-
-        let (executor, context) = {
-            let inner = self.inner.lock().expect("hosted runner mutex poisoned");
-            inner.ensure_headless_session(session_id)?;
-            inner.ensure_attachable()?;
-            let connection_id = inner.resolve_connection_reference(&reference)?;
-            inner.ensure_controller_message_connection(
-                &connection_id,
-                reference.subscription_id.as_deref(),
-            )?;
-            (
-                Arc::clone(&inner.message_executor),
-                inner
-                    .headless_message_context(&connection_id, reference.subscription_id.clone())?,
-            )
-        };
-
-        let result = executor.execute(&context, to_agent_message)?;
-        let published_message_count = result.messages.len();
-
-        let mut inner = self.inner.lock().expect("hosted runner mutex poisoned");
-        inner.ensure_headless_session(session_id)?;
-        inner.ensure_attachable()?;
-        inner.ensure_controller_message_connection(
-            &context.connection_id,
-            context.subscription_id.as_deref(),
-        )?;
-        let cursor = inner.publish_headless_messages(result.messages);
-
-        Ok(json!({
-            "success": true,
-            "accepted": true,
-            "cursor": cursor,
-            "execution": result.execution,
-            "published_messages": published_message_count,
-            "message": result.message
-        }))
-    }
-
-    fn publish_drained_headless_runtime_messages(
-        &self,
-        session_id: &str,
-    ) -> Result<usize, HostedRunnerError> {
-        let executor = {
-            let inner = self.inner.lock().expect("hosted runner mutex poisoned");
-            inner.ensure_headless_session(session_id)?;
-            Arc::clone(&inner.message_executor)
-        };
-        let messages = executor.drain()?;
-        let message_count = messages.len();
-        if message_count == 0 {
-            return Ok(0);
-        }
-
-        let mut inner = self.inner.lock().expect("hosted runner mutex poisoned");
-        inner.ensure_headless_session(session_id)?;
-        inner.publish_headless_messages(messages);
-        Ok(message_count)
-    }
-}
-
-#[derive(Debug, Clone)]
-struct HostedRunnerHeadlessConnectionRecord {
+#[derive(Clone)]
+struct ConnectionRecord {
     id: String,
     role: ConnectionRole,
     client_protocol_version: Option<String>,
     client_info: Option<ClientInfo>,
     capabilities: Option<ClientCapabilities>,
-    opt_out_notifications: Option<Vec<String>>,
+    opt_out_notifications: Vec<String>,
     subscription_ids: HashSet<String>,
     last_seen_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-struct HostedRunnerHeadlessConnectionInput {
-    #[serde(rename = "protocolVersion", alias = "protocol_version", default)]
-    protocol_version: Option<String>,
-    #[serde(rename = "clientInfo", alias = "client_info", default)]
+struct ConnectionUpsert {
+    connection_id: String,
+    role: ConnectionRole,
+    client_protocol_version: Option<String>,
     client_info: Option<ClientInfo>,
-    #[serde(rename = "sessionId", alias = "session_id", default)]
-    session_id: Option<String>,
-    #[serde(rename = "connectionId", alias = "connection_id", default)]
-    connection_id: Option<String>,
-    #[serde(default)]
-    capabilities: Option<HostedRunnerClientCapabilities>,
-    #[serde(
-        rename = "optOutNotifications",
-        alias = "opt_out_notifications",
-        default
-    )]
+    capabilities: Option<ClientCapabilities>,
     opt_out_notifications: Vec<String>,
-    #[serde(default)]
-    role: Option<ConnectionRole>,
-    #[serde(rename = "takeControl", alias = "take_control", default)]
     take_control: bool,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-struct HostedRunnerClientCapabilities {
-    #[serde(rename = "serverRequests", alias = "server_requests", default)]
-    server_requests: Vec<ServerRequestType>,
-    #[serde(rename = "utilityOperations", alias = "utility_operations", default)]
-    utility_operations: Vec<UtilityOperation>,
-    #[serde(rename = "rawAgentEvents", alias = "raw_agent_events", default)]
-    raw_agent_events: Option<bool>,
+#[derive(Clone)]
+struct SubscriptionRecord {
+    connection_id: String,
+    role: ConnectionRole,
+    attached: bool,
 }
 
-impl HostedRunnerClientCapabilities {
-    fn into_client_capabilities(self) -> Option<ClientCapabilities> {
-        let has_capabilities = !self.server_requests.is_empty()
-            || !self.utility_operations.is_empty()
-            || self.raw_agent_events.is_some();
-        has_capabilities.then(|| ClientCapabilities {
-            server_requests: (!self.server_requests.is_empty()).then_some(self.server_requests),
-            utility_operations: (!self.utility_operations.is_empty())
-                .then_some(self.utility_operations),
-            raw_agent_events: self.raw_agent_events,
-        })
-    }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RuntimeSnapshot {
+    #[serde(rename = "protocolVersion")]
+    protocol_version: String,
+    session_id: String,
+    cursor: u64,
+    last_init: Option<InitConfig>,
+    state: RuntimeStateSnapshot,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-struct HostedRunnerHeadlessConnectionReferenceInput {
-    #[serde(rename = "connectionId", alias = "connection_id", default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RuntimeStateSnapshot {
+    protocol_version: Option<String>,
+    client_protocol_version: Option<String>,
+    client_info: Option<ClientInfo>,
+    capabilities: Option<ClientCapabilities>,
+    opt_out_notifications: Option<Vec<String>>,
+    connection_role: Option<ConnectionRole>,
+    connection_count: usize,
+    subscriber_count: usize,
+    controller_subscription_id: Option<String>,
+    controller_connection_id: Option<String>,
+    connections: Vec<ConnectionState>,
+    model: Option<String>,
+    provider: Option<String>,
+    session_id: Option<String>,
+    cwd: Option<String>,
+    git_branch: Option<String>,
+    current_response: Option<serde_json::Value>,
+    pending_approvals: Vec<serde_json::Value>,
+    pending_client_tools: Vec<serde_json::Value>,
+    pending_user_inputs: Vec<serde_json::Value>,
+    pending_tool_retries: Vec<serde_json::Value>,
+    tracked_tools: Vec<serde_json::Value>,
+    active_tools: Vec<serde_json::Value>,
+    active_utility_commands: Vec<ActiveUtilityCommandSnapshot>,
+    active_file_watches: Vec<ActiveFileWatchSnapshot>,
+    last_error: Option<String>,
+    last_error_type: Option<String>,
+    last_status: Option<String>,
+    last_response_duration_ms: Option<u64>,
+    last_ttft_ms: Option<u64>,
+    is_ready: bool,
+    is_responding: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ActiveUtilityCommandSnapshot {
+    command_id: String,
+    command: String,
+    cwd: Option<String>,
+    shell_mode: UtilityCommandShellMode,
+    terminal_mode: UtilityCommandTerminalMode,
+    pid: Option<u32>,
+    columns: Option<u32>,
+    rows: Option<u32>,
+    owner_connection_id: Option<String>,
+    output: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ActiveFileWatchSnapshot {
+    watch_id: String,
+    root_dir: String,
+    include_patterns: Option<Vec<String>>,
+    exclude_patterns: Option<Vec<String>>,
+    debounce_ms: u32,
+    owner_connection_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum StreamEnvelope {
+    Snapshot {
+        snapshot: RuntimeSnapshot,
+    },
+    Reset {
+        reason: String,
+        snapshot: RuntimeSnapshot,
+    },
+    Message {
+        cursor: u64,
+        message: Box<FromAgentMessage>,
+    },
+    Heartbeat {
+        cursor: u64,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+struct ConnectionCreateRequest {
+    #[serde(rename = "protocolVersion")]
+    protocol_version: Option<String>,
+    #[serde(rename = "clientInfo")]
+    client_info: Option<ClientInfo>,
+    #[serde(rename = "sessionId")]
+    session_id: Option<String>,
+    #[serde(rename = "connectionId")]
     connection_id: Option<String>,
-    #[serde(rename = "subscriptionId", alias = "subscription_id", default)]
+    #[serde(rename = "thinkingLevel")]
+    _thinking_level: Option<ThinkingLevel>,
+    capabilities: Option<HttpClientCapabilities>,
+    #[serde(rename = "optOutNotifications", default)]
+    opt_out_notifications: Vec<String>,
+    role: Option<ConnectionRole>,
+    #[serde(rename = "takeControl", default)]
+    take_control: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct SubscribeRequest {
+    #[serde(rename = "connectionId")]
+    connection_id: Option<String>,
+    #[serde(rename = "protocolVersion")]
+    protocol_version: Option<String>,
+    #[serde(rename = "clientInfo")]
+    client_info: Option<ClientInfo>,
+    capabilities: Option<HttpClientCapabilities>,
+    #[serde(rename = "optOutNotifications", default)]
+    opt_out_notifications: Vec<String>,
+    role: Option<ConnectionRole>,
+    #[serde(rename = "takeControl", default)]
+    take_control: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct HeartbeatRequest {
+    #[serde(rename = "connectionId")]
+    connection_id: Option<String>,
+    #[serde(rename = "subscriptionId")]
     subscription_id: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostedRunnerHeadlessRuntimeSnapshot {
-    #[serde(rename = "protocolVersion")]
-    pub protocol_version: String,
-    pub session_id: String,
-    pub cursor: u64,
-    pub state: Value,
+#[derive(Debug, Deserialize)]
+struct DisconnectRequest {
+    #[serde(rename = "connectionId")]
+    connection_id: Option<String>,
+    #[serde(rename = "subscriptionId")]
+    subscription_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DrainRequest {
+    reason: Option<String>,
+    requested_by: Option<String>,
+    export_paths: Option<Vec<String>>,
+}
+
+struct UtilityCommandInvocation {
+    connection_id: Option<String>,
+    command_id: String,
+    command: String,
+    cwd: Option<String>,
+    env: HashMap<String, String>,
+    shell_mode: UtilityCommandShellMode,
+    terminal_mode: UtilityCommandTerminalMode,
+    columns: Option<u32>,
+    rows: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct HttpClientCapabilities {
+    #[serde(rename = "serverRequests")]
+    server_requests: Option<Vec<ServerRequestType>>,
+    #[serde(rename = "utilityOperations")]
+    utility_operations: Option<Vec<UtilityOperation>>,
+    #[serde(rename = "rawAgentEvents")]
+    raw_agent_events: Option<bool>,
+}
+
+impl From<HttpClientCapabilities> for ClientCapabilities {
+    fn from(value: HttpClientCapabilities) -> Self {
+        Self {
+            server_requests: value.server_requests,
+            utility_operations: value.utility_operations,
+            raw_agent_events: value.raw_agent_events,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -873,17 +729,15 @@ struct TransportOnlyHostedRunnerMessageExecutor;
 impl HostedRunnerHeadlessMessageExecutor for TransportOnlyHostedRunnerMessageExecutor {
     fn execute(
         &self,
-        context: &HostedRunnerHeadlessMessageContext,
-        message: ToAgentMessage,
+        _context: &HostedRunnerHeadlessMessageContext,
+        _message: ToAgentMessage,
     ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
-        let response = match message {
-            ToAgentMessage::Hello { .. } => hosted_hello_ok_for_context(context),
-            _ => FromAgentMessage::Status {
-                message: "Rust hosted runner accepted the headless message; agent execution is not attached yet".to_string(),
-            },
-        };
         Ok(HostedRunnerHeadlessMessageResult::transport_only(
-            vec![response],
+            vec![FromAgentMessage::Status {
+                message:
+                    "Rust hosted runner accepted the headless message; agent execution is not attached yet"
+                        .to_string(),
+            }],
             "Rust hosted runner accepted the headless message; agent execution is not attached yet",
         ))
     }
@@ -907,978 +761,309 @@ fn hosted_runner_error_from_async_transport(error: AsyncTransportError) -> Hoste
     HostedRunnerError::runtime_not_ready(format!("agent supervisor is not ready: {error}"))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum HostedRunnerHeadlessStreamEnvelope {
-    Snapshot {
-        snapshot: HostedRunnerHeadlessRuntimeSnapshot,
-    },
-    Message {
-        cursor: u64,
-        message: Value,
-    },
-    Heartbeat {
-        cursor: u64,
-    },
-    Reset {
-        reason: String,
-        snapshot: HostedRunnerHeadlessRuntimeSnapshot,
-    },
+struct HttpRequest {
+    method: String,
+    path: String,
+    query: HashMap<String, String>,
+    headers: HashMap<String, String>,
+    body: Vec<u8>,
 }
 
-impl HostedRunnerHeadlessStreamEnvelope {
-    fn cursor(&self) -> u64 {
-        match self {
-            Self::Snapshot { snapshot } | Self::Reset { snapshot, .. } => snapshot.cursor,
-            Self::Message { cursor, .. } | Self::Heartbeat { cursor } => *cursor,
-        }
-    }
+struct HostedError {
+    status: u16,
+    code: &'static str,
+    message: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostedRunnerHeadlessConnectionState {
-    pub connection_id: String,
-    pub role: ConnectionRole,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub client_protocol_version: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub client_info: Option<ClientInfo>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub capabilities: Option<ClientCapabilities>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub opt_out_notifications: Option<Vec<String>>,
-    pub subscription_count: usize,
-    pub attached_subscription_count: usize,
-    pub controller_lease_granted: bool,
-    pub lease_expires_at: Option<String>,
+type HostedResult<T> = Result<T, HostedError>;
+
+pub async fn start_hosted_runner(config: HostedRunnerConfig) -> io::Result<HostedRunnerHandle> {
+    start_hosted_runner_with_message_executor(
+        config,
+        Arc::new(TransportOnlyHostedRunnerMessageExecutor),
+    )
+    .await
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostedRunnerHeadlessConnectionSnapshot {
-    pub session_id: String,
-    pub connection_id: String,
-    pub role: ConnectionRole,
-    pub controller_lease_granted: bool,
-    pub controller_connection_id: Option<String>,
-    pub lease_expires_at: String,
-    pub heartbeat_interval_ms: u64,
-    pub snapshot: HostedRunnerHeadlessRuntimeSnapshot,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostedRunnerHeadlessSubscriptionSnapshot {
-    pub connection_id: String,
-    pub subscription_id: String,
-    pub opt_out_notifications: Option<Vec<String>>,
-    pub role: ConnectionRole,
-    pub controller_lease_granted: bool,
-    pub controller_subscription_id: Option<String>,
-    pub controller_connection_id: Option<String>,
-    pub lease_expires_at: String,
-    pub heartbeat_interval_ms: u64,
-    pub snapshot: HostedRunnerHeadlessRuntimeSnapshot,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostedRunnerHeadlessHeartbeatSnapshot {
-    pub connection_id: String,
-    pub controller_lease_granted: bool,
-    pub controller_connection_id: Option<String>,
-    pub lease_expires_at: String,
-    pub heartbeat_interval_ms: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostedRunnerHeadlessDisconnectSnapshot {
-    pub success: bool,
-    pub connection_id: String,
-    pub controller_connection_id: Option<String>,
-    pub disconnected_subscription_ids: Vec<String>,
-}
-
-impl HostedRunnerRuntimeInner {
-    fn ensure_attachable(&self) -> Result<(), HostedRunnerError> {
-        if self.draining {
-            return Err(HostedRunnerError::runtime_not_ready(
-                "hosted runner is draining",
-            ));
-        }
-        if !self.ready {
-            return Err(HostedRunnerError::runtime_not_ready(
-                "hosted runner is not ready",
-            ));
-        }
-        Ok(())
-    }
-
-    fn ensure_headless_session(&self, session_id: &str) -> Result<(), HostedRunnerError> {
-        if session_id == self.headless_session_id {
-            Ok(())
-        } else {
-            Err(HostedRunnerError::not_found(format!(
-                "headless session not found: {session_id}"
-            )))
-        }
-    }
-
-    fn next_connection_id(&mut self) -> String {
-        let id = format!("hconn_{}", self.next_connection_sequence);
-        self.next_connection_sequence += 1;
-        id
-    }
-
-    fn next_subscription_id(&mut self) -> String {
-        let id = format!("hsub_{}", self.next_subscription_sequence);
-        self.next_subscription_sequence += 1;
-        id
-    }
-
-    fn current_headless_cursor(&self) -> u64 {
-        self.next_headless_cursor.saturating_sub(1)
-    }
-
-    fn allocate_headless_cursor(&mut self) -> u64 {
-        let cursor = self.next_headless_cursor;
-        self.next_headless_cursor += 1;
-        cursor
-    }
-
-    fn push_headless_event(&mut self, envelope: HostedRunnerHeadlessStreamEnvelope) {
-        self.headless_events.push(envelope);
-        let excess = self
-            .headless_events
-            .len()
-            .saturating_sub(MAX_HEADLESS_REPLAY_EVENTS);
-        if excess > 0 {
-            self.headless_events.drain(..excess);
-        }
-    }
-
-    fn publish_headless_message(&mut self, message: Value) -> u64 {
-        let cursor = self.allocate_headless_cursor();
-        self.push_headless_event(HostedRunnerHeadlessStreamEnvelope::Message { cursor, message });
-        cursor
-    }
-
-    fn publish_headless_messages(&mut self, messages: Vec<FromAgentMessage>) -> u64 {
-        let mut cursor = self.current_headless_cursor();
-        for message in messages {
-            cursor = self.publish_headless_message(json!(message));
-        }
-        cursor
-    }
-
-    fn has_headless_runtime_activity(&self) -> bool {
-        !self.headless_connections.is_empty() || self.current_headless_cursor() > 0
-    }
-
-    fn publish_drain_status_if_active(&mut self, stop_reason: &str) {
-        if !self.has_headless_runtime_activity() {
-            return;
-        }
-        let message = FromAgentMessage::Status {
-            message: format!("Hosted runner is draining: {stop_reason}"),
-        };
-        self.publish_headless_message(json!(message));
-    }
-
-    fn drain_manifest_runtime(&self) -> HostedRunnerManifestRuntime {
-        let has_activity = self.has_headless_runtime_activity();
-        HostedRunnerManifestRuntime {
-            flush_status: if has_activity {
-                RuntimeFlushStatus::Completed
-            } else {
-                RuntimeFlushStatus::Skipped
-            },
-            error: None,
-            session_id: self.config.maestro_session_id.clone().or_else(|| {
-                has_activity
-                    .then(|| self.headless_session_id.clone())
-                    .filter(|session_id| !session_id.is_empty())
-            }),
-            session_file: None,
-            protocol_version: has_activity.then(|| HEADLESS_PROTOCOL_VERSION.to_string()),
-            cursor: has_activity.then(|| self.current_headless_cursor()),
-        }
-    }
-
-    fn controller_connection_id(&self) -> Option<&str> {
-        self.controller_connection_id
-            .as_deref()
-            .filter(|id| self.headless_connections.contains_key(*id))
-    }
-
-    fn clear_controller_connection(&mut self) {
-        self.controller_connection_id = None;
-    }
-
-    fn connection_lease_expires_at(connection: &HostedRunnerHeadlessConnectionRecord) -> String {
-        format_timestamp(
-            connection.last_seen_at + ChronoDuration::milliseconds(HEADLESS_CONNECTION_IDLE_MS),
-        )
-    }
-
-    fn controller_subscription_id(&self) -> Option<String> {
-        let controller_id = self.controller_connection_id()?;
-        self.headless_connections
-            .get(controller_id)
-            .and_then(|connection| connection.subscription_ids.iter().next().cloned())
-    }
-
-    fn connection_states(&self) -> Vec<HostedRunnerHeadlessConnectionState> {
-        let controller_id = self.controller_connection_id();
-        let mut states = self
-            .headless_connections
-            .values()
-            .map(|connection| HostedRunnerHeadlessConnectionState {
-                connection_id: connection.id.clone(),
-                role: connection.role,
-                client_protocol_version: connection.client_protocol_version.clone(),
-                client_info: connection.client_info.clone(),
-                capabilities: connection.capabilities.clone(),
-                opt_out_notifications: connection.opt_out_notifications.clone(),
-                subscription_count: connection.subscription_ids.len(),
-                attached_subscription_count: connection.subscription_ids.len(),
-                controller_lease_granted: controller_id == Some(connection.id.as_str()),
-                lease_expires_at: Some(Self::connection_lease_expires_at(connection)),
-            })
-            .collect::<Vec<_>>();
-        states.sort_by(|left, right| left.connection_id.cmp(&right.connection_id));
-        states
-    }
-
-    fn preferred_connection(
-        &self,
-        connection_id: Option<&str>,
-    ) -> Option<&HostedRunnerHeadlessConnectionRecord> {
-        connection_id
-            .and_then(|id| self.headless_connections.get(id))
-            .or_else(|| {
-                self.controller_connection_id()
-                    .and_then(|id| self.headless_connections.get(id))
-            })
-            .or_else(|| self.headless_connections.values().next())
-    }
-
-    fn headless_runtime_snapshot(
-        &self,
-        connection_id: Option<&str>,
-    ) -> HostedRunnerHeadlessRuntimeSnapshot {
-        let preferred = self.preferred_connection(connection_id);
-        let subscriber_count = self
-            .headless_connections
-            .values()
-            .map(|connection| connection.subscription_ids.len())
-            .sum::<usize>();
-        let git_branch =
-            collect_git_state(&self.config.workspace_root).and_then(|state| state.branch);
-        HostedRunnerHeadlessRuntimeSnapshot {
-            protocol_version: HEADLESS_PROTOCOL_VERSION.to_string(),
-            session_id: self.headless_session_id.clone(),
-            cursor: self.current_headless_cursor(),
-            state: json!({
-                "protocol_version": HEADLESS_PROTOCOL_VERSION,
-                "client_protocol_version": preferred.and_then(|connection| connection.client_protocol_version.clone()),
-                "client_info": preferred.and_then(|connection| connection.client_info.clone()),
-                "capabilities": preferred.and_then(|connection| connection.capabilities.clone()),
-                "opt_out_notifications": preferred.and_then(|connection| connection.opt_out_notifications.clone()),
-                "connection_role": preferred.map(|connection| connection.role),
-                "connection_count": self.headless_connections.len(),
-                "subscriber_count": subscriber_count,
-                "controller_subscription_id": self.controller_subscription_id(),
-                "controller_connection_id": self.controller_connection_id(),
-                "connections": self.connection_states(),
-                "session_id": self.headless_session_id.clone(),
-                "cwd": self.config.workspace_root.display().to_string(),
-                "git_branch": git_branch,
-                "is_ready": self.ready && !self.draining,
-                "is_responding": false
-            }),
-        }
-    }
-
-    fn headless_stream_events(
-        &self,
-        cursor: Option<u64>,
-        connection_id: Option<&str>,
-    ) -> Vec<HostedRunnerHeadlessStreamEnvelope> {
-        let Some(cursor) = cursor else {
-            return vec![HostedRunnerHeadlessStreamEnvelope::Snapshot {
-                snapshot: self.headless_runtime_snapshot(connection_id),
-            }];
-        };
-
-        let replay_gap = self
-            .headless_events
-            .first()
-            .map(HostedRunnerHeadlessStreamEnvelope::cursor)
-            .is_some_and(|oldest_cursor| cursor.saturating_add(1) < oldest_cursor);
-        if replay_gap {
-            return vec![HostedRunnerHeadlessStreamEnvelope::Reset {
-                reason: "replay_gap".to_string(),
-                snapshot: self.headless_runtime_snapshot(connection_id),
-            }];
-        }
-
-        let events = self
-            .headless_events
-            .iter()
-            .filter(|event| event.cursor() > cursor)
-            .cloned()
-            .collect::<Vec<_>>();
-        if events.is_empty() {
-            vec![HostedRunnerHeadlessStreamEnvelope::Heartbeat {
-                cursor: self.current_headless_cursor(),
-            }]
-        } else {
-            events
-        }
-    }
-
-    fn headless_connection_snapshot(
-        &self,
-        connection_id: &str,
-    ) -> HostedRunnerHeadlessConnectionSnapshot {
-        let connection = self
-            .headless_connections
-            .get(connection_id)
-            .expect("headless connection exists");
-        HostedRunnerHeadlessConnectionSnapshot {
-            session_id: self.headless_session_id.clone(),
-            connection_id: connection.id.clone(),
-            role: connection.role,
-            controller_lease_granted: self.controller_connection_id()
-                == Some(connection.id.as_str()),
-            controller_connection_id: self.controller_connection_id().map(str::to_string),
-            lease_expires_at: Self::connection_lease_expires_at(connection),
-            heartbeat_interval_ms: HEADLESS_HEARTBEAT_INTERVAL_MS,
-            snapshot: self.headless_runtime_snapshot(Some(connection_id)),
-        }
-    }
-
-    fn headless_subscription_snapshot(
-        &self,
-        connection_id: &str,
-        subscription_id: &str,
-    ) -> HostedRunnerHeadlessSubscriptionSnapshot {
-        let connection = self
-            .headless_connections
-            .get(connection_id)
-            .expect("headless connection exists");
-        HostedRunnerHeadlessSubscriptionSnapshot {
-            connection_id: connection.id.clone(),
-            subscription_id: subscription_id.to_string(),
-            opt_out_notifications: connection.opt_out_notifications.clone(),
-            role: connection.role,
-            controller_lease_granted: self.controller_connection_id()
-                == Some(connection.id.as_str()),
-            controller_subscription_id: self.controller_subscription_id(),
-            controller_connection_id: self.controller_connection_id().map(str::to_string),
-            lease_expires_at: Self::connection_lease_expires_at(connection),
-            heartbeat_interval_ms: HEADLESS_HEARTBEAT_INTERVAL_MS,
-            snapshot: self.headless_runtime_snapshot(Some(connection_id)),
-        }
-    }
-
-    fn headless_heartbeat_snapshot(
-        &self,
-        connection_id: &str,
-    ) -> HostedRunnerHeadlessHeartbeatSnapshot {
-        let connection = self
-            .headless_connections
-            .get(connection_id)
-            .expect("headless connection exists");
-        HostedRunnerHeadlessHeartbeatSnapshot {
-            connection_id: connection.id.clone(),
-            controller_lease_granted: self.controller_connection_id()
-                == Some(connection.id.as_str()),
-            controller_connection_id: self.controller_connection_id().map(str::to_string),
-            lease_expires_at: Self::connection_lease_expires_at(connection),
-            heartbeat_interval_ms: HEADLESS_HEARTBEAT_INTERVAL_MS,
-        }
-    }
-
-    fn resolve_connection_reference(
-        &self,
-        input: &HostedRunnerHeadlessConnectionReferenceInput,
-    ) -> Result<String, HostedRunnerError> {
-        if let Some(connection_id) = input.connection_id.as_deref() {
-            let connection_id = validate_headless_id(connection_id, "connectionId")?;
-            if self.headless_connections.contains_key(&connection_id) {
-                return Ok(connection_id);
-            }
-        }
-        if let Some(subscription_id) = input.subscription_id.as_deref() {
-            let subscription_id = validate_headless_id(subscription_id, "subscriptionId")?;
-            for connection in self.headless_connections.values() {
-                if connection.subscription_ids.contains(&subscription_id) {
-                    return Ok(connection.id.clone());
-                }
-            }
-        }
-        Err(HostedRunnerError::not_found(
-            "headless connection not found",
-        ))
-    }
-
-    fn resolve_subscription(&self, subscription_id: &str) -> Result<String, HostedRunnerError> {
-        for connection in self.headless_connections.values() {
-            if connection.subscription_ids.contains(subscription_id) {
-                return Ok(connection.id.clone());
-            }
-        }
-        Err(HostedRunnerError::not_found(
-            "headless subscription not found",
-        ))
-    }
-
-    fn ensure_controller_message_connection(
-        &self,
-        connection_id: &str,
-        subscription_id: Option<&str>,
-    ) -> Result<(), HostedRunnerError> {
-        let connection = self
-            .headless_connections
-            .get(connection_id)
-            .ok_or_else(|| HostedRunnerError::not_found("headless connection not found"))?;
-        if connection.role != ConnectionRole::Controller {
-            return Err(HostedRunnerError::lease_conflict(
-                "headless messages require the controller connection",
-            ));
-        }
-        if self.controller_connection_id() != Some(connection_id) {
-            return Err(HostedRunnerError::lease_conflict(
-                "headless controller lease is held by another connection",
-            ));
-        }
-        if let Some(subscription_id) = subscription_id {
-            if !connection.subscription_ids.contains(subscription_id) {
-                return Err(HostedRunnerError::not_found(
-                    "headless subscription not found",
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    fn headless_message_context(
-        &self,
-        connection_id: &str,
-        subscription_id: Option<String>,
-    ) -> Result<HostedRunnerHeadlessMessageContext, HostedRunnerError> {
-        let connection = self
-            .headless_connections
-            .get(connection_id)
-            .ok_or_else(|| HostedRunnerError::not_found("headless connection not found"))?;
-        Ok(HostedRunnerHeadlessMessageContext {
-            session_id: self.headless_session_id.clone(),
-            connection_id: connection.id.clone(),
-            subscription_id,
-            role: connection.role,
-            controller_connection_id: self.controller_connection_id().map(str::to_string),
-            client_protocol_version: connection.client_protocol_version.clone(),
-            client_info: connection.client_info.clone(),
-            capabilities: connection.capabilities.clone(),
-            opt_out_notifications: connection.opt_out_notifications.clone(),
-            lease_expires_at: Self::connection_lease_expires_at(connection),
-            workspace_root: self.config.workspace_root.clone(),
-        })
-    }
-}
-
-fn ensure_headless_connection(
-    inner: &mut HostedRunnerRuntimeInner,
-    input: HostedRunnerHeadlessConnectionInput,
-) -> Result<String, HostedRunnerError> {
-    inner.ensure_attachable()?;
-    let requested_session_id = input
-        .session_id
-        .as_deref()
-        .unwrap_or(&inner.headless_session_id);
-    inner.ensure_headless_session(requested_session_id)?;
-
-    let role = input.role.unwrap_or(ConnectionRole::Controller);
-    let capabilities = input
-        .capabilities
-        .and_then(HostedRunnerClientCapabilities::into_client_capabilities);
-    validate_headless_capabilities(role, capabilities.as_ref())?;
-
-    let requested_connection_id = match input.connection_id {
-        Some(connection_id) => {
-            let connection_id = validate_headless_id(&connection_id, "connectionId")?;
-            if !inner.headless_connections.contains_key(&connection_id) {
-                return Err(HostedRunnerError::not_found(
-                    "headless connection not found",
-                ));
-            }
-            Some(connection_id)
-        }
-        None => None,
-    };
-
-    if let Some(existing) = requested_connection_id
-        .as_deref()
-        .and_then(|connection_id| inner.headless_connections.get(connection_id))
-    {
-        if existing.role != role {
-            return Err(HostedRunnerError::bad_request(
-                "headless connection role does not match existing connection",
-            ));
-        }
-    }
-
-    let existing_controller_id = inner.controller_connection_id().map(str::to_string);
-    if role == ConnectionRole::Controller
-        && existing_controller_id
-            .as_deref()
-            .is_some_and(|controller_id| requested_connection_id.as_deref() != Some(controller_id))
-        && !input.take_control
-    {
-        return Err(HostedRunnerError::lease_conflict(
-            "Controller lease is already held by another connection",
+pub async fn start_hosted_runner_with_message_executor(
+    config: HostedRunnerConfig,
+    message_executor: Arc<dyn HostedRunnerHeadlessMessageExecutor>,
+) -> io::Result<HostedRunnerHandle> {
+    let workspace_root = tokio::fs::canonicalize(&config.workspace_root).await?;
+    if !tokio::fs::metadata(&workspace_root).await?.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "workspace root must be a directory",
         ));
     }
 
-    let connection_id = requested_connection_id.unwrap_or_else(|| inner.next_connection_id());
-    let now = Utc::now();
-    let opt_out_notifications =
-        (!input.opt_out_notifications.is_empty()).then_some(input.opt_out_notifications);
-    let connection = inner
-        .headless_connections
-        .entry(connection_id.clone())
-        .or_insert_with(|| HostedRunnerHeadlessConnectionRecord {
-            id: connection_id.clone(),
-            role,
-            client_protocol_version: None,
-            client_info: None,
-            capabilities: None,
-            opt_out_notifications: None,
-            subscription_ids: HashSet::new(),
-            last_seen_at: now,
-        });
-    connection.client_protocol_version = input.protocol_version.or_else(|| {
-        connection
-            .client_protocol_version
-            .clone()
-            .or_else(|| Some(HEADLESS_PROTOCOL_VERSION.to_string()))
+    let mut config = config;
+    config.workspace_root = workspace_root;
+    let listener = TcpListener::bind(config.bind_addr).await?;
+    let local_addr = listener.local_addr()?;
+    let shutdown = CancellationToken::new();
+    let server_shutdown = shutdown.clone();
+    let shared = SharedRunner::new_with_message_executor(config, message_executor);
+    let task = tokio::spawn(async move {
+        serve(listener, shared, server_shutdown).await;
     });
-    connection.client_info = input.client_info.or_else(|| connection.client_info.clone());
-    connection.capabilities = capabilities.or_else(|| connection.capabilities.clone());
-    connection.opt_out_notifications =
-        opt_out_notifications.or_else(|| connection.opt_out_notifications.clone());
-    connection.last_seen_at = now;
 
-    if role == ConnectionRole::Controller {
-        inner.controller_connection_id = Some(connection_id.clone());
-    }
-
-    Ok(connection_id)
-}
-
-fn validate_headless_capabilities(
-    role: ConnectionRole,
-    capabilities: Option<&ClientCapabilities>,
-) -> Result<(), HostedRunnerError> {
-    let Some(capabilities) = capabilities else {
-        return Ok(());
-    };
-    if role == ConnectionRole::Viewer {
-        if capabilities
-            .server_requests
-            .as_deref()
-            .unwrap_or_default()
-            .iter()
-            .any(|request| {
-                matches!(
-                    request,
-                    ServerRequestType::ClientTool
-                        | ServerRequestType::UserInput
-                        | ServerRequestType::ToolRetry
-                )
-            })
-        {
-            return Err(HostedRunnerError::bad_request(
-                "viewer headless connections cannot negotiate mutating server requests",
-            ));
-        }
-        if capabilities
-            .utility_operations
-            .as_deref()
-            .unwrap_or_default()
-            .iter()
-            .any(|operation| matches!(operation, UtilityOperation::CommandExec))
-        {
-            return Err(HostedRunnerError::bad_request(
-                "viewer headless connections cannot negotiate command execution",
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn validate_headless_id(value: &str, field: &str) -> Result<String, HostedRunnerError> {
-    let value = value.trim();
-    if value.is_empty() || value.contains('\0') {
-        return Err(HostedRunnerError::bad_request(format!(
-            "{field} must be a non-empty string"
-        )));
-    }
-    Ok(value.to_string())
-}
-
-/// Serve the hosted-runner identity/drain surface on an existing TCP listener.
-///
-/// This intentionally only adapts HTTP requests onto the provider-neutral
-/// route core. The full headless HTTP/SSE host remains a separate layer.
-pub async fn serve_hosted_runner_http(
-    listener: TcpListener,
-    runtime: HostedRunnerRuntime,
-    shutdown: CancellationToken,
-) -> io::Result<()> {
-    loop {
-        tokio::select! {
-            () = shutdown.cancelled() => return Ok(()),
-            accepted = listener.accept() => {
-                let (stream, _) = accepted?;
-                let runtime = runtime.clone();
-                tokio::spawn(async move {
-                    let _ = handle_hosted_runner_http_stream(stream, runtime).await;
-                });
-            }
-        }
-    }
-}
-
-async fn handle_hosted_runner_http_stream(
-    mut stream: TcpStream,
-    runtime: HostedRunnerRuntime,
-) -> io::Result<()> {
-    let response = match read_http_request(&mut stream).await {
-        Ok(request) => {
-            let body = (!request.body.is_empty()).then_some(request.body.as_str());
-            runtime.handle_request_with_headers(
-                &request.method,
-                &request.path,
-                body,
-                &request.headers,
-            )
-        }
-        Err(error) if error.kind() == io::ErrorKind::InvalidData => HostedRunnerHttpResponse::json(
-            400,
-            json!({
-                "error": error.to_string(),
-                "code": "bad_request"
-            }),
-        ),
-        Err(error) => return Err(error),
-    };
-    write_http_response(&mut stream, response).await
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct HostedRunnerHttpRequest {
-    method: String,
-    path: String,
-    headers: HashMap<String, String>,
-    body: String,
-}
-
-async fn read_http_request(stream: &mut TcpStream) -> io::Result<HostedRunnerHttpRequest> {
-    let mut bytes = Vec::with_capacity(4096);
-    let mut buffer = [0_u8; 4096];
-    let header_end = loop {
-        if let Some(index) = find_http_header_end(&bytes) {
-            break index;
-        }
-        let read = stream.read(&mut buffer).await?;
-        if read == 0 {
-            return Err(invalid_http("connection closed before HTTP headers"));
-        }
-        bytes.extend_from_slice(&buffer[..read]);
-        if bytes.len() > MAX_HTTP_HEADER_BYTES {
-            return Err(invalid_http("HTTP headers exceed hosted runner limit"));
-        }
-    };
-
-    let header_text = std::str::from_utf8(&bytes[..header_end])
-        .map_err(|_| invalid_http("HTTP headers must be UTF-8"))?;
-    let mut lines = header_text.split("\r\n");
-    let request_line = lines
-        .next()
-        .filter(|line| !line.trim().is_empty())
-        .ok_or_else(|| invalid_http("missing HTTP request line"))?;
-    let mut parts = request_line.split_whitespace();
-    let method = parts
-        .next()
-        .ok_or_else(|| invalid_http("missing HTTP method"))?;
-    let target = parts
-        .next()
-        .ok_or_else(|| invalid_http("missing HTTP target"))?;
-    let version = parts
-        .next()
-        .ok_or_else(|| invalid_http("missing HTTP version"))?;
-    if !version.starts_with("HTTP/1.") {
-        return Err(invalid_http("only HTTP/1.x requests are supported"));
-    }
-    let method = method.to_string();
-    let path = target.to_string();
-
-    let mut headers = HashMap::new();
-    let mut content_length = 0_usize;
-    for line in lines {
-        let Some((name, value)) = line.split_once(':') else {
-            continue;
-        };
-        let name = name.trim().to_ascii_lowercase();
-        let value = value.trim().to_string();
-        if name.eq_ignore_ascii_case("content-length") {
-            content_length = value
-                .parse::<usize>()
-                .map_err(|_| invalid_http("invalid content-length header"))?;
-        }
-        headers.insert(name, value);
-    }
-    if content_length > MAX_HTTP_BODY_BYTES {
-        return Err(invalid_http("HTTP body exceeds hosted runner limit"));
-    }
-
-    let body_start = header_end + 4;
-    while bytes.len() < body_start + content_length {
-        let read = stream.read(&mut buffer).await?;
-        if read == 0 {
-            return Err(invalid_http("connection closed before HTTP body"));
-        }
-        bytes.extend_from_slice(&buffer[..read]);
-    }
-    let body = std::str::from_utf8(&bytes[body_start..body_start + content_length])
-        .map_err(|_| invalid_http("HTTP body must be UTF-8"))?
-        .to_string();
-
-    Ok(HostedRunnerHttpRequest {
-        method,
-        path,
-        headers,
-        body,
+    Ok(HostedRunnerHandle {
+        local_addr,
+        shutdown,
+        task,
     })
 }
 
-async fn write_http_response(
-    stream: &mut TcpStream,
-    response: HostedRunnerHttpResponse,
-) -> io::Result<()> {
-    let (content_type, cache_control, body) = match response.response_body {
-        HostedRunnerHttpResponseBody::Json => (
-            "application/json",
-            "no-store",
-            serde_json::to_vec(&response.body).map_err(io::Error::other)?,
-        ),
-        HostedRunnerHttpResponseBody::EventStream => {
-            let body = render_sse_body(&response.body)?;
-            ("text/event-stream", "no-cache", body.into_bytes())
+impl SharedRunner {
+    #[cfg(test)]
+    fn new(config: HostedRunnerConfig) -> Self {
+        Self::new_with_message_executor(config, Arc::new(TransportOnlyHostedRunnerMessageExecutor))
+    }
+
+    fn new_with_message_executor(
+        config: HostedRunnerConfig,
+        message_executor: Arc<dyn HostedRunnerHeadlessMessageExecutor>,
+    ) -> Self {
+        let session_id = config
+            .maestro_session_id
+            .clone()
+            .unwrap_or_else(|| config.runner_session_id.clone());
+        let (events, _) = broadcast::channel(MAX_EVENTS);
+        Self {
+            config: Arc::new(config),
+            state: Arc::new(Mutex::new(RunnerState {
+                ready: true,
+                draining: false,
+                session_id,
+                cursor: 0,
+                last_init: None,
+                last_status: Some("Ready".to_string()),
+                controller_connection_id: None,
+                connections: HashMap::new(),
+                subscriptions: HashMap::new(),
+                active_utility_commands: HashMap::new(),
+                active_file_watches: HashMap::new(),
+                envelopes: VecDeque::new(),
+            })),
+            events,
+            message_executor,
         }
-    };
-    let headers = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: {content_type}\r\nCache-Control: {cache_control}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        response.status,
-        http_reason(response.status),
-        body.len()
-    );
-    stream.write_all(headers.as_bytes()).await?;
-    stream.write_all(&body).await?;
-    stream.shutdown().await
-}
-
-fn find_http_header_end(bytes: &[u8]) -> Option<usize> {
-    bytes.windows(4).position(|window| window == b"\r\n\r\n")
-}
-
-fn render_sse_body(body: &Value) -> io::Result<String> {
-    let events = body
-        .as_array()
-        .ok_or_else(|| io::Error::other("event stream response body must be a JSON array"))?;
-    let mut rendered = String::new();
-    for event in events {
-        rendered.push_str("data: ");
-        rendered.push_str(&serde_json::to_string(event).map_err(io::Error::other)?);
-        rendered.push_str("\n\n");
     }
-    Ok(rendered)
-}
 
-fn invalid_http(message: &'static str) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message)
-}
+    fn identity(&self) -> HostedRunnerIdentity {
+        let state = self.state.lock().expect("hosted runner state poisoned");
+        HostedRunnerIdentity {
+            protocol_version: HOSTED_RUNNER_IDENTITY_PROTOCOL_VERSION.to_string(),
+            runner_session_id: self.config.runner_session_id.clone(),
+            owner_instance_id: self.config.owner_instance_id.clone(),
+            ready: state.ready,
+            draining: state.draining,
+        }
+    }
 
-fn http_reason(status: u16) -> &'static str {
-    match status {
-        200 => "OK",
-        400 => "Bad Request",
-        404 => "Not Found",
-        405 => "Method Not Allowed",
-        409 => "Conflict",
-        500 => "Internal Server Error",
-        501 => "Not Implemented",
-        503 => "Service Unavailable",
-        _ => "Unknown",
+    fn ensure_attachable(&self) -> HostedResult<()> {
+        let state = self.state.lock().expect("hosted runner state poisoned");
+        if !state.ready || state.draining {
+            return Err(HostedError::new(
+                503,
+                "runtime_not_ready",
+                "hosted runner is not accepting new attachments",
+            ));
+        }
+        Ok(())
+    }
+
+    fn snapshot(&self, state: &RunnerState) -> RuntimeSnapshot {
+        let controller_subscription_id = state
+            .controller_connection_id
+            .as_ref()
+            .and_then(|connection_id| state.connections.get(connection_id))
+            .and_then(|connection| {
+                connection
+                    .subscription_ids
+                    .iter()
+                    .find(|subscription_id| {
+                        state
+                            .subscriptions
+                            .get(*subscription_id)
+                            .map(|subscription| subscription.role == ConnectionRole::Controller)
+                            .unwrap_or(false)
+                    })
+                    .cloned()
+            });
+        let preferred_connection = state
+            .controller_connection_id
+            .as_ref()
+            .and_then(|connection_id| state.connections.get(connection_id))
+            .or_else(|| state.connections.values().next());
+        let connections = state
+            .connections
+            .values()
+            .map(|connection| {
+                let attached_subscription_count = connection
+                    .subscription_ids
+                    .iter()
+                    .filter(|subscription_id| {
+                        state
+                            .subscriptions
+                            .get(*subscription_id)
+                            .map(|subscription| subscription.attached)
+                            .unwrap_or(false)
+                    })
+                    .count();
+                ConnectionState {
+                    connection_id: connection.id.clone(),
+                    role: connection.role,
+                    client_protocol_version: connection.client_protocol_version.clone(),
+                    client_info: connection.client_info.clone(),
+                    capabilities: connection.capabilities.clone(),
+                    opt_out_notifications: (!connection.opt_out_notifications.is_empty())
+                        .then(|| connection.opt_out_notifications.clone()),
+                    subscription_count: connection.subscription_ids.len(),
+                    attached_subscription_count,
+                    controller_lease_granted: state.controller_connection_id.as_deref()
+                        == Some(connection.id.as_str()),
+                    lease_expires_at: Some(lease_expires_at(connection)),
+                }
+            })
+            .collect();
+
+        RuntimeSnapshot {
+            protocol_version: HEADLESS_PROTOCOL_VERSION.to_string(),
+            session_id: state.session_id.clone(),
+            cursor: state.cursor,
+            last_init: state.last_init.clone(),
+            state: RuntimeStateSnapshot {
+                protocol_version: Some(HEADLESS_PROTOCOL_VERSION.to_string()),
+                client_protocol_version: preferred_connection
+                    .and_then(|connection| connection.client_protocol_version.clone()),
+                client_info: preferred_connection
+                    .and_then(|connection| connection.client_info.clone()),
+                capabilities: preferred_connection
+                    .and_then(|connection| connection.capabilities.clone()),
+                opt_out_notifications: preferred_connection.and_then(|connection| {
+                    (!connection.opt_out_notifications.is_empty())
+                        .then(|| connection.opt_out_notifications.clone())
+                }),
+                connection_role: preferred_connection.map(|connection| connection.role),
+                connection_count: state.connections.len(),
+                subscriber_count: state.subscriptions.len(),
+                controller_subscription_id,
+                controller_connection_id: state.controller_connection_id.clone(),
+                connections,
+                model: Some("rust-hosted-runner".to_string()),
+                provider: Some("rust".to_string()),
+                session_id: Some(state.session_id.clone()),
+                cwd: Some(self.config.workspace_root.to_string_lossy().to_string()),
+                git_branch: None,
+                current_response: None,
+                pending_approvals: Vec::new(),
+                pending_client_tools: Vec::new(),
+                pending_user_inputs: Vec::new(),
+                pending_tool_retries: Vec::new(),
+                tracked_tools: Vec::new(),
+                active_tools: Vec::new(),
+                active_utility_commands: state.active_utility_commands.values().cloned().collect(),
+                active_file_watches: state.active_file_watches.values().cloned().collect(),
+                last_error: None,
+                last_error_type: None,
+                last_status: state.last_status.clone(),
+                last_response_duration_ms: None,
+                last_ttft_ms: None,
+                is_ready: state.ready && !state.draining,
+                is_responding: false,
+            },
+        }
+    }
+
+    fn publish_message(&self, state: &mut RunnerState, message: FromAgentMessage) {
+        state.cursor += 1;
+        let envelope = StreamEnvelope::Message {
+            cursor: state.cursor,
+            message: Box::new(message),
+        };
+        state.envelopes.push_back(envelope.clone());
+        while state.envelopes.len() > MAX_EVENTS {
+            state.envelopes.pop_front();
+        }
+        let _ = self.events.send(envelope);
+    }
+
+    fn publish_snapshot(&self, state: &mut RunnerState) {
+        let envelope = StreamEnvelope::Snapshot {
+            snapshot: self.snapshot(state),
+        };
+        state.envelopes.push_back(envelope.clone());
+        while state.envelopes.len() > MAX_EVENTS {
+            state.envelopes.pop_front();
+        }
+        let _ = self.events.send(envelope);
+    }
+
+    fn reset_envelope(&self, reason: impl Into<String>) -> StreamEnvelope {
+        let state = self.state.lock().expect("hosted runner state poisoned");
+        StreamEnvelope::Reset {
+            reason: reason.into(),
+            snapshot: self.snapshot(&state),
+        }
+    }
+
+    fn subscribe_from(
+        &self,
+        cursor: u64,
+    ) -> (Vec<StreamEnvelope>, broadcast::Receiver<StreamEnvelope>) {
+        let state = self.state.lock().expect("hosted runner state poisoned");
+        let rx = self.events.subscribe();
+        (self.replay_from_state(&state, cursor), rx)
+    }
+
+    fn replay_from_state(&self, state: &RunnerState, cursor: u64) -> Vec<StreamEnvelope> {
+        let first_cursor = state.envelopes.iter().find_map(|envelope| match envelope {
+            StreamEnvelope::Message { cursor, .. } | StreamEnvelope::Heartbeat { cursor } => {
+                Some(*cursor)
+            }
+            StreamEnvelope::Snapshot { .. } | StreamEnvelope::Reset { .. } => None,
+        });
+        if let Some(first_cursor) = first_cursor {
+            if cursor > 0 && cursor < first_cursor.saturating_sub(1) {
+                return vec![StreamEnvelope::Reset {
+                    reason: "replay_gap".to_string(),
+                    snapshot: self.snapshot(state),
+                }];
+            }
+        }
+        state
+            .envelopes
+            .iter()
+            .filter(|envelope| match envelope {
+                StreamEnvelope::Message {
+                    cursor: event_cursor,
+                    ..
+                }
+                | StreamEnvelope::Heartbeat {
+                    cursor: event_cursor,
+                } => *event_cursor > cursor,
+                StreamEnvelope::Snapshot { .. } | StreamEnvelope::Reset { .. } => true,
+            })
+            .cloned()
+            .collect()
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostedRunnerIdentity {
-    pub protocol_version: String,
-    pub runner_session_id: String,
-    pub owner_instance_id: String,
-    pub ready: bool,
-    pub draining: bool,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct HostedRunnerDrainInput {
-    pub reason: Option<String>,
-    pub requested_by: Option<String>,
-    pub export_paths: Option<Vec<String>>,
-}
-
-impl HostedRunnerDrainInput {
-    fn export_paths(&self) -> Option<&[String]> {
-        self.export_paths.as_deref()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostedRunnerDrainResult {
-    pub status: SnapshotManifestStatus,
-    pub manifest_path: PathBuf,
-    pub manifest: HostedRunnerSnapshotManifest,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostedRunnerSnapshotManifest {
-    pub manifest_version: String,
-    pub protocol_version: String,
-    pub status: SnapshotManifestStatus,
-    pub runner_session_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub owner_instance_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub workspace_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub agent_run_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub maestro_session_id: Option<String>,
-    pub workspace_root: String,
-    pub snapshot_root: String,
-    pub snapshot_path: String,
-    pub requested_at: String,
-    pub completed_at: String,
-    pub stop_reason: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub requested_by: Option<String>,
-    pub runtime: HostedRunnerManifestRuntime,
-    pub workspace_export: HostedRunnerWorkspaceExport,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub git: Option<HostedRunnerGitState>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SnapshotManifestStatus {
-    Drained,
-    Interrupted,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostedRunnerManifestRuntime {
-    pub flush_status: RuntimeFlushStatus,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_file: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub protocol_version: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cursor: Option<u64>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RuntimeFlushStatus {
-    Completed,
-    Failed,
-    Skipped,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostedRunnerWorkspaceExport {
-    pub mode: String,
-    pub paths: Vec<HostedRunnerWorkspaceExportPath>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostedRunnerWorkspaceExportPath {
-    pub input: String,
-    pub path: String,
-    pub relative_path: String,
-    #[serde(rename = "type")]
-    pub entry_type: HostedRunnerWorkspaceExportPathType,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum HostedRunnerWorkspaceExportPathType {
-    File,
-    Directory,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostedRunnerGitState {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub commit: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub branch: Option<String>,
-    pub dirty: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HostedRunnerHttpResponse {
-    pub status: u16,
-    pub body: Value,
-    response_body: HostedRunnerHttpResponseBody,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HostedRunnerHttpResponseBody {
-    Json,
-    EventStream,
-}
-
-impl HostedRunnerHttpResponse {
-    pub fn json(status: u16, body: Value) -> Self {
+impl HostedError {
+    fn new(status: u16, code: &'static str, message: impl Into<String>) -> Self {
         Self {
             status,
-            body,
-            response_body: HostedRunnerHttpResponseBody::Json,
+            code,
+            message: message.into(),
         }
     }
+}
 
-    fn event_stream(body: Value) -> Self {
-        Self {
-            status: 200,
-            body,
-            response_body: HostedRunnerHttpResponseBody::EventStream,
-        }
-    }
-
-    pub fn from_error(error: HostedRunnerError) -> Self {
-        Self::json(
-            error.http_status(),
-            json!({
-                "error": error.message,
-                "code": error.code.as_str()
-            }),
-        )
+impl From<HostedRunnerError> for HostedError {
+    fn from(error: HostedRunnerError) -> Self {
+        Self::new(error.http_status(), error.code.as_str(), error.message)
     }
 }
 
@@ -1947,15 +1132,18 @@ impl HostedRunnerError {
         Self::new(HostedRunnerErrorCode::WorkspaceViolation, message)
     }
 
+    pub fn unsupported_capability(message: impl Into<String>) -> Self {
+        Self::new(HostedRunnerErrorCode::UnsupportedCapability, message)
+    }
+
     pub fn internal(message: impl Into<String>) -> Self {
         Self::new(HostedRunnerErrorCode::Internal, message)
     }
 
     pub fn http_status(&self) -> u16 {
         match self.code {
-            HostedRunnerErrorCode::InvalidConfig
-            | HostedRunnerErrorCode::BadRequest
-            | HostedRunnerErrorCode::WorkspaceViolation => 400,
+            HostedRunnerErrorCode::InvalidConfig | HostedRunnerErrorCode::BadRequest => 400,
+            HostedRunnerErrorCode::WorkspaceViolation => 403,
             HostedRunnerErrorCode::NotFound => 404,
             HostedRunnerErrorCode::RuntimeNotReady => 503,
             HostedRunnerErrorCode::LeaseConflict => 409,
@@ -1973,480 +1161,1440 @@ impl std::fmt::Display for HostedRunnerError {
 
 impl std::error::Error for HostedRunnerError {}
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ParsedListen {
-    host: Option<String>,
-    port: Option<u16>,
-}
-
-fn first_env(env: &HashMap<String, String>, keys: &[&str]) -> Option<String> {
-    keys.iter().find_map(|key| env_value(env, key))
-}
-
-fn env_value(env: &HashMap<String, String>, key: &str) -> Option<String> {
-    env.get(key).map(|value| value.trim()).and_then(|value| {
-        if value.is_empty() {
-            None
-        } else {
-            Some(value.to_string())
-        }
-    })
-}
-
-fn parse_listen(value: Option<&str>) -> Result<ParsedListen, HostedRunnerError> {
-    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
-        return Ok(ParsedListen {
-            host: None,
-            port: None,
-        });
-    };
-    if value.chars().all(|char| char.is_ascii_digit()) {
-        return Ok(ParsedListen {
-            host: None,
-            port: Some(parse_port(value, "MAESTRO_HOSTED_RUNNER_LISTEN")?),
-        });
-    }
-    let Some((host, port)) = value.rsplit_once(':') else {
-        return Err(HostedRunnerError::invalid_config(
-            "MAESTRO_HOSTED_RUNNER_LISTEN must be <host:port> or <port>",
-        ));
-    };
-    if host.trim().is_empty() || port.trim().is_empty() {
-        return Err(HostedRunnerError::invalid_config(
-            "MAESTRO_HOSTED_RUNNER_LISTEN must be <host:port> or <port>",
-        ));
-    }
-    Ok(ParsedListen {
-        host: Some(host.trim().to_string()),
-        port: Some(parse_port(port.trim(), "MAESTRO_HOSTED_RUNNER_LISTEN")?),
-    })
-}
-
-fn parse_optional_port(value: Option<&str>) -> Option<Result<u16, HostedRunnerError>> {
-    value
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| parse_port(value, "hosted runner port"))
-}
-
-fn parse_port(value: &str, label: &str) -> Result<u16, HostedRunnerError> {
-    if !value.chars().all(|char| char.is_ascii_digit()) {
-        return Err(HostedRunnerError::invalid_config(format!(
-            "{label} must be a TCP port between 1 and 65535"
-        )));
-    }
-    let port = value.parse::<u32>().map_err(|_| {
-        HostedRunnerError::invalid_config(format!("{label} must be a TCP port between 1 and 65535"))
-    })?;
-    if !(1..=65535).contains(&port) {
-        return Err(HostedRunnerError::invalid_config(format!(
-            "{label} must be a TCP port between 1 and 65535"
-        )));
-    }
-    Ok(port as u16)
-}
-
-fn resolve_workspace_root(path: Option<&str>) -> Result<PathBuf, HostedRunnerError> {
-    let path = path
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-        .ok_or_else(|| {
-            HostedRunnerError::invalid_config(
-                "maestro hosted-runner requires MAESTRO_WORKSPACE_ROOT",
-            )
-        })?;
-    let workspace_root = fs::canonicalize(Path::new(path)).map_err(|error| {
-        HostedRunnerError::invalid_config(format!(
-            "hosted runner workspace root is unavailable: {error}"
-        ))
-    })?;
-    let metadata = fs::metadata(&workspace_root).map_err(|error| {
-        HostedRunnerError::invalid_config(format!(
-            "hosted runner workspace root is unavailable: {error}"
-        ))
-    })?;
-    if !metadata.is_dir() {
-        return Err(HostedRunnerError::invalid_config(
-            "hosted runner workspace root is not a directory",
-        ));
-    }
-    Ok(workspace_root)
-}
-
-fn resolve_snapshot_root(path: Option<&str>, workspace_root: &Path) -> PathBuf {
-    let Some(path) = path.map(str::trim).filter(|path| !path.is_empty()) else {
-        return workspace_root.join(".maestro").join("runner-snapshots");
-    };
-    let path = PathBuf::from(path);
-    if path.is_absolute() {
-        path
-    } else {
-        workspace_root.join(path)
-    }
-}
-
-fn path_to_str(path: &Path) -> Result<&str, HostedRunnerError> {
-    path.to_str()
-        .ok_or_else(|| HostedRunnerError::invalid_config("path must be valid UTF-8"))
-}
-
-fn non_empty(value: String, field: &str) -> Result<String, HostedRunnerError> {
-    let value = value.trim().to_string();
-    if value.is_empty() {
-        return Err(HostedRunnerError::invalid_config(format!(
-            "{field} must not be empty"
-        )));
-    }
-    Ok(value)
-}
-
-fn parse_headless_body<T: DeserializeOwned>(
-    body: Option<&str>,
-    label: &str,
-) -> Result<T, HostedRunnerError> {
-    let body = body
-        .map(str::trim)
-        .filter(|body| !body.is_empty())
-        .unwrap_or("{}");
-    serde_json::from_str::<T>(body).map_err(|error| {
-        HostedRunnerError::bad_request(format!("invalid {label} JSON body: {error}"))
-    })
-}
-
-fn parse_headless_message_body(body: Option<&str>) -> Result<Value, HostedRunnerError> {
-    let body = body
-        .map(str::trim)
-        .filter(|body| !body.is_empty())
-        .ok_or_else(|| HostedRunnerError::bad_request("headless message body is required"))?;
-    let value = serde_json::from_str::<Value>(body).map_err(|error| {
-        HostedRunnerError::bad_request(format!("invalid headless message JSON body: {error}"))
-    })?;
-    if !value.is_object() {
-        return Err(HostedRunnerError::bad_request(
-            "headless message body must be a JSON object",
-        ));
-    }
-    Ok(value)
-}
-
-fn parse_headless_session_route(path: &str) -> Option<(&str, &str)> {
-    let path = http_route_path(path);
-    let suffix = path.strip_prefix(HEADLESS_SESSIONS_PREFIX)?;
-    let (session_id, action) = suffix.split_once('/')?;
-    if session_id.is_empty() || action.is_empty() || action.contains('/') {
-        return None;
-    }
-    Some((session_id, action))
-}
-
-fn http_route_path(path: &str) -> &str {
-    path.split('?').next().unwrap_or(path)
-}
-
-fn query_value(path: &str, name: &str) -> Option<String> {
-    let query = path.split_once('?')?.1;
-    query.split('&').find_map(|pair| {
-        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
-        (key == name).then(|| value.to_string())
-    })
-}
-
-fn parse_optional_query_u64(path: &str, name: &str) -> Result<Option<u64>, HostedRunnerError> {
-    query_value(path, name)
-        .map(|value| {
-            let value = value.trim();
-            if value.is_empty() {
-                return Err(HostedRunnerError::bad_request(format!(
-                    "{name} query parameter must be an unsigned integer"
-                )));
+async fn serve(listener: TcpListener, shared: SharedRunner, shutdown: CancellationToken) {
+    loop {
+        tokio::select! {
+            () = shutdown.cancelled() => break,
+            accepted = listener.accept() => {
+                let Ok((socket, _addr)) = accepted else {
+                    continue;
+                };
+                let shared = shared.clone();
+                tokio::spawn(async move {
+                    let _ = handle_socket(socket, shared).await;
+                });
             }
-            value.parse::<u64>().map_err(|_| {
-                HostedRunnerError::bad_request(format!(
-                    "{name} query parameter must be an unsigned integer"
-                ))
-            })
-        })
-        .transpose()
-}
-
-fn headless_connection_reference_from_headers(
-    headers: &HashMap<String, String>,
-) -> HostedRunnerHeadlessConnectionReferenceInput {
-    HostedRunnerHeadlessConnectionReferenceInput {
-        connection_id: first_header(
-            headers,
-            &[
-                "x-maestro-headless-connection-id",
-                "x-composer-headless-connection-id",
-                "x-evalops-headless-connection-id",
-            ],
-        ),
-        subscription_id: first_header(
-            headers,
-            &[
-                "x-maestro-headless-subscriber-id",
-                "x-composer-headless-subscriber-id",
-                "x-maestro-headless-subscription-id",
-                "x-composer-headless-subscription-id",
-                "x-evalops-headless-subscriber-id",
-            ],
-        ),
+        }
     }
 }
 
-fn first_header(headers: &HashMap<String, String>, names: &[&str]) -> Option<String> {
-    names
-        .iter()
-        .find_map(|name| headers.get(*name))
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
+async fn handle_socket(mut socket: TcpStream, shared: SharedRunner) -> io::Result<()> {
+    let Some(request) = read_request(&mut socket).await? else {
+        return Ok(());
+    };
+
+    let response = route_request(request, shared).await;
+    match response {
+        Ok(ResponseBody::Json { status, body }) => {
+            write_json_value(&mut socket, status, body).await
+        }
+        Ok(ResponseBody::Sse {
+            replay,
+            mut rx,
+            shared,
+        }) => {
+            write_sse_headers(&mut socket).await?;
+            for envelope in replay {
+                write_sse_event(&mut socket, &envelope).await?;
+            }
+            loop {
+                match rx.recv().await {
+                    Ok(envelope) => write_sse_event(&mut socket, &envelope).await?,
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        let envelope = shared.reset_envelope(format!("broadcast_lag:{skipped}"));
+                        write_sse_event(&mut socket, &envelope).await?;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            Ok(())
+        }
+        Err(error) => write_error(&mut socket, error).await,
+    }
 }
 
-fn method_not_allowed() -> HostedRunnerHttpResponse {
-    HostedRunnerHttpResponse::json(
-        405,
+enum ResponseBody {
+    Json {
+        status: u16,
+        body: serde_json::Value,
+    },
+    Sse {
+        replay: Vec<StreamEnvelope>,
+        rx: broadcast::Receiver<StreamEnvelope>,
+        shared: SharedRunner,
+    },
+}
+
+async fn route_request(request: HttpRequest, shared: SharedRunner) -> HostedResult<ResponseBody> {
+    match (request.method.as_str(), request.path.as_str()) {
+        ("GET", HOSTED_RUNNER_IDENTITY_PATH) => json_response(200, shared.identity()),
+        ("GET", "/readyz" | "/healthz") => {
+            let identity = shared.identity();
+            if identity.ready && !identity.draining {
+                json_response(200, json!({"ok": true}))
+            } else {
+                Err(HostedError::new(
+                    503,
+                    "runtime_not_ready",
+                    "hosted runner is draining or not ready",
+                ))
+            }
+        }
+        ("POST", HOSTED_RUNNER_DRAIN_PATH) => {
+            let input = parse_json::<DrainRequest>(&request.body)?;
+            handle_drain(shared, input).await
+        }
+        ("POST", "/api/headless/connections") => {
+            shared.ensure_attachable()?;
+            let input = parse_json::<ConnectionCreateRequest>(&request.body)?;
+            handle_connection_create(shared, input)
+        }
+        ("GET", path)
+            if path.starts_with("/api/headless/sessions/") && path.ends_with("/state") =>
+        {
+            let session_id = session_id_from_path(path, "/state")?;
+            handle_state(shared, session_id)
+        }
+        ("POST", path)
+            if path.starts_with("/api/headless/sessions/") && path.ends_with("/subscribe") =>
+        {
+            shared.ensure_attachable()?;
+            let session_id = session_id_from_path(path, "/subscribe")?;
+            let input = parse_json::<SubscribeRequest>(&request.body)?;
+            handle_subscribe(shared, session_id, input)
+        }
+        ("GET", path)
+            if path.starts_with("/api/headless/sessions/") && path.ends_with("/events") =>
+        {
+            let session_id = session_id_from_path(path, "/events")?;
+            handle_events(shared, session_id, request.query)
+        }
+        ("POST", path)
+            if path.starts_with("/api/headless/sessions/")
+                && (path.ends_with("/messages") || path.ends_with("/message")) =>
+        {
+            let session_id = if path.ends_with("/messages") {
+                session_id_from_path(path, "/messages")?
+            } else {
+                session_id_from_path(path, "/message")?
+            };
+            let message = parse_json::<ToAgentMessage>(&request.body)?;
+            handle_message(shared, session_id, request.headers, message).await
+        }
+        ("POST", path)
+            if path.starts_with("/api/headless/sessions/") && path.ends_with("/heartbeat") =>
+        {
+            let session_id = session_id_from_path(path, "/heartbeat")?;
+            let input = parse_json::<HeartbeatRequest>(&request.body)?;
+            handle_heartbeat(shared, session_id, input)
+        }
+        ("POST", path)
+            if path.starts_with("/api/headless/sessions/") && path.ends_with("/disconnect") =>
+        {
+            let session_id = session_id_from_path(path, "/disconnect")?;
+            let input = parse_json::<DisconnectRequest>(&request.body)?;
+            handle_disconnect(shared, session_id, input)
+        }
+        _ => Err(HostedError::new(404, "not_found", "route not found")),
+    }
+}
+
+async fn handle_drain(shared: SharedRunner, input: DrainRequest) -> HostedResult<ResponseBody> {
+    let export_paths = input
+        .export_paths
+        .clone()
+        .unwrap_or_else(|| vec![".".to_string()]);
+    for export_path in &export_paths {
+        let _ = resolve_workspace_path(
+            &shared.config.workspace_root,
+            None,
+            Some(export_path.as_str()),
+        )?;
+    }
+
+    let drained_messages = shared.message_executor.drain().map_err(HostedError::from)?;
+    {
+        let mut state = shared.state.lock().expect("hosted runner state poisoned");
+        if state.cursor > 0 || !state.connections.is_empty() || !drained_messages.is_empty() {
+            let reason = input
+                .reason
+                .as_deref()
+                .unwrap_or("platform_requested_drain");
+            shared.publish_message(
+                &mut state,
+                FromAgentMessage::Status {
+                    message: format!("Hosted runner is draining: {reason}"),
+                },
+            );
+        }
+        for message in drained_messages {
+            shared.publish_message(&mut state, message);
+        }
+    }
+
+    let manifest_path = write_snapshot_manifest(&shared, &input).await?;
+    {
+        let mut state = shared.state.lock().expect("hosted runner state poisoned");
+        state.draining = true;
+        state.ready = false;
+        state.last_status = Some("Drained".to_string());
+        shared.publish_snapshot(&mut state);
+    }
+    json_response(
+        200,
         json!({
-            "error": "method_not_allowed",
-            "code": "bad_request"
+            "protocol_version": HOSTED_RUNNER_DRAIN_PROTOCOL_VERSION,
+            "status": "drained",
+            "runner_session_id": shared.config.runner_session_id,
+            "requested_by": input.requested_by,
+            "reason": input.reason,
+            "manifest_path": manifest_path.to_string_lossy(),
         }),
     )
 }
 
-fn parse_drain_body(body: Option<&str>) -> Result<HostedRunnerDrainInput, HostedRunnerError> {
-    let body = body.map(str::trim).unwrap_or("");
-    if body.is_empty() {
-        return Ok(HostedRunnerDrainInput::default());
-    }
-    let value = serde_json::from_str::<Value>(body)
-        .map_err(|error| HostedRunnerError::bad_request(format!("invalid JSON body: {error}")))?;
-    parse_hosted_runner_drain_input(&value)
-}
-
-pub fn parse_hosted_runner_drain_input(
-    value: &Value,
-) -> Result<HostedRunnerDrainInput, HostedRunnerError> {
-    let Value::Object(record) = value else {
-        return Err(HostedRunnerError::bad_request(
-            "drain payload must be a JSON object",
-        ));
-    };
-    let reason = match get_string(record.get("reason"), "reason")? {
-        Some(value) => Some(value),
-        None => get_string(record.get("stop_reason"), "stop_reason")?,
-    };
-    let requested_by = match get_string(record.get("requested_by"), "requested_by")? {
-        Some(value) => Some(value),
-        None => get_string(record.get("requestedBy"), "requestedBy")?,
-    };
-    let export_paths = match get_string_array(record.get("export_paths"), "export_paths")? {
-        Some(value) => Some(value),
-        None => get_string_array(record.get("exportPaths"), "exportPaths")?,
-    };
-    Ok(HostedRunnerDrainInput {
-        reason,
-        requested_by,
-        export_paths,
-    })
-}
-
-fn get_string(value: Option<&Value>, field: &str) -> Result<Option<String>, HostedRunnerError> {
-    let Some(value) = value else {
-        return Ok(None);
-    };
-    if value.is_null() {
-        return Ok(None);
-    }
-    let Some(value) = value.as_str() else {
-        return Err(HostedRunnerError::bad_request(format!(
-            "{field} must be a string"
-        )));
-    };
-    let value = value.trim();
-    if value.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(value.to_string()))
-    }
-}
-
-fn get_string_array(
-    value: Option<&Value>,
-    field: &str,
-) -> Result<Option<Vec<String>>, HostedRunnerError> {
-    let Some(value) = value else {
-        return Ok(None);
-    };
-    if value.is_null() {
-        return Ok(None);
-    }
-    let Some(values) = value.as_array() else {
-        return Err(HostedRunnerError::bad_request(format!(
-            "{field} must be an array of strings"
-        )));
-    };
-    let mut strings = Vec::with_capacity(values.len());
-    for (index, value) in values.iter().enumerate() {
-        let Some(value) = value.as_str() else {
-            return Err(HostedRunnerError::bad_request(format!(
-                "{field}[{index}] must be a non-empty string"
-            )));
-        };
-        let value = value.trim();
-        if value.is_empty() {
-            return Err(HostedRunnerError::bad_request(format!(
-                "{field}[{index}] must be a non-empty string"
-            )));
-        }
-        if value.contains('\0') {
-            return Err(HostedRunnerError::bad_request(format!(
-                "{field}[{index}] contains a null byte"
-            )));
-        }
-        strings.push(value.to_string());
-    }
-    Ok((!strings.is_empty()).then_some(strings))
-}
-
-fn resolve_workspace_export_paths(
-    workspace_root: &Path,
-    export_paths: Option<&[String]>,
-) -> Result<Vec<HostedRunnerWorkspaceExportPath>, HostedRunnerError> {
-    let default_path;
-    let requested = if let Some(export_paths) = export_paths {
-        export_paths
-    } else {
-        default_path = vec![".".to_string()];
-        &default_path
-    };
-
-    requested
-        .iter()
-        .map(|input| resolve_workspace_export_path(workspace_root, input))
-        .collect()
-}
-
-fn resolve_workspace_export_path(
-    workspace_root: &Path,
-    input: &str,
-) -> Result<HostedRunnerWorkspaceExportPath, HostedRunnerError> {
-    let logical_path = if Path::new(input).is_absolute() {
-        PathBuf::from(input)
-    } else {
-        workspace_root.join(input)
-    };
-    let real_path = fs::canonicalize(&logical_path).map_err(|error| {
-        HostedRunnerError::bad_request(format!("export path is unavailable: {input} ({error})"))
-    })?;
-    if !real_path.starts_with(workspace_root) {
-        return Err(HostedRunnerError::workspace_violation(format!(
-            "export path escapes hosted runner workspace root: {input}"
-        )));
-    }
-    let metadata = fs::metadata(&real_path).map_err(|error| {
-        HostedRunnerError::bad_request(format!("export path is unavailable: {input} ({error})"))
-    })?;
-    let relative_path = real_path
-        .strip_prefix(workspace_root)
-        .ok()
-        .and_then(|path| {
-            let rendered = path.display().to_string();
-            (!rendered.is_empty()).then_some(rendered)
-        })
-        .unwrap_or_else(|| ".".to_string());
-
-    Ok(HostedRunnerWorkspaceExportPath {
-        input: input.to_string(),
-        path: real_path.display().to_string(),
-        relative_path,
-        entry_type: if metadata.is_dir() {
-            HostedRunnerWorkspaceExportPathType::Directory
-        } else {
-            HostedRunnerWorkspaceExportPathType::File
+fn handle_connection_create(
+    shared: SharedRunner,
+    input: ConnectionCreateRequest,
+) -> HostedResult<ResponseBody> {
+    let mut state = shared.state.lock().expect("hosted runner state poisoned");
+    ensure_session_id(&state, input.session_id.as_deref())?;
+    let connection_id = input
+        .connection_id
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| format!("conn_{}", Uuid::new_v4().simple()));
+    let role = input.role.unwrap_or(ConnectionRole::Controller);
+    upsert_connection(
+        &mut state,
+        ConnectionUpsert {
+            connection_id: connection_id.clone(),
+            role,
+            client_protocol_version: input.protocol_version,
+            client_info: input.client_info,
+            capabilities: input.capabilities.map(Into::into),
+            opt_out_notifications: input.opt_out_notifications,
+            take_control: input.take_control,
         },
-    })
-}
-
-fn safe_manifest_file_name(runner_session_id: &str, requested_at: &str) -> String {
-    format!(
-        "{}-{}.json",
-        safe_component(runner_session_id),
-        safe_component(requested_at)
+    )?;
+    let snapshot = shared.snapshot(&state);
+    let controller_lease_granted = role == ConnectionRole::Controller
+        && state.controller_connection_id.as_deref() == Some(&connection_id);
+    let lease_expires_at = state.connections.get(&connection_id).map(lease_expires_at);
+    json_response(
+        200,
+        json!({
+            "session_id": state.session_id,
+            "connection_id": connection_id,
+            "role": role,
+            "controller_lease_granted": controller_lease_granted,
+            "controller_connection_id": state.controller_connection_id,
+            "lease_expires_at": lease_expires_at,
+            "heartbeat_interval_ms": DEFAULT_HEARTBEAT_INTERVAL_MS,
+            "snapshot": snapshot,
+        }),
     )
 }
 
-fn safe_component(value: &str) -> String {
-    value
+fn handle_subscribe(
+    shared: SharedRunner,
+    session_id: &str,
+    input: SubscribeRequest,
+) -> HostedResult<ResponseBody> {
+    let mut state = shared.state.lock().expect("hosted runner state poisoned");
+    ensure_session_id(&state, Some(session_id))?;
+    let role = input.role.unwrap_or(ConnectionRole::Controller);
+    let connection_id = input
+        .connection_id
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| format!("conn_{}", Uuid::new_v4().simple()));
+    upsert_connection(
+        &mut state,
+        ConnectionUpsert {
+            connection_id: connection_id.clone(),
+            role,
+            client_protocol_version: input.protocol_version,
+            client_info: input.client_info,
+            capabilities: input.capabilities.map(Into::into),
+            opt_out_notifications: input.opt_out_notifications,
+            take_control: input.take_control,
+        },
+    )?;
+    let subscription_id = format!("sub_{}", Uuid::new_v4().simple());
+    state.subscriptions.insert(
+        subscription_id.clone(),
+        SubscriptionRecord {
+            connection_id: connection_id.clone(),
+            role,
+            attached: true,
+        },
+    );
+    if let Some(connection) = state.connections.get_mut(&connection_id) {
+        connection.subscription_ids.insert(subscription_id.clone());
+    }
+    if role == ConnectionRole::Controller {
+        state.controller_connection_id = Some(connection_id.clone());
+    }
+    state.last_status = Some("Attached".to_string());
+    let connection_count = state.connections.len();
+    let controller_connection_id = state.controller_connection_id.clone();
+    let lease_expires_at = state.connections.get(&connection_id).map(lease_expires_at);
+    shared.publish_message(
+        &mut state,
+        FromAgentMessage::ConnectionInfo {
+            connection_id: Some(connection_id.clone()),
+            client_protocol_version: None,
+            client_info: None,
+            capabilities: None,
+            opt_out_notifications: None,
+            role: Some(role),
+            connection_count: Some(connection_count),
+            controller_connection_id,
+            lease_expires_at: lease_expires_at.clone(),
+            connections: None,
+        },
+    );
+    let snapshot = shared.snapshot(&state);
+    json_response(
+        200,
+        json!({
+            "connection_id": connection_id,
+            "subscription_id": subscription_id,
+            "role": role,
+            "controller_lease_granted": role == ConnectionRole::Controller,
+            "controller_subscription_id": snapshot.state.controller_subscription_id,
+            "controller_connection_id": snapshot.state.controller_connection_id,
+            "lease_expires_at": lease_expires_at,
+            "heartbeat_interval_ms": DEFAULT_HEARTBEAT_INTERVAL_MS,
+            "snapshot": snapshot,
+        }),
+    )
+}
+
+fn handle_state(shared: SharedRunner, session_id: &str) -> HostedResult<ResponseBody> {
+    let state = shared.state.lock().expect("hosted runner state poisoned");
+    ensure_session_id(&state, Some(session_id))?;
+    json_response(200, shared.snapshot(&state))
+}
+
+fn handle_events(
+    shared: SharedRunner,
+    session_id: &str,
+    query: HashMap<String, String>,
+) -> HostedResult<ResponseBody> {
+    let state = shared.state.lock().expect("hosted runner state poisoned");
+    ensure_session_id(&state, Some(session_id))?;
+    drop(state);
+    let cursor = query
+        .get("cursor")
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    let (replay, rx) = shared.subscribe_from(cursor);
+    Ok(ResponseBody::Sse { replay, rx, shared })
+}
+
+async fn handle_message(
+    shared: SharedRunner,
+    session_id: &str,
+    headers: HashMap<String, String>,
+    message: ToAgentMessage,
+) -> HostedResult<ResponseBody> {
+    let (connection_header_id, subscription_id) = connection_from_headers(&headers);
+    let connection_id;
+    let mut executor_request = None;
+    let mut execution = HostedRunnerHeadlessMessageExecution::TransportOnly;
+    let mut published_messages = 0usize;
+    let mut response_message =
+        "Rust hosted runner accepted the headless message; agent execution is not attached yet"
+            .to_string();
+    {
+        let mut state = shared.state.lock().expect("hosted runner state poisoned");
+        ensure_session_id(&state, Some(session_id))?;
+        let resolved_connection_id = resolve_message_connection_id(
+            &state,
+            connection_header_id.clone(),
+            subscription_id.clone(),
+        )?;
+        assert_controller(&state, Some(resolved_connection_id.as_str()))?;
+        if state.draining {
+            return Err(HostedError::new(
+                503,
+                "runtime_not_ready",
+                "hosted runner is draining",
+            ));
+        }
+        connection_id = Some(resolved_connection_id.clone());
+        match &message {
+            ToAgentMessage::Hello {
+                protocol_version,
+                client_info,
+                capabilities,
+                role,
+                opt_out_notifications,
+            } => {
+                let lease_expires_at =
+                    state
+                        .connections
+                        .get_mut(&resolved_connection_id)
+                        .map(|connection| {
+                            connection.client_protocol_version = protocol_version.clone();
+                            connection.client_info = client_info.clone();
+                            connection.capabilities = capabilities.clone();
+                            connection.opt_out_notifications =
+                                opt_out_notifications.clone().unwrap_or_default();
+                            connection.role = role.unwrap_or(connection.role);
+                            connection.last_seen_at = Utc::now();
+                            lease_expires_at(connection)
+                        });
+                let controller_connection_id = state.controller_connection_id.clone();
+                shared.publish_message(
+                    &mut state,
+                    FromAgentMessage::HelloOk {
+                        protocol_version: HEADLESS_PROTOCOL_VERSION.to_string(),
+                        connection_id: Some(resolved_connection_id.clone()),
+                        client_protocol_version: protocol_version.clone(),
+                        client_info: client_info.clone(),
+                        capabilities: capabilities.clone(),
+                        opt_out_notifications: opt_out_notifications.clone(),
+                        role: (*role).or(Some(ConnectionRole::Controller)),
+                        controller_connection_id,
+                        lease_expires_at,
+                    },
+                );
+            }
+            ToAgentMessage::Init {
+                system_prompt,
+                append_system_prompt,
+                thinking_level,
+                approval_mode,
+            } => {
+                state.last_init = Some(InitConfig {
+                    system_prompt: system_prompt.clone(),
+                    append_system_prompt: append_system_prompt.clone(),
+                    thinking_level: *thinking_level,
+                    approval_mode: *approval_mode,
+                });
+                state.last_status = Some("Initialized".to_string());
+            }
+            ToAgentMessage::Prompt { content, .. } => {
+                state.last_status = Some(format!("Prompt: {content}"));
+                executor_request = Some((
+                    Arc::clone(&shared.message_executor),
+                    message_context(
+                        &state,
+                        &resolved_connection_id,
+                        subscription_id.clone(),
+                        &shared.config.workspace_root,
+                    )?,
+                ));
+            }
+            ToAgentMessage::UtilityCommandTerminate { command_id, .. } => {
+                state.active_utility_commands.remove(command_id);
+                shared.publish_message(
+                    &mut state,
+                    FromAgentMessage::UtilityCommandExited {
+                        command_id: command_id.clone(),
+                        success: false,
+                        exit_code: None,
+                        signal: None,
+                        reason: Some("terminated".to_string()),
+                    },
+                );
+            }
+            ToAgentMessage::UtilityCommandStdin { .. }
+            | ToAgentMessage::UtilityCommandResize { .. }
+            | ToAgentMessage::ToolResponse { .. }
+            | ToAgentMessage::ClientToolResult { .. }
+            | ToAgentMessage::ServerRequestResponse { .. }
+            | ToAgentMessage::Interrupt
+            | ToAgentMessage::Cancel
+            | ToAgentMessage::Shutdown => {
+                executor_request = Some((
+                    Arc::clone(&shared.message_executor),
+                    message_context(
+                        &state,
+                        &resolved_connection_id,
+                        subscription_id.clone(),
+                        &shared.config.workspace_root,
+                    )?,
+                ));
+            }
+            ToAgentMessage::UtilityCommandStart { .. }
+            | ToAgentMessage::UtilityFileSearch { .. }
+            | ToAgentMessage::UtilityFileRead { .. }
+            | ToAgentMessage::UtilityFileWatchStart { .. }
+            | ToAgentMessage::UtilityFileWatchStop { .. } => {}
+        }
+    }
+
+    if let Some((executor, context)) = executor_request {
+        let result = executor
+            .execute(&context, message.clone())
+            .map_err(HostedError::from)?;
+        published_messages = result.messages.len();
+        execution = result.execution;
+        response_message = result.message;
+
+        let mut state = shared.state.lock().expect("hosted runner state poisoned");
+        ensure_session_id(&state, Some(session_id))?;
+        assert_controller(&state, Some(context.connection_id.as_str()))?;
+        if state.draining {
+            return Err(HostedError::new(
+                503,
+                "runtime_not_ready",
+                "hosted runner is draining",
+            ));
+        }
+        for message in result.messages {
+            shared.publish_message(&mut state, message);
+        }
+    }
+
+    match message {
+        ToAgentMessage::UtilityCommandStart {
+            command_id,
+            command,
+            cwd,
+            env,
+            shell_mode,
+            terminal_mode,
+            columns,
+            rows,
+            ..
+        } => {
+            run_utility_command(
+                shared.clone(),
+                UtilityCommandInvocation {
+                    connection_id: connection_id.clone(),
+                    command_id,
+                    command,
+                    cwd,
+                    env: env.unwrap_or_default(),
+                    shell_mode: shell_mode.unwrap_or(UtilityCommandShellMode::Shell),
+                    terminal_mode: terminal_mode.unwrap_or(UtilityCommandTerminalMode::Pipe),
+                    columns,
+                    rows,
+                },
+            )
+            .await?;
+        }
+        ToAgentMessage::UtilityFileRead {
+            read_id,
+            path,
+            cwd,
+            offset,
+            limit,
+        } => handle_file_read(shared.clone(), read_id, path, cwd, offset, limit).await?,
+        ToAgentMessage::UtilityFileSearch {
+            search_id,
+            query,
+            cwd,
+            limit,
+        } => handle_file_search(shared.clone(), search_id, query, cwd, limit).await?,
+        ToAgentMessage::UtilityFileWatchStart {
+            watch_id,
+            root_dir,
+            include_patterns,
+            exclude_patterns,
+            debounce_ms,
+        } => handle_file_watch_start(
+            shared.clone(),
+            connection_id.clone(),
+            watch_id,
+            root_dir,
+            include_patterns,
+            exclude_patterns,
+            debounce_ms.unwrap_or(250),
+        )?,
+        ToAgentMessage::UtilityFileWatchStop { watch_id } => {
+            handle_file_watch_stop(shared.clone(), watch_id)?;
+        }
+        _ => {}
+    }
+
+    let cursor = shared
+        .state
+        .lock()
+        .expect("hosted runner state poisoned")
+        .cursor;
+    json_response(
+        200,
+        json!({
+            "ok": true,
+            "success": true,
+            "accepted": true,
+            "cursor": cursor,
+            "execution": execution,
+            "published_messages": published_messages,
+            "message": response_message,
+        }),
+    )
+}
+
+fn handle_heartbeat(
+    shared: SharedRunner,
+    session_id: &str,
+    input: HeartbeatRequest,
+) -> HostedResult<ResponseBody> {
+    let mut state = shared.state.lock().expect("hosted runner state poisoned");
+    ensure_session_id(&state, Some(session_id))?;
+    let connection_id = resolve_connection_id(&state, input.connection_id, input.subscription_id)?;
+    let controller_lease_granted =
+        state.controller_connection_id.as_deref() == Some(connection_id.as_str());
+    let controller_connection_id = state.controller_connection_id.clone();
+    let connection = state.connections.get_mut(&connection_id).ok_or_else(|| {
+        HostedError::new(404, "stale_connection", "Headless connection not found")
+    })?;
+    connection.last_seen_at = Utc::now();
+    let lease_expires_at = lease_expires_at(connection);
+    json_response(
+        200,
+        json!({
+            "connection_id": connection_id,
+            "controller_lease_granted": controller_lease_granted,
+            "controller_connection_id": controller_connection_id,
+            "lease_expires_at": lease_expires_at,
+            "heartbeat_interval_ms": DEFAULT_HEARTBEAT_INTERVAL_MS,
+        }),
+    )
+}
+
+fn handle_disconnect(
+    shared: SharedRunner,
+    session_id: &str,
+    input: DisconnectRequest,
+) -> HostedResult<ResponseBody> {
+    let mut state = shared.state.lock().expect("hosted runner state poisoned");
+    ensure_session_id(&state, Some(session_id))?;
+    let connection_id = resolve_connection_id(&state, input.connection_id, input.subscription_id)?;
+    let mut disconnected_subscription_ids = Vec::new();
+    if let Some(connection) = state.connections.remove(&connection_id) {
+        for subscription_id in connection.subscription_ids {
+            state.subscriptions.remove(&subscription_id);
+            disconnected_subscription_ids.push(subscription_id);
+        }
+    }
+    if state.controller_connection_id.as_deref() == Some(connection_id.as_str()) {
+        state.controller_connection_id = None;
+    }
+    shared.publish_snapshot(&mut state);
+    json_response(
+        200,
+        json!({
+            "success": true,
+            "connection_id": connection_id,
+            "controller_connection_id": state.controller_connection_id,
+            "disconnected_subscription_ids": disconnected_subscription_ids,
+        }),
+    )
+}
+
+fn upsert_connection(state: &mut RunnerState, input: ConnectionUpsert) -> HostedResult<()> {
+    let ConnectionUpsert {
+        connection_id,
+        role,
+        client_protocol_version,
+        client_info,
+        capabilities,
+        opt_out_notifications,
+        take_control,
+    } = input;
+    let was_controller = state.controller_connection_id.as_deref() == Some(connection_id.as_str());
+    if role == ConnectionRole::Controller {
+        if let Some(controller_connection_id) = state.controller_connection_id.as_ref() {
+            if controller_connection_id != &connection_id && !take_control {
+                return Err(HostedError::new(
+                    409,
+                    "runtime_owned_elsewhere",
+                    "Controller lease is already held by another connection",
+                ));
+            }
+        }
+        state.controller_connection_id = Some(connection_id.clone());
+    } else if was_controller {
+        state.controller_connection_id = None;
+    }
+    let now = Utc::now();
+    let existing = state.connections.remove(&connection_id);
+    let subscription_ids = existing
+        .as_ref()
+        .map(|connection| connection.subscription_ids.clone())
+        .unwrap_or_default();
+    let client_protocol_version = client_protocol_version.or_else(|| {
+        existing
+            .as_ref()
+            .and_then(|connection| connection.client_protocol_version.clone())
+    });
+    let client_info = client_info.or_else(|| {
+        existing
+            .as_ref()
+            .and_then(|connection| connection.client_info.clone())
+    });
+    let capabilities = capabilities.or_else(|| {
+        existing
+            .as_ref()
+            .and_then(|connection| connection.capabilities.clone())
+    });
+    let opt_out_notifications = if opt_out_notifications.is_empty() {
+        existing
+            .as_ref()
+            .map(|connection| connection.opt_out_notifications.clone())
+            .unwrap_or_default()
+    } else {
+        opt_out_notifications
+    };
+    state.connections.insert(
+        connection_id.clone(),
+        ConnectionRecord {
+            id: connection_id,
+            role,
+            client_protocol_version,
+            client_info,
+            capabilities,
+            opt_out_notifications,
+            subscription_ids,
+            last_seen_at: now,
+        },
+    );
+    Ok(())
+}
+
+fn lease_expires_at(connection: &ConnectionRecord) -> String {
+    (connection.last_seen_at + ChronoDuration::milliseconds(CONNECTION_IDLE_MS))
+        .to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+async fn run_utility_command(
+    shared: SharedRunner,
+    invocation: UtilityCommandInvocation,
+) -> HostedResult<()> {
+    let UtilityCommandInvocation {
+        connection_id,
+        command_id,
+        command,
+        cwd,
+        env,
+        shell_mode,
+        terminal_mode,
+        columns,
+        rows,
+    } = invocation;
+    let cwd_path = resolve_workspace_path(&shared.config.workspace_root, None, cwd.as_deref())?;
+    {
+        let mut state = shared.state.lock().expect("hosted runner state poisoned");
+        let snapshot = ActiveUtilityCommandSnapshot {
+            command_id: command_id.clone(),
+            command: command.clone(),
+            cwd: Some(cwd_path.to_string_lossy().to_string()),
+            shell_mode,
+            terminal_mode,
+            pid: None,
+            columns,
+            rows,
+            owner_connection_id: connection_id.clone(),
+            output: String::new(),
+        };
+        state
+            .active_utility_commands
+            .insert(command_id.clone(), snapshot);
+        shared.publish_message(
+            &mut state,
+            FromAgentMessage::UtilityCommandStarted {
+                command_id: command_id.clone(),
+                command: command.clone(),
+                cwd: Some(cwd_path.to_string_lossy().to_string()),
+                shell_mode,
+                terminal_mode,
+                pid: None,
+                columns,
+                rows,
+                owner_connection_id: connection_id.clone(),
+            },
+        );
+    }
+
+    let output = spawn_command(&command, &cwd_path, env, shell_mode).await?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let success = output.status.success();
+    let exit_code = output.status.code();
+    let mut state = shared.state.lock().expect("hosted runner state poisoned");
+    if let Some(active) = state.active_utility_commands.get_mut(&command_id) {
+        active.output.push_str(&stdout);
+        active.output.push_str(&stderr);
+    }
+    if !stdout.is_empty() {
+        shared.publish_message(
+            &mut state,
+            FromAgentMessage::UtilityCommandOutput {
+                command_id: command_id.clone(),
+                stream: UtilityCommandStream::Stdout,
+                content: stdout,
+            },
+        );
+    }
+    if !stderr.is_empty() {
+        shared.publish_message(
+            &mut state,
+            FromAgentMessage::UtilityCommandOutput {
+                command_id: command_id.clone(),
+                stream: UtilityCommandStream::Stderr,
+                content: stderr,
+            },
+        );
+    }
+    state.active_utility_commands.remove(&command_id);
+    shared.publish_message(
+        &mut state,
+        FromAgentMessage::UtilityCommandExited {
+            command_id,
+            success,
+            exit_code,
+            signal: None,
+            reason: None,
+        },
+    );
+    Ok(())
+}
+
+async fn spawn_command(
+    command: &str,
+    cwd: &Path,
+    env: HashMap<String, String>,
+    shell_mode: UtilityCommandShellMode,
+) -> HostedResult<std::process::Output> {
+    let mut child = if shell_mode == UtilityCommandShellMode::Direct {
+        let Some(parts) = shlex::split(command) else {
+            return Err(HostedError::new(
+                400,
+                "unsupported_capability",
+                "could not parse direct command",
+            ));
+        };
+        let mut iter = parts.into_iter();
+        let Some(program) = iter.next() else {
+            return Err(HostedError::new(400, "bad_request", "command is empty"));
+        };
+        let mut child = Command::new(program);
+        child.args(iter);
+        child
+    } else {
+        let mut child = Command::new("sh");
+        child.arg("-lc").arg(command);
+        child
+    };
+    child.current_dir(cwd).envs(env);
+    child
+        .output()
+        .await
+        .map_err(|error| HostedError::new(500, "runtime_failed", error.to_string()))
+}
+
+async fn handle_file_read(
+    shared: SharedRunner,
+    read_id: String,
+    path: String,
+    cwd: Option<String>,
+    offset: Option<u32>,
+    limit: Option<u32>,
+) -> HostedResult<()> {
+    let full_path =
+        resolve_workspace_path(&shared.config.workspace_root, cwd.as_deref(), Some(&path))?;
+    let content = tokio::fs::read_to_string(&full_path)
+        .await
+        .map_err(|error| HostedError::new(404, "not_found", error.to_string()))?;
+    let lines: Vec<&str> = content.lines().collect();
+    let start = offset.unwrap_or(0) as usize;
+    let limit = limit.unwrap_or(200) as usize;
+    let selected = lines
+        .iter()
+        .skip(start)
+        .take(limit)
+        .copied()
+        .collect::<Vec<_>>();
+    let mut rendered = selected.join("\n");
+    if !rendered.is_empty() {
+        rendered.push('\n');
+    }
+    let relative_path = relative_workspace_path(&shared.config.workspace_root, &full_path);
+    let mut state = shared.state.lock().expect("hosted runner state poisoned");
+    shared.publish_message(
+        &mut state,
+        FromAgentMessage::UtilityFileReadResult {
+            read_id,
+            path: full_path.to_string_lossy().to_string(),
+            relative_path,
+            cwd: shared.config.workspace_root.to_string_lossy().to_string(),
+            content: rendered,
+            start_line: start as u32 + 1,
+            end_line: (start + selected.len()) as u32,
+            total_lines: lines.len() as u32,
+            truncated: start + selected.len() < lines.len(),
+        },
+    );
+    Ok(())
+}
+
+async fn handle_file_search(
+    shared: SharedRunner,
+    search_id: String,
+    query: String,
+    cwd: Option<String>,
+    limit: Option<u32>,
+) -> HostedResult<()> {
+    let root = resolve_workspace_path(&shared.config.workspace_root, cwd.as_deref(), Some("."))?;
+    let results = search_workspace_files(
+        &shared.config.workspace_root,
+        &root,
+        &query,
+        limit.unwrap_or(50) as usize,
+    );
+    let mut state = shared.state.lock().expect("hosted runner state poisoned");
+    shared.publish_message(
+        &mut state,
+        FromAgentMessage::UtilityFileSearchResults {
+            search_id,
+            query,
+            cwd: root.to_string_lossy().to_string(),
+            results,
+            truncated: false,
+        },
+    );
+    Ok(())
+}
+
+fn handle_file_watch_start(
+    shared: SharedRunner,
+    connection_id: Option<String>,
+    watch_id: String,
+    root_dir: Option<String>,
+    include_patterns: Option<Vec<String>>,
+    exclude_patterns: Option<Vec<String>>,
+    debounce_ms: u32,
+) -> HostedResult<()> {
+    let root = resolve_workspace_path(
+        &shared.config.workspace_root,
+        None,
+        root_dir.as_deref().or(Some(".")),
+    )?;
+    let root_dir = root.to_string_lossy().to_string();
+    let mut state = shared.state.lock().expect("hosted runner state poisoned");
+    state.active_file_watches.insert(
+        watch_id.clone(),
+        ActiveFileWatchSnapshot {
+            watch_id: watch_id.clone(),
+            root_dir: root_dir.clone(),
+            include_patterns: include_patterns.clone(),
+            exclude_patterns: exclude_patterns.clone(),
+            debounce_ms,
+            owner_connection_id: connection_id.clone(),
+        },
+    );
+    shared.publish_message(
+        &mut state,
+        FromAgentMessage::UtilityFileWatchStarted {
+            watch_id,
+            root_dir,
+            include_patterns,
+            exclude_patterns,
+            debounce_ms,
+            owner_connection_id: connection_id,
+        },
+    );
+    Ok(())
+}
+
+fn handle_file_watch_stop(shared: SharedRunner, watch_id: String) -> HostedResult<()> {
+    let mut state = shared.state.lock().expect("hosted runner state poisoned");
+    state.active_file_watches.remove(&watch_id);
+    shared.publish_message(
+        &mut state,
+        FromAgentMessage::UtilityFileWatchStopped {
+            watch_id,
+            reason: Some("Stopped by controller".to_string()),
+        },
+    );
+    Ok(())
+}
+
+async fn write_snapshot_manifest(
+    shared: &SharedRunner,
+    input: &DrainRequest,
+) -> HostedResult<PathBuf> {
+    let root = shared.config.snapshot_root.clone().unwrap_or_else(|| {
+        shared
+            .config
+            .workspace_root
+            .join(".maestro/runner-snapshots")
+    });
+    tokio::fs::create_dir_all(&root)
+        .await
+        .map_err(|error| HostedError::new(500, "runtime_failed", error.to_string()))?;
+    let filename = format!(
+        "{}-{}.json",
+        safe_manifest_component(&shared.config.runner_session_id),
+        Utc::now().timestamp_millis()
+    );
+    let path = root.join(filename);
+    let (maestro_session_id, snapshot) = {
+        let state = shared.state.lock().expect("hosted runner state poisoned");
+        (state.session_id.clone(), shared.snapshot(&state))
+    };
+    let has_runtime_activity = snapshot.cursor > 0;
+    let body = json!({
+        "protocol_version": HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION,
+        "runner_session_id": shared.config.runner_session_id,
+        "workspace_id": shared.config.workspace_id,
+        "agent_run_id": shared.config.agent_run_id,
+        "maestro_session_id": maestro_session_id.clone(),
+        "reason": input.reason,
+        "requested_by": input.requested_by,
+        "created_at": Utc::now().to_rfc3339(),
+        "workspace_root": shared.config.workspace_root,
+        "runtime": {
+            "flush_status": if has_runtime_activity { "completed" } else { "skipped" },
+            "error": null,
+            "session_id": maestro_session_id,
+            "session_file": null,
+            "protocol_version": if has_runtime_activity {
+                Some(HEADLESS_PROTOCOL_VERSION)
+            } else {
+                None
+            },
+            "cursor": if has_runtime_activity {
+                Some(snapshot.cursor)
+            } else {
+                None
+            },
+        },
+        "snapshot": snapshot,
+    });
+    let body = serde_json::to_vec_pretty(&body)
+        .map_err(|error| HostedError::new(500, "runtime_failed", error.to_string()))?;
+    tokio::fs::write(&path, body)
+        .await
+        .map_err(|error| HostedError::new(500, "runtime_failed", error.to_string()))?;
+    Ok(path)
+}
+
+fn safe_manifest_component(value: &str) -> String {
+    let component = value
         .chars()
-        .map(|char| {
-            if char.is_ascii_alphanumeric() || matches!(char, '.' | '_' | '-') {
-                char
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
             } else {
                 '_'
             }
         })
-        .collect()
-}
-
-fn format_timestamp(timestamp: DateTime<Utc>) -> String {
-    timestamp.to_rfc3339_opts(SecondsFormat::Millis, true)
-}
-
-fn git_output(workspace_root: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(workspace_root)
-        .args(args)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let stdout = String::from_utf8(output.stdout).ok()?;
-    let stdout = stdout.trim();
-    (!stdout.is_empty()).then(|| stdout.to_string())
-}
-
-fn collect_git_state(workspace_root: &Path) -> Option<HostedRunnerGitState> {
-    let commit = git_output(workspace_root, &["rev-parse", "HEAD"]);
-    let branch = git_output(workspace_root, &["rev-parse", "--abbrev-ref", "HEAD"])
-        .filter(|branch| branch != "HEAD");
-    let dirty = git_output(workspace_root, &["status", "--porcelain"]).is_some();
-    if commit.is_none() && branch.is_none() && !dirty {
-        None
+        .collect::<String>();
+    if component.is_empty() {
+        "runner".to_string()
     } else {
-        Some(HostedRunnerGitState {
-            commit,
-            branch,
-            dirty,
-        })
+        component
     }
 }
 
-fn is_headless_path(path: &str) -> bool {
-    HEADLESS_PATH_PREFIXES
-        .iter()
-        .any(|prefix| path == *prefix || path.starts_with(prefix))
+fn search_workspace_files(
+    workspace_root: &Path,
+    root: &Path,
+    query: &str,
+    limit: usize,
+) -> Vec<UtilityFileSearchMatch> {
+    let mut results = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let relative = relative_workspace_path(workspace_root, &path);
+            if query.is_empty() || relative.contains(query) {
+                results.push(UtilityFileSearchMatch {
+                    path: relative,
+                    score: 100,
+                });
+                if results.len() >= limit {
+                    return results;
+                }
+            }
+        }
+    }
+    results
+}
+
+fn ensure_session_id(state: &RunnerState, requested: Option<&str>) -> HostedResult<()> {
+    if requested.is_some_and(|session_id| session_id != state.session_id) {
+        return Err(HostedError::new(
+            404,
+            "stale_session",
+            "Headless session not found",
+        ));
+    }
+    Ok(())
+}
+
+fn assert_controller(state: &RunnerState, connection_id: Option<&str>) -> HostedResult<()> {
+    let Some(connection_id) = connection_id else {
+        return Err(HostedError::new(
+            403,
+            "access_denied",
+            "missing headless connection id",
+        ));
+    };
+    let Some(connection) = state.connections.get(connection_id) else {
+        return Err(HostedError::new(
+            404,
+            "stale_connection",
+            "Headless connection not found",
+        ));
+    };
+    if connection.role == ConnectionRole::Viewer {
+        return Err(HostedError::new(
+            403,
+            "access_denied",
+            "Viewer headless connections cannot send messages",
+        ));
+    }
+    if state.controller_connection_id.as_deref() != Some(connection_id) {
+        return Err(HostedError::new(
+            403,
+            "runtime_owned_elsewhere",
+            "Headless connection does not have controller access",
+        ));
+    }
+    Ok(())
+}
+
+fn resolve_connection_id(
+    state: &RunnerState,
+    connection_id: Option<String>,
+    subscription_id: Option<String>,
+) -> HostedResult<String> {
+    if let Some(connection_id) = connection_id {
+        return Ok(connection_id);
+    }
+    if let Some(subscription_id) = subscription_id {
+        if let Some(subscription) = state.subscriptions.get(&subscription_id) {
+            return Ok(subscription.connection_id.clone());
+        }
+    }
+    Err(HostedError::new(
+        404,
+        "stale_connection",
+        "Headless connection not found",
+    ))
+}
+
+fn resolve_message_connection_id(
+    state: &RunnerState,
+    connection_id: Option<String>,
+    subscription_id: Option<String>,
+) -> HostedResult<String> {
+    let resolved_connection_id =
+        resolve_connection_id(state, connection_id.clone(), subscription_id.clone())?;
+    if let Some(subscription_id) = subscription_id {
+        let subscription = state.subscriptions.get(&subscription_id).ok_or_else(|| {
+            HostedError::new(404, "stale_connection", "Headless subscription not found")
+        })?;
+        if subscription.connection_id != resolved_connection_id {
+            return Err(HostedError::new(
+                403,
+                "access_denied",
+                "Headless subscription does not belong to the message connection",
+            ));
+        }
+    }
+    Ok(resolved_connection_id)
+}
+
+fn message_context(
+    state: &RunnerState,
+    connection_id: &str,
+    subscription_id: Option<String>,
+    workspace_root: &Path,
+) -> HostedResult<HostedRunnerHeadlessMessageContext> {
+    let connection = state.connections.get(connection_id).ok_or_else(|| {
+        HostedError::new(404, "stale_connection", "Headless connection not found")
+    })?;
+    Ok(HostedRunnerHeadlessMessageContext {
+        session_id: state.session_id.clone(),
+        connection_id: connection.id.clone(),
+        subscription_id,
+        role: connection.role,
+        controller_connection_id: state.controller_connection_id.clone(),
+        client_protocol_version: connection.client_protocol_version.clone(),
+        client_info: connection.client_info.clone(),
+        capabilities: connection.capabilities.clone(),
+        opt_out_notifications: (!connection.opt_out_notifications.is_empty())
+            .then(|| connection.opt_out_notifications.clone()),
+        lease_expires_at: lease_expires_at(connection),
+        workspace_root: workspace_root.to_path_buf(),
+    })
+}
+
+fn connection_from_headers(headers: &HashMap<String, String>) -> (Option<String>, Option<String>) {
+    (
+        headers
+            .get("x-maestro-headless-connection-id")
+            .or_else(|| headers.get("x-composer-headless-connection-id"))
+            .cloned(),
+        headers
+            .get("x-maestro-headless-subscriber-id")
+            .or_else(|| headers.get("x-composer-headless-subscriber-id"))
+            .cloned(),
+    )
+}
+
+fn session_id_from_path<'a>(path: &'a str, suffix: &str) -> HostedResult<&'a str> {
+    let Some(prefix_removed) = path.strip_prefix("/api/headless/sessions/") else {
+        return Err(HostedError::new(404, "not_found", "route not found"));
+    };
+    let Some(session_id) = prefix_removed.strip_suffix(suffix) else {
+        return Err(HostedError::new(404, "not_found", "route not found"));
+    };
+    Ok(session_id.trim_end_matches('/'))
+}
+
+fn resolve_workspace_path(
+    workspace_root: &Path,
+    cwd: Option<&str>,
+    requested: Option<&str>,
+) -> HostedResult<PathBuf> {
+    let base = match cwd {
+        Some(cwd) if !cwd.trim().is_empty() => workspace_root.join(cwd),
+        _ => workspace_root.to_path_buf(),
+    };
+    let requested = requested.unwrap_or(".");
+    let candidate = if Path::new(requested).is_absolute() {
+        PathBuf::from(requested)
+    } else {
+        base.join(requested)
+    };
+    let normalized = canonicalize_existing_prefix(&candidate)?;
+    if !normalized.starts_with(workspace_root) {
+        return Err(HostedError::new(
+            403,
+            "workspace_violation",
+            "requested path escapes hosted workspace root",
+        ));
+    }
+    Ok(normalized)
+}
+
+fn canonicalize_existing_prefix(path: &Path) -> HostedResult<PathBuf> {
+    let mut current = path.to_path_buf();
+    let mut missing_components = Vec::<OsString>::new();
+    loop {
+        match current.canonicalize() {
+            Ok(mut canonical) => {
+                for component in missing_components.iter().rev() {
+                    canonical.push(component);
+                }
+                return Ok(canonical);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let Some(component) = current.file_name().map(OsString::from) else {
+                    return Err(HostedError::new(
+                        404,
+                        "not_found",
+                        "requested workspace path does not exist",
+                    ));
+                };
+                missing_components.push(component);
+                if !current.pop() {
+                    return Err(HostedError::new(
+                        404,
+                        "not_found",
+                        "requested workspace path does not exist",
+                    ));
+                }
+            }
+            Err(error) => {
+                return Err(HostedError::new(404, "not_found", error.to_string()));
+            }
+        }
+    }
+}
+
+fn relative_workspace_path(workspace_root: &Path, path: &Path) -> String {
+    path.strip_prefix(workspace_root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .trim_start_matches('/')
+        .to_string()
+}
+
+fn parse_json<T: for<'de> Deserialize<'de>>(body: &[u8]) -> HostedResult<T> {
+    if body.is_empty() {
+        return serde_json::from_slice(b"{}")
+            .map_err(|error| HostedError::new(400, "bad_request", error.to_string()));
+    }
+    serde_json::from_slice(body)
+        .map_err(|error| HostedError::new(400, "bad_request", error.to_string()))
+}
+
+fn json_response<T: Serialize>(status: u16, body: T) -> HostedResult<ResponseBody> {
+    let body = serde_json::to_value(body)
+        .map_err(|error| HostedError::new(500, "runtime_failed", error.to_string()))?;
+    Ok(ResponseBody::Json { status, body })
+}
+
+async fn read_request(socket: &mut TcpStream) -> io::Result<Option<HttpRequest>> {
+    let mut buffer = Vec::new();
+    let mut header_end = None;
+    loop {
+        let mut chunk = [0_u8; 1024];
+        let read = socket.read(&mut chunk).await?;
+        if read == 0 {
+            if buffer.is_empty() {
+                return Ok(None);
+            }
+            break;
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+        if let Some(position) = find_header_end(&buffer) {
+            header_end = Some(position);
+            break;
+        }
+        if buffer.len() > 64 * 1024 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "request headers too large",
+            ));
+        }
+    }
+    let Some(header_end) = header_end else {
+        return Ok(None);
+    };
+    let headers_text = String::from_utf8_lossy(&buffer[..header_end]);
+    let mut lines = headers_text.split("\r\n");
+    let Some(request_line) = lines.next() else {
+        return Ok(None);
+    };
+    let mut request_parts = request_line.split_whitespace();
+    let method = request_parts.next().unwrap_or("").to_string();
+    let target = request_parts.next().unwrap_or("/");
+    let (path, query) = parse_target(target);
+    let mut headers = HashMap::new();
+    for line in lines {
+        if let Some((name, value)) = line.split_once(':') {
+            headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
+        }
+    }
+    let content_length = headers
+        .get("content-length")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+    let body_start = header_end + 4;
+    let mut body = buffer[body_start..].to_vec();
+    while body.len() < content_length {
+        let mut chunk = vec![0_u8; content_length - body.len()];
+        let read = socket.read(&mut chunk).await?;
+        if read == 0 {
+            break;
+        }
+        body.extend_from_slice(&chunk[..read]);
+    }
+    body.truncate(content_length);
+    Ok(Some(HttpRequest {
+        method,
+        path,
+        query,
+        headers,
+        body,
+    }))
+}
+
+fn find_header_end(buffer: &[u8]) -> Option<usize> {
+    buffer.windows(4).position(|window| window == b"\r\n\r\n")
+}
+
+fn parse_target(target: &str) -> (String, HashMap<String, String>) {
+    let (path, raw_query) = target.split_once('?').unwrap_or((target, ""));
+    let mut query = HashMap::new();
+    for pair in raw_query.split('&').filter(|pair| !pair.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        query.insert(key.to_string(), value.to_string());
+    }
+    (path.to_string(), query)
+}
+
+async fn write_json_value(
+    socket: &mut TcpStream,
+    status: u16,
+    body: serde_json::Value,
+) -> io::Result<()> {
+    let bytes = serde_json::to_vec(&body)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    write_response(socket, status, "application/json", &bytes).await
+}
+
+async fn write_error(socket: &mut TcpStream, error: HostedError) -> io::Result<()> {
+    let body = serde_json::to_vec(&json!({
+        "error": error.message,
+        "error_type": error.code,
+        "code": error.code,
+    }))
+    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    write_response(socket, error.status, "application/json", &body).await
+}
+
+async fn write_response(
+    socket: &mut TcpStream,
+    status: u16,
+    content_type: &str,
+    body: &[u8],
+) -> io::Result<()> {
+    let reason = status_reason(status);
+    let headers = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    socket.write_all(headers.as_bytes()).await?;
+    socket.write_all(body).await
+}
+
+async fn write_sse_headers(socket: &mut TcpStream) -> io::Result<()> {
+    socket
+        .write_all(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n",
+        )
+        .await
+}
+
+async fn write_sse_event(socket: &mut TcpStream, envelope: &StreamEnvelope) -> io::Result<()> {
+    let payload = serde_json::to_string(envelope)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    socket.write_all(b"data: ").await?;
+    socket.write_all(payload.as_bytes()).await?;
+    socket.write_all(b"\n\n").await
+}
+
+fn status_reason(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        400 => "Bad Request",
+        403 => "Forbidden",
+        404 => "Not Found",
+        409 => "Conflict",
+        500 => "Internal Server Error",
+        503 => "Service Unavailable",
+        _ => "OK",
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use pretty_assertions::assert_eq;
-    use std::sync::{Arc, Mutex};
-    use tempfile::TempDir;
+    use reqwest::StatusCode;
+    use tempfile::tempdir;
 
-    fn runtime() -> (TempDir, HostedRunnerRuntime) {
-        let temp_dir = TempDir::new().unwrap();
-        fs::write(temp_dir.path().join("file.txt"), "hello\n").unwrap();
-        let config = HostedRunnerConfig::new("mrs/test:1", temp_dir.path())
-            .unwrap()
-            .with_owner_instance_id("owner-1")
-            .with_workspace_id("workspace-1")
-            .with_agent_run_id("agent-run-1")
-            .with_maestro_session_id("maestro-session-1");
-        (temp_dir, HostedRunnerRuntime::new(config))
-    }
+    use super::*;
+    use crate::headless::RemoteTransportConfig;
 
     #[derive(Debug)]
     struct ScriptedRuntimeExecutor;
@@ -2459,9 +2607,9 @@ mod tests {
         ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
             match message {
                 ToAgentMessage::Prompt { content, .. } => {
-                    assert_eq!(context.session_id, "maestro-session-1");
-                    assert_eq!(context.connection_id, "hconn_1");
-                    assert_eq!(context.subscription_id.as_deref(), Some("hsub_1"));
+                    assert_eq!(context.session_id, "sess_test");
+                    assert_eq!(context.connection_id, "conn_exec");
+                    assert!(context.subscription_id.as_deref().is_some());
                     Ok(HostedRunnerHeadlessMessageResult::runtime_handled(
                         vec![
                             FromAgentMessage::ResponseStart {
@@ -2469,62 +2617,78 @@ mod tests {
                             },
                             FromAgentMessage::ResponseChunk {
                                 response_id: "resp-hosted-1".to_string(),
-                                content,
+                                content: format!("runtime: {content}"),
                                 is_thinking: false,
                             },
                             FromAgentMessage::ResponseEnd {
                                 response_id: "resp-hosted-1".to_string(),
                                 usage: None,
                                 tools_summary: None,
-                                duration_ms: None,
-                                ttft_ms: None,
+                                duration_ms: Some(7),
+                                ttft_ms: Some(3),
                             },
                         ],
                         "Rust hosted runner message handled by runtime executor",
                     ))
                 }
-                _ => Ok(HostedRunnerHeadlessMessageResult::runtime_handled(
-                    vec![FromAgentMessage::Status {
-                        message: "scripted runtime executor accepted message".to_string(),
-                    }],
-                    "Rust hosted runner message handled by runtime executor",
+                _ => Ok(HostedRunnerHeadlessMessageResult::transport_only(
+                    Vec::new(),
+                    "scripted executor ignored message",
                 )),
             }
         }
     }
 
-    struct DrainableRuntimeExecutor {
-        messages: Mutex<Vec<FromAgentMessage>>,
-    }
-
-    impl DrainableRuntimeExecutor {
-        fn new(messages: Vec<FromAgentMessage>) -> Self {
-            Self {
-                messages: Mutex::new(messages),
-            }
-        }
-    }
-
-    impl HostedRunnerHeadlessMessageExecutor for DrainableRuntimeExecutor {
-        fn execute(
-            &self,
-            _context: &HostedRunnerHeadlessMessageContext,
-            _message: ToAgentMessage,
-        ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
-            Ok(HostedRunnerHeadlessMessageResult::runtime_handled(
-                Vec::new(),
-                "accepted by drainable runtime",
-            ))
-        }
-
-        fn drain(&self) -> Result<Vec<FromAgentMessage>, HostedRunnerError> {
-            Ok(self.messages.lock().expect("messages").drain(..).collect())
+    fn test_config(workspace_root: PathBuf) -> HostedRunnerConfig {
+        HostedRunnerConfig {
+            runner_session_id: "mrs_test".to_string(),
+            workspace_root,
+            bind_addr: "127.0.0.1:0".parse().expect("bind addr"),
+            owner_instance_id: Some("owner_test".to_string()),
+            snapshot_root: None,
+            workspace_id: Some("ws_test".to_string()),
+            agent_run_id: Some("run_test".to_string()),
+            maestro_session_id: Some("sess_test".to_string()),
+            attach_audience: None,
         }
     }
 
     #[test]
-    fn resolves_env_config_with_contract_names() {
-        let temp_dir = TempDir::new().unwrap();
+    fn supervisor_executor_reports_runtime_not_ready_until_connected() {
+        let workspace = tempdir().expect("workspace");
+        let supervisor = Arc::new(Mutex::new(AgentSupervisor::new(
+            crate::headless::SupervisorConfig::default(),
+        )));
+        let executor = AgentSupervisorHostedRunnerMessageExecutor::new(supervisor);
+        let context = HostedRunnerHeadlessMessageContext {
+            session_id: "sess_test".to_string(),
+            connection_id: "conn_exec".to_string(),
+            subscription_id: Some("sub_exec".to_string()),
+            role: ConnectionRole::Controller,
+            controller_connection_id: Some("conn_exec".to_string()),
+            client_protocol_version: Some(HEADLESS_PROTOCOL_VERSION.to_string()),
+            client_info: None,
+            capabilities: None,
+            opt_out_notifications: None,
+            lease_expires_at: Utc::now().to_rfc3339(),
+            workspace_root: workspace.path().to_path_buf(),
+        };
+
+        let error = executor
+            .execute(
+                &context,
+                ToAgentMessage::Prompt {
+                    content: "hello".to_string(),
+                    attachments: None,
+                },
+            )
+            .expect_err("supervisor should not be connected");
+        assert_eq!(error.code, HostedRunnerErrorCode::RuntimeNotReady);
+    }
+
+    #[test]
+    fn resolves_env_config_with_hosted_runner_contract_names() {
+        let workspace = tempdir().expect("workspace");
         let mut env = HashMap::new();
         env.insert(
             "MAESTRO_RUNNER_SESSION_ID".to_string(),
@@ -2536,750 +2700,739 @@ mod tests {
         );
         env.insert(
             "MAESTRO_WORKSPACE_ROOT".to_string(),
-            temp_dir.path().display().to_string(),
+            workspace.path().display().to_string(),
         );
         env.insert(
             "MAESTRO_HOSTED_RUNNER_LISTEN".to_string(),
-            "0.0.0.0:9090".to_string(),
+            "127.0.0.1:9090".to_string(),
         );
         env.insert(
             "MAESTRO_REMOTE_RUNNER_WORKSPACE_ID".to_string(),
             "workspace_1".to_string(),
         );
-        let config = HostedRunnerConfig::from_env_map(&env).unwrap();
+        env.insert(
+            "MAESTRO_REMOTE_RUNNER_SNAPSHOT_ROOT".to_string(),
+            ".snapshots".to_string(),
+        );
+
+        let config = HostedRunnerConfig::from_env_map(&env).expect("config");
         assert_eq!(config.runner_session_id, "mrs_123");
         assert_eq!(config.owner_instance_id.as_deref(), Some("pod_1"));
         assert_eq!(
             config.workspace_root,
-            temp_dir.path().canonicalize().unwrap()
+            workspace.path().canonicalize().unwrap()
         );
+        assert_eq!(config.bind_addr, "127.0.0.1:9090".parse().unwrap());
         assert_eq!(
-            config.snapshot_root,
-            temp_dir
-                .path()
-                .canonicalize()
-                .unwrap()
-                .join(".maestro")
-                .join("runner-snapshots")
+            config.snapshot_root.as_deref(),
+            Some(
+                workspace
+                    .path()
+                    .canonicalize()
+                    .unwrap()
+                    .join(".snapshots")
+                    .as_path()
+            )
         );
-        assert_eq!(config.host.as_deref(), Some("0.0.0.0"));
-        assert_eq!(config.port, 9090);
         assert_eq!(config.workspace_id.as_deref(), Some("workspace_1"));
     }
 
     #[test]
-    fn identity_reflects_ready_and_draining_state() {
-        let (_temp_dir, runtime) = runtime();
-        let identity = runtime.identity().unwrap();
-        assert_eq!(
-            identity.protocol_version,
-            HOSTED_RUNNER_IDENTITY_PROTOCOL_VERSION
-        );
-        assert_eq!(identity.runner_session_id, "mrs/test:1");
-        assert_eq!(identity.owner_instance_id, "owner-1");
+    fn sse_lag_reset_envelope_includes_current_snapshot() {
+        let workspace = tempdir().expect("workspace");
+        let shared = SharedRunner::new(test_config(workspace.path().to_path_buf()));
+        {
+            let mut state = shared.state.lock().expect("state");
+            shared.publish_message(
+                &mut state,
+                FromAgentMessage::Status {
+                    message: "ready".to_string(),
+                },
+            );
+        }
+
+        let envelope = shared.reset_envelope("broadcast_lag:3");
+        let StreamEnvelope::Reset { reason, snapshot } = envelope else {
+            panic!("expected reset envelope");
+        };
+        assert_eq!(reason, "broadcast_lag:3");
+        assert_eq!(snapshot.cursor, 1);
+    }
+
+    #[tokio::test]
+    async fn identity_and_drain_follow_runner_contract() {
+        let workspace = tempdir().expect("workspace");
+        let handle = start_hosted_runner(test_config(workspace.path().to_path_buf()))
+            .await
+            .expect("start hosted runner");
+        let client = reqwest::Client::new();
+
+        let identity: HostedRunnerIdentity = client
+            .get(format!(
+                "{}/.well-known/evalops/remote-runner/identity",
+                handle.base_url()
+            ))
+            .send()
+            .await
+            .expect("identity response")
+            .json()
+            .await
+            .expect("identity json");
+        assert_eq!(identity.runner_session_id, "mrs_test");
+        assert_eq!(identity.owner_instance_id.as_deref(), Some("owner_test"));
         assert!(identity.ready);
         assert!(!identity.draining);
 
-        runtime.set_ready(false);
-        let identity = runtime.identity().unwrap();
-        assert!(!identity.ready);
-        assert!(!identity.draining);
-    }
-
-    #[test]
-    fn drain_writes_manifest_and_marks_runtime_non_attachable() {
-        let (temp_dir, runtime) = runtime();
-        let requested_at = DateTime::parse_from_rfc3339("2026-04-23T12:34:56.789Z")
-            .unwrap()
-            .with_timezone(&Utc);
-        let completed_at = DateTime::parse_from_rfc3339("2026-04-23T12:34:57.001Z")
-            .unwrap()
-            .with_timezone(&Utc);
-        let result = runtime
-            .drain_at(
-                HostedRunnerDrainInput {
-                    reason: Some("ttl_expired".to_string()),
-                    requested_by: Some("platform".to_string()),
-                    export_paths: Some(vec!["file.txt".to_string()]),
-                },
-                requested_at,
-                completed_at,
-            )
-            .unwrap();
-
-        assert!(runtime.is_draining());
-        let identity = runtime.identity().unwrap();
-        assert!(!identity.ready);
-        assert!(identity.draining);
-
-        assert_eq!(result.status, SnapshotManifestStatus::Drained);
-        assert!(result.manifest_path.exists());
-        assert!(result
-            .manifest_path
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .starts_with("mrs_test_1-2026-04-23T12_34_56.789Z"));
-        assert_eq!(
-            result.manifest.manifest_version,
-            HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION
-        );
-        assert_eq!(
-            result.manifest.protocol_version,
-            HOSTED_RUNNER_DRAIN_PROTOCOL_VERSION
-        );
-        assert_eq!(result.manifest.stop_reason, "ttl_expired");
-        assert_eq!(result.manifest.requested_by.as_deref(), Some("platform"));
-        assert_eq!(
-            result.manifest.runtime.flush_status,
-            RuntimeFlushStatus::Skipped
-        );
-        assert_eq!(
-            result.manifest.runtime.session_id.as_deref(),
-            Some("maestro-session-1")
-        );
-        assert_eq!(result.manifest.runtime.protocol_version, None);
-        assert_eq!(result.manifest.runtime.cursor, None);
-        assert_eq!(
-            result.manifest.workspace_export.paths[0].relative_path,
-            "file.txt"
-        );
-        assert_eq!(
-            result.manifest.workspace_export.paths[0].entry_type,
-            HostedRunnerWorkspaceExportPathType::File
-        );
-
-        let written = fs::read_to_string(&result.manifest_path).unwrap();
-        let written: HostedRunnerSnapshotManifest = serde_json::from_str(&written).unwrap();
-        assert_eq!(written, result.manifest);
-        assert!(result.manifest_path.starts_with(
-            temp_dir
-                .path()
-                .join(".maestro")
-                .join("runner-snapshots")
-                .canonicalize()
-                .unwrap_or_else(|_| temp_dir.path().join(".maestro").join("runner-snapshots"))
-        ));
-    }
-
-    #[test]
-    fn drain_rejects_workspace_escape() {
-        let temp_dir = TempDir::new().unwrap();
-        let outside = TempDir::new().unwrap();
-        let outside_file = outside.path().join("secret.txt");
-        fs::write(&outside_file, "secret\n").unwrap();
-        let runtime = HostedRunnerRuntime::new(
-            HostedRunnerConfig::new("mrs_123", temp_dir.path())
-                .unwrap()
-                .with_owner_instance_id("owner-1"),
-        );
-
-        let error = runtime
-            .drain(HostedRunnerDrainInput {
-                export_paths: Some(vec![outside_file.display().to_string()]),
-                ..HostedRunnerDrainInput::default()
-            })
-            .unwrap_err();
-        assert_eq!(error.code, HostedRunnerErrorCode::WorkspaceViolation);
-        assert!(runtime.is_draining());
-    }
-
-    #[test]
-    fn drain_blocks_headless_messages_and_records_runtime_cursor() {
-        let (_temp_dir, runtime) = runtime();
-        let controller = runtime.handle_request(
-            "POST",
-            "/api/headless/connections",
-            Some(
-                &json!({
-                    "protocolVersion": HEADLESS_PROTOCOL_VERSION,
-                    "role": "controller"
-                })
-                .to_string(),
-            ),
-        );
-        assert_eq!(controller.status, 200);
-
-        let subscribe = runtime.handle_request(
-            "POST",
-            "/api/headless/sessions/maestro-session-1/subscribe",
-            Some(r#"{"connectionId":"hconn_1","role":"controller"}"#),
-        );
-        assert_eq!(subscribe.status, 200);
-
-        let mut headers = HashMap::new();
-        headers.insert(
-            "x-maestro-headless-connection-id".to_string(),
-            "hconn_1".to_string(),
-        );
-        headers.insert(
-            "x-maestro-headless-subscriber-id".to_string(),
-            "hsub_1".to_string(),
-        );
-        let hello = runtime.handle_request_with_headers(
-            "POST",
-            "/api/headless/sessions/maestro-session-1/messages",
-            Some(r#"{"type":"hello"}"#),
-            &headers,
-        );
-        assert_eq!(hello.status, 200);
-        assert_eq!(hello.body["cursor"], 1);
-
-        let requested_at = DateTime::parse_from_rfc3339("2026-04-23T13:00:00.000Z")
-            .unwrap()
-            .with_timezone(&Utc);
-        let completed_at = DateTime::parse_from_rfc3339("2026-04-23T13:00:00.500Z")
-            .unwrap()
-            .with_timezone(&Utc);
-        let result = runtime
-            .drain_at(
-                HostedRunnerDrainInput {
-                    reason: Some("budget_exhausted".to_string()),
-                    requested_by: Some("platform".to_string()),
-                    export_paths: Some(vec![".".to_string()]),
-                },
-                requested_at,
-                completed_at,
-            )
-            .unwrap();
-        assert_eq!(
-            result.manifest.runtime.flush_status,
-            RuntimeFlushStatus::Completed
-        );
-        assert_eq!(
-            result.manifest.runtime.session_id.as_deref(),
-            Some("maestro-session-1")
-        );
-        assert_eq!(
-            result.manifest.runtime.protocol_version.as_deref(),
-            Some(HEADLESS_PROTOCOL_VERSION)
-        );
-        assert_eq!(result.manifest.runtime.cursor, Some(2));
-
-        let blocked = runtime.handle_request_with_headers(
-            "POST",
-            "/api/headless/sessions/maestro-session-1/messages",
-            Some(r#"{"type":"prompt","content":"after drain"}"#),
-            &headers,
-        );
-        assert_eq!(blocked.status, 503);
-        assert_eq!(blocked.body["code"], "runtime_not_ready");
-
-        let events = runtime.handle_request(
-            "GET",
-            "/api/headless/sessions/maestro-session-1/events?cursor=1&subscriptionId=hsub_1",
-            None,
-        );
-        assert_eq!(events.status, 200);
-        assert_eq!(events.body[0]["type"], "message");
-        assert_eq!(events.body[0]["cursor"], 2);
-        assert_eq!(events.body[0]["message"]["type"], "status");
-        assert!(events.body[0]["message"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("budget_exhausted"));
-    }
-
-    #[test]
-    fn parses_drain_payload_snake_and_camel_names() {
-        let input = parse_hosted_runner_drain_input(&json!({
-            "stop_reason": "budget_exhausted",
-            "requestedBy": "platform",
-            "exportPaths": ["."]
-        }))
-        .unwrap();
-        assert_eq!(input.reason.as_deref(), Some("budget_exhausted"));
-        assert_eq!(input.requested_by.as_deref(), Some("platform"));
-        assert_eq!(input.export_paths.as_deref(), Some(&[".".to_string()][..]));
-    }
-
-    #[test]
-    fn request_handler_exposes_identity_and_drain_shapes() {
-        let (_temp_dir, runtime) = runtime();
-        let identity = runtime.handle_request("GET", HOSTED_RUNNER_IDENTITY_PATH, None);
-        assert_eq!(identity.status, 200);
-        assert_eq!(
-            identity.body["protocol_version"],
-            HOSTED_RUNNER_IDENTITY_PROTOCOL_VERSION
-        );
-
-        let drain = runtime.handle_request(
-            "POST",
-            HOSTED_RUNNER_DRAIN_PATH,
-            Some(r#"{"reason":"user_stop","export_paths":["."]}"#),
-        );
-        assert_eq!(drain.status, 200);
-        assert_eq!(
-            drain.body["protocol_version"],
-            HOSTED_RUNNER_DRAIN_PROTOCOL_VERSION
-        );
-        assert_eq!(drain.body["status"], "drained");
-        assert_eq!(
-            drain.body["manifest"]["manifest_version"],
-            HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION
-        );
-    }
-
-    #[test]
-    fn request_handler_tracks_headless_controller_viewer_leases() {
-        let (_temp_dir, runtime) = runtime();
-
-        let controller = runtime.handle_request(
-            "POST",
-            "/api/headless/connections",
-            Some(
-                &json!({
-                    "protocolVersion": HEADLESS_PROTOCOL_VERSION,
-                    "clientInfo": {"name": "maestro-controller", "version": "test"},
-                    "role": "controller",
-                    "capabilities": {
-                        "serverRequests": ["approval", "tool_retry"],
-                        "utilityOperations": ["command_exec"]
-                    },
-                    "optOutNotifications": ["heartbeat"]
-                })
-                .to_string(),
-            ),
-        );
-        assert_eq!(controller.status, 200);
-        assert_eq!(controller.body["session_id"], "maestro-session-1");
-        assert_eq!(controller.body["connection_id"], "hconn_1");
-        assert_eq!(controller.body["role"], "controller");
-        assert_eq!(controller.body["controller_lease_granted"], true);
-        assert_eq!(controller.body["controller_connection_id"], "hconn_1");
-
-        let viewer = runtime.handle_request(
-            "POST",
-            "/api/headless/connections",
-            Some(
-                &json!({
-                    "role": "viewer",
-                    "capabilities": {
-                        "serverRequests": ["approval"],
-                        "utilityOperations": ["file_read", "file_search"]
-                    }
-                })
-                .to_string(),
-            ),
-        );
-        assert_eq!(viewer.status, 200);
-        assert_eq!(viewer.body["connection_id"], "hconn_2");
-        assert_eq!(viewer.body["role"], "viewer");
-        assert_eq!(viewer.body["controller_lease_granted"], false);
-        assert_eq!(viewer.body["controller_connection_id"], "hconn_1");
-
-        let rejected_viewer = runtime.handle_request(
-            "POST",
-            "/api/headless/connections",
-            Some(
-                &json!({
-                    "role": "viewer",
-                    "capabilities": {
-                        "utilityOperations": ["command_exec"]
-                    }
-                })
-                .to_string(),
-            ),
-        );
-        assert_eq!(rejected_viewer.status, 400);
-        assert_eq!(rejected_viewer.body["code"], "bad_request");
-
-        let conflict = runtime.handle_request(
-            "POST",
-            "/api/headless/connections",
-            Some(r#"{"role":"controller"}"#),
-        );
-        assert_eq!(conflict.status, 409);
-        assert_eq!(conflict.body["code"], "controller_lease_held");
-
-        let takeover = runtime.handle_request(
-            "POST",
-            "/api/headless/connections",
-            Some(r#"{"role":"controller","takeControl":true}"#),
-        );
-        assert_eq!(takeover.status, 200);
-        assert_eq!(takeover.body["connection_id"], "hconn_3");
-        assert_eq!(takeover.body["controller_lease_granted"], true);
-        assert_eq!(takeover.body["controller_connection_id"], "hconn_3");
-
-        let subscribe = runtime.handle_request(
-            "POST",
-            "/api/headless/sessions/maestro-session-1/subscribe",
-            Some(r#"{"connectionId":"hconn_3","role":"controller"}"#),
-        );
-        assert_eq!(subscribe.status, 200);
-        assert_eq!(subscribe.body["subscription_id"], "hsub_1");
-        assert_eq!(subscribe.body["snapshot"]["cursor"], 0);
-
-        let state = runtime.handle_request(
-            "GET",
-            "/api/headless/sessions/maestro-session-1/state",
-            None,
-        );
-        assert_eq!(state.status, 200);
-        assert_eq!(state.body["session_id"], "maestro-session-1");
-        assert_eq!(state.body["state"]["connection_count"], 3);
-        assert_eq!(state.body["state"]["controller_connection_id"], "hconn_3");
-        assert_eq!(state.body["state"]["controller_subscription_id"], "hsub_1");
-
-        let mut headers = HashMap::new();
-        headers.insert(
-            "x-maestro-headless-connection-id".to_string(),
-            "hconn_3".to_string(),
-        );
-        headers.insert(
-            "x-maestro-headless-subscriber-id".to_string(),
-            "hsub_1".to_string(),
-        );
-        let message = runtime.handle_request_with_headers(
-            "POST",
-            "/api/headless/sessions/maestro-session-1/messages",
-            Some(r#"{"type":"hello"}"#),
-            &headers,
-        );
-        assert_eq!(message.status, 200);
-        assert_eq!(message.body["success"], true);
-        assert_eq!(message.body["execution"], "transport_only");
-        assert_eq!(message.body["cursor"], 1);
-
-        let events = runtime.handle_request(
-            "GET",
-            "/api/headless/sessions/maestro-session-1/events?cursor=0&subscriptionId=hsub_1",
-            None,
-        );
-        assert_eq!(events.status, 200);
-        assert_eq!(events.body[0]["type"], "message");
-        assert_eq!(events.body[0]["cursor"], 1);
-        assert_eq!(events.body[0]["message"]["type"], "hello_ok");
-        assert_eq!(events.body[0]["message"]["connection_id"], "hconn_3");
-
-        let mut viewer_headers = HashMap::new();
-        viewer_headers.insert(
-            "x-maestro-headless-connection-id".to_string(),
-            "hconn_2".to_string(),
-        );
-        let viewer_message = runtime.handle_request_with_headers(
-            "POST",
-            "/api/headless/sessions/maestro-session-1/messages",
-            Some(r#"{"type":"hello"}"#),
-            &viewer_headers,
-        );
-        assert_eq!(viewer_message.status, 409);
-        assert_eq!(viewer_message.body["code"], "controller_lease_held");
-    }
-
-    #[test]
-    fn request_handler_publishes_runtime_executor_messages() {
-        let temp_dir = TempDir::new().unwrap();
-        fs::write(temp_dir.path().join("file.txt"), "hello\n").unwrap();
-        let config = HostedRunnerConfig::new("mrs/test:1", temp_dir.path())
-            .unwrap()
-            .with_owner_instance_id("owner-1")
-            .with_maestro_session_id("maestro-session-1");
-        let runtime = HostedRunnerRuntime::new_with_message_executor(
-            config,
-            Arc::new(ScriptedRuntimeExecutor),
-        );
-
-        let controller = runtime.handle_request(
-            "POST",
-            "/api/headless/connections",
-            Some(r#"{"protocolVersion":"headless.v1","role":"controller"}"#),
-        );
-        assert_eq!(controller.status, 200);
-        let subscribe = runtime.handle_request(
-            "POST",
-            "/api/headless/sessions/maestro-session-1/subscribe",
-            Some(r#"{"connectionId":"hconn_1","role":"controller"}"#),
-        );
-        assert_eq!(subscribe.status, 200);
-
-        let mut headers = HashMap::new();
-        headers.insert(
-            "x-maestro-headless-connection-id".to_string(),
-            "hconn_1".to_string(),
-        );
-        headers.insert(
-            "x-maestro-headless-subscriber-id".to_string(),
-            "hsub_1".to_string(),
-        );
-        let message = runtime.handle_request_with_headers(
-            "POST",
-            "/api/headless/sessions/maestro-session-1/messages",
-            Some(r#"{"type":"prompt","content":"hello from hosted","attachments":null}"#),
-            &headers,
-        );
-        assert_eq!(message.status, 200);
-        assert_eq!(message.body["success"], true);
-        assert_eq!(message.body["execution"], "runtime_handled");
-        assert_eq!(message.body["published_messages"], 3);
-        assert_eq!(message.body["cursor"], 3);
-
-        let events = runtime.handle_request(
-            "GET",
-            "/api/headless/sessions/maestro-session-1/events?cursor=0&subscriptionId=hsub_1",
-            None,
-        );
-        assert_eq!(events.status, 200);
-        assert_eq!(events.body[0]["cursor"], 1);
-        assert_eq!(events.body[0]["message"]["type"], "response_start");
-        assert_eq!(events.body[1]["cursor"], 2);
-        assert_eq!(events.body[1]["message"]["type"], "response_chunk");
-        assert_eq!(events.body[1]["message"]["content"], "hello from hosted");
-        assert_eq!(events.body[2]["cursor"], 3);
-        assert_eq!(events.body[2]["message"]["type"], "response_end");
-    }
-
-    #[test]
-    fn event_replay_drains_runtime_executor_messages() {
-        let temp_dir = TempDir::new().unwrap();
-        let config = HostedRunnerConfig::new("mrs/test:1", temp_dir.path())
-            .unwrap()
-            .with_owner_instance_id("owner-1")
-            .with_maestro_session_id("maestro-session-1");
-        let executor = Arc::new(DrainableRuntimeExecutor::new(vec![
-            FromAgentMessage::ResponseStart {
-                response_id: "resp-drain-1".to_string(),
-            },
-            FromAgentMessage::ResponseChunk {
-                response_id: "resp-drain-1".to_string(),
-                content: "drained later".to_string(),
-                is_thinking: false,
-            },
-        ]));
-        let runtime = HostedRunnerRuntime::new_with_message_executor(config, executor);
-
-        let controller = runtime.handle_request(
-            "POST",
-            "/api/headless/connections",
-            Some(r#"{"protocolVersion":"headless.v1","role":"controller"}"#),
-        );
-        assert_eq!(controller.status, 200);
-        let subscribe = runtime.handle_request(
-            "POST",
-            "/api/headless/sessions/maestro-session-1/subscribe",
-            Some(r#"{"connectionId":"hconn_1","role":"controller"}"#),
-        );
-        assert_eq!(subscribe.status, 200);
-
-        let events = runtime.handle_request(
-            "GET",
-            "/api/headless/sessions/maestro-session-1/events?cursor=0&subscriptionId=hsub_1",
-            None,
-        );
-        assert_eq!(events.status, 200);
-        assert_eq!(events.body[0]["cursor"], 1);
-        assert_eq!(events.body[0]["message"]["type"], "response_start");
-        assert_eq!(events.body[1]["cursor"], 2);
-        assert_eq!(events.body[1]["message"]["type"], "response_chunk");
-        assert_eq!(events.body[1]["message"]["content"], "drained later");
-
-        let replay = runtime.handle_request(
-            "GET",
-            "/api/headless/sessions/maestro-session-1/events?cursor=2&subscriptionId=hsub_1",
-            None,
-        );
-        assert_eq!(replay.status, 200);
-        assert_eq!(replay.body[0]["type"], "heartbeat");
-        assert_eq!(replay.body[0]["cursor"], 2);
-    }
-
-    #[test]
-    fn supervisor_executor_reports_runtime_not_ready_until_connected() {
-        let supervisor = Arc::new(Mutex::new(AgentSupervisor::new(
-            crate::headless::SupervisorConfig::default(),
-        )));
-        let executor = AgentSupervisorHostedRunnerMessageExecutor::new(supervisor);
-        let context = HostedRunnerHeadlessMessageContext {
-            session_id: "maestro-session-1".to_string(),
-            connection_id: "hconn_1".to_string(),
-            subscription_id: Some("hsub_1".to_string()),
-            role: ConnectionRole::Controller,
-            controller_connection_id: Some("hconn_1".to_string()),
-            client_protocol_version: Some(HEADLESS_PROTOCOL_VERSION.to_string()),
-            client_info: None,
-            capabilities: None,
-            opt_out_notifications: None,
-            lease_expires_at: format_timestamp(Utc::now()),
-            workspace_root: TempDir::new().unwrap().path().to_path_buf(),
-        };
-
-        let error = executor
-            .execute(
-                &context,
-                ToAgentMessage::Prompt {
-                    content: "hello".to_string(),
-                    attachments: None,
-                },
-            )
-            .expect_err("disconnected supervisor should not accept prompts");
-
-        assert_eq!(error.code, HostedRunnerErrorCode::RuntimeNotReady);
-    }
-
-    #[tokio::test]
-    async fn http_listener_serves_identity_and_drain_routes() {
-        let (_temp_dir, runtime) = runtime();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let shutdown = CancellationToken::new();
-        let server = tokio::spawn(serve_hosted_runner_http(
-            listener,
-            runtime.clone(),
-            shutdown.clone(),
-        ));
-
-        let client = reqwest::Client::new();
-        let identity = client
-            .get(format!("http://{address}{HOSTED_RUNNER_IDENTITY_PATH}"))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(identity.status(), reqwest::StatusCode::OK);
-        let identity = identity.json::<Value>().await.unwrap();
-        assert_eq!(
-            identity["protocol_version"],
-            HOSTED_RUNNER_IDENTITY_PROTOCOL_VERSION
-        );
-        assert_eq!(identity["ready"], true);
-
-        let drain = client
-            .post(format!("http://{address}{HOSTED_RUNNER_DRAIN_PATH}"))
-            .json(&json!({
-                "reason": "user_stop",
-                "export_paths": ["."]
-            }))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(drain.status(), reqwest::StatusCode::OK);
-        let drain = drain.json::<Value>().await.unwrap();
-        assert_eq!(
-            drain["protocol_version"],
-            HOSTED_RUNNER_DRAIN_PROTOCOL_VERSION
-        );
-        assert_eq!(drain["status"], "drained");
-        assert_eq!(
-            drain["manifest"]["manifest_version"],
-            HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION
-        );
-        assert!(runtime.is_draining());
-
-        shutdown.cancel();
-        server.await.unwrap().unwrap();
-    }
-
-    #[tokio::test]
-    async fn http_listener_serves_headless_lease_routes() {
-        let (_temp_dir, runtime) = runtime();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let shutdown = CancellationToken::new();
-        let server = tokio::spawn(serve_hosted_runner_http(
-            listener,
-            runtime,
-            shutdown.clone(),
-        ));
-
-        let client = reqwest::Client::new();
-        let connection = client
-            .post(format!("http://{address}/api/headless/connections"))
-            .json(&json!({
-                "protocolVersion": HEADLESS_PROTOCOL_VERSION,
-                "role": "controller",
-                "capabilities": {
-                    "serverRequests": ["approval", "tool_retry"],
-                    "utilityOperations": ["command_exec"]
-                }
-            }))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(connection.status(), reqwest::StatusCode::OK);
-        let connection = connection.json::<Value>().await.unwrap();
-        assert_eq!(connection["connection_id"], "hconn_1");
-        assert_eq!(connection["controller_lease_granted"], true);
-
-        let subscribe = client
+        let drain: serde_json::Value = client
             .post(format!(
-                "http://{address}/api/headless/sessions/maestro-session-1/subscribe"
+                "{}/.well-known/evalops/remote-runner/drain",
+                handle.base_url()
             ))
+            .json(&json!({"reason": "test", "requested_by": "platform", "export_paths": ["."]}))
+            .send()
+            .await
+            .expect("drain response")
+            .json()
+            .await
+            .expect("drain json");
+        assert_eq!(drain["status"], "drained");
+        let manifest_path = drain["manifest_path"].as_str().expect("manifest path");
+        assert!(Path::new(manifest_path).exists());
+
+        let post_drain_identity: HostedRunnerIdentity = client
+            .get(format!(
+                "{}/.well-known/evalops/remote-runner/identity",
+                handle.base_url()
+            ))
+            .send()
+            .await
+            .expect("identity response")
+            .json()
+            .await
+            .expect("identity json");
+        assert!(!post_drain_identity.ready);
+        assert!(post_drain_identity.draining);
+
+        let attach = client
+            .post(format!("{}/api/headless/connections", handle.base_url()))
+            .json(&json!({"sessionId": "sess_test", "role": "controller"}))
+            .send()
+            .await
+            .expect("attach response");
+        assert_eq!(attach.status(), StatusCode::SERVICE_UNAVAILABLE);
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn drain_manifest_records_runtime_cursor_after_activity() {
+        let workspace = tempdir().expect("workspace");
+        let handle = start_hosted_runner(test_config(workspace.path().to_path_buf()))
+            .await
+            .expect("start hosted runner");
+        let client = reqwest::Client::new();
+
+        let connection: serde_json::Value = client
+            .post(format!("{}/api/headless/connections", handle.base_url()))
             .json(&json!({
-                "connectionId": "hconn_1",
+                "sessionId": "sess_test",
+                "connectionId": "conn_drain",
                 "role": "controller"
             }))
             .send()
             .await
-            .unwrap();
-        assert_eq!(subscribe.status(), reqwest::StatusCode::OK);
-        let subscribe = subscribe.json::<Value>().await.unwrap();
-        assert_eq!(subscribe["subscription_id"], "hsub_1");
-        assert_eq!(subscribe["controller_connection_id"], "hconn_1");
-        assert_eq!(subscribe["snapshot"]["state"]["subscriber_count"], 1);
+            .expect("connection response")
+            .json()
+            .await
+            .expect("connection json");
+        assert_eq!(connection["connection_id"], "conn_drain");
 
-        let heartbeat = client
+        let message: serde_json::Value = client
             .post(format!(
-                "http://{address}/api/headless/sessions/maestro-session-1/heartbeat"
+                "{}/api/headless/sessions/sess_test/messages",
+                handle.base_url()
             ))
+            .header("x-maestro-headless-connection-id", "conn_drain")
+            .json(&json!({"type": "prompt", "content": "before drain"}))
+            .send()
+            .await
+            .expect("message response")
+            .json()
+            .await
+            .expect("message json");
+        assert!(message["cursor"].as_u64().unwrap_or_default() > 0);
+
+        let drain: serde_json::Value = client
+            .post(format!(
+                "{}/.well-known/evalops/remote-runner/drain",
+                handle.base_url()
+            ))
+            .json(&json!({"reason": "cursor-check"}))
+            .send()
+            .await
+            .expect("drain response")
+            .json()
+            .await
+            .expect("drain json");
+        let manifest_path = drain["manifest_path"].as_str().expect("manifest path");
+        let manifest: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(manifest_path).expect("manifest contents"),
+        )
+        .expect("manifest json");
+        assert_eq!(manifest["runtime"]["flush_status"], "completed");
+        assert_eq!(
+            manifest["runtime"]["protocol_version"],
+            HEADLESS_PROTOCOL_VERSION
+        );
+        assert!(manifest["runtime"]["cursor"].as_u64().unwrap_or_default() >= 2);
+
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn message_executor_publishes_runtime_handled_events() {
+        let workspace = tempdir().expect("workspace");
+        let handle = start_hosted_runner_with_message_executor(
+            test_config(workspace.path().to_path_buf()),
+            Arc::new(ScriptedRuntimeExecutor),
+        )
+        .await
+        .expect("start hosted runner");
+        let client = reqwest::Client::new();
+
+        let connection: serde_json::Value = client
+            .post(format!("{}/api/headless/connections", handle.base_url()))
             .json(&json!({
-                "connectionId": "hconn_1",
-                "subscriptionId": "hsub_1"
+                "sessionId": "sess_test",
+                "connectionId": "conn_exec",
+                "role": "controller"
             }))
             .send()
             .await
-            .unwrap();
-        assert_eq!(heartbeat.status(), reqwest::StatusCode::OK);
-        let heartbeat = heartbeat.json::<Value>().await.unwrap();
-        assert_eq!(heartbeat["controller_lease_granted"], true);
-
-        let state = client
-            .get(format!(
-                "http://{address}/api/headless/sessions/maestro-session-1/state"
-            ))
-            .send()
+            .expect("connection response")
+            .json()
             .await
-            .unwrap();
-        assert_eq!(state.status(), reqwest::StatusCode::OK);
-        let state = state.json::<Value>().await.unwrap();
-        assert_eq!(state["state"]["controller_subscription_id"], "hsub_1");
+            .expect("connection json");
+        assert_eq!(connection["connection_id"], "conn_exec");
 
-        let message = client
+        let subscription: serde_json::Value = client
             .post(format!(
-                "http://{address}/api/headless/sessions/maestro-session-1/messages"
+                "{}/api/headless/sessions/sess_test/subscribe",
+                handle.base_url()
             ))
-            .header("x-maestro-headless-connection-id", "hconn_1")
-            .header("x-maestro-headless-subscriber-id", "hsub_1")
-            .json(&json!({"type": "hello"}))
+            .json(&json!({
+                "connectionId": "conn_exec",
+                "subscriptionId": "sub_exec",
+                "role": "controller"
+            }))
             .send()
             .await
-            .unwrap();
-        assert_eq!(message.status(), reqwest::StatusCode::OK);
-        let message = message.json::<Value>().await.unwrap();
+            .expect("subscription response")
+            .json()
+            .await
+            .expect("subscription json");
+        let subscription_id = subscription["subscription_id"]
+            .as_str()
+            .expect("subscription id")
+            .to_string();
+
+        let message: serde_json::Value = client
+            .post(format!(
+                "{}/api/headless/sessions/sess_test/messages",
+                handle.base_url()
+            ))
+            .header("x-maestro-headless-connection-id", "conn_exec")
+            .header("x-maestro-headless-subscriber-id", subscription_id)
+            .json(&json!({"type": "prompt", "content": "hello"}))
+            .send()
+            .await
+            .expect("message response")
+            .json()
+            .await
+            .expect("message json");
         assert_eq!(message["success"], true);
-        assert_eq!(message["execution"], "transport_only");
-        assert_eq!(message["cursor"], 1);
+        assert_eq!(message["execution"], "runtime_handled");
+        assert_eq!(message["published_messages"], 3);
 
-        let events = client
+        let mut events_response = client
             .get(format!(
-                "http://{address}/api/headless/sessions/maestro-session-1/events?cursor=0&subscriptionId=hsub_1"
+                "{}/api/headless/sessions/sess_test/events?cursor=0",
+                handle.base_url()
             ))
             .send()
             .await
-            .unwrap();
-        assert_eq!(events.status(), reqwest::StatusCode::OK);
-        assert!(events
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .starts_with("text/event-stream"));
-        let events = events.text().await.unwrap();
-        assert!(events.contains("data:"));
-        assert!(events.contains(r#""type":"message""#));
-        assert!(events.contains(r#""type":"hello_ok""#));
+            .expect("events response");
+        assert_eq!(events_response.status(), StatusCode::OK);
+        let mut event_text = String::new();
+        for _ in 0..8 {
+            let chunk =
+                tokio::time::timeout(std::time::Duration::from_secs(1), events_response.chunk())
+                    .await
+                    .expect("event chunk timeout")
+                    .expect("event chunk read");
+            let Some(chunk) = chunk else {
+                break;
+            };
+            event_text.push_str(&String::from_utf8_lossy(&chunk));
+            if event_text.contains("\"type\":\"response_end\"") {
+                break;
+            }
+        }
+        assert!(event_text.contains("\"type\":\"response_start\""));
+        assert!(event_text.contains("\"type\":\"response_chunk\""));
+        assert!(event_text.contains("\"content\":\"runtime: hello\""));
+        assert!(event_text.contains("\"type\":\"response_end\""));
 
-        shutdown.cancel();
-        server.await.unwrap().unwrap();
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn remote_transport_attaches_and_receives_workspace_events() {
+        let workspace = tempdir().expect("workspace");
+        tokio::fs::write(workspace.path().join("notes.md"), "alpha\nbeta\n")
+            .await
+            .expect("write fixture");
+        let handle = start_hosted_runner(test_config(workspace.path().to_path_buf()))
+            .await
+            .expect("start hosted runner");
+        let mut transport = crate::headless::RemoteAgentTransport::connect(RemoteTransportConfig {
+            base_url: handle.base_url(),
+            session_id: Some("sess_test".to_string()),
+            role: Some("controller".to_string()),
+            client_name: "rust-hosted-runner-test".to_string(),
+            opt_out_notifications: vec!["heartbeat".to_string()],
+            ..RemoteTransportConfig::default()
+        })
+        .await
+        .expect("connect");
+
+        assert_eq!(transport.session_id(), "sess_test");
+        transport
+            .read_file(
+                "read_notes".to_string(),
+                "notes.md".to_string(),
+                None,
+                None,
+                None,
+            )
+            .expect("send read request");
+
+        let mut saw_read = false;
+        for _ in 0..8 {
+            let incoming =
+                tokio::time::timeout(std::time::Duration::from_secs(1), transport.recv_incoming())
+                    .await
+                    .expect("incoming timeout")
+                    .expect("incoming event");
+            if let crate::headless::RemoteIncoming::Message(
+                FromAgentMessage::UtilityFileReadResult { content, .. },
+            ) = incoming
+            {
+                saw_read = content.contains("alpha");
+                break;
+            }
+        }
+        assert!(saw_read, "expected hosted runner file read event");
+
+        transport
+            .shutdown_and_wait()
+            .await
+            .expect("shutdown transport");
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn hosted_messages_reject_workspace_escape_before_file_work() {
+        let workspace = tempdir().expect("workspace");
+        let handle = start_hosted_runner(test_config(workspace.path().to_path_buf()))
+            .await
+            .expect("start hosted runner");
+        let client = reqwest::Client::new();
+
+        let connection: serde_json::Value = client
+            .post(format!("{}/api/headless/connections", handle.base_url()))
+            .json(&json!({"sessionId": "sess_test", "role": "controller"}))
+            .send()
+            .await
+            .expect("connection response")
+            .json()
+            .await
+            .expect("connection json");
+        let connection_id = connection["connection_id"]
+            .as_str()
+            .expect("connection id")
+            .to_string();
+        let subscription: serde_json::Value = client
+            .post(format!(
+                "{}/api/headless/sessions/sess_test/subscribe",
+                handle.base_url()
+            ))
+            .json(&json!({"connectionId": connection_id, "role": "controller"}))
+            .send()
+            .await
+            .expect("subscription response")
+            .json()
+            .await
+            .expect("subscription json");
+        let subscription_id = subscription["subscription_id"]
+            .as_str()
+            .expect("subscription id")
+            .to_string();
+
+        let response = client
+            .post(format!(
+                "{}/api/headless/sessions/sess_test/messages",
+                handle.base_url()
+            ))
+            .header("x-maestro-headless-connection-id", connection_id)
+            .header("x-maestro-headless-subscriber-id", subscription_id)
+            .json(&json!({
+                "type": "utility_file_read",
+                "read_id": "escape",
+                "path": "../secret.txt"
+            }))
+            .send()
+            .await
+            .expect("message response");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body: serde_json::Value = response.json().await.expect("error body");
+        assert_eq!(body["error_type"], "workspace_violation");
+
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn hosted_messages_reject_symlink_escape_for_missing_child() {
+        let workspace = tempdir().expect("workspace");
+        let outside = tempdir().expect("outside");
+        std::os::unix::fs::symlink(outside.path(), workspace.path().join("outside-link"))
+            .expect("symlink fixture");
+        let handle = start_hosted_runner(test_config(workspace.path().to_path_buf()))
+            .await
+            .expect("start hosted runner");
+        let client = reqwest::Client::new();
+
+        let connection: serde_json::Value = client
+            .post(format!("{}/api/headless/connections", handle.base_url()))
+            .json(&json!({"sessionId": "sess_test", "role": "controller"}))
+            .send()
+            .await
+            .expect("connection response")
+            .json()
+            .await
+            .expect("connection json");
+        let connection_id = connection["connection_id"]
+            .as_str()
+            .expect("connection id")
+            .to_string();
+        let subscription: serde_json::Value = client
+            .post(format!(
+                "{}/api/headless/sessions/sess_test/subscribe",
+                handle.base_url()
+            ))
+            .json(&json!({"connectionId": connection_id, "role": "controller"}))
+            .send()
+            .await
+            .expect("subscription response")
+            .json()
+            .await
+            .expect("subscription json");
+        let subscription_id = subscription["subscription_id"]
+            .as_str()
+            .expect("subscription id")
+            .to_string();
+
+        let response = client
+            .post(format!(
+                "{}/api/headless/sessions/sess_test/messages",
+                handle.base_url()
+            ))
+            .header("x-maestro-headless-connection-id", connection_id)
+            .header("x-maestro-headless-subscriber-id", subscription_id)
+            .json(&json!({
+                "type": "utility_file_read",
+                "read_id": "symlink-escape",
+                "path": "outside-link/missing.txt"
+            }))
+            .send()
+            .await
+            .expect("message response");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body: serde_json::Value = response.json().await.expect("error body");
+        assert_eq!(body["error_type"], "workspace_violation");
+
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn duplicate_subscribe_preserves_disconnect_cleanup() {
+        let workspace = tempdir().expect("workspace");
+        let handle = start_hosted_runner(test_config(workspace.path().to_path_buf()))
+            .await
+            .expect("start hosted runner");
+        let client = reqwest::Client::new();
+
+        let connection: serde_json::Value = client
+            .post(format!("{}/api/headless/connections", handle.base_url()))
+            .json(&json!({
+                "sessionId": "sess_test",
+                "connectionId": "conn_multi",
+                "role": "controller",
+                "protocolVersion": "2026-03-30",
+                "clientInfo": {"name": "lease-test", "version": "1.0.0"},
+                "capabilities": {
+                    "serverRequests": ["approval"],
+                    "utilityOperations": ["file_read"],
+                    "rawAgentEvents": true
+                }
+            }))
+            .send()
+            .await
+            .expect("connection response")
+            .json()
+            .await
+            .expect("connection json");
+        assert_eq!(connection["connection_id"], "conn_multi");
+        assert!(connection["lease_expires_at"].as_str().is_some());
+
+        for _ in 0..2 {
+            let subscription = client
+                .post(format!(
+                    "{}/api/headless/sessions/sess_test/subscribe",
+                    handle.base_url()
+                ))
+                .json(&json!({
+                    "connectionId": "conn_multi",
+                    "role": "controller"
+                }))
+                .send()
+                .await
+                .expect("subscription response");
+            assert_eq!(subscription.status(), StatusCode::OK);
+        }
+
+        let state: serde_json::Value = client
+            .get(format!(
+                "{}/api/headless/sessions/sess_test/state",
+                handle.base_url()
+            ))
+            .send()
+            .await
+            .expect("state response")
+            .json()
+            .await
+            .expect("state json");
+        assert_eq!(state["state"]["subscriber_count"], 2);
+        let connection_state = state["state"]["connections"]
+            .as_array()
+            .expect("connections")
+            .iter()
+            .find(|connection| connection["connection_id"] == "conn_multi")
+            .expect("conn_multi state");
+        assert_eq!(connection_state["subscription_count"], 2);
+        assert_eq!(connection_state["client_protocol_version"], "2026-03-30");
+        assert_eq!(connection_state["client_info"]["name"], "lease-test");
+        assert_eq!(connection_state["capabilities"]["raw_agent_events"], true);
+        assert!(connection_state["lease_expires_at"].as_str().is_some());
+
+        let heartbeat: serde_json::Value = client
+            .post(format!(
+                "{}/api/headless/sessions/sess_test/heartbeat",
+                handle.base_url()
+            ))
+            .json(&json!({"connectionId": "conn_multi"}))
+            .send()
+            .await
+            .expect("heartbeat response")
+            .json()
+            .await
+            .expect("heartbeat json");
+        assert_eq!(heartbeat["controller_lease_granted"], true);
+        assert!(heartbeat["lease_expires_at"].as_str().is_some());
+
+        let disconnected: serde_json::Value = client
+            .post(format!(
+                "{}/api/headless/sessions/sess_test/disconnect",
+                handle.base_url()
+            ))
+            .json(&json!({"connectionId": "conn_multi"}))
+            .send()
+            .await
+            .expect("disconnect response")
+            .json()
+            .await
+            .expect("disconnect json");
+        assert_eq!(
+            disconnected["disconnected_subscription_ids"]
+                .as_array()
+                .expect("disconnected subscriptions")
+                .len(),
+            2
+        );
+
+        let state_after_disconnect: serde_json::Value = client
+            .get(format!(
+                "{}/api/headless/sessions/sess_test/state",
+                handle.base_url()
+            ))
+            .send()
+            .await
+            .expect("state response")
+            .json()
+            .await
+            .expect("state json");
+        assert_eq!(state_after_disconnect["state"]["subscriber_count"], 0);
+
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn drain_manifest_filename_stays_inside_snapshot_root() {
+        let workspace = tempdir().expect("workspace");
+        let snapshot_root = workspace.path().join("snapshots");
+        let mut config = test_config(workspace.path().to_path_buf());
+        config.runner_session_id = "../evil/session.v1".to_string();
+        config.snapshot_root = Some(snapshot_root.clone());
+        let handle = start_hosted_runner(config)
+            .await
+            .expect("start hosted runner");
+        let client = reqwest::Client::new();
+
+        let drain: serde_json::Value = client
+            .post(format!(
+                "{}/.well-known/evalops/remote-runner/drain",
+                handle.base_url()
+            ))
+            .json(&json!({"reason": "sanitize-session"}))
+            .send()
+            .await
+            .expect("drain response")
+            .json()
+            .await
+            .expect("drain json");
+        let manifest_path = PathBuf::from(drain["manifest_path"].as_str().expect("manifest path"));
+        assert_eq!(manifest_path.parent(), Some(snapshot_root.as_path()));
+        assert!(manifest_path.exists());
+        assert!(manifest_path
+            .file_name()
+            .expect("manifest filename")
+            .to_string_lossy()
+            .starts_with("___evil_session_v1-"));
+
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn controller_takeover_is_explicit_and_viewers_cannot_mutate() {
+        let workspace = tempdir().expect("workspace");
+        let handle = start_hosted_runner(test_config(workspace.path().to_path_buf()))
+            .await
+            .expect("start hosted runner");
+        let client = reqwest::Client::new();
+
+        let first_controller: serde_json::Value = client
+            .post(format!("{}/api/headless/connections", handle.base_url()))
+            .json(&json!({
+                "sessionId": "sess_test",
+                "connectionId": "conn_first",
+                "role": "controller"
+            }))
+            .send()
+            .await
+            .expect("first controller response")
+            .json()
+            .await
+            .expect("first controller json");
+        assert_eq!(first_controller["controller_connection_id"], "conn_first");
+
+        let rejected_takeover = client
+            .post(format!("{}/api/headless/connections", handle.base_url()))
+            .json(&json!({
+                "sessionId": "sess_test",
+                "connectionId": "conn_second",
+                "role": "controller"
+            }))
+            .send()
+            .await
+            .expect("rejected takeover response");
+        assert_eq!(rejected_takeover.status(), StatusCode::CONFLICT);
+
+        let accepted_takeover: serde_json::Value = client
+            .post(format!("{}/api/headless/connections", handle.base_url()))
+            .json(&json!({
+                "sessionId": "sess_test",
+                "connectionId": "conn_second",
+                "role": "controller",
+                "takeControl": true
+            }))
+            .send()
+            .await
+            .expect("accepted takeover response")
+            .json()
+            .await
+            .expect("accepted takeover json");
+        assert_eq!(accepted_takeover["controller_connection_id"], "conn_second");
+
+        let controller_message: serde_json::Value = client
+            .post(format!(
+                "{}/api/headless/sessions/sess_test/messages",
+                handle.base_url()
+            ))
+            .header("x-maestro-headless-connection-id", "conn_second")
+            .json(&json!({"type": "prompt", "content": "cursor please"}))
+            .send()
+            .await
+            .expect("controller message response")
+            .json()
+            .await
+            .expect("controller message json");
+        assert_eq!(controller_message["ok"], true);
+        assert!(controller_message["cursor"].as_u64().unwrap_or_default() > 0);
+
+        let viewer: serde_json::Value = client
+            .post(format!("{}/api/headless/connections", handle.base_url()))
+            .json(&json!({
+                "sessionId": "sess_test",
+                "connectionId": "conn_viewer",
+                "role": "viewer"
+            }))
+            .send()
+            .await
+            .expect("viewer response")
+            .json()
+            .await
+            .expect("viewer json");
+        assert_eq!(viewer["role"], "viewer");
+        let viewer_subscription: serde_json::Value = client
+            .post(format!(
+                "{}/api/headless/sessions/sess_test/subscribe",
+                handle.base_url()
+            ))
+            .json(&json!({
+                "connectionId": "conn_viewer",
+                "role": "viewer"
+            }))
+            .send()
+            .await
+            .expect("viewer subscription response")
+            .json()
+            .await
+            .expect("viewer subscription json");
+        let viewer_subscription_id = viewer_subscription["subscription_id"]
+            .as_str()
+            .expect("viewer subscription id");
+        let viewer_message = client
+            .post(format!(
+                "{}/api/headless/sessions/sess_test/messages",
+                handle.base_url()
+            ))
+            .header("x-maestro-headless-connection-id", "conn_viewer")
+            .header("x-maestro-headless-subscriber-id", viewer_subscription_id)
+            .json(&json!({"type": "prompt", "content": "nope"}))
+            .send()
+            .await
+            .expect("viewer message response");
+        assert_eq!(viewer_message.status(), StatusCode::FORBIDDEN);
+
+        handle.shutdown().await;
     }
 }
