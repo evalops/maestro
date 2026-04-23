@@ -268,7 +268,7 @@ export function applyHostedRunnerEnvironment(config: HostedRunnerConfig): void {
 		process.env.REMOTE_RUNNER_OWNER_INSTANCE_ID = config.ownerInstanceId;
 	}
 	process.env.MAESTRO_PROFILE ??= "hosted-runner";
-	process.env.MAESTRO_WEB_REQUIRE_KEY ??= "0";
+	process.env.MAESTRO_WEB_REQUIRE_KEY ??= "1";
 	process.env.MAESTRO_WEB_REQUIRE_REDIS ??= "0";
 	process.env.MAESTRO_WEB_REQUIRE_CSRF ??= "0";
 	process.env.MAESTRO_AGENT_DIR ??= resolve(

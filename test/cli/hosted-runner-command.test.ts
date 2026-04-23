@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+	applyHostedRunnerEnvironment,
 	resolveHostedRunnerConfig,
 	toHostedRunnerContext,
 } from "../../src/cli/commands/hosted-runner.js";
@@ -114,5 +115,46 @@ describe("hosted-runner command config", () => {
 		await expect(
 			resolveHostedRunnerConfig(["--runner-session-id", "mrs_123"], {}),
 		).rejects.toThrow(/workspace-root/);
+	});
+
+	it("requires API auth by default in hosted-runner mode", async () => {
+		const workspaceRoot = await createTempWorkspace();
+		const originalCwd = process.cwd();
+		const previous = {
+			MAESTRO_HOSTED_RUNNER_MODE: process.env.MAESTRO_HOSTED_RUNNER_MODE,
+			MAESTRO_RUNNER_SESSION_ID: process.env.MAESTRO_RUNNER_SESSION_ID,
+			MAESTRO_WORKSPACE_ROOT: process.env.MAESTRO_WORKSPACE_ROOT,
+			MAESTRO_PROFILE: process.env.MAESTRO_PROFILE,
+			MAESTRO_WEB_REQUIRE_KEY: process.env.MAESTRO_WEB_REQUIRE_KEY,
+			MAESTRO_WEB_REQUIRE_REDIS: process.env.MAESTRO_WEB_REQUIRE_REDIS,
+			MAESTRO_WEB_REQUIRE_CSRF: process.env.MAESTRO_WEB_REQUIRE_CSRF,
+			MAESTRO_AGENT_DIR: process.env.MAESTRO_AGENT_DIR,
+		};
+		delete process.env.MAESTRO_PROFILE;
+		delete process.env.MAESTRO_WEB_REQUIRE_KEY;
+		delete process.env.MAESTRO_WEB_REQUIRE_REDIS;
+		delete process.env.MAESTRO_WEB_REQUIRE_CSRF;
+		delete process.env.MAESTRO_AGENT_DIR;
+
+		try {
+			applyHostedRunnerEnvironment({
+				runnerSessionId: "mrs_123",
+				workspaceRoot,
+				port: 8080,
+			});
+
+			expect(process.env.MAESTRO_WEB_REQUIRE_KEY).toBe("1");
+			expect(process.env.MAESTRO_WEB_REQUIRE_REDIS).toBe("0");
+			expect(process.env.MAESTRO_WEB_REQUIRE_CSRF).toBe("0");
+		} finally {
+			process.chdir(originalCwd);
+			for (const [key, value] of Object.entries(previous)) {
+				if (value === undefined) {
+					delete process.env[key];
+				} else {
+					process.env[key] = value;
+				}
+			}
+		}
 	});
 });
