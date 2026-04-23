@@ -26,7 +26,10 @@ import {
 	describeToolDisplayName,
 	summarizeToolUse,
 } from "../../utils/tool-use-summary.js";
-import type { ActionApprovalService } from "../action-approval.js";
+import type {
+	ActionApprovalDecision,
+	ActionApprovalService,
+} from "../action-approval.js";
 import { validateToolArguments } from "../providers/validation.js";
 import type {
 	AgentEvent,
@@ -118,6 +121,46 @@ export interface ToolSafetyContext {
 			approvalRequestId?: string;
 		},
 	) => AgentEvent[];
+}
+
+interface ApprovalRegistrationMetadata {
+	remoteApprovalRequestId?: string;
+}
+
+interface ApprovalRegistrationAwareService {
+	waitForPendingApprovalRegistration?: (
+		requestId: string,
+		options?: { signal?: AbortSignal },
+	) => Promise<ApprovalRegistrationMetadata | null>;
+}
+
+async function waitForPendingApprovalRegistration(
+	approvalService: ActionApprovalService,
+	requestId: string,
+	decisionPromise: Promise<ActionApprovalDecision>,
+	signal?: AbortSignal,
+): Promise<ApprovalRegistrationMetadata | null> {
+	const registrationAware = approvalService as ActionApprovalService &
+		ApprovalRegistrationAwareService;
+	if (
+		typeof registrationAware.waitForPendingApprovalRegistration !== "function"
+	) {
+		return null;
+	}
+
+	try {
+		return await Promise.race([
+			registrationAware.waitForPendingApprovalRegistration(requestId, {
+				signal,
+			}),
+			decisionPromise.then(
+				() => null,
+				() => null,
+			),
+		]);
+	} catch {
+		return null;
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -720,13 +763,18 @@ export async function* evaluateToolSafety(
 					reason: localApprovalReason ?? "Approval required",
 				} satisfies import("../action-approval.js").ActionApprovalRequest);
 			const shouldEmitEvents = approvalService.requiresUserInteraction();
-			if (shouldEmitEvents) {
-				yield recordEvent({ type: "action_approval_required", request });
-			}
+			const decisionPromise = approvalService.requestApproval(request, signal);
+			const registrationMetadata = await waitForPendingApprovalRegistration(
+				approvalService,
+				request.id,
+				decisionPromise,
+				signal,
+			);
 			recordMaestroApprovalHit({
 				approval_request_id:
 					platformApprovalRequest?.id ??
 					toolExecutionBridgePlan?.metadata.approvalRequestId ??
+					registrationMetadata?.remoteApprovalRequestId ??
 					request.id,
 				action:
 					request.actionDescription ?? request.summaryLabel ?? request.toolName,
@@ -747,8 +795,11 @@ export async function* evaluateToolSafety(
 					agent_run_step_id: toolCall.id,
 				},
 			});
+			if (shouldEmitEvents) {
+				yield recordEvent({ type: "action_approval_required", request });
+			}
 
-			const decision = await approvalService.requestApproval(request, signal);
+			const decision = await decisionPromise;
 			if (shouldEmitEvents) {
 				yield recordEvent({
 					type: "action_approval_resolved",

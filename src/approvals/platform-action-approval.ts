@@ -20,16 +20,34 @@ type RemoteApprovalRegistration = {
 	requestId: string;
 };
 
+export interface PendingApprovalRegistration {
+	remoteApprovalRequestId?: string;
+}
+
+interface PendingApprovalRegistrationWaiter {
+	resolve: (registration: PendingApprovalRegistration | null) => void;
+	timeout: ReturnType<typeof setTimeout>;
+}
+
 export interface PlatformBackedActionApprovalOptions {
 	sessionIdProvider?: SessionIdProvider;
 	approvalsServiceConfig?: ApprovalsServiceConfig | false;
 }
 
 const logger = createLogger("approvals:platform-action-approval");
+const PENDING_APPROVAL_REGISTRATION_WAIT_TIMEOUT_MS = 30_000;
 
 export class PlatformBackedActionApprovalService extends ActionApprovalService {
 	private readonly sessionIdProvider?: SessionIdProvider;
 	private readonly approvalsServiceConfig?: ApprovalsServiceConfig | false;
+	private readonly pendingApprovalRegistrations = new Map<
+		string,
+		PendingApprovalRegistration
+	>();
+	private readonly pendingApprovalRegistrationWaiters = new Map<
+		string,
+		PendingApprovalRegistrationWaiter[]
+	>();
 
 	constructor(
 		mode?: ApprovalMode,
@@ -53,9 +71,13 @@ export class PlatformBackedActionApprovalService extends ActionApprovalService {
 			? await this.requestRemoteApproval(request, sessionId, signal)
 			: { remote: null };
 		if ("decision" in remoteRegistration) {
+			this.publishPendingApprovalRegistration(request.id, null);
 			return remoteRegistration.decision;
 		}
 
+		this.publishPendingApprovalRegistration(request.id, {
+			remoteApprovalRequestId: remoteRegistration.remote?.requestId,
+		});
 		this.onPendingApprovalRegistered(sessionId, request);
 		try {
 			const decision = await super.requestApproval(request, signal);
@@ -68,8 +90,58 @@ export class PlatformBackedActionApprovalService extends ActionApprovalService {
 			}
 			return decision;
 		} finally {
+			this.publishPendingApprovalRegistration(request.id, null);
 			this.onPendingApprovalSettled(request);
 		}
+	}
+
+	getPendingApprovalRegistration(
+		requestId: string,
+	): PendingApprovalRegistration | undefined {
+		return this.pendingApprovalRegistrations.get(requestId);
+	}
+
+	waitForPendingApprovalRegistration(
+		requestId: string,
+		options: { signal?: AbortSignal; timeoutMs?: number } = {},
+	): Promise<PendingApprovalRegistration | null> {
+		const existing = this.pendingApprovalRegistrations.get(requestId);
+		if (existing) {
+			return Promise.resolve(existing);
+		}
+		if (options.signal?.aborted) {
+			return Promise.resolve(null);
+		}
+
+		return new Promise((resolve) => {
+			const service = this;
+			let settled = false;
+			const onAbort = () => finish(null);
+			const timeout = setTimeout(
+				() => finish(null),
+				options.timeoutMs ?? PENDING_APPROVAL_REGISTRATION_WAIT_TIMEOUT_MS,
+			);
+			timeout.unref?.();
+			const waiter: PendingApprovalRegistrationWaiter = {
+				resolve: finish,
+				timeout,
+			};
+			function finish(registration: PendingApprovalRegistration | null) {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				clearTimeout(timeout);
+				options.signal?.removeEventListener("abort", onAbort);
+				service.removePendingApprovalRegistrationWaiter(requestId, waiter);
+				resolve(registration);
+			}
+			const waiters =
+				this.pendingApprovalRegistrationWaiters.get(requestId) ?? [];
+			waiters.push(waiter);
+			this.pendingApprovalRegistrationWaiters.set(requestId, waiters);
+			options.signal?.addEventListener("abort", onAbort, { once: true });
+		});
 	}
 
 	protected onPendingApprovalRegistered(
@@ -78,6 +150,42 @@ export class PlatformBackedActionApprovalService extends ActionApprovalService {
 	): void {}
 
 	protected onPendingApprovalSettled(_request: ActionApprovalRequest): void {}
+
+	private publishPendingApprovalRegistration(
+		requestId: string,
+		registration: PendingApprovalRegistration | null,
+	): void {
+		if (registration) {
+			this.pendingApprovalRegistrations.set(requestId, registration);
+		} else {
+			this.pendingApprovalRegistrations.delete(requestId);
+		}
+
+		const waiters = this.pendingApprovalRegistrationWaiters.get(requestId);
+		if (!waiters) {
+			return;
+		}
+		this.pendingApprovalRegistrationWaiters.delete(requestId);
+		for (const waiter of waiters) {
+			waiter.resolve(registration);
+		}
+	}
+
+	private removePendingApprovalRegistrationWaiter(
+		requestId: string,
+		waiter: PendingApprovalRegistrationWaiter,
+	): void {
+		const waiters = this.pendingApprovalRegistrationWaiters.get(requestId);
+		if (!waiters) {
+			return;
+		}
+		const remaining = waiters.filter((candidate) => candidate !== waiter);
+		if (remaining.length > 0) {
+			this.pendingApprovalRegistrationWaiters.set(requestId, remaining);
+		} else {
+			this.pendingApprovalRegistrationWaiters.delete(requestId);
+		}
+	}
 
 	private getSessionId(): string | undefined {
 		if (typeof this.sessionIdProvider === "function") {

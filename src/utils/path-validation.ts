@@ -238,10 +238,7 @@ export function validatePathSync(path: string, baseDir?: string): string {
 /**
  * Check if a path is within the current working directory
  */
-export function isWithinCwd(
-	path: string,
-	cwd: string = process.cwd(),
-): boolean {
+export function isWithinCwd(path: string, cwd = process.cwd()): boolean {
 	const normalizedPath = normalizePath(path);
 	const normalizedCwd = normalizePath(cwd);
 	const isWindows = process.platform === "win32";

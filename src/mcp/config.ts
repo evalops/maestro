@@ -61,6 +61,7 @@ import { readJsonFile, writeJsonFile } from "../utils/fs.js";
 import { createLogger } from "../utils/logger.js";
 import { resolveEnvPath } from "../utils/path-expansion.js";
 import { defaultEnvValidators, evaluateEnvValidators } from "./env-limits.js";
+import { getPlatformMcpPluginServers } from "./platform-plugin.js";
 import {
 	type McpAuthPresetInput,
 	type McpServerInput,
@@ -156,7 +157,10 @@ export function loadMcpConfig(
 		? parseConfigFile(resolve(projectRoot, LOCAL_CONFIG_NAME), "local")
 		: { servers: [], authPresets: [] };
 	const pluginCfg: ParsedConfig = {
-		servers: options.pluginServers ?? [],
+		servers: [
+			...getPlatformMcpPluginServers(),
+			...(options.pluginServers ?? []),
+		],
 		authPresets: [],
 	};
 

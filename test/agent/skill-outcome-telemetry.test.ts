@@ -9,6 +9,7 @@ import type {
 	Model,
 	ToolResultMessage,
 } from "../../src/agent/types.js";
+import type { SkillArtifactMetadata } from "../../src/skills/artifact-metadata.js";
 import {
 	closeMaestroEventBusTransport,
 	setMaestroEventBusTransportForTests,
@@ -148,6 +149,11 @@ class SkillSelectionTransport implements AgentTransport {
 	constructor(
 		private readonly shouldFailAfterSelection = false,
 		private readonly shouldEmitEvaluation = false,
+		private readonly extraSkillSelections: Array<{
+			toolCallId: string;
+			toolExecutionId: string;
+			skillMetadata: SkillArtifactMetadata;
+		}> = [],
 	) {}
 
 	async *continue(): AsyncGenerator<AgentEvent, void, unknown> {}
@@ -189,6 +195,33 @@ class SkillSelectionTransport implements AgentTransport {
 			result: toolResult,
 			isError: false,
 		};
+
+		for (const selection of this.extraSkillSelections) {
+			const extraToolCallMessage = createAssistantToolCallMessage(
+				selection.toolCallId,
+			);
+			yield { type: "message_start", message: extraToolCallMessage };
+			yield { type: "message_end", message: extraToolCallMessage };
+			yield {
+				type: "tool_execution_start",
+				toolCallId: selection.toolCallId,
+				toolName: "Skill",
+				args: { skill: selection.skillMetadata.name },
+			};
+
+			const extraToolResult = createSkillToolResult(selection.toolCallId);
+			yield { type: "message_start", message: extraToolResult };
+			yield { type: "message_end", message: extraToolResult };
+			yield {
+				type: "tool_execution_end",
+				toolCallId: selection.toolCallId,
+				toolName: "Skill",
+				toolExecutionId: selection.toolExecutionId,
+				skillMetadata: selection.skillMetadata,
+				result: extraToolResult,
+				isError: false,
+			};
+		}
 
 		if (this.shouldEmitEvaluation) {
 			const evalToolCallId = "tool-eval-1";
@@ -370,6 +403,96 @@ describe("skill outcome telemetry", () => {
 				},
 			},
 		});
+		expect(
+			payloads.find(
+				(payload) => payload.type === "maestro.events.skill.failed",
+			),
+		).toMatchObject({
+			data: {
+				tool_call_id: "tool-skill-1",
+				tool_execution_id: "exec_skill_1",
+				turn_status: "evaluation_failed",
+				error_category: "evaluation",
+				error_message: "formatting checks failed",
+				evaluation_tool_name: "Bash",
+				evaluation_tool_call_id: "tool-eval-1",
+				evaluation_tool_execution_id: "exec_eval_1",
+				evaluation_score: 0.82,
+				evaluation_threshold: 0.9,
+				evaluation_assertion_count: 1,
+				evaluation_rationale: "formatting checks failed",
+				skill_metadata: {
+					name: "incident-review",
+					artifactId: "skill_remote_1",
+					version: "3",
+					source: "service",
+				},
+			},
+		});
+	});
+
+	it("keeps multi-skill evaluation failures turn-level unless attributable", async () => {
+		const published: Array<{ subject: string; payload: string }> = [];
+		process.env.MAESTRO_EVENT_BUS_URL = "nats://bus.example:4222";
+		setMaestroEventBusTransportForTests({
+			async publish(subject, payload) {
+				published.push({ subject, payload });
+			},
+		});
+
+		const agent = new Agent({
+			transport: new SkillSelectionTransport(false, true, [
+				{
+					toolCallId: "tool-skill-2",
+					toolExecutionId: "exec_skill_2",
+					skillMetadata: {
+						name: "release-readiness",
+						artifactId: "skill_remote_2",
+						version: "1",
+						hash: "hash_skill_456",
+						source: "service",
+					},
+				},
+			]),
+			initialState: {
+				model: mockModel,
+				tools: [],
+				session: {
+					id: "session_123",
+					startedAt: new Date("2026-04-23T18:00:00.000Z"),
+				},
+			},
+		});
+
+		await agent.prompt("load multiple skills and evaluate the run");
+
+		const payloads = published.map(({ payload }) => JSON.parse(payload));
+		const skillOutcomes = payloads.filter((payload) =>
+			[
+				"maestro.events.skill.succeeded",
+				"maestro.events.skill.failed",
+			].includes(payload.type),
+		);
+		expect(skillOutcomes).toHaveLength(2);
+		expect(
+			skillOutcomes.map((payload) => payload.data.skill_metadata.artifactId),
+		).toEqual(["skill_remote_1", "skill_remote_2"]);
+		expect(skillOutcomes.map((payload) => payload.data.turn_status)).toEqual([
+			"evaluation_failed",
+			"evaluation_failed",
+		]);
+		expect(skillOutcomes.map((payload) => payload.data.error_message)).toEqual([
+			"formatting checks failed",
+			"formatting checks failed",
+		]);
+		expect(
+			skillOutcomes.map((payload) => payload.data.evaluation_tool_call_id),
+		).toEqual([undefined, undefined]);
+		expect(
+			payloads.filter(
+				(payload) => payload.type === "maestro.events.eval.scored",
+			),
+		).toHaveLength(2);
 	});
 
 	it("publishes failed skill outcomes when the turn errors after selection", async () => {

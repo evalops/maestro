@@ -18,6 +18,18 @@ async function waitForPending(
 	});
 }
 
+function getRegistrationWaiterCount(
+	service: PlatformBackedActionApprovalService,
+	requestId: string,
+): number {
+	const waiters = (
+		service as unknown as {
+			pendingApprovalRegistrationWaiters: Map<string, unknown[]>;
+		}
+	).pendingApprovalRegistrationWaiters;
+	return waiters.get(requestId)?.length ?? 0;
+}
+
 describe("platform-backed action approval service", () => {
 	afterEach(() => {
 		resetApprovalsDownstreamForTests();
@@ -84,6 +96,78 @@ describe("platform-backed action approval service", () => {
 			decision: "DECISION_TYPE_APPROVED",
 			reason: "looks good",
 		});
+	});
+
+	it("exposes remote approval registration metadata while the request is pending", async () => {
+		const fetchMock = vi.fn(async (url: string | URL | Request) => {
+			const href = String(url);
+			if (href.endsWith("/approvals.v1.ApprovalService/RequestApproval")) {
+				return new Response(
+					JSON.stringify({ approvalRequest: { id: "remote-approval-2" } }),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			}
+			if (href.endsWith("/approvals.v1.ApprovalService/ResolveApproval")) {
+				return new Response(JSON.stringify({}), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+			return new Response("not found", { status: 404 });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		const service = new PlatformBackedActionApprovalService("prompt", {
+			sessionIdProvider: "session-2",
+			approvalsServiceConfig: {
+				baseUrl: "https://platform.test",
+				maxAttempts: 1,
+				timeoutMs: 500,
+				workspaceId: "workspace-1",
+			},
+		});
+
+		const approval = service.requestApproval({
+			...approvalRequest,
+			id: "approval-2",
+		});
+
+		await expect(
+			service.waitForPendingApprovalRegistration("approval-2"),
+		).resolves.toEqual({
+			remoteApprovalRequestId: "remote-approval-2",
+		});
+		expect(service.getPendingApprovalRegistration("approval-2")).toEqual({
+			remoteApprovalRequestId: "remote-approval-2",
+		});
+
+		expect(service.approve("approval-2", "approved")).toBe(true);
+		await expect(approval).resolves.toEqual({
+			approved: true,
+			reason: "approved",
+			resolvedBy: "user",
+		});
+		expect(
+			service.getPendingApprovalRegistration("approval-2"),
+		).toBeUndefined();
+	});
+
+	it("cleans up approval registration waiters when the caller aborts before registration", async () => {
+		const service = new PlatformBackedActionApprovalService("prompt", {
+			approvalsServiceConfig: false,
+		});
+		const controller = new AbortController();
+
+		const registration = service.waitForPendingApprovalRegistration(
+			"approval-abort",
+			{ signal: controller.signal },
+		);
+		expect(getRegistrationWaiterCount(service, "approval-abort")).toBe(1);
+
+		controller.abort();
+
+		await expect(registration).resolves.toBeNull();
+		expect(getRegistrationWaiterCount(service, "approval-abort")).toBe(0);
 	});
 
 	it("falls back to local prompt approvals when platform registration fails open", async () => {
