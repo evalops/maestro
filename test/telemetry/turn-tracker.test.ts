@@ -407,4 +407,86 @@ describe("TurnTracker", () => {
 		]);
 		expect(completed?.toolFailureCount).toBe(1);
 	});
+
+	it("attaches prompt artifact identity to completed turns", () => {
+		let listener: ((event: AgentEvent) => void) | undefined;
+		const agent = {
+			state: {
+				messages: [],
+				error: undefined,
+				promptMetadata: {
+					name: "maestro-system",
+					label: "production",
+					surface: "maestro",
+					version: 9,
+					versionId: "ver_9",
+					hash: "hash_123",
+					source: "service",
+				},
+				model: {
+					id: "test-model",
+					provider: "anthropic",
+				},
+				thinkingLevel: "off",
+			},
+			subscribe: (fn: (event: AgentEvent) => void) => {
+				listener = fn;
+				return () => {
+					listener = undefined;
+				};
+			},
+		} as unknown as Agent;
+
+		let completed:
+			| {
+					promptMetadata?: {
+						name: string;
+						versionId?: string;
+						source: string;
+					};
+			  }
+			| undefined;
+		const tracker = new TurnTracker(agent, {
+			sessionId: "session-prompt-metadata",
+			onTurnComplete: (event) => {
+				completed = {
+					promptMetadata: event.promptMetadata,
+				};
+			},
+		});
+
+		const assistantMessage: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "done" }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet-4-20250514",
+			usage: {
+				input: 10,
+				output: 5,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		};
+
+		listener?.({ type: "agent_start" });
+		listener?.({ type: "message_start", message: assistantMessage });
+		listener?.({ type: "message_end", message: assistantMessage });
+		listener?.({
+			type: "agent_end",
+			messages: [assistantMessage],
+			stopReason: "stop",
+		});
+
+		tracker.dispose();
+
+		expect(completed?.promptMetadata).toMatchObject({
+			name: "maestro-system",
+			versionId: "ver_9",
+			source: "service",
+		});
+	});
 });

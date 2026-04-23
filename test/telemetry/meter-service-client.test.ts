@@ -13,6 +13,15 @@ function createCanonicalTurnEvent() {
 			provider: "anthropic",
 			thinkingLevel: "medium",
 		})
+		.setPromptMetadata({
+			name: "maestro-system",
+			label: "production",
+			surface: "maestro",
+			version: 9,
+			versionId: "ver_9",
+			hash: "hash_123",
+			source: "service",
+		})
 		.setSandboxMode("docker")
 		.setApprovalMode("auto")
 		.setMcpServers(["context7"]);
@@ -78,6 +87,13 @@ describe("meter telemetry client", () => {
 					sandboxMode: "docker",
 					approvalMode: "auto",
 					thinkingLevel: "medium",
+					promptName: "maestro-system",
+					promptLabel: "production",
+					promptSurface: "maestro",
+					promptVersion: "9",
+					promptVersionId: "ver_9",
+					promptHash: "hash_123",
+					promptSource: "service",
 				},
 				data: event,
 				metrics: {

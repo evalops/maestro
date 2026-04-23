@@ -166,6 +166,7 @@ describeDb("hosted session database storage", () => {
 		}
 
 		process.env = originalEnv;
+		vi.doUnmock("../../src/telemetry/maestro-event-bus.js");
 		vi.resetModules();
 	});
 
@@ -254,6 +255,51 @@ describeDb("hosted session database storage", () => {
 		} finally {
 			await verify.end();
 		}
+	});
+
+	it("emits prompt selection telemetry for hosted session starts", async () => {
+		const recordMaestroPromptVariantSelected = vi.fn();
+		vi.doMock("../../src/telemetry/maestro-event-bus.js", () => ({
+			recordMaestroPromptVariantSelected,
+		}));
+
+		const { migrate } = await import("../../src/db/migrate.js");
+		await expect(migrate()).resolves.toBe(7);
+
+		const { createWebSessionManagerForRequest } = await import(
+			"../../src/server/session-scope.js"
+		);
+		const { isHostedSessionManager } = await import(
+			"../../src/server/hosted-session-manager.js"
+		);
+
+		const req = createScopedRequest("production-identity-token");
+		const manager = createWebSessionManagerForRequest(req, false);
+		expect(isHostedSessionManager(manager)).toBe(true);
+
+		const state = createMockState();
+		state.promptMetadata = {
+			name: "maestro-system",
+			label: "production",
+			surface: "maestro",
+			version: 9,
+			versionId: "ver_9",
+			hash: "hash_123",
+			source: "service",
+		};
+
+		manager.startSession(state, { subject: "key:test-subject" });
+		await manager.flush();
+
+		expect(recordMaestroPromptVariantSelected).toHaveBeenCalledWith(
+			expect.objectContaining({
+				prompt_metadata: state.promptMetadata,
+				correlation: {
+					session_id: manager.getSessionId(),
+				},
+				selected_at: expect.any(String),
+			}),
+		);
 	});
 
 	it("does not truncate unbounded hosted session listings", async () => {

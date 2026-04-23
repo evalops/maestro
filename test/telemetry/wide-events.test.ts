@@ -101,6 +101,42 @@ describe("TurnCollector", () => {
 		expect(event.features.hookCount).toBe(3);
 	});
 
+	it("carries prompt artifact identity on canonical turn events", () => {
+		const collector = new TurnCollector("session-123", 1);
+
+		collector
+			.setModel({
+				id: "claude-opus-4-6",
+				provider: "anthropic",
+				thinkingLevel: "medium",
+			})
+			.setPromptMetadata({
+				name: "maestro-system",
+				label: "production",
+				surface: "maestro",
+				version: 9,
+				versionId: "ver_9",
+				hash: "hash_123",
+				source: "service",
+			});
+
+		const event = collector.complete(
+			"success",
+			{ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			0,
+		);
+
+		expect(event.promptMetadata).toEqual({
+			name: "maestro-system",
+			label: "production",
+			surface: "maestro",
+			version: 9,
+			versionId: "ver_9",
+			hash: "hash_123",
+			source: "service",
+		});
+	});
+
 	it("records error details", () => {
 		const collector = new TurnCollector("session-123", 1);
 

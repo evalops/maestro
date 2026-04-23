@@ -1909,6 +1909,7 @@ export class Agent {
 		recordMaestroToolCallAttempt({
 			tool_call_id: event.toolCallId,
 			tool_execution_id: event.toolExecutionId,
+			prompt_metadata: this._state.promptMetadata,
 			tool_name: event.toolName,
 			safe_arguments: event.args,
 			correlation: {
@@ -1983,6 +1984,7 @@ export class Agent {
 		recordMaestroToolCallCompleted({
 			tool_call_id: event.toolCallId,
 			tool_execution_id: event.toolExecutionId,
+			prompt_metadata: this._state.promptMetadata,
 			status: event.isError
 				? "MAESTRO_TOOL_CALL_STATUS_FAILED"
 				: "MAESTRO_TOOL_CALL_STATUS_SUCCEEDED",
