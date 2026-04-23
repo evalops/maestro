@@ -123,6 +123,24 @@ describe("verified request principals", () => {
 		);
 	});
 
+	it("rejects whitespace-only JWT subjects without throwing", async () => {
+		process.env = {
+			...originalEnv,
+			MAESTRO_JWT_SECRET: "test-jwt-secret-should-be-long-enough",
+		};
+		vi.resetModules();
+		const { checkApiAuth } = await import("../../src/server/authz.js");
+		const token = await createJwtToken(process.env.MAESTRO_JWT_SECRET!, {
+			sub: "   ",
+		});
+		const req = createRequest({ authorization: `Bearer ${token}` });
+
+		await expect(checkApiAuth(req)).resolves.toEqual({
+			ok: false,
+			error: "Unauthorized",
+		});
+	});
+
 	it("keeps hosted session scope stable across JWT rotation for the same user and workspace", async () => {
 		process.env = {
 			...originalEnv,
@@ -264,24 +282,6 @@ describe("verified request principals", () => {
 		const result = await checkApiAuth(req);
 
 		expect(result).toEqual({ ok: false, error: "Unauthorized" });
-	});
-
-	it("rejects JWTs with whitespace-only subjects without throwing", async () => {
-		process.env = {
-			...originalEnv,
-			MAESTRO_JWT_SECRET: "test-jwt-secret-should-be-long-enough",
-		};
-		vi.resetModules();
-		const { checkApiAuth } = await import("../../src/server/authz.js");
-		const token = await createJwtToken(process.env.MAESTRO_JWT_SECRET!, {
-			sub: "   ",
-		});
-		const req = createRequest({ authorization: `Bearer ${token}` });
-
-		await expect(checkApiAuth(req)).resolves.toEqual({
-			ok: false,
-			error: "Unauthorized",
-		});
 	});
 
 	it("applies the authenticated boundary to /debug/z when auth is configured", async () => {

@@ -78,6 +78,12 @@ export class PlatformBackedActionApprovalService extends ActionApprovalService {
 		this.publishPendingApprovalRegistration(request.id, {
 			remoteApprovalRequestId: remoteRegistration.remote?.requestId,
 		});
+		if (remoteRegistration.remote?.requestId && !request.platform) {
+			request.platform = {
+				source: "approvals_service",
+				approvalRequestId: remoteRegistration.remote.requestId,
+			};
+		}
 		this.onPendingApprovalRegistered(sessionId, request);
 		try {
 			const decision = await super.requestApproval(request, signal);

@@ -41,6 +41,8 @@ export interface PendingServerRequestSnapshot {
 	args: unknown;
 	reason: string;
 	timestamp: number;
+	timeoutMs: number;
+	platform?: ActionApprovalRequest["platform"];
 }
 
 export interface ServerRequestRegisteredEvent {
@@ -155,6 +157,7 @@ export class ServerRequestManager {
 			actionDescription: request.actionDescription,
 			args: request.args,
 			reason: request.reason,
+			platform: request.platform,
 			timestamp: Date.now(),
 			timeoutMs: options.timeoutMs ?? DEFAULT_APPROVAL_TIMEOUT_MS,
 			resolve: (decision) => service.resolve(request.id, decision),
@@ -263,6 +266,8 @@ export class ServerRequestManager {
 			args: entry.args,
 			reason: entry.reason,
 			timestamp: entry.timestamp,
+			timeoutMs: entry.timeoutMs,
+			platform: entry.kind === "approval" ? entry.platform : undefined,
 		};
 	}
 
@@ -287,6 +292,8 @@ export class ServerRequestManager {
 				args: entry.args,
 				reason: entry.reason,
 				timestamp: entry.timestamp,
+				timeoutMs: entry.timeoutMs,
+				platform: entry.kind === "approval" ? entry.platform : undefined,
 			}));
 	}
 
@@ -491,6 +498,8 @@ export class ServerRequestManager {
 			args: entry.args,
 			reason: entry.reason,
 			timestamp: entry.timestamp,
+			timeoutMs: entry.timeoutMs,
+			platform: entry.kind === "approval" ? entry.platform : undefined,
 		};
 	}
 }

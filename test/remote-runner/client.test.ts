@@ -360,43 +360,6 @@ describe("remote runner client", () => {
 		});
 	});
 
-	it("does not use the total wait timeout as the per-request timeout", async () => {
-		vi.useFakeTimers();
-		const aborts: string[] = [];
-		vi.stubGlobal(
-			"fetch",
-			vi.fn(
-				async (_input: RequestInfo | URL, init?: RequestInit) =>
-					new Promise<Response>((_resolve, reject) => {
-						init?.signal?.addEventListener(
-							"abort",
-							() => {
-								aborts.push("aborted");
-								const error = new Error("aborted");
-								error.name = "AbortError";
-								reject(error);
-							},
-							{ once: true },
-						);
-					}),
-			),
-		);
-
-		const waitPromise = waitForRunnerSessionReady("mrs_wait_request_timeout", {
-			maxAttempts: 1,
-			pollIntervalMs: 0,
-			timeoutMs: 10_000,
-		});
-		const assertion = expect(waitPromise).rejects.toThrow(
-			"remote runner service request timed out after 5000ms",
-		);
-
-		await vi.advanceTimersByTimeAsync(4_999);
-		expect(aborts).toEqual([]);
-		await vi.advanceTimersByTimeAsync(1);
-		await assertion;
-	});
-
 	it("fails fast when the runner session enters a terminal state", async () => {
 		getRunnerSessionResponses.push({
 			session: {
@@ -444,6 +407,34 @@ describe("remote runner client", () => {
 			"Timed out after 5ms waiting for remote runner session mrs_wait_timeout to become ready",
 		);
 		await vi.advanceTimersByTimeAsync(5);
+		await assertion;
+		vi.useRealTimers();
+	});
+
+	it("does not use the overall wait timeout as the per-request timeout", async () => {
+		vi.useFakeTimers();
+		vi.stubEnv("MAESTRO_REMOTE_RUNNER_TIMEOUT_MS", "2");
+		vi.stubEnv("MAESTRO_REMOTE_RUNNER_MAX_ATTEMPTS", "1");
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				async (_input: RequestInfo | URL, init?: RequestInit) =>
+					new Promise<Response>((_resolve, reject) => {
+						init?.signal?.addEventListener("abort", () => {
+							reject(new DOMException("Aborted", "AbortError"));
+						});
+					}),
+			),
+		);
+
+		const waitPromise = waitForRunnerSessionReady("mrs_wait_request_timeout", {
+			pollIntervalMs: 0,
+			timeoutMs: 10_000,
+		});
+		const assertion = expect(waitPromise).rejects.toThrow(
+			"remote runner service request timed out after 2ms",
+		);
+		await vi.advanceTimersByTimeAsync(2);
 		await assertion;
 		vi.useRealTimers();
 	});

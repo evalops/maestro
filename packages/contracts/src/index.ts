@@ -421,6 +421,38 @@ export interface ComposerPendingClientToolRequest {
 	reason?: string;
 }
 
+export type ComposerPendingRequestKind =
+	| "approval"
+	| "client_tool"
+	| "mcp_elicitation"
+	| "user_input"
+	| "tool_retry";
+
+export interface ComposerPendingRequestPlatformRef {
+	source: "approvals_service" | "tool_execution";
+	toolExecutionId?: string;
+	approvalRequestId?: string;
+}
+
+export interface ComposerPendingRequest {
+	id: string;
+	kind: ComposerPendingRequestKind;
+	status: "pending";
+	visibility: "user";
+	sessionId?: string;
+	toolCallId: string;
+	toolName: string;
+	displayName?: string;
+	summaryLabel?: string;
+	actionDescription?: string;
+	args: unknown;
+	reason: string;
+	createdAt: string;
+	expiresAt?: string;
+	source: "local" | "platform";
+	platform?: ComposerPendingRequestPlatformRef;
+}
+
 /**
  * Full session data including message history.
  *
@@ -435,6 +467,8 @@ export interface ComposerSession extends ComposerSessionSummary {
 	pendingClientToolRequests?: ComposerPendingClientToolRequest[];
 	/** Pending tool retry requests that still require a decision */
 	pendingToolRetryRequests?: ComposerToolRetryRequest[];
+	/** Unified pending requests for hosted attach, Platform, and admin surfaces */
+	pendingRequests?: ComposerPendingRequest[];
 }
 
 /**
@@ -523,6 +557,7 @@ export interface ComposerActionApprovalRequest {
 	actionDescription?: string;
 	args: unknown;
 	reason: string;
+	platform?: ComposerPendingRequestPlatformRef;
 }
 
 export interface ComposerActionApprovalDecision {

@@ -6121,6 +6121,32 @@
                 "args": {},
                 "reason": {
                   "type": "string"
+                },
+                "platform": {
+                  "type": "object",
+                  "required": [
+                    "source"
+                  ],
+                  "properties": {
+                    "source": {
+                      "anyOf": [
+                        {
+                          "const": "approvals_service",
+                          "type": "string"
+                        },
+                        {
+                          "const": "tool_execution",
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "toolExecutionId": {
+                      "type": "string"
+                    },
+                    "approvalRequestId": {
+                      "type": "string"
+                    }
+                  }
                 }
               }
             }
@@ -6198,6 +6224,127 @@
                 },
                 "summary": {
                   "type": "string"
+                }
+              }
+            }
+          },
+          "pendingRequests": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "kind",
+                "status",
+                "visibility",
+                "toolCallId",
+                "toolName",
+                "args",
+                "reason",
+                "createdAt",
+                "source"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "anyOf": [
+                    {
+                      "const": "approval",
+                      "type": "string"
+                    },
+                    {
+                      "const": "client_tool",
+                      "type": "string"
+                    },
+                    {
+                      "const": "mcp_elicitation",
+                      "type": "string"
+                    },
+                    {
+                      "const": "user_input",
+                      "type": "string"
+                    },
+                    {
+                      "const": "tool_retry",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "status": {
+                  "const": "pending",
+                  "type": "string"
+                },
+                "visibility": {
+                  "const": "user",
+                  "type": "string"
+                },
+                "sessionId": {
+                  "type": "string"
+                },
+                "toolCallId": {
+                  "type": "string"
+                },
+                "toolName": {
+                  "type": "string"
+                },
+                "displayName": {
+                  "type": "string"
+                },
+                "summaryLabel": {
+                  "type": "string"
+                },
+                "actionDescription": {
+                  "type": "string"
+                },
+                "args": {},
+                "reason": {
+                  "type": "string"
+                },
+                "createdAt": {
+                  "type": "string"
+                },
+                "expiresAt": {
+                  "type": "string"
+                },
+                "source": {
+                  "anyOf": [
+                    {
+                      "const": "local",
+                      "type": "string"
+                    },
+                    {
+                      "const": "platform",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "platform": {
+                  "type": "object",
+                  "required": [
+                    "source"
+                  ],
+                  "properties": {
+                    "source": {
+                      "anyOf": [
+                        {
+                          "const": "approvals_service",
+                          "type": "string"
+                        },
+                        {
+                          "const": "tool_execution",
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "toolExecutionId": {
+                      "type": "string"
+                    },
+                    "approvalRequestId": {
+                      "type": "string"
+                    }
+                  }
                 }
               }
             }

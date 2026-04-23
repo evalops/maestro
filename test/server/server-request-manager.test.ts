@@ -48,6 +48,44 @@ describe("ServerRequestManager", () => {
 		expect(manager.get("approval_1")).toBeUndefined();
 	});
 
+	it("exposes timeout and Platform correlation on pending approval snapshots", () => {
+		const service = new ActionApprovalService("prompt");
+		vi.spyOn(service, "resolve").mockReturnValue(true);
+
+		manager.registerApproval({
+			sessionId: "sess_platform",
+			request: {
+				id: "approval_platform",
+				toolName: "bash",
+				displayName: "Bash",
+				args: { command: "git push origin main" },
+				reason: "Platform approval required",
+				platform: {
+					source: "tool_execution",
+					toolExecutionId: "texec_1",
+					approvalRequestId: "approval_platform",
+				},
+			},
+			service,
+			timeoutMs: 30_000,
+		});
+
+		expect(manager.listPending({ sessionId: "sess_platform" })).toEqual([
+			expect.objectContaining({
+				id: "approval_platform",
+				kind: "approval",
+				sessionId: "sess_platform",
+				toolName: "bash",
+				timeoutMs: 30_000,
+				platform: {
+					source: "tool_execution",
+					toolExecutionId: "texec_1",
+					approvalRequestId: "approval_platform",
+				},
+			}),
+		]);
+	});
+
 	it("resolves client tool requests through the same registry", () => {
 		const resolve = vi.fn().mockReturnValue(true);
 		const cancel = vi.fn().mockReturnValue(true);

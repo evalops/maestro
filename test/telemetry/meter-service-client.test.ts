@@ -131,32 +131,23 @@ describe("meter telemetry client", () => {
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
 
-	it("keeps skill metadata arrays positionally aligned", async () => {
-		const event = {
-			...createCanonicalTurnEvent(),
-			skillMetadata: [
-				{
-					name: "incident-review",
-					artifactId: "skill_remote_1",
-					version: "3",
-					hash: "hash_skill_123",
-					source: "service",
-				},
-				{
-					name: "local-debug",
-					version: "1",
-					hash: "hash_skill_456",
-					source: "filesystem",
-				},
-			],
-		};
+	it("preserves skill metadata positions when optional fields are missing", async () => {
+		const event = createCanonicalTurnEvent();
+		event.skillMetadata?.push({
+			name: "local-helper",
+			version: "dev",
+			source: "project",
+		});
 		const fetchMock = vi.fn(async (_input: unknown, init?: RequestInit) => {
-			expect(JSON.parse(String(init?.body ?? "{}")).metadata).toMatchObject({
-				skillNames: "incident-review,local-debug",
+			const body = JSON.parse(String(init?.body ?? "{}")) as {
+				metadata: Record<string, string>;
+			};
+			expect(body.metadata).toMatchObject({
+				skillNames: "incident-review,local-helper",
 				skillArtifactIds: "skill_remote_1,",
-				skillVersions: "3,1",
-				skillHashes: "hash_skill_123,hash_skill_456",
-				skillSources: "service,filesystem",
+				skillVersions: "3,dev",
+				skillHashes: "hash_skill_123,",
+				skillSources: "service,project",
 			});
 			return new Response(JSON.stringify({ event: { id: "wide_event_1" } }), {
 				status: 200,
@@ -165,7 +156,9 @@ describe("meter telemetry client", () => {
 		});
 		vi.stubGlobal("fetch", fetchMock);
 
-		await expect(mirrorCanonicalTurnEventToMeter(event)).resolves.toBe(true);
+		const result = await mirrorCanonicalTurnEventToMeter(event);
+
+		expect(result).toBe(true);
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
 

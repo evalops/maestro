@@ -274,7 +274,7 @@ export async function checkApiAuth(
 		);
 		return { ok: true, principal: principal ?? undefined };
 	}
-	if (jwtPayload) {
+	if (jwtPayload?.sub) {
 		const principal = setVerifiedRequestPrincipal(
 			req,
 			createJwtPrincipal(jwtPayload),

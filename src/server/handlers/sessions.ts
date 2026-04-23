@@ -38,6 +38,7 @@ import { readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type {
 	ComposerPendingClientToolRequest,
+	ComposerPendingRequest,
 	ComposerSession,
 	ComposerSessionSummary,
 } from "@evalops/contracts";
@@ -99,6 +100,7 @@ function getPendingServerRequestPayload(
 	ComposerSession,
 	| "pendingApprovalRequests"
 	| "pendingClientToolRequests"
+	| "pendingRequests"
 	| "pendingToolRetryRequests"
 > {
 	const pending = serverRequestManager.listPending({ sessionId });
@@ -113,6 +115,7 @@ function getPendingServerRequestPayload(
 			actionDescription: entry.actionDescription,
 			args: entry.args,
 			reason: entry.reason,
+			platform: entry.platform,
 		}));
 
 	const pendingClientToolRequests: ComposerPendingClientToolRequest[] = pending
@@ -167,6 +170,31 @@ function getPendingServerRequestPayload(
 				summary: typeof args.summary === "string" ? args.summary : undefined,
 			};
 		});
+	const pendingRequests: ComposerPendingRequest[] = pending.map((entry) => {
+		const createdAt = new Date(entry.timestamp).toISOString();
+		const expiresAt =
+			Number.isFinite(entry.timeoutMs) && entry.timeoutMs > 0
+				? new Date(entry.timestamp + entry.timeoutMs).toISOString()
+				: undefined;
+		return {
+			id: entry.id,
+			kind: entry.kind,
+			status: "pending",
+			visibility: "user",
+			sessionId: entry.sessionId,
+			toolCallId: entry.callId,
+			toolName: entry.toolName,
+			displayName: entry.displayName,
+			summaryLabel: entry.summaryLabel,
+			actionDescription: entry.actionDescription,
+			args: entry.args,
+			reason: entry.reason,
+			createdAt,
+			expiresAt,
+			source: entry.platform ? "platform" : "local",
+			platform: entry.platform,
+		};
+	});
 
 	return {
 		...(pendingApprovalRequests.length > 0 ? { pendingApprovalRequests } : {}),
@@ -176,6 +204,7 @@ function getPendingServerRequestPayload(
 		...(pendingToolRetryRequests.length > 0
 			? { pendingToolRetryRequests }
 			: {}),
+		...(pendingRequests.length > 0 ? { pendingRequests } : {}),
 	};
 }
 
