@@ -241,6 +241,65 @@ describe("maestro event bus", () => {
 		});
 	});
 
+	it("publishes evaluation-failed skill outcomes with eval details", async () => {
+		const published: Array<{ subject: string; payload: string }> = [];
+		setMaestroEventBusTransportForTests({
+			async publish(subject, payload) {
+				published.push({ subject, payload });
+			},
+		});
+
+		recordMaestroSkillOutcome({
+			tool_call_id: "tool_skill_1",
+			tool_execution_id: "exec_skill_1",
+			skill_metadata: {
+				name: "incident-review",
+				artifactId: "skill_remote_1",
+				version: "3",
+				hash: "hash_skill_123",
+				source: "service",
+			},
+			turn_status: "evaluation_failed",
+			error_category: "evaluation",
+			error_message: "formatting checks failed",
+			evaluation_tool_name: "Bash",
+			evaluation_tool_call_id: "tool_eval_1",
+			evaluation_tool_execution_id: "exec_eval_1",
+			evaluation_score: 0.82,
+			evaluation_threshold: 0.9,
+			evaluation_assertion_count: 1,
+			evaluation_rationale: "formatting checks failed",
+			outcome_at: "2026-04-23T18:12:00.000Z",
+			env: { MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222" },
+		});
+
+		await Promise.resolve();
+
+		expect(published).toHaveLength(1);
+		expect(JSON.parse(published[0]?.payload ?? "{}")).toMatchObject({
+			type: "maestro.events.skill.failed",
+			data: {
+				tool_call_id: "tool_skill_1",
+				tool_execution_id: "exec_skill_1",
+				turn_status: "evaluation_failed",
+				error_category: "evaluation",
+				error_message: "formatting checks failed",
+				evaluation_tool_name: "Bash",
+				evaluation_tool_call_id: "tool_eval_1",
+				evaluation_tool_execution_id: "exec_eval_1",
+				evaluation_score: 0.82,
+				evaluation_threshold: 0.9,
+				evaluation_assertion_count: 1,
+				evaluation_rationale: "formatting checks failed",
+				skill_metadata: {
+					name: "incident-review",
+					artifactId: "skill_remote_1",
+					source: "service",
+				},
+			},
+		});
+	});
+
 	it("publishes eval scored CloudEvents with prompt and skill identity", async () => {
 		const published: Array<{ subject: string; payload: string }> = [];
 		setMaestroEventBusTransportForTests({

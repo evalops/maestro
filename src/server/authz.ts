@@ -2,7 +2,6 @@ import { createHash, createHmac } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { type JWTPayload, createRemoteJWKSet, jwtVerify } from "jose";
 import {
-	authenticateRequest,
 	getRequestHeader,
 	getRequestToken,
 	secureCompare,
@@ -40,6 +39,10 @@ type RequestWithPrincipal = IncomingMessage & {
 	[REQUEST_PRINCIPAL]?: VerifiedRequestPrincipal | null;
 };
 
+interface CheckApiAuthOptions {
+	apiKey?: string | null;
+}
+
 function base64UrlDecode(input: string): string {
 	return Buffer.from(
 		input.replace(/-/g, "+").replace(/_/g, "/"),
@@ -68,8 +71,8 @@ function verifySharedToken(token: string): string | null {
 	return userId;
 }
 
-function hasConfiguredAuth(): boolean {
-	return Boolean(WEB_API_KEY || SHARED_SECRET || JWT_SECRET || JWT_JWKS_URL);
+function hasConfiguredAuth(apiKey = WEB_API_KEY): boolean {
+	return Boolean(apiKey || SHARED_SECRET || JWT_SECRET || JWT_JWKS_URL);
 }
 
 function sanitizePrincipalPart(value: string): string {
@@ -245,13 +248,20 @@ async function verifyJwt(token: string): Promise<JWTPayload | null> {
 	}
 }
 
-export async function checkApiAuth(req: IncomingMessage): Promise<{
+export async function checkApiAuth(
+	req: IncomingMessage,
+	options: CheckApiAuthOptions = {},
+): Promise<{
 	ok: boolean;
 	error?: string;
 	principal?: VerifiedRequestPrincipal;
 }> {
+	const webApiKey = options.apiKey?.trim() || WEB_API_KEY;
 	const cachedPrincipal = getVerifiedRequestPrincipal(req);
-	if (cachedPrincipal) {
+	if (
+		cachedPrincipal &&
+		(!webApiKey || cachedPrincipal.authMethod !== "anon")
+	) {
 		return { ok: true, principal: cachedPrincipal };
 	}
 	const bearer = getRequestToken(req);
@@ -271,14 +281,14 @@ export async function checkApiAuth(req: IncomingMessage): Promise<{
 		);
 		return { ok: true, principal: principal ?? undefined };
 	}
-	if (WEB_API_KEY && bearer && secureCompare(bearer, WEB_API_KEY)) {
+	if (webApiKey && bearer && secureCompare(bearer, webApiKey)) {
 		const principal = setVerifiedRequestPrincipal(
 			req,
 			createApiKeyPrincipal(bearer),
 		);
 		return { ok: true, principal: principal ?? undefined };
 	}
-	if (hasConfiguredAuth()) {
+	if (hasConfiguredAuth(webApiKey)) {
 		setVerifiedRequestPrincipal(req, null);
 		return { ok: false, error: "Unauthorized" };
 	}

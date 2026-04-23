@@ -205,8 +205,9 @@ export function createAuthMiddleware(
 ): Middleware {
 	return async (req, res, next) => {
 		const pathname = getPathname(req);
-		const requiresAuthBoundary =
-			pathname.startsWith("/api") || pathname === "/debug/z";
+		const isApiRoute = pathname.startsWith("/api");
+		const isDebugRoute = pathname.startsWith("/debug");
+		const requiresAuthBoundary = isApiRoute || isDebugRoute;
 		if (requiresAuthBoundary) {
 			const missingKey = !apiKey || apiKey.length === 0;
 
@@ -226,7 +227,7 @@ export function createAuthMiddleware(
 					return;
 				}
 				// Requirement off and no key: allow through.
-				const auth = await checkApiAuth(req);
+				const auth = await checkApiAuth(req, { apiKey });
 				if (!auth.ok) {
 					sendJson(
 						res,
@@ -241,13 +242,10 @@ export function createAuthMiddleware(
 			}
 
 			// Key provided: validate it.
-			if (
-				pathname.startsWith("/api") &&
-				getArtifactAccessGrantFromRequest(req)
-			) {
+			if (isApiRoute && getArtifactAccessGrantFromRequest(req)) {
 				return next();
 			}
-			const auth = await checkApiAuth(req);
+			const auth = await checkApiAuth(req, { apiKey });
 			if (!auth.ok) {
 				sendJson(
 					res,

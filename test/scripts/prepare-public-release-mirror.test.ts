@@ -63,6 +63,15 @@ describe("prepare-public-release-mirror", () => {
 		write(join(source, "README.md"), "public readme\n");
 		write(join(source, "src/index.ts"), "export const value = 1;\n");
 		write(join(source, ".github/workflows/ci.yml"), "internal ci\n");
+		write(join(source, ".husky/_/husky.sh"), "generated husky helper\n");
+		write(
+			join(source, "packages/contracts/dist/index.js"),
+			"generated package output\n",
+		);
+		write(
+			join(source, "packages/core/node_modules/pkg/index.js"),
+			"nested dependency\n",
+		);
 		write(
 			join(source, "scripts/smoke-registry-install.js"),
 			"internal smoke\n",
@@ -101,6 +110,13 @@ describe("prepare-public-release-mirror", () => {
 		expect(existsSync(join(target, "old.txt"))).toBe(false);
 		expect(existsSync(join(target, ".env"))).toBe(false);
 		expect(existsSync(join(target, "docs/internal/notes.md"))).toBe(false);
+		expect(existsSync(join(target, ".husky/_/husky.sh"))).toBe(false);
+		expect(existsSync(join(target, "packages/contracts/dist/index.js"))).toBe(
+			false,
+		);
+		expect(
+			existsSync(join(target, "packages/core/node_modules/pkg/index.js")),
+		).toBe(false);
 		expect(
 			readFileSync(
 				join(target, ".github/workflows/public-release-mirror.yml"),

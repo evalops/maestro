@@ -165,7 +165,7 @@
   },
   "devDependencies": {
     "@bufbuild/buf": "^1.67.0",
-    "@bufbuild/protoc-gen-es": "^2.11.0",
+    "@bufbuild/protoc-gen-es": "2.12.0",
     "@biomejs/biome": "^1.9.4",
     "@google/genai": "^1.50.1",
     "@smithy/types": "^4.13.1",
