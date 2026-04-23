@@ -14,6 +14,7 @@ export interface HostedRunnerConfig {
 	runnerSessionId: string;
 	ownerInstanceId?: string;
 	workspaceRoot: string;
+	snapshotRoot: string;
 	host?: string;
 	port: number;
 	workspaceId?: string;
@@ -32,6 +33,7 @@ Options:
   --runner-session-id <id>  Platform remote-runner session id (required)
   --owner-instance-id <id>  Platform runtime owner generation for attach fencing
   --workspace-root <path>   Workspace root mounted into the runtime pod (required)
+  --snapshot-root <path>    Directory for drain snapshot manifests
   --listen <host:port>      Address to bind, for example 0.0.0.0:8080
   --host <host>             Bind host when --listen is not used
   --port <port>             Bind port when --listen is not used
@@ -45,6 +47,7 @@ Environment:
   MAESTRO_RUNNER_SESSION_ID, REMOTE_RUNNER_SESSION_ID
   MAESTRO_REMOTE_RUNNER_OWNER_INSTANCE_ID, REMOTE_RUNNER_OWNER_INSTANCE_ID
   MAESTRO_WORKSPACE_ROOT
+  MAESTRO_REMOTE_RUNNER_SNAPSHOT_ROOT, REMOTE_RUNNER_SNAPSHOT_ROOT
   MAESTRO_HOSTED_RUNNER_LISTEN, MAESTRO_HOSTED_RUNNER_HOST, MAESTRO_HOSTED_RUNNER_PORT, PORT
   MAESTRO_REMOTE_RUNNER_WORKSPACE_ID, MAESTRO_AGENT_RUN_ID, MAESTRO_SESSION_ID
   MAESTRO_ATTACH_AUDIENCE`;
@@ -168,6 +171,16 @@ async function resolveWorkspaceRoot(path: string | undefined): Promise<string> {
 	return realpath(workspaceRoot);
 }
 
+function resolveSnapshotRoot(
+	path: string | undefined,
+	workspaceRoot: string,
+): string {
+	if (!path) {
+		return resolve(workspaceRoot, ".maestro", "runner-snapshots");
+	}
+	return resolve(workspaceRoot, path);
+}
+
 export function formatHostedRunnerUsage(): string {
 	return HOSTED_RUNNER_USAGE;
 }
@@ -203,6 +216,10 @@ export async function resolveHostedRunnerConfig(
 		parsePort(env.PORT, "PORT") ??
 		options.defaultPort ??
 		8080;
+	const workspaceRoot = await resolveWorkspaceRoot(
+		getLastFlag(parsed, "workspace-root") ??
+			getEnvValue(env, ["MAESTRO_WORKSPACE_ROOT", "WORKSPACE_ROOT"]),
+	);
 
 	return {
 		runnerSessionId,
@@ -212,9 +229,14 @@ export async function resolveHostedRunnerConfig(
 				"MAESTRO_REMOTE_RUNNER_OWNER_INSTANCE_ID",
 				"REMOTE_RUNNER_OWNER_INSTANCE_ID",
 			]),
-		workspaceRoot: await resolveWorkspaceRoot(
-			getLastFlag(parsed, "workspace-root") ??
-				getEnvValue(env, ["MAESTRO_WORKSPACE_ROOT", "WORKSPACE_ROOT"]),
+		workspaceRoot,
+		snapshotRoot: resolveSnapshotRoot(
+			getLastFlag(parsed, "snapshot-root") ??
+				getEnvValue(env, [
+					"MAESTRO_REMOTE_RUNNER_SNAPSHOT_ROOT",
+					"REMOTE_RUNNER_SNAPSHOT_ROOT",
+				]),
+			workspaceRoot,
 		),
 		host:
 			listen.host ??
@@ -239,6 +261,7 @@ export function applyHostedRunnerEnvironment(config: HostedRunnerConfig): void {
 	process.env.MAESTRO_HOSTED_RUNNER_MODE = "1";
 	process.env.MAESTRO_RUNNER_SESSION_ID = config.runnerSessionId;
 	process.env.MAESTRO_WORKSPACE_ROOT = config.workspaceRoot;
+	process.env.MAESTRO_REMOTE_RUNNER_SNAPSHOT_ROOT = config.snapshotRoot;
 	if (config.ownerInstanceId) {
 		process.env.MAESTRO_REMOTE_RUNNER_OWNER_INSTANCE_ID =
 			config.ownerInstanceId;
@@ -276,6 +299,7 @@ export function toHostedRunnerContext(
 		runnerSessionId: config.runnerSessionId,
 		ownerInstanceId: config.ownerInstanceId,
 		workspaceRoot: config.workspaceRoot,
+		snapshotRoot: config.snapshotRoot,
 		listenHost: config.host,
 		listenPort: config.port,
 		workspaceId: config.workspaceId,

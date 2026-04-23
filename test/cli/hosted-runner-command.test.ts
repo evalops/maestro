@@ -33,6 +33,8 @@ describe("hosted-runner command config", () => {
 				"pod_123",
 				"--workspace-root",
 				workspaceRoot,
+				"--snapshot-root",
+				".runner-snapshots",
 				"--listen",
 				"0.0.0.0:9090",
 				"--workspace-id",
@@ -47,6 +49,7 @@ describe("hosted-runner command config", () => {
 			runnerSessionId: "mrs_123",
 			ownerInstanceId: "pod_123",
 			workspaceRoot: realpathSync(workspaceRoot),
+			snapshotRoot: join(realpathSync(workspaceRoot), ".runner-snapshots"),
 			host: "0.0.0.0",
 			port: 9090,
 			workspaceId: "ws_123",
@@ -57,6 +60,7 @@ describe("hosted-runner command config", () => {
 			runnerSessionId: "mrs_123",
 			ownerInstanceId: "pod_123",
 			workspaceRoot: realpathSync(workspaceRoot),
+			snapshotRoot: join(realpathSync(workspaceRoot), ".runner-snapshots"),
 			listenHost: "0.0.0.0",
 			listenPort: 9090,
 		});
@@ -68,6 +72,7 @@ describe("hosted-runner command config", () => {
 			MAESTRO_RUNNER_SESSION_ID: "mrs_env",
 			MAESTRO_REMOTE_RUNNER_OWNER_INSTANCE_ID: "pod_env",
 			MAESTRO_WORKSPACE_ROOT: workspaceRoot,
+			MAESTRO_REMOTE_RUNNER_SNAPSHOT_ROOT: ".snapshots",
 			MAESTRO_HOSTED_RUNNER_PORT: "7070",
 			MAESTRO_REMOTE_RUNNER_WORKSPACE_ID: "ws_env",
 		});
@@ -76,6 +81,7 @@ describe("hosted-runner command config", () => {
 			runnerSessionId: "mrs_env",
 			ownerInstanceId: "pod_env",
 			workspaceRoot: realpathSync(workspaceRoot),
+			snapshotRoot: join(realpathSync(workspaceRoot), ".snapshots"),
 			port: 7070,
 			workspaceId: "ws_env",
 		});

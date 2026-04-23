@@ -25,6 +25,7 @@ export interface HostedRunnerContext {
 	runnerSessionId: string;
 	ownerInstanceId?: string;
 	workspaceRoot: string;
+	snapshotRoot?: string;
 	listenHost?: string;
 	listenPort?: number;
 	workspaceId?: string;
