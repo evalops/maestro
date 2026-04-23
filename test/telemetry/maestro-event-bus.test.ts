@@ -5,6 +5,7 @@ import {
 	closeMaestroEventBusTransport,
 	getMaestroEventBusStatus,
 	publishMaestroCloudEvent,
+	recordMaestroPromptVariantSelected,
 	resolveMaestroEventBusConfig,
 	setMaestroEventBusTransportForTests,
 } from "../../src/telemetry/maestro-event-bus.js";
@@ -71,6 +72,51 @@ describe("maestro event bus", () => {
 			"type.googleapis.com/maestro.v1.ToolCallAttempt",
 		);
 		expect(event.data.tool_call_id).toBe("tool_1");
+	});
+
+	it("publishes prompt variant selected CloudEvents with prompt identity", async () => {
+		const published: Array<{ subject: string; payload: string }> = [];
+		setMaestroEventBusTransportForTests({
+			async publish(subject, payload) {
+				published.push({ subject, payload });
+			},
+		});
+
+		recordMaestroPromptVariantSelected({
+			prompt_metadata: {
+				name: "maestro-system",
+				label: "production",
+				surface: "maestro",
+				version: 9,
+				versionId: "ver_9",
+				hash: "hash_123",
+				source: "service",
+			},
+			correlation: {
+				workspace_id: "workspace_123",
+				session_id: "session_123",
+			},
+			selected_at: "2026-04-23T17:00:00.000Z",
+			env: { MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222" },
+		});
+
+		await Promise.resolve();
+
+		expect(published).toHaveLength(1);
+		expect(published[0]?.subject).toBe(
+			"maestro.events.prompt_variant.selected",
+		);
+		expect(JSON.parse(published[0]?.payload ?? "{}")).toMatchObject({
+			type: "maestro.events.prompt_variant.selected",
+			data: {
+				prompt_metadata: {
+					name: "maestro-system",
+					versionId: "ver_9",
+					source: "service",
+				},
+				selected_at: "2026-04-23T17:00:00.000Z",
+			},
+		});
 	});
 
 	it("does not let undefined correlation overrides erase env defaults", () => {

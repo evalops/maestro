@@ -30,6 +30,7 @@ import { SESSION_CONFIG, getAgentDir } from "../config/constants.js";
 import { getRegisteredModels } from "../models/registry.js";
 import type { RegisteredModel } from "../models/registry.js";
 import { queueSharedMemoryUpdate } from "../shared-memory/client.js";
+import { recordMaestroPromptVariantSelected } from "../telemetry/maestro-event-bus.js";
 import { createLogger } from "../utils/logger.js";
 import { resolveEnvPath } from "../utils/path-expansion.js";
 import { SessionFileWriter } from "./file-writer.js";
@@ -499,6 +500,16 @@ export class SessionManager {
 				},
 			},
 		});
+
+		if (state.promptMetadata) {
+			recordMaestroPromptVariantSelected({
+				prompt_metadata: state.promptMetadata,
+				correlation: {
+					session_id: this.sessionId,
+				},
+				selected_at: entry.timestamp,
+			});
+		}
 
 		// Auto-prune old sessions in the background (non-blocking)
 		if (

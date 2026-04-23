@@ -207,6 +207,7 @@ export class TurnTracker {
 			thinkingLevel:
 				state.thinkingLevel as CanonicalTurnEvent["model"]["thinkingLevel"],
 		});
+		this.currentTurn.setPromptMetadata(state.promptMetadata);
 
 		// Set context from tracker
 		if (this.context.sandboxMode) {

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { JetStreamClient, NatsConnection } from "nats";
+import type { PromptMetadata } from "../prompts/types.js";
 import {
 	MaestroBusEventType,
 	getMaestroBusEventCatalogEntry,
@@ -155,6 +156,7 @@ export interface ToolCallAttemptEventData extends Record<string, unknown> {
 	correlation: MaestroCorrelation;
 	tool_call_id: string;
 	tool_execution_id?: string;
+	prompt_metadata?: PromptMetadata;
 	tool_namespace?: string;
 	tool_name: string;
 	tool_version?: string;
@@ -172,6 +174,7 @@ export interface ToolCallResultEventData extends Record<string, unknown> {
 	correlation: MaestroCorrelation;
 	tool_call_id: string;
 	tool_execution_id?: string;
+	prompt_metadata?: PromptMetadata;
 	approval_request_id?: string;
 	governed_outcome?: string;
 	status: MaestroToolCallStatus;
@@ -206,6 +209,13 @@ export interface MaestroEventBusStatus {
 	tenantId?: string;
 	defaultSurface: MaestroSurface;
 	defaultRuntimeMode: MaestroRuntimeMode;
+}
+
+export interface PromptVariantSelectedEventData
+	extends Record<string, unknown> {
+	correlation: MaestroCorrelation;
+	prompt_metadata: PromptMetadata;
+	selected_at: string;
 }
 
 export interface MaestroEventBusTransport {
@@ -260,6 +270,7 @@ export interface RecordMaestroFirewallBlockInput {
 export interface RecordMaestroToolCallAttemptInput {
 	tool_call_id: string;
 	tool_execution_id?: string;
+	prompt_metadata?: PromptMetadata;
 	tool_namespace?: string;
 	tool_name: string;
 	tool_version?: string;
@@ -278,6 +289,7 @@ export interface RecordMaestroToolCallAttemptInput {
 export interface RecordMaestroToolCallCompletedInput {
 	tool_call_id: string;
 	tool_execution_id?: string;
+	prompt_metadata?: PromptMetadata;
 	approval_request_id?: string;
 	governed_outcome?: string;
 	status: MaestroToolCallStatus;
@@ -288,6 +300,13 @@ export interface RecordMaestroToolCallCompletedInput {
 	error_message?: string;
 	correlation?: Partial<MaestroCorrelation>;
 	completed_at?: string;
+	env?: Env;
+}
+
+export interface RecordMaestroPromptVariantSelectedInput {
+	prompt_metadata: PromptMetadata;
+	correlation?: Partial<MaestroCorrelation>;
+	selected_at?: string;
 	env?: Env;
 }
 
@@ -845,6 +864,7 @@ export function recordMaestroToolCallAttempt(
 			),
 			tool_call_id: event.tool_call_id,
 			tool_execution_id: event.tool_execution_id,
+			prompt_metadata: event.prompt_metadata,
 			tool_namespace: event.tool_namespace,
 			tool_name: event.tool_name,
 			tool_version: event.tool_version,
@@ -874,6 +894,7 @@ export function recordMaestroToolCallCompleted(
 			),
 			tool_call_id: event.tool_call_id,
 			tool_execution_id: event.tool_execution_id,
+			prompt_metadata: event.prompt_metadata,
 			approval_request_id: event.approval_request_id,
 			governed_outcome: event.governed_outcome,
 			status: event.status,
@@ -885,6 +906,24 @@ export function recordMaestroToolCallCompleted(
 			completed_at: completedAt,
 		},
 		{ env: event.env, time: completedAt },
+	);
+}
+
+export function recordMaestroPromptVariantSelected(
+	event: RecordMaestroPromptVariantSelectedInput,
+): void {
+	const selectedAt = event.selected_at ?? new Date().toISOString();
+	void publishMaestroCloudEvent<PromptVariantSelectedEventData>(
+		MaestroBusEventType.PromptVariantSelected,
+		{
+			correlation: mergeCorrelation(
+				resolveMaestroEventBusConfig(event.env).defaultCorrelation,
+				event.correlation,
+			),
+			prompt_metadata: event.prompt_metadata,
+			selected_at: selectedAt,
+		},
+		{ env: event.env, time: selectedAt },
 	);
 }
 

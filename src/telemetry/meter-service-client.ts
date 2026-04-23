@@ -106,6 +106,16 @@ function buildMetadata(event: CanonicalTurnEvent): Record<string, string> {
 		sandboxMode: event.sandboxMode,
 		approvalMode: event.approvalMode,
 		thinkingLevel: event.model.thinkingLevel,
+		promptName: event.promptMetadata?.name,
+		promptLabel: event.promptMetadata?.label,
+		promptSurface: event.promptMetadata?.surface,
+		promptVersion:
+			typeof event.promptMetadata?.version === "number"
+				? String(event.promptMetadata.version)
+				: undefined,
+		promptVersionId: event.promptMetadata?.versionId,
+		promptHash: event.promptMetadata?.hash,
+		promptSource: event.promptMetadata?.source,
 	});
 }
 

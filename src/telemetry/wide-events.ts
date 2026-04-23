@@ -13,6 +13,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import type { PromptMetadata } from "../prompts/types.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -67,6 +68,7 @@ export interface CanonicalTurnEvent {
 
 	// ─── Model Context ──────────────────────────────────────────────────────
 	model: ModelInfo;
+	promptMetadata?: PromptMetadata;
 
 	// ─── Timing ─────────────────────────────────────────────────────────────
 	totalDurationMs: number;
@@ -182,6 +184,7 @@ export class TurnCollector {
 		provider: "unknown",
 		thinkingLevel: "off",
 	};
+	private promptMetadata?: PromptMetadata;
 	private tools: Map<
 		string,
 		{ name: string; callId: string; startTime: number; inputSizeBytes?: number }
@@ -223,6 +226,11 @@ export class TurnCollector {
 
 	setModel(model: ModelInfo): this {
 		this.model = model;
+		return this;
+	}
+
+	setPromptMetadata(promptMetadata: PromptMetadata | undefined): this {
+		this.promptMetadata = promptMetadata;
 		return this;
 	}
 
@@ -375,6 +383,7 @@ export class TurnCollector {
 
 			// Model
 			model: this.model,
+			promptMetadata: this.promptMetadata,
 
 			// Timing
 			totalDurationMs: Math.round(totalDurationMs),

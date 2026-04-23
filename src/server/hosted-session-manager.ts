@@ -27,6 +27,7 @@ import {
 	isSessionTreeEntry,
 } from "../session/types.js";
 import { queueSharedMemoryUpdate } from "../shared-memory/client.js";
+import { recordMaestroPromptVariantSelected } from "../telemetry/maestro-event-bus.js";
 
 type SessionRow = typeof hostedSessions.$inferSelect;
 
@@ -541,6 +542,16 @@ export class HostedSessionManager {
 				},
 			},
 		});
+
+		if (state.promptMetadata) {
+			recordMaestroPromptVariantSelected({
+				prompt_metadata: state.promptMetadata,
+				correlation: {
+					session_id: this.sessionId,
+				},
+				selected_at: entry.timestamp,
+			});
+		}
 	}
 
 	saveMessage(message: AppMessage): void {
