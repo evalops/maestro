@@ -168,6 +168,40 @@ describe("verified request principals", () => {
 		expect(getAuthScopeKey(reqA)).not.toBe(getAuthScopeKey(reqOtherWorkspace));
 	});
 
+	it("does not collapse long workspace identifiers that only differ after the old truncation boundary", async () => {
+		process.env = {
+			...originalEnv,
+			MAESTRO_JWT_SECRET: "test-jwt-secret-should-be-long-enough",
+			MAESTRO_SESSION_SCOPE: "auth",
+		};
+		vi.resetModules();
+		const { checkApiAuth, getAuthScopeKey } = await import(
+			"../../src/server/authz.js"
+		);
+		const sharedPrefix = "workspace-1234567890abcdef1234567890";
+		const tokenA = await createJwtToken(process.env.MAESTRO_JWT_SECRET!, {
+			sub: "user-1234567890abcdef1234567890",
+			workspaceId: `${sharedPrefix}AAAAAA`,
+			orgId: "org-1234567890abcdef1234567890",
+			jti: "jwt-a",
+		});
+		const tokenB = await createJwtToken(process.env.MAESTRO_JWT_SECRET!, {
+			sub: "user-1234567890abcdef1234567890",
+			workspaceId: `${sharedPrefix}BBBBBB`,
+			orgId: "org-1234567890abcdef1234567890",
+			jti: "jwt-b",
+		});
+		const reqA = createRequest({ authorization: `Bearer ${tokenA}` });
+		const reqB = createRequest({ authorization: `Bearer ${tokenB}` });
+
+		await checkApiAuth(reqA);
+		await checkApiAuth(reqB);
+
+		expect(getAuthScopeKey(reqA)).toMatch(/^principal_[a-f0-9]{24}$/);
+		expect(getAuthScopeKey(reqB)).toMatch(/^principal_[a-f0-9]{24}$/);
+		expect(getAuthScopeKey(reqA)).not.toBe(getAuthScopeKey(reqB));
+	});
+
 	it("keeps shared-secret tokens scoped by durable user identity", async () => {
 		process.env = {
 			...originalEnv,

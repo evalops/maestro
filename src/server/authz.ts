@@ -73,10 +73,7 @@ function hasConfiguredAuth(): boolean {
 }
 
 function sanitizePrincipalPart(value: string): string {
-	return value
-		.trim()
-		.replace(/[^a-zA-Z0-9._-]/g, "_")
-		.slice(0, 32);
+	return value.trim().replace(/[^a-zA-Z0-9._-]/g, "_");
 }
 
 function getStringClaim(
