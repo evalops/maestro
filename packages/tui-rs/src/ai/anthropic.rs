@@ -119,7 +119,7 @@ impl AnthropicClient {
     /// Create a new Anthropic client
     pub fn new(api_key: impl Into<String>) -> Result<Self> {
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(300))
+            .timeout(std::time::Duration::from_mins(5))
             .build()
             .context("Failed to create HTTP client")?;
 

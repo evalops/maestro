@@ -64,7 +64,7 @@ impl Default for RetryConfig {
         Self {
             max_retries: 3,
             initial_delay: Duration::from_secs(1),
-            max_delay: Duration::from_secs(60),
+            max_delay: Duration::from_mins(1),
             backoff_multiplier: 2.0,
             jitter_factor: 0.25,
             respect_retry_after: true,
@@ -92,7 +92,7 @@ impl RetryConfig {
         Self {
             max_retries: 2,
             initial_delay: Duration::from_secs(2),
-            max_delay: Duration::from_secs(120),
+            max_delay: Duration::from_mins(2),
             backoff_multiplier: 3.0,
             jitter_factor: 0.3,
             respect_retry_after: true,
@@ -539,7 +539,7 @@ mod tests {
     fn test_extract_retry_after_minutes() {
         let kind = ErrorKind::classify("Rate limit exceeded, please wait 2 minutes");
         if let ErrorKind::RateLimited { retry_after } = kind {
-            assert_eq!(retry_after, Some(Duration::from_secs(120)));
+            assert_eq!(retry_after, Some(Duration::from_mins(2)));
         } else {
             panic!("Expected RateLimited");
         }
@@ -604,7 +604,7 @@ mod tests {
     fn test_retry_policy_respects_retry_after() {
         let config = RetryConfig {
             respect_retry_after: true,
-            max_delay: Duration::from_secs(120),
+            max_delay: Duration::from_mins(2),
             ..Default::default()
         };
         let mut policy = RetryPolicy::new(config);
@@ -632,7 +632,7 @@ mod tests {
         let mut policy = RetryPolicy::new(config);
 
         let error_kind = ErrorKind::RateLimited {
-            retry_after: Some(Duration::from_secs(120)),
+            retry_after: Some(Duration::from_mins(2)),
         };
         let decision = policy.should_retry(error_kind);
 
@@ -651,7 +651,7 @@ mod tests {
             initial_delay: Duration::from_secs(1),
             backoff_multiplier: 2.0,
             jitter_factor: 0.0, // No jitter for deterministic test
-            max_delay: Duration::from_secs(60),
+            max_delay: Duration::from_mins(1),
             respect_retry_after: true,
         };
         let mut policy = RetryPolicy::new(config);

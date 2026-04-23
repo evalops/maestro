@@ -1006,7 +1006,7 @@ impl ToolHistory {
     #[must_use]
     pub fn most_used_tools(&self, limit: usize) -> Vec<(&str, &ToolStats)> {
         let mut ranked: Vec<_> = self.stats.iter().map(|(k, v)| (k.as_str(), v)).collect();
-        ranked.sort_by(|a, b| b.1.total.cmp(&a.1.total));
+        ranked.sort_by_key(|candidate| std::cmp::Reverse(candidate.1.total));
         ranked.truncate(limit);
         ranked
     }
@@ -1058,7 +1058,7 @@ impl ToolHistory {
             .filter(|(_, s)| s.failures > 0)
             .map(|(k, v)| (k.as_str(), v))
             .collect();
-        ranked.sort_by(|a, b| b.1.failures.cmp(&a.1.failures));
+        ranked.sort_by_key(|candidate| std::cmp::Reverse(candidate.1.failures));
         ranked.truncate(limit);
         ranked
     }
@@ -1376,7 +1376,7 @@ impl ToolHistory {
             lines.push("By Tool:".to_string());
 
             let mut tool_stats: Vec<_> = self.stats.iter().collect();
-            tool_stats.sort_by(|a, b| b.1.total.cmp(&a.1.total));
+            tool_stats.sort_by_key(|candidate| std::cmp::Reverse(candidate.1.total));
 
             for (name, stats) in tool_stats.iter().take(10) {
                 lines.push(format!(
@@ -1743,7 +1743,7 @@ mod tests {
 
         exec.fail_with_details(
             "Command timed out after 30_000ms".to_string(),
-            Duration::from_millis(30_000),
+            Duration::from_secs(30),
             Some(details),
         );
 
@@ -1772,11 +1772,7 @@ mod tests {
             "exit_code": 0
         });
 
-        exec.complete_with_details(
-            "Built".to_string(),
-            Duration::from_millis(1000),
-            Some(details),
-        );
+        exec.complete_with_details("Built".to_string(), Duration::from_secs(1), Some(details));
 
         assert_eq!(exec.command(), Some("cargo build"));
     }
@@ -2307,7 +2303,7 @@ mod tests {
         let mut stats = ToolStats::default();
         // High variance: 10ms and 1000ms
         stats.record(true, Duration::from_millis(10));
-        stats.record(true, Duration::from_millis(1000));
+        stats.record(true, Duration::from_secs(1));
 
         assert!(stats.has_high_variance(0.5));
     }

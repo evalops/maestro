@@ -425,16 +425,14 @@ impl ContextCompactor {
                                 }
                                 ContentBlock::ToolResult {
                                     content, is_error, ..
-                                } => {
-                                    if self.config.summarize_tool_results {
-                                        let status = if is_error.unwrap_or(false) {
-                                            "failed"
-                                        } else {
-                                            "succeeded"
-                                        };
-                                        let truncated = truncate_text(content, 150);
-                                        tool_results.push(format!("Tool {status}: {truncated}"));
-                                    }
+                                } if self.config.summarize_tool_results => {
+                                    let status = if is_error.unwrap_or(false) {
+                                        "failed"
+                                    } else {
+                                        "succeeded"
+                                    };
+                                    let truncated = truncate_text(content, 150);
+                                    tool_results.push(format!("Tool {status}: {truncated}"));
                                 }
                                 _ => {}
                             }

@@ -805,7 +805,7 @@ impl RemoteAgentTransport {
         }
     }
 
-    pub(super) async fn recv_incoming(&mut self) -> Result<RemoteIncoming, AsyncTransportError> {
+    pub(crate) async fn recv_incoming(&mut self) -> Result<RemoteIncoming, AsyncTransportError> {
         let result = self
             .event_rx
             .recv()
@@ -2763,7 +2763,7 @@ mod tests {
                         if socket.write_all(headers.as_bytes()).await.is_err() {
                             return;
                         }
-                        tokio::time::sleep(Duration::from_secs(60)).await;
+                        tokio::time::sleep(Duration::from_mins(1)).await;
                         return;
                     }
 
@@ -3634,7 +3634,7 @@ mod tests {
                         if socket.write_all(payload.as_bytes()).await.is_err() {
                             return;
                         }
-                        tokio::time::sleep(Duration::from_secs(60)).await;
+                        tokio::time::sleep(Duration::from_mins(1)).await;
                         return;
                     }
 
@@ -3846,7 +3846,7 @@ mod tests {
                 return;
             }
 
-            tokio::time::sleep(Duration::from_secs(60)).await;
+            tokio::time::sleep(Duration::from_mins(1)).await;
         });
 
         let (event_tx, event_rx) =

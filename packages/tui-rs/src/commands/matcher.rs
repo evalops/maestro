@@ -344,7 +344,7 @@ impl SlashCommandMatcher {
         }
 
         // Sort by score descending
-        matches.sort_by(|a, b| b.score.cmp(&a.score));
+        matches.sort_by_key(|candidate| std::cmp::Reverse(candidate.score));
         matches
     }
 

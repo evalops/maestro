@@ -23,7 +23,7 @@ use super::session::{SessionReader, SessionRecorder, SessionReplay};
 
 const MAX_STALE_REMOTE_REFERENCE_RETRIES: u32 = 3;
 const MIN_RECONNECT_SLEEP: Duration = Duration::from_millis(1);
-const REMOTE_COMPACTION_SILENCE_TIMEOUT: Duration = Duration::from_secs(180);
+const REMOTE_COMPACTION_SILENCE_TIMEOUT: Duration = Duration::from_mins(3);
 
 fn jittered_reconnect_delay_for_sample(
     base_delay: Duration,
@@ -87,7 +87,7 @@ impl Default for SupervisorConfig {
             max_reconnect_delay: Duration::from_secs(30),
             backoff_multiplier: 2.0,
             reconnect_jitter_factor: 0.25,
-            max_reconnect_elapsed: Duration::from_secs(600),
+            max_reconnect_elapsed: Duration::from_mins(10),
             health_check_interval: Duration::from_secs(30),
             health_check_timeout: Duration::from_secs(5),
             auto_reconnect: true,
@@ -1608,7 +1608,7 @@ mod tests {
         assert_eq!(config.max_reconnect_attempts, 5);
         assert_eq!(config.reconnect_delay, Duration::from_secs(1));
         assert!((config.reconnect_jitter_factor - 0.25).abs() < f64::EPSILON);
-        assert_eq!(config.max_reconnect_elapsed, Duration::from_secs(600));
+        assert_eq!(config.max_reconnect_elapsed, Duration::from_mins(10));
         assert!(config.auto_reconnect);
     }
 

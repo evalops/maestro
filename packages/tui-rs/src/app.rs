@@ -851,13 +851,12 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             // The timeout prevents blocking forever on input.
             if event::poll(std::time::Duration::from_millis(50))? {
                 match event::read()? {
-                    Event::Key(key) => {
+                    Event::Key(key)
                         // Only handle key press events (not release).
                         // Some terminals send both press and release events.
-                        if key.kind == KeyEventKind::Press {
+                        if key.kind == KeyEventKind::Press => {
                             self.handle_key(key.code, key.modifiers).await?;
                         }
-                    }
                     Event::Mouse(mouse) => {
                         // Handle mouse scroll wheel
                         match mouse.kind {
@@ -1095,7 +1094,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
 
     fn active_session_count(&self) -> Option<usize> {
         let sessions = self.session_manager.list_all_sessions().ok()?;
-        let cutoff = SystemTime::now().checked_sub(Duration::from_secs(60 * 60))?;
+        let cutoff = SystemTime::now().checked_sub(Duration::from_hours(1))?;
         let mut count = 0usize;
         for session in sessions {
             if let Some(modified) = session.modified {
@@ -1616,15 +1615,14 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                     self.record_model_change(model);
                 }
             }
-            FromAgent::ModelChangeFailed { model, .. } => {
+            FromAgent::ModelChangeFailed { model, .. }
                 if self
                     .pending_model_change
                     .as_ref()
                     .map(|pending| pending.model == *model)
-                    .unwrap_or(false)
-                {
-                    self.pending_model_change = None;
-                }
+                    .unwrap_or(false) =>
+            {
+                self.pending_model_change = None;
             }
             FromAgent::SessionInfo { cwd, .. } => {
                 self.state.status = Some(format!("Session in: {cwd}"));
@@ -2009,10 +2007,8 @@ Add the required fields and retry.",
                     self.update_slash_state();
                 }
             }
-            KeyCode::Char('j') if ctrl => {
-                if self.state.input().is_empty() {
-                    self.state.scroll_down(1);
-                }
+            KeyCode::Char('j') if ctrl && self.state.input().is_empty() => {
+                self.state.scroll_down(1);
             }
             KeyCode::PageUp => {
                 let step = (self.capabilities.viewport_height as usize).max(5) / 2;

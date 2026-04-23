@@ -678,7 +678,7 @@ impl ZoneLayout {
                 .iter()
                 .filter_map(|id| self.zones.get(id).map(|c| (id.clone(), c)))
                 .collect();
-            by_priority.sort_by(|a, b| b.1.priority.cmp(&a.1.priority));
+            by_priority.sort_by_key(|candidate| std::cmp::Reverse(candidate.1.priority));
 
             for (id, config) in by_priority {
                 if remaining == 0 {

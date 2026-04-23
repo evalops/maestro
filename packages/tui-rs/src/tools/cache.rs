@@ -28,7 +28,7 @@ impl Default for CacheConfig {
     fn default() -> Self {
         Self {
             max_entries: 100,
-            ttl: Duration::from_secs(60),
+            ttl: Duration::from_mins(1),
             enabled: true,
             excluded_tools: vec!["bash".to_string(), "write".to_string(), "edit".to_string()],
         }
@@ -698,7 +698,7 @@ mod tests {
     fn test_cache_config_default() {
         let config = CacheConfig::default();
         assert_eq!(config.max_entries, 100);
-        assert_eq!(config.ttl, Duration::from_secs(60));
+        assert_eq!(config.ttl, Duration::from_mins(1));
         assert!(config.enabled);
         assert!(config.excluded_tools.contains(&"bash".to_string()));
         assert!(config.excluded_tools.contains(&"write".to_string()));
@@ -756,7 +756,7 @@ mod tests {
         let result = CachedResult::new("output", false);
 
         // Should not be expired with long TTL
-        assert!(!result.is_expired(Duration::from_secs(3600)));
+        assert!(!result.is_expired(Duration::from_hours(1)));
 
         // Should be expired with zero TTL
         assert!(result.is_expired(Duration::from_secs(0)));
@@ -772,7 +772,7 @@ mod tests {
         };
 
         // Without created_at, should always be considered expired
-        assert!(result.is_expired(Duration::from_secs(3600)));
+        assert!(result.is_expired(Duration::from_hours(1)));
     }
 
     #[test]
@@ -875,14 +875,14 @@ mod tests {
     fn test_cache_config_accessor() {
         let config = CacheConfig {
             max_entries: 200,
-            ttl: Duration::from_secs(120),
+            ttl: Duration::from_mins(2),
             enabled: true,
             excluded_tools: vec!["test".to_string()],
         };
         let cache = ToolResultCache::new(config);
 
         assert_eq!(cache.config().max_entries, 200);
-        assert_eq!(cache.config().ttl, Duration::from_secs(120));
+        assert_eq!(cache.config().ttl, Duration::from_mins(2));
         assert!(cache.config().enabled);
     }
 
@@ -1614,7 +1614,7 @@ mod tests {
     #[test]
     fn test_evict_expired_leaves_fresh_entries() {
         let config = CacheConfig {
-            ttl: Duration::from_secs(60),
+            ttl: Duration::from_mins(1),
             ..Default::default()
         };
         let mut cache = ToolResultCache::new(config);
@@ -1633,7 +1633,7 @@ mod tests {
     fn test_get_updates_access_order_but_not_created_at() {
         let config = CacheConfig {
             max_entries: 2,
-            ttl: Duration::from_secs(60),
+            ttl: Duration::from_mins(1),
             ..Default::default()
         };
         let mut cache = ToolResultCache::new(config);
@@ -1769,7 +1769,7 @@ mod tests {
     fn test_cache_state_consistency_after_many_operations() {
         let config = CacheConfig {
             max_entries: 10,
-            ttl: Duration::from_secs(60),
+            ttl: Duration::from_mins(1),
             ..Default::default()
         };
         let mut cache = ToolResultCache::new(config);
@@ -2455,7 +2455,7 @@ mod tests {
 
         // Load with 60 second TTL - old entry should be skipped
         let config = CacheConfig {
-            ttl: Duration::from_secs(60),
+            ttl: Duration::from_mins(1),
             ..Default::default()
         };
         let mut cache = ToolResultCache::new(config);
@@ -2493,7 +2493,7 @@ mod tests {
         std::fs::write(&cache_file, serde_json::to_string(&entry).unwrap()).unwrap();
 
         let config = CacheConfig {
-            ttl: Duration::from_secs(60),
+            ttl: Duration::from_mins(1),
             ..Default::default()
         };
         let mut cache = ToolResultCache::new(config);
@@ -2596,7 +2596,7 @@ mod tests {
         let result = CachedResult::new("test", false);
 
         // Should not be expired with long TTL
-        assert!(!result.is_expired_by_timestamp(Duration::from_secs(3600)));
+        assert!(!result.is_expired_by_timestamp(Duration::from_hours(1)));
 
         // A freshly created entry with zero TTL is NOT expired
         // (same second, so age is 0, and 0 > 0 is false)
@@ -2627,7 +2627,7 @@ mod tests {
         };
 
         // Without timestamp, should always be considered expired
-        assert!(result.is_expired_by_timestamp(Duration::from_secs(3600)));
+        assert!(result.is_expired_by_timestamp(Duration::from_hours(1)));
     }
 
     #[test]
