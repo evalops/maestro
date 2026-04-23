@@ -1,0 +1,38 @@
+{
+	"name": "@evalops/consumer",
+	"version": "0.10.8",
+	"description": "Unified EvalOps consumer SDK for Maestro service integrations",
+	"type": "module",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"default": "./dist/index.js"
+		},
+		"./package.json": "./package.json"
+	},
+	"files": ["dist", "README.md"],
+	"scripts": {
+		"clean": "node ../../scripts/clean-paths.js dist ../../tmp/tsbuildinfo/consumer-sdk.tsbuildinfo",
+		"build": "node ../../scripts/clean-paths.js dist ../../tmp/tsbuildinfo/consumer-sdk.tsbuildinfo && node ../../scripts/ensure-dir.js ../../tmp/tsbuildinfo && tsc -p tsconfig.build.json",
+		"check": "node ../../scripts/ensure-dir.js ../../tmp/tsbuildinfo && tsc -p tsconfig.build.json --noEmit",
+		"test": "vitest --run"
+	},
+	"keywords": ["evalops", "maestro", "sdk", "consumer"],
+	"author": "EvalOps",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/evalops/maestro.git",
+		"directory": "packages/consumer-sdk"
+	},
+	"dependencies": {
+		"@evalops/contracts": "^0.10.8"
+	},
+	"devDependencies": {
+		"@types/node": "^24.10.7",
+		"typescript": "^5.9.3",
+		"vitest": "^4.0.7"
+	}
+}

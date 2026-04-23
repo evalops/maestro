@@ -23,6 +23,7 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ComposerChatRequest, ComposerMessage } from "@evalops/contracts";
+import { isAssistantMessage } from "../../agent/type-guards.js";
 import type {
 	Attachment as AgentAttachment,
 	AgentEvent,
@@ -37,22 +38,20 @@ import {
 } from "../../memory/auto-consolidation.js";
 import { createAutomaticMemoryExtractionCoordinator } from "../../memory/auto-extraction.js";
 import type { RegisteredModel } from "../../models/registry.js";
-import { createLogger } from "../../utils/logger.js";
-
-const logger = createLogger("web:chat");
-
-function getComposerTextContent(content: ComposerMessage["content"]): string {
-	if (typeof content === "string") return content;
-	if (!Array.isArray(content)) return "";
-	return content
-		.filter((block) => block.type === "text")
-		.map((block) => block.text)
-		.join("");
-}
-
+import {
+	recordComplianceAssistantAction,
+	recordComplianceToolAction,
+} from "../../services/compliance/recorder.js";
+import {
+	recordIntelligentRouterChatMetric,
+	selectIntelligentRouterModel,
+} from "../../services/intelligent-router/recorder.js";
+import { recordAssistantUsageMetric } from "../../services/usage-analytics/recorder.js";
+import { evaluateModelPolicy } from "../../services/workspace-config/policy.js";
 import { toSessionModelMetadata } from "../../session/manager.js";
 import { createRuntimeSessionSummaryUpdater } from "../../session/runtime-summary-updater.js";
 import { recordSseSkip } from "../../telemetry.js";
+import { createLogger } from "../../utils/logger.js";
 import type { WebServerContext } from "../app-context.js";
 import {
 	normalizeApprovalMode,
@@ -64,6 +63,7 @@ import { getAuthSubject } from "../authz.js";
 import { getAgentCircuitBreaker } from "../circuit-breaker.js";
 import { clientToolService } from "../client-tools-service.js";
 import { isHostedSessionManager } from "../hosted-session-manager.js";
+import { getWorkspaceConfigContext } from "../request-context.js";
 import { serverRequestManager } from "../server-request-manager.js";
 import {
 	ApiError,
@@ -81,6 +81,17 @@ import {
 	ChatRequestSchema,
 	parseAndValidateJson,
 } from "../validation.js";
+
+const logger = createLogger("web:chat");
+
+function getComposerTextContent(content: ComposerMessage["content"]): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.filter((block) => block.type === "text")
+		.map((block) => block.text)
+		.join("");
+}
 
 /**
  * Handle an incoming chat request.
@@ -275,8 +286,63 @@ export async function handleChat(
 			}
 		}
 
-		// Resolve model from registry
-		const registeredModel = await getRegisteredModel(chatReq.model);
+		// Resolve model from registry through the intelligent router. With no history,
+		// this preserves the caller's requested model; with enough data or overrides,
+		// it can select a better-scoring model and expose explicit fallbacks.
+		const routingSelection = selectIntelligentRouterModel({
+			req,
+			requestedModel: chatReq.model,
+			body: chatReq,
+		});
+		let registeredModel: RegisteredModel | undefined;
+		let lastModelError: unknown;
+		let selectedModelError: unknown;
+		let selectedModelPolicyViolation: ReturnType<
+			typeof evaluateModelPolicy
+		> | null = null;
+		for (const [index, modelInput] of routingSelection.modelInputs.entries()) {
+			try {
+				const candidateModel = await getRegisteredModel(modelInput);
+				const violation = evaluateModelPolicy(
+					getWorkspaceConfigContext()?.config,
+					{
+						provider: candidateModel.provider,
+						modelId: candidateModel.id,
+					},
+				);
+				if (violation) {
+					if (index === 0) {
+						selectedModelPolicyViolation = violation;
+					}
+					continue;
+				}
+				registeredModel = candidateModel;
+				break;
+			} catch (error) {
+				lastModelError = error;
+				if (index === 0) {
+					selectedModelError = error;
+				}
+			}
+		}
+		if (!registeredModel && selectedModelPolicyViolation) {
+			sendJson(
+				res,
+				403,
+				{
+					error: selectedModelPolicyViolation.message,
+					code: selectedModelPolicyViolation.code,
+					workspaceId: selectedModelPolicyViolation.workspaceId,
+				},
+				cors,
+				req,
+			);
+			return;
+		}
+		if (!registeredModel) {
+			throw selectedModelError ?? lastModelError;
+		}
+		const routeStartedAt = Date.now();
 
 		// Parse approval mode from request header (allows per-request override)
 		const headerApproval = normalizeApprovalMode(
@@ -615,6 +681,12 @@ export async function handleChat(
 				storeToolArgs(event.toolCallId, event.args);
 			}
 			if (event.type === "tool_execution_end") {
+				recordComplianceToolAction({
+					req,
+					event,
+					sessionId: sessionManager.getSessionId(),
+					subject,
+				});
 				if (event.toolName === "artifacts" && !event.isError) {
 					const sessionId = sessionManager.getSessionId();
 					const args = toolArgsByCallId.get(event.toolCallId) ?? {};
@@ -639,7 +711,26 @@ export async function handleChat(
 			// Handle message completion - persist to session
 			if (event.type === "message_end") {
 				sessionManager.saveMessage(event.message);
-				if (event.message.role === "assistant") {
+				if (isAssistantMessage(event.message)) {
+					recordAssistantUsageMetric({
+						req,
+						message: event.message,
+						sessionId: sessionManager.getSessionId(),
+						subject,
+					});
+					recordIntelligentRouterChatMetric({
+						taskType: routingSelection.taskType,
+						provider: registeredModel.provider,
+						model: registeredModel.id,
+						startedAt: routeStartedAt,
+						message: event.message,
+					});
+					recordComplianceAssistantAction({
+						req,
+						message: event.message,
+						sessionId: sessionManager.getSessionId(),
+						subject,
+					});
 					automaticMemoryExtraction.schedule(sessionManager.getSessionFile());
 				}
 				// Update session snapshot on every event

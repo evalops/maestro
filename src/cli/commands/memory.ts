@@ -1,5 +1,6 @@
 import chalk from "chalk";
 import { badge, muted, sectionHeading, separator } from "../../style/theme.js";
+import { fetchDownstream } from "../../utils/downstream-http.js";
 
 const REQUEST_TIMEOUT_MS = 5000;
 
@@ -78,46 +79,48 @@ async function fetchJson(
 	config: SharedMemoryConfig,
 	path: string,
 ): Promise<unknown> {
-	const controller = new AbortController();
-	const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-	try {
-		const response = await fetch(`${config.baseUrl}${path}`, {
+	const response = await fetchDownstream(
+		`${config.baseUrl}${path}`,
+		{
 			headers: buildHeaders(config),
-			signal: controller.signal,
-		});
-		const text = await response.text();
-		if (!response.ok) {
-			throw new Error(
-				`Shared memory error ${response.status}: ${text || response.statusText}`,
-			);
-		}
-		return text ? (JSON.parse(text) as unknown) : {};
-	} finally {
-		clearTimeout(timeout);
+		},
+		{
+			serviceName: "shared memory service",
+			failureMode: "required",
+			timeoutMs: REQUEST_TIMEOUT_MS,
+		},
+	);
+	const text = await response.text();
+	if (!response.ok) {
+		throw new Error(
+			`Shared memory error ${response.status}: ${text || response.statusText}`,
+		);
 	}
+	return text ? (JSON.parse(text) as unknown) : {};
 }
 
 async function fetchText(
 	config: SharedMemoryConfig,
 	path: string,
 ): Promise<string> {
-	const controller = new AbortController();
-	const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-	try {
-		const response = await fetch(`${config.baseUrl}${path}`, {
+	const response = await fetchDownstream(
+		`${config.baseUrl}${path}`,
+		{
 			headers: buildHeaders(config),
-			signal: controller.signal,
-		});
-		const text = await response.text();
-		if (!response.ok) {
-			throw new Error(
-				`Shared memory error ${response.status}: ${text || response.statusText}`,
-			);
-		}
-		return text;
-	} finally {
-		clearTimeout(timeout);
+		},
+		{
+			serviceName: "shared memory service",
+			failureMode: "required",
+			timeoutMs: REQUEST_TIMEOUT_MS,
+		},
+	);
+	const text = await response.text();
+	if (!response.ok) {
+		throw new Error(
+			`Shared memory error ${response.status}: ${text || response.statusText}`,
+		);
 	}
+	return text;
 }
 
 function printCapabilities(cap?: CapabilitiesResponse): void {

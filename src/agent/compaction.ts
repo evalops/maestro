@@ -2161,7 +2161,9 @@ export interface CompactionAgent {
 	): Promise<AssistantMessage>;
 	replaceMessages(messages: AppMessage[]): void;
 	appendMessage?(message: AppMessage): void;
-	clearTransientRunState?(): void;
+	clearTransientRunState?(options?: {
+		clearSessionContextCache?: boolean;
+	}): void;
 }
 
 /**
@@ -2564,7 +2566,7 @@ export async function performCompaction(params: {
 		...filteredKeep,
 	];
 	agent.replaceMessages(newMessages);
-	agent.clearTransientRunState?.();
+	agent.clearTransientRunState?.({ clearSessionContextCache: true });
 	sessionManager.saveMessage(summaryMessage);
 	sessionManager.saveMessage(resumeMessage);
 	await runPostCompactionCleanup({

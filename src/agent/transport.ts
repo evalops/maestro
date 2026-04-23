@@ -456,6 +456,7 @@ export class ProviderTransport implements AgentTransport {
 			let steeringAfterTools: QueuedMessage<AppMessage>[] | null = null;
 			let pendingNextTurn = false;
 			let encounteredError = false;
+			let firstModelOutputSeen = false;
 
 			const currentMessages = cfg.preprocessMessages
 				? await cfg.preprocessMessages(
@@ -502,6 +503,9 @@ export class ProviderTransport implements AgentTransport {
 				}
 				streamAttempt++;
 
+				cfg.queryProfiler?.checkpoint("model:request:start", {
+					attempt: streamAttempt,
+				});
 				const stream = createProviderStream(
 					model,
 					currentContext,
@@ -527,6 +531,10 @@ export class ProviderTransport implements AgentTransport {
 							event.type === "thinking_delta" ||
 							event.type === "toolcall_delta"
 						) {
+							if (!firstModelOutputSeen) {
+								cfg.queryProfiler?.checkpoint("model:first-token");
+								firstModelOutputSeen = true;
+							}
 							if (currentAssistantMessage) {
 								yield {
 									type: "message_update",
@@ -538,6 +546,10 @@ export class ProviderTransport implements AgentTransport {
 						}
 
 						if (event.type === "toolcall_end") {
+							if (!firstModelOutputSeen) {
+								cfg.queryProfiler?.checkpoint("model:first-token");
+								firstModelOutputSeen = true;
+							}
 							const rawArgs = event.toolCall.arguments;
 							const normalizedArgs =
 								rawArgs &&
@@ -566,6 +578,7 @@ export class ProviderTransport implements AgentTransport {
 									if (credential?.type !== "anthropic-oauth") {
 										try {
 											trackUsage({
+												sessionId: cfg.session?.id,
 												provider: model.provider,
 												model: model.id,
 												tokensInput: usage.input || 0,
@@ -1033,6 +1046,13 @@ export class ProviderTransport implements AgentTransport {
 			}
 
 			hasMoreToolCalls = encounteredError ? false : pendingNextTurn;
+			if (encounteredError) {
+				cfg.queryProfiler?.terminal("turn:error");
+			} else if (!hasMoreToolCalls) {
+				cfg.queryProfiler?.terminal("turn:complete", {
+					tool_results: toolResults.length,
+				});
+			}
 		}
 	}
 }

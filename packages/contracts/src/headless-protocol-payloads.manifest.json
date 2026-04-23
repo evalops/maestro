@@ -1114,7 +1114,8 @@
 					"kind": "union",
 					"variants": [
 						{ "kind": "literal", "value": "lagged" },
-						{ "kind": "literal", "value": "replay_gap" }
+						{ "kind": "literal", "value": "replay_gap" },
+						{ "kind": "literal", "value": "restored_from_snapshot" }
 					]
 				},
 				"snapshot": {

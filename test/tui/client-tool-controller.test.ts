@@ -85,6 +85,11 @@ describe("ClientToolController", () => {
 							{
 								label: "React",
 								description: "Use React for the frontend.",
+								preview: {
+									kind: "markdown",
+									title: "React empty state",
+									body: "### No runs yet\nStart a run to see traces here.",
+								},
 							},
 							{
 								label: "Vue",
@@ -112,6 +117,10 @@ describe("ClientToolController", () => {
 
 		await Promise.resolve();
 		expect(harness.getModal().options.description).toContain("Which stack");
+		expect(harness.getModal().options.description).toContain(
+			"Preview (markdown: React empty state)",
+		);
+		expect(harness.getModal().options.description).toContain("### No runs yet");
 		harness.getModal().options.onSubmit("1");
 
 		await Promise.resolve();

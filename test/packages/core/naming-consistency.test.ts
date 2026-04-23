@@ -6,6 +6,10 @@ import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import {
+	getGlobalInstallCommand,
+	getPackageName,
+} from "../../../src/package-metadata.js";
 
 const ROOT = join(__dirname, "../../..");
 
@@ -62,10 +66,11 @@ describe("Naming Consistency", () => {
 	});
 
 	describe("package.json names", () => {
-		it("root package uses the maestro name and not composer", () => {
+		it("root package metadata stays aligned with the published package name", () => {
 			const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf-8"));
-			expect(pkg.name).toContain("maestro");
-			expect(pkg.name).not.toContain("composer");
+			expect(pkg.name).toMatch(/^@[^/]+\/maestro$/);
+			expect(pkg.name).toBe(getPackageName());
+			expect(getGlobalInstallCommand("npm")).toContain(pkg.name);
 		});
 
 		it("web package is @evalops/maestro-web", () => {

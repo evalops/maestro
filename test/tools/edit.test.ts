@@ -10,6 +10,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentToolResult } from "../../src/agent/types.js";
+import { collectDiagnostics } from "../../src/lsp/index.js";
+import type { LspDiagnostic } from "../../src/lsp/types.js";
+import { runValidatorsOnSuccess } from "../../src/safety/safe-mode.js";
 import { editTool } from "../../src/tools/edit.js";
 
 // Mock the safe-mode module to avoid plan mode checks in tests
@@ -35,6 +38,18 @@ function getTextOutput(result: AgentToolResult<unknown>): string {
 			.map((c) => c.text)
 			.join("\n") || ""
 	);
+}
+
+function diagnostic(message: string, line: number): LspDiagnostic {
+	return {
+		message,
+		severity: 1,
+		source: "typescript",
+		range: {
+			start: { line, character: 0 },
+			end: { line, character: 1 },
+		},
+	};
 }
 
 describe("edit tool", () => {
@@ -571,6 +586,47 @@ describe("edit tool", () => {
 					path: filePath,
 				}),
 			).rejects.toThrow("Must provide");
+		});
+	});
+
+	describe("LSP diagnostic deltas", () => {
+		it("reports and validates only newly introduced diagnostics", async () => {
+			const filePath = join(testDir, "delta.ts");
+			writeFileSync(filePath, "const value = 1;\n");
+			const existing = diagnostic("pre-existing edit diagnostic", 0);
+			const introduced = diagnostic("new edit diagnostic", 1);
+
+			vi.mocked(collectDiagnostics)
+				.mockResolvedValueOnce({ [filePath]: [existing] })
+				.mockResolvedValueOnce({ [filePath]: [existing, introduced] });
+
+			const result = await editTool.execute("edit-delta", {
+				path: filePath,
+				oldText: "const value = 1;",
+				newText: "const value: string = 1;",
+			});
+
+			expect(result.isError).toBeFalsy();
+			const output = getTextOutput(result);
+			expect(output).toContain("new edit diagnostic");
+			expect(output).not.toContain("pre-existing edit diagnostic");
+			expect(output).toContain("Diagnostic delta: 1 introduced, 0 repaired");
+			expect(
+				(
+					result.details as {
+						diagnosticDelta?: {
+							introducedCount: number;
+							repair: { shouldFollowUp: boolean };
+						};
+					}
+				).diagnosticDelta,
+			).toMatchObject({
+				introducedCount: 1,
+				repair: { shouldFollowUp: true },
+			});
+			expect(runValidatorsOnSuccess).toHaveBeenLastCalledWith([filePath], {
+				[filePath]: [introduced],
+			});
 		});
 	});
 

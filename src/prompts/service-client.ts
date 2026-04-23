@@ -1,11 +1,9 @@
 import {
 	type PlatformServiceConfig,
-	fetchWithRetry,
 	getEnvValue,
 	postPlatformConnect,
 	resolveOrganizationId,
 	resolvePlatformServiceConfig,
-	resolvePlatformToken,
 	trimString,
 } from "../platform/client.js";
 import {
@@ -14,6 +12,7 @@ import {
 	platformConnectMethodPath,
 	platformConnectServicePath,
 } from "../platform/core-services.js";
+import { fetchDownstream } from "../utils/downstream-http.js";
 import { createLogger } from "../utils/logger.js";
 import type {
 	ResolvePromptTemplateInput,
@@ -86,7 +85,7 @@ function hasConfiguredPromptsBaseUrl(): boolean {
 	);
 }
 
-async function warnPromptsServiceMisconfiguration(): Promise<void> {
+function warnPromptsServiceMisconfiguration(): void {
 	if (!hasConfiguredPromptsBaseUrl()) {
 		return;
 	}
@@ -96,11 +95,9 @@ async function warnPromptsServiceMisconfiguration(): Promise<void> {
 		);
 		return;
 	}
-	if (!(await resolvePlatformToken(PROMPTS_TOKEN_ENV_VARS))) {
-		logger.warn(
-			"Prompts service configured without access token; retaining bundled prompts",
-		);
-	}
+	logger.warn(
+		"Prompts service configured without access token; retaining bundled prompts",
+	);
 }
 
 async function resolvePromptsServiceConfig(): Promise<PromptsServiceConfig | null> {
@@ -127,7 +124,7 @@ async function resolvePromptsServiceConfig(): Promise<PromptsServiceConfig | nul
 		requireToken: true,
 	});
 	if (!config) {
-		await warnPromptsServiceMisconfiguration();
+		warnPromptsServiceMisconfiguration();
 		return null;
 	}
 
@@ -179,10 +176,10 @@ async function resolveViaPlatformConnect(
 		{
 			name,
 			label: trimString(input.label) ?? "production",
-			surface: trimString(input.surface),
 		},
 		{
 			serviceName: "prompts service",
+			failureMode: "optional",
 			timeoutMs: config.timeoutMs,
 			maxAttempts: config.maxAttempts,
 		},
@@ -211,14 +208,15 @@ async function resolveViaLegacyRest(
 		url.searchParams.set("surface", trimString(input.surface)!);
 	}
 
-	const response = await fetchWithRetry(
-		url.toString(),
+	const response = await fetchDownstream(
+		url,
 		{
 			method: "GET",
 			headers: buildHeaders(config),
 		},
 		{
 			serviceName: "prompts service",
+			failureMode: "optional",
 			timeoutMs: config.timeoutMs,
 			maxAttempts: config.maxAttempts,
 		},

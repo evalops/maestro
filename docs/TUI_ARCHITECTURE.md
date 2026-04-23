@@ -148,8 +148,8 @@ private wrapCache = new Map<number, Map<string, string[]>>();
 |----------------|---------|
 | `tui-renderer.ts` | Main orchestrator (~2,550 LOC) |
 | `tui-renderer/*.ts` | Extracted controllers + setup modules |
-| `commands/` | Slash command handling + extracted handlers |
-| `commands/subcommands/` | Command suite subcommand handlers (`/ss`, `/diag`, etc.) |
+| `commands/` | Slash command catalog, registry adapter, and handlers |
+| `commands/subcommands/` | Shared command-suite subcommand definitions and routing helpers |
 | `selectors/` | Modal selection UIs (theme, model, etc.) |
 | `session/` | Session management views |
 | `approval/` | Tool approval modal |
@@ -269,16 +269,14 @@ class AgentEventRouter {
 
 ### Slash Commands
 
-Commands are registered in `commands/registry.ts`:
+Commands are declared in catalog files and assembled by `commands/registry.ts`:
 
 ```typescript
-// Registration
-buildEntry(
-  { name: "theme", description: "Change color theme", tags: ["ui"] },
-  equals("theme"),
-  handlers.theme,
-  createContext,
-)
+// Standalone command metadata
+exact("theme", "theme", {
+  description: "Change color theme",
+  tags: ["ui"],
+});
 
 // Handler receives context
 handleTheme(context: CommandExecutionContext) {
@@ -288,7 +286,7 @@ handleTheme(context: CommandExecutionContext) {
 
 Commands support:
 - Arguments with validation
-- Command suite subcommands (`/ss new`, `/ss list`)
+- Command-suite subcommands (`/ss new`, `/ss list`)
 - Autocomplete
 - Help generation
 
@@ -367,6 +365,11 @@ tui.setFocus(selectList);   // Modal mode: selector has focus
 
 | File | Purpose |
 |------|---------|
+| `command-catalog.ts` | Flat metadata catalog for standalone slash commands |
+| `command-registry-adapter.ts` | Builds executable registry entries from catalog metadata |
+| `command-suite-catalog.ts` | Parent command-suite metadata (`/ss`, `/diag`, `/ui`, etc.) |
+| `command-suite-handlers.ts` | Command-suite subcommand routing |
+| `subcommands/*.ts` | Shared subcommand definitions and completion metadata |
 | `safety-handlers.ts` | /approvals, /plan command handlers |
 | `utility-handlers.ts` | /copy, /init, /report handlers |
 | `guardian-handlers.ts` | /guardian command handler |
@@ -374,8 +377,6 @@ tui.setFocus(selectList);   // Modal mode: selector has focus
 | `otel-handlers.ts` | /otel command handler |
 | `mcp-handlers.ts` | /mcp command handler |
 | `composer-handlers.ts` | /composer config handler |
-| `subcommands/session-commands.ts` | `/ss` subcommand routing |
-| `subcommands/diag-commands.ts` | `/diag` subcommand routing |
 
 ## Performance Characteristics
 

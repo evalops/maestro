@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import type { Container, TUI } from "@evalops/tui";
-import type { Question } from "../../tools/ask-user.js";
+import type { Question, QuestionOption } from "../../tools/ask-user.js";
 import { extractQuestions, parseUserResponse } from "../../tools/ask-user.js";
 import type { CustomEditor } from "../custom-editor.js";
 import {
@@ -534,14 +534,15 @@ function formatAskUserPrompt(
 	total: number,
 	queueLength: number,
 ): string {
+	const optionLines = question.options.flatMap((option, optionIndex) => [
+		`${optionIndex + 1}. ${option.label}: ${option.description}`,
+		...formatAskUserOptionPreview(option),
+	]);
 	const lines = [
 		`Question ${index + 1} of ${total}`,
 		`[${question.header}] ${question.question}`,
 		"",
-		...question.options.map(
-			(option, optionIndex) =>
-				`${optionIndex + 1}. ${option.label}: ${option.description}`,
-		),
+		...optionLines,
 		`${question.options.length + 1}. Other: type your own answer directly`,
 		"",
 		question.multiSelect
@@ -554,6 +555,19 @@ function formatAskUserPrompt(
 		lines.push("", queueSuffix);
 	}
 	return lines.join("\n");
+}
+
+function formatAskUserOptionPreview(option: QuestionOption): string[] {
+	if (!option.preview) {
+		return [];
+	}
+	const title = option.preview.title ? `: ${option.preview.title}` : "";
+	const lines = option.preview.body.split(/\r?\n/);
+	const bodyLines = lines.slice(0, 12).map((line) => `   ${line}`);
+	if (lines.length > bodyLines.length) {
+		bodyLines.push("   ...");
+	}
+	return [`   Preview (${option.preview.kind}${title})`, ...bodyLines];
 }
 
 function normalizeAskUserAnswer(answer: string | string[]): {

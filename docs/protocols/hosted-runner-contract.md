@@ -40,6 +40,7 @@ flags or environment variables, but the resolved values are the contract.
 | Listen address | `--listen`, `--host`, `--port`, `MAESTRO_HOSTED_RUNNER_LISTEN`, `MAESTRO_HOSTED_RUNNER_HOST`, `MAESTRO_HOSTED_RUNNER_PORT`, `PORT` | yes |
 | Owner generation | `--owner-instance-id`, `MAESTRO_REMOTE_RUNNER_OWNER_INSTANCE_ID`, `REMOTE_RUNNER_OWNER_INSTANCE_ID` | required when Platform fences owners |
 | Snapshot root | `--snapshot-root`, `MAESTRO_REMOTE_RUNNER_SNAPSHOT_ROOT`, `REMOTE_RUNNER_SNAPSHOT_ROOT` | optional |
+| Restore manifest | `MAESTRO_REMOTE_RUNNER_RESTORE_MANIFEST`, `REMOTE_RUNNER_RESTORE_MANIFEST` | optional |
 | Workspace id | `--workspace-id`, `MAESTRO_REMOTE_RUNNER_WORKSPACE_ID`, `MAESTRO_WORKSPACE_ID` | optional |
 | Agent run id | `--agent-run-id`, `MAESTRO_AGENT_RUN_ID` | optional |
 | Existing Maestro session | `--maestro-session-id`, `MAESTRO_SESSION_ID` | optional |
@@ -153,6 +154,12 @@ The lifecycle is:
 8. Maestro stops active headless work, flushes session state, writes a local
    snapshot manifest, and reports drain status.
 9. Platform uploads artifacts if required and terminates the provider instance.
+10. If Platform starts a replacement runner from uploaded artifacts, it passes
+    the restored local manifest path through the restore-manifest field. Maestro
+    validates the manifest against the workspace root, seeds the runtime cursor
+    and last snapshot state, emits a `restored_from_snapshot` reset event, and
+    accepts fresh controller/viewer attachments only when the runtime flush was
+    completed.
 
 Drain uses:
 
@@ -161,9 +168,12 @@ POST /.well-known/evalops/remote-runner/drain
 ```
 
 The manifest protocol is
-`evalops.remote-runner.snapshot-manifest.v1`. Maestro writes a local manifest;
-it does not upload to GCS, S3, Modal storage, Daytona storage, or any other
-provider store. Upload and retention are Platform responsibilities.
+`evalops.remote-runner.snapshot-manifest.v1`. Both Rust-hosted and
+TypeScript-hosted drain paths write this same local manifest envelope, including
+the runtime flush status, workspace export contract, and headless runtime
+snapshot. Maestro does not upload to GCS, S3, Modal storage, Daytona storage, or
+any other provider store. Upload, retention, workspace artifact hydration, and
+choosing which manifest should be restored are Platform responsibilities.
 
 ## Rust Hosted Surface
 
@@ -172,14 +182,33 @@ The Rust crate exposes a first hosted-runner library surface through
 runtime for tests and local adapters, exposes the identity/readiness/drain
 contract, serves the replayable headless attach endpoints, enforces
 workspace-root containment for file, watch, and command utility operations, and
-writes the local drain manifest. It deliberately keeps provider scheduling and
-artifact upload out of Rust; Platform still owns those concerns.
+writes the local drain manifest with the requested workspace export paths. It
+deliberately keeps provider scheduling and artifact upload out of Rust;
+Platform still owns those concerns.
+
+The Rust surface can also start from a previously written snapshot manifest via
+`MAESTRO_REMOTE_RUNNER_RESTORE_MANIFEST`, `REMOTE_RUNNER_RESTORE_MANIFEST`, or
+`HostedRunnerConfig::with_restore_manifest_path`. Relative paths resolve under
+the workspace root. Startup rejects manifests with an unsupported protocol
+version or workspace export paths that escape the current workspace. Restore is
+a runtime-state seed: it preserves the logical Maestro session id, cursor,
+last init, and snapshot state for reconnecting clients, then emits a reset
+snapshot with reason `restored_from_snapshot`. Manifests whose
+`runtime.flush_status` is `failed` or `skipped` restore into a not-ready
+inspection state: identity reports `ready=false`, `/readyz` and attach routes
+return `runtime_not_ready`, and the runtime snapshot surfaces the restore
+problem in `last_status`, `last_error`, and `last_error_type`. It does not
+hydrate files from cloud storage; the provider must mount or download workspace
+artifacts before starting Maestro.
 
 The Rust surface now has an opt-in hosted conformance adapter. The adapter
 spawns a deterministic fixture binary, attaches over HTTP/SSE, and exercises the
 same shared scenarios as the TypeScript in-process host while the Rust server
 owns leases, replay, snapshots, workspace utilities, heartbeat, and disconnect
-behavior. It is not yet the final `maestro hosted-runner` CLI wrapper.
+behavior. The required hosted adapter also covers the drain handoff shape:
+manifest response, persisted snapshot file, export-path recording, and
+post-drain mutation rejection. It is not yet the final `maestro hosted-runner`
+CLI wrapper.
 
 ## Error Vocabulary
 

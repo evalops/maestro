@@ -216,6 +216,57 @@ describe("HeadlessInProcessHost", () => {
 		stream.close();
 	});
 
+	it("counts fleet run errors once when retry companion events fire", async () => {
+		const fakeAgent = new FakeAgent();
+		tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-in-process-"));
+		const sessionManager = new SessionManager(false, undefined, {
+			sessionDir: tempDir,
+		});
+		const runtimeService = new HeadlessRuntimeService();
+		const host = new HeadlessInProcessHost(runtimeService);
+
+		const snapshot = await host.ensureSession({
+			scope_key: "anon",
+			registeredModel: TEST_MODEL,
+			thinkingLevel: "off",
+			approvalMode: "prompt",
+			context: {
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			},
+			sessionManager,
+		});
+
+		fakeAgent.emit({
+			type: "agent_end",
+			messages: [],
+			stopReason: "error",
+		});
+		fakeAgent.emit({
+			type: "error",
+			message: "provider overloaded",
+		});
+		fakeAgent.emit({
+			type: "auto_retry_end",
+			success: false,
+			attempt: 3,
+			finalError: "provider overloaded",
+		});
+
+		const fleet = runtimeService.getFleetDashboardSnapshot();
+		const instance = fleet.instances.find(
+			(item) => item.sessionId === snapshot.session_id,
+		);
+
+		expect(instance?.errorStats).toMatchObject({
+			errors: 1,
+			runs: 1,
+			toolErrors: 0,
+			toolExecutions: 0,
+			errorRate: 1,
+		});
+		expect(fleet.summary.errorRate).toBe(1);
+	});
+
 	it("disconnects explicit in-process connections and clears controller lease", async () => {
 		const fakeAgent = new FakeAgent();
 		tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-in-process-"));

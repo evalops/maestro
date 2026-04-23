@@ -1,0 +1,38 @@
+{
+	"name": "@evalops/consumer",
+	"projectType": "library",
+	"root": "packages/consumer-sdk",
+	"sourceRoot": "packages/consumer-sdk/src",
+	"implicitDependencies": ["contracts"],
+	"targets": {
+		"clean": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "cd packages/consumer-sdk && bun run clean",
+				"forwardAllArgs": true
+			}
+		},
+		"build": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "cd packages/consumer-sdk && bun run build",
+				"forwardAllArgs": true
+			},
+			"dependsOn": ["^build"]
+		},
+		"check": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "cd packages/consumer-sdk && bun run check",
+				"forwardAllArgs": true
+			}
+		},
+		"test": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "cd packages/consumer-sdk && bun run test",
+				"forwardAllArgs": true
+			}
+		}
+	}
+}

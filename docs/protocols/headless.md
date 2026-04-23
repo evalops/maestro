@@ -96,15 +96,21 @@ snapshot manifest. The manifest directory comes from `--snapshot-root`,
   "status": "drained",
   "manifest_path": "/workspace/.maestro/runner-snapshots/mrs_123-2026-04-23T00_00_00_000Z.json",
   "manifest": {
-    "manifest_version": "evalops.remote-runner.snapshot-manifest.v1",
+    "protocol_version": "evalops.remote-runner.snapshot-manifest.v1",
     "runner_session_id": "mrs_123",
-    "owner_instance_id": "pod_123",
+    "workspace_id": "workspace_123",
+    "agent_run_id": "run_123",
     "maestro_session_id": "session_123",
+    "reason": "ttl_expired",
+    "requested_by": "platform",
+    "created_at": "2026-04-23T00:00:00.000Z",
     "workspace_root": "/workspace",
     "runtime": {
       "flush_status": "completed",
       "session_id": "session_123",
-      "session_file": "/workspace/.maestro/agent/sessions/session.jsonl"
+      "session_file": "/workspace/.maestro/agent/sessions/session.jsonl",
+      "protocol_version": "2026-04-02",
+      "cursor": 42
     },
     "workspace_export": {
       "mode": "local_path_contract",
@@ -116,6 +122,28 @@ snapshot manifest. The manifest directory comes from `--snapshot-root`,
           "type": "directory"
         }
       ]
+    },
+    "snapshot": {
+      "protocolVersion": "2026-04-02",
+      "session_id": "session_123",
+      "cursor": 42,
+      "last_init": null,
+      "state": {
+        "connection_count": 0,
+        "subscriber_count": 0,
+        "connections": [],
+        "pending_approvals": [],
+        "pending_client_tools": [],
+        "pending_mcp_elicitations": [],
+        "pending_user_inputs": [],
+        "pending_tool_retries": [],
+        "tracked_tools": [],
+        "active_tools": [],
+        "active_utility_commands": [],
+        "active_file_watches": [],
+        "is_ready": true,
+        "is_responding": false
+      }
     }
   }
 }
@@ -127,6 +155,39 @@ as a partial handoff record, stop sending attach traffic, and decide whether to
 retry drain or terminate the pod. Maestro does not upload to GCS or require a
 Cloud Storage mount; Platform/deploy own artifact upload, retention, and any
 future resume controller behavior.
+
+The runtime flush status is the field that controls restore readiness:
+`completed` is attachable, `failed` is an interrupted restore, and `skipped`
+means no runtime activity was persisted. Older local manifests that used
+`interrupted` for the runtime flush status are treated as `failed`.
+
+## Hosted Remote-Runner Restore
+
+When Platform has already restored workspace artifacts and a prior snapshot
+manifest into the workspace, the Rust hosted runner can seed its runtime state
+from that manifest at startup:
+
+- `MAESTRO_REMOTE_RUNNER_RESTORE_MANIFEST`
+- `REMOTE_RUNNER_RESTORE_MANIFEST`
+
+Relative manifest paths resolve under `MAESTRO_WORKSPACE_ROOT`. Startup
+validates the manifest protocol and workspace export paths against the current
+workspace before binding the HTTP server. A restored runner keeps the new
+`runner_session_id` for Platform identity, restores the logical Maestro session
+id and cursor from the manifest, returns the restored state from
+`GET /api/headless/sessions/:id/state`, and emits an initial SSE reset envelope
+with reason `restored_from_snapshot`.
+
+Only manifests with `runtime.flush_status=completed` report `ready=true` and
+accept new controller/viewer attachments. `failed` or `skipped` manifests still
+preserve the logical session id, cursor, and last snapshot for inspection, but
+identity and runtime snapshots stay not-ready with `last_error` populated so
+Platform can retry, quarantine, or terminate without silently attaching clients
+to a partial restore.
+
+Restore is deliberately local and provider-neutral. Maestro does not download
+artifacts, pick a provider object, or decide retention policy; Platform/deploy
+must hydrate the workspace and pass the manifest path before the runner starts.
 
 ## Handshake
 
@@ -381,9 +442,6 @@ The shared publisher lives in `@evalops/ai/telemetry` and currently emits:
 - `maestro.events.sandbox_violation`
 - `maestro.events.firewall_block`
 - `maestro.events.tool_call.attempted|completed`
-- `maestro.events.prompt_variant.selected`
-- `maestro.events.skill.invoked|succeeded|failed`
-- `maestro.events.eval.scored`
 
 `MAESTRO_TELEMETRY` continues to control local training and diagnostic
 telemetry. Audit-bus publishing is controlled separately with

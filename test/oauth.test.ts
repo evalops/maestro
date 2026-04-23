@@ -288,7 +288,10 @@ describe("OAuth Index", () => {
 			const fetchMock = vi.fn().mockResolvedValue(
 				new Response(JSON.stringify({ error: "upstream_error" }), {
 					status: 502,
-					headers: { "Content-Type": "application/json" },
+					headers: {
+						"Content-Type": "application/json",
+						"Retry-After-Ms": "1",
+					},
 				}),
 			);
 			vi.stubGlobal("fetch", fetchMock);
@@ -306,7 +309,7 @@ describe("OAuth Index", () => {
 			await logout("evalops");
 
 			expect(hasOAuthCredentials("evalops")).toBe(false);
-			expect(fetchMock).toHaveBeenCalledTimes(1);
+			expect(fetchMock).toHaveBeenCalledTimes(2);
 		});
 	});
 
@@ -404,6 +407,59 @@ describe("OAuth Index", () => {
 			expect(init?.headers).toEqual({
 				"Content-Type": "application/json",
 			});
+			expect(init?.body).toBe(
+				JSON.stringify({ refresh_token: "old-evalops-refresh" }),
+			);
+		});
+
+		it("retries transient EvalOps refresh failures", async () => {
+			const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+			let calls = 0;
+			const fetchMock = vi.fn(async () => {
+				calls += 1;
+				if (calls === 1) {
+					return new Response(JSON.stringify({ error: "upstream_error" }), {
+						status: 503,
+						headers: {
+							"Content-Type": "application/json",
+							"Retry-After-Ms": "1",
+						},
+					});
+				}
+				return new Response(
+					JSON.stringify({
+						access_token: "retried-evalops-access",
+						expires_at: expiresAt,
+						organization_id: "org_123",
+						refresh_token: "retried-evalops-refresh",
+						scopes: ["llm_gateway:invoke"],
+					}),
+					{
+						status: 200,
+						headers: { "Content-Type": "application/json" },
+					},
+				);
+			});
+			vi.stubGlobal("fetch", fetchMock);
+
+			saveOAuthCredentials("evalops", {
+				type: "oauth",
+				access: "expired-access",
+				refresh: "old-evalops-refresh",
+				expires: Date.now() - 1000,
+				metadata: {
+					identityBaseUrl: "https://identity.evalops.test",
+					organizationId: "org_123",
+				},
+			});
+
+			await expect(getOAuthToken("evalops")).resolves.toBe(
+				"retried-evalops-access",
+			);
+
+			expect(fetchMock).toHaveBeenCalledTimes(2);
+			const [url, init] = fetchMock.mock.calls[1] ?? [];
+			expect(url).toBe("https://identity.evalops.test/v1/tokens/refresh");
 			expect(init?.body).toBe(
 				JSON.stringify({ refresh_token: "old-evalops-refresh" }),
 			);

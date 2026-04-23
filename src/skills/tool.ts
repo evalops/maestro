@@ -16,6 +16,11 @@ import {
 	loadSkills,
 	searchSkills,
 } from "./loader.js";
+import {
+	type SkillsServiceConfig,
+	loadSkillsFromService,
+	resolveSkillsServiceConfig,
+} from "./service-client.js";
 
 const logger = createLogger("skills:tool");
 
@@ -39,17 +44,23 @@ const SkillToolSchema = Type.Object({
  */
 export function createSkillTool(
 	workspaceDir: string,
-	options?: { includeSystem?: boolean },
+	options?: {
+		includeSystem?: boolean;
+		includeService?: boolean;
+		skillsService?: SkillsServiceConfig | false;
+	},
 ): AgentTool {
 	// Load skills once when tool is created
-	let cachedSkills: LoadedSkill[] | null = null;
+	let cachedSkills: Promise<LoadedSkill[]> | null = null;
 
-	const getSkills = (): LoadedSkill[] => {
+	const getSkills = async (): Promise<LoadedSkill[]> => {
 		if (cachedSkills === null) {
-			const result = loadSkills(workspaceDir, options);
-			cachedSkills = result.skills;
+			cachedSkills = loadSkillsForTool(workspaceDir, options).catch((error) => {
+				cachedSkills = null;
+				throw error;
+			});
 		}
-		return cachedSkills;
+		return await cachedSkills;
 	};
 
 	return {
@@ -80,7 +91,22 @@ Available skills can be listed by calling this tool with skill="list".`,
 				};
 			}
 
-			const skills = getSkills();
+			let skills: LoadedSkill[];
+			try {
+				skills = await getSkills();
+			} catch (error) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Error loading skills: ${
+								error instanceof Error ? error.message : String(error)
+							}`,
+						},
+					],
+					isError: true,
+				};
+			}
 
 			// Handle "list" command
 			if (skillName.toLowerCase() === "list") {
@@ -169,6 +195,63 @@ Available skills can be listed by calling this tool with skill="list".`,
 			};
 		},
 	};
+}
+
+function mergeSkills(
+	localSkills: LoadedSkill[],
+	serviceSkills: LoadedSkill[],
+): LoadedSkill[] {
+	const skillMap = new Map<string, LoadedSkill>();
+	for (const skill of localSkills) {
+		skillMap.set(skill.name.toLowerCase(), skill);
+	}
+	for (const skill of serviceSkills) {
+		const existing = skillMap.get(skill.name.toLowerCase());
+		if (existing) {
+			logger.debug("Skills service skill overrides local skill", {
+				name: skill.name,
+				overridden: existing.sourceType,
+			});
+		}
+		skillMap.set(skill.name.toLowerCase(), skill);
+	}
+	return Array.from(skillMap.values());
+}
+
+async function loadSkillsForTool(
+	workspaceDir: string,
+	options?: {
+		includeSystem?: boolean;
+		includeService?: boolean;
+		skillsService?: SkillsServiceConfig | false;
+	},
+): Promise<LoadedSkill[]> {
+	const result = loadSkills(workspaceDir, options);
+	if (options?.includeService === false) {
+		return result.skills;
+	}
+
+	const config = resolveSkillsServiceConfig(options?.skillsService);
+	if (!config) {
+		return result.skills;
+	}
+
+	try {
+		const serviceSkills = await loadSkillsFromService(config);
+		return mergeSkills(result.skills, serviceSkills);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		if (config.failureMode === "required") {
+			throw new Error(`Skills service unavailable: ${message}`);
+		}
+		logger.warn(
+			"Failed to load skills from skills service; using local skills",
+			{
+				error: message,
+			},
+		);
+		return result.skills;
+	}
 }
 
 /**

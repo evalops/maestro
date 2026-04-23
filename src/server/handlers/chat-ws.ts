@@ -7,6 +7,7 @@
 import type { IncomingMessage } from "node:http";
 import type { ComposerChatRequest, ComposerMessage } from "@evalops/contracts";
 import type { RawData, WebSocket } from "ws";
+import { isAssistantMessage } from "../../agent/type-guards.js";
 import type {
 	Attachment as AgentAttachment,
 	AgentEvent,
@@ -21,6 +22,7 @@ import {
 } from "../../memory/auto-consolidation.js";
 import { createAutomaticMemoryExtractionCoordinator } from "../../memory/auto-extraction.js";
 import type { RegisteredModel } from "../../models/registry.js";
+import { recordAssistantUsageMetric } from "../../services/usage-analytics/recorder.js";
 import { toSessionModelMetadata } from "../../session/manager.js";
 import { createRuntimeSessionSummaryUpdater } from "../../session/runtime-summary-updater.js";
 import { createLogger } from "../../utils/logger.js";
@@ -764,7 +766,13 @@ export function handleChatWebSocket(
 
 				if (event.type === "message_end") {
 					sessionManager.saveMessage(event.message);
-					if (event.message.role === "assistant") {
+					if (isAssistantMessage(event.message)) {
+						recordAssistantUsageMetric({
+							req,
+							message: event.message,
+							sessionId: sessionManager.getSessionId(),
+							subject,
+						});
 						automaticMemoryExtraction.schedule(sessionManager.getSessionFile());
 					}
 					sessionManager.updateSnapshot(

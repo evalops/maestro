@@ -566,6 +566,40 @@ describe("performCompaction", () => {
 		);
 	});
 
+	it("continues post-compaction cleanup when one handler fails", async () => {
+		const messages = buildConversation(10);
+		const agent = createMockAgent(messages);
+		const sessionManager = createMockSessionManager();
+		const failingCleanup = vi.fn(() => {
+			throw new Error("cleanup failed");
+		});
+		const laterCleanup = vi.fn();
+		const disposeFailing = registerPostCompactionCleanup(
+			"failing-cleanup",
+			failingCleanup,
+		);
+		const disposeLater = registerPostCompactionCleanup(
+			"later-cleanup",
+			laterCleanup,
+		);
+
+		try {
+			const result = await performCompaction({
+				agent,
+				sessionManager,
+			});
+
+			expect(result.success).toBe(true);
+		} finally {
+			disposeFailing();
+			disposeLater();
+			resetPostCompactionCleanupRegistry();
+		}
+
+		expect(failingCleanup).toHaveBeenCalledOnce();
+		expect(laterCleanup).toHaveBeenCalledOnce();
+	});
+
 	it("returns failure when too few messages", async () => {
 		const messages = buildConversation(2); // 4 messages, below keepCount+1=7
 		const agent = createMockAgent(messages);
@@ -2709,6 +2743,9 @@ Current plan contents:
 		await performCompaction({ agent, sessionManager });
 
 		expect(agent.clearTransientRunState).toHaveBeenCalledOnce();
+		expect(agent.clearTransientRunState).toHaveBeenCalledWith({
+			clearSessionContextCache: true,
+		});
 	});
 
 	it("uses renderSummaryText callback when provided", async () => {

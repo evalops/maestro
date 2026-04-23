@@ -25,9 +25,11 @@ import { AdminModelsTab } from "./admin-models-tab.js";
 import { AdminPolicyTab } from "./admin-policy-tab.js";
 import { AdminSecurityTab } from "./admin-security-tab.js";
 import { AdminUsersTab } from "./admin-users-tab.js";
+import "./fleet-dashboard.js";
 
 type AdminTab =
 	| "overview"
+	| "fleet"
 	| "users"
 	| "models"
 	| "directories"
@@ -1551,10 +1553,22 @@ export class AdminSettings extends LitElement {
 		return this.policyTab.render();
 	}
 
+	private renderFleetTab() {
+		if (!this.api.isAuthenticated()) {
+			return this.renderUnavailableState(
+				"Sign in with enterprise credentials to view fleet status.",
+			);
+		}
+
+		return html`<fleet-dashboard .api=${this.api}></fleet-dashboard>`;
+	}
+
 	private renderCurrentTab() {
 		switch (this.currentTab) {
 			case "overview":
 				return this.renderOverviewTab();
+			case "fleet":
+				return this.renderFleetTab();
 			case "users":
 				return this.renderUsersTab();
 			case "models":
@@ -1598,6 +1612,12 @@ export class AdminSettings extends LitElement {
 						@click=${() => this.selectTab("users")}
 					>
 						<span>Users & Roles</span>
+					</div>
+					<div
+						class="nav-item ${this.currentTab === "fleet" ? "active" : ""}"
+						@click=${() => this.selectTab("fleet")}
+					>
+						<span>Fleet</span>
 					</div>
 					<div
 						class="nav-item ${this.currentTab === "models" ? "active" : ""}"

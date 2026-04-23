@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GovernanceEngine } from "../src/engine.js";
 import type { GovernanceAuditEvent } from "../src/types.js";
 
@@ -10,7 +10,14 @@ describe("GovernanceEngine", () => {
 	let engine: GovernanceEngine;
 
 	beforeEach(() => {
-		engine = new GovernanceEngine();
+		vi.unstubAllGlobals();
+		vi.unstubAllEnvs();
+		engine = new GovernanceEngine({ service: false });
+	});
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+		vi.unstubAllEnvs();
 	});
 
 	describe("evaluate()", () => {
@@ -46,6 +53,181 @@ describe("GovernanceEngine", () => {
 			});
 			// Either block or require_approval depending on the rule
 			expect(result.verdict).not.toBe("allow");
+		});
+
+		it("delegates action evaluation to the governance service when configured", async () => {
+			const fetchMock = vi.fn().mockResolvedValue(
+				new Response(
+					JSON.stringify({
+						evaluation: {
+							decision: "ACTION_DECISION_REQUIRE_APPROVAL",
+							riskLevel: "RISK_LEVEL_HIGH",
+							reasons: ["destructive action requested"],
+							matchedRules: ["rule-delete"],
+						},
+					}),
+					{ status: 200 },
+				),
+			);
+			vi.stubGlobal("fetch", fetchMock);
+			const engine = new GovernanceEngine({
+				service: {
+					baseUrl: "https://governance.test/",
+					maxAttempts: 1,
+					timeoutMs: 500,
+					token: "governance-token",
+					workspaceId: "workspace-1",
+				},
+			});
+
+			const result = await engine.evaluate({
+				toolName: "bash",
+				args: { command: "rm -rf /tmp/build" },
+				userIntent: "clean build output",
+			});
+
+			expect(result).toMatchObject({
+				reason: "destructive action requested",
+				ruleId: "rule-delete",
+				triggeredBy: "policy",
+				verdict: "require_approval",
+			});
+			expect(result.sanitizedArgs).toEqual({
+				command: "rm -rf /tmp/build",
+			});
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+			expect(url).toBe(
+				"https://governance.test/governance.v1.GovernanceService/EvaluateAction",
+			);
+			expect(init.method).toBe("POST");
+			expect(init.headers).toMatchObject({
+				Authorization: "Bearer governance-token",
+				"Connect-Protocol-Version": "1",
+				"Content-Type": "application/json",
+			});
+			const body = JSON.parse(String(init.body)) as {
+				actionPayload: string;
+				actionType: string;
+				agentId: string;
+				workspaceId: string;
+			};
+			expect(body).toMatchObject({
+				actionType: "bash",
+				agentId: "maestro",
+				workspaceId: "workspace-1",
+			});
+			expect(
+				JSON.parse(Buffer.from(body.actionPayload, "base64").toString("utf8")),
+			).toMatchObject({
+				args: { command: "rm -rf /tmp/build" },
+				toolName: "bash",
+				userIntent: "clean build output",
+			});
+		});
+
+		it("normalizes governance service URLs before storing request config", async () => {
+			const fetchMock = vi.fn().mockResolvedValue(
+				new Response(
+					JSON.stringify({
+						evaluation: {
+							decision: "ACTION_DECISION_ALLOW",
+							reasons: [],
+							matchedRules: [],
+						},
+					}),
+					{ status: 200 },
+				),
+			);
+			vi.stubGlobal("fetch", fetchMock);
+			const engine = new GovernanceEngine({
+				service: {
+					baseUrl: "https://governance.test/governance.v1.GovernanceService/",
+					maxAttempts: 1,
+					timeoutMs: 500,
+					workspaceId: "workspace-1",
+				},
+			});
+
+			const result = await engine.evaluate({
+				toolName: "bash",
+				args: { command: "echo hello" },
+			});
+
+			expect(result.verdict).toBe("allow");
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+			expect(url).toBe(
+				"https://governance.test/governance.v1.GovernanceService/EvaluateAction",
+			);
+		});
+
+		it("falls back to local evaluation when the optional governance service fails", async () => {
+			const fetchMock = vi
+				.fn()
+				.mockRejectedValue(new Error("connection refused"));
+			vi.stubGlobal("fetch", fetchMock);
+			const engine = new GovernanceEngine({
+				service: {
+					baseUrl: "https://governance.test",
+					maxAttempts: 1,
+					timeoutMs: 500,
+					workspaceId: "workspace-1",
+				},
+			});
+
+			const result = await engine.evaluate({
+				toolName: "bash",
+				args: { command: "echo hello" },
+			});
+
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			expect(result.verdict).toBe("allow");
+		});
+
+		it("disables firewall-level governance delegation when engine-level service fallback is enabled by env", async () => {
+			const fetchMock = vi
+				.fn()
+				.mockRejectedValue(new Error("connection refused"));
+			vi.stubGlobal("fetch", fetchMock);
+			vi.stubEnv("GOVERNANCE_SERVICE_URL", "https://governance.test");
+			vi.stubEnv("GOVERNANCE_SERVICE_WORKSPACE_ID", "workspace-1");
+			vi.stubEnv("GOVERNANCE_SERVICE_MAX_ATTEMPTS", "1");
+			vi.stubEnv("GOVERNANCE_SERVICE_TIMEOUT_MS", "500");
+
+			const engine = new GovernanceEngine();
+			const result = await engine.evaluate({
+				toolName: "bash",
+				args: { command: "echo hello" },
+			});
+
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			expect(result.verdict).toBe("allow");
+		});
+
+		it("blocks when the required governance service is unavailable", async () => {
+			const fetchMock = vi
+				.fn()
+				.mockRejectedValue(new Error("connection refused"));
+			vi.stubGlobal("fetch", fetchMock);
+			const engine = new GovernanceEngine({
+				service: {
+					baseUrl: "https://governance.test",
+					maxAttempts: 1,
+					required: true,
+					timeoutMs: 500,
+					workspaceId: "workspace-1",
+				},
+			});
+
+			const result = await engine.evaluate({
+				toolName: "bash",
+				args: { command: "echo hello" },
+			});
+
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			expect(result.verdict).toBe("block");
+			expect(result.reason).toContain("Governance service unavailable");
 		});
 	});
 
@@ -153,6 +335,7 @@ describe("GovernanceEngine", () => {
 		it("should fire callback for each event", async () => {
 			const events: GovernanceAuditEvent[] = [];
 			const engine = new GovernanceEngine({
+				service: false,
 				onAuditEvent: (event) => events.push(event),
 			});
 			await engine.evaluate({

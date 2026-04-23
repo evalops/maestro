@@ -19,6 +19,7 @@ function getUsageFilePathInternal(): string {
 
 export interface UsageEntry {
 	timestamp: number; // Unix timestamp
+	sessionId?: string;
 	provider: string;
 	model: string;
 	tokensInput: number;
@@ -62,6 +63,14 @@ export interface UsageSummary {
 	>;
 }
 
+export interface UsageFilterOptions {
+	since?: number; // Unix timestamp
+	until?: number; // Unix timestamp
+	provider?: string;
+	model?: string;
+	sessionId?: string;
+}
+
 /**
  * Load usage data from disk
  */
@@ -81,6 +90,22 @@ function loadUsage(): UsageEntry[] {
 		});
 		return [];
 	}
+}
+
+function filterUsageEntries(
+	entries: UsageEntry[],
+	options?: UsageFilterOptions,
+): UsageEntry[] {
+	return entries.filter((entry) => {
+		if (options?.since && entry.timestamp < options.since) return false;
+		if (options?.until && entry.timestamp > options.until) return false;
+		if (options?.provider && entry.provider !== options.provider) return false;
+		if (options?.model && entry.model !== options.model) return false;
+		if (options?.sessionId && entry.sessionId !== options.sessionId) {
+			return false;
+		}
+		return true;
+	});
 }
 
 /**
@@ -123,24 +148,19 @@ export function trackUsage(entry: Omit<UsageEntry, "timestamp">): void {
 }
 
 /**
+ * Get raw usage entries for reporting and session-level analytics.
+ */
+export function getUsageEntries(options?: UsageFilterOptions): UsageEntry[] {
+	return filterUsageEntries(loadUsage(), options).map((entry) => ({
+		...entry,
+	}));
+}
+
+/**
  * Get usage summary for a time period
  */
-export function getUsageSummary(options?: {
-	since?: number; // Unix timestamp
-	until?: number; // Unix timestamp
-	provider?: string;
-	model?: string;
-}): UsageSummary {
-	const entries = loadUsage();
-
-	// Filter entries
-	const filtered = entries.filter((entry) => {
-		if (options?.since && entry.timestamp < options.since) return false;
-		if (options?.until && entry.timestamp > options.until) return false;
-		if (options?.provider && entry.provider !== options.provider) return false;
-		if (options?.model && entry.model !== options.model) return false;
-		return true;
-	});
+export function getUsageSummary(options?: UsageFilterOptions): UsageSummary {
+	const filtered = getUsageEntries(options);
 
 	// Calculate summary
 	const summary: UsageSummary = {
@@ -247,26 +267,12 @@ export function getUsageFilePath(): string {
 /**
  * Export usage data to CSV format
  */
-export function exportUsageToCSV(options?: {
-	since?: number;
-	until?: number;
-	provider?: string;
-	model?: string;
-}): string {
-	const entries = loadUsage();
-
-	// Filter entries
-	const filtered = entries.filter((entry) => {
-		if (options?.since && entry.timestamp < options.since) return false;
-		if (options?.until && entry.timestamp > options.until) return false;
-		if (options?.provider && entry.provider !== options.provider) return false;
-		if (options?.model && entry.model !== options.model) return false;
-		return true;
-	});
+export function exportUsageToCSV(options?: UsageFilterOptions): string {
+	const filtered = getUsageEntries(options);
 
 	// CSV header
 	const lines = [
-		"Timestamp,Date,Provider,Model,Tokens Input,Tokens Output,Tokens Cache Read,Tokens Cache Write,Total Tokens,Cost (USD)",
+		"Timestamp,Date,Session ID,Provider,Model,Tokens Input,Tokens Output,Tokens Cache Read,Tokens Cache Write,Total Tokens,Cost (USD)",
 	];
 
 	// CSV rows
@@ -282,6 +288,7 @@ export function exportUsageToCSV(options?: {
 			[
 				entry.timestamp,
 				date,
+				entry.sessionId ?? "",
 				entry.provider,
 				entry.model,
 				entry.tokensInput,
@@ -305,18 +312,10 @@ export function exportUsageToJSON(options?: {
 	until?: number;
 	provider?: string;
 	model?: string;
+	sessionId?: string;
 	pretty?: boolean;
 }): string {
-	const entries = loadUsage();
-
-	// Filter entries
-	const filtered = entries.filter((entry) => {
-		if (options?.since && entry.timestamp < options.since) return false;
-		if (options?.until && entry.timestamp > options.until) return false;
-		if (options?.provider && entry.provider !== options.provider) return false;
-		if (options?.model && entry.model !== options.model) return false;
-		return true;
-	});
+	const filtered = getUsageEntries(options);
 
 	// Get summary
 	const summary = getUsageSummary(options);

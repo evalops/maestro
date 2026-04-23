@@ -139,7 +139,7 @@
 		"test": "vitest --run"
 	},
 	"dependencies": {
-		"@evalops/contracts": "^0.10.8"
+		"@evalops/contracts": "workspace:*"
 	},
 	"devDependencies": {
 		"@types/node": "^24.10.7",

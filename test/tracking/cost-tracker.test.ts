@@ -22,6 +22,7 @@ import {
 	compareProviders,
 	exportUsageToCSV,
 	exportUsageToJSON,
+	getUsageEntries,
 	getUsageSummary,
 	getUsageTrends,
 	trackUsage,
@@ -160,6 +161,33 @@ describe("Enhanced Cost Tracking", () => {
 			expect(csv).not.toContain("openai");
 		});
 
+		it("should include and filter by session id", () => {
+			trackUsage({
+				sessionId: "session-a",
+				provider: "anthropic",
+				model: "claude-sonnet-4-5",
+				tokensInput: 1000,
+				tokensOutput: 500,
+				cost: 0.015,
+			});
+			trackUsage({
+				sessionId: "session-b",
+				provider: "openai",
+				model: "gpt-4o",
+				tokensInput: 200,
+				tokensOutput: 100,
+				cost: 0.003,
+			});
+
+			const csv = exportUsageToCSV({ sessionId: "session-a" });
+			const lines = csv.split("\n");
+
+			expect(lines.length).toBe(2);
+			expect(lines[0]).toContain("Session ID");
+			expect(csv).toContain("session-a");
+			expect(csv).not.toContain("session-b");
+		});
+
 		it("should filter by time range", () => {
 			createSampleEntries();
 
@@ -291,6 +319,36 @@ describe("Enhanced Cost Tracking", () => {
 
 			expect(data.entries.length).toBe(1);
 			expect(data.entries[0].model).toBe("gpt-4");
+		});
+	});
+
+	describe("getUsageEntries", () => {
+		it("returns raw usage entries filtered by session", () => {
+			trackUsage({
+				sessionId: "session-a",
+				provider: "anthropic",
+				model: "claude-sonnet-4-5",
+				tokensInput: 1000,
+				tokensOutput: 500,
+				cost: 0.015,
+			});
+			trackUsage({
+				sessionId: "session-b",
+				provider: "openai",
+				model: "gpt-4o",
+				tokensInput: 200,
+				tokensOutput: 100,
+				cost: 0.003,
+			});
+
+			expect(getUsageEntries({ sessionId: "session-a" })).toMatchObject([
+				{ sessionId: "session-a", provider: "anthropic" },
+			]);
+			expect(getUsageSummary({ sessionId: "session-a" })).toMatchObject({
+				totalRequests: 1,
+				totalTokens: 1500,
+				totalCost: 0.015,
+			});
 		});
 	});
 

@@ -5,6 +5,7 @@ import {
 	createServer,
 } from "node:http";
 import { PLATFORM_HTTP_ROUTES } from "../platform/core-services.js";
+import { fetchDownstream } from "../utils/downstream-http.js";
 import { createLogger } from "../utils/logger.js";
 import {
 	type OAuthCredentials,
@@ -30,6 +31,8 @@ const SHARED_PLATFORM_BASE_URL_ENV_VARS = [
 ] as const;
 const DEFAULT_PROVIDER_REF_PROVIDER = "openai";
 const DEFAULT_PROVIDER_REF_ENVIRONMENT = "prod";
+const DEFAULT_IDENTITY_TIMEOUT_MS = 10_000;
+const DEFAULT_IDENTITY_MAX_ATTEMPTS = 2;
 const REQUIRED_SCOPE = "llm_gateway:invoke";
 
 interface IdentityStartResponse {
@@ -115,6 +118,11 @@ function getEnvValue(names: string[]): string | undefined {
 	return undefined;
 }
 
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+	const parsed = Number.parseInt(value ?? "", 10);
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 function normalizeIdentityBaseUrl(
 	baseUrl: string,
 	suffixes: readonly string[] = [],
@@ -136,6 +144,39 @@ function getIdentityBaseUrl(): string {
 		]) ?? DEFAULT_IDENTITY_URL,
 		Object.values(PLATFORM_HTTP_ROUTES.identity),
 	);
+}
+
+function getIdentityTimeoutMs(): number {
+	return parsePositiveInt(
+		getEnvValue([
+			"MAESTRO_EVALOPS_IDENTITY_TIMEOUT_MS",
+			"EVALOPS_IDENTITY_TIMEOUT_MS",
+		]),
+		DEFAULT_IDENTITY_TIMEOUT_MS,
+	);
+}
+
+function getIdentityMaxAttempts(): number {
+	return parsePositiveInt(
+		getEnvValue([
+			"MAESTRO_EVALOPS_IDENTITY_MAX_ATTEMPTS",
+			"EVALOPS_IDENTITY_MAX_ATTEMPTS",
+		]),
+		DEFAULT_IDENTITY_MAX_ATTEMPTS,
+	);
+}
+
+function fetchIdentity(
+	identityBaseUrl: string,
+	path: string,
+	init: RequestInit,
+): Promise<Response> {
+	return fetchDownstream(`${identityBaseUrl}${path}`, init, {
+		serviceName: "EvalOps identity service",
+		failureMode: "required",
+		timeoutMs: getIdentityTimeoutMs(),
+		maxAttempts: getIdentityMaxAttempts(),
+	});
 }
 
 function getOrganizationId(): string {
@@ -347,8 +388,9 @@ export async function issueEvalOpsDelegationToken(
 			"EvalOps delegation requires a valid access token. Run /login evalops first.",
 		);
 	}
-	const response = await fetch(
-		`${identityBaseUrl}${PLATFORM_HTTP_ROUTES.identity.delegationTokens}`,
+	const response = await fetchIdentity(
+		identityBaseUrl,
+		PLATFORM_HTTP_ROUTES.identity.delegationTokens,
 		{
 			method: "POST",
 			headers: {
@@ -509,8 +551,9 @@ async function startIdentityLogin(
 	onStatus?: (status: string) => void,
 ): Promise<string> {
 	onStatus?.("Requesting EvalOps managed login URL...");
-	const response = await fetch(
-		`${identityBaseUrl}${PLATFORM_HTTP_ROUTES.identity.authGoogleStart}`,
+	const response = await fetchIdentity(
+		identityBaseUrl,
+		PLATFORM_HTTP_ROUTES.identity.authGoogleStart,
 		{
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
@@ -607,8 +650,9 @@ export async function refreshEvalOpsToken(
 
 	const identityBaseUrl =
 		getMetadataString(metadata, "identityBaseUrl") ?? getIdentityBaseUrl();
-	const response = await fetch(
-		`${identityBaseUrl}${PLATFORM_HTTP_ROUTES.identity.tokenRefresh}`,
+	const response = await fetchIdentity(
+		identityBaseUrl,
+		PLATFORM_HTTP_ROUTES.identity.tokenRefresh,
 		{
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
@@ -668,8 +712,9 @@ export async function revokeEvalOpsToken(
 
 	const identityBaseUrl =
 		getMetadataString(metadata, "identityBaseUrl") ?? getIdentityBaseUrl();
-	const response = await fetch(
-		`${identityBaseUrl}${PLATFORM_HTTP_ROUTES.identity.tokenRevoke}`,
+	const response = await fetchIdentity(
+		identityBaseUrl,
+		PLATFORM_HTTP_ROUTES.identity.tokenRevoke,
 		{
 			method: "POST",
 			headers: { "Content-Type": "application/json" },

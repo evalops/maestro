@@ -1,8 +1,13 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { getPackageVersion } from "../../package-metadata.js";
+import { createRequire } from "node:module";
 import type { WebServerContext } from "../app-context.js";
 import { sendJson } from "../server-utils.js";
-const VERSION = getPackageVersion();
+
+const packageJson = createRequire(import.meta.url)("../../../package.json") as {
+	version?: string;
+};
+
+const VERSION = process.env.MAESTRO_VERSION ?? packageJson.version ?? "unknown";
 const CLIENT_HEADERS = [
 	"X-Composer-Client",
 	"X-Composer-Client-Tools",

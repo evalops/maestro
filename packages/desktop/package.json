@@ -36,7 +36,7 @@
 		"directory": "packages/desktop"
 	},
 	"dependencies": {
-		"@evalops/contracts": "^0.10.8",
+		"@evalops/contracts": "workspace:*",
 		"electron-store": "^10.0.1",
 		"electron-updater": "^6.3.9"
 	},

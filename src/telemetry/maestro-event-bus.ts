@@ -4,17 +4,7 @@ import {
 	MaestroBusEventType,
 	getMaestroBusEventCatalogEntry,
 } from "./maestro-event-catalog.js";
-
-export {
-	MAESTRO_BUS_EVENT_CATALOG,
-	MAESTRO_BUS_EVENT_TYPES,
-	MaestroBusEventType,
-	getMaestroBusEventCatalogEntry,
-	isMaestroBusEventType,
-	listMaestroBusEventCatalog,
-	type MaestroBusEventCatalogEntry,
-	type MaestroBusEventCategory,
-} from "./maestro-event-catalog.js";
+export { MaestroBusEventType } from "./maestro-event-catalog.js";
 
 type Env = NodeJS.ProcessEnv;
 
@@ -606,6 +596,14 @@ function normalizeTime(value: string | Date | undefined): string {
 	return value ?? new Date().toISOString();
 }
 
+function dataSchemaFor(type: MaestroBusEventType): string {
+	return getMaestroBusEventCatalogEntry(type).dataSchema;
+}
+
+function protoAnyTypeFor(type: MaestroBusEventType): string {
+	return getMaestroBusEventCatalogEntry(type).protoAnyType;
+}
+
 export function buildMaestroCloudEvent<TData extends Record<string, unknown>>(
 	type: MaestroBusEventType,
 	data: TData,
@@ -620,7 +618,7 @@ export function buildMaestroCloudEvent<TData extends Record<string, unknown>>(
 		"correlation" in data && data.correlation ? data.correlation : correlation;
 	const typedData = {
 		...data,
-		"@type": getMaestroBusEventCatalogEntry(type).protoAnyType,
+		"@type": protoAnyTypeFor(type),
 		correlation: dataCorrelation,
 	} as TData & { "@type": string };
 
@@ -634,9 +632,7 @@ export function buildMaestroCloudEvent<TData extends Record<string, unknown>>(
 		data_content_type: "application/protobuf",
 		tenant_id: options.tenantId ?? config.tenantId,
 		data: typedData,
-		extensions: {
-			dataschema: getMaestroBusEventCatalogEntry(type).dataSchema,
-		},
+		extensions: { dataschema: dataSchemaFor(type) },
 	};
 }
 

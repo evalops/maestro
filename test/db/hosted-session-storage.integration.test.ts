@@ -171,7 +171,7 @@ describeDb("hosted session database storage", () => {
 
 	it("persists scoped web sessions in Postgres instead of JSONL files", async () => {
 		const { migrate } = await import("../../src/db/migrate.js");
-		await expect(migrate()).resolves.toBe(6);
+		await expect(migrate()).resolves.toBe(7);
 
 		const { createWebSessionManagerForRequest } = await import(
 			"../../src/server/session-scope.js"
@@ -258,7 +258,7 @@ describeDb("hosted session database storage", () => {
 
 	it("does not truncate unbounded hosted session listings", async () => {
 		const { migrate } = await import("../../src/db/migrate.js");
-		await expect(migrate()).resolves.toBe(6);
+		await expect(migrate()).resolves.toBe(7);
 		const { getDb } = await import("../../src/db/client.js");
 		const { hostedSessions } = await import("../../src/db/schema.js");
 		const { HostedSessionManager } = await import(
@@ -296,7 +296,7 @@ describeDb("hosted session database storage", () => {
 
 	it("surfaces queued database write failures on flush", async () => {
 		const { migrate } = await import("../../src/db/migrate.js");
-		await expect(migrate()).resolves.toBe(6);
+		await expect(migrate()).resolves.toBe(7);
 		const { createWebSessionManagerForRequest } = await import(
 			"../../src/server/session-scope.js"
 		);

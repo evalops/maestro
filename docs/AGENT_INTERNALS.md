@@ -28,6 +28,20 @@ This document describes the internal architecture of the Maestro agent system, i
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+## Local Checkpoint Profiling
+
+Set `MAESTRO_STARTUP_PROFILE=1` to print startup checkpoints such as
+`process:start`, `config:loaded`, `tools:prepared`, `mcp:bootstrap_queued`, and
+the selected runtime readiness checkpoint. Startup checkpoints include RSS memory
+snapshots so cold-start regressions are easier to spot in local or CI logs.
+
+Set `MAESTRO_QUERY_PROFILE=1` to print per-turn checkpoints for prompt handling
+and first-token latency. Query profiling records fixed labels only, including
+`input:received`, `context:loaded`, `prompt:assembled`, `tools:prepared`,
+`model:request:start`, `model:first-token`, and terminal `turn:*` checkpoints.
+Profiler detail fields are constrained and redact prompt text, tokens, tool
+arguments, message bodies, and other free-form user content.
+
 ## Transport Layer (`src/agent/transport.ts`)
 
 The `ProviderTransport` class is the core of the agent's communication layer.

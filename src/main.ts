@@ -89,9 +89,9 @@
 
 import { createRequire } from "node:module";
 import chalk from "chalk";
-import {
+import type {
 	ActionApprovalService,
-	type ApprovalMode,
+	ApprovalMode,
 } from "./agent/action-approval.js";
 import { createBackgroundTextAgent } from "./agent/background-agent.js";
 import {
@@ -106,6 +106,7 @@ import {
 	applySessionStartHooks,
 	runUserPromptWithRecovery,
 } from "./agent/user-prompt-runtime.js";
+import { PlatformBackedActionApprovalService } from "./approvals/platform-action-approval.js";
 import { createAuthSetup, validateCodexFlags } from "./bootstrap/auth-setup.js";
 import {
 	disposeCheckpointService,
@@ -146,7 +147,6 @@ import { ensureModelsLoaded } from "./models/builtin.js";
 import type { RegisteredModel } from "./models/registry.js";
 import { reloadModelConfig } from "./models/registry.js";
 import { initOpenTelemetry } from "./opentelemetry.js";
-import { getPackageVersion } from "./package-metadata.js";
 import { resolveMaestroSystemPrompt } from "./prompts/system-prompt.js";
 import type { AuthMode } from "./providers/auth.js";
 import { AgentRuntimeController } from "./runtime/agent-runtime.js";
@@ -158,8 +158,17 @@ import { ServerRequestToolRetryService } from "./server/tool-retry-service.js";
 import { SessionManager } from "./session/manager.js";
 import { askUserClientTool } from "./tools/ask-user-client.js";
 import type { UpdateCheckResult } from "./update/check.js";
+import { createStartupProfilerFromEnv } from "./utils/checkpoint-profiler.js";
 import { isInsideGitRepository } from "./utils/git.js";
-const VERSION = getPackageVersion();
+/**
+ * Load version from package.json at runtime.
+ * Uses Node's createRequire for compatibility with ESM imports
+ * (avoids experimental import assertions syntax).
+ */
+const packageJson = createRequire(import.meta.url)("../package.json") as {
+	version?: string;
+};
+const VERSION = packageJson.version ?? "unknown";
 
 let enterpriseCleanupRegistered = false;
 let checkpointCleanupRegistered = false;
@@ -419,9 +428,12 @@ export async function main(args: string[]) {
 
 	// Load environment variables from .env files (project and user level)
 	loadEnv();
+	const startupProfiler = createStartupProfilerFromEnv();
+	startupProfiler.checkpoint("process:start");
 
 	// Parse arguments early to check for version/help flags before heavy initialization
 	const parsed = parseArgs(args);
+	startupProfiler.checkpoint("cli:parsed");
 
 	// Handle --version early exit (before any async operations)
 	if (parsed.version) {
@@ -464,9 +476,11 @@ export async function main(args: string[]) {
 		}
 
 		const { startWebServer } = await import("./web-server.js");
+		const { migrate } = await import("./db/migrate.js");
 		const port =
 			parsed.port ?? (Number.parseInt(process.env.PORT || "8080", 10) || 8080);
-		await startWebServer(port);
+		await migrate();
+		await startWebServer(port, { skipStartupMigration: true });
 		return;
 	}
 
@@ -494,6 +508,7 @@ export async function main(args: string[]) {
 	}
 
 	const runtimeConfig = loadRuntimeConfig(parsed, process.cwd());
+	startupProfiler.checkpoint("config:loaded");
 	const reasoningSummary =
 		runtimeConfig.config.model_supports_reasoning_summaries === false
 			? undefined
@@ -519,14 +534,6 @@ export async function main(args: string[]) {
 		process.exit(1);
 	};
 
-	const startupProfilingEnabled = process.env.MAESTRO_STARTUP_PROFILE === "1";
-	const logStartupPhase = (label: string, startedAt: number) => {
-		if (!startupProfilingEnabled) return;
-		console.error(
-			`[startup] ${label}: ${Math.round(performance.now() - startedAt)}ms`,
-		);
-	};
-
 	// ─────────────────────────────────────────────────────────────────────────────
 	// PHASE 1: Environment and Telemetry Initialization
 	// ─────────────────────────────────────────────────────────────────────────────
@@ -535,17 +542,14 @@ export async function main(args: string[]) {
 	// This is non-blocking (void) to avoid startup latency
 	void initOpenTelemetry("composer-cli");
 
-	const bootstrapParallelStart = performance.now();
 	const modelLoadPromise = (async () => {
-		const startedAt = performance.now();
 		await ensureModelsLoaded();
-		logStartupPhase("models.loaded", startedAt);
+		startupProfiler.checkpoint("models:loaded");
 	})();
 	const enterpriseContextPromise = (async () => {
-		const startedAt = performance.now();
 		const { enterpriseContext } = await import("./enterprise/context.js");
 		await enterpriseContext.initialize();
-		logStartupPhase("enterprise.initialized", startedAt);
+		startupProfiler.checkpoint("enterprise:initialized");
 		return enterpriseContext;
 	})();
 
@@ -555,7 +559,7 @@ export async function main(args: string[]) {
 		enterpriseContextPromise,
 		modelLoadPromise,
 	]);
-	logStartupPhase("bootstrap.parallel", bootstrapParallelStart);
+	startupProfiler.checkpoint("bootstrap:parallel");
 
 	// ─────────────────────────────────────────────────────────────────────────────
 	// PHASE 2: Enterprise Context Initialization
@@ -620,6 +624,7 @@ export async function main(args: string[]) {
 		authMode,
 		explicitApiKey: parsed.apiKey,
 	});
+	startupProfiler.checkpoint("auth:configured");
 
 	if (parsed.command === "exec") {
 		if (parsed.execFullAuto && parsed.execReadOnly) {
@@ -673,6 +678,7 @@ export async function main(args: string[]) {
 		process.once("SIGTERM", disposeCheckpoint);
 		checkpointCleanupRegistered = true;
 	}
+	startupProfiler.checkpoint("runtime:prepared");
 
 	// ─────────────────────────────────────────────────────────────────────────────
 	// Early Exit: Help Command
@@ -834,6 +840,45 @@ export async function main(args: string[]) {
 		}
 	}
 
+	if (parsed.command === "stats") {
+		const { handleStatsCommand } = await import("./cli/commands/stats.js");
+		switch (parsed.subcommand) {
+			case undefined:
+			case "today":
+			case "yesterday":
+			case "week":
+			case "7d":
+			case "month":
+			case "30d":
+			case "all":
+				await handleStatsCommand(parsed.subcommand, {
+					sessionId: parsed.session,
+					format: parsed.exportFormat,
+				});
+				return;
+			default:
+				console.error(
+					chalk.red(`Unknown stats subcommand: ${parsed.subcommand}`),
+				);
+				console.log(chalk.dim("\nAvailable commands:"));
+				console.log(
+					chalk.dim("  maestro stats              - Show last 7 days"),
+				);
+				console.log(
+					chalk.dim("  maestro stats --session <id> - Show one session"),
+				);
+				console.log(chalk.dim("  maestro stats today        - Show today"));
+				console.log(
+					chalk.dim("  maestro stats month        - Show last 30 days"),
+				);
+				console.log(chalk.dim("  maestro stats all          - Show all time"));
+				console.log(
+					chalk.dim("  maestro stats --format json|csv - Export usage data"),
+				);
+				process.exit(1);
+		}
+	}
+
 	// Handle models commands
 	if (parsed.command === "models") {
 		const { handleModelsList, handleModelsProviders } = await import(
@@ -920,6 +965,7 @@ export async function main(args: string[]) {
 		parsed.continue && !parsed.resume, // continueSession: auto-load most recent
 		parsed.session, // customSessionPath: explicit session file
 	);
+	startupProfiler.checkpoint("session:created");
 
 	let execResumeApplied = false;
 	if (parsed.command === "exec") {
@@ -1000,6 +1046,9 @@ export async function main(args: string[]) {
 		toolNames: systemPromptToolNames,
 		appendPrompt: parsed.appendSystemPrompt,
 	});
+	startupProfiler.checkpoint("prompt:assembled", {
+		system_bytes: systemPrompt.length,
+	});
 	const systemPromptSourcePaths = resolveExplicitSystemPromptSourcePaths(
 		parsed.systemPrompt,
 		parsed.appendSystemPrompt,
@@ -1030,7 +1079,9 @@ export async function main(args: string[]) {
 				approvalModeOverride,
 				() => sessionManager.getSessionId() ?? undefined,
 			)
-		: new ActionApprovalService(approvalModeOverride);
+		: new PlatformBackedActionApprovalService(approvalModeOverride, {
+				sessionIdProvider: () => sessionManager.getSessionId() ?? undefined,
+			});
 	const headlessClientToolService = isHeadlessMode
 		? clientToolService.forSession(
 				() => sessionManager.getSessionId() ?? undefined,
@@ -1071,6 +1122,7 @@ export async function main(args: string[]) {
 		exitWithStartupError(error);
 	}
 	const { allTools, sandbox, sandboxMode } = toolsResult;
+	startupProfiler.checkpoint("tools:prepared", { tools: allTools.length });
 	const useInteractiveClientTools = Boolean(interactiveClientToolService);
 	const replaceAskUserTool = <T extends typeof allTools>(tools: T): T =>
 		tools.map((tool) =>
@@ -1129,6 +1181,7 @@ export async function main(args: string[]) {
 		cwd: process.cwd(),
 	});
 	setTaskBudgetTotal(agent, parsed.taskBudget);
+	startupProfiler.checkpoint("agent:ready");
 
 	// ─────────────────────────────────────────────────────────────────────────────
 	// PHASE 11.5: TypeScript Hooks Initialization
@@ -1148,14 +1201,13 @@ export async function main(args: string[]) {
 	// PHASE 12: MCP (Model Context Protocol) Integration
 	// ─────────────────────────────────────────────────────────────────────────────
 
-	const mcpInitStartedAt = performance.now();
 	const { initializeMcpServers } = await import("./bootstrap/mcp-setup.js");
 	initializeMcpServers({
 		agent,
 		baseTools: configuredAllTools,
 		cwd: process.cwd(),
 	});
-	logStartupPhase("mcp.bootstrap_queued", mcpInitStartedAt);
+	startupProfiler.checkpoint("mcp:bootstrap_queued");
 
 	// Determine mode early to know if we should print messages
 	const isInteractive = parsed.messages.length === 0;
@@ -1278,6 +1330,7 @@ export async function main(args: string[]) {
 	// 5. Single-shot: Process CLI messages and exit
 	try {
 		if (agentsInitPrompt) {
+			startupProfiler.terminal("exec:ready", { mode: "agents" });
 			const cwd = process.cwd();
 			const targetPath = agentsInitPath ?? "AGENTS.md";
 			const displayPath =
@@ -1296,6 +1349,7 @@ export async function main(args: string[]) {
 			console.log(chalk.dim(`AGENTS.md generated at ${displayPath}`));
 		} else if (mode === "headless" || parsed.headless) {
 			// Headless mode - for native TUI communication
+			startupProfiler.terminal("headless:ready");
 			await runHeadlessMode(
 				agent,
 				sessionManager,
@@ -1304,10 +1358,12 @@ export async function main(args: string[]) {
 			);
 		} else if (mode === "rpc") {
 			// RPC mode - headless operation
+			startupProfiler.terminal("rpc:ready");
 			const { runRpcMode } = await import("./cli/rpc-mode.js");
 			await runRpcMode(agent, sessionManager);
 		} else if (isInteractive) {
 			// No messages and not RPC - use TUI
+			startupProfiler.terminal("ui:ready");
 			await runInteractiveMode(
 				agent,
 				sessionManager,
@@ -1323,6 +1379,7 @@ export async function main(args: string[]) {
 				},
 			);
 		} else if (parsed.command === "exec") {
+			startupProfiler.terminal("exec:ready");
 			await runExecCommand({
 				agent,
 				sessionManager,
@@ -1334,6 +1391,7 @@ export async function main(args: string[]) {
 			});
 		} else {
 			// CLI mode with messages
+			startupProfiler.terminal("cli:ready");
 			await runSingleShotMode(agent, sessionManager, parsed.messages, mode);
 		}
 	} finally {

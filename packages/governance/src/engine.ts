@@ -29,7 +29,13 @@ import {
 	SafetyMiddleware,
 	type SafetyMiddlewareConfig,
 } from "../../../src/safety/safety-middleware.js";
+import { createLogger } from "../../../src/utils/logger.js";
 import { toApprovalContext, toGovernanceVerdict } from "./mappers.js";
+import {
+	type GovernanceServiceConfig,
+	evaluateActionWithGovernanceService,
+	resolveGovernanceServiceConfig,
+} from "./service-client.js";
 import type {
 	GovernanceAuditEvent,
 	GovernanceCommandAnalysis,
@@ -43,16 +49,21 @@ import type {
 
 /** Maximum audit log entries retained in memory. */
 const MAX_AUDIT_LOG_SIZE = 10_000;
+const logger = createLogger("governance:engine");
 
 export class GovernanceEngine {
 	private firewall: ActionFirewall;
 	private middleware: SafetyMiddleware;
 	private auditLog: GovernanceAuditEvent[] = [];
 	private onAuditEvent?: (event: GovernanceAuditEvent) => void;
+	private serviceConfig: GovernanceServiceConfig | false | undefined;
 
 	constructor(config?: GovernanceEngineConfig) {
-		this.firewall = new ActionFirewall(defaultFirewallRules);
+		this.firewall = new ActionFirewall(defaultFirewallRules, {
+			governanceService: false,
+		});
 		this.onAuditEvent = config?.onAuditEvent;
+		this.serviceConfig = config?.service;
 
 		const middlewareConfig: SafetyMiddlewareConfig = {
 			enableLoopDetection: config?.enableLoopDetection ?? true,
@@ -74,6 +85,20 @@ export class GovernanceEngine {
 	async evaluate(
 		toolCall: GovernanceToolCall,
 	): Promise<GovernanceEvaluationResult> {
+		const serviceResult = await this.evaluateWithGovernanceService(toolCall);
+		if (serviceResult) {
+			this.recordAuditEvent({
+				type: "evaluation",
+				toolName: toolCall.toolName,
+				verdict: serviceResult.verdict,
+				details: {
+					ruleId: serviceResult.ruleId,
+					triggeredBy: serviceResult.triggeredBy,
+				},
+			});
+			return serviceResult;
+		}
+
 		const context = toApprovalContext(toolCall);
 
 		// 1. Run middleware pre-execution checks
@@ -132,6 +157,45 @@ export class GovernanceEngine {
 		});
 
 		return result;
+	}
+
+	private async evaluateWithGovernanceService(
+		toolCall: GovernanceToolCall,
+	): Promise<GovernanceEvaluationResult | null> {
+		const config = resolveGovernanceServiceConfig(this.serviceConfig, toolCall);
+		if (!config) {
+			return null;
+		}
+
+		const sanitizedArgs = this.middleware.sanitizeForLogging(toolCall.args);
+		try {
+			const result = await evaluateActionWithGovernanceService(
+				config,
+				toolCall,
+			);
+			if (!result) {
+				return null;
+			}
+			return { ...result, sanitizedArgs };
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			if (config.failureMode === "required") {
+				return {
+					verdict: "block",
+					reason: `Governance service unavailable: ${message}`,
+					triggeredBy: "policy",
+					sanitizedArgs,
+				};
+			}
+			logger.warn(
+				"Failed to evaluate action with governance service; falling back locally",
+				{
+					error: message,
+					toolName: toolCall.toolName,
+				},
+			);
+			return null;
+		}
 	}
 
 	/**

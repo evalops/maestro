@@ -10,6 +10,11 @@ import {
 	refreshAnthropicToken,
 } from "./anthropic.js";
 import {
+	revokeOAuthProviderConnection,
+	syncOAuthProviderConnection,
+	syncStoredOAuthProviderConnection,
+} from "./connectors.js";
+import {
 	buildEvalOpsDelegationEnvironment,
 	issueEvalOpsDelegationToken,
 	loginEvalOps,
@@ -128,6 +133,7 @@ export async function login(
 		onDeviceCode?: (code: string, verificationUri: string) => void;
 	},
 ): Promise<void> {
+	let shouldSyncConnectorConnection = false;
 	switch (provider) {
 		case "anthropic":
 			if (!options.onPromptCode) {
@@ -140,9 +146,11 @@ export async function login(
 				options.onAuthUrl,
 				options.onPromptCode,
 			);
+			shouldSyncConnectorConnection = true;
 			break;
 		case "openai":
 			await loginOpenAI(options.onAuthUrl, options.onStatus);
+			shouldSyncConnectorConnection = true;
 			break;
 		case "evalops":
 			assertEvalOpsManagedGatewayEnabled();
@@ -150,9 +158,11 @@ export async function login(
 			break;
 		case "google-gemini-cli":
 			await loginGoogleGeminiCli(options.onAuthUrl, options.onStatus);
+			shouldSyncConnectorConnection = true;
 			break;
 		case "google-antigravity":
 			await loginGoogleAntigravity(options.onAuthUrl, options.onStatus);
+			shouldSyncConnectorConnection = true;
 			break;
 		case "github-copilot":
 			if (!options.onDeviceCode) {
@@ -161,9 +171,13 @@ export async function login(
 				);
 			}
 			await loginGitHubCopilot(options.onDeviceCode, options.onStatus);
+			shouldSyncConnectorConnection = true;
 			break;
 		default:
 			throw new Error(`Unknown OAuth provider: ${provider}`);
+	}
+	if (shouldSyncConnectorConnection) {
+		await syncStoredOAuthProviderConnection(provider);
 	}
 }
 
@@ -181,6 +195,9 @@ export async function logout(provider: SupportedOAuthProvider): Promise<void> {
 				provider,
 			});
 		}
+	}
+	if (provider !== "evalops") {
+		await revokeOAuthProviderConnection(provider, credentials);
 	}
 	removeOAuthCredentials(provider);
 }
@@ -237,6 +254,13 @@ export async function refreshToken(
 			break;
 		default:
 			throw new Error(`Unknown OAuth provider: ${provider}`);
+	}
+
+	if (provider !== "evalops") {
+		newCredentials = await syncOAuthProviderConnection(
+			provider,
+			newCredentials,
+		);
 	}
 
 	// Save new credentials

@@ -19,29 +19,36 @@
 		{
 			"idx": 2,
 			"version": "7",
-			"when": 1776800458000,
-			"tag": "0002_ensure_distributed_locks",
+			"when": 1733108402000,
+			"tag": "0002_usage_metrics",
 			"breakpoints": true
 		},
 		{
 			"idx": 3,
 			"version": "7",
-			"when": 1776800459000,
-			"tag": "0003_ensure_runtime_identity_tables",
+			"when": 1733108403000,
+			"tag": "0003_execution_traces",
 			"breakpoints": true
 		},
 		{
 			"idx": 4,
 			"version": "7",
-			"when": 1776800460000,
-			"tag": "0004_reconcile_legacy_rbac_tables",
+			"when": 1733108404000,
+			"tag": "0004_workspace_config",
 			"breakpoints": true
 		},
 		{
 			"idx": 5,
 			"version": "7",
+			"when": 1733108405000,
+			"tag": "0005_revenue_attribution",
+			"breakpoints": true
+		},
+		{
+			"idx": 6,
+			"version": "7",
 			"when": 1776800461000,
-			"tag": "0005_hosted_session_storage",
+			"tag": "0006_hosted_session_storage",
 			"breakpoints": true
 		}
 	]

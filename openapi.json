@@ -718,6 +718,432 @@
         }
       }
     },
+    "/api/usage/analytics": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/usage/analytics/{period}": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "period",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/traces": {
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/traces/{id}": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/workspace-configs": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/workspace-configs/{workspaceId}": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "workspaceId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "put": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "workspaceId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "delete": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "workspaceId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/compliance/generate-report": {
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/compliance/controls": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/compliance/evidence/{controlId}": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "controlId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/attribution/record-outcome": {
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/attribution/roi/{agentId}": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "agentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/intelligent-router/decisions": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/intelligent-router/metrics": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/intelligent-router/overrides": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/intelligent-router/overrides/{taskType}": {
+      "delete": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "taskType",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/fleet": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
     "/api/background": {
       "get": {
         "summary": "Get background task status",

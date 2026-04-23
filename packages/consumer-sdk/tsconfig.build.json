@@ -1,0 +1,12 @@
+{
+	"extends": "../../tsconfig.base.json",
+	"compilerOptions": {
+		"outDir": "./dist",
+		"rootDir": "./src",
+		"composite": true,
+		"tsBuildInfoFile": "../../tmp/tsbuildinfo/consumer-sdk.tsbuildinfo"
+	},
+	"include": ["src/**/*.ts"],
+	"exclude": ["node_modules", "dist", "test"],
+	"references": [{ "path": "../contracts/tsconfig.build.json" }]
+}

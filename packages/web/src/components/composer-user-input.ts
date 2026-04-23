@@ -6,9 +6,18 @@ import type { ComposerPendingClientToolRequest } from "@evalops/contracts";
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 
+type AskUserOptionPreviewKind = "markdown" | "text" | "diff";
+
+interface AskUserOptionPreview {
+	kind: AskUserOptionPreviewKind;
+	title?: string;
+	body: string;
+}
+
 interface AskUserOption {
 	label: string;
 	description: string;
+	preview?: AskUserOptionPreview;
 }
 
 interface AskUserQuestion {
@@ -22,6 +31,41 @@ interface QuestionSelectionState {
 	selectedOptionIndexes: number[];
 	otherSelected: boolean;
 	otherText: string;
+}
+
+const PREVIEW_KINDS = new Set<AskUserOptionPreviewKind>([
+	"markdown",
+	"text",
+	"diff",
+]);
+
+function parseAskUserOptionPreview(
+	value: unknown,
+): AskUserOptionPreview | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return undefined;
+	}
+	const { kind, title, body } = value as {
+		kind?: unknown;
+		title?: unknown;
+		body?: unknown;
+	};
+	if (
+		typeof kind !== "string" ||
+		!PREVIEW_KINDS.has(kind as AskUserOptionPreviewKind)
+	) {
+		return undefined;
+	}
+	if (typeof body !== "string" || body.trim().length === 0) {
+		return undefined;
+	}
+	return {
+		kind: kind as AskUserOptionPreviewKind,
+		...(typeof title === "string" && title.trim().length > 0
+			? { title: title.trim() }
+			: {}),
+		body,
+	};
 }
 
 function parseAskUserQuestions(args: unknown): AskUserQuestion[] {
@@ -61,11 +105,21 @@ function parseAskUserQuestions(args: unknown): AskUserQuestion[] {
 			const { label, description } = option as {
 				label?: unknown;
 				description?: unknown;
+				preview?: unknown;
 			};
 			if (typeof label !== "string" || typeof description !== "string") {
 				return [];
 			}
-			return [{ label, description }];
+			const preview = parseAskUserOptionPreview(
+				(option as { preview?: unknown }).preview,
+			);
+			return [
+				{
+					label,
+					description,
+					...(preview ? { preview } : {}),
+				},
+			];
 		});
 		if (parsedOptions.length === 0) {
 			return [];
@@ -282,6 +336,47 @@ export class ComposerUserInput extends LitElement {
 
 		.option-description {
 			margin-top: 0.3rem;
+		}
+
+		.option-preview {
+			margin-top: 0.65rem;
+			padding-top: 0.65rem;
+			border-top: 1px solid #30363d;
+		}
+
+		.option-preview-title {
+			display: flex;
+			align-items: center;
+			gap: 0.4rem;
+			font-size: 0.66rem;
+			font-weight: 700;
+			color: #8b949e;
+			text-transform: uppercase;
+			letter-spacing: 0.06em;
+			margin-bottom: 0.4rem;
+		}
+
+		.option-preview-kind {
+			padding: 0.08rem 0.3rem;
+			border: 1px solid #30363d;
+			border-radius: 2px;
+			color: #3fb950;
+		}
+
+		.option-preview-body {
+			box-sizing: border-box;
+			margin: 0;
+			max-height: 12rem;
+			overflow: auto;
+			white-space: pre-wrap;
+			word-break: break-word;
+			padding: 0.55rem 0.65rem;
+			border: 1px solid #30363d;
+			border-radius: 3px;
+			background: #0b1016;
+			color: #c9d1d9;
+			font-size: 0.7rem;
+			line-height: 1.45;
 		}
 
 		.other-input {
@@ -573,6 +668,22 @@ export class ComposerUserInput extends LitElement {
 		}
 	}
 
+	private renderOptionPreview(preview?: AskUserOptionPreview) {
+		if (!preview) {
+			return "";
+		}
+		const title = preview.title ?? "Preview";
+		return html`
+			<div class="option-preview">
+				<div class="option-preview-title">
+					<span>${title}</span>
+					<span class="option-preview-kind">${preview.kind}</span>
+				</div>
+				<pre class="option-preview-body" data-preview-kind=${preview.kind}>${preview.body}</pre>
+			</div>
+		`;
+	}
+
 	override render() {
 		if (!this.request) return html``;
 
@@ -646,6 +757,7 @@ export class ComposerUserInput extends LitElement {
 																		<div class="option-card ${selected ? "selected" : ""}">
 																			<div class="option-label">${option.label}</div>
 																			<div class="option-description">${option.description}</div>
+																			${this.renderOptionPreview(option.preview)}
 																		</div>
 																	</label>
 																`;

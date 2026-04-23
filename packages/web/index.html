@@ -19,6 +19,9 @@
         })();
     </script>
 
+    <!-- Preconnect to API -->
+    <link rel="preconnect" href="http://localhost:8080">
+
     <!-- Favicon -->
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='40' fill='%2358a6ff'/></svg>">
 
@@ -209,6 +212,7 @@
 
     <!-- Main app -->
     <composer-chat
+        api-endpoint="http://localhost:8080"
         model="claude-sonnet-4-5">
     </composer-chat>
 

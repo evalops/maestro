@@ -97,6 +97,48 @@ describe("pipeline tools", () => {
 		});
 	});
 
+	it("retries transient Pipeline API failures", async () => {
+		let calls = 0;
+		const fetchMock = vi.fn(async () => {
+			calls += 1;
+			if (calls === 1) {
+				return new Response("unavailable", {
+					status: 503,
+					headers: { "Retry-After-Ms": "1" },
+				});
+			}
+			return new Response(
+				JSON.stringify({
+					items: [
+						{
+							id: "contact-1",
+							first_name: "Jane",
+							last_name: "Smith",
+						},
+					],
+				}),
+				{ status: 200 },
+			);
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		const result = await pipelineSearchContactsTool.execute("pipeline-retry", {
+			name: "Jane",
+		});
+
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(getTextOutput(result)).toContain("Found 1 Pipeline contact");
+		expect(result.details).toEqual({
+			contacts: [
+				expect.objectContaining({
+					id: "contact-1",
+					name: "Jane Smith",
+				}),
+			],
+			count: 1,
+		});
+	});
+
 	it("searches deals with structured filters", async () => {
 		const fetchMock = vi.fn().mockResolvedValue(
 			new Response(

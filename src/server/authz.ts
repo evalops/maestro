@@ -2,6 +2,7 @@ import { createHash, createHmac } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { type JWTPayload, createRemoteJWKSet, jwtVerify } from "jose";
 import {
+	authenticateRequest,
 	getRequestHeader,
 	getRequestToken,
 	secureCompare,
@@ -16,9 +17,6 @@ const JWT_JWKS_URL = process.env.MAESTRO_JWT_JWKS_URL?.trim() || null;
 const JWT_AUDIENCE = process.env.MAESTRO_JWT_AUD?.trim() || undefined;
 const JWT_ISSUER = process.env.MAESTRO_JWT_ISS?.trim() || undefined;
 const JWT_ALG = process.env.MAESTRO_JWT_ALG?.trim() || "HS256";
-const API_AUTH_CONFIGURED = Boolean(
-	WEB_API_KEY || SHARED_SECRET || JWT_SECRET || JWT_JWKS_URL,
-);
 
 function base64UrlDecode(input: string): string {
 	return Buffer.from(
@@ -92,14 +90,7 @@ export async function checkApiAuth(req: IncomingMessage): Promise<{
 		}
 		return { ok: false, error: "Unauthorized" };
 	}
-	if (API_AUTH_CONFIGURED) {
-		return { ok: false, error: "Unauthorized" };
-	}
 	return { ok: true };
-}
-
-export function isApiAuthConfigured(): boolean {
-	return API_AUTH_CONFIGURED;
 }
 
 export async function requireApiAuth(

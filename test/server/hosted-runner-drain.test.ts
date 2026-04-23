@@ -9,12 +9,16 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+	HEADLESS_PROTOCOL_VERSION,
+	createHeadlessRuntimeState,
+} from "../../src/cli/headless-protocol.js";
 import type { HostedRunnerContext } from "../../src/server/app-context.js";
 import {
-	HOSTED_RUNNER_DRAIN_PROTOCOL_VERSION,
 	HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION,
 	drainHostedRunner,
 } from "../../src/server/handlers/hosted-runner-drain.js";
+import type { HeadlessRuntimeSnapshot } from "../../src/server/headless-runtime-service.js";
 
 const tempDirs: string[] = [];
 
@@ -49,15 +53,38 @@ function hostedRunnerContext(
 	};
 }
 
+function runtimeSnapshot(
+	workspaceRoot: string,
+	cursor = 7,
+): HeadlessRuntimeSnapshot {
+	const state = createHeadlessRuntimeState();
+	state.protocol_version = HEADLESS_PROTOCOL_VERSION;
+	state.session_id = "session_123";
+	state.cwd = workspaceRoot;
+	state.model = "gpt-5.4";
+	state.provider = "openai";
+	state.last_status = "Ready";
+	state.is_ready = true;
+	return {
+		protocolVersion: HEADLESS_PROTOCOL_VERSION,
+		session_id: "session_123",
+		cursor,
+		last_init: null,
+		state,
+	};
+}
+
 describe("hosted runner drain", () => {
 	it("drains the active runtime and writes a bounded snapshot manifest", async () => {
 		const workspaceRoot = await createTempWorkspace();
 		const context = hostedRunnerContext(workspaceRoot);
+		const snapshot = runtimeSnapshot(workspaceRoot);
 		const drainRuntime = vi.fn().mockResolvedValue({
 			sessionId: "session_123",
 			sessionFile: join(workspaceRoot, ".maestro", "sessions", "session.jsonl"),
-			protocolVersion: "2026-04-02",
+			protocolVersion: HEADLESS_PROTOCOL_VERSION,
 			cursor: 7,
+			snapshot,
 		});
 
 		const result = await drainHostedRunner(
@@ -74,27 +101,34 @@ describe("hosted runner drain", () => {
 		);
 
 		expect(result?.status).toBe("drained");
+		expect(result?.runner_session_id).toBe("mrs_123");
+		expect(result?.reason).toBe("ttl_expired");
+		expect(result?.requested_by).toBe("platform");
 		expect(context.draining).toBe(true);
 		expect(drainRuntime).toHaveBeenCalledWith("session_123");
 		expect(result?.manifest).toMatchObject({
-			manifest_version: HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION,
-			protocol_version: HOSTED_RUNNER_DRAIN_PROTOCOL_VERSION,
-			status: "drained",
+			protocol_version: HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION,
 			runner_session_id: "mrs_123",
-			owner_instance_id: "pod_123",
 			workspace_id: "ws_123",
 			agent_run_id: "ar_123",
 			maestro_session_id: "session_123",
-			workspace_root: workspaceRoot,
-			stop_reason: "ttl_expired",
+			reason: "ttl_expired",
 			requested_by: "platform",
+			created_at: "2026-04-23T00:00:00.000Z",
+			workspace_root: workspaceRoot,
 			runtime: {
 				flush_status: "completed",
 				session_id: "session_123",
-				protocol_version: "2026-04-02",
+				protocol_version: HEADLESS_PROTOCOL_VERSION,
 				cursor: 7,
 			},
+			snapshot,
 		});
+		expect(result?.manifest).not.toHaveProperty("manifest_version");
+		expect(result?.manifest).not.toHaveProperty("status");
+		expect(result?.manifest).not.toHaveProperty("snapshot_root");
+		expect(result?.manifest).not.toHaveProperty("snapshot_path");
+		expect(result?.manifest).not.toHaveProperty("stop_reason");
 		expect(result?.manifest.workspace_export.paths).toEqual([
 			{
 				input: ".",
@@ -134,15 +168,66 @@ describe("hosted runner drain", () => {
 
 		expect(result?.status).toBe("interrupted");
 		expect(context.draining).toBe(true);
+		expect(result?.manifest.protocol_version).toBe(
+			HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION,
+		);
+		expect(result?.manifest.maestro_session_id).toBe("session_123");
 		expect(result?.manifest.runtime).toMatchObject({
 			flush_status: "failed",
 			session_id: "session_123",
 			error: "flush timed out",
 		});
+		expect(result?.manifest.snapshot).toMatchObject({
+			protocolVersion: HEADLESS_PROTOCOL_VERSION,
+			session_id: "session_123",
+			cursor: 0,
+			state: {
+				is_ready: false,
+				last_status: "Drain interrupted before runtime flush completed",
+				last_error: "flush timed out",
+				last_error_type: "protocol",
+			},
+		});
 		const persisted = JSON.parse(
 			await readFile(result!.manifest_path, "utf8"),
-		) as { status: string };
-		expect(persisted.status).toBe("interrupted");
+		) as Record<string, unknown>;
+		expect(persisted).not.toHaveProperty("status");
+		expect(persisted).toEqual(result?.manifest);
+	});
+
+	it("records a skipped manifest when no runtime state is available", async () => {
+		const workspaceRoot = await createTempWorkspace();
+		const context = hostedRunnerContext(workspaceRoot);
+		const drainRuntime = vi.fn().mockResolvedValue(null);
+
+		const result = await drainHostedRunner(
+			{ reason: "empty-runtime" },
+			{
+				hostedRunner: context,
+				drainRuntime,
+				now: () => new Date("2026-04-23T00:02:00.000Z"),
+			},
+		);
+
+		expect(result?.status).toBe("drained");
+		expect(result?.manifest).toMatchObject({
+			protocol_version: HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION,
+			maestro_session_id: "session_123",
+			reason: "empty-runtime",
+			runtime: {
+				flush_status: "skipped",
+				session_id: "session_123",
+			},
+			snapshot: {
+				protocolVersion: HEADLESS_PROTOCOL_VERSION,
+				session_id: "session_123",
+				cursor: 0,
+				state: {
+					is_ready: false,
+					last_status: "Drain skipped: no runtime activity was available",
+				},
+			},
+		});
 	});
 
 	it("rejects export paths outside the hosted workspace root", async () => {

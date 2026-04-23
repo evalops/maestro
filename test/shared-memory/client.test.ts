@@ -150,6 +150,44 @@ describe("shared-memory client", () => {
 		expect(parsed?.state?.maestro?.baz).toBe("qux");
 	});
 
+	it("retries transient capabilities failures before syncing", async () => {
+		let capabilitiesCalls = 0;
+		let syncBody: unknown = null;
+		const fetchMock = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
+			const url = typeof input === "string" ? input : input.toString();
+			if (url.endsWith("/capabilities")) {
+				capabilitiesCalls += 1;
+				if (capabilitiesCalls === 1) {
+					return new Response("unavailable", {
+						status: 503,
+						headers: { "Retry-After-Ms": "1" },
+					});
+				}
+				return createCapabilitiesResponse({ max_events_batch: 5 });
+			}
+			if (url.includes("/sync")) {
+				syncBody = init?.body ?? null;
+				return new Response("", { status: 200 });
+			}
+			return new Response("", { status: 200 });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		const { queueSharedMemoryUpdate } = await import(
+			"../../src/shared-memory/client.js"
+		);
+		queueSharedMemoryUpdate({
+			sessionId: "session-a",
+			state: { foo: "bar" },
+		});
+
+		await vi.advanceTimersByTimeAsync(1000);
+
+		expect(capabilitiesCalls).toBe(2);
+		const parsed = syncBody ? JSON.parse(String(syncBody)) : null;
+		expect(parsed?.state?.maestro?.foo).toBe("bar");
+	});
+
 	it("backs off with retry-after on rate limiting", async () => {
 		let syncCalls = 0;
 		const fetchMock = vi.fn(async (input: RequestInfo, init?: RequestInit) => {

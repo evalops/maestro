@@ -10,6 +10,9 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentToolResult } from "../../src/agent/types.js";
+import { collectDiagnostics } from "../../src/lsp/index.js";
+import type { LspDiagnostic } from "../../src/lsp/types.js";
+import { runValidatorsOnSuccess } from "../../src/safety/safe-mode.js";
 import { writeTool } from "../../src/tools/write.js";
 
 // Mock the safe-mode module to avoid plan mode checks in tests
@@ -35,6 +38,18 @@ function getTextOutput(result: AgentToolResult<unknown>): string {
 			.map((c) => c.text)
 			.join("\n") || ""
 	);
+}
+
+function diagnostic(message: string, line: number): LspDiagnostic {
+	return {
+		message,
+		severity: 1,
+		source: "typescript",
+		range: {
+			start: { line, character: 0 },
+			end: { line, character: 1 },
+		},
+	};
 }
 
 describe("write tool", () => {
@@ -445,6 +460,80 @@ describe("write tool", () => {
 			expect(result.isError).toBeFalsy();
 			const written = readFileSync(filePath, "utf-8");
 			expect(written.split("\n")).toHaveLength(10000);
+		});
+	});
+
+	describe("LSP diagnostic deltas", () => {
+		it("reports and validates only newly introduced diagnostics", async () => {
+			const filePath = join(testDir, "delta.ts");
+			writeFileSync(filePath, "const value = 1;\n");
+			const existing = diagnostic("pre-existing type error", 0);
+			const introduced = diagnostic("new type error", 1);
+
+			vi.mocked(collectDiagnostics)
+				.mockResolvedValueOnce({ [filePath]: [existing] })
+				.mockResolvedValueOnce({ [filePath]: [existing, introduced] });
+
+			const result = await writeTool.execute("write-delta", {
+				path: filePath,
+				content: "const value = 1;\nconst next: string = 2;\n",
+			});
+
+			expect(result.isError).toBeFalsy();
+			const output = getTextOutput(result);
+			expect(output).toContain("new type error");
+			expect(output).not.toContain("pre-existing type error");
+			expect(output).toContain("Diagnostic delta: 1 introduced, 0 repaired");
+			expect(
+				(
+					result.details as {
+						diagnosticDelta?: {
+							introducedCount: number;
+							repair: { shouldFollowUp: boolean };
+						};
+					}
+				).diagnosticDelta,
+			).toMatchObject({
+				introducedCount: 1,
+				repair: { shouldFollowUp: true },
+			});
+			expect(runValidatorsOnSuccess).toHaveBeenLastCalledWith([filePath], {
+				[filePath]: [introduced],
+			});
+		});
+
+		it("falls back to current diagnostics when baseline capture fails", async () => {
+			const filePath = join(testDir, "fallback.ts");
+			writeFileSync(filePath, "const value = 1;\n");
+			const current = diagnostic("current diagnostic", 0);
+
+			vi.mocked(collectDiagnostics)
+				.mockRejectedValueOnce(new Error("lsp unavailable"))
+				.mockResolvedValueOnce({ [filePath]: [current] });
+
+			const result = await writeTool.execute("write-delta-fallback", {
+				path: filePath,
+				content: "const value: string = 1;\n",
+			});
+
+			expect(result.isError).toBeFalsy();
+			expect(getTextOutput(result)).toContain("current diagnostic");
+			expect(
+				(
+					result.details as {
+						diagnosticDelta?: {
+							usedDelta: boolean;
+							repair: { shouldFollowUp: boolean };
+						};
+					}
+				).diagnosticDelta,
+			).toMatchObject({
+				usedDelta: false,
+				repair: { shouldFollowUp: false },
+			});
+			expect(runValidatorsOnSuccess).toHaveBeenLastCalledWith([filePath], {
+				[filePath]: [current],
+			});
 		});
 	});
 

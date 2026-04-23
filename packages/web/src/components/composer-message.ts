@@ -93,6 +93,7 @@ function ensureHljsLoaded(): void {
 			for (const listener of hljsLoadListeners) listener();
 		})
 		.catch(() => {
+			hljsLoadPromise = undefined;
 			// Best-effort: if highlighting fails to load, render without it.
 		});
 }

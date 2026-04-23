@@ -19,12 +19,14 @@ import { handleChat } from "./handlers/chat.js";
 import { handleClientToolResult } from "./handlers/client-tools.js";
 import { handleCommandPrefs } from "./handlers/command-prefs.js";
 import { handleCommands } from "./handlers/commands.js";
+import { handleCompliance } from "./handlers/compliance.js";
 import { handleComposer } from "./handlers/composer.js";
 import { handleConfig } from "./handlers/config.js";
 import { handleContext } from "./handlers/context.js";
 import { handleCost } from "./handlers/cost.js";
 import { handleDiagnostics } from "./handlers/diagnostics.js";
 import { handleFiles } from "./handlers/files.js";
+import { handleFleet } from "./handlers/fleet.js";
 import { handleFramework } from "./handlers/framework.js";
 import {
 	handleGuardianConfig,
@@ -51,6 +53,7 @@ import {
 	HOSTED_RUNNER_IDENTITY_PATH,
 	handleHostedRunnerIdentity,
 } from "./handlers/hosted-runner-identity.js";
+import { handleIntelligentRouter } from "./handlers/intelligent-router.js";
 import { handleLsp } from "./handlers/lsp.js";
 import { handleMcpStatus } from "./handlers/mcp.js";
 import { handleMemory } from "./handlers/memory.js";
@@ -64,6 +67,7 @@ import { handlePreview } from "./handlers/preview.js";
 import { handlePromptSuggestion } from "./handlers/prompt-suggestion.js";
 import { handleQueue } from "./handlers/queue.js";
 import { handleQuota } from "./handlers/quota.js";
+import { handleRevenueAttribution } from "./handlers/revenue-attribution.js";
 import { handleReview } from "./handlers/review.js";
 import { handleRun } from "./handlers/run.js";
 import {
@@ -90,12 +94,15 @@ import { handleStatus } from "./handlers/status.js";
 import { handleTelemetry } from "./handlers/telemetry.js";
 import { handleToolRetry } from "./handlers/tool-retry.js";
 import { handleTools } from "./handlers/tools.js";
+import { handleTraces } from "./handlers/traces.js";
 import { handleTraining } from "./handlers/training.js";
 import { handleUI } from "./handlers/ui.js";
 import { handleChanges } from "./handlers/undo.js";
 import { handleUndo } from "./handlers/undo.js";
+import { handleUsageAnalytics } from "./handlers/usage-analytics.js";
 import { handleUsage } from "./handlers/usage.js";
 import { handleWorkflow } from "./handlers/workflow.js";
+import { handleWorkspaceConfig } from "./handlers/workspace-config.js";
 import { handleZen } from "./handlers/zen.js";
 import { getPrometheusMetrics } from "./logger.js";
 import { requestTracker } from "./request-tracker.js";
@@ -324,6 +331,129 @@ export function createRoutes(context: WebServerContext): Route[] {
 			method: "GET",
 			path: "/api/usage",
 			handler: (req, res) => handleUsage(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/usage/analytics",
+			handler: (req, res) => handleUsageAnalytics(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/usage/analytics/:period",
+			handler: (req, res, params) =>
+				handleUsageAnalytics(req, res, corsHeaders, params),
+		},
+		{
+			method: "POST",
+			path: "/api/traces",
+			handler: (req, res) => handleTraces(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/traces",
+			handler: (req, res) => handleTraces(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/traces/:id",
+			handler: (req, res, params) =>
+				handleTraces(req, res, corsHeaders, params),
+		},
+		{
+			method: "GET",
+			path: "/api/workspace-configs",
+			handler: (req, res) => handleWorkspaceConfig(req, res, corsHeaders),
+		},
+		{
+			method: "POST",
+			path: "/api/workspace-configs",
+			handler: (req, res) => handleWorkspaceConfig(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/workspace-configs/:workspaceId",
+			handler: (req, res, params) =>
+				handleWorkspaceConfig(req, res, corsHeaders, params),
+		},
+		{
+			method: "PUT",
+			path: "/api/workspace-configs/:workspaceId",
+			handler: (req, res, params) =>
+				handleWorkspaceConfig(req, res, corsHeaders, params),
+		},
+		{
+			method: "DELETE",
+			path: "/api/workspace-configs/:workspaceId",
+			handler: (req, res, params) =>
+				handleWorkspaceConfig(req, res, corsHeaders, params),
+		},
+		{
+			method: "POST",
+			path: "/api/compliance/generate-report",
+			handler: (req, res) => handleCompliance(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/compliance/controls",
+			handler: (req, res) => handleCompliance(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/compliance/evidence/:controlId",
+			handler: (req, res, params) =>
+				handleCompliance(req, res, corsHeaders, params),
+		},
+		{
+			method: "POST",
+			path: "/api/attribution/record-outcome",
+			handler: (req, res) => handleRevenueAttribution(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/attribution/roi/:agentId",
+			handler: (req, res, params) =>
+				handleRevenueAttribution(req, res, corsHeaders, params),
+		},
+		{
+			method: "GET",
+			path: "/api/intelligent-router/decisions",
+			handler: (req, res) => handleIntelligentRouter(req, res, corsHeaders),
+		},
+		{
+			method: "POST",
+			path: "/api/intelligent-router/decisions",
+			handler: (req, res) => handleIntelligentRouter(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/intelligent-router/metrics",
+			handler: (req, res) => handleIntelligentRouter(req, res, corsHeaders),
+		},
+		{
+			method: "POST",
+			path: "/api/intelligent-router/metrics",
+			handler: (req, res) => handleIntelligentRouter(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/intelligent-router/overrides",
+			handler: (req, res) => handleIntelligentRouter(req, res, corsHeaders),
+		},
+		{
+			method: "POST",
+			path: "/api/intelligent-router/overrides",
+			handler: (req, res) => handleIntelligentRouter(req, res, corsHeaders),
+		},
+		{
+			method: "DELETE",
+			path: "/api/intelligent-router/overrides/:taskType",
+			handler: (req, res, params) =>
+				handleIntelligentRouter(req, res, corsHeaders, params),
+		},
+		{
+			method: "GET",
+			path: "/api/fleet",
+			handler: (req, res) => handleFleet(req, res, context),
 		},
 		{
 			method: "GET",

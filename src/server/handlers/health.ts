@@ -1,10 +1,10 @@
 import { stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { isDatabaseConfigured, testConnection } from "../../db/client.js";
 import {
-	isDatabaseConfigured,
-	isDbAvailable,
-	testConnection,
-} from "../../db/client.js";
+	CRITICAL_DATABASE_TABLES,
+	checkCriticalTables,
+} from "../../db/health.js";
 import type { HostedRunnerContext } from "../app-context.js";
 import { sendJson } from "../server-utils.js";
 
@@ -14,6 +14,12 @@ export interface HealthCheckResult {
 		database: {
 			status: "up" | "down" | "unconfigured";
 			latencyMs?: number;
+			criticalTables?: {
+				status: "ok" | "missing" | "error";
+				checked: string[];
+				missing: string[];
+				error?: string;
+			};
 		};
 		hostedRunner?: {
 			status: "ready" | "draining" | "unavailable";
@@ -105,9 +111,6 @@ export async function runHealthChecks(
 	if (!isDatabaseConfigured()) {
 		checks.database.status = "unconfigured";
 		// unconfigured is acceptable - some deployments don't use enterprise features
-	} else if (!isDbAvailable()) {
-		checks.database.status = "down";
-		overallStatus = "degraded";
 	} else {
 		const start = performance.now();
 		const connected = await testConnection();
@@ -115,6 +118,28 @@ export async function runHealthChecks(
 
 		if (connected) {
 			checks.database.status = "up";
+			try {
+				const tableChecks = await checkCriticalTables();
+				const missing = tableChecks
+					.filter((table) => !table.exists)
+					.map((table) => table.name);
+				checks.database.criticalTables = {
+					status: missing.length > 0 ? "missing" : "ok",
+					checked: tableChecks.map((table) => table.name),
+					missing,
+				};
+				if (missing.length > 0) {
+					overallStatus = "unhealthy";
+				}
+			} catch (error) {
+				checks.database.criticalTables = {
+					status: "error",
+					checked: [...CRITICAL_DATABASE_TABLES],
+					missing: [...CRITICAL_DATABASE_TABLES],
+					error: error instanceof Error ? error.message : String(error),
+				};
+				overallStatus = "unhealthy";
+			}
 		} else {
 			checks.database.status = "down";
 			overallStatus = "degraded";

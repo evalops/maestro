@@ -211,7 +211,7 @@ maestro --approval-mode fail
 **Mitigations:**
 | Control | Location | Description |
 |---------|----------|-------------|
-| Lockfile Pinning | `package-lock.json`, `bun.lockb` | Exact version pinning |
+| Lockfile Pinning | `bun.lockb` | Exact version pinning |
 | Guardian CI | `.github/workflows/` | Semgrep security scanning in CI |
 | MCP Isolation | Per-server processes | MCP servers run in separate processes |
 | Dependency Audit | `npm audit` | Regular vulnerability scanning |

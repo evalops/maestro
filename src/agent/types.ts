@@ -33,6 +33,7 @@
 
 import type { TSchema } from "@sinclair/typebox";
 import type { PromptMetadata } from "../prompts/types.js";
+import type { CheckpointProfiler } from "../utils/checkpoint-profiler.js";
 import type {
 	ActionApprovalDecision,
 	ActionApprovalRequest,
@@ -1134,6 +1135,36 @@ export type AgentEvent =
 			isError: boolean;
 	  }
 	| {
+			/** LSP diagnostic delta produced by an edit/write tool call */
+			type: "diagnostic_delta";
+			/** Tool call identifier */
+			toolCallId: string;
+			/** Name of the tool */
+			toolName: string;
+			/** File affected by the diagnostic delta */
+			file: string;
+			/** User-facing file path from the tool call */
+			displayPath: string;
+			/** Whether a pre-edit baseline was available */
+			usedDelta: boolean;
+			/** Newly introduced diagnostic count */
+			introducedCount: number;
+			/** Diagnostics repaired by the tool call */
+			repairedCount: number;
+			/** Remaining diagnostics for the affected file */
+			remainingCount: number;
+			/** Stable fingerprint for introduced diagnostics */
+			fingerprint: string;
+			/** Repair attempt number for this fingerprint */
+			repairAttempt?: number;
+			/** Maximum automatic repair attempts for this fingerprint */
+			maxRepairAttempts?: number;
+			/** Whether Agent queued a follow-up repair turn */
+			willAutoFollowUp: boolean;
+			/** Why a repair follow-up was or was not queued */
+			reason: string;
+	  }
+	| {
 			/** Summary emitted after the final tool in a batch completes */
 			type: "tool_batch_summary";
 			/** Stable one-line summary of what the completed tool batch did */
@@ -1334,6 +1365,8 @@ export interface AgentRunConfig {
 	};
 	/** Optional helper function for running LLM queries (e.g., for summarization) */
 	runLLM?: (systemPrompt: string, userPrompt: string) => Promise<string>;
+	/** Optional debug checkpoint profiler for local query latency diagnostics. */
+	queryProfiler?: CheckpointProfiler;
 	/** Optional sandbox for isolated tool execution */
 	sandbox?: import("../sandbox/types.js").Sandbox;
 	/** Sampling temperature override (0.0-2.0, lower = more deterministic) */

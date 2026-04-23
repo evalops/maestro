@@ -336,6 +336,15 @@ export class AgentContextManager {
 	}
 
 	/**
+	 * Clear cached session-scoped source output after context rewrites.
+	 */
+	clearSessionCache(): number {
+		const cleared = this.sourceCache.size;
+		this.sourceCache.clear();
+		return cleared;
+	}
+
+	/**
 	 * Check if a source is enabled.
 	 */
 	isSourceEnabled(name: string): boolean {

@@ -310,6 +310,11 @@ describe("headless protocol helpers", () => {
 								{
 									label: "Zod",
 									description: "Use Zod schemas",
+									preview: {
+										kind: "diff",
+										title: "Zod dependency",
+										body: 'diff --git a/package.json b/package.json\n+"zod": "latest"',
+									},
 								},
 							],
 						},
@@ -330,6 +335,11 @@ describe("headless protocol helpers", () => {
 								{
 									label: "Zod",
 									description: "Use Zod schemas",
+									preview: {
+										kind: "diff",
+										title: "Zod dependency",
+										body: 'diff --git a/package.json b/package.json\n+"zod": "latest"',
+									},
 								},
 							],
 						},
@@ -351,6 +361,11 @@ describe("headless protocol helpers", () => {
 								{
 									label: "Zod",
 									description: "Use Zod schemas",
+									preview: {
+										kind: "diff",
+										title: "Zod dependency",
+										body: 'diff --git a/package.json b/package.json\n+"zod": "latest"',
+									},
 								},
 							],
 						},

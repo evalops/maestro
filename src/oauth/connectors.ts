@@ -1,3 +1,11 @@
+import {
+	type RemoteConnectorConnection,
+	type RemoteSourceOfTruthPolicy,
+	refreshRemoteConnection,
+	registerRemoteConnection,
+	revokeRemoteConnection,
+	setRemoteSourceOfTruthPolicy,
+} from "../connectors/service-client.js";
 import type { SupportedOAuthProvider } from "./index.js";
 import {
 	type OAuthCredentials,
@@ -16,6 +24,14 @@ const CONNECTOR_PROVIDER_BY_OAUTH_PROVIDER: Record<
 	"google-antigravity": "google",
 	"google-gemini-cli": "google",
 	openai: "x-evalops:openai",
+};
+
+const DISPLAY_NAME_BY_OAUTH_PROVIDER: Record<ConnectorOAuthProvider, string> = {
+	anthropic: "Anthropic OAuth",
+	"github-copilot": "GitHub Copilot OAuth",
+	"google-antigravity": "Google Antigravity OAuth",
+	"google-gemini-cli": "Google Gemini CLI OAuth",
+	openai: "OpenAI OAuth",
 };
 
 export const CONNECTOR_SOURCE_OF_TRUTH_AREAS = [
@@ -70,16 +86,6 @@ function trimString(value: string | undefined): string | undefined {
 	return trimmed ? trimmed : undefined;
 }
 
-function getMetadataString(
-	metadata: Record<string, unknown> | undefined,
-	key: string,
-): string | undefined {
-	const value = metadata?.[key];
-	return typeof value === "string" && value.trim().length > 0
-		? value.trim()
-		: undefined;
-}
-
 export function normalizeConnectorSourceOfTruthArea(
 	area: string,
 ): ConnectorSourceOfTruthArea | null {
@@ -98,6 +104,194 @@ export function normalizeConnectorSourceOfTruthArea(
 		}
 	}
 	return null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function getMetadataString(
+	metadata: Record<string, unknown> | undefined,
+	key: string,
+): string | undefined {
+	const value = metadata?.[key];
+	return typeof value === "string" && value.trim().length > 0
+		? value.trim()
+		: undefined;
+}
+
+function getMetadataStringArray(
+	metadata: Record<string, unknown> | undefined,
+	key: string,
+): string[] | undefined {
+	const value = metadata?.[key];
+	if (!Array.isArray(value)) {
+		return undefined;
+	}
+	const entries = value
+		.filter((entry): entry is string => typeof entry === "string")
+		.map((entry) => entry.trim())
+		.filter((entry) => entry.length > 0);
+	return entries.length > 0 ? entries : undefined;
+}
+
+function getMetadataStringMap(
+	metadata: Record<string, unknown> | undefined,
+	key: string,
+): Record<string, string> | undefined {
+	const value = metadata?.[key];
+	if (!isRecord(value)) {
+		return undefined;
+	}
+	const entries = Object.entries(value)
+		.map(
+			([entryKey, entryValue]) =>
+				[
+					entryKey.trim(),
+					typeof entryValue === "string" ? entryValue.trim() : "",
+				] as const,
+		)
+		.filter(([entryKey, entryValue]) => entryKey && entryValue);
+	return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+function mergeConnectionMetadata(
+	credentials: OAuthCredentials,
+	connection: RemoteConnectorConnection | null,
+	providerId: string,
+): OAuthCredentials {
+	if (!connection) {
+		return credentials;
+	}
+	return {
+		...credentials,
+		metadata: {
+			...credentials.metadata,
+			connectorConnectionId: connection.id,
+			connectorHealthStatus: connection.healthStatus,
+			connectorProviderId: connection.providerId || providerId,
+			connectorUpdatedAt: connection.updatedAt,
+			connectorWorkspaceId: connection.workspaceId,
+		},
+	};
+}
+
+function getSourceOfTruthArea(
+	metadata: Record<string, unknown> | undefined,
+): string | undefined {
+	return (
+		getMetadataString(metadata, "connectorSourceOfTruthArea") ??
+		getMetadataString(metadata, "sourceOfTruthArea")
+	);
+}
+
+function getSourceOfTruthFallbackConnectionId(
+	metadata: Record<string, unknown> | undefined,
+): string | undefined {
+	return (
+		getMetadataString(metadata, "connectorSourceOfTruthFallbackConnectionId") ??
+		getMetadataString(metadata, "sourceOfTruthFallbackConnectionId")
+	);
+}
+
+function mergeSourceOfTruthPolicyMetadata(
+	credentials: OAuthCredentials,
+	policy: RemoteSourceOfTruthPolicy | null,
+): OAuthCredentials {
+	if (!policy) {
+		return credentials;
+	}
+	return {
+		...credentials,
+		metadata: {
+			...credentials.metadata,
+			connectorSourceOfTruthArea: policy.area,
+			connectorSourceOfTruthPrimaryConnectionId: policy.primaryConnectionId,
+			connectorSourceOfTruthWorkspaceId: policy.workspaceId,
+			...(policy.fallbackConnectionId
+				? {
+						connectorSourceOfTruthFallbackConnectionId:
+							policy.fallbackConnectionId,
+					}
+				: {}),
+		},
+	};
+}
+
+async function syncSourceOfTruthPolicy(
+	credentials: OAuthCredentials,
+	connection: RemoteConnectorConnection | null,
+): Promise<OAuthCredentials> {
+	if (!connection) {
+		return credentials;
+	}
+	const area = getSourceOfTruthArea(credentials.metadata);
+	if (!area) {
+		return credentials;
+	}
+
+	const policy = await setRemoteSourceOfTruthPolicy({
+		workspaceId: connection.workspaceId,
+		area,
+		primaryConnectionId: connection.id,
+		fallbackConnectionId: getSourceOfTruthFallbackConnectionId(
+			credentials.metadata,
+		),
+	});
+	return mergeSourceOfTruthPolicyMetadata(credentials, policy);
+}
+
+export async function syncOAuthProviderConnection(
+	provider: SupportedOAuthProvider,
+	credentials: OAuthCredentials,
+): Promise<OAuthCredentials> {
+	if (!isConnectorOAuthProvider(provider)) {
+		return credentials;
+	}
+
+	const providerId = CONNECTOR_PROVIDER_BY_OAUTH_PROVIDER[provider];
+	const connectionId = getMetadataString(
+		credentials.metadata,
+		"connectorConnectionId",
+	);
+	if (connectionId) {
+		const connection = await refreshRemoteConnection(connectionId);
+		return syncSourceOfTruthPolicy(
+			mergeConnectionMetadata(credentials, connection, providerId),
+			connection,
+		);
+	}
+
+	const connection = await registerRemoteConnection({
+		providerId,
+		displayName: DISPLAY_NAME_BY_OAUTH_PROVIDER[provider],
+		authType: "AUTH_TYPE_OAUTH2",
+		scopes: getMetadataStringArray(credentials.metadata, "scopes"),
+		credentials: getMetadataStringMap(
+			credentials.metadata,
+			"connectorCredentialRefs",
+		),
+	});
+	return syncSourceOfTruthPolicy(
+		mergeConnectionMetadata(credentials, connection, providerId),
+		connection,
+	);
+}
+
+export async function syncStoredOAuthProviderConnection(
+	provider: SupportedOAuthProvider,
+): Promise<void> {
+	if (!isConnectorOAuthProvider(provider)) {
+		return;
+	}
+	const credentials = loadOAuthCredentials(provider);
+	if (!credentials) {
+		return;
+	}
+	const synced = await syncOAuthProviderConnection(provider, credentials);
+	if (synced !== credentials) {
+		saveOAuthCredentials(provider, synced);
+	}
 }
 
 export async function configureOAuthProviderSourceOfTruthPolicy(
@@ -135,20 +329,20 @@ export async function configureOAuthProviderSourceOfTruthPolicy(
 	}
 
 	saveOAuthCredentials(provider, { ...credentials, metadata });
-	const saved =
-		loadOAuthCredentials(provider) ??
-		({ ...credentials, metadata } satisfies OAuthCredentials);
-	const savedMetadata = saved.metadata ?? {};
+	await syncStoredOAuthProviderConnection(provider);
+
+	const synced = loadOAuthCredentials(provider) ?? { ...credentials, metadata };
+	const syncedMetadata = synced.metadata ?? {};
 	const connectorConnectionId = getMetadataString(
-		savedMetadata,
+		syncedMetadata,
 		"connectorConnectionId",
 	);
 	const primaryConnectionId = getMetadataString(
-		savedMetadata,
+		syncedMetadata,
 		"connectorSourceOfTruthPrimaryConnectionId",
 	);
 	const workspaceId = getMetadataString(
-		savedMetadata,
+		syncedMetadata,
 		"connectorSourceOfTruthWorkspaceId",
 	);
 	return {
@@ -185,5 +379,22 @@ export function clearOAuthProviderSourceOfTruthPolicy(
 		delete metadata[key];
 	}
 	saveOAuthCredentials(provider, { ...credentials, metadata });
-	return true;
+	return hadPolicyMetadata;
+}
+
+export async function revokeOAuthProviderConnection(
+	provider: SupportedOAuthProvider,
+	credentials: OAuthCredentials | null,
+): Promise<void> {
+	if (!isConnectorOAuthProvider(provider)) {
+		return;
+	}
+	const connectionId = getMetadataString(
+		credentials?.metadata,
+		"connectorConnectionId",
+	);
+	if (!connectionId) {
+		return;
+	}
+	await revokeRemoteConnection(connectionId);
 }

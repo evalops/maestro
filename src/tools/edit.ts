@@ -41,7 +41,15 @@ import { constants } from "node:fs";
 import { access, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { resolve as resolvePath } from "node:path";
 import { Type } from "@sinclair/typebox";
-import { collectDiagnostics } from "../lsp/index.js";
+import {
+	captureDiagnosticBaseline,
+	collectDiagnosticDelta,
+} from "../lsp/diagnostic-deltas.js";
+import {
+	type DiagnosticDeltaToolSummary,
+	buildDiagnosticDeltaToolSummary,
+	formatDiagnosticDeltaForToolOutput,
+} from "../lsp/diagnostic-repair.js";
 import { assertTeamMemoryContentSafe } from "../memory/team-memory.js";
 import {
 	requirePlanCheck,
@@ -171,6 +179,7 @@ type EditToolDetails = {
 	diff: string;
 	editsApplied?: number;
 	validators?: ValidatorRunResult[];
+	diagnosticDelta?: DiagnosticDeltaToolSummary;
 	mode?: "sandbox";
 };
 
@@ -406,18 +415,29 @@ If "not found", read file to check actual content.`,
 				});
 		}
 
+		const diagnosticBaseline = await captureDiagnosticBaseline(absolutePath);
+		throwIfAborted();
+
 		await writeFileAtomically(absolutePath, newContent);
 		let validatorSummaries: ValidatorRunResult[] | undefined;
 		let linterOutput = "";
+		let diagnosticDeltaSummary: DiagnosticDeltaToolSummary | undefined;
 		try {
-			const lspDiagnostics = await collectDiagnostics();
-			const fileDiagnostics = lspDiagnostics[absolutePath] || [];
-			if (fileDiagnostics.length > 0) {
-				linterOutput = formatLspDiagnostics(path, fileDiagnostics);
+			const diagnosticDelta = await collectDiagnosticDelta(diagnosticBaseline);
+			diagnosticDeltaSummary = buildDiagnosticDeltaToolSummary({
+				file: absolutePath,
+				displayPath: path,
+				result: diagnosticDelta,
+			});
+			const visibleDiagnostics = diagnosticDelta.usedDelta
+				? diagnosticDelta.newDiagnostics
+				: diagnosticDelta.fileDiagnostics;
+			if (visibleDiagnostics.length > 0) {
+				linterOutput = formatLspDiagnostics(path, visibleDiagnostics);
 			}
 			validatorSummaries = await runValidatorsOnSuccess(
 				[absolutePath],
-				lspDiagnostics,
+				diagnosticDelta.validatorDiagnostics,
 			);
 		} catch (validatorError) {
 			await writeFileAtomically(absolutePath, originalContent);
@@ -433,11 +453,22 @@ If "not found", read file to check actual content.`,
 				: `Successfully edited ${path}.`;
 
 		return respond
-			.text(linterOutput ? `${resultMessage}\n${linterOutput}` : resultMessage)
+			.text(
+				[
+					resultMessage,
+					linterOutput,
+					diagnosticDeltaSummary
+						? formatDiagnosticDeltaForToolOutput(diagnosticDeltaSummary)
+						: "",
+				]
+					.filter(Boolean)
+					.join("\n"),
+			)
 			.detail({
 				diff,
 				editsApplied: hasMultiEdit ? replacementCount : undefined,
 				validators: validatorSummaries,
+				diagnosticDelta: diagnosticDeltaSummary,
 			});
 	},
 });
