@@ -500,9 +500,7 @@ function summarizeArgs(args: unknown): string | undefined {
 	return `${serialized.slice(0, 397)}...`;
 }
 
-function pendingRequest(
-	state: HeadlessRuntimeState,
-): {
+function pendingRequest(state: HeadlessRuntimeState): {
 	kind: "approval" | "user_input" | "tool_retry";
 	request: HeadlessPendingApprovalState;
 } | null {
