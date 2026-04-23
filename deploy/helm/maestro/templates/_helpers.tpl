@@ -42,12 +42,8 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 Service account name
 */}}
 {{- define "maestro.serviceAccountName" -}}
-{{- if .Values.serviceAccount }}
-{{- if .Values.serviceAccount.name }}
+{{- if and .Values.serviceAccount .Values.serviceAccount.name }}
 {{- .Values.serviceAccount.name }}
-{{- else }}
-{{- include "maestro.fullname" . }}
-{{- end }}
 {{- else }}
 {{- include "maestro.fullname" . }}
 {{- end }}
@@ -60,7 +56,12 @@ durable owner router; otherwise clients can land on a pod that does not own the
 runtime state for /api/headless/* or /api/chat/ws.
 */}}
 {{- define "maestro.validateHeadlessRuntimeRouting" -}}
+{{- $autoscaling := default dict (get .Values "autoscaling") -}}
+{{- $autoscalingEnabled := default false (get $autoscaling "enabled") -}}
 {{- $replicas := int (default 1 .Values.replicaCount) -}}
+{{- if $autoscalingEnabled -}}
+{{- $replicas = int (default 1 (get $autoscaling "maxReplicas")) -}}
+{{- end -}}
 {{- $headlessRuntime := default dict (get .Values "headlessRuntime") -}}
 {{- $routing := default dict (get $headlessRuntime "routing") -}}
 {{- $routingMode := default "single-replica" (get $routing "mode") -}}
@@ -69,6 +70,6 @@ runtime state for /api/headless/* or /api/chat/ws.
 {{- fail (printf "headlessRuntime.routing.mode must be one of %s, got %q" (join ", " $validModes) $routingMode) -}}
 {{- end -}}
 {{- if and (gt $replicas 1) (eq $routingMode "single-replica") -}}
-{{- fail "replicaCount > 1 requires headlessRuntime.routing.mode to be sticky-session or durable-owner so /api/headless/* and /api/chat/ws stay on the owning runtime pod" -}}
+{{- fail "replicaCount or autoscaling.maxReplicas > 1 requires headlessRuntime.routing.mode to be sticky-session or durable-owner so /api/headless/* and /api/chat/ws stay on the owning runtime pod" -}}
 {{- end -}}
 {{- end }}
