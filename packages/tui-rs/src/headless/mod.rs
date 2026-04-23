@@ -246,7 +246,8 @@ pub use session::{
 
 // Supervisor with reconnection
 pub use supervisor::{
-    AgentSupervisor, HealthStatus, SupervisorBuilder, SupervisorConfig, SupervisorEvent,
+    agent_event_to_message, AgentSupervisor, HealthStatus, SupervisorBuilder, SupervisorConfig,
+    SupervisorEvent,
 };
 
 // Message framing

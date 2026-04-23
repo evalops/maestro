@@ -516,6 +516,27 @@ impl AgentSupervisor {
         Ok(())
     }
 
+    /// Send a protocol message and drain any agent messages that are already available.
+    pub fn send_and_drain_agent_messages(
+        &mut self,
+        msg: ToAgentMessage,
+    ) -> Result<Vec<FromAgentMessage>, AsyncTransportError> {
+        self.send(msg)?;
+        Ok(self.drain_available_agent_messages())
+    }
+
+    /// Drain currently available supervisor agent events as headless protocol messages.
+    #[must_use]
+    pub fn drain_available_agent_messages(&mut self) -> Vec<FromAgentMessage> {
+        let mut messages = Vec::new();
+        while let Some(event) = self.poll() {
+            if let SupervisorEvent::Agent(agent_event) = event {
+                messages.push(agent_event_to_message(&agent_event));
+            }
+        }
+        messages
+    }
+
     /// Send a prompt
     pub fn prompt(&mut self, content: impl Into<String>) -> Result<(), AsyncTransportError> {
         self.send(ToAgentMessage::Prompt {
@@ -1158,45 +1179,46 @@ impl Default for SupervisorBuilder {
     }
 }
 
-#[cfg(test)]
-fn event_to_message(event: &AgentEvent) -> Option<FromAgentMessage> {
+/// Convert a supervisor agent event into the wire-level headless message shape.
+#[must_use]
+pub fn agent_event_to_message(event: &AgentEvent) -> FromAgentMessage {
     match event {
-        AgentEvent::RawAgentEvent { event_type, event } => Some(FromAgentMessage::RawAgentEvent {
+        AgentEvent::RawAgentEvent { event_type, event } => FromAgentMessage::RawAgentEvent {
             event_type: event_type.clone(),
             event: event.clone(),
-        }),
+        },
         AgentEvent::Ready {
             protocol_version,
             model,
             provider,
             session_id,
-        } => Some(FromAgentMessage::Ready {
+        } => FromAgentMessage::Ready {
             protocol_version: protocol_version.clone(),
             model: model.clone(),
             provider: provider.clone(),
             session_id: session_id.clone(),
-        }),
+        },
         AgentEvent::SessionInfo {
             session_id,
             cwd,
             git_branch,
-        } => Some(FromAgentMessage::SessionInfo {
+        } => FromAgentMessage::SessionInfo {
             session_id: session_id.clone(),
             cwd: cwd.clone(),
             git_branch: git_branch.clone(),
-        }),
-        AgentEvent::ResponseStart { response_id } => Some(FromAgentMessage::ResponseStart {
+        },
+        AgentEvent::ResponseStart { response_id } => FromAgentMessage::ResponseStart {
             response_id: response_id.clone(),
-        }),
+        },
         AgentEvent::ResponseChunk {
             response_id,
             content,
             is_thinking,
-        } => Some(FromAgentMessage::ResponseChunk {
+        } => FromAgentMessage::ResponseChunk {
             response_id: response_id.clone(),
             content: content.clone(),
             is_thinking: *is_thinking,
-        }),
+        },
         AgentEvent::ResponseEnd {
             response_id,
             usage,
@@ -1204,60 +1226,60 @@ fn event_to_message(event: &AgentEvent) -> Option<FromAgentMessage> {
             duration_ms,
             ttft_ms,
             ..
-        } => Some(FromAgentMessage::ResponseEnd {
+        } => FromAgentMessage::ResponseEnd {
             response_id: response_id.clone(),
             usage: usage.clone(),
             tools_summary: tools_summary.clone(),
             duration_ms: *duration_ms,
             ttft_ms: *ttft_ms,
-        }),
+        },
         AgentEvent::ToolCall {
             call_id,
             tool,
             args,
-        } => Some(FromAgentMessage::ToolCall {
+        } => FromAgentMessage::ToolCall {
             call_id: call_id.clone(),
             tool: tool.clone(),
             args: args.clone(),
             requires_approval: false,
-        }),
+        },
         AgentEvent::ApprovalRequired {
             call_id,
             tool,
             args,
-        } => Some(FromAgentMessage::ToolCall {
+        } => FromAgentMessage::ToolCall {
             call_id: call_id.clone(),
             tool: tool.clone(),
             args: args.clone(),
             requires_approval: true,
-        }),
-        AgentEvent::ToolStart { call_id, .. } => Some(FromAgentMessage::ToolStart {
+        },
+        AgentEvent::ToolStart { call_id, .. } => FromAgentMessage::ToolStart {
             call_id: call_id.clone(),
-        }),
-        AgentEvent::ToolOutput { call_id, content } => Some(FromAgentMessage::ToolOutput {
+        },
+        AgentEvent::ToolOutput { call_id, content } => FromAgentMessage::ToolOutput {
             call_id: call_id.clone(),
             content: content.clone(),
-        }),
+        },
         AgentEvent::ToolEnd {
             call_id, success, ..
-        } => Some(FromAgentMessage::ToolEnd {
+        } => FromAgentMessage::ToolEnd {
             call_id: call_id.clone(),
             success: *success,
-        }),
+        },
         AgentEvent::Error {
             request_id,
             message,
             fatal,
             error_type,
-        } => Some(FromAgentMessage::Error {
+        } => FromAgentMessage::Error {
             request_id: request_id.clone(),
             message: message.clone(),
             fatal: *fatal,
             error_type: *error_type,
-        }),
-        AgentEvent::Status { message } => Some(FromAgentMessage::Status {
+        },
+        AgentEvent::Status { message } => FromAgentMessage::Status {
             message: message.clone(),
-        }),
+        },
         AgentEvent::Compaction {
             summary,
             first_kept_entry_index,
@@ -1265,14 +1287,14 @@ fn event_to_message(event: &AgentEvent) -> Option<FromAgentMessage> {
             auto,
             custom_instructions,
             timestamp,
-        } => Some(FromAgentMessage::Compaction {
+        } => FromAgentMessage::Compaction {
             summary: summary.clone(),
             first_kept_entry_index: *first_kept_entry_index,
             tokens_before: *tokens_before,
             auto: *auto,
             custom_instructions: custom_instructions.clone(),
             timestamp: timestamp.clone(),
-        }),
+        },
     }
 }
 
@@ -2335,14 +2357,13 @@ mod tests {
     }
 
     #[test]
-    fn event_to_message_preserves_headless_metadata() {
-        let ready = event_to_message(&AgentEvent::Ready {
+    fn agent_event_to_message_preserves_headless_metadata() {
+        let ready = agent_event_to_message(&AgentEvent::Ready {
             protocol_version: Some("2026-03-30".to_string()),
             model: "claude-3-opus".to_string(),
             provider: "anthropic".to_string(),
             session_id: Some("sess_123".to_string()),
-        })
-        .expect("ready message");
+        });
         assert!(matches!(
             ready,
             super::super::messages::FromAgentMessage::Ready {
@@ -2352,7 +2373,7 @@ mod tests {
             } if version == "2026-03-30" && session_id == "sess_123"
         ));
 
-        let response_end = event_to_message(&AgentEvent::ResponseEnd {
+        let response_end = agent_event_to_message(&AgentEvent::ResponseEnd {
             response_id: "resp_1".to_string(),
             usage: Some(TokenUsage {
                 input_tokens: 10,
@@ -2368,8 +2389,7 @@ mod tests {
             duration_ms: Some(2400),
             ttft_ms: Some(150),
             full_text: Some("Hello".to_string()),
-        })
-        .expect("response end message");
+        });
         assert!(matches!(
             response_end,
             super::super::messages::FromAgentMessage::ResponseEnd {
@@ -2379,13 +2399,12 @@ mod tests {
             }
         ));
 
-        let error = event_to_message(&AgentEvent::Error {
+        let error = agent_event_to_message(&AgentEvent::Error {
             request_id: None,
             message: "cancelled".to_string(),
             fatal: false,
             error_type: Some(HeadlessErrorType::Cancelled),
-        })
-        .expect("error message");
+        });
         assert!(matches!(
             error,
             super::super::messages::FromAgentMessage::Error {
@@ -2393,6 +2412,50 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn drain_available_agent_messages_skips_supervisor_lifecycle_events() {
+        let mut supervisor = AgentSupervisor::new(SupervisorConfig::default());
+        supervisor
+            .event_tx
+            .send(SupervisorEvent::Connected)
+            .expect("connected event");
+        supervisor
+            .event_tx
+            .send(SupervisorEvent::Agent(Box::new(AgentEvent::Status {
+                message: "queued status".to_string(),
+            })))
+            .expect("status event");
+        supervisor
+            .event_tx
+            .send(SupervisorEvent::HealthChanged {
+                status: HealthStatus::Healthy,
+            })
+            .expect("health event");
+        supervisor
+            .event_tx
+            .send(SupervisorEvent::Agent(Box::new(
+                AgentEvent::ResponseStart {
+                    response_id: "resp_drain".to_string(),
+                },
+            )))
+            .expect("response start event");
+
+        let messages = supervisor.drain_available_agent_messages();
+
+        assert_eq!(messages.len(), 2);
+        assert!(matches!(
+            messages[0],
+            super::super::messages::FromAgentMessage::Status { ref message }
+                if message == "queued status"
+        ));
+        assert!(matches!(
+            messages[1],
+            super::super::messages::FromAgentMessage::ResponseStart { ref response_id }
+                if response_id == "resp_drain"
+        ));
+        assert!(supervisor.poll().is_none());
     }
 
     #[cfg(unix)]
