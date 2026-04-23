@@ -179,12 +179,11 @@ impl HostedRunnerConfig {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct HostedRunnerRuntime {
     inner: Arc<Mutex<HostedRunnerRuntimeInner>>,
 }
 
-#[derive(Debug, Clone)]
 struct HostedRunnerRuntimeInner {
     config: HostedRunnerConfig,
     ready: bool,
@@ -196,10 +195,28 @@ struct HostedRunnerRuntimeInner {
     next_subscription_sequence: u64,
     headless_events: Vec<HostedRunnerHeadlessStreamEnvelope>,
     next_headless_cursor: u64,
+    message_executor: Arc<dyn HostedRunnerHeadlessMessageExecutor>,
+}
+
+impl std::fmt::Debug for HostedRunnerRuntime {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HostedRunnerRuntime")
+            .field("config", &self.config())
+            .field("draining", &self.is_draining())
+            .finish_non_exhaustive()
+    }
 }
 
 impl HostedRunnerRuntime {
     pub fn new(config: HostedRunnerConfig) -> Self {
+        Self::new_with_message_executor(config, Arc::new(TransportOnlyHostedRunnerMessageExecutor))
+    }
+
+    pub fn new_with_message_executor(
+        config: HostedRunnerConfig,
+        message_executor: Arc<dyn HostedRunnerHeadlessMessageExecutor>,
+    ) -> Self {
         let headless_session_id = config
             .maestro_session_id
             .clone()
@@ -216,6 +233,7 @@ impl HostedRunnerRuntime {
                 next_subscription_sequence: 1,
                 headless_events: Vec::new(),
                 next_headless_cursor: 1,
+                message_executor,
             })),
         }
     }
@@ -589,24 +607,41 @@ impl HostedRunnerRuntime {
             })?;
         let reference = headless_connection_reference_from_headers(headers);
 
+        let (executor, context) = {
+            let inner = self.inner.lock().expect("hosted runner mutex poisoned");
+            inner.ensure_headless_session(session_id)?;
+            inner.ensure_attachable()?;
+            let connection_id = inner.resolve_connection_reference(&reference)?;
+            inner.ensure_controller_message_connection(
+                &connection_id,
+                reference.subscription_id.as_deref(),
+            )?;
+            (
+                Arc::clone(&inner.message_executor),
+                inner
+                    .headless_message_context(&connection_id, reference.subscription_id.clone())?,
+            )
+        };
+
+        let result = executor.execute(&context, to_agent_message)?;
+        let published_message_count = result.messages.len();
+
         let mut inner = self.inner.lock().expect("hosted runner mutex poisoned");
         inner.ensure_headless_session(session_id)?;
         inner.ensure_attachable()?;
-        let connection_id = inner.resolve_connection_reference(&reference)?;
         inner.ensure_controller_message_connection(
-            &connection_id,
-            reference.subscription_id.as_deref(),
+            &context.connection_id,
+            context.subscription_id.as_deref(),
         )?;
-        let from_agent_message =
-            inner.hosted_response_for_message(&connection_id, to_agent_message)?;
-        let cursor = inner.publish_headless_message(json!(from_agent_message));
+        let cursor = inner.publish_headless_messages(result.messages);
 
         Ok(json!({
             "success": true,
             "accepted": true,
             "cursor": cursor,
-            "execution": "transport_only",
-            "message": "Rust hosted runner accepted the headless message; agent execution is not attached yet"
+            "execution": result.execution,
+            "published_messages": published_message_count,
+            "message": result.message
         }))
     }
 }
@@ -686,6 +721,93 @@ pub struct HostedRunnerHeadlessRuntimeSnapshot {
     pub session_id: String,
     pub cursor: u64,
     pub state: Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct HostedRunnerHeadlessMessageContext {
+    pub session_id: String,
+    pub connection_id: String,
+    pub subscription_id: Option<String>,
+    pub role: ConnectionRole,
+    pub controller_connection_id: Option<String>,
+    pub client_protocol_version: Option<String>,
+    pub client_info: Option<ClientInfo>,
+    pub capabilities: Option<ClientCapabilities>,
+    pub opt_out_notifications: Option<Vec<String>>,
+    pub lease_expires_at: String,
+    pub workspace_root: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostedRunnerHeadlessMessageExecution {
+    TransportOnly,
+    RuntimeHandled,
+}
+
+#[derive(Debug, Clone)]
+pub struct HostedRunnerHeadlessMessageResult {
+    pub execution: HostedRunnerHeadlessMessageExecution,
+    pub messages: Vec<FromAgentMessage>,
+    pub message: String,
+}
+
+impl HostedRunnerHeadlessMessageResult {
+    pub fn transport_only(messages: Vec<FromAgentMessage>, message: impl Into<String>) -> Self {
+        Self {
+            execution: HostedRunnerHeadlessMessageExecution::TransportOnly,
+            messages,
+            message: message.into(),
+        }
+    }
+
+    pub fn runtime_handled(messages: Vec<FromAgentMessage>, message: impl Into<String>) -> Self {
+        Self {
+            execution: HostedRunnerHeadlessMessageExecution::RuntimeHandled,
+            messages,
+            message: message.into(),
+        }
+    }
+}
+
+pub trait HostedRunnerHeadlessMessageExecutor: Send + Sync {
+    fn execute(
+        &self,
+        context: &HostedRunnerHeadlessMessageContext,
+        message: ToAgentMessage,
+    ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError>;
+}
+
+#[derive(Debug, Default)]
+struct TransportOnlyHostedRunnerMessageExecutor;
+
+impl HostedRunnerHeadlessMessageExecutor for TransportOnlyHostedRunnerMessageExecutor {
+    fn execute(
+        &self,
+        context: &HostedRunnerHeadlessMessageContext,
+        message: ToAgentMessage,
+    ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
+        let response = match message {
+            ToAgentMessage::Hello { .. } => FromAgentMessage::HelloOk {
+                protocol_version: HEADLESS_PROTOCOL_VERSION.to_string(),
+                connection_id: Some(context.connection_id.clone()),
+                client_protocol_version: context.client_protocol_version.clone(),
+                client_info: context.client_info.clone(),
+                capabilities: context.capabilities.clone(),
+                opt_out_notifications: context.opt_out_notifications.clone(),
+                role: Some(context.role),
+                controller_connection_id: context.controller_connection_id.clone(),
+                lease_expires_at: Some(context.lease_expires_at.clone()),
+            },
+            _ => FromAgentMessage::Status {
+                message: "Rust hosted runner accepted the headless message; agent execution is not attached yet".to_string(),
+            },
+        };
+        Ok(HostedRunnerHeadlessMessageResult::transport_only(
+            vec![response],
+            "Rust hosted runner accepted the headless message; agent execution is not attached yet",
+        ))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -838,6 +960,14 @@ impl HostedRunnerRuntimeInner {
     fn publish_headless_message(&mut self, message: Value) -> u64 {
         let cursor = self.allocate_headless_cursor();
         self.push_headless_event(HostedRunnerHeadlessStreamEnvelope::Message { cursor, message });
+        cursor
+    }
+
+    fn publish_headless_messages(&mut self, messages: Vec<FromAgentMessage>) -> u64 {
+        let mut cursor = self.current_headless_cursor();
+        for message in messages {
+            cursor = self.publish_headless_message(json!(message));
+        }
         cursor
     }
 
@@ -1134,30 +1264,27 @@ impl HostedRunnerRuntimeInner {
         Ok(())
     }
 
-    fn hosted_response_for_message(
+    fn headless_message_context(
         &self,
         connection_id: &str,
-        message: ToAgentMessage,
-    ) -> Result<FromAgentMessage, HostedRunnerError> {
+        subscription_id: Option<String>,
+    ) -> Result<HostedRunnerHeadlessMessageContext, HostedRunnerError> {
         let connection = self
             .headless_connections
             .get(connection_id)
             .ok_or_else(|| HostedRunnerError::not_found("headless connection not found"))?;
-        Ok(match message {
-            ToAgentMessage::Hello { .. } => FromAgentMessage::HelloOk {
-                protocol_version: HEADLESS_PROTOCOL_VERSION.to_string(),
-                connection_id: Some(connection.id.clone()),
-                client_protocol_version: connection.client_protocol_version.clone(),
-                client_info: connection.client_info.clone(),
-                capabilities: connection.capabilities.clone(),
-                opt_out_notifications: connection.opt_out_notifications.clone(),
-                role: Some(connection.role),
-                controller_connection_id: self.controller_connection_id().map(str::to_string),
-                lease_expires_at: Some(Self::connection_lease_expires_at(connection)),
-            },
-            _ => FromAgentMessage::Status {
-                message: "Rust hosted runner accepted the headless message; agent execution is not attached yet".to_string(),
-            },
+        Ok(HostedRunnerHeadlessMessageContext {
+            session_id: self.headless_session_id.clone(),
+            connection_id: connection.id.clone(),
+            subscription_id,
+            role: connection.role,
+            controller_connection_id: self.controller_connection_id().map(str::to_string),
+            client_protocol_version: connection.client_protocol_version.clone(),
+            client_info: connection.client_info.clone(),
+            capabilities: connection.capabilities.clone(),
+            opt_out_notifications: connection.opt_out_notifications.clone(),
+            lease_expires_at: Self::connection_lease_expires_at(connection),
+            workspace_root: self.config.workspace_root.clone(),
         })
     }
 }
@@ -2209,6 +2336,7 @@ fn is_headless_path(path: &str) -> bool {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+    use std::sync::Arc;
     use tempfile::TempDir;
 
     fn runtime() -> (TempDir, HostedRunnerRuntime) {
@@ -2221,6 +2349,51 @@ mod tests {
             .with_agent_run_id("agent-run-1")
             .with_maestro_session_id("maestro-session-1");
         (temp_dir, HostedRunnerRuntime::new(config))
+    }
+
+    #[derive(Debug)]
+    struct ScriptedRuntimeExecutor;
+
+    impl HostedRunnerHeadlessMessageExecutor for ScriptedRuntimeExecutor {
+        fn execute(
+            &self,
+            context: &HostedRunnerHeadlessMessageContext,
+            message: ToAgentMessage,
+        ) -> Result<HostedRunnerHeadlessMessageResult, HostedRunnerError> {
+            match message {
+                ToAgentMessage::Prompt { content, .. } => {
+                    assert_eq!(context.session_id, "maestro-session-1");
+                    assert_eq!(context.connection_id, "hconn_1");
+                    assert_eq!(context.subscription_id.as_deref(), Some("hsub_1"));
+                    Ok(HostedRunnerHeadlessMessageResult::runtime_handled(
+                        vec![
+                            FromAgentMessage::ResponseStart {
+                                response_id: "resp-hosted-1".to_string(),
+                            },
+                            FromAgentMessage::ResponseChunk {
+                                response_id: "resp-hosted-1".to_string(),
+                                content,
+                                is_thinking: false,
+                            },
+                            FromAgentMessage::ResponseEnd {
+                                response_id: "resp-hosted-1".to_string(),
+                                usage: None,
+                                tools_summary: None,
+                                duration_ms: None,
+                                ttft_ms: None,
+                            },
+                        ],
+                        "Rust hosted runner message handled by runtime executor",
+                    ))
+                }
+                _ => Ok(HostedRunnerHeadlessMessageResult::runtime_handled(
+                    vec![FromAgentMessage::Status {
+                        message: "scripted runtime executor accepted message".to_string(),
+                    }],
+                    "Rust hosted runner message handled by runtime executor",
+                )),
+            }
+        }
     }
 
     #[test]
@@ -2667,6 +2840,68 @@ mod tests {
         );
         assert_eq!(viewer_message.status, 409);
         assert_eq!(viewer_message.body["code"], "controller_lease_held");
+    }
+
+    #[test]
+    fn request_handler_publishes_runtime_executor_messages() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::write(temp_dir.path().join("file.txt"), "hello\n").unwrap();
+        let config = HostedRunnerConfig::new("mrs/test:1", temp_dir.path())
+            .unwrap()
+            .with_owner_instance_id("owner-1")
+            .with_maestro_session_id("maestro-session-1");
+        let runtime = HostedRunnerRuntime::new_with_message_executor(
+            config,
+            Arc::new(ScriptedRuntimeExecutor),
+        );
+
+        let controller = runtime.handle_request(
+            "POST",
+            "/api/headless/connections",
+            Some(r#"{"protocolVersion":"headless.v1","role":"controller"}"#),
+        );
+        assert_eq!(controller.status, 200);
+        let subscribe = runtime.handle_request(
+            "POST",
+            "/api/headless/sessions/maestro-session-1/subscribe",
+            Some(r#"{"connectionId":"hconn_1","role":"controller"}"#),
+        );
+        assert_eq!(subscribe.status, 200);
+
+        let mut headers = HashMap::new();
+        headers.insert(
+            "x-maestro-headless-connection-id".to_string(),
+            "hconn_1".to_string(),
+        );
+        headers.insert(
+            "x-maestro-headless-subscriber-id".to_string(),
+            "hsub_1".to_string(),
+        );
+        let message = runtime.handle_request_with_headers(
+            "POST",
+            "/api/headless/sessions/maestro-session-1/messages",
+            Some(r#"{"type":"prompt","content":"hello from hosted","attachments":null}"#),
+            &headers,
+        );
+        assert_eq!(message.status, 200);
+        assert_eq!(message.body["success"], true);
+        assert_eq!(message.body["execution"], "runtime_handled");
+        assert_eq!(message.body["published_messages"], 3);
+        assert_eq!(message.body["cursor"], 3);
+
+        let events = runtime.handle_request(
+            "GET",
+            "/api/headless/sessions/maestro-session-1/events?cursor=0&subscriptionId=hsub_1",
+            None,
+        );
+        assert_eq!(events.status, 200);
+        assert_eq!(events.body[0]["cursor"], 1);
+        assert_eq!(events.body[0]["message"]["type"], "response_start");
+        assert_eq!(events.body[1]["cursor"], 2);
+        assert_eq!(events.body[1]["message"]["type"], "response_chunk");
+        assert_eq!(events.body[1]["message"]["content"], "hello from hosted");
+        assert_eq!(events.body[2]["cursor"], 3);
+        assert_eq!(events.body[2]["message"]["type"], "response_end");
     }
 
     #[tokio::test]
