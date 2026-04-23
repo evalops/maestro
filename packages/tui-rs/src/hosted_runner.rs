@@ -21,8 +21,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_util::sync::CancellationToken;
 
 use crate::headless::{
-    ClientCapabilities, ClientInfo, ConnectionRole, ServerRequestType, UtilityOperation,
-    HEADLESS_PROTOCOL_VERSION,
+    ClientCapabilities, ClientInfo, ConnectionRole, FromAgentMessage, ServerRequestType,
+    ToAgentMessage, UtilityOperation, HEADLESS_PROTOCOL_VERSION,
 };
 
 pub const HOSTED_RUNNER_IDENTITY_PATH: &str = "/.well-known/evalops/remote-runner/identity";
@@ -40,6 +40,7 @@ const HEADLESS_CONNECTIONS_PATH: &str = "/api/headless/connections";
 const HEADLESS_SESSIONS_PREFIX: &str = "/api/headless/sessions/";
 const HEADLESS_HEARTBEAT_INTERVAL_MS: u64 = 15_000;
 const HEADLESS_CONNECTION_IDLE_MS: i64 = (HEADLESS_HEARTBEAT_INTERVAL_MS as i64) * 3;
+const MAX_HEADLESS_REPLAY_EVENTS: usize = 128;
 
 const HEADLESS_PATH_PREFIXES: &[&str] = &[HEADLESS_CONNECTIONS_PATH, HEADLESS_SESSIONS_PREFIX];
 
@@ -193,6 +194,8 @@ struct HostedRunnerRuntimeInner {
     controller_connection_id: Option<String>,
     next_connection_sequence: u64,
     next_subscription_sequence: u64,
+    headless_events: Vec<HostedRunnerHeadlessStreamEnvelope>,
+    next_headless_cursor: u64,
 }
 
 impl HostedRunnerRuntime {
@@ -211,6 +214,8 @@ impl HostedRunnerRuntime {
                 controller_connection_id: None,
                 next_connection_sequence: 1,
                 next_subscription_sequence: 1,
+                headless_events: Vec::new(),
+                next_headless_cursor: 1,
             })),
         }
     }
@@ -344,7 +349,18 @@ impl HostedRunnerRuntime {
         path: &str,
         body: Option<&str>,
     ) -> HostedRunnerHttpResponse {
-        match (method, path) {
+        self.handle_request_with_headers(method, path, body, &HashMap::new())
+    }
+
+    fn handle_request_with_headers(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&str>,
+        headers: &HashMap<String, String>,
+    ) -> HostedRunnerHttpResponse {
+        let route_path = http_route_path(path);
+        match (method, route_path) {
             ("GET", HOSTED_RUNNER_IDENTITY_PATH) => self
                 .identity()
                 .map(|identity| HostedRunnerHttpResponse::json(200, json!(identity)))
@@ -391,8 +407,8 @@ impl HostedRunnerRuntime {
                 Err(error) => HostedRunnerHttpResponse::from_error(error),
             },
             (_, HEADLESS_CONNECTIONS_PATH) => method_not_allowed(),
-            _ if path.starts_with(HEADLESS_SESSIONS_PREFIX) => {
-                match parse_headless_session_route(path) {
+            _ if route_path.starts_with(HEADLESS_SESSIONS_PREFIX) => {
+                match parse_headless_session_route(route_path) {
                     Some((session_id, "subscribe")) if method == "POST" => self
                         .subscribe_headless_session(session_id, body)
                         .map(|snapshot| HostedRunnerHttpResponse::json(200, json!(snapshot)))
@@ -413,9 +429,16 @@ impl HostedRunnerRuntime {
                         .map(|snapshot| HostedRunnerHttpResponse::json(200, json!(snapshot)))
                         .unwrap_or_else(HostedRunnerHttpResponse::from_error),
                     Some((_session_id, "state")) => method_not_allowed(),
-                    Some((_session_id, "events" | "message" | "messages")) => {
-                        unsupported_headless_runtime_response()
-                    }
+                    Some((session_id, "events")) if method == "GET" => self
+                        .headless_session_events(session_id, path)
+                        .map(|events| HostedRunnerHttpResponse::event_stream(json!(events)))
+                        .unwrap_or_else(HostedRunnerHttpResponse::from_error),
+                    Some((_session_id, "events")) => method_not_allowed(),
+                    Some((session_id, "message" | "messages")) if method == "POST" => self
+                        .post_headless_session_message(session_id, body, headers)
+                        .map(|result| HostedRunnerHttpResponse::json(200, result))
+                        .unwrap_or_else(HostedRunnerHttpResponse::from_error),
+                    Some((_session_id, "message" | "messages")) => method_not_allowed(),
                     _ => HostedRunnerHttpResponse::json(
                         404,
                         json!({
@@ -425,7 +448,7 @@ impl HostedRunnerRuntime {
                     ),
                 }
             }
-            _ if is_headless_path(path) => HostedRunnerHttpResponse::json(
+            _ if is_headless_path(route_path) => HostedRunnerHttpResponse::json(
                 501,
                 json!({
                     "error": "headless host surface not implemented in Rust yet",
@@ -531,6 +554,61 @@ impl HostedRunnerRuntime {
         inner.ensure_headless_session(session_id)?;
         Ok(inner.headless_runtime_snapshot(None))
     }
+
+    fn headless_session_events(
+        &self,
+        session_id: &str,
+        path: &str,
+    ) -> Result<Vec<HostedRunnerHeadlessStreamEnvelope>, HostedRunnerError> {
+        let cursor = parse_optional_query_u64(path, "cursor")?;
+        let subscription_id = query_value(path, "subscriptionId")
+            .or_else(|| query_value(path, "subscription_id"))
+            .map(|value| validate_headless_id(&value, "subscriptionId"))
+            .transpose()?;
+
+        let inner = self.inner.lock().expect("hosted runner mutex poisoned");
+        inner.ensure_headless_session(session_id)?;
+        let connection_id = subscription_id
+            .as_deref()
+            .map(|subscription_id| inner.resolve_subscription(subscription_id))
+            .transpose()?;
+        Ok(inner.headless_stream_events(cursor, connection_id.as_deref()))
+    }
+
+    fn post_headless_session_message(
+        &self,
+        session_id: &str,
+        body: Option<&str>,
+        headers: &HashMap<String, String>,
+    ) -> Result<Value, HostedRunnerError> {
+        let message = parse_headless_message_body(body)?;
+        let to_agent_message =
+            serde_json::from_value::<ToAgentMessage>(message.clone()).map_err(|error| {
+                HostedRunnerError::bad_request(format!(
+                    "invalid headless message JSON body: {error}"
+                ))
+            })?;
+        let reference = headless_connection_reference_from_headers(headers);
+
+        let mut inner = self.inner.lock().expect("hosted runner mutex poisoned");
+        inner.ensure_headless_session(session_id)?;
+        let connection_id = inner.resolve_connection_reference(&reference)?;
+        inner.ensure_controller_message_connection(
+            &connection_id,
+            reference.subscription_id.as_deref(),
+        )?;
+        let from_agent_message =
+            inner.hosted_response_for_message(&connection_id, to_agent_message)?;
+        let cursor = inner.publish_headless_message(json!(from_agent_message));
+
+        Ok(json!({
+            "success": true,
+            "accepted": true,
+            "cursor": cursor,
+            "execution": "transport_only",
+            "message": "Rust hosted runner accepted the headless message; agent execution is not attached yet"
+        }))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -608,6 +686,34 @@ pub struct HostedRunnerHeadlessRuntimeSnapshot {
     pub session_id: String,
     pub cursor: u64,
     pub state: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum HostedRunnerHeadlessStreamEnvelope {
+    Snapshot {
+        snapshot: HostedRunnerHeadlessRuntimeSnapshot,
+    },
+    Message {
+        cursor: u64,
+        message: Value,
+    },
+    Heartbeat {
+        cursor: u64,
+    },
+    Reset {
+        reason: String,
+        snapshot: HostedRunnerHeadlessRuntimeSnapshot,
+    },
+}
+
+impl HostedRunnerHeadlessStreamEnvelope {
+    fn cursor(&self) -> u64 {
+        match self {
+            Self::Snapshot { snapshot } | Self::Reset { snapshot, .. } => snapshot.cursor,
+            Self::Message { cursor, .. } | Self::Heartbeat { cursor } => *cursor,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -708,6 +814,33 @@ impl HostedRunnerRuntimeInner {
         id
     }
 
+    fn current_headless_cursor(&self) -> u64 {
+        self.next_headless_cursor.saturating_sub(1)
+    }
+
+    fn allocate_headless_cursor(&mut self) -> u64 {
+        let cursor = self.next_headless_cursor;
+        self.next_headless_cursor += 1;
+        cursor
+    }
+
+    fn push_headless_event(&mut self, envelope: HostedRunnerHeadlessStreamEnvelope) {
+        self.headless_events.push(envelope);
+        let excess = self
+            .headless_events
+            .len()
+            .saturating_sub(MAX_HEADLESS_REPLAY_EVENTS);
+        if excess > 0 {
+            self.headless_events.drain(..excess);
+        }
+    }
+
+    fn publish_headless_message(&mut self, message: Value) -> u64 {
+        let cursor = self.allocate_headless_cursor();
+        self.push_headless_event(HostedRunnerHeadlessStreamEnvelope::Message { cursor, message });
+        cursor
+    }
+
     fn controller_connection_id(&self) -> Option<&str> {
         self.controller_connection_id
             .as_deref()
@@ -781,7 +914,7 @@ impl HostedRunnerRuntimeInner {
         HostedRunnerHeadlessRuntimeSnapshot {
             protocol_version: HEADLESS_PROTOCOL_VERSION.to_string(),
             session_id: self.headless_session_id.clone(),
-            cursor: 0,
+            cursor: self.current_headless_cursor(),
             state: json!({
                 "protocol_version": HEADLESS_PROTOCOL_VERSION,
                 "client_protocol_version": preferred.and_then(|connection| connection.client_protocol_version.clone()),
@@ -800,6 +933,44 @@ impl HostedRunnerRuntimeInner {
                 "is_ready": self.ready && !self.draining,
                 "is_responding": false
             }),
+        }
+    }
+
+    fn headless_stream_events(
+        &self,
+        cursor: Option<u64>,
+        connection_id: Option<&str>,
+    ) -> Vec<HostedRunnerHeadlessStreamEnvelope> {
+        let Some(cursor) = cursor else {
+            return vec![HostedRunnerHeadlessStreamEnvelope::Snapshot {
+                snapshot: self.headless_runtime_snapshot(connection_id),
+            }];
+        };
+
+        let replay_gap = self
+            .headless_events
+            .first()
+            .map(HostedRunnerHeadlessStreamEnvelope::cursor)
+            .is_some_and(|oldest_cursor| cursor.saturating_add(1) < oldest_cursor);
+        if replay_gap {
+            return vec![HostedRunnerHeadlessStreamEnvelope::Reset {
+                reason: "replay_gap".to_string(),
+                snapshot: self.headless_runtime_snapshot(connection_id),
+            }];
+        }
+
+        let events = self
+            .headless_events
+            .iter()
+            .filter(|event| event.cursor() > cursor)
+            .cloned()
+            .collect::<Vec<_>>();
+        if events.is_empty() {
+            vec![HostedRunnerHeadlessStreamEnvelope::Heartbeat {
+                cursor: self.current_headless_cursor(),
+            }]
+        } else {
+            events
         }
     }
 
@@ -887,6 +1058,73 @@ impl HostedRunnerRuntimeInner {
         Err(HostedRunnerError::not_found(
             "headless connection not found",
         ))
+    }
+
+    fn resolve_subscription(&self, subscription_id: &str) -> Result<String, HostedRunnerError> {
+        for connection in self.headless_connections.values() {
+            if connection.subscription_ids.contains(subscription_id) {
+                return Ok(connection.id.clone());
+            }
+        }
+        Err(HostedRunnerError::not_found(
+            "headless subscription not found",
+        ))
+    }
+
+    fn ensure_controller_message_connection(
+        &self,
+        connection_id: &str,
+        subscription_id: Option<&str>,
+    ) -> Result<(), HostedRunnerError> {
+        let connection = self
+            .headless_connections
+            .get(connection_id)
+            .ok_or_else(|| HostedRunnerError::not_found("headless connection not found"))?;
+        if connection.role != ConnectionRole::Controller {
+            return Err(HostedRunnerError::lease_conflict(
+                "headless messages require the controller connection",
+            ));
+        }
+        if self.controller_connection_id() != Some(connection_id) {
+            return Err(HostedRunnerError::lease_conflict(
+                "headless controller lease is held by another connection",
+            ));
+        }
+        if let Some(subscription_id) = subscription_id {
+            if !connection.subscription_ids.contains(subscription_id) {
+                return Err(HostedRunnerError::not_found(
+                    "headless subscription not found",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn hosted_response_for_message(
+        &self,
+        connection_id: &str,
+        message: ToAgentMessage,
+    ) -> Result<FromAgentMessage, HostedRunnerError> {
+        let connection = self
+            .headless_connections
+            .get(connection_id)
+            .ok_or_else(|| HostedRunnerError::not_found("headless connection not found"))?;
+        Ok(match message {
+            ToAgentMessage::Hello { .. } => FromAgentMessage::HelloOk {
+                protocol_version: HEADLESS_PROTOCOL_VERSION.to_string(),
+                connection_id: Some(connection.id.clone()),
+                client_protocol_version: connection.client_protocol_version.clone(),
+                client_info: connection.client_info.clone(),
+                capabilities: connection.capabilities.clone(),
+                opt_out_notifications: connection.opt_out_notifications.clone(),
+                role: Some(connection.role),
+                controller_connection_id: self.controller_connection_id().map(str::to_string),
+                lease_expires_at: Some(Self::connection_lease_expires_at(connection)),
+            },
+            _ => FromAgentMessage::Status {
+                message: "Rust hosted runner accepted the headless message; agent execution is not attached yet".to_string(),
+            },
+        })
     }
 }
 
@@ -1060,7 +1298,12 @@ async fn handle_hosted_runner_http_stream(
     let response = match read_http_request(&mut stream).await {
         Ok(request) => {
             let body = (!request.body.is_empty()).then_some(request.body.as_str());
-            runtime.handle_request(&request.method, &request.path, body)
+            runtime.handle_request_with_headers(
+                &request.method,
+                &request.path,
+                body,
+                &request.headers,
+            )
         }
         Err(error) if error.kind() == io::ErrorKind::InvalidData => HostedRunnerHttpResponse::json(
             400,
@@ -1078,6 +1321,7 @@ async fn handle_hosted_runner_http_stream(
 struct HostedRunnerHttpRequest {
     method: String,
     path: String,
+    headers: HashMap<String, String>,
     body: String,
 }
 
@@ -1119,19 +1363,22 @@ async fn read_http_request(stream: &mut TcpStream) -> io::Result<HostedRunnerHtt
         return Err(invalid_http("only HTTP/1.x requests are supported"));
     }
     let method = method.to_string();
-    let path = target.split('?').next().unwrap_or(target).to_string();
+    let path = target.to_string();
 
+    let mut headers = HashMap::new();
     let mut content_length = 0_usize;
     for line in lines {
         let Some((name, value)) = line.split_once(':') else {
             continue;
         };
+        let name = name.trim().to_ascii_lowercase();
+        let value = value.trim().to_string();
         if name.eq_ignore_ascii_case("content-length") {
             content_length = value
-                .trim()
                 .parse::<usize>()
                 .map_err(|_| invalid_http("invalid content-length header"))?;
         }
+        headers.insert(name, value);
     }
     if content_length > MAX_HTTP_BODY_BYTES {
         return Err(invalid_http("HTTP body exceeds hosted runner limit"));
@@ -1149,16 +1396,31 @@ async fn read_http_request(stream: &mut TcpStream) -> io::Result<HostedRunnerHtt
         .map_err(|_| invalid_http("HTTP body must be UTF-8"))?
         .to_string();
 
-    Ok(HostedRunnerHttpRequest { method, path, body })
+    Ok(HostedRunnerHttpRequest {
+        method,
+        path,
+        headers,
+        body,
+    })
 }
 
 async fn write_http_response(
     stream: &mut TcpStream,
     response: HostedRunnerHttpResponse,
 ) -> io::Result<()> {
-    let body = serde_json::to_vec(&response.body).map_err(io::Error::other)?;
+    let (content_type, cache_control, body) = match response.response_body {
+        HostedRunnerHttpResponseBody::Json => (
+            "application/json",
+            "no-store",
+            serde_json::to_vec(&response.body).map_err(io::Error::other)?,
+        ),
+        HostedRunnerHttpResponseBody::EventStream => {
+            let body = render_sse_body(&response.body)?;
+            ("text/event-stream", "no-cache", body.into_bytes())
+        }
+    };
     let headers = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {} {}\r\nContent-Type: {content_type}\r\nCache-Control: {cache_control}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         response.status,
         http_reason(response.status),
         body.len()
@@ -1172,6 +1434,19 @@ fn find_http_header_end(bytes: &[u8]) -> Option<usize> {
     bytes.windows(4).position(|window| window == b"\r\n\r\n")
 }
 
+fn render_sse_body(body: &Value) -> io::Result<String> {
+    let events = body
+        .as_array()
+        .ok_or_else(|| io::Error::other("event stream response body must be a JSON array"))?;
+    let mut rendered = String::new();
+    for event in events {
+        rendered.push_str("data: ");
+        rendered.push_str(&serde_json::to_string(event).map_err(io::Error::other)?);
+        rendered.push_str("\n\n");
+    }
+    Ok(rendered)
+}
+
 fn invalid_http(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
@@ -1182,6 +1457,7 @@ fn http_reason(status: u16) -> &'static str {
         400 => "Bad Request",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        409 => "Conflict",
         500 => "Internal Server Error",
         501 => "Not Implemented",
         503 => "Service Unavailable",
@@ -1311,11 +1587,30 @@ pub struct HostedRunnerGitState {
 pub struct HostedRunnerHttpResponse {
     pub status: u16,
     pub body: Value,
+    response_body: HostedRunnerHttpResponseBody,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostedRunnerHttpResponseBody {
+    Json,
+    EventStream,
 }
 
 impl HostedRunnerHttpResponse {
     pub fn json(status: u16, body: Value) -> Self {
-        Self { status, body }
+        Self {
+            status,
+            body,
+            response_body: HostedRunnerHttpResponseBody::Json,
+        }
+    }
+
+    fn event_stream(body: Value) -> Self {
+        Self {
+            status: 200,
+            body,
+            response_body: HostedRunnerHttpResponseBody::EventStream,
+        }
     }
 
     pub fn from_error(error: HostedRunnerError) -> Self {
@@ -1560,8 +1855,24 @@ fn parse_headless_body<T: DeserializeOwned>(
     })
 }
 
+fn parse_headless_message_body(body: Option<&str>) -> Result<Value, HostedRunnerError> {
+    let body = body
+        .map(str::trim)
+        .filter(|body| !body.is_empty())
+        .ok_or_else(|| HostedRunnerError::bad_request("headless message body is required"))?;
+    let value = serde_json::from_str::<Value>(body).map_err(|error| {
+        HostedRunnerError::bad_request(format!("invalid headless message JSON body: {error}"))
+    })?;
+    if !value.is_object() {
+        return Err(HostedRunnerError::bad_request(
+            "headless message body must be a JSON object",
+        ));
+    }
+    Ok(value)
+}
+
 fn parse_headless_session_route(path: &str) -> Option<(&str, &str)> {
-    let path = path.split('?').next().unwrap_or(path);
+    let path = http_route_path(path);
     let suffix = path.strip_prefix(HEADLESS_SESSIONS_PREFIX)?;
     let (session_id, action) = suffix.split_once('/')?;
     if session_id.is_empty() || action.is_empty() || action.contains('/') {
@@ -1570,23 +1881,76 @@ fn parse_headless_session_route(path: &str) -> Option<(&str, &str)> {
     Some((session_id, action))
 }
 
+fn http_route_path(path: &str) -> &str {
+    path.split('?').next().unwrap_or(path)
+}
+
+fn query_value(path: &str, name: &str) -> Option<String> {
+    let query = path.split_once('?')?.1;
+    query.split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        (key == name).then(|| value.to_string())
+    })
+}
+
+fn parse_optional_query_u64(path: &str, name: &str) -> Result<Option<u64>, HostedRunnerError> {
+    query_value(path, name)
+        .map(|value| {
+            let value = value.trim();
+            if value.is_empty() {
+                return Err(HostedRunnerError::bad_request(format!(
+                    "{name} query parameter must be an unsigned integer"
+                )));
+            }
+            value.parse::<u64>().map_err(|_| {
+                HostedRunnerError::bad_request(format!(
+                    "{name} query parameter must be an unsigned integer"
+                ))
+            })
+        })
+        .transpose()
+}
+
+fn headless_connection_reference_from_headers(
+    headers: &HashMap<String, String>,
+) -> HostedRunnerHeadlessConnectionReferenceInput {
+    HostedRunnerHeadlessConnectionReferenceInput {
+        connection_id: first_header(
+            headers,
+            &[
+                "x-maestro-headless-connection-id",
+                "x-composer-headless-connection-id",
+                "x-evalops-headless-connection-id",
+            ],
+        ),
+        subscription_id: first_header(
+            headers,
+            &[
+                "x-maestro-headless-subscriber-id",
+                "x-composer-headless-subscriber-id",
+                "x-maestro-headless-subscription-id",
+                "x-composer-headless-subscription-id",
+                "x-evalops-headless-subscriber-id",
+            ],
+        ),
+    }
+}
+
+fn first_header(headers: &HashMap<String, String>, names: &[&str]) -> Option<String> {
+    names
+        .iter()
+        .find_map(|name| headers.get(*name))
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
 fn method_not_allowed() -> HostedRunnerHttpResponse {
     HostedRunnerHttpResponse::json(
         405,
         json!({
             "error": "method_not_allowed",
             "code": "bad_request"
-        }),
-    )
-}
-
-fn unsupported_headless_runtime_response() -> HostedRunnerHttpResponse {
-    HostedRunnerHttpResponse::json(
-        501,
-        json!({
-            "error": "headless runtime message and event streaming are not implemented in Rust yet",
-            "code": "unsupported_capability",
-            "capability": "headless_runtime_stream"
         }),
     )
 }
@@ -2099,6 +2463,15 @@ mod tests {
         assert_eq!(takeover.body["controller_lease_granted"], true);
         assert_eq!(takeover.body["controller_connection_id"], "hconn_3");
 
+        let subscribe = runtime.handle_request(
+            "POST",
+            "/api/headless/sessions/maestro-session-1/subscribe",
+            Some(r#"{"connectionId":"hconn_3","role":"controller"}"#),
+        );
+        assert_eq!(subscribe.status, 200);
+        assert_eq!(subscribe.body["subscription_id"], "hsub_1");
+        assert_eq!(subscribe.body["snapshot"]["cursor"], 0);
+
         let state = runtime.handle_request(
             "GET",
             "/api/headless/sessions/maestro-session-1/state",
@@ -2108,14 +2481,52 @@ mod tests {
         assert_eq!(state.body["session_id"], "maestro-session-1");
         assert_eq!(state.body["state"]["connection_count"], 3);
         assert_eq!(state.body["state"]["controller_connection_id"], "hconn_3");
+        assert_eq!(state.body["state"]["controller_subscription_id"], "hsub_1");
 
-        let message = runtime.handle_request(
+        let mut headers = HashMap::new();
+        headers.insert(
+            "x-maestro-headless-connection-id".to_string(),
+            "hconn_3".to_string(),
+        );
+        headers.insert(
+            "x-maestro-headless-subscriber-id".to_string(),
+            "hsub_1".to_string(),
+        );
+        let message = runtime.handle_request_with_headers(
             "POST",
             "/api/headless/sessions/maestro-session-1/messages",
-            Some("{}"),
+            Some(r#"{"type":"hello"}"#),
+            &headers,
         );
-        assert_eq!(message.status, 501);
-        assert_eq!(message.body["capability"], "headless_runtime_stream");
+        assert_eq!(message.status, 200);
+        assert_eq!(message.body["success"], true);
+        assert_eq!(message.body["execution"], "transport_only");
+        assert_eq!(message.body["cursor"], 1);
+
+        let events = runtime.handle_request(
+            "GET",
+            "/api/headless/sessions/maestro-session-1/events?cursor=0&subscriptionId=hsub_1",
+            None,
+        );
+        assert_eq!(events.status, 200);
+        assert_eq!(events.body[0]["type"], "message");
+        assert_eq!(events.body[0]["cursor"], 1);
+        assert_eq!(events.body[0]["message"]["type"], "hello_ok");
+        assert_eq!(events.body[0]["message"]["connection_id"], "hconn_3");
+
+        let mut viewer_headers = HashMap::new();
+        viewer_headers.insert(
+            "x-maestro-headless-connection-id".to_string(),
+            "hconn_2".to_string(),
+        );
+        let viewer_message = runtime.handle_request_with_headers(
+            "POST",
+            "/api/headless/sessions/maestro-session-1/messages",
+            Some(r#"{"type":"hello"}"#),
+            &viewer_headers,
+        );
+        assert_eq!(viewer_message.status, 409);
+        assert_eq!(viewer_message.body["code"], "controller_lease_held");
     }
 
     #[tokio::test]
@@ -2244,17 +2655,41 @@ mod tests {
         let state = state.json::<Value>().await.unwrap();
         assert_eq!(state["state"]["controller_subscription_id"], "hsub_1");
 
-        let unsupported = client
+        let message = client
             .post(format!(
                 "http://{address}/api/headless/sessions/maestro-session-1/messages"
             ))
-            .json(&json!({}))
+            .header("x-maestro-headless-connection-id", "hconn_1")
+            .header("x-maestro-headless-subscriber-id", "hsub_1")
+            .json(&json!({"type": "hello"}))
             .send()
             .await
             .unwrap();
-        assert_eq!(unsupported.status(), reqwest::StatusCode::NOT_IMPLEMENTED);
-        let unsupported = unsupported.json::<Value>().await.unwrap();
-        assert_eq!(unsupported["capability"], "headless_runtime_stream");
+        assert_eq!(message.status(), reqwest::StatusCode::OK);
+        let message = message.json::<Value>().await.unwrap();
+        assert_eq!(message["success"], true);
+        assert_eq!(message["execution"], "transport_only");
+        assert_eq!(message["cursor"], 1);
+
+        let events = client
+            .get(format!(
+                "http://{address}/api/headless/sessions/maestro-session-1/events?cursor=0&subscriptionId=hsub_1"
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(events.status(), reqwest::StatusCode::OK);
+        assert!(events
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("text/event-stream"));
+        let events = events.text().await.unwrap();
+        assert!(events.contains("data:"));
+        assert!(events.contains(r#""type":"message""#));
+        assert!(events.contains(r#""type":"hello_ok""#));
 
         shutdown.cancel();
         server.await.unwrap().unwrap();
