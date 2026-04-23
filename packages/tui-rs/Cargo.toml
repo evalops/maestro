@@ -19,7 +19,7 @@ crossterm = { version = "0.28", features = ["bracketed-paste", "event-stream"] }
 ratatui = { version = "0.29", features = ["unstable-widget-ref"] }
 
 # Async runtime
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "sync", "signal", "fs", "process"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "sync", "signal", "fs", "process", "net"] }
 tokio-stream = "0.1"
 tokio-util = "0.7"
 futures = "0.3"

@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -14,6 +15,9 @@ use std::sync::{Arc, Mutex};
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio_util::sync::CancellationToken;
 
 pub const HOSTED_RUNNER_IDENTITY_PATH: &str = "/.well-known/evalops/remote-runner/identity";
 pub const HOSTED_RUNNER_DRAIN_PATH: &str = "/.well-known/evalops/remote-runner/drain";
@@ -24,6 +28,8 @@ pub const HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION: &str =
     "evalops.remote-runner.snapshot-manifest.v1";
 
 const DEFAULT_LISTEN_PORT: u16 = 8080;
+const MAX_HTTP_HEADER_BYTES: usize = 64 * 1024;
+const MAX_HTTP_BODY_BYTES: usize = 1024 * 1024;
 
 const HEADLESS_PATH_PREFIXES: &[&str] = &["/api/headless/connections", "/api/headless/sessions/"];
 
@@ -366,6 +372,165 @@ impl HostedRunnerRuntime {
                 }),
             ),
         }
+    }
+}
+
+/// Serve the hosted-runner identity/drain surface on an existing TCP listener.
+///
+/// This intentionally only adapts HTTP requests onto the provider-neutral
+/// route core. The full headless HTTP/SSE host remains a separate layer.
+pub async fn serve_hosted_runner_http(
+    listener: TcpListener,
+    runtime: HostedRunnerRuntime,
+    shutdown: CancellationToken,
+) -> io::Result<()> {
+    loop {
+        tokio::select! {
+            () = shutdown.cancelled() => return Ok(()),
+            accepted = listener.accept() => {
+                let (stream, _) = accepted?;
+                let runtime = runtime.clone();
+                tokio::spawn(async move {
+                    let _ = handle_hosted_runner_http_stream(stream, runtime).await;
+                });
+            }
+        }
+    }
+}
+
+async fn handle_hosted_runner_http_stream(
+    mut stream: TcpStream,
+    runtime: HostedRunnerRuntime,
+) -> io::Result<()> {
+    let response = match read_http_request(&mut stream).await {
+        Ok(request) => {
+            let body = (!request.body.is_empty()).then_some(request.body.as_str());
+            runtime.handle_request(&request.method, &request.path, body)
+        }
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => HostedRunnerHttpResponse::json(
+            400,
+            json!({
+                "error": error.to_string(),
+                "code": "bad_request"
+            }),
+        ),
+        Err(error) => return Err(error),
+    };
+    write_http_response(&mut stream, response).await
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HostedRunnerHttpRequest {
+    method: String,
+    path: String,
+    body: String,
+}
+
+async fn read_http_request(stream: &mut TcpStream) -> io::Result<HostedRunnerHttpRequest> {
+    let mut bytes = Vec::with_capacity(4096);
+    let mut buffer = [0_u8; 4096];
+    let header_end = loop {
+        if let Some(index) = find_http_header_end(&bytes) {
+            break index;
+        }
+        let read = stream.read(&mut buffer).await?;
+        if read == 0 {
+            return Err(invalid_http("connection closed before HTTP headers"));
+        }
+        bytes.extend_from_slice(&buffer[..read]);
+        if bytes.len() > MAX_HTTP_HEADER_BYTES {
+            return Err(invalid_http("HTTP headers exceed hosted runner limit"));
+        }
+    };
+
+    let header_text = std::str::from_utf8(&bytes[..header_end])
+        .map_err(|_| invalid_http("HTTP headers must be UTF-8"))?;
+    let mut lines = header_text.split("\r\n");
+    let request_line = lines
+        .next()
+        .filter(|line| !line.trim().is_empty())
+        .ok_or_else(|| invalid_http("missing HTTP request line"))?;
+    let mut parts = request_line.split_whitespace();
+    let method = parts
+        .next()
+        .ok_or_else(|| invalid_http("missing HTTP method"))?;
+    let target = parts
+        .next()
+        .ok_or_else(|| invalid_http("missing HTTP target"))?;
+    let version = parts
+        .next()
+        .ok_or_else(|| invalid_http("missing HTTP version"))?;
+    if !version.starts_with("HTTP/1.") {
+        return Err(invalid_http("only HTTP/1.x requests are supported"));
+    }
+    let method = method.to_string();
+    let path = target.split('?').next().unwrap_or(target).to_string();
+
+    let mut content_length = 0_usize;
+    for line in lines {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case("content-length") {
+            content_length = value
+                .trim()
+                .parse::<usize>()
+                .map_err(|_| invalid_http("invalid content-length header"))?;
+        }
+    }
+    if content_length > MAX_HTTP_BODY_BYTES {
+        return Err(invalid_http("HTTP body exceeds hosted runner limit"));
+    }
+
+    let body_start = header_end + 4;
+    while bytes.len() < body_start + content_length {
+        let read = stream.read(&mut buffer).await?;
+        if read == 0 {
+            return Err(invalid_http("connection closed before HTTP body"));
+        }
+        bytes.extend_from_slice(&buffer[..read]);
+    }
+    let body = std::str::from_utf8(&bytes[body_start..body_start + content_length])
+        .map_err(|_| invalid_http("HTTP body must be UTF-8"))?
+        .to_string();
+
+    Ok(HostedRunnerHttpRequest { method, path, body })
+}
+
+async fn write_http_response(
+    stream: &mut TcpStream,
+    response: HostedRunnerHttpResponse,
+) -> io::Result<()> {
+    let body = serde_json::to_vec(&response.body).map_err(io::Error::other)?;
+    let headers = format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        response.status,
+        http_reason(response.status),
+        body.len()
+    );
+    stream.write_all(headers.as_bytes()).await?;
+    stream.write_all(&body).await?;
+    stream.shutdown().await
+}
+
+fn find_http_header_end(bytes: &[u8]) -> Option<usize> {
+    bytes.windows(4).position(|window| window == b"\r\n\r\n")
+}
+
+fn invalid_http(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+fn http_reason(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        400 => "Bad Request",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        500 => "Internal Server Error",
+        501 => "Not Implemented",
+        503 => "Service Unavailable",
+        _ => "Unknown",
     }
 }
 
@@ -1146,5 +1311,84 @@ mod tests {
         assert_eq!(response.status, 501);
         assert_eq!(response.body["code"], "unsupported_capability");
         assert_eq!(response.body["capability"], "headless_http_host");
+    }
+
+    #[tokio::test]
+    async fn http_listener_serves_identity_and_drain_routes() {
+        let (_temp_dir, runtime) = runtime();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let shutdown = CancellationToken::new();
+        let server = tokio::spawn(serve_hosted_runner_http(
+            listener,
+            runtime.clone(),
+            shutdown.clone(),
+        ));
+
+        let client = reqwest::Client::new();
+        let identity = client
+            .get(format!("http://{address}{HOSTED_RUNNER_IDENTITY_PATH}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(identity.status(), reqwest::StatusCode::OK);
+        let identity = identity.json::<Value>().await.unwrap();
+        assert_eq!(
+            identity["protocol_version"],
+            HOSTED_RUNNER_IDENTITY_PROTOCOL_VERSION
+        );
+        assert_eq!(identity["ready"], true);
+
+        let drain = client
+            .post(format!("http://{address}{HOSTED_RUNNER_DRAIN_PATH}"))
+            .json(&json!({
+                "reason": "user_stop",
+                "export_paths": ["."]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(drain.status(), reqwest::StatusCode::OK);
+        let drain = drain.json::<Value>().await.unwrap();
+        assert_eq!(
+            drain["protocol_version"],
+            HOSTED_RUNNER_DRAIN_PROTOCOL_VERSION
+        );
+        assert_eq!(drain["status"], "drained");
+        assert_eq!(
+            drain["manifest"]["manifest_version"],
+            HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION
+        );
+        assert!(runtime.is_draining());
+
+        shutdown.cancel();
+        server.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn http_listener_reports_headless_routes_as_unsupported() {
+        let (_temp_dir, runtime) = runtime();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let shutdown = CancellationToken::new();
+        let server = tokio::spawn(serve_hosted_runner_http(
+            listener,
+            runtime,
+            shutdown.clone(),
+        ));
+
+        let response = reqwest::Client::new()
+            .post(format!("http://{address}/api/headless/connections"))
+            .json(&json!({}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::NOT_IMPLEMENTED);
+        let body = response.json::<Value>().await.unwrap();
+        assert_eq!(body["code"], "unsupported_capability");
+        assert_eq!(body["capability"], "headless_http_host");
+
+        shutdown.cancel();
+        server.await.unwrap().unwrap();
     }
 }
