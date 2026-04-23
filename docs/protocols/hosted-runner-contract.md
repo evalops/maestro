@@ -175,8 +175,11 @@ workspace-root containment for file, watch, and command utility operations, and
 writes the local drain manifest. It deliberately keeps provider scheduling and
 artifact upload out of Rust; Platform still owns those concerns.
 
-The current Rust surface is meant to unblock the real Rust-hosted conformance
-adapter. It is not yet the final `maestro hosted-runner` CLI wrapper.
+The Rust surface now has an opt-in hosted conformance adapter. The adapter
+spawns a deterministic fixture binary, attaches over HTTP/SSE, and exercises the
+same shared scenarios as the TypeScript in-process host while the Rust server
+owns leases, replay, snapshots, workspace utilities, heartbeat, and disconnect
+behavior. It is not yet the final `maestro hosted-runner` CLI wrapper.
 
 ## Error Vocabulary
 
@@ -279,16 +282,23 @@ Every hosted runner implementation should satisfy the shared conformance suite:
 npm run test -- test/headless/runtime-conformance.test.ts
 ```
 
+Rust hosted-runner wire parity is opt-in while the fixture compiles the Rust
+crate:
+
+```bash
+MAESTRO_RUST_HOSTED_CONFORMANCE=1 npm run test -- test/headless/runtime-conformance.test.ts
+```
+
 Current coverage includes schema-valid snapshots/envelopes, controller/viewer
 roles, explicit controller takeover, cursor replay/reset, approval request and
 response resolution, workspace-root file-read enforcement, utility
 command/search/watch lifecycle, and disconnect cleanup.
 
-The current TypeScript adapter targets the in-process host. The Rust-hosted
-adapter should drive the same scenarios through
-`maestro_tui::hosted_runner::start_hosted_runner` and the external HTTP/SSE surface.
-The scenario body must remain shared; only adapter startup and transport
-details should vary.
+The TypeScript adapter targets the in-process host. The Rust-hosted adapter
+drives the same scenarios through
+`maestro_tui::hosted_runner::start_hosted_runner_with_message_executor` and the
+external HTTP/SSE surface. The scenario body must remain shared; only adapter
+startup and transport details should vary.
 
 ## References
 

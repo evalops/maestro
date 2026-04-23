@@ -25,10 +25,10 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::headless::messages::{
-    ClientCapabilities, ClientInfo, ConnectionRole, ConnectionState, FromAgentMessage, InitConfig,
-    ServerRequestType, ThinkingLevel, ToAgentMessage, UtilityCommandShellMode,
-    UtilityCommandStream, UtilityCommandTerminalMode, UtilityFileSearchMatch, UtilityOperation,
-    HEADLESS_PROTOCOL_VERSION,
+    ApprovalMode, ClientCapabilities, ClientInfo, ConnectionRole, ConnectionState,
+    FromAgentMessage, InitConfig, ServerRequestType, ThinkingLevel, ToAgentMessage,
+    UtilityCommandShellMode, UtilityCommandStream, UtilityCommandTerminalMode,
+    UtilityFileSearchMatch, UtilityOperation, HEADLESS_PROTOCOL_VERSION,
 };
 use crate::headless::{AgentState, AgentSupervisor, AsyncTransportError};
 
@@ -433,41 +433,85 @@ struct RuntimeSnapshot {
     protocol_version: String,
     session_id: String,
     cursor: u64,
-    last_init: Option<InitConfig>,
+    last_init: Option<RuntimeInitSnapshot>,
     state: RuntimeStateSnapshot,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct RuntimeInitSnapshot {
+    #[serde(rename = "type")]
+    message_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system_prompt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    append_system_prompt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking_level: Option<ThinkingLevel>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    approval_mode: Option<ApprovalMode>,
+}
+
+impl From<&InitConfig> for RuntimeInitSnapshot {
+    fn from(config: &InitConfig) -> Self {
+        Self {
+            message_type: "init".to_string(),
+            system_prompt: config.system_prompt.clone(),
+            append_system_prompt: config.append_system_prompt.clone(),
+            thinking_level: config.thinking_level,
+            approval_mode: config.approval_mode,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct RuntimeStateSnapshot {
+    #[serde(skip_serializing_if = "Option::is_none")]
     protocol_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     client_protocol_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     client_info: Option<ClientInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     capabilities: Option<ClientCapabilities>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     opt_out_notifications: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     connection_role: Option<ConnectionRole>,
     connection_count: usize,
     subscriber_count: usize,
     controller_subscription_id: Option<String>,
     controller_connection_id: Option<String>,
     connections: Vec<ConnectionState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     cwd: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     git_branch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     current_response: Option<serde_json::Value>,
     pending_approvals: Vec<serde_json::Value>,
     pending_client_tools: Vec<serde_json::Value>,
+    pending_mcp_elicitations: Vec<serde_json::Value>,
     pending_user_inputs: Vec<serde_json::Value>,
     pending_tool_retries: Vec<serde_json::Value>,
     tracked_tools: Vec<serde_json::Value>,
     active_tools: Vec<serde_json::Value>,
     active_utility_commands: Vec<ActiveUtilityCommandSnapshot>,
     active_file_watches: Vec<ActiveFileWatchSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     last_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     last_error_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     last_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     last_response_duration_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     last_ttft_ms: Option<u64>,
     is_ready: bool,
     is_responding: bool,
@@ -777,6 +821,13 @@ fn json_value<T: Serialize>(value: &T) -> serde_json::Value {
     serde_json::to_value(value).unwrap_or(serde_json::Value::Null)
 }
 
+fn json_string_value<T: Serialize>(value: &T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(ToOwned::to_owned))
+        .unwrap_or_default()
+}
+
 struct HttpRequest {
     method: String,
     path: String,
@@ -957,7 +1008,7 @@ impl SharedRunner {
             protocol_version: HEADLESS_PROTOCOL_VERSION.to_string(),
             session_id: state.session_id.clone(),
             cursor: state.cursor,
-            last_init: state.last_init.clone(),
+            last_init: state.last_init.as_ref().map(RuntimeInitSnapshot::from),
             state: RuntimeStateSnapshot {
                 protocol_version: Some(protocol_version),
                 client_protocol_version: preferred_connection
@@ -1007,6 +1058,7 @@ impl SharedRunner {
                 pending_client_tools: agent_state
                     .map(|state| state.pending_client_tools.iter().map(json_value).collect())
                     .unwrap_or_default(),
+                pending_mcp_elicitations: Vec::new(),
                 pending_user_inputs: agent_state
                     .map(|state| state.pending_user_inputs.iter().map(json_value).collect())
                     .unwrap_or_default(),
@@ -1036,7 +1088,7 @@ impl SharedRunner {
                 last_error: agent_state.and_then(|state| state.last_error.clone()),
                 last_error_type: agent_state
                     .and_then(|state| state.last_error_type)
-                    .map(|error_type| format!("{error_type:?}")),
+                    .map(|error_type| json_string_value(&error_type)),
                 last_status: agent_state
                     .and_then(|state| state.last_status.clone())
                     .or_else(|| state.last_status.clone()),
@@ -1560,6 +1612,15 @@ fn handle_events(
     let state = shared.state.lock().expect("hosted runner state poisoned");
     ensure_session_id(&state, Some(session_id))?;
     drop(state);
+    if query
+        .get("cursor")
+        .map(|value| value.trim_start().starts_with('-'))
+        .unwrap_or(false)
+    {
+        let replay = vec![shared.reset_envelope("replay_gap")];
+        let rx = shared.events.subscribe();
+        return Ok(ResponseBody::Sse { replay, rx, shared });
+    }
     let cursor = query
         .get("cursor")
         .and_then(|value| value.parse::<u64>().ok())
@@ -1787,11 +1848,11 @@ async fn handle_message(
         _ => {}
     }
 
-    let cursor = shared
-        .state
-        .lock()
-        .expect("hosted runner state poisoned")
-        .cursor;
+    let snapshot = {
+        let state = shared.state.lock().expect("hosted runner state poisoned");
+        shared.snapshot(&state)
+    };
+    let cursor = snapshot.cursor;
     json_response(
         200,
         json!({
@@ -1802,6 +1863,7 @@ async fn handle_message(
             "execution": execution,
             "published_messages": published_messages,
             "message": response_message,
+            "snapshot": snapshot,
         }),
     )
 }
@@ -1988,47 +2050,66 @@ async fn run_utility_command(
         );
     }
 
-    let output = spawn_command(&command, &cwd_path, env, shell_mode).await?;
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    let success = output.status.success();
-    let exit_code = output.status.code();
-    let mut state = shared.state.lock().expect("hosted runner state poisoned");
-    if let Some(active) = state.active_utility_commands.get_mut(&command_id) {
-        active.output.push_str(&stdout);
-        active.output.push_str(&stderr);
-    }
-    if !stdout.is_empty() {
-        shared.publish_message(
-            &mut state,
-            FromAgentMessage::UtilityCommandOutput {
-                command_id: command_id.clone(),
-                stream: UtilityCommandStream::Stdout,
-                content: stdout,
-            },
-        );
-    }
-    if !stderr.is_empty() {
-        shared.publish_message(
-            &mut state,
-            FromAgentMessage::UtilityCommandOutput {
-                command_id: command_id.clone(),
-                stream: UtilityCommandStream::Stderr,
-                content: stderr,
-            },
-        );
-    }
-    state.active_utility_commands.remove(&command_id);
-    shared.publish_message(
-        &mut state,
-        FromAgentMessage::UtilityCommandExited {
-            command_id,
-            success,
-            exit_code,
-            signal: None,
-            reason: None,
-        },
-    );
+    tokio::spawn(async move {
+        let output = spawn_command(&command, &cwd_path, env, shell_mode).await;
+        let mut state = shared.state.lock().expect("hosted runner state poisoned");
+        match output {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                let success = output.status.success();
+                let exit_code = output.status.code();
+                if let Some(active) = state.active_utility_commands.get_mut(&command_id) {
+                    active.output.push_str(&stdout);
+                    active.output.push_str(&stderr);
+                }
+                if !stdout.is_empty() {
+                    shared.publish_message(
+                        &mut state,
+                        FromAgentMessage::UtilityCommandOutput {
+                            command_id: command_id.clone(),
+                            stream: UtilityCommandStream::Stdout,
+                            content: stdout,
+                        },
+                    );
+                }
+                if !stderr.is_empty() {
+                    shared.publish_message(
+                        &mut state,
+                        FromAgentMessage::UtilityCommandOutput {
+                            command_id: command_id.clone(),
+                            stream: UtilityCommandStream::Stderr,
+                            content: stderr,
+                        },
+                    );
+                }
+                state.active_utility_commands.remove(&command_id);
+                shared.publish_message(
+                    &mut state,
+                    FromAgentMessage::UtilityCommandExited {
+                        command_id,
+                        success,
+                        exit_code,
+                        signal: None,
+                        reason: None,
+                    },
+                );
+            }
+            Err(error) => {
+                state.active_utility_commands.remove(&command_id);
+                shared.publish_message(
+                    &mut state,
+                    FromAgentMessage::UtilityCommandExited {
+                        command_id,
+                        success: false,
+                        exit_code: None,
+                        signal: None,
+                        reason: Some(error.message),
+                    },
+                );
+            }
+        }
+    });
     Ok(())
 }
 
@@ -2079,7 +2160,12 @@ async fn handle_file_read(
         .await
         .map_err(|error| HostedError::new(404, "not_found", error.to_string()))?;
     let lines: Vec<&str> = content.lines().collect();
-    let start = offset.unwrap_or(0) as usize;
+    let requested_offset = offset.unwrap_or(1).max(1) as usize;
+    let start = if lines.is_empty() {
+        0
+    } else {
+        requested_offset - 1
+    };
     let limit = limit.unwrap_or(200) as usize;
     let selected = lines
         .iter()
@@ -2087,10 +2173,7 @@ async fn handle_file_read(
         .take(limit)
         .copied()
         .collect::<Vec<_>>();
-    let mut rendered = selected.join("\n");
-    if !rendered.is_empty() {
-        rendered.push('\n');
-    }
+    let rendered = selected.join("\n");
     let relative_path = relative_workspace_path(&shared.config.workspace_root, &full_path);
     let mut state = shared.state.lock().expect("hosted runner state poisoned");
     shared.publish_message(
@@ -2101,7 +2184,11 @@ async fn handle_file_read(
             relative_path,
             cwd: shared.config.workspace_root.to_string_lossy().to_string(),
             content: rendered,
-            start_line: start as u32 + 1,
+            start_line: if lines.is_empty() {
+                0
+            } else {
+                start as u32 + 1
+            },
             end_line: (start + selected.len()) as u32,
             total_lines: lines.len() as u32,
             truncated: start + selected.len() < lines.len(),
@@ -2340,7 +2427,7 @@ fn assert_controller(state: &RunnerState, connection_id: Option<&str>) -> Hosted
         return Err(HostedError::new(
             403,
             "runtime_owned_elsewhere",
-            "Headless connection does not have controller access",
+            "Controller lease is currently held by another connection",
         ));
     }
     Ok(())
@@ -2456,7 +2543,7 @@ fn resolve_workspace_path(
         return Err(HostedError::new(
             403,
             "workspace_violation",
-            "requested path escapes hosted workspace root",
+            "Path is outside hosted workspace root",
         ));
     }
     Ok(normalized)
@@ -2862,6 +2949,36 @@ mod tests {
         };
         assert_eq!(reason, "broadcast_lag:3");
         assert_eq!(snapshot.cursor, 1);
+    }
+
+    #[tokio::test]
+    async fn events_negative_cursor_returns_replay_gap_reset() {
+        let workspace = tempdir().expect("workspace");
+        let handle = start_hosted_runner(test_config(workspace.path().to_path_buf()))
+            .await
+            .expect("start hosted runner");
+        let client = reqwest::Client::new();
+
+        let mut events_response = client
+            .get(format!(
+                "{}/api/headless/sessions/sess_test/events?cursor=-999",
+                handle.base_url()
+            ))
+            .send()
+            .await
+            .expect("events response");
+        assert_eq!(events_response.status(), StatusCode::OK);
+        let chunk =
+            tokio::time::timeout(std::time::Duration::from_secs(1), events_response.chunk())
+                .await
+                .expect("event chunk timeout")
+                .expect("event chunk read")
+                .expect("event chunk");
+        let event_text = String::from_utf8_lossy(&chunk);
+        assert!(event_text.contains(r#""type":"reset""#));
+        assert!(event_text.contains(r#""reason":"replay_gap""#));
+
+        handle.shutdown().await;
     }
 
     #[tokio::test]
