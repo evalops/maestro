@@ -137,7 +137,7 @@ describe("ComposerChatApprovals", () => {
 			],
 		});
 
-		expect(state.pendingApprovalQueue).toEqual([
+		expect(state.pendingApprovalQueue).toMatchObject([
 			{
 				id: "approval-1",
 				toolName: "bash",
@@ -150,6 +150,15 @@ describe("ComposerChatApprovals", () => {
 					source: "tool_execution",
 					toolExecutionId: "texec-1",
 					approvalRequestId: "approval-1",
+				},
+				pendingRequest: {
+					source: "platform",
+					createdAt: "2026-04-23T23:00:00.000Z",
+					platform: {
+						source: "tool_execution",
+						toolExecutionId: "texec-1",
+						approvalRequestId: "approval-1",
+					},
 				},
 			},
 		]);

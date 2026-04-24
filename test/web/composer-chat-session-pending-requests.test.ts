@@ -269,7 +269,7 @@ describe("composer-chat session pending request restore", () => {
 		await element.selectSession("session-platform");
 		await flushAsyncWork();
 
-		expect(element.pendingApprovalQueue).toEqual([
+		expect(element.pendingApprovalQueue).toMatchObject([
 			{
 				id: "approval-platform",
 				toolName: "bash",
@@ -283,9 +283,18 @@ describe("composer-chat session pending request restore", () => {
 					toolExecutionId: "texec-1",
 					approvalRequestId: "approval-platform",
 				},
+				pendingRequest: {
+					source: "platform",
+					createdAt: "2026-04-23T23:00:00.000Z",
+					platform: {
+						source: "tool_execution",
+						toolExecutionId: "texec-1",
+						approvalRequestId: "approval-platform",
+					},
+				},
 			},
 		]);
-		expect(element.pendingToolRetryQueue).toEqual([
+		expect(element.pendingToolRetryQueue).toMatchObject([
 			{
 				id: "retry-platform",
 				toolCallId: "tool-call-platform",
@@ -295,9 +304,13 @@ describe("composer-chat session pending request restore", () => {
 				attempt: 2,
 				maxAttempts: undefined,
 				summary: undefined,
+				pendingRequest: {
+					source: "local",
+					createdAt: "2026-04-23T23:00:01.000Z",
+				},
 			},
 		]);
-		expect(element.pendingUserInputQueue).toEqual([
+		expect(element.pendingUserInputQueue).toMatchObject([
 			{
 				toolCallId: "client-call-platform",
 				toolName: "ask_user",
@@ -317,6 +330,10 @@ describe("composer-chat session pending request restore", () => {
 				},
 				kind: "user_input",
 				reason: "Agent requested structured user input",
+				pendingRequest: {
+					source: "platform",
+					createdAt: "2026-04-23T23:00:02.000Z",
+				},
 			},
 		]);
 		expect(sendClientToolResult).not.toHaveBeenCalled();

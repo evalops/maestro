@@ -196,7 +196,7 @@ describe("ComposerChatClientRequests", () => {
 			],
 		});
 
-		expect(state.pendingToolRetryQueue).toEqual([
+		expect(state.pendingToolRetryQueue).toMatchObject([
 			{
 				id: "retry-1",
 				toolCallId: "tool-call-1",
@@ -206,33 +206,53 @@ describe("ComposerChatClientRequests", () => {
 				attempt: 2,
 				maxAttempts: 3,
 				summary: "Tests failed",
+				pendingRequest: {
+					source: "local",
+					createdAt: "2026-04-23T23:00:00.000Z",
+				},
 			},
 		]);
-		expect(state.pendingMcpElicitationQueue).toEqual([
+		expect(state.pendingMcpElicitationQueue).toMatchObject([
 			{
 				toolCallId: "mcp-call-1",
 				toolName: "mcp_elicitation",
 				args: { prompt: "project" },
 				kind: "mcp_elicitation",
 				reason: "MCP server requested more input",
+				pendingRequest: {
+					source: "platform",
+					createdAt: "2026-04-23T23:00:01.000Z",
+					platform: {
+						source: "tool_execution",
+						toolExecutionId: "texec-1",
+					},
+				},
 			},
 		]);
-		expect(state.pendingUserInputQueue).toEqual([
+		expect(state.pendingUserInputQueue).toMatchObject([
 			{
 				toolCallId: "user-call-1",
 				toolName: "ask_user",
 				args: { questions: [{ header: "Mode" }] },
 				kind: "user_input",
 				reason: "Agent requested structured user input",
+				pendingRequest: {
+					source: "platform",
+					createdAt: "2026-04-23T23:00:02.000Z",
+				},
 			},
 		]);
-		expect(replayable).toEqual([
+		expect(replayable).toMatchObject([
 			{
 				toolCallId: "artifact-call-1",
 				toolName: "artifacts",
 				args: { command: "list" },
 				kind: "client_tool",
 				reason: "Client tool requires local execution",
+				pendingRequest: {
+					source: "local",
+					createdAt: "2026-04-23T23:00:03.000Z",
+				},
 			},
 		]);
 	});
@@ -266,13 +286,17 @@ describe("ComposerChatClientRequests", () => {
 			],
 		});
 
-		expect(state.pendingUserInputQueue).toEqual([
+		expect(state.pendingUserInputQueue).toMatchObject([
 			{
 				toolCallId: "user-call-1",
 				toolName: "ask_user",
 				args: { questions: [{ header: "Latest" }] },
 				kind: "user_input",
 				reason: "Latest Platform wait projection",
+				pendingRequest: {
+					source: "platform",
+					createdAt: "2026-04-23T23:00:00.000Z",
+				},
 			},
 		]);
 	});

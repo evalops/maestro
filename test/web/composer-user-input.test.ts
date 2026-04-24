@@ -15,6 +15,7 @@ describe("composer-user-input", () => {
 				toolName: string;
 				args: Record<string, unknown>;
 				kind: "user_input";
+				pendingRequest?: Record<string, unknown>;
 			};
 			queueLength: number;
 			updateComplete?: Promise<void>;
@@ -47,6 +48,11 @@ describe("composer-user-input", () => {
 					},
 				],
 			},
+			pendingRequest: {
+				source: "platform",
+				createdAt: new Date().toISOString(),
+				expiresAt: new Date(Date.now() + 4 * 60 * 1000).toISOString(),
+			},
 		};
 		el.queueLength = 2;
 
@@ -56,6 +62,11 @@ describe("composer-user-input", () => {
 		const text = (el.shadowRoot?.textContent ?? "").replace(/\s+/g, " ");
 		expect(text).toContain("Input 1 of 2");
 		expect(text).toContain("1 more input request waiting");
+		expect(text).toContain(
+			"1 more input request waiting behind this one. \u2022 Platform wait",
+		);
+		expect(text).toContain("Platform wait");
+		expect(text).toContain("Expires");
 		expect(text).toContain("Which schema library should we use?");
 		expect(text).toContain("Zod patch");
 		expect(text).toContain("diff --git a/package.json b/package.json");

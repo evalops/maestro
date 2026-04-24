@@ -18,6 +18,7 @@ describe("composer-mcp-elicitation", () => {
 				toolName: string;
 				kind: "mcp_elicitation";
 				args: Record<string, unknown>;
+				pendingRequest?: Record<string, unknown>;
 			};
 			updateComplete?: Promise<void>;
 		};
@@ -53,6 +54,11 @@ describe("composer-mcp-elicitation", () => {
 					required: ["project", "flavor"],
 				},
 			},
+			pendingRequest: {
+				source: "platform",
+				createdAt: new Date().toISOString(),
+				expiresAt: new Date(Date.now() + 6 * 60 * 1000).toISOString(),
+			},
 		};
 		el.queueLength = 2;
 
@@ -65,6 +71,8 @@ describe("composer-mcp-elicitation", () => {
 		const text = (el.shadowRoot?.textContent ?? "").replace(/\s+/g, " ");
 		expect(text).toContain("MCP Elicitation");
 		expect(text).toContain("Request 1 of 2");
+		expect(text).toContain("Platform wait");
+		expect(text).toContain("Expires");
 		expect(text).toContain("Provide the project details");
 
 		const projectInput = el.shadowRoot?.querySelector(

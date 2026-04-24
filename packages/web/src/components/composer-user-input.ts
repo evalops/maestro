@@ -5,6 +5,7 @@
 import type { ComposerPendingClientToolRequest } from "@evalops/contracts";
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
+import { formatPendingRequestStatus } from "./pending-request-metadata.js";
 
 type AskUserOptionPreviewKind = "markdown" | "text" | "diff";
 
@@ -500,10 +501,12 @@ export class ComposerUserInput extends LitElement {
 	}
 
 	private getQueueSubtitle(): string {
-		if (this.queueLength <= 1) {
-			return "This agent run is waiting for your structured response.";
-		}
-		return `${this.queueLength - 1} more input request${this.queueLength === 2 ? "" : "s"} waiting behind this one.`;
+		const queueStatus =
+			this.queueLength <= 1
+				? "This agent run is waiting for your structured response."
+				: `${this.queueLength - 1} more input request${this.queueLength === 2 ? "" : "s"} waiting behind this one.`;
+		const requestStatus = formatPendingRequestStatus(this.request);
+		return [queueStatus, requestStatus].filter(Boolean).join(" • ");
 	}
 
 	private toggleOption(

@@ -4,6 +4,7 @@ import type {
 	ComposerPendingRequest,
 } from "@evalops/contracts";
 import type { ApiClient, Session } from "../services/api-client.js";
+import { attachPendingRequestMetadata } from "./pending-request-metadata.js";
 
 type ToastType = "success" | "error" | "info";
 
@@ -37,16 +38,19 @@ function approvalFromPendingRequest(
 	if (request.kind !== "approval") {
 		return null;
 	}
-	return {
-		id: request.id,
-		toolName: request.toolName,
-		displayName: request.displayName,
-		summaryLabel: request.summaryLabel,
-		actionDescription: request.actionDescription,
-		args: request.args,
-		reason: request.reason,
-		platform: request.platform,
-	};
+	return attachPendingRequestMetadata(
+		{
+			id: request.id,
+			toolName: request.toolName,
+			displayName: request.displayName,
+			summaryLabel: request.summaryLabel,
+			actionDescription: request.actionDescription,
+			args: request.args,
+			reason: request.reason,
+			platform: request.platform,
+		},
+		request,
+	);
 }
 
 function mergeApprovalRequests(

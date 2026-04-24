@@ -56,6 +56,7 @@ describe("composer-approval", () => {
 				toolName: string;
 				args: Record<string, unknown>;
 				reason: string;
+				pendingRequest?: Record<string, unknown>;
 			};
 			queueLength: number;
 			updateComplete?: Promise<void>;
@@ -71,6 +72,11 @@ describe("composer-approval", () => {
 				cwd: "/tmp/demo",
 			},
 			reason: "Potentially dangerous shell command",
+			pendingRequest: {
+				source: "platform",
+				createdAt: new Date().toISOString(),
+				expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+			},
 		};
 		el.queueLength = 3;
 
@@ -80,6 +86,8 @@ describe("composer-approval", () => {
 		const text = (el.shadowRoot?.textContent ?? "").replace(/\s+/g, " ");
 		expect(text).toContain("Approval 1 of 3");
 		expect(text).toContain("2 more approvals waiting");
+		expect(text).toContain("Platform wait");
+		expect(text).toContain("Expires");
 		expect(text).toContain("Action execute");
 		expect(text).toContain("Shell mode enabled");
 		expect(text).toContain("cwd:");

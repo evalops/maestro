@@ -4,6 +4,7 @@ import type {
 	ComposerToolRetryRequest,
 } from "@evalops/contracts";
 import type { ApiClient, Session } from "../services/api-client.js";
+import { attachPendingRequestMetadata } from "./pending-request-metadata.js";
 
 type ToastType = "success" | "error" | "info";
 
@@ -53,13 +54,16 @@ function clientToolRequestFromPendingRequest(
 	) {
 		return null;
 	}
-	return {
-		toolCallId: request.toolCallId,
-		toolName: request.toolName,
-		args: request.args,
-		kind: request.kind,
-		reason: request.reason,
-	};
+	return attachPendingRequestMetadata(
+		{
+			toolCallId: request.toolCallId,
+			toolName: request.toolName,
+			args: request.args,
+			kind: request.kind,
+			reason: request.reason,
+		},
+		request,
+	);
 }
 
 function toolRetryRequestFromPendingRequest(
@@ -69,29 +73,32 @@ function toolRetryRequestFromPendingRequest(
 		return null;
 	}
 	const args = isRecord(request.args) ? request.args : {};
-	return {
-		id: request.id,
-		toolCallId:
-			typeof args.tool_call_id === "string"
-				? args.tool_call_id
-				: request.toolCallId,
-		toolName: request.toolName,
-		args: hasOwn(args, "args") ? args.args : request.args,
-		errorMessage:
-			typeof args.error_message === "string"
-				? args.error_message
-				: request.reason,
-		attempt:
-			typeof args.attempt === "number" && Number.isFinite(args.attempt)
-				? args.attempt
-				: 1,
-		maxAttempts:
-			typeof args.max_attempts === "number" &&
-			Number.isFinite(args.max_attempts)
-				? args.max_attempts
-				: undefined,
-		summary: typeof args.summary === "string" ? args.summary : undefined,
-	};
+	return attachPendingRequestMetadata(
+		{
+			id: request.id,
+			toolCallId:
+				typeof args.tool_call_id === "string"
+					? args.tool_call_id
+					: request.toolCallId,
+			toolName: request.toolName,
+			args: hasOwn(args, "args") ? args.args : request.args,
+			errorMessage:
+				typeof args.error_message === "string"
+					? args.error_message
+					: request.reason,
+			attempt:
+				typeof args.attempt === "number" && Number.isFinite(args.attempt)
+					? args.attempt
+					: 1,
+			maxAttempts:
+				typeof args.max_attempts === "number" &&
+				Number.isFinite(args.max_attempts)
+					? args.max_attempts
+					: undefined,
+			summary: typeof args.summary === "string" ? args.summary : undefined,
+		},
+		request,
+	);
 }
 
 function mergeClientToolRequests(
