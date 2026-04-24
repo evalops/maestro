@@ -23,6 +23,7 @@ import {
 	saveBashHistory,
 } from "../../src/cli-tui/bash/bash-history.js";
 import { highlightBashCommand } from "../../src/cli-tui/bash/bash-syntax.js";
+import { runShellCommand } from "../../src/cli-tui/run/run-shell-command.js";
 import { runStreamingShellCommand } from "../../src/cli-tui/run/streaming-shell-command.js";
 import { backgroundTaskManager } from "../../src/tools/background-tasks.js";
 
@@ -741,6 +742,16 @@ describe("runStreamingShellCommand", () => {
 		);
 
 		expect(result.stdout).toBe("line1\nline2\nline3");
+	});
+});
+
+describe("runShellCommand", () => {
+	it("respects cwd option", async () => {
+		const result = await runShellCommand("pwd", {
+			cwd: "/tmp",
+		});
+
+		expect(result.stdout).toMatch(/^\/tmp|^\/private\/tmp/);
 	});
 });
 
