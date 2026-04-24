@@ -125,6 +125,158 @@ describe("ComposerChatClientRequests", () => {
 		]);
 	});
 
+	it("restores normalized pending requests when split queues are absent", () => {
+		const { clientRequests, state } = createClientRequestHarness();
+
+		const replayable = clientRequests.restorePendingRequests({
+			pendingRequests: [
+				{
+					id: "retry-1",
+					kind: "tool_retry",
+					status: "pending",
+					visibility: "user",
+					sessionId: "session-1",
+					toolCallId: "tool-call-1",
+					toolName: "bash",
+					args: {
+						tool_call_id: "tool-call-1",
+						args: { command: "npm test" },
+						error_message: "exit 1",
+						attempt: 2,
+						max_attempts: 3,
+						summary: "Tests failed",
+					},
+					reason: "Tests failed",
+					createdAt: "2026-04-23T23:00:00.000Z",
+					source: "local",
+				},
+				{
+					id: "mcp-1",
+					kind: "mcp_elicitation",
+					status: "pending",
+					visibility: "user",
+					sessionId: "session-1",
+					toolCallId: "mcp-call-1",
+					toolName: "mcp_elicitation",
+					args: { prompt: "project" },
+					reason: "MCP server requested more input",
+					createdAt: "2026-04-23T23:00:01.000Z",
+					source: "platform",
+					platform: {
+						source: "tool_execution",
+						toolExecutionId: "texec-1",
+					},
+				},
+				{
+					id: "user-1",
+					kind: "user_input",
+					status: "pending",
+					visibility: "user",
+					sessionId: "session-1",
+					toolCallId: "user-call-1",
+					toolName: "ask_user",
+					args: { questions: [{ header: "Mode" }] },
+					reason: "Agent requested structured user input",
+					createdAt: "2026-04-23T23:00:02.000Z",
+					source: "platform",
+				},
+				{
+					id: "artifact-1",
+					kind: "client_tool",
+					status: "pending",
+					visibility: "user",
+					sessionId: "session-1",
+					toolCallId: "artifact-call-1",
+					toolName: "artifacts",
+					args: { command: "list" },
+					reason: "Client tool requires local execution",
+					createdAt: "2026-04-23T23:00:03.000Z",
+					source: "local",
+				},
+			],
+		});
+
+		expect(state.pendingToolRetryQueue).toEqual([
+			{
+				id: "retry-1",
+				toolCallId: "tool-call-1",
+				toolName: "bash",
+				args: { command: "npm test" },
+				errorMessage: "exit 1",
+				attempt: 2,
+				maxAttempts: 3,
+				summary: "Tests failed",
+			},
+		]);
+		expect(state.pendingMcpElicitationQueue).toEqual([
+			{
+				toolCallId: "mcp-call-1",
+				toolName: "mcp_elicitation",
+				args: { prompt: "project" },
+				kind: "mcp_elicitation",
+				reason: "MCP server requested more input",
+			},
+		]);
+		expect(state.pendingUserInputQueue).toEqual([
+			{
+				toolCallId: "user-call-1",
+				toolName: "ask_user",
+				args: { questions: [{ header: "Mode" }] },
+				kind: "user_input",
+				reason: "Agent requested structured user input",
+			},
+		]);
+		expect(replayable).toEqual([
+			{
+				toolCallId: "artifact-call-1",
+				toolName: "artifacts",
+				args: { command: "list" },
+				kind: "client_tool",
+				reason: "Client tool requires local execution",
+			},
+		]);
+	});
+
+	it("lets normalized pending requests refresh legacy queue entries", () => {
+		const { clientRequests, state } = createClientRequestHarness();
+
+		clientRequests.restorePendingRequests({
+			pendingClientToolRequests: [
+				{
+					toolCallId: "user-call-1",
+					toolName: "ask_user",
+					args: { questions: [{ header: "Old" }] },
+					kind: "user_input",
+				},
+			],
+			pendingRequests: [
+				{
+					id: "user-1",
+					kind: "user_input",
+					status: "pending",
+					visibility: "user",
+					sessionId: "session-1",
+					toolCallId: "user-call-1",
+					toolName: "ask_user",
+					args: { questions: [{ header: "Latest" }] },
+					reason: "Latest Platform wait projection",
+					createdAt: "2026-04-23T23:00:00.000Z",
+					source: "platform",
+				},
+			],
+		});
+
+		expect(state.pendingUserInputQueue).toEqual([
+			{
+				toolCallId: "user-call-1",
+				toolName: "ask_user",
+				args: { questions: [{ header: "Latest" }] },
+				kind: "user_input",
+				reason: "Latest Platform wait projection",
+			},
+		]);
+	});
+
 	it("submits MCP elicitation responses and clears the queue", async () => {
 		const { apiClient, clientRequests, showToast, state } =
 			createClientRequestHarness();
