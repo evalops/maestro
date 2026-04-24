@@ -28,6 +28,7 @@ import type { RegisteredModel } from "../../src/models/registry.js";
 import type { WebServerContext } from "../../src/server/app-context.js";
 import { clientToolService } from "../../src/server/client-tools-service.js";
 import {
+	HostedRunnerErrorType,
 	handleHeadlessConnectionCreate,
 	handleHeadlessSessionCreate,
 	handleHeadlessSessionDisconnect,
@@ -2842,6 +2843,150 @@ describe("headless session handlers", () => {
 		} finally {
 			await rm(hostedWorkspaceRoot, { recursive: true, force: true });
 			await rm(requestedWorkspaceRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("returns structured runtime-not-ready errors while hosted runners drain", async () => {
+		const workspaceRoot = await mkdtemp(
+			join(tmpdir(), "maestro-headless-hosted-draining-"),
+		);
+		try {
+			const context = createContext({
+				hostedRunner: {
+					enabled: true,
+					runnerSessionId: "mrs_test",
+					ownerInstanceId: "pod-a",
+					workspaceRoot,
+					workspaceId: "ws_1",
+					agentRunId: "run_1",
+					activeMaestroSessionId: "session_owner",
+					draining: true,
+				},
+			});
+			const req = createJsonRequest("POST", "/api/headless/sessions", {
+				model: TEST_MODEL.id,
+			});
+			const res = new MockResponse();
+			res.req = req;
+
+			let caught: unknown;
+			try {
+				await handleHeadlessSessionCreate(
+					req,
+					res as unknown as ServerResponse,
+					context,
+				);
+			} catch (error) {
+				caught = error;
+			}
+
+			expect(caught).toBeInstanceOf(ApiError);
+			expect((caught as ApiError).errorType).toBe(
+				HostedRunnerErrorType.RuntimeNotReady,
+			);
+
+			const errorRes = new MockResponse();
+			errorRes.req = req;
+			respondWithApiError(
+				errorRes as unknown as ServerResponse,
+				caught,
+				500,
+				{},
+				req,
+			);
+
+			expect(errorRes.statusCode).toBe(503);
+			expect(JSON.parse(errorRes.body)).toMatchObject({
+				error:
+					"Hosted runner is draining and not accepting headless session traffic",
+				code: "UNAVAILABLE",
+				error_type: HostedRunnerErrorType.RuntimeNotReady,
+				details: [
+					{
+						reason: HostedRunnerErrorType.RuntimeNotReady,
+						domain: "maestro.hosted_runner",
+						metadata: {
+							runner_session_id: "mrs_test",
+							owner_instance_id: "pod-a",
+							workspace_id: "ws_1",
+							agent_run_id: "run_1",
+							maestro_session_id: "session_owner",
+							draining: "true",
+						},
+					},
+				],
+			});
+		} finally {
+			await rm(workspaceRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("reports hosted runner draining before accepting new session mutations", async () => {
+		const workspaceRoot = await mkdtemp(
+			join(tmpdir(), "maestro-headless-hosted-draining-"),
+		);
+		try {
+			const context = createContext({
+				hostedRunner: {
+					enabled: true,
+					runnerSessionId: "mrs_test",
+					ownerInstanceId: "pod-a",
+					workspaceRoot,
+					activeMaestroSessionId: "session_owner",
+					draining: true,
+				},
+			});
+			const req = createJsonRequest(
+				"POST",
+				"/api/headless/sessions/session_owner/messages",
+				{ type: "prompt", content: "after drain" },
+			);
+			const res = new MockResponse();
+			res.req = req;
+
+			let caught: unknown;
+			try {
+				await handleHeadlessSessionMessage(
+					req,
+					res as unknown as ServerResponse,
+					context,
+					{
+						id: "session_owner",
+					},
+				);
+			} catch (error) {
+				caught = error;
+			}
+
+			expect(caught).toBeInstanceOf(ApiError);
+
+			const errorRes = new MockResponse();
+			errorRes.req = req;
+			respondWithApiError(
+				errorRes as unknown as ServerResponse,
+				caught,
+				500,
+				{},
+				req,
+			);
+
+			expect(errorRes.statusCode).toBe(503);
+			expect(JSON.parse(errorRes.body)).toMatchObject({
+				error_type: HostedRunnerErrorType.RuntimeNotReady,
+				details: [
+					{
+						reason: HostedRunnerErrorType.RuntimeNotReady,
+						metadata: {
+							owner_instance_id: "pod-a",
+							maestro_session_id: "session_owner",
+							requested_maestro_session_id: "session_owner",
+							draining: "true",
+						},
+					},
+				],
+			});
+		} finally {
+			await rm(workspaceRoot, { recursive: true, force: true });
 		}
 	});
 

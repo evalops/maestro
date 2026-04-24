@@ -1480,6 +1480,9 @@ fn classify_remote_status(
     if body_has_remote_error_code(trimmed_body, "runtime_owned_elsewhere") {
         return (false, RemoteErrorKind::OwnershipConflict);
     }
+    if body_has_remote_error_code(trimmed_body, "runtime_not_ready") {
+        return (true, RemoteErrorKind::RuntimeNotReady);
+    }
 
     if trimmed_body.contains("Headless connection not found") {
         return (
@@ -2954,6 +2957,26 @@ mod tests {
                 r#"{"error":"Hosted runner is bound to Maestro session sess_owner","code":"ALREADY_EXISTS","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"runtime_owned_elsewhere","domain":"maestro.hosted_runner","metadata":{"owner_instance_id":"pod-a","maestro_session_id":"sess_owner"}}]}"#,
             ),
             (false, RemoteErrorKind::OwnershipConflict)
+        );
+    }
+
+    #[test]
+    fn retryability_classifies_structured_runtime_not_ready_as_retryable() {
+        assert_eq!(
+            classify_remote_status(
+                StatusCode::SERVICE_UNAVAILABLE,
+                RemoteRequestKind::Subscribe,
+                r#"{"error":"Hosted runner is draining and not accepting headless session traffic","code":"UNAVAILABLE","error_type":"runtime_not_ready"}"#,
+            ),
+            (true, RemoteErrorKind::RuntimeNotReady)
+        );
+        assert_eq!(
+            classify_remote_status(
+                StatusCode::SERVICE_UNAVAILABLE,
+                RemoteRequestKind::Message,
+                r#"{"error":"Hosted runner is draining and not accepting headless session traffic","code":"UNAVAILABLE","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"runtime_not_ready","domain":"maestro.hosted_runner","metadata":{"draining":"true","maestro_session_id":"sess_owner"}}]}"#,
+            ),
+            (true, RemoteErrorKind::RuntimeNotReady)
         );
     }
 
