@@ -65,6 +65,7 @@ import "./composer-message.js";
 import "./composer-input.js";
 import type { ComposerInput } from "./composer-input.js";
 import "./composer-session-sidebar.js";
+import "./composer-session-timeline-panel.js";
 import "./composer-share-dialog.js";
 import "./composer-export-dialog.js";
 import "./composer-settings.js";
@@ -1091,6 +1092,7 @@ export class ComposerChat extends LitElement {
 	@state() private settingsOpen = false;
 	@state() private adminSettingsOpen = false;
 	@state() private artifactsOpen = false;
+	@state() private timelineOpen = false;
 	@state() private activeArtifact: string | null = null;
 	@state() private artifactsState = createEmptyArtifactsState();
 	@state() private artifactsPanelAttachments: NonNullable<
@@ -2626,6 +2628,7 @@ export class ComposerChat extends LitElement {
 			| "moon"
 			| "grid"
 			| "file"
+			| "timeline"
 			| "reduce"
 			| "close",
 	) {
@@ -2645,6 +2648,8 @@ export class ComposerChat extends LitElement {
 			moon: "M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z",
 			grid: "M4 4h7v7H4Zm9 0h7v7h-7ZM4 13h7v7H4Zm9 7v-7h7v7Z",
 			file: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6",
+			timeline:
+				"M4 5h4m-4 7h8m-8 7h12M10 5h10M14 12h6M18 19h2M8 5a2 2 0 1 1-4 0 2 2 0 0 1 4 0Zm4 7a2 2 0 1 1-4 0 2 2 0 0 1 4 0Zm4 7a2 2 0 1 1-4 0 2 2 0 0 1 4 0Z",
 			reduce: "M12 21a9 9 0 1 1 0-18 9 9 0 0 1 0 18Zm-5-9h10",
 			close: "M18 6 6 18M6 6l12 12",
 		};
@@ -2750,6 +2755,7 @@ export class ComposerChat extends LitElement {
 	private toggleArtifactsPanel() {
 		this.artifactsOpen = !this.artifactsOpen;
 		if (this.artifactsOpen) {
+			this.timelineOpen = false;
 			void this.refreshArtifactsPanelAttachments();
 		}
 	}
@@ -2763,6 +2769,21 @@ export class ComposerChat extends LitElement {
 		this.activeArtifact = filename;
 		this.artifactsOpen = true;
 		void this.refreshArtifactsPanelAttachments();
+	}
+
+	private toggleTimelinePanel() {
+		if (this.shareToken || !this.currentSessionId) {
+			this.showToast("Select a writable session first", "info", 1800);
+			return;
+		}
+		this.timelineOpen = !this.timelineOpen;
+		if (this.timelineOpen) {
+			this.artifactsOpen = false;
+		}
+	}
+
+	private closeTimelinePanel() {
+		this.timelineOpen = false;
 	}
 
 	private handleOpenArtifact = (e: Event) => {
@@ -3980,6 +4001,14 @@ export class ComposerChat extends LitElement {
 						>
 							${this.renderIcon("file")}
 						</button>
+						<button
+							class="icon-btn ${this.timelineOpen ? "active" : ""}"
+							title=${isShared ? "Shared sessions are read-only" : "Run timeline"}
+							@click=${this.toggleTimelinePanel}
+							?disabled=${isShared || !this.currentSessionId}
+						>
+							${this.renderIcon("timeline")}
+						</button>
 						<button class="icon-btn ${this.compactMode ? "active" : ""}" title="Toggle compact layout (Ctrl/Cmd+M)" @click=${this.toggleCompact}>${this.renderIcon("grid")}</button>
 						<button class="icon-btn ${this.reducedMotion ? "active" : ""}" title="Toggle reduced motion" @click=${this.toggleReducedMotion}>${this.renderIcon("reduce")}</button>
 					</div>
@@ -4045,6 +4074,17 @@ export class ComposerChat extends LitElement {
 								@select-artifact=${(e: CustomEvent<{ filename: string }>) =>
 									this.setActiveArtifact(e.detail.filename)}
 							></composer-artifacts-panel>
+					  `
+						: ""
+				}
+				${
+					this.timelineOpen
+						? html`
+							<composer-session-timeline-panel
+								.apiClient=${this.apiClient}
+								.sessionId=${this.currentSessionId}
+								@close=${this.closeTimelinePanel}
+							></composer-session-timeline-panel>
 					  `
 						: ""
 				}
