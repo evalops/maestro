@@ -1,0 +1,111 @@
+name: public-source-provenance
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - edited
+      - synchronize
+      - reopened
+      - ready_for_review
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: public-source-provenance-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  require-internal-pr:
+    if: ${{ !startsWith(github.event.pull_request.head.ref, 'sync/') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check mirrored-source provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          mapfile -t changed_files < <(
+            gh api --paginate "/repos/${REPOSITORY}/pulls/${PR_NUMBER}/files" --jq ".[].filename"
+          )
+
+          mirrored_files=()
+          for file_path in "${changed_files[@]}"; do
+            case "$file_path" in
+              .github/workflows/*|\
+              .github/release-mirror-manifest.json|\
+              .github/public-release-mirror.exclude|\
+              docs/release-ops.md|\
+              docs/internal/*|\
+              scripts/configure-npm-trusted-publisher.mjs|\
+              scripts/deprecate-release.js|\
+              scripts/smoke-registry-install.js|\
+              scripts/validate-public-package-deps.js)
+                continue
+                ;;
+            esac
+            mirrored_files+=("$file_path")
+          done
+
+          if [[ "${#mirrored_files[@]}" -eq 0 ]]; then
+            echo "No mirrored source files changed."
+            exit 0
+          fi
+
+          if grep -Eiq "(https://github[.]com/evalops/maestro-internal/pull/[0-9]+|evalops/maestro-internal#[0-9]+|maestro-internal#[0-9]+)" <<< "${PR_BODY:-}"; then
+            echo "Mirrored source provenance link found."
+            exit 0
+          fi
+
+          marker="<!-- public-source-provenance -->"
+          file_list="$(printf -- "- %s\n" "${mirrored_files[@]}" | head -n 25)"
+          if [[ "${#mirrored_files[@]}" -gt 25 ]]; then
+            file_list="$(printf "%s\n- ... %d more" "$file_list" "$((${#mirrored_files[@]} - 25))")"
+          fi
+
+          comment_body="$(cat <<EOF
+          ${marker}
+          This PR changes mirrored Maestro source files in the public repo, but it does not link the matching private source-of-truth PR.
+
+          Add one of these to the PR body, then re-run the check:
+
+          - \`https://github.com/evalops/maestro-internal/pull/<number>\`
+          - \`evalops/maestro-internal#<number>\`
+          - \`maestro-internal#<number>\`
+
+          Mirrored files touched:
+
+          ${file_list}
+          EOF
+          )"
+
+          existing_comment_id="$(
+            gh api "/repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" \
+              --jq ".[] | select(.body | contains(\"${marker}\")) | .id" |
+              head -n 1
+          )"
+
+          if [[ -n "$existing_comment_id" ]]; then
+            gh api \
+              --method PATCH \
+              "/repos/${REPOSITORY}/issues/comments/${existing_comment_id}" \
+              -f body="$comment_body" >/dev/null
+          else
+            gh api \
+              --method POST \
+              "/repos/${REPOSITORY}/issues/${PR_NUMBER}/comments" \
+              -f body="$comment_body" >/dev/null
+          fi
+
+          echo "::error::Public PRs that touch mirrored source must link the matching evalops/maestro-internal PR."
+          exit 1
