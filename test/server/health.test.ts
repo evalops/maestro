@@ -50,10 +50,24 @@ describe("runHealthChecks", () => {
 				runnerSessionId: "mrs_123",
 				workspaceRoot,
 				draining: true,
+				lastDrain: {
+					status: "drained",
+					manifestPath: "/workspace/.maestro/runner-snapshots/mrs_123.json",
+					drainedAt: "2026-04-23T00:00:00.000Z",
+					reason: "kubernetes_prestop",
+					requestedBy: "kubernetes_prestop",
+				},
 			},
 		});
 
 		expect(result.status).toBe("unhealthy");
 		expect(result.checks.hostedRunner?.status).toBe("draining");
+		expect(result.checks.hostedRunner?.lastDrain).toMatchObject({
+			status: "drained",
+			manifestPath: "/workspace/.maestro/runner-snapshots/mrs_123.json",
+			drainedAt: "2026-04-23T00:00:00.000Z",
+			reason: "kubernetes_prestop",
+			requestedBy: "kubernetes_prestop",
+		});
 	});
 });

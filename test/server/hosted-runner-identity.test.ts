@@ -51,12 +51,20 @@ describe("hosted runner identity", () => {
 				ownerInstanceId: "pod_123",
 				workspaceRoot,
 				draining: true,
+				lastDrain: {
+					status: "drained",
+					manifestPath: "/workspace/.maestro/runner-snapshots/mrs_123.json",
+					drainedAt: "2026-04-23T00:00:00.000Z",
+				},
 			}),
 		).resolves.toMatchObject({
 			runner_session_id: "mrs_123",
 			owner_instance_id: "pod_123",
 			ready: false,
 			draining: true,
+			drain_status: "drained",
+			drain_manifest_path: "/workspace/.maestro/runner-snapshots/mrs_123.json",
+			drained_at: "2026-04-23T00:00:00.000Z",
 		});
 	});
 

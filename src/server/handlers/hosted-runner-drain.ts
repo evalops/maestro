@@ -511,6 +511,13 @@ export async function drainHostedRunner(
 		`${JSON.stringify(manifest, null, 2)}\n`,
 		"utf8",
 	);
+	hostedRunner.lastDrain = {
+		status,
+		manifestPath: snapshotPath,
+		drainedAt: requestedAt,
+		...(input.reason ? { reason: input.reason } : {}),
+		...(input.requestedBy ? { requestedBy: input.requestedBy } : {}),
+	};
 
 	return {
 		status,
