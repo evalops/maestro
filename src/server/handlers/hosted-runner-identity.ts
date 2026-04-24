@@ -15,6 +15,9 @@ export interface HostedRunnerIdentity {
 	owner_instance_id: string;
 	ready: boolean;
 	draining: boolean;
+	drain_status?: string;
+	drain_manifest_path?: string;
+	drained_at?: string;
 }
 
 export async function buildHostedRunnerIdentity(
@@ -33,6 +36,15 @@ export async function buildHostedRunnerIdentity(
 		owner_instance_id: hostedRunner.ownerInstanceId,
 		ready: readiness.status === "ready",
 		draining,
+		...(hostedRunner.lastDrain?.status
+			? { drain_status: hostedRunner.lastDrain.status }
+			: {}),
+		...(hostedRunner.lastDrain?.manifestPath
+			? { drain_manifest_path: hostedRunner.lastDrain.manifestPath }
+			: {}),
+		...(hostedRunner.lastDrain?.drainedAt
+			? { drained_at: hostedRunner.lastDrain.drainedAt }
+			: {}),
 	};
 }
 

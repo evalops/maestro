@@ -30,6 +30,13 @@ export interface HealthCheckResult {
 			workspaceId?: string;
 			agentRunId?: string;
 			maestroSessionId?: string;
+			lastDrain?: {
+				status: string;
+				manifestPath: string;
+				drainedAt: string;
+				reason?: string;
+				requestedBy?: string;
+			};
 			error?: string;
 		};
 	};
@@ -67,6 +74,9 @@ export async function checkHostedRunnerReadiness(
 		maestroSessionId:
 			hostedRunner.activeMaestroSessionId ??
 			hostedRunner.configuredMaestroSessionId,
+		...(hostedRunner.lastDrain
+			? { lastDrain: { ...hostedRunner.lastDrain } }
+			: {}),
 	};
 	if (hostedRunner.draining) {
 		return {

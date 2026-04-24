@@ -34,6 +34,13 @@ export interface HostedRunnerContext {
 	configuredMaestroSessionId?: string;
 	activeMaestroSessionId?: string;
 	draining?: boolean;
+	lastDrain?: {
+		status: string;
+		manifestPath: string;
+		drainedAt: string;
+		reason?: string;
+		requestedBy?: string;
+	};
 }
 
 export interface WebServerServices {

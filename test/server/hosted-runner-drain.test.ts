@@ -112,6 +112,13 @@ describe("hosted runner drain", () => {
 		expect(result?.reason).toBe("ttl_expired");
 		expect(result?.requested_by).toBe("platform");
 		expect(context.draining).toBe(true);
+		expect(context.lastDrain).toMatchObject({
+			status: HostedRunnerDrainStatusValue.Drained,
+			manifestPath: result?.manifest_path,
+			drainedAt: "2026-04-23T00:00:00.000Z",
+			reason: "ttl_expired",
+			requestedBy: "platform",
+		});
 		expect(drainRuntime).toHaveBeenCalledWith("session_123");
 		expect(result?.manifest).toMatchObject({
 			protocol_version: HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION,
