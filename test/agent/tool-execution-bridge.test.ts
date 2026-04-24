@@ -196,6 +196,40 @@ describe("tool execution bridge", () => {
 		expect(fetch).not.toHaveBeenCalled();
 	});
 
+	it("keeps git branch listing in observe mode", async () => {
+		process.env.EVALOPS_FEATURE_FLAGS_PATH = writeFlags([
+			MAESTRO_PLATFORM_RUNTIME_TOOL_EXECUTION_BRIDGE_FLAG,
+		]);
+		vi.stubGlobal("fetch", vi.fn());
+
+		const bridge = new DefaultPlatformToolExecutionBridge();
+		await expect(
+			bridge.prepare({
+				cfg: baseConfig(),
+				toolCall: {
+					type: "toolCall",
+					id: "tc_branch_1",
+					name: "bash",
+					arguments: { command: "git branch" },
+				},
+				sanitizedArgs: { command: "git branch" },
+			}),
+		).resolves.toMatchObject({
+			status: "observe",
+			plan: {
+				classification: {
+					mode: "observe",
+					tool: {
+						idempotent: true,
+						mutatesResource: false,
+					},
+				},
+			},
+		});
+
+		expect(fetch).not.toHaveBeenCalled();
+	});
+
 	it("keeps local observe-only execution when Platform recording fails", async () => {
 		process.env.EVALOPS_FEATURE_FLAGS_PATH = writeFlags([
 			MAESTRO_PLATFORM_RUNTIME_AGENT_RUNTIME_OBSERVE_FLAG,
@@ -483,5 +517,95 @@ describe("tool execution bridge", () => {
 			status: "deny",
 			reason: expect.stringContaining("Platform ToolExecution unavailable"),
 		});
+	});
+
+	it("propagates AbortError while preparing governed executions", async () => {
+		process.env.EVALOPS_FEATURE_FLAGS_PATH = writeFlags([
+			MAESTRO_PLATFORM_RUNTIME_TOOL_EXECUTION_BRIDGE_FLAG,
+		]);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => {
+				throw new DOMException("Aborted", "AbortError");
+			}),
+		);
+
+		const bridge = new DefaultPlatformToolExecutionBridge();
+		const abortController = new AbortController();
+		abortController.abort();
+		await expect(
+			bridge.prepare(
+				{
+					cfg: baseConfig(),
+					toolCall: {
+						type: "toolCall",
+						id: "tc_abort_1",
+						name: "bash",
+						arguments: { command: "git push" },
+					},
+					sanitizedArgs: { command: "git push" },
+				},
+				abortController.signal,
+			),
+		).rejects.toMatchObject({ name: "AbortError" });
+	});
+
+	it("propagates AbortError while resuming governed approvals", async () => {
+		process.env.EVALOPS_FEATURE_FLAGS_PATH = writeFlags([
+			MAESTRO_PLATFORM_RUNTIME_TOOL_EXECUTION_BRIDGE_FLAG,
+		]);
+		let requestsSeen = 0;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => {
+				requestsSeen++;
+				if (requestsSeen === 1) {
+					return new Response(
+						JSON.stringify({
+							execution: {
+								id: "texec_abort_resume_1",
+								state: "TOOL_EXECUTION_STATE_WAITING_APPROVAL",
+								approvalWait: {
+									approvalRequestId: "approval_abort_1",
+									resumeToken: "resume_abort_1",
+								},
+							},
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}
+				throw new DOMException("Aborted", "AbortError");
+			}),
+		);
+
+		const bridge = new DefaultPlatformToolExecutionBridge();
+		const input = {
+			cfg: baseConfig(),
+			toolCall: {
+				type: "toolCall",
+				id: "tc_abort_resume_1",
+				name: "bash",
+				arguments: { command: "git push" },
+			} satisfies ToolCall,
+			sanitizedArgs: { command: "git push" },
+		};
+		const prepared = await bridge.prepare(input);
+		if (prepared.status !== "wait_approval") {
+			throw new Error("expected approval wait");
+		}
+
+		const abortController = new AbortController();
+		abortController.abort();
+		await expect(
+			bridge.resolveApproval(
+				input,
+				prepared.plan,
+				{
+					approved: true,
+					resolvedBy: "user",
+				},
+				abortController.signal,
+			),
+		).rejects.toMatchObject({ name: "AbortError" });
 	});
 });
