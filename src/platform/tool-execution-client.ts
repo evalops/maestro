@@ -443,10 +443,3 @@ export async function resumeToolExecutionWithPlatform(
 		execution: normalizeExecutionRecord(objectValue(payload, "execution")),
 	};
 }
-
-export function hasToolExecutionDestination(): boolean {
-	return Boolean(
-		getEnvValue(TOOL_EXECUTION_TOKEN_ENV_VARS) &&
-			getEnvValue(TOOL_EXECUTION_ORGANIZATION_ENV_VARS),
-	);
-}

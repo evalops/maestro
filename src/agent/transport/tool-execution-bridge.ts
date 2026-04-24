@@ -34,13 +34,6 @@ import type {
 const logger = createLogger("transport:tool-execution-bridge");
 
 const OBSERVE_OUTPUT_SUMMARY_MAX_LENGTH = 280;
-const OBSERVE_RESULT_FIELDS = [
-	"maestro_bridge_mode",
-	"maestro_local_outcome",
-	"maestro_local_output_summary",
-	"maestro_local_output_redactions",
-] as const;
-
 const READ_ONLY_BASH_PREFIXES = [
 	"cat",
 	"cd",
@@ -49,7 +42,6 @@ const READ_ONLY_BASH_PREFIXES = [
 	"echo",
 	"env",
 	"find",
-	"git branch",
 	"git diff",
 	"git log",
 	"git remote -v",
@@ -88,6 +80,19 @@ const BASH_MUTATION_MARKERS = [
 	/\bterraform\s+(apply|destroy|import)\b/u,
 	/(^|[^<])>{1,2}/u,
 ] as const;
+
+const READ_ONLY_GIT_BRANCH_ARGS = new Set([
+	"--all",
+	"--list",
+	"--merged",
+	"--no-contains",
+	"--no-merged",
+	"--points-at",
+	"--remotes",
+	"-a",
+	"-l",
+	"-r",
+]);
 
 export type PlatformBridgeMode = "observe" | "governed";
 
@@ -203,11 +208,31 @@ function isReadOnlyBashCommand(command: string): boolean {
 	if (!normalized) {
 		return false;
 	}
+	if (isReadOnlyGitBranchCommand(normalized)) {
+		return true;
+	}
 	if (BASH_MUTATION_MARKERS.some((pattern) => pattern.test(normalized))) {
 		return false;
 	}
 	return READ_ONLY_BASH_PREFIXES.some(
 		(prefix) => normalized === prefix || normalized.startsWith(`${prefix} `),
+	);
+}
+
+function isReadOnlyGitBranchCommand(normalized: string): boolean {
+	const parts = normalized.split(" ");
+	if (parts[0] !== "git" || parts[1] !== "branch") {
+		return false;
+	}
+	const args = parts.slice(2);
+	if (args.length === 0) {
+		return true;
+	}
+	return args.every(
+		(arg) =>
+			READ_ONLY_GIT_BRANCH_ARGS.has(arg) ||
+			arg.startsWith("--format=") ||
+			arg.startsWith("--sort="),
 	);
 }
 
@@ -291,12 +316,7 @@ function classifyToolExecution(
 	}
 	const mode: PlatformBridgeMode = rollout.governedEnabled
 		? "governed"
-		: rollout.observeEnabled
-			? "observe"
-			: "observe";
-	if (mode === "observe" && !rollout.observeEnabled) {
-		return null;
-	}
+		: "observe";
 	const toolName = mcpTool.tool ?? toolCall.name;
 	const readOnly = isReadOnlyTool(toolCall.name, toolDef?.annotations);
 	return {
@@ -613,6 +633,9 @@ export class DefaultPlatformToolExecutionBridge
 					return { status: "allow", plan };
 			}
 		} catch (error) {
+			if (isAbortError(error)) {
+				throw error;
+			}
 			const message = error instanceof Error ? error.message : String(error);
 			return {
 				status: "deny",
@@ -679,6 +702,9 @@ export class DefaultPlatformToolExecutionBridge
 					return { status: "allow", plan: nextPlan };
 			}
 		} catch (error) {
+			if (isAbortError(error)) {
+				throw error;
+			}
 			const message = error instanceof Error ? error.message : String(error);
 			return decision.approved
 				? {
@@ -744,10 +770,6 @@ export function getDefaultPlatformToolExecutionBridge(): PlatformToolExecutionBr
 	return defaultBridge;
 }
 
-export function resetPlatformToolExecutionBridgeForTests(): void {
-	defaultBridge = null;
-}
-
 export function buildObservedResultMetadata(
 	plan: ToolExecutionBridgePlan | undefined,
 	observation: ObserveToolExecutionResult | undefined,
@@ -764,15 +786,6 @@ export function buildObservedResultMetadata(
 	};
 }
 
-export function stripObserveResultMetadata(
-	metadata: Record<string, string>,
-): Record<string, string> {
-	return Object.fromEntries(
-		Object.entries(metadata).filter(
-			([key]) =>
-				!OBSERVE_RESULT_FIELDS.includes(
-					key as (typeof OBSERVE_RESULT_FIELDS)[number],
-				),
-		),
-	);
+function isAbortError(error: unknown): boolean {
+	return error instanceof Error && error.name === "AbortError";
 }
