@@ -24,9 +24,13 @@ export async function runStreamingShellCommand(
 	options: StreamingShellCommandOptions = {},
 ): Promise<StreamingShellCommandResult> {
 	return await new Promise((resolve) => {
+		const cwd = options.cwd ?? process.cwd();
 		const child: ChildProcess = spawn("bash", ["-lc", command], {
-			cwd: options.cwd ?? process.cwd(),
-			env: options.env ?? process.env,
+			cwd,
+			env: {
+				...(options.env ?? process.env),
+				PWD: cwd,
+			},
 		});
 
 		let stdout = "";
