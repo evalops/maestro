@@ -4,6 +4,7 @@ export interface PlatformConnectMethodDescriptor {
 }
 
 export const PLATFORM_CONNECT_SERVICES = {
+	agentRuntime: "agentruntime.v1.AgentRuntimeService",
 	approvals: "approvals.v1.ApprovalService",
 	connectors: "connectors.v1.ConnectorService",
 	governance: "governance.v1.GovernanceService",
@@ -15,6 +16,48 @@ export const PLATFORM_CONNECT_SERVICES = {
 } as const;
 
 export const PLATFORM_CONNECT_METHODS = {
+	agentRuntime: {
+		completeRun: {
+			service: PLATFORM_CONNECT_SERVICES.agentRuntime,
+			method: "CompleteRun",
+		},
+		failRun: {
+			service: PLATFORM_CONNECT_SERVICES.agentRuntime,
+			method: "FailRun",
+		},
+		getRun: {
+			service: PLATFORM_CONNECT_SERVICES.agentRuntime,
+			method: "GetRun",
+		},
+		handleTrigger: {
+			service: PLATFORM_CONNECT_SERVICES.agentRuntime,
+			method: "HandleTrigger",
+		},
+		listRunEvents: {
+			service: PLATFORM_CONNECT_SERVICES.agentRuntime,
+			method: "ListRunEvents",
+		},
+		recordRunCheckpoint: {
+			service: PLATFORM_CONNECT_SERVICES.agentRuntime,
+			method: "RecordRunCheckpoint",
+		},
+		recordRunCost: {
+			service: PLATFORM_CONNECT_SERVICES.agentRuntime,
+			method: "RecordRunCost",
+		},
+		recordRunStep: {
+			service: PLATFORM_CONNECT_SERVICES.agentRuntime,
+			method: "RecordRunStep",
+		},
+		resumeRun: {
+			service: PLATFORM_CONNECT_SERVICES.agentRuntime,
+			method: "ResumeRun",
+		},
+		waitRun: {
+			service: PLATFORM_CONNECT_SERVICES.agentRuntime,
+			method: "WaitRun",
+		},
+	},
 	approvals: {
 		requestApproval: {
 			service: PLATFORM_CONNECT_SERVICES.approvals,

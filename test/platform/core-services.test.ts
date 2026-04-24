@@ -9,6 +9,19 @@ import {
 
 describe("Platform core service contract names", () => {
 	it("pins Connect service and method paths used by Maestro clients", () => {
+		expect(
+			platformConnectMethodPath(
+				PLATFORM_CONNECT_METHODS.agentRuntime.handleTrigger,
+			),
+		).toBe("/agentruntime.v1.AgentRuntimeService/HandleTrigger");
+		expect(
+			platformConnectMethodPath(
+				PLATFORM_CONNECT_METHODS.agentRuntime.recordRunStep,
+			),
+		).toBe("/agentruntime.v1.AgentRuntimeService/RecordRunStep");
+		expect(
+			platformConnectMethodPath(PLATFORM_CONNECT_METHODS.agentRuntime.waitRun),
+		).toBe("/agentruntime.v1.AgentRuntimeService/WaitRun");
 		expect(platformConnectServicePath(PLATFORM_CONNECT_SERVICES.prompts)).toBe(
 			"/prompts.v1.PromptService",
 		);
