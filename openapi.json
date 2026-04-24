@@ -2203,6 +2203,31 @@
         }
       }
     },
+    "/api/pending-requests/{requestId}/resume": {
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "requestId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
     "/api/chat/approval": {
       "post": {
         "summary": "Auto-generated from route definition",

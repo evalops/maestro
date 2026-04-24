@@ -61,6 +61,7 @@ import { handleMode } from "./handlers/mode.js";
 import { handleModel, handleModels } from "./handlers/models.js";
 import { handleOllama } from "./handlers/ollama.js";
 import { handlePackageStatus } from "./handlers/package.js";
+import { handlePendingRequestResume } from "./handlers/pending-requests.js";
 import { handlePlan } from "./handlers/plan.js";
 import { handlePolicyValidate } from "./handlers/policy.js";
 import { handlePreview } from "./handlers/preview.js";
@@ -745,6 +746,12 @@ export function createRoutes(context: WebServerContext): Route[] {
 			method: "POST",
 			path: "/api/chat",
 			handler: async (req, res) => handleChat(req, res, context),
+		},
+		{
+			method: "POST",
+			path: "/api/pending-requests/:requestId/resume",
+			handler: (req, res, params) =>
+				handlePendingRequestResume(req, res, context, params),
 		},
 		{
 			method: "POST",

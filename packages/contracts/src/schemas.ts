@@ -355,6 +355,76 @@ export const ComposerPendingRequestSchema = Type.Object({
 	platform: Type.Optional(ComposerPendingRequestPlatformRefSchema),
 });
 
+export const ComposerPendingRequestResolutionSchema = Type.Union([
+	Type.Literal("approved"),
+	Type.Literal("denied"),
+	Type.Literal("completed"),
+	Type.Literal("failed"),
+	Type.Literal("answered"),
+	Type.Literal("retried"),
+	Type.Literal("skipped"),
+	Type.Literal("aborted"),
+	Type.Literal("cancelled"),
+]);
+
+export const ComposerPendingRequestPlatformOperationSchema = Type.Union([
+	Type.Literal("ResolveApproval"),
+	Type.Literal("ResumeToolExecution"),
+	Type.Literal("ResumeRun"),
+]);
+
+export const ComposerClientToolResultContentSchema = Type.Union([
+	ComposerTextContentSchema,
+	ComposerImageContentSchema,
+]);
+
+export const ComposerPendingRequestResumeRequestSchema = Type.Object({
+	kind: Type.Optional(
+		Type.Union([
+			Type.Literal("approval"),
+			Type.Literal("client_tool"),
+			Type.Literal("mcp_elicitation"),
+			Type.Literal("user_input"),
+			Type.Literal("tool_retry"),
+		]),
+	),
+	sessionId: Type.Optional(Type.String()),
+	decision: Type.Optional(
+		Type.Union([Type.Literal("approved"), Type.Literal("denied")]),
+	),
+	action: Type.Optional(
+		Type.Union([
+			Type.Literal("retry"),
+			Type.Literal("skip"),
+			Type.Literal("abort"),
+		]),
+	),
+	content: Type.Optional(Type.Array(ComposerClientToolResultContentSchema)),
+	isError: Type.Optional(Type.Boolean()),
+	reason: Type.Optional(Type.String()),
+});
+
+export const ComposerPendingRequestResumeResponseSchema = Type.Object({
+	success: Type.Literal(true),
+	request: Type.Object({
+		id: Type.String(),
+		kind: Type.Union([
+			Type.Literal("approval"),
+			Type.Literal("client_tool"),
+			Type.Literal("mcp_elicitation"),
+			Type.Literal("user_input"),
+			Type.Literal("tool_retry"),
+		]),
+		sessionId: Type.Optional(Type.String()),
+		resolution: ComposerPendingRequestResolutionSchema,
+		source: Type.Union([Type.Literal("local"), Type.Literal("platform")]),
+		platform: Type.Optional(ComposerPendingRequestPlatformRefSchema),
+		platformOperation: Type.Optional(
+			ComposerPendingRequestPlatformOperationSchema,
+		),
+	}),
+});
+
 export const ComposerToolRetryRequestSchema = Type.Object({
 	id: Type.String(),
 	toolCallId: Type.String(),

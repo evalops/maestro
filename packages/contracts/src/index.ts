@@ -428,6 +428,22 @@ export type ComposerPendingRequestKind =
 	| "user_input"
 	| "tool_retry";
 
+export type ComposerPendingRequestResolution =
+	| "approved"
+	| "denied"
+	| "completed"
+	| "failed"
+	| "answered"
+	| "retried"
+	| "skipped"
+	| "aborted"
+	| "cancelled";
+
+export type ComposerPendingRequestPlatformOperation =
+	| "ResolveApproval"
+	| "ResumeToolExecution"
+	| "ResumeRun";
+
 export interface ComposerPendingRequestPlatformRef {
 	source: "approvals_service" | "tool_execution";
 	toolExecutionId?: string;
@@ -451,6 +467,33 @@ export interface ComposerPendingRequest {
 	expiresAt?: string;
 	source: "local" | "platform";
 	platform?: ComposerPendingRequestPlatformRef;
+}
+
+export type ComposerClientToolResultContent =
+	| ComposerTextContent
+	| ComposerImageContent;
+
+export interface ComposerPendingRequestResumeRequest {
+	kind?: ComposerPendingRequestKind;
+	sessionId?: string;
+	decision?: "approved" | "denied";
+	action?: "retry" | "skip" | "abort";
+	content?: ComposerClientToolResultContent[];
+	isError?: boolean;
+	reason?: string;
+}
+
+export interface ComposerPendingRequestResumeResponse {
+	success: true;
+	request: {
+		id: string;
+		kind: ComposerPendingRequestKind;
+		sessionId?: string;
+		resolution: ComposerPendingRequestResolution;
+		source: "local" | "platform";
+		platform?: ComposerPendingRequestPlatformRef;
+		platformOperation?: ComposerPendingRequestPlatformOperation;
+	};
 }
 
 /**

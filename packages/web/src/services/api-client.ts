@@ -71,6 +71,8 @@ import {
 	isComposerGuardianStatusResponse,
 	isComposerModel,
 	isComposerModelListResponse,
+	isComposerPendingRequestResumeRequest,
+	isComposerPendingRequestResumeResponse,
 	isComposerPlanActionResponse,
 	isComposerPlanStatusResponse,
 	isComposerSession,
@@ -104,6 +106,8 @@ import type {
 	ComposerGuardianStatusResponse,
 	ComposerMessage,
 	ComposerModel,
+	ComposerPendingRequestResumeRequest,
+	ComposerPendingRequestResumeResponse,
 	ComposerPlanActionResponse,
 	ComposerPlanStatusResponse,
 	ComposerProjectOnboardingState,
@@ -1633,10 +1637,10 @@ export class ApiClient {
 		>;
 		isError: boolean;
 	}): Promise<void> {
-		await this.tryFallbackFetch(
-			"/api/chat/client-tool-result",
-			this.buildJsonRequestInit("POST", input),
-		);
+		await this.resumePendingRequest(input.toolCallId, {
+			content: input.content,
+			isError: input.isError,
+		});
 	}
 
 	async submitApprovalDecision(input: {
@@ -1644,11 +1648,11 @@ export class ApiClient {
 		decision: "approved" | "denied";
 		reason?: string;
 	}): Promise<{ success: boolean }> {
-		return await this.fetchJsonRequestWithFallback<{ success: boolean }>(
-			"/api/chat/approval",
-			"POST",
-			input,
-		);
+		return await this.resumePendingRequest(input.requestId, {
+			kind: "approval",
+			decision: input.decision,
+			reason: input.reason,
+		});
 	}
 
 	async submitToolRetryDecision(input: {
@@ -1656,11 +1660,37 @@ export class ApiClient {
 		action: "retry" | "skip" | "abort";
 		reason?: string;
 	}): Promise<{ success: boolean }> {
-		return await this.fetchJsonRequestWithFallback<{ success: boolean }>(
-			"/api/chat/tool-retry",
-			"POST",
-			input,
-		);
+		return await this.resumePendingRequest(input.requestId, {
+			kind: "tool_retry",
+			action: input.action,
+			reason: input.reason,
+		});
+	}
+
+	async resumePendingRequest(
+		requestId: string,
+		input: ComposerPendingRequestResumeRequest,
+	): Promise<ComposerPendingRequestResumeResponse> {
+		if (
+			VALIDATE_API_RESPONSES &&
+			!isComposerPendingRequestResumeRequest(input)
+		) {
+			throw new Error("Invalid pending request resume request payload");
+		}
+
+		const data =
+			await this.fetchJsonRequestWithFallback<ComposerPendingRequestResumeResponse>(
+				`/api/pending-requests/${encodeURIComponent(requestId)}/resume`,
+				"POST",
+				input,
+			);
+		if (
+			VALIDATE_API_RESPONSES &&
+			!isComposerPendingRequestResumeResponse(data)
+		) {
+			throw new Error("Invalid pending request resume response payload");
+		}
+		return data;
 	}
 
 	/**
