@@ -42,3 +42,8 @@ This contract is the Maestro-side client/read-model slice for
 and `ApprovalRequest` APIs; Maestro uses this session projection so clients can
 rehydrate pending decisions after reload or hosted-runner attach while preserving
 the older split queues.
+
+Web clients should merge `pendingRequests` with the legacy split queues during
+the rollout. When the same request appears in both surfaces, prefer the
+normalized `pendingRequests` entry so Platform correlation fields and refreshed
+display metadata survive attach/reload recovery.

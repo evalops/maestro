@@ -1,6 +1,7 @@
 import type {
 	ComposerActionApprovalRequest,
 	ComposerApprovalMode,
+	ComposerPendingRequest,
 } from "@evalops/contracts";
 import type { ApiClient, Session } from "../services/api-client.js";
 
@@ -29,6 +30,44 @@ export type ComposerApprovalStatusUpdate = {
 	notify?: boolean;
 	sessionId?: string | null;
 };
+
+function approvalFromPendingRequest(
+	request: ComposerPendingRequest,
+): ComposerActionApprovalRequest | null {
+	if (request.kind !== "approval") {
+		return null;
+	}
+	return {
+		id: request.id,
+		toolName: request.toolName,
+		displayName: request.displayName,
+		summaryLabel: request.summaryLabel,
+		actionDescription: request.actionDescription,
+		args: request.args,
+		reason: request.reason,
+		platform: request.platform,
+	};
+}
+
+function mergeApprovalRequests(
+	session: Pick<Session, "pendingApprovalRequests" | "pendingRequests">,
+): ComposerActionApprovalRequest[] {
+	const merged = new Map<string, ComposerActionApprovalRequest>();
+	if (Array.isArray(session.pendingApprovalRequests)) {
+		for (const request of session.pendingApprovalRequests) {
+			merged.set(request.id, request);
+		}
+	}
+	if (Array.isArray(session.pendingRequests)) {
+		for (const request of session.pendingRequests) {
+			const approval = approvalFromPendingRequest(request);
+			if (approval) {
+				merged.set(approval.id, approval);
+			}
+		}
+	}
+	return [...merged.values()];
+}
 
 export class ComposerChatApprovals {
 	private approvalModeNoticeSessionId: string | null = null;
@@ -84,11 +123,11 @@ export class ComposerChatApprovals {
 		});
 	}
 
-	restorePendingRequests(session: Pick<Session, "pendingApprovalRequests">) {
+	restorePendingRequests(
+		session: Pick<Session, "pendingApprovalRequests" | "pendingRequests">,
+	) {
 		this.setState({
-			pendingApprovalQueue: Array.isArray(session.pendingApprovalRequests)
-				? [...session.pendingApprovalRequests]
-				: [],
+			pendingApprovalQueue: mergeApprovalRequests(session),
 			approvalSubmitting: false,
 		});
 	}

@@ -187,6 +187,141 @@ describe("composer-chat session pending request restore", () => {
 		expect(sendClientToolResult).not.toHaveBeenCalled();
 	});
 
+	it("rehydrates pending queues from normalized pendingRequests after attach", async () => {
+		const element = createChat();
+		const sendClientToolResult = vi.fn().mockResolvedValue({ success: true });
+		element.apiClient = {
+			createSession: vi.fn(),
+			getSession: vi.fn().mockResolvedValue({
+				id: "session-platform",
+				messages: [],
+				pendingRequests: [
+					{
+						id: "approval-platform",
+						kind: "approval",
+						status: "pending",
+						visibility: "user",
+						sessionId: "session-platform",
+						toolCallId: "approval-platform",
+						toolName: "bash",
+						displayName: "Run shell command",
+						summaryLabel: "Needs command approval",
+						actionDescription: "npm test",
+						args: { command: "npm test" },
+						reason: "Platform approval wait",
+						createdAt: "2026-04-23T23:00:00.000Z",
+						source: "platform",
+						platform: {
+							source: "tool_execution",
+							toolExecutionId: "texec-1",
+							approvalRequestId: "approval-platform",
+						},
+					},
+					{
+						id: "retry-platform",
+						kind: "tool_retry",
+						status: "pending",
+						visibility: "user",
+						sessionId: "session-platform",
+						toolCallId: "tool-call-platform",
+						toolName: "read",
+						args: {
+							tool_call_id: "tool-call-platform",
+							args: { file: "README.md" },
+							error_message: "timed out",
+							attempt: 2,
+						},
+						reason: "timed out",
+						createdAt: "2026-04-23T23:00:01.000Z",
+						source: "local",
+					},
+					{
+						id: "user-platform",
+						kind: "user_input",
+						status: "pending",
+						visibility: "user",
+						sessionId: "session-platform",
+						toolCallId: "client-call-platform",
+						toolName: "ask_user",
+						args: {
+							questions: [
+								{
+									header: "Mode",
+									question: "How should we proceed?",
+									options: [
+										{
+											label: "Continue",
+											description: "Keep going",
+										},
+									],
+								},
+							],
+						},
+						reason: "Agent requested structured user input",
+						createdAt: "2026-04-23T23:00:02.000Z",
+						source: "platform",
+					},
+				],
+			}),
+			sendClientToolResult,
+		};
+
+		await element.selectSession("session-platform");
+		await flushAsyncWork();
+
+		expect(element.pendingApprovalQueue).toEqual([
+			{
+				id: "approval-platform",
+				toolName: "bash",
+				displayName: "Run shell command",
+				summaryLabel: "Needs command approval",
+				actionDescription: "npm test",
+				args: { command: "npm test" },
+				reason: "Platform approval wait",
+				platform: {
+					source: "tool_execution",
+					toolExecutionId: "texec-1",
+					approvalRequestId: "approval-platform",
+				},
+			},
+		]);
+		expect(element.pendingToolRetryQueue).toEqual([
+			{
+				id: "retry-platform",
+				toolCallId: "tool-call-platform",
+				toolName: "read",
+				args: { file: "README.md" },
+				errorMessage: "timed out",
+				attempt: 2,
+				maxAttempts: undefined,
+				summary: undefined,
+			},
+		]);
+		expect(element.pendingUserInputQueue).toEqual([
+			{
+				toolCallId: "client-call-platform",
+				toolName: "ask_user",
+				args: {
+					questions: [
+						{
+							header: "Mode",
+							question: "How should we proceed?",
+							options: [
+								{
+									label: "Continue",
+									description: "Keep going",
+								},
+							],
+						},
+					],
+				},
+				kind: "user_input",
+				reason: "Agent requested structured user input",
+			},
+		]);
+		expect(sendClientToolResult).not.toHaveBeenCalled();
+	});
+
 	it("restores pending queues after the current-session update cycle runs", async () => {
 		const element = createChat();
 		let flushedSessionUpdate = false;

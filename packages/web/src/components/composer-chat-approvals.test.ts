@@ -87,6 +87,74 @@ describe("ComposerChatApprovals", () => {
 		);
 	});
 
+	it("restores Platform approvals from normalized pending requests", () => {
+		const { approvals, state } = createApprovalsHarness();
+
+		approvals.restorePendingRequests({
+			pendingApprovalRequests: [
+				{
+					id: "approval-1",
+					toolName: "bash",
+					args: { command: "old" },
+					reason: "Legacy projection",
+				},
+			],
+			pendingRequests: [
+				{
+					id: "approval-1",
+					kind: "approval",
+					status: "pending",
+					visibility: "user",
+					sessionId: "session-1",
+					toolCallId: "approval-1",
+					toolName: "bash",
+					displayName: "Run shell command",
+					summaryLabel: "Needs command approval",
+					actionDescription: "npm test",
+					args: { command: "npm test" },
+					reason: "Platform approval wait",
+					createdAt: "2026-04-23T23:00:00.000Z",
+					source: "platform",
+					platform: {
+						source: "tool_execution",
+						toolExecutionId: "texec-1",
+						approvalRequestId: "approval-1",
+					},
+				},
+				{
+					id: "user-1",
+					kind: "user_input",
+					status: "pending",
+					visibility: "user",
+					sessionId: "session-1",
+					toolCallId: "user-call-1",
+					toolName: "ask_user",
+					args: { questions: [] },
+					reason: "Not an approval",
+					createdAt: "2026-04-23T23:00:01.000Z",
+					source: "platform",
+				},
+			],
+		});
+
+		expect(state.pendingApprovalQueue).toEqual([
+			{
+				id: "approval-1",
+				toolName: "bash",
+				displayName: "Run shell command",
+				summaryLabel: "Needs command approval",
+				actionDescription: "npm test",
+				args: { command: "npm test" },
+				reason: "Platform approval wait",
+				platform: {
+					source: "tool_execution",
+					toolExecutionId: "texec-1",
+					approvalRequestId: "approval-1",
+				},
+			},
+		]);
+	});
+
 	it("stores stricter-server notices when approval mode resolves down", () => {
 		const { approvals, showToast, state } = createApprovalsHarness();
 

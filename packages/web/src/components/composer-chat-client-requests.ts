@@ -1,5 +1,6 @@
 import type {
 	ComposerPendingClientToolRequest,
+	ComposerPendingRequest,
 	ComposerToolRetryRequest,
 } from "@evalops/contracts";
 import type { ApiClient, Session } from "../services/api-client.js";
@@ -32,6 +33,105 @@ function isMcpElicitationRequest(
 	return (
 		request.kind === "mcp_elicitation" || request.toolName === "mcp_elicitation"
 	);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function hasOwn(value: Record<string, unknown>, key: string): boolean {
+	return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function clientToolRequestFromPendingRequest(
+	request: ComposerPendingRequest,
+): ComposerPendingClientToolRequest | null {
+	if (
+		request.kind !== "client_tool" &&
+		request.kind !== "mcp_elicitation" &&
+		request.kind !== "user_input"
+	) {
+		return null;
+	}
+	return {
+		toolCallId: request.toolCallId,
+		toolName: request.toolName,
+		args: request.args,
+		kind: request.kind,
+		reason: request.reason,
+	};
+}
+
+function toolRetryRequestFromPendingRequest(
+	request: ComposerPendingRequest,
+): ComposerToolRetryRequest | null {
+	if (request.kind !== "tool_retry") {
+		return null;
+	}
+	const args = isRecord(request.args) ? request.args : {};
+	return {
+		id: request.id,
+		toolCallId:
+			typeof args.tool_call_id === "string"
+				? args.tool_call_id
+				: request.toolCallId,
+		toolName: request.toolName,
+		args: hasOwn(args, "args") ? args.args : request.args,
+		errorMessage:
+			typeof args.error_message === "string"
+				? args.error_message
+				: request.reason,
+		attempt:
+			typeof args.attempt === "number" && Number.isFinite(args.attempt)
+				? args.attempt
+				: 1,
+		maxAttempts:
+			typeof args.max_attempts === "number" &&
+			Number.isFinite(args.max_attempts)
+				? args.max_attempts
+				: undefined,
+		summary: typeof args.summary === "string" ? args.summary : undefined,
+	};
+}
+
+function mergeClientToolRequests(
+	session: Pick<Session, "pendingClientToolRequests" | "pendingRequests">,
+): ComposerPendingClientToolRequest[] {
+	const merged = new Map<string, ComposerPendingClientToolRequest>();
+	if (Array.isArray(session.pendingClientToolRequests)) {
+		for (const request of session.pendingClientToolRequests) {
+			merged.set(request.toolCallId, request);
+		}
+	}
+	if (Array.isArray(session.pendingRequests)) {
+		for (const request of session.pendingRequests) {
+			const clientToolRequest = clientToolRequestFromPendingRequest(request);
+			if (clientToolRequest) {
+				merged.set(clientToolRequest.toolCallId, clientToolRequest);
+			}
+		}
+	}
+	return [...merged.values()];
+}
+
+function mergeToolRetryRequests(
+	session: Pick<Session, "pendingToolRetryRequests" | "pendingRequests">,
+): ComposerToolRetryRequest[] {
+	const merged = new Map<string, ComposerToolRetryRequest>();
+	if (Array.isArray(session.pendingToolRetryRequests)) {
+		for (const request of session.pendingToolRetryRequests) {
+			merged.set(request.id, request);
+		}
+	}
+	if (Array.isArray(session.pendingRequests)) {
+		for (const request of session.pendingRequests) {
+			const toolRetryRequest = toolRetryRequestFromPendingRequest(request);
+			if (toolRetryRequest) {
+				merged.set(toolRetryRequest.id, toolRetryRequest);
+			}
+		}
+	}
+	return [...merged.values()];
 }
 
 export class ComposerChatClientRequests {
@@ -143,18 +243,14 @@ export class ComposerChatClientRequests {
 	restorePendingRequests(
 		session: Pick<
 			Session,
-			"pendingToolRetryRequests" | "pendingClientToolRequests"
+			| "pendingToolRetryRequests"
+			| "pendingClientToolRequests"
+			| "pendingRequests"
 		>,
 	): ComposerPendingClientToolRequest[] {
-		const pendingClientToolRequests = Array.isArray(
-			session.pendingClientToolRequests,
-		)
-			? [...session.pendingClientToolRequests]
-			: [];
+		const pendingClientToolRequests = mergeClientToolRequests(session);
 		this.setState({
-			pendingToolRetryQueue: Array.isArray(session.pendingToolRetryRequests)
-				? [...session.pendingToolRetryRequests]
-				: [],
+			pendingToolRetryQueue: mergeToolRetryRequests(session),
 			toolRetrySubmitting: false,
 			pendingMcpElicitationQueue: pendingClientToolRequests.filter(
 				isMcpElicitationRequest,
