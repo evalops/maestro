@@ -22,18 +22,59 @@ env:
 
 jobs:
   require-internal-pr:
-    if: ${{ !startsWith(github.event.pull_request.head.ref, 'sync/') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Check mirrored-source provenance
         env:
           GH_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           PR_BODY: ${{ github.event.pull_request.body }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
+
+          if [[ "$HEAD_REF" == sync/* ]]; then
+            if [[ "$HEAD_REPOSITORY" != "$REPOSITORY" ]]; then
+              echo "::error::Generated public sync PRs must come from ${REPOSITORY}, not ${HEAD_REPOSITORY}."
+              exit 1
+            fi
+
+            case "$HEAD_REF" in
+              sync/public-release-mirror|sync/release-mirror)
+                ;;
+              *)
+                echo "::error::Unexpected generated sync branch '${HEAD_REF}'. Expected sync/public-release-mirror or sync/release-mirror."
+                exit 1
+                ;;
+            esac
+
+            if ! grep -Eiq "sync-public-release-mirror" <<< "${PR_BODY:-}"; then
+              echo "::error::Generated public sync PR is missing sync-public-release-mirror provenance in its body."
+              exit 1
+            fi
+
+            if ! grep -Eiq "internal source SHA: \`?[0-9a-f]{40}\`?" <<< "${PR_BODY:-}"; then
+              echo "::error::Generated public sync PR is missing the internal source SHA."
+              exit 1
+            fi
+
+            if [[ "$HEAD_REF" == "sync/public-release-mirror" ]]; then
+              if ! grep -Eiq "Source-of-truth status|Public Mirror Drift Audit" <<< "${PR_BODY:-}"; then
+                echo "::error::Generated public-tree sync PR is missing source-of-truth status details."
+                exit 1
+              fi
+              if ! grep -Eiq "public-only commits since last generated sync" <<< "${PR_BODY:-}"; then
+                echo "::error::Generated public-tree sync PR is missing public-only commit accounting."
+                exit 1
+              fi
+            fi
+
+            echo "Generated public sync provenance found."
+            exit 0
+          fi
 
           mapfile -t changed_files < <(
             gh api --paginate "/repos/${REPOSITORY}/pulls/${PR_NUMBER}/files" --jq ".[].filename"
