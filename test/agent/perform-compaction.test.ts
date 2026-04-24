@@ -267,13 +267,18 @@ function createActiveSkillHookMessage(name = "debug"): AppMessage {
 function createRestoredSkillHookMessage(
 	name = "reviewer",
 	content = "# Skill: reviewer\n\n> Review specialist\n\n## Instructions\n\nInspect the diff for regressions.",
+	skillMetadata?: Record<string, string>,
 ): AppMessage {
 	return {
 		role: "hookMessage",
 		customType: "skill",
 		content: [{ type: "text", text: content.replaceAll("reviewer", name) }],
 		display: false,
-		details: { name, source: "tool" },
+		details: {
+			name,
+			source: "tool",
+			...(skillMetadata ? { skillMetadata } : {}),
+		},
 		timestamp: Date.now(),
 	};
 }
@@ -2268,7 +2273,18 @@ Current plan contents:
 
 	it("re-restores prior hidden tool skill context across repeated compactions", async () => {
 		const messages = buildConversation(10);
-		messages.splice(2, 0, createRestoredSkillHookMessage("reviewer"));
+		const skillMetadata = {
+			name: "reviewer",
+			hash: "hash_review_skill",
+			source: "service",
+			artifactId: "skill_review_1",
+			version: "7",
+		};
+		messages.splice(
+			2,
+			0,
+			createRestoredSkillHookMessage("reviewer", undefined, skillMetadata),
+		);
 		const agent = createMockAgentWithoutAppendMessage(messages);
 		const sessionManager = createMockSessionManager();
 
@@ -2284,7 +2300,7 @@ Current plan contents:
 			role: "hookMessage",
 			customType: "skill",
 			display: false,
-			details: { name: "reviewer", source: "tool" },
+			details: { name: "reviewer", source: "tool", skillMetadata },
 		});
 		expect(JSON.stringify(restoredSkillMessages[0]?.content)).toContain(
 			"Inspect the diff for regressions.",
