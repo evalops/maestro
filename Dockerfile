@@ -51,7 +51,6 @@ RUN apk add --no-cache tini git && \
     adduser --system --uid 1001 appuser
 
 COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/src/db/migrations ./dist/db/migrations
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/skills ./skills

@@ -365,6 +365,21 @@ export class ComposerSessionTimelinePanel extends LitElement {
 								? html`<span class="chip platform">${item.toolExecutionId}</span>`
 								: ""
 						}
+						${
+							item.approvalRequestId
+								? html`<span class="chip platform">${item.approvalRequestId}</span>`
+								: ""
+						}
+						${
+							item.artifactId
+								? html`<span class="chip platform">${item.artifactId}</span>`
+								: ""
+						}
+						${
+							item.remoteRunnerSessionId
+								? html`<span class="chip platform">${item.remoteRunnerSessionId}</span>`
+								: ""
+						}
 					</div>
 				</div>
 			</div>

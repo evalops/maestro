@@ -11,6 +11,7 @@ This directory contains detailed design documentation for each major feature and
 | [Context Management](CONTEXT_MANAGEMENT.md) | Token budgeting, context sources, and auto-compaction |
 | [Session Recovery & Persistence](SESSION_PERSISTENCE.md) | JSONL storage, buffered writing, and crash recovery |
 | [Headless Control Plane](HEADLESS_CONTROL_PLANE.md) | Remote/session control-plane design for headless, replay, and client callbacks |
+| [Run Timeline Contract](../protocols/run-timeline.md) | Product-safe run event projection, redaction, visibility, and stable IDs |
 
 ## User Interface
 
