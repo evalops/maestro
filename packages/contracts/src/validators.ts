@@ -45,6 +45,7 @@ import {
 	ComposerPlanActionResponseSchema,
 	ComposerPlanRequestSchema,
 	ComposerPlanStatusResponseSchema,
+	ComposerRunTimelineResponseSchema,
 	ComposerSessionListResponseSchema,
 	ComposerSessionSchema,
 	ComposerSessionSummarySchema,
@@ -383,6 +384,11 @@ export const isComposerPendingRequestResumeResponse = (
 	value: unknown,
 ): value is Static<typeof ComposerPendingRequestResumeResponseSchema> =>
 	Value.Check(ComposerPendingRequestResumeResponseSchema, value);
+
+export const isComposerRunTimelineResponse = (
+	value: unknown,
+): value is Static<typeof ComposerRunTimelineResponseSchema> =>
+	Value.Check(ComposerRunTimelineResponseSchema, value);
 
 export const isComposerSessionListResponse = (
 	value: unknown,

@@ -496,6 +496,67 @@ export interface ComposerPendingRequestResumeResponse {
 	};
 }
 
+export type ComposerRunTimelineVisibility = "user" | "admin" | "audit";
+
+export type ComposerRunTimelineSource = "local" | "platform";
+
+export type ComposerRunTimelineEventType =
+	| "session.started"
+	| "session.updated"
+	| "message.user"
+	| "message.assistant"
+	| "tool.requested"
+	| "tool.completed"
+	| "tool.failed"
+	| "wait.pending"
+	| "compaction.created"
+	| "branch.created"
+	| "model.changed"
+	| "thinking.changed"
+	| "custom.event";
+
+export type ComposerRunTimelineStatus =
+	| "pending"
+	| "running"
+	| "completed"
+	| "failed"
+	| "approved"
+	| "denied"
+	| "info";
+
+export interface ComposerRunTimelineItem {
+	id: string;
+	sessionId: string;
+	timestamp: string;
+	type: ComposerRunTimelineEventType;
+	title: string;
+	visibility: ComposerRunTimelineVisibility;
+	source: ComposerRunTimelineSource;
+	status?: ComposerRunTimelineStatus;
+	summary?: string;
+	role?: ComposerRole;
+	toolCallId?: string;
+	toolName?: string;
+	pendingRequestId?: string;
+	pendingRequestKind?: ComposerPendingRequestKind;
+	approvalRequestId?: string;
+	toolExecutionId?: string;
+	artifactId?: string;
+	remoteRunnerSessionId?: string;
+	platform?: ComposerPendingRequestPlatformRef;
+	platformOperation?: ComposerPendingRequestPlatformOperation;
+	metadata?: Record<string, unknown>;
+}
+
+export interface ComposerRunTimelineResponse {
+	sessionId: string;
+	source: ComposerRunTimelineSource;
+	generatedAt: string;
+	platformBacked: boolean;
+	pendingRequestCount: number;
+	items: ComposerRunTimelineItem[];
+}
+
 /**
  * Full session data including message history.
  *

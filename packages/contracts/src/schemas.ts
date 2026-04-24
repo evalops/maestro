@@ -425,6 +425,86 @@ export const ComposerPendingRequestResumeResponseSchema = Type.Object({
 	}),
 });
 
+export const ComposerRunTimelineVisibilitySchema = Type.Union([
+	Type.Literal("user"),
+	Type.Literal("admin"),
+	Type.Literal("audit"),
+]);
+
+export const ComposerRunTimelineSourceSchema = Type.Union([
+	Type.Literal("local"),
+	Type.Literal("platform"),
+]);
+
+export const ComposerRunTimelineEventTypeSchema = Type.Union([
+	Type.Literal("session.started"),
+	Type.Literal("session.updated"),
+	Type.Literal("message.user"),
+	Type.Literal("message.assistant"),
+	Type.Literal("tool.requested"),
+	Type.Literal("tool.completed"),
+	Type.Literal("tool.failed"),
+	Type.Literal("wait.pending"),
+	Type.Literal("compaction.created"),
+	Type.Literal("branch.created"),
+	Type.Literal("model.changed"),
+	Type.Literal("thinking.changed"),
+	Type.Literal("custom.event"),
+]);
+
+export const ComposerRunTimelineStatusSchema = Type.Union([
+	Type.Literal("pending"),
+	Type.Literal("running"),
+	Type.Literal("completed"),
+	Type.Literal("failed"),
+	Type.Literal("approved"),
+	Type.Literal("denied"),
+	Type.Literal("info"),
+]);
+
+export const ComposerRunTimelineItemSchema = Type.Object({
+	id: Type.String(),
+	sessionId: Type.String(),
+	timestamp: Type.String(),
+	type: ComposerRunTimelineEventTypeSchema,
+	title: Type.String(),
+	visibility: ComposerRunTimelineVisibilitySchema,
+	source: ComposerRunTimelineSourceSchema,
+	status: Type.Optional(ComposerRunTimelineStatusSchema),
+	summary: Type.Optional(Type.String()),
+	role: Type.Optional(ComposerRoleSchema),
+	toolCallId: Type.Optional(Type.String()),
+	toolName: Type.Optional(Type.String()),
+	pendingRequestId: Type.Optional(Type.String()),
+	pendingRequestKind: Type.Optional(
+		Type.Union([
+			Type.Literal("approval"),
+			Type.Literal("client_tool"),
+			Type.Literal("mcp_elicitation"),
+			Type.Literal("user_input"),
+			Type.Literal("tool_retry"),
+		]),
+	),
+	approvalRequestId: Type.Optional(Type.String()),
+	toolExecutionId: Type.Optional(Type.String()),
+	artifactId: Type.Optional(Type.String()),
+	remoteRunnerSessionId: Type.Optional(Type.String()),
+	platform: Type.Optional(ComposerPendingRequestPlatformRefSchema),
+	platformOperation: Type.Optional(
+		ComposerPendingRequestPlatformOperationSchema,
+	),
+	metadata: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+});
+
+export const ComposerRunTimelineResponseSchema = Type.Object({
+	sessionId: Type.String(),
+	source: ComposerRunTimelineSourceSchema,
+	generatedAt: Type.String(),
+	platformBacked: Type.Boolean(),
+	pendingRequestCount: Type.Number(),
+	items: Type.Array(ComposerRunTimelineItemSchema),
+});
+
 export const ComposerToolRetryRequestSchema = Type.Object({
 	id: Type.String(),
 	toolCallId: Type.String(),

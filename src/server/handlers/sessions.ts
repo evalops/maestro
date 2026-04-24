@@ -10,6 +10,7 @@
  * |--------|------|-------------|
  * | GET | `/api/sessions` | List all sessions with pagination |
  * | GET | `/api/sessions/:id` | Get a specific session with messages |
+ * | GET | `/api/sessions/:id/timeline` | Get a redacted run timeline |
  * | POST | `/api/sessions` | Create a new session |
  * | PATCH | `/api/sessions/:id` | Update session metadata (title, tags, favorite) |
  * | DELETE | `/api/sessions/:id` | Delete a session |
@@ -37,8 +38,6 @@ import crypto from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type {
-	ComposerPendingClientToolRequest,
-	ComposerPendingRequest,
 	ComposerSession,
 	ComposerSessionSummary,
 } from "@evalops/contracts";
@@ -51,7 +50,7 @@ import type { SessionEntry } from "../../session/types.js";
 import { createLogger } from "../../utils/logger.js";
 import { getAuthSubject } from "../authz.js";
 import { isHostedSessionManager } from "../hosted-session-manager.js";
-import { serverRequestManager } from "../server-request-manager.js";
+import { getPendingServerRequestPayload } from "../pending-request-payload.js";
 import {
 	buildContentDisposition,
 	readJsonBody,
@@ -91,122 +90,8 @@ export type {
 } from "./session-share-store.js";
 
 const logger = createLogger("sessions-handler");
-const sessionIdPattern = /^[a-zA-Z0-9._-]+$/;
+export const sessionIdPattern = /^[a-zA-Z0-9._-]+$/;
 const attachmentIdPattern = /^[a-zA-Z0-9._-]+$/;
-
-function getPendingServerRequestPayload(
-	sessionId: string,
-): Pick<
-	ComposerSession,
-	| "pendingApprovalRequests"
-	| "pendingClientToolRequests"
-	| "pendingRequests"
-	| "pendingToolRetryRequests"
-> {
-	const pending = serverRequestManager.listPending({ sessionId });
-
-	const pendingApprovalRequests = pending
-		.filter((entry) => entry.kind === "approval")
-		.map((entry) => ({
-			id: entry.id,
-			toolName: entry.toolName,
-			displayName: entry.displayName,
-			summaryLabel: entry.summaryLabel,
-			actionDescription: entry.actionDescription,
-			args: entry.args,
-			reason: entry.reason,
-			platform: entry.platform,
-		}));
-
-	const pendingClientToolRequests: ComposerPendingClientToolRequest[] = pending
-		.filter(
-			(
-				entry,
-			): entry is typeof entry & {
-				kind: "client_tool" | "mcp_elicitation" | "user_input";
-			} =>
-				entry.kind === "client_tool" ||
-				entry.kind === "mcp_elicitation" ||
-				entry.kind === "user_input",
-		)
-		.map((entry) => ({
-			toolCallId: entry.callId,
-			toolName: entry.toolName,
-			args: entry.args,
-			kind: entry.kind,
-			reason: entry.reason,
-		}));
-
-	const pendingToolRetryRequests = pending
-		.filter((entry) => entry.kind === "tool_retry")
-		.map((entry) => {
-			const args =
-				entry.args &&
-				typeof entry.args === "object" &&
-				!Array.isArray(entry.args)
-					? (entry.args as Record<string, unknown>)
-					: {};
-			return {
-				id: entry.id,
-				toolCallId:
-					typeof args.tool_call_id === "string"
-						? args.tool_call_id
-						: entry.callId,
-				toolName: entry.toolName,
-				args: args.args,
-				errorMessage:
-					typeof args.error_message === "string"
-						? args.error_message
-						: entry.reason,
-				attempt:
-					typeof args.attempt === "number" && Number.isFinite(args.attempt)
-						? args.attempt
-						: 1,
-				maxAttempts:
-					typeof args.max_attempts === "number" &&
-					Number.isFinite(args.max_attempts)
-						? args.max_attempts
-						: undefined,
-				summary: typeof args.summary === "string" ? args.summary : undefined,
-			};
-		});
-	const pendingRequests: ComposerPendingRequest[] = pending.map((entry) => {
-		const createdAt = new Date(entry.timestamp).toISOString();
-		const expiresAt =
-			Number.isFinite(entry.timeoutMs) && entry.timeoutMs > 0
-				? new Date(entry.timestamp + entry.timeoutMs).toISOString()
-				: undefined;
-		return {
-			id: entry.id,
-			kind: entry.kind,
-			status: "pending",
-			visibility: "user",
-			sessionId: entry.sessionId,
-			toolCallId: entry.callId,
-			toolName: entry.toolName,
-			displayName: entry.displayName,
-			summaryLabel: entry.summaryLabel,
-			actionDescription: entry.actionDescription,
-			args: entry.args,
-			reason: entry.reason,
-			createdAt,
-			expiresAt,
-			source: entry.platform ? "platform" : "local",
-			platform: entry.platform,
-		};
-	});
-
-	return {
-		...(pendingApprovalRequests.length > 0 ? { pendingApprovalRequests } : {}),
-		...(pendingClientToolRequests.length > 0
-			? { pendingClientToolRequests }
-			: {}),
-		...(pendingToolRetryRequests.length > 0
-			? { pendingToolRetryRequests }
-			: {}),
-		...(pendingRequests.length > 0 ? { pendingRequests } : {}),
-	};
-}
 
 function sendSensitiveContentBlockedResponse(
 	req: IncomingMessage,
@@ -234,7 +119,7 @@ function sendSensitiveContentBlockedResponse(
  *
  * Returns true if access is allowed, false otherwise.
  */
-function verifySessionOwnership(
+export function verifySessionOwnership(
 	session: { owner?: unknown; subject?: unknown },
 	subject: string,
 ): boolean {
