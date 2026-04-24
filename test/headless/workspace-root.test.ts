@@ -42,6 +42,18 @@ describe("hosted workspace root guard", () => {
 		).toBe(realpathSync(join(workspaceRoot, "src")));
 	});
 
+	it("allows inside paths whose segment names start with dot-dot", async () => {
+		const workspaceRoot = await createTempDir("maestro-workspace-root-");
+		await mkdir(join(workspaceRoot, "..cache"));
+
+		expect(
+			resolveHostedWorkspacePath("..cache", {
+				MAESTRO_HOSTED_RUNNER_MODE: "1",
+				MAESTRO_WORKSPACE_ROOT: workspaceRoot,
+			}),
+		).toBe(realpathSync(join(workspaceRoot, "..cache")));
+	});
+
 	it("rejects paths outside the hosted workspace root", async () => {
 		const workspaceRoot = await createTempDir("maestro-workspace-root-");
 		const outsideRoot = await createTempDir("maestro-workspace-outside-");
