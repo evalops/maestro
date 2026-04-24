@@ -1034,6 +1034,13 @@ export interface AgentState {
  * - `error` - Error occurred
  * - `compaction` - Context was compacted
  */
+export type GovernedToolOutcome =
+	| "approval_required"
+	| "approval_pending"
+	| "authentication_required"
+	| "denied"
+	| "rate_limited";
+
 export type AgentEvent =
 	| {
 			/** Agent execution started */
@@ -1127,12 +1134,7 @@ export type AgentEvent =
 			/** Optional stable error or outcome code for telemetry and clients */
 			errorCode?: string;
 			/** Optional governed outcome classification surfaced by the tool result */
-			governedOutcome?:
-				| "approval_required"
-				| "approval_pending"
-				| "authentication_required"
-				| "denied"
-				| "rate_limited";
+			governedOutcome?: GovernedToolOutcome;
 			/** Optional selected skill artifact metadata surfaced by the tool result */
 			skillMetadata?: SkillArtifactMetadata;
 			/** Name of the tool */

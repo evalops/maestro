@@ -106,18 +106,12 @@ import type {
 	AgentTransport,
 	AppMessage,
 	AssistantMessage,
+	GovernedToolOutcome,
 	Message,
 	QueuedMessage,
 	ToolCall,
 	ToolResultMessage,
 } from "./types.js";
-
-type GovernedToolOutcome =
-	| "approval_required"
-	| "approval_pending"
-	| "authentication_required"
-	| "denied"
-	| "rate_limited";
 
 function getGovernedToolResultEventMetadata(details: unknown): {
 	errorCode?: string;
