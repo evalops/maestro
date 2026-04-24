@@ -46,4 +46,7 @@ the older split queues.
 Web clients should merge `pendingRequests` with the legacy split queues during
 the rollout. When the same request appears in both surfaces, prefer the
 normalized `pendingRequests` entry so Platform correlation fields and refreshed
-display metadata survive attach/reload recovery.
+display metadata survive attach/reload recovery. Client UI surfaces should also
+preserve `source`, `createdAt`, and `expiresAt` from the normalized entry so
+users can tell whether a wait is Platform-backed and whether it is close to or
+past timeout.

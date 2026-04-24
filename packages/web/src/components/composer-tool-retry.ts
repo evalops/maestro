@@ -5,6 +5,7 @@
 import type { ComposerToolRetryRequest } from "@evalops/contracts";
 import { LitElement, css, html } from "lit";
 import { customElement, property } from "lit/decorators.js";
+import { formatPendingRequestStatus } from "./pending-request-metadata.js";
 
 @customElement("composer-tool-retry")
 export class ComposerToolRetry extends LitElement {
@@ -318,10 +319,12 @@ export class ComposerToolRetry extends LitElement {
 	private getQueueSubtitle(): string {
 		const total = Math.max(this.queueLength, this.request ? 1 : 0);
 		const remaining = Math.max(total - 1, 0);
-		if (remaining === 0) {
-			return "No other pending retry decisions";
-		}
-		return `${remaining} more retry decision${remaining === 1 ? "" : "s"} waiting`;
+		const queueStatus =
+			remaining === 0
+				? "No other pending retry decisions"
+				: `${remaining} more retry decision${remaining === 1 ? "" : "s"} waiting`;
+		const requestStatus = formatPendingRequestStatus(this.request);
+		return [queueStatus, requestStatus].filter(Boolean).join(" • ");
 	}
 
 	private getToolTitle(): string {

@@ -5,6 +5,7 @@
 import type { ComposerPendingClientToolRequest } from "@evalops/contracts";
 import { LitElement, type PropertyValues, css, html, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
+import { formatPendingRequestStatus } from "./pending-request-metadata.js";
 
 type PrimitiveValue = string | number | boolean | string[];
 
@@ -997,6 +998,7 @@ export class ComposerMcpElicitation extends LitElement {
 
 		const parsed = parseMcpElicitationRequest(this.request.args);
 		const waitingCount = Math.max(0, this.queueLength - 1);
+		const pendingStatus = formatPendingRequestStatus(this.request);
 
 		return html`
 			<div class="overlay">
@@ -1027,6 +1029,7 @@ export class ComposerMcpElicitation extends LitElement {
 										? html`<br />${waitingCount} more MCP request${waitingCount === 1 ? "" : "s"} waiting.`
 										: nothing
 								}
+								${pendingStatus ? html`<br />${pendingStatus}` : nothing}
 							</div>
 						</div>
 
