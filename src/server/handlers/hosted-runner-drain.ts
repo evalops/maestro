@@ -25,7 +25,34 @@ export const HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION =
 export const HOSTED_RUNNER_RETENTION_POLICY_VERSION =
 	"evalops.remote-runner.retention.v1";
 
-type SnapshotManifestStatus = "drained" | "interrupted";
+export enum HostedRunnerDrainStatusValue {
+	Drained = "drained",
+	Interrupted = "interrupted",
+}
+
+export enum HostedRunnerRuntimeFlushStatusValue {
+	Completed = "completed",
+	Failed = "failed",
+	Skipped = "skipped",
+}
+
+export enum HostedRunnerWorkspaceExportPathTypeValue {
+	File = "file",
+	Directory = "directory",
+	Other = "other",
+}
+
+export enum HostedRunnerWorkspaceExportModeValue {
+	LocalPathContract = "local_path_contract",
+}
+
+export type HostedRunnerDrainStatus = HostedRunnerDrainStatusValue;
+export type HostedRunnerRuntimeFlushStatus =
+	HostedRunnerRuntimeFlushStatusValue;
+export type HostedRunnerWorkspaceExportPathType =
+	HostedRunnerWorkspaceExportPathTypeValue;
+export type HostedRunnerWorkspaceExportMode =
+	HostedRunnerWorkspaceExportModeValue;
 
 export interface HostedRunnerRetentionPolicy {
 	policy_version: typeof HOSTED_RUNNER_RETENTION_POLICY_VERSION;
@@ -68,7 +95,7 @@ export interface HostedRunnerWorkspaceExportPath {
 	input: string;
 	path: string;
 	relative_path: string;
-	type: "file" | "directory" | "other";
+	type: HostedRunnerWorkspaceExportPathType;
 }
 
 export interface HostedRunnerSnapshotManifest {
@@ -82,7 +109,7 @@ export interface HostedRunnerSnapshotManifest {
 	created_at: string;
 	workspace_root: string;
 	runtime: {
-		flush_status: "completed" | "failed" | "skipped";
+		flush_status: HostedRunnerRuntimeFlushStatus;
 		error?: string;
 		session_id: string;
 		session_file?: string;
@@ -90,7 +117,7 @@ export interface HostedRunnerSnapshotManifest {
 		cursor?: number;
 	};
 	workspace_export: {
-		mode: "local_path_contract";
+		mode: HostedRunnerWorkspaceExportMode;
 		paths: HostedRunnerWorkspaceExportPath[];
 	};
 	snapshot: HeadlessRuntimeSnapshot;
@@ -103,7 +130,7 @@ export interface HostedRunnerSnapshotManifest {
 }
 
 export interface HostedRunnerDrainResult {
-	status: SnapshotManifestStatus;
+	status: HostedRunnerDrainStatus;
 	runner_session_id: string;
 	reason?: string;
 	requested_by?: string;
@@ -245,10 +272,10 @@ async function resolveWorkspaceExportPaths(
 			path: realPath,
 			relative_path: relative(workspaceRoot, realPath) || ".",
 			type: pathStat.isDirectory()
-				? "directory"
+				? HostedRunnerWorkspaceExportPathTypeValue.Directory
 				: pathStat.isFile()
-					? "file"
-					: "other",
+					? HostedRunnerWorkspaceExportPathTypeValue.File
+					: HostedRunnerWorkspaceExportPathTypeValue.Other,
 		});
 	}
 	return paths;
@@ -304,11 +331,12 @@ function buildHostedRunnerSnapshot(
 	state.cwd = workspaceRoot;
 	state.provider = "typescript";
 	state.model = "typescript-hosted-runner";
-	state.is_ready = runtime.flush_status === "completed";
+	state.is_ready =
+		runtime.flush_status === HostedRunnerRuntimeFlushStatusValue.Completed;
 	state.last_status =
-		runtime.flush_status === "completed"
+		runtime.flush_status === HostedRunnerRuntimeFlushStatusValue.Completed
 			? "Drained"
-			: runtime.flush_status === "failed"
+			: runtime.flush_status === HostedRunnerRuntimeFlushStatusValue.Failed
 				? "Drain interrupted before runtime flush completed"
 				: "Drain skipped: no runtime activity was available";
 	if (runtime.error) {
@@ -375,9 +403,9 @@ export async function drainHostedRunner(
 		hostedRunner.configuredMaestroSessionId;
 	const maestroSessionId = activeSessionId ?? hostedRunner.runnerSessionId;
 
-	let status: SnapshotManifestStatus = "drained";
+	let status: HostedRunnerDrainStatus = HostedRunnerDrainStatusValue.Drained;
 	let runtime: HostedRunnerSnapshotManifest["runtime"] = {
-		flush_status: "skipped",
+		flush_status: HostedRunnerRuntimeFlushStatusValue.Skipped,
 		session_id: maestroSessionId,
 	};
 	let runtimeSnapshot: HeadlessRuntimeSnapshot | undefined;
@@ -392,7 +420,7 @@ export async function drainHostedRunner(
 				runtimeResult?.cursor ?? runtimeResult?.snapshot?.cursor;
 			runtime = runtimeResult
 				? {
-						flush_status: "completed",
+						flush_status: HostedRunnerRuntimeFlushStatusValue.Completed,
 						session_id: runtimeResult.sessionId,
 						...(runtimeResult.sessionFile
 							? { session_file: runtimeResult.sessionFile }
@@ -403,14 +431,14 @@ export async function drainHostedRunner(
 						...(runtimeCursor !== undefined ? { cursor: runtimeCursor } : {}),
 					}
 				: {
-						flush_status: "skipped",
+						flush_status: HostedRunnerRuntimeFlushStatusValue.Skipped,
 						session_id: activeSessionId,
 					};
 			runtimeSnapshot = runtimeResult?.snapshot;
 		} catch (error) {
-			status = "interrupted";
+			status = HostedRunnerDrainStatusValue.Interrupted;
 			runtime = {
-				flush_status: "failed",
+				flush_status: HostedRunnerRuntimeFlushStatusValue.Failed,
 				session_id: activeSessionId,
 				error: error instanceof Error ? error.message : String(error),
 			};
@@ -442,7 +470,7 @@ export async function drainHostedRunner(
 		workspace_root: workspaceRoot,
 		runtime,
 		workspace_export: {
-			mode: "local_path_contract",
+			mode: HostedRunnerWorkspaceExportModeValue.LocalPathContract,
 			paths: exportPaths,
 		},
 		snapshot,
@@ -515,7 +543,7 @@ export async function handleHostedRunnerDrain(
 
 	sendJson(
 		res,
-		result.status === "interrupted" ? 503 : 200,
+		result.status === HostedRunnerDrainStatusValue.Interrupted ? 503 : 200,
 		{
 			protocol_version: HOSTED_RUNNER_DRAIN_PROTOCOL_VERSION,
 			status: result.status,

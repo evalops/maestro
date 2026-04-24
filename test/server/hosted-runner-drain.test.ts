@@ -17,6 +17,9 @@ import type { HostedRunnerContext } from "../../src/server/app-context.js";
 import {
 	HOSTED_RUNNER_RETENTION_POLICY_VERSION,
 	HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION,
+	HostedRunnerDrainStatusValue,
+	HostedRunnerRuntimeFlushStatusValue,
+	HostedRunnerWorkspaceExportPathTypeValue,
 	drainHostedRunner,
 } from "../../src/server/handlers/hosted-runner-drain.js";
 import type { HeadlessRuntimeSnapshot } from "../../src/server/headless-runtime-service.js";
@@ -101,7 +104,7 @@ describe("hosted runner drain", () => {
 			},
 		);
 
-		expect(result?.status).toBe("drained");
+		expect(result?.status).toBe(HostedRunnerDrainStatusValue.Drained);
 		expect(result?.runner_session_id).toBe("mrs_123");
 		expect(result?.reason).toBe("ttl_expired");
 		expect(result?.requested_by).toBe("platform");
@@ -118,7 +121,7 @@ describe("hosted runner drain", () => {
 			created_at: "2026-04-23T00:00:00.000Z",
 			workspace_root: workspaceRoot,
 			runtime: {
-				flush_status: "completed",
+				flush_status: HostedRunnerRuntimeFlushStatusValue.Completed,
 				session_id: "session_123",
 				protocol_version: HEADLESS_PROTOCOL_VERSION,
 				cursor: 7,
@@ -158,13 +161,13 @@ describe("hosted runner drain", () => {
 				input: ".",
 				path: workspaceRoot,
 				relative_path: ".",
-				type: "directory",
+				type: HostedRunnerWorkspaceExportPathTypeValue.Directory,
 			},
 			{
 				input: "README.md",
 				path: join(workspaceRoot, "README.md"),
 				relative_path: "README.md",
-				type: "file",
+				type: HostedRunnerWorkspaceExportPathTypeValue.File,
 			},
 		]);
 
@@ -190,14 +193,14 @@ describe("hosted runner drain", () => {
 			},
 		);
 
-		expect(result?.status).toBe("interrupted");
+		expect(result?.status).toBe(HostedRunnerDrainStatusValue.Interrupted);
 		expect(context.draining).toBe(true);
 		expect(result?.manifest.protocol_version).toBe(
 			HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION,
 		);
 		expect(result?.manifest.maestro_session_id).toBe("session_123");
 		expect(result?.manifest.runtime).toMatchObject({
-			flush_status: "failed",
+			flush_status: HostedRunnerRuntimeFlushStatusValue.Failed,
 			session_id: "session_123",
 			error: "flush timed out",
 		});
@@ -233,13 +236,13 @@ describe("hosted runner drain", () => {
 			},
 		);
 
-		expect(result?.status).toBe("drained");
+		expect(result?.status).toBe(HostedRunnerDrainStatusValue.Drained);
 		expect(result?.manifest).toMatchObject({
 			protocol_version: HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION,
 			maestro_session_id: "session_123",
 			reason: "empty-runtime",
 			runtime: {
-				flush_status: "skipped",
+				flush_status: HostedRunnerRuntimeFlushStatusValue.Skipped,
 				session_id: "session_123",
 			},
 			snapshot: {
