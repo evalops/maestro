@@ -111,18 +111,24 @@ function patternToRegExp(pattern) {
 	return new RegExp(`^${source}$`);
 }
 
-function readExcludePatterns(sourceRoot, excludeFile) {
-	const patterns = [...DEFAULT_EXCLUDES];
-	const path = resolve(sourceRoot, excludeFile);
+function readPatternFile(path) {
 	if (!existsSync(path)) {
-		return patterns;
+		return [];
 	}
-
-	const configured = readFileSync(path, "utf8")
+	return readFileSync(path, "utf8")
 		.split(/\r?\n/u)
 		.map((line) => line.trim())
 		.filter((line) => line && !line.startsWith("#"));
+}
+
+function readExcludePatterns(sourceRoot, excludeFile) {
+	const patterns = [...DEFAULT_EXCLUDES];
+	const configured = readPatternFile(resolve(sourceRoot, excludeFile));
 	return [...patterns, ...configured];
+}
+
+function readSourceOnlyExcludePatterns(sourceRoot) {
+	return readPatternFile(resolve(sourceRoot, ".publish-exclude"));
 }
 
 function getNestedTargetExclude(sourceRoot, targetRoot) {
@@ -247,9 +253,15 @@ function resolvePublicPackageJson(
 	};
 }
 
-function buildMirrorPlan(sourceRoot, targetRoot, shouldExclude, packageName) {
-	const sourceFiles = new Set(walkFiles(sourceRoot, shouldExclude));
-	const targetFiles = new Set(walkFiles(targetRoot, shouldExclude));
+function buildMirrorPlan(
+	sourceRoot,
+	targetRoot,
+	sourceShouldExclude,
+	targetShouldExclude,
+	packageName,
+) {
+	const sourceFiles = new Set(walkFiles(sourceRoot, sourceShouldExclude));
+	const targetFiles = new Set(walkFiles(targetRoot, targetShouldExclude));
 	const { content: packageJsonContent, publicPackageName } =
 		resolvePublicPackageJson(sourceRoot, packageName);
 	const copiedPaths = [];
@@ -325,16 +337,22 @@ if (!existsSync(targetRoot)) {
 }
 
 const excludePatterns = readExcludePatterns(sourceRoot, options.excludeFile);
+const sourceOnlyExcludePatterns = readSourceOnlyExcludePatterns(sourceRoot);
 const nestedTargetExclude = getNestedTargetExclude(sourceRoot, targetRoot);
 if (nestedTargetExclude) {
 	excludePatterns.push(nestedTargetExclude);
 }
 
-const shouldExclude = createMatcher(excludePatterns);
+const sourceShouldExclude = createMatcher([
+	...excludePatterns,
+	...sourceOnlyExcludePatterns,
+]);
+const targetShouldExclude = createMatcher(excludePatterns);
 const plan = buildMirrorPlan(
 	sourceRoot,
 	targetRoot,
-	shouldExclude,
+	sourceShouldExclude,
+	targetShouldExclude,
 	options.packageName,
 );
 const report = {
