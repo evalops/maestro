@@ -59,6 +59,7 @@ pub enum RemoteErrorKind {
     RoleConflict,
     AccessDenied,
     OwnershipConflict,
+    RuntimeNotReady,
 }
 
 /// Error type for async transport operations

@@ -35,6 +35,13 @@ import {
 import { createSessionManagerForRequest } from "../session-scope.js";
 import { parseAndValidateJson, validatePayload } from "../validation.js";
 
+export enum HostedRunnerErrorType {
+	RuntimeNotReady = "runtime_not_ready",
+	RuntimeOwnedElsewhere = "runtime_owned_elsewhere",
+}
+
+const HOSTED_RUNNER_ERROR_DOMAIN = "maestro.hosted_runner";
+
 function stringLiteralUnion<const T extends readonly string[]>(values: T) {
 	return Type.Unsafe<T[number]>(
 		Type.Union(
@@ -279,11 +286,10 @@ function getScopeKey(req: IncomingMessage): string {
 	return getAuthScopeKey(req);
 }
 
-function hostedRunnerOwnershipError(
+function hostedRunnerErrorMetadata(
 	context: WebServerContext,
-	message: string,
 	metadata: Record<string, string | undefined>,
-): ApiError {
+): Record<string, string> {
 	const hostedRunner = context.hostedRunner;
 	const detailMetadata: Record<string, string> = {};
 	for (const [key, value] of Object.entries({
@@ -297,17 +303,44 @@ function hostedRunnerOwnershipError(
 			detailMetadata[key] = value;
 		}
 	}
+	return detailMetadata;
+}
+
+function hostedRunnerOwnershipError(
+	context: WebServerContext,
+	message: string,
+	metadata: Record<string, string | undefined>,
+): ApiError {
 	return new ApiError(
 		409,
 		message,
 		[
 			{
-				reason: "runtime_owned_elsewhere",
-				domain: "maestro.hosted_runner",
-				metadata: detailMetadata,
+				reason: HostedRunnerErrorType.RuntimeOwnedElsewhere,
+				domain: HOSTED_RUNNER_ERROR_DOMAIN,
+				metadata: hostedRunnerErrorMetadata(context, metadata),
 			},
 		],
-		"runtime_owned_elsewhere",
+		HostedRunnerErrorType.RuntimeOwnedElsewhere,
+	);
+}
+
+function hostedRunnerNotReadyError(
+	context: WebServerContext,
+	message: string,
+	metadata: Record<string, string | undefined>,
+): ApiError {
+	return new ApiError(
+		503,
+		message,
+		[
+			{
+				reason: HostedRunnerErrorType.RuntimeNotReady,
+				domain: HOSTED_RUNNER_ERROR_DOMAIN,
+				metadata: hostedRunnerErrorMetadata(context, metadata),
+			},
+		],
+		HostedRunnerErrorType.RuntimeNotReady,
 	);
 }
 
@@ -322,6 +355,17 @@ function ensureHostedRunnerCanUseSession(
 	const activeSessionId =
 		hostedRunner.activeMaestroSessionId ??
 		hostedRunner.configuredMaestroSessionId;
+	if (hostedRunner.draining) {
+		throw hostedRunnerNotReadyError(
+			context,
+			"Hosted runner is draining and not accepting headless session traffic",
+			{
+				draining: "true",
+				maestro_session_id: activeSessionId,
+				requested_maestro_session_id: requestedSessionId,
+			},
+		);
+	}
 	if (!activeSessionId) {
 		return;
 	}
