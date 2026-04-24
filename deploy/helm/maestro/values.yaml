@@ -51,7 +51,7 @@ terminationGracePeriodSeconds: 45
 
 startupProbe:
   httpGet:
-    path: /healthz
+    path: /health
     port: http
   failureThreshold: 18
   periodSeconds: 5

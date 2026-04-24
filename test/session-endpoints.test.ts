@@ -395,6 +395,18 @@ describe("Session Endpoints", () => {
 								name: "bash",
 								arguments: { command: "rm -rf /tmp/demo" },
 							},
+							{
+								type: "toolCall",
+								id: "write-call-1",
+								name: "write",
+								arguments: { path: "src/foo.ts", content: secret },
+							},
+							{
+								type: "toolCall",
+								id: "skill-call-1",
+								name: "Skill",
+								arguments: { skill: "incident-review" },
+							},
 						],
 						api: "openai-responses",
 						provider: "openai",
@@ -425,15 +437,82 @@ describe("Session Endpoints", () => {
 						role: "toolResult",
 						toolCallId: "tool-call-1",
 						toolName: "bash",
-						content: [{ type: "text", text: "done" }],
-						isError: false,
+						content: [{ type: "text", text: "denied" }],
+						details: {
+							governedOutcome: {
+								classification: "denied",
+								code: "governance_denied",
+								approvalRequestId: "apr_denied",
+							},
+						},
+						isError: true,
 						timestamp: 1704067203000,
+					},
+				},
+				{
+					type: "message",
+					id: "tool-result-write-1",
+					parentId: "tool-result-1",
+					timestamp: "2024-01-01T00:00:03.500Z",
+					message: {
+						role: "toolResult",
+						toolCallId: "write-call-1",
+						toolName: "write",
+						content: [{ type: "text", text: "wrote file" }],
+						details: {
+							previousExists: false,
+							bytesWritten: 42,
+							diff: `+${secret}`,
+							diagnosticDelta: {
+								kind: "diagnostic_delta",
+								file: "/workspace/src/foo.ts",
+								displayPath: "src/foo.ts",
+								usedDelta: true,
+								introducedCount: 1,
+								repairedCount: 0,
+								remainingCount: 1,
+								fingerprint: "diagnostic-fingerprint",
+								introducedDiagnostics: [],
+								repairedDiagnostics: [],
+								repair: {
+									shouldFollowUp: true,
+									maxAttempts: 2,
+									reason: "New diagnostics were introduced by this tool call.",
+								},
+							},
+						},
+						isError: false,
+						timestamp: 1704067203500,
+					},
+				},
+				{
+					type: "message",
+					id: "tool-result-skill-1",
+					parentId: "tool-result-write-1",
+					timestamp: "2024-01-01T00:00:03.750Z",
+					message: {
+						role: "toolResult",
+						toolCallId: "skill-call-1",
+						toolName: "Skill",
+						content: [{ type: "text", text: "loaded skill" }],
+						details: {
+							skillMetadata: {
+								name: "incident-review",
+								hash: "hash_skill_123",
+								source: "service",
+								artifactId: "skill_remote_1",
+								version: "3",
+								scope: "workspace",
+							},
+						},
+						isError: false,
+						timestamp: 1704067203750,
 					},
 				},
 				{
 					type: "compaction",
 					id: "compaction-1",
-					parentId: "tool-result-1",
+					parentId: "tool-result-skill-1",
 					timestamp: "2024-01-01T00:00:04.000Z",
 					summary: "Kept the deploy context",
 					firstKeptEntryId: "assistant-1",
@@ -490,8 +569,11 @@ describe("Session Endpoints", () => {
 					pendingRequestId?: string;
 					toolExecutionId?: string;
 					approvalRequestId?: string;
+					artifactId?: string;
 					platformOperation?: string;
 					source?: string;
+					status?: string;
+					metadata?: Record<string, unknown>;
 				}>;
 			};
 			expect(body.sessionId).toBe("test-session-1");
@@ -505,6 +587,11 @@ describe("Session Endpoints", () => {
 					"message.assistant",
 					"tool.requested",
 					"tool.completed",
+					"tool.failed",
+					"file.changed",
+					"diagnostic.delta",
+					"artifact.linked",
+					"policy.decision",
 					"compaction.created",
 					"wait.pending",
 				]),
@@ -520,6 +607,55 @@ describe("Session Endpoints", () => {
 					approvalRequestId: "apr_1",
 					platformOperation: "ResumeToolExecution",
 					source: "platform",
+				}),
+			);
+			const fileItem = body.items.find((item) => item.type === "file.changed");
+			expect(fileItem).toEqual(
+				expect.objectContaining({
+					toolCallId: "write-call-1",
+					summary: expect.stringContaining("src/foo.ts"),
+					metadata: expect.objectContaining({
+						path: "src/foo.ts",
+						bytesWritten: 42,
+						hasDiff: true,
+					}),
+				}),
+			);
+			const diagnosticItem = body.items.find(
+				(item) => item.type === "diagnostic.delta",
+			);
+			expect(diagnosticItem).toEqual(
+				expect.objectContaining({
+					status: "failed",
+					summary: expect.stringContaining("1 introduced"),
+					metadata: expect.objectContaining({
+						displayPath: "src/foo.ts",
+						shouldFollowUp: true,
+					}),
+				}),
+			);
+			const artifactItem = body.items.find(
+				(item) => item.type === "artifact.linked",
+			);
+			expect(artifactItem).toEqual(
+				expect.objectContaining({
+					artifactId: "skill_remote_1",
+					metadata: expect.objectContaining({
+						name: "incident-review",
+						source: "service",
+					}),
+				}),
+			);
+			const policyItem = body.items.find(
+				(item) => item.type === "policy.decision",
+			);
+			expect(policyItem).toEqual(
+				expect.objectContaining({
+					status: "denied",
+					approvalRequestId: "apr_denied",
+					metadata: expect.objectContaining({
+						errorCode: "governance_denied",
+					}),
 				}),
 			);
 			const serialized = JSON.stringify(body);

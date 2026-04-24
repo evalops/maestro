@@ -38,6 +38,8 @@ describe("ComposerSessionTimelinePanel", () => {
 					pendingRequestId: "approval-1",
 					pendingRequestKind: "approval",
 					toolExecutionId: "te_1",
+					approvalRequestId: "apr_1",
+					artifactId: "skill_remote_1",
 				},
 			],
 		});
@@ -59,6 +61,8 @@ describe("ComposerSessionTimelinePanel", () => {
 		expect(text).toContain("Run timeline");
 		expect(text).toContain("Waiting for approval: Shell Command");
 		expect(text).toContain("te_1");
+		expect(text).toContain("apr_1");
+		expect(text).toContain("skill_remote_1");
 		expect(text).toContain("Platform");
 	});
 
