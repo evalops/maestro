@@ -176,6 +176,13 @@ Drain uses:
 POST /.well-known/evalops/remote-runner/drain
 ```
 
+The Helm chart's default preStop hook calls this endpoint with the enum-backed
+`kubernetes_prestop` reason/requester before sleeping briefly for Kubernetes
+termination propagation. If a process receives SIGINT or SIGTERM without that
+preStop call, the web server runs the same drain path with the
+`process_shutdown` reason and writes the same manifest envelope before closing
+connections.
+
 The manifest protocol is
 `evalops.remote-runner.snapshot-manifest.v1`. Both Rust-hosted and
 TypeScript-hosted drain paths write this same local manifest envelope, including

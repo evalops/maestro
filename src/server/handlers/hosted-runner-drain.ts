@@ -46,6 +46,16 @@ export enum HostedRunnerWorkspaceExportModeValue {
 	LocalPathContract = "local_path_contract",
 }
 
+export enum HostedRunnerDrainReasonValue {
+	KubernetesPreStop = "kubernetes_prestop",
+	ProcessShutdown = "process_shutdown",
+}
+
+export enum HostedRunnerDrainRequestedByValue {
+	KubernetesPreStop = "kubernetes_prestop",
+	MaestroWebServer = "maestro_web_server",
+}
+
 export type HostedRunnerDrainStatus = HostedRunnerDrainStatusValue;
 export type HostedRunnerRuntimeFlushStatus =
 	HostedRunnerRuntimeFlushStatusValue;
@@ -53,6 +63,10 @@ export type HostedRunnerWorkspaceExportPathType =
 	HostedRunnerWorkspaceExportPathTypeValue;
 export type HostedRunnerWorkspaceExportMode =
 	HostedRunnerWorkspaceExportModeValue;
+export type HostedRunnerDrainReason = HostedRunnerDrainReasonValue | string;
+export type HostedRunnerDrainRequestedBy =
+	| HostedRunnerDrainRequestedByValue
+	| string;
 
 export interface HostedRunnerRetentionPolicy {
 	policy_version: typeof HOSTED_RUNNER_RETENTION_POLICY_VERSION;
@@ -78,8 +92,8 @@ export interface HostedRunnerRetentionPolicy {
 }
 
 export interface HostedRunnerDrainInput {
-	reason?: string;
-	requestedBy?: string;
+	reason?: HostedRunnerDrainReason;
+	requestedBy?: HostedRunnerDrainRequestedBy;
 	exportPaths?: string[];
 }
 
@@ -144,6 +158,20 @@ export interface DrainHostedRunnerOptions {
 		sessionId: string,
 	) => Promise<HostedRunnerRuntimeDrainResult | null>;
 	now?: () => Date;
+}
+
+interface HostedRunnerDrainRuntimeContext {
+	hostedRunner?: HostedRunnerContext;
+	headlessRuntimeService: Pick<
+		WebServerContext["headlessRuntimeService"],
+		"getRuntimeBySessionId"
+	>;
+}
+
+export interface DrainHostedRunnerForShutdownOptions {
+	now?: () => Date;
+	reason?: HostedRunnerDrainReason;
+	requestedBy?: HostedRunnerDrainRequestedBy;
 }
 
 function getString(value: unknown, field: string): string | undefined {
@@ -495,7 +523,7 @@ export async function drainHostedRunner(
 }
 
 async function drainActiveRuntime(
-	context: WebServerContext,
+	context: HostedRunnerDrainRuntimeContext,
 	sessionId: string,
 ): Promise<HostedRunnerRuntimeDrainResult | null> {
 	const runtime =
@@ -513,6 +541,25 @@ async function drainActiveRuntime(
 		cursor: snapshot.cursor,
 		snapshot,
 	};
+}
+
+export async function drainHostedRunnerForShutdown(
+	context: HostedRunnerDrainRuntimeContext,
+	options: DrainHostedRunnerForShutdownOptions = {},
+): Promise<HostedRunnerDrainResult | null> {
+	return drainHostedRunner(
+		{
+			reason: options.reason ?? HostedRunnerDrainReasonValue.ProcessShutdown,
+			requestedBy:
+				options.requestedBy ??
+				HostedRunnerDrainRequestedByValue.MaestroWebServer,
+		},
+		{
+			hostedRunner: context.hostedRunner,
+			drainRuntime: (sessionId) => drainActiveRuntime(context, sessionId),
+			now: options.now,
+		},
+	);
 }
 
 export async function handleHostedRunnerDrain(

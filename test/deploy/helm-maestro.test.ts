@@ -43,6 +43,8 @@ describe("maestro Helm chart", () => {
 		expect(result.stdout).toContain("name: XDG_CACHE_HOME");
 		expect(result.stdout).toContain("startupProbe:");
 		expect(result.stdout).toContain("preStop:");
+		expect(result.stdout).toContain("/.well-known/evalops/remote-runner/drain");
+		expect(result.stdout).toContain("kubernetes_prestop");
 	});
 
 	helmIt("can render an HPA without a fixed deployment replica count", () => {
