@@ -3,7 +3,10 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 
 function isInsidePath(parent: string, candidate: string): boolean {
 	const rel = relative(parent, candidate);
-	return rel === "" || (!rel.startsWith("..") && !rel.includes(`..${sep}`));
+	return (
+		rel === "" ||
+		(rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
+	);
 }
 
 export function getHostedWorkspaceRoot(env = process.env): string | undefined {
