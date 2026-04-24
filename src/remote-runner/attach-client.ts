@@ -12,11 +12,13 @@ import chalk from "chalk";
 import {
 	type HeadlessFromAgentMessage,
 	type HeadlessPendingApprovalState,
+	type HeadlessPendingRequestState,
 	type HeadlessRuntimeState,
 	type HeadlessToAgentMessage,
 	applyIncomingHeadlessMessage,
 	applyOutgoingHeadlessMessage,
 	createHeadlessRuntimeState,
+	syncHeadlessPendingRequests,
 } from "../cli/headless-protocol.js";
 
 const DEFAULT_ATTACH_TIMEOUT_MS = 5_000;
@@ -147,7 +149,9 @@ function normalizeState(value: unknown): HeadlessRuntimeState {
 	if (!value || typeof value !== "object" || Array.isArray(value)) {
 		return createHeadlessRuntimeState();
 	}
-	return structuredClone(value as HeadlessRuntimeState);
+	const state = structuredClone(value as HeadlessRuntimeState);
+	syncHeadlessPendingRequests(state);
+	return state;
 }
 
 function asTrimmedString(
@@ -502,8 +506,17 @@ function summarizeArgs(args: unknown): string | undefined {
 
 function pendingRequest(state: HeadlessRuntimeState): {
 	kind: "approval" | "user_input" | "tool_retry";
-	request: HeadlessPendingApprovalState;
+	request: HeadlessPendingApprovalState | HeadlessPendingRequestState;
 } | null {
+	for (const request of state.pending_requests) {
+		if (
+			request.kind === "approval" ||
+			request.kind === "user_input" ||
+			request.kind === "tool_retry"
+		) {
+			return { kind: request.kind, request };
+		}
+	}
 	if (state.pending_approvals.length > 0) {
 		return { kind: "approval", request: state.pending_approvals[0]! };
 	}
