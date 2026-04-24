@@ -233,20 +233,20 @@ describe("headless protocol helpers", () => {
 
 	it("translates approval requests into legacy and server_request messages", () => {
 		const translator = new HeadlessProtocolTranslator();
-		expect(
-			translator.handleAgentEvent({
-				type: "action_approval_required",
-				request: {
-					id: "call_approval",
-					toolName: "bash",
-					displayName: "Bash",
-					summaryLabel: "Ran rm -rf dist",
-					actionDescription: "Running rm -rf dist",
-					args: { command: "rm -rf dist" },
-					reason: "Dangerous command",
-				},
-			}),
-		).toEqual([
+		const messages = translator.handleAgentEvent({
+			type: "action_approval_required",
+			request: {
+				id: "call_approval",
+				toolName: "bash",
+				displayName: "Bash",
+				summaryLabel: "Ran rm -rf dist",
+				actionDescription: "Running rm -rf dist",
+				args: { command: "rm -rf dist" },
+				reason: "Dangerous command",
+			},
+		});
+
+		expect(messages).toEqual([
 			{
 				type: "tool_call",
 				call_id: "call_approval",
@@ -267,6 +267,9 @@ describe("headless protocol helpers", () => {
 				reason: "Dangerous command",
 			},
 		]);
+		for (const message of messages) {
+			expect(Value.Check(HeadlessFromAgentMessageSchema, message)).toBe(true);
+		}
 	});
 
 	it("translates approval resolutions into server_request_resolved messages", () => {
@@ -522,6 +525,89 @@ describe("headless protocol helpers", () => {
 				args: { command: "git push --force" },
 			},
 		]);
+	});
+
+	it("keeps a unified pending_requests queue in sync with typed pending queues", () => {
+		const state = createHeadlessRuntimeState();
+		state.session_id = "session_unified";
+
+		applyIncomingHeadlessMessage(state, {
+			type: "server_request",
+			request_id: "approval_1",
+			request_type: "approval",
+			call_id: "call_bash",
+			tool: "bash",
+			display_name: "Bash",
+			summary_label: "Ran git push --force",
+			action_description: "Running git push --force",
+			args: { command: "git push --force" },
+			reason: "Force push requires approval",
+		});
+		applyIncomingHeadlessMessage(state, {
+			type: "server_request",
+			request_id: "input_1",
+			request_type: "user_input",
+			call_id: "call_user_input",
+			tool: "ask_user",
+			args: { question: "Which branch?" },
+			reason: "Agent requested structured user input",
+		});
+
+		expect(state.pending_requests).toEqual([
+			{
+				id: "approval_1",
+				kind: "approval",
+				status: "pending",
+				visibility: "user",
+				session_id: "session_unified",
+				tool_call_id: "call_bash",
+				call_id: "call_bash",
+				request_id: "approval_1",
+				tool_name: "bash",
+				tool: "bash",
+				display_name: "Bash",
+				summary_label: "Ran git push --force",
+				action_description: "Running git push --force",
+				args: { command: "git push --force" },
+				source: "local",
+			},
+			{
+				id: "input_1",
+				kind: "user_input",
+				status: "pending",
+				visibility: "user",
+				session_id: "session_unified",
+				tool_call_id: "call_user_input",
+				call_id: "call_user_input",
+				request_id: "input_1",
+				tool_name: "ask_user",
+				tool: "ask_user",
+				args: { question: "Which branch?" },
+				source: "local",
+			},
+		]);
+
+		applyOutgoingHeadlessMessage(state, {
+			type: "server_request_response",
+			request_id: "approval_1",
+			request_type: "approval",
+			approved: false,
+		});
+
+		expect(state.pending_requests.map((request) => request.id)).toEqual([
+			"input_1",
+		]);
+
+		applyIncomingHeadlessMessage(state, {
+			type: "server_request_resolved",
+			request_id: "input_1",
+			request_type: "user_input",
+			call_id: "call_user_input",
+			resolution: "cancelled",
+			resolved_by: "runtime",
+		});
+
+		expect(state.pending_requests).toEqual([]);
 	});
 
 	it("tracks handshake metadata in runtime state", () => {

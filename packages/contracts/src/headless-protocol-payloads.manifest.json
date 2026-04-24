@@ -507,6 +507,9 @@
 				},
 				"call_id": { "kind": "string" },
 				"tool": { "kind": "string" },
+				"display_name": { "kind": "string", "optional": true },
+				"summary_label": { "kind": "string", "optional": true },
+				"action_description": { "kind": "string", "optional": true },
 				"args": { "kind": "unknown" },
 				"reason": { "kind": "string" }
 			}
@@ -862,7 +865,48 @@
 				"call_id": { "kind": "string" },
 				"request_id": { "kind": "string", "optional": true },
 				"tool": { "kind": "string" },
+				"display_name": { "kind": "string", "optional": true },
+				"summary_label": { "kind": "string", "optional": true },
+				"action_description": { "kind": "string", "optional": true },
 				"args": { "kind": "unknown" }
+			}
+		},
+		"HeadlessPendingRequestStateSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"id": { "kind": "string" },
+				"kind": {
+					"kind": "enumRef",
+					"name": "headlessServerRequestTypes"
+				},
+				"status": { "kind": "literal", "value": "pending" },
+				"visibility": { "kind": "literal", "value": "user" },
+				"session_id": {
+					"kind": "union",
+					"variants": [
+						{ "kind": "string" },
+						{ "kind": "literal", "value": null }
+					],
+					"optional": true
+				},
+				"tool_call_id": { "kind": "string" },
+				"call_id": { "kind": "string" },
+				"request_id": { "kind": "string", "optional": true },
+				"tool_name": { "kind": "string" },
+				"tool": { "kind": "string" },
+				"display_name": { "kind": "string", "optional": true },
+				"summary_label": { "kind": "string", "optional": true },
+				"action_description": { "kind": "string", "optional": true },
+				"args": { "kind": "unknown" },
+				"source": {
+					"kind": "union",
+					"variants": [
+						{ "kind": "literal", "value": "local" },
+						{ "kind": "literal", "value": "platform" }
+					]
+				},
+				"platform": { "kind": "unknown", "optional": true }
 			}
 		},
 		"HeadlessActiveToolStateSchema": {
@@ -1003,6 +1047,14 @@
 				"current_response": {
 					"kind": "ref",
 					"name": "HeadlessStreamingResponseStateSchema",
+					"optional": true
+				},
+				"pending_requests": {
+					"kind": "array",
+					"items": {
+						"kind": "ref",
+						"name": "HeadlessPendingRequestStateSchema"
+					},
 					"optional": true
 				},
 				"pending_approvals": {

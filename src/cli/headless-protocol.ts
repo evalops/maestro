@@ -519,6 +519,18 @@ export interface HeadlessPendingApprovalState {
 	args: unknown;
 }
 
+export interface HeadlessPendingRequestState
+	extends HeadlessPendingApprovalState {
+	id: string;
+	kind: HeadlessServerRequestType;
+	status: "pending";
+	visibility: "user";
+	session_id?: string | null;
+	tool_call_id: string;
+	tool_name: string;
+	source: "local" | "platform";
+}
+
 export interface HeadlessActiveToolState {
 	call_id: string;
 	tool: string;
@@ -578,6 +590,7 @@ export interface HeadlessRuntimeState {
 	cwd?: string;
 	git_branch?: string | null;
 	current_response?: HeadlessStreamingResponseState;
+	pending_requests: HeadlessPendingRequestState[];
 	pending_approvals: HeadlessPendingApprovalState[];
 	pending_client_tools: HeadlessPendingApprovalState[];
 	pending_mcp_elicitations: HeadlessPendingApprovalState[];
@@ -613,6 +626,7 @@ export function createHeadlessRuntimeState(): HeadlessRuntimeState {
 		connection_count: 0,
 		subscriber_count: 0,
 		connections: [],
+		pending_requests: [],
 		pending_approvals: [],
 		pending_client_tools: [],
 		pending_mcp_elicitations: [],
@@ -625,6 +639,57 @@ export function createHeadlessRuntimeState(): HeadlessRuntimeState {
 		is_ready: false,
 		is_responding: false,
 	};
+}
+
+function toUnifiedPendingRequestState(
+	kind: HeadlessServerRequestType,
+	request: HeadlessPendingApprovalState,
+	sessionId: string | null | undefined,
+): HeadlessPendingRequestState {
+	const id = getPendingRequestId(request);
+	return {
+		id,
+		kind,
+		status: "pending",
+		visibility: "user",
+		...(sessionId !== undefined ? { session_id: sessionId } : {}),
+		tool_call_id: request.call_id,
+		call_id: request.call_id,
+		...(request.request_id ? { request_id: request.request_id } : {}),
+		tool_name: request.tool,
+		tool: request.tool,
+		...(request.display_name ? { display_name: request.display_name } : {}),
+		...(request.summary_label ? { summary_label: request.summary_label } : {}),
+		...(request.action_description
+			? { action_description: request.action_description }
+			: {}),
+		args: request.args,
+		source: "local",
+	};
+}
+
+export function syncHeadlessPendingRequests(
+	state: HeadlessRuntimeState,
+): HeadlessPendingRequestState[] {
+	const sessionId = state.session_id;
+	state.pending_requests = [
+		...state.pending_approvals.map((request) =>
+			toUnifiedPendingRequestState("approval", request, sessionId),
+		),
+		...state.pending_client_tools.map((request) =>
+			toUnifiedPendingRequestState("client_tool", request, sessionId),
+		),
+		...state.pending_mcp_elicitations.map((request) =>
+			toUnifiedPendingRequestState("mcp_elicitation", request, sessionId),
+		),
+		...state.pending_user_inputs.map((request) =>
+			toUnifiedPendingRequestState("user_input", request, sessionId),
+		),
+		...state.pending_tool_retries.map((request) =>
+			toUnifiedPendingRequestState("tool_retry", request, sessionId),
+		),
+	];
+	return state.pending_requests;
 }
 
 export function headlessViewerCanSend(msg: HeadlessToAgentMessage): boolean {
@@ -1325,6 +1390,17 @@ export function applyOutgoingHeadlessMessage(
 	state: HeadlessRuntimeState,
 	msg: HeadlessToAgentMessage,
 ): void {
+	try {
+		applyOutgoingHeadlessMessageInner(state, msg);
+	} finally {
+		syncHeadlessPendingRequests(state);
+	}
+}
+
+function applyOutgoingHeadlessMessageInner(
+	state: HeadlessRuntimeState,
+	msg: HeadlessToAgentMessage,
+): void {
 	if (headlessHelloChangesConnectionRole(msg, state.connection_role)) {
 		return;
 	}
@@ -1454,6 +1530,17 @@ export function applyOutgoingHeadlessMessage(
 }
 
 export function applyIncomingHeadlessMessage(
+	state: HeadlessRuntimeState,
+	msg: HeadlessFromAgentMessage,
+): void {
+	try {
+		applyIncomingHeadlessMessageInner(state, msg);
+	} finally {
+		syncHeadlessPendingRequests(state);
+	}
+}
+
+function applyIncomingHeadlessMessageInner(
 	state: HeadlessRuntimeState,
 	msg: HeadlessFromAgentMessage,
 ): void {

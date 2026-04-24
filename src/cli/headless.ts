@@ -145,6 +145,7 @@ export async function runHeadlessMode(
 		for (const request of [
 			...state.pending_approvals,
 			...state.pending_client_tools,
+			...state.pending_mcp_elicitations,
 			...state.pending_user_inputs,
 			...state.pending_tool_retries,
 		]) {
