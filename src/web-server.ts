@@ -63,6 +63,11 @@ import type {
 	HostedRunnerContext,
 	WebServerContext,
 } from "./server/app-context.js";
+import {
+	HostedRunnerDrainReasonValue,
+	HostedRunnerDrainStatusValue,
+	drainHostedRunnerForShutdown,
+} from "./server/handlers/hosted-runner-drain.js";
 import { createWorkspaceConfigMiddleware } from "./services/workspace-config/middleware.js";
 import { recordApiRequest } from "./telemetry.js";
 import { artifactsClientTool } from "./tools/artifacts-client.js";
@@ -912,7 +917,34 @@ export async function startWebServer(
 			if (shuttingDown) return;
 			shuttingDown = true;
 			if (context.hostedRunner) {
-				context.hostedRunner.draining = true;
+				if (context.hostedRunner.draining) {
+					logger.info("Hosted runner already draining before shutdown", {
+						runnerSessionId: context.hostedRunner.runnerSessionId,
+					});
+				} else {
+					try {
+						const drainResult = await drainHostedRunnerForShutdown(context, {
+							reason: HostedRunnerDrainReasonValue.ProcessShutdown,
+						});
+						if (drainResult) {
+							const log =
+								drainResult.status === HostedRunnerDrainStatusValue.Interrupted
+									? logger.warn.bind(logger)
+									: logger.info.bind(logger);
+							log("Hosted runner drained during graceful shutdown", {
+								runnerSessionId: drainResult.runner_session_id,
+								status: drainResult.status,
+								manifestPath: drainResult.manifest_path,
+							});
+						}
+					} catch (error) {
+						context.hostedRunner.draining = true;
+						logger.warn("Hosted runner shutdown drain failed", {
+							runnerSessionId: context.hostedRunner.runnerSessionId,
+							error: error instanceof Error ? error.message : String(error),
+						});
+					}
+				}
 			}
 			logger.info(`${signal} received. Starting graceful shutdown...`);
 			stopStatsCollection();

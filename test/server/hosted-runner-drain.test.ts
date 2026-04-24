@@ -17,10 +17,13 @@ import type { HostedRunnerContext } from "../../src/server/app-context.js";
 import {
 	HOSTED_RUNNER_RETENTION_POLICY_VERSION,
 	HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION,
+	HostedRunnerDrainReasonValue,
+	HostedRunnerDrainRequestedByValue,
 	HostedRunnerDrainStatusValue,
 	HostedRunnerRuntimeFlushStatusValue,
 	HostedRunnerWorkspaceExportPathTypeValue,
 	drainHostedRunner,
+	drainHostedRunnerForShutdown,
 } from "../../src/server/handlers/hosted-runner-drain.js";
 import type { HeadlessRuntimeSnapshot } from "../../src/server/headless-runtime-service.js";
 
@@ -258,6 +261,54 @@ describe("hosted runner drain", () => {
 				policy_version: HOSTED_RUNNER_RETENTION_POLICY_VERSION,
 				managed_by: "platform",
 			},
+		});
+	});
+
+	it("drains active runtime state for process shutdown", async () => {
+		const workspaceRoot = await createTempWorkspace();
+		const context = hostedRunnerContext(workspaceRoot);
+		const snapshot = runtimeSnapshot(workspaceRoot, 11);
+		const runtime = {
+			getSnapshot: vi.fn(() => snapshot),
+			getSessionFile: vi.fn(() =>
+				join(workspaceRoot, ".maestro", "sessions", "session.jsonl"),
+			),
+			dispose: vi.fn().mockResolvedValue(undefined),
+		};
+		const headlessRuntimeService = {
+			getRuntimeBySessionId: vi.fn(() => runtime),
+		};
+
+		const result = await drainHostedRunnerForShutdown(
+			{
+				hostedRunner: context,
+				headlessRuntimeService,
+			},
+			{
+				now: () => new Date("2026-04-23T00:02:30.000Z"),
+			},
+		);
+
+		expect(result?.status).toBe(HostedRunnerDrainStatusValue.Drained);
+		expect(result?.reason).toBe(HostedRunnerDrainReasonValue.ProcessShutdown);
+		expect(result?.requested_by).toBe(
+			HostedRunnerDrainRequestedByValue.MaestroWebServer,
+		);
+		expect(context.draining).toBe(true);
+		expect(headlessRuntimeService.getRuntimeBySessionId).toHaveBeenCalledWith(
+			"session_123",
+		);
+		expect(runtime.dispose).toHaveBeenCalled();
+		expect(result?.manifest).toMatchObject({
+			maestro_session_id: "session_123",
+			reason: HostedRunnerDrainReasonValue.ProcessShutdown,
+			requested_by: HostedRunnerDrainRequestedByValue.MaestroWebServer,
+			runtime: {
+				flush_status: HostedRunnerRuntimeFlushStatusValue.Completed,
+				session_id: "session_123",
+				cursor: 11,
+			},
+			snapshot,
 		});
 	});
 
