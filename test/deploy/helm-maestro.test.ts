@@ -41,7 +41,10 @@ describe("maestro Helm chart", () => {
 		expect(result.stdout).toMatch(/mountPath:\s+\/tmp/);
 		expect(result.stdout).toContain("name: HOME");
 		expect(result.stdout).toContain("name: XDG_CACHE_HOME");
-		expect(result.stdout).toContain("startupProbe:");
+		expect(result.stdout).toMatch(/startupProbe:[\s\S]*path:\s+\/healthz/);
+		expect(result.stdout).toMatch(/livenessProbe:[\s\S]*path:\s+\/healthz/);
+		expect(result.stdout).toMatch(/readinessProbe:[\s\S]*path:\s+\/readyz/);
+		expect(result.stdout).not.toMatch(/path:\s+\/health\n/);
 		expect(result.stdout).toContain("preStop:");
 	});
 
