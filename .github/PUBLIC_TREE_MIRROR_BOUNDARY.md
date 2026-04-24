@@ -8,7 +8,9 @@ public-tree mirror runs on every push to internal `main`.
 Related:
 
 - `scripts/prepare-public-release-mirror.mjs`
+- `scripts/check-public-mirror-drift.mjs`
 - `.github/public-release-mirror.exclude`
+- `.github/workflows/public-mirror-drift-audit.yml`
 - `.github/workflows/sync-public-release-mirror.yml`
 - `evalops/maestro-internal#1425`
 
@@ -88,7 +90,17 @@ and opens or updates the stable public mirror PR. The report lists:
 - the resolved public package name
 
 The workflow writes those counts and a sample file list to the GitHub step
-summary so each sync PR shows the size and shape of the public-tree update.
+summary so each sync PR shows the size and shape of the public-tree update. It
+also uploads a machine-readable status bundle:
+
+- `public-tree-mirror-report.json`: raw copy/delete plan
+- `public-tree-mirror-status.json`: source SHA, public SHA, invariant, drift
+  counts, and sampled changed paths
+- `public-tree-mirror-status.md`: at-a-glance dashboard for humans
+
+The scheduled `public-mirror-drift-audit` workflow writes the same status bundle
+against current internal `main` and public `main`. Treat its check as the
+current answer to "is public a verified projection of private right now?"
 
 ## Operating Rules
 
@@ -98,3 +110,5 @@ summary so each sync PR shows the size and shape of the public-tree update.
    generated tree unless ownership deliberately moves back into internal.
 4. Treat a failed mirror sync as a release-blocking bridge failure; do not
    backfill public directly except for emergency recovery.
+5. Treat a missing or malformed public sync status as a bridge failure. The
+   generated public PR must carry source-of-truth metadata, not just a diff.
