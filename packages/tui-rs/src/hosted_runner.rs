@@ -584,8 +584,7 @@ impl SnapshotManifest {
     fn validate_for_workspace(&self, workspace_root: &Path) -> HostedResult<()> {
         if self.protocol_version != HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION {
             return Err(HostedError::new(
-                400,
-                "invalid_snapshot_manifest",
+                HostedRunnerErrorCode::InvalidSnapshotManifest,
                 format!(
                     "unsupported snapshot manifest protocol version: {}",
                     self.protocol_version
@@ -594,8 +593,7 @@ impl SnapshotManifest {
         }
         if self.workspace_export.mode != "local_path_contract" {
             return Err(HostedError::new(
-                400,
-                "invalid_snapshot_manifest",
+                HostedRunnerErrorCode::InvalidSnapshotManifest,
                 format!(
                     "unsupported workspace export mode: {}",
                     self.workspace_export.mode
@@ -1042,7 +1040,7 @@ struct HttpRequest {
 #[derive(Debug)]
 struct HostedError {
     status: u16,
-    code: &'static str,
+    code: HostedRunnerErrorCode,
     message: String,
 }
 
@@ -1190,8 +1188,7 @@ impl SharedRunner {
         let state = self.state.lock().expect("hosted runner state poisoned");
         if !state.ready || state.draining {
             return Err(HostedError::new(
-                503,
-                "runtime_not_ready",
+                HostedRunnerErrorCode::RuntimeNotReady,
                 "hosted runner is not accepting new attachments",
             ));
         }
@@ -1533,9 +1530,9 @@ impl SharedRunner {
 }
 
 impl HostedError {
-    fn new(status: u16, code: &'static str, message: impl Into<String>) -> Self {
+    fn new(code: HostedRunnerErrorCode, message: impl Into<String>) -> Self {
         Self {
-            status,
+            status: code.http_status(),
             code,
             message: message.into(),
         }
@@ -1544,19 +1541,25 @@ impl HostedError {
 
 impl From<HostedRunnerError> for HostedError {
     fn from(error: HostedRunnerError) -> Self {
-        Self::new(error.http_status(), error.code.as_str(), error.message)
+        Self::new(error.code, error.message)
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostedRunnerErrorCode {
     InvalidConfig,
+    InvalidSnapshotManifest,
     BadRequest,
     NotFound,
+    StaleSession,
+    StaleConnection,
+    AccessDenied,
     RuntimeNotReady,
     LeaseConflict,
+    RuntimeOwnedElsewhere,
     WorkspaceViolation,
     UnsupportedCapability,
+    RuntimeFailed,
     Internal,
 }
 
@@ -1564,25 +1567,31 @@ impl HostedRunnerErrorCode {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::InvalidConfig => "invalid_config",
+            Self::InvalidSnapshotManifest => "invalid_snapshot_manifest",
             Self::BadRequest => "bad_request",
             Self::NotFound => "not_found",
+            Self::StaleSession => "stale_session",
+            Self::StaleConnection => "stale_connection",
+            Self::AccessDenied => "access_denied",
             Self::RuntimeNotReady => "runtime_not_ready",
             Self::LeaseConflict => "controller_lease_held",
+            Self::RuntimeOwnedElsewhere => "runtime_owned_elsewhere",
             Self::WorkspaceViolation => "workspace_violation",
             Self::UnsupportedCapability => "unsupported_capability",
+            Self::RuntimeFailed => "runtime_failed",
             Self::Internal => "internal_error",
         }
     }
 
     pub fn http_status(self) -> u16 {
         match self {
-            Self::InvalidConfig | Self::BadRequest => 400,
-            Self::WorkspaceViolation => 403,
-            Self::NotFound => 404,
+            Self::InvalidConfig | Self::InvalidSnapshotManifest | Self::BadRequest => 400,
+            Self::AccessDenied | Self::WorkspaceViolation => 403,
+            Self::NotFound | Self::StaleSession | Self::StaleConnection => 404,
             Self::RuntimeNotReady => 503,
-            Self::LeaseConflict => 409,
+            Self::LeaseConflict | Self::RuntimeOwnedElsewhere => 409,
             Self::UnsupportedCapability => 501,
-            Self::Internal => 500,
+            Self::RuntimeFailed | Self::Internal => 500,
         }
     }
 }
@@ -1719,8 +1728,7 @@ async fn route_request(request: HttpRequest, shared: SharedRunner) -> HostedResu
                 json_response(200, json!({"ok": true}))
             } else {
                 Err(HostedError::new(
-                    503,
-                    "runtime_not_ready",
+                    HostedRunnerErrorCode::RuntimeNotReady,
                     "hosted runner is draining or not ready",
                 ))
             }
@@ -1780,7 +1788,10 @@ async fn route_request(request: HttpRequest, shared: SharedRunner) -> HostedResu
             let input = parse_json::<DisconnectRequest>(&request.body)?;
             handle_disconnect(shared, session_id, input)
         }
-        _ => Err(HostedError::new(404, "not_found", "route not found")),
+        _ => Err(HostedError::new(
+            HostedRunnerErrorCode::NotFound,
+            "route not found",
+        )),
     }
 }
 
@@ -2011,8 +2022,7 @@ async fn handle_message(
         assert_controller(&state, Some(resolved_connection_id.as_str()))?;
         if state.draining {
             return Err(HostedError::new(
-                503,
-                "runtime_not_ready",
+                HostedRunnerErrorCode::RuntimeNotReady,
                 "hosted runner is draining",
             ));
         }
@@ -2133,8 +2143,7 @@ async fn handle_message(
         assert_controller(&state, Some(context.connection_id.as_str()))?;
         if state.draining {
             return Err(HostedError::new(
-                503,
-                "runtime_not_ready",
+                HostedRunnerErrorCode::RuntimeNotReady,
                 "hosted runner is draining",
             ));
         }
@@ -2237,7 +2246,10 @@ fn handle_heartbeat(
         state.controller_connection_id.as_deref() == Some(connection_id.as_str());
     let controller_connection_id = state.controller_connection_id.clone();
     let connection = state.connections.get_mut(&connection_id).ok_or_else(|| {
-        HostedError::new(404, "stale_connection", "Headless connection not found")
+        HostedError::new(
+            HostedRunnerErrorCode::StaleConnection,
+            "Headless connection not found",
+        )
     })?;
     connection.last_seen_at = Utc::now();
     let lease_expires_at = lease_expires_at(connection);
@@ -2298,8 +2310,7 @@ fn upsert_connection(state: &mut RunnerState, input: ConnectionUpsert) -> Hosted
         if let Some(controller_connection_id) = state.controller_connection_id.as_ref() {
             if controller_connection_id != &connection_id && !take_control {
                 return Err(HostedError::new(
-                    409,
-                    "runtime_owned_elsewhere",
+                    HostedRunnerErrorCode::RuntimeOwnedElsewhere,
                     "Controller lease is already held by another connection",
                 ));
             }
@@ -2479,14 +2490,16 @@ async fn spawn_command(
     let mut child = if shell_mode == UtilityCommandShellMode::Direct {
         let Some(parts) = shlex::split(command) else {
             return Err(HostedError::new(
-                400,
-                "unsupported_capability",
+                HostedRunnerErrorCode::UnsupportedCapability,
                 "could not parse direct command",
             ));
         };
         let mut iter = parts.into_iter();
         let Some(program) = iter.next() else {
-            return Err(HostedError::new(400, "bad_request", "command is empty"));
+            return Err(HostedError::new(
+                HostedRunnerErrorCode::BadRequest,
+                "command is empty",
+            ));
         };
         let mut child = Command::new(program);
         child.args(iter);
@@ -2500,7 +2513,7 @@ async fn spawn_command(
     child
         .output()
         .await
-        .map_err(|error| HostedError::new(500, "runtime_failed", error.to_string()))
+        .map_err(|error| HostedError::new(HostedRunnerErrorCode::RuntimeFailed, error.to_string()))
 }
 
 async fn handle_file_read(
@@ -2515,7 +2528,7 @@ async fn handle_file_read(
         resolve_workspace_path(&shared.config.workspace_root, cwd.as_deref(), Some(&path))?;
     let content = tokio::fs::read_to_string(&full_path)
         .await
-        .map_err(|error| HostedError::new(404, "not_found", error.to_string()))?;
+        .map_err(|error| HostedError::new(HostedRunnerErrorCode::NotFound, error.to_string()))?;
     let lines: Vec<&str> = content.lines().collect();
     let requested_offset = offset.unwrap_or(1).max(1) as usize;
     let start = if lines.is_empty() {
@@ -2646,9 +2659,9 @@ async fn write_snapshot_manifest(
             .workspace_root
             .join(".maestro/runner-snapshots")
     });
-    tokio::fs::create_dir_all(&root)
-        .await
-        .map_err(|error| HostedError::new(500, "runtime_failed", error.to_string()))?;
+    tokio::fs::create_dir_all(&root).await.map_err(|error| {
+        HostedError::new(HostedRunnerErrorCode::RuntimeFailed, error.to_string())
+    })?;
     let filename = format!(
         "{}-{}.json",
         safe_manifest_component(&shared.config.runner_session_id),
@@ -2731,15 +2744,17 @@ async fn write_snapshot_manifest(
         snapshot,
         retention_policy: Some(default_retention_policy_manifest()),
     };
-    let body_bytes = serde_json::to_vec_pretty(&manifest)
-        .map_err(|error| HostedError::new(500, "runtime_failed", error.to_string()))?;
+    let body_bytes = serde_json::to_vec_pretty(&manifest).map_err(|error| {
+        HostedError::new(HostedRunnerErrorCode::RuntimeFailed, error.to_string())
+    })?;
     let manifest = parse_snapshot_manifest_bytes(&body_bytes, &shared.config.workspace_root)
-        .map_err(|error| HostedError::new(500, "runtime_failed", error.message))?;
-    let body = serde_json::to_value(&manifest)
-        .map_err(|error| HostedError::new(500, "runtime_failed", error.to_string()))?;
-    tokio::fs::write(&path, body_bytes)
-        .await
-        .map_err(|error| HostedError::new(500, "runtime_failed", error.to_string()))?;
+        .map_err(|error| HostedError::new(HostedRunnerErrorCode::RuntimeFailed, error.message))?;
+    let body = serde_json::to_value(&manifest).map_err(|error| {
+        HostedError::new(HostedRunnerErrorCode::RuntimeFailed, error.to_string())
+    })?;
+    tokio::fs::write(&path, body_bytes).await.map_err(|error| {
+        HostedError::new(HostedRunnerErrorCode::RuntimeFailed, error.to_string())
+    })?;
     Ok((path, body))
 }
 
@@ -2749,15 +2764,13 @@ fn parse_snapshot_manifest_bytes(
 ) -> HostedResult<SnapshotManifest> {
     let manifest = serde_json::from_slice::<SnapshotManifest>(bytes).map_err(|error| {
         HostedError::new(
-            400,
-            "invalid_snapshot_manifest",
+            HostedRunnerErrorCode::InvalidSnapshotManifest,
             format!("invalid snapshot manifest json: {error}"),
         )
     })?;
     let workspace_root = workspace_root.canonicalize().map_err(|error| {
         HostedError::new(
-            400,
-            "invalid_snapshot_manifest",
+            HostedRunnerErrorCode::InvalidSnapshotManifest,
             format!("invalid restore workspace root: {error}"),
         )
     })?;
@@ -2790,7 +2803,7 @@ async fn load_restore_manifest(
 fn hosted_error_to_io(error: HostedError) -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidData,
-        format!("{}: {}", error.code, error.message),
+        format!("{}: {}", error.code.as_str(), error.message),
     )
 }
 
@@ -2848,8 +2861,7 @@ fn search_workspace_files(
 fn ensure_session_id(state: &RunnerState, requested: Option<&str>) -> HostedResult<()> {
     if requested.is_some_and(|session_id| session_id != state.session_id) {
         return Err(HostedError::new(
-            404,
-            "stale_session",
+            HostedRunnerErrorCode::StaleSession,
             "Headless session not found",
         ));
     }
@@ -2859,29 +2871,25 @@ fn ensure_session_id(state: &RunnerState, requested: Option<&str>) -> HostedResu
 fn assert_controller(state: &RunnerState, connection_id: Option<&str>) -> HostedResult<()> {
     let Some(connection_id) = connection_id else {
         return Err(HostedError::new(
-            403,
-            "access_denied",
+            HostedRunnerErrorCode::AccessDenied,
             "missing headless connection id",
         ));
     };
     let Some(connection) = state.connections.get(connection_id) else {
         return Err(HostedError::new(
-            404,
-            "stale_connection",
+            HostedRunnerErrorCode::StaleConnection,
             "Headless connection not found",
         ));
     };
     if connection.role == ConnectionRole::Viewer {
         return Err(HostedError::new(
-            403,
-            "access_denied",
+            HostedRunnerErrorCode::AccessDenied,
             "Viewer headless connections cannot send messages",
         ));
     }
     if state.controller_connection_id.as_deref() != Some(connection_id) {
         return Err(HostedError::new(
-            403,
-            "runtime_owned_elsewhere",
+            HostedRunnerErrorCode::RuntimeOwnedElsewhere,
             "Controller lease is currently held by another connection",
         ));
     }
@@ -2902,8 +2910,7 @@ fn resolve_connection_id(
         }
     }
     Err(HostedError::new(
-        404,
-        "stale_connection",
+        HostedRunnerErrorCode::StaleConnection,
         "Headless connection not found",
     ))
 }
@@ -2917,12 +2924,14 @@ fn resolve_message_connection_id(
         resolve_connection_id(state, connection_id.clone(), subscription_id.clone())?;
     if let Some(subscription_id) = subscription_id {
         let subscription = state.subscriptions.get(&subscription_id).ok_or_else(|| {
-            HostedError::new(404, "stale_connection", "Headless subscription not found")
+            HostedError::new(
+                HostedRunnerErrorCode::StaleConnection,
+                "Headless subscription not found",
+            )
         })?;
         if subscription.connection_id != resolved_connection_id {
             return Err(HostedError::new(
-                403,
-                "access_denied",
+                HostedRunnerErrorCode::AccessDenied,
                 "Headless subscription does not belong to the message connection",
             ));
         }
@@ -2937,7 +2946,10 @@ fn message_context(
     workspace_root: &Path,
 ) -> HostedResult<HostedRunnerHeadlessMessageContext> {
     let connection = state.connections.get(connection_id).ok_or_else(|| {
-        HostedError::new(404, "stale_connection", "Headless connection not found")
+        HostedError::new(
+            HostedRunnerErrorCode::StaleConnection,
+            "Headless connection not found",
+        )
     })?;
     Ok(HostedRunnerHeadlessMessageContext {
         session_id: state.session_id.clone(),
@@ -2975,10 +2987,16 @@ fn connection_from_headers(headers: &HashMap<String, String>) -> (Option<String>
 
 fn session_id_from_path<'a>(path: &'a str, suffix: &str) -> HostedResult<&'a str> {
     let Some(prefix_removed) = path.strip_prefix("/api/headless/sessions/") else {
-        return Err(HostedError::new(404, "not_found", "route not found"));
+        return Err(HostedError::new(
+            HostedRunnerErrorCode::NotFound,
+            "route not found",
+        ));
     };
     let Some(session_id) = prefix_removed.strip_suffix(suffix) else {
-        return Err(HostedError::new(404, "not_found", "route not found"));
+        return Err(HostedError::new(
+            HostedRunnerErrorCode::NotFound,
+            "route not found",
+        ));
     };
     Ok(session_id.trim_end_matches('/'))
 }
@@ -3001,8 +3019,7 @@ fn resolve_workspace_path(
     let normalized = canonicalize_existing_prefix(&candidate)?;
     if !normalized.starts_with(workspace_root) {
         return Err(HostedError::new(
-            403,
-            "workspace_violation",
+            HostedRunnerErrorCode::WorkspaceViolation,
             "Path is outside hosted workspace root",
         ));
     }
@@ -3023,22 +3040,23 @@ fn canonicalize_existing_prefix(path: &Path) -> HostedResult<PathBuf> {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 let Some(component) = current.file_name().map(OsString::from) else {
                     return Err(HostedError::new(
-                        404,
-                        "not_found",
+                        HostedRunnerErrorCode::NotFound,
                         "requested workspace path does not exist",
                     ));
                 };
                 missing_components.push(component);
                 if !current.pop() {
                     return Err(HostedError::new(
-                        404,
-                        "not_found",
+                        HostedRunnerErrorCode::NotFound,
                         "requested workspace path does not exist",
                     ));
                 }
             }
             Err(error) => {
-                return Err(HostedError::new(404, "not_found", error.to_string()));
+                return Err(HostedError::new(
+                    HostedRunnerErrorCode::NotFound,
+                    error.to_string(),
+                ));
             }
         }
     }
@@ -3054,16 +3072,18 @@ fn relative_workspace_path(workspace_root: &Path, path: &Path) -> String {
 
 fn parse_json<T: for<'de> Deserialize<'de>>(body: &[u8]) -> HostedResult<T> {
     if body.is_empty() {
-        return serde_json::from_slice(b"{}")
-            .map_err(|error| HostedError::new(400, "bad_request", error.to_string()));
+        return serde_json::from_slice(b"{}").map_err(|error| {
+            HostedError::new(HostedRunnerErrorCode::BadRequest, error.to_string())
+        });
     }
     serde_json::from_slice(body)
-        .map_err(|error| HostedError::new(400, "bad_request", error.to_string()))
+        .map_err(|error| HostedError::new(HostedRunnerErrorCode::BadRequest, error.to_string()))
 }
 
 fn json_response<T: Serialize>(status: u16, body: T) -> HostedResult<ResponseBody> {
-    let body = serde_json::to_value(body)
-        .map_err(|error| HostedError::new(500, "runtime_failed", error.to_string()))?;
+    let body = serde_json::to_value(body).map_err(|error| {
+        HostedError::new(HostedRunnerErrorCode::RuntimeFailed, error.to_string())
+    })?;
     Ok(ResponseBody::Json { status, body })
 }
 
@@ -3158,10 +3178,11 @@ async fn write_json_value(
 }
 
 async fn write_error(socket: &mut TcpStream, error: HostedError) -> io::Result<()> {
+    let code = error.code.as_str();
     let body = serde_json::to_vec(&json!({
         "error": error.message,
-        "error_type": error.code,
-        "code": error.code,
+        "error_type": code,
+        "code": code,
     }))
     .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     write_response(socket, error.status, "application/json", &body).await
@@ -3224,12 +3245,18 @@ mod tests {
     fn status_reason_covers_runner_error_statuses() {
         let codes = [
             HostedRunnerErrorCode::InvalidConfig,
+            HostedRunnerErrorCode::InvalidSnapshotManifest,
             HostedRunnerErrorCode::BadRequest,
             HostedRunnerErrorCode::NotFound,
+            HostedRunnerErrorCode::StaleSession,
+            HostedRunnerErrorCode::StaleConnection,
+            HostedRunnerErrorCode::AccessDenied,
             HostedRunnerErrorCode::RuntimeNotReady,
             HostedRunnerErrorCode::LeaseConflict,
+            HostedRunnerErrorCode::RuntimeOwnedElsewhere,
             HostedRunnerErrorCode::WorkspaceViolation,
             HostedRunnerErrorCode::UnsupportedCapability,
+            HostedRunnerErrorCode::RuntimeFailed,
             HostedRunnerErrorCode::Internal,
         ];
 
@@ -3323,6 +3350,26 @@ mod tests {
             maestro_session_id: Some("sess_test".to_string()),
             attach_audience: None,
         }
+    }
+
+    #[tokio::test]
+    async fn route_rejects_connection_prefix_without_separator() {
+        let workspace = tempdir().expect("workspace");
+        let shared = SharedRunner::new(test_config(workspace.path().to_path_buf()));
+        let request = HttpRequest {
+            method: "POST".to_string(),
+            path: "/api/headless/connections-extra".to_string(),
+            query: HashMap::new(),
+            headers: HashMap::new(),
+            body: b"{}".to_vec(),
+        };
+
+        let error = match route_request(request, shared).await {
+            Ok(_) => panic!("unexpected route match"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.code, HostedRunnerErrorCode::NotFound);
     }
 
     #[test]
@@ -3697,7 +3744,7 @@ mod tests {
         let escaped_bytes = serde_json::to_vec(&escaped_manifest).expect("escaped manifest json");
         let error =
             parse_snapshot_manifest_bytes(&escaped_bytes, workspace.path()).expect_err("escape");
-        assert_eq!(error.code, "workspace_violation");
+        assert_eq!(error.code, HostedRunnerErrorCode::WorkspaceViolation);
 
         handle.shutdown().await;
     }

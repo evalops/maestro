@@ -87,8 +87,8 @@ semantics.
 
 ## Reference Patterns
 
-The downloaded reference tree at `/Users/jonathanhaas/Downloads/src` reinforces
-three design choices this suite should keep enforcing:
+The downloaded reference tree used during the hosted-runner parity review
+reinforces three design choices this suite should keep enforcing:
 
 - remote sessions need a durable control session plus a replayable event stream,
   not a single fragile socket
