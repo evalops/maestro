@@ -35,6 +35,7 @@ import {
 	buildHeadlessRawAgentEventMessage,
 	createHeadlessRuntimeState,
 	loadPromptAttachments,
+	syncHeadlessPendingRequests,
 } from "../cli/headless-protocol.js";
 import { withHeadlessPostKeepMessages } from "../headless/prompt-recovery.js";
 import { HeadlessUtilityCommandManager } from "../headless/utility-command-manager.js";
@@ -835,6 +836,7 @@ export class HeadlessSessionRuntime {
 	}
 
 	getSnapshot(): HeadlessRuntimeSnapshot {
+		syncHeadlessPendingRequests(this.state);
 		const snapshot: HeadlessRuntimeSnapshot = {
 			protocolVersion: HEADLESS_PROTOCOL_VERSION,
 			session_id: this.sessionId,
