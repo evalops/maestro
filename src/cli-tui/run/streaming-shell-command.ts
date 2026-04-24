@@ -15,6 +15,10 @@ export interface StreamingShellCommandResult {
 	stderr: string;
 }
 
+function shellEscape(value: string): string {
+	return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
 /**
  * Run a shell command with streaming output callbacks.
  * Calls onStdout/onStderr for each chunk received, enabling real-time display.
@@ -24,9 +28,14 @@ export async function runStreamingShellCommand(
 	options: StreamingShellCommandOptions = {},
 ): Promise<StreamingShellCommandResult> {
 	return await new Promise((resolve) => {
-		const child: ChildProcess = spawn("bash", ["-lc", command], {
-			cwd: options.cwd ?? process.cwd(),
-			env: options.env ?? process.env,
+		const cwd = options.cwd ?? process.cwd();
+		const shellCommand = `cd -- ${shellEscape(cwd)} && ${command}`;
+		const child: ChildProcess = spawn("bash", ["-lc", shellCommand], {
+			cwd,
+			env: {
+				...(options.env ?? process.env),
+				PWD: cwd,
+			},
 		});
 
 		let stdout = "";

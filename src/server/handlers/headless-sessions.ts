@@ -11,9 +11,12 @@ import {
 	headlessUtilityOperations,
 } from "@evalops/contracts";
 import { type Static, type TSchema, Type } from "@sinclair/typebox";
+import type { ApprovalMode } from "../../agent/action-approval.js";
 import type { ThinkingLevel } from "../../agent/types.js";
 import type { HeadlessToAgentMessage } from "../../cli/headless-protocol.js";
 import { resolveExistingWorkspaceRoot } from "../../headless/workspace-root.js";
+import type { RegisteredModel } from "../../models/registry.js";
+import { recordMaestroSessionRuntimeTrigger } from "../../platform/agent-runtime-client.js";
 import type { WebServerContext } from "../app-context.js";
 import {
 	normalizeApprovalMode,
@@ -499,7 +502,10 @@ function rethrowHeadlessConnectionLifecycleError(error: unknown): never {
 async function ensureRuntime(
 	req: IncomingMessage,
 	context: WebServerContext,
-	input: HeadlessSessionCreateInput & { registerConnection?: boolean },
+	input: HeadlessSessionCreateInput & {
+		registerConnection?: boolean;
+		recordAgentRuntimeTrigger?: boolean;
+	},
 ) {
 	const sessionManager = createSessionManagerForRequest(req, false);
 	const role = getHeadlessRole(req, input.role);
@@ -585,7 +591,56 @@ async function ensureRuntime(
 	if (context.hostedRunner) {
 		claimHostedRunnerSession(context, runtime.getSnapshot().session_id);
 	}
+	if (input.recordAgentRuntimeTrigger !== false) {
+		await recordPlatformAgentRuntimeSessionStart({
+			context,
+			runtime,
+			subject,
+			registeredModel,
+			role,
+			thinkingLevel: (input.thinkingLevel ?? "off") as ThinkingLevel,
+			approvalMode: effectiveApproval,
+			workspaceRoot,
+			input,
+		});
+	}
 	return runtime;
+}
+
+async function recordPlatformAgentRuntimeSessionStart(options: {
+	context: WebServerContext;
+	runtime: HeadlessSessionRuntime;
+	subject?: string;
+	registeredModel: RegisteredModel;
+	role: HeadlessConnectionRole;
+	thinkingLevel: ThinkingLevel;
+	approvalMode: ApprovalMode;
+	workspaceRoot: string | undefined;
+	input: HeadlessSessionCreateInput;
+}): Promise<void> {
+	const snapshot = options.runtime.getSnapshot();
+	const hostedRunner = options.context.hostedRunner;
+	const result = await recordMaestroSessionRuntimeTrigger({
+		workspaceId: hostedRunner?.workspaceId,
+		sessionId: snapshot.session_id,
+		actorId: options.subject,
+		correlationId: `maestro-session:${snapshot.session_id}`,
+		metadata: {
+			model: options.registeredModel.id,
+			provider: options.registeredModel.provider,
+			role: options.role,
+			thinking_level: options.thinkingLevel,
+			approval_mode: options.approvalMode,
+			client: options.input.client ?? "generic",
+			protocol_version: options.input.protocolVersion,
+			workspace_root: options.workspaceRoot,
+			runner_session_id: hostedRunner?.runnerSessionId,
+			owner_instance_id: hostedRunner?.ownerInstanceId,
+		},
+	});
+	if (result?.run.id && hostedRunner && !hostedRunner.agentRunId) {
+		hostedRunner.agentRunId = result.run.id;
+	}
 }
 
 async function ensureConnection(
@@ -596,6 +651,7 @@ async function ensureConnection(
 	const runtime = await ensureRuntime(req, context, {
 		...input,
 		registerConnection: false,
+		recordAgentRuntimeTrigger: false,
 	});
 	const role = getHeadlessRole(req, input.role);
 	const heartbeat = runtime.registerConnection({
