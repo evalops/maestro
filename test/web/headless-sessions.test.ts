@@ -25,6 +25,13 @@ import {
 	createHeadlessRuntimeState,
 } from "../../src/cli/headless-protocol.js";
 import type { RegisteredModel } from "../../src/models/registry.js";
+import {
+	MaestroAgentRuntimeSourceEventType,
+	PlatformAgentRunStateValue,
+	PlatformRuntimeChannelKindValue,
+	PlatformRuntimeTriggerKindValue,
+	PlatformSurfaceValue,
+} from "../../src/platform/agent-runtime-client.js";
 import type { WebServerContext } from "../../src/server/app-context.js";
 import { clientToolService } from "../../src/server/client-tools-service.js";
 import {
@@ -285,6 +292,8 @@ function createMockAttachedStream(
 
 afterEach(() => {
 	vi.restoreAllMocks();
+	vi.unstubAllEnvs();
+	vi.unstubAllGlobals();
 	for (const request of serverRequestManager.listPending()) {
 		serverRequestManager.cancel(request.id, "Test cleanup");
 	}
@@ -2801,6 +2810,110 @@ describe("headless session handlers", () => {
 					cwd: resolvedWorkspaceRoot,
 				},
 			});
+		} finally {
+			await rm(workspaceRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("records hosted session starts in Platform agent-runtime when configured", async () => {
+		const workspaceRoot = await mkdtemp(
+			join(tmpdir(), "maestro-headless-runtime-ledger-"),
+		);
+		try {
+			vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_URL", "https://runtime.test/");
+			vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_TOKEN", "runtime-token");
+			vi.stubEnv("MAESTRO_AGENT_RUNTIME_ORG_ID", "org_1");
+			vi.stubEnv("MAESTRO_AGENT_RUNTIME_WORKSPACE_ID", "ws_env");
+
+			const requests: Record<string, unknown>[] = [];
+			const fetchMock = vi.fn(
+				async (input: RequestInfo | URL, init?: RequestInit) => {
+					expect(String(input)).toBe(
+						"https://runtime.test/agentruntime.v1.AgentRuntimeService/HandleTrigger",
+					);
+					requests.push(
+						JSON.parse(String(init?.body)) as Record<string, unknown>,
+					);
+					return new Response(
+						JSON.stringify({
+							run: {
+								id: "agent_run_123",
+								state: PlatformAgentRunStateValue.Accepted,
+								linkage: {
+									runId: "agent_run_123",
+									workspaceId: "ws_hosted",
+									agentId: "maestro",
+								},
+							},
+							events: [],
+							idempotentReplay: false,
+						}),
+						{ status: 200 },
+					);
+				},
+			);
+			vi.stubGlobal("fetch", fetchMock);
+
+			const createAgent = vi.fn().mockResolvedValue(new FakeAgent());
+			const context = createContext({
+				createAgent,
+				hostedRunner: {
+					enabled: true,
+					runnerSessionId: "mrs_test",
+					ownerInstanceId: "pod-a",
+					workspaceRoot,
+					workspaceId: "ws_hosted",
+				},
+			});
+			const req = createJsonRequest("POST", "/api/headless/sessions", {
+				model: TEST_MODEL.id,
+				workspaceRoot,
+				client: "vscode",
+				protocolVersion: "headless.v1",
+			});
+			const res = new MockResponse();
+			res.req = req;
+
+			await handleHeadlessSessionCreate(
+				req,
+				res as unknown as ServerResponse,
+				context,
+			);
+
+			const snapshot = JSON.parse(res.body) as { session_id: string };
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			expect(requests[0]).toMatchObject({
+				trigger: {
+					workspaceId: "ws_hosted",
+					agentId: "maestro",
+					channelId: `maestro-session:${snapshot.session_id}`,
+					idempotencyKey: `maestro-session:ws_hosted:${snapshot.session_id}`,
+					sourceEventType: MaestroAgentRuntimeSourceEventType.SessionStarted,
+					surfaceType: PlatformSurfaceValue.Maestro,
+					triggerKind: PlatformRuntimeTriggerKindValue.Api,
+					channelContext: {
+						channelKind: PlatformRuntimeChannelKindValue.Api,
+						providerWorkspaceId: "ws_hosted",
+						threadId: snapshot.session_id,
+					},
+					payload: {
+						maestroSessionId: snapshot.session_id,
+						metadata: {
+							model: TEST_MODEL.id,
+							provider: TEST_MODEL.provider,
+							role: "controller",
+							thinking_level: "off",
+							approval_mode: "prompt",
+							client: "vscode",
+							protocol_version: "headless.v1",
+							workspace_root: realpathSync(workspaceRoot),
+							runner_session_id: "mrs_test",
+							owner_instance_id: "pod-a",
+						},
+					},
+				},
+			});
+			expect(context.hostedRunner?.agentRunId).toBe("agent_run_123");
 		} finally {
 			await rm(workspaceRoot, { recursive: true, force: true });
 		}
