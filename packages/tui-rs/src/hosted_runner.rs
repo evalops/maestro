@@ -932,6 +932,11 @@ impl AgentSupervisorHostedRunnerMessageExecutor {
     pub fn new(supervisor: Arc<Mutex<AgentSupervisor>>) -> Self {
         Self { supervisor }
     }
+
+    #[must_use]
+    pub fn supervisor(&self) -> Arc<Mutex<AgentSupervisor>> {
+        Arc::clone(&self.supervisor)
+    }
 }
 
 impl std::fmt::Debug for AgentSupervisorHostedRunnerMessageExecutor {
@@ -1466,27 +1471,10 @@ impl SharedRunner {
 
     fn reset_envelope(&self, reason: impl Into<String>) -> StreamEnvelope {
         let state = self.state.lock().expect("hosted runner state poisoned");
-        self.reset_envelope_from_state(&state, reason)
-    }
-
-    fn reset_envelope_from_state(
-        &self,
-        state: &RunnerState,
-        reason: impl Into<String>,
-    ) -> StreamEnvelope {
         StreamEnvelope::Reset {
             reason: reason.into(),
-            snapshot: self.snapshot(state),
+            snapshot: self.snapshot(&state),
         }
-    }
-
-    fn reset_and_subscribe(
-        &self,
-        reason: impl Into<String>,
-    ) -> (Vec<StreamEnvelope>, broadcast::Receiver<StreamEnvelope>) {
-        let state = self.state.lock().expect("hosted runner state poisoned");
-        let rx = self.events.subscribe();
-        (vec![self.reset_envelope_from_state(&state, reason)], rx)
     }
 
     fn subscribe_from(
@@ -1970,7 +1958,8 @@ fn handle_events(
         .map(|value| value.trim_start().starts_with('-'))
         .unwrap_or(false)
     {
-        let (replay, rx) = shared.reset_and_subscribe("replay_gap");
+        let replay = vec![shared.reset_envelope("replay_gap")];
+        let rx = shared.events.subscribe();
         return Ok(ResponseBody::Sse { replay, rx, shared });
     }
     let cursor = query
@@ -2955,15 +2944,10 @@ fn connection_from_headers(headers: &HashMap<String, String>) -> (Option<String>
         headers
             .get("x-maestro-headless-connection-id")
             .or_else(|| headers.get("x-composer-headless-connection-id"))
-            .or_else(|| headers.get("x-evalops-headless-connection-id"))
             .cloned(),
         headers
             .get("x-maestro-headless-subscriber-id")
-            .or_else(|| headers.get("x-maestro-headless-subscription-id"))
             .or_else(|| headers.get("x-composer-headless-subscriber-id"))
-            .or_else(|| headers.get("x-composer-headless-subscription-id"))
-            .or_else(|| headers.get("x-evalops-headless-subscriber-id"))
-            .or_else(|| headers.get("x-evalops-headless-subscription-id"))
             .cloned(),
     )
 }
@@ -3457,25 +3441,6 @@ mod tests {
         assert!(event_text.contains(r#""reason":"replay_gap""#));
 
         handle.shutdown().await;
-    }
-
-    #[test]
-    fn connection_headers_accept_evalops_subscription_aliases() {
-        let headers = HashMap::from([
-            (
-                "x-evalops-headless-connection-id".to_string(),
-                "conn_evalops".to_string(),
-            ),
-            (
-                "x-evalops-headless-subscription-id".to_string(),
-                "sub_evalops".to_string(),
-            ),
-        ]);
-
-        let (connection_id, subscription_id) = connection_from_headers(&headers);
-
-        assert_eq!(connection_id.as_deref(), Some("conn_evalops"));
-        assert_eq!(subscription_id.as_deref(), Some("sub_evalops"));
     }
 
     #[tokio::test]
