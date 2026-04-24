@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { handleSessionTimeline } from "../src/server/handlers/session-timeline.js";
 import {
 	handleSessionExport,
 	handleSessionShare,
@@ -353,6 +354,194 @@ describe("Session Endpoints", () => {
 
 			expect(getStatus()).toBe(400);
 			expect(getBody()).toEqual({ error: "Invalid session id" });
+		});
+	});
+
+	describe("handleSessionTimeline - GET", () => {
+		it("returns a redacted run timeline with Platform wait references", async () => {
+			const secret = makeTestAnthropicToken();
+			const longPrompt = `Deploy with token ${secret} ${"x".repeat(300)}`;
+			const entries = [
+				{
+					type: "session",
+					id: "test-session-1",
+					version: 2,
+					timestamp: "2024-01-01T00:00:00.000Z",
+					cwd: "/workspace",
+				},
+				{
+					type: "message",
+					id: "user-1",
+					parentId: null,
+					timestamp: "2024-01-01T00:00:01.000Z",
+					message: {
+						role: "user",
+						content: longPrompt,
+						timestamp: 1704067201000,
+					},
+				},
+				{
+					type: "message",
+					id: "assistant-1",
+					parentId: "user-1",
+					timestamp: "2024-01-01T00:00:02.000Z",
+					message: {
+						role: "assistant",
+						content: [
+							{ type: "text", text: "I will inspect the workspace." },
+							{
+								type: "toolCall",
+								id: "tool-call-1",
+								name: "bash",
+								arguments: { command: "rm -rf /tmp/demo" },
+							},
+						],
+						api: "openai-responses",
+						provider: "openai",
+						model: "gpt-5.2",
+						usage: {
+							input: 1,
+							output: 1,
+							cacheRead: 0,
+							cacheWrite: 0,
+							cost: {
+								input: 0,
+								output: 0,
+								cacheRead: 0,
+								cacheWrite: 0,
+								total: 0,
+							},
+						},
+						stopReason: "toolUse",
+						timestamp: 1704067202000,
+					},
+				},
+				{
+					type: "message",
+					id: "tool-result-1",
+					parentId: "assistant-1",
+					timestamp: "2024-01-01T00:00:03.000Z",
+					message: {
+						role: "toolResult",
+						toolCallId: "tool-call-1",
+						toolName: "bash",
+						content: [{ type: "text", text: "done" }],
+						isError: false,
+						timestamp: 1704067203000,
+					},
+				},
+				{
+					type: "compaction",
+					id: "compaction-1",
+					parentId: "tool-result-1",
+					timestamp: "2024-01-01T00:00:04.000Z",
+					summary: "Kept the deploy context",
+					firstKeptEntryId: "assistant-1",
+					tokensBefore: 4096,
+				},
+			];
+			writeFileSync(
+				jsonlExportPath,
+				`${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+				"utf8",
+			);
+			vi.spyOn(serverRequestManager, "listPending").mockReturnValue([
+				{
+					id: "approval-1",
+					kind: "approval",
+					sessionId: "test-session-1",
+					callId: "approval-1",
+					toolName: "bash",
+					displayName: "Shell Command",
+					summaryLabel: "run bash",
+					actionDescription: "Run a shell command",
+					args: { command: "rm -rf /tmp/demo" },
+					reason: "Needs approval",
+					timestamp: 1704067205000,
+					timeoutMs: 60_000,
+					platform: {
+						source: "tool_execution",
+						toolExecutionId: "te_1",
+						approvalRequestId: "apr_1",
+					},
+				},
+			]);
+
+			const req = createMockRequest("GET");
+			const { res, getStatus, getBody } = createMockResponse();
+
+			await handleSessionTimeline(
+				req,
+				res,
+				{ id: "test-session-1" },
+				corsHeaders,
+			);
+
+			expect(getStatus()).toBe(200);
+			const body = getBody() as {
+				sessionId: string;
+				source: string;
+				platformBacked: boolean;
+				pendingRequestCount: number;
+				items: Array<{
+					type: string;
+					summary?: string;
+					toolCallId?: string;
+					pendingRequestId?: string;
+					toolExecutionId?: string;
+					approvalRequestId?: string;
+					platformOperation?: string;
+					source?: string;
+				}>;
+			};
+			expect(body.sessionId).toBe("test-session-1");
+			expect(body.source).toBe("local");
+			expect(body.platformBacked).toBe(false);
+			expect(body.pendingRequestCount).toBe(1);
+			expect(body.items.map((item) => item.type)).toEqual(
+				expect.arrayContaining([
+					"session.started",
+					"message.user",
+					"message.assistant",
+					"tool.requested",
+					"tool.completed",
+					"compaction.created",
+					"wait.pending",
+				]),
+			);
+			const userItem = body.items.find((item) => item.type === "message.user");
+			expect(userItem?.summary).toContain("[redacted-secret]");
+			expect(userItem?.summary?.length).toBeLessThanOrEqual(180);
+			const waitItem = body.items.find((item) => item.type === "wait.pending");
+			expect(waitItem).toEqual(
+				expect.objectContaining({
+					pendingRequestId: "approval-1",
+					toolExecutionId: "te_1",
+					approvalRequestId: "apr_1",
+					platformOperation: "ResumeToolExecution",
+					source: "platform",
+				}),
+			);
+			const serialized = JSON.stringify(body);
+			expect(serialized).not.toContain(secret);
+			expect(serialized).not.toContain("rm -rf /tmp/demo");
+		});
+
+		it("returns 400 for invalid timeline session ids", async () => {
+			const req = createMockRequest("GET");
+			const { res, getStatus, getBody } = createMockResponse();
+
+			await handleSessionTimeline(
+				req,
+				res,
+				{ id: "../malicious/path" },
+				corsHeaders,
+			);
+
+			expect(getStatus()).toBe(400);
+			expect(getBody()).toEqual(
+				expect.objectContaining({ error: "Invalid session id" }),
+			);
 		});
 	});
 

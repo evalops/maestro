@@ -175,4 +175,55 @@ describe("ApiClient approvals", () => {
 			}),
 		);
 	});
+
+	it("loads the session timeline from the session-scoped endpoint", async () => {
+		global.fetch = vi.fn().mockResolvedValue(
+			new Response(
+				JSON.stringify({
+					sessionId: "session 1",
+					source: "local",
+					generatedAt: "2024-01-01T00:00:00.000Z",
+					platformBacked: false,
+					pendingRequestCount: 1,
+					items: [
+						{
+							id: "pending:approval-1",
+							sessionId: "session 1",
+							timestamp: "2024-01-01T00:00:01.000Z",
+							type: "wait.pending",
+							title: "Waiting for approval: Shell Command",
+							visibility: "user",
+							source: "platform",
+							status: "pending",
+							toolCallId: "approval-1",
+							toolName: "bash",
+							pendingRequestId: "approval-1",
+							pendingRequestKind: "approval",
+							approvalRequestId: "apr_1",
+							toolExecutionId: "te_1",
+							platform: {
+								source: "tool_execution",
+								toolExecutionId: "te_1",
+								approvalRequestId: "apr_1",
+							},
+							platformOperation: "ResumeToolExecution",
+						},
+					],
+				}),
+				{
+					status: 200,
+					headers: { "content-type": "application/json" },
+				},
+			),
+		);
+
+		const api = new ApiClient("http://localhost:8080");
+		const timeline = await api.getSessionTimeline("session 1");
+
+		expect(global.fetch).toHaveBeenCalled();
+		const [url] = vi.mocked(global.fetch).mock.calls[0] ?? [];
+		expect(String(url)).toContain("/api/sessions/session%201/timeline");
+		expect(timeline.pendingRequestCount).toBe(1);
+		expect(timeline.items[0]?.toolExecutionId).toBe("te_1");
+	});
 });

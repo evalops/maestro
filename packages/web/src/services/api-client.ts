@@ -75,6 +75,7 @@ import {
 	isComposerPendingRequestResumeResponse,
 	isComposerPlanActionResponse,
 	isComposerPlanStatusResponse,
+	isComposerRunTimelineResponse,
 	isComposerSession,
 	isComposerSessionListResponse,
 	isComposerSessionSummary,
@@ -113,6 +114,7 @@ import type {
 	ComposerProjectOnboardingState,
 	ComposerPromptSuggestionRequest,
 	ComposerPromptSuggestionResponse,
+	ComposerRunTimelineResponse,
 	ComposerSession,
 	ComposerSessionSummary,
 	ComposerToolCall,
@@ -167,6 +169,8 @@ export type Model = ComposerModel;
 export type Session = ComposerSession;
 
 export type SessionSummary = ComposerSessionSummary;
+
+export type RunTimelineResponse = ComposerRunTimelineResponse;
 
 export type ChatRequest = ComposerChatRequest;
 
@@ -1888,6 +1892,19 @@ export class ApiClient {
 			throw new Error("Invalid session payload");
 		}
 		return data as Session;
+	}
+
+	/**
+	 * Get the run timeline for a specific session.
+	 */
+	async getSessionTimeline(sessionId: string): Promise<RunTimelineResponse> {
+		const data = await this.fetchJsonWithFallback(
+			`/api/sessions/${encodeURIComponent(sessionId)}/timeline`,
+		);
+		if (VALIDATE_API_RESPONSES && !isComposerRunTimelineResponse(data)) {
+			throw new Error("Invalid session timeline payload");
+		}
+		return data as RunTimelineResponse;
 	}
 
 	/**

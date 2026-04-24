@@ -83,6 +83,7 @@ import {
 	handleSessionAttachment,
 	handleSessionAttachmentExtract,
 } from "./handlers/session-attachments.js";
+import { handleSessionTimeline } from "./handlers/session-timeline.js";
 import {
 	handleSessionExport,
 	handleSessionShare,
@@ -860,6 +861,12 @@ export function createRoutes(context: WebServerContext): Route[] {
 					params as { id: string; attachmentId: string },
 					corsHeaders,
 				),
+		},
+		{
+			method: "GET",
+			path: "/api/sessions/:id/timeline",
+			handler: (req, res, params) =>
+				handleSessionTimeline(req, res, params as { id: string }, corsHeaders),
 		},
 		{
 			method: "GET",
