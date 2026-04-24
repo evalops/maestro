@@ -1215,13 +1215,14 @@ impl SharedRunner {
                 connection
                     .subscription_ids
                     .iter()
-                    .find(|subscription_id| {
+                    .filter(|subscription_id| {
                         state
                             .subscriptions
                             .get(*subscription_id)
                             .map(|subscription| subscription.role == ConnectionRole::Controller)
                             .unwrap_or(false)
                     })
+                    .min()
                     .cloned()
             });
         let preferred_connection = state
@@ -1572,6 +1573,18 @@ impl HostedRunnerErrorCode {
             Self::Internal => "internal_error",
         }
     }
+
+    pub fn http_status(self) -> u16 {
+        match self {
+            Self::InvalidConfig | Self::BadRequest => 400,
+            Self::WorkspaceViolation => 403,
+            Self::NotFound => 404,
+            Self::RuntimeNotReady => 503,
+            Self::LeaseConflict => 409,
+            Self::UnsupportedCapability => 501,
+            Self::Internal => 500,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1621,15 +1634,7 @@ impl HostedRunnerError {
     }
 
     pub fn http_status(&self) -> u16 {
-        match self.code {
-            HostedRunnerErrorCode::InvalidConfig | HostedRunnerErrorCode::BadRequest => 400,
-            HostedRunnerErrorCode::WorkspaceViolation => 403,
-            HostedRunnerErrorCode::NotFound => 404,
-            HostedRunnerErrorCode::RuntimeNotReady => 503,
-            HostedRunnerErrorCode::LeaseConflict => 409,
-            HostedRunnerErrorCode::UnsupportedCapability => 501,
-            HostedRunnerErrorCode::Internal => 500,
-        }
+        self.code.http_status()
     }
 }
 
@@ -3201,6 +3206,7 @@ fn status_reason(status: u16) -> &'static str {
         404 => "Not Found",
         409 => "Conflict",
         500 => "Internal Server Error",
+        501 => "Not Implemented",
         503 => "Service Unavailable",
         _ => "OK",
     }
@@ -3213,6 +3219,24 @@ mod tests {
 
     use super::*;
     use crate::headless::RemoteTransportConfig;
+
+    #[test]
+    fn status_reason_covers_runner_error_statuses() {
+        let codes = [
+            HostedRunnerErrorCode::InvalidConfig,
+            HostedRunnerErrorCode::BadRequest,
+            HostedRunnerErrorCode::NotFound,
+            HostedRunnerErrorCode::RuntimeNotReady,
+            HostedRunnerErrorCode::LeaseConflict,
+            HostedRunnerErrorCode::WorkspaceViolation,
+            HostedRunnerErrorCode::UnsupportedCapability,
+            HostedRunnerErrorCode::Internal,
+        ];
+
+        for code in codes {
+            assert_ne!(status_reason(code.http_status()), "OK", "{code:?}");
+        }
+    }
 
     #[derive(Debug)]
     struct ScriptedRuntimeExecutor;
@@ -4555,6 +4579,7 @@ mod tests {
         assert_eq!(connection["connection_id"], "conn_multi");
         assert!(connection["lease_expires_at"].as_str().is_some());
 
+        let mut subscription_ids = Vec::new();
         for _ in 0..2 {
             let subscription = client
                 .post(format!(
@@ -4569,7 +4594,16 @@ mod tests {
                 .await
                 .expect("subscription response");
             assert_eq!(subscription.status(), StatusCode::OK);
+            let subscription: serde_json::Value =
+                subscription.json().await.expect("subscription json");
+            subscription_ids.push(
+                subscription["subscription_id"]
+                    .as_str()
+                    .expect("subscription id")
+                    .to_string(),
+            );
         }
+        subscription_ids.sort();
 
         let state: serde_json::Value = client
             .get(format!(
@@ -4583,6 +4617,10 @@ mod tests {
             .await
             .expect("state json");
         assert_eq!(state["state"]["subscriber_count"], 2);
+        assert_eq!(
+            state["state"]["controller_subscription_id"],
+            subscription_ids[0]
+        );
         let connection_state = state["state"]["connections"]
             .as_array()
             .expect("connections")
@@ -4642,6 +4680,8 @@ mod tests {
             .await
             .expect("state json");
         assert_eq!(state_after_disconnect["state"]["subscriber_count"], 0);
+        assert!(state_after_disconnect["state"]["controller_connection_id"].is_null());
+        assert!(state_after_disconnect["state"]["controller_subscription_id"].is_null());
 
         handle.shutdown().await;
     }
