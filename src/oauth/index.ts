@@ -34,6 +34,7 @@ import {
 	loginGoogleGeminiCli,
 	refreshGoogleGeminiCliToken,
 } from "./google-gemini-cli.js";
+import { loginOpenAICodex, refreshOpenAICodexToken } from "./openai-codex.js";
 import {
 	loginOpenAI,
 	migrateOpenAICredentials,
@@ -58,6 +59,7 @@ export type SupportedOAuthProvider =
 	| "anthropic"
 	| "evalops"
 	| "openai"
+	| "openai-codex"
 	| "github-copilot"
 	| "google-gemini-cli"
 	| "google-antigravity";
@@ -89,7 +91,13 @@ export function getOAuthProviders(): OAuthProviderInfo[] {
 		{
 			id: "openai",
 			name: "OpenAI",
-			description: "ChatGPT Plus subscription",
+			description: "OpenAI Platform API via ChatGPT login",
+			available: true,
+		},
+		{
+			id: "openai-codex",
+			name: "OpenAI Codex",
+			description: "Codex with ChatGPT Plus/Pro login",
 			available: true,
 		},
 		{
@@ -150,6 +158,14 @@ export async function login(
 			break;
 		case "openai":
 			await loginOpenAI(options.onAuthUrl, options.onStatus);
+			shouldSyncConnectorConnection = true;
+			break;
+		case "openai-codex":
+			await loginOpenAICodex(
+				options.onAuthUrl,
+				options.onPromptCode,
+				options.onStatus,
+			);
 			shouldSyncConnectorConnection = true;
 			break;
 		case "evalops":
@@ -224,6 +240,12 @@ export async function refreshToken(
 			break;
 		case "openai":
 			newCredentials = await refreshOpenAIToken(
+				credentials.refresh,
+				credentials.metadata,
+			);
+			break;
+		case "openai-codex":
+			newCredentials = await refreshOpenAICodexToken(
 				credentials.refresh,
 				credentials.metadata,
 			);

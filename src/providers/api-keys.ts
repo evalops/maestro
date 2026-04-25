@@ -68,6 +68,11 @@ export const envApiKeyMap = {
 	"google-antigravity": ["GOOGLE_ANTIGRAVITY_TOKEN"],
 	evalops: ["MAESTRO_EVALOPS_ACCESS_TOKEN"],
 	openai: ["OPENAI_API_KEY"],
+	"openai-codex": [
+		"OPENAI_CODEX_TOKEN",
+		"OPENAI_CODEX_ACCESS_TOKEN",
+		"CODEX_API_KEY",
+	],
 	"azure-openai": ["AZURE_OPENAI_API_KEY"],
 	anthropic: ["ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
 	bedrock: [

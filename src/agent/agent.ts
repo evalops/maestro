@@ -334,6 +334,9 @@ function mapThinkingLevel(level: ThinkingLevel): ReasoningEffort | undefined {
 		case "medium":
 			return "medium"; // Moderate depth
 		case "high":
+			return "high"; // Thorough reasoning
+		case "ultra":
+			return "ultra"; // Provider max where supported
 		case "max":
 			return "high"; // Maximum reasoning (max maps to high for providers)
 		default:

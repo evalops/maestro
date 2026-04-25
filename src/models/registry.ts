@@ -51,6 +51,7 @@
  * |-----------------------|------------------------------------------|
  * | openai-completions    | OpenAI Chat Completions API              |
  * | openai-responses      | OpenAI Responses API (newer)             |
+ * | openai-codex-responses| ChatGPT Codex Responses backend          |
  * | anthropic-messages    | Anthropic Messages API                   |
  * | google-generative-ai  | Google Generative AI API                 |
  * | google-gemini-cli     | Google Cloud Code Assist (Gemini CLI)    |

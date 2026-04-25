@@ -39,18 +39,10 @@ export interface AuthSetupResult {
 }
 
 /**
- * Validate that no unsupported Codex/ChatGPT flags are used, and warn
- * about CODEX_API_KEY if present. Throws with an error message on invalid flags.
+ * Validate that no unsupported legacy Codex/ChatGPT flags are used.
+ * Throws with an error message on invalid flags.
  */
 export function validateCodexFlags(args: string[], command?: string): void {
-	if (process.env.CODEX_API_KEY) {
-		console.warn(
-			chalk.yellow(
-				"CODEX_API_KEY detected but Codex subscriptions are not supported. The value will be ignored.",
-			),
-		);
-	}
-
 	if (command !== "help" && command !== "config") {
 		const codexFlagsUsed = args.some((arg, index) => {
 			if (arg === "--codex-api-key" || arg.startsWith("--codex-api-key=")) {
@@ -62,7 +54,7 @@ export function validateCodexFlags(args: string[], command?: string): void {
 		});
 		if (codexFlagsUsed) {
 			throw new Error(
-				"Codex/ChatGPT auth mode is no longer supported. Use a standard OpenAI API key instead.",
+				"Legacy Codex/ChatGPT auth flags are no longer supported. Use the openai-codex provider with `maestro codex login` or CODEX_API_KEY instead.",
 			);
 		}
 	}

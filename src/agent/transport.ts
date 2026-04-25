@@ -442,6 +442,7 @@ export class ProviderTransport implements AgentTransport {
 			authType: credential?.type ?? "api-key",
 			headers,
 			requestBody: credential?.requestBody,
+			sessionId: cfg.session?.id,
 			taskBudget: cfg.taskBudget,
 		};
 

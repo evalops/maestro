@@ -170,10 +170,11 @@ describe("OAuth Index", () => {
 		it("should return all supported providers", () => {
 			const providers = getOAuthProviders();
 
-			expect(providers).toHaveLength(6);
+			expect(providers).toHaveLength(7);
 			expect(providers.map((p) => p.id)).toContain("anthropic");
 			expect(providers.map((p) => p.id)).toContain("evalops");
 			expect(providers.map((p) => p.id)).toContain("openai");
+			expect(providers.map((p) => p.id)).toContain("openai-codex");
 			expect(providers.map((p) => p.id)).toContain("github-copilot");
 			expect(providers.map((p) => p.id)).toContain("google-gemini-cli");
 			expect(providers.map((p) => p.id)).toContain("google-antigravity");
@@ -215,6 +216,7 @@ describe("OAuth Index", () => {
 			expect(hasOAuthCredentials("anthropic")).toBe(false);
 			expect(hasOAuthCredentials("evalops")).toBe(false);
 			expect(hasOAuthCredentials("openai")).toBe(false);
+			expect(hasOAuthCredentials("openai-codex")).toBe(false);
 			expect(hasOAuthCredentials("github-copilot")).toBe(false);
 			expect(hasOAuthCredentials("google-gemini-cli")).toBe(false);
 			expect(hasOAuthCredentials("google-antigravity")).toBe(false);
@@ -759,6 +761,13 @@ describe("OpenAI OAuth", () => {
 		expect(module.loginOpenAI).toBeDefined();
 		expect(module.refreshOpenAIToken).toBeDefined();
 		expect(module.migrateOpenAICredentials).toBeDefined();
+	});
+
+	it("should import openai-codex module without errors", async () => {
+		const module = await import("../src/oauth/openai-codex.js");
+		expect(module.loginOpenAICodex).toBeDefined();
+		expect(module.refreshOpenAICodexToken).toBeDefined();
+		expect(module.extractOpenAICodexAccountId).toBeDefined();
 	});
 });
 

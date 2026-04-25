@@ -34,9 +34,19 @@ describe("Built-in model registry", () => {
 		expect(model?.baseUrl).toBe("https://openrouter.ai/api/v1/responses");
 	});
 
-	it("omits Codex subscription models entirely", () => {
+	it("does not mix Codex subscription models into the Platform OpenAI provider", () => {
 		const model = getModel("openai", "gpt-5.1-codex-mini");
 		expect(model).toBeNull();
+	});
+
+	it("exposes Codex subscription models through the OpenAI Codex provider", () => {
+		const model = getModel("openai-codex", "gpt-5.5");
+		expect(model).toBeTruthy();
+		expect(model?.provider).toBe("openai-codex");
+		expect(model?.api).toBe("openai-codex-responses");
+		expect(model?.baseUrl).toBe("https://chatgpt.com/backend-api");
+		expect(model?.contextWindow).toBe(272000);
+		expect(model?.maxTokens).toBe(128000);
 	});
 
 	it("overlays OpenAI GPT-5.2 with correct pricing and endpoints", () => {

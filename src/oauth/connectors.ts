@@ -24,6 +24,7 @@ const CONNECTOR_PROVIDER_BY_OAUTH_PROVIDER: Record<
 	"google-antigravity": "google",
 	"google-gemini-cli": "google",
 	openai: "x-evalops:openai",
+	"openai-codex": "x-evalops:openai",
 };
 
 const DISPLAY_NAME_BY_OAUTH_PROVIDER: Record<ConnectorOAuthProvider, string> = {
@@ -32,6 +33,7 @@ const DISPLAY_NAME_BY_OAUTH_PROVIDER: Record<ConnectorOAuthProvider, string> = {
 	"google-antigravity": "Google Antigravity OAuth",
 	"google-gemini-cli": "Google Gemini CLI OAuth",
 	openai: "OpenAI OAuth",
+	"openai-codex": "OpenAI Codex OAuth",
 };
 
 export const CONNECTOR_SOURCE_OF_TRUTH_AREAS = [

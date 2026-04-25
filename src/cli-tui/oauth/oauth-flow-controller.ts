@@ -343,7 +343,8 @@ export class OAuthFlowController {
 		const { login } = await import("../../oauth/index.js");
 
 		const { chatContainer, ui, requestRender } = this.renderContext;
-		const requiresPromptCode = providerId === "anthropic";
+		const requiresPromptCode =
+			providerId === "anthropic" || providerId === "openai-codex";
 
 		chatContainer.addChild(new Spacer(1));
 		chatContainer.addChild(new Text(`Logging in to ${providerId}...`, 1, 0));
@@ -388,7 +389,9 @@ export class OAuthFlowController {
 					if (requiresPromptCode) {
 						chatContainer.addChild(
 							new Text(
-								"Paste the authorization code below (or type 'cancel' to abort):",
+								providerId === "openai-codex"
+									? "Complete authentication in the browser. If asked, paste the redirect URL or authorization code below."
+									: "Paste the authorization code below (or type 'cancel' to abort):",
 								1,
 								0,
 							),
@@ -497,11 +500,18 @@ export class OAuthFlowController {
 								return;
 							}
 
-							// Basic authorization code validation
-							if (
-								trimmedText.length < 10 ||
-								!/^[a-zA-Z0-9_#-]+$/.test(trimmedText)
-							) {
+							// Basic authorization code validation. OpenAI Codex also accepts
+							// a full redirect URL for the manual fallback path.
+							const looksLikeOAuthValue =
+								providerId === "openai-codex"
+									? trimmedText.length >= 10 &&
+										(trimmedText.startsWith("http://") ||
+											trimmedText.startsWith("https://") ||
+											trimmedText.includes("code=") ||
+											/^[a-zA-Z0-9_#-]+$/.test(trimmedText))
+									: trimmedText.length >= 10 &&
+										/^[a-zA-Z0-9_#-]+$/.test(trimmedText);
+							if (!looksLikeOAuthValue) {
 								this.notificationView.showError(
 									"Invalid authorization code format. Please try again or type 'cancel'.",
 								);
