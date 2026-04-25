@@ -199,18 +199,8 @@ function getEnvValue(names: readonly string[]): string | undefined {
 }
 
 function metadataValue(value: string | undefined): string | undefined {
-	let normalized: string | undefined;
-	if (value !== undefined) {
-		let next = "";
-		for (const char of value) {
-			const codePoint = char.codePointAt(0);
-			next +=
-				codePoint !== undefined && (codePoint < 32 || codePoint === 127)
-					? " "
-					: char;
-		}
-		normalized = next;
-	}
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: metadata must neutralize C0 control characters and DEL.
+	const normalized = value?.replace(/[\x00-\x1f\x7f]/gu, " ");
 	const trimmed = trimString(normalized);
 	if (!trimmed) {
 		return undefined;
