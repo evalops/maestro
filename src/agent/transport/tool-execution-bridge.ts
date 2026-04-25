@@ -34,6 +34,7 @@ import type {
 const logger = createLogger("transport:tool-execution-bridge");
 
 const OBSERVE_OUTPUT_SUMMARY_MAX_LENGTH = 280;
+const METADATA_VALUE_MAX_LENGTH = 512;
 const READ_ONLY_BASH_PREFIXES = [
 	"cat",
 	"cd",
@@ -193,6 +194,38 @@ function getEnvValue(names: readonly string[]): string | undefined {
 		}
 	}
 	return undefined;
+}
+
+function metadataValue(value: string | undefined): string | undefined {
+	const normalized = value
+		?.split("")
+		.map((char) => {
+			const codePoint = char.codePointAt(0);
+			return codePoint !== undefined && (codePoint < 32 || codePoint === 127)
+				? " "
+				: char;
+		})
+		.join("");
+	const trimmed = trimString(normalized);
+	if (!trimmed) {
+		return undefined;
+	}
+	if (trimmed.length <= METADATA_VALUE_MAX_LENGTH) {
+		return trimmed;
+	}
+	return `${trimmed.slice(0, METADATA_VALUE_MAX_LENGTH - 3).trimEnd()}...`;
+}
+
+function getMetadataEnvValue(names: readonly string[]): string | undefined {
+	return metadataValue(getEnvValue(names));
+}
+
+function getCurrentWorkingDirectory(): string | undefined {
+	try {
+		return metadataValue(process.cwd());
+	} catch {
+		return undefined;
+	}
 }
 
 function buildShellCommandSummary(command: string): string {
@@ -430,9 +463,60 @@ function buildLinkage(
 	};
 }
 
+function buildRuntimeContextMetadata(
+	linkage: ToolExecutionLinkage,
+): Record<string, string> {
+	const cwd =
+		getMetadataEnvValue(["MAESTRO_CWD"]) ?? getCurrentWorkingDirectory();
+	const workspaceRoot = getMetadataEnvValue([
+		"MAESTRO_WORKSPACE_ROOT",
+		"WORKSPACE_ROOT",
+	]);
+	const repositoryRoot =
+		getMetadataEnvValue([
+			"MAESTRO_REPOSITORY_ROOT",
+			"MAESTRO_REPO_ROOT",
+			"GITHUB_WORKSPACE",
+		]) ?? workspaceRoot;
+	const repository = getMetadataEnvValue([
+		"MAESTRO_GIT_REPOSITORY",
+		"GITHUB_REPOSITORY",
+		"CI_PROJECT_PATH",
+	]);
+	const gitBranch = getMetadataEnvValue([
+		"MAESTRO_GIT_BRANCH",
+		"GITHUB_HEAD_REF",
+		"GITHUB_REF_NAME",
+		"CI_COMMIT_REF_NAME",
+		"VERCEL_GIT_COMMIT_REF",
+	]);
+	const gitCommit = getMetadataEnvValue([
+		"MAESTRO_GIT_COMMIT",
+		"GITHUB_SHA",
+		"CI_COMMIT_SHA",
+		"VERCEL_GIT_COMMIT_SHA",
+	]);
+
+	return {
+		...(linkage.runId ? { maestro_agent_run_id: linkage.runId } : {}),
+		maestro_agent_run_step_id: linkage.stepId,
+		...(linkage.actorId ? { maestro_actor_id: linkage.actorId } : {}),
+		...(linkage.correlationId
+			? { maestro_correlation_id: linkage.correlationId }
+			: {}),
+		...(cwd ? { maestro_cwd: cwd } : {}),
+		...(workspaceRoot ? { maestro_workspace_root: workspaceRoot } : {}),
+		...(repositoryRoot ? { maestro_repository_root: repositoryRoot } : {}),
+		...(repository ? { maestro_repository: repository } : {}),
+		...(gitBranch ? { maestro_git_branch: gitBranch } : {}),
+		...(gitCommit ? { maestro_git_commit: gitCommit } : {}),
+	};
+}
+
 function buildMetadata(
 	input: ToolExecutionBridgeInput,
 	classification: ToolExecutionClassification,
+	linkage: ToolExecutionLinkage,
 ): Record<string, string> {
 	const originalArgs = input.toolCall.arguments as Record<string, unknown>;
 	const redactedArguments =
@@ -446,6 +530,7 @@ function buildMetadata(
 	return {
 		maestro_bridge_mode: classification.mode,
 		maestro_tool_call_id: input.toolCall.id,
+		...buildRuntimeContextMetadata(linkage),
 		...(sessionId ? { maestro_session_id: sessionId } : {}),
 		...(remoteRunnerSessionId
 			? { maestro_remote_runner_session_id: remoteRunnerSessionId }
@@ -470,13 +555,14 @@ function buildExecuteRequest(
 	config: ToolExecutionServiceConfig,
 	classification: ToolExecutionClassification,
 ): ExecutePlatformToolRequest {
+	const linkage = buildLinkage(
+		input.cfg,
+		input.toolCall,
+		config.organizationId,
+		config.workspaceId ?? process.cwd(),
+	);
 	return {
-		linkage: buildLinkage(
-			input.cfg,
-			input.toolCall,
-			config.organizationId,
-			config.workspaceId ?? process.cwd(),
-		),
+		linkage,
 		tool: classification.tool,
 		...(classification.connector
 			? { connector: classification.connector }
@@ -490,7 +576,7 @@ function buildExecuteRequest(
 			allowNonIdempotentRetry: false,
 		},
 		idempotencyKey: `maestro:${input.toolCall.id}`,
-		metadata: buildMetadata(input, classification),
+		metadata: buildMetadata(input, classification, linkage),
 	};
 }
 
