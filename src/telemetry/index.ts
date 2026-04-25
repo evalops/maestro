@@ -85,6 +85,14 @@ export {
 	type ToolCallResultEventData,
 } from "./maestro-event-bus.js";
 
+export {
+	CANONICAL_MAESTRO_PLATFORM_REPLAY_FIXTURE_NAME,
+	buildCanonicalMaestroPlatformReplayFixture,
+	canonicalMaestroPlatformReplayFixtureJson,
+	type MaestroPlatformReplayFixture,
+	type MaestroPlatformReplayFixtureEvent,
+} from "./maestro-platform-replay-fixture.js";
+
 // Wide events (canonical turn events)
 export {
 	TurnCollector,
