@@ -62,6 +62,9 @@ const EXECUTE_TOOL_PATH = platformConnectMethodPath(
 const RESUME_TOOL_EXECUTION_PATH = platformConnectMethodPath(
 	PLATFORM_CONNECT_METHODS.toolexecution.resumeToolExecution,
 );
+const RECORD_TOOL_EXECUTION_OUTPUT_PATH = platformConnectMethodPath(
+	PLATFORM_CONNECT_METHODS.toolexecution.recordToolExecutionOutput,
+);
 
 export type ToolExecutionRiskLevel =
 	| "RISK_LEVEL_UNSPECIFIED"
@@ -140,6 +143,29 @@ export interface ResumePlatformToolExecutionRequest {
 	reason?: string;
 }
 
+export interface PlatformToolOutputProposal {
+	kind: string;
+	targetRef?: string;
+	payload?: Record<string, unknown>;
+	metadata?: Record<string, string>;
+}
+
+export interface PlatformToolExecutionOutput {
+	rawOutput?: Record<string, unknown>;
+	safeOutput?: Record<string, unknown>;
+	proposals?: PlatformToolOutputProposal[];
+	redactions?: string[];
+	contentType?: string;
+	outputDigest?: string;
+	durationMs?: number;
+}
+
+export interface RecordPlatformToolExecutionOutputRequest {
+	executionId: string;
+	output: PlatformToolExecutionOutput;
+	metadata?: Record<string, string>;
+}
+
 export interface PlatformApprovalWait {
 	approvalRequestId?: string;
 	resumeToken?: string;
@@ -162,6 +188,10 @@ export interface ResumePlatformToolExecutionResponse {
 	execution: PlatformToolExecutionRecord;
 }
 
+export interface RecordPlatformToolExecutionOutputResponse {
+	execution: PlatformToolExecutionRecord;
+}
+
 export interface ToolExecutionServiceConfig extends PlatformServiceConfig {}
 
 function stripTrailingSlashes(value: string): string {
@@ -173,6 +203,7 @@ function normalizeBaseUrl(baseUrl: string): string {
 	for (const suffix of [
 		EXECUTE_TOOL_PATH,
 		RESUME_TOOL_EXECUTION_PATH,
+		RECORD_TOOL_EXECUTION_OUTPUT_PATH,
 		platformConnectServicePath(
 			PLATFORM_CONNECT_METHODS.toolexecution.executeTool.service,
 		),
@@ -197,6 +228,7 @@ export async function resolveToolExecutionServiceConfig(
 		baseUrlSuffixes: [
 			EXECUTE_TOOL_PATH,
 			RESUME_TOOL_EXECUTION_PATH,
+			RECORD_TOOL_EXECUTION_OUTPUT_PATH,
 			platformConnectServicePath(
 				PLATFORM_CONNECT_METHODS.toolexecution.executeTool.service,
 			),
@@ -373,6 +405,27 @@ function normalizeExecuteToolRequest(
 	});
 }
 
+function normalizeToolExecutionOutput(
+	output: PlatformToolExecutionOutput,
+): Record<string, unknown> {
+	return stripUndefinedValues({
+		rawOutput: output.rawOutput,
+		safeOutput: output.safeOutput,
+		proposals: output.proposals?.map((proposal) =>
+			stripUndefinedValues({
+				kind: proposal.kind,
+				targetRef: proposal.targetRef,
+				payload: proposal.payload,
+				metadata: proposal.metadata,
+			}),
+		),
+		redactions: output.redactions,
+		contentType: output.contentType,
+		outputDigest: output.outputDigest,
+		durationMs: output.durationMs,
+	});
+}
+
 async function parseJsonResponse(
 	response: Response,
 	serviceName: string,
@@ -429,6 +482,33 @@ export async function resumeToolExecutionWithPlatform(
 			approved: request.approved,
 			decidedBy: request.decidedBy,
 			reason: request.reason,
+		}),
+		{
+			serviceName: "tool execution service",
+			failureMode: "required",
+			timeoutMs: config.timeoutMs,
+			maxAttempts: config.maxAttempts,
+			signal,
+		},
+	);
+	const payload = await parseJsonResponse(response, "tool execution service");
+	return {
+		execution: normalizeExecutionRecord(objectValue(payload, "execution")),
+	};
+}
+
+export async function recordToolExecutionOutputWithPlatform(
+	config: ToolExecutionServiceConfig,
+	request: RecordPlatformToolExecutionOutputRequest,
+	signal?: AbortSignal,
+): Promise<RecordPlatformToolExecutionOutputResponse> {
+	const response = await postPlatformConnect(
+		config,
+		RECORD_TOOL_EXECUTION_OUTPUT_PATH,
+		stripUndefinedValues({
+			executionId: request.executionId,
+			output: normalizeToolExecutionOutput(request.output),
+			metadata: request.metadata,
 		}),
 		{
 			serviceName: "tool execution service",

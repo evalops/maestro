@@ -556,11 +556,23 @@ export function createToolExecutionPromise(
 							signal,
 						)
 					: undefined;
+			const governedOutput =
+				toolExecutionBridge && toolExecutionBridgePlan?.kind === "governed"
+					? await toolExecutionBridge.recordGovernedOutput(
+							toolExecutionBridgePlan,
+							toolResultMsg,
+							clock.now() - startTime,
+							signal,
+						)
+					: undefined;
 
 			return {
 				message: toolResultMsg,
 				isError: toolResultMsg.isError,
-				...buildObservedResultMetadata(toolExecutionBridgePlan, observed),
+				...buildObservedResultMetadata(
+					toolExecutionBridgePlan,
+					observed ?? governedOutput,
+				),
 			};
 		} catch (error: unknown) {
 			if (error instanceof Error && error.name === "AbortError") {
@@ -621,11 +633,23 @@ export function createToolExecutionPromise(
 							signal,
 						)
 					: undefined;
+			const governedOutput =
+				toolExecutionBridge && toolExecutionBridgePlan?.kind === "governed"
+					? await toolExecutionBridge.recordGovernedOutput(
+							toolExecutionBridgePlan,
+							toolResultMsg,
+							clock.now() - startTime,
+							signal,
+						)
+					: undefined;
 
 			return {
 				message: toolResultMsg,
 				isError: true,
-				...buildObservedResultMetadata(toolExecutionBridgePlan, observed),
+				...buildObservedResultMetadata(
+					toolExecutionBridgePlan,
+					observed ?? governedOutput,
+				),
 			};
 		}
 	})();

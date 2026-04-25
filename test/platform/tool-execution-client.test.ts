@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	executeToolWithPlatform,
+	recordToolExecutionOutputWithPlatform,
 	resolveToolExecutionServiceConfig,
 	resumeToolExecutionWithPlatform,
 } from "../../src/platform/tool-execution-client.js";
@@ -97,6 +98,21 @@ describe("tool execution client", () => {
 				if (
 					parsed.pathname ===
 					"/toolexecution.v1.ToolExecutionService/ResumeToolExecution"
+				) {
+					return new Response(
+						JSON.stringify({
+							execution: {
+								id: "texec_1",
+								state: "TOOL_EXECUTION_STATE_SUCCEEDED",
+							},
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				}
+
+				if (
+					parsed.pathname ===
+					"/toolexecution.v1.ToolExecutionService/RecordToolExecutionOutput"
 				) {
 					return new Response(
 						JSON.stringify({
@@ -224,6 +240,54 @@ describe("tool execution client", () => {
 			approved: true,
 			decidedBy: "user_1",
 			reason: "approved in ui",
+		});
+	});
+
+	it("records local execution output through the shared connect catalog", async () => {
+		const config = await resolveToolExecutionServiceConfig();
+		if (!config) {
+			throw new Error("expected tool execution config");
+		}
+
+		await expect(
+			recordToolExecutionOutputWithPlatform(config, {
+				executionId: "texec_1",
+				output: {
+					safeOutput: {
+						status: "succeeded",
+						summary: "git status clean",
+					},
+					redactions: [],
+					contentType: "application/json",
+					durationMs: 42,
+				},
+				metadata: {
+					maestro_local_outcome: "succeeded",
+				},
+			}),
+		).resolves.toMatchObject({
+			execution: {
+				id: "texec_1",
+				state: "TOOL_EXECUTION_STATE_SUCCEEDED",
+			},
+		});
+
+		expect(requests[0]?.pathname).toBe(
+			"/toolexecution.v1.ToolExecutionService/RecordToolExecutionOutput",
+		);
+		expect(requests[0]?.body).toMatchObject({
+			executionId: "texec_1",
+			output: {
+				safeOutput: {
+					status: "succeeded",
+					summary: "git status clean",
+				},
+				contentType: "application/json",
+				durationMs: 42,
+			},
+			metadata: {
+				maestro_local_outcome: "succeeded",
+			},
 		});
 	});
 });

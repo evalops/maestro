@@ -471,6 +471,94 @@ describe("tool execution bridge", () => {
 		});
 	});
 
+	it("records governed local output against the Platform execution", async () => {
+		process.env.EVALOPS_FEATURE_FLAGS_PATH = writeFlags([
+			MAESTRO_PLATFORM_RUNTIME_TOOL_EXECUTION_BRIDGE_FLAG,
+		]);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url = typeof input === "string" ? input : input.toString();
+				const parsed = new URL(url);
+				requests.push({
+					body: parseRequestBody(init?.body),
+					headers: headersToRecord(init?.headers),
+					method: init?.method,
+					pathname: parsed.pathname,
+					url,
+				});
+				return new Response(
+					JSON.stringify({
+						execution: {
+							id: "texec_output_1",
+							state: "TOOL_EXECUTION_STATE_SUCCEEDED",
+						},
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			}),
+		);
+
+		const bridge = new DefaultPlatformToolExecutionBridge();
+		const prepared = await bridge.prepare({
+			cfg: baseConfig(),
+			toolCall: {
+				type: "toolCall",
+				id: "tc_output_1",
+				name: "bash",
+				arguments: { command: "git push" },
+			},
+			sanitizedArgs: { command: "git push" },
+		});
+		if (prepared.status !== "allow") {
+			throw new Error("expected allowed governed plan");
+		}
+
+		await expect(
+			bridge.recordGovernedOutput(
+				prepared.plan,
+				{
+					role: "toolResult",
+					toolCallId: "tc_output_1",
+					toolName: "bash",
+					content: [{ type: "text", text: "pushed main" }],
+					isError: false,
+					timestamp: Date.now(),
+				},
+				42,
+			),
+		).resolves.toEqual({
+			metadata: {
+				toolExecutionId: "texec_output_1",
+				approvalRequestId: undefined,
+			},
+		});
+
+		expect(requests[1]).toMatchObject({
+			pathname:
+				"/toolexecution.v1.ToolExecutionService/RecordToolExecutionOutput",
+			body: {
+				executionId: "texec_output_1",
+				output: {
+					safeOutput: {
+						status: "succeeded",
+						tool_name: "bash",
+						tool_call_id: "tc_output_1",
+						summary: "pushed main",
+					},
+					redactions: [],
+					contentType: "application/json",
+					durationMs: 42,
+				},
+				metadata: expect.objectContaining({
+					maestro_bridge_mode: "governed",
+					maestro_local_outcome: "succeeded",
+					maestro_tool_call_id: "tc_output_1",
+				}),
+			},
+		});
+	});
+
 	it("denies governed executions when Platform rejects them", async () => {
 		process.env.EVALOPS_FEATURE_FLAGS_PATH = writeFlags([
 			MAESTRO_PLATFORM_RUNTIME_TOOL_EXECUTION_BRIDGE_FLAG,
