@@ -197,15 +197,18 @@ function getEnvValue(names: readonly string[]): string | undefined {
 }
 
 function metadataValue(value: string | undefined): string | undefined {
-	const normalized = value
-		?.split("")
-		.map((char) => {
+	let normalized: string | undefined;
+	if (value !== undefined) {
+		let next = "";
+		for (const char of value) {
 			const codePoint = char.codePointAt(0);
-			return codePoint !== undefined && (codePoint < 32 || codePoint === 127)
-				? " "
-				: char;
-		})
-		.join("");
+			next +=
+				codePoint !== undefined && (codePoint < 32 || codePoint === 127)
+					? " "
+					: char;
+		}
+		normalized = next;
+	}
 	const trimmed = trimString(normalized);
 	if (!trimmed) {
 		return undefined;
