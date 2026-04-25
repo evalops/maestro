@@ -45,8 +45,25 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
       - name: Install Semgrep CLI
-        run: python3 -m pip install --user "semgrep==1.144.0" && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        env:
+          UV_HTTP_TIMEOUT: "120"
+        run: |
+          set -e
+          for attempt in 1 2 3; do
+            if uv tool install "semgrep==1.144.0"; then
+              break
+            fi
+            if [ "$attempt" = "3" ]; then
+              echo "uv tool install failed after 3 attempts" >&2
+              exit 1
+            fi
+            echo "uv tool install attempt $attempt failed; retrying..." >&2
+            sleep $((attempt * 5))
+          done
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Composer Guardian
         run: bash scripts/guardian.sh --all --trigger ci
       - run: npx nx run maestro:build:all
