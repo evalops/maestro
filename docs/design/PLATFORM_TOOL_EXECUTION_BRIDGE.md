@@ -112,7 +112,9 @@ Each governed or observed call builds a Platform `ExecuteTool` request with:
 - sanitized arguments only
 - risk level and retry policy
 - metadata carrying Maestro correlation fields such as session ID, remote-runner
-  session ID, display labels, and redaction state
+  session ID, AgentRun ID, AgentRun step ID, actor ID, correlation ID, cwd,
+  workspace root, repository root/name, git branch, git commit, display labels,
+  and redaction state
 
 Observe-only result recording adds:
 
@@ -122,6 +124,12 @@ Observe-only result recording adds:
 
 Only a short scrubbed output summary leaves Maestro. Secret-like tokens are
 redacted before the summary is sent.
+
+The runtime context metadata is built from explicit Maestro/CI environment
+variables such as `MAESTRO_CWD`, `MAESTRO_WORKSPACE_ROOT`,
+`MAESTRO_REPOSITORY_ROOT`, `MAESTRO_GIT_REPOSITORY`, `MAESTRO_GIT_BRANCH`, and
+`MAESTRO_GIT_COMMIT`, with `process.cwd()` as the cwd fallback. Maestro does not
+shell out while preparing the Platform request.
 
 ## Flow
 

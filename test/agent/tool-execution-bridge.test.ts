@@ -90,8 +90,18 @@ describe("tool execution bridge", () => {
 		vi.stubEnv("MAESTRO_AGENT_RUN_ID", "run_1");
 		vi.stubEnv("MAESTRO_AGENT_ID", "maestro");
 		vi.stubEnv("MAESTRO_SURFACE", "cli");
+		vi.stubEnv("MAESTRO_CHANNEL_ID", "cli:local");
 		vi.stubEnv("MAESTRO_SESSION_ID", "sess_1");
 		vi.stubEnv("MAESTRO_REMOTE_RUNNER_SESSION_ID", "rrs_1");
+		vi.stubEnv("MAESTRO_CWD", "/workspace/evalops/maestro");
+		vi.stubEnv("MAESTRO_WORKSPACE_ROOT", "/workspace/evalops/maestro");
+		vi.stubEnv("MAESTRO_REPOSITORY_ROOT", "/workspace/evalops/maestro");
+		vi.stubEnv("MAESTRO_GIT_REPOSITORY", "evalops/maestro");
+		vi.stubEnv("MAESTRO_GIT_BRANCH", "jh/platform-runtime-lifecycle");
+		vi.stubEnv(
+			"MAESTRO_GIT_COMMIT",
+			"0123456789abcdef0123456789abcdef01234567",
+		);
 	});
 
 	afterEach(() => {
@@ -161,6 +171,16 @@ describe("tool execution bridge", () => {
 			body: expect.objectContaining({
 				metadata: expect.objectContaining({
 					maestro_bridge_mode: "observe",
+					maestro_agent_run_id: "run_1",
+					maestro_agent_run_step_id: "tc_1",
+					maestro_actor_id: "user_1",
+					maestro_correlation_id: "sess_1:tc_1",
+					maestro_cwd: "/workspace/evalops/maestro",
+					maestro_workspace_root: "/workspace/evalops/maestro",
+					maestro_repository_root: "/workspace/evalops/maestro",
+					maestro_repository: "evalops/maestro",
+					maestro_git_branch: "jh/platform-runtime-lifecycle",
+					maestro_git_commit: "0123456789abcdef0123456789abcdef01234567",
 					maestro_local_outcome: "succeeded",
 					maestro_local_output_summary: "git status clean",
 				}),
