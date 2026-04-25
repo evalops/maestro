@@ -10,11 +10,13 @@ import {
 	type PlatformConnectorRef,
 	type PlatformToolExecutionRecord,
 	type PlatformToolRef,
+	type RecordPlatformToolExecutionOutputRequest,
 	type ResumePlatformToolExecutionRequest,
 	type ToolExecutionLinkage,
 	type ToolExecutionRiskLevel,
 	type ToolExecutionServiceConfig,
 	executeToolWithPlatform,
+	recordToolExecutionOutputWithPlatform,
 	resolveToolExecutionServiceConfig,
 	resumeToolExecutionWithPlatform,
 } from "../../platform/tool-execution-client.js";
@@ -440,6 +442,27 @@ function summarizeToolResult(result: ToolResultMessage): {
 	};
 }
 
+function buildOutputPayload(
+	result: ToolResultMessage,
+	durationMs: number | undefined,
+): RecordPlatformToolExecutionOutputRequest["output"] {
+	const summary = summarizeToolResult(result);
+	const safeOutput = {
+		status: result.isError ? "failed" : "succeeded",
+		tool_name: result.toolName,
+		tool_call_id: result.toolCallId,
+		summary: summary.summary,
+	};
+	return {
+		safeOutput,
+		redactions: summary.redactions,
+		contentType: "application/json",
+		...(durationMs !== undefined
+			? { durationMs: Math.max(0, Math.round(durationMs)) }
+			: {}),
+	};
+}
+
 function buildLinkage(
 	cfg: AgentRunConfig,
 	toolCall: ToolCall,
@@ -652,6 +675,12 @@ export interface PlatformToolExecutionBridge {
 		result: ToolResultMessage,
 		signal?: AbortSignal,
 	): Promise<ObserveToolExecutionResult>;
+	recordGovernedOutput(
+		plan: GovernedToolExecutionPlan,
+		result: ToolResultMessage,
+		durationMs?: number,
+		signal?: AbortSignal,
+	): Promise<ObserveToolExecutionResult>;
 }
 
 export class DefaultPlatformToolExecutionBridge
@@ -844,6 +873,56 @@ export class DefaultPlatformToolExecutionBridge
 				error: message,
 				toolName: plan.request.tool.name,
 				toolCallId: plan.request.metadata?.maestro_tool_call_id,
+			});
+			return { metadata: plan.metadata };
+		}
+	}
+
+	async recordGovernedOutput(
+		plan: GovernedToolExecutionPlan,
+		result: ToolResultMessage,
+		durationMs?: number,
+		signal?: AbortSignal,
+	): Promise<ObserveToolExecutionResult> {
+		const executionId = plan.metadata.toolExecutionId;
+		if (!executionId) {
+			return { metadata: plan.metadata };
+		}
+
+		const request: RecordPlatformToolExecutionOutputRequest = {
+			executionId,
+			output: buildOutputPayload(result, durationMs),
+			metadata: {
+				...plan.request.metadata,
+				maestro_bridge_mode: "governed",
+				maestro_local_outcome: result.isError ? "failed" : "succeeded",
+				maestro_tool_call_id: result.toolCallId,
+			},
+		};
+		try {
+			const response = await recordToolExecutionOutputWithPlatform(
+				plan.config,
+				request,
+				signal,
+			);
+			return {
+				metadata: {
+					toolExecutionId: response.execution.id ?? executionId,
+					approvalRequestId:
+						response.execution.approvalWait?.approvalRequestId ??
+						plan.metadata.approvalRequestId,
+				},
+			};
+		} catch (error) {
+			if (isAbortError(error)) {
+				throw error;
+			}
+			const message = error instanceof Error ? error.message : String(error);
+			logger.warn("Failed to record governed tool execution output", {
+				error: message,
+				toolName: plan.request.tool.name,
+				toolCallId: result.toolCallId,
+				toolExecutionId: executionId,
 			});
 			return { metadata: plan.metadata };
 		}
