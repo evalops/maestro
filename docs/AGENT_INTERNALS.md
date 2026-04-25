@@ -245,10 +245,11 @@ Environment overrides:
 ### Supported Providers
 
 1. **Anthropic**: Claude Pro/Max subscriptions
-2. **OpenAI**: ChatGPT Plus subscriptions
-3. **GitHub Copilot**: GitHub Copilot subscriptions
-4. **Google Gemini CLI**: Cloud Code Assist OAuth
-5. **Google Antigravity**: Antigravity sandbox OAuth
+2. **OpenAI**: ChatGPT login exchanged for OpenAI Platform API access
+3. **OpenAI Codex**: ChatGPT Codex login for the `openai-codex` provider
+4. **GitHub Copilot**: GitHub Copilot subscriptions
+5. **Google Gemini CLI**: Cloud Code Assist OAuth
+6. **Google Antigravity**: Antigravity sandbox OAuth
 
 ### Credential Storage
 

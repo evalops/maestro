@@ -47,6 +47,7 @@ import type { ToolRetryDecision, ToolRetryRequest } from "./tool-retry.js";
  * Each provider may support different API formats:
  * - `openai-completions` - OpenAI Chat Completions API
  * - `openai-responses` - OpenAI Responses API (newer format)
+ * - `openai-codex-responses` - ChatGPT Codex Responses backend
  * - `anthropic-messages` - Anthropic Messages API
  * - `google-generative-ai` - Google Generative AI (Gemini)
  * - `google-gemini-cli` - Google Cloud Code Assist (Gemini CLI)
@@ -55,6 +56,7 @@ import type { ToolRetryDecision, ToolRetryRequest } from "./tool-retry.js";
 export type Api =
 	| "openai-completions"
 	| "openai-responses"
+	| "openai-codex-responses"
 	| "anthropic-messages"
 	| "google-generative-ai"
 	| "google-gemini-cli"
@@ -96,6 +98,7 @@ export type KnownProvider =
 	| "bedrock"
 	| "google"
 	| "openai"
+	| "openai-codex"
 	| "azure-openai"
 	| "writer"
 	| "xai"
@@ -1459,6 +1462,8 @@ export interface StreamOptions {
 	headers?: Record<string, string>;
 	/** Additional request body fields for provider-specific extensions */
 	requestBody?: Record<string, unknown>;
+	/** Stable session id for provider-side request grouping/cache keys */
+	sessionId?: string;
 	/** Authentication type for the request */
 	authType?: "api-key" | "anthropic-oauth";
 	/** Optional Anthropic API-side task budget for the current turn */

@@ -266,6 +266,7 @@ export class ModelSelectorComponent extends Container {
 			"anthropic",
 			"evalops",
 			"openai",
+			"openai-codex",
 			"github-copilot",
 			"google-gemini-cli",
 			"google-antigravity",

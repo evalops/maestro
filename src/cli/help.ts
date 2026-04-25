@@ -89,6 +89,9 @@ export function printHelp(version: string) {
   # Use different model
   maestro --provider openai --model gpt-4o-mini "Help me refactor this code"
 
+  # Use Codex subscription models after \`maestro codex login\`
+  maestro --provider openai-codex --model gpt-5.5 "Plan this migration"
+
   # Export a portable session log
   maestro export <session-id> ./session.jsonl --format jsonl
 
@@ -113,6 +116,8 @@ export function printHelp(version: string) {
 	const env = `${sectionHeading("Environment Variables:")}${muted(
 		`  GEMINI_API_KEY          - Google Gemini API key
   OPENAI_API_KEY          - OpenAI API key
+  OPENAI_CODEX_TOKEN      - OpenAI Codex ChatGPT access token
+  OPENAI_CODEX_ACCOUNT_ID - ChatGPT account id when using a raw Codex token
   ANTHROPIC_API_KEY       - Anthropic API key
   CLAUDE_CODE_TOKEN       - Claude Code access token for --auth claude
   ANTHROPIC_OAUTH_TOKEN   - Alternate env for Claude Code bearer tokens

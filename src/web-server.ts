@@ -247,12 +247,6 @@ const REQUEST_TIMEOUT_MS =
 	Number.parseInt(process.env.MAESTRO_REQUEST_TIMEOUT_MS || "60000", 10) ||
 	60000;
 
-if (process.env.CODEX_API_KEY) {
-	logger.warn(
-		"CODEX_API_KEY detected but Codex subscriptions are not supported. The value will be ignored.",
-	);
-}
-
 // Harden defaults for hosted deployments.
 process.env.MAESTRO_WEB_SERVER = "1";
 if (!process.env.MAESTRO_SAFE_MODE) process.env.MAESTRO_SAFE_MODE = "1";

@@ -33,6 +33,7 @@
  * | anthropic_oauth_file| Anthropic OAuth from stored credentials  |
  * | evalops_oauth_file  | EvalOps managed OAuth from stored credentials |
  * | openai_oauth_file   | OpenAI OAuth from stored credentials     |
+ * | openai_codex_oauth_file | OpenAI Codex ChatGPT OAuth from stored credentials |
  * | google_oauth_file   | Google OAuth from stored credentials     |
  *
  * ## Example
@@ -74,6 +75,7 @@ export type AuthCredentialSource =
 	| "anthropic_oauth_file"
 	| "evalops_oauth_file"
 	| "openai_oauth_file"
+	| "openai_codex_oauth_file"
 	| "google_oauth_file"
 	| "github_copilot_oauth_file";
 
@@ -104,10 +106,16 @@ const ANTHROPIC_OAUTH_ENV_VARS = [
 function isOpenAIProvider(provider: string): boolean {
 	const normalized = provider.toLowerCase();
 	return (
-		normalized === "openai" ||
-		normalized.startsWith("openai/") ||
-		normalized.includes("openai-")
+		normalized !== "openai-codex" &&
+		(normalized === "openai" ||
+			normalized.startsWith("openai/") ||
+			normalized.includes("openai-"))
 	);
+}
+
+function isOpenAICodexProvider(provider: string): boolean {
+	const normalized = provider.toLowerCase();
+	return normalized === "openai-codex";
 }
 
 function isGoogleGeminiCliProvider(provider: string): boolean {
@@ -290,6 +298,25 @@ export function createAuthResolver(options: AuthResolverOptions): AuthResolver {
 					"evalops_oauth_file",
 					credentials?.metadata,
 				);
+			}
+		}
+
+		if (isOpenAICodexProvider(provider) && options.mode !== "api-key") {
+			const oauthToken = await getOAuthToken("openai-codex");
+			if (oauthToken) {
+				const credentials = loadOAuthCredentials("openai-codex");
+				const accountId =
+					typeof credentials?.metadata?.accountId === "string"
+						? credentials.metadata.accountId
+						: undefined;
+				return {
+					provider,
+					token: oauthToken,
+					type: "api-key",
+					source: "openai_codex_oauth_file",
+					headers: accountId ? { "chatgpt-account-id": accountId } : undefined,
+					metadata: credentials?.metadata,
+				};
 			}
 		}
 

@@ -85,15 +85,13 @@ describe("validateCodexFlags", () => {
 		).not.toThrow();
 	});
 
-	it("warns about CODEX_API_KEY env var", () => {
+	it("does not warn about supported CODEX_API_KEY env var", () => {
 		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 		process.env.CODEX_API_KEY = "some-key";
 
 		validateCodexFlags([]);
 
-		expect(warnSpy).toHaveBeenCalledWith(
-			expect.stringContaining("CODEX_API_KEY"),
-		);
+		expect(warnSpy).not.toHaveBeenCalled();
 		warnSpy.mockRestore();
 	});
 });

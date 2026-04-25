@@ -12,7 +12,7 @@
 
 import { createLogger } from "../utils/logger.js";
 import { convertAppMessageToLlm } from "./custom-messages.js";
-import type { AppMessage, Model } from "./types.js";
+import type { Api, AppMessage, Model } from "./types.js";
 
 const logger = createLogger("auto-compaction");
 
@@ -117,15 +117,7 @@ function estimateMessageTokens(message: AppMessage): number {
  */
 export function calculateContextUsage(
 	messages: AppMessage[],
-	model: Model<
-		| "anthropic-messages"
-		| "openai-completions"
-		| "openai-responses"
-		| "google-generative-ai"
-		| "google-gemini-cli"
-		| "bedrock-converse"
-		| "vertex-ai"
-	>,
+	model: Model<Api>,
 	systemPromptTokens = 0,
 ): CompactionStats {
 	let totalTokens = systemPromptTokens;
@@ -157,15 +149,7 @@ export function calculateContextUsage(
  */
 export function shouldAutoCompact(
 	messages: AppMessage[],
-	model: Model<
-		| "anthropic-messages"
-		| "openai-completions"
-		| "openai-responses"
-		| "google-generative-ai"
-		| "google-gemini-cli"
-		| "bedrock-converse"
-		| "vertex-ai"
-	>,
+	model: Model<Api>,
 	config: AutoCompactionConfig = getAutoCompactionConfig(),
 	systemPromptTokens = 0,
 ): CompactionStats {
@@ -243,15 +227,7 @@ export class AutoCompactionMonitor {
 	 */
 	check(
 		messages: AppMessage[],
-		model: Model<
-			| "anthropic-messages"
-			| "openai-completions"
-			| "openai-responses"
-			| "google-generative-ai"
-			| "google-gemini-cli"
-			| "bedrock-converse"
-			| "vertex-ai"
-		>,
+		model: Model<Api>,
 		systemPromptTokens = 0,
 	): CompactionStats {
 		const now = Date.now();

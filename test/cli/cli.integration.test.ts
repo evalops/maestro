@@ -696,7 +696,7 @@ describe("CLI integration", () => {
 		).rejects.toThrow("exit");
 		expect(exitCodes).toEqual([1]);
 		expect(output.join("\n")).toContain(
-			"Codex/ChatGPT auth mode is no longer supported",
+			"Legacy Codex/ChatGPT auth flags are no longer supported",
 		);
 		exitSpy.mockRestore();
 	});
@@ -712,7 +712,7 @@ describe("CLI integration", () => {
 		).rejects.toThrow("exit");
 		expect(exitCodes).toEqual([1]);
 		expect(output.join("\n")).toContain(
-			"Codex/ChatGPT auth mode is no longer supported",
+			"Legacy Codex/ChatGPT auth flags are no longer supported",
 		);
 		exitSpy.mockRestore();
 	});

@@ -24,12 +24,14 @@ vi.mock("../../src/oauth/storage.js", () => ({
 describe("auth resolver", () => {
 	const originalAnthropic = process.env.ANTHROPIC_API_KEY;
 	const originalOpenAI = process.env.OPENAI_API_KEY;
+	const originalOpenAICodex = process.env.OPENAI_CODEX_TOKEN;
 	const originalClaude = process.env.CLAUDE_CODE_TOKEN;
 	const originalCodex = process.env.CODEX_API_KEY;
 
 	beforeEach(() => {
 		Reflect.deleteProperty(process.env, "ANTHROPIC_API_KEY");
 		Reflect.deleteProperty(process.env, "OPENAI_API_KEY");
+		Reflect.deleteProperty(process.env, "OPENAI_CODEX_TOKEN");
 		Reflect.deleteProperty(process.env, "CLAUDE_CODE_TOKEN");
 	});
 
@@ -43,6 +45,11 @@ describe("auth resolver", () => {
 			Reflect.deleteProperty(process.env, "OPENAI_API_KEY");
 		} else {
 			process.env.OPENAI_API_KEY = originalOpenAI;
+		}
+		if (originalOpenAICodex === undefined) {
+			Reflect.deleteProperty(process.env, "OPENAI_CODEX_TOKEN");
+		} else {
+			process.env.OPENAI_CODEX_TOKEN = originalOpenAICodex;
 		}
 		if (originalClaude === undefined) {
 			Reflect.deleteProperty(process.env, "CLAUDE_CODE_TOKEN");
@@ -155,6 +162,38 @@ describe("auth resolver", () => {
 		expect(credential?.source).toBe("github_copilot_oauth_file");
 		mockedGetToken.mockReset();
 		mockedLoadCreds.mockReset();
+	});
+
+	it("uses OpenAI Codex OAuth token with account header when available", async () => {
+		const mockedGetToken = vi.mocked(getOAuthToken);
+		const mockedLoadCreds = vi.mocked(loadOAuthCredentials);
+		mockedGetToken.mockResolvedValue("codex-oauth-token");
+		mockedLoadCreds.mockReturnValue({
+			type: "oauth",
+			access: "codex-oauth-token",
+			refresh: "ref",
+			expires: Date.now() + 60_000,
+			metadata: { mode: "openai-codex", accountId: "acct_123" },
+		});
+		const resolver = createAuthResolver({ mode: "auto" });
+		const credential = await resolver("openai-codex");
+		expect(credential).toBeDefined();
+		expect(credential?.token).toBe("codex-oauth-token");
+		expect(credential?.source).toBe("openai_codex_oauth_file");
+		expect(credential?.headers).toEqual({ "chatgpt-account-id": "acct_123" });
+		expect(getFreshOpenAIOAuthCredential).not.toHaveBeenCalled();
+		mockedGetToken.mockReset();
+		mockedLoadCreds.mockReset();
+	});
+
+	it("uses OpenAI Codex environment token only for openai-codex", async () => {
+		process.env.OPENAI_CODEX_TOKEN = "codex-env-token";
+		const resolver = createAuthResolver({ mode: "api-key" });
+		expect(await resolver("openai")).toBeUndefined();
+		const credential = await resolver("openai-codex");
+		expect(credential?.token).toBe("codex-env-token");
+		expect(credential?.source).toBe("env");
+		expect(credential?.envVar).toBe("OPENAI_CODEX_TOKEN");
 	});
 
 	it("uses EvalOps OAuth token with org header and provider_ref", async () => {
