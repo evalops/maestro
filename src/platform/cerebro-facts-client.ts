@@ -117,6 +117,7 @@ const CEREBRO_CHANGE_LIMIT_ENV_VARS = [
 ] as const;
 
 const CEREBRO_SERVICE_PATH = "/cerebro.v1.CerebroService/";
+const CEREBRO_SERVICE_SUFFIX = "/cerebro.v1.CerebroService";
 
 function jsonRecordArray(value: unknown): JsonRecord[] {
 	return Array.isArray(value)
@@ -187,6 +188,13 @@ function truncatePromptAddition(value: string): string {
 	return `${value.slice(0, MAX_PROMPT_CHARS).trimEnd()}\n[truncated]`;
 }
 
+function normalizeCerebroBaseUrl(baseUrl: string): string {
+	const normalized = normalizeBaseUrl(baseUrl);
+	return normalized.endsWith(CEREBRO_SERVICE_SUFFIX)
+		? normalized.slice(0, -CEREBRO_SERVICE_SUFFIX.length)
+		: normalized;
+}
+
 export function buildMaestroSessionFactsQuery(
 	input: MaestroSessionFactsInput,
 ): string | undefined {
@@ -209,7 +217,7 @@ export function resolveCerebroFactsServiceConfig(): CerebroFactsServiceConfig | 
 		return null;
 	}
 	return {
-		baseUrl: normalizeBaseUrl(baseUrl),
+		baseUrl: normalizeCerebroBaseUrl(baseUrl),
 		token: resolveConfiguredToken(CEREBRO_TOKEN_ENV_VARS),
 		workspaceId: resolveWorkspaceId(CEREBRO_WORKSPACE_ENV_VARS),
 		timeoutMs: parsePositiveInt(

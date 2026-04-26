@@ -209,7 +209,16 @@ function metadataValue(value: string | undefined): string | undefined {
 	if (trimmed.length <= METADATA_VALUE_MAX_LENGTH) {
 		return trimmed;
 	}
-	return `${trimmed.slice(0, METADATA_VALUE_MAX_LENGTH - 3).trimEnd()}...`;
+	const suffix = "...";
+	const maxPrefixLength = METADATA_VALUE_MAX_LENGTH - suffix.length;
+	let prefix = "";
+	for (const char of trimmed) {
+		if (prefix.length + char.length > maxPrefixLength) {
+			break;
+		}
+		prefix += char;
+	}
+	return `${prefix.trimEnd()}${suffix}`;
 }
 
 function getMetadataEnvValue(names: readonly string[]): string | undefined {

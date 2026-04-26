@@ -125,7 +125,7 @@ describe("ComposerChatClientRequests", () => {
 		]);
 	});
 
-	it("restores normalized pending requests when split queues are absent", () => {
+	it("restores legacy wrapped pending requests when split queues are absent", () => {
 		const { clientRequests, state } = createClientRequestHarness();
 
 		const replayable = clientRequests.restorePendingRequests({
@@ -296,6 +296,65 @@ describe("ComposerChatClientRequests", () => {
 				pendingRequest: {
 					source: "platform",
 					createdAt: "2026-04-23T23:00:00.000Z",
+				},
+			},
+		]);
+	});
+
+	it("attaches normalized pending request metadata without downgrading split tool retry details", () => {
+		const { clientRequests, state } = createClientRequestHarness();
+
+		clientRequests.restorePendingRequests({
+			pendingToolRetryRequests: [
+				{
+					id: "retry-1",
+					toolCallId: "tool-call-1",
+					toolName: "bash",
+					args: { command: "npm test" },
+					errorMessage: "exit 1",
+					attempt: 2,
+					maxAttempts: 3,
+					summary: "Tests failed",
+				},
+			],
+			pendingRequests: [
+				{
+					id: "retry-1",
+					kind: "tool_retry",
+					status: "pending",
+					visibility: "user",
+					sessionId: "session-1",
+					toolCallId: "tool-call-1",
+					toolName: "bash",
+					args: { command: "npm test" },
+					reason: "Latest Platform wait projection",
+					createdAt: "2026-04-23T23:00:00.000Z",
+					source: "platform",
+					platform: {
+						source: "tool_execution",
+						toolExecutionId: "texec-1",
+					},
+				},
+			],
+		});
+
+		expect(state.pendingToolRetryQueue).toMatchObject([
+			{
+				id: "retry-1",
+				toolCallId: "tool-call-1",
+				toolName: "bash",
+				args: { command: "npm test" },
+				errorMessage: "exit 1",
+				attempt: 2,
+				maxAttempts: 3,
+				summary: "Tests failed",
+				pendingRequest: {
+					source: "platform",
+					createdAt: "2026-04-23T23:00:00.000Z",
+					platform: {
+						source: "tool_execution",
+						toolExecutionId: "texec-1",
+					},
 				},
 			},
 		]);
