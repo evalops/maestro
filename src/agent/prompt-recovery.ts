@@ -1,4 +1,3 @@
-import { isAbortError } from "../utils/abort.js";
 import { isContextOverflow as isOverflowError } from "../utils/context-overflow.js";
 import { createLogger } from "../utils/logger.js";
 import type { Agent } from "./agent.js";
@@ -155,6 +154,10 @@ function getErrorMessage(error: unknown): string | undefined {
 		return error;
 	}
 	return undefined;
+}
+
+function isAbortError(error: unknown): boolean {
+	return error instanceof Error && error.name === "AbortError";
 }
 
 function getTaskBudgetPreCompactionTokens(params: {

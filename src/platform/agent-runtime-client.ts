@@ -417,7 +417,9 @@ export async function recordMaestroSessionRuntimeTrigger(
 					...input,
 					workspaceId: input.workspaceId ?? config.workspaceId,
 				},
-				{ signal: options?.signal },
+				{
+					signal: options?.signal,
+				},
 			);
 		} catch (error) {
 			if (isAbortError(error)) {

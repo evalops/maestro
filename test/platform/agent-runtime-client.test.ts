@@ -116,6 +116,15 @@ describe("agent runtime service client", () => {
 		expect(resolveCerebroFactsServiceConfig()).toMatchObject({
 			baseUrl: "https://cerebro.test",
 		});
+
+		vi.stubEnv(
+			"CEREBRO_SERVICE_URL",
+			"https://cerebro.test//cerebro.v1.CerebroService/",
+		);
+
+		expect(resolveCerebroFactsServiceConfig()).toMatchObject({
+			baseUrl: "https://cerebro.test",
+		});
 	});
 
 	it("records Maestro session triggers through the shared Platform Connect endpoint", async () => {
@@ -426,21 +435,24 @@ describe("agent runtime service client", () => {
 		expect(fetchMock).toHaveBeenCalledTimes(2);
 	});
 
-	it("propagates cancellation while gathering Cerebro facts for Maestro session triggers", async () => {
+	it("propagates cancellation while gathering Cerebro facts for runtime triggers", async () => {
 		vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_URL", "https://runtime.test/");
 		vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_TOKEN", "runtime-token");
 		vi.stubEnv("MAESTRO_AGENT_RUNTIME_ORG_ID", "org_1");
 		vi.stubEnv("MAESTRO_AGENT_RUNTIME_WORKSPACE_ID", "ws_env");
 		vi.stubEnv("MAESTRO_CEREBRO_URL", "https://cerebro.test/");
 
-		const abortError = new Error("Operation aborted");
-		abortError.name = "AbortError";
-		const abortController = new AbortController();
+		const controller = new AbortController();
+		controller.abort(new DOMException("Aborted", "AbortError"));
+
 		const fetchMock = vi.fn(
-			async (_input: RequestInfo | URL, init?: RequestInit) => {
-				abortController.abort(abortError);
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				expect(String(input)).toBe(
+					"https://cerebro.test/cerebro.v1.CerebroService/Search",
+				);
+				expect(init?.signal).toBeInstanceOf(AbortSignal);
 				expect(init?.signal?.aborted).toBe(true);
-				throw abortError;
+				throw new DOMException("Aborted", "AbortError");
 			},
 		);
 		vi.stubGlobal("fetch", fetchMock);
@@ -451,26 +463,29 @@ describe("agent runtime service client", () => {
 					sessionId: "session_1",
 					metadata: { prompt: "triage pipeline regressions" },
 				},
-				{ signal: abortController.signal },
+				{ signal: controller.signal },
 			),
 		).rejects.toMatchObject({ name: "AbortError" });
-		expect(fetchMock).toHaveBeenCalledOnce();
+		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
 
-	it("propagates cancellation while sending Maestro session triggers to agent-runtime", async () => {
+	it("propagates cancellation while sending Maestro session runtime triggers", async () => {
 		vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_URL", "https://runtime.test/");
 		vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_TOKEN", "runtime-token");
 		vi.stubEnv("MAESTRO_AGENT_RUNTIME_ORG_ID", "org_1");
 		vi.stubEnv("MAESTRO_AGENT_RUNTIME_WORKSPACE_ID", "ws_env");
 
-		const abortError = new Error("Operation aborted");
-		abortError.name = "AbortError";
-		const abortController = new AbortController();
+		const controller = new AbortController();
+		controller.abort(new DOMException("Aborted", "AbortError"));
+
 		const fetchMock = vi.fn(
-			async (_input: RequestInfo | URL, init?: RequestInit) => {
-				abortController.abort(abortError);
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				expect(String(input)).toBe(
+					"https://runtime.test/agentruntime.v1.AgentRuntimeService/HandleTrigger",
+				);
+				expect(init?.signal).toBeInstanceOf(AbortSignal);
 				expect(init?.signal?.aborted).toBe(true);
-				throw abortError;
+				throw new DOMException("Aborted", "AbortError");
 			},
 		);
 		vi.stubGlobal("fetch", fetchMock);
@@ -478,10 +493,10 @@ describe("agent runtime service client", () => {
 		await expect(
 			recordMaestroSessionRuntimeTrigger(
 				{ sessionId: "session_1" },
-				{ signal: abortController.signal },
+				{ signal: controller.signal },
 			),
 		).rejects.toMatchObject({ name: "AbortError" });
-		expect(fetchMock).toHaveBeenCalledOnce();
+		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
 
 	it("fails open when agent-runtime is not configured or unavailable", async () => {
