@@ -354,6 +354,17 @@ describe("agent runtime service client", () => {
 					return Response.json({
 						changes: [
 							{ id: "change_pipeline_recent", thingId: "thing_pipeline" },
+							{
+								event: { id: "" },
+								affectedThingIds: ["thing_pipeline"],
+								whyItMatters: "Pipeline ownership changed",
+							},
+							{
+								event: { id: "" },
+								affectedThingIds: ["thing_pipeline"],
+								whyItMatters: "Pipeline ownership changed",
+							},
+							{ affectedThingIds: [], whyItMatters: "" },
 						],
 					});
 				}
@@ -404,6 +415,17 @@ describe("agent runtime service client", () => {
 											linkIds: ["link_pipeline_owner"],
 										},
 									],
+									changes: [
+										{
+											id: "change_pipeline_recent",
+											thingId: "thing_pipeline",
+										},
+										{
+											event: { id: "" },
+											affectedThingIds: ["thing_pipeline"],
+											whyItMatters: "Pipeline ownership changed",
+										},
+									],
 									watermarks: [],
 									summary: {
 										thingCount: 3,
@@ -411,7 +433,7 @@ describe("agent runtime service client", () => {
 										pathCount: 1,
 										factCount: 1,
 										eventCount: 1,
-										changeCount: 1,
+										changeCount: 2,
 										evidenceCount: 3,
 										watermarkCount: 0,
 									},
