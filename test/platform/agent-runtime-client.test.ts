@@ -252,6 +252,14 @@ describe("agent runtime service client", () => {
 								kind: "THING_KIND_SERVICE",
 							},
 						],
+						links: [
+							{
+								id: "link_search_owner",
+								sourceThingId: "thing_pipeline",
+								targetThingId: "thing_owner",
+								kind: "LINK_KIND_OWNS",
+							},
+						],
 						evidence: [
 							{
 								id: "evidence_search",
@@ -295,6 +303,48 @@ describe("agent runtime service client", () => {
 					});
 				}
 
+				if (url.endsWith("/cerebro.v1.CerebroService/MapThing")) {
+					expect(body).toMatchObject({
+						workspaceId: "ws_env",
+						thingId: "thing_pipeline",
+						depth: 1,
+					});
+					return Response.json({
+						root: {
+							id: "thing_pipeline",
+							name: "Pipeline",
+							kind: "THING_KIND_SERVICE",
+						},
+						things: [
+							{
+								id: "thing_owner",
+								name: "Platform",
+								kind: "THING_KIND_TEAM",
+							},
+						],
+						links: [
+							{
+								id: "link_pipeline_owner",
+								sourceThingId: "thing_pipeline",
+								targetThingId: "thing_owner",
+								kind: "LINK_KIND_OWNS",
+							},
+						],
+						paths: [
+							{
+								thingIds: ["thing_pipeline", "thing_owner"],
+								linkIds: ["link_pipeline_owner"],
+							},
+						],
+						evidence: [
+							{
+								id: "evidence_graph",
+								uri: "https://github.com/evalops/platform/blob/main/OWNERS",
+							},
+						],
+					});
+				}
+
 				if (url.endsWith("/cerebro.v1.CerebroService/ListChanges")) {
 					expect(body).toMatchObject({
 						workspaceId: "ws_env",
@@ -326,14 +376,44 @@ describe("agent runtime service client", () => {
 									provider: "cerebro",
 									workspaceId: "ws_env",
 									query: "triage pipeline regressions",
-									thingIds: ["thing_pipeline", "thing_pipeline_canonical"],
+									thingIds: [
+										"thing_pipeline",
+										"thing_pipeline_canonical",
+										"thing_owner",
+									],
+									linkIds: ["link_search_owner", "link_pipeline_owner"],
 									factIds: ["fact_pipeline_owner"],
+									eventIds: ["event_pipeline_deploy"],
+									links: [
+										{
+											id: "link_search_owner",
+											sourceThingId: "thing_pipeline",
+											targetThingId: "thing_owner",
+											kind: "LINK_KIND_OWNS",
+										},
+										{
+											id: "link_pipeline_owner",
+											sourceThingId: "thing_pipeline",
+											targetThingId: "thing_owner",
+											kind: "LINK_KIND_OWNS",
+										},
+									],
+									paths: [
+										{
+											thingIds: ["thing_pipeline", "thing_owner"],
+											linkIds: ["link_pipeline_owner"],
+										},
+									],
+									watermarks: [],
 									summary: {
-										thingCount: 2,
+										thingCount: 3,
+										linkCount: 2,
+										pathCount: 1,
 										factCount: 1,
 										eventCount: 1,
 										changeCount: 1,
-										evidenceCount: 2,
+										evidenceCount: 3,
+										watermarkCount: 0,
 									},
 								},
 							},
@@ -374,6 +454,186 @@ describe("agent runtime service client", () => {
 		expect(requests.map((request) => request.url)).toEqual([
 			"https://cerebro.test/cerebro.v1.CerebroService/Search",
 			"https://cerebro.test/cerebro.v1.CerebroService/GetThing",
+			"https://cerebro.test/cerebro.v1.CerebroService/MapThing",
+			"https://cerebro.test/cerebro.v1.CerebroService/ListChanges",
+			"https://runtime.test/agentruntime.v1.AgentRuntimeService/HandleTrigger",
+		]);
+	});
+
+	it("keeps gathered Cerebro facts when one map lookup fails", async () => {
+		vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_URL", "https://runtime.test/");
+		vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_TOKEN", "runtime-token");
+		vi.stubEnv("MAESTRO_AGENT_RUNTIME_ORG_ID", "org_1");
+		vi.stubEnv("MAESTRO_AGENT_RUNTIME_WORKSPACE_ID", "ws_env");
+		vi.stubEnv("MAESTRO_CEREBRO_URL", "https://cerebro.test/");
+		vi.stubEnv("MAESTRO_CEREBRO_MAX_ATTEMPTS", "1");
+
+		const requests: string[] = [];
+		const fetchMock = vi.fn(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url = String(input);
+				const body = parseRequestBody(init?.body);
+				requests.push(url);
+
+				if (url.endsWith("/cerebro.v1.CerebroService/Search")) {
+					return Response.json({
+						things: [
+							{ id: "thing_pipeline", name: "Pipeline" },
+							{ id: "thing_scheduler", name: "Scheduler" },
+						],
+						evidence: [
+							{
+								id: "evidence_search",
+								uri: "https://github.com/evalops/platform",
+							},
+						],
+					});
+				}
+
+				if (url.endsWith("/cerebro.v1.CerebroService/GetThing")) {
+					if (body?.thingId === "thing_pipeline") {
+						return Response.json({
+							thing: { id: "thing_pipeline", name: "Pipeline" },
+							facts: [
+								{
+									id: "fact_pipeline_owner",
+									subjectThingId: "thing_pipeline",
+									statement: "Pipeline is owned by Platform",
+								},
+							],
+						});
+					}
+					expect(body?.thingId).toBe("thing_scheduler");
+					return Response.json({
+						thing: { id: "thing_scheduler", name: "Scheduler" },
+						facts: [
+							{
+								id: "fact_scheduler_slo",
+								subjectThingId: "thing_scheduler",
+								statement: "Scheduler has an SLO",
+							},
+						],
+					});
+				}
+
+				if (url.endsWith("/cerebro.v1.CerebroService/MapThing")) {
+					if (body?.thingId === "thing_scheduler") {
+						return new Response("map temporarily unavailable", { status: 503 });
+					}
+					expect(body).toMatchObject({
+						workspaceId: "ws_env",
+						thingId: "thing_pipeline",
+						depth: 1,
+					});
+					return Response.json({
+						root: { id: "thing_pipeline", name: "Pipeline" },
+						things: [{ id: "thing_owner", name: "Platform" }],
+						links: [
+							{
+								id: "link_pipeline_owner",
+								sourceThingId: "thing_pipeline",
+								targetThingId: "thing_owner",
+							},
+						],
+						paths: [
+							{
+								thingIds: ["thing_pipeline", "thing_owner"],
+								linkIds: ["link_pipeline_owner"],
+							},
+						],
+						evidence: [
+							{
+								id: "evidence_graph",
+								uri: "https://github.com/evalops/platform/blob/main/OWNERS",
+							},
+						],
+					});
+				}
+
+				if (url.endsWith("/cerebro.v1.CerebroService/ListChanges")) {
+					expect(body).toMatchObject({
+						workspaceId: "ws_env",
+						thingIds: ["thing_pipeline", "thing_scheduler"],
+						limit: 10,
+					});
+					return Response.json({
+						changes: [{ id: "change_pipeline_recent" }],
+					});
+				}
+
+				if (
+					url ===
+					"https://runtime.test/agentruntime.v1.AgentRuntimeService/HandleTrigger"
+				) {
+					expect(body).toMatchObject({
+						trigger: {
+							workspaceId: "ws_env",
+							payload: {
+								maestroSessionId: "session_1",
+								facts_context: {
+									provider: "cerebro",
+									thingIds: [
+										"thing_pipeline",
+										"thing_scheduler",
+										"thing_owner",
+									],
+									linkIds: ["link_pipeline_owner"],
+									factIds: ["fact_pipeline_owner", "fact_scheduler_slo"],
+									links: [
+										{
+											id: "link_pipeline_owner",
+											sourceThingId: "thing_pipeline",
+											targetThingId: "thing_owner",
+										},
+									],
+									paths: [
+										{
+											thingIds: ["thing_pipeline", "thing_owner"],
+											linkIds: ["link_pipeline_owner"],
+										},
+									],
+									summary: {
+										thingCount: 3,
+										linkCount: 1,
+										pathCount: 1,
+										factCount: 2,
+										changeCount: 1,
+										evidenceCount: 2,
+									},
+								},
+							},
+						},
+					});
+					return Response.json({
+						run: {
+							id: "run_with_partial_map",
+							state: PlatformAgentRunStateValue.Accepted,
+						},
+						events: [],
+						idempotentReplay: false,
+					});
+				}
+
+				return new Response("unexpected endpoint", { status: 404 });
+			},
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(
+			recordMaestroSessionRuntimeTrigger({
+				sessionId: "session_1",
+				metadata: { prompt: "triage pipeline regressions" },
+			}),
+		).resolves.toMatchObject({
+			run: { id: "run_with_partial_map" },
+		});
+
+		expect(requests).toEqual([
+			"https://cerebro.test/cerebro.v1.CerebroService/Search",
+			"https://cerebro.test/cerebro.v1.CerebroService/GetThing",
+			"https://cerebro.test/cerebro.v1.CerebroService/GetThing",
+			"https://cerebro.test/cerebro.v1.CerebroService/MapThing",
+			"https://cerebro.test/cerebro.v1.CerebroService/MapThing",
 			"https://cerebro.test/cerebro.v1.CerebroService/ListChanges",
 			"https://runtime.test/agentruntime.v1.AgentRuntimeService/HandleTrigger",
 		]);
@@ -435,24 +695,21 @@ describe("agent runtime service client", () => {
 		expect(fetchMock).toHaveBeenCalledTimes(2);
 	});
 
-	it("propagates cancellation while gathering Cerebro facts for runtime triggers", async () => {
+	it("propagates cancellation while gathering Cerebro facts for Maestro session triggers", async () => {
 		vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_URL", "https://runtime.test/");
 		vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_TOKEN", "runtime-token");
 		vi.stubEnv("MAESTRO_AGENT_RUNTIME_ORG_ID", "org_1");
 		vi.stubEnv("MAESTRO_AGENT_RUNTIME_WORKSPACE_ID", "ws_env");
 		vi.stubEnv("MAESTRO_CEREBRO_URL", "https://cerebro.test/");
 
-		const controller = new AbortController();
-		controller.abort(new DOMException("Aborted", "AbortError"));
-
+		const abortError = new Error("Operation aborted");
+		abortError.name = "AbortError";
+		const abortController = new AbortController();
 		const fetchMock = vi.fn(
-			async (input: RequestInfo | URL, init?: RequestInit) => {
-				expect(String(input)).toBe(
-					"https://cerebro.test/cerebro.v1.CerebroService/Search",
-				);
-				expect(init?.signal).toBeInstanceOf(AbortSignal);
+			async (_input: RequestInfo | URL, init?: RequestInit) => {
+				abortController.abort(abortError);
 				expect(init?.signal?.aborted).toBe(true);
-				throw new DOMException("Aborted", "AbortError");
+				throw abortError;
 			},
 		);
 		vi.stubGlobal("fetch", fetchMock);
@@ -463,29 +720,26 @@ describe("agent runtime service client", () => {
 					sessionId: "session_1",
 					metadata: { prompt: "triage pipeline regressions" },
 				},
-				{ signal: controller.signal },
+				{ signal: abortController.signal },
 			),
 		).rejects.toMatchObject({ name: "AbortError" });
-		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(fetchMock).toHaveBeenCalledOnce();
 	});
 
-	it("propagates cancellation while sending Maestro session runtime triggers", async () => {
+	it("propagates cancellation while sending Maestro session triggers to agent-runtime", async () => {
 		vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_URL", "https://runtime.test/");
 		vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_TOKEN", "runtime-token");
 		vi.stubEnv("MAESTRO_AGENT_RUNTIME_ORG_ID", "org_1");
 		vi.stubEnv("MAESTRO_AGENT_RUNTIME_WORKSPACE_ID", "ws_env");
 
-		const controller = new AbortController();
-		controller.abort(new DOMException("Aborted", "AbortError"));
-
+		const abortError = new Error("Operation aborted");
+		abortError.name = "AbortError";
+		const abortController = new AbortController();
 		const fetchMock = vi.fn(
-			async (input: RequestInfo | URL, init?: RequestInit) => {
-				expect(String(input)).toBe(
-					"https://runtime.test/agentruntime.v1.AgentRuntimeService/HandleTrigger",
-				);
-				expect(init?.signal).toBeInstanceOf(AbortSignal);
+			async (_input: RequestInfo | URL, init?: RequestInit) => {
+				abortController.abort(abortError);
 				expect(init?.signal?.aborted).toBe(true);
-				throw new DOMException("Aborted", "AbortError");
+				throw abortError;
 			},
 		);
 		vi.stubGlobal("fetch", fetchMock);
@@ -493,10 +747,10 @@ describe("agent runtime service client", () => {
 		await expect(
 			recordMaestroSessionRuntimeTrigger(
 				{ sessionId: "session_1" },
-				{ signal: controller.signal },
+				{ signal: abortController.signal },
 			),
 		).rejects.toMatchObject({ name: "AbortError" });
-		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(fetchMock).toHaveBeenCalledOnce();
 	});
 
 	it("fails open when agent-runtime is not configured or unavailable", async () => {
