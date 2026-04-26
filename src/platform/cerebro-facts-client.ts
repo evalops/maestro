@@ -15,6 +15,7 @@ type JsonRecord = Record<string, unknown>;
 
 interface CerebroSearchResponse {
 	things?: JsonRecord[];
+	links?: JsonRecord[];
 	evidence?: JsonRecord[];
 }
 
@@ -29,24 +30,42 @@ interface CerebroListChangesResponse {
 	changes?: JsonRecord[];
 }
 
+interface CerebroMapThingResponse {
+	root?: JsonRecord;
+	things?: JsonRecord[];
+	links?: JsonRecord[];
+	paths?: JsonRecord[];
+	evidence?: JsonRecord[];
+}
+
+export interface MaestroFactsContextSummary {
+	thingCount: number;
+	linkCount: number;
+	pathCount: number;
+	factCount: number;
+	eventCount: number;
+	changeCount: number;
+	evidenceCount: number;
+	watermarkCount: number;
+}
+
 export interface MaestroFactsContext {
 	provider: "cerebro";
 	workspaceId: string;
 	query: string;
 	thingIds: string[];
+	linkIds: string[];
 	factIds: string[];
+	eventIds: string[];
 	things: JsonRecord[];
+	links: JsonRecord[];
+	paths: JsonRecord[];
 	facts: JsonRecord[];
 	events: JsonRecord[];
 	changes: JsonRecord[];
 	evidence: JsonRecord[];
-	summary: {
-		thingCount: number;
-		factCount: number;
-		eventCount: number;
-		changeCount: number;
-		evidenceCount: number;
-	};
+	watermarks: JsonRecord[];
+	summary: MaestroFactsContextSummary;
 }
 
 export interface MaestroSessionFactsInput {
@@ -150,6 +169,51 @@ function pushUniqueRecord(
 	records.push(record);
 }
 
+function recordStringArray(record: JsonRecord, name: string): string[] {
+	const value = record[name];
+	return Array.isArray(value)
+		? value
+				.filter(
+					(item): item is string =>
+						typeof item === "string" && item.trim().length > 0,
+				)
+				.map((item) => item.trim())
+		: [];
+}
+
+function pathKey(path: JsonRecord): string | undefined {
+	const id = recordId(path);
+	if (id) {
+		return `id:${id}`;
+	}
+	const thingIds = recordStringArray(path, "thingIds");
+	const linkIds = recordStringArray(path, "linkIds");
+	if (thingIds.length === 0 && linkIds.length === 0) {
+		return undefined;
+	}
+	return `${thingIds.join("\u0000")}\u0001${linkIds.join("\u0000")}`;
+}
+
+function pushUniquePath(
+	paths: JsonRecord[],
+	seen: Set<string>,
+	path: JsonRecord | undefined,
+): void {
+	if (!path) {
+		return;
+	}
+	const key = pathKey(path);
+	if (!key || seen.has(key)) {
+		return;
+	}
+	seen.add(key);
+	paths.push(path);
+}
+
+function isAbortError(error: unknown): boolean {
+	return error instanceof Error && error.name === "AbortError";
+}
+
 function pickMetadataString(
 	metadata: Record<string, unknown> | undefined,
 	...names: string[]
@@ -227,11 +291,16 @@ export async function gatherMaestroSessionFactsContext(
 	}
 
 	const things: JsonRecord[] = [];
+	const links: JsonRecord[] = [];
+	const paths: JsonRecord[] = [];
 	const facts: JsonRecord[] = [];
 	const events: JsonRecord[] = [];
 	const changes: JsonRecord[] = [];
 	const evidence: JsonRecord[] = [];
+	const watermarks: JsonRecord[] = [];
 	const thingIds = new Set<string>();
+	const linkIds = new Set<string>();
+	const pathIds = new Set<string>();
 	const factIds = new Set<string>();
 	const eventIds = new Set<string>();
 	const changeIds = new Set<string>();
@@ -251,12 +320,16 @@ export async function gatherMaestroSessionFactsContext(
 	for (const thing of jsonRecordArray(search.things)) {
 		pushUniqueRecord(things, thingIds, thing);
 	}
+	for (const link of jsonRecordArray(search.links)) {
+		pushUniqueRecord(links, linkIds, link);
+	}
 	for (const item of jsonRecordArray(search.evidence)) {
 		pushUniqueRecord(evidence, evidenceIds, item);
 	}
 
+	const mapThingIds = [...thingIds];
 	const thingResponses = await Promise.all(
-		[...thingIds].map((thingId) =>
+		mapThingIds.map((thingId) =>
 			postCerebro<CerebroGetThingResponse>(
 				config,
 				"GetThing",
@@ -278,11 +351,47 @@ export async function gatherMaestroSessionFactsContext(
 		}
 	}
 
-	if (thingIds.size > 0) {
+	const changeThingIds = [...thingIds];
+	if (mapThingIds.length > 0) {
+		const mapResults = await Promise.allSettled(
+			mapThingIds.map((thingId) =>
+				postCerebro<CerebroMapThingResponse>(
+					config,
+					"MapThing",
+					{ workspaceId, thingId, depth: 1 },
+					{ signal: options?.signal, failureMode: options?.failureMode },
+				),
+			),
+		);
+		for (const result of mapResults) {
+			if (result.status === "rejected") {
+				if (isAbortError(result.reason)) {
+					throw result.reason;
+				}
+				continue;
+			}
+			const response = result.value;
+			pushUniqueRecord(things, thingIds, response.root);
+			for (const thing of jsonRecordArray(response.things)) {
+				pushUniqueRecord(things, thingIds, thing);
+			}
+			for (const link of jsonRecordArray(response.links)) {
+				pushUniqueRecord(links, linkIds, link);
+			}
+			for (const path of jsonRecordArray(response.paths)) {
+				pushUniquePath(paths, pathIds, path);
+			}
+			for (const item of jsonRecordArray(response.evidence)) {
+				pushUniqueRecord(evidence, evidenceIds, item);
+			}
+		}
+	}
+
+	if (changeThingIds.length > 0) {
 		const response = await postCerebro<CerebroListChangesResponse>(
 			config,
 			"ListChanges",
-			{ workspaceId, thingIds: [...thingIds], limit: config.changeLimit },
+			{ workspaceId, thingIds: changeThingIds, limit: config.changeLimit },
 			{ signal: options?.signal, failureMode: options?.failureMode },
 		);
 		for (const change of jsonRecordArray(response.changes)) {
@@ -295,18 +404,26 @@ export async function gatherMaestroSessionFactsContext(
 		workspaceId,
 		query,
 		thingIds: [...thingIds],
+		linkIds: [...linkIds],
 		factIds: [...factIds],
+		eventIds: [...eventIds],
 		things,
+		links,
+		paths,
 		facts,
 		events,
 		changes,
 		evidence,
+		watermarks,
 		summary: {
 			thingCount: things.length,
+			linkCount: links.length,
+			pathCount: paths.length,
 			factCount: facts.length,
 			eventCount: events.length,
 			changeCount: changes.length,
 			evidenceCount: evidence.length,
+			watermarkCount: watermarks.length,
 		},
 	};
 }
