@@ -1,5 +1,7 @@
 import { createSessionHookService } from "../hooks/session-integration.js";
 import { buildRelevantMemoryPromptAdditionAsync } from "../memory/relevant-recall.js";
+import { buildMaestroFactsPromptAddition } from "../platform/cerebro-facts-client.js";
+import { isAbortError } from "../utils/abort.js";
 import { createLogger } from "../utils/logger.js";
 import type { Agent } from "./agent.js";
 import { buildCompactionHookContext } from "./compaction-hooks.js";
@@ -145,6 +147,36 @@ async function applyAutomaticMemoryRecall(params: {
 		return;
 	}
 	queueNextRunSystemPromptAddition(params.agent, promptAddition);
+}
+
+async function applyAutomaticCerebroFactsContext(params: {
+	agent: Agent;
+	sessionManager: PromptRuntimeSessionManager;
+	prompt: string;
+	cwd: string;
+	signal?: AbortSignal;
+}): Promise<void> {
+	try {
+		const promptAddition = await buildMaestroFactsPromptAddition(
+			{
+				sessionId: params.sessionManager.getSessionId?.(),
+				factsQuery: params.prompt,
+				metadata: { workspace_root: params.cwd },
+			},
+			{ signal: params.signal },
+		);
+		if (!promptAddition) {
+			return;
+		}
+		queueNextRunSystemPromptAddition(params.agent, promptAddition);
+	} catch (error) {
+		if (isAbortError(error)) {
+			throw error;
+		}
+		logger.warn("Failed to load Cerebro facts context", {
+			error: error instanceof Error ? error.message : String(error),
+		});
+	}
 }
 
 function extractAssistantText(message: AppMessage | undefined): string {
@@ -730,6 +762,7 @@ export async function runUserPromptWithRecovery(params: {
 		await applyUserPromptSubmitHooks(params);
 		throwIfAborted(params.signal);
 		await applyPreMessageHooks(params);
+		await applyAutomaticCerebroFactsContext(params);
 		await applyAutomaticMemoryRecall(params);
 		throwIfAborted(params.signal);
 		try {
