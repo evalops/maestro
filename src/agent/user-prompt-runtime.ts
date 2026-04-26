@@ -1,6 +1,7 @@
 import { createSessionHookService } from "../hooks/session-integration.js";
 import { buildRelevantMemoryPromptAdditionAsync } from "../memory/relevant-recall.js";
 import { buildMaestroFactsPromptAddition } from "../platform/cerebro-facts-client.js";
+import { isAbortError } from "../utils/abort-error.js";
 import { createLogger } from "../utils/logger.js";
 import type { Agent } from "./agent.js";
 import { buildCompactionHookContext } from "./compaction-hooks.js";
@@ -274,15 +275,6 @@ function throwIfAborted(signal?: AbortSignal): void {
 	);
 	abortError.name = "AbortError";
 	throw abortError;
-}
-
-function isAbortError(error: unknown): boolean {
-	return (
-		typeof error === "object" &&
-		error !== null &&
-		"name" in error &&
-		(error as { name?: unknown }).name === "AbortError"
-	);
 }
 
 async function runSessionStartHooksInternal(params: {

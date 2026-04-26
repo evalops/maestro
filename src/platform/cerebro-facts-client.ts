@@ -275,13 +275,17 @@ export async function gatherMaestroSessionFactsContext(
 		pushUniqueRecord(evidence, evidenceIds, item);
 	}
 
-	for (const thingId of [...thingIds]) {
-		const response = await postCerebro<CerebroGetThingResponse>(
-			config,
-			"GetThing",
-			{ workspaceId, thingId },
-			{ signal: options?.signal, failureMode: options?.failureMode },
-		);
+	const getThingResponses = await Promise.all(
+		[...thingIds].map((thingId) =>
+			postCerebro<CerebroGetThingResponse>(
+				config,
+				"GetThing",
+				{ workspaceId, thingId },
+				{ signal: options?.signal, failureMode: options?.failureMode },
+			),
+		),
+	);
+	for (const response of getThingResponses) {
 		pushUniqueRecord(things, thingIds, response.thing);
 		for (const fact of jsonRecordArray(response.facts)) {
 			pushUniqueRecord(facts, factIds, fact);

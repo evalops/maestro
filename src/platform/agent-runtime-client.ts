@@ -1,3 +1,4 @@
+import { isAbortError } from "../utils/abort-error.js";
 import {
 	type MaestroFactsContext,
 	gatherMaestroSessionFactsContext,
@@ -63,15 +64,6 @@ const AGENT_RUNTIME_BASE_URL_SUFFIXES = [
 	HANDLE_TRIGGER_PATH,
 	platformConnectServicePath(PLATFORM_CONNECT_SERVICES.agentRuntime),
 ] as const;
-
-function isAbortError(error: unknown): boolean {
-	return (
-		typeof error === "object" &&
-		error !== null &&
-		"name" in error &&
-		(error as { name?: unknown }).name === "AbortError"
-	);
-}
 
 export enum PlatformSurfaceValue {
 	Maestro = "SURFACE_MAESTRO",

@@ -24,6 +24,14 @@ function parseRequestBody(
 		: undefined;
 }
 
+function createDeferred<T>() {
+	let resolve!: (value: T | PromiseLike<T>) => void;
+	const promise = new Promise<T>((res) => {
+		resolve = res;
+	});
+	return { promise, resolve };
+}
+
 describe("agent runtime service client", () => {
 	beforeEach(() => {
 		for (const name of [
@@ -341,6 +349,84 @@ describe("agent runtime service client", () => {
 			"https://cerebro.test/cerebro.v1.CerebroService/ListChanges",
 			"https://runtime.test/agentruntime.v1.AgentRuntimeService/HandleTrigger",
 		]);
+	});
+
+	it("requests Cerebro GetThing facts in parallel", async () => {
+		vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_URL", "https://runtime.test/");
+		vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_TOKEN", "runtime-token");
+		vi.stubEnv("MAESTRO_AGENT_RUNTIME_ORG_ID", "org_1");
+		vi.stubEnv("MAESTRO_AGENT_RUNTIME_WORKSPACE_ID", "ws_env");
+		vi.stubEnv("MAESTRO_CEREBRO_URL", "https://cerebro.test/");
+		vi.stubEnv("MAESTRO_CEREBRO_TOKEN", "cerebro-token");
+
+		const getThingA = createDeferred<Response>();
+		const getThingB = createDeferred<Response>();
+		const requestedThingIds: string[] = [];
+
+		const fetchMock = vi.fn(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url = String(input);
+				const body = parseRequestBody(init?.body);
+
+				if (url.endsWith("/cerebro.v1.CerebroService/Search")) {
+					return Response.json({
+						things: [{ id: "thing_a" }, { id: "thing_b" }],
+					});
+				}
+
+				if (url.endsWith("/cerebro.v1.CerebroService/GetThing")) {
+					const thingId = body?.thingId;
+					if (typeof thingId !== "string") {
+						throw new Error("expected GetThing thingId");
+					}
+					requestedThingIds.push(thingId);
+					if (thingId === "thing_a") {
+						return getThingA.promise;
+					}
+					if (thingId === "thing_b") {
+						return getThingB.promise;
+					}
+					throw new Error(`unexpected thingId ${thingId}`);
+				}
+
+				if (url.endsWith("/cerebro.v1.CerebroService/ListChanges")) {
+					return Response.json({ changes: [] });
+				}
+
+				if (
+					url ===
+					"https://runtime.test/agentruntime.v1.AgentRuntimeService/HandleTrigger"
+				) {
+					return Response.json({
+						run: {
+							id: "run_parallel_facts",
+							state: PlatformAgentRunStateValue.Accepted,
+						},
+						events: [],
+						idempotentReplay: false,
+					});
+				}
+
+				return new Response("unexpected endpoint", { status: 404 });
+			},
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const recordPromise = recordMaestroSessionRuntimeTrigger({
+			sessionId: "session_1",
+			metadata: { prompt: "triage pipeline regressions" },
+		});
+
+		await vi.waitFor(() => {
+			expect(requestedThingIds).toEqual(["thing_a", "thing_b"]);
+		});
+
+		getThingA.resolve(Response.json({ thing: { id: "thing_a" } }));
+		getThingB.resolve(Response.json({ thing: { id: "thing_b" } }));
+
+		await expect(recordPromise).resolves.toMatchObject({
+			run: { id: "run_parallel_facts" },
+		});
 	});
 
 	it("continues recording Maestro session triggers when Cerebro facts are unavailable", async () => {
