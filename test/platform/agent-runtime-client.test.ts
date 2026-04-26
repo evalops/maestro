@@ -116,6 +116,15 @@ describe("agent runtime service client", () => {
 		expect(resolveCerebroFactsServiceConfig()).toMatchObject({
 			baseUrl: "https://cerebro.test",
 		});
+
+		vi.stubEnv(
+			"CEREBRO_SERVICE_URL",
+			"https://cerebro.test//cerebro.v1.CerebroService/",
+		);
+
+		expect(resolveCerebroFactsServiceConfig()).toMatchObject({
+			baseUrl: "https://cerebro.test",
+		});
 	});
 
 	it("records Maestro session triggers through the shared Platform Connect endpoint", async () => {

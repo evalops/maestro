@@ -51,7 +51,7 @@ export interface MaestroFactsContext {
 
 export interface MaestroSessionFactsInput {
 	workspaceId?: string;
-	sessionId?: string;
+	sessionId: string;
 	actorId?: string;
 	factsQuery?: string;
 	metadata?: Record<string, unknown>;
@@ -72,7 +72,6 @@ const DEFAULT_TIMEOUT_MS = 1_500;
 const DEFAULT_MAX_ATTEMPTS = 1;
 const DEFAULT_SEARCH_LIMIT = 5;
 const DEFAULT_CHANGE_LIMIT = 10;
-const MAX_PROMPT_CHARS = 4_000;
 
 const CEREBRO_BASE_URL_ENV_VARS = [
 	"MAESTRO_CEREBRO_URL",
@@ -164,35 +163,8 @@ function pickMetadataString(
 	return undefined;
 }
 
-function compactJson(value: unknown): string {
-	return JSON.stringify(value);
-}
-
-function appendRecords(
-	sections: string[],
-	label: string,
-	records: readonly JsonRecord[],
-): void {
-	if (records.length === 0) {
-		return;
-	}
-	sections.push(
-		`${label}:\n${records.map((record) => `- ${compactJson(record)}`).join("\n")}`,
-	);
-}
-
-function truncatePromptAddition(value: string): string {
-	if (value.length <= MAX_PROMPT_CHARS) {
-		return value;
-	}
-	return `${value.slice(0, MAX_PROMPT_CHARS).trimEnd()}\n[truncated]`;
-}
-
 function normalizeCerebroBaseUrl(baseUrl: string): string {
-	const normalized = normalizeBaseUrl(baseUrl);
-	return normalized.endsWith(CEREBRO_SERVICE_SUFFIX)
-		? normalized.slice(0, -CEREBRO_SERVICE_SUFFIX.length)
-		: normalized;
+	return normalizeBaseUrl(baseUrl, [CEREBRO_SERVICE_SUFFIX]);
 }
 
 export function buildMaestroSessionFactsQuery(
@@ -339,38 +311,6 @@ export async function gatherMaestroSessionFactsContext(
 	};
 }
 
-export function formatMaestroFactsPromptAddition(
-	context: MaestroFactsContext,
-): string {
-	const sections = [
-		"# Cerebro Facts Context",
-		[
-			`Provider: ${context.provider}`,
-			`Workspace: ${context.workspaceId}`,
-			`Query: ${context.query}`,
-			`Summary: ${compactJson(context.summary)}`,
-		].join("\n"),
-	];
-	appendRecords(sections, "Things", context.things);
-	appendRecords(sections, "Facts", context.facts);
-	appendRecords(sections, "Recent events", context.events);
-	appendRecords(sections, "Recent changes", context.changes);
-	appendRecords(sections, "Evidence", context.evidence);
-	return truncatePromptAddition(sections.join("\n\n"));
-}
-
-export async function buildMaestroFactsPromptAddition(
-	input: MaestroSessionFactsInput,
-	options?: {
-		config?: CerebroFactsServiceConfig | null;
-		signal?: AbortSignal;
-		failureMode?: DownstreamFailureMode;
-	},
-): Promise<string | null> {
-	const context = await gatherMaestroSessionFactsContext(input, options);
-	return context ? formatMaestroFactsPromptAddition(context) : null;
-}
-
 async function postCerebro<ResponseBody>(
 	config: CerebroFactsServiceConfig,
 	method: string,
@@ -400,10 +340,9 @@ async function postCerebro<ResponseBody>(
 		},
 	);
 	if (!response.ok) {
-		const text = await response.text();
 		throw new Error(
 			`cerebro facts service returned ${response.status}: ${
-				text || response.statusText
+				(await response.text()) || response.statusText
 			}`,
 		);
 	}
