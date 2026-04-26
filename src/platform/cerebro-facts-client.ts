@@ -151,6 +151,11 @@ function recordId(record: JsonRecord): string | undefined {
 	return typeof id === "string" && id.trim().length > 0 ? id : undefined;
 }
 
+function recordString(record: JsonRecord, name: string): string {
+	const value = record[name];
+	return typeof value === "string" ? value.trim() : "";
+}
+
 function pushUniqueRecord(
 	records: JsonRecord[],
 	seen: Set<string>,
@@ -208,6 +213,42 @@ function pushUniquePath(
 	}
 	seen.add(key);
 	paths.push(path);
+}
+
+function changeKey(change: JsonRecord): string | undefined {
+	const id = recordId(change);
+	if (id) {
+		return `id:${id}`;
+	}
+	const event = change.event;
+	if (typeof event === "object" && event !== null && !Array.isArray(event)) {
+		const eventId = recordString(event as JsonRecord, "id");
+		if (eventId) {
+			return `event:${eventId}`;
+		}
+	}
+	const affectedThingIds = recordStringArray(change, "affectedThingIds");
+	const whyItMatters = recordString(change, "whyItMatters");
+	if (affectedThingIds.length === 0 && !whyItMatters) {
+		return undefined;
+	}
+	return `${affectedThingIds.join("\u0000")}\u0001${whyItMatters}`;
+}
+
+function pushUniqueChange(
+	changes: JsonRecord[],
+	seen: Set<string>,
+	change: JsonRecord | undefined,
+): void {
+	if (!change) {
+		return;
+	}
+	const key = changeKey(change);
+	if (!key || seen.has(key)) {
+		return;
+	}
+	seen.add(key);
+	changes.push(change);
 }
 
 function isAbortError(error: unknown): boolean {
@@ -395,7 +436,7 @@ export async function gatherMaestroSessionFactsContext(
 			{ signal: options?.signal, failureMode: options?.failureMode },
 		);
 		for (const change of jsonRecordArray(response.changes)) {
-			pushUniqueRecord(changes, changeIds, change);
+			pushUniqueChange(changes, changeIds, change);
 		}
 	}
 
