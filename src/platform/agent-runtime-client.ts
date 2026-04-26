@@ -1,4 +1,8 @@
 import {
+	type MaestroFactsContext,
+	gatherMaestroSessionFactsContext,
+} from "./cerebro-facts-client.js";
+import {
 	type PlatformServiceConfig,
 	postPlatformConnect,
 	resolvePlatformServiceConfig,
@@ -59,6 +63,15 @@ const AGENT_RUNTIME_BASE_URL_SUFFIXES = [
 	HANDLE_TRIGGER_PATH,
 	platformConnectServicePath(PLATFORM_CONNECT_SERVICES.agentRuntime),
 ] as const;
+
+function isAbortError(error: unknown): boolean {
+	return (
+		typeof error === "object" &&
+		error !== null &&
+		"name" in error &&
+		(error as { name?: unknown }).name === "AbortError"
+	);
+}
 
 export enum PlatformSurfaceValue {
 	Maestro = "SURFACE_MAESTRO",
@@ -150,6 +163,8 @@ export interface MaestroSessionRuntimeTriggerInput {
 	correlationId?: string;
 	sourceEventId?: string;
 	idempotencyKey?: string;
+	factsQuery?: string;
+	factsContext?: MaestroFactsContext;
 	metadata?: Record<string, unknown>;
 }
 
@@ -352,6 +367,7 @@ export function buildMaestroSessionRuntimeTrigger(
 		payload: {
 			maestroSessionId: sessionId,
 			...(input.metadata ? { metadata: input.metadata } : {}),
+			...(input.factsContext ? { facts_context: input.factsContext } : {}),
 		},
 	};
 }
@@ -401,7 +417,27 @@ export async function recordMaestroSessionRuntimeTrigger(
 	if (!config) {
 		return null;
 	}
-	const trigger = buildMaestroSessionRuntimeTrigger(input, config.workspaceId);
+	let factsContext = input.factsContext;
+	if (!factsContext) {
+		try {
+			factsContext = await gatherMaestroSessionFactsContext(
+				{
+					...input,
+					workspaceId: input.workspaceId ?? config.workspaceId,
+				},
+				{ signal: options?.signal },
+			);
+		} catch (error) {
+			if (isAbortError(error)) {
+				throw error;
+			}
+			factsContext = undefined;
+		}
+	}
+	const trigger = buildMaestroSessionRuntimeTrigger(
+		{ ...input, factsContext },
+		config.workspaceId,
+	);
 	if (!trigger) {
 		return null;
 	}
@@ -410,7 +446,10 @@ export async function recordMaestroSessionRuntimeTrigger(
 			config,
 			signal: options?.signal,
 		});
-	} catch {
+	} catch (error) {
+		if (isAbortError(error)) {
+			throw error;
+		}
 		return null;
 	}
 }
