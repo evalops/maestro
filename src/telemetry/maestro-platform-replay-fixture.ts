@@ -145,6 +145,13 @@ const eventPlan = [
 	},
 ] as const;
 
+const TOOL_CALL_CORRELATED_EVENT_TYPES = new Set<MaestroBusEventType>([
+	MaestroBusEventType.ToolCallAttempted,
+	MaestroBusEventType.ToolCallCompleted,
+	MaestroBusEventType.SkillInvoked,
+	MaestroBusEventType.EvalScored,
+]);
+
 export type MaestroPlatformReplayFixtureEvent = MaestroCloudEvent<
 	Record<string, unknown>
 >;
@@ -182,7 +189,10 @@ function eventFor(
 	}
 	const stepId =
 		agentRunStepId ??
-		(typeof data.tool_call_id === "string" ? data.tool_call_id : undefined) ??
+		(TOOL_CALL_CORRELATED_EVENT_TYPES.has(type) &&
+		typeof data.tool_call_id === "string"
+			? data.tool_call_id
+			: undefined) ??
 		baseCorrelation.agent_run_step_id;
 	return buildMaestroCloudEvent(
 		type,
@@ -337,10 +347,6 @@ function buildEvents(): MaestroPlatformReplayFixtureEvent[] {
 					summary: "8 telemetry tests passed",
 				},
 				redactions: ["stdout"],
-				estimated_cost: {
-					currency_code: "USD",
-					amount: 0.001,
-				},
 				completed_at: eventPlan[7].time,
 			},
 			7,

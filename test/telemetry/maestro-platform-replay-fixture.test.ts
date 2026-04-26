@@ -187,6 +187,9 @@ describe("canonical Maestro Platform replay fixture", () => {
 		expect(
 			byType.get(MaestroBusEventType.SkillFailed)?.data,
 		).not.toHaveProperty("status");
+		expect(
+			byType.get(MaestroBusEventType.ToolCallCompleted)?.data,
+		).not.toHaveProperty("estimated_cost");
 		expect(byType.get(MaestroBusEventType.ApprovalHit)?.data).toMatchObject({
 			context: {
 				tool_name: "Bash",
@@ -257,7 +260,7 @@ describe("canonical Maestro Platform replay fixture", () => {
 			"tool_call_platform_replay_bash_001",
 			"tool_call_platform_replay_bash_001",
 			"tool_call_platform_replay_bash_001",
-			"tool_call_platform_replay_skill_001",
+			"agent_run_step_platform_replay_001",
 			"agent_run_step_platform_replay_001",
 		]);
 	});

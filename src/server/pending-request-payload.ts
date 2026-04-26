@@ -8,6 +8,24 @@ import {
 	serverRequestManager,
 } from "./server-request-manager.js";
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function getToolRetryPayload(args: unknown): Record<string, unknown> {
+	return isRecord(args) ? args : {};
+}
+
+function pendingRequestArgs(entry: PendingServerRequestSnapshot): unknown {
+	if (entry.kind !== "tool_retry") {
+		return entry.args;
+	}
+	const args = getToolRetryPayload(entry.args);
+	return Object.prototype.hasOwnProperty.call(args, "args")
+		? args.args
+		: entry.args;
+}
+
 function mapPendingComposerRequests(
 	pending: PendingServerRequestSnapshot[],
 ): ComposerPendingRequest[] {
@@ -28,7 +46,7 @@ function mapPendingComposerRequests(
 			displayName: entry.displayName,
 			summaryLabel: entry.summaryLabel,
 			actionDescription: entry.actionDescription,
-			args: entry.args,
+			args: pendingRequestArgs(entry),
 			reason: entry.reason,
 			createdAt,
 			expiresAt,
@@ -92,12 +110,7 @@ export function getPendingServerRequestPayload(
 	const pendingToolRetryRequests = pending
 		.filter((entry) => entry.kind === "tool_retry")
 		.map((entry) => {
-			const args =
-				entry.args &&
-				typeof entry.args === "object" &&
-				!Array.isArray(entry.args)
-					? (entry.args as Record<string, unknown>)
-					: {};
+			const args = getToolRetryPayload(entry.args);
 			return {
 				id: entry.id,
 				toolCallId:

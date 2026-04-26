@@ -301,6 +301,11 @@ describe("Session Endpoints", () => {
 					toolCallId: string;
 					toolName: string;
 				}>;
+				pendingRequests: Array<{
+					id: string;
+					kind: string;
+					args: unknown;
+				}>;
 			};
 			expect(body.pendingApprovalRequests).toEqual([
 				{
@@ -334,6 +339,13 @@ describe("Session Endpoints", () => {
 					reason: "Client execution required",
 				},
 			]);
+			expect(
+				body.pendingRequests.find((request) => request.id === "retry-1"),
+			).toMatchObject({
+				id: "retry-1",
+				kind: "tool_retry",
+				args: { file: "README.md" },
+			});
 		});
 
 		it("should return 404 for non-existent session", async () => {

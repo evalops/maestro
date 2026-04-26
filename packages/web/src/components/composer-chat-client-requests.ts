@@ -132,6 +132,11 @@ function mergeToolRetryRequests(
 	}
 	if (Array.isArray(session.pendingRequests)) {
 		for (const request of session.pendingRequests) {
+			const existing = merged.get(request.id);
+			if (request.kind === "tool_retry" && existing) {
+				merged.set(request.id, attachPendingRequestMetadata(existing, request));
+				continue;
+			}
 			const toolRetryRequest = toolRetryRequestFromPendingRequest(request);
 			if (toolRetryRequest) {
 				merged.set(toolRetryRequest.id, toolRetryRequest);

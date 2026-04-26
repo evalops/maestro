@@ -78,6 +78,15 @@ const okResult: ToolResultMessage = {
 	timestamp: Date.now(),
 };
 
+function expectNoLoneSurrogates(value: string): void {
+	for (const char of Array.from(value)) {
+		const codePoint = char.codePointAt(0);
+		expect(
+			codePoint === undefined || codePoint < 0xd800 || codePoint > 0xdfff,
+		).toBe(true);
+	}
+}
+
 describe("tool execution bridge", () => {
 	let requests: CapturedRequest[];
 
@@ -190,6 +199,65 @@ describe("tool execution bridge", () => {
 				}),
 			}),
 		});
+	});
+
+	it("truncates metadata without splitting surrogate pairs", async () => {
+		process.env.EVALOPS_FEATURE_FLAGS_PATH = writeFlags([
+			MAESTRO_PLATFORM_RUNTIME_AGENT_RUNTIME_OBSERVE_FLAG,
+		]);
+		const branch = `${"a".repeat(508)}😀feature`;
+		vi.stubEnv("MAESTRO_GIT_BRANCH", branch);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url = typeof input === "string" ? input : input.toString();
+				const parsed = new URL(url);
+				requests.push({
+					body: parseRequestBody(init?.body),
+					headers: headersToRecord(init?.headers),
+					method: init?.method,
+					pathname: parsed.pathname,
+					url,
+				});
+				return new Response(
+					JSON.stringify({
+						execution: {
+							id: "texec_unicode_1",
+							state: "TOOL_EXECUTION_STATE_SUCCEEDED",
+						},
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			}),
+		);
+
+		const bridge = new DefaultPlatformToolExecutionBridge();
+		const prepared = await bridge.prepare({
+			cfg: baseConfig(),
+			toolCall: {
+				type: "toolCall",
+				id: "tc_unicode_1",
+				name: "bash",
+				arguments: { command: "git status" },
+			},
+			sanitizedArgs: { command: "git status" },
+		});
+		if (prepared.status !== "observe") {
+			throw new Error("expected observe plan");
+		}
+		await bridge.recordObservation(prepared.plan, {
+			...okResult,
+			toolCallId: "tc_unicode_1",
+		});
+
+		const metadata = requests[0]?.body?.metadata as
+			| Record<string, string>
+			| undefined;
+		const gitBranch = metadata?.maestro_git_branch;
+		expect(gitBranch).toBeDefined();
+		expect(gitBranch?.length).toBeLessThanOrEqual(512);
+		expect(gitBranch).toMatch(/\.\.\.$/u);
+		expectNoLoneSurrogates(gitBranch ?? "");
 	});
 
 	it("skips the bridge when no Platform destination is configured", async () => {

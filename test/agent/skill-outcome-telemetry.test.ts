@@ -145,6 +145,34 @@ function createEvaluatedToolResult(toolCallId: string): ToolResultMessage {
 	};
 }
 
+function createExplicitPassedEvaluationToolResult(
+	toolCallId: string,
+): ToolResultMessage {
+	return {
+		role: "toolResult",
+		toolCallId,
+		toolName: "Bash",
+		content: [{ type: "text", text: "bash completed" }],
+		details: {
+			evaluation: {
+				score: 0.1,
+				threshold: 0.9,
+				passed: true,
+				rationale: "reviewer accepted the output",
+			},
+			assertions: [
+				{
+					name: "manual-review",
+					passed: true,
+					score: 0.1,
+				},
+			],
+		},
+		isError: false,
+		timestamp: Date.now(),
+	};
+}
+
 class SkillSelectionTransport implements AgentTransport {
 	constructor(
 		private readonly shouldFailAfterSelection = false,
@@ -155,6 +183,7 @@ class SkillSelectionTransport implements AgentTransport {
 			skillMetadata: SkillArtifactMetadata;
 		}> = [],
 		private readonly failureMessage = "turn blew up",
+		private readonly evaluationResultFactory = createEvaluatedToolResult,
 	) {}
 
 	async *continue(): AsyncGenerator<AgentEvent, void, unknown> {}
@@ -240,7 +269,7 @@ class SkillSelectionTransport implements AgentTransport {
 				args: { command: "npm test" },
 			};
 
-			const evalResult = createEvaluatedToolResult(evalToolCallId);
+			const evalResult = this.evaluationResultFactory(evalToolCallId);
 			yield { type: "message_start", message: evalResult };
 			yield { type: "message_end", message: evalResult };
 			yield {
@@ -428,6 +457,63 @@ describe("skill outcome telemetry", () => {
 					version: "3",
 					source: "service",
 				},
+			},
+		});
+	});
+
+	it("treats explicit passed evaluation as authoritative over score threshold", async () => {
+		const published: Array<{ subject: string; payload: string }> = [];
+		process.env.MAESTRO_EVENT_BUS_URL = "nats://bus.example:4222";
+		setMaestroEventBusTransportForTests({
+			async publish(subject, payload) {
+				published.push({ subject, payload });
+			},
+		});
+
+		const agent = new Agent({
+			transport: new SkillSelectionTransport(
+				false,
+				true,
+				[],
+				"turn blew up",
+				createExplicitPassedEvaluationToolResult,
+			),
+			initialState: {
+				model: mockModel,
+				tools: [],
+				session: {
+					id: "session_123",
+					startedAt: new Date("2026-04-23T18:00:00.000Z"),
+				},
+			},
+		});
+
+		await agent.prompt("load the incident review skill and evaluate the run");
+
+		const payloads = published.map(({ payload }) => JSON.parse(payload));
+		expect(
+			payloads.find((payload) => payload.type === "maestro.events.eval.scored"),
+		).toMatchObject({
+			data: {
+				score: 0.1,
+				threshold: 0.9,
+				passed: true,
+				rationale: "reviewer accepted the output",
+			},
+		});
+		expect(
+			payloads.some(
+				(payload) => payload.type === "maestro.events.skill.failed",
+			),
+		).toBe(false);
+		expect(
+			payloads.find(
+				(payload) => payload.type === "maestro.events.skill.succeeded",
+			),
+		).toMatchObject({
+			data: {
+				tool_call_id: "tool-skill-1",
+				turn_status: "success",
 			},
 		});
 	});

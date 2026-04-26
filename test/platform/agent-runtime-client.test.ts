@@ -9,6 +9,7 @@ import {
 	buildMaestroSessionRuntimeTrigger,
 	recordMaestroSessionRuntimeTrigger,
 } from "../../src/platform/agent-runtime-client.js";
+import { resolveCerebroFactsServiceConfig } from "../../src/platform/cerebro-facts-client.js";
 
 function headersToRecord(
 	headers: HeadersInit | undefined,
@@ -54,6 +55,8 @@ describe("agent runtime service client", () => {
 			"CEREBRO_WORKSPACE_ID",
 			"MAESTRO_CEREBRO_TIMEOUT_MS",
 			"CEREBRO_TIMEOUT_MS",
+			"MAESTRO_CEREBRO_MAX_ATTEMPTS",
+			"CEREBRO_MAX_ATTEMPTS",
 			"MAESTRO_CEREBRO_SEARCH_LIMIT",
 			"CEREBRO_SEARCH_LIMIT",
 			"MAESTRO_CEREBRO_CHANGE_LIMIT",
@@ -101,6 +104,17 @@ describe("agent runtime service client", () => {
 				maestroSessionId: "session_1",
 				metadata: { model: "gpt-5" },
 			},
+		});
+	});
+
+	it("accepts full Cerebro service URLs without duplicating the service path", () => {
+		vi.stubEnv(
+			"CEREBRO_SERVICE_URL",
+			"https://cerebro.test/cerebro.v1.CerebroService/",
+		);
+
+		expect(resolveCerebroFactsServiceConfig()).toMatchObject({
+			baseUrl: "https://cerebro.test",
 		});
 	});
 
@@ -229,7 +243,12 @@ describe("agent runtime service client", () => {
 								kind: "THING_KIND_SERVICE",
 							},
 						],
-						evidence: [{ id: "evidence_search", uri: "https://repo.test" }],
+						evidence: [
+							{
+								id: "evidence_search",
+								uri: "https://github.com/evalops/platform",
+							},
+						],
 					});
 				}
 
@@ -240,7 +259,7 @@ describe("agent runtime service client", () => {
 					});
 					return Response.json({
 						thing: {
-							id: "thing_pipeline",
+							id: "thing_pipeline_canonical",
 							name: "Pipeline",
 							kind: "THING_KIND_SERVICE",
 						},
@@ -249,6 +268,7 @@ describe("agent runtime service client", () => {
 								id: "fact_pipeline_owner",
 								subjectThingId: "thing_pipeline",
 								statement: "Pipeline is owned by Platform",
+								confidence: 0.9,
 							},
 						],
 						recentEvents: [
@@ -257,22 +277,24 @@ describe("agent runtime service client", () => {
 								summary: "Pipeline deployed",
 							},
 						],
-						evidence: [{ id: "evidence_owner", uri: "https://owner.test" }],
+						evidence: [
+							{
+								id: "evidence_owner",
+								uri: "https://github.com/evalops/platform",
+							},
+						],
 					});
 				}
 
 				if (url.endsWith("/cerebro.v1.CerebroService/ListChanges")) {
 					expect(body).toMatchObject({
 						workspaceId: "ws_env",
-						thingIds: ["thing_pipeline"],
+						thingIds: ["thing_pipeline", "thing_pipeline_canonical"],
 						limit: 10,
 					});
 					return Response.json({
 						changes: [
-							{
-								id: "change_pipeline_recent",
-								thingId: "thing_pipeline",
-							},
+							{ id: "change_pipeline_recent", thingId: "thing_pipeline" },
 						],
 					});
 				}
@@ -295,10 +317,10 @@ describe("agent runtime service client", () => {
 									provider: "cerebro",
 									workspaceId: "ws_env",
 									query: "triage pipeline regressions",
-									thingIds: ["thing_pipeline"],
+									thingIds: ["thing_pipeline", "thing_pipeline_canonical"],
 									factIds: ["fact_pipeline_owner"],
 									summary: {
-										thingCount: 1,
+										thingCount: 2,
 										factCount: 1,
 										eventCount: 1,
 										changeCount: 1,
@@ -312,6 +334,11 @@ describe("agent runtime service client", () => {
 						run: {
 							id: "run_with_facts",
 							state: PlatformAgentRunStateValue.Accepted,
+							linkage: {
+								runId: "run_with_facts",
+								workspaceId: "ws_env",
+								agentId: "maestro",
+							},
 						},
 						events: [],
 						idempotentReplay: false,

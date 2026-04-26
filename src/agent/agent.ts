@@ -221,6 +221,9 @@ function isFailedToolEvaluation(summary: ToolEvaluationSummary): boolean {
 	if (summary.passed === false) {
 		return true;
 	}
+	if (summary.passed === true) {
+		return false;
+	}
 	return (
 		typeof summary.score === "number" &&
 		typeof summary.threshold === "number" &&
