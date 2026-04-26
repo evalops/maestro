@@ -21,6 +21,7 @@ import {
 	resumeToolExecutionWithPlatform,
 } from "../../platform/tool-execution-client.js";
 import { isReadOnlyTool } from "../../tools/parallel-execution.js";
+import { isAbortError } from "../../utils/abort.js";
 import { createLogger } from "../../utils/logger.js";
 import type {
 	ActionApprovalDecision,
@@ -942,8 +943,4 @@ export function buildObservedResultMetadata(
 			observation?.metadata.approvalRequestId ??
 			plan.metadata.approvalRequestId,
 	};
-}
-
-function isAbortError(error: unknown): boolean {
-	return error instanceof Error && error.name === "AbortError";
 }
