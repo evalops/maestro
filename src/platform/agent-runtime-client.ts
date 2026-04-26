@@ -1,3 +1,4 @@
+import { isAbortError } from "../utils/abort.js";
 import {
 	type MaestroFactsContext,
 	gatherMaestroSessionFactsContext,
@@ -21,10 +22,6 @@ const DEFAULT_MAX_ATTEMPTS = 2;
 const HANDLE_TRIGGER_PATH = platformConnectMethodPath(
 	PLATFORM_CONNECT_METHODS.agentRuntime.handleTrigger,
 );
-
-function isAbortError(error: unknown): boolean {
-	return error instanceof Error && error.name === "AbortError";
-}
 
 const AGENT_RUNTIME_BASE_URL_ENV_VARS = [
 	"MAESTRO_AGENT_RUNTIME_SERVICE_URL",
@@ -420,7 +417,9 @@ export async function recordMaestroSessionRuntimeTrigger(
 					...input,
 					workspaceId: input.workspaceId ?? config.workspaceId,
 				},
-				{ signal: options?.signal },
+				{
+					signal: options?.signal,
+				},
 			);
 		} catch (error) {
 			if (isAbortError(error)) {
