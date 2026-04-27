@@ -81,6 +81,7 @@ struct AppState {
     command_prefs: Arc<Mutex<CommandPrefs>>,
     sessions: Arc<Mutex<SessionStore>>,
     session_persist_lock: Arc<Mutex<()>>,
+    approval_modes: Arc<Mutex<HashMap<String, String>>>,
     pending_tool_responses: Arc<Mutex<HashMap<String, PendingToolResponseSender>>>,
 }
 
@@ -302,6 +303,7 @@ async fn main() -> anyhow::Result<()> {
         command_prefs: Arc::new(Mutex::new(command_prefs)),
         sessions: Arc::new(Mutex::new(sessions)),
         session_persist_lock: Arc::new(Mutex::new(())),
+        approval_modes: Arc::new(Mutex::new(HashMap::new())),
         pending_tool_responses: Arc::new(Mutex::new(HashMap::new())),
     };
 
@@ -413,6 +415,7 @@ fn is_local_endpoint(head: &RequestHead) -> bool {
                 | "/api/review"
                 | "/api/context"
                 | "/api/stats"
+                | "/api/approvals"
                 | "/api/telemetry"
                 | "/api/training"
         ) | (
@@ -426,6 +429,7 @@ fn is_local_endpoint(head: &RequestHead) -> bool {
                 | "/api/framework"
                 | "/api/undo"
                 | "/api/run"
+                | "/api/approvals"
         )
     ) || is_session_endpoint(head)
         || is_pending_request_resume_endpoint(head)
@@ -726,6 +730,18 @@ async fn handle_local_endpoint(
                 }
             };
             run_script_response(&state.config.cwd, request).await
+        }
+        ("GET", "/api/approvals") => {
+            if let Err(response) = authorize(&head, &state.config) {
+                return response;
+            }
+            approval_mode_response(&head, state).await
+        }
+        ("POST", "/api/approvals") => {
+            if let Err(response) = authorize(&head, &state.config) {
+                return response;
+            }
+            set_approval_mode_response(stream, initial, &head, state).await
         }
         ("GET", "/api/background") => {
             if let Err(response) = authorize(&head, &state.config) {
@@ -1132,11 +1148,15 @@ async fn handle_session_get(state: &AppState, session_path: SessionPath<'_>) -> 
         Some("timeline") => json_response(
             200,
             &serde_json::json!({
-                "sessionId": session.id,
-                "events": session.messages.iter().enumerate().map(|(index, message)| {
+                "source": "local",
+                "generatedAt": now_rfc3339(),
+                "platformBacked": false,
+                "pendingRequestCount": 0,
+                "items": session.messages.iter().enumerate().map(|(index, message)| {
                     serde_json::json!({
                         "id": format!("{}-{index}", session.id),
                         "type": "message",
+                        "timestamp": message.get("timestamp").cloned().unwrap_or(Value::Null),
                         "message": message
                     })
                 }).collect::<Vec<_>>()
@@ -2198,6 +2218,99 @@ async fn run_script_response(cwd: &Path, request: RunScriptRequest) -> Vec<u8> {
     }
 }
 
+async fn approval_mode_response(head: &RequestHead, state: &AppState) -> Vec<u8> {
+    let session_id = approval_session_id(head);
+    let mode = state
+        .approval_modes
+        .lock()
+        .await
+        .get(&session_id)
+        .cloned()
+        .unwrap_or_else(default_approval_mode);
+    json_response(
+        200,
+        &serde_json::json!({
+            "mode": mode,
+            "availableModes": ["auto", "prompt", "fail"]
+        }),
+    )
+}
+
+async fn set_approval_mode_response(
+    stream: &mut TcpStream,
+    initial: &mut Vec<u8>,
+    head: &RequestHead,
+    state: &AppState,
+) -> Vec<u8> {
+    let body = match read_request_body(stream, initial, head).await {
+        Ok(body) => body,
+        Err(error) => return json_response(400, &serde_json::json!({ "error": error })),
+    };
+    let payload = if body.is_empty() {
+        Value::Object(serde_json::Map::new())
+    } else {
+        match serde_json::from_slice::<Value>(&body) {
+            Ok(value) if value.is_object() => value,
+            Ok(_) => {
+                return json_response(
+                    400,
+                    &serde_json::json!({ "error": "approval payload must be an object" }),
+                );
+            }
+            Err(error) => {
+                return json_response(
+                    400,
+                    &serde_json::json!({ "error": format!("invalid approval request: {error}") }),
+                );
+            }
+        }
+    };
+    let Some(mode) = payload
+        .get("mode")
+        .and_then(Value::as_str)
+        .filter(|mode| matches!(*mode, "auto" | "prompt" | "fail"))
+    else {
+        return json_response(
+            400,
+            &serde_json::json!({ "error": "mode must be auto, prompt, or fail" }),
+        );
+    };
+    let session_id = payload
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| approval_session_id(head));
+    state
+        .approval_modes
+        .lock()
+        .await
+        .insert(session_id, mode.to_string());
+    json_response(
+        200,
+        &serde_json::json!({
+            "success": true,
+            "mode": mode,
+            "message": format!("Approval mode set to {mode}")
+        }),
+    )
+}
+
+fn approval_session_id(head: &RequestHead) -> String {
+    head.query
+        .get("sessionId")
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .unwrap_or_else(|| "default".to_string())
+}
+
+fn default_approval_mode() -> String {
+    env::var("MAESTRO_APPROVAL_MODE")
+        .ok()
+        .filter(|mode| matches!(mode.as_str(), "auto" | "prompt" | "fail"))
+        .unwrap_or_else(|| "prompt".to_string())
+}
+
 async fn script_runner_command() -> Option<String> {
     if let Ok(runner) = env::var("MAESTRO_SCRIPT_RUNNER") {
         let runner = runner.trim();
@@ -2485,7 +2598,8 @@ async fn selected_chat_model(chat: &ChatRequest, state: &AppState) -> String {
     {
         return model.to_string();
     }
-    state.selected_model.lock().await.id.clone()
+    let selected = state.selected_model.lock().await;
+    format!("{}/{}", selected.provider, selected.id)
 }
 
 async fn usage_provider_model(
@@ -3121,6 +3235,18 @@ async fn handle_chat_websocket_endpoint(
     if let Err(response) = authorize(&head, &state.config) {
         stream
             .write_all(&response)
+            .await
+            .map_err(|error| error.to_string())?;
+        let _ = stream.shutdown().await;
+        return Ok(());
+    }
+
+    if !origin_allowed(&head) {
+        stream
+            .write_all(&json_response(
+                403,
+                &serde_json::json!({ "error": "WebSocket origin is not allowed" }),
+            ))
             .await
             .map_err(|error| error.to_string())?;
         let _ = stream.shutdown().await;
@@ -4577,6 +4703,27 @@ fn cors_origin() -> String {
     env::var("MAESTRO_WEB_ORIGIN").unwrap_or_else(|_| "http://localhost:4173".into())
 }
 
+fn origin_allowed(head: &RequestHead) -> bool {
+    let Some(origin) = head.headers.get("origin").map(|origin| origin.trim()) else {
+        return true;
+    };
+    if origin.is_empty() || origin == cors_origin() {
+        return true;
+    }
+    matches!(
+        origin,
+        "http://localhost:4173"
+            | "http://localhost:3000"
+            | "http://localhost:5173"
+            | "http://127.0.0.1:4173"
+            | "http://127.0.0.1:3000"
+            | "http://127.0.0.1:5173"
+            | "http://[::1]:4173"
+            | "http://[::1]:3000"
+            | "http://[::1]:5173"
+    )
+}
+
 fn env_u16(name: &str, default: u16) -> u16 {
     env::var(name)
         .ok()
@@ -4619,6 +4766,7 @@ mod tests {
             "/api/commands",
             "/api/config",
             "/api/usage",
+            "/api/approvals",
             "/api/telemetry",
             "/api/training",
             "/api/sessions",
@@ -4642,6 +4790,7 @@ mod tests {
             "POST /api/sessions HTTP/1.1\r\nHost: localhost\r\n\r\n",
             "POST /api/sessions/session-1/share HTTP/1.1\r\nHost: localhost\r\n\r\n",
             "POST /api/sessions/session-1/export HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "POST /api/approvals HTTP/1.1\r\nHost: localhost\r\n\r\n",
             "PATCH /api/sessions/session-1 HTTP/1.1\r\nHost: localhost\r\n\r\n",
             "DELETE /api/sessions/session-1 HTTP/1.1\r\nHost: localhost\r\n\r\n",
             "POST /api/pending-requests/request-1/resume HTTP/1.1\r\nHost: localhost\r\n\r\n",
@@ -4658,6 +4807,21 @@ mod tests {
             .expect("shared path should parse");
         assert_eq!(shared.token, "token-1");
         assert_eq!(shared.tail, Some("attachments/a1"));
+    }
+
+    #[test]
+    fn websocket_origin_check_allows_local_and_rejects_cross_site() {
+        let allowed = parse_request_head(
+            b"GET /api/chat/ws HTTP/1.1\r\nHost: localhost\r\nOrigin: http://localhost:4173\r\n\r\n",
+        )
+        .expect("request should parse");
+        assert!(origin_allowed(&allowed));
+
+        let rejected = parse_request_head(
+            b"GET /api/chat/ws HTTP/1.1\r\nHost: localhost\r\nOrigin: https://evil.example\r\n\r\n",
+        )
+        .expect("request should parse");
+        assert!(!origin_allowed(&rejected));
     }
 
     #[test]
