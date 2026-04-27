@@ -1,3 +1,7 @@
+import {
+	type MaestroCloseReason,
+	recordMaestroSessionEvent,
+} from "@evalops/ai/telemetry";
 import type { AgentConfig, Task } from "../types.js";
 
 const DEFAULT_IDENTITY_URL = "http://127.0.0.1:8080";
@@ -120,6 +124,83 @@ function buildGitHubTaskRuntimeEnvironment(task: Task): Record<string, string> {
 			? {}
 			: { MAESTRO_EVENT_BUS_ATTR_SOURCE_ISSUE: String(task.sourceIssue) }),
 	};
+}
+
+function buildGitHubTaskEventEnvironment(
+	task: Task,
+	env: NodeJS.ProcessEnv,
+): Record<string, string> {
+	return {
+		...cloneEnv(env),
+		...buildGitHubTaskRuntimeEnvironment(task),
+	};
+}
+
+function buildGitHubTaskEventMetadata(
+	task: Task,
+	extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+	const metadata: Record<string, unknown> = {
+		task_id: task.id,
+		task_type: task.type,
+		source_issue: task.sourceIssue,
+		priority: task.priority,
+		attempts: task.attempts,
+		...extra,
+	};
+	return Object.fromEntries(
+		Object.entries(metadata).filter(([, value]) => value !== undefined),
+	);
+}
+
+export interface GitHubTaskSessionCloseInput {
+	status: "completed" | "failed";
+	branch?: string;
+	prUrl?: string;
+	durationMs?: number;
+	tokensUsed?: number;
+	cost?: number;
+	error?: string;
+}
+
+function closeReasonForGitHubTask(
+	status: GitHubTaskSessionCloseInput["status"],
+): MaestroCloseReason {
+	return status === "completed"
+		? "MAESTRO_CLOSE_REASON_COMPLETED"
+		: "MAESTRO_CLOSE_REASON_ERROR";
+}
+
+export function recordGitHubTaskSessionStarted(
+	task: Task,
+	env: NodeJS.ProcessEnv = process.env,
+): void {
+	recordMaestroSessionEvent("MAESTRO_SESSION_STATE_STARTED", {
+		sessionId: task.id,
+		metadata: buildGitHubTaskEventMetadata(task),
+		env: buildGitHubTaskEventEnvironment(task, env),
+	});
+}
+
+export function recordGitHubTaskSessionClosed(
+	task: Task,
+	input: GitHubTaskSessionCloseInput,
+	env: NodeJS.ProcessEnv = process.env,
+): void {
+	recordMaestroSessionEvent("MAESTRO_SESSION_STATE_CLOSED", {
+		sessionId: task.id,
+		closeReason: closeReasonForGitHubTask(input.status),
+		closeMessage: input.error,
+		metadata: buildGitHubTaskEventMetadata(task, {
+			status: input.status,
+			branch: input.branch,
+			pr_url: input.prUrl,
+			duration_ms: input.durationMs,
+			tokens_used: input.tokensUsed,
+			cost: input.cost,
+		}),
+		env: buildGitHubTaskEventEnvironment(task, env),
+	});
 }
 
 function getAgentType(task: Task): string {
