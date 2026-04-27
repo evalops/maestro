@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { JetStreamClient, NatsConnection } from "nats";
 import type { PromptMetadata } from "../prompts/types.js";
@@ -50,6 +51,14 @@ export type MaestroToolCallStatus =
 	| "MAESTRO_TOOL_CALL_STATUS_FAILED"
 	| "MAESTRO_TOOL_CALL_STATUS_DENIED"
 	| "MAESTRO_TOOL_CALL_STATUS_CANCELLED";
+
+export type MaestroSkillOutcomeProtoStatus =
+	| "MAESTRO_SKILL_OUTCOME_STATUS_SUCCEEDED"
+	| "MAESTRO_SKILL_OUTCOME_STATUS_FAILED"
+	| "MAESTRO_SKILL_OUTCOME_STATUS_DENIED"
+	| "MAESTRO_SKILL_OUTCOME_STATUS_CANCELLED"
+	| "MAESTRO_SKILL_OUTCOME_STATUS_EVALUATION_FAILED"
+	| "MAESTRO_SKILL_OUTCOME_STATUS_RATE_LIMITED";
 
 export interface MaestroCorrelation {
 	organization_id?: string;
@@ -225,6 +234,8 @@ export interface SkillInvocationEventData extends Record<string, unknown> {
 	correlation: MaestroCorrelation;
 	prompt_metadata?: PromptMetadata;
 	skill_metadata: SkillArtifactMetadata;
+	invocation_id?: string;
+	skill_id?: string;
 	tool_call_id: string;
 	tool_execution_id?: string;
 	invoked_at: string;
@@ -241,6 +252,9 @@ export interface SkillOutcomeEventData extends Record<string, unknown> {
 	correlation: MaestroCorrelation;
 	prompt_metadata?: PromptMetadata;
 	skill_metadata: SkillArtifactMetadata;
+	invocation_id?: string;
+	skill_id?: string;
+	status?: MaestroSkillOutcomeProtoStatus;
 	tool_call_id?: string;
 	tool_execution_id?: string;
 	turn_status: MaestroSkillOutcomeStatus;
@@ -294,6 +308,7 @@ export type MaestroTelemetryMirrorEvent = {
 };
 
 export interface RecordMaestroApprovalHitInput {
+	event_id?: string;
 	approval_request_id?: string;
 	governance_decision_id?: string;
 	action: string;
@@ -309,6 +324,7 @@ export interface RecordMaestroApprovalHitInput {
 }
 
 export interface RecordMaestroFirewallBlockInput {
+	event_id?: string;
 	rule_id?: string;
 	operation: string;
 	target: string;
@@ -322,6 +338,7 @@ export interface RecordMaestroFirewallBlockInput {
 }
 
 export interface RecordMaestroToolCallAttemptInput {
+	event_id?: string;
 	tool_call_id: string;
 	tool_execution_id?: string;
 	prompt_metadata?: PromptMetadata;
@@ -342,6 +359,7 @@ export interface RecordMaestroToolCallAttemptInput {
 }
 
 export interface RecordMaestroToolCallCompletedInput {
+	event_id?: string;
 	tool_call_id: string;
 	tool_execution_id?: string;
 	prompt_metadata?: PromptMetadata;
@@ -360,6 +378,7 @@ export interface RecordMaestroToolCallCompletedInput {
 }
 
 export interface RecordMaestroPromptVariantSelectedInput {
+	event_id?: string;
 	prompt_metadata: PromptMetadata;
 	correlation?: Partial<MaestroCorrelation>;
 	selected_at?: string;
@@ -367,8 +386,11 @@ export interface RecordMaestroPromptVariantSelectedInput {
 }
 
 export interface RecordMaestroSkillInvokedInput {
+	event_id?: string;
 	prompt_metadata?: PromptMetadata;
 	skill_metadata: SkillArtifactMetadata;
+	invocation_id?: string;
+	skill_id?: string;
 	tool_call_id: string;
 	tool_execution_id?: string;
 	correlation?: Partial<MaestroCorrelation>;
@@ -377,8 +399,12 @@ export interface RecordMaestroSkillInvokedInput {
 }
 
 export interface RecordMaestroSkillOutcomeInput {
+	event_id?: string;
 	prompt_metadata?: PromptMetadata;
 	skill_metadata: SkillArtifactMetadata;
+	invocation_id?: string;
+	skill_id?: string;
+	status?: MaestroSkillOutcomeProtoStatus;
 	tool_call_id?: string;
 	tool_execution_id?: string;
 	turn_status: MaestroSkillOutcomeStatus;
@@ -398,6 +424,7 @@ export interface RecordMaestroSkillOutcomeInput {
 }
 
 export interface RecordMaestroEvalScoredInput {
+	event_id?: string;
 	prompt_metadata?: PromptMetadata;
 	skill_metadata?: SkillArtifactMetadata;
 	tool_call_id: string;
@@ -414,6 +441,8 @@ export interface RecordMaestroEvalScoredInput {
 }
 
 let transportOverride: MaestroEventBusTransport | null | undefined;
+const scopedTransportOverride =
+	new AsyncLocalStorage<MaestroEventBusTransport | null>();
 let natsTransportPromise:
 	| Promise<{ key: string; transport: MaestroEventBusTransport }>
 	| undefined;
@@ -632,7 +661,16 @@ export function setMaestroEventBusTransportForTests(
 	transportOverride = transport;
 }
 
+export async function withMaestroEventBusTransportOverride<T>(
+	transport: MaestroEventBusTransport | null,
+	callback: () => Promise<T>,
+): Promise<T> {
+	return scopedTransportOverride.run(transport, callback);
+}
+
 export async function closeMaestroEventBusTransport(): Promise<void> {
+	const scopedTransport = scopedTransportOverride.getStore();
+	if (scopedTransport?.close) await scopedTransport.close();
 	if (transportOverride?.close) await transportOverride.close();
 	if (natsTransportPromise) {
 		const { transport } = await natsTransportPromise;
@@ -693,6 +731,8 @@ async function createNatsTransport(
 async function getTransport(
 	config: MaestroEventBusConfig,
 ): Promise<MaestroEventBusTransport | null> {
+	const scopedTransport = scopedTransportOverride.getStore();
+	if (scopedTransport !== undefined) return scopedTransport;
 	if (transportOverride !== undefined) return transportOverride;
 	return createNatsTransport(config);
 }
@@ -844,6 +884,23 @@ function durationFromMs(value: unknown): string | undefined {
 	return `${Number((value / 1000).toFixed(3))}s`;
 }
 
+function protoSkillOutcomeStatusFromTurnStatus(
+	status: MaestroSkillOutcomeStatus,
+): MaestroSkillOutcomeProtoStatus {
+	switch (status) {
+		case "success":
+			return "MAESTRO_SKILL_OUTCOME_STATUS_SUCCEEDED";
+		case "aborted":
+			return "MAESTRO_SKILL_OUTCOME_STATUS_CANCELLED";
+		case "evaluation_failed":
+			return "MAESTRO_SKILL_OUTCOME_STATUS_EVALUATION_FAILED";
+		case "rate_limited":
+			return "MAESTRO_SKILL_OUTCOME_STATUS_RATE_LIMITED";
+		case "error":
+			return "MAESTRO_SKILL_OUTCOME_STATUS_FAILED";
+	}
+}
+
 function sessionEventTypeForMetric(
 	metric: unknown,
 ): MaestroBusEventType | undefined {
@@ -926,7 +983,7 @@ export function recordMaestroApprovalHit(
 			context: event.context,
 			occurred_at: occurredAt,
 		},
-		{ env: event.env, time: occurredAt },
+		{ env: event.env, eventId: event.event_id, time: occurredAt },
 	);
 }
 
@@ -950,7 +1007,7 @@ export function recordMaestroFirewallBlock(
 			context: event.context,
 			occurred_at: occurredAt,
 		},
-		{ env: event.env, time: occurredAt },
+		{ env: event.env, eventId: event.event_id, time: occurredAt },
 	);
 }
 
@@ -981,7 +1038,7 @@ export function recordMaestroToolCallAttempt(
 			idempotency_key: event.idempotency_key,
 			attempted_at: attemptedAt,
 		},
-		{ env: event.env, time: attemptedAt },
+		{ env: event.env, eventId: event.event_id, time: attemptedAt },
 	);
 }
 
@@ -1010,7 +1067,7 @@ export function recordMaestroToolCallCompleted(
 			error_message: event.error_message,
 			completed_at: completedAt,
 		},
-		{ env: event.env, time: completedAt },
+		{ env: event.env, eventId: event.event_id, time: completedAt },
 	);
 }
 
@@ -1028,7 +1085,7 @@ export function recordMaestroPromptVariantSelected(
 			prompt_metadata: event.prompt_metadata,
 			selected_at: selectedAt,
 		},
-		{ env: event.env, time: selectedAt },
+		{ env: event.env, eventId: event.event_id, time: selectedAt },
 	);
 }
 
@@ -1045,11 +1102,13 @@ export function recordMaestroSkillInvoked(
 			),
 			prompt_metadata: event.prompt_metadata,
 			skill_metadata: event.skill_metadata,
+			invocation_id: event.invocation_id,
+			skill_id: event.skill_id ?? event.skill_metadata.artifactId,
 			tool_call_id: event.tool_call_id,
 			tool_execution_id: event.tool_execution_id,
 			invoked_at: invokedAt,
 		},
-		{ env: event.env, time: invokedAt },
+		{ env: event.env, eventId: event.event_id, time: invokedAt },
 	);
 }
 
@@ -1070,6 +1129,11 @@ export function recordMaestroSkillOutcome(
 			),
 			prompt_metadata: event.prompt_metadata,
 			skill_metadata: event.skill_metadata,
+			invocation_id: event.invocation_id,
+			skill_id: event.skill_id ?? event.skill_metadata.artifactId,
+			status:
+				event.status ??
+				protoSkillOutcomeStatusFromTurnStatus(event.turn_status),
 			tool_call_id: event.tool_call_id,
 			tool_execution_id: event.tool_execution_id,
 			turn_status: event.turn_status,
@@ -1085,7 +1149,7 @@ export function recordMaestroSkillOutcome(
 			stop_reason: event.stop_reason,
 			outcome_at: outcomeAt,
 		},
-		{ env: event.env, time: outcomeAt },
+		{ env: event.env, eventId: event.event_id, time: outcomeAt },
 	);
 }
 
@@ -1112,7 +1176,7 @@ export function recordMaestroEvalScored(
 			assertion_count: event.assertion_count,
 			scored_at: scoredAt,
 		},
-		{ env: event.env, time: scoredAt },
+		{ env: event.env, eventId: event.event_id, time: scoredAt },
 	);
 }
 
