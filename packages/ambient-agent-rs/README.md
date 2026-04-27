@@ -142,6 +142,12 @@ github_token: ghp_xxxxx  # Your GitHub token
 |----------|-------------|
 | `ANTHROPIC_API_KEY` | API key for Claude models |
 | `GITHUB_TOKEN` | GitHub personal access token |
+| `MAESTRO_EVENT_BUS_URL` or `EVALOPS_NATS_URL` | NATS JetStream URL for publishing Ambient daemon session lifecycle CloudEvents |
+| `MAESTRO_EVENT_BUS` | Set to `0` or `false` to disable audit-bus publishing even when bus routing is configured |
+
+When bus routing is configured, the daemon publishes
+`maestro.sessions.session.started`, `suspended`, `resumed`, and `closed`
+events with `source=maestro.ambient-agent`.
 
 ## Data Storage
 

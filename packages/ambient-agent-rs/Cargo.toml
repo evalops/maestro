@@ -21,6 +21,7 @@ futures = "0.3"
 
 # HTTP client for GitHub API and AI
 reqwest = { version = "0.12", features = ["json", "stream"] }
+async-nats = "0.42"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

@@ -43,6 +43,7 @@ pub mod executor;
 pub mod github_watcher;
 pub mod ipc;
 pub mod learner;
+pub mod platform_event_bus;
 pub mod pr_creator;
 pub mod types;
 
