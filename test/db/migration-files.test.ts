@@ -100,8 +100,13 @@ describe("database migration packaging", () => {
 			"utf8",
 		);
 
+		expect(migration).toContain('ADD COLUMN IF NOT EXISTS "id"');
+		expect(migration).toContain('ADD COLUMN IF NOT EXISTS "payload"');
+		expect(migration).toContain('ADD COLUMN IF NOT EXISTS "status"');
+		expect(migration).toContain("webhook_deliveries_pkey");
 		expect(migration).toContain("organization_id");
 		expect(migration).toContain("next_attempt_at");
+		expect(migration).toContain('ALTER COLUMN "url" DROP DEFAULT');
 		expect(migration).toContain(
 			"IF to_regclass('public.webhook_deliveries') IS NOT NULL THEN",
 		);
