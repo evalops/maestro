@@ -364,7 +364,7 @@ pub(crate) fn default_model_from_registry(registry: &ModelRegistry) -> ModelInfo
         .unwrap_or_else(emergency_default_model)
 }
 
-pub(crate) fn emergency_default_model() -> ModelInfo {
+fn default_builtin_model() -> ModelInfo {
     ModelInfo {
         id: "claude-sonnet-4-5-20250514".to_string(),
         provider: "anthropic".to_string(),
@@ -386,6 +386,10 @@ pub(crate) fn emergency_default_model() -> ModelInfo {
             reasoning: true,
         },
     }
+}
+
+pub(crate) fn emergency_default_model() -> ModelInfo {
+    default_builtin_model()
 }
 
 pub(crate) fn resolve_model(input: &str, registry: &ModelRegistry) -> Option<ModelInfo> {
@@ -417,27 +421,7 @@ pub(crate) fn resolve_model(input: &str, registry: &ModelRegistry) -> Option<Mod
 
 pub(crate) fn builtin_models() -> Vec<ModelInfo> {
     vec![
-        ModelInfo {
-            id: "claude-sonnet-4-5-20250514".to_string(),
-            provider: "anthropic".to_string(),
-            name: "Claude Sonnet 4.5".to_string(),
-            api: "anthropic-messages".to_string(),
-            context_window: 200_000,
-            max_tokens: 64_000,
-            reasoning: true,
-            cost: ModelCost {
-                input: 3.0,
-                output: 15.0,
-                cache_read: 0.3,
-                cache_write: 3.75,
-            },
-            capabilities: ModelCapabilities {
-                streaming: true,
-                tools: true,
-                vision: true,
-                reasoning: true,
-            },
-        },
+        default_builtin_model(),
         ModelInfo {
             id: "gpt-5.1-codex-max".to_string(),
             provider: "openai".to_string(),

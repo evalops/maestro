@@ -1709,9 +1709,6 @@ fn attachment_string_field(attachment: &Value, keys: &[&str]) -> Option<String> 
 fn extract_attachment_request_response(request: ExtractAttachmentRequest) -> Vec<u8> {
     match extract_attachment_request(request) {
         Ok(output) => attachment_extract_json_response(output.file_name.clone(), output),
-        Err(error) if error == "Unsupported document format" => {
-            json_response(400, &serde_json::json!({ "error": error }))
-        }
         Err(error) => json_response(400, &serde_json::json!({ "error": error })),
     }
 }
