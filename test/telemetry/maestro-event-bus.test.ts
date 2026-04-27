@@ -6,6 +6,7 @@ import {
 	closeMaestroEventBusTransport,
 	getMaestroEventBusStatus,
 	publishMaestroCloudEvent,
+	publishMaestroCloudEventStrict,
 	recordMaestroEvalScored,
 	recordMaestroPromptVariantSelected,
 	recordMaestroSkillInvoked,
@@ -492,6 +493,57 @@ describe("maestro event bus", () => {
 				decision_mode: "MAESTRO_DECISION_MODE_REQUIRE_APPROVAL",
 			},
 		});
+	});
+
+	it("keeps runtime publish best-effort but exposes a strict smoke path", async () => {
+		setMaestroEventBusTransportForTests({
+			async publish() {
+				throw new Error("nats unavailable");
+			},
+		});
+		const data = {
+			correlation: {
+				workspace_id: "workspace_123",
+				session_id: "session_123",
+			},
+			action: "Smoke approval",
+			decision_mode: "MAESTRO_DECISION_MODE_REQUIRE_APPROVAL" as const,
+			occurred_at: "2026-04-22T16:00:00.000Z",
+		};
+		const options = {
+			env: { MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222" },
+			eventId: "event_strict",
+			time: "2026-04-22T16:00:00.000Z",
+		};
+
+		await expect(
+			publishMaestroCloudEvent(MaestroBusEventType.ApprovalHit, data, options),
+		).resolves.toBeUndefined();
+		await expect(
+			publishMaestroCloudEventStrict(
+				MaestroBusEventType.ApprovalHit,
+				data,
+				options,
+			),
+		).rejects.toThrow("nats unavailable");
+	});
+
+	it("fails strict smoke publishing when bus routing is not configured", async () => {
+		await expect(
+			publishMaestroCloudEventStrict(
+				MaestroBusEventType.ApprovalHit,
+				{
+					correlation: {
+						workspace_id: "workspace_123",
+						session_id: "session_123",
+					},
+					action: "Smoke approval",
+					decision_mode: "MAESTRO_DECISION_MODE_REQUIRE_APPROVAL",
+					occurred_at: "2026-04-22T16:00:00.000Z",
+				},
+				{ env: {} },
+			),
+		).rejects.toThrow("Maestro event bus is not enabled: disabled");
 	});
 
 	it("reports missing NATS URL separately from disabled bus state", () => {

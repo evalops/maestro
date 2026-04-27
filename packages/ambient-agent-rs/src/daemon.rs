@@ -794,6 +794,7 @@ mod tests {
     use crate::platform_event_bus::{PlatformEventBusConfig, PlatformEventBusTransport};
     use async_trait::async_trait;
     use serde_json::Value;
+    use std::os::unix::fs::PermissionsExt;
     use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
 
@@ -959,11 +960,16 @@ mod tests {
 
         wait_for_published(&transport, 1).await;
 
-        std::fs::create_dir(temp.path().join("learner.json")).unwrap();
+        let original_permissions = std::fs::metadata(temp.path()).unwrap().permissions();
+        let mut read_only_permissions = original_permissions.clone();
+        read_only_permissions.set_mode(0o500);
+        std::fs::set_permissions(temp.path(), read_only_permissions).unwrap();
 
         cmd_tx.send(DaemonCommand::Shutdown).await.unwrap();
 
         let result = daemon_handle.await.unwrap();
+
+        std::fs::set_permissions(temp.path(), original_permissions).unwrap();
 
         assert!(result.is_err());
         wait_for_published(&transport, 2).await;

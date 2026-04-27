@@ -53,6 +53,7 @@ export {
 	closeMaestroEventBusTransport,
 	getMaestroEventBusStatus,
 	publishMaestroCloudEvent,
+	publishMaestroCloudEventStrict,
 	recordMaestroApprovalHit,
 	recordMaestroEvalScored,
 	recordMaestroFirewallBlock,
