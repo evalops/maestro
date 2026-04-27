@@ -65,9 +65,67 @@ struct AppState {
     config: Arc<Config>,
     started_at: Instant,
     selected_model: Arc<Mutex<ModelInfo>>,
-    telemetry_override: Arc<Mutex<Option<bool>>>,
-    training_override: Arc<Mutex<Option<bool>>>,
+    telemetry_override: Arc<Mutex<Option<TelemetryOverride>>>,
+    training_override: Arc<Mutex<Option<TrainingOverride>>>,
     command_prefs: Arc<Mutex<CommandPrefs>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TelemetryOverride {
+    Enabled,
+    Disabled,
+}
+
+impl TelemetryOverride {
+    fn from_action(action: &str) -> Option<Self> {
+        match action {
+            "on" => Some(Self::Enabled),
+            "off" => Some(Self::Disabled),
+            "reset" => None,
+            _ => unreachable!("action was validated"),
+        }
+    }
+
+    fn is_enabled(self) -> bool {
+        matches!(self, Self::Enabled)
+    }
+
+    fn runtime_override(self) -> &'static str {
+        if self.is_enabled() {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TrainingOverride {
+    OptedIn,
+    OptedOut,
+}
+
+impl TrainingOverride {
+    fn from_action(action: &str) -> Option<Self> {
+        match action {
+            "on" => Some(Self::OptedIn),
+            "off" => Some(Self::OptedOut),
+            "reset" => None,
+            _ => unreachable!("action was validated"),
+        }
+    }
+
+    fn is_opt_out(self) -> bool {
+        matches!(self, Self::OptedOut)
+    }
+
+    fn preference(self) -> &'static str {
+        if self.is_opt_out() {
+            "opted-out"
+        } else {
+            "opted-in"
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -144,7 +202,7 @@ struct GitSnapshot {
     status: GitStatus,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Default, PartialEq, Eq, Serialize)]
 struct GitStatus {
     modified: usize,
     added: usize,
@@ -641,12 +699,7 @@ async fn handle_local_endpoint(
                 Ok(action) => action,
                 Err(response) => return response,
             };
-            let override_value = match action.as_str() {
-                "on" => Some(true),
-                "off" => Some(false),
-                "reset" => None,
-                _ => unreachable!("action was validated"),
-            };
+            let override_value = TelemetryOverride::from_action(&action);
             *state.telemetry_override.lock().await = override_value;
             json_response(
                 200,
@@ -671,12 +724,7 @@ async fn handle_local_endpoint(
                 Ok(action) => action,
                 Err(response) => return response,
             };
-            let override_value = match action.as_str() {
-                "on" => Some(false),
-                "off" => Some(true),
-                "reset" => None,
-                _ => unreachable!("action was validated"),
-            };
+            let override_value = TrainingOverride::from_action(&action);
             *state.training_override.lock().await = override_value;
             json_response(
                 200,
@@ -1304,7 +1352,7 @@ fn framework_response(head: &RequestHead) -> Value {
     }
 }
 
-fn telemetry_status(override_value: Option<bool>) -> Value {
+fn telemetry_status(override_value: Option<TelemetryOverride>) -> Value {
     let flag = env::var("MAESTRO_TELEMETRY")
         .or_else(|_| env::var("PLAYWRIGHT_TELEMETRY"))
         .ok();
@@ -1330,21 +1378,25 @@ fn telemetry_status(override_value: Option<bool>) -> Value {
         "filePath": file_path,
         "sampleRate": 1,
         "flagValue": flag,
-        "runtimeOverride": override_value.map(|enabled| if enabled { "enabled" } else { "disabled" })
+        "runtimeOverride": override_value.map(TelemetryOverride::runtime_override)
     })
 }
 
 fn telemetry_enabled(
-    override_value: Option<bool>,
+    override_value: Option<TelemetryOverride>,
     flag: Option<&str>,
     telemetry_sink_configured: bool,
 ) -> bool {
-    override_value.unwrap_or_else(|| parse_bool_flag(flag).unwrap_or(telemetry_sink_configured))
+    override_value
+        .map(TelemetryOverride::is_enabled)
+        .unwrap_or_else(|| parse_bool_flag(flag).unwrap_or(telemetry_sink_configured))
 }
 
-fn training_status(override_value: Option<bool>) -> Value {
+fn training_status(override_value: Option<TrainingOverride>) -> Value {
     let flag = env::var("MAESTRO_TRAINING_OPT_OUT").ok();
-    let opt_out = override_value.or_else(|| parse_bool_flag(flag.as_deref()));
+    let opt_out = override_value
+        .map(TrainingOverride::is_opt_out)
+        .or_else(|| parse_bool_flag(flag.as_deref()));
     let preference = match opt_out {
         Some(true) => "opted-out",
         Some(false) => "opted-in",
@@ -1355,7 +1407,7 @@ fn training_status(override_value: Option<bool>) -> Value {
         "optOut": opt_out,
         "reason": if override_value.is_some() { "runtime override" } else if flag.is_some() { "MAESTRO_TRAINING_OPT_OUT" } else { "provider default" },
         "flagValue": flag,
-        "runtimeOverride": override_value.map(|opt_out| if opt_out { "opted-out" } else { "opted-in" })
+        "runtimeOverride": override_value.map(TrainingOverride::preference)
     })
 }
 
@@ -2200,18 +2252,32 @@ async fn git_snapshot(cwd: &Path) -> Option<GitSnapshot> {
         .await
         .ok()?;
     let status_output = run_git(cwd, &["status", "--porcelain"]).await.ok()?;
-    let lines: Vec<&str> = status_output
-        .lines()
-        .filter(|line| !line.is_empty())
-        .collect();
-    let status = GitStatus {
-        modified: lines.iter().filter(|line| line.starts_with(" M")).count(),
-        added: lines.iter().filter(|line| line.starts_with("A ")).count(),
-        deleted: lines.iter().filter(|line| line.starts_with(" D")).count(),
-        untracked: lines.iter().filter(|line| line.starts_with("??")).count(),
-        total: lines.len(),
-    };
+    let status = parse_git_status(&status_output);
     Some(GitSnapshot { branch, status })
+}
+
+fn parse_git_status(status_output: &str) -> GitStatus {
+    let mut status = GitStatus::default();
+    for line in status_output.lines().filter(|line| !line.is_empty()) {
+        status.total += 1;
+        let code = line.get(..2).unwrap_or("");
+        if code == "??" {
+            status.untracked += 1;
+            continue;
+        }
+
+        let mut chars = code.chars();
+        let index_status = chars.next().unwrap_or(' ');
+        let worktree_status = chars.next().unwrap_or(' ');
+        if index_status == 'D' || worktree_status == 'D' {
+            status.deleted += 1;
+        } else if matches!(index_status, 'A' | 'R' | 'C') {
+            status.added += 1;
+        } else {
+            status.modified += 1;
+        }
+    }
+    status
 }
 
 async fn run_git(cwd: &Path, args: &[&str]) -> Result<String, String> {
@@ -2886,7 +2952,7 @@ mod tests {
 
     #[test]
     fn training_on_maps_to_opted_in() {
-        let status = training_status(Some(false));
+        let status = training_status(Some(TrainingOverride::OptedIn));
 
         assert_eq!(
             status.get("preference").and_then(Value::as_str),
@@ -2900,7 +2966,29 @@ mod tests {
         assert!(telemetry_enabled(None, Some("on"), false));
         assert!(telemetry_enabled(None, Some("True"), false));
         assert!(!telemetry_enabled(None, Some("false"), true));
-        assert!(telemetry_enabled(Some(true), Some("false"), false));
+        assert!(telemetry_enabled(
+            Some(TelemetryOverride::Enabled),
+            Some("false"),
+            false
+        ));
+    }
+
+    #[test]
+    fn parses_git_status_for_index_worktree_and_rename_codes() {
+        let status = parse_git_status(
+            " M modified-in-worktree.rs\nM  staged-modified.rs\nMM staged-and-modified.rs\nA  added.rs\nAM added-and-modified.rs\n D deleted-in-worktree.rs\nD  staged-deleted.rs\nR  renamed.rs -> old-name.rs\nC  copied.rs -> old-copy.rs\nUU conflicted.rs\n?? untracked.rs\n",
+        );
+
+        assert_eq!(
+            status,
+            GitStatus {
+                modified: 4,
+                added: 4,
+                deleted: 2,
+                untracked: 1,
+                total: 11,
+            }
+        );
     }
 
     #[test]
