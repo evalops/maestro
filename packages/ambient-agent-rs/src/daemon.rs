@@ -15,6 +15,9 @@ use crate::{
         StatusResponse,
     },
     learner::{Learner, Outcome},
+    platform_event_bus::{
+        AmbientCloseReason, AmbientSessionEvent, AmbientSessionState, PlatformEventBus,
+    },
     pr_creator::{PrCreator, PrCreatorConfig},
     types::*,
 };
@@ -79,11 +82,29 @@ pub struct AmbientDaemon {
     command_rx: Option<mpsc::Receiver<DaemonCommand>>,
     start_time: chrono::DateTime<Utc>,
     ipc_server: Option<IpcServer>,
+    platform_event_bus: PlatformEventBus,
+    session_id: String,
+    data_dir: PathBuf,
+    workspace_root: PathBuf,
 }
 
 impl AmbientDaemon {
     /// Create a new daemon
     pub fn new(config: AmbientConfig, data_dir: PathBuf) -> Self {
+        Self::new_with_options(
+            config,
+            data_dir,
+            PlatformEventBus::from_env(),
+            default_socket_path(),
+        )
+    }
+
+    fn new_with_options(
+        config: AmbientConfig,
+        data_dir: PathBuf,
+        platform_event_bus: PlatformEventBus,
+        ipc_socket_path: PathBuf,
+    ) -> Self {
         let (command_tx, command_rx) = mpsc::channel(100);
 
         // Initialize components
@@ -123,7 +144,8 @@ impl AmbientDaemon {
         let pr_creator = PrCreator::new(pr_creator_config);
 
         // IPC server for CLI communication
-        let ipc_server = IpcServer::new(default_socket_path());
+        let ipc_server = IpcServer::new(ipc_socket_path);
+        let workspace_root = std::env::current_dir().unwrap_or_else(|_| data_dir.clone());
 
         Self {
             config,
@@ -141,6 +163,10 @@ impl AmbientDaemon {
             command_rx: Some(command_rx),
             start_time: Utc::now(),
             ipc_server: Some(ipc_server),
+            platform_event_bus,
+            session_id: uuid::Uuid::new_v4().to_string(),
+            data_dir,
+            workspace_root,
         }
     }
 
@@ -177,6 +203,8 @@ impl AmbientDaemon {
 
         // Update status
         *self.status.write().await = DaemonStatus::Running;
+        self.record_session_event(AmbientSessionState::Started, None, None)
+            .await;
 
         // Subscribe to events
         let mut event_rx = self.event_bus.read().await.subscribe();
@@ -195,7 +223,6 @@ impl AmbientDaemon {
 
         // Get auth token for verification
         let auth_token = ipc_server.token().to_string();
-
         // Spawn IPC handler task
         let ipc_handle = tokio::spawn(async move {
             loop {
@@ -262,7 +289,7 @@ impl AmbientDaemon {
 
         info!("Daemon running, waiting for events");
 
-        loop {
+        let (close_reason, close_message) = loop {
             tokio::select! {
                 // Handle commands
                 Some(cmd) = command_rx.recv() => {
@@ -270,15 +297,22 @@ impl AmbientDaemon {
                         DaemonCommand::Pause => {
                             info!("Pausing daemon");
                             *self.status.write().await = DaemonStatus::Paused;
+                            self.record_session_event(AmbientSessionState::Suspended, None, None)
+                                .await;
                         }
                         DaemonCommand::Resume => {
                             info!("Resuming daemon");
                             *self.status.write().await = DaemonStatus::Running;
+                            self.record_session_event(AmbientSessionState::Resumed, None, None)
+                                .await;
                         }
                         DaemonCommand::Shutdown => {
                             info!("Shutting down daemon");
                             *self.status.write().await = DaemonStatus::ShuttingDown;
-                            break;
+                            break (
+                                AmbientCloseReason::UserStopped,
+                                Some("shutdown requested".to_string()),
+                            );
                         }
                         DaemonCommand::ProcessEvent(event) => {
                             if *self.status.read().await == DaemonStatus::Running {
@@ -299,15 +333,52 @@ impl AmbientDaemon {
                     }
                 }
             }
-        }
+        };
 
         // Cleanup
         ipc_handle.abort(); // Stop IPC handler
-        self.save_state().await?;
+        let save_result = self.save_state().await;
+        if let Err(error) = &save_result {
+            warn!(
+                "Failed to save Ambient daemon state during shutdown: {}",
+                error
+            );
+        }
         *self.status.write().await = DaemonStatus::Stopped;
+        self.record_session_event(
+            AmbientSessionState::Closed,
+            Some(close_reason),
+            close_message,
+        )
+        .await;
 
         info!("Daemon stopped");
-        Ok(())
+        save_result
+    }
+
+    async fn record_session_event(
+        &self,
+        state: AmbientSessionState,
+        close_reason: Option<AmbientCloseReason>,
+        close_message: Option<String>,
+    ) {
+        let status = self.get_status().await;
+        let mut event = AmbientSessionEvent::new(&self.session_id, state, &self.workspace_root)
+            .metadata(
+                "daemon_status",
+                format!("{:?}", status).to_ascii_lowercase(),
+            )
+            .metadata("data_dir", self.data_dir.to_string_lossy().to_string())
+            .metadata("pid", serde_json::json!(std::process::id()));
+
+        if let Some(reason) = close_reason {
+            event = event.close_reason(reason);
+        }
+        if let Some(message) = close_message {
+            event = event.close_message(message);
+        }
+
+        self.platform_event_bus.publish_session_event(event).await;
     }
 
     /// Process a single event
@@ -654,6 +725,8 @@ impl AmbientDaemon {
 pub struct DaemonBuilder {
     config: Option<AmbientConfig>,
     data_dir: Option<PathBuf>,
+    ipc_socket_path: Option<PathBuf>,
+    platform_event_bus: Option<PlatformEventBus>,
 }
 
 impl DaemonBuilder {
@@ -661,6 +734,8 @@ impl DaemonBuilder {
         Self {
             config: None,
             data_dir: None,
+            ipc_socket_path: None,
+            platform_event_bus: None,
         }
     }
 
@@ -674,6 +749,16 @@ impl DaemonBuilder {
         self
     }
 
+    pub fn ipc_socket_path(mut self, path: PathBuf) -> Self {
+        self.ipc_socket_path = Some(path);
+        self
+    }
+
+    pub fn platform_event_bus(mut self, publisher: PlatformEventBus) -> Self {
+        self.platform_event_bus = Some(publisher);
+        self
+    }
+
     pub fn build(self) -> anyhow::Result<AmbientDaemon> {
         let config = self
             .config
@@ -683,8 +768,17 @@ impl DaemonBuilder {
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join("ambient-agent")
         });
+        let ipc_socket_path = self.ipc_socket_path.unwrap_or_else(default_socket_path);
+        let platform_event_bus = self
+            .platform_event_bus
+            .unwrap_or_else(PlatformEventBus::from_env);
 
-        Ok(AmbientDaemon::new(config, data_dir))
+        Ok(AmbientDaemon::new_with_options(
+            config,
+            data_dir,
+            platform_event_bus,
+            ipc_socket_path,
+        ))
     }
 }
 
@@ -697,7 +791,38 @@ impl Default for DaemonBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform_event_bus::{PlatformEventBusConfig, PlatformEventBusTransport};
+    use async_trait::async_trait;
+    use serde_json::Value;
+    use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
+
+    #[derive(Default)]
+    struct RecordingTransport {
+        published: Mutex<Vec<(String, String)>>,
+    }
+
+    #[async_trait]
+    impl PlatformEventBusTransport for RecordingTransport {
+        async fn publish(&self, subject: &str, payload: String) -> anyhow::Result<()> {
+            self.published
+                .lock()
+                .unwrap()
+                .push((subject.to_string(), payload));
+            Ok(())
+        }
+    }
+
+    async fn wait_for_published(transport: &RecordingTransport, expected_len: usize) {
+        for _ in 0..50 {
+            if transport.published.lock().unwrap().len() >= expected_len {
+                return;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+        }
+        let actual_len = transport.published.lock().unwrap().len();
+        panic!("expected {expected_len} published events, got {actual_len}");
+    }
 
     fn test_config() -> AmbientConfig {
         AmbientConfig {
@@ -722,6 +847,7 @@ mod tests {
         let mut daemon = DaemonBuilder::new()
             .config(test_config())
             .data_dir(temp.path().to_path_buf())
+            .ipc_socket_path(temp.path().join("daemon.sock"))
             .build()
             .unwrap();
 
@@ -742,5 +868,75 @@ mod tests {
 
         // Wait for completion
         let _ = daemon_handle.await;
+    }
+
+    #[tokio::test]
+    async fn test_daemon_publishes_session_lifecycle_events() {
+        let temp = TempDir::new().unwrap();
+        let transport = Arc::new(RecordingTransport::default());
+        let publisher =
+            PlatformEventBus::with_transport(PlatformEventBusConfig::for_test(), transport.clone());
+        let mut daemon = DaemonBuilder::new()
+            .config(test_config())
+            .data_dir(temp.path().to_path_buf())
+            .ipc_socket_path(temp.path().join("daemon-events.sock"))
+            .platform_event_bus(publisher)
+            .build()
+            .unwrap();
+        let cmd_tx = daemon.get_command_sender();
+
+        let daemon_handle = tokio::spawn(async move { daemon.run().await });
+
+        wait_for_published(&transport, 1).await;
+        cmd_tx.send(DaemonCommand::Pause).await.unwrap();
+        wait_for_published(&transport, 2).await;
+        cmd_tx.send(DaemonCommand::Resume).await.unwrap();
+        wait_for_published(&transport, 3).await;
+        cmd_tx.send(DaemonCommand::Shutdown).await.unwrap();
+
+        daemon_handle.await.unwrap().unwrap();
+        wait_for_published(&transport, 4).await;
+
+        let published = transport.published.lock().unwrap();
+        let subjects: Vec<_> = published
+            .iter()
+            .map(|(subject, _)| subject.as_str())
+            .collect();
+        assert_eq!(
+            subjects,
+            vec![
+                "maestro.sessions.session.started",
+                "maestro.sessions.session.suspended",
+                "maestro.sessions.session.resumed",
+                "maestro.sessions.session.closed",
+            ]
+        );
+
+        let started: Value = serde_json::from_str(&published[0].1).unwrap();
+        assert_eq!(started["source"], "maestro.ambient-agent");
+        assert_eq!(
+            started["data"]["correlation"]["agent_id"],
+            "ambient_agent_daemon"
+        );
+        assert_eq!(
+            started["data"]["runtime_mode"],
+            "MAESTRO_RUNTIME_MODE_HEADLESS"
+        );
+        assert_ne!(
+            started["data"]["workspace_root"],
+            temp.path().to_string_lossy().as_ref()
+        );
+        assert_eq!(
+            started["data"]["metadata"]["data_dir"],
+            temp.path().to_string_lossy().as_ref()
+        );
+
+        let closed: Value = serde_json::from_str(&published[3].1).unwrap();
+        assert_eq!(closed["data"]["state"], "MAESTRO_SESSION_STATE_CLOSED");
+        assert_eq!(
+            closed["data"]["close_reason"],
+            "MAESTRO_CLOSE_REASON_USER_STOPPED"
+        );
+        assert_eq!(closed["data"]["close_message"], "shutdown requested");
     }
 }

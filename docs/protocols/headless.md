@@ -478,6 +478,9 @@ same shared publisher with
 The GitHub agent worker also records task session start/close events through
 this shared publisher with `MAESTRO_SURFACE=github-agent` and task correlation
 attributes, so platform subscribers can join worker runs to issue/PR work.
+The Rust Ambient Agent daemon publishes session start/suspend/resume/close
+events with `source=maestro.ambient-agent` when the same event-bus NATS
+environment is configured.
 
 `MAESTRO_TELEMETRY` continues to control local training and diagnostic
 telemetry. Audit-bus publishing is controlled separately with
