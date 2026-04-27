@@ -59,7 +59,7 @@ pub(crate) async fn read_request_body_with_limit(
     let content_length = head
         .headers
         .get("content-length")
-        .and_then(|value| value.parse::<usize>().ok())
+        .and_then(|value| parse_content_length(value))
         .ok_or_else(|| "content-length is required".to_string())?;
     if content_length > max_body_bytes {
         return Err(format!(
@@ -105,16 +105,33 @@ pub(crate) fn parse_request_head(initial: &[u8]) -> Result<RequestHead, String> 
         .split_once('?')
         .map(|(path, query)| (path.to_string(), parse_query(query)))
         .unwrap_or_else(|| (raw_target.to_string(), HashMap::new()));
-    let headers = lines
+    let mut headers = HashMap::new();
+    for (name, value) in lines
         .filter_map(|line| line.split_once(':'))
         .map(|(name, value)| (name.trim().to_lowercase(), value.trim().to_string()))
-        .collect();
+    {
+        headers
+            .entry(name)
+            .and_modify(|existing: &mut String| {
+                existing.push_str(", ");
+                existing.push_str(&value);
+            })
+            .or_insert(value);
+    }
     Ok(RequestHead {
         method,
         path,
         query,
         headers,
     })
+}
+
+fn parse_content_length(value: &str) -> Option<usize> {
+    let mut lengths = value
+        .split(',')
+        .map(|part| part.trim().parse::<usize>().ok());
+    let first = lengths.next()??;
+    lengths.all(|length| length == Some(first)).then_some(first)
 }
 
 fn parse_query(query: &str) -> HashMap<String, String> {

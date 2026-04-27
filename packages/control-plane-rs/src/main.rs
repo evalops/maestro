@@ -6070,6 +6070,18 @@ mod tests {
     }
 
     #[test]
+    fn combines_duplicate_headers_in_parse_request_head() {
+        let request = b"GET /api/status HTTP/1.1\r\nHost: localhost\r\nX-Forwarded-For: 10.0.0.1\r\nx-forwarded-for: 10.0.0.2\r\nCookie: a=1\r\nCookie: b=2\r\n\r\n";
+        let head = parse_request_head(request).expect("request should parse");
+
+        assert_eq!(
+            head.headers.get("x-forwarded-for"),
+            Some(&"10.0.0.1, 10.0.0.2".to_string())
+        );
+        assert_eq!(head.headers.get("cookie"), Some(&"a=1, b=2".to_string()));
+    }
+
+    #[test]
     fn authorizes_shared_secret_bearer_token() {
         let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
         let previous = env::var_os("MAESTRO_AUTH_SHARED_SECRET");
