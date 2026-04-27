@@ -1523,7 +1523,13 @@ async fn handle_attachment_extract(
             );
         }
     };
-    extract_attachment_request_response(request)
+    match tokio::task::spawn_blocking(move || extract_attachment_request_response(request)).await {
+        Ok(response) => response,
+        Err(error) => json_response(
+            500,
+            &serde_json::json!({ "error": format!("Attachment extraction failed: {error}") }),
+        ),
+    }
 }
 
 async fn handle_session_attachment_extract(
