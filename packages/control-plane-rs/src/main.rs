@@ -19,6 +19,8 @@ const MAX_HEADER_BYTES: usize = 64 * 1024;
 const MAX_JSON_BODY_BYTES: usize = 32 * 1024 * 1024;
 const DEFAULT_EXTRACT_MAX_CHARS: usize = 200_000;
 const MAX_EXTRACT_INPUT_BYTES: usize = 50 * 1024 * 1024;
+const MAX_PROJECT_ONBOARDING_IMPRESSIONS: u8 = 4;
+const CORS_ALLOW_HEADERS: &str = "authorization,content-type,x-composer-artifact-access,x-composer-api-key,x-composer-approval-mode,x-composer-client,x-composer-client-tools,x-composer-csrf,x-composer-agent-id,x-composer-slim-events,x-composer-workspace,x-composer-workspace-id,x-maestro-artifact-access,x-maestro-api-key,x-maestro-approval-mode,x-maestro-agent-id,x-maestro-client,x-maestro-client-tools,x-maestro-csrf,x-maestro-slim-events,x-maestro-workspace,x-maestro-workspace-id,x-csrf-token";
 static ATTACHMENT_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
 type PendingToolResponseSender = mpsc::UnboundedSender<(String, bool, Option<ToolResult>)>;
@@ -584,6 +586,9 @@ async fn handle_local_endpoint(
         ("POST", "/api/status") => {
             if let Err(response) = authorize(&head, &state.config) {
                 return response;
+            }
+            if head.query.get("action").map(String::as_str) == Some("mark-onboarding-seen") {
+                mark_project_onboarding_seen(&state.config.cwd).await;
             }
             json_response(200, &serde_json::json!({ "success": true }))
         }
@@ -1207,10 +1212,7 @@ async fn handle_session_get(
         Some("artifacts") => json_response(200, &session_artifacts_value(&session)),
         Some("artifact-access") => session_artifact_access_response(head, &session),
         Some("attachments") => json_response(200, &session_attachments_value(&session)),
-        Some("artifacts.zip") => json_response(
-            404,
-            &serde_json::json!({ "error": "Artifacts archive not found" }),
-        ),
+        Some("artifacts.zip") => serve_session_artifacts_zip(&session),
         Some(tail) if tail.starts_with("artifacts/") => serve_session_artifact(&session, tail),
         Some(tail) if tail.starts_with("attachments/") => serve_session_attachment(&session, tail),
         _ => json_response(404, &serde_json::json!({ "error": "Not found" })),
@@ -1258,8 +1260,8 @@ async fn handle_session_share_post(state: &AppState, session_path: SessionPath<'
         200,
         &serde_json::json!({
             "shareToken": token,
-            "shareUrl": format!("/shared/{token}"),
-            "webShareUrl": format!("/shared/{token}"),
+            "shareUrl": format!("/share/{token}"),
+            "webShareUrl": format!("/share/{token}"),
             "expiresAt": "9999-12-31T23:59:59.999Z",
             "maxAccesses": Value::Null
         }),
@@ -1754,6 +1756,133 @@ fn serve_session_artifact(session: &SessionRecord, tail: &str) -> Vec<u8> {
         return json_response(404, &serde_json::json!({ "error": "Artifact not found" }));
     };
     response_with_no_store(200, mime_for_path(Path::new(&filename)), content.as_bytes())
+}
+
+fn serve_session_artifacts_zip(session: &SessionRecord) -> Vec<u8> {
+    let mut artifacts = reconstruct_session_artifacts(session)
+        .into_iter()
+        .collect::<Vec<_>>();
+    artifacts.sort_by(|left, right| left.0.cmp(&right.0));
+    let zip = match build_store_zip(
+        artifacts
+            .iter()
+            .map(|(name, content)| (name.as_str(), content.as_bytes())),
+    ) {
+        Ok(zip) => zip,
+        Err(error) => return json_response(500, &serde_json::json!({ "error": error })),
+    };
+    response_with_extra_headers(
+        200,
+        "application/zip",
+        &zip,
+        &format!(
+            "Content-Disposition: {}\r\nCache-Control: no-store, no-cache, must-revalidate\r\n",
+            attachment_content_disposition(&format!("artifacts-{}.zip", session.id))
+        ),
+    )
+}
+
+fn build_store_zip<'a, I>(entries: I) -> Result<Vec<u8>, String>
+where
+    I: IntoIterator<Item = (&'a str, &'a [u8])>,
+{
+    let entries = entries.into_iter().collect::<Vec<_>>();
+    if entries.len() > u16::MAX as usize {
+        return Err("Too many artifacts to archive".to_string());
+    }
+
+    let mut output = Vec::new();
+    let mut central_directory = Vec::new();
+    for (name, content) in &entries {
+        let name_bytes = name.as_bytes();
+        if name_bytes.len() > u16::MAX as usize || content.len() > u32::MAX as usize {
+            return Err("Artifact archive entry is too large".to_string());
+        }
+        let local_header_offset = output.len();
+        if local_header_offset > u32::MAX as usize {
+            return Err("Artifact archive is too large".to_string());
+        }
+        let crc = crc32(content);
+        push_u32_le(&mut output, 0x0403_4b50);
+        push_u16_le(&mut output, 20);
+        push_u16_le(&mut output, 0);
+        push_u16_le(&mut output, 0);
+        push_u16_le(&mut output, 0);
+        push_u16_le(&mut output, 0);
+        push_u32_le(&mut output, crc);
+        push_u32_le(&mut output, content.len() as u32);
+        push_u32_le(&mut output, content.len() as u32);
+        push_u16_le(&mut output, name_bytes.len() as u16);
+        push_u16_le(&mut output, 0);
+        output.extend_from_slice(name_bytes);
+        output.extend_from_slice(content);
+
+        push_u32_le(&mut central_directory, 0x0201_4b50);
+        push_u16_le(&mut central_directory, 20);
+        push_u16_le(&mut central_directory, 20);
+        push_u16_le(&mut central_directory, 0);
+        push_u16_le(&mut central_directory, 0);
+        push_u16_le(&mut central_directory, 0);
+        push_u16_le(&mut central_directory, 0);
+        push_u32_le(&mut central_directory, crc);
+        push_u32_le(&mut central_directory, content.len() as u32);
+        push_u32_le(&mut central_directory, content.len() as u32);
+        push_u16_le(&mut central_directory, name_bytes.len() as u16);
+        push_u16_le(&mut central_directory, 0);
+        push_u16_le(&mut central_directory, 0);
+        push_u16_le(&mut central_directory, 0);
+        push_u16_le(&mut central_directory, 0);
+        push_u32_le(&mut central_directory, 0);
+        push_u32_le(&mut central_directory, local_header_offset as u32);
+        central_directory.extend_from_slice(name_bytes);
+    }
+
+    let central_directory_offset = output.len();
+    let central_directory_size = central_directory.len();
+    if central_directory_offset > u32::MAX as usize || central_directory_size > u32::MAX as usize {
+        return Err("Artifact archive is too large".to_string());
+    }
+    output.extend_from_slice(&central_directory);
+    push_u32_le(&mut output, 0x0605_4b50);
+    push_u16_le(&mut output, 0);
+    push_u16_le(&mut output, 0);
+    push_u16_le(&mut output, entries.len() as u16);
+    push_u16_le(&mut output, entries.len() as u16);
+    push_u32_le(&mut output, central_directory_size as u32);
+    push_u32_le(&mut output, central_directory_offset as u32);
+    push_u16_le(&mut output, 0);
+    Ok(output)
+}
+
+fn push_u16_le(output: &mut Vec<u8>, value: u16) {
+    output.extend_from_slice(&value.to_le_bytes());
+}
+
+fn push_u32_le(output: &mut Vec<u8>, value: u32) {
+    output.extend_from_slice(&value.to_le_bytes());
+}
+
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffffu32;
+    for byte in bytes {
+        crc ^= *byte as u32;
+        for _ in 0..8 {
+            let mask = 0u32.wrapping_sub(crc & 1);
+            crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+        }
+    }
+    !crc
+}
+
+fn attachment_content_disposition(filename: &str) -> String {
+    let safe_filename = filename
+        .chars()
+        .map(|ch| match ch {
+            '"' | '\\' | '\r' | '\n' => '_',
+            _ => ch,
+        })
+        .collect::<String>();
+    format!("attachment; filename=\"{safe_filename}\"")
 }
 
 fn reconstruct_session_artifacts(session: &SessionRecord) -> HashMap<String, String> {
@@ -4649,6 +4778,36 @@ async fn onboarding_snapshot(cwd: &Path) -> OnboardingSnapshot {
     let has_instructions = async_path_exists(cwd.join("AGENT.md")).await
         || async_path_exists(cwd.join("AGENTS.md")).await
         || async_path_exists(cwd.join("CLAUDE.md")).await;
+    let stored = read_project_onboarding_entry(cwd).await;
+    let stored_seen_count = stored
+        .as_ref()
+        .and_then(|entry| entry.get("seenCount"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        .min(u8::MAX as u64) as u8;
+    let stored_completed = stored
+        .as_ref()
+        .and_then(|entry| entry.get("completed"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let snapshot = compute_onboarding_snapshot(
+        workspace_empty,
+        has_instructions,
+        stored_seen_count,
+        stored_completed,
+    );
+    if snapshot.completed && !stored_completed {
+        persist_project_onboarding_entry(cwd, snapshot.seen_count, true).await;
+    }
+    snapshot
+}
+
+fn compute_onboarding_snapshot(
+    workspace_empty: bool,
+    has_instructions: bool,
+    seen_count: u8,
+    stored_completed: bool,
+) -> OnboardingSnapshot {
     let steps = vec![
         OnboardingStep {
             key: "workspace",
@@ -4667,15 +4826,96 @@ async fn onboarding_snapshot(cwd: &Path) -> OnboardingSnapshot {
         .iter()
         .filter(|step| step.is_enabled)
         .all(|step| step.is_complete);
+    let completed = stored_completed || completed;
     OnboardingSnapshot {
         should_show: !completed
+            && seen_count < MAX_PROJECT_ONBOARDING_IMPRESSIONS
             && steps
                 .iter()
                 .any(|step| step.is_enabled && !step.is_complete),
         completed,
-        seen_count: 0,
+        seen_count,
         steps,
     }
+}
+
+async fn mark_project_onboarding_seen(cwd: &Path) {
+    let snapshot = onboarding_snapshot(cwd).await;
+    if !snapshot.should_show {
+        return;
+    }
+    persist_project_onboarding_entry(
+        cwd,
+        snapshot
+            .seen_count
+            .saturating_add(1)
+            .min(MAX_PROJECT_ONBOARDING_IMPRESSIONS),
+        snapshot.completed,
+    )
+    .await;
+}
+
+async fn read_project_onboarding_entry(cwd: &Path) -> Option<Value> {
+    let path = project_onboarding_path();
+    let raw = tokio::fs::read_to_string(path).await.ok()?;
+    let store = serde_json::from_str::<Value>(&raw).ok()?;
+    if store.get("version").and_then(Value::as_u64) != Some(1) {
+        return None;
+    }
+    store
+        .get("projects")
+        .and_then(Value::as_object)
+        .and_then(|projects| projects.get(&project_onboarding_key(cwd)).cloned())
+}
+
+async fn persist_project_onboarding_entry(cwd: &Path, seen_count: u8, completed: bool) {
+    let path = project_onboarding_path();
+    let mut store = tokio::fs::read_to_string(&path)
+        .await
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .filter(|value| value.get("version").and_then(Value::as_u64) == Some(1))
+        .unwrap_or_else(|| serde_json::json!({ "version": 1, "projects": {} }));
+    if !store.get("projects").map(Value::is_object).unwrap_or(false) {
+        store["projects"] = serde_json::json!({});
+    }
+    if let Some(projects) = store.get_mut("projects").and_then(Value::as_object_mut) {
+        projects.insert(
+            project_onboarding_key(cwd),
+            serde_json::json!({
+                "seenCount": seen_count,
+                "completed": completed,
+                "updatedAt": now_rfc3339()
+            }),
+        );
+    }
+    if let Some(parent) = path.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+    if let Ok(serialized) = serde_json::to_vec_pretty(&store) {
+        let _ = tokio::fs::write(path, serialized).await;
+    }
+}
+
+fn project_onboarding_path() -> PathBuf {
+    env::var("MAESTRO_PROJECT_ONBOARDING_FILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| maestro_home().join("project-onboarding.json"))
+}
+
+fn project_onboarding_key(cwd: &Path) -> String {
+    cwd.canonicalize()
+        .unwrap_or_else(|_| {
+            if cwd.is_absolute() {
+                cwd.to_path_buf()
+            } else {
+                env::current_dir()
+                    .map(|current| current.join(cwd))
+                    .unwrap_or_else(|_| cwd.to_path_buf())
+            }
+        })
+        .to_string_lossy()
+        .to_string()
 }
 
 async fn workspace_is_empty_for_onboarding(cwd: &Path) -> bool {
@@ -5064,7 +5304,7 @@ fn response_with_extra_headers_and_length(
         _ => "OK",
     };
     let mut head = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\nAccess-Control-Allow-Origin: {}\r\nAccess-Control-Allow-Credentials: true\r\nAccess-Control-Allow-Headers: authorization,content-type,x-composer-api-key,x-maestro-api-key,x-composer-client,x-maestro-client,x-composer-client-tools,x-maestro-client-tools,x-composer-slim-events,x-maestro-slim-events\r\nAccess-Control-Allow-Methods: GET,POST,PATCH,DELETE,OPTIONS\r\n",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\nAccess-Control-Allow-Origin: {}\r\nAccess-Control-Allow-Credentials: true\r\nAccess-Control-Allow-Headers: {CORS_ALLOW_HEADERS}\r\nAccess-Control-Allow-Methods: GET,POST,PATCH,DELETE,OPTIONS\r\n",
         content_length,
         cors_origin()
     );
@@ -5242,6 +5482,35 @@ mod tests {
         .expect("data url extraction should succeed");
 
         assert_eq!(output.extracted_text, "hello");
+    }
+
+    #[test]
+    fn builds_store_zip_archive_without_node_runtime() {
+        let zip = build_store_zip([("artifact.txt", b"hello artifact".as_slice())])
+            .expect("zip archive should build");
+
+        assert!(zip.starts_with(&[0x50, 0x4b, 0x03, 0x04]));
+        assert!(zip
+            .windows("artifact.txt".len())
+            .any(|window| window == b"artifact.txt"));
+        assert!(zip
+            .windows("hello artifact".len())
+            .any(|window| window == b"hello artifact"));
+        assert!(zip
+            .windows(4)
+            .any(|window| window == [0x50, 0x4b, 0x05, 0x06]));
+    }
+
+    #[test]
+    fn onboarding_snapshot_honors_seen_count_limit() {
+        let first_seen = compute_onboarding_snapshot(false, false, 1, false);
+        assert!(first_seen.should_show);
+        assert_eq!(first_seen.seen_count, 1);
+
+        let capped =
+            compute_onboarding_snapshot(false, false, MAX_PROJECT_ONBOARDING_IMPRESSIONS, false);
+        assert!(!capped.should_show);
+        assert_eq!(capped.seen_count, MAX_PROJECT_ONBOARDING_IMPRESSIONS);
     }
 
     #[test]
@@ -5453,6 +5722,9 @@ mod tests {
         let response = json_response(200, &serde_json::json!({ "ok": true }));
 
         assert!(response.windows(4).any(|window| window == b"\r\n\r\n"));
+        let response = String::from_utf8(response).expect("response should be utf-8");
+        assert!(response.contains("x-composer-csrf"));
+        assert!(response.contains("x-maestro-artifact-access"));
     }
 
     #[test]
