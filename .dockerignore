@@ -12,6 +12,7 @@ coverage/
 .DS_Store
 .external/
 packages/tui-rs/target
+packages/control-plane-rs/target
 packages/desktop
 packages/jetbrains-plugin
 packages/vscode-extension

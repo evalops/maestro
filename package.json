@@ -57,6 +57,7 @@
     "bun:cli": "bun run ./src/cli.ts",
     "bun:watch": "bun run --watch ./src/cli.ts",
     "web": "node dist/web-server.js",
+    "web:rust-control": "packages/control-plane-rs/target/release/maestro-control-plane",
     "web:dev": "concurrently --names \"server,ui\" --prefix-colors \"blue,green\" \"tsx --watch src/web-server.ts\" \"bun run dev:web\"",
     "bun:lint": "bunx biome check . && bun run lint:evals",
     "bun:test": "node ./scripts/run-vitest.js --run",
@@ -109,6 +110,8 @@
     "vscode:package": "npx nx run vscode-extension:package",
     "vscode:publish": "npx nx run vscode-extension:publish",
     "tui-rs:build": "cd packages/tui-rs && cargo build --release",
+    "control-plane-rs:build": "cd packages/control-plane-rs && cargo build --release --bin maestro-control-plane",
+    "control-plane-rs:check": "cd packages/control-plane-rs && cargo check --bin maestro-control-plane",
     "tui-rs:build:debug": "cd packages/tui-rs && cargo build",
     "tui-rs:check": "cd packages/tui-rs && cargo check",
     "tui-rs:test": "cd packages/tui-rs && cargo test"
