@@ -829,7 +829,7 @@ export async function publishMaestroCloudEventStrict<
 	options: PublishMaestroEventOptions = {},
 ): Promise<void> {
 	const config = resolveMaestroEventBusConfig(options.env);
-	if (!config.enabled) {
+	if (!config.enabled && !config.natsUrl) {
 		throw new Error(`Maestro event bus is not enabled: ${config.reason}`);
 	}
 	const transport = await getTransport(config);

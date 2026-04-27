@@ -528,6 +528,48 @@ describe("maestro event bus", () => {
 		).rejects.toThrow("nats unavailable");
 	});
 
+	it("permits strict smoke publishing with an explicit URL when runtime publishing is disabled", async () => {
+		const published: Array<{ subject: string; payload: string }> = [];
+		setMaestroEventBusTransportForTests({
+			async publish(subject, payload) {
+				published.push({ subject, payload });
+			},
+		});
+
+		await expect(
+			publishMaestroCloudEventStrict(
+				MaestroBusEventType.ApprovalHit,
+				{
+					correlation: {
+						workspace_id: "workspace_123",
+						session_id: "session_123",
+					},
+					action: "Smoke approval",
+					decision_mode: "MAESTRO_DECISION_MODE_REQUIRE_APPROVAL",
+					occurred_at: "2026-04-22T16:00:00.000Z",
+				},
+				{
+					env: {
+						MAESTRO_EVENT_BUS: "false",
+						MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222",
+					},
+					eventId: "event_strict_disabled",
+					time: "2026-04-22T16:00:00.000Z",
+				},
+			),
+		).resolves.toBeUndefined();
+
+		expect(published).toHaveLength(1);
+		expect(published[0]?.subject).toBe("maestro.events.approval_hit");
+		expect(JSON.parse(published[0]?.payload ?? "{}")).toMatchObject({
+			id: "event_strict_disabled",
+			type: "maestro.events.approval_hit",
+			data: {
+				action: "Smoke approval",
+			},
+		});
+	});
+
 	it("fails strict smoke publishing when bus routing is not configured", async () => {
 		await expect(
 			publishMaestroCloudEventStrict(

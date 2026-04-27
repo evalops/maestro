@@ -25,7 +25,7 @@
     "prepare": "husky",
     "install:local": "node ./scripts/install-client.js",
     "prebuild": "node ./scripts/ensure-deps.js && node ./scripts/headless-protocol-codegen.mjs && bun run generate:headless-proto:buf",
-		"build": "node ./scripts/ensure-dir.js ./tmp/tsbuildinfo && tsc -b tsconfig.build.json --force && bun build ./src/cli.ts --target node --packages external --external tree-sitter --external tree-sitter-bash --outfile dist/cli.js && node ./scripts/bundle-runtime-deps.mjs && node ./scripts/copy-themes.js && node ./scripts/copy-db-migrations.js",
+    "build": "node ./scripts/ensure-dir.js ./tmp/tsbuildinfo && tsc -b tsconfig.build.json --force && bun build ./src/cli.ts --target node --packages external --external tree-sitter --external tree-sitter-bash --outfile dist/cli.js && node ./scripts/bundle-runtime-deps.mjs && node ./scripts/copy-themes.js && node ./scripts/copy-db-migrations.js",
     "start": "node --enable-source-maps dist/cli.js",
     "start:native": "MAESTRO_AGENT_SCRIPT=\"$(pwd)/dist/cli.js\" ./packages/tui-rs/target/release/maestro-tui",
     "dev": "node ./scripts/headless-protocol-codegen.mjs && bun run generate:headless-proto:buf && node ./scripts/ensure-dir.js ./tmp/tsbuildinfo && tsc -b tsconfig.build.json --watch --preserveWatchOutput",
@@ -225,6 +225,7 @@
     "follow-redirects": ">=1.16.0",
     "@isaacs/brace-expansion": ">=5.0.1",
     "picomatch": ">=4.0.4",
+    "protobufjs": "8.0.1",
     "qs": ">=6.14.2"
   },
   "optionalDependencies": {
