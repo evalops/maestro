@@ -29,7 +29,7 @@ FROM oven/bun:1.3-alpine AS builder-base
 WORKDIR /app
 
 # contracts build generates Rust protocol files and formats with rustfmt
-RUN apk add --no-cache python3 make g++ git nodejs pkgconfig openssl-dev openssl-libs-static && \
+RUN apk add --no-cache python3 make g++ git nodejs pkgconfig && \
     wget -qO- https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal -c rustfmt && \
     ln -s /root/.cargo/bin/rustfmt /usr/local/bin/rustfmt
 ENV PATH="/root/.cargo/bin:${PATH}"
@@ -58,6 +58,7 @@ COPY packages/memory ./packages/memory
 COPY packages/slack-agent ./packages/slack-agent
 COPY packages/slack-agent-ui ./packages/slack-agent-ui
 COPY packages/tui ./packages/tui
+COPY packages/tui-rs ./packages/tui-rs
 COPY packages/web ./packages/web
 
 # Write lockfile hash stamp so ensure-deps.js skips re-install
@@ -70,21 +71,20 @@ FROM builder-base AS rust-builder
 WORKDIR /app
 
 COPY proto ./proto
-COPY packages/tui-rs ./packages/tui-rs
+COPY --from=web-builder /app/packages/tui-rs ./packages/tui-rs
 COPY packages/control-plane-rs ./packages/control-plane-rs
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
-    --mount=type=cache,target=/app/packages/control-plane-rs/target \
     cd packages/control-plane-rs && \
-    cargo build --release --bin maestro-control-plane && \
+    CARGO_TARGET_DIR=/app/rust-target cargo build --release --bin maestro-control-plane && \
     mkdir -p /app/target-bin && \
-    cp target/release/maestro-control-plane /app/target-bin/maestro-control-plane
+    cp /app/rust-target/release/maestro-control-plane /app/target-bin/maestro-control-plane
 
 # ---------- runner ----------
 FROM alpine:3.23 AS runner
 WORKDIR /app
 
-RUN apk add --no-cache tini git ca-certificates openssl libstdc++ && \
+RUN apk add --no-cache tini git ca-certificates libstdc++ && \
     addgroup --system --gid 1001 appgroup && \
     adduser --system --uid 1001 appuser
 

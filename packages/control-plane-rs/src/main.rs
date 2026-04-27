@@ -27,16 +27,19 @@ mod model_catalog;
 
 pub(crate) use http::MAX_JSON_BODY_BYTES;
 use http::{
-    cors_origin, header_end, json_response, origin_allowed, parse_request_head, query_flag,
-    read_request_body, read_request_body_with_limit, read_request_head, response,
-    response_with_cache, response_with_cache_and_length, response_with_extra_headers,
+    cors_origin, header_end, json_response, origin_allowed, query_flag, read_request_body,
+    read_request_body_with_limit, read_request_head, response_with_cache,
+    response_with_cache_and_length, response_with_extra_headers,
     response_with_extra_headers_and_length, response_with_no_store,
     response_with_no_store_and_length, text_response, RequestHead,
 };
+#[cfg(test)]
+use http::{parse_request_head, response};
+use model_catalog::{available_models, default_model, resolve_model, ModelInfo};
+#[cfg(test)]
 use model_catalog::{
-    available_models, builtin_models, default_model, emergency_default_model,
-    merge_configured_models, merge_llm_gateway_model_catalog, resolve_model, ModelInfo,
-    ModelRegistry,
+    builtin_models, emergency_default_model, merge_configured_models,
+    merge_llm_gateway_model_catalog, ModelRegistry,
 };
 
 const MAX_EXTRACT_JSON_BODY_BYTES: usize = 72 * 1024 * 1024;
@@ -130,6 +133,12 @@ struct AppState {
     shared_sessions: Arc<Mutex<HashMap<String, SharedSessionGrant>>>,
     approval_modes: Arc<Mutex<HashMap<String, String>>>,
     pending_tool_responses: Arc<Mutex<HashMap<String, PendingToolResponseSender>>>,
+}
+
+#[derive(Debug, Clone)]
+struct AuthContext {
+    subject: Option<String>,
+    unrestricted: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -349,7 +358,7 @@ async fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<(),
             .map_err(|error| error.to_string())?;
         let _ = stream.shutdown().await;
         return Ok(());
-    }
+    };
 
     if is_static_asset_request(&head) {
         let response = static_response(&head, &state.config).await;
@@ -359,7 +368,7 @@ async fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<(),
             .map_err(|error| error.to_string())?;
         let _ = stream.shutdown().await;
         return Ok(());
-    }
+    };
 
     let response = json_response(
         501,
@@ -913,6 +922,8 @@ struct SessionStore {
 #[serde(rename_all = "camelCase")]
 struct SessionRecord {
     id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    owner: Option<String>,
     title: String,
     created_at: String,
     updated_at: String,
@@ -938,16 +949,24 @@ struct ShareOptions {
     allow_sensitive_content: bool,
 }
 
+struct ExportOptions {
+    format: String,
+    allow_sensitive_content: bool,
+}
+
 async fn handle_session_endpoint(
     stream: &mut TcpStream,
     initial: &mut Vec<u8>,
     head: &RequestHead,
     state: &AppState,
 ) -> Vec<u8> {
+    let Some(auth) = auth_context(head, &state.config) else {
+        return json_response(401, &serde_json::json!({ "error": "Unauthorized" }));
+    };
     match head.method.as_str() {
         "GET" if head.path == "/api/sessions" => json_response(
             200,
-            &serde_json::json!({ "sessions": session_summaries(state).await }),
+            &serde_json::json!({ "sessions": session_summaries(state, &auth).await }),
         ),
         "POST" if head.path == "/api/sessions" => {
             let body = match read_request_body(stream, initial, head).await {
@@ -967,7 +986,7 @@ async fn handle_session_endpoint(
                     }
                 }
             };
-            let session = create_session_record(request.title);
+            let session = create_session_record(request.title, auth.subject.clone());
             let value = session_full_value(&session);
             {
                 state
@@ -986,10 +1005,12 @@ async fn handle_session_endpoint(
             };
             match session_path.tail {
                 Some("share") => {
-                    handle_session_share_post(stream, initial, head, state, session_path).await
+                    handle_session_share_post(stream, initial, head, state, session_path, &auth)
+                        .await
                 }
                 Some("export") => {
-                    handle_session_export_post(stream, initial, head, state, session_path).await
+                    handle_session_export_post(stream, initial, head, state, session_path, &auth)
+                        .await
                 }
                 Some(tail) => {
                     if let Some(attachment_id) = session_attachment_extract_id(tail) {
@@ -998,6 +1019,7 @@ async fn handle_session_endpoint(
                             state,
                             session_path.id,
                             attachment_id,
+                            &auth,
                         )
                         .await
                     } else {
@@ -1014,7 +1036,7 @@ async fn handle_session_endpoint(
             let Some(session_path) = session_path_from_path(&head.path) else {
                 return json_response(404, &serde_json::json!({ "error": "Not found" }));
             };
-            handle_session_get(head, state, session_path).await
+            handle_session_get(head, state, session_path, &auth).await
         }
         "PATCH" => {
             let Some(session_path) = session_path_from_path(&head.path) else {
@@ -1044,6 +1066,9 @@ async fn handle_session_endpoint(
             let Some(session) = sessions.sessions.get_mut(session_path.id) else {
                 return json_response(404, &serde_json::json!({ "error": "Session not found" }));
             };
+            if !session_visible_to_auth(session, &auth) {
+                return json_response(404, &serde_json::json!({ "error": "Session not found" }));
+            }
             if let Some(title) = request.title.and_then(|title| normalize_title(Some(title))) {
                 session.title = title;
             }
@@ -1066,7 +1091,15 @@ async fn handle_session_endpoint(
             if session_path.tail.is_some() {
                 return json_response(404, &serde_json::json!({ "error": "Not found" }));
             }
-            state.sessions.lock().await.sessions.remove(session_path.id);
+            let mut sessions = state.sessions.lock().await;
+            let Some(session) = sessions.sessions.get(session_path.id) else {
+                return json_response(404, &serde_json::json!({ "error": "Session not found" }));
+            };
+            if !session_visible_to_auth(session, &auth) {
+                return json_response(404, &serde_json::json!({ "error": "Session not found" }));
+            }
+            sessions.sessions.remove(session_path.id);
+            drop(sessions);
             persist_session_store(state).await;
             response_with_extra_headers_and_length(204, "application/json", &[], "", 0)
         }
@@ -1143,10 +1176,11 @@ async fn persist_session_store(state: &AppState) {
     }
 }
 
-fn create_session_record(title: Option<String>) -> SessionRecord {
+fn create_session_record(title: Option<String>, owner: Option<String>) -> SessionRecord {
     let now = now_rfc3339();
     SessionRecord {
         id: new_session_id(),
+        owner,
         title: normalize_title(title).unwrap_or_else(|| "New Chat".to_string()),
         created_at: now.clone(),
         updated_at: now,
@@ -1163,13 +1197,22 @@ fn normalize_title(title: Option<String>) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-async fn session_summaries(state: &AppState) -> Vec<Value> {
+fn session_visible_to_auth(session: &SessionRecord, auth: &AuthContext) -> bool {
+    auth.unrestricted
+        || auth
+            .subject
+            .as_deref()
+            .is_some_and(|subject| session.owner.as_deref() == Some(subject))
+}
+
+async fn session_summaries(state: &AppState, auth: &AuthContext) -> Vec<Value> {
     let mut sessions: Vec<SessionRecord> = state
         .sessions
         .lock()
         .await
         .sessions
         .values()
+        .filter(|session| session_visible_to_auth(session, auth))
         .cloned()
         .collect();
     sessions.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
@@ -1183,6 +1226,7 @@ async fn handle_session_get(
     head: &RequestHead,
     state: &AppState,
     session_path: SessionPath<'_>,
+    auth: &AuthContext,
 ) -> Vec<u8> {
     let Some(session) = state
         .sessions
@@ -1194,6 +1238,9 @@ async fn handle_session_get(
     else {
         return json_response(404, &serde_json::json!({ "error": "Session not found" }));
     };
+    if !session_visible_to_auth(&session, auth) {
+        return json_response(404, &serde_json::json!({ "error": "Session not found" }));
+    }
 
     match session_path.tail {
         None => json_response(200, &session_full_value(&session)),
@@ -1314,6 +1361,7 @@ async fn handle_session_share_post(
     head: &RequestHead,
     state: &AppState,
     session_path: SessionPath<'_>,
+    auth: &AuthContext,
 ) -> Vec<u8> {
     let Some(session) = state
         .sessions
@@ -1325,6 +1373,9 @@ async fn handle_session_share_post(
     else {
         return json_response(404, &serde_json::json!({ "error": "Session not found" }));
     };
+    if !session_visible_to_auth(&session, auth) {
+        return json_response(404, &serde_json::json!({ "error": "Session not found" }));
+    }
     let options = match read_share_options(stream, initial, head).await {
         Ok(options) => options,
         Err(response) => return response,
@@ -1406,6 +1457,33 @@ fn share_options_from_value(value: &Value) -> ShareOptions {
     }
 }
 
+fn export_options_from_body(body: &[u8]) -> Result<ExportOptions, String> {
+    if body.is_empty() {
+        return Ok(ExportOptions {
+            format: "json".to_string(),
+            allow_sensitive_content: false,
+        });
+    }
+    let value = serde_json::from_slice::<Value>(body)
+        .map_err(|error| format!("invalid export request: {error}"))?;
+    Ok(export_options_from_value(&value))
+}
+
+fn export_options_from_value(value: &Value) -> ExportOptions {
+    ExportOptions {
+        format: value
+            .get("format")
+            .and_then(Value::as_str)
+            .filter(|format| matches!(*format, "json" | "markdown" | "text"))
+            .unwrap_or("json")
+            .to_string(),
+        allow_sensitive_content: value
+            .get("allowSensitiveContent")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    }
+}
+
 fn session_contains_sensitive_content(session: &SessionRecord) -> bool {
     let haystack = serde_json::to_string(&session.messages)
         .unwrap_or_default()
@@ -1437,24 +1515,15 @@ async fn handle_session_export_post(
     head: &RequestHead,
     state: &AppState,
     session_path: SessionPath<'_>,
+    auth: &AuthContext,
 ) -> Vec<u8> {
     let body = match read_request_body(stream, initial, head).await {
         Ok(body) => body,
         Err(error) => return json_response(400, &serde_json::json!({ "error": error })),
     };
-    let format = if body.is_empty() {
-        "json".to_string()
-    } else {
-        serde_json::from_slice::<Value>(&body)
-            .ok()
-            .and_then(|value| {
-                value
-                    .get("format")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            })
-            .filter(|format| matches!(format.as_str(), "json" | "markdown" | "text"))
-            .unwrap_or_else(|| "json".to_string())
+    let options = match export_options_from_body(&body) {
+        Ok(options) => options,
+        Err(error) => return json_response(400, &serde_json::json!({ "error": error })),
     };
     let Some(session) = state
         .sessions
@@ -1466,7 +1535,19 @@ async fn handle_session_export_post(
     else {
         return json_response(404, &serde_json::json!({ "error": "Session not found" }));
     };
-    match format.as_str() {
+    if !session_visible_to_auth(&session, auth) {
+        return json_response(404, &serde_json::json!({ "error": "Session not found" }));
+    }
+    if !options.allow_sensitive_content && session_contains_sensitive_content(&session) {
+        return json_response(
+            409,
+            &serde_json::json!({
+                "error": "Sensitive content detected. Confirm that you want to export this session.",
+                "code": "sensitive_content_detected"
+            }),
+        );
+    }
+    match options.format.as_str() {
         "markdown" => text_response(200, &session_export_text(&session, true)),
         "text" => text_response(200, &session_export_text(&session, false)),
         _ => json_response(200, &session_full_value(&session)),
@@ -1582,6 +1663,7 @@ async fn handle_session_attachment_extract(
     state: &AppState,
     session_id: &str,
     attachment_id: String,
+    auth: &AuthContext,
 ) -> Vec<u8> {
     let should_force = head
         .query
@@ -1593,6 +1675,9 @@ async fn handle_session_attachment_extract(
         let Some(session) = sessions.sessions.get_mut(session_id) else {
             return json_response(404, &serde_json::json!({ "error": "Session not found" }));
         };
+        if !session_visible_to_auth(session, auth) {
+            return json_response(404, &serde_json::json!({ "error": "Session not found" }));
+        }
         let Some(attachment) = find_session_attachment_mut(session, &attachment_id) else {
             return json_response(404, &serde_json::json!({ "error": "Attachment not found" }));
         };
@@ -1656,6 +1741,9 @@ async fn handle_session_attachment_extract(
         let Some(session) = sessions.sessions.get_mut(session_id) else {
             return attachment_extract_json_response(file_name, output);
         };
+        if !session_visible_to_auth(session, auth) {
+            return json_response(404, &serde_json::json!({ "error": "Session not found" }));
+        }
         let Some(attachment) = find_session_attachment_mut(session, &attachment_id) else {
             return attachment_extract_json_response(file_name, output);
         };
@@ -3302,7 +3390,7 @@ async fn record_usage_entry(
     }
 }
 
-async fn record_chat_user_message(state: &AppState, chat: &ChatRequest) {
+async fn record_chat_user_message(state: &AppState, chat: &ChatRequest, owner: Option<String>) {
     let Some(session_id) = chat.session_id.as_deref() else {
         return;
     };
@@ -3317,14 +3405,14 @@ async fn record_chat_user_message(state: &AppState, chat: &ChatRequest) {
     if !latest.attachments.is_empty() {
         message["attachments"] = serde_json::json!(latest.attachments);
     }
-    append_session_message(state, session_id, message, Some(&latest.content)).await;
+    append_session_message(state, session_id, message, Some(&latest.content), owner).await;
 }
 
 async fn record_chat_assistant_message(state: &AppState, session_id: Option<&str>, message: Value) {
     let Some(session_id) = session_id else {
         return;
     };
-    append_session_message(state, session_id, message, None).await;
+    append_session_message(state, session_id, message, None, None).await;
 }
 
 async fn append_session_message(
@@ -3332,12 +3420,13 @@ async fn append_session_message(
     session_id: &str,
     message: Value,
     title_source: Option<&Value>,
+    owner: Option<String>,
 ) {
     let mut sessions = state.sessions.lock().await;
     let session = sessions
         .sessions
         .entry(session_id.to_string())
-        .or_insert_with(|| create_session_record(title_source.and_then(title_from_content)));
+        .or_insert_with(|| create_session_record(title_source.and_then(title_from_content), owner));
     if session.message_count == 0 {
         if let Some(title) = title_source.and_then(title_from_content) {
             session.title = title;
@@ -3372,14 +3461,15 @@ async fn handle_chat_endpoint(
     head: RequestHead,
     state: AppState,
 ) -> Result<(), String> {
-    if let Err(response) = authorize(&head, &state.config) {
+    let Some(auth) = auth_context(&head, &state.config) else {
+        let response = json_response(401, &serde_json::json!({ "error": "Unauthorized" }));
         stream
             .write_all(&response)
             .await
             .map_err(|error| error.to_string())?;
         let _ = stream.shutdown().await;
         return Ok(());
-    }
+    };
     if let Err(response) = validate_csrf(&head, &state.config) {
         stream
             .write_all(&response)
@@ -3387,7 +3477,7 @@ async fn handle_chat_endpoint(
             .map_err(|error| error.to_string())?;
         let _ = stream.shutdown().await;
         return Ok(());
-    }
+    };
 
     let body = match read_request_body(&mut stream, &mut initial, &head).await {
         Ok(body) => body,
@@ -3451,7 +3541,7 @@ async fn handle_chat_endpoint(
         return Ok(());
     }
 
-    record_chat_user_message(&state, &chat).await;
+    record_chat_user_message(&state, &chat, auth.subject.clone()).await;
     let session_id = chat.session_id.clone();
     let prepared_attachments = match prepare_chat_attachments(&chat).await {
         Ok(attachments) => attachments,
@@ -3917,14 +4007,15 @@ async fn handle_chat_websocket_endpoint(
     head: RequestHead,
     state: AppState,
 ) -> Result<(), String> {
-    if let Err(response) = authorize(&head, &state.config) {
+    let Some(auth) = auth_context(&head, &state.config) else {
+        let response = json_response(401, &serde_json::json!({ "error": "Unauthorized" }));
         stream
             .write_all(&response)
             .await
             .map_err(|error| error.to_string())?;
         let _ = stream.shutdown().await;
         return Ok(());
-    }
+    };
 
     if !origin_allowed(&head) {
         stream
@@ -4029,7 +4120,7 @@ async fn handle_chat_websocket_endpoint(
         return Ok(());
     }
 
-    record_chat_user_message(&state, &chat).await;
+    record_chat_user_message(&state, &chat, auth.subject.clone()).await;
     let session_id = chat.session_id.clone();
     let prepared_attachments = match prepare_chat_attachments(&chat).await {
         Ok(attachments) => attachments,
@@ -4911,6 +5002,17 @@ fn sse_headers() -> String {
 }
 
 fn authorize(head: &RequestHead, config: &Config) -> Result<(), Vec<u8>> {
+    if auth_context(head, config).is_some() {
+        Ok(())
+    } else {
+        Err(json_response(
+            401,
+            &serde_json::json!({ "error": "Unauthorized" }),
+        ))
+    }
+}
+
+fn auth_context(head: &RequestHead, config: &Config) -> Option<AuthContext> {
     let bearer = head
         .headers
         .get("authorization")
@@ -4922,22 +5024,33 @@ fn authorize(head: &RequestHead, config: &Config) -> Result<(), Vec<u8>> {
         .or_else(|| head.headers.get("x-composer-api-key"))
         .map(String::as_str);
 
-    let matched_api_key = config
+    if config
         .api_key
         .as_deref()
         .map(|expected| bearer == Some(expected) || header_key == Some(expected))
-        .unwrap_or(false);
-    let matched_bearer_token = bearer.map(valid_bearer_token).unwrap_or(false);
-    let allow_without_auth = !config.require_key && !auth_is_configured(config);
-
-    if matched_api_key || matched_bearer_token || allow_without_auth {
-        Ok(())
-    } else {
-        Err(json_response(
-            401,
-            &serde_json::json!({ "error": "Unauthorized" }),
-        ))
+        .unwrap_or(false)
+    {
+        return Some(AuthContext {
+            subject: None,
+            unrestricted: true,
+        });
     }
+
+    if let Some(subject) = bearer.and_then(bearer_token_subject) {
+        return Some(AuthContext {
+            subject: Some(subject),
+            unrestricted: false,
+        });
+    }
+
+    if !config.require_key && !auth_is_configured(config) {
+        return Some(AuthContext {
+            subject: None,
+            unrestricted: true,
+        });
+    }
+
+    None
 }
 
 fn validate_csrf(head: &RequestHead, config: &Config) -> Result<(), Vec<u8>> {
@@ -5012,35 +5125,39 @@ fn prod_profile() -> bool {
     )
 }
 
-fn valid_bearer_token(token: &str) -> bool {
-    verify_shared_bearer_token(token) || verify_jwt(token)
+fn bearer_token_subject(token: &str) -> Option<String> {
+    shared_bearer_subject(token).or_else(|| jwt_subject(token))
 }
 
-fn verify_shared_bearer_token(token: &str) -> bool {
+fn shared_bearer_subject(token: &str) -> Option<String> {
     let Ok(secret) = env::var("MAESTRO_AUTH_SHARED_SECRET") else {
-        return false;
+        return None;
     };
     let secret = secret.trim();
     if secret.is_empty() {
-        return false;
+        return None;
     }
     let Some((encoded_user, provided_signature)) = token.split_once('.') else {
-        return false;
+        return None;
     };
     if provided_signature.contains('.') {
-        return false;
+        return None;
     }
     let Ok(user_bytes) = URL_SAFE_NO_PAD.decode(encoded_user) else {
-        return false;
+        return None;
     };
     let Ok(user_id) = String::from_utf8(user_bytes) else {
-        return false;
+        return None;
     };
     let expected = hmac_sha256_hex(secret.as_bytes(), user_id.as_bytes());
-    secure_eq(provided_signature.as_bytes(), expected.as_bytes())
+    if secure_eq(provided_signature.as_bytes(), expected.as_bytes()) {
+        Some(user_id)
+    } else {
+        None
+    }
 }
 
-fn verify_jwt(token: &str) -> bool {
+fn jwt_subject(token: &str) -> Option<String> {
     match env::var("MAESTRO_JWT_ALG")
         .ok()
         .map(|alg| alg.trim().to_string())
@@ -5048,34 +5165,34 @@ fn verify_jwt(token: &str) -> bool {
         .unwrap_or_else(|| "HS256".to_string())
         .as_str()
     {
-        "HS256" => verify_hs256_jwt(token),
-        "RS256" => verify_jwks_jwt(token, Algorithm::RS256),
-        "RS384" => verify_jwks_jwt(token, Algorithm::RS384),
-        "RS512" => verify_jwks_jwt(token, Algorithm::RS512),
-        _ => false,
+        "HS256" => hs256_jwt_subject(token),
+        "RS256" => jwks_jwt_subject(token, Algorithm::RS256),
+        "RS384" => jwks_jwt_subject(token, Algorithm::RS384),
+        "RS512" => jwks_jwt_subject(token, Algorithm::RS512),
+        _ => None,
     }
 }
 
-fn verify_hs256_jwt(token: &str) -> bool {
+fn hs256_jwt_subject(token: &str) -> Option<String> {
     if env::var("MAESTRO_JWT_ALG")
         .ok()
         .map(|alg| alg != "HS256")
         .unwrap_or(false)
     {
-        return false;
+        return None;
     }
     let Ok(secret) = env::var("MAESTRO_JWT_SECRET") else {
-        return false;
+        return None;
     };
     let secret = secret.trim();
     if secret.is_empty() {
-        return false;
+        return None;
     }
     let mut parts = token.split('.');
     let (Some(header), Some(payload), Some(signature), None) =
         (parts.next(), parts.next(), parts.next(), parts.next())
     else {
-        return false;
+        return None;
     };
     let Ok(header_value) = URL_SAFE_NO_PAD
         .decode(header)
@@ -5083,15 +5200,15 @@ fn verify_hs256_jwt(token: &str) -> bool {
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
         .ok_or(())
     else {
-        return false;
+        return None;
     };
     if header_value.get("alg").and_then(Value::as_str) != Some("HS256") {
-        return false;
+        return None;
     }
     let signed = format!("{header}.{payload}");
     let expected = hmac_sha256_base64url(secret.as_bytes(), signed.as_bytes());
     if !secure_eq(signature.as_bytes(), expected.as_bytes()) {
-        return false;
+        return None;
     }
     let Ok(payload_value) = URL_SAFE_NO_PAD
         .decode(payload)
@@ -5099,17 +5216,14 @@ fn verify_hs256_jwt(token: &str) -> bool {
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
         .ok_or(())
     else {
-        return false;
+        return None;
     };
-    if payload_value
+    let subject = payload_value
         .get("sub")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|sub| !sub.is_empty())
-        .is_none()
-    {
-        return false;
-    }
+        .map(str::to_string)?;
     let now_secs = now_millis() / 1000;
     if payload_value
         .get("exp")
@@ -5117,7 +5231,7 @@ fn verify_hs256_jwt(token: &str) -> bool {
         .map(|exp| exp <= now_secs)
         .unwrap_or(false)
     {
-        return false;
+        return None;
     }
     if payload_value
         .get("nbf")
@@ -5125,30 +5239,30 @@ fn verify_hs256_jwt(token: &str) -> bool {
         .map(|nbf| nbf > now_secs)
         .unwrap_or(false)
     {
-        return false;
+        return None;
     }
     if let Ok(audience) = env::var("MAESTRO_JWT_AUD") {
         if !jwt_claim_matches(&payload_value, "aud", audience.trim()) {
-            return false;
+            return None;
         }
     }
     if let Ok(issuer) = env::var("MAESTRO_JWT_ISS") {
         if !jwt_claim_matches(&payload_value, "iss", issuer.trim()) {
-            return false;
+            return None;
         }
     }
-    true
+    Some(subject)
 }
 
-fn verify_jwks_jwt(token: &str, algorithm: Algorithm) -> bool {
+fn jwks_jwt_subject(token: &str, algorithm: Algorithm) -> Option<String> {
     let Ok(header) = decode_header(token) else {
-        return false;
+        return None;
     };
     if header.alg != algorithm {
-        return false;
+        return None;
     }
     let Some(jwks) = load_jwks() else {
-        return false;
+        return None;
     };
     let key = jwks
         .keys
@@ -5162,7 +5276,7 @@ fn verify_jwks_jwt(token: &str, algorithm: Algorithm) -> bool {
         })
         .and_then(|key| DecodingKey::from_jwk(key).ok());
     let Some(key) = key else {
-        return false;
+        return None;
     };
     let mut validation = Validation::new(algorithm);
     if let Ok(audience) = env::var("MAESTRO_JWT_AUD") {
@@ -5182,14 +5296,14 @@ fn verify_jwks_jwt(token: &str, algorithm: Algorithm) -> bool {
         }
     }
     let Ok(data) = decode::<Value>(token, &key, &validation) else {
-        return false;
+        return None;
     };
     data.claims
         .get("sub")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|sub| !sub.is_empty())
-        .is_some()
+        .map(str::to_string)
 }
 
 fn load_jwks() -> Option<jsonwebtoken::jwk::JwkSet> {
@@ -5752,6 +5866,7 @@ mod tests {
     fn test_session_record(id: &str) -> SessionRecord {
         SessionRecord {
             id: id.to_string(),
+            owner: None,
             title: "Test Session".to_string(),
             created_at: "2026-04-27T00:00:00Z".to_string(),
             updated_at: "2026-04-27T00:00:00Z".to_string(),
@@ -5788,6 +5903,10 @@ mod tests {
         let token = format!("{}.{}", URL_SAFE_NO_PAD.encode(user_id), signature);
 
         assert!(authorize(&bearer_head(&token), &auth_test_config()).is_ok());
+        assert_eq!(
+            auth_context(&bearer_head(&token), &auth_test_config()).and_then(|auth| auth.subject),
+            Some("user-123".to_string())
+        );
         assert!(authorize(&bearer_head("bad-token"), &auth_test_config()).is_err());
 
         if let Some(previous) = previous {
@@ -5833,6 +5952,10 @@ mod tests {
         let token = format!("{signing_input}.{signature}");
 
         assert!(authorize(&bearer_head(&token), &auth_test_config()).is_ok());
+        assert_eq!(
+            auth_context(&bearer_head(&token), &auth_test_config()).and_then(|auth| auth.subject),
+            Some("user-123".to_string())
+        );
 
         if let Some(previous) = previous_secret {
             env::set_var("MAESTRO_JWT_SECRET", previous);
@@ -6045,7 +6168,7 @@ mod tests {
 
     #[test]
     fn artifact_view_wraps_html_in_sandboxed_viewer() {
-        let mut session = create_session_record(Some("Artifacts".to_string()));
+        let mut session = create_session_record(Some("Artifacts".to_string()), None);
         session.messages.push(composer_assistant_message_with_tools(
             "created",
             "",
@@ -6095,7 +6218,7 @@ mod tests {
         update_tool_metadata_status(&mut tools, "tool-1", "running");
         finish_tool_metadata(&mut tools, "tool-1", true);
 
-        let mut session = create_session_record(Some("Artifacts".to_string()));
+        let mut session = create_session_record(Some("Artifacts".to_string()), None);
         session.messages.push(composer_assistant_message_with_tools(
             "done", "", None, &tools,
         ));
@@ -6147,6 +6270,42 @@ mod tests {
         }));
 
         assert!(session_contains_sensitive_content(&session));
+    }
+
+    #[test]
+    fn subject_auth_only_sees_owned_sessions() {
+        let mut session = test_session_record("session-1");
+        session.owner = Some("user-123".to_string());
+        let owner = AuthContext {
+            subject: Some("user-123".to_string()),
+            unrestricted: false,
+        };
+        let other_user = AuthContext {
+            subject: Some("user-456".to_string()),
+            unrestricted: false,
+        };
+        let admin = AuthContext {
+            subject: None,
+            unrestricted: true,
+        };
+
+        assert!(session_visible_to_auth(&session, &owner));
+        assert!(!session_visible_to_auth(&session, &other_user));
+        assert!(session_visible_to_auth(&session, &admin));
+    }
+
+    #[test]
+    fn export_options_require_explicit_sensitive_confirmation() {
+        let default_options = export_options_from_body(&[]).expect("empty body should parse");
+        assert_eq!(default_options.format, "json");
+        assert!(!default_options.allow_sensitive_content);
+
+        let confirmed = export_options_from_value(&serde_json::json!({
+            "format": "markdown",
+            "allowSensitiveContent": true
+        }));
+        assert_eq!(confirmed.format, "markdown");
+        assert!(confirmed.allow_sensitive_content);
     }
 
     #[test]
