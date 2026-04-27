@@ -87,6 +87,7 @@ export {
 	type RecordMaestroEvalScoredInput,
 	type RecordMaestroFirewallBlockInput,
 	type RecordMaestroPromptVariantSelectedInput,
+	type PromptVariantSelectedEventData,
 	type RecordMaestroSkillInvokedInput,
 	type RecordMaestroSkillOutcomeInput,
 	type RecordMaestroToolCallAttemptInput,
