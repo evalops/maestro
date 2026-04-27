@@ -5123,6 +5123,18 @@ fn load_jwks() -> Option<jsonwebtoken::jwk::JwkSet> {
     if url.is_empty() {
         return None;
     }
+    // `reqwest::blocking` panics when used directly on a Tokio runtime thread.
+    let url = url.to_string();
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return std::thread::spawn(move || fetch_jwks_from_url(&url))
+            .join()
+            .ok()
+            .flatten();
+    }
+    fetch_jwks_from_url(&url)
+}
+
+fn fetch_jwks_from_url(url: &str) -> Option<jsonwebtoken::jwk::JwkSet> {
     reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
@@ -5997,6 +6009,45 @@ mod tests {
         }
         if let Some(previous) = previous_iss {
             env::set_var("MAESTRO_JWT_ISS", previous);
+        }
+    }
+
+    #[tokio::test]
+    async fn jwks_auth_check_does_not_panic_inside_tokio_runtime() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous_url = env::var_os("MAESTRO_JWT_JWKS_URL");
+        let previous_alg = env::var_os("MAESTRO_JWT_ALG");
+        let previous_secret = env::var_os("MAESTRO_JWT_SECRET");
+        env::set_var("MAESTRO_JWT_JWKS_URL", "http://127.0.0.1:1/jwks.json");
+        env::set_var("MAESTRO_JWT_ALG", "RS256");
+        env::remove_var("MAESTRO_JWT_SECRET");
+
+        let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256","typ":"JWT"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(r#"{"sub":"user-123","exp":4102444800}"#);
+        let token = format!("{header}.{payload}.signature");
+
+        let result =
+            std::panic::catch_unwind(|| authorize(&bearer_head(&token), &auth_test_config()));
+        assert!(
+            result.is_ok(),
+            "authorize should not panic inside a Tokio runtime"
+        );
+        assert!(result.expect("authorize should return a result").is_err());
+
+        if let Some(previous) = previous_url {
+            env::set_var("MAESTRO_JWT_JWKS_URL", previous);
+        } else {
+            env::remove_var("MAESTRO_JWT_JWKS_URL");
+        }
+        if let Some(previous) = previous_alg {
+            env::set_var("MAESTRO_JWT_ALG", previous);
+        } else {
+            env::remove_var("MAESTRO_JWT_ALG");
+        }
+        if let Some(previous) = previous_secret {
+            env::set_var("MAESTRO_JWT_SECRET", previous);
+        } else {
+            env::remove_var("MAESTRO_JWT_SECRET");
         }
     }
 
