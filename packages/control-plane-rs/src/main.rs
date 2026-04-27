@@ -86,6 +86,7 @@ struct AppState {
     sessions: Arc<Mutex<SessionStore>>,
     session_persist_lock: Arc<Mutex<()>>,
     usage_persist_lock: Arc<Mutex<()>>,
+    shared_sessions: Arc<Mutex<HashMap<String, SharedSessionGrant>>>,
     approval_modes: Arc<Mutex<HashMap<String, String>>>,
     pending_tool_responses: Arc<Mutex<HashMap<String, PendingToolResponseSender>>>,
 }
@@ -309,6 +310,7 @@ async fn main() -> anyhow::Result<()> {
         sessions: Arc::new(Mutex::new(sessions)),
         session_persist_lock: Arc::new(Mutex::new(())),
         usage_persist_lock: Arc::new(Mutex::new(())),
+        shared_sessions: Arc::new(Mutex::new(HashMap::new())),
         approval_modes: Arc::new(Mutex::new(HashMap::new())),
         pending_tool_responses: Arc::new(Mutex::new(HashMap::new())),
     };
@@ -930,6 +932,18 @@ struct SessionRecord {
     messages: Vec<Value>,
 }
 
+struct SharedSessionGrant {
+    session_id: String,
+    expires_at: u64,
+    max_accesses: Option<u64>,
+    access_count: u64,
+}
+
+struct ShareOptions {
+    expires_in_hours: u64,
+    max_accesses: Option<u64>,
+}
+
 async fn handle_session_endpoint(
     stream: &mut TcpStream,
     initial: &mut Vec<u8>,
@@ -977,7 +991,9 @@ async fn handle_session_endpoint(
                 return json_response(404, &serde_json::json!({ "error": "Not found" }));
             };
             match session_path.tail {
-                Some("share") => handle_session_share_post(state, session_path).await,
+                Some("share") => {
+                    handle_session_share_post(stream, initial, head, state, session_path).await
+                }
                 Some("export") => {
                     handle_session_export_post(stream, initial, head, state, session_path).await
                 }
@@ -1223,12 +1239,38 @@ async fn handle_shared_session_get(
     state: &AppState,
     shared_path: SharedSessionPath<'_>,
 ) -> Vec<u8> {
+    let now = now_millis();
+    let session_id = {
+        let mut shares = state.shared_sessions.lock().await;
+        let Some(grant) = shares.get_mut(shared_path.token) else {
+            return json_response(
+                404,
+                &serde_json::json!({ "error": "Shared session not found" }),
+            );
+        };
+        if grant.expires_at <= now
+            || grant
+                .max_accesses
+                .map(|max| grant.access_count >= max)
+                .unwrap_or(false)
+        {
+            shares.remove(shared_path.token);
+            return json_response(
+                404,
+                &serde_json::json!({ "error": "Shared session not found" }),
+            );
+        }
+        if shared_path.tail.is_none() {
+            grant.access_count = grant.access_count.saturating_add(1);
+        }
+        grant.session_id.clone()
+    };
     let Some(session) = state
         .sessions
         .lock()
         .await
         .sessions
-        .get(shared_path.token)
+        .get(&session_id)
         .cloned()
     else {
         return json_response(
@@ -1244,7 +1286,13 @@ async fn handle_shared_session_get(
     }
 }
 
-async fn handle_session_share_post(state: &AppState, session_path: SessionPath<'_>) -> Vec<u8> {
+async fn handle_session_share_post(
+    stream: &mut TcpStream,
+    initial: &mut Vec<u8>,
+    head: &RequestHead,
+    state: &AppState,
+    session_path: SessionPath<'_>,
+) -> Vec<u8> {
     let Some(session) = state
         .sessions
         .lock()
@@ -1255,17 +1303,80 @@ async fn handle_session_share_post(state: &AppState, session_path: SessionPath<'
     else {
         return json_response(404, &serde_json::json!({ "error": "Session not found" }));
     };
-    let token = session.id;
+    let options = match read_share_options(stream, initial, head).await {
+        Ok(options) => options,
+        Err(response) => return response,
+    };
+    let token = generate_share_token(&session.id);
+    let expires_at = chrono::Utc::now() + chrono::Duration::hours(options.expires_in_hours as i64);
+    state.shared_sessions.lock().await.insert(
+        token.clone(),
+        SharedSessionGrant {
+            session_id: session.id,
+            expires_at: expires_at.timestamp_millis().max(0) as u64,
+            max_accesses: options.max_accesses,
+            access_count: 0,
+        },
+    );
     json_response(
         200,
         &serde_json::json!({
             "shareToken": token,
-            "shareUrl": format!("/share/{token}"),
+            "shareUrl": format!("/api/sessions/shared/{token}"),
             "webShareUrl": format!("/share/{token}"),
-            "expiresAt": "9999-12-31T23:59:59.999Z",
-            "maxAccesses": Value::Null
+            "expiresAt": expires_at.to_rfc3339(),
+            "maxAccesses": options.max_accesses
         }),
     )
+}
+
+async fn read_share_options(
+    stream: &mut TcpStream,
+    initial: &mut Vec<u8>,
+    head: &RequestHead,
+) -> Result<ShareOptions, Vec<u8>> {
+    let body = read_request_body(stream, initial, head)
+        .await
+        .map_err(|error| json_response(400, &serde_json::json!({ "error": error })))?;
+    let value = if body.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice::<Value>(&body).map_err(|error| {
+            json_response(
+                400,
+                &serde_json::json!({ "error": format!("invalid share request: {error}") }),
+            )
+        })?
+    };
+    Ok(share_options_from_value(&value))
+}
+
+fn share_options_from_value(value: &Value) -> ShareOptions {
+    let expires_in_hours = value
+        .get("expiresInHours")
+        .and_then(Value::as_u64)
+        .unwrap_or(24)
+        .clamp(1, 168);
+    let max_accesses = match value.get("maxAccesses") {
+        Some(Value::Null) => None,
+        Some(value) => Some(value.as_u64().unwrap_or(100).max(1)),
+        None => Some(100),
+    };
+    ShareOptions {
+        expires_in_hours,
+        max_accesses,
+    }
+}
+
+fn generate_share_token(session_id: &str) -> String {
+    let nonce = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let payload = format!("{session_id}:{}:{nonce}", now_millis());
+    let digest = Sha1::digest(payload.as_bytes());
+    BASE64_STANDARD
+        .encode(digest)
+        .trim_end_matches('=')
+        .replace('+', "-")
+        .replace('/', "_")
 }
 
 async fn handle_session_export_post(
@@ -5511,6 +5622,31 @@ mod tests {
             compute_onboarding_snapshot(false, false, MAX_PROJECT_ONBOARDING_IMPRESSIONS, false);
         assert!(!capped.should_show);
         assert_eq!(capped.seen_count, MAX_PROJECT_ONBOARDING_IMPRESSIONS);
+    }
+
+    #[test]
+    fn share_options_honor_expiry_and_access_limits() {
+        let options = share_options_from_value(&serde_json::json!({
+            "expiresInHours": 999,
+            "maxAccesses": 0
+        }));
+
+        assert_eq!(options.expires_in_hours, 168);
+        assert_eq!(options.max_accesses, Some(1));
+
+        let unlimited = share_options_from_value(&serde_json::json!({
+            "maxAccesses": Value::Null
+        }));
+        assert_eq!(unlimited.max_accesses, None);
+    }
+
+    #[test]
+    fn generated_share_tokens_are_opaque() {
+        let session_id = "session-123";
+        let token = generate_share_token(session_id);
+
+        assert_ne!(token, session_id);
+        assert!(!token.contains(session_id));
     }
 
     #[test]
