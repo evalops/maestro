@@ -211,8 +211,13 @@ BEGIN
 			HAVING count(*) > 1
 		)
 	THEN
-		ALTER TABLE "webhook_deliveries"
-			ADD CONSTRAINT "webhook_deliveries_pkey" PRIMARY KEY ("id");
+		BEGIN
+			ALTER TABLE "webhook_deliveries"
+				ADD CONSTRAINT "webhook_deliveries_pkey" PRIMARY KEY ("id");
+		EXCEPTION
+			WHEN duplicate_object OR invalid_table_definition THEN
+				NULL;
+		END;
 	END IF;
 
 	IF NOT EXISTS (SELECT 1 FROM "webhook_deliveries" WHERE "org_id" IS NULL) THEN
@@ -227,22 +232,38 @@ BEGIN
 				AND conrelid = 'public.webhook_deliveries'::regclass
 		)
 	THEN
-		ALTER TABLE "webhook_deliveries"
-			ADD CONSTRAINT "webhook_deliveries_org_id_organizations_id_fk"
-			FOREIGN KEY ("org_id")
-			REFERENCES "public"."organizations"("id")
-			ON DELETE cascade
-			ON UPDATE no action
-			NOT VALID;
+		BEGIN
+			ALTER TABLE "webhook_deliveries"
+				ADD CONSTRAINT "webhook_deliveries_org_id_organizations_id_fk"
+				FOREIGN KEY ("org_id")
+				REFERENCES "public"."organizations"("id")
+				ON DELETE cascade
+				ON UPDATE no action
+				NOT VALID;
+		EXCEPTION
+			WHEN duplicate_object THEN
+				NULL;
+		END;
 	END IF;
 END $$;
 --> statement-breakpoint
 DO $$
 BEGIN
 	IF to_regclass('public.webhook_deliveries') IS NOT NULL THEN
-		CREATE INDEX IF NOT EXISTS "webhook_delivery_org_status_idx"
-			ON "webhook_deliveries" USING btree ("org_id", "status");
-		CREATE INDEX IF NOT EXISTS "webhook_delivery_retry_idx"
-			ON "webhook_deliveries" USING btree ("status", "next_retry_at");
+		BEGIN
+			CREATE INDEX IF NOT EXISTS "webhook_delivery_org_status_idx"
+				ON "webhook_deliveries" USING btree ("org_id", "status");
+		EXCEPTION
+			WHEN duplicate_table OR unique_violation THEN
+				NULL;
+		END;
+
+		BEGIN
+			CREATE INDEX IF NOT EXISTS "webhook_delivery_retry_idx"
+				ON "webhook_deliveries" USING btree ("status", "next_retry_at");
+		EXCEPTION
+			WHEN duplicate_table OR unique_violation THEN
+				NULL;
+		END;
 	END IF;
 END $$;

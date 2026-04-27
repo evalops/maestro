@@ -114,6 +114,13 @@ describe("database migration packaging", () => {
 			"DROP FUNCTION IF EXISTS maestro_reconcile_webhook_payload",
 		);
 		expect(migration).toContain("webhook_deliveries_pkey");
+		expect(migration).toContain(
+			"WHEN duplicate_object OR invalid_table_definition THEN",
+		);
+		expect(migration).toContain("WHEN duplicate_object THEN");
+		expect(migration).toContain(
+			"WHEN duplicate_table OR unique_violation THEN",
+		);
 		expect(migration).toContain("organization_id");
 		expect(migration).toContain("next_attempt_at");
 		expect(migration).toContain('ALTER COLUMN "url" DROP DEFAULT');
