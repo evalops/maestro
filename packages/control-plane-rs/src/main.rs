@@ -1987,12 +1987,52 @@ fn serve_session_artifact(session: &SessionRecord, tail: &str) -> Vec<u8> {
     let Some(rest) = tail.strip_prefix("artifacts/") else {
         return json_response(404, &serde_json::json!({ "error": "Artifact not found" }));
     };
+    let is_view = rest.ends_with("/view");
     let filename = percent_decode_component(rest.strip_suffix("/view").unwrap_or(rest));
     let artifacts = reconstruct_session_artifacts(session);
     let Some(content) = artifacts.get(&filename) else {
         return json_response(404, &serde_json::json!({ "error": "Artifact not found" }));
     };
-    response_with_no_store(200, mime_for_path(Path::new(&filename)), content.as_bytes())
+    let mime = mime_for_path(Path::new(&filename));
+    if is_view && mime.starts_with("text/html") {
+        return sandboxed_artifact_viewer(&filename, content);
+    }
+    response_with_no_store(200, mime, content.as_bytes())
+}
+
+fn sandboxed_artifact_viewer(filename: &str, content: &str) -> Vec<u8> {
+    let title = html_escape(filename);
+    let srcdoc = html_escape(content);
+    let body = format!(
+        r#"<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>{title}</title>
+<style>
+html,body,iframe{{margin:0;width:100%;height:100%;border:0;background:white;}}
+</style>
+</head>
+<body>
+<iframe title="{title}" sandbox="allow-scripts allow-forms allow-popups allow-downloads" srcdoc="{srcdoc}"></iframe>
+</body>
+</html>"#
+    );
+    response_with_extra_headers(
+        200,
+        "text/html; charset=utf-8",
+        body.as_bytes(),
+        "Cache-Control: no-store, no-cache, must-revalidate\r\nContent-Security-Policy: default-src 'none'; frame-src 'self'; style-src 'unsafe-inline'; base-uri 'none'\r\n",
+    )
+}
+
+fn html_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 fn serve_session_artifacts_zip(session: &SessionRecord) -> Vec<u8> {
@@ -3646,6 +3686,7 @@ async fn handle_chat_endpoint(
     let mut thinking_started = false;
     let mut terminal_sent = false;
     let mut tool_names: HashMap<String, String> = HashMap::new();
+    let mut assistant_tools: Vec<Value> = Vec::new();
 
     while let Some(event) = events.recv().await {
         match event {
@@ -3745,6 +3786,7 @@ async fn handle_chat_endpoint(
                 requires_approval,
             } => {
                 tool_names.insert(call_id.clone(), tool.clone());
+                record_tool_call_metadata(&mut assistant_tools, &call_id, &tool, args.clone());
                 if requires_approval {
                     state
                         .pending_tool_responses
@@ -3778,6 +3820,7 @@ async fn handle_chat_endpoint(
                 }
             }
             FromAgent::ToolStart { call_id } => {
+                update_tool_metadata_status(&mut assistant_tools, &call_id, "running");
                 let tool = tool_names
                     .get(&call_id)
                     .cloned()
@@ -3812,6 +3855,7 @@ async fn handle_chat_endpoint(
             }
             FromAgent::ToolEnd { call_id, success } => {
                 state.pending_tool_responses.lock().await.remove(&call_id);
+                finish_tool_metadata(&mut assistant_tools, &call_id, success);
                 let tool = tool_names
                     .remove(&call_id)
                     .unwrap_or_else(|| "tool".to_string());
@@ -3903,6 +3947,7 @@ async fn handle_chat_endpoint(
                 reason,
             } => {
                 state.pending_tool_responses.lock().await.remove(&call_id);
+                finish_tool_metadata(&mut assistant_tools, &call_id, false);
                 send_sse(
                     &mut stream,
                     &serde_json::json!({
@@ -3924,7 +3969,12 @@ async fn handle_chat_endpoint(
                     usage.as_ref(),
                 )
                 .await;
-                let message = composer_assistant_message(&assistant_text, &thinking_text, usage);
+                let message = composer_assistant_message_with_tools(
+                    &assistant_text,
+                    &thinking_text,
+                    usage,
+                    &assistant_tools,
+                );
                 record_chat_assistant_message(&state, session_id.as_deref(), message.clone()).await;
                 send_sse(
                     &mut stream,
@@ -4167,6 +4217,7 @@ async fn handle_chat_websocket_endpoint(
     let mut thinking_started = false;
     let mut terminal_sent = false;
     let mut tool_names: HashMap<String, String> = HashMap::new();
+    let mut assistant_tools: Vec<Value> = Vec::new();
 
     while let Some(event) = events.recv().await {
         match event {
@@ -4252,6 +4303,7 @@ async fn handle_chat_websocket_endpoint(
                 requires_approval,
             } => {
                 tool_names.insert(call_id.clone(), tool.clone());
+                record_tool_call_metadata(&mut assistant_tools, &call_id, &tool, args.clone());
                 if requires_approval {
                     state
                         .pending_tool_responses
@@ -4285,6 +4337,7 @@ async fn handle_chat_websocket_endpoint(
                 }
             }
             FromAgent::ToolStart { call_id } => {
+                update_tool_metadata_status(&mut assistant_tools, &call_id, "running");
                 let tool = tool_names
                     .get(&call_id)
                     .cloned()
@@ -4319,6 +4372,7 @@ async fn handle_chat_websocket_endpoint(
             }
             FromAgent::ToolEnd { call_id, success } => {
                 state.pending_tool_responses.lock().await.remove(&call_id);
+                finish_tool_metadata(&mut assistant_tools, &call_id, success);
                 let tool = tool_names
                     .remove(&call_id)
                     .unwrap_or_else(|| "tool".to_string());
@@ -4410,6 +4464,7 @@ async fn handle_chat_websocket_endpoint(
                 reason,
             } => {
                 state.pending_tool_responses.lock().await.remove(&call_id);
+                finish_tool_metadata(&mut assistant_tools, &call_id, false);
                 send_ws_json(
                     &mut stream,
                     &serde_json::json!({
@@ -4431,7 +4486,12 @@ async fn handle_chat_websocket_endpoint(
                     usage.as_ref(),
                 )
                 .await;
-                let message = composer_assistant_message(&assistant_text, &thinking_text, usage);
+                let message = composer_assistant_message_with_tools(
+                    &assistant_text,
+                    &thinking_text,
+                    usage,
+                    &assistant_tools,
+                );
                 record_chat_assistant_message(&state, session_id.as_deref(), message.clone()).await;
                 send_ws_json(
                     &mut stream,
@@ -4659,6 +4719,15 @@ fn composer_text_content(content: &Value) -> String {
 }
 
 fn composer_assistant_message(content: &str, thinking: &str, usage: Option<TokenUsage>) -> Value {
+    composer_assistant_message_with_tools(content, thinking, usage, &[])
+}
+
+fn composer_assistant_message_with_tools(
+    content: &str,
+    thinking: &str,
+    usage: Option<TokenUsage>,
+    tools: &[Value],
+) -> Value {
     let mut message = serde_json::json!({
         "role": "assistant",
         "content": content,
@@ -4676,7 +4745,41 @@ fn composer_assistant_message(content: &str, thinking: &str, usage: Option<Token
             "cost": usage.cost.map(|total| serde_json::json!({ "total": total }))
         });
     }
+    if !tools.is_empty() {
+        message["tools"] = Value::Array(tools.to_vec());
+    }
     message
+}
+
+fn record_tool_call_metadata(tools: &mut Vec<Value>, call_id: &str, name: &str, args: Value) {
+    tools.push(serde_json::json!({
+        "id": call_id,
+        "name": name,
+        "args": args,
+        "status": "pending"
+    }));
+}
+
+fn update_tool_metadata_status(tools: &mut [Value], call_id: &str, status: &str) {
+    if let Some(tool) = tools
+        .iter_mut()
+        .find(|tool| tool.get("id").and_then(Value::as_str) == Some(call_id))
+    {
+        tool["status"] = Value::String(status.to_string());
+    }
+}
+
+fn finish_tool_metadata(tools: &mut [Value], call_id: &str, success: bool) {
+    if let Some(tool) = tools
+        .iter_mut()
+        .find(|tool| tool.get("id").and_then(Value::as_str) == Some(call_id))
+    {
+        tool["status"] = Value::String("completed".to_string());
+        tool["result"] = serde_json::json!({
+            "success": success,
+            "isError": !success
+        });
+    }
 }
 
 fn now_rfc3339() -> String {
@@ -6011,6 +6114,64 @@ mod tests {
         assert!(zip
             .windows(4)
             .any(|window| window == [0x50, 0x4b, 0x05, 0x06]));
+    }
+
+    #[test]
+    fn artifact_view_wraps_html_in_sandboxed_viewer() {
+        let mut session = create_session_record(Some("Artifacts".to_string()));
+        session.messages.push(composer_assistant_message_with_tools(
+            "created",
+            "",
+            None,
+            &[serde_json::json!({
+                "id": "tool-1",
+                "name": "artifacts",
+                "status": "completed",
+                "args": {
+                    "command": "create",
+                    "filename": "report.html",
+                    "content": "<script>window.top.location='https://example.com'</script>"
+                },
+                "result": { "isError": false }
+            })],
+        ));
+
+        let response = serve_session_artifact(&session, "artifacts/report.html/view");
+        let text = String::from_utf8(response).expect("response should be utf-8");
+
+        assert!(text.starts_with("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8"));
+        assert!(text.contains("Content-Security-Policy: default-src 'none'"));
+        assert!(text.contains("sandbox=\"allow-scripts allow-forms allow-popups allow-downloads\""));
+        assert!(text.contains("srcdoc=\"&lt;script&gt;window.top.location=&#39;https://example.com&#39;&lt;/script&gt;\""));
+        assert!(!text.contains("<script>window.top.location"));
+    }
+
+    #[test]
+    fn assistant_tool_metadata_reconstructs_artifacts_after_persist() {
+        let mut tools = Vec::new();
+        record_tool_call_metadata(
+            &mut tools,
+            "tool-1",
+            "artifacts",
+            serde_json::json!({
+                "command": "create",
+                "filename": "report.html",
+                "content": "<h1>Hello</h1>"
+            }),
+        );
+        update_tool_metadata_status(&mut tools, "tool-1", "running");
+        finish_tool_metadata(&mut tools, "tool-1", true);
+
+        let mut session = create_session_record(Some("Artifacts".to_string()));
+        session.messages.push(composer_assistant_message_with_tools(
+            "done", "", None, &tools,
+        ));
+
+        let artifacts = reconstruct_session_artifacts(&session);
+        assert_eq!(
+            artifacts.get("report.html"),
+            Some(&"<h1>Hello</h1>".to_string())
+        );
     }
 
     #[test]
