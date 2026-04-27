@@ -939,4 +939,54 @@ mod tests {
         );
         assert_eq!(closed["data"]["close_message"], "shutdown requested");
     }
+
+    #[tokio::test]
+    async fn test_daemon_publishes_closed_event_when_save_state_fails() {
+        let temp = TempDir::new().unwrap();
+        let transport = Arc::new(RecordingTransport::default());
+        let publisher =
+            PlatformEventBus::with_transport(PlatformEventBusConfig::for_test(), transport.clone());
+        let mut daemon = DaemonBuilder::new()
+            .config(test_config())
+            .data_dir(temp.path().to_path_buf())
+            .ipc_socket_path(temp.path().join("daemon-save-failure.sock"))
+            .platform_event_bus(publisher)
+            .build()
+            .unwrap();
+        let cmd_tx = daemon.get_command_sender();
+
+        let daemon_handle = tokio::spawn(async move { daemon.run().await });
+
+        wait_for_published(&transport, 1).await;
+
+        std::fs::create_dir(temp.path().join("learner.json")).unwrap();
+
+        cmd_tx.send(DaemonCommand::Shutdown).await.unwrap();
+
+        let result = daemon_handle.await.unwrap();
+
+        assert!(result.is_err());
+        wait_for_published(&transport, 2).await;
+
+        let published = transport.published.lock().unwrap();
+        let subjects: Vec<_> = published
+            .iter()
+            .map(|(subject, _)| subject.as_str())
+            .collect();
+        assert_eq!(
+            subjects,
+            vec![
+                "maestro.sessions.session.started",
+                "maestro.sessions.session.closed",
+            ]
+        );
+
+        let closed: Value = serde_json::from_str(&published[1].1).unwrap();
+        assert_eq!(closed["data"]["state"], "MAESTRO_SESSION_STATE_CLOSED");
+        assert_eq!(
+            closed["data"]["close_reason"],
+            "MAESTRO_CLOSE_REASON_USER_STOPPED"
+        );
+        assert_eq!(closed["data"]["close_message"], "shutdown requested");
+    }
 }
