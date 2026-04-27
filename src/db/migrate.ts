@@ -35,6 +35,145 @@ interface MigrationRecord {
 	applied_at: Date;
 }
 
+export interface InitialSchemaMarker {
+	kind: "constraint" | "index" | "table" | "type";
+	name: string;
+	exists: boolean;
+}
+
+export interface InitialSchemaState {
+	exists: boolean;
+	partial: boolean;
+	present: string[];
+	missing: string[];
+}
+
+type InitialSchemaMarkerDefinition = Pick<InitialSchemaMarker, "kind" | "name">;
+
+// Full 0000_initial baseline, except audit_hash_cache objects repaired by 0007.
+export const INITIAL_SCHEMA_BASELINE_MARKERS = [
+	{ kind: "type", name: "alert_severity" },
+	{ kind: "type", name: "audit_status" },
+	{ kind: "type", name: "model_approval_status" },
+	{ kind: "type", name: "user_role" },
+	{ kind: "type", name: "webhook_delivery_status" },
+	{ kind: "table", name: "alerts" },
+	{ kind: "table", name: "api_keys" },
+	{ kind: "table", name: "audit_logs" },
+	{ kind: "table", name: "directory_access_rules" },
+	{ kind: "table", name: "distributed_locks" },
+	{ kind: "table", name: "model_approvals" },
+	{ kind: "table", name: "org_memberships" },
+	{ kind: "table", name: "organizations" },
+	{ kind: "table", name: "permissions" },
+	{ kind: "table", name: "revoked_tokens" },
+	{ kind: "table", name: "role_permissions" },
+	{ kind: "table", name: "roles" },
+	{ kind: "table", name: "session_messages" },
+	{ kind: "table", name: "sessions" },
+	{ kind: "table", name: "totp_rate_limits" },
+	{ kind: "table", name: "totp_used_codes" },
+	{ kind: "table", name: "user_revocation_timestamps" },
+	{ kind: "table", name: "users" },
+	{ kind: "table", name: "webhook_deliveries" },
+	{ kind: "constraint", name: "organizations_slug_unique" },
+	{ kind: "constraint", name: "revoked_tokens_token_hash_unique" },
+	{ kind: "constraint", name: "totp_rate_limits_user_id_unique" },
+	{
+		kind: "constraint",
+		name: "user_revocation_timestamps_user_id_unique",
+	},
+	{ kind: "constraint", name: "users_email_unique" },
+	{ kind: "constraint", name: "alerts_org_id_organizations_id_fk" },
+	{ kind: "constraint", name: "alerts_user_id_users_id_fk" },
+	{ kind: "constraint", name: "api_keys_org_id_organizations_id_fk" },
+	{ kind: "constraint", name: "api_keys_user_id_users_id_fk" },
+	{ kind: "constraint", name: "audit_logs_org_id_organizations_id_fk" },
+	{ kind: "constraint", name: "audit_logs_user_id_users_id_fk" },
+	{ kind: "constraint", name: "audit_logs_session_id_sessions_id_fk" },
+	{
+		kind: "constraint",
+		name: "directory_access_rules_org_id_organizations_id_fk",
+	},
+	{ kind: "constraint", name: "model_approvals_org_id_organizations_id_fk" },
+	{ kind: "constraint", name: "model_approvals_approved_by_users_id_fk" },
+	{ kind: "constraint", name: "org_memberships_org_id_organizations_id_fk" },
+	{ kind: "constraint", name: "org_memberships_user_id_users_id_fk" },
+	{ kind: "constraint", name: "org_memberships_role_id_roles_id_fk" },
+	{ kind: "constraint", name: "revoked_tokens_user_id_users_id_fk" },
+	{ kind: "constraint", name: "revoked_tokens_org_id_organizations_id_fk" },
+	{ kind: "constraint", name: "revoked_tokens_revoked_by_users_id_fk" },
+	{ kind: "constraint", name: "role_permissions_role_id_roles_id_fk" },
+	{
+		kind: "constraint",
+		name: "role_permissions_permission_id_permissions_id_fk",
+	},
+	{ kind: "constraint", name: "roles_org_id_organizations_id_fk" },
+	{ kind: "constraint", name: "session_messages_session_id_sessions_id_fk" },
+	{ kind: "constraint", name: "sessions_org_id_organizations_id_fk" },
+	{ kind: "constraint", name: "sessions_user_id_users_id_fk" },
+	{ kind: "constraint", name: "totp_rate_limits_user_id_users_id_fk" },
+	{ kind: "constraint", name: "totp_used_codes_user_id_users_id_fk" },
+	{
+		kind: "constraint",
+		name: "user_revocation_timestamps_user_id_users_id_fk",
+	},
+	{
+		kind: "constraint",
+		name: "user_revocation_timestamps_revoked_by_users_id_fk",
+	},
+	{ kind: "constraint", name: "users_default_org_id_organizations_id_fk" },
+	{ kind: "constraint", name: "webhook_deliveries_org_id_organizations_id_fk" },
+	{ kind: "index", name: "alert_org_user_idx" },
+	{ kind: "index", name: "alert_type_idx" },
+	{ kind: "index", name: "alert_unread_idx" },
+	{ kind: "index", name: "api_key_org_user_idx" },
+	{ kind: "index", name: "api_key_prefix_idx" },
+	{ kind: "index", name: "audit_log_org_user_idx" },
+	{ kind: "index", name: "audit_log_action_idx" },
+	{ kind: "index", name: "audit_log_resource_idx" },
+	{ kind: "index", name: "audit_log_session_idx" },
+	{ kind: "index", name: "audit_log_trace_idx" },
+	{ kind: "index", name: "audit_log_org_created_idx" },
+	{ kind: "index", name: "dir_access_org_idx" },
+	{ kind: "index", name: "distributed_lock_expires_idx" },
+	{ kind: "index", name: "model_approval_org_model_idx" },
+	{ kind: "index", name: "model_approval_status_idx" },
+	{ kind: "index", name: "org_membership_org_user_idx" },
+	{ kind: "index", name: "org_membership_user_idx" },
+	{ kind: "index", name: "org_slug_idx" },
+	{ kind: "index", name: "org_active_idx" },
+	{ kind: "index", name: "permission_resource_action_idx" },
+	{ kind: "index", name: "revoked_token_hash_idx" },
+	{ kind: "index", name: "revoked_token_user_idx" },
+	{ kind: "index", name: "revoked_token_expires_idx" },
+	{ kind: "index", name: "role_permission_pk" },
+	{ kind: "index", name: "role_org_name_idx" },
+	{ kind: "index", name: "session_message_session_idx" },
+	{ kind: "index", name: "session_message_pii_idx" },
+	{ kind: "index", name: "session_org_user_idx" },
+	{ kind: "index", name: "session_user_idx" },
+	{ kind: "index", name: "session_created_idx" },
+	{ kind: "index", name: "totp_rate_limit_user_idx" },
+	{ kind: "index", name: "totp_rate_limit_locked_idx" },
+	{ kind: "index", name: "totp_used_code_user_idx" },
+	{ kind: "index", name: "totp_used_code_window_idx" },
+	{ kind: "index", name: "user_revocation_user_idx" },
+	{ kind: "index", name: "user_email_idx" },
+	{ kind: "index", name: "user_active_idx" },
+	{ kind: "index", name: "webhook_delivery_org_status_idx" },
+	{ kind: "index", name: "webhook_delivery_retry_idx" },
+] as const;
+
+function firstRow(results: unknown): Record<string, unknown> | null {
+	const rows = Array.from(results as Iterable<Record<string, unknown>>);
+	return rows[0] ?? null;
+}
+
+function sqlBoolean(value: unknown): boolean {
+	return value === true || value === "true" || value === 1 || value === "1";
+}
+
 /**
  * Get the list of migrations from the journal
  */
@@ -129,6 +268,115 @@ async function markMigrationApplied(tag: string): Promise<void> {
 	`);
 }
 
+async function relationExists(relationName: string): Promise<boolean> {
+	const db = getDb();
+
+	const result = await db.execute(sql`
+		SELECT to_regclass(${`public.${relationName}`}) IS NOT NULL AS exists
+	`);
+
+	return sqlBoolean(firstRow(result)?.exists);
+}
+
+async function constraintExists(constraintName: string): Promise<boolean> {
+	const db = getDb();
+
+	const result = await db.execute(sql`
+		SELECT EXISTS (
+			SELECT 1
+			FROM pg_constraint c
+			JOIN pg_namespace n ON n.oid = c.connamespace
+			WHERE n.nspname = 'public' AND c.conname = ${constraintName}
+		) AS exists
+	`);
+
+	return sqlBoolean(firstRow(result)?.exists);
+}
+
+async function enumTypeExists(typeName: string): Promise<boolean> {
+	const db = getDb();
+
+	const result = await db.execute(sql`
+		SELECT EXISTS (
+			SELECT 1
+			FROM pg_type t
+			JOIN pg_namespace n ON n.oid = t.typnamespace
+			WHERE n.nspname = 'public' AND t.typname = ${typeName}
+		) AS exists
+	`);
+
+	return sqlBoolean(firstRow(result)?.exists);
+}
+
+function markerLabel(marker: InitialSchemaMarkerDefinition): string {
+	return `${marker.kind}:${marker.name}`;
+}
+
+export function classifyInitialSchemaMarkers(
+	markers: InitialSchemaMarker[],
+): InitialSchemaState {
+	const present = markers.filter((marker) => marker.exists).map(markerLabel);
+	const missing = markers.filter((marker) => !marker.exists).map(markerLabel);
+
+	return {
+		exists: missing.length === 0,
+		partial: present.length > 0 && missing.length > 0,
+		present,
+		missing,
+	};
+}
+
+async function getInitialSchemaState(): Promise<InitialSchemaState> {
+	const markers: InitialSchemaMarker[] = [];
+
+	for (const marker of INITIAL_SCHEMA_BASELINE_MARKERS) {
+		if (marker.kind === "constraint") {
+			markers.push({
+				...marker,
+				exists: await constraintExists(marker.name),
+			});
+			continue;
+		}
+
+		if (marker.kind === "type") {
+			markers.push({ ...marker, exists: await enumTypeExists(marker.name) });
+			continue;
+		}
+
+		markers.push({ ...marker, exists: await relationExists(marker.name) });
+	}
+
+	return classifyInitialSchemaMarkers(markers);
+}
+
+async function reconcileLegacyMigrationRecords(
+	migrationEntries: MigrationJournal["entries"],
+	appliedMigrations: Set<string>,
+): Promise<void> {
+	for (const entry of migrationEntries) {
+		if (entry.tag !== "0000_initial" || appliedMigrations.has(entry.tag)) {
+			continue;
+		}
+
+		const initialSchemaState = await getInitialSchemaState();
+		if (initialSchemaState.partial) {
+			throw new Error(
+				`Detected a partial legacy initial schema before ${entry.tag}; refusing to mark it applied or replay it. Missing markers: ${initialSchemaState.missing.join(", ")}`,
+			);
+		}
+		if (!initialSchemaState.exists) {
+			continue;
+		}
+
+		logger.warn(
+			"Detected existing initial schema for untracked migration; marking as applied",
+			{ tag: entry.tag, presentMarkers: initialSchemaState.present },
+		);
+		await markMigrationApplied(entry.tag);
+		appliedMigrations.add(entry.tag);
+	}
+}
+
 /**
  * Remove a migration from the applied list (for rollback)
  */
@@ -175,6 +423,7 @@ export async function migrate(): Promise<number> {
 	await ensureMigrationsTable();
 	const appliedMigrations = await getAppliedMigrations();
 	const migrationEntries = getMigrationEntries();
+	await reconcileLegacyMigrationRecords(migrationEntries, appliedMigrations);
 
 	let applied = 0;
 
