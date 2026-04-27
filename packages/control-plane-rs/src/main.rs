@@ -328,15 +328,6 @@ async fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<(),
     let mut initial = Vec::with_capacity(4096);
     let head = read_request_head(&mut stream, &mut initial).await?;
 
-    if head.method == "OPTIONS" {
-        stream
-            .write_all(&response(204, "text/plain; charset=utf-8", &[]))
-            .await
-            .map_err(|error| error.to_string())?;
-        let _ = stream.shutdown().await;
-        return Ok(());
-    }
-
     if is_chat_websocket_endpoint(&head) {
         return handle_chat_websocket_endpoint(stream, initial, head, state).await;
     }
@@ -1339,7 +1330,10 @@ async fn handle_session_share_post(
             }),
         );
     }
-    let token = generate_share_token(&session.id);
+    let token = match generate_share_token() {
+        Ok(token) => token,
+        Err(error) => return json_response(500, &serde_json::json!({ "error": error })),
+    };
     let expires_at = chrono::Utc::now() + chrono::Duration::hours(options.expires_in_hours as i64);
     state.shared_sessions.lock().await.insert(
         token.clone(),
@@ -1422,15 +1416,11 @@ fn session_contains_sensitive_content(session: &SessionRecord) -> bool {
     .any(|needle| haystack.contains(needle))
 }
 
-fn generate_share_token(session_id: &str) -> String {
-    let nonce = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let payload = format!("{session_id}:{}:{nonce}", now_millis());
-    let digest = Sha1::digest(payload.as_bytes());
-    BASE64_STANDARD
-        .encode(digest)
-        .trim_end_matches('=')
-        .replace('+', "-")
-        .replace('/', "_")
+fn generate_share_token() -> Result<String, String> {
+    let mut bytes = [0_u8; 32];
+    getrandom::fill(&mut bytes)
+        .map_err(|error| format!("Unable to generate share token: {error}"))?;
+    Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
 
 async fn handle_session_export_post(
@@ -6295,10 +6285,11 @@ mod tests {
     #[test]
     fn generated_share_tokens_are_opaque() {
         let session_id = "session-123";
-        let token = generate_share_token(session_id);
+        let token = generate_share_token().expect("share token should be generated");
 
         assert_ne!(token, session_id);
         assert!(!token.contains(session_id));
+        assert!(token.len() >= 32);
     }
 
     #[test]
