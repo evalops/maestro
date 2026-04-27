@@ -1,5 +1,6 @@
 import type { EnterpriseSession } from "../enterprise/context.js";
 import { checkSessionLimits } from "../safety/policy.js";
+import { recordMaestroSessionEvent } from "../telemetry/maestro-event-bus.js";
 
 type SessionState = Parameters<SessionInitializationManager["startSession"]>[0];
 
@@ -36,6 +37,16 @@ export interface SessionInitializationEnterpriseContext {
 
 export interface SessionInitializationLogger {
 	warn(message: string, context: Record<string, unknown>): void;
+}
+
+function webSessionEventEnv(
+	env: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+	return {
+		...env,
+		MAESTRO_EVENT_BUS_SOURCE: env.MAESTRO_EVENT_BUS_SOURCE ?? "maestro.web",
+		MAESTRO_SURFACE: env.MAESTRO_SURFACE ?? "web",
+	};
 }
 
 export async function startSessionWithPolicy(params: {
@@ -85,8 +96,17 @@ export async function startSessionWithPolicy(params: {
 	}
 
 	sessionManager.startSession(agent.state, { subject });
+	const sessionId = sessionManager.getSessionId();
+	recordMaestroSessionEvent("MAESTRO_SESSION_STATE_STARTED", {
+		sessionId,
+		env: webSessionEventEnv(),
+		metadata: {
+			model: modelId,
+			...(subject ? { subject } : {}),
+		},
+	});
 	if (enterpriseContext.isEnterprise()) {
-		enterpriseContext.startSession(sessionManager.getSessionId(), modelId);
+		enterpriseContext.startSession(sessionId, modelId);
 		const session = enterpriseContext.getSession();
 		if (session) {
 			agent.setSession({
@@ -96,6 +116,6 @@ export async function startSessionWithPolicy(params: {
 		}
 	}
 
-	onSessionReady(sessionManager.getSessionId());
+	onSessionReady(sessionId);
 	return null;
 }
