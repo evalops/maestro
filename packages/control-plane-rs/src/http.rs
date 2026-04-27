@@ -153,7 +153,7 @@ fn parse_query(query: &str) -> HashMap<String, String> {
 pub(crate) fn query_flag(head: &RequestHead, name: &str) -> bool {
     head.query
         .get(name)
-        .map(|value| !matches!(value.as_str(), "" | "0" | "false" | "off"))
+        .map(|value| !matches!(value.as_str(), "0" | "false" | "off"))
         .unwrap_or(false)
 }
 

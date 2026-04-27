@@ -6285,6 +6285,18 @@ mod tests {
     }
 
     #[test]
+    fn query_flag_treats_present_valueless_param_as_true() {
+        let head = parse_request_head(
+            b"GET /artifact?download&standalone=0 HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        )
+        .expect("request should parse");
+
+        assert!(query_flag(&head, "download"));
+        assert!(!query_flag(&head, "standalone"));
+        assert!(!query_flag(&head, "missing"));
+    }
+
+    #[test]
     fn authorizes_shared_secret_bearer_token() {
         let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
         let previous = env::var_os("MAESTRO_AUTH_SHARED_SECRET");
