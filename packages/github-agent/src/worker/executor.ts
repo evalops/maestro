@@ -15,7 +15,11 @@ import type { GitHubApiClient } from "../github/client.js";
 import type { GitHubReporter, TaskProgress } from "../github/reporter.js";
 import type { MemoryStore } from "../memory/store.js";
 import type { AgentConfig, Task, TaskResult } from "../types.js";
-import { buildGitHubTaskEnvironment } from "./evalops.js";
+import {
+	buildGitHubTaskEnvironment,
+	recordGitHubTaskSessionClosed,
+	recordGitHubTaskSessionStarted,
+} from "./evalops.js";
 
 export interface ExecutorOptions {
 	config: AgentConfig;
@@ -47,6 +51,7 @@ export class TaskExecutor {
 		const startTime = Date.now();
 		const progress = this.buildInitialProgress(task, startTime);
 		await this.reportProgress(task, progress);
+		recordGitHubTaskSessionStarted(task);
 		const branchName = this.generateBranchName(task);
 
 		try {
@@ -124,6 +129,14 @@ export class TaskExecutor {
 			progress.status = "completed";
 			progress.durationMs = Date.now() - startTime;
 			await this.reportProgress(task, progress);
+			recordGitHubTaskSessionClosed(task, {
+				status: "completed",
+				branch: progress.branch,
+				prUrl: progress.prUrl,
+				durationMs: progress.durationMs,
+				tokensUsed: progress.tokensUsed,
+				cost: progress.cost,
+			});
 
 			return {
 				success: true,
@@ -140,6 +153,15 @@ export class TaskExecutor {
 			progress.error = error;
 			progress.durationMs = Date.now() - startTime;
 			await this.reportProgress(task, progress);
+			recordGitHubTaskSessionClosed(task, {
+				status: "failed",
+				branch: progress.branch,
+				prUrl: progress.prUrl,
+				durationMs: progress.durationMs,
+				tokensUsed: progress.tokensUsed,
+				cost: progress.cost,
+				error,
+			});
 			await this.publishFailureCheckRun(task, progress, branchName);
 
 			// Clean up: switch back to base branch

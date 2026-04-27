@@ -475,6 +475,9 @@ The shared publisher lives in `@evalops/ai/telemetry` and currently emits:
 The publisher conformance fixture used by Platform can be regenerated from the
 same shared publisher with
 `tsx scripts/generate-maestro-publisher-conformance-fixture.ts`.
+The GitHub agent worker also records task session start/close events through
+this shared publisher with `MAESTRO_SURFACE=github-agent` and task correlation
+attributes, so platform subscribers can join worker runs to issue/PR work.
 
 `MAESTRO_TELEMETRY` continues to control local training and diagnostic
 telemetry. Audit-bus publishing is controlled separately with

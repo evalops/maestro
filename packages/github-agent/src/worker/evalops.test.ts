@@ -1,6 +1,14 @@
+import {
+	closeMaestroEventBusTransport,
+	setMaestroEventBusTransportForTests,
+} from "@evalops/ai/telemetry";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentConfig, Task } from "../types.js";
-import { buildGitHubTaskEnvironment } from "./evalops.js";
+import {
+	buildGitHubTaskEnvironment,
+	recordGitHubTaskSessionClosed,
+	recordGitHubTaskSessionStarted,
+} from "./evalops.js";
 
 const fetchMock = vi.fn();
 
@@ -27,8 +35,10 @@ describe("buildGitHubTaskEnvironment", () => {
 		vi.stubGlobal("fetch", fetchMock);
 	});
 
-	afterEach(() => {
+	afterEach(async () => {
 		vi.unstubAllGlobals();
+		setMaestroEventBusTransportForTests(undefined);
+		await closeMaestroEventBusTransport();
 	});
 
 	it("returns inherited env when EvalOps auth is not configured", async () => {
@@ -162,5 +172,92 @@ describe("buildGitHubTaskEnvironment", () => {
 				"Failed to issue delegated EvalOps token for GitHub worker; using inherited auth: identity unavailable",
 			),
 		]);
+	});
+
+	it("records GitHub worker session lifecycle on the shared event bus", async () => {
+		const published: Array<{ subject: string; payload: string }> = [];
+		setMaestroEventBusTransportForTests({
+			async publish(subject, payload) {
+				published.push({ subject, payload });
+			},
+		});
+
+		const task = createTask({
+			id: "task-789",
+			type: "pr-feedback",
+			sourceIssue: 123,
+			attempts: 2,
+		});
+		const env = {
+			MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222",
+			MAESTRO_EVALOPS_ORG_ID: "org_123",
+			MAESTRO_EVALOPS_WORKSPACE_ID: "workspace_123",
+		};
+
+		recordGitHubTaskSessionStarted(task, env);
+		recordGitHubTaskSessionClosed(
+			task,
+			{
+				status: "failed",
+				branch: "fix/review-feedback-123",
+				prUrl: "https://github.com/evalops/maestro/pull/123",
+				durationMs: 1234,
+				tokensUsed: 4567,
+				cost: 1.23,
+				error: "composer failed",
+			},
+			env,
+		);
+
+		await Promise.resolve();
+
+		expect(published).toHaveLength(2);
+		expect(JSON.parse(published[0]?.payload ?? "{}")).toMatchObject({
+			type: "maestro.sessions.session.started",
+			source: "maestro.github-agent",
+			tenant_id: "org_123",
+			data: {
+				state: "MAESTRO_SESSION_STATE_STARTED",
+				surface: "MAESTRO_SURFACE_GITHUB_AGENT",
+				runtime_mode: "MAESTRO_RUNTIME_MODE_HEADLESS",
+				correlation: {
+					organization_id: "org_123",
+					workspace_id: "workspace_123",
+					session_id: "task-789",
+					agent_run_id: "task-789",
+					agent_id: "github_feedback_worker",
+					request_id: "github:pr-feedback:123",
+					attributes: {
+						task_id: "task-789",
+						task_type: "pr-feedback",
+						source_issue: "123",
+					},
+				},
+				metadata: {
+					task_id: "task-789",
+					task_type: "pr-feedback",
+					source_issue: 123,
+					priority: 50,
+					attempts: 2,
+				},
+			},
+		});
+		expect(JSON.parse(published[1]?.payload ?? "{}")).toMatchObject({
+			type: "maestro.sessions.session.closed",
+			source: "maestro.github-agent",
+			data: {
+				state: "MAESTRO_SESSION_STATE_CLOSED",
+				close_reason: "MAESTRO_CLOSE_REASON_ERROR",
+				close_message: "composer failed",
+				metadata: {
+					status: "failed",
+					branch: "fix/review-feedback-123",
+					pr_url: "https://github.com/evalops/maestro/pull/123",
+					duration_ms: 1234,
+					tokens_used: 4567,
+					cost: 1.23,
+				},
+			},
+		});
 	});
 });
