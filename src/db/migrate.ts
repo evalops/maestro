@@ -165,11 +165,6 @@ export const INITIAL_SCHEMA_BASELINE_MARKERS = [
 	{ kind: "index", name: "webhook_delivery_retry_idx" },
 ] as const;
 
-function firstRow(results: unknown): Record<string, unknown> | null {
-	const rows = Array.from(results as Iterable<Record<string, unknown>>);
-	return rows[0] ?? null;
-}
-
 function sqlBoolean(value: unknown): boolean {
 	return value === true || value === "true" || value === 1 || value === "1";
 }
@@ -361,28 +356,29 @@ async function reconcileLegacyMigrationRecords(
 	migrationEntries: MigrationJournal["entries"],
 	appliedMigrations: Set<string>,
 ): Promise<void> {
-	for (const entry of migrationEntries) {
-		if (entry.tag !== "0000_initial" || appliedMigrations.has(entry.tag)) {
-			continue;
-		}
-
-		const initialSchemaState = await getInitialSchemaState();
-		if (initialSchemaState.partial) {
-			throw new Error(
-				`Detected a partial legacy initial schema before ${entry.tag}; refusing to mark it applied or replay it. Missing markers: ${initialSchemaState.missing.join(", ")}`,
-			);
-		}
-		if (!initialSchemaState.exists) {
-			continue;
-		}
-
-		logger.warn(
-			"Detected existing initial schema for untracked migration; marking as applied",
-			{ tag: entry.tag, presentMarkers: initialSchemaState.present },
-		);
-		await markMigrationApplied(entry.tag);
-		appliedMigrations.add(entry.tag);
+	const initialEntry = migrationEntries.find(
+		(entry) => entry.tag === "0000_initial",
+	);
+	if (!initialEntry || appliedMigrations.has(initialEntry.tag)) {
+		return;
 	}
+
+	const initialSchemaState = await getInitialSchemaState();
+	if (initialSchemaState.partial) {
+		throw new Error(
+			`Detected a partial legacy initial schema before ${initialEntry.tag}; refusing to mark it applied or replay it. Missing markers: ${initialSchemaState.missing.join(", ")}`,
+		);
+	}
+	if (!initialSchemaState.exists) {
+		return;
+	}
+
+	logger.warn(
+		"Detected existing initial schema for untracked migration; marking as applied",
+		{ tag: initialEntry.tag, presentMarkers: initialSchemaState.present },
+	);
+	await markMigrationApplied(initialEntry.tag);
+	appliedMigrations.add(initialEntry.tag);
 }
 
 /**
