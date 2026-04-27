@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { JetStreamClient, NatsConnection } from "nats";
 import type { PromptMetadata } from "../prompts/types.js";
@@ -440,6 +441,8 @@ export interface RecordMaestroEvalScoredInput {
 }
 
 let transportOverride: MaestroEventBusTransport | null | undefined;
+const scopedTransportOverride =
+	new AsyncLocalStorage<MaestroEventBusTransport | null>();
 let natsTransportPromise:
 	| Promise<{ key: string; transport: MaestroEventBusTransport }>
 	| undefined;
@@ -662,16 +665,12 @@ export async function withMaestroEventBusTransportOverride<T>(
 	transport: MaestroEventBusTransport | null,
 	callback: () => Promise<T>,
 ): Promise<T> {
-	const previousTransport = transportOverride;
-	transportOverride = transport;
-	try {
-		return await callback();
-	} finally {
-		transportOverride = previousTransport;
-	}
+	return scopedTransportOverride.run(transport, callback);
 }
 
 export async function closeMaestroEventBusTransport(): Promise<void> {
+	const scopedTransport = scopedTransportOverride.getStore();
+	if (scopedTransport?.close) await scopedTransport.close();
 	if (transportOverride?.close) await transportOverride.close();
 	if (natsTransportPromise) {
 		const { transport } = await natsTransportPromise;
@@ -732,6 +731,8 @@ async function createNatsTransport(
 async function getTransport(
 	config: MaestroEventBusConfig,
 ): Promise<MaestroEventBusTransport | null> {
+	const scopedTransport = scopedTransportOverride.getStore();
+	if (scopedTransport !== undefined) return scopedTransport;
 	if (transportOverride !== undefined) return transportOverride;
 	return createNatsTransport(config);
 }

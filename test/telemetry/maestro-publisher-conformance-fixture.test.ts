@@ -220,6 +220,26 @@ describe("canonical Maestro publisher conformance fixture", () => {
 		expect(parsed.events).toHaveLength(4);
 	});
 
+	it("isolates concurrent publisher fixture builds", async () => {
+		const fixtures = await Promise.all(
+			Array.from({ length: 5 }, (_, index) =>
+				buildCanonicalMaestroPublisherConformanceFixture({
+					sourceRevision: `test-revision-${index}`,
+				}),
+			),
+		);
+
+		for (const [index, fixture] of fixtures.entries()) {
+			expect(fixture.origin.source_revision).toBe(`test-revision-${index}`);
+			expect(fixture.events.map((event) => event.id)).toEqual([
+				"evt_maestro_publisher_001_approval_hit",
+				"evt_maestro_publisher_002_tool_call_attempted",
+				"evt_maestro_publisher_003_tool_call_completed",
+				"evt_maestro_publisher_004_skill_failed",
+			]);
+		}
+	});
+
 	it("provides a one-command JSON fixture generator", () => {
 		const output = execFileSync(
 			resolve(repoRoot, "node_modules/.bin/tsx"),
