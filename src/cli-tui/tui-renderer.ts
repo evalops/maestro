@@ -900,7 +900,9 @@ export class TuiRenderer {
 			notifyFileChanges: () => this.gitView.notifyFileChanges(),
 			inMinimalMode: () => this.isMinimalMode(),
 		});
-		this.ui.setInterruptHandler(() => this.handleCtrlC());
+		this.ui.setInterruptHandler(() => {
+			void this.handleCtrlC();
+		});
 		const sessionSubsystem = createSessionSubsystem({
 			agent: this.agent,
 			sessionManager: this.sessionManager,
@@ -1201,8 +1203,8 @@ export class TuiRenderer {
 						),
 				},
 				refreshFooterHint: () => this.refreshFooterHint(),
-				onQuit: () => {
-					this.stop();
+				onQuit: async () => {
+					await this.stop();
 					process.exit(0);
 				},
 			}),
@@ -1294,8 +1296,12 @@ export class TuiRenderer {
 				this.isAgentRunning || this.interruptController.isArmed(),
 			onInterrupt: () => this.inputController.handleInterruptRequest(),
 			onKeepPartial: () => this.inputController.handleKeepPartialRequest(),
-			onCtrlC: () => this.handleCtrlC(),
-			onCtrlD: () => this.inputController.handleCtrlDExit(),
+			onCtrlC: () => {
+				void this.handleCtrlC();
+			},
+			onCtrlD: () => {
+				void this.inputController.handleCtrlDExit();
+			},
 			showCommandPalette: () =>
 				this.getCommandPaletteView().showCommandPalette(),
 			showFileSearch: () => this.getFileSearchView().showFileSearch(),
@@ -1875,7 +1881,7 @@ export class TuiRenderer {
 		this.inputController.setInterruptCallback(callback);
 	}
 
-	private handleCtrlC(): void {
+	private async handleCtrlC(): Promise<void> {
 		const bashModeView = this.bashModeView;
 		if (bashModeView?.isCommandRunning()) {
 			if (bashModeView.abortCurrentCommand()) {
@@ -1883,7 +1889,7 @@ export class TuiRenderer {
 				return;
 			}
 		}
-		this.runController.handleCtrlC();
+		await this.runController.handleCtrlC();
 	}
 
 	private renderHeader(): void {
@@ -2571,7 +2577,11 @@ export class TuiRenderer {
 		this.notificationView.showInfo(formatPerfReport(snap));
 	}
 
-	stop(): void {
+	async stop(): Promise<void> {
+		await this.agentEventBridge?.recordSessionClosed({
+			closeReason: "MAESTRO_CLOSE_REASON_USER_STOPPED",
+			closeMessage: "TUI stopped",
+		});
 		this.slashHintController?.dispose();
 		this.loaderView.stop();
 		this.backgroundTasksController.stop();

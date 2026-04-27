@@ -682,10 +682,16 @@ export function recordSessionDuration(
 	sessionId: string,
 	durationMs: number,
 	metadata?: Omit<BusinessMetricTelemetry["metadata"], "sessionId">,
-): void {
-	recordBusinessMetric("session.duration", durationMs, {
-		...metadata,
-		sessionId,
+): Promise<void> {
+	return recordTelemetry({
+		type: "business-metric",
+		timestamp: new Date().toISOString(),
+		metric: "session.duration",
+		value: durationMs,
+		metadata: {
+			...metadata,
+			sessionId,
+		},
 	});
 }
 

@@ -877,6 +877,25 @@ function stringMetadata(metadata: unknown, name: string): string | undefined {
 		: undefined;
 }
 
+function closeReasonFromMetadata(
+	metadata: unknown,
+): MaestroCloseReason | undefined {
+	const value =
+		stringMetadata(metadata, "closeReason") ??
+		stringMetadata(metadata, "close_reason");
+	switch (value) {
+		case "MAESTRO_CLOSE_REASON_COMPLETED":
+		case "MAESTRO_CLOSE_REASON_USER_STOPPED":
+		case "MAESTRO_CLOSE_REASON_IDLE_TIMEOUT":
+		case "MAESTRO_CLOSE_REASON_TTL_EXPIRED":
+		case "MAESTRO_CLOSE_REASON_ERROR":
+		case "MAESTRO_CLOSE_REASON_POLICY_DENIED":
+			return value;
+		default:
+			return undefined;
+	}
+}
+
 function durationFromMs(value: unknown): string | undefined {
 	if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
 		return undefined;
@@ -1239,7 +1258,13 @@ export async function mirrorTelemetryToMaestroEventBus(
 						: undefined,
 				close_reason:
 					eventType === MaestroBusEventType.SessionClosed
-						? "MAESTRO_CLOSE_REASON_COMPLETED"
+						? (closeReasonFromMetadata(fields.metadata) ??
+							"MAESTRO_CLOSE_REASON_COMPLETED")
+						: undefined,
+				close_message:
+					eventType === MaestroBusEventType.SessionClosed
+						? (stringMetadata(fields.metadata, "closeMessage") ??
+							stringMetadata(fields.metadata, "close_message"))
 						: undefined,
 				metadata: contextFromMetadata(fields.metadata, {
 					value: fields.value,

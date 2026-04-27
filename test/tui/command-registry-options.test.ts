@@ -313,4 +313,19 @@ describe("buildTuiCommandRegistryOptions", () => {
 		expect(commandSuiteHandlers).toBeDefined();
 		expect(options.getCommandSuiteHandlers()).toBe(commandSuiteHandlers);
 	});
+
+	it("waits for the quit shutdown hook", async () => {
+		const { deps } = createDeps();
+		const calls: string[] = [];
+		deps.onQuit = vi.fn(async () => {
+			calls.push("stop-start");
+			await Promise.resolve();
+			calls.push("stop-finished");
+		});
+		const options = buildTuiCommandRegistryOptions(deps);
+
+		await options.handlers.quit(createCommandContext("/quit"));
+
+		expect(calls).toEqual(["stop-start", "stop-finished"]);
+	});
 });

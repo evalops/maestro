@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { recordSessionDuration } from "../../src/telemetry.js";
 import {
 	MaestroBusEventType,
 	buildMaestroCloudEvent,
@@ -76,6 +77,58 @@ describe("maestro event bus", () => {
 			"type.googleapis.com/maestro.v1.ToolCallAttempt",
 		);
 		expect(event.data.tool_call_id).toBe("tool_1");
+	});
+
+	it("maps session duration metadata to a close lifecycle CloudEvent", async () => {
+		const published: Array<{ subject: string; payload: string }> = [];
+		setMaestroEventBusTransportForTests({
+			async publish(subject, payload) {
+				published.push({ subject, payload });
+			},
+		});
+		const previousUrl = process.env.MAESTRO_EVENT_BUS_URL;
+		const previousSource = process.env.MAESTRO_EVENT_BUS_SOURCE;
+		process.env.MAESTRO_EVENT_BUS_URL = "nats://bus.example:4222";
+		process.env.MAESTRO_EVENT_BUS_SOURCE = "maestro-tui-test";
+		try {
+			await recordSessionDuration("session_tui", 1234, {
+				closeReason: "MAESTRO_CLOSE_REASON_USER_STOPPED",
+				closeMessage: "TUI stopped",
+			});
+			for (let i = 0; i < 10 && published.length === 0; i++) {
+				await new Promise((resolve) => setTimeout(resolve, 0));
+			}
+		} finally {
+			if (previousUrl === undefined) {
+				delete process.env.MAESTRO_EVENT_BUS_URL;
+			} else {
+				process.env.MAESTRO_EVENT_BUS_URL = previousUrl;
+			}
+			if (previousSource === undefined) {
+				delete process.env.MAESTRO_EVENT_BUS_SOURCE;
+			} else {
+				process.env.MAESTRO_EVENT_BUS_SOURCE = previousSource;
+			}
+		}
+
+		expect(published).toHaveLength(1);
+		expect(published[0]?.subject).toBe("maestro.sessions.session.closed");
+		expect(JSON.parse(published[0]?.payload ?? "{}")).toMatchObject({
+			type: "maestro.sessions.session.closed",
+			source: "maestro-tui-test",
+			data: {
+				correlation: {
+					session_id: "session_tui",
+				},
+				state: "MAESTRO_SESSION_STATE_CLOSED",
+				close_reason: "MAESTRO_CLOSE_REASON_USER_STOPPED",
+				close_message: "TUI stopped",
+				metadata: {
+					metric: "session.duration",
+					value: 1234,
+				},
+			},
+		});
 	});
 
 	it("publishes prompt variant selected CloudEvents with prompt identity", async () => {
