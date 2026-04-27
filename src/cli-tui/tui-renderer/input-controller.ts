@@ -23,7 +23,7 @@ export interface InputControllerDeps {
 
 export interface InputControllerCallbacks {
 	showInfo: (message: string) => void;
-	stopRenderer: () => void;
+	stopRenderer: () => Promise<void> | void;
 	exitProcess: (code?: number) => void;
 }
 
@@ -97,8 +97,8 @@ export class InputController {
 		this.onInterruptCallback?.(options);
 	}
 
-	handleCtrlDExit(): void {
-		this.callbacks.stopRenderer();
+	async handleCtrlDExit(): Promise<void> {
+		await this.callbacks.stopRenderer();
 		this.callbacks.exitProcess(0);
 	}
 

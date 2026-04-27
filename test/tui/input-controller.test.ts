@@ -10,6 +10,8 @@ function createController(options?: {
 	isBashModeActive?: boolean;
 	tryHandleOneOffInput?: boolean;
 	tryHandleInput?: boolean;
+	stopRenderer?: () => Promise<void> | void;
+	exitProcess?: (code?: number) => void;
 }) {
 	const editor = {
 		addToHistory: vi.fn(),
@@ -46,8 +48,8 @@ function createController(options?: {
 		},
 		callbacks: {
 			showInfo: vi.fn(),
-			stopRenderer: vi.fn(),
-			exitProcess: vi.fn(),
+			stopRenderer: options?.stopRenderer ?? vi.fn(),
+			exitProcess: options?.exitProcess ?? vi.fn(),
 		},
 	});
 
@@ -95,5 +97,23 @@ describe("InputController", () => {
 		expect(getBashModeView).toHaveBeenCalledTimes(1);
 		expect(bashModeView.tryHandleOneOffInput).toHaveBeenCalledWith("pwd");
 		expect(bashModeView.tryHandleInput).toHaveBeenCalledWith("pwd");
+	});
+
+	it("waits for renderer shutdown before exiting on Ctrl-D", async () => {
+		const calls: string[] = [];
+		const { controller } = createController({
+			stopRenderer: async () => {
+				calls.push("stop-start");
+				await Promise.resolve();
+				calls.push("stop-finished");
+			},
+			exitProcess: (code) => {
+				calls.push(`exit-${code}`);
+			},
+		});
+
+		await controller.handleCtrlDExit();
+
+		expect(calls).toEqual(["stop-start", "stop-finished", "exit-0"]);
 	});
 });

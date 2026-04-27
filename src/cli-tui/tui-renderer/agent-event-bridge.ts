@@ -73,6 +73,7 @@ export class AgentEventBridge {
 	private readonly deps: AgentEventBridgeDeps;
 	private readonly callbacks: AgentEventBridgeCallbacks;
 	private sessionStartTime: number | null = null;
+	private sessionTelemetrySessionId: string | null = null;
 	private sessionTelemetryRecorded = false;
 	private sessionCloseTelemetryRecorded = false;
 	private sessionTelemetryMetadata: Record<string, unknown> | undefined;
@@ -115,7 +116,9 @@ export class AgentEventBridge {
 				});
 			}
 			if (!this.sessionTelemetryRecorded) {
+				const sessionId = this.deps.sessionManager.getSessionId();
 				this.sessionStartTime = Date.now();
+				this.sessionTelemetrySessionId = sessionId;
 				this.sessionTelemetryRecorded = true;
 				this.sessionTelemetryMetadata = {
 					model: state.model
@@ -124,7 +127,7 @@ export class AgentEventBridge {
 					provider: state.model?.provider,
 					...this.getPromptTelemetryMetadata(state),
 				};
-				recordSessionStart(this.deps.sessionManager.getSessionId(), {
+				recordSessionStart(sessionId, {
 					...this.sessionTelemetryMetadata,
 				});
 			}
@@ -155,17 +158,18 @@ export class AgentEventBridge {
 			closeReason?: MaestroCloseReason;
 			closeMessage?: string;
 		} = {},
-	): void {
+	): Promise<void> {
 		if (
 			!this.sessionTelemetryRecorded ||
 			this.sessionCloseTelemetryRecorded ||
-			this.sessionStartTime === null
+			this.sessionStartTime === null ||
+			this.sessionTelemetrySessionId === null
 		) {
-			return;
+			return Promise.resolve();
 		}
 		this.sessionCloseTelemetryRecorded = true;
-		recordSessionDuration(
-			this.deps.sessionManager.getSessionId(),
+		return recordSessionDuration(
+			this.sessionTelemetrySessionId,
 			Math.max(0, Date.now() - this.sessionStartTime),
 			{
 				...this.sessionTelemetryMetadata,

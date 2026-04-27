@@ -81,12 +81,14 @@ function createState(): AgentState {
 	};
 }
 
-function createBridge(options: { backup?: unknown } = {}) {
+function createBridge(
+	options: { backup?: unknown; getSessionId?: () => string } = {},
+) {
 	return new AgentEventBridge({
 		deps: {
 			agent: {} as never,
 			sessionManager: {
-				getSessionId: () => "session-123",
+				getSessionId: options.getSessionId ?? (() => "session-123"),
 			} as never,
 			sessionRecoveryManager: {
 				getCurrentBackup: () => options.backup ?? null,
@@ -169,8 +171,8 @@ describe("AgentEventBridge prompt telemetry", () => {
 			{ type: "agent_start" } as AgentEvent,
 			createState(),
 		);
-		bridge.recordSessionClosed();
-		bridge.recordSessionClosed();
+		await bridge.recordSessionClosed();
+		await bridge.recordSessionClosed();
 
 		expect(telemetryMocks.recordSessionDuration).toHaveBeenCalledTimes(1);
 		expect(telemetryMocks.recordSessionDuration).toHaveBeenCalledWith(
@@ -183,6 +185,30 @@ describe("AgentEventBridge prompt telemetry", () => {
 				prompt_hash: "hash_123",
 				closeReason: "MAESTRO_CLOSE_REASON_USER_STOPPED",
 				closeMessage: "TUI stopped",
+			}),
+		);
+	});
+
+	it("uses the session id captured at start when recording close telemetry", async () => {
+		let sessionId = "session-start";
+		const bridge = createBridge({ getSessionId: () => sessionId });
+
+		await bridge.handleEvent(
+			{ type: "agent_start" } as AgentEvent,
+			createState(),
+		);
+		sessionId = "session-after-clear";
+		await bridge.recordSessionClosed();
+
+		expect(telemetryMocks.recordSessionStart).toHaveBeenCalledWith(
+			"session-start",
+			expect.any(Object),
+		);
+		expect(telemetryMocks.recordSessionDuration).toHaveBeenCalledWith(
+			"session-start",
+			expect.any(Number),
+			expect.objectContaining({
+				closeReason: "MAESTRO_CLOSE_REASON_USER_STOPPED",
 			}),
 		);
 	});

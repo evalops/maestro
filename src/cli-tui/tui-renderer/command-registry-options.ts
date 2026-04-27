@@ -137,7 +137,7 @@ export interface TuiCommandRegistryDeps {
 	handleModeCommand: (context: CommandExecutionContext) => void;
 	commandSuite: CommandSuiteRuntimeDeps;
 	refreshFooterHint: () => void;
-	onQuit: () => void;
+	onQuit: () => Promise<void> | void;
 }
 
 export function buildTuiCommandRegistryOptions(
@@ -256,7 +256,9 @@ export function buildTuiCommandRegistryOptions(
 		branch: (context) =>
 			deps.getBranchController().handleBranchCommand(context),
 		tree: (context) => deps.handleTreeCommand(context),
-		quit: (_context) => deps.onQuit(),
+		quit: async (_context) => {
+			await deps.onQuit();
+		},
 		approvals: (context) =>
 			handleApprovalsCommand(context, deps.approvalService, {
 				showToast: (msg, type) => deps.notificationView.showToast(msg, type),

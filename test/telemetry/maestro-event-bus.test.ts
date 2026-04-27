@@ -91,7 +91,7 @@ describe("maestro event bus", () => {
 		process.env.MAESTRO_EVENT_BUS_URL = "nats://bus.example:4222";
 		process.env.MAESTRO_EVENT_BUS_SOURCE = "maestro-tui-test";
 		try {
-			recordSessionDuration("session_tui", 1234, {
+			await recordSessionDuration("session_tui", 1234, {
 				closeReason: "MAESTRO_CLOSE_REASON_USER_STOPPED",
 				closeMessage: "TUI stopped",
 			});

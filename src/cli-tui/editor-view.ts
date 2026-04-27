@@ -26,7 +26,7 @@ interface EditorViewOptions {
 	 * Called when Ctrl+D is pressed with an empty editor.
 	 * Standard Unix behavior: exit/end of input.
 	 */
-	onCtrlD?: () => void;
+	onCtrlD?: () => Promise<void> | void;
 	showCommandPalette: () => void;
 	showFileSearch: () => void;
 	onEditLastQueuedFollowUp?: () => boolean;
@@ -73,7 +73,7 @@ export class EditorView {
 			this.options.onCtrlC?.();
 		};
 		editor.onCtrlD = () => {
-			this.options.onCtrlD?.();
+			void this.options.onCtrlD?.();
 		};
 		editor.onShortcut = (shortcut) => {
 			if (shortcut === "command-palette") {

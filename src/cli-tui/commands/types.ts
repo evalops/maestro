@@ -67,7 +67,7 @@ export interface CommandHandlers {
 	queue(context: CommandExecutionContext): Promise<void> | void;
 	branch(context: CommandExecutionContext): void;
 	tree(context: CommandExecutionContext): void;
-	quit(context: CommandExecutionContext): void;
+	quit(context: CommandExecutionContext): Promise<void> | void;
 	approvals(context: CommandExecutionContext): void;
 	planMode(context: CommandExecutionContext): void;
 	commands(context: CommandExecutionContext): void | Promise<void>;

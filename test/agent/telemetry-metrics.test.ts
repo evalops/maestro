@@ -59,12 +59,12 @@ describe("Business Metrics Telemetry", () => {
 	});
 
 	describe("recordSessionDuration", () => {
-		it("records session duration in ms", () => {
-			expect(() => {
+		it("records session duration in ms", async () => {
+			await expect(
 				recordSessionDuration("session-123", 60000, {
 					model: "claude-3-opus",
-				});
-			}).not.toThrow();
+				}),
+			).resolves.toBeUndefined();
 		});
 	});
 

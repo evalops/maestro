@@ -7,7 +7,7 @@ interface RunControllerOptions {
 	setEditorDisabled: (disabled: boolean) => void;
 	focusEditor: () => void;
 	clearEditor: () => void;
-	stopRenderer: () => void;
+	stopRenderer: () => Promise<void> | void;
 	refreshFooterHint: () => void;
 	notifyFileChanges: () => void;
 	inMinimalMode: () => boolean;
@@ -37,11 +37,12 @@ export class RunController {
 		this.options.focusEditor();
 	}
 
-	handleCtrlC(): void {
+	async handleCtrlC(): Promise<void> {
 		const now = Date.now();
 		if (now - this.lastCtrlCTime < 500) {
-			this.options.stopRenderer();
+			await this.options.stopRenderer();
 			process.exit(0);
+			return;
 		}
 		this.options.clearEditor();
 		this.options.focusEditor();
