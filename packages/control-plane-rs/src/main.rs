@@ -1,10 +1,16 @@
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use base64::{
+    engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD},
+    Engine as _,
+};
+use hmac::{Hmac, Mac};
 use maestro_tui::agent::{FromAgent, NativeAgent, NativeAgentConfig, TokenUsage, ToolResult};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha1::{Digest, Sha1};
+use sha2::Sha256;
 use std::collections::HashMap;
 use std::env;
+use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::process::{self, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -17,6 +23,7 @@ use tokio::sync::{mpsc, Mutex};
 
 const MAX_HEADER_BYTES: usize = 64 * 1024;
 const MAX_JSON_BODY_BYTES: usize = 32 * 1024 * 1024;
+const MAX_EXTRACT_JSON_BODY_BYTES: usize = 72 * 1024 * 1024;
 const DEFAULT_EXTRACT_MAX_CHARS: usize = 200_000;
 const MAX_EXTRACT_INPUT_BYTES: usize = 50 * 1024 * 1024;
 const MAX_PROJECT_ONBOARDING_IMPRESSIONS: u8 = 4;
@@ -1496,7 +1503,14 @@ async fn handle_attachment_extract(
     initial: &mut Vec<u8>,
     head: &RequestHead,
 ) -> Vec<u8> {
-    let body = match read_request_body(stream, initial, head).await {
+    let body = match read_request_body_with_limit(
+        stream,
+        initial,
+        head,
+        MAX_EXTRACT_JSON_BODY_BYTES,
+    )
+    .await
+    {
         Ok(body) => body,
         Err(error) => return json_response(400, &serde_json::json!({ "error": error })),
     };
@@ -1523,41 +1537,44 @@ async fn handle_session_attachment_extract(
         .get("force")
         .map(|force| matches!(force.as_str(), "1" | "true"))
         .unwrap_or(false);
-    let mut sessions = state.sessions.lock().await;
-    let Some(session) = sessions.sessions.get_mut(session_id) else {
-        return json_response(404, &serde_json::json!({ "error": "Session not found" }));
-    };
-    let Some(attachment) = find_session_attachment_mut(session, &attachment_id) else {
-        return json_response(404, &serde_json::json!({ "error": "Attachment not found" }));
-    };
+    let (file_name, mime_type, content_base64) = {
+        let mut sessions = state.sessions.lock().await;
+        let Some(session) = sessions.sessions.get_mut(session_id) else {
+            return json_response(404, &serde_json::json!({ "error": "Session not found" }));
+        };
+        let Some(attachment) = find_session_attachment_mut(session, &attachment_id) else {
+            return json_response(404, &serde_json::json!({ "error": "Attachment not found" }));
+        };
 
-    let file_name = attachment_string_field(attachment, &["fileName", "file_name"])
-        .unwrap_or_else(|| "attachment".to_string());
-    let mime_type = attachment_string_field(attachment, &["mimeType", "mime_type"]);
-    if let Some(extracted_text) =
-        attachment_string_field(attachment, &["extractedText", "extracted_text"])
-    {
-        if !should_force {
-            return json_response(
-                200,
-                &serde_json::json!({
-                    "fileName": file_name,
-                    "format": "unknown",
-                    "size": attachment.get("size").and_then(Value::as_u64).unwrap_or(0),
-                    "truncated": false,
-                    "extractedText": extracted_text,
-                    "cached": true
-                }),
-            );
+        let file_name = attachment_string_field(attachment, &["fileName", "file_name"])
+            .unwrap_or_else(|| "attachment".to_string());
+        let mime_type = attachment_string_field(attachment, &["mimeType", "mime_type"]);
+        if let Some(extracted_text) =
+            attachment_string_field(attachment, &["extractedText", "extracted_text"])
+        {
+            if !should_force {
+                return json_response(
+                    200,
+                    &serde_json::json!({
+                        "fileName": file_name,
+                        "format": "unknown",
+                        "size": attachment.get("size").and_then(Value::as_u64).unwrap_or(0),
+                        "truncated": false,
+                        "extractedText": extracted_text,
+                        "cached": true
+                    }),
+                );
+            }
         }
-    }
-    let Some(content_base64) =
-        attachment_string_field(attachment, &["contentBase64", "content_base64", "content"])
-    else {
-        return json_response(
-            404,
-            &serde_json::json!({ "error": "Attachment content not available" }),
-        );
+        let Some(content_base64) =
+            attachment_string_field(attachment, &["contentBase64", "content_base64", "content"])
+        else {
+            return json_response(
+                404,
+                &serde_json::json!({ "error": "Attachment content not available" }),
+            );
+        };
+        (file_name, mime_type, content_base64)
     };
     let output = match extract_attachment_request(ExtractAttachmentRequest {
         file_name: file_name.clone(),
@@ -1570,14 +1587,23 @@ async fn handle_session_attachment_extract(
             return json_response(400, &serde_json::json!({ "error": error }));
         }
     };
-    if let Some(object) = attachment.as_object_mut() {
-        object.insert(
-            "extractedText".to_string(),
-            Value::String(output.extracted_text.clone()),
-        );
-    }
+    let mut sessions = state.sessions.lock().await;
+    let updated = sessions
+        .sessions
+        .get_mut(session_id)
+        .and_then(|session| find_session_attachment_mut(session, &attachment_id))
+        .and_then(Value::as_object_mut)
+        .map(|object| {
+            object.insert(
+                "extractedText".to_string(),
+                Value::String(output.extracted_text.clone()),
+            );
+        })
+        .is_some();
     drop(sessions);
-    persist_session_store(state).await;
+    if updated {
+        persist_session_store(state).await;
+    }
     attachment_extract_json_response(file_name, output)
 }
 
@@ -1690,6 +1716,16 @@ fn extract_document_text(
         "text" => {
             String::from_utf8(bytes).map_err(|_| "Document is not valid UTF-8 text".to_string())?
         }
+        "pdf" => pdf_extract::extract_text_from_mem(&bytes)
+            .map_err(|error| format!("Failed to extract PDF text: {error}"))?,
+        "docx" => extract_zip_text(&bytes, |name| name == "word/document.xml")?,
+        "pptx" => extract_zip_text(&bytes, |name| {
+            name.starts_with("ppt/slides/") && name.ends_with(".xml")
+        })?,
+        "xlsx" => extract_zip_text(&bytes, |name| {
+            name == "xl/sharedStrings.xml"
+                || (name.starts_with("xl/worksheets/") && name.ends_with(".xml"))
+        })?,
         _ => String::new(),
     };
     if extracted_text.is_empty() && format == "unknown" {
@@ -1712,6 +1748,24 @@ fn detect_document_format(file_name: &str, mime_type: Option<&str>) -> String {
     if mime_type.starts_with("text/") {
         return "text".to_string();
     }
+    if mime_type == "application/pdf" || lower_name.ends_with(".pdf") {
+        return "pdf".to_string();
+    }
+    if mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        || lower_name.ends_with(".docx")
+    {
+        return "docx".to_string();
+    }
+    if mime_type == "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        || lower_name.ends_with(".pptx")
+    {
+        return "pptx".to_string();
+    }
+    if mime_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        || lower_name.ends_with(".xlsx")
+    {
+        return "xlsx".to_string();
+    }
     for extension in [
         ".txt",
         ".md",
@@ -1733,6 +1787,61 @@ fn detect_document_format(file_name: &str, mime_type: Option<&str>) -> String {
         }
     }
     "unknown".to_string()
+}
+
+fn extract_zip_text<F>(bytes: &[u8], accept: F) -> Result<String, String>
+where
+    F: Fn(&str) -> bool,
+{
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
+        .map_err(|error| format!("Failed to read document archive: {error}"))?;
+    let mut output = String::new();
+    for index in 0..archive.len() {
+        let mut file = archive
+            .by_index(index)
+            .map_err(|error| format!("Failed to read document entry: {error}"))?;
+        let name = file.name().to_string();
+        if !accept(&name) {
+            continue;
+        }
+        let mut xml = String::new();
+        file.read_to_string(&mut xml)
+            .map_err(|error| format!("Failed to read document XML: {error}"))?;
+        if !output.is_empty() {
+            output.push('\n');
+        }
+        output.push_str(&xml_text_content(&xml));
+    }
+    Ok(output)
+}
+
+fn xml_text_content(xml: &str) -> String {
+    let mut text = String::new();
+    let mut in_tag = false;
+    for ch in xml.chars() {
+        match ch {
+            '<' => {
+                in_tag = true;
+                text.push(' ');
+            }
+            '>' => in_tag = false,
+            _ if !in_tag => text.push(ch),
+            _ => {}
+        }
+    }
+    decode_xml_entities(&collapse_whitespace(&text))
+}
+
+fn collapse_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn decode_xml_entities(text: &str) -> String {
+    text.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
 }
 
 fn clamp_chars(text: &str, max_chars: usize) -> (String, bool) {
@@ -4758,18 +4867,6 @@ fn sse_headers() -> String {
 }
 
 fn authorize(head: &RequestHead, config: &Config) -> Result<(), Vec<u8>> {
-    let Some(expected) = config.api_key.as_deref() else {
-        if config.require_key {
-            return Err(json_response(
-                401,
-                &serde_json::json!({
-                    "error": "MAESTRO_WEB_API_KEY is required for API requests"
-                }),
-            ));
-        }
-        return Ok(());
-    };
-
     let bearer = head
         .headers
         .get("authorization")
@@ -4781,7 +4878,15 @@ fn authorize(head: &RequestHead, config: &Config) -> Result<(), Vec<u8>> {
         .or_else(|| head.headers.get("x-composer-api-key"))
         .map(String::as_str);
 
-    if bearer == Some(expected) || header_key == Some(expected) {
+    let matched_api_key = config
+        .api_key
+        .as_deref()
+        .map(|expected| bearer == Some(expected) || header_key == Some(expected))
+        .unwrap_or(false);
+    let matched_bearer_token = bearer.map(valid_bearer_token).unwrap_or(false);
+    let allow_without_auth = !config.require_key && !auth_is_configured(config);
+
+    if matched_api_key || matched_bearer_token || allow_without_auth {
         Ok(())
     } else {
         Err(json_response(
@@ -4789,6 +4894,165 @@ fn authorize(head: &RequestHead, config: &Config) -> Result<(), Vec<u8>> {
             &serde_json::json!({ "error": "Unauthorized" }),
         ))
     }
+}
+
+fn auth_is_configured(config: &Config) -> bool {
+    config.api_key.is_some()
+        || env::var("MAESTRO_AUTH_SHARED_SECRET")
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+        || env::var("MAESTRO_JWT_SECRET")
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+}
+
+fn valid_bearer_token(token: &str) -> bool {
+    verify_shared_bearer_token(token) || verify_hs256_jwt(token)
+}
+
+fn verify_shared_bearer_token(token: &str) -> bool {
+    let Ok(secret) = env::var("MAESTRO_AUTH_SHARED_SECRET") else {
+        return false;
+    };
+    let secret = secret.trim();
+    if secret.is_empty() {
+        return false;
+    }
+    let Some((encoded_user, provided_signature)) = token.split_once('.') else {
+        return false;
+    };
+    if provided_signature.contains('.') {
+        return false;
+    }
+    let Ok(user_bytes) = URL_SAFE_NO_PAD.decode(encoded_user) else {
+        return false;
+    };
+    let Ok(user_id) = String::from_utf8(user_bytes) else {
+        return false;
+    };
+    let expected = hmac_sha256_hex(secret.as_bytes(), user_id.as_bytes());
+    secure_eq(provided_signature.as_bytes(), expected.as_bytes())
+}
+
+fn verify_hs256_jwt(token: &str) -> bool {
+    if env::var("MAESTRO_JWT_ALG")
+        .ok()
+        .map(|alg| alg != "HS256")
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    let Ok(secret) = env::var("MAESTRO_JWT_SECRET") else {
+        return false;
+    };
+    let secret = secret.trim();
+    if secret.is_empty() {
+        return false;
+    }
+    let mut parts = token.split('.');
+    let (Some(header), Some(payload), Some(signature), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return false;
+    };
+    let Ok(header_value) = URL_SAFE_NO_PAD
+        .decode(header)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .ok_or(())
+    else {
+        return false;
+    };
+    if header_value.get("alg").and_then(Value::as_str) != Some("HS256") {
+        return false;
+    }
+    let signed = format!("{header}.{payload}");
+    let expected = hmac_sha256_base64url(secret.as_bytes(), signed.as_bytes());
+    if !secure_eq(signature.as_bytes(), expected.as_bytes()) {
+        return false;
+    }
+    let Ok(payload_value) = URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .ok_or(())
+    else {
+        return false;
+    };
+    if payload_value
+        .get("sub")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|sub| !sub.is_empty())
+        .is_none()
+    {
+        return false;
+    }
+    let now_secs = now_millis() / 1000;
+    if payload_value
+        .get("exp")
+        .and_then(Value::as_u64)
+        .map(|exp| exp <= now_secs)
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    if payload_value
+        .get("nbf")
+        .and_then(Value::as_u64)
+        .map(|nbf| nbf > now_secs)
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    if let Ok(audience) = env::var("MAESTRO_JWT_AUD") {
+        if !jwt_claim_matches(&payload_value, "aud", audience.trim()) {
+            return false;
+        }
+    }
+    if let Ok(issuer) = env::var("MAESTRO_JWT_ISS") {
+        if !jwt_claim_matches(&payload_value, "iss", issuer.trim()) {
+            return false;
+        }
+    }
+    true
+}
+
+fn jwt_claim_matches(payload: &Value, claim: &str, expected: &str) -> bool {
+    if expected.is_empty() {
+        return true;
+    }
+    match payload.get(claim) {
+        Some(Value::String(value)) => value == expected,
+        Some(Value::Array(values)) => values.iter().any(|value| value.as_str() == Some(expected)),
+        _ => false,
+    }
+}
+
+fn hmac_sha256_base64url(secret: &[u8], payload: &[u8]) -> String {
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC accepts arbitrary key sizes");
+    mac.update(payload);
+    URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
+}
+
+fn hmac_sha256_hex(secret: &[u8], payload: &[u8]) -> String {
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC accepts arbitrary key sizes");
+    mac.update(payload);
+    mac.finalize()
+        .into_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn secure_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.iter()
+        .zip(right)
+        .fold(0u8, |acc, (left, right)| acc | (left ^ right))
+        == 0
 }
 
 async fn build_status_snapshot(state: &AppState) -> StatusSnapshot {
@@ -5234,6 +5498,15 @@ async fn read_request_body(
     initial: &mut Vec<u8>,
     head: &RequestHead,
 ) -> Result<Vec<u8>, String> {
+    read_request_body_with_limit(stream, initial, head, MAX_JSON_BODY_BYTES).await
+}
+
+async fn read_request_body_with_limit(
+    stream: &mut TcpStream,
+    initial: &mut Vec<u8>,
+    head: &RequestHead,
+    max_body_bytes: usize,
+) -> Result<Vec<u8>, String> {
     let header_end = header_end(initial)?;
     let body_start = header_end + 4;
     let content_length = head
@@ -5241,9 +5514,9 @@ async fn read_request_body(
         .get("content-length")
         .and_then(|value| value.parse::<usize>().ok())
         .ok_or_else(|| "content-length is required".to_string())?;
-    if content_length > MAX_JSON_BODY_BYTES {
+    if content_length > max_body_bytes {
         return Err(format!(
-            "request body exceeded limit: {content_length} > {MAX_JSON_BODY_BYTES}"
+            "request body exceeded limit: {content_length} > {max_body_bytes}"
         ));
     }
 
@@ -5257,7 +5530,7 @@ async fn read_request_body(
             return Err("connection closed before request body completed".into());
         }
         initial.extend_from_slice(&chunk[..read]);
-        if initial.len().saturating_sub(body_start) > MAX_JSON_BODY_BYTES {
+        if initial.len().saturating_sub(body_start) > max_body_bytes {
             return Err("request body exceeded limit".into());
         }
     }
@@ -5467,6 +5740,32 @@ fn env_u16(name: &str, default: u16) -> u16 {
 mod tests {
     use super::*;
 
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn auth_test_config() -> Config {
+        Config {
+            listen_host: "127.0.0.1".to_string(),
+            listen_port: 0,
+            api_key: Some("api-key".to_string()),
+            require_key: true,
+            cwd: PathBuf::from("."),
+            session_store_path: PathBuf::from("sessions.json"),
+            command_prefs_path: PathBuf::from("command-prefs.json"),
+            usage_file_path: PathBuf::from("usage.jsonl"),
+            static_root: PathBuf::from("dist"),
+            static_cache_max_age: 0,
+        }
+    }
+
+    fn bearer_head(token: &str) -> RequestHead {
+        RequestHead {
+            method: "GET".to_string(),
+            path: "/api/status".to_string(),
+            query: HashMap::new(),
+            headers: HashMap::from([("authorization".to_string(), format!("Bearer {token}"))]),
+        }
+    }
+
     #[test]
     fn parses_request_path_without_query() {
         let request =
@@ -5480,6 +5779,67 @@ mod tests {
             Some(&"mark-onboarding-seen".to_string())
         );
         assert_eq!(head.headers.get("host"), Some(&"localhost".to_string()));
+    }
+
+    #[test]
+    fn authorizes_shared_secret_bearer_token() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous = env::var_os("MAESTRO_AUTH_SHARED_SECRET");
+        env::set_var("MAESTRO_AUTH_SHARED_SECRET", "shared-secret");
+
+        let user_id = "user-123";
+        let signature = hmac_sha256_hex(b"shared-secret", user_id.as_bytes());
+        let token = format!("{}.{}", URL_SAFE_NO_PAD.encode(user_id), signature);
+
+        assert!(authorize(&bearer_head(&token), &auth_test_config()).is_ok());
+        assert!(authorize(&bearer_head("bad-token"), &auth_test_config()).is_err());
+
+        if let Some(previous) = previous {
+            env::set_var("MAESTRO_AUTH_SHARED_SECRET", previous);
+        } else {
+            env::remove_var("MAESTRO_AUTH_SHARED_SECRET");
+        }
+    }
+
+    #[test]
+    fn authorizes_hs256_jwt_bearer_token() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous_secret = env::var_os("MAESTRO_JWT_SECRET");
+        let previous_alg = env::var_os("MAESTRO_JWT_ALG");
+        let previous_aud = env::var_os("MAESTRO_JWT_AUD");
+        let previous_iss = env::var_os("MAESTRO_JWT_ISS");
+        env::set_var("MAESTRO_JWT_SECRET", "jwt-secret");
+        env::remove_var("MAESTRO_JWT_ALG");
+        env::remove_var("MAESTRO_JWT_AUD");
+        env::remove_var("MAESTRO_JWT_ISS");
+
+        let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"HS256","typ":"JWT"}"#);
+        let expires_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0)
+            .saturating_add(60);
+        let payload = URL_SAFE_NO_PAD.encode(format!(r#"{{"sub":"user-123","exp":{expires_at}}}"#));
+        let signing_input = format!("{header}.{payload}");
+        let signature = hmac_sha256_base64url(b"jwt-secret", signing_input.as_bytes());
+        let token = format!("{signing_input}.{signature}");
+
+        assert!(authorize(&bearer_head(&token), &auth_test_config()).is_ok());
+
+        if let Some(previous) = previous_secret {
+            env::set_var("MAESTRO_JWT_SECRET", previous);
+        } else {
+            env::remove_var("MAESTRO_JWT_SECRET");
+        }
+        if let Some(previous) = previous_alg {
+            env::set_var("MAESTRO_JWT_ALG", previous);
+        }
+        if let Some(previous) = previous_aud {
+            env::set_var("MAESTRO_JWT_AUD", previous);
+        }
+        if let Some(previous) = previous_iss {
+            env::set_var("MAESTRO_JWT_ISS", previous);
+        }
     }
 
     #[test]
@@ -5596,6 +5956,30 @@ mod tests {
     }
 
     #[test]
+    fn extracts_docx_attachment_without_node_runtime() {
+        let docx = build_store_zip([(
+            "word/document.xml",
+            br#"<w:document><w:body><w:p><w:r><w:t>Hello &amp; Rust</w:t></w:r></w:p></w:body></w:document>"#
+                .as_slice(),
+        )])
+        .expect("docx zip should build");
+
+        let output = extract_document_text(
+            docx,
+            "notes.docx".to_string(),
+            Some(
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    .to_string(),
+            ),
+            None,
+        )
+        .expect("docx extraction should succeed");
+
+        assert_eq!(output.format, "docx");
+        assert!(output.extracted_text.contains("Hello & Rust"));
+    }
+
+    #[test]
     fn builds_store_zip_archive_without_node_runtime() {
         let zip = build_store_zip([("artifact.txt", b"hello artifact".as_slice())])
             .expect("zip archive should build");
@@ -5676,6 +6060,7 @@ mod tests {
     #[test]
     fn chat_body_limit_allows_base64_attachments() {
         assert!(MAX_JSON_BODY_BYTES >= 32 * 1024 * 1024);
+        assert!(MAX_EXTRACT_JSON_BODY_BYTES > (MAX_EXTRACT_INPUT_BYTES * 4 / 3));
     }
 
     #[test]
