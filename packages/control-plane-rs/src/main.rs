@@ -6,7 +6,7 @@ use hmac::{Hmac, Mac};
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use maestro_tui::agent::{FromAgent, NativeAgent, NativeAgentConfig, TokenUsage, ToolResult};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use sha1::{Digest, Sha1};
 use sha2::Sha256;
 use std::collections::HashMap;
@@ -27,10 +27,10 @@ mod model_catalog;
 
 pub(crate) use http::MAX_JSON_BODY_BYTES;
 use http::{
-    header_end, json_response, origin_allowed, percent_decode_component, query_flag,
-    read_request_body, read_request_body_with_limit, read_request_head, response_cors_origin,
-    response_with_cache, response_with_cache_and_length, response_with_extra_headers,
-    response_with_extra_headers_and_length, response_with_no_store,
+    cors_credentials_header_for_origin, header_end, json_response, origin_allowed,
+    percent_decode_component, query_flag, read_request_body, read_request_body_with_limit,
+    read_request_head, response_cors_origin, response_with_cache, response_with_cache_and_length,
+    response_with_extra_headers, response_with_extra_headers_and_length, response_with_no_store,
     response_with_no_store_and_length, text_response, with_cors_origin, RequestHead,
 };
 #[cfg(test)]
@@ -3520,6 +3520,8 @@ struct ChatMessage {
     content: Value,
     #[serde(default)]
     attachments: Vec<ChatAttachment>,
+    #[serde(default, flatten)]
+    extra: Map<String, Value>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -3659,11 +3661,10 @@ async fn record_chat_user_message(
     let Some(latest) = chat.messages.last() else {
         return Ok(());
     };
-    let mut message = serde_json::json!({
-        "role": latest.role.clone(),
-        "content": latest.content.clone(),
-        "timestamp": now_rfc3339()
-    });
+    let mut message = chat_message_prompt_value(latest);
+    if let Value::Object(object) = &mut message {
+        object.insert("timestamp".to_string(), Value::String(now_rfc3339()));
+    }
     if !latest.attachments.is_empty() {
         message["attachments"] = serde_json::json!(latest.attachments);
     }
@@ -3825,8 +3826,7 @@ async fn handle_chat_endpoint(
         return Ok(());
     }
 
-    let prompt = build_prompt_from_chat(&chat);
-    if prompt.trim().is_empty() {
+    if !chat_message_has_input(latest) {
         stream
             .write_all(&with_cors_origin(
                 json_response(
@@ -3840,6 +3840,7 @@ async fn handle_chat_endpoint(
         let _ = stream.shutdown().await;
         return Ok(());
     }
+    let prompt = build_prompt_from_chat(&chat);
 
     let session_id = chat.session_id.clone();
     let prepared_attachments = match prepare_chat_attachments(&chat).await {
@@ -4427,8 +4428,7 @@ async fn handle_chat_websocket_endpoint(
         return Ok(());
     }
 
-    let prompt = build_prompt_from_chat(&chat);
-    if prompt.trim().is_empty() {
+    if !chat_message_has_input(latest) {
         send_ws_json(
             &mut stream,
             &serde_json::json!({ "type": "error", "message": "User message cannot be empty" }),
@@ -4439,6 +4439,7 @@ async fn handle_chat_websocket_endpoint(
         let _ = stream.shutdown().await;
         return Ok(());
     }
+    let prompt = build_prompt_from_chat(&chat);
 
     let session_id = chat.session_id.clone();
     let prepared_attachments = match prepare_chat_attachments(&chat).await {
@@ -4977,18 +4978,22 @@ async fn cleanup_prepared_attachments(mut attachments: PreparedAttachments) {
 fn build_prompt_from_chat(chat: &ChatRequest) -> String {
     let mut parts = Vec::new();
     if chat.messages.len() > 1 {
-        parts.push("Conversation so far:".to_string());
-        for message in chat.messages.iter().take(chat.messages.len() - 1) {
-            let content = composer_text_content(&message.content);
-            if !content.trim().is_empty() {
-                parts.push(format!("{}: {}", message.role, content.trim()));
-            }
-        }
+        let history: Vec<Value> = chat.messages[..chat.messages.len() - 1]
+            .iter()
+            .map(chat_message_prompt_value)
+            .collect();
+        let rendered =
+            serde_json::to_string_pretty(&history).expect("chat history should serialize");
+        parts.push(format!(
+            "Conversation so far (structured JSON, preserving content blocks and tool metadata):\n{rendered}"
+        ));
         parts.push("Current user message:".to_string());
     }
 
     if let Some(latest) = chat.messages.last() {
-        parts.push(composer_text_content(&latest.content));
+        let rendered = serde_json::to_string_pretty(&chat_message_prompt_value(latest))
+            .expect("chat message should serialize");
+        parts.push(rendered);
         let attachment_notes: Vec<String> =
             latest.attachments.iter().map(attachment_note).collect();
         if !attachment_notes.is_empty() {
@@ -4997,6 +5002,26 @@ fn build_prompt_from_chat(chat: &ChatRequest) -> String {
     }
 
     parts.join("\n\n")
+}
+
+fn chat_message_prompt_value(message: &ChatMessage) -> Value {
+    let mut object = Map::new();
+    object.insert("role".to_string(), Value::String(message.role.clone()));
+    object.insert("content".to_string(), message.content.clone());
+    if !message.attachments.is_empty() {
+        object.insert(
+            "attachments".to_string(),
+            serde_json::json!(message.attachments),
+        );
+    }
+    for (key, value) in &message.extra {
+        object.insert(key.clone(), value.clone());
+    }
+    Value::Object(object)
+}
+
+fn chat_message_has_input(message: &ChatMessage) -> bool {
+    !composer_text_content(&message.content).trim().is_empty() || !message.attachments.is_empty()
 }
 
 fn attachment_note(attachment: &ChatAttachment) -> String {
@@ -5332,9 +5357,11 @@ fn parse_websocket_frame(
 }
 
 fn sse_headers(head: &RequestHead) -> String {
+    let origin = response_cors_origin(head);
     let mut headers = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nAccess-Control-Allow-Origin: {}\r\nAccess-Control-Allow-Credentials: true\r\n",
-        response_cors_origin(head)
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nAccess-Control-Allow-Origin: {}\r\n{}",
+        origin,
+        cors_credentials_header_for_origin(&origin)
     );
     if head.headers.contains_key("origin") {
         headers.push_str("Vary: Origin\r\n");
@@ -6600,7 +6627,17 @@ mod tests {
         let response = sse_headers(&head);
 
         assert!(response.contains("Access-Control-Allow-Origin: http://localhost:3000\r\n"));
+        assert!(response.contains("Access-Control-Allow-Credentials: true\r\n"));
         assert!(response.contains("Vary: Origin\r\n"));
+    }
+
+    #[test]
+    fn wildcard_cors_origin_omits_credentials_header() {
+        assert_eq!(cors_credentials_header_for_origin("*"), "");
+        assert_eq!(
+            cors_credentials_header_for_origin("http://localhost:3000"),
+            "Access-Control-Allow-Credentials: true\r\n"
+        );
     }
 
     #[test]
@@ -6930,6 +6967,7 @@ mod tests {
                 role: "user".to_string(),
                 content: Value::String("hello".to_string()),
                 attachments: Vec::new(),
+                extra: Map::new(),
             }],
         };
 
@@ -6955,6 +6993,7 @@ mod tests {
                 role: "user".to_string(),
                 content: Value::String("hello".to_string()),
                 attachments: Vec::new(),
+                extra: Map::new(),
             }],
         };
 
@@ -7346,6 +7385,54 @@ mod tests {
         let response = String::from_utf8(response).expect("response should be utf-8");
 
         assert!(response.contains("Access-Control-Allow-Origin: http://127.0.0.1:5173\r\n"));
+        assert!(response.contains("Access-Control-Allow-Credentials: true\r\n"));
+    }
+
+    #[test]
+    fn chat_prompt_preserves_structured_history() {
+        let chat = ChatRequest {
+            model: None,
+            thinking_level: None,
+            session_id: None,
+            messages: vec![
+                ChatMessage {
+                    role: "assistant".to_string(),
+                    content: Value::String("I can inspect that.".to_string()),
+                    attachments: Vec::new(),
+                    extra: {
+                        let mut extra = Map::new();
+                        extra.insert(
+                            "tools".to_string(),
+                            serde_json::json!([{ "id": "call-1", "name": "read_file" }]),
+                        );
+                        extra
+                    },
+                },
+                ChatMessage {
+                    role: "user".to_string(),
+                    content: serde_json::json!([
+                        { "type": "text", "text": "What about this image?" },
+                        { "type": "image", "url": "attachment://att-1" }
+                    ]),
+                    attachments: vec![ChatAttachment {
+                        id: Some("att-1".to_string()),
+                        attachment_type: Some("image".to_string()),
+                        file_name: Some("screen.png".to_string()),
+                        mime_type: Some("image/png".to_string()),
+                        content: None,
+                        content_omitted: Some(true),
+                        extracted_text: None,
+                    }],
+                    extra: Map::new(),
+                },
+            ],
+        };
+
+        let prompt = build_prompt_from_chat(&chat);
+
+        assert!(prompt.contains("\"tools\""));
+        assert!(prompt.contains("\"type\": \"image\""));
+        assert!(prompt.contains("\"attachments\""));
     }
 
     #[test]
@@ -7515,6 +7602,7 @@ mod tests {
                     content_omitted: None,
                     extracted_text: None,
                 }],
+                extra: Map::new(),
             }],
         };
 

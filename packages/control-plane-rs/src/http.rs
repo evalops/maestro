@@ -259,10 +259,12 @@ pub(crate) fn response_with_extra_headers_and_length(
         501 => "Not Implemented",
         _ => "OK",
     };
+    let origin = cors_origin();
     let mut head = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\nAccess-Control-Allow-Origin: {}\r\nAccess-Control-Allow-Credentials: true\r\nAccess-Control-Allow-Headers: {CORS_ALLOW_HEADERS}\r\nAccess-Control-Allow-Methods: GET,POST,PATCH,DELETE,OPTIONS\r\n",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\nAccess-Control-Allow-Origin: {}\r\n{}Access-Control-Allow-Headers: {CORS_ALLOW_HEADERS}\r\nAccess-Control-Allow-Methods: GET,POST,PATCH,DELETE,OPTIONS\r\n",
         content_length,
-        cors_origin()
+        origin,
+        cors_credentials_header_for_origin(&origin)
     );
     if !extra_headers.is_empty() {
         head.push_str(extra_headers);
@@ -278,6 +280,14 @@ pub(crate) fn response_with_extra_headers_and_length(
 
 pub(crate) fn cors_origin() -> String {
     env::var("MAESTRO_WEB_ORIGIN").unwrap_or_else(|_| "http://localhost:4173".into())
+}
+
+pub(crate) fn cors_credentials_header_for_origin(origin: &str) -> &'static str {
+    if origin == "*" {
+        ""
+    } else {
+        "Access-Control-Allow-Credentials: true\r\n"
+    }
 }
 
 pub(crate) fn response_cors_origin(head: &RequestHead) -> String {
@@ -318,6 +328,9 @@ pub(crate) fn with_cors_origin(response: Vec<u8>, head: &RequestHead) -> Vec<u8>
             has_origin_header = true;
             continue;
         }
+        if line.starts_with("Access-Control-Allow-Credentials:") {
+            continue;
+        }
         if let Some(values) = line.strip_prefix("Vary:") {
             has_vary_origin = values
                 .split(',')
@@ -330,6 +343,7 @@ pub(crate) fn with_cors_origin(response: Vec<u8>, head: &RequestHead) -> Vec<u8>
     if has_origin_header && head.headers.contains_key("origin") && !has_vary_origin {
         rewritten.push_str("Vary: Origin\r\n");
     }
+    rewritten.push_str(cors_credentials_header_for_origin(&origin));
 
     rewritten.push_str("\r\n");
     let mut bytes = rewritten.into_bytes();
