@@ -123,44 +123,14 @@ fn parse_query(query: &str) -> HashMap<String, String> {
         .filter(|part| !part.is_empty())
         .filter_map(|part| {
             let (key, value) = part.split_once('=').unwrap_or((part, ""));
-            let key = decode_query_component(key);
+            let key = percent_decode_component(key);
             if key.is_empty() {
                 None
             } else {
-                Some((key, decode_query_component(value)))
+                Some((key, percent_decode_component(value)))
             }
         })
         .collect()
-}
-
-fn decode_query_component(value: &str) -> String {
-    let bytes = value.as_bytes();
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        match bytes[index] {
-            b'+' => {
-                decoded.push(b' ');
-                index += 1;
-            }
-            b'%' if index + 2 < bytes.len() => {
-                if let Ok(hex) = std::str::from_utf8(&bytes[index + 1..index + 3]) {
-                    if let Ok(byte) = u8::from_str_radix(hex, 16) {
-                        decoded.push(byte);
-                        index += 3;
-                        continue;
-                    }
-                }
-                decoded.push(bytes[index]);
-                index += 1;
-            }
-            byte => {
-                decoded.push(byte);
-                index += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&decoded).to_string()
 }
 
 pub(crate) fn query_flag(head: &RequestHead, name: &str) -> bool {

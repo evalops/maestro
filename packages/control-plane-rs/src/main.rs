@@ -523,6 +523,9 @@ async fn handle_local_endpoint(
     head: &RequestHead,
     state: &AppState,
 ) -> Vec<u8> {
+    if head.method == "OPTIONS" && head.path.starts_with("/api/") {
+        return text_response(204, "");
+    }
     if let Err(response) = validate_csrf(&head, &state.config) {
         return response;
     }
@@ -6151,15 +6154,34 @@ mod tests {
         }
     }
 
-    #[test]
-    fn options_preflight_is_handled_before_local_route_checks() {
+    async fn connected_tcp_streams() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have a local addr");
+        let client = TcpStream::connect(addr);
+        let server = async { listener.accept().await.expect("listener should accept").0 };
+        let (client, server) = tokio::join!(client, server);
+        (client.expect("client should connect"), server)
+    }
+
+    #[tokio::test]
+    async fn options_preflight_is_handled_before_local_route_checks() {
         let head = parse_request_head(
             b"OPTIONS /api/chat HTTP/1.1\r\nHost: localhost\r\nOrigin: http://localhost:4173\r\nAccess-Control-Request-Method: POST\r\n\r\n",
         )
         .expect("request should parse");
         assert!(is_local_endpoint(&head));
 
-        let response = response(204, "text/plain; charset=utf-8", &[]);
+        let (_client, mut server) = connected_tcp_streams().await;
+        let mut initial = Vec::new();
+        let state = test_app_state_with_sessions(HashMap::new());
+        let response = with_cors_origin(
+            handle_local_endpoint(&mut server, &mut initial, &head, &state).await,
+            &head,
+        );
         let text = String::from_utf8(response).expect("response should be utf-8");
         assert!(text.starts_with("HTTP/1.1 204 No Content\r\n"));
         assert!(text.contains("Access-Control-Allow-Methods: GET,POST,PATCH,DELETE,OPTIONS\r\n"));
