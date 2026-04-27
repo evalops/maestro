@@ -321,6 +321,16 @@ async fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<(),
         return Ok(());
     }
 
+    if is_chat_websocket_endpoint(&head) {
+        let response = chat_websocket_response(&head, &state);
+        stream
+            .write_all(&response)
+            .await
+            .map_err(|error| error.to_string())?;
+        let _ = stream.shutdown().await;
+        return Ok(());
+    }
+
     if is_chat_endpoint(&head) {
         return handle_chat_endpoint(stream, initial, head, state).await;
     }
@@ -363,6 +373,22 @@ async fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<(),
 
 fn is_chat_endpoint(head: &RequestHead) -> bool {
     head.method == "POST" && head.path == "/api/chat"
+}
+
+fn is_chat_websocket_endpoint(head: &RequestHead) -> bool {
+    head.method == "GET" && head.path == "/api/chat/ws"
+}
+
+fn chat_websocket_response(head: &RequestHead, state: &AppState) -> Vec<u8> {
+    if let Err(response) = authorize(head, &state.config) {
+        return response;
+    }
+    response_with_extra_headers(
+        426,
+        "application/json",
+        br#"{"error":"WebSocket chat is not available in the Rust control plane yet; use POST /api/chat SSE streaming."}"#,
+        "Upgrade: websocket\r\n",
+    )
 }
 
 fn is_local_endpoint(head: &RequestHead) -> bool {
@@ -1905,6 +1931,7 @@ async fn handle_chat_endpoint(
     let mut assistant_text = String::new();
     let mut thinking_text = String::new();
     let mut response_started = false;
+    let mut thinking_started = false;
     let mut terminal_sent = false;
     let mut tool_names: HashMap<String, String> = HashMap::new();
 
@@ -1950,6 +1977,24 @@ async fn handle_chat_endpoint(
                     .await?;
                 }
                 if is_thinking {
+                    if !thinking_started {
+                        thinking_started = true;
+                        let message =
+                            composer_assistant_message(&assistant_text, &thinking_text, None);
+                        send_sse(
+                            &mut stream,
+                            &serde_json::json!({
+                                "type": "message_update",
+                                "message": message,
+                                "assistantMessageEvent": {
+                                    "type": "thinking_start",
+                                    "contentIndex": 0,
+                                    "partial": message
+                                }
+                            }),
+                        )
+                        .await?;
+                    }
                     thinking_text.push_str(&content);
                     send_sse(
                         &mut stream,
@@ -2960,6 +3005,7 @@ fn response_with_extra_headers_and_length(
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        426 => "Upgrade Required",
         413 => "Payload Too Large",
         429 => "Too Many Requests",
         500 => "Internal Server Error",
@@ -3051,6 +3097,15 @@ mod tests {
             let head = parse_request_head(request.as_bytes()).expect("request should parse");
             assert!(is_local_endpoint(&head), "{request} should be local");
         }
+    }
+
+    #[test]
+    fn detects_chat_websocket_route_separately_from_sse() {
+        let head = parse_request_head(b"GET /api/chat/ws HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .expect("request should parse");
+
+        assert!(is_chat_websocket_endpoint(&head));
+        assert!(!is_chat_endpoint(&head));
     }
 
     #[test]
