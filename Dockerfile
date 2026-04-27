@@ -89,6 +89,7 @@ RUN apk add --no-cache tini git ca-certificates openssl libstdc++ && \
     adduser --system --uid 1001 appuser
 
 COPY --from=web-builder /usr/local/bin/bun /usr/local/bin/bun
+COPY --from=deps /app/node_modules ./node_modules
 COPY package.json bun.lockb ./
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=web-builder /app/packages/web/dist ./packages/web/dist
