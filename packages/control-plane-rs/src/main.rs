@@ -27,9 +27,9 @@ mod model_catalog;
 
 pub(crate) use http::MAX_JSON_BODY_BYTES;
 use http::{
-    header_end, json_response, origin_allowed, query_flag, read_request_body,
-    read_request_body_with_limit, read_request_head, response_cors_origin, response_with_cache,
-    response_with_cache_and_length, response_with_extra_headers,
+    header_end, json_response, origin_allowed, percent_decode_component, query_flag,
+    read_request_body, read_request_body_with_limit, read_request_head, response_cors_origin,
+    response_with_cache, response_with_cache_and_length, response_with_extra_headers,
     response_with_extra_headers_and_length, response_with_no_store,
     response_with_no_store_and_length, text_response, with_cors_origin, RequestHead,
 };
@@ -434,6 +434,7 @@ fn is_local_endpoint(head: &RequestHead) -> bool {
                 | "/api/telemetry"
                 | "/api/training"
                 | "/api/framework"
+                | "/api/background"
                 | "/api/undo"
                 | "/api/run"
                 | "/api/approvals"
@@ -777,6 +778,16 @@ async fn handle_local_endpoint(
                 return response;
             }
             json_response(200, &background_response(&head))
+        }
+        ("POST", "/api/background") => {
+            if let Err(response) = authorize(&head, &state.config) {
+                return response;
+            }
+            let settings = background_response(&head)
+                .get("settings")
+                .cloned()
+                .unwrap_or(Value::Null);
+            json_response(200, &serde_json::json!({ "success": true, "settings": settings }))
         }
         ("GET", "/api/undo") => {
             if let Err(response) = authorize(&head, &state.config) {
@@ -1160,9 +1171,36 @@ async fn handle_pending_request_resume_endpoint(
 
 async fn load_session_store(path: &Path) -> SessionStore {
     match tokio::fs::read(path).await {
-        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
+        Ok(bytes) => decode_session_store(&bytes).unwrap_or_else(|error| {
+            eprintln!(
+                "failed to load Rust session store at {}: {error}",
+                path.display()
+            );
+            SessionStore::default()
+        }),
         Err(_) => SessionStore::default(),
     }
+}
+
+fn decode_session_store(bytes: &[u8]) -> Result<SessionStore, String> {
+    let value = serde_json::from_slice::<Value>(bytes).map_err(|error| error.to_string())?;
+    if value.get("sessions").is_some() {
+        return serde_json::from_value::<SessionStore>(value).map_err(|error| error.to_string());
+    }
+    if value.is_object() {
+        let sessions = serde_json::from_value::<HashMap<String, SessionRecord>>(value)
+            .map_err(|error| error.to_string())?;
+        return Ok(SessionStore { sessions });
+    }
+    if value.is_array() {
+        let sessions = serde_json::from_value::<Vec<SessionRecord>>(value)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .map(|session| (session.id.clone(), session))
+            .collect();
+        return Ok(SessionStore { sessions });
+    }
+    Err("session store must be an object or array".to_string())
 }
 
 async fn persist_session_store(state: &AppState) {
@@ -1317,12 +1355,7 @@ async fn handle_shared_session_get(
                 &serde_json::json!({ "error": "Shared session not found" }),
             );
         };
-        if grant.expires_at <= now
-            || grant
-                .max_accesses
-                .map(|max| grant.access_count >= max)
-                .unwrap_or(false)
-        {
+        if grant.expires_at <= now {
             shares.remove(shared_path.token);
             return json_response(
                 404,
@@ -1330,6 +1363,17 @@ async fn handle_shared_session_get(
             );
         }
         if shared_path.tail.is_none() {
+            if grant
+                .max_accesses
+                .map(|max| grant.access_count >= max)
+                .unwrap_or(false)
+            {
+                shares.remove(shared_path.token);
+                return json_response(
+                    404,
+                    &serde_json::json!({ "error": "Shared session not found" }),
+                );
+            }
             grant.access_count = grant.access_count.saturating_add(1);
         }
         grant.session_id.clone()
@@ -2364,26 +2408,6 @@ fn reconstruct_session_artifacts(session: &SessionRecord) -> HashMap<String, Str
         }
     }
     artifacts
-}
-
-fn percent_decode_component(value: &str) -> String {
-    let bytes = value.as_bytes();
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%' && index + 2 < bytes.len() {
-            if let Ok(hex) = std::str::from_utf8(&bytes[index + 1..index + 3]) {
-                if let Ok(byte) = u8::from_str_radix(hex, 16) {
-                    decoded.push(byte);
-                    index += 3;
-                    continue;
-                }
-            }
-        }
-        decoded.push(bytes[index]);
-        index += 1;
-    }
-    String::from_utf8_lossy(&decoded).to_string()
 }
 
 fn session_summary_value(session: &SessionRecord) -> Value {
@@ -3553,7 +3577,6 @@ async fn handle_chat_endpoint(
         return Ok(());
     }
 
-    record_chat_user_message(&state, &chat, auth.subject.clone()).await;
     let session_id = chat.session_id.clone();
     let prepared_attachments = match prepare_chat_attachments(&chat).await {
         Ok(attachments) => attachments,
@@ -3569,6 +3592,7 @@ async fn handle_chat_endpoint(
             return Ok(());
         }
     };
+    record_chat_user_message(&state, &chat, auth.subject.clone()).await;
 
     stream
         .write_all(sse_headers(&head).as_bytes())
@@ -4141,7 +4165,6 @@ async fn handle_chat_websocket_endpoint(
         return Ok(());
     }
 
-    record_chat_user_message(&state, &chat, auth.subject.clone()).await;
     let session_id = chat.session_id.clone();
     let prepared_attachments = match prepare_chat_attachments(&chat).await {
         Ok(attachments) => attachments,
@@ -4157,6 +4180,7 @@ async fn handle_chat_websocket_endpoint(
             return Ok(());
         }
     };
+    record_chat_user_message(&state, &chat, auth.subject.clone()).await;
 
     let model = selected_chat_model(&chat, &state).await;
     let (usage_provider, usage_model) = usage_provider_model(&chat, &state, &model).await;
@@ -5903,6 +5927,24 @@ mod tests {
         }
     }
 
+    fn test_app_state_with_sessions(sessions: HashMap<String, SessionRecord>) -> AppState {
+        let config = Arc::new(auth_test_config());
+        AppState {
+            config: config.clone(),
+            started_at: Instant::now(),
+            selected_model: Arc::new(Mutex::new(emergency_default_model())),
+            telemetry_override: Arc::new(Mutex::new(None)),
+            training_override: Arc::new(Mutex::new(None)),
+            command_prefs: Arc::new(Mutex::new(CommandPrefs::default())),
+            sessions: Arc::new(Mutex::new(SessionStore { sessions })),
+            session_persist_lock: Arc::new(Mutex::new(())),
+            usage_persist_lock: Arc::new(Mutex::new(())),
+            shared_sessions: Arc::new(Mutex::new(HashMap::new())),
+            approval_modes: Arc::new(Mutex::new(HashMap::new())),
+            pending_tool_responses: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
     #[test]
     fn parses_request_path_without_query() {
         let request =
@@ -6365,6 +6407,66 @@ mod tests {
     }
 
     #[test]
+    fn decodes_legacy_session_store_shapes() {
+        let wrapped = decode_session_store(
+            br#"{"sessions":{"session-1":{"id":"session-1","title":"One","createdAt":"2026-04-27T00:00:00Z","updatedAt":"2026-04-27T00:00:00Z","messageCount":0,"messages":[]}}}"#,
+        )
+        .expect("wrapped store should decode");
+        assert!(wrapped.sessions.contains_key("session-1"));
+
+        let mapped = decode_session_store(
+            br#"{"session-2":{"id":"session-2","title":"Two","createdAt":"2026-04-27T00:00:00Z","updatedAt":"2026-04-27T00:00:00Z","messageCount":0,"messages":[]}}"#,
+        )
+        .expect("map store should decode");
+        assert!(mapped.sessions.contains_key("session-2"));
+
+        let array = decode_session_store(
+            br#"[{"id":"session-3","title":"Three","createdAt":"2026-04-27T00:00:00Z","updatedAt":"2026-04-27T00:00:00Z","messageCount":0,"messages":[]}]"#,
+        )
+        .expect("array store should decode");
+        assert!(array.sessions.contains_key("session-3"));
+    }
+
+    #[tokio::test]
+    async fn shared_attachment_reads_do_not_consume_or_require_page_access() {
+        let mut session = test_session_record("session-1");
+        session.messages.push(serde_json::json!({
+            "role": "user",
+            "content": "see attachment",
+            "attachments": [{
+                "id": "att-1",
+                "fileName": "note.txt",
+                "mimeType": "text/plain",
+                "content": BASE64_STANDARD.encode("hello")
+            }]
+        }));
+        let state =
+            test_app_state_with_sessions(HashMap::from([(session.id.clone(), session.clone())]));
+        state.shared_sessions.lock().await.insert(
+            "share-token".to_string(),
+            SharedSessionGrant {
+                session_id: session.id.clone(),
+                expires_at: now_millis().saturating_add(60_000),
+                max_accesses: Some(1),
+                access_count: 1,
+            },
+        );
+
+        let response = handle_shared_session_get(
+            &state,
+            SharedSessionPath {
+                token: "share-token",
+                tail: Some("attachments/att-1"),
+            },
+        )
+        .await;
+        let text = String::from_utf8(response).expect("response should be utf-8");
+
+        assert!(text.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(text.ends_with("hello"));
+    }
+
+    #[test]
     fn export_options_require_explicit_sensitive_confirmation() {
         let default_options = export_options_from_body(&[]).expect("empty body should parse");
         assert_eq!(default_options.format, "json");
@@ -6694,6 +6796,21 @@ mod tests {
         let response = String::from_utf8(response).expect("response should be utf-8");
         assert!(response.contains("x-composer-csrf"));
         assert!(response.contains("x-maestro-artifact-access"));
+    }
+
+    #[tokio::test]
+    async fn response_cors_origin_matches_allowed_request_origin() {
+        let head = parse_request_head(
+            b"GET /api/status HTTP/1.1\r\nHost: localhost\r\nOrigin: http://127.0.0.1:5173\r\n\r\n",
+        )
+        .expect("request should parse");
+        let response = with_cors_origin(
+            json_response(200, &serde_json::json!({ "ok": true })),
+            &head,
+        );
+        let response = String::from_utf8(response).expect("response should be utf-8");
+
+        assert!(response.contains("Access-Control-Allow-Origin: http://127.0.0.1:5173\r\n"));
     }
 
     #[test]

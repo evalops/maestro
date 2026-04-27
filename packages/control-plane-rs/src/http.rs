@@ -354,7 +354,11 @@ pub(crate) fn origin_allowed(head: &RequestHead) -> bool {
     let Some(origin) = head.headers.get("origin").map(|origin| origin.trim()) else {
         return true;
     };
-    if origin.is_empty() || origin == cors_origin() {
+    origin.is_empty() || origin_allowed_value(origin)
+}
+
+fn origin_allowed_value(origin: &str) -> bool {
+    if origin == cors_origin() {
         return true;
     }
     matches!(
@@ -372,4 +376,25 @@ pub(crate) fn origin_allowed(head: &RequestHead) -> bool {
             | "http://[::1]:3000"
             | "http://[::1]:5173"
     )
+}
+
+pub(crate) fn percent_decode_component(value: &str) -> String {
+    let normalized = value.replace('+', " ");
+    let bytes = normalized.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            if let Ok(hex) = std::str::from_utf8(&bytes[index + 1..index + 3]) {
+                if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                    decoded.push(byte);
+                    index += 3;
+                    continue;
+                }
+            }
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&decoded).to_string()
 }
