@@ -883,7 +883,32 @@ async fn default_model() -> ModelInfo {
     env::var("MAESTRO_DEFAULT_MODEL")
         .ok()
         .and_then(|model| resolve_model(&model, &registry))
-        .unwrap_or_else(|| registry.models[0].clone())
+        .or_else(|| registry.models.first().cloned())
+        .unwrap_or_else(emergency_default_model)
+}
+
+fn emergency_default_model() -> ModelInfo {
+    ModelInfo {
+        id: "claude-sonnet-4-5-20250514".to_string(),
+        provider: "anthropic".to_string(),
+        name: "Claude Sonnet 4.5".to_string(),
+        api: "anthropic-messages".to_string(),
+        context_window: 200_000,
+        max_tokens: 64_000,
+        reasoning: true,
+        cost: ModelCost {
+            input: 3.0,
+            output: 15.0,
+            cache_read: 0.3,
+            cache_write: 3.75,
+        },
+        capabilities: ModelCapabilities {
+            streaming: true,
+            tools: true,
+            vision: true,
+            reasoning: true,
+        },
+    }
 }
 
 fn resolve_model(input: &str, registry: &ModelRegistry) -> Option<ModelInfo> {
@@ -2304,6 +2329,15 @@ async fn static_response(head: &RequestHead, config: &Config) -> Vec<u8> {
             json_response(403, &serde_json::json!({ "error": "Forbidden" }))
         }
         StaticPathResolution::Missing => {
+            if !should_spa_fallback(head) {
+                return json_response(
+                    404,
+                    &serde_json::json!({
+                        "error": "Not found",
+                        "staticRoot": config.static_root
+                    }),
+                );
+            }
             let index = config.static_root.join("index.html");
             match canonical_static_path(&config.static_root, &index).await {
                 StaticPathResolution::Found(index) => match tokio::fs::read(&index).await {
@@ -2340,6 +2374,12 @@ async fn static_response(head: &RequestHead, config: &Config) -> Vec<u8> {
             }
         }
     }
+}
+
+fn should_spa_fallback(head: &RequestHead) -> bool {
+    let trimmed = head.path.trim_end_matches('/');
+    let last_segment = trimmed.rsplit('/').next().unwrap_or_default();
+    !last_segment.contains('.')
 }
 
 async fn canonical_static_path(root: &Path, path: &Path) -> StaticPathResolution {
@@ -2780,6 +2820,51 @@ mod tests {
         ));
 
         let _ = tokio::fs::remove_dir_all(base).await;
+    }
+
+    #[test]
+    fn missing_asset_paths_do_not_spa_fallback() {
+        let asset = RequestHead {
+            method: "GET".to_string(),
+            path: "/assets/app.js".to_string(),
+            query: HashMap::new(),
+            headers: HashMap::new(),
+        };
+        let route = RequestHead {
+            method: "GET".to_string(),
+            path: "/settings".to_string(),
+            query: HashMap::new(),
+            headers: HashMap::new(),
+        };
+
+        assert!(!should_spa_fallback(&asset));
+        assert!(should_spa_fallback(&route));
+    }
+
+    #[test]
+    fn prepared_attachments_drop_removes_temp_dir() {
+        let dir = env::temp_dir().join(format!(
+            "maestro-attachment-drop-test-{}-{}",
+            process::id(),
+            ATTACHMENT_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        std::fs::write(dir.join("file.txt"), "contents").expect("write temp file");
+
+        drop(PreparedAttachments {
+            paths: Vec::new(),
+            temp_dir: Some(dir.clone()),
+        });
+
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn emergency_default_model_is_available_without_registry_entries() {
+        let model = emergency_default_model();
+
+        assert_eq!(model.provider, "anthropic");
+        assert!(!model.id.is_empty());
     }
 
     #[test]
