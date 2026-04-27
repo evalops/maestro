@@ -7,7 +7,7 @@ use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use maestro_tui::agent::{FromAgent, NativeAgent, NativeAgentConfig, TokenUsage, ToolResult};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha1::Sha1;
+use sha1::{Digest, Sha1};
 use sha2::Sha256;
 use std::collections::HashMap;
 use std::env;
@@ -36,7 +36,7 @@ const MAX_EXTRACT_JSON_BODY_BYTES: usize = 72 * 1024 * 1024;
 const DEFAULT_EXTRACT_MAX_CHARS: usize = 200_000;
 const MAX_EXTRACT_INPUT_BYTES: usize = 50 * 1024 * 1024;
 const MAX_PROJECT_ONBOARDING_IMPRESSIONS: u8 = 4;
-const CORS_ALLOW_HEADERS: &str = "authorization,content-type,x-composer-artifact-access,x-composer-api-key,x-composer-approval-mode,x-composer-client,x-composer-client-tools,x-composer-csrf,x-composer-agent-id,x-composer-slim-events,x-composer-workspace,x-composer-workspace-id,x-maestro-artifact-access,x-maestro-api-key,x-maestro-approval-mode,x-maestro-agent-id,x-maestro-client,x-maestro-client-tools,x-maestro-csrf,x-maestro-slim-events,x-maestro-workspace,x-maestro-workspace-id,x-csrf-token";
+const CORS_ALLOW_HEADERS: &str = "authorization,content-type,x-composer-artifact-access,x-composer-api-key,x-composer-approval-mode,x-composer-client,x-composer-client-tools,x-composer-csrf,x-composer-agent-id,x-composer-slim-events,x-composer-workspace,x-composer-workspace-id,x-maestro-artifact-access,x-maestro-api-key,x-maestro-approval-mode,x-maestro-agent-id,x-maestro-client,x-maestro-client-tools,x-maestro-csrf,x-maestro-slim-events,x-maestro-workspace,x-maestro-workspace-id,x-csrf-token,x-xsrf-token";
 static ATTACHMENT_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
 type PendingToolResponseSender = mpsc::UnboundedSender<(String, bool, Option<ToolResult>)>;
@@ -47,6 +47,8 @@ struct Config {
     listen_port: u16,
     api_key: Option<String>,
     require_key: bool,
+    csrf_token: Option<String>,
+    require_csrf: bool,
     cwd: PathBuf,
     session_store_path: PathBuf,
     command_prefs_path: PathBuf,
@@ -66,6 +68,9 @@ impl Config {
             .map(|value| value != "0")
             .unwrap_or_else(|_| env::var("NODE_ENV").map(|v| v != "test").unwrap_or(true));
         let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let csrf_token = trimmed_env("MAESTRO_WEB_CSRF_TOKEN");
+        let require_csrf = csrf_token.is_some()
+            || (prod_profile() && env::var("MAESTRO_WEB_REQUIRE_CSRF").as_deref() != Ok("0"));
 
         Self {
             listen_host: env::var("MAESTRO_CONTROL_HOST").unwrap_or_else(|_| "0.0.0.0".into()),
@@ -75,6 +80,8 @@ impl Config {
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty()),
             require_key,
+            csrf_token,
+            require_csrf,
             cwd: cwd.clone(),
             session_store_path: env::var("MAESTRO_SESSIONS_FILE")
                 .map(PathBuf::from)
@@ -505,6 +512,12 @@ async fn handle_local_endpoint(
     head: RequestHead,
     state: &AppState,
 ) -> Vec<u8> {
+    if let Err(response) = validate_csrf(&head, &state.config) {
+        return response;
+    }
+    if head.method == "GET" && shared_session_path_from_path(&head.path).is_some() {
+        return handle_session_endpoint(stream, initial, &head, state).await;
+    }
     if is_session_endpoint(&head) {
         if let Err(response) = authorize(&head, &state.config) {
             return response;
@@ -3369,6 +3382,14 @@ async fn handle_chat_endpoint(
         let _ = stream.shutdown().await;
         return Ok(());
     }
+    if let Err(response) = validate_csrf(&head, &state.config) {
+        stream
+            .write_all(&response)
+            .await
+            .map_err(|error| error.to_string())?;
+        let _ = stream.shutdown().await;
+        return Ok(());
+    }
 
     let body = match read_request_body(&mut stream, &mut initial, &head).await {
         Ok(body) => body,
@@ -4921,6 +4942,53 @@ fn authorize(head: &RequestHead, config: &Config) -> Result<(), Vec<u8>> {
     }
 }
 
+fn validate_csrf(head: &RequestHead, config: &Config) -> Result<(), Vec<u8>> {
+    if !csrf_applies(head) || !config.require_csrf {
+        return Ok(());
+    }
+    let Some(expected) = config.csrf_token.as_deref() else {
+        return Err(json_response(
+            403,
+            &serde_json::json!({
+                "error": "MAESTRO_WEB_CSRF_TOKEN is required for state-changing requests"
+            }),
+        ));
+    };
+    let provided = head
+        .headers
+        .get("x-composer-csrf")
+        .or_else(|| head.headers.get("x-maestro-csrf"))
+        .or_else(|| head.headers.get("x-csrf-token"))
+        .or_else(|| head.headers.get("x-xsrf-token"))
+        .map(String::as_str);
+    if provided
+        .map(|value| constant_time_eq(value.as_bytes(), expected.as_bytes()))
+        .unwrap_or(false)
+    {
+        Ok(())
+    } else {
+        Err(json_response(
+            403,
+            &serde_json::json!({ "error": "Forbidden: invalid CSRF token" }),
+        ))
+    }
+}
+
+fn csrf_applies(head: &RequestHead) -> bool {
+    head.path.starts_with("/api/") && !matches!(head.method.as_str(), "GET" | "HEAD" | "OPTIONS")
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let diff = left
+        .iter()
+        .zip(right.iter())
+        .fold(0_u8, |diff, (left, right)| diff | (left ^ right));
+    diff == 0
+}
+
 fn auth_is_configured(config: &Config) -> bool {
     config.api_key.is_some()
         || env::var("MAESTRO_AUTH_SHARED_SECRET")
@@ -4932,6 +5000,18 @@ fn auth_is_configured(config: &Config) -> bool {
         || env::var("MAESTRO_JWT_JWKS_URL")
             .map(|value| !value.trim().is_empty())
             .unwrap_or(false)
+}
+
+fn prod_profile() -> bool {
+    matches!(
+        env::var("MAESTRO_PROFILE")
+            .or_else(|_| env::var("MAESTRO_WEB_PROFILE"))
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "prod" | "production" | "secure" | "hardened"
+    )
 }
 
 fn valid_bearer_token(token: &str) -> bool {
@@ -5901,6 +5981,8 @@ mod tests {
             listen_port: 0,
             api_key: Some("api-key".to_string()),
             require_key: true,
+            csrf_token: None,
+            require_csrf: false,
             cwd: PathBuf::from("."),
             session_store_path: PathBuf::from("sessions.json"),
             command_prefs_path: PathBuf::from("command-prefs.json"),
@@ -5920,6 +6002,19 @@ mod tests {
             path: "/api/status".to_string(),
             query: HashMap::new(),
             headers: HashMap::from([("authorization".to_string(), format!("Bearer {token}"))]),
+        }
+    }
+
+    fn csrf_head(method: &str, token: Option<&str>) -> RequestHead {
+        let mut headers = HashMap::new();
+        if let Some(token) = token {
+            headers.insert("x-maestro-csrf".to_string(), token.to_string());
+        }
+        RequestHead {
+            method: method.to_string(),
+            path: "/api/status".to_string(),
+            query: HashMap::new(),
+            headers,
         }
     }
 
@@ -5969,6 +6064,18 @@ mod tests {
         } else {
             env::remove_var("MAESTRO_AUTH_SHARED_SECRET");
         }
+    }
+
+    #[test]
+    fn csrf_validation_requires_matching_token_for_mutating_api_requests() {
+        let mut config = auth_test_config();
+        config.require_csrf = true;
+        config.csrf_token = Some("csrf-token".to_string());
+
+        assert!(validate_csrf(&csrf_head("POST", Some("csrf-token")), &config).is_ok());
+        assert!(validate_csrf(&csrf_head("POST", Some("wrong-token")), &config).is_err());
+        assert!(validate_csrf(&csrf_head("POST", None), &config).is_err());
+        assert!(validate_csrf(&csrf_head("GET", None), &config).is_ok());
     }
 
     #[test]
