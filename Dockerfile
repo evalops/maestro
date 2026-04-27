@@ -88,9 +88,6 @@ RUN apk add --no-cache tini git ca-certificates openssl libstdc++ && \
     addgroup --system --gid 1001 appgroup && \
     adduser --system --uid 1001 appuser
 
-COPY --from=web-builder /usr/local/bin/bun /usr/local/bin/bun
-COPY --from=deps /app/node_modules ./node_modules
-COPY package.json bun.lockb ./
 COPY --from=web-builder /app/packages/web/dist ./packages/web/dist
 COPY --from=rust-builder /app/target-bin/maestro-control-plane ./bin/maestro-control-plane
 
