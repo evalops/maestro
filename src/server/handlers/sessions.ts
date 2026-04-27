@@ -47,6 +47,7 @@ import {
 } from "../../safety/outbound-secret-preflight.js";
 import { safeReadSessionEntries } from "../../session/session-context.js";
 import type { SessionEntry } from "../../session/types.js";
+import { recordMaestroSessionEvent } from "../../telemetry/maestro-event-bus.js";
 import { createLogger } from "../../utils/logger.js";
 import { getAuthSubject } from "../authz.js";
 import { isHostedSessionManager } from "../hosted-session-manager.js";
@@ -57,6 +58,7 @@ import {
 	respondWithApiError,
 	sendJson,
 } from "../server-utils.js";
+import { webSessionEventEnv } from "../session-event-env.js";
 import {
 	createWebSessionManagerForRequest,
 	createWebSessionManagerForScope,
@@ -450,6 +452,14 @@ export async function handleSessions(
 			}
 
 			await sessionManager.deleteSession(sessionId);
+			recordMaestroSessionEvent("MAESTRO_SESSION_STATE_CLOSED", {
+				sessionId,
+				closeReason: "MAESTRO_CLOSE_REASON_USER_STOPPED",
+				closeMessage: "Web session deleted",
+				correlation: { principal_id: subject },
+				env: webSessionEventEnv(),
+				metadata: { operation: "session.delete" },
+			});
 
 			res.writeHead(204, cors);
 			res.end();

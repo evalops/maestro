@@ -12,6 +12,13 @@ import {
 } from "../src/server/handlers/sessions.js";
 import { serverRequestManager } from "../src/server/server-request-manager.js";
 
+const telemetryMocks = vi.hoisted(() => ({
+	recordMaestroPromptVariantSelected: vi.fn(),
+	recordMaestroSessionEvent: vi.fn(),
+}));
+
+vi.mock("../src/telemetry/maestro-event-bus.js", () => telemetryMocks);
+
 function makeTestAnthropicToken(): string {
 	return [
 		"sk-ant-api03-",
@@ -808,12 +815,43 @@ describe("Session Endpoints", () => {
 
 	describe("handleSessions - DELETE", () => {
 		it("should delete a session", async () => {
+			const previousSource = process.env.MAESTRO_EVENT_BUS_SOURCE;
+			const previousSurface = process.env.MAESTRO_SURFACE;
+			delete process.env.MAESTRO_EVENT_BUS_SOURCE;
+			delete process.env.MAESTRO_SURFACE;
 			const req = createMockRequest("DELETE");
 			const { res, getStatus } = createMockResponse();
 
-			await handleSessions(req, res, { id: "test-session-1" }, corsHeaders);
+			try {
+				await handleSessions(req, res, { id: "test-session-1" }, corsHeaders);
 
-			expect(getStatus()).toBe(204);
+				expect(getStatus()).toBe(204);
+				expect(telemetryMocks.recordMaestroSessionEvent).toHaveBeenCalledWith(
+					"MAESTRO_SESSION_STATE_CLOSED",
+					expect.objectContaining({
+						sessionId: "test-session-1",
+						closeReason: "MAESTRO_CLOSE_REASON_USER_STOPPED",
+						closeMessage: "Web session deleted",
+						correlation: { principal_id: "anon" },
+						env: expect.objectContaining({
+							MAESTRO_EVENT_BUS_SOURCE: "maestro.web",
+							MAESTRO_SURFACE: "web",
+						}),
+						metadata: { operation: "session.delete" },
+					}),
+				);
+			} finally {
+				if (previousSource === undefined) {
+					delete process.env.MAESTRO_EVENT_BUS_SOURCE;
+				} else {
+					process.env.MAESTRO_EVENT_BUS_SOURCE = previousSource;
+				}
+				if (previousSurface === undefined) {
+					delete process.env.MAESTRO_SURFACE;
+				} else {
+					process.env.MAESTRO_SURFACE = previousSurface;
+				}
+			}
 		});
 
 		it("should return 400 for invalid session id", async () => {
@@ -823,6 +861,7 @@ describe("Session Endpoints", () => {
 			await handleSessions(req, res, { id: "invalid/id" }, corsHeaders);
 
 			expect(getStatus()).toBe(400);
+			expect(telemetryMocks.recordMaestroSessionEvent).not.toHaveBeenCalled();
 		});
 	});
 });
