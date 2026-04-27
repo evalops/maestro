@@ -102,6 +102,9 @@ describe("database migration packaging", () => {
 
 		expect(migration).toContain("organization_id");
 		expect(migration).toContain("next_attempt_at");
+		expect(migration).toContain(
+			"IF to_regclass('public.webhook_deliveries') IS NOT NULL THEN",
+		);
 		expect(migration).toContain("webhook_delivery_retry_idx");
 	});
 });

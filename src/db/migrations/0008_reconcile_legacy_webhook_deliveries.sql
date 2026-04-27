@@ -188,10 +188,14 @@ BEGIN
 	END IF;
 END $$;
 --> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "webhook_delivery_org_status_idx"
-	ON "webhook_deliveries" USING btree ("org_id", "status");
---> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "webhook_delivery_retry_idx"
-	ON "webhook_deliveries" USING btree ("status", "next_retry_at");
+DO $$
+BEGIN
+	IF to_regclass('public.webhook_deliveries') IS NOT NULL THEN
+		CREATE INDEX IF NOT EXISTS "webhook_delivery_org_status_idx"
+			ON "webhook_deliveries" USING btree ("org_id", "status");
+		CREATE INDEX IF NOT EXISTS "webhook_delivery_retry_idx"
+			ON "webhook_deliveries" USING btree ("status", "next_retry_at");
+	END IF;
+END $$;
 --> statement-breakpoint
 DROP FUNCTION IF EXISTS maestro_reconcile_webhook_payload(text);
