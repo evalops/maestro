@@ -24,6 +24,7 @@ const CRITICAL_DATABASE_COLUMNS: Partial<
 	Record<(typeof CRITICAL_DATABASE_TABLES)[number], readonly string[]>
 > = {
 	webhook_deliveries: [
+		"id",
 		"org_id",
 		"url",
 		"payload",

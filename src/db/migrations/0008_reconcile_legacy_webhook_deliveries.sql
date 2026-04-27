@@ -35,15 +35,20 @@ BEGIN
 		RETURN;
 	END IF;
 
+	ALTER TABLE "webhook_deliveries" ADD COLUMN IF NOT EXISTS "id" uuid DEFAULT gen_random_uuid();
 	ALTER TABLE "webhook_deliveries" ADD COLUMN IF NOT EXISTS "org_id" uuid;
 	ALTER TABLE "webhook_deliveries" ADD COLUMN IF NOT EXISTS "url" text;
+	ALTER TABLE "webhook_deliveries" ADD COLUMN IF NOT EXISTS "payload" jsonb;
 	ALTER TABLE "webhook_deliveries" ADD COLUMN IF NOT EXISTS "signature" varchar(200);
+	ALTER TABLE "webhook_deliveries" ADD COLUMN IF NOT EXISTS "status" "webhook_delivery_status";
+	ALTER TABLE "webhook_deliveries" ADD COLUMN IF NOT EXISTS "attempts" integer DEFAULT 0;
 	ALTER TABLE "webhook_deliveries" ADD COLUMN IF NOT EXISTS "max_attempts" integer DEFAULT 5;
 	ALTER TABLE "webhook_deliveries" ADD COLUMN IF NOT EXISTS "next_retry_at" timestamp with time zone;
 	ALTER TABLE "webhook_deliveries" ADD COLUMN IF NOT EXISTS "last_error" text;
 	ALTER TABLE "webhook_deliveries" ADD COLUMN IF NOT EXISTS "last_status_code" integer;
 	ALTER TABLE "webhook_deliveries" ADD COLUMN IF NOT EXISTS "last_response_time_ms" integer;
 	ALTER TABLE "webhook_deliveries" ADD COLUMN IF NOT EXISTS "delivered_at" timestamp with time zone;
+	ALTER TABLE "webhook_deliveries" ADD COLUMN IF NOT EXISTS "created_at" timestamp with time zone DEFAULT now();
 
 	IF EXISTS (
 		SELECT 1
@@ -139,6 +144,7 @@ BEGIN
 			);
 	END IF;
 
+	UPDATE "webhook_deliveries" SET "id" = gen_random_uuid() WHERE "id" IS NULL;
 	UPDATE "webhook_deliveries" SET "payload" = '{}'::jsonb WHERE "payload" IS NULL;
 	UPDATE "webhook_deliveries" SET "status" = 'failed' WHERE "status" IS NULL;
 	UPDATE "webhook_deliveries" SET "attempts" = 0 WHERE "attempts" IS NULL;
@@ -161,10 +167,33 @@ BEGIN
 	ALTER TABLE "webhook_deliveries" ALTER COLUMN "attempts" SET NOT NULL;
 	ALTER TABLE "webhook_deliveries" ALTER COLUMN "max_attempts" SET DEFAULT 5;
 	ALTER TABLE "webhook_deliveries" ALTER COLUMN "max_attempts" SET NOT NULL;
-	ALTER TABLE "webhook_deliveries" ALTER COLUMN "url" SET DEFAULT '';
+	ALTER TABLE "webhook_deliveries" ALTER COLUMN "url" DROP DEFAULT;
 	ALTER TABLE "webhook_deliveries" ALTER COLUMN "url" SET NOT NULL;
 	ALTER TABLE "webhook_deliveries" ALTER COLUMN "created_at" SET DEFAULT now();
 	ALTER TABLE "webhook_deliveries" ALTER COLUMN "created_at" SET NOT NULL;
+
+	ALTER TABLE "webhook_deliveries" ALTER COLUMN "id" SET DEFAULT gen_random_uuid();
+	IF NOT EXISTS (SELECT 1 FROM "webhook_deliveries" WHERE "id" IS NULL) THEN
+		ALTER TABLE "webhook_deliveries" ALTER COLUMN "id" SET NOT NULL;
+	END IF;
+
+	IF NOT EXISTS (
+			SELECT 1
+			FROM pg_constraint
+			WHERE conrelid = 'public.webhook_deliveries'::regclass
+				AND contype = 'p'
+		)
+		AND NOT EXISTS (SELECT 1 FROM "webhook_deliveries" WHERE "id" IS NULL)
+		AND NOT EXISTS (
+			SELECT 1
+			FROM "webhook_deliveries"
+			GROUP BY "id"
+			HAVING count(*) > 1
+		)
+	THEN
+		ALTER TABLE "webhook_deliveries"
+			ADD CONSTRAINT "webhook_deliveries_pkey" PRIMARY KEY ("id");
+	END IF;
 
 	IF NOT EXISTS (SELECT 1 FROM "webhook_deliveries" WHERE "org_id" IS NULL) THEN
 		ALTER TABLE "webhook_deliveries" ALTER COLUMN "org_id" SET NOT NULL;
