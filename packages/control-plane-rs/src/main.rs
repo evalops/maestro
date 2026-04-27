@@ -79,12 +79,12 @@ enum TelemetryOverride {
 }
 
 impl TelemetryOverride {
-    fn from_action(action: &str) -> Option<Self> {
+    fn from_action(action: &str) -> Result<Option<Self>, String> {
         match action {
-            "on" => Some(Self::Enabled),
-            "off" => Some(Self::Disabled),
-            "reset" => None,
-            _ => unreachable!("action was validated"),
+            "on" => Ok(Some(Self::Enabled)),
+            "off" => Ok(Some(Self::Disabled)),
+            "reset" => Ok(None),
+            _ => Err(format!("unsupported telemetry action \"{action}\"")),
         }
     }
 
@@ -108,12 +108,12 @@ enum TrainingOverride {
 }
 
 impl TrainingOverride {
-    fn from_action(action: &str) -> Option<Self> {
+    fn from_action(action: &str) -> Result<Option<Self>, String> {
         match action {
-            "on" => Some(Self::OptedIn),
-            "off" => Some(Self::OptedOut),
-            "reset" => None,
-            _ => unreachable!("action was validated"),
+            "on" => Ok(Some(Self::OptedIn)),
+            "off" => Ok(Some(Self::OptedOut)),
+            "reset" => Ok(None),
+            _ => Err(format!("unsupported training action \"{action}\"")),
         }
     }
 
@@ -754,7 +754,10 @@ async fn handle_local_endpoint(
                 Ok(action) => action,
                 Err(response) => return response,
             };
-            let override_value = TelemetryOverride::from_action(&action);
+            let override_value = match TelemetryOverride::from_action(&action) {
+                Ok(override_value) => override_value,
+                Err(error) => return json_response(400, &serde_json::json!({ "error": error })),
+            };
             *state.telemetry_override.lock().await = override_value;
             json_response(
                 200,
@@ -779,7 +782,10 @@ async fn handle_local_endpoint(
                 Ok(action) => action,
                 Err(response) => return response,
             };
-            let override_value = TrainingOverride::from_action(&action);
+            let override_value = match TrainingOverride::from_action(&action) {
+                Ok(override_value) => override_value,
+                Err(error) => return json_response(400, &serde_json::json!({ "error": error })),
+            };
             *state.training_override.lock().await = override_value;
             json_response(
                 200,
@@ -3911,6 +3917,12 @@ mod tests {
         );
         assert!(parse_action_body(br#"{}"#, &["on", "off", "reset"]).is_err());
         assert!(parse_action_body(br#"{"action":"maybe"}"#, &["on", "off", "reset"]).is_err());
+    }
+
+    #[test]
+    fn override_parsers_reject_unknown_actions_without_panicking() {
+        assert!(TelemetryOverride::from_action("toggle").is_err());
+        assert!(TrainingOverride::from_action("toggle").is_err());
     }
 
     #[test]
