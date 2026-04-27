@@ -80,6 +80,7 @@ struct AppState {
     training_override: Arc<Mutex<Option<TrainingOverride>>>,
     command_prefs: Arc<Mutex<CommandPrefs>>,
     sessions: Arc<Mutex<SessionStore>>,
+    session_persist_lock: Arc<Mutex<()>>,
     pending_tool_responses: Arc<Mutex<HashMap<String, PendingToolResponseSender>>>,
 }
 
@@ -300,6 +301,7 @@ async fn main() -> anyhow::Result<()> {
         training_override: Arc::new(Mutex::new(None)),
         command_prefs: Arc::new(Mutex::new(command_prefs)),
         sessions: Arc::new(Mutex::new(sessions)),
+        session_persist_lock: Arc::new(Mutex::new(())),
         pending_tool_responses: Arc::new(Mutex::new(HashMap::new())),
     };
 
@@ -431,8 +433,18 @@ fn is_local_endpoint(head: &RequestHead) -> bool {
 
 fn is_session_endpoint(head: &RequestHead) -> bool {
     match head.method.as_str() {
-        "GET" => head.path == "/api/sessions" || session_path_from_path(&head.path).is_some(),
-        "POST" => head.path == "/api/sessions",
+        "GET" => {
+            head.path == "/api/sessions"
+                || shared_session_path_from_path(&head.path).is_some()
+                || session_path_from_path(&head.path).is_some()
+        }
+        "POST" => {
+            head.path == "/api/sessions"
+                || session_path_from_path(&head.path)
+                    .and_then(|path| path.tail)
+                    .map(|tail| matches!(tail, "share" | "export"))
+                    .unwrap_or(false)
+        }
         "PATCH" | "DELETE" => session_path_from_path(&head.path).is_some(),
         _ => false,
     }
@@ -447,7 +459,15 @@ struct SessionPath<'a> {
     tail: Option<&'a str>,
 }
 
+struct SharedSessionPath<'a> {
+    token: &'a str,
+    tail: Option<&'a str>,
+}
+
 fn session_path_from_path(path: &str) -> Option<SessionPath<'_>> {
+    if path.starts_with("/api/sessions/shared/") {
+        return None;
+    }
     let remainder = path.strip_prefix("/api/sessions/")?;
     let (id, tail) = remainder
         .split_once('/')
@@ -457,6 +477,18 @@ fn session_path_from_path(path: &str) -> Option<SessionPath<'_>> {
         return None;
     }
     Some(SessionPath { id, tail })
+}
+
+fn shared_session_path_from_path(path: &str) -> Option<SharedSessionPath<'_>> {
+    let remainder = path.strip_prefix("/api/sessions/shared/")?;
+    let (token, tail) = remainder
+        .split_once('/')
+        .map(|(token, tail)| (token, Some(tail)))
+        .unwrap_or((remainder, None));
+    if token.is_empty() {
+        return None;
+    }
+    Some(SharedSessionPath { token, tail })
 }
 
 fn pending_request_id_from_resume_path(path: &str) -> Option<&str> {
@@ -899,7 +931,22 @@ async fn handle_session_endpoint(
             persist_session_store(state).await;
             json_response(200, &value)
         }
+        "POST" => {
+            let Some(session_path) = session_path_from_path(&head.path) else {
+                return json_response(404, &serde_json::json!({ "error": "Not found" }));
+            };
+            match session_path.tail {
+                Some("share") => handle_session_share_post(state, session_path).await,
+                Some("export") => {
+                    handle_session_export_post(stream, initial, head, state, session_path).await
+                }
+                _ => json_response(404, &serde_json::json!({ "error": "Not found" })),
+            }
+        }
         "GET" => {
+            if let Some(shared_path) = shared_session_path_from_path(&head.path) {
+                return handle_shared_session_get(state, shared_path).await;
+            }
             let Some(session_path) = session_path_from_path(&head.path) else {
                 return json_response(404, &serde_json::json!({ "error": "Not found" }));
             };
@@ -952,6 +999,9 @@ async fn handle_session_endpoint(
             let Some(session_path) = session_path_from_path(&head.path) else {
                 return json_response(404, &serde_json::json!({ "error": "Not found" }));
             };
+            if session_path.tail.is_some() {
+                return json_response(404, &serde_json::json!({ "error": "Not found" }));
+            }
             state.sessions.lock().await.sessions.remove(session_path.id);
             persist_session_store(state).await;
             response_with_extra_headers_and_length(204, "application/json", &[], "", 0)
@@ -1019,6 +1069,7 @@ async fn load_session_store(path: &Path) -> SessionStore {
 }
 
 async fn persist_session_store(state: &AppState) {
+    let _persist = state.session_persist_lock.lock().await;
     let store = state.sessions.lock().await.clone();
     if let Some(parent) = state.config.session_store_path.parent() {
         let _ = tokio::fs::create_dir_all(parent).await;
@@ -1096,16 +1147,307 @@ async fn handle_session_get(state: &AppState, session_path: SessionPath<'_>) -> 
             &serde_json::json!({ "sessionId": session.id, "enabled": false, "shareUrl": Value::Null }),
         ),
         Some("export") => json_response(200, &session_full_value(&session)),
-        Some(tail) if tail.starts_with("artifacts") => json_response(
-            200,
-            &serde_json::json!({ "sessionId": session.id, "artifacts": [] }),
+        Some("artifacts") => json_response(200, &session_artifacts_value(&session)),
+        Some("attachments") => json_response(200, &session_attachments_value(&session)),
+        Some("artifacts.zip") => json_response(
+            404,
+            &serde_json::json!({ "error": "Artifacts archive not found" }),
         ),
-        Some(tail) if tail.starts_with("attachments") => json_response(
-            200,
-            &serde_json::json!({ "sessionId": session.id, "attachments": [] }),
-        ),
+        Some(tail) if tail.starts_with("artifacts/") => serve_session_artifact(&session, tail),
+        Some(tail) if tail.starts_with("attachments/") => serve_session_attachment(&session, tail),
         _ => json_response(404, &serde_json::json!({ "error": "Not found" })),
     }
+}
+
+async fn handle_shared_session_get(
+    state: &AppState,
+    shared_path: SharedSessionPath<'_>,
+) -> Vec<u8> {
+    let Some(session) = state
+        .sessions
+        .lock()
+        .await
+        .sessions
+        .get(shared_path.token)
+        .cloned()
+    else {
+        return json_response(
+            404,
+            &serde_json::json!({ "error": "Shared session not found" }),
+        );
+    };
+
+    match shared_path.tail {
+        None => json_response(200, &session_full_value(&session)),
+        Some(tail) if tail.starts_with("attachments/") => serve_session_attachment(&session, tail),
+        _ => json_response(404, &serde_json::json!({ "error": "Not found" })),
+    }
+}
+
+async fn handle_session_share_post(state: &AppState, session_path: SessionPath<'_>) -> Vec<u8> {
+    let Some(session) = state
+        .sessions
+        .lock()
+        .await
+        .sessions
+        .get(session_path.id)
+        .cloned()
+    else {
+        return json_response(404, &serde_json::json!({ "error": "Session not found" }));
+    };
+    let token = session.id;
+    json_response(
+        200,
+        &serde_json::json!({
+            "shareToken": token,
+            "shareUrl": format!("/shared/{token}"),
+            "webShareUrl": format!("/shared/{token}"),
+            "expiresAt": "9999-12-31T23:59:59.999Z",
+            "maxAccesses": Value::Null
+        }),
+    )
+}
+
+async fn handle_session_export_post(
+    stream: &mut TcpStream,
+    initial: &mut Vec<u8>,
+    head: &RequestHead,
+    state: &AppState,
+    session_path: SessionPath<'_>,
+) -> Vec<u8> {
+    let body = match read_request_body(stream, initial, head).await {
+        Ok(body) => body,
+        Err(error) => return json_response(400, &serde_json::json!({ "error": error })),
+    };
+    let format = if body.is_empty() {
+        "json".to_string()
+    } else {
+        serde_json::from_slice::<Value>(&body)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("format")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .filter(|format| matches!(format.as_str(), "json" | "markdown" | "text"))
+            .unwrap_or_else(|| "json".to_string())
+    };
+    let Some(session) = state
+        .sessions
+        .lock()
+        .await
+        .sessions
+        .get(session_path.id)
+        .cloned()
+    else {
+        return json_response(404, &serde_json::json!({ "error": "Session not found" }));
+    };
+    match format.as_str() {
+        "markdown" => text_response(200, &session_export_text(&session, true)),
+        "text" => text_response(200, &session_export_text(&session, false)),
+        _ => json_response(200, &session_full_value(&session)),
+    }
+}
+
+fn session_export_text(session: &SessionRecord, markdown: bool) -> String {
+    let mut lines = Vec::new();
+    if markdown {
+        lines.push(format!("# {}", session.title));
+    } else {
+        lines.push(session.title.clone());
+    }
+    for message in &session.messages {
+        let role = message
+            .get("role")
+            .and_then(Value::as_str)
+            .unwrap_or("message");
+        let text = message_text(message);
+        if markdown {
+            lines.push(format!("\n## {role}\n{text}"));
+        } else {
+            lines.push(format!("\n{role}:\n{text}"));
+        }
+    }
+    lines.join("\n")
+}
+
+fn message_text(message: &Value) -> String {
+    match message.get("content") {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(blocks)) => blocks
+            .iter()
+            .filter_map(|block| {
+                block
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .or_else(|| Some(block.to_string()))
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Some(value) => value.to_string(),
+        None => String::new(),
+    }
+}
+
+fn session_attachments_value(session: &SessionRecord) -> Value {
+    let attachments = session_attachments(session);
+    serde_json::json!({ "sessionId": session.id, "attachments": attachments })
+}
+
+fn session_attachments(session: &SessionRecord) -> Vec<Value> {
+    let mut attachments = Vec::new();
+    for message in &session.messages {
+        if let Some(values) = message.get("attachments").and_then(Value::as_array) {
+            attachments.extend(values.iter().cloned());
+        }
+    }
+    attachments
+}
+
+fn serve_session_attachment(session: &SessionRecord, tail: &str) -> Vec<u8> {
+    let Some(attachment_id) = tail
+        .strip_prefix("attachments/")
+        .and_then(|rest| rest.split('/').next())
+        .map(percent_decode_component)
+        .filter(|value| !value.is_empty())
+    else {
+        return json_response(404, &serde_json::json!({ "error": "Attachment not found" }));
+    };
+    let Some(attachment) = session_attachments(session).into_iter().find(|attachment| {
+        attachment
+            .get("id")
+            .and_then(Value::as_str)
+            .map(|id| id == attachment_id)
+            .unwrap_or(false)
+    }) else {
+        return json_response(404, &serde_json::json!({ "error": "Attachment not found" }));
+    };
+    let Some(content) = attachment.get("content").and_then(Value::as_str) else {
+        return json_response(
+            404,
+            &serde_json::json!({ "error": "Attachment content not available" }),
+        );
+    };
+    let encoded = content
+        .split_once(',')
+        .map(|(_, value)| value)
+        .unwrap_or(content);
+    let Ok(bytes) = BASE64_STANDARD.decode(encoded) else {
+        return json_response(
+            400,
+            &serde_json::json!({ "error": "Attachment content is not valid base64" }),
+        );
+    };
+    let mime = attachment
+        .get("mimeType")
+        .or_else(|| attachment.get("mime_type"))
+        .and_then(Value::as_str)
+        .unwrap_or("application/octet-stream");
+    response_with_no_store(200, mime, &bytes)
+}
+
+fn session_artifacts_value(session: &SessionRecord) -> Value {
+    let artifacts = reconstruct_session_artifacts(session)
+        .into_iter()
+        .map(|(filename, content)| {
+            serde_json::json!({
+                "filename": filename,
+                "content": content
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({ "sessionId": session.id, "artifacts": artifacts })
+}
+
+fn serve_session_artifact(session: &SessionRecord, tail: &str) -> Vec<u8> {
+    let Some(rest) = tail.strip_prefix("artifacts/") else {
+        return json_response(404, &serde_json::json!({ "error": "Artifact not found" }));
+    };
+    let filename = percent_decode_component(rest.strip_suffix("/view").unwrap_or(rest));
+    let artifacts = reconstruct_session_artifacts(session);
+    let Some(content) = artifacts.get(&filename) else {
+        return json_response(404, &serde_json::json!({ "error": "Artifact not found" }));
+    };
+    response_with_no_store(200, mime_for_path(Path::new(&filename)), content.as_bytes())
+}
+
+fn reconstruct_session_artifacts(session: &SessionRecord) -> HashMap<String, String> {
+    let mut artifacts = HashMap::new();
+    for message in &session.messages {
+        let Some(tools) = message.get("tools").and_then(Value::as_array) else {
+            continue;
+        };
+        for tool in tools {
+            if tool.get("name").and_then(Value::as_str) != Some("artifacts") {
+                continue;
+            }
+            if tool.get("status").and_then(Value::as_str) != Some("completed") {
+                continue;
+            }
+            if tool
+                .get("result")
+                .and_then(|result| result.get("isError"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let Some(args) = tool.get("args") else {
+                continue;
+            };
+            let command = args.get("command").and_then(Value::as_str).unwrap_or("");
+            let Some(filename) = args.get("filename").and_then(Value::as_str) else {
+                continue;
+            };
+            match command {
+                "create" | "rewrite" => {
+                    artifacts.insert(
+                        filename.to_string(),
+                        args.get("content")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                    );
+                }
+                "update" => {
+                    if let (Some(current), Some(old), Some(new)) = (
+                        artifacts.get_mut(filename),
+                        args.get("old_str").and_then(Value::as_str),
+                        args.get("new_str").and_then(Value::as_str),
+                    ) {
+                        *current = current.replacen(old, new, 1);
+                    }
+                }
+                "delete" => {
+                    artifacts.remove(filename);
+                }
+                _ => {}
+            }
+        }
+    }
+    artifacts
+}
+
+fn percent_decode_component(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            if let Ok(hex) = std::str::from_utf8(&bytes[index + 1..index + 3]) {
+                if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                    decoded.push(byte);
+                    index += 3;
+                    continue;
+                }
+            }
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&decoded).to_string()
 }
 
 fn session_summary_value(session: &SessionRecord) -> Value {
@@ -4282,7 +4624,11 @@ mod tests {
             "/api/sessions",
             "/api/sessions/session-1",
             "/api/sessions/session-1/timeline",
+            "/api/sessions/session-1/artifacts",
+            "/api/sessions/session-1/artifacts/report.html",
             "/api/sessions/session-1/attachments/file-1",
+            "/api/sessions/shared/session-1",
+            "/api/sessions/shared/session-1/attachments/file-1",
         ] {
             let request = format!("GET {target} HTTP/1.1\r\nHost: localhost\r\n\r\n");
             let head = parse_request_head(request.as_bytes()).expect("request should parse");
@@ -4294,6 +4640,8 @@ mod tests {
     fn detects_session_create_and_pending_resume_routes() {
         for request in [
             "POST /api/sessions HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "POST /api/sessions/session-1/share HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "POST /api/sessions/session-1/export HTTP/1.1\r\nHost: localhost\r\n\r\n",
             "PATCH /api/sessions/session-1 HTTP/1.1\r\nHost: localhost\r\n\r\n",
             "DELETE /api/sessions/session-1 HTTP/1.1\r\nHost: localhost\r\n\r\n",
             "POST /api/pending-requests/request-1/resume HTTP/1.1\r\nHost: localhost\r\n\r\n",
@@ -4301,6 +4649,15 @@ mod tests {
             let head = parse_request_head(request.as_bytes()).expect("request should parse");
             assert!(is_local_endpoint(&head), "{request} should be local");
         }
+    }
+
+    #[test]
+    fn shared_session_paths_do_not_parse_as_regular_sessions() {
+        assert!(session_path_from_path("/api/sessions/shared/token-1").is_none());
+        let shared = shared_session_path_from_path("/api/sessions/shared/token-1/attachments/a1")
+            .expect("shared path should parse");
+        assert_eq!(shared.token, "token-1");
+        assert_eq!(shared.tail, Some("attachments/a1"));
     }
 
     #[test]
