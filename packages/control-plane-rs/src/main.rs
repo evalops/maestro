@@ -2,6 +2,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use maestro_tui::agent::{FromAgent, NativeAgent, NativeAgentConfig, TokenUsage};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
@@ -322,13 +323,7 @@ async fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<(),
     }
 
     if is_chat_websocket_endpoint(&head) {
-        let response = chat_websocket_response(&head, &state);
-        stream
-            .write_all(&response)
-            .await
-            .map_err(|error| error.to_string())?;
-        let _ = stream.shutdown().await;
-        return Ok(());
+        return handle_chat_websocket_endpoint(stream, initial, head, state).await;
     }
 
     if is_chat_endpoint(&head) {
@@ -377,18 +372,6 @@ fn is_chat_endpoint(head: &RequestHead) -> bool {
 
 fn is_chat_websocket_endpoint(head: &RequestHead) -> bool {
     head.method == "GET" && head.path == "/api/chat/ws"
-}
-
-fn chat_websocket_response(head: &RequestHead, state: &AppState) -> Vec<u8> {
-    if let Err(response) = authorize(head, &state.config) {
-        return response;
-    }
-    response_with_extra_headers(
-        426,
-        "application/json",
-        br#"{"error":"WebSocket chat is not available in the Rust control plane yet; use POST /api/chat SSE streaming."}"#,
-        "Upgrade: websocket\r\n",
-    )
 }
 
 fn is_local_endpoint(head: &RequestHead) -> bool {
@@ -2245,6 +2228,477 @@ async fn handle_chat_endpoint(
     Ok(())
 }
 
+async fn handle_chat_websocket_endpoint(
+    mut stream: TcpStream,
+    mut initial: Vec<u8>,
+    head: RequestHead,
+    state: AppState,
+) -> Result<(), String> {
+    if let Err(response) = authorize(&head, &state.config) {
+        stream
+            .write_all(&response)
+            .await
+            .map_err(|error| error.to_string())?;
+        let _ = stream.shutdown().await;
+        return Ok(());
+    }
+
+    let Some(key) = head.headers.get("sec-websocket-key") else {
+        stream
+            .write_all(&json_response(
+                400,
+                &serde_json::json!({ "error": "Missing Sec-WebSocket-Key" }),
+            ))
+            .await
+            .map_err(|error| error.to_string())?;
+        let _ = stream.shutdown().await;
+        return Ok(());
+    };
+    let accept_key = websocket_accept_key(key);
+    let handshake = format!(
+        "HTTP/1.1 101 Switching Protocols\r\n\
+         Upgrade: websocket\r\n\
+         Connection: Upgrade\r\n\
+         Sec-WebSocket-Accept: {accept_key}\r\n\
+         \r\n"
+    );
+    stream
+        .write_all(handshake.as_bytes())
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let body_start = header_end(&initial)? + 4;
+    let mut websocket_buffer = initial.split_off(body_start);
+    let request_body = match read_websocket_text_message(&mut stream, &mut websocket_buffer).await {
+        Ok(body) => body,
+        Err(error) => {
+            send_ws_json(
+                &mut stream,
+                &serde_json::json!({ "type": "error", "message": error }),
+            )
+            .await?;
+            send_ws_json(&mut stream, &serde_json::json!({ "type": "done" })).await?;
+            send_ws_close(&mut stream).await?;
+            let _ = stream.shutdown().await;
+            return Ok(());
+        }
+    };
+    let chat = match serde_json::from_slice::<ChatRequest>(&request_body) {
+        Ok(request) => request,
+        Err(error) => {
+            send_ws_json(
+                &mut stream,
+                &serde_json::json!({ "type": "error", "message": format!("invalid chat request: {error}") }),
+            )
+            .await?;
+            send_ws_json(&mut stream, &serde_json::json!({ "type": "done" })).await?;
+            send_ws_close(&mut stream).await?;
+            let _ = stream.shutdown().await;
+            return Ok(());
+        }
+    };
+
+    let Some(latest) = chat.messages.last() else {
+        send_ws_json(
+            &mut stream,
+            &serde_json::json!({ "type": "error", "message": "No messages supplied" }),
+        )
+        .await?;
+        send_ws_json(&mut stream, &serde_json::json!({ "type": "done" })).await?;
+        send_ws_close(&mut stream).await?;
+        let _ = stream.shutdown().await;
+        return Ok(());
+    };
+    if latest.role != "user" {
+        send_ws_json(
+            &mut stream,
+            &serde_json::json!({ "type": "error", "message": "Last message must be a user message" }),
+        )
+        .await?;
+        send_ws_json(&mut stream, &serde_json::json!({ "type": "done" })).await?;
+        send_ws_close(&mut stream).await?;
+        let _ = stream.shutdown().await;
+        return Ok(());
+    }
+
+    let prompt = build_prompt_from_chat(&chat);
+    if prompt.trim().is_empty() {
+        send_ws_json(
+            &mut stream,
+            &serde_json::json!({ "type": "error", "message": "User message cannot be empty" }),
+        )
+        .await?;
+        send_ws_json(&mut stream, &serde_json::json!({ "type": "done" })).await?;
+        send_ws_close(&mut stream).await?;
+        let _ = stream.shutdown().await;
+        return Ok(());
+    }
+
+    let prepared_attachments = match prepare_chat_attachments(&chat).await {
+        Ok(attachments) => attachments,
+        Err(error) => {
+            send_ws_json(
+                &mut stream,
+                &serde_json::json!({ "type": "error", "message": error }),
+            )
+            .await?;
+            send_ws_json(&mut stream, &serde_json::json!({ "type": "done" })).await?;
+            send_ws_close(&mut stream).await?;
+            let _ = stream.shutdown().await;
+            return Ok(());
+        }
+    };
+
+    let model = chat
+        .model
+        .or_else(|| env::var("MAESTRO_DEFAULT_MODEL").ok())
+        .unwrap_or_else(|| "claude-sonnet-4-5-20250514".to_string());
+    let thinking_enabled = chat
+        .thinking_level
+        .as_deref()
+        .map(|level| !matches!(level, "off" | "none" | "disabled"))
+        .unwrap_or(false);
+    let config = NativeAgentConfig {
+        model,
+        cwd: state.config.cwd.to_string_lossy().to_string(),
+        thinking_enabled,
+        thinking_budget: env::var("MAESTRO_THINKING_BUDGET")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(10_000),
+        ..NativeAgentConfig::default()
+    };
+
+    let (agent, mut events) = match NativeAgent::new(config) {
+        Ok(agent) => agent,
+        Err(error) => {
+            send_ws_json(
+                &mut stream,
+                &serde_json::json!({ "type": "error", "message": error.to_string() }),
+            )
+            .await?;
+            send_ws_json(&mut stream, &serde_json::json!({ "type": "done" })).await?;
+            send_ws_close(&mut stream).await?;
+            let _ = stream.shutdown().await;
+            cleanup_prepared_attachments(prepared_attachments).await;
+            return Ok(());
+        }
+    };
+
+    send_ws_json(&mut stream, &serde_json::json!({ "type": "agent_start" })).await?;
+    send_ws_json(&mut stream, &serde_json::json!({ "type": "turn_start" })).await?;
+
+    if let Err(error) = agent
+        .prompt(prompt, prepared_attachments.paths.clone())
+        .await
+    {
+        send_ws_json(
+            &mut stream,
+            &serde_json::json!({ "type": "error", "message": error.to_string() }),
+        )
+        .await?;
+        send_ws_json(&mut stream, &serde_json::json!({ "type": "done" })).await?;
+        send_ws_close(&mut stream).await?;
+        let _ = stream.shutdown().await;
+        cleanup_prepared_attachments(prepared_attachments).await;
+        return Ok(());
+    }
+
+    let mut assistant_text = String::new();
+    let mut thinking_text = String::new();
+    let mut response_started = false;
+    let mut thinking_started = false;
+    let mut terminal_sent = false;
+    let mut tool_names: HashMap<String, String> = HashMap::new();
+
+    while let Some(event) = events.recv().await {
+        match event {
+            FromAgent::Ready { .. }
+            | FromAgent::ModelChanged { .. }
+            | FromAgent::ModelChangeFailed { .. }
+            | FromAgent::SessionInfo { .. } => {}
+            FromAgent::ResponseStart { .. } => {
+                response_started = true;
+                let message = composer_assistant_message(&assistant_text, &thinking_text, None);
+                send_ws_json(
+                    &mut stream,
+                    &serde_json::json!({
+                        "type": "message_update",
+                        "message": message,
+                        "assistantMessageEvent": { "type": "start", "partial": message }
+                    }),
+                )
+                .await?;
+            }
+            FromAgent::ResponseChunk {
+                content,
+                is_thinking,
+                ..
+            } => {
+                if !response_started {
+                    response_started = true;
+                }
+                if is_thinking {
+                    if !thinking_started {
+                        thinking_started = true;
+                        let message =
+                            composer_assistant_message(&assistant_text, &thinking_text, None);
+                        send_ws_json(
+                            &mut stream,
+                            &serde_json::json!({
+                                "type": "message_update",
+                                "message": message,
+                                "assistantMessageEvent": {
+                                    "type": "thinking_start",
+                                    "contentIndex": 0,
+                                    "partial": message
+                                }
+                            }),
+                        )
+                        .await?;
+                    }
+                    thinking_text.push_str(&content);
+                    send_ws_json(
+                        &mut stream,
+                        &serde_json::json!({
+                            "type": "message_update",
+                            "message": composer_assistant_message(&assistant_text, &thinking_text, None),
+                            "assistantMessageEvent": {
+                                "type": "thinking_delta",
+                                "contentIndex": 0,
+                                "delta": content
+                            }
+                        }),
+                    )
+                    .await?;
+                } else {
+                    assistant_text.push_str(&content);
+                    send_ws_json(
+                        &mut stream,
+                        &serde_json::json!({
+                            "type": "message_update",
+                            "message": composer_assistant_message(&assistant_text, &thinking_text, None),
+                            "assistantMessageEvent": {
+                                "type": "text_delta",
+                                "contentIndex": 0,
+                                "delta": content
+                            }
+                        }),
+                    )
+                    .await?;
+                }
+            }
+            FromAgent::ToolCall {
+                call_id,
+                tool,
+                args,
+                requires_approval,
+            } => {
+                tool_names.insert(call_id.clone(), tool.clone());
+                if requires_approval {
+                    send_ws_json(
+                        &mut stream,
+                        &serde_json::json!({
+                            "type": "action_approval_required",
+                            "request": {
+                                "id": call_id,
+                                "toolName": tool,
+                                "args": args,
+                                "reason": "Tool execution requires approval"
+                            }
+                        }),
+                    )
+                    .await?;
+                } else {
+                    send_ws_json(
+                        &mut stream,
+                        &serde_json::json!({
+                            "type": "tool_execution_start",
+                            "toolCallId": call_id,
+                            "toolName": tool,
+                            "args": args
+                        }),
+                    )
+                    .await?;
+                }
+            }
+            FromAgent::ToolStart { call_id } => {
+                let tool = tool_names
+                    .get(&call_id)
+                    .cloned()
+                    .unwrap_or_else(|| "tool".to_string());
+                send_ws_json(
+                    &mut stream,
+                    &serde_json::json!({
+                        "type": "tool_execution_start",
+                        "toolCallId": call_id,
+                        "toolName": tool,
+                        "args": {}
+                    }),
+                )
+                .await?;
+            }
+            FromAgent::ToolOutput { call_id, content } => {
+                let tool = tool_names
+                    .get(&call_id)
+                    .cloned()
+                    .unwrap_or_else(|| "tool".to_string());
+                send_ws_json(
+                    &mut stream,
+                    &serde_json::json!({
+                        "type": "tool_execution_update",
+                        "toolCallId": call_id,
+                        "toolName": tool,
+                        "args": {},
+                        "partialResult": content
+                    }),
+                )
+                .await?;
+            }
+            FromAgent::ToolEnd { call_id, success } => {
+                let tool = tool_names
+                    .remove(&call_id)
+                    .unwrap_or_else(|| "tool".to_string());
+                send_ws_json(
+                    &mut stream,
+                    &serde_json::json!({
+                        "type": "tool_execution_end",
+                        "toolCallId": call_id,
+                        "toolName": tool,
+                        "result": { "success": success },
+                        "isError": !success
+                    }),
+                )
+                .await?;
+            }
+            FromAgent::BatchStart { total } => {
+                send_ws_json(
+                    &mut stream,
+                    &serde_json::json!({
+                        "type": "status",
+                        "status": "tool_batch_start",
+                        "details": { "total": total }
+                    }),
+                )
+                .await?;
+            }
+            FromAgent::BatchEnd {
+                total,
+                successes,
+                failures,
+            } => {
+                send_ws_json(
+                    &mut stream,
+                    &serde_json::json!({
+                        "type": "tool_batch_summary",
+                        "summary": format!("{successes}/{total} tools succeeded"),
+                        "summaryLabels": [],
+                        "toolCallIds": [],
+                        "toolNames": [],
+                        "callsSucceeded": successes,
+                        "callsFailed": failures
+                    }),
+                )
+                .await?;
+            }
+            FromAgent::Error { message, .. } => {
+                send_ws_json(
+                    &mut stream,
+                    &serde_json::json!({ "type": "error", "message": message }),
+                )
+                .await?;
+            }
+            FromAgent::Status { message } => {
+                send_ws_json(
+                    &mut stream,
+                    &serde_json::json!({
+                        "type": "status",
+                        "status": message,
+                        "details": {}
+                    }),
+                )
+                .await?;
+            }
+            FromAgent::Compaction {
+                summary,
+                first_kept_entry_index,
+                tokens_before,
+                auto,
+                custom_instructions,
+                timestamp,
+            } => {
+                send_ws_json(
+                    &mut stream,
+                    &serde_json::json!({
+                        "type": "compaction",
+                        "summary": summary,
+                        "firstKeptEntryIndex": first_kept_entry_index,
+                        "tokensBefore": tokens_before,
+                        "auto": auto,
+                        "customInstructions": custom_instructions,
+                        "timestamp": timestamp
+                    }),
+                )
+                .await?;
+            }
+            FromAgent::HookBlocked {
+                call_id,
+                tool,
+                reason,
+            } => {
+                send_ws_json(
+                    &mut stream,
+                    &serde_json::json!({
+                        "type": "tool_execution_end",
+                        "toolCallId": call_id,
+                        "toolName": tool,
+                        "result": reason,
+                        "isError": true
+                    }),
+                )
+                .await?;
+            }
+            FromAgent::ResponseEnd { usage, .. } => {
+                let message = composer_assistant_message(&assistant_text, &thinking_text, usage);
+                send_ws_json(
+                    &mut stream,
+                    &serde_json::json!({ "type": "message_end", "message": message }),
+                )
+                .await?;
+                send_ws_json(
+                    &mut stream,
+                    &serde_json::json!({
+                        "type": "agent_end",
+                        "messages": [message],
+                        "stopReason": "stop"
+                    }),
+                )
+                .await?;
+                send_ws_json(&mut stream, &serde_json::json!({ "type": "done" })).await?;
+                terminal_sent = true;
+                break;
+            }
+        }
+    }
+
+    if !terminal_sent {
+        send_ws_json(
+            &mut stream,
+            &serde_json::json!({
+                "type": "error",
+                "message": "Agent stream closed before response completed"
+            }),
+        )
+        .await?;
+        send_ws_json(&mut stream, &serde_json::json!({ "type": "done" })).await?;
+    }
+
+    send_ws_close(&mut stream).await?;
+    let _ = stream.shutdown().await;
+    cleanup_prepared_attachments(prepared_attachments).await;
+    Ok(())
+}
+
 async fn prepare_chat_attachments(chat: &ChatRequest) -> Result<PreparedAttachments, String> {
     let Some(latest) = chat.messages.last() else {
         return Ok(PreparedAttachments {
@@ -2457,6 +2911,138 @@ async fn send_sse(stream: &mut TcpStream, value: &Value) -> Result<(), String> {
         .write_all(format!("data: {body}\n\n").as_bytes())
         .await
         .map_err(|error| error.to_string())
+}
+
+fn websocket_accept_key(key: &str) -> String {
+    let mut hasher = Sha1::new();
+    hasher.update(key.as_bytes());
+    hasher.update(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
+    BASE64_STANDARD.encode(hasher.finalize())
+}
+
+async fn send_ws_json(stream: &mut TcpStream, value: &Value) -> Result<(), String> {
+    let body = serde_json::to_vec(value).map_err(|error| error.to_string())?;
+    write_ws_text_frame(stream, &body).await
+}
+
+async fn write_ws_text_frame(stream: &mut TcpStream, payload: &[u8]) -> Result<(), String> {
+    let mut frame = Vec::with_capacity(payload.len() + 10);
+    frame.push(0x81);
+    if payload.len() < 126 {
+        frame.push(payload.len() as u8);
+    } else if payload.len() <= u16::MAX as usize {
+        frame.push(126);
+        frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    } else {
+        frame.push(127);
+        frame.extend_from_slice(&(payload.len() as u64).to_be_bytes());
+    }
+    frame.extend_from_slice(payload);
+    stream
+        .write_all(&frame)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn send_ws_close(stream: &mut TcpStream) -> Result<(), String> {
+    stream
+        .write_all(&[0x88, 0x00])
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn read_websocket_text_message(
+    stream: &mut TcpStream,
+    buffer: &mut Vec<u8>,
+) -> Result<Vec<u8>, String> {
+    loop {
+        if let Some(message) = try_parse_websocket_text_message(buffer)? {
+            return Ok(message);
+        }
+
+        let mut chunk = [0u8; 4096];
+        let read = stream
+            .read(&mut chunk)
+            .await
+            .map_err(|error| error.to_string())?;
+        if read == 0 {
+            return Err("WebSocket closed before chat request".to_string());
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+        if buffer.len() > MAX_JSON_BODY_BYTES + 14 {
+            return Err("WebSocket chat request exceeds maximum allowed size".to_string());
+        }
+    }
+}
+
+fn try_parse_websocket_text_message(buffer: &mut Vec<u8>) -> Result<Option<Vec<u8>>, String> {
+    if buffer.len() < 2 {
+        return Ok(None);
+    }
+
+    let opcode = buffer[0] & 0x0f;
+    if opcode == 0x8 {
+        return Err("WebSocket closed before chat request".to_string());
+    }
+    if opcode != 0x1 && opcode != 0x2 {
+        return Err(format!("unsupported WebSocket opcode: {opcode}"));
+    }
+    if buffer[0] & 0x80 == 0 {
+        return Err("fragmented WebSocket chat requests are not supported".to_string());
+    }
+
+    let masked = buffer[1] & 0x80 != 0;
+    if !masked {
+        return Err("client WebSocket frames must be masked".to_string());
+    }
+
+    let mut offset = 2usize;
+    let mut len = (buffer[1] & 0x7f) as usize;
+    if len == 126 {
+        if buffer.len() < offset + 2 {
+            return Ok(None);
+        }
+        len = u16::from_be_bytes([buffer[offset], buffer[offset + 1]]) as usize;
+        offset += 2;
+    } else if len == 127 {
+        if buffer.len() < offset + 8 {
+            return Ok(None);
+        }
+        let raw_len = u64::from_be_bytes([
+            buffer[offset],
+            buffer[offset + 1],
+            buffer[offset + 2],
+            buffer[offset + 3],
+            buffer[offset + 4],
+            buffer[offset + 5],
+            buffer[offset + 6],
+            buffer[offset + 7],
+        ]);
+        len = usize::try_from(raw_len)
+            .map_err(|_| "WebSocket frame length is too large".to_string())?;
+        offset += 8;
+    }
+
+    if len > MAX_JSON_BODY_BYTES {
+        return Err("WebSocket chat request exceeds maximum allowed size".to_string());
+    }
+    if buffer.len() < offset + 4 + len {
+        return Ok(None);
+    }
+
+    let mask = [
+        buffer[offset],
+        buffer[offset + 1],
+        buffer[offset + 2],
+        buffer[offset + 3],
+    ];
+    offset += 4;
+    let mut payload = buffer[offset..offset + len].to_vec();
+    for (index, byte) in payload.iter_mut().enumerate() {
+        *byte ^= mask[index % 4];
+    }
+    buffer.drain(..offset + len);
+    Ok(Some(payload))
 }
 
 fn sse_headers() -> String {
@@ -3106,6 +3692,32 @@ mod tests {
 
         assert!(is_chat_websocket_endpoint(&head));
         assert!(!is_chat_endpoint(&head));
+    }
+
+    #[test]
+    fn computes_websocket_accept_key() {
+        assert_eq!(
+            websocket_accept_key("dGhlIHNhbXBsZSBub25jZQ=="),
+            "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+        );
+    }
+
+    #[test]
+    fn parses_masked_websocket_text_frame() {
+        let payload = br#"{"messages":[]}"#;
+        let mask = [0x37, 0xfa, 0x21, 0x3d];
+        let mut frame = vec![0x81, 0x80 | payload.len() as u8];
+        frame.extend_from_slice(&mask);
+        for (index, byte) in payload.iter().enumerate() {
+            frame.push(byte ^ mask[index % mask.len()]);
+        }
+
+        let parsed = try_parse_websocket_text_message(&mut frame)
+            .expect("frame should parse")
+            .expect("frame should be complete");
+
+        assert_eq!(parsed, payload);
+        assert!(frame.is_empty());
     }
 
     #[test]

@@ -1464,6 +1464,7 @@ dependencies = [
  "maestro-tui",
  "serde",
  "serde_json",
+ "sha1",
  "tokio",
 ]
 
