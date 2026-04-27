@@ -6,10 +6,10 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::process::{Child, Command};
+use tokio::process::Command;
 use tokio::sync::Mutex;
 
 const MAX_HEADER_BYTES: usize = 64 * 1024;
@@ -19,11 +19,6 @@ const MAX_JSON_BODY_BYTES: usize = 2 * 1024 * 1024;
 struct Config {
     listen_host: String,
     listen_port: u16,
-    backend_host: String,
-    backend_port: u16,
-    node_command: String,
-    node_script: String,
-    node_compat_enabled: bool,
     api_key: Option<String>,
     require_key: bool,
     cwd: PathBuf,
@@ -34,7 +29,6 @@ struct Config {
 impl Config {
     fn from_env() -> Self {
         let listen_port = env_u16("PORT", 8080);
-        let backend_port = env_u16("MAESTRO_NODE_BACKEND_PORT", listen_port + 1);
         let require_key = env::var("MAESTRO_WEB_REQUIRE_KEY")
             .map(|value| value != "0")
             .unwrap_or_else(|_| env::var("NODE_ENV").map(|v| v != "test").unwrap_or(true));
@@ -42,15 +36,6 @@ impl Config {
         Self {
             listen_host: env::var("MAESTRO_CONTROL_HOST").unwrap_or_else(|_| "0.0.0.0".into()),
             listen_port,
-            backend_host: env::var("MAESTRO_NODE_BACKEND_HOST")
-                .unwrap_or_else(|_| "127.0.0.1".into()),
-            backend_port,
-            node_command: env::var("MAESTRO_NODE_COMMAND").unwrap_or_else(|_| "node".into()),
-            node_script: env::var("MAESTRO_NODE_SCRIPT")
-                .unwrap_or_else(|_| "dist/web-server.js".into()),
-            node_compat_enabled: env::var("MAESTRO_NODE_COMPAT")
-                .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
-                .unwrap_or(false),
             api_key: env::var("MAESTRO_WEB_API_KEY")
                 .ok()
                 .map(|value| value.trim().to_string())
@@ -70,97 +55,16 @@ impl Config {
     fn listen_addr(&self) -> String {
         format!("{}:{}", self.listen_host, self.listen_port)
     }
-
-    fn backend_addr(&self) -> String {
-        format!("{}:{}", self.backend_host, self.backend_port)
-    }
 }
 
 #[derive(Clone)]
 struct AppState {
     config: Arc<Config>,
-    backend: Arc<BackendProcess>,
     started_at: Instant,
     selected_model: Arc<Mutex<ModelInfo>>,
     telemetry_override: Arc<Mutex<Option<bool>>>,
     training_override: Arc<Mutex<Option<bool>>>,
     command_prefs: Arc<Mutex<CommandPrefs>>,
-}
-
-struct BackendProcess {
-    child: Mutex<Option<Child>>,
-}
-
-impl BackendProcess {
-    fn new() -> Self {
-        Self {
-            child: Mutex::new(None),
-        }
-    }
-
-    async fn ensure_started(&self, config: &Config) -> Result<(), String> {
-        let mut guard = self.child.lock().await;
-        if let Some(child) = guard.as_mut() {
-            match child.try_wait() {
-                Ok(None) => return Ok(()),
-                Ok(Some(status)) => {
-                    eprintln!("maestro node backend exited before proxy: {status}");
-                    *guard = None;
-                }
-                Err(error) => {
-                    eprintln!("failed to inspect maestro node backend: {error}");
-                    *guard = None;
-                }
-            }
-        }
-
-        let mut command = Command::new(&config.node_command);
-        command
-            .arg(&config.node_script)
-            .current_dir(&config.cwd)
-            .env("PORT", config.backend_port.to_string())
-            .env("MAESTRO_CONTROL_PLANE_PARENT", "1")
-            .stdin(Stdio::null())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit());
-
-        let child = command
-            .spawn()
-            .map_err(|error| format!("failed to start node backend: {error}"))?;
-        *guard = Some(child);
-        wait_for_backend(&mut guard, &config.backend_addr()).await?;
-        Ok(())
-    }
-}
-
-async fn wait_for_backend(child: &mut Option<Child>, backend_addr: &str) -> Result<(), String> {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        if TcpStream::connect(backend_addr).await.is_ok() {
-            return Ok(());
-        }
-
-        if let Some(process) = child.as_mut() {
-            match process.try_wait() {
-                Ok(Some(status)) => {
-                    *child = None;
-                    return Err(format!("node backend exited before listening: {status}"));
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    *child = None;
-                    return Err(format!("failed to inspect node backend: {error}"));
-                }
-            }
-        }
-
-        if Instant::now() >= deadline {
-            return Err(format!(
-                "node backend did not listen on {backend_addr} within 10s"
-            ));
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
 }
 
 #[derive(Debug)]
@@ -302,15 +206,12 @@ async fn main() -> anyhow::Result<()> {
     let config = Arc::new(Config::from_env());
     let listener = TcpListener::bind(config.listen_addr()).await?;
     eprintln!(
-        "maestro rust server listening on http://{} (node compat: {}, backend: {})",
-        config.listen_addr(),
-        config.node_compat_enabled,
-        config.backend_addr()
+        "maestro rust server listening on http://{}",
+        config.listen_addr()
     );
 
     let state = AppState {
         config,
-        backend: Arc::new(BackendProcess::new()),
         started_at: Instant::now(),
         selected_model: Arc::new(Mutex::new(default_model())),
         telemetry_override: Arc::new(Mutex::new(None)),
@@ -369,25 +270,20 @@ async fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<(),
         return Ok(());
     }
 
-    if state.config.node_compat_enabled {
-        state.backend.ensure_started(&state.config).await?;
-        proxy_to_backend(stream, initial, &state.config.backend_addr()).await
-    } else {
-        let response = json_response(
-            501,
-            &serde_json::json!({
-                "error": "route has not been migrated to the Rust server yet",
-                "path": head.path,
-                "nodeCompat": "set MAESTRO_NODE_COMPAT=1 to temporarily proxy this route"
-            }),
-        );
-        stream
-            .write_all(&response)
-            .await
-            .map_err(|error| error.to_string())?;
-        let _ = stream.shutdown().await;
-        Ok(())
-    }
+    let response = json_response(
+        501,
+        &serde_json::json!({
+            "error": "route has not been migrated to the Rust server yet",
+            "path": head.path,
+            "runtime": "rust-control-plane"
+        }),
+    );
+    stream
+        .write_all(&response)
+        .await
+        .map_err(|error| error.to_string())?;
+    let _ = stream.shutdown().await;
+    Ok(())
 }
 
 fn is_chat_endpoint(head: &RequestHead) -> bool {
@@ -2017,24 +1913,6 @@ fn header_end(initial: &[u8]) -> Result<usize, String> {
         .windows(4)
         .position(|window| window == b"\r\n\r\n")
         .ok_or_else(|| "request header terminator not found".to_string())
-}
-
-async fn proxy_to_backend(
-    mut client: TcpStream,
-    initial: Vec<u8>,
-    backend_addr: &str,
-) -> Result<(), String> {
-    let mut backend = TcpStream::connect(backend_addr)
-        .await
-        .map_err(|error| format!("failed to connect to node backend: {error}"))?;
-    backend
-        .write_all(&initial)
-        .await
-        .map_err(|error| error.to_string())?;
-    tokio::io::copy_bidirectional(&mut client, &mut backend)
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(())
 }
 
 fn text_response(status: u16, body: &str) -> Vec<u8> {
