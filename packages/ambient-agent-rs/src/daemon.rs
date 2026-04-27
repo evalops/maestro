@@ -959,6 +959,8 @@ mod tests {
 
         wait_for_published(&transport, 1).await;
 
+        // Make the learner storage path unwritable in a way that also fails
+        // under privileged users.
         std::fs::create_dir(temp.path().join("learner.json")).unwrap();
 
         cmd_tx.send(DaemonCommand::Shutdown).await.unwrap();

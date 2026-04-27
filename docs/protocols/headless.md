@@ -487,5 +487,11 @@ telemetry. Audit-bus publishing is controlled separately with
 `MAESTRO_EVENT_BUS`; set it to `0` or `false` to suppress bus writes even when
 managed EvalOps routing is active.
 
+To verify a live JetStream route without relying on best-effort runtime
+publishing, run `bun run smoke:event-bus` with `MAESTRO_EVENT_BUS_URL` or
+`EVALOPS_NATS_URL` configured. The smoke publishes a single
+`maestro.sessions.session.started` CloudEvent and fails on connection or
+publish errors.
+
 For the larger remote-attach and control-plane architecture, see the companion
 design document: [docs/design/HEADLESS_CONTROL_PLANE.md](../design/HEADLESS_CONTROL_PLANE.md).
