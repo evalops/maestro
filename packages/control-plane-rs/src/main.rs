@@ -7,7 +7,7 @@ use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use maestro_tui::agent::{FromAgent, NativeAgent, NativeAgentConfig, TokenUsage, ToolResult};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha1::{Digest, Sha1};
+use sha1::Sha1;
 use sha2::Sha256;
 use std::collections::HashMap;
 use std::env;
@@ -381,9 +381,6 @@ fn is_chat_websocket_endpoint(head: &RequestHead) -> bool {
 }
 
 fn is_local_endpoint(head: &RequestHead) -> bool {
-    if head.method == "OPTIONS" && head.path.starts_with("/api/") {
-        return true;
-    }
     matches!(
         (head.method.as_str(), head.path.as_str()),
         (
@@ -874,9 +871,6 @@ async fn handle_local_endpoint(
                     "message": "Training preference updated"
                 }),
             )
-        }
-        ("OPTIONS", path) if path.starts_with("/api/") => {
-            response(204, "text/plain; charset=utf-8", &[])
         }
         _ => json_response(404, &serde_json::json!({ "error": "Not found" })),
     }
@@ -6060,12 +6054,12 @@ mod tests {
     }
 
     #[test]
-    fn detects_api_options_preflight_as_local() {
+    fn options_preflight_is_handled_before_local_route_checks() {
         let head = parse_request_head(
             b"OPTIONS /api/chat HTTP/1.1\r\nHost: localhost\r\nOrigin: http://localhost:4173\r\nAccess-Control-Request-Method: POST\r\n\r\n",
         )
         .expect("request should parse");
-        assert!(is_local_endpoint(&head));
+        assert!(!is_local_endpoint(&head));
 
         let response = response(204, "text/plain; charset=utf-8", &[]);
         let text = String::from_utf8(response).expect("response should be utf-8");
@@ -6286,10 +6280,12 @@ mod tests {
     fn generated_share_tokens_are_opaque() {
         let session_id = "session-123";
         let token = generate_share_token().expect("share token should be generated");
+        let another = generate_share_token().expect("share token should be generated");
 
         assert_ne!(token, session_id);
         assert!(!token.contains(session_id));
         assert!(token.len() >= 32);
+        assert_ne!(token, another);
     }
 
     #[test]

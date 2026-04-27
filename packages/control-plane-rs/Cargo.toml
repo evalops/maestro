@@ -13,9 +13,9 @@ path = "src/main.rs"
 anyhow = "1"
 base64 = "0.22"
 chrono = "0.4"
+getrandom = "0.3.4"
 hmac = "0.12"
 jsonwebtoken = "9"
-getrandom = "0.3"
 maestro-tui = { path = "../tui-rs" }
 pdf-extract = "0.7"
 reqwest = { version = "0.12", features = ["blocking", "json"] }
