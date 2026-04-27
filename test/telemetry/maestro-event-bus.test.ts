@@ -171,6 +171,8 @@ describe("maestro event bus", () => {
 		});
 
 		recordMaestroSkillInvoked({
+			invocation_id: "skill_invocation_1",
+			skill_id: "skill_remote_1",
 			tool_call_id: "tool_skill_1",
 			skill_metadata: {
 				name: "incident-review",
@@ -189,6 +191,8 @@ describe("maestro event bus", () => {
 		expect(JSON.parse(published[0]?.payload ?? "{}")).toMatchObject({
 			type: "maestro.events.skill.invoked",
 			data: {
+				invocation_id: "skill_invocation_1",
+				skill_id: "skill_remote_1",
 				tool_call_id: "tool_skill_1",
 				skill_metadata: {
 					name: "incident-review",
@@ -250,6 +254,8 @@ describe("maestro event bus", () => {
 		});
 
 		recordMaestroSkillOutcome({
+			invocation_id: "skill_invocation_1",
+			skill_id: "skill_remote_1",
 			tool_call_id: "tool_skill_1",
 			tool_execution_id: "exec_skill_1",
 			skill_metadata: {
@@ -279,6 +285,9 @@ describe("maestro event bus", () => {
 		expect(JSON.parse(published[0]?.payload ?? "{}")).toMatchObject({
 			type: "maestro.events.skill.failed",
 			data: {
+				invocation_id: "skill_invocation_1",
+				skill_id: "skill_remote_1",
+				status: "MAESTRO_SKILL_OUTCOME_STATUS_EVALUATION_FAILED",
 				tool_call_id: "tool_skill_1",
 				tool_execution_id: "exec_skill_1",
 				turn_status: "evaluation_failed",

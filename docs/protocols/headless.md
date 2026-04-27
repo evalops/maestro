@@ -468,6 +468,13 @@ The shared publisher lives in `@evalops/ai/telemetry` and currently emits:
 - `maestro.events.sandbox_violation`
 - `maestro.events.firewall_block`
 - `maestro.events.tool_call.attempted|completed`
+- `maestro.events.prompt_variant.selected`
+- `maestro.events.skill.invoked|succeeded|failed`
+- `maestro.events.eval.scored`
+
+The publisher conformance fixture used by Platform can be regenerated from the
+same shared publisher with
+`tsx scripts/generate-maestro-publisher-conformance-fixture.ts`.
 
 `MAESTRO_TELEMETRY` continues to control local training and diagnostic
 telemetry. Audit-bus publishing is controlled separately with
