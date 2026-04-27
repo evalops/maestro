@@ -1324,7 +1324,7 @@ fn session_timeline_value(session: &SessionRecord) -> Value {
                 "status": "completed",
                 "role": role,
                 "summary": timeline_message_summary(message),
-                "metadata": { "message": message }
+                "metadata": { "message": public_session_message(message) }
             })
         }).collect::<Vec<_>>()
     })
@@ -1643,7 +1643,10 @@ fn message_text(message: &Value) -> String {
 }
 
 fn session_attachments_value(session: &SessionRecord) -> Value {
-    let attachments = session_attachments(session);
+    let mut attachments = session_attachments(session);
+    for attachment in &mut attachments {
+        sanitize_attachment_for_read(attachment);
+    }
     serde_json::json!({ "sessionId": session.id, "attachments": attachments })
 }
 
@@ -2432,8 +2435,38 @@ fn session_summary_value(session: &SessionRecord) -> Value {
 
 fn session_full_value(session: &SessionRecord) -> Value {
     let mut value = session_summary_value(session);
-    value["messages"] = Value::Array(session.messages.clone());
+    value["messages"] = Value::Array(
+        session
+            .messages
+            .iter()
+            .map(public_session_message)
+            .collect(),
+    );
     value
+}
+
+fn public_session_message(message: &Value) -> Value {
+    let mut message = message.clone();
+    if let Some(object) = message.as_object_mut() {
+        if let Some(attachments) = object.get_mut("attachments").and_then(Value::as_array_mut) {
+            for attachment in attachments {
+                sanitize_attachment_for_read(attachment);
+            }
+        }
+    }
+    message
+}
+
+fn sanitize_attachment_for_read(attachment: &mut Value) {
+    let Some(object) = attachment.as_object_mut() else {
+        return;
+    };
+    let had_inline_content = object.remove("content").is_some()
+        || object.remove("contentBase64").is_some()
+        || object.remove("content_base64").is_some();
+    if had_inline_content && !object.contains_key("contentOmitted") {
+        object.insert("contentOmitted".to_string(), Value::Bool(true));
+    }
 }
 
 fn new_session_id() -> String {
@@ -3417,12 +3450,16 @@ async fn record_usage_entry(
     }
 }
 
-async fn record_chat_user_message(state: &AppState, chat: &ChatRequest, owner: Option<String>) {
+async fn record_chat_user_message(
+    state: &AppState,
+    chat: &ChatRequest,
+    auth: &AuthContext,
+) -> Result<(), String> {
     let Some(session_id) = chat.session_id.as_deref() else {
-        return;
+        return Ok(());
     };
     let Some(latest) = chat.messages.last() else {
-        return;
+        return Ok(());
     };
     let mut message = serde_json::json!({
         "role": latest.role.clone(),
@@ -3432,14 +3469,22 @@ async fn record_chat_user_message(state: &AppState, chat: &ChatRequest, owner: O
     if !latest.attachments.is_empty() {
         message["attachments"] = serde_json::json!(latest.attachments);
     }
-    append_session_message(state, session_id, message, Some(&latest.content), owner).await;
+    append_session_message(
+        state,
+        session_id,
+        message,
+        Some(&latest.content),
+        auth.subject.clone(),
+        Some(auth),
+    )
+    .await
 }
 
 async fn record_chat_assistant_message(state: &AppState, session_id: Option<&str>, message: Value) {
     let Some(session_id) = session_id else {
         return;
     };
-    append_session_message(state, session_id, message, None, None).await;
+    let _ = append_session_message(state, session_id, message, None, None, None).await;
 }
 
 async fn append_session_message(
@@ -3448,12 +3493,26 @@ async fn append_session_message(
     message: Value,
     title_source: Option<&Value>,
     owner: Option<String>,
-) {
+    auth: Option<&AuthContext>,
+) -> Result<(), String> {
     let mut sessions = state.sessions.lock().await;
-    let session = sessions
-        .sessions
-        .entry(session_id.to_string())
-        .or_insert_with(|| create_session_record(title_source.and_then(title_from_content), owner));
+    let session = if sessions.sessions.contains_key(session_id) {
+        let session = sessions
+            .sessions
+            .get_mut(session_id)
+            .expect("session existence checked");
+        if auth.is_some_and(|auth| !session_visible_to_auth(session, auth)) {
+            return Err("Session not found".to_string());
+        }
+        session
+    } else {
+        sessions
+            .sessions
+            .entry(session_id.to_string())
+            .or_insert_with(|| {
+                create_session_record(title_source.and_then(title_from_content), owner)
+            })
+    };
     if session.message_count == 0 {
         if let Some(title) = title_source.and_then(title_from_content) {
             session.title = title;
@@ -3464,6 +3523,7 @@ async fn append_session_message(
     session.updated_at = now_rfc3339();
     drop(sessions);
     persist_session_store(state).await;
+    Ok(())
 }
 
 fn title_from_content(content: &Value) -> Option<String> {
@@ -3595,7 +3655,18 @@ async fn handle_chat_endpoint(
             return Ok(());
         }
     };
-    record_chat_user_message(&state, &chat, auth.subject.clone()).await;
+    if let Err(error) = record_chat_user_message(&state, &chat, &auth).await {
+        cleanup_prepared_attachments(prepared_attachments).await;
+        stream
+            .write_all(&with_cors_origin(
+                json_response(404, &serde_json::json!({ "error": error })),
+                &head,
+            ))
+            .await
+            .map_err(|error| error.to_string())?;
+        let _ = stream.shutdown().await;
+        return Ok(());
+    }
 
     stream
         .write_all(sse_headers(&head).as_bytes())
@@ -4183,7 +4254,18 @@ async fn handle_chat_websocket_endpoint(
             return Ok(());
         }
     };
-    record_chat_user_message(&state, &chat, auth.subject.clone()).await;
+    if let Err(error) = record_chat_user_message(&state, &chat, &auth).await {
+        cleanup_prepared_attachments(prepared_attachments).await;
+        send_ws_json(
+            &mut stream,
+            &serde_json::json!({ "type": "error", "message": error }),
+        )
+        .await?;
+        send_ws_json(&mut stream, &serde_json::json!({ "type": "done" })).await?;
+        send_ws_close(&mut stream).await?;
+        let _ = stream.shutdown().await;
+        return Ok(());
+    }
 
     let model = selected_chat_model(&chat, &state).await;
     let (usage_provider, usage_model) = usage_provider_model(&chat, &state, &model).await;
@@ -4805,7 +4887,13 @@ fn composer_assistant_message_with_tools(
             "output": usage.output_tokens,
             "cacheRead": usage.cache_read_tokens,
             "cacheWrite": usage.cache_write_tokens,
-            "cost": usage.cost.map(|total| serde_json::json!({ "total": total }))
+            "cost": {
+                "input": 0.0,
+                "output": 0.0,
+                "cacheRead": 0.0,
+                "cacheWrite": 0.0,
+                "total": usage.cost.unwrap_or(0.0)
+            }
         });
     }
     if !tools.is_empty() {
@@ -6365,6 +6453,27 @@ mod tests {
     }
 
     #[test]
+    fn assistant_usage_cost_uses_contract_shape() {
+        let message = composer_assistant_message(
+            "done",
+            "",
+            Some(TokenUsage {
+                input_tokens: 1,
+                output_tokens: 2,
+                cache_read_tokens: 3,
+                cache_write_tokens: 4,
+                cost: None,
+            }),
+        );
+
+        assert_eq!(message["usage"]["cost"]["input"], 0.0);
+        assert_eq!(message["usage"]["cost"]["output"], 0.0);
+        assert_eq!(message["usage"]["cost"]["cacheRead"], 0.0);
+        assert_eq!(message["usage"]["cost"]["cacheWrite"], 0.0);
+        assert_eq!(message["usage"]["cost"]["total"], 0.0);
+    }
+
+    #[test]
     fn onboarding_snapshot_honors_seen_count_limit() {
         let first_seen = compute_onboarding_snapshot(false, false, 1, false);
         assert!(first_seen.should_show);
@@ -6485,6 +6594,63 @@ mod tests {
         let text = String::from_utf8(response).expect("response should be utf-8");
 
         assert!(text.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(text.ends_with("hello"));
+    }
+
+    #[tokio::test]
+    async fn chat_user_message_rejects_unowned_existing_session() {
+        let mut session = test_session_record("session-1");
+        session.owner = Some("other-user".to_string());
+        let state = test_app_state_with_sessions(HashMap::from([(session.id.clone(), session)]));
+        let auth = AuthContext {
+            subject: Some("user-123".to_string()),
+            unrestricted: false,
+        };
+        let chat = ChatRequest {
+            model: None,
+            thinking_level: None,
+            session_id: Some("session-1".to_string()),
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: Value::String("hello".to_string()),
+                attachments: Vec::new(),
+            }],
+        };
+
+        let result = record_chat_user_message(&state, &chat, &auth).await;
+        let stored = state.sessions.lock().await;
+
+        assert!(result.is_err());
+        assert!(stored.sessions["session-1"].messages.is_empty());
+    }
+
+    #[test]
+    fn session_read_payloads_omit_inline_attachment_content() {
+        let mut session = test_session_record("session-1");
+        session.messages.push(serde_json::json!({
+            "role": "user",
+            "content": "see attachment",
+            "attachments": [{
+                "id": "att-1",
+                "fileName": "note.txt",
+                "mimeType": "text/plain",
+                "content": BASE64_STANDARD.encode("hello")
+            }]
+        }));
+
+        let full = session_full_value(&session);
+        let attachment = &full["messages"][0]["attachments"][0];
+        assert!(attachment.get("content").is_none());
+        assert_eq!(
+            attachment.get("contentOmitted").and_then(Value::as_bool),
+            Some(true)
+        );
+
+        let list = session_attachments_value(&session);
+        assert!(list["attachments"][0].get("content").is_none());
+
+        let response = serve_session_attachment(&session, "attachments/att-1");
+        let text = String::from_utf8(response).expect("response should be utf-8");
         assert!(text.ends_with("hello"));
     }
 
