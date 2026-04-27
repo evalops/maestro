@@ -1,10 +1,12 @@
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use maestro_tui::agent::{FromAgent, NativeAgent, NativeAgentConfig, TokenUsage};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{self, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -14,6 +16,7 @@ use tokio::sync::Mutex;
 
 const MAX_HEADER_BYTES: usize = 64 * 1024;
 const MAX_JSON_BODY_BYTES: usize = 2 * 1024 * 1024;
+static ATTACHMENT_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone)]
 struct Config {
@@ -75,7 +78,7 @@ struct RequestHead {
     headers: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ModelInfo {
     id: String,
@@ -89,7 +92,7 @@ struct ModelInfo {
     capabilities: ModelCapabilities,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ModelCost {
     input: f64,
@@ -98,12 +101,18 @@ struct ModelCost {
     cache_write: f64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ModelCapabilities {
     streaming: bool,
     tools: bool,
     vision: bool,
     reasoning: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ModelRegistry {
+    models: Vec<ModelInfo>,
+    aliases: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -213,7 +222,7 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         config,
         started_at: Instant::now(),
-        selected_model: Arc::new(Mutex::new(default_model())),
+        selected_model: Arc::new(Mutex::new(default_model().await)),
         telemetry_override: Arc::new(Mutex::new(None)),
         training_override: Arc::new(Mutex::new(None)),
         command_prefs: Arc::new(Mutex::new(CommandPrefs {
@@ -327,6 +336,7 @@ fn is_local_endpoint(head: &RequestHead) -> bool {
                 | "/api/training"
                 | "/api/framework"
                 | "/api/undo"
+                | "/api/run"
         )
     )
 }
@@ -344,7 +354,7 @@ async fn handle_local_endpoint(
             if let Err(response) = authorize(&head, &state.config) {
                 return response;
             }
-            json_response(200, &serde_json::json!({ "models": builtin_models() }))
+            json_response(200, &serde_json::json!({ "models": available_models().await.models }))
         }
         ("GET", "/api/model") => {
             if let Err(response) = authorize(&head, &state.config) {
@@ -373,7 +383,8 @@ async fn handle_local_endpoint(
             let Some(model_id) = payload.get("model").and_then(Value::as_str).map(str::trim) else {
                 return json_response(400, &serde_json::json!({ "error": "model is required" }));
             };
-            let Some(model) = resolve_model(model_id) else {
+            let registry = available_models().await;
+            let Some(model) = resolve_model(model_id, &registry) else {
                 return json_response(
                     404,
                     &serde_json::json!({ "error": format!("Unknown model: {model_id}") }),
@@ -522,6 +533,25 @@ async fn handle_local_endpoint(
                 return json_response(200, &serde_json::json!({ "scripts": package_scripts(&state.config.cwd).await }));
             }
             json_response(400, &serde_json::json!({ "error": "Invalid action" }))
+        }
+        ("POST", "/api/run") => {
+            if let Err(response) = authorize(&head, &state.config) {
+                return response;
+            }
+            let body = match read_request_body(stream, initial, &head).await {
+                Ok(body) => body,
+                Err(error) => return json_response(400, &serde_json::json!({ "error": error })),
+            };
+            let request: RunScriptRequest = match serde_json::from_slice(&body) {
+                Ok(request) => request,
+                Err(error) => {
+                    return json_response(
+                        400,
+                        &serde_json::json!({ "error": format!("invalid run request: {error}") }),
+                    );
+                }
+            };
+            run_script_response(&state.config.cwd, request).await
         }
         ("GET", "/api/background") => {
             if let Err(response) = authorize(&head, &state.config) {
@@ -695,21 +725,168 @@ fn builtin_models() -> Vec<ModelInfo> {
     ]
 }
 
-fn default_model() -> ModelInfo {
-    env::var("MAESTRO_DEFAULT_MODEL")
-        .ok()
-        .and_then(|model| resolve_model(&model))
-        .unwrap_or_else(|| {
-            let mut models = builtin_models();
-            models.remove(0)
-        })
+async fn available_models() -> ModelRegistry {
+    let mut registry = ModelRegistry {
+        models: builtin_models(),
+        aliases: HashMap::new(),
+    };
+
+    let Some(config) = read_json_value(&model_config_path()).await else {
+        return registry;
+    };
+    merge_configured_models(&mut registry, &config);
+    registry
 }
 
-fn resolve_model(input: &str) -> Option<ModelInfo> {
+fn merge_configured_models(registry: &mut ModelRegistry, config: &Value) {
+    if let Some(aliases) = config.get("aliases").and_then(Value::as_object) {
+        registry
+            .aliases
+            .extend(aliases.iter().filter_map(|(alias, target)| {
+                target
+                    .as_str()
+                    .map(|target| (alias.to_string(), target.trim().to_string()))
+            }));
+    }
+
+    let Some(providers) = config.get("providers").and_then(Value::as_array) else {
+        return;
+    };
+
+    for provider in providers {
+        if provider.get("enabled").and_then(Value::as_bool) == Some(false) {
+            continue;
+        }
+        let Some(provider_id) = provider.get("id").and_then(Value::as_str).map(str::trim) else {
+            continue;
+        };
+        if provider_id.is_empty() {
+            continue;
+        }
+        let provider_api = provider.get("api").and_then(Value::as_str).map(str::trim);
+        let Some(models) = provider.get("models").and_then(Value::as_array) else {
+            continue;
+        };
+
+        for model in models {
+            let Some(id) = model.get("id").and_then(Value::as_str).map(str::trim) else {
+                continue;
+            };
+            if id.is_empty() {
+                continue;
+            }
+            let name = model
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .unwrap_or(id);
+            let api = model
+                .get("api")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .or(provider_api)
+                .unwrap_or("openai-responses");
+            let reasoning = model
+                .get("reasoning")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let input_modes = model
+                .get("input")
+                .and_then(Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            let vision = input_modes
+                .iter()
+                .any(|mode| mode.as_str() == Some("image"));
+            let tools = model
+                .get("toolUse")
+                .or_else(|| model.get("tools"))
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+
+            let info = ModelInfo {
+                id: id.to_string(),
+                provider: provider_id.to_string(),
+                name: name.to_string(),
+                api: api.to_string(),
+                context_window: value_u32(model.get("contextWindow")).unwrap_or(0),
+                max_tokens: value_u32(model.get("maxTokens")).unwrap_or(0),
+                reasoning,
+                cost: model_cost_from_value(model.get("cost")),
+                capabilities: ModelCapabilities {
+                    streaming: true,
+                    tools,
+                    vision,
+                    reasoning,
+                },
+            };
+            upsert_model(&mut registry.models, info);
+        }
+    }
+}
+
+fn upsert_model(models: &mut Vec<ModelInfo>, model: ModelInfo) {
+    if let Some(existing) = models
+        .iter_mut()
+        .find(|candidate| candidate.provider == model.provider && candidate.id == model.id)
+    {
+        *existing = model;
+    } else {
+        models.push(model);
+    }
+}
+
+fn value_u32(value: Option<&Value>) -> Option<u32> {
+    value?.as_u64().and_then(|value| u32::try_from(value).ok())
+}
+
+fn model_cost_from_value(value: Option<&Value>) -> ModelCost {
+    let Some(cost) = value.and_then(Value::as_object) else {
+        return zero_model_cost();
+    };
+    ModelCost {
+        input: cost.get("input").and_then(Value::as_f64).unwrap_or(0.0),
+        output: cost.get("output").and_then(Value::as_f64).unwrap_or(0.0),
+        cache_read: cost.get("cacheRead").and_then(Value::as_f64).unwrap_or(0.0),
+        cache_write: cost
+            .get("cacheWrite")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0),
+    }
+}
+
+fn zero_model_cost() -> ModelCost {
+    ModelCost {
+        input: 0.0,
+        output: 0.0,
+        cache_read: 0.0,
+        cache_write: 0.0,
+    }
+}
+
+async fn default_model() -> ModelInfo {
+    let registry = available_models().await;
+    env::var("MAESTRO_DEFAULT_MODEL")
+        .ok()
+        .and_then(|model| resolve_model(&model, &registry))
+        .unwrap_or_else(|| registry.models[0].clone())
+}
+
+fn resolve_model(input: &str, registry: &ModelRegistry) -> Option<ModelInfo> {
     let normalized = input.trim();
-    builtin_models().into_iter().find(|model| {
-        model.id == normalized || format!("{}/{}", model.provider, model.id) == normalized
-    })
+    let normalized = registry
+        .aliases
+        .get(normalized)
+        .map(String::as_str)
+        .unwrap_or(normalized);
+    registry
+        .models
+        .iter()
+        .find(|model| {
+            model.id == normalized || format!("{}/{}", model.provider, model.id) == normalized
+        })
+        .cloned()
 }
 
 async fn workspace_files(cwd: &Path) -> Vec<String> {
@@ -884,15 +1061,145 @@ fn usage_snapshot() -> Value {
 }
 
 async fn package_scripts(cwd: &Path) -> Vec<String> {
+    let mut scripts: Vec<String> = package_script_map(cwd).await.into_keys().collect();
+    scripts.sort();
+    scripts
+}
+
+async fn package_script_map(cwd: &Path) -> HashMap<String, String> {
     let package_json = cwd.join("package.json");
     let Some(value) = read_json_value(&package_json.to_string_lossy()).await else {
-        return Vec::new();
+        return HashMap::new();
     };
     value
         .get("scripts")
         .and_then(Value::as_object)
-        .map(|scripts| scripts.keys().cloned().collect())
+        .map(|scripts| {
+            scripts
+                .iter()
+                .filter_map(|(name, command)| {
+                    command
+                        .as_str()
+                        .map(|command| (name.to_string(), command.to_string()))
+                })
+                .collect()
+        })
         .unwrap_or_default()
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RunScriptRequest {
+    script: String,
+    args: Option<String>,
+}
+
+async fn run_script_response(cwd: &Path, request: RunScriptRequest) -> Vec<u8> {
+    let script = request.script.trim();
+    if script.is_empty() {
+        return json_response(
+            400,
+            &serde_json::json!({ "error": "Script name is required" }),
+        );
+    }
+    if !is_valid_script_name(script) {
+        return json_response(
+            400,
+            &serde_json::json!({ "error": "Invalid script name format" }),
+        );
+    }
+
+    let available_scripts = package_script_map(cwd).await;
+    if !available_scripts.contains_key(script) {
+        let mut available: Vec<String> = available_scripts.keys().cloned().collect();
+        available.sort();
+        return json_response(
+            400,
+            &serde_json::json!({
+                "error": format!("Script \"{script}\" not found in package.json"),
+                "available": available,
+            }),
+        );
+    }
+
+    let args = request.args.unwrap_or_default();
+    if contains_shell_metachars(&args) {
+        return json_response(
+            400,
+            &serde_json::json!({
+                "error": "Arguments contain invalid characters. Shell metacharacters are not allowed."
+            }),
+        );
+    }
+
+    let args = args.trim();
+    let command = if args.is_empty() {
+        format!("npm run {script}")
+    } else {
+        format!("npm run {script} -- {args}")
+    };
+
+    match Command::new("sh")
+        .arg("-lc")
+        .arg(&command)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .output()
+        .await
+    {
+        Ok(output) => json_response(
+            200,
+            &serde_json::json!({
+                "success": output.status.success(),
+                "exitCode": output.status.code().unwrap_or(1),
+                "stdout": String::from_utf8_lossy(&output.stdout),
+                "stderr": String::from_utf8_lossy(&output.stderr),
+                "command": command,
+            }),
+        ),
+        Err(error) => json_response(
+            500,
+            &serde_json::json!({ "error": format!("failed to run script: {error}") }),
+        ),
+    }
+}
+
+fn is_valid_script_name(script: &str) -> bool {
+    script.len() <= 100
+        && !script.is_empty()
+        && script
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | ':' | '.' | '-'))
+}
+
+fn contains_shell_metachars(value: &str) -> bool {
+    value.chars().any(|ch| {
+        matches!(
+            ch,
+            ';' | '&'
+                | '|'
+                | '`'
+                | '$'
+                | '('
+                | ')'
+                | '{'
+                | '}'
+                | '['
+                | ']'
+                | '<'
+                | '>'
+                | '\\'
+                | '!'
+                | '#'
+                | '*'
+                | '?'
+                | '"'
+                | '\''
+                | '\n'
+                | '\r'
+                | '\t'
+        )
+    })
 }
 
 fn background_response(head: &RequestHead) -> Value {
@@ -1050,8 +1357,19 @@ struct ChatMessage {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ChatAttachment {
+    id: Option<String>,
+    #[serde(rename = "type")]
+    attachment_type: Option<String>,
     file_name: Option<String>,
+    mime_type: Option<String>,
+    content: Option<String>,
+    content_omitted: Option<bool>,
     extracted_text: Option<String>,
+}
+
+struct PreparedAttachments {
+    paths: Vec<String>,
+    temp_dir: Option<PathBuf>,
 }
 
 async fn handle_chat_endpoint(
@@ -1121,6 +1439,18 @@ async fn handle_chat_endpoint(
         return Ok(());
     }
 
+    let prepared_attachments = match prepare_chat_attachments(&chat).await {
+        Ok(attachments) => attachments,
+        Err(error) => {
+            stream
+                .write_all(&json_response(400, &serde_json::json!({ "error": error })))
+                .await
+                .map_err(|error| error.to_string())?;
+            let _ = stream.shutdown().await;
+            return Ok(());
+        }
+    };
+
     stream
         .write_all(sse_headers().as_bytes())
         .await
@@ -1156,6 +1486,7 @@ async fn handle_chat_endpoint(
             .await?;
             send_sse(&mut stream, &serde_json::json!({ "type": "done" })).await?;
             let _ = stream.shutdown().await;
+            cleanup_prepared_attachments(prepared_attachments).await;
             return Ok(());
         }
     };
@@ -1174,7 +1505,9 @@ async fn handle_chat_endpoint(
     send_sse(&mut stream, &serde_json::json!({ "type": "agent_start" })).await?;
     send_sse(&mut stream, &serde_json::json!({ "type": "turn_start" })).await?;
 
-    let prompt_result = agent.prompt(prompt, Vec::new()).await;
+    let prompt_result = agent
+        .prompt(prompt, prepared_attachments.paths.clone())
+        .await;
     if let Err(error) = prompt_result {
         send_sse(
             &mut stream,
@@ -1183,12 +1516,14 @@ async fn handle_chat_endpoint(
         .await?;
         send_sse(&mut stream, &serde_json::json!({ "type": "done" })).await?;
         let _ = stream.shutdown().await;
+        cleanup_prepared_attachments(prepared_attachments).await;
         return Ok(());
     }
 
     let mut assistant_text = String::new();
     let mut thinking_text = String::new();
     let mut response_started = false;
+    let mut terminal_sent = false;
     let mut tool_names: HashMap<String, String> = HashMap::new();
 
     while let Some(event) = events.recv().await {
@@ -1460,13 +1795,123 @@ async fn handle_chat_endpoint(
                 )
                 .await?;
                 send_sse(&mut stream, &serde_json::json!({ "type": "done" })).await?;
+                terminal_sent = true;
                 break;
             }
         }
     }
 
+    if !terminal_sent {
+        send_sse(
+            &mut stream,
+            &serde_json::json!({
+                "type": "error",
+                "message": "Agent stream closed before response completed"
+            }),
+        )
+        .await?;
+        send_sse(&mut stream, &serde_json::json!({ "type": "done" })).await?;
+    }
+
     let _ = stream.shutdown().await;
+    cleanup_prepared_attachments(prepared_attachments).await;
     Ok(())
+}
+
+async fn prepare_chat_attachments(chat: &ChatRequest) -> Result<PreparedAttachments, String> {
+    let Some(latest) = chat.messages.last() else {
+        return Ok(PreparedAttachments {
+            paths: Vec::new(),
+            temp_dir: None,
+        });
+    };
+    let mut temp_dir: Option<PathBuf> = None;
+    let mut paths = Vec::new();
+
+    for (index, attachment) in latest.attachments.iter().enumerate() {
+        let Some(content) = attachment
+            .content
+            .as_deref()
+            .map(str::trim)
+            .filter(|content| !content.is_empty())
+        else {
+            continue;
+        };
+        let encoded = strip_data_url_prefix(content);
+        let bytes = BASE64_STANDARD.decode(encoded).map_err(|error| {
+            format!(
+                "attachment {} content is not valid base64: {error}",
+                attachment.file_name.as_deref().unwrap_or("attachment")
+            )
+        })?;
+
+        if temp_dir.is_none() {
+            let dir = chat_attachment_temp_dir();
+            tokio::fs::create_dir_all(&dir)
+                .await
+                .map_err(|error| format!("failed to create attachment temp directory: {error}"))?;
+            temp_dir = Some(dir);
+        }
+        let file_name =
+            sanitize_attachment_file_name(attachment.file_name.as_deref().unwrap_or("attachment"));
+        let path = temp_dir
+            .as_ref()
+            .expect("attachment temp dir should be initialized")
+            .join(format!("{index}-{file_name}"));
+        tokio::fs::write(&path, bytes)
+            .await
+            .map_err(|error| format!("failed to write attachment {file_name}: {error}"))?;
+        paths.push(path.to_string_lossy().to_string());
+    }
+
+    Ok(PreparedAttachments { paths, temp_dir })
+}
+
+fn strip_data_url_prefix(content: &str) -> &str {
+    content
+        .split_once(',')
+        .filter(|(prefix, _)| prefix.starts_with("data:"))
+        .map(|(_, data)| data.trim())
+        .unwrap_or(content)
+}
+
+fn chat_attachment_temp_dir() -> PathBuf {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    let counter = ATTACHMENT_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    env::temp_dir().join(format!("maestro-chat-{}-{now}-{counter}", process::id()))
+}
+
+fn sanitize_attachment_file_name(name: &str) -> String {
+    let leaf = name
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("attachment")
+        .trim();
+    let sanitized: String = leaf
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let sanitized = sanitized.trim_matches('_');
+    if sanitized.is_empty() {
+        "attachment".to_string()
+    } else {
+        sanitized.chars().take(120).collect()
+    }
+}
+
+async fn cleanup_prepared_attachments(attachments: PreparedAttachments) {
+    if let Some(temp_dir) = attachments.temp_dir {
+        let _ = tokio::fs::remove_dir_all(temp_dir).await;
+    }
 }
 
 fn build_prompt_from_chat(chat: &ChatRequest) -> String {
@@ -1484,25 +1929,56 @@ fn build_prompt_from_chat(chat: &ChatRequest) -> String {
 
     if let Some(latest) = chat.messages.last() {
         parts.push(composer_text_content(&latest.content));
-        let attachment_notes: Vec<String> = latest
-            .attachments
-            .iter()
-            .filter_map(|attachment| {
-                attachment.extracted_text.as_ref().map(|text| {
-                    format!(
-                        "Attachment {}:\n{}",
-                        attachment.file_name.as_deref().unwrap_or("attachment"),
-                        text
-                    )
-                })
-            })
-            .collect();
+        let attachment_notes: Vec<String> =
+            latest.attachments.iter().map(attachment_note).collect();
         if !attachment_notes.is_empty() {
             parts.push(attachment_notes.join("\n\n"));
         }
     }
 
     parts.join("\n\n")
+}
+
+fn attachment_note(attachment: &ChatAttachment) -> String {
+    let name = attachment.file_name.as_deref().unwrap_or("attachment");
+    if let Some(text) = attachment
+        .extracted_text
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        return format!("Attachment {name}:\n{text}");
+    }
+
+    let mime = attachment
+        .mime_type
+        .as_deref()
+        .filter(|mime| !mime.trim().is_empty())
+        .unwrap_or("unknown type");
+    let kind = attachment
+        .attachment_type
+        .as_deref()
+        .filter(|kind| !kind.trim().is_empty())
+        .unwrap_or("file");
+    let id = attachment
+        .id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty())
+        .map(|id| format!(" id={id}"))
+        .unwrap_or_default();
+    if attachment
+        .content
+        .as_deref()
+        .is_some_and(|content| !content.trim().is_empty())
+    {
+        format!("Attachment {name}{id} ({kind}, {mime}) is attached for model input.")
+    } else if attachment.content_omitted.unwrap_or(false) {
+        format!(
+            "Attachment {name}{id} ({kind}, {mime}) was referenced, but its content was omitted."
+        )
+    } else {
+        format!("Attachment {name}{id} ({kind}, {mime}) was referenced.")
+    }
 }
 
 fn composer_text_content(content: &Value) -> String {
@@ -1739,7 +2215,13 @@ async fn static_response(head: &RequestHead, config: &Config) -> Vec<u8> {
     match tokio::fs::read(&path).await {
         Ok(bytes) => {
             if head.method == "HEAD" {
-                response_with_cache(200, mime_for_path(&path), &[], config.static_cache_max_age)
+                response_with_cache_and_length(
+                    200,
+                    mime_for_path(&path),
+                    &[],
+                    config.static_cache_max_age,
+                    bytes.len(),
+                )
             } else {
                 response_with_cache(
                     200,
@@ -1752,12 +2234,24 @@ async fn static_response(head: &RequestHead, config: &Config) -> Vec<u8> {
         Err(_) => {
             let index = config.static_root.join("index.html");
             match tokio::fs::read(&index).await {
-                Ok(bytes) => response_with_cache(
-                    200,
-                    "text/html; charset=utf-8",
-                    &bytes,
-                    config.static_cache_max_age,
-                ),
+                Ok(bytes) => {
+                    if head.method == "HEAD" {
+                        response_with_cache_and_length(
+                            200,
+                            "text/html; charset=utf-8",
+                            &[],
+                            config.static_cache_max_age,
+                            bytes.len(),
+                        )
+                    } else {
+                        response_with_cache(
+                            200,
+                            "text/html; charset=utf-8",
+                            &bytes,
+                            config.static_cache_max_age,
+                        )
+                    }
+                }
                 Err(_) => json_response(
                     404,
                     &serde_json::json!({
@@ -1935,11 +2429,28 @@ fn response_with_cache(
     body: &[u8],
     cache_seconds: u64,
 ) -> Vec<u8> {
-    response_with_extra_headers(
+    response_with_extra_headers_and_length(
         status,
         content_type,
         body,
         &format!("Cache-Control: public, max-age={cache_seconds}\r\n"),
+        body.len(),
+    )
+}
+
+fn response_with_cache_and_length(
+    status: u16,
+    content_type: &str,
+    body: &[u8],
+    cache_seconds: u64,
+    content_length: usize,
+) -> Vec<u8> {
+    response_with_extra_headers_and_length(
+        status,
+        content_type,
+        body,
+        &format!("Cache-Control: public, max-age={cache_seconds}\r\n"),
+        content_length,
     )
 }
 
@@ -1948,6 +2459,16 @@ fn response_with_extra_headers(
     content_type: &str,
     body: &[u8],
     extra_headers: &str,
+) -> Vec<u8> {
+    response_with_extra_headers_and_length(status, content_type, body, extra_headers, body.len())
+}
+
+fn response_with_extra_headers_and_length(
+    status: u16,
+    content_type: &str,
+    body: &[u8],
+    extra_headers: &str,
+    content_length: usize,
 ) -> Vec<u8> {
     let reason = match status {
         200 => "OK",
@@ -1965,7 +2486,7 @@ fn response_with_extra_headers(
     };
     let mut bytes = format!(
         "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\nAccess-Control-Allow-Origin: {}\r\nAccess-Control-Allow-Credentials: true\r\nAccess-Control-Allow-Headers: authorization,content-type,x-composer-api-key,x-maestro-api-key,x-composer-client,x-maestro-client,x-composer-client-tools,x-maestro-client-tools,x-composer-slim-events,x-maestro-slim-events\r\nAccess-Control-Allow-Methods: GET,POST,PATCH,DELETE,OPTIONS\r\n{extra_headers}\r\n",
-        body.len(),
+        content_length,
         cors_origin()
     )
     .into_bytes();
@@ -2030,10 +2551,102 @@ mod tests {
 
     #[test]
     fn resolves_provider_model_ids() {
-        let model = resolve_model("openai/gpt-5.1-codex-max").expect("model should resolve");
+        let registry = ModelRegistry {
+            models: builtin_models(),
+            aliases: HashMap::new(),
+        };
+        let model =
+            resolve_model("openai/gpt-5.1-codex-max", &registry).expect("model should resolve");
 
         assert_eq!(model.provider, "openai");
         assert_eq!(model.id, "gpt-5.1-codex-max");
+    }
+
+    #[test]
+    fn resolves_configured_models_and_aliases() {
+        let config = serde_json::json!({
+            "aliases": { "fast": "local/llama-fast" },
+            "providers": [{
+                "id": "local",
+                "name": "Local",
+                "api": "openai-responses",
+                "models": [{
+                    "id": "llama-fast",
+                    "name": "Llama Fast",
+                    "reasoning": false,
+                    "input": ["text", "image"],
+                    "contextWindow": 8192,
+                    "maxTokens": 2048,
+                    "cost": {
+                        "input": 0,
+                        "output": 0,
+                        "cacheRead": 0,
+                        "cacheWrite": 0
+                    }
+                }]
+            }]
+        });
+        let mut registry = ModelRegistry {
+            models: builtin_models(),
+            aliases: HashMap::new(),
+        };
+        merge_configured_models(&mut registry, &config);
+
+        let model = resolve_model("fast", &registry).expect("alias should resolve");
+
+        assert_eq!(model.provider, "local");
+        assert_eq!(model.id, "llama-fast");
+        assert!(model.capabilities.vision);
+    }
+
+    #[test]
+    fn head_response_keeps_get_content_length_without_body() {
+        let response = response_with_cache_and_length(
+            200,
+            "text/plain; charset=utf-8",
+            &[],
+            60,
+            "hello".len(),
+        );
+        let response = String::from_utf8(response).expect("response should be utf-8");
+
+        assert!(response.contains("Content-Length: 5\r\n"));
+        assert!(response.ends_with("\r\n\r\n"));
+    }
+
+    #[test]
+    fn validates_run_script_inputs() {
+        assert!(is_valid_script_name("build:all"));
+        assert!(!is_valid_script_name("build && rm -rf /"));
+        assert!(contains_shell_metachars("foo; bar"));
+        assert!(!contains_shell_metachars("--filter packages/web"));
+    }
+
+    #[test]
+    fn keeps_attachment_only_prompt_non_empty() {
+        let chat = ChatRequest {
+            model: None,
+            thinking_level: None,
+            session_id: None,
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: Value::String(String::new()),
+                attachments: vec![ChatAttachment {
+                    id: Some("att-1".to_string()),
+                    attachment_type: Some("image".to_string()),
+                    file_name: Some("screen.png".to_string()),
+                    mime_type: Some("image/png".to_string()),
+                    content: Some("aGVsbG8=".to_string()),
+                    content_omitted: None,
+                    extracted_text: None,
+                }],
+            }],
+        };
+
+        let prompt = build_prompt_from_chat(&chat);
+
+        assert!(prompt.contains("screen.png"));
+        assert!(!prompt.trim().is_empty());
     }
 
     #[test]
