@@ -107,6 +107,12 @@ describe("database migration packaging", () => {
 			'ALTER TYPE "webhook_delivery_status" ADD VALUE IF NOT EXISTS',
 		);
 		expect(migration).toContain('"status"::text NOT IN');
+		expect(migration).toContain(
+			"CREATE OR REPLACE FUNCTION maestro_reconcile_webhook_payload",
+		);
+		expect(migration).not.toContain(
+			"DROP FUNCTION IF EXISTS maestro_reconcile_webhook_payload",
+		);
 		expect(migration).toContain("webhook_deliveries_pkey");
 		expect(migration).toContain("organization_id");
 		expect(migration).toContain("next_attempt_at");
