@@ -1576,32 +1576,49 @@ async fn handle_session_attachment_extract(
         };
         (file_name, mime_type, content_base64)
     };
-    let output = match extract_attachment_request(ExtractAttachmentRequest {
-        file_name: file_name.clone(),
-        mime_type,
-        content_base64,
-        max_chars: None,
-    }) {
-        Ok(output) => output,
-        Err(error) => {
+    let output = match tokio::task::spawn_blocking({
+        let file_name = file_name.clone();
+        move || {
+            extract_attachment_request(ExtractAttachmentRequest {
+                file_name,
+                mime_type,
+                content_base64,
+                max_chars: None,
+            })
+        }
+    })
+    .await
+    {
+        Ok(Ok(output)) => output,
+        Ok(Err(error)) => {
             return json_response(400, &serde_json::json!({ "error": error }));
         }
+        Err(error) => {
+            return json_response(
+                500,
+                &serde_json::json!({ "error": format!("Attachment extraction failed: {error}") }),
+            );
+        }
     };
-    let mut sessions = state.sessions.lock().await;
-    let updated = sessions
-        .sessions
-        .get_mut(session_id)
-        .and_then(|session| find_session_attachment_mut(session, &attachment_id))
-        .and_then(Value::as_object_mut)
-        .map(|object| {
+    let should_persist = {
+        let mut sessions = state.sessions.lock().await;
+        let Some(session) = sessions.sessions.get_mut(session_id) else {
+            return attachment_extract_json_response(file_name, output);
+        };
+        let Some(attachment) = find_session_attachment_mut(session, &attachment_id) else {
+            return attachment_extract_json_response(file_name, output);
+        };
+        if let Some(object) = attachment.as_object_mut() {
             object.insert(
                 "extractedText".to_string(),
                 Value::String(output.extracted_text.clone()),
             );
-        })
-        .is_some();
-    drop(sessions);
-    if updated {
+            true
+        } else {
+            false
+        }
+    };
+    if should_persist {
         persist_session_store(state).await;
     }
     attachment_extract_json_response(file_name, output)
