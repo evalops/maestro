@@ -126,6 +126,7 @@ struct AppState {
     selected_model: Arc<Mutex<ModelInfo>>,
     telemetry_override: Arc<Mutex<Option<TelemetryOverride>>>,
     training_override: Arc<Mutex<Option<TrainingOverride>>>,
+    background_settings: Arc<Mutex<BackgroundSettings>>,
     command_prefs: Arc<Mutex<CommandPrefs>>,
     sessions: Arc<Mutex<SessionStore>>,
     session_persist_lock: Arc<Mutex<()>>,
@@ -197,6 +198,18 @@ impl TrainingOverride {
             "opted-in"
         }
     }
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BackgroundSettings {
+    notifications_enabled: bool,
+    status_details_enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct BackgroundUpdateRequest {
+    enabled: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -311,6 +324,7 @@ async fn main() -> anyhow::Result<()> {
         selected_model: Arc::new(Mutex::new(default_model(&config).await)),
         telemetry_override: Arc::new(Mutex::new(None)),
         training_override: Arc::new(Mutex::new(None)),
+        background_settings: Arc::new(Mutex::new(BackgroundSettings::default())),
         command_prefs: Arc::new(Mutex::new(command_prefs)),
         sessions: Arc::new(Mutex::new(sessions)),
         session_persist_lock: Arc::new(Mutex::new(())),
@@ -780,17 +794,14 @@ async fn handle_local_endpoint(
             if let Err(response) = authorize(&head, &state.config) {
                 return response;
             }
-            json_response(200, &background_response(&head))
+            let settings = state.background_settings.lock().await.clone();
+            json_response(200, &background_response(&head, &settings))
         }
         ("POST", "/api/background") => {
             if let Err(response) = authorize(&head, &state.config) {
                 return response;
             }
-            let settings = background_response(&head)
-                .get("settings")
-                .cloned()
-                .unwrap_or(Value::Null);
-            json_response(200, &serde_json::json!({ "success": true, "settings": settings }))
+            update_background_response(stream, initial, &head, state).await
         }
         ("GET", "/api/undo") => {
             if let Err(response) = authorize(&head, &state.config) {
@@ -3144,7 +3155,7 @@ fn contains_shell_metachars(value: &str) -> bool {
     })
 }
 
-fn background_response(head: &RequestHead) -> Value {
+fn background_response(head: &RequestHead, settings: &BackgroundSettings) -> Value {
     match head.query.get("action").map(String::as_str) {
         Some("history") => serde_json::json!({ "history": [], "truncated": false }),
         Some("path") => serde_json::json!({
@@ -3153,10 +3164,7 @@ fn background_response(head: &RequestHead) -> Value {
             "overridden": env::var("MAESTRO_BACKGROUND_TASKS_FILE").is_ok()
         }),
         _ => serde_json::json!({
-            "settings": {
-                "notificationsEnabled": false,
-                "statusDetailsEnabled": false
-            },
+            "settings": settings,
             "snapshot": {
                 "running": 0,
                 "total": 0,
@@ -3165,6 +3173,74 @@ fn background_response(head: &RequestHead) -> Value {
             }
         }),
     }
+}
+
+async fn update_background_response(
+    stream: &mut TcpStream,
+    initial: &mut Vec<u8>,
+    head: &RequestHead,
+    state: &AppState,
+) -> Vec<u8> {
+    let action = match head.query.get("action").map(String::as_str) {
+        Some("notify") => "notify",
+        Some("details") => "details",
+        Some(action) => {
+            return json_response(
+                400,
+                &serde_json::json!({ "error": format!("unsupported background action \"{action}\"") }),
+            );
+        }
+        None => {
+            return json_response(
+                400,
+                &serde_json::json!({ "error": "background action is required" }),
+            );
+        }
+    };
+    let body = match read_request_body(stream, initial, head).await {
+        Ok(body) => body,
+        Err(error) => return json_response(400, &serde_json::json!({ "error": error })),
+    };
+    let request = match serde_json::from_slice::<BackgroundUpdateRequest>(&body) {
+        Ok(request) => request,
+        Err(error) => {
+            return json_response(
+                400,
+                &serde_json::json!({ "error": format!("invalid background update request: {error}") }),
+            );
+        }
+    };
+
+    let mut settings = state.background_settings.lock().await;
+    let message = match action {
+        "notify" => {
+            settings.notifications_enabled = request.enabled;
+            format!(
+                "Background task notifications {}.",
+                if request.enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+            )
+        }
+        "details" => {
+            settings.status_details_enabled = request.enabled;
+            format!(
+                "Background task details {}.",
+                if request.enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+            )
+        }
+        _ => unreachable!("background action was validated"),
+    };
+    json_response(
+        200,
+        &serde_json::json!({ "success": true, "message": message }),
+    )
 }
 
 fn undo_response(head: &RequestHead) -> Value {
@@ -3510,7 +3586,10 @@ async fn append_session_message(
             .sessions
             .entry(session_id.to_string())
             .or_insert_with(|| {
-                create_session_record(title_source.and_then(title_from_content), owner)
+                let mut session =
+                    create_session_record(title_source.and_then(title_from_content), owner);
+                session.id = session_id.to_string();
+                session
             })
     };
     if session.message_count == 0 {
@@ -6026,6 +6105,7 @@ mod tests {
             selected_model: Arc::new(Mutex::new(emergency_default_model())),
             telemetry_override: Arc::new(Mutex::new(None)),
             training_override: Arc::new(Mutex::new(None)),
+            background_settings: Arc::new(Mutex::new(BackgroundSettings::default())),
             command_prefs: Arc::new(Mutex::new(CommandPrefs::default())),
             sessions: Arc::new(Mutex::new(SessionStore { sessions })),
             session_persist_lock: Arc::new(Mutex::new(())),
@@ -6267,6 +6347,15 @@ mod tests {
         (client.expect("client should connect"), server)
     }
 
+    fn response_json(response: Vec<u8>) -> Value {
+        let body = response
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .map(|index| &response[index + 4..])
+            .expect("response should contain header separator");
+        serde_json::from_slice(body).expect("response body should be json")
+    }
+
     #[tokio::test]
     async fn options_preflight_is_handled_before_local_route_checks() {
         let head = parse_request_head(
@@ -6285,6 +6374,45 @@ mod tests {
         let text = String::from_utf8(response).expect("response should be utf-8");
         assert!(text.starts_with("HTTP/1.1 204 No Content\r\n"));
         assert!(text.contains("Access-Control-Allow-Methods: GET,POST,PATCH,DELETE,OPTIONS\r\n"));
+    }
+
+    #[tokio::test]
+    async fn background_update_parses_body_and_returns_update_contract() {
+        let body = r#"{"enabled":true}"#;
+        let request = format!(
+            "POST /api/background?action=notify HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let mut initial = request.into_bytes();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (_client, mut server) = connected_tcp_streams().await;
+        let state = test_app_state_with_sessions(HashMap::new());
+
+        let response =
+            response_json(handle_local_endpoint(&mut server, &mut initial, &head, &state).await);
+        let settings = state.background_settings.lock().await.clone();
+        let status = background_response(
+            &RequestHead {
+                method: "GET".to_string(),
+                path: "/api/background".to_string(),
+                query: HashMap::new(),
+                headers: HashMap::new(),
+            },
+            &settings,
+        );
+
+        assert_eq!(response.get("success").and_then(Value::as_bool), Some(true));
+        assert_eq!(
+            response.get("message").and_then(Value::as_str),
+            Some("Background task notifications enabled.")
+        );
+        assert!(response.get("settings").is_none());
+        assert_eq!(
+            status
+                .pointer("/settings/notificationsEnabled")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
     }
 
     #[test]
@@ -6634,6 +6762,37 @@ mod tests {
 
         assert!(result.is_err());
         assert!(stored.sessions["session-1"].messages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn chat_user_message_preserves_requested_id_when_creating_session() {
+        let state = test_app_state_with_sessions(HashMap::new());
+        let auth = AuthContext {
+            subject: Some("user-123".to_string()),
+            unrestricted: false,
+        };
+        let chat = ChatRequest {
+            model: None,
+            thinking_level: None,
+            session_id: Some("requested-session".to_string()),
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: Value::String("hello".to_string()),
+                attachments: Vec::new(),
+            }],
+        };
+
+        record_chat_user_message(&state, &chat, &auth)
+            .await
+            .expect("message should be recorded");
+        let stored = state.sessions.lock().await;
+        let session = stored
+            .sessions
+            .get("requested-session")
+            .expect("session should use requested key");
+
+        assert_eq!(session.id, "requested-session");
+        assert_eq!(session.message_count, 1);
     }
 
     #[test]
