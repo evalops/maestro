@@ -18,8 +18,10 @@ const ORGANIZATION_ID = "org_evalops_fixture";
 const WORKSPACE_ID = "workspace_publisher_fixture";
 const SESSION_ID = "session_publisher_fixture_001";
 const AGENT_RUN_ID = "agent_run_publisher_fixture_001";
+const BASH_AGENT_RUN_STEP_ID = "agent_run_step_publisher_fixture_bash_001";
 const BASH_TOOL_CALL_ID = "tool_call_publisher_fixture_bash_001";
 const BASH_TOOL_EXECUTION_ID = "tool_exec_publisher_fixture_bash_001";
+const SKILL_AGENT_RUN_STEP_ID = "agent_run_step_publisher_fixture_skill_001";
 const SKILL_TOOL_CALL_ID = "tool_call_publisher_fixture_skill_001";
 const SKILL_TOOL_EXECUTION_ID = "tool_exec_publisher_fixture_skill_001";
 const APPROVAL_REQUEST_ID = "approval_publisher_fixture_001";
@@ -129,14 +131,14 @@ export interface MaestroPublisherConformanceFixture {
 function bashCorrelation(): MaestroCorrelation {
 	return {
 		...baseCorrelation,
-		agent_run_step_id: BASH_TOOL_CALL_ID,
+		agent_run_step_id: BASH_AGENT_RUN_STEP_ID,
 	};
 }
 
 function skillCorrelation(): MaestroCorrelation {
 	return {
 		...baseCorrelation,
-		agent_run_step_id: SKILL_TOOL_CALL_ID,
+		agent_run_step_id: SKILL_AGENT_RUN_STEP_ID,
 	};
 }
 

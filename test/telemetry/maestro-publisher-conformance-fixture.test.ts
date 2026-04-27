@@ -13,6 +13,14 @@ function sortedKeys(value: unknown): string[] {
 	return Object.keys(value as Record<string, unknown>).sort();
 }
 
+function toolCallId(value: unknown): string | undefined {
+	return value &&
+		typeof value === "object" &&
+		typeof (value as Record<string, unknown>).tool_call_id === "string"
+		? ((value as Record<string, unknown>).tool_call_id as string)
+		: undefined;
+}
+
 describe("canonical Maestro publisher conformance fixture", () => {
 	const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -177,6 +185,19 @@ describe("canonical Maestro publisher conformance fixture", () => {
 			required_event_types: fixture.subjects,
 			required_subjects: fixture.subjects,
 		});
+	});
+
+	it("uses standalone agent run step ids instead of aliasing tool call ids", async () => {
+		const fixture = await buildCanonicalMaestroPublisherConformanceFixture();
+
+		for (const event of fixture.events) {
+			const stepId = event.data.correlation.agent_run_step_id;
+			const currentToolCallId = toolCallId(event.data);
+
+			if (typeof stepId === "string" && typeof currentToolCallId === "string") {
+				expect(stepId).not.toBe(currentToolCallId);
+			}
+		}
 	});
 
 	it("serializes stable publisher conformance JSON for Platform tests", async () => {
