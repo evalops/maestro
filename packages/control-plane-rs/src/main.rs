@@ -416,7 +416,7 @@ async fn handle_local_endpoint(
             if let Err(response) = authorize(&head, &state.config) {
                 return response;
             }
-            json_response(200, &serde_json::json!({ "commands": command_catalog(&state.config.cwd) }))
+            json_response(200, &serde_json::json!({ "commands": command_catalog(&state.config.cwd).await }))
         }
         ("GET", "/api/command-prefs") => {
             if let Err(response) = authorize(&head, &state.config) {
@@ -974,21 +974,21 @@ fn lines_from_output(output: &[u8]) -> Vec<String> {
         .collect()
 }
 
-fn command_catalog(cwd: &Path) -> Vec<Value> {
+async fn command_catalog(cwd: &Path) -> Vec<Value> {
     let mut commands = Vec::new();
     for dir in [
         maestro_home().join("commands"),
         cwd.join(".maestro/commands"),
     ] {
-        let Ok(entries) = std::fs::read_dir(dir) else {
+        let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
             continue;
         };
-        for entry in entries.flatten() {
+        while let Ok(Some(entry)) = entries.next_entry().await {
             let path = entry.path();
             if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
                 continue;
             }
-            let Ok(raw) = std::fs::read_to_string(path) else {
+            let Ok(raw) = tokio::fs::read_to_string(path).await else {
                 continue;
             };
             let Ok(value) = serde_json::from_str::<Value>(&raw) else {
@@ -1394,6 +1394,12 @@ struct ChatAttachment {
 struct PreparedAttachments {
     paths: Vec<String>,
     temp_dir: Option<PathBuf>,
+}
+
+enum StaticPathResolution {
+    Found(PathBuf),
+    Missing,
+    Forbidden,
 }
 
 async fn handle_chat_endpoint(
@@ -2102,10 +2108,11 @@ async fn build_status_snapshot(state: &AppState) -> StatusSnapshot {
     let cwd = state.config.cwd.clone();
     let git = git_snapshot(&cwd).await;
     let context = ContextSnapshot {
-        agent_md: cwd.join("AGENT.md").exists() || cwd.join("AGENTS.md").exists(),
-        claude_md: cwd.join("CLAUDE.md").exists(),
+        agent_md: async_path_exists(cwd.join("AGENT.md")).await
+            || async_path_exists(cwd.join("AGENTS.md")).await,
+        claude_md: async_path_exists(cwd.join("CLAUDE.md")).await,
     };
-    let onboarding = onboarding_snapshot(&cwd);
+    let onboarding = onboarding_snapshot(&cwd).await;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
@@ -2175,29 +2182,11 @@ async fn run_git(cwd: &Path, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn onboarding_snapshot(cwd: &Path) -> OnboardingSnapshot {
-    let workspace_empty = std::fs::read_dir(cwd)
-        .map(|entries| {
-            !entries.flatten().any(|entry| {
-                let name = entry.file_name();
-                let name = name.to_string_lossy();
-                !matches!(
-                    name.as_ref(),
-                    ".DS_Store"
-                        | ".git"
-                        | ".gitignore"
-                        | ".maestro"
-                        | "Thumbs.db"
-                        | "AGENT.md"
-                        | "AGENTS.md"
-                        | "CLAUDE.md"
-                )
-            })
-        })
-        .unwrap_or(false);
-    let has_instructions = cwd.join("AGENT.md").exists()
-        || cwd.join("AGENTS.md").exists()
-        || cwd.join("CLAUDE.md").exists();
+async fn onboarding_snapshot(cwd: &Path) -> OnboardingSnapshot {
+    let workspace_empty = workspace_is_empty_for_onboarding(cwd).await;
+    let has_instructions = async_path_exists(cwd.join("AGENT.md")).await
+        || async_path_exists(cwd.join("AGENTS.md")).await
+        || async_path_exists(cwd.join("CLAUDE.md")).await;
     let steps = vec![
         OnboardingStep {
             key: "workspace",
@@ -2227,6 +2216,34 @@ fn onboarding_snapshot(cwd: &Path) -> OnboardingSnapshot {
     }
 }
 
+async fn workspace_is_empty_for_onboarding(cwd: &Path) -> bool {
+    let Ok(mut entries) = tokio::fs::read_dir(cwd).await else {
+        return false;
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !matches!(
+            name.as_ref(),
+            ".DS_Store"
+                | ".git"
+                | ".gitignore"
+                | ".maestro"
+                | "Thumbs.db"
+                | "AGENT.md"
+                | "AGENTS.md"
+                | "CLAUDE.md"
+        ) {
+            return false;
+        }
+    }
+    true
+}
+
+async fn async_path_exists(path: PathBuf) -> bool {
+    tokio::fs::metadata(path).await.is_ok()
+}
+
 fn is_static_asset_request(head: &RequestHead) -> bool {
     matches!(head.method.as_str(), "GET" | "HEAD") && !head.path.starts_with("/api/")
 }
@@ -2236,45 +2253,69 @@ async fn static_response(head: &RequestHead, config: &Config) -> Vec<u8> {
         return json_response(403, &serde_json::json!({ "error": "Forbidden" }));
     };
 
-    match tokio::fs::read(&path).await {
-        Ok(bytes) => {
-            if is_spa_entry_path(&path) && head.method == "HEAD" {
-                response_with_no_store_and_length(200, mime_for_path(&path), &[], bytes.len())
-            } else if is_spa_entry_path(&path) {
-                response_with_no_store(200, mime_for_path(&path), &bytes)
-            } else if head.method == "HEAD" {
-                response_with_cache_and_length(
-                    200,
-                    mime_for_path(&path),
-                    &[],
-                    config.static_cache_max_age,
-                    bytes.len(),
-                )
-            } else {
-                response_with_cache(
-                    200,
-                    mime_for_path(&path),
-                    &bytes,
-                    config.static_cache_max_age,
-                )
-            }
-        }
-        Err(_) => {
-            let index = config.static_root.join("index.html");
-            match tokio::fs::read(&index).await {
-                Ok(bytes) => {
-                    if head.method == "HEAD" {
-                        response_with_no_store_and_length(
-                            200,
-                            "text/html; charset=utf-8",
-                            &[],
-                            bytes.len(),
-                        )
-                    } else {
-                        response_with_no_store(200, "text/html; charset=utf-8", &bytes)
-                    }
+    match canonical_static_path(&config.static_root, &path).await {
+        StaticPathResolution::Found(path) => match tokio::fs::read(&path).await {
+            Ok(bytes) => {
+                if is_spa_entry_path(&path) && head.method == "HEAD" {
+                    response_with_no_store_and_length(200, mime_for_path(&path), &[], bytes.len())
+                } else if is_spa_entry_path(&path) {
+                    response_with_no_store(200, mime_for_path(&path), &bytes)
+                } else if head.method == "HEAD" {
+                    response_with_cache_and_length(
+                        200,
+                        mime_for_path(&path),
+                        &[],
+                        config.static_cache_max_age,
+                        bytes.len(),
+                    )
+                } else {
+                    response_with_cache(
+                        200,
+                        mime_for_path(&path),
+                        &bytes,
+                        config.static_cache_max_age,
+                    )
                 }
-                Err(_) => json_response(
+            }
+            Err(_) => json_response(
+                404,
+                &serde_json::json!({
+                    "error": "Not found",
+                    "staticRoot": config.static_root
+                }),
+            ),
+        },
+        StaticPathResolution::Forbidden => {
+            json_response(403, &serde_json::json!({ "error": "Forbidden" }))
+        }
+        StaticPathResolution::Missing => {
+            let index = config.static_root.join("index.html");
+            match canonical_static_path(&config.static_root, &index).await {
+                StaticPathResolution::Found(index) => match tokio::fs::read(&index).await {
+                    Ok(bytes) => {
+                        if head.method == "HEAD" {
+                            response_with_no_store_and_length(
+                                200,
+                                "text/html; charset=utf-8",
+                                &[],
+                                bytes.len(),
+                            )
+                        } else {
+                            response_with_no_store(200, "text/html; charset=utf-8", &bytes)
+                        }
+                    }
+                    Err(_) => json_response(
+                        404,
+                        &serde_json::json!({
+                            "error": "Not found",
+                            "staticRoot": config.static_root
+                        }),
+                    ),
+                },
+                StaticPathResolution::Forbidden => {
+                    json_response(403, &serde_json::json!({ "error": "Forbidden" }))
+                }
+                StaticPathResolution::Missing => json_response(
                     404,
                     &serde_json::json!({
                         "error": "Not found",
@@ -2283,6 +2324,19 @@ async fn static_response(head: &RequestHead, config: &Config) -> Vec<u8> {
                 ),
             }
         }
+    }
+}
+
+async fn canonical_static_path(root: &Path, path: &Path) -> StaticPathResolution {
+    let Ok(canonical_root) = tokio::fs::canonicalize(root).await else {
+        return StaticPathResolution::Missing;
+    };
+    match tokio::fs::canonicalize(path).await {
+        Ok(canonical_path) if canonical_path.starts_with(&canonical_root) => {
+            StaticPathResolution::Found(canonical_path)
+        }
+        Ok(_) => StaticPathResolution::Forbidden,
+        Err(_) => StaticPathResolution::Missing,
     }
 }
 
@@ -2531,12 +2585,19 @@ fn response_with_extra_headers_and_length(
         501 => "Not Implemented",
         _ => "OK",
     };
-    let mut bytes = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\nAccess-Control-Allow-Origin: {}\r\nAccess-Control-Allow-Credentials: true\r\nAccess-Control-Allow-Headers: authorization,content-type,x-composer-api-key,x-maestro-api-key,x-composer-client,x-maestro-client,x-composer-client-tools,x-maestro-client-tools,x-composer-slim-events,x-maestro-slim-events\r\nAccess-Control-Allow-Methods: GET,POST,PATCH,DELETE,OPTIONS\r\n{extra_headers}\r\n",
+    let mut head = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\nAccess-Control-Allow-Origin: {}\r\nAccess-Control-Allow-Credentials: true\r\nAccess-Control-Allow-Headers: authorization,content-type,x-composer-api-key,x-maestro-api-key,x-composer-client,x-maestro-client,x-composer-client-tools,x-maestro-client-tools,x-composer-slim-events,x-maestro-slim-events\r\nAccess-Control-Allow-Methods: GET,POST,PATCH,DELETE,OPTIONS\r\n",
         content_length,
         cors_origin()
-    )
-    .into_bytes();
+    );
+    if !extra_headers.is_empty() {
+        head.push_str(extra_headers);
+        if !extra_headers.ends_with("\r\n") {
+            head.push_str("\r\n");
+        }
+    }
+    head.push_str("\r\n");
+    let mut bytes = head.into_bytes();
     bytes.extend_from_slice(body);
     bytes
 }
@@ -2662,6 +2723,13 @@ mod tests {
     }
 
     #[test]
+    fn json_response_has_header_body_separator() {
+        let response = json_response(200, &serde_json::json!({ "ok": true }));
+
+        assert!(response.windows(4).any(|window| window == b"\r\n\r\n"));
+    }
+
+    #[test]
     fn spa_entry_response_uses_no_store() {
         let response =
             response_with_no_store_and_length(200, "text/html; charset=utf-8", &[], "index".len());
@@ -2669,6 +2737,34 @@ mod tests {
 
         assert!(response.contains("Content-Length: 5\r\n"));
         assert!(response.contains("Cache-Control: no-store, no-cache, must-revalidate\r\n"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn canonical_static_path_rejects_symlink_escape() {
+        let base = env::temp_dir().join(format!(
+            "maestro-static-test-{}-{}",
+            process::id(),
+            ATTACHMENT_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let root = base.join("static");
+        let outside = base.join("outside");
+        tokio::fs::create_dir_all(&root).await.expect("create root");
+        tokio::fs::create_dir_all(&outside)
+            .await
+            .expect("create outside");
+        tokio::fs::write(outside.join("secret.txt"), "secret")
+            .await
+            .expect("write secret");
+        std::os::unix::fs::symlink(outside.join("secret.txt"), root.join("secret.txt"))
+            .expect("create symlink");
+
+        assert!(matches!(
+            canonical_static_path(&root, &root.join("secret.txt")).await,
+            StaticPathResolution::Forbidden
+        ));
+
+        let _ = tokio::fs::remove_dir_all(base).await;
     }
 
     #[test]
@@ -2680,6 +2776,17 @@ mod tests {
         );
         assert!(parse_action_body(br#"{}"#, &["on", "off", "reset"]).is_err());
         assert!(parse_action_body(br#"{"action":"maybe"}"#, &["on", "off", "reset"]).is_err());
+    }
+
+    #[test]
+    fn training_on_maps_to_opted_in() {
+        let status = training_status(Some(false));
+
+        assert_eq!(
+            status.get("preference").and_then(Value::as_str),
+            Some("opted-in")
+        );
+        assert_eq!(status.get("optOut").and_then(Value::as_bool), Some(false));
     }
 
     #[test]
