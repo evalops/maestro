@@ -29,6 +29,8 @@ struct Config {
     require_key: bool,
     cwd: PathBuf,
     session_store_path: PathBuf,
+    command_prefs_path: PathBuf,
+    usage_file_path: PathBuf,
     static_root: PathBuf,
     static_cache_max_age: u64,
 }
@@ -52,6 +54,8 @@ impl Config {
             session_store_path: env::var("MAESTRO_SESSIONS_FILE")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from(".maestro/sessions.json")),
+            command_prefs_path: command_prefs_path(),
+            usage_file_path: usage_file_path(),
             static_root: env::var("MAESTRO_WEB_STATIC_ROOT")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from("packages/web/dist")),
@@ -182,7 +186,7 @@ struct ModelRegistry {
     aliases: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct CommandPrefs {
     favorites: Vec<String>,
     recents: Vec<String>,
@@ -286,6 +290,7 @@ async fn main() -> anyhow::Result<()> {
         config.listen_addr()
     );
     let sessions = load_session_store(&config.session_store_path).await;
+    let command_prefs = load_command_prefs(&config.command_prefs_path).await;
 
     let state = AppState {
         config,
@@ -293,10 +298,7 @@ async fn main() -> anyhow::Result<()> {
         selected_model: Arc::new(Mutex::new(default_model().await)),
         telemetry_override: Arc::new(Mutex::new(None)),
         training_override: Arc::new(Mutex::new(None)),
-        command_prefs: Arc::new(Mutex::new(CommandPrefs {
-            favorites: Vec::new(),
-            recents: Vec::new(),
-        })),
+        command_prefs: Arc::new(Mutex::new(command_prefs)),
         sessions: Arc::new(Mutex::new(sessions)),
         pending_tool_responses: Arc::new(Mutex::new(HashMap::new())),
     };
@@ -580,7 +582,8 @@ async fn handle_local_endpoint(
                     );
                 }
             };
-            *state.command_prefs.lock().await = prefs;
+            *state.command_prefs.lock().await = prefs.clone();
+            persist_command_prefs(&state.config.command_prefs_path, &prefs).await;
             json_response(200, &serde_json::json!({ "ok": true }))
         }
         ("GET", "/api/config") => {
@@ -661,7 +664,7 @@ async fn handle_local_endpoint(
             if let Err(response) = authorize(&head, &state.config) {
                 return response;
             }
-            json_response(200, &usage_snapshot())
+            json_response(200, &usage_snapshot(&state.config.usage_file_path).await)
         }
         ("GET", "/api/metrics") => text_response(200, "# HELP maestro_rust_control_plane_up Rust control plane up\n# TYPE maestro_rust_control_plane_up gauge\nmaestro_rust_control_plane_up 1\n"),
         ("GET", "/api/run") => {
@@ -1575,6 +1578,14 @@ fn maestro_home() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from(".maestro"))
 }
 
+fn agent_dir() -> PathBuf {
+    env::var("MAESTRO_AGENT_DIR")
+        .or_else(|_| env::var("PLAYWRIGHT_AGENT_DIR"))
+        .or_else(|_| env::var("CODING_AGENT_DIR"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| maestro_home().join("agent"))
+}
+
 fn model_config_path() -> String {
     env::var("MAESTRO_MODELS_FILE").unwrap_or_else(|_| {
         maestro_home()
@@ -1582,6 +1593,18 @@ fn model_config_path() -> String {
             .to_string_lossy()
             .to_string()
     })
+}
+
+fn command_prefs_path() -> PathBuf {
+    env::var("MAESTRO_COMMAND_PREFS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| agent_dir().join("command-prefs.json"))
+}
+
+fn usage_file_path() -> PathBuf {
+    env::var("MAESTRO_USAGE_FILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| maestro_home().join("usage.json"))
 }
 
 async fn read_json_value(path: &str) -> Option<Value> {
@@ -1600,28 +1623,130 @@ fn contains_forbidden_json_key(value: &Value) -> bool {
     }
 }
 
-fn usage_snapshot() -> Value {
-    let totals = serde_json::json!({
-        "input": 0,
-        "output": 0,
-        "cacheRead": 0,
-        "cacheWrite": 0,
-        "total": 0
-    });
+async fn load_command_prefs(path: &Path) -> CommandPrefs {
+    let Ok(raw) = tokio::fs::read_to_string(path).await else {
+        return CommandPrefs::default();
+    };
+    serde_json::from_str(&raw).unwrap_or_default()
+}
+
+async fn persist_command_prefs(path: &Path, prefs: &CommandPrefs) {
+    if let Some(parent) = path.parent() {
+        if tokio::fs::create_dir_all(parent).await.is_err() {
+            return;
+        }
+    }
+    if let Ok(bytes) = serde_json::to_vec_pretty(prefs) {
+        let _ = tokio::fs::write(path, bytes).await;
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UsageEntry {
+    #[serde(default)]
+    provider: String,
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    tokens_input: u64,
+    #[serde(default)]
+    tokens_output: u64,
+    #[serde(default)]
+    tokens_cache_read: u64,
+    #[serde(default)]
+    tokens_cache_write: u64,
+    #[serde(default)]
+    cost: f64,
+}
+
+#[derive(Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UsageTokenTotals {
+    input: u64,
+    output: u64,
+    cache_read: u64,
+    cache_write: u64,
+    total: u64,
+}
+
+#[derive(Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UsageBucket {
+    cost: f64,
+    requests: u64,
+    tokens: u64,
+    tokens_detailed: UsageTokenTotals,
+}
+
+async fn load_usage_entries(path: &Path) -> Vec<UsageEntry> {
+    let Ok(raw) = tokio::fs::read_to_string(path).await else {
+        return Vec::new();
+    };
+    serde_json::from_str(&raw).unwrap_or_default()
+}
+
+async fn usage_snapshot(path: &Path) -> Value {
+    let entries = load_usage_entries(path).await;
+    let mut total_cost = 0.0;
+    let mut totals = UsageTokenTotals::default();
+    let mut by_provider: HashMap<String, UsageBucket> = HashMap::new();
+    let mut by_model: HashMap<String, UsageBucket> = HashMap::new();
+
+    for entry in &entries {
+        let tokens = entry.tokens_input
+            + entry.tokens_output
+            + entry.tokens_cache_read
+            + entry.tokens_cache_write;
+        total_cost += entry.cost;
+        totals.input += entry.tokens_input;
+        totals.output += entry.tokens_output;
+        totals.cache_read += entry.tokens_cache_read;
+        totals.cache_write += entry.tokens_cache_write;
+        totals.total += tokens;
+
+        let provider = if entry.provider.is_empty() {
+            "unknown"
+        } else {
+            &entry.provider
+        };
+        let provider_bucket = by_provider.entry(provider.to_string()).or_default();
+        add_usage_to_bucket(provider_bucket, entry.cost, tokens, entry);
+
+        let model = if entry.model.is_empty() {
+            "unknown"
+        } else {
+            &entry.model
+        };
+        let model_bucket = by_model.entry(format!("{provider}/{model}")).or_default();
+        add_usage_to_bucket(model_bucket, entry.cost, tokens, entry);
+    }
+
     serde_json::json!({
         "summary": {
-            "totalCost": 0,
-            "totalRequests": 0,
-            "totalTokens": 0,
+            "totalCost": total_cost,
+            "totalRequests": entries.len(),
+            "totalTokens": totals.total,
             "tokensDetailed": totals,
             "totalTokensDetailed": totals,
             "totalTokensBreakdown": totals,
-            "totalCachedTokens": 0,
-            "byProvider": {},
-            "byModel": {}
+            "totalCachedTokens": totals.cache_read + totals.cache_write,
+            "byProvider": by_provider,
+            "byModel": by_model
         },
-        "hasData": false
+        "hasData": !entries.is_empty()
     })
+}
+
+fn add_usage_to_bucket(bucket: &mut UsageBucket, cost: f64, tokens: u64, entry: &UsageEntry) {
+    bucket.cost += cost;
+    bucket.requests += 1;
+    bucket.tokens += tokens;
+    bucket.tokens_detailed.input += entry.tokens_input;
+    bucket.tokens_detailed.output += entry.tokens_output;
+    bucket.tokens_detailed.cache_read += entry.tokens_cache_read;
+    bucket.tokens_detailed.cache_write += entry.tokens_cache_write;
+    bucket.tokens_detailed.total += tokens;
 }
 
 async fn package_scripts(cwd: &Path) -> Vec<String> {
@@ -2021,6 +2146,75 @@ async fn selected_chat_model(chat: &ChatRequest, state: &AppState) -> String {
     state.selected_model.lock().await.id.clone()
 }
 
+async fn usage_provider_model(
+    chat: &ChatRequest,
+    state: &AppState,
+    agent_model: &str,
+) -> (String, String) {
+    if chat
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .is_none()
+    {
+        let selected = state.selected_model.lock().await;
+        return (selected.provider.clone(), selected.id.clone());
+    }
+
+    if let Some((provider, model)) = agent_model.split_once('/') {
+        return (provider.to_string(), model.to_string());
+    }
+
+    let registry = available_models().await;
+    resolve_model(agent_model, &registry)
+        .map(|model| (model.provider, model.id))
+        .unwrap_or_else(|| ("unknown".to_string(), agent_model.to_string()))
+}
+
+async fn record_usage_entry(
+    state: &AppState,
+    session_id: Option<&str>,
+    provider: &str,
+    model: &str,
+    usage: Option<&TokenUsage>,
+) {
+    let Some(usage) = usage else {
+        return;
+    };
+    let path = &state.config.usage_file_path;
+    let mut entries = tokio::fs::read_to_string(path)
+        .await
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Vec<Value>>(&raw).ok())
+        .unwrap_or_default();
+    let mut entry = serde_json::json!({
+        "timestamp": now_millis(),
+        "provider": provider,
+        "model": model,
+        "tokensInput": usage.input_tokens,
+        "tokensOutput": usage.output_tokens,
+        "tokensCacheRead": usage.cache_read_tokens,
+        "tokensCacheWrite": usage.cache_write_tokens,
+        "cost": usage.cost.unwrap_or(0.0)
+    });
+    if let Some(session_id) = session_id {
+        entry["sessionId"] = Value::String(session_id.to_string());
+    }
+    entries.push(entry);
+    if entries.len() > 10_000 {
+        entries.drain(..entries.len() - 10_000);
+    }
+    if let Some(parent) = path.parent() {
+        if tokio::fs::create_dir_all(parent).await.is_err() {
+            return;
+        }
+    }
+    if let Ok(bytes) = serde_json::to_vec_pretty(&entries) {
+        let _ = tokio::fs::write(path, bytes).await;
+    }
+}
+
 async fn record_chat_user_message(state: &AppState, chat: &ChatRequest) {
     let Some(session_id) = chat.session_id.as_deref() else {
         return;
@@ -2100,7 +2294,17 @@ async fn handle_chat_endpoint(
         return Ok(());
     }
 
-    let body = read_request_body(&mut stream, &mut initial, &head).await?;
+    let body = match read_request_body(&mut stream, &mut initial, &head).await {
+        Ok(body) => body,
+        Err(error) => {
+            stream
+                .write_all(&json_response(400, &serde_json::json!({ "error": error })))
+                .await
+                .map_err(|error| error.to_string())?;
+            let _ = stream.shutdown().await;
+            return Ok(());
+        }
+    };
     let chat = match serde_json::from_slice::<ChatRequest>(&body) {
         Ok(request) => request,
         Err(error) => {
@@ -2172,6 +2376,7 @@ async fn handle_chat_endpoint(
         .map_err(|error| error.to_string())?;
 
     let model = selected_chat_model(&chat, &state).await;
+    let (usage_provider, usage_model) = usage_provider_model(&chat, &state, &model).await;
     let thinking_enabled = chat
         .thinking_level
         .as_deref()
@@ -2508,6 +2713,14 @@ async fn handle_chat_endpoint(
                 .await?;
             }
             FromAgent::ResponseEnd { usage, .. } => {
+                record_usage_entry(
+                    &state,
+                    session_id.as_deref(),
+                    &usage_provider,
+                    &usage_model,
+                    usage.as_ref(),
+                )
+                .await;
                 let message = composer_assistant_message(&assistant_text, &thinking_text, usage);
                 record_chat_assistant_message(&state, session_id.as_deref(), message.clone()).await;
                 send_sse(
@@ -2681,6 +2894,7 @@ async fn handle_chat_websocket_endpoint(
     };
 
     let model = selected_chat_model(&chat, &state).await;
+    let (usage_provider, usage_model) = usage_provider_model(&chat, &state, &model).await;
     let thinking_enabled = chat
         .thinking_level
         .as_deref()
@@ -2994,6 +3208,14 @@ async fn handle_chat_websocket_endpoint(
                 .await?;
             }
             FromAgent::ResponseEnd { usage, .. } => {
+                record_usage_entry(
+                    &state,
+                    session_id.as_deref(),
+                    &usage_provider,
+                    &usage_model,
+                    usage.as_ref(),
+                )
+                .await;
                 let message = composer_assistant_message(&assistant_text, &thinking_text, usage);
                 record_chat_assistant_message(&state, session_id.as_deref(), message.clone()).await;
                 send_ws_json(
@@ -3246,6 +3468,13 @@ fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 async fn send_sse(stream: &mut TcpStream, value: &Value) -> Result<(), String> {
     let body = serde_json::to_string(value).map_err(|error| error.to_string())?;
     stream
@@ -3317,28 +3546,70 @@ async fn read_websocket_text_message(
 }
 
 fn try_parse_websocket_text_message(buffer: &mut Vec<u8>) -> Result<Option<Vec<u8>>, String> {
-    if buffer.len() < 2 {
+    let mut cursor = 0usize;
+    let mut started = false;
+    let mut message = Vec::new();
+
+    loop {
+        let Some(frame) = parse_websocket_frame(buffer, cursor)? else {
+            return Ok(None);
+        };
+
+        match frame.opcode {
+            0x0 => {
+                if !started {
+                    return Err("unexpected WebSocket continuation frame".to_string());
+                }
+            }
+            0x1 | 0x2 => {
+                if started {
+                    return Err(
+                        "new WebSocket data frame started before continuation finished".to_string(),
+                    );
+                }
+                started = true;
+            }
+            0x8 => return Err("WebSocket closed before chat request".to_string()),
+            opcode => return Err(format!("unsupported WebSocket opcode: {opcode}")),
+        }
+
+        message.extend_from_slice(&frame.payload);
+        if message.len() > MAX_JSON_BODY_BYTES {
+            return Err("WebSocket chat request exceeds maximum allowed size".to_string());
+        }
+        cursor = frame.next;
+
+        if frame.fin {
+            buffer.drain(..cursor);
+            return Ok(Some(message));
+        }
+    }
+}
+
+struct ParsedWebSocketFrame {
+    fin: bool,
+    opcode: u8,
+    payload: Vec<u8>,
+    next: usize,
+}
+
+fn parse_websocket_frame(
+    buffer: &[u8],
+    start: usize,
+) -> Result<Option<ParsedWebSocketFrame>, String> {
+    if buffer.len() < start + 2 {
         return Ok(None);
     }
 
-    let opcode = buffer[0] & 0x0f;
-    if opcode == 0x8 {
-        return Err("WebSocket closed before chat request".to_string());
-    }
-    if opcode != 0x1 && opcode != 0x2 {
-        return Err(format!("unsupported WebSocket opcode: {opcode}"));
-    }
-    if buffer[0] & 0x80 == 0 {
-        return Err("fragmented WebSocket chat requests are not supported".to_string());
-    }
-
-    let masked = buffer[1] & 0x80 != 0;
+    let fin = buffer[start] & 0x80 != 0;
+    let opcode = buffer[start] & 0x0f;
+    let masked = buffer[start + 1] & 0x80 != 0;
     if !masked {
         return Err("client WebSocket frames must be masked".to_string());
     }
 
-    let mut offset = 2usize;
-    let mut len = (buffer[1] & 0x7f) as usize;
+    let mut offset = start + 2;
+    let mut len = (buffer[start + 1] & 0x7f) as usize;
     if len == 126 {
         if buffer.len() < offset + 2 {
             return Ok(None);
@@ -3382,8 +3653,12 @@ fn try_parse_websocket_text_message(buffer: &mut Vec<u8>) -> Result<Option<Vec<u
     for (index, byte) in payload.iter_mut().enumerate() {
         *byte ^= mask[index % 4];
     }
-    buffer.drain(..offset + len);
-    Ok(Some(payload))
+    Ok(Some(ParsedWebSocketFrame {
+        fin,
+        opcode,
+        payload,
+        next: offset + len,
+    }))
 }
 
 fn sse_headers() -> String {
@@ -4065,6 +4340,30 @@ mod tests {
             .expect("frame should be complete");
 
         assert_eq!(parsed, payload);
+        assert!(frame.is_empty());
+    }
+
+    #[test]
+    fn parses_fragmented_masked_websocket_text_frame() {
+        let first = br#"{"messages":"#;
+        let second = br#"[]}"#;
+        let mask = [0x37, 0xfa, 0x21, 0x3d];
+        let mut frame = vec![0x01, 0x80 | first.len() as u8];
+        frame.extend_from_slice(&mask);
+        for (index, byte) in first.iter().enumerate() {
+            frame.push(byte ^ mask[index % mask.len()]);
+        }
+        frame.extend_from_slice(&[0x80, 0x80 | second.len() as u8]);
+        frame.extend_from_slice(&mask);
+        for (index, byte) in second.iter().enumerate() {
+            frame.push(byte ^ mask[index % mask.len()]);
+        }
+
+        let parsed = try_parse_websocket_text_message(&mut frame)
+            .expect("fragmented frame should parse")
+            .expect("fragmented frame should be complete");
+
+        assert_eq!(parsed, br#"{"messages":[]}"#);
         assert!(frame.is_empty());
     }
 
