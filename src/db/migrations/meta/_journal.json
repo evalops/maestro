@@ -57,6 +57,13 @@
 			"when": 1776800462000,
 			"tag": "0007_reconcile_legacy_audit_hash_cache",
 			"breakpoints": true
+		},
+		{
+			"idx": 8,
+			"version": "7",
+			"when": 1777303800000,
+			"tag": "0008_reconcile_legacy_webhook_deliveries",
+			"breakpoints": true
 		}
 	]
 }
