@@ -821,6 +821,25 @@ export async function publishMaestroCloudEvent<
 	}
 }
 
+export async function publishMaestroCloudEventStrict<
+	TData extends Record<string, unknown>,
+>(
+	type: MaestroBusEventType,
+	data: TData,
+	options: PublishMaestroEventOptions = {},
+): Promise<void> {
+	const config = resolveMaestroEventBusConfig(options.env);
+	if (!config.enabled) {
+		throw new Error(`Maestro event bus is not enabled: ${config.reason}`);
+	}
+	const transport = await getTransport(config);
+	if (!transport) {
+		throw new Error("Maestro event bus transport is unavailable");
+	}
+	const event = buildMaestroCloudEvent(type, data, options);
+	await transport.publish(type, JSON.stringify(event));
+}
+
 function contextFromMetadata(
 	metadata: unknown,
 	extra?: Record<string, unknown>,

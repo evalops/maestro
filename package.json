@@ -75,6 +75,7 @@
     "tui": "npm run cli",
     "verify": "npm run format && npm run lint && npm run test && npm run build && npm run smoke && npm run telemetry:report",
     "smoke": "node scripts/smoke-cli.js",
+    "smoke:event-bus": "tsx scripts/smoke-maestro-event-bus.ts",
     "smoke:headless": "node scripts/smoke-headless.js",
     "headless:responsiveness": "node scripts/headless-responsiveness-harness.js",
     "smoke:pack": "node scripts/smoke-packed-cli.js",
