@@ -385,3 +385,31 @@ pub(crate) fn percent_decode_component(value: &str) -> String {
     }
     String::from_utf8_lossy(&decoded).to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_request_head, query_flag};
+
+    #[test]
+    fn query_flag_treats_present_valueless_parameter_as_true() {
+        let head =
+            parse_request_head(b"GET /api/status?verbose HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                .expect("request should parse");
+
+        assert!(query_flag(&head, "verbose"));
+    }
+
+    #[test]
+    fn query_flag_keeps_explicit_false_values_false() {
+        for value in ["0", "false", "off"] {
+            let request =
+                format!("GET /api/status?verbose={value} HTTP/1.1\r\nHost: localhost\r\n\r\n");
+            let head = parse_request_head(request.as_bytes()).expect("request should parse");
+
+            assert!(
+                !query_flag(&head, "verbose"),
+                "expected {value} to be false"
+            );
+        }
+    }
+}
