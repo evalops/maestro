@@ -1,13 +1,23 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const telemetryMocks = vi.hoisted(() => ({
+	recordSessionDuration: vi.fn(),
 	recordSessionStart: vi.fn(),
 	recordTokenUsage: vi.fn(),
 }));
 
-vi.mock("../../src/telemetry.js", () => ({
-	recordSessionStart: telemetryMocks.recordSessionStart,
-	recordTokenUsage: telemetryMocks.recordTokenUsage,
+vi.mock("../../src/telemetry.js", () => telemetryMocks);
+vi.mock("../../src/cli-tui/utils/footer-utils.js", () => ({
+	calculateFooterStats: vi.fn(() => ({
+		totalInput: 0,
+		totalOutput: 0,
+		totalCacheRead: 0,
+		totalCacheWrite: 0,
+		totalCost: 0,
+		contextTokens: 0,
+		contextWindow: 0,
+		contextPercent: 0,
+	})),
 }));
 
 import type { AgentEvent, AgentState } from "../../src/agent/types.js";
@@ -71,40 +81,45 @@ function createState(): AgentState {
 	};
 }
 
+function createBridge(options: { backup?: unknown } = {}) {
+	return new AgentEventBridge({
+		deps: {
+			agent: {} as never,
+			sessionManager: {
+				getSessionId: () => "session-123",
+			} as never,
+			sessionRecoveryManager: {
+				getCurrentBackup: () => options.backup ?? null,
+				startSession: vi.fn(),
+				updateMessages: vi.fn(),
+			} as never,
+			autoRetryController: { checkAndRetry: vi.fn() } as never,
+			interruptController: { clear: vi.fn() } as never,
+			footer: { updateState: vi.fn() } as never,
+			agentEventRouter: { handle: vi.fn() } as never,
+		},
+		callbacks: {
+			ensureInitialized: async () => {},
+			handleApprovalRequired: vi.fn(),
+			handleApprovalResolved: vi.fn(),
+			handleToolRetryRequired: vi.fn(),
+			handleToolRetryResolved: vi.fn(),
+			setAgentRunning: vi.fn(),
+			maybeShowContextWarning: vi.fn(),
+			setCurrentModelMetadata: vi.fn(),
+		},
+	});
+}
+
 describe("AgentEventBridge prompt telemetry", () => {
 	beforeEach(() => {
+		telemetryMocks.recordSessionDuration.mockReset();
 		telemetryMocks.recordSessionStart.mockReset();
 		telemetryMocks.recordTokenUsage.mockReset();
 	});
 
 	it("includes prompt metadata in session start telemetry", async () => {
-		const bridge = new AgentEventBridge({
-			deps: {
-				agent: {} as never,
-				sessionManager: {
-					getSessionId: () => "session-123",
-				} as never,
-				sessionRecoveryManager: {
-					getCurrentBackup: () => null,
-					startSession: vi.fn(),
-					updateMessages: vi.fn(),
-				} as never,
-				autoRetryController: { checkAndRetry: vi.fn() } as never,
-				interruptController: { clear: vi.fn() } as never,
-				footer: { updateState: vi.fn() } as never,
-				agentEventRouter: { handle: vi.fn() } as never,
-			},
-			callbacks: {
-				ensureInitialized: async () => {},
-				handleApprovalRequired: vi.fn(),
-				handleApprovalResolved: vi.fn(),
-				handleToolRetryRequired: vi.fn(),
-				handleToolRetryResolved: vi.fn(),
-				setAgentRunning: vi.fn(),
-				maybeShowContextWarning: vi.fn(),
-				setCurrentModelMetadata: vi.fn(),
-			},
-		});
+		const bridge = createBridge();
 
 		await bridge.handleEvent(
 			{ type: "agent_start" } as AgentEvent,
@@ -123,33 +138,7 @@ describe("AgentEventBridge prompt telemetry", () => {
 	});
 
 	it("includes prompt metadata in token usage telemetry", async () => {
-		const bridge = new AgentEventBridge({
-			deps: {
-				agent: {} as never,
-				sessionManager: {
-					getSessionId: () => "session-123",
-				} as never,
-				sessionRecoveryManager: {
-					getCurrentBackup: () => ({}),
-					startSession: vi.fn(),
-					updateMessages: vi.fn(),
-				} as never,
-				autoRetryController: { checkAndRetry: vi.fn() } as never,
-				interruptController: { clear: vi.fn() } as never,
-				footer: { updateState: vi.fn() } as never,
-				agentEventRouter: { handle: vi.fn() } as never,
-			},
-			callbacks: {
-				ensureInitialized: async () => {},
-				handleApprovalRequired: vi.fn(),
-				handleApprovalResolved: vi.fn(),
-				handleToolRetryRequired: vi.fn(),
-				handleToolRetryResolved: vi.fn(),
-				setAgentRunning: vi.fn(),
-				maybeShowContextWarning: vi.fn(),
-				setCurrentModelMetadata: vi.fn(),
-			},
-		});
+		const bridge = createBridge({ backup: {} });
 
 		await bridge.handleEvent(
 			{ type: "agent_end" } as AgentEvent,
@@ -170,6 +159,31 @@ describe("AgentEventBridge prompt telemetry", () => {
 				prompt_version: 9,
 				prompt_hash: "hash_123",
 			},
+		);
+	});
+
+	it("records one closed session duration when the TUI stops", async () => {
+		const bridge = createBridge();
+
+		await bridge.handleEvent(
+			{ type: "agent_start" } as AgentEvent,
+			createState(),
+		);
+		bridge.recordSessionClosed();
+		bridge.recordSessionClosed();
+
+		expect(telemetryMocks.recordSessionDuration).toHaveBeenCalledTimes(1);
+		expect(telemetryMocks.recordSessionDuration).toHaveBeenCalledWith(
+			"session-123",
+			expect.any(Number),
+			expect.objectContaining({
+				model: "anthropic/claude-sonnet-4",
+				provider: "anthropic",
+				prompt_version: 9,
+				prompt_hash: "hash_123",
+				closeReason: "MAESTRO_CLOSE_REASON_USER_STOPPED",
+				closeMessage: "TUI stopped",
+			}),
 		);
 	});
 });

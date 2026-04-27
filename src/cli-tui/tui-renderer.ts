@@ -2572,6 +2572,10 @@ export class TuiRenderer {
 	}
 
 	stop(): void {
+		this.agentEventBridge?.recordSessionClosed({
+			closeReason: "MAESTRO_CLOSE_REASON_USER_STOPPED",
+			closeMessage: "TUI stopped",
+		});
 		this.slashHintController?.dispose();
 		this.loaderView.stop();
 		this.backgroundTasksController.stop();

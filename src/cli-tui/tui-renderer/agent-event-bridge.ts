@@ -23,7 +23,12 @@ import {
 	type SessionModelMetadata,
 	toSessionModelMetadata,
 } from "../../session/manager.js";
-import { recordSessionStart, recordTokenUsage } from "../../telemetry.js";
+import {
+	recordSessionDuration,
+	recordSessionStart,
+	recordTokenUsage,
+} from "../../telemetry.js";
+import type { MaestroCloseReason } from "../../telemetry/maestro-event-bus.js";
 import type { AgentEventRouter } from "../agent-event-router.js";
 import type { FooterComponent } from "../footer.js";
 import type { InterruptController } from "../interrupt-controller.js";
@@ -69,6 +74,8 @@ export class AgentEventBridge {
 	private readonly callbacks: AgentEventBridgeCallbacks;
 	private sessionStartTime: number | null = null;
 	private sessionTelemetryRecorded = false;
+	private sessionCloseTelemetryRecorded = false;
+	private sessionTelemetryMetadata: Record<string, unknown> | undefined;
 
 	constructor(options: AgentEventBridgeOptions) {
 		this.deps = options.deps;
@@ -110,12 +117,15 @@ export class AgentEventBridge {
 			if (!this.sessionTelemetryRecorded) {
 				this.sessionStartTime = Date.now();
 				this.sessionTelemetryRecorded = true;
-				recordSessionStart(this.deps.sessionManager.getSessionId(), {
+				this.sessionTelemetryMetadata = {
 					model: state.model
 						? `${state.model.provider}/${state.model.id}`
 						: undefined,
 					provider: state.model?.provider,
 					...this.getPromptTelemetryMetadata(state),
+				};
+				recordSessionStart(this.deps.sessionManager.getSessionId(), {
+					...this.sessionTelemetryMetadata,
 				});
 			}
 		} else if (event.type === "agent_end") {
@@ -138,6 +148,31 @@ export class AgentEventBridge {
 			: undefined;
 		this.callbacks.setCurrentModelMetadata(metadata);
 		this.deps.agentEventRouter.handle(event);
+	}
+
+	recordSessionClosed(
+		options: {
+			closeReason?: MaestroCloseReason;
+			closeMessage?: string;
+		} = {},
+	): void {
+		if (
+			!this.sessionTelemetryRecorded ||
+			this.sessionCloseTelemetryRecorded ||
+			this.sessionStartTime === null
+		) {
+			return;
+		}
+		this.sessionCloseTelemetryRecorded = true;
+		recordSessionDuration(
+			this.deps.sessionManager.getSessionId(),
+			Math.max(0, Date.now() - this.sessionStartTime),
+			{
+				...this.sessionTelemetryMetadata,
+				closeReason: options.closeReason ?? "MAESTRO_CLOSE_REASON_USER_STOPPED",
+				closeMessage: options.closeMessage ?? "TUI stopped",
+			},
+		);
 	}
 
 	private recordTokenUsageFromMessages(state: AgentState): void {
