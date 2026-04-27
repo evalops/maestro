@@ -23,6 +23,19 @@ order and how to customize providers.
 
 Paths are read in that order, later entries overriding earlier ones.
 
+The Rust control plane keeps the same local fallback, and can also hydrate
+`GET /api/models` from the llm-gateway model catalog before applying local
+Maestro overrides:
+
+- `MAESTRO_LLM_GATEWAY_MODELS_URL` points directly at the catalog endpoint.
+- `MAESTRO_LLM_GATEWAY_URL` derives the catalog URL as `<base>/v1/models`.
+- `MAESTRO_LLM_GATEWAY_TOKEN` is sent as a bearer token when set.
+- `MAESTRO_LLM_GATEWAY_ORG_ID` is sent as `X-Organization-ID` when set.
+- `MAESTRO_LLM_GATEWAY_TIMEOUT_MS` defaults to `2500`.
+
+If the gateway URL is unset, unavailable, or returns invalid JSON, Maestro falls
+back to the built-in models and `~/.maestro/models.json`.
+
 ## Format
 
 Custom config files accept:

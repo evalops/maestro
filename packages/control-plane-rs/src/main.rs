@@ -3,6 +3,7 @@ use base64::{
     Engine as _,
 };
 use hmac::{Hmac, Mac};
+use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use maestro_tui::agent::{FromAgent, NativeAgent, NativeAgentConfig, TokenUsage, ToolResult};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -20,6 +21,14 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::process::Command;
 use tokio::sync::{mpsc, Mutex};
+
+mod model_catalog;
+
+use model_catalog::{
+    available_models, builtin_models, default_model, emergency_default_model,
+    merge_configured_models, merge_llm_gateway_model_catalog, resolve_model, ModelInfo,
+    ModelRegistry,
+};
 
 const MAX_HEADER_BYTES: usize = 64 * 1024;
 const MAX_JSON_BODY_BYTES: usize = 32 * 1024 * 1024;
@@ -44,6 +53,10 @@ struct Config {
     usage_file_path: PathBuf,
     static_root: PathBuf,
     static_cache_max_age: u64,
+    llm_gateway_models_url: Option<String>,
+    llm_gateway_token: Option<String>,
+    llm_gateway_org_id: Option<String>,
+    llm_gateway_timeout_ms: u64,
 }
 
 impl Config {
@@ -52,6 +65,7 @@ impl Config {
         let require_key = env::var("MAESTRO_WEB_REQUIRE_KEY")
             .map(|value| value != "0")
             .unwrap_or_else(|_| env::var("NODE_ENV").map(|v| v != "test").unwrap_or(true));
+        let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
         Self {
             listen_host: env::var("MAESTRO_CONTROL_HOST").unwrap_or_else(|_| "0.0.0.0".into()),
@@ -61,10 +75,10 @@ impl Config {
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty()),
             require_key,
-            cwd: env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            cwd: cwd.clone(),
             session_store_path: env::var("MAESTRO_SESSIONS_FILE")
                 .map(PathBuf::from)
-                .unwrap_or_else(|_| PathBuf::from(".maestro/sessions.json")),
+                .unwrap_or_else(|_| default_session_store_path(&cwd)),
             command_prefs_path: command_prefs_path(),
             usage_file_path: usage_file_path(),
             static_root: env::var("MAESTRO_WEB_STATIC_ROOT")
@@ -74,6 +88,13 @@ impl Config {
                 .ok()
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(86_400),
+            llm_gateway_models_url: llm_gateway_models_url(),
+            llm_gateway_token: trimmed_env("MAESTRO_LLM_GATEWAY_TOKEN"),
+            llm_gateway_org_id: trimmed_env("MAESTRO_LLM_GATEWAY_ORG_ID"),
+            llm_gateway_timeout_ms: env::var("MAESTRO_LLM_GATEWAY_TIMEOUT_MS")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(2_500),
         }
     }
 
@@ -162,43 +183,6 @@ struct RequestHead {
     path: String,
     query: HashMap<String, String>,
     headers: HashMap<String, String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ModelInfo {
-    id: String,
-    provider: String,
-    name: String,
-    api: String,
-    context_window: u32,
-    max_tokens: u32,
-    reasoning: bool,
-    cost: ModelCost,
-    capabilities: ModelCapabilities,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ModelCost {
-    input: f64,
-    output: f64,
-    cache_read: f64,
-    cache_write: f64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ModelCapabilities {
-    streaming: bool,
-    tools: bool,
-    vision: bool,
-    reasoning: bool,
-}
-
-#[derive(Debug, Clone)]
-struct ModelRegistry {
-    models: Vec<ModelInfo>,
-    aliases: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -308,9 +292,9 @@ async fn main() -> anyhow::Result<()> {
     let command_prefs = load_command_prefs(&config.command_prefs_path).await;
 
     let state = AppState {
-        config,
+        config: config.clone(),
         started_at: Instant::now(),
-        selected_model: Arc::new(Mutex::new(default_model().await)),
+        selected_model: Arc::new(Mutex::new(default_model(&config).await)),
         telemetry_override: Arc::new(Mutex::new(None)),
         training_override: Arc::new(Mutex::new(None)),
         command_prefs: Arc::new(Mutex::new(command_prefs)),
@@ -553,7 +537,10 @@ async fn handle_local_endpoint(
             if let Err(response) = authorize(&head, &state.config) {
                 return response;
             }
-            json_response(200, &serde_json::json!({ "models": available_models().await.models }))
+            json_response(
+                200,
+                &serde_json::json!({ "models": available_models(&state.config).await.models }),
+            )
         }
         ("GET", "/api/model") => {
             if let Err(response) = authorize(&head, &state.config) {
@@ -582,7 +569,7 @@ async fn handle_local_endpoint(
             let Some(model_id) = payload.get("model").and_then(Value::as_str).map(str::trim) else {
                 return json_response(400, &serde_json::json!({ "error": "model is required" }));
             };
-            let registry = available_models().await;
+            let registry = available_models(&state.config).await;
             let Some(model) = resolve_model(model_id, &registry) else {
                 return json_response(
                     404,
@@ -949,6 +936,7 @@ struct SharedSessionGrant {
 struct ShareOptions {
     expires_in_hours: u64,
     max_accesses: Option<u64>,
+    allow_sensitive_content: bool,
 }
 
 async fn handle_session_endpoint(
@@ -1210,23 +1198,7 @@ async fn handle_session_get(
 
     match session_path.tail {
         None => json_response(200, &session_full_value(&session)),
-        Some("timeline") => json_response(
-            200,
-            &serde_json::json!({
-                "source": "local",
-                "generatedAt": now_rfc3339(),
-                "platformBacked": false,
-                "pendingRequestCount": 0,
-                "items": session.messages.iter().enumerate().map(|(index, message)| {
-                    serde_json::json!({
-                        "id": format!("{}-{index}", session.id),
-                        "type": "message",
-                        "timestamp": message.get("timestamp").cloned().unwrap_or(Value::Null),
-                        "message": message
-                    })
-                }).collect::<Vec<_>>()
-            }),
-        ),
+        Some("timeline") => json_response(200, &session_timeline_value(&session)),
         Some("share") => json_response(
             200,
             &serde_json::json!({ "sessionId": session.id, "enabled": false, "shareUrl": Value::Null }),
@@ -1236,10 +1208,54 @@ async fn handle_session_get(
         Some("artifact-access") => session_artifact_access_response(head, &session),
         Some("attachments") => json_response(200, &session_attachments_value(&session)),
         Some("artifacts.zip") => serve_session_artifacts_zip(&session),
-        Some(tail) if tail.starts_with("artifacts/") => serve_session_artifact(&session, tail),
+        Some(tail) if tail.starts_with("artifacts/") => {
+            serve_session_artifact(head, &session, tail)
+        }
         Some(tail) if tail.starts_with("attachments/") => serve_session_attachment(&session, tail),
         _ => json_response(404, &serde_json::json!({ "error": "Not found" })),
     }
+}
+
+fn session_timeline_value(session: &SessionRecord) -> Value {
+    serde_json::json!({
+        "sessionId": session.id,
+        "source": "local",
+        "generatedAt": now_rfc3339(),
+        "platformBacked": false,
+        "pendingRequestCount": 0,
+        "items": session.messages.iter().enumerate().map(|(index, message)| {
+            let role = message.get("role").and_then(Value::as_str).unwrap_or("assistant");
+            let event_type = if role == "user" { "message.user" } else { "message.assistant" };
+            serde_json::json!({
+                "id": format!("{}-{index}", session.id),
+                "sessionId": session.id,
+                "timestamp": message.get("timestamp").and_then(Value::as_str).unwrap_or(&session.updated_at),
+                "type": event_type,
+                "title": if role == "user" { "User message" } else { "Assistant message" },
+                "visibility": "user",
+                "source": "local",
+                "status": "completed",
+                "role": role,
+                "summary": timeline_message_summary(message),
+                "metadata": { "message": message }
+            })
+        }).collect::<Vec<_>>()
+    })
+}
+
+fn timeline_message_summary(message: &Value) -> String {
+    message
+        .get("content")
+        .map(|content| {
+            content
+                .as_str()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| content.to_string())
+        })
+        .unwrap_or_default()
+        .chars()
+        .take(240)
+        .collect()
 }
 
 async fn handle_shared_session_get(
@@ -1314,6 +1330,15 @@ async fn handle_session_share_post(
         Ok(options) => options,
         Err(response) => return response,
     };
+    if !options.allow_sensitive_content && session_contains_sensitive_content(&session) {
+        return json_response(
+            409,
+            &serde_json::json!({
+                "error": "Sensitive content detected. Confirm that you want to publish this session.",
+                "code": "sensitive_content_detected"
+            }),
+        );
+    }
     let token = generate_share_token(&session.id);
     let expires_at = chrono::Utc::now() + chrono::Duration::hours(options.expires_in_hours as i64);
     state.shared_sessions.lock().await.insert(
@@ -1372,7 +1397,29 @@ fn share_options_from_value(value: &Value) -> ShareOptions {
     ShareOptions {
         expires_in_hours,
         max_accesses,
+        allow_sensitive_content: value
+            .get("allowSensitiveContent")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
     }
+}
+
+fn session_contains_sensitive_content(session: &SessionRecord) -> bool {
+    let haystack = serde_json::to_string(&session.messages)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    [
+        "api_key",
+        "apikey",
+        "access token",
+        "auth token",
+        "bearer ",
+        "password",
+        "private key",
+        "secret",
+    ]
+    .iter()
+    .any(|needle| haystack.contains(needle))
 }
 
 fn generate_share_token(session_id: &str) -> String {
@@ -1989,7 +2036,7 @@ fn artifact_access_actions(raw_actions: Option<&String>) -> Option<Vec<String>> 
     }
 }
 
-fn serve_session_artifact(session: &SessionRecord, tail: &str) -> Vec<u8> {
+fn serve_session_artifact(head: &RequestHead, session: &SessionRecord, tail: &str) -> Vec<u8> {
     let Some(rest) = tail.strip_prefix("artifacts/") else {
         return json_response(404, &serde_json::json!({ "error": "Artifact not found" }));
     };
@@ -2002,6 +2049,17 @@ fn serve_session_artifact(session: &SessionRecord, tail: &str) -> Vec<u8> {
     let mime = mime_for_path(Path::new(&filename));
     if is_view && mime.starts_with("text/html") {
         return sandboxed_artifact_viewer(&filename, content);
+    }
+    if query_flag(head, "download") || query_flag(head, "standalone") {
+        return response_with_extra_headers(
+            200,
+            mime,
+            content.as_bytes(),
+            &format!(
+                "Content-Disposition: {}\r\nCache-Control: no-store, no-cache, must-revalidate\r\n",
+                attachment_content_disposition(&filename)
+            ),
+        );
     }
     response_with_no_store(200, mime, content.as_bytes())
 }
@@ -2357,242 +2415,6 @@ fn pending_tool_response_from_payload(payload: &Value) -> (bool, Option<ToolResu
     }
 }
 
-fn builtin_models() -> Vec<ModelInfo> {
-    vec![
-        ModelInfo {
-            id: "claude-sonnet-4-5-20250514".to_string(),
-            provider: "anthropic".to_string(),
-            name: "Claude Sonnet 4.5".to_string(),
-            api: "anthropic-messages".to_string(),
-            context_window: 200_000,
-            max_tokens: 64_000,
-            reasoning: true,
-            cost: ModelCost {
-                input: 3.0,
-                output: 15.0,
-                cache_read: 0.3,
-                cache_write: 3.75,
-            },
-            capabilities: ModelCapabilities {
-                streaming: true,
-                tools: true,
-                vision: true,
-                reasoning: true,
-            },
-        },
-        ModelInfo {
-            id: "gpt-5.1-codex-max".to_string(),
-            provider: "openai".to_string(),
-            name: "GPT-5.1 Codex Max".to_string(),
-            api: "openai-codex-responses".to_string(),
-            context_window: 400_000,
-            max_tokens: 128_000,
-            reasoning: true,
-            cost: ModelCost {
-                input: 0.0,
-                output: 0.0,
-                cache_read: 0.0,
-                cache_write: 0.0,
-            },
-            capabilities: ModelCapabilities {
-                streaming: true,
-                tools: true,
-                vision: true,
-                reasoning: true,
-            },
-        },
-    ]
-}
-
-async fn available_models() -> ModelRegistry {
-    let mut registry = ModelRegistry {
-        models: builtin_models(),
-        aliases: HashMap::new(),
-    };
-
-    let Some(config) = read_json_value(&model_config_path()).await else {
-        return registry;
-    };
-    merge_configured_models(&mut registry, &config);
-    registry
-}
-
-fn merge_configured_models(registry: &mut ModelRegistry, config: &Value) {
-    if let Some(aliases) = config.get("aliases").and_then(Value::as_object) {
-        registry
-            .aliases
-            .extend(aliases.iter().filter_map(|(alias, target)| {
-                target
-                    .as_str()
-                    .map(|target| (alias.to_string(), target.trim().to_string()))
-            }));
-    }
-
-    let Some(providers) = config.get("providers").and_then(Value::as_array) else {
-        return;
-    };
-
-    for provider in providers {
-        if provider.get("enabled").and_then(Value::as_bool) == Some(false) {
-            continue;
-        }
-        let Some(provider_id) = provider.get("id").and_then(Value::as_str).map(str::trim) else {
-            continue;
-        };
-        if provider_id.is_empty() {
-            continue;
-        }
-        let provider_api = provider.get("api").and_then(Value::as_str).map(str::trim);
-        let Some(models) = provider.get("models").and_then(Value::as_array) else {
-            continue;
-        };
-
-        for model in models {
-            let Some(id) = model.get("id").and_then(Value::as_str).map(str::trim) else {
-                continue;
-            };
-            if id.is_empty() {
-                continue;
-            }
-            let name = model
-                .get("name")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|name| !name.is_empty())
-                .unwrap_or(id);
-            let api = model
-                .get("api")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .or(provider_api)
-                .unwrap_or("openai-responses");
-            let reasoning = model
-                .get("reasoning")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            let input_modes = model
-                .get("input")
-                .and_then(Value::as_array)
-                .map(Vec::as_slice)
-                .unwrap_or(&[]);
-            let vision = input_modes
-                .iter()
-                .any(|mode| mode.as_str() == Some("image"));
-            let tools = model
-                .get("toolUse")
-                .or_else(|| model.get("tools"))
-                .and_then(Value::as_bool)
-                .unwrap_or(true);
-
-            let info = ModelInfo {
-                id: id.to_string(),
-                provider: provider_id.to_string(),
-                name: name.to_string(),
-                api: api.to_string(),
-                context_window: value_u32(model.get("contextWindow")).unwrap_or(0),
-                max_tokens: value_u32(model.get("maxTokens")).unwrap_or(0),
-                reasoning,
-                cost: model_cost_from_value(model.get("cost")),
-                capabilities: ModelCapabilities {
-                    streaming: true,
-                    tools,
-                    vision,
-                    reasoning,
-                },
-            };
-            upsert_model(&mut registry.models, info);
-        }
-    }
-}
-
-fn upsert_model(models: &mut Vec<ModelInfo>, model: ModelInfo) {
-    if let Some(existing) = models
-        .iter_mut()
-        .find(|candidate| candidate.provider == model.provider && candidate.id == model.id)
-    {
-        *existing = model;
-    } else {
-        models.push(model);
-    }
-}
-
-fn value_u32(value: Option<&Value>) -> Option<u32> {
-    value?.as_u64().and_then(|value| u32::try_from(value).ok())
-}
-
-fn model_cost_from_value(value: Option<&Value>) -> ModelCost {
-    let Some(cost) = value.and_then(Value::as_object) else {
-        return zero_model_cost();
-    };
-    ModelCost {
-        input: cost.get("input").and_then(Value::as_f64).unwrap_or(0.0),
-        output: cost.get("output").and_then(Value::as_f64).unwrap_or(0.0),
-        cache_read: cost.get("cacheRead").and_then(Value::as_f64).unwrap_or(0.0),
-        cache_write: cost
-            .get("cacheWrite")
-            .and_then(Value::as_f64)
-            .unwrap_or(0.0),
-    }
-}
-
-fn zero_model_cost() -> ModelCost {
-    ModelCost {
-        input: 0.0,
-        output: 0.0,
-        cache_read: 0.0,
-        cache_write: 0.0,
-    }
-}
-
-async fn default_model() -> ModelInfo {
-    let registry = available_models().await;
-    env::var("MAESTRO_DEFAULT_MODEL")
-        .ok()
-        .and_then(|model| resolve_model(&model, &registry))
-        .or_else(|| registry.models.first().cloned())
-        .unwrap_or_else(emergency_default_model)
-}
-
-fn emergency_default_model() -> ModelInfo {
-    ModelInfo {
-        id: "claude-sonnet-4-5-20250514".to_string(),
-        provider: "anthropic".to_string(),
-        name: "Claude Sonnet 4.5".to_string(),
-        api: "anthropic-messages".to_string(),
-        context_window: 200_000,
-        max_tokens: 64_000,
-        reasoning: true,
-        cost: ModelCost {
-            input: 3.0,
-            output: 15.0,
-            cache_read: 0.3,
-            cache_write: 3.75,
-        },
-        capabilities: ModelCapabilities {
-            streaming: true,
-            tools: true,
-            vision: true,
-            reasoning: true,
-        },
-    }
-}
-
-fn resolve_model(input: &str, registry: &ModelRegistry) -> Option<ModelInfo> {
-    let normalized = input.trim();
-    let normalized = registry
-        .aliases
-        .get(normalized)
-        .map(String::as_str)
-        .unwrap_or(normalized);
-    registry
-        .models
-        .iter()
-        .find(|model| {
-            model.id == normalized || format!("{}/{}", model.provider, model.id) == normalized
-        })
-        .cloned()
-}
-
 async fn workspace_files(cwd: &Path) -> Vec<String> {
     if let Ok(output) = Command::new("rg")
         .arg("--files")
@@ -2736,6 +2558,16 @@ fn command_prefs_path() -> PathBuf {
     env::var("MAESTRO_COMMAND_PREFS")
         .map(PathBuf::from)
         .unwrap_or_else(|_| agent_dir().join("command-prefs.json"))
+}
+
+fn default_session_store_path(cwd: &Path) -> PathBuf {
+    if let Ok(state_dir) = env::var("MAESTRO_STATE_DIR") {
+        return PathBuf::from(state_dir).join("sessions.json");
+    }
+    if cwd == Path::new("/app") {
+        return env::temp_dir().join("maestro/sessions.json");
+    }
+    PathBuf::from(".maestro/sessions.json")
 }
 
 fn usage_file_path() -> PathBuf {
@@ -3086,6 +2918,17 @@ fn default_approval_mode() -> String {
         .unwrap_or_else(|| "prompt".to_string())
 }
 
+async fn approval_mode_for_session(state: &AppState, session_id: Option<&str>) -> String {
+    let key = session_id.unwrap_or("default");
+    state
+        .approval_modes
+        .lock()
+        .await
+        .get(key)
+        .cloned()
+        .unwrap_or_else(default_approval_mode)
+}
+
 async fn script_runner_command() -> Option<String> {
     if let Ok(runner) = env::var("MAESTRO_SCRIPT_RUNNER") {
         let runner = runner.trim();
@@ -3414,7 +3257,7 @@ async fn usage_provider_model(
         return (provider.to_string(), model.to_string());
     }
 
-    let registry = available_models().await;
+    let registry = available_models(&state.config).await;
     resolve_model(agent_model, &registry)
         .map(|model| (model.provider, model.id))
         .unwrap_or_else(|| ("unknown".to_string(), agent_model.to_string()))
@@ -3794,24 +3637,60 @@ async fn handle_chat_endpoint(
                 tool_names.insert(call_id.clone(), tool.clone());
                 record_tool_call_metadata(&mut assistant_tools, &call_id, &tool, args.clone());
                 if requires_approval {
-                    state
-                        .pending_tool_responses
-                        .lock()
+                    match approval_mode_for_session(&state, session_id.as_deref())
                         .await
-                        .insert(call_id.clone(), agent.tool_response_sender());
-                    send_sse(
-                        &mut stream,
-                        &serde_json::json!({
-                            "type": "action_approval_required",
-                            "request": {
-                                "id": call_id,
-                                "toolName": tool,
-                                "args": args,
-                                "reason": "Tool execution requires approval"
-                            }
-                        }),
-                    )
-                    .await?;
+                        .as_str()
+                    {
+                        "auto" => {
+                            let _ =
+                                agent
+                                    .tool_response_sender()
+                                    .send((call_id.clone(), true, None));
+                            send_sse(
+                                &mut stream,
+                                &serde_json::json!({
+                                    "type": "tool_execution_start",
+                                    "toolCallId": call_id,
+                                }),
+                            )
+                            .await?;
+                        }
+                        "fail" => {
+                            let _ =
+                                agent
+                                    .tool_response_sender()
+                                    .send((call_id.clone(), false, None));
+                            send_sse(
+                                &mut stream,
+                                &serde_json::json!({
+                                    "type": "tool_execution_error",
+                                    "toolCallId": call_id,
+                                    "error": "Tool execution blocked by approval mode"
+                                }),
+                            )
+                            .await?;
+                        }
+                        _ => {
+                            state
+                                .pending_tool_responses
+                                .lock()
+                                .await
+                                .insert(call_id.clone(), agent.tool_response_sender());
+                            send_sse(
+                                &mut stream,
+                                &serde_json::json!({
+                                    "type": "action_approval_required",
+                                    "request": {
+                                        "id": call_id,
+                                        "toolName": tool,
+                                        "args": args,
+                                        "reason": "Tool execution requires approval"
+                                    }
+                                }),
+                            )
+                            .await?;
+                        }
+                    }
                 } else {
                     send_sse(
                         &mut stream,
@@ -4311,24 +4190,60 @@ async fn handle_chat_websocket_endpoint(
                 tool_names.insert(call_id.clone(), tool.clone());
                 record_tool_call_metadata(&mut assistant_tools, &call_id, &tool, args.clone());
                 if requires_approval {
-                    state
-                        .pending_tool_responses
-                        .lock()
+                    match approval_mode_for_session(&state, session_id.as_deref())
                         .await
-                        .insert(call_id.clone(), agent.tool_response_sender());
-                    send_ws_json(
-                        &mut stream,
-                        &serde_json::json!({
-                            "type": "action_approval_required",
-                            "request": {
-                                "id": call_id,
-                                "toolName": tool,
-                                "args": args,
-                                "reason": "Tool execution requires approval"
-                            }
-                        }),
-                    )
-                    .await?;
+                        .as_str()
+                    {
+                        "auto" => {
+                            let _ =
+                                agent
+                                    .tool_response_sender()
+                                    .send((call_id.clone(), true, None));
+                            send_ws_json(
+                                &mut stream,
+                                &serde_json::json!({
+                                    "type": "tool_execution_start",
+                                    "toolCallId": call_id,
+                                }),
+                            )
+                            .await?;
+                        }
+                        "fail" => {
+                            let _ =
+                                agent
+                                    .tool_response_sender()
+                                    .send((call_id.clone(), false, None));
+                            send_ws_json(
+                                &mut stream,
+                                &serde_json::json!({
+                                    "type": "tool_execution_error",
+                                    "toolCallId": call_id,
+                                    "error": "Tool execution blocked by approval mode"
+                                }),
+                            )
+                            .await?;
+                        }
+                        _ => {
+                            state
+                                .pending_tool_responses
+                                .lock()
+                                .await
+                                .insert(call_id.clone(), agent.tool_response_sender());
+                            send_ws_json(
+                                &mut stream,
+                                &serde_json::json!({
+                                    "type": "action_approval_required",
+                                    "request": {
+                                        "id": call_id,
+                                        "toolName": tool,
+                                        "args": args,
+                                        "reason": "Tool execution requires approval"
+                                    }
+                                }),
+                            )
+                            .await?;
+                        }
+                    }
                 } else {
                     send_ws_json(
                         &mut stream,
@@ -5030,10 +4945,13 @@ fn auth_is_configured(config: &Config) -> bool {
         || env::var("MAESTRO_JWT_SECRET")
             .map(|value| !value.trim().is_empty())
             .unwrap_or(false)
+        || env::var("MAESTRO_JWT_JWKS_URL")
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
 }
 
 fn valid_bearer_token(token: &str) -> bool {
-    verify_shared_bearer_token(token) || verify_hs256_jwt(token)
+    verify_shared_bearer_token(token) || verify_jwt(token)
 }
 
 fn verify_shared_bearer_token(token: &str) -> bool {
@@ -5058,6 +4976,22 @@ fn verify_shared_bearer_token(token: &str) -> bool {
     };
     let expected = hmac_sha256_hex(secret.as_bytes(), user_id.as_bytes());
     secure_eq(provided_signature.as_bytes(), expected.as_bytes())
+}
+
+fn verify_jwt(token: &str) -> bool {
+    match env::var("MAESTRO_JWT_ALG")
+        .ok()
+        .map(|alg| alg.trim().to_string())
+        .filter(|alg| !alg.is_empty())
+        .unwrap_or_else(|| "HS256".to_string())
+        .as_str()
+    {
+        "HS256" => verify_hs256_jwt(token),
+        "RS256" => verify_jwks_jwt(token, Algorithm::RS256),
+        "RS384" => verify_jwks_jwt(token, Algorithm::RS384),
+        "RS512" => verify_jwks_jwt(token, Algorithm::RS512),
+        _ => false,
+    }
 }
 
 fn verify_hs256_jwt(token: &str) -> bool {
@@ -5142,6 +5076,81 @@ fn verify_hs256_jwt(token: &str) -> bool {
         }
     }
     true
+}
+
+fn verify_jwks_jwt(token: &str, algorithm: Algorithm) -> bool {
+    let Ok(header) = decode_header(token) else {
+        return false;
+    };
+    if header.alg != algorithm {
+        return false;
+    }
+    let Some(jwks) = load_jwks() else {
+        return false;
+    };
+    let key = jwks
+        .keys
+        .iter()
+        .find(|key| {
+            header
+                .kid
+                .as_deref()
+                .map(|kid| key.common.key_id.as_deref() == Some(kid))
+                .unwrap_or(true)
+        })
+        .and_then(|key| DecodingKey::from_jwk(key).ok());
+    let Some(key) = key else {
+        return false;
+    };
+    let mut validation = Validation::new(algorithm);
+    if let Ok(audience) = env::var("MAESTRO_JWT_AUD") {
+        let audience = audience.trim().to_string();
+        if !audience.is_empty() {
+            validation.set_audience(&[audience]);
+        } else {
+            validation.validate_aud = false;
+        }
+    } else {
+        validation.validate_aud = false;
+    }
+    if let Ok(issuer) = env::var("MAESTRO_JWT_ISS") {
+        let issuer = issuer.trim().to_string();
+        if !issuer.is_empty() {
+            validation.set_issuer(&[issuer]);
+        }
+    }
+    let Ok(data) = decode::<Value>(token, &key, &validation) else {
+        return false;
+    };
+    data.claims
+        .get("sub")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|sub| !sub.is_empty())
+        .is_some()
+}
+
+fn load_jwks() -> Option<jsonwebtoken::jwk::JwkSet> {
+    if let Ok(raw) = env::var("MAESTRO_JWT_JWKS") {
+        return serde_json::from_str(raw.trim()).ok();
+    }
+    let url = env::var("MAESTRO_JWT_JWKS_URL").ok()?;
+    let url = url.trim();
+    if url.is_empty() {
+        return None;
+    }
+    reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .ok()?
+        .get(url)
+        .header("accept", "application/json")
+        .send()
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .json()
+        .ok()
 }
 
 fn jwt_claim_matches(payload: &Value, claim: &str, expected: &str) -> bool {
@@ -5711,6 +5720,13 @@ fn parse_query(query: &str) -> HashMap<String, String> {
         .collect()
 }
 
+fn query_flag(head: &RequestHead, name: &str) -> bool {
+    head.query
+        .get(name)
+        .map(|value| !matches!(value.as_str(), "" | "0" | "false" | "off"))
+        .unwrap_or(false)
+}
+
 fn header_end(initial: &[u8]) -> Result<usize, String> {
     initial
         .windows(4)
@@ -5862,6 +5878,21 @@ fn env_u16(name: &str, default: u16) -> u16 {
         .unwrap_or(default)
 }
 
+fn trimmed_env(name: &str) -> Option<String> {
+    env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn llm_gateway_models_url() -> Option<String> {
+    if let Some(url) = trimmed_env("MAESTRO_LLM_GATEWAY_MODELS_URL") {
+        return Some(url);
+    }
+    let base = trimmed_env("MAESTRO_LLM_GATEWAY_URL")?;
+    Some(format!("{}/v1/models", base.trim_end_matches('/')))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5880,6 +5911,10 @@ mod tests {
             usage_file_path: PathBuf::from("usage.jsonl"),
             static_root: PathBuf::from("dist"),
             static_cache_max_age: 0,
+            llm_gateway_models_url: None,
+            llm_gateway_token: None,
+            llm_gateway_org_id: None,
+            llm_gateway_timeout_ms: 2_500,
         }
     }
 
@@ -5889,6 +5924,19 @@ mod tests {
             path: "/api/status".to_string(),
             query: HashMap::new(),
             headers: HashMap::from([("authorization".to_string(), format!("Bearer {token}"))]),
+        }
+    }
+
+    fn test_session_record(id: &str) -> SessionRecord {
+        SessionRecord {
+            id: id.to_string(),
+            title: "Test Session".to_string(),
+            created_at: "2026-04-27T00:00:00Z".to_string(),
+            updated_at: "2026-04-27T00:00:00Z".to_string(),
+            message_count: 0,
+            favorite: None,
+            tags: Vec::new(),
+            messages: Vec::new(),
         }
     }
 
@@ -6142,7 +6190,13 @@ mod tests {
             })],
         ));
 
-        let response = serve_session_artifact(&session, "artifacts/report.html/view");
+        let head = RequestHead {
+            method: "GET".to_string(),
+            path: "/api/sessions/session-1/artifacts/report.html/view".to_string(),
+            query: HashMap::new(),
+            headers: HashMap::new(),
+        };
+        let response = serve_session_artifact(&head, &session, "artifacts/report.html/view");
         let text = String::from_utf8(response).expect("response should be utf-8");
 
         assert!(text.starts_with("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8"));
@@ -6201,11 +6255,41 @@ mod tests {
 
         assert_eq!(options.expires_in_hours, 168);
         assert_eq!(options.max_accesses, Some(1));
+        assert!(!options.allow_sensitive_content);
 
         let unlimited = share_options_from_value(&serde_json::json!({
-            "maxAccesses": Value::Null
+            "maxAccesses": Value::Null,
+            "allowSensitiveContent": true
         }));
         assert_eq!(unlimited.max_accesses, None);
+        assert!(unlimited.allow_sensitive_content);
+    }
+
+    #[test]
+    fn session_sensitive_content_detection_flags_secrets() {
+        let mut session = test_session_record("session-1");
+        session.messages.push(serde_json::json!({
+            "role": "user",
+            "content": "my api_key is secret"
+        }));
+
+        assert!(session_contains_sensitive_content(&session));
+    }
+
+    #[test]
+    fn timeline_items_use_run_timeline_schema() {
+        let mut session = test_session_record("session-1");
+        session.messages.push(serde_json::json!({
+            "role": "user",
+            "timestamp": "2026-04-27T00:00:00Z",
+            "content": "hello"
+        }));
+
+        let timeline = session_timeline_value(&session);
+        assert_eq!(timeline["sessionId"], "session-1");
+        assert_eq!(timeline["items"][0]["sessionId"], "session-1");
+        assert_eq!(timeline["items"][0]["type"], "message.user");
+        assert_eq!(timeline["items"][0]["visibility"], "user");
     }
 
     #[test]
@@ -6405,6 +6489,75 @@ mod tests {
         assert_eq!(model.provider, "local");
         assert_eq!(model.id, "llama-fast");
         assert!(model.capabilities.vision);
+    }
+
+    #[test]
+    fn merges_platform_model_catalog_from_llm_gateway_payload() {
+        let catalog = serde_json::json!({
+            "data": [{
+                "id": "openai",
+                "models": [{
+                    "id": "gpt-5.1-codex-max",
+                    "name": "GPT-5.1 Codex Max",
+                    "provider": "openai",
+                    "pricing": {
+                        "input": 1.25,
+                        "output": 10.0
+                    },
+                    "capabilities": {
+                        "context_length": 400000,
+                        "max_tokens": 128000,
+                        "supports_streaming": true,
+                        "supports_functions": true,
+                        "supports_vision": true
+                    },
+                    "supports_reasoning": true
+                }]
+            }],
+            "external_providers": [{
+                "id": "together-ai",
+                "models": [{
+                    "id": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+                    "name": "Llama 3.3 70B Instruct Turbo",
+                    "reasoning": false,
+                    "tool_call": true,
+                    "cost": {
+                        "input": 0.88,
+                        "output": 0.88,
+                        "cache_read": 0.0,
+                        "cache_write": 0.0
+                    },
+                    "limit": {
+                        "context": 131072,
+                        "output": 4096
+                    },
+                    "modalities": {
+                        "input": ["text", "image"],
+                        "output": ["text"]
+                    }
+                }]
+            }]
+        });
+        let mut registry = ModelRegistry {
+            models: builtin_models(),
+            aliases: HashMap::new(),
+        };
+
+        merge_llm_gateway_model_catalog(&mut registry, &catalog);
+
+        let codex = resolve_model("openai/gpt-5.1-codex-max", &registry).expect("codex model");
+        assert_eq!(codex.max_tokens, 128_000);
+        assert_eq!(codex.api, "openai-codex-responses");
+        assert!(codex.capabilities.reasoning);
+
+        let llama = resolve_model(
+            "together-ai/meta-llama/Llama-3.3-70B-Instruct-Turbo",
+            &registry,
+        )
+        .expect("external model");
+        assert_eq!(llama.context_window, 131_072);
+        assert!(llama.capabilities.vision);
+        assert_eq!(llama.cost.input, 0.88);
     }
 
     #[test]
