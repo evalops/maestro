@@ -391,6 +391,9 @@ fn is_chat_websocket_endpoint(head: &RequestHead) -> bool {
 }
 
 fn is_local_endpoint(head: &RequestHead) -> bool {
+    if head.method == "OPTIONS" && head.path.starts_with("/api/") {
+        return true;
+    }
     matches!(
         (head.method.as_str(), head.path.as_str()),
         (
@@ -866,6 +869,9 @@ async fn handle_local_endpoint(
                 }),
             )
         }
+        ("OPTIONS", path) if path.starts_with("/api/") => {
+            response(204, "text/plain; charset=utf-8", &[])
+        }
         _ => json_response(404, &serde_json::json!({ "error": "Not found" })),
     }
 }
@@ -966,7 +972,7 @@ async fn handle_session_endpoint(
             let Some(session_path) = session_path_from_path(&head.path) else {
                 return json_response(404, &serde_json::json!({ "error": "Not found" }));
             };
-            handle_session_get(state, session_path).await
+            handle_session_get(head, state, session_path).await
         }
         "PATCH" => {
             let Some(session_path) = session_path_from_path(&head.path) else {
@@ -1131,7 +1137,11 @@ async fn session_summaries(state: &AppState) -> Vec<Value> {
         .collect::<Vec<_>>()
 }
 
-async fn handle_session_get(state: &AppState, session_path: SessionPath<'_>) -> Vec<u8> {
+async fn handle_session_get(
+    head: &RequestHead,
+    state: &AppState,
+    session_path: SessionPath<'_>,
+) -> Vec<u8> {
     let Some(session) = state
         .sessions
         .lock()
@@ -1168,6 +1178,7 @@ async fn handle_session_get(state: &AppState, session_path: SessionPath<'_>) -> 
         ),
         Some("export") => json_response(200, &session_full_value(&session)),
         Some("artifacts") => json_response(200, &session_artifacts_value(&session)),
+        Some("artifact-access") => session_artifact_access_response(head, &session),
         Some("attachments") => json_response(200, &session_attachments_value(&session)),
         Some("artifacts.zip") => json_response(
             404,
@@ -1379,6 +1390,64 @@ fn session_artifacts_value(session: &SessionRecord) -> Value {
         })
         .collect::<Vec<_>>();
     serde_json::json!({ "sessionId": session.id, "artifacts": artifacts })
+}
+
+fn session_artifact_access_response(head: &RequestHead, session: &SessionRecord) -> Vec<u8> {
+    let Some(actions) = artifact_access_actions(head.query.get("actions")) else {
+        return json_response(
+            400,
+            &serde_json::json!({ "error": "actions must include view, file, events, or zip" }),
+        );
+    };
+    let filename = head
+        .query
+        .get("filename")
+        .map(|value| percent_decode_component(value))
+        .filter(|value| !value.trim().is_empty());
+    let ttl_ms = env::var("MAESTRO_ARTIFACT_ACCESS_TTL_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(5 * 60 * 1000);
+    let expires_at = now_millis().saturating_add(ttl_ms);
+    let expires_at_iso =
+        (chrono::Utc::now() + chrono::Duration::milliseconds(ttl_ms as i64)).to_rfc3339();
+    let token_payload = format!(
+        "{}:{}:{}:{}",
+        session.id,
+        filename.as_deref().unwrap_or(""),
+        actions.join(","),
+        expires_at
+    );
+    json_response(
+        200,
+        &serde_json::json!({
+            "sessionId": session.id,
+            "scope": Value::Null,
+            "filename": filename,
+            "actions": actions,
+            "expiresAt": expires_at,
+            "expiresAtIso": expires_at_iso,
+            "token": BASE64_STANDARD.encode(token_payload)
+        }),
+    )
+}
+
+fn artifact_access_actions(raw_actions: Option<&String>) -> Option<Vec<String>> {
+    let decoded = raw_actions.map(|value| percent_decode_component(value))?;
+    let mut actions = Vec::new();
+    for action in decoded.split(',').map(str::trim) {
+        if matches!(action, "view" | "file" | "events" | "zip")
+            && !actions.iter().any(|existing| existing == action)
+        {
+            actions.push(action.to_string());
+        }
+    }
+    if actions.is_empty() {
+        None
+    } else {
+        Some(actions)
+    }
 }
 
 fn serve_session_artifact(session: &SessionRecord, tail: &str) -> Vec<u8> {
@@ -4773,6 +4842,7 @@ mod tests {
             "/api/sessions/session-1",
             "/api/sessions/session-1/timeline",
             "/api/sessions/session-1/artifacts",
+            "/api/sessions/session-1/artifact-access",
             "/api/sessions/session-1/artifacts/report.html",
             "/api/sessions/session-1/attachments/file-1",
             "/api/sessions/shared/session-1",
@@ -4798,6 +4868,27 @@ mod tests {
             let head = parse_request_head(request.as_bytes()).expect("request should parse");
             assert!(is_local_endpoint(&head), "{request} should be local");
         }
+    }
+
+    #[test]
+    fn detects_api_options_preflight_as_local() {
+        let head = parse_request_head(
+            b"OPTIONS /api/chat HTTP/1.1\r\nHost: localhost\r\nOrigin: http://localhost:4173\r\nAccess-Control-Request-Method: POST\r\n\r\n",
+        )
+        .expect("request should parse");
+        assert!(is_local_endpoint(&head));
+
+        let response = response(204, "text/plain; charset=utf-8", &[]);
+        let text = String::from_utf8(response).expect("response should be utf-8");
+        assert!(text.starts_with("HTTP/1.1 204 No Content\r\n"));
+        assert!(text.contains("Access-Control-Allow-Methods: GET,POST,PATCH,DELETE,OPTIONS\r\n"));
+    }
+
+    #[test]
+    fn artifact_access_actions_decode_and_filter_query_actions() {
+        let actions = artifact_access_actions(Some(&"view%2Cfile%2Cbad%2Czip%2Cfile".to_string()))
+            .expect("valid actions should be extracted");
+        assert_eq!(actions, vec!["view", "file", "zip"]);
     }
 
     #[test]
