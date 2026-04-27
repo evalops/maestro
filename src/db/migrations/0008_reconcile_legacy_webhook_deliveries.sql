@@ -246,5 +246,3 @@ BEGIN
 			ON "webhook_deliveries" USING btree ("status", "next_retry_at");
 	END IF;
 END $$;
---> statement-breakpoint
-DROP FUNCTION IF EXISTS maestro_reconcile_webhook_payload(text);
