@@ -17,6 +17,8 @@ use tokio::sync::{mpsc, Mutex};
 
 const MAX_HEADER_BYTES: usize = 64 * 1024;
 const MAX_JSON_BODY_BYTES: usize = 32 * 1024 * 1024;
+const DEFAULT_EXTRACT_MAX_CHARS: usize = 200_000;
+const MAX_EXTRACT_INPUT_BYTES: usize = 50 * 1024 * 1024;
 static ATTACHMENT_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
 type PendingToolResponseSender = mpsc::UnboundedSender<(String, bool, Option<ToolResult>)>;
@@ -81,6 +83,7 @@ struct AppState {
     command_prefs: Arc<Mutex<CommandPrefs>>,
     sessions: Arc<Mutex<SessionStore>>,
     session_persist_lock: Arc<Mutex<()>>,
+    usage_persist_lock: Arc<Mutex<()>>,
     approval_modes: Arc<Mutex<HashMap<String, String>>>,
     pending_tool_responses: Arc<Mutex<HashMap<String, PendingToolResponseSender>>>,
 }
@@ -303,6 +306,7 @@ async fn main() -> anyhow::Result<()> {
         command_prefs: Arc::new(Mutex::new(command_prefs)),
         sessions: Arc::new(Mutex::new(sessions)),
         session_persist_lock: Arc::new(Mutex::new(())),
+        usage_persist_lock: Arc::new(Mutex::new(())),
         approval_modes: Arc::new(Mutex::new(HashMap::new())),
         pending_tool_responses: Arc::new(Mutex::new(HashMap::new())),
     };
@@ -433,6 +437,7 @@ fn is_local_endpoint(head: &RequestHead) -> bool {
                 | "/api/undo"
                 | "/api/run"
                 | "/api/approvals"
+                | "/api/attachments/extract"
         )
     ) || is_session_endpoint(head)
         || is_pending_request_resume_endpoint(head)
@@ -449,7 +454,10 @@ fn is_session_endpoint(head: &RequestHead) -> bool {
             head.path == "/api/sessions"
                 || session_path_from_path(&head.path)
                     .and_then(|path| path.tail)
-                    .map(|tail| matches!(tail, "share" | "export"))
+                    .map(|tail| {
+                        matches!(tail, "share" | "export")
+                            || session_attachment_extract_id(tail).is_some()
+                    })
                     .unwrap_or(false)
         }
         "PATCH" | "DELETE" => session_path_from_path(&head.path).is_some(),
@@ -734,6 +742,12 @@ async fn handle_local_endpoint(
             };
             run_script_response(&state.config.cwd, request).await
         }
+        ("POST", "/api/attachments/extract") => {
+            if let Err(response) = authorize(&head, &state.config) {
+                return response;
+            }
+            handle_attachment_extract(stream, initial, &head).await
+        }
         ("GET", "/api/approvals") => {
             if let Err(response) = authorize(&head, &state.config) {
                 return response;
@@ -961,6 +975,19 @@ async fn handle_session_endpoint(
                 Some("share") => handle_session_share_post(state, session_path).await,
                 Some("export") => {
                     handle_session_export_post(stream, initial, head, state, session_path).await
+                }
+                Some(tail) => {
+                    if let Some(attachment_id) = session_attachment_extract_id(tail) {
+                        handle_session_attachment_extract(
+                            head,
+                            state,
+                            session_path.id,
+                            attachment_id,
+                        )
+                        .await
+                    } else {
+                        json_response(404, &serde_json::json!({ "error": "Not found" }))
+                    }
                 }
                 _ => json_response(404, &serde_json::json!({ "error": "Not found" })),
             }
@@ -1335,6 +1362,273 @@ fn session_attachments(session: &SessionRecord) -> Vec<Value> {
         }
     }
     attachments
+}
+
+fn session_attachment_extract_id(tail: &str) -> Option<String> {
+    let rest = tail.strip_prefix("attachments/")?;
+    let (attachment_id, suffix) = rest.split_once('/')?;
+    if suffix != "extract" {
+        return None;
+    }
+    let attachment_id = percent_decode_component(attachment_id);
+    if attachment_id.is_empty() {
+        None
+    } else {
+        Some(attachment_id)
+    }
+}
+
+async fn handle_attachment_extract(
+    stream: &mut TcpStream,
+    initial: &mut Vec<u8>,
+    head: &RequestHead,
+) -> Vec<u8> {
+    let body = match read_request_body(stream, initial, head).await {
+        Ok(body) => body,
+        Err(error) => return json_response(400, &serde_json::json!({ "error": error })),
+    };
+    let request: ExtractAttachmentRequest = match serde_json::from_slice(&body) {
+        Ok(request) => request,
+        Err(error) => {
+            return json_response(
+                400,
+                &serde_json::json!({ "error": format!("invalid attachment extract request: {error}") }),
+            );
+        }
+    };
+    extract_attachment_request_response(request)
+}
+
+async fn handle_session_attachment_extract(
+    head: &RequestHead,
+    state: &AppState,
+    session_id: &str,
+    attachment_id: String,
+) -> Vec<u8> {
+    let should_force = head
+        .query
+        .get("force")
+        .map(|force| matches!(force.as_str(), "1" | "true"))
+        .unwrap_or(false);
+    let mut sessions = state.sessions.lock().await;
+    let Some(session) = sessions.sessions.get_mut(session_id) else {
+        return json_response(404, &serde_json::json!({ "error": "Session not found" }));
+    };
+    let Some(attachment) = find_session_attachment_mut(session, &attachment_id) else {
+        return json_response(404, &serde_json::json!({ "error": "Attachment not found" }));
+    };
+
+    let file_name = attachment_string_field(attachment, &["fileName", "file_name"])
+        .unwrap_or_else(|| "attachment".to_string());
+    let mime_type = attachment_string_field(attachment, &["mimeType", "mime_type"]);
+    if let Some(extracted_text) =
+        attachment_string_field(attachment, &["extractedText", "extracted_text"])
+    {
+        if !should_force {
+            return json_response(
+                200,
+                &serde_json::json!({
+                    "fileName": file_name,
+                    "format": "unknown",
+                    "size": attachment.get("size").and_then(Value::as_u64).unwrap_or(0),
+                    "truncated": false,
+                    "extractedText": extracted_text,
+                    "cached": true
+                }),
+            );
+        }
+    }
+    let Some(content_base64) =
+        attachment_string_field(attachment, &["contentBase64", "content_base64", "content"])
+    else {
+        return json_response(
+            404,
+            &serde_json::json!({ "error": "Attachment content not available" }),
+        );
+    };
+    let output = match extract_attachment_request(ExtractAttachmentRequest {
+        file_name: file_name.clone(),
+        mime_type,
+        content_base64,
+        max_chars: None,
+    }) {
+        Ok(output) => output,
+        Err(error) => {
+            return json_response(400, &serde_json::json!({ "error": error }));
+        }
+    };
+    if let Some(object) = attachment.as_object_mut() {
+        object.insert(
+            "extractedText".to_string(),
+            Value::String(output.extracted_text.clone()),
+        );
+    }
+    drop(sessions);
+    persist_session_store(state).await;
+    attachment_extract_json_response(file_name, output)
+}
+
+fn find_session_attachment_mut<'a>(
+    session: &'a mut SessionRecord,
+    attachment_id: &str,
+) -> Option<&'a mut Value> {
+    for message in &mut session.messages {
+        let Some(attachments) = message.get_mut("attachments").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        if let Some(attachment) = attachments.iter_mut().find(|attachment| {
+            attachment
+                .get("id")
+                .and_then(Value::as_str)
+                .map(|id| id == attachment_id)
+                .unwrap_or(false)
+        }) {
+            return Some(attachment);
+        }
+    }
+    None
+}
+
+fn attachment_string_field(attachment: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| attachment.get(*key).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn extract_attachment_request_response(request: ExtractAttachmentRequest) -> Vec<u8> {
+    match extract_attachment_request(request) {
+        Ok(output) => attachment_extract_json_response(output.file_name.clone(), output),
+        Err(error) if error == "Unsupported document format" => {
+            json_response(400, &serde_json::json!({ "error": error }))
+        }
+        Err(error) => json_response(400, &serde_json::json!({ "error": error })),
+    }
+}
+
+fn attachment_extract_json_response(file_name: String, output: ExtractDocumentOutput) -> Vec<u8> {
+    json_response(
+        200,
+        &serde_json::json!({
+            "fileName": file_name,
+            "format": output.format,
+            "size": output.size_bytes,
+            "truncated": output.truncated,
+            "extractedText": output.extracted_text
+        }),
+    )
+}
+
+fn extract_attachment_request(
+    request: ExtractAttachmentRequest,
+) -> Result<ExtractDocumentOutput, String> {
+    let file_name = request.file_name.trim().to_string();
+    if file_name.is_empty() {
+        return Err("fileName is required".to_string());
+    }
+    let normalized = normalize_base64(&request.content_base64);
+    let encoded = strip_data_url_prefix(&normalized);
+    if encoded.is_empty() {
+        return Err("contentBase64 is required".to_string());
+    }
+    if !is_valid_base64(encoded) {
+        return Err("Invalid base64 content".to_string());
+    }
+    let bytes = BASE64_STANDARD
+        .decode(encoded)
+        .map_err(|_| "Invalid base64 content".to_string())?;
+    extract_document_text(
+        bytes,
+        file_name,
+        request.mime_type.filter(|value| !value.trim().is_empty()),
+        request.max_chars,
+    )
+}
+
+fn normalize_base64(input: &str) -> String {
+    input.chars().filter(|ch| !ch.is_whitespace()).collect()
+}
+
+fn is_valid_base64(input: &str) -> bool {
+    if input.is_empty() || input.len() % 4 == 1 {
+        return false;
+    }
+    input
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '/' | '='))
+}
+
+fn extract_document_text(
+    bytes: Vec<u8>,
+    file_name: String,
+    mime_type: Option<String>,
+    max_chars: Option<usize>,
+) -> Result<ExtractDocumentOutput, String> {
+    if bytes.len() > MAX_EXTRACT_INPUT_BYTES {
+        return Err(format!(
+            "Document is too large ({:.1}MB). Maximum supported size is 50MB.",
+            bytes.len() as f64 / 1024.0 / 1024.0
+        ));
+    }
+    let format = detect_document_format(&file_name, mime_type.as_deref());
+    let size_bytes = bytes.len();
+    let extracted_text = match format.as_str() {
+        "text" => {
+            String::from_utf8(bytes).map_err(|_| "Document is not valid UTF-8 text".to_string())?
+        }
+        _ => String::new(),
+    };
+    if extracted_text.is_empty() && format == "unknown" {
+        return Err("Unsupported document format".to_string());
+    }
+    let max_chars = max_chars.unwrap_or(DEFAULT_EXTRACT_MAX_CHARS).max(1);
+    let (extracted_text, truncated) = clamp_chars(&extracted_text, max_chars);
+    Ok(ExtractDocumentOutput {
+        file_name,
+        format,
+        size_bytes,
+        truncated,
+        extracted_text,
+    })
+}
+
+fn detect_document_format(file_name: &str, mime_type: Option<&str>) -> String {
+    let lower_name = file_name.to_ascii_lowercase();
+    let mime_type = mime_type.unwrap_or("").to_ascii_lowercase();
+    if mime_type.starts_with("text/") {
+        return "text".to_string();
+    }
+    for extension in [
+        ".txt",
+        ".md",
+        ".markdown",
+        ".json",
+        ".yaml",
+        ".yml",
+        ".csv",
+        ".ts",
+        ".tsx",
+        ".js",
+        ".jsx",
+        ".html",
+        ".css",
+        ".xml",
+    ] {
+        if lower_name.ends_with(extension) {
+            return "text".to_string();
+        }
+    }
+    "unknown".to_string()
+}
+
+fn clamp_chars(text: &str, max_chars: usize) -> (String, bool) {
+    for (count, (index, _)) in text.char_indices().enumerate() {
+        if count == max_chars {
+            return (text[..index].to_string(), true);
+        }
+    }
+    (text.to_string(), false)
 }
 
 fn serve_session_attachment(session: &SessionRecord, tail: &str) -> Vec<u8> {
@@ -2645,6 +2939,23 @@ struct ChatAttachment {
     extracted_text: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExtractAttachmentRequest {
+    file_name: String,
+    mime_type: Option<String>,
+    content_base64: String,
+    max_chars: Option<usize>,
+}
+
+struct ExtractDocumentOutput {
+    file_name: String,
+    format: String,
+    size_bytes: usize,
+    truncated: bool,
+    extracted_text: String,
+}
+
 struct PreparedAttachments {
     paths: Vec<String>,
     temp_dir: Option<PathBuf>,
@@ -2707,6 +3018,7 @@ async fn record_usage_entry(
     let Some(usage) = usage else {
         return;
     };
+    let _persist = state.usage_persist_lock.lock().await;
     let path = &state.config.usage_file_path;
     let mut entries = tokio::fs::read_to_string(path)
         .await
@@ -4860,6 +5172,8 @@ mod tests {
             "POST /api/sessions HTTP/1.1\r\nHost: localhost\r\n\r\n",
             "POST /api/sessions/session-1/share HTTP/1.1\r\nHost: localhost\r\n\r\n",
             "POST /api/sessions/session-1/export HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "POST /api/sessions/session-1/attachments/att-1/extract HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "POST /api/attachments/extract HTTP/1.1\r\nHost: localhost\r\n\r\n",
             "POST /api/approvals HTTP/1.1\r\nHost: localhost\r\n\r\n",
             "PATCH /api/sessions/session-1 HTTP/1.1\r\nHost: localhost\r\n\r\n",
             "DELETE /api/sessions/session-1 HTTP/1.1\r\nHost: localhost\r\n\r\n",
@@ -4889,6 +5203,45 @@ mod tests {
         let actions = artifact_access_actions(Some(&"view%2Cfile%2Cbad%2Czip%2Cfile".to_string()))
             .expect("valid actions should be extracted");
         assert_eq!(actions, vec!["view", "file", "zip"]);
+    }
+
+    #[test]
+    fn parses_session_attachment_extract_path() {
+        assert_eq!(
+            session_attachment_extract_id("attachments/att%201/extract"),
+            Some("att 1".to_string())
+        );
+        assert!(session_attachment_extract_id("attachments/att-1").is_none());
+        assert!(session_attachment_extract_id("artifacts/report.txt").is_none());
+    }
+
+    #[test]
+    fn extracts_text_attachment_without_node_runtime() {
+        let output = extract_attachment_request(ExtractAttachmentRequest {
+            file_name: "notes.md".to_string(),
+            mime_type: Some("text/markdown".to_string()),
+            content_base64: BASE64_STANDARD.encode("hello from rust"),
+            max_chars: Some(5),
+        })
+        .expect("text extraction should succeed");
+
+        assert_eq!(output.format, "text");
+        assert_eq!(output.size_bytes, "hello from rust".len());
+        assert_eq!(output.extracted_text, "hello");
+        assert!(output.truncated);
+    }
+
+    #[test]
+    fn extracts_text_attachment_from_data_url_content() {
+        let output = extract_attachment_request(ExtractAttachmentRequest {
+            file_name: "notes.txt".to_string(),
+            mime_type: None,
+            content_base64: format!("data:text/plain;base64,{}", BASE64_STANDARD.encode("hello")),
+            max_chars: None,
+        })
+        .expect("data url extraction should succeed");
+
+        assert_eq!(output.extracted_text, "hello");
     }
 
     #[test]
