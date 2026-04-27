@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{self, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::process::Command;
@@ -232,7 +232,14 @@ async fn main() -> anyhow::Result<()> {
     };
 
     loop {
-        let (stream, _) = listener.accept().await?;
+        let (stream, _) = match listener.accept().await {
+            Ok(connection) => connection,
+            Err(error) => {
+                eprintln!("control-plane accept failed: {error}");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+        };
         let state = state.clone();
         tokio::spawn(async move {
             if let Err(error) = handle_connection(stream, state).await {
@@ -1396,6 +1403,14 @@ struct PreparedAttachments {
     temp_dir: Option<PathBuf>,
 }
 
+impl Drop for PreparedAttachments {
+    fn drop(&mut self) {
+        if let Some(temp_dir) = self.temp_dir.take() {
+            let _ = std::fs::remove_dir_all(temp_dir);
+        }
+    }
+}
+
 enum StaticPathResolution {
     Found(PathBuf),
     Missing,
@@ -1938,8 +1953,8 @@ fn sanitize_attachment_file_name(name: &str) -> String {
     }
 }
 
-async fn cleanup_prepared_attachments(attachments: PreparedAttachments) {
-    if let Some(temp_dir) = attachments.temp_dir {
+async fn cleanup_prepared_attachments(mut attachments: PreparedAttachments) {
+    if let Some(temp_dir) = attachments.temp_dir.take() {
         let _ = tokio::fs::remove_dir_all(temp_dir).await;
     }
 }
