@@ -127,6 +127,7 @@ struct AppState {
     telemetry_override: Arc<Mutex<Option<TelemetryOverride>>>,
     training_override: Arc<Mutex<Option<TrainingOverride>>>,
     background_settings: Arc<Mutex<BackgroundSettings>>,
+    framework_preference: Arc<Mutex<Option<String>>>,
     command_prefs: Arc<Mutex<CommandPrefs>>,
     sessions: Arc<Mutex<SessionStore>>,
     session_persist_lock: Arc<Mutex<()>>,
@@ -210,6 +211,12 @@ struct BackgroundSettings {
 #[derive(Debug, Deserialize)]
 struct BackgroundUpdateRequest {
     enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct FrameworkUpdateRequest {
+    framework: Option<Option<String>>,
+    scope: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -325,6 +332,7 @@ async fn main() -> anyhow::Result<()> {
         telemetry_override: Arc::new(Mutex::new(None)),
         training_override: Arc::new(Mutex::new(None)),
         background_settings: Arc::new(Mutex::new(BackgroundSettings::default())),
+        framework_preference: Arc::new(Mutex::new(None)),
         command_prefs: Arc::new(Mutex::new(command_prefs)),
         sessions: Arc::new(Mutex::new(sessions)),
         session_persist_lock: Arc::new(Mutex::new(())),
@@ -832,13 +840,14 @@ async fn handle_local_endpoint(
             if let Err(response) = authorize(&head, &state.config) {
                 return response;
             }
-            json_response(200, &framework_response(&head))
+            let framework = state.framework_preference.lock().await.clone();
+            json_response(200, &framework_response(&head, framework.as_deref()))
         }
         ("POST", "/api/framework") => {
             if let Err(response) = authorize(&head, &state.config) {
                 return response;
             }
-            json_response(200, &serde_json::json!({ "success": true, "message": "Framework preference accepted by Rust control plane" }))
+            update_framework_response(stream, initial, &head, state).await
         }
         ("GET", "/api/tools") => {
             if let Err(response) = authorize(&head, &state.config) {
@@ -3272,16 +3281,129 @@ async fn changes_snapshot(cwd: &Path) -> Value {
     serde_json::json!({ "files": files, "tools": [], "total": total })
 }
 
-fn framework_response(head: &RequestHead) -> Value {
+struct FrameworkInfo {
+    id: &'static str,
+    summary: &'static str,
+}
+
+const FRAMEWORKS: &[FrameworkInfo] = &[
+    FrameworkInfo {
+        id: "express",
+        summary: "Preferred framework: Express.js on Node 20. Use TypeScript, zod for validation, vitest, and supertest for HTTP tests.",
+    },
+    FrameworkInfo {
+        id: "fastapi",
+        summary: "Preferred framework: FastAPI on Python 3.12. Use pydantic v2, uvicorn, pytest, httpx for tests, and typed routers.",
+    },
+    FrameworkInfo {
+        id: "node",
+        summary: "Preferred framework: Generic Node.js on TypeScript/Node 20. Use zod for validation, vitest for unit tests, supertest for HTTP, and eslint/biome for linting.",
+    },
+];
+
+fn framework_response(head: &RequestHead, current: Option<&str>) -> Value {
     match head.query.get("action").map(String::as_str) {
-        Some("list") => serde_json::json!({ "frameworks": [] }),
+        Some("list") => serde_json::json!({
+            "frameworks": FRAMEWORKS
+                .iter()
+                .map(|info| serde_json::json!({ "id": info.id, "summary": info.summary }))
+                .collect::<Vec<_>>()
+        }),
         _ => serde_json::json!({
-            "framework": "default",
+            "framework": current.unwrap_or("none"),
             "source": "rust-control-plane",
             "locked": false,
-            "scope": "user"
+            "scope": framework_scope(head.query.get("scope").map(String::as_str).unwrap_or("user")).unwrap_or("user")
         }),
     }
+}
+
+async fn update_framework_response(
+    stream: &mut TcpStream,
+    initial: &mut Vec<u8>,
+    head: &RequestHead,
+    state: &AppState,
+) -> Vec<u8> {
+    let body = match read_request_body(stream, initial, head).await {
+        Ok(body) => body,
+        Err(error) => return json_response(400, &serde_json::json!({ "error": error })),
+    };
+    let request = match serde_json::from_slice::<FrameworkUpdateRequest>(&body) {
+        Ok(request) => request,
+        Err(error) => {
+            return json_response(
+                400,
+                &serde_json::json!({ "error": format!("invalid framework update request: {error}") }),
+            );
+        }
+    };
+    let scope = match request.scope.as_deref().map(framework_scope).transpose() {
+        Ok(scope) => scope.unwrap_or("user"),
+        Err(error) => return json_response(400, &serde_json::json!({ "error": error })),
+    };
+    let Some(raw_framework) = request.framework else {
+        return json_response(
+            400,
+            &serde_json::json!({ "error": "framework is required" }),
+        );
+    };
+    let normalized = raw_framework.and_then(normalize_framework_id);
+    if normalized.is_none() {
+        *state.framework_preference.lock().await = None;
+        return json_response(
+            200,
+            &serde_json::json!({
+                "success": true,
+                "message": format!("Default framework cleared for {scope} scope"),
+                "framework": Value::Null,
+                "scope": scope
+            }),
+        );
+    }
+    let framework = normalized.expect("framework none case returned");
+    let Some(info) = framework_info(&framework) else {
+        let available = FRAMEWORKS
+            .iter()
+            .map(|info| info.id)
+            .collect::<Vec<_>>()
+            .join(", ");
+        return json_response(
+            400,
+            &serde_json::json!({ "error": format!("Unknown framework \"{framework}\". Available options: {available}") }),
+        );
+    };
+    *state.framework_preference.lock().await = Some(info.id.to_string());
+    json_response(
+        200,
+        &serde_json::json!({
+            "success": true,
+            "framework": info.id,
+            "summary": info.summary,
+            "scope": scope,
+            "message": format!("{} (scope: {scope})", info.summary)
+        }),
+    )
+}
+
+fn framework_scope(scope: &str) -> Result<&'static str, String> {
+    match scope {
+        "user" => Ok("user"),
+        "workspace" => Ok("workspace"),
+        other => Err(format!("unsupported framework scope \"{other}\"")),
+    }
+}
+
+fn normalize_framework_id(value: String) -> Option<String> {
+    let normalized = value.trim().to_lowercase();
+    if normalized.is_empty() || matches!(normalized.as_str(), "none" | "off") {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn framework_info(id: &str) -> Option<&'static FrameworkInfo> {
+    FRAMEWORKS.iter().find(|info| info.id == id)
 }
 
 fn telemetry_status(override_value: Option<TelemetryOverride>) -> Value {
@@ -6106,6 +6228,7 @@ mod tests {
             telemetry_override: Arc::new(Mutex::new(None)),
             training_override: Arc::new(Mutex::new(None)),
             background_settings: Arc::new(Mutex::new(BackgroundSettings::default())),
+            framework_preference: Arc::new(Mutex::new(None)),
             command_prefs: Arc::new(Mutex::new(CommandPrefs::default())),
             sessions: Arc::new(Mutex::new(SessionStore { sessions })),
             session_persist_lock: Arc::new(Mutex::new(())),
@@ -6412,6 +6535,47 @@ mod tests {
                 .pointer("/settings/notificationsEnabled")
                 .and_then(Value::as_bool),
             Some(true)
+        );
+    }
+
+    #[tokio::test]
+    async fn framework_update_parses_body_and_returns_contract_shape() {
+        let body = r#"{"framework":"fastapi","scope":"workspace"}"#;
+        let request = format!(
+            "POST /api/framework HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let mut initial = request.into_bytes();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (_client, mut server) = connected_tcp_streams().await;
+        let state = test_app_state_with_sessions(HashMap::new());
+
+        let response =
+            response_json(handle_local_endpoint(&mut server, &mut initial, &head, &state).await);
+        let framework = state.framework_preference.lock().await.clone();
+        let status = framework_response(
+            &RequestHead {
+                method: "GET".to_string(),
+                path: "/api/framework".to_string(),
+                query: HashMap::new(),
+                headers: HashMap::new(),
+            },
+            framework.as_deref(),
+        );
+
+        assert_eq!(response.get("success").and_then(Value::as_bool), Some(true));
+        assert_eq!(
+            response.get("framework").and_then(Value::as_str),
+            Some("fastapi")
+        );
+        assert_eq!(
+            response.get("scope").and_then(Value::as_str),
+            Some("workspace")
+        );
+        assert!(response.get("summary").and_then(Value::as_str).is_some());
+        assert_eq!(
+            status.get("framework").and_then(Value::as_str),
+            Some("fastapi")
         );
     }
 
