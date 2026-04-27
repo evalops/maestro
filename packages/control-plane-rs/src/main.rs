@@ -17,6 +17,7 @@ use tokio::sync::Mutex;
 const MAX_HEADER_BYTES: usize = 64 * 1024;
 const MAX_JSON_BODY_BYTES: usize = 2 * 1024 * 1024;
 static ATTACHMENT_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+static SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone)]
 struct Config {
@@ -403,7 +404,39 @@ fn is_local_endpoint(head: &RequestHead) -> bool {
                 | "/api/undo"
                 | "/api/run"
         )
-    )
+    ) || is_session_endpoint(head)
+        || is_pending_request_resume_endpoint(head)
+}
+
+fn is_session_endpoint(head: &RequestHead) -> bool {
+    match head.method.as_str() {
+        "GET" => head.path == "/api/sessions" || session_id_from_path(&head.path).is_some(),
+        "POST" => head.path == "/api/sessions",
+        "PATCH" | "DELETE" => session_id_from_path(&head.path).is_some(),
+        _ => false,
+    }
+}
+
+fn is_pending_request_resume_endpoint(head: &RequestHead) -> bool {
+    head.method == "POST" && pending_request_id_from_resume_path(&head.path).is_some()
+}
+
+fn session_id_from_path(path: &str) -> Option<&str> {
+    let session_id = path.strip_prefix("/api/sessions/")?;
+    if session_id.is_empty() || session_id.contains('/') {
+        return None;
+    }
+    Some(session_id)
+}
+
+fn pending_request_id_from_resume_path(path: &str) -> Option<&str> {
+    let request_id = path
+        .strip_prefix("/api/pending-requests/")?
+        .strip_suffix("/resume")?;
+    if request_id.is_empty() || request_id.contains('/') {
+        return None;
+    }
+    Some(request_id)
 }
 
 async fn handle_local_endpoint(
@@ -412,6 +445,19 @@ async fn handle_local_endpoint(
     head: RequestHead,
     state: &AppState,
 ) -> Vec<u8> {
+    if is_session_endpoint(&head) {
+        if let Err(response) = authorize(&head, &state.config) {
+            return response;
+        }
+        return handle_session_endpoint(stream, initial, &head).await;
+    }
+    if is_pending_request_resume_endpoint(&head) {
+        if let Err(response) = authorize(&head, &state.config) {
+            return response;
+        }
+        return handle_pending_request_resume_endpoint(stream, initial, &head).await;
+    }
+
     match (head.method.as_str(), head.path.as_str()) {
         ("GET", "/healthz") => text_response(200, "ok\n"),
         ("GET", "/readyz") => json_response(200, &serde_json::json!({ "status": "ready" })),
@@ -737,6 +783,214 @@ async fn handle_local_endpoint(
         }
         _ => json_response(404, &serde_json::json!({ "error": "Not found" })),
     }
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct SessionCreateRequest {
+    title: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct SessionUpdateRequest {
+    title: Option<String>,
+    favorite: Option<bool>,
+    tags: Option<Vec<String>>,
+}
+
+async fn handle_session_endpoint(
+    stream: &mut TcpStream,
+    initial: &mut Vec<u8>,
+    head: &RequestHead,
+) -> Vec<u8> {
+    match head.method.as_str() {
+        "GET" if head.path == "/api/sessions" => {
+            json_response(200, &serde_json::json!({ "sessions": [] }))
+        }
+        "POST" if head.path == "/api/sessions" => {
+            let body = match read_request_body(stream, initial, head).await {
+                Ok(body) => body,
+                Err(error) => return json_response(400, &serde_json::json!({ "error": error })),
+            };
+            let request = if body.is_empty() {
+                SessionCreateRequest::default()
+            } else {
+                match serde_json::from_slice::<SessionCreateRequest>(&body) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        return json_response(
+                            400,
+                            &serde_json::json!({ "error": format!("invalid session request: {error}") }),
+                        );
+                    }
+                }
+            };
+            json_response(200, &session_value(&new_session_id(), request.title, 0))
+        }
+        "GET" => {
+            let Some(session_id) = session_id_from_path(&head.path) else {
+                return json_response(404, &serde_json::json!({ "error": "Not found" }));
+            };
+            json_response(200, &session_value(session_id, None, 0))
+        }
+        "PATCH" => {
+            let Some(session_id) = session_id_from_path(&head.path) else {
+                return json_response(404, &serde_json::json!({ "error": "Not found" }));
+            };
+            let body = match read_request_body(stream, initial, head).await {
+                Ok(body) => body,
+                Err(error) => return json_response(400, &serde_json::json!({ "error": error })),
+            };
+            let request = if body.is_empty() {
+                SessionUpdateRequest::default()
+            } else {
+                match serde_json::from_slice::<SessionUpdateRequest>(&body) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        return json_response(
+                            400,
+                            &serde_json::json!({ "error": format!("invalid session update: {error}") }),
+                        );
+                    }
+                }
+            };
+            json_response(
+                200,
+                &session_summary_value(
+                    session_id,
+                    request.title,
+                    0,
+                    request.favorite,
+                    request.tags,
+                ),
+            )
+        }
+        "DELETE" => response_with_extra_headers_and_length(204, "application/json", &[], "", 0),
+        _ => json_response(405, &serde_json::json!({ "error": "Method not allowed" })),
+    }
+}
+
+async fn handle_pending_request_resume_endpoint(
+    stream: &mut TcpStream,
+    initial: &mut Vec<u8>,
+    head: &RequestHead,
+) -> Vec<u8> {
+    let Some(request_id) = pending_request_id_from_resume_path(&head.path) else {
+        return json_response(404, &serde_json::json!({ "error": "Not found" }));
+    };
+    let body = match read_request_body(stream, initial, head).await {
+        Ok(body) => body,
+        Err(error) => return json_response(400, &serde_json::json!({ "error": error })),
+    };
+    let payload = if body.is_empty() {
+        Value::Object(serde_json::Map::new())
+    } else {
+        match serde_json::from_slice::<Value>(&body) {
+            Ok(payload) if payload.is_object() => payload,
+            Ok(_) => {
+                return json_response(
+                    400,
+                    &serde_json::json!({ "error": "pending request resume payload must be an object" }),
+                );
+            }
+            Err(error) => {
+                return json_response(
+                    400,
+                    &serde_json::json!({ "error": format!("invalid pending request resume request: {error}") }),
+                );
+            }
+        }
+    };
+    json_response(200, &pending_request_resume_value(request_id, &payload))
+}
+
+fn session_value(id: &str, title: Option<String>, message_count: u64) -> Value {
+    let mut session = session_summary_value(id, title, message_count, None, None);
+    session["messages"] = Value::Array(Vec::new());
+    session
+}
+
+fn session_summary_value(
+    id: &str,
+    title: Option<String>,
+    message_count: u64,
+    favorite: Option<bool>,
+    tags: Option<Vec<String>>,
+) -> Value {
+    let title = title
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "New Chat".to_string());
+    let now = now_rfc3339();
+    let mut value = serde_json::json!({
+        "id": id,
+        "title": title,
+        "createdAt": now,
+        "updatedAt": now,
+        "messageCount": message_count
+    });
+    if let Some(favorite) = favorite {
+        value["favorite"] = Value::Bool(favorite);
+    }
+    if let Some(tags) = tags {
+        value["tags"] = serde_json::json!(tags);
+    }
+    value
+}
+
+fn new_session_id() -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    let counter = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("rust-session-{now}-{counter}")
+}
+
+fn pending_request_resume_value(request_id: &str, payload: &Value) -> Value {
+    let kind = payload
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| {
+            if payload.get("decision").is_some() {
+                "approval"
+            } else if payload.get("action").is_some() {
+                "tool_retry"
+            } else {
+                "client_tool"
+            }
+        });
+    let resolution = match kind {
+        "approval" => payload
+            .get("decision")
+            .and_then(Value::as_str)
+            .unwrap_or("approved"),
+        "tool_retry" => match payload.get("action").and_then(Value::as_str) {
+            Some("retry") => "retried",
+            Some("skip") => "skipped",
+            Some("abort") => "aborted",
+            _ => "completed",
+        },
+        "user_input" => "answered",
+        _ if payload
+            .get("isError")
+            .and_then(Value::as_bool)
+            .unwrap_or(false) =>
+        {
+            "failed"
+        }
+        _ => "completed",
+    };
+    let mut request = serde_json::json!({
+        "id": request_id,
+        "kind": kind,
+        "resolution": resolution,
+        "source": "local"
+    });
+    if let Some(session_id) = payload.get("sessionId").and_then(Value::as_str) {
+        request["sessionId"] = Value::String(session_id.to_string());
+    }
+    serde_json::json!({ "success": true, "request": request })
 }
 
 fn builtin_models() -> Vec<ModelInfo> {
@@ -2777,11 +3031,53 @@ mod tests {
             "/api/usage",
             "/api/telemetry",
             "/api/training",
+            "/api/sessions",
+            "/api/sessions/session-1",
         ] {
             let request = format!("GET {target} HTTP/1.1\r\nHost: localhost\r\n\r\n");
             let head = parse_request_head(request.as_bytes()).expect("request should parse");
             assert!(is_local_endpoint(&head), "{target} should be local");
         }
+    }
+
+    #[test]
+    fn detects_session_create_and_pending_resume_routes() {
+        for request in [
+            "POST /api/sessions HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "PATCH /api/sessions/session-1 HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "DELETE /api/sessions/session-1 HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "POST /api/pending-requests/request-1/resume HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        ] {
+            let head = parse_request_head(request.as_bytes()).expect("request should parse");
+            assert!(is_local_endpoint(&head), "{request} should be local");
+        }
+    }
+
+    #[test]
+    fn pending_request_resume_maps_approval_and_tool_results() {
+        let approval = pending_request_resume_value(
+            "approval-1",
+            &serde_json::json!({ "kind": "approval", "decision": "denied" }),
+        );
+        assert_eq!(
+            approval
+                .pointer("/request/resolution")
+                .and_then(Value::as_str),
+            Some("denied")
+        );
+
+        let tool = pending_request_resume_value(
+            "tool-1",
+            &serde_json::json!({ "content": [], "isError": true }),
+        );
+        assert_eq!(
+            tool.pointer("/request/kind").and_then(Value::as_str),
+            Some("client_tool")
+        );
+        assert_eq!(
+            tool.pointer("/request/resolution").and_then(Value::as_str),
+            Some("failed")
+        );
     }
 
     #[test]
