@@ -1319,12 +1319,10 @@ fn telemetry_status(override_value: Option<bool>) -> Value {
                 .to_string_lossy()
                 .to_string()
         });
-    let enabled = override_value.unwrap_or_else(|| {
-        matches!(flag.as_deref(), Some("1" | "true" | "TRUE"))
-            || endpoint.is_some()
-            || env::var("MAESTRO_TELEMETRY_FILE").is_ok()
-            || env::var("PLAYWRIGHT_TELEMETRY_FILE").is_ok()
-    });
+    let telemetry_sink_configured = endpoint.is_some()
+        || env::var("MAESTRO_TELEMETRY_FILE").is_ok()
+        || env::var("PLAYWRIGHT_TELEMETRY_FILE").is_ok();
+    let enabled = telemetry_enabled(override_value, flag.as_deref(), telemetry_sink_configured);
     serde_json::json!({
         "enabled": enabled,
         "reason": if override_value.is_some() { "runtime override" } else if enabled { "configured" } else { "disabled" },
@@ -1334,6 +1332,14 @@ fn telemetry_status(override_value: Option<bool>) -> Value {
         "flagValue": flag,
         "runtimeOverride": override_value.map(|enabled| if enabled { "enabled" } else { "disabled" })
     })
+}
+
+fn telemetry_enabled(
+    override_value: Option<bool>,
+    flag: Option<&str>,
+    telemetry_sink_configured: bool,
+) -> bool {
+    override_value.unwrap_or_else(|| parse_bool_flag(flag).unwrap_or(telemetry_sink_configured))
 }
 
 fn training_status(override_value: Option<bool>) -> Value {
@@ -2887,6 +2893,14 @@ mod tests {
             Some("opted-in")
         );
         assert_eq!(status.get("optOut").and_then(Value::as_bool), Some(false));
+    }
+
+    #[test]
+    fn telemetry_flag_uses_bool_parser_and_explicit_false_wins() {
+        assert!(telemetry_enabled(None, Some("on"), false));
+        assert!(telemetry_enabled(None, Some("True"), false));
+        assert!(!telemetry_enabled(None, Some("false"), true));
+        assert!(telemetry_enabled(Some(true), Some("false"), false));
     }
 
     #[test]
