@@ -1,6 +1,7 @@
 import type { EnterpriseSession } from "../enterprise/context.js";
 import { checkSessionLimits } from "../safety/policy.js";
 import { recordMaestroSessionEvent } from "../telemetry/maestro-event-bus.js";
+import { webSessionEventEnv } from "./session-event-env.js";
 
 type SessionState = Parameters<SessionInitializationManager["startSession"]>[0];
 
@@ -37,16 +38,6 @@ export interface SessionInitializationEnterpriseContext {
 
 export interface SessionInitializationLogger {
 	warn(message: string, context: Record<string, unknown>): void;
-}
-
-function webSessionEventEnv(
-	env: NodeJS.ProcessEnv = process.env,
-): NodeJS.ProcessEnv {
-	return {
-		...env,
-		MAESTRO_EVENT_BUS_SOURCE: env.MAESTRO_EVENT_BUS_SOURCE ?? "maestro.web",
-		MAESTRO_SURFACE: env.MAESTRO_SURFACE ?? "web",
-	};
 }
 
 export async function startSessionWithPolicy(params: {
