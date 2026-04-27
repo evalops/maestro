@@ -76,6 +76,10 @@ describe("database migration packaging", () => {
 		expect(dockerfile).toContain(
 			"COPY --from=web-builder /app/packages/web/dist ./packages/web/dist",
 		);
+		expect(dockerfile).toContain(
+			"COPY --from=web-builder /usr/local/bin/bun /usr/local/bin/bun",
+		);
+		expect(dockerfile).not.toContain("nodejs npm");
 		expect(dockerfile).not.toContain(
 			"COPY --from=builder /app/src/db/migrations",
 		);

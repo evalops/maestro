@@ -84,10 +84,12 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
 FROM alpine:3.23 AS runner
 WORKDIR /app
 
-RUN apk add --no-cache tini git ca-certificates openssl nodejs npm && \
+RUN apk add --no-cache tini git ca-certificates openssl libstdc++ && \
     addgroup --system --gid 1001 appgroup && \
     adduser --system --uid 1001 appuser
 
+COPY --from=web-builder /usr/local/bin/bun /usr/local/bin/bun
+COPY package.json bun.lockb ./
 COPY --from=web-builder /app/packages/web/dist ./packages/web/dist
 COPY --from=rust-builder /app/target-bin/maestro-control-plane ./bin/maestro-control-plane
 

@@ -1,5 +1,5 @@
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-use maestro_tui::agent::{FromAgent, NativeAgent, NativeAgentConfig, TokenUsage};
+use maestro_tui::agent::{FromAgent, NativeAgent, NativeAgentConfig, TokenUsage, ToolResult};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha1::{Digest, Sha1};
@@ -13,12 +13,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::process::Command;
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, Mutex};
 
 const MAX_HEADER_BYTES: usize = 64 * 1024;
-const MAX_JSON_BODY_BYTES: usize = 2 * 1024 * 1024;
+const MAX_JSON_BODY_BYTES: usize = 32 * 1024 * 1024;
 static ATTACHMENT_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
+type PendingToolResponseSender = mpsc::UnboundedSender<(String, bool, Option<ToolResult>)>;
 
 #[derive(Debug, Clone)]
 struct Config {
@@ -27,6 +28,7 @@ struct Config {
     api_key: Option<String>,
     require_key: bool,
     cwd: PathBuf,
+    session_store_path: PathBuf,
     static_root: PathBuf,
     static_cache_max_age: u64,
 }
@@ -47,6 +49,9 @@ impl Config {
                 .filter(|value| !value.is_empty()),
             require_key,
             cwd: env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            session_store_path: env::var("MAESTRO_SESSIONS_FILE")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from(".maestro/sessions.json")),
             static_root: env::var("MAESTRO_WEB_STATIC_ROOT")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from("packages/web/dist")),
@@ -70,6 +75,8 @@ struct AppState {
     telemetry_override: Arc<Mutex<Option<TelemetryOverride>>>,
     training_override: Arc<Mutex<Option<TrainingOverride>>>,
     command_prefs: Arc<Mutex<CommandPrefs>>,
+    sessions: Arc<Mutex<SessionStore>>,
+    pending_tool_responses: Arc<Mutex<HashMap<String, PendingToolResponseSender>>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -278,6 +285,7 @@ async fn main() -> anyhow::Result<()> {
         "maestro rust server listening on http://{}",
         config.listen_addr()
     );
+    let sessions = load_session_store(&config.session_store_path).await;
 
     let state = AppState {
         config,
@@ -289,6 +297,8 @@ async fn main() -> anyhow::Result<()> {
             favorites: Vec::new(),
             recents: Vec::new(),
         })),
+        sessions: Arc::new(Mutex::new(sessions)),
+        pending_tool_responses: Arc::new(Mutex::new(HashMap::new())),
     };
 
     loop {
@@ -419,9 +429,9 @@ fn is_local_endpoint(head: &RequestHead) -> bool {
 
 fn is_session_endpoint(head: &RequestHead) -> bool {
     match head.method.as_str() {
-        "GET" => head.path == "/api/sessions" || session_id_from_path(&head.path).is_some(),
+        "GET" => head.path == "/api/sessions" || session_path_from_path(&head.path).is_some(),
         "POST" => head.path == "/api/sessions",
-        "PATCH" | "DELETE" => session_id_from_path(&head.path).is_some(),
+        "PATCH" | "DELETE" => session_path_from_path(&head.path).is_some(),
         _ => false,
     }
 }
@@ -430,12 +440,21 @@ fn is_pending_request_resume_endpoint(head: &RequestHead) -> bool {
     head.method == "POST" && pending_request_id_from_resume_path(&head.path).is_some()
 }
 
-fn session_id_from_path(path: &str) -> Option<&str> {
-    let session_id = path.strip_prefix("/api/sessions/")?;
-    if session_id.is_empty() || session_id.contains('/') {
+struct SessionPath<'a> {
+    id: &'a str,
+    tail: Option<&'a str>,
+}
+
+fn session_path_from_path(path: &str) -> Option<SessionPath<'_>> {
+    let remainder = path.strip_prefix("/api/sessions/")?;
+    let (id, tail) = remainder
+        .split_once('/')
+        .map(|(id, tail)| (id, Some(tail)))
+        .unwrap_or((remainder, None));
+    if id.is_empty() {
         return None;
     }
-    Some(session_id)
+    Some(SessionPath { id, tail })
 }
 
 fn pending_request_id_from_resume_path(path: &str) -> Option<&str> {
@@ -458,13 +477,13 @@ async fn handle_local_endpoint(
         if let Err(response) = authorize(&head, &state.config) {
             return response;
         }
-        return handle_session_endpoint(stream, initial, &head).await;
+        return handle_session_endpoint(stream, initial, &head, state).await;
     }
     if is_pending_request_resume_endpoint(&head) {
         if let Err(response) = authorize(&head, &state.config) {
             return response;
         }
-        return handle_pending_request_resume_endpoint(stream, initial, &head).await;
+        return handle_pending_request_resume_endpoint(stream, initial, &head, state).await;
     }
 
     match (head.method.as_str(), head.path.as_str()) {
@@ -813,15 +832,39 @@ struct SessionUpdateRequest {
     tags: Option<Vec<String>>,
 }
 
+#[derive(Clone, Default, Serialize, Deserialize)]
+struct SessionStore {
+    #[serde(default)]
+    sessions: HashMap<String, SessionRecord>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionRecord {
+    id: String,
+    title: String,
+    created_at: String,
+    updated_at: String,
+    message_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    favorite: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tags: Vec<String>,
+    #[serde(default)]
+    messages: Vec<Value>,
+}
+
 async fn handle_session_endpoint(
     stream: &mut TcpStream,
     initial: &mut Vec<u8>,
     head: &RequestHead,
+    state: &AppState,
 ) -> Vec<u8> {
     match head.method.as_str() {
-        "GET" if head.path == "/api/sessions" => {
-            json_response(200, &serde_json::json!({ "sessions": [] }))
-        }
+        "GET" if head.path == "/api/sessions" => json_response(
+            200,
+            &serde_json::json!({ "sessions": session_summaries(state).await }),
+        ),
         "POST" if head.path == "/api/sessions" => {
             let body = match read_request_body(stream, initial, head).await {
                 Ok(body) => body,
@@ -840,16 +883,30 @@ async fn handle_session_endpoint(
                     }
                 }
             };
-            json_response(200, &session_value(&new_session_id(), request.title, 0))
+            let session = create_session_record(request.title);
+            let value = session_full_value(&session);
+            {
+                state
+                    .sessions
+                    .lock()
+                    .await
+                    .sessions
+                    .insert(session.id.clone(), session);
+            }
+            persist_session_store(state).await;
+            json_response(200, &value)
         }
         "GET" => {
-            let Some(session_id) = session_id_from_path(&head.path) else {
+            let Some(session_path) = session_path_from_path(&head.path) else {
                 return json_response(404, &serde_json::json!({ "error": "Not found" }));
             };
-            json_response(200, &session_value(session_id, None, 0))
+            handle_session_get(state, session_path).await
         }
         "PATCH" => {
-            let Some(session_id) = session_id_from_path(&head.path) else {
+            let Some(session_path) = session_path_from_path(&head.path) else {
+                return json_response(404, &serde_json::json!({ "error": "Not found" }));
+            };
+            if session_path.tail.is_some() {
                 return json_response(404, &serde_json::json!({ "error": "Not found" }));
             };
             let body = match read_request_body(stream, initial, head).await {
@@ -869,18 +926,33 @@ async fn handle_session_endpoint(
                     }
                 }
             };
-            json_response(
-                200,
-                &session_summary_value(
-                    session_id,
-                    request.title,
-                    0,
-                    request.favorite,
-                    request.tags,
-                ),
-            )
+            let mut sessions = state.sessions.lock().await;
+            let Some(session) = sessions.sessions.get_mut(session_path.id) else {
+                return json_response(404, &serde_json::json!({ "error": "Session not found" }));
+            };
+            if let Some(title) = request.title.and_then(|title| normalize_title(Some(title))) {
+                session.title = title;
+            }
+            if let Some(favorite) = request.favorite {
+                session.favorite = Some(favorite);
+            }
+            if let Some(tags) = request.tags {
+                session.tags = tags;
+            }
+            session.updated_at = now_rfc3339();
+            let value = session_summary_value(session);
+            drop(sessions);
+            persist_session_store(state).await;
+            json_response(200, &value)
         }
-        "DELETE" => response_with_extra_headers_and_length(204, "application/json", &[], "", 0),
+        "DELETE" => {
+            let Some(session_path) = session_path_from_path(&head.path) else {
+                return json_response(404, &serde_json::json!({ "error": "Not found" }));
+            };
+            state.sessions.lock().await.sessions.remove(session_path.id);
+            persist_session_store(state).await;
+            response_with_extra_headers_and_length(204, "application/json", &[], "", 0)
+        }
         _ => json_response(405, &serde_json::json!({ "error": "Method not allowed" })),
     }
 }
@@ -889,6 +961,7 @@ async fn handle_pending_request_resume_endpoint(
     stream: &mut TcpStream,
     initial: &mut Vec<u8>,
     head: &RequestHead,
+    state: &AppState,
 ) -> Vec<u8> {
     let Some(request_id) = pending_request_id_from_resume_path(&head.path) else {
         return json_response(404, &serde_json::json!({ "error": "Not found" }));
@@ -916,40 +989,142 @@ async fn handle_pending_request_resume_endpoint(
             }
         }
     };
+    let Some(sender) = state.pending_tool_responses.lock().await.remove(request_id) else {
+        return json_response(
+            404,
+            &serde_json::json!({ "error": format!("No active pending request: {request_id}") }),
+        );
+    };
+    let (approved, result) = pending_tool_response_from_payload(&payload);
+    if sender
+        .send((request_id.to_string(), approved, result))
+        .is_err()
+    {
+        return json_response(
+            409,
+            &serde_json::json!({ "error": "Pending request is no longer active" }),
+        );
+    }
     json_response(200, &pending_request_resume_value(request_id, &payload))
 }
 
-fn session_value(id: &str, title: Option<String>, message_count: u64) -> Value {
-    let mut session = session_summary_value(id, title, message_count, None, None);
-    session["messages"] = Value::Array(Vec::new());
-    session
+async fn load_session_store(path: &Path) -> SessionStore {
+    match tokio::fs::read(path).await {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
+        Err(_) => SessionStore::default(),
+    }
 }
 
-fn session_summary_value(
-    id: &str,
-    title: Option<String>,
-    message_count: u64,
-    favorite: Option<bool>,
-    tags: Option<Vec<String>>,
-) -> Value {
-    let title = title
+async fn persist_session_store(state: &AppState) {
+    let store = state.sessions.lock().await.clone();
+    if let Some(parent) = state.config.session_store_path.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+    if let Ok(bytes) = serde_json::to_vec_pretty(&store) {
+        let _ = tokio::fs::write(&state.config.session_store_path, bytes).await;
+    }
+}
+
+fn create_session_record(title: Option<String>) -> SessionRecord {
+    let now = now_rfc3339();
+    SessionRecord {
+        id: new_session_id(),
+        title: normalize_title(title).unwrap_or_else(|| "New Chat".to_string()),
+        created_at: now.clone(),
+        updated_at: now,
+        message_count: 0,
+        favorite: None,
+        tags: Vec::new(),
+        messages: Vec::new(),
+    }
+}
+
+fn normalize_title(title: Option<String>) -> Option<String> {
+    title
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "New Chat".to_string());
-    let now = now_rfc3339();
+}
+
+async fn session_summaries(state: &AppState) -> Vec<Value> {
+    let mut sessions: Vec<SessionRecord> = state
+        .sessions
+        .lock()
+        .await
+        .sessions
+        .values()
+        .cloned()
+        .collect();
+    sessions.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    sessions
+        .iter()
+        .map(session_summary_value)
+        .collect::<Vec<_>>()
+}
+
+async fn handle_session_get(state: &AppState, session_path: SessionPath<'_>) -> Vec<u8> {
+    let Some(session) = state
+        .sessions
+        .lock()
+        .await
+        .sessions
+        .get(session_path.id)
+        .cloned()
+    else {
+        return json_response(404, &serde_json::json!({ "error": "Session not found" }));
+    };
+
+    match session_path.tail {
+        None => json_response(200, &session_full_value(&session)),
+        Some("timeline") => json_response(
+            200,
+            &serde_json::json!({
+                "sessionId": session.id,
+                "events": session.messages.iter().enumerate().map(|(index, message)| {
+                    serde_json::json!({
+                        "id": format!("{}-{index}", session.id),
+                        "type": "message",
+                        "message": message
+                    })
+                }).collect::<Vec<_>>()
+            }),
+        ),
+        Some("share") => json_response(
+            200,
+            &serde_json::json!({ "sessionId": session.id, "enabled": false, "shareUrl": Value::Null }),
+        ),
+        Some("export") => json_response(200, &session_full_value(&session)),
+        Some(tail) if tail.starts_with("artifacts") => json_response(
+            200,
+            &serde_json::json!({ "sessionId": session.id, "artifacts": [] }),
+        ),
+        Some(tail) if tail.starts_with("attachments") => json_response(
+            200,
+            &serde_json::json!({ "sessionId": session.id, "attachments": [] }),
+        ),
+        _ => json_response(404, &serde_json::json!({ "error": "Not found" })),
+    }
+}
+
+fn session_summary_value(session: &SessionRecord) -> Value {
     let mut value = serde_json::json!({
-        "id": id,
-        "title": title,
-        "createdAt": now,
-        "updatedAt": now,
-        "messageCount": message_count
+        "id": session.id,
+        "title": session.title,
+        "createdAt": session.created_at,
+        "updatedAt": session.updated_at,
+        "messageCount": session.message_count
     });
-    if let Some(favorite) = favorite {
+    if let Some(favorite) = session.favorite {
         value["favorite"] = Value::Bool(favorite);
     }
-    if let Some(tags) = tags {
-        value["tags"] = serde_json::json!(tags);
+    if !session.tags.is_empty() {
+        value["tags"] = serde_json::json!(session.tags);
     }
+    value
+}
+
+fn session_full_value(session: &SessionRecord) -> Value {
+    let mut value = session_summary_value(session);
+    value["messages"] = Value::Array(session.messages.clone());
     value
 }
 
@@ -1006,6 +1181,40 @@ fn pending_request_resume_value(request_id: &str, payload: &Value) -> Value {
         request["sessionId"] = Value::String(session_id.to_string());
     }
     serde_json::json!({ "success": true, "request": request })
+}
+
+fn pending_tool_response_from_payload(payload: &Value) -> (bool, Option<ToolResult>) {
+    if payload
+        .get("kind")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| kind == "approval")
+        || payload.get("decision").is_some()
+    {
+        let decision = payload
+            .get("decision")
+            .and_then(Value::as_str)
+            .unwrap_or("approved");
+        return (!matches!(decision, "denied" | "rejected" | "abort"), None);
+    }
+
+    let output = payload
+        .get("content")
+        .map(|content| {
+            content
+                .as_str()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| content.to_string())
+        })
+        .unwrap_or_default();
+    if payload
+        .get("isError")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        (true, Some(ToolResult::failure(output)))
+    } else {
+        (true, Some(ToolResult::success(output)))
+    }
 }
 
 fn builtin_models() -> Vec<ModelInfo> {
@@ -1487,21 +1696,24 @@ async fn run_script_response(cwd: &Path, request: RunScriptRequest) -> Vec<u8> {
         );
     }
 
-    let args = args.trim();
-    let command = if args.is_empty() {
-        format!("npm run {script}")
-    } else {
-        format!("npm run {script} -- {args}")
+    let Some(runner) = script_runner_command().await else {
+        return json_response(
+            503,
+            &serde_json::json!({
+                "error": "No JavaScript package runner is available for /api/run. Install bun or npm, or set MAESTRO_SCRIPT_RUNNER."
+            }),
+        );
     };
 
-    match Command::new("sh")
-        .arg("-lc")
-        .arg(&command)
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .output()
-        .await
-    {
+    let args = args.trim();
+    let mut command = Command::new(&runner);
+    command.arg("run").arg(script);
+    if !args.is_empty() {
+        command.arg("--");
+        command.args(args.split_whitespace());
+    }
+
+    match command.current_dir(cwd).stdin(Stdio::null()).output().await {
         Ok(output) => json_response(
             200,
             &serde_json::json!({
@@ -1509,13 +1721,47 @@ async fn run_script_response(cwd: &Path, request: RunScriptRequest) -> Vec<u8> {
                 "exitCode": output.status.code().unwrap_or(1),
                 "stdout": String::from_utf8_lossy(&output.stdout),
                 "stderr": String::from_utf8_lossy(&output.stderr),
-                "command": command,
+                "command": script_run_display(&runner, script, args),
             }),
         ),
         Err(error) => json_response(
             500,
             &serde_json::json!({ "error": format!("failed to run script: {error}") }),
         ),
+    }
+}
+
+async fn script_runner_command() -> Option<String> {
+    if let Ok(runner) = env::var("MAESTRO_SCRIPT_RUNNER") {
+        let runner = runner.trim();
+        if !runner.is_empty() {
+            return Some(runner.to_string());
+        }
+    }
+    for candidate in ["bun", "npm"] {
+        if executable_on_path(candidate).await {
+            return Some(candidate.to_string());
+        }
+    }
+    None
+}
+
+async fn executable_on_path(name: &str) -> bool {
+    Command::new("sh")
+        .arg("-lc")
+        .arg(format!("command -v {name} >/dev/null 2>&1"))
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+fn script_run_display(runner: &str, script: &str, args: &str) -> String {
+    if args.is_empty() {
+        format!("{runner} run {script}")
+    } else {
+        format!("{runner} run {script} -- {args}")
     }
 }
 
@@ -1728,7 +1974,7 @@ struct ChatRequest {
     session_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ChatMessage {
     role: String,
@@ -1737,7 +1983,7 @@ struct ChatMessage {
     attachments: Vec<ChatAttachment>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ChatAttachment {
     id: Option<String>,
@@ -1761,6 +2007,76 @@ impl Drop for PreparedAttachments {
             let _ = std::fs::remove_dir_all(temp_dir);
         }
     }
+}
+
+async fn selected_chat_model(chat: &ChatRequest, state: &AppState) -> String {
+    if let Some(model) = chat
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+    {
+        return model.to_string();
+    }
+    state.selected_model.lock().await.id.clone()
+}
+
+async fn record_chat_user_message(state: &AppState, chat: &ChatRequest) {
+    let Some(session_id) = chat.session_id.as_deref() else {
+        return;
+    };
+    let Some(latest) = chat.messages.last() else {
+        return;
+    };
+    let mut message = serde_json::json!({
+        "role": latest.role.clone(),
+        "content": latest.content.clone(),
+        "timestamp": now_rfc3339()
+    });
+    if !latest.attachments.is_empty() {
+        message["attachments"] = serde_json::json!(latest.attachments);
+    }
+    append_session_message(state, session_id, message, Some(&latest.content)).await;
+}
+
+async fn record_chat_assistant_message(state: &AppState, session_id: Option<&str>, message: Value) {
+    let Some(session_id) = session_id else {
+        return;
+    };
+    append_session_message(state, session_id, message, None).await;
+}
+
+async fn append_session_message(
+    state: &AppState,
+    session_id: &str,
+    message: Value,
+    title_source: Option<&Value>,
+) {
+    let mut sessions = state.sessions.lock().await;
+    let session = sessions
+        .sessions
+        .entry(session_id.to_string())
+        .or_insert_with(|| create_session_record(title_source.and_then(title_from_content)));
+    if session.message_count == 0 {
+        if let Some(title) = title_source.and_then(title_from_content) {
+            session.title = title;
+        }
+    }
+    session.messages.push(message);
+    session.message_count = session.messages.len() as u64;
+    session.updated_at = now_rfc3339();
+    drop(sessions);
+    persist_session_store(state).await;
+}
+
+fn title_from_content(content: &Value) -> Option<String> {
+    let text = composer_text_content(content);
+    let title = text
+        .split_whitespace()
+        .take(12)
+        .collect::<Vec<_>>()
+        .join(" ");
+    normalize_title(Some(title)).map(|title| title.chars().take(80).collect())
 }
 
 enum StaticPathResolution {
@@ -1836,6 +2152,8 @@ async fn handle_chat_endpoint(
         return Ok(());
     }
 
+    record_chat_user_message(&state, &chat).await;
+    let session_id = chat.session_id.clone();
     let prepared_attachments = match prepare_chat_attachments(&chat).await {
         Ok(attachments) => attachments,
         Err(error) => {
@@ -1853,10 +2171,7 @@ async fn handle_chat_endpoint(
         .await
         .map_err(|error| error.to_string())?;
 
-    let model = chat
-        .model
-        .or_else(|| env::var("MAESTRO_DEFAULT_MODEL").ok())
-        .unwrap_or_else(|| "claude-sonnet-4-5-20250514".to_string());
+    let model = selected_chat_model(&chat, &state).await;
     let thinking_enabled = chat
         .thinking_level
         .as_deref()
@@ -1888,7 +2203,7 @@ async fn handle_chat_endpoint(
         }
     };
 
-    if let Some(session_id) = chat.session_id.as_deref() {
+    if let Some(session_id) = session_id.as_deref() {
         send_sse(
             &mut stream,
             &serde_json::json!({
@@ -2023,6 +2338,11 @@ async fn handle_chat_endpoint(
             } => {
                 tool_names.insert(call_id.clone(), tool.clone());
                 if requires_approval {
+                    state
+                        .pending_tool_responses
+                        .lock()
+                        .await
+                        .insert(call_id.clone(), agent.tool_response_sender());
                     send_sse(
                         &mut stream,
                         &serde_json::json!({
@@ -2083,6 +2403,7 @@ async fn handle_chat_endpoint(
                 .await?;
             }
             FromAgent::ToolEnd { call_id, success } => {
+                state.pending_tool_responses.lock().await.remove(&call_id);
                 let tool = tool_names
                     .remove(&call_id)
                     .unwrap_or_else(|| "tool".to_string());
@@ -2173,6 +2494,7 @@ async fn handle_chat_endpoint(
                 tool,
                 reason,
             } => {
+                state.pending_tool_responses.lock().await.remove(&call_id);
                 send_sse(
                     &mut stream,
                     &serde_json::json!({
@@ -2187,6 +2509,7 @@ async fn handle_chat_endpoint(
             }
             FromAgent::ResponseEnd { usage, .. } => {
                 let message = composer_assistant_message(&assistant_text, &thinking_text, usage);
+                record_chat_assistant_message(&state, session_id.as_deref(), message.clone()).await;
                 send_sse(
                     &mut stream,
                     &serde_json::json!({ "type": "message_end", "message": message }),
@@ -2340,6 +2663,8 @@ async fn handle_chat_websocket_endpoint(
         return Ok(());
     }
 
+    record_chat_user_message(&state, &chat).await;
+    let session_id = chat.session_id.clone();
     let prepared_attachments = match prepare_chat_attachments(&chat).await {
         Ok(attachments) => attachments,
         Err(error) => {
@@ -2355,10 +2680,7 @@ async fn handle_chat_websocket_endpoint(
         }
     };
 
-    let model = chat
-        .model
-        .or_else(|| env::var("MAESTRO_DEFAULT_MODEL").ok())
-        .unwrap_or_else(|| "claude-sonnet-4-5-20250514".to_string());
+    let model = selected_chat_model(&chat, &state).await;
     let thinking_enabled = chat
         .thinking_level
         .as_deref()
@@ -2502,6 +2824,11 @@ async fn handle_chat_websocket_endpoint(
             } => {
                 tool_names.insert(call_id.clone(), tool.clone());
                 if requires_approval {
+                    state
+                        .pending_tool_responses
+                        .lock()
+                        .await
+                        .insert(call_id.clone(), agent.tool_response_sender());
                     send_ws_json(
                         &mut stream,
                         &serde_json::json!({
@@ -2562,6 +2889,7 @@ async fn handle_chat_websocket_endpoint(
                 .await?;
             }
             FromAgent::ToolEnd { call_id, success } => {
+                state.pending_tool_responses.lock().await.remove(&call_id);
                 let tool = tool_names
                     .remove(&call_id)
                     .unwrap_or_else(|| "tool".to_string());
@@ -2652,6 +2980,7 @@ async fn handle_chat_websocket_endpoint(
                 tool,
                 reason,
             } => {
+                state.pending_tool_responses.lock().await.remove(&call_id);
                 send_ws_json(
                     &mut stream,
                     &serde_json::json!({
@@ -2666,6 +2995,7 @@ async fn handle_chat_websocket_endpoint(
             }
             FromAgent::ResponseEnd { usage, .. } => {
                 let message = composer_assistant_message(&assistant_text, &thinking_text, usage);
+                record_chat_assistant_message(&state, session_id.as_deref(), message.clone()).await;
                 send_ws_json(
                     &mut stream,
                     &serde_json::json!({ "type": "message_end", "message": message }),
@@ -2873,15 +3203,20 @@ fn composer_text_content(content: &Value) -> String {
         Value::String(text) => text.clone(),
         Value::Array(blocks) => blocks
             .iter()
-            .filter_map(|block| {
-                let object = block.as_object()?;
-                if object.get("type")?.as_str()? == "text" {
-                    object.get("text")?.as_str()
-                } else {
-                    None
+            .map(|block| {
+                if let Some(object) = block.as_object() {
+                    if object.get("type").and_then(Value::as_str) == Some("text") {
+                        return object
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string();
+                    }
                 }
+                block.to_string()
             })
-            .collect::<String>(),
+            .collect::<Vec<_>>()
+            .join("\n"),
         _ => String::new(),
     }
 }
@@ -3671,6 +4006,8 @@ mod tests {
             "/api/training",
             "/api/sessions",
             "/api/sessions/session-1",
+            "/api/sessions/session-1/timeline",
+            "/api/sessions/session-1/attachments/file-1",
         ] {
             let request = format!("GET {target} HTTP/1.1\r\nHost: localhost\r\n\r\n");
             let head = parse_request_head(request.as_bytes()).expect("request should parse");
@@ -3689,6 +4026,11 @@ mod tests {
             let head = parse_request_head(request.as_bytes()).expect("request should parse");
             assert!(is_local_endpoint(&head), "{request} should be local");
         }
+    }
+
+    #[test]
+    fn chat_body_limit_allows_base64_attachments() {
+        assert!(MAX_JSON_BODY_BYTES >= 32 * 1024 * 1024);
     }
 
     #[test]
@@ -3751,6 +4093,30 @@ mod tests {
             tool.pointer("/request/resolution").and_then(Value::as_str),
             Some("failed")
         );
+
+        let (approved, result) = pending_tool_response_from_payload(
+            &serde_json::json!({ "kind": "approval", "decision": "denied" }),
+        );
+        assert!(!approved);
+        assert!(result.is_none());
+
+        let (approved, result) =
+            pending_tool_response_from_payload(&serde_json::json!({ "content": "ok" }));
+        assert!(approved);
+        assert_eq!(result.expect("tool result").output, "ok");
+    }
+
+    #[test]
+    fn composer_content_preserves_non_text_blocks() {
+        let content = serde_json::json!([
+            { "type": "text", "text": "hello" },
+            { "type": "tool_result", "toolUseId": "tool-1", "content": "world" }
+        ]);
+        let rendered = composer_text_content(&content);
+
+        assert!(rendered.contains("hello"));
+        assert!(rendered.contains("tool_result"));
+        assert!(rendered.contains("tool-1"));
     }
 
     #[test]
