@@ -630,12 +630,15 @@ async fn handle_local_endpoint(
             if let Err(response) = authorize(&head, &state.config) {
                 return response;
             }
-            let action = read_action(stream, initial, &head).await;
-            let override_value = match action.as_deref() {
-                Some("on") => Some(true),
-                Some("off") => Some(false),
-                Some("reset") => None,
-                _ => *state.telemetry_override.lock().await,
+            let action = match read_required_action(stream, initial, &head, &["on", "off", "reset"]).await {
+                Ok(action) => action,
+                Err(response) => return response,
+            };
+            let override_value = match action.as_str() {
+                "on" => Some(true),
+                "off" => Some(false),
+                "reset" => None,
+                _ => unreachable!("action was validated"),
             };
             *state.telemetry_override.lock().await = override_value;
             json_response(
@@ -657,12 +660,15 @@ async fn handle_local_endpoint(
             if let Err(response) = authorize(&head, &state.config) {
                 return response;
             }
-            let action = read_action(stream, initial, &head).await;
-            let override_value = match action.as_deref() {
-                Some("on") => Some(false),
-                Some("off") => Some(true),
-                Some("reset") => None,
-                _ => *state.training_override.lock().await,
+            let action = match read_required_action(stream, initial, &head, &["on", "off", "reset"]).await {
+                Ok(action) => action,
+                Err(response) => return response,
+            };
+            let override_value = match action.as_str() {
+                "on" => Some(false),
+                "off" => Some(true),
+                "reset" => None,
+                _ => unreachable!("action was validated"),
             };
             *state.training_override.lock().await = override_value;
             json_response(
@@ -1323,17 +1329,35 @@ fn parse_bool_flag(value: Option<&str>) -> Option<bool> {
     }
 }
 
-async fn read_action(
+async fn read_required_action(
     stream: &mut TcpStream,
     initial: &mut Vec<u8>,
     head: &RequestHead,
-) -> Option<String> {
-    let body = read_request_body(stream, initial, head).await.ok()?;
-    let payload = serde_json::from_slice::<Value>(&body).ok()?;
-    payload
+    valid_actions: &[&str],
+) -> Result<String, Vec<u8>> {
+    let body = read_request_body(stream, initial, head)
+        .await
+        .map_err(|error| json_response(400, &serde_json::json!({ "error": error })))?;
+    parse_action_body(&body, valid_actions)
+        .map_err(|error| json_response(400, &serde_json::json!({ "error": error })))
+}
+
+fn parse_action_body(body: &[u8], valid_actions: &[&str]) -> Result<String, String> {
+    let payload = serde_json::from_slice::<Value>(body)
+        .map_err(|error| format!("invalid action request: {error}"))?;
+    let action = payload
         .get("action")
         .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
+        .map(str::trim)
+        .filter(|action| !action.is_empty())
+        .ok_or_else(|| "action is required".to_string())?;
+    if !valid_actions.contains(&action) {
+        return Err(format!(
+            "invalid action \"{action}\". Expected one of: {}",
+            valid_actions.join(", ")
+        ));
+    }
+    Ok(action.to_string())
 }
 
 #[derive(Debug, Deserialize)]
@@ -2214,7 +2238,11 @@ async fn static_response(head: &RequestHead, config: &Config) -> Vec<u8> {
 
     match tokio::fs::read(&path).await {
         Ok(bytes) => {
-            if head.method == "HEAD" {
+            if is_spa_entry_path(&path) && head.method == "HEAD" {
+                response_with_no_store_and_length(200, mime_for_path(&path), &[], bytes.len())
+            } else if is_spa_entry_path(&path) {
+                response_with_no_store(200, mime_for_path(&path), &bytes)
+            } else if head.method == "HEAD" {
                 response_with_cache_and_length(
                     200,
                     mime_for_path(&path),
@@ -2236,20 +2264,14 @@ async fn static_response(head: &RequestHead, config: &Config) -> Vec<u8> {
             match tokio::fs::read(&index).await {
                 Ok(bytes) => {
                     if head.method == "HEAD" {
-                        response_with_cache_and_length(
+                        response_with_no_store_and_length(
                             200,
                             "text/html; charset=utf-8",
                             &[],
-                            config.static_cache_max_age,
                             bytes.len(),
                         )
                     } else {
-                        response_with_cache(
-                            200,
-                            "text/html; charset=utf-8",
-                            &bytes,
-                            config.static_cache_max_age,
-                        )
+                        response_with_no_store(200, "text/html; charset=utf-8", &bytes)
                     }
                 }
                 Err(_) => json_response(
@@ -2277,6 +2299,12 @@ fn resolve_static_path(root: &Path, request_path: &str) -> Option<PathBuf> {
     } else {
         Some(root.join(trimmed))
     }
+}
+
+fn is_spa_entry_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("index.html"))
 }
 
 fn mime_for_path(path: &Path) -> &'static str {
@@ -2454,6 +2482,25 @@ fn response_with_cache_and_length(
     )
 }
 
+fn response_with_no_store(status: u16, content_type: &str, body: &[u8]) -> Vec<u8> {
+    response_with_no_store_and_length(status, content_type, body, body.len())
+}
+
+fn response_with_no_store_and_length(
+    status: u16,
+    content_type: &str,
+    body: &[u8],
+    content_length: usize,
+) -> Vec<u8> {
+    response_with_extra_headers_and_length(
+        status,
+        content_type,
+        body,
+        "Cache-Control: no-store, no-cache, must-revalidate\r\n",
+        content_length,
+    )
+}
+
 fn response_with_extra_headers(
     status: u16,
     content_type: &str,
@@ -2612,6 +2659,27 @@ mod tests {
 
         assert!(response.contains("Content-Length: 5\r\n"));
         assert!(response.ends_with("\r\n\r\n"));
+    }
+
+    #[test]
+    fn spa_entry_response_uses_no_store() {
+        let response =
+            response_with_no_store_and_length(200, "text/html; charset=utf-8", &[], "index".len());
+        let response = String::from_utf8(response).expect("response should be utf-8");
+
+        assert!(response.contains("Content-Length: 5\r\n"));
+        assert!(response.contains("Cache-Control: no-store, no-cache, must-revalidate\r\n"));
+    }
+
+    #[test]
+    fn action_body_rejects_missing_or_unknown_actions() {
+        assert_eq!(
+            parse_action_body(br#"{"action":"reset"}"#, &["on", "off", "reset"])
+                .expect("reset should parse"),
+            "reset"
+        );
+        assert!(parse_action_body(br#"{}"#, &["on", "off", "reset"]).is_err());
+        assert!(parse_action_body(br#"{"action":"maybe"}"#, &["on", "off", "reset"]).is_err());
     }
 
     #[test]
