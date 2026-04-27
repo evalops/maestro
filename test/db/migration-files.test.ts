@@ -103,6 +103,10 @@ describe("database migration packaging", () => {
 		expect(migration).toContain('ADD COLUMN IF NOT EXISTS "id"');
 		expect(migration).toContain('ADD COLUMN IF NOT EXISTS "payload"');
 		expect(migration).toContain('ADD COLUMN IF NOT EXISTS "status"');
+		expect(migration).toContain(
+			'ALTER TYPE "webhook_delivery_status" ADD VALUE IF NOT EXISTS',
+		);
+		expect(migration).toContain('"status"::text NOT IN');
 		expect(migration).toContain("webhook_deliveries_pkey");
 		expect(migration).toContain("organization_id");
 		expect(migration).toContain("next_attempt_at");

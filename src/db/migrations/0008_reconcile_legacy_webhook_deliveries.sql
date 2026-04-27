@@ -26,6 +26,14 @@ BEGIN
 	END IF;
 END $$;
 --> statement-breakpoint
+ALTER TYPE "webhook_delivery_status" ADD VALUE IF NOT EXISTS 'pending';
+--> statement-breakpoint
+ALTER TYPE "webhook_delivery_status" ADD VALUE IF NOT EXISTS 'delivered';
+--> statement-breakpoint
+ALTER TYPE "webhook_delivery_status" ADD VALUE IF NOT EXISTS 'failed';
+--> statement-breakpoint
+ALTER TYPE "webhook_delivery_status" ADD VALUE IF NOT EXISTS 'retrying';
+--> statement-breakpoint
 DO $$
 DECLARE
 	payload_type text;
@@ -144,6 +152,18 @@ BEGIN
 			);
 	END IF;
 
+	IF status_type = 'webhook_delivery_status' THEN
+		UPDATE "webhook_deliveries"
+		SET "status" = (
+			CASE
+				WHEN "status"::text IN ('completed', 'sent', 'success') THEN 'delivered'
+				ELSE 'failed'
+			END
+		)::"webhook_delivery_status"
+		WHERE "status" IS NOT NULL
+			AND "status"::text NOT IN ('pending', 'delivered', 'failed', 'retrying');
+	END IF;
+
 	UPDATE "webhook_deliveries" SET "id" = gen_random_uuid() WHERE "id" IS NULL;
 	UPDATE "webhook_deliveries" SET "payload" = '{}'::jsonb WHERE "payload" IS NULL;
 	UPDATE "webhook_deliveries" SET "status" = 'failed' WHERE "status" IS NULL;
@@ -158,7 +178,7 @@ BEGIN
 			"last_error",
 			'legacy webhook delivery row has no target url after schema reconciliation'
 		)
-	WHERE "url" = '' AND "status" IN ('pending', 'retrying');
+	WHERE "url" = '' AND "status"::text IN ('pending', 'retrying');
 
 	ALTER TABLE "webhook_deliveries" ALTER COLUMN "payload" SET NOT NULL;
 	ALTER TABLE "webhook_deliveries" ALTER COLUMN "status" SET DEFAULT 'pending';
