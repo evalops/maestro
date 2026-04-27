@@ -19,6 +19,7 @@ vi.mock("../../src/session/session-memory.js", () => ({
 const BASE_DB_URL =
 	process.env.MAESTRO_DATABASE_URL || process.env.DATABASE_URL;
 const describeDb = BASE_DB_URL ? describe : describe.skip;
+const EXPECTED_MIGRATION_COUNT = 8;
 
 const originalEnv = { ...process.env };
 
@@ -192,7 +193,7 @@ describeDb("hosted session database storage", () => {
 
 	it("persists scoped web sessions in Postgres instead of JSONL files", async () => {
 		const { migrate } = await import("../../src/db/migrate.js");
-		await expect(migrate()).resolves.toBe(7);
+		await expect(migrate()).resolves.toBe(EXPECTED_MIGRATION_COUNT);
 
 		const { createWebSessionManagerForRequest } = await import(
 			"../../src/server/session-scope.js"
@@ -281,7 +282,7 @@ describeDb("hosted session database storage", () => {
 		process.env.MAESTRO_JWT_SECRET = "test-jwt-secret-should-be-long-enough";
 
 		const { migrate } = await import("../../src/db/migrate.js");
-		await expect(migrate()).resolves.toBe(7);
+		await expect(migrate()).resolves.toBe(EXPECTED_MIGRATION_COUNT);
 
 		const { checkApiAuth } = await import("../../src/server/authz.js");
 		const { createWebSessionManagerForRequest } = await import(
@@ -359,7 +360,7 @@ describeDb("hosted session database storage", () => {
 		}));
 
 		const { migrate } = await import("../../src/db/migrate.js");
-		await expect(migrate()).resolves.toBe(7);
+		await expect(migrate()).resolves.toBe(EXPECTED_MIGRATION_COUNT);
 
 		const { createWebSessionManagerForRequest } = await import(
 			"../../src/server/session-scope.js"
@@ -399,7 +400,7 @@ describeDb("hosted session database storage", () => {
 
 	it("does not truncate unbounded hosted session listings", async () => {
 		const { migrate } = await import("../../src/db/migrate.js");
-		await expect(migrate()).resolves.toBe(7);
+		await expect(migrate()).resolves.toBe(EXPECTED_MIGRATION_COUNT);
 		const { getDb } = await import("../../src/db/client.js");
 		const { hostedSessions } = await import("../../src/db/schema.js");
 		const { HostedSessionManager } = await import(
@@ -437,7 +438,7 @@ describeDb("hosted session database storage", () => {
 
 	it("surfaces queued database write failures on flush", async () => {
 		const { migrate } = await import("../../src/db/migrate.js");
-		await expect(migrate()).resolves.toBe(7);
+		await expect(migrate()).resolves.toBe(EXPECTED_MIGRATION_COUNT);
 		const { createWebSessionManagerForRequest } = await import(
 			"../../src/server/session-scope.js"
 		);

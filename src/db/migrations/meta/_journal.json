@@ -50,6 +50,13 @@
 			"when": 1776800461000,
 			"tag": "0006_hosted_session_storage",
 			"breakpoints": true
+		},
+		{
+			"idx": 7,
+			"version": "7",
+			"when": 1776800462000,
+			"tag": "0007_reconcile_legacy_audit_hash_cache",
+			"breakpoints": true
 		}
 	]
 }
