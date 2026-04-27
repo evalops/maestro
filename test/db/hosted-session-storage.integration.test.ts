@@ -19,7 +19,7 @@ vi.mock("../../src/session/session-memory.js", () => ({
 const BASE_DB_URL =
 	process.env.MAESTRO_DATABASE_URL || process.env.DATABASE_URL;
 const describeDb = BASE_DB_URL ? describe : describe.skip;
-const EXPECTED_MIGRATION_COUNT = 8;
+const EXPECTED_MIGRATION_COUNT = 9;
 
 const originalEnv = { ...process.env };
 

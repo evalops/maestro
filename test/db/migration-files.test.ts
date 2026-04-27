@@ -34,6 +34,9 @@ describe("database migration packaging", () => {
 		expect(journal.entries.map((entry) => entry.tag)).toContain(
 			"0007_reconcile_legacy_audit_hash_cache",
 		);
+		expect(journal.entries.map((entry) => entry.tag)).toContain(
+			"0008_reconcile_legacy_webhook_deliveries",
+		);
 
 		for (const entry of journal.entries) {
 			expect(
@@ -89,5 +92,16 @@ describe("database migration packaging", () => {
 			'CREATE TABLE IF NOT EXISTS "audit_hash_cache"',
 		);
 		expect(migration).toContain("audit_hash_cache_org_id_organizations_id_fk");
+	});
+
+	it("preserves the legacy webhook delivery repair migration", () => {
+		const migration = readFileSync(
+			path.join(migrationsDir, "0008_reconcile_legacy_webhook_deliveries.sql"),
+			"utf8",
+		);
+
+		expect(migration).toContain("organization_id");
+		expect(migration).toContain("next_attempt_at");
+		expect(migration).toContain("webhook_delivery_retry_idx");
 	});
 });

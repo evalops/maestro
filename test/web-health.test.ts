@@ -116,6 +116,38 @@ describe("Health Checks", () => {
 			});
 		});
 
+		it("should return unhealthy when a critical table has missing columns", async () => {
+			vi.mocked(isDatabaseConfigured).mockReturnValue(true);
+			vi.mocked(testConnection).mockResolvedValue(true);
+			vi.mocked(checkCriticalTables).mockResolvedValue([
+				{ name: "_composer_migrations", exists: true },
+				{ name: "organizations", exists: true },
+				{ name: "users", exists: true },
+				{ name: "sessions", exists: true },
+				{
+					name: "webhook_deliveries",
+					exists: true,
+					missingColumns: ["org_id", "next_retry_at"],
+				},
+				{ name: "distributed_locks", exists: true },
+				{ name: "usage_metrics", exists: true },
+				{ name: "execution_traces", exists: true },
+				{ name: "workspace_config", exists: true },
+				{ name: "revenue_attribution", exists: true },
+			]);
+
+			const result = await runHealthChecks();
+
+			expect(result.status).toBe("unhealthy");
+			expect(result.checks.database.criticalTables).toMatchObject({
+				status: "missing",
+				missing: [
+					"webhook_deliveries.org_id",
+					"webhook_deliveries.next_retry_at",
+				],
+			});
+		});
+
 		it("should include timestamp in result", async () => {
 			vi.mocked(isDatabaseConfigured).mockReturnValue(false);
 

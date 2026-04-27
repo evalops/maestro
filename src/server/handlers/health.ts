@@ -130,9 +130,12 @@ export async function runHealthChecks(
 			checks.database.status = "up";
 			try {
 				const tableChecks = await checkCriticalTables();
-				const missing = tableChecks
-					.filter((table) => !table.exists)
-					.map((table) => table.name);
+				const missing = tableChecks.flatMap((table) => {
+					if (!table.exists) return [table.name];
+					return (table.missingColumns ?? []).map(
+						(column) => `${table.name}.${column}`,
+					);
+				});
 				checks.database.criticalTables = {
 					status: missing.length > 0 ? "missing" : "ok",
 					checked: tableChecks.map((table) => table.name),
