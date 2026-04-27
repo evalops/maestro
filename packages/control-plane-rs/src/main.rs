@@ -388,6 +388,9 @@ fn is_chat_websocket_endpoint(head: &RequestHead) -> bool {
 }
 
 fn is_local_endpoint(head: &RequestHead) -> bool {
+    if head.method == "OPTIONS" && head.path.starts_with("/api/") {
+        return true;
+    }
     matches!(
         (head.method.as_str(), head.path.as_str()),
         (
@@ -5936,12 +5939,15 @@ fn origin_allowed(head: &RequestHead) -> bool {
     matches!(
         origin,
         "http://localhost:4173"
+            | "http://localhost:8080"
             | "http://localhost:3000"
             | "http://localhost:5173"
             | "http://127.0.0.1:4173"
+            | "http://127.0.0.1:8080"
             | "http://127.0.0.1:3000"
             | "http://127.0.0.1:5173"
             | "http://[::1]:4173"
+            | "http://[::1]:8080"
             | "http://[::1]:3000"
             | "http://[::1]:5173"
     )
@@ -6217,7 +6223,7 @@ mod tests {
             b"OPTIONS /api/chat HTTP/1.1\r\nHost: localhost\r\nOrigin: http://localhost:4173\r\nAccess-Control-Request-Method: POST\r\n\r\n",
         )
         .expect("request should parse");
-        assert!(!is_local_endpoint(&head));
+        assert!(is_local_endpoint(&head));
 
         let response = response(204, "text/plain; charset=utf-8", &[]);
         let text = String::from_utf8(response).expect("response should be utf-8");
@@ -6462,6 +6468,12 @@ mod tests {
         )
         .expect("request should parse");
         assert!(origin_allowed(&allowed));
+
+        let packaged_origin = parse_request_head(
+            b"GET /api/chat/ws HTTP/1.1\r\nHost: localhost:8080\r\nOrigin: http://localhost:8080\r\n\r\n",
+        )
+        .expect("request should parse");
+        assert!(origin_allowed(&packaged_origin));
 
         let rejected = parse_request_head(
             b"GET /api/chat/ws HTTP/1.1\r\nHost: localhost\r\nOrigin: https://evil.example\r\n\r\n",
