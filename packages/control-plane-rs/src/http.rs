@@ -244,6 +244,10 @@ pub(crate) fn response_with_extra_headers_and_length(
     extra_headers: &str,
     content_length: usize,
 ) -> Vec<u8> {
+    assert!(
+        body.is_empty() || content_length == body.len(),
+        "response body length must match Content-Length unless body is empty"
+    );
     let reason = match status {
         200 => "OK",
         204 => "No Content",
@@ -402,7 +406,7 @@ pub(crate) fn percent_decode_component(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_request_head, query_flag};
+    use super::{parse_request_head, query_flag, response_with_extra_headers_and_length};
 
     #[test]
     fn query_flag_treats_present_valueless_parameter_as_true() {
@@ -425,5 +429,19 @@ mod tests {
                 "expected {value} to be false"
             );
         }
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "response body length must match Content-Length unless body is empty"
+    )]
+    fn response_with_explicit_length_rejects_non_empty_mismatches() {
+        let _ = response_with_extra_headers_and_length(
+            200,
+            "text/plain; charset=utf-8",
+            b"hello",
+            "",
+            4,
+        );
     }
 }
