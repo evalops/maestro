@@ -27,11 +27,11 @@ mod model_catalog;
 
 pub(crate) use http::MAX_JSON_BODY_BYTES;
 use http::{
-    cors_origin, header_end, json_response, origin_allowed, query_flag, read_request_body,
-    read_request_body_with_limit, read_request_head, response_with_cache,
+    header_end, json_response, origin_allowed, query_flag, read_request_body,
+    read_request_body_with_limit, read_request_head, response_cors_origin, response_with_cache,
     response_with_cache_and_length, response_with_extra_headers,
     response_with_extra_headers_and_length, response_with_no_store,
-    response_with_no_store_and_length, text_response, RequestHead,
+    response_with_no_store_and_length, text_response, with_cors_origin, RequestHead,
 };
 #[cfg(test)]
 use http::{parse_request_head, response};
@@ -351,9 +351,9 @@ async fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<(),
     }
 
     if is_local_endpoint(&head) {
-        let response = handle_local_endpoint(&mut stream, &mut initial, head, &state).await;
+        let response = handle_local_endpoint(&mut stream, &mut initial, &head, &state).await;
         stream
-            .write_all(&response)
+            .write_all(&with_cors_origin(response, &head))
             .await
             .map_err(|error| error.to_string())?;
         let _ = stream.shutdown().await;
@@ -363,7 +363,7 @@ async fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<(),
     if is_static_asset_request(&head) {
         let response = static_response(&head, &state.config).await;
         stream
-            .write_all(&response)
+            .write_all(&with_cors_origin(response, &head))
             .await
             .map_err(|error| error.to_string())?;
         let _ = stream.shutdown().await;
@@ -379,7 +379,7 @@ async fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<(),
         }),
     );
     stream
-        .write_all(&response)
+        .write_all(&with_cors_origin(response, &head))
         .await
         .map_err(|error| error.to_string())?;
     let _ = stream.shutdown().await;
@@ -519,7 +519,7 @@ fn pending_request_id_from_resume_path(path: &str) -> Option<&str> {
 async fn handle_local_endpoint(
     stream: &mut TcpStream,
     initial: &mut Vec<u8>,
-    head: RequestHead,
+    head: &RequestHead,
     state: &AppState,
 ) -> Vec<u8> {
     if let Err(response) = validate_csrf(&head, &state.config) {
@@ -3464,7 +3464,7 @@ async fn handle_chat_endpoint(
     let Some(auth) = auth_context(&head, &state.config) else {
         let response = json_response(401, &serde_json::json!({ "error": "Unauthorized" }));
         stream
-            .write_all(&response)
+            .write_all(&with_cors_origin(response, &head))
             .await
             .map_err(|error| error.to_string())?;
         let _ = stream.shutdown().await;
@@ -3472,7 +3472,7 @@ async fn handle_chat_endpoint(
     };
     if let Err(response) = validate_csrf(&head, &state.config) {
         stream
-            .write_all(&response)
+            .write_all(&with_cors_origin(response, &head))
             .await
             .map_err(|error| error.to_string())?;
         let _ = stream.shutdown().await;
@@ -3483,7 +3483,10 @@ async fn handle_chat_endpoint(
         Ok(body) => body,
         Err(error) => {
             stream
-                .write_all(&json_response(400, &serde_json::json!({ "error": error })))
+                .write_all(&with_cors_origin(
+                    json_response(400, &serde_json::json!({ "error": error })),
+                    &head,
+                ))
                 .await
                 .map_err(|error| error.to_string())?;
             let _ = stream.shutdown().await;
@@ -3494,9 +3497,12 @@ async fn handle_chat_endpoint(
         Ok(request) => request,
         Err(error) => {
             stream
-                .write_all(&json_response(
-                    400,
-                    &serde_json::json!({ "error": format!("invalid chat request: {error}") }),
+                .write_all(&with_cors_origin(
+                    json_response(
+                        400,
+                        &serde_json::json!({ "error": format!("invalid chat request: {error}") }),
+                    ),
+                    &head,
                 ))
                 .await
                 .map_err(|error| error.to_string())?;
@@ -3507,9 +3513,9 @@ async fn handle_chat_endpoint(
 
     let Some(latest) = chat.messages.last() else {
         stream
-            .write_all(&json_response(
-                400,
-                &serde_json::json!({ "error": "No messages supplied" }),
+            .write_all(&with_cors_origin(
+                json_response(400, &serde_json::json!({ "error": "No messages supplied" })),
+                &head,
             ))
             .await
             .map_err(|error| error.to_string())?;
@@ -3518,9 +3524,12 @@ async fn handle_chat_endpoint(
     };
     if latest.role != "user" {
         stream
-            .write_all(&json_response(
-                400,
-                &serde_json::json!({ "error": "Last message must be a user message" }),
+            .write_all(&with_cors_origin(
+                json_response(
+                    400,
+                    &serde_json::json!({ "error": "Last message must be a user message" }),
+                ),
+                &head,
             ))
             .await
             .map_err(|error| error.to_string())?;
@@ -3531,9 +3540,12 @@ async fn handle_chat_endpoint(
     let prompt = build_prompt_from_chat(&chat);
     if prompt.trim().is_empty() {
         stream
-            .write_all(&json_response(
-                400,
-                &serde_json::json!({ "error": "User message cannot be empty" }),
+            .write_all(&with_cors_origin(
+                json_response(
+                    400,
+                    &serde_json::json!({ "error": "User message cannot be empty" }),
+                ),
+                &head,
             ))
             .await
             .map_err(|error| error.to_string())?;
@@ -3547,7 +3559,10 @@ async fn handle_chat_endpoint(
         Ok(attachments) => attachments,
         Err(error) => {
             stream
-                .write_all(&json_response(400, &serde_json::json!({ "error": error })))
+                .write_all(&with_cors_origin(
+                    json_response(400, &serde_json::json!({ "error": error })),
+                    &head,
+                ))
                 .await
                 .map_err(|error| error.to_string())?;
             let _ = stream.shutdown().await;
@@ -3556,7 +3571,7 @@ async fn handle_chat_endpoint(
     };
 
     stream
-        .write_all(sse_headers().as_bytes())
+        .write_all(sse_headers(&head).as_bytes())
         .await
         .map_err(|error| error.to_string())?;
 
@@ -4010,7 +4025,7 @@ async fn handle_chat_websocket_endpoint(
     let Some(auth) = auth_context(&head, &state.config) else {
         let response = json_response(401, &serde_json::json!({ "error": "Unauthorized" }));
         stream
-            .write_all(&response)
+            .write_all(&with_cors_origin(response, &head))
             .await
             .map_err(|error| error.to_string())?;
         let _ = stream.shutdown().await;
@@ -4019,9 +4034,12 @@ async fn handle_chat_websocket_endpoint(
 
     if !origin_allowed(&head) {
         stream
-            .write_all(&json_response(
-                403,
-                &serde_json::json!({ "error": "WebSocket origin is not allowed" }),
+            .write_all(&with_cors_origin(
+                json_response(
+                    403,
+                    &serde_json::json!({ "error": "WebSocket origin is not allowed" }),
+                ),
+                &head,
             ))
             .await
             .map_err(|error| error.to_string())?;
@@ -4031,9 +4049,12 @@ async fn handle_chat_websocket_endpoint(
 
     let Some(key) = head.headers.get("sec-websocket-key") else {
         stream
-            .write_all(&json_response(
-                400,
-                &serde_json::json!({ "error": "Missing Sec-WebSocket-Key" }),
+            .write_all(&with_cors_origin(
+                json_response(
+                    400,
+                    &serde_json::json!({ "error": "Missing Sec-WebSocket-Key" }),
+                ),
+                &head,
             ))
             .await
             .map_err(|error| error.to_string())?;
@@ -4994,11 +5015,16 @@ fn parse_websocket_frame(
     }))
 }
 
-fn sse_headers() -> String {
-    format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nAccess-Control-Allow-Origin: {}\r\nAccess-Control-Allow-Credentials: true\r\n\r\n",
-        cors_origin()
-    )
+fn sse_headers(head: &RequestHead) -> String {
+    let mut headers = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nAccess-Control-Allow-Origin: {}\r\nAccess-Control-Allow-Credentials: true\r\n",
+        response_cors_origin(head)
+    );
+    if head.headers.contains_key("origin") {
+        headers.push_str("Vary: Origin\r\n");
+    }
+    headers.push_str("\r\n");
+    headers
 }
 
 fn authorize(head: &RequestHead, config: &Config) -> Result<(), Vec<u8>> {
@@ -5893,6 +5919,24 @@ mod tests {
     }
 
     #[test]
+    fn parses_and_percent_decodes_query_parameters() {
+        let request = b"GET /api/status?model=my%2Fmodel&title=hello+world&file=docs%2Fnotes%20v1.md&flag+name=value+with+spaces&empty=%ZZ HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        let head = parse_request_head(request).expect("request should parse");
+
+        assert_eq!(head.query.get("model"), Some(&"my/model".to_string()));
+        assert_eq!(head.query.get("title"), Some(&"hello world".to_string()));
+        assert_eq!(
+            head.query.get("file"),
+            Some(&"docs/notes v1.md".to_string())
+        );
+        assert_eq!(
+            head.query.get("flag name"),
+            Some(&"value with spaces".to_string())
+        );
+        assert_eq!(head.query.get("empty"), Some(&"%ZZ".to_string()));
+    }
+
+    #[test]
     fn authorizes_shared_secret_bearer_token() {
         let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
         let previous = env::var_os("MAESTRO_AUTH_SHARED_SECRET");
@@ -6077,6 +6121,32 @@ mod tests {
         let text = String::from_utf8(response).expect("response should be utf-8");
         assert!(text.starts_with("HTTP/1.1 204 No Content\r\n"));
         assert!(text.contains("Access-Control-Allow-Methods: GET,POST,PATCH,DELETE,OPTIONS\r\n"));
+    }
+
+    #[test]
+    fn sse_headers_reflect_allowed_request_origin() {
+        let head = parse_request_head(
+            b"GET /api/status HTTP/1.1\r\nHost: localhost\r\nOrigin: http://localhost:3000\r\n\r\n",
+        )
+        .expect("request should parse");
+        let response = sse_headers(&head);
+
+        assert!(response.contains("Access-Control-Allow-Origin: http://localhost:3000\r\n"));
+        assert!(response.contains("Vary: Origin\r\n"));
+    }
+
+    #[test]
+    fn rewrites_cors_response_to_match_allowed_request_origin() {
+        let head = parse_request_head(
+            b"GET /api/status HTTP/1.1\r\nHost: localhost\r\nOrigin: http://localhost:3000\r\n\r\n",
+        )
+        .expect("request should parse");
+
+        let response = with_cors_origin(response(200, "text/plain; charset=utf-8", b"ok"), &head);
+        let text = String::from_utf8(response).expect("response should be utf-8");
+
+        assert!(text.contains("Access-Control-Allow-Origin: http://localhost:3000\r\n"));
+        assert!(text.contains("Vary: Origin\r\n"));
     }
 
     #[test]

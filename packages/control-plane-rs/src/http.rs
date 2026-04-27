@@ -123,13 +123,44 @@ fn parse_query(query: &str) -> HashMap<String, String> {
         .filter(|part| !part.is_empty())
         .filter_map(|part| {
             let (key, value) = part.split_once('=').unwrap_or((part, ""));
+            let key = decode_query_component(key);
             if key.is_empty() {
                 None
             } else {
-                Some((key.to_string(), value.replace('+', " ")))
+                Some((key, decode_query_component(value)))
             }
         })
         .collect()
+}
+
+fn decode_query_component(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'+' => {
+                decoded.push(b' ');
+                index += 1;
+            }
+            b'%' if index + 2 < bytes.len() => {
+                if let Ok(hex) = std::str::from_utf8(&bytes[index + 1..index + 3]) {
+                    if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                        decoded.push(byte);
+                        index += 3;
+                        continue;
+                    }
+                }
+                decoded.push(bytes[index]);
+                index += 1;
+            }
+            byte => {
+                decoded.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&decoded).to_string()
 }
 
 pub(crate) fn query_flag(head: &RequestHead, name: &str) -> bool {
@@ -260,6 +291,63 @@ pub(crate) fn response_with_extra_headers_and_length(
 
 pub(crate) fn cors_origin() -> String {
     env::var("MAESTRO_WEB_ORIGIN").unwrap_or_else(|_| "http://localhost:4173".into())
+}
+
+pub(crate) fn response_cors_origin(head: &RequestHead) -> String {
+    if origin_allowed(head) {
+        if let Some(origin) = head
+            .headers
+            .get("origin")
+            .map(|origin| origin.trim())
+            .filter(|origin| !origin.is_empty())
+        {
+            return origin.to_string();
+        }
+    }
+    cors_origin()
+}
+
+pub(crate) fn with_cors_origin(response: Vec<u8>, head: &RequestHead) -> Vec<u8> {
+    let Ok(headers_end) = header_end(&response) else {
+        return response;
+    };
+    let Ok(headers) = std::str::from_utf8(&response[..headers_end]) else {
+        return response;
+    };
+
+    let origin = response_cors_origin(head);
+    let mut rewritten = String::with_capacity(headers.len() + origin.len() + 32);
+    let mut has_origin_header = false;
+    let mut has_vary_origin = false;
+
+    for line in headers.split("\r\n") {
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with("Access-Control-Allow-Origin:") {
+            rewritten.push_str("Access-Control-Allow-Origin: ");
+            rewritten.push_str(&origin);
+            rewritten.push_str("\r\n");
+            has_origin_header = true;
+            continue;
+        }
+        if let Some(values) = line.strip_prefix("Vary:") {
+            has_vary_origin = values
+                .split(',')
+                .any(|value| value.trim().eq_ignore_ascii_case("Origin"));
+        }
+        rewritten.push_str(line);
+        rewritten.push_str("\r\n");
+    }
+
+    if has_origin_header && head.headers.contains_key("origin") && !has_vary_origin {
+        rewritten.push_str("Vary: Origin\r\n");
+    }
+
+    rewritten.push_str("\r\n");
+    let mut bytes = rewritten.into_bytes();
+    bytes.extend_from_slice(&response[headers_end + 4..]);
+    bytes
 }
 
 pub(crate) fn origin_allowed(head: &RequestHead) -> bool {
