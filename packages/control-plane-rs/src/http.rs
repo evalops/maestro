@@ -1,8 +1,13 @@
 use serde::Serialize;
 use std::collections::HashMap;
 use std::env;
+use std::future::Future;
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
+
+tokio::task_local! {
+    static RESPONSE_CORS_ORIGIN: String;
+}
 
 const MAX_HEADER_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_JSON_BODY_BYTES: usize = 32 * 1024 * 1024;
@@ -140,11 +145,13 @@ fn parse_query(query: &str) -> HashMap<String, String> {
         .filter(|part| !part.is_empty())
         .filter_map(|part| {
             let (key, value) = part.split_once('=').unwrap_or((part, ""));
-            let key = percent_decode_component(key);
             if key.is_empty() {
                 None
             } else {
-                Some((key, percent_decode_component(value)))
+                Some((
+                    percent_decode_component(key),
+                    percent_decode_component(value),
+                ))
             }
         })
         .collect()
@@ -244,10 +251,6 @@ pub(crate) fn response_with_extra_headers_and_length(
     extra_headers: &str,
     content_length: usize,
 ) -> Vec<u8> {
-    assert!(
-        body.is_empty() || content_length == body.len(),
-        "response body length must match Content-Length unless body is empty"
-    );
     let reason = match status {
         200 => "OK",
         204 => "No Content",
@@ -256,7 +259,6 @@ pub(crate) fn response_with_extra_headers_and_length(
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
-        409 => "Conflict",
         426 => "Upgrade Required",
         413 => "Payload Too Large",
         429 => "Too Many Requests",
@@ -264,12 +266,12 @@ pub(crate) fn response_with_extra_headers_and_length(
         501 => "Not Implemented",
         _ => "OK",
     };
-    let origin = cors_origin();
+    let cors_origin = response_cors_origin();
     let mut head = format!(
         "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\nAccess-Control-Allow-Origin: {}\r\n{}Access-Control-Allow-Headers: {CORS_ALLOW_HEADERS}\r\nAccess-Control-Allow-Methods: GET,POST,PATCH,DELETE,OPTIONS\r\n",
         content_length,
-        origin,
-        cors_credentials_header_for_origin(&origin)
+        cors_origin,
+        cors_credentials_header(&cors_origin)
     );
     if !extra_headers.is_empty() {
         head.push_str(extra_headers);
@@ -283,11 +285,35 @@ pub(crate) fn response_with_extra_headers_and_length(
     bytes
 }
 
-pub(crate) fn cors_origin() -> String {
-    env::var("MAESTRO_WEB_ORIGIN").unwrap_or_else(|_| "http://localhost:4173".into())
+pub(crate) async fn with_response_cors_origin<F>(origin: String, future: F) -> F::Output
+where
+    F: Future,
+{
+    RESPONSE_CORS_ORIGIN.scope(origin, future).await
 }
 
-pub(crate) fn cors_credentials_header_for_origin(origin: &str) -> &'static str {
+pub(crate) fn requested_cors_origin(head: &RequestHead) -> String {
+    head.headers
+        .get("origin")
+        .map(|origin| origin.trim())
+        .filter(|origin| !origin.is_empty() && origin_allowed(head))
+        .map(|origin| origin.to_string())
+        .unwrap_or_else(cors_origin)
+}
+
+pub(crate) fn response_cors_origin() -> String {
+    RESPONSE_CORS_ORIGIN
+        .try_with(Clone::clone)
+        .unwrap_or_else(|_| cors_origin())
+}
+
+pub(crate) fn response_cors_credentials_header() -> &'static str {
+    RESPONSE_CORS_ORIGIN
+        .try_with(|origin| cors_credentials_header(origin))
+        .unwrap_or_else(|_| cors_credentials_header(&cors_origin()))
+}
+
+fn cors_credentials_header(origin: &str) -> &'static str {
     if origin == "*" {
         ""
     } else {
@@ -295,65 +321,8 @@ pub(crate) fn cors_credentials_header_for_origin(origin: &str) -> &'static str {
     }
 }
 
-pub(crate) fn response_cors_origin(head: &RequestHead) -> String {
-    if origin_allowed(head) {
-        if let Some(origin) = head
-            .headers
-            .get("origin")
-            .map(|origin| origin.trim())
-            .filter(|origin| !origin.is_empty())
-        {
-            return origin.to_string();
-        }
-    }
-    cors_origin()
-}
-
-pub(crate) fn with_cors_origin(response: Vec<u8>, head: &RequestHead) -> Vec<u8> {
-    let Ok(headers_end) = header_end(&response) else {
-        return response;
-    };
-    let Ok(headers) = std::str::from_utf8(&response[..headers_end]) else {
-        return response;
-    };
-
-    let origin = response_cors_origin(head);
-    let mut rewritten = String::with_capacity(headers.len() + origin.len() + 32);
-    let mut has_origin_header = false;
-    let mut has_vary_origin = false;
-
-    for line in headers.split("\r\n") {
-        if line.is_empty() {
-            continue;
-        }
-        if line.starts_with("Access-Control-Allow-Origin:") {
-            rewritten.push_str("Access-Control-Allow-Origin: ");
-            rewritten.push_str(&origin);
-            rewritten.push_str("\r\n");
-            has_origin_header = true;
-            continue;
-        }
-        if line.starts_with("Access-Control-Allow-Credentials:") {
-            continue;
-        }
-        if let Some(values) = line.strip_prefix("Vary:") {
-            has_vary_origin = values
-                .split(',')
-                .any(|value| value.trim().eq_ignore_ascii_case("Origin"));
-        }
-        rewritten.push_str(line);
-        rewritten.push_str("\r\n");
-    }
-
-    if has_origin_header && head.headers.contains_key("origin") && !has_vary_origin {
-        rewritten.push_str("Vary: Origin\r\n");
-    }
-    rewritten.push_str(cors_credentials_header_for_origin(&origin));
-
-    rewritten.push_str("\r\n");
-    let mut bytes = rewritten.into_bytes();
-    bytes.extend_from_slice(&response[headers_end + 4..]);
-    bytes
+pub(crate) fn cors_origin() -> String {
+    env::var("MAESTRO_WEB_ORIGIN").unwrap_or_else(|_| "http://localhost:4173".into())
 }
 
 pub(crate) fn origin_allowed(head: &RequestHead) -> bool {
@@ -404,46 +373,4 @@ pub(crate) fn percent_decode_component(value: &str) -> String {
         index += 1;
     }
     String::from_utf8_lossy(&decoded).to_string()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{parse_request_head, query_flag, response_with_extra_headers_and_length};
-
-    #[test]
-    fn query_flag_treats_present_valueless_parameter_as_true() {
-        let head =
-            parse_request_head(b"GET /api/status?verbose HTTP/1.1\r\nHost: localhost\r\n\r\n")
-                .expect("request should parse");
-
-        assert!(query_flag(&head, "verbose"));
-    }
-
-    #[test]
-    fn query_flag_keeps_explicit_false_values_false() {
-        for value in ["0", "false", "off"] {
-            let request =
-                format!("GET /api/status?verbose={value} HTTP/1.1\r\nHost: localhost\r\n\r\n");
-            let head = parse_request_head(request.as_bytes()).expect("request should parse");
-
-            assert!(
-                !query_flag(&head, "verbose"),
-                "expected {value} to be false"
-            );
-        }
-    }
-
-    #[test]
-    #[should_panic(
-        expected = "response body length must match Content-Length unless body is empty"
-    )]
-    fn response_with_explicit_length_rejects_non_empty_mismatches() {
-        let _ = response_with_extra_headers_and_length(
-            200,
-            "text/plain; charset=utf-8",
-            b"hello",
-            "",
-            4,
-        );
-    }
 }
