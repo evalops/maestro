@@ -70,10 +70,24 @@ describe("database migration packaging", () => {
 		);
 	});
 
-	it("keeps Docker and build scripts wired to ship migrations", () => {
+	it("keeps build scripts wired to ship migrations without the legacy Node image copy", () => {
 		const dockerfile = readFileSync(path.join(repoRoot, "Dockerfile"), "utf8");
-		expect(dockerfile).toContain(
-			"COPY --from=builder /app/src/db/migrations ./dist/db/migrations",
+		const runnerStage =
+			dockerfile.split("# ---------- runner ----------")[1] ?? "";
+		expect(dockerfile).toContain("RUN bun run build:all");
+		expect(runnerStage).toContain(
+			"COPY --from=web-builder /app/packages/web/dist ./packages/web/dist",
+		);
+		expect(runnerStage).not.toContain(
+			"COPY --from=web-builder /usr/local/bin/bun /usr/local/bin/bun",
+		);
+		expect(runnerStage).not.toContain(
+			"COPY --from=deps /app/node_modules ./node_modules",
+		);
+		expect(runnerStage).not.toContain("COPY package.json bun.lockb ./");
+		expect(runnerStage).not.toContain("nodejs npm");
+		expect(runnerStage).not.toContain(
+			"COPY --from=builder /app/src/db/migrations",
 		);
 
 		const packageJson = JSON.parse(
