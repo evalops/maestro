@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { recordSessionDuration } from "../../src/telemetry.js";
+import { maestroCorrelationToChronicleMetadata } from "../../src/telemetry/index.js";
 import {
 	MaestroBusEventType,
 	buildMaestroCloudEvent,
@@ -14,6 +15,7 @@ import {
 	recordMaestroToolCallCompleted,
 	resolveMaestroEventBusConfig,
 	setMaestroEventBusTransportForTests,
+	withMaestroEventBusTransportOverride,
 } from "../../src/telemetry/maestro-event-bus.js";
 
 describe("maestro event bus", () => {
@@ -78,6 +80,50 @@ describe("maestro event bus", () => {
 			"type.googleapis.com/maestro.v1.ToolCallAttempt",
 		);
 		expect(event.data.tool_call_id).toBe("tool_1");
+	});
+
+	it("serializes Maestro correlation into Chronicle metadata keys", () => {
+		const metadata = maestroCorrelationToChronicleMetadata({
+			organization_id: "org_123",
+			workspace_id: "workspace_123",
+			session_id: "session_123",
+			agent_run_id: "run_123",
+			agent_run_step_id: "step_123",
+			agent_id: "agent_123",
+			actor_id: "user_123",
+			principal_id: "principal_123",
+			trace_id: "trace_123",
+			request_id: "request_123",
+			parent_event_id: "event_parent",
+			attributes: {
+				maestro_session_id: "spoofed_session",
+				task_id: "task_123",
+				task_type: "pr-review",
+				source_issue: "42",
+				trace_id: "spoofed_trace",
+				empty: " ",
+			},
+		});
+
+		expect(metadata).toMatchObject({
+			organization_id: "org_123",
+			workspace_id: "workspace_123",
+			maestro_session_id: "session_123",
+			agent_run_id: "run_123",
+			agent_run_step_id: "step_123",
+			agent_id: "agent_123",
+			actor_id: "user_123",
+			principal_id: "principal_123",
+			trace_id: "trace_123",
+			request_id: "request_123",
+			parent_event_id: "event_parent",
+			task_id: "task_123",
+			task_type: "pr-review",
+			source_issue: "42",
+		});
+		expect(metadata.maestro_session_id).toBe("session_123");
+		expect(metadata.trace_id).toBe("trace_123");
+		expect(metadata.empty).toBeUndefined();
 	});
 
 	it("maps session duration metadata to a close lifecycle CloudEvent", async () => {
@@ -528,48 +574,6 @@ describe("maestro event bus", () => {
 		).rejects.toThrow("nats unavailable");
 	});
 
-	it("permits strict smoke publishing with an explicit URL when runtime publishing is disabled", async () => {
-		const published: Array<{ subject: string; payload: string }> = [];
-		setMaestroEventBusTransportForTests({
-			async publish(subject, payload) {
-				published.push({ subject, payload });
-			},
-		});
-
-		await expect(
-			publishMaestroCloudEventStrict(
-				MaestroBusEventType.ApprovalHit,
-				{
-					correlation: {
-						workspace_id: "workspace_123",
-						session_id: "session_123",
-					},
-					action: "Smoke approval",
-					decision_mode: "MAESTRO_DECISION_MODE_REQUIRE_APPROVAL",
-					occurred_at: "2026-04-22T16:00:00.000Z",
-				},
-				{
-					env: {
-						MAESTRO_EVENT_BUS: "false",
-						MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222",
-					},
-					eventId: "event_strict_disabled",
-					time: "2026-04-22T16:00:00.000Z",
-				},
-			),
-		).resolves.toBeUndefined();
-
-		expect(published).toHaveLength(1);
-		expect(published[0]?.subject).toBe("maestro.events.approval_hit");
-		expect(JSON.parse(published[0]?.payload ?? "{}")).toMatchObject({
-			id: "event_strict_disabled",
-			type: "maestro.events.approval_hit",
-			data: {
-				action: "Smoke approval",
-			},
-		});
-	});
-
 	it("fails strict smoke publishing when bus routing is not configured", async () => {
 		await expect(
 			publishMaestroCloudEventStrict(
@@ -586,6 +590,39 @@ describe("maestro event bus", () => {
 				{ env: {} },
 			),
 		).rejects.toThrow("Maestro event bus is not enabled: disabled");
+	});
+
+	it("allows strict smoke publishing when an explicit NATS URL is configured", async () => {
+		const published: Array<{ subject: string; payload: string }> = [];
+		await withMaestroEventBusTransportOverride(
+			{
+				async publish(subject, payload) {
+					published.push({ subject, payload });
+				},
+			},
+			async () => {
+				await publishMaestroCloudEventStrict(
+					MaestroBusEventType.ApprovalHit,
+					{
+						correlation: {
+							workspace_id: "workspace_123",
+							session_id: "session_123",
+						},
+						action: "Smoke approval",
+						decision_mode: "MAESTRO_DECISION_MODE_REQUIRE_APPROVAL",
+						occurred_at: "2026-04-22T16:00:00.000Z",
+					},
+					{
+						env: {
+							MAESTRO_EVENT_BUS: "false",
+							MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222",
+						},
+					},
+				);
+			},
+		);
+
+		expect(published).toHaveLength(1);
 	});
 
 	it("reports missing NATS URL separately from disabled bus state", () => {

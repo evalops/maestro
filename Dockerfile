@@ -1,7 +1,9 @@
 # syntax=docker/dockerfile:1
 
+ARG BUN_IMAGE=oven/bun:1.3.6-alpine
+
 # ---------- deps ----------
-FROM oven/bun:1.3-alpine AS deps
+FROM ${BUN_IMAGE} AS deps
 WORKDIR /app
 
 RUN apk add --no-cache python3 make g++ git
@@ -25,7 +27,7 @@ COPY packages/web/package.json packages/web/
 RUN bun install --no-frozen-lockfile
 
 # ---------- builder base ----------
-FROM oven/bun:1.3-alpine AS builder-base
+FROM ${BUN_IMAGE} AS builder-base
 WORKDIR /app
 
 # contracts build generates Rust protocol files and formats with rustfmt
@@ -70,18 +72,22 @@ RUN bun run build:all
 FROM builder-base AS rust-builder
 WORKDIR /app
 
+COPY --from=deps /app/node_modules ./node_modules
+COPY scripts ./scripts
+COPY packages/contracts/src ./packages/contracts/src
 COPY proto ./proto
 COPY --from=web-builder /app/packages/tui-rs ./packages/tui-rs
 COPY packages/control-plane-rs ./packages/control-plane-rs
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
+    node scripts/headless-protocol-codegen.mjs && \
     cd packages/control-plane-rs && \
     CARGO_TARGET_DIR=/app/rust-target cargo build --release --bin maestro-control-plane && \
     mkdir -p /app/target-bin && \
     cp /app/rust-target/release/maestro-control-plane /app/target-bin/maestro-control-plane
 
 # ---------- runner ----------
-FROM alpine:3.23 AS runner
+FROM ${BUN_IMAGE} AS runner
 WORKDIR /app
 
 RUN apk add --no-cache tini git ca-certificates libstdc++ nodejs npm && \
