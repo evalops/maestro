@@ -583,6 +583,14 @@ impl AmbientDaemon {
             let pr_title = format!("[Ambient] {}", plan.summary);
             let pr_body = self.generate_pr_body(&plan, &result, &critique);
             let repo_path = std::path::Path::new(&event.repo.path);
+            let authorship =
+                match PrCreator::build_authorship_metadata(&event, routing.model.as_str()) {
+                    Ok(authorship) => authorship,
+                    Err(e) => {
+                        error!("Failed to build Maestro commit authorship trailers: {}", e);
+                        return;
+                    }
+                };
 
             let pr_result = self
                 .pr_creator
@@ -594,6 +602,7 @@ impl AmbientDaemon {
                     &pr_body,
                     &result.changes,
                     &event,
+                    &authorship,
                 )
                 .await;
 
