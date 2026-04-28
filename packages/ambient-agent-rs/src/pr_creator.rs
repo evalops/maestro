@@ -52,6 +52,15 @@ pub struct PrCreationResult {
     pub error: Option<String>,
 }
 
+/// Metadata rendered into Maestro-authored git commit trailers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MaestroAuthorshipMetadata {
+    pub maestro_version: String,
+    pub model_identifier: String,
+    pub prompt_id: String,
+    pub approvals_id: String,
+}
+
 /// GitHub PR creation response
 #[derive(Debug, Deserialize)]
 struct GitHubPrResponse {
@@ -95,6 +104,7 @@ impl PrCreator {
         body: &str,
         changes: &[FileChange],
         source_event: &NormalizedEvent,
+        authorship: &MaestroAuthorshipMetadata,
     ) -> PrCreationResult {
         // Generate branch name
         let branch_name = self.generate_branch_name(source_event);
@@ -128,7 +138,10 @@ impl PrCreator {
         }
 
         // Step 3: Stage and commit changes
-        if let Err(e) = self.commit_changes(repo_path, changes, title).await {
+        if let Err(e) = self
+            .commit_changes(repo_path, changes, title, authorship)
+            .await
+        {
             // Try to cleanup
             let _ = self
                 .cleanup_branch(repo_path, &branch_name, base_branch)
@@ -298,6 +311,7 @@ impl PrCreator {
         repo_path: &Path,
         changes: &[FileChange],
         message: &str,
+        authorship: &MaestroAuthorshipMetadata,
     ) -> anyhow::Result<()> {
         // Stage all changed files
         for change in changes {
@@ -335,8 +349,12 @@ impl PrCreator {
 
         // Commit with configured author
         let author = format!("{} <{}>", self.config.author_name, self.config.author_email);
-        self.run_git_command(repo_path, &["commit", "-m", message, "--author", &author])
-            .await?;
+        let commit_message = Self::commit_message_with_authorship(message, authorship)?;
+        self.run_git_command(
+            repo_path,
+            &["commit", "-m", &commit_message, "--author", &author],
+        )
+        .await?;
 
         info!("Committed {} changes", changes.len());
         Ok(())
@@ -580,10 +598,187 @@ impl PrCreator {
     }
 }
 
+impl PrCreator {
+    pub(crate) fn build_authorship_metadata(
+        source_event: &NormalizedEvent,
+        model_identifier: &str,
+    ) -> anyhow::Result<MaestroAuthorshipMetadata> {
+        let prompt_id = non_empty_or_error("Maestro-Prompt-Id", &source_event.id)?;
+        let model_identifier = non_empty_or_error("model identifier", model_identifier)?;
+        let approvals_id = approvals_id_from_event(source_event)
+            .unwrap_or_else(|| format!("missing:approval-follow-up-required:{prompt_id}"));
+
+        Ok(MaestroAuthorshipMetadata {
+            maestro_version: env!("CARGO_PKG_VERSION").to_string(),
+            model_identifier: model_identifier.to_string(),
+            prompt_id: prompt_id.to_string(),
+            approvals_id,
+        })
+    }
+
+    pub(crate) fn commit_message_with_authorship(
+        message: &str,
+        authorship: &MaestroAuthorshipMetadata,
+    ) -> anyhow::Result<String> {
+        let message = non_empty_or_error("commit message", message)?;
+        let maestro_version = non_empty_or_error("Maestro-Version", &authorship.maestro_version)?;
+        let model_identifier =
+            non_empty_or_error("model identifier", &authorship.model_identifier)?;
+        let prompt_id = non_empty_or_error("Maestro-Prompt-Id", &authorship.prompt_id)?;
+        let approvals_id = non_empty_or_error("Maestro-Approvals-Id", &authorship.approvals_id)?;
+
+        Ok(format!(
+            "{message}\n\nCo-Authored-By: Maestro <maestro@evalops.dev>\nMaestro-Version: {maestro_version} / {model_identifier}\nMaestro-Prompt-Id: {prompt_id}\nMaestro-Approvals-Id: {approvals_id}"
+        ))
+    }
+}
+
+fn non_empty_or_error<'a>(field: &str, value: &'a str) -> anyhow::Result<&'a str> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("{field} is required for Maestro commit authorship trailers");
+    }
+    Ok(trimmed)
+}
+
+fn approvals_id_from_event(event: &NormalizedEvent) -> Option<String> {
+    for key in ["approvals_id", "approval_id", "maestro_approvals_id"] {
+        if let Some(value) = event
+            .payload
+            .extra
+            .get(key)
+            .and_then(|value| value.as_str())
+        {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
+    use std::collections::HashMap;
 
+    fn event_with_extra(extra: HashMap<String, serde_json::Value>) -> NormalizedEvent {
+        let repo = Repository {
+            owner: "evalops".to_string(),
+            name: "platform".to_string(),
+            full_name: "evalops/platform".to_string(),
+            default_branch: "main".to_string(),
+            path: "/tmp/platform".to_string(),
+            url: "https://github.com/evalops/platform".to_string(),
+            config: None,
+            agent_md: None,
+            test_coverage: None,
+            codeowners: vec![],
+        };
+        NormalizedEvent {
+            id: "prompt_123".to_string(),
+            source: WatcherType::GitHubWebhook,
+            event_type: EventType::Issue,
+            repo: repo.clone(),
+            repository: repo.full_name.clone(),
+            priority: 5,
+            title: "Ship provenance".to_string(),
+            body: None,
+            labels: vec![],
+            context: EventContext {
+                repo,
+                history: vec![],
+                related: vec![],
+            },
+            payload: EventPayload {
+                extra,
+                ..Default::default()
+            },
+            created_at: Utc::now(),
+            processed_at: None,
+            status: EventStatus::Pending,
+            flags: EventFlags::default(),
+        }
+    }
+
+    #[test]
+    fn renders_maestro_commit_trailers() {
+        let metadata = MaestroAuthorshipMetadata {
+            maestro_version: "0.1.0".to_string(),
+            model_identifier: "anthropic/claude-sonnet".to_string(),
+            prompt_id: "prompt_123".to_string(),
+            approvals_id: "approval_456".to_string(),
+        };
+
+        let message =
+            PrCreator::commit_message_with_authorship("feat: add provenance", &metadata).unwrap();
+
+        assert_eq!(
+            message,
+            "feat: add provenance\n\nCo-Authored-By: Maestro <maestro@evalops.dev>\nMaestro-Version: 0.1.0 / anthropic/claude-sonnet\nMaestro-Prompt-Id: prompt_123\nMaestro-Approvals-Id: approval_456"
+        );
+    }
+
+    #[test]
+    fn fails_loudly_when_required_authorship_fields_are_missing() {
+        let metadata = MaestroAuthorshipMetadata {
+            maestro_version: "0.1.0".to_string(),
+            model_identifier: "".to_string(),
+            prompt_id: "prompt_123".to_string(),
+            approvals_id: "approval_456".to_string(),
+        };
+
+        let err = PrCreator::commit_message_with_authorship("feat: add provenance", &metadata)
+            .expect_err("missing model should fail");
+
+        assert!(
+            err.to_string().contains("model identifier is required"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn builds_explicit_follow_up_approval_trailer_when_missing() {
+        let metadata =
+            PrCreator::build_authorship_metadata(&event_with_extra(HashMap::new()), "gpt-5.4")
+                .unwrap();
+
+        assert_eq!(metadata.prompt_id, "prompt_123");
+        assert_eq!(metadata.model_identifier, "gpt-5.4");
+        assert_eq!(
+            metadata.approvals_id,
+            "missing:approval-follow-up-required:prompt_123"
+        );
+    }
+
+    #[test]
+    fn fallback_approval_trailer_uses_trimmed_prompt_id() {
+        let mut event = event_with_extra(HashMap::new());
+        event.id = " prompt_123 ".to_string();
+        let metadata = PrCreator::build_authorship_metadata(&event, "gpt-5.4").unwrap();
+
+        assert_eq!(metadata.prompt_id, "prompt_123");
+        assert_eq!(
+            metadata.approvals_id,
+            "missing:approval-follow-up-required:prompt_123"
+        );
+    }
+
+    #[test]
+    fn uses_approval_identifier_from_event_payload() {
+        let mut extra = HashMap::new();
+        extra.insert(
+            "approvals_id".to_string(),
+            serde_json::Value::String("approval_789".to_string()),
+        );
+
+        let metadata =
+            PrCreator::build_authorship_metadata(&event_with_extra(extra), "gpt-5.4").unwrap();
+
+        assert_eq!(metadata.approvals_id, "approval_789");
+    }
     #[test]
     fn test_generate_branch_name() {
         let config = PrCreatorConfig::default();
