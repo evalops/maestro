@@ -84,7 +84,7 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
 FROM alpine:3.23 AS runner
 WORKDIR /app
 
-RUN apk add --no-cache tini git ca-certificates libstdc++ && \
+RUN apk add --no-cache tini git ca-certificates libstdc++ nodejs npm && \
     addgroup --system --gid 1001 appgroup && \
     adduser --system --uid 1001 appuser
 
