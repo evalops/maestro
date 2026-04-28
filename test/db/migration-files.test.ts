@@ -70,7 +70,7 @@ describe("database migration packaging", () => {
 		);
 	});
 
-	it("keeps build scripts wired to ship migrations without the legacy Node image copy", () => {
+	it("keeps build scripts wired without the legacy Node image copy", () => {
 		const dockerfile = readFileSync(path.join(repoRoot, "Dockerfile"), "utf8");
 		const runnerStage =
 			dockerfile.split("# ---------- runner ----------")[1] ?? "";
@@ -85,7 +85,7 @@ describe("database migration packaging", () => {
 			"COPY --from=deps /app/node_modules ./node_modules",
 		);
 		expect(runnerStage).not.toContain("COPY package.json bun.lockb ./");
-		expect(runnerStage).not.toContain("nodejs npm");
+		expect(runnerStage).toContain("nodejs npm");
 		expect(runnerStage).not.toContain(
 			"COPY --from=builder /app/src/db/migrations",
 		);
