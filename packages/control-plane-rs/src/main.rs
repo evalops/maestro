@@ -6220,6 +6220,15 @@ fn trimmed_env(name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn truthy_env(name: &str) -> bool {
+    trimmed_env(name)
+        .map(|value| {
+            let normalized = value.to_ascii_lowercase();
+            !matches!(normalized.as_str(), "0" | "false" | "off" | "no")
+        })
+        .unwrap_or(false)
+}
+
 fn llm_gateway_models_url() -> Option<String> {
     if let Some(url) = trimmed_env("MAESTRO_LLM_GATEWAY_MODELS_URL") {
         return Some(url);
@@ -6227,10 +6236,16 @@ fn llm_gateway_models_url() -> Option<String> {
     if let Some(base) = trimmed_env("MAESTRO_LLM_GATEWAY_URL") {
         return Some(format!("{}/v1/models", base.trim_end_matches('/')));
     }
-    Some(
-        trimmed_env("MAESTRO_OPENROUTER_MODELS_URL")
-            .unwrap_or_else(|| "https://openrouter.ai/api/v1/models".to_string()),
-    )
+    if let Some(url) = trimmed_env("MAESTRO_OPENROUTER_MODELS_URL") {
+        return Some(url);
+    }
+    if truthy_env("MAESTRO_ENABLE_OPENROUTER_MODELS")
+        || trimmed_env("MAESTRO_OPENROUTER_API_KEY").is_some()
+        || trimmed_env("OPENROUTER_API_KEY").is_some()
+    {
+        return Some("https://openrouter.ai/api/v1/models".to_string());
+    }
+    None
 }
 
 fn is_openrouter_models_url(url: &str) -> bool {
@@ -6695,6 +6710,25 @@ mod tests {
             cors_credentials_header_for_origin("http://localhost:3000"),
             "Access-Control-Allow-Credentials: true\r\n"
         );
+    }
+
+    #[test]
+    fn wildcard_web_origin_allows_websocket_origins() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous = env::var_os("MAESTRO_WEB_ORIGIN");
+        env::set_var("MAESTRO_WEB_ORIGIN", "*");
+        let head = parse_request_head(
+            b"GET /api/chat/ws HTTP/1.1\r\nHost: localhost\r\nOrigin: https://app.example.com\r\n\r\n",
+        )
+        .expect("request should parse");
+
+        assert!(origin_allowed(&head));
+
+        if let Some(previous) = previous {
+            env::set_var("MAESTRO_WEB_ORIGIN", previous);
+        } else {
+            env::remove_var("MAESTRO_WEB_ORIGIN");
+        }
     }
 
     #[test]
@@ -7553,6 +7587,48 @@ mod tests {
 
         assert!(response.contains("Access-Control-Allow-Origin: http://127.0.0.1:5173\r\n"));
         assert!(response.contains("Access-Control-Allow-Credentials: true\r\n"));
+    }
+
+    #[test]
+    fn openrouter_catalog_requires_explicit_configuration() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let vars = [
+            "MAESTRO_LLM_GATEWAY_MODELS_URL",
+            "MAESTRO_LLM_GATEWAY_URL",
+            "MAESTRO_OPENROUTER_MODELS_URL",
+            "MAESTRO_ENABLE_OPENROUTER_MODELS",
+            "MAESTRO_OPENROUTER_API_KEY",
+            "OPENROUTER_API_KEY",
+        ];
+        let previous = vars.map(|name| (name, env::var_os(name)));
+        for name in vars {
+            env::remove_var(name);
+        }
+
+        assert!(llm_gateway_models_url().is_none());
+
+        env::set_var("MAESTRO_ENABLE_OPENROUTER_MODELS", "1");
+        assert_eq!(
+            llm_gateway_models_url().as_deref(),
+            Some("https://openrouter.ai/api/v1/models")
+        );
+
+        env::set_var("MAESTRO_ENABLE_OPENROUTER_MODELS", "0");
+        assert!(llm_gateway_models_url().is_none());
+
+        env::set_var("MAESTRO_OPENROUTER_API_KEY", "key");
+        assert_eq!(
+            llm_gateway_models_url().as_deref(),
+            Some("https://openrouter.ai/api/v1/models")
+        );
+
+        for (name, value) in previous {
+            if let Some(value) = value {
+                env::set_var(name, value);
+            } else {
+                env::remove_var(name);
+            }
+        }
     }
 
     #[test]

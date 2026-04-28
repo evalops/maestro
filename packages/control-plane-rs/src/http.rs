@@ -363,7 +363,8 @@ pub(crate) fn origin_allowed(head: &RequestHead) -> bool {
 }
 
 fn origin_allowed_value(origin: &str) -> bool {
-    if origin == cors_origin() {
+    let configured_origin = cors_origin();
+    if configured_origin == "*" || origin == configured_origin {
         return true;
     }
     matches!(
