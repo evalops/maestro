@@ -256,6 +256,7 @@ pub(crate) fn response_with_extra_headers_and_length(
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        409 => "Conflict",
         426 => "Upgrade Required",
         413 => "Payload Too Large",
         429 => "Too Many Requests",
