@@ -472,6 +472,13 @@ The shared publisher lives in `@evalops/ai/telemetry` and currently emits:
 - `maestro.events.skill.invoked|succeeded|failed`
 - `maestro.events.eval.scored`
 
+Use `maestroCorrelationToChronicleMetadata(correlation)` when handing the same
+run/session identity to Chronicle or agentd capture. It emits the stable
+metadata keys consumed by Platform Chronicle evidence and Cerebro's Chronicle
+consumer, including `maestro_session_id`, `agent_run_id`,
+`agent_run_step_id`, `tool_execution_id`, `trace_id`, `task_id`, and
+`source_issue`.
+
 The publisher conformance fixture used by Platform can be regenerated from the
 same shared publisher with
 `tsx scripts/generate-maestro-publisher-conformance-fixture.ts`.

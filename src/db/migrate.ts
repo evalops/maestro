@@ -169,17 +169,6 @@ function sqlBoolean(value: unknown): boolean {
 	return value === true || value === "true" || value === 1 || value === "1";
 }
 
-function isInitialSchemaMarkerKind(
-	value: unknown,
-): value is InitialSchemaMarker["kind"] {
-	return (
-		value === "constraint" ||
-		value === "index" ||
-		value === "table" ||
-		value === "type"
-	);
-}
-
 /**
  * Get the list of migrations from the journal
  */
@@ -285,7 +274,7 @@ export function classifyInitialSchemaMarkers(
 	const missing = markers.filter((marker) => !marker.exists).map(markerLabel);
 
 	return {
-		exists: markers.length > 0 && missing.length === 0,
+		exists: present.length > 0 && missing.length === 0,
 		partial: present.length > 0 && missing.length > 0,
 		present,
 		missing,
@@ -293,25 +282,22 @@ export function classifyInitialSchemaMarkers(
 }
 
 async function getInitialSchemaState(): Promise<InitialSchemaState> {
-	const markerDefinitions: InitialSchemaMarkerDefinition[] = [
-		...INITIAL_SCHEMA_BASELINE_MARKERS,
-	];
-	if (markerDefinitions.length === 0) {
+	const db = getDb();
+	const markerValues = INITIAL_SCHEMA_BASELINE_MARKERS.map(
+		(marker) => sql`(${marker.kind}, ${marker.name})`,
+	);
+	if (markerValues.length === 0) {
 		return classifyInitialSchemaMarkers([]);
 	}
-
-	const db = getDb();
-	const markerRows = markerDefinitions.map(
-		(marker, index) => sql`(${index}, ${marker.kind}, ${marker.name})`,
-	);
 	const result = await db.execute(sql`
-		WITH markers(ord, kind, name) AS (
-			VALUES ${sql.join(markerRows, sql`, `)}
+		WITH markers(kind, name) AS (
+			VALUES ${sql.join(markerValues, sql`, `)}
 		)
 		SELECT
 			kind,
 			name,
 			CASE
+				WHEN kind IN ('index', 'table') THEN to_regclass('public.' || name) IS NOT NULL
 				WHEN kind = 'constraint' THEN EXISTS (
 					SELECT 1
 					FROM pg_constraint c
@@ -324,30 +310,15 @@ async function getInitialSchemaState(): Promise<InitialSchemaState> {
 					JOIN pg_namespace n ON n.oid = t.typnamespace
 					WHERE n.nspname = 'public' AND t.typname = markers.name
 				)
-				ELSE pg_catalog.to_regclass(
-					'public.' || pg_catalog.quote_ident(markers.name)
-				) IS NOT NULL
+				ELSE false
 			END AS exists
 		FROM markers
-		ORDER BY ord
 	`);
-
-	const markers = (Array.from(result) as Array<Record<string, unknown>>).map(
-		(row) => {
-			if (
-				!isInitialSchemaMarkerKind(row.kind) ||
-				typeof row.name !== "string"
-			) {
-				throw new Error("Failed to inspect initial schema baseline markers");
-			}
-
-			return {
-				kind: row.kind,
-				name: row.name,
-				exists: sqlBoolean(row.exists),
-			};
-		},
-	);
+	const markers = Array.from(result).map((row) => ({
+		kind: String(row.kind) as InitialSchemaMarker["kind"],
+		name: String(row.name),
+		exists: sqlBoolean(row.exists),
+	}));
 
 	return classifyInitialSchemaMarkers(markers);
 }
@@ -356,29 +327,28 @@ async function reconcileLegacyMigrationRecords(
 	migrationEntries: MigrationJournal["entries"],
 	appliedMigrations: Set<string>,
 ): Promise<void> {
-	const initialEntry = migrationEntries.find(
-		(entry) => entry.tag === "0000_initial",
-	);
-	if (!initialEntry || appliedMigrations.has(initialEntry.tag)) {
-		return;
-	}
+	for (const entry of migrationEntries) {
+		if (entry.tag !== "0000_initial" || appliedMigrations.has(entry.tag)) {
+			continue;
+		}
 
-	const initialSchemaState = await getInitialSchemaState();
-	if (initialSchemaState.partial) {
-		throw new Error(
-			`Detected a partial legacy initial schema before ${initialEntry.tag}; refusing to mark it applied or replay it. Missing markers: ${initialSchemaState.missing.join(", ")}`,
+		const initialSchemaState = await getInitialSchemaState();
+		if (initialSchemaState.partial) {
+			throw new Error(
+				`Detected a partial legacy initial schema before ${entry.tag}; refusing to mark it applied or replay it. Missing markers: ${initialSchemaState.missing.join(", ")}`,
+			);
+		}
+		if (!initialSchemaState.exists) {
+			continue;
+		}
+
+		logger.warn(
+			"Detected existing initial schema for untracked migration; marking as applied",
+			{ tag: entry.tag, presentMarkers: initialSchemaState.present },
 		);
+		await markMigrationApplied(entry.tag);
+		appliedMigrations.add(entry.tag);
 	}
-	if (!initialSchemaState.exists) {
-		return;
-	}
-
-	logger.warn(
-		"Detected existing initial schema for untracked migration; marking as applied",
-		{ tag: initialEntry.tag, presentMarkers: initialSchemaState.present },
-	);
-	await markMigrationApplied(initialEntry.tag);
-	appliedMigrations.add(initialEntry.tag);
 }
 
 /**

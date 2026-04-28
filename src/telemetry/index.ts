@@ -52,6 +52,7 @@ export {
 	buildMaestroCloudEvent,
 	closeMaestroEventBusTransport,
 	getMaestroEventBusStatus,
+	maestroCorrelationToChronicleMetadata,
 	publishMaestroCloudEvent,
 	publishMaestroCloudEventStrict,
 	recordMaestroApprovalHit,

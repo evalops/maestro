@@ -117,12 +117,15 @@ describe("database migration packaging", () => {
 		expect(migration).toContain('ADD COLUMN IF NOT EXISTS "id"');
 		expect(migration).toContain('ADD COLUMN IF NOT EXISTS "payload"');
 		expect(migration).toContain('ADD COLUMN IF NOT EXISTS "status"');
+		expect(migration).toMatch(
+			/CREATE TYPE "webhook_delivery_status"[\s\S]+EXCEPTION\s+WHEN duplicate_object OR unique_violation THEN\s+NULL;\s+END;/,
+		);
 		expect(migration).toContain(
 			'ALTER TYPE "webhook_delivery_status" ADD VALUE IF NOT EXISTS',
 		);
 		expect(migration).toContain('"status"::text NOT IN');
-		expect(migration).toContain(
-			"CREATE OR REPLACE FUNCTION maestro_reconcile_webhook_payload",
+		expect(migration).toMatch(
+			/CREATE OR REPLACE FUNCTION maestro_reconcile_webhook_payload[\s\S]+EXCEPTION\s+WHEN duplicate_function OR unique_violation THEN\s+NULL;\s+END;/,
 		);
 		expect(migration).not.toContain(
 			"DROP FUNCTION IF EXISTS maestro_reconcile_webhook_payload",

@@ -14,10 +14,10 @@ function markers(existing: string[]): InitialSchemaMarker[] {
 }
 
 describe("legacy migration reconciliation", () => {
-	it("does not treat an empty marker list as an existing baseline", () => {
+	it("treats an empty marker definition set as fresh", () => {
 		const state = classifyInitialSchemaMarkers([]);
 
-		expect(state).toMatchObject({
+		expect(state).toEqual({
 			exists: false,
 			partial: false,
 			present: [],

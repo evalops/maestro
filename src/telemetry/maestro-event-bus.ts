@@ -757,6 +757,52 @@ function mergeCorrelation(
 	};
 }
 
+export function maestroCorrelationToChronicleMetadata(
+	correlation: MaestroCorrelation,
+): Record<string, string> {
+	const metadata: Record<string, string> = {};
+	const canonicalKeys = new Set<string>();
+	const putCanonicalMetadata = (
+		key: string,
+		value: string | undefined,
+	): void => {
+		canonicalKeys.add(key);
+		putMetadata(metadata, key, value);
+	};
+	putCanonicalMetadata("organization_id", correlation.organization_id);
+	putCanonicalMetadata("workspace_id", correlation.workspace_id);
+	putCanonicalMetadata("maestro_session_id", correlation.session_id);
+	putCanonicalMetadata("agent_run_id", correlation.agent_run_id);
+	putCanonicalMetadata("agent_run_step_id", correlation.agent_run_step_id);
+	putCanonicalMetadata("agent_id", correlation.agent_id);
+	putCanonicalMetadata("actor_id", correlation.actor_id);
+	putCanonicalMetadata("principal_id", correlation.principal_id);
+	putCanonicalMetadata("trace_id", correlation.trace_id);
+	putCanonicalMetadata("request_id", correlation.request_id);
+	putCanonicalMetadata(
+		"remote_runner_session_id",
+		correlation.remote_runner_session_id,
+	);
+	putCanonicalMetadata("objective_id", correlation.objective_id);
+	putCanonicalMetadata("conversation_id", correlation.conversation_id);
+	putCanonicalMetadata("parent_event_id", correlation.parent_event_id);
+	for (const [key, value] of Object.entries(correlation.attributes ?? {})) {
+		if (canonicalKeys.has(key)) continue;
+		putMetadata(metadata, key, value);
+	}
+	return metadata;
+}
+
+function putMetadata(
+	metadata: Record<string, string>,
+	key: string,
+	value: string | undefined,
+): void {
+	const cleanValue = value?.trim();
+	if (!cleanValue) return;
+	metadata[key] = cleanValue;
+}
+
 function normalizeTime(value: string | Date | undefined): string {
 	if (value instanceof Date) return value.toISOString();
 	return value ?? new Date().toISOString();

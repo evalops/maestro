@@ -1,13 +1,23 @@
-CREATE OR REPLACE FUNCTION maestro_reconcile_webhook_payload(value text)
-RETURNS jsonb
-LANGUAGE plpgsql
-AS $$
+DO $$
 BEGIN
-	RETURN value::jsonb;
-EXCEPTION WHEN others THEN
-	RETURN jsonb_build_object('legacy_payload', value);
-END;
-$$;
+	BEGIN
+		EXECUTE $function$
+			CREATE OR REPLACE FUNCTION maestro_reconcile_webhook_payload(value text)
+			RETURNS jsonb
+			LANGUAGE plpgsql
+			AS $body$
+			BEGIN
+				RETURN value::jsonb;
+			EXCEPTION WHEN others THEN
+				RETURN jsonb_build_object('legacy_payload', value);
+			END;
+			$body$;
+		$function$;
+	EXCEPTION
+		WHEN duplicate_function OR unique_violation THEN
+			NULL;
+	END;
+END $$;
 --> statement-breakpoint
 DO $$
 BEGIN
@@ -17,12 +27,17 @@ BEGIN
 		JOIN pg_namespace n ON n.oid = t.typnamespace
 		WHERE n.nspname = 'public' AND t.typname = 'webhook_delivery_status'
 	) THEN
-		CREATE TYPE "webhook_delivery_status" AS ENUM (
-			'pending',
-			'delivered',
-			'failed',
-			'retrying'
-		);
+		BEGIN
+			CREATE TYPE "webhook_delivery_status" AS ENUM (
+				'pending',
+				'delivered',
+				'failed',
+				'retrying'
+			);
+		EXCEPTION
+			WHEN duplicate_object OR unique_violation THEN
+				NULL;
+		END;
 	END IF;
 END $$;
 --> statement-breakpoint
