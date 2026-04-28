@@ -2854,6 +2854,8 @@ struct UsageBucket {
     requests: u64,
     tokens: u64,
     tokens_detailed: UsageTokenTotals,
+    calls: u64,
+    cached_tokens: u64,
 }
 
 async fn load_usage_entries(path: &Path) -> Vec<UsageEntry> {
@@ -2919,6 +2921,8 @@ fn add_usage_to_bucket(bucket: &mut UsageBucket, cost: f64, tokens: u64, entry: 
     bucket.cost += cost;
     bucket.requests += 1;
     bucket.tokens += tokens;
+    bucket.calls += 1;
+    bucket.cached_tokens += entry.tokens_cache_read + entry.tokens_cache_write;
     bucket.tokens_detailed.input += entry.tokens_input;
     bucket.tokens_detailed.output += entry.tokens_output;
     bucket.tokens_detailed.cache_read += entry.tokens_cache_read;
@@ -6915,6 +6919,46 @@ mod tests {
         assert_eq!(message["usage"]["cost"]["cacheRead"], 0.0);
         assert_eq!(message["usage"]["cost"]["cacheWrite"], 0.0);
         assert_eq!(message["usage"]["cost"]["total"], 0.0);
+    }
+
+    #[tokio::test]
+    async fn usage_buckets_include_contract_breakdown_fields() {
+        let path = env::temp_dir().join(format!(
+            "maestro-usage-{}-{}.json",
+            process::id(),
+            ATTACHMENT_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let usage = serde_json::json!([{
+            "provider": "openai",
+            "model": "gpt-5.1-codex-max",
+            "tokensInput": 10,
+            "tokensOutput": 20,
+            "tokensCacheRead": 3,
+            "tokensCacheWrite": 4,
+            "cost": 0.12
+        }]);
+        tokio::fs::write(&path, usage.to_string())
+            .await
+            .expect("usage file should be written");
+
+        let snapshot = usage_snapshot(&path).await;
+        let provider = snapshot
+            .pointer("/summary/byProvider/openai")
+            .expect("provider bucket should exist");
+        let model = snapshot
+            .pointer("/summary/byModel")
+            .and_then(|models| models.get("openai/gpt-5.1-codex-max"))
+            .expect("model bucket should exist");
+
+        assert_eq!(provider.get("calls").and_then(Value::as_u64), Some(1));
+        assert_eq!(
+            provider.get("cachedTokens").and_then(Value::as_u64),
+            Some(7)
+        );
+        assert_eq!(model.get("calls").and_then(Value::as_u64), Some(1));
+        assert_eq!(model.get("cachedTokens").and_then(Value::as_u64), Some(7));
+
+        let _ = tokio::fs::remove_file(path).await;
     }
 
     #[test]
