@@ -323,6 +323,7 @@ async fn main() -> anyhow::Result<()> {
         config.listen_addr()
     );
     let sessions = load_session_store(&config.session_store_path).await;
+    let shared_sessions = sessions.shared_sessions.clone();
     let command_prefs = load_command_prefs(&config.command_prefs_path).await;
 
     let state = AppState {
@@ -337,7 +338,7 @@ async fn main() -> anyhow::Result<()> {
         sessions: Arc::new(Mutex::new(sessions)),
         session_persist_lock: Arc::new(Mutex::new(())),
         usage_persist_lock: Arc::new(Mutex::new(())),
-        shared_sessions: Arc::new(Mutex::new(HashMap::new())),
+        shared_sessions: Arc::new(Mutex::new(shared_sessions)),
         approval_modes: Arc::new(Mutex::new(HashMap::new())),
         pending_tool_responses: Arc::new(Mutex::new(HashMap::new())),
     };
@@ -950,6 +951,8 @@ struct SessionUpdateRequest {
 struct SessionStore {
     #[serde(default)]
     sessions: HashMap<String, SessionRecord>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    shared_sessions: HashMap<String, SharedSessionGrant>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -970,6 +973,8 @@ struct SessionRecord {
     messages: Vec<Value>,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct SharedSessionGrant {
     session_id: String,
     expires_at: u64,
@@ -1213,7 +1218,10 @@ fn decode_session_store(bytes: &[u8]) -> Result<SessionStore, String> {
     if value.is_object() {
         let sessions = serde_json::from_value::<HashMap<String, SessionRecord>>(value)
             .map_err(|error| error.to_string())?;
-        return Ok(SessionStore { sessions });
+        return Ok(SessionStore {
+            sessions,
+            shared_sessions: HashMap::new(),
+        });
     }
     if value.is_array() {
         let sessions = serde_json::from_value::<Vec<SessionRecord>>(value)
@@ -1221,7 +1229,10 @@ fn decode_session_store(bytes: &[u8]) -> Result<SessionStore, String> {
             .into_iter()
             .map(|session| (session.id.clone(), session))
             .collect();
-        return Ok(SessionStore { sessions });
+        return Ok(SessionStore {
+            sessions,
+            shared_sessions: HashMap::new(),
+        });
     }
     Err("session store must be an object or array".to_string())
 }
@@ -1235,6 +1246,15 @@ async fn persist_session_store(state: &AppState) {
     if let Ok(bytes) = serde_json::to_vec_pretty(&store) {
         let _ = tokio::fs::write(&state.config.session_store_path, bytes).await;
     }
+}
+
+async fn persist_shared_sessions(state: &AppState) {
+    let shared_sessions = state.shared_sessions.lock().await.clone();
+    {
+        let mut store = state.sessions.lock().await;
+        store.shared_sessions = shared_sessions;
+    }
+    persist_session_store(state).await;
 }
 
 fn create_session_record(title: Option<String>, owner: Option<String>) -> SessionRecord {
@@ -1370,7 +1390,7 @@ async fn handle_shared_session_get(
     shared_path: SharedSessionPath<'_>,
 ) -> Vec<u8> {
     let now = now_millis();
-    let session_id = {
+    let (session_id, should_persist_shared_sessions) = {
         let mut shares = state.shared_sessions.lock().await;
         let Some(grant) = shares.get_mut(shared_path.token) else {
             return json_response(
@@ -1380,6 +1400,8 @@ async fn handle_shared_session_get(
         };
         if grant.expires_at <= now {
             shares.remove(shared_path.token);
+            drop(shares);
+            persist_shared_sessions(state).await;
             return json_response(
                 404,
                 &serde_json::json!({ "error": "Shared session not found" }),
@@ -1392,15 +1414,22 @@ async fn handle_shared_session_get(
                 .unwrap_or(false)
             {
                 shares.remove(shared_path.token);
+                drop(shares);
+                persist_shared_sessions(state).await;
                 return json_response(
                     404,
                     &serde_json::json!({ "error": "Shared session not found" }),
                 );
             }
             grant.access_count = grant.access_count.saturating_add(1);
+            (grant.session_id.clone(), true)
+        } else {
+            (grant.session_id.clone(), false)
         }
-        grant.session_id.clone()
     };
+    if should_persist_shared_sessions {
+        persist_shared_sessions(state).await;
+    }
     let Some(session) = state
         .sessions
         .lock()
@@ -1470,6 +1499,7 @@ async fn handle_session_share_post(
             access_count: 0,
         },
     );
+    persist_shared_sessions(state).await;
     json_response(
         200,
         &serde_json::json!({
@@ -6257,7 +6287,10 @@ mod tests {
             background_settings: Arc::new(Mutex::new(BackgroundSettings::default())),
             framework_preference: Arc::new(Mutex::new(None)),
             command_prefs: Arc::new(Mutex::new(CommandPrefs::default())),
-            sessions: Arc::new(Mutex::new(SessionStore { sessions })),
+            sessions: Arc::new(Mutex::new(SessionStore {
+                sessions,
+                shared_sessions: HashMap::new(),
+            })),
             session_persist_lock: Arc::new(Mutex::new(())),
             usage_persist_lock: Arc::new(Mutex::new(())),
             shared_sessions: Arc::new(Mutex::new(HashMap::new())),
@@ -6855,6 +6888,33 @@ mod tests {
         }));
         assert_eq!(unlimited.max_accesses, None);
         assert!(unlimited.allow_sensitive_content);
+    }
+
+    #[test]
+    fn session_store_preserves_shared_session_grants() {
+        let store = SessionStore {
+            sessions: HashMap::from([("session-1".to_string(), test_session_record("session-1"))]),
+            shared_sessions: HashMap::from([(
+                "share-token".to_string(),
+                SharedSessionGrant {
+                    session_id: "session-1".to_string(),
+                    expires_at: 1_900_000_000_000,
+                    max_accesses: Some(3),
+                    access_count: 1,
+                },
+            )]),
+        };
+
+        let encoded = serde_json::to_vec(&store).expect("store should serialize");
+        let decoded = decode_session_store(&encoded).expect("store should decode");
+        let grant = decoded
+            .shared_sessions
+            .get("share-token")
+            .expect("share grant should persist");
+
+        assert_eq!(grant.session_id, "session-1");
+        assert_eq!(grant.max_accesses, Some(3));
+        assert_eq!(grant.access_count, 1);
     }
 
     #[test]
