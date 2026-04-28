@@ -4117,15 +4117,9 @@ async fn handle_chat_endpoint(
                                 agent
                                     .tool_response_sender()
                                     .send((call_id.clone(), false, None));
-                            send_sse(
-                                &mut stream,
-                                &serde_json::json!({
-                                    "type": "tool_execution_error",
-                                    "toolCallId": call_id,
-                                    "error": "Tool execution blocked by approval mode"
-                                }),
-                            )
-                            .await?;
+                            finish_tool_metadata(&mut assistant_tools, &call_id, false);
+                            send_sse(&mut stream, &approval_blocked_tool_event(&call_id, &tool))
+                                .await?;
                         }
                         _ => {
                             state
@@ -4688,13 +4682,10 @@ async fn handle_chat_websocket_endpoint(
                                 agent
                                     .tool_response_sender()
                                     .send((call_id.clone(), false, None));
+                            finish_tool_metadata(&mut assistant_tools, &call_id, false);
                             send_ws_json(
                                 &mut stream,
-                                &serde_json::json!({
-                                    "type": "tool_execution_error",
-                                    "toolCallId": call_id,
-                                    "error": "Tool execution blocked by approval mode"
-                                }),
+                                &approval_blocked_tool_event(&call_id, &tool),
                             )
                             .await?;
                         }
@@ -5200,12 +5191,31 @@ fn finish_tool_metadata(tools: &mut [Value], call_id: &str, success: bool) {
         .iter_mut()
         .find(|tool| tool.get("id").and_then(Value::as_str) == Some(call_id))
     {
-        tool["status"] = Value::String("completed".to_string());
+        tool["status"] = Value::String(if success { "completed" } else { "error" }.to_string());
         tool["result"] = serde_json::json!({
             "success": success,
             "isError": !success
         });
     }
+}
+
+fn approval_blocked_tool_event(call_id: &str, tool_name: &str) -> Value {
+    serde_json::json!({
+        "type": "tool_execution_end",
+        "toolCallId": call_id,
+        "toolName": tool_name,
+        "result": {
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Tool execution blocked by approval mode"
+                }
+            ],
+            "isError": true,
+            "timestamp": now_rfc3339()
+        },
+        "isError": true
+    })
 }
 
 fn now_rfc3339() -> String {
@@ -7904,5 +7914,31 @@ mod tests {
         let request = b"GET\r\nHost: localhost\r\n\r\n";
 
         assert!(parse_request_head(request).is_err());
+    }
+
+    #[test]
+    fn approval_blocked_tool_event_uses_contract_tool_end_shape() {
+        let event = approval_blocked_tool_event("call-1", "bash");
+
+        assert_eq!(event["type"], "tool_execution_end");
+        assert_eq!(event["toolCallId"], "call-1");
+        assert_eq!(event["toolName"], "bash");
+        assert_eq!(event["isError"], true);
+        assert_eq!(event["result"]["isError"], true);
+        assert_eq!(
+            event["result"]["content"][0]["text"],
+            "Tool execution blocked by approval mode"
+        );
+    }
+
+    #[test]
+    fn failed_tool_metadata_is_marked_error_for_replay() {
+        let mut tools = Vec::new();
+        record_tool_call_metadata(&mut tools, "tool-1", "bash", serde_json::json!({}));
+
+        finish_tool_metadata(&mut tools, "tool-1", false);
+
+        assert_eq!(tools[0]["status"], "error");
+        assert_eq!(tools[0]["result"]["isError"], true);
     }
 }
