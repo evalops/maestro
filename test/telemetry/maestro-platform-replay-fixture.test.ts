@@ -105,8 +105,18 @@ describe("canonical Maestro Platform replay fixture", () => {
 			},
 			selected_at: "2026-04-23T18:01:00.000Z",
 		});
-		expect(promptVariantSelected).not.toHaveProperty("prompt_id");
-		expect(promptVariantSelected).not.toHaveProperty("version_id");
+		expect(promptVariantSelected).toHaveProperty(
+			"prompt_id",
+			"prompt_platform_replay_system",
+		);
+		expect(promptVariantSelected).toHaveProperty(
+			"prompt_name",
+			"maestro-system",
+		);
+		expect(promptVariantSelected).toHaveProperty(
+			"version_id",
+			"prompt_version_9",
+		);
 		const toolAttempts = fixture.events
 			.filter((event) => event.type === MaestroBusEventType.ToolCallAttempted)
 			.map((event) => event.data);
@@ -148,12 +158,14 @@ describe("canonical Maestro Platform replay fixture", () => {
 			tool_execution_id: "tool_exec_platform_replay_skill_001",
 			invoked_at: "2026-04-23T18:04:00.000Z",
 		});
-		expect(
-			byType.get(MaestroBusEventType.SkillInvoked)?.data,
-		).not.toHaveProperty("invocation_id");
-		expect(
-			byType.get(MaestroBusEventType.SkillInvoked)?.data,
-		).not.toHaveProperty("skill_id");
+		expect(byType.get(MaestroBusEventType.SkillInvoked)?.data).toHaveProperty(
+			"invocation_id",
+			"invocation_platform_replay_skill_001",
+		);
+		expect(byType.get(MaestroBusEventType.SkillInvoked)?.data).toHaveProperty(
+			"skill_id",
+			"skill_incident_review",
+		);
 		expect(byType.get(MaestroBusEventType.SkillFailed)?.data).toMatchObject({
 			"@type": "type.googleapis.com/maestro.v1.SkillOutcome",
 			prompt_metadata: {
@@ -181,9 +193,10 @@ describe("canonical Maestro Platform replay fixture", () => {
 			evaluation_rationale: "formatting checks failed",
 			outcome_at: "2026-04-23T18:09:00.000Z",
 		});
-		expect(
-			byType.get(MaestroBusEventType.SkillFailed)?.data,
-		).not.toHaveProperty("invocation_id");
+		expect(byType.get(MaestroBusEventType.SkillFailed)?.data).toHaveProperty(
+			"invocation_id",
+			"invocation_platform_replay_skill_001",
+		);
 		expect(
 			byType.get(MaestroBusEventType.SkillFailed)?.data,
 		).not.toHaveProperty("status");
@@ -211,15 +224,18 @@ describe("canonical Maestro Platform replay fixture", () => {
 			score: 0.82,
 			passed: false,
 			threshold: 0.9,
+			scorer: "fermata.replay.score",
 			rationale: "formatting checks failed",
 			assertion_count: 1,
 			scored_at: "2026-04-23T18:08:00.000Z",
 		});
-		expect(byType.get(MaestroBusEventType.EvalScored)?.data).not.toHaveProperty(
+		expect(byType.get(MaestroBusEventType.EvalScored)?.data).toHaveProperty(
 			"eval_run_id",
+			"eval_run_platform_replay_001",
 		);
-		expect(byType.get(MaestroBusEventType.EvalScored)?.data).not.toHaveProperty(
+		expect(byType.get(MaestroBusEventType.EvalScored)?.data).toHaveProperty(
 			"scenario_id",
+			"canonical-maestro-session-platform-replay",
 		);
 		expect(byType.get(MaestroBusEventType.EvalScored)?.data).not.toHaveProperty(
 			"suite_id",
@@ -230,15 +246,17 @@ describe("canonical Maestro Platform replay fixture", () => {
 			required_subjects: fixture.subjects,
 			platform_join_keys: {
 				agent_run_id: "agent_run_platform_replay_001",
-				prompt_id: "maestro-system",
+				prompt_id: "prompt_platform_replay_system",
 				prompt_version_id: "prompt_version_9",
 				prompt_artifact_hash: "sha256:prompt-platform-replay",
 				tool_call_id: "tool_call_platform_replay_bash_001",
 				tool_execution_id: "tool_exec_platform_replay_bash_001",
 				evaluation_tool_call_id: "tool_call_platform_replay_bash_001",
 				evaluation_tool_execution_id: "tool_exec_platform_replay_bash_001",
+				eval_run_id: "eval_run_platform_replay_001",
 				skill_tool_call_id: "tool_call_platform_replay_skill_001",
 				skill_tool_execution_id: "tool_exec_platform_replay_skill_001",
+				skill_invocation_id: "invocation_platform_replay_skill_001",
 				approval_request_id: "approval_platform_replay_001",
 				skill_id: "skill_incident_review",
 			},

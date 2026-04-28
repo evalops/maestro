@@ -74,6 +74,9 @@ describe("maestro event bus", () => {
 			data_content_type: "application/protobuf",
 			extensions: {
 				dataschema: "buf.build/evalops/proto/maestro.v1.ToolCallAttempt",
+				evalops_context_version: "evalops.context.v1",
+				workspace_id: "workspace_123",
+				maestro_session_id: "session_123",
 			},
 		});
 		expect(event.data["@type"]).toBe(
@@ -93,6 +96,7 @@ describe("maestro event bus", () => {
 			actor_id: "user_123",
 			principal_id: "principal_123",
 			trace_id: "trace_123",
+			traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
 			request_id: "request_123",
 			parent_event_id: "event_parent",
 			attributes: {
@@ -115,6 +119,7 @@ describe("maestro event bus", () => {
 			actor_id: "user_123",
 			principal_id: "principal_123",
 			trace_id: "trace_123",
+			traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
 			request_id: "request_123",
 			parent_event_id: "event_parent",
 			task_id: "task_123",
@@ -213,6 +218,9 @@ describe("maestro event bus", () => {
 		expect(JSON.parse(published[0]?.payload ?? "{}")).toMatchObject({
 			type: "maestro.events.prompt_variant.selected",
 			data: {
+				prompt_id: "maestro-system",
+				prompt_name: "maestro-system",
+				version_id: "ver_9",
 				prompt_metadata: {
 					name: "maestro-system",
 					versionId: "ver_9",
@@ -424,6 +432,7 @@ describe("maestro event bus", () => {
 			score: 0.82,
 			threshold: 0.9,
 			passed: false,
+			scorer: "fermata.replay.score",
 			rationale: "formatting checks failed",
 			assertion_count: 1,
 			prompt_metadata: {
@@ -452,12 +461,15 @@ describe("maestro event bus", () => {
 		expect(JSON.parse(published[0]?.payload ?? "{}")).toMatchObject({
 			type: "maestro.events.eval.scored",
 			data: {
+				eval_run_id: "exec_eval_1",
+				scenario_id: "skill_remote_1",
 				tool_call_id: "tool_eval_1",
 				tool_execution_id: "exec_eval_1",
 				tool_name: "Bash",
 				score: 0.82,
 				threshold: 0.9,
 				passed: false,
+				scorer: "fermata.replay.score",
 				rationale: "formatting checks failed",
 				assertion_count: 1,
 				prompt_metadata: {

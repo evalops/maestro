@@ -70,6 +70,7 @@ export interface MaestroCorrelation {
 	actor_id?: string;
 	principal_id?: string;
 	trace_id?: string;
+	traceparent?: string;
 	request_id?: string;
 	parent_event_id?: string;
 	remote_runner_session_id?: string;
@@ -100,6 +101,7 @@ export interface MaestroCloudEvent<TData extends Record<string, unknown>> {
 	data: TData & { "@type": string };
 	extensions: {
 		dataschema: string;
+		evalops_context_version: "evalops.context.v1";
 		[key: string]: string;
 	};
 }
@@ -226,6 +228,9 @@ export interface MaestroEventBusStatus {
 export interface PromptVariantSelectedEventData
 	extends Record<string, unknown> {
 	correlation: MaestroCorrelation;
+	prompt_id: string;
+	prompt_name: string;
+	version_id: string;
 	prompt_metadata: PromptMetadata;
 	selected_at: string;
 }
@@ -273,6 +278,8 @@ export interface SkillOutcomeEventData extends Record<string, unknown> {
 
 export interface EvalScoredEventData extends Record<string, unknown> {
 	correlation: MaestroCorrelation;
+	eval_run_id: string;
+	scenario_id: string;
 	prompt_metadata?: PromptMetadata;
 	skill_metadata?: SkillArtifactMetadata;
 	tool_call_id: string;
@@ -281,6 +288,7 @@ export interface EvalScoredEventData extends Record<string, unknown> {
 	score?: number;
 	threshold?: number;
 	passed?: boolean;
+	scorer?: string;
 	rationale?: string;
 	assertion_count?: number;
 	scored_at: string;
@@ -379,6 +387,9 @@ export interface RecordMaestroToolCallCompletedInput {
 
 export interface RecordMaestroPromptVariantSelectedInput {
 	event_id?: string;
+	prompt_id?: string;
+	prompt_name?: string;
+	version_id?: string;
 	prompt_metadata: PromptMetadata;
 	correlation?: Partial<MaestroCorrelation>;
 	selected_at?: string;
@@ -425,6 +436,8 @@ export interface RecordMaestroSkillOutcomeInput {
 
 export interface RecordMaestroEvalScoredInput {
 	event_id?: string;
+	eval_run_id?: string;
+	scenario_id?: string;
 	prompt_metadata?: PromptMetadata;
 	skill_metadata?: SkillArtifactMetadata;
 	tool_call_id: string;
@@ -433,6 +446,7 @@ export interface RecordMaestroEvalScoredInput {
 	score?: number;
 	threshold?: number;
 	passed?: boolean;
+	scorer?: string;
 	rationale?: string;
 	assertion_count?: number;
 	correlation?: Partial<MaestroCorrelation>;
@@ -555,6 +569,7 @@ function defaultCorrelation(env: Env): MaestroCorrelation {
 		actor_id: readEnv(env, ["MAESTRO_ACTOR_ID"]),
 		principal_id: readEnv(env, ["MAESTRO_PRINCIPAL_ID"]),
 		trace_id: readEnv(env, ["TRACE_ID", "OTEL_TRACE_ID"]),
+		traceparent: readEnv(env, ["TRACEPARENT", "TRACE_PARENT"]),
 		request_id: readEnv(env, ["MAESTRO_REQUEST_ID"]),
 		remote_runner_session_id: readEnv(env, [
 			"MAESTRO_REMOTE_RUNNER_SESSION_ID",
@@ -778,6 +793,7 @@ export function maestroCorrelationToChronicleMetadata(
 	putCanonicalMetadata("actor_id", correlation.actor_id);
 	putCanonicalMetadata("principal_id", correlation.principal_id);
 	putCanonicalMetadata("trace_id", correlation.trace_id);
+	putCanonicalMetadata("traceparent", correlation.traceparent);
 	putCanonicalMetadata("request_id", correlation.request_id);
 	putCanonicalMetadata(
 		"remote_runner_session_id",
@@ -826,13 +842,20 @@ export function buildMaestroCloudEvent<TData extends Record<string, unknown>>(
 		config.defaultCorrelation,
 		options.correlation,
 	);
-	const dataCorrelation =
+	const contextCorrelation =
 		"correlation" in data && data.correlation ? data.correlation : correlation;
+	const dataCorrelation = maestroDataCorrelation(
+		contextCorrelation as MaestroCorrelation,
+	);
 	const typedData = {
 		...data,
 		"@type": protoAnyTypeFor(type),
 		correlation: dataCorrelation,
 	} as TData & { "@type": string };
+	const contextExtensions = maestroContextExtensions(
+		contextCorrelation as MaestroCorrelation,
+		typedData,
+	);
 
 	return {
 		spec_version: "1.0",
@@ -844,8 +867,49 @@ export function buildMaestroCloudEvent<TData extends Record<string, unknown>>(
 		data_content_type: "application/protobuf",
 		tenant_id: options.tenantId ?? config.tenantId,
 		data: typedData,
-		extensions: { dataschema: dataSchemaFor(type) },
+		extensions: {
+			dataschema: dataSchemaFor(type),
+			evalops_context_version: "evalops.context.v1",
+			...contextExtensions,
+		},
 	};
+}
+
+function maestroDataCorrelation(
+	correlation: MaestroCorrelation,
+): MaestroCorrelation {
+	const { traceparent: _traceparent, ...dataCorrelation } = correlation;
+	return dataCorrelation;
+}
+
+function maestroContextExtensions(
+	correlation: MaestroCorrelation,
+	data: Record<string, unknown>,
+): Record<string, string> {
+	const extensions: Record<string, string> = {};
+	putMetadata(extensions, "workspace_id", correlation.workspace_id);
+	putMetadata(extensions, "maestro_session_id", correlation.session_id);
+	putMetadata(extensions, "agent_run_id", correlation.agent_run_id);
+	putMetadata(extensions, "agent_run_step_id", correlation.agent_run_step_id);
+	putMetadata(extensions, "trace_id", correlation.trace_id);
+	putMetadata(extensions, "traceparent", correlation.traceparent);
+	putMetadata(extensions, "request_id", correlation.request_id);
+	putMetadata(extensions, "source_issue", correlation.attributes?.source_issue);
+	putMetadata(extensions, "task_id", correlation.attributes?.task_id);
+	putMetadata(
+		extensions,
+		"tool_execution_id",
+		stringRecordValue(data, "tool_execution_id"),
+	);
+	return extensions;
+}
+
+function stringRecordValue(
+	record: Record<string, unknown>,
+	key: string,
+): string | undefined {
+	const value = record[key];
+	return typeof value === "string" ? value : undefined;
 }
 
 export async function publishMaestroCloudEvent<
@@ -1159,6 +1223,12 @@ export function recordMaestroPromptVariantSelected(
 	event: RecordMaestroPromptVariantSelectedInput,
 ): void {
 	const selectedAt = event.selected_at ?? new Date().toISOString();
+	const promptID = event.prompt_id ?? event.prompt_metadata.name;
+	const promptName = event.prompt_name ?? event.prompt_metadata.name;
+	const versionID =
+		event.version_id ??
+		event.prompt_metadata.versionId ??
+		event.prompt_metadata.hash;
 	void publishMaestroCloudEvent<PromptVariantSelectedEventData>(
 		MaestroBusEventType.PromptVariantSelected,
 		{
@@ -1166,6 +1236,9 @@ export function recordMaestroPromptVariantSelected(
 				resolveMaestroEventBusConfig(event.env).defaultCorrelation,
 				event.correlation,
 			),
+			prompt_id: promptID,
+			prompt_name: promptName,
+			version_id: versionID,
 			prompt_metadata: event.prompt_metadata,
 			selected_at: selectedAt,
 		},
@@ -1241,6 +1314,14 @@ export function recordMaestroEvalScored(
 	event: RecordMaestroEvalScoredInput,
 ): void {
 	const scoredAt = event.scored_at ?? new Date().toISOString();
+	const evalRunID =
+		event.eval_run_id ?? event.tool_execution_id ?? event.tool_call_id;
+	const scenarioID =
+		event.scenario_id ??
+		event.skill_metadata?.artifactId ??
+		event.skill_metadata?.name ??
+		event.tool_name ??
+		event.tool_call_id;
 	void publishMaestroCloudEvent<EvalScoredEventData>(
 		MaestroBusEventType.EvalScored,
 		{
@@ -1248,6 +1329,8 @@ export function recordMaestroEvalScored(
 				resolveMaestroEventBusConfig(event.env).defaultCorrelation,
 				event.correlation,
 			),
+			eval_run_id: evalRunID,
+			scenario_id: scenarioID,
 			prompt_metadata: event.prompt_metadata,
 			skill_metadata: event.skill_metadata,
 			tool_call_id: event.tool_call_id,
@@ -1256,6 +1339,7 @@ export function recordMaestroEvalScored(
 			score: event.score,
 			threshold: event.threshold,
 			passed: event.passed,
+			scorer: event.scorer,
 			rationale: event.rationale,
 			assertion_count: event.assertion_count,
 			scored_at: scoredAt,
