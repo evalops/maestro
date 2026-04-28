@@ -80,6 +80,10 @@ impl Config {
         let csrf_token = trimmed_env("MAESTRO_WEB_CSRF_TOKEN");
         let require_csrf = csrf_token.is_some()
             || (prod_profile() && env::var("MAESTRO_WEB_REQUIRE_CSRF").as_deref() != Ok("0"));
+        let llm_gateway_models_url = llm_gateway_models_url();
+        let openrouter_models = llm_gateway_models_url
+            .as_deref()
+            .is_some_and(is_openrouter_models_url);
 
         Self {
             listen_host: env::var("MAESTRO_CONTROL_HOST").unwrap_or_else(|_| "0.0.0.0".into()),
@@ -104,9 +108,18 @@ impl Config {
                 .ok()
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(86_400),
-            llm_gateway_models_url: llm_gateway_models_url(),
-            llm_gateway_token: trimmed_env("MAESTRO_LLM_GATEWAY_TOKEN"),
-            llm_gateway_org_id: trimmed_env("MAESTRO_LLM_GATEWAY_ORG_ID"),
+            llm_gateway_models_url,
+            llm_gateway_token: if openrouter_models {
+                trimmed_env("MAESTRO_OPENROUTER_API_KEY")
+                    .or_else(|| trimmed_env("OPENROUTER_API_KEY"))
+            } else {
+                trimmed_env("MAESTRO_LLM_GATEWAY_TOKEN")
+            },
+            llm_gateway_org_id: if openrouter_models {
+                None
+            } else {
+                trimmed_env("MAESTRO_LLM_GATEWAY_ORG_ID")
+            },
             llm_gateway_timeout_ms: env::var("MAESTRO_LLM_GATEWAY_TIMEOUT_MS")
                 .ok()
                 .and_then(|value| value.parse().ok())
@@ -6209,8 +6222,17 @@ fn llm_gateway_models_url() -> Option<String> {
     if let Some(url) = trimmed_env("MAESTRO_LLM_GATEWAY_MODELS_URL") {
         return Some(url);
     }
-    let base = trimmed_env("MAESTRO_LLM_GATEWAY_URL")?;
-    Some(format!("{}/v1/models", base.trim_end_matches('/')))
+    if let Some(base) = trimmed_env("MAESTRO_LLM_GATEWAY_URL") {
+        return Some(format!("{}/v1/models", base.trim_end_matches('/')));
+    }
+    Some(
+        trimmed_env("MAESTRO_OPENROUTER_MODELS_URL")
+            .unwrap_or_else(|| "https://openrouter.ai/api/v1/models".to_string()),
+    )
+}
+
+fn is_openrouter_models_url(url: &str) -> bool {
+    url.contains("openrouter.ai/")
 }
 
 #[cfg(test)]
@@ -7405,6 +7427,58 @@ mod tests {
         assert_eq!(llama.context_window, 131_072);
         assert!(llama.capabilities.vision);
         assert_eq!(llama.cost.input, 0.88);
+    }
+
+    #[test]
+    fn merges_openrouter_model_catalog_payload() {
+        let catalog = serde_json::json!({
+            "data": [{
+                "id": "anthropic/claude-sonnet-4.5",
+                "name": "Anthropic: Claude Sonnet 4.5",
+                "context_length": 200000,
+                "architecture": {
+                    "input_modalities": ["text", "image"],
+                    "output_modalities": ["text"]
+                },
+                "pricing": {
+                    "prompt": "0.000003",
+                    "completion": "0.000015",
+                    "input_cache_read": "0.0000003",
+                    "input_cache_write": "0.00000375"
+                },
+                "top_provider": {
+                    "context_length": 200000,
+                    "max_completion_tokens": 64000,
+                    "is_moderated": true
+                },
+                "supported_parameters": [
+                    "include_reasoning",
+                    "max_tokens",
+                    "reasoning",
+                    "tool_choice",
+                    "tools"
+                ]
+            }]
+        });
+        let mut registry = ModelRegistry {
+            models: builtin_models(),
+            aliases: HashMap::new(),
+        };
+
+        merge_llm_gateway_model_catalog(&mut registry, &catalog);
+        let model = resolve_model("openrouter/anthropic/claude-sonnet-4.5", &registry)
+            .expect("openrouter model should resolve");
+
+        assert_eq!(model.provider, "openrouter");
+        assert_eq!(model.id, "anthropic/claude-sonnet-4.5");
+        assert_eq!(model.api, "openai-completions");
+        assert_eq!(model.context_window, 200_000);
+        assert_eq!(model.max_tokens, 64_000);
+        assert!(model.capabilities.vision);
+        assert!(model.capabilities.tools);
+        assert!(model.capabilities.reasoning);
+        assert_eq!(model.cost.input, 0.000003);
+        assert_eq!(model.cost.cache_write, 0.00000375);
     }
 
     #[test]

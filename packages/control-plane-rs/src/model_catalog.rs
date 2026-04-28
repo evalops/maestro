@@ -93,12 +93,25 @@ pub(crate) fn merge_llm_gateway_model_catalog(registry: &mut ModelRegistry, cata
         merge_gateway_model_array(registry, None, models);
     }
 
-    if let Some(providers) = catalog.get("data").and_then(Value::as_array) {
-        merge_gateway_provider_array(registry, providers);
+    if let Some(data) = catalog.get("data").and_then(Value::as_array) {
+        if data.iter().any(|entry| entry.get("models").is_some()) {
+            merge_gateway_provider_array(registry, data);
+        } else {
+            merge_openrouter_model_array(registry, data);
+        }
     }
 
     if let Some(providers) = catalog.get("external_providers").and_then(Value::as_array) {
         merge_gateway_provider_array(registry, providers);
+    }
+}
+
+fn merge_openrouter_model_array(registry: &mut ModelRegistry, models: &[Value]) {
+    for model in models {
+        let Some(info) = model_info_from_openrouter_value(model) else {
+            continue;
+        };
+        upsert_model(&mut registry.models, info);
     }
 }
 
@@ -127,6 +140,53 @@ fn merge_gateway_model_array(
         };
         upsert_model(&mut registry.models, info);
     }
+}
+
+fn model_info_from_openrouter_value(model: &Value) -> Option<ModelInfo> {
+    let id = model.get("id").and_then(Value::as_str).map(str::trim)?;
+    if id.is_empty() {
+        return None;
+    }
+    let provider = "openrouter";
+    let name = model
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or(id);
+    let top_provider = model.get("top_provider");
+    let reasoning =
+        supported_parameter(model, "reasoning") || supported_parameter(model, "include_reasoning");
+    let tools = supported_parameter(model, "tools") || supported_parameter(model, "tool_choice");
+    let vision = openrouter_input_modalities_include(model, "image");
+
+    Some(ModelInfo {
+        id: id.to_string(),
+        provider: provider.to_string(),
+        name: name.to_string(),
+        api: default_api_for_provider_model(provider, id).to_string(),
+        context_window: value_u32(
+            model
+                .get("context_length")
+                .or_else(|| top_provider.and_then(|provider| provider.get("context_length"))),
+        )
+        .unwrap_or(0),
+        max_tokens: value_u32(
+            top_provider
+                .and_then(|provider| provider.get("max_completion_tokens"))
+                .or_else(|| model.get("max_completion_tokens"))
+                .or_else(|| model.get("maxTokens")),
+        )
+        .unwrap_or(0),
+        reasoning,
+        cost: openrouter_model_cost_from_value(model.get("pricing")),
+        capabilities: ModelCapabilities {
+            streaming: true,
+            tools,
+            vision,
+            reasoning,
+        },
+    })
 }
 
 fn model_info_from_gateway_value(provider_id: Option<&str>, model: &Value) -> Option<ModelInfo> {
@@ -199,6 +259,27 @@ fn model_info_from_gateway_value(provider_id: Option<&str>, model: &Value) -> Op
 fn gateway_modalities_include(model: &Value, mode: &str) -> Option<bool> {
     let input = model.get("modalities")?.get("input")?.as_array()?;
     Some(input.iter().any(|entry| entry.as_str() == Some(mode)))
+}
+
+fn openrouter_input_modalities_include(model: &Value, mode: &str) -> bool {
+    model
+        .get("architecture")
+        .and_then(|architecture| architecture.get("input_modalities"))
+        .and_then(Value::as_array)
+        .map(|modalities| modalities.iter().any(|entry| entry.as_str() == Some(mode)))
+        .unwrap_or(false)
+}
+
+fn supported_parameter(model: &Value, parameter: &str) -> bool {
+    model
+        .get("supported_parameters")
+        .and_then(Value::as_array)
+        .map(|parameters| {
+            parameters
+                .iter()
+                .any(|entry| entry.as_str() == Some(parameter))
+        })
+        .unwrap_or(false)
 }
 
 fn default_api_for_provider_model(provider: &str, model_id: &str) -> &'static str {
@@ -339,6 +420,26 @@ fn model_cost_from_value(value: Option<&Value>) -> ModelCost {
             .or_else(|| cost.get("cache_write"))
             .and_then(Value::as_f64)
             .unwrap_or(0.0),
+    }
+}
+
+fn openrouter_model_cost_from_value(value: Option<&Value>) -> ModelCost {
+    let Some(cost) = value.and_then(Value::as_object) else {
+        return zero_model_cost();
+    };
+    ModelCost {
+        input: value_f64(cost.get("prompt")).unwrap_or(0.0),
+        output: value_f64(cost.get("completion")).unwrap_or(0.0),
+        cache_read: value_f64(cost.get("input_cache_read")).unwrap_or(0.0),
+        cache_write: value_f64(cost.get("input_cache_write")).unwrap_or(0.0),
+    }
+}
+
+fn value_f64(value: Option<&Value>) -> Option<f64> {
+    match value? {
+        Value::Number(number) => number.as_f64(),
+        Value::String(text) => text.trim().parse().ok(),
+        _ => None,
     }
 }
 
