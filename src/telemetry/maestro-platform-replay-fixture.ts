@@ -235,6 +235,9 @@ function buildEvents(): MaestroPlatformReplayFixtureEvent[] {
 		eventFor(
 			MaestroBusEventType.PromptVariantSelected,
 			{
+				prompt_id: "prompt_platform_replay_system",
+				prompt_name: "maestro-system",
+				version_id: "prompt_version_9",
 				prompt_metadata: promptMetadata,
 				selected_at: eventPlan[1].time,
 			},
@@ -279,6 +282,8 @@ function buildEvents(): MaestroPlatformReplayFixtureEvent[] {
 		eventFor(
 			MaestroBusEventType.SkillInvoked,
 			{
+				invocation_id: "invocation_platform_replay_skill_001",
+				skill_id: SKILL_ID,
 				prompt_metadata: promptMetadata,
 				skill_metadata: skillMetadata,
 				tool_call_id: SKILL_TOOL_CALL_ID,
@@ -354,6 +359,8 @@ function buildEvents(): MaestroPlatformReplayFixtureEvent[] {
 		eventFor(
 			MaestroBusEventType.EvalScored,
 			{
+				eval_run_id: "eval_run_platform_replay_001",
+				scenario_id: CANONICAL_MAESTRO_PLATFORM_REPLAY_FIXTURE_NAME,
 				prompt_metadata: promptMetadata,
 				skill_metadata: skillMetadata,
 				tool_call_id: BASH_TOOL_CALL_ID,
@@ -362,6 +369,7 @@ function buildEvents(): MaestroPlatformReplayFixtureEvent[] {
 				score: 0.82,
 				passed: false,
 				threshold: 0.9,
+				scorer: "fermata.replay.score",
 				rationale: "formatting checks failed",
 				assertion_count: 1,
 				scored_at: eventPlan[8].time,
@@ -371,6 +379,8 @@ function buildEvents(): MaestroPlatformReplayFixtureEvent[] {
 		eventFor(
 			MaestroBusEventType.SkillFailed,
 			{
+				invocation_id: "invocation_platform_replay_skill_001",
+				skill_id: SKILL_ID,
 				prompt_metadata: promptMetadata,
 				skill_metadata: skillMetadata,
 				tool_call_id: SKILL_TOOL_CALL_ID,
@@ -435,15 +445,17 @@ export function buildCanonicalMaestroPlatformReplayFixture(): MaestroPlatformRep
 			required_subjects: subjects,
 			platform_join_keys: {
 				agent_run_id: AGENT_RUN_ID,
-				prompt_id: promptMetadata.name,
+				prompt_id: "prompt_platform_replay_system",
 				prompt_version_id: promptMetadata.versionId,
 				prompt_artifact_hash: promptMetadata.hash,
 				tool_call_id: BASH_TOOL_CALL_ID,
 				tool_execution_id: BASH_TOOL_EXECUTION_ID,
 				evaluation_tool_call_id: BASH_TOOL_CALL_ID,
 				evaluation_tool_execution_id: BASH_TOOL_EXECUTION_ID,
+				eval_run_id: "eval_run_platform_replay_001",
 				skill_tool_call_id: SKILL_TOOL_CALL_ID,
 				skill_tool_execution_id: SKILL_TOOL_EXECUTION_ID,
+				skill_invocation_id: "invocation_platform_replay_skill_001",
 				approval_request_id: APPROVAL_REQUEST_ID,
 				skill_id: SKILL_ID,
 			},
