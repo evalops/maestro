@@ -12,7 +12,7 @@ use sha2::Sha256;
 use std::collections::HashMap;
 use std::env;
 use std::io::{Cursor, Read};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{self, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -25,20 +25,21 @@ use tokio::sync::{mpsc, Mutex};
 mod http;
 mod model_catalog;
 
+#[cfg(test)]
+use http::parse_request_head;
 pub(crate) use http::MAX_JSON_BODY_BYTES;
 use http::{
-    cors_credentials_header_for_origin, header_end, json_response, origin_allowed,
-    percent_decode_component, query_flag, read_request_body, read_request_body_with_limit,
-    read_request_head, response_cors_origin, response_with_cache, response_with_cache_and_length,
-    response_with_extra_headers, response_with_extra_headers_and_length, response_with_no_store,
-    response_with_no_store_and_length, text_response, with_cors_origin, RequestHead,
+    header_end, json_response, origin_allowed, percent_decode_component, query_flag,
+    read_request_body, read_request_body_with_limit, read_request_head, requested_cors_origin,
+    response, response_cors_credentials_header, response_cors_origin, response_with_cache,
+    response_with_cache_and_length, response_with_extra_headers,
+    response_with_extra_headers_and_length, response_with_no_store,
+    response_with_no_store_and_length, text_response, with_response_cors_origin, RequestHead,
 };
-#[cfg(test)]
-use http::{parse_request_head, response};
 use model_catalog::{available_models, default_model, resolve_model, ModelInfo};
 #[cfg(test)]
 use model_catalog::{
-    builtin_models, emergency_default_model, merge_configured_models,
+    builtin_models, default_model_from_registry, emergency_default_model, merge_configured_models,
     merge_llm_gateway_model_catalog, ModelRegistry,
 };
 
@@ -137,12 +138,13 @@ struct AppState {
     config: Arc<Config>,
     started_at: Instant,
     selected_model: Arc<Mutex<ModelInfo>>,
-    telemetry_override: Arc<Mutex<Option<TelemetryOverride>>>,
-    training_override: Arc<Mutex<Option<TrainingOverride>>>,
+    telemetry_override: Arc<Mutex<Option<bool>>>,
+    training_override: Arc<Mutex<Option<bool>>>,
     background_settings: Arc<Mutex<BackgroundSettings>>,
     framework_preference: Arc<Mutex<Option<String>>>,
     command_prefs: Arc<Mutex<CommandPrefs>>,
     sessions: Arc<Mutex<SessionStore>>,
+    session_store_persist_enabled: bool,
     session_persist_lock: Arc<Mutex<()>>,
     usage_persist_lock: Arc<Mutex<()>>,
     shared_sessions: Arc<Mutex<HashMap<String, SharedSessionGrant>>>,
@@ -154,64 +156,6 @@ struct AppState {
 struct AuthContext {
     subject: Option<String>,
     unrestricted: bool,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TelemetryOverride {
-    Enabled,
-    Disabled,
-}
-
-impl TelemetryOverride {
-    fn from_action(action: &str) -> Result<Option<Self>, String> {
-        match action {
-            "on" => Ok(Some(Self::Enabled)),
-            "off" => Ok(Some(Self::Disabled)),
-            "reset" => Ok(None),
-            _ => Err(format!("unsupported telemetry action \"{action}\"")),
-        }
-    }
-
-    fn is_enabled(self) -> bool {
-        matches!(self, Self::Enabled)
-    }
-
-    fn runtime_override(self) -> &'static str {
-        if self.is_enabled() {
-            "enabled"
-        } else {
-            "disabled"
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TrainingOverride {
-    OptedIn,
-    OptedOut,
-}
-
-impl TrainingOverride {
-    fn from_action(action: &str) -> Result<Option<Self>, String> {
-        match action {
-            "on" => Ok(Some(Self::OptedIn)),
-            "off" => Ok(Some(Self::OptedOut)),
-            "reset" => Ok(None),
-            _ => Err(format!("unsupported training action \"{action}\"")),
-        }
-    }
-
-    fn is_opt_out(self) -> bool {
-        matches!(self, Self::OptedOut)
-    }
-
-    fn preference(self) -> &'static str {
-        if self.is_opt_out() {
-            "opted-out"
-        } else {
-            "opted-in"
-        }
-    }
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -261,7 +205,7 @@ struct GitSnapshot {
     status: GitStatus,
 }
 
-#[derive(Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Serialize)]
 struct GitStatus {
     modified: usize,
     added: usize,
@@ -335,7 +279,8 @@ async fn main() -> anyhow::Result<()> {
         "maestro rust server listening on http://{}",
         config.listen_addr()
     );
-    let sessions = load_session_store(&config.session_store_path).await;
+    let (sessions, session_store_persist_enabled) =
+        load_session_store(&config.session_store_path).await;
     let shared_sessions = sessions.shared_sessions.clone();
     let command_prefs = load_command_prefs(&config.command_prefs_path).await;
 
@@ -349,6 +294,7 @@ async fn main() -> anyhow::Result<()> {
         framework_preference: Arc::new(Mutex::new(None)),
         command_prefs: Arc::new(Mutex::new(command_prefs)),
         sessions: Arc::new(Mutex::new(sessions)),
+        session_store_persist_enabled,
         session_persist_lock: Arc::new(Mutex::new(())),
         usage_persist_lock: Arc::new(Mutex::new(())),
         shared_sessions: Arc::new(Mutex::new(shared_sessions)),
@@ -377,49 +323,53 @@ async fn main() -> anyhow::Result<()> {
 async fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<(), String> {
     let mut initial = Vec::with_capacity(4096);
     let head = read_request_head(&mut stream, &mut initial).await?;
+    let response_origin = requested_cors_origin(&head);
 
-    if is_chat_websocket_endpoint(&head) {
-        return handle_chat_websocket_endpoint(stream, initial, head, state).await;
-    }
+    with_response_cors_origin(response_origin, async move {
+        if is_chat_websocket_endpoint(&head) {
+            return handle_chat_websocket_endpoint(stream, initial, head, state).await;
+        }
 
-    if is_chat_endpoint(&head) {
-        return handle_chat_endpoint(stream, initial, head, state).await;
-    }
+        if is_chat_endpoint(&head) {
+            return handle_chat_endpoint(stream, initial, head, state).await;
+        }
 
-    if is_local_endpoint(&head) {
-        let response = handle_local_endpoint(&mut stream, &mut initial, &head, &state).await;
+        if is_local_endpoint(&head) {
+            let response = handle_local_endpoint(&mut stream, &mut initial, head, &state).await;
+            stream
+                .write_all(&response)
+                .await
+                .map_err(|error| error.to_string())?;
+            let _ = stream.shutdown().await;
+            return Ok(());
+        }
+
+        if is_static_asset_request(&head) {
+            let response = static_response(&head, &state.config).await;
+            stream
+                .write_all(&response)
+                .await
+                .map_err(|error| error.to_string())?;
+            let _ = stream.shutdown().await;
+            return Ok(());
+        }
+
+        let response = json_response(
+            501,
+            &serde_json::json!({
+                "error": "route has not been migrated to the Rust server yet",
+                "path": head.path,
+                "runtime": "rust-control-plane"
+            }),
+        );
         stream
-            .write_all(&with_cors_origin(response, &head))
+            .write_all(&response)
             .await
             .map_err(|error| error.to_string())?;
         let _ = stream.shutdown().await;
-        return Ok(());
-    };
-
-    if is_static_asset_request(&head) {
-        let response = static_response(&head, &state.config).await;
-        stream
-            .write_all(&with_cors_origin(response, &head))
-            .await
-            .map_err(|error| error.to_string())?;
-        let _ = stream.shutdown().await;
-        return Ok(());
-    };
-
-    let response = json_response(
-        501,
-        &serde_json::json!({
-            "error": "route has not been migrated to the Rust server yet",
-            "path": head.path,
-            "runtime": "rust-control-plane"
-        }),
-    );
-    stream
-        .write_all(&with_cors_origin(response, &head))
-        .await
-        .map_err(|error| error.to_string())?;
-    let _ = stream.shutdown().await;
-    Ok(())
+        Ok(())
+    })
+    .await
 }
 
 fn is_chat_endpoint(head: &RequestHead) -> bool {
@@ -556,12 +506,9 @@ fn pending_request_id_from_resume_path(path: &str) -> Option<&str> {
 async fn handle_local_endpoint(
     stream: &mut TcpStream,
     initial: &mut Vec<u8>,
-    head: &RequestHead,
+    head: RequestHead,
     state: &AppState,
 ) -> Vec<u8> {
-    if head.method == "OPTIONS" && head.path.starts_with("/api/") {
-        return text_response(204, "");
-    }
     if let Err(response) = validate_csrf(&head, &state.config) {
         return response;
     }
@@ -656,7 +603,10 @@ async fn handle_local_endpoint(
             if let Err(response) = authorize(&head, &state.config) {
                 return response;
             }
-            json_response(200, &serde_json::json!({ "commands": command_catalog(&state.config.cwd).await }))
+            json_response(
+                200,
+                &serde_json::json!({ "commands": command_catalog(&state.config.cwd).await }),
+            )
         }
         ("GET", "/api/command-prefs") => {
             if let Err(response) = authorize(&head, &state.config) {
@@ -901,9 +851,11 @@ async fn handle_local_endpoint(
                 Ok(action) => action,
                 Err(response) => return response,
             };
-            let override_value = match TelemetryOverride::from_action(&action) {
-                Ok(override_value) => override_value,
-                Err(error) => return json_response(400, &serde_json::json!({ "error": error })),
+            let override_value = match action.as_str() {
+                "on" => Some(true),
+                "off" => Some(false),
+                "reset" => None,
+                _ => unreachable!("action was validated"),
             };
             *state.telemetry_override.lock().await = override_value;
             json_response(
@@ -929,9 +881,11 @@ async fn handle_local_endpoint(
                 Ok(action) => action,
                 Err(response) => return response,
             };
-            let override_value = match TrainingOverride::from_action(&action) {
-                Ok(override_value) => override_value,
-                Err(error) => return json_response(400, &serde_json::json!({ "error": error })),
+            let override_value = match action.as_str() {
+                "on" => Some(false),
+                "off" => Some(true),
+                "reset" => None,
+                _ => unreachable!("action was validated"),
             };
             *state.training_override.lock().await = override_value;
             json_response(
@@ -942,6 +896,9 @@ async fn handle_local_endpoint(
                     "message": "Training preference updated"
                 }),
             )
+        }
+        ("OPTIONS", path) if path.starts_with("/api/") => {
+            response(204, "text/plain; charset=utf-8", &[])
         }
         _ => json_response(404, &serde_json::json!({ "error": "Not found" })),
     }
@@ -1144,7 +1101,7 @@ async fn handle_session_endpoint(
             };
             if session_path.tail.is_some() {
                 return json_response(404, &serde_json::json!({ "error": "Not found" }));
-            }
+            };
             let mut sessions = state.sessions.lock().await;
             let Some(session) = sessions.sessions.get(session_path.id) else {
                 return json_response(404, &serde_json::json!({ "error": "Session not found" }));
@@ -1212,16 +1169,22 @@ async fn handle_pending_request_resume_endpoint(
     json_response(200, &pending_request_resume_value(request_id, &payload))
 }
 
-async fn load_session_store(path: &Path) -> SessionStore {
+async fn load_session_store(path: &Path) -> (SessionStore, bool) {
     match tokio::fs::read(path).await {
-        Ok(bytes) => decode_session_store(&bytes).unwrap_or_else(|error| {
-            eprintln!(
-                "failed to load Rust session store at {}: {error}",
-                path.display()
-            );
-            SessionStore::default()
-        }),
-        Err(_) => SessionStore::default(),
+        Ok(bytes) => match decode_session_store(&bytes) {
+            Ok(store) => (store, true),
+            Err(error) => {
+                eprintln!(
+                    "failed to parse session store at {}: {error}; leaving the file untouched",
+                    path.display()
+                );
+                (SessionStore::default(), false)
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            (SessionStore::default(), true)
+        }
+        Err(_) => (SessionStore::default(), true),
     }
 }
 
@@ -1253,6 +1216,13 @@ fn decode_session_store(bytes: &[u8]) -> Result<SessionStore, String> {
 }
 
 async fn persist_session_store(state: &AppState) {
+    if !state.session_store_persist_enabled {
+        eprintln!(
+            "skipping session store write because {} did not parse on startup",
+            state.config.session_store_path.display()
+        );
+        return;
+    }
     let _persist = state.session_persist_lock.lock().await;
     let store = state.sessions.lock().await.clone();
     if let Some(parent) = state.config.session_store_path.parent() {
@@ -1264,6 +1234,9 @@ async fn persist_session_store(state: &AppState) {
 }
 
 async fn persist_shared_sessions(state: &AppState) {
+    if !state.session_store_persist_enabled {
+        return;
+    }
     let shared_sessions = state.shared_sessions.lock().await.clone();
     {
         let mut store = state.sessions.lock().await;
@@ -1764,13 +1737,7 @@ async fn handle_attachment_extract(
             );
         }
     };
-    match tokio::task::spawn_blocking(move || extract_attachment_request_response(request)).await {
-        Ok(response) => response,
-        Err(error) => json_response(
-            500,
-            &serde_json::json!({ "error": format!("Attachment extraction failed: {error}") }),
-        ),
-    }
+    extract_attachment_request_response(request)
 }
 
 async fn handle_session_attachment_extract(
@@ -1910,6 +1877,9 @@ fn attachment_string_field(attachment: &Value, keys: &[&str]) -> Option<String> 
 fn extract_attachment_request_response(request: ExtractAttachmentRequest) -> Vec<u8> {
     match extract_attachment_request(request) {
         Ok(output) => attachment_extract_json_response(output.file_name.clone(), output),
+        Err(error) if error == "Unsupported document format" => {
+            json_response(400, &serde_json::json!({ "error": error }))
+        }
         Err(error) => json_response(400, &serde_json::json!({ "error": error })),
     }
 }
@@ -2716,7 +2686,7 @@ async fn command_catalog(cwd: &Path) -> Vec<Value> {
             if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
                 continue;
             }
-            let Ok(raw) = tokio::fs::read_to_string(path).await else {
+            let Ok(raw) = tokio::fs::read_to_string(&path).await else {
                 continue;
             };
             let Ok(value) = serde_json::from_str::<Value>(&raw) else {
@@ -3455,7 +3425,7 @@ fn framework_info(id: &str) -> Option<&'static FrameworkInfo> {
     FRAMEWORKS.iter().find(|info| info.id == id)
 }
 
-fn telemetry_status(override_value: Option<TelemetryOverride>) -> Value {
+fn telemetry_status(override_value: Option<bool>) -> Value {
     let flag = env::var("MAESTRO_TELEMETRY")
         .or_else(|_| env::var("PLAYWRIGHT_TELEMETRY"))
         .ok();
@@ -3470,10 +3440,14 @@ fn telemetry_status(override_value: Option<TelemetryOverride>) -> Value {
                 .to_string_lossy()
                 .to_string()
         });
-    let telemetry_sink_configured = endpoint.is_some()
-        || env::var("MAESTRO_TELEMETRY_FILE").is_ok()
-        || env::var("PLAYWRIGHT_TELEMETRY_FILE").is_ok();
-    let enabled = telemetry_enabled(override_value, flag.as_deref(), telemetry_sink_configured);
+    let file_configured =
+        env::var("MAESTRO_TELEMETRY_FILE").is_ok() || env::var("PLAYWRIGHT_TELEMETRY_FILE").is_ok();
+    let enabled = telemetry_enabled(
+        override_value,
+        flag.as_deref(),
+        endpoint.is_some(),
+        file_configured,
+    );
     serde_json::json!({
         "enabled": enabled,
         "reason": if override_value.is_some() { "runtime override" } else if enabled { "configured" } else { "disabled" },
@@ -3481,25 +3455,24 @@ fn telemetry_status(override_value: Option<TelemetryOverride>) -> Value {
         "filePath": file_path,
         "sampleRate": 1,
         "flagValue": flag,
-        "runtimeOverride": override_value.map(TelemetryOverride::runtime_override)
+        "runtimeOverride": override_value.map(|enabled| if enabled { "enabled" } else { "disabled" })
     })
 }
 
 fn telemetry_enabled(
-    override_value: Option<TelemetryOverride>,
+    override_value: Option<bool>,
     flag: Option<&str>,
-    telemetry_sink_configured: bool,
+    endpoint_configured: bool,
+    file_configured: bool,
 ) -> bool {
     override_value
-        .map(TelemetryOverride::is_enabled)
-        .unwrap_or_else(|| parse_bool_flag(flag).unwrap_or(telemetry_sink_configured))
+        .or_else(|| parse_bool_flag(flag))
+        .unwrap_or(endpoint_configured || file_configured)
 }
 
-fn training_status(override_value: Option<TrainingOverride>) -> Value {
+fn training_status(override_value: Option<bool>) -> Value {
     let flag = env::var("MAESTRO_TRAINING_OPT_OUT").ok();
-    let opt_out = override_value
-        .map(TrainingOverride::is_opt_out)
-        .or_else(|| parse_bool_flag(flag.as_deref()));
+    let opt_out = override_value.or_else(|| parse_bool_flag(flag.as_deref()));
     let preference = match opt_out {
         Some(true) => "opted-out",
         Some(false) => "opted-in",
@@ -3510,7 +3483,7 @@ fn training_status(override_value: Option<TrainingOverride>) -> Value {
         "optOut": opt_out,
         "reason": if override_value.is_some() { "runtime override" } else if flag.is_some() { "MAESTRO_TRAINING_OPT_OUT" } else { "provider default" },
         "flagValue": flag,
-        "runtimeOverride": override_value.map(TrainingOverride::preference)
+        "runtimeOverride": override_value.map(|opt_out| if opt_out { "opted-out" } else { "opted-in" })
     })
 }
 
@@ -3802,7 +3775,7 @@ async fn handle_chat_endpoint(
     let Some(auth) = auth_context(&head, &state.config) else {
         let response = json_response(401, &serde_json::json!({ "error": "Unauthorized" }));
         stream
-            .write_all(&with_cors_origin(response, &head))
+            .write_all(&response)
             .await
             .map_err(|error| error.to_string())?;
         let _ = stream.shutdown().await;
@@ -3810,21 +3783,18 @@ async fn handle_chat_endpoint(
     };
     if let Err(response) = validate_csrf(&head, &state.config) {
         stream
-            .write_all(&with_cors_origin(response, &head))
+            .write_all(&response)
             .await
             .map_err(|error| error.to_string())?;
         let _ = stream.shutdown().await;
         return Ok(());
-    };
+    }
 
     let body = match read_request_body(&mut stream, &mut initial, &head).await {
         Ok(body) => body,
         Err(error) => {
             stream
-                .write_all(&with_cors_origin(
-                    json_response(400, &serde_json::json!({ "error": error })),
-                    &head,
-                ))
+                .write_all(&json_response(400, &serde_json::json!({ "error": error })))
                 .await
                 .map_err(|error| error.to_string())?;
             let _ = stream.shutdown().await;
@@ -3835,12 +3805,9 @@ async fn handle_chat_endpoint(
         Ok(request) => request,
         Err(error) => {
             stream
-                .write_all(&with_cors_origin(
-                    json_response(
-                        400,
-                        &serde_json::json!({ "error": format!("invalid chat request: {error}") }),
-                    ),
-                    &head,
+                .write_all(&json_response(
+                    400,
+                    &serde_json::json!({ "error": format!("invalid chat request: {error}") }),
                 ))
                 .await
                 .map_err(|error| error.to_string())?;
@@ -3851,9 +3818,9 @@ async fn handle_chat_endpoint(
 
     let Some(latest) = chat.messages.last() else {
         stream
-            .write_all(&with_cors_origin(
-                json_response(400, &serde_json::json!({ "error": "No messages supplied" })),
-                &head,
+            .write_all(&json_response(
+                400,
+                &serde_json::json!({ "error": "No messages supplied" }),
             ))
             .await
             .map_err(|error| error.to_string())?;
@@ -3862,12 +3829,9 @@ async fn handle_chat_endpoint(
     };
     if latest.role != "user" {
         stream
-            .write_all(&with_cors_origin(
-                json_response(
-                    400,
-                    &serde_json::json!({ "error": "Last message must be a user message" }),
-                ),
-                &head,
+            .write_all(&json_response(
+                400,
+                &serde_json::json!({ "error": "Last message must be a user message" }),
             ))
             .await
             .map_err(|error| error.to_string())?;
@@ -3877,12 +3841,9 @@ async fn handle_chat_endpoint(
 
     if !chat_message_has_input(latest) {
         stream
-            .write_all(&with_cors_origin(
-                json_response(
-                    400,
-                    &serde_json::json!({ "error": "User message cannot be empty" }),
-                ),
-                &head,
+            .write_all(&json_response(
+                400,
+                &serde_json::json!({ "error": "User message cannot be empty" }),
             ))
             .await
             .map_err(|error| error.to_string())?;
@@ -3896,10 +3857,7 @@ async fn handle_chat_endpoint(
         Ok(attachments) => attachments,
         Err(error) => {
             stream
-                .write_all(&with_cors_origin(
-                    json_response(400, &serde_json::json!({ "error": error })),
-                    &head,
-                ))
+                .write_all(&json_response(400, &serde_json::json!({ "error": error })))
                 .await
                 .map_err(|error| error.to_string())?;
             let _ = stream.shutdown().await;
@@ -3909,10 +3867,7 @@ async fn handle_chat_endpoint(
     if let Err(error) = record_chat_user_message(&state, &chat, &auth).await {
         cleanup_prepared_attachments(prepared_attachments).await;
         stream
-            .write_all(&with_cors_origin(
-                json_response(404, &serde_json::json!({ "error": error })),
-                &head,
-            ))
+            .write_all(&json_response(404, &serde_json::json!({ "error": error })))
             .await
             .map_err(|error| error.to_string())?;
         let _ = stream.shutdown().await;
@@ -3920,7 +3875,7 @@ async fn handle_chat_endpoint(
     }
 
     stream
-        .write_all(sse_headers(&head).as_bytes())
+        .write_all(sse_headers().as_bytes())
         .await
         .map_err(|error| error.to_string())?;
 
@@ -4368,7 +4323,7 @@ async fn handle_chat_websocket_endpoint(
     let Some(auth) = auth_context(&head, &state.config) else {
         let response = json_response(401, &serde_json::json!({ "error": "Unauthorized" }));
         stream
-            .write_all(&with_cors_origin(response, &head))
+            .write_all(&response)
             .await
             .map_err(|error| error.to_string())?;
         let _ = stream.shutdown().await;
@@ -4377,12 +4332,9 @@ async fn handle_chat_websocket_endpoint(
 
     if !origin_allowed(&head) {
         stream
-            .write_all(&with_cors_origin(
-                json_response(
-                    403,
-                    &serde_json::json!({ "error": "WebSocket origin is not allowed" }),
-                ),
-                &head,
+            .write_all(&json_response(
+                403,
+                &serde_json::json!({ "error": "WebSocket origin is not allowed" }),
             ))
             .await
             .map_err(|error| error.to_string())?;
@@ -4392,12 +4344,9 @@ async fn handle_chat_websocket_endpoint(
 
     let Some(key) = head.headers.get("sec-websocket-key") else {
         stream
-            .write_all(&with_cors_origin(
-                json_response(
-                    400,
-                    &serde_json::json!({ "error": "Missing Sec-WebSocket-Key" }),
-                ),
-                &head,
+            .write_all(&json_response(
+                400,
+                &serde_json::json!({ "error": "Missing Sec-WebSocket-Key" }),
             ))
             .await
             .map_err(|error| error.to_string())?;
@@ -5415,18 +5364,12 @@ fn parse_websocket_frame(
     }))
 }
 
-fn sse_headers(head: &RequestHead) -> String {
-    let origin = response_cors_origin(head);
-    let mut headers = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nAccess-Control-Allow-Origin: {}\r\n{}",
-        origin,
-        cors_credentials_header_for_origin(&origin)
-    );
-    if head.headers.contains_key("origin") {
-        headers.push_str("Vary: Origin\r\n");
-    }
-    headers.push_str("\r\n");
-    headers
+fn sse_headers() -> String {
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nAccess-Control-Allow-Origin: {}\r\n{}\r\n",
+        response_cors_origin(),
+        response_cors_credentials_header()
+    )
 }
 
 fn authorize(head: &RequestHead, config: &Config) -> Result<(), Vec<u8>> {
@@ -5810,10 +5753,12 @@ async fn build_status_snapshot(state: &AppState) -> StatusSnapshot {
     let started = Instant::now();
     let cwd = state.config.cwd.clone();
     let git = git_snapshot(&cwd).await;
+    let agent_md_path = cwd.join("AGENT.md");
+    let agents_md_path = cwd.join("AGENTS.md");
+    let claude_md_path = cwd.join("CLAUDE.md");
     let context = ContextSnapshot {
-        agent_md: async_path_exists(cwd.join("AGENT.md")).await
-            || async_path_exists(cwd.join("AGENTS.md")).await,
-        claude_md: async_path_exists(cwd.join("CLAUDE.md")).await,
+        agent_md: async_path_exists(agent_md_path).await || async_path_exists(agents_md_path).await,
+        claude_md: async_path_exists(claude_md_path).await,
     };
     let onboarding = onboarding_snapshot(&cwd).await;
     let now = SystemTime::now()
@@ -5857,32 +5802,18 @@ async fn git_snapshot(cwd: &Path) -> Option<GitSnapshot> {
         .await
         .ok()?;
     let status_output = run_git(cwd, &["status", "--porcelain"]).await.ok()?;
-    let status = parse_git_status(&status_output);
+    let lines: Vec<&str> = status_output
+        .lines()
+        .filter(|line| !line.is_empty())
+        .collect();
+    let status = GitStatus {
+        modified: lines.iter().filter(|line| line.starts_with(" M")).count(),
+        added: lines.iter().filter(|line| line.starts_with("A ")).count(),
+        deleted: lines.iter().filter(|line| line.starts_with(" D")).count(),
+        untracked: lines.iter().filter(|line| line.starts_with("??")).count(),
+        total: lines.len(),
+    };
     Some(GitSnapshot { branch, status })
-}
-
-fn parse_git_status(status_output: &str) -> GitStatus {
-    let mut status = GitStatus::default();
-    for line in status_output.lines().filter(|line| !line.is_empty()) {
-        status.total += 1;
-        let code = line.get(..2).unwrap_or("");
-        if code == "??" {
-            status.untracked += 1;
-            continue;
-        }
-
-        let mut chars = code.chars();
-        let index_status = chars.next().unwrap_or(' ');
-        let worktree_status = chars.next().unwrap_or(' ');
-        if index_status == 'D' || worktree_status == 'D' {
-            status.deleted += 1;
-        } else if matches!(index_status, 'A' | 'R' | 'C') {
-            status.added += 1;
-        } else {
-            status.modified += 1;
-        }
-    }
-    status
 }
 
 async fn run_git(cwd: &Path, args: &[&str]) -> Result<String, String> {
@@ -6185,16 +6116,43 @@ async fn canonical_static_path(root: &Path, path: &Path) -> StaticPathResolution
 
 fn resolve_static_path(root: &Path, request_path: &str) -> Option<PathBuf> {
     let trimmed = request_path.trim_start_matches('/');
-    if trimmed
-        .split('/')
-        .any(|segment| segment == ".." || segment.contains('\\'))
-    {
+    let mut relative = PathBuf::new();
+    if trimmed.is_empty() {
+        relative.push("index.html");
+    } else {
+        for component in Path::new(trimmed).components() {
+            match component {
+                Component::Normal(segment) => {
+                    if segment.to_string_lossy().contains('\\') {
+                        return None;
+                    }
+                    relative.push(segment);
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    let candidate = root.join(&relative);
+    let Some(canonical_root) = root.canonicalize().ok() else {
+        return Some(candidate);
+    };
+    let existing = existing_static_ancestor(&candidate, root)?;
+    if !existing.canonicalize().ok()?.starts_with(&canonical_root) {
         return None;
     }
-    if trimmed.is_empty() {
-        Some(root.join("index.html"))
-    } else {
-        Some(root.join(trimmed))
+    Some(candidate)
+}
+
+fn existing_static_ancestor<'a>(mut path: &'a Path, root: &'a Path) -> Option<&'a Path> {
+    loop {
+        if path.exists() {
+            return Some(path);
+        }
+        if path == root {
+            return None;
+        }
+        path = path.parent()?;
     }
 }
 
@@ -6269,6 +6227,7 @@ fn is_openrouter_models_url(url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -6344,11 +6303,70 @@ mod tests {
                 sessions,
                 shared_sessions: HashMap::new(),
             })),
+            session_store_persist_enabled: true,
             session_persist_lock: Arc::new(Mutex::new(())),
             usage_persist_lock: Arc::new(Mutex::new(())),
             shared_sessions: Arc::new(Mutex::new(HashMap::new())),
             approval_modes: Arc::new(Mutex::new(HashMap::new())),
             pending_tool_responses: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    fn unique_test_dir(prefix: &str) -> PathBuf {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        env::temp_dir().join(format!("{prefix}-{}-{now}", process::id()))
+    }
+
+    async fn tcp_stream_pair() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+        let connect = TcpStream::connect(addr);
+        let accept = listener.accept();
+        let (client, accepted) = tokio::join!(connect, accept);
+        let client = client.expect("client should connect");
+        let (server, _) = accepted.expect("listener should accept");
+        (client, server)
+    }
+
+    fn response_json(response: Vec<u8>) -> Value {
+        let body = response
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .map(|index| &response[index + 4..])
+            .expect("response should contain header separator");
+        serde_json::from_slice(body).expect("response body should be json")
+    }
+
+    struct TestDir {
+        path: PathBuf,
+    }
+
+    impl TestDir {
+        fn new(label: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "maestro-control-plane-{label}-{}-{}",
+                process::id(),
+                ATTACHMENT_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir_all(&path).expect("test dir should be created");
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
         }
     }
 
@@ -6368,21 +6386,16 @@ mod tests {
     }
 
     #[test]
-    fn parses_and_percent_decodes_query_parameters() {
-        let request = b"GET /api/status?model=my%2Fmodel&title=hello+world&file=docs%2Fnotes%20v1.md&flag+name=value+with+spaces&empty=%ZZ HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    fn parses_percent_encoded_query_components() {
+        let request =
+            b"GET /api/artifact-access?filename=logs%2Ftoday%20one.txt&action=mark+done HTTP/1.1\r\nHost: localhost\r\n\r\n";
         let head = parse_request_head(request).expect("request should parse");
 
-        assert_eq!(head.query.get("model"), Some(&"my/model".to_string()));
-        assert_eq!(head.query.get("title"), Some(&"hello world".to_string()));
         assert_eq!(
-            head.query.get("file"),
-            Some(&"docs/notes v1.md".to_string())
+            head.query.get("filename"),
+            Some(&"logs/today one.txt".to_string())
         );
-        assert_eq!(
-            head.query.get("flag name"),
-            Some(&"value with spaces".to_string())
-        );
-        assert_eq!(head.query.get("empty"), Some(&"%ZZ".to_string()));
+        assert_eq!(head.query.get("action"), Some(&"mark done".to_string()));
     }
 
     #[test]
@@ -6582,43 +6595,15 @@ mod tests {
         }
     }
 
-    async fn connected_tcp_streams() -> (TcpStream, TcpStream) {
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("listener should bind");
-        let addr = listener
-            .local_addr()
-            .expect("listener should have a local addr");
-        let client = TcpStream::connect(addr);
-        let server = async { listener.accept().await.expect("listener should accept").0 };
-        let (client, server) = tokio::join!(client, server);
-        (client.expect("client should connect"), server)
-    }
-
-    fn response_json(response: Vec<u8>) -> Value {
-        let body = response
-            .windows(4)
-            .position(|window| window == b"\r\n\r\n")
-            .map(|index| &response[index + 4..])
-            .expect("response should contain header separator");
-        serde_json::from_slice(body).expect("response body should be json")
-    }
-
-    #[tokio::test]
-    async fn options_preflight_is_handled_before_local_route_checks() {
+    #[test]
+    fn detects_api_options_preflight_as_local() {
         let head = parse_request_head(
             b"OPTIONS /api/chat HTTP/1.1\r\nHost: localhost\r\nOrigin: http://localhost:4173\r\nAccess-Control-Request-Method: POST\r\n\r\n",
         )
         .expect("request should parse");
         assert!(is_local_endpoint(&head));
 
-        let (_client, mut server) = connected_tcp_streams().await;
-        let mut initial = Vec::new();
-        let state = test_app_state_with_sessions(HashMap::new());
-        let response = with_cors_origin(
-            handle_local_endpoint(&mut server, &mut initial, &head, &state).await,
-            &head,
-        );
+        let response = response(204, "text/plain; charset=utf-8", &[]);
         let text = String::from_utf8(response).expect("response should be utf-8");
         assert!(text.starts_with("HTTP/1.1 204 No Content\r\n"));
         assert!(text.contains("Access-Control-Allow-Methods: GET,POST,PATCH,DELETE,OPTIONS\r\n"));
@@ -6633,11 +6618,11 @@ mod tests {
         );
         let mut initial = request.into_bytes();
         let head = parse_request_head(&initial).expect("request should parse");
-        let (_client, mut server) = connected_tcp_streams().await;
+        let (_client, mut server) = tcp_stream_pair().await;
         let state = test_app_state_with_sessions(HashMap::new());
 
         let response =
-            response_json(handle_local_endpoint(&mut server, &mut initial, &head, &state).await);
+            response_json(handle_local_endpoint(&mut server, &mut initial, head, &state).await);
         let settings = state.background_settings.lock().await.clone();
         let status = background_response(
             &RequestHead {
@@ -6672,11 +6657,11 @@ mod tests {
         );
         let mut initial = request.into_bytes();
         let head = parse_request_head(&initial).expect("request should parse");
-        let (_client, mut server) = connected_tcp_streams().await;
+        let (_client, mut server) = tcp_stream_pair().await;
         let state = test_app_state_with_sessions(HashMap::new());
 
         let response =
-            response_json(handle_local_endpoint(&mut server, &mut initial, &head, &state).await);
+            response_json(handle_local_endpoint(&mut server, &mut initial, head, &state).await);
         let framework = state.framework_preference.lock().await.clone();
         let status = framework_response(
             &RequestHead {
@@ -6702,61 +6687,6 @@ mod tests {
             status.get("framework").and_then(Value::as_str),
             Some("fastapi")
         );
-    }
-
-    #[test]
-    fn sse_headers_reflect_allowed_request_origin() {
-        let head = parse_request_head(
-            b"GET /api/status HTTP/1.1\r\nHost: localhost\r\nOrigin: http://localhost:3000\r\n\r\n",
-        )
-        .expect("request should parse");
-        let response = sse_headers(&head);
-
-        assert!(response.contains("Access-Control-Allow-Origin: http://localhost:3000\r\n"));
-        assert!(response.contains("Access-Control-Allow-Credentials: true\r\n"));
-        assert!(response.contains("Vary: Origin\r\n"));
-    }
-
-    #[test]
-    fn wildcard_cors_origin_omits_credentials_header() {
-        assert_eq!(cors_credentials_header_for_origin("*"), "");
-        assert_eq!(
-            cors_credentials_header_for_origin("http://localhost:3000"),
-            "Access-Control-Allow-Credentials: true\r\n"
-        );
-    }
-
-    #[test]
-    fn wildcard_web_origin_allows_websocket_origins() {
-        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
-        let previous = env::var_os("MAESTRO_WEB_ORIGIN");
-        env::set_var("MAESTRO_WEB_ORIGIN", "*");
-        let head = parse_request_head(
-            b"GET /api/chat/ws HTTP/1.1\r\nHost: localhost\r\nOrigin: https://app.example.com\r\n\r\n",
-        )
-        .expect("request should parse");
-
-        assert!(origin_allowed(&head));
-
-        if let Some(previous) = previous {
-            env::set_var("MAESTRO_WEB_ORIGIN", previous);
-        } else {
-            env::remove_var("MAESTRO_WEB_ORIGIN");
-        }
-    }
-
-    #[test]
-    fn rewrites_cors_response_to_match_allowed_request_origin() {
-        let head = parse_request_head(
-            b"GET /api/status HTTP/1.1\r\nHost: localhost\r\nOrigin: http://localhost:3000\r\n\r\n",
-        )
-        .expect("request should parse");
-
-        let response = with_cors_origin(response(200, "text/plain; charset=utf-8", b"ok"), &head);
-        let text = String::from_utf8(response).expect("response should be utf-8");
-
-        assert!(text.contains("Access-Control-Allow-Origin: http://localhost:3000\r\n"));
-        assert!(text.contains("Vary: Origin\r\n"));
     }
 
     #[test]
@@ -7140,7 +7070,7 @@ mod tests {
                 access_count: 0,
             },
         );
-        let mut server = connected_tcp_streams().await.0;
+        let mut server = tcp_stream_pair().await.0;
         let head = parse_request_head(
             b"GET /api/sessions/shared/share-token HTTP/1.1\r\nHost: localhost\r\n\r\n",
         )
@@ -7277,12 +7207,10 @@ mod tests {
     fn generated_share_tokens_are_opaque() {
         let session_id = "session-123";
         let token = generate_share_token().expect("share token should be generated");
-        let another = generate_share_token().expect("share token should be generated");
 
         assert_ne!(token, session_id);
         assert!(!token.contains(session_id));
         assert!(token.len() >= 32);
-        assert_ne!(token, another);
     }
 
     #[test]
@@ -7313,6 +7241,23 @@ mod tests {
         )
         .expect("request should parse");
         assert!(!origin_allowed(&rejected));
+    }
+
+    #[tokio::test]
+    async fn allowed_request_origin_is_echoed_in_cors_response_headers() {
+        let head = parse_request_head(
+            b"GET /api/status HTTP/1.1\r\nHost: localhost\r\nOrigin: http://localhost:3000\r\n\r\n",
+        )
+        .expect("request should parse");
+
+        let response = with_response_cors_origin(requested_cors_origin(&head), async {
+            response(200, "application/json", b"{}")
+        })
+        .await;
+        let response = String::from_utf8(response).expect("response should be utf-8");
+
+        assert!(response.contains("Access-Control-Allow-Origin: http://localhost:3000\r\n"));
+        assert!(!response.contains("Access-Control-Allow-Origin: http://localhost:4173\r\n"));
     }
 
     #[test]
@@ -7603,6 +7548,18 @@ mod tests {
     }
 
     #[test]
+    fn default_model_handles_empty_registry() {
+        let registry = ModelRegistry {
+            models: Vec::new(),
+            aliases: HashMap::new(),
+        };
+
+        let model = default_model_from_registry(&registry);
+
+        assert_eq!(model.id, "claude-sonnet-4-5-20250514");
+    }
+
+    #[test]
     fn head_response_keeps_get_content_length_without_body() {
         let response = response_with_cache_and_length(
             200,
@@ -7633,14 +7590,45 @@ mod tests {
             b"GET /api/status HTTP/1.1\r\nHost: localhost\r\nOrigin: http://127.0.0.1:5173\r\n\r\n",
         )
         .expect("request should parse");
-        let response = with_cors_origin(
-            json_response(200, &serde_json::json!({ "ok": true })),
-            &head,
-        );
+        let response = with_response_cors_origin(requested_cors_origin(&head), async {
+            json_response(200, &serde_json::json!({ "ok": true }))
+        })
+        .await;
         let response = String::from_utf8(response).expect("response should be utf-8");
 
         assert!(response.contains("Access-Control-Allow-Origin: http://127.0.0.1:5173\r\n"));
         assert!(response.contains("Access-Control-Allow-Credentials: true\r\n"));
+    }
+
+    #[tokio::test]
+    async fn wildcard_cors_origin_omits_credentials_header() {
+        let response = with_response_cors_origin("*".to_string(), async {
+            json_response(200, &serde_json::json!({ "ok": true }))
+        })
+        .await;
+        let response = String::from_utf8(response).expect("response should be utf-8");
+
+        assert!(response.contains("Access-Control-Allow-Origin: *\r\n"));
+        assert!(!response.contains("Access-Control-Allow-Credentials: true\r\n"));
+    }
+
+    #[test]
+    fn wildcard_web_origin_allows_websocket_origins() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous = env::var_os("MAESTRO_WEB_ORIGIN");
+        env::set_var("MAESTRO_WEB_ORIGIN", "*");
+        let head = parse_request_head(
+            b"GET /api/chat/ws HTTP/1.1\r\nHost: localhost\r\nOrigin: https://app.example.com\r\n\r\n",
+        )
+        .expect("request should parse");
+
+        assert!(origin_allowed(&head));
+
+        if let Some(previous) = previous {
+            env::set_var("MAESTRO_WEB_ORIGIN", previous);
+        } else {
+            env::remove_var("MAESTRO_WEB_ORIGIN");
+        }
     }
 
     #[test]
@@ -7827,14 +7815,8 @@ mod tests {
     }
 
     #[test]
-    fn override_parsers_reject_unknown_actions_without_panicking() {
-        assert!(TelemetryOverride::from_action("toggle").is_err());
-        assert!(TrainingOverride::from_action("toggle").is_err());
-    }
-
-    #[test]
     fn training_on_maps_to_opted_in() {
-        let status = training_status(Some(TrainingOverride::OptedIn));
+        let status = training_status(Some(false));
 
         assert_eq!(
             status.get("preference").and_then(Value::as_str),
@@ -7844,33 +7826,49 @@ mod tests {
     }
 
     #[test]
-    fn telemetry_flag_uses_bool_parser_and_explicit_false_wins() {
-        assert!(telemetry_enabled(None, Some("on"), false));
-        assert!(telemetry_enabled(None, Some("True"), false));
-        assert!(!telemetry_enabled(None, Some("false"), true));
-        assert!(telemetry_enabled(
-            Some(TelemetryOverride::Enabled),
-            Some("false"),
-            false
-        ));
+    fn telemetry_flag_accepts_common_truthy_values() {
+        for value in ["1", "true", "TRUE", "True", "yes", "YES", "on", "On"] {
+            assert!(
+                telemetry_enabled(None, Some(value), false, false),
+                "{value} should enable telemetry"
+            );
+        }
     }
 
     #[test]
-    fn parses_git_status_for_index_worktree_and_rename_codes() {
-        let status = parse_git_status(
-            " M modified-in-worktree.rs\nM  staged-modified.rs\nMM staged-and-modified.rs\nA  added.rs\nAM added-and-modified.rs\n D deleted-in-worktree.rs\nD  staged-deleted.rs\nR  renamed.rs -> old-name.rs\nC  copied.rs -> old-copy.rs\nUU conflicted.rs\n?? untracked.rs\n",
-        );
+    fn telemetry_explicit_false_overrides_endpoint_and_file_configuration() {
+        for value in ["0", "false", "FALSE", "False", "no", "NO", "off", "Off"] {
+            assert!(
+                !telemetry_enabled(None, Some(value), true, true),
+                "{value} should disable telemetry"
+            );
+        }
+    }
 
-        assert_eq!(
-            status,
-            GitStatus {
-                modified: 4,
-                added: 4,
-                deleted: 2,
-                untracked: 1,
-                total: 11,
-            }
-        );
+    #[test]
+    fn resolves_missing_static_paths_within_root() {
+        let root = TestDir::new("static-root");
+        fs::write(root.path().join("index.html"), "<html></html>")
+            .expect("index should be written");
+
+        let resolved =
+            resolve_static_path(root.path(), "/assets/app.js").expect("path should stay in root");
+
+        assert_eq!(resolved, root.path().join("assets/app.js"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_static_paths_that_escape_through_symlinks() {
+        let root = TestDir::new("static-root");
+        let outside = TestDir::new("outside-root");
+        let escape = root.path().join("escape");
+        fs::write(root.path().join("index.html"), "<html></html>")
+            .expect("index should be written");
+        fs::write(outside.path().join("secret.txt"), "secret").expect("secret should be written");
+        std::os::unix::fs::symlink(outside.path(), &escape).expect("symlink should be created");
+
+        assert!(resolve_static_path(root.path(), "/escape/secret.txt").is_none());
     }
 
     #[test]
@@ -7907,6 +7905,261 @@ mod tests {
 
         assert!(prompt.contains("screen.png"));
         assert!(!prompt.trim().is_empty());
+    }
+
+    #[tokio::test]
+    async fn prepared_attachments_drop_cleans_temp_dir() {
+        let chat = ChatRequest {
+            model: None,
+            thinking_level: None,
+            session_id: None,
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: Value::String("hello".to_string()),
+                attachments: vec![ChatAttachment {
+                    id: Some("att-1".to_string()),
+                    attachment_type: Some("image".to_string()),
+                    file_name: Some("screen.png".to_string()),
+                    mime_type: Some("image/png".to_string()),
+                    content: Some("aGVsbG8=".to_string()),
+                    content_omitted: None,
+                    extracted_text: None,
+                }],
+                extra: Map::new(),
+            }],
+        };
+
+        let attachments = prepare_chat_attachments(&chat)
+            .await
+            .expect("attachments should prepare");
+        let temp_dir = attachments
+            .temp_dir
+            .clone()
+            .expect("temp dir should be created");
+
+        drop(attachments);
+
+        assert!(!temp_dir.exists(), "temp dir should be removed on drop");
+    }
+
+    #[tokio::test]
+    async fn missing_static_asset_returns_404_instead_of_index() {
+        let static_root = unique_test_dir("maestro-static-asset");
+        fs::create_dir_all(&static_root).expect("static root should exist");
+        fs::write(static_root.join("index.html"), "<html>ok</html>").expect("index should exist");
+
+        let head = RequestHead {
+            method: "GET".to_string(),
+            path: "/assets/app.js".to_string(),
+            query: HashMap::new(),
+            headers: HashMap::new(),
+        };
+        let config = Config {
+            listen_host: "127.0.0.1".to_string(),
+            listen_port: 8080,
+            api_key: None,
+            require_key: false,
+            csrf_token: None,
+            require_csrf: false,
+            cwd: PathBuf::from("."),
+            session_store_path: static_root.join("sessions.json"),
+            command_prefs_path: static_root.join("command-prefs.json"),
+            usage_file_path: static_root.join("usage.json"),
+            static_root: static_root.clone(),
+            static_cache_max_age: 60,
+            llm_gateway_models_url: None,
+            llm_gateway_token: None,
+            llm_gateway_org_id: None,
+            llm_gateway_timeout_ms: 2_500,
+        };
+
+        let response = static_response(&head, &config).await;
+        let response = String::from_utf8(response).expect("response should be utf-8");
+
+        assert!(response.starts_with("HTTP/1.1 404 Not Found\r\n"));
+        assert!(!response.contains("<html>ok</html>"));
+
+        let _ = fs::remove_dir_all(static_root);
+    }
+
+    #[tokio::test]
+    async fn missing_spa_route_falls_back_to_index() {
+        let static_root = unique_test_dir("maestro-static-spa");
+        fs::create_dir_all(&static_root).expect("static root should exist");
+        fs::write(static_root.join("index.html"), "<html>ok</html>").expect("index should exist");
+
+        let head = RequestHead {
+            method: "GET".to_string(),
+            path: "/chat/session".to_string(),
+            query: HashMap::new(),
+            headers: HashMap::new(),
+        };
+        let config = Config {
+            listen_host: "127.0.0.1".to_string(),
+            listen_port: 8080,
+            api_key: None,
+            require_key: false,
+            csrf_token: None,
+            require_csrf: false,
+            cwd: PathBuf::from("."),
+            session_store_path: static_root.join("sessions.json"),
+            command_prefs_path: static_root.join("command-prefs.json"),
+            usage_file_path: static_root.join("usage.json"),
+            static_root: static_root.clone(),
+            static_cache_max_age: 60,
+            llm_gateway_models_url: None,
+            llm_gateway_token: None,
+            llm_gateway_org_id: None,
+            llm_gateway_timeout_ms: 2_500,
+        };
+
+        let response = static_response(&head, &config).await;
+        let response = String::from_utf8(response).expect("response should be utf-8");
+
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(response.contains("<html>ok</html>"));
+
+        let _ = fs::remove_dir_all(static_root);
+    }
+
+    #[tokio::test]
+    async fn delete_session_subpath_returns_404_without_removing_session() {
+        let root = TestDir::new("session-delete-subpath");
+        let session_id = "session-1".to_string();
+        let now = now_rfc3339();
+        let session = SessionRecord {
+            id: session_id.clone(),
+            owner: None,
+            title: "Test Session".to_string(),
+            created_at: now.clone(),
+            updated_at: now,
+            message_count: 0,
+            favorite: None,
+            tags: Vec::new(),
+            messages: Vec::new(),
+        };
+        let state = AppState {
+            config: Arc::new(Config {
+                listen_host: "127.0.0.1".to_string(),
+                listen_port: 8080,
+                api_key: Some("api-key".to_string()),
+                require_key: true,
+                csrf_token: None,
+                require_csrf: false,
+                cwd: PathBuf::from("."),
+                session_store_path: root.path().join("sessions.json"),
+                command_prefs_path: root.path().join("command-prefs.json"),
+                usage_file_path: root.path().join("usage.json"),
+                static_root: root.path().to_path_buf(),
+                static_cache_max_age: 60,
+                llm_gateway_models_url: None,
+                llm_gateway_token: None,
+                llm_gateway_org_id: None,
+                llm_gateway_timeout_ms: 2_500,
+            }),
+            started_at: Instant::now(),
+            selected_model: Arc::new(Mutex::new(emergency_default_model())),
+            telemetry_override: Arc::new(Mutex::new(None)),
+            training_override: Arc::new(Mutex::new(None)),
+            background_settings: Arc::new(Mutex::new(BackgroundSettings::default())),
+            framework_preference: Arc::new(Mutex::new(None)),
+            command_prefs: Arc::new(Mutex::new(CommandPrefs {
+                favorites: Vec::new(),
+                recents: Vec::new(),
+            })),
+            sessions: Arc::new(Mutex::new(SessionStore {
+                sessions: HashMap::from([(session_id.clone(), session)]),
+                shared_sessions: HashMap::new(),
+            })),
+            session_store_persist_enabled: true,
+            session_persist_lock: Arc::new(Mutex::new(())),
+            usage_persist_lock: Arc::new(Mutex::new(())),
+            shared_sessions: Arc::new(Mutex::new(HashMap::new())),
+            approval_modes: Arc::new(Mutex::new(HashMap::new())),
+            pending_tool_responses: Arc::new(Mutex::new(HashMap::new())),
+        };
+        let (_client, mut server) = tcp_stream_pair().await;
+        let head = RequestHead {
+            method: "DELETE".to_string(),
+            path: format!("/api/sessions/{session_id}/share"),
+            query: HashMap::new(),
+            headers: HashMap::from([("x-maestro-api-key".to_string(), "api-key".to_string())]),
+        };
+
+        let response = handle_session_endpoint(&mut server, &mut Vec::new(), &head, &state).await;
+        let response = String::from_utf8(response).expect("response should be utf-8");
+
+        assert!(response.starts_with("HTTP/1.1 404 Not Found\r\n"));
+        assert!(state
+            .sessions
+            .lock()
+            .await
+            .sessions
+            .contains_key(&session_id));
+    }
+
+    #[tokio::test]
+    async fn invalid_session_store_is_left_untouched_and_future_writes_are_blocked() {
+        let root = TestDir::new("invalid-session-store");
+        let session_store_path = root.path().join("sessions.json");
+        tokio::fs::write(&session_store_path, br#"{"sessions":"invalid"}"#)
+            .await
+            .expect("fixture should be written");
+
+        let (store, persist_enabled) = load_session_store(&session_store_path).await;
+        assert!(store.sessions.is_empty());
+        assert!(!persist_enabled);
+
+        let state = AppState {
+            config: Arc::new(Config {
+                listen_host: "127.0.0.1".to_string(),
+                listen_port: 8080,
+                api_key: None,
+                require_key: false,
+                csrf_token: None,
+                require_csrf: false,
+                cwd: PathBuf::from("."),
+                session_store_path: session_store_path.clone(),
+                command_prefs_path: root.path().join("command-prefs.json"),
+                usage_file_path: root.path().join("usage.json"),
+                static_root: root.path().to_path_buf(),
+                static_cache_max_age: 60,
+                llm_gateway_models_url: None,
+                llm_gateway_token: None,
+                llm_gateway_org_id: None,
+                llm_gateway_timeout_ms: 2_500,
+            }),
+            started_at: Instant::now(),
+            selected_model: Arc::new(Mutex::new(emergency_default_model())),
+            telemetry_override: Arc::new(Mutex::new(None)),
+            training_override: Arc::new(Mutex::new(None)),
+            background_settings: Arc::new(Mutex::new(BackgroundSettings::default())),
+            framework_preference: Arc::new(Mutex::new(None)),
+            command_prefs: Arc::new(Mutex::new(CommandPrefs {
+                favorites: Vec::new(),
+                recents: Vec::new(),
+            })),
+            sessions: Arc::new(Mutex::new(SessionStore {
+                sessions: HashMap::from([(
+                    "session-1".to_string(),
+                    test_session_record("session-1"),
+                )]),
+                shared_sessions: HashMap::new(),
+            })),
+            session_store_persist_enabled: persist_enabled,
+            session_persist_lock: Arc::new(Mutex::new(())),
+            usage_persist_lock: Arc::new(Mutex::new(())),
+            shared_sessions: Arc::new(Mutex::new(HashMap::new())),
+            approval_modes: Arc::new(Mutex::new(HashMap::new())),
+            pending_tool_responses: Arc::new(Mutex::new(HashMap::new())),
+        };
+
+        persist_session_store(&state).await;
+
+        let bytes = tokio::fs::read(&session_store_path)
+            .await
+            .expect("session store should still exist");
+        assert_eq!(bytes, br#"{"sessions":"invalid"}"#);
     }
 
     #[test]

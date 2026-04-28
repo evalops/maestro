@@ -165,19 +165,13 @@ export const INITIAL_SCHEMA_BASELINE_MARKERS = [
 	{ kind: "index", name: "webhook_delivery_retry_idx" },
 ] as const;
 
-function sqlBoolean(value: unknown): boolean {
-	return value === true || value === "true" || value === 1 || value === "1";
+function firstRow(results: unknown): Record<string, unknown> | null {
+	const rows = Array.from(results as Iterable<Record<string, unknown>>);
+	return rows[0] ?? null;
 }
 
-function isInitialSchemaMarkerKind(
-	value: unknown,
-): value is InitialSchemaMarker["kind"] {
-	return (
-		value === "constraint" ||
-		value === "index" ||
-		value === "table" ||
-		value === "type"
-	);
+function sqlBoolean(value: unknown): boolean {
+	return value === true || value === "true" || value === 1 || value === "1";
 }
 
 /**
@@ -274,6 +268,46 @@ async function markMigrationApplied(tag: string): Promise<void> {
 	`);
 }
 
+async function relationExists(relationName: string): Promise<boolean> {
+	const db = getDb();
+
+	const result = await db.execute(sql`
+		SELECT to_regclass(${`public.${relationName}`}) IS NOT NULL AS exists
+	`);
+
+	return sqlBoolean(firstRow(result)?.exists);
+}
+
+async function constraintExists(constraintName: string): Promise<boolean> {
+	const db = getDb();
+
+	const result = await db.execute(sql`
+		SELECT EXISTS (
+			SELECT 1
+			FROM pg_constraint c
+			JOIN pg_namespace n ON n.oid = c.connamespace
+			WHERE n.nspname = 'public' AND c.conname = ${constraintName}
+		) AS exists
+	`);
+
+	return sqlBoolean(firstRow(result)?.exists);
+}
+
+async function enumTypeExists(typeName: string): Promise<boolean> {
+	const db = getDb();
+
+	const result = await db.execute(sql`
+		SELECT EXISTS (
+			SELECT 1
+			FROM pg_type t
+			JOIN pg_namespace n ON n.oid = t.typnamespace
+			WHERE n.nspname = 'public' AND t.typname = ${typeName}
+		) AS exists
+	`);
+
+	return sqlBoolean(firstRow(result)?.exists);
+}
+
 function markerLabel(marker: InitialSchemaMarkerDefinition): string {
 	return `${marker.kind}:${marker.name}`;
 }
@@ -285,7 +319,7 @@ export function classifyInitialSchemaMarkers(
 	const missing = markers.filter((marker) => !marker.exists).map(markerLabel);
 
 	return {
-		exists: markers.length > 0 && missing.length === 0,
+		exists: missing.length === 0,
 		partial: present.length > 0 && missing.length > 0,
 		present,
 		missing,
@@ -293,61 +327,24 @@ export function classifyInitialSchemaMarkers(
 }
 
 async function getInitialSchemaState(): Promise<InitialSchemaState> {
-	const markerDefinitions: InitialSchemaMarkerDefinition[] = [
-		...INITIAL_SCHEMA_BASELINE_MARKERS,
-	];
-	if (markerDefinitions.length === 0) {
-		return classifyInitialSchemaMarkers([]);
+	const markers: InitialSchemaMarker[] = [];
+
+	for (const marker of INITIAL_SCHEMA_BASELINE_MARKERS) {
+		if (marker.kind === "constraint") {
+			markers.push({
+				...marker,
+				exists: await constraintExists(marker.name),
+			});
+			continue;
+		}
+
+		if (marker.kind === "type") {
+			markers.push({ ...marker, exists: await enumTypeExists(marker.name) });
+			continue;
+		}
+
+		markers.push({ ...marker, exists: await relationExists(marker.name) });
 	}
-
-	const db = getDb();
-	const markerRows = markerDefinitions.map(
-		(marker, index) => sql`(${index}, ${marker.kind}, ${marker.name})`,
-	);
-	const result = await db.execute(sql`
-		WITH markers(ord, kind, name) AS (
-			VALUES ${sql.join(markerRows, sql`, `)}
-		)
-		SELECT
-			kind,
-			name,
-			CASE
-				WHEN kind = 'constraint' THEN EXISTS (
-					SELECT 1
-					FROM pg_constraint c
-					JOIN pg_namespace n ON n.oid = c.connamespace
-					WHERE n.nspname = 'public' AND c.conname = markers.name
-				)
-				WHEN kind = 'type' THEN EXISTS (
-					SELECT 1
-					FROM pg_type t
-					JOIN pg_namespace n ON n.oid = t.typnamespace
-					WHERE n.nspname = 'public' AND t.typname = markers.name
-				)
-				ELSE pg_catalog.to_regclass(
-					'public.' || pg_catalog.quote_ident(markers.name)
-				) IS NOT NULL
-			END AS exists
-		FROM markers
-		ORDER BY ord
-	`);
-
-	const markers = (Array.from(result) as Array<Record<string, unknown>>).map(
-		(row) => {
-			if (
-				!isInitialSchemaMarkerKind(row.kind) ||
-				typeof row.name !== "string"
-			) {
-				throw new Error("Failed to inspect initial schema baseline markers");
-			}
-
-			return {
-				kind: row.kind,
-				name: row.name,
-				exists: sqlBoolean(row.exists),
-			};
-		},
-	);
 
 	return classifyInitialSchemaMarkers(markers);
 }
@@ -356,29 +353,28 @@ async function reconcileLegacyMigrationRecords(
 	migrationEntries: MigrationJournal["entries"],
 	appliedMigrations: Set<string>,
 ): Promise<void> {
-	const initialEntry = migrationEntries.find(
-		(entry) => entry.tag === "0000_initial",
-	);
-	if (!initialEntry || appliedMigrations.has(initialEntry.tag)) {
-		return;
-	}
+	for (const entry of migrationEntries) {
+		if (entry.tag !== "0000_initial" || appliedMigrations.has(entry.tag)) {
+			continue;
+		}
 
-	const initialSchemaState = await getInitialSchemaState();
-	if (initialSchemaState.partial) {
-		throw new Error(
-			`Detected a partial legacy initial schema before ${initialEntry.tag}; refusing to mark it applied or replay it. Missing markers: ${initialSchemaState.missing.join(", ")}`,
+		const initialSchemaState = await getInitialSchemaState();
+		if (initialSchemaState.partial) {
+			throw new Error(
+				`Detected a partial legacy initial schema before ${entry.tag}; refusing to mark it applied or replay it. Missing markers: ${initialSchemaState.missing.join(", ")}`,
+			);
+		}
+		if (!initialSchemaState.exists) {
+			continue;
+		}
+
+		logger.warn(
+			"Detected existing initial schema for untracked migration; marking as applied",
+			{ tag: entry.tag, presentMarkers: initialSchemaState.present },
 		);
+		await markMigrationApplied(entry.tag);
+		appliedMigrations.add(entry.tag);
 	}
-	if (!initialSchemaState.exists) {
-		return;
-	}
-
-	logger.warn(
-		"Detected existing initial schema for untracked migration; marking as applied",
-		{ tag: initialEntry.tag, presentMarkers: initialSchemaState.present },
-	);
-	await markMigrationApplied(initialEntry.tag);
-	appliedMigrations.add(initialEntry.tag);
 }
 
 /**
