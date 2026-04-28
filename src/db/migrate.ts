@@ -327,24 +327,22 @@ export function classifyInitialSchemaMarkers(
 }
 
 async function getInitialSchemaState(): Promise<InitialSchemaState> {
-	const markers: InitialSchemaMarker[] = [];
+	const markers = await Promise.all(
+		INITIAL_SCHEMA_BASELINE_MARKERS.map(async (marker) => {
+			if (marker.kind === "constraint") {
+				return {
+					...marker,
+					exists: await constraintExists(marker.name),
+				};
+			}
 
-	for (const marker of INITIAL_SCHEMA_BASELINE_MARKERS) {
-		if (marker.kind === "constraint") {
-			markers.push({
-				...marker,
-				exists: await constraintExists(marker.name),
-			});
-			continue;
-		}
+			if (marker.kind === "type") {
+				return { ...marker, exists: await enumTypeExists(marker.name) };
+			}
 
-		if (marker.kind === "type") {
-			markers.push({ ...marker, exists: await enumTypeExists(marker.name) });
-			continue;
-		}
-
-		markers.push({ ...marker, exists: await relationExists(marker.name) });
-	}
+			return { ...marker, exists: await relationExists(marker.name) };
+		}),
+	);
 
 	return classifyInitialSchemaMarkers(markers);
 }
