@@ -1012,6 +1012,11 @@ async fn handle_session_endpoint(
     head: &RequestHead,
     state: &AppState,
 ) -> Vec<u8> {
+    if head.method == "GET" {
+        if let Some(shared_path) = shared_session_path_from_path(&head.path) {
+            return handle_shared_session_get(state, shared_path).await;
+        }
+    }
     let Some(auth) = auth_context(head, &state.config) else {
         return json_response(401, &serde_json::json!({ "error": "Unauthorized" }));
     };
@@ -1082,9 +1087,6 @@ async fn handle_session_endpoint(
             }
         }
         "GET" => {
-            if let Some(shared_path) = shared_session_path_from_path(&head.path) {
-                return handle_shared_session_get(state, shared_path).await;
-            }
             let Some(session_path) = session_path_from_path(&head.path) else {
                 return json_response(404, &serde_json::json!({ "error": "Not found" }));
             };
@@ -7030,6 +7032,37 @@ mod tests {
 
         assert!(text.starts_with("HTTP/1.1 200 OK\r\n"));
         assert!(text.ends_with("hello"));
+    }
+
+    #[tokio::test]
+    async fn shared_session_get_uses_share_token_without_api_auth() {
+        let mut session = test_session_record("session-1");
+        session.messages.push(serde_json::json!({
+            "role": "user",
+            "content": "shared hello"
+        }));
+        let state =
+            test_app_state_with_sessions(HashMap::from([(session.id.clone(), session.clone())]));
+        state.shared_sessions.lock().await.insert(
+            "share-token".to_string(),
+            SharedSessionGrant {
+                session_id: session.id.clone(),
+                expires_at: now_millis().saturating_add(60_000),
+                max_accesses: Some(2),
+                access_count: 0,
+            },
+        );
+        let mut server = connected_tcp_streams().await.0;
+        let head = parse_request_head(
+            b"GET /api/sessions/shared/share-token HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        )
+        .expect("request should parse");
+
+        let response = handle_session_endpoint(&mut server, &mut Vec::new(), &head, &state).await;
+        let text = String::from_utf8(response).expect("response should be utf-8");
+
+        assert!(text.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(text.contains("shared hello"));
     }
 
     #[tokio::test]

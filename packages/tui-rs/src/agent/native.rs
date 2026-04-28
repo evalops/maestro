@@ -2118,7 +2118,7 @@ impl NativeAgentRunner {
                     });
 
                     // If requires approval, wait for response
-                    let (approved, result) = if requires_approval {
+                    let (approved, mut result) = if requires_approval {
                         match wait_for_tool_response(
                             &call_id,
                             &mut self.tool_response_rx,
@@ -2141,6 +2141,12 @@ impl NativeAgentRunner {
 
                         (true, Some(result))
                     };
+                    if approved && result.is_none() {
+                        result = Some(
+                            self.execute_tool(&tool_name, &resolved_args, &call_id)
+                                .await,
+                        );
+                    }
 
                     // Build tool result for conversation
                     let (result_content, is_error) = if approved {
