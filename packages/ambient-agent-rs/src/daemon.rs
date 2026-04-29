@@ -539,10 +539,11 @@ impl AmbientDaemon {
         let effective_config = EffectiveRuntimeConfig::from_ambient(&self.config, &event);
         let limits = effective_config.limits;
         if routing.estimated_cost > limits.max_cost_per_task_usd {
-            warn!(
-                "Skipping event {} because estimated cost ${:.4} exceeds configured per-task limit ${:.4}",
-                event.id, routing.estimated_cost, limits.max_cost_per_task_usd
+            let failure_reason = format!(
+                "estimated cost ${:.4} exceeds configured per-task limit ${:.4}",
+                routing.estimated_cost, limits.max_cost_per_task_usd
             );
+            warn!("Skipping event {} because {}", event.id, failure_reason);
             if let Err(e) = self
                 .checkpoint_mgr
                 .write()
@@ -551,6 +552,31 @@ impl AmbientDaemon {
                 .await
             {
                 error!("Failed to rollback cost-limited checkpoint: {}", e);
+            }
+            let duration = (Utc::now() - start_time).num_seconds() as u64;
+            let outcome = Outcome {
+                task_id: plan.task_id.clone(),
+                event_type: event.event_type,
+                task_type: main_task_type,
+                complexity: plan.estimated_complexity,
+                model_used: routing.model.clone(),
+                success: false,
+                confidence_predicted: 0.0,
+                tokens_used: 0,
+                cost_usd: routing.estimated_cost,
+                duration_secs: duration,
+                failure_reason: Some(failure_reason),
+                labels: event.labels.clone(),
+                repo: event.repository.clone(),
+                timestamp: Utc::now(),
+            };
+            if let Err(e) = self.learner.write().await.record_outcome(outcome).await {
+                error!("Failed to record cost-limited outcome: {}", e);
+            }
+            {
+                let mut stats = self.stats.write().await;
+                stats.tasks_executed += 1;
+                stats.tasks_failed += 1;
             }
             return;
         }
@@ -1096,9 +1122,15 @@ mod tests {
         daemon.execute_plan(event, plan).await;
 
         let stats = daemon.stats.read().await;
-        assert_eq!(stats.tasks_executed, 0);
+        assert_eq!(stats.tasks_executed, 1);
+        assert_eq!(stats.tasks_failed, 1);
         assert_eq!(stats.total_cost, 0.0);
         drop(stats);
+
+        let learner_stats = daemon.learner.read().await.get_stats();
+        assert_eq!(learner_stats.total_outcomes, 1);
+        assert_eq!(learner_stats.overall_success_rate, 0.0);
+        assert!(learner_stats.total_cost > 0.0);
         assert!(daemon.checkpoint_mgr.read().await.list_active().is_empty());
     }
 
