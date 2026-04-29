@@ -57,6 +57,13 @@ const sessionJson = `
 {"type":"message","message":{"role":"toolResult","toolCallId":"tool-1","toolName":"bash","content":[{"type":"text","text":"src\\npackage.json"}],"isError":false,"timestamp":3}}
 `;
 
+const rustAuthoredSessionJson = `
+{"type":"session","id":"session-rust","timestamp":"2024-01-01T00:00:00.000Z","cwd":"/repo","model":"anthropic/claude-3","model_metadata":{"provider":"anthropic","model_id":"claude-3","provider_name":"Anthropic"},"thinking_level":"low","system_prompt":"Persisted system","tools":[{"name":"bash","description":"Run bash"}]}
+{"type":"message","message":{"role":"user","content":"inspect legacy output","timestamp":1}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"thinking","text":"Need a shell command","signature":"sig-1"},{"type":"tool_call","id":"tool-legacy","name":"bash","args":{"command":"cat README.md"}}],"api":"anthropic-messages","provider":"anthropic","model":"claude-3","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stop_reason":"tool_use","timestamp":2}}
+{"type":"message","message":{"role":"toolResult","tool_call_id":"tool-legacy","tool_name":"bash","content":"legacy output","is_error":false,"timestamp":3}}
+`;
+
 const richSessionJson = `
 {"type":"session","id":"session-2","timestamp":"2024-02-01T00:00:00.000Z","cwd":"/repo","model":"anthropic/claude-3","thinkingLevel":"medium","systemPrompt":"Persisted system","tools":[{"name":"read","description":"Read files"},{"name":"bash","description":"Run bash"}]}
 {"type":"message","message":{"role":"user","content":[{"type":"text","text":"See attachment for context"}],"attachments":[{"id":"att-1","type":"image","fileName":"design.png","mimeType":"image/png","size":12345,"content":"base64-data","preview":"thumbnail"}],"timestamp":4}}
@@ -166,6 +173,33 @@ describe("exporters", () => {
 		expect(text).toContain("User:\nlist files");
 		expect(text).toContain("[tool call] bash");
 		expect(text).toContain("[tool result] bash");
+	});
+
+	it("exports Rust-authored legacy tool sessions without dropping tool data", async () => {
+		const sessionFile = createTempSessionFile(rustAuthoredSessionJson);
+		const manager = new SessionManager(false, sessionFile);
+		const htmlPath = join(dirname(sessionFile), "rust.html");
+		const textPath = join(dirname(sessionFile), "rust.txt");
+
+		const htmlOutputPath = await exportSessionToHtml(
+			manager,
+			buildAgentState(),
+			htmlPath,
+		);
+		const textOutputPath = await exportSessionToText(
+			manager,
+			buildAgentState(),
+			textPath,
+		);
+
+		const html = readFileSync(htmlOutputPath, "utf8");
+		const text = readFileSync(textOutputPath, "utf8");
+		expect(html).toContain("Need a shell command");
+		expect(html).toContain("$ cat README.md");
+		expect(html).toContain("legacy output");
+		expect(text).toContain("[tool call] bash");
+		expect(text).toContain("[tool result] bash");
+		expect(text).toContain("legacy output");
 	});
 
 	it("renders attachments, thinking, and multiple tool calls in HTML", async () => {
@@ -282,6 +316,50 @@ describe("exporters", () => {
 		expect(exported.format).toBe("maestro-session-export.v1");
 		expect(exported.exportedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
 		expect(exported.entries[0]?.type).toBe("session");
+	});
+
+	it("normalizes Rust-authored entries in portable JSON exports", async () => {
+		const sessionFile = createTempSessionFile(rustAuthoredSessionJson);
+		const manager = new SessionManager(false, sessionFile);
+		const jsonPath = join(dirname(sessionFile), "rust-portable.json");
+		const outputPath = await exportSessionToJson(manager, jsonPath);
+		const exported = JSON.parse(readFileSync(outputPath, "utf8")) as {
+			entries: Array<{
+				type: string;
+				thinkingLevel?: string;
+				modelMetadata?: { modelId?: string; providerName?: string };
+				message?: {
+					content?: Array<{
+						type: string;
+						thinking?: string;
+						arguments?: unknown;
+					}>;
+					stopReason?: string;
+					toolCallId?: string;
+					toolName?: string;
+					isError?: boolean;
+				};
+			}>;
+		};
+
+		expect(exported.entries[0]).toMatchObject({
+			type: "session",
+			thinkingLevel: "low",
+			modelMetadata: {
+				modelId: "claude-3",
+				providerName: "Anthropic",
+			},
+		});
+		expect(exported.entries[2]?.message?.content).toMatchObject([
+			{ type: "thinking", thinking: "Need a shell command" },
+			{ type: "toolCall", arguments: { command: "cat README.md" } },
+		]);
+		expect(exported.entries[2]?.message?.stopReason).toBe("toolUse");
+		expect(exported.entries[3]?.message).toMatchObject({
+			toolCallId: "tool-legacy",
+			toolName: "bash",
+			isError: false,
+		});
 	});
 
 	it("redacts secrets in portable JSONL exports", async () => {

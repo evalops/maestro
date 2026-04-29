@@ -26,7 +26,7 @@ import type {
 	SessionHeaderEntry,
 	SessionManager,
 } from "./session/manager.js";
-import type { SessionEntry } from "./session/types.js";
+import { type SessionEntry, parseSessionEntry } from "./session/types.js";
 import { getHomeDir } from "./utils/path-expansion.js";
 
 const normalizeForCompare = (value: string): string =>
@@ -64,7 +64,7 @@ async function parseSessionFile(
 				continue;
 			}
 			try {
-				const entry = JSON.parse(trimmed);
+				const entry = parseSessionEntry(trimmed);
 				if (entry.type === "session" && !header) {
 					header = entry as SessionHeaderEntry;
 					continue;
@@ -132,7 +132,7 @@ async function streamPortableEntries(
 			}
 			let entry: SessionEntry;
 			try {
-				entry = JSON.parse(trimmed) as SessionEntry;
+				entry = parseSessionEntry(trimmed);
 			} catch {
 				// Ignore malformed lines so partial or truncated session files remain exportable.
 				continue;

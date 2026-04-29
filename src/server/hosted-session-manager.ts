@@ -25,6 +25,7 @@ import {
 	type SessionTreeEntry,
 	isSessionHeaderEntry,
 	isSessionTreeEntry,
+	parseSessionEntry,
 } from "../session/types.js";
 import { queueSharedMemoryUpdate } from "../shared-memory/client.js";
 import { recordMaestroPromptVariantSelected } from "../telemetry/maestro-event-bus.js";
@@ -38,7 +39,11 @@ function parseSessionEntryValue(value: unknown): SessionEntry | null {
 	if (typeof (value as { type?: unknown }).type !== "string") {
 		return null;
 	}
-	return value as SessionEntry;
+	try {
+		return parseSessionEntry(JSON.stringify(value));
+	} catch {
+		return null;
+	}
 }
 
 export interface HostedSessionMetadataUpdate {
