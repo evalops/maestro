@@ -9,9 +9,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::fs;
 
-/// Outcome record for learning
+/// Persisted task outcome used by the learner to derive patterns.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct Outcome {
+pub struct LearnerOutcome {
     pub task_id: String,
     pub event_type: EventType,
     pub task_type: TaskType,
@@ -30,7 +30,7 @@ pub struct Outcome {
     pub timestamp: DateTime<Utc>,
 }
 
-impl Outcome {
+impl LearnerOutcome {
     fn normalize_costs(&mut self) {
         // Older persisted outcomes only tracked a single cost field. Backfill the
         // explicit estimate so we can keep historical learner stats coherent.
@@ -68,7 +68,7 @@ pub enum PatternType {
 /// Learner tracks outcomes and derives patterns
 pub struct Learner {
     storage_path: PathBuf,
-    outcomes: Vec<Outcome>,
+    outcomes: Vec<LearnerOutcome>,
     patterns: HashMap<(PatternType, String), LearnedPattern>,
     max_outcomes: usize,
     min_samples_for_pattern: u64,
@@ -87,7 +87,7 @@ impl Learner {
     }
 
     /// Record an outcome
-    pub async fn record_outcome(&mut self, mut outcome: Outcome) -> anyhow::Result<()> {
+    pub async fn record_outcome(&mut self, mut outcome: LearnerOutcome) -> anyhow::Result<()> {
         outcome.normalize_costs();
         self.outcomes.push(outcome.clone());
 
@@ -108,7 +108,7 @@ impl Learner {
     }
 
     /// Update patterns based on new outcome
-    fn update_patterns(&mut self, outcome: &Outcome) {
+    fn update_patterns(&mut self, outcome: &LearnerOutcome) {
         // Update label patterns
         for label in &outcome.labels {
             self.update_pattern(PatternType::Label, label, outcome);
@@ -143,7 +143,7 @@ impl Learner {
     }
 
     /// Update a single pattern
-    fn update_pattern(&mut self, pattern_type: PatternType, key: &str, outcome: &Outcome) {
+    fn update_pattern(&mut self, pattern_type: PatternType, key: &str, outcome: &LearnerOutcome) {
         let pattern_key = (pattern_type.clone(), key.to_string());
 
         let pattern = self
@@ -372,7 +372,7 @@ pub struct LearnerStats {
 /// Serialization helper
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct LearnerData {
-    outcomes: Vec<Outcome>,
+    outcomes: Vec<LearnerOutcome>,
     patterns: Vec<LearnedPattern>,
 }
 
@@ -381,8 +381,8 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    fn make_outcome(success: bool, labels: Vec<&str>) -> Outcome {
-        Outcome {
+    fn make_outcome(success: bool, labels: Vec<&str>) -> LearnerOutcome {
+        LearnerOutcome {
             task_id: "test-task".to_string(),
             event_type: EventType::Issue,
             task_type: TaskType::Fix,
