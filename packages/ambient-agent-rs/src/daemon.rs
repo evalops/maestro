@@ -585,6 +585,7 @@ impl AmbientDaemon {
                 success: false,
                 confidence_predicted: 0.0,
                 tokens_used: 0,
+                estimated_cost_usd: routing.estimated_cost,
                 cost_usd: 0.0,
                 duration_secs: duration,
                 failure_reason: Some(failure_reason),
@@ -627,6 +628,7 @@ impl AmbientDaemon {
             success: critique.approved && result.status == ExecutionStatus::Success,
             confidence_predicted: critique.confidence,
             tokens_used: 0, // Would come from actual execution
+            estimated_cost_usd: routing.estimated_cost,
             cost_usd: routing.estimated_cost,
             duration_secs: duration,
             failure_reason: result.error.clone(),
@@ -1140,6 +1142,17 @@ mod tests {
             files: vec![],
             risks: vec![],
         };
+        let expected_estimated_cost = {
+            let mut cascader = Cascader::new(None);
+            let task = plan.tasks.first().unwrap().clone();
+            let context = TaskContext {
+                complexity: plan.estimated_complexity,
+                task_type: TaskType::Implement,
+                estimated_tokens: None,
+                previous_attempts: 0,
+            };
+            cascader.route(&task, &context).estimated_cost
+        };
 
         daemon.execute_plan(event, plan).await;
 
@@ -1152,6 +1165,7 @@ mod tests {
         let learner_stats = daemon.learner.read().await.get_stats();
         assert_eq!(learner_stats.total_outcomes, 1);
         assert_eq!(learner_stats.overall_success_rate, 0.0);
+        assert_eq!(learner_stats.total_estimated_cost, expected_estimated_cost);
         assert_eq!(learner_stats.total_cost, 0.0);
         assert!(daemon.checkpoint_mgr.read().await.list_active().is_empty());
     }

@@ -20,12 +20,24 @@ pub struct Outcome {
     pub success: bool,
     pub confidence_predicted: f64,
     pub tokens_used: u64,
+    #[serde(default)]
+    pub estimated_cost_usd: f64,
     pub cost_usd: f64,
     pub duration_secs: u64,
     pub failure_reason: Option<String>,
     pub labels: Vec<String>,
     pub repo: String,
     pub timestamp: DateTime<Utc>,
+}
+
+impl Outcome {
+    fn normalize_costs(&mut self) {
+        // Older persisted outcomes only tracked a single cost field. Backfill the
+        // explicit estimate so we can keep historical learner stats coherent.
+        if self.estimated_cost_usd == 0.0 && self.cost_usd > 0.0 {
+            self.estimated_cost_usd = self.cost_usd;
+        }
+    }
 }
 
 /// Pattern derived from outcomes
@@ -36,6 +48,8 @@ pub struct LearnedPattern {
     pub success_rate: f64,
     pub sample_count: u64,
     pub avg_confidence: f64,
+    #[serde(default)]
+    pub avg_estimated_cost: f64,
     pub avg_cost: f64,
     pub last_updated: DateTime<Utc>,
 }
@@ -73,7 +87,8 @@ impl Learner {
     }
 
     /// Record an outcome
-    pub async fn record_outcome(&mut self, outcome: Outcome) -> anyhow::Result<()> {
+    pub async fn record_outcome(&mut self, mut outcome: Outcome) -> anyhow::Result<()> {
+        outcome.normalize_costs();
         self.outcomes.push(outcome.clone());
 
         // Update patterns
@@ -140,6 +155,7 @@ impl Learner {
                 success_rate: 0.5, // Start with neutral
                 sample_count: 0,
                 avg_confidence: 0.0,
+                avg_estimated_cost: 0.0,
                 avg_cost: 0.0,
                 last_updated: Utc::now(),
             });
@@ -156,6 +172,8 @@ impl Learner {
         let n = pattern.sample_count as f64;
         pattern.avg_confidence =
             ((n - 1.0) * pattern.avg_confidence + outcome.confidence_predicted) / n;
+        pattern.avg_estimated_cost =
+            ((n - 1.0) * pattern.avg_estimated_cost + outcome.estimated_cost_usd) / n;
         pattern.avg_cost = ((n - 1.0) * pattern.avg_cost + outcome.cost_usd) / n;
 
         pattern.last_updated = Utc::now();
@@ -268,6 +286,7 @@ impl Learner {
         let total_outcomes = self.outcomes.len();
         let successful = self.outcomes.iter().filter(|o| o.success).count();
         let total_cost: f64 = self.outcomes.iter().map(|o| o.cost_usd).sum();
+        let total_estimated_cost: f64 = self.outcomes.iter().map(|o| o.estimated_cost_usd).sum();
         let total_patterns = self.patterns.len();
 
         // Recent performance (last 24 hours)
@@ -292,6 +311,7 @@ impl Learner {
             },
             recent_success_rate,
             total_cost,
+            total_estimated_cost,
             total_patterns: total_patterns as u64,
         }
     }
@@ -323,11 +343,15 @@ impl Learner {
         let data: LearnerData = serde_json::from_str(&content)?;
 
         self.outcomes = data.outcomes;
+        for outcome in &mut self.outcomes {
+            outcome.normalize_costs();
+        }
         self.patterns.clear();
 
-        for pattern in data.patterns {
-            let key = (pattern.pattern_type.clone(), pattern.key.clone());
-            self.patterns.insert(key, pattern);
+        // Rebuild derived patterns from outcomes so schema changes in persisted
+        // pattern caches do not leave learner behavior stale or ambiguous.
+        for outcome in self.outcomes.clone() {
+            self.update_patterns(&outcome);
         }
 
         Ok(())
@@ -341,6 +365,7 @@ pub struct LearnerStats {
     pub overall_success_rate: f64,
     pub recent_success_rate: f64,
     pub total_cost: f64,
+    pub total_estimated_cost: f64,
     pub total_patterns: u64,
 }
 
@@ -366,6 +391,7 @@ mod tests {
             success,
             confidence_predicted: 0.8,
             tokens_used: 1000,
+            estimated_cost_usd: 0.01,
             cost_usd: 0.01,
             duration_secs: 60,
             failure_reason: if success {
@@ -421,5 +447,43 @@ mod tests {
 
         let stats = learner.get_stats();
         assert_eq!(stats.total_outcomes, 5);
+        assert_eq!(stats.total_estimated_cost, 0.05);
+    }
+
+    #[tokio::test]
+    async fn test_load_backfills_missing_estimated_costs() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("learner.json");
+        let legacy = serde_json::json!({
+            "outcomes": [{
+                "task_id": "legacy-task",
+                "event_type": "issue",
+                "task_type": "fix",
+                "complexity": "simple",
+                "model_used": "claude-sonnet",
+                "success": true,
+                "confidence_predicted": 0.7,
+                "tokens_used": 500,
+                "cost_usd": 0.42,
+                "duration_secs": 5,
+                "failure_reason": null,
+                "labels": ["bug"],
+                "repo": "test/repo",
+                "timestamp": Utc::now(),
+            }],
+            "patterns": [],
+        });
+        fs::write(&path, serde_json::to_string_pretty(&legacy).unwrap())
+            .await
+            .unwrap();
+
+        let mut learner = Learner::new(path);
+        learner.load().await.unwrap();
+
+        let stats = learner.get_stats();
+        assert_eq!(stats.total_outcomes, 1);
+        assert_eq!(stats.total_cost, 0.42);
+        assert_eq!(stats.total_estimated_cost, 0.42);
+        assert!(learner.get_label_success_rate("bug").is_none());
     }
 }
