@@ -19,6 +19,7 @@ use crate::{
         AmbientCloseReason, AmbientSessionEvent, AmbientSessionState, PlatformEventBus,
     },
     pr_creator::{PrCreator, PrCreatorConfig},
+    runtime_config::EffectiveRuntimeConfig,
     types::*,
 };
 use chrono::Utc;
@@ -116,6 +117,8 @@ impl AmbientDaemon {
 
         let decider_config = DeciderConfig {
             thresholds: config.thresholds.clone(),
+            limits: config.limits.clone(),
+            capabilities: config.capabilities.clone(),
             ..Default::default()
         };
         let decider = Decider::new(decider_config);
@@ -321,7 +324,7 @@ impl AmbientDaemon {
                         }
                         DaemonCommand::UpdateConfig(new_config) => {
                             info!("Updating configuration");
-                            self.config = new_config;
+                            self.update_config(new_config).await;
                         }
                     }
                 }
@@ -354,6 +357,14 @@ impl AmbientDaemon {
 
         info!("Daemon stopped");
         save_result
+    }
+
+    async fn update_config(&mut self, new_config: AmbientConfig) {
+        self.decider
+            .write()
+            .await
+            .update_runtime_config(&new_config);
+        self.config = new_config;
     }
 
     async fn record_session_event(
@@ -397,31 +408,18 @@ impl AmbientDaemon {
         // Make decision
         let decision = self.decider.read().await.decide(&event).await;
 
-        // Apply learner adjustment to confidence and re-determine action
-        let adjusted_confidence = (decision.confidence + confidence_adj).clamp(0.0, 1.0);
-        let adjusted_action = {
-            let thresholds = &self.config.thresholds;
-
-            // Respect complexity-based execution blocks from the decider
-            // If original decision was Ask despite high confidence, it's due to complexity
-            // (Complex/High tasks are never auto-executed, even with high confidence)
-            let complexity_blocked = decision.action == DecisionAction::Ask
-                && decision.confidence >= thresholds.auto_execute;
-
-            if complexity_blocked {
-                // Don't upgrade to Execute - complexity restriction applies
-                if adjusted_confidence >= thresholds.ask_human {
-                    DecisionAction::Ask
-                } else {
-                    DecisionAction::Skip
-                }
-            } else if adjusted_confidence >= thresholds.auto_execute {
-                DecisionAction::Execute
-            } else if adjusted_confidence >= thresholds.ask_human {
-                DecisionAction::Ask
-            } else {
-                DecisionAction::Skip
-            }
+        // Apply learner adjustment to confidence and re-determine action unless
+        // a deterministic policy/safety gate already made the decision final.
+        let adjusted_confidence = if decision.final_action {
+            decision.confidence
+        } else {
+            (decision.confidence + confidence_adj).clamp(0.0, 1.0)
+        };
+        let adjusted_action = if decision.final_action {
+            decision.action
+        } else {
+            let effective_config = EffectiveRuntimeConfig::from_ambient(&self.config, &event);
+            Self::adjusted_action(&decision, adjusted_confidence, effective_config.thresholds)
         };
 
         info!(
@@ -460,6 +458,26 @@ impl AmbientDaemon {
             DecisionAction::Queue => {
                 debug!("Queuing event for later: {}", event.id);
             }
+        }
+    }
+
+    fn adjusted_action(
+        decision: &Decision,
+        adjusted_confidence: f64,
+        thresholds: &Thresholds,
+    ) -> DecisionAction {
+        if decision.auto_execute_blocked {
+            if adjusted_confidence >= thresholds.ask_human {
+                DecisionAction::Ask
+            } else {
+                DecisionAction::Skip
+            }
+        } else if adjusted_confidence >= thresholds.auto_execute {
+            DecisionAction::Execute
+        } else if adjusted_confidence >= thresholds.ask_human {
+            DecisionAction::Ask
+        } else {
+            DecisionAction::Skip
         }
     }
 
@@ -517,6 +535,25 @@ impl AmbientDaemon {
             "Routed to {} ({}) - estimated cost: ${:.4}",
             routing.tier.name, routing.model, routing.estimated_cost
         );
+
+        let effective_config = EffectiveRuntimeConfig::from_ambient(&self.config, &event);
+        let limits = effective_config.limits;
+        if routing.estimated_cost > limits.max_cost_per_task_usd {
+            warn!(
+                "Skipping event {} because estimated cost ${:.4} exceeds configured per-task limit ${:.4}",
+                event.id, routing.estimated_cost, limits.max_cost_per_task_usd
+            );
+            if let Err(e) = self
+                .checkpoint_mgr
+                .write()
+                .await
+                .rollback(&checkpoint_id)
+                .await
+            {
+                error!("Failed to rollback cost-limited checkpoint: {}", e);
+            }
+            return;
+        }
 
         // Execute the plan using the real LLM
         let result = self.executor.execute(&plan, &routing).await;
@@ -850,6 +887,51 @@ mod tests {
         }
     }
 
+    fn test_event(title: &str, body: &str, event_type: EventType) -> NormalizedEvent {
+        let repo = Repository {
+            owner: "evalops".to_string(),
+            name: "maestro".to_string(),
+            full_name: "evalops/maestro".to_string(),
+            default_branch: "main".to_string(),
+            path: "/tmp/maestro".to_string(),
+            url: "https://github.com/evalops/maestro".to_string(),
+            config: None,
+            agent_md: Some("instructions".to_string()),
+            test_coverage: Some(80.0),
+            codeowners: vec!["@evalops/runtime".to_string()],
+        };
+
+        NormalizedEvent {
+            id: "evt_test".to_string(),
+            source: WatcherType::GitHubPoll,
+            event_type,
+            repo: repo.clone(),
+            repository: repo.full_name.clone(),
+            priority: 50,
+            title: title.to_string(),
+            body: Some(body.to_string()),
+            labels: vec![],
+            context: EventContext {
+                repo,
+                history: vec![],
+                related: vec![],
+            },
+            payload: EventPayload {
+                title: Some(title.to_string()),
+                body: Some(body.to_string()),
+                number: Some(1),
+                labels: vec![],
+                author: Some("octocat".to_string()),
+                url: Some("https://github.com/evalops/maestro/issues/1".to_string()),
+                extra: std::collections::HashMap::new(),
+            },
+            created_at: Utc::now(),
+            processed_at: None,
+            status: EventStatus::Pending,
+            flags: EventFlags::default(),
+        }
+    }
+
     #[tokio::test]
     async fn test_daemon_lifecycle() {
         let temp = TempDir::new().unwrap();
@@ -877,6 +959,147 @@ mod tests {
 
         // Wait for completion
         let _ = daemon_handle.await;
+    }
+
+    #[tokio::test]
+    async fn test_update_config_refreshes_decider_policy_defaults() {
+        let temp = TempDir::new().unwrap();
+        let mut daemon = DaemonBuilder::new()
+            .config(test_config())
+            .data_dir(temp.path().to_path_buf())
+            .ipc_socket_path(temp.path().join("daemon-config.sock"))
+            .build()
+            .unwrap();
+        let event = test_event(
+            "GHSA advisory for crate foo",
+            "CVE-2026-1234 in foo requires remediation.",
+            EventType::SecurityAlert,
+        );
+
+        let before = daemon.decider.read().await.decide(&event).await;
+        assert!(!before.reason.contains("Ambient policy gate"));
+
+        let mut updated = test_config();
+        updated.capabilities.security_patches = false;
+        daemon.update_config(updated).await;
+
+        let after = daemon.decider.read().await.decide(&event).await;
+        assert_eq!(after.action, DecisionAction::Skip);
+        assert!(after.reason.contains("security patch work is disabled"));
+    }
+
+    #[test]
+    fn test_adjusted_action_respects_supplied_thresholds() {
+        let decision = Decision {
+            action: DecisionAction::Ask,
+            confidence: 0.6,
+            reason: "below auto threshold".to_string(),
+            plan: None,
+            question: None,
+            final_action: false,
+            auto_execute_blocked: false,
+        };
+
+        let daemon_thresholds = Thresholds {
+            auto_execute: 0.8,
+            ask_human: 0.5,
+            skip: 0.0,
+        };
+        let repo_thresholds = Thresholds {
+            auto_execute: 0.95,
+            ask_human: 0.5,
+            skip: 0.0,
+        };
+
+        assert_eq!(
+            AmbientDaemon::adjusted_action(&decision, 0.85, &daemon_thresholds),
+            DecisionAction::Execute
+        );
+        assert_eq!(
+            AmbientDaemon::adjusted_action(&decision, 0.85, &repo_thresholds),
+            DecisionAction::Ask
+        );
+    }
+
+    #[test]
+    fn test_adjusted_action_respects_complexity_ask_ceiling() {
+        let decision = Decision {
+            action: DecisionAction::Ask,
+            confidence: 0.9,
+            reason: "complexity requires human approval".to_string(),
+            plan: None,
+            question: None,
+            final_action: false,
+            auto_execute_blocked: true,
+        };
+        let thresholds = Thresholds {
+            auto_execute: 0.8,
+            ask_human: 0.5,
+            skip: 0.0,
+        };
+
+        assert_eq!(
+            AmbientDaemon::adjusted_action(&decision, 0.95, &thresholds),
+            DecisionAction::Ask
+        );
+        assert_eq!(
+            AmbientDaemon::adjusted_action(&decision, 0.4, &thresholds),
+            DecisionAction::Skip
+        );
+
+        let moderate_confidence_decision = Decision {
+            confidence: 0.6,
+            ..decision
+        };
+        assert_eq!(
+            AmbientDaemon::adjusted_action(&moderate_confidence_decision, 0.95, &thresholds),
+            DecisionAction::Ask
+        );
+    }
+
+    #[tokio::test]
+    async fn test_execute_plan_blocks_estimated_cost_over_limit() {
+        let temp = TempDir::new().unwrap();
+        let mut config = test_config();
+        config.limits.max_cost_per_task_usd = 0.0001;
+        let daemon = DaemonBuilder::new()
+            .config(config)
+            .data_dir(temp.path().to_path_buf())
+            .ipc_socket_path(temp.path().join("daemon-cost-limit.sock"))
+            .build()
+            .unwrap();
+        let event = test_event(
+            "Implement hosted runtime bridge",
+            "Implement the hosted runtime bridge with tests.",
+            EventType::Issue,
+        );
+        let plan = TaskPlan {
+            task_id: "plan_cost_limit".to_string(),
+            summary: "Handle issue: Implement hosted runtime bridge".to_string(),
+            estimated_complexity: Complexity::Medium,
+            event: event.clone(),
+            strategy: ExecutionStrategy::Solo,
+            estimated_duration_ms: 60_000,
+            tasks: vec![Task {
+                id: "plan_cost_limit_main".to_string(),
+                task_type: TaskType::Implement,
+                prompt: "Implement hosted runtime bridge".to_string(),
+                files: vec![],
+                depends_on: vec![],
+                priority: 100,
+                estimated_tokens: None,
+            }],
+            files: vec![],
+            risks: vec![],
+        };
+
+        daemon.execute_plan(event, plan).await;
+
+        let stats = daemon.stats.read().await;
+        assert_eq!(stats.tasks_executed, 0);
+        assert_eq!(stats.total_cost, 0.0);
+        drop(stats);
+        assert!(daemon.checkpoint_mgr.read().await.list_active().is_empty());
     }
 
     #[tokio::test]

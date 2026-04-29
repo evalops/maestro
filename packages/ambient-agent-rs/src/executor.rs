@@ -1,11 +1,16 @@
 //! Executor
 //!
 //! Executes tasks by calling LLMs and applying file changes.
-//! Handles prompt construction, API calls, response parsing, and file operations.
+//! Handles API calls, response parsing, and file operations.
 
 use crate::cascader::RoutingResult;
+#[cfg(test)]
+use crate::file_permission::FilePermissionRule;
+use crate::file_permission::{
+    FilePermissionDecision, FilePermissionEvaluation, FilePermissionPolicy,
+};
+use crate::prompt::{PromptBuilder, PromptBundle, PromptFileContext};
 use crate::types::*;
-use chrono::{Datelike, Utc};
 use regex::Regex;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -26,22 +31,6 @@ static FILE_CHANGE_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
 
 static MARKDOWN_FILE_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)```(?:\w+)?\n// File: ([^\n]+)\n(.*?)```").unwrap());
-
-/// Protected file patterns that should never be modified
-static PROTECTED_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
-    vec![
-        Regex::new(r"^\.git/").unwrap(),
-        Regex::new(r"^\.env").unwrap(),
-        Regex::new(r"credentials").unwrap(),
-        Regex::new(r"secrets?\.").unwrap(),
-        Regex::new(r"\.pem$").unwrap(),
-        Regex::new(r"\.key$").unwrap(),
-        Regex::new(r"id_rsa").unwrap(),
-        Regex::new(r"\.ssh/").unwrap(),
-        Regex::new(r"node_modules/").unwrap(),
-        Regex::new(r"vendor/").unwrap(),
-    ]
-});
 
 /// Allowed test commands (whitelist for security)
 static ALLOWED_TEST_COMMANDS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
@@ -87,6 +76,7 @@ impl Default for ExecutorConfig {
 pub struct Executor {
     config: ExecutorConfig,
     client: Client,
+    file_permission_policy: FilePermissionPolicy,
 }
 
 /// Anthropic API request
@@ -143,7 +133,21 @@ impl Executor {
             .build()
             .unwrap_or_else(|_| Client::new());
 
-        Self { config, client }
+        Self {
+            config,
+            client,
+            file_permission_policy: FilePermissionPolicy::default_write_policy(),
+        }
+    }
+
+    /// Override file write permissions for executor-applied changes.
+    ///
+    /// The executor is currently non-interactive, so Ask and Deny decisions both
+    /// stop writes. Keeping Ask distinct gives callers a stable hook for future
+    /// approval plumbing without changing this execution path.
+    pub fn with_file_permission_policy(mut self, policy: FilePermissionPolicy) -> Self {
+        self.file_permission_policy = policy;
+        self
     }
 
     /// Execute a task plan using the routed model
@@ -156,12 +160,12 @@ impl Executor {
         ));
 
         // Build the prompt
-        let (system_prompt, user_prompt) = self.build_prompts(plan).await;
+        let prompts = self.build_prompts(plan).await;
         logs.push("Built prompts".to_string());
 
         // Call the LLM with retries
         let response = match self
-            .call_llm_with_retry(&routing.model, &system_prompt, &user_prompt)
+            .call_llm_with_retry(&routing.model, &prompts.system, &prompts.user)
             .await
         {
             Ok(resp) => {
@@ -277,95 +281,25 @@ impl Executor {
         }
     }
 
-    /// Build system and user prompts for the LLM
-    async fn build_prompts(&self, plan: &TaskPlan) -> (String, String) {
-        let current_year = Utc::now().year();
-        let system_prompt = format!(
-            r#"You are an expert software engineer. Your task is to implement code changes based on the given requirements.
+    /// Build system and user prompts for the LLM.
+    async fn build_prompts(&self, plan: &TaskPlan) -> PromptBundle {
+        let prompt_builder = PromptBuilder::new();
+        let mut file_contexts = Vec::with_capacity(plan.files.len());
 
-When making changes, output them in the following format:
-
-<file_change>
-<action>create|modify|delete</action>
-<path>path/to/file.ext</path>
-<content>
-Full file content here (for create/modify)
-</content>
-</file_change>
-
-Rules:
-1. Output the COMPLETE file content for create/modify operations
-2. Include all necessary imports and dependencies
-3. Follow existing code style and conventions
-4. Add appropriate error handling
-5. Include comments for complex logic
-6. Do not include content tags for delete operations
-7. NEVER use absolute paths - always use relative paths from the project root
-8. NEVER modify files outside the project directory
-9. When using websearch/codesearch for up-to-date information, include the current year ({current_year}) in the query unless the user specifies a different year or a historical range
-
-Think step by step about the implementation before writing code."#
-        );
-
-        // Build user prompt with context
-        let mut user_prompt = format!("## Task\n{}\n\n", plan.summary);
-
-        // Add event context
-        user_prompt.push_str(&format!(
-            "## Event Details\nType: {:?}\nTitle: {}\n",
-            plan.event.event_type, plan.event.title
-        ));
-
-        if let Some(ref body) = plan.event.body {
-            let truncated = self.safe_truncate(body, 2000);
-            user_prompt.push_str(&format!("Body:\n{}\n\n", truncated));
-        }
-
-        // Add file context
-        if !plan.files.is_empty() {
-            user_prompt.push_str("## Relevant Files\n");
-            for file in &plan.files {
-                if let Ok(content) = self.read_file_context(file).await {
-                    user_prompt.push_str(&format!("### {}\n```\n{}\n```\n\n", file, content));
-                }
+        for file in &plan.files {
+            if let Ok(content) = self.read_file_context(file).await {
+                file_contexts.push(PromptFileContext::new(file, content));
             }
         }
 
-        // Add task breakdown
-        user_prompt.push_str("## Tasks\n");
-        for (i, task) in plan.tasks.iter().enumerate() {
-            user_prompt.push_str(&format!(
-                "{}. {:?}: {}\n",
-                i + 1,
-                task.task_type,
-                task.prompt
-            ));
-        }
-
-        (system_prompt, user_prompt)
+        prompt_builder.build(plan, &file_contexts)
     }
 
-    /// Safely truncate a string at character boundaries
-    fn safe_truncate(&self, s: &str, max_chars: usize) -> String {
-        if s.len() <= max_chars {
-            return s.to_string();
-        }
-        // Find the last valid char boundary before max_chars
-        let mut end = max_chars;
-        while end > 0 && !s.is_char_boundary(end) {
-            end -= 1;
-        }
-        format!("{}...(truncated)", &s[..end])
-    }
-
-    /// Read file content for context (truncated if too large)
+    /// Read file content for prompt context.
     async fn read_file_context(&self, path: &str) -> anyhow::Result<String> {
         // Validate path before reading
         let full_path = self.validate_path(path)?;
-        let content = fs::read_to_string(&full_path).await?;
-
-        // Truncate if too large
-        Ok(self.safe_truncate(&content, 10000))
+        Ok(fs::read_to_string(&full_path).await?)
     }
 
     /// Validate that a path is safe and within the working directory
@@ -423,14 +357,9 @@ Think step by step about the implementation before writing code."#
         Ok(final_path)
     }
 
-    /// Check if a file path matches protected patterns
-    fn is_protected_path(&self, path: &str) -> bool {
-        for pattern in PROTECTED_PATTERNS.iter() {
-            if pattern.is_match(path) {
-                return true;
-            }
-        }
-        false
+    /// Evaluate write permission for an executor-applied file path.
+    pub fn evaluate_file_permission(&self, path: &str) -> FilePermissionEvaluation {
+        self.file_permission_policy.evaluate(path)
     }
 
     /// Call the LLM with retry logic and exponential backoff
@@ -570,9 +499,32 @@ Think step by step about the implementation before writing code."#
 
     /// Apply a parsed change to the filesystem with security checks
     async fn apply_change(&self, change: &ParsedChange) -> anyhow::Result<FileChange> {
-        // Security: Check for protected files
-        if self.is_protected_path(&change.file_path) {
-            anyhow::bail!("Cannot modify protected file: {}", change.file_path);
+        // Security: Check write permission before touching the filesystem.
+        let file_permission = self.evaluate_file_permission(&change.file_path);
+        if file_permission.decision.is_blocking() {
+            let decision = match file_permission.decision {
+                FilePermissionDecision::Ask => "requires approval",
+                FilePermissionDecision::Deny => "is denied",
+                FilePermissionDecision::Allow => "is allowed",
+            };
+            let pattern = file_permission
+                .matched_pattern
+                .as_deref()
+                .map(|pattern| format!(" matched by '{pattern}'"))
+                .unwrap_or_default();
+            let reason = file_permission
+                .reason
+                .as_deref()
+                .map(|reason| format!(": {reason}"))
+                .unwrap_or_default();
+
+            anyhow::bail!(
+                "Cannot modify {}: file permission {}{}{}",
+                change.file_path,
+                decision,
+                pattern,
+                reason
+            );
         }
 
         // Security: Validate path is within working directory
@@ -781,34 +733,49 @@ fn main() {
     fn test_protected_paths() {
         let executor = Executor::new(ExecutorConfig::default());
 
-        assert!(executor.is_protected_path(".git/config"));
-        assert!(executor.is_protected_path(".env"));
-        assert!(executor.is_protected_path(".env.local"));
-        assert!(executor.is_protected_path("config/secrets.json"));
-        assert!(executor.is_protected_path("credentials.yaml"));
-        assert!(executor.is_protected_path("server.key"));
-        assert!(executor.is_protected_path("node_modules/package/index.js"));
+        for path in [
+            ".git/config",
+            ".env",
+            ".env.local",
+            "config/secrets.json",
+            "credentials.yaml",
+            "server.key",
+            "node_modules/package/index.js",
+        ] {
+            assert!(
+                executor
+                    .evaluate_file_permission(path)
+                    .decision
+                    .is_blocking(),
+                "{path} should be blocked"
+            );
+        }
 
-        assert!(!executor.is_protected_path("src/main.rs"));
-        assert!(!executor.is_protected_path("lib/utils.ts"));
+        for path in ["src/main.rs", "lib/utils.ts"] {
+            assert_eq!(
+                executor.evaluate_file_permission(path).decision,
+                FilePermissionDecision::Allow,
+                "{path} should be allowed"
+            );
+        }
     }
 
     #[test]
-    fn test_safe_truncate() {
-        let executor = Executor::new(ExecutorConfig::default());
+    fn test_file_permission_policy_override_uses_last_match() {
+        let executor = Executor::new(ExecutorConfig::default()).with_file_permission_policy(
+            FilePermissionPolicy::new(vec![
+                FilePermissionRule::new("*", FilePermissionDecision::Allow),
+                FilePermissionRule::new("src/generated/**", FilePermissionDecision::Ask),
+                FilePermissionRule::new("src/generated/fixtures/**", FilePermissionDecision::Allow),
+            ]),
+        );
 
-        // Normal truncation
-        let short = "hello";
-        assert_eq!(executor.safe_truncate(short, 10), "hello");
+        let generated = executor.evaluate_file_permission("src/generated/client.rs");
+        let fixture = executor.evaluate_file_permission("src/generated/fixtures/client.rs");
 
-        let long = "hello world this is a long string";
-        let truncated = executor.safe_truncate(long, 10);
-        assert!(truncated.starts_with("hello worl"));
-        assert!(truncated.ends_with("...(truncated)"));
-
-        // UTF-8 boundary handling
-        let utf8 = "hello 世界 world";
-        let truncated = executor.safe_truncate(utf8, 8);
-        assert!(truncated.is_ascii() || truncated.chars().all(|c| c.len_utf8() <= 4));
+        assert_eq!(generated.decision, FilePermissionDecision::Ask);
+        assert!(generated.decision.is_blocking());
+        assert_eq!(fixture.decision, FilePermissionDecision::Allow);
+        assert!(!fixture.decision.is_blocking());
     }
 }

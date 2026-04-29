@@ -160,6 +160,14 @@ pub struct Decision {
     pub reason: String,
     pub plan: Option<TaskPlan>,
     pub question: Option<String>,
+    /// True when deterministic policy, approval, or safety rules must not be
+    /// changed by learner confidence adjustment.
+    #[serde(default)]
+    pub final_action: bool,
+    /// True when learner adjustment may still move between Ask and Skip, but
+    /// must not upgrade the decision to Execute.
+    #[serde(default)]
+    pub auto_execute_blocked: bool,
 }
 
 /// Factors that contribute to confidence score

@@ -40,12 +40,26 @@ Flow: WATCH → FILTER → DECIDE → PLAN → ROUTE → EXECUTE → CRITIQUE �
 | **Decider** | Determines whether to act on an event and plans the task |
 | **Cascader** | Routes tasks to appropriate model tier based on complexity |
 | **Executor** | Executes tasks by calling LLMs and applying file changes |
+| **FilePermissionPolicy** | Evaluates executor writes with ordered allow/ask/deny path rules |
+| **PromptBuilder** | Renders system/user prompts from plans and bounded context |
 | **Critic** | LLM-as-Judge that reviews agent outputs before shipping |
 | **CheckpointManager** | Provides atomic operations with rollback capability |
 | **Learner** | Records outcomes and learns from success/failure patterns |
 | **IPC** | Unix socket communication between CLI and daemon |
 
+## Prompt Iteration
+
+Prompt rendering lives in `src/prompt.rs`, separate from executor I/O. Use
+`PromptBuilder` tests for fast iteration on system rules, untrusted event-body
+formatting, file-context limits, and deterministic current-year behavior before
+running the full executor path.
+
 ## Confidence Thresholds
+
+Ambient policy gates run before confidence thresholds. They block prompt-injection
+signals and disabled capabilities, and they require human approval for protected
+files, actions that are never safe to auto-execute, and work above the configured
+complexity or file-count limits.
 
 | Confidence | Action |
 |------------|--------|
@@ -132,6 +146,20 @@ repos:
 thresholds:
   auto_execute: 0.8  # Confidence threshold for auto-execution
   ask_human: 0.5     # Below this, ask for human approval
+
+limits:
+  max_complexity: medium
+  max_files_changed: 20
+  max_cost_per_task_usd: 5.0
+
+capabilities:
+  implement_features: true
+  fix_bugs: true
+  update_dependencies: true
+  refactor: true
+  add_tests: true
+  update_docs: true
+  security_patches: true
 
 github_token: ghp_xxxxx  # Your GitHub token
 ```
