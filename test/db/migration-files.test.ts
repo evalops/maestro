@@ -132,6 +132,12 @@ describe("database migration packaging", () => {
 		);
 		expect(migration).toContain("webhook_deliveries_pkey");
 		expect(migration).toContain(
+			"webhook_deliveries contains duplicate id values after legacy schema reconciliation",
+		);
+		expect(migration).toMatch(
+			/RAISE EXCEPTION[\s\S]+USING ERRCODE = 'unique_violation'/,
+		);
+		expect(migration).toContain(
 			"WHEN duplicate_object OR invalid_table_definition THEN",
 		);
 		expect(migration).toContain("WHEN duplicate_object THEN");

@@ -298,16 +298,38 @@ impl AmbientDaemon {
                 Some(cmd) = command_rx.recv() => {
                     match cmd {
                         DaemonCommand::Pause => {
-                            info!("Pausing daemon");
-                            *self.status.write().await = DaemonStatus::Paused;
-                            self.record_session_event(AmbientSessionState::Suspended, None, None)
-                                .await;
+                            let should_publish = {
+                                let mut status = self.status.write().await;
+                                if *status == DaemonStatus::Running {
+                                    info!("Pausing daemon");
+                                    *status = DaemonStatus::Paused;
+                                    true
+                                } else {
+                                    debug!("Ignoring pause command while daemon is {:?}", *status);
+                                    false
+                                }
+                            };
+                            if should_publish {
+                                self.record_session_event(AmbientSessionState::Suspended, None, None)
+                                    .await;
+                            }
                         }
                         DaemonCommand::Resume => {
-                            info!("Resuming daemon");
-                            *self.status.write().await = DaemonStatus::Running;
-                            self.record_session_event(AmbientSessionState::Resumed, None, None)
-                                .await;
+                            let should_publish = {
+                                let mut status = self.status.write().await;
+                                if *status == DaemonStatus::Paused {
+                                    info!("Resuming daemon");
+                                    *status = DaemonStatus::Running;
+                                    true
+                                } else {
+                                    debug!("Ignoring resume command while daemon is {:?}", *status);
+                                    false
+                                }
+                            };
+                            if should_publish {
+                                self.record_session_event(AmbientSessionState::Resumed, None, None)
+                                    .await;
+                            }
                         }
                         DaemonCommand::Shutdown => {
                             info!("Shutting down daemon");
@@ -1152,10 +1174,19 @@ mod tests {
         let daemon_handle = tokio::spawn(async move { daemon.run().await });
 
         wait_for_published(&transport, 1).await;
+        cmd_tx.send(DaemonCommand::Resume).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        assert_eq!(transport.published.lock().unwrap().len(), 1);
         cmd_tx.send(DaemonCommand::Pause).await.unwrap();
         wait_for_published(&transport, 2).await;
+        cmd_tx.send(DaemonCommand::Pause).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        assert_eq!(transport.published.lock().unwrap().len(), 2);
         cmd_tx.send(DaemonCommand::Resume).await.unwrap();
         wait_for_published(&transport, 3).await;
+        cmd_tx.send(DaemonCommand::Resume).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        assert_eq!(transport.published.lock().unwrap().len(), 3);
         cmd_tx.send(DaemonCommand::Shutdown).await.unwrap();
 
         daemon_handle.await.unwrap().unwrap();

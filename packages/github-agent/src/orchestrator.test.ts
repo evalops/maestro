@@ -19,6 +19,13 @@ import type { TaskExecutor } from "./worker/executor.js";
 
 // Mock all dependencies
 let mockMemory: MockMemoryStore;
+const { closeMaestroEventBusTransportMock } = vi.hoisted(() => ({
+	closeMaestroEventBusTransportMock: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("@evalops/ai/telemetry", () => ({
+	closeMaestroEventBusTransport: closeMaestroEventBusTransportMock,
+}));
 
 vi.mock("./memory/store.js", () => ({
 	// biome-ignore lint/complexity/useArrowFunction: Vitest requires constructable mock for `new`.
@@ -742,9 +749,23 @@ describe("Orchestrator", () => {
 			await orchestrator.stop();
 
 			expect(mockWatcher.stop).toHaveBeenCalled();
+			expect(closeMaestroEventBusTransportMock).toHaveBeenCalled();
 			expect(mockMemory.save).toHaveBeenCalled();
 
 			await startPromise.catch(() => {});
+		});
+
+		it("should save memory when event bus shutdown fails", async () => {
+			closeMaestroEventBusTransportMock.mockRejectedValueOnce(
+				new Error("transport close failed"),
+			);
+
+			const orchestrator = new Orchestrator(config);
+
+			await expect(orchestrator.stop()).resolves.toBeUndefined();
+
+			expect(closeMaestroEventBusTransportMock).toHaveBeenCalled();
+			expect(mockMemory.save).toHaveBeenCalled();
 		});
 	});
 });
