@@ -39,6 +39,7 @@ pub mod critic;
 pub mod daemon;
 pub mod decider;
 pub mod event_bus;
+mod execution_report;
 pub mod executor;
 pub mod file_permission;
 pub mod github_watcher;
