@@ -9,7 +9,10 @@ import {
 	generateEntryId,
 	isLikelyCompactionSummary,
 } from "../../src/session/session-context.js";
-import type { SessionEntry } from "../../src/session/types.js";
+import {
+	type SessionEntry,
+	tryParseSessionEntry,
+} from "../../src/session/types.js";
 
 describe("extractTextFromContent", () => {
 	it("returns string content as-is", () => {
@@ -215,6 +218,115 @@ describe("session context compatibility", () => {
 
 		expect(info?.messageCount).toBe(3);
 		expect(info?.firstMessage).toBe("Read README");
+		expect(info?.allMessagesText).toContain("[tool call] read");
+		expect(info?.allMessagesText).toContain("file contents");
+	});
+});
+
+function parseRustAuthoredToolSession(): SessionEntry[] {
+	return [
+		`{"type":"session","id":"session-1","timestamp":"${timestamp}","cwd":"/tmp","model":"openai/gpt-5.2","model_metadata":{"provider":"openai","model_id":"gpt-5.2","provider_name":"OpenAI","base_url":"https://example.test","context_window":100000,"max_tokens":4096},"thinking_level":"medium"}`,
+		`{"type":"message","timestamp":"${timestamp}","message":{"role":"user","content":"Read README","timestamp":0}}`,
+		`{"type":"message","timestamp":"${timestamp}","message":{"role":"assistant","api":"openai-responses","provider":"openai","model":"gpt-5.2","usage":{"input":10,"output":4,"cacheRead":2,"cacheWrite":1,"cost":{"input":0.1,"output":0.2,"cacheRead":0.01,"cacheWrite":0.02,"total":0.33}},"stop_reason":"tool_use","timestamp":1,"content":[{"type":"thinking","text":"Need a file read","signature":"sig-1"},{"type":"tool_call","id":"call-1","name":"read","args":{"path":"README.md"}}]}}`,
+		`{"type":"message","timestamp":"${timestamp}","message":{"role":"toolResult","tool_call_id":"call-1","tool_name":"read","content":"file contents","is_error":false,"timestamp":2}}`,
+		`{"type":"model_change","timestamp":"${timestamp}","model":"openai/gpt-5.2","model_metadata":{"provider":"openai","model_id":"gpt-5.2"}}`,
+		`{"type":"thinking_level_change","timestamp":"${timestamp}","thinking_level":"high"}`,
+		`{"type":"compaction","timestamp":"${timestamp}","summary":"Kept the useful work","first_kept_entry_index":0,"tokens_before":1234,"auto":true,"custom_instructions":"keep tool context"}`,
+	]
+		.map((line) => tryParseSessionEntry(line))
+		.filter((entry): entry is SessionEntry => Boolean(entry));
+}
+
+describe("Rust-authored session compatibility", () => {
+	it("normalizes legacy Rust snake_case transcript fields at parse time", () => {
+		const entries = parseRustAuthoredToolSession();
+
+		expect(entries[0]).toMatchObject({
+			type: "session",
+			thinkingLevel: "medium",
+			modelMetadata: {
+				modelId: "gpt-5.2",
+				providerName: "OpenAI",
+				baseUrl: "https://example.test",
+				contextWindow: 100000,
+				maxTokens: 4096,
+			},
+		});
+		expect(entries[2]).toMatchObject({
+			type: "message",
+			message: {
+				role: "assistant",
+				stopReason: "toolUse",
+				content: [
+					{
+						type: "thinking",
+						thinking: "Need a file read",
+						thinkingSignature: "sig-1",
+					},
+					{
+						type: "toolCall",
+						id: "call-1",
+						name: "read",
+						arguments: { path: "README.md" },
+					},
+				],
+			},
+		});
+		expect(entries[3]).toMatchObject({
+			type: "message",
+			message: {
+				role: "toolResult",
+				toolCallId: "call-1",
+				toolName: "read",
+				content: [{ type: "text", text: "file contents" }],
+				isError: false,
+			},
+		});
+		expect(entries[4]).toMatchObject({
+			type: "model_change",
+			modelMetadata: { modelId: "gpt-5.2" },
+		});
+		expect(entries[5]).toMatchObject({
+			type: "thinking_level_change",
+			thinkingLevel: "high",
+		});
+		expect(entries[6]).toMatchObject({
+			type: "compaction",
+			firstKeptEntryIndex: 0,
+			tokensBefore: 1234,
+			customInstructions: "keep tool context",
+		});
+	});
+
+	it("normalizes legacy Rust stop reason values to TypeScript values", () => {
+		const stopReasons = [
+			["tool_use", "toolUse"],
+			["tool_calls", "toolUse"],
+			["max_tokens", "length"],
+			["end_turn", "stop"],
+			["stop_sequence", "stop"],
+			["error", "error"],
+		] as const;
+
+		for (const [rustStopReason, expected] of stopReasons) {
+			const entry = tryParseSessionEntry(
+				`{"type":"message","timestamp":"${timestamp}","message":{"role":"assistant","stop_reason":"${rustStopReason}","content":[],"timestamp":1}}`,
+			);
+
+			expect(entry).toMatchObject({
+				type: "message",
+				message: { role: "assistant", stopReason: expected },
+			});
+		}
+	});
+
+	it("summarizes legacy Rust tool sessions without losing tool calls", () => {
+		const stats = { birthtime: new Date(timestamp) } as Stats;
+		const info = buildSessionFileInfo(parseRustAuthoredToolSession(), stats);
+
+		expect(info?.messageCount).toBe(3);
+		expect(info?.firstMessage).toBe("Read README");
+		expect(info?.allMessagesText).toContain("[thinking] Need a file read");
 		expect(info?.allMessagesText).toContain("[tool call] read");
 		expect(info?.allMessagesText).toContain("file contents");
 	});
