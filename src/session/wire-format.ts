@@ -1,38 +1,56 @@
 import type { SessionEntry } from "./types.js";
+import {
+	sessionWireContentBlockFieldAliases,
+	sessionWireContentBlockTypeAliases,
+	sessionWireFieldAliases,
+	sessionWireStopReasonAliases,
+} from "./wire-format.generated.js";
+
+type AliasMap = Readonly<Record<string, string>>;
+
+function getOwnProperty<T>(
+	value: Readonly<Record<string, T>>,
+	key: string,
+): T | undefined {
+	return Object.prototype.hasOwnProperty.call(value, key)
+		? value[key]
+		: undefined;
+}
 
 function renameOwnProperty(
 	value: Record<string, unknown>,
 	from: string,
 	to: string,
 ): void {
-	if (!(from in value) || to in value) return;
+	if (
+		!Object.prototype.hasOwnProperty.call(value, from) ||
+		Object.prototype.hasOwnProperty.call(value, to)
+	) {
+		return;
+	}
 	value[to] = value[from];
 	delete value[from];
+}
+
+function renameOwnProperties(
+	value: Record<string, unknown>,
+	aliases: AliasMap | undefined,
+): void {
+	if (!aliases) return;
+	for (const [from, to] of Object.entries(aliases)) {
+		renameOwnProperty(value, from, to);
+	}
 }
 
 function normalizeModelMetadata(value: unknown): void {
 	if (!value || typeof value !== "object") return;
 	const metadata = value as Record<string, unknown>;
-	renameOwnProperty(metadata, "model_id", "modelId");
-	renameOwnProperty(metadata, "provider_name", "providerName");
-	renameOwnProperty(metadata, "base_url", "baseUrl");
-	renameOwnProperty(metadata, "context_window", "contextWindow");
-	renameOwnProperty(metadata, "max_tokens", "maxTokens");
+	renameOwnProperties(metadata, sessionWireFieldAliases.modelMetadata);
 }
 
 export function normalizeStopReasonValue(value: unknown): unknown {
-	switch (value) {
-		case "tool_use":
-		case "tool_calls":
-			return "toolUse";
-		case "max_tokens":
-			return "length";
-		case "end_turn":
-		case "stop_sequence":
-			return "stop";
-		default:
-			return value;
-	}
+	if (typeof value !== "string") return value;
+	return getOwnProperty(sessionWireStopReasonAliases, value) ?? value;
 }
 
 function normalizeMessageContentBlocks(content: unknown): void {
@@ -40,16 +58,16 @@ function normalizeMessageContentBlocks(content: unknown): void {
 	for (const block of content) {
 		if (!block || typeof block !== "object") continue;
 		const record = block as Record<string, unknown>;
-		if (record.type === "tool_call") {
-			record.type = "toolCall";
+		if (typeof record.type === "string") {
+			record.type =
+				getOwnProperty(sessionWireContentBlockTypeAliases, record.type) ??
+				record.type;
 		}
-		if (record.type === "toolCall") {
-			renameOwnProperty(record, "args", "arguments");
-		}
-		if (record.type === "thinking") {
-			renameOwnProperty(record, "text", "thinking");
-			renameOwnProperty(record, "signature", "thinkingSignature");
-		}
+		if (typeof record.type !== "string") continue;
+		renameOwnProperties(
+			record,
+			getOwnProperty(sessionWireContentBlockFieldAliases, record.type),
+		);
 	}
 }
 
@@ -57,15 +75,13 @@ function normalizeSessionMessage(message: unknown): void {
 	if (!message || typeof message !== "object") return;
 	const record = message as Record<string, unknown>;
 	if (record.role === "assistant") {
-		renameOwnProperty(record, "stop_reason", "stopReason");
+		renameOwnProperties(record, sessionWireFieldAliases.assistantMessage);
 		record.stopReason = normalizeStopReasonValue(record.stopReason);
 		normalizeMessageContentBlocks(record.content);
 		return;
 	}
 	if (record.role === "toolResult") {
-		renameOwnProperty(record, "tool_call_id", "toolCallId");
-		renameOwnProperty(record, "tool_name", "toolName");
-		renameOwnProperty(record, "is_error", "isError");
+		renameOwnProperties(record, sessionWireFieldAliases.toolResultMessage);
 		if (typeof record.content === "string") {
 			record.content = [{ type: "text", text: record.content }];
 		}
@@ -82,31 +98,21 @@ export function normalizeSessionEntry(entry: unknown): SessionEntry | null {
 	}
 	switch (record.type) {
 		case "session":
-			renameOwnProperty(record, "model_metadata", "modelMetadata");
-			renameOwnProperty(record, "thinking_level", "thinkingLevel");
-			renameOwnProperty(record, "system_prompt", "systemPrompt");
-			renameOwnProperty(record, "branched_from", "branchedFrom");
+			renameOwnProperties(record, sessionWireFieldAliases.session);
 			normalizeModelMetadata(record.modelMetadata);
 			break;
 		case "message":
 			normalizeSessionMessage(record.message);
 			break;
 		case "thinking_level_change":
-			renameOwnProperty(record, "thinking_level", "thinkingLevel");
+			renameOwnProperties(record, sessionWireFieldAliases.thinkingLevelChange);
 			break;
 		case "model_change":
-			renameOwnProperty(record, "model_metadata", "modelMetadata");
+			renameOwnProperties(record, sessionWireFieldAliases.modelChange);
 			normalizeModelMetadata(record.modelMetadata);
 			break;
 		case "compaction":
-			renameOwnProperty(record, "first_kept_entry_id", "firstKeptEntryId");
-			renameOwnProperty(
-				record,
-				"first_kept_entry_index",
-				"firstKeptEntryIndex",
-			);
-			renameOwnProperty(record, "tokens_before", "tokensBefore");
-			renameOwnProperty(record, "custom_instructions", "customInstructions");
+			renameOwnProperties(record, sessionWireFieldAliases.compaction);
 			break;
 		default:
 			break;

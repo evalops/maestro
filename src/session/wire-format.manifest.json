@@ -1,0 +1,57 @@
+{
+	"version": "session-wire-format.v1",
+	"stopReasonAliases": {
+		"tool_use": "toolUse",
+		"tool_calls": "toolUse",
+		"max_tokens": "length",
+		"end_turn": "stop",
+		"stop_sequence": "stop"
+	},
+	"fieldAliases": {
+		"modelMetadata": {
+			"model_id": "modelId",
+			"provider_name": "providerName",
+			"base_url": "baseUrl",
+			"context_window": "contextWindow",
+			"max_tokens": "maxTokens"
+		},
+		"session": {
+			"model_metadata": "modelMetadata",
+			"thinking_level": "thinkingLevel",
+			"system_prompt": "systemPrompt",
+			"branched_from": "branchedFrom"
+		},
+		"assistantMessage": {
+			"stop_reason": "stopReason"
+		},
+		"toolResultMessage": {
+			"tool_call_id": "toolCallId",
+			"tool_name": "toolName",
+			"is_error": "isError"
+		},
+		"thinkingLevelChange": {
+			"thinking_level": "thinkingLevel"
+		},
+		"modelChange": {
+			"model_metadata": "modelMetadata"
+		},
+		"compaction": {
+			"first_kept_entry_id": "firstKeptEntryId",
+			"first_kept_entry_index": "firstKeptEntryIndex",
+			"tokens_before": "tokensBefore",
+			"custom_instructions": "customInstructions"
+		}
+	},
+	"contentBlockTypeAliases": {
+		"tool_call": "toolCall"
+	},
+	"contentBlockFieldAliases": {
+		"toolCall": {
+			"args": "arguments"
+		},
+		"thinking": {
+			"text": "thinking",
+			"signature": "thinkingSignature"
+		}
+	}
+}
