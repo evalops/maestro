@@ -1,12 +1,10 @@
 name: GHCR Publish
 
 on:
-  pull_request:
-    branches:
-      - main
   push:
     branches:
       - main
+  pull_request:
 
 concurrency:
   group: ghcr-publish-${{ github.workflow }}-${{ github.ref }}
@@ -23,9 +21,9 @@ jobs:
       packages: write
 
     steps:
-      - name: Validate publish gate
+      - name: Publish is push-only
         if: github.event_name == 'pull_request'
-        run: echo "Image publishing runs only for pushes to main."
+        run: echo "GHCR publish runs only on main pushes; this PR check satisfies the required status without building an image."
 
       - name: Checkout repository
         if: github.event_name == 'push'
