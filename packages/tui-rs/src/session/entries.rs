@@ -181,7 +181,28 @@
 //! };
 //! ```
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
+
+fn deserialize_tool_result_content<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    Ok(match value {
+        Value::String(content) => content,
+        Value::Array(blocks) => blocks
+            .iter()
+            .filter_map(|block| match block {
+                Value::Object(object) => object.get("text").and_then(Value::as_str),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(""),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    })
+}
 
 /// Top-level discriminated union for all session event types.
 ///
@@ -286,18 +307,21 @@ pub struct SessionHeader {
     ///
     /// Omitted from JSON if None.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "modelMetadata", alias = "model_metadata")]
     pub model_metadata: Option<ModelMetadata>,
 
     /// Extended thinking budget level.
     ///
     /// Defaults to `Medium` if not specified in the JSON.
     #[serde(default)]
+    #[serde(rename = "thinkingLevel", alias = "thinking_level")]
     pub thinking_level: ThinkingLevel,
 
     /// Custom system prompt override.
     ///
     /// If provided, replaces the default system prompt. Omitted if None.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "systemPrompt", alias = "system_prompt")]
     pub system_prompt: Option<String>,
 
     /// List of tools available to the assistant.
@@ -310,6 +334,7 @@ pub struct SessionHeader {
     ///
     /// Used to track session forks for alternative conversation paths. Omitted if None.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "branchedFrom", alias = "branched_from")]
     pub branched_from: Option<String>,
 }
 
@@ -317,18 +342,23 @@ pub struct SessionHeader {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelMetadata {
     pub provider: String,
+    #[serde(rename = "modelId", alias = "model_id")]
     pub model_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "providerName", alias = "provider_name")]
     pub provider_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "baseUrl", alias = "base_url")]
     pub base_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "contextWindow", alias = "context_window")]
     pub context_window: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "maxTokens", alias = "max_tokens")]
     pub max_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
@@ -517,7 +547,11 @@ pub enum AppMessage {
         ///
         /// Common values: "`end_turn`", "`max_tokens`", "`stop_sequence`", "`tool_use`".
         /// Omitted if None.
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(
+            rename = "stopReason",
+            alias = "stop_reason",
+            skip_serializing_if = "Option::is_none"
+        )]
         stop_reason: Option<String>,
 
         /// Unix timestamp in milliseconds.
@@ -534,12 +568,15 @@ pub enum AppMessage {
         /// Unique identifier linking this result to the tool call.
         ///
         /// Matches the `id` field from the `ContentBlock::ToolCall`.
+        #[serde(rename = "toolCallId", alias = "tool_call_id")]
         tool_call_id: String,
 
         /// Name of the tool that was executed.
+        #[serde(rename = "toolName", alias = "tool_name")]
         tool_name: String,
 
         /// Tool output (success result or error message).
+        #[serde(deserialize_with = "deserialize_tool_result_content")]
         content: String,
 
         /// Structured tool execution details.
@@ -551,7 +588,7 @@ pub enum AppMessage {
         /// Whether this result represents an error.
         ///
         /// Defaults to false if missing.
-        #[serde(default)]
+        #[serde(rename = "isError", alias = "is_error", default)]
         is_error: bool,
 
         /// Unix timestamp in milliseconds.
@@ -651,16 +688,23 @@ pub enum ContentBlock {
     /// Plain text
     Text { text: String },
     /// Thinking content
+    #[serde(rename = "thinking")]
     Thinking {
+        #[serde(rename = "thinking", alias = "text")]
         text: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(
+            rename = "thinkingSignature",
+            alias = "signature",
+            skip_serializing_if = "Option::is_none"
+        )]
         signature: Option<String>,
     },
     /// Tool call
+    #[serde(rename = "toolCall", alias = "tool_call")]
     ToolCall {
         id: String,
         name: String,
-        #[serde(default)]
+        #[serde(rename = "arguments", alias = "args", default)]
         args: serde_json::Value,
     },
     /// Image (base64)
@@ -887,6 +931,90 @@ mod tests {
             }
             _ => panic!("Expected Message entry"),
         }
+    }
+
+    #[test]
+    fn parse_typescript_assistant_blocks() {
+        let json = r#"{"type":"message","timestamp":"2024-01-15T10:30:00Z","message":{"role":"assistant","api":"openai-responses","provider":"openai","model":"gpt-5.2","usage":{"input":10,"output":4,"cacheRead":2,"cacheWrite":1,"cost":{"input":0.1,"output":0.2,"cacheRead":0.01,"cacheWrite":0.02,"total":0.33}},"stopReason":"toolUse","timestamp":0,"content":[{"type":"thinking","thinking":"Need a file read","thinkingSignature":"sig-1"},{"type":"toolCall","id":"call_1","name":"read","arguments":{"path":"README.md"}}]}}"#;
+        let entry: SessionEntry = serde_json::from_str(json).unwrap();
+
+        let SessionEntry::Message(msg) = entry else {
+            panic!("Expected Message entry");
+        };
+        let AppMessage::Assistant {
+            content,
+            stop_reason,
+            usage,
+            ..
+        } = msg.message
+        else {
+            panic!("Expected assistant message");
+        };
+
+        assert_eq!(stop_reason.as_deref(), Some("toolUse"));
+        assert_eq!(usage.unwrap().cache_read, 2);
+        match &content[0] {
+            ContentBlock::Thinking { text, signature } => {
+                assert_eq!(text, "Need a file read");
+                assert_eq!(signature.as_deref(), Some("sig-1"));
+            }
+            _ => panic!("Expected thinking block"),
+        }
+        match &content[1] {
+            ContentBlock::ToolCall { id, name, args } => {
+                assert_eq!(id, "call_1");
+                assert_eq!(name, "read");
+                assert_eq!(args["path"], "README.md");
+            }
+            _ => panic!("Expected tool call block"),
+        }
+    }
+
+    #[test]
+    fn parse_legacy_snake_case_assistant_blocks() {
+        let json = r#"{"type":"message","timestamp":"2024-01-15T10:30:00Z","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"thinking","text":"Need a file read","signature":"sig-1"},{"type":"tool_call","id":"call_1","name":"read","args":{"path":"README.md"}}],"timestamp":0}}"#;
+        let entry: SessionEntry = serde_json::from_str(json).unwrap();
+
+        let SessionEntry::Message(msg) = entry else {
+            panic!("Expected Message entry");
+        };
+        let AppMessage::Assistant {
+            content,
+            stop_reason,
+            ..
+        } = msg.message
+        else {
+            panic!("Expected assistant message");
+        };
+
+        assert_eq!(stop_reason.as_deref(), Some("tool_use"));
+        assert!(matches!(content[0], ContentBlock::Thinking { .. }));
+        assert!(matches!(content[1], ContentBlock::ToolCall { .. }));
+    }
+
+    #[test]
+    fn parse_typescript_tool_result_message() {
+        let json = r#"{"type":"message","timestamp":"2024-01-15T10:30:00Z","message":{"role":"toolResult","toolCallId":"call_1","toolName":"read","content":[{"type":"text","text":"file contents"}],"details":{"path":"README.md"},"isError":false,"timestamp":0}}"#;
+        let entry: SessionEntry = serde_json::from_str(json).unwrap();
+
+        let SessionEntry::Message(msg) = entry else {
+            panic!("Expected Message entry");
+        };
+        let AppMessage::ToolResult {
+            tool_call_id,
+            tool_name,
+            content,
+            is_error,
+            ..
+        } = msg.message
+        else {
+            panic!("Expected tool result message");
+        };
+
+        assert_eq!(tool_call_id, "call_1");
+        assert_eq!(tool_name, "read");
+        assert_eq!(content, "file contents");
+        assert!(!is_error);
     }
 
     #[test]

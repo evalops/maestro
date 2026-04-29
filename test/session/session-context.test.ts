@@ -1,11 +1,15 @@
+import type { Stats } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import type { AppMessage } from "../../src/agent/types.js";
 import {
+	buildSessionContextFromEntries,
+	buildSessionFileInfo,
 	extractTextFromContent,
 	generateEntryId,
 	isLikelyCompactionSummary,
 } from "../../src/session/session-context.js";
+import type { SessionEntry } from "../../src/session/types.js";
 
 describe("extractTextFromContent", () => {
 	it("returns string content as-is", () => {
@@ -103,5 +107,115 @@ describe("generateEntryId", () => {
 			expect(existing.has(id)).toBe(false);
 			existing.add(id);
 		}
+	});
+});
+
+const timestamp = "2024-01-15T10:30:00.000Z";
+
+function createTypescriptToolSession(): SessionEntry[] {
+	return [
+		{
+			type: "session",
+			id: "session-1",
+			timestamp,
+			cwd: "/tmp",
+			model: "openai/gpt-5.2",
+			thinkingLevel: "medium",
+		},
+		{
+			type: "message",
+			id: "user-1",
+			parentId: null,
+			timestamp,
+			message: {
+				role: "user",
+				content: "Read README",
+				timestamp: 0,
+			},
+		},
+		{
+			type: "message",
+			id: "assistant-1",
+			parentId: "user-1",
+			timestamp,
+			message: {
+				role: "assistant",
+				api: "openai-responses",
+				provider: "openai",
+				model: "gpt-5.2",
+				usage: {
+					input: 10,
+					output: 4,
+					cacheRead: 2,
+					cacheWrite: 1,
+					cost: {
+						input: 0.1,
+						output: 0.2,
+						cacheRead: 0.01,
+						cacheWrite: 0.02,
+						total: 0.33,
+					},
+				},
+				stopReason: "toolUse",
+				timestamp: 1,
+				content: [
+					{
+						type: "thinking",
+						thinking: "Need a file read",
+						thinkingSignature: "sig-1",
+					},
+					{
+						type: "toolCall",
+						id: "call-1",
+						name: "read",
+						arguments: { path: "README.md" },
+					},
+				],
+			},
+		},
+		{
+			type: "message",
+			id: "tool-1",
+			parentId: "assistant-1",
+			timestamp,
+			message: {
+				role: "toolResult",
+				toolCallId: "call-1",
+				toolName: "read",
+				content: [{ type: "text", text: "file contents" }],
+				isError: false,
+				timestamp: 2,
+			},
+		},
+	];
+}
+
+describe("session context compatibility", () => {
+	it("rebuilds TypeScript-authored tool sessions", () => {
+		const entries = createTypescriptToolSession();
+		const context = buildSessionContextFromEntries(entries);
+
+		expect(context.thinkingLevel).toBe("medium");
+		expect(context.model).toBe("openai/gpt-5.2");
+		expect(context.messages).toHaveLength(3);
+		expect(context.messages[1]).toMatchObject({
+			role: "assistant",
+			stopReason: "toolUse",
+		});
+		expect(context.messageEntries.map((entry) => entry.id)).toEqual([
+			"user-1",
+			"assistant-1",
+			"tool-1",
+		]);
+	});
+
+	it("summarizes TypeScript-authored tool sessions for catalog search", () => {
+		const stats = { birthtime: new Date(timestamp) } as Stats;
+		const info = buildSessionFileInfo(createTypescriptToolSession(), stats);
+
+		expect(info?.messageCount).toBe(3);
+		expect(info?.firstMessage).toBe("Read README");
+		expect(info?.allMessagesText).toContain("[tool call] read");
+		expect(info?.allMessagesText).toContain("file contents");
 	});
 });
