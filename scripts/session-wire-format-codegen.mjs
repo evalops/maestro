@@ -46,6 +46,19 @@ function assertNestedStringMap(value, path) {
 	}
 }
 
+function assertStringArray(value, path) {
+	if (!Array.isArray(value)) {
+		throw new Error(`Session wire manifest ${path} must be an array`);
+	}
+	for (const [index, nested] of value.entries()) {
+		if (typeof nested !== "string" || nested.length === 0) {
+			throw new Error(
+				`Session wire manifest ${path}[${index}] must be a non-empty string`,
+			);
+		}
+	}
+}
+
 function validateManifest(manifest) {
 	if (!isPlainObject(manifest)) {
 		throw new Error("Session wire manifest must be an object");
@@ -59,6 +72,14 @@ function validateManifest(manifest) {
 	assertNestedStringMap(
 		manifest.contentBlockFieldAliases,
 		"contentBlockFieldAliases",
+	);
+	assertStringArray(
+		manifest.compactionContextEntryTypes,
+		"compactionContextEntryTypes",
+	);
+	assertStringArray(
+		manifest.compactionContextExcludedMessageRoles,
+		"compactionContextExcludedMessageRoles",
 	);
 }
 
@@ -98,6 +119,10 @@ export const sessionWireContentBlockTypeAliases = ${renderObject(manifest.conten
 
 export const sessionWireContentBlockFieldAliases = ${renderObject(manifest.contentBlockFieldAliases)} as const;
 
+export const sessionWireCompactionContextEntryTypes = ${renderObject(manifest.compactionContextEntryTypes)} as const;
+
+export const sessionWireCompactionContextExcludedMessageRoles = ${renderObject(manifest.compactionContextExcludedMessageRoles)} as const;
+
 type SessionWireAliasSource = Readonly<Record<string, unknown>>;
 
 function getSessionWireAlias<T extends SessionWireAliasSource>(
@@ -124,6 +149,20 @@ export function canonicalSessionWireContentBlockType(type: string): string {
 export function getSessionWireContentBlockFieldAliases(type: string) {
 \treturn getSessionWireAlias(sessionWireContentBlockFieldAliases, type);
 }
+
+export function isSessionWireCompactionContextEntryType(type: string): boolean {
+\treturn sessionWireCompactionContextEntryTypes.includes(
+\t\ttype as (typeof sessionWireCompactionContextEntryTypes)[number],
+\t);
+}
+
+export function isSessionWireCompactionExcludedMessageRole(
+\trole: string,
+): boolean {
+\treturn sessionWireCompactionContextExcludedMessageRoles.includes(
+\t\trole as (typeof sessionWireCompactionContextExcludedMessageRoles)[number],
+\t);
+}
 `;
 }
 
@@ -132,6 +171,10 @@ const STOP_REASON_ALIASES_PREFIX =
 	"pub const STOP_REASON_ALIASES: &[(&str, &str)] = ";
 const CONTENT_BLOCK_TYPE_ALIASES_PREFIX =
 	"pub const CONTENT_BLOCK_TYPE_ALIASES: &[(&str, &str)] = ";
+const COMPACTION_CONTEXT_ENTRY_TYPES_PREFIX =
+	"pub const COMPACTION_CONTEXT_ENTRY_TYPES: &[&str] = ";
+const COMPACTION_CONTEXT_EXCLUDED_MESSAGE_ROLES_PREFIX =
+	"pub const COMPACTION_CONTEXT_EXCLUDED_MESSAGE_ROLES: &[&str] = ";
 
 function toRustArray(
 	entries,
@@ -192,6 +235,38 @@ function toRustMatchArms(entries) {
 	].join("\n");
 }
 
+function toRustStringArray(values, prefixLength = 0) {
+	if (values.length === 0) {
+		return "&[]";
+	}
+	const inline = `&[${values.map((value) => JSON.stringify(value)).join(", ")}]`;
+	if (prefixLength + inline.length + ";".length <= RUST_MAX_WIDTH) {
+		return inline;
+	}
+	return `&[\n${values
+		.map((value) => `    ${JSON.stringify(value)},`)
+		.join("\n")}\n]`;
+}
+
+function toRustStringMatcher(functionName, argumentName, values) {
+	if (values.length === 0) {
+		return `#[must_use]
+pub fn ${functionName}(_${argumentName}: &str) -> bool {
+    false
+}`;
+	}
+	const pattern = values
+		.map((value) => `        ${JSON.stringify(value)}`)
+		.join("\n        | ");
+	return `#[must_use]
+pub fn ${functionName}(${argumentName}: &str) -> bool {
+    matches!(
+        ${argumentName},
+${pattern}
+    )
+}`;
+}
+
 function renderRust(manifest) {
 	const stopAliases = Object.entries(manifest.stopReasonAliases ?? {});
 	const contentBlockTypeAliases = Object.entries(
@@ -201,6 +276,10 @@ function renderRust(manifest) {
 		manifest.contentBlockFieldAliases ?? {},
 	);
 	const fieldAliases = Object.entries(manifest.fieldAliases ?? {});
+	const compactionContextEntryTypes =
+		manifest.compactionContextEntryTypes ?? [];
+	const compactionContextExcludedMessageRoles =
+		manifest.compactionContextExcludedMessageRoles ?? [];
 	const stopReasonMatchArms = [
 		...stopAliases.map(
 			([from, to]) => `        ${JSON.stringify(from)} => ${JSON.stringify(to)},`,
@@ -230,6 +309,16 @@ pub const CONTENT_BLOCK_FIELD_ALIASES: &[(&str, &[(&str, &str)])] = ${toRustNest
 
 pub const FIELD_ALIASES: &[(&str, &[(&str, &str)])] = ${toRustNestedArray(fieldAliases)};
 
+${COMPACTION_CONTEXT_ENTRY_TYPES_PREFIX}${toRustStringArray(
+		compactionContextEntryTypes,
+		COMPACTION_CONTEXT_ENTRY_TYPES_PREFIX.length,
+	)};
+
+${COMPACTION_CONTEXT_EXCLUDED_MESSAGE_ROLES_PREFIX}${toRustStringArray(
+		compactionContextExcludedMessageRoles,
+		COMPACTION_CONTEXT_EXCLUDED_MESSAGE_ROLES_PREFIX.length,
+	)};
+
 #[must_use]
 pub fn canonical_stop_reason(reason: &str) -> &str {
     match reason {
@@ -253,10 +342,14 @@ ${toRustMatchArms(contentBlockFieldAliases)}
 
 #[must_use]
 pub fn field_aliases(section: &str) -> &'static [(&'static str, &'static str)] {
-    match section {
+	match section {
 ${toRustMatchArms(fieldAliases)}
     }
 }
+
+${toRustStringMatcher("is_compaction_context_entry_type", "entry_type", compactionContextEntryTypes)}
+
+${toRustStringMatcher("is_compaction_context_excluded_message_role", "role", compactionContextExcludedMessageRoles)}
 `;
 }
 
@@ -285,19 +378,125 @@ function formatTs(source, outputPath) {
 	}
 }
 
+function removeRustTrailingCommasOutsideStrings(source) {
+	let output = "";
+	let inString = false;
+	let escaped = false;
+	for (let index = 0; index < source.length; index += 1) {
+		const char = source[index];
+		if (inString) {
+			output += char;
+			if (escaped) {
+				escaped = false;
+			} else if (char === "\\") {
+				escaped = true;
+			} else if (char === '"') {
+				inString = false;
+			}
+			continue;
+		}
+		if (char === '"') {
+			inString = true;
+			output += char;
+			continue;
+		}
+		if (char === "," && /[\])}]/.test(source[index + 1] ?? "")) {
+			continue;
+		}
+		output += char;
+	}
+	return output;
+}
+
+function stripRustWhitespaceOutsideStrings(source) {
+	let output = "";
+	let inString = false;
+	let escaped = false;
+	for (const char of source) {
+		if (inString) {
+			output += char;
+			if (escaped) {
+				escaped = false;
+			} else if (char === "\\") {
+				escaped = true;
+			} else if (char === '"') {
+				inString = false;
+			}
+			continue;
+		}
+		if (char === '"') {
+			inString = true;
+			output += char;
+			continue;
+		}
+		if (!/\s/.test(char)) {
+			output += char;
+		}
+	}
+	return removeRustTrailingCommasOutsideStrings(output);
+}
+
+function rustGeneratedMatches(current, expected, { rustfmtAvailable }) {
+	if (rustfmtAvailable) {
+		return current === expected;
+	}
+	return (
+		stripRustWhitespaceOutsideStrings(current) ===
+		stripRustWhitespaceOutsideStrings(expected)
+	);
+}
+
+function formatRust(source, outputPath, { check = false } = {}) {
+	const tempDir = mkdtempSync(join(dirname(outputPath), ".session-wire-codegen-"));
+	const tempPath = join(tempDir, "wire_format_generated.rs");
+	try {
+		writeFileSync(tempPath, source, "utf8");
+		const rustfmt = process.env.SESSION_WIRE_FORMAT_RUSTFMT ?? "rustfmt";
+		const result = spawnSync(rustfmt, [tempPath], {
+			cwd: rootDir,
+			encoding: "utf8",
+		});
+		if (result.error?.code === "ENOENT") {
+			if (!check) {
+				throw new Error(
+					`${rustfmt} is required to write generated Rust session wire output. Install rustfmt or run with --check.`,
+				);
+			}
+			return { content: source, rustfmtAvailable: false };
+		}
+		if (result.error) {
+			throw result.error;
+		}
+		if (result.status !== 0) {
+			throw new Error(
+				`Failed to format generated Rust session wire file: ${result.stderr || result.stdout}`,
+			);
+		}
+		return { content: readFileSync(tempPath, "utf8"), rustfmtAvailable: true };
+	} finally {
+		rmSync(tempDir, { recursive: true, force: true });
+	}
+}
+
 async function main() {
 	const check = process.argv.includes("--check");
 	const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
 	validateManifest(manifest);
 	const rustSource = renderRust(manifest);
+	const rustOutput = formatRust(rustSource, rustOutputPath, { check });
 	const targets = [
 		{
 			path: tsOutputPath,
 			content: formatTs(renderTs(manifest), tsOutputPath),
+			matches: (current, expected) => current === expected,
 		},
 		{
 			path: rustOutputPath,
-			content: rustSource,
+			content: rustOutput.content,
+			matches: (current, expected) =>
+				rustGeneratedMatches(current, expected, {
+					rustfmtAvailable: rustOutput.rustfmtAvailable,
+				}),
 		},
 	];
 
@@ -305,7 +504,7 @@ async function main() {
 		let failed = false;
 		for (const target of targets) {
 			const current = await readFile(target.path, "utf8").catch(() => null);
-			if (current !== target.content) {
+			if (current === null || !target.matches(current, target.content)) {
 				failed = true;
 				console.error(
 					`Session wire generated file is out of date: ${target.path}`,

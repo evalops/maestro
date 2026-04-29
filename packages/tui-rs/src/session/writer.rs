@@ -208,15 +208,19 @@ mod tests {
         let path = dir.path().join("test.jsonl");
 
         let header = SessionHeader {
+            version: Some(2),
             id: "test123".to_string(),
             timestamp: "2024-01-15T10:30:00Z".to_string(),
             cwd: "/tmp".to_string(),
             model: "anthropic/claude-3".to_string(),
+            subject: None,
             model_metadata: None,
             thinking_level: Default::default(),
             system_prompt: None,
+            prompt_metadata: None,
             tools: vec![],
             branched_from: None,
+            parent_session: None,
         };
 
         let mut writer = SessionWriter::create(&path, header).unwrap();

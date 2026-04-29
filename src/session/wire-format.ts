@@ -3,6 +3,8 @@ import {
 	canonicalSessionWireContentBlockType,
 	canonicalSessionWireStopReason,
 	getSessionWireContentBlockFieldAliases,
+	isSessionWireCompactionContextEntryType,
+	isSessionWireCompactionExcludedMessageRole,
 	sessionWireFieldAliases,
 } from "./wire-format.generated.js";
 
@@ -90,6 +92,12 @@ export function normalizeSessionEntry(entry: unknown): SessionEntry | null {
 			renameOwnProperties(record, sessionWireFieldAliases.session);
 			normalizeModelMetadata(record.modelMetadata);
 			break;
+		case "session_meta":
+			renameOwnProperties(record, sessionWireFieldAliases.sessionMeta);
+			break;
+		case "attachment_extract":
+			renameOwnProperties(record, sessionWireFieldAliases.attachmentExtract);
+			break;
 		case "message":
 			normalizeSessionMessage(record.message);
 			break;
@@ -103,10 +111,44 @@ export function normalizeSessionEntry(entry: unknown): SessionEntry | null {
 		case "compaction":
 			renameOwnProperties(record, sessionWireFieldAliases.compaction);
 			break;
+		case "branch_summary":
+			renameOwnProperties(record, sessionWireFieldAliases.branchSummary);
+			break;
+		case "custom":
+			renameOwnProperties(record, sessionWireFieldAliases.custom);
+			break;
+		case "custom_message":
+			renameOwnProperties(record, sessionWireFieldAliases.customMessage);
+			normalizeMessageContentBlocks(record.content);
+			break;
+		case "label":
+			renameOwnProperties(record, sessionWireFieldAliases.label);
+			break;
 		default:
 			break;
 	}
 	return record as unknown as SessionEntry;
+}
+
+export function isSessionWireCompactionContextEntry(entry: unknown): boolean {
+	if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+		return false;
+	}
+	const record = entry as Record<string, unknown>;
+	if (record.type === "message") {
+		const message = record.message;
+		if (message && typeof message === "object" && !Array.isArray(message)) {
+			const role = (message as Record<string, unknown>).role;
+			return (
+				typeof role !== "string" ||
+				!isSessionWireCompactionExcludedMessageRole(role)
+			);
+		}
+	}
+	return (
+		typeof record.type === "string" &&
+		isSessionWireCompactionContextEntryType(record.type)
+	);
 }
 
 export function parseSessionEntry(line: string): SessionEntry {

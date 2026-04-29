@@ -312,6 +312,38 @@ describe("Session Migration", () => {
 			// Index 2 should be branch_summary (index 3 in full entries array)
 			expect(compaction.firstKeptEntryId).toBe(migrated[3].id);
 		});
+
+		it("preserves tool results in legacy v1 compaction indexes", async () => {
+			const entries = [
+				createV1SessionHeader("session-1"),
+				createV1MessageEntry("user", "Message 0"),
+				{
+					type: "message",
+					timestamp: new Date().toISOString(),
+					message: {
+						role: "toolResult",
+						toolCallId: "call-1",
+						toolName: "read",
+						content: [{ type: "text", text: "Tool output" }],
+						isError: false,
+						timestamp: Date.now(),
+					},
+				},
+				createV1MessageEntry("assistant", "Message 1"),
+				createV1CompactionEntry(1),
+			];
+			const filePath = writeSessionFile(
+				sessionDir,
+				"test-session.jsonl",
+				entries,
+			);
+
+			const { runSessionMigration } = await importMigrationModule();
+			await runSessionMigration();
+
+			const migrated = readSessionEntries(filePath);
+			expect(migrated[4].firstKeptEntryId).toBe(migrated[2].id);
+		});
 	});
 
 	describe("runSessionMigration", () => {

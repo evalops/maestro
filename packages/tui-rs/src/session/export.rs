@@ -689,15 +689,19 @@ mod tests {
 
     fn sample_header() -> SessionHeader {
         SessionHeader {
+            version: Some(2),
             id: "test-123".to_string(),
             timestamp: "2024-01-15T10:30:00Z".to_string(),
             cwd: "/tmp".to_string(),
             model: "claude-sonnet-4".to_string(),
+            subject: None,
             model_metadata: None,
             thinking_level: ThinkingLevel::Medium,
             system_prompt: None,
+            prompt_metadata: None,
             tools: vec![],
             branched_from: None,
+            parent_session: None,
         }
     }
 

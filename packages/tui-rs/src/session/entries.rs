@@ -270,6 +270,18 @@ pub enum SessionEntry {
     ///
     /// Recorded when the conversation history is summarized to fit within token limits.
     Compaction(CompactionEntry),
+
+    /// Summary of a branch that was folded back into this timeline.
+    BranchSummary(BranchSummaryEntry),
+
+    /// Extension entry with custom structured data.
+    Custom(CustomEntry),
+
+    /// Hook or extension-authored message included in session context.
+    CustomMessage(CustomMessageEntry),
+
+    /// User-facing label attached to another tree entry.
+    Label(LabelEntry),
 }
 
 /// Session initialization parameters (first entry in every session file).
@@ -294,6 +306,10 @@ pub enum SessionEntry {
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionHeader {
+    /// Session schema version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u32>,
+
     /// Unique session identifier (typically a UUID v4).
     ///
     /// Used to reference this session in commands and file lookups.
@@ -312,7 +328,12 @@ pub struct SessionHeader {
     /// Model identifier in `provider/model-id` format.
     ///
     /// Examples: "anthropic/claude-3-5-sonnet-20241022", "openai/gpt-4"
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub model: String,
+
+    /// Optional user-facing subject/title seed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
 
     /// Detailed model metadata (provider name, context window, etc.).
     ///
@@ -335,6 +356,14 @@ pub struct SessionHeader {
     #[serde(rename = "systemPrompt", alias = "system_prompt")]
     pub system_prompt: Option<String>,
 
+    /// Prompt service metadata carried by TypeScript-authored sessions.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "promptMetadata",
+        alias = "prompt_metadata"
+    )]
+    pub prompt_metadata: Option<serde_json::Value>,
+
     /// List of tools available to the assistant.
     ///
     /// Empty list is omitted from JSON to reduce file size.
@@ -347,6 +376,14 @@ pub struct SessionHeader {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "branchedFrom", alias = "branched_from")]
     pub branched_from: Option<String>,
+
+    /// Parent session ID for imported or branched sessions.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "parentSession",
+        alias = "parent_session"
+    )]
+    pub parent_session: Option<String>,
 }
 
 /// Model metadata
@@ -486,9 +523,9 @@ pub struct MessageEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttachmentExtract {
     pub timestamp: String,
-    #[serde(rename = "attachmentId")]
+    #[serde(rename = "attachmentId", alias = "attachment_id")]
     pub attachment_id: String,
-    #[serde(rename = "extractedText")]
+    #[serde(rename = "extractedText", alias = "extracted_text")]
     pub extracted_text: String,
 }
 
@@ -731,6 +768,14 @@ pub enum ContentBlock {
     Image {
         #[serde(skip_serializing_if = "Option::is_none")]
         source: Option<ImageSource>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        data: Option<String>,
+        #[serde(
+            rename = "mimeType",
+            alias = "mime_type",
+            skip_serializing_if = "Option::is_none"
+        )]
+        mime_type: Option<String>,
     },
 }
 
@@ -848,6 +893,18 @@ pub struct SessionMeta {
     pub timestamp: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "resumeSummary",
+        alias = "resume_summary"
+    )]
+    pub resume_summary: Option<String>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "memoryExtractionHash",
+        alias = "memory_extraction_hash"
+    )]
+    pub memory_extraction_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -892,6 +949,88 @@ pub struct CompactionEntry {
         skip_serializing_if = "Option::is_none"
     )]
     pub custom_instructions: Option<String>,
+}
+
+/// Summary of a previously explored branch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BranchSummaryEntry {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(
+        rename = "parentId",
+        alias = "parent_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parent_id: Option<String>,
+    pub timestamp: String,
+    #[serde(rename = "fromId", alias = "from_id")]
+    pub from_id: String,
+    pub summary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
+    #[serde(rename = "fromHook", alias = "from_hook", default)]
+    pub from_hook: bool,
+}
+
+/// Extension-owned structured entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomEntry {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(
+        rename = "parentId",
+        alias = "parent_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parent_id: Option<String>,
+    pub timestamp: String,
+    #[serde(rename = "customType", alias = "custom_type")]
+    pub custom_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
+}
+
+/// Extension-owned message that TypeScript can include in context.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomMessageEntry {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(
+        rename = "parentId",
+        alias = "parent_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parent_id: Option<String>,
+    pub timestamp: String,
+    #[serde(rename = "customType", alias = "custom_type")]
+    pub custom_type: String,
+    pub content: MessageContent,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
+    #[serde(default = "default_true")]
+    pub display: bool,
+}
+
+/// Label attached to a tree entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LabelEntry {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(
+        rename = "parentId",
+        alias = "parent_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parent_id: Option<String>,
+    pub timestamp: String,
+    #[serde(rename = "targetId", alias = "target_id")]
+    pub target_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Computed session statistics (not serialized to JSONL).
@@ -945,6 +1084,8 @@ impl SessionStats {
 mod tests {
     use super::super::wire_format_generated::{
         canonical_content_block_type, content_block_field_aliases, field_aliases,
+        is_compaction_context_entry_type, is_compaction_context_excluded_message_role,
+        COMPACTION_CONTEXT_ENTRY_TYPES, COMPACTION_CONTEXT_EXCLUDED_MESSAGE_ROLES,
         CONTENT_BLOCK_FIELD_ALIASES, CONTENT_BLOCK_TYPE_ALIASES, FIELD_ALIASES,
         STOP_REASON_ALIASES,
     };
@@ -987,7 +1128,18 @@ mod tests {
             }),
             "thinkingLevel" => json!("high"),
             "systemPrompt" => json!("Persisted system"),
+            "promptMetadata" => json!({
+                "name": "system",
+                "label": "System",
+                "hash": "hash-1",
+                "source": "service"
+            }),
             "branchedFrom" => json!("parent-session"),
+            "parentSession" => json!("root-session"),
+            "resumeSummary" => json!("Continue from the test"),
+            "memoryExtractionHash" => json!("abc123"),
+            "attachmentId" => json!("attachment-1"),
+            "extractedText" => json!("extracted text"),
             "stopReason" => json!("tool_use"),
             "toolCallId" => json!("call-1"),
             "toolName" => json!("read"),
@@ -996,6 +1148,10 @@ mod tests {
             "firstKeptEntryIndex" => json!(1),
             "tokensBefore" => json!(1234),
             "customInstructions" => json!("keep tool context"),
+            "fromId" => json!("branch-root"),
+            "fromHook" => json!(true),
+            "customType" => json!("hook"),
+            "targetId" => json!("message-1"),
             "arguments" => json!({ "path": "README.md" }),
             "thinking" => json!("Need a file read"),
             "thinkingSignature" => json!("sig-1"),
@@ -1256,6 +1412,24 @@ mod tests {
                     let serialized = serialized_entry(Value::Object(session));
                     assert_serialized_uses_canonical_fields(&serialized, aliases);
                 }
+                "sessionMeta" => {
+                    let mut entry = as_object(json!({
+                        "type": "session_meta",
+                        "timestamp": "2024-01-15T10:30:00Z"
+                    }));
+                    insert_alias_fields(&mut entry, aliases);
+                    let serialized = serialized_entry(Value::Object(entry));
+                    assert_serialized_uses_canonical_fields(&serialized, aliases);
+                }
+                "attachmentExtract" => {
+                    let mut entry = as_object(json!({
+                        "type": "attachment_extract",
+                        "timestamp": "2024-01-15T10:30:00Z"
+                    }));
+                    insert_alias_fields(&mut entry, aliases);
+                    let serialized = serialized_entry(Value::Object(entry));
+                    assert_serialized_uses_canonical_fields(&serialized, aliases);
+                }
                 "assistantMessage" => {
                     let mut message = as_object(json!({
                         "role": "assistant",
@@ -1315,9 +1489,70 @@ mod tests {
                     let serialized = serialized_entry(Value::Object(entry));
                     assert_serialized_uses_canonical_fields(&serialized, aliases);
                 }
+                "branchSummary" => {
+                    let mut entry = as_object(json!({
+                        "type": "branch_summary",
+                        "id": "branch-summary-1",
+                        "parentId": "message-1",
+                        "timestamp": "2024-01-15T10:30:00Z",
+                        "summary": "Branch result"
+                    }));
+                    insert_alias_fields(&mut entry, aliases);
+                    let serialized = serialized_entry(Value::Object(entry));
+                    assert_serialized_uses_canonical_fields(&serialized, aliases);
+                }
+                "custom" => {
+                    let mut entry = as_object(json!({
+                        "type": "custom",
+                        "id": "custom-1",
+                        "parentId": "message-1",
+                        "timestamp": "2024-01-15T10:30:00Z"
+                    }));
+                    insert_alias_fields(&mut entry, aliases);
+                    let serialized = serialized_entry(Value::Object(entry));
+                    assert_serialized_uses_canonical_fields(&serialized, aliases);
+                }
+                "customMessage" => {
+                    let mut entry = as_object(json!({
+                        "type": "custom_message",
+                        "id": "custom-message-1",
+                        "parentId": "message-1",
+                        "timestamp": "2024-01-15T10:30:00Z",
+                        "content": "Hook content",
+                        "display": true
+                    }));
+                    insert_alias_fields(&mut entry, aliases);
+                    let serialized = serialized_entry(Value::Object(entry));
+                    assert_serialized_uses_canonical_fields(&serialized, aliases);
+                }
+                "label" => {
+                    let mut entry = as_object(json!({
+                        "type": "label",
+                        "id": "label-1",
+                        "parentId": "message-1",
+                        "timestamp": "2024-01-15T10:30:00Z",
+                        "label": "Interesting"
+                    }));
+                    insert_alias_fields(&mut entry, aliases);
+                    let serialized = serialized_entry(Value::Object(entry));
+                    assert_serialized_uses_canonical_fields(&serialized, aliases);
+                }
                 other => panic!("generated field alias test missing section {other}"),
             }
         }
+    }
+
+    #[test]
+    fn generated_compaction_context_manifest_matches_rust_helpers() {
+        for entry_type in COMPACTION_CONTEXT_ENTRY_TYPES {
+            assert!(is_compaction_context_entry_type(entry_type));
+        }
+        assert!(!is_compaction_context_entry_type("tool_result"));
+
+        for role in COMPACTION_CONTEXT_EXCLUDED_MESSAGE_ROLES {
+            assert!(is_compaction_context_excluded_message_role(role));
+        }
+        assert!(!is_compaction_context_excluded_message_role("assistant"));
     }
 
     #[test]
