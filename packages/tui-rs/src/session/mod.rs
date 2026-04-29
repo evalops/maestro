@@ -147,6 +147,7 @@ mod entries;
 mod export;
 mod manager;
 mod reader;
+mod wire_format_generated;
 mod writer;
 
 pub use branching::{

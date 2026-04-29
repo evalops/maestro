@@ -181,6 +181,7 @@
 //! };
 //! ```
 
+use super::wire_format_generated::canonical_stop_reason;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
@@ -202,15 +203,6 @@ where
         Value::Null => String::new(),
         other => other.to_string(),
     })
-}
-
-fn canonical_stop_reason(reason: &str) -> &str {
-    match reason {
-        "tool_use" | "tool_calls" => "toolUse",
-        "max_tokens" => "length",
-        "end_turn" | "stop_sequence" => "stop",
-        other => other,
-    }
 }
 
 fn serialize_stop_reason<S>(value: &Option<String>, serializer: S) -> Result<S::Ok, S::Error>

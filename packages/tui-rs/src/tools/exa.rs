@@ -364,6 +364,33 @@ pub async fn codesearch(args: Value) -> ToolResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static EXA_API_KEY_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvVarRestore {
+        key: &'static str,
+        original: Option<String>,
+    }
+
+    impl EnvVarRestore {
+        fn capture(key: &'static str) -> Self {
+            Self {
+                key,
+                original: std::env::var(key).ok(),
+            }
+        }
+    }
+
+    impl Drop for EnvVarRestore {
+        fn drop(&mut self) {
+            if let Some(value) = &self.original {
+                std::env::set_var(self.key, value);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
 
     // ========================================================================
     // normalize_cost_dollars Tests
@@ -511,34 +538,27 @@ mod tests {
 
     #[test]
     fn test_get_exa_api_key_not_set() {
-        // Temporarily unset the key if it exists
-        let original = std::env::var("EXA_API_KEY").ok();
+        let _lock = EXA_API_KEY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let _restore = EnvVarRestore::capture("EXA_API_KEY");
         std::env::remove_var("EXA_API_KEY");
 
         let result = get_exa_api_key();
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("EXA_API_KEY"));
-
-        // Restore if it was set
-        if let Some(key) = original {
-            std::env::set_var("EXA_API_KEY", key);
-        }
     }
 
     #[test]
     fn test_get_exa_api_key_set() {
-        let original = std::env::var("EXA_API_KEY").ok();
+        let _lock = EXA_API_KEY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        let _restore = EnvVarRestore::capture("EXA_API_KEY");
         std::env::set_var("EXA_API_KEY", "test-key-123");
 
         let result = get_exa_api_key();
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "test-key-123");
-
-        // Restore original state
-        if let Some(key) = original {
-            std::env::set_var("EXA_API_KEY", key);
-        } else {
-            std::env::remove_var("EXA_API_KEY");
-        }
     }
 }

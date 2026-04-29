@@ -239,6 +239,21 @@ describe("Rust-authored session compatibility", () => {
 		}
 	});
 
+	it("leaves prototype-named alias values unchanged", () => {
+		const entry = tryParseSessionEntry(
+			`{"type":"message","timestamp":"${timestamp}","message":{"role":"assistant","stop_reason":"constructor","content":[{"type":"constructor","text":"kept"}],"timestamp":1}}`,
+		);
+
+		expect(entry).toMatchObject({
+			type: "message",
+			message: {
+				role: "assistant",
+				stopReason: "constructor",
+				content: [{ type: "constructor", text: "kept" }],
+			},
+		});
+	});
+
 	it("summarizes legacy Rust tool sessions without losing tool calls", () => {
 		const stats = { birthtime: new Date(timestamp) } as Stats;
 		const info = buildSessionFileInfo(parseRustAuthoredToolSession(), stats);
