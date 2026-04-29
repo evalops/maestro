@@ -1,16 +1,14 @@
 #!/usr/bin/env node
 
-import { spawnSync } from "node:child_process";
-import {
-	existsSync,
-	mkdtempSync,
-	readFileSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { readFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+	checkOrWriteGeneratedTargets,
+	formatRustWithRustfmt,
+	formatTsWithBiome,
+	rustGeneratedMatches,
+} from "./codegen-utils.mjs";
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const manifestPath = resolve(rootDir, "src/session/wire-format.manifest.json");
@@ -353,141 +351,26 @@ ${toRustStringMatcher("is_compaction_context_excluded_message_role", "role", com
 `;
 }
 
-function formatTs(source, outputPath) {
-	const tempDir = mkdtempSync(join(dirname(outputPath), ".session-wire-codegen-"));
-	const tempPath = join(tempDir, "wire-format.generated.ts");
-	try {
-		writeFileSync(tempPath, source, "utf8");
-		const localBiome = join(rootDir, "node_modules/.bin/biome");
-		const command = existsSync(localBiome) ? localBiome : "bunx";
-		const args = existsSync(localBiome)
-			? ["check", "--write", "--unsafe", tempPath]
-			: ["@biomejs/biome@1.9.4", "check", "--write", "--unsafe", tempPath];
-		const result = spawnSync(command, args, {
-			cwd: rootDir,
-			encoding: "utf8",
-		});
-		if (result.status !== 0) {
-			throw new Error(
-				`Failed to format generated TypeScript session wire file: ${result.stderr || result.stdout}`,
-			);
-		}
-		return readFileSync(tempPath, "utf8");
-	} finally {
-		rmSync(tempDir, { recursive: true, force: true });
-	}
-}
-
-function removeRustTrailingCommasOutsideStrings(source) {
-	let output = "";
-	let inString = false;
-	let escaped = false;
-	for (let index = 0; index < source.length; index += 1) {
-		const char = source[index];
-		if (inString) {
-			output += char;
-			if (escaped) {
-				escaped = false;
-			} else if (char === "\\") {
-				escaped = true;
-			} else if (char === '"') {
-				inString = false;
-			}
-			continue;
-		}
-		if (char === '"') {
-			inString = true;
-			output += char;
-			continue;
-		}
-		if (char === "," && /[\])}]/.test(source[index + 1] ?? "")) {
-			continue;
-		}
-		output += char;
-	}
-	return output;
-}
-
-function stripRustWhitespaceOutsideStrings(source) {
-	let output = "";
-	let inString = false;
-	let escaped = false;
-	for (const char of source) {
-		if (inString) {
-			output += char;
-			if (escaped) {
-				escaped = false;
-			} else if (char === "\\") {
-				escaped = true;
-			} else if (char === '"') {
-				inString = false;
-			}
-			continue;
-		}
-		if (char === '"') {
-			inString = true;
-			output += char;
-			continue;
-		}
-		if (!/\s/.test(char)) {
-			output += char;
-		}
-	}
-	return removeRustTrailingCommasOutsideStrings(output);
-}
-
-function rustGeneratedMatches(current, expected, { rustfmtAvailable }) {
-	if (rustfmtAvailable) {
-		return current === expected;
-	}
-	return (
-		stripRustWhitespaceOutsideStrings(current) ===
-		stripRustWhitespaceOutsideStrings(expected)
-	);
-}
-
-function formatRust(source, outputPath, { check = false } = {}) {
-	const tempDir = mkdtempSync(join(dirname(outputPath), ".session-wire-codegen-"));
-	const tempPath = join(tempDir, "wire_format_generated.rs");
-	try {
-		writeFileSync(tempPath, source, "utf8");
-		const rustfmt = process.env.SESSION_WIRE_FORMAT_RUSTFMT ?? "rustfmt";
-		const result = spawnSync(rustfmt, [tempPath], {
-			cwd: rootDir,
-			encoding: "utf8",
-		});
-		if (result.error?.code === "ENOENT") {
-			if (!check) {
-				throw new Error(
-					`${rustfmt} is required to write generated Rust session wire output. Install rustfmt or run with --check.`,
-				);
-			}
-			return { content: source, rustfmtAvailable: false };
-		}
-		if (result.error) {
-			throw result.error;
-		}
-		if (result.status !== 0) {
-			throw new Error(
-				`Failed to format generated Rust session wire file: ${result.stderr || result.stdout}`,
-			);
-		}
-		return { content: readFileSync(tempPath, "utf8"), rustfmtAvailable: true };
-	} finally {
-		rmSync(tempDir, { recursive: true, force: true });
-	}
-}
-
 async function main() {
 	const check = process.argv.includes("--check");
 	const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
 	validateManifest(manifest);
 	const rustSource = renderRust(manifest);
-	const rustOutput = formatRust(rustSource, rustOutputPath, { check });
+	const rustOutput = formatRustWithRustfmt(rustSource, rustOutputPath, {
+		rootDir,
+		label: "generated Rust session wire file",
+		check,
+		envNames: ["SESSION_WIRE_FORMAT_RUSTFMT"],
+		tempPrefix: ".session-wire-codegen-",
+	});
 	const targets = [
 		{
 			path: tsOutputPath,
-			content: formatTs(renderTs(manifest), tsOutputPath),
+			content: formatTsWithBiome(renderTs(manifest), tsOutputPath, {
+				rootDir,
+				label: "generated TypeScript session wire file",
+				tempPrefix: ".session-wire-codegen-",
+			}),
 			matches: (current, expected) => current === expected,
 		},
 		{
@@ -500,27 +383,10 @@ async function main() {
 		},
 	];
 
-	if (check) {
-		let failed = false;
-		for (const target of targets) {
-			const current = await readFile(target.path, "utf8").catch(() => null);
-			if (current === null || !target.matches(current, target.content)) {
-				failed = true;
-				console.error(
-					`Session wire generated file is out of date: ${target.path}`,
-				);
-			}
-		}
-		if (failed) {
-			process.exitCode = 1;
-		}
-		return;
-	}
-
-	for (const target of targets) {
-		await mkdir(dirname(target.path), { recursive: true });
-		await writeFile(target.path, target.content);
-	}
+	await checkOrWriteGeneratedTargets(targets, {
+		check,
+		outOfDateLabel: "Session wire generated file is out of date",
+	});
 }
 
 await main();
