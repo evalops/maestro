@@ -470,6 +470,14 @@ impl ThinkingLevel {
 /// A message entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageEntry {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(
+        rename = "parentId",
+        alias = "parent_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parent_id: Option<String>,
     pub timestamp: String,
     pub message: AppMessage,
 }
@@ -851,10 +859,29 @@ pub struct SessionMeta {
 /// Context compaction entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompactionEntry {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(
+        rename = "parentId",
+        alias = "parent_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parent_id: Option<String>,
     pub timestamp: String,
     pub summary: String,
-    #[serde(rename = "firstKeptEntryIndex", alias = "first_kept_entry_index")]
-    pub first_kept_entry_index: usize,
+    #[serde(
+        rename = "firstKeptEntryId",
+        alias = "first_kept_entry_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub first_kept_entry_id: Option<String>,
+    #[serde(
+        default,
+        rename = "firstKeptEntryIndex",
+        alias = "first_kept_entry_index",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub first_kept_entry_index: Option<usize>,
     #[serde(rename = "tokensBefore", alias = "tokens_before")]
     pub tokens_before: u64,
     #[serde(default)]
@@ -916,7 +943,13 @@ impl SessionStats {
 
 #[cfg(test)]
 mod tests {
+    use super::super::wire_format_generated::{
+        canonical_content_block_type, content_block_field_aliases, field_aliases,
+        CONTENT_BLOCK_FIELD_ALIASES, CONTENT_BLOCK_TYPE_ALIASES, FIELD_ALIASES,
+        STOP_REASON_ALIASES,
+    };
     use super::*;
+    use serde_json::{json, Map, Value};
 
     fn repo_fixture(name: &str) -> String {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -932,6 +965,78 @@ mod tests {
             .filter(|line| !line.trim().is_empty())
             .map(|line| serde_json::from_str(line).unwrap())
             .collect()
+    }
+
+    fn as_object(value: Value) -> Map<String, Value> {
+        match value {
+            Value::Object(object) => object,
+            _ => panic!("expected JSON object"),
+        }
+    }
+
+    fn sample_wire_value(canonical: &str) -> Value {
+        match canonical {
+            "modelId" => json!("gpt-5.2"),
+            "providerName" => json!("OpenAI"),
+            "baseUrl" => json!("https://example.test"),
+            "contextWindow" => json!(100_000),
+            "maxTokens" => json!(4096),
+            "modelMetadata" => json!({
+                "provider": "openai",
+                "modelId": "gpt-5.2"
+            }),
+            "thinkingLevel" => json!("high"),
+            "systemPrompt" => json!("Persisted system"),
+            "branchedFrom" => json!("parent-session"),
+            "stopReason" => json!("tool_use"),
+            "toolCallId" => json!("call-1"),
+            "toolName" => json!("read"),
+            "isError" => json!(true),
+            "firstKeptEntryId" => json!("assistant-1"),
+            "firstKeptEntryIndex" => json!(1),
+            "tokensBefore" => json!(1234),
+            "customInstructions" => json!("keep tool context"),
+            "arguments" => json!({ "path": "README.md" }),
+            "thinking" => json!("Need a file read"),
+            "thinkingSignature" => json!("sig-1"),
+            other => panic!("missing sample value for canonical field {other}"),
+        }
+    }
+
+    fn insert_alias_fields(object: &mut Map<String, Value>, aliases: &[(&str, &str)]) {
+        for &(alias, canonical) in aliases {
+            object.insert(alias.to_string(), sample_wire_value(canonical));
+        }
+    }
+
+    fn assert_serialized_uses_canonical_fields(value: &Value, aliases: &[(&str, &str)]) {
+        for &(alias, canonical) in aliases {
+            assert!(
+                value.get(canonical).is_some(),
+                "missing canonical field {canonical} after parsing alias {alias}"
+            );
+            assert!(
+                value.get(alias).is_none(),
+                "serialized entry kept legacy alias {alias}"
+            );
+        }
+    }
+
+    fn serialized_entry(value: Value) -> Value {
+        let entry: SessionEntry = serde_json::from_value(value).unwrap();
+        serde_json::to_value(entry).unwrap()
+    }
+
+    fn serialized_assistant_block(block: Value) -> Value {
+        serialized_entry(json!({
+            "type": "message",
+            "timestamp": "2024-01-15T10:30:00Z",
+            "message": {
+                "role": "assistant",
+                "content": [block],
+                "timestamp": 0
+            }
+        }))
     }
 
     #[test]
@@ -1064,6 +1169,154 @@ mod tests {
         ] {
             let entries = parse_fixture(fixture);
             assert!(!entries.is_empty(), "fixture {fixture} should not be empty");
+        }
+    }
+
+    #[test]
+    fn generated_stop_reason_aliases_match_rust_serializer() {
+        for &(alias, canonical) in STOP_REASON_ALIASES {
+            let serialized = serialized_entry(json!({
+                "type": "message",
+                "timestamp": "2024-01-15T10:30:00Z",
+                "message": {
+                    "role": "assistant",
+                    "stopReason": alias,
+                    "content": [],
+                    "timestamp": 0
+                }
+            }));
+
+            assert_eq!(serialized["message"]["stopReason"], canonical);
+        }
+    }
+
+    #[test]
+    fn generated_content_block_aliases_match_rust_deserializer() {
+        for &(alias, canonical) in CONTENT_BLOCK_TYPE_ALIASES {
+            assert_eq!(canonical_content_block_type(alias), canonical);
+            let serialized = serialized_assistant_block(json!({
+                "type": alias,
+                "id": "call-1",
+                "name": "read",
+                "arguments": { "path": "README.md" }
+            }));
+
+            assert_eq!(serialized["message"]["content"][0]["type"], canonical);
+        }
+
+        for &(block_type, aliases) in CONTENT_BLOCK_FIELD_ALIASES {
+            assert_eq!(content_block_field_aliases(block_type), aliases);
+            let mut block = match block_type {
+                "toolCall" => as_object(json!({
+                    "type": "toolCall",
+                    "id": "call-1",
+                    "name": "read"
+                })),
+                "thinking" => as_object(json!({
+                    "type": "thinking"
+                })),
+                other => panic!("generated content block alias test missing {other}"),
+            };
+            insert_alias_fields(&mut block, aliases);
+
+            let serialized = serialized_assistant_block(Value::Object(block));
+            let serialized_block = &serialized["message"]["content"][0];
+            assert_serialized_uses_canonical_fields(serialized_block, aliases);
+        }
+    }
+
+    #[test]
+    fn generated_field_aliases_match_rust_deserializer() {
+        for &(section, aliases) in FIELD_ALIASES {
+            assert_eq!(field_aliases(section), aliases);
+
+            match section {
+                "modelMetadata" => {
+                    let mut metadata = as_object(json!({ "provider": "openai" }));
+                    insert_alias_fields(&mut metadata, aliases);
+                    let serialized = serialized_entry(json!({
+                        "type": "session",
+                        "id": "session-1",
+                        "timestamp": "2024-01-15T10:30:00Z",
+                        "cwd": "/tmp",
+                        "model": "openai/gpt-5.2",
+                        "modelMetadata": Value::Object(metadata)
+                    }));
+                    assert_serialized_uses_canonical_fields(&serialized["modelMetadata"], aliases);
+                }
+                "session" => {
+                    let mut session = as_object(json!({
+                        "type": "session",
+                        "id": "session-1",
+                        "timestamp": "2024-01-15T10:30:00Z",
+                        "cwd": "/tmp",
+                        "model": "openai/gpt-5.2"
+                    }));
+                    insert_alias_fields(&mut session, aliases);
+                    let serialized = serialized_entry(Value::Object(session));
+                    assert_serialized_uses_canonical_fields(&serialized, aliases);
+                }
+                "assistantMessage" => {
+                    let mut message = as_object(json!({
+                        "role": "assistant",
+                        "content": [],
+                        "timestamp": 0
+                    }));
+                    insert_alias_fields(&mut message, aliases);
+                    let serialized = serialized_entry(json!({
+                        "type": "message",
+                        "timestamp": "2024-01-15T10:30:00Z",
+                        "message": Value::Object(message)
+                    }));
+                    assert_serialized_uses_canonical_fields(&serialized["message"], aliases);
+                    assert_eq!(serialized["message"]["stopReason"], "toolUse");
+                }
+                "toolResultMessage" => {
+                    let mut message = as_object(json!({
+                        "role": "toolResult",
+                        "content": "file contents",
+                        "timestamp": 0
+                    }));
+                    insert_alias_fields(&mut message, aliases);
+                    let serialized = serialized_entry(json!({
+                        "type": "message",
+                        "timestamp": "2024-01-15T10:30:00Z",
+                        "message": Value::Object(message)
+                    }));
+                    assert_serialized_uses_canonical_fields(&serialized["message"], aliases);
+                }
+                "thinkingLevelChange" => {
+                    let mut entry = as_object(json!({
+                        "type": "thinking_level_change",
+                        "timestamp": "2024-01-15T10:30:00Z"
+                    }));
+                    insert_alias_fields(&mut entry, aliases);
+                    let serialized = serialized_entry(Value::Object(entry));
+                    assert_serialized_uses_canonical_fields(&serialized, aliases);
+                }
+                "modelChange" => {
+                    let mut entry = as_object(json!({
+                        "type": "model_change",
+                        "timestamp": "2024-01-15T10:30:00Z",
+                        "model": "openai/gpt-5.2"
+                    }));
+                    insert_alias_fields(&mut entry, aliases);
+                    let serialized = serialized_entry(Value::Object(entry));
+                    assert_serialized_uses_canonical_fields(&serialized, aliases);
+                }
+                "compaction" => {
+                    let mut entry = as_object(json!({
+                        "type": "compaction",
+                        "timestamp": "2024-01-15T10:30:00Z",
+                        "summary": "Kept the useful work",
+                        "auto": true
+                    }));
+                    insert_alias_fields(&mut entry, aliases);
+                    let serialized = serialized_entry(Value::Object(entry));
+                    assert_serialized_uses_canonical_fields(&serialized, aliases);
+                }
+                other => panic!("generated field alias test missing section {other}"),
+            }
         }
     }
 

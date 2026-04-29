@@ -494,6 +494,7 @@ impl SessionReader {
         let mut model_changes: Vec<ModelChange> = Vec::new();
         let mut compactions: Vec<CompactionEntry> = Vec::new();
         let mut usage_entries: Vec<UsageEntry> = Vec::new();
+        let mut visible_message_ids: Vec<Option<String>> = Vec::new();
 
         for (line_num, line) in reader.lines().enumerate() {
             let line = line?;
@@ -515,6 +516,9 @@ impl SessionReader {
                     header = Some(h);
                 }
                 SessionEntry::Message(m) => {
+                    if !matches!(&m.message, AppMessage::ToolResult { .. }) {
+                        visible_message_ids.push(m.id.clone());
+                    }
                     // Update stats
                     match &m.message {
                         AppMessage::User { .. } => stats.user_messages += 1,
@@ -564,7 +568,22 @@ impl SessionReader {
                 SessionEntry::ModelChange(change) => {
                     model_changes.push(change);
                 }
-                SessionEntry::Compaction(entry) => {
+                SessionEntry::Compaction(mut entry) => {
+                    let first_kept_entry_index = entry
+                        .first_kept_entry_id
+                        .as_deref()
+                        .and_then(|first_kept_entry_id| {
+                            visible_message_ids
+                                .iter()
+                                .position(|id| id.as_deref() == Some(first_kept_entry_id))
+                        })
+                        .or(entry.first_kept_entry_index);
+
+                    if let Some(index) = first_kept_entry_index {
+                        entry.first_kept_entry_index = Some(index);
+                        let keep_from = index.min(visible_message_ids.len());
+                        visible_message_ids.drain(..keep_from);
+                    }
                     compactions.push(entry);
                 }
             }
@@ -704,5 +723,33 @@ mod tests {
         assert_eq!(session.usage_entries.len(), 1);
         assert_eq!(session.usage_entries[0].model, "gpt-5.2");
         assert_eq!(session.usage_entries[0].usage.cache_read, 2);
+    }
+
+    #[test]
+    fn read_typescript_compaction_cut_point_by_entry_id() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, r#"{{"type":"session","id":"test123","timestamp":"2024-01-15T10:30:00Z","cwd":"/tmp","model":"openai/gpt-5.2","thinkingLevel":"medium"}}"#).unwrap();
+        writeln!(file, r#"{{"type":"message","id":"user-1","parentId":null,"timestamp":"2024-01-15T10:30:00Z","message":{{"role":"user","content":"Read README","timestamp":0}}}}"#).unwrap();
+        writeln!(file, r#"{{"type":"message","id":"assistant-1","parentId":"user-1","timestamp":"2024-01-15T10:30:01Z","message":{{"role":"assistant","content":[{{"type":"toolCall","id":"call-1","name":"read","arguments":{{"path":"README.md"}}}}],"timestamp":1}}}}"#).unwrap();
+        writeln!(file, r#"{{"type":"message","id":"tool-1","parentId":"assistant-1","timestamp":"2024-01-15T10:30:02Z","message":{{"role":"toolResult","toolCallId":"call-1","toolName":"read","content":"file contents","isError":false,"timestamp":2}}}}"#).unwrap();
+        writeln!(file, r#"{{"type":"message","id":"assistant-2","parentId":"tool-1","timestamp":"2024-01-15T10:30:03Z","message":{{"role":"assistant","content":[{{"type":"text","text":"Done"}}],"timestamp":3}}}}"#).unwrap();
+        writeln!(file, r#"{{"type":"compaction","id":"compact-1","parentId":"assistant-2","timestamp":"2024-01-15T10:30:04Z","summary":"Kept assistant result","firstKeptEntryId":"assistant-2","tokensBefore":1234,"auto":true}}"#).unwrap();
+        writeln!(file, r#"{{"type":"message","id":"user-2","parentId":"compact-1","timestamp":"2024-01-15T10:30:05Z","message":{{"role":"user","content":"Summarize","timestamp":4}}}}"#).unwrap();
+        writeln!(file, r#"{{"type":"message","id":"assistant-3","parentId":"user-2","timestamp":"2024-01-15T10:30:06Z","message":{{"role":"assistant","content":[{{"type":"text","text":"Summary"}}],"timestamp":5}}}}"#).unwrap();
+        writeln!(file, r#"{{"type":"compaction","id":"compact-2","parentId":"assistant-3","timestamp":"2024-01-15T10:30:07Z","summary":"Kept summary","firstKeptEntryId":"assistant-3","tokensBefore":2345,"auto":true}}"#).unwrap();
+
+        let session = SessionReader::read_file(file.path()).unwrap();
+
+        assert_eq!(session.compactions.len(), 2);
+        assert_eq!(
+            session.compactions[0].first_kept_entry_id.as_deref(),
+            Some("assistant-2")
+        );
+        assert_eq!(session.compactions[0].first_kept_entry_index, Some(2));
+        assert_eq!(
+            session.compactions[1].first_kept_entry_id.as_deref(),
+            Some("assistant-3")
+        );
+        assert_eq!(session.compactions[1].first_kept_entry_index, Some(2));
     }
 }
