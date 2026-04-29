@@ -94,6 +94,13 @@ RUN apk add --no-cache tini git ca-certificates libstdc++ nodejs npm && \
     addgroup --system --gid 1001 appgroup && \
     adduser --system --uid 1001 appuser
 
+# Keep the Rust control plane as the default runtime while preserving the
+# JavaScript migration entrypoint used by the deploy PreSync hook.
+COPY --from=web-builder /app/dist ./dist
+COPY --from=web-builder /app/src/db/migrations ./dist/db/migrations
+COPY --from=web-builder /app/node_modules ./node_modules
+COPY --from=web-builder /app/package.json ./
+COPY --from=web-builder /app/skills ./skills
 COPY --from=web-builder /app/packages/web/dist ./packages/web/dist
 COPY --from=rust-builder /app/target-bin/maestro-control-plane ./bin/maestro-control-plane
 
