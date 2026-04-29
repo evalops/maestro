@@ -7,7 +7,7 @@ export ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY GROQ_API_KEY \
        COMPOSER_MODEL COMPOSER_MODEL_PROVIDER
 
 .PHONY: help setup install build build-all compile run-ts run-rs run-rs-debug \
-        web dev dev-all test test-fast test-coverage lint check fmt fmt-unsafe \
+        web dev dev-all developer-surface-check test test-fast test-coverage lint check fmt fmt-unsafe \
         smoke evals verify clean db-up db-down db-migrate
 
 help: ## Show this help
@@ -52,6 +52,9 @@ dev: ## TS watch mode
 
 dev-all: ## TS watch + test watch
 	npm run dev:all
+
+developer-surface-check: ## Verify local tooling, introspection, and tracing guardrails
+	npm run developer-surface:check
 
 test: ## Full test suite
 	npx nx run maestro:test --skip-nx-cache
