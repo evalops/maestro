@@ -1198,6 +1198,8 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         }
 
         let entry = SessionEntry::Message(MessageEntry {
+            id: None,
+            parent_id: None,
             timestamp: Utc::now().to_rfc3339(),
             message: AppMessage::User {
                 content: MessageContent::Text(content.to_string()),
@@ -1254,6 +1256,8 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             .or_else(|| message.usage.as_ref().map(to_session_usage));
 
         let entry = SessionEntry::Message(MessageEntry {
+            id: None,
+            parent_id: None,
             timestamp: Utc::now().to_rfc3339(),
             message: AppMessage::Assistant {
                 content: blocks,
@@ -1299,6 +1303,8 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         };
 
         let entry = SessionEntry::Message(MessageEntry {
+            id: None,
+            parent_id: None,
             timestamp: Utc::now().to_rfc3339(),
             message: AppMessage::ToolResult {
                 tool_call_id: call_id.to_string(),
@@ -1351,9 +1357,12 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         }
 
         let entry = SessionEntry::Compaction(CompactionEntry {
+            id: None,
+            parent_id: None,
             timestamp: Utc::now().to_rfc3339(),
             summary,
-            first_kept_entry_index,
+            first_kept_entry_id: None,
+            first_kept_entry_index: Some(first_kept_entry_index),
             tokens_before,
             auto,
             custom_instructions,
@@ -4543,11 +4552,14 @@ fn restore_visible_session_messages(state: &mut AppState, session: &ParsedSessio
     }
 
     for compaction in &session.compactions {
-        state.apply_compaction(
-            compaction.summary.clone(),
-            compaction.first_kept_entry_index,
-            parse_rfc3339_system_time(&compaction.timestamp).unwrap_or_else(|_| SystemTime::now()),
-        );
+        if let Some(first_kept_entry_index) = compaction.first_kept_entry_index {
+            state.apply_compaction(
+                compaction.summary.clone(),
+                first_kept_entry_index,
+                parse_rfc3339_system_time(&compaction.timestamp)
+                    .unwrap_or_else(|_| SystemTime::now()),
+            );
+        }
     }
 }
 
@@ -5145,9 +5157,12 @@ mod tests {
             thinking_level_changes: Vec::new(),
             model_changes: Vec::new(),
             compactions: vec![CompactionEntry {
+                id: None,
+                parent_id: None,
                 timestamp: "2026-03-31T12:05:00Z".to_string(),
                 summary: "## Conversation Summary".to_string(),
-                first_kept_entry_index: 4,
+                first_kept_entry_id: None,
+                first_kept_entry_index: Some(4),
                 tokens_before: 1000,
                 auto: true,
                 custom_instructions: None,
@@ -5256,17 +5271,23 @@ mod tests {
             model_changes: Vec::new(),
             compactions: vec![
                 CompactionEntry {
+                    id: None,
+                    parent_id: None,
                     timestamp: "2026-03-31T12:05:00Z".to_string(),
                     summary: "## First Summary".to_string(),
-                    first_kept_entry_index: 4,
+                    first_kept_entry_id: None,
+                    first_kept_entry_index: Some(4),
                     tokens_before: 1000,
                     auto: true,
                     custom_instructions: None,
                 },
                 CompactionEntry {
+                    id: None,
+                    parent_id: None,
                     timestamp: "2026-03-31T12:10:00Z".to_string(),
                     summary: "## Second Summary".to_string(),
-                    first_kept_entry_index: 2,
+                    first_kept_entry_id: None,
+                    first_kept_entry_index: Some(2),
                     tokens_before: 1200,
                     auto: true,
                     custom_instructions: None,

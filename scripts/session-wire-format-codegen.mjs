@@ -1,7 +1,13 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -124,26 +130,85 @@ export function getSessionWireContentBlockFieldAliases(type: string) {
 const RUST_MAX_WIDTH = 100;
 const STOP_REASON_ALIASES_PREFIX =
 	"pub const STOP_REASON_ALIASES: &[(&str, &str)] = ";
+const CONTENT_BLOCK_TYPE_ALIASES_PREFIX =
+	"pub const CONTENT_BLOCK_TYPE_ALIASES: &[(&str, &str)] = ";
 
-function toRustArray(entries, prefixLength = 0) {
+function toRustArray(
+	entries,
+	prefixLength = 0,
+	indent = "",
+	forceMultiline = false,
+) {
 	if (entries.length === 0) {
 		return "&[]";
 	}
 	const inline = `&[${entries
 		.map(([from, to]) => `(${JSON.stringify(from)}, ${JSON.stringify(to)})`)
 		.join(", ")}]`;
-	if (prefixLength + inline.length + ";".length <= RUST_MAX_WIDTH) {
+	if (!forceMultiline && prefixLength + inline.length + ";".length <= RUST_MAX_WIDTH) {
 		return inline;
 	}
+	const itemIndent = `${indent}    `;
 	return `&[\n${entries
-		.map(([from, to]) => `    (${JSON.stringify(from)}, ${JSON.stringify(to)}),`)
-		.join("\n")}\n]`;
+		.map(
+			([from, to]) =>
+				`${itemIndent}(${JSON.stringify(from)}, ${JSON.stringify(to)}),`,
+		)
+		.join("\n")}\n${indent}]`;
+}
+
+function toRustNestedArray(entries) {
+	if (entries.length === 0) {
+		return "&[]";
+	}
+	const renderedEntries = entries.map(([section, aliases]) => {
+		const aliasEntries = Object.entries(aliases ?? {});
+		const aliasArray = toRustArray(
+			aliasEntries,
+			8,
+			"        ",
+			aliasEntries.length > 2,
+		);
+		if (aliasEntries.length <= 1 && section.length <= 16) {
+			return `    (${JSON.stringify(section)}, ${aliasArray}),`;
+		}
+		return `    (\n        ${JSON.stringify(section)},\n        ${aliasArray},\n    ),`;
+	});
+	return `&[\n${renderedEntries.join("\n")}\n]`;
+}
+
+function toRustMatchArms(entries) {
+	return [
+		...entries.map(([key, aliases]) => {
+			const aliasEntries = Object.entries(aliases ?? {});
+			return `        ${JSON.stringify(key)} => ${toRustArray(
+				aliasEntries,
+				8,
+				"        ",
+				aliasEntries.length > 2,
+			)},`;
+		}),
+		"        _ => &[],",
+	].join("\n");
 }
 
 function renderRust(manifest) {
 	const stopAliases = Object.entries(manifest.stopReasonAliases ?? {});
-	const matchArms = [
+	const contentBlockTypeAliases = Object.entries(
+		manifest.contentBlockTypeAliases ?? {},
+	);
+	const contentBlockFieldAliases = Object.entries(
+		manifest.contentBlockFieldAliases ?? {},
+	);
+	const fieldAliases = Object.entries(manifest.fieldAliases ?? {});
+	const stopReasonMatchArms = [
 		...stopAliases.map(
+			([from, to]) => `        ${JSON.stringify(from)} => ${JSON.stringify(to)},`,
+		),
+		"        other => other,",
+	].join("\n");
+	const contentBlockTypeMatchArms = [
+		...contentBlockTypeAliases.map(
 			([from, to]) => `        ${JSON.stringify(from)} => ${JSON.stringify(to)},`,
 		),
 		"        other => other,",
@@ -157,10 +222,39 @@ pub const SESSION_WIRE_FORMAT_VERSION: &str = ${JSON.stringify(manifest.version)
 
 ${STOP_REASON_ALIASES_PREFIX}${toRustArray(stopAliases, STOP_REASON_ALIASES_PREFIX.length)};
 
+${CONTENT_BLOCK_TYPE_ALIASES_PREFIX}${toRustArray(contentBlockTypeAliases, CONTENT_BLOCK_TYPE_ALIASES_PREFIX.length)};
+
+pub const CONTENT_BLOCK_FIELD_ALIASES: &[(&str, &[(&str, &str)])] = ${toRustNestedArray(
+		contentBlockFieldAliases,
+	)};
+
+pub const FIELD_ALIASES: &[(&str, &[(&str, &str)])] = ${toRustNestedArray(fieldAliases)};
+
 #[must_use]
 pub fn canonical_stop_reason(reason: &str) -> &str {
     match reason {
-${matchArms}
+${stopReasonMatchArms}
+    }
+}
+
+#[must_use]
+pub fn canonical_content_block_type(block_type: &str) -> &str {
+    match block_type {
+${contentBlockTypeMatchArms}
+    }
+}
+
+#[must_use]
+pub fn content_block_field_aliases(block_type: &str) -> &'static [(&'static str, &'static str)] {
+    match block_type {
+${toRustMatchArms(contentBlockFieldAliases)}
+    }
+}
+
+#[must_use]
+pub fn field_aliases(section: &str) -> &'static [(&'static str, &'static str)] {
+    match section {
+${toRustMatchArms(fieldAliases)}
     }
 }
 `;
@@ -171,14 +265,15 @@ function formatTs(source, outputPath) {
 	const tempPath = join(tempDir, "wire-format.generated.ts");
 	try {
 		writeFileSync(tempPath, source, "utf8");
-		const result = spawnSync(
-			"bunx",
-			["biome", "check", "--write", "--unsafe", tempPath],
-			{
-				cwd: rootDir,
-				encoding: "utf8",
-			},
-		);
+		const localBiome = join(rootDir, "node_modules/.bin/biome");
+		const command = existsSync(localBiome) ? localBiome : "bunx";
+		const args = existsSync(localBiome)
+			? ["check", "--write", "--unsafe", tempPath]
+			: ["@biomejs/biome@1.9.4", "check", "--write", "--unsafe", tempPath];
+		const result = spawnSync(command, args, {
+			cwd: rootDir,
+			encoding: "utf8",
+		});
 		if (result.status !== 0) {
 			throw new Error(
 				`Failed to format generated TypeScript session wire file: ${result.stderr || result.stdout}`,

@@ -12,6 +12,61 @@ pub const STOP_REASON_ALIASES: &[(&str, &str)] = &[
     ("stop_sequence", "stop"),
 ];
 
+pub const CONTENT_BLOCK_TYPE_ALIASES: &[(&str, &str)] = &[("tool_call", "toolCall")];
+
+pub const CONTENT_BLOCK_FIELD_ALIASES: &[(&str, &[(&str, &str)])] = &[
+    ("toolCall", &[("args", "arguments")]),
+    (
+        "thinking",
+        &[("text", "thinking"), ("signature", "thinkingSignature")],
+    ),
+];
+
+pub const FIELD_ALIASES: &[(&str, &[(&str, &str)])] = &[
+    (
+        "modelMetadata",
+        &[
+            ("model_id", "modelId"),
+            ("provider_name", "providerName"),
+            ("base_url", "baseUrl"),
+            ("context_window", "contextWindow"),
+            ("max_tokens", "maxTokens"),
+        ],
+    ),
+    (
+        "session",
+        &[
+            ("model_metadata", "modelMetadata"),
+            ("thinking_level", "thinkingLevel"),
+            ("system_prompt", "systemPrompt"),
+            ("branched_from", "branchedFrom"),
+        ],
+    ),
+    ("assistantMessage", &[("stop_reason", "stopReason")]),
+    (
+        "toolResultMessage",
+        &[
+            ("tool_call_id", "toolCallId"),
+            ("tool_name", "toolName"),
+            ("is_error", "isError"),
+        ],
+    ),
+    (
+        "thinkingLevelChange",
+        &[("thinking_level", "thinkingLevel")],
+    ),
+    ("modelChange", &[("model_metadata", "modelMetadata")]),
+    (
+        "compaction",
+        &[
+            ("first_kept_entry_id", "firstKeptEntryId"),
+            ("first_kept_entry_index", "firstKeptEntryIndex"),
+            ("tokens_before", "tokensBefore"),
+            ("custom_instructions", "customInstructions"),
+        ],
+    ),
+];
+
 #[must_use]
 pub fn canonical_stop_reason(reason: &str) -> &str {
     match reason {
@@ -21,5 +76,56 @@ pub fn canonical_stop_reason(reason: &str) -> &str {
         "end_turn" => "stop",
         "stop_sequence" => "stop",
         other => other,
+    }
+}
+
+#[must_use]
+pub fn canonical_content_block_type(block_type: &str) -> &str {
+    match block_type {
+        "tool_call" => "toolCall",
+        other => other,
+    }
+}
+
+#[must_use]
+pub fn content_block_field_aliases(block_type: &str) -> &'static [(&'static str, &'static str)] {
+    match block_type {
+        "toolCall" => &[("args", "arguments")],
+        "thinking" => &[("text", "thinking"), ("signature", "thinkingSignature")],
+        _ => &[],
+    }
+}
+
+#[must_use]
+pub fn field_aliases(section: &str) -> &'static [(&'static str, &'static str)] {
+    match section {
+        "modelMetadata" => &[
+            ("model_id", "modelId"),
+            ("provider_name", "providerName"),
+            ("base_url", "baseUrl"),
+            ("context_window", "contextWindow"),
+            ("max_tokens", "maxTokens"),
+        ],
+        "session" => &[
+            ("model_metadata", "modelMetadata"),
+            ("thinking_level", "thinkingLevel"),
+            ("system_prompt", "systemPrompt"),
+            ("branched_from", "branchedFrom"),
+        ],
+        "assistantMessage" => &[("stop_reason", "stopReason")],
+        "toolResultMessage" => &[
+            ("tool_call_id", "toolCallId"),
+            ("tool_name", "toolName"),
+            ("is_error", "isError"),
+        ],
+        "thinkingLevelChange" => &[("thinking_level", "thinkingLevel")],
+        "modelChange" => &[("model_metadata", "modelMetadata")],
+        "compaction" => &[
+            ("first_kept_entry_id", "firstKeptEntryId"),
+            ("first_kept_entry_index", "firstKeptEntryIndex"),
+            ("tokens_before", "tokensBefore"),
+            ("custom_instructions", "customInstructions"),
+        ],
+        _ => &[],
     }
 }
