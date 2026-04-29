@@ -200,6 +200,7 @@ function eventFor(
 			correlation: {
 				...baseCorrelation,
 				agent_run_step_id: stepId,
+				traceparent: fixtureTraceparent(index),
 			},
 			...data,
 		},
@@ -209,6 +210,10 @@ function eventFor(
 			time: plan.time,
 		},
 	);
+}
+
+function fixtureTraceparent(index: number): string {
+	return `00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-${String(index + 1).padStart(16, "0")}-01`;
 }
 
 function buildEvents(): MaestroPlatformReplayFixtureEvent[] {
