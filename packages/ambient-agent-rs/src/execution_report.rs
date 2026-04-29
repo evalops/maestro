@@ -1,6 +1,6 @@
 //! Execution report rendering for ambient pull requests.
 
-use crate::types::*;
+use crate::{text::one_line, types::*};
 
 pub(crate) struct ExecutionReport<'a> {
     event: &'a NormalizedEvent,
@@ -165,10 +165,6 @@ fn change_summary(change: &FileChange) -> String {
 
 fn inline_code(value: &str) -> String {
     value.replace('`', "\\`")
-}
-
-fn one_line(value: &str) -> String {
-    value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[cfg(test)]

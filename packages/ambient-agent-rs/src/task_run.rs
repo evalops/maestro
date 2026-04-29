@@ -1,6 +1,6 @@
 //! Task run accounting for daemon plan execution.
 
-use crate::{cascader::TaskContext, learner::LearnerOutcome, types::*};
+use crate::{cascader::TaskContext, learner::LearnerOutcome, text::one_line, types::*};
 use chrono::Utc;
 
 #[derive(Debug, Clone)]
@@ -131,12 +131,59 @@ impl PlanRunOutcome {
         critique: &CriticResult,
         costs: CostAccounting,
     ) -> Self {
+        let success = critique.approved && result.status == ExecutionStatus::Success;
         Self {
-            success: critique.approved && result.status == ExecutionStatus::Success,
+            success,
             confidence_predicted: critique.confidence,
-            failure_reason: result.error.clone(),
+            failure_reason: if success {
+                None
+            } else {
+                result
+                    .error
+                    .clone()
+                    .or_else(|| execution_failure_reason(result, critique))
+            },
             costs,
         }
+    }
+}
+
+fn execution_failure_reason(result: &ExecutionResult, critique: &CriticResult) -> Option<String> {
+    if result.status != ExecutionStatus::Success {
+        return Some(format!("execution ended with status {:?}", result.status));
+    }
+
+    if critique.approved {
+        return None;
+    }
+
+    let critic_context = critique
+        .issues
+        .iter()
+        .max_by_key(|issue| issue_severity_rank(issue.severity))
+        .map(|issue| {
+            let location = issue
+                .location
+                .as_deref()
+                .map(|location| format!(" at {location}"))
+                .unwrap_or_default();
+            format!(
+                "{:?}/{:?}{location}: {}",
+                issue.severity,
+                issue.issue_type,
+                one_line(&issue.description)
+            )
+        })
+        .unwrap_or_else(|| format!("confidence {:.0}%", critique.confidence * 100.0));
+
+    Some(format!("critic rejected: {critic_context}"))
+}
+
+fn issue_severity_rank(severity: CriticIssueSeverity) -> u8 {
+    match severity {
+        CriticIssueSeverity::Blocker => 3,
+        CriticIssueSeverity::Warning => 2,
+        CriticIssueSeverity::Info => 1,
     }
 }
 
@@ -269,6 +316,111 @@ mod tests {
 
         assert!(!outcome.success);
         assert_eq!(outcome.failure_reason.as_deref(), Some("executor failed"));
+    }
+
+    #[test]
+    fn execution_outcome_records_critic_rejection_reason() {
+        let result = ExecutionResult {
+            status: ExecutionStatus::Success,
+            changes: vec![],
+            test_results: vec![],
+            error: None,
+            logs: vec![],
+        };
+        let critique = CriticResult {
+            approved: false,
+            confidence: 0.55,
+            issues: vec![CriticIssue {
+                severity: CriticIssueSeverity::Blocker,
+                issue_type: CriticIssueType::Security,
+                location: Some("src/auth.rs".to_string()),
+                description: "Hardcoded token detected.\nRemove it.".to_string(),
+            }],
+            suggestions: vec![],
+        };
+
+        let outcome = PlanRunOutcome::from_execution(
+            &result,
+            &critique,
+            CostAccounting::estimate_as_actual(0.2, 0),
+        );
+
+        assert!(!outcome.success);
+        assert_eq!(
+            outcome.failure_reason.as_deref(),
+            Some("critic rejected: Blocker/Security at src/auth.rs: Hardcoded token detected. Remove it.")
+        );
+    }
+
+    #[test]
+    fn execution_outcome_prefers_highest_severity_critic_issue() {
+        let result = ExecutionResult {
+            status: ExecutionStatus::Success,
+            changes: vec![],
+            test_results: vec![],
+            error: None,
+            logs: vec![],
+        };
+        let critique = CriticResult {
+            approved: false,
+            confidence: 0.45,
+            issues: vec![
+                CriticIssue {
+                    severity: CriticIssueSeverity::Warning,
+                    issue_type: CriticIssueType::Style,
+                    location: Some("src/style.rs".to_string()),
+                    description: "Remove debug logging.".to_string(),
+                },
+                CriticIssue {
+                    severity: CriticIssueSeverity::Blocker,
+                    issue_type: CriticIssueType::Correctness,
+                    location: Some("src/lib.rs".to_string()),
+                    description: "Tests still fail.".to_string(),
+                },
+            ],
+            suggestions: vec![],
+        };
+
+        let outcome = PlanRunOutcome::from_execution(
+            &result,
+            &critique,
+            CostAccounting::estimate_as_actual(0.2, 0),
+        );
+
+        assert!(!outcome.success);
+        assert_eq!(
+            outcome.failure_reason.as_deref(),
+            Some("critic rejected: Blocker/Correctness at src/lib.rs: Tests still fail.")
+        );
+    }
+
+    #[test]
+    fn execution_outcome_records_non_success_status_without_error() {
+        let result = ExecutionResult {
+            status: ExecutionStatus::Partial,
+            changes: vec![],
+            test_results: vec![],
+            error: None,
+            logs: vec![],
+        };
+        let critique = CriticResult {
+            approved: true,
+            confidence: 0.95,
+            issues: vec![],
+            suggestions: vec![],
+        };
+
+        let outcome = PlanRunOutcome::from_execution(
+            &result,
+            &critique,
+            CostAccounting::estimate_as_actual(0.2, 0),
+        );
+
+        assert!(!outcome.success);
+        assert_eq!(
+            outcome.failure_reason.as_deref(),
+            Some("execution ended with status Partial")
+        );
     }
 
     #[test]

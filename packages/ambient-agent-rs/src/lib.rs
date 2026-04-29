@@ -51,6 +51,7 @@ pub mod pr_creator;
 pub mod prompt;
 pub mod runtime_config;
 mod task_run;
+mod text;
 pub mod types;
 
 pub use cascader::Cascader;
