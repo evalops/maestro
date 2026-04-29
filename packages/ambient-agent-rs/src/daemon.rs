@@ -585,7 +585,7 @@ impl AmbientDaemon {
                 success: false,
                 confidence_predicted: 0.0,
                 tokens_used: 0,
-                cost_usd: routing.estimated_cost,
+                cost_usd: 0.0,
                 duration_secs: duration,
                 failure_reason: Some(failure_reason),
                 labels: event.labels.clone(),
@@ -1152,7 +1152,7 @@ mod tests {
         let learner_stats = daemon.learner.read().await.get_stats();
         assert_eq!(learner_stats.total_outcomes, 1);
         assert_eq!(learner_stats.overall_success_rate, 0.0);
-        assert!(learner_stats.total_cost > 0.0);
+        assert_eq!(learner_stats.total_cost, 0.0);
         assert!(daemon.checkpoint_mgr.read().await.list_active().is_empty());
     }
 
