@@ -26,6 +26,14 @@ const rustOutputPath = resolve(
 	rootDir,
 	"packages/tui-rs/src/headless/generated_protocol.rs",
 );
+const protocolFixturePath = resolve(
+	rootDir,
+	"packages/contracts/schema/headless/protocol.json",
+);
+const payloadSchemaFixturePath = resolve(
+	rootDir,
+	"packages/contracts/schema/headless/payload-schemas.json",
+);
 
 const protoToExportKey = {
 	ServerRequestType: "serverRequestTypes",
@@ -495,6 +503,10 @@ pub const HEADLESS_FROM_AGENT_MESSAGE_TYPES: &[&str] = ${toRustArray(
 `;
 }
 
+function renderJsonFixture(value) {
+	return `${JSON.stringify(value, null, "\t")}\n`;
+}
+
 async function main() {
 	const check = process.argv.includes("--check");
 	const protocolSpec = buildProtocolSpec(await readFile(protoPath, "utf8"));
@@ -534,6 +546,30 @@ async function main() {
 				rustGeneratedMatches(current, expected, {
 					rustfmtAvailable: rustOutput.rustfmtAvailable,
 				}),
+		},
+		{
+			path: protocolFixturePath,
+			content: formatTsWithBiome(
+				renderJsonFixture(protocolSpec),
+				protocolFixturePath,
+				{
+					rootDir,
+					label: "headless protocol JSON fixture",
+					tempPrefix: ".headless-codegen-",
+				},
+			),
+		},
+		{
+			path: payloadSchemaFixturePath,
+			content: formatTsWithBiome(
+				renderJsonFixture(payloadManifest),
+				payloadSchemaFixturePath,
+				{
+					rootDir,
+					label: "headless payload schema JSON fixture",
+					tempPrefix: ".headless-codegen-",
+				},
+			),
 		},
 	];
 
