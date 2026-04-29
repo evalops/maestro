@@ -1,21 +1,12 @@
 import type { SessionEntry } from "./types.js";
 import {
-	sessionWireContentBlockFieldAliases,
-	sessionWireContentBlockTypeAliases,
+	canonicalSessionWireContentBlockType,
+	canonicalSessionWireStopReason,
+	getSessionWireContentBlockFieldAliases,
 	sessionWireFieldAliases,
-	sessionWireStopReasonAliases,
 } from "./wire-format.generated.js";
 
 type AliasMap = Readonly<Record<string, string>>;
-
-function getOwnProperty<T>(
-	value: Readonly<Record<string, T>>,
-	key: string,
-): T | undefined {
-	return Object.prototype.hasOwnProperty.call(value, key)
-		? value[key]
-		: undefined;
-}
 
 function renameOwnProperty(
 	value: Record<string, unknown>,
@@ -50,7 +41,7 @@ function normalizeModelMetadata(value: unknown): void {
 
 export function normalizeStopReasonValue(value: unknown): unknown {
 	if (typeof value !== "string") return value;
-	return getOwnProperty(sessionWireStopReasonAliases, value) ?? value;
+	return canonicalSessionWireStopReason(value);
 }
 
 function normalizeMessageContentBlocks(content: unknown): void {
@@ -59,14 +50,12 @@ function normalizeMessageContentBlocks(content: unknown): void {
 		if (!block || typeof block !== "object") continue;
 		const record = block as Record<string, unknown>;
 		if (typeof record.type === "string") {
-			record.type =
-				getOwnProperty(sessionWireContentBlockTypeAliases, record.type) ??
-				record.type;
+			record.type = canonicalSessionWireContentBlockType(record.type);
 		}
 		if (typeof record.type !== "string") continue;
 		renameOwnProperties(
 			record,
-			getOwnProperty(sessionWireContentBlockFieldAliases, record.type),
+			getSessionWireContentBlockFieldAliases(record.type),
 		);
 	}
 }

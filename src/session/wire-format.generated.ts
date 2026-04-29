@@ -62,3 +62,26 @@ export const sessionWireContentBlockFieldAliases = {
 		signature: "thinkingSignature",
 	},
 } as const;
+
+type SessionWireAliasSource = Readonly<Record<string, unknown>>;
+
+function getSessionWireAlias<T extends SessionWireAliasSource>(
+	aliases: T,
+	key: string,
+): T[keyof T] | undefined {
+	return Object.prototype.hasOwnProperty.call(aliases, key)
+		? aliases[key as keyof T]
+		: undefined;
+}
+
+export function canonicalSessionWireStopReason(reason: string): string {
+	return getSessionWireAlias(sessionWireStopReasonAliases, reason) ?? reason;
+}
+
+export function canonicalSessionWireContentBlockType(type: string): string {
+	return getSessionWireAlias(sessionWireContentBlockTypeAliases, type) ?? type;
+}
+
+export function getSessionWireContentBlockFieldAliases(type: string) {
+	return getSessionWireAlias(sessionWireContentBlockFieldAliases, type);
+}
