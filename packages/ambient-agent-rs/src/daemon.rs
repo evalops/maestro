@@ -4,7 +4,7 @@
 //! Watches for events, makes decisions, executes tasks, and learns.
 
 use crate::{
-    cascader::{Cascader, TaskContext},
+    cascader::Cascader,
     checkpoint::CheckpointManager,
     critic::{Critic, CriticConfig},
     decider::{Decider, DeciderConfig},
@@ -14,12 +14,13 @@ use crate::{
         default_socket_path, verify_token_constant_time, IpcCommand, IpcResponse, IpcServer,
         StatusResponse,
     },
-    learner::{Learner, LearnerOutcome},
+    learner::Learner,
     platform_event_bus::{
         AmbientCloseReason, AmbientSessionEvent, AmbientSessionState, PlatformEventBus,
     },
     pr_creator::{PrCreator, PrCreatorConfig},
     runtime_config::EffectiveRuntimeConfig,
+    task_run::{CostAccounting, PlanRunContext, PlanRunOutcome},
     types::*,
 };
 use chrono::Utc;
@@ -506,51 +507,14 @@ impl AmbientDaemon {
     /// Execute a task plan
     async fn execute_plan(&self, event: NormalizedEvent, plan: TaskPlan) {
         let start_time = Utc::now();
+        let run_context = PlanRunContext::from_plan(&event, &plan);
 
-        // Determine the main task type from the plan
-        let main_task_type = plan
-            .tasks
-            .first()
-            .map(|t| t.task_type)
-            .unwrap_or(TaskType::Fix);
-
-        // Create checkpoint
-        let checkpoint_id = match self
-            .checkpoint_mgr
-            .write()
-            .await
-            .create(&plan.task_id, &plan.summary)
-            .await
-        {
-            Ok(id) => id,
-            Err(e) => {
-                error!("Failed to create checkpoint: {}", e);
-                return;
-            }
+        let Some(checkpoint_id) = self.create_plan_checkpoint(&plan).await else {
+            return;
         };
 
-        // Route to appropriate model
-        let task = Task {
-            id: plan.task_id.clone(),
-            task_type: main_task_type,
-            prompt: format!(
-                "{}\n\n{}",
-                event.title,
-                event.body.as_deref().unwrap_or_default()
-            ),
-            files: plan.files.clone(),
-            depends_on: vec![],
-            priority: event.priority,
-            estimated_tokens: None,
-        };
-
-        let context = TaskContext {
-            complexity: plan.estimated_complexity,
-            task_type: main_task_type,
-            estimated_tokens: None,
-            previous_attempts: 0,
-        };
-
+        let task = run_context.route_task(&event, &plan);
+        let context = run_context.task_context();
         let routing = self.cascader.write().await.route(&task, &context);
 
         info!(
@@ -566,48 +530,18 @@ impl AmbientDaemon {
                 routing.estimated_cost, limits.max_cost_per_task_usd
             );
             warn!("Skipping event {} because {}", event.id, failure_reason);
-            if let Err(e) = self
-                .checkpoint_mgr
-                .write()
-                .await
-                .rollback(&checkpoint_id)
-                .await
-            {
-                error!("Failed to rollback cost-limited checkpoint: {}", e);
-            }
-            let duration = (Utc::now() - start_time).num_seconds() as u64;
-            let outcome = LearnerOutcome {
-                task_id: plan.task_id.clone(),
-                event_type: event.event_type,
-                task_type: main_task_type,
-                complexity: plan.estimated_complexity,
-                model_used: routing.model.clone(),
-                success: false,
-                confidence_predicted: 0.0,
-                tokens_used: 0,
-                estimated_cost_usd: routing.estimated_cost,
-                cost_usd: 0.0,
-                duration_secs: duration,
-                failure_reason: Some(failure_reason),
-                labels: event.labels.clone(),
-                repo: event.repository.clone(),
-                timestamp: Utc::now(),
-            };
-            if let Err(e) = self.learner.write().await.record_outcome(outcome).await {
-                error!("Failed to record cost-limited outcome: {}", e);
-            }
-            {
-                let mut stats = self.stats.write().await;
-                stats.tasks_executed += 1;
-                stats.tasks_failed += 1;
-            }
+            self.rollback_checkpoint(&checkpoint_id, "cost-limited")
+                .await;
+            let outcome = PlanRunOutcome::cost_limited(
+                failure_reason,
+                CostAccounting::estimated_only(routing.estimated_cost),
+            );
+            self.record_plan_outcome(&run_context, &routing.model, start_time, &outcome)
+                .await;
             return;
         }
 
-        // Execute the plan using the real LLM
         let result = self.executor.execute(&plan, &routing).await;
-
-        // Critique the result
         let critique = self.critic.critique(&plan, &result).await;
 
         info!(
@@ -617,70 +551,158 @@ impl AmbientDaemon {
             critique.issues.len()
         );
 
-        // Record outcome
-        let duration = (Utc::now() - start_time).num_seconds() as u64;
-        let outcome = LearnerOutcome {
-            task_id: plan.task_id.clone(),
-            event_type: event.event_type,
-            task_type: main_task_type,
-            complexity: plan.estimated_complexity,
-            model_used: routing.model.clone(),
-            success: critique.approved && result.status == ExecutionStatus::Success,
-            confidence_predicted: critique.confidence,
-            tokens_used: 0, // Would come from actual execution
-            estimated_cost_usd: routing.estimated_cost,
-            cost_usd: routing.estimated_cost,
-            duration_secs: duration,
-            failure_reason: result.error.clone(),
-            labels: event.labels.clone(),
-            repo: event.repository.clone(),
-            timestamp: Utc::now(),
-        };
+        let outcome = PlanRunOutcome::from_execution(
+            &result,
+            &critique,
+            CostAccounting::estimate_as_actual(routing.estimated_cost, 0),
+        );
+        self.record_plan_outcome(&run_context, &routing.model, start_time, &outcome)
+            .await;
+        self.finish_plan_execution(
+            &event,
+            &plan,
+            &checkpoint_id,
+            &routing.model,
+            &result,
+            &critique,
+            outcome.success,
+        )
+        .await;
+    }
 
-        if let Err(e) = self.learner.write().await.record_outcome(outcome).await {
+    async fn create_plan_checkpoint(&self, plan: &TaskPlan) -> Option<String> {
+        match self
+            .checkpoint_mgr
+            .write()
+            .await
+            .create(&plan.task_id, &plan.summary)
+            .await
+        {
+            Ok(id) => Some(id),
+            Err(e) => {
+                error!("Failed to create checkpoint: {}", e);
+                None
+            }
+        }
+    }
+
+    async fn rollback_checkpoint(&self, checkpoint_id: &str, reason: &str) {
+        if let Err(e) = self
+            .checkpoint_mgr
+            .write()
+            .await
+            .rollback(checkpoint_id)
+            .await
+        {
+            error!("Failed to rollback {reason} checkpoint: {}", e);
+        }
+    }
+
+    async fn commit_checkpoint(&self, checkpoint_id: &str) {
+        if let Err(e) = self
+            .checkpoint_mgr
+            .write()
+            .await
+            .commit(checkpoint_id)
+            .await
+        {
+            error!("Failed to commit checkpoint: {}", e);
+        }
+    }
+
+    async fn record_plan_outcome(
+        &self,
+        run_context: &PlanRunContext,
+        model_used: &str,
+        start_time: chrono::DateTime<Utc>,
+        outcome: &PlanRunOutcome,
+    ) {
+        let duration = (Utc::now() - start_time).num_seconds() as u64;
+        let learner_outcome = run_context.learner_outcome(model_used, duration, outcome);
+
+        if let Err(e) = self
+            .learner
+            .write()
+            .await
+            .record_outcome(learner_outcome)
+            .await
+        {
             error!("Failed to record outcome: {}", e);
         }
 
-        // Update stats
-        {
-            let mut stats = self.stats.write().await;
-            stats.tasks_executed += 1;
-            if critique.approved {
-                stats.tasks_succeeded += 1;
-            } else {
-                stats.tasks_failed += 1;
-            }
-            stats.total_cost += routing.estimated_cost;
+        let mut stats = self.stats.write().await;
+        stats.tasks_executed += 1;
+        if outcome.success {
+            stats.tasks_succeeded += 1;
+        } else {
+            stats.tasks_failed += 1;
         }
+        stats.total_cost += outcome.costs.actual_cost_usd;
+    }
 
-        // Handle result
-        if critique.approved {
-            // Commit checkpoint
-            if let Err(e) = self
-                .checkpoint_mgr
-                .write()
-                .await
-                .commit(&checkpoint_id)
+    async fn finish_plan_execution(
+        &self,
+        event: &NormalizedEvent,
+        plan: &TaskPlan,
+        checkpoint_id: &str,
+        model_used: &str,
+        result: &ExecutionResult,
+        critique: &CriticResult,
+        success: bool,
+    ) {
+        if success {
+            self.commit_checkpoint(checkpoint_id).await;
+
+            if let Some(pr_result) = self
+                .create_pr_for_execution(event, plan, model_used, result, critique)
                 .await
             {
-                error!("Failed to commit checkpoint: {}", e);
+                if pr_result.success {
+                    info!(
+                        "Created PR #{} at {}",
+                        pr_result.pr_number.unwrap_or(0),
+                        pr_result.pr_url.as_deref().unwrap_or("unknown")
+                    );
+                    self.stats.write().await.prs_created += 1;
+                } else {
+                    warn!(
+                        "Failed to create PR: {}",
+                        pr_result.error.as_deref().unwrap_or("unknown error")
+                    );
+                }
+            }
+        } else {
+            warn!("Execution did not pass final approval, rolling back");
+            for issue in &critique.issues {
+                warn!("  - {:?}: {}", issue.severity, issue.description);
             }
 
-            // Create PR for the changes
-            let pr_title = format!("[Ambient] {}", plan.summary);
-            let pr_body = self.generate_pr_body(&plan, &result, &critique);
-            let repo_path = std::path::Path::new(&event.repo.path);
-            let authorship =
-                match PrCreator::build_authorship_metadata(&event, routing.model.as_str()) {
-                    Ok(authorship) => authorship,
-                    Err(e) => {
-                        error!("Failed to build Maestro commit authorship trailers: {}", e);
-                        return;
-                    }
-                };
+            self.rollback_checkpoint(checkpoint_id, "failed execution")
+                .await;
+        }
+    }
 
-            let pr_result = self
-                .pr_creator
+    async fn create_pr_for_execution(
+        &self,
+        event: &NormalizedEvent,
+        plan: &TaskPlan,
+        model_used: &str,
+        result: &ExecutionResult,
+        critique: &CriticResult,
+    ) -> Option<crate::pr_creator::PrCreationResult> {
+        let pr_title = format!("[Ambient] {}", plan.summary);
+        let pr_body = self.generate_pr_body(plan, result, critique);
+        let repo_path = std::path::Path::new(&event.repo.path);
+        let authorship = match PrCreator::build_authorship_metadata(event, model_used) {
+            Ok(authorship) => authorship,
+            Err(e) => {
+                error!("Failed to build Maestro commit authorship trailers: {}", e);
+                return None;
+            }
+        };
+
+        Some(
+            self.pr_creator
                 .create_pr(
                     repo_path,
                     &event.repository,
@@ -688,41 +710,11 @@ impl AmbientDaemon {
                     &pr_title,
                     &pr_body,
                     &result.changes,
-                    &event,
+                    event,
                     &authorship,
                 )
-                .await;
-
-            if pr_result.success {
-                info!(
-                    "Created PR #{} at {}",
-                    pr_result.pr_number.unwrap_or(0),
-                    pr_result.pr_url.as_deref().unwrap_or("unknown")
-                );
-                self.stats.write().await.prs_created += 1;
-            } else {
-                warn!(
-                    "Failed to create PR: {}",
-                    pr_result.error.as_deref().unwrap_or("unknown error")
-                );
-            }
-        } else {
-            // Rollback
-            warn!("Critique failed, rolling back");
-            for issue in &critique.issues {
-                warn!("  - {:?}: {}", issue.severity, issue.description);
-            }
-
-            if let Err(e) = self
-                .checkpoint_mgr
-                .write()
-                .await
-                .rollback(&checkpoint_id)
-                .await
-            {
-                error!("Failed to rollback: {}", e);
-            }
-        }
+                .await,
+        )
     }
 
     /// Generate PR body from plan and results
@@ -887,7 +879,9 @@ impl Default for DaemonBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cascader::TaskContext;
     use crate::platform_event_bus::{PlatformEventBusConfig, PlatformEventBusTransport};
+    use crate::task_run::{CostAccounting, PlanRunOutcome};
     use async_trait::async_trait;
     use serde_json::Value;
     use std::sync::{Arc, Mutex};
@@ -1167,6 +1161,76 @@ mod tests {
         assert_eq!(learner_stats.overall_success_rate, 0.0);
         assert_eq!(learner_stats.total_estimated_cost, expected_estimated_cost);
         assert_eq!(learner_stats.total_cost, 0.0);
+        assert!(daemon.checkpoint_mgr.read().await.list_active().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_final_plan_success_requires_executor_success() {
+        let temp = TempDir::new().unwrap();
+        let daemon = DaemonBuilder::new()
+            .config(test_config())
+            .data_dir(temp.path().to_path_buf())
+            .ipc_socket_path(temp.path().join("daemon-final-success.sock"))
+            .build()
+            .unwrap();
+        let event = test_event(
+            "Fix failing route",
+            "The route should return a successful response.",
+            EventType::Issue,
+        );
+        let plan = TaskPlan {
+            task_id: "plan_final_success".to_string(),
+            summary: "Handle issue: Fix failing route".to_string(),
+            estimated_complexity: Complexity::Simple,
+            event: event.clone(),
+            strategy: ExecutionStrategy::Solo,
+            estimated_duration_ms: 60_000,
+            tasks: vec![Task {
+                id: "plan_final_success_main".to_string(),
+                task_type: TaskType::Fix,
+                prompt: "Fix failing route".to_string(),
+                files: vec![],
+                depends_on: vec![],
+                priority: 100,
+                estimated_tokens: None,
+            }],
+            files: vec![],
+            risks: vec![],
+        };
+        let checkpoint_id = daemon.create_plan_checkpoint(&plan).await.unwrap();
+        let result = ExecutionResult {
+            status: ExecutionStatus::Failed,
+            changes: vec![],
+            test_results: vec![],
+            error: Some("executor failed".to_string()),
+            logs: vec![],
+        };
+        let critique = CriticResult {
+            approved: true,
+            confidence: 0.95,
+            issues: vec![],
+            suggestions: vec![],
+        };
+        let outcome = PlanRunOutcome::from_execution(
+            &result,
+            &critique,
+            CostAccounting::estimate_as_actual(0.01, 0),
+        );
+
+        daemon
+            .finish_plan_execution(
+                &event,
+                &plan,
+                &checkpoint_id,
+                "claude-3-5-haiku-20241022",
+                &result,
+                &critique,
+                outcome.success,
+            )
+            .await;
+
+        assert!(!outcome.success);
+        assert_eq!(daemon.stats.read().await.prs_created, 0);
         assert!(daemon.checkpoint_mgr.read().await.list_active().is_empty());
     }
 
