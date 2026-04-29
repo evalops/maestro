@@ -60,7 +60,7 @@ describe("canonical Maestro Platform replay fixture", () => {
 			"evt_maestro_replay_011_session_closed",
 		]);
 
-		for (const event of fixture.events) {
+		for (const [index, event] of fixture.events.entries()) {
 			expect(event).toMatchObject({
 				spec_version: "1.0",
 				source: "maestro-fixture",
@@ -81,6 +81,10 @@ describe("canonical Maestro Platform replay fixture", () => {
 			expect(event.extensions.dataschema).toMatch(
 				/^buf\.build\/evalops\/proto\/maestro\.v1\./,
 			);
+			expect(event.extensions.traceparent).toBe(
+				`00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-${String(index + 1).padStart(16, "0")}-01`,
+			);
+			expect(event.data.correlation).not.toHaveProperty("traceparent");
 			expect(event.time).toMatch(/^2026-04-23T18:/);
 		}
 	});
