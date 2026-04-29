@@ -13,6 +13,7 @@ import {
 	type SessionEntry,
 	tryParseSessionEntry,
 } from "../../src/session/types.js";
+import { parseSessionWireFixture } from "./session-wire-fixtures.js";
 
 describe("extractTextFromContent", () => {
 	it("returns string content as-is", () => {
@@ -116,81 +117,7 @@ describe("generateEntryId", () => {
 const timestamp = "2024-01-15T10:30:00.000Z";
 
 function createTypescriptToolSession(): SessionEntry[] {
-	return [
-		{
-			type: "session",
-			id: "session-1",
-			timestamp,
-			cwd: "/tmp",
-			model: "openai/gpt-5.2",
-			thinkingLevel: "medium",
-		},
-		{
-			type: "message",
-			id: "user-1",
-			parentId: null,
-			timestamp,
-			message: {
-				role: "user",
-				content: "Read README",
-				timestamp: 0,
-			},
-		},
-		{
-			type: "message",
-			id: "assistant-1",
-			parentId: "user-1",
-			timestamp,
-			message: {
-				role: "assistant",
-				api: "openai-responses",
-				provider: "openai",
-				model: "gpt-5.2",
-				usage: {
-					input: 10,
-					output: 4,
-					cacheRead: 2,
-					cacheWrite: 1,
-					cost: {
-						input: 0.1,
-						output: 0.2,
-						cacheRead: 0.01,
-						cacheWrite: 0.02,
-						total: 0.33,
-					},
-				},
-				stopReason: "toolUse",
-				timestamp: 1,
-				content: [
-					{
-						type: "thinking",
-						thinking: "Need a file read",
-						thinkingSignature: "sig-1",
-					},
-					{
-						type: "toolCall",
-						id: "call-1",
-						name: "read",
-						arguments: { path: "README.md" },
-					},
-				],
-			},
-		},
-		{
-			type: "message",
-			id: "tool-1",
-			parentId: "assistant-1",
-			timestamp,
-			message: {
-				role: "toolResult",
-				toolCallId: "call-1",
-				toolName: "read",
-				content: [{ type: "text", text: "file contents" }],
-				isError: false,
-				timestamp: 2,
-			},
-		},
-	];
+	return parseSessionWireFixture("canonical-tool-session.jsonl");
 }
 
 describe("session context compatibility", () => {
@@ -224,17 +151,7 @@ describe("session context compatibility", () => {
 });
 
 function parseRustAuthoredToolSession(): SessionEntry[] {
-	return [
-		`{"type":"session","id":"session-1","timestamp":"${timestamp}","cwd":"/tmp","model":"openai/gpt-5.2","model_metadata":{"provider":"openai","model_id":"gpt-5.2","provider_name":"OpenAI","base_url":"https://example.test","context_window":100000,"max_tokens":4096},"thinking_level":"medium"}`,
-		`{"type":"message","timestamp":"${timestamp}","message":{"role":"user","content":"Read README","timestamp":0}}`,
-		`{"type":"message","timestamp":"${timestamp}","message":{"role":"assistant","api":"openai-responses","provider":"openai","model":"gpt-5.2","usage":{"input":10,"output":4,"cacheRead":2,"cacheWrite":1,"cost":{"input":0.1,"output":0.2,"cacheRead":0.01,"cacheWrite":0.02,"total":0.33}},"stop_reason":"tool_use","timestamp":1,"content":[{"type":"thinking","text":"Need a file read","signature":"sig-1"},{"type":"tool_call","id":"call-1","name":"read","args":{"path":"README.md"}}]}}`,
-		`{"type":"message","timestamp":"${timestamp}","message":{"role":"toolResult","tool_call_id":"call-1","tool_name":"read","content":"file contents","is_error":false,"timestamp":2}}`,
-		`{"type":"model_change","timestamp":"${timestamp}","model":"openai/gpt-5.2","model_metadata":{"provider":"openai","model_id":"gpt-5.2"}}`,
-		`{"type":"thinking_level_change","timestamp":"${timestamp}","thinking_level":"high"}`,
-		`{"type":"compaction","timestamp":"${timestamp}","summary":"Kept the useful work","first_kept_entry_index":0,"tokens_before":1234,"auto":true,"custom_instructions":"keep tool context"}`,
-	]
-		.map((line) => tryParseSessionEntry(line))
-		.filter((entry): entry is SessionEntry => Boolean(entry));
+	return parseSessionWireFixture("legacy-rust-tool-session.jsonl");
 }
 
 describe("Rust-authored session compatibility", () => {
@@ -244,6 +161,8 @@ describe("Rust-authored session compatibility", () => {
 		expect(entries[0]).toMatchObject({
 			type: "session",
 			thinkingLevel: "medium",
+			systemPrompt: "Persisted system",
+			branchedFrom: "parent-session",
 			modelMetadata: {
 				modelId: "gpt-5.2",
 				providerName: "OpenAI",

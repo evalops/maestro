@@ -181,7 +181,7 @@
 //! };
 //! ```
 
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 fn deserialize_tool_result_content<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -202,6 +202,25 @@ where
         Value::Null => String::new(),
         other => other.to_string(),
     })
+}
+
+fn canonical_stop_reason(reason: &str) -> &str {
+    match reason {
+        "tool_use" | "tool_calls" => "toolUse",
+        "max_tokens" => "length",
+        "end_turn" | "stop_sequence" => "stop",
+        other => other,
+    }
+}
+
+fn serialize_stop_reason<S>(value: &Option<String>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match value.as_deref() {
+        Some(reason) => serializer.serialize_some(canonical_stop_reason(reason)),
+        None => serializer.serialize_none(),
+    }
 }
 
 /// Top-level discriminated union for all session event types.
@@ -550,6 +569,7 @@ pub enum AppMessage {
         #[serde(
             rename = "stopReason",
             alias = "stop_reason",
+            serialize_with = "serialize_stop_reason",
             skip_serializing_if = "Option::is_none"
         )]
         stop_reason: Option<String>,
@@ -805,6 +825,7 @@ pub struct TokenCost {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThinkingLevelChange {
     pub timestamp: String,
+    #[serde(rename = "thinkingLevel", alias = "thinking_level")]
     pub thinking_level: ThinkingLevel,
 }
 
@@ -813,7 +834,11 @@ pub struct ThinkingLevelChange {
 pub struct ModelChange {
     pub timestamp: String,
     pub model: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "modelMetadata",
+        alias = "model_metadata",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub model_metadata: Option<ModelMetadata>,
 }
 
@@ -836,11 +861,17 @@ pub struct SessionMeta {
 pub struct CompactionEntry {
     pub timestamp: String,
     pub summary: String,
+    #[serde(rename = "firstKeptEntryIndex", alias = "first_kept_entry_index")]
     pub first_kept_entry_index: usize,
+    #[serde(rename = "tokensBefore", alias = "tokens_before")]
     pub tokens_before: u64,
     #[serde(default)]
     pub auto: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "customInstructions",
+        alias = "custom_instructions",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub custom_instructions: Option<String>,
 }
 
@@ -894,6 +925,22 @@ impl SessionStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn repo_fixture(name: &str) -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("test/fixtures/session-wire")
+            .join(name);
+        std::fs::read_to_string(path).unwrap()
+    }
+
+    fn parse_fixture(name: &str) -> Vec<SessionEntry> {
+        repo_fixture(name)
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
 
     #[test]
     fn parse_session_header() {
@@ -1015,6 +1062,76 @@ mod tests {
         assert_eq!(tool_name, "read");
         assert_eq!(content, "file contents");
         assert!(!is_error);
+    }
+
+    #[test]
+    fn parse_shared_session_wire_fixtures() {
+        for fixture in [
+            "canonical-tool-session.jsonl",
+            "legacy-rust-tool-session.jsonl",
+        ] {
+            let entries = parse_fixture(fixture);
+            assert!(!entries.is_empty(), "fixture {fixture} should not be empty");
+        }
+    }
+
+    #[test]
+    fn serialize_rust_entries_prefers_canonical_session_wire_keys() {
+        let entries = parse_fixture("legacy-rust-tool-session.jsonl");
+
+        let session = serde_json::to_value(&entries[0]).unwrap();
+        assert_eq!(session["thinkingLevel"], "medium");
+        assert_eq!(session["modelMetadata"]["modelId"], "gpt-5.2");
+        assert_eq!(session["systemPrompt"], "Persisted system");
+        assert_eq!(session["branchedFrom"], "parent-session");
+        assert!(session.get("thinking_level").is_none());
+        assert!(session.get("model_metadata").is_none());
+        assert!(session.get("system_prompt").is_none());
+        assert!(session.get("branched_from").is_none());
+
+        let assistant = serde_json::to_value(&entries[2]).unwrap();
+        let assistant_message = &assistant["message"];
+        assert_eq!(assistant_message["stopReason"], "toolUse");
+        assert!(assistant_message.get("stop_reason").is_none());
+        assert_eq!(
+            assistant_message["content"][0]["thinking"],
+            "Need a file read"
+        );
+        assert_eq!(
+            assistant_message["content"][0]["thinkingSignature"],
+            "sig-1"
+        );
+        assert_eq!(assistant_message["content"][1]["type"], "toolCall");
+        assert_eq!(
+            assistant_message["content"][1]["arguments"]["path"],
+            "README.md"
+        );
+        assert!(assistant_message["content"][1].get("args").is_none());
+
+        let tool_result = serde_json::to_value(&entries[3]).unwrap();
+        let tool_result_message = &tool_result["message"];
+        assert_eq!(tool_result_message["toolCallId"], "call-1");
+        assert_eq!(tool_result_message["toolName"], "read");
+        assert_eq!(tool_result_message["isError"], false);
+        assert!(tool_result_message.get("tool_call_id").is_none());
+        assert!(tool_result_message.get("tool_name").is_none());
+        assert!(tool_result_message.get("is_error").is_none());
+
+        let model_change = serde_json::to_value(&entries[4]).unwrap();
+        assert_eq!(model_change["modelMetadata"]["modelId"], "gpt-5.2");
+        assert!(model_change.get("model_metadata").is_none());
+
+        let thinking_level_change = serde_json::to_value(&entries[5]).unwrap();
+        assert_eq!(thinking_level_change["thinkingLevel"], "high");
+        assert!(thinking_level_change.get("thinking_level").is_none());
+
+        let compaction = serde_json::to_value(&entries[6]).unwrap();
+        assert_eq!(compaction["firstKeptEntryIndex"], 0);
+        assert_eq!(compaction["tokensBefore"], 1234);
+        assert_eq!(compaction["customInstructions"], "keep tool context");
+        assert!(compaction.get("first_kept_entry_index").is_none());
+        assert!(compaction.get("tokens_before").is_none());
+        assert!(compaction.get("custom_instructions").is_none());
     }
 
     #[test]
