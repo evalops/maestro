@@ -8,6 +8,7 @@
  * - Learning from outcomes
  */
 
+import { closeMaestroEventBusTransport } from "@evalops/ai/telemetry";
 import { GitHubAuth } from "./github/auth.js";
 import { GitHubApiClient } from "./github/client.js";
 import { GitHubReporter, type TaskProgress } from "./github/reporter.js";
@@ -196,7 +197,16 @@ export class Orchestrator {
 		if (this.webhookServer) {
 			await this.webhookServer.stop();
 		}
-		this.memory.save();
+		try {
+			await closeMaestroEventBusTransport();
+		} catch (error) {
+			console.warn(
+				"[orchestrator] Failed to close event bus transport:",
+				error,
+			);
+		} finally {
+			this.memory.save();
+		}
 		console.log("[orchestrator] Stopped");
 	}
 

@@ -212,6 +212,17 @@ BEGIN
 		ALTER TABLE "webhook_deliveries" ALTER COLUMN "id" SET NOT NULL;
 	END IF;
 
+	IF EXISTS (
+			SELECT 1
+			FROM "webhook_deliveries"
+			GROUP BY "id"
+			HAVING count(*) > 1
+		)
+	THEN
+		RAISE EXCEPTION 'webhook_deliveries contains duplicate id values after legacy schema reconciliation'
+			USING ERRCODE = 'unique_violation';
+	END IF;
+
 	IF NOT EXISTS (
 			SELECT 1
 			FROM pg_constraint
@@ -219,12 +230,6 @@ BEGIN
 				AND contype = 'p'
 		)
 		AND NOT EXISTS (SELECT 1 FROM "webhook_deliveries" WHERE "id" IS NULL)
-		AND NOT EXISTS (
-			SELECT 1
-			FROM "webhook_deliveries"
-			GROUP BY "id"
-			HAVING count(*) > 1
-		)
 	THEN
 		BEGIN
 			ALTER TABLE "webhook_deliveries"
