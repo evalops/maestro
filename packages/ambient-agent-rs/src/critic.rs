@@ -124,6 +124,8 @@ impl Critic {
         // Check for obvious mismatches
         issues.extend(self.check_request_match(plan, result));
 
+        self.enforce_warning_budget(&mut issues);
+
         // Calculate confidence
         let confidence = self.calculate_confidence(&issues);
         let has_blockers = issues
@@ -301,6 +303,27 @@ impl Critic {
         confidence.max(0.0)
     }
 
+    fn enforce_warning_budget(&self, issues: &mut Vec<CriticIssue>) {
+        let warning_count = issues
+            .iter()
+            .filter(|issue| issue.severity == CriticIssueSeverity::Warning)
+            .count();
+
+        if warning_count <= self.config.max_warnings {
+            return;
+        }
+
+        issues.push(CriticIssue {
+            severity: CriticIssueSeverity::Blocker,
+            issue_type: CriticIssueType::Correctness,
+            location: None,
+            description: format!(
+                "Warning budget exceeded: {warning_count} warning(s) found, maximum allowed is {}",
+                self.config.max_warnings
+            ),
+        });
+    }
+
     /// Quick check without full evaluation
     pub fn quick_check(&self, changes: &[FileChange]) -> Vec<CriticIssue> {
         let mut issues = vec![];
@@ -310,5 +333,142 @@ impl Critic {
             }
         }
         issues
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use std::collections::HashMap;
+
+    fn event() -> NormalizedEvent {
+        let repo = Repository {
+            owner: "evalops".to_string(),
+            name: "maestro".to_string(),
+            full_name: "evalops/maestro".to_string(),
+            default_branch: "main".to_string(),
+            path: "/tmp/maestro".to_string(),
+            url: "https://github.com/evalops/maestro".to_string(),
+            config: None,
+            agent_md: None,
+            test_coverage: None,
+            codeowners: vec![],
+        };
+
+        NormalizedEvent {
+            id: "evt".to_string(),
+            source: WatcherType::GitHubPoll,
+            event_type: EventType::Issue,
+            repo: repo.clone(),
+            repository: repo.full_name.clone(),
+            priority: 10,
+            title: "Tighten ambient critic".to_string(),
+            body: Some("Keep warning gates deterministic".to_string()),
+            labels: vec!["ambient".to_string()],
+            context: EventContext {
+                repo,
+                history: vec![],
+                related: vec![],
+            },
+            payload: EventPayload {
+                title: Some("Tighten ambient critic".to_string()),
+                body: Some("Keep warning gates deterministic".to_string()),
+                number: Some(42),
+                labels: vec!["ambient".to_string()],
+                author: Some("octocat".to_string()),
+                url: None,
+                extra: HashMap::new(),
+            },
+            created_at: Utc::now(),
+            processed_at: None,
+            status: EventStatus::Pending,
+            flags: EventFlags::default(),
+        }
+    }
+
+    fn plan() -> TaskPlan {
+        TaskPlan {
+            task_id: "plan-1".to_string(),
+            summary: "Tighten ambient critic".to_string(),
+            estimated_complexity: Complexity::Simple,
+            event: event(),
+            strategy: ExecutionStrategy::Solo,
+            tasks: vec![],
+            estimated_duration_ms: 60_000,
+            files: vec!["src/app.ts".to_string()],
+            risks: vec![],
+        }
+    }
+
+    fn result_with_content(content: &str) -> ExecutionResult {
+        ExecutionResult {
+            status: ExecutionStatus::Success,
+            changes: vec![FileChange {
+                file: "src/app.ts".to_string(),
+                change_type: ChangeType::Modify,
+                content: Some(content.to_string()),
+                old_path: None,
+                additions: 1,
+                deletions: 0,
+            }],
+            test_results: vec![TestResult {
+                name: "cargo test".to_string(),
+                passed: true,
+                duration_ms: 1200,
+                error: None,
+            }],
+            error: None,
+            logs: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn critique_approves_when_warnings_are_at_budget() {
+        let critic = Critic::new(CriticConfig {
+            max_warnings: 1,
+            ..CriticConfig::default()
+        });
+
+        let critique = critic
+            .critique(&plan(), &result_with_content("console.log('debug');"))
+            .await;
+
+        assert!(critique.approved);
+        assert_eq!(
+            critique
+                .issues
+                .iter()
+                .filter(|issue| issue.severity == CriticIssueSeverity::Warning)
+                .count(),
+            1
+        );
+        assert!(!critique
+            .issues
+            .iter()
+            .any(|issue| issue.description.contains("Warning budget exceeded")));
+    }
+
+    #[tokio::test]
+    async fn critique_rejects_when_warnings_exceed_budget() {
+        let critic = Critic::new(CriticConfig {
+            max_warnings: 1,
+            ..CriticConfig::default()
+        });
+
+        let critique = critic
+            .critique(
+                &plan(),
+                &result_with_content("const payload: any = value;\nconsole.log(payload);"),
+            )
+            .await;
+
+        assert!(!critique.approved);
+        assert!(critique.issues.iter().any(|issue| {
+            issue.severity == CriticIssueSeverity::Blocker
+                && issue
+                    .description
+                    .contains("Warning budget exceeded: 2 warning(s) found")
+        }));
     }
 }
