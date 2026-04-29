@@ -194,6 +194,7 @@ export {
 	normalizeSessionEntry,
 	normalizeStopReasonValue,
 	parseSessionEntry,
+	isSessionWireCompactionContextEntry,
 	tryParseSessionEntry,
 } from "./wire-format.js";
 

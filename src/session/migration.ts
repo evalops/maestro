@@ -170,7 +170,8 @@ function migrateV1ToV2(entries: SessionEntry[]): boolean {
 			migrated = true;
 		}
 		prevId = entry.id;
-		// Collect all entry types that contribute to firstKeptEntryIndex
+		// Preserve v1 migration semantics: legacy firstKeptEntryIndex was computed
+		// from message-bearing entries, including tool results.
 		if (
 			entry.type === "message" ||
 			entry.type === "custom_message" ||

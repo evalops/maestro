@@ -1146,15 +1146,19 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             .collect::<Vec<_>>();
 
         let header = SessionHeader {
+            version: Some(2),
             id: session_id.clone(),
             timestamp: Utc::now().to_rfc3339(),
             cwd,
             model: policy_model,
+            subject: None,
             model_metadata: None,
             thinking_level: self.current_thinking_level,
             system_prompt: None,
+            prompt_metadata: None,
             tools,
             branched_from: None,
+            parent_session: None,
         };
 
         self.session_manager
@@ -5092,15 +5096,19 @@ mod tests {
         let mut state = AppState::new();
         let session = ParsedSession {
             header: SessionHeader {
+                version: Some(2),
                 id: "session-1".to_string(),
                 timestamp: "2026-03-31T12:00:00Z".to_string(),
                 cwd: "/tmp".to_string(),
                 model: "anthropic/claude-sonnet-4-5".to_string(),
+                subject: None,
                 model_metadata: None,
                 thinking_level: ThinkingLevel::Medium,
                 system_prompt: None,
+                prompt_metadata: None,
                 tools: Vec::new(),
                 branched_from: None,
+                parent_session: None,
             },
             messages: vec![
                 AppMessage::User {
@@ -5189,15 +5197,19 @@ mod tests {
         let mut state = AppState::new();
         let session = ParsedSession {
             header: SessionHeader {
+                version: Some(2),
                 id: "session-2".to_string(),
                 timestamp: "2026-03-31T12:00:00Z".to_string(),
                 cwd: "/tmp".to_string(),
                 model: "anthropic/claude-sonnet-4-5".to_string(),
+                subject: None,
                 model_metadata: None,
                 thinking_level: ThinkingLevel::Medium,
                 system_prompt: None,
+                prompt_metadata: None,
                 tools: Vec::new(),
                 branched_from: None,
+                parent_session: None,
             },
             messages: vec![
                 AppMessage::User {

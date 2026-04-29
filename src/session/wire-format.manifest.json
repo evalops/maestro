@@ -19,7 +19,17 @@
 			"model_metadata": "modelMetadata",
 			"thinking_level": "thinkingLevel",
 			"system_prompt": "systemPrompt",
-			"branched_from": "branchedFrom"
+			"prompt_metadata": "promptMetadata",
+			"branched_from": "branchedFrom",
+			"parent_session": "parentSession"
+		},
+		"sessionMeta": {
+			"resume_summary": "resumeSummary",
+			"memory_extraction_hash": "memoryExtractionHash"
+		},
+		"attachmentExtract": {
+			"attachment_id": "attachmentId",
+			"extracted_text": "extractedText"
 		},
 		"assistantMessage": {
 			"stop_reason": "stopReason"
@@ -40,6 +50,19 @@
 			"first_kept_entry_index": "firstKeptEntryIndex",
 			"tokens_before": "tokensBefore",
 			"custom_instructions": "customInstructions"
+		},
+		"branchSummary": {
+			"from_id": "fromId",
+			"from_hook": "fromHook"
+		},
+		"custom": {
+			"custom_type": "customType"
+		},
+		"customMessage": {
+			"custom_type": "customType"
+		},
+		"label": {
+			"target_id": "targetId"
 		}
 	},
 	"contentBlockTypeAliases": {
@@ -53,5 +76,11 @@
 			"text": "thinking",
 			"signature": "thinkingSignature"
 		}
-	}
+	},
+	"compactionContextEntryTypes": [
+		"message",
+		"custom_message",
+		"branch_summary"
+	],
+	"compactionContextExcludedMessageRoles": ["toolResult"]
 }

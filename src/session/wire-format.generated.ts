@@ -25,7 +25,17 @@ export const sessionWireFieldAliases = {
 		model_metadata: "modelMetadata",
 		thinking_level: "thinkingLevel",
 		system_prompt: "systemPrompt",
+		prompt_metadata: "promptMetadata",
 		branched_from: "branchedFrom",
+		parent_session: "parentSession",
+	},
+	sessionMeta: {
+		resume_summary: "resumeSummary",
+		memory_extraction_hash: "memoryExtractionHash",
+	},
+	attachmentExtract: {
+		attachment_id: "attachmentId",
+		extracted_text: "extractedText",
 	},
 	assistantMessage: {
 		stop_reason: "stopReason",
@@ -47,6 +57,19 @@ export const sessionWireFieldAliases = {
 		tokens_before: "tokensBefore",
 		custom_instructions: "customInstructions",
 	},
+	branchSummary: {
+		from_id: "fromId",
+		from_hook: "fromHook",
+	},
+	custom: {
+		custom_type: "customType",
+	},
+	customMessage: {
+		custom_type: "customType",
+	},
+	label: {
+		target_id: "targetId",
+	},
 } as const;
 
 export const sessionWireContentBlockTypeAliases = {
@@ -62,6 +85,16 @@ export const sessionWireContentBlockFieldAliases = {
 		signature: "thinkingSignature",
 	},
 } as const;
+
+export const sessionWireCompactionContextEntryTypes = [
+	"message",
+	"custom_message",
+	"branch_summary",
+] as const;
+
+export const sessionWireCompactionContextExcludedMessageRoles = [
+	"toolResult",
+] as const;
 
 type SessionWireAliasSource = Readonly<Record<string, unknown>>;
 
@@ -84,4 +117,18 @@ export function canonicalSessionWireContentBlockType(type: string): string {
 
 export function getSessionWireContentBlockFieldAliases(type: string) {
 	return getSessionWireAlias(sessionWireContentBlockFieldAliases, type);
+}
+
+export function isSessionWireCompactionContextEntryType(type: string): boolean {
+	return sessionWireCompactionContextEntryTypes.includes(
+		type as (typeof sessionWireCompactionContextEntryTypes)[number],
+	);
+}
+
+export function isSessionWireCompactionExcludedMessageRole(
+	role: string,
+): boolean {
+	return sessionWireCompactionContextExcludedMessageRoles.includes(
+		role as (typeof sessionWireCompactionContextExcludedMessageRoles)[number],
+	);
 }

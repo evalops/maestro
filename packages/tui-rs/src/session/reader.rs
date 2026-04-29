@@ -250,9 +250,15 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use super::entries::{
-    AppMessage, CompactionEntry, ModelChange, SessionEntry, SessionHeader, SessionMeta,
-    SessionStats, ThinkingLevelChange, TokenUsage,
+    AppMessage, BranchSummaryEntry, CompactionEntry, CustomMessageEntry, MessageContent,
+    ModelChange, SessionEntry, SessionHeader, SessionMeta, SessionStats, ThinkingLevelChange,
+    TokenUsage,
 };
+use super::wire_format_generated::is_compaction_context_excluded_message_role;
+
+const BRANCH_SUMMARY_PREFIX: &str =
+    "The following is a summary of a branch that this conversation came back from:\n\n<summary>\n";
+const BRANCH_SUMMARY_SUFFIX: &str = "\n</summary>";
 
 fn apply_attachment_extracts(
     message: AppMessage,
@@ -302,6 +308,40 @@ fn apply_attachment_extracts(
         attachments: Some(next_attachments),
         timestamp,
     }
+}
+
+fn timestamp_millis(timestamp: &str) -> u64 {
+    chrono::DateTime::parse_from_rfc3339(timestamp)
+        .map(|datetime| datetime.timestamp_millis().max(0) as u64)
+        .unwrap_or(0)
+}
+
+fn custom_message_to_user_message(entry: &CustomMessageEntry) -> Option<AppMessage> {
+    if !entry.display {
+        return None;
+    }
+
+    Some(AppMessage::User {
+        content: entry.content.clone(),
+        attachments: None,
+        timestamp: timestamp_millis(&entry.timestamp),
+    })
+}
+
+fn branch_summary_to_user_message(entry: &BranchSummaryEntry) -> AppMessage {
+    AppMessage::User {
+        content: MessageContent::Text(format!(
+            "{BRANCH_SUMMARY_PREFIX}{}{BRANCH_SUMMARY_SUFFIX}",
+            entry.summary
+        )),
+        attachments: None,
+        timestamp: timestamp_millis(&entry.timestamp),
+    }
+}
+
+struct CompactionContextEntry {
+    id: Option<String>,
+    visible_index: usize,
 }
 
 /// Errors that can occur during session file reading.
@@ -494,7 +534,8 @@ impl SessionReader {
         let mut model_changes: Vec<ModelChange> = Vec::new();
         let mut compactions: Vec<CompactionEntry> = Vec::new();
         let mut usage_entries: Vec<UsageEntry> = Vec::new();
-        let mut visible_message_ids: Vec<Option<String>> = Vec::new();
+        let mut compaction_context_entries: Vec<CompactionContextEntry> = Vec::new();
+        let mut visible_context_len = 0usize;
 
         for (line_num, line) in reader.lines().enumerate() {
             let line = line?;
@@ -516,8 +557,12 @@ impl SessionReader {
                     header = Some(h);
                 }
                 SessionEntry::Message(m) => {
-                    if !matches!(&m.message, AppMessage::ToolResult { .. }) {
-                        visible_message_ids.push(m.id.clone());
+                    compaction_context_entries.push(CompactionContextEntry {
+                        id: m.id.clone(),
+                        visible_index: visible_context_len,
+                    });
+                    if !is_compaction_context_excluded_message_role(m.message.role()) {
+                        visible_context_len += 1;
                     }
                     // Update stats
                     match &m.message {
@@ -569,23 +614,58 @@ impl SessionReader {
                     model_changes.push(change);
                 }
                 SessionEntry::Compaction(mut entry) => {
-                    let first_kept_entry_index = entry
+                    let resolved_cut = entry
                         .first_kept_entry_id
                         .as_deref()
                         .and_then(|first_kept_entry_id| {
-                            visible_message_ids
+                            compaction_context_entries
                                 .iter()
-                                .position(|id| id.as_deref() == Some(first_kept_entry_id))
+                                .position(|entry| entry.id.as_deref() == Some(first_kept_entry_id))
+                                .map(|position| {
+                                    (position, compaction_context_entries[position].visible_index)
+                                })
                         })
-                        .or(entry.first_kept_entry_index);
+                        .or_else(|| {
+                            entry.first_kept_entry_index.map(|index| {
+                                let position = compaction_context_entries
+                                    .iter()
+                                    .position(|entry| entry.visible_index >= index)
+                                    .unwrap_or(compaction_context_entries.len());
+                                (position, index)
+                            })
+                        });
 
-                    if let Some(index) = first_kept_entry_index {
-                        entry.first_kept_entry_index = Some(index);
-                        let keep_from = index.min(visible_message_ids.len());
-                        visible_message_ids.drain(..keep_from);
+                    if let Some((position, visible_index)) = resolved_cut {
+                        entry.first_kept_entry_index = Some(visible_index);
+                        let keep_from = position.min(compaction_context_entries.len());
+                        compaction_context_entries.drain(..keep_from);
+                        for context_entry in &mut compaction_context_entries {
+                            context_entry.visible_index =
+                                context_entry.visible_index.saturating_sub(visible_index);
+                        }
+                        visible_context_len = visible_context_len.saturating_sub(visible_index);
                     }
                     compactions.push(entry);
                 }
+                SessionEntry::BranchSummary(entry) => {
+                    compaction_context_entries.push(CompactionContextEntry {
+                        id: entry.id.clone(),
+                        visible_index: visible_context_len,
+                    });
+                    visible_context_len += 1;
+                    messages.push(branch_summary_to_user_message(&entry));
+                }
+                SessionEntry::CustomMessage(entry) => {
+                    compaction_context_entries.push(CompactionContextEntry {
+                        id: entry.id.clone(),
+                        visible_index: visible_context_len,
+                    });
+                    if let Some(message) = custom_message_to_user_message(&entry) {
+                        visible_context_len += 1;
+                        messages.push(message);
+                    }
+                }
+                SessionEntry::Custom(_) | SessionEntry::Label(_) => {}
             }
         }
 
@@ -751,5 +831,80 @@ mod tests {
             Some("assistant-3")
         );
         assert_eq!(session.compactions[1].first_kept_entry_index, Some(2));
+    }
+
+    #[test]
+    fn read_typescript_compaction_cut_point_by_tool_result_entry_id() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, r#"{{"type":"session","id":"test123","timestamp":"2024-01-15T10:30:00Z","cwd":"/tmp","model":"openai/gpt-5.2","thinkingLevel":"medium"}}"#).unwrap();
+        writeln!(file, r#"{{"type":"message","id":"user-1","parentId":null,"timestamp":"2024-01-15T10:30:00Z","message":{{"role":"user","content":"Read README","timestamp":0}}}}"#).unwrap();
+        writeln!(file, r#"{{"type":"message","id":"assistant-1","parentId":"user-1","timestamp":"2024-01-15T10:30:01Z","message":{{"role":"assistant","content":[{{"type":"toolCall","id":"call-1","name":"read","arguments":{{"path":"README.md"}}}}],"timestamp":1}}}}"#).unwrap();
+        writeln!(file, r#"{{"type":"message","id":"tool-1","parentId":"assistant-1","timestamp":"2024-01-15T10:30:02Z","message":{{"role":"toolResult","toolCallId":"call-1","toolName":"read","content":"file contents","isError":false,"timestamp":2}}}}"#).unwrap();
+        writeln!(file, r#"{{"type":"message","id":"assistant-2","parentId":"tool-1","timestamp":"2024-01-15T10:30:03Z","message":{{"role":"assistant","content":[{{"type":"text","text":"Done"}}],"timestamp":3}}}}"#).unwrap();
+        writeln!(file, r#"{{"type":"compaction","id":"compact-1","parentId":"assistant-2","timestamp":"2024-01-15T10:30:04Z","summary":"Kept tool result boundary","firstKeptEntryId":"tool-1","tokensBefore":1234,"auto":true}}"#).unwrap();
+
+        let session = SessionReader::read_file(file.path()).unwrap();
+
+        assert_eq!(session.compactions.len(), 1);
+        assert_eq!(
+            session.compactions[0].first_kept_entry_id.as_deref(),
+            Some("tool-1")
+        );
+        assert_eq!(session.compactions[0].first_kept_entry_index, Some(2));
+        assert_eq!(session.stats.tool_results, 1);
+    }
+
+    #[test]
+    fn read_typescript_tree_entries_in_compaction_context() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, r#"{{"type":"session","version":2,"id":"test123","timestamp":"2024-01-15T10:30:00Z","cwd":"/tmp","subject":"Parity","model":"openai/gpt-5.2","promptMetadata":{{"name":"system","label":"System","hash":"hash-1","source":"service"}},"parentSession":"root-session","thinkingLevel":"medium"}}"#).unwrap();
+        writeln!(file, r#"{{"type":"message","id":"user-1","parentId":null,"timestamp":"2024-01-15T10:30:00Z","message":{{"role":"user","content":"Start","timestamp":0}}}}"#).unwrap();
+        writeln!(file, r#"{{"type":"message","id":"tool-1","parentId":"user-1","timestamp":"2024-01-15T10:30:01Z","message":{{"role":"toolResult","toolCallId":"call-1","toolName":"read","content":[{{"type":"text","text":"ignored for compaction index"}}],"isError":false,"timestamp":1}}}}"#).unwrap();
+        writeln!(file, r#"{{"type":"custom_message","id":"hidden-hook-1","parentId":"tool-1","timestamp":"2024-01-15T10:30:02Z","customType":"hook","content":"Hidden hook context","display":false}}"#).unwrap();
+        writeln!(file, r#"{{"type":"custom_message","id":"visible-hook-1","parentId":"hidden-hook-1","timestamp":"2024-01-15T10:30:03Z","customType":"hook","content":"Visible hook context","display":true}}"#).unwrap();
+        writeln!(file, r#"{{"type":"branch_summary","id":"branch-1","parentId":"visible-hook-1","timestamp":"2024-01-15T10:30:04Z","fromId":"user-1","summary":"Branch context"}}"#).unwrap();
+        writeln!(file, r#"{{"type":"compaction","id":"compact-1","parentId":"branch-1","timestamp":"2024-01-15T10:30:04Z","summary":"Kept branch","firstKeptEntryId":"branch-1","tokensBefore":1234,"auto":true}}"#).unwrap();
+
+        let session = SessionReader::read_file(file.path()).unwrap();
+
+        assert_eq!(session.header.version, Some(2));
+        assert_eq!(session.header.subject.as_deref(), Some("Parity"));
+        assert_eq!(
+            session.header.parent_session.as_deref(),
+            Some("root-session")
+        );
+        assert_eq!(
+            session.header.prompt_metadata.as_ref().unwrap()["hash"],
+            "hash-1"
+        );
+        assert_eq!(session.messages.len(), 4);
+        assert!(!session
+            .messages
+            .iter()
+            .any(|message| message.text_content().contains("Hidden hook context")));
+        assert_eq!(session.messages[2].text_content(), "Visible hook context");
+        assert!(session.messages[3]
+            .text_content()
+            .contains("Branch context"));
+        assert_eq!(session.compactions[0].first_kept_entry_index, Some(2));
+    }
+
+    #[test]
+    fn resolves_hidden_custom_message_compaction_ids_without_rendering_content() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, r#"{{"type":"session","version":2,"id":"test123","timestamp":"2024-01-15T10:30:00Z","cwd":"/tmp","model":"openai/gpt-5.2","thinkingLevel":"medium"}}"#).unwrap();
+        writeln!(file, r#"{{"type":"message","id":"user-1","parentId":null,"timestamp":"2024-01-15T10:30:00Z","message":{{"role":"user","content":"Visible before hook","timestamp":0}}}}"#).unwrap();
+        writeln!(file, r#"{{"type":"custom_message","id":"hidden-hook-1","parentId":"user-1","timestamp":"2024-01-15T10:30:01Z","customType":"hook","content":"Hidden hook context","display":false}}"#).unwrap();
+        writeln!(file, r#"{{"type":"message","id":"assistant-1","parentId":"hidden-hook-1","timestamp":"2024-01-15T10:30:02Z","message":{{"role":"assistant","content":[{{"type":"text","text":"Visible after hook"}}],"timestamp":2}}}}"#).unwrap();
+        writeln!(file, r#"{{"type":"compaction","id":"compact-1","parentId":"assistant-1","timestamp":"2024-01-15T10:30:03Z","summary":"Kept hidden hook boundary","firstKeptEntryId":"hidden-hook-1","tokensBefore":1234,"auto":true}}"#).unwrap();
+
+        let session = SessionReader::read_file(file.path()).unwrap();
+
+        assert_eq!(session.messages.len(), 2);
+        assert!(!session
+            .messages
+            .iter()
+            .any(|message| message.text_content().contains("Hidden hook context")));
+        assert_eq!(session.compactions[0].first_kept_entry_index, Some(1));
     }
 }

@@ -39,7 +39,23 @@ pub const FIELD_ALIASES: &[(&str, &[(&str, &str)])] = &[
             ("model_metadata", "modelMetadata"),
             ("thinking_level", "thinkingLevel"),
             ("system_prompt", "systemPrompt"),
+            ("prompt_metadata", "promptMetadata"),
             ("branched_from", "branchedFrom"),
+            ("parent_session", "parentSession"),
+        ],
+    ),
+    (
+        "sessionMeta",
+        &[
+            ("resume_summary", "resumeSummary"),
+            ("memory_extraction_hash", "memoryExtractionHash"),
+        ],
+    ),
+    (
+        "attachmentExtract",
+        &[
+            ("attachment_id", "attachmentId"),
+            ("extracted_text", "extractedText"),
         ],
     ),
     ("assistantMessage", &[("stop_reason", "stopReason")]),
@@ -65,7 +81,19 @@ pub const FIELD_ALIASES: &[(&str, &[(&str, &str)])] = &[
             ("custom_instructions", "customInstructions"),
         ],
     ),
+    (
+        "branchSummary",
+        &[("from_id", "fromId"), ("from_hook", "fromHook")],
+    ),
+    ("custom", &[("custom_type", "customType")]),
+    ("customMessage", &[("custom_type", "customType")]),
+    ("label", &[("target_id", "targetId")]),
 ];
+
+pub const COMPACTION_CONTEXT_ENTRY_TYPES: &[&str] =
+    &["message", "custom_message", "branch_summary"];
+
+pub const COMPACTION_CONTEXT_EXCLUDED_MESSAGE_ROLES: &[&str] = &["toolResult"];
 
 #[must_use]
 pub fn canonical_stop_reason(reason: &str) -> &str {
@@ -110,7 +138,17 @@ pub fn field_aliases(section: &str) -> &'static [(&'static str, &'static str)] {
             ("model_metadata", "modelMetadata"),
             ("thinking_level", "thinkingLevel"),
             ("system_prompt", "systemPrompt"),
+            ("prompt_metadata", "promptMetadata"),
             ("branched_from", "branchedFrom"),
+            ("parent_session", "parentSession"),
+        ],
+        "sessionMeta" => &[
+            ("resume_summary", "resumeSummary"),
+            ("memory_extraction_hash", "memoryExtractionHash"),
+        ],
+        "attachmentExtract" => &[
+            ("attachment_id", "attachmentId"),
+            ("extracted_text", "extractedText"),
         ],
         "assistantMessage" => &[("stop_reason", "stopReason")],
         "toolResultMessage" => &[
@@ -126,6 +164,20 @@ pub fn field_aliases(section: &str) -> &'static [(&'static str, &'static str)] {
             ("tokens_before", "tokensBefore"),
             ("custom_instructions", "customInstructions"),
         ],
+        "branchSummary" => &[("from_id", "fromId"), ("from_hook", "fromHook")],
+        "custom" => &[("custom_type", "customType")],
+        "customMessage" => &[("custom_type", "customType")],
+        "label" => &[("target_id", "targetId")],
         _ => &[],
     }
+}
+
+#[must_use]
+pub fn is_compaction_context_entry_type(entry_type: &str) -> bool {
+    matches!(entry_type, "message" | "custom_message" | "branch_summary")
+}
+
+#[must_use]
+pub fn is_compaction_context_excluded_message_role(role: &str) -> bool {
+    matches!(role, "toolResult")
 }
