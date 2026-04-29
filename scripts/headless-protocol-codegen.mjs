@@ -1,13 +1,12 @@
-import { spawnSync } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import {
-	mkdtempSync,
-	readFileSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { readFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+	checkOrWriteGeneratedTargets,
+	formatRustWithRustfmt,
+	formatTsWithBiome,
+	rustGeneratedMatches,
+} from "./codegen-utils.mjs";
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const protoPath = resolve(rootDir, "proto/maestro/v1/headless.proto");
@@ -438,36 +437,6 @@ ${renderEntries(runtimeSchemaEntries)}
 `;
 }
 
-function formatTs(source, filePath = tsOutputPath) {
-	return formatTsViaTempFile(source, filePath);
-}
-
-function formatTsViaTempFile(source, filePath) {
-	const tempDir = mkdtempSync(join(dirname(filePath), ".headless-codegen-"));
-	const tempPath = join(tempDir, basename(filePath));
-
-	try {
-		writeFileSync(tempPath, source);
-		const result = spawnSync("bunx", ["biome", "format", "--write", tempPath], {
-			cwd: rootDir,
-			encoding: "utf8",
-		});
-		if (result.error) {
-			throw new Error(
-				`Failed to launch Biome while formatting generated TypeScript protocol file: ${result.error.message}`,
-			);
-		}
-		if (result.status !== 0) {
-			throw new Error(
-				`Failed to format generated TypeScript protocol file: ${result.stderr || result.stdout}`,
-			);
-		}
-		return readFileSync(tempPath, "utf8");
-	} finally {
-		rmSync(tempDir, { recursive: true, force: true });
-	}
-}
-
 function renderRust(protocolSpec) {
 	return `#![allow(dead_code)]
 
@@ -526,68 +495,52 @@ pub const HEADLESS_FROM_AGENT_MESSAGE_TYPES: &[&str] = ${toRustArray(
 `;
 }
 
-function formatRust(source) {
-	const result = spawnSync("rustfmt", ["--emit", "stdout"], {
-		cwd: rootDir,
-		encoding: "utf8",
-		input: source,
-	});
-	if (result.error) {
-		throw new Error(
-			`Failed to launch rustfmt while formatting generated Rust protocol file: ${result.error.message}`,
-		);
-	}
-	if (result.status !== 0) {
-		throw new Error(
-			`Failed to format generated Rust protocol file: ${result.stderr || result.stdout}`,
-		);
-	}
-	return result.stdout;
-}
-
 async function main() {
 	const check = process.argv.includes("--check");
 	const protocolSpec = buildProtocolSpec(await readFile(protoPath, "utf8"));
 	const payloadManifest = JSON.parse(await readFile(payloadManifestPath, "utf8"));
+	const rustOutput = formatRustWithRustfmt(renderRust(protocolSpec), rustOutputPath, {
+		rootDir,
+		label: "generated Rust headless protocol file",
+		check,
+		envNames: ["HEADLESS_PROTOCOL_RUSTFMT"],
+		tempPrefix: ".headless-codegen-",
+	});
 	const targets = [
 		{
 			path: tsOutputPath,
-			content: formatTs(renderTs(protocolSpec), tsOutputPath),
+			content: formatTsWithBiome(renderTs(protocolSpec), tsOutputPath, {
+				rootDir,
+				label: "generated TypeScript headless protocol file",
+				tempPrefix: ".headless-codegen-",
+			}),
 		},
 		{
 			path: tsSchemaOutputPath,
-			content: formatTs(
+			content: formatTsWithBiome(
 				renderTsSchemas(payloadManifest),
 				tsSchemaOutputPath,
+				{
+					rootDir,
+					label: "generated TypeScript headless protocol schema file",
+					tempPrefix: ".headless-codegen-",
+				},
 			),
 		},
 		{
 			path: rustOutputPath,
-			content: formatRust(renderRust(protocolSpec)),
+			content: rustOutput.content,
+			matches: (current, expected) =>
+				rustGeneratedMatches(current, expected, {
+					rustfmtAvailable: rustOutput.rustfmtAvailable,
+				}),
 		},
 	];
 
-	if (check) {
-		let failed = false;
-		for (const target of targets) {
-			const current = await readFile(target.path, "utf8").catch(() => null);
-			if (current !== target.content) {
-				failed = true;
-				console.error(
-					`Headless protocol generated file is out of date: ${target.path}`,
-				);
-			}
-		}
-		if (failed) {
-			process.exitCode = 1;
-		}
-		return;
-	}
-
-	for (const target of targets) {
-		await mkdir(dirname(target.path), { recursive: true });
-		await writeFile(target.path, target.content);
-	}
+	await checkOrWriteGeneratedTargets(targets, {
+		check,
+		outOfDateLabel: "Headless protocol generated file is out of date",
+	});
 }
 
 await main();
