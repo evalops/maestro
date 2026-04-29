@@ -14,7 +14,7 @@ use crate::{
         default_socket_path, verify_token_constant_time, IpcCommand, IpcResponse, IpcServer,
         StatusResponse,
     },
-    learner::{Learner, Outcome},
+    learner::{Learner, LearnerOutcome},
     platform_event_bus::{
         AmbientCloseReason, AmbientSessionEvent, AmbientSessionState, PlatformEventBus,
     },
@@ -576,7 +576,7 @@ impl AmbientDaemon {
                 error!("Failed to rollback cost-limited checkpoint: {}", e);
             }
             let duration = (Utc::now() - start_time).num_seconds() as u64;
-            let outcome = Outcome {
+            let outcome = LearnerOutcome {
                 task_id: plan.task_id.clone(),
                 event_type: event.event_type,
                 task_type: main_task_type,
@@ -619,7 +619,7 @@ impl AmbientDaemon {
 
         // Record outcome
         let duration = (Utc::now() - start_time).num_seconds() as u64;
-        let outcome = Outcome {
+        let outcome = LearnerOutcome {
             task_id: plan.task_id.clone(),
             event_type: event.event_type,
             task_type: main_task_type,
