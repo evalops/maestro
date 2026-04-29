@@ -683,4 +683,26 @@ mod tests {
         // Should use first user message as title
         assert!(session.title().contains("Hello"));
     }
+
+    #[test]
+    fn read_typescript_authored_tool_session() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, r#"{{"type":"session","id":"test123","timestamp":"2024-01-15T10:30:00Z","cwd":"/tmp","model":"openai/gpt-5.2","thinkingLevel":"medium"}}"#).unwrap();
+        writeln!(file, r#"{{"type":"message","timestamp":"2024-01-15T10:30:00Z","message":{{"role":"user","content":"Read README","timestamp":0}}}}"#).unwrap();
+        writeln!(file, r#"{{"type":"message","timestamp":"2024-01-15T10:30:01Z","message":{{"role":"assistant","api":"openai-responses","provider":"openai","model":"gpt-5.2","usage":{{"input":10,"output":4,"cacheRead":2,"cacheWrite":1,"cost":{{"input":0.1,"output":0.2,"cacheRead":0.01,"cacheWrite":0.02,"total":0.33}}}},"stopReason":"toolUse","timestamp":1,"content":[{{"type":"toolCall","id":"call_1","name":"read","arguments":{{"path":"README.md"}}}}]}}}}"#).unwrap();
+        writeln!(file, r#"{{"type":"message","timestamp":"2024-01-15T10:30:02Z","message":{{"role":"toolResult","toolCallId":"call_1","toolName":"read","content":[{{"type":"text","text":"file contents"}}],"isError":false,"timestamp":2}}}}"#).unwrap();
+
+        let session = SessionReader::read_file(file.path()).unwrap();
+
+        assert_eq!(session.messages.len(), 3);
+        assert_eq!(session.stats.user_messages, 1);
+        assert_eq!(session.stats.assistant_messages, 1);
+        assert_eq!(session.stats.tool_calls, 1);
+        assert_eq!(session.stats.tool_results, 1);
+        assert_eq!(session.stats.total_input_tokens, 10);
+        assert_eq!(session.stats.total_output_tokens, 4);
+        assert_eq!(session.usage_entries.len(), 1);
+        assert_eq!(session.usage_entries[0].model, "gpt-5.2");
+        assert_eq!(session.usage_entries[0].usage.cache_read, 2);
+    }
 }
