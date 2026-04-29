@@ -14,6 +14,48 @@ const rustOutputPath = resolve(
 	"packages/tui-rs/src/session/wire_format_generated.rs",
 );
 
+function isPlainObject(value) {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function assertStringMap(value, path) {
+	if (!isPlainObject(value)) {
+		throw new Error(`Session wire manifest ${path} must be an object`);
+	}
+	for (const [key, nested] of Object.entries(value)) {
+		if (typeof nested !== "string") {
+			throw new Error(
+				`Session wire manifest ${path}.${key} must be a string`,
+			);
+		}
+	}
+}
+
+function assertNestedStringMap(value, path) {
+	if (!isPlainObject(value)) {
+		throw new Error(`Session wire manifest ${path} must be an object`);
+	}
+	for (const [key, nested] of Object.entries(value)) {
+		assertStringMap(nested, `${path}.${key}`);
+	}
+}
+
+function validateManifest(manifest) {
+	if (!isPlainObject(manifest)) {
+		throw new Error("Session wire manifest must be an object");
+	}
+	if (typeof manifest.version !== "string" || manifest.version.length === 0) {
+		throw new Error("Session wire manifest version must be a non-empty string");
+	}
+	assertStringMap(manifest.stopReasonAliases, "stopReasonAliases");
+	assertNestedStringMap(manifest.fieldAliases, "fieldAliases");
+	assertStringMap(manifest.contentBlockTypeAliases, "contentBlockTypeAliases");
+	assertNestedStringMap(
+		manifest.contentBlockFieldAliases,
+		"contentBlockFieldAliases",
+	);
+}
+
 function renderObject(value, indent = "") {
 	if (!value || typeof value !== "object" || Array.isArray(value)) {
 		return JSON.stringify(value);
@@ -49,6 +91,33 @@ export const sessionWireFieldAliases = ${renderObject(manifest.fieldAliases)} as
 export const sessionWireContentBlockTypeAliases = ${renderObject(manifest.contentBlockTypeAliases)} as const;
 
 export const sessionWireContentBlockFieldAliases = ${renderObject(manifest.contentBlockFieldAliases)} as const;
+
+type SessionWireAliasSource = Readonly<Record<string, unknown>>;
+
+function getSessionWireAlias<T extends SessionWireAliasSource>(
+\taliases: T,
+\tkey: string,
+): T[keyof T] | undefined {
+\treturn Object.prototype.hasOwnProperty.call(aliases, key)
+\t\t? aliases[key as keyof T]
+\t\t: undefined;
+}
+
+export function canonicalSessionWireStopReason(reason: string): string {
+\treturn (
+\t\tgetSessionWireAlias(sessionWireStopReasonAliases, reason) ?? reason
+\t);
+}
+
+export function canonicalSessionWireContentBlockType(type: string): string {
+\treturn (
+\t\tgetSessionWireAlias(sessionWireContentBlockTypeAliases, type) ?? type
+\t);
+}
+
+export function getSessionWireContentBlockFieldAliases(type: string) {
+\treturn getSessionWireAlias(sessionWireContentBlockFieldAliases, type);
+}
 `;
 }
 
@@ -124,6 +193,7 @@ function formatTs(source, outputPath) {
 async function main() {
 	const check = process.argv.includes("--check");
 	const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+	validateManifest(manifest);
 	const rustSource = renderRust(manifest);
 	const targets = [
 		{
