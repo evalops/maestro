@@ -9,6 +9,7 @@ use crate::{
     critic::{Critic, CriticConfig},
     decider::{Decider, DeciderConfig},
     event_bus::{EventBus, EventBusConfig},
+    execution_report::ExecutionReport,
     executor::{Executor, ExecutorConfig},
     ipc::{
         default_socket_path, verify_token_constant_time, IpcCommand, IpcResponse, IpcServer,
@@ -691,7 +692,7 @@ impl AmbientDaemon {
         critique: &CriticResult,
     ) -> Option<crate::pr_creator::PrCreationResult> {
         let pr_title = format!("[Ambient] {}", plan.summary);
-        let pr_body = self.generate_pr_body(plan, result, critique);
+        let pr_body = ExecutionReport::new(event, plan, result, critique).render_markdown();
         let repo_path = std::path::Path::new(&event.repo.path);
         let authorship = match PrCreator::build_authorship_metadata(event, model_used) {
             Ok(authorship) => authorship,
@@ -715,63 +716,6 @@ impl AmbientDaemon {
                 )
                 .await,
         )
-    }
-
-    /// Generate PR body from plan and results
-    fn generate_pr_body(
-        &self,
-        plan: &TaskPlan,
-        result: &ExecutionResult,
-        critique: &CriticResult,
-    ) -> String {
-        let mut body = String::new();
-
-        // Summary
-        body.push_str("## Summary\n\n");
-        body.push_str(&plan.summary);
-        body.push_str("\n\n");
-
-        // Changes
-        body.push_str("## Changes\n\n");
-        for change in &result.changes {
-            let icon = match change.change_type {
-                ChangeType::Create => "➕",
-                ChangeType::Modify => "✏️",
-                ChangeType::Delete => "🗑️",
-                ChangeType::Rename => "📝",
-            };
-            body.push_str(&format!(
-                "- {} `{}` (+{}, -{})\n",
-                icon, change.file, change.additions, change.deletions
-            ));
-        }
-        body.push('\n');
-
-        // Test results
-        if !result.test_results.is_empty() {
-            body.push_str("## Test Results\n\n");
-            for test in &result.test_results {
-                let icon = if test.passed { "✅" } else { "❌" };
-                body.push_str(&format!("- {} {}\n", icon, test.name));
-            }
-            body.push('\n');
-        }
-
-        // Critic assessment
-        body.push_str("## Quality Assessment\n\n");
-        body.push_str(&format!(
-            "**Confidence:** {:.0}%\n\n",
-            critique.confidence * 100.0
-        ));
-
-        if !critique.suggestions.is_empty() {
-            body.push_str("**Suggestions:**\n");
-            for suggestion in &critique.suggestions {
-                body.push_str(&format!("- {}\n", suggestion));
-            }
-        }
-
-        body
     }
 
     /// Load persisted state
