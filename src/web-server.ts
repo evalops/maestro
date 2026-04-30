@@ -122,10 +122,15 @@ const getDbModule = (() => {
 	};
 })();
 import { WebActionApprovalService } from "./server/approval-service.js";
-import { checkApiAuth } from "./server/authz.js";
+import { checkApiAuth, getAuthSubject } from "./server/authz.js";
 import { startAutomationScheduler } from "./server/automations/scheduler.js";
 import { clientToolService } from "./server/client-tools-service.js";
 import { handleChatWebSocket } from "./server/handlers/chat-ws.js";
+import { handleRuntimeAppServerWebSocket } from "./server/handlers/runtime-app-server-ws.js";
+import {
+	sessionIdPattern,
+	verifySessionOwnership,
+} from "./server/handlers/sessions.js";
 import { HeadlessRuntimeService } from "./server/headless-runtime-service.js";
 import {
 	isOverloaded,
@@ -149,6 +154,7 @@ import {
 import { requestTracker } from "./server/request-tracker.js";
 import { createRequestHandler } from "./server/router.js";
 import { createRoutes } from "./server/routes.js";
+import { authorizeRuntimeWebSocketSession } from "./server/runtime-ws-access.js";
 import {
 	createAuthMiddleware,
 	createCorsMiddleware,
@@ -163,6 +169,7 @@ import {
 	createCorsHeaders,
 	sendJson,
 } from "./server/server-utils.js";
+import { createWebSessionManagerForRequest } from "./server/session-scope.js";
 import { serveStatic } from "./server/static-server.js";
 import { resolveWebRoot } from "./server/web-root.js";
 
@@ -189,6 +196,21 @@ function registerCrashHandlers() {
 		logger.error("FATAL: Unhandled Rejection. Exiting...");
 		process.exit(1);
 	});
+}
+
+async function validateRuntimeSessionAccess(
+	req: IncomingMessage,
+	sessionId: string,
+): Promise<boolean> {
+	if (!sessionIdPattern.test(sessionId)) {
+		return false;
+	}
+	const sessionManager = createWebSessionManagerForRequest(req, false);
+	const session = await sessionManager.loadSession(sessionId);
+	if (!session) {
+		return false;
+	}
+	return verifySessionOwnership(session, getAuthSubject(req));
 }
 
 function normalizeAuthMode(value?: string | null): AuthMode {
@@ -857,7 +879,7 @@ export async function startWebServer(
 			req.url || "/",
 			`http://${req.headers.host || "localhost"}`,
 		);
-		if (url.pathname !== "/api/chat/ws") {
+		if (url.pathname !== "/api/chat/ws" && url.pathname !== "/api/runtime/ws") {
 			socket.destroy();
 			return;
 		}
@@ -877,7 +899,30 @@ export async function startWebServer(
 			return;
 		}
 
+		let runtimeSessionId: string | undefined;
+		if (url.pathname === "/api/runtime/ws") {
+			const authorization = await authorizeRuntimeWebSocketSession({
+				req,
+				socket,
+				requestedSessionId: url.searchParams.get("sessionId"),
+				validateSessionAccess: validateRuntimeSessionAccess,
+				logAccessError: logError,
+			});
+			if (authorization === null) {
+				return;
+			}
+			runtimeSessionId = authorization;
+		}
+
 		wsServer.handleUpgrade(req, socket, head, (ws) => {
+			if (url.pathname === "/api/runtime/ws") {
+				handleRuntimeAppServerWebSocket(ws, {
+					sessionId: runtimeSessionId,
+					validateSessionAccess: (sessionId) =>
+						validateRuntimeSessionAccess(req, sessionId),
+				});
+				return;
+			}
 			handleChatWebSocket(ws, req, context);
 		});
 	});

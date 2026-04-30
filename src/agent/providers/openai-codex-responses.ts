@@ -1,5 +1,3 @@
-import { arch, platform, release } from "node:os";
-import { extractOpenAICodexAccountId } from "../../oauth/openai-codex.js";
 import { fetchWithRetry } from "../../providers/network-config.js";
 import {
 	createTimeoutReader,
@@ -18,6 +16,7 @@ import type {
 	ToolCall,
 	Usage,
 } from "../types.js";
+import { resolveOpenAICodexSession } from "./openai-codex-session.js";
 import type { OpenAIOptions } from "./openai-shared.js";
 import { filterResponsesApiTools } from "./openai-shared.js";
 import { sanitizeSurrogates } from "./sanitize-unicode.js";
@@ -29,9 +28,6 @@ const toolArgumentNormalizer = createToolArgumentNormalizer({
 	logger,
 	providerLabel: "OpenAI Codex",
 });
-
-const DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api";
-const ORIGINATOR = "codex_cli_rs";
 
 type ResponsesInputContent =
 	| { type: "input_text"; text: string }
@@ -152,20 +148,19 @@ export async function* streamOpenAICodexResponses(
 
 	try {
 		const token = options.apiKey;
-		const accountId = resolveAccountId(token, options.headers);
 		const body = buildRequestBody(model, context, options);
-		const headers = buildHeaders(
-			model.headers,
-			options.headers,
-			accountId,
+		const session = resolveOpenAICodexSession({
 			token,
-			options.sessionId,
-		);
+			modelBaseUrl: model.baseUrl,
+			modelHeaders: model.headers,
+			optionHeaders: options.headers,
+			sessionId: options.sessionId,
+		});
 		const response = await fetchWithRetry(
-			resolveCodexUrl(model.baseUrl),
+			session.url,
 			{
 				method: "POST",
-				headers,
+				headers: session.headers,
 				body: JSON.stringify(body),
 				signal: options.signal,
 			},
@@ -683,61 +678,6 @@ function normalizeStatus(status: unknown): CodexResponseStatus | undefined {
 		return status;
 	}
 	return undefined;
-}
-
-function resolveCodexUrl(baseUrl?: string): string {
-	const raw =
-		baseUrl && baseUrl.trim().length > 0 ? baseUrl : DEFAULT_CODEX_BASE_URL;
-	const normalized = raw.replace(/\/+$/u, "");
-	if (normalized.endsWith("/codex/responses")) return normalized;
-	if (normalized.endsWith("/codex")) return `${normalized}/responses`;
-	return `${normalized}/codex/responses`;
-}
-
-function buildHeaders(
-	modelHeaders: Record<string, string> | undefined,
-	optionHeaders: Record<string, string> | undefined,
-	accountId: string,
-	token: string,
-	sessionId?: string,
-): Headers {
-	const headers = new Headers(modelHeaders);
-	for (const [key, value] of Object.entries(optionHeaders ?? {})) {
-		headers.set(key, value);
-	}
-	headers.set("Authorization", `Bearer ${token}`);
-	headers.set("chatgpt-account-id", accountId);
-	headers.set("originator", ORIGINATOR);
-	headers.set("User-Agent", `maestro (${platform()} ${release()}; ${arch()})`);
-	headers.set("OpenAI-Beta", "responses=experimental");
-	headers.set("accept", "text/event-stream");
-	headers.set("content-type", "application/json");
-	if (sessionId) {
-		headers.set("session_id", sessionId);
-		headers.set("x-client-request-id", sessionId);
-	}
-	return headers;
-}
-
-function resolveAccountId(
-	token: string,
-	headers: Record<string, string> | undefined,
-): string {
-	for (const [key, value] of Object.entries(headers ?? {})) {
-		if (key.toLowerCase() === "chatgpt-account-id" && value.trim()) {
-			return value.trim();
-		}
-	}
-	const accountId =
-		process.env.OPENAI_CODEX_ACCOUNT_ID?.trim() ??
-		process.env.CHATGPT_ACCOUNT_ID?.trim() ??
-		extractOpenAICodexAccountId(token);
-	if (!accountId) {
-		throw new Error(
-			"OpenAI Codex account id is required. Log in with /login openai-codex or set OPENAI_CODEX_ACCOUNT_ID.",
-		);
-	}
-	return accountId;
 }
 
 function mapCodexReasoningEffort(
