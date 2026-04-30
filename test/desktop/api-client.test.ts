@@ -252,4 +252,37 @@ describe("desktop api client", () => {
 		);
 		expect(retryHeaders.get("authorization")).toBe("Bearer desktop-key");
 	});
+
+	it("retries rejected desktop API config requests before sending", async () => {
+		const fetchMock = vi
+			.fn()
+			.mockImplementation(() =>
+				Promise.resolve(makeJsonResponse({ topics: [] })),
+			);
+		global.fetch = fetchMock;
+		const getApiConfig = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("ipc busy"))
+			.mockResolvedValueOnce({
+				baseUrl: "http://localhost:8124",
+				apiKey: "desktop-key",
+				csrfToken: "desktop-csrf",
+			});
+		(globalThis as unknown as { window: unknown }).window = {
+			electron: { getApiConfig },
+			setTimeout,
+		};
+
+		const client = new ApiClient("http://localhost:8080");
+		await client.listMemoryTopics();
+
+		expect(getApiConfig).toHaveBeenCalledTimes(2);
+		expect(fetchMock.mock.calls[0]?.[0]).toBe(
+			"http://localhost:8124/api/memory?action=list",
+		);
+		const retryHeaders = new Headers(
+			(fetchMock.mock.calls[0]?.[1] as RequestInit).headers,
+		);
+		expect(retryHeaders.get("authorization")).toBe("Bearer desktop-key");
+	});
 });

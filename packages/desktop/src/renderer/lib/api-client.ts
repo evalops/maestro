@@ -689,6 +689,7 @@ export class ApiClient {
 			return;
 		}
 		const loadConfig = async (): Promise<void> => {
+			let lastConfigError: unknown;
 			for (let attempt = 0; attempt < DESKTOP_CONFIG_MAX_ATTEMPTS; attempt++) {
 				const configTimeout = new Promise<typeof DESKTOP_CONFIG_TIMEOUT>(
 					(resolve) => {
@@ -703,7 +704,13 @@ export class ApiClient {
 					.then(
 						(config: DesktopApiConfig | null | undefined) => config ?? null,
 					);
-				const config = await Promise.race([configRequest, configTimeout]);
+				let config: DesktopApiConfig | null | typeof DESKTOP_CONFIG_TIMEOUT;
+				try {
+					config = await Promise.race([configRequest, configTimeout]);
+				} catch (err: unknown) {
+					lastConfigError = err;
+					continue;
+				}
 
 				if (config === DESKTOP_CONFIG_TIMEOUT) {
 					continue;
@@ -722,9 +729,10 @@ export class ApiClient {
 				}
 				return;
 			}
-			throw new Error(
-				`Timed out loading desktop API config after ${DESKTOP_CONFIG_MAX_ATTEMPTS} attempts`,
-			);
+			const message = `Failed to load desktop API config after ${DESKTOP_CONFIG_MAX_ATTEMPTS} attempts`;
+			throw lastConfigError instanceof Error
+				? new Error(message, { cause: lastConfigError })
+				: new Error(message);
 		};
 		this.configPromise = loadConfig().catch((err: unknown) => {
 			this.configPromise = null;
