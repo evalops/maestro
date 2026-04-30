@@ -3,7 +3,7 @@
  * Do not edit manually; update `headless-protocol-payloads.manifest.json` instead.
  */
 
-import { type Static, type TSchema, Type } from "@sinclair/typebox";
+import { type Static, Type } from "@sinclair/typebox";
 import {
 	headlessApprovalModes,
 	headlessConnectionRoles,
@@ -20,17 +20,7 @@ import {
 	headlessUtilityFileWatchChangeTypes,
 	headlessUtilityOperations,
 } from "./headless-protocol-generated.js";
-
-function stringLiteralUnion<const T extends readonly string[]>(values: T) {
-	return Type.Unsafe<T[number]>(
-		Type.Union(
-			values.map((value) => Type.Literal(value)) as unknown as [
-				TSchema,
-				...TSchema[],
-			],
-		),
-	);
-}
+import { stringLiteralUnion } from "./typebox-utils.js";
 
 export const HeadlessClientInfoSchema = Type.Object(
 	{
