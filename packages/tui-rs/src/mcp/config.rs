@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::path_utils::{dedupe_paths, env_path};
+use crate::path_utils::{dedupe_paths, env_path, legacy_composer_home_dir, maestro_home_dir};
 
 /// Transport type for MCP server communication
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -246,12 +246,11 @@ fn user_config_paths() -> Vec<PathBuf> {
         return vec![path];
     }
     let mut paths = Vec::new();
-    if let Some(maestro_home) = env_path("MAESTRO_HOME") {
+    if let Some(maestro_home) = maestro_home_dir() {
         paths.push(maestro_home.join("mcp.json"));
     }
-    if let Some(home) = dirs::home_dir() {
-        paths.push(home.join(".maestro").join("mcp.json"));
-        paths.push(home.join(".composer").join("mcp.json"));
+    if let Some(composer_home) = legacy_composer_home_dir() {
+        paths.push(composer_home.join("mcp.json"));
     }
     dedupe_paths(paths)
 }
@@ -261,12 +260,11 @@ fn enterprise_config_paths() -> Vec<PathBuf> {
         return vec![path];
     }
     let mut paths = Vec::new();
-    if let Some(maestro_home) = env_path("MAESTRO_HOME") {
+    if let Some(maestro_home) = maestro_home_dir() {
         paths.push(maestro_home.join("enterprise").join("mcp.json"));
     }
-    if let Some(home) = dirs::home_dir() {
-        paths.push(home.join(".maestro").join("enterprise").join("mcp.json"));
-        paths.push(home.join(".composer").join("enterprise").join("mcp.json"));
+    if let Some(composer_home) = legacy_composer_home_dir() {
+        paths.push(composer_home.join("enterprise").join("mcp.json"));
     }
     dedupe_paths(paths)
 }
@@ -559,6 +557,56 @@ mod tests {
             enterprise_config_paths(),
             vec![PathBuf::from("/tmp/override-enterprise-mcp.json")]
         );
+
+        restore_env_var("MAESTRO_ENTERPRISE_MCP_PATH", previous_override);
+        restore_env_var("MAESTRO_HOME", previous_home);
+    }
+
+    #[test]
+    fn test_user_config_paths_use_custom_maestro_home_without_default_maestro_fallback() {
+        let _lock = ENV_MUTEX.lock().expect("lock env");
+        let previous_override = std::env::var("MAESTRO_USER_MCP_PATH").ok();
+        let previous_home = std::env::var("MAESTRO_HOME").ok();
+        let home = dirs::home_dir().expect("home dir");
+
+        std::env::remove_var("MAESTRO_USER_MCP_PATH");
+        std::env::set_var("MAESTRO_HOME", "/tmp/custom-maestro-home");
+
+        let paths = user_config_paths();
+
+        assert_eq!(
+            paths,
+            dedupe_paths(vec![
+                PathBuf::from("/tmp/custom-maestro-home/mcp.json"),
+                home.join(".composer").join("mcp.json"),
+            ])
+        );
+        assert!(!paths.contains(&home.join(".maestro").join("mcp.json")));
+
+        restore_env_var("MAESTRO_USER_MCP_PATH", previous_override);
+        restore_env_var("MAESTRO_HOME", previous_home);
+    }
+
+    #[test]
+    fn test_enterprise_config_paths_use_custom_maestro_home_without_default_maestro_fallback() {
+        let _lock = ENV_MUTEX.lock().expect("lock env");
+        let previous_override = std::env::var("MAESTRO_ENTERPRISE_MCP_PATH").ok();
+        let previous_home = std::env::var("MAESTRO_HOME").ok();
+        let home = dirs::home_dir().expect("home dir");
+
+        std::env::remove_var("MAESTRO_ENTERPRISE_MCP_PATH");
+        std::env::set_var("MAESTRO_HOME", "/tmp/custom-maestro-home");
+
+        let paths = enterprise_config_paths();
+
+        assert_eq!(
+            paths,
+            dedupe_paths(vec![
+                PathBuf::from("/tmp/custom-maestro-home/enterprise/mcp.json"),
+                home.join(".composer").join("enterprise").join("mcp.json"),
+            ])
+        );
+        assert!(!paths.contains(&home.join(".maestro").join("enterprise").join("mcp.json")));
 
         restore_env_var("MAESTRO_ENTERPRISE_MCP_PATH", previous_override);
         restore_env_var("MAESTRO_HOME", previous_home);

@@ -13,7 +13,7 @@ use std::time::SystemTime;
 use regex::Regex;
 use url::Url;
 
-use crate::path_utils::env_path;
+use crate::path_utils::{env_path, legacy_composer_home_dir, maestro_home_dir};
 
 use super::dangerous_patterns::check_dangerous_patterns;
 use super::path_containment::{expand_tilde, is_tilde_path};
@@ -164,20 +164,11 @@ fn policy_path_candidates() -> Vec<PolicyPathCandidate> {
     if let Some(path) = env_path("MAESTRO_POLICY_PATH") {
         push_policy_path_candidate(&mut candidates, path, true);
     }
-    if let Some(maestro_home) = env_path("MAESTRO_HOME") {
+    if let Some(maestro_home) = maestro_home_dir() {
         push_policy_path_candidate(&mut candidates, maestro_home.join("policy.json"), false);
     }
-    if let Some(home) = dirs::home_dir() {
-        push_policy_path_candidate(
-            &mut candidates,
-            home.join(".maestro").join("policy.json"),
-            false,
-        );
-        push_policy_path_candidate(
-            &mut candidates,
-            home.join(".composer").join("policy.json"),
-            false,
-        );
+    if let Some(composer_home) = legacy_composer_home_dir() {
+        push_policy_path_candidate(&mut candidates, composer_home.join("policy.json"), false);
     }
     candidates
 }
@@ -947,6 +938,17 @@ fn is_private_ip(ip: &IpAddr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{LazyLock, Mutex};
+
+    static ENV_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    fn restore_env_var(name: &str, previous: Option<String>) {
+        if let Some(value) = previous {
+            std::env::set_var(name, value);
+        } else {
+            std::env::remove_var(name);
+        }
+    }
 
     // ========================================================================
     // Private IP Detection Tests
@@ -1063,6 +1065,32 @@ mod tests {
             let p = path.unwrap();
             assert!(p.ends_with("policy.json"));
         }
+    }
+
+    #[test]
+    fn test_policy_path_candidates_use_custom_maestro_home_without_default_maestro_fallback() {
+        let _lock = ENV_MUTEX.lock().expect("lock env");
+        let previous_enterprise = std::env::var("MAESTRO_ENTERPRISE_POLICY_PATH").ok();
+        let previous_policy = std::env::var("MAESTRO_POLICY_PATH").ok();
+        let previous_home = std::env::var("MAESTRO_HOME").ok();
+        let home = dirs::home_dir().expect("home dir");
+
+        std::env::remove_var("MAESTRO_ENTERPRISE_POLICY_PATH");
+        std::env::remove_var("MAESTRO_POLICY_PATH");
+        std::env::set_var("MAESTRO_HOME", "/tmp/custom-maestro-home");
+
+        let paths: Vec<PathBuf> = policy_path_candidates()
+            .into_iter()
+            .map(|candidate| candidate.path)
+            .collect();
+
+        assert!(paths.contains(&PathBuf::from("/tmp/custom-maestro-home/policy.json")));
+        assert!(paths.contains(&home.join(".composer").join("policy.json")));
+        assert!(!paths.contains(&home.join(".maestro").join("policy.json")));
+
+        restore_env_var("MAESTRO_ENTERPRISE_POLICY_PATH", previous_enterprise);
+        restore_env_var("MAESTRO_POLICY_PATH", previous_policy);
+        restore_env_var("MAESTRO_HOME", previous_home);
     }
 
     #[test]
