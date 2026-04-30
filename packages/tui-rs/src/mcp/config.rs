@@ -4,9 +4,11 @@
 //! with proper precedence handling.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+
+use crate::path_utils::{dedupe_paths, env_path};
 
 /// Transport type for MCP server communication
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -198,8 +200,7 @@ pub fn load_mcp_config(project_root: Option<&Path>) -> McpConfig {
 
     // Load in precedence order (lowest first, highest last)
     // User config (lowest precedence)
-    if let Some(home) = dirs::home_dir() {
-        let user_path = home.join(".composer").join("mcp.json");
+    if let Some(user_path) = effective_user_config_path() {
         load_config_file(&user_path, McpConfigScope::User, &mut merged);
     }
 
@@ -215,14 +216,59 @@ pub fn load_mcp_config(project_root: Option<&Path>) -> McpConfig {
     }
 
     // Enterprise config (highest precedence)
-    if let Some(home) = dirs::home_dir() {
-        let enterprise_path = home.join(".composer").join("enterprise").join("mcp.json");
+    if let Some(enterprise_path) = effective_enterprise_config_path() {
         load_config_file(&enterprise_path, McpConfigScope::Enterprise, &mut merged);
     }
 
     McpConfig {
         servers: merged.into_values().collect(),
     }
+}
+
+fn effective_user_config_path() -> Option<PathBuf> {
+    select_effective_config_path(user_config_paths())
+}
+
+fn effective_enterprise_config_path() -> Option<PathBuf> {
+    select_effective_config_path(enterprise_config_paths())
+}
+
+fn select_effective_config_path(paths: Vec<PathBuf>) -> Option<PathBuf> {
+    paths
+        .iter()
+        .find(|path| path.is_file())
+        .cloned()
+        .or_else(|| paths.into_iter().next())
+}
+
+fn user_config_paths() -> Vec<PathBuf> {
+    if let Some(path) = env_path("MAESTRO_USER_MCP_PATH") {
+        return vec![path];
+    }
+    let mut paths = Vec::new();
+    if let Some(maestro_home) = env_path("MAESTRO_HOME") {
+        paths.push(maestro_home.join("mcp.json"));
+    }
+    if let Some(home) = dirs::home_dir() {
+        paths.push(home.join(".maestro").join("mcp.json"));
+        paths.push(home.join(".composer").join("mcp.json"));
+    }
+    dedupe_paths(paths)
+}
+
+fn enterprise_config_paths() -> Vec<PathBuf> {
+    if let Some(path) = env_path("MAESTRO_ENTERPRISE_MCP_PATH") {
+        return vec![path];
+    }
+    let mut paths = Vec::new();
+    if let Some(maestro_home) = env_path("MAESTRO_HOME") {
+        paths.push(maestro_home.join("enterprise").join("mcp.json"));
+    }
+    if let Some(home) = dirs::home_dir() {
+        paths.push(home.join(".maestro").join("enterprise").join("mcp.json"));
+        paths.push(home.join(".composer").join("enterprise").join("mcp.json"));
+    }
+    dedupe_paths(paths)
 }
 
 /// Load a single config file and merge into the map
@@ -328,6 +374,17 @@ pub fn expand_env_vars(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{LazyLock, Mutex};
+
+    static ENV_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    fn restore_env_var(name: &str, previous: Option<String>) {
+        if let Some(value) = previous {
+            std::env::set_var(name, value);
+        } else {
+            std::env::remove_var(name);
+        }
+    }
 
     #[test]
     fn test_server_config_validation_stdio() {
@@ -466,6 +523,45 @@ mod tests {
         let server = merged.get("scope-test").expect("server");
         assert_eq!(server.scope, McpConfigScope::Project);
         assert_eq!(server.transport, McpTransport::Stdio);
+    }
+
+    #[test]
+    fn test_user_config_paths_do_not_fall_back_when_env_override_is_set() {
+        let _lock = ENV_MUTEX.lock().expect("lock env");
+        let previous_override = std::env::var("MAESTRO_USER_MCP_PATH").ok();
+        let previous_home = std::env::var("MAESTRO_HOME").ok();
+
+        std::env::set_var("MAESTRO_USER_MCP_PATH", "/tmp/override-user-mcp.json");
+        std::env::set_var("MAESTRO_HOME", "/tmp/maestro-home");
+
+        assert_eq!(
+            user_config_paths(),
+            vec![PathBuf::from("/tmp/override-user-mcp.json")]
+        );
+
+        restore_env_var("MAESTRO_USER_MCP_PATH", previous_override);
+        restore_env_var("MAESTRO_HOME", previous_home);
+    }
+
+    #[test]
+    fn test_enterprise_config_paths_do_not_fall_back_when_env_override_is_set() {
+        let _lock = ENV_MUTEX.lock().expect("lock env");
+        let previous_override = std::env::var("MAESTRO_ENTERPRISE_MCP_PATH").ok();
+        let previous_home = std::env::var("MAESTRO_HOME").ok();
+
+        std::env::set_var(
+            "MAESTRO_ENTERPRISE_MCP_PATH",
+            "/tmp/override-enterprise-mcp.json",
+        );
+        std::env::set_var("MAESTRO_HOME", "/tmp/maestro-home");
+
+        assert_eq!(
+            enterprise_config_paths(),
+            vec![PathBuf::from("/tmp/override-enterprise-mcp.json")]
+        );
+
+        restore_env_var("MAESTRO_ENTERPRISE_MCP_PATH", previous_override);
+        restore_env_var("MAESTRO_HOME", previous_home);
     }
 
     #[test]

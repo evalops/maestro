@@ -4,8 +4,9 @@
 
 use std::env;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use crate::path_utils::resolve_env_path;
 use crate::safety::is_safe_mode_enabled;
 use crate::sandbox::SANDBOX_ENV_VAR;
 use crate::session::ThinkingLevel;
@@ -38,6 +39,8 @@ pub fn build_runtime_badges(params: RuntimeBadgeParams) -> RuntimeBadges {
     if env::var("MAESTRO_PLAN_MODE").ok().as_deref() == Some("1") {
         core.push("plan:on".to_string());
     }
+
+    core.extend(enterprise_runtime_badges());
 
     core.push(format!(
         "approvals:{}",
@@ -137,6 +140,93 @@ fn thinking_badge_label(level: ThinkingLevel) -> Option<&'static str> {
     }
 }
 
+pub fn enterprise_badges_from_sources(
+    enterprise_mode: bool,
+    policy_present: bool,
+    enterprise_mcp_present: bool,
+) -> Vec<String> {
+    let mut badges = Vec::new();
+    if enterprise_mode || policy_present || enterprise_mcp_present {
+        badges.push("ent:on".to_string());
+    }
+    if policy_present {
+        badges.push("ent:policy".to_string());
+    }
+    if enterprise_mcp_present {
+        badges.push("ent:mcp".to_string());
+    }
+    badges
+}
+
+fn enterprise_runtime_badges() -> Vec<String> {
+    enterprise_badges_from_sources(
+        truthy_env("MAESTRO_ENTERPRISE_MODE")
+            || has_env_value("MAESTRO_ENTERPRISE_ORG_ID")
+            || has_env_value("MAESTRO_ENTERPRISE_TOKEN"),
+        rust_policy_config_exists(),
+        rust_enterprise_mcp_config_exists(),
+    )
+}
+
+fn truthy_env(name: &str) -> bool {
+    env::var(name)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn has_env_value(name: &str) -> bool {
+    env::var(name)
+        .ok()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+}
+
+fn rust_policy_config_exists() -> bool {
+    env_path_exists("MAESTRO_ENTERPRISE_POLICY_PATH")
+        || env_path_exists("MAESTRO_POLICY_PATH")
+        || maestro_home_dir()
+            .map(|home| home.join("policy.json").is_file())
+            .unwrap_or(false)
+        || legacy_composer_dir()
+            .map(|home| home.join("policy.json").is_file())
+            .unwrap_or(false)
+}
+
+fn rust_enterprise_mcp_config_exists() -> bool {
+    env_path_exists("MAESTRO_ENTERPRISE_MCP_PATH")
+        || maestro_home_dir()
+            .map(|home| home.join("enterprise").join("mcp.json").is_file())
+            .unwrap_or(false)
+        || legacy_composer_dir()
+            .map(|home| home.join("enterprise").join("mcp.json").is_file())
+            .unwrap_or(false)
+}
+
+fn legacy_composer_dir() -> Option<PathBuf> {
+    dirs::home_dir().map(|home| home.join(".composer"))
+}
+
+fn maestro_home_dir() -> Option<PathBuf> {
+    env::var("MAESTRO_HOME")
+        .ok()
+        .and_then(|value| resolve_env_path(&value))
+        .or_else(|| dirs::home_dir().map(|home| home.join(".maestro")))
+}
+
+fn env_path_exists(name: &str) -> bool {
+    env::var(name)
+        .ok()
+        .and_then(|value| resolve_env_path(&value))
+        .map(|path| path.is_file())
+        .unwrap_or(false)
+}
+
 fn is_docker_env() -> bool {
     if env::var("DOCKER_CONTAINER").ok().as_deref() == Some("1") {
         return true;
@@ -232,6 +322,19 @@ fn is_musl_env() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::sync::{LazyLock, Mutex};
+    use tempfile::tempdir;
+
+    static ENV_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    fn restore_env_var(name: &str, previous: Option<String>) {
+        if let Some(value) = previous {
+            env::set_var(name, value);
+        } else {
+            env::remove_var(name);
+        }
+    }
 
     #[test]
     fn test_runtime_badges_show_mcp_failures_without_connected_servers() {
@@ -259,5 +362,109 @@ mod tests {
         });
 
         assert!(badges.core.contains(&"mcp:1(3)!2".to_string()));
+    }
+
+    #[test]
+    fn test_enterprise_badges_from_sources_stay_compact() {
+        let badges = enterprise_badges_from_sources(true, true, true);
+
+        assert_eq!(
+            badges,
+            vec![
+                "ent:on".to_string(),
+                "ent:policy".to_string(),
+                "ent:mcp".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_enterprise_badges_stay_hidden_without_sources() {
+        let badges = enterprise_badges_from_sources(false, false, false);
+
+        assert!(badges.is_empty());
+    }
+
+    #[test]
+    fn test_enterprise_config_detection_checks_default_maestro_home() {
+        let _lock = ENV_MUTEX.lock().expect("lock env");
+        let temp = tempdir().expect("tempdir");
+        let maestro_home = temp.path().join(".maestro");
+        fs::create_dir_all(maestro_home.join("enterprise")).expect("create maestro dirs");
+        fs::write(maestro_home.join("policy.json"), "{}").expect("write policy");
+        fs::write(maestro_home.join("enterprise").join("mcp.json"), "{}").expect("write mcp");
+
+        let previous_home = env::var("HOME").ok();
+        let previous_maestro_home = env::var("MAESTRO_HOME").ok();
+        let previous_enterprise_policy = env::var("MAESTRO_ENTERPRISE_POLICY_PATH").ok();
+        let previous_policy = env::var("MAESTRO_POLICY_PATH").ok();
+        let previous_enterprise_mcp = env::var("MAESTRO_ENTERPRISE_MCP_PATH").ok();
+
+        env::set_var("HOME", temp.path());
+        env::remove_var("MAESTRO_HOME");
+        env::remove_var("MAESTRO_ENTERPRISE_POLICY_PATH");
+        env::remove_var("MAESTRO_POLICY_PATH");
+        env::remove_var("MAESTRO_ENTERPRISE_MCP_PATH");
+
+        assert!(rust_policy_config_exists());
+        assert!(rust_enterprise_mcp_config_exists());
+
+        restore_env_var("HOME", previous_home);
+        restore_env_var("MAESTRO_HOME", previous_maestro_home);
+        restore_env_var("MAESTRO_ENTERPRISE_POLICY_PATH", previous_enterprise_policy);
+        restore_env_var("MAESTRO_POLICY_PATH", previous_policy);
+        restore_env_var("MAESTRO_ENTERPRISE_MCP_PATH", previous_enterprise_mcp);
+    }
+
+    #[test]
+    fn test_enterprise_config_detection_checks_maestro_home_override() {
+        let _lock = ENV_MUTEX.lock().expect("lock env");
+        let temp = tempdir().expect("tempdir");
+        let maestro_home = temp.path().join("custom-maestro");
+        fs::create_dir_all(maestro_home.join("enterprise")).expect("create maestro dirs");
+        fs::write(maestro_home.join("policy.json"), "{}").expect("write policy");
+        fs::write(maestro_home.join("enterprise").join("mcp.json"), "{}").expect("write mcp");
+
+        let previous_home = env::var("HOME").ok();
+        let previous_maestro_home = env::var("MAESTRO_HOME").ok();
+
+        env::set_var("HOME", temp.path());
+        env::set_var("MAESTRO_HOME", "~/custom-maestro");
+
+        assert!(rust_policy_config_exists());
+        assert!(rust_enterprise_mcp_config_exists());
+
+        restore_env_var("HOME", previous_home);
+        restore_env_var("MAESTRO_HOME", previous_maestro_home);
+    }
+
+    #[test]
+    fn test_enterprise_config_detection_checks_env_override_paths() {
+        let _lock = ENV_MUTEX.lock().expect("lock env");
+        let temp = tempdir().expect("tempdir");
+        let policy_path = temp.path().join("custom-policy.json");
+        let fallback_policy_path = temp.path().join("fallback-policy.json");
+        let mcp_path = temp.path().join("custom-enterprise-mcp.json");
+        fs::write(&policy_path, "{}").expect("write enterprise policy");
+        fs::write(&fallback_policy_path, "{}").expect("write fallback policy");
+        fs::write(&mcp_path, "{}").expect("write enterprise mcp");
+
+        let previous_enterprise_policy = env::var("MAESTRO_ENTERPRISE_POLICY_PATH").ok();
+        let previous_policy = env::var("MAESTRO_POLICY_PATH").ok();
+        let previous_enterprise_mcp = env::var("MAESTRO_ENTERPRISE_MCP_PATH").ok();
+        let previous_maestro_home = env::var("MAESTRO_HOME").ok();
+
+        env::remove_var("MAESTRO_HOME");
+        env::set_var("MAESTRO_ENTERPRISE_POLICY_PATH", &policy_path);
+        env::set_var("MAESTRO_POLICY_PATH", &fallback_policy_path);
+        env::set_var("MAESTRO_ENTERPRISE_MCP_PATH", &mcp_path);
+
+        assert!(rust_policy_config_exists());
+        assert!(rust_enterprise_mcp_config_exists());
+
+        restore_env_var("MAESTRO_ENTERPRISE_POLICY_PATH", previous_enterprise_policy);
+        restore_env_var("MAESTRO_POLICY_PATH", previous_policy);
+        restore_env_var("MAESTRO_ENTERPRISE_MCP_PATH", previous_enterprise_mcp);
+        restore_env_var("MAESTRO_HOME", previous_maestro_home);
     }
 }

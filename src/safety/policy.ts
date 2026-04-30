@@ -7,10 +7,11 @@
  *
  * ## Policy File Location
  *
- * Policies are loaded from `~/.maestro/policy.json` and
- * `.maestro/workspace.toml` in the current workspace. The global JSON file is
- * typically deployed by enterprise IT and should be protected with appropriate
- * permissions. Workspace TOML applies a stricter project-specific layer.
+ * Policies are loaded from `~/.maestro/policy.json` (or the legacy Composer
+ * policy file as a fallback) and `.maestro/workspace.toml` in the current
+ * workspace. The global JSON file is typically deployed by enterprise IT and
+ * should be protected with appropriate permissions. Workspace TOML applies a
+ * stricter project-specific layer.
  *
  * ## Policy Structure
  *
@@ -109,7 +110,9 @@ import { PATHS } from "../config/constants.js";
 import { extractDependencies } from "../utils/dependency-extractor.js";
 import { safeJsonParse } from "../utils/json.js";
 import { createLogger } from "../utils/logger.js";
+import { getHomeDir, resolveEnvPath } from "../utils/path-expansion.js";
 import { expandHomeDir, resolveRealPath } from "../utils/path-matcher.js";
+import { uniquePaths } from "../utils/path-utils.js";
 import { compileTypeboxSchema } from "../utils/typebox-ajv.js";
 import { dangerousPatterns as shellDangerousPatterns } from "./bash-safety-analyzer.js";
 import { checkModelAccess } from "./validators/model-policy-validator.js";
@@ -259,6 +262,23 @@ interface PolicySource {
 }
 
 const getUserPolicyPath = (): string => join(PATHS.MAESTRO_HOME, "policy.json");
+const getLegacyUserPolicyPath = (): string =>
+	join(getHomeDir(), ".composer", "policy.json");
+
+function getUserPolicyPathCandidates(): string[] {
+	return uniquePaths([
+		resolveEnvPath(process.env.MAESTRO_ENTERPRISE_POLICY_PATH),
+		resolveEnvPath(process.env.MAESTRO_POLICY_PATH),
+		getUserPolicyPath(),
+		getLegacyUserPolicyPath(),
+	]);
+}
+
+function getEffectiveUserPolicyPath(): string | null {
+	const candidates = getUserPolicyPathCandidates();
+	return candidates.find(isPolicyFile) ?? null;
+}
+
 const isPolicyFile = (path: string): boolean => {
 	if (!existsSync(path)) return false;
 	try {
@@ -294,8 +314,8 @@ function isRecord(value: unknown): value is UnknownRecord {
 
 function getPolicySources(): PolicySource[] {
 	const sources: PolicySource[] = [];
-	const userPolicyPath = getUserPolicyPath();
-	if (isPolicyFile(userPolicyPath)) {
+	const userPolicyPath = getEffectiveUserPolicyPath();
+	if (userPolicyPath) {
 		sources.push({ path: userPolicyPath, format: "json", scope: "user" });
 	}
 

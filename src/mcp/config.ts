@@ -7,11 +7,13 @@
  *
  * ## Configuration Sources (precedence order)
  *
- * 1. **Enterprise**: `~/.maestro/enterprise/mcp.json` (highest)
+ * 1. **Enterprise**: `~/.maestro/enterprise/mcp.json` (highest; legacy
+ *    Composer enterprise MCP config remains a fallback)
  * 2. **Plugin**: Programmatically provided servers
  * 3. **Project**: `.maestro/mcp.json` in project root
  * 4. **Local**: `.maestro/mcp.local.json` (git-ignored)
- * 5. **User**: `~/.maestro/mcp.json` (lowest)
+ * 5. **User**: `~/.maestro/mcp.json` (lowest; legacy Composer user MCP config
+ *    remains a fallback)
  *
  * ## Configuration Format
  *
@@ -53,13 +55,14 @@
  * @module mcp/config
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { z } from "zod";
 import { PATHS } from "../config/constants.js";
 import { readJsonFile, writeJsonFile } from "../utils/fs.js";
 import { createLogger } from "../utils/logger.js";
-import { resolveEnvPath } from "../utils/path-expansion.js";
+import { getHomeDir, resolveEnvPath } from "../utils/path-expansion.js";
+import { uniquePaths } from "../utils/path-utils.js";
 import { defaultEnvValidators, evaluateEnvValidators } from "./env-limits.js";
 import { getPlatformMcpPluginServers } from "./platform-plugin.js";
 import {
@@ -81,13 +84,66 @@ const logger = createLogger("mcp:config");
 const PROJECT_CONFIG_NAME = ".maestro/mcp.json";
 const LOCAL_CONFIG_NAME = ".maestro/mcp.local.json";
 
-const getEnterpriseConfigPath = (): string =>
-	resolveEnvPath(process.env.MAESTRO_ENTERPRISE_MCP_PATH) ??
+const getEnterpriseConfigPathOverride = (): string | null =>
+	resolveEnvPath(process.env.MAESTRO_ENTERPRISE_MCP_PATH);
+
+const getDefaultEnterpriseConfigPath = (): string =>
 	join(PATHS.MAESTRO_HOME, "enterprise", "mcp.json");
 
-const getUserConfigPath = (): string =>
-	resolveEnvPath(process.env.MAESTRO_USER_MCP_PATH) ??
+const getEnterpriseConfigPath = (): string =>
+	getEnterpriseConfigPathOverride() ?? getDefaultEnterpriseConfigPath();
+
+const getUserConfigPathOverride = (): string | null =>
+	resolveEnvPath(process.env.MAESTRO_USER_MCP_PATH);
+
+const getDefaultUserConfigPath = (): string =>
 	join(PATHS.MAESTRO_HOME, "mcp.json");
+
+const getUserConfigPath = (): string =>
+	getUserConfigPathOverride() ?? getDefaultUserConfigPath();
+
+const getLegacyEnterpriseConfigPath = (): string =>
+	join(getHomeDir(), ".composer", "enterprise", "mcp.json");
+
+const getLegacyUserConfigPath = (): string =>
+	join(getHomeDir(), ".composer", "mcp.json");
+
+function isConfigFile(path: string): boolean {
+	try {
+		return statSync(path).isFile();
+	} catch {
+		return false;
+	}
+}
+
+function selectEffectiveConfigPath(paths: string[]): string {
+	return paths.find(isConfigFile) ?? paths[0]!;
+}
+
+const getUserConfigPathCandidates = (): string[] => {
+	const overridePath = getUserConfigPathOverride();
+	if (overridePath) {
+		return [overridePath];
+	}
+	return uniquePaths([getDefaultUserConfigPath(), getLegacyUserConfigPath()]);
+};
+
+const getEnterpriseConfigPathCandidates = (): string[] => {
+	const overridePath = getEnterpriseConfigPathOverride();
+	if (overridePath) {
+		return [overridePath];
+	}
+	return uniquePaths([
+		getDefaultEnterpriseConfigPath(),
+		getLegacyEnterpriseConfigPath(),
+	]);
+};
+
+const getEffectiveUserConfigPath = (): string =>
+	selectEffectiveConfigPath(getUserConfigPathCandidates());
+
+const getEffectiveEnterpriseConfigPath = (): string =>
+	selectEffectiveConfigPath(getEnterpriseConfigPathCandidates());
 
 type ParsedConfig = {
 	servers: McpServerConfig[];
@@ -145,9 +201,9 @@ export function loadMcpConfig(
 	projectRoot?: string,
 	options: LoadMcpOptions = {},
 ): McpConfig {
-	const userCfg = parseConfigFile(getUserConfigPath(), "user");
+	const userCfg = parseConfigFile(getEffectiveUserConfigPath(), "user");
 	const enterpriseCfg = parseConfigFile(
-		getEnterpriseConfigPath(),
+		getEffectiveEnterpriseConfigPath(),
 		"enterprise",
 	);
 	const projectCfg = projectRoot
@@ -195,7 +251,10 @@ export function loadMcpConfig(
 }
 
 export function getConfigPaths(projectRoot?: string): string[] {
-	const paths = [getUserConfigPath(), getEnterpriseConfigPath()];
+	const paths = [
+		getEffectiveUserConfigPath(),
+		getEffectiveEnterpriseConfigPath(),
+	];
 	if (projectRoot) {
 		paths.push(resolve(projectRoot, PROJECT_CONFIG_NAME));
 		paths.push(resolve(projectRoot, LOCAL_CONFIG_NAME));
@@ -209,7 +268,7 @@ export function getWritableMcpConfigPath(
 ): string {
 	switch (scope) {
 		case "user":
-			return getUserConfigPath();
+			return getEffectiveUserConfigPath();
 		case "project":
 			return resolve(projectRoot, PROJECT_CONFIG_NAME);
 		case "local":
@@ -435,7 +494,7 @@ export function updateMcpAuthPresetInConfig(
 }
 
 function parseConfigFile(path: string, scope: McpScope): ParsedConfig {
-	if (!existsSync(path)) {
+	if (!isConfigFile(path)) {
 		return { servers: [], authPresets: [] };
 	}
 	try {

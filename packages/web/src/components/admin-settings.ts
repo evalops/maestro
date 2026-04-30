@@ -20,6 +20,7 @@ import {
 	getEnterpriseApi,
 } from "../services/enterprise-api.js";
 import { AdminAuditTab } from "./admin-audit-tab.js";
+import { AdminCommandCenterTab } from "./admin-command-center-tab.js";
 import { AdminDirectoriesTab } from "./admin-directories-tab.js";
 import { AdminModelsTab } from "./admin-models-tab.js";
 import { AdminPolicyTab } from "./admin-policy-tab.js";
@@ -29,6 +30,7 @@ import "./fleet-dashboard.js";
 
 type AdminTab =
 	| "overview"
+	| "command-center"
 	| "fleet"
 	| "users"
 	| "models"
@@ -303,8 +305,47 @@ export class AdminSettings extends LitElement {
 			color: var(--admin-accent-red);
 		}
 
+		.stat-card.error .stat-value {
+			color: var(--admin-accent-red);
+		}
+
 		.stat-card.success .stat-value {
 			color: var(--admin-accent-green);
+		}
+
+		.posture-detail,
+		.metric-detail,
+		.watch-detail {
+			color: var(--admin-text-secondary);
+			font-size: 0.8rem;
+			line-height: 1.45;
+		}
+
+		.posture-detail {
+			margin-bottom: 1.25rem;
+		}
+
+		.metric-detail {
+			margin-top: 0.65rem;
+		}
+
+		.command-metrics {
+			margin-bottom: 0;
+		}
+
+		.control-lanes td {
+			vertical-align: top;
+			line-height: 1.45;
+		}
+
+		.control-lanes strong {
+			font-family: var(--font-mono);
+			font-size: 0.75rem;
+			color: var(--admin-text-primary);
+		}
+
+		.watch-detail {
+			margin-bottom: 0.4rem;
 		}
 
 		/* Tables - Terminal-style data grid */
@@ -899,6 +940,7 @@ export class AdminSettings extends LitElement {
 		18, 24, 31, 28, 35, 42, 38, 45, 41, 52, 48, 58, 54, 62,
 	];
 	@state() private alerts: Alert[] = [];
+	@state() private auditLogs: AuditLog[] = [];
 	@state() private modelApprovals: ModelApproval[] = [];
 	@state() private directoryRules: DirectoryRule[] = [];
 	@state() private orgSettings: OrganizationSettings | null = null;
@@ -914,16 +956,22 @@ export class AdminSettings extends LitElement {
 
 	private api: EnterpriseApiClient;
 	private readonly auditTab: AdminAuditTab;
+	private readonly commandCenterTab: AdminCommandCenterTab;
 	private readonly directoriesTab: AdminDirectoriesTab;
 	private readonly modelsTab: AdminModelsTab;
 	private readonly policyTab: AdminPolicyTab;
 	private readonly usersTab: AdminUsersTab;
 	private readonly securityTab: AdminSecurityTab;
 	private alertRefreshInterval: ReturnType<typeof setInterval> | null = null;
+	private tabLoadRequestId = 0;
 
 	constructor() {
 		super();
 		this.api = getEnterpriseApi();
+		this.commandCenterTab = new AdminCommandCenterTab(
+			(value) => this.formatDate(value),
+			(tone) => this.getToneBadgeClass(tone),
+		);
 		this.auditTab = new AdminAuditTab(
 			this,
 			this.api,
@@ -1084,11 +1132,38 @@ export class AdminSettings extends LitElement {
 		}
 	}
 
-	private async loadTabData(tab: AdminTab) {
+	private isCurrentTabLoad(tab: AdminTab, requestId: number) {
+		return this.tabLoadRequestId === requestId && this.currentTab === tab;
+	}
+
+	private async loadTabData(tab: AdminTab, requestId = this.tabLoadRequestId) {
 		if (!this.api.isAuthenticated()) return;
 
 		try {
 			switch (tab) {
+				case "command-center": {
+					const [approvalsRes, rulesRes, settingsRes, logsRes] =
+						await Promise.all([
+							this.api.getModelApprovals().catch(() => null),
+							this.api.getDirectoryRules().catch(() => null),
+							this.api.getOrgSettings().catch(() => null),
+							this.api.getAuditLogs({ limit: 100 }).catch(() => null),
+						]);
+					if (!this.isCurrentTabLoad(tab, requestId)) return;
+					this.modelApprovals = approvalsRes?.approvals ?? this.modelApprovals;
+					this.directoryRules = rulesRes?.rules ?? this.directoryRules;
+					if (settingsRes) {
+						this.orgSettings = settingsRes;
+						this.piiPatterns = settingsRes.piiPatterns?.join("\n") ?? "";
+						this.auditRetention = settingsRes.auditRetentionDays ?? 90;
+						this.webhookUrls = settingsRes.alertWebhooks?.join("\n") ?? "";
+					}
+					if (logsRes?.logs) {
+						this.auditLogs = logsRes.logs;
+						this.auditTab.setLogs(logsRes.logs);
+					}
+					break;
+				}
 				case "users": {
 					await this.usersTab.load();
 					break;
@@ -1109,7 +1184,9 @@ export class AdminSettings extends LitElement {
 					const logsRes = await this.api
 						.getAuditLogs({ limit: 500 })
 						.catch(() => null);
+					if (!this.isCurrentTabLoad(tab, requestId)) return;
 					if (logsRes?.logs) {
+						this.auditLogs = logsRes.logs;
 						this.auditTab.setLogs(logsRes.logs);
 					}
 					break;
@@ -1125,8 +1202,16 @@ export class AdminSettings extends LitElement {
 	}
 
 	private async selectTab(tab: AdminTab) {
+		const requestId = ++this.tabLoadRequestId;
 		this.currentTab = tab;
-		await this.loadTabData(tab);
+		this.tabLoading = true;
+		try {
+			await this.loadTabData(tab, requestId);
+		} finally {
+			if (this.tabLoadRequestId === requestId) {
+				this.tabLoading = false;
+			}
+		}
 	}
 
 	private close() {
@@ -1190,6 +1275,18 @@ export class AdminSettings extends LitElement {
 			case "pending":
 			case "medium":
 				return "warning";
+			default:
+				return "";
+		}
+	}
+
+	private getToneBadgeClass(tone: string): string {
+		switch (tone) {
+			case "success":
+			case "warning":
+			case "error":
+			case "info":
+				return tone;
 			default:
 				return "";
 		}
@@ -1462,6 +1559,24 @@ export class AdminSettings extends LitElement {
 		return this.usersTab.render(this.tabLoading);
 	}
 
+	private renderCommandCenterTab() {
+		if (!this.api.isAuthenticated()) {
+			return this.renderUnavailableState(
+				"Sign in with enterprise credentials to view command center controls.",
+			);
+		}
+
+		return this.commandCenterTab.render(this.tabLoading, {
+			usage: this.orgUsage,
+			quota: this.quota,
+			alerts: this.alerts,
+			auditLogs: this.auditLogs,
+			modelApprovals: this.modelApprovals,
+			directoryRules: this.directoryRules,
+			orgSettings: this.orgSettings,
+		});
+	}
+
 	private renderModelsTab() {
 		if (!this.api.isAuthenticated()) {
 			return this.renderUnavailableState(
@@ -1526,6 +1641,8 @@ export class AdminSettings extends LitElement {
 		switch (this.currentTab) {
 			case "overview":
 				return this.renderOverviewTab();
+			case "command-center":
+				return this.renderCommandCenterTab();
 			case "fleet":
 				return this.renderFleetTab();
 			case "users":
@@ -1565,6 +1682,12 @@ export class AdminSettings extends LitElement {
 						@click=${() => this.selectTab("overview")}
 					>
 						<span>Overview</span>
+					</div>
+					<div
+						class="nav-item ${this.currentTab === "command-center" ? "active" : ""}"
+						@click=${() => this.selectTab("command-center")}
+					>
+						<span>Command Center</span>
 					</div>
 					<div
 						class="nav-item ${this.currentTab === "users" ? "active" : ""}"

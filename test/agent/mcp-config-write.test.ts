@@ -1,4 +1,10 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -7,6 +13,7 @@ import {
 	addMcpServerToConfig,
 	getWritableMcpConfigPath,
 	inferRemoteMcpTransport,
+	loadMcpConfig,
 	removeMcpAuthPresetFromConfig,
 	removeMcpServerFromConfig,
 	updateMcpAuthPresetInConfig,
@@ -15,13 +22,27 @@ import {
 
 describe("MCP config writing", () => {
 	let testDir: string;
+	let previousHome: string | undefined;
+	let previousMaestroHome: string | undefined;
+	let previousUserMcpPath: string | undefined;
 
 	beforeEach(() => {
 		testDir = join(tmpdir(), `mcp-config-write-${Date.now()}`);
 		mkdirSync(testDir, { recursive: true });
+		const homeDir = join(testDir, "home");
+		mkdirSync(homeDir, { recursive: true });
+		previousHome = process.env.HOME;
+		previousMaestroHome = process.env.MAESTRO_HOME;
+		previousUserMcpPath = process.env.MAESTRO_USER_MCP_PATH;
+		process.env.HOME = homeDir;
+		delete process.env.MAESTRO_HOME;
+		delete process.env.MAESTRO_USER_MCP_PATH;
 	});
 
 	afterEach(() => {
+		restoreEnv("HOME", previousHome);
+		restoreEnv("MAESTRO_HOME", previousMaestroHome);
+		restoreEnv("MAESTRO_USER_MCP_PATH", previousUserMcpPath);
 		rmSync(testDir, { recursive: true, force: true });
 	});
 
@@ -243,6 +264,176 @@ describe("MCP config writing", () => {
 		});
 	});
 
+	it("loads user config from legacy fallback when maestro path is a directory", () => {
+		const homeDir = process.env.HOME!;
+		const legacyConfigPath = join(homeDir, ".composer", "mcp.json");
+		mkdirSync(join(homeDir, ".maestro", "mcp.json"), { recursive: true });
+		mkdirSync(join(homeDir, ".composer"), { recursive: true });
+		writeFileSync(
+			legacyConfigPath,
+			JSON.stringify({
+				mcpServers: {
+					linear: {
+						transport: "http",
+						url: "https://mcp.linear.app/mcp",
+					},
+				},
+			}),
+		);
+
+		const config = loadMcpConfig(testDir);
+
+		expect(config.servers).toHaveLength(1);
+		expect(config.servers[0]).toMatchObject({
+			name: "linear",
+			scope: "user",
+			url: "https://mcp.linear.app/mcp",
+		});
+		expect(getWritableMcpConfigPath("user", testDir)).toBe(legacyConfigPath);
+	});
+
+	it("uses explicit user MCP env paths before legacy fallbacks", () => {
+		const homeDir = process.env.HOME!;
+		const explicitConfigPath = join(homeDir, "managed", "mcp.json");
+		const legacyConfigPath = join(homeDir, ".composer", "mcp.json");
+		process.env.MAESTRO_USER_MCP_PATH = explicitConfigPath;
+		mkdirSync(join(homeDir, ".composer"), { recursive: true });
+		writeFileSync(
+			legacyConfigPath,
+			JSON.stringify({
+				mcpServers: {
+					stale: {
+						transport: "stdio",
+						command: "legacy-cmd",
+					},
+				},
+			}),
+		);
+
+		const loaded = loadMcpConfig(testDir);
+		expect(loaded.servers).toHaveLength(0);
+		expect(getWritableMcpConfigPath("user", testDir)).toBe(explicitConfigPath);
+
+		const result = addMcpServerToConfig({
+			projectRoot: testDir,
+			scope: "user",
+			server: {
+				name: "linear",
+				transport: "http",
+				url: "https://mcp.linear.app/mcp",
+			},
+		});
+
+		expect(result.path).toBe(explicitConfigPath);
+		expect(JSON.parse(readFileSync(explicitConfigPath, "utf-8"))).toEqual({
+			mcpServers: {
+				linear: {
+					transport: "http",
+					url: "https://mcp.linear.app/mcp",
+				},
+			},
+		});
+	});
+
+	it("loads symlinked user config files as effective MCP config paths", () => {
+		const homeDir = process.env.HOME!;
+		const managedConfigPath = join(homeDir, "managed", "mcp.json");
+		const symlinkConfigPath = join(homeDir, ".maestro", "mcp.json");
+		mkdirSync(join(homeDir, "managed"), { recursive: true });
+		mkdirSync(join(homeDir, ".maestro"), { recursive: true });
+		writeFileSync(
+			managedConfigPath,
+			JSON.stringify({
+				mcpServers: {
+					linear: {
+						transport: "http",
+						url: "https://mcp.linear.app/mcp",
+					},
+				},
+			}),
+		);
+		symlinkSync(managedConfigPath, symlinkConfigPath);
+
+		const config = loadMcpConfig(testDir);
+
+		expect(config.servers).toHaveLength(1);
+		expect(config.servers[0]).toMatchObject({
+			name: "linear",
+			scope: "user",
+			url: "https://mcp.linear.app/mcp",
+		});
+		expect(getWritableMcpConfigPath("user", testDir)).toBe(symlinkConfigPath);
+	});
+
+	it("updates user servers in the selected legacy fallback config", () => {
+		const homeDir = process.env.HOME!;
+		const legacyConfigPath = join(homeDir, ".composer", "mcp.json");
+		mkdirSync(join(homeDir, ".composer"), { recursive: true });
+		writeFileSync(
+			legacyConfigPath,
+			JSON.stringify({
+				mcpServers: {
+					linear: {
+						transport: "http",
+						url: "https://mcp.linear.app/mcp",
+					},
+				},
+			}),
+		);
+
+		const result = updateMcpServerInConfig({
+			projectRoot: testDir,
+			name: "linear",
+			server: {
+				name: "linear",
+				transport: "http",
+				url: "https://mcp.linear.app/mcp/v2",
+			},
+		});
+
+		expect(result).toEqual({
+			path: legacyConfigPath,
+			scope: "user",
+		});
+		expect(JSON.parse(readFileSync(legacyConfigPath, "utf-8"))).toEqual({
+			mcpServers: {
+				linear: {
+					transport: "http",
+					url: "https://mcp.linear.app/mcp/v2",
+				},
+			},
+		});
+	});
+
+	it("removes user auth presets from the selected legacy fallback config", () => {
+		const homeDir = process.env.HOME!;
+		const legacyConfigPath = join(homeDir, ".composer", "mcp.json");
+		mkdirSync(join(homeDir, ".composer"), { recursive: true });
+		writeFileSync(
+			legacyConfigPath,
+			JSON.stringify({
+				authPresets: {
+					"linear-auth": {
+						headersHelper: "bun run scripts/mcp-headers.ts",
+					},
+				},
+			}),
+		);
+
+		const result = removeMcpAuthPresetFromConfig({
+			projectRoot: testDir,
+			name: "linear-auth",
+		});
+
+		expect(result).toEqual({
+			path: legacyConfigPath,
+			scope: "user",
+		});
+		expect(JSON.parse(readFileSync(legacyConfigPath, "utf-8"))).toEqual({
+			authPresets: {},
+		});
+	});
+
 	it("writes a new auth preset alongside existing MCP servers", () => {
 		const result = addMcpAuthPresetToConfig({
 			projectRoot: testDir,
@@ -343,3 +534,11 @@ describe("MCP config writing", () => {
 		});
 	});
 });
+
+function restoreEnv(name: string, value: string | undefined) {
+	if (value === undefined) {
+		delete process.env[name];
+	} else {
+		process.env[name] = value;
+	}
+}

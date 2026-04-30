@@ -1,9 +1,13 @@
+import { statSync } from "node:fs";
+import { join } from "node:path";
 import type { ApprovalMode } from "../../agent/action-approval.js";
 import type { ThinkingLevel } from "../../agent/types.js";
 import { composerManager } from "../../composers/index.js";
+import { PATHS } from "../../config/constants.js";
 import { mcpManager } from "../../mcp/index.js";
 import { isSafeModeEnabled } from "../../safety/safe-mode.js";
 import { backgroundTaskManager } from "../../tools/background-tasks.js";
+import { getHomeDir, resolveEnvPath } from "../../utils/path-expansion.js";
 import {
 	isBubblewrapEnv,
 	isDockerEnv,
@@ -29,6 +33,9 @@ export interface RuntimeBadgeParams {
 	alertCount?: number;
 	reducedMotion?: boolean;
 	compactForced?: boolean;
+	enterpriseMode?: boolean;
+	enterprisePolicyActive?: boolean;
+	enterpriseMcpActive?: boolean;
 }
 
 export function buildRuntimeBadges(params: RuntimeBadgeParams): string[] {
@@ -42,6 +49,16 @@ export function buildRuntimeBadges(params: RuntimeBadgeParams): string[] {
 	if (process.env.MAESTRO_PLAN_MODE === "1") {
 		badges.push("plan:on");
 	}
+
+	badges.push(
+		...buildEnterpriseRuntimeBadges({
+			enterpriseMode: params.enterpriseMode ?? isEnterpriseModeEnabled(),
+			policyPresent:
+				params.enterprisePolicyActive ?? hasEnterprisePolicyConfig(),
+			enterpriseMcpPresent:
+				params.enterpriseMcpActive ?? hasEnterpriseMcpConfig(),
+		}),
+	);
 
 	if (params.approvalMode) {
 		badges.push(`approvals:${params.approvalMode}`);
@@ -139,6 +156,28 @@ export function buildRuntimeBadges(params: RuntimeBadgeParams): string[] {
 	return badges;
 }
 
+export function buildEnterpriseRuntimeBadges(input: {
+	enterpriseMode: boolean;
+	policyPresent: boolean;
+	enterpriseMcpPresent: boolean;
+}): string[] {
+	const badges: string[] = [];
+	if (
+		input.enterpriseMode ||
+		input.policyPresent ||
+		input.enterpriseMcpPresent
+	) {
+		badges.push("ent:on");
+	}
+	if (input.policyPresent) {
+		badges.push("ent:policy");
+	}
+	if (input.enterpriseMcpPresent) {
+		badges.push("ent:mcp");
+	}
+	return badges;
+}
+
 function getBackgroundTaskCounts(): { running: number; failed: number } {
 	const tasks = backgroundTaskManager.getTasks();
 	let running = 0;
@@ -152,4 +191,45 @@ function getBackgroundTaskCounts(): { running: number; failed: number } {
 		}
 	}
 	return { running, failed };
+}
+
+function isEnterpriseModeEnabled(): boolean {
+	return (
+		isTruthy(process.env.MAESTRO_ENTERPRISE_MODE) ||
+		hasEnvValue(process.env.MAESTRO_ENTERPRISE_ORG_ID) ||
+		hasEnvValue(process.env.MAESTRO_ENTERPRISE_TOKEN)
+	);
+}
+
+function hasEnterprisePolicyConfig(): boolean {
+	return [
+		resolveEnvPath(process.env.MAESTRO_ENTERPRISE_POLICY_PATH),
+		resolveEnvPath(process.env.MAESTRO_POLICY_PATH),
+		join(PATHS.MAESTRO_HOME, "policy.json"),
+		join(getHomeDir(), ".composer", "policy.json"),
+	].some((path) => path !== null && fileExists(path));
+}
+
+function hasEnterpriseMcpConfig(): boolean {
+	return [
+		resolveEnvPath(process.env.MAESTRO_ENTERPRISE_MCP_PATH),
+		join(PATHS.MAESTRO_HOME, "enterprise", "mcp.json"),
+		join(getHomeDir(), ".composer", "enterprise", "mcp.json"),
+	].some((path) => path !== null && fileExists(path));
+}
+
+function isTruthy(value: string | undefined): boolean {
+	return ["1", "true", "yes", "on"].includes(value?.trim().toLowerCase() ?? "");
+}
+
+function hasEnvValue(value: string | undefined): boolean {
+	return (value?.trim().length ?? 0) > 0;
+}
+
+function fileExists(path: string): boolean {
+	try {
+		return statSync(path).isFile();
+	} catch {
+		return false;
+	}
 }

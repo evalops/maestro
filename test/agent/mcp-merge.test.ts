@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -6,19 +6,40 @@ import { loadMcpConfig } from "../../src/mcp/config.js";
 import type { McpServerConfig } from "../../src/mcp/types.js";
 
 describe("MCP multi-scope precedence and env expansion", () => {
+	const ENV_KEYS = [
+		"HOME",
+		"MAESTRO_HOME",
+		"MAESTRO_ENTERPRISE_MCP_PATH",
+		"MAESTRO_USER_MCP_PATH",
+		"TEST_FOO",
+	] as const;
+
 	let baseDir: string;
 	let projectDir: string;
+	let previousEnv: Partial<Record<(typeof ENV_KEYS)[number], string>>;
 
 	beforeEach(() => {
-		baseDir = join(tmpdir(), `mcp-merge-${Date.now()}`);
+		previousEnv = Object.fromEntries(
+			ENV_KEYS.map((key) => [key, process.env[key]]),
+		);
+		baseDir = mkdtempSync(join(tmpdir(), "mcp-merge-"));
 		projectDir = baseDir;
 		mkdirSync(projectDir, { recursive: true });
-		Reflect.deleteProperty(process.env, "MAESTRO_ENTERPRISE_MCP_PATH");
-		Reflect.deleteProperty(process.env, "MAESTRO_USER_MCP_PATH");
+		for (const key of ENV_KEYS) {
+			Reflect.deleteProperty(process.env, key);
+		}
 	});
 
 	afterEach(() => {
-		// leave temp dirs; OS will clean
+		for (const key of ENV_KEYS) {
+			const value = previousEnv[key];
+			if (value === undefined) {
+				Reflect.deleteProperty(process.env, key);
+			} else {
+				process.env[key] = value;
+			}
+		}
+		rmSync(baseDir, { recursive: true, force: true });
 	});
 
 	function write(path: string, data: unknown) {
@@ -83,6 +104,87 @@ describe("MCP multi-scope precedence and env expansion", () => {
 
 		const cfg = loadMcpConfig(projectDir, { includeEnvLimits: true });
 		expect(cfg.servers).toHaveLength(0);
+	});
+
+	it("ignores default directory candidates when selecting the effective user MCP config path", () => {
+		const previousHome = process.env.HOME;
+		const previousMaestroHome = process.env.MAESTRO_HOME;
+		const previousUserMcpPath = process.env.MAESTRO_USER_MCP_PATH;
+		try {
+			process.env.HOME = baseDir;
+			Reflect.deleteProperty(process.env, "MAESTRO_HOME");
+			Reflect.deleteProperty(process.env, "MAESTRO_USER_MCP_PATH");
+			mkdirSync(join(baseDir, ".maestro", "mcp.json"), {
+				recursive: true,
+			});
+			write(join(baseDir, ".composer", "mcp.json"), {
+				servers: [
+					{
+						name: "svc",
+						transport: "stdio",
+						command: "legacy-user-cmd",
+					},
+				],
+			});
+
+			const cfg = loadMcpConfig(projectDir, { includeEnvLimits: true });
+
+			expect(cfg.servers).toHaveLength(1);
+			expect(cfg.servers[0]!.command).toBe("legacy-user-cmd");
+		} finally {
+			if (previousHome === undefined) {
+				Reflect.deleteProperty(process.env, "HOME");
+			} else {
+				process.env.HOME = previousHome;
+			}
+			if (previousMaestroHome === undefined) {
+				Reflect.deleteProperty(process.env, "MAESTRO_HOME");
+			} else {
+				process.env.MAESTRO_HOME = previousMaestroHome;
+			}
+			if (previousUserMcpPath === undefined) {
+				Reflect.deleteProperty(process.env, "MAESTRO_USER_MCP_PATH");
+			} else {
+				process.env.MAESTRO_USER_MCP_PATH = previousUserMcpPath;
+			}
+		}
+	});
+
+	it("does not fall back to legacy enterprise MCP config when an env path is explicit", () => {
+		const previousHome = process.env.HOME;
+		const previousEnterpriseMcpPath = process.env.MAESTRO_ENTERPRISE_MCP_PATH;
+		try {
+			process.env.HOME = baseDir;
+			process.env.MAESTRO_ENTERPRISE_MCP_PATH = join(
+				baseDir,
+				"managed",
+				"enterprise-mcp.json",
+			);
+			write(join(baseDir, ".composer", "enterprise", "mcp.json"), {
+				servers: [
+					{
+						name: "svc",
+						transport: "stdio",
+						command: "legacy-enterprise-cmd",
+					},
+				],
+			});
+
+			const cfg = loadMcpConfig(projectDir, { includeEnvLimits: true });
+
+			expect(cfg.servers).toHaveLength(0);
+		} finally {
+			if (previousHome === undefined) {
+				Reflect.deleteProperty(process.env, "HOME");
+			} else {
+				process.env.HOME = previousHome;
+			}
+			if (previousEnterpriseMcpPath === undefined) {
+				Reflect.deleteProperty(process.env, "MAESTRO_ENTERPRISE_MCP_PATH");
+			} else {
+				process.env.MAESTRO_ENTERPRISE_MCP_PATH = previousEnterpriseMcpPath;
+			}
+		}
 	});
 
 	it("expands ${VAR} and ${VAR:-fallback}", () => {
