@@ -13,7 +13,7 @@ use std::time::SystemTime;
 use regex::Regex;
 use url::Url;
 
-use crate::path_utils::{dedupe_paths, env_path};
+use crate::path_utils::env_path;
 
 use super::dangerous_patterns::check_dangerous_patterns;
 use super::path_containment::{expand_tilde, is_tilde_path};
@@ -111,30 +111,75 @@ static PIP_INSTALL_PATTERN: std::sync::LazyLock<Regex> = std::sync::LazyLock::ne
 });
 
 fn policy_path() -> Option<PathBuf> {
-    let candidates = policy_path_candidates();
-    candidates
-        .iter()
-        .find(|path| path.is_file())
-        .cloned()
-        .or_else(|| candidates.into_iter().next())
+    select_policy_path(policy_path_candidates())
 }
 
-fn policy_path_candidates() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
+#[derive(Clone)]
+struct PolicyPathCandidate {
+    path: PathBuf,
+    explicit: bool,
+}
+
+fn select_policy_path(candidates: Vec<PolicyPathCandidate>) -> Option<PathBuf> {
+    if let Some(path) = candidates
+        .iter()
+        .find(|candidate| candidate.path.is_file())
+        .map(|candidate| candidate.path.clone())
+    {
+        return Some(path);
+    }
+    if let Some(path) = candidates
+        .iter()
+        .find(|candidate| candidate.explicit && candidate.path.exists())
+        .map(|candidate| candidate.path.clone())
+    {
+        return Some(path);
+    }
+    candidates
+        .into_iter()
+        .find(|candidate| !candidate.path.exists())
+        .map(|candidate| candidate.path)
+}
+
+fn push_policy_path_candidate(
+    candidates: &mut Vec<PolicyPathCandidate>,
+    path: PathBuf,
+    explicit: bool,
+) {
+    if let Some(candidate) = candidates
+        .iter_mut()
+        .find(|candidate| candidate.path == path)
+    {
+        candidate.explicit = candidate.explicit || explicit;
+    } else {
+        candidates.push(PolicyPathCandidate { path, explicit });
+    }
+}
+
+fn policy_path_candidates() -> Vec<PolicyPathCandidate> {
+    let mut candidates = Vec::new();
     if let Some(path) = env_path("MAESTRO_ENTERPRISE_POLICY_PATH") {
-        paths.push(path);
+        push_policy_path_candidate(&mut candidates, path, true);
     }
     if let Some(path) = env_path("MAESTRO_POLICY_PATH") {
-        paths.push(path);
+        push_policy_path_candidate(&mut candidates, path, true);
     }
     if let Some(maestro_home) = env_path("MAESTRO_HOME") {
-        paths.push(maestro_home.join("policy.json"));
+        push_policy_path_candidate(&mut candidates, maestro_home.join("policy.json"), false);
     }
     if let Some(home) = dirs::home_dir() {
-        paths.push(home.join(".maestro").join("policy.json"));
-        paths.push(home.join(".composer").join("policy.json"));
+        push_policy_path_candidate(
+            &mut candidates,
+            home.join(".maestro").join("policy.json"),
+            false,
+        );
+        push_policy_path_candidate(
+            &mut candidates,
+            home.join(".composer").join("policy.json"),
+            false,
+        );
     }
-    dedupe_paths(paths)
+    candidates
 }
 
 fn load_policy(force: bool) -> Result<Option<EnterprisePolicy>, String> {
@@ -1018,5 +1063,58 @@ mod tests {
             let p = path.unwrap();
             assert!(p.ends_with("policy.json"));
         }
+    }
+
+    #[test]
+    fn test_select_policy_path_ignores_existing_directories() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let directory_candidate = temp.path().join("policy-dir");
+        std::fs::create_dir(&directory_candidate).expect("create policy dir");
+
+        assert_eq!(
+            select_policy_path(vec![PolicyPathCandidate {
+                path: directory_candidate,
+                explicit: false,
+            }]),
+            None
+        );
+    }
+
+    #[test]
+    fn test_select_policy_path_prefers_regular_file_over_directory() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let directory_candidate = temp.path().join("policy-dir");
+        let file_candidate = temp.path().join("policy.json");
+        std::fs::create_dir(&directory_candidate).expect("create policy dir");
+        std::fs::write(&file_candidate, "{}").expect("write policy file");
+
+        assert_eq!(
+            select_policy_path(vec![
+                PolicyPathCandidate {
+                    path: directory_candidate,
+                    explicit: false,
+                },
+                PolicyPathCandidate {
+                    path: file_candidate.clone(),
+                    explicit: false,
+                },
+            ]),
+            Some(file_candidate)
+        );
+    }
+
+    #[test]
+    fn test_select_policy_path_preserves_explicit_invalid_policy_path() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let directory_candidate = temp.path().join("policy-dir");
+        std::fs::create_dir(&directory_candidate).expect("create policy dir");
+
+        assert_eq!(
+            select_policy_path(vec![PolicyPathCandidate {
+                path: directory_candidate.clone(),
+                explicit: true,
+            }]),
+            Some(directory_candidate)
+        );
     }
 }
