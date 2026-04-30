@@ -5,6 +5,7 @@
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
+import { randomBytes, randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { app } from "electron";
@@ -18,6 +19,9 @@ let serverReady = false;
 
 const SERVER_PORT = Number(process.env.MAESTRO_DESKTOP_PORT ?? 8080);
 const SERVER_HOST = "127.0.0.1";
+const RENDERER_SERVER_HOST = "localhost";
+const IS_DEV_SERVER = Boolean(process.env.VITE_DEV_SERVER_URL);
+const DEV_API_KEY = "maestro-desktop-local-api-key";
 const DEV_UI_PORT =
 	process.env.MAESTRO_DESKTOP_UI_PORT ?? process.env.VITE_PORT;
 const DEV_UI_ORIGIN = process.env.VITE_DEV_SERVER_URL
@@ -25,6 +29,17 @@ const DEV_UI_ORIGIN = process.env.VITE_DEV_SERVER_URL
 	: `http://localhost:${DEV_UI_PORT ?? "5173"}`;
 const CSRF_TOKEN =
 	process.env.MAESTRO_DESKTOP_CSRF_TOKEN ?? "maestro-desktop-csrf";
+const API_KEY =
+	process.env.MAESTRO_DESKTOP_API_KEY ??
+	(IS_DEV_SERVER ? DEV_API_KEY : randomUUID());
+const JWT_SECRET =
+	process.env.MAESTRO_DESKTOP_JWT_SECRET ?? randomBytes(32).toString("hex");
+
+export interface DesktopApiConfig {
+	baseUrl: string;
+	apiKey: string;
+	csrfToken: string;
+}
 
 /**
  * Get the path to the web server module
@@ -90,10 +105,10 @@ export async function startServer(): Promise<boolean> {
 					NODE_ENV: "production",
 					// Disable API key requirement for local desktop use
 					MAESTRO_WEB_REQUIRE_KEY: "0",
+					MAESTRO_WEB_API_KEY: API_KEY,
 					MAESTRO_WEB_REQUIRE_REDIS: "0",
 					MAESTRO_WEB_CSRF_TOKEN: CSRF_TOKEN,
-					// Set a JWT secret for local desktop use (not exposed externally)
-					MAESTRO_JWT_SECRET: "maestro-desktop-local-jwt-secret-key-32chars",
+					MAESTRO_JWT_SECRET: JWT_SECRET,
 					// Allow CORS from Vite dev server and Electron
 					MAESTRO_WEB_ORIGIN: DEV_UI_ORIGIN,
 				},
@@ -171,5 +186,13 @@ export function isServerReady(): boolean {
  * Get the server URL
  */
 export function getServerUrl(): string {
-	return `http://${SERVER_HOST}:${SERVER_PORT}`;
+	return `http://${RENDERER_SERVER_HOST}:${SERVER_PORT}`;
+}
+
+export function getServerApiConfig(): DesktopApiConfig {
+	return {
+		baseUrl: getServerUrl(),
+		apiKey: API_KEY,
+		csrfToken: CSRF_TOKEN,
+	};
 }

@@ -34,9 +34,17 @@ import type {
 
 const DEFAULT_BASE_URL =
 	import.meta.env.VITE_MAESTRO_BASE_URL ?? "http://localhost:8080";
+const DEFAULT_API_KEY = import.meta.env.VITE_MAESTRO_API_KEY ?? null;
 const DEFAULT_CSRF_TOKEN =
 	import.meta.env.VITE_MAESTRO_CSRF_TOKEN ?? "maestro-desktop-csrf";
+const DESKTOP_CONFIG_TIMEOUT_MS = 500;
 const MAX_SSE_BUFFER = 1024 * 1024; // 1MB
+
+interface DesktopApiConfig {
+	baseUrl?: string;
+	apiKey?: string;
+	csrfToken?: string;
+}
 
 export type ApprovalMode = "auto" | "prompt" | "fail";
 export type QueueMode = "one" | "all";
@@ -651,15 +659,56 @@ export interface ComposerStatus {
 }
 
 export class ApiClient {
+	private apiKey: string | null;
 	private baseUrl: string;
+	private configPromise: Promise<void> | null = null;
 	private csrfToken: string;
 
 	constructor(baseUrl: string = DEFAULT_BASE_URL) {
+		this.apiKey = DEFAULT_API_KEY;
 		this.baseUrl = baseUrl.replace(/\/$/, "");
 		this.csrfToken = DEFAULT_CSRF_TOKEN;
 	}
 
+	private async ensureDesktopConfig(): Promise<void> {
+		if (this.configPromise) {
+			await this.configPromise;
+			return;
+		}
+		if (!window.electron?.getApiConfig) {
+			return;
+		}
+		const configTimeout = new Promise<null>((resolve) => {
+			window.setTimeout(() => resolve(null), DESKTOP_CONFIG_TIMEOUT_MS);
+		});
+		const configRequest = window.electron
+			.getApiConfig()
+			.then((config: DesktopApiConfig | null | undefined) => config ?? null);
+		this.configPromise = Promise.race([configRequest, configTimeout])
+			.then((config: DesktopApiConfig | null | undefined) => {
+				if (!config) return;
+				if (config.baseUrl) {
+					this.baseUrl = config.baseUrl.replace(/\/$/, "");
+				}
+				if (config.apiKey) {
+					this.apiKey = config.apiKey;
+				}
+				if (config.csrfToken) {
+					this.csrfToken = config.csrfToken;
+				}
+			})
+			.catch((err: unknown) => {
+				console.warn("Failed to load desktop API config:", err);
+			});
+		await this.configPromise;
+	}
+
+	private getAuthHeaders(): Record<string, string> {
+		return this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {};
+	}
+
 	private async fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
+		await this.ensureDesktopConfig();
 		const method = (options?.method || "GET").toUpperCase();
 		const needsCsrf =
 			method !== "GET" && method !== "HEAD" && method !== "OPTIONS";
@@ -667,6 +716,7 @@ export class ApiClient {
 			...options,
 			headers: {
 				"Content-Type": "application/json",
+				...this.getAuthHeaders(),
 				...(needsCsrf
 					? {
 							"x-composer-csrf": this.csrfToken,
@@ -839,9 +889,11 @@ export class ApiClient {
 	}
 
 	async deleteSession(sessionId: string): Promise<void> {
+		await this.ensureDesktopConfig();
 		await fetch(`${this.baseUrl}/api/sessions/${sessionId}`, {
 			method: "DELETE",
 			headers: {
+				...this.getAuthHeaders(),
 				"x-composer-csrf": this.csrfToken,
 				"x-maestro-csrf": this.csrfToken,
 			},
@@ -855,10 +907,12 @@ export class ApiClient {
 		model?: string;
 		thinkingLevel?: ThinkingLevel;
 	}): AsyncGenerator<AgentEvent, void, unknown> {
+		await this.ensureDesktopConfig();
 		const response = await fetch(`${this.baseUrl}/api/chat`, {
 			method: "POST",
 			headers: {
 				"Content-Type": "application/json",
+				...this.getAuthHeaders(),
 				"x-composer-slim-events": "1",
 				"x-maestro-slim-events": "1",
 				"x-composer-csrf": this.csrfToken,

@@ -24,6 +24,12 @@ const DEFAULT_WIDTH = 1200;
 const DEFAULT_HEIGHT = 800;
 const MIN_WIDTH = 900;
 const MIN_HEIGHT = 600;
+const OPEN_DEVTOOLS =
+	process.env.MAESTRO_DESKTOP_OPEN_DEVTOOLS === "1" ||
+	process.env.VITE_DESKTOP_OPEN_DEVTOOLS === "1";
+const LOG_RENDERER_CONSOLE =
+	process.env.MAESTRO_DESKTOP_LOG_RENDERER === "1" ||
+	process.env.VITE_DESKTOP_LOG_RENDERER === "1";
 
 export function createMainWindow(preloadPath: string): BrowserWindow {
 	// Restore previous window bounds if available
@@ -75,12 +81,22 @@ export function createMainWindow(preloadPath: string): BrowserWindow {
 		return { action: "deny" };
 	});
 
+	if (LOG_RENDERER_CONSOLE) {
+		mainWindow.webContents.on(
+			"console-message",
+			(_event, level, message, line, sourceId) => {
+				console.log(`[Renderer:${level}] ${message} (${sourceId}:${line})`);
+			},
+		);
+	}
+
 	// Load the app
 	if (process.env.VITE_DEV_SERVER_URL) {
 		// Development: load from Vite dev server
 		mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
-		// Open DevTools in development
-		mainWindow.webContents.openDevTools();
+		if (OPEN_DEVTOOLS) {
+			mainWindow.webContents.openDevTools();
+		}
 	} else {
 		// Production: load from bundled files
 		mainWindow.loadFile(join(__dirname, "../../dist/index.html"));

@@ -11,6 +11,8 @@ import {
 import { useState } from "react";
 import type { SessionSummary } from "../../lib/types";
 
+const APP_VERSION = import.meta.env.VITE_MAESTRO_DESKTOP_VERSION ?? "dev";
+
 export interface SidebarProps {
 	open: boolean;
 	activeView: "chat" | "automations";
@@ -329,7 +331,7 @@ export function Sidebar({
 							</svg>
 						</button>
 						<span className="font-mono text-[10px] px-2 py-0.5 rounded-md bg-bg-tertiary/50">
-							v0.10.0
+							v{APP_VERSION}
 						</span>
 					</div>
 				</div>

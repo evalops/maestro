@@ -13,6 +13,8 @@ const electronAPI = {
 	// App
 	getVersion: () => ipcRenderer.invoke("app:getVersion"),
 	getName: () => ipcRenderer.invoke("app:getName"),
+	getDeviceIdentityStatus: () => ipcRenderer.invoke("deviceIdentity:getStatus"),
+	getApiConfig: () => ipcRenderer.invoke("server:getApiConfig"),
 
 	// Theme
 	getTheme: () => ipcRenderer.invoke("theme:get"),
