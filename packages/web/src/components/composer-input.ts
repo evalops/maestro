@@ -87,19 +87,22 @@ export class ComposerInput extends LitElement {
 			gap: 0.75rem;
 			align-items: flex-end;
 			position: relative;
-			background: var(--bg-primary, #0c0d0f);
-			border: 1px solid var(--border-primary, #1e2023);
-			padding: 0.75rem;
+			background: var(--bg-elevated, #232427);
+			border: 1px solid var(--border-subtle, #1f2022);
+			border-radius: var(--radius-lg, 14px);
+			padding: 0.85rem 0.95rem;
+			box-shadow: var(--shadow-md, 0 8px 24px -12px rgba(0, 0, 0, 0.5));
+			transition: border-color 0.15s ease, box-shadow 0.15s ease;
 		}
 
 		.input-wrapper:focus-within {
-			border-color: var(--accent-amber, #d4a012);
-			box-shadow: 0 0 0 1px var(--accent-amber-dim, rgba(212, 160, 18, 0.12));
+			border-color: var(--border-secondary, #3a3d42);
+			box-shadow: var(--shadow-lg, 0 24px 48px -16px rgba(0, 0, 0, 0.55)), 0 0 0 1px var(--border-secondary, #3a3d42);
 		}
 
 		.input-wrapper.recording {
-			border-color: var(--accent-red, #ef4444);
-			box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.25);
+			border-color: var(--accent-red, #f87171);
+			box-shadow: 0 0 0 1px var(--accent-red-dim, rgba(248, 113, 113, 0.14));
 		}
 
 		textarea {
@@ -109,12 +112,12 @@ export class ComposerInput extends LitElement {
 			padding: 0;
 			border: none;
 			background: transparent;
-			color: var(--text-primary, #e8e9eb);
-			font-family: var(--font-mono, "JetBrains Mono", monospace);
-			font-size: 0.85rem;
+			color: var(--text-primary, #ececec);
+			font-family: var(--font-sans, "Inter", sans-serif);
+			font-size: 0.92rem;
 			resize: none;
 			outline: none;
-			line-height: 1.6;
+			line-height: 1.55;
 		}
 
 		textarea:disabled {
@@ -130,14 +133,14 @@ export class ComposerInput extends LitElement {
 			position: absolute;
 			bottom: 0.75rem;
 			right: 6rem;
-			font-family: var(--font-mono, monospace);
+			font-family: var(--font-sans, 'Inter', sans-serif);
 			font-size: 0.6rem;
 			color: var(--text-tertiary, #5c5e62);
 			pointer-events: none;
 			opacity: 0;
 			transition: opacity 0.15s ease;
-			text-transform: uppercase;
-			letter-spacing: 0.05em;
+			text-transform: none;
+			letter-spacing: 0;
 		}
 
 		.input-wrapper:focus-within .char-count {
@@ -153,48 +156,50 @@ export class ComposerInput extends LitElement {
 		}
 
 		button {
-			padding: 0.5rem 1rem;
-			background: var(--accent-amber-dim, rgba(212, 160, 18, 0.12));
-			color: var(--accent-amber, #d4a012);
+			padding: 0.4rem 0.85rem;
+			background: var(--text-primary, #ececec);
+			color: var(--bg-primary, #1a1b1d);
 			border: none;
-			font-family: var(--font-mono, monospace);
-			font-size: 0.65rem;
-			font-weight: 600;
+			border-radius: 999px;
+			font-family: var(--font-sans, "Inter", sans-serif);
+			font-size: 0.78rem;
+			font-weight: 500;
 			cursor: pointer;
-			transition: all 0.15s ease;
+			transition: background 0.12s ease, transform 0.12s ease;
 			white-space: nowrap;
-			text-transform: uppercase;
-			letter-spacing: 0.08em;
+			text-transform: none;
+			letter-spacing: 0;
 		}
 
 		button:hover:not(:disabled) {
-			background: var(--accent-amber, #d4a012);
-			color: var(--bg-deep, #08090a);
+			background: var(--text-secondary, #b4b4b4);
 		}
 
 		button:disabled {
-			opacity: 0.3;
+			opacity: 0.35;
 			cursor: not-allowed;
 		}
 
 		.hint {
-			font-family: var(--font-mono, monospace);
-			font-size: 0.6rem;
-			color: var(--text-tertiary, #5c5e62);
-			margin-top: 0.75rem;
+			font-family: var(--font-sans, "Inter", sans-serif);
+			font-size: 0.7rem;
+			color: var(--text-tertiary, #8e8e8e);
+			margin-top: 0.5rem;
+			padding: 0 0.25rem;
 			display: flex;
 			align-items: center;
 			gap: 0.75rem;
 		}
 
 		.hint kbd {
-			padding: 0.15rem 0.4rem;
-			background: var(--bg-elevated, #161719);
-			border: 1px solid var(--border-primary, #1e2023);
-			font-family: inherit;
-			font-size: 0.6rem;
-			font-weight: 600;
-			color: var(--text-secondary, #8b8d91);
+			padding: 0.1rem 0.4rem;
+			background: var(--bg-elevated, #232427);
+			border: 1px solid var(--border-subtle, #1f2022);
+			border-radius: 4px;
+			font-family: var(--font-mono, monospace);
+			font-size: 0.65rem;
+			font-weight: 500;
+			color: var(--text-secondary, #b4b4b4);
 		}
 
 		.actions {
@@ -204,45 +209,47 @@ export class ComposerInput extends LitElement {
 		}
 
 		.attach-button {
-			width: 34px;
-			height: 34px;
+			width: 32px;
+			height: 32px;
 			padding: 0;
 			display: inline-flex;
 			align-items: center;
 			justify-content: center;
 			background: transparent;
-			border: 1px solid var(--border-primary, #1e2023);
-			color: var(--text-tertiary, #5c5e62);
+			border: none;
+			border-radius: 999px;
+			color: var(--text-tertiary, #8e8e8e);
 			cursor: pointer;
-			transition: all 0.15s ease;
+			transition: background 0.12s ease, color 0.12s ease;
 		}
 
 		.attach-button:hover:not(:disabled) {
-			background: var(--bg-elevated, #161719);
-			color: var(--text-primary, #e8e9eb);
+			background: var(--bg-panel, #2c2e31);
+			color: var(--text-primary, #ececec);
 		}
 
 		.voice-button {
-			width: 34px;
-			height: 34px;
+			width: 32px;
+			height: 32px;
 			padding: 0;
 			display: inline-flex;
 			align-items: center;
 			justify-content: center;
 			background: transparent;
-			border: 1px solid var(--border-primary, #1e2023);
-			color: var(--text-tertiary, #5c5e62);
+			border: none;
+			border-radius: 999px;
+			color: var(--text-tertiary, #8e8e8e);
 			cursor: pointer;
-			transition: all 0.15s ease;
+			transition: background 0.12s ease, color 0.12s ease;
 		}
 
 		.voice-button:hover:not(:disabled) {
-			background: var(--bg-elevated, #161719);
-			color: var(--text-primary, #e8e9eb);
+			background: var(--bg-panel, #2c2e31);
+			color: var(--text-primary, #ececec);
 		}
 
 		.voice-button.active {
-			border-color: var(--accent-red, #ef4444);
+			border: 1px solid var(--accent-red, #ef4444);
 			color: var(--accent-red, #ef4444);
 			background: rgba(239, 68, 68, 0.08);
 		}
@@ -255,12 +262,12 @@ export class ComposerInput extends LitElement {
 			align-items: center;
 			justify-content: center;
 			background: transparent;
-			border: 1px solid var(--border-primary, #1e2023);
+			border: 1px solid var(--border-subtle, #1e2023);
 			color: var(--text-tertiary, #5c5e62);
 			cursor: pointer;
 			transition: all 0.15s ease;
 			font-size: 0.52rem;
-			letter-spacing: 0.04em;
+			letter-spacing: 0;
 		}
 
 		.mcp-button:hover:not(:disabled),
@@ -280,14 +287,14 @@ export class ComposerInput extends LitElement {
 			position: relative;
 			width: 48px;
 			height: 48px;
-			border: 1px solid var(--border-primary, #1e2023);
+			border: 1px solid var(--border-subtle, #1e2023);
 			background: var(--bg-elevated, #161719);
 			overflow: hidden;
 			display: inline-flex;
 			align-items: center;
 			justify-content: center;
 			color: var(--text-secondary, #8b8d91);
-			font-family: var(--font-mono, monospace);
+			font-family: var(--font-sans, 'Inter', sans-serif);
 			font-size: 0.6rem;
 		}
 
@@ -305,7 +312,7 @@ export class ComposerInput extends LitElement {
 			width: 20px;
 			height: 20px;
 			border-radius: 999px;
-			border: 1px solid var(--border-primary, #1e2023);
+			border: 1px solid var(--border-subtle, #1e2023);
 			background: var(--bg-deep, #08090a);
 			color: var(--text-tertiary, #5c5e62);
 			cursor: pointer;
@@ -325,7 +332,7 @@ export class ComposerInput extends LitElement {
 			left: 0;
 			right: 0;
 			background: var(--bg-secondary, #161b22);
-			border: 1px solid var(--border-primary, #1e2023);
+			border: 1px solid var(--border-subtle, #1e2023);
 			border-bottom: none;
 			max-height: 200px;
 			overflow-y: auto;
@@ -341,7 +348,7 @@ export class ComposerInput extends LitElement {
 			padding: 0.5rem 0.75rem;
 			cursor: pointer;
 			color: var(--text-primary, #e8e9eb);
-			font-family: var(--font-mono, monospace);
+			font-family: var(--font-sans, 'Inter', sans-serif);
 			font-size: 0.8rem;
 			border-bottom: 1px solid var(--border-dim, rgba(30, 32, 35, 0.5));
 		}
@@ -382,13 +389,13 @@ export class ComposerInput extends LitElement {
 		}
 
 		.suggestion-badge {
-			border: 1px solid var(--border-primary, #1e2023);
+			border: 1px solid var(--border-subtle, #1e2023);
 			background: var(--bg-elevated, #161719);
 			color: var(--text-secondary, #9ca3af);
 			padding: 0.12rem 0.42rem;
 			font-size: 0.62rem;
-			text-transform: uppercase;
-			letter-spacing: 0.08em;
+			text-transform: none;
+			letter-spacing: 0;
 			flex-shrink: 0;
 		}
 
@@ -402,7 +409,7 @@ export class ComposerInput extends LitElement {
 		.suggestion-empty {
 			padding: 0.75rem;
 			color: var(--text-secondary, #9ca3af);
-			font-family: var(--font-mono, monospace);
+			font-family: var(--font-sans, 'Inter', sans-serif);
 			font-size: 0.75rem;
 		}
 
@@ -414,10 +421,10 @@ export class ComposerInput extends LitElement {
 			margin-bottom: 0.5rem;
 			padding: 0.55rem 0.75rem;
 			background: var(--bg-secondary, #161b22);
-			border: 1px solid var(--border-primary, #1e2023);
+			border: 1px solid var(--border-subtle, #1e2023);
 			box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
 			color: var(--text-secondary, #9ca3af);
-			font-family: var(--font-mono, monospace);
+			font-family: var(--font-sans, 'Inter', sans-serif);
 			font-size: 0.75rem;
 			z-index: 95;
 		}
@@ -434,7 +441,7 @@ export class ComposerInput extends LitElement {
 			right: 0;
 			margin-bottom: 0.35rem;
 			padding: 0.5rem 0.75rem;
-			border: 1px solid var(--border-primary, #1e2023);
+			border: 1px solid var(--border-subtle, #1e2023);
 			background: var(--bg-secondary, #161b22);
 			box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
 			border-radius: 4px;
@@ -442,7 +449,7 @@ export class ComposerInput extends LitElement {
 			justify-content: space-between;
 			align-items: center;
 			gap: 0.75rem;
-			font-family: var(--font-mono, monospace);
+			font-family: var(--font-sans, 'Inter', sans-serif);
 			color: var(--text-primary, #e8e9eb);
 			z-index: 90;
 		}
@@ -489,7 +496,7 @@ export class ComposerInput extends LitElement {
 		.slash-hint kbd {
 			padding: 0.15rem 0.4rem;
 			background: var(--bg-elevated, #161719);
-			border: 1px solid var(--border-primary, #1e2023);
+			border: 1px solid var(--border-subtle, #1e2023);
 			font-family: inherit;
 			font-size: 0.62rem;
 			font-weight: 600;
@@ -499,7 +506,7 @@ export class ComposerInput extends LitElement {
 		.prompt-suggestion {
 			margin-bottom: 0.35rem;
 			padding: 0.6rem 0.75rem;
-			border: 1px solid var(--border-primary, #1e2023);
+			border: 1px solid var(--border-subtle, #1e2023);
 			background: var(--bg-secondary, #161b22);
 			box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
 			border-radius: 4px;
@@ -507,7 +514,7 @@ export class ComposerInput extends LitElement {
 			justify-content: space-between;
 			align-items: center;
 			gap: 0.75rem;
-			font-family: var(--font-mono, monospace);
+			font-family: var(--font-sans, 'Inter', sans-serif);
 		}
 
 		.prompt-suggestion-copy {
@@ -519,8 +526,8 @@ export class ComposerInput extends LitElement {
 
 		.prompt-suggestion-label {
 			font-size: 0.62rem;
-			text-transform: uppercase;
-			letter-spacing: 0.12em;
+			text-transform: none;
+			letter-spacing: 0;
 			color: var(--text-tertiary, #6b7280);
 		}
 
@@ -544,7 +551,7 @@ export class ComposerInput extends LitElement {
 
 		.prompt-suggestion-dismiss {
 			background: transparent;
-			border: 1px solid var(--border-primary, #1e2023);
+			border: 1px solid var(--border-subtle, #1e2023);
 			color: var(--text-tertiary, #6b7280);
 		}
 

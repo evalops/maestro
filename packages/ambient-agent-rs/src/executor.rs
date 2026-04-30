@@ -45,6 +45,7 @@ static ALLOWED_TEST_COMMANDS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
 pub struct ExecutorConfig {
     pub api_key: String,
     pub api_base_url: String,
+    pub api_provider: LlmApiProvider,
     pub max_tokens: u32,
     pub temperature: f64,
     pub run_tests: bool,
@@ -55,11 +56,18 @@ pub struct ExecutorConfig {
     pub max_retries: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LlmApiProvider {
+    AnthropicMessages,
+    OpenRouterChatCompletions,
+}
+
 impl Default for ExecutorConfig {
     fn default() -> Self {
         Self {
             api_key: String::new(),
-            api_base_url: "https://api.anthropic.com/v1".to_string(),
+            api_base_url: "https://openrouter.ai/api/v1".to_string(),
+            api_provider: LlmApiProvider::OpenRouterChatCompletions,
             max_tokens: 4096,
             temperature: 0.0,
             run_tests: true,
@@ -68,6 +76,38 @@ impl Default for ExecutorConfig {
             request_timeout_secs: 300, // 5 minutes for LLM calls
             test_timeout_secs: 120,    // 2 minutes for tests
             max_retries: 3,
+        }
+    }
+}
+
+impl ExecutorConfig {
+    pub fn from_env(working_dir: impl Into<String>) -> Self {
+        let working_dir = working_dir.into();
+        let api_provider = match std::env::var("MAESTRO_AMBIENT_LLM_API").ok().as_deref() {
+            Some("anthropic") | Some("anthropic-messages") => LlmApiProvider::AnthropicMessages,
+            _ => LlmApiProvider::OpenRouterChatCompletions,
+        };
+
+        match api_provider {
+            LlmApiProvider::OpenRouterChatCompletions => Self {
+                api_key: std::env::var("OPENROUTER_API_KEY")
+                    .or_else(|_| std::env::var("MAESTRO_OPENROUTER_API_KEY"))
+                    .unwrap_or_default(),
+                api_base_url: std::env::var("OPENROUTER_BASE_URL")
+                    .or_else(|_| std::env::var("MAESTRO_OPENROUTER_BASE_URL"))
+                    .unwrap_or_else(|_| "https://openrouter.ai/api/v1".to_string()),
+                api_provider,
+                working_dir,
+                ..Default::default()
+            },
+            LlmApiProvider::AnthropicMessages => Self {
+                api_key: std::env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
+                api_base_url: std::env::var("ANTHROPIC_BASE_URL")
+                    .unwrap_or_else(|_| "https://api.anthropic.com/v1".to_string()),
+                api_provider,
+                working_dir,
+                ..Default::default()
+            },
         }
     }
 }
@@ -87,6 +127,36 @@ struct AnthropicRequest {
     temperature: f64,
     messages: Vec<Message>,
     system: String,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenRouterChatRequest {
+    model: String,
+    max_tokens: u32,
+    temperature: f64,
+    messages: Vec<Message>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenRouterChatResponse {
+    choices: Vec<OpenRouterChoice>,
+    usage: Option<OpenRouterUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenRouterChoice {
+    message: OpenRouterMessage,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenRouterMessage {
+    content: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenRouterUsage {
+    prompt_tokens: Option<u32>,
+    completion_tokens: Option<u32>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -400,8 +470,27 @@ impl Executor {
         Err(last_error.unwrap_or_else(|| anyhow::anyhow!("LLM call failed after retries")))
     }
 
-    /// Call the Anthropic API
+    /// Call the configured LLM API
     async fn call_llm(
+        &self,
+        model: &str,
+        system_prompt: &str,
+        user_prompt: &str,
+    ) -> anyhow::Result<AnthropicResponse> {
+        match self.config.api_provider {
+            LlmApiProvider::AnthropicMessages => {
+                self.call_anthropic_messages(model, system_prompt, user_prompt)
+                    .await
+            }
+            LlmApiProvider::OpenRouterChatCompletions => {
+                self.call_openrouter_chat_completions(model, system_prompt, user_prompt)
+                    .await
+            }
+        }
+    }
+
+    /// Call the Anthropic Messages API
+    async fn call_anthropic_messages(
         &self,
         model: &str,
         system_prompt: &str,
@@ -436,6 +525,69 @@ impl Executor {
 
         let result: AnthropicResponse = response.json().await?;
         Ok(result)
+    }
+
+    /// Call the OpenRouter OpenAI-compatible chat completions API.
+    async fn call_openrouter_chat_completions(
+        &self,
+        model: &str,
+        system_prompt: &str,
+        user_prompt: &str,
+    ) -> anyhow::Result<AnthropicResponse> {
+        let request = OpenRouterChatRequest {
+            model: model.to_string(),
+            max_tokens: self.config.max_tokens,
+            temperature: self.config.temperature,
+            messages: vec![
+                Message {
+                    role: "system".to_string(),
+                    content: system_prompt.to_string(),
+                },
+                Message {
+                    role: "user".to_string(),
+                    content: user_prompt.to_string(),
+                },
+            ],
+        };
+
+        let response = self
+            .client
+            .post(format!("{}/chat/completions", self.config.api_base_url))
+            .bearer_auth(&self.config.api_key)
+            .header("content-type", "application/json")
+            .header("HTTP-Referer", "https://maestro.evalops.dev")
+            .header("X-OpenRouter-Title", "EvalOps Maestro Ambient Agent")
+            .json(&request)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("API error {}: {}", status, body);
+        }
+
+        let result: OpenRouterChatResponse = response.json().await?;
+        let text = result
+            .choices
+            .first()
+            .and_then(|choice| choice.message.content.clone())
+            .unwrap_or_default();
+        let usage = result.usage.unwrap_or(OpenRouterUsage {
+            prompt_tokens: Some(0),
+            completion_tokens: Some(0),
+        });
+
+        Ok(AnthropicResponse {
+            content: vec![ContentBlock {
+                content_type: "text".to_string(),
+                text: Some(text),
+            }],
+            usage: Usage {
+                input_tokens: usage.prompt_tokens.unwrap_or(0),
+                output_tokens: usage.completion_tokens.unwrap_or(0),
+            },
+        })
     }
 
     /// Parse LLM response to extract file changes with validation
@@ -673,6 +825,9 @@ impl Executor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::mpsc;
 
     #[test]
     fn test_parse_file_change_blocks() {
@@ -777,5 +932,85 @@ fn main() {
         assert!(generated.decision.is_blocking());
         assert_eq!(fixture.decision, FilePermissionDecision::Allow);
         assert!(!fixture.decision.is_blocking());
+    }
+
+    #[tokio::test]
+    async fn call_llm_uses_openrouter_chat_completions() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (request_tx, request_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_http_request(&mut stream);
+            request_tx.send(request).unwrap();
+            let body = "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"<file_change><action>modify</action><path>README.md</path><content>ok</content></file_change>\"}}],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7,\"total_tokens\":18}}";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+
+        let executor = Executor::new(ExecutorConfig {
+            api_key: "or-test-key".to_string(),
+            api_base_url: format!("http://{}", addr),
+            api_provider: LlmApiProvider::OpenRouterChatCompletions,
+            max_retries: 1,
+            ..ExecutorConfig::default()
+        });
+
+        let response = executor
+            .call_llm(
+                "~anthropic/claude-opus-latest",
+                "system prompt",
+                "user prompt",
+            )
+            .await
+            .unwrap();
+
+        let request = request_rx.recv().unwrap();
+        assert!(request.starts_with("POST /chat/completions HTTP/1.1"));
+        assert!(request.contains("authorization: Bearer or-test-key"));
+        assert!(request.contains("\"model\":\"~anthropic/claude-opus-latest\""));
+        assert!(request.contains("\"role\":\"system\""));
+        assert!(request.contains("\"content\":\"system prompt\""));
+        assert!(request.contains("\"role\":\"user\""));
+        assert!(request.contains("\"content\":\"user prompt\""));
+        assert_eq!(response.usage.input_tokens, 11);
+        assert_eq!(response.usage.output_tokens, 7);
+        assert_eq!(
+            response.content[0].text.as_deref(),
+            Some("<file_change><action>modify</action><path>README.md</path><content>ok</content></file_change>")
+        );
+    }
+
+    fn read_http_request(stream: &mut TcpStream) -> String {
+        let mut buffer = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        loop {
+            let read = stream.read(&mut chunk).unwrap();
+            if read == 0 {
+                break;
+            }
+            buffer.extend_from_slice(&chunk[..read]);
+            let Some(header_end) = find_header_end(&buffer) else {
+                continue;
+            };
+            let headers = String::from_utf8_lossy(&buffer[..header_end]).to_ascii_lowercase();
+            let content_length = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length: "))
+                .and_then(|value| value.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            if buffer.len() >= header_end + 4 + content_length {
+                break;
+            }
+        }
+        String::from_utf8(buffer).unwrap()
+    }
+
+    fn find_header_end(buffer: &[u8]) -> Option<usize> {
+        buffer.windows(4).position(|window| window == b"\r\n\r\n")
     }
 }

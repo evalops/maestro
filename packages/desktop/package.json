@@ -7,18 +7,19 @@
 	"scripts": {
 		"clean": "node ../../scripts/clean-paths.js dist dist-electron release",
 		"dev": "vite",
+		"build:native:device-identity": "./scripts/build-device-identity-helper.sh",
 		"build": "vite build",
 		"preview": "vite preview",
 		"check": "tsc --noEmit",
 		"icons": "./scripts/generate-icons.sh",
-		"package": "npm run build && electron-builder --config electron-builder.json",
-		"package:mac": "npm run build && electron-builder --mac --config electron-builder.json",
-		"package:mac:universal": "npm run build && electron-builder --mac --universal --config electron-builder.json",
+		"package": "npm run build:native:device-identity && npm run build && electron-builder --config electron-builder.json",
+		"package:mac": "npm run build:native:device-identity && npm run build && electron-builder --mac --config electron-builder.json",
+		"package:mac:universal": "npm run build:native:device-identity && npm run build && electron-builder --mac --universal --config electron-builder.json",
 		"package:win": "npm run build && electron-builder --win --config electron-builder.json",
 		"package:linux": "npm run build && electron-builder --linux --config electron-builder.json",
-		"package:all": "npm run build && electron-builder -mwl --config electron-builder.json",
-		"publish": "npm run build && electron-builder --publish always --config electron-builder.json",
-		"publish:mac": "npm run build && electron-builder --mac --publish always --config electron-builder.json"
+		"package:all": "npm run build:native:device-identity && npm run build && electron-builder -mwl --config electron-builder.json",
+		"publish": "npm run build:native:device-identity && npm run build && electron-builder --publish always --config electron-builder.json",
+		"publish:mac": "npm run build:native:device-identity && npm run build && electron-builder --mac --publish always --config electron-builder.json"
 	},
 	"keywords": [
 		"maestro",

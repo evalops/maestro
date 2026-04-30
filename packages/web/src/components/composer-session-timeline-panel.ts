@@ -45,7 +45,7 @@ export class ComposerSessionTimelinePanel extends LitElement {
 			flex-direction: column;
 			z-index: 35;
 			color: var(--text-primary, #e8e9eb);
-			font-family: var(--font-mono, monospace);
+			font-family: var(--font-sans, "Inter", sans-serif);
 		}
 
 		.header {
@@ -60,8 +60,8 @@ export class ComposerSessionTimelinePanel extends LitElement {
 		.title {
 			font-size: 0.65rem;
 			font-weight: 700;
-			letter-spacing: 0.08em;
-			text-transform: uppercase;
+			letter-spacing: 0;
+			text-transform: none;
 			color: var(--text-tertiary, #5c5e62);
 		}
 
@@ -71,13 +71,13 @@ export class ComposerSessionTimelinePanel extends LitElement {
 		}
 
 		button {
-			border: 1px solid var(--border-primary, #1e2023);
+			border: 1px solid var(--border-subtle, #1e2023);
 			background: transparent;
 			color: var(--text-tertiary, #5c5e62);
 			height: 28px;
 			min-width: 28px;
 			cursor: pointer;
-			font-family: var(--font-mono, monospace);
+			font-family: var(--font-sans, "Inter", sans-serif);
 			font-size: 0.68rem;
 		}
 
@@ -112,7 +112,7 @@ export class ComposerSessionTimelinePanel extends LitElement {
 		}
 
 		.metric {
-			border: 1px solid var(--border-primary, #1e2023);
+			border: 1px solid var(--border-subtle, #1e2023);
 			background: var(--bg-primary, #0c0d0f);
 			padding: 0.5rem;
 			min-width: 0;
@@ -127,8 +127,8 @@ export class ComposerSessionTimelinePanel extends LitElement {
 		.metric-label {
 			margin-top: 0.25rem;
 			font-size: 0.55rem;
-			letter-spacing: 0.08em;
-			text-transform: uppercase;
+			letter-spacing: 0;
+			text-transform: none;
 			color: var(--text-tertiary, #5c5e62);
 			white-space: nowrap;
 			overflow: hidden;
@@ -215,11 +215,11 @@ export class ComposerSessionTimelinePanel extends LitElement {
 		}
 
 		.chip {
-			border: 1px solid var(--border-primary, #1e2023);
+			border: 1px solid var(--border-subtle, #1e2023);
 			color: var(--text-tertiary, #5c5e62);
 			font-size: 0.54rem;
-			text-transform: uppercase;
-			letter-spacing: 0.06em;
+			text-transform: none;
+			letter-spacing: 0;
 			padding: 0.1rem 0.3rem;
 			max-width: 100%;
 			overflow: hidden;

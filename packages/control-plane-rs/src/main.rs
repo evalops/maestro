@@ -5505,9 +5505,7 @@ fn shared_bearer_subject(token: &str) -> Option<String> {
     if secret.is_empty() {
         return None;
     }
-    let Some((encoded_user, provided_signature)) = token.split_once('.') else {
-        return None;
-    };
+    let (encoded_user, provided_signature) = token.split_once('.')?;
     if provided_signature.contains('.') {
         return None;
     }
@@ -5629,9 +5627,7 @@ fn jwks_jwt_subject(token: &str, algorithm: Algorithm) -> Option<String> {
     if header.alg != algorithm {
         return None;
     }
-    let Some(jwks) = load_jwks() else {
-        return None;
-    };
+    let jwks = load_jwks()?;
     let key = jwks
         .keys
         .iter()
@@ -5643,9 +5639,7 @@ fn jwks_jwt_subject(token: &str, algorithm: Algorithm) -> Option<String> {
                 .unwrap_or(true)
         })
         .and_then(|key| DecodingKey::from_jwk(key).ok());
-    let Some(key) = key else {
-        return None;
-    };
+    let key = key?;
     let mut validation = Validation::new(algorithm);
     if let Ok(audience) = env::var("MAESTRO_JWT_AUD") {
         let audience = audience.trim().to_string();
@@ -5825,7 +5819,7 @@ fn parse_git_status(status_output: &str) -> GitStatus {
         if codes.iter().any(|code| matches!(code, 'A' | 'R' | 'C')) {
             added += 1;
         }
-        if codes.iter().any(|code| *code == 'D') {
+        if codes.contains(&'D') {
             deleted += 1;
         }
     }
@@ -7285,8 +7279,10 @@ mod tests {
 
     #[test]
     fn chat_body_limit_allows_base64_attachments() {
-        assert!(MAX_JSON_BODY_BYTES >= 32 * 1024 * 1024);
-        assert!(MAX_EXTRACT_JSON_BODY_BYTES > (MAX_EXTRACT_INPUT_BYTES * 4 / 3));
+        const {
+            assert!(MAX_JSON_BODY_BYTES >= 32 * 1024 * 1024);
+            assert!(MAX_EXTRACT_JSON_BODY_BYTES > (MAX_EXTRACT_INPUT_BYTES * 4 / 3));
+        }
     }
 
     #[test]

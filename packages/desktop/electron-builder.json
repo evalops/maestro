@@ -12,6 +12,12 @@
 	"asar": true,
 	"compression": "maximum",
 	"mac": {
+		"extraResources": [
+			{
+				"from": "native/maestro-device-identity",
+				"to": "native/maestro-device-identity"
+			}
+		],
 		"target": [
 			{
 				"target": "dmg",

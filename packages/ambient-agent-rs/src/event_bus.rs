@@ -6,6 +6,7 @@
 use crate::types::*;
 use chrono::Utc;
 use sha2::{Digest, Sha256};
+use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -168,7 +169,7 @@ impl EventBus {
             .filter(|e| e.status == EventStatus::Pending)
             .cloned()
             .collect();
-        pending.sort_by(|a, b| b.priority.cmp(&a.priority));
+        pending.sort_by_key(|event| Reverse(event.priority));
         pending
     }
 
@@ -192,7 +193,7 @@ impl EventBus {
             .filter(|e| e.repo.full_name == repo)
             .cloned()
             .collect();
-        events.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        events.sort_by_key(|event| Reverse(event.created_at));
         events.truncate(limit);
         events
     }
@@ -332,7 +333,7 @@ impl EventBus {
                 .map(|(id, e)| (id.clone(), e.created_at))
                 .collect();
 
-            terminal.sort_by(|a, b| a.1.cmp(&b.1));
+            terminal.sort_by_key(|event| event.1);
 
             let excess = state
                 .events
@@ -353,7 +354,7 @@ impl EventBus {
                     .map(|(id, e)| (id.clone(), e.created_at))
                     .collect();
 
-                active.sort_by(|a, b| a.1.cmp(&b.1));
+                active.sort_by_key(|event| event.1);
 
                 let still_excess = state
                     .events

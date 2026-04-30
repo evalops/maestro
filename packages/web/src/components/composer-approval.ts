@@ -92,8 +92,8 @@ export class ComposerApproval extends LitElement {
 			font-size: 0.85rem;
 			font-weight: 700;
 			color: #d29922;
-			text-transform: uppercase;
-			letter-spacing: 0.05em;
+			text-transform: none;
+			letter-spacing: 0;
 			margin-bottom: 0.25rem;
 		}
 
@@ -118,8 +118,8 @@ export class ComposerApproval extends LitElement {
 			font-size: 0.7rem;
 			font-weight: 700;
 			color: #6e7681;
-			text-transform: uppercase;
-			letter-spacing: 0.1em;
+			text-transform: none;
+			letter-spacing: 0;
 			margin-bottom: 0.5rem;
 		}
 
@@ -172,8 +172,8 @@ export class ComposerApproval extends LitElement {
 
 		.detail-chip-label {
 			color: #8b949e;
-			text-transform: uppercase;
-			letter-spacing: 0.06em;
+			text-transform: none;
+			letter-spacing: 0;
 		}
 
 		.detail-chip-value {
@@ -272,8 +272,8 @@ export class ComposerApproval extends LitElement {
 			font-family: inherit;
 			font-size: 0.75rem;
 			font-weight: 700;
-			text-transform: uppercase;
-			letter-spacing: 0.05em;
+			text-transform: none;
+			letter-spacing: 0;
 			cursor: pointer;
 			transition: all 0.15s;
 		}

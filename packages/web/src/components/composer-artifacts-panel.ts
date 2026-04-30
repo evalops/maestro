@@ -71,16 +71,16 @@ export class ComposerArtifactsPanel extends LitElement {
 		}
 
 		.title {
-			font-family: var(--font-mono, monospace);
+			font-family: var(--font-sans, "Inter", sans-serif);
 			font-size: 0.65rem;
 			font-weight: 700;
-			letter-spacing: 0.08em;
-			text-transform: uppercase;
+			letter-spacing: 0;
+			text-transform: none;
 			color: var(--text-tertiary, #5c5e62);
 		}
 
 		.close {
-			border: 1px solid var(--border-primary, #1e2023);
+			border: 1px solid var(--border-subtle, #1e2023);
 			background: transparent;
 			color: var(--text-tertiary, #5c5e62);
 			width: 28px;
@@ -102,10 +102,10 @@ export class ComposerArtifactsPanel extends LitElement {
 		}
 
 		.tab {
-			border: 1px solid var(--border-primary, #1e2023);
+			border: 1px solid var(--border-subtle, #1e2023);
 			background: transparent;
 			color: var(--text-tertiary, #5c5e62);
-			font-family: var(--font-mono, monospace);
+			font-family: var(--font-sans, "Inter", sans-serif);
 			font-size: 0.7rem;
 			padding: 0.25rem 0.5rem;
 			cursor: pointer;
@@ -121,7 +121,7 @@ export class ComposerArtifactsPanel extends LitElement {
 		.empty {
 			padding: 0.75rem;
 			color: var(--text-tertiary, #5c5e62);
-			font-family: var(--font-mono, monospace);
+			font-family: var(--font-sans, "Inter", sans-serif);
 			font-size: 0.75rem;
 		}
 

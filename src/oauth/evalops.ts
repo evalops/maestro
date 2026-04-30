@@ -8,6 +8,10 @@ import { PLATFORM_HTTP_ROUTES } from "../platform/core-services.js";
 import { fetchDownstream } from "../utils/downstream-http.js";
 import { createLogger } from "../utils/logger.js";
 import {
+	buildDesktopDeviceProof,
+	enrollDesktopDeviceIdentity,
+} from "./device-identity.js";
+import {
 	type OAuthCredentials,
 	loadOAuthCredentials,
 	saveOAuthCredentials,
@@ -382,6 +386,10 @@ export async function issueEvalOpsDelegationToken(
 	const metadata = resolveStoredEvalOpsMetadata(request.metadata);
 	const identityBaseUrl =
 		getMetadataString(metadata, "identityBaseUrl") ?? getIdentityBaseUrl();
+	const deviceProof = await buildDesktopDeviceProof(
+		identityBaseUrl,
+		"delegation",
+	);
 	const token = request.token ?? (await getFreshEvalOpsAccessToken(metadata));
 	if (!token) {
 		throw new Error(
@@ -405,6 +413,7 @@ export async function issueEvalOpsDelegationToken(
 					: {}),
 				run_id: request.runId,
 				...(request.scopes?.length ? { scopes: request.scopes } : {}),
+				...(deviceProof ? { device_proof: deviceProof } : {}),
 				surface: request.surface,
 				...(request.ttlSeconds ? { ttl_seconds: request.ttlSeconds } : {}),
 			}),
@@ -614,6 +623,12 @@ export async function loginEvalOps(
 			}),
 		]);
 
+		const deviceId = await enrollDesktopDeviceIdentity(
+			identityBaseUrl,
+			result.accessToken,
+			process.env.npm_package_version,
+		);
+
 		const credentials: OAuthCredentials = {
 			type: "oauth",
 			access: result.accessToken,
@@ -623,6 +638,7 @@ export async function loginEvalOps(
 				identityBaseUrl,
 				organizationId: result.organizationId,
 				providerRef,
+				...(deviceId ? { deviceId } : {}),
 				...(result.refreshExpiresAt
 					? { refreshExpiresAt: result.refreshExpiresAt }
 					: {}),
@@ -650,13 +666,17 @@ export async function refreshEvalOpsToken(
 
 	const identityBaseUrl =
 		getMetadataString(metadata, "identityBaseUrl") ?? getIdentityBaseUrl();
+	const deviceProof = await buildDesktopDeviceProof(identityBaseUrl, "refresh");
 	const response = await fetchIdentity(
 		identityBaseUrl,
 		PLATFORM_HTTP_ROUTES.identity.tokenRefresh,
 		{
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ refresh_token: refreshToken }),
+			body: JSON.stringify({
+				refresh_token: refreshToken,
+				...(deviceProof ? { device_proof: deviceProof } : {}),
+			}),
 		},
 	);
 

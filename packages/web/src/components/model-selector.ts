@@ -31,7 +31,7 @@ export class ModelSelector extends LitElement {
 
 		.dialog {
 			background: var(--bg-secondary);
-			border: 1px solid var(--border-primary);
+			border: 1px solid var(--border-subtle);
 			border-radius: 12px;
 			width: 90%;
 			max-width: 600px;
@@ -61,7 +61,7 @@ export class ModelSelector extends LitElement {
 
 		.close {
 			background: none;
-			border: 1px solid var(--border-primary);
+			border: 1px solid var(--border-subtle);
 			color: var(--text-secondary);
 			font-size: 1.25rem;
 			cursor: pointer;
@@ -91,7 +91,7 @@ export class ModelSelector extends LitElement {
 			width: 100%;
 			padding: 0.75rem 1rem;
 			background: var(--bg-secondary);
-			border: 1px solid var(--border-primary);
+			border: 1px solid var(--border-subtle);
 			border-radius: 8px;
 			color: var(--text-primary);
 			font-size: 0.9rem;
@@ -159,7 +159,7 @@ export class ModelSelector extends LitElement {
 			font-size: 0.75rem;
 			color: var(--text-tertiary);
 			margin-top: 0.35rem;
-			font-family: var(--font-mono);
+			font-family: var(--font-sans, "Inter", sans-serif);
 		}
 
 		.model-item.selected .model-info {
@@ -175,7 +175,7 @@ export class ModelSelector extends LitElement {
 			margin-top: 0.25rem;
 			color: var(--text-secondary);
 			font-weight: 500;
-			text-transform: uppercase;
+			text-transform: none;
 			letter-spacing: 0.02em;
 		}
 
@@ -188,7 +188,7 @@ export class ModelSelector extends LitElement {
 			padding: 3rem;
 			text-align: center;
 			color: var(--text-tertiary);
-			font-family: var(--font-mono);
+			font-family: var(--font-sans, "Inter", sans-serif);
 			font-size: 0.8rem;
 		}
 

@@ -65,6 +65,33 @@ describe("AdminPolicyTab", () => {
 		assert.deepEqual(element.toastCalls, []);
 	});
 
+	it("surfaces enterprise control areas without adding unsupported policy JSON", async () => {
+		const element = await fixture<TestAdminPolicyHost>(
+			html`<test-admin-policy-host></test-admin-policy-host>`,
+		);
+		await element.updateComplete;
+
+		const text = element.shadowRoot?.textContent ?? "";
+		const textarea = element.shadowRoot?.querySelector(
+			"textarea",
+		) as HTMLTextAreaElement | null;
+
+		assert.include(text, "Session Defaults");
+		assert.include(text, "Model Access");
+		assert.include(text, "Command Policy");
+		assert.include(text, "MCP Server Policy");
+		assert.include(text, "Network Policy");
+		assert.include(text, "Git");
+		assert.include(text, "Session Retention");
+		assert.include(text, "limits.maxConcurrentSessions");
+		assert.ok(textarea);
+
+		const policy = JSON.parse(textarea.value) as Record<string, unknown>;
+		assert.property(policy, "skills");
+		assert.notProperty(policy, "mcp");
+		assert.notProperty(policy, "git");
+	});
+
 	it("keeps policy handler context when validating JSON", async () => {
 		const validatePolicy = vi
 			.fn<PolicyClient["validatePolicy"]>()
@@ -102,9 +129,11 @@ describe("AdminPolicyTab", () => {
 				blockLocalhost: false,
 				blockPrivateIPs: false,
 			},
+			skills: { required: [] },
 			limits: {
 				maxTokensPerSession: 500000,
 				maxSessionDurationMinutes: 480,
+				maxConcurrentSessions: 3,
 			},
 		});
 		assert.deepEqual(element.toastCalls, [

@@ -48,8 +48,8 @@ export class ComposerThinking extends LitElement {
 			font-size: 0.7rem;
 			font-weight: 700;
 			color: #bc8cff;
-			text-transform: uppercase;
-			letter-spacing: 0.05em;
+			text-transform: none;
+			letter-spacing: 0;
 		}
 
 		.thinking-icon {

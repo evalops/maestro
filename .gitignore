@@ -2,6 +2,7 @@
 dist/
 dist-electron/
 release/
+target/
 node_modules/
 .nx/
 
@@ -26,6 +27,7 @@ src/**/*.js.map
 session.txt
 .cache/
 coverage
+packages/control-plane-rs/sessions.json
 
 # Local env (API keys)
 .env

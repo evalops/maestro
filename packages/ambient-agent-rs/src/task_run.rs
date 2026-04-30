@@ -6,6 +6,7 @@ use chrono::Utc;
 #[derive(Debug, Clone)]
 pub(crate) struct PlanRunContext {
     task_id: String,
+    event_id: String,
     event_type: EventType,
     task_type: TaskType,
     complexity: Complexity,
@@ -17,6 +18,7 @@ impl PlanRunContext {
     pub(crate) fn from_plan(event: &NormalizedEvent, plan: &TaskPlan) -> Self {
         Self {
             task_id: plan.task_id.clone(),
+            event_id: event.id.clone(),
             event_type: event.event_type,
             task_type: Self::main_task_type(plan),
             complexity: plan.estimated_complexity,
@@ -55,6 +57,22 @@ impl PlanRunContext {
             estimated_tokens: None,
             previous_attempts: 0,
         }
+    }
+
+    pub(crate) fn event_id(&self) -> &str {
+        &self.event_id
+    }
+
+    pub(crate) fn repository(&self) -> &str {
+        &self.repo
+    }
+
+    pub(crate) fn task_type(&self) -> TaskType {
+        self.task_type
+    }
+
+    pub(crate) fn complexity(&self) -> Complexity {
+        self.complexity
     }
 
     pub(crate) fn learner_outcome(
