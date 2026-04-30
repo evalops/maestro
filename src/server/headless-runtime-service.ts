@@ -106,7 +106,7 @@ export function inferFleetModelTier(
 	model: string,
 ): string | undefined {
 	const normalized = `${provider}/${model}`.toLowerCase();
-	if (normalized.includes("haiku") || normalized.includes("mini")) {
+	if (normalized.includes("haiku") || hasMiniModelVariant(normalized)) {
 		return "fast";
 	}
 	if (
@@ -122,7 +122,11 @@ export function inferFleetModelTier(
 	return undefined;
 }
 
-function getFleetPlatformEventBusStatus():
+function hasMiniModelVariant(normalizedProviderModel: string): boolean {
+	return /(?:^|[/:._-])mini(?:$|[/:._-])/.test(normalizedProviderModel);
+}
+
+export function getFleetPlatformEventBusStatus():
 	| NonNullable<FleetAgentInstance["platformEventBus"]>
 	| undefined {
 	const explicitFlag = parseBooleanEnv(
@@ -131,7 +135,11 @@ function getFleetPlatformEventBusStatus():
 	if (explicitFlag === false) {
 		return { enabled: false, reason: "flag disabled" };
 	}
-	if (process.env.MAESTRO_EVENT_BUS_URL || process.env.EVALOPS_NATS_URL) {
+	if (
+		process.env.MAESTRO_EVENT_BUS_URL ||
+		process.env.EVALOPS_NATS_URL ||
+		process.env.NATS_URL
+	) {
 		return { enabled: true, reason: "nats", subject: AMBIENT_ROUTING_SUBJECT };
 	}
 	if (
