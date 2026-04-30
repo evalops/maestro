@@ -191,6 +191,11 @@ function toRustArray(
 	}
 	if (entries.length === 1) {
 		const [[from, to]] = entries;
+		const tuple = `(${JSON.stringify(from)}, ${JSON.stringify(to)})`;
+		const itemIndent = `${indent}    `;
+		if (itemIndent.length + tuple.length + ",".length <= RUST_MAX_WIDTH) {
+			return `&[\n${itemIndent}${tuple},\n${indent}]`;
+		}
 		return `&[(\n${indent}    ${JSON.stringify(from)},\n${indent}    ${JSON.stringify(to)},\n${indent})]`;
 	}
 	const itemIndent = `${indent}    `;
