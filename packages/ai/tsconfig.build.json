@@ -51,6 +51,7 @@
 		"../../src/telemetry.ts",
 		"../../src/opentelemetry.ts",
 		"../../src/training.ts",
+		"../../src/timeline/**/*.ts",
 		"../../src/mcp/elicitation.ts",
 		"../../src/guardian/**/*.ts",
 		"../../src/lsp/**/*.ts",

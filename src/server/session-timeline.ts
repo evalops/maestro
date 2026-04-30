@@ -14,16 +14,11 @@ import type {
 import { getDiagnosticDeltaFromToolResult } from "../lsp/diagnostic-repair.js";
 import type { SessionEntry } from "../session/types.js";
 import { getSkillArtifactMetadataFromDetails } from "../skills/artifact-metadata.js";
-
-const SUMMARY_LIMIT = 180;
-
-const SECRET_PATTERNS: Array<[RegExp, string]> = [
-	[/\b(Bearer\s+)[A-Za-z0-9._~+/=-]{16,}/gi, "$1[redacted]"],
-	[/\b(sk-[A-Za-z0-9_-]{16,})\b/g, "[redacted-secret]"],
-	[/\b(gh[pousr]_[A-Za-z0-9_]{16,})\b/g, "[redacted-token]"],
-	[/\b(xox[a-zA-Z]?-[A-Za-z0-9-]{16,})\b/g, "[redacted-token]"],
-	[/\b(AKIA[0-9A-Z]{16})\b/g, "[redacted-access-key]"],
-];
+import {
+	compactTimelineMetadata,
+	compactTimelineSummary,
+	redactTimelineSecrets,
+} from "../timeline/redaction.js";
 
 interface BuildComposerRunTimelineOptions {
 	sessionId: string;
@@ -52,22 +47,6 @@ function normalizeTimestamp(value: unknown, fallback: string): string {
 	return fallback;
 }
 
-function redactSecrets(value: string): string {
-	let redacted = value;
-	for (const [pattern, replacement] of SECRET_PATTERNS) {
-		redacted = redacted.replace(pattern, replacement);
-	}
-	return redacted;
-}
-
-function compactSummary(value: string | undefined): string | undefined {
-	if (!value) return undefined;
-	const singleLine = redactSecrets(value.replace(/\s+/g, " ").trim());
-	if (!singleLine) return undefined;
-	if (singleLine.length <= SUMMARY_LIMIT) return singleLine;
-	return `${singleLine.slice(0, SUMMARY_LIMIT - 3)}...`;
-}
-
 function detailsRecord(value: unknown): Record<string, unknown> | undefined {
 	if (!value || typeof value !== "object" || Array.isArray(value)) {
 		return undefined;
@@ -78,7 +57,7 @@ function detailsRecord(value: unknown): Record<string, unknown> | undefined {
 function redactedString(value: unknown): string | undefined {
 	if (typeof value !== "string") return undefined;
 	const trimmed = value.trim();
-	return trimmed ? redactSecrets(trimmed) : undefined;
+	return trimmed ? redactTimelineSecrets(trimmed) : undefined;
 }
 
 function finiteNumber(value: unknown): number | undefined {
@@ -89,15 +68,6 @@ function finiteNumber(value: unknown): number | undefined {
 
 function booleanValue(value: unknown): boolean | undefined {
 	return typeof value === "boolean" ? value : undefined;
-}
-
-function compactMetadata(
-	values: Record<string, unknown>,
-): Record<string, unknown> | undefined {
-	const metadata = Object.fromEntries(
-		Object.entries(values).filter(([, value]) => value !== undefined),
-	);
-	return Object.keys(metadata).length > 0 ? metadata : undefined;
 }
 
 function textFromContent(content: unknown): string | undefined {
@@ -184,7 +154,7 @@ function addDerivedToolResultItems(
 					? "created"
 					: "wrote"
 				: "edited";
-		const summary = compactSummary(
+		const summary = compactTimelineSummary(
 			[
 				displayPath,
 				bytesWritten !== undefined ? `${bytesWritten} bytes` : undefined,
@@ -195,7 +165,7 @@ function addDerivedToolResultItems(
 		);
 		const hasDiff =
 			typeof details?.diff === "string" && details.diff.length > 0;
-		const metadata = compactMetadata({
+		const metadata = compactTimelineMetadata({
 			path: displayPath,
 			action,
 			previousExists,
@@ -222,7 +192,7 @@ function addDerivedToolResultItems(
 
 	const diagnosticDelta = getDiagnosticDeltaFromToolResult(toolResult);
 	if (diagnosticDelta) {
-		const summary = compactSummary(
+		const summary = compactTimelineSummary(
 			`Diagnostic delta: ${diagnosticDelta.introducedCount} introduced, ${diagnosticDelta.repairedCount} repaired, ${diagnosticDelta.remainingCount} remaining.`,
 		);
 		appendItem(items, {
@@ -252,7 +222,7 @@ function addDerivedToolResultItems(
 
 	const skillMetadata = getSkillArtifactMetadataFromDetails(toolResult.details);
 	if (skillMetadata) {
-		const summary = compactSummary(
+		const summary = compactTimelineSummary(
 			[
 				skillMetadata.name,
 				skillMetadata.version ? `v${skillMetadata.version}` : undefined,
@@ -262,7 +232,7 @@ function addDerivedToolResultItems(
 				.filter(Boolean)
 				.join(" | "),
 		);
-		const metadata = compactMetadata({
+		const metadata = compactTimelineMetadata({
 			name: skillMetadata.name,
 			version: skillMetadata.version,
 			source: skillMetadata.source,
@@ -292,7 +262,7 @@ function addDerivedToolResultItems(
 
 	const governed = governedToolMetadata(toolResult.details);
 	if (governed.governedOutcome || governed.errorCode) {
-		const summary = compactSummary(
+		const summary = compactTimelineSummary(
 			[
 				governed.governedOutcome
 					? `Outcome: ${governed.governedOutcome}`
@@ -302,7 +272,7 @@ function addDerivedToolResultItems(
 				.filter(Boolean)
 				.join(" | "),
 		);
-		const metadata = compactMetadata({
+		const metadata = compactTimelineMetadata({
 			governedOutcome: governed.governedOutcome,
 			errorCode: governed.errorCode,
 		});
@@ -346,7 +316,9 @@ function addMessageItems(
 ): void {
 	if (message.role === "user") {
 		const userMessage = message as UserMessage;
-		const summary = compactSummary(textFromContent(userMessage.content));
+		const summary = compactTimelineSummary(
+			textFromContent(userMessage.content),
+		);
 		appendItem(items, {
 			id: `message:${options.baseId}`,
 			sessionId,
@@ -364,7 +336,9 @@ function addMessageItems(
 
 	if (message.role === "assistant") {
 		const assistantMessage = message as AssistantMessage;
-		const summary = compactSummary(textFromContent(assistantMessage.content));
+		const summary = compactTimelineSummary(
+			textFromContent(assistantMessage.content),
+		);
 		appendItem(items, {
 			id: `message:${options.baseId}`,
 			sessionId,
@@ -411,7 +385,7 @@ function addMessageItems(
 		const approvalRequestId =
 			governed.approvalRequestId ?? redactedString(details?.approvalRequestId);
 		const toolExecutionId = redactedString(details?.toolExecutionId);
-		const metadata = compactMetadata({
+		const metadata = compactTimelineMetadata({
 			governedOutcome: governed.governedOutcome,
 			errorCode: governed.errorCode,
 		});
@@ -494,7 +468,7 @@ function addPendingRequestItems(
 	generatedAt: string,
 ): void {
 	for (const request of pendingRequests) {
-		const summary = compactSummary(
+		const summary = compactTimelineSummary(
 			request.actionDescription || request.summaryLabel || request.reason,
 		);
 		const platformOperation = platformOperationForPending(request);
@@ -555,7 +529,7 @@ function addEntryItems(
 				break;
 			}
 			case "session_meta": {
-				const summary = compactSummary(
+				const summary = compactTimelineSummary(
 					entry.title || entry.resumeSummary || entry.summary,
 				);
 				appendItem(items, {
@@ -582,7 +556,7 @@ function addEntryItems(
 				break;
 			}
 			case "compaction": {
-				const summary = compactSummary(entry.summary);
+				const summary = compactTimelineSummary(entry.summary);
 				appendItem(items, {
 					id: `compaction:${entry.id}`,
 					sessionId,
@@ -602,7 +576,7 @@ function addEntryItems(
 				break;
 			}
 			case "branch_summary": {
-				const summary = compactSummary(entry.summary);
+				const summary = compactTimelineSummary(entry.summary);
 				appendItem(items, {
 					id: `branch:${entry.id}`,
 					sessionId,
@@ -618,7 +592,7 @@ function addEntryItems(
 				break;
 			}
 			case "model_change": {
-				const summary = compactSummary(entry.model);
+				const summary = compactTimelineSummary(entry.model);
 				appendItem(items, {
 					id: `model-change:${entry.id}`,
 					sessionId,
@@ -633,7 +607,7 @@ function addEntryItems(
 				break;
 			}
 			case "thinking_level_change": {
-				const summary = compactSummary(entry.thinkingLevel);
+				const summary = compactTimelineSummary(entry.thinkingLevel);
 				appendItem(items, {
 					id: `thinking-change:${entry.id}`,
 					sessionId,
@@ -649,7 +623,7 @@ function addEntryItems(
 			}
 			case "custom_message": {
 				if (!entry.display) break;
-				const summary = compactSummary(textFromContent(entry.content));
+				const summary = compactTimelineSummary(textFromContent(entry.content));
 				appendItem(items, {
 					id: `custom-message:${entry.id}`,
 					sessionId,

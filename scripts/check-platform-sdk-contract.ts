@@ -19,6 +19,10 @@ import {
 const EXPECTED_PACKAGE_NAME = "@evalops/sdk-ts";
 
 const serviceModules = {
+	agentRuntime: {
+		specifier: "agentruntime/v1/runtime_pb",
+		exportName: "AgentRuntimeService",
+	},
 	approvals: {
 		specifier: "approvals/v1/approvals_pb",
 		exportName: "ApprovalService",
@@ -35,6 +39,10 @@ const serviceModules = {
 		specifier: "llmgateway/v1/gateway_pb",
 		exportName: "GatewayService",
 	},
+	maestroTimeline: {
+		specifier: "maestro/v1/timeline_pb",
+		exportName: "MaestroTimelineService",
+	},
 	meter: {
 		specifier: "meter/v1/meter_pb",
 		exportName: "MeterService",
@@ -42,6 +50,14 @@ const serviceModules = {
 	prompts: {
 		specifier: "prompts/v1/prompts_pb",
 		exportName: "PromptService",
+	},
+	remoteRunner: {
+		specifier: "remoterunner/v1/remoterunner_pb",
+		exportName: "RemoteRunnerService",
+	},
+	toolexecution: {
+		specifier: "toolexecution/v1/toolexecution_pb",
+		exportName: "ToolExecutionService",
 	},
 } as const;
 

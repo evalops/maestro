@@ -866,7 +866,9 @@ export function createRoutes(context: WebServerContext): Route[] {
 			method: "GET",
 			path: "/api/sessions/:id/timeline",
 			handler: (req, res, params) =>
-				handleSessionTimeline(req, res, params as { id: string }, corsHeaders),
+				handleSessionTimeline(req, res, params as { id: string }, corsHeaders, {
+					hostedRunner: context.hostedRunner,
+				}),
 		},
 		{
 			method: "GET",
