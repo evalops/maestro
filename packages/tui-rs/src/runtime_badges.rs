@@ -4,9 +4,9 @@
 
 use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use crate::path_utils::resolve_env_path;
+use crate::path_utils::{legacy_composer_home_dir, maestro_home_dir, resolve_env_path};
 use crate::safety::is_safe_mode_enabled;
 use crate::sandbox::SANDBOX_ENV_VAR;
 use crate::session::ThinkingLevel;
@@ -193,7 +193,7 @@ fn rust_policy_config_exists() -> bool {
         || maestro_home_dir()
             .map(|home| home.join("policy.json").is_file())
             .unwrap_or(false)
-        || legacy_composer_dir()
+        || legacy_composer_home_dir()
             .map(|home| home.join("policy.json").is_file())
             .unwrap_or(false)
 }
@@ -203,20 +203,9 @@ fn rust_enterprise_mcp_config_exists() -> bool {
         || maestro_home_dir()
             .map(|home| home.join("enterprise").join("mcp.json").is_file())
             .unwrap_or(false)
-        || legacy_composer_dir()
+        || legacy_composer_home_dir()
             .map(|home| home.join("enterprise").join("mcp.json").is_file())
             .unwrap_or(false)
-}
-
-fn legacy_composer_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| home.join(".composer"))
-}
-
-fn maestro_home_dir() -> Option<PathBuf> {
-    env::var("MAESTRO_HOME")
-        .ok()
-        .and_then(|value| resolve_env_path(&value))
-        .or_else(|| dirs::home_dir().map(|home| home.join(".maestro")))
 }
 
 fn env_path_exists(name: &str) -> bool {
