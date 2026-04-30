@@ -2,12 +2,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	MaestroAgentRuntimeSourceEventType,
 	PlatformAgentRunStateValue,
+	PlatformAgentRunStepKindValue,
+	PlatformAgentRunStepStateValue,
+	PlatformAgentRunWaitTypeValue,
 	PlatformRuntimeChannelKindValue,
 	PlatformRuntimeEventTypeValue,
 	PlatformRuntimeTriggerKindValue,
 	PlatformSurfaceValue,
 	buildMaestroSessionRuntimeTrigger,
+	claimNextAgentRuntimeRun,
+	completeAgentRuntimeRun,
+	failAgentRuntimeRun,
+	getAgentRuntimeRun,
+	listAgentRuntimeRunEvents,
+	recordAgentRuntimeRunStep,
 	recordMaestroSessionRuntimeTrigger,
+	resumeAgentRuntimeRun,
+	waitAgentRuntimeRun,
 } from "../../src/platform/agent-runtime-client.js";
 import { resolveCerebroFactsServiceConfig } from "../../src/platform/cerebro-facts-client.js";
 
@@ -211,6 +222,428 @@ describe("agent runtime service client", () => {
 			],
 			idempotentReplay: false,
 		});
+	});
+
+	it("drives the Platform AgentRuntime lease, step, wait, resume, and complete lifecycle", async () => {
+		const config = {
+			baseUrl: "https://runtime.test",
+			token: "runtime-token",
+			organizationId: "org_1",
+			workspaceId: "ws_1",
+			timeoutMs: 2_000,
+			maxAttempts: 1,
+		};
+		const requests: Array<{
+			url: string;
+			body: Record<string, unknown> | undefined;
+		}> = [];
+		const fetchMock = vi.fn(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url = String(input);
+				const body = parseRequestBody(init?.body);
+				requests.push({ url, body });
+				expect(init?.method).toBe("POST");
+				expect(headersToRecord(init?.headers)).toMatchObject({
+					authorization: "Bearer runtime-token",
+					"connect-protocol-version": "1",
+					"content-type": "application/json",
+					"x-organization-id": "org_1",
+				});
+
+				if (url.endsWith("/ClaimNextRun")) {
+					expect(body).toMatchObject({
+						workerId: "maestro-worker",
+						workerQueue: "runs.default",
+						leaseSeconds: 30,
+					});
+					return Response.json({
+						run: {
+							id: "run_1",
+							state: PlatformAgentRunStateValue.Running,
+							lease: {
+								id: "lease_1",
+								token: "lease-token-1",
+								workerId: "maestro-worker",
+							},
+						},
+						lease: {
+							id: "lease_1",
+							token: "lease-token-1",
+							workerId: "maestro-worker",
+						},
+						events: [
+							{
+								id: "event_claimed",
+								runId: "run_1",
+								type: PlatformRuntimeEventTypeValue.RunClaimed,
+							},
+						],
+					});
+				}
+
+				if (url.endsWith("/RecordRunStep")) {
+					expect(body).toMatchObject({
+						runId: "run_1",
+						leaseToken: "lease-token-1",
+						step: {
+							id: "step_tool_1",
+							name: "governed shell",
+							stepKind: PlatformAgentRunStepKindValue.ToolCallIntent,
+							state: PlatformAgentRunStepStateValue.Running,
+						},
+					});
+					return Response.json({
+						run: {
+							id: "run_1",
+							state: PlatformAgentRunStateValue.Running,
+							steps: [
+								{
+									id: "step_tool_1",
+									name: "governed shell",
+									stepKind: PlatformAgentRunStepKindValue.ToolCallIntent,
+									state: PlatformAgentRunStepStateValue.Running,
+								},
+							],
+						},
+						step: {
+							id: "step_tool_1",
+							name: "governed shell",
+							stepKind: PlatformAgentRunStepKindValue.ToolCallIntent,
+							state: PlatformAgentRunStepStateValue.Running,
+						},
+						event: {
+							id: "event_step",
+							stepId: "step_tool_1",
+							type: PlatformRuntimeEventTypeValue.StepRecorded,
+						},
+					});
+				}
+
+				if (url.endsWith("/WaitRun")) {
+					expect(body).toMatchObject({
+						runId: "run_1",
+						leaseToken: "lease-token-1",
+						wait: {
+							id: "wait_approval_1",
+							stepId: "step_tool_1",
+							type: PlatformAgentRunWaitTypeValue.Approval,
+							externalRef: "approval_1",
+						},
+						checkpoint: {
+							id: "checkpoint_approval_1",
+							stepId: "step_tool_1",
+							resumeToken: "resume-after-approval",
+						},
+					});
+					return Response.json({
+						run: {
+							id: "run_1",
+							state: PlatformAgentRunStateValue.Waiting,
+							waits: [
+								{
+									id: "wait_approval_1",
+									stepId: "step_tool_1",
+									type: PlatformAgentRunWaitTypeValue.Approval,
+									externalRef: "approval_1",
+								},
+							],
+							latestCheckpoint: {
+								id: "checkpoint_approval_1",
+								stepId: "step_tool_1",
+								sequence: 1,
+							},
+						},
+						wait: {
+							id: "wait_approval_1",
+							stepId: "step_tool_1",
+							type: PlatformAgentRunWaitTypeValue.Approval,
+						},
+						checkpoint: {
+							id: "checkpoint_approval_1",
+							stepId: "step_tool_1",
+							sequence: 1,
+						},
+						event: {
+							id: "event_wait",
+							waitId: "wait_approval_1",
+							checkpointId: "checkpoint_approval_1",
+							type: PlatformRuntimeEventTypeValue.RunWaiting,
+						},
+					});
+				}
+
+				if (url.endsWith("/ResumeRun")) {
+					expect(body).toMatchObject({
+						runId: "run_1",
+						waitId: "wait_approval_1",
+						resumeEventId: "approval_event_1",
+					});
+					return Response.json({
+						run: {
+							id: "run_1",
+							state: PlatformAgentRunStateValue.Queued,
+						},
+						event: {
+							id: "event_resume",
+							waitId: "wait_approval_1",
+							type: PlatformRuntimeEventTypeValue.RunResumed,
+						},
+					});
+				}
+
+				if (url.endsWith("/CompleteRun")) {
+					expect(body).toMatchObject({
+						runId: "run_1",
+						leaseToken: "lease-token-2",
+						result: { status: "ok" },
+					});
+					return Response.json({
+						run: {
+							id: "run_1",
+							state: PlatformAgentRunStateValue.Succeeded,
+						},
+						event: {
+							id: "event_complete",
+							type: PlatformRuntimeEventTypeValue.RunSucceeded,
+						},
+					});
+				}
+
+				if (url.endsWith("/GetRun")) {
+					expect(body).toMatchObject({ id: "run_1" });
+					return Response.json({
+						run: {
+							id: "run_1",
+							state: PlatformAgentRunStateValue.Succeeded,
+						},
+					});
+				}
+
+				if (url.endsWith("/ListRunEvents")) {
+					expect(body).toMatchObject({ runId: "run_1" });
+					return Response.json({
+						events: [
+							{
+								id: "event_complete",
+								runId: "run_1",
+								type: PlatformRuntimeEventTypeValue.RunSucceeded,
+							},
+						],
+					});
+				}
+
+				return new Response("unexpected endpoint", { status: 404 });
+			},
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const claim = await claimNextAgentRuntimeRun(
+			{
+				workerId: "maestro-worker",
+				workerQueue: "runs.default",
+				leaseSeconds: 30,
+			},
+			{ config },
+		);
+		expect(claim.run.lease?.token).toBe("lease-token-1");
+		expect(claim.lease?.workerId).toBe("maestro-worker");
+
+		await expect(
+			recordAgentRuntimeRunStep(
+				{
+					runId: "run_1",
+					leaseToken: "lease-token-1",
+					step: {
+						id: "step_tool_1",
+						name: "governed shell",
+						stepKind: PlatformAgentRunStepKindValue.ToolCallIntent,
+						state: PlatformAgentRunStepStateValue.Running,
+					},
+				},
+				{ config },
+			),
+		).resolves.toMatchObject({
+			step: { id: "step_tool_1" },
+			event: { stepId: "step_tool_1" },
+		});
+
+		await expect(
+			waitAgentRuntimeRun(
+				{
+					runId: "run_1",
+					leaseToken: "lease-token-1",
+					wait: {
+						id: "wait_approval_1",
+						stepId: "step_tool_1",
+						type: PlatformAgentRunWaitTypeValue.Approval,
+						externalRef: "approval_1",
+						reason: "needs approval",
+					},
+					checkpoint: {
+						id: "checkpoint_approval_1",
+						stepId: "step_tool_1",
+						resumeToken: "resume-after-approval",
+					},
+				},
+				{ config },
+			),
+		).resolves.toMatchObject({
+			run: {
+				state: PlatformAgentRunStateValue.Waiting,
+				latestCheckpoint: { id: "checkpoint_approval_1" },
+			},
+			wait: { id: "wait_approval_1" },
+		});
+
+		await expect(
+			resumeAgentRuntimeRun(
+				{
+					runId: "run_1",
+					waitId: "wait_approval_1",
+					resumeEventId: "approval_event_1",
+				},
+				{ config },
+			),
+		).resolves.toMatchObject({
+			run: { state: PlatformAgentRunStateValue.Queued },
+			event: { waitId: "wait_approval_1" },
+		});
+
+		await expect(
+			completeAgentRuntimeRun(
+				{
+					runId: "run_1",
+					leaseToken: "lease-token-2",
+					result: { status: "ok" },
+				},
+				{ config },
+			),
+		).resolves.toMatchObject({
+			run: { state: PlatformAgentRunStateValue.Succeeded },
+		});
+
+		await expect(
+			getAgentRuntimeRun({ runId: "run_1" }, { config }),
+		).resolves.toMatchObject({
+			run: { state: PlatformAgentRunStateValue.Succeeded },
+		});
+		await expect(
+			listAgentRuntimeRunEvents({ runId: "run_1" }, { config }),
+		).resolves.toMatchObject({
+			events: [{ type: PlatformRuntimeEventTypeValue.RunSucceeded }],
+		});
+
+		expect(requests.map((request) => request.url)).toEqual([
+			"https://runtime.test/agentruntime.v1.AgentRuntimeService/ClaimNextRun",
+			"https://runtime.test/agentruntime.v1.AgentRuntimeService/RecordRunStep",
+			"https://runtime.test/agentruntime.v1.AgentRuntimeService/WaitRun",
+			"https://runtime.test/agentruntime.v1.AgentRuntimeService/ResumeRun",
+			"https://runtime.test/agentruntime.v1.AgentRuntimeService/CompleteRun",
+			"https://runtime.test/agentruntime.v1.AgentRuntimeService/GetRun",
+			"https://runtime.test/agentruntime.v1.AgentRuntimeService/ListRunEvents",
+		]);
+	});
+
+	it("preserves zero lease seconds when claiming a Platform AgentRuntime run", async () => {
+		const config = {
+			baseUrl: "https://runtime.test",
+			token: "runtime-token",
+			organizationId: "org_1",
+			workspaceId: "ws_1",
+			timeoutMs: 2_000,
+			maxAttempts: 1,
+		};
+		const fetchMock = vi.fn(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				expect(String(input)).toBe(
+					"https://runtime.test/agentruntime.v1.AgentRuntimeService/ClaimNextRun",
+				);
+				expect(parseRequestBody(init?.body)).toMatchObject({
+					workerId: "maestro-worker",
+					workerQueue: "runs.default",
+					leaseSeconds: 0,
+				});
+				return Response.json({
+					run: {
+						id: "run_1",
+						state: PlatformAgentRunStateValue.Running,
+					},
+					lease: {
+						id: "lease_1",
+						token: "lease-token-1",
+					},
+				});
+			},
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(
+			claimNextAgentRuntimeRun(
+				{
+					workerId: "maestro-worker",
+					workerQueue: "runs.default",
+					leaseSeconds: 0,
+				},
+				{ config },
+			),
+		).resolves.toMatchObject({
+			run: { state: PlatformAgentRunStateValue.Running },
+			lease: { token: "lease-token-1" },
+		});
+	});
+
+	it("preserves zero retry delay when failing a Platform AgentRuntime run", async () => {
+		const config = {
+			baseUrl: "https://runtime.test",
+			token: "runtime-token",
+			organizationId: "org_1",
+			workspaceId: "ws_1",
+			timeoutMs: 2_000,
+			maxAttempts: 1,
+		};
+		const fetchMock = vi.fn(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				expect(String(input)).toBe(
+					"https://runtime.test/agentruntime.v1.AgentRuntimeService/FailRun",
+				);
+				expect(parseRequestBody(init?.body)).toMatchObject({
+					runId: "run_1",
+					leaseToken: "lease-token-1",
+					errorMessage: "tool failed",
+					retryable: true,
+					retryDelaySeconds: 0,
+				});
+				return Response.json({
+					run: {
+						id: "run_1",
+						state: PlatformAgentRunStateValue.Failed,
+					},
+					event: {
+						id: "event_failed",
+						runId: "run_1",
+						type: PlatformRuntimeEventTypeValue.RunFailed,
+					},
+				});
+			},
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(
+			failAgentRuntimeRun(
+				{
+					runId: "run_1",
+					leaseToken: "lease-token-1",
+					errorMessage: "tool failed",
+					retryable: true,
+					retryDelaySeconds: 0,
+				},
+				{ config },
+			),
+		).resolves.toMatchObject({
+			run: { state: PlatformAgentRunStateValue.Failed },
+			event: { type: PlatformRuntimeEventTypeValue.RunFailed },
+		});
+		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
 
 	it("enriches Maestro session triggers with Cerebro facts when configured", async () => {

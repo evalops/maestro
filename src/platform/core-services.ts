@@ -18,6 +18,10 @@ export const PLATFORM_CONNECT_SERVICES = {
 
 export const PLATFORM_CONNECT_METHODS = {
 	agentRuntime: {
+		claimNextRun: {
+			service: PLATFORM_CONNECT_SERVICES.agentRuntime,
+			method: "ClaimNextRun",
+		},
 		completeRun: {
 			service: PLATFORM_CONNECT_SERVICES.agentRuntime,
 			method: "CompleteRun",

@@ -16,6 +16,11 @@ describe("Platform core service contract names", () => {
 		).toBe("/agentruntime.v1.AgentRuntimeService/HandleTrigger");
 		expect(
 			platformConnectMethodPath(
+				PLATFORM_CONNECT_METHODS.agentRuntime.claimNextRun,
+			),
+		).toBe("/agentruntime.v1.AgentRuntimeService/ClaimNextRun");
+		expect(
+			platformConnectMethodPath(
 				PLATFORM_CONNECT_METHODS.agentRuntime.recordRunStep,
 			),
 		).toBe("/agentruntime.v1.AgentRuntimeService/RecordRunStep");
