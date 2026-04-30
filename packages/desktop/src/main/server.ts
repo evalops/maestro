@@ -14,7 +14,6 @@ import {
 	DESKTOP_DEFAULT_CSRF_TOKEN,
 	DESKTOP_DEV_API_KEY,
 } from "../shared/runtime-defaults.js";
-import { getDeviceIdentityHelperPath } from "./device-identity-helper-path.js";
 
 // ESM equivalent of __dirname
 const __filename = fileURLToPath(import.meta.url);
