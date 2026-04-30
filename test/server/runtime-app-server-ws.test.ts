@@ -108,6 +108,17 @@ describe("runtime app-server WebSocket", () => {
 			serverRequestManager: manager,
 			sessionId: "sess_1",
 		});
+		socket.emit(
+			"message",
+			JSON.stringify({
+				jsonrpc: "2.0",
+				id: "init-1",
+				method: "runtime.initialize",
+				params: { sessionId: "sess_1" },
+			}),
+		);
+		await Promise.resolve();
+		socket.sent.length = 0;
 
 		manager.registerApproval({
 			sessionId: "sess_other",
@@ -253,6 +264,60 @@ describe("runtime app-server WebSocket", () => {
 				(notification) => notification.params?.request?.id === "approval_other",
 			),
 		).toBe(false);
+	});
+
+	it("delays pre-bound pending request replay until initialization completes", async () => {
+		const socket = new FakeSocket();
+		const manager = new ServerRequestManager();
+		const approvalService = new ActionApprovalService("prompt");
+
+		manager.registerApproval({
+			sessionId: "sess_1",
+			request: {
+				id: "approval_prebound",
+				toolName: "bash",
+				args: { command: "git status" },
+				reason: "Approval required",
+			},
+			service: approvalService,
+		});
+
+		handleRuntimeAppServerWebSocket(socket as unknown as WebSocket, {
+			serverRequestManager: manager,
+			sessionId: "sess_1",
+		});
+
+		expect(socket.sent).toEqual([]);
+
+		socket.emit(
+			"message",
+			JSON.stringify({
+				jsonrpc: "2.0",
+				id: "init-1",
+				method: "runtime.initialize",
+				params: { sessionId: "sess_1" },
+			}),
+		);
+		await Promise.resolve();
+
+		const messages = socket.sent.map((payload) => JSON.parse(payload));
+		expect(messages).toEqual([
+			expect.objectContaining({
+				jsonrpc: "2.0",
+				id: "init-1",
+			}),
+			expect.objectContaining({
+				jsonrpc: "2.0",
+				method: "runtime.initialized",
+			}),
+			expect.objectContaining({
+				jsonrpc: "2.0",
+				method: "runtime.server_request.registered",
+				params: expect.objectContaining({
+					request: expect.objectContaining({ id: "approval_prebound" }),
+				}),
+			}),
+		]);
 	});
 
 	it("rejects session initialization when access validation fails", async () => {
