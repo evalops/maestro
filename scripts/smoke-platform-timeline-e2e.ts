@@ -85,6 +85,15 @@ func main() {
 	}
 	_, err = approvalStore.CreateApprovalRequest(ctx, approvalRequest)
 	must(err)
+	_, _, _, err = approvalStore.FinalizeApproval(ctx, "approval_1", approvals.ApprovalDecisionRecord{
+		ID:                "decision_1",
+		ApprovalRequestID: "approval_1",
+		Decision:          approvalsv1.DecisionType_DECISION_TYPE_APPROVED,
+		DecidedBy:         "manager_1",
+		Reason:            "approved by smoke harness",
+		DecidedAt:         base.Add(3 * time.Minute),
+	}, "resolved", false, 0)
+	must(err)
 
 	execution := &toolexecutionv1.ToolExecution{
 		Id: "texec_1",
@@ -293,6 +302,12 @@ async function main(): Promise<void> {
 		assert(
 			types.has("tool.completed"),
 			"missing tool.completed from Platform audit event",
+		);
+		assert(
+			timeline.items.some(
+				(item) => item.type === "policy.decision" && item.status === "approved",
+			),
+			"missing approved Platform approval decision",
 		);
 		assert(
 			timeline.items.some(

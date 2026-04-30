@@ -248,8 +248,63 @@ function normalizeType(
 	}
 }
 
-function normalizeStatus(value: string | undefined): ComposerRunTimelineStatus {
-	switch (value) {
+function normalizeApprovalDecisionStatus(
+	value: unknown,
+): Extract<ComposerRunTimelineStatus, "approved" | "denied"> | undefined {
+	if (typeof value === "boolean") {
+		return value ? "approved" : "denied";
+	}
+	const text = stringValue(value);
+	if (!text) return undefined;
+	const normalized = text.toLowerCase().replace(/[^a-z0-9]+/gu, "_");
+	if (
+		normalized.includes("decision_type_denied") ||
+		normalized.includes("approval_decision_denied") ||
+		["denied", "deny", "rejected", "reject", "blocked", "disallowed"].includes(
+			normalized,
+		)
+	) {
+		return "denied";
+	}
+	if (
+		normalized.includes("decision_type_approved") ||
+		normalized.includes("approval_decision_approved") ||
+		["approved", "approve", "allowed", "allow", "granted"].includes(normalized)
+	) {
+		return "approved";
+	}
+	return undefined;
+}
+
+function approvalDecisionFromEntry(
+	entry: PlatformTimelineEntry,
+): Extract<ComposerRunTimelineStatus, "approved" | "denied"> | undefined {
+	const metadata = entry.metadata ?? {};
+	for (const key of [
+		"decision",
+		"approvalDecision",
+		"approval_decision",
+		"resolution",
+		"approvalResolution",
+		"approval_resolution",
+		"status",
+		"state",
+		"approved",
+	]) {
+		const status = normalizeApprovalDecisionStatus(metadata[key]);
+		if (status) return status;
+	}
+	for (const value of [entry.summary, entry.sourceObject?.type]) {
+		const status = normalizeApprovalDecisionStatus(value);
+		if (status) return status;
+	}
+	return undefined;
+}
+
+function normalizeStatus(
+	entry: PlatformTimelineEntry,
+): ComposerRunTimelineStatus {
+	switch (entry.type) {
 		case "MAESTRO_TIMELINE_ENTRY_TYPE_TOOL_EXECUTION_WAITING_APPROVAL":
 		case "MAESTRO_TIMELINE_ENTRY_TYPE_APPROVAL_REQUIRED":
 		case "MAESTRO_TIMELINE_ENTRY_TYPE_RUN_WAITING":
@@ -261,7 +316,7 @@ function normalizeStatus(value: string | undefined): ComposerRunTimelineStatus {
 		case "MAESTRO_TIMELINE_ENTRY_TYPE_RUN_FAILED":
 			return "failed";
 		case "MAESTRO_TIMELINE_ENTRY_TYPE_APPROVAL_RESOLVED":
-			return "approved";
+			return approvalDecisionFromEntry(entry) ?? "info";
 		default:
 			return "info";
 	}
@@ -335,7 +390,7 @@ function normalizePlatformEntry(
 		title: compactTimelineSummary(entry.title) ?? "Platform timeline event",
 		visibility: normalizeVisibility(entry.visibility),
 		source: "platform",
-		status: normalizeStatus(entry.type),
+		status: normalizeStatus(entry),
 		...(summary ? { summary } : {}),
 		toolCallId: relatedString(relatedIds, "toolCallId", "tool_call_id"),
 		toolExecutionId: relatedString(
