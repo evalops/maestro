@@ -21,6 +21,7 @@ const DEFAULT_POLICY_JSON = JSON.stringify(
 		tools: { allowed: [], blocked: [] },
 		dependencies: { allowed: [], blocked: [] },
 		models: { allowed: ["claude-*", "gpt-4*"], blocked: [] },
+		skills: { required: [] },
 		paths: {
 			allowed: [],
 			blocked: ["/etc/**", "**/.env*", "**/secrets/**"],
@@ -34,11 +35,60 @@ const DEFAULT_POLICY_JSON = JSON.stringify(
 		limits: {
 			maxTokensPerSession: 500000,
 			maxSessionDurationMinutes: 480,
+			maxConcurrentSessions: 3,
 		},
 	},
 	null,
 	2,
 );
+
+const ENTERPRISE_CONTROL_AREAS = [
+	{
+		name: "Session Defaults",
+		source: "limits.*",
+		detail: "Token, duration, and concurrency defaults for managed sessions.",
+	},
+	{
+		name: "Model Access",
+		source: "models.*",
+		detail: "Allowed and blocked model families, providers, and preview tiers.",
+	},
+	{
+		name: "Command Policy",
+		source: "tools.*",
+		detail:
+			"Tool execution guardrails for shell, file, and automation surfaces.",
+	},
+	{
+		name: "MCP Server Policy",
+		source: "enterprise MCP config",
+		detail:
+			"First-party and approved MCP server distribution through managed config.",
+	},
+	{
+		name: "Security",
+		source: "paths.*, dependencies.*",
+		detail:
+			"Filesystem and dependency controls for sensitive workspace boundaries.",
+	},
+	{
+		name: "Network Policy",
+		source: "network.*",
+		detail:
+			"Host allowlists, blocklists, localhost, and private-network restrictions.",
+	},
+	{
+		name: "Git",
+		source: "tools.*, paths.*",
+		detail: "Repository-safe command access paired with protected path policy.",
+	},
+	{
+		name: "Session Retention",
+		source: "limits.*, audit retention",
+		detail:
+			"Session lifetime limits aligned with enterprise audit retention settings.",
+	},
+] as const;
 
 export class AdminPolicyTab {
 	private policyJson = DEFAULT_POLICY_JSON;
@@ -72,6 +122,20 @@ export class AdminPolicyTab {
 							? html`<div style="color: var(--admin-accent-red); font-size: 0.75rem; margin-bottom: 1rem; padding: 0.75rem; background: var(--admin-accent-red-dim); border-left: 2px solid var(--admin-accent-red);">${this.policyError}</div>`
 							: ""
 					}
+
+					<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 0.75rem; margin-bottom: 1.25rem;">
+						${ENTERPRISE_CONTROL_AREAS.map(
+							(area) => html`
+								<div style="border: 1px solid var(--admin-border-subtle); background: var(--admin-bg-surface); border-radius: 6px; padding: 0.85rem;">
+									<div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.45rem;">
+										<div style="font-size: 0.82rem; font-weight: 600; color: var(--admin-text-primary);">${area.name}</div>
+										<code style="font-size: 0.62rem; color: var(--admin-text-tertiary); background: var(--admin-bg-elevated); padding: 0.12rem 0.3rem; border-radius: 4px;">${area.source}</code>
+									</div>
+									<div style="font-size: 0.72rem; line-height: 1.5; color: var(--admin-text-secondary);">${area.detail}</div>
+								</div>
+							`,
+						)}
+					</div>
 
 					<div class="form-group">
 						<label class="form-label">Policy Configuration (JSON)</label>
@@ -132,6 +196,11 @@ export class AdminPolicyTab {
 								<td><code>["*-preview", "*-experimental"]</code></td>
 							</tr>
 							<tr>
+								<td><code>skills.required</code></td>
+								<td>Required skill names for workspace-controlled workflows</td>
+								<td><code>["github:gh-address-comments"]</code></td>
+							</tr>
+							<tr>
 								<td><code>paths.blocked</code></td>
 								<td>Glob patterns for blocked file paths</td>
 								<td><code>["/etc/**", "**/.env*"]</code></td>
@@ -152,6 +221,11 @@ export class AdminPolicyTab {
 								<td><code>["evil.com"]</code></td>
 							</tr>
 							<tr>
+								<td><code>network.allowedHosts</code></td>
+								<td>If set, only these hosts are reachable</td>
+								<td><code>["api.github.com", "*.company.com"]</code></td>
+							</tr>
+							<tr>
 								<td><code>network.blockLocalhost</code></td>
 								<td>Block access to localhost/127.0.0.1</td>
 								<td><code>true</code></td>
@@ -170,6 +244,21 @@ export class AdminPolicyTab {
 								<td><code>limits.maxSessionDurationMinutes</code></td>
 								<td>Maximum session duration in minutes</td>
 								<td><code>480</code></td>
+							</tr>
+							<tr>
+								<td><code>limits.maxConcurrentSessions</code></td>
+								<td>Maximum concurrent active sessions per policy scope</td>
+								<td><code>3</code></td>
+							</tr>
+							<tr>
+								<td><code>enterprise MCP config</code></td>
+								<td>Managed MCP server source used alongside policy.json</td>
+								<td><code>~/.maestro/mcp.json</code></td>
+							</tr>
+							<tr>
+								<td><code>git safety</code></td>
+								<td>Git command access is controlled through tools and path policy</td>
+								<td><code>tools.blocked + paths.blocked</code></td>
 							</tr>
 						</tbody>
 					</table>

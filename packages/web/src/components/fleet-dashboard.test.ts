@@ -160,6 +160,48 @@ describe("FleetDashboard", () => {
 		assert.include(text, "2 / 3");
 	});
 
+	it("renders frontier model and platform routing metadata", async () => {
+		const base = fleetSnapshot();
+		const getFleetStatus = vi.fn(async () =>
+			fleetSnapshot({
+				instances: [
+					{
+						...base.instances[0]!,
+						model: "~anthropic/claude-opus-latest",
+						provider: "openrouter",
+						modelTier: "frontier",
+						modelPolicy: "ambient-frontier",
+						routingReason: "frontier required for ambient execution",
+						estimatedCostUsd: 0.12,
+						platformEventBus: {
+							enabled: true,
+							reason: "nats",
+							subject: "maestro.ambient_agent.routing.selected",
+							lastPublishedAt: "2026-04-20T18:59:59.000Z",
+						},
+					},
+				],
+			}),
+		);
+		const element = await fixture<FleetDashboard>(
+			html`<fleet-dashboard
+				.api=${{ getFleetStatus }}
+				.refreshMs=${0}
+			></fleet-dashboard>`,
+		);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await element.updateComplete;
+
+		const text = element.shadowRoot?.textContent ?? "";
+		assert.include(text, "openrouter/~anthropic/claude-opus-latest");
+		assert.include(text, "frontier");
+		assert.include(text, "ambient-frontier");
+		assert.include(text, "frontier required for ambient execution");
+		assert.include(text, "$0.1200 estimate");
+		assert.include(text, "Platform Bus");
+		assert.include(text, "maestro.ambient_agent.routing.selected");
+	});
+
 	it("renders an empty state when no agents are running", async () => {
 		const getFleetStatus = vi.fn(async () =>
 			fleetSnapshot({

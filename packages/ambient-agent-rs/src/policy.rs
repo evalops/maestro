@@ -44,19 +44,10 @@ static VERSIONED_DEPENDENCY_BUMP_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
         .unwrap()
 });
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct PolicyGateConfig {
     pub limits: Limits,
     pub capabilities: Capabilities,
-}
-
-impl Default for PolicyGateConfig {
-    fn default() -> Self {
-        Self {
-            limits: Limits::default(),
-            capabilities: Capabilities::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -276,9 +267,9 @@ fn infer_task_type_with_mode(event: &NormalizedEvent, mode: TaskTypeInferenceMod
         TaskTypeInferenceMode::SecurityFirst => {
             if looks_like_security_task(&content) {
                 TaskType::Security
-            } else if event.event_type == EventType::DependencyUpdate {
-                TaskType::Fix
-            } else if looks_like_fix_task(&content) {
+            } else if event.event_type == EventType::DependencyUpdate
+                || looks_like_fix_task(&content)
+            {
                 TaskType::Fix
             } else if looks_like_refactor_task(&content) {
                 TaskType::Refactor
@@ -435,10 +426,7 @@ fn merge_candidate_files(candidate_files: &[String], content: &str) -> Vec<Strin
     let mut files = candidate_files.to_vec();
     for cap in FILE_PATH_PATTERN.captures_iter(content) {
         if let Some(file) = cap.get(1).or_else(|| cap.get(2)) {
-            let value = file
-                .as_str()
-                .trim()
-                .trim_end_matches(|c| c == ',' || c == '.');
+            let value = file.as_str().trim().trim_end_matches([',', '.']);
             if value.contains('/')
                 || value.starts_with('.')
                 || is_sensitive_file_name(value)

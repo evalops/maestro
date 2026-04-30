@@ -14,6 +14,7 @@ import {
 	DESKTOP_DEFAULT_CSRF_TOKEN,
 	DESKTOP_DEV_API_KEY,
 } from "../shared/runtime-defaults.js";
+import { getDeviceIdentityHelperPath } from "./device-identity-helper-path.js";
 
 // ESM equivalent of __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -26,7 +27,6 @@ const SERVER_PORT = Number(
 	process.env.MAESTRO_DESKTOP_PORT ?? DESKTOP_DEFAULT_API_PORT,
 );
 const SERVER_HOST = "127.0.0.1";
-const RENDERER_SERVER_HOST = "localhost";
 const IS_DEV_SERVER = Boolean(process.env.VITE_DEV_SERVER_URL);
 const DEV_UI_PORT =
 	process.env.MAESTRO_DESKTOP_UI_PORT ?? process.env.VITE_PORT;
@@ -98,6 +98,7 @@ export async function startServer(): Promise<boolean> {
 	}
 
 	const webServerPath = getWebServerPath();
+	const deviceIdentityHelperPath = getDeviceIdentityHelperPath();
 	console.log("Starting Maestro server from:", webServerPath);
 
 	return new Promise((resolve) => {
@@ -117,6 +118,9 @@ export async function startServer(): Promise<boolean> {
 					MAESTRO_JWT_SECRET: JWT_SECRET,
 					// Allow CORS from Vite dev server and Electron
 					MAESTRO_WEB_ORIGIN: DEV_UI_ORIGIN,
+					...(deviceIdentityHelperPath
+						? { MAESTRO_DEVICE_IDENTITY_HELPER: deviceIdentityHelperPath }
+						: {}),
 				},
 				detached: false,
 			});
@@ -192,7 +196,7 @@ export function isServerReady(): boolean {
  * Get the server URL
  */
 export function getServerUrl(): string {
-	return `http://${RENDERER_SERVER_HOST}:${SERVER_PORT}`;
+	return `http://${SERVER_HOST}:${SERVER_PORT}`;
 }
 
 export function getServerApiConfig(): DesktopApiConfig {

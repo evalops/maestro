@@ -57,102 +57,61 @@ export class AdminSettings extends LitElement {
 		   Inspired by mission control centers and financial terminals
 		   ============================================================ */
 
-		@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=DM+Sans:wght@400;500;600;700&display=swap");
+		@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap");
 
 		:host {
-			--admin-bg-deep: #08090a;
-			--admin-bg-base: #0c0d0f;
-			--admin-bg-elevated: #111214;
-			--admin-bg-surface: #161719;
-			--admin-border: #1e2023;
-			--admin-border-subtle: #141517;
-			--admin-text-primary: #e8e9eb;
-			--admin-text-secondary: #8b8d91;
-			--admin-text-tertiary: #5c5e62;
-			--admin-accent-amber: #d4a012;
-			--admin-accent-amber-dim: rgba(212, 160, 18, 0.12);
-			--admin-accent-amber-glow: rgba(212, 160, 18, 0.25);
-			--admin-accent-green: #22c55e;
-			--admin-accent-green-dim: rgba(34, 197, 94, 0.12);
-			--admin-accent-red: #ef4444;
-			--admin-accent-red-dim: rgba(239, 68, 68, 0.12);
-			--admin-accent-blue: #3b82f6;
-			--admin-accent-blue-dim: rgba(59, 130, 246, 0.12);
+			--admin-bg-deep: var(--bg-deep, #161718);
+			--admin-bg-base: var(--bg-primary, #1a1b1d);
+			--admin-bg-elevated: var(--bg-elevated, #232427);
+			--admin-bg-surface: var(--bg-surface, #26282b);
+			--admin-border: var(--border-primary, #2a2c2f);
+			--admin-border-subtle: var(--border-subtle, #1f2022);
+			--admin-text-primary: var(--text-primary, #ececec);
+			--admin-text-secondary: var(--text-secondary, #b4b4b4);
+			--admin-text-tertiary: var(--text-tertiary, #8e8e8e);
+			--admin-accent-amber: var(--accent-amber, #d4a012);
+			--admin-accent-amber-dim: var(--accent-amber-dim, rgba(212, 160, 18, 0.16));
+			--admin-accent-amber-glow: rgba(212, 160, 18, 0.18);
+			--admin-accent-green: var(--accent-green, #4ade80);
+			--admin-accent-green-dim: var(--accent-green-dim, rgba(74, 222, 128, 0.12));
+			--admin-accent-red: var(--accent-red, #f87171);
+			--admin-accent-red-dim: var(--accent-red-dim, rgba(248, 113, 113, 0.14));
+			--admin-accent-blue: var(--accent-blue, #4f8cf7);
+			--admin-accent-blue-dim: var(--accent-blue-dim, rgba(79, 140, 247, 0.14));
 
-			--font-display: "DM Sans", system-ui, sans-serif;
-			--font-mono: "JetBrains Mono", "SF Mono", monospace;
+			--font-display: var(--font-sans, "Inter", system-ui, sans-serif);
 
 			display: flex;
 			flex-direction: column;
 			height: 100%;
-			background: var(--admin-bg-deep);
+			background: var(--admin-bg-base);
 			color: var(--admin-text-primary);
 			font-family: var(--font-display);
 			position: relative;
 		}
 
-		/* Subtle grid background */
-		:host::before {
-			content: "";
-			position: absolute;
-			inset: 0;
-			background-image:
-				linear-gradient(var(--admin-border-subtle) 1px, transparent 1px),
-				linear-gradient(90deg, var(--admin-border-subtle) 1px, transparent 1px);
-			background-size: 40px 40px;
-			opacity: 0.4;
-			pointer-events: none;
-		}
-
-		/* Header - Minimal, purposeful */
+		/* Header */
 		.admin-header {
 			display: flex;
 			align-items: center;
 			justify-content: space-between;
-			padding: 1rem 1.5rem;
+			padding: 0.75rem 1rem;
 			background: var(--admin-bg-base);
 			border-bottom: 1px solid var(--admin-border);
 			position: relative;
 			z-index: 10;
 		}
 
-		.admin-header::after {
-			content: "";
-			position: absolute;
-			bottom: 0;
-			left: 0;
-			right: 0;
-			height: 1px;
-			background: linear-gradient(90deg, transparent, var(--admin-accent-amber) 20%, var(--admin-accent-amber) 80%, transparent);
-			opacity: 0.3;
-		}
-
 		.admin-header h2 {
-			font-family: var(--font-mono);
-			font-size: 0.75rem;
-			font-weight: 600;
+			font-family: var(--font-sans, "Inter", sans-serif);
+			font-size: 0.92rem;
+			font-weight: 500;
 			margin: 0;
-			color: var(--admin-text-secondary);
-			text-transform: uppercase;
-			letter-spacing: 0.15em;
+			color: var(--admin-text-primary);
+			letter-spacing: -0.005em;
 			display: flex;
 			align-items: center;
-			gap: 0.75rem;
-		}
-
-		.admin-header h2::before {
-			content: "";
-			width: 8px;
-			height: 8px;
-			background: var(--admin-accent-amber);
-			border-radius: 50%;
-			box-shadow: 0 0 12px var(--admin-accent-amber-glow);
-			animation: pulse-glow 2s ease-in-out infinite;
-		}
-
-		@keyframes pulse-glow {
-			0%, 100% { opacity: 1; }
-			50% { opacity: 0.5; }
+			gap: 0.6rem;
 		}
 
 		.close-btn {
@@ -160,11 +119,12 @@ export class AdminSettings extends LitElement {
 			height: 32px;
 			padding: 0;
 			background: transparent;
-			border: 1px solid var(--admin-border);
+			border: none;
+			border-radius: var(--radius-sm, 6px);
 			color: var(--admin-text-tertiary);
 			cursor: pointer;
-			transition: all 0.15s ease;
-			font-family: var(--font-mono);
+			transition: background 0.12s ease, color 0.12s ease;
+			font-family: var(--font-sans, "Inter", sans-serif);
 			font-size: 1rem;
 			display: flex;
 			align-items: center;
@@ -172,9 +132,8 @@ export class AdminSettings extends LitElement {
 		}
 
 		.close-btn:hover {
-			background: var(--admin-accent-red-dim);
-			border-color: var(--admin-accent-red);
-			color: var(--admin-accent-red);
+			background: var(--bg-panel, #2c2e31);
+			color: var(--admin-text-primary, #ececec);
 		}
 
 		/* Layout */
@@ -204,11 +163,11 @@ export class AdminSettings extends LitElement {
 			padding: 0.875rem 1.5rem;
 			cursor: pointer;
 			color: var(--admin-text-secondary);
-			font-family: var(--font-mono);
+			font-family: var(--font-sans, "Inter", sans-serif);
 			font-size: 0.7rem;
 			font-weight: 500;
-			text-transform: uppercase;
-			letter-spacing: 0.08em;
+			text-transform: none;
+			letter-spacing: 0;
 			transition: all 0.15s ease;
 			position: relative;
 			margin: 0 0.75rem;
@@ -268,13 +227,13 @@ export class AdminSettings extends LitElement {
 		}
 
 		.section-header h3 {
-			font-family: var(--font-mono);
+			font-family: var(--font-sans, "Inter", sans-serif);
 			font-size: 0.65rem;
 			font-weight: 600;
 			margin: 0;
 			color: var(--admin-text-tertiary);
-			text-transform: uppercase;
-			letter-spacing: 0.12em;
+			text-transform: none;
+			letter-spacing: 0;
 		}
 
 		.section-content {
@@ -319,7 +278,7 @@ export class AdminSettings extends LitElement {
 		}
 
 		.stat-value {
-			font-family: var(--font-mono);
+			font-family: var(--font-sans, "Inter", sans-serif);
 			font-size: 2rem;
 			font-weight: 700;
 			color: var(--admin-text-primary);
@@ -329,11 +288,11 @@ export class AdminSettings extends LitElement {
 		}
 
 		.stat-label {
-			font-family: var(--font-mono);
+			font-family: var(--font-sans, "Inter", sans-serif);
 			font-size: 0.6rem;
 			color: var(--admin-text-tertiary);
-			text-transform: uppercase;
-			letter-spacing: 0.1em;
+			text-transform: none;
+			letter-spacing: 0;
 		}
 
 		.stat-card.warning .stat-value {
@@ -358,12 +317,12 @@ export class AdminSettings extends LitElement {
 		.data-table th {
 			text-align: left;
 			padding: 0.875rem 1rem;
-			font-family: var(--font-mono);
+			font-family: var(--font-sans, "Inter", sans-serif);
 			font-size: 0.6rem;
 			font-weight: 600;
 			color: var(--admin-text-tertiary);
-			text-transform: uppercase;
-			letter-spacing: 0.1em;
+			text-transform: none;
+			letter-spacing: 0;
 			border-bottom: 1px solid var(--admin-border);
 			background: var(--admin-bg-elevated);
 		}
@@ -402,12 +361,12 @@ export class AdminSettings extends LitElement {
 			padding: 0.25rem 0.5rem;
 			background: var(--admin-bg-surface);
 			border: none;
-			font-family: var(--font-mono);
+			font-family: var(--font-sans, "Inter", sans-serif);
 			font-size: 0.6rem;
 			font-weight: 600;
 			color: var(--admin-text-secondary);
-			text-transform: uppercase;
-			letter-spacing: 0.05em;
+			text-transform: none;
+			letter-spacing: 0;
 		}
 
 		.badge::before {
@@ -459,11 +418,11 @@ export class AdminSettings extends LitElement {
 		/* Buttons - Sharp, utilitarian */
 		.btn {
 			padding: 0.625rem 1rem;
-			font-family: var(--font-mono);
+			font-family: var(--font-sans, "Inter", sans-serif);
 			font-size: 0.7rem;
 			font-weight: 500;
-			text-transform: uppercase;
-			letter-spacing: 0.05em;
+			text-transform: none;
+			letter-spacing: 0;
 			cursor: pointer;
 			transition: all 0.15s ease;
 			border: 1px solid var(--admin-border);
@@ -511,12 +470,12 @@ export class AdminSettings extends LitElement {
 
 		.form-label {
 			display: block;
-			font-family: var(--font-mono);
+			font-family: var(--font-sans, "Inter", sans-serif);
 			font-size: 0.6rem;
 			font-weight: 600;
 			color: var(--admin-text-tertiary);
-			text-transform: uppercase;
-			letter-spacing: 0.1em;
+			text-transform: none;
+			letter-spacing: 0;
 			margin-bottom: 0.5rem;
 		}
 
@@ -526,7 +485,7 @@ export class AdminSettings extends LitElement {
 			border: 1px solid var(--admin-border);
 			background: var(--admin-bg-deep);
 			color: var(--admin-text-primary);
-			font-family: var(--font-mono);
+			font-family: var(--font-sans, "Inter", sans-serif);
 			font-size: 0.8rem;
 			transition: all 0.15s ease;
 		}
@@ -591,7 +550,7 @@ export class AdminSettings extends LitElement {
 		}
 
 		.alert-icon {
-			font-family: var(--font-mono);
+			font-family: var(--font-sans, "Inter", sans-serif);
 			font-size: 0.8rem;
 			font-weight: 700;
 			width: 24px;
@@ -616,7 +575,7 @@ export class AdminSettings extends LitElement {
 		}
 
 		.alert-meta {
-			font-family: var(--font-mono);
+			font-family: var(--font-sans, "Inter", sans-serif);
 			font-size: 0.65rem;
 			color: var(--admin-text-tertiary);
 			display: flex;
@@ -630,10 +589,10 @@ export class AdminSettings extends LitElement {
 			text-align: center;
 			padding: 4rem 2rem;
 			color: var(--admin-text-tertiary);
-			font-family: var(--font-mono);
+			font-family: var(--font-sans, "Inter", sans-serif);
 			font-size: 0.75rem;
-			text-transform: uppercase;
-			letter-spacing: 0.1em;
+			text-transform: none;
+			letter-spacing: 0;
 		}
 
 		.error-message {
@@ -641,7 +600,7 @@ export class AdminSettings extends LitElement {
 			border-left: 3px solid var(--admin-accent-red);
 			padding: 1rem 1.25rem;
 			margin: 0 2rem 1.5rem;
-			font-family: var(--font-mono);
+			font-family: var(--font-sans, "Inter", sans-serif);
 			font-size: 0.75rem;
 			color: var(--admin-accent-red);
 		}
@@ -655,7 +614,7 @@ export class AdminSettings extends LitElement {
 			background: var(--admin-bg-elevated);
 			border: 1px solid var(--admin-border);
 			color: var(--admin-text-primary);
-			font-family: var(--font-mono);
+			font-family: var(--font-sans, "Inter", sans-serif);
 			font-size: 0.75rem;
 			z-index: 1000;
 			animation: toast-in 0.25s ease;
@@ -732,12 +691,12 @@ export class AdminSettings extends LitElement {
 
 		.dialog h4 {
 			margin: 0 0 1rem 0;
-			font-family: var(--font-mono);
+			font-family: var(--font-sans, "Inter", sans-serif);
 			font-size: 0.7rem;
 			font-weight: 600;
 			color: var(--admin-accent-red);
-			text-transform: uppercase;
-			letter-spacing: 0.1em;
+			text-transform: none;
+			letter-spacing: 0;
 		}
 
 		.dialog p {
@@ -760,7 +719,7 @@ export class AdminSettings extends LitElement {
 			border: 1px solid var(--admin-border);
 			background: var(--admin-bg-deep);
 			color: var(--admin-text-primary);
-			font-family: var(--font-mono);
+			font-family: var(--font-sans, "Inter", sans-serif);
 			font-size: 0.8rem;
 			margin-bottom: 1.25rem;
 			transition: border-color 0.15s ease;
@@ -782,10 +741,10 @@ export class AdminSettings extends LitElement {
 			justify-content: center;
 			padding: 4rem 2rem;
 			color: var(--admin-text-tertiary);
-			font-family: var(--font-mono);
+			font-family: var(--font-sans, "Inter", sans-serif);
 			font-size: 0.75rem;
-			text-transform: uppercase;
-			letter-spacing: 0.1em;
+			text-transform: none;
+			letter-spacing: 0;
 		}
 
 		.spinner {
@@ -820,10 +779,10 @@ export class AdminSettings extends LitElement {
 			border: 1px solid var(--admin-border);
 			background: var(--admin-bg-base);
 			color: var(--admin-text-secondary);
-			font-family: var(--font-mono);
+			font-family: var(--font-sans, "Inter", sans-serif);
 			font-size: 0.65rem;
-			text-transform: uppercase;
-			letter-spacing: 0.05em;
+			text-transform: none;
+			letter-spacing: 0;
 			cursor: pointer;
 			transition: all 0.15s ease;
 		}
@@ -846,12 +805,12 @@ export class AdminSettings extends LitElement {
 		}
 
 		.page-info {
-			font-family: var(--font-mono);
+			font-family: var(--font-sans, "Inter", sans-serif);
 			font-size: 0.65rem;
 			color: var(--admin-text-tertiary);
 			margin: 0 1rem;
-			text-transform: uppercase;
-			letter-spacing: 0.05em;
+			text-transform: none;
+			letter-spacing: 0;
 		}
 
 		/* Icon button in tables */
@@ -1444,7 +1403,7 @@ export class AdminSettings extends LitElement {
 								return html`
 									<div style="margin-bottom: 1rem;">
 										<div style="display: flex; justify-content: space-between; margin-bottom: 0.35rem; font-size: 0.8rem;">
-											<span style="font-family: var(--font-mono);">${model.modelId}</span>
+											<span style="font-family: var(--font-sans, 'Inter', sans-serif);">${model.modelId}</span>
 											<span style="color: var(--admin-text-secondary);">${this.formatNumber(model.tokenUsed)} (${pct.toFixed(1)}%)</span>
 										</div>
 										<div style="height: 6px; background: var(--admin-bg-surface); border-radius: 3px; overflow: hidden;">

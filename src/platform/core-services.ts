@@ -223,6 +223,8 @@ export const PLATFORM_CONNECT_METHODS = {
 export const PLATFORM_HTTP_ROUTES = {
 	identity: {
 		authGoogleStart: "/v1/auth/google/start",
+		deviceChallenges: "/v1/device-challenges",
+		devices: "/v1/devices",
 		tokenRefresh: "/v1/tokens/refresh",
 		tokenRevoke: "/v1/tokens/revoke",
 		delegationTokens: "/v1/delegation-tokens",

@@ -17,7 +17,8 @@ use crate::{
     },
     learner::Learner,
     platform_event_bus::{
-        AmbientCloseReason, AmbientSessionEvent, AmbientSessionState, PlatformEventBus,
+        AmbientCloseReason, AmbientPlanEvent, AmbientPlanEventKind, AmbientSessionEvent,
+        AmbientSessionState, PlatformEventBus,
     },
     pr_creator::{PrCreator, PrCreatorConfig},
     runtime_config::EffectiveRuntimeConfig,
@@ -29,6 +30,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
+
+struct FinishedPlanExecution<'a> {
+    event: &'a NormalizedEvent,
+    plan: &'a TaskPlan,
+    checkpoint_id: &'a str,
+    model_used: &'a str,
+    result: &'a ExecutionResult,
+    critique: &'a CriticResult,
+    success: bool,
+}
 
 /// Commands sent to the daemon
 #[allow(clippy::large_enum_variant)]
@@ -130,11 +141,7 @@ impl AmbientDaemon {
         let cascader = Cascader::new(None);
 
         // Executor for real LLM calls
-        let executor_config = ExecutorConfig {
-            api_key: std::env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
-            working_dir: data_dir.to_string_lossy().to_string(),
-            ..Default::default()
-        };
+        let executor_config = ExecutorConfig::from_env(data_dir.to_string_lossy().to_string());
         let executor = Executor::new(executor_config);
 
         let checkpoint_mgr = CheckpointManager::new(data_dir.join("checkpoints"));
@@ -522,6 +529,13 @@ impl AmbientDaemon {
             "Routed to {} ({}) - estimated cost: ${:.4}",
             routing.tier.name, routing.model, routing.estimated_cost
         );
+        self.record_plan_event(
+            AmbientPlanEventKind::RoutingSelected,
+            &run_context,
+            &routing,
+            None,
+        )
+        .await;
 
         let effective_config = EffectiveRuntimeConfig::from_ambient(&self.config, &event);
         let limits = effective_config.limits;
@@ -537,6 +551,13 @@ impl AmbientDaemon {
                 failure_reason,
                 CostAccounting::estimated_only(routing.estimated_cost),
             );
+            self.record_plan_event(
+                AmbientPlanEventKind::CostLimited,
+                &run_context,
+                &routing,
+                Some(&outcome),
+            )
+            .await;
             self.record_plan_outcome(&run_context, &routing.model, start_time, &outcome)
                 .await;
             return;
@@ -557,17 +578,24 @@ impl AmbientDaemon {
             &critique,
             CostAccounting::estimate_as_actual(routing.estimated_cost, 0),
         );
+        self.record_plan_event(
+            AmbientPlanEventKind::ExecutionCompleted,
+            &run_context,
+            &routing,
+            Some(&outcome),
+        )
+        .await;
         self.record_plan_outcome(&run_context, &routing.model, start_time, &outcome)
             .await;
-        self.finish_plan_execution(
-            &event,
-            &plan,
-            &checkpoint_id,
-            &routing.model,
-            &result,
-            &critique,
-            outcome.success,
-        )
+        self.finish_plan_execution(FinishedPlanExecution {
+            event: &event,
+            plan: &plan,
+            checkpoint_id: &checkpoint_id,
+            model_used: &routing.model,
+            result: &result,
+            critique: &critique,
+            success: outcome.success,
+        })
         .await;
     }
 
@@ -596,6 +624,43 @@ impl AmbientDaemon {
             .await
         {
             error!("Failed to rollback {reason} checkpoint: {}", e);
+        }
+    }
+
+    async fn record_plan_event(
+        &self,
+        kind: AmbientPlanEventKind,
+        run_context: &PlanRunContext,
+        routing: &crate::cascader::RoutingResult,
+        outcome: Option<&PlanRunOutcome>,
+    ) {
+        let mut event = AmbientPlanEvent::new(&self.session_id, kind, &self.workspace_root)
+            .event_id(run_context.event_id())
+            .repository(run_context.repository())
+            .task_type(format!("{:?}", run_context.task_type()).to_ascii_lowercase())
+            .complexity(format!("{:?}", run_context.complexity()).to_ascii_lowercase())
+            .model(routing.model.clone())
+            .provider(Self::selected_model_provider())
+            .tier(routing.tier.name.clone())
+            .estimated_cost_usd(routing.estimated_cost)
+            .metadata("routing_reason", routing.reason.clone());
+
+        if let Some(outcome) = outcome {
+            event = event
+                .actual_cost_usd(outcome.costs.actual_cost_usd)
+                .success(outcome.success);
+            if let Some(reason) = &outcome.failure_reason {
+                event = event.metadata("failure_reason", reason.clone());
+            }
+        }
+
+        self.platform_event_bus.publish_plan_event(event).await;
+    }
+
+    fn selected_model_provider() -> &'static str {
+        match std::env::var("MAESTRO_AMBIENT_LLM_API").ok().as_deref() {
+            Some("anthropic") | Some("anthropic-messages") => "anthropic",
+            _ => crate::cascader::DEFAULT_FRONTIER_PROVIDER,
         }
     }
 
@@ -641,16 +706,17 @@ impl AmbientDaemon {
         stats.total_cost += outcome.costs.actual_cost_usd;
     }
 
-    async fn finish_plan_execution(
-        &self,
-        event: &NormalizedEvent,
-        plan: &TaskPlan,
-        checkpoint_id: &str,
-        model_used: &str,
-        result: &ExecutionResult,
-        critique: &CriticResult,
-        success: bool,
-    ) {
+    async fn finish_plan_execution(&self, execution: FinishedPlanExecution<'_>) {
+        let FinishedPlanExecution {
+            event,
+            plan,
+            checkpoint_id,
+            model_used,
+            result,
+            critique,
+            success,
+        } = execution;
+
         if success {
             self.commit_checkpoint(checkpoint_id).await;
 
@@ -1162,15 +1228,15 @@ mod tests {
         );
 
         daemon
-            .finish_plan_execution(
-                &event,
-                &plan,
-                &checkpoint_id,
-                "claude-3-5-haiku-20241022",
-                &result,
-                &critique,
-                outcome.success,
-            )
+            .finish_plan_execution(FinishedPlanExecution {
+                event: &event,
+                plan: &plan,
+                checkpoint_id: &checkpoint_id,
+                model_used: "claude-3-5-haiku-20241022",
+                result: &result,
+                critique: &critique,
+                success: outcome.success,
+            })
             .await;
 
         assert!(!outcome.success);

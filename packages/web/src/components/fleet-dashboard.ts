@@ -20,6 +20,7 @@ interface FleetProviderFootprint {
 	key: string;
 	provider: string;
 	model: string;
+	modelTier?: string;
 	instances: number;
 	activeTasks: number;
 	connections: number;
@@ -67,8 +68,8 @@ export class FleetDashboard extends LitElement {
 			color: var(--fleet-text-tertiary);
 			font-family: var(--fleet-font-mono);
 			font-size: 0.65rem;
-			letter-spacing: 0.08em;
-			text-transform: uppercase;
+			letter-spacing: 0;
+			text-transform: none;
 		}
 
 		.refresh-btn {
@@ -133,8 +134,8 @@ export class FleetDashboard extends LitElement {
 			color: var(--fleet-text-tertiary);
 			font-family: var(--fleet-font-mono);
 			font-size: 0.6rem;
-			letter-spacing: 0.1em;
-			text-transform: uppercase;
+			letter-spacing: 0;
+			text-transform: none;
 		}
 
 		.section {
@@ -158,9 +159,9 @@ export class FleetDashboard extends LitElement {
 			font-family: var(--fleet-font-mono);
 			font-size: 0.65rem;
 			font-weight: 600;
-			letter-spacing: 0.12em;
+			letter-spacing: 0;
 			margin: 0;
-			text-transform: uppercase;
+			text-transform: none;
 		}
 
 		.data-table {
@@ -176,10 +177,10 @@ export class FleetDashboard extends LitElement {
 			font-family: var(--fleet-font-mono);
 			font-size: 0.6rem;
 			font-weight: 600;
-			letter-spacing: 0.1em;
+			letter-spacing: 0;
 			padding: 0.875rem 1rem;
 			text-align: left;
-			text-transform: uppercase;
+			text-transform: none;
 		}
 
 		.data-table td {
@@ -223,9 +224,9 @@ export class FleetDashboard extends LitElement {
 			font-family: var(--fleet-font-mono);
 			font-size: 0.6rem;
 			font-weight: 600;
-			letter-spacing: 0.05em;
+			letter-spacing: 0;
 			padding: 0.25rem 0.5rem;
-			text-transform: uppercase;
+			text-transform: none;
 		}
 
 		.badge::before {
@@ -309,7 +310,7 @@ export class FleetDashboard extends LitElement {
 			font-size: 0.6rem;
 			font-weight: 600;
 			letter-spacing: 0;
-			text-transform: uppercase;
+			text-transform: none;
 		}
 
 		.insight-title {
@@ -350,7 +351,7 @@ export class FleetDashboard extends LitElement {
 			font-size: 0.56rem;
 			font-weight: 600;
 			letter-spacing: 0;
-			text-transform: uppercase;
+			text-transform: none;
 		}
 
 		.compact-table tr:last-child td {
@@ -363,10 +364,10 @@ export class FleetDashboard extends LitElement {
 			color: var(--fleet-text-tertiary);
 			font-family: var(--fleet-font-mono);
 			font-size: 0.75rem;
-			letter-spacing: 0.08em;
+			letter-spacing: 0;
 			padding: 3rem 2rem;
 			text-align: center;
-			text-transform: uppercase;
+			text-transform: none;
 		}
 
 		.error-message {
@@ -467,6 +468,10 @@ export class FleetDashboard extends LitElement {
 		return new Date(value).toLocaleString();
 	}
 
+	private formatCost(value: number): string {
+		return `$${value.toFixed(4)}`;
+	}
+
 	private healthClass(health: FleetAgentHealth): string {
 		return health;
 	}
@@ -548,6 +553,7 @@ export class FleetDashboard extends LitElement {
 					key,
 					provider,
 					model,
+					modelTier: instance.modelTier,
 					instances: 0,
 					activeTasks: 0,
 					connections: 0,
@@ -560,6 +566,7 @@ export class FleetDashboard extends LitElement {
 					executions: number;
 				});
 			current.instances += 1;
+			current.modelTier ??= instance.modelTier;
 			current.activeTasks += instance.activeTasks.total;
 			current.connections += instance.resourceUtilization.connections;
 			current.subscribers += instance.resourceUtilization.subscribers;
@@ -680,7 +687,10 @@ export class FleetDashboard extends LitElement {
 											${footprint.map(
 												(entry) => html`
 													<tr>
-														<td><code>${entry.provider}/${entry.model}</code></td>
+														<td>
+															<code>${entry.provider}/${entry.model}</code>
+															${entry.modelTier ? html`<div class="muted">${entry.modelTier}</div>` : ""}
+														</td>
 														<td>${entry.instances}</td>
 														<td>${entry.activeTasks}</td>
 														<td>${entry.connections} / ${entry.subscribers}</td>
@@ -727,12 +737,30 @@ export class FleetDashboard extends LitElement {
 	}
 
 	private renderInstance(instance: FleetAgentInstance) {
+		const platformBus = instance.platformEventBus;
 		return html`
 			<tr>
 				<td>
 					<div class="identity">
 						<code>${instance.sessionId}</code>
 						<span class="muted">${instance.provider ?? "provider unknown"} / ${instance.model ?? "model unknown"}</span>
+						${
+							instance.modelTier || instance.modelPolicy
+								? html`<span class="muted">${[
+										instance.modelTier,
+										instance.modelPolicy,
+									]
+										.filter(Boolean)
+										.join(" / ")}</span>`
+								: ""
+						}
+						${instance.routingReason ? html`<span class="muted">${instance.routingReason}</span>` : ""}
+						${instance.estimatedCostUsd !== undefined ? html`<span class="muted">${this.formatCost(instance.estimatedCostUsd)} estimate</span>` : ""}
+						${
+							platformBus
+								? html`<span class="muted">Platform Bus ${platformBus.enabled ? platformBus.reason : "disabled"}${platformBus.subject ? ` / ${platformBus.subject}` : ""}</span>`
+								: ""
+						}
 						<span class="muted">${instance.gitBranch ?? "no branch"} ${instance.cwd ? `- ${instance.cwd}` : ""}</span>
 					</div>
 				</td>

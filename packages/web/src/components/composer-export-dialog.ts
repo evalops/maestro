@@ -22,17 +22,17 @@ export class ComposerExportDialog extends LitElement {
 		.modal-dialog {
 			width: min(520px, 100%);
 			background: var(--bg-deep, #08090a);
-			border: 1px solid var(--border-primary, #1e2023);
+			border: 1px solid var(--border-subtle, #1e2023);
 			box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
 			padding: 0.9rem;
-			font-family: var(--font-mono, monospace);
+			font-family: var(--font-sans, "Inter", sans-serif);
 		}
 
 		.modal-title {
 			font-size: 0.75rem;
 			font-weight: 700;
-			letter-spacing: 0.08em;
-			text-transform: uppercase;
+			letter-spacing: 0;
+			text-transform: none;
 			color: var(--text-secondary, #8b8d91);
 			margin-bottom: 0.75rem;
 		}
@@ -53,7 +53,7 @@ export class ComposerExportDialog extends LitElement {
 		.modal-row select {
 			flex: 1;
 			background: var(--bg-elevated, #161719);
-			border: 1px solid var(--border-primary, #1e2023);
+			border: 1px solid var(--border-subtle, #1e2023);
 			color: var(--text-primary, #e8e9eb);
 			padding: 0.35rem 0.5rem;
 			font-family: inherit;
@@ -74,7 +74,7 @@ export class ComposerExportDialog extends LitElement {
 		}
 
 		.modal-btn {
-			border: 1px solid var(--border-primary, #1e2023);
+			border: 1px solid var(--border-subtle, #1e2023);
 			background: transparent;
 			color: var(--text-tertiary, #5c5e62);
 			height: 30px;
@@ -82,8 +82,8 @@ export class ComposerExportDialog extends LitElement {
 			cursor: pointer;
 			font-family: inherit;
 			font-size: 0.7rem;
-			letter-spacing: 0.06em;
-			text-transform: uppercase;
+			letter-spacing: 0;
+			text-transform: none;
 		}
 
 		.modal-btn.primary {

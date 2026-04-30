@@ -133,6 +133,16 @@ export interface FleetAgentInstance {
 	scopeKey: string;
 	model?: string;
 	provider?: string;
+	modelTier?: string;
+	modelPolicy?: string;
+	routingReason?: string;
+	estimatedCostUsd?: number;
+	platformEventBus?: {
+		enabled: boolean;
+		reason: string;
+		subject?: string;
+		lastPublishedAt?: string;
+	};
 	cwd?: string;
 	gitBranch?: string | null;
 	health: FleetAgentHealth;

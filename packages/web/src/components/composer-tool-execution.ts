@@ -108,8 +108,8 @@ export class ComposerToolExecution extends LitElement {
 			font-size: 0.75rem;
 			font-weight: 700;
 			color: #e6edf3;
-			text-transform: uppercase;
-			letter-spacing: 0.05em;
+			text-transform: none;
+			letter-spacing: 0;
 			flex: 1;
 			min-width: 0;
 		}
@@ -176,8 +176,8 @@ export class ComposerToolExecution extends LitElement {
 		.tool-status {
 			font-size: 0.65rem;
 			color: #6e7681;
-			text-transform: uppercase;
-			letter-spacing: 0.05em;
+			text-transform: none;
+			letter-spacing: 0;
 		}
 
 		.tool-status.running {
@@ -211,8 +211,8 @@ export class ComposerToolExecution extends LitElement {
 	.args-truncated {
 		font-size: 0.6rem;
 		color: #f2cc60;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
+		text-transform: none;
+		letter-spacing: 0;
 	}
 
 	.args-truncated-note {
@@ -313,8 +313,8 @@ export class ComposerToolExecution extends LitElement {
 		.section-label {
 			font-size: 0.65rem;
 			color: #6e7681;
-			text-transform: uppercase;
-			letter-spacing: 0.1em;
+			text-transform: none;
+			letter-spacing: 0;
 			margin-bottom: 0.35rem;
 			font-weight: 700;
 		}
@@ -391,8 +391,8 @@ export class ComposerToolExecution extends LitElement {
 			padding: 0.25rem 0.5rem;
 			font-family: inherit;
 			font-size: 0.7rem;
-			text-transform: uppercase;
-			letter-spacing: 0.05em;
+			text-transform: none;
+			letter-spacing: 0;
 		transition: all 0.15s;
 		margin-top: 0.5rem;
 	}

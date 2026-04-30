@@ -109,12 +109,12 @@ export class ComposerSettings extends LitElement {
 			height: 28px;
 			padding: 0;
 			background: transparent;
-			border: 1px solid var(--border-primary);
-			border-radius: 6px;
-			color: var(--text-secondary);
+			border: none;
+			border-radius: var(--radius-sm, 6px);
+			color: var(--text-tertiary);
 			cursor: pointer;
-			transition: all 0.2s;
-			font-size: 0.9rem;
+			transition: background 0.12s ease, color 0.12s ease;
+			font-size: 0.95rem;
 			display: flex;
 			align-items: center;
 			justify-content: center;
@@ -123,7 +123,6 @@ export class ComposerSettings extends LitElement {
 		.close-btn:hover {
 			background: var(--bg-panel);
 			color: var(--text-primary);
-			border-color: var(--border-secondary);
 		}
 
 		.settings-content {
@@ -135,7 +134,7 @@ export class ComposerSettings extends LitElement {
 		.section {
 			margin-bottom: 2rem;
 			background: var(--bg-secondary);
-			border: 1px solid var(--border-primary);
+			border: 1px solid var(--border-subtle);
 			border-radius: 8px;
 			overflow: hidden;
 		}
@@ -147,13 +146,13 @@ export class ComposerSettings extends LitElement {
 		}
 
 		.section-header h3 {
-			font-family: var(--font-mono);
+			font-family: var(--font-sans, "Inter", sans-serif);
 			font-size: 0.7rem;
 			font-weight: 600;
 			margin: 0;
 			color: var(--text-secondary);
-			text-transform: uppercase;
-			letter-spacing: 0.05em;
+			text-transform: none;
+			letter-spacing: 0;
 		}
 
 		.section-content {
@@ -169,18 +168,18 @@ export class ComposerSettings extends LitElement {
 		}
 
 		.info-label {
-			font-family: var(--font-mono);
+			font-family: var(--font-sans, "Inter", sans-serif);
 			color: var(--text-tertiary);
 			font-size: 0.7rem;
-			text-transform: uppercase;
-			letter-spacing: 0.05em;
+			text-transform: none;
+			letter-spacing: 0;
 			padding-top: 0.15em;
 		}
 
 		.info-value {
 			color: var(--text-primary);
 			word-break: break-all;
-			font-family: var(--font-mono);
+			font-family: var(--font-sans, "Inter", sans-serif);
 		}
 
 		.info-value.highlight {
@@ -203,14 +202,14 @@ export class ComposerSettings extends LitElement {
 			display: inline-block;
 			padding: 0.15rem 0.4rem;
 			background: var(--bg-panel);
-			border: 1px solid var(--border-primary);
+			border: 1px solid var(--border-subtle);
 			border-radius: 4px;
 			font-size: 0.65rem;
 			font-weight: 600;
 			color: var(--text-secondary);
-			text-transform: uppercase;
+			text-transform: none;
 			margin-right: 0.35rem;
-			font-family: var(--font-mono);
+			font-family: var(--font-sans, "Inter", sans-serif);
 		}
 
 		.badge.active {
@@ -239,7 +238,7 @@ export class ComposerSettings extends LitElement {
 
 		.model-card {
 			background: var(--bg-primary);
-			border: 1px solid var(--border-primary);
+			border: 1px solid var(--border-subtle);
 			border-radius: 6px;
 			padding: 1rem;
 			transition: all 0.2s;
@@ -268,10 +267,10 @@ export class ComposerSettings extends LitElement {
 		.model-provider {
 			font-size: 0.7rem;
 			color: var(--text-tertiary);
-			text-transform: uppercase;
-			letter-spacing: 0.05em;
+			text-transform: none;
+			letter-spacing: 0;
 			margin-bottom: 0.75rem;
-			font-family: var(--font-mono);
+			font-family: var(--font-sans, "Inter", sans-serif);
 		}
 
 		.model-stats {
@@ -290,7 +289,7 @@ export class ComposerSettings extends LitElement {
 
 		.stat-card {
 			background: var(--bg-secondary);
-			border: 1px solid var(--border-primary);
+			border: 1px solid var(--border-subtle);
 			border-radius: 8px;
 			padding: 1rem;
 			text-align: center;
@@ -301,16 +300,16 @@ export class ComposerSettings extends LitElement {
 			font-weight: 700;
 			color: var(--text-primary);
 			margin-bottom: 0.35rem;
-			font-family: var(--font-mono);
+			font-family: var(--font-sans, "Inter", sans-serif);
 			letter-spacing: -0.03em;
 		}
 
 		.stat-label {
 			font-size: 0.7rem;
 			color: var(--text-secondary);
-			text-transform: uppercase;
-			letter-spacing: 0.05em;
-			font-family: var(--font-mono);
+			text-transform: none;
+			letter-spacing: 0;
+			font-family: var(--font-sans, "Inter", sans-serif);
 		}
 
 		.empty-state {
@@ -318,7 +317,7 @@ export class ComposerSettings extends LitElement {
 			padding: 3rem 1rem;
 			color: var(--text-tertiary);
 			font-size: 0.8rem;
-			font-family: var(--font-mono);
+			font-family: var(--font-sans, "Inter", sans-serif);
 		}
 
 		.loading {
@@ -326,9 +325,9 @@ export class ComposerSettings extends LitElement {
 			padding: 3rem 1rem;
 			color: var(--text-tertiary);
 			font-size: 0.8rem;
-			text-transform: uppercase;
-			letter-spacing: 0.05em;
-			font-family: var(--font-mono);
+			text-transform: none;
+			letter-spacing: 0;
+			font-family: var(--font-sans, "Inter", sans-serif);
 		}
 
 		.error-message {
@@ -339,7 +338,7 @@ export class ComposerSettings extends LitElement {
 			font-size: 0.8rem;
 			color: var(--accent-red);
 			line-height: 1.5;
-			font-family: var(--font-mono);
+			font-family: var(--font-sans, "Inter", sans-serif);
 		}
 
 		.control-row {
@@ -353,12 +352,12 @@ export class ComposerSettings extends LitElement {
 		.field-input,
 		.field-select {
 			background: var(--bg-primary);
-			border: 1px solid var(--border-primary);
+			border: 1px solid var(--border-subtle);
 			border-radius: 6px;
 			padding: 0.65rem 0.75rem;
 			color: var(--text-primary);
 			font-size: 0.78rem;
-			font-family: var(--font-mono);
+			font-family: var(--font-sans, "Inter", sans-serif);
 		}
 
 		.field-input {
@@ -371,14 +370,14 @@ export class ComposerSettings extends LitElement {
 
 		.action-btn {
 			background: var(--bg-panel);
-			border: 1px solid var(--border-primary);
+			border: 1px solid var(--border-subtle);
 			border-radius: 6px;
 			padding: 0.65rem 0.85rem;
 			color: var(--text-secondary);
 			font-size: 0.72rem;
-			font-family: var(--font-mono);
-			text-transform: uppercase;
-			letter-spacing: 0.05em;
+			font-family: var(--font-sans, "Inter", sans-serif);
+			text-transform: none;
+			letter-spacing: 0;
 			cursor: pointer;
 			transition: all 0.2s;
 		}
@@ -403,7 +402,7 @@ export class ComposerSettings extends LitElement {
 
 		.panel-card {
 			background: var(--bg-primary);
-			border: 1px solid var(--border-primary);
+			border: 1px solid var(--border-subtle);
 			border-radius: 8px;
 			padding: 0.9rem;
 			display: flex;
@@ -441,7 +440,7 @@ export class ComposerSettings extends LitElement {
 			flex-wrap: wrap;
 			gap: 0.85rem;
 			font-size: 0.72rem;
-			font-family: var(--font-mono);
+			font-family: var(--font-sans, "Inter", sans-serif);
 		}
 
 		.panel-link-row a {
@@ -457,7 +456,7 @@ export class ComposerSettings extends LitElement {
 			border-radius: 8px;
 			padding: 0.75rem 0.9rem;
 			font-size: 0.75rem;
-			font-family: var(--font-mono);
+			font-family: var(--font-sans, "Inter", sans-serif);
 			line-height: 1.5;
 		}
 
@@ -477,10 +476,10 @@ export class ComposerSettings extends LitElement {
 			margin: 0;
 			padding: 0.75rem 0.9rem;
 			border-radius: 8px;
-			border: 1px solid var(--border-primary);
+			border: 1px solid var(--border-subtle);
 			background: var(--bg-panel);
 			font-size: 0.72rem;
-			font-family: var(--font-mono);
+			font-family: var(--font-mono, monospace);
 			line-height: 1.55;
 			color: var(--text-secondary);
 			white-space: pre-wrap;

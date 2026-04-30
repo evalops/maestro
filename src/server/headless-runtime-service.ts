@@ -99,6 +99,79 @@ const MAX_RUNTIME_CLEANUP_FAILURES =
 		process.env.MAESTRO_HEADLESS_RUNTIME_MAX_CLEANUP_FAILURES || "",
 		10,
 	) || 3;
+const AMBIENT_ROUTING_SUBJECT = "maestro.ambient_agent.routing.selected";
+
+export function inferFleetModelTier(
+	provider: string,
+	model: string,
+): string | undefined {
+	const normalized = `${provider}/${model}`.toLowerCase();
+	if (normalized.includes("haiku") || normalized.includes("mini")) {
+		return "fast";
+	}
+	if (
+		normalized.includes("claude-opus") ||
+		normalized.includes("gpt-5") ||
+		normalized.includes("frontier")
+	) {
+		return "frontier";
+	}
+	if (normalized.includes("sonnet")) {
+		return "standard";
+	}
+	return undefined;
+}
+
+function getFleetPlatformEventBusStatus():
+	| NonNullable<FleetAgentInstance["platformEventBus"]>
+	| undefined {
+	const explicitFlag = parseBooleanEnv(
+		process.env.MAESTRO_EVENT_BUS ?? process.env.MAESTRO_AUDIT_BUS,
+	);
+	if (explicitFlag === false) {
+		return { enabled: false, reason: "flag disabled" };
+	}
+	if (process.env.MAESTRO_EVENT_BUS_URL || process.env.EVALOPS_NATS_URL) {
+		return { enabled: true, reason: "nats", subject: AMBIENT_ROUTING_SUBJECT };
+	}
+	if (
+		process.env.MAESTRO_EVALOPS_ACCESS_TOKEN &&
+		(process.env.MAESTRO_EVALOPS_ORG_ID ||
+			process.env.EVALOPS_ORGANIZATION_ID ||
+			process.env.MAESTRO_ENTERPRISE_ORG_ID)
+	) {
+		return {
+			enabled: true,
+			reason: "managed evalops routing",
+			subject: AMBIENT_ROUTING_SUBJECT,
+		};
+	}
+	if (explicitFlag === true) {
+		return {
+			enabled: true,
+			reason: "flag enabled",
+			subject: AMBIENT_ROUTING_SUBJECT,
+		};
+	}
+	return undefined;
+}
+
+function parseBooleanEnv(value: string | undefined): boolean | undefined {
+	switch (value?.toLowerCase()) {
+		case "1":
+		case "true":
+		case "yes":
+		case "on":
+			return true;
+		case "0":
+		case "false":
+		case "no":
+		case "off":
+			return false;
+		default:
+			return undefined;
+	}
+}
 
 export interface HeadlessRuntimeSnapshot {
 	protocolVersion: string;
@@ -151,6 +224,16 @@ export interface FleetAgentInstance {
 	scopeKey: string;
 	model?: string;
 	provider?: string;
+	modelTier?: string;
+	modelPolicy?: string;
+	routingReason?: string;
+	estimatedCostUsd?: number;
+	platformEventBus?: {
+		enabled: boolean;
+		reason: string;
+		subject?: string;
+		lastPublishedAt?: string;
+	};
 	cwd?: string;
 	gitBranch?: string | null;
 	health: FleetAgentHealth;
@@ -865,6 +948,7 @@ export class HeadlessSessionRuntime {
 			scopeKey: this.scopeKey,
 			...(state.model ? { model: state.model } : {}),
 			...(state.provider ? { provider: state.provider } : {}),
+			...this.getFleetModelRoutingMetadata(state),
 			...(state.cwd ? { cwd: state.cwd } : {}),
 			...(state.git_branch !== undefined
 				? { gitBranch: state.git_branch }
@@ -890,6 +974,32 @@ export class HeadlessSessionRuntime {
 				: {}),
 			startedAt: new Date(this.startedAt).toISOString(),
 			updatedAt: new Date(Math.min(this.updatedAt, now)).toISOString(),
+		};
+	}
+
+	private getFleetModelRoutingMetadata(
+		state: HeadlessRuntimeState,
+	): Pick<
+		FleetAgentInstance,
+		| "modelTier"
+		| "modelPolicy"
+		| "routingReason"
+		| "estimatedCostUsd"
+		| "platformEventBus"
+	> {
+		const model = state.model ?? "";
+		const provider = state.provider ?? "";
+		const modelTier = inferFleetModelTier(provider, model);
+		const platformEventBus = getFleetPlatformEventBusStatus();
+		return {
+			...(modelTier ? { modelTier } : {}),
+			...(modelTier === "frontier"
+				? {
+						modelPolicy: "ambient-frontier",
+						routingReason: "frontier model available for ambient execution",
+					}
+				: {}),
+			...(platformEventBus ? { platformEventBus } : {}),
 		};
 	}
 

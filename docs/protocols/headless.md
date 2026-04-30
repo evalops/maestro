@@ -488,6 +488,16 @@ attributes, so platform subscribers can join worker runs to issue/PR work.
 The Rust Ambient Agent daemon publishes session start/suspend/resume/close
 events with `source=maestro.ambient-agent` when the same event-bus NATS
 environment is configured.
+It also publishes plan-level routing and outcome events:
+
+- `maestro.ambient_agent.routing.selected`
+- `maestro.ambient_agent.plan.cost_limited`
+- `maestro.ambient_agent.plan.completed`
+
+These include the session correlation block plus repository, upstream event ID,
+task type, complexity, selected provider/model/tier, estimated cost, and final
+success/cost metadata when available. Maestro web surfaces the same model tier
+and Platform bus readiness fields in the fleet dashboard.
 
 `MAESTRO_TELEMETRY` continues to control local training and diagnostic
 telemetry. Audit-bus publishing is controlled separately with

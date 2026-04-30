@@ -452,8 +452,8 @@ export class ComposerMcpElicitation extends LitElement {
 			gap: 0.6rem;
 			flex-wrap: wrap;
 			font-size: 0.7rem;
-			text-transform: uppercase;
-			letter-spacing: 0.08em;
+			text-transform: none;
+			letter-spacing: 0;
 			color: #fcd34d;
 		}
 
@@ -492,8 +492,8 @@ export class ComposerMcpElicitation extends LitElement {
 		.label {
 			font-size: 0.72rem;
 			font-weight: 700;
-			letter-spacing: 0.06em;
-			text-transform: uppercase;
+			letter-spacing: 0;
+			text-transform: none;
 			color: #94a3b8;
 			margin-bottom: 0.45rem;
 		}

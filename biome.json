@@ -11,6 +11,9 @@
 			"packages/slack-agent-ui/.dev-data",
 			"packages/jetbrains-plugin/build",
 			"packages/vscode-extension/media",
+			"packages/ambient-agent-rs/target",
+			"packages/control-plane-rs/sessions.json",
+			"packages/control-plane-rs/target",
 			"packages/tui-rs/target",
 			"packages/desktop/dist-electron",
 			"packages/desktop/release"

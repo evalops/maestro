@@ -8,13 +8,14 @@ type SessionEditField = "tags" | "title";
 export class ComposerSessionSidebar extends LitElement {
 	static override styles = css`
 		:host {
-			width: 260px;
-			background: var(--bg-deep, #08090a);
-			border-right: 1px solid var(--border-primary, #1e2023);
+			width: 272px;
+			background: var(--bg-deep, #161718);
+			border-right: 1px solid var(--border-subtle, #1f2022);
 			display: flex;
 			flex-direction: column;
 			transition: transform 0.2s ease;
 			z-index: 20;
+			padding: 0.5rem 0.5rem 0.75rem;
 		}
 
 		:host([collapsed]) {
@@ -22,82 +23,102 @@ export class ComposerSessionSidebar extends LitElement {
 		}
 
 		.sidebar-header {
-			padding: 1rem 0.75rem;
+			padding: 0.5rem 0.5rem 0.75rem;
 			display: flex;
 			flex-direction: column;
-			gap: 0.75rem;
-			border-bottom: 1px solid var(--border-primary, #1e2023);
+			gap: 0.5rem;
+			border-bottom: none;
 		}
 
 		.sidebar-header h2 {
-			font-family: var(--font-mono, monospace);
-			font-size: 0.6rem;
-			font-weight: 600;
-			margin: 0;
-			color: var(--text-tertiary, #5c5e62);
-			text-transform: uppercase;
-			letter-spacing: 0.1em;
+			font-family: var(--font-sans, "Inter", sans-serif);
+			font-size: 0.7rem;
+			font-weight: 500;
+			margin: 0.5rem 0 0.25rem;
+			padding: 0 0.4rem;
+			color: var(--text-tertiary, #8e8e8e);
+			letter-spacing: 0.01em;
+			text-transform: none;
 		}
 
 		.session-search {
-			margin-top: 0.4rem;
 			width: 100%;
-			padding: 0.35rem 0.5rem;
-			background: var(--bg-primary, #0a0e14);
-			border: 1px solid var(--border-secondary, #30363d);
-			color: var(--text-primary, #e6edf3);
-			border-radius: 3px;
-			font-family: var(--font-mono, "SF Mono", "Menlo", "Monaco", monospace);
-			font-size: 0.75rem;
+			padding: 0.5rem 0.7rem;
+			background: var(--bg-elevated, #232427);
+			border: 1px solid transparent;
+			color: var(--text-primary, #ececec);
+			border-radius: var(--radius-md, 10px);
+			font-family: var(--font-sans, "Inter", sans-serif);
+			font-size: 0.78rem;
+			transition: border-color 0.15s ease, background 0.15s ease;
+		}
+
+		.session-search:focus-visible {
+			border-color: var(--border-secondary, #3a3d42);
+			background: var(--bg-surface, #26282b);
 		}
 
 		.session-search::placeholder {
-			color: var(--text-tertiary, #5c5e62);
+			color: var(--text-tertiary, #8e8e8e);
 		}
 
 		.new-session-btn {
 			width: 100%;
-			padding: 0.5rem 0.75rem;
-			background: var(--accent-amber-dim, rgba(212, 160, 18, 0.12));
-			color: var(--accent-amber, #d4a012);
+			padding: 0.55rem 0.7rem;
+			background: transparent;
+			color: var(--text-primary, #ececec);
 			border: none;
-			font-family: var(--font-mono, monospace);
-			font-size: 0.7rem;
-			font-weight: 600;
+			border-radius: var(--radius-md, 10px);
+			font-family: var(--font-sans, "Inter", sans-serif);
+			font-size: 0.82rem;
+			font-weight: 500;
 			cursor: pointer;
-			transition: all 0.15s ease;
+			transition: background 0.12s ease;
 			display: flex;
 			align-items: center;
+			justify-content: flex-start;
+			gap: 0.6rem;
+			text-transform: none;
+			letter-spacing: 0;
+		}
+
+		.new-session-btn::before {
+			content: "+";
+			display: inline-flex;
+			align-items: center;
 			justify-content: center;
-			gap: 0.5rem;
-			text-transform: uppercase;
-			letter-spacing: 0.05em;
+			width: 18px;
+			height: 18px;
+			font-weight: 400;
+			font-size: 1rem;
+			color: var(--text-secondary, #b4b4b4);
 		}
 
 		.new-session-btn:hover {
-			background: var(--accent-amber, #d4a012);
-			color: var(--bg-deep, #08090a);
+			background: var(--bg-elevated, #232427);
+			color: var(--text-primary, #ececec);
 		}
 
 		.new-session-btn:active {
-			transform: scale(0.98);
+			transform: none;
 		}
 
 		.sessions-list {
 			flex: 1;
 			overflow-y: auto;
-			padding: 0.5rem;
+			padding: 0.25rem 0.25rem 0.5rem;
 		}
 
 		.session-item {
 			width: 100%;
-			padding: 0.625rem 0.75rem;
-			margin-bottom: 1px;
+			padding: 0.55rem 0.7rem;
+			margin-bottom: 2px;
 			cursor: pointer;
-			transition: all 0.1s ease;
+			transition: background 0.12s ease;
 			background: transparent;
 			border: none;
-			border-left: 2px solid transparent;
+			border-left: none;
+			border-radius: var(--radius-md, 10px);
 			position: relative;
 			text-align: left;
 			display: flex;
@@ -107,12 +128,12 @@ export class ComposerSessionSidebar extends LitElement {
 		}
 
 		.session-item:hover {
-			background: var(--bg-elevated, #161719);
+			background: var(--bg-elevated, #232427);
 		}
 
 		.session-item.active {
-			background: var(--bg-elevated, #161719);
-			border-left-color: var(--accent-amber, #d4a012);
+			background: var(--bg-surface, #26282b);
+			border-left-color: transparent;
 		}
 
 		.session-item-body {
@@ -128,48 +149,49 @@ export class ComposerSessionSidebar extends LitElement {
 		}
 
 		.session-title {
-			font-family: var(--font-mono, monospace);
-			font-size: 0.75rem;
+			font-family: var(--font-sans, "Inter", sans-serif);
+			font-size: 0.82rem;
 			font-weight: 500;
-			margin-bottom: 0.2rem;
-			color: var(--text-primary, #e8e9eb);
+			margin-bottom: 0.15rem;
+			color: var(--text-primary, #ececec);
 			white-space: nowrap;
 			overflow: hidden;
 			text-overflow: ellipsis;
+			letter-spacing: -0.005em;
 		}
 
 		.session-item.active .session-title {
-			color: var(--accent-amber, #d4a012);
+			color: var(--text-primary, #ececec);
 		}
 
 		.session-meta {
-			font-family: var(--font-mono, monospace);
-			font-size: 0.6rem;
-			color: var(--text-tertiary, #5c5e62);
+			font-family: var(--font-sans, "Inter", sans-serif);
+			font-size: 0.7rem;
+			color: var(--text-tertiary, #8e8e8e);
 		}
 
 		.session-resume {
-			margin-top: 0.4rem;
-			font-family: var(--font-mono, monospace);
-			font-size: 0.63rem;
+			margin-top: 0.35rem;
+			font-family: var(--font-sans, "Inter", sans-serif);
+			font-size: 0.7rem;
 			line-height: 1.45;
-			color: var(--text-secondary, #a4a8ae);
+			color: var(--text-secondary, #b4b4b4);
 		}
 
 		.session-tags {
 			display: flex;
 			gap: 0.25rem;
 			flex-wrap: wrap;
-			margin-top: 0.35rem;
+			margin-top: 0.4rem;
 		}
 
 		.session-tag {
-			border: 1px solid var(--border-primary, #1e2023);
+			border: 1px solid var(--border-secondary, #3a3d42);
 			border-radius: 999px;
-			padding: 0.1rem 0.35rem;
-			font-family: var(--font-mono, monospace);
-			font-size: 0.56rem;
-			color: var(--text-tertiary, #5c5e62);
+			padding: 0.1rem 0.45rem;
+			font-family: var(--font-sans, "Inter", sans-serif);
+			font-size: 0.6rem;
+			color: var(--text-tertiary, #8e8e8e);
 		}
 
 		.session-tools {
@@ -183,16 +205,16 @@ export class ComposerSessionSidebar extends LitElement {
 			padding: 0;
 			border: none;
 			background: transparent;
-			color: var(--text-tertiary, #5c5e62);
-			font-family: var(--font-mono, monospace);
-			font-size: 0.58rem;
-			text-transform: uppercase;
-			letter-spacing: 0.08em;
+			color: var(--text-tertiary, #8e8e8e);
+			font-family: var(--font-sans, "Inter", sans-serif);
+			font-size: 0.65rem;
+			text-transform: none;
+			letter-spacing: 0;
 			cursor: pointer;
 		}
 
 		.session-link-btn:hover {
-			color: var(--accent-amber, #d4a012);
+			color: var(--text-primary, #ececec);
 		}
 
 		.session-editor {
@@ -209,7 +231,7 @@ export class ComposerSessionSidebar extends LitElement {
 			border: 1px solid var(--border-secondary, #30363d);
 			border-radius: 3px;
 			color: var(--text-primary, #e6edf3);
-			font-family: var(--font-mono, monospace);
+			font-family: var(--font-sans, 'Inter', sans-serif);
 			font-size: 0.72rem;
 		}
 
@@ -219,28 +241,28 @@ export class ComposerSessionSidebar extends LitElement {
 		}
 
 		.icon-btn {
-			width: 26px;
-			height: 26px;
+			width: 24px;
+			height: 24px;
 			padding: 0;
 			background: transparent;
-			border: 1px solid var(--border-primary, #1e2023);
-			color: var(--text-tertiary, #5c5e62);
+			border: none;
+			border-radius: var(--radius-sm, 6px);
+			color: var(--text-tertiary, #8e8e8e);
 			cursor: pointer;
-			transition: all 0.15s ease;
+			transition: background 0.12s ease, color 0.12s ease;
 			display: flex;
 			align-items: center;
 			justify-content: center;
 			flex-shrink: 0;
+			font-size: 0.85rem;
 		}
 
 		.icon-btn:hover {
-			background: var(--bg-elevated, #161719);
-			border-color: var(--border-hover, #3a3d42);
-			color: var(--text-primary, #e8e9eb);
+			background: var(--bg-panel, #2c2e31);
+			color: var(--text-primary, #ececec);
 		}
 
 		.favorite-btn.active {
-			border-color: var(--accent-amber, #d4a012);
 			color: var(--accent-amber, #d4a012);
 		}
 
@@ -257,10 +279,54 @@ export class ComposerSessionSidebar extends LitElement {
 
 		.empty,
 		.loading {
-			font-family: var(--font-mono, monospace);
+			font-family: var(--font-sans, "Inter", sans-serif);
+			font-size: 0.78rem;
+			color: var(--text-tertiary, #8e8e8e);
+			padding: 0.6rem 0.7rem;
+		}
+
+		.section-label {
+			font-family: var(--font-sans, "Inter", sans-serif);
 			font-size: 0.7rem;
-			color: var(--text-tertiary, #5c5e62);
-			padding: 0.5rem 0.25rem;
+			font-weight: 500;
+			color: var(--text-tertiary, #8e8e8e);
+			padding: 0.5rem 0.7rem 0.35rem;
+			letter-spacing: 0.005em;
+		}
+
+		.sidebar-footer {
+			border-top: 1px solid var(--border-subtle, #1f2022);
+			padding: 0.5rem 0.25rem 0.25rem;
+			margin-top: 0.25rem;
+		}
+
+		.footer-link {
+			width: 100%;
+			padding: 0.55rem 0.7rem;
+			background: transparent;
+			color: var(--text-secondary, #b4b4b4);
+			border: none;
+			border-radius: var(--radius-md, 10px);
+			font-family: var(--font-sans, "Inter", sans-serif);
+			font-size: 0.82rem;
+			font-weight: 500;
+			cursor: pointer;
+			transition: background 0.12s ease, color 0.12s ease;
+			display: flex;
+			align-items: center;
+			gap: 0.6rem;
+			text-align: left;
+		}
+
+		.footer-link::before {
+			content: "⚙";
+			font-size: 0.95rem;
+			color: var(--text-tertiary, #8e8e8e);
+		}
+
+		.footer-link:hover {
+			background: var(--bg-elevated, #232427);
+			color: var(--text-primary, #ececec);
 		}
 
 		@media (max-width: 768px) {
@@ -456,16 +522,15 @@ export class ComposerSessionSidebar extends LitElement {
 
 		return html`
 			<div class="sidebar-header">
-				<h2>Sessions</h2>
 				<button
 					class="new-session-btn"
 					@click=${() => this.dispatch("new-session")}
 				>
-					New Chat
+					New chat
 				</button>
 				<input
 					type="search"
-					placeholder="Filter..."
+					placeholder="Search sessions"
 					.value=${this.sessionSearch}
 					@input=${(event: Event) => {
 						this.sessionSearch = (
@@ -474,6 +539,7 @@ export class ComposerSessionSidebar extends LitElement {
 					}}
 					class="session-search"
 				/>
+				<h2>Sessions</h2>
 			</div>
 			<div class="sessions-list">
 				${
@@ -612,6 +678,15 @@ export class ComposerSessionSidebar extends LitElement {
 							`,
 							)
 				}
+			</div>
+			<div class="sidebar-footer">
+				<button
+					type="button"
+					class="footer-link"
+					@click=${() => this.dispatch("open-settings")}
+				>
+					Settings
+				</button>
 			</div>
 		`;
 	}

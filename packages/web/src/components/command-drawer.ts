@@ -29,12 +29,12 @@ export class CommandDrawer extends LitElement {
 			transform: translateX(-50%);
 			width: min(720px, 94vw);
 			background: var(--bg-secondary, #121417);
-			border: 1px solid var(--border-primary, #1e2023);
+			border: 1px solid var(--border-subtle, #1e2023);
 			border-radius: 10px;
 			box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
 			padding: 14px 16px 10px;
 			color: var(--text-primary, #e8e9eb);
-			font-family: var(--font-mono, "JetBrains Mono", monospace);
+			font-family: var(--font-sans, "Inter", sans-serif);
 		}
 		.header {
 			display: flex;
@@ -45,7 +45,7 @@ export class CommandDrawer extends LitElement {
 		input {
 			flex: 1;
 			background: var(--bg-primary, #0c0d0f);
-			border: 1px solid var(--border-primary, #1e2023);
+			border: 1px solid var(--border-subtle, #1e2023);
 			color: inherit;
 			padding: 10px 12px;
 			border-radius: 6px;
@@ -101,7 +101,7 @@ export class CommandDrawer extends LitElement {
 		.badge {
 			font-size: 0.65rem;
 			padding: 2px 6px;
-			border: 1px solid var(--border-primary, #1e2023);
+			border: 1px solid var(--border-subtle, #1e2023);
 			border-radius: 4px;
 		}
 		.fav {

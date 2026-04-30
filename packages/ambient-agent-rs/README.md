@@ -67,15 +67,21 @@ complexity or file-count limits.
 | 0.5 - 0.8 | Ask human for approval |
 | < 0.5 | Skip (too uncertain) |
 
-## Model Cascading
+## Frontier Model Routing
 
-Tasks are routed to model tiers based on complexity to optimize cost:
+Ambient execution defaults to OpenRouter with the latest Claude Opus-family
+frontier alias. This keeps long-running autonomous work on a model class suited
+for multi-step repo changes while preserving explicit escape hatches for local
+or Anthropic-direct testing.
 
-| Tier | Model | Use Case |
-|------|-------|----------|
-| 1 | claude-3-5-haiku | Simple fixes, typos, doc updates |
-| 2 | claude-3-5-sonnet | Standard features, refactoring |
-| 3 | claude-3-opus | Complex architecture, security |
+| Tier | Default model | Provider | Use case |
+|------|---------------|----------|----------|
+| frontier | `~anthropic/claude-opus-latest` | OpenRouter chat completions | Ambient auto-execution, complex repo changes, security and architecture work |
+
+Set `MAESTRO_AMBIENT_FRONTIER_MODEL` to pin a model such as
+`anthropic/claude-opus-4.7` or `anthropic/claude-opus-4.5`. Set
+`MAESTRO_AMBIENT_LLM_API=anthropic` only when intentionally testing the
+Anthropic Messages API path.
 
 ## Installation
 
@@ -168,14 +174,21 @@ github_token: ghp_xxxxx  # Your GitHub token
 
 | Variable | Description |
 |----------|-------------|
-| `ANTHROPIC_API_KEY` | API key for Claude models |
+| `OPENROUTER_API_KEY` | API key for the default OpenRouter frontier model path |
+| `MAESTRO_AMBIENT_FRONTIER_MODEL` | Optional OpenRouter model override; defaults to `~anthropic/claude-opus-latest` |
+| `MAESTRO_AMBIENT_LLM_API` | Optional provider override; set to `anthropic` for the Anthropic Messages API fallback |
+| `ANTHROPIC_API_KEY` | API key for the Anthropic fallback path |
 | `GITHUB_TOKEN` | GitHub personal access token |
 | `MAESTRO_EVENT_BUS_URL` or `EVALOPS_NATS_URL` | NATS JetStream URL for publishing Ambient daemon session lifecycle CloudEvents |
 | `MAESTRO_EVENT_BUS` | Set to `0` or `false` to disable audit-bus publishing even when bus routing is configured |
 
 When bus routing is configured, the daemon publishes
 `maestro.sessions.session.started`, `suspended`, `resumed`, and `closed`
-events with `source=maestro.ambient-agent`.
+events with `source=maestro.ambient-agent`. Plan routing and execution also
+emit `maestro.ambient_agent.routing.selected`,
+`maestro.ambient_agent.plan.cost_limited`, and
+`maestro.ambient_agent.plan.completed` so Platform consumers and Maestro web can
+join agent activity to model tier, cost, repository, and session correlation.
 
 ## Data Storage
 

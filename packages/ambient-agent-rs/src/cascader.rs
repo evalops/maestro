@@ -8,47 +8,51 @@ use chrono::Utc;
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
+pub const DEFAULT_OPENROUTER_FRONTIER_MODEL: &str = "~anthropic/claude-opus-latest";
+pub const DEFAULT_ANTHROPIC_FRONTIER_MODEL: &str = "claude-opus-4-1-20250805";
+pub const DEFAULT_FRONTIER_PROVIDER: &str = "openrouter";
+
 /// Default model tiers
 fn default_tiers() -> Vec<ModelTier> {
-    vec![
-        ModelTier {
-            name: "flash".to_string(),
-            model: "claude-3-5-haiku-20241022".to_string(),
-            cost_per_1k_input: 0.0008,
-            cost_per_1k_output: 0.004,
-            capabilities: vec![
-                "typo-fix".to_string(),
-                "simple-refactor".to_string(),
-                "doc-update".to_string(),
-            ],
-            max_complexity: Complexity::Simple,
-        },
-        ModelTier {
-            name: "standard".to_string(),
-            model: "claude-sonnet-4-20250514".to_string(),
-            cost_per_1k_input: 0.003,
-            cost_per_1k_output: 0.015,
-            capabilities: vec![
-                "feature-impl".to_string(),
-                "bug-fix".to_string(),
-                "refactor".to_string(),
-                "test-write".to_string(),
-            ],
-            max_complexity: Complexity::Medium,
-        },
-        ModelTier {
-            name: "advanced".to_string(),
-            model: "claude-opus-4-20250115".to_string(),
-            cost_per_1k_input: 0.015,
-            cost_per_1k_output: 0.075,
-            capabilities: vec![
-                "architecture".to_string(),
-                "complex-debug".to_string(),
-                "security-fix".to_string(),
-            ],
-            max_complexity: Complexity::Complex,
-        },
-    ]
+    vec![ModelTier {
+        name: "frontier".to_string(),
+        model: ambient_frontier_model(),
+        // OpenRouter currently lists Claude Opus latest/4.7 at $5/M input and
+        // $25/M output tokens. Keep these estimates conservative and visible.
+        cost_per_1k_input: 0.005,
+        cost_per_1k_output: 0.025,
+        capabilities: vec![
+            "typo-fix".to_string(),
+            "simple-refactor".to_string(),
+            "doc-update".to_string(),
+            "feature-impl".to_string(),
+            "bug-fix".to_string(),
+            "refactor".to_string(),
+            "test-write".to_string(),
+            "architecture".to_string(),
+            "complex-debug".to_string(),
+            "security-fix".to_string(),
+        ],
+        max_complexity: Complexity::High,
+    }]
+}
+
+fn ambient_frontier_model() -> String {
+    std::env::var("MAESTRO_AMBIENT_FRONTIER_MODEL")
+        .or_else(|_| std::env::var("AMBIENT_FRONTIER_MODEL"))
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(default_frontier_model_for_configured_provider)
+}
+
+fn default_frontier_model_for_configured_provider() -> String {
+    match std::env::var("MAESTRO_AMBIENT_LLM_API").ok().as_deref() {
+        Some("anthropic") | Some("anthropic-messages") => {
+            DEFAULT_ANTHROPIC_FRONTIER_MODEL.to_string()
+        }
+        _ => DEFAULT_OPENROUTER_FRONTIER_MODEL.to_string(),
+    }
 }
 
 /// Static task type to capability mapping to avoid recreation on every call
@@ -163,11 +167,15 @@ impl Cascader {
                 .cloned()
                 .unwrap_or_else(|| ModelTier {
                     name: "fallback".to_string(),
-                    model: "claude-sonnet-4-20250514".to_string(),
-                    cost_per_1k_input: 0.003,
-                    cost_per_1k_output: 0.015,
-                    capabilities: vec!["feature-impl".to_string()],
-                    max_complexity: Complexity::Medium,
+                    model: ambient_frontier_model(),
+                    cost_per_1k_input: 0.005,
+                    cost_per_1k_output: 0.025,
+                    capabilities: vec![
+                        "feature-impl".to_string(),
+                        "architecture".to_string(),
+                        "security-fix".to_string(),
+                    ],
+                    max_complexity: Complexity::High,
                 })
         };
 
@@ -190,13 +198,8 @@ impl Cascader {
             )
         } else {
             (
-                self.config
-                    .tiers
-                    .iter()
-                    .find(|t| t.name == "standard")
-                    .cloned()
-                    .unwrap_or_else(default_tier),
-                "Default to standard tier".to_string(),
+                default_tier(),
+                "Default to configured frontier tier".to_string(),
             )
         };
 
@@ -262,9 +265,13 @@ impl Cascader {
             timestamp: Utc::now(),
         });
 
-        // Calculate cost saved vs advanced tier
-        if let Some(advanced) = self.config.tiers.iter().find(|t| t.name == "advanced") {
-            if tier.name != "advanced" {
+        // Calculate cost saved vs highest-cost configured tier.
+        if let Some(advanced) = self.config.tiers.iter().max_by(|a, b| {
+            let cost_a = a.cost_per_1k_input + a.cost_per_1k_output;
+            let cost_b = b.cost_per_1k_input + b.cost_per_1k_output;
+            cost_a.total_cmp(&cost_b)
+        }) {
+            if tier.name != advanced.name {
                 let advanced_cost = (actual_tokens as f64 * advanced.cost_per_1k_input) / 1000.0
                     + (actual_tokens as f64 * 0.3 * advanced.cost_per_1k_output) / 1000.0;
                 self.stats.total_cost_saved += advanced_cost - actual_cost;
@@ -314,7 +321,11 @@ impl Cascader {
             return 0.0;
         }
 
-        let advanced = match self.config.tiers.iter().find(|t| t.name == "advanced") {
+        let advanced = match self.config.tiers.iter().max_by(|a, b| {
+            let cost_a = a.cost_per_1k_input + a.cost_per_1k_output;
+            let cost_b = b.cost_per_1k_input + b.cost_per_1k_output;
+            cost_a.total_cmp(&cost_b)
+        }) {
             Some(t) => t,
             None => return 0.0,
         };
@@ -334,5 +345,111 @@ impl Cascader {
         } else {
             ((advanced_total - actual_total) / advanced_total) * 100.0
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn task(task_type: TaskType) -> Task {
+        Task {
+            id: "task-1".to_string(),
+            task_type,
+            prompt: "Do the work".to_string(),
+            files: vec![],
+            depends_on: vec![],
+            priority: 100,
+            estimated_tokens: Some(4_000),
+        }
+    }
+
+    #[test]
+    fn default_routes_ambient_work_to_openrouter_opus_latest() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("MAESTRO_AMBIENT_FRONTIER_MODEL");
+        std::env::remove_var("AMBIENT_FRONTIER_MODEL");
+        std::env::remove_var("MAESTRO_AMBIENT_LLM_API");
+        let mut cascader = Cascader::new(None);
+
+        let documentation = cascader.route(
+            &task(TaskType::Document),
+            &TaskContext {
+                complexity: Complexity::Trivial,
+                task_type: TaskType::Document,
+                estimated_tokens: Some(2_000),
+                previous_attempts: 0,
+            },
+        );
+        let security = cascader.route(
+            &task(TaskType::Security),
+            &TaskContext {
+                complexity: Complexity::High,
+                task_type: TaskType::Security,
+                estimated_tokens: Some(20_000),
+                previous_attempts: 0,
+            },
+        );
+
+        assert_eq!(documentation.tier.name, "frontier");
+        assert_eq!(documentation.model, DEFAULT_OPENROUTER_FRONTIER_MODEL);
+        assert_eq!(security.tier.name, "frontier");
+        assert_eq!(security.model, DEFAULT_OPENROUTER_FRONTIER_MODEL);
+    }
+
+    #[test]
+    fn anthropic_api_default_uses_native_anthropic_model_id() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("MAESTRO_AMBIENT_FRONTIER_MODEL");
+        std::env::remove_var("AMBIENT_FRONTIER_MODEL");
+        std::env::set_var("MAESTRO_AMBIENT_LLM_API", "anthropic");
+
+        let mut cascader = Cascader::new(None);
+        let routed = cascader.route(
+            &task(TaskType::Implement),
+            &TaskContext {
+                complexity: Complexity::High,
+                task_type: TaskType::Implement,
+                estimated_tokens: Some(4_000),
+                previous_attempts: 0,
+            },
+        );
+
+        assert_eq!(routed.tier.name, "frontier");
+        assert_eq!(routed.model, DEFAULT_ANTHROPIC_FRONTIER_MODEL);
+        std::env::remove_var("MAESTRO_AMBIENT_LLM_API");
+    }
+
+    #[test]
+    fn non_fallback_path_uses_configured_default_tier() {
+        let mut cascader = Cascader::new(Some(CascaderConfig {
+            tiers: vec![ModelTier {
+                name: "frontier".to_string(),
+                model: "test-frontier".to_string(),
+                cost_per_1k_input: 0.001,
+                cost_per_1k_output: 0.002,
+                capabilities: vec!["doc-update".to_string()],
+                max_complexity: Complexity::Trivial,
+            }],
+            fallback_to_higher: false,
+            max_retries: 0,
+        }));
+
+        let routed = cascader.route(
+            &task(TaskType::Security),
+            &TaskContext {
+                complexity: Complexity::High,
+                task_type: TaskType::Security,
+                estimated_tokens: Some(4_000),
+                previous_attempts: 0,
+            },
+        );
+
+        assert_eq!(routed.tier.name, "frontier");
+        assert_eq!(routed.model, "test-frontier");
+        assert_eq!(routed.reason, "Default to configured frontier tier");
     }
 }

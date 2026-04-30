@@ -16,6 +16,7 @@ import {
 	nativeTheme,
 	shell,
 } from "electron";
+import { getDeviceIdentityStatus } from "./device-identity";
 import { getServerApiConfig } from "./server";
 
 export function setupIpc(): void {
@@ -26,6 +27,10 @@ export function setupIpc(): void {
 
 	ipcMain.handle("app:getName", () => {
 		return app.getName();
+	});
+
+	ipcMain.handle("deviceIdentity:getStatus", () => {
+		return getDeviceIdentityStatus();
 	});
 
 	ipcMain.handle("server:getApiConfig", () => {

@@ -162,13 +162,13 @@ export class ComposerMessage extends LitElement {
 
 		.message {
 			display: flex;
-			gap: 1.25rem;
-			padding: 1.5rem 0;
-			font-family: var(--font-mono, "JetBrains Mono", monospace);
-			font-size: 0.85rem;
-			line-height: 1.7;
-			color: var(--text-primary, #e8e9eb);
-			border-bottom: 1px solid var(--border-subtle, #141517);
+			gap: 1rem;
+			padding: 1.25rem 0;
+			font-family: var(--font-sans, "Inter", sans-serif);
+			font-size: 0.92rem;
+			line-height: 1.65;
+			color: var(--text-primary, #ececec);
+			border-bottom: none;
 			content-visibility: auto;
 			contain-intrinsic-size: 1px 220px;
 		}
@@ -182,9 +182,9 @@ export class ComposerMessage extends LitElement {
 		}
 
 		.message.compact {
-			padding: 1rem 0;
-			font-size: 0.8rem;
-			gap: 1rem;
+			padding: 0.75rem 0;
+			font-size: 0.88rem;
+			gap: 0.75rem;
 		}
 
 		.message.user {
@@ -206,21 +206,22 @@ export class ComposerMessage extends LitElement {
 			align-items: center;
 			justify-content: center;
 			font-size: 0.7rem;
-			font-weight: 600;
-			font-family: var(--font-mono, monospace);
-			color: var(--text-tertiary, #5c5e62);
+			font-weight: 500;
+			font-family: var(--font-sans, "Inter", sans-serif);
+			color: var(--text-tertiary, #8e8e8e);
+			border-radius: 50%;
 		}
 
 		.message.user .avatar {
-			background: var(--bg-elevated, #161719);
-			border: 1px solid var(--border-primary, #1e2023);
-			color: var(--text-secondary, #8b8d91);
+			background: var(--bg-elevated, #232427);
+			border: none;
+			color: var(--text-secondary, #b4b4b4);
 		}
 
 		.message.assistant .avatar {
-			background: var(--accent-amber-dim, rgba(212, 160, 18, 0.12));
-			border: 1px solid transparent;
-			color: var(--accent-amber, #d4a012);
+			background: transparent;
+			border: none;
+			color: var(--text-secondary, #b4b4b4);
 		}
 
 		.content-column {
@@ -236,21 +237,22 @@ export class ComposerMessage extends LitElement {
 		}
 
 		.role-name {
-			font-weight: 600;
-			font-size: 0.7rem;
-			color: var(--text-secondary, #8b8d91);
-			text-transform: uppercase;
-			letter-spacing: 0.08em;
+			font-weight: 500;
+			font-size: 0.78rem;
+			color: var(--text-secondary, #b4b4b4);
+			text-transform: none;
+			letter-spacing: 0;
+			font-family: var(--font-sans, "Inter", sans-serif);
 		}
 
 		.message.assistant .role-name {
-			color: var(--accent-amber, #d4a012);
+			color: var(--text-secondary, #b4b4b4);
 		}
 
 		.timestamp {
-			font-size: 0.65rem;
-			color: var(--text-tertiary, #5c5e62);
-			font-family: var(--font-mono, monospace);
+			font-size: 0.7rem;
+			color: var(--text-tertiary, #8e8e8e);
+			font-family: var(--font-sans, "Inter", sans-serif);
 		}
 
 		.content {
@@ -271,8 +273,8 @@ export class ComposerMessage extends LitElement {
 			font-size: 0.6rem;
 			font-weight: 600;
 			color: var(--accent-amber, #d4a012);
-			text-transform: uppercase;
-			letter-spacing: 0.05em;
+			text-transform: none;
+			letter-spacing: 0;
 		}
 
 		.tool-summaries {
@@ -286,12 +288,12 @@ export class ComposerMessage extends LitElement {
 			display: inline-flex;
 			align-items: center;
 			padding: 0.18rem 0.5rem;
-			border: 1px solid var(--border-primary, #1e2023);
+			border: 1px solid var(--border-subtle, #1e2023);
 			background: var(--bg-elevated, #161719);
 			color: var(--text-secondary, #8b8d91);
 			font-size: 0.65rem;
-			letter-spacing: 0.04em;
-			text-transform: uppercase;
+			letter-spacing: 0;
+			text-transform: none;
 		}
 
 		.content > composer-tool-execution {
@@ -316,8 +318,8 @@ export class ComposerMessage extends LitElement {
 
 		.artifact-title {
 			font-size: 0.65rem;
-			text-transform: uppercase;
-			letter-spacing: 0.08em;
+			text-transform: none;
+			letter-spacing: 0;
 			color: var(--text-tertiary, #5c5e62);
 			font-weight: 600;
 		}
@@ -325,10 +327,10 @@ export class ComposerMessage extends LitElement {
 		.artifact-toggle {
 			padding: 0.25rem 0.5rem;
 			background: transparent;
-			border: 1px solid var(--border-primary, #1e2023);
+			border: 1px solid var(--border-subtle, #1e2023);
 			color: var(--text-secondary, #8b8d91);
 			cursor: pointer;
-			font-family: var(--font-mono, monospace);
+			font-family: var(--font-sans, 'Inter', sans-serif);
 			font-size: 0.65rem;
 			transition: all 0.15s ease;
 		}
@@ -349,7 +351,7 @@ export class ComposerMessage extends LitElement {
 			padding: 1rem;
 			overflow-x: auto;
 			margin: 1rem 0;
-			border: 1px solid var(--border-primary, #1e2023);
+			border: 1px solid var(--border-subtle, #1e2023);
 			border-left: 2px solid var(--accent-amber, #d4a012);
 			position: relative;
 			font-family: var(--font-mono, monospace);
@@ -435,14 +437,14 @@ export class ComposerMessage extends LitElement {
 			border-collapse: collapse;
 			width: 100%;
 			margin: 1.25rem 0;
-			border: 1px solid var(--border-primary, #1e2023);
+			border: 1px solid var(--border-subtle, #1e2023);
 			font-size: 0.8rem;
 		}
 
 		.bubble :global(th),
 		.bubble :global(td) {
 			padding: 0.5rem 0.75rem;
-			border: 1px solid var(--border-primary, #1e2023);
+			border: 1px solid var(--border-subtle, #1e2023);
 			text-align: left;
 		}
 
@@ -451,8 +453,8 @@ export class ComposerMessage extends LitElement {
 			font-weight: 600;
 			font-size: 0.7rem;
 			color: var(--text-secondary, #8b8d91);
-			text-transform: uppercase;
-			letter-spacing: 0.05em;
+			text-transform: none;
+			letter-spacing: 0;
 		}
 
 		.bubble :global(tr:nth-child(even)) {
@@ -465,16 +467,16 @@ export class ComposerMessage extends LitElement {
 			right: 0.5rem;
 			padding: 0.25rem 0.5rem;
 			background: var(--bg-elevated, #161719);
-			border: 1px solid var(--border-primary, #1e2023);
+			border: 1px solid var(--border-subtle, #1e2023);
 			color: var(--text-tertiary, #5c5e62);
 			font-size: 0.6rem;
 			font-weight: 600;
-			font-family: var(--font-mono, monospace);
+			font-family: var(--font-sans, 'Inter', sans-serif);
 			cursor: pointer;
 			opacity: 0;
 			transition: all 0.15s ease;
-			text-transform: uppercase;
-			letter-spacing: 0.05em;
+			text-transform: none;
+			letter-spacing: 0;
 		}
 
 		.bubble :global(pre:hover) .copy-button {
@@ -503,7 +505,7 @@ export class ComposerMessage extends LitElement {
 		.attachment {
 			width: 56px;
 			height: 56px;
-			border: 1px solid var(--border-primary, #1e2023);
+			border: 1px solid var(--border-subtle, #1e2023);
 			background: var(--bg-elevated, #161719);
 			display: inline-flex;
 			align-items: center;
@@ -511,7 +513,7 @@ export class ComposerMessage extends LitElement {
 			overflow: hidden;
 			cursor: pointer;
 			color: var(--text-tertiary, #5c5e62);
-			font-family: var(--font-mono, monospace);
+			font-family: var(--font-sans, 'Inter', sans-serif);
 			font-size: 0.6rem;
 			position: relative;
 		}

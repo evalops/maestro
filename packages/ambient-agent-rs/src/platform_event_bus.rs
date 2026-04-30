@@ -16,6 +16,8 @@ use uuid::Uuid;
 
 const SESSION_EVENT_SCHEMA: &str = "buf.build/evalops/proto/maestro.v1.MaestroSession";
 const SESSION_EVENT_TYPE: &str = "type.googleapis.com/maestro.v1.MaestroSession";
+const PLAN_EVENT_SCHEMA: &str = "buf.build/evalops/proto/maestro.v1.AmbientAgentPlanEvent";
+const PLAN_EVENT_TYPE: &str = "type.googleapis.com/maestro.v1.AmbientAgentPlanEvent";
 const DEFAULT_SOURCE: &str = "maestro.ambient-agent";
 const DEFAULT_AGENT_ID: &str = "ambient_agent_daemon";
 
@@ -81,6 +83,121 @@ pub struct AmbientSessionEvent {
     pub close_reason: Option<AmbientCloseReason>,
     pub close_message: Option<String>,
     pub metadata: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AmbientPlanEventKind {
+    RoutingSelected,
+    CostLimited,
+    ExecutionCompleted,
+}
+
+impl AmbientPlanEventKind {
+    fn event_type(self) -> &'static str {
+        match self {
+            Self::RoutingSelected => "maestro.ambient_agent.routing.selected",
+            Self::CostLimited => "maestro.ambient_agent.plan.cost_limited",
+            Self::ExecutionCompleted => "maestro.ambient_agent.plan.completed",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AmbientPlanEvent {
+    pub session_id: String,
+    pub kind: AmbientPlanEventKind,
+    pub workspace_root: String,
+    pub event_id: Option<String>,
+    pub repository: Option<String>,
+    pub task_type: Option<String>,
+    pub complexity: Option<String>,
+    pub model: Option<String>,
+    pub provider: Option<String>,
+    pub tier: Option<String>,
+    pub estimated_cost_usd: Option<f64>,
+    pub actual_cost_usd: Option<f64>,
+    pub success: Option<bool>,
+    pub metadata: BTreeMap<String, Value>,
+}
+
+impl AmbientPlanEvent {
+    pub fn new(
+        session_id: impl Into<String>,
+        kind: AmbientPlanEventKind,
+        workspace_root: impl AsRef<Path>,
+    ) -> Self {
+        Self {
+            session_id: session_id.into(),
+            kind,
+            workspace_root: workspace_root.as_ref().to_string_lossy().to_string(),
+            event_id: None,
+            repository: None,
+            task_type: None,
+            complexity: None,
+            model: None,
+            provider: None,
+            tier: None,
+            estimated_cost_usd: None,
+            actual_cost_usd: None,
+            success: None,
+            metadata: BTreeMap::new(),
+        }
+    }
+
+    pub fn event_id(mut self, value: impl Into<String>) -> Self {
+        self.event_id = Some(value.into());
+        self
+    }
+
+    pub fn repository(mut self, value: impl Into<String>) -> Self {
+        self.repository = Some(value.into());
+        self
+    }
+
+    pub fn task_type(mut self, value: impl Into<String>) -> Self {
+        self.task_type = Some(value.into());
+        self
+    }
+
+    pub fn complexity(mut self, value: impl Into<String>) -> Self {
+        self.complexity = Some(value.into());
+        self
+    }
+
+    pub fn model(mut self, value: impl Into<String>) -> Self {
+        self.model = Some(value.into());
+        self
+    }
+
+    pub fn provider(mut self, value: impl Into<String>) -> Self {
+        self.provider = Some(value.into());
+        self
+    }
+
+    pub fn tier(mut self, value: impl Into<String>) -> Self {
+        self.tier = Some(value.into());
+        self
+    }
+
+    pub fn estimated_cost_usd(mut self, value: f64) -> Self {
+        self.estimated_cost_usd = Some(value);
+        self
+    }
+
+    pub fn actual_cost_usd(mut self, value: f64) -> Self {
+        self.actual_cost_usd = Some(value);
+        self
+    }
+
+    pub fn success(mut self, value: bool) -> Self {
+        self.success = Some(value);
+        self
+    }
+
+    pub fn metadata(mut self, key: impl Into<String>, value: impl Into<Value>) -> Self {
+        self.metadata.insert(key.into(), value.into());
+        self
+    }
 }
 
 impl AmbientSessionEvent {
@@ -315,10 +432,29 @@ impl PlatformEventBus {
 
         let subject = event.state.event_type();
         let payload = build_session_cloud_event(&self.config, &event);
+        self.publish_encoded(subject, payload, "Ambient session event")
+            .await;
+    }
+
+    pub async fn publish_plan_event(&self, event: AmbientPlanEvent) {
+        if !self.config.enabled {
+            return;
+        }
+        if self.config.nats_url.is_none() && self.config.reason != "test" {
+            return;
+        }
+
+        let subject = event.kind.event_type();
+        let payload = build_plan_cloud_event(&self.config, &event);
+        self.publish_encoded(subject, payload, "Ambient plan event")
+            .await;
+    }
+
+    async fn publish_encoded(&self, subject: &str, payload: Value, label: &str) {
         let encoded = match serde_json::to_string(&payload) {
             Ok(value) => value,
             Err(error) => {
-                warn!("Failed to encode Ambient session event: {}", error);
+                warn!("Failed to encode {}: {}", label, error);
                 return;
             }
         };
@@ -330,8 +466,8 @@ impl PlatformEventBus {
         .await
         {
             Ok(Ok(())) => {}
-            Ok(Err(error)) => warn!("Failed to publish Ambient session event: {}", error),
-            Err(_) => warn!("Timed out publishing Ambient session event {}", subject),
+            Ok(Err(error)) => warn!("Failed to publish {}: {}", label, error),
+            Err(_) => warn!("Timed out publishing {} {}", label, subject),
         }
     }
 }
@@ -393,55 +529,7 @@ fn build_session_cloud_event(
 ) -> Value {
     let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
     let event_type = event.state.event_type();
-    let mut correlation = Map::new();
-    optional_insert(
-        &mut correlation,
-        "organization_id",
-        config.tenant_id.clone(),
-    );
-    correlation.insert("workspace_id".to_string(), json!(config.workspace_id));
-    correlation.insert("session_id".to_string(), json!(event.session_id));
-    optional_insert(
-        &mut correlation,
-        "agent_run_id",
-        config.agent_run_id.clone(),
-    );
-    correlation.insert(
-        "agent_id".to_string(),
-        json!(config.agent_id.as_deref().unwrap_or(DEFAULT_AGENT_ID)),
-    );
-    optional_insert(&mut correlation, "actor_id", config.actor_id.clone());
-    optional_insert(
-        &mut correlation,
-        "principal_id",
-        config.principal_id.clone(),
-    );
-    optional_insert(&mut correlation, "trace_id", config.trace_id.clone());
-    correlation.insert(
-        "request_id".to_string(),
-        json!(config
-            .request_id
-            .clone()
-            .unwrap_or_else(|| format!("ambient-daemon:{}", event.session_id))),
-    );
-    optional_insert(
-        &mut correlation,
-        "remote_runner_session_id",
-        config.remote_runner_session_id.clone(),
-    );
-    optional_insert(
-        &mut correlation,
-        "objective_id",
-        config.objective_id.clone(),
-    );
-    optional_insert(
-        &mut correlation,
-        "conversation_id",
-        config.conversation_id.clone(),
-    );
-    if !config.attributes.is_empty() {
-        correlation.insert("attributes".to_string(), json!(config.attributes));
-    }
+    let correlation = build_correlation(config, &event.session_id);
 
     let mut data = Map::new();
     data.insert("@type".to_string(), json!(SESSION_EVENT_TYPE));
@@ -481,6 +569,112 @@ fn build_session_cloud_event(
         json!({ "dataschema": SESSION_EVENT_SCHEMA }),
     );
     Value::Object(root)
+}
+
+fn build_plan_cloud_event(config: &PlatformEventBusConfig, event: &AmbientPlanEvent) -> Value {
+    let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+    let event_type = event.kind.event_type();
+    let correlation = build_correlation(config, &event.session_id);
+
+    let mut data = Map::new();
+    data.insert("@type".to_string(), json!(PLAN_EVENT_TYPE));
+    data.insert("correlation".to_string(), Value::Object(correlation));
+    data.insert("workspace_root".to_string(), json!(event.workspace_root));
+    data.insert(
+        "runtime_version".to_string(),
+        json!(env!("CARGO_PKG_VERSION")),
+    );
+    optional_insert(&mut data, "event_id", event.event_id.clone());
+    optional_insert(&mut data, "repository", event.repository.clone());
+    optional_insert(&mut data, "task_type", event.task_type.clone());
+    optional_insert(&mut data, "complexity", event.complexity.clone());
+    optional_insert(&mut data, "model", event.model.clone());
+    optional_insert(&mut data, "provider", event.provider.clone());
+    optional_insert(&mut data, "tier", event.tier.clone());
+    if let Some(value) = event.estimated_cost_usd {
+        data.insert("estimated_cost_usd".to_string(), json!(value));
+    }
+    if let Some(value) = event.actual_cost_usd {
+        data.insert("actual_cost_usd".to_string(), json!(value));
+    }
+    if let Some(value) = event.success {
+        data.insert("success".to_string(), json!(value));
+    }
+    if !event.metadata.is_empty() {
+        data.insert("metadata".to_string(), json!(event.metadata));
+    }
+
+    let mut root = Map::new();
+    root.insert("spec_version".to_string(), json!("1.0"));
+    root.insert("id".to_string(), json!(Uuid::new_v4().to_string()));
+    root.insert("type".to_string(), json!(event_type));
+    root.insert("source".to_string(), json!(config.source));
+    root.insert("subject".to_string(), json!(event_type));
+    root.insert("time".to_string(), json!(now));
+    root.insert(
+        "data_content_type".to_string(),
+        json!("application/protobuf"),
+    );
+    optional_insert(&mut root, "tenant_id", config.tenant_id.clone());
+    root.insert("data".to_string(), Value::Object(data));
+    root.insert(
+        "extensions".to_string(),
+        json!({ "dataschema": PLAN_EVENT_SCHEMA }),
+    );
+    Value::Object(root)
+}
+
+fn build_correlation(config: &PlatformEventBusConfig, session_id: &str) -> Map<String, Value> {
+    let mut correlation = Map::new();
+    optional_insert(
+        &mut correlation,
+        "organization_id",
+        config.tenant_id.clone(),
+    );
+    correlation.insert("workspace_id".to_string(), json!(config.workspace_id));
+    correlation.insert("session_id".to_string(), json!(session_id));
+    optional_insert(
+        &mut correlation,
+        "agent_run_id",
+        config.agent_run_id.clone(),
+    );
+    correlation.insert(
+        "agent_id".to_string(),
+        json!(config.agent_id.as_deref().unwrap_or(DEFAULT_AGENT_ID)),
+    );
+    optional_insert(&mut correlation, "actor_id", config.actor_id.clone());
+    optional_insert(
+        &mut correlation,
+        "principal_id",
+        config.principal_id.clone(),
+    );
+    optional_insert(&mut correlation, "trace_id", config.trace_id.clone());
+    correlation.insert(
+        "request_id".to_string(),
+        json!(config
+            .request_id
+            .clone()
+            .unwrap_or_else(|| format!("ambient-daemon:{}", session_id))),
+    );
+    optional_insert(
+        &mut correlation,
+        "remote_runner_session_id",
+        config.remote_runner_session_id.clone(),
+    );
+    optional_insert(
+        &mut correlation,
+        "objective_id",
+        config.objective_id.clone(),
+    );
+    optional_insert(
+        &mut correlation,
+        "conversation_id",
+        config.conversation_id.clone(),
+    );
+    if !config.attributes.is_empty() {
+        correlation.insert("attributes".to_string(), json!(config.attributes));
+    }
+    correlation
 }
 
 fn optional_insert(map: &mut Map<String, Value>, key: &str, value: Option<String>) {
@@ -602,6 +796,63 @@ mod tests {
         );
         assert_eq!(event["data"]["correlation"]["agent_id"], DEFAULT_AGENT_ID);
         assert_eq!(event["data"]["metadata"]["status"], "running");
+    }
+
+    #[tokio::test]
+    async fn publishes_ambient_plan_routing_cloudevent() {
+        let transport = Arc::new(RecordingTransport::default());
+        let publisher =
+            PlatformEventBus::with_transport(PlatformEventBusConfig::for_test(), transport.clone());
+
+        publisher
+            .publish_plan_event(
+                AmbientPlanEvent::new(
+                    "ambient-session-1",
+                    AmbientPlanEventKind::RoutingSelected,
+                    "/tmp/ambient-agent",
+                )
+                .event_id("issue-123")
+                .repository("evalops/maestro")
+                .task_type("security")
+                .complexity("high")
+                .model("~anthropic/claude-opus-latest")
+                .provider("openrouter")
+                .tier("frontier")
+                .estimated_cost_usd(0.12)
+                .metadata("routing_reason", "frontier required for ambient execution"),
+            )
+            .await;
+
+        let published = transport.published.lock().unwrap();
+        assert_eq!(published.len(), 1);
+        assert_eq!(published[0].0, "maestro.ambient_agent.routing.selected");
+        let event: Value = serde_json::from_str(&published[0].1).unwrap();
+        assert_eq!(event["type"], "maestro.ambient_agent.routing.selected");
+        assert_eq!(event["source"], DEFAULT_SOURCE);
+        assert_eq!(
+            event["extensions"]["dataschema"],
+            "buf.build/evalops/proto/maestro.v1.AmbientAgentPlanEvent"
+        );
+        assert_eq!(
+            event["data"]["@type"],
+            "type.googleapis.com/maestro.v1.AmbientAgentPlanEvent"
+        );
+        assert_eq!(
+            event["data"]["correlation"]["session_id"],
+            "ambient-session-1"
+        );
+        assert_eq!(event["data"]["event_id"], "issue-123");
+        assert_eq!(event["data"]["repository"], "evalops/maestro");
+        assert_eq!(event["data"]["task_type"], "security");
+        assert_eq!(event["data"]["complexity"], "high");
+        assert_eq!(event["data"]["model"], "~anthropic/claude-opus-latest");
+        assert_eq!(event["data"]["provider"], "openrouter");
+        assert_eq!(event["data"]["tier"], "frontier");
+        assert_eq!(event["data"]["estimated_cost_usd"], 0.12);
+        assert_eq!(
+            event["data"]["metadata"]["routing_reason"],
+            "frontier required for ambient execution"
+        );
     }
 
     #[test]
