@@ -417,11 +417,15 @@ function pickNumber(
 ): number | undefined {
 	for (const name of names) {
 		const value = record?.[name];
-		if (typeof value === "number" && Number.isFinite(value)) {
+		if (isFiniteNumber(value)) {
 			return value;
 		}
 	}
 	return undefined;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+	return typeof value === "number" && Number.isFinite(value);
 }
 
 function normalizeLinkage(
@@ -728,7 +732,7 @@ export async function claimNextAgentRuntimeRun(
 		{
 			workerId: input.workerId,
 			...(input.workerQueue ? { workerQueue: input.workerQueue } : {}),
-			...(typeof input.leaseSeconds === "number"
+			...(isFiniteNumber(input.leaseSeconds)
 				? { leaseSeconds: input.leaseSeconds }
 				: {}),
 		},
@@ -852,7 +856,7 @@ export async function failAgentRuntimeRun(
 			...(typeof input.retryable === "boolean"
 				? { retryable: input.retryable }
 				: {}),
-			...(typeof input.retryDelaySeconds === "number"
+			...(isFiniteNumber(input.retryDelaySeconds)
 				? { retryDelaySeconds: input.retryDelaySeconds }
 				: {}),
 		},

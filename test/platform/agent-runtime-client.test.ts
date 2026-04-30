@@ -646,6 +646,56 @@ describe("agent runtime service client", () => {
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
 
+	it("omits non-finite lease duration when claiming a Platform AgentRuntime run", async () => {
+		const config = {
+			baseUrl: "https://runtime.test",
+			token: "runtime-token",
+			organizationId: "org_1",
+			workspaceId: "ws_1",
+			timeoutMs: 2_000,
+			maxAttempts: 1,
+		};
+		const fetchMock = vi.fn(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				expect(String(input)).toBe(
+					"https://runtime.test/agentruntime.v1.AgentRuntimeService/ClaimNextRun",
+				);
+				expect(parseRequestBody(init?.body)).toEqual({
+					workerId: "maestro-worker",
+					workerQueue: "runs.default",
+				});
+				return Response.json({
+					run: {
+						id: "run_1",
+						state: PlatformAgentRunStateValue.Running,
+					},
+					lease: {
+						token: "lease-token-1",
+						workerId: "maestro-worker",
+						workerQueue: "runs.default",
+					},
+					events: [],
+				});
+			},
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(
+			claimNextAgentRuntimeRun(
+				{
+					workerId: "maestro-worker",
+					workerQueue: "runs.default",
+					leaseSeconds: Number.NaN,
+				},
+				{ config },
+			),
+		).resolves.toMatchObject({
+			run: { state: PlatformAgentRunStateValue.Running },
+			lease: { token: "lease-token-1" },
+		});
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
 	it("enriches Maestro session triggers with Cerebro facts when configured", async () => {
 		vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_URL", "https://runtime.test/");
 		vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_TOKEN", "runtime-token");
