@@ -1,11 +1,33 @@
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 import electron from "vite-plugin-electron/simple";
+import {
+	DESKTOP_DEFAULT_API_PORT,
+	DESKTOP_DEFAULT_CSRF_TOKEN,
+	DESKTOP_DEV_API_KEY,
+} from "./src/shared/runtime-defaults";
+
+const desktopPackage = JSON.parse(
+	readFileSync(new URL("./package.json", import.meta.url), "utf-8"),
+) as { version?: string };
 
 const DEV_PORT = Number(
 	process.env.MAESTRO_DESKTOP_UI_PORT ?? process.env.VITE_PORT ?? 5173,
 );
+const DESKTOP_API_PORT =
+	process.env.MAESTRO_DESKTOP_PORT ?? DESKTOP_DEFAULT_API_PORT;
+const IS_PRODUCTION_BUILD = process.env.NODE_ENV === "production";
+
+process.env.VITE_MAESTRO_BASE_URL ??= `http://localhost:${DESKTOP_API_PORT}`;
+if (!IS_PRODUCTION_BUILD || process.env.MAESTRO_DESKTOP_API_KEY) {
+	process.env.VITE_MAESTRO_API_KEY ??=
+		process.env.MAESTRO_DESKTOP_API_KEY ?? DESKTOP_DEV_API_KEY;
+}
+process.env.VITE_MAESTRO_CSRF_TOKEN ??=
+	process.env.MAESTRO_DESKTOP_CSRF_TOKEN ?? DESKTOP_DEFAULT_CSRF_TOKEN;
+process.env.VITE_MAESTRO_DESKTOP_VERSION ??= desktopPackage.version ?? "dev";
 
 export default defineConfig({
 	plugins: [

@@ -28,7 +28,9 @@ const makeJsonResponse = (payload: unknown) =>
 describe("desktop api client", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
+		vi.useRealTimers();
 		global.fetch = originalFetch;
+		delete (globalThis as { window?: unknown }).window;
 	});
 
 	it("sends both composer and maestro headers for streaming chat", async () => {
@@ -213,5 +215,74 @@ describe("desktop api client", () => {
 			"http://localhost:8080/api/automations/magic-docs",
 		);
 		expect(response.template?.contextPaths).toEqual(["docs/architecture.md"]);
+	});
+
+	it("retries desktop API config before sending after an IPC timeout", async () => {
+		vi.useFakeTimers();
+		const fetchMock = vi
+			.fn()
+			.mockImplementation(() =>
+				Promise.resolve(makeJsonResponse({ topics: [] })),
+			);
+		global.fetch = fetchMock;
+		const getApiConfig = vi
+			.fn()
+			.mockReturnValueOnce(new Promise(() => {}))
+			.mockResolvedValueOnce({
+				baseUrl: "http://localhost:8123",
+				apiKey: "desktop-key",
+				csrfToken: "desktop-csrf",
+			});
+		(globalThis as unknown as { window: unknown }).window = {
+			electron: { getApiConfig },
+			setTimeout,
+		};
+
+		const client = new ApiClient("http://localhost:8080");
+		const request = client.listMemoryTopics();
+		await vi.advanceTimersByTimeAsync(500);
+		await request;
+
+		expect(getApiConfig).toHaveBeenCalledTimes(2);
+		expect(fetchMock.mock.calls[0]?.[0]).toBe(
+			"http://localhost:8123/api/memory?action=list",
+		);
+		const retryHeaders = new Headers(
+			(fetchMock.mock.calls[0]?.[1] as RequestInit).headers,
+		);
+		expect(retryHeaders.get("authorization")).toBe("Bearer desktop-key");
+	});
+
+	it("retries rejected desktop API config requests before sending", async () => {
+		const fetchMock = vi
+			.fn()
+			.mockImplementation(() =>
+				Promise.resolve(makeJsonResponse({ topics: [] })),
+			);
+		global.fetch = fetchMock;
+		const getApiConfig = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("ipc busy"))
+			.mockResolvedValueOnce({
+				baseUrl: "http://localhost:8124",
+				apiKey: "desktop-key",
+				csrfToken: "desktop-csrf",
+			});
+		(globalThis as unknown as { window: unknown }).window = {
+			electron: { getApiConfig },
+			setTimeout,
+		};
+
+		const client = new ApiClient("http://localhost:8080");
+		await client.listMemoryTopics();
+
+		expect(getApiConfig).toHaveBeenCalledTimes(2);
+		expect(fetchMock.mock.calls[0]?.[0]).toBe(
+			"http://localhost:8124/api/memory?action=list",
+		);
+		const retryHeaders = new Headers(
+			(fetchMock.mock.calls[0]?.[1] as RequestInit).headers,
+		);
+		expect(retryHeaders.get("authorization")).toBe("Bearer desktop-key");
 	});
 });

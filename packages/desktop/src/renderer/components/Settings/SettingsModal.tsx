@@ -40,6 +40,7 @@ import { dedupeModels, getModelKey } from "../../lib/model-utils";
 import type { Model, ThinkingLevel } from "../../lib/types";
 import { AppearanceSection } from "./AppearanceSection";
 import { BackgroundTasksSection } from "./BackgroundTasksSection";
+import { EnterpriseControlsSection } from "./EnterpriseControlsSection";
 import { FrameworkSection } from "./FrameworkSection";
 import { MemorySection } from "./MemorySection";
 import {
@@ -1011,6 +1012,14 @@ export function SettingsModal({
 						onUpdateModel={updateModel}
 						onUpdateMode={updateMode}
 						onThinkingLevelChange={setThinkingLevel}
+					/>
+
+					<EnterpriseControlsSection
+						approvalMode={approvalMode}
+						guardianEnabled={guardianStatus?.enabled ?? true}
+						hasSession={hasSession}
+						mcpServerCount={mcpStatus?.servers.length ?? 0}
+						modelCount={availableModels.length}
 					/>
 
 					<SafetyApprovalsSection
