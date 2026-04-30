@@ -9,6 +9,12 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { app } from "electron";
+import {
+	DESKTOP_DEFAULT_API_PORT,
+	DESKTOP_DEFAULT_CSRF_TOKEN,
+	DESKTOP_DEV_API_KEY,
+} from "../shared/runtime-defaults.js";
+import { getDeviceIdentityHelperPath } from "./device-identity-helper-path.js";
 
 // ESM equivalent of __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -17,21 +23,22 @@ const __dirname = dirname(__filename);
 let serverProcess: ChildProcess | null = null;
 let serverReady = false;
 
-const SERVER_PORT = Number(process.env.MAESTRO_DESKTOP_PORT ?? 8080);
+const SERVER_PORT = Number(
+	process.env.MAESTRO_DESKTOP_PORT ?? DESKTOP_DEFAULT_API_PORT,
+);
 const SERVER_HOST = "127.0.0.1";
 const RENDERER_SERVER_HOST = "localhost";
 const IS_DEV_SERVER = Boolean(process.env.VITE_DEV_SERVER_URL);
-const DEV_API_KEY = "maestro-desktop-local-api-key";
 const DEV_UI_PORT =
 	process.env.MAESTRO_DESKTOP_UI_PORT ?? process.env.VITE_PORT;
 const DEV_UI_ORIGIN = process.env.VITE_DEV_SERVER_URL
 	? process.env.VITE_DEV_SERVER_URL.replace(/\/$/, "")
 	: `http://localhost:${DEV_UI_PORT ?? "5173"}`;
 const CSRF_TOKEN =
-	process.env.MAESTRO_DESKTOP_CSRF_TOKEN ?? "maestro-desktop-csrf";
+	process.env.MAESTRO_DESKTOP_CSRF_TOKEN ?? DESKTOP_DEFAULT_CSRF_TOKEN;
 const API_KEY =
 	process.env.MAESTRO_DESKTOP_API_KEY ??
-	(IS_DEV_SERVER ? DEV_API_KEY : randomUUID());
+	(IS_DEV_SERVER ? DESKTOP_DEV_API_KEY : randomUUID());
 const JWT_SECRET =
 	process.env.MAESTRO_DESKTOP_JWT_SECRET ?? randomBytes(32).toString("hex");
 

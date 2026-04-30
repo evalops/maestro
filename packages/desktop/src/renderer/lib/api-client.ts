@@ -21,6 +21,11 @@ import type {
 	TeamMemoryStatus,
 	TeamMemoryStatusResponse,
 } from "@evalops/contracts";
+import {
+	DESKTOP_CONFIG_TIMEOUT_MS,
+	DESKTOP_DEFAULT_API_PORT,
+	DESKTOP_DEFAULT_CSRF_TOKEN,
+} from "../../shared/runtime-defaults";
 import type {
 	AgentEvent,
 	AutomationTask,
@@ -33,11 +38,12 @@ import type {
 } from "./types";
 
 const DEFAULT_BASE_URL =
-	import.meta.env.VITE_MAESTRO_BASE_URL ?? "http://localhost:8080";
+	import.meta.env.VITE_MAESTRO_BASE_URL ??
+	`http://localhost:${DESKTOP_DEFAULT_API_PORT}`;
 const DEFAULT_API_KEY = import.meta.env.VITE_MAESTRO_API_KEY ?? null;
 const DEFAULT_CSRF_TOKEN =
-	import.meta.env.VITE_MAESTRO_CSRF_TOKEN ?? "maestro-desktop-csrf";
-const DESKTOP_CONFIG_TIMEOUT_MS = 500;
+	import.meta.env.VITE_MAESTRO_CSRF_TOKEN ?? DESKTOP_DEFAULT_CSRF_TOKEN;
+const DESKTOP_CONFIG_TIMEOUT = Symbol("desktop-config-timeout");
 const MAX_SSE_BUFFER = 1024 * 1024; // 1MB
 
 interface DesktopApiConfig {
@@ -681,26 +687,44 @@ export class ApiClient {
 		if (!window.electron?.getApiConfig) {
 			return;
 		}
-		const configTimeout = new Promise<null>((resolve) => {
-			window.setTimeout(() => resolve(null), DESKTOP_CONFIG_TIMEOUT_MS);
-		});
+		const configTimeout = new Promise<typeof DESKTOP_CONFIG_TIMEOUT>(
+			(resolve) => {
+				window.setTimeout(
+					() => resolve(DESKTOP_CONFIG_TIMEOUT),
+					DESKTOP_CONFIG_TIMEOUT_MS,
+				);
+			},
+		);
 		const configRequest = window.electron
 			.getApiConfig()
 			.then((config: DesktopApiConfig | null | undefined) => config ?? null);
 		this.configPromise = Promise.race([configRequest, configTimeout])
-			.then((config: DesktopApiConfig | null | undefined) => {
-				if (!config) return;
-				if (config.baseUrl) {
-					this.baseUrl = config.baseUrl.replace(/\/$/, "");
-				}
-				if (config.apiKey) {
-					this.apiKey = config.apiKey;
-				}
-				if (config.csrfToken) {
-					this.csrfToken = config.csrfToken;
-				}
-			})
+			.then(
+				(
+					config:
+						| DesktopApiConfig
+						| null
+						| typeof DESKTOP_CONFIG_TIMEOUT
+						| undefined,
+				) => {
+					if (config === DESKTOP_CONFIG_TIMEOUT) {
+						this.configPromise = null;
+						return;
+					}
+					if (!config) return;
+					if (config.baseUrl) {
+						this.baseUrl = config.baseUrl.replace(/\/$/, "");
+					}
+					if (config.apiKey) {
+						this.apiKey = config.apiKey;
+					}
+					if (config.csrfToken) {
+						this.csrfToken = config.csrfToken;
+					}
+				},
+			)
 			.catch((err: unknown) => {
+				this.configPromise = null;
 				console.warn("Failed to load desktop API config:", err);
 			});
 		await this.configPromise;
