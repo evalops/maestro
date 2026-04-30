@@ -189,6 +189,10 @@ function toRustArray(
 	if (!forceMultiline && prefixLength + inline.length + ";".length <= RUST_MAX_WIDTH) {
 		return inline;
 	}
+	if (entries.length === 1) {
+		const [[from, to]] = entries;
+		return `&[(\n${indent}    ${JSON.stringify(from)},\n${indent}    ${JSON.stringify(to)},\n${indent})]`;
+	}
 	const itemIndent = `${indent}    `;
 	return `&[\n${entries
 		.map(
