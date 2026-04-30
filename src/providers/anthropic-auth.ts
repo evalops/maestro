@@ -52,6 +52,7 @@ import { rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { getAgentDir } from "../config/constants.js";
 import { safeJsonParse } from "../utils/json.js";
+import { fetchOAuthHttp } from "../utils/oauth-http.js";
 
 // Portions of this module are derived from https://github.com/sst/opencode-anthropic-auth (MIT).
 
@@ -65,6 +66,7 @@ export interface AnthropicOAuthCredential {
 }
 
 const CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+const ANTHROPIC_OAUTH_SERVICE_NAME = "Anthropic OAuth service";
 
 const CLAUDE_LOGIN_HOST: Record<AnthropicLoginMode, string> = {
 	pro: "claude.ai",
@@ -226,18 +228,22 @@ export async function exchangeAnthropicAuthorizationCode(
 	if (!actualCode || !state) {
 		return null;
 	}
-	const response = await fetch("https://console.anthropic.com/v1/oauth/token", {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({
-			code: actualCode,
-			state,
-			grant_type: "authorization_code",
-			client_id: CLIENT_ID,
-			redirect_uri: "https://console.anthropic.com/oauth/code/callback",
-			code_verifier: verifier,
-		}),
-	});
+	const response = await fetchOAuthHttp(
+		"https://console.anthropic.com/v1/oauth/token",
+		{
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				code: actualCode,
+				state,
+				grant_type: "authorization_code",
+				client_id: CLIENT_ID,
+				redirect_uri: "https://console.anthropic.com/oauth/code/callback",
+				code_verifier: verifier,
+			}),
+		},
+		{ serviceName: ANTHROPIC_OAUTH_SERVICE_NAME },
+	);
 	if (!response.ok) {
 		return null;
 	}
@@ -259,15 +265,19 @@ export async function refreshAnthropicOAuthToken(
 	refreshToken?: string;
 	expiresAt: number;
 } | null> {
-	const response = await fetch("https://console.anthropic.com/v1/oauth/token", {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({
-			grant_type: "refresh_token",
-			refresh_token: refreshToken,
-			client_id: CLIENT_ID,
-		}),
-	});
+	const response = await fetchOAuthHttp(
+		"https://console.anthropic.com/v1/oauth/token",
+		{
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				grant_type: "refresh_token",
+				refresh_token: refreshToken,
+				client_id: CLIENT_ID,
+			}),
+		},
+		{ serviceName: ANTHROPIC_OAUTH_SERVICE_NAME },
+	);
 	if (!response.ok) {
 		return null;
 	}
@@ -285,7 +295,7 @@ export async function refreshAnthropicOAuthToken(
 export async function fetchClaudeApiKey(
 	accessToken: string,
 ): Promise<string | null> {
-	const response = await fetch(
+	const response = await fetchOAuthHttp(
 		"https://api.anthropic.com/api/oauth/claude_cli/create_api_key",
 		{
 			method: "POST",
@@ -294,6 +304,7 @@ export async function fetchClaudeApiKey(
 				authorization: `Bearer ${accessToken}`,
 			},
 		},
+		{ serviceName: ANTHROPIC_OAUTH_SERVICE_NAME },
 	);
 	if (!response.ok) {
 		return null;

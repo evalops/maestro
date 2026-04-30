@@ -334,6 +334,14 @@ describe("OAuth Index", () => {
 		});
 
 		it("should remove credentials and return null when refresh fails for expired token", async () => {
+			const fetchMock = vi.fn().mockResolvedValue(
+				new Response(JSON.stringify({ error: "invalid_grant" }), {
+					status: 400,
+					headers: { "Content-Type": "application/json" },
+				}),
+			);
+			vi.stubGlobal("fetch", fetchMock);
+
 			// Save expired credentials
 			saveOAuthCredentials("anthropic", {
 				type: "oauth",
@@ -342,10 +350,10 @@ describe("OAuth Index", () => {
 				expires: Date.now() - 1000, // Already expired
 			});
 
-			// The refresh will fail (no mock for the API), credentials should be removed
 			const token = await getOAuthToken("anthropic");
 			expect(token).toBeNull();
 			expect(hasOAuthCredentials("anthropic")).toBe(false);
+			expect(fetchMock).toHaveBeenCalledTimes(1);
 		});
 
 		it("should refresh EvalOps credentials when the access token expires", async () => {
