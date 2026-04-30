@@ -1,4 +1,13 @@
 import type {
+	RuntimeServerRequestKind,
+	RuntimeServerRequestLifecycleEvent,
+	RuntimeServerRequestRegisteredEvent,
+	RuntimeServerRequestResolution,
+	RuntimeServerRequestResolvedBy,
+	RuntimeServerRequestResolvedEvent,
+	RuntimeServerRequestSnapshot,
+} from "@evalops/contracts";
+import type {
 	ActionApprovalDecision,
 	ActionApprovalRequest,
 	ActionApprovalService,
@@ -12,55 +21,13 @@ import type { ImageContent, TextContent } from "../agent/types.js";
 
 type ToolResultContent = TextContent | ImageContent;
 
-export type ServerRequestKind =
-	| "approval"
-	| "client_tool"
-	| "mcp_elicitation"
-	| "user_input"
-	| "tool_retry";
-export type ServerRequestResolution =
-	| "approved"
-	| "denied"
-	| "completed"
-	| "failed"
-	| "answered"
-	| "retried"
-	| "skipped"
-	| "aborted"
-	| "cancelled";
-
-export interface PendingServerRequestSnapshot {
-	id: string;
-	kind: ServerRequestKind;
-	sessionId?: string;
-	callId: string;
-	toolName: string;
-	displayName?: string;
-	summaryLabel?: string;
-	actionDescription?: string;
-	args: unknown;
-	reason: string;
-	timestamp: number;
-	timeoutMs: number;
-	platform?: ActionApprovalRequest["platform"];
-}
-
-export interface ServerRequestRegisteredEvent {
-	type: "registered";
-	request: PendingServerRequestSnapshot;
-}
-
-export interface ServerRequestResolvedEvent {
-	type: "resolved";
-	request: PendingServerRequestSnapshot;
-	resolution: ServerRequestResolution;
-	reason?: string;
-	resolvedBy: "user" | "policy" | "client" | "runtime";
-}
-
-export type ServerRequestLifecycleEvent =
-	| ServerRequestRegisteredEvent
-	| ServerRequestResolvedEvent;
+export type ServerRequestKind = RuntimeServerRequestKind;
+export type ServerRequestResolution = RuntimeServerRequestResolution;
+export type ServerRequestResolvedBy = RuntimeServerRequestResolvedBy;
+export type PendingServerRequestSnapshot = RuntimeServerRequestSnapshot;
+export type ServerRequestRegisteredEvent = RuntimeServerRequestRegisteredEvent;
+export type ServerRequestResolvedEvent = RuntimeServerRequestResolvedEvent;
+export type ServerRequestLifecycleEvent = RuntimeServerRequestLifecycleEvent;
 
 type ServerRequestListener = (event: ServerRequestLifecycleEvent) => void;
 

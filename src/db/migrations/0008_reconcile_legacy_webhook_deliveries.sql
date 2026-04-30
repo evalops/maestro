@@ -154,6 +154,7 @@ BEGIN
 		AND column_name = 'status';
 
 	IF status_type IS NOT NULL AND status_type <> 'webhook_delivery_status' THEN
+		ALTER TABLE "webhook_deliveries" ALTER COLUMN "status" DROP DEFAULT;
 		ALTER TABLE "webhook_deliveries"
 			ALTER COLUMN "status" TYPE "webhook_delivery_status"
 			USING (
@@ -196,7 +197,7 @@ BEGIN
 	WHERE "url" = '' AND "status"::text IN ('pending', 'retrying');
 
 	ALTER TABLE "webhook_deliveries" ALTER COLUMN "payload" SET NOT NULL;
-	ALTER TABLE "webhook_deliveries" ALTER COLUMN "status" SET DEFAULT 'pending';
+	ALTER TABLE "webhook_deliveries" ALTER COLUMN "status" SET DEFAULT 'pending'::"webhook_delivery_status";
 	ALTER TABLE "webhook_deliveries" ALTER COLUMN "status" SET NOT NULL;
 	ALTER TABLE "webhook_deliveries" ALTER COLUMN "attempts" SET DEFAULT 0;
 	ALTER TABLE "webhook_deliveries" ALTER COLUMN "attempts" SET NOT NULL;

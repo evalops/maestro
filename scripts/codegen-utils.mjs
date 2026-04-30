@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import {
 	existsSync,
+	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	rmSync,
@@ -14,6 +15,7 @@ export function formatTsWithBiome(
 	outputPath,
 	{ rootDir, label, tempPrefix = ".codegen-" },
 ) {
+	mkdirSync(dirname(outputPath), { recursive: true });
 	const tempDir = mkdtempSync(join(dirname(outputPath), tempPrefix));
 	const tempPath = join(tempDir, basename(outputPath));
 	try {
@@ -64,6 +66,7 @@ export function formatRustWithRustfmt(
 		tempPrefix = ".codegen-",
 	} = {},
 ) {
+	mkdirSync(dirname(outputPath), { recursive: true });
 	const tempDir = mkdtempSync(join(dirname(outputPath), tempPrefix));
 	const tempPath = join(tempDir, basename(outputPath));
 	try {
