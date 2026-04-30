@@ -9,6 +9,7 @@ export const PLATFORM_CONNECT_SERVICES = {
 	connectors: "connectors.v1.ConnectorService",
 	governance: "governance.v1.GovernanceService",
 	llmGateway: "llmgateway.v1.GatewayService",
+	maestroTimeline: "maestro.v1.MaestroTimelineService",
 	meter: "meter.v1.MeterService",
 	prompts: "prompts.v1.PromptService",
 	remoteRunner: "remoterunner.v1.RemoteRunnerService",
@@ -136,6 +137,12 @@ export const PLATFORM_CONNECT_METHODS = {
 		getInfo: {
 			service: PLATFORM_CONNECT_SERVICES.llmGateway,
 			method: "GetInfo",
+		},
+	},
+	maestroTimeline: {
+		listRunTimeline: {
+			service: PLATFORM_CONNECT_SERVICES.maestroTimeline,
+			method: "ListRunTimeline",
 		},
 	},
 	meter: {

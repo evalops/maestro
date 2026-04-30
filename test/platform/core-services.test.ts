@@ -81,6 +81,11 @@ describe("Platform core service contract names", () => {
 		).toBe("/remoterunner.v1.RemoteRunnerService/GetStatus");
 		expect(
 			platformConnectMethodPath(
+				PLATFORM_CONNECT_METHODS.maestroTimeline.listRunTimeline,
+			),
+		).toBe("/maestro.v1.MaestroTimelineService/ListRunTimeline");
+		expect(
+			platformConnectMethodPath(
 				PLATFORM_CONNECT_METHODS.toolexecution.executeTool,
 			),
 		).toBe("/toolexecution.v1.ToolExecutionService/ExecuteTool");

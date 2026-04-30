@@ -208,6 +208,8 @@ describe("Session Endpoints", () => {
 
 	afterEach(() => {
 		vi.restoreAllMocks();
+		vi.unstubAllEnvs();
+		vi.unstubAllGlobals();
 		delete process.env.MAESTRO_STRICT_SESSION_ACCESS;
 	});
 
@@ -367,6 +369,8 @@ describe("Session Endpoints", () => {
 
 		it("should return 400 for invalid session id", async () => {
 			const req = createMockRequest("GET");
+			req.url =
+				"/api/sessions/test-session-1/timeline?agent_run_id=run_attacker&remote_runner_session_id=mrs_attacker&workspace_id=ws_attacker";
 			const { res, getStatus, getBody } = createMockResponse();
 
 			await handleSessions(req, res, { id: "../malicious/path" }, corsHeaders);
@@ -566,6 +570,8 @@ describe("Session Endpoints", () => {
 			]);
 
 			const req = createMockRequest("GET");
+			req.url =
+				"/api/sessions/test-session-1/timeline?agent_run_id=run_attacker&remote_runner_session_id=mrs_attacker&workspace_id=ws_attacker";
 			const { res, getStatus, getBody } = createMockResponse();
 
 			await handleSessionTimeline(
@@ -680,6 +686,167 @@ describe("Session Endpoints", () => {
 			const serialized = JSON.stringify(body);
 			expect(serialized).not.toContain(secret);
 			expect(serialized).not.toContain("rm -rf /tmp/demo");
+		});
+
+		it("uses Platform MaestroTimeline for hosted runner sessions with run correlation", async () => {
+			vi.stubEnv("MAESTRO_PLATFORM_BASE_URL", "https://platform.test/");
+			vi.stubEnv("MAESTRO_EVALOPS_ACCESS_TOKEN", "evalops-token");
+			vi.stubEnv("MAESTRO_EVALOPS_ORG_ID", "org_evalops");
+			vi.stubEnv("MAESTRO_REMOTE_RUNNER_WORKSPACE_ID", "ws_evalops");
+			const fetchMock = vi.fn(
+				async (input: RequestInfo | URL, init?: RequestInit) => {
+					expect(String(input)).toBe(
+						"https://platform.test/maestro.v1.MaestroTimelineService/ListRunTimeline",
+					);
+					expect(JSON.parse(String(init?.body))).toMatchObject({
+						organizationId: "org_evalops",
+						workspaceId: "ws_hosted",
+						sessionId: "test-session-1",
+						agentRunId: "run_hosted_1",
+						remoteRunnerSessionId: "mrs_1",
+					});
+					return new Response(
+						JSON.stringify({
+							organizationId: "org_evalops",
+							workspaceId: "ws_hosted",
+							sessionId: "test-session-1",
+							agentRunId: "run_hosted_1",
+							remoteRunnerSessionId: "mrs_1",
+							entries: [
+								{
+									id: "platform-tool-completed",
+									timestamp: "2026-04-30T18:00:00Z",
+									type: "MAESTRO_TIMELINE_ENTRY_TYPE_TOOL_CALL_COMPLETED",
+									title: "Bash completed",
+									summary: "tests passed",
+									visibility: "MAESTRO_TIMELINE_VISIBILITY_USER_VISIBLE",
+									relatedIds: {
+										sessionId: "test-session-1",
+										agentRunId: "run_hosted_1",
+										toolCallId: "tool_call_1",
+										toolExecutionId: "texec_1",
+										remoteRunnerSessionId: "mrs_1",
+									},
+								},
+							],
+						}),
+						{ status: 200, headers: { "Content-Type": "application/json" } },
+					);
+				},
+			);
+			vi.stubGlobal("fetch", fetchMock);
+			vi.spyOn(serverRequestManager, "listPending").mockReturnValue([]);
+
+			const req = createMockRequest("GET");
+			const { res, getStatus, getBody } = createMockResponse();
+
+			await handleSessionTimeline(
+				req,
+				res,
+				{ id: "test-session-1" },
+				corsHeaders,
+				{
+					hostedRunner: {
+						enabled: true,
+						runnerSessionId: "mrs_1",
+						workspaceRoot: "/workspace",
+						workspaceId: "ws_hosted",
+						agentRunId: "run_hosted_1",
+						activeMaestroSessionId: "test-session-1",
+					},
+				},
+			);
+
+			expect(getStatus()).toBe(200);
+			expect(getBody()).toEqual(
+				expect.objectContaining({
+					sessionId: "test-session-1",
+					source: "platform",
+					platformBacked: true,
+					items: [
+						expect.objectContaining({
+							id: "platform-tool-completed",
+							type: "tool.completed",
+							source: "platform",
+							toolCallId: "tool_call_1",
+							toolExecutionId: "texec_1",
+							remoteRunnerSessionId: "mrs_1",
+							metadata: expect.objectContaining({
+								agentRunId: "run_hosted_1",
+							}),
+						}),
+					],
+				}),
+			);
+		});
+
+		it("ignores untrusted query correlation for unrelated sessions", async () => {
+			const fetchMock = vi.fn(async () => {
+				throw new Error("unexpected Platform timeline request");
+			});
+			vi.stubGlobal("fetch", fetchMock);
+			vi.spyOn(serverRequestManager, "listPending").mockReturnValue([]);
+
+			const req = createMockRequest("GET");
+			req.url =
+				"/api/sessions/test-session-1/timeline?agent_run_id=run_attacker&remote_runner_session_id=mrs_attacker&workspace_id=ws_attacker";
+			const { res, getStatus, getBody } = createMockResponse();
+
+			await handleSessionTimeline(
+				req,
+				res,
+				{ id: "test-session-1" },
+				corsHeaders,
+				{
+					hostedRunner: {
+						enabled: true,
+						runnerSessionId: "mrs_unbound",
+						workspaceRoot: "/workspace",
+						workspaceId: "ws_hosted",
+						agentRunId: "run_unbound",
+					},
+				},
+			);
+
+			expect(getStatus()).toBe(200);
+			expect(fetchMock).not.toHaveBeenCalled();
+			expect(getBody()).toEqual(
+				expect.objectContaining({
+					sessionId: "test-session-1",
+					source: "local",
+					platformBacked: false,
+				}),
+			);
+		});
+
+		it("ignores client-provided Platform correlation for local sessions", async () => {
+			const fetchMock = vi.fn(async () => {
+				throw new Error("unexpected Platform timeline request");
+			});
+			vi.stubGlobal("fetch", fetchMock);
+			vi.spyOn(serverRequestManager, "listPending").mockReturnValue([]);
+
+			const req = createMockRequest("GET");
+			req.url =
+				"/api/sessions/test-session-1/timeline?agent_run_id=run_other&remote_runner_session_id=mrs_other&workspace_id=ws_other";
+			const { res, getStatus, getBody } = createMockResponse();
+
+			await handleSessionTimeline(
+				req,
+				res,
+				{ id: "test-session-1" },
+				corsHeaders,
+			);
+
+			expect(getStatus()).toBe(200);
+			expect(fetchMock).not.toHaveBeenCalled();
+			expect(getBody()).toEqual(
+				expect.objectContaining({
+					sessionId: "test-session-1",
+					source: "local",
+					platformBacked: false,
+				}),
+			);
 		});
 
 		it("returns 400 for invalid timeline session ids", async () => {
