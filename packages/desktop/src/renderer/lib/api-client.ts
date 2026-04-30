@@ -675,6 +675,9 @@ export class ApiClient {
 			await this.configPromise;
 			return;
 		}
+		if (typeof window === "undefined") {
+			return;
+		}
 		if (!window.electron?.getApiConfig) {
 			return;
 		}
