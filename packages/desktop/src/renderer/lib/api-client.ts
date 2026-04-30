@@ -22,6 +22,7 @@ import type {
 	TeamMemoryStatusResponse,
 } from "@evalops/contracts";
 import {
+	DESKTOP_CONFIG_MAX_ATTEMPTS,
 	DESKTOP_CONFIG_TIMEOUT_MS,
 	DESKTOP_DEFAULT_API_PORT,
 	DESKTOP_DEFAULT_CSRF_TOKEN,
@@ -687,46 +688,49 @@ export class ApiClient {
 		if (!window.electron?.getApiConfig) {
 			return;
 		}
-		const configTimeout = new Promise<typeof DESKTOP_CONFIG_TIMEOUT>(
-			(resolve) => {
-				window.setTimeout(
-					() => resolve(DESKTOP_CONFIG_TIMEOUT),
-					DESKTOP_CONFIG_TIMEOUT_MS,
+		const loadConfig = async (): Promise<void> => {
+			for (let attempt = 0; attempt < DESKTOP_CONFIG_MAX_ATTEMPTS; attempt++) {
+				const configTimeout = new Promise<typeof DESKTOP_CONFIG_TIMEOUT>(
+					(resolve) => {
+						window.setTimeout(
+							() => resolve(DESKTOP_CONFIG_TIMEOUT),
+							DESKTOP_CONFIG_TIMEOUT_MS,
+						);
+					},
 				);
-			},
-		);
-		const configRequest = window.electron
-			.getApiConfig()
-			.then((config: DesktopApiConfig | null | undefined) => config ?? null);
-		this.configPromise = Promise.race([configRequest, configTimeout])
-			.then(
-				(
-					config:
-						| DesktopApiConfig
-						| null
-						| typeof DESKTOP_CONFIG_TIMEOUT
-						| undefined,
-				) => {
-					if (config === DESKTOP_CONFIG_TIMEOUT) {
-						this.configPromise = null;
-						return;
-					}
-					if (!config) return;
-					if (config.baseUrl) {
-						this.baseUrl = config.baseUrl.replace(/\/$/, "");
-					}
-					if (config.apiKey) {
-						this.apiKey = config.apiKey;
-					}
-					if (config.csrfToken) {
-						this.csrfToken = config.csrfToken;
-					}
-				},
-			)
-			.catch((err: unknown) => {
-				this.configPromise = null;
-				console.warn("Failed to load desktop API config:", err);
-			});
+				const configRequest = window.electron
+					.getApiConfig()
+					.then(
+						(config: DesktopApiConfig | null | undefined) => config ?? null,
+					);
+				const config = await Promise.race([configRequest, configTimeout]);
+
+				if (config === DESKTOP_CONFIG_TIMEOUT) {
+					continue;
+				}
+				if (!config) {
+					return;
+				}
+				if (config.baseUrl) {
+					this.baseUrl = config.baseUrl.replace(/\/$/, "");
+				}
+				if (config.apiKey) {
+					this.apiKey = config.apiKey;
+				}
+				if (config.csrfToken) {
+					this.csrfToken = config.csrfToken;
+				}
+				return;
+			}
+			throw new Error(
+				`Timed out loading desktop API config after ${DESKTOP_CONFIG_MAX_ATTEMPTS} attempts`,
+			);
+		};
+		this.configPromise = loadConfig().catch((err: unknown) => {
+			this.configPromise = null;
+			console.warn("Failed to load desktop API config:", err);
+			throw err;
+		});
 		await this.configPromise;
 	}
 
