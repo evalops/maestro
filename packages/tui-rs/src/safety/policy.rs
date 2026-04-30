@@ -1,7 +1,8 @@
 //! Enterprise policy enforcement (parity with TS).
 //!
-//! Reads ~/.composer/policy.json and enforces tool, path, network, model, and
-//! session limits. Policy load failures fail closed (block) to match CLI behavior.
+//! Reads enterprise policy from the Maestro home directory, with legacy Composer
+//! fallback, and enforces tool, path, network, model, and session limits. Policy
+//! load failures fail closed (block) to match CLI behavior.
 
 use serde::Deserialize;
 use std::net::{IpAddr, ToSocketAddrs};
@@ -11,6 +12,8 @@ use std::time::SystemTime;
 
 use regex::Regex;
 use url::Url;
+
+use crate::path_utils::{dedupe_paths, env_path};
 
 use super::dangerous_patterns::check_dangerous_patterns;
 use super::path_containment::{expand_tilde, is_tilde_path};
@@ -108,7 +111,30 @@ static PIP_INSTALL_PATTERN: std::sync::LazyLock<Regex> = std::sync::LazyLock::ne
 });
 
 fn policy_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| home.join(".composer").join("policy.json"))
+    let candidates = policy_path_candidates();
+    candidates
+        .iter()
+        .find(|path| path.is_file())
+        .cloned()
+        .or_else(|| candidates.into_iter().next())
+}
+
+fn policy_path_candidates() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(path) = env_path("MAESTRO_ENTERPRISE_POLICY_PATH") {
+        paths.push(path);
+    }
+    if let Some(path) = env_path("MAESTRO_POLICY_PATH") {
+        paths.push(path);
+    }
+    if let Some(maestro_home) = env_path("MAESTRO_HOME") {
+        paths.push(maestro_home.join("policy.json"));
+    }
+    if let Some(home) = dirs::home_dir() {
+        paths.push(home.join(".maestro").join("policy.json"));
+        paths.push(home.join(".composer").join("policy.json"));
+    }
+    dedupe_paths(paths)
 }
 
 fn load_policy(force: bool) -> Result<Option<EnterprisePolicy>, String> {

@@ -78,6 +78,7 @@ pub mod effects;
 /// File system operations (search, workspace management).
 /// Handles file listing, fuzzy search, and workspace-relative paths.
 pub mod files;
+pub(crate) mod path_utils;
 
 /// Headless mode communication protocol.
 /// JSON-based IPC protocol for communicating with the Node.js agent.

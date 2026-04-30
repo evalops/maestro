@@ -34,6 +34,8 @@ const mockReadFileSync = vi.mocked(fs.readFileSync);
 const mockWatch = vi.mocked(fs.watch);
 const originalHome = process.env.HOME;
 const originalUserProfile = process.env.USERPROFILE;
+const originalMaestroPolicyPath = process.env.MAESTRO_POLICY_PATH;
+const originalEnterprisePolicyPath = process.env.MAESTRO_ENTERPRISE_POLICY_PATH;
 let cwdSpy: ReturnType<typeof vi.spyOn> | undefined;
 
 function mockFileStats(): fs.Stats {
@@ -103,6 +105,16 @@ describe("Enterprise Policy Enforcement", () => {
 			Reflect.deleteProperty(process.env, "USERPROFILE");
 		} else {
 			process.env.USERPROFILE = originalUserProfile;
+		}
+		if (originalMaestroPolicyPath === undefined) {
+			Reflect.deleteProperty(process.env, "MAESTRO_POLICY_PATH");
+		} else {
+			process.env.MAESTRO_POLICY_PATH = originalMaestroPolicyPath;
+		}
+		if (originalEnterprisePolicyPath === undefined) {
+			Reflect.deleteProperty(process.env, "MAESTRO_ENTERPRISE_POLICY_PATH");
+		} else {
+			process.env.MAESTRO_ENTERPRISE_POLICY_PATH = originalEnterprisePolicyPath;
 		}
 	});
 
@@ -838,6 +850,90 @@ describe("Enterprise Policy Enforcement", () => {
 	});
 
 	describe("Workspace Policy", () => {
+		it("prefers the highest-precedence user policy source", async () => {
+			const envPolicyPath = "/mock-home/override-policy.json";
+			const legacyPolicyPath = join("/mock-home", ".composer", "policy.json");
+			setupPolicies({
+				user: { tools: { blocked: ["bash"] } },
+			});
+
+			mockExistsSync.mockImplementation(
+				(path) =>
+					path === legacyPolicyPath ||
+					path === envPolicyPath ||
+					path === WORKSPACE_POLICY_PATH,
+			);
+			mockLstatSync.mockImplementation((path) => {
+				if (
+					path !== legacyPolicyPath &&
+					path !== envPolicyPath &&
+					path !== WORKSPACE_POLICY_PATH
+				) {
+					throw new Error("ENOENT");
+				}
+				return mockFileStats();
+			});
+			mockReadFileSync.mockImplementation((path) => {
+				if (path === envPolicyPath) {
+					return JSON.stringify({ tools: { blocked: ["read"] } });
+				}
+				if (path === legacyPolicyPath) {
+					return JSON.stringify({ tools: { blocked: ["bash"] } });
+				}
+				return "";
+			});
+			process.env.MAESTRO_POLICY_PATH = envPolicyPath;
+
+			const bashResult = await checkPolicy({
+				toolName: "bash",
+				args: {},
+			} as ActionApprovalContext);
+			expect(bashResult.allowed).toBe(true);
+
+			const readResult = await checkPolicy({
+				toolName: "read",
+				args: {},
+			} as ActionApprovalContext);
+			expect(readResult.allowed).toBe(false);
+			expect(readResult.reason).toContain("explicitly blocked");
+		});
+
+		it("ignores malformed lower-precedence user policies when a higher-precedence one exists", async () => {
+			const envPolicyPath = "/mock-home/override-policy.json";
+			const legacyPolicyPath = join("/mock-home", ".composer", "policy.json");
+
+			mockExistsSync.mockImplementation(
+				(path) => path === legacyPolicyPath || path === envPolicyPath,
+			);
+			mockLstatSync.mockImplementation((path) => {
+				if (path !== legacyPolicyPath && path !== envPolicyPath) {
+					throw new Error("ENOENT");
+				}
+				return mockFileStats();
+			});
+			mockReadFileSync.mockImplementation((path) => {
+				if (path === envPolicyPath) {
+					return JSON.stringify({ tools: { blocked: ["read"] } });
+				}
+				if (path === legacyPolicyPath) {
+					return "{invalid json";
+				}
+				return "";
+			});
+			mockWatch.mockReturnValue({
+				unref: () => {},
+				close: () => {},
+			} as unknown as ReturnType<typeof fs.watch>);
+			process.env.MAESTRO_POLICY_PATH = envPolicyPath;
+
+			const result = await checkPolicy({
+				toolName: "read",
+				args: {},
+			} as ActionApprovalContext);
+			expect(result.allowed).toBe(false);
+			expect(result.reason).toContain("explicitly blocked");
+		});
+
 		it("enforces workspace.toml controls when no user policy exists", async () => {
 			setupPolicies({
 				workspace: `
