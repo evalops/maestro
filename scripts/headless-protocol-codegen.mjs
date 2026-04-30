@@ -389,19 +389,9 @@ function renderTsSchemas(payloadManifest) {
  * Do not edit manually; update \`headless-protocol-payloads.manifest.json\` instead.
  */
 
-import { type Static, type TSchema, Type } from "@sinclair/typebox";
+import { type Static, Type } from "@sinclair/typebox";
 import { ${enumImports.join(", ")} } from "./headless-protocol-generated.js";
-
-function stringLiteralUnion<const T extends readonly string[]>(values: T) {
-\treturn Type.Unsafe<T[number]>(
-\t\tType.Union(
-\t\t\tvalues.map((value) => Type.Literal(value)) as unknown as [
-\t\t\t\tTSchema,
-\t\t\t\t...TSchema[],
-\t\t\t],
-\t\t),
-\t);
-}
+import { stringLiteralUnion } from "./typebox-utils.js";
 
 ${renderEntries(namedSchemaEntries)}
 
