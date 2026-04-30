@@ -163,6 +163,10 @@ function stringValue(value: unknown): string | undefined {
 		: undefined;
 }
 
+function isAbortError(error: unknown): boolean {
+	return error instanceof Error && error.name === "AbortError";
+}
+
 function relatedString(
 	relatedIds: Record<string, unknown> | undefined,
 	...keys: string[]
@@ -329,6 +333,7 @@ function platformOperationForType(
 		case "MAESTRO_TIMELINE_ENTRY_TYPE_TOOL_EXECUTION_WAITING_APPROVAL":
 			return "ResumeToolExecution";
 		case "MAESTRO_TIMELINE_ENTRY_TYPE_APPROVAL_REQUIRED":
+			return "ResolveApproval";
 		case "MAESTRO_TIMELINE_ENTRY_TYPE_RUN_WAITING":
 			return "ResumeRun";
 		default:
@@ -548,7 +553,10 @@ export async function tryListMaestroTimelineWithPlatform(
 			query,
 			options?.signal,
 		);
-	} catch {
+	} catch (error) {
+		if (isAbortError(error)) {
+			throw error;
+		}
 		return null;
 	}
 }

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	listMaestroTimelineWithPlatform,
 	resolveMaestroTimelineServiceConfig,
+	tryListMaestroTimelineWithPlatform,
 } from "../../src/platform/maestro-timeline-client.js";
 
 type CapturedRequest = {
@@ -166,6 +167,19 @@ describe("maestro timeline client", () => {
 									},
 								},
 								{
+									id: "entry_approval_required",
+									timestamp: "2026-04-30T18:01:15Z",
+									type: "MAESTRO_TIMELINE_ENTRY_TYPE_APPROVAL_REQUIRED",
+									title: "Approval required",
+									visibility: "MAESTRO_TIMELINE_VISIBILITY_USER_VISIBLE",
+									relatedIds: {
+										sessionId: "sess_1",
+										agentRunId: "run_1",
+										approvalRequestId: "approval_2",
+										remoteRunnerSessionId: "mrs_1",
+									},
+								},
+								{
 									id: "entry_approval_denied",
 									timestamp: "2026-04-30T18:01:30Z",
 									type: "MAESTRO_TIMELINE_ENTRY_TYPE_APPROVAL_RESOLVED",
@@ -263,6 +277,13 @@ describe("maestro timeline client", () => {
 					platformOperation: "ResumeToolExecution",
 				},
 				{
+					id: "entry_approval_required",
+					type: "wait.pending",
+					status: "pending",
+					approvalRequestId: "approval_2",
+					platformOperation: "ResolveApproval",
+				},
+				{
 					id: "entry_approval_denied",
 					type: "policy.decision",
 					status: "denied",
@@ -310,5 +331,29 @@ describe("maestro timeline client", () => {
 		expect(serialized).not.toContain("leaked-token");
 		expect(serialized).not.toContain("sk-leaked");
 		expect(serialized).not.toContain("raw payload");
+	});
+
+	it("rethrows AbortError instead of falling back to the local timeline", async () => {
+		const config = await resolveMaestroTimelineServiceConfig();
+		if (!config) {
+			throw new Error("expected timeline config");
+		}
+		const abortError = new Error("aborted");
+		abortError.name = "AbortError";
+		const controller = new AbortController();
+		controller.abort(abortError);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => {
+				throw abortError;
+			}),
+		);
+
+		await expect(
+			tryListMaestroTimelineWithPlatform(
+				{ sessionId: "sess_1", agentRunId: "run_1" },
+				{ config, signal: controller.signal },
+			),
+		).rejects.toMatchObject({ name: "AbortError" });
 	});
 });
