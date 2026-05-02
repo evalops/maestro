@@ -114,6 +114,7 @@ describe("OAuth Storage", () => {
 describe("OAuth Index", () => {
 	const originalEvalOpsOrgId = process.env.MAESTRO_EVALOPS_ORG_ID;
 	const originalEvalOpsOrganizationId = process.env.EVALOPS_ORGANIZATION_ID;
+	const originalEnterpriseOrgId = process.env.MAESTRO_ENTERPRISE_ORG_ID;
 	const originalEvalOpsIdentityUrl = process.env.EVALOPS_IDENTITY_URL;
 	const originalFeatureFlagsPath = process.env.EVALOPS_FEATURE_FLAGS_PATH;
 	const originalFetch = global.fetch;
@@ -135,6 +136,11 @@ describe("OAuth Index", () => {
 			Reflect.deleteProperty(process.env, "EVALOPS_ORGANIZATION_ID");
 		} else {
 			process.env.EVALOPS_ORGANIZATION_ID = originalEvalOpsOrganizationId;
+		}
+		if (originalEnterpriseOrgId === undefined) {
+			Reflect.deleteProperty(process.env, "MAESTRO_ENTERPRISE_ORG_ID");
+		} else {
+			process.env.MAESTRO_ENTERPRISE_ORG_ID = originalEnterpriseOrgId;
 		}
 		if (originalEvalOpsIdentityUrl === undefined) {
 			Reflect.deleteProperty(process.env, "EVALOPS_IDENTITY_URL");
@@ -696,15 +702,38 @@ describe("OAuth Index", () => {
 			).rejects.toThrow("GitHub Copilot requires onDeviceCode callback");
 		});
 
-		it("should require an org id for evalops login", async () => {
+		it("starts evalops login without a preconfigured org id", async () => {
 			Reflect.deleteProperty(process.env, "MAESTRO_EVALOPS_ORG_ID");
 			Reflect.deleteProperty(process.env, "EVALOPS_ORGANIZATION_ID");
+			Reflect.deleteProperty(process.env, "MAESTRO_ENTERPRISE_ORG_ID");
+			process.env.MAESTRO_IDENTITY_URL = "https://identity.evalops.test";
+
+			const fetchMock = vi.fn().mockResolvedValue(
+				new Response(JSON.stringify({ error: "redirect_uri_not_allowed" }), {
+					status: 400,
+					headers: { "Content-Type": "application/json" },
+				}),
+			);
+			vi.stubGlobal("fetch", fetchMock);
+
 			await expect(
 				login("evalops", {
 					onAuthUrl: vi.fn(),
 					onStatus: vi.fn(),
 				}),
-			).rejects.toThrow("MAESTRO_EVALOPS_ORG_ID");
+			).rejects.toThrow("IDENTITY_GOOGLE_ALLOWED_REDIRECT_URIS");
+
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			const [, init] = fetchMock.mock.calls[0] ?? [];
+			expect(JSON.parse(String(init?.body))).toMatchObject({
+				redirect_uri: "http://127.0.0.1:1460/auth/callback/evalops",
+				response_mode: "query",
+				prompt: "select_account",
+				scopes: ["llm_gateway:invoke"],
+			});
+			expect(JSON.parse(String(init?.body))).not.toHaveProperty(
+				"organization_id",
+			);
 		});
 	});
 });

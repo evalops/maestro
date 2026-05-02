@@ -5,6 +5,7 @@ import {
 	type OpenAIResponseFormat,
 	type OpenAIToolChoice,
 	filterResponsesApiTools,
+	normalizeOpenAIToolParameters,
 	streamOpenAI,
 } from "../../src/agent/providers/openai.js";
 import type {
@@ -401,6 +402,39 @@ describe("filterResponsesApiTools", () => {
 		expect(result).toHaveLength(0);
 	});
 
+	it("keeps normalized object unions for Responses API tools", () => {
+		const tools = [
+			{
+				name: "background_tasks",
+				description: "background tasks",
+				parameters: {
+					anyOf: [
+						{
+							type: "object",
+							properties: { action: { const: "list" } },
+							required: ["action"],
+						},
+						{
+							type: "object",
+							properties: { action: { const: "stop" } },
+							required: ["action"],
+						},
+					],
+				},
+			},
+		];
+
+		const result = filterResponsesApiTools(tools);
+		expect(result).toHaveLength(1);
+		expect(result[0]!.parameters).toMatchObject({
+			type: "object",
+			properties: {
+				action: { enum: ["list", "stop"] },
+			},
+			required: ["action"],
+		});
+	});
+
 	it("filters out tools with enum schema", () => {
 		const tools = [
 			{
@@ -459,6 +493,547 @@ describe("filterResponsesApiTools", () => {
 			}>,
 		);
 		expect(result).toHaveLength(2);
+	});
+});
+
+describe("normalizeOpenAIToolParameters", () => {
+	it("adds a top-level object type to union-like schemas", () => {
+		const schema = {
+			anyOf: [
+				{
+					type: "object",
+					properties: { action: { const: "list" } },
+					required: ["action"],
+				},
+				{
+					type: "object",
+					properties: {
+						action: { const: "logs" },
+						taskId: { type: "string" },
+					},
+					required: ["action", "taskId"],
+				},
+				{
+					type: "object",
+					properties: {
+						action: { const: "stop" },
+						taskId: { type: "string" },
+					},
+					required: ["action", "taskId"],
+				},
+			],
+		};
+
+		expect(normalizeOpenAIToolParameters(schema)).toMatchObject({
+			type: "object",
+			properties: {
+				action: { enum: ["list", "logs", "stop"] },
+				taskId: { type: "string" },
+			},
+			required: ["action"],
+			additionalProperties: false,
+		});
+	});
+
+	it("normalizes object-typed schemas with top-level unions", () => {
+		const schema = {
+			type: "object",
+			anyOf: [
+				{
+					type: "object",
+					properties: { action: { const: "list" } },
+					required: ["action"],
+				},
+				{
+					type: "object",
+					properties: { action: { const: "stop" } },
+					required: ["action"],
+				},
+			],
+		};
+
+		expect(normalizeOpenAIToolParameters(schema)).toMatchObject({
+			type: "object",
+			properties: {
+				action: { enum: ["list", "stop"] },
+			},
+			required: ["action"],
+		});
+	});
+
+	it("keeps root object constraints when flattening top-level unions", () => {
+		const schema = {
+			type: "object",
+			additionalProperties: true,
+			properties: {
+				workspace: { type: "string", minLength: 1 },
+			},
+			required: ["workspace"],
+			anyOf: [
+				{
+					type: "object",
+					properties: { action: { const: "list" } },
+					required: ["action"],
+				},
+				{
+					type: "object",
+					properties: { action: { const: "stop" } },
+					required: ["action"],
+				},
+			],
+		};
+
+		expect(normalizeOpenAIToolParameters(schema)).toMatchObject({
+			type: "object",
+			properties: {
+				workspace: { type: "string", minLength: 1 },
+				action: { enum: ["list", "stop"] },
+			},
+			required: ["workspace", "action"],
+			additionalProperties: true,
+		});
+	});
+
+	it("merges const and enum branches regardless of order", () => {
+		const schema = {
+			anyOf: [
+				{
+					type: "object",
+					properties: { action: { const: "list" } },
+					required: ["action"],
+				},
+				{
+					type: "object",
+					properties: { action: { enum: ["logs", "stop"] } },
+					required: ["action"],
+				},
+			],
+		};
+
+		expect(normalizeOpenAIToolParameters(schema)).toMatchObject({
+			type: "object",
+			properties: {
+				action: { enum: ["list", "logs", "stop"] },
+			},
+			required: ["action"],
+		});
+	});
+
+	it("filters lossy Responses unions with branch-only required fields", () => {
+		const result = filterResponsesApiTools([
+			{
+				name: "lossy",
+				description: "lossy union",
+				parameters: {
+					oneOf: [
+						{
+							type: "object",
+							properties: { owner: { type: "string" } },
+							required: ["owner"],
+						},
+						{
+							type: "object",
+							properties: { repo: { type: "string" } },
+							required: ["repo"],
+						},
+					],
+				},
+			},
+		]);
+
+		expect(result).toHaveLength(0);
+	});
+
+	it("uses branch-required fields when object unions have no shared required field", () => {
+		const schema = {
+			anyOf: [
+				{
+					type: "object",
+					properties: { owner: { type: "string" } },
+					required: ["owner"],
+				},
+				{
+					type: "object",
+					properties: { repo: { type: "string" } },
+					required: ["repo"],
+				},
+			],
+		};
+
+		expect(normalizeOpenAIToolParameters(schema)).toMatchObject({
+			type: "object",
+			properties: {
+				owner: { type: "string" },
+				repo: { type: "string" },
+			},
+			required: ["owner", "repo"],
+		});
+	});
+
+	it("keeps all required fields when flattening allOf object schemas", () => {
+		const schema = {
+			allOf: [
+				{
+					type: "object",
+					properties: { action: { const: "start" } },
+					required: ["action"],
+				},
+				{
+					type: "object",
+					properties: { command: { type: "string" } },
+					required: ["command"],
+				},
+			],
+		};
+
+		expect(normalizeOpenAIToolParameters(schema)).toMatchObject({
+			type: "object",
+			properties: {
+				action: { const: "start" },
+				command: { type: "string" },
+			},
+			required: ["action", "command"],
+		});
+	});
+
+	it("merges compatible allOf constraints on the same property", () => {
+		const schema = {
+			allOf: [
+				{
+					type: "object",
+					properties: { count: { type: "number", minimum: 1 } },
+					required: ["count"],
+				},
+				{
+					type: "object",
+					properties: { count: { type: "number", maximum: 10 } },
+					required: ["count"],
+				},
+			],
+		};
+
+		expect(normalizeOpenAIToolParameters(schema)).toMatchObject({
+			type: "object",
+			properties: {
+				count: { type: "number", minimum: 1, maximum: 10 },
+			},
+			required: ["count"],
+		});
+	});
+
+	it("keeps stricter allOf bounds on the same property", () => {
+		const schema = {
+			allOf: [
+				{
+					type: "object",
+					properties: { count: { type: "number", minimum: 1, maximum: 20 } },
+					required: ["count"],
+				},
+				{
+					type: "object",
+					properties: { count: { type: "number", minimum: 5, maximum: 10 } },
+					required: ["count"],
+				},
+			],
+		};
+
+		expect(normalizeOpenAIToolParameters(schema)).toMatchObject({
+			type: "object",
+			properties: {
+				count: { type: "number", minimum: 5, maximum: 10 },
+			},
+			required: ["count"],
+		});
+	});
+
+	it("keeps validation constraints when allOf annotations differ", () => {
+		const schema = {
+			allOf: [
+				{
+					type: "object",
+					properties: {
+						count: {
+							type: "number",
+							minimum: 1,
+							description: "Minimum count",
+						},
+					},
+					required: ["count"],
+				},
+				{
+					type: "object",
+					properties: {
+						count: {
+							type: "number",
+							minimum: 1,
+							description: "Requested count",
+						},
+					},
+					required: ["count"],
+				},
+			],
+		};
+
+		expect(normalizeOpenAIToolParameters(schema)).toMatchObject({
+			type: "object",
+			properties: {
+				count: {
+					type: "number",
+					minimum: 1,
+					description: "Minimum count",
+				},
+			},
+			required: ["count"],
+		});
+	});
+
+	it("intersects enum-like allOf property values", () => {
+		const schema = {
+			allOf: [
+				{
+					type: "object",
+					properties: { action: { const: "start" } },
+					required: ["action"],
+				},
+				{
+					type: "object",
+					properties: { action: { enum: ["start", "stop"] } },
+					required: ["action"],
+				},
+			],
+		};
+
+		expect(normalizeOpenAIToolParameters(schema)).toMatchObject({
+			type: "object",
+			properties: {
+				action: { enum: ["start"] },
+			},
+			required: ["action"],
+		});
+	});
+
+	it("falls back when allOf enum intersections are empty", () => {
+		const schema = {
+			allOf: [
+				{
+					type: "object",
+					properties: { action: { const: "start" } },
+					required: ["action"],
+				},
+				{
+					type: "object",
+					properties: { action: { const: "stop" } },
+					required: ["action"],
+				},
+			],
+		};
+
+		expect(normalizeOpenAIToolParameters(schema)).toEqual({
+			type: "object",
+			properties: {},
+			additionalProperties: true,
+		});
+	});
+
+	it("preserves matching properties with different key order", () => {
+		const schema = {
+			anyOf: [
+				{
+					type: "object",
+					properties: {
+						path: { type: "string", description: "File path", minLength: 1 },
+					},
+				},
+				{
+					type: "object",
+					properties: {
+						path: { minLength: 1, description: "File path", type: "string" },
+					},
+				},
+			],
+		};
+
+		expect(normalizeOpenAIToolParameters(schema)).toMatchObject({
+			type: "object",
+			properties: {
+				path: { type: "string", description: "File path", minLength: 1 },
+			},
+		});
+	});
+
+	it("uses an object schema for null or scalar schemas", () => {
+		expect(normalizeOpenAIToolParameters(null)).toEqual({
+			type: "object",
+			properties: {},
+			additionalProperties: true,
+		});
+		expect(normalizeOpenAIToolParameters("string")).toEqual({
+			type: "object",
+			properties: {},
+			additionalProperties: true,
+		});
+	});
+
+	it("sends normalized tool parameters in Completions requests", async () => {
+		const mockFetch = vi.fn();
+		vi.stubGlobal("fetch", mockFetch);
+		const mockResponse = new Response(
+			makeStream([
+				'data: {"choices":[{"delta":{"content":"ok"}}]}\n',
+				'data: {"choices":[{"finish_reason":"stop"}]}\n',
+				"data: [DONE]\n",
+			]),
+			{ status: 200 },
+		);
+		mockFetch.mockResolvedValue(mockResponse);
+
+		const context: Context = {
+			...baseContext,
+			tools: [
+				{
+					name: "background_tasks",
+					description: "manage background tasks",
+					parameters: {
+						anyOf: [
+							{
+								type: "object",
+								properties: { action: { const: "list" } },
+								required: ["action"],
+							},
+						],
+					},
+				} as Context["tools"][number],
+			],
+		};
+
+		for await (const _ of streamOpenAI(completionsModel, context, {
+			apiKey: "k",
+		})) {
+			// consume stream
+		}
+
+		const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+		const body = JSON.parse(init.body as string);
+		expect(body.tools[0].function.parameters).toMatchObject({
+			type: "object",
+			properties: {
+				action: { const: "list" },
+			},
+			required: ["action"],
+		});
+		expect(body.tools[0].function.parameters.anyOf).toBeUndefined();
+		vi.unstubAllGlobals();
+	});
+
+	it("filters lossy branch-only unions in Completions requests", async () => {
+		const mockFetch = vi.fn();
+		vi.stubGlobal("fetch", mockFetch);
+		const mockResponse = new Response(
+			makeStream([
+				'data: {"choices":[{"delta":{"content":"ok"}}]}\n',
+				'data: {"choices":[{"finish_reason":"stop"}]}\n',
+				"data: [DONE]\n",
+			]),
+			{ status: 200 },
+		);
+		mockFetch.mockResolvedValue(mockResponse);
+
+		const context: Context = {
+			...baseContext,
+			tools: [
+				{
+					name: "github_resource",
+					description: "fetch github resources",
+					parameters: {
+						anyOf: [
+							{
+								type: "object",
+								properties: { owner: { type: "string" } },
+								required: ["owner"],
+							},
+							{
+								type: "object",
+								properties: { repo: { type: "string" } },
+								required: ["repo"],
+							},
+						],
+					},
+				} as Context["tools"][number],
+				{
+					name: "background_tasks",
+					description: "manage background tasks",
+					parameters: {
+						type: "object",
+						properties: { action: { type: "string" } },
+						required: ["action"],
+						additionalProperties: false,
+					},
+				} as Context["tools"][number],
+			],
+		};
+
+		for await (const _ of streamOpenAI(completionsModel, context, {
+			apiKey: "k",
+		})) {
+			// consume stream
+		}
+
+		const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+		const body = JSON.parse(init.body as string);
+		expect(body.tools).toHaveLength(1);
+		expect(body.tools[0].function.name).toBe("background_tasks");
+		vi.unstubAllGlobals();
+	});
+
+	it("omits tools when every Completions tool is filtered", async () => {
+		const mockFetch = vi.fn();
+		vi.stubGlobal("fetch", mockFetch);
+		const mockResponse = new Response(
+			makeStream([
+				'data: {"choices":[{"delta":{"content":"ok"}}]}\n',
+				'data: {"choices":[{"finish_reason":"stop"}]}\n',
+				"data: [DONE]\n",
+			]),
+			{ status: 200 },
+		);
+		mockFetch.mockResolvedValue(mockResponse);
+
+		const context: Context = {
+			...baseContext,
+			tools: [
+				{
+					name: "github_resource",
+					description: "fetch github resources",
+					parameters: {
+						anyOf: [
+							{
+								type: "object",
+								properties: { owner: { type: "string" } },
+								required: ["owner"],
+							},
+							{
+								type: "object",
+								properties: { repo: { type: "string" } },
+								required: ["repo"],
+							},
+						],
+					},
+				} as Context["tools"][number],
+			],
+		};
+
+		for await (const _ of streamOpenAI(completionsModel, context, {
+			apiKey: "k",
+			toolChoice: "required",
+		})) {
+			// consume stream
+		}
+
+		const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+		const body = JSON.parse(init.body as string);
+		expect(body.tools).toBeUndefined();
+		expect(body.tool_choice).toBeUndefined();
+		vi.unstubAllGlobals();
 	});
 });
 
@@ -567,6 +1142,74 @@ describe("toolChoice parameter", () => {
 		const [, fetchOptions] = mockFetch.mock.calls[0]!;
 		const body = JSON.parse(fetchOptions.body);
 		expect(body.tool_choice).toEqual(specificTool);
+	});
+
+	it("drops specific tool choice when that tool is filtered", async () => {
+		const lines = [
+			'data: {"choices":[{"delta":{"content":"Hi"}}]}\n',
+			'data: {"choices":[{"finish_reason":"stop"}]}\n',
+			"data: [DONE]\n",
+		];
+		const mockResponse = new Response(
+			new ReadableStream({
+				start(controller) {
+					for (const line of lines) {
+						controller.enqueue(new TextEncoder().encode(line));
+					}
+					controller.close();
+				},
+			}),
+			{ status: 200 },
+		);
+		mockFetch.mockResolvedValue(mockResponse);
+
+		const lossyToolName = "github_resource";
+		const contextWithLossyAndValidTools: Context = {
+			...contextWithTools,
+			tools: [
+				{
+					name: lossyToolName,
+					description: "fetch github resources",
+					parameters: {
+						anyOf: [
+							{
+								type: "object",
+								properties: { owner: { type: "string" } },
+								required: ["owner"],
+							},
+							{
+								type: "object",
+								properties: { repo: { type: "string" } },
+								required: ["repo"],
+							},
+						],
+					},
+				} as Context["tools"][number],
+				contextWithTools.tools[0],
+			],
+		};
+		const specificTool: OpenAIToolChoice = {
+			type: "function",
+			function: { name: lossyToolName },
+		};
+
+		for await (const _ of streamOpenAI(
+			completionsModel,
+			contextWithLossyAndValidTools,
+			{
+				apiKey: "k",
+				toolChoice: specificTool,
+			},
+		)) {
+			// consume events
+		}
+
+		expect(mockFetch).toHaveBeenCalledTimes(1);
+		const [, fetchOptions] = mockFetch.mock.calls[0]!;
+		const body = JSON.parse(fetchOptions.body);
+		expect(body.tools).toHaveLength(1);
+		expect(body.tools[0].function.name).toBe(contextWithTools.tools[0].name);
+		expect(body.tool_choice).toBeUndefined();
 	});
 
 	it("does not include tool_choice when not specified", async () => {

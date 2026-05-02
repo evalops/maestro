@@ -664,7 +664,7 @@ export async function handleConfigInit(): Promise<void> {
 		} else {
 			useEnv = false;
 			const noKeyMessage = isEvalOpsManagedProvider(providerId)
-				? "\nManaged gateway preset does not use a local API key. Run /login evalops after setup."
+				? "\nManaged gateway preset does not use a local API key. Run maestro evalops login after setup."
 				: "\nLocal providers do not require API keys. Skipping step.";
 			console.log(chalk.dim(noKeyMessage));
 		}

@@ -93,7 +93,7 @@ export function createAuthSetup(params: {
 								!isEvalOpsManagedGatewayEnabled()
 							? "EvalOps managed gateway access is currently disabled by dynamic config."
 							: isEvalOpsManagedProvider(providerName)
-								? 'Run "/login evalops" after setting MAESTRO_EVALOPS_ORG_ID.'
+								? 'Run "maestro evalops login" or "/login evalops" to authenticate before retrying.'
 								: 'Run "/login" to authenticate before retrying.';
 			push(
 				`${loginHint} Or provide an API key for the selected provider.`,

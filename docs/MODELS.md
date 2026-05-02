@@ -213,6 +213,11 @@ Background:
 > Production and organization workflows should prefer OpenAI Platform or the
 > EvalOps managed gateway.
 
+For EvalOps managed gateway models, run `maestro evalops login` locally. The
+login flow uses the Identity Google callback, stores the returned organization
+metadata with the local OAuth credential, and then routes models such as
+`evalops/gpt-4o-mini` through `MAESTRO_LLM_GATEWAY_URL`.
+
 ## Factory Commands
 
 - `/import factory` or `npm run factory:import` – copies `~/.factory` config +

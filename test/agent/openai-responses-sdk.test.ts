@@ -424,6 +424,61 @@ describe("OpenAI Responses SDK streaming", () => {
 		expect(params.tool_choice).toBe("none");
 	});
 
+	it("normalizes top-level union tool schemas before Responses filtering", async () => {
+		const context: Context = {
+			...baseContext,
+			tools: [
+				{
+					name: "background_tasks",
+					description: "manage background tasks",
+					parameters: {
+						anyOf: [
+							{
+								type: "object",
+								properties: { action: { const: "list" } },
+								required: ["action"],
+							},
+							{
+								type: "object",
+								properties: {
+									action: { const: "stop" },
+									taskId: { type: "string" },
+								},
+								required: ["action"],
+							},
+						],
+					},
+				},
+			],
+		};
+
+		for await (const _ of streamResponsesApiSdk(responsesModel, context, {
+			apiKey: "k",
+		})) {
+			// drain
+		}
+
+		const params = openaiMock.getLastParams() as {
+			tools?: Array<{
+				name: string;
+				parameters: Record<string, unknown>;
+			}>;
+		};
+		expect(params.tools).toHaveLength(1);
+		expect(params.tools?.[0]).toMatchObject({
+			name: "background_tasks",
+			parameters: {
+				type: "object",
+				properties: {
+					action: { enum: ["list", "stop"] },
+					taskId: { type: "string" },
+				},
+				required: ["action"],
+				additionalProperties: false,
+			},
+		});
+	});
+
 	it("streams reasoning summary deltas when provided", async () => {
 		openaiMock.setStream(() =>
 			makeEventStream([

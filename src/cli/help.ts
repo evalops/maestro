@@ -92,6 +92,9 @@ export function printHelp(version: string) {
   # Use Codex subscription models after \`maestro codex login\`
   maestro --provider openai-codex --model gpt-5.5 "Plan this migration"
 
+  # Use EvalOps managed gateway models after \`maestro evalops login\`
+  maestro --provider evalops --model gpt-4o-mini "Say hello in one sentence"
+
   # Export a portable session log
   maestro export <session-id> ./session.jsonl --format jsonl
 

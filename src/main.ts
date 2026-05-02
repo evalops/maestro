@@ -742,6 +742,12 @@ export async function main(args: string[]) {
 		return;
 	}
 
+	if (parsed.command === "evalops") {
+		const { handleEvalOpsCommand } = await import("./cli/commands/evalops.js");
+		await handleEvalOpsCommand(parsed.subcommand);
+		return;
+	}
+
 	if (parsed.command === "codex") {
 		const { handleCodexCommand } = await import("./cli/commands/codex.js");
 		await handleCodexCommand(parsed.subcommand, parsed.messages);
