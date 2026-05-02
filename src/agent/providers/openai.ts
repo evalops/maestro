@@ -114,7 +114,10 @@ import type {
 
 const logger = createLogger("agent:providers:openai");
 import { streamResponsesApiSdk } from "./openai-responses-sdk.js";
-export { filterResponsesApiTools } from "./openai-shared.js";
+export {
+	filterResponsesApiTools,
+	normalizeOpenAIToolParameters,
+} from "./openai-shared.js";
 export type {
 	OpenAIOptions,
 	OpenAIResponseFormat,
@@ -129,6 +132,7 @@ import type {
 	OpenAIResponseFormat,
 	OpenAIToolChoice,
 } from "./openai-shared.js";
+import { filterResponsesApiTools } from "./openai-shared.js";
 import { sanitizeSurrogates } from "./sanitize-unicode.js";
 import {
 	createToolArgumentNormalizer,
@@ -850,37 +854,72 @@ export async function* streamOpenAI(
 	}
 
 	if (context.tools && context.tools.length > 0) {
-		requestBody.tools = context.tools.map((tool, idx, arr) => {
-			const toolDef: {
-				type: "function";
-				function: { name: string; description: string; parameters: unknown };
-				cache_control?: CacheControl;
-			} = {
-				type: "function" as const,
-				function: {
-					name: tool.name,
-					description: tool.description,
-					parameters: tool.parameters,
+		const validTools = filterResponsesApiTools(context.tools);
+		if (validTools.length < context.tools.length) {
+			const filtered = context.tools.filter(
+				(t) => !validTools.some((v) => v.name === t.name),
+			);
+			logger.warn(
+				"Some tools filtered out due to OpenAI-compatible schema limitations",
+				{
+					filteredTools: filtered.map((t) => t.name),
+					reason:
+						"OpenAI-compatible tool schemas cannot preserve lossy top-level unions",
 				},
-			};
-			// Apply cache_control to last tool for OpenRouter with Claude
-			if (
-				compat.supportsCacheControl &&
-				idx === arr.length - 1 &&
-				cacheAppliedCount < maxCacheItems
-			) {
-				toolDef.cache_control = { type: "ephemeral" };
-				cacheAppliedCount++;
-			}
-			return toolDef;
-		});
+			);
+		}
+		if (validTools.length > 0) {
+			requestBody.tools = validTools.map((tool, idx, arr) => {
+				const toolDef: {
+					type: "function";
+					function: { name: string; description: string; parameters: unknown };
+					cache_control?: CacheControl;
+				} = {
+					type: "function" as const,
+					function: {
+						name: tool.name,
+						description: tool.description,
+						parameters: tool.parameters,
+					},
+				};
+				// Apply cache_control to last tool for OpenRouter with Claude
+				if (
+					compat.supportsCacheControl &&
+					idx === arr.length - 1 &&
+					cacheAppliedCount < maxCacheItems
+				) {
+					toolDef.cache_control = { type: "ephemeral" };
+					cacheAppliedCount++;
+				}
+				return toolDef;
+			});
+		} else if (hasToolHistory(context.messages)) {
+			requestBody.tools = [];
+		}
 	} else if (hasToolHistory(context.messages)) {
 		requestBody.tools = [];
 	}
 
 	// Set tool_choice if specified
 	if (options.toolChoice && requestBody.tools && requestBody.tools.length > 0) {
-		requestBody.tool_choice = options.toolChoice;
+		if (
+			typeof options.toolChoice === "object" &&
+			options.toolChoice.type === "function"
+		) {
+			const toolName = options.toolChoice.function.name;
+			if (requestBody.tools.some((tool) => tool.function.name === toolName)) {
+				requestBody.tool_choice = options.toolChoice;
+			} else {
+				logger.warn(
+					"Dropping tool_choice for filtered OpenAI-compatible tool",
+					{
+						toolName,
+					},
+				);
+			}
+		} else {
+			requestBody.tool_choice = options.toolChoice;
+		}
 	}
 
 	if (options.temperature !== undefined) {

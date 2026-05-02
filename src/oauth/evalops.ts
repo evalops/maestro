@@ -183,17 +183,12 @@ function fetchIdentity(
 	});
 }
 
-function getOrganizationId(): string {
+function getConfiguredOrganizationId(): string | undefined {
 	const organizationId = getEnvValue([
 		"MAESTRO_EVALOPS_ORG_ID",
 		"EVALOPS_ORGANIZATION_ID",
 		"MAESTRO_ENTERPRISE_ORG_ID",
 	]);
-	if (!organizationId) {
-		throw new Error(
-			"EvalOps login requires MAESTRO_EVALOPS_ORG_ID or EVALOPS_ORGANIZATION_ID.",
-		);
-	}
 	return organizationId;
 }
 
@@ -329,7 +324,15 @@ function resolveStoredEvalOpsMetadata(
 function resolveDelegationOrganizationId(
 	metadata: Record<string, unknown> | undefined,
 ): string {
-	return getMetadataString(metadata, "organizationId") ?? getOrganizationId();
+	const organizationId =
+		getMetadataString(metadata, "organizationId") ??
+		getConfiguredOrganizationId();
+	if (!organizationId) {
+		throw new Error(
+			"EvalOps delegation requires an organization id from /login evalops or MAESTRO_EVALOPS_ORG_ID.",
+		);
+	}
+	return organizationId;
 }
 
 async function getFreshEvalOpsAccessToken(
@@ -556,7 +559,7 @@ function closeServer(server: Server): Promise<void> {
 
 async function startIdentityLogin(
 	identityBaseUrl: string,
-	organizationId: string,
+	organizationId: string | undefined,
 	onStatus?: (status: string) => void,
 ): Promise<string> {
 	onStatus?.("Requesting EvalOps managed login URL...");
@@ -569,7 +572,7 @@ async function startIdentityLogin(
 			body: JSON.stringify({
 				redirect_uri: CALLBACK_URI,
 				response_mode: "query",
-				organization_id: organizationId,
+				...(organizationId ? { organization_id: organizationId } : {}),
 				prompt: "select_account",
 				scopes: [REQUIRED_SCOPE],
 			}),
@@ -600,7 +603,7 @@ export async function loginEvalOps(
 	onStatus?: (status: string) => void,
 ): Promise<void> {
 	const identityBaseUrl = getIdentityBaseUrl();
-	const organizationId = getOrganizationId();
+	const organizationId = getConfiguredOrganizationId();
 	const providerRef = getProviderRef();
 	const { server, getResult } = await startCallbackServer();
 

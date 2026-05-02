@@ -123,4 +123,17 @@ describe("parseArgs", () => {
 			session: "session-123",
 		});
 	});
+
+	it("parses evalops auth commands", () => {
+		expect(parseArgs(["evalops", "login"])).toMatchObject({
+			command: "evalops",
+			subcommand: "login",
+			messages: [],
+		});
+		expect(parseArgs(["evalops", "status"])).toMatchObject({
+			command: "evalops",
+			subcommand: "status",
+			messages: [],
+		});
+	});
 });

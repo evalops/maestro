@@ -69,7 +69,6 @@ export async function* streamResponsesApiSdk(
 	// Build input messages
 	const input = buildInput(context, model, options);
 
-	// Filter and convert tools
 	const validTools = context.tools
 		? filterResponsesApiTools(context.tools)
 		: [];
@@ -100,7 +99,7 @@ export async function* streamResponsesApiSdk(
 			type: "function" as const,
 			name: tool.name,
 			description: tool.description,
-			parameters: tool.parameters as Record<string, unknown>,
+			parameters: tool.parameters,
 			strict: null,
 		}));
 	}
