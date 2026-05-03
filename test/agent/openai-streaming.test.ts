@@ -619,6 +619,45 @@ describe("normalizeOpenAIToolParameters", () => {
 		});
 	});
 
+	it("drops branch-only constraints when merging enum-like anyOf branches", () => {
+		const schema = {
+			anyOf: [
+				{
+					type: "object",
+					properties: {
+						action: {
+							const: "list",
+							type: "string",
+							minLength: 4,
+							description: "List background tasks",
+						},
+					},
+					required: ["action"],
+				},
+				{
+					type: "object",
+					properties: {
+						action: {
+							const: "stop",
+							type: "string",
+							minLength: 1,
+							description: "Stop a background task",
+						},
+					},
+					required: ["action"],
+				},
+			],
+		};
+
+		expect(normalizeOpenAIToolParameters(schema)).toMatchObject({
+			type: "object",
+			properties: {
+				action: { type: "string", enum: ["list", "stop"] },
+			},
+			required: ["action"],
+		});
+	});
+
 	it("filters lossy Responses unions with branch-only required fields", () => {
 		const result = filterResponsesApiTools([
 			{
