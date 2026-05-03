@@ -6,6 +6,7 @@
  */
 
 import type { ReasoningEffort, StreamOptions } from "../types.js";
+import { isRecord } from "./tool-arguments.js";
 
 // =============================================================================
 // OpenAI API Types
@@ -105,10 +106,6 @@ const EMPTY_TOOL_PARAMETERS_SCHEMA = {
 } as const;
 
 const TOP_LEVEL_UNION_KEYS = ["anyOf", "oneOf", "allOf"] as const;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return !!value && typeof value === "object" && !Array.isArray(value);
-}
 
 function canonicalizeSchema(value: unknown): unknown {
 	if (Array.isArray(value)) {
@@ -231,8 +228,18 @@ function mergeObjectVariants(
 					const {
 						const: _const,
 						enum: _enum,
-						...schemaWithoutDiscriminator
+						...currentWithoutDiscriminator
 					} = current;
+					const {
+						const: _incomingConst,
+						enum: _incomingEnum,
+						...incomingWithoutDiscriminator
+					} = propertySchema;
+					const mergedSchema =
+						mergeCompatibleObjectSchemas(
+							currentWithoutDiscriminator,
+							incomingWithoutDiscriminator,
+						) ?? currentWithoutDiscriminator;
 					const enumValues =
 						requiredMode === "union"
 							? currentValues.filter((value) => incomingValues.includes(value))
@@ -241,7 +248,7 @@ function mergeObjectVariants(
 						return undefined;
 					}
 					mergedProperties[propertyName] = {
-						...schemaWithoutDiscriminator,
+						...mergedSchema,
 						...(enumValues.length > 0 ? { enum: enumValues } : {}),
 					};
 					continue;

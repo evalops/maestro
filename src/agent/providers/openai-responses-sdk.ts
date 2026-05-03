@@ -105,13 +105,22 @@ export async function* streamResponsesApiSdk(
 	}
 
 	if (options.toolChoice && validTools.length > 0) {
-		params.tool_choice =
-			typeof options.toolChoice === "string"
-				? options.toolChoice
-				: {
-						type: "function",
-						name: options.toolChoice.function.name,
-					};
+		if (typeof options.toolChoice === "string") {
+			params.tool_choice = options.toolChoice;
+		} else {
+			const toolName = options.toolChoice.function.name;
+			if (validTools.some((tool) => tool.name === toolName)) {
+				params.tool_choice = {
+					type: "function",
+					name: toolName,
+				};
+			} else {
+				logger.warn("Dropping tool_choice for filtered Responses API tool", {
+					toolName,
+					model: model.id,
+				});
+			}
+		}
 	}
 
 	if (options.maxTokens) {
