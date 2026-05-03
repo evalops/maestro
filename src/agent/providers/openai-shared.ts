@@ -198,6 +198,31 @@ function mergeCompatibleObjectSchemas(
 	return merged;
 }
 
+function mergeSharedObjectSchemaConstraints(
+	left: Record<string, unknown>,
+	right: Record<string, unknown>,
+	enumValues: unknown[],
+): Record<string, unknown> {
+	const merged: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(left)) {
+		if (right[key] !== undefined && schemasAreEqual(value, right[key])) {
+			merged[key] = value;
+		}
+	}
+	const primitiveTypes = new Set(
+		enumValues
+			.map((value) => (value === null ? "null" : typeof value))
+			.filter((value) => ["boolean", "number", "string"].includes(value)),
+	);
+	if (primitiveTypes.size === 1) {
+		const [primitiveType] = [...primitiveTypes];
+		if (left.type === primitiveType || right.type === primitiveType) {
+			merged.type = primitiveType;
+		}
+	}
+	return merged;
+}
+
 function mergeObjectVariants(
 	variants: unknown[],
 	requiredMode: "intersection" | "union",
@@ -235,11 +260,6 @@ function mergeObjectVariants(
 						enum: _incomingEnum,
 						...incomingWithoutDiscriminator
 					} = propertySchema;
-					const mergedSchema =
-						mergeCompatibleObjectSchemas(
-							currentWithoutDiscriminator,
-							incomingWithoutDiscriminator,
-						) ?? currentWithoutDiscriminator;
 					const enumValues =
 						requiredMode === "union"
 							? currentValues.filter((value) => incomingValues.includes(value))
@@ -247,6 +267,17 @@ function mergeObjectVariants(
 					if (requiredMode === "union" && enumValues.length === 0) {
 						return undefined;
 					}
+					const mergedSchema =
+						requiredMode === "union"
+							? (mergeCompatibleObjectSchemas(
+									currentWithoutDiscriminator,
+									incomingWithoutDiscriminator,
+								) ?? currentWithoutDiscriminator)
+							: mergeSharedObjectSchemaConstraints(
+									currentWithoutDiscriminator,
+									incomingWithoutDiscriminator,
+									enumValues,
+								);
 					mergedProperties[propertyName] = {
 						...mergedSchema,
 						...(enumValues.length > 0 ? { enum: enumValues } : {}),
