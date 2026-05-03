@@ -424,6 +424,42 @@ describe("OpenAI Responses SDK streaming", () => {
 		expect(params.tool_choice).toBe("none");
 	});
 
+	it("drops forced tool_choice when that tool is filtered out", async () => {
+		const context: Context = {
+			...baseContext,
+			tools: [
+				{
+					name: "read",
+					description: "read file",
+					parameters: {
+						type: "object",
+						properties: { path: { type: "string" } },
+						required: ["path"],
+					},
+				},
+				{
+					name: "unsupported",
+					description: "unsupported schema",
+					parameters: { enum: ["a", "b"] },
+				},
+			],
+		};
+
+		for await (const _ of streamResponsesApiSdk(responsesModel, context, {
+			apiKey: "k",
+			toolChoice: { type: "function", function: { name: "unsupported" } },
+		})) {
+			// drain
+		}
+
+		const params = openaiMock.getLastParams() as {
+			tools?: Array<{ name: string }>;
+			tool_choice?: unknown;
+		};
+		expect(params.tools?.map((tool) => tool.name)).toEqual(["read"]);
+		expect(params.tool_choice).toBeUndefined();
+	});
+
 	it("normalizes top-level union tool schemas before Responses filtering", async () => {
 		const context: Context = {
 			...baseContext,
@@ -441,7 +477,7 @@ describe("OpenAI Responses SDK streaming", () => {
 							{
 								type: "object",
 								properties: {
-									action: { const: "stop" },
+									action: { const: "stop", type: "string" },
 									taskId: { type: "string" },
 								},
 								required: ["action"],
@@ -470,7 +506,7 @@ describe("OpenAI Responses SDK streaming", () => {
 			parameters: {
 				type: "object",
 				properties: {
-					action: { enum: ["list", "stop"] },
+					action: { type: "string", enum: ["list", "stop"] },
 					taskId: { type: "string" },
 				},
 				required: ["action"],

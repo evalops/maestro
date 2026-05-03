@@ -416,7 +416,7 @@ describe("filterResponsesApiTools", () => {
 						},
 						{
 							type: "object",
-							properties: { action: { const: "stop" } },
+							properties: { action: { const: "stop", type: "string" } },
 							required: ["action"],
 						},
 					],
@@ -429,7 +429,7 @@ describe("filterResponsesApiTools", () => {
 		expect(result[0]!.parameters).toMatchObject({
 			type: "object",
 			properties: {
-				action: { enum: ["list", "stop"] },
+				action: { type: "string", enum: ["list", "stop"] },
 			},
 			required: ["action"],
 		});
