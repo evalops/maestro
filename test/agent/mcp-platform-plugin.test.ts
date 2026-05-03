@@ -84,6 +84,19 @@ describe("platform MCP plugin servers", () => {
 		]);
 	});
 
+	it("keeps transport session evidence for existing MCP clients", () => {
+		process.env.MAESTRO_PLATFORM_MCP_URL =
+			"https://agent-mcp.evalops.example/mcp/";
+		process.env.EVALOPS_ORGANIZATION_ID = "workspace-123";
+		process.env.MAESTRO_SESSION_ID = "session-123";
+
+		const [server] = getPlatformMcpPluginServers();
+		expect(server?.headers).toMatchObject({
+			"Mcp-Session-Id": "session-123",
+			"X-EvalOps-Session-Id": "session-123",
+		});
+	});
+
 	it("merges the Platform MCP plugin server into the runtime MCP config", () => {
 		process.env.MAESTRO_PLATFORM_MCP_URL =
 			"https://agent-mcp.evalops.example/mcp";
