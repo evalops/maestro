@@ -29,7 +29,13 @@ describe("platform MCP plugin servers", () => {
 			"EVALOPS_ORGANIZATION_ID",
 			"MAESTRO_ENTERPRISE_ORG_ID",
 			"MAESTRO_SESSION_ID",
+			"MAESTRO_AGENT_ID",
+			"MAESTRO_EVALOPS_AGENT_ID",
 			"MAESTRO_AGENT_RUN_ID",
+			"MAESTRO_PLATFORM_MCP_SCOPES",
+			"MAESTRO_AGENT_MCP_SCOPES",
+			"MAESTRO_EVALOPS_AGENT_MCP_SCOPES",
+			"MAESTRO_CEREBRO_MCP_SCOPES",
 			"MAESTRO_REQUEST_ID",
 			"TRACE_ID",
 			"OTEL_TRACE_ID",
@@ -49,7 +55,9 @@ describe("platform MCP plugin servers", () => {
 		process.env.EVALOPS_TOKEN = "evalops-token";
 		process.env.EVALOPS_ORGANIZATION_ID = "workspace-123";
 		process.env.MAESTRO_SESSION_ID = "session-123";
+		process.env.MAESTRO_AGENT_ID = "agent-maestro";
 		process.env.MAESTRO_AGENT_RUN_ID = "run-123";
+		process.env.MAESTRO_CEREBRO_MCP_SCOPES = "cerebro:read,cerebro:assert";
 		process.env.MAESTRO_REQUEST_ID = "request-123";
 		process.env.TRACE_ID = "trace-123";
 		process.env.MAESTRO_SURFACE = "MAESTRO_SURFACE_CLI";
@@ -64,7 +72,10 @@ describe("platform MCP plugin servers", () => {
 					Authorization: "Bearer evalops-token",
 					"Mcp-Session-Id": "session-123",
 					"X-EvalOps-Workspace-Id": "workspace-123",
+					"X-EvalOps-Session-Id": "session-123",
+					"X-EvalOps-Agent-Id": "agent-maestro",
 					"X-EvalOps-Agent-Run-Id": "run-123",
+					"X-EvalOps-Scopes": "cerebro:read,cerebro:assert",
 					"X-EvalOps-Request-Id": "request-123",
 					"X-EvalOps-Trace-Id": "trace-123",
 					"X-EvalOps-Maestro-Surface": "MAESTRO_SURFACE_CLI",

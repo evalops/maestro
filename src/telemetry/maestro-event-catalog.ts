@@ -9,6 +9,7 @@ export enum MaestroBusEventType {
 	ToolCallAttempted = "maestro.events.tool_call.attempted",
 	ToolCallCompleted = "maestro.events.tool_call.completed",
 	PromptVariantSelected = "maestro.events.prompt_variant.selected",
+	ContextLearned = "maestro.events.context.learned",
 	SkillInvoked = "maestro.events.skill.invoked",
 	SkillSucceeded = "maestro.events.skill.succeeded",
 	SkillFailed = "maestro.events.skill.failed",
@@ -21,6 +22,7 @@ export type MaestroBusEventCategory =
 	| "safety"
 	| "tool"
 	| "prompt"
+	| "knowledge"
 	| "skill"
 	| "eval";
 
@@ -123,6 +125,12 @@ export const MAESTRO_BUS_EVENT_CATALOG = {
 		"prompt",
 		"PromptVariantSelected",
 		["prompts.maestro-prompt-variant-selected"],
+	),
+	[MaestroBusEventType.ContextLearned]: entry(
+		MaestroBusEventType.ContextLearned,
+		"knowledge",
+		"MaestroLearnedContext",
+		["cerebro.maestro-learned-context"],
 	),
 	[MaestroBusEventType.SkillInvoked]: entry(
 		MaestroBusEventType.SkillInvoked,

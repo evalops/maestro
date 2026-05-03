@@ -33,6 +33,16 @@ const PLATFORM_MCP_WORKSPACE_ENV_VARS = [
 	"EVALOPS_ORGANIZATION_ID",
 	"MAESTRO_ENTERPRISE_ORG_ID",
 ] as const;
+const PLATFORM_MCP_AGENT_ID_ENV_VARS = [
+	"MAESTRO_AGENT_ID",
+	"MAESTRO_EVALOPS_AGENT_ID",
+] as const;
+const PLATFORM_MCP_SCOPES_ENV_VARS = [
+	"MAESTRO_PLATFORM_MCP_SCOPES",
+	"MAESTRO_AGENT_MCP_SCOPES",
+	"MAESTRO_EVALOPS_AGENT_MCP_SCOPES",
+	"MAESTRO_CEREBRO_MCP_SCOPES",
+] as const;
 const DEFAULT_PLATFORM_MCP_SERVER_NAME = "evalops";
 
 function isPlatformMcpExplicitlyDisabled(): boolean {
@@ -51,7 +61,10 @@ function buildPlatformMcpHeaders(): Record<string, string> | undefined {
 			...(token ? { Authorization: `Bearer ${token}` } : {}),
 			"Mcp-Session-Id": getEnvValue(["MAESTRO_SESSION_ID"]),
 			"X-EvalOps-Workspace-Id": workspaceId,
+			"X-EvalOps-Session-Id": getEnvValue(["MAESTRO_SESSION_ID"]),
+			"X-EvalOps-Agent-Id": getEnvValue(PLATFORM_MCP_AGENT_ID_ENV_VARS),
 			"X-EvalOps-Agent-Run-Id": getEnvValue(["MAESTRO_AGENT_RUN_ID"]),
+			"X-EvalOps-Scopes": getEnvValue(PLATFORM_MCP_SCOPES_ENV_VARS),
 			"X-EvalOps-Request-Id": getEnvValue(["MAESTRO_REQUEST_ID"]),
 			"X-EvalOps-Trace-Id": getEnvValue(["TRACE_ID", "OTEL_TRACE_ID"]),
 			"X-EvalOps-Maestro-Surface":
