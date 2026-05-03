@@ -469,15 +469,48 @@ The shared publisher lives in `@evalops/ai/telemetry` and currently emits:
 - `maestro.events.firewall_block`
 - `maestro.events.tool_call.attempted|completed`
 - `maestro.events.prompt_variant.selected`
+- `maestro.events.context.learned`
 - `maestro.events.skill.invoked|succeeded|failed`
 - `maestro.events.eval.scored`
+
+Use `recordMaestroLearnedContext` when a Maestro coding session learns a
+durable, evidence-backed fact that future agents should be able to recall. The
+event must include a stable `learning_id`, `statement`, claim-family
+`dimension`, confidence score/reason, supporting evidence, and the normal
+org/user/workspace/session/run correlation. Cerebro projects this event into a
+learned-context document Thing plus an agent-authored Fact, so agents can query
+it later without treating it as connector source truth.
 
 Use `maestroCorrelationToChronicleMetadata(correlation)` when handing the same
 run/session identity to Chronicle or agentd capture. It emits the stable
 metadata keys consumed by Platform Chronicle evidence and Cerebro's Chronicle
-consumer, including `maestro_session_id`, `agent_run_id`,
-`agent_run_step_id`, `tool_execution_id`, `trace_id`, `task_id`, and
-`source_issue`.
+consumer, including `organization_id`, `user_id`, `workspace_id`,
+`maestro_session_id`, `agent_run_id`, `agent_run_step_id`,
+`tool_execution_id`, `trace_id`, `task_id`, and `source_issue`.
+
+For end-to-end Platform traceability, managed launchers should set the org and
+user identity environment variables before starting Maestro:
+
+- `MAESTRO_EVALOPS_ORG_ID` or `EVALOPS_ORGANIZATION_ID`
+- `MAESTRO_EVALOPS_USER_ID`, `EVALOPS_USER_ID`, or `MAESTRO_USER_ID`
+- `MAESTRO_EVALOPS_WORKSPACE_ID` or `EVALOPS_WORKSPACE_ID`
+- `MAESTRO_SESSION_ID`, `MAESTRO_AGENT_RUN_ID`, and, for tool-level spans,
+  `MAESTRO_AGENT_RUN_STEP_ID`
+
+Maestro copies those values into CloudEvent extensions and OpenTelemetry span
+attributes (`evalops.organization_id`, `enduser.id`, `evalops.workspace_id`,
+`maestro.session_id`, and `maestro.agent_run_id`). Platform `traces` normalizes
+those attributes into first-class trace fields, and Cerebro imports the same
+event correlation into org/user/session/run/tool graph nodes.
+
+For direct Cerebro MCP access through the EvalOps plugin, set
+`MAESTRO_PLATFORM_MCP_URL` or `MAESTRO_EVALOPS_AGENT_MCP_URL` and grant scopes
+with `MAESTRO_CEREBRO_MCP_SCOPES` or `MAESTRO_PLATFORM_MCP_SCOPES`. Use
+`cerebro:read` for recall-only agents and add `cerebro:assert` only for agents
+allowed to write explicit learned facts. Maestro forwards
+`X-EvalOps-Workspace-Id`, `X-EvalOps-Session-Id`, `X-EvalOps-Agent-Id`,
+`X-EvalOps-Agent-Run-Id`, trace/request IDs, and scopes so Cerebro can
+attribute every query and assertion to the user/org session.
 
 The publisher conformance fixture used by Platform can be regenerated from the
 same shared publisher with

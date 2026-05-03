@@ -62,6 +62,7 @@ export type MaestroSkillOutcomeProtoStatus =
 
 export interface MaestroCorrelation {
 	organization_id?: string;
+	user_id?: string;
 	workspace_id: string;
 	session_id: string;
 	agent_run_id?: string;
@@ -235,6 +236,29 @@ export interface PromptVariantSelectedEventData
 	selected_at: string;
 }
 
+export interface MaestroLearnedContextEvidence extends Record<string, unknown> {
+	source: string;
+	source_id?: string;
+	uri?: string;
+	excerpt?: string;
+}
+
+export interface MaestroLearnedContextEventData
+	extends Record<string, unknown> {
+	correlation: MaestroCorrelation;
+	learning_id: string;
+	subject_thing_id?: string;
+	subject_key?: string;
+	statement: string;
+	dimension: string;
+	confidence_score: number;
+	confidence_reason: string;
+	evidence: MaestroLearnedContextEvidence[];
+	tool_call_id?: string;
+	tool_execution_id?: string;
+	learned_at: string;
+}
+
 export interface SkillInvocationEventData extends Record<string, unknown> {
 	correlation: MaestroCorrelation;
 	prompt_metadata?: PromptMetadata;
@@ -393,6 +417,23 @@ export interface RecordMaestroPromptVariantSelectedInput {
 	prompt_metadata: PromptMetadata;
 	correlation?: Partial<MaestroCorrelation>;
 	selected_at?: string;
+	env?: Env;
+}
+
+export interface RecordMaestroLearnedContextInput {
+	event_id?: string;
+	learning_id: string;
+	subject_thing_id?: string;
+	subject_key?: string;
+	statement: string;
+	dimension: string;
+	confidence_score: number;
+	confidence_reason: string;
+	evidence: MaestroLearnedContextEvidence[];
+	tool_call_id?: string;
+	tool_execution_id?: string;
+	correlation?: Partial<MaestroCorrelation>;
+	learned_at?: string;
 	env?: Env;
 }
 
@@ -562,9 +603,15 @@ function defaultCorrelation(env: Env): MaestroCorrelation {
 			"EVALOPS_ORGANIZATION_ID",
 			"MAESTRO_ENTERPRISE_ORG_ID",
 		]),
+		user_id: readEnv(env, [
+			"MAESTRO_EVALOPS_USER_ID",
+			"EVALOPS_USER_ID",
+			"MAESTRO_USER_ID",
+		]),
 		workspace_id: workspaceId,
 		session_id: sessionId,
 		agent_run_id: readEnv(env, ["MAESTRO_AGENT_RUN_ID"]),
+		agent_run_step_id: readEnv(env, ["MAESTRO_AGENT_RUN_STEP_ID"]),
 		agent_id: readEnv(env, ["MAESTRO_AGENT_ID"]),
 		actor_id: readEnv(env, ["MAESTRO_ACTOR_ID"]),
 		principal_id: readEnv(env, ["MAESTRO_PRINCIPAL_ID"]),
@@ -589,10 +636,15 @@ function defaultPrincipal(env: Env): MaestroPrincipal | undefined {
 	if (!subject) return undefined;
 	return {
 		subject,
-		user_id: readEnv(env, ["MAESTRO_USER_ID"]),
+		user_id: readEnv(env, [
+			"MAESTRO_EVALOPS_USER_ID",
+			"EVALOPS_USER_ID",
+			"MAESTRO_USER_ID",
+		]),
 		organization_id: readEnv(env, [
 			"MAESTRO_EVALOPS_ORG_ID",
 			"EVALOPS_ORGANIZATION_ID",
+			"MAESTRO_ENTERPRISE_ORG_ID",
 		]),
 		workspace_id: readEnv(env, [
 			"MAESTRO_EVALOPS_WORKSPACE_ID",
@@ -785,6 +837,7 @@ export function maestroCorrelationToChronicleMetadata(
 		putMetadata(metadata, key, value);
 	};
 	putCanonicalMetadata("organization_id", correlation.organization_id);
+	putCanonicalMetadata("user_id", correlation.user_id);
 	putCanonicalMetadata("workspace_id", correlation.workspace_id);
 	putCanonicalMetadata("maestro_session_id", correlation.session_id);
 	putCanonicalMetadata("agent_run_id", correlation.agent_run_id);
@@ -843,7 +896,12 @@ export function buildMaestroCloudEvent<TData extends Record<string, unknown>>(
 		options.correlation,
 	);
 	const contextCorrelation =
-		"correlation" in data && data.correlation ? data.correlation : correlation;
+		"correlation" in data && data.correlation
+			? mergeCorrelation(
+					correlation,
+					data.correlation as Partial<MaestroCorrelation>,
+				)
+			: correlation;
 	const dataCorrelation = maestroDataCorrelation(
 		contextCorrelation as MaestroCorrelation,
 	);
@@ -887,6 +945,8 @@ function maestroContextExtensions(
 	data: Record<string, unknown>,
 ): Record<string, string> {
 	const extensions: Record<string, string> = {};
+	putMetadata(extensions, "organization_id", correlation.organization_id);
+	putMetadata(extensions, "user_id", correlation.user_id);
 	putMetadata(extensions, "workspace_id", correlation.workspace_id);
 	putMetadata(extensions, "maestro_session_id", correlation.session_id);
 	putMetadata(extensions, "agent_run_id", correlation.agent_run_id);
@@ -1243,6 +1303,33 @@ export function recordMaestroPromptVariantSelected(
 			selected_at: selectedAt,
 		},
 		{ env: event.env, eventId: event.event_id, time: selectedAt },
+	);
+}
+
+export function recordMaestroLearnedContext(
+	event: RecordMaestroLearnedContextInput,
+): void {
+	const learnedAt = event.learned_at ?? new Date().toISOString();
+	void publishMaestroCloudEvent<MaestroLearnedContextEventData>(
+		MaestroBusEventType.ContextLearned,
+		{
+			correlation: mergeCorrelation(
+				resolveMaestroEventBusConfig(event.env).defaultCorrelation,
+				event.correlation,
+			),
+			learning_id: event.learning_id,
+			subject_thing_id: event.subject_thing_id,
+			subject_key: event.subject_key,
+			statement: event.statement,
+			dimension: event.dimension,
+			confidence_score: event.confidence_score,
+			confidence_reason: event.confidence_reason,
+			evidence: event.evidence,
+			tool_call_id: event.tool_call_id,
+			tool_execution_id: event.tool_execution_id,
+			learned_at: learnedAt,
+		},
+		{ env: event.env, eventId: event.event_id, time: learnedAt },
 	);
 }
 

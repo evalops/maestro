@@ -9,6 +9,7 @@ import {
 	publishMaestroCloudEvent,
 	publishMaestroCloudEventStrict,
 	recordMaestroEvalScored,
+	recordMaestroLearnedContext,
 	recordMaestroPromptVariantSelected,
 	recordMaestroSkillInvoked,
 	recordMaestroSkillOutcome,
@@ -29,6 +30,7 @@ describe("maestro event bus", () => {
 			MAESTRO_TELEMETRY: "0",
 			MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222",
 			MAESTRO_EVALOPS_ORG_ID: "org_123",
+			MAESTRO_EVALOPS_USER_ID: "user_123",
 			MAESTRO_EVALOPS_WORKSPACE_ID: "workspace_123",
 			MAESTRO_SESSION_ID: "session_123",
 		});
@@ -38,8 +40,27 @@ describe("maestro event bus", () => {
 		expect(config.natsUrl).toBe("nats://bus.example:4222");
 		expect(config.defaultCorrelation).toMatchObject({
 			organization_id: "org_123",
+			user_id: "user_123",
 			workspace_id: "workspace_123",
 			session_id: "session_123",
+		});
+	});
+
+	it("prefers EvalOps-scoped user identity over legacy Maestro user identity", () => {
+		const config = resolveMaestroEventBusConfig({
+			MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222",
+			MAESTRO_EVALOPS_ORG_ID: "org_123",
+			MAESTRO_EVALOPS_USER_ID: "user_evalops",
+			MAESTRO_USER_ID: "user_legacy",
+			MAESTRO_SESSION_ID: "session_123",
+			MAESTRO_PRINCIPAL_SUBJECT: "subject_123",
+		});
+
+		expect(config.defaultCorrelation.user_id).toBe("user_evalops");
+		expect(config.defaultPrincipal).toMatchObject({
+			subject: "subject_123",
+			user_id: "user_evalops",
+			organization_id: "org_123",
 		});
 	});
 
@@ -59,6 +80,8 @@ describe("maestro event bus", () => {
 				env: {
 					MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222",
 					MAESTRO_EVENT_BUS_SOURCE: "maestro-test",
+					MAESTRO_EVALOPS_ORG_ID: "org_123",
+					MAESTRO_EVALOPS_USER_ID: "user_123",
 				},
 				eventId: "event_1",
 				time: "2026-04-22T16:00:00.000Z",
@@ -75,6 +98,8 @@ describe("maestro event bus", () => {
 			extensions: {
 				dataschema: "buf.build/evalops/proto/maestro.v1.ToolCallAttempt",
 				evalops_context_version: "evalops.context.v1",
+				organization_id: "org_123",
+				user_id: "user_123",
 				workspace_id: "workspace_123",
 				maestro_session_id: "session_123",
 			},
@@ -85,9 +110,96 @@ describe("maestro event bus", () => {
 		expect(event.data.tool_call_id).toBe("tool_1");
 	});
 
+	it("publishes learned context CloudEvents for Cerebro recall", async () => {
+		const published: Array<{ subject: string; payload: string }> = [];
+		setMaestroEventBusTransportForTests({
+			async publish(subject, payload) {
+				published.push({ subject, payload });
+			},
+		});
+
+		recordMaestroLearnedContext({
+			event_id: "event_learned_1",
+			learning_id: "learned_evalops_1",
+			subject_thing_id: "maestro_repository_evalops_platform",
+			statement:
+				"Platform trace budgets must be scoped by EvalOps organization.",
+			dimension: "traceability.org_budget_scope",
+			confidence_score: 0.86,
+			confidence_reason:
+				"The coding session confirmed org identifiers are propagated through telemetry.",
+			evidence: [
+				{
+					source: "maestro-session",
+					source_id: "session_123",
+					excerpt: "Org identifiers are present in trace context.",
+				},
+			],
+			tool_call_id: "tool_call_123",
+			tool_execution_id: "tool_exec_123",
+			correlation: {
+				organization_id: "org_123",
+				user_id: "user_123",
+				workspace_id: "workspace_123",
+				session_id: "session_123",
+				agent_run_id: "run_123",
+				agent_id: "maestro",
+			},
+			learned_at: "2026-05-02T18:12:00.000Z",
+			env: { MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222" },
+		});
+
+		await Promise.resolve();
+
+		expect(published).toHaveLength(1);
+		expect(published[0]?.subject).toBe("maestro.events.context.learned");
+		expect(JSON.parse(published[0]?.payload ?? "{}")).toMatchObject({
+			id: "event_learned_1",
+			type: "maestro.events.context.learned",
+			data: {
+				"@type": "type.googleapis.com/maestro.v1.MaestroLearnedContext",
+				learning_id: "learned_evalops_1",
+				subject_thing_id: "maestro_repository_evalops_platform",
+				statement:
+					"Platform trace budgets must be scoped by EvalOps organization.",
+				dimension: "traceability.org_budget_scope",
+				confidence_score: 0.86,
+				confidence_reason:
+					"The coding session confirmed org identifiers are propagated through telemetry.",
+				evidence: [
+					{
+						source: "maestro-session",
+						source_id: "session_123",
+						excerpt: "Org identifiers are present in trace context.",
+					},
+				],
+				tool_call_id: "tool_call_123",
+				tool_execution_id: "tool_exec_123",
+				correlation: {
+					organization_id: "org_123",
+					user_id: "user_123",
+					workspace_id: "workspace_123",
+					session_id: "session_123",
+					agent_run_id: "run_123",
+					agent_id: "maestro",
+				},
+			},
+			extensions: {
+				dataschema: "buf.build/evalops/proto/maestro.v1.MaestroLearnedContext",
+				organization_id: "org_123",
+				user_id: "user_123",
+				workspace_id: "workspace_123",
+				maestro_session_id: "session_123",
+				agent_run_id: "run_123",
+				tool_execution_id: "tool_exec_123",
+			},
+		});
+	});
+
 	it("serializes Maestro correlation into Chronicle metadata keys", () => {
 		const metadata = maestroCorrelationToChronicleMetadata({
 			organization_id: "org_123",
+			user_id: "user_123",
 			workspace_id: "workspace_123",
 			session_id: "session_123",
 			agent_run_id: "run_123",
@@ -101,6 +213,7 @@ describe("maestro event bus", () => {
 			parent_event_id: "event_parent",
 			attributes: {
 				maestro_session_id: "spoofed_session",
+				user_id: "spoofed_user",
 				task_id: "task_123",
 				task_type: "pr-review",
 				source_issue: "42",
@@ -111,6 +224,7 @@ describe("maestro event bus", () => {
 
 		expect(metadata).toMatchObject({
 			organization_id: "org_123",
+			user_id: "user_123",
 			workspace_id: "workspace_123",
 			maestro_session_id: "session_123",
 			agent_run_id: "run_123",
@@ -127,6 +241,7 @@ describe("maestro event bus", () => {
 			source_issue: "42",
 		});
 		expect(metadata.maestro_session_id).toBe("session_123");
+		expect(metadata.user_id).toBe("user_123");
 		expect(metadata.trace_id).toBe("trace_123");
 		expect(metadata.empty).toBeUndefined();
 	});

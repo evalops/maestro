@@ -10,25 +10,37 @@ import {
 	getTelemetryTracer,
 	isOpenTelemetryEnabled,
 } from "../opentelemetry.js";
+import { resolveMaestroEventBusConfig } from "../telemetry/maestro-event-bus.js";
 import type { AgentTool, Api, Model, ThinkingLevel, Usage } from "./types.js";
 
-export interface AgentTurnContext {
+export interface MaestroTraceIdentityContext {
+	organizationId?: string;
+	workspaceId?: string;
+	userId?: string;
+	sessionId?: string;
+	agentId?: string;
+	agentRunId?: string;
+	agentRunStepId?: string;
+	traceId?: string;
+	requestId?: string;
+	surface?: string;
+}
+
+export interface AgentTurnContext extends MaestroTraceIdentityContext {
 	modelId: string;
 	modelProvider: string;
 	thinkingLevel: ThinkingLevel;
 	toolCount: number;
 	messageCount: number;
-	userId?: string;
-	sessionId?: string;
 }
 
-export interface ToolCallContext {
+export interface ToolCallContext extends MaestroTraceIdentityContext {
 	toolName: string;
 	toolCallId: string;
 	inputSize: number;
 }
 
-export interface LlmRequestContext {
+export interface LlmRequestContext extends MaestroTraceIdentityContext {
 	modelId: string;
 	provider: string;
 	inputTokens?: number;
@@ -76,6 +88,65 @@ async function withSpan<T>(
 	});
 }
 
+export function maestroTraceIdentityAttributes(
+	context: MaestroTraceIdentityContext = {},
+): Record<string, string | undefined> {
+	const eventBusConfig = resolveMaestroEventBusConfig();
+	const correlation = eventBusConfig.defaultCorrelation;
+	const principal = eventBusConfig.defaultPrincipal;
+	const organizationId = traceIdentityValue(
+		context.organizationId ??
+			correlation.organization_id ??
+			principal?.organization_id,
+	);
+	const workspaceId = traceIdentityValue(
+		context.workspaceId ?? correlation.workspace_id ?? principal?.workspace_id,
+	);
+	const userId = traceIdentityValue(
+		context.userId ?? correlation.user_id ?? principal?.user_id,
+	);
+	const sessionId = traceIdentityValue(
+		context.sessionId ?? correlation.session_id,
+	);
+	const agentId = traceIdentityValue(context.agentId ?? correlation.agent_id);
+	const agentRunId = traceIdentityValue(
+		context.agentRunId ?? correlation.agent_run_id,
+	);
+	const agentRunStepId = traceIdentityValue(
+		context.agentRunStepId ?? correlation.agent_run_step_id,
+	);
+	const traceId = traceIdentityValue(context.traceId ?? correlation.trace_id);
+	const requestId = traceIdentityValue(
+		context.requestId ?? correlation.request_id,
+	);
+	const surface = context.surface ?? eventBusConfig.defaultSurface;
+
+	return {
+		"enduser.id": userId,
+		"user.id": userId,
+		"agent.user.id": userId,
+		"organization.id": organizationId,
+		"evalops.organization_id": organizationId,
+		"workspace.id": workspaceId,
+		"evalops.workspace_id": workspaceId,
+		"agent.session.id": sessionId,
+		"maestro.session_id": sessionId,
+		"agent.id": agentId,
+		"maestro.agent_run_id": agentRunId,
+		"maestro.agent_run_step_id": agentRunStepId,
+		"trace.id": traceId,
+		"request.id": requestId,
+		"maestro.surface": surface,
+	};
+}
+
+function traceIdentityValue(value: string | undefined): string | undefined {
+	if (value === undefined || value === "" || value === "unknown") {
+		return undefined;
+	}
+	return value;
+}
+
 /**
  * Creates a span for an agent turn (user message → assistant response cycle).
  *
@@ -97,13 +168,12 @@ export async function traceAgentTurn<T>(
 	return withSpan(
 		"agent.turn",
 		{
+			...maestroTraceIdentityAttributes(context),
 			"agent.model.id": context.modelId,
 			"agent.model.provider": context.modelProvider,
 			"agent.thinking_level": context.thinkingLevel,
 			"agent.tools.count": context.toolCount,
 			"agent.messages.count": context.messageCount,
-			"agent.user.id": context.userId,
-			"agent.session.id": context.sessionId,
 		},
 		operation,
 	);
@@ -131,6 +201,7 @@ export async function traceToolCall<T>(
 	return withSpan(
 		`tool.${context.toolName}`,
 		{
+			...maestroTraceIdentityAttributes(context),
 			"tool.name": context.toolName,
 			"tool.call_id": context.toolCallId,
 			"tool.input_size": context.inputSize,
@@ -175,6 +246,7 @@ export async function traceLlmRequest<T>(
 	return withSpan(
 		"llm.request",
 		{
+			...maestroTraceIdentityAttributes(context),
 			"llm.model.id": context.modelId,
 			"llm.model.provider": context.provider,
 			"llm.input_tokens": context.inputTokens,
