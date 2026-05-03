@@ -1,0 +1,45 @@
+{
+	"name": "@evalops/governance",
+	"projectType": "library",
+	"root": "packages/governance",
+	"sourceRoot": "packages/governance/src",
+	"implicitDependencies": ["contracts", "tui"],
+	"targets": {
+		"clean": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "cd packages/governance && bun run clean",
+				"forwardAllArgs": true
+			}
+		},
+		"build": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "cd packages/governance && bun run build",
+				"forwardAllArgs": true
+			},
+			"dependsOn": ["^build"]
+		},
+		"dev": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "cd packages/governance && bun run dev",
+				"forwardAllArgs": true
+			}
+		},
+		"check": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "cd packages/governance && bun run check",
+				"forwardAllArgs": true
+			}
+		},
+		"test": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "cd packages/governance && bun run test",
+				"forwardAllArgs": true
+			}
+		}
+	}
+}
