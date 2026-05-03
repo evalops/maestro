@@ -22,7 +22,7 @@ run_shared_memory_tests() {
 	fi
 }
 
-node scripts/ensure-deps.js --no-install --workspace @evalops/contracts
+node scripts/ensure-deps.js --no-install --workspace @evalops/contracts --workspace @evalops/tui
 
 if git diff --name-only "$NX_BASE" "$NX_HEAD" | grep -qE '^(nx\.json|project\.json|tsconfig\.base\.json|package\.json|bun\.lockb|package-lock\.json|packages/.*/project\.json)$'; then
 	cmd=(npx nx run-many -t test --all --parallel=3)
