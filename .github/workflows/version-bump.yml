@@ -61,6 +61,7 @@ jobs:
       - name: Commit release branch
         env:
           RELEASE_BRANCH: ${{ steps.version.outputs.branch }}
+          HUSKY: "0"
         run: |
           set -euo pipefail
           if git diff --quiet; then
