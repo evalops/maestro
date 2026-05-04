@@ -1,39 +1,18 @@
 /**
- * GovernanceEngine - Main entry point for the governance library.
+ * GovernanceEngine - thin Platform governance proxy.
  *
- * Wraps ActionFirewall + SafetyMiddleware + enterprise policy behind
- * a clean, agent-agnostic API. This is the class that consumers
- * (including the MCP server) interact with.
+ * This package no longer re-hosts Maestro's local safety pipeline. Maestro's
+ * in-process firewall remains in src/safety for standalone operation; this
+ * package is the MCP/package edge over Platform governance services.
  *
  * @module governance/engine
  */
 
 import {
-	ActionFirewall,
-	defaultFirewallRules,
-} from "../../../src/safety/action-firewall.js";
-import {
-	analyzeCommandSafety,
-	hasEgressPrimitives,
-	isDestructiveSimpleCommand,
-	isParserAvailable,
-	tokenizeSimple,
-} from "../../../src/safety/bash-safety-analyzer.js";
-import {
-	detectSensitiveContent,
-	sanitizePayload,
-} from "../../../src/safety/context-firewall.js";
-import { checkContextFirewall } from "../../../src/safety/firewall-check.js";
-import { checkPolicy, getCurrentPolicy } from "../../../src/safety/policy.js";
-import {
-	SafetyMiddleware,
-	type SafetyMiddlewareConfig,
-} from "../../../src/safety/safety-middleware.js";
-import { createLogger } from "../../../src/utils/logger.js";
-import { toApprovalContext, toGovernanceVerdict } from "./mappers.js";
-import {
 	type GovernanceServiceConfig,
+	detectPIIWithGovernanceService,
 	evaluateActionWithGovernanceService,
+	getSafetyPolicyWithGovernanceService,
 	resolveGovernanceServiceConfig,
 } from "./service-client.js";
 import type {
@@ -47,328 +26,225 @@ import type {
 	GovernanceToolCall,
 } from "./types.js";
 
-/** Maximum audit log entries retained in memory. */
-const MAX_AUDIT_LOG_SIZE = 10_000;
-const logger = createLogger("governance:engine");
+const MAX_AUDIT_LOG_SIZE = 1_000;
+const EGRESS_COMMAND_PATTERN =
+	/(?:^|[;&|()\s])(?:curl|wget|nc|ncat|netcat|ssh|scp|sftp|ftp|telnet|rsync)(?:\s|$)/u;
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
 
 export class GovernanceEngine {
-	private firewall: ActionFirewall;
-	private middleware: SafetyMiddleware;
 	private auditLog: GovernanceAuditEvent[] = [];
 	private onAuditEvent?: (event: GovernanceAuditEvent) => void;
 	private serviceConfig: GovernanceServiceConfig | false | undefined;
 
 	constructor(config?: GovernanceEngineConfig) {
-		this.firewall = new ActionFirewall(defaultFirewallRules, {
-			governanceService: false,
-		});
 		this.onAuditEvent = config?.onAuditEvent;
 		this.serviceConfig = config?.service;
-
-		const middlewareConfig: SafetyMiddlewareConfig = {
-			enableLoopDetection: config?.enableLoopDetection ?? true,
-			enableSequenceAnalysis: config?.enableSequenceAnalysis ?? true,
-			enableContextFirewall: config?.enableContextFirewall ?? true,
-		};
-		this.middleware = new SafetyMiddleware(middlewareConfig);
 	}
 
-	/**
-	 * Full governance pipeline evaluation (middleware + firewall).
-	 *
-	 * Runs the complete safety pipeline:
-	 * 1. SafetyMiddleware.preExecution (loop detection, sequence analysis, context firewall)
-	 * 2. ActionFirewall.evaluate (rule-based policy enforcement)
-	 *
-	 * Returns the most restrictive verdict from either subsystem.
-	 */
 	async evaluate(
 		toolCall: GovernanceToolCall,
 	): Promise<GovernanceEvaluationResult> {
-		const serviceResult = await this.evaluateWithGovernanceService(toolCall);
-		if (serviceResult) {
-			this.recordAuditEvent({
-				type: "evaluation",
-				toolName: toolCall.toolName,
-				verdict: serviceResult.verdict,
-				details: {
-					ruleId: serviceResult.ruleId,
-					triggeredBy: serviceResult.triggeredBy,
-				},
-			});
-			return serviceResult;
-		}
-
-		const context = toApprovalContext(toolCall);
-
-		// 1. Run middleware pre-execution checks
-		const middlewareResult = this.middleware.preExecution(
-			toolCall.toolName,
-			toolCall.args,
-		);
-
-		if (!middlewareResult.allowed) {
-			const result: GovernanceEvaluationResult = {
-				verdict: middlewareResult.requiresApproval
-					? "require_approval"
-					: "block",
-				reason: middlewareResult.reason,
-				triggeredBy: "middleware",
-				sanitizedArgs: middlewareResult.sanitizedArgs,
-			};
-			this.recordAuditEvent({
-				type: "evaluation",
-				toolName: toolCall.toolName,
-				verdict: result.verdict,
-				details: { triggeredBy: middlewareResult.triggeredBy },
-			});
-			return result;
-		}
-
-		// 2. Run firewall evaluation
-		const firewallVerdict = await this.firewall.evaluate(context);
-
-		const verdict = toGovernanceVerdict(firewallVerdict.action);
-		const result: GovernanceEvaluationResult = {
-			verdict,
-			sanitizedArgs: middlewareResult.sanitizedArgs,
-		};
-
-		if (firewallVerdict.action !== "allow") {
-			result.ruleId =
-				"ruleId" in firewallVerdict ? firewallVerdict.ruleId : undefined;
-			result.reason =
-				"reason" in firewallVerdict ? firewallVerdict.reason : undefined;
-			result.remediation =
-				"remediation" in firewallVerdict
-					? firewallVerdict.remediation
-					: undefined;
-			result.triggeredBy = "firewall";
-		}
-
-		this.recordAuditEvent({
-			type: "evaluation",
-			toolName: toolCall.toolName,
-			verdict: result.verdict,
-			details: {
-				ruleId: result.ruleId,
-				triggeredBy: result.triggeredBy,
-			},
-		});
-
-		return result;
-	}
-
-	private async evaluateWithGovernanceService(
-		toolCall: GovernanceToolCall,
-	): Promise<GovernanceEvaluationResult | null> {
-		const config = resolveGovernanceServiceConfig(this.serviceConfig, toolCall);
+		const config = this.resolveConfig(toolCall);
 		if (!config) {
-			return null;
+			return this.notConfiguredEvaluation(toolCall.toolName);
 		}
 
-		const sanitizedArgs = this.middleware.sanitizeForLogging(toolCall.args);
 		try {
 			const result = await evaluateActionWithGovernanceService(
 				config,
 				toolCall,
 			);
-			if (!result) {
-				return null;
-			}
-			return { ...result, sanitizedArgs };
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			if (config.failureMode === "required") {
-				return {
-					verdict: "block",
-					reason: `Governance service unavailable: ${message}`,
-					triggeredBy: "policy",
-					sanitizedArgs,
-				};
-			}
-			logger.warn(
-				"Failed to evaluate action with governance service; falling back locally",
-				{
-					error: message,
-					toolName: toolCall.toolName,
+			this.recordAuditEvent({
+				type: "evaluation",
+				toolName: toolCall.toolName,
+				verdict: result.verdict,
+				details: {
+					ruleId: result.ruleId,
+					triggeredBy: "platform-governance",
 				},
-			);
-			return null;
+			});
+			return result;
+		} catch (error) {
+			const message = errorMessage(error);
+			const result: GovernanceEvaluationResult = {
+				reason: `Governance service unavailable: ${message}`,
+				ruleId: "governance-service-unavailable",
+				triggeredBy: "policy",
+				verdict: "block",
+			};
+			this.recordAuditEvent({
+				type: "evaluation",
+				toolName: toolCall.toolName,
+				verdict: result.verdict,
+				details: { error: message, triggeredBy: "platform-governance" },
+			});
+			return result;
 		}
 	}
 
-	/**
-	 * Scan a payload for credentials, PII, and sensitive content.
-	 */
-	scanPayload(payload: unknown): GovernanceScanResult {
-		const findings = detectSensitiveContent(payload);
-		const firewallResult = checkContextFirewall(
-			payload as Record<string, unknown>,
-		);
-		const sanitized = sanitizePayload(payload);
-
-		const result: GovernanceScanResult = {
-			hasSensitiveContent: findings.length > 0,
-			findingCount: findings.length,
-			findingTypes: [...new Set(findings.map((f: { type: string }) => f.type))],
-			sanitizedPayload: sanitized,
-			blocked: firewallResult.blocked ?? false,
-			blockReason: firewallResult.blockReason,
-		};
-
-		this.recordAuditEvent({
-			type: "scan",
-			toolName: "scan_payload",
-			details: {
-				findingCount: result.findingCount,
-				findingTypes: result.findingTypes,
-				blocked: result.blocked,
-			},
-		});
-
-		return result;
-	}
-
-	/**
-	 * Analyze a bash command for safety concerns.
-	 */
-	analyzeCommand(command: string): GovernanceCommandAnalysis {
-		const parserAvailable = isParserAvailable();
-		const tokens = tokenizeSimple(command);
-		const destructive = isDestructiveSimpleCommand(tokens);
-		const hasEgress = hasEgressPrimitives(command);
-
-		let safe = true;
-		let reason: string | undefined;
-
-		if (destructive) {
-			safe = false;
-			reason = "Command contains destructive or mutating operations";
-		}
-
-		if (parserAvailable) {
-			const analysis = analyzeCommandSafety(command);
-			if (!analysis.safe) {
-				safe = false;
-				reason =
-					analysis.reason ?? "Command failed tree-sitter safety analysis";
-			}
-		}
-
-		const result: GovernanceCommandAnalysis = {
-			safe,
-			destructive,
-			hasEgress,
-			reason,
-			details: { parserAvailable },
-		};
-
-		this.recordAuditEvent({
-			type: "command_analysis",
-			toolName: "bash",
-			details: {
-				safe: result.safe,
-				destructive: result.destructive,
-				hasEgress: result.hasEgress,
-			},
-		});
-
-		return result;
-	}
-
-	/**
-	 * Check a tool call against enterprise policy only.
-	 */
-	async checkPolicy(
-		toolCall: GovernanceToolCall,
-	): Promise<GovernancePolicyCheckResult> {
-		const context = toApprovalContext(toolCall);
-		const result = await checkPolicy(context);
-
-		this.recordAuditEvent({
-			type: "policy_check",
-			toolName: toolCall.toolName,
-			details: { allowed: result.allowed, reason: result.reason },
-		});
-
-		return result;
-	}
-
-	/**
-	 * Get information about the current policy configuration.
-	 */
-	getPolicy(): GovernancePolicyInfo {
-		const policy = getCurrentPolicy();
-		if (!policy) {
+	async scanPayload(payload: unknown): Promise<GovernanceScanResult> {
+		const config = this.resolveConfig();
+		if (!config) {
 			return {
-				loaded: false,
-				hasToolRestrictions: false,
-				hasPathRestrictions: false,
-				hasNetworkRestrictions: false,
-				hasDependencyRestrictions: false,
-				hasSessionLimits: false,
+				blockReason: "Platform governance service is not configured",
+				blocked: true,
+				findingCount: 0,
+				findingTypes: [],
+				hasSensitiveContent: false,
+				sanitizedPayload: payload,
 			};
 		}
 
+		try {
+			const result = await detectPIIWithGovernanceService(config, payload);
+			this.recordAuditEvent({
+				type: "scan",
+				toolName: "scan_payload",
+				details: {
+					findingCount: result.findingCount,
+					findingTypes: result.findingTypes,
+					triggeredBy: "platform-governance",
+				},
+			});
+			return result;
+		} catch (error) {
+			const message = errorMessage(error);
+			const result: GovernanceScanResult = {
+				blockReason: `Governance service unavailable: ${message}`,
+				blocked: true,
+				findingCount: 0,
+				findingTypes: [],
+				hasSensitiveContent: false,
+				sanitizedPayload: payload,
+			};
+			this.recordAuditEvent({
+				type: "scan",
+				toolName: "scan_payload",
+				details: { error: message, triggeredBy: "platform-governance" },
+			});
+			return result;
+		}
+	}
+
+	async analyzeCommand(command: string): Promise<GovernanceCommandAnalysis> {
+		const evaluation = await this.evaluate({
+			args: { command },
+			toolName: "bash",
+			userIntent: "Analyze command safety through Platform governance",
+		});
 		return {
-			loaded: true,
-			orgId: policy.orgId,
-			hasToolRestrictions: !!(policy.tools?.allowed || policy.tools?.blocked),
-			hasPathRestrictions: !!(policy.paths?.allowed || policy.paths?.blocked),
-			hasNetworkRestrictions: !!(
-				policy.network?.allowedHosts ||
-				policy.network?.blockedHosts ||
-				policy.network?.blockLocalhost ||
-				policy.network?.blockPrivateIPs
-			),
-			hasDependencyRestrictions: !!(
-				policy.dependencies?.allowed || policy.dependencies?.blocked
-			),
-			hasSessionLimits: !!(
-				policy.limits?.maxTokensPerSession ||
-				policy.limits?.maxSessionDurationMinutes ||
-				policy.limits?.maxConcurrentSessions
-			),
+			destructive: evaluation.verdict !== "allow",
+			hasEgress: EGRESS_COMMAND_PATTERN.test(command),
+			reason: evaluation.reason,
+			safe: evaluation.verdict === "allow",
+			details: { parserAvailable: false },
 		};
 	}
 
-	/**
-	 * Log an audit event.
-	 */
-	logAuditEvent(event: Omit<GovernanceAuditEvent, "timestamp">): void {
-		this.recordAuditEvent(event);
+	async checkPolicy(
+		toolCall: GovernanceToolCall,
+	): Promise<GovernancePolicyCheckResult> {
+		const result = await this.evaluate(toolCall);
+		return {
+			allowed: result.verdict === "allow",
+			reason: result.reason,
+		};
 	}
 
-	/**
-	 * Retrieve the audit log.
-	 */
+	async getPolicy(): Promise<GovernancePolicyInfo> {
+		const config = this.resolveConfig();
+		if (!config) {
+			return {
+				loaded: false,
+				hasDependencyRestrictions: false,
+				hasNetworkRestrictions: false,
+				hasPathRestrictions: false,
+				hasSessionLimits: false,
+				hasToolRestrictions: false,
+			};
+		}
+
+		try {
+			const summary = await getSafetyPolicyWithGovernanceService(config);
+			return {
+				loaded: true,
+				orgId: summary.workspaceId ?? config.workspaceId,
+				hasDependencyRestrictions: false,
+				hasNetworkRestrictions: false,
+				hasPathRestrictions: false,
+				hasSessionLimits: false,
+				hasToolRestrictions: summary.ruleCount > 0,
+			};
+		} catch (error) {
+			return {
+				error: `Governance service unavailable: ${errorMessage(error)}`,
+				loaded: false,
+				orgId: config.workspaceId,
+				hasDependencyRestrictions: false,
+				hasNetworkRestrictions: false,
+				hasPathRestrictions: false,
+				hasSessionLimits: false,
+				hasToolRestrictions: false,
+			};
+		}
+	}
+
+	logAuditEvent(event: Omit<GovernanceAuditEvent, "timestamp">): void {
+		this.recordAuditEvent({
+			...event,
+			details: {
+				...event.details,
+				note: "local process audit only; durable audit belongs in Platform audit service",
+			},
+		});
+	}
+
 	getAuditLog(): GovernanceAuditEvent[] {
 		return [...this.auditLog];
 	}
 
-	/**
-	 * Reset internal state (loop detector, sequence analyzer).
-	 */
 	reset(): void {
-		this.middleware.reset();
 		this.auditLog = [];
 	}
 
-	/**
-	 * Record a tool execution outcome for state updates.
-	 */
 	recordExecution(
 		toolName: string,
-		args: Record<string, unknown>,
+		_args: Record<string, unknown>,
 		success: boolean,
 	): void {
-		this.middleware.postExecution(toolName, args, success);
 		this.recordAuditEvent({
 			type: "execution",
 			toolName,
-			details: { success },
+			details: {
+				success,
+				note: "execution outcome was not written to Platform audit",
+			},
 		});
+	}
+
+	private resolveConfig(toolCall?: GovernanceToolCall) {
+		return resolveGovernanceServiceConfig(this.serviceConfig, toolCall);
+	}
+
+	private notConfiguredEvaluation(
+		toolName: string,
+	): GovernanceEvaluationResult {
+		const result: GovernanceEvaluationResult = {
+			reason: "Platform governance service is not configured",
+			ruleId: "governance-service-not-configured",
+			triggeredBy: "policy",
+			verdict: "block",
+		};
+		this.recordAuditEvent({
+			type: "evaluation",
+			toolName,
+			verdict: result.verdict,
+			details: { triggeredBy: "platform-governance" },
+		});
+		return result;
 	}
 
 	private recordAuditEvent(

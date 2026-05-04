@@ -136,4 +136,25 @@ describe("parseArgs", () => {
 			messages: [],
 		});
 	});
+
+	it("preserves maestro init bootstrap arguments for the init handler", () => {
+		expect(
+			parseArgs([
+				"init",
+				"--mcp-url",
+				"https://app.evalops.dev",
+				"--rotate-key",
+				"--json",
+			]),
+		).toMatchObject({
+			command: "init",
+			commandArgs: [
+				"--mcp-url",
+				"https://app.evalops.dev",
+				"--rotate-key",
+				"--json",
+			],
+			messages: [],
+		});
+	});
 });

@@ -92,7 +92,10 @@ export function printHelp(version: string) {
   # Use Codex subscription models after \`maestro codex login\`
   maestro --provider openai-codex --model gpt-5.5 "Plan this migration"
 
-  # Use EvalOps managed gateway models after \`maestro evalops login\`
+  # Bootstrap EvalOps login, API key, and agent registration in one flow
+  maestro init
+
+  # Use EvalOps managed gateway models after \`maestro init\`
   maestro --provider evalops --model gpt-4o-mini "Say hello in one sentence"
 
   # Export a portable session log
@@ -184,6 +187,12 @@ export function printHelp(version: string) {
   maestro remote extend <session-id> --ttl 2h
   maestro remote stop <session-id> [--reason <text>]`,
 	)}`;
+	const initSection = `${sectionHeading("maestro init")}${muted(
+		`  maestro init                         Login, create or reuse an API key, and register this agent
+  maestro init --rotate-key           Replace the stored agent MCP API key
+  maestro init --mcp-url <url>        Override the EvalOps agent MCP endpoint
+  maestro init --json                 Emit machine-readable bootstrap output`,
+	)}`;
 	const hostedRunnerSection = `${sectionHeading("maestro hosted-runner")}${muted(
 		`  maestro hosted-runner --runner-session-id <id> --workspace-root <path> [--listen 0.0.0.0:8080]
 
@@ -234,6 +243,7 @@ export function printHelp(version: string) {
 			webSection,
 			portabilitySection,
 			memorySection,
+			initSection,
 			remoteSection,
 			hostedRunnerSection,
 			sessionsSection,

@@ -1,7 +1,7 @@
 {
 	"name": "@evalops/governance-mcp-server",
 	"version": "0.10.10",
-	"description": "MCP server exposing governance tools (firewall, policy, credential scanning) to any MCP-compatible agent.",
+	"description": "MCP server exposing Platform governance proxy tools to any MCP-compatible agent.",
 	"type": "module",
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",

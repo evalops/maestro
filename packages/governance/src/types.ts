@@ -1,9 +1,9 @@
 /**
- * Agent-agnostic governance types.
+ * Platform governance proxy types.
  *
- * These types define the public API surface of the governance engine.
- * They deliberately avoid Composer-internal types so that any MCP-compatible
- * agent can use the governance library without importing Composer internals.
+ * These types define the public API surface of the thin Platform governance
+ * proxy. Maestro's local safety firewall remains in src/safety for standalone
+ * operation and is intentionally not re-exported as a package authority here.
  *
  * @module governance/types
  */
@@ -128,6 +128,8 @@ export interface GovernancePolicyInfo {
 	hasDependencyRestrictions: boolean;
 	/** Whether session limits are configured */
 	hasSessionLimits: boolean;
+	/** Last policy fetch error, when the service could not be reached. */
+	error?: string;
 }
 
 /**
@@ -155,16 +157,17 @@ export interface GovernanceAuditEvent {
  * Configuration for the governance engine.
  */
 export interface GovernanceEngineConfig {
-	/** Whether to enable loop detection (default: true) */
+	/** Deprecated: local loop detection is not run by the Platform proxy. */
 	enableLoopDetection?: boolean;
-	/** Whether to enable sequence analysis (default: true) */
+	/** Deprecated: local sequence analysis is not run by the Platform proxy. */
 	enableSequenceAnalysis?: boolean;
-	/** Whether to enable context firewall (default: true) */
+	/** Deprecated: local context firewall is not run by the Platform proxy. */
 	enableContextFirewall?: boolean;
 	/**
-	 * Optional governance service delegation. When omitted, environment variables
-	 * such as GOVERNANCE_SERVICE_URL can enable the remote service. Set to false
-	 * to force local evaluation.
+	 * Optional Platform governance service configuration. When omitted,
+	 * environment variables such as GOVERNANCE_SERVICE_URL can enable the proxy.
+	 * Set to false to disable the proxy; the package will fail closed instead
+	 * of evaluating policy locally.
 	 */
 	service?:
 		| false
@@ -187,8 +190,6 @@ export interface GovernanceEngineConfig {
 				circuitResetTimeoutMs?: number;
 				/** Successes needed to close a half-open service circuit. */
 				circuitSuccessThreshold?: number;
-				/** Block on service failure instead of falling back locally. */
-				required?: boolean;
 		  };
 	/** Callback for audit events */
 	onAuditEvent?: (event: GovernanceAuditEvent) => void;

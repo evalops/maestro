@@ -4,6 +4,11 @@ import { loadOAuthCredentials } from "../../oauth/storage.js";
 
 export async function handleEvalOpsCommand(subcommand?: string): Promise<void> {
 	switch (subcommand) {
+		case "init": {
+			const { handleInitCommand } = await import("./init.js");
+			await handleInitCommand();
+			return;
+		}
 		case "login":
 			await handleLogin();
 			return;
@@ -16,7 +21,7 @@ export async function handleEvalOpsCommand(subcommand?: string): Promise<void> {
 		default:
 			console.error(
 				chalk.red(
-					'Unknown evalops subcommand. Try "maestro evalops login", "logout", or "status".',
+					'Unknown evalops subcommand. Try "maestro init" for setup, or "maestro evalops login", "logout", or "status".',
 				),
 			);
 			process.exit(1);

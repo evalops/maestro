@@ -23,7 +23,7 @@ const CALLBACK_PORT = 1460;
 const CALLBACK_PATH = "/auth/callback/evalops";
 const CALLBACK_ORIGIN = `http://127.0.0.1:${CALLBACK_PORT}`;
 const CALLBACK_URI = `${CALLBACK_ORIGIN}${CALLBACK_PATH}`;
-const DEFAULT_IDENTITY_URL = "http://127.0.0.1:8080";
+const DEFAULT_IDENTITY_URL = "https://identity.evalops.dev";
 const IDENTITY_BASE_URL_ENV_VARS = [
 	"MAESTRO_IDENTITY_URL",
 	"EVALOPS_IDENTITY_URL",

@@ -1,9 +1,9 @@
 {
 	"extends": "../../tsconfig.base.json",
 	"compilerOptions": {
+		"composite": true,
 		"outDir": "./dist",
 		"rootDir": "./src",
-		"composite": true,
 		"tsBuildInfoFile": "../../tmp/tsbuildinfo/governance-mcp-server.tsbuildinfo"
 	},
 	"include": ["src/**/*.ts"],

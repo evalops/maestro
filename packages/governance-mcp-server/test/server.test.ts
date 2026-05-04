@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createGovernanceMcpServer } from "../src/server.js";
 
 describe("createGovernanceMcpServer", () => {
@@ -8,15 +8,34 @@ describe("createGovernanceMcpServer", () => {
 		expect(engine).toBeDefined();
 	});
 
-	it("should accept engine configuration", () => {
+	it("should accept engine configuration", async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			new Response(
+				JSON.stringify({
+					evaluation: {
+						decision: "ACTION_DECISION_ALLOW",
+						matchedRules: [],
+						reasons: [],
+					},
+				}),
+				{ status: 200 },
+			),
+		);
+		vi.stubGlobal("fetch", fetchMock);
 		const events: unknown[] = [];
 		const { engine } = createGovernanceMcpServer({
 			engineConfig: {
+				service: {
+					baseUrl: "https://platform.test",
+					maxAttempts: 1,
+					timeoutMs: 500,
+					workspaceId: "workspace-1",
+				},
 				onAuditEvent: (event) => events.push(event),
 			},
 		});
-		// Trigger an evaluation to verify the callback works
-		engine.analyzeCommand("echo test");
+		await engine.evaluate({ args: { command: "echo test" }, toolName: "bash" });
 		expect(events.length).toBeGreaterThan(0);
+		vi.unstubAllGlobals();
 	});
 });

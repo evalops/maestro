@@ -3,7 +3,6 @@
 	"projectType": "library",
 	"root": "packages/governance",
 	"sourceRoot": "packages/governance/src",
-	"implicitDependencies": ["contracts", "tui"],
 	"targets": {
 		"clean": {
 			"executor": "nx:run-commands",

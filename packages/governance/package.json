@@ -1,14 +1,14 @@
 {
 	"name": "@evalops/governance",
 	"version": "0.10.10",
-	"description": "Agent governance library — safety pipeline, firewall, and policy enforcement for any MCP-compatible agent.",
+	"description": "Thin Platform governance proxy for MCP-compatible agents.",
 	"type": "module",
-	"main": "./dist/packages/governance/src/index.js",
-	"types": "./dist/packages/governance/src/index.d.ts",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
 	"exports": {
 		".": {
-			"types": "./dist/packages/governance/src/index.d.ts",
-			"default": "./dist/packages/governance/src/index.js"
+			"types": "./dist/index.d.ts",
+			"default": "./dist/index.js"
 		}
 	},
 	"files": ["dist", "README.md"],
@@ -20,15 +20,7 @@
 		"test": "vitest --run --passWithNoTests",
 		"prepublishOnly": "npm run clean && npm run build"
 	},
-	"keywords": [
-		"governance",
-		"safety",
-		"firewall",
-		"policy",
-		"agent",
-		"mcp",
-		"evalops"
-	],
+	"keywords": ["governance", "platform", "policy", "agent", "mcp", "evalops"],
 	"author": "EvalOps",
 	"license": "MIT",
 	"repository": {
@@ -39,11 +31,7 @@
 	"engines": {
 		"node": ">=20.0.0"
 	},
-	"dependencies": {
-		"@evalops/contracts": "^0.10.10",
-		"@evalops/tui": "^0.10.10",
-		"@sinclair/typebox": "^0.34.0"
-	},
+	"dependencies": {},
 	"devDependencies": {
 		"@types/node": "^24.10.7",
 		"typescript": "^5.9.3",
