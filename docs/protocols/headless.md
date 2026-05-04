@@ -504,13 +504,16 @@ those attributes into first-class trace fields, and Cerebro imports the same
 event correlation into org/user/session/run/tool graph nodes.
 
 For direct Cerebro MCP access through the EvalOps plugin, set
-`MAESTRO_PLATFORM_MCP_URL` or `MAESTRO_EVALOPS_AGENT_MCP_URL` and grant scopes
-with `MAESTRO_CEREBRO_MCP_SCOPES` or `MAESTRO_PLATFORM_MCP_SCOPES`. Use
-`cerebro:read` for recall-only agents and add `cerebro:assert` only for agents
-allowed to write explicit learned facts. Maestro forwards
-`X-EvalOps-Workspace-Id`, `X-EvalOps-Session-Id`, `X-EvalOps-Agent-Id`,
-`X-EvalOps-Agent-Run-Id`, trace/request IDs, and scopes so Cerebro can
-attribute every query and assertion to the user/org session.
+`MAESTRO_PLATFORM_MCP_URL`, `MAESTRO_EVALOPS_AGENT_MCP_URL`, or the manifest
+form `MAESTRO_PLATFORM_MCP_MANIFEST_URL`, then grant scopes with
+`MAESTRO_CEREBRO_MCP_SCOPES` or `MAESTRO_PLATFORM_MCP_SCOPES`. The URL can be
+the public app base URL, the `/mcp` endpoint, or
+`/.well-known/evalops/agent-mcp.json`; Maestro normalizes those forms to the
+HTTP MCP endpoint. Use `cerebro:read` for recall-only agents and add
+`cerebro:assert` only for agents allowed to write explicit learned facts.
+Maestro forwards `X-EvalOps-Workspace-Id`, `X-EvalOps-Session-Id`,
+`X-EvalOps-Agent-Id`, `X-EvalOps-Agent-Run-Id`, trace/request IDs, and scopes so
+Cerebro can attribute every query and assertion to the user/org session.
 
 The publisher conformance fixture used by Platform can be regenerated from the
 same shared publisher with

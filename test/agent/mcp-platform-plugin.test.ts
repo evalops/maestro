@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadMcpConfig } from "../../src/mcp/config.js";
 import { getPlatformMcpPluginServers } from "../../src/mcp/platform-plugin.js";
+import { saveOAuthCredentials } from "../../src/oauth/storage.js";
 
 describe("platform MCP plugin servers", () => {
 	let projectDir: string;
@@ -11,7 +12,9 @@ describe("platform MCP plugin servers", () => {
 	beforeEach(() => {
 		projectDir = join(tmpdir(), `mcp-platform-plugin-${Date.now()}`);
 		mkdirSync(join(projectDir, ".maestro"), { recursive: true });
+		process.env.MAESTRO_AGENT_DIR = join(projectDir, "agent");
 		for (const name of [
+			"MAESTRO_AGENT_DIR",
 			"MAESTRO_PLATFORM_MCP_ENABLED",
 			"MAESTRO_AGENT_MCP_ENABLED",
 			"MAESTRO_PLATFORM_MCP_NAME",
@@ -19,6 +22,9 @@ describe("platform MCP plugin servers", () => {
 			"MAESTRO_PLATFORM_MCP_URL",
 			"MAESTRO_AGENT_MCP_URL",
 			"MAESTRO_EVALOPS_AGENT_MCP_URL",
+			"MAESTRO_PLATFORM_MCP_MANIFEST_URL",
+			"MAESTRO_AGENT_MCP_MANIFEST_URL",
+			"MAESTRO_EVALOPS_AGENT_MCP_MANIFEST_URL",
 			"MAESTRO_PLATFORM_MCP_TOKEN",
 			"MAESTRO_AGENT_MCP_TOKEN",
 			"MAESTRO_EVALOPS_ACCESS_TOKEN",
@@ -41,7 +47,9 @@ describe("platform MCP plugin servers", () => {
 			"OTEL_TRACE_ID",
 			"MAESTRO_SURFACE",
 		]) {
-			Reflect.deleteProperty(process.env, name);
+			if (name !== "MAESTRO_AGENT_DIR") {
+				Reflect.deleteProperty(process.env, name);
+			}
 		}
 	});
 
@@ -95,6 +103,57 @@ describe("platform MCP plugin servers", () => {
 			"Mcp-Session-Id": "session-123",
 			"X-EvalOps-Session-Id": "session-123",
 		});
+	});
+
+	it("uses stored maestro init MCP credentials when no env URL is present", () => {
+		saveOAuthCredentials("evalops", {
+			type: "oauth",
+			access: "oauth-access",
+			refresh: "oauth-refresh",
+			expires: Date.now() + 60_000,
+			metadata: {
+				agentMcp: {
+					agentId: "agent-stored",
+					apiKey: "eoak_stored",
+					createdAt: "2026-05-03T19:00:00.000Z",
+					endpoint: "https://app.evalops.dev/mcp",
+					registeredAt: "2026-05-03T19:00:01.000Z",
+					runId: "run-stored",
+					surface: "cli",
+					workspaceId: "org-stored",
+				},
+			},
+		});
+
+		expect(getPlatformMcpPluginServers()).toEqual([
+			{
+				name: "evalops",
+				transport: "http",
+				url: "https://app.evalops.dev/mcp",
+				scope: "plugin",
+				headers: {
+					Authorization: "Bearer eoak_stored",
+					"X-EvalOps-Agent-Id": "agent-stored",
+					"X-EvalOps-Agent-Run-Id": "run-stored",
+					"X-EvalOps-Maestro-Surface": "maestro",
+					"X-EvalOps-Workspace-Id": "org-stored",
+				},
+			},
+		]);
+	});
+
+	it("normalizes public app and manifest URLs to the Platform MCP endpoint", () => {
+		process.env.MAESTRO_PLATFORM_MCP_URL = "https://app.evalops.dev";
+		expect(getPlatformMcpPluginServers()[0]?.url).toBe(
+			"https://app.evalops.dev/mcp",
+		);
+
+		Reflect.deleteProperty(process.env, "MAESTRO_PLATFORM_MCP_URL");
+		process.env.MAESTRO_PLATFORM_MCP_MANIFEST_URL =
+			"https://app.evalops.dev/.well-known/evalops/agent-mcp.json";
+		expect(getPlatformMcpPluginServers()[0]?.url).toBe(
+			"https://app.evalops.dev/mcp",
+		);
 	});
 
 	it("merges the Platform MCP plugin server into the runtime MCP config", () => {

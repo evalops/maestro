@@ -125,8 +125,11 @@ adding a project config file. Configure one of:
 - `MAESTRO_PLATFORM_MCP_URL`
 - `MAESTRO_AGENT_MCP_URL`
 - `MAESTRO_EVALOPS_AGENT_MCP_URL`
+- `MAESTRO_PLATFORM_MCP_MANIFEST_URL`
 
-Maestro forwards the bearer token from `MAESTRO_PLATFORM_MCP_TOKEN`,
+The URL may be the public app base URL, the `/mcp` endpoint, or the EvalOps
+agent MCP manifest at `/.well-known/evalops/agent-mcp.json`; Maestro normalizes
+those forms to the HTTP MCP endpoint. Maestro forwards the bearer token from `MAESTRO_PLATFORM_MCP_TOKEN`,
 `MAESTRO_AGENT_MCP_TOKEN`, `MAESTRO_EVALOPS_ACCESS_TOKEN`, or `EVALOPS_TOKEN`.
 It also forwards `X-EvalOps-Workspace-Id`, `X-EvalOps-Session-Id`,
 `X-EvalOps-Agent-Id`, `X-EvalOps-Agent-Run-Id`, trace/request IDs, and
