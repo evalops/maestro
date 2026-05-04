@@ -6,6 +6,16 @@ versioning when releases are cut.
 
 
 
+
+## [0.10.11] - 2026-05-04
+
+### Added
+
+### Changed
+
+### Fixed
+
+
 ## [0.10.10] - 2026-05-03
 
 ### Added
