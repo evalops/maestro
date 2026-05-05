@@ -78,7 +78,7 @@
     "verify-build:packages": "VERIFY_PACKAGES=1 bun scripts/verify-build.ts",
     "release:check": "node scripts/release-readiness.js release",
     "release:check:ci": "node scripts/release-readiness.js ci",
-    "verify:runtime-deps": "node scripts/check-runtime-deps.js",
+    "verify:runtime-deps": "node scripts/check-runtime-deps.js && node scripts/check-docker-runtime-workspaces.mjs",
     "tui": "npm run cli",
     "verify": "npm run format && npm run lint && npm run test && npm run build && npm run smoke && npm run telemetry:report",
     "smoke": "node scripts/smoke-cli.js",
