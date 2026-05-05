@@ -3625,9 +3625,34 @@ impl ToolRegistry {
                     serde_json::json!({
                         "type": "object",
                         "properties": {
-                            "questions": {"type": "array"}
+                            "questions": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "question": {"type": "string"},
+                                        "header": {"type": "string"},
+                                        "options": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "label": {"type": "string"},
+                                                    "description": {"type": "string"}
+                                                },
+                                                "required": ["label", "description"],
+                                                "additionalProperties": false
+                                            }
+                                        },
+                                        "multiSelect": {"type": "boolean"}
+                                    },
+                                    "required": ["question", "header", "options"],
+                                    "additionalProperties": false
+                                }
+                            }
                         },
-                        "required": ["questions"]
+                        "required": ["questions"],
+                        "additionalProperties": false
                     }),
                 ),
                 requires_approval: false,
@@ -4501,6 +4526,36 @@ mod tests {
         let registry = ToolRegistry::new();
         let count = registry.tools().count();
         assert_eq!(count, 38); // includes parity tools + IDE stubs
+    }
+
+    #[test]
+    fn test_ask_user_schema_declares_nested_array_items() {
+        let registry = ToolRegistry::new();
+        let schema = &registry
+            .get("ask_user")
+            .expect("ask_user tool")
+            .tool
+            .input_schema;
+
+        let questions = &schema["properties"]["questions"];
+        assert_eq!(questions["type"], "array");
+        assert!(questions.get("items").is_some());
+        assert!(questions.get("minItems").is_none());
+        assert!(questions.get("maxItems").is_none());
+        assert_eq!(questions["items"]["properties"]["options"]["type"], "array");
+        assert!(questions["items"]["properties"]["options"]
+            .get("items")
+            .is_some());
+        assert!(questions["items"]["properties"]
+            .get("multi_select")
+            .is_none());
+        assert!(questions["items"]["properties"]
+            .get("multiSelect")
+            .is_some());
+        assert_eq!(
+            questions["items"]["properties"]["options"]["items"]["required"],
+            serde_json::json!(["label", "description"])
+        );
     }
 
     #[test]
