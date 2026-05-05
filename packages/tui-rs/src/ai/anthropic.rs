@@ -82,7 +82,7 @@ use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use serde::Deserialize;
 use tokio::sync::mpsc;
 
-use super::client::{AiClient, AiProvider};
+use super::client::{provider_model_name, AiClient, AiProvider};
 use super::types::{ContentBlock, Message, RequestConfig, StopReason, StreamEvent};
 
 /// Parser state for accumulating data across SSE events within a single stream.
@@ -122,11 +122,9 @@ impl AnthropicClient {
             .timeout(std::time::Duration::from_mins(5))
             .build()
             .context("Failed to create HTTP client")?;
+        let api_key = api_key.into().trim().to_string();
 
-        Ok(Self {
-            client,
-            api_key: api_key.into(),
-        })
+        Ok(Self { client, api_key })
     }
 
     /// Create a new client from environment variable
@@ -289,8 +287,9 @@ impl AnthropicClient {
         messages: &[Message],
         config: &RequestConfig,
     ) -> Result<serde_json::Value> {
+        let model = provider_model_name(&config.model);
         let mut body = serde_json::json!({
-            "model": config.model,
+            "model": model,
             "max_tokens": config.max_tokens,
             "messages": messages,
             "stream": true,
@@ -702,7 +701,7 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
     fn test_build_request_body_basic() {
         let client = AnthropicClient::new("test-key").unwrap();
         let config = RequestConfig {
-            model: "claude-3-opus-20240229".to_string(),
+            model: "anthropic/claude-3-opus-20240229".to_string(),
             max_tokens: 4096,
             system: Some("You are a helpful assistant.".to_string()),
             cache_system_prompt: false,
@@ -716,6 +715,14 @@ data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text
         assert_eq!(body["stream"], true);
         // Without caching, system is a simple string
         assert_eq!(body["system"], "You are a helpful assistant.");
+    }
+
+    #[test]
+    fn trims_api_key_before_building_headers() {
+        let client = AnthropicClient::new("  test-key\n").unwrap();
+        let headers = client.headers();
+
+        assert_eq!(headers.get("x-api-key").unwrap(), "test-key");
     }
 
     #[test]

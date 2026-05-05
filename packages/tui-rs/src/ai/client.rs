@@ -31,6 +31,17 @@ impl AiProvider {
     #[must_use]
     pub fn from_model(model: &str) -> Self {
         let model_lower = model.to_lowercase();
+        let provider_prefix = model_lower.split_once('/').map(|(provider, _)| provider);
+        match provider_prefix {
+            Some("anthropic") => return AiProvider::Anthropic,
+            Some("openai" | "azure-openai" | "azure") => return AiProvider::OpenAI,
+            Some("google" | "gemini") => return AiProvider::Google,
+            Some("mistral") => return AiProvider::Mistral,
+            Some("groq") => return AiProvider::Groq,
+            Some("vertex-ai" | "vertex") => return AiProvider::VertexAi,
+            _ => {}
+        }
+
         if model_lower.starts_with("claude") || model_lower.starts_with("anthropic") {
             AiProvider::Anthropic
         } else if model_lower.starts_with("gpt")
@@ -59,6 +70,25 @@ impl AiProvider {
             // Default to Anthropic for unknown models
             AiProvider::Anthropic
         }
+    }
+}
+
+/// Return the provider-native model id to send to upstream model APIs.
+#[must_use]
+pub fn provider_model_name(model: &str) -> String {
+    let trimmed = model.trim();
+    let Some((provider, model_id)) = trimmed.split_once('/') else {
+        return trimmed.to_string();
+    };
+    let model_id = model_id.trim();
+    if model_id.is_empty() {
+        return trimmed.to_string();
+    }
+
+    match provider.to_ascii_lowercase().as_str() {
+        "anthropic" | "openai" | "azure-openai" | "azure" | "google" | "gemini" | "mistral"
+        | "groq" | "vertex-ai" | "vertex" => model_id.to_string(),
+        _ => trimmed.to_string(),
     }
 }
 
@@ -208,6 +238,14 @@ mod tests {
             AiProvider::from_model("gpt-5.1-codex-max"),
             AiProvider::OpenAI
         );
+        assert_eq!(
+            AiProvider::from_model("openai/gpt-5.1-codex-max"),
+            AiProvider::OpenAI
+        );
+        assert_eq!(
+            AiProvider::from_model("azure-openai/gpt-4o"),
+            AiProvider::OpenAI
+        );
         assert_eq!(AiProvider::from_model("gpt-4o"), AiProvider::OpenAI);
         assert_eq!(AiProvider::from_model("gpt-4-turbo"), AiProvider::OpenAI);
         assert_eq!(AiProvider::from_model("o1-preview"), AiProvider::OpenAI);
@@ -230,6 +268,10 @@ mod tests {
     fn test_provider_from_model_google() {
         assert_eq!(
             AiProvider::from_model("gemini-2.0-flash"),
+            AiProvider::Google
+        );
+        assert_eq!(
+            AiProvider::from_model("google/gemini-2.5-pro"),
             AiProvider::Google
         );
         assert_eq!(AiProvider::from_model("gemini-2.5-pro"), AiProvider::Google);
@@ -277,6 +319,26 @@ mod tests {
             AiProvider::Anthropic
         );
         assert_eq!(AiProvider::from_model(""), AiProvider::Anthropic);
+    }
+
+    #[test]
+    fn test_provider_model_name_strips_known_provider_prefixes() {
+        assert_eq!(
+            provider_model_name("openai/gpt-5.1-codex-max"),
+            "gpt-5.1-codex-max"
+        );
+        assert_eq!(
+            provider_model_name("anthropic/claude-sonnet-4-5-20250514"),
+            "claude-sonnet-4-5-20250514"
+        );
+        assert_eq!(
+            provider_model_name(" google/gemini-2.5-pro\n"),
+            "gemini-2.5-pro"
+        );
+        assert_eq!(
+            provider_model_name("unknown-provider/model/name"),
+            "unknown-provider/model/name"
+        );
     }
 
     #[test]

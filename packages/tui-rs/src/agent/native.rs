@@ -107,8 +107,8 @@ use super::{
     TokenUsage, ToolResult,
 };
 use crate::ai::{
-    AiProvider, ContentBlock, ImageSource, Message, MessageContent, RequestConfig, Role,
-    StreamEvent, ThinkingConfig, Tool, UnifiedClient,
+    provider_model_name, AiProvider, ContentBlock, ImageSource, Message, MessageContent,
+    RequestConfig, Role, StreamEvent, ThinkingConfig, Tool, UnifiedClient,
 };
 use crate::hooks::{HookResult, IntegratedHookSystem};
 use crate::safety::{
@@ -1710,7 +1710,7 @@ impl NativeAgentRunner {
         };
 
         RequestConfig {
-            model: self.config.model.clone(),
+            model: provider_model_name(&self.config.model),
             max_tokens: self.config.max_tokens,
             temperature: if self.config.thinking_enabled {
                 None // Temperature must be 1 or omitted for thinking
