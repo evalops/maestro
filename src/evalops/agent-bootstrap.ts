@@ -10,18 +10,21 @@ import {
 } from "../oauth/storage.js";
 import { getPackageVersion } from "../package-metadata.js";
 import { getEnvValue, normalizeBaseUrl } from "../platform/client.js";
+import { PLATFORM_HTTP_ROUTES } from "../platform/core-services.js";
 
 const DEFAULT_AGENT_MCP_BASE_URL = "https://app.evalops.dev";
+const DEFAULT_IDENTITY_BASE_URL = "https://identity.evalops.dev";
 const AGENT_MCP_MANIFEST_PATH = "/.well-known/evalops/agent-mcp.json";
 const AGENT_MCP_PATH = "/mcp";
 const DEFAULT_AGENT_TYPE = "maestro";
 const DEFAULT_SURFACE = "cli";
-const DEFAULT_REGISTER_SCOPES = ["llm_gateway:invoke"];
 const DEFAULT_API_KEY_SCOPES = [
 	"agent:register",
 	"agent:heartbeat",
 	"governance:evaluate",
+	"llm_gateway:invoke",
 	"memories:read",
+	"memories:write",
 	"meter:record",
 ];
 
@@ -110,6 +113,12 @@ interface CreateAPIKeyOutput {
 	scopes?: string[];
 }
 
+interface CreateAPIKeyHTTPOutput extends Partial<CreateAPIKeyOutput> {
+	error?: string;
+	key?: Record<string, unknown>;
+	scopes_granted?: unknown;
+}
+
 interface RegisterOutput {
 	agent_id?: string;
 	expires_at?: string;
@@ -122,7 +131,9 @@ interface RegisterOutput {
 
 interface AgentMcpEndpoint {
 	endpoint: string;
+	identityBaseUrl?: string;
 	manifestUrl?: string;
+	preferDerivedIdentity?: boolean;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -218,6 +229,67 @@ function normalizeManifestUrl(url: string): string {
 	return parsed.toString();
 }
 
+function resolveIdentityBaseUrl(
+	credentials: OAuthCredentials | null,
+	endpoint?: AgentMcpEndpoint,
+): string {
+	const configured = getEnvValue([
+		"MAESTRO_IDENTITY_URL",
+		"EVALOPS_IDENTITY_URL",
+		"MAESTRO_PLATFORM_BASE_URL",
+		"MAESTRO_EVALOPS_BASE_URL",
+		"EVALOPS_BASE_URL",
+	]);
+	const stored =
+		typeof credentials?.metadata?.identityBaseUrl === "string"
+			? credentials.metadata.identityBaseUrl
+			: undefined;
+	const derived = identityBaseUrlFromMcpEndpoint(endpoint?.endpoint);
+	const storedBeforeDerived = endpoint
+		? !endpoint.preferDerivedIdentity && isCustomMcpEndpoint(endpoint.endpoint)
+		: false;
+	return normalizeBaseUrl(
+		configured ??
+			endpoint?.identityBaseUrl ??
+			(endpoint?.preferDerivedIdentity ? derived : undefined) ??
+			(storedBeforeDerived ? stored : undefined) ??
+			derived ??
+			stored ??
+			DEFAULT_IDENTITY_BASE_URL,
+		Object.values(PLATFORM_HTTP_ROUTES.identity),
+	);
+}
+
+function isCustomMcpEndpoint(endpoint: string): boolean {
+	const parsed = new URL(normalizeBaseUrl(endpoint));
+	return (
+		parsed.hostname !== "app.evalops.dev" &&
+		parsed.hostname !== "staging.evalops.dev"
+	);
+}
+
+function identityBaseUrlFromMcpEndpoint(
+	endpoint: string | undefined,
+): string | undefined {
+	if (!endpoint) {
+		return undefined;
+	}
+	const parsed = new URL(normalizeBaseUrl(endpoint));
+	if (parsed.hostname === "app.evalops.dev") {
+		return DEFAULT_IDENTITY_BASE_URL;
+	}
+	if (parsed.hostname === "staging.evalops.dev") {
+		return "https://api.staging.evalops.dev";
+	}
+	if (parsed.hostname.startsWith("app.")) {
+		parsed.hostname = `identity.${parsed.hostname.slice("app.".length)}`;
+	}
+	parsed.pathname = "";
+	parsed.search = "";
+	parsed.hash = "";
+	return normalizeBaseUrl(parsed.toString());
+}
+
 async function resolveEndpointFromManifest(
 	manifestUrl: string,
 	fetchImpl: typeof fetch,
@@ -231,15 +303,28 @@ async function resolveEndpointFromManifest(
 		);
 	}
 	const payload = (await response.json()) as unknown;
+	const payloadRecord = isRecord(payload) ? payload : undefined;
 	const protocol =
-		isRecord(payload) && isRecord(payload.protocol)
-			? payload.protocol
+		payloadRecord && isRecord(payloadRecord.protocol)
+			? payloadRecord.protocol
 			: undefined;
 	const endpoint = nonEmptyString(protocol?.endpoint);
 	if (!endpoint) {
 		throw new Error("EvalOps MCP manifest did not include protocol.endpoint");
 	}
-	return { endpoint: normalizeMcpEndpoint(endpoint), manifestUrl };
+	const identity = payloadRecord?.identity;
+	const identityBaseUrl =
+		nonEmptyString(isRecord(identity) ? identity.base_url : undefined) ??
+		nonEmptyString(isRecord(identity) ? identity.baseUrl : undefined) ??
+		nonEmptyString(isRecord(identity) ? identity.url : undefined) ??
+		nonEmptyString(payloadRecord?.identity_base_url) ??
+		nonEmptyString(payloadRecord?.identityBaseUrl);
+	return {
+		endpoint: normalizeMcpEndpoint(endpoint),
+		identityBaseUrl,
+		manifestUrl,
+		preferDerivedIdentity: true,
+	};
 }
 
 async function resolveAgentMcpEndpoint(
@@ -247,7 +332,10 @@ async function resolveAgentMcpEndpoint(
 	deps: Required<Pick<EvalOpsInitDependencies, "fetch" | "loadCredentials">>,
 ): Promise<AgentMcpEndpoint> {
 	if (options.mcpUrl) {
-		return { endpoint: normalizeMcpEndpoint(options.mcpUrl) };
+		return {
+			endpoint: normalizeMcpEndpoint(options.mcpUrl),
+			preferDerivedIdentity: true,
+		};
 	}
 	if (options.manifestUrl) {
 		return resolveEndpointFromManifest(
@@ -262,7 +350,10 @@ async function resolveAgentMcpEndpoint(
 		"MAESTRO_EVALOPS_AGENT_MCP_URL",
 	]);
 	if (configuredMcpUrl) {
-		return { endpoint: normalizeMcpEndpoint(configuredMcpUrl) };
+		return {
+			endpoint: normalizeMcpEndpoint(configuredMcpUrl),
+			preferDerivedIdentity: true,
+		};
 	}
 
 	const configuredManifestUrl = getEnvValue([
@@ -418,29 +509,59 @@ function buildKeyName(options: EvalOpsInitOptions, now: Date): string {
 
 async function createAgentAPIKey(
 	options: EvalOpsInitOptions,
-	endpoint: string,
+	identityBaseUrl: string,
 	oauthToken: string,
-	createClient: (endpoint: string, bearerToken: string) => EvalOpsMcpClient,
+	fetchImpl: typeof fetch,
 	now: Date,
 ): Promise<CreateAPIKeyOutput> {
-	const output = await callMcpTool<CreateAPIKeyOutput>(
-		createClient,
-		endpoint,
-		"",
-		"evalops_create_api_key",
+	const expiresInDays = positiveInteger(options.expiresInDays);
+	const expiresAt = expiresInDays
+		? new Date(
+				now.getTime() + expiresInDays * 24 * 60 * 60 * 1000,
+			).toISOString()
+		: undefined;
+	const response = await fetchImpl(
+		`${identityBaseUrl}${PLATFORM_HTTP_ROUTES.identity.apiKeys}`,
 		{
-			name: buildKeyName(options, now),
-			scopes: options.apiKeyScopes ?? DEFAULT_API_KEY_SCOPES,
-			user_token: oauthToken,
-			...(positiveInteger(options.expiresInDays)
-				? { expires_in_days: options.expiresInDays }
-				: {}),
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${oauthToken}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				name: buildKeyName(options, now),
+				scopes: options.apiKeyScopes ?? DEFAULT_API_KEY_SCOPES,
+				...(expiresAt ? { expires_at: expiresAt } : {}),
+			}),
 		},
 	);
-	if (!nonEmptyString(output.api_key)) {
+	const output = (await response
+		.json()
+		.catch(() => ({}))) as CreateAPIKeyHTTPOutput;
+	if (!response.ok) {
+		throw new Error(
+			typeof output.error === "string" && output.error.trim()
+				? output.error
+				: `EvalOps API key creation failed (${response.status})`,
+		);
+	}
+	const key = isRecord(output.key) ? output.key : undefined;
+	const normalized: CreateAPIKeyOutput = {
+		api_key: nonEmptyString(output.api_key) ?? "",
+		expires_at:
+			nonEmptyString(output.expires_at) ?? nonEmptyString(key?.expires_at),
+		key_id: nonEmptyString(output.key_id) ?? nonEmptyString(key?.id),
+		name: nonEmptyString(output.name) ?? nonEmptyString(key?.name),
+		prefix: nonEmptyString(output.prefix) ?? nonEmptyString(key?.prefix),
+		scopes:
+			stringArray(output.scopes) ??
+			stringArray(key?.scopes) ??
+			stringArray(output.scopes_granted),
+	};
+	if (!nonEmptyString(normalized.api_key)) {
 		throw new Error("EvalOps API key creation did not return api_key");
 	}
-	return output;
+	return normalized;
 }
 
 async function registerAgent(
@@ -452,14 +573,15 @@ async function registerAgent(
 	const output = await callMcpTool<RegisterOutput>(
 		createClient,
 		endpoint,
-		"",
+		apiKey,
 		"evalops_register",
 		{
 			agent_type: options.agentType ?? DEFAULT_AGENT_TYPE,
 			capabilities: ["maestro:init", "maestro:cli"],
-			scopes: options.registerScopes ?? DEFAULT_REGISTER_SCOPES,
+			...(options.registerScopes?.length
+				? { scopes: options.registerScopes }
+				: {}),
 			surface: options.surface ?? DEFAULT_SURFACE,
-			user_token: apiKey,
 			...(positiveInteger(options.ttlSeconds)
 				? { ttl_seconds: options.ttlSeconds }
 				: {}),
@@ -524,6 +646,10 @@ export async function bootstrapEvalOpsAgent(
 	const endpoint = await resolveAgentMcpEndpoint(options, deps);
 	const credentialsBeforeKey = deps.loadCredentials("evalops");
 	const stored = getStoredAgentMcpMetadata(credentialsBeforeKey);
+	const identityBaseUrl = resolveIdentityBaseUrl(
+		credentialsBeforeKey,
+		endpoint,
+	);
 	const now = deps.now();
 
 	let apiKey = stored && !options.rotateKey ? stored.apiKey : undefined;
@@ -534,9 +660,9 @@ export async function bootstrapEvalOpsAgent(
 		deps.onStatus({ message: "Creating EvalOps agent API key" });
 		keyOutput = await createAgentAPIKey(
 			options,
-			endpoint.endpoint,
+			identityBaseUrl,
 			oauthToken,
-			deps.createMcpClient,
+			deps.fetch,
 			now,
 		);
 		apiKey = keyOutput.api_key;
@@ -563,9 +689,9 @@ export async function bootstrapEvalOpsAgent(
 		});
 		keyOutput = await createAgentAPIKey(
 			{ ...options, rotateKey: true },
-			endpoint.endpoint,
+			identityBaseUrl,
 			oauthToken,
-			deps.createMcpClient,
+			deps.fetch,
 			now,
 		);
 		apiKey = keyOutput.api_key;

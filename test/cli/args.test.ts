@@ -128,11 +128,30 @@ describe("parseArgs", () => {
 		expect(parseArgs(["evalops", "login"])).toMatchObject({
 			command: "evalops",
 			subcommand: "login",
+			commandArgs: [],
 			messages: [],
 		});
 		expect(parseArgs(["evalops", "status"])).toMatchObject({
 			command: "evalops",
 			subcommand: "status",
+			commandArgs: [],
+			messages: [],
+		});
+	});
+
+	it("preserves evalops init bootstrap arguments for the init handler", () => {
+		expect(
+			parseArgs([
+				"evalops",
+				"init",
+				"--mcp-url",
+				"https://app.evalops.dev",
+				"--rotate-key",
+			]),
+		).toMatchObject({
+			command: "evalops",
+			subcommand: "init",
+			commandArgs: ["--mcp-url", "https://app.evalops.dev", "--rotate-key"],
 			messages: [],
 		});
 	});

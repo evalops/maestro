@@ -3,6 +3,27 @@ import {
 	type EvalOpsInitOptions,
 	bootstrapEvalOpsAgent,
 } from "../../evalops/agent-bootstrap.js";
+import { muted, sectionHeading } from "../../style/theme.js";
+
+export function formatInitHelp(): string {
+	return `${sectionHeading("maestro init")}${muted(
+		`  maestro init                         Login, create or reuse an API key, and register this agent
+  maestro init --rotate-key           Replace the stored agent MCP API key
+  maestro init --mcp-url <url>        Override the EvalOps agent MCP endpoint
+  maestro init --json                 Emit machine-readable bootstrap output
+
+Options
+  --agent-type <type>                 Agent type to register, defaults to maestro
+  --surface <surface>                 Surface to register, defaults to cli
+  --workspace, --workspace-id <id>    Workspace to associate with the registration
+  --scope <scope[,scope...]>          Registration scopes to request
+  --key-scope <scope[,scope...]>      API key scopes to request
+  --expires-in-days <days>            API key TTL in days
+  --force-login                       Re-run EvalOps OAuth before bootstrapping
+  --manifest-url <url>                Override the agent MCP manifest URL
+  --ttl-seconds <seconds>             Registration TTL in seconds`,
+	)}`;
+}
 
 function readValue(args: string[], index: number, flag: string): string {
 	const value = args[index + 1];
@@ -108,6 +129,11 @@ export function parseInitArgs(args: string[]): EvalOpsInitOptions {
 }
 
 export async function handleInitCommand(args: string[] = []): Promise<void> {
+	if (args.includes("--help") || args.includes("-h")) {
+		console.log(formatInitHelp());
+		return;
+	}
+
 	let options: EvalOpsInitOptions;
 	try {
 		options = parseInitArgs(args);

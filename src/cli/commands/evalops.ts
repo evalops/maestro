@@ -1,12 +1,16 @@
 import chalk from "chalk";
+import { getStoredEvalOpsAgentMcpMetadata } from "../../evalops/agent-bootstrap.js";
 import { hasOAuthCredentials, login, logout } from "../../oauth/index.js";
 import { loadOAuthCredentials } from "../../oauth/storage.js";
 
-export async function handleEvalOpsCommand(subcommand?: string): Promise<void> {
+export async function handleEvalOpsCommand(
+	subcommand?: string,
+	args: string[] = [],
+): Promise<void> {
 	switch (subcommand) {
 		case "init": {
 			const { handleInitCommand } = await import("./init.js");
-			await handleInitCommand();
+			await handleInitCommand(args);
 			return;
 		}
 		case "login":
@@ -68,6 +72,7 @@ async function handleStatus(): Promise<void> {
 	);
 	const minutes = Math.round(remainingMs / 60_000);
 	const metadata = credentials?.metadata;
+	const agentMcp = getStoredEvalOpsAgentMcpMetadata();
 	const organizationId =
 		typeof metadata?.organizationId === "string"
 			? metadata.organizationId
@@ -93,6 +98,26 @@ async function handleStatus(): Promise<void> {
 				? providerRef.environment
 				: "prod";
 		console.log(chalk.dim(`Provider ref: ${provider}/${environment}`));
+	}
+	if (agentMcp) {
+		console.log(chalk.green("EvalOps agent session configured."));
+		console.log(chalk.dim(`MCP endpoint: ${agentMcp.endpoint}`));
+		if (agentMcp.agentId) {
+			console.log(chalk.dim(`Agent: ${agentMcp.agentId}`));
+		}
+		if (agentMcp.runId) {
+			console.log(chalk.dim(`Run: ${agentMcp.runId}`));
+		}
+		if (agentMcp.keyPrefix) {
+			console.log(chalk.dim(`API key: ${agentMcp.keyPrefix}`));
+		}
+		if (agentMcp.sessionExpiresAt) {
+			console.log(chalk.dim(`Session expires: ${agentMcp.sessionExpiresAt}`));
+		}
+	} else {
+		console.log(
+			chalk.yellow('No EvalOps agent session yet. Run "maestro init".'),
+		);
 	}
 	console.log(
 		chalk.dim(

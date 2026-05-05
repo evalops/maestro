@@ -234,6 +234,52 @@ describe("auth resolver", () => {
 		mockedLoadCreds.mockReset();
 	});
 
+	it("prefers the stored EvalOps agent key for managed gateway inference", async () => {
+		const mockedGetToken = vi.mocked(getOAuthToken);
+		const mockedLoadCreds = vi.mocked(loadOAuthCredentials);
+		mockedGetToken.mockResolvedValue("evalops-token");
+		mockedLoadCreds.mockReturnValue({
+			type: "oauth",
+			access: "evalops-token",
+			refresh: "",
+			expires: Date.now() + 60_000,
+			metadata: {
+				agentId: "agent_cli",
+				organizationId: "org_evalops",
+				providerRef: {
+					provider: "openai",
+					environment: "prod",
+				},
+				agentMcp: {
+					apiKey: "pk_live_agent",
+					expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+					scopes: ["agent:register", "llm_gateway:invoke"],
+				},
+			},
+		});
+		const resolver = createAuthResolver({ mode: "auto" });
+		const credential = await resolver("evalops");
+		expect(credential).toBeDefined();
+		expect(credential?.token).toBe("pk_live_agent");
+		expect(credential?.source).toBe("evalops_agent_key_file");
+		expect(credential?.headers).toEqual({
+			"X-Organization-ID": "org_evalops",
+		});
+		expect(credential?.requestBody).toEqual({
+			metadata: {
+				agent_id: "agent_cli",
+				surface: "maestro",
+			},
+			provider_ref: {
+				provider: "openai",
+				environment: "prod",
+			},
+		});
+		expect(mockedGetToken).not.toHaveBeenCalled();
+		mockedGetToken.mockReset();
+		mockedLoadCreds.mockReset();
+	});
+
 	it("fails closed for evalops providers when the kill switch is enabled", async () => {
 		const path = join(
 			tmpdir(),

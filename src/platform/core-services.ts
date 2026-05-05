@@ -233,6 +233,7 @@ export const PLATFORM_CONNECT_METHODS = {
 
 export const PLATFORM_HTTP_ROUTES = {
 	identity: {
+		apiKeys: "/v1/api-keys",
 		authGoogleStart: "/v1/auth/google/start",
 		deviceChallenges: "/v1/device-challenges",
 		devices: "/v1/devices",
