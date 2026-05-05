@@ -3473,7 +3473,7 @@ impl ToolRegistry {
                 .with_schema(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "patterns": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                        "patterns": {"type": "array", "items": {"type": "string"}},
                         "paths": {
                             "anyOf": [
                                 {"type": "string"},
@@ -3606,8 +3606,47 @@ impl ToolRegistry {
                         "type": "object",
                         "properties": {
                             "goal": {"type": "string"},
-                            "items": {},
-                            "updates": {"type": "array"},
+                            "items": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": {"type": "string"},
+                                        "content": {"type": "string"},
+                                        "status": {"type": "string"},
+                                        "priority": {"type": "string"},
+                                        "notes": {"type": "string"},
+                                        "due": {"type": "string"},
+                                        "blockedBy": {
+                                            "type": "array",
+                                            "items": {"type": "string"}
+                                        }
+                                    },
+                                    "required": ["content"],
+                                    "additionalProperties": false
+                                }
+                            },
+                            "updates": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": {"type": "string"},
+                                        "status": {"type": "string"},
+                                        "priority": {"type": "string"},
+                                        "notes": {"type": "string"},
+                                        "due": {"type": "string"},
+                                        "blockedBy": {
+                                            "type": "array",
+                                            "items": {"type": "string"}
+                                        },
+                                        "content": {"type": "string"},
+                                        "remove": {"type": "boolean"}
+                                    },
+                                    "required": ["id"],
+                                    "additionalProperties": false
+                                }
+                            },
                             "includeSummary": {"type": "boolean"}
                         },
                         "required": ["goal"]
@@ -4313,6 +4352,40 @@ mod tests {
         )
     }
 
+    fn collect_openai_schema_issues(
+        value: &serde_json::Value,
+        path: &str,
+        issues: &mut Vec<String>,
+    ) {
+        let Some(object) = value.as_object() else {
+            return;
+        };
+
+        if object.get("type").and_then(serde_json::Value::as_str) == Some("array")
+            && !object.contains_key("items")
+        {
+            issues.push(format!("{path}: array schema missing items"));
+        }
+
+        for keyword in ["minItems", "maxItems"] {
+            if object.contains_key(keyword) {
+                issues.push(format!(
+                    "{path}: unsupported OpenAI schema keyword {keyword}"
+                ));
+            }
+        }
+
+        for (key, child) in object {
+            let child_path = format!("{path}.{key}");
+            collect_openai_schema_issues(child, &child_path, issues);
+            if let Some(values) = child.as_array() {
+                for (idx, nested) in values.iter().enumerate() {
+                    collect_openai_schema_issues(nested, &format!("{child_path}[{idx}]"), issues);
+                }
+            }
+        }
+    }
+
     #[cfg(not(windows))]
     fn failing_counter_server(server_name: &str, counter_path: &Path) -> serde_json::Value {
         serde_json::json!({
@@ -4556,6 +4629,22 @@ mod tests {
             questions["items"]["properties"]["options"]["items"]["required"],
             serde_json::json!(["label", "description"])
         );
+    }
+
+    #[test]
+    fn test_registered_tool_schemas_are_openai_safe() {
+        let registry = ToolRegistry::new();
+        let mut issues = Vec::new();
+
+        for (name, definition) in &registry.tools {
+            collect_openai_schema_issues(
+                &definition.tool.input_schema,
+                &format!("tool.{name}.parameters"),
+                &mut issues,
+            );
+        }
+
+        assert!(issues.is_empty(), "{}", issues.join("\n"));
     }
 
     #[test]
