@@ -16,6 +16,7 @@ const DURABLE_MEMORY_TAG = "maestro-kind:durable-memory";
 const SOURCE_TAG = "source:maestro";
 const TOPIC_TAG_PREFIX = "maestro-topic:";
 const PROJECT_NAME_TAG_PREFIX = "maestro-project-name:";
+const SESSION_TAG_PREFIX = "maestro-session:";
 
 type RemoteMemoryConfig = {
 	agentId: string;
@@ -189,6 +190,7 @@ function buildRemoteMemoryTags(
 	topic: string,
 	tags?: readonly string[],
 	projectName?: string,
+	sessionId?: string,
 ): string[] {
 	return (
 		mergeTags(
@@ -199,6 +201,7 @@ function buildRemoteMemoryTags(
 				...(projectName
 					? [`${PROJECT_NAME_TAG_PREFIX}${projectName.trim().toLowerCase()}`]
 					: []),
+				...(sessionId ? [`${SESSION_TAG_PREFIX}${sessionId.trim()}`] : []),
 			],
 			tags,
 		) ?? []
@@ -208,8 +211,11 @@ function buildRemoteMemoryTags(
 function buildSourceReferences(
 	topic: string,
 	scope: RemoteMemoryScope,
+	options?: {
+		sessionId?: string;
+	},
 ): MemorySourceReference[] {
-	return [
+	const references: MemorySourceReference[] = [
 		{
 			uri: scope.repository
 				? `repo:${scope.repository}`
@@ -225,6 +231,23 @@ function buildSourceReferences(
 			},
 		},
 	];
+	const sessionId = options?.sessionId?.trim();
+	if (sessionId) {
+		references.push({
+			uri: `maestro://sessions/${sessionId}`,
+			title: `Maestro session ${sessionId}`,
+			type: "maestro-session",
+			metadata: {
+				source: "maestro",
+				sessionId,
+				topic: normalizeTopic(topic),
+				...(scope.projectId ? { projectId: scope.projectId } : {}),
+				...(scope.projectName ? { projectName: scope.projectName } : {}),
+				...(scope.repository ? { repository: scope.repository } : {}),
+			},
+		});
+	}
+	return references;
 }
 
 function extractTopicFromTags(tags?: readonly string[]): string | undefined {
@@ -280,7 +303,8 @@ function toLocalMemoryEntry(
 				tag !== SOURCE_TAG &&
 				tag !== DURABLE_MEMORY_TAG &&
 				!tag.startsWith(TOPIC_TAG_PREFIX) &&
-				!tag.startsWith(PROJECT_NAME_TAG_PREFIX),
+				!tag.startsWith(PROJECT_NAME_TAG_PREFIX) &&
+				!tag.startsWith(SESSION_TAG_PREFIX),
 		);
 
 	return {
@@ -349,6 +373,7 @@ async function upsertRemoteDurableMemoryWithConfig(
 	content: string,
 	options?: {
 		existingRecords?: ClientMemory[];
+		sessionId?: string;
 		tags?: string[];
 	},
 ): Promise<{ entry: MemoryEntry; created: boolean; updated: boolean }> {
@@ -357,6 +382,7 @@ async function upsertRemoteDurableMemoryWithConfig(
 		topic,
 		options?.tags,
 		scope.projectName,
+		options?.sessionId,
 	);
 	const existingRecords =
 		options?.existingRecords ??
@@ -377,7 +403,9 @@ async function upsertRemoteDurableMemoryWithConfig(
 			agentId: config.agentId,
 			tags: nextTags,
 			reviewStatus: "approved",
-			sourceReferences: buildSourceReferences(topic, scope),
+			sourceReferences: buildSourceReferences(topic, scope, {
+				sessionId: options?.sessionId,
+			}),
 		};
 		const created = requireMemory(
 			(await config.client.store(request)).memory,
@@ -410,7 +438,9 @@ async function upsertRemoteDurableMemoryWithConfig(
 				id: existing.id,
 				content: nextContent,
 				reviewStatus: "approved",
-				sourceReferences: buildSourceReferences(topic, scope),
+				sourceReferences: buildSourceReferences(topic, scope, {
+					sessionId: options?.sessionId,
+				}),
 				tags: mergedTags ?? [],
 			})
 		).memory,
@@ -430,6 +460,7 @@ export async function upsertRemoteDurableMemory(
 		cwd?: string;
 		projectId?: string;
 		projectName?: string;
+		sessionId?: string;
 		tags?: string[];
 	},
 ): Promise<{ entry: MemoryEntry; created: boolean; updated: boolean } | null> {
@@ -443,7 +474,7 @@ export async function upsertRemoteDurableMemory(
 		resolveRemoteScope(options),
 		topic,
 		content,
-		{ tags: options?.tags },
+		{ sessionId: options?.sessionId, tags: options?.tags },
 	);
 }
 

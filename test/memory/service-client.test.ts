@@ -118,6 +118,74 @@ describe("memory service client", () => {
 		});
 	});
 
+	it("attaches session provenance to remote durable memories", async () => {
+		const requests: Array<{ body?: string; method?: string; url: string }> = [];
+		const fetchMock = vi.fn(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url = typeof input === "string" ? input : input.toString();
+				requests.push({
+					url,
+					method: init?.method,
+					body: typeof init?.body === "string" ? init.body : undefined,
+				});
+				if (url.includes("/v1/memories?")) {
+					return new Response(JSON.stringify({ memories: [] }), {
+						status: 200,
+					});
+				}
+				if (url.endsWith("/v1/memories")) {
+					const body = JSON.parse(String(init?.body));
+					return new Response(
+						JSON.stringify({
+							id: "mem_remote_session",
+							organization_id: "org_123",
+							type: "project",
+							content: body.content,
+							repository: body.repository,
+							agent: body.agent,
+							tags: body.tags,
+							created_at: "2026-04-09T00:00:00.000Z",
+							updated_at: "2026-04-09T00:00:00.000Z",
+						}),
+						{ status: 201 },
+					);
+				}
+				throw new Error(`Unexpected request: ${url}`);
+			},
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const { upsertRemoteDurableMemory } = await import(
+			"../../src/memory/service-client.js"
+		);
+		await upsertRemoteDurableMemory(
+			"team-preferences",
+			"Keep pull requests focused.",
+			{
+				cwd: repoRoot,
+				sessionId: "session-123",
+				tags: ["auto", "durable", "workflow"],
+			},
+		);
+
+		const createBody = JSON.parse(String(requests[1]?.body));
+		expect(createBody.tags).toEqual(
+			expect.arrayContaining(["maestro-session:session-123"]),
+		);
+		expect(createBody.source_references).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					type: "maestro-session",
+					uri: "maestro://sessions/session-123",
+					metadata: expect.objectContaining({
+						sessionId: "session-123",
+						source: "maestro",
+					}),
+				}),
+			]),
+		);
+	});
+
 	it("updates matching remote durable memories when metadata changes", async () => {
 		const requests: Array<{ body?: string; method?: string; url: string }> = [];
 		const fetchMock = vi.fn(
