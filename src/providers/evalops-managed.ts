@@ -4,6 +4,9 @@ import {
 	isFeatureFlagEnabled,
 } from "../config/feature-flags.js";
 
+export const DEFAULT_EVALOPS_MANAGED_GATEWAY_BASE_URL =
+	"https://llm-gateway.evalops.dev/v1";
+
 export type EvalOpsManagedProviderDefinition = {
 	allowedModelApis?: readonly Api[];
 	api: Api;

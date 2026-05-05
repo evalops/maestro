@@ -619,10 +619,11 @@ export async function loginEvalOps(
 		const result = await Promise.race([
 			getResult(),
 			new Promise<EvalOpsCallbackResult>((_, reject) => {
-				setTimeout(
+				const timeout = setTimeout(
 					() => reject(new Error("EvalOps login timed out after 5 minutes")),
 					5 * 60 * 1000,
 				);
+				timeout.unref?.();
 			}),
 		]);
 
