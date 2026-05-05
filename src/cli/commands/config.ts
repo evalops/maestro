@@ -22,6 +22,7 @@ import { getHomeDir } from "../../utils/path-expansion.js";
 import type { Api } from "../../agent/types.js";
 import { getEnvVarsForProvider } from "../../providers/api-keys.js";
 import {
+	DEFAULT_EVALOPS_MANAGED_GATEWAY_BASE_URL,
 	getEvalOpsManagedProviderDefinitions,
 	isEvalOpsManagedProvider,
 } from "../../providers/evalops-managed.js";
@@ -41,7 +42,8 @@ type ProviderPreset = {
 
 function getManagedGatewayBaseUrl(): string {
 	return (
-		process.env.MAESTRO_LLM_GATEWAY_URL?.trim() || "http://127.0.0.1:8081/v1"
+		process.env.MAESTRO_LLM_GATEWAY_URL?.trim() ||
+		DEFAULT_EVALOPS_MANAGED_GATEWAY_BASE_URL
 	);
 }
 

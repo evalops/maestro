@@ -125,6 +125,10 @@ export async function handleInitCommand(args: string[] = []): Promise<void> {
 	const result = await bootstrapEvalOpsAgent(options, {
 		onAuthUrl: (url) => {
 			if (options.json) {
+				console.error(
+					"Open this URL in your browser to authenticate with EvalOps:",
+				);
+				console.error(url);
 				return;
 			}
 			console.log(
@@ -135,9 +139,11 @@ export async function handleInitCommand(args: string[] = []): Promise<void> {
 			console.log(chalk.underline(url));
 		},
 		onStatus: (status) => {
-			if (!options.json) {
-				console.log(chalk.dim(status.message));
+			if (options.json) {
+				console.error(status.message);
+				return;
 			}
+			console.log(chalk.dim(status.message));
 		},
 	});
 

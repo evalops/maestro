@@ -1,16 +1,15 @@
 import type { Api, Model } from "../agent/types.js";
 import {
+	DEFAULT_EVALOPS_MANAGED_GATEWAY_BASE_URL,
 	getEvalOpsManagedProviderDefinitions,
 	isEvalOpsManagedGatewayEnabled,
 } from "../providers/evalops-managed.js";
 import { MODELS as GENERATED_MODELS } from "./models.generated.js";
 import { normalizeModelBaseUrl } from "./url-normalize.js";
 
-const DEFAULT_MANAGED_GATEWAY_BASE_URL = "http://127.0.0.1:8081/v1";
-
 function getManagedGatewayBaseUrl(): string {
 	const configured = process.env.MAESTRO_LLM_GATEWAY_URL?.trim();
-	return configured || DEFAULT_MANAGED_GATEWAY_BASE_URL;
+	return configured || DEFAULT_EVALOPS_MANAGED_GATEWAY_BASE_URL;
 }
 
 function getManagedGatewayBaseUrlForApi(api: Api): string {

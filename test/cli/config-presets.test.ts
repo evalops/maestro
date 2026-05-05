@@ -3,8 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resetFeatureFlagCacheForTests } from "../../src/config/feature-flags.js";
-
-const DEFAULT_MANAGED_GATEWAY_BASE_URL = "http://127.0.0.1:8081/v1";
+import { DEFAULT_EVALOPS_MANAGED_GATEWAY_BASE_URL } from "../../src/providers/evalops-managed.js";
 
 describe("config provider presets", () => {
 	const originalGatewayUrl = process.env.MAESTRO_LLM_GATEWAY_URL;
@@ -53,7 +52,7 @@ describe("config provider presets", () => {
 				name: definition.name,
 				api: definition.api,
 				defaultModel: definition.defaultModel,
-				baseUrl: DEFAULT_MANAGED_GATEWAY_BASE_URL,
+				baseUrl: DEFAULT_EVALOPS_MANAGED_GATEWAY_BASE_URL,
 				requiresApiKey: false,
 				note: definition.note,
 			});
