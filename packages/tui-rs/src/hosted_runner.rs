@@ -3430,6 +3430,10 @@ mod tests {
             "workspace_1".to_string(),
         );
         env.insert(
+            "MAESTRO_AGENT_RUN_ID".to_string(),
+            "agent_run_1".to_string(),
+        );
+        env.insert(
             "MAESTRO_REMOTE_RUNNER_SNAPSHOT_ROOT".to_string(),
             ".snapshots".to_string(),
         );
@@ -3458,6 +3462,7 @@ mod tests {
             )
         );
         assert_eq!(config.workspace_id.as_deref(), Some("workspace_1"));
+        assert_eq!(config.agent_run_id.as_deref(), Some("agent_run_1"));
         assert_eq!(
             config.restore_manifest_path.as_deref(),
             Some(
@@ -3572,6 +3577,21 @@ mod tests {
         assert_eq!(identity.owner_instance_id.as_deref(), Some("owner_test"));
         assert!(identity.ready);
         assert!(!identity.draining);
+
+        let identity_json: serde_json::Value = client
+            .get(format!(
+                "{}/.well-known/evalops/remote-runner/identity",
+                handle.base_url()
+            ))
+            .send()
+            .await
+            .expect("identity response")
+            .json()
+            .await
+            .expect("identity json");
+        assert!(identity_json.get("workspace_id").is_none());
+        assert!(identity_json.get("agent_run_id").is_none());
+        assert!(identity_json.get("maestro_session_id").is_none());
 
         let drain: serde_json::Value = client
             .post(format!(

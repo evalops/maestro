@@ -8,7 +8,11 @@ import {
 	initOpenTelemetry,
 	isOpenTelemetryEnabled,
 } from "./opentelemetry.js";
-import { mirrorTelemetryToMaestroEventBus } from "./telemetry/maestro-event-bus.js";
+import {
+	type MaestroCorrelation,
+	mirrorTelemetryToMaestroEventBus,
+	resolveMaestroEventBusConfig,
+} from "./telemetry/maestro-event-bus.js";
 import {
 	hasRemoteMeterDestination,
 	mirrorCanonicalTurnEventToMeter,
@@ -320,9 +324,11 @@ async function postToEndpoint(payload: string) {
 
 function recordOpenTelemetrySpan(event: TelemetryEvent): void {
 	try {
+		const correlationAttributes = maestroCorrelationSpanAttributes(event);
 		const tracer = getTelemetryTracer();
 		tracer.startActiveSpan(`telemetry.${event.type}`, (span: Span) => {
 			span.setAttributes({
+				...correlationAttributes,
 				"maestro.telemetry.type": event.type,
 				"maestro.telemetry.timestamp": event.timestamp,
 			});
@@ -423,11 +429,26 @@ function recordOpenTelemetrySpan(event: TelemetryEvent): void {
 								: SpanStatusCode.OK,
 					});
 					break;
-				case "canonical-turn":
+				case "canonical-turn": {
+					const canonicalTurn = isCanonicalTurnTelemetryEvent(event)
+						? event
+						: undefined;
 					span.setAttributes({
 						"maestro.turn.id": event.turnId,
 						"maestro.turn.number": event.turnNumber,
 						"maestro.turn.session_id": event.sessionId,
+						"agent.session.id": event.sessionId,
+						...(canonicalTurn
+							? {
+									"llm.model.id": canonicalTurn.model.id,
+									"llm.model.provider": canonicalTurn.model.provider,
+									"llm.usage.input_tokens": canonicalTurn.tokens.input,
+									"llm.usage.output_tokens": canonicalTurn.tokens.output,
+									"llm.usage.cache_read_tokens": canonicalTurn.tokens.cacheRead,
+									"llm.usage.cache_write_tokens":
+										canonicalTurn.tokens.cacheWrite,
+								}
+							: {}),
 						"maestro.turn.status": String(
 							"status" in event ? event.status : "unknown",
 						),
@@ -451,6 +472,7 @@ function recordOpenTelemetrySpan(event: TelemetryEvent): void {
 								: SpanStatusCode.OK,
 					});
 					break;
+				}
 				default:
 					span.setStatus({ code: SpanStatusCode.UNSET });
 			}
@@ -464,6 +486,111 @@ function recordOpenTelemetrySpan(event: TelemetryEvent): void {
 	} catch {
 		// Never let tracing failures affect runtime
 	}
+}
+
+function stringRecord(value: unknown): Record<string, unknown> | undefined {
+	return value && typeof value === "object" && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: undefined;
+}
+
+function metadataString(
+	record: Record<string, unknown> | undefined,
+	keys: string[],
+): string | undefined {
+	for (const key of keys) {
+		const value = record?.[key];
+		if (typeof value === "string" && value.trim().length > 0) {
+			return value;
+		}
+	}
+	return undefined;
+}
+
+function eventCorrelationOverrides(
+	event: TelemetryEvent,
+): Partial<MaestroCorrelation> {
+	const metadata = stringRecord(
+		"metadata" in event ? event.metadata : undefined,
+	);
+	const topLevelTraceId =
+		"traceId" in event &&
+		typeof event.traceId === "string" &&
+		event.traceId.trim().length > 0
+			? event.traceId
+			: undefined;
+	return {
+		organization_id: metadataString(metadata, [
+			"organizationId",
+			"organization_id",
+			"orgId",
+			"org_id",
+		]),
+		user_id: metadataString(metadata, ["userId", "user_id"]),
+		workspace_id: metadataString(metadata, ["workspaceId", "workspace_id"]),
+		session_id:
+			("sessionId" in event && typeof event.sessionId === "string"
+				? event.sessionId
+				: undefined) ??
+			metadataString(metadata, [
+				"sessionId",
+				"session_id",
+				"maestroSessionId",
+				"maestro_session_id",
+			]),
+		agent_run_id: metadataString(metadata, ["agentRunId", "agent_run_id"]),
+		agent_run_step_id: metadataString(metadata, [
+			"agentRunStepId",
+			"agent_run_step_id",
+			"toolCallId",
+			"tool_call_id",
+		]),
+		agent_id: metadataString(metadata, ["agentId", "agent_id"]),
+		trace_id:
+			topLevelTraceId ?? metadataString(metadata, ["traceId", "trace_id"]),
+		request_id: metadataString(metadata, ["requestId", "request_id"]),
+	};
+}
+
+function maestroCorrelationSpanAttributes(
+	event: TelemetryEvent,
+): Record<string, string> {
+	const config = resolveMaestroEventBusConfig();
+	const overrides = eventCorrelationOverrides(event);
+	const correlation = {
+		...config.defaultCorrelation,
+		...Object.fromEntries(
+			Object.entries(overrides).filter(([, value]) => value !== undefined),
+		),
+	};
+	const principal = config.defaultPrincipal;
+	const attributes: Record<string, string | undefined> = {
+		"enduser.id": correlation.user_id ?? principal?.user_id,
+		"user.id": correlation.user_id ?? principal?.user_id,
+		"agent.user.id": correlation.user_id ?? principal?.user_id,
+		"organization.id":
+			correlation.organization_id ?? principal?.organization_id,
+		"evalops.organization_id":
+			correlation.organization_id ?? principal?.organization_id,
+		"workspace.id": correlation.workspace_id ?? principal?.workspace_id,
+		"evalops.workspace_id": correlation.workspace_id ?? principal?.workspace_id,
+		"maestro.session_id": correlation.session_id,
+		"agent.id": correlation.agent_id,
+		"maestro.agent_run_id": correlation.agent_run_id,
+		"maestro.agent_run_step_id": correlation.agent_run_step_id,
+		"trace.id": correlation.trace_id,
+		"request.id": correlation.request_id,
+		"maestro.surface": config.defaultSurface,
+	};
+
+	return Object.fromEntries(
+		Object.entries(attributes).filter(
+			(entry): entry is [string, string] =>
+				typeof entry[1] === "string" &&
+				entry[1].trim().length > 0 &&
+				entry[1] !== "unknown",
+		),
+	);
 }
 
 async function persistTelemetry(event: TelemetryEvent) {
