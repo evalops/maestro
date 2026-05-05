@@ -6,15 +6,62 @@ import type { ToolAnnotations } from "../../src/agent/types.js";
 import { loadMcpConfig } from "../../src/mcp/config.js";
 import { McpClientManager } from "../../src/mcp/manager.js";
 
+const PLATFORM_MCP_ENV_KEYS = [
+	"MAESTRO_PLATFORM_MCP_ENABLED",
+	"MAESTRO_AGENT_MCP_ENABLED",
+	"MAESTRO_HOME",
+	"MAESTRO_AGENT_DIR",
+	"MAESTRO_PLATFORM_MCP_URL",
+	"MAESTRO_AGENT_MCP_URL",
+	"MAESTRO_EVALOPS_AGENT_MCP_URL",
+	"MAESTRO_PLATFORM_MCP_TOKEN",
+	"MAESTRO_AGENT_MCP_TOKEN",
+	"MAESTRO_EVALOPS_ACCESS_TOKEN",
+	"EVALOPS_TOKEN",
+	"MAESTRO_WORKSPACE_ID",
+	"MAESTRO_EVALOPS_WORKSPACE_ID",
+	"MAESTRO_EVALOPS_ORG_ID",
+	"EVALOPS_ORGANIZATION_ID",
+	"MAESTRO_ENTERPRISE_ORG_ID",
+	"MAESTRO_AGENT_ID",
+	"MAESTRO_EVALOPS_AGENT_ID",
+	"MAESTRO_AGENT_RUN_ID",
+	"MAESTRO_SESSION_ID",
+	"MAESTRO_REQUEST_ID",
+	"TRACE_ID",
+	"OTEL_TRACE_ID",
+] as const;
+
 describe("MCP config loader", () => {
 	let testDir: string;
+	let previousEnv: Partial<
+		Record<(typeof PLATFORM_MCP_ENV_KEYS)[number], string>
+	>;
 
 	beforeEach(() => {
+		previousEnv = Object.fromEntries(
+			PLATFORM_MCP_ENV_KEYS.map((key) => [key, process.env[key]]),
+		);
 		testDir = join(tmpdir(), `mcp-test-${Date.now()}`);
 		mkdirSync(testDir, { recursive: true });
+		for (const key of PLATFORM_MCP_ENV_KEYS) {
+			Reflect.deleteProperty(process.env, key);
+		}
+		process.env.MAESTRO_PLATFORM_MCP_ENABLED = "false";
+		process.env.MAESTRO_AGENT_MCP_ENABLED = "false";
+		process.env.MAESTRO_HOME = join(testDir, "home");
+		process.env.MAESTRO_AGENT_DIR = join(testDir, "agent");
 	});
 
 	afterEach(() => {
+		for (const key of PLATFORM_MCP_ENV_KEYS) {
+			const value = previousEnv[key];
+			if (value === undefined) {
+				Reflect.deleteProperty(process.env, key);
+			} else {
+				process.env[key] = value;
+			}
+		}
 		rmSync(testDir, { recursive: true, force: true });
 	});
 
