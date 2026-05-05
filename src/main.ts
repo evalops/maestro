@@ -744,7 +744,7 @@ export async function main(args: string[]) {
 
 	if (parsed.command === "evalops") {
 		const { handleEvalOpsCommand } = await import("./cli/commands/evalops.js");
-		await handleEvalOpsCommand(parsed.subcommand);
+		await handleEvalOpsCommand(parsed.subcommand, parsed.commandArgs ?? []);
 		return;
 	}
 

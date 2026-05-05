@@ -256,7 +256,12 @@ export function parseArgs(args: string[]): Args {
 					result.subcommand = nextArg;
 					i++;
 				}
-				if (arg === "remote" || arg === "hosted-runner" || arg === "init") {
+				if (
+					arg === "remote" ||
+					arg === "hosted-runner" ||
+					arg === "init" ||
+					arg === "evalops"
+				) {
 					result.commandArgs = args.slice(i + 1);
 					break;
 				}

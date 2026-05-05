@@ -73,6 +73,7 @@ export type AuthCredentialSource =
 	| "custom_env"
 	| "anthropic_oauth_env"
 	| "anthropic_oauth_file"
+	| "evalops_agent_key_file"
 	| "evalops_oauth_file"
 	| "openai_oauth_file"
 	| "openai_codex_oauth_file"
@@ -143,6 +144,34 @@ function getNonEmptyString(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim().length > 0
 		? value.trim()
 		: undefined;
+}
+
+function getStringArray(value: unknown): string[] {
+	return Array.isArray(value)
+		? value
+				.map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+				.filter((entry) => entry.length > 0)
+		: [];
+}
+
+function isFutureTimestamp(value: unknown): boolean {
+	const timestamp = getNonEmptyString(value);
+	return !timestamp || Date.parse(timestamp) > Date.now();
+}
+
+function resolveEvalOpsAgentMcpAPIKey(
+	metadata?: Record<string, unknown>,
+): string | undefined {
+	const agentMcp = isRecord(metadata?.agentMcp) ? metadata.agentMcp : undefined;
+	const apiKey = getNonEmptyString(agentMcp?.apiKey);
+	if (!apiKey || !isFutureTimestamp(agentMcp?.expiresAt)) {
+		return undefined;
+	}
+	const scopes = getStringArray(agentMcp?.scopes);
+	if (scopes.length > 0 && !scopes.includes("llm_gateway:invoke")) {
+		return undefined;
+	}
+	return apiKey;
 }
 
 function resolveEvalOpsOrganizationId(
@@ -289,14 +318,24 @@ export function createAuthResolver(options: AuthResolverOptions): AuthResolver {
 		}
 
 		if (isEvalOpsManagedProvider(provider) && options.mode !== "api-key") {
+			const credentials = loadOAuthCredentials("evalops");
+			const agentAPIKey = resolveEvalOpsAgentMcpAPIKey(credentials?.metadata);
+			if (agentAPIKey) {
+				return buildEvalOpsCredential(
+					provider,
+					agentAPIKey,
+					"evalops_agent_key_file",
+					credentials?.metadata,
+				);
+			}
 			const oauthToken = await getOAuthToken("evalops");
 			if (oauthToken) {
-				const credentials = loadOAuthCredentials("evalops");
+				const refreshedCredentials = loadOAuthCredentials("evalops");
 				return buildEvalOpsCredential(
 					provider,
 					oauthToken,
 					"evalops_oauth_file",
-					credentials?.metadata,
+					refreshedCredentials?.metadata ?? credentials?.metadata,
 				);
 			}
 		}
