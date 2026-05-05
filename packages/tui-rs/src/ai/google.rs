@@ -34,7 +34,7 @@ use tokio::sync::mpsc;
 use super::types::{
     ContentBlock, Message, MessageContent, RequestConfig, Role, StopReason, StreamEvent,
 };
-use super::AiProvider;
+use super::{provider_model_name, AiProvider};
 
 /// Google Gemini API base URL
 const GOOGLE_API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta";
@@ -50,7 +50,7 @@ impl GoogleClient {
     /// Create a new Google client with the given API key
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
-            api_key: api_key.into(),
+            api_key: api_key.into().trim().to_string(),
             client: Client::new(),
         }
     }
@@ -77,7 +77,7 @@ impl GoogleClient {
         // Clone for the spawned task
         let client = self.client.clone();
         let api_key = self.api_key.clone();
-        let model = config.model.clone();
+        let model = provider_model_name(&config.model);
 
         tokio::spawn(async move {
             if let Err(e) =
