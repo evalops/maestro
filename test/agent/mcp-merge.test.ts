@@ -9,8 +9,30 @@ describe("MCP multi-scope precedence and env expansion", () => {
 	const ENV_KEYS = [
 		"HOME",
 		"MAESTRO_HOME",
+		"MAESTRO_AGENT_DIR",
 		"MAESTRO_ENTERPRISE_MCP_PATH",
 		"MAESTRO_USER_MCP_PATH",
+		"MAESTRO_PLATFORM_MCP_ENABLED",
+		"MAESTRO_AGENT_MCP_ENABLED",
+		"MAESTRO_PLATFORM_MCP_URL",
+		"MAESTRO_AGENT_MCP_URL",
+		"MAESTRO_EVALOPS_AGENT_MCP_URL",
+		"MAESTRO_PLATFORM_MCP_TOKEN",
+		"MAESTRO_AGENT_MCP_TOKEN",
+		"MAESTRO_EVALOPS_ACCESS_TOKEN",
+		"EVALOPS_TOKEN",
+		"MAESTRO_WORKSPACE_ID",
+		"MAESTRO_EVALOPS_WORKSPACE_ID",
+		"MAESTRO_EVALOPS_ORG_ID",
+		"EVALOPS_ORGANIZATION_ID",
+		"MAESTRO_ENTERPRISE_ORG_ID",
+		"MAESTRO_AGENT_ID",
+		"MAESTRO_EVALOPS_AGENT_ID",
+		"MAESTRO_AGENT_RUN_ID",
+		"MAESTRO_SESSION_ID",
+		"MAESTRO_REQUEST_ID",
+		"TRACE_ID",
+		"OTEL_TRACE_ID",
 		"TEST_FOO",
 	] as const;
 
@@ -28,6 +50,10 @@ describe("MCP multi-scope precedence and env expansion", () => {
 		for (const key of ENV_KEYS) {
 			Reflect.deleteProperty(process.env, key);
 		}
+		process.env.MAESTRO_PLATFORM_MCP_ENABLED = "false";
+		process.env.MAESTRO_AGENT_MCP_ENABLED = "false";
+		process.env.MAESTRO_HOME = join(baseDir, "home");
+		process.env.MAESTRO_AGENT_DIR = join(baseDir, "agent");
 	});
 
 	afterEach(() => {

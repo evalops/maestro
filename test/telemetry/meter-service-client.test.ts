@@ -46,6 +46,14 @@ function createCanonicalTurnEvent() {
 
 describe("meter telemetry client", () => {
 	beforeEach(() => {
+		vi.stubEnv("MAESTRO_HOME", `/tmp/maestro-meter-test-${Date.now()}`);
+		vi.stubEnv("MAESTRO_PLATFORM_BASE_URL", "");
+		vi.stubEnv("MAESTRO_EVALOPS_BASE_URL", "");
+		vi.stubEnv("EVALOPS_BASE_URL", "");
+		vi.stubEnv("MAESTRO_EVALOPS_ACCESS_TOKEN", "");
+		vi.stubEnv("EVALOPS_TOKEN", "");
+		vi.stubEnv("EVALOPS_ORGANIZATION_ID", "");
+		vi.stubEnv("MAESTRO_ENTERPRISE_ORG_ID", "");
 		vi.stubEnv("MAESTRO_METER_BASE", "http://meter.test/");
 		vi.stubEnv("MAESTRO_METER_ACCESS_TOKEN", "meter-token");
 		vi.stubEnv("MAESTRO_EVALOPS_ORG_ID", "org_evalops");
@@ -217,7 +225,10 @@ describe("meter telemetry client", () => {
 	});
 
 	it("skips remote mirroring when required meter config is missing", async () => {
+		vi.stubEnv("MAESTRO_METER_ORGANIZATION_ID", "");
 		vi.stubEnv("MAESTRO_EVALOPS_ORG_ID", "");
+		vi.stubEnv("EVALOPS_ORGANIZATION_ID", "");
+		vi.stubEnv("MAESTRO_ENTERPRISE_ORG_ID", "");
 		const fetchMock = vi.fn();
 		vi.stubGlobal("fetch", fetchMock);
 
