@@ -6,9 +6,13 @@
  */
 
 import { randomUUID } from "node:crypto";
-import Clipboard from "@crosscopy/clipboard";
 import type { Attachment } from "../../agent/types.js";
 import type { PromptPayload, QueuedPrompt } from "../prompt-queue.js";
+
+type ClipboardApi = {
+	hasImage: () => boolean;
+	getImageBinary: () => Promise<Array<number>>;
+};
 
 // ─── Callback & Dependency Interfaces ────────────────────────────────────────
 
@@ -84,6 +88,10 @@ export class AttachmentController {
 	 */
 	async handleClipboardImagePaste(): Promise<void> {
 		try {
+			const Clipboard = await loadClipboardApi();
+			if (!Clipboard) {
+				return;
+			}
 			if (!Clipboard.hasImage()) {
 				return;
 			}
@@ -187,4 +195,20 @@ export function createAttachmentController(
 	options: AttachmentControllerOptions,
 ): AttachmentController {
 	return new AttachmentController(options);
+}
+
+async function loadClipboardApi(): Promise<ClipboardApi | undefined> {
+	try {
+		const module = await import("@crosscopy/clipboard");
+		const api = module.default ?? module;
+		if (
+			typeof api.hasImage !== "function" ||
+			typeof api.getImageBinary !== "function"
+		) {
+			return undefined;
+		}
+		return api;
+	} catch {
+		return undefined;
+	}
 }
