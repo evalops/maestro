@@ -6,6 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: write
   contents: write
 
 concurrency:
@@ -37,3 +38,12 @@ jobs:
           else
             echo "Created semver tag ${{ steps.release.outputs.release_tag }}."
           fi
+
+      - name: Dispatch public release workflow
+        if: ${{ github.repository == 'evalops/maestro' && steps.release.outputs.tag_exists != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ steps.release.outputs.release_version }}
+        run: |
+          set -euo pipefail
+          gh workflow run release --field "version=${RELEASE_VERSION}"
