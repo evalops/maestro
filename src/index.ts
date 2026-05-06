@@ -22,6 +22,7 @@ export {
 
 // SDK tool types for external consumers
 export * from "./sdk-tools.js";
+export * from "./platform/a2a-client.js";
 
 // Distributed lock manager for concurrent operations
 export {

@@ -33,6 +33,7 @@ export interface ResolvePlatformServiceConfigOptions {
 	requireBaseUrl?: boolean;
 	requireOrganizationId?: boolean;
 	requireToken?: boolean;
+	allowOAuthTokenFallback?: boolean;
 }
 
 export interface PlatformRequestOptions {
@@ -160,7 +161,10 @@ export async function resolvePlatformServiceConfig(
 		return null;
 	}
 
-	const token = await resolvePlatformToken(options.tokenEnvVars);
+	const token =
+		options.allowOAuthTokenFallback === false
+			? getEnvValue(options.tokenEnvVars ?? [])
+			: await resolvePlatformToken(options.tokenEnvVars);
 	if (!token && options.requireToken !== false) {
 		return null;
 	}
@@ -186,7 +190,7 @@ export async function resolvePlatformServiceConfig(
 	};
 }
 
-function buildPlatformJsonHeaders(
+export function buildPlatformJsonHeaders(
 	config: Pick<PlatformServiceConfig, "organizationId" | "token">,
 	extraHeaders?: Record<string, string | undefined>,
 ): Record<string, string> {
