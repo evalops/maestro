@@ -33,7 +33,24 @@ describe("maestro init command", () => {
 		);
 		expect(help).toContain("--rotate-key");
 		expect(help).toContain("--mcp-url <url>");
+		expect(help).toContain("--capability <cap[,cap...]>");
 		expect(help).toContain("--json");
+	});
+
+	it("parses explicit agent capabilities for custom shims", () => {
+		expect(
+			parseInitArgs([
+				"--agent-type",
+				"codex",
+				"--capability",
+				"code:write,git",
+				"--capabilities",
+				"x-demo:plan",
+			]),
+		).toMatchObject({
+			agentType: "codex",
+			capabilities: ["code:write", "git", "x-demo:plan"],
+		});
 	});
 
 	it("still rejects unknown bootstrap options", () => {

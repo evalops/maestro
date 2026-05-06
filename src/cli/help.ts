@@ -194,6 +194,7 @@ export function printHelp(version: string) {
 		`  maestro init                         Login, create or reuse an API key, and register this agent
   maestro init --rotate-key           Replace the stored agent MCP API key
   maestro init --mcp-url <url>        Override the EvalOps agent MCP endpoint
+  maestro init --capability code:write Declare an agent-registry capability
   maestro init --json                 Emit machine-readable bootstrap output`,
 	)}`;
 	const hostedRunnerSection = `${sectionHeading("maestro hosted-runner")}${muted(
