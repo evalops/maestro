@@ -4,10 +4,17 @@ All notable changes to this project will be documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/) and adheres to semantic
 versioning when releases are cut.
 
+## [0.10.15] - 2026-05-06
 
+### Added
 
+- Added any-agent EvalOps control-plane profile metadata for managed runtime, MCP/OTLP shims, durable memory mode, and runtime ownership across the CLI bootstrap flow, managed context, MCP plugin headers, and Rust event bus extensions.
 
+### Changed
 
+- Published the public package/release train with the any-agent registry wiring that landed through the internal source-of-truth mirror.
+
+### Fixed
 
 
 ## [0.10.14] - 2026-05-06
