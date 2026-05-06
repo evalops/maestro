@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import {
 	type PlatformRuntimeConfig,
+	buildSlackAgentRuntimeEvent,
 	buildSlackAgentRuntimeTrigger,
+	recordSlackAgentRuntimeEvent,
 	recordSlackAgentRuntimeTrigger,
 	resolvePlatformRuntimeConfig,
 } from "../src/platform-runtime.js";
@@ -195,6 +197,83 @@ describe("recordSlackAgentRuntimeTrigger", () => {
 		});
 		expect(fetchImpl).toHaveBeenCalledWith(
 			"https://platform.example/agentruntime.v1.AgentRuntimeService/HandleTrigger",
+			expect.objectContaining({
+				method: "POST",
+				headers: expect.objectContaining({
+					Authorization: "Bearer token",
+					"Connect-Protocol-Version": "1",
+					"X-Organization-ID": "org_evalops",
+				}),
+			}),
+		);
+	});
+});
+
+describe("buildSlackAgentRuntimeEvent", () => {
+	it("builds a channel-visible Slack runtime lifecycle event", () => {
+		const event = buildSlackAgentRuntimeEvent(context(), {
+			runId: "run_platform",
+			type: "RUNTIME_EVENT_TYPE_TOOL_CALL_RECORDED",
+			message: "Started Slack agent tool bash",
+			attributes: { tool_name: "bash", duration_ms: 42 },
+			config: config(),
+		});
+
+		expect(event).toMatchObject({
+			runId: "run_platform",
+			type: "RUNTIME_EVENT_TYPE_TOOL_CALL_RECORDED",
+			message: "Started Slack agent tool bash",
+			attributes: {
+				adapter: "maestro-slack-agent",
+				surface: "slack",
+				source_event_id: "1710000000.000100",
+				maestro_run_id: "run_test",
+				slack_team_id: "T123",
+				slack_channel_id: "C123",
+				slack_actor_id: "U123",
+				tool_name: "bash",
+				duration_ms: 42,
+			},
+			visibility: {
+				level: "RUNTIME_VISIBILITY_LEVEL_CHANNEL_VISIBLE",
+				audiences: ["RUNTIME_AUDIENCE_CHANNEL", "RUNTIME_AUDIENCE_AUDIT"],
+				sensitivity: "RUNTIME_SENSITIVITY_PUBLIC",
+				safeSummary: "Started Slack agent tool bash",
+			},
+		});
+	});
+});
+
+describe("recordSlackAgentRuntimeEvent", () => {
+	it("posts lifecycle events to AgentRuntime RecordRunEvent", async () => {
+		const fetchImpl = vi.fn(
+			async (_url: string | URL | Request, init?: RequestInit) => {
+				const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+				expect(body).toMatchObject({
+					runId: "run_platform",
+					type: "RUNTIME_EVENT_TYPE_CHANNEL_MESSAGE_RECORDED",
+					message: "Slack response posted",
+				});
+				return new Response(
+					JSON.stringify({
+						event: { id: "event_platform", sequence: 7 },
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			},
+		) as unknown as typeof fetch;
+
+		const result = await recordSlackAgentRuntimeEvent(context(), {
+			runId: "run_platform",
+			type: "RUNTIME_EVENT_TYPE_CHANNEL_MESSAGE_RECORDED",
+			message: "Slack response posted",
+			attributes: { text_length: 128 },
+			config: config(fetchImpl),
+		});
+
+		expect(result).toEqual({ eventId: "event_platform", sequence: 7 });
+		expect(fetchImpl).toHaveBeenCalledWith(
+			"https://platform.example/agentruntime.v1.AgentRuntimeService/RecordRunEvent",
 			expect.objectContaining({
 				method: "POST",
 				headers: expect.objectContaining({
