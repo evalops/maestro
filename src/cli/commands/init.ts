@@ -15,6 +15,11 @@ export function formatInitHelp(): string {
 Options
   --agent-type <type>                 Agent type to register, defaults to maestro
   --surface <surface>                 Surface to register, defaults to cli
+  --integration-profile <profile>     mcp_only, mcp_otlp, managed_runtime, sdk_integrated, or provider_proxy
+  --shim-type <type>                  native_mcp, command_wrapper, hook, provider_proxy, sdk, or mcp_firewall_proxy
+  --trace-mode <mode>                 none, mcp_events, or otlp
+  --memory-mode <mode>                none, read_only, durable, or cerebro
+  --runtime-owner <owner>             external or evalops
   --workspace, --workspace-id <id>    Workspace to associate with the registration
   --scope <scope[,scope...]>          Registration scopes to request
   --key-scope <scope[,scope...]>      API key scopes to request
@@ -83,6 +88,10 @@ export function parseInitArgs(args: string[]): EvalOpsInitOptions {
 			case "--force-login":
 				options.forceLogin = true;
 				break;
+			case "--integration-profile":
+				options.integrationProfile = readValue(args, i, arg);
+				i++;
+				break;
 			case "--json":
 				options.json = true;
 				break;
@@ -92,6 +101,10 @@ export function parseInitArgs(args: string[]): EvalOpsInitOptions {
 				break;
 			case "--manifest-url":
 				options.manifestUrl = readValue(args, i, arg);
+				i++;
+				break;
+			case "--memory-mode":
+				options.memoryMode = readValue(args, i, arg);
 				i++;
 				break;
 			case "--register-scope":
@@ -105,8 +118,20 @@ export function parseInitArgs(args: string[]): EvalOpsInitOptions {
 			case "--rotate-key":
 				options.rotateKey = true;
 				break;
+			case "--runtime-owner":
+				options.runtimeOwner = readValue(args, i, arg);
+				i++;
+				break;
+			case "--shim-type":
+				options.shimType = readValue(args, i, arg);
+				i++;
+				break;
 			case "--surface":
 				options.surface = readValue(args, i, arg);
+				i++;
+				break;
+			case "--trace-mode":
+				options.traceMode = readValue(args, i, arg);
 				i++;
 				break;
 			case "--ttl-seconds":
@@ -144,6 +169,9 @@ export function formatInitSuccess(
 		checkLine(`Authenticated as ${authenticatedAs}`),
 		checkLine(`${keyMode} managed inference key`),
 		checkLine("Registered local agent runtime"),
+		checkLine(
+			`Integration profile ${result.integrationProfile ?? "managed_runtime"} via ${result.shimType ?? "sdk"}`,
+		),
 		checkLine(`Loaded ${governedActions} governed actions`),
 		checkLine(
 			result.approvalPolicyAttached

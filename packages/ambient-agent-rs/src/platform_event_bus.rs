@@ -268,6 +268,11 @@ pub struct PlatformEventBusConfig {
     pub agent_run_id: Option<String>,
     pub agent_run_step_id: Option<String>,
     pub agent_id: Option<String>,
+    pub integration_profile: Option<String>,
+    pub shim_type: Option<String>,
+    pub trace_mode: Option<String>,
+    pub memory_mode: Option<String>,
+    pub runtime_owner: Option<String>,
     pub actor_id: Option<String>,
     pub principal_id: Option<String>,
     pub trace_id: Option<String>,
@@ -353,6 +358,28 @@ impl PlatformEventBusConfig {
             agent_run_id,
             agent_run_step_id: read_env(&vars, &["MAESTRO_AGENT_RUN_STEP_ID"]).cloned(),
             agent_id,
+            integration_profile: read_env(
+                &vars,
+                &[
+                    "MAESTRO_EVALOPS_INTEGRATION_PROFILE",
+                    "EVALOPS_INTEGRATION_PROFILE",
+                ],
+            )
+            .cloned(),
+            shim_type: read_env(&vars, &["MAESTRO_EVALOPS_SHIM_TYPE", "EVALOPS_SHIM_TYPE"])
+                .cloned(),
+            trace_mode: read_env(&vars, &["MAESTRO_EVALOPS_TRACE_MODE", "EVALOPS_TRACE_MODE"])
+                .cloned(),
+            memory_mode: read_env(
+                &vars,
+                &["MAESTRO_EVALOPS_MEMORY_MODE", "EVALOPS_MEMORY_MODE"],
+            )
+            .cloned(),
+            runtime_owner: read_env(
+                &vars,
+                &["MAESTRO_EVALOPS_RUNTIME_OWNER", "EVALOPS_RUNTIME_OWNER"],
+            )
+            .cloned(),
             actor_id: read_env(&vars, &["MAESTRO_ACTOR_ID"]).cloned(),
             principal_id: read_env(&vars, &["MAESTRO_PRINCIPAL_ID"]).cloned(),
             trace_id: read_env(&vars, &["TRACE_ID", "OTEL_TRACE_ID"]).cloned(),
@@ -386,6 +413,11 @@ impl PlatformEventBusConfig {
             agent_run_id: None,
             agent_run_step_id: None,
             agent_id: None,
+            integration_profile: None,
+            shim_type: None,
+            trace_mode: None,
+            memory_mode: None,
+            runtime_owner: None,
             actor_id: None,
             principal_id: None,
             trace_id: None,
@@ -664,6 +696,19 @@ fn build_correlation(config: &PlatformEventBusConfig, session_id: &str) -> Map<S
         "agent_run_step_id",
         config.agent_run_step_id.clone(),
     );
+    optional_insert(
+        &mut correlation,
+        "integration_profile",
+        config.integration_profile.clone(),
+    );
+    optional_insert(&mut correlation, "shim_type", config.shim_type.clone());
+    optional_insert(&mut correlation, "trace_mode", config.trace_mode.clone());
+    optional_insert(&mut correlation, "memory_mode", config.memory_mode.clone());
+    optional_insert(
+        &mut correlation,
+        "runtime_owner",
+        config.runtime_owner.clone(),
+    );
     correlation.insert(
         "agent_id".to_string(),
         json!(config.agent_id.as_deref().unwrap_or(DEFAULT_AGENT_ID)),
@@ -723,6 +768,19 @@ fn build_context_extensions(
         &mut extensions,
         "agent_run_step_id",
         config.agent_run_step_id.clone(),
+    );
+    optional_insert(
+        &mut extensions,
+        "integration_profile",
+        config.integration_profile.clone(),
+    );
+    optional_insert(&mut extensions, "shim_type", config.shim_type.clone());
+    optional_insert(&mut extensions, "trace_mode", config.trace_mode.clone());
+    optional_insert(&mut extensions, "memory_mode", config.memory_mode.clone());
+    optional_insert(
+        &mut extensions,
+        "runtime_owner",
+        config.runtime_owner.clone(),
     );
     optional_insert(&mut extensions, "trace_id", config.trace_id.clone());
     optional_insert(&mut extensions, "traceparent", config.traceparent.clone());
@@ -849,6 +907,54 @@ mod tests {
         );
         assert_eq!(event["data"]["correlation"]["agent_id"], DEFAULT_AGENT_ID);
         assert_eq!(event["data"]["metadata"]["status"], "running");
+    }
+
+    #[test]
+    fn managed_env_carries_evalops_agent_connection_profile() {
+        let config = PlatformEventBusConfig::from_iter([
+            (
+                "MAESTRO_EVALOPS_ACCESS_TOKEN".to_string(),
+                "token".to_string(),
+            ),
+            ("EVALOPS_ORGANIZATION_ID".to_string(), "org_any".to_string()),
+            (
+                "MAESTRO_EVALOPS_WORKSPACE_ID".to_string(),
+                "workspace_any".to_string(),
+            ),
+            ("MAESTRO_AGENT_ID".to_string(), "agent_any".to_string()),
+            ("MAESTRO_AGENT_RUN_ID".to_string(), "run_any".to_string()),
+            (
+                "MAESTRO_EVALOPS_INTEGRATION_PROFILE".to_string(),
+                "mcp_otlp".to_string(),
+            ),
+            (
+                "MAESTRO_EVALOPS_SHIM_TYPE".to_string(),
+                "command_wrapper".to_string(),
+            ),
+            ("MAESTRO_EVALOPS_TRACE_MODE".to_string(), "otlp".to_string()),
+            (
+                "MAESTRO_EVALOPS_MEMORY_MODE".to_string(),
+                "durable".to_string(),
+            ),
+            (
+                "MAESTRO_EVALOPS_RUNTIME_OWNER".to_string(),
+                "external".to_string(),
+            ),
+        ]);
+
+        assert!(config.enabled);
+        assert_eq!(config.integration_profile.as_deref(), Some("mcp_otlp"));
+        assert_eq!(config.shim_type.as_deref(), Some("command_wrapper"));
+        assert_eq!(config.trace_mode.as_deref(), Some("otlp"));
+        assert_eq!(config.memory_mode.as_deref(), Some("durable"));
+        assert_eq!(config.runtime_owner.as_deref(), Some("external"));
+
+        let correlation = build_correlation(&config, "ambient-session-1");
+        assert_eq!(correlation["integration_profile"], "mcp_otlp");
+        assert_eq!(correlation["shim_type"], "command_wrapper");
+        assert_eq!(correlation["trace_mode"], "otlp");
+        assert_eq!(correlation["memory_mode"], "durable");
+        assert_eq!(correlation["runtime_owner"], "external");
     }
 
     #[tokio::test]
