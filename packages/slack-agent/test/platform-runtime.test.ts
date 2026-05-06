@@ -148,7 +148,7 @@ describe("buildSlackAgentRuntimeTrigger", () => {
 
 		expect(trigger?.sourceEventId).toBe("trigger_123");
 		expect(trigger?.idempotencyKey).toBe(
-			"maestro-slack:workspace_evalops:C123:1710000000.000100:slash:trigger_123",
+			"maestro-slack:workspace_evalops:C123:slash:trigger_123",
 		);
 	});
 });

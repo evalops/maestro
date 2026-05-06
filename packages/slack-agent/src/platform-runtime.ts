@@ -99,7 +99,6 @@ export function buildSlackAgentRuntimeTrigger(
 		"maestro-slack",
 		workspaceId,
 		ctx.message.channel,
-		threadId,
 		source,
 		sourceEventId,
 	].join(":");
