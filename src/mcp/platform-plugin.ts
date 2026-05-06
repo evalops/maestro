@@ -79,9 +79,14 @@ function buildPlatformMcpHeaders(): Record<string, string> | undefined {
 				getEnvValue(PLATFORM_MCP_AGENT_ID_ENV_VARS) ?? stored?.agentId,
 			"X-EvalOps-Agent-Run-Id":
 				getEnvValue(["MAESTRO_AGENT_RUN_ID"]) ?? stored?.runId,
+			"X-EvalOps-Integration-Profile": stored?.integrationProfile,
+			"X-EvalOps-Memory-Mode": stored?.memoryMode,
+			"X-EvalOps-Runtime-Owner": stored?.runtimeOwner,
 			"X-EvalOps-Scopes": getEnvValue(PLATFORM_MCP_SCOPES_ENV_VARS),
+			"X-EvalOps-Shim-Type": stored?.shimType,
 			"X-EvalOps-Request-Id": getEnvValue(["MAESTRO_REQUEST_ID"]),
 			"X-EvalOps-Trace-Id": getEnvValue(["TRACE_ID", "OTEL_TRACE_ID"]),
+			"X-EvalOps-Trace-Mode": stored?.traceMode,
 			"X-EvalOps-Maestro-Surface":
 				getEnvValue(["MAESTRO_SURFACE"]) ?? "maestro",
 		}).filter(

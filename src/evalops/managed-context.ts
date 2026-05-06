@@ -20,15 +20,20 @@ export interface EvalOpsManagedContext {
 	evidencePublisher: EvalOpsManagedEvidencePublisher;
 	expiresAt?: number;
 	inference: EvalOpsManagedInferenceState;
+	integrationProfile?: string;
 	keyPrefix?: string;
 	managed: boolean;
+	memoryMode?: string;
 	mode: "EvalOps managed" | "EvalOps authenticated" | "local";
 	organizationId?: string;
 	providerRef?: Record<string, unknown>;
 	runId?: string;
+	runtimeOwner?: string;
 	sessionExpiresAt?: string;
 	sessionId?: string;
+	shimType?: string;
 	traceIngestion: EvalOpsManagedTraceState;
+	traceMode?: string;
 	userEmail?: string;
 	userId?: string;
 	workspaceId?: string;
@@ -38,9 +43,14 @@ interface StoredAgentMcpMetadata {
 	agentId?: string;
 	apiKey?: string;
 	endpoint?: string;
+	integrationProfile?: string;
 	keyPrefix?: string;
+	memoryMode?: string;
 	runId?: string;
+	runtimeOwner?: string;
 	sessionExpiresAt?: string;
+	shimType?: string;
+	traceMode?: string;
 	workspaceId?: string;
 }
 
@@ -115,9 +125,14 @@ function storedAgentMcp(
 		agentId: recordValue(agentMcp, "agentId"),
 		apiKey: recordValue(agentMcp, "apiKey"),
 		endpoint: recordValue(agentMcp, "endpoint"),
+		integrationProfile: recordValue(agentMcp, "integrationProfile"),
 		keyPrefix: recordValue(agentMcp, "keyPrefix"),
+		memoryMode: recordValue(agentMcp, "memoryMode"),
 		runId: recordValue(agentMcp, "runId"),
+		runtimeOwner: recordValue(agentMcp, "runtimeOwner"),
 		sessionExpiresAt: recordValue(agentMcp, "sessionExpiresAt"),
+		shimType: recordValue(agentMcp, "shimType"),
+		traceMode: recordValue(agentMcp, "traceMode"),
 		workspaceId: recordValue(agentMcp, "workspaceId"),
 	};
 }
@@ -202,15 +217,20 @@ export function resolveManagedEvalOpsContext(
 		evidencePublisher: managed ? "EvalOps" : "none",
 		expiresAt: credentials?.expires,
 		inference: managed ? "managed" : "local",
+		integrationProfile: agentMcp?.integrationProfile,
 		keyPrefix: agentMcp?.keyPrefix,
 		managed,
+		memoryMode: agentMcp?.memoryMode,
 		mode,
 		organizationId,
 		providerRef,
 		runId,
+		runtimeOwner: agentMcp?.runtimeOwner,
 		sessionExpiresAt: agentMcp?.sessionExpiresAt,
 		sessionId: readEnv(env, ["MAESTRO_SESSION_ID"]),
+		shimType: agentMcp?.shimType,
 		traceIngestion: managed && runId ? "live" : "not configured",
+		traceMode: agentMcp?.traceMode,
 		userEmail: nonEmptyString(metadata?.email),
 		userId: readEnv(env, USER_ENV) ?? nonEmptyString(metadata?.userId),
 		workspaceId,
@@ -242,6 +262,14 @@ export function formatManagedEvalOpsStatus(
 	);
 	if (context.agentId) lines.push(`${dim("Agent")}: ${context.agentId}`);
 	if (context.runId) lines.push(`${dim("Run")}: ${context.runId}`);
+	if (context.integrationProfile) {
+		lines.push(`${dim("Integration profile")}: ${context.integrationProfile}`);
+	}
+	if (context.shimType) lines.push(`${dim("Shim")}: ${context.shimType}`);
+	if (context.traceMode)
+		lines.push(`${dim("Trace mode")}: ${context.traceMode}`);
+	if (context.memoryMode)
+		lines.push(`${dim("Memory mode")}: ${context.memoryMode}`);
 	lines.push(`${good("Trace ingestion")}: ${context.traceIngestion}`);
 	lines.push(`${good("Evidence publisher")}: ${context.evidencePublisher}`);
 	lines.push(`${good("Inference")}: ${context.inference}`);

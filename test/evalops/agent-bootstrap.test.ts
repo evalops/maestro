@@ -187,7 +187,12 @@ describe("bootstrapEvalOpsAgent", () => {
 		]);
 		expect(calls[0]?.args).toMatchObject({
 			agent_type: "maestro",
+			integration_profile: "managed_runtime",
+			memory_mode: "durable",
+			runtime_owner: "evalops",
+			shim_type: "sdk",
 			surface: "cli",
+			trace_mode: "otlp",
 		});
 		expect(calls[0]?.args).not.toHaveProperty("scopes");
 		expect(calls[0]?.args).not.toHaveProperty("user_token");
@@ -199,8 +204,122 @@ describe("bootstrapEvalOpsAgent", () => {
 			agentId: "agent_123",
 			apiKey: "eoak_created",
 			endpoint: "https://app.evalops.dev/mcp",
+			integrationProfile: "managed_runtime",
 			keyPrefix: "eoak_live_123",
+			memoryMode: "durable",
+			runtimeOwner: "evalops",
 			runId: "run_123",
+			shimType: "sdk",
+			traceMode: "otlp",
+		});
+	});
+
+	it("lets non-Maestro shims choose the agent-neutral connection profile", async () => {
+		const calls: Array<{ args: Record<string, unknown>; tool: string }> = [];
+		const createMcpClient = vi.fn(
+			(_endpoint: string, _token: string): EvalOpsMcpClient => ({
+				callTool: async (tool, args) => {
+					calls.push({ args, tool });
+					if (tool === "evalops_register") {
+						return {
+							content: [],
+							structuredContent: {
+								agent_id: "agent_codex",
+								integration_profile: "mcp_otlp",
+								memory_mode: "durable",
+								registered: true,
+								run_id: "run_codex",
+								runtime_owner: "external",
+								shim_type: "command_wrapper",
+								trace_mode: "otlp",
+							},
+						};
+					}
+					if (tool === "evalops_check_action") {
+						return { content: [], structuredContent: { decision: "allow" } };
+					}
+					if (tool === "evalops_control_plane_summary") {
+						return {
+							content: [],
+							structuredContent: {
+								evidence: [{ id: "proof", trace: "run_codex" }],
+								findings: [],
+								metrics: { total_tools: 2 },
+								policy_controls: [{ label: "Starter policy" }],
+								tools: [
+									{ name: "evalops_check_action" },
+									{ name: "evalops_recall" },
+								],
+							},
+						};
+					}
+					throw new Error(`unexpected tool ${tool}`);
+				},
+				close: async () => undefined,
+				connect: async () => undefined,
+			}),
+		);
+		const saveCredentials = vi.fn();
+
+		const result = await bootstrapEvalOpsAgent(
+			{
+				agentType: "codex",
+				integrationProfile: "mcp_otlp",
+				keyName: "codex-shim",
+				mcpUrl: "https://app.evalops.dev",
+				memoryMode: "durable",
+				runtimeOwner: "external",
+				shimType: "command_wrapper",
+				surface: "cli",
+				traceMode: "otlp",
+			},
+			{
+				createMcpClient,
+				fetch: vi.fn(
+					async () =>
+						new Response(JSON.stringify({ api_key: "eoak_created" }), {
+							status: 201,
+						}),
+				),
+				getOAuthToken: vi.fn().mockResolvedValue("oauth-access"),
+				hasOAuthCredentials: vi.fn().mockReturnValue(true),
+				loadCredentials: vi.fn(() => ({
+					type: "oauth",
+					access: "oauth-access",
+					metadata: { organizationId: "org_evalops" },
+				})),
+				login: vi.fn(),
+				now: () => new Date("2026-05-06T06:00:00Z"),
+				saveCredentials,
+			},
+		);
+
+		expect(calls[0]?.args).toMatchObject({
+			agent_type: "codex",
+			integration_profile: "mcp_otlp",
+			memory_mode: "durable",
+			runtime_owner: "external",
+			shim_type: "command_wrapper",
+			surface: "cli",
+			trace_mode: "otlp",
+		});
+		expect(result).toMatchObject({
+			agentId: "agent_codex",
+			integrationProfile: "mcp_otlp",
+			memoryMode: "durable",
+			runtimeOwner: "external",
+			shimType: "command_wrapper",
+			traceMode: "otlp",
+		});
+		expect(
+			saveCredentials.mock.calls[0]?.[1]?.metadata?.agentMcp,
+		).toMatchObject({
+			agentId: "agent_codex",
+			integrationProfile: "mcp_otlp",
+			memoryMode: "durable",
+			runtimeOwner: "external",
+			shimType: "command_wrapper",
+			traceMode: "otlp",
 		});
 	});
 

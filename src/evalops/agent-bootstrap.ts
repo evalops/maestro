@@ -33,13 +33,18 @@ export interface EvalOpsInitOptions {
 	apiKeyScopes?: string[];
 	expiresInDays?: number;
 	forceLogin?: boolean;
+	integrationProfile?: string;
 	json?: boolean;
 	keyName?: string;
 	manifestUrl?: string;
+	memoryMode?: string;
 	mcpUrl?: string;
 	registerScopes?: string[];
 	rotateKey?: boolean;
+	runtimeOwner?: string;
+	shimType?: string;
 	surface?: string;
+	traceMode?: string;
 	ttlSeconds?: number;
 	workspaceId?: string;
 }
@@ -50,16 +55,21 @@ export interface EvalOpsAgentMcpMetadata {
 	createdAt: string;
 	endpoint: string;
 	expiresAt?: string;
+	integrationProfile?: string;
 	keyId?: string;
 	keyName?: string;
 	keyPrefix?: string;
 	manifestUrl?: string;
+	memoryMode?: string;
 	registeredAt: string;
 	registryVisible?: boolean;
 	runId?: string;
+	runtimeOwner?: string;
 	scopes?: string[];
 	sessionExpiresAt?: string;
+	shimType?: string;
 	surface: string;
+	traceMode?: string;
 	type: "agent-mcp";
 	workspaceId?: string;
 }
@@ -75,16 +85,21 @@ export interface EvalOpsInitResult {
 	evidenceEvents?: number;
 	governedActionsLoaded?: number;
 	governedInferenceCheckRan?: boolean;
+	integrationProfile?: string;
 	keyPrefix?: string;
 	manifestUrl?: string;
+	memoryMode?: string;
 	organizationId?: string;
 	registryVisible?: boolean;
 	riskFindings?: number;
 	runId?: string;
+	runtimeOwner?: string;
 	scopesGranted?: string[];
 	sessionExpiresAt?: string;
+	shimType?: string;
 	stored: boolean;
 	traceIngestionStarted?: boolean;
+	traceMode?: string;
 }
 
 export interface EvalOpsInitStatus {
@@ -131,11 +146,16 @@ interface CreateAPIKeyHTTPOutput extends Partial<CreateAPIKeyOutput> {
 interface RegisterOutput {
 	agent_id?: string;
 	expires_at?: string;
+	integration_profile?: string;
+	memory_mode?: string;
 	registered?: boolean;
 	registry_visible?: boolean;
 	run_id?: string;
+	runtime_owner?: string;
 	scopes_denied?: string[];
 	scopes_granted?: string[];
+	shim_type?: string;
+	trace_mode?: string;
 }
 
 interface CheckActionOutput {
@@ -211,17 +231,22 @@ function getStoredAgentMcpMetadata(
 		surface,
 		agentId: nonEmptyString(agentMcp?.agentId),
 		expiresAt: nonEmptyString(agentMcp?.expiresAt),
+		integrationProfile: nonEmptyString(agentMcp?.integrationProfile),
 		keyId: nonEmptyString(agentMcp?.keyId),
 		keyName: nonEmptyString(agentMcp?.keyName),
 		keyPrefix: nonEmptyString(agentMcp?.keyPrefix),
 		manifestUrl: nonEmptyString(agentMcp?.manifestUrl),
+		memoryMode: nonEmptyString(agentMcp?.memoryMode),
 		registryVisible:
 			typeof agentMcp?.registryVisible === "boolean"
 				? agentMcp.registryVisible
 				: undefined,
 		runId: nonEmptyString(agentMcp?.runId),
+		runtimeOwner: nonEmptyString(agentMcp?.runtimeOwner),
 		scopes: stringArray(agentMcp?.scopes),
 		sessionExpiresAt: nonEmptyString(agentMcp?.sessionExpiresAt),
+		shimType: nonEmptyString(agentMcp?.shimType),
+		traceMode: nonEmptyString(agentMcp?.traceMode),
 		workspaceId: nonEmptyString(agentMcp?.workspaceId),
 	};
 }
@@ -526,6 +551,51 @@ function buildKeyName(options: EvalOpsInitOptions, now: Date): string {
 	return `maestro-init-${host || "local"}-${now.toISOString().slice(0, 10)}`;
 }
 
+function integrationProfileForOptions(options: EvalOpsInitOptions): string {
+	return (
+		nonEmptyString(options.integrationProfile) ??
+		(options.agentType && options.agentType !== DEFAULT_AGENT_TYPE
+			? "mcp_otlp"
+			: "managed_runtime")
+	);
+}
+
+function shimTypeForOptions(options: EvalOpsInitOptions): string {
+	return (
+		nonEmptyString(options.shimType) ??
+		(integrationProfileForOptions(options) === "managed_runtime"
+			? "sdk"
+			: "native_mcp")
+	);
+}
+
+function traceModeForOptions(options: EvalOpsInitOptions): string {
+	return (
+		nonEmptyString(options.traceMode) ??
+		(integrationProfileForOptions(options) === "mcp_only"
+			? "mcp_events"
+			: "otlp")
+	);
+}
+
+function memoryModeForOptions(options: EvalOpsInitOptions): string {
+	return (
+		nonEmptyString(options.memoryMode) ??
+		(integrationProfileForOptions(options) === "managed_runtime"
+			? "durable"
+			: "none")
+	);
+}
+
+function runtimeOwnerForOptions(options: EvalOpsInitOptions): string {
+	return (
+		nonEmptyString(options.runtimeOwner) ??
+		(integrationProfileForOptions(options) === "managed_runtime"
+			? "evalops"
+			: "external")
+	);
+}
+
 async function createAgentAPIKey(
 	options: EvalOpsInitOptions,
 	identityBaseUrl: string,
@@ -593,10 +663,15 @@ async function registerAgent(
 		{
 			agent_type: options.agentType ?? DEFAULT_AGENT_TYPE,
 			capabilities: ["maestro:init", "maestro:cli"],
+			integration_profile: integrationProfileForOptions(options),
+			memory_mode: memoryModeForOptions(options),
+			runtime_owner: runtimeOwnerForOptions(options),
 			...(options.registerScopes?.length
 				? { scopes: options.registerScopes }
 				: {}),
+			shim_type: shimTypeForOptions(options),
 			surface: options.surface ?? DEFAULT_SURFACE,
+			trace_mode: traceModeForOptions(options),
 			...(positiveInteger(options.ttlSeconds)
 				? { ttl_seconds: options.ttlSeconds }
 				: {}),
@@ -860,6 +935,18 @@ export async function bootstrapEvalOpsAgent(
 	}
 	const keyPrefix = nonEmptyString(keyOutput?.prefix) ?? stored?.keyPrefix;
 	const scopes = keyOutput?.scopes ?? stored?.scopes;
+	const integrationProfile =
+		nonEmptyString(registerOutput.integration_profile) ??
+		integrationProfileForOptions(options);
+	const memoryMode =
+		nonEmptyString(registerOutput.memory_mode) ?? memoryModeForOptions(options);
+	const runtimeOwner =
+		nonEmptyString(registerOutput.runtime_owner) ??
+		runtimeOwnerForOptions(options);
+	const shimType =
+		nonEmptyString(registerOutput.shim_type) ?? shimTypeForOptions(options);
+	const traceMode =
+		nonEmptyString(registerOutput.trace_mode) ?? traceModeForOptions(options);
 	const agentMcp: EvalOpsAgentMcpMetadata = {
 		type: "agent-mcp",
 		apiKey,
@@ -872,14 +959,19 @@ export async function bootstrapEvalOpsAgent(
 		surface: options.surface ?? DEFAULT_SURFACE,
 		agentId: registerOutput.agent_id,
 		expiresAt: nonEmptyString(keyOutput?.expires_at) ?? stored?.expiresAt,
+		integrationProfile,
 		keyId: nonEmptyString(keyOutput?.key_id) ?? stored?.keyId,
 		keyName: nonEmptyString(keyOutput?.name) ?? stored?.keyName,
 		keyPrefix,
 		manifestUrl: endpoint.manifestUrl,
+		memoryMode,
 		registryVisible: registerOutput.registry_visible,
 		runId: registerOutput.run_id,
+		runtimeOwner,
 		scopes,
 		sessionExpiresAt: registerOutput.expires_at,
+		shimType,
+		traceMode,
 		workspaceId:
 			options.workspaceId ?? organizationIdFromCredentials(credentials),
 	};
@@ -896,15 +988,20 @@ export async function bootstrapEvalOpsAgent(
 		evidenceEvents: (controlPlaneSummary.evidence ?? []).length,
 		governedActionsLoaded: governedActionCount(controlPlaneSummary),
 		governedInferenceCheckRan: Boolean(governedInferenceCheck.decision),
+		integrationProfile,
 		keyPrefix,
 		manifestUrl: endpoint.manifestUrl,
+		memoryMode,
 		organizationId: organizationIdFromCredentials(credentials),
 		registryVisible: registerOutput.registry_visible,
 		riskFindings: countHighRiskFindings(controlPlaneSummary),
 		runId: registerOutput.run_id,
+		runtimeOwner,
 		scopesGranted: registerOutput.scopes_granted,
 		sessionExpiresAt: registerOutput.expires_at,
+		shimType,
 		stored: true,
 		traceIngestionStarted: hasTraceEvidence(controlPlaneSummary),
+		traceMode,
 	};
 }

@@ -54,12 +54,17 @@ describe("maestro init command", () => {
 			evidenceEvents: 1,
 			governedActionsLoaded: 17,
 			governedInferenceCheckRan: true,
+			integrationProfile: "managed_runtime",
 			keyPrefix: "eoak_live_123",
+			memoryMode: "durable",
 			registryVisible: true,
 			riskFindings: 0,
 			runId: "run_123",
+			runtimeOwner: "evalops",
+			shimType: "sdk",
 			stored: true,
 			traceIngestionStarted: true,
+			traceMode: "otlp",
 		});
 		const plainOutput = stripAnsi(output);
 
@@ -67,6 +72,9 @@ describe("maestro init command", () => {
 		expect(plainOutput).toContain("✓ Authenticated as jonathan@evalops.dev");
 		expect(plainOutput).toContain("✓ Created managed inference key");
 		expect(plainOutput).toContain("✓ Registered local agent runtime");
+		expect(plainOutput).toContain(
+			"✓ Integration profile managed_runtime via sdk",
+		);
 		expect(plainOutput).toContain("✓ Loaded 17 governed actions");
 		expect(plainOutput).toContain("✓ Attached default approval policy");
 		expect(plainOutput).toContain("✓ Started trace ingestion");
