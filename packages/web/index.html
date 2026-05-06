@@ -6,18 +6,7 @@
     <title>Composer - AI Coding Assistant</title>
     <meta name="description" content="Modern web interface for Composer AI coding assistant with session management, tool integration, and beautiful design">
 
-    <script>
-        (function () {
-            try {
-                var stored = localStorage.getItem("composer_theme");
-                var prefersLight = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches;
-                var theme = stored === "light" || stored === "dark" ? stored : (prefersLight ? "light" : "dark");
-                document.documentElement.dataset.theme = theme;
-            } catch (e) {
-                document.documentElement.dataset.theme = "dark";
-            }
-        })();
-    </script>
+    <script src="/theme-bootstrap.js"></script>
 
     <!-- Preconnect to API -->
     <link rel="preconnect" href="http://localhost:8080">

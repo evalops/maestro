@@ -50,6 +50,12 @@ const MAX_PROJECT_ONBOARDING_IMPRESSIONS: u8 = 4;
 static ATTACHMENT_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
 type PendingToolResponseSender = mpsc::UnboundedSender<(String, bool, Option<ToolResult>)>;
+const RUNTIME_CONFIG_SCRIPT_PATH: &str = "/__maestro/runtime-config.js";
+const RUNTIME_CONFIG_SCRIPT_TAG: &str =
+    r#"    <script src="/__maestro/runtime-config.js"></script>"#;
+const RUNTIME_SESSION_COOKIE_NAME: &str = "maestro_web_session";
+const RUNTIME_SESSION_COOKIE_CONTEXT: &[u8] = b"maestro-web-session:v1";
+const RUNTIME_SESSION_API_KEY_COOKIE_CONTEXT: &[u8] = b"maestro-web-session-api-key:v1";
 
 #[derive(Debug, Clone)]
 struct Config {
@@ -156,6 +162,11 @@ struct AppState {
 struct AuthContext {
     subject: Option<String>,
     unrestricted: bool,
+}
+
+enum RuntimeSessionAuth {
+    Scoped(String),
+    ApiKey,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -336,6 +347,16 @@ async fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<(),
 
         if is_local_endpoint(&head) {
             let response = handle_local_endpoint(&mut stream, &mut initial, head, &state).await;
+            stream
+                .write_all(&response)
+                .await
+                .map_err(|error| error.to_string())?;
+            let _ = stream.shutdown().await;
+            return Ok(());
+        }
+
+        if is_runtime_config_request(&head) {
+            let response = runtime_config_response(&head, &state.config);
             stream
                 .write_all(&response)
                 .await
@@ -5392,12 +5413,7 @@ fn auth_context(head: &RequestHead, config: &Config) -> Option<AuthContext> {
         .or_else(|| head.headers.get("x-composer-api-key"))
         .map(String::as_str);
 
-    if config
-        .api_key
-        .as_deref()
-        .map(|expected| bearer == Some(expected) || header_key == Some(expected))
-        .unwrap_or(false)
-    {
+    if header_auth_matches(config, bearer, header_key) {
         return Some(AuthContext {
             subject: None,
             unrestricted: true,
@@ -5411,6 +5427,26 @@ fn auth_context(head: &RequestHead, config: &Config) -> Option<AuthContext> {
         });
     }
 
+    if let Some(subject) = trusted_proxy_auth_subject(head) {
+        return Some(AuthContext {
+            subject: Some(subject),
+            unrestricted: false,
+        });
+    }
+
+    if let Some(session_auth) = runtime_session_cookie_auth(head, config) {
+        return Some(match session_auth {
+            RuntimeSessionAuth::ApiKey => AuthContext {
+                subject: None,
+                unrestricted: true,
+            },
+            RuntimeSessionAuth::Scoped(subject) => AuthContext {
+                subject: Some(subject),
+                unrestricted: false,
+            },
+        });
+    }
+
     if !config.require_key && !auth_is_configured(config) {
         return Some(AuthContext {
             subject: None,
@@ -5419,6 +5455,63 @@ fn auth_context(head: &RequestHead, config: &Config) -> Option<AuthContext> {
     }
 
     None
+}
+
+fn header_auth_matches(config: &Config, bearer: Option<&str>, header_key: Option<&str>) -> bool {
+    config
+        .api_key
+        .as_deref()
+        .map(|expected| bearer == Some(expected) || header_key == Some(expected))
+        .unwrap_or(false)
+}
+
+fn runtime_session_cookie_auth(head: &RequestHead, config: &Config) -> Option<RuntimeSessionAuth> {
+    let provided = cookie_value(head, RUNTIME_SESSION_COOKIE_NAME)?;
+    let (encoded_subject, _signature) = provided.split_once('.')?;
+    let payload = String::from_utf8(URL_SAFE_NO_PAD.decode(encoded_subject).ok()?).ok()?;
+    let api_key_expected = runtime_session_api_key_cookie_value(config)?;
+    if constant_time_eq(provided.as_bytes(), api_key_expected.as_bytes()) {
+        return Some(RuntimeSessionAuth::ApiKey);
+    }
+    let expected = runtime_session_cookie_value(config, &payload)?;
+    constant_time_eq(provided.as_bytes(), expected.as_bytes())
+        .then_some(RuntimeSessionAuth::Scoped(payload))
+}
+
+fn cookie_value<'a>(head: &'a RequestHead, name: &str) -> Option<&'a str> {
+    let cookies = head.headers.get("cookie")?;
+    cookies.split(';').find_map(|cookie| {
+        let (cookie_name, value) = cookie.trim().split_once('=')?;
+        (cookie_name == name).then_some(value)
+    })
+}
+
+fn trusted_proxy_auth_subject(head: &RequestHead) -> Option<String> {
+    let expected_token = trimmed_env("MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN")?;
+    let provided_token = head
+        .headers
+        .get("x-maestro-proxy-auth")
+        .or_else(|| head.headers.get("x-composer-proxy-auth"))
+        .map(String::as_str)?;
+    if !constant_time_eq(provided_token.as_bytes(), expected_token.as_bytes()) {
+        return None;
+    }
+    [
+        "x-auth-request-email",
+        "x-forwarded-email",
+        "x-auth-request-user",
+    ]
+    .iter()
+    .find_map(|name| {
+        head.headers
+            .get(*name)
+            .and_then(|value| nonempty_str(value).map(str::to_string))
+    })
+}
+
+fn nonempty_str(value: &str) -> Option<&str> {
+    let value = value.trim();
+    (!value.is_empty()).then_some(value)
 }
 
 fn validate_csrf(head: &RequestHead, config: &Config) -> Result<(), Vec<u8>> {
@@ -5470,6 +5563,9 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 
 fn auth_is_configured(config: &Config) -> bool {
     config.api_key.is_some()
+        || env::var("MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN")
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
         || env::var("MAESTRO_AUTH_SHARED_SECRET")
             .map(|value| !value.trim().is_empty())
             .unwrap_or(false)
@@ -6024,6 +6120,158 @@ fn is_static_asset_request(head: &RequestHead) -> bool {
     matches!(head.method.as_str(), "GET" | "HEAD") && !head.path.starts_with("/api/")
 }
 
+fn is_runtime_config_request(head: &RequestHead) -> bool {
+    matches!(head.method.as_str(), "GET" | "HEAD") && head.path == RUNTIME_CONFIG_SCRIPT_PATH
+}
+
+fn runtime_config_response(head: &RequestHead, config: &Config) -> Vec<u8> {
+    let body = runtime_config_script(config);
+    if head.method == "HEAD" {
+        response_with_no_store_and_length(
+            200,
+            "application/javascript; charset=utf-8",
+            &[],
+            body.len(),
+        )
+    } else {
+        response_with_no_store(200, "application/javascript; charset=utf-8", &body)
+    }
+}
+
+fn runtime_config_script(config: &Config) -> Vec<u8> {
+    let csrf_token =
+        serde_json::to_string(&config.csrf_token).unwrap_or_else(|_| "null".to_string());
+    format!("delete window.__MAESTRO_API_KEY__;\nwindow.__MAESTRO_CSRF_TOKEN__ = {csrf_token};\n")
+        .into_bytes()
+}
+
+fn should_inject_runtime_config(config: &Config) -> bool {
+    config.api_key.is_some() || config.csrf_token.is_some()
+}
+
+fn spa_entry_body(bytes: &[u8], config: &Config) -> Vec<u8> {
+    if !should_inject_runtime_config(config) {
+        return bytes.to_vec();
+    }
+    let Ok(html) = std::str::from_utf8(bytes) else {
+        return bytes.to_vec();
+    };
+    if html.contains(RUNTIME_CONFIG_SCRIPT_PATH) {
+        return bytes.to_vec();
+    }
+    let Some(head_end) = html.find("</head>") else {
+        return bytes.to_vec();
+    };
+    let mut updated = String::with_capacity(html.len() + RUNTIME_CONFIG_SCRIPT_TAG.len() + 1);
+    updated.push_str(&html[..head_end]);
+    updated.push_str(RUNTIME_CONFIG_SCRIPT_TAG);
+    updated.push('\n');
+    updated.push_str(&html[head_end..]);
+    updated.into_bytes()
+}
+
+fn runtime_session_cookie_value(config: &Config, subject: &str) -> Option<String> {
+    runtime_session_cookie_value_for_payload(config, RUNTIME_SESSION_COOKIE_CONTEXT, subject)
+}
+
+fn runtime_session_api_key_cookie_value(config: &Config) -> Option<String> {
+    runtime_session_cookie_value_for_payload(
+        config,
+        RUNTIME_SESSION_API_KEY_COOKIE_CONTEXT,
+        "api-key",
+    )
+}
+
+fn runtime_session_cookie_value_for_payload(
+    config: &Config,
+    context: &[u8],
+    payload: &str,
+) -> Option<String> {
+    let api_key = config.api_key.as_deref()?;
+    let mut mac = Hmac::<Sha256>::new_from_slice(api_key.as_bytes()).ok()?;
+    mac.update(context);
+    mac.update(b":");
+    mac.update(payload.as_bytes());
+    let encoded_subject = URL_SAFE_NO_PAD.encode(payload.as_bytes());
+    let signature = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
+    Some(format!("{encoded_subject}.{signature}"))
+}
+
+fn request_is_secure(head: &RequestHead) -> bool {
+    let forwarded_proto = head
+        .headers
+        .get("x-forwarded-proto")
+        .and_then(|value| value.split(',').next())
+        .map(str::trim)
+        .is_some_and(|value| value.eq_ignore_ascii_case("https"));
+    let forwarded_scheme = head
+        .headers
+        .get("x-forwarded-scheme")
+        .map(String::as_str)
+        .is_some_and(|value| value.eq_ignore_ascii_case("https"));
+    let forwarded_ssl = head
+        .headers
+        .get("x-forwarded-ssl")
+        .map(String::as_str)
+        .is_some_and(|value| value.eq_ignore_ascii_case("on"));
+    forwarded_proto || forwarded_scheme || forwarded_ssl
+}
+
+fn is_loopback_listen_host(host: &str) -> bool {
+    let host = host.trim();
+    host.eq_ignore_ascii_case("localhost")
+        || host == "127.0.0.1"
+        || host == "::1"
+        || host == "[::1]"
+}
+
+fn spa_entry_session_cookie_value(head: &RequestHead, config: &Config) -> Option<String> {
+    let bearer = head
+        .headers
+        .get("authorization")
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(str::trim);
+    let header_key = head
+        .headers
+        .get("x-maestro-api-key")
+        .or_else(|| head.headers.get("x-composer-api-key"))
+        .map(String::as_str);
+    if header_auth_matches(config, bearer, header_key) {
+        return runtime_session_api_key_cookie_value(config);
+    }
+    if let Some(subject) = trusted_proxy_auth_subject(head) {
+        return runtime_session_cookie_value(config, &subject);
+    }
+    if config.api_key.is_some() && is_loopback_listen_host(&config.listen_host) {
+        return runtime_session_api_key_cookie_value(config);
+    }
+    None
+}
+
+fn spa_entry_extra_headers(head: &RequestHead, config: &Config) -> String {
+    let mut headers = "Cache-Control: no-store, no-cache, must-revalidate\r\n".to_string();
+    if let Some(cookie_value) = spa_entry_session_cookie_value(head, config) {
+        let secure = if request_is_secure(head) {
+            "; Secure"
+        } else {
+            ""
+        };
+        headers.push_str(&format!(
+            "Set-Cookie: {RUNTIME_SESSION_COOKIE_NAME}={cookie_value}; Path=/; HttpOnly; SameSite=Lax{secure}\r\n"
+        ));
+    }
+    headers
+}
+
+fn spa_entry_response(head: &RequestHead, mime: &str, body: &[u8], config: &Config) -> Vec<u8> {
+    let extra_headers = spa_entry_extra_headers(head, config);
+    if head.method == "HEAD" {
+        response_with_extra_headers_and_length(200, mime, &[], &extra_headers, body.len())
+    } else {
+        response_with_extra_headers_and_length(200, mime, body, &extra_headers, body.len())
+    }
+}
+
 async fn static_response(head: &RequestHead, config: &Config) -> Vec<u8> {
     let Some(path) = resolve_static_path(&config.static_root, &head.path) else {
         return json_response(403, &serde_json::json!({ "error": "Forbidden" }));
@@ -6032,10 +6280,9 @@ async fn static_response(head: &RequestHead, config: &Config) -> Vec<u8> {
     match canonical_static_path(&config.static_root, &path).await {
         StaticPathResolution::Found(path) => match tokio::fs::read(&path).await {
             Ok(bytes) => {
-                if is_spa_entry_path(&path) && head.method == "HEAD" {
-                    response_with_no_store_and_length(200, mime_for_path(&path), &[], bytes.len())
-                } else if is_spa_entry_path(&path) {
-                    response_with_no_store(200, mime_for_path(&path), &bytes)
+                if is_spa_entry_path(&path) {
+                    let body = spa_entry_body(&bytes, config);
+                    spa_entry_response(head, mime_for_path(&path), &body, config)
                 } else if head.method == "HEAD" {
                     response_with_cache_and_length(
                         200,
@@ -6078,16 +6325,8 @@ async fn static_response(head: &RequestHead, config: &Config) -> Vec<u8> {
             match canonical_static_path(&config.static_root, &index).await {
                 StaticPathResolution::Found(index) => match tokio::fs::read(&index).await {
                     Ok(bytes) => {
-                        if head.method == "HEAD" {
-                            response_with_no_store_and_length(
-                                200,
-                                "text/html; charset=utf-8",
-                                &[],
-                                bytes.len(),
-                            )
-                        } else {
-                            response_with_no_store(200, "text/html; charset=utf-8", &bytes)
-                        }
+                        let body = spa_entry_body(&bytes, config);
+                        spa_entry_response(head, "text/html; charset=utf-8", &body, config)
                     }
                     Err(_) => json_response(
                         404,
@@ -6359,6 +6598,13 @@ mod tests {
             .map(|index| &response[index + 4..])
             .expect("response should contain header separator");
         serde_json::from_slice(body).expect("response body should be json")
+    }
+
+    fn response_body_text(response: &str) -> &str {
+        let separator = response
+            .find("\r\n\r\n")
+            .expect("response should contain header separator");
+        &response[separator + 4..]
     }
 
     struct TestDir {
@@ -7788,6 +8034,325 @@ mod tests {
 
         assert!(response.contains("Content-Length: 5\r\n"));
         assert!(response.contains("Cache-Control: no-store, no-cache, must-revalidate\r\n"));
+    }
+
+    #[test]
+    fn runtime_config_script_serializes_csrf_without_api_key() {
+        let mut config = auth_test_config();
+        config.csrf_token = Some("csrf\"token".to_string());
+
+        let script =
+            String::from_utf8(runtime_config_script(&config)).expect("script should be utf-8");
+
+        assert!(!script.contains("api-key"));
+        assert!(script.contains("delete window.__MAESTRO_API_KEY__;"));
+        assert!(script.contains("window.__MAESTRO_CSRF_TOKEN__ = \"csrf\\\"token\";"));
+    }
+
+    #[test]
+    fn runtime_config_head_reports_script_length_without_body() {
+        let mut config = auth_test_config();
+        config.csrf_token = Some("csrf-token".to_string());
+        let head = RequestHead {
+            method: "HEAD".to_string(),
+            path: RUNTIME_CONFIG_SCRIPT_PATH.to_string(),
+            query: HashMap::new(),
+            headers: HashMap::new(),
+        };
+        let expected_length = runtime_config_script(&config).len();
+
+        let response = runtime_config_response(&head, &config);
+        let response = String::from_utf8(response).expect("response should be utf-8");
+
+        assert!(response.contains("Content-Type: application/javascript; charset=utf-8\r\n"));
+        assert!(response.contains(&format!("Content-Length: {expected_length}\r\n")));
+        assert!(response.ends_with("\r\n\r\n"));
+    }
+
+    #[tokio::test]
+    async fn spa_entry_injects_runtime_config_script_when_browser_auth_configured() {
+        let root = TestDir::new("runtime-config-spa");
+        let index = "<html><head><title>Maestro</title></head><body>ok</body></html>";
+        fs::write(root.path().join("index.html"), index).expect("index should be written");
+        let mut config = auth_test_config();
+        config.static_root = root.path().to_path_buf();
+        config.csrf_token = Some("csrf-token".to_string());
+        let head = RequestHead {
+            method: "GET".to_string(),
+            path: "/".to_string(),
+            query: HashMap::new(),
+            headers: HashMap::from([("x-maestro-api-key".to_string(), "api-key".to_string())]),
+        };
+
+        let response = static_response(&head, &config).await;
+        let response = String::from_utf8(response).expect("response should be utf-8");
+        let body = response_body_text(&response);
+
+        assert!(body.contains(RUNTIME_CONFIG_SCRIPT_TAG));
+        assert!(body.contains("</head><body>ok</body>"));
+        assert!(!body.contains("window.__MAESTRO_API_KEY__ ="));
+        assert!(response.contains(&format!(
+            "Set-Cookie: {RUNTIME_SESSION_COOKIE_NAME}={}; Path=/; HttpOnly; SameSite=Lax\r\n",
+            runtime_session_api_key_cookie_value(&config).expect("cookie should be available")
+        )));
+        assert!(response.contains(&format!("Content-Length: {}\r\n", body.len())));
+    }
+
+    #[test]
+    fn runtime_session_cookie_authorizes_same_origin_browser_requests() {
+        let config = auth_test_config();
+        let cookie = runtime_session_cookie_value(&config, "jonathan@evalops.dev")
+            .expect("cookie should be available");
+        let head = RequestHead {
+            method: "GET".to_string(),
+            path: "/api/status".to_string(),
+            query: HashMap::new(),
+            headers: HashMap::from([(
+                "cookie".to_string(),
+                format!("theme=dark; {RUNTIME_SESSION_COOKIE_NAME}={cookie}; other=value"),
+            )]),
+        };
+
+        let context = auth_context(&head, &config).expect("cookie should authorize request");
+
+        assert!(!context.unrestricted);
+        assert_eq!(context.subject.as_deref(), Some("jonathan@evalops.dev"));
+    }
+
+    #[test]
+    fn bearer_token_identity_wins_over_runtime_session_cookie() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous = env::var_os("MAESTRO_AUTH_SHARED_SECRET");
+        env::set_var("MAESTRO_AUTH_SHARED_SECRET", "shared-secret");
+        let config = auth_test_config();
+        let cookie = runtime_session_cookie_value(&config, "cookie-user")
+            .expect("cookie should be available");
+        let bearer_user = "bearer-user";
+        let signature = hmac_sha256_hex(b"shared-secret", bearer_user.as_bytes());
+        let token = format!("{}.{}", URL_SAFE_NO_PAD.encode(bearer_user), signature);
+        let head = RequestHead {
+            method: "GET".to_string(),
+            path: "/api/status".to_string(),
+            query: HashMap::new(),
+            headers: HashMap::from([
+                ("authorization".to_string(), format!("Bearer {token}")),
+                (
+                    "cookie".to_string(),
+                    format!("{RUNTIME_SESSION_COOKIE_NAME}={cookie}"),
+                ),
+            ]),
+        };
+
+        let context = auth_context(&head, &config).expect("bearer token should authorize");
+
+        assert_eq!(context.subject.as_deref(), Some(bearer_user));
+        assert!(!context.unrestricted);
+
+        if let Some(previous) = previous {
+            env::set_var("MAESTRO_AUTH_SHARED_SECRET", previous);
+        } else {
+            env::remove_var("MAESTRO_AUTH_SHARED_SECRET");
+        }
+    }
+
+    #[test]
+    fn loopback_api_key_runtime_session_cookie_keeps_legacy_unrestricted_access() {
+        let config = auth_test_config();
+        let cookie =
+            runtime_session_api_key_cookie_value(&config).expect("cookie should be available");
+        let head = RequestHead {
+            method: "GET".to_string(),
+            path: "/api/sessions".to_string(),
+            query: HashMap::new(),
+            headers: HashMap::from([(
+                "cookie".to_string(),
+                format!("{RUNTIME_SESSION_COOKIE_NAME}={cookie}"),
+            )]),
+        };
+
+        let context = auth_context(&head, &config).expect("api-key cookie should authorize");
+
+        assert!(context.subject.is_none());
+        assert!(context.unrestricted);
+    }
+
+    #[test]
+    fn scoped_runtime_session_cookie_for_api_key_sentinel_subject_stays_scoped() {
+        let config = auth_test_config();
+        let subject = "api-key:unrestricted";
+        let cookie =
+            runtime_session_cookie_value(&config, subject).expect("cookie should be available");
+        let head = RequestHead {
+            method: "GET".to_string(),
+            path: "/api/sessions".to_string(),
+            query: HashMap::new(),
+            headers: HashMap::from([(
+                "cookie".to_string(),
+                format!("{RUNTIME_SESSION_COOKIE_NAME}={cookie}"),
+            )]),
+        };
+
+        let context = auth_context(&head, &config).expect("scoped cookie should authorize");
+
+        assert_eq!(context.subject.as_deref(), Some(subject));
+        assert!(!context.unrestricted);
+    }
+
+    #[test]
+    fn trusted_proxy_auth_requires_shared_proxy_token() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous = env::var_os("MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN");
+        env::set_var("MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN", "proxy-secret");
+        let config = auth_test_config();
+        let spoofed = RequestHead {
+            method: "GET".to_string(),
+            path: "/api/status".to_string(),
+            query: HashMap::new(),
+            headers: HashMap::from([(
+                "x-auth-request-email".to_string(),
+                "jonathan@evalops.dev".to_string(),
+            )]),
+        };
+        let trusted = RequestHead {
+            method: "GET".to_string(),
+            path: "/api/status".to_string(),
+            query: HashMap::new(),
+            headers: HashMap::from([
+                (
+                    "x-auth-request-email".to_string(),
+                    "jonathan@evalops.dev".to_string(),
+                ),
+                (
+                    "x-maestro-proxy-auth".to_string(),
+                    "proxy-secret".to_string(),
+                ),
+            ]),
+        };
+
+        assert!(auth_context(&spoofed, &config).is_none());
+        let context = auth_context(&trusted, &config).expect("proxy token should authorize");
+        assert_eq!(context.subject.as_deref(), Some("jonathan@evalops.dev"));
+        assert!(!context.unrestricted);
+
+        if let Some(previous) = previous {
+            env::set_var("MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN", previous);
+        } else {
+            env::remove_var("MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN");
+        }
+    }
+
+    #[test]
+    fn trusted_proxy_token_counts_as_configured_auth() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous = env::var_os("MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN");
+        env::set_var("MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN", "proxy-secret");
+        let mut config = auth_test_config();
+        config.api_key = None;
+        config.require_key = false;
+        let head = RequestHead {
+            method: "GET".to_string(),
+            path: "/api/status".to_string(),
+            query: HashMap::new(),
+            headers: HashMap::new(),
+        };
+
+        assert!(auth_context(&head, &config).is_none());
+
+        if let Some(previous) = previous {
+            env::set_var("MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN", previous);
+        } else {
+            env::remove_var("MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN");
+        }
+    }
+
+    #[tokio::test]
+    async fn loopback_api_key_web_first_load_mints_session_cookie() {
+        let root = TestDir::new("runtime-config-spa-loopback-api-key");
+        fs::write(root.path().join("index.html"), "<html><head></head></html>")
+            .expect("index should be written");
+        let mut config = auth_test_config();
+        config.static_root = root.path().to_path_buf();
+        config.listen_host = "127.0.0.1".to_string();
+        let head = RequestHead {
+            method: "GET".to_string(),
+            path: "/".to_string(),
+            query: HashMap::new(),
+            headers: HashMap::new(),
+        };
+
+        let response = static_response(&head, &config).await;
+        let response = String::from_utf8(response).expect("response should be utf-8");
+
+        assert!(response.contains(&format!(
+            "Set-Cookie: {RUNTIME_SESSION_COOKIE_NAME}={}; Path=/; HttpOnly; SameSite=Lax\r\n",
+            runtime_session_api_key_cookie_value(&config).expect("cookie should be available")
+        )));
+    }
+
+    #[tokio::test]
+    async fn spa_entry_does_not_mint_session_cookie_without_authenticated_issuer() {
+        let root = TestDir::new("runtime-config-spa-unauth");
+        fs::write(root.path().join("index.html"), "<html><head></head></html>")
+            .expect("index should be written");
+        let mut config = auth_test_config();
+        config.static_root = root.path().to_path_buf();
+        config.listen_host = "0.0.0.0".to_string();
+        let head = RequestHead {
+            method: "GET".to_string(),
+            path: "/".to_string(),
+            query: HashMap::new(),
+            headers: HashMap::new(),
+        };
+
+        let response = static_response(&head, &config).await;
+        let response = String::from_utf8(response).expect("response should be utf-8");
+
+        assert!(!response.contains("Set-Cookie: maestro_web_session="));
+    }
+
+    #[tokio::test]
+    async fn spa_entry_head_uses_injected_body_length() {
+        let root = TestDir::new("runtime-config-spa-head");
+        let index = "<html><head></head><body>ok</body></html>";
+        fs::write(root.path().join("index.html"), index).expect("index should be written");
+        let mut config = auth_test_config();
+        config.static_root = root.path().to_path_buf();
+        let expected_length = spa_entry_body(index.as_bytes(), &config).len();
+        let head = RequestHead {
+            method: "HEAD".to_string(),
+            path: "/".to_string(),
+            query: HashMap::new(),
+            headers: HashMap::new(),
+        };
+
+        let response = static_response(&head, &config).await;
+        let response = String::from_utf8(response).expect("response should be utf-8");
+
+        assert!(response.contains(&format!("Content-Length: {expected_length}\r\n")));
+        assert!(response.ends_with("\r\n\r\n"));
+    }
+
+    #[tokio::test]
+    async fn spa_entry_without_browser_auth_does_not_inject_runtime_config() {
+        let root = TestDir::new("runtime-config-spa-disabled");
+        let index = "<html><head></head><body>ok</body></html>";
+        fs::write(root.path().join("index.html"), index).expect("index should be written");
+        let mut config = auth_test_config();
+        config.static_root = root.path().to_path_buf();
+        config.api_key = None;
+        config.csrf_token = None;
+        let head = RequestHead {
+            method: "GET".to_string(),
+            path: "/".to_string(),
+            query: HashMap::new(),
+            headers: HashMap::new(),
+        };
+
+        let response = static_response(&head, &config).await;
+        let response = String::from_utf8(response).expect("response should be utf-8");
+
+        assert!(!response.contains(RUNTIME_CONFIG_SCRIPT_PATH));
+        assert!(response.contains(index));
     }
 
     #[cfg(unix)]
