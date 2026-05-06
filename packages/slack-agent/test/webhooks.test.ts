@@ -44,4 +44,37 @@ describe("createWebhookServer", () => {
 			await server.stop();
 		}
 	});
+
+	it("falls back to payload hash instead of proxy request ids", async () => {
+		const events: WebhookEvent[] = [];
+		const server = createWebhookServer(
+			{ port: 0, host: "127.0.0.1" },
+			async (event) => {
+				events.push(event);
+			},
+		);
+
+		await server.start();
+		try {
+			const url = `http://127.0.0.1:${server.port}/webhooks/T123/generic`;
+			const body = JSON.stringify({ event: "deploy.failed", id: 42 });
+			for (const requestId of ["req-1", "req-2"]) {
+				const response = await fetch(url, {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						"x-request-id": requestId,
+					},
+					body,
+				});
+				expect(response.status).toBe(200);
+			}
+
+			expect(events).toHaveLength(2);
+			expect(events[0]?.id).toBe(events[1]?.id);
+			expect(events[0]?.id).not.toContain("req-");
+		} finally {
+			await server.stop();
+		}
+	});
 });

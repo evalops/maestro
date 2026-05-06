@@ -264,7 +264,6 @@ function webhookEventId(
 		"x-linear-delivery",
 		"x-webhook-id",
 		"x-webhook-delivery",
-		"x-request-id",
 	]);
 	const bodyId = firstString(body.id, body.event_id, body.delivery_id);
 	const seed =

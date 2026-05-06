@@ -69,7 +69,7 @@ describe("resolvePlatformRuntimeConfig", () => {
 	it("resolves organization scoping for Connect requests", () => {
 		const resolved = resolvePlatformRuntimeConfig({
 			SLACK_AGENT_PLATFORM_RUNTIME_URL: "https://platform.example",
-			MAESTRO_AGENT_RUNTIME_ORG_ID: "org_evalops",
+			AGENT_RUNTIME_ORGANIZATION_ID: "org_evalops",
 		});
 
 		expect(resolved?.organizationId).toBe("org_evalops");
