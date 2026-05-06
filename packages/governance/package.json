@@ -1,6 +1,6 @@
 {
 	"name": "@evalops/governance",
-	"version": "0.10.13",
+	"version": "0.10.14",
 	"description": "Thin Platform governance proxy for MCP-compatible agents.",
 	"type": "module",
 	"main": "./dist/index.js",
