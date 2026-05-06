@@ -132,7 +132,7 @@ export function readPackageJson(path) {
  * @param {Record<string, unknown>} pkg
  */
 export function writePackageJson(path, pkg) {
-	writeFileSync(path, JSON.stringify(pkg, null, 2) + "\n");
+	writeFileSync(path, `${JSON.stringify(pkg, null, "\t")}\n`);
 }
 
 /**
