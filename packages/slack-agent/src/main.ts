@@ -439,8 +439,13 @@ function getRuntime(teamId: string): WorkspaceRuntime {
 	};
 
 	// Webhook triggers (per workspace)
-	rt.triggerManager.setRunCallback(async (channel, prompt, event) => {
-		await handleTriggerPrompt(rt, channel, prompt, event.id);
+	rt.triggerManager.setRunCallback(async (channel, prompt, event, trigger) => {
+		await handleTriggerPrompt(
+			rt,
+			channel,
+			prompt,
+			`${event.id}:trigger:${trigger.id}`,
+		);
 	});
 
 	// Scheduler (per workspace)

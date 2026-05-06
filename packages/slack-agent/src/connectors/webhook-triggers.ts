@@ -39,6 +39,7 @@ export type TriggerRunCallback = (
 	channel: string,
 	prompt: string,
 	event: WebhookEvent,
+	trigger: WebhookTrigger,
 ) => Promise<void>;
 
 export class WebhookTriggerManager {
@@ -100,7 +101,7 @@ export class WebhookTriggerManager {
 
 			if (this.runCallback) {
 				try {
-					await this.runCallback(channel, prompt, event);
+					await this.runCallback(channel, prompt, event, trigger);
 					fired++;
 					logger.logInfo(`Trigger fired: ${trigger.id} -> #${channel}`);
 				} catch (error) {
