@@ -1,6 +1,6 @@
 {
 	"name": "@evalops/tui",
-	"version": "0.10.14",
+	"version": "0.10.15",
 	"description": "Terminal UI library with differential rendering for Maestro",
 	"type": "module",
 	"main": "./dist/index.js",
