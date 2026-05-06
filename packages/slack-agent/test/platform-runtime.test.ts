@@ -68,6 +68,15 @@ describe("resolvePlatformRuntimeConfig", () => {
 		expect(resolved?.agentId).toBe("maestro-slack-agent");
 	});
 
+	it("normalizes RecordRunEvent endpoint URLs", () => {
+		const resolved = resolvePlatformRuntimeConfig({
+			SLACK_AGENT_PLATFORM_RUNTIME_URL:
+				"https://platform.example/agentruntime.v1.AgentRuntimeService/RecordRunEvent",
+		});
+
+		expect(resolved?.baseUrl).toBe("https://platform.example");
+	});
+
 	it("resolves organization scoping for Connect requests", () => {
 		const resolved = resolvePlatformRuntimeConfig({
 			SLACK_AGENT_PLATFORM_RUNTIME_URL: "https://platform.example",

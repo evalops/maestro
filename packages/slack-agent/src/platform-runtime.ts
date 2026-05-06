@@ -349,7 +349,11 @@ function buildRuntimeHeaders(
 
 function normalizeAgentRuntimeBaseUrl(value: string): string {
 	let normalized = value.trim().replace(/\/+$/, "");
-	for (const suffix of [HANDLE_TRIGGER_PATH, AGENT_RUNTIME_SERVICE_SUFFIX]) {
+	for (const suffix of [
+		HANDLE_TRIGGER_PATH,
+		RECORD_RUN_EVENT_PATH,
+		AGENT_RUNTIME_SERVICE_SUFFIX,
+	]) {
 		if (normalized.endsWith(suffix)) {
 			normalized = normalized.slice(0, -suffix.length).replace(/\/+$/, "");
 		}
