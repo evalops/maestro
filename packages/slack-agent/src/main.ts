@@ -439,8 +439,8 @@ function getRuntime(teamId: string): WorkspaceRuntime {
 	};
 
 	// Webhook triggers (per workspace)
-	rt.triggerManager.setRunCallback(async (channel, prompt) => {
-		await handleTriggerPrompt(rt, channel, prompt);
+	rt.triggerManager.setRunCallback(async (channel, prompt, event) => {
+		await handleTriggerPrompt(rt, channel, prompt, event.id);
 	});
 
 	// Scheduler (per workspace)
@@ -857,6 +857,7 @@ async function handleTriggerPrompt(
 	rt: WorkspaceRuntime,
 	channelId: string,
 	prompt: string,
+	sourceEventId: string,
 ): Promise<void> {
 	// Skip if already running in this channel (atomic check-and-mark)
 	if (!tryStartRun(rt, channelId)) {
@@ -908,7 +909,7 @@ async function handleTriggerPrompt(
 	);
 	triggerCtx.source = "trigger";
 	triggerCtx.runId = runId;
-	triggerCtx.sourceEventId = runId;
+	triggerCtx.sourceEventId = sourceEventId;
 	triggerCtx.message.user = "trigger";
 	triggerCtx.message.userName = "Webhook Trigger";
 

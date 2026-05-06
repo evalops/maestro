@@ -44,6 +44,7 @@ function config(fetchImpl: typeof fetch = fetch): PlatformRuntimeConfig {
 	return {
 		baseUrl: "https://platform.example",
 		token: "token",
+		organizationId: "org_evalops",
 		workspaceId: "workspace_evalops",
 		agentId: "engineering-ops",
 		timeoutMs: 1_000,
@@ -63,6 +64,15 @@ describe("resolvePlatformRuntimeConfig", () => {
 		expect(resolved?.baseUrl).toBe("https://platform.example");
 		expect(resolved?.token).toBe("token");
 		expect(resolved?.agentId).toBe("maestro-slack-agent");
+	});
+
+	it("resolves organization scoping for Connect requests", () => {
+		const resolved = resolvePlatformRuntimeConfig({
+			SLACK_AGENT_PLATFORM_RUNTIME_URL: "https://platform.example",
+			MAESTRO_EVALOPS_ORG_ID: "org_evalops",
+		});
+
+		expect(resolved?.organizationId).toBe("org_evalops");
 	});
 
 	it("stays disabled without a Platform URL", () => {
@@ -189,6 +199,8 @@ describe("recordSlackAgentRuntimeTrigger", () => {
 				method: "POST",
 				headers: expect.objectContaining({
 					Authorization: "Bearer token",
+					"Connect-Protocol-Version": "1",
+					"X-Organization-ID": "org_evalops",
 				}),
 			}),
 		);

@@ -5,6 +5,7 @@ type JsonRecord = Record<string, unknown>;
 export interface PlatformRuntimeConfig {
 	baseUrl: string;
 	token?: string;
+	organizationId?: string;
 	workspaceId?: string;
 	agentId: string;
 	timeoutMs: number;
@@ -47,6 +48,14 @@ const WORKSPACE_ENV = [
 	"EVALOPS_WORKSPACE_ID",
 ] as const;
 
+const ORGANIZATION_ENV = [
+	"SLACK_AGENT_PLATFORM_ORGANIZATION_ID",
+	"MAESTRO_AGENT_RUNTIME_ORGANIZATION_ID",
+	"MAESTRO_EVALOPS_ORG_ID",
+	"EVALOPS_ORGANIZATION_ID",
+	"EVALOPS_ORG_ID",
+] as const;
+
 const AGENT_ENV = [
 	"SLACK_AGENT_PLATFORM_AGENT_ID",
 	"MAESTRO_AGENT_RUNTIME_AGENT_ID",
@@ -69,6 +78,7 @@ export function resolvePlatformRuntimeConfig(
 	return {
 		baseUrl: normalizeAgentRuntimeBaseUrl(baseUrl),
 		token: firstEnv(env, TOKEN_ENV),
+		organizationId: firstEnv(env, ORGANIZATION_ENV),
 		workspaceId: firstEnv(env, WORKSPACE_ENV),
 		agentId: firstEnv(env, AGENT_ENV) ?? DEFAULT_AGENT_ID,
 		timeoutMs:
@@ -195,10 +205,7 @@ export async function recordSlackAgentRuntimeTrigger(
 			`${config.baseUrl}${HANDLE_TRIGGER_PATH}`,
 			{
 				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					...(config.token ? { Authorization: `Bearer ${config.token}` } : {}),
-				},
+				headers: buildRuntimeHeaders(config),
 				body: JSON.stringify({ trigger }),
 				signal: controller.signal,
 			},
@@ -215,6 +222,17 @@ export async function recordSlackAgentRuntimeTrigger(
 	} finally {
 		clearTimeout(timeout);
 	}
+}
+
+function buildRuntimeHeaders(
+	config: PlatformRuntimeConfig,
+): Record<string, string> {
+	return compactStrings({
+		Authorization: config.token ? `Bearer ${config.token}` : undefined,
+		"Content-Type": "application/json",
+		"Connect-Protocol-Version": "1",
+		"X-Organization-ID": config.organizationId,
+	});
 }
 
 function normalizeAgentRuntimeBaseUrl(value: string): string {

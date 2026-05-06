@@ -11,7 +11,7 @@
  * Each source maps to a handler that extracts a summary and optional channel routing.
  */
 
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import {
 	type IncomingMessage,
 	type ServerResponse,
@@ -20,6 +20,7 @@ import {
 import * as logger from "./logger.js";
 
 export interface WebhookEvent {
+	id: string;
 	teamId: string;
 	source: string;
 	summary: string;
@@ -191,6 +192,7 @@ export function createWebhookServer(
 				const { summary, channel } = handler(body);
 
 				const event: WebhookEvent = {
+					id: webhookEventId(req, source, teamId, bodyBuf, body),
 					teamId,
 					source,
 					summary,
@@ -246,6 +248,53 @@ export function createWebhookServer(
 				});
 			}),
 	};
+}
+
+function webhookEventId(
+	req: IncomingMessage,
+	source: string,
+	teamId: string,
+	bodyBuf: Buffer,
+	body: Record<string, unknown>,
+): string {
+	const headerId = firstHeader(req, [
+		"x-github-delivery",
+		"stripe-event-id",
+		"linear-delivery",
+		"x-linear-delivery",
+		"x-webhook-id",
+		"x-webhook-delivery",
+		"x-request-id",
+	]);
+	const bodyId = firstString(body.id, body.event_id, body.delivery_id);
+	const seed =
+		headerId ??
+		bodyId ??
+		createHash("sha256").update(bodyBuf).digest("hex").slice(0, 32);
+	return `${source}:${teamId}:${seed}`;
+}
+
+function firstHeader(
+	req: IncomingMessage,
+	names: readonly string[],
+): string | undefined {
+	for (const name of names) {
+		const value = req.headers[name];
+		const stringValue = Array.isArray(value) ? value[0] : value;
+		if (typeof stringValue === "string" && stringValue.trim()) {
+			return stringValue.trim();
+		}
+	}
+	return undefined;
+}
+
+function firstString(...values: unknown[]): string | undefined {
+	for (const value of values) {
+		if (typeof value === "string" && value.trim()) {
+			return value.trim();
+		}
+	}
+	return undefined;
 }
 
 function readBody(
