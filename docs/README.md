@@ -9,6 +9,7 @@ Use this index to jump to the right guide quickly and see how the pieces connect
 - [Web UI Guide](WEB_UI.md) — browser workflow and TUI/Web parity appendix.
 - [Conductor Bridge](CONDUCTOR_BRIDGE.md) — connect the Conductor extension to a local Maestro server.
 - [Ambient Agent Design](design/AMBIENT_AGENT.md) — always-on GitHub agent daemon architecture.
+- [Any-Agent EvalOps Control Plane](design/ANY_AGENT_CONTROL_PLANE.md) - options and shim strategy for bringing any coding agent into EvalOps registration, governance, traces, evidence, and memory.
 
 ## Core Reference
 - [Tools Reference](TOOLS_REFERENCE.md) — authoritative slash command and flag definitions.
@@ -33,6 +34,7 @@ Use this index to jump to the right guide quickly and see how the pieces connect
 ## Feature Design Docs
 - [Design Index](design/INDEX.md) — comprehensive design documentation for all major subsystems.
   - [Headless Control Plane](design/HEADLESS_CONTROL_PLANE.md) — session/control-plane design for headless remote attach, server requests, and subscriber backpressure.
+  - [Any-Agent EvalOps Control Plane](design/ANY_AGENT_CONTROL_PLANE.md) - agent-neutral control-plane, registry, shim, trace, evidence, and memory integration strategy.
   - Core Systems: Tool System, Agent State Machine, Context Management, Session Persistence
   - User Interface: TUI Rendering, Web UI Architecture
   - Safety & Security: Safety Firewall, Enterprise RBAC, OAuth Authentication

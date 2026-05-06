@@ -98,6 +98,7 @@ See [Safety](docs/SAFETY.md) and the [Threat Model](docs/THREAT_MODEL.md) for th
 | Set up MCP servers | [MCP Guide](docs/MCP_GUIDE.md) |
 | Work on the repo as a contributor | [Contributor Runbook](docs/CONTRIBUTOR_RUNBOOK.md) |
 | Integrate Maestro headlessly | [Headless protocol](docs/protocols/headless.md) |
+| Bring any coding agent into EvalOps | [Any-Agent Control Plane](docs/design/ANY_AGENT_CONTROL_PLANE.md) |
 | Browse the full docs map | [Documentation index](docs/README.md) |
 
 ## Contributing
