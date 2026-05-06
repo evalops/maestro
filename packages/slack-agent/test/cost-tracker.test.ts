@@ -72,6 +72,25 @@ describe("CostTracker", () => {
 			expect(record.estimatedCost).toBeCloseTo(0.0105, 5);
 		});
 
+		it("calculates cost for the default Opus model", async () => {
+			await mkdir(join(dir, "C123"));
+
+			const record = tracker.record("C123", {
+				model: "claude-opus-4-6",
+				inputTokens: 1000,
+				outputTokens: 500,
+				cacheWriteTokens: 2000,
+				cacheReadTokens: 3000,
+			});
+
+			// Input: 1000 * $5/M = $0.005
+			// Output: 500 * $25/M = $0.0125
+			// Cache Write: 2000 * $6.25/M = $0.0125
+			// Cache Read: 3000 * $0.50/M = $0.0015
+			// Total: $0.0315
+			expect(record.estimatedCost).toBeCloseTo(0.0315, 5);
+		});
+
 		it("persists record to JSONL file", async () => {
 			await mkdir(join(dir, "C123"));
 

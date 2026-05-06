@@ -19,6 +19,7 @@ import {
 import { CostTracker } from "./cost-tracker.js";
 import { isRetryableError, retryAsync } from "./errors.js";
 import * as logger from "./logger.js";
+import { recordSlackAgentRuntimeTrigger } from "./platform-runtime.js";
 import {
 	type Executor,
 	type SandboxConfig,
@@ -55,6 +56,9 @@ import {
 
 // Re-export for backwards compatibility
 export { isRetryableError } from "./errors.js";
+
+const DEFAULT_SLACK_AGENT_PROVIDER = "anthropic";
+const DEFAULT_SLACK_AGENT_MODEL_ID = "claude-opus-4-6";
 
 /**
  * Retry configuration for transient failures
@@ -820,13 +824,17 @@ export function createAgentRunner(
 				}
 			}
 
-			// Get the model - default to Claude Sonnet 4
+			// Get the model - default to Claude Opus for Slack's main agent surface.
+			const modelId =
+				process.env.SLACK_AGENT_MODEL?.trim() || DEFAULT_SLACK_AGENT_MODEL_ID;
 			const model = getModel(
-				"anthropic",
-				"claude-sonnet-4-20250514",
+				DEFAULT_SLACK_AGENT_PROVIDER,
+				modelId,
 			) as Model<Api>;
 			if (!model) {
-				throw new Error("Failed to get Claude Sonnet 4 model");
+				throw new Error(
+					`Failed to get ${DEFAULT_SLACK_AGENT_PROVIDER}/${modelId} model`,
+				);
 			}
 			const summaryModelId = process.env.SLACK_AGENT_SUMMARY_MODEL;
 			const summaryModel = summaryModelId
@@ -1149,6 +1157,26 @@ export function createAgentRunner(
 			const activeAgent = agent;
 			if (!activeAgent) {
 				throw new Error("Agent not initialized");
+			}
+
+			try {
+				const runtimeResult = await recordSlackAgentRuntimeTrigger(ctx, {
+					workingDir,
+					channelDir,
+					prompt: ctx.message.text,
+					model: `${model.provider}/${model.id}`,
+				});
+				if (runtimeResult?.runId) {
+					ctx.platformRunId = runtimeResult.runId;
+					logger.logInfo(
+						`Platform AgentRuntime run recorded: ${runtimeResult.runId}`,
+					);
+				}
+			} catch (error) {
+				logger.logWarning(
+					"Platform AgentRuntime recording skipped",
+					error instanceof Error ? error.message : String(error),
+				);
 			}
 
 			// Run with retry logic for transient API failures
