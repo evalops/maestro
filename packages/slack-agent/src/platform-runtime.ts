@@ -94,13 +94,14 @@ export function buildSlackAgentRuntimeTrigger(
 	const threadId =
 		clean(ctx.threadKey) ?? clean(ctx.message.threadTs) ?? messageTs;
 	const source = ctx.source ?? "channel";
+	const sourceEventId = sourceEventIdFor(ctx, messageTs);
 	const idempotencyKey = [
 		"maestro-slack",
 		workspaceId,
 		ctx.message.channel,
 		threadId,
-		messageTs,
 		source,
+		sourceEventId,
 	].join(":");
 	const envelopeKind =
 		source === "dm"
@@ -114,7 +115,7 @@ export function buildSlackAgentRuntimeTrigger(
 		surfaceType: "SURFACE_SLACK",
 		channelId: ctx.message.channel,
 		idempotencyKey,
-		sourceEventId: messageTs,
+		sourceEventId,
 		sourceEventType: slackSourceEventType(source),
 		actorId: ctx.message.user,
 		correlationId: ctx.message.user,
@@ -132,6 +133,7 @@ export function buildSlackAgentRuntimeTrigger(
 				source,
 				slack_user_name: ctx.message.userName,
 				slack_team_id: ctx.teamId,
+				source_event_id: sourceEventId,
 				maestro_run_id: ctx.runId,
 				task_id: ctx.taskId,
 			}),
@@ -151,6 +153,7 @@ export function buildSlackAgentRuntimeTrigger(
 			slack_agent: {
 				runId: ctx.runId,
 				taskId: ctx.taskId,
+				sourceEventId,
 				source,
 				useThread: ctx.useThread,
 			},
@@ -246,6 +249,17 @@ function clean(value: string | undefined): string | undefined {
 function positiveInt(value: string | undefined): number | undefined {
 	const parsed = Number.parseInt(value ?? "", 10);
 	return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function sourceEventIdFor(ctx: SlackContext, messageTs: string): string {
+	const configured = clean(ctx.sourceEventId);
+	if (configured) {
+		return configured;
+	}
+	if (ctx.source === "scheduled" && ctx.taskId) {
+		return `scheduled:${ctx.taskId}`;
+	}
+	return messageTs;
 }
 
 function compactStrings(

@@ -75,6 +75,8 @@ export interface SlackContext {
 	runId?: string;
 	/** Platform AgentRuntime run ID when optional Platform recording is enabled. */
 	platformRunId?: string;
+	/** Stable upstream event ID for idempotent runtime recording. */
+	sourceEventId?: string;
 	/** Scheduled task ID if this run is task-backed. */
 	taskId?: string;
 	/** Origin of the run (message, dm, slash, scheduled). */
@@ -1523,6 +1525,8 @@ export class SlackBot {
 		text?: string;
 		channel_id: string;
 		user_id: string;
+		event_id?: string;
+		trigger_id?: string;
 	}): Promise<SlackContext> {
 		return this.createSlashContextTeam(this.defaultTeamId, command);
 	}
@@ -1534,6 +1538,8 @@ export class SlackBot {
 			text?: string;
 			channel_id: string;
 			user_id: string;
+			event_id?: string;
+			trigger_id?: string;
 		},
 	): Promise<SlackContext> {
 		const ws = await this.getWorkspaceState(teamId);
@@ -1577,6 +1583,7 @@ export class SlackBot {
 			threadKey,
 			useThread: false,
 			source: "slash",
+			sourceEventId: command.event_id ?? command.trigger_id,
 			...responseHandlers,
 		};
 	}

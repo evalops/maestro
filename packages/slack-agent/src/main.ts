@@ -814,6 +814,7 @@ async function handleScheduledTask(
 		scheduledCtx.runId = runId;
 		scheduledCtx.taskId = task.id;
 		scheduledCtx.source = "scheduled";
+		scheduledCtx.sourceEventId = `scheduled:${task.id}:${task.nextRun}`;
 
 		const logCtx: logger.LogContext = {
 			channelId,
@@ -907,6 +908,7 @@ async function handleTriggerPrompt(
 	);
 	triggerCtx.source = "trigger";
 	triggerCtx.runId = runId;
+	triggerCtx.sourceEventId = runId;
 	triggerCtx.message.user = "trigger";
 	triggerCtx.message.userName = "Webhook Trigger";
 

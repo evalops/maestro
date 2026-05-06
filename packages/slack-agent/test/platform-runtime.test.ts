@@ -127,6 +127,30 @@ describe("buildSlackAgentRuntimeTrigger", () => {
 			"RUNTIME_WORK_ENVELOPE_KIND_DIRECT_CONVERSATION",
 		);
 	});
+
+	it("uses stable upstream event ids for idempotency", () => {
+		const trigger = buildSlackAgentRuntimeTrigger(
+			context({
+				source: "slash",
+				sourceEventId: "trigger_123",
+				message: {
+					...context().message,
+					ts: "synthetic-now",
+				},
+			}),
+			{
+				workingDir: "/workspace",
+				channelDir: "/workspace/C123",
+				prompt: "deploy",
+				config: config(),
+			},
+		);
+
+		expect(trigger?.sourceEventId).toBe("trigger_123");
+		expect(trigger?.idempotencyKey).toBe(
+			"maestro-slack:workspace_evalops:C123:1710000000.000100:slash:trigger_123",
+		);
+	});
 });
 
 describe("recordSlackAgentRuntimeTrigger", () => {
