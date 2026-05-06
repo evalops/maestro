@@ -3,9 +3,13 @@ import { maestroTraceIdentityAttributes } from "../../src/agent/tracing.js";
 
 const ENV_KEYS = [
 	"MAESTRO_EVALOPS_ORG_ID",
+	"EVALOPS_ORGANIZATION_ID",
 	"MAESTRO_EVALOPS_USER_ID",
 	"MAESTRO_EVALOPS_WORKSPACE_ID",
+	"EVALOPS_WORKSPACE_ID",
+	"MAESTRO_EVALOPS_ACCESS_TOKEN",
 	"MAESTRO_SESSION_ID",
+	"MAESTRO_AGENT_ID",
 	"MAESTRO_AGENT_RUN_ID",
 	"MAESTRO_AGENT_RUN_STEP_ID",
 	"TRACE_ID",
@@ -79,6 +83,25 @@ describe("agent tracing identity attributes", () => {
 		expect(maestroTraceIdentityAttributes()).toMatchObject({
 			"agent.session.id": undefined,
 			"maestro.session_id": undefined,
+		});
+	});
+
+	it("uses managed EvalOps workspace aliases for span identity", () => {
+		process.env.MAESTRO_EVALOPS_ACCESS_TOKEN = "evalops-token";
+		process.env.EVALOPS_ORGANIZATION_ID = "org_alias";
+		process.env.EVALOPS_WORKSPACE_ID = "workspace_alias";
+		process.env.MAESTRO_AGENT_ID = "coding-agent";
+		process.env.MAESTRO_AGENT_RUN_ID = "run_alias";
+		process.env.MAESTRO_SESSION_ID = "session_alias";
+
+		expect(maestroTraceIdentityAttributes()).toMatchObject({
+			"organization.id": "org_alias",
+			"evalops.organization_id": "org_alias",
+			"workspace.id": "workspace_alias",
+			"evalops.workspace_id": "workspace_alias",
+			"agent.id": "coding-agent",
+			"maestro.agent_run_id": "run_alias",
+			"maestro.session_id": "session_alias",
 		});
 	});
 });

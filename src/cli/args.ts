@@ -57,6 +57,7 @@ const COMMANDS = new Set([
 	"models",
 	"cost",
 	"stats",
+	"status",
 	"agents",
 	"exec",
 	"web",

@@ -1,6 +1,10 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { JetStreamClient, NatsConnection } from "nats";
+import {
+	type EvalOpsManagedContext,
+	resolveManagedEvalOpsContext,
+} from "../evalops/managed-context.js";
 import type { PromptMetadata } from "../prompts/types.js";
 import type { SkillArtifactMetadata } from "../skills/artifact-metadata.js";
 import {
@@ -579,40 +583,21 @@ function normalizeRuntimeMode(value: string | undefined): MaestroRuntimeMode {
 	}
 }
 
-function managedEvalOpsRoutingActive(env: Env): boolean {
-	return Boolean(
-		readEnv(env, ["MAESTRO_EVALOPS_ACCESS_TOKEN"]) &&
-			readEnv(env, [
-				"MAESTRO_EVALOPS_ORG_ID",
-				"EVALOPS_ORGANIZATION_ID",
-				"MAESTRO_ENTERPRISE_ORG_ID",
-			]),
-	);
-}
-
-function defaultCorrelation(env: Env): MaestroCorrelation {
-	const workspaceId =
-		readEnv(env, ["MAESTRO_EVALOPS_WORKSPACE_ID", "EVALOPS_WORKSPACE_ID"]) ??
-		env.PWD ??
-		process.cwd();
+function defaultCorrelation(
+	env: Env,
+	managedContext: EvalOpsManagedContext,
+): MaestroCorrelation {
+	const workspaceId = managedContext.workspaceId ?? env.PWD ?? process.cwd();
 	const sessionId = readEnv(env, ["MAESTRO_SESSION_ID"]) ?? "unknown";
 
 	return {
-		organization_id: readEnv(env, [
-			"MAESTRO_EVALOPS_ORG_ID",
-			"EVALOPS_ORGANIZATION_ID",
-			"MAESTRO_ENTERPRISE_ORG_ID",
-		]),
-		user_id: readEnv(env, [
-			"MAESTRO_EVALOPS_USER_ID",
-			"EVALOPS_USER_ID",
-			"MAESTRO_USER_ID",
-		]),
+		organization_id: managedContext.organizationId,
+		user_id: managedContext.userId,
 		workspace_id: workspaceId,
 		session_id: sessionId,
-		agent_run_id: readEnv(env, ["MAESTRO_AGENT_RUN_ID"]),
+		agent_run_id: managedContext.runId,
 		agent_run_step_id: readEnv(env, ["MAESTRO_AGENT_RUN_STEP_ID"]),
-		agent_id: readEnv(env, ["MAESTRO_AGENT_ID"]),
+		agent_id: managedContext.agentId,
 		actor_id: readEnv(env, ["MAESTRO_ACTOR_ID"]),
 		principal_id: readEnv(env, ["MAESTRO_PRINCIPAL_ID"]),
 		trace_id: readEnv(env, ["TRACE_ID", "OTEL_TRACE_ID"]),
@@ -627,7 +612,10 @@ function defaultCorrelation(env: Env): MaestroCorrelation {
 	};
 }
 
-function defaultPrincipal(env: Env): MaestroPrincipal | undefined {
+function defaultPrincipal(
+	env: Env,
+	managedContext: EvalOpsManagedContext,
+): MaestroPrincipal | undefined {
 	const subject = readEnv(env, [
 		"MAESTRO_PRINCIPAL_SUBJECT",
 		"MAESTRO_USER_SUBJECT",
@@ -636,20 +624,9 @@ function defaultPrincipal(env: Env): MaestroPrincipal | undefined {
 	if (!subject) return undefined;
 	return {
 		subject,
-		user_id: readEnv(env, [
-			"MAESTRO_EVALOPS_USER_ID",
-			"EVALOPS_USER_ID",
-			"MAESTRO_USER_ID",
-		]),
-		organization_id: readEnv(env, [
-			"MAESTRO_EVALOPS_ORG_ID",
-			"EVALOPS_ORGANIZATION_ID",
-			"MAESTRO_ENTERPRISE_ORG_ID",
-		]),
-		workspace_id: readEnv(env, [
-			"MAESTRO_EVALOPS_WORKSPACE_ID",
-			"EVALOPS_WORKSPACE_ID",
-		]),
+		user_id: managedContext.userId,
+		organization_id: managedContext.organizationId,
+		workspace_id: managedContext.workspaceId,
 		roles: readEnv(env, ["MAESTRO_PRINCIPAL_ROLES"])
 			?.split(",")
 			.map((role) => role.trim())
@@ -665,6 +642,7 @@ function defaultPrincipal(env: Env): MaestroPrincipal | undefined {
 export function resolveMaestroEventBusConfig(
 	env: Env = process.env,
 ): MaestroEventBusConfig {
+	const managedContext = resolveManagedEvalOpsContext(env);
 	const flag = readBoolean(
 		readEnv(env, ["MAESTRO_EVENT_BUS", "MAESTRO_AUDIT_BUS"]),
 	);
@@ -673,7 +651,7 @@ export function resolveMaestroEventBusConfig(
 		"EVALOPS_NATS_URL",
 		"NATS_URL",
 	]);
-	const managedRouting = managedEvalOpsRoutingActive(env);
+	const managedRouting = managedContext.managed;
 	const enabled =
 		flag === false ? false : (flag ?? Boolean(natsUrl || managedRouting));
 	let reason = "disabled";
@@ -690,19 +668,15 @@ export function resolveMaestroEventBusConfig(
 		natsUser: readEnv(env, ["MAESTRO_EVENT_BUS_USER", "NATS_USER"]),
 		natsPassword: readEnv(env, ["MAESTRO_EVENT_BUS_PASSWORD", "NATS_PASSWORD"]),
 		source: readEnv(env, ["MAESTRO_EVENT_BUS_SOURCE"]) ?? "maestro",
-		tenantId: readEnv(env, [
-			"MAESTRO_EVALOPS_ORG_ID",
-			"EVALOPS_ORGANIZATION_ID",
-			"MAESTRO_ENTERPRISE_ORG_ID",
-		]),
+		tenantId: managedContext.organizationId,
 		defaultSurface: normalizeSurface(
 			readEnv(env, ["MAESTRO_SURFACE", "MAESTRO_EVENT_SURFACE"]),
 		),
 		defaultRuntimeMode: normalizeRuntimeMode(
 			readEnv(env, ["MAESTRO_RUNTIME_MODE"]),
 		),
-		defaultCorrelation: defaultCorrelation(env),
-		defaultPrincipal: defaultPrincipal(env),
+		defaultCorrelation: defaultCorrelation(env, managedContext),
+		defaultPrincipal: defaultPrincipal(env, managedContext),
 	};
 }
 

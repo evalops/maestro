@@ -23,6 +23,12 @@ interface OAuthStorageFormat {
 	[provider: string]: OAuthCredentials;
 }
 
+let oauthStorageRevision = 0;
+
+export function getOAuthStorageRevision(): number {
+	return oauthStorageRevision;
+}
+
 /**
  * Get path to oauth.json
  */
@@ -94,6 +100,7 @@ export function saveOAuthCredentials(
 	const storage = loadStorage();
 	storage[provider] = creds;
 	saveStorage(storage);
+	oauthStorageRevision += 1;
 }
 
 /**
@@ -103,6 +110,7 @@ export function removeOAuthCredentials(provider: string): void {
 	const storage = loadStorage();
 	delete storage[provider];
 	saveStorage(storage);
+	oauthStorageRevision += 1;
 }
 
 /**

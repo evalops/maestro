@@ -523,6 +523,10 @@ function buildRuntimeContextMetadata(
 	]);
 
 	return {
+		...(linkage.organizationId
+			? { organization_id: linkage.organizationId }
+			: {}),
+		...(linkage.workspaceId ? { workspace_id: linkage.workspaceId } : {}),
 		...(linkage.runId ? { maestro_agent_run_id: linkage.runId } : {}),
 		maestro_agent_run_step_id: linkage.stepId,
 		...(linkage.actorId ? { maestro_actor_id: linkage.actorId } : {}),
