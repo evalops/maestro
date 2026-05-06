@@ -128,6 +128,50 @@ export function parseInitArgs(args: string[]): EvalOpsInitOptions {
 	return options;
 }
 
+function checkLine(text: string): string {
+	return `${chalk.green("✓")} ${text}`;
+}
+
+export function formatInitSuccess(
+	result: Awaited<ReturnType<typeof bootstrapEvalOpsAgent>>,
+): string {
+	const keyMode = result.apiKeyCreated ? "Created" : "Reused";
+	const authenticatedAs = result.authenticatedAs ?? "EvalOps";
+	const governedActions = result.governedActionsLoaded ?? 0;
+	const lines = [
+		chalk.bold("EvalOps Maestro bootstrap"),
+		"",
+		checkLine(`Authenticated as ${authenticatedAs}`),
+		checkLine(`${keyMode} managed inference key`),
+		checkLine("Registered local agent runtime"),
+		checkLine(`Loaded ${governedActions} governed actions`),
+		checkLine(
+			result.approvalPolicyAttached
+				? "Attached default approval policy"
+				: "Queued approval policy review",
+		),
+		checkLine(
+			result.traceIngestionStarted
+				? "Started trace ingestion"
+				: "Requested trace ingestion",
+		),
+		checkLine(
+			result.governedInferenceCheckRan
+				? "Ran first governed inference check"
+				: "Queued first governed inference check",
+		),
+		checkLine(
+			result.evidenceEventPublished
+				? "Published evidence event"
+				: "Queued evidence event",
+		),
+		"",
+		"Open console:",
+		result.consoleUrl ?? "https://app.evalops.dev/overview?env=production",
+	];
+	return lines.join("\n");
+}
+
 export async function handleInitCommand(args: string[] = []): Promise<void> {
 	if (args.includes("--help") || args.includes("-h")) {
 		console.log(formatInitHelp());
@@ -142,10 +186,6 @@ export async function handleInitCommand(args: string[] = []): Promise<void> {
 			chalk.red(error instanceof Error ? error.message : String(error)),
 		);
 		process.exit(1);
-	}
-
-	if (!options.json) {
-		console.log(chalk.bold("Maestro EvalOps Init"));
 	}
 
 	const result = await bootstrapEvalOpsAgent(options, {
@@ -178,24 +218,5 @@ export async function handleInitCommand(args: string[] = []): Promise<void> {
 		return;
 	}
 
-	console.log(chalk.green("EvalOps agent bootstrap complete."));
-	console.log(chalk.dim(`MCP endpoint: ${result.endpoint}`));
-	if (result.organizationId) {
-		console.log(chalk.dim(`Organization: ${result.organizationId}`));
-	}
-	if (result.agentId) {
-		console.log(chalk.dim(`Agent: ${result.agentId}`));
-	}
-	if (result.runId) {
-		console.log(chalk.dim(`Run: ${result.runId}`));
-	}
-	if (result.keyPrefix) {
-		const keyMode = result.apiKeyCreated ? "created" : "reused";
-		console.log(chalk.dim(`API key ${keyMode}: ${result.keyPrefix}`));
-	}
-	console.log(
-		chalk.dim(
-			"Stored EvalOps MCP credentials locally for future Maestro sessions.",
-		),
-	);
+	console.log(formatInitSuccess(result));
 }

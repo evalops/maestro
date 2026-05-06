@@ -67,15 +67,24 @@ export interface EvalOpsAgentMcpMetadata {
 export interface EvalOpsInitResult {
 	agentId?: string;
 	apiKeyCreated: boolean;
+	approvalPolicyAttached?: boolean;
+	authenticatedAs?: string;
+	consoleUrl?: string;
 	endpoint: string;
+	evidenceEventPublished?: boolean;
+	evidenceEvents?: number;
+	governedActionsLoaded?: number;
+	governedInferenceCheckRan?: boolean;
 	keyPrefix?: string;
 	manifestUrl?: string;
 	organizationId?: string;
 	registryVisible?: boolean;
+	riskFindings?: number;
 	runId?: string;
 	scopesGranted?: string[];
 	sessionExpiresAt?: string;
 	stored: boolean;
+	traceIngestionStarted?: boolean;
 }
 
 export interface EvalOpsInitStatus {
@@ -127,6 +136,24 @@ interface RegisterOutput {
 	run_id?: string;
 	scopes_denied?: string[];
 	scopes_granted?: string[];
+}
+
+interface CheckActionOutput {
+	decision?: string;
+	risk_level?: string;
+	reasons?: string[];
+}
+
+interface ControlPlaneSummaryOutput {
+	evidence?: unknown[];
+	findings?: unknown[];
+	metrics?: {
+		approval_required_tools?: number;
+		high_risk_tools?: number;
+		total_tools?: number;
+	};
+	policy_controls?: unknown[];
+	tools?: unknown[];
 }
 
 interface AgentMcpEndpoint {
@@ -416,24 +443,16 @@ function createDefaultMcpClient(
 	};
 }
 
-async function callMcpTool<T>(
-	createClient: (endpoint: string, bearerToken: string) => EvalOpsMcpClient,
-	endpoint: string,
-	token: string,
+async function callConnectedMcpTool<T>(
+	client: EvalOpsMcpClient,
 	toolName: string,
 	args: Record<string, unknown>,
 ): Promise<T> {
-	const client = createClient(endpoint, token);
-	await client.connect();
-	try {
-		const result = await client.callTool(toolName, args);
-		if (result.isError) {
-			throw new Error(`${toolName} returned an MCP error`);
-		}
-		return parseToolOutput<T>(toolName, result);
-	} finally {
-		await client.close().catch(() => undefined);
+	const result = await client.callTool(toolName, args);
+	if (result.isError) {
+		throw new Error(`${toolName} returned an MCP error`);
 	}
+	return parseToolOutput<T>(toolName, result);
 }
 
 function parseToolOutput<T>(toolName: string, result: CallToolResult): T {
@@ -566,14 +585,10 @@ async function createAgentAPIKey(
 
 async function registerAgent(
 	options: EvalOpsInitOptions,
-	endpoint: string,
-	apiKey: string,
-	createClient: (endpoint: string, bearerToken: string) => EvalOpsMcpClient,
+	client: EvalOpsMcpClient,
 ): Promise<RegisterOutput> {
-	const output = await callMcpTool<RegisterOutput>(
-		createClient,
-		endpoint,
-		apiKey,
+	const output = await callConnectedMcpTool<RegisterOutput>(
+		client,
 		"evalops_register",
 		{
 			agent_type: options.agentType ?? DEFAULT_AGENT_TYPE,
@@ -594,6 +609,30 @@ async function registerAgent(
 	return output;
 }
 
+async function runGovernedInferenceCheck(
+	client: EvalOpsMcpClient,
+): Promise<CheckActionOutput> {
+	return callConnectedMcpTool<CheckActionOutput>(
+		client,
+		"evalops_check_action",
+		{
+			action_type: "llm_gateway.invoke",
+			action_payload: "maestro init first governed inference check",
+			declared_risk_level: "low",
+		},
+	);
+}
+
+async function loadControlPlaneSummary(
+	client: EvalOpsMcpClient,
+): Promise<ControlPlaneSummaryOutput> {
+	return callConnectedMcpTool<ControlPlaneSummaryOutput>(
+		client,
+		"evalops_control_plane_summary",
+		{},
+	);
+}
+
 function organizationIdFromCredentials(
 	credentials: OAuthCredentials | null,
 ): string | undefined {
@@ -601,6 +640,92 @@ function organizationIdFromCredentials(
 		nonEmptyString(credentials?.metadata?.organizationId) ??
 		nonEmptyString(credentials?.metadata?.organization_id)
 	);
+}
+
+function authenticatedAsFromCredentials(
+	credentials: OAuthCredentials | null,
+): string | undefined {
+	const metadata = credentials?.metadata;
+	const user = isRecord(metadata?.user) ? metadata.user : undefined;
+	return (
+		nonEmptyString(metadata?.email) ??
+		nonEmptyString(metadata?.preferred_username) ??
+		nonEmptyString(metadata?.preferredUsername) ??
+		nonEmptyString(metadata?.user) ??
+		nonEmptyString(user?.email) ??
+		nonEmptyString(user?.name)
+	);
+}
+
+function consoleUrlFromEndpoint(endpoint: string): string {
+	const parsed = new URL(endpoint);
+	parsed.pathname = "/overview";
+	parsed.search = "";
+	parsed.hash = "";
+	const env =
+		parsed.hostname === "app.evalops.dev"
+			? "production"
+			: parsed.hostname === "staging.evalops.dev"
+				? "staging"
+				: "local";
+	parsed.searchParams.set("env", env);
+	return parsed.toString();
+}
+
+function countHighRiskFindings(summary: ControlPlaneSummaryOutput): number {
+	const findings = Array.isArray(summary.findings) ? summary.findings : [];
+	const findingCount = findings.filter((finding) => {
+		const record = isRecord(finding) ? finding : undefined;
+		const severity = nonEmptyString(record?.severity)?.toLowerCase();
+		return severity === "critical" || severity === "high";
+	}).length;
+	const metricCount = summary.metrics?.high_risk_tools;
+	if (typeof metricCount === "number" && Number.isFinite(metricCount)) {
+		return Math.max(findingCount, Math.max(0, Math.trunc(metricCount)));
+	}
+	return findingCount;
+}
+
+function hasPolicyControl(summary: ControlPlaneSummaryOutput): boolean {
+	const approvalRequired = summary.metrics?.approval_required_tools ?? 0;
+	if (approvalRequired > 0) {
+		return true;
+	}
+	const controls = Array.isArray(summary.policy_controls)
+		? summary.policy_controls
+		: [];
+	return controls.some((control) => {
+		const record = isRecord(control) ? control : undefined;
+		return /approval|policy|starter/i.test(
+			[
+				nonEmptyString(record?.label),
+				nonEmptyString(record?.value),
+				nonEmptyString(record?.detail),
+			]
+				.filter(Boolean)
+				.join(" "),
+		);
+	});
+}
+
+function hasTraceEvidence(summary: ControlPlaneSummaryOutput): boolean {
+	const evidence = Array.isArray(summary.evidence) ? summary.evidence : [];
+	return evidence.some((entry) => {
+		const record = isRecord(entry) ? entry : undefined;
+		return Boolean(
+			nonEmptyString(record?.trace) ??
+				nonEmptyString(record?.trace_id) ??
+				nonEmptyString(record?.traceId),
+		);
+	});
+}
+
+function governedActionCount(summary: ControlPlaneSummaryOutput): number {
+	const metricTotal = summary.metrics?.total_tools;
+	if (typeof metricTotal === "number" && Number.isFinite(metricTotal)) {
+		return Math.max(0, Math.trunc(metricTotal));
+	}
+	return Array.isArray(summary.tools) ? summary.tools.length : 0;
 }
 
 function saveBootstrapMetadata(
@@ -673,13 +798,20 @@ export async function bootstrapEvalOpsAgent(
 
 	deps.onStatus({ message: "Registering Maestro with EvalOps agent MCP" });
 	let registerOutput: RegisterOutput;
+	let client: EvalOpsMcpClient;
+	const openAndRegister = async (token: string) => {
+		const mcpClient = deps.createMcpClient(endpoint.endpoint, token);
+		await mcpClient.connect();
+		try {
+			const output = await registerAgent(options, mcpClient);
+			return { client: mcpClient, registerOutput: output };
+		} catch (error) {
+			await mcpClient.close().catch(() => undefined);
+			throw error;
+		}
+	};
 	try {
-		registerOutput = await registerAgent(
-			options,
-			endpoint.endpoint,
-			apiKey,
-			deps.createMcpClient,
-		);
+		({ client, registerOutput } = await openAndRegister(apiKey));
 	} catch (error) {
 		if (apiKeyCreated) {
 			throw error;
@@ -696,12 +828,30 @@ export async function bootstrapEvalOpsAgent(
 		);
 		apiKey = keyOutput.api_key;
 		apiKeyCreated = true;
-		registerOutput = await registerAgent(
-			options,
-			endpoint.endpoint,
-			apiKey,
-			deps.createMcpClient,
-		);
+		({ client, registerOutput } = await openAndRegister(apiKey));
+	}
+
+	let governedInferenceCheck: CheckActionOutput = {};
+	let controlPlaneSummary: ControlPlaneSummaryOutput = {};
+	try {
+		deps.onStatus({ message: "Running first governed inference check" });
+		governedInferenceCheck = await runGovernedInferenceCheck(client);
+	} catch (error) {
+		const reason = error instanceof Error ? error.message : String(error);
+		deps.onStatus({
+			message: `EvalOps governed inference check unavailable; continuing bootstrap (${reason})`,
+		});
+	}
+	try {
+		deps.onStatus({ message: "Loading EvalOps control-plane proof" });
+		controlPlaneSummary = await loadControlPlaneSummary(client);
+	} catch (error) {
+		const reason = error instanceof Error ? error.message : String(error);
+		deps.onStatus({
+			message: `EvalOps control-plane proof unavailable; continuing bootstrap (${reason})`,
+		});
+	} finally {
+		await client.close().catch(() => undefined);
 	}
 
 	const credentials = deps.loadCredentials("evalops");
@@ -738,14 +888,23 @@ export async function bootstrapEvalOpsAgent(
 	return {
 		agentId: registerOutput.agent_id,
 		apiKeyCreated,
+		approvalPolicyAttached: hasPolicyControl(controlPlaneSummary),
+		authenticatedAs: authenticatedAsFromCredentials(credentials),
+		consoleUrl: consoleUrlFromEndpoint(endpoint.endpoint),
 		endpoint: endpoint.endpoint,
+		evidenceEventPublished: (controlPlaneSummary.evidence ?? []).length > 0,
+		evidenceEvents: (controlPlaneSummary.evidence ?? []).length,
+		governedActionsLoaded: governedActionCount(controlPlaneSummary),
+		governedInferenceCheckRan: Boolean(governedInferenceCheck.decision),
 		keyPrefix,
 		manifestUrl: endpoint.manifestUrl,
 		organizationId: organizationIdFromCredentials(credentials),
 		registryVisible: registerOutput.registry_visible,
+		riskFindings: countHighRiskFindings(controlPlaneSummary),
 		runId: registerOutput.run_id,
 		scopesGranted: registerOutput.scopes_granted,
 		sessionExpiresAt: registerOutput.expires_at,
 		stored: true,
+		traceIngestionStarted: hasTraceEvidence(controlPlaneSummary),
 	};
 }
