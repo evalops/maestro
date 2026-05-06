@@ -204,11 +204,16 @@ export {
 
 // Platform AgentRuntime bridge
 export {
+	buildSlackAgentRuntimeEvent,
 	buildSlackAgentRuntimeTrigger,
+	recordSlackAgentRuntimeEvent,
 	recordSlackAgentRuntimeTrigger,
 	resolvePlatformRuntimeConfig,
 	type PlatformRuntimeConfig,
+	type PlatformRuntimeEventResult,
 	type PlatformRuntimeTriggerResult,
+	type SlackRuntimeEventOptions,
+	type SlackRuntimeEventType,
 	type SlackRuntimeTriggerOptions,
 } from "./platform-runtime.js";
 

@@ -26,6 +26,31 @@ export interface PlatformRuntimeTriggerResult {
 	idempotentReplay?: boolean;
 }
 
+export type SlackRuntimeEventType =
+	| "RUNTIME_EVENT_TYPE_CHANNEL_MESSAGE_RECORDED"
+	| "RUNTIME_EVENT_TYPE_MODEL_RESPONSE_RECORDED"
+	| "RUNTIME_EVENT_TYPE_TOOL_CALL_RECORDED"
+	| "RUNTIME_EVENT_TYPE_TOOL_RESULT_RECORDED"
+	| "RUNTIME_EVENT_TYPE_APPROVAL_REQUESTED"
+	| "RUNTIME_EVENT_TYPE_APPROVAL_RESOLVED"
+	| "RUNTIME_EVENT_TYPE_AGENT_PROGRESS_RECORDED"
+	| "RUNTIME_EVENT_TYPE_COST_RECORDED"
+	| "RUNTIME_EVENT_TYPE_RUN_FAILED";
+
+export interface SlackRuntimeEventOptions {
+	runId: string;
+	type: SlackRuntimeEventType;
+	message: string;
+	attributes?: JsonRecord | undefined;
+	visibility?: JsonRecord | undefined;
+	config?: PlatformRuntimeConfig | null | undefined;
+}
+
+export interface PlatformRuntimeEventResult {
+	eventId?: string;
+	sequence?: number;
+}
+
 const BASE_URL_ENV = [
 	"SLACK_AGENT_PLATFORM_RUNTIME_URL",
 	"MAESTRO_AGENT_RUNTIME_SERVICE_URL",
@@ -66,6 +91,8 @@ const AGENT_ENV = [
 
 const HANDLE_TRIGGER_PATH =
 	"/agentruntime.v1.AgentRuntimeService/HandleTrigger";
+const RECORD_RUN_EVENT_PATH =
+	"/agentruntime.v1.AgentRuntimeService/RecordRunEvent";
 const AGENT_RUNTIME_SERVICE_SUFFIX = "/agentruntime.v1.AgentRuntimeService";
 const DEFAULT_AGENT_ID = "maestro-slack-agent";
 const DEFAULT_TIMEOUT_MS = 2_000;
@@ -227,6 +254,90 @@ export async function recordSlackAgentRuntimeTrigger(
 	}
 }
 
+export function buildSlackAgentRuntimeEvent(
+	ctx: SlackContext,
+	options: SlackRuntimeEventOptions,
+): JsonRecord | null {
+	const config = options.config ?? resolvePlatformRuntimeConfig();
+	const runId = clean(options.runId);
+	const message = clean(options.message);
+	if (!config || !runId || !message) {
+		return null;
+	}
+	const messageTs =
+		clean(ctx.message.ts) ?? clean(ctx.runId) ?? config.now().toISOString();
+	const sourceEventId = sourceEventIdFor(ctx, messageTs);
+	const baseAttributes: JsonRecord = compactJson({
+		adapter: "maestro-slack-agent",
+		surface: "slack",
+		source: ctx.source ?? "channel",
+		source_event_id: sourceEventId,
+		maestro_run_id: ctx.runId,
+		task_id: ctx.taskId,
+		slack_team_id: ctx.teamId,
+		slack_channel_id: ctx.message.channel,
+		slack_channel_name: ctx.channelName,
+		slack_thread_ts: ctx.message.threadTs ?? ctx.threadKey ?? messageTs,
+		slack_message_ts: messageTs,
+		slack_actor_id: ctx.message.user,
+		slack_actor_name: ctx.message.userName,
+	});
+	return {
+		runId,
+		type: options.type,
+		message,
+		attributes: {
+			...baseAttributes,
+			...(options.attributes ?? {}),
+		},
+		visibility:
+			options.visibility ??
+			channelVisibleRuntimeVisibility(
+				safeRuntimeSummary(message, options.attributes),
+			),
+	};
+}
+
+export async function recordSlackAgentRuntimeEvent(
+	ctx: SlackContext,
+	options: SlackRuntimeEventOptions,
+): Promise<PlatformRuntimeEventResult | null> {
+	const config = options.config ?? resolvePlatformRuntimeConfig();
+	if (!config) {
+		return null;
+	}
+	const event = buildSlackAgentRuntimeEvent(ctx, { ...options, config });
+	if (!event) {
+		return null;
+	}
+
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
+	try {
+		const response = await config.fetchImpl(
+			`${config.baseUrl}${RECORD_RUN_EVENT_PATH}`,
+			{
+				method: "POST",
+				headers: buildRuntimeHeaders(config),
+				body: JSON.stringify(event),
+				signal: controller.signal,
+			},
+		);
+		if (!response.ok) {
+			throw new Error(`AgentRuntime returned ${response.status}`);
+		}
+		const body = (await response.json()) as JsonRecord;
+		const recorded = readRecord(body.event);
+		const sequence = readNumber(recorded?.sequence);
+		return {
+			eventId: readString(recorded?.id),
+			sequence,
+		};
+	} finally {
+		clearTimeout(timeout);
+	}
+}
+
 function buildRuntimeHeaders(
 	config: PlatformRuntimeConfig,
 ): Record<string, string> {
@@ -259,6 +370,43 @@ function firstEnv(
 		}
 	}
 	return undefined;
+}
+
+function compactJson(values: Record<string, unknown>): JsonRecord {
+	const result: JsonRecord = {};
+	for (const [key, value] of Object.entries(values)) {
+		if (typeof value === "string") {
+			const cleaned = clean(value);
+			if (cleaned) {
+				result[key] = cleaned;
+			}
+			continue;
+		}
+		if (value !== undefined && value !== null) {
+			result[key] = value;
+		}
+	}
+	return result;
+}
+
+function channelVisibleRuntimeVisibility(safeSummary: string): JsonRecord {
+	return {
+		level: "RUNTIME_VISIBILITY_LEVEL_CHANNEL_VISIBLE",
+		audiences: ["RUNTIME_AUDIENCE_CHANNEL", "RUNTIME_AUDIENCE_AUDIT"],
+		sensitivity: "RUNTIME_SENSITIVITY_PUBLIC",
+		safeSummary,
+	};
+}
+
+function safeRuntimeSummary(
+	message: string,
+	attributes: JsonRecord | undefined,
+): string {
+	const raw =
+		readString(attributes?.safeSummary) ??
+		readString(attributes?.safe_summary) ??
+		message;
+	return raw.length > 240 ? `${raw.slice(0, 237)}...` : raw;
 }
 
 function clean(value: string | undefined): string | undefined {
@@ -337,4 +485,10 @@ function readString(value: unknown): string | undefined {
 
 function readBoolean(value: unknown): boolean | undefined {
 	return typeof value === "boolean" ? value : undefined;
+}
+
+function readNumber(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isFinite(value)
+		? value
+		: undefined;
 }
