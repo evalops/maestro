@@ -21,9 +21,12 @@ import { isRetryableError, retryAsync } from "./errors.js";
 import * as logger from "./logger.js";
 import {
 	type SlackRuntimeEventType,
-	recordSlackAgentRuntimeEvent,
 	recordSlackAgentRuntimeTrigger,
 } from "./platform-runtime.js";
+import {
+	type RuntimeEventRecorder,
+	createRuntimeEventRecorder,
+} from "./runtime-event-recorder.js";
 import {
 	type Executor,
 	type SandboxConfig,
@@ -173,17 +176,6 @@ interface LogMessage {
 	}>;
 	isBot?: boolean;
 }
-
-type RuntimeEventAttributes = Record<
-	string,
-	string | number | boolean | null | undefined
->;
-
-type RuntimeEventRecorder = (
-	type: SlackRuntimeEventType,
-	message: string,
-	attributes?: RuntimeEventAttributes,
-) => Promise<void>;
 
 interface Thread {
 	parentTs: string;
@@ -715,50 +707,6 @@ export interface AgentRunnerOptions {
 	) => void;
 }
 
-function compactRuntimeAttributes(
-	attributes: RuntimeEventAttributes | undefined,
-): Record<string, string | number | boolean> {
-	const result: Record<string, string | number | boolean> = {};
-	for (const [key, value] of Object.entries(attributes ?? {})) {
-		if (value === undefined || value === null) {
-			continue;
-		}
-		if (typeof value === "string") {
-			const trimmed = value.trim();
-			if (trimmed) {
-				result[key] = trimmed;
-			}
-			continue;
-		}
-		result[key] = value;
-	}
-	return result;
-}
-
-function createRuntimeEventRecorder(
-	ctx: SlackContext,
-	runId: string | undefined,
-): RuntimeEventRecorder {
-	if (!runId) {
-		return async () => undefined;
-	}
-	return async (type, message, attributes) => {
-		try {
-			await recordSlackAgentRuntimeEvent(ctx, {
-				runId,
-				type,
-				message,
-				attributes: compactRuntimeAttributes(attributes),
-			});
-		} catch (error) {
-			logger.logWarning(
-				"Platform AgentRuntime event recording skipped",
-				error instanceof Error ? error.message : String(error),
-			);
-		}
-	};
-}
-
 export function createAgentRunner(
 	sandboxConfig: SandboxConfig,
 	workingDir?: string,
@@ -803,7 +751,13 @@ export function createAgentRunner(
 			);
 			const memory = getMemory(channelDir);
 			let recentMessages = "";
-			let recordRuntimeEvent: RuntimeEventRecorder = async () => undefined;
+			let runtimeEventRecorder: RuntimeEventRecorder =
+				createRuntimeEventRecorder(ctx, undefined);
+			const recordRuntimeEvent = (
+				type: SlackRuntimeEventType,
+				message: string,
+				attributes?: Parameters<RuntimeEventRecorder["record"]>[2],
+			) => runtimeEventRecorder.record(type, message, attributes);
 
 			// Build file content section for code/text files attached to current message
 			let fileContentSection = "";
@@ -1306,7 +1260,7 @@ export function createAgentRunner(
 				});
 				if (runtimeResult?.runId) {
 					ctx.platformRunId = runtimeResult.runId;
-					recordRuntimeEvent = createRuntimeEventRecorder(
+					runtimeEventRecorder = createRuntimeEventRecorder(
 						ctx,
 						runtimeResult.runId,
 					);
@@ -1367,6 +1321,7 @@ export function createAgentRunner(
 				throw error;
 			}
 
+			await runtimeEventRecorder.flush();
 			await queue.flush();
 
 			// Get final assistant message and replace main message
