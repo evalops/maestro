@@ -18,6 +18,27 @@ const AGENT_MCP_MANIFEST_PATH = "/.well-known/evalops/agent-mcp.json";
 const AGENT_MCP_PATH = "/mcp";
 const DEFAULT_AGENT_TYPE = "maestro";
 const DEFAULT_SURFACE = "cli";
+const DEFAULT_AGENT_NEUTRAL_CAPABILITIES = [
+	"mcp",
+	"tool.use",
+	"responses:create",
+];
+const DEFAULT_MAESTRO_AGENT_CAPABILITIES = [
+	"maestro:init",
+	"maestro:cli",
+	"conversation:manage",
+	"workflow:orchestrate",
+	"code:write",
+	"code:review",
+	"code:test",
+	"shell",
+	"git",
+	"fs",
+	"mcp",
+	"tool.use",
+	"research",
+	"responses:create",
+];
 const DEFAULT_API_KEY_SCOPES = [
 	"agent:register",
 	"agent:heartbeat",
@@ -31,6 +52,7 @@ const DEFAULT_API_KEY_SCOPES = [
 export interface EvalOpsInitOptions {
 	agentType?: string;
 	apiKeyScopes?: string[];
+	capabilities?: string[];
 	expiresInDays?: number;
 	forceLogin?: boolean;
 	integrationProfile?: string;
@@ -596,6 +618,25 @@ function runtimeOwnerForOptions(options: EvalOpsInitOptions): string {
 	);
 }
 
+function capabilitiesForOptions(options: EvalOpsInitOptions): string[] {
+	const requested = stringArray(options.capabilities);
+	const defaults =
+		(options.agentType ?? DEFAULT_AGENT_TYPE) === DEFAULT_AGENT_TYPE
+			? DEFAULT_MAESTRO_AGENT_CAPABILITIES
+			: DEFAULT_AGENT_NEUTRAL_CAPABILITIES;
+	const out: string[] = [];
+	const seen = new Set<string>();
+	for (const capability of requested ?? defaults) {
+		const normalized = nonEmptyString(capability);
+		if (!normalized) continue;
+		const key = normalized.toLowerCase();
+		if (seen.has(key)) continue;
+		seen.add(key);
+		out.push(normalized);
+	}
+	return out;
+}
+
 async function createAgentAPIKey(
 	options: EvalOpsInitOptions,
 	identityBaseUrl: string,
@@ -662,7 +703,7 @@ async function registerAgent(
 		"evalops_register",
 		{
 			agent_type: options.agentType ?? DEFAULT_AGENT_TYPE,
-			capabilities: ["maestro:init", "maestro:cli"],
+			capabilities: capabilitiesForOptions(options),
 			integration_profile: integrationProfileForOptions(options),
 			memory_mode: memoryModeForOptions(options),
 			runtime_owner: runtimeOwnerForOptions(options),
