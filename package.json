@@ -1,7 +1,7 @@
 {
   "name": "@evalops/maestro",
   "description": "Maestro by EvalOps - Deterministic coding agent with TUI/CLI and Web UI for AI-assisted development",
-  "version": "0.10.12",
+  "version": "0.10.13",
   "private": false,
   "type": "module",
   "workspaces": [
@@ -127,8 +127,8 @@
     "@aws-sdk/client-bedrock-runtime": "^3.1020.0",
     "@crosscopy/clipboard": "^0.2.8",
     "@daytonaio/sdk": "^0.155.0",
-    "@evalops/contracts": "^0.10.12",
-    "@evalops/tui": "^0.10.12",
+    "@evalops/contracts": "^0.10.13",
+    "@evalops/tui": "^0.10.13",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/auto-instrumentations-node": "^0.74.0",
