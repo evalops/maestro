@@ -35,7 +35,7 @@ interface LoggerConfig {
 	jsonFormat: boolean;
 	/** Whether to include timestamps */
 	timestamps: boolean;
-	/** Custom output function (defaults to console) */
+	/** Custom output function (defaults to stderr) */
 	output?: (entry: LogEntry) => void;
 }
 
@@ -114,15 +114,13 @@ class Logger {
 	 * Output as JSON (for log aggregation systems)
 	 */
 	private outputJson(entry: LogEntry): void {
-		const output = entry.level === "error" ? console.error : console.log;
-		output(JSON.stringify(entry));
+		console.error(JSON.stringify(entry));
 	}
 
 	/**
 	 * Output as human-readable format
 	 */
 	private outputPretty(entry: LogEntry): void {
-		const output = entry.level === "error" ? console.error : console.log;
 		const parts: string[] = [];
 
 		if (this.config.timestamps) {
@@ -136,10 +134,10 @@ class Logger {
 			parts.push(JSON.stringify(entry.context));
 		}
 
-		output(parts.join(" "));
+		console.error(parts.join(" "));
 
 		if (entry.error?.stack) {
-			output(entry.error.stack);
+			console.error(entry.error.stack);
 		}
 	}
 

@@ -144,7 +144,7 @@ describe("ProviderTransport workflow-state integration", () => {
 			timestamp: Date.now(),
 		};
 
-		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const logSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 		const handoffResults: ToolResultMessage[] = [];
 
 		for await (const event of transport.run([], userMessage, cfg)) {
