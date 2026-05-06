@@ -1205,9 +1205,10 @@ export function createAgentRunner(
 								cacheReadTokens += record.cacheReadTokens || 0;
 								modelUsed = record.model;
 								await recordRuntimeEvent(
-									"RUNTIME_EVENT_TYPE_COST_RECORDED",
-									"Slack agent model cost recorded",
+									"RUNTIME_EVENT_TYPE_MODEL_RESPONSE_RECORDED",
+									"Slack agent model usage observed",
 									{
+										metric_kind: "model_usage",
 										model: record.model,
 										input_tokens: record.inputTokens,
 										output_tokens: record.outputTokens,
@@ -1354,9 +1355,10 @@ export function createAgentRunner(
 				});
 			} catch (error) {
 				await recordRuntimeEvent(
-					"RUNTIME_EVENT_TYPE_RUN_FAILED",
-					"Slack agent run failed",
+					"RUNTIME_EVENT_TYPE_AGENT_PROGRESS_RECORDED",
+					"Slack agent observed run failure",
 					{
+						progress_kind: "run_failure_observed",
 						error: error instanceof Error ? error.message : String(error),
 						tools_executed: toolsExecuted,
 						total_cost_usd: runCostTotal,
