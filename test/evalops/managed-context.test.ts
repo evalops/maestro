@@ -160,6 +160,27 @@ describe("managed EvalOps context", () => {
 		).toBe("org_gateway");
 	});
 
+	it("requires an agent session before treating env auth as managed", () => {
+		const loginOnlyContext = resolveManagedEvalOpsContext({
+			MAESTRO_EVALOPS_ACCESS_TOKEN: "evalops-token",
+			MAESTRO_REMOTE_RUNNER_ORG_ID: "org_remote",
+		});
+		expect(loginOnlyContext.authenticated).toBe(true);
+		expect(loginOnlyContext.managed).toBe(false);
+		expect(loginOnlyContext.mode).toBe("EvalOps authenticated");
+
+		const managedContext = resolveManagedEvalOpsContext({
+			MAESTRO_EVALOPS_ACCESS_TOKEN: "evalops-token",
+			MAESTRO_REMOTE_RUNNER_ORG_ID: "org_remote",
+			MAESTRO_REMOTE_RUNNER_WORKSPACE_ID: "workspace_remote",
+			MAESTRO_AGENT_RUN_ID: "run_remote",
+		});
+		expect(managedContext.managed).toBe(true);
+		expect(managedContext.organizationId).toBe("org_remote");
+		expect(managedContext.workspaceId).toBe("workspace_remote");
+		expect(managedContext.runId).toBe("run_remote");
+	});
+
 	it("formats a human status block with active EvalOps sinks", () => {
 		const output = formatManagedEvalOpsStatus(
 			resolveManagedEvalOpsContext(

@@ -20,6 +20,27 @@ const PLAN_EVENT_SCHEMA: &str = "buf.build/evalops/proto/maestro.v1.AmbientAgent
 const PLAN_EVENT_TYPE: &str = "type.googleapis.com/maestro.v1.AmbientAgentPlanEvent";
 const DEFAULT_SOURCE: &str = "maestro.ambient-agent";
 const DEFAULT_AGENT_ID: &str = "ambient_agent_daemon";
+const EVALOPS_CONTEXT_VERSION: &str = "evalops.context.v1";
+const ORG_ENV: &[&str] = &[
+    "MAESTRO_EVALOPS_ORG_ID",
+    "EVALOPS_ORGANIZATION_ID",
+    "EVALOPS_ORG_ID",
+    "MAESTRO_ENTERPRISE_ORG_ID",
+    "MAESTRO_LLM_GATEWAY_ORG_ID",
+    "MAESTRO_REMOTE_RUNNER_ORG_ID",
+];
+const WORKSPACE_ENV: &[&str] = &[
+    "MAESTRO_EVALOPS_WORKSPACE_ID",
+    "EVALOPS_WORKSPACE_ID",
+    "MAESTRO_REMOTE_RUNNER_WORKSPACE_ID",
+    "MAESTRO_WORKSPACE_ID",
+];
+const USER_ENV: &[&str] = &[
+    "MAESTRO_EVALOPS_USER_ID",
+    "EVALOPS_USER_ID",
+    "MAESTRO_USER_ID",
+];
+const TOKEN_ENV: &[&str] = &["MAESTRO_EVALOPS_ACCESS_TOKEN", "EVALOPS_TOKEN"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AmbientSessionState {
@@ -243,11 +264,14 @@ pub struct PlatformEventBusConfig {
     pub source: String,
     pub tenant_id: Option<String>,
     pub workspace_id: String,
+    pub user_id: Option<String>,
     pub agent_run_id: Option<String>,
+    pub agent_run_step_id: Option<String>,
     pub agent_id: Option<String>,
     pub actor_id: Option<String>,
     pub principal_id: Option<String>,
     pub trace_id: Option<String>,
+    pub traceparent: Option<String>,
     pub request_id: Option<String>,
     pub remote_runner_session_id: Option<String>,
     pub objective_id: Option<String>,
@@ -277,16 +301,12 @@ impl PlatformEventBusConfig {
             &["MAESTRO_EVENT_BUS_URL", "EVALOPS_NATS_URL", "NATS_URL"],
         )
         .cloned();
-        let managed_routing = read_env(&vars, &["MAESTRO_EVALOPS_ACCESS_TOKEN"]).is_some()
-            && read_env(
-                &vars,
-                &[
-                    "MAESTRO_EVALOPS_ORG_ID",
-                    "EVALOPS_ORGANIZATION_ID",
-                    "MAESTRO_ENTERPRISE_ORG_ID",
-                ],
-            )
-            .is_some();
+        let access_token = read_env(&vars, TOKEN_ENV).is_some();
+        let organization_id = read_env(&vars, ORG_ENV).cloned();
+        let agent_id = read_env(&vars, &["MAESTRO_AGENT_ID"]).cloned();
+        let agent_run_id = read_env(&vars, &["MAESTRO_AGENT_RUN_ID"]).cloned();
+        let managed_agent_session = access_token && (agent_id.is_some() || agent_run_id.is_some());
+        let managed_routing = organization_id.is_some() && managed_agent_session;
 
         let enabled = if flag == Some(false) {
             false
@@ -306,15 +326,7 @@ impl PlatformEventBusConfig {
         }
         .to_string();
 
-        let tenant_id = read_env(
-            &vars,
-            &[
-                "MAESTRO_EVALOPS_ORG_ID",
-                "EVALOPS_ORGANIZATION_ID",
-                "MAESTRO_ENTERPRISE_ORG_ID",
-            ],
-        )
-        .cloned();
+        let tenant_id = organization_id;
 
         Self {
             enabled,
@@ -328,26 +340,23 @@ impl PlatformEventBusConfig {
                 .cloned()
                 .unwrap_or_else(|| DEFAULT_SOURCE.to_string()),
             tenant_id,
-            workspace_id: read_env(
-                &vars,
-                &[
-                    "MAESTRO_EVALOPS_WORKSPACE_ID",
-                    "EVALOPS_WORKSPACE_ID",
-                    "PWD",
-                ],
-            )
-            .cloned()
-            .unwrap_or_else(|| {
-                env::current_dir()
-                    .unwrap_or_else(|_| ".".into())
-                    .to_string_lossy()
-                    .to_string()
-            }),
-            agent_run_id: read_env(&vars, &["MAESTRO_AGENT_RUN_ID"]).cloned(),
-            agent_id: read_env(&vars, &["MAESTRO_AGENT_ID"]).cloned(),
+            workspace_id: read_env(&vars, WORKSPACE_ENV)
+                .cloned()
+                .or_else(|| read_env(&vars, &["PWD"]).cloned())
+                .unwrap_or_else(|| {
+                    env::current_dir()
+                        .unwrap_or_else(|_| ".".into())
+                        .to_string_lossy()
+                        .to_string()
+                }),
+            user_id: read_env(&vars, USER_ENV).cloned(),
+            agent_run_id,
+            agent_run_step_id: read_env(&vars, &["MAESTRO_AGENT_RUN_STEP_ID"]).cloned(),
+            agent_id,
             actor_id: read_env(&vars, &["MAESTRO_ACTOR_ID"]).cloned(),
             principal_id: read_env(&vars, &["MAESTRO_PRINCIPAL_ID"]).cloned(),
             trace_id: read_env(&vars, &["TRACE_ID", "OTEL_TRACE_ID"]).cloned(),
+            traceparent: read_env(&vars, &["TRACEPARENT", "TRACE_PARENT"]).cloned(),
             request_id: read_env(&vars, &["MAESTRO_REQUEST_ID"]).cloned(),
             remote_runner_session_id: read_env(&vars, &["MAESTRO_REMOTE_RUNNER_SESSION_ID"])
                 .cloned(),
@@ -373,11 +382,14 @@ impl PlatformEventBusConfig {
             source: DEFAULT_SOURCE.to_string(),
             tenant_id: Some("org_test".to_string()),
             workspace_id: "workspace_test".to_string(),
+            user_id: None,
             agent_run_id: None,
+            agent_run_step_id: None,
             agent_id: None,
             actor_id: None,
             principal_id: None,
             trace_id: None,
+            traceparent: None,
             request_id: None,
             remote_runner_session_id: None,
             objective_id: None,
@@ -566,7 +578,11 @@ fn build_session_cloud_event(
     root.insert("data".to_string(), Value::Object(data));
     root.insert(
         "extensions".to_string(),
-        json!({ "dataschema": SESSION_EVENT_SCHEMA }),
+        Value::Object(build_context_extensions(
+            SESSION_EVENT_SCHEMA,
+            config,
+            &event.session_id,
+        )),
     );
     Value::Object(root)
 }
@@ -619,7 +635,11 @@ fn build_plan_cloud_event(config: &PlatformEventBusConfig, event: &AmbientPlanEv
     root.insert("data".to_string(), Value::Object(data));
     root.insert(
         "extensions".to_string(),
-        json!({ "dataschema": PLAN_EVENT_SCHEMA }),
+        Value::Object(build_context_extensions(
+            PLAN_EVENT_SCHEMA,
+            config,
+            &event.session_id,
+        )),
     );
     Value::Object(root)
 }
@@ -631,12 +651,18 @@ fn build_correlation(config: &PlatformEventBusConfig, session_id: &str) -> Map<S
         "organization_id",
         config.tenant_id.clone(),
     );
+    optional_insert(&mut correlation, "user_id", config.user_id.clone());
     correlation.insert("workspace_id".to_string(), json!(config.workspace_id));
     correlation.insert("session_id".to_string(), json!(session_id));
     optional_insert(
         &mut correlation,
         "agent_run_id",
         config.agent_run_id.clone(),
+    );
+    optional_insert(
+        &mut correlation,
+        "agent_run_step_id",
+        config.agent_run_step_id.clone(),
     );
     correlation.insert(
         "agent_id".to_string(),
@@ -675,6 +701,33 @@ fn build_correlation(config: &PlatformEventBusConfig, session_id: &str) -> Map<S
         correlation.insert("attributes".to_string(), json!(config.attributes));
     }
     correlation
+}
+
+fn build_context_extensions(
+    dataschema: &str,
+    config: &PlatformEventBusConfig,
+    session_id: &str,
+) -> Map<String, Value> {
+    let mut extensions = Map::new();
+    extensions.insert("dataschema".to_string(), json!(dataschema));
+    extensions.insert(
+        "evalops_context_version".to_string(),
+        json!(EVALOPS_CONTEXT_VERSION),
+    );
+    optional_insert(&mut extensions, "organization_id", config.tenant_id.clone());
+    optional_insert(&mut extensions, "user_id", config.user_id.clone());
+    extensions.insert("workspace_id".to_string(), json!(config.workspace_id));
+    extensions.insert("maestro_session_id".to_string(), json!(session_id));
+    optional_insert(&mut extensions, "agent_run_id", config.agent_run_id.clone());
+    optional_insert(
+        &mut extensions,
+        "agent_run_step_id",
+        config.agent_run_step_id.clone(),
+    );
+    optional_insert(&mut extensions, "trace_id", config.trace_id.clone());
+    optional_insert(&mut extensions, "traceparent", config.traceparent.clone());
+    optional_insert(&mut extensions, "request_id", config.request_id.clone());
+    extensions
 }
 
 fn optional_insert(map: &mut Map<String, Value>, key: &str, value: Option<String>) {
@@ -882,6 +935,96 @@ mod tests {
         assert_eq!(config.actor_id.as_deref(), Some("actor_123"));
         assert_eq!(config.trace_id.as_deref(), Some("trace_123"));
         assert_eq!(config.request_id.as_deref(), Some("request_123"));
+    }
+
+    #[test]
+    fn does_not_enable_managed_routing_without_agent_session() {
+        let config = PlatformEventBusConfig::from_iter([
+            (
+                "MAESTRO_EVALOPS_ACCESS_TOKEN".to_string(),
+                "evalops-token".to_string(),
+            ),
+            ("MAESTRO_EVALOPS_ORG_ID".to_string(), "org_123".to_string()),
+        ]);
+
+        assert!(!config.enabled);
+        assert_eq!(config.reason, "disabled");
+    }
+
+    #[test]
+    fn resolves_managed_aliases_like_typescript_context() {
+        let config = PlatformEventBusConfig::from_iter([
+            (
+                "MAESTRO_EVALOPS_ACCESS_TOKEN".to_string(),
+                "evalops-token".to_string(),
+            ),
+            (
+                "MAESTRO_REMOTE_RUNNER_ORG_ID".to_string(),
+                "org_remote".to_string(),
+            ),
+            (
+                "MAESTRO_REMOTE_RUNNER_WORKSPACE_ID".to_string(),
+                "workspace_remote".to_string(),
+            ),
+            ("EVALOPS_USER_ID".to_string(), "user_123".to_string()),
+            ("MAESTRO_AGENT_ID".to_string(), "agent_123".to_string()),
+            (
+                "MAESTRO_AGENT_RUN_ID".to_string(),
+                "agent_run_123".to_string(),
+            ),
+            (
+                "MAESTRO_AGENT_RUN_STEP_ID".to_string(),
+                "step_123".to_string(),
+            ),
+            ("TRACE_PARENT".to_string(), "00-trace-span-01".to_string()),
+        ]);
+
+        assert!(config.enabled);
+        assert_eq!(config.reason, "managed evalops routing");
+        assert_eq!(config.tenant_id.as_deref(), Some("org_remote"));
+        assert_eq!(config.workspace_id, "workspace_remote");
+        assert_eq!(config.user_id.as_deref(), Some("user_123"));
+        assert_eq!(config.agent_id.as_deref(), Some("agent_123"));
+        assert_eq!(config.agent_run_id.as_deref(), Some("agent_run_123"));
+        assert_eq!(config.agent_run_step_id.as_deref(), Some("step_123"));
+        assert_eq!(config.traceparent.as_deref(), Some("00-trace-span-01"));
+    }
+
+    #[test]
+    fn session_cloud_event_includes_evalops_context_extensions() {
+        let mut config = PlatformEventBusConfig::for_test();
+        config.user_id = Some("user_test".to_string());
+        config.agent_run_id = Some("run_test".to_string());
+        config.agent_run_step_id = Some("step_test".to_string());
+        config.trace_id = Some("trace_test".to_string());
+        config.traceparent = Some("00-trace-span-01".to_string());
+        config.request_id = Some("request_test".to_string());
+
+        let event = build_session_cloud_event(
+            &config,
+            &AmbientSessionEvent::new(
+                "ambient-session-1",
+                AmbientSessionState::Started,
+                "/tmp/workspace",
+            ),
+        );
+
+        assert_eq!(
+            event["extensions"]["evalops_context_version"],
+            "evalops.context.v1"
+        );
+        assert_eq!(event["extensions"]["organization_id"], "org_test");
+        assert_eq!(event["extensions"]["user_id"], "user_test");
+        assert_eq!(event["extensions"]["workspace_id"], "workspace_test");
+        assert_eq!(
+            event["extensions"]["maestro_session_id"],
+            "ambient-session-1"
+        );
+        assert_eq!(event["extensions"]["agent_run_id"], "run_test");
+        assert_eq!(event["extensions"]["agent_run_step_id"], "step_test");
+        assert_eq!(event["extensions"]["trace_id"], "trace_test");
+        assert_eq!(event["extensions"]["traceparent"], "00-trace-span-01");
+        assert_eq!(event["extensions"]["request_id"], "request_test");
     }
 
     #[test]
