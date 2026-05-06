@@ -98,6 +98,9 @@ export function printHelp(version: string) {
   # Use EvalOps managed gateway models after \`maestro init\`
   maestro --provider evalops --model gpt-4o-mini "Say hello in one sentence"
 
+  # Confirm managed mode sinks and EvalOps org identity
+  maestro status
+
   # Export a portable session log
   maestro export <session-id> ./session.jsonl --format jsonl
 

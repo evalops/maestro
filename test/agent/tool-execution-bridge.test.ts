@@ -179,6 +179,8 @@ describe("tool execution bridge", () => {
 			url: "https://platform.test/toolexecution.v1.ToolExecutionService/ExecuteTool",
 			body: expect.objectContaining({
 				metadata: expect.objectContaining({
+					organization_id: "org_evalops",
+					workspace_id: "ws_evalops",
 					maestro_bridge_mode: "observe",
 					maestro_agent_run_id: "run_1",
 					maestro_agent_run_step_id: "tc_1",

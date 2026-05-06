@@ -1,7 +1,9 @@
 import chalk from "chalk";
-import { getStoredEvalOpsAgentMcpMetadata } from "../../evalops/agent-bootstrap.js";
+import {
+	formatManagedEvalOpsStatus,
+	resolveManagedEvalOpsContext,
+} from "../../evalops/managed-context.js";
 import { hasOAuthCredentials, login, logout } from "../../oauth/index.js";
-import { loadOAuthCredentials } from "../../oauth/storage.js";
 
 export async function handleEvalOpsCommand(
 	subcommand?: string,
@@ -20,7 +22,7 @@ export async function handleEvalOpsCommand(
 			await handleLogout();
 			return;
 		case "status":
-			await handleStatus();
+			await handleEvalOpsStatus();
 			return;
 		default:
 			console.error(
@@ -56,7 +58,7 @@ async function handleLogout(): Promise<void> {
 	console.log(chalk.green("Removed stored EvalOps credentials."));
 }
 
-async function handleStatus(): Promise<void> {
+export async function handleEvalOpsStatus(): Promise<void> {
 	if (!hasOAuthCredentials("evalops")) {
 		console.log(chalk.yellow("No stored EvalOps credentials."));
 		console.log(
@@ -65,63 +67,12 @@ async function handleStatus(): Promise<void> {
 		return;
 	}
 
-	const credentials = loadOAuthCredentials("evalops");
-	const remainingMs = Math.max(
-		0,
-		(credentials?.expires ?? Date.now()) - Date.now(),
-	);
-	const minutes = Math.round(remainingMs / 60_000);
-	const metadata = credentials?.metadata;
-	const agentMcp = getStoredEvalOpsAgentMcpMetadata();
-	const organizationId =
-		typeof metadata?.organizationId === "string"
-			? metadata.organizationId
-			: undefined;
-	const providerRef =
-		metadata?.providerRef &&
-		typeof metadata.providerRef === "object" &&
-		!Array.isArray(metadata.providerRef)
-			? (metadata.providerRef as Record<string, unknown>)
-			: undefined;
-
 	console.log(chalk.green("Stored EvalOps credentials detected."));
-	if (organizationId) {
-		console.log(chalk.dim(`Organization: ${organizationId}`));
-	}
-	if (providerRef) {
-		const provider =
-			typeof providerRef.provider === "string"
-				? providerRef.provider
-				: "openai";
-		const environment =
-			typeof providerRef.environment === "string"
-				? providerRef.environment
-				: "prod";
-		console.log(chalk.dim(`Provider ref: ${provider}/${environment}`));
-	}
-	if (agentMcp) {
-		console.log(chalk.green("EvalOps agent session configured."));
-		console.log(chalk.dim(`MCP endpoint: ${agentMcp.endpoint}`));
-		if (agentMcp.agentId) {
-			console.log(chalk.dim(`Agent: ${agentMcp.agentId}`));
-		}
-		if (agentMcp.runId) {
-			console.log(chalk.dim(`Run: ${agentMcp.runId}`));
-		}
-		if (agentMcp.keyPrefix) {
-			console.log(chalk.dim(`API key: ${agentMcp.keyPrefix}`));
-		}
-		if (agentMcp.sessionExpiresAt) {
-			console.log(chalk.dim(`Session expires: ${agentMcp.sessionExpiresAt}`));
-		}
-	} else {
+	const context = resolveManagedEvalOpsContext();
+	console.log(formatManagedEvalOpsStatus(context));
+	if (!context.managed) {
 		console.log(
 			chalk.yellow('No EvalOps agent session yet. Run "maestro init".'),
 		);
 	}
-	console.log(
-		chalk.dim(
-			`Access token expires in ~${minutes} minute${minutes === 1 ? "" : "s"} (auto-refresh enabled).`,
-		),
-	);
 }

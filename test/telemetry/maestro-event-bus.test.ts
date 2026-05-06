@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import * as oauthStorage from "../../src/oauth/storage.js";
 import { recordSessionDuration } from "../../src/telemetry.js";
 import { maestroCorrelationToChronicleMetadata } from "../../src/telemetry/index.js";
 import {
@@ -61,6 +62,102 @@ describe("maestro event bus", () => {
 			subject: "subject_123",
 			user_id: "user_evalops",
 			organization_id: "org_123",
+		});
+	});
+
+	it("loads EvalOps oauth credentials only once per config resolution", () => {
+		const loadCredentials = vi
+			.spyOn(oauthStorage, "loadOAuthCredentials")
+			.mockReturnValue({
+				type: "oauth",
+				refresh: "refresh-token",
+				access: "access-token",
+				expires: Date.now() + 60_000,
+				metadata: {
+					organizationId: "org_123",
+					userId: "user_123",
+					agentMcp: {
+						agentId: "agent_123",
+						apiKey: "api_key_123",
+						runId: "run_123",
+						workspaceId: "workspace_123",
+					},
+				},
+			});
+		const previousSubject = process.env.MAESTRO_PRINCIPAL_SUBJECT;
+		const previousSessionId = process.env.MAESTRO_SESSION_ID;
+		try {
+			process.env.MAESTRO_PRINCIPAL_SUBJECT = "subject_123";
+			process.env.MAESTRO_SESSION_ID = "session_123";
+
+			const config = resolveMaestroEventBusConfig();
+
+			expect(loadCredentials).toHaveBeenCalledTimes(1);
+			expect(loadCredentials).toHaveBeenCalledWith("evalops");
+			expect(config.defaultCorrelation).toMatchObject({
+				organization_id: "org_123",
+				user_id: "user_123",
+				workspace_id: "workspace_123",
+				agent_id: "agent_123",
+				agent_run_id: "run_123",
+				session_id: "session_123",
+			});
+			expect(config.defaultPrincipal).toMatchObject({
+				subject: "subject_123",
+				user_id: "user_123",
+				organization_id: "org_123",
+				workspace_id: "workspace_123",
+			});
+		} finally {
+			loadCredentials.mockRestore();
+			if (previousSubject === undefined) {
+				delete process.env.MAESTRO_PRINCIPAL_SUBJECT;
+			} else {
+				process.env.MAESTRO_PRINCIPAL_SUBJECT = previousSubject;
+			}
+			if (previousSessionId === undefined) {
+				delete process.env.MAESTRO_SESSION_ID;
+			} else {
+				process.env.MAESTRO_SESSION_ID = previousSessionId;
+			}
+		}
+	});
+
+	it("carries managed EvalOps org and workspace aliases into CloudEvent context", () => {
+		const event = buildMaestroCloudEvent(
+			MaestroBusEventType.ToolCallAttempted,
+			{
+				tool_call_id: "tool_1",
+				tool_name: "bash",
+				attempted_at: "2026-05-06T01:00:00.000Z",
+			},
+			{
+				env: {
+					MAESTRO_EVALOPS_ACCESS_TOKEN: "evalops-token",
+					EVALOPS_ORGANIZATION_ID: "org_alias",
+					EVALOPS_WORKSPACE_ID: "workspace_alias",
+					MAESTRO_AGENT_ID: "coding-agent",
+					MAESTRO_AGENT_RUN_ID: "run_alias",
+					MAESTRO_SESSION_ID: "session_alias",
+				},
+				eventId: "event_alias",
+				time: "2026-05-06T01:00:00.000Z",
+			},
+		);
+
+		expect(event.tenant_id).toBe("org_alias");
+		expect(event.data.correlation).toMatchObject({
+			organization_id: "org_alias",
+			workspace_id: "workspace_alias",
+			session_id: "session_alias",
+			agent_id: "coding-agent",
+			agent_run_id: "run_alias",
+		});
+		expect(event.extensions).toMatchObject({
+			organization_id: "org_alias",
+			workspace_id: "workspace_alias",
+			maestro_session_id: "session_alias",
+			agent_run_id: "run_alias",
 		});
 	});
 
