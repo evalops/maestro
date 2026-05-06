@@ -452,6 +452,12 @@ export async function main(args: string[]) {
 		process.exit(1);
 	}
 
+	const exitWithEarlyStartupError = (error: unknown): never => {
+		const message = error instanceof Error ? error.message : String(error);
+		console.error(chalk.red(message));
+		process.exit(1);
+	};
+
 	// Handle `maestro hosted-runner` before importing web-server so hosted
 	// defaults are visible to its module-level runtime profile.
 	if (parsed.command === "hosted-runner") {
@@ -481,6 +487,34 @@ export async function main(args: string[]) {
 			parsed.port ?? (Number.parseInt(process.env.PORT || "8080", 10) || 8080);
 		await migrate();
 		await startWebServer(port, { skipStartupMigration: true });
+		return;
+	}
+
+	// Bootstrap/status commands need stdout to stay under their direct control.
+	// In particular, `maestro init --json` must be parseable JSON with any
+	// progress or diagnostic output on stderr, so route it before config loading
+	// can emit normal CLI startup logs.
+	if (parsed.command === "init") {
+		try {
+			validateCodexFlags(args, parsed.command);
+		} catch (error) {
+			exitWithEarlyStartupError(error);
+		}
+
+		const { handleInitCommand } = await import("./cli/commands/init.js");
+		await handleInitCommand(parsed.commandArgs ?? []);
+		return;
+	}
+
+	if (parsed.command === "status") {
+		try {
+			validateCodexFlags(args, parsed.command);
+		} catch (error) {
+			exitWithEarlyStartupError(error);
+		}
+
+		const { handleStatusCommand } = await import("./cli/commands/status.js");
+		await handleStatusCommand();
 		return;
 	}
 
@@ -745,18 +779,6 @@ export async function main(args: string[]) {
 	if (parsed.command === "evalops") {
 		const { handleEvalOpsCommand } = await import("./cli/commands/evalops.js");
 		await handleEvalOpsCommand(parsed.subcommand, parsed.commandArgs ?? []);
-		return;
-	}
-
-	if (parsed.command === "status") {
-		const { handleStatusCommand } = await import("./cli/commands/status.js");
-		await handleStatusCommand();
-		return;
-	}
-
-	if (parsed.command === "init") {
-		const { handleInitCommand } = await import("./cli/commands/init.js");
-		await handleInitCommand(parsed.commandArgs ?? []);
 		return;
 	}
 
