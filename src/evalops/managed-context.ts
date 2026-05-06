@@ -88,6 +88,26 @@ const USER_ENV = [
 ] as const;
 
 const TOKEN_ENV = ["MAESTRO_EVALOPS_ACCESS_TOKEN", "EVALOPS_TOKEN"] as const;
+const INTEGRATION_PROFILE_ENV = [
+	"MAESTRO_EVALOPS_INTEGRATION_PROFILE",
+	"MAESTRO_INTEGRATION_PROFILE",
+] as const;
+const MEMORY_MODE_ENV = [
+	"MAESTRO_EVALOPS_MEMORY_MODE",
+	"MAESTRO_MEMORY_MODE",
+] as const;
+const RUNTIME_OWNER_ENV = [
+	"MAESTRO_EVALOPS_RUNTIME_OWNER",
+	"MAESTRO_RUNTIME_OWNER",
+] as const;
+const SHIM_TYPE_ENV = [
+	"MAESTRO_EVALOPS_SHIM_TYPE",
+	"MAESTRO_SHIM_TYPE",
+] as const;
+const TRACE_MODE_ENV = [
+	"MAESTRO_EVALOPS_TRACE_MODE",
+	"MAESTRO_TRACE_MODE",
+] as const;
 
 function nonEmptyString(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim().length > 0
@@ -217,20 +237,21 @@ export function resolveManagedEvalOpsContext(
 		evidencePublisher: managed ? "EvalOps" : "none",
 		expiresAt: credentials?.expires,
 		inference: managed ? "managed" : "local",
-		integrationProfile: agentMcp?.integrationProfile,
+		integrationProfile:
+			readEnv(env, INTEGRATION_PROFILE_ENV) ?? agentMcp?.integrationProfile,
 		keyPrefix: agentMcp?.keyPrefix,
 		managed,
-		memoryMode: agentMcp?.memoryMode,
+		memoryMode: readEnv(env, MEMORY_MODE_ENV) ?? agentMcp?.memoryMode,
 		mode,
 		organizationId,
 		providerRef,
 		runId,
-		runtimeOwner: agentMcp?.runtimeOwner,
+		runtimeOwner: readEnv(env, RUNTIME_OWNER_ENV) ?? agentMcp?.runtimeOwner,
 		sessionExpiresAt: agentMcp?.sessionExpiresAt,
 		sessionId: readEnv(env, ["MAESTRO_SESSION_ID"]),
-		shimType: agentMcp?.shimType,
+		shimType: readEnv(env, SHIM_TYPE_ENV) ?? agentMcp?.shimType,
 		traceIngestion: managed && runId ? "live" : "not configured",
-		traceMode: agentMcp?.traceMode,
+		traceMode: readEnv(env, TRACE_MODE_ENV) ?? agentMcp?.traceMode,
 		userEmail: nonEmptyString(metadata?.email),
 		userId: readEnv(env, USER_ENV) ?? nonEmptyString(metadata?.userId),
 		workspaceId,
@@ -265,6 +286,8 @@ export function formatManagedEvalOpsStatus(
 	if (context.integrationProfile) {
 		lines.push(`${dim("Integration profile")}: ${context.integrationProfile}`);
 	}
+	if (context.runtimeOwner)
+		lines.push(`${dim("Runtime owner")}: ${context.runtimeOwner}`);
 	if (context.shimType) lines.push(`${dim("Shim")}: ${context.shimType}`);
 	if (context.traceMode)
 		lines.push(`${dim("Trace mode")}: ${context.traceMode}`);

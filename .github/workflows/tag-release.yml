@@ -43,7 +43,8 @@ jobs:
         if: ${{ github.repository == 'evalops/maestro' && steps.release.outputs.tag_exists != 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
           RELEASE_VERSION: ${{ steps.release.outputs.release_version }}
         run: |
           set -euo pipefail
-          gh workflow run release --field "version=${RELEASE_VERSION}"
+          gh workflow run release --ref "${RELEASE_TAG}" --field "version=${RELEASE_VERSION}"

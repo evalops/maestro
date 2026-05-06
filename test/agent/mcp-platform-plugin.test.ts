@@ -42,6 +42,16 @@ describe("platform MCP plugin servers", () => {
 			"MAESTRO_AGENT_MCP_SCOPES",
 			"MAESTRO_EVALOPS_AGENT_MCP_SCOPES",
 			"MAESTRO_CEREBRO_MCP_SCOPES",
+			"MAESTRO_EVALOPS_INTEGRATION_PROFILE",
+			"MAESTRO_INTEGRATION_PROFILE",
+			"MAESTRO_EVALOPS_MEMORY_MODE",
+			"MAESTRO_MEMORY_MODE",
+			"MAESTRO_EVALOPS_RUNTIME_OWNER",
+			"MAESTRO_RUNTIME_OWNER",
+			"MAESTRO_EVALOPS_SHIM_TYPE",
+			"MAESTRO_SHIM_TYPE",
+			"MAESTRO_EVALOPS_TRACE_MODE",
+			"MAESTRO_TRACE_MODE",
 			"MAESTRO_REQUEST_ID",
 			"TRACE_ID",
 			"OTEL_TRACE_ID",
@@ -90,6 +100,42 @@ describe("platform MCP plugin servers", () => {
 				},
 			},
 		]);
+	});
+
+	it("prefers env-driven profile headers over stored managed metadata", () => {
+		process.env.MAESTRO_PLATFORM_MCP_URL =
+			"https://agent-mcp.evalops.example/mcp";
+		process.env.EVALOPS_ORGANIZATION_ID = "workspace-123";
+		process.env.MAESTRO_EVALOPS_INTEGRATION_PROFILE = "mcp_only";
+		process.env.MAESTRO_EVALOPS_MEMORY_MODE = "cerebro";
+		process.env.MAESTRO_EVALOPS_RUNTIME_OWNER = "customer";
+		process.env.MAESTRO_EVALOPS_SHIM_TYPE = "shim";
+		process.env.MAESTRO_EVALOPS_TRACE_MODE = "mcp_events";
+		saveOAuthCredentials("evalops", {
+			type: "oauth",
+			access: "oauth-access",
+			refresh: "oauth-refresh",
+			expires: Date.now() + 60_000,
+			metadata: {
+				agentMcp: {
+					apiKey: "eoak_stored",
+					endpoint: "https://app.evalops.dev/mcp",
+					integrationProfile: "managed_runtime",
+					memoryMode: "durable",
+					runtimeOwner: "evalops",
+					shimType: "sdk",
+					traceMode: "otlp",
+				},
+			},
+		});
+
+		expect(getPlatformMcpPluginServers()[0]?.headers).toMatchObject({
+			"X-EvalOps-Integration-Profile": "mcp_only",
+			"X-EvalOps-Memory-Mode": "cerebro",
+			"X-EvalOps-Runtime-Owner": "customer",
+			"X-EvalOps-Shim-Type": "shim",
+			"X-EvalOps-Trace-Mode": "mcp_events",
+		});
 	});
 
 	it("keeps transport session evidence for existing MCP clients", () => {
