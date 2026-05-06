@@ -49,6 +49,26 @@ const PLATFORM_MCP_SCOPES_ENV_VARS = [
 	"MAESTRO_EVALOPS_AGENT_MCP_SCOPES",
 	"MAESTRO_CEREBRO_MCP_SCOPES",
 ] as const;
+const PLATFORM_MCP_INTEGRATION_PROFILE_ENV_VARS = [
+	"MAESTRO_EVALOPS_INTEGRATION_PROFILE",
+	"MAESTRO_INTEGRATION_PROFILE",
+] as const;
+const PLATFORM_MCP_MEMORY_MODE_ENV_VARS = [
+	"MAESTRO_EVALOPS_MEMORY_MODE",
+	"MAESTRO_MEMORY_MODE",
+] as const;
+const PLATFORM_MCP_RUNTIME_OWNER_ENV_VARS = [
+	"MAESTRO_EVALOPS_RUNTIME_OWNER",
+	"MAESTRO_RUNTIME_OWNER",
+] as const;
+const PLATFORM_MCP_SHIM_TYPE_ENV_VARS = [
+	"MAESTRO_EVALOPS_SHIM_TYPE",
+	"MAESTRO_SHIM_TYPE",
+] as const;
+const PLATFORM_MCP_TRACE_MODE_ENV_VARS = [
+	"MAESTRO_EVALOPS_TRACE_MODE",
+	"MAESTRO_TRACE_MODE",
+] as const;
 const DEFAULT_PLATFORM_MCP_SERVER_NAME = "evalops";
 const AGENT_MCP_MANIFEST_PATH = "/.well-known/evalops/agent-mcp.json";
 const AGENT_MCP_PATH = "/mcp";
@@ -79,14 +99,21 @@ function buildPlatformMcpHeaders(): Record<string, string> | undefined {
 				getEnvValue(PLATFORM_MCP_AGENT_ID_ENV_VARS) ?? stored?.agentId,
 			"X-EvalOps-Agent-Run-Id":
 				getEnvValue(["MAESTRO_AGENT_RUN_ID"]) ?? stored?.runId,
-			"X-EvalOps-Integration-Profile": stored?.integrationProfile,
-			"X-EvalOps-Memory-Mode": stored?.memoryMode,
-			"X-EvalOps-Runtime-Owner": stored?.runtimeOwner,
+			"X-EvalOps-Integration-Profile":
+				getEnvValue(PLATFORM_MCP_INTEGRATION_PROFILE_ENV_VARS) ??
+				stored?.integrationProfile,
+			"X-EvalOps-Memory-Mode":
+				getEnvValue(PLATFORM_MCP_MEMORY_MODE_ENV_VARS) ?? stored?.memoryMode,
+			"X-EvalOps-Runtime-Owner":
+				getEnvValue(PLATFORM_MCP_RUNTIME_OWNER_ENV_VARS) ??
+				stored?.runtimeOwner,
 			"X-EvalOps-Scopes": getEnvValue(PLATFORM_MCP_SCOPES_ENV_VARS),
-			"X-EvalOps-Shim-Type": stored?.shimType,
+			"X-EvalOps-Shim-Type":
+				getEnvValue(PLATFORM_MCP_SHIM_TYPE_ENV_VARS) ?? stored?.shimType,
 			"X-EvalOps-Request-Id": getEnvValue(["MAESTRO_REQUEST_ID"]),
 			"X-EvalOps-Trace-Id": getEnvValue(["TRACE_ID", "OTEL_TRACE_ID"]),
-			"X-EvalOps-Trace-Mode": stored?.traceMode,
+			"X-EvalOps-Trace-Mode":
+				getEnvValue(PLATFORM_MCP_TRACE_MODE_ENV_VARS) ?? stored?.traceMode,
 			"X-EvalOps-Maestro-Surface":
 				getEnvValue(["MAESTRO_SURFACE"]) ?? "maestro",
 		}).filter(

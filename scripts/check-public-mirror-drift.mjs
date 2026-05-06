@@ -58,6 +58,61 @@ function readReport(reportPath) {
 	return JSON.parse(readFileSync(reportPath, "utf8"));
 }
 
+function readReleaseManifestDrift(sourceRoot, targetRoot) {
+	const manifestPath = resolve(
+		sourceRoot,
+		".github/release-mirror-manifest.json",
+	);
+	if (!existsSync(manifestPath)) {
+		return [];
+	}
+
+	const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+	const files = Array.isArray(manifest.files) ? manifest.files : [];
+	const changedPaths = [];
+	for (const relativePath of files) {
+		if (typeof relativePath !== "string" || !relativePath.trim()) {
+			continue;
+		}
+		const sourcePath = resolve(sourceRoot, relativePath);
+		if (!existsSync(sourcePath)) {
+			throw new Error(`Missing source file for mirror sync: ${sourcePath}`);
+		}
+		const targetPath = resolve(targetRoot, relativePath);
+		const sourceContent = readFileSync(sourcePath);
+		const targetContent = existsSync(targetPath) ? readFileSync(targetPath) : null;
+		if (!targetContent || !sourceContent.equals(targetContent)) {
+			changedPaths.push(relativePath);
+		}
+	}
+	return changedPaths.sort();
+}
+
+function mergeReleaseManifestDrift(report, releaseManifestChangedPaths) {
+	if (releaseManifestChangedPaths.length === 0) {
+		return {
+			...report,
+			releaseManifestChangedCount: 0,
+			releaseManifestChangedPaths: [],
+		};
+	}
+
+	const copiedPaths = Array.isArray(report.copiedPaths)
+		? [...report.copiedPaths]
+		: [];
+	const copiedPathSet = new Set(copiedPaths);
+	const addedPaths = releaseManifestChangedPaths.filter(
+		(path) => !copiedPathSet.has(path),
+	);
+	return {
+		...report,
+		copiedCount: copiedPaths.length + addedPaths.length,
+		copiedPaths: [...copiedPaths, ...addedPaths],
+		releaseManifestChangedCount: releaseManifestChangedPaths.length,
+		releaseManifestChangedPaths,
+	};
+}
+
 function samplePaths(report, limit) {
 	const copied = Array.isArray(report.copiedPaths) ? report.copiedPaths : [];
 	const deleted = Array.isArray(report.deletedPaths) ? report.deletedPaths : [];
@@ -204,7 +259,17 @@ if (result.error) {
 }
 
 const report = readReport(reportPath);
-const status = buildStatus(report, options.summaryLimit, sourceRoot, targetRoot);
+const mergedReport = mergeReleaseManifestDrift(
+	report,
+	readReleaseManifestDrift(sourceRoot, targetRoot),
+);
+writeFileSync(reportPath, `${JSON.stringify(mergedReport, null, 2)}\n`);
+const status = buildStatus(
+	mergedReport,
+	options.summaryLimit,
+	sourceRoot,
+	targetRoot,
+);
 const markdown = buildMarkdown(status);
 process.stdout.write(markdown);
 
@@ -218,8 +283,8 @@ if (process.env.GITHUB_STEP_SUMMARY) {
 	appendFileSync(process.env.GITHUB_STEP_SUMMARY, `\n${markdown}`);
 }
 
-const copiedCount = Number(report.copiedCount ?? 0);
-const deletedCount = Number(report.deletedCount ?? 0);
+const copiedCount = Number(mergedReport.copiedCount ?? 0);
+const deletedCount = Number(mergedReport.deletedCount ?? 0);
 if (copiedCount + deletedCount > 0) {
 	console.error(
 		"Public mirror drift detected. Let internal main generate and merge the public sync PR before relying on public main.",

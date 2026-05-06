@@ -84,6 +84,11 @@ describe("managed EvalOps context", () => {
 				EVALOPS_WORKSPACE_ID: "workspace_env",
 				MAESTRO_AGENT_ID: "agent_env",
 				MAESTRO_AGENT_RUN_ID: "run_env",
+				MAESTRO_EVALOPS_INTEGRATION_PROFILE: "mcp_only",
+				MAESTRO_EVALOPS_MEMORY_MODE: "cerebro",
+				MAESTRO_EVALOPS_RUNTIME_OWNER: "customer",
+				MAESTRO_EVALOPS_SHIM_TYPE: "shim",
+				MAESTRO_EVALOPS_TRACE_MODE: "mcp_events",
 			},
 			() => baseCredentials,
 		);
@@ -92,6 +97,11 @@ describe("managed EvalOps context", () => {
 		expect(context.workspaceId).toBe("workspace_env");
 		expect(context.agentId).toBe("agent_env");
 		expect(context.runId).toBe("run_env");
+		expect(context.integrationProfile).toBe("mcp_only");
+		expect(context.memoryMode).toBe("cerebro");
+		expect(context.runtimeOwner).toBe("customer");
+		expect(context.shimType).toBe("shim");
+		expect(context.traceMode).toBe("mcp_events");
 	});
 
 	it("does not report managed mode without an organization identity", () => {
@@ -205,6 +215,7 @@ describe("managed EvalOps context", () => {
 		expect(output).toContain("Organization: org_evalops");
 		expect(output).toContain("Workspace: workspace_evalops");
 		expect(output).toContain("Agent runtime: registered");
+		expect(output).toContain("Runtime owner: evalops");
 		expect(output).toContain("Trace ingestion: live");
 		expect(output).toContain("Evidence publisher: EvalOps");
 		expect(output).toContain("Inference: managed");

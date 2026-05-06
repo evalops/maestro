@@ -145,4 +145,47 @@ describe("check-public-mirror-drift", () => {
 		});
 		expect(readFileSync(markdownPath, "utf8")).toContain("drift detected");
 	});
+
+	it("includes release manifest overlay drift in preview status", () => {
+		const { root, source, target } = makeFixture();
+		write(join(source, "README.md"), "hello\n");
+		write(join(target, "README.md"), "hello\n");
+		write(
+			join(source, ".github/release-mirror-manifest.json"),
+			`${JSON.stringify(
+				{ files: [".github/workflows/tag-release.yml"] },
+				null,
+				2,
+			)}\n`,
+		);
+		write(join(source, ".github/workflows/tag-release.yml"), "new\n");
+		write(join(target, ".github/workflows/tag-release.yml"), "old\n");
+		const reportPath = join(root, "drift.json");
+		const statusPath = join(root, "status.json");
+		const markdownPath = join(root, "status.md");
+
+		const result = runCheck(
+			source,
+			target,
+			reportPath,
+			statusPath,
+			markdownPath,
+		);
+
+		expect(result.status).toBe(1);
+		const report = readJson(reportPath);
+		expect(report).toMatchObject({
+			copiedCount: 1,
+			releaseManifestChangedCount: 1,
+			releaseManifestChangedPaths: [".github/workflows/tag-release.yml"],
+		});
+		const status = readJson(statusPath);
+		expect(status).toMatchObject({
+			mirror: {
+				filesToCopyOrUpdate: 1,
+				sampledChangedPaths: ["copy/update .github/workflows/tag-release.yml"],
+			},
+			result: "drift_detected",
+		});
+	});
 });
