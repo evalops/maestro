@@ -73,6 +73,8 @@ export interface SlackContext {
 	useThread: boolean;
 	/** Per-run ID for observability (set by main.ts). */
 	runId?: string;
+	/** Platform AgentRuntime run ID when optional Platform recording is enabled. */
+	platformRunId?: string;
 	/** Scheduled task ID if this run is task-backed. */
 	taskId?: string;
 	/** Origin of the run (message, dm, slash, scheduled). */

@@ -202,6 +202,16 @@ export {
 	type ThreadMemoryConfig,
 } from "./thread-memory.js";
 
+// Platform AgentRuntime bridge
+export {
+	buildSlackAgentRuntimeTrigger,
+	recordSlackAgentRuntimeTrigger,
+	resolvePlatformRuntimeConfig,
+	type PlatformRuntimeConfig,
+	type PlatformRuntimeTriggerResult,
+	type SlackRuntimeTriggerOptions,
+} from "./platform-runtime.js";
+
 // Idempotency (duplicate event prevention)
 export {
 	IdempotencyManager,
