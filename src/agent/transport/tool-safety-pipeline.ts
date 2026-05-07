@@ -18,7 +18,7 @@ import {
 	type GuardedFileMatch,
 	classifyGuardedFileAccessAction,
 	describeDefaultGuardedFileMatch,
-	findDefaultGuardedToolCallMatch,
+	findGuardedToolCallMatch,
 } from "../../safety/guarded-files.js";
 import type { SafetyMiddleware } from "../../safety/safety-middleware.js";
 import type { WorkflowStateTracker } from "../../safety/workflow-state.js";
@@ -38,6 +38,7 @@ import {
 import type {
 	ActionApprovalDecision,
 	ActionApprovalService,
+	ActionFirewallVerdict,
 } from "../action-approval.js";
 import { validateToolArguments } from "../providers/validation.js";
 import type {
@@ -563,14 +564,16 @@ export async function* evaluateToolSafety(
 		metadata: {
 			workflowState: workflowSnapshot,
 			annotations: toolDef?.annotations,
+			guardedFiles: cfg.guardedFiles,
 		},
 		user: cfg.user,
 		session: cfg.session,
 		userIntent: extractTextFromContent(userMessage.content),
 	});
-	let guardedFileMatch = findDefaultGuardedToolCallMatch(
+	let guardedFileMatch = findGuardedToolCallMatch(
 		effectiveToolCall.name,
 		effectiveToolCall.arguments,
+		{ policy: cfg.guardedFiles },
 	);
 	let guardedFileApprovalRequired =
 		Boolean(guardedFileMatch) ||
@@ -581,17 +584,31 @@ export async function* evaluateToolSafety(
 		: guardedFileApprovalRequired && verdict.action === "require_approval"
 			? verdict.reason
 			: undefined;
+	const guardedFileBlockVerdict = (
+		match: GuardedFileMatch,
+	): Extract<ActionFirewallVerdict, { action: "block" }> => ({
+		action: "block",
+		ruleId: DEFAULT_GUARDED_FILE_RULE_ID,
+		reason: describeDefaultGuardedFileMatch(match),
+		remediation:
+			"Remove the matching custom guard or change its defaultBehavior to ask if this access should be approval-gated instead of blocked.",
+	});
 
-	if (verdict.action === "block") {
+	const emitFirewallBlock = async (
+		blockVerdict: Extract<ActionFirewallVerdict, { action: "block" }>,
+		blockedToolCall: ToolCall,
+	) => {
 		const blockedResult: ToolResultMessage = {
 			role: "toolResult",
-			toolCallId: toolCall.id,
-			toolName: toolCall.name,
+			toolCallId: blockedToolCall.id,
+			toolName: blockedToolCall.name,
 			content: [
 				{
 					type: "text",
-					text: `Action blocked by firewall: ${verdict.reason}${
-						verdict.remediation ? `\n\nSuggestion: ${verdict.remediation}` : ""
+					text: `Action blocked by firewall: ${blockVerdict.reason}${
+						blockVerdict.remediation
+							? `\n\nSuggestion: ${blockVerdict.remediation}`
+							: ""
 					}`,
 				},
 			],
@@ -600,40 +617,64 @@ export async function* evaluateToolSafety(
 		};
 		await logToolExecutionAudit(
 			auditLogger,
-			toolCall.name,
+			blockedToolCall.name,
 			safetyMiddleware.sanitizeForLogging(
-				toolCall.arguments as Record<string, unknown>,
+				blockedToolCall.arguments as Record<string, unknown>,
 			),
 			"denied",
 			0,
-			verdict.reason,
+			blockVerdict.reason,
 		);
 		const firewallBlockedEvents = recordEvents(
-			emitToolResult(blockedResult, toolCall, true),
+			emitToolResult(blockedResult, blockedToolCall, true),
 		);
 		const sanitizedFirewallArgs = safetyMiddleware.sanitizeForLogging(
-			effectiveToolCall.arguments as Record<string, unknown>,
+			blockedToolCall.arguments as Record<string, unknown>,
 		);
 		recordMaestroFirewallBlock({
-			rule_id: verdict.ruleId,
-			operation: toolCall.name,
+			rule_id: blockVerdict.ruleId,
+			operation: blockedToolCall.name,
 			target:
 				typeof sanitizedFirewallArgs.command === "string"
 					? sanitizedFirewallArgs.command
-					: toolCall.name,
-			reason: verdict.reason,
+					: blockedToolCall.name,
+			reason: blockVerdict.reason,
 			context: sanitizedFirewallArgs,
 			correlation: {
 				session_id: cfg.session?.id,
-				agent_run_step_id: toolCall.id,
+				agent_run_step_id: blockedToolCall.id,
 			},
 		});
-		for (const event of firewallBlockedEvents) {
+		const blockedToolSafetyVerdict = { outcome: "blocked" as const, events };
+		return {
+			eventsToYield: firewallBlockedEvents,
+			verdict: blockedToolSafetyVerdict,
+			rateLimitUpdate: rateLimitResult.updatedState,
+		};
+	};
+
+	if (verdict.action === "block") {
+		const blocked = await emitFirewallBlock(verdict, effectiveToolCall);
+		for (const event of blocked.eventsToYield) {
 			yield event;
 		}
 		return {
-			verdict: { outcome: "blocked", events },
-			rateLimitUpdate: rateLimitResult.updatedState,
+			verdict: blocked.verdict,
+			rateLimitUpdate: blocked.rateLimitUpdate,
+		};
+	}
+
+	if (guardedFileMatch?.defaultBehavior === "block") {
+		const blocked = await emitFirewallBlock(
+			guardedFileBlockVerdict(guardedFileMatch),
+			effectiveToolCall,
+		);
+		for (const event of blocked.eventsToYield) {
+			yield event;
+		}
+		return {
+			verdict: blocked.verdict,
+			rateLimitUpdate: blocked.rateLimitUpdate,
 		};
 	}
 
@@ -773,10 +814,49 @@ export async function* evaluateToolSafety(
 					...effectiveToolCall,
 					arguments: permissionHookResult.updatedInput,
 				};
-				const guardedMatch = findDefaultGuardedToolCallMatch(
+				const rewrittenVerdict = await firewall.evaluate({
+					toolName: effectiveToolCall.name,
+					args: effectiveToolCall.arguments,
+					metadata: {
+						workflowState: workflowSnapshot,
+						annotations: toolDef?.annotations,
+						guardedFiles: cfg.guardedFiles,
+					},
+					user: cfg.user,
+					session: cfg.session,
+					userIntent: extractTextFromContent(userMessage.content),
+				});
+				if (rewrittenVerdict.action === "block") {
+					const blocked = await emitFirewallBlock(
+						rewrittenVerdict,
+						effectiveToolCall,
+					);
+					for (const event of blocked.eventsToYield) {
+						yield event;
+					}
+					return {
+						verdict: blocked.verdict,
+						rateLimitUpdate: blocked.rateLimitUpdate,
+					};
+				}
+				const guardedMatch = findGuardedToolCallMatch(
 					effectiveToolCall.name,
 					effectiveToolCall.arguments,
+					{ policy: cfg.guardedFiles },
 				);
+				if (guardedMatch?.defaultBehavior === "block") {
+					const blocked = await emitFirewallBlock(
+						guardedFileBlockVerdict(guardedMatch),
+						effectiveToolCall,
+					);
+					for (const event of blocked.eventsToYield) {
+						yield event;
+					}
+					return {
+						verdict: blocked.verdict,
+						rateLimitUpdate: blocked.rateLimitUpdate,
+					};
+				}
 				if (guardedMatch) {
 					guardedFileMatch = guardedMatch;
 					guardedFileApprovalRequired = true;

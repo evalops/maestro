@@ -74,7 +74,7 @@ import {
 import {
 	DEFAULT_GUARDED_FILE_RULE_ID,
 	describeDefaultGuardedFileMatch,
-	findDefaultGuardedToolCallMatch,
+	findGuardedToolCallMatch,
 } from "./guarded-files.js";
 import { isContainedInWorkspace, isSystemPath } from "./path-containment.js";
 import { checkPolicy } from "./policy.js";
@@ -542,10 +542,32 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 	{
 		id: DEFAULT_GUARDED_FILE_RULE_ID,
 		description:
+			"Block guarded user and editor configuration files when policy requires a hard block",
+		action: "block",
+		evaluate: (ctx) => {
+			const match = findGuardedToolCallMatch(ctx.toolName, ctx.args, {
+				policy: ctx.metadata?.guardedFiles,
+			});
+			if (match?.defaultBehavior === "block") {
+				return {
+					allowed: false,
+					reason: describeDefaultGuardedFileMatch(match),
+					remediation:
+						"Remove the matching custom guard or change its defaultBehavior to ask if this access should be approval-gated instead of blocked.",
+				};
+			}
+			return { allowed: true };
+		},
+	},
+	{
+		id: DEFAULT_GUARDED_FILE_RULE_ID,
+		description:
 			"Require explicit approval before reading or mutating guarded user and editor configuration files",
 		action: "require_approval",
 		evaluate: (ctx) => {
-			const match = findDefaultGuardedToolCallMatch(ctx.toolName, ctx.args);
+			const match = findGuardedToolCallMatch(ctx.toolName, ctx.args, {
+				policy: ctx.metadata?.guardedFiles,
+			});
 			if (match) {
 				return {
 					allowed: false,

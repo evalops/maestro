@@ -31,6 +31,7 @@
  * @module agent/types
  */
 
+import type { GuardedFilesPolicySettings } from "@evalops/contracts";
 import type { TSchema } from "@sinclair/typebox";
 import type { PromptMetadata } from "../prompts/types.js";
 import type { SkillArtifactMetadata } from "../skills/artifact-metadata.js";
@@ -1378,6 +1379,8 @@ export interface AgentRunConfig {
 		/** When the session started */
 		startedAt: Date;
 	};
+	/** User/org guarded-files override policy for this run */
+	guardedFiles?: GuardedFilesPolicySettings;
 	/** Optional helper function for running LLM queries (e.g., for summarization) */
 	runLLM?: (systemPrompt: string, userPrompt: string) => Promise<string>;
 	/** Optional debug checkpoint profiler for local query latency diagnostics. */

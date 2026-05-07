@@ -19,7 +19,10 @@ import {
 	createToolHookService,
 	registerHook,
 } from "../../src/hooks/index.js";
-import { ActionFirewall } from "../../src/safety/action-firewall.js";
+import {
+	ActionFirewall,
+	defaultFirewallRules,
+} from "../../src/safety/action-firewall.js";
 import { AdaptiveThresholds } from "../../src/safety/adaptive-thresholds.js";
 import { SafetyMiddleware } from "../../src/safety/safety-middleware.js";
 import { WorkflowStateTracker } from "../../src/safety/workflow-state.js";
@@ -57,6 +60,7 @@ function createBaseSafetyContext(options: {
 	approvalService?: Parameters<typeof evaluateToolSafety>[0]["approvalService"];
 	hookService?: Parameters<typeof evaluateToolSafety>[0]["hookService"];
 	firewall?: ActionFirewall;
+	cfg?: Partial<AgentRunConfig>;
 }): Parameters<typeof evaluateToolSafety>[0] {
 	return {
 		toolCall: {
@@ -71,7 +75,7 @@ function createBaseSafetyContext(options: {
 			content: "Read the file",
 			timestamp: Date.now(),
 		} satisfies Message,
-		cfg: { tools: [options.tool] } as AgentRunConfig,
+		cfg: { tools: [options.tool], ...options.cfg } as AgentRunConfig,
 		clock: { now: () => Date.now() },
 		safetyMiddleware: new SafetyMiddleware({
 			enableContextFirewall: false,
@@ -509,6 +513,59 @@ describe("evaluateToolSafety guarded files", () => {
 		);
 	});
 
+	it("blocks guardedFiles block rules even when the firewall returns allow", async () => {
+		const readTool = createReadTool();
+		const approvalService = {
+			requiresUserInteraction: () => true,
+			requestApproval: vi.fn(async (_request: ActionApprovalRequest) => ({
+				approved: true,
+				resolvedBy: "user" as const,
+			})),
+		};
+
+		const { result } = await collectSafetyResult(
+			createBaseSafetyContext({
+				tool: readTool,
+				path: "/workspace/project/.secrets/token.txt",
+				approvalService,
+				firewall: {
+					evaluate: vi.fn(async () => ({ action: "allow" as const })),
+				} as unknown as ActionFirewall,
+				cfg: {
+					guardedFiles: {
+						organization: {
+							rules: [
+								{
+									key: "org-secrets",
+									description: "Organization secret fixtures",
+									patterns: ["**/.secrets/**"],
+									defaultBehavior: "block",
+								},
+							],
+						},
+					},
+				},
+			}),
+		);
+
+		expect(result.verdict.outcome).toBe("blocked");
+		expect(approvalService.requestApproval).not.toHaveBeenCalled();
+		const toolResultEvent = result.verdict.events.find(
+			(event) => event.type === "tool_execution_end",
+		);
+		expect(toolResultEvent).toMatchObject({
+			type: "tool_execution_end",
+			result: {
+				content: [
+					{
+						type: "text",
+						text: expect.stringContaining("Organization secret fixtures"),
+					},
+				],
+			},
+		});
+	});
+
 	it("re-checks guarded files after PermissionRequest hooks rewrite inputs", async () => {
 		clearHookConfigCache();
 		clearRegisteredHooks();
@@ -574,6 +631,91 @@ describe("evaluateToolSafety guarded files", () => {
 		);
 		expect(result.verdict.effectiveToolCall.arguments).toEqual({
 			path: "~/.ssh/config",
+		});
+	});
+
+	it("blocks guardedFiles block rules after PermissionRequest hooks rewrite inputs", async () => {
+		clearHookConfigCache();
+		clearRegisteredHooks();
+
+		registerHook("PermissionRequest", {
+			type: "callback",
+			callback: async () => ({
+				reason: "Policy rewrite",
+				hookSpecificOutput: {
+					hookEventName: "PermissionRequest",
+					decision: {
+						behavior: "allow",
+						updatedInput: { path: "/workspace/project/.secrets/token.txt" },
+					},
+				},
+			}),
+		});
+
+		const readTool = createReadTool();
+		const approvalService = {
+			requiresUserInteraction: () => true,
+			requestApproval: vi.fn(async (_request: ActionApprovalRequest) => ({
+				approved: true,
+				resolvedBy: "user" as const,
+			})),
+		};
+
+		const { result } = await collectSafetyResult(
+			createBaseSafetyContext({
+				tool: readTool,
+				path: "/tmp/original.txt",
+				approvalService,
+				hookService: createToolHookService({
+					cwd: "/tmp/test",
+					resolveTool: (toolName) =>
+						toolName === "read" ? readTool : undefined,
+				}),
+				firewall: new ActionFirewall([
+					{
+						name: "require-original-approval",
+						description: "require approval for the original path",
+						action: "require_approval",
+						evaluate: async (ctx) => ({
+							allowed:
+								(ctx.args as { path?: string }).path !== "/tmp/original.txt",
+							reason: "Approval required",
+						}),
+					},
+					...defaultFirewallRules,
+				]),
+				cfg: {
+					guardedFiles: {
+						organization: {
+							rules: [
+								{
+									key: "org-secrets",
+									description: "Organization secret fixtures",
+									patterns: ["**/.secrets/**"],
+									defaultBehavior: "block",
+								},
+							],
+						},
+					},
+				},
+			}),
+		);
+
+		expect(result.verdict.outcome).toBe("blocked");
+		expect(approvalService.requestApproval).not.toHaveBeenCalled();
+		const toolResultEvent = result.verdict.events.find(
+			(event) => event.type === "tool_execution_end",
+		);
+		expect(toolResultEvent).toMatchObject({
+			type: "tool_execution_end",
+			result: {
+				content: [
+					{
+						type: "text",
+						text: expect.stringContaining("Organization secret fixtures"),
+					},
+				],
+			},
 		});
 	});
 });

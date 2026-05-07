@@ -202,6 +202,92 @@ describe("ActionFirewall", () => {
 		expect(verdict.reason).toContain("Guarded file access");
 	});
 
+	it("lets explicit guardedFiles key allowlists bypass default guards", async () => {
+		const verdict = await defaultActionFirewall.evaluate({
+			...makeReadPathContext("~/.ssh/config"),
+			metadata: {
+				guardedFiles: {
+					user: { allowlist: ["ssh-gpg-keys"] },
+				},
+			},
+		});
+		expect(verdict.action).toBe("allow");
+	});
+
+	it("keeps mandatory org guardedFiles keys approval-gated", async () => {
+		const verdict = await defaultActionFirewall.evaluate({
+			...makeReadPathContext("~/.ssh/config"),
+			metadata: {
+				guardedFiles: {
+					organization: { mandatoryKeys: ["ssh-gpg-keys"] },
+					user: { allowlist: ["ssh-gpg-keys"] },
+				},
+			},
+		});
+		expect(verdict).toMatchObject({
+			action: "require_approval",
+			ruleId: "default-guarded-file",
+		});
+	});
+
+	it("blocks custom guardedFiles rules with defaultBehavior block", async () => {
+		const verdict = await defaultActionFirewall.evaluate({
+			toolName: "read",
+			args: { path: "/workspace/project/.secrets/token.txt" },
+			metadata: {
+				guardedFiles: {
+					organization: {
+						rules: [
+							{
+								key: "org-secrets",
+								description: "Organization secret fixtures",
+								patterns: ["**/.secrets/**"],
+								defaultBehavior: "block",
+							},
+						],
+					},
+				},
+			},
+		});
+		expect(verdict).toMatchObject({
+			action: "block",
+			ruleId: "default-guarded-file",
+		});
+	});
+
+	it("blocks multi-path tool calls when any guarded path is block-scoped", async () => {
+		const verdict = await defaultActionFirewall.evaluate({
+			toolName: "move_file",
+			args: {
+				source: "/workspace/project/.cursor/settings.json",
+				destination: "/workspace/project/.secrets/token.txt",
+			},
+			metadata: {
+				guardedFiles: {
+					organization: {
+						rules: [
+							{
+								key: "org-secrets",
+								description: "Organization secret fixtures",
+								patterns: ["**/.secrets/**"],
+								defaultBehavior: "block",
+							},
+						],
+					},
+				},
+			},
+		});
+		expect(verdict).toMatchObject({
+			action: "block",
+			ruleId: "default-guarded-file",
+		});
+		if (verdict.action !== "block") {
+			throw new Error("Expected multi-path guarded move to be blocked");
+		}
+		expect(verdict.reason).toContain("is blocked by policy");
+		expect(verdict.reason).not.toContain("requires explicit approval");
+	});
+
 	it("requires approval for guarded file mutations beyond write and edit", async () => {
 		const deleteVerdict = await defaultActionFirewall.evaluate(
 			makeDeleteFileContext("~/.ssh/config"),

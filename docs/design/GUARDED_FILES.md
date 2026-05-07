@@ -70,7 +70,31 @@ governance consumers can join guarded-file decisions back to the run timeline.
 
 ## Overrides
 
-The shipped surface is the default enforced policy plus audit contract. User and
-organization override management is intentionally separate from this runtime
-guard so that future UI/API work can add explicit allowlist configuration
-without weakening the default protection.
+The runtime accepts normalized user and organization `guardedFiles` settings:
+
+```json
+{
+  "guardedFiles": {
+    "allowlist": ["amp-settings", "/Users/me/special/.ssh/internal-only"],
+    "rules": [
+      {
+        "key": "org-secrets",
+        "description": "Organization secret fixtures",
+        "patterns": ["**/.secrets/**"],
+        "defaultBehavior": "block"
+      }
+    ],
+    "mandatoryKeys": ["ssh-gpg-keys"]
+  }
+}
+```
+
+Allowlist entries can be guard keys or path/glob entries. Organization and user
+custom rules extend the default list; they do not replace it. Mandatory keys win
+over allowlists, so an organization can require a guard category to remain
+approval-gated even when a user has an allowlist entry for that key or path.
+
+The current UI/API management surface is intentionally minimal. Runtime callers
+can pass the policy directly, and the database settings types preserve the
+shape for user/org settings. A fuller administration UI can build on that
+contract without weakening the default protection.

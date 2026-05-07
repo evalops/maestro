@@ -3,6 +3,7 @@
  * Supports multi-tenancy, RBAC, audit logging, and PII protection
  */
 
+import type { GuardedFilesSettings } from "@evalops/contracts";
 import { relations } from "drizzle-orm";
 import {
 	bigint,
@@ -112,6 +113,8 @@ export type OrganizationSettings = {
 	internal?: {
 		telemetryDisabled?: boolean;
 	};
+	/** Organization-level guarded-files extensions and mandatory guard keys */
+	guardedFiles?: GuardedFilesSettings;
 };
 
 // ============================================================================
@@ -151,6 +154,8 @@ export type UserSettings = {
 	};
 	preferredModels?: string[];
 	defaultThinkingLevel?: string;
+	/** User-level guarded-files allowlist and custom guard extensions */
+	guardedFiles?: GuardedFilesSettings;
 	/** 2FA configuration */
 	twoFactor?: {
 		enabled: boolean;

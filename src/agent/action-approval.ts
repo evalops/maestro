@@ -1,3 +1,5 @@
+import type { GuardedFilesPolicySettings } from "@evalops/contracts";
+
 /**
  * Action Approval System
  *
@@ -101,6 +103,8 @@ export interface ActionApprovalContext {
 			/** Tool interacts with external/untrusted systems */
 			openWorldHint?: boolean;
 		};
+		/** User/org guarded-files override policy for this run */
+		guardedFiles?: GuardedFilesPolicySettings;
 	};
 	/** User context for permission-based policies */
 	user?: {
