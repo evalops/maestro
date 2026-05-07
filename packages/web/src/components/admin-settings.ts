@@ -953,6 +953,7 @@ export class AdminSettings extends LitElement {
 	@state() private piiPatterns = "";
 	@state() private auditRetention = 90;
 	@state() private webhookUrls = "";
+	@state() private telemetryDisabled = false;
 
 	private api: EnterpriseApiClient;
 	private readonly auditTab: AdminAuditTab;
@@ -1024,6 +1025,7 @@ export class AdminSettings extends LitElement {
 				piiPatterns: this.piiPatterns,
 				auditRetention: this.auditRetention,
 				webhookUrls: this.webhookUrls,
+				telemetryDisabled: this.telemetryDisabled,
 			}),
 			(state) => {
 				if (state.orgSettings !== undefined) {
@@ -1037,6 +1039,9 @@ export class AdminSettings extends LitElement {
 				}
 				if (state.webhookUrls !== undefined) {
 					this.webhookUrls = state.webhookUrls;
+				}
+				if (state.telemetryDisabled !== undefined) {
+					this.telemetryDisabled = state.telemetryDisabled;
 				}
 				this.requestUpdate();
 			},
@@ -1157,6 +1162,8 @@ export class AdminSettings extends LitElement {
 						this.piiPatterns = settingsRes.piiPatterns?.join("\n") ?? "";
 						this.auditRetention = settingsRes.auditRetentionDays ?? 90;
 						this.webhookUrls = settingsRes.alertWebhooks?.join("\n") ?? "";
+						this.telemetryDisabled =
+							settingsRes.internal?.telemetryDisabled ?? false;
 					}
 					if (logsRes?.logs) {
 						this.auditLogs = logsRes.logs;

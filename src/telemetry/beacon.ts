@@ -2,6 +2,7 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { resolveEnvPath } from "../utils/path-expansion.js";
 import { sanitizeWithStaticMask } from "../utils/secret-redactor.js";
+import { isInternalTelemetryDisabled } from "./disablement.js";
 
 export interface BeaconEvent {
 	feature: string;
@@ -56,10 +57,7 @@ export function beaconTimeoutMs(env: NodeJS.ProcessEnv): number {
 }
 
 export function isBeaconEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-	if (
-		env.MAESTRO_INTERNAL_TELEMETRY_DISABLED === "1" ||
-		env.MAESTRO_INTERNAL_TELEMETRY_DISABLED === "true"
-	) {
+	if (isInternalTelemetryDisabled(env)) {
 		return false;
 	}
 	const flag = telemetryFlag(env)?.toLowerCase();

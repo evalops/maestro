@@ -8,6 +8,7 @@ import {
 	initOpenTelemetry,
 	isOpenTelemetryEnabled,
 } from "./opentelemetry.js";
+import { isInternalTelemetryDisabled } from "./telemetry/disablement.js";
 import {
 	type MaestroCorrelation,
 	mirrorTelemetryToMaestroEventBus,
@@ -933,6 +934,10 @@ export function getBackgroundTaskHistory(
 }
 
 export async function recordTelemetry(event: TelemetryEvent): Promise<void> {
+	if (isInternalTelemetryDisabled()) {
+		return;
+	}
+
 	const normalizedEvent = normalizeTelemetryEventMetadata(event);
 	const openTelemetryEnabled = isOpenTelemetryEnabled();
 	if (openTelemetryEnabled) {

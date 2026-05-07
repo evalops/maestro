@@ -12,6 +12,7 @@ import {
 } from "../evalops/managed-context.js";
 import type { PromptMetadata } from "../prompts/types.js";
 import type { SkillArtifactMetadata } from "../skills/artifact-metadata.js";
+import { isInternalTelemetryDisabled } from "./disablement.js";
 import {
 	MaestroBusEventType,
 	getMaestroBusEventCatalogEntry,
@@ -676,6 +677,7 @@ export function resolveMaestroEventBusConfig(
 	env: Env = process.env,
 ): MaestroEventBusConfig {
 	const managedContext = resolveManagedEvalOpsContext(env);
+	const internalTelemetryDisabled = isInternalTelemetryDisabled(env);
 	const flag = readBoolean(
 		readEnv(env, ["MAESTRO_EVENT_BUS", "MAESTRO_AUDIT_BUS"]),
 	);
@@ -688,9 +690,11 @@ export function resolveMaestroEventBusConfig(
 	const baseEnabled =
 		flag === false ? false : (flag ?? Boolean(natsUrl || managedRouting));
 	const featureGate = resolveEventBusFeatureGate(env, managedContext);
-	const enabled = baseEnabled && featureGate.allowed;
+	const enabled =
+		!internalTelemetryDisabled && baseEnabled && featureGate.allowed;
 	let reason = "disabled";
-	if (flag === false) reason = "flag disabled";
+	if (internalTelemetryDisabled) reason = "internal telemetry disabled";
+	else if (flag === false) reason = "flag disabled";
 	else if (baseEnabled && !featureGate.allowed)
 		reason = featureGate.reason ?? "feature flag disabled";
 	else if (natsUrl) reason = "nats";

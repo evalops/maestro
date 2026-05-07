@@ -16,6 +16,7 @@ type SecurityState = {
 	piiPatterns: string;
 	auditRetention: number;
 	webhookUrls: string;
+	telemetryDisabled: boolean;
 };
 
 export class AdminSecurityTab {
@@ -36,6 +37,7 @@ export class AdminSecurityTab {
 			piiPatterns: settings?.piiPatterns?.join("\n") || "",
 			auditRetention: settings?.auditRetentionDays || 90,
 			webhookUrls: settings?.alertWebhooks?.join("\n") || "",
+			telemetryDisabled: settings?.internal?.telemetryDisabled ?? false,
 		});
 	}
 
@@ -111,6 +113,25 @@ INTERNAL-[A-Z]{3}-\\d{4}"
 					<button class="btn btn-primary" @click=${this.handleSaveWebhooks}>Save Webhooks</button>
 				</div>
 			</div>
+
+			<div class="section">
+				<div class="section-header">
+					<h3>Internal Telemetry</h3>
+				</div>
+				<div class="section-content">
+					<div class="form-group">
+						<label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+							<input
+								type="checkbox"
+								?checked=${state.telemetryDisabled}
+								@change=${this.handleTelemetryDisabledInput}
+							/>
+							<span>Disable internal telemetry for hosted runtimes</span>
+						</label>
+					</div>
+					<button class="btn btn-primary" @click=${this.handleSaveTelemetryControls}>Save Controls</button>
+				</div>
+			</div>
 		`;
 	}
 
@@ -130,6 +151,12 @@ INTERNAL-[A-Z]{3}-\\d{4}"
 	private readonly handleWebhookUrlsInput = (event: Event) => {
 		this.setState({
 			webhookUrls: (event.target as HTMLTextAreaElement).value,
+		});
+	};
+
+	private readonly handleTelemetryDisabledInput = (event: Event) => {
+		this.setState({
+			telemetryDisabled: (event.target as HTMLInputElement).checked,
 		});
 	};
 
@@ -181,6 +208,26 @@ INTERNAL-[A-Z]{3}-\\d{4}"
 		} catch (error) {
 			this.showToast(
 				error instanceof Error ? error.message : "Failed to save webhooks",
+				"error",
+			);
+		}
+	};
+
+	private readonly handleSaveTelemetryControls = async () => {
+		try {
+			const current = this.getState().orgSettings;
+			await this.getApi().updateOrgSettings({
+				internal: {
+					...current?.internal,
+					telemetryDisabled: this.getState().telemetryDisabled,
+				},
+			});
+			this.showToast("Telemetry controls saved", "success");
+		} catch (error) {
+			this.showToast(
+				error instanceof Error
+					? error.message
+					: "Failed to save telemetry controls",
 				"error",
 			);
 		}
