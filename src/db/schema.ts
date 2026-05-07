@@ -108,6 +108,10 @@ export type OrganizationSettings = {
 		maxContextWindow?: number;
 		requireApproval?: boolean;
 	};
+	/** Internal EvalOps controls projected into hosted runtime environments */
+	internal?: {
+		telemetryDisabled?: boolean;
+	};
 };
 
 // ============================================================================

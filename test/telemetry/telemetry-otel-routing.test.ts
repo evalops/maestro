@@ -107,6 +107,53 @@ describe("telemetry OTel metric routing", () => {
 		expect(recordToolInvocationMetric).not.toHaveBeenCalled();
 	});
 
+	it("skips OTel and event-bus routing when internal telemetry is disabled", async () => {
+		vi.stubEnv("MAESTRO_INTERNAL_TELEMETRY_DISABLED", "1");
+		vi.stubEnv("MAESTRO_TELEMETRY", "1");
+
+		const recordCompactionMetric = vi.fn();
+		const recordToolInvocationMetric = vi.fn();
+		const mirrorTelemetryToMaestroEventBus = vi.fn(() => Promise.resolve());
+
+		vi.doMock("../../src/opentelemetry.js", () => ({
+			getTelemetryTracer: () => ({
+				startActiveSpan: vi.fn(),
+			}),
+			initOpenTelemetry: vi.fn(),
+			isOpenTelemetryEnabled: () => true,
+		}));
+		vi.doMock("../../src/telemetry/metrics.js", () => ({
+			recordCompactionMetric,
+			recordToolInvocationMetric,
+		}));
+		vi.doMock("../../src/telemetry/maestro-event-bus.js", () => ({
+			mirrorTelemetryToMaestroEventBus,
+			resolveMaestroEventBusConfig: () => ({
+				defaultCorrelation: {},
+				defaultPrincipal: undefined,
+				defaultSurface: "cli",
+			}),
+		}));
+		vi.doMock("../../src/telemetry/meter-service-client.js", () => ({
+			hasRemoteMeterDestination: () => false,
+			mirrorCanonicalTurnEventToMeter: vi.fn(() => Promise.resolve()),
+		}));
+
+		const { recordTelemetry } = await import("../../src/telemetry.js");
+
+		await recordTelemetry({
+			type: "tool-execution",
+			timestamp: "2026-05-07T07:00:02.000Z",
+			toolName: "bash",
+			success: true,
+			durationMs: 125,
+		});
+
+		expect(recordToolInvocationMetric).not.toHaveBeenCalled();
+		expect(recordCompactionMetric).not.toHaveBeenCalled();
+		expect(mirrorTelemetryToMaestroEventBus).not.toHaveBeenCalled();
+	});
+
 	it("populates skill metrics from tool skill metadata", async () => {
 		const recordAgentTurnMetric = vi.fn();
 		const recordCompactionMetric = vi.fn();

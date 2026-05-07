@@ -72,6 +72,19 @@ describe("maestro event bus", () => {
 		});
 	});
 
+	it("honors the internal telemetry kill switch before audit-bus routing", () => {
+		const config = resolveMaestroEventBusConfig({
+			MAESTRO_INTERNAL_TELEMETRY_DISABLED: "1",
+			MAESTRO_TELEMETRY: "1",
+			MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222",
+			MAESTRO_EVALOPS_ORG_ID: "org_123",
+		});
+
+		expect(config.enabled).toBe(false);
+		expect(config.reason).toBe("internal telemetry disabled");
+		expect(config.natsUrl).toBe("nats://bus.example:4222");
+	});
+
 	it("requires the managed rollout flag when a feature flag snapshot is mounted", () => {
 		const snapshot = writeFlagSnapshot([
 			{ key: "platform.kill_switches.maestro.platform_events", enabled: false },

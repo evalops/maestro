@@ -28,6 +28,9 @@ export interface OrganizationSettings {
 	piiPatterns?: string[];
 	auditRetentionDays?: number;
 	alertWebhooks?: string[];
+	internal?: {
+		telemetryDisabled?: boolean;
+	};
 }
 
 export interface Role {

@@ -5,7 +5,7 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { and, eq } from "drizzle-orm";
-import { AuditLogger } from "../audit/logger.js";
+import { AUDIT_ACTIONS, AuditLogger } from "../audit/logger.js";
 import { TokenTracker } from "../billing/token-tracker.js";
 import { getDb } from "../db/client.js";
 import {
@@ -26,6 +26,7 @@ import {
 } from "../rbac/permissions.js";
 import type { Route } from "../server/router.js";
 import { readJsonBody, sendJson } from "../server/server-utils.js";
+import { resolveInternalTelemetryDisabledSetting } from "../telemetry/disablement.js";
 import { createLogger } from "../utils/logger.js";
 import {
 	handleLogin,
@@ -262,14 +263,50 @@ async function handleUpdateOrgSettings(
 		return;
 	}
 
-	// Encrypt sensitive fields (webhookSigningSecret) before storing
-	const encryptedSettings = encryptOrgSettings(body);
-
 	const db = getDb();
+	const org = await db.query.organizations.findFirst({
+		where: eq(organizations.id, auth.orgId),
+	});
+	if (!org) {
+		sendJson(res, 404, { error: "Organization not found" }, cors, req);
+		return;
+	}
+
+	const previousSettings = decryptOrgSettings(org.settings) || {};
+	const mergedSettings: OrganizationSettings = {
+		...previousSettings,
+		...body,
+		internal:
+			body.internal || previousSettings.internal
+				? { ...previousSettings.internal, ...body.internal }
+				: undefined,
+	};
+	const previousTelemetryDisabled =
+		resolveInternalTelemetryDisabledSetting(previousSettings);
+	const nextTelemetryDisabled =
+		resolveInternalTelemetryDisabledSetting(mergedSettings);
+
+	// Encrypt sensitive fields (webhookSigningSecret) before storing
+	const encryptedSettings = encryptOrgSettings(mergedSettings);
+
 	await db
 		.update(organizations)
 		.set({ settings: encryptedSettings })
 		.where(eq(organizations.id, auth.orgId));
+
+	if (previousTelemetryDisabled !== nextTelemetryDisabled) {
+		await AuditLogger.log({
+			orgId: auth.orgId,
+			userId: auth.userId,
+			action: AUDIT_ACTIONS.CONFIG_WRITE,
+			resourceType: "organization_settings",
+			status: "success",
+			metadata: {
+				originalValue: String(previousTelemetryDisabled),
+				newValue: String(nextTelemetryDisabled),
+			},
+		});
+	}
 
 	sendJson(res, 200, { success: true }, cors, req);
 }
