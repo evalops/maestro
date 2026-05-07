@@ -4,6 +4,8 @@ import {
 	PlatformAgentRunStepKindValue,
 	PlatformAgentRunStepStateValue,
 	PlatformAgentRunWaitTypeValue,
+	completeAgentRuntimeRun,
+	failAgentRuntimeRun,
 	recordAgentRuntimeRunStep,
 	resumeAgentRuntimeRun,
 	waitAgentRuntimeRun,
@@ -30,6 +32,8 @@ export interface HostedAgentRuntimeProgressRecorderOperations {
 	recordStep?: typeof recordAgentRuntimeRunStep;
 	waitRun?: typeof waitAgentRuntimeRun;
 	resumeRun?: typeof resumeAgentRuntimeRun;
+	completeRun?: typeof completeAgentRuntimeRun;
+	failRun?: typeof failAgentRuntimeRun;
 }
 
 export interface HostedAgentRuntimeProgressRecorderOptions {
@@ -37,6 +41,20 @@ export interface HostedAgentRuntimeProgressRecorderOptions {
 	hostedRunner?: HostedAgentRuntimeProgressContext;
 	workspaceRoot?: string;
 	operations?: HostedAgentRuntimeProgressRecorderOperations;
+}
+
+export interface HostedAgentRuntimeCompleteInput {
+	reason?: string;
+	requestedBy?: string;
+	flushStatus?: string;
+	manifestPath?: string;
+}
+
+export interface HostedAgentRuntimeFailInput {
+	errorMessage: string;
+	reason?: string;
+	requestedBy?: string;
+	retryable?: boolean;
 }
 
 function safeIdPart(value: string): string {
@@ -88,6 +106,7 @@ export class HostedAgentRuntimeProgressRecorder {
 	private readonly resumedWaitIds = new Set<string>();
 	private pending: Promise<void> = Promise.resolve();
 	private turnIndex = 0;
+	private terminalRecorded = false;
 
 	constructor(options: HostedAgentRuntimeProgressRecorderOptions) {
 		this.sessionId = options.sessionId;
@@ -97,6 +116,8 @@ export class HostedAgentRuntimeProgressRecorder {
 			recordStep: options.operations?.recordStep ?? recordAgentRuntimeRunStep,
 			waitRun: options.operations?.waitRun ?? waitAgentRuntimeRun,
 			resumeRun: options.operations?.resumeRun ?? resumeAgentRuntimeRun,
+			completeRun: options.operations?.completeRun ?? completeAgentRuntimeRun,
+			failRun: options.operations?.failRun ?? failAgentRuntimeRun,
 		};
 	}
 
@@ -262,6 +283,68 @@ export class HostedAgentRuntimeProgressRecorder {
 
 	async flush(): Promise<void> {
 		await this.pending;
+	}
+
+	async completeRun(
+		input: HostedAgentRuntimeCompleteInput = {},
+	): Promise<void> {
+		if (this.terminalRecorded) {
+			await this.flush();
+			return;
+		}
+		this.terminalRecorded = true;
+		this.enqueue(async () => {
+			const handles = this.handles();
+			if (!handles) {
+				return;
+			}
+			await this.operations.completeRun({
+				runId: handles.runId,
+				leaseToken: handles.leaseToken,
+				result: this.basePayload({
+					event_type: "hosted_runner_drained",
+					status: "drained",
+					flush_status: input.flushStatus,
+					reason: input.reason,
+					requested_by: input.requestedBy,
+					manifest_path: input.manifestPath,
+				}),
+			});
+		});
+		await this.flush();
+	}
+
+	async failRun(input: HostedAgentRuntimeFailInput): Promise<void> {
+		if (this.terminalRecorded) {
+			await this.flush();
+			return;
+		}
+		this.terminalRecorded = true;
+		this.recordStep({
+			id: this.stepId("terminal", "failed"),
+			name: "Hosted runner drain failed",
+			stepKind: PlatformAgentRunStepKindValue.Error,
+			state: PlatformAgentRunStepStateValue.Failed,
+			errorMessage: input.errorMessage,
+			output: this.basePayload({
+				event_type: "hosted_runner_drain_failed",
+				reason: input.reason,
+				requested_by: input.requestedBy,
+			}),
+		});
+		this.enqueue(async () => {
+			const handles = this.handles();
+			if (!handles) {
+				return;
+			}
+			await this.operations.failRun({
+				runId: handles.runId,
+				leaseToken: handles.leaseToken,
+				errorMessage: input.errorMessage,
+				retryable: input.retryable ?? false,
+			});
+		});
+		await this.flush();
 	}
 
 	private recordApprovalWait(input: {

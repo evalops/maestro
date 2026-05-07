@@ -63,6 +63,8 @@ import { WebActionApprovalService } from "./approval-service.js";
 import { getAgentCircuitBreaker } from "./circuit-breaker.js";
 import { clientToolService } from "./client-tools-service.js";
 import {
+	type HostedAgentRuntimeCompleteInput,
+	type HostedAgentRuntimeFailInput,
 	type HostedAgentRuntimeProgressRecorder,
 	createHostedAgentRuntimeProgressRecorder,
 } from "./hosted-agent-runtime-progress.js";
@@ -900,6 +902,18 @@ export class HeadlessSessionRuntime {
 			}
 		});
 		return disposePromise;
+	}
+
+	async completeHostedAgentRuntimeRun(
+		input: HostedAgentRuntimeCompleteInput = {},
+	): Promise<void> {
+		await this.agentRuntimeProgress?.completeRun(input);
+	}
+
+	async failHostedAgentRuntimeRun(
+		input: HostedAgentRuntimeFailInput,
+	): Promise<void> {
+		await this.agentRuntimeProgress?.failRun(input);
 	}
 
 	disposeBestEffort(reason: string): void {
