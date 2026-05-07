@@ -13,8 +13,14 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { isOpenTelemetryEnabled } from "../opentelemetry.js";
 import type { PromptMetadata } from "../prompts/types.js";
 import type { SkillArtifactMetadata } from "../skills/artifact-metadata.js";
+import {
+	recordAgentTurnMetric,
+	recordLlmRequestMetric,
+	recordLlmTokenUsageMetric,
+} from "./metrics.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -179,6 +185,7 @@ export class TurnCollector {
 	private readonly startTime: number;
 	private llmStartTime?: number;
 	private accumulatedLlmDurationMs = 0;
+	private llmRequestCount = 0;
 	private queueStartTime?: number;
 
 	private model: ModelInfo = {
@@ -310,6 +317,7 @@ export class TurnCollector {
 	}
 
 	recordLlmStart(): this {
+		this.llmRequestCount += 1;
 		this.llmStartTime = performance.now();
 		return this;
 	}
@@ -371,6 +379,7 @@ export class TurnCollector {
 		costUsd: number,
 		errorDetails?: { category?: string; message?: string },
 		abortReason?: CanonicalTurnEvent["abortReason"],
+		metricTokens: TokenUsage = tokens,
 	): CanonicalTurnEvent {
 		const endTime = performance.now();
 		const totalDurationMs = endTime - this.startTime;
@@ -453,6 +462,37 @@ export class TurnCollector {
 			sampleReason,
 		};
 
+		if (isOpenTelemetryEnabled()) {
+			try {
+				recordAgentTurnMetric({
+					durationMs: event.totalDurationMs,
+					status: event.status,
+					modelId: event.model.id,
+					modelProvider: event.model.provider,
+				});
+				const llmRequestCount = Math.max(
+					this.llmRequestCount,
+					hasTokenUsage(metricTokens) ? 1 : 0,
+				);
+				for (
+					let requestIndex = 0;
+					requestIndex < llmRequestCount;
+					requestIndex++
+				) {
+					recordLlmRequestMetric({
+						provider: event.model.provider,
+						modelId: event.model.id,
+					});
+				}
+				recordLlmTokenUsageMetric(metricTokens, {
+					"llm.model.provider": event.model.provider,
+					"llm.model.id": event.model.id,
+				});
+			} catch {
+				// Metrics must never affect canonical event creation or sampling.
+			}
+		}
+
 		// Only persist if sampled
 		if (sampled) {
 			const recorder = this.recorder ?? defaultRecorder;
@@ -492,6 +532,15 @@ export class TurnCollector {
 
 		return { sampled: false, sampleReason: "random" };
 	}
+}
+
+function hasTokenUsage(tokens: TokenUsage): boolean {
+	return (
+		tokens.input > 0 ||
+		tokens.output > 0 ||
+		tokens.cacheRead > 0 ||
+		tokens.cacheWrite > 0
+	);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
