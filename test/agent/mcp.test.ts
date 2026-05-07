@@ -205,6 +205,91 @@ describe("MCP config loader", () => {
 		expect(config.servers[0]!.authPreset).toBe("linear-auth");
 	});
 
+	it("ignores invalid trustedWorkspaces entries without rejecting the config", () => {
+		const configDir = join(testDir, ".maestro");
+		mkdirSync(configDir, { recursive: true });
+		writeFileSync(
+			join(configDir, "mcp.json"),
+			JSON.stringify({
+				mcpServers: {
+					docs: {
+						url: "https://example.com/mcp",
+					},
+				},
+				trustedWorkspaces: {
+					docs: [
+						{
+							workspaceUri: "git:https://github.com/evalops/platform.git",
+							mode: "trusted",
+						},
+						{
+							workspaceUri: "git:https://github.com/evalops/deploy.git",
+							mode: "definitely-not-valid",
+						},
+					],
+					broken: {
+						workspaceUri: "git:https://github.com/evalops/maestro.git",
+						mode: "trusted",
+					},
+				},
+			}),
+		);
+
+		const config = loadMcpConfig(testDir);
+		expect(config.servers).toHaveLength(1);
+		expect(config.servers[0]!.name).toBe("docs");
+		expect(config.trustedWorkspaces).toEqual({
+			docs: [
+				{
+					workspaceUri: "git:https://github.com/evalops/platform.git",
+					mode: "trusted",
+				},
+			],
+		});
+	});
+
+	it("ignores malformed trustedWorkspaces sections without rejecting the config", () => {
+		const configDir = join(testDir, ".maestro");
+		mkdirSync(configDir, { recursive: true });
+		writeFileSync(
+			join(configDir, "mcp.json"),
+			JSON.stringify({
+				mcpServers: {
+					docs: {
+						url: "https://example.com/mcp",
+					},
+				},
+				trustedWorkspaces: [],
+			}),
+		);
+
+		const config = loadMcpConfig(testDir);
+		expect(config.servers).toHaveLength(1);
+		expect(config.servers[0]!.name).toBe("docs");
+		expect(config.trustedWorkspaces).toBeUndefined();
+	});
+
+	it("ignores invalid workspaceTrustDefault without rejecting the config", () => {
+		const configDir = join(testDir, ".maestro");
+		mkdirSync(configDir, { recursive: true });
+		writeFileSync(
+			join(configDir, "mcp.json"),
+			JSON.stringify({
+				mcpServers: {
+					docs: {
+						url: "https://example.com/mcp",
+					},
+				},
+				workspaceTrustDefault: "definitely-not-valid",
+			}),
+		);
+
+		const config = loadMcpConfig(testDir);
+		expect(config.servers).toHaveLength(1);
+		expect(config.servers[0]!.name).toBe("docs");
+		expect(config.workspaceTrustDefault).toBeUndefined();
+	});
+
 	it("detects SSE transport when URL ends with /sse", () => {
 		const configDir = join(testDir, ".maestro");
 		mkdirSync(configDir, { recursive: true });

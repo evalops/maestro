@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import {
 	chmodSync,
 	existsSync,
@@ -10,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runWithMcpClientToolService } from "../../src/mcp/elicitation.js";
+import { resolveMcpWorkspaceUri } from "../../src/mcp/workspace-trust.js";
 
 const mockClientConnect = vi.fn();
 const mockClientClose = vi.fn();
@@ -76,6 +78,10 @@ describe("MCP manager remote transports", () => {
 		manager = new McpClientManager();
 		tempDir = join(tmpdir(), `maestro-mcp-transport-${Date.now()}`);
 		mkdirSync(tempDir, { recursive: true });
+		vi.stubEnv(
+			"MAESTRO_MCP_WORKSPACE_TRUST_FILE",
+			join(tempDir, "workspace-trust.json"),
+		);
 		mockClientConnect.mockClear();
 		mockClientClose.mockClear();
 		mockCallTool.mockClear();
@@ -172,6 +178,596 @@ describe("MCP manager remote transports", () => {
 			expect(event.parameters.metadata).not.toHaveProperty("query");
 			expect(event.parameters.metadata).not.toHaveProperty("content");
 		}
+	});
+
+	it("routes untrusted workspace MCP tool calls through MCP elicitation", async () => {
+		const requestExecution = vi.fn().mockResolvedValue({
+			content: [
+				{
+					type: "text",
+					text: JSON.stringify({
+						action: "accept",
+						content: { decision: "trust_once" },
+					}),
+				},
+			],
+			isError: false,
+		});
+
+		await manager.configure({
+			workspaceTrustDefault: "ask",
+			projectRoot: tempDir,
+			servers: [
+				{
+					name: "remote-http",
+					transport: "http",
+					url: "https://example.com/mcp",
+				},
+			],
+			authPresets: [],
+		});
+
+		const result = await runWithMcpClientToolService({ requestExecution }, () =>
+			manager.callTool("remote-http", "search", { query: "docs" }),
+		);
+
+		expect(requestExecution).toHaveBeenCalledTimes(1);
+		expect(requestExecution.mock.calls[0]?.[1]).toBe("mcp_elicitation");
+		expect(requestExecution.mock.calls[0]?.[2]).toMatchObject({
+			serverName: "remote-http",
+			mode: "form",
+			requestedSchema: {
+				properties: {
+					decision: {
+						enum: ["trust_once", "trust_always", "block", "cancel"],
+					},
+				},
+			},
+		});
+		expect(mockCallTool).toHaveBeenCalledWith({
+			name: "search",
+			arguments: { query: "docs" },
+		});
+		expect(result.content).toEqual([{ type: "text", text: "ok" }]);
+	});
+
+	it("does not invoke MCP tools when workspace trust is denied", async () => {
+		const requestExecution = vi.fn().mockResolvedValue({
+			content: [
+				{
+					type: "text",
+					text: JSON.stringify({ action: "cancel" }),
+				},
+			],
+			isError: false,
+		});
+
+		await manager.configure({
+			workspaceTrustDefault: "ask",
+			projectRoot: tempDir,
+			servers: [
+				{
+					name: "remote-http",
+					transport: "http",
+					url: "https://example.com/mcp",
+				},
+			],
+			authPresets: [],
+		});
+
+		await expect(
+			runWithMcpClientToolService({ requestExecution }, () =>
+				manager.callTool("remote-http", "search", { query: "docs" }),
+			),
+		).rejects.toThrow("was not trusted");
+
+		expect(requestExecution).toHaveBeenCalledTimes(1);
+		expect(mockCallTool).not.toHaveBeenCalled();
+	});
+
+	it("honors legacy blocked trust entries without server fingerprints", async () => {
+		writeFileSync(
+			join(tempDir, "workspace-trust.json"),
+			JSON.stringify({
+				version: 1,
+				servers: {
+					"remote-http": [
+						{
+							workspaceUri: `file:${tempDir}`,
+							mode: "blocked",
+							grantedBy: "user",
+							grantedAt: "2026-05-07T00:00:00.000Z",
+						},
+					],
+				},
+			}),
+		);
+
+		await manager.configure({
+			projectRoot: tempDir,
+			servers: [
+				{
+					name: "remote-http",
+					transport: "http",
+					url: "https://example.com/mcp",
+				},
+			],
+			authPresets: [],
+		});
+
+		await expect(
+			manager.callTool("remote-http", "search", { query: "docs" }),
+		).rejects.toThrow("is not trusted");
+		expect(mockCallTool).not.toHaveBeenCalled();
+	});
+
+	it("blocks ask-mode MCP calls when no MCP elicitation client is connected", async () => {
+		await manager.configure({
+			workspaceTrustDefault: "ask",
+			projectRoot: tempDir,
+			servers: [
+				{
+					name: "remote-http",
+					transport: "http",
+					url: "https://example.com/mcp",
+				},
+			],
+			authPresets: [],
+		});
+
+		await expect(
+			manager.callTool("remote-http", "search", { query: "docs" }),
+		).rejects.toThrow("no MCP elicitation client is connected");
+		expect(mockCallTool).not.toHaveBeenCalled();
+	});
+
+	it("enforces configured workspace trust over stale stored trust", async () => {
+		const requestExecution = vi.fn().mockResolvedValue({
+			content: [
+				{
+					type: "text",
+					text: JSON.stringify({
+						action: "accept",
+						content: { decision: "trust_always" },
+					}),
+				},
+			],
+			isError: false,
+		});
+		const server = {
+			name: "remote-http",
+			transport: "http" as const,
+			url: "https://example.com/mcp",
+		};
+
+		await manager.configure({
+			workspaceTrustDefault: "ask",
+			projectRoot: tempDir,
+			servers: [server],
+			authPresets: [],
+		});
+		await runWithMcpClientToolService({ requestExecution }, () =>
+			manager.callTool("remote-http", "search", { query: "docs" }),
+		);
+		expect(mockCallTool).toHaveBeenCalledTimes(1);
+
+		mockCallTool.mockClear();
+		await manager.configure({
+			workspaceTrustDefault: "ask",
+			projectRoot: tempDir,
+			trustedWorkspaces: {
+				"remote-http": [
+					{
+						workspaceUri: `file:${tempDir}`,
+						mode: "blocked",
+						grantedBy: "admin",
+						grantedAt: "2026-05-07T00:00:00.000Z",
+						reason: "Revoked by policy",
+					},
+				],
+			},
+			servers: [server],
+			authPresets: [],
+		});
+
+		await expect(
+			runWithMcpClientToolService({ requestExecution }, () =>
+				manager.callTool("remote-http", "search", { query: "docs" }),
+			),
+		).rejects.toThrow("is not trusted");
+		expect(mockCallTool).not.toHaveBeenCalled();
+	});
+
+	it("reprompts when a stored trust decision belongs to a different server definition", async () => {
+		const requestExecution = vi.fn().mockResolvedValue({
+			content: [
+				{
+					type: "text",
+					text: JSON.stringify({
+						action: "accept",
+						content: { decision: "trust_always" },
+					}),
+				},
+			],
+			isError: false,
+		});
+
+		await manager.configure({
+			workspaceTrustDefault: "ask",
+			projectRoot: tempDir,
+			servers: [
+				{
+					name: "remote-http",
+					transport: "http",
+					url: "https://example.com/mcp",
+				},
+			],
+			authPresets: [],
+		});
+		await runWithMcpClientToolService({ requestExecution }, () =>
+			manager.callTool("remote-http", "search", { query: "docs" }),
+		);
+
+		mockCallTool.mockClear();
+		requestExecution.mockClear().mockResolvedValue({
+			content: [
+				{
+					type: "text",
+					text: JSON.stringify({
+						action: "accept",
+						content: { decision: "trust_always" },
+					}),
+				},
+			],
+			isError: false,
+		});
+
+		await manager.configure({
+			workspaceTrustDefault: "ask",
+			projectRoot: tempDir,
+			servers: [
+				{
+					name: "remote-http",
+					transport: "http",
+					url: "https://different.example.com/mcp",
+				},
+			],
+			authPresets: [],
+		});
+		await runWithMcpClientToolService({ requestExecution }, () =>
+			manager.callTool("remote-http", "search", { query: "docs" }),
+		);
+
+		expect(requestExecution).toHaveBeenCalledTimes(1);
+		expect(mockCallTool).toHaveBeenCalledWith({
+			name: "search",
+			arguments: { query: "docs" },
+		});
+
+		const trustStore = JSON.parse(
+			readFileSync(join(tempDir, "workspace-trust.json"), "utf8"),
+		) as {
+			servers: Record<string, Array<{ serverFingerprint?: string }>>;
+		};
+		const entries = trustStore.servers["remote-http"] ?? [];
+		expect(entries).toHaveLength(2);
+		expect(new Set(entries.map((entry) => entry.serverFingerprint)).size).toBe(
+			2,
+		);
+
+		mockCallTool.mockClear();
+		requestExecution.mockClear();
+		await manager.configure({
+			workspaceTrustDefault: "ask",
+			projectRoot: tempDir,
+			servers: [
+				{
+					name: "remote-http",
+					transport: "http",
+					url: "https://example.com/mcp",
+				},
+			],
+			authPresets: [],
+		});
+		await runWithMcpClientToolService({ requestExecution }, () =>
+			manager.callTool("remote-http", "search", { query: "docs" }),
+		);
+
+		expect(requestExecution).not.toHaveBeenCalled();
+		expect(mockCallTool).toHaveBeenCalledWith({
+			name: "search",
+			arguments: { query: "docs" },
+		});
+	});
+
+	it("reprompts when a stored trust decision belongs to changed auth preset contents", async () => {
+		const requestExecution = vi.fn().mockResolvedValue({
+			content: [
+				{
+					type: "text",
+					text: JSON.stringify({
+						action: "accept",
+						content: { decision: "trust_always" },
+					}),
+				},
+			],
+			isError: false,
+		});
+		const server = {
+			name: "remote-http",
+			transport: "http" as const,
+			url: "https://example.com/mcp",
+			authPreset: "prod",
+		};
+
+		await manager.configure({
+			workspaceTrustDefault: "ask",
+			projectRoot: tempDir,
+			servers: [server],
+			authPresets: [
+				{
+					name: "prod",
+					headers: { Authorization: "Bearer first" },
+				},
+			],
+		});
+		await runWithMcpClientToolService({ requestExecution }, () =>
+			manager.callTool("remote-http", "search", { query: "docs" }),
+		);
+
+		mockCallTool.mockClear();
+		requestExecution.mockClear().mockResolvedValue({
+			content: [
+				{
+					type: "text",
+					text: JSON.stringify({
+						action: "accept",
+						content: { decision: "trust_once" },
+					}),
+				},
+			],
+			isError: false,
+		});
+
+		await manager.configure({
+			workspaceTrustDefault: "ask",
+			projectRoot: tempDir,
+			servers: [server],
+			authPresets: [
+				{
+					name: "prod",
+					headers: { Authorization: "Bearer second" },
+				},
+			],
+		});
+		await runWithMcpClientToolService({ requestExecution }, () =>
+			manager.callTool("remote-http", "search", { query: "docs" }),
+		);
+
+		expect(requestExecution).toHaveBeenCalledTimes(1);
+		expect(mockCallTool).toHaveBeenCalledWith({
+			name: "search",
+			arguments: { query: "docs" },
+		});
+	});
+
+	it("keeps stored trust when only server metadata changes", async () => {
+		const requestExecution = vi.fn().mockResolvedValue({
+			content: [
+				{
+					type: "text",
+					text: JSON.stringify({
+						action: "accept",
+						content: { decision: "trust_always" },
+					}),
+				},
+			],
+			isError: false,
+		});
+		const server = {
+			name: "remote-http",
+			transport: "http" as const,
+			url: "https://example.com/mcp",
+		};
+
+		await manager.configure({
+			workspaceTrustDefault: "ask",
+			projectRoot: tempDir,
+			servers: [{ ...server, scope: "user", enabled: true }],
+			authPresets: [],
+		});
+		await runWithMcpClientToolService({ requestExecution }, () =>
+			manager.callTool("remote-http", "search", { query: "docs" }),
+		);
+
+		mockCallTool.mockClear();
+		requestExecution.mockClear();
+		await manager.configure({
+			workspaceTrustDefault: "ask",
+			projectRoot: tempDir,
+			servers: [{ ...server, scope: "enterprise", disabled: false }],
+			authPresets: [],
+		});
+		await runWithMcpClientToolService({ requestExecution }, () =>
+			manager.callTool("remote-http", "search", { query: "docs" }),
+		);
+
+		expect(requestExecution).not.toHaveBeenCalled();
+		expect(mockCallTool).toHaveBeenCalledWith({
+			name: "search",
+			arguments: { query: "docs" },
+		});
+	});
+
+	it("keeps trustedWorkspaces entries scoped to their server", async () => {
+		const requestExecution = vi.fn();
+
+		await manager.configure({
+			projectRoot: tempDir,
+			trustedWorkspaces: {
+				linear: [
+					{
+						workspaceUri: `file:${tempDir}`,
+						mode: "trusted",
+						grantedBy: "admin",
+						grantedAt: "2026-05-07T00:00:00.000Z",
+					},
+				],
+			},
+			servers: [
+				{
+					name: "remote-http",
+					transport: "http",
+					url: "https://example.com/mcp",
+				},
+			],
+			authPresets: [],
+		});
+
+		await runWithMcpClientToolService({ requestExecution }, () =>
+			manager.callTool("remote-http", "search", { query: "docs" }),
+		);
+
+		expect(requestExecution).not.toHaveBeenCalled();
+		expect(mockCallTool).toHaveBeenCalledWith({
+			name: "search",
+			arguments: { query: "docs" },
+		});
+	});
+
+	it("expires malformed workspace trust timestamps", async () => {
+		const requestExecution = vi.fn().mockResolvedValue({
+			content: [
+				{
+					type: "text",
+					text: JSON.stringify({
+						action: "accept",
+						content: { decision: "trust_once" },
+					}),
+				},
+			],
+			isError: false,
+		});
+
+		await manager.configure({
+			workspaceTrustDefault: "ask",
+			projectRoot: tempDir,
+			trustedWorkspaces: {
+				"remote-http": [
+					{
+						workspaceUri: `file:${tempDir}`,
+						mode: "trusted",
+						expiresAt: "not-a-date",
+					},
+				],
+			},
+			servers: [
+				{
+					name: "remote-http",
+					transport: "http",
+					url: "https://example.com/mcp",
+				},
+			],
+			authPresets: [],
+		});
+
+		await runWithMcpClientToolService({ requestExecution }, () =>
+			manager.callTool("remote-http", "search", { query: "docs" }),
+		);
+
+		expect(requestExecution).toHaveBeenCalledTimes(1);
+		expect(mockCallTool).toHaveBeenCalledWith({
+			name: "search",
+			arguments: { query: "docs" },
+		});
+	});
+
+	it("canonicalizes configured git workspace URIs before matching policy", async () => {
+		const repoDir = join(tempDir, "canonical-policy");
+		mkdirSync(repoDir, { recursive: true });
+		execFileSync("git", ["-C", repoDir, "init"], { stdio: "ignore" });
+		execFileSync(
+			"git",
+			[
+				"-C",
+				repoDir,
+				"remote",
+				"add",
+				"origin",
+				"git@github.com:acme/private-repo.git",
+			],
+			{ stdio: "ignore" },
+		);
+
+		await manager.configure({
+			workspaceTrustDefault: "trusted",
+			projectRoot: repoDir,
+			trustedWorkspaces: {
+				"remote-http": [
+					{
+						workspaceUri: "git:git@github.com:acme/private-repo.git",
+						mode: "blocked",
+					},
+				],
+			},
+			servers: [
+				{
+					name: "remote-http",
+					transport: "http",
+					url: "https://example.com/mcp",
+				},
+			],
+			authPresets: [],
+		});
+
+		await expect(
+			manager.callTool("remote-http", "search", { query: "docs" }),
+		).rejects.toThrow("is not trusted");
+		expect(mockCallTool).not.toHaveBeenCalled();
+	});
+
+	it("strips credentials from git remote workspace URIs", async () => {
+		const repoDir = join(tempDir, "credentialed-remote");
+		mkdirSync(repoDir, { recursive: true });
+		execFileSync("git", ["-C", repoDir, "init"], { stdio: "ignore" });
+		execFileSync(
+			"git",
+			[
+				"-C",
+				repoDir,
+				"remote",
+				"add",
+				"origin",
+				"https://token:secret@github.com/acme/private-repo.git?access_token=abc#frag",
+			],
+			{ stdio: "ignore" },
+		);
+
+		await expect(resolveMcpWorkspaceUri(repoDir)).resolves.toBe(
+			"git:https://github.com/acme/private-repo.git",
+		);
+	});
+
+	it("strips userinfo and secrets from scp-style git remote workspace URIs", async () => {
+		const repoDir = join(tempDir, "scp-credentialed-remote");
+		mkdirSync(repoDir, { recursive: true });
+		execFileSync("git", ["-C", repoDir, "init"], { stdio: "ignore" });
+		execFileSync(
+			"git",
+			[
+				"-C",
+				repoDir,
+				"remote",
+				"add",
+				"origin",
+				"token@github.com:acme/private-repo.git?access_token=abc#frag",
+			],
+			{ stdio: "ignore" },
+		);
+
+		await expect(resolveMcpWorkspaceUri(repoDir)).resolves.toBe(
+			"git:github.com:acme/private-repo.git",
+		);
 	});
 
 	it("uses SSE transport for sse servers", async () => {

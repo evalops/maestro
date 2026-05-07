@@ -106,6 +106,13 @@ export const PATHS = {
 			join(getComposerHome(), "mcp-project-approvals.json")
 		);
 	},
+	/** Per-workspace MCP invocation trust decisions */
+	get MCP_WORKSPACE_TRUST_FILE(): string {
+		return (
+			resolveEnvPath(process.env.MAESTRO_MCP_WORKSPACE_TRUST_FILE) ??
+			join(getComposerHome(), "mcp-workspace-trust.json")
+		);
+	},
 	/** Project onboarding state */
 	get PROJECT_ONBOARDING_FILE(): string {
 		return (

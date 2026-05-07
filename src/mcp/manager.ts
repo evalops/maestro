@@ -82,6 +82,7 @@ import type {
 	McpServerConfig,
 	McpServerStatus,
 } from "./types.js";
+import { ensureMcpWorkspaceTrusted } from "./workspace-trust.js";
 
 const logger = createLogger("mcp:manager");
 const execFileAsync = promisify(execFile);
@@ -439,6 +440,8 @@ export class McpClientManager extends EventEmitter {
 			servers: config.servers ?? [],
 			authPresets: config.authPresets ?? [],
 			projectRoot: config.projectRoot,
+			trustedWorkspaces: config.trustedWorkspaces,
+			workspaceTrustDefault: config.workspaceTrustDefault,
 			envLimits: config.envLimits,
 		};
 		const previousAuthPresetMap = buildAuthPresetMap(this.config.authPresets);
@@ -971,6 +974,15 @@ export class McpClientManager extends EventEmitter {
 		if (!server) {
 			throw new Error(`MCP server '${serverName}' not connected`);
 		}
+		await ensureMcpWorkspaceTrusted({
+			config: this.config,
+			server: buildComparableServerConfig(
+				server.config,
+				buildAuthPresetMap(this.config.authPresets),
+			),
+			toolName,
+			clientToolService: getCurrentMcpClientToolService(),
+		});
 
 		void emitMcpToolUsageBeacon({
 			serverName,
