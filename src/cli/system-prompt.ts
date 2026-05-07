@@ -4,8 +4,10 @@ import {
 	openSync,
 	readFileSync,
 	readSync,
+	readdirSync,
 	statSync,
 } from "node:fs";
+import type { Dirent } from "node:fs";
 import { join, resolve } from "node:path";
 import chalk from "chalk";
 import { buildSearchGuidelines } from "../agent/search-guidance.js";
@@ -16,6 +18,10 @@ import {
 	resolveLoadedAppendSystemPromptPath,
 	resolveProjectDocCandidateFilenames,
 } from "../config/index.js";
+import {
+	DEFAULT_GUARDED_FILE_RULES,
+	findDefaultGuardedFileMatch,
+} from "../safety/guarded-files.js";
 
 // Tool descriptions for dynamic system prompt generation
 const TOOL_DESCRIPTIONS: Record<string, string> = {
@@ -455,6 +461,78 @@ function formatCurrentDateTime(): string {
 	});
 }
 
+const GUARDED_WORKSPACE_SCAN_IGNORES = new Set([
+	".git",
+	".hg",
+	".svn",
+	"node_modules",
+	"dist",
+	"build",
+	"coverage",
+	".next",
+	".turbo",
+	".nx",
+	".cache",
+	"tmp",
+]);
+
+function collectGuardedWorkspaceCategories(
+	cwd: string,
+	options: { maxEntries?: number } = {},
+): string[] {
+	const maxEntries = options.maxEntries ?? 5000;
+	const categories = new Set<string>();
+	const stack = [cwd];
+	let entriesVisited = 0;
+
+	while (stack.length > 0 && entriesVisited < maxEntries) {
+		const dir = stack.pop();
+		if (!dir) break;
+
+		let entries: Dirent[];
+		try {
+			entries = readdirSync(dir, { withFileTypes: true });
+		} catch {
+			continue;
+		}
+
+		for (const entry of entries) {
+			if (entriesVisited >= maxEntries) break;
+			entriesVisited += 1;
+			const path = join(dir, entry.name);
+			const match = findDefaultGuardedFileMatch(path, { cwd });
+			if (match) {
+				categories.add(match.category);
+			}
+			if (
+				entry.isDirectory() &&
+				!GUARDED_WORKSPACE_SCAN_IGNORES.has(entry.name)
+			) {
+				stack.push(path);
+			}
+		}
+	}
+
+	return DEFAULT_GUARDED_FILE_RULES.map((rule) => rule.category).filter(
+		(category) => categories.has(category),
+	);
+}
+
+function buildGuardedWorkspacePromptFragment(cwd: string): string | null {
+	const categories = collectGuardedWorkspaceCategories(cwd);
+	if (categories.length === 0) {
+		return null;
+	}
+
+	const categoryText = categories.join(", ");
+	return [
+		"# Guarded Workspace Paths",
+		"",
+		`This workspace contains paths covered by Maestro's default guarded-files policy: ${categoryText}.`,
+		"Ask for explicit user approval before attempting to read, list, search, execute against, or modify these guarded paths.",
+	].join("\n");
+}
+
 export function buildBundledSystemPromptBase(toolNames?: string[]): string {
 	const currentYear = new Date().getFullYear();
 	const activeToolNames = toolNames ?? DEFAULT_TOOL_NAMES;
@@ -483,6 +561,11 @@ export function finalizeSystemPrompt(
 		for (const { path, content } of contextFiles) {
 			prompt += `## ${path}\n\n${content}\n\n`;
 		}
+	}
+
+	const guardedWorkspaceFragment = buildGuardedWorkspacePromptFragment(cwd);
+	if (guardedWorkspaceFragment) {
+		prompt += `\n\n${guardedWorkspaceFragment}\n`;
 	}
 
 	if (appendText) {
