@@ -15,6 +15,11 @@ export interface HostedRunnerIdentity {
 	owner_instance_id: string;
 	ready: boolean;
 	draining: boolean;
+	agent_run_id?: string;
+	a2a_message_id?: string;
+	a2a_task_id?: string;
+	agent_runtime_worker_queue?: string;
+	agent_runtime_correlation_path?: string;
 	drain_status?: string;
 	drain_manifest_path?: string;
 	drained_at?: string;
@@ -36,6 +41,22 @@ export async function buildHostedRunnerIdentity(
 		owner_instance_id: hostedRunner.ownerInstanceId,
 		ready: readiness.status === "ready",
 		draining,
+		...(hostedRunner.agentRunId
+			? { agent_run_id: hostedRunner.agentRunId }
+			: {}),
+		...(hostedRunner.a2aMessageId
+			? { a2a_message_id: hostedRunner.a2aMessageId }
+			: {}),
+		...(hostedRunner.a2aTaskId ? { a2a_task_id: hostedRunner.a2aTaskId } : {}),
+		...(hostedRunner.agentRuntimeWorkerQueue
+			? { agent_runtime_worker_queue: hostedRunner.agentRuntimeWorkerQueue }
+			: {}),
+		...(hostedRunner.agentRuntimeCorrelationPath
+			? {
+					agent_runtime_correlation_path:
+						hostedRunner.agentRuntimeCorrelationPath,
+				}
+			: {}),
 		...(hostedRunner.lastDrain?.status
 			? { drain_status: hostedRunner.lastDrain.status }
 			: {}),

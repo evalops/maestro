@@ -28,6 +28,12 @@ describe("runHealthChecks", () => {
 				ownerInstanceId: "pod_123",
 				workspaceRoot,
 				workspaceId: "ws_123",
+				agentRunId: "agent_run_123",
+				a2aMessageId: "maestro-session:ws_123:session_123",
+				a2aTaskId: "agent_run_123",
+				agentRuntimeWorkerQueue: "agent-runtime.production",
+				agentRuntimeCorrelationPath:
+					"maestro_message_id=maestro-session:ws_123:session_123 a2a_task_id=agent_run_123 platform_agent_run_id=agent_run_123 worker_queue=agent-runtime.production",
 				activeMaestroSessionId: "session_123",
 			},
 		});
@@ -38,6 +44,12 @@ describe("runHealthChecks", () => {
 			ownerInstanceId: "pod_123",
 			workspaceRoot,
 			workspaceId: "ws_123",
+			agentRunId: "agent_run_123",
+			a2aMessageId: "maestro-session:ws_123:session_123",
+			a2aTaskId: "agent_run_123",
+			agentRuntimeWorkerQueue: "agent-runtime.production",
+			agentRuntimeCorrelationPath:
+				"maestro_message_id=maestro-session:ws_123:session_123 a2a_task_id=agent_run_123 platform_agent_run_id=agent_run_123 worker_queue=agent-runtime.production",
 			maestroSessionId: "session_123",
 		});
 	});

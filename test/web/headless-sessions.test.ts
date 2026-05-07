@@ -2863,6 +2863,11 @@ describe("headless session handlers", () => {
 					ownerInstanceId: "pod-a",
 					workspaceRoot,
 					workspaceId: "ws_hosted",
+					agentRunId: "previous_agent_run",
+					a2aMessageId: "previous_message",
+					a2aTaskId: "previous_task",
+					agentRuntimeWorkerQueue: "previous.queue",
+					agentRuntimeCorrelationPath: "previous path",
 				},
 			});
 			const req = createJsonRequest("POST", "/api/headless/sessions", {
@@ -2914,6 +2919,216 @@ describe("headless session handlers", () => {
 				},
 			});
 			expect(context.hostedRunner?.agentRunId).toBe("agent_run_123");
+			expect(context.hostedRunner?.a2aMessageId).toBeUndefined();
+			expect(context.hostedRunner?.a2aTaskId).toBeUndefined();
+			expect(context.hostedRunner?.agentRuntimeWorkerQueue).toBeUndefined();
+			expect(context.hostedRunner?.agentRuntimeCorrelationPath).toBeUndefined();
+		} finally {
+			await rm(workspaceRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("preserves hosted runner A2A handles when Platform trigger recording fails", async () => {
+		const workspaceRoot = await mkdtemp(
+			join(tmpdir(), "maestro-headless-runtime-failed-record-"),
+		);
+		try {
+			vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_URL", "https://runtime.test/");
+			vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_TOKEN", "runtime-token");
+			vi.stubEnv("MAESTRO_AGENT_RUNTIME_ORG_ID", "org_1");
+			vi.stubEnv("MAESTRO_AGENT_RUNTIME_WORKSPACE_ID", "ws_env");
+			const fetchMock = vi.fn(async () =>
+				Response.json(
+					{ error: { code: "unavailable", message: "try again" } },
+					{ status: 503 },
+				),
+			);
+			vi.stubGlobal("fetch", fetchMock);
+
+			const createAgent = vi.fn().mockResolvedValue(new FakeAgent());
+			const context = createContext({
+				createAgent,
+				hostedRunner: {
+					enabled: true,
+					runnerSessionId: "mrs_test",
+					ownerInstanceId: "pod-a",
+					workspaceRoot,
+					workspaceId: "ws_hosted",
+					agentRunId: "previous_agent_run",
+					a2aMessageId: "previous_message",
+					a2aTaskId: "previous_task",
+					agentRuntimeWorkerQueue: "previous.queue",
+					agentRuntimeCorrelationPath: "previous path",
+				},
+			});
+			const req = createJsonRequest("POST", "/api/headless/sessions", {
+				model: TEST_MODEL.id,
+				workspaceRoot,
+				client: "vscode",
+				protocolVersion: "headless.v1",
+			});
+			const res = new MockResponse();
+			res.req = req;
+
+			await handleHeadlessSessionCreate(
+				req,
+				res as unknown as ServerResponse,
+				context,
+			);
+
+			expect(fetchMock).toHaveBeenCalled();
+			expect(context.hostedRunner?.agentRunId).toBe("previous_agent_run");
+			expect(context.hostedRunner?.a2aMessageId).toBe("previous_message");
+			expect(context.hostedRunner?.a2aTaskId).toBe("previous_task");
+			expect(context.hostedRunner?.agentRuntimeWorkerQueue).toBe(
+				"previous.queue",
+			);
+			expect(context.hostedRunner?.agentRuntimeCorrelationPath).toBe(
+				"previous path",
+			);
+		} finally {
+			await rm(workspaceRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("can record hosted session starts through the Platform A2A bridge", async () => {
+		const workspaceRoot = await mkdtemp(
+			join(tmpdir(), "maestro-headless-runtime-a2a-"),
+		);
+		try {
+			vi.stubEnv("MAESTRO_AGENT_RUNTIME_A2A_ENABLED", "true");
+			vi.stubEnv("MAESTRO_PLATFORM_A2A_URL", "");
+			vi.stubEnv("MAESTRO_A2A_URL", "");
+			vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_URL", "https://runtime.test/");
+			vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_TOKEN", "runtime-token");
+			vi.stubEnv("MAESTRO_EVALOPS_WORKSPACE_ID", "ws_env");
+
+			const requests: { body?: Record<string, unknown>; url: string }[] = [];
+			let a2aMessageId = "";
+			const fetchMock = vi.fn(
+				async (input: RequestInfo | URL, init?: RequestInit) => {
+					const url = String(input);
+					const body =
+						typeof init?.body === "string"
+							? (JSON.parse(init.body) as Record<string, unknown>)
+							: undefined;
+					requests.push({
+						url,
+						body,
+					});
+					if (url === "https://runtime.test/message:send") {
+						const message =
+							body?.message && typeof body.message === "object"
+								? (body.message as Record<string, unknown>)
+								: {};
+						a2aMessageId =
+							typeof message.messageId === "string" ? message.messageId : "";
+						return Response.json({
+							task: {
+								id: "agent_run_a2a",
+								contextId: "maestro-session:test",
+								status: { state: "TASK_STATE_SUBMITTED" },
+								metadata: {
+									a2aMessageId,
+									a2aTaskId: "agent_run_a2a",
+									agentRunId: "agent_run_a2a",
+									agentRunState: PlatformAgentRunStateValue.Queued,
+									workspaceId: "ws_hosted",
+									agentId: "maestro",
+									workerQueue: "agent-runtime.production",
+									correlationPath: `maestro_message_id=${a2aMessageId} a2a_task_id=agent_run_a2a platform_agent_run_id=agent_run_a2a worker_queue=agent-runtime.production`,
+								},
+							},
+						});
+					}
+					if (url === "https://runtime.test/tasks/agent_run_a2a") {
+						return Response.json({
+							id: "agent_run_a2a",
+							contextId: "maestro-session:test",
+							status: { state: "TASK_STATE_SUBMITTED" },
+							metadata: {
+								a2aMessageId,
+								a2aTaskId: "agent_run_a2a",
+								agentRunId: "agent_run_a2a",
+								agentRunState: PlatformAgentRunStateValue.Queued,
+								workspaceId: "ws_hosted",
+								agentId: "maestro",
+								workerQueue: "agent-runtime.production",
+								correlationPath: `maestro_message_id=${a2aMessageId} a2a_task_id=agent_run_a2a platform_agent_run_id=agent_run_a2a worker_queue=agent-runtime.production`,
+							},
+						});
+					}
+					return Response.json(
+						{ error: { code: "not_found", message: `unexpected ${url}` } },
+						{ status: 404 },
+					);
+				},
+			);
+			vi.stubGlobal("fetch", fetchMock);
+
+			const createAgent = vi.fn().mockResolvedValue(new FakeAgent());
+			const context = createContext({
+				createAgent,
+				hostedRunner: {
+					enabled: true,
+					runnerSessionId: "mrs_test",
+					ownerInstanceId: "pod-a",
+					workspaceRoot,
+					workspaceId: "ws_hosted",
+				},
+			});
+			const req = createJsonRequest("POST", "/api/headless/sessions", {
+				model: TEST_MODEL.id,
+				workspaceRoot,
+				client: "vscode",
+				protocolVersion: "headless.v1",
+			});
+			const res = new MockResponse();
+			res.req = req;
+
+			await handleHeadlessSessionCreate(
+				req,
+				res as unknown as ServerResponse,
+				context,
+			);
+
+			const snapshot = JSON.parse(res.body) as { session_id: string };
+			expect(fetchMock).toHaveBeenCalledTimes(2);
+			expect(requests[0]).toMatchObject({
+				url: "https://runtime.test/message:send",
+				body: {
+					message: expect.objectContaining({
+						messageId: `maestro-session:ws_hosted:${snapshot.session_id}`,
+						contextId: `maestro-session:${snapshot.session_id}`,
+						metadata: expect.objectContaining({
+							workspaceId: "ws_hosted",
+							agentId: "maestro",
+							sessionId: snapshot.session_id,
+							actorId: "anon",
+							sourceEventType:
+								MaestroAgentRuntimeSourceEventType.SessionStarted,
+							metadata: expect.objectContaining({
+								model: TEST_MODEL.id,
+								runner_session_id: "mrs_test",
+								owner_instance_id: "pod-a",
+							}),
+						}),
+					}),
+					configuration: { returnImmediately: true },
+				},
+			});
+			expect(requests[1]?.url).toBe("https://runtime.test/tasks/agent_run_a2a");
+			expect(context.hostedRunner?.agentRunId).toBe("agent_run_a2a");
+			expect(context.hostedRunner?.a2aMessageId).toBe(
+				`maestro-session:ws_hosted:${snapshot.session_id}`,
+			);
+			expect(context.hostedRunner?.a2aTaskId).toBe("agent_run_a2a");
+			expect(context.hostedRunner?.agentRuntimeWorkerQueue).toBe(
+				"agent-runtime.production",
+			);
+			expect(context.hostedRunner?.agentRuntimeCorrelationPath).toContain(
+				"platform_agent_run_id=agent_run_a2a",
+			);
 		} finally {
 			await rm(workspaceRoot, { recursive: true, force: true });
 		}

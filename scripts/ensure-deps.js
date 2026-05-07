@@ -96,6 +96,12 @@ function hashFile(path) {
 	return createHash("sha256").update(buf).digest("hex");
 }
 
+export function writeInstallStamp() {
+	const hash = hashFile(lockfile);
+	mkdirSync(dirname(stamp), { recursive: true });
+	writeFileSync(stamp, hash);
+}
+
 function runInstall() {
 	const result = spawnSync("bun", ["install", "--frozen-lockfile"], {
 		stdio: "inherit",
@@ -103,9 +109,7 @@ function runInstall() {
 	if (result.status !== 0) {
 		process.exit(result.status ?? 1);
 	}
-	const hash = hashFile(lockfile);
-	mkdirSync(dirname(stamp), { recursive: true });
-	writeFileSync(stamp, hash);
+	writeInstallStamp();
 }
 
 export function workspaceStampPath(projectRoot, pkg) {

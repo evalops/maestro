@@ -67,12 +67,16 @@ const A2A_BASE_URL_SUFFIXES = [
 	"/.well-known/agent-card.json",
 	"/message:send",
 	"/message:stream",
+	"/agentruntime.v1.AgentRuntimeService/HandleTrigger",
+	"/agentruntime.v1.AgentRuntimeService",
 ] as const;
 
 export interface A2AServiceConfig extends PlatformServiceConfig {
 	agentId?: string;
 	sessionId?: string;
 	actorId?: string;
+	traceparent?: string;
+	tracestate?: string;
 }
 
 export interface A2AAgentCard {
@@ -141,7 +145,16 @@ export interface A2ATask {
 	id: string;
 	contextId?: string;
 	status: A2ATaskStatus;
+	artifacts?: A2AArtifact[];
 	history?: A2AMessage[];
+	metadata?: Record<string, unknown>;
+}
+
+export interface A2AArtifact {
+	artifactId: string;
+	name?: string;
+	description?: string;
+	parts: A2APart[];
 	metadata?: Record<string, unknown>;
 }
 
@@ -152,10 +165,16 @@ export interface SendA2AMessageInput {
 		returnImmediately?: boolean;
 	};
 	metadata?: Record<string, unknown>;
+	traceContext?: A2ATraceContext;
 }
 
 export interface SendA2AMessageResult {
 	task: A2ATask;
+}
+
+export interface A2ATraceContext {
+	traceparent?: string;
+	tracestate?: string;
 }
 
 function normalizeA2ABaseUrl(baseUrl: string): string {
@@ -262,8 +281,15 @@ export async function sendA2AMessage(
 	input: SendA2AMessageInput,
 	options: { signal?: AbortSignal } = {},
 ): Promise<SendA2AMessageResult> {
+	// `traceContext` is caller control data, not part of the A2A request body.
+	// Project it into headers and message metadata so Platform can join
+	// the task to traces without receiving a Maestro-private wrapper field.
+	const { traceContext: inputTraceContext, ...messageInput } = input;
+	const traceContext = resolveA2ATraceContext(inputTraceContext ?? config, {
+		envFallback: !inputTraceContext,
+	});
 	const body = {
-		...input,
+		...messageInput,
 		message: {
 			...input.message,
 			metadata: {
@@ -272,6 +298,12 @@ export async function sendA2AMessage(
 				agentId: config.agentId,
 				sessionId: config.sessionId,
 				actorId: config.actorId,
+				...(traceContext?.traceparent
+					? { traceparent: traceContext.traceparent }
+					: {}),
+				...(traceContext?.tracestate
+					? { tracestate: traceContext.tracestate }
+					: {}),
 			},
 		},
 	};
@@ -279,7 +311,7 @@ export async function sendA2AMessage(
 		`${config.baseUrl}/message:send`,
 		{
 			method: "POST",
-			headers: buildA2AHeaders(config),
+			headers: buildA2AHeaders(config, traceContext),
 			body: JSON.stringify(body),
 			signal: options.signal,
 		},
@@ -294,10 +326,36 @@ export async function sendA2AMessage(
 	return (await response.json()) as SendA2AMessageResult;
 }
 
+export function resolveA2ATraceContext(
+	input?: A2ATraceContext,
+	options: { envFallback?: boolean } = {},
+): A2ATraceContext | undefined {
+	const envFallback = options.envFallback ?? true;
+	// Explicit trace input wins as a unit. A caller-provided traceparent with no
+	// tracestate should not inherit a stale process-level TRACESTATE value.
+	const traceparent =
+		trimString(input?.traceparent) ??
+		(envFallback
+			? getEnvValue(["TRACEPARENT", "TRACE_PARENT", "MAESTRO_TRACEPARENT"])
+			: undefined);
+	const tracestate =
+		trimString(input?.tracestate) ??
+		(envFallback
+			? getEnvValue(["TRACESTATE", "TRACE_STATE", "MAESTRO_TRACESTATE"])
+			: undefined);
+	if (!traceparent) {
+		return undefined;
+	}
+	return {
+		traceparent,
+		...(tracestate ? { tracestate } : {}),
+	};
+}
+
 export async function getA2ATask(
 	config: A2AServiceConfig,
 	taskId: string,
-	options: { signal?: AbortSignal } = {},
+	options: { signal?: AbortSignal; traceContext?: A2ATraceContext } = {},
 ): Promise<A2ATask> {
 	const trimmedTaskId = trimString(taskId);
 	if (!trimmedTaskId) {
@@ -307,7 +365,7 @@ export async function getA2ATask(
 		`${config.baseUrl}/tasks/${encodeURIComponent(trimmedTaskId)}`,
 		{
 			method: "GET",
-			headers: buildA2AHeaders(config),
+			headers: buildA2AHeaders(config, options.traceContext),
 			signal: options.signal,
 		},
 		{
@@ -321,12 +379,23 @@ export async function getA2ATask(
 	return (await response.json()) as A2ATask;
 }
 
-function buildA2AHeaders(config: A2AServiceConfig): Record<string, string> {
+function buildA2AHeaders(
+	config: A2AServiceConfig,
+	traceContext?: A2ATraceContext,
+): Record<string, string> {
+	// Header projection mirrors message metadata projection: intermediaries can
+	// route and trace the HTTP request, while the task itself keeps durable
+	// correlation metadata for later lookup.
+	const resolvedTraceContext = resolveA2ATraceContext(traceContext ?? config, {
+		envFallback: !traceContext,
+	});
 	return buildPlatformJsonHeaders(config, {
 		"X-EvalOps-Workspace-Id": config.workspaceId,
 		"X-EvalOps-Agent-Id": config.agentId,
 		"X-EvalOps-Session-Id": config.sessionId,
 		"X-EvalOps-Actor-Id": config.actorId,
+		traceparent: resolvedTraceContext?.traceparent,
+		tracestate: resolvedTraceContext?.tracestate,
 	});
 }
 
