@@ -15,6 +15,8 @@ function createRecorder(overrides?: {
 	recordStep?: ReturnType<typeof vi.fn>;
 	waitRun?: ReturnType<typeof vi.fn>;
 	resumeRun?: ReturnType<typeof vi.fn>;
+	completeRun?: ReturnType<typeof vi.fn>;
+	failRun?: ReturnType<typeof vi.fn>;
 }) {
 	const recordStep =
 		overrides?.recordStep ?? vi.fn(async () => ({ run: { id: "run_1" } }));
@@ -22,6 +24,10 @@ function createRecorder(overrides?: {
 		overrides?.waitRun ?? vi.fn(async () => ({ run: { id: "run_1" } }));
 	const resumeRun =
 		overrides?.resumeRun ?? vi.fn(async () => ({ run: { id: "run_1" } }));
+	const completeRun =
+		overrides?.completeRun ?? vi.fn(async () => ({ run: { id: "run_1" } }));
+	const failRun =
+		overrides?.failRun ?? vi.fn(async () => ({ run: { id: "run_1" } }));
 	const recorder = new HostedAgentRuntimeProgressRecorder({
 		sessionId: "session_1",
 		workspaceRoot: "/workspace",
@@ -35,9 +41,9 @@ function createRecorder(overrides?: {
 			ownerInstanceId: "pod-a",
 			agentRuntimeWorkerQueue: "agent-runtime.production",
 		},
-		operations: { recordStep, waitRun, resumeRun },
+		operations: { recordStep, waitRun, resumeRun, completeRun, failRun },
 	});
-	return { recorder, recordStep, waitRun, resumeRun };
+	return { recorder, recordStep, waitRun, resumeRun, completeRun, failRun };
 }
 
 describe("hosted AgentRuntime progress recorder", () => {
@@ -166,9 +172,10 @@ describe("hosted AgentRuntime progress recorder", () => {
 	});
 
 	it("no-ops when hosted Platform lease handles are absent", async () => {
-		const { recorder, recordStep, waitRun, resumeRun } = createRecorder({
-			agentRuntimeLeaseToken: "",
-		});
+		const { recorder, recordStep, waitRun, resumeRun, completeRun, failRun } =
+			createRecorder({
+				agentRuntimeLeaseToken: "",
+			});
 
 		recorder.recordAgentEvent({ type: "turn_start" });
 		recorder.recordServerRequestEvent({
@@ -201,11 +208,81 @@ describe("hosted AgentRuntime progress recorder", () => {
 			resolution: "answered",
 			resolvedBy: "client",
 		});
+		await recorder.completeRun({ reason: "process_shutdown" });
+		await recorder.failRun({ errorMessage: "should stay local" });
 		await recorder.flush();
 
 		expect(recordStep).not.toHaveBeenCalled();
 		expect(waitRun).not.toHaveBeenCalled();
 		expect(resumeRun).not.toHaveBeenCalled();
+		expect(completeRun).not.toHaveBeenCalled();
+		expect(failRun).not.toHaveBeenCalled();
+	});
+
+	it("completes the Platform run after prior progress writes during hosted drain", async () => {
+		const { recorder, recordStep, completeRun } = createRecorder();
+
+		recorder.recordAgentEvent({ type: "turn_start" });
+		await recorder.completeRun({
+			reason: "process_shutdown",
+			requestedBy: "maestro_web_server",
+			flushStatus: "completed",
+			manifestPath: "/workspace/.maestro/runner-snapshots/mrs.json",
+		});
+		await recorder.completeRun({ reason: "duplicate" });
+
+		expect(recordStep).toHaveBeenCalledTimes(1);
+		expect(completeRun).toHaveBeenCalledTimes(1);
+		expect(completeRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				runId: "run_1",
+				leaseToken: "lease-token-1",
+				result: expect.objectContaining({
+					event_type: "hosted_runner_drained",
+					status: "drained",
+					flush_status: "completed",
+					reason: "process_shutdown",
+					requested_by: "maestro_web_server",
+					manifest_path: "/workspace/.maestro/runner-snapshots/mrs.json",
+				}),
+			}),
+		);
+	});
+
+	it("fails the Platform run once when hosted drain is interrupted", async () => {
+		const { recorder, recordStep, failRun } = createRecorder();
+
+		await recorder.failRun({
+			errorMessage: "Hosted runner drain failed: flush timed out",
+			reason: "kubernetes_prestop",
+			requestedBy: "kubernetes_prestop",
+		});
+		await recorder.failRun({ errorMessage: "duplicate failure" });
+
+		expect(recordStep).toHaveBeenCalledWith(
+			expect.objectContaining({
+				step: expect.objectContaining({
+					id: "maestro:session_1:terminal:failed",
+					stepKind: PlatformAgentRunStepKindValue.Error,
+					state: PlatformAgentRunStepStateValue.Failed,
+					errorMessage: "Hosted runner drain failed: flush timed out",
+					output: expect.objectContaining({
+						event_type: "hosted_runner_drain_failed",
+						reason: "kubernetes_prestop",
+						requested_by: "kubernetes_prestop",
+					}),
+				}),
+			}),
+		);
+		expect(failRun).toHaveBeenCalledTimes(1);
+		expect(failRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				runId: "run_1",
+				leaseToken: "lease-token-1",
+				errorMessage: "Hosted runner drain failed: flush timed out",
+				retryable: false,
+			}),
+		);
 	});
 
 	it("keeps later progress flowing after a Platform write failure", async () => {

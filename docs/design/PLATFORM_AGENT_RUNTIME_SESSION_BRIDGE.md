@@ -22,6 +22,8 @@ The bridge is intentionally anchored by session start:
 4. Maestro stores correlation handles on the hosted-runner context.
 5. If the AgentRun includes a lease token, Maestro records turn, tool, wait,
    and resume progress back to Platform.
+6. When a managed hosted-runner drain explicitly flushes the active runtime,
+   Maestro completes or fails the Platform run.
 
 Maestro does not let Platform mutate the live runtime in this path. If the
 Platform write fails or is not configured, the headless session still starts.
@@ -31,7 +33,8 @@ Platform write fails or is not configured, the headless session still starts.
 | File | Responsibility |
 |------|----------------|
 | `src/server/handlers/headless-sessions.ts` | Starts headless runtimes, chooses session ownership, captures HTTP trace context, and stores hosted-runner correlation fields. |
-| `src/server/hosted-agent-runtime-progress.ts` | Converts hosted runtime events into leased AgentRuntime step, wait, and resume writes. |
+| `src/server/hosted-agent-runtime-progress.ts` | Converts hosted runtime events into leased AgentRuntime step, wait, resume, complete, and fail writes. |
+| `src/server/handlers/hosted-runner-drain.ts` | Defines the explicit terminal lifecycle boundary for successful or interrupted hosted-runner drains. |
 | `src/platform/agent-runtime-client.ts` | Builds Platform AgentRuntime triggers, normalizes Connect responses, selects the Connect or A2A transport, and maps A2A task metadata back into AgentRuntime-shaped results. |
 | `src/platform/a2a-client.ts` | Implements the A2A HTTP/JSON facade: agent-card discovery, message send, task lookup, Platform headers, and trace propagation. |
 
@@ -134,12 +137,21 @@ stream and records only structural progress metadata:
   steps.
 - Pending server requests become AgentRuntime waits with checkpoints.
 - Server-request resolutions resume the matching AgentRuntime wait.
+- Successful hosted-runner drain completes the Platform run.
+- Interrupted hosted-runner drain records a terminal error step and fails the
+  Platform run.
 
 The recorder is deliberately inert unless the hosted-runner context has both
 `agentRunId` and `agentRuntimeLeaseToken`. Writes are queued in order and
 logged as warnings on failure; a Platform outage must not interrupt local
 prompt execution. Tool arguments are summarized as key names instead of copied
 into Platform progress payloads.
+
+Terminal `CompleteRun` / `FailRun` calls are tied to hosted-runner drain,
+including Kubernetes preStop and process shutdown. Generic idle disposal is not
+a terminal signal because headless sessions can be disconnected and later
+resumed. The current Platform client has no `CancelRun` helper, so interrupted
+drains are represented with `FailRun` and a non-retryable drain error.
 
 ## Failure Behavior
 
@@ -165,9 +177,11 @@ When changing the bridge, verify the behavior at all three layers:
    `npm run test -- test/platform/agent-runtime-client.test.ts test/platform/a2a-client.test.ts`
 2. Runtime-progress tests for step, wait, resume, and failure-safe behavior:
    `npm run test -- test/server/hosted-agent-runtime-progress.test.ts`
-3. Headless-session tests for hosted-runner correlation:
+3. Hosted-runner drain tests for terminal complete/fail semantics:
+   `npm run test -- test/server/hosted-runner-drain.test.ts`
+4. Headless-session tests for hosted-runner correlation:
    `npm run test -- test/web/headless-sessions.test.ts`
-4. Managed deployment smoke tests for live A2A trace projection in `evalops/deploy`.
+5. Managed deployment smoke tests for live A2A trace projection in `evalops/deploy`.
 
 Keep new code behind this adapter boundary. Server handlers should pass
 session facts into the bridge and store returned correlation handles; they
