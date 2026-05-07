@@ -148,3 +148,26 @@ export {
 	formatPerfReport,
 	type SessionPerfSnapshot,
 } from "./session-perf.js";
+
+export {
+	emitBeacon,
+	emitBeaconBatch,
+	isBeaconEnabled,
+	normalizeBeaconEvent,
+	type BeaconEvent,
+	type EmitBeaconOptions,
+} from "./beacon.js";
+
+export {
+	CliCommandAggregator,
+	getGlobalCliCommandAggregator,
+	normalizeCommandAction,
+	resetGlobalCliCommandAggregatorForTests,
+	type CliCommandAggregatorOptions,
+} from "./cli-command-aggregator.js";
+
+export {
+	cliCommandName,
+	recordCliStartupTelemetry,
+	type RecordCliStartupTelemetryOptions,
+} from "./cli-startup.js";

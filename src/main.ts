@@ -156,6 +156,7 @@ import { ServerRequestActionApprovalService } from "./server/approval-service.js
 import { clientToolService } from "./server/client-tools-service.js";
 import { ServerRequestToolRetryService } from "./server/tool-retry-service.js";
 import { SessionManager } from "./session/manager.js";
+import { beaconTimeoutMs } from "./telemetry/beacon.js";
 import { askUserClientTool } from "./tools/ask-user-client.js";
 import type { UpdateCheckResult } from "./update/check.js";
 import { createStartupProfilerFromEnv } from "./utils/checkpoint-profiler.js";
@@ -169,6 +170,7 @@ const packageJson = createRequire(import.meta.url)("../package.json") as {
 	version?: string;
 };
 const VERSION = packageJson.version ?? "unknown";
+const STARTUP_TELEMETRY_EXIT_WAIT_GRACE_MS = 25;
 
 let enterpriseCleanupRegistered = false;
 let checkpointCleanupRegistered = false;
@@ -270,6 +272,29 @@ async function runInteractiveMode(
 			cwd: process.cwd(),
 			reason: sessionEndReason,
 		});
+	}
+}
+
+async function waitForStartupTelemetryForImmediateExit(
+	startupTelemetry: Promise<void>,
+): Promise<void> {
+	let timeout: NodeJS.Timeout | undefined;
+	try {
+		await Promise.race([
+			startupTelemetry,
+			new Promise<void>((resolve) => {
+				timeout = setTimeout(
+					resolve,
+					beaconTimeoutMs(process.env) + STARTUP_TELEMETRY_EXIT_WAIT_GRACE_MS,
+				);
+			}),
+		]);
+	} catch {
+		// Startup telemetry is best effort and must not affect explicit exits.
+	} finally {
+		if (timeout) {
+			clearTimeout(timeout);
+		}
 	}
 }
 
@@ -434,21 +459,34 @@ export async function main(args: string[]) {
 	// Parse arguments early to check for version/help flags before heavy initialization
 	const parsed = parseArgs(args);
 	startupProfiler.checkpoint("cli:parsed");
+	const startupTelemetry = import("./telemetry/cli-startup.js")
+		.then(({ recordCliStartupTelemetry }) =>
+			recordCliStartupTelemetry({
+				args: parsed,
+				clientVersion: VERSION,
+				commandCountLockTimeoutMs: 0,
+				rawArgs: args,
+			}),
+		)
+		.catch(() => undefined);
 
 	// Handle --version early exit (before any async operations)
 	if (parsed.version) {
 		console.log(`Maestro v${VERSION}`);
+		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
 		process.exit(0);
 	}
 
 	// Handle --help early exit (before any logging redirection or heavy init)
 	if (parsed.help) {
 		printHelp(VERSION);
+		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
 		process.exit(0);
 	}
 
 	if (parsed.error) {
 		console.error(chalk.red(parsed.error));
+		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
 		process.exit(1);
 	}
 
