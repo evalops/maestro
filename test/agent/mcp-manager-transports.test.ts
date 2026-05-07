@@ -1,4 +1,11 @@
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,6 +13,7 @@ import { runWithMcpClientToolService } from "../../src/mcp/elicitation.js";
 
 const mockClientConnect = vi.fn();
 const mockClientClose = vi.fn();
+const mockCallTool = vi.fn();
 const mockSetNotificationHandler = vi.fn();
 const mockSetRequestHandler = vi.fn();
 const mockListPrompts = vi.fn().mockResolvedValue({ prompts: [] });
@@ -28,6 +36,10 @@ vi.mock("@modelcontextprotocol/sdk/client/index.js", () => ({
 		listTools = vi.fn().mockResolvedValue({ tools: [] });
 		listResources = vi.fn().mockResolvedValue({ resources: [] });
 		listPrompts = mockListPrompts;
+		callTool = mockCallTool.mockResolvedValue({
+			content: [{ type: "text", text: "ok" }],
+			isError: false,
+		});
 		setNotificationHandler = mockSetNotificationHandler;
 		setRequestHandler = mockSetRequestHandler;
 		close = mockClientClose.mockResolvedValue(undefined);
@@ -66,6 +78,7 @@ describe("MCP manager remote transports", () => {
 		mkdirSync(tempDir, { recursive: true });
 		mockClientConnect.mockClear();
 		mockClientClose.mockClear();
+		mockCallTool.mockClear();
 		mockSetNotificationHandler.mockClear();
 		mockSetRequestHandler.mockClear();
 		mockListPrompts.mockReset().mockResolvedValue({ prompts: [] });
@@ -76,6 +89,7 @@ describe("MCP manager remote transports", () => {
 
 	afterEach(async () => {
 		await manager.disconnectAll();
+		vi.unstubAllEnvs();
 		rmSync(tempDir, { recursive: true, force: true });
 	});
 
@@ -96,6 +110,68 @@ describe("MCP manager remote transports", () => {
 			"https://example.com/mcp",
 		);
 		expect(manager.isConnected("remote-http")).toBe(true);
+	});
+
+	it("emits sparse MCP connection and tool usage beacons", async () => {
+		vi.stubEnv("MAESTRO_TELEMETRY", "1");
+		vi.stubEnv("MAESTRO_BEACON_FILE", join(tempDir, "beacon.jsonl"));
+		vi.stubEnv("MAESTRO_VERSION", "0.10.18-test");
+
+		await manager.configure({
+			servers: [
+				{
+					name: "remote-http",
+					transport: "http",
+					url: "https://example.com/mcp?token=secret",
+				},
+			],
+		});
+		await waitForBeaconEvents(1, process.env.MAESTRO_BEACON_FILE!);
+
+		await manager.callTool("remote-http", "search", {
+			query: "do not collect this",
+		});
+		const events = await waitForBeaconEvents(
+			2,
+			process.env.MAESTRO_BEACON_FILE!,
+		);
+
+		expect(events).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					feature: "mcp.connection",
+					action: "remoteConnected",
+					parameters: {
+						metadata: expect.objectContaining({
+							serverName: "remote-http",
+							transport: "http",
+							remoteHost: "example.com",
+							toolCount: 0,
+							resourceCount: 0,
+							promptCount: 0,
+						}),
+					},
+				}),
+				expect.objectContaining({
+					feature: "mcp.toolUsage",
+					action: "remoteToolCalled",
+					parameters: {
+						metadata: {
+							serverName: "remote-http",
+							transport: "http",
+							remoteHost: "example.com",
+							toolName: "search",
+						},
+					},
+				}),
+			]),
+		);
+		for (const event of events) {
+			expect(event.parameters.metadata).not.toHaveProperty("url");
+			expect(event.parameters.metadata).not.toHaveProperty("args");
+			expect(event.parameters.metadata).not.toHaveProperty("query");
+			expect(event.parameters.metadata).not.toHaveProperty("content");
+		}
 	});
 
 	it("uses SSE transport for sse servers", async () => {
@@ -363,3 +439,36 @@ describe("MCP manager remote transports", () => {
 		).resolves.toEqual({ action: "cancel" });
 	});
 });
+
+async function waitForBeaconEvents(
+	count: number,
+	file: string,
+): Promise<
+	Array<{
+		feature: string;
+		action: string;
+		parameters: { metadata: Record<string, unknown> };
+	}>
+> {
+	const deadline = Date.now() + 1000;
+	while (Date.now() < deadline) {
+		if (existsSync(file)) {
+			const events = readFileSync(file, "utf8")
+				.trim()
+				.split("\n")
+				.filter(Boolean)
+				.flatMap((line) => JSON.parse(line));
+			if (events.length >= count) {
+				return events;
+			}
+		}
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	return existsSync(file)
+		? readFileSync(file, "utf8")
+				.trim()
+				.split("\n")
+				.filter(Boolean)
+				.flatMap((line) => JSON.parse(line))
+		: [];
+}
