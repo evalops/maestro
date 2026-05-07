@@ -20,14 +20,22 @@ const featureFlagCache: FeatureFlagCache = {
 	lastKnownSnapshot: null,
 };
 
+type FeatureFlagEnv = {
+	EVALOPS_FEATURE_FLAGS_PATH?: string | undefined;
+};
+
 export const MAESTRO_EVALOPS_MANAGED_KILL_SWITCH =
 	"platform.kill_switches.maestro.evalops_managed";
 export const MAESTRO_AUTONOMOUS_ACTIONS_KILL_SWITCH =
 	"platform.kill_switches.maestro.autonomous_actions";
 export const MAESTRO_PLATFORM_RUNTIME_BRIDGE_KILL_SWITCH =
 	"platform.kill_switches.maestro.platform_runtime_bridge";
+export const MAESTRO_PLATFORM_EVENTS_KILL_SWITCH =
+	"platform.kill_switches.maestro.platform_events";
 export const MAESTRO_DRAFT_AND_CONFIRM_DEFAULT_FLAG =
 	"maestro.agent_authority.draft_and_confirm_default";
+export const MAESTRO_PLATFORM_EVENTS_PUBLISHER_FLAG =
+	"maestro.platform_events.publisher_enabled";
 export const MAESTRO_PLATFORM_RUNTIME_AGENT_RUNTIME_OBSERVE_FLAG =
 	"maestro.platform_runtime.agent_runtime_observe";
 export const MAESTRO_PLATFORM_RUNTIME_TOOL_EXECUTION_BRIDGE_FLAG =
@@ -76,8 +84,10 @@ const DEFAULT_OUT_OF_CLUSTER_FLAG_CONTROL_URL =
 	"https://flags.internal.evalops.dev";
 const DEFAULT_REMOTE_TIMEOUT_MS = 2_000;
 
-function getFeatureFlagsPath(): string | undefined {
-	const configured = process.env.EVALOPS_FEATURE_FLAGS_PATH?.trim();
+function getFeatureFlagsPath(
+	env: FeatureFlagEnv = process.env,
+): string | undefined {
+	const configured = env.EVALOPS_FEATURE_FLAGS_PATH?.trim();
 	return configured ? configured : undefined;
 }
 
@@ -107,8 +117,10 @@ function getFeatureFlagRemoteHeaders(
 	return merged;
 }
 
-function readFeatureFlagSnapshot(): FeatureFlagSnapshot | null {
-	const path = getFeatureFlagsPath();
+function readFeatureFlagSnapshot(
+	env: FeatureFlagEnv = process.env,
+): FeatureFlagSnapshot | null {
+	const path = getFeatureFlagsPath(env);
 	if (!path) {
 		featureFlagCache.lastKnownSnapshot = null;
 		featureFlagCache.lastPath = undefined;
@@ -142,13 +154,22 @@ function readFeatureFlagSnapshot(): FeatureFlagSnapshot | null {
 	}
 }
 
-export function isFeatureFlagEnabled(key: string): boolean {
+export function isFeatureFlagSnapshotConfigured(
+	env: FeatureFlagEnv = process.env,
+): boolean {
+	return getFeatureFlagsPath(env) !== undefined;
+}
+
+export function isFeatureFlagEnabled(
+	key: string,
+	env: FeatureFlagEnv = process.env,
+): boolean {
 	const normalizedKey = key.trim();
 	if (!normalizedKey) {
 		return false;
 	}
 
-	const snapshot = readFeatureFlagSnapshot();
+	const snapshot = readFeatureFlagSnapshot(env);
 	if (!snapshot?.flags?.length) {
 		return false;
 	}
@@ -168,6 +189,18 @@ export function isDraftAndConfirmDefaultEnabled(): boolean {
 
 export function isPlatformRuntimeBridgeDisabled(): boolean {
 	return isFeatureFlagEnabled(MAESTRO_PLATFORM_RUNTIME_BRIDGE_KILL_SWITCH);
+}
+
+export function areMaestroPlatformEventsDisabled(
+	env: FeatureFlagEnv = process.env,
+): boolean {
+	return isFeatureFlagEnabled(MAESTRO_PLATFORM_EVENTS_KILL_SWITCH, env);
+}
+
+export function isMaestroPlatformEventsPublisherEnabled(
+	env: FeatureFlagEnv = process.env,
+): boolean {
+	return isFeatureFlagEnabled(MAESTRO_PLATFORM_EVENTS_PUBLISHER_FLAG, env);
 }
 
 export function isPlatformRuntimeObserveEnabled(): boolean {

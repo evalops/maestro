@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as oauthStorage from "../../src/oauth/storage.js";
 import { recordSessionDuration } from "../../src/telemetry.js";
@@ -26,6 +29,28 @@ describe("maestro event bus", () => {
 		await closeMaestroEventBusTransport();
 	});
 
+	function writeFlagSnapshot(flags: Array<{ key: string; enabled: boolean }>) {
+		const dir = mkdtempSync(join(tmpdir(), "maestro-event-bus-flags-"));
+		const path = join(dir, "flags.json");
+		writeFileSync(path, JSON.stringify({ flags, schema_version: 1 }), "utf8");
+		return {
+			path,
+			cleanup: () => rmSync(dir, { force: true, recursive: true }),
+		};
+	}
+
+	function managedEventBusEnv(snapshotPath: string) {
+		return {
+			EVALOPS_FEATURE_FLAGS_PATH: snapshotPath,
+			MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222",
+			MAESTRO_EVENT_BUS_SOURCE: "maestro.web",
+			MAESTRO_EVALOPS_ORG_ID: "org_evalops",
+			MAESTRO_EVALOPS_WORKSPACE_ID: "workspace_evalops",
+			MAESTRO_EVALOPS_ACCESS_TOKEN: "token_evalops",
+			MAESTRO_AGENT_RUN_ID: "run_evalops",
+		};
+	}
+
 	it("uses an audit-bus consent scope independent of training telemetry", () => {
 		const config = resolveMaestroEventBusConfig({
 			MAESTRO_TELEMETRY: "0",
@@ -45,6 +70,100 @@ describe("maestro event bus", () => {
 			workspace_id: "workspace_123",
 			session_id: "session_123",
 		});
+	});
+
+	it("requires the managed rollout flag when a feature flag snapshot is mounted", () => {
+		const snapshot = writeFlagSnapshot([
+			{ key: "platform.kill_switches.maestro.platform_events", enabled: false },
+			{ key: "maestro.platform_events.publisher_enabled", enabled: false },
+		]);
+		try {
+			expect(
+				getMaestroEventBusStatus(managedEventBusEnv(snapshot.path)),
+			).toMatchObject({
+				enabled: false,
+				reason: "platform events rollout disabled",
+			});
+		} finally {
+			snapshot.cleanup();
+		}
+	});
+
+	it("honors the managed platform-events kill switch when a snapshot is mounted", () => {
+		const snapshot = writeFlagSnapshot([
+			{ key: "platform.kill_switches.maestro.platform_events", enabled: true },
+			{ key: "maestro.platform_events.publisher_enabled", enabled: true },
+		]);
+		try {
+			expect(
+				getMaestroEventBusStatus(managedEventBusEnv(snapshot.path)),
+			).toMatchObject({
+				enabled: false,
+				reason: "platform events kill switch enabled",
+			});
+		} finally {
+			snapshot.cleanup();
+		}
+	});
+
+	it("allows managed event publishing when rollout is enabled and kill switch is off", () => {
+		const snapshot = writeFlagSnapshot([
+			{ key: "platform.kill_switches.maestro.platform_events", enabled: false },
+			{ key: "maestro.platform_events.publisher_enabled", enabled: true },
+		]);
+		try {
+			expect(
+				getMaestroEventBusStatus(managedEventBusEnv(snapshot.path)),
+			).toMatchObject({
+				enabled: true,
+				reason: "nats",
+			});
+		} finally {
+			snapshot.cleanup();
+		}
+	});
+
+	it("does not apply managed rollout flags to manual NATS configuration", () => {
+		const snapshot = writeFlagSnapshot([
+			{ key: "platform.kill_switches.maestro.platform_events", enabled: false },
+			{ key: "maestro.platform_events.publisher_enabled", enabled: false },
+		]);
+		try {
+			expect(
+				getMaestroEventBusStatus({
+					EVALOPS_FEATURE_FLAGS_PATH: snapshot.path,
+					MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222",
+				}),
+			).toMatchObject({
+				enabled: true,
+				reason: "nats",
+			});
+		} finally {
+			snapshot.cleanup();
+		}
+	});
+
+	it("does not apply managed rollout flags to NATS publishers with identity metadata", () => {
+		const snapshot = writeFlagSnapshot([
+			{ key: "platform.kill_switches.maestro.platform_events", enabled: false },
+			{ key: "maestro.platform_events.publisher_enabled", enabled: false },
+		]);
+		try {
+			expect(
+				getMaestroEventBusStatus({
+					EVALOPS_FEATURE_FLAGS_PATH: snapshot.path,
+					MAESTRO_EVENT_BUS_URL: "nats://bus.example:4222",
+					MAESTRO_EVENT_BUS_SOURCE: "maestro.web",
+					MAESTRO_EVALOPS_ORG_ID: "org_evalops",
+					MAESTRO_EVALOPS_WORKSPACE_ID: "workspace_evalops",
+				}),
+			).toMatchObject({
+				enabled: true,
+				reason: "nats",
+			});
+		} finally {
+			snapshot.cleanup();
+		}
 	});
 
 	it("prefers EvalOps-scoped user identity over legacy Maestro user identity", () => {

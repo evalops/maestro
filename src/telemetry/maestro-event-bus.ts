@@ -2,6 +2,11 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { JetStreamClient, NatsConnection } from "nats";
 import {
+	areMaestroPlatformEventsDisabled,
+	isFeatureFlagSnapshotConfigured,
+	isMaestroPlatformEventsPublisherEnabled,
+} from "../config/feature-flags.js";
+import {
 	type EvalOpsManagedContext,
 	resolveManagedEvalOpsContext,
 } from "../evalops/managed-context.js";
@@ -639,6 +644,34 @@ function defaultPrincipal(
 	};
 }
 
+function resolveEventBusFeatureGate(
+	env: Env,
+	managedContext: EvalOpsManagedContext,
+): {
+	allowed: boolean;
+	reason?: string;
+} {
+	if (!isFeatureFlagSnapshotConfigured(env)) {
+		return { allowed: true };
+	}
+	if (!managedContext.managed) {
+		return { allowed: true };
+	}
+	if (areMaestroPlatformEventsDisabled(env)) {
+		return {
+			allowed: false,
+			reason: "platform events kill switch enabled",
+		};
+	}
+	if (!isMaestroPlatformEventsPublisherEnabled(env)) {
+		return {
+			allowed: false,
+			reason: "platform events rollout disabled",
+		};
+	}
+	return { allowed: true };
+}
+
 export function resolveMaestroEventBusConfig(
 	env: Env = process.env,
 ): MaestroEventBusConfig {
@@ -652,10 +685,14 @@ export function resolveMaestroEventBusConfig(
 		"NATS_URL",
 	]);
 	const managedRouting = managedContext.managed;
-	const enabled =
+	const baseEnabled =
 		flag === false ? false : (flag ?? Boolean(natsUrl || managedRouting));
+	const featureGate = resolveEventBusFeatureGate(env, managedContext);
+	const enabled = baseEnabled && featureGate.allowed;
 	let reason = "disabled";
 	if (flag === false) reason = "flag disabled";
+	else if (baseEnabled && !featureGate.allowed)
+		reason = featureGate.reason ?? "feature flag disabled";
 	else if (natsUrl) reason = "nats";
 	else if (managedRouting) reason = "managed evalops routing";
 	else if (flag === true) reason = "flag enabled";

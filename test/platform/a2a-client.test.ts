@@ -4,6 +4,7 @@ import {
 	discoverA2AAgentCard,
 	getA2ATask,
 	resolveA2AServiceConfig,
+	resolveA2ATraceContext,
 	sendA2AMessage,
 } from "../../src/platform/a2a-client.js";
 
@@ -65,6 +66,12 @@ describe("platform A2A client", () => {
 			"MAESTRO_AGENT_ID",
 			"MAESTRO_SESSION_ID",
 			"MAESTRO_USER_ID",
+			"TRACEPARENT",
+			"TRACE_PARENT",
+			"TRACESTATE",
+			"TRACE_STATE",
+			"MAESTRO_TRACEPARENT",
+			"MAESTRO_TRACESTATE",
 		]) {
 			vi.stubEnv(name, "");
 		}
@@ -252,6 +259,11 @@ describe("platform A2A client", () => {
 					},
 				}),
 				configuration: { returnImmediately: true },
+				traceContext: {
+					traceparent:
+						"00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+					tracestate: "evalops=maestro",
+				},
 			}),
 		).resolves.toMatchObject({
 			task: {
@@ -272,11 +284,77 @@ describe("platform A2A client", () => {
 						sessionId: "session_1",
 						actorId: "user_1",
 						requestKind: "smoke",
+						traceparent:
+							"00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+						tracestate: "evalops=maestro",
 					}),
 				}),
 				configuration: { returnImmediately: true },
 			}),
+			headers: expect.objectContaining({
+				traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+				tracestate: "evalops=maestro",
+			}),
 		});
+		expect(requests[0]?.body).not.toHaveProperty("traceContext");
+	});
+
+	it("keeps explicit partial trace context isolated from env tracestate", () => {
+		vi.stubEnv("TRACESTATE", "evalops=stale-env-state");
+
+		expect(
+			resolveA2ATraceContext(
+				{
+					traceparent:
+						"00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+				},
+				{ envFallback: false },
+			),
+		).toEqual({
+			traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+		});
+		expect(
+			resolveA2ATraceContext({
+				tracestate: "evalops=orphan-state",
+			}),
+		).toBeUndefined();
+	});
+
+	it("does not backfill env tracestate when sending an explicit traceparent", async () => {
+		vi.stubEnv("TRACESTATE", "evalops=stale-env-state");
+		const config = await resolveA2AServiceConfig();
+		if (!config) {
+			throw new Error("expected config");
+		}
+
+		await sendA2AMessage(config, {
+			message: buildA2AUserMessage({
+				messageId: "msg_partial_trace",
+				contextId: "session_1",
+				text: "Run with a request trace only",
+			}),
+			traceContext: {
+				traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+			},
+		});
+
+		expect(requests[0]?.headers).toMatchObject({
+			traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+		});
+		expect(requests[0]?.headers).not.toHaveProperty("tracestate");
+		expect(requests[0]?.body).not.toHaveProperty("traceContext");
+		expect(requests[0]?.body).toMatchObject({
+			message: {
+				metadata: {
+					traceparent:
+						"00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+				},
+			},
+		});
+		expect(
+			(requests[0]?.body?.message as Record<string, unknown>)
+				?.metadata as Record<string, unknown>,
+		).not.toHaveProperty("tracestate");
 	});
 
 	it("gets an A2A task by run id", async () => {
@@ -290,6 +368,25 @@ describe("platform A2A client", () => {
 			status: { state: "TASK_STATE_COMPLETED" },
 		});
 		expect(requests[0]?.url).toBe("https://platform.test/tasks/run_1");
+	});
+
+	it("gets an A2A task with explicit trace headers", async () => {
+		const config = await resolveA2AServiceConfig();
+		if (!config) {
+			throw new Error("expected config");
+		}
+
+		await getA2ATask(config, "run_1", {
+			traceContext: {
+				traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+				tracestate: "evalops=maestro",
+			},
+		});
+
+		expect(requests[0]?.headers).toMatchObject({
+			traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+			tracestate: "evalops=maestro",
+		});
 	});
 
 	it("reuses the existing AgentRuntime service environment", async () => {

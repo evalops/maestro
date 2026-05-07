@@ -10,8 +10,13 @@ describe("tool surface smoke evals", () => {
 		const cases = loadToolSurfaceEvalCases();
 		const results = await runToolSurfaceEvalSuite(cases);
 		const summary = summarizeToolSurfaceEvalResults(results);
+		const failures = results
+			.filter((result) => !result.pass)
+			.map(
+				(result) => `${result.testCase.name}: ${result.mismatch ?? "failed"}`,
+			);
 
 		expect(summary.total).toBeGreaterThanOrEqual(12);
-		expect(summary.failed).toBe(0);
+		expect(failures, failures.join("\n")).toEqual([]);
 	});
 });

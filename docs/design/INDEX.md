@@ -12,6 +12,7 @@ This directory contains detailed design documentation for each major feature and
 | [Session Recovery & Persistence](SESSION_PERSISTENCE.md) | JSONL storage, buffered writing, and crash recovery |
 | [Headless Control Plane](HEADLESS_CONTROL_PLANE.md) | Remote/session control-plane design for headless, replay, and client callbacks |
 | [Any-Agent EvalOps Control Plane](ANY_AGENT_CONTROL_PLANE.md) | Agent-neutral registration, governance, traces, evidence, memory, and shim strategy |
+| [Platform AgentRuntime Session Bridge](PLATFORM_AGENT_RUNTIME_SESSION_BRIDGE.md) | Hosted-session to Platform AgentRuntime/A2A projection, trace context, and correlation handles |
 | [Run Timeline Contract](../protocols/run-timeline.md) | Product-safe run event projection, redaction, visibility, and stable IDs |
 
 ## User Interface

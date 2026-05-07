@@ -21,6 +21,7 @@ Use this index to jump to the right guide quickly and see how the pieces connect
 - [MCP Guide](MCP_GUIDE.md) — Model Context Protocol setup and usage.
 - [Headless Protocol Reference](protocols/headless.md) — versioned JSON-over-stdio contract for Chat, TUIs, and other embedders.
 - [Hosted Runner Contract](protocols/hosted-runner-contract.md) — provider-neutral runtime contract for account-scoped remote Maestro sessions.
+- [Platform AgentRuntime Session Bridge](design/PLATFORM_AGENT_RUNTIME_SESSION_BRIDGE.md) — how hosted session starts are projected to Platform AgentRuntime/A2A with trace and support correlation.
 - [Pending Request Contract](protocols/pending-requests.md) — unified session projection for approvals, user input, MCP elicitations, tool retries, and Platform waits.
 
 ## Architecture & Patterns
@@ -35,6 +36,7 @@ Use this index to jump to the right guide quickly and see how the pieces connect
 - [Design Index](design/INDEX.md) — comprehensive design documentation for all major subsystems.
   - [Headless Control Plane](design/HEADLESS_CONTROL_PLANE.md) — session/control-plane design for headless remote attach, server requests, and subscriber backpressure.
   - [Any-Agent EvalOps Control Plane](design/ANY_AGENT_CONTROL_PLANE.md) - agent-neutral control-plane, registry, shim, trace, evidence, and memory integration strategy.
+  - [Platform AgentRuntime Session Bridge](design/PLATFORM_AGENT_RUNTIME_SESSION_BRIDGE.md) — hosted-session trigger projection, A2A fallback, trace context, and boundary normalization.
   - Core Systems: Tool System, Agent State Machine, Context Management, Session Persistence
   - User Interface: TUI Rendering, Web UI Architecture
   - Safety & Security: Safety Firewall, Enterprise RBAC, OAuth Authentication

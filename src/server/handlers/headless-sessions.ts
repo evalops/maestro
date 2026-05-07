@@ -29,6 +29,7 @@ import type {
 	HeadlessRuntimeStreamEnvelope,
 	HeadlessSessionRuntime,
 } from "../headless-runtime-service.js";
+import { getTraceParentHeader } from "../request-context.js";
 import {
 	ApiError,
 	getRequestHeader,
@@ -620,11 +621,16 @@ async function recordPlatformAgentRuntimeSessionStart(options: {
 }): Promise<void> {
 	const snapshot = options.runtime.getSnapshot();
 	const hostedRunner = options.context.hostedRunner;
+	// This is a projection, not ownership transfer. The local headless runtime
+	// remains authoritative; Platform receives session-start metadata and trace
+	// context so AgentRuntime, A2A, deploy smoke tests, and support endpoints can
+	// all join on the same Maestro session.
 	const result = await recordMaestroSessionRuntimeTrigger({
 		workspaceId: hostedRunner?.workspaceId,
 		sessionId: snapshot.session_id,
 		actorId: options.subject,
 		correlationId: `maestro-session:${snapshot.session_id}`,
+		traceparent: getTraceParentHeader(),
 		metadata: {
 			model: options.registeredModel.id,
 			provider: options.registeredModel.provider,
@@ -638,9 +644,40 @@ async function recordPlatformAgentRuntimeSessionStart(options: {
 			owner_instance_id: hostedRunner?.ownerInstanceId,
 		},
 	});
-	if (result?.run.id && hostedRunner && !hostedRunner.agentRunId) {
+	if (!hostedRunner || !result) {
+		return;
+	}
+	const a2aCorrelation = result.events.find(
+		(event) => event.type === "maestro.platform_runtime.a2a_correlated",
+	)?.attributes;
+	if (result.run.id) {
 		hostedRunner.agentRunId = result.run.id;
 	}
+	// Store only support-grade handles on the hosted runner. The full run/task
+	// state stays in Platform; health and identity endpoints expose these ids
+	// for operators without making Platform a session-state dependency.
+	hostedRunner.a2aMessageId = a2aCorrelation
+		? stringAttribute(a2aCorrelation, "a2a_message_id")
+		: undefined;
+	hostedRunner.a2aTaskId = a2aCorrelation
+		? stringAttribute(a2aCorrelation, "a2a_task_id")
+		: undefined;
+	hostedRunner.agentRuntimeWorkerQueue = a2aCorrelation
+		? stringAttribute(a2aCorrelation, "worker_queue")
+		: undefined;
+	hostedRunner.agentRuntimeCorrelationPath = a2aCorrelation
+		? stringAttribute(a2aCorrelation, "correlation_path")
+		: undefined;
+}
+
+function stringAttribute(
+	attributes: Record<string, unknown>,
+	key: string,
+): string | undefined {
+	const value = attributes[key];
+	return typeof value === "string" && value.trim().length > 0
+		? value
+		: undefined;
 }
 
 async function ensureConnection(

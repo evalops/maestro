@@ -23,6 +23,7 @@
   "scripts": {
     "clean": "node ./scripts/clean-paths.js dist ./tmp/tsbuildinfo/composer.tsbuildinfo",
     "prepare": "husky",
+    "postinstall": "node -e \"const fs=require('node:fs');const cp=require('node:child_process');if(!fs.existsSync('./scripts/ensure-deps.js')||!fs.existsSync('./packages/contracts/package.json'))process.exit(0);const r=cp.spawnSync(process.execPath,['./scripts/ensure-deps.js','--no-install'],{stdio:'inherit'});process.exit(r.status??1);\"",
     "install:local": "node ./scripts/install-client.js",
     "prebuild": "node ./scripts/ensure-deps.js && node ./scripts/session-wire-format-codegen.mjs && node ./scripts/headless-protocol-codegen.mjs && bun run generate:headless-proto:buf",
     "build": "node ./scripts/ensure-dir.js ./tmp/tsbuildinfo && tsc -b tsconfig.build.json --force && bun build ./src/cli.ts --target node --packages external --external tree-sitter --external tree-sitter-bash --outfile dist/cli.js && node ./scripts/bundle-runtime-deps.mjs && node ./scripts/copy-themes.js && node ./scripts/copy-db-migrations.js",

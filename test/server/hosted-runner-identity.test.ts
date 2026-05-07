@@ -31,6 +31,12 @@ describe("hosted runner identity", () => {
 				runnerSessionId: "mrs_123",
 				ownerInstanceId: "pod_123",
 				workspaceRoot,
+				agentRunId: "agent_run_123",
+				a2aMessageId: "maestro-session:ws_123:session_123",
+				a2aTaskId: "agent_run_123",
+				agentRuntimeWorkerQueue: "agent-runtime.production",
+				agentRuntimeCorrelationPath:
+					"maestro_message_id=maestro-session:ws_123:session_123 a2a_task_id=agent_run_123 platform_agent_run_id=agent_run_123 worker_queue=agent-runtime.production",
 			}),
 		).resolves.toEqual({
 			protocol_version: HOSTED_RUNNER_IDENTITY_PROTOCOL_VERSION,
@@ -38,6 +44,12 @@ describe("hosted runner identity", () => {
 			owner_instance_id: "pod_123",
 			ready: true,
 			draining: false,
+			agent_run_id: "agent_run_123",
+			a2a_message_id: "maestro-session:ws_123:session_123",
+			a2a_task_id: "agent_run_123",
+			agent_runtime_worker_queue: "agent-runtime.production",
+			agent_runtime_correlation_path:
+				"maestro_message_id=maestro-session:ws_123:session_123 a2a_task_id=agent_run_123 platform_agent_run_id=agent_run_123 worker_queue=agent-runtime.production",
 		});
 	});
 

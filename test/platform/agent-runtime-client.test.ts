@@ -40,21 +40,31 @@ describe("agent runtime service client", () => {
 	beforeEach(() => {
 		for (const name of [
 			"MAESTRO_AGENT_RUNTIME_SERVICE_URL",
+			"MAESTRO_AGENT_RUNTIME_A2A_ENABLED",
 			"AGENT_RUNTIME_SERVICE_URL",
 			"MAESTRO_PLATFORM_BASE_URL",
+			"MAESTRO_PLATFORM_A2A_ENABLED",
+			"MAESTRO_PLATFORM_A2A_URL",
+			"MAESTRO_A2A_URL",
 			"MAESTRO_EVALOPS_BASE_URL",
 			"EVALOPS_BASE_URL",
 			"MAESTRO_AGENT_RUNTIME_SERVICE_TOKEN",
 			"AGENT_RUNTIME_SERVICE_TOKEN",
+			"MAESTRO_PLATFORM_A2A_TOKEN",
+			"MAESTRO_A2A_TOKEN",
 			"MAESTRO_EVALOPS_ACCESS_TOKEN",
 			"EVALOPS_TOKEN",
 			"MAESTRO_AGENT_RUNTIME_ORG_ID",
 			"AGENT_RUNTIME_ORGANIZATION_ID",
+			"MAESTRO_PLATFORM_A2A_ORG_ID",
+			"MAESTRO_A2A_ORG_ID",
 			"MAESTRO_EVALOPS_ORG_ID",
 			"EVALOPS_ORGANIZATION_ID",
 			"MAESTRO_ENTERPRISE_ORG_ID",
 			"MAESTRO_AGENT_RUNTIME_WORKSPACE_ID",
 			"AGENT_RUNTIME_WORKSPACE_ID",
+			"MAESTRO_PLATFORM_A2A_WORKSPACE_ID",
+			"MAESTRO_A2A_WORKSPACE_ID",
 			"MAESTRO_WORKSPACE_ID",
 			"EVALOPS_WORKSPACE_ID",
 			"MAESTRO_CEREBRO_URL",
@@ -72,6 +82,12 @@ describe("agent runtime service client", () => {
 			"CEREBRO_SEARCH_LIMIT",
 			"MAESTRO_CEREBRO_CHANGE_LIMIT",
 			"CEREBRO_CHANGE_LIMIT",
+			"TRACEPARENT",
+			"TRACE_PARENT",
+			"TRACESTATE",
+			"TRACE_STATE",
+			"MAESTRO_TRACEPARENT",
+			"MAESTRO_TRACESTATE",
 		]) {
 			vi.stubEnv(name, "");
 		}
@@ -1256,6 +1272,389 @@ describe("agent runtime service client", () => {
 			),
 		).rejects.toMatchObject({ name: "AbortError" });
 		expect(fetchMock).toHaveBeenCalledOnce();
+	});
+
+	it("keeps the A2A send result when task lookup is temporarily unavailable", async () => {
+		vi.stubEnv("MAESTRO_AGENT_RUNTIME_A2A_ENABLED", "true");
+		vi.stubEnv(
+			"MAESTRO_AGENT_RUNTIME_SERVICE_URL",
+			"https://runtime.test/agentruntime.v1.AgentRuntimeService/HandleTrigger",
+		);
+		vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_TOKEN", "runtime-token");
+		vi.stubEnv("MAESTRO_AGENT_RUNTIME_ORG_ID", "org_1");
+		vi.stubEnv("MAESTRO_AGENT_RUNTIME_WORKSPACE_ID", "ws_env");
+
+		const requests: Array<{
+			body?: Record<string, unknown>;
+			headers: Record<string, string>;
+			url: string;
+		}> = [];
+		const fetchMock = vi.fn(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url = String(input);
+				requests.push({
+					url,
+					headers: headersToRecord(init?.headers),
+					body: parseRequestBody(init?.body),
+				});
+				if (url === "https://runtime.test/message:send") {
+					return Response.json({
+						task: {
+							id: "task_from_send",
+							contextId: "maestro-session:session_1",
+							status: { state: "TASK_STATE_SUBMITTED" },
+							metadata: {
+								a2aMessageId: "maestro-session:ws_env:session_1",
+								a2aTaskId: "task_from_send",
+								agent_run_id: "run_from_send",
+								agent_run_state: PlatformAgentRunStateValue.Queued,
+								workspace_id: "ws_env",
+								agent_id: "maestro",
+								workerQueue: "agent-runtime.local",
+								traceparent:
+									"00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+								tracestate: "evalops=maestro-test",
+								correlationPath:
+									"maestro_message_id=maestro-session:ws_env:session_1 a2a_task_id=task_from_send platform_agent_run_id=run_from_send worker_queue=agent-runtime.local",
+							},
+						},
+					});
+				}
+				if (url === "https://runtime.test/tasks/task_from_send") {
+					return Response.json(
+						{ error: { code: "unavailable", message: "not indexed yet" } },
+						{ status: 503 },
+					);
+				}
+				return new Response("unexpected endpoint", { status: 404 });
+			},
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(
+			recordMaestroSessionRuntimeTrigger({
+				sessionId: "session_1",
+				traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+				tracestate: "evalops=maestro-test",
+			}),
+		).resolves.toMatchObject({
+			run: { id: "run_from_send", state: PlatformAgentRunStateValue.Queued },
+			events: [
+				{
+					type: "maestro.platform_runtime.a2a_correlated",
+					runId: "run_from_send",
+					attributes: {
+						a2a_message_id: "maestro-session:ws_env:session_1",
+						a2a_task_id: "task_from_send",
+						platform_agent_run_id: "run_from_send",
+						worker_queue: "agent-runtime.local",
+						traceparent:
+							"00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+						tracestate: "evalops=maestro-test",
+					},
+				},
+			],
+		});
+		expect(requests.map((request) => request.url)).toEqual([
+			"https://runtime.test/message:send",
+			"https://runtime.test/tasks/task_from_send",
+			"https://runtime.test/tasks/task_from_send",
+		]);
+		expect(requests[0]?.headers).toMatchObject({
+			traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+			tracestate: "evalops=maestro-test",
+		});
+		expect(requests[1]?.headers).toMatchObject({
+			traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+			tracestate: "evalops=maestro-test",
+		});
+		expect(requests[2]?.headers).toMatchObject({
+			traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+			tracestate: "evalops=maestro-test",
+		});
+		expect(requests[0]?.body).toMatchObject({
+			message: {
+				metadata: {
+					traceparent:
+						"00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+					tracestate: "evalops=maestro-test",
+				},
+			},
+		});
+	});
+
+	it("normalizes AgentRuntime Connect URLs when authless A2A falls back to shared env", async () => {
+		vi.stubEnv("MAESTRO_AGENT_RUNTIME_A2A_ENABLED", "true");
+		vi.stubEnv(
+			"MAESTRO_AGENT_RUNTIME_SERVICE_URL",
+			"https://runtime.test/agentruntime.v1.AgentRuntimeService/HandleTrigger",
+		);
+		vi.stubEnv("MAESTRO_AGENT_RUNTIME_WORKSPACE_ID", "ws_env");
+
+		const requests: string[] = [];
+		const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+			const url = String(input);
+			requests.push(url);
+			if (url === "https://runtime.test/message:send") {
+				return Response.json({
+					task: {
+						id: "task_from_send",
+						contextId: "maestro-session:session_1",
+						status: { state: "working" },
+					},
+				});
+			}
+			if (url === "https://runtime.test/tasks/task_from_send") {
+				return Response.json({
+					id: "task_from_send",
+					contextId: "maestro-session:session_1",
+					status: { state: "working" },
+				});
+			}
+			return new Response("unexpected endpoint", { status: 404 });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(
+			recordMaestroSessionRuntimeTrigger({ sessionId: "session_1" }),
+		).resolves.toMatchObject({
+			run: { id: "task_from_send", state: PlatformAgentRunStateValue.Running },
+		});
+		expect(requests).toEqual([
+			"https://runtime.test/message:send",
+			"https://runtime.test/tasks/task_from_send",
+		]);
+	});
+
+	it("preserves send-time run metadata when A2A task lookup returns status-only", async () => {
+		vi.stubEnv("MAESTRO_AGENT_RUNTIME_A2A_ENABLED", "true");
+		vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_URL", "https://runtime.test/");
+		vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_TOKEN", "runtime-token");
+		vi.stubEnv("MAESTRO_AGENT_RUNTIME_ORG_ID", "org_1");
+		vi.stubEnv("MAESTRO_AGENT_RUNTIME_WORKSPACE_ID", "ws_env");
+
+		const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+			const url = String(input);
+			if (url === "https://runtime.test/message:send") {
+				return Response.json({
+					task: {
+						id: "task_from_send",
+						contextId: "maestro-session:session_1",
+						status: { state: "TASK_STATE_SUBMITTED" },
+						metadata: {
+							a2aMessageId: "maestro-session:ws_env:session_1",
+							a2aTaskId: "task_from_send",
+							agent_run_id: "run_from_send",
+							agent_run_state: PlatformAgentRunStateValue.Queued,
+							workspace_id: "ws_env",
+							agent_id: "maestro",
+							workerQueue: "agent-runtime.local",
+						},
+					},
+				});
+			}
+			if (url === "https://runtime.test/tasks/task_from_send") {
+				return Response.json({
+					id: "task_from_send",
+					contextId: "maestro-session:session_1",
+					status: { state: "working", timestamp: "2026-05-07T03:15:00Z" },
+				});
+			}
+			return new Response("unexpected endpoint", { status: 404 });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(
+			recordMaestroSessionRuntimeTrigger({ sessionId: "session_1" }),
+		).resolves.toMatchObject({
+			run: {
+				id: "run_from_send",
+				state: PlatformAgentRunStateValue.Running,
+				updatedAt: "2026-05-07T03:15:00Z",
+				linkage: {
+					runId: "run_from_send",
+					workspaceId: "ws_env",
+					agentId: "maestro",
+				},
+			},
+			events: [
+				{
+					runId: "run_from_send",
+					attributes: {
+						a2a_message_id: "maestro-session:ws_env:session_1",
+						a2a_task_id: "task_from_send",
+						platform_agent_run_id: "run_from_send",
+						worker_queue: "agent-runtime.local",
+					},
+				},
+			],
+		});
+	});
+
+	it("prefers dedicated A2A endpoint and credentials over AgentRuntime fallback env", async () => {
+		vi.stubEnv("MAESTRO_AGENT_RUNTIME_A2A_ENABLED", "true");
+		vi.stubEnv(
+			"MAESTRO_AGENT_RUNTIME_SERVICE_URL",
+			"https://legacy-runtime.test/agentruntime.v1.AgentRuntimeService/HandleTrigger",
+		);
+		vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_TOKEN", "legacy-token");
+		vi.stubEnv("MAESTRO_AGENT_RUNTIME_ORG_ID", "legacy-org");
+		vi.stubEnv("MAESTRO_AGENT_RUNTIME_WORKSPACE_ID", "legacy-ws");
+		vi.stubEnv("MAESTRO_PLATFORM_A2A_URL", "https://bridge.test/message:send");
+		vi.stubEnv("MAESTRO_PLATFORM_A2A_TOKEN", "a2a-token");
+		vi.stubEnv("MAESTRO_PLATFORM_A2A_ORG_ID", "a2a-org");
+		vi.stubEnv("MAESTRO_PLATFORM_A2A_WORKSPACE_ID", "a2a-ws");
+
+		const requests: string[] = [];
+		const headers: Record<string, string>[] = [];
+		const fetchMock = vi.fn(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url = String(input);
+				requests.push(url);
+				headers.push(headersToRecord(init?.headers));
+				if (url === "https://bridge.test/message:send") {
+					return Response.json({
+						task: {
+							id: "task_1",
+							contextId: "maestro-session:session_1",
+							status: { state: "TASK_STATE_SUBMITTED" },
+						},
+					});
+				}
+				if (url === "https://bridge.test/tasks/task_1") {
+					return Response.json({
+						id: "task_1",
+						contextId: "maestro-session:session_1",
+						status: { state: "TASK_STATE_WORKING" },
+					});
+				}
+				return new Response("unexpected endpoint", { status: 404 });
+			},
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		await expect(
+			recordMaestroSessionRuntimeTrigger({ sessionId: "session_1" }),
+		).resolves.toMatchObject({
+			run: { id: "task_1", linkage: { workspaceId: "a2a-ws" } },
+		});
+		expect(requests).toEqual([
+			"https://bridge.test/message:send",
+			"https://bridge.test/tasks/task_1",
+		]);
+		expect(headers[0]).toMatchObject({
+			authorization: "Bearer a2a-token",
+			"content-type": "application/json",
+			"x-organization-id": "a2a-org",
+			"x-evalops-workspace-id": "a2a-ws",
+		});
+	});
+
+	it("maps proto and JSON A2A task states", async () => {
+		vi.stubEnv("MAESTRO_AGENT_RUNTIME_A2A_ENABLED", "true");
+		vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_URL", "https://runtime.test/");
+		vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_TOKEN", "runtime-token");
+		vi.stubEnv("MAESTRO_AGENT_RUNTIME_ORG_ID", "org_1");
+		vi.stubEnv("MAESTRO_AGENT_RUNTIME_WORKSPACE_ID", "ws_env");
+
+		const cases = [
+			{
+				sessionId: "working",
+				taskState: "working",
+				runState: PlatformAgentRunStateValue.Running,
+			},
+			{
+				sessionId: "input-required",
+				taskState: "input-required",
+				runState: PlatformAgentRunStateValue.Waiting,
+			},
+			{
+				sessionId: "completed",
+				taskState: "completed",
+				runState: PlatformAgentRunStateValue.Succeeded,
+			},
+			{
+				sessionId: "failed",
+				taskState: "failed",
+				runState: PlatformAgentRunStateValue.Failed,
+			},
+			{
+				sessionId: "rejected",
+				taskState: "TASK_STATE_REJECTED",
+				runState: PlatformAgentRunStateValue.Failed,
+			},
+			{
+				sessionId: "rejected-json",
+				taskState: "rejected",
+				runState: PlatformAgentRunStateValue.Failed,
+			},
+			{
+				sessionId: "auth-required",
+				taskState: "TASK_STATE_AUTH_REQUIRED",
+				runState: PlatformAgentRunStateValue.Waiting,
+			},
+			{
+				sessionId: "auth-required-json",
+				taskState: "auth-required",
+				runState: PlatformAgentRunStateValue.Waiting,
+			},
+			{
+				sessionId: "canceled",
+				taskState: "TASK_STATE_CANCELED",
+				runState: PlatformAgentRunStateValue.Cancelled,
+			},
+			{
+				sessionId: "cancelled",
+				taskState: "TASK_STATE_CANCELLED",
+				runState: PlatformAgentRunStateValue.Cancelled,
+			},
+			{
+				sessionId: "canceled-json",
+				taskState: "canceled",
+				runState: PlatformAgentRunStateValue.Cancelled,
+			},
+			{
+				sessionId: "cancelled-json",
+				taskState: "cancelled",
+				runState: PlatformAgentRunStateValue.Cancelled,
+			},
+		] as const;
+		for (const testCase of cases) {
+			const taskId = `task_${testCase.sessionId}`;
+			const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+				const url = String(input);
+				if (url === "https://runtime.test/message:send") {
+					return Response.json({
+						task: {
+							id: taskId,
+							contextId: `maestro-session:${testCase.sessionId}`,
+							status: { state: "TASK_STATE_SUBMITTED" },
+						},
+					});
+				}
+				if (url === `https://runtime.test/tasks/${taskId}`) {
+					return Response.json({
+						id: taskId,
+						contextId: `maestro-session:${testCase.sessionId}`,
+						status: { state: testCase.taskState },
+						metadata: {
+							workspace_id: "ws_env",
+							agent_id: "maestro",
+						},
+					});
+				}
+				return new Response("unexpected endpoint", { status: 404 });
+			});
+			vi.stubGlobal("fetch", fetchMock);
+
+			await expect(
+				recordMaestroSessionRuntimeTrigger({
+					sessionId: testCase.sessionId,
+				}),
+			).resolves.toMatchObject({
+				run: { id: taskId, state: testCase.runState },
+			});
+		}
 	});
 
 	it("fails open when agent-runtime is not configured or unavailable", async () => {
