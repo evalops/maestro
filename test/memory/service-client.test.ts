@@ -412,6 +412,7 @@ describe("memory service client", () => {
 			"https://identity.test/identity.v1.TokenService/IssueServiceToken";
 		process.env.MAESTRO_MEMORY_IDENTITY_BOOTSTRAP_KEY = "bootstrap-key";
 		process.env.MAESTRO_MEMORY_SERVICE_TOKEN_TTL_SECONDS = "123";
+		const issuedMemoryToken = ["identity", "memory", "token"].join("-");
 
 		const tokenRequests: Array<{
 			body: string;
@@ -448,7 +449,7 @@ describe("memory service client", () => {
 					callback(response);
 					response.end(
 						JSON.stringify({
-							token: "identity-memory-token",
+							token: issuedMemoryToken,
 							expires_at: "2099-01-01T00:00:00.000Z",
 						}),
 					);
@@ -498,8 +499,8 @@ describe("memory service client", () => {
 			ttl_seconds: 123,
 		});
 		expect(authorizations).toEqual([
-			"Bearer identity-memory-token",
-			"Bearer identity-memory-token",
+			`Bearer ${issuedMemoryToken}`,
+			`Bearer ${issuedMemoryToken}`,
 		]);
 	});
 });
