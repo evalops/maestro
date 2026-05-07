@@ -53,6 +53,11 @@ import {
 	ResourceListChangedNotificationSchema,
 	ToolListChangedNotificationSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import { getPackageVersion } from "../package-metadata.js";
+import {
+	emitMcpConnectionBeacon,
+	emitMcpToolUsageBeacon,
+} from "../telemetry/mcp-beacon.js";
 import { parseCommandArguments } from "../tools/shell-utils.js";
 import { createLogger } from "../utils/logger.js";
 import { getHomeDir } from "../utils/path-expansion.js";
@@ -695,6 +700,16 @@ export class McpClientManager extends EventEmitter {
 			this.setupNotificationHandlers(client, name);
 
 			this.emit("connected", { name, tools: tools.length, isReconnect });
+			void emitMcpConnectionBeacon({
+				serverName: name,
+				transport: transportType,
+				remoteHost: config.url ? getMcpRemoteHost(config.url) : undefined,
+				toolCount: tools.length,
+				resourceCount: resources.length,
+				promptCount: prompts.length,
+				isReconnect,
+				clientVersion: getPackageVersion(),
+			}).catch(() => undefined);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			this.lastErrors.set(name, message);
@@ -956,6 +971,16 @@ export class McpClientManager extends EventEmitter {
 		if (!server) {
 			throw new Error(`MCP server '${serverName}' not connected`);
 		}
+
+		void emitMcpToolUsageBeacon({
+			serverName,
+			transport: server.config.transport,
+			remoteHost: server.config.url
+				? getMcpRemoteHost(server.config.url)
+				: undefined,
+			toolName,
+			clientVersion: getPackageVersion(),
+		}).catch(() => undefined);
 
 		const result = await server.client.callTool({
 			name: toolName,
