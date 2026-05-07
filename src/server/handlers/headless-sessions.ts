@@ -653,6 +653,7 @@ async function recordPlatformAgentRuntimeSessionStart(options: {
 	if (result.run.id) {
 		hostedRunner.agentRunId = result.run.id;
 	}
+	hostedRunner.agentRuntimeLeaseToken = result.run.lease?.token;
 	// Store only support-grade handles on the hosted runner. The full run/task
 	// state stays in Platform; health and identity endpoints expose these ids
 	// for operators without making Platform a session-state dependency.

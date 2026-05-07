@@ -9,15 +9,19 @@ runtime owner.
 Maestro remains the source of truth for the live headless runtime: session
 ownership, connection leases, prompt execution, approval mode, and local
 workspace state all stay in Maestro. Platform AgentRuntime receives a durable
-projection of that session start so Platform can correlate work across A2A
-tasks, AgentRuntime runs, traces, worker queues, and hosted-runner health.
+projection of that session start and, when Platform returns a leased run
+handle, a best-effort stream of hosted runtime progress. Platform can correlate
+work across A2A tasks, AgentRuntime runs, traces, worker queues, hosted-runner
+health, and timeline views without owning the live session.
 
-The bridge is intentionally one-way at session start:
+The bridge is intentionally anchored by session start:
 
 1. A headless session is created or attached.
 2. Maestro records a Platform AgentRuntime trigger.
 3. Platform returns an AgentRun, or an A2A task that maps back to an AgentRun.
-4. Maestro stores only correlation handles on the hosted-runner context.
+4. Maestro stores correlation handles on the hosted-runner context.
+5. If the AgentRun includes a lease token, Maestro records turn, tool, wait,
+   and resume progress back to Platform.
 
 Maestro does not let Platform mutate the live runtime in this path. If the
 Platform write fails or is not configured, the headless session still starts.
@@ -27,6 +31,7 @@ Platform write fails or is not configured, the headless session still starts.
 | File | Responsibility |
 |------|----------------|
 | `src/server/handlers/headless-sessions.ts` | Starts headless runtimes, chooses session ownership, captures HTTP trace context, and stores hosted-runner correlation fields. |
+| `src/server/hosted-agent-runtime-progress.ts` | Converts hosted runtime events into leased AgentRuntime step, wait, and resume writes. |
 | `src/platform/agent-runtime-client.ts` | Builds Platform AgentRuntime triggers, normalizes Connect responses, selects the Connect or A2A transport, and maps A2A task metadata back into AgentRuntime-shaped results. |
 | `src/platform/a2a-client.ts` | Implements the A2A HTTP/JSON facade: agent-card discovery, message send, task lookup, Platform headers, and trace propagation. |
 
@@ -106,22 +111,44 @@ Hosted-runner context stores only the Platform handles that operators and
 support tools need:
 
 - `agentRunId`
+- `agentRuntimeLeaseToken`
 - `a2aMessageId`
 - `a2aTaskId`
 - `agentRuntimeWorkerQueue`
 - `agentRuntimeCorrelationPath`
 
-These fields are surfaced by health and identity endpoints, but they are not a
-replacement for the headless runtime snapshot. They let Platform, deploy smoke
-tests, and support workflows join a Maestro session to the AgentRuntime run and
-A2A task without granting them ownership of the live session.
+The lease token is used only inside the hosted runtime process for progress
+writes. Health and identity endpoints surface the support-grade ids, not the
+lease token. These fields are not a replacement for the headless runtime
+snapshot. They let Platform, deploy smoke tests, and support workflows join a
+Maestro session to the AgentRuntime run and A2A task without granting them
+ownership of the live session.
+
+## Runtime Progress Projection
+
+`hosted-agent-runtime-progress.ts` listens to the local headless runtime event
+stream and records only structural progress metadata:
+
+- `turn_start` and `turn_end` become model-call steps.
+- Tool starts become tool-intent steps; tool ends become tool-result or error
+  steps.
+- Pending server requests become AgentRuntime waits with checkpoints.
+- Server-request resolutions resume the matching AgentRuntime wait.
+
+The recorder is deliberately inert unless the hosted-runner context has both
+`agentRunId` and `agentRuntimeLeaseToken`. Writes are queued in order and
+logged as warnings on failure; a Platform outage must not interrupt local
+prompt execution. Tool arguments are summarized as key names instead of copied
+into Platform progress payloads.
 
 ## Failure Behavior
 
-The bridge is best-effort for session-start recording:
+The bridge is best-effort for session-start and runtime-progress recording:
 
 - Missing Platform config returns `null`.
 - Platform/A2A failures return `null`.
+- Progress writes no-op without a run id and lease token.
+- Progress write failures are logged and later progress writes continue.
 - Abort errors are rethrown so shutdown and request cancellation still behave
   correctly.
 - The headless session continues even when the Platform record is unavailable.
@@ -136,9 +163,11 @@ When changing the bridge, verify the behavior at all three layers:
 
 1. Unit tests for request shape and normalization:
    `npm run test -- test/platform/agent-runtime-client.test.ts test/platform/a2a-client.test.ts`
-2. Headless-session tests for hosted-runner correlation:
+2. Runtime-progress tests for step, wait, resume, and failure-safe behavior:
+   `npm run test -- test/server/hosted-agent-runtime-progress.test.ts`
+3. Headless-session tests for hosted-runner correlation:
    `npm run test -- test/web/headless-sessions.test.ts`
-3. Managed deployment smoke tests for live A2A trace projection in `evalops/deploy`.
+4. Managed deployment smoke tests for live A2A trace projection in `evalops/deploy`.
 
 Keep new code behind this adapter boundary. Server handlers should pass
 session facts into the bridge and store returned correlation handles; they

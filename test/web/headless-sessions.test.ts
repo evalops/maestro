@@ -2839,6 +2839,9 @@ describe("headless session handlers", () => {
 							run: {
 								id: "agent_run_123",
 								state: PlatformAgentRunStateValue.Accepted,
+								lease: {
+									token: "lease-token-123",
+								},
 								linkage: {
 									runId: "agent_run_123",
 									workspaceId: "ws_hosted",
@@ -2919,6 +2922,9 @@ describe("headless session handlers", () => {
 				},
 			});
 			expect(context.hostedRunner?.agentRunId).toBe("agent_run_123");
+			expect(context.hostedRunner?.agentRuntimeLeaseToken).toBe(
+				"lease-token-123",
+			);
 			expect(context.hostedRunner?.a2aMessageId).toBeUndefined();
 			expect(context.hostedRunner?.a2aTaskId).toBeUndefined();
 			expect(context.hostedRunner?.agentRuntimeWorkerQueue).toBeUndefined();
