@@ -1,4 +1,8 @@
 import { resolve } from "node:path";
+import {
+	DEFAULT_GUARDED_FILE_PATTERNS,
+	type GuardedFilePattern,
+} from "@evalops/contracts";
 import { minimatch } from "minimatch";
 import {
 	expandTildePathWithHomeDir,
@@ -12,12 +16,14 @@ export const GUARDED_FILES_BLOCK_POLICY_ID = "guardedFiles_block";
 export type GuardedFileAccessAction = "read" | "write" | "execute" | "unknown";
 
 export interface GuardedFileRule {
+	key: string;
 	category: string;
 	patterns: string[];
 }
 
 export interface GuardedFileMatch {
 	ruleId: typeof DEFAULT_GUARDED_FILE_RULE_ID;
+	key: string;
 	category: string;
 	pattern: string;
 	path: string;
@@ -59,76 +65,16 @@ export function classifyGuardedFileAccessAction(
 	return "unknown";
 }
 
-export const DEFAULT_GUARDED_FILE_RULES: GuardedFileRule[] = [
-	{
-		category: "Cursor configuration",
-		patterns: [
-			"**/.cursor/**",
-			"~/.cursor/**",
-			"~/Library/Application Support/Cursor/**",
-			"~/.config/Cursor/**",
-			"%APPDATA%/Cursor/**",
-		],
-	},
-	{
-		category: "Windsurf configuration",
-		patterns: [
-			"**/.windsurf/**",
-			"~/.codeium/windsurf/**",
-			"~/Library/Application Support/Windsurf/**",
-			"~/.config/Windsurf/**",
-			"%APPDATA%/Windsurf/**",
-			"/Library/Application Support/Windsurf/**",
-			"/etc/windsurf/**",
-			"%ProgramData%/Windsurf/**",
-		],
-	},
-	{
-		category: "Antigravity configuration",
-		patterns: ["~/.gemini/**"],
-	},
-	{
-		category: "JetBrains application configuration",
-		patterns: [
-			"~/Library/Application Support/JetBrains/**",
-			"~/.config/JetBrains/**",
-			"~/.local/share/JetBrains/**",
-			"%APPDATA%/JetBrains/**",
-			"%LOCALAPPDATA%/JetBrains/**",
-		],
-	},
-	{
-		category: "JetBrains project configuration",
-		patterns: ["**/.idea/**"],
-	},
-	{
-		category: "Neovim configuration",
-		patterns: [
-			"~/.config/nvim/**",
-			"~/.local/share/nvim/**",
-			"~/.local/state/nvim/**",
-		],
-	},
-	{
-		category: "Amp settings",
-		patterns: ["**/amp.json", "**/.amp/**"],
-	},
-	{
-		category: "Shell configuration",
-		patterns: [
-			"~/.bashrc",
-			"~/.zshrc",
-			"~/.config/fish/config.fish",
-			"~/.config/fish/conf.d/**",
-			"~/.cshrc",
-			"~/.tcshrc",
-		],
-	},
-	{
-		category: "SSH and GPG keys",
-		patterns: ["**/.ssh/**", "~/.ssh/**", "**/.gnupg/**", "~/.gnupg/**"],
-	},
-];
+function guardedPatternToRule(pattern: GuardedFilePattern): GuardedFileRule {
+	return {
+		key: pattern.key,
+		category: pattern.description,
+		patterns: pattern.patterns,
+	};
+}
+
+export const DEFAULT_GUARDED_FILE_RULES: GuardedFileRule[] =
+	DEFAULT_GUARDED_FILE_PATTERNS.map(guardedPatternToRule);
 
 const ENV_TOKEN_PATTERN = /%([A-Z0-9_()]+)%/gi;
 const SHELL_ENV_TOKEN_PATTERN =
@@ -270,6 +216,7 @@ export function findDefaultGuardedFileMatch(
 			if (matches) {
 				return {
 					ruleId: DEFAULT_GUARDED_FILE_RULE_ID,
+					key: rule.key,
 					category: rule.category,
 					pattern,
 					path: trimmedPath,

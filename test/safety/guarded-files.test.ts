@@ -1,5 +1,7 @@
+import { DEFAULT_GUARDED_FILE_PATTERNS } from "@evalops/contracts";
 import { describe, expect, it } from "vitest";
 import {
+	DEFAULT_GUARDED_FILE_RULES,
 	DEFAULT_GUARDED_FILE_RULE_ID,
 	findDefaultGuardedFileMatch,
 	findDefaultGuardedToolCallMatch,
@@ -16,16 +18,28 @@ const options = {
 };
 
 describe("default guarded files", () => {
+	it("uses the shared guarded-files contract for runtime defaults", () => {
+		expect(DEFAULT_GUARDED_FILE_RULES).toEqual(
+			DEFAULT_GUARDED_FILE_PATTERNS.map(({ key, description, patterns }) => ({
+				key,
+				category: description,
+				patterns,
+			})),
+		);
+	});
+
 	it("matches SSH and GPG material from absolute and tilde paths", () => {
 		expect(
 			findDefaultGuardedFileMatch("/Users/tester/.ssh/config", options),
 		).toMatchObject({
 			ruleId: DEFAULT_GUARDED_FILE_RULE_ID,
+			key: "ssh-gpg-keys",
 			category: "SSH and GPG keys",
 		});
 		expect(
 			findDefaultGuardedFileMatch("~/.gnupg/private-keys-v1.d/key", options),
 		).toMatchObject({
+			key: "ssh-gpg-keys",
 			category: "SSH and GPG keys",
 		});
 	});
@@ -50,6 +64,7 @@ describe("default guarded files", () => {
 		expect(
 			findDefaultGuardedFileMatch("/Users/tester/.zshrc", options),
 		).toMatchObject({
+			key: "shell-config",
 			category: "Shell configuration",
 		});
 		expect(
