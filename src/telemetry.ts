@@ -42,6 +42,7 @@ type BaseTelemetryEvent = {
 		| "business-metric"
 		| "sandbox-violation";
 	timestamp: string;
+	sensitiveMetadata?: Record<string, unknown>;
 };
 
 export interface ApiRequestTelemetry extends BaseTelemetryEvent {
@@ -237,6 +238,8 @@ const defaultTelemetryFile = PATHS.TELEMETRY_LOG;
 const toolFailureLogFile = PATHS.TOOL_FAILURE_LOG;
 const BACKGROUND_TASK_HISTORY_LIMIT = 50;
 const backgroundTaskHistory: BackgroundTaskTelemetry[] = [];
+const SENSITIVE_METADATA_KEY_PATTERN =
+	/^(api[_-]?key|authorization|auth|bearer|client[_-]?secret|cookie|credential|credentials|key|password|passwd|private[_-]?key|refresh[_-]?token|secret|session[_-]?token|set[_-]?cookie|token)$/i;
 
 export interface TelemetryStatus {
 	enabled: boolean;
@@ -289,6 +292,246 @@ export function setTelemetryRuntimeOverride(
 	telemetryOverride = enabled;
 	telemetryOverrideReason = reason;
 	telemetryEnabled = enabled === null ? initialTelemetryEnabled : enabled;
+}
+
+export function splitTelemetryMetadata(metadata?: Record<string, unknown>): {
+	metadata?: Record<string, unknown>;
+	sensitiveMetadata?: Record<string, unknown>;
+} {
+	return splitTelemetryMetadataRecord(metadata, new WeakSet<object>());
+}
+
+function splitTelemetryMetadataRecord(
+	metadata: Record<string, unknown> | undefined,
+	seen: WeakSet<object>,
+): {
+	metadata?: Record<string, unknown>;
+	sensitiveMetadata?: Record<string, unknown>;
+} {
+	if (!metadata) {
+		return {};
+	}
+	if (seen.has(metadata)) {
+		return {
+			metadata: {
+				value: "[circular]",
+			},
+		};
+	}
+	seen.add(metadata);
+	const safe: Record<string, unknown> = {};
+	const sensitive: Record<string, unknown> = {};
+
+	for (const [key, value] of Object.entries(metadata)) {
+		if (isSensitiveMetadataKey(key)) {
+			sensitive[key] = maskSensitiveMetadataValue(value, seen);
+			continue;
+		}
+		const splitValue = splitTelemetryMetadataValue(value, seen);
+		if (splitValue.safe !== undefined) {
+			safe[key] = splitValue.safe;
+		}
+		if (splitValue.sensitive !== undefined) {
+			sensitive[key] = splitValue.sensitive;
+		}
+	}
+	seen.delete(metadata);
+
+	return {
+		metadata: hasEntries(safe) ? safe : undefined,
+		sensitiveMetadata: hasEntries(sensitive) ? sensitive : undefined,
+	};
+}
+
+function normalizeTelemetryEventMetadata(
+	event: TelemetryEvent,
+): TelemetryEvent {
+	if (!("metadata" in event) && !("sensitiveMetadata" in event)) {
+		return event;
+	}
+	const existingMetadata =
+		"metadata" in event ? stringRecord(event.metadata) : undefined;
+	const { metadata, sensitiveMetadata } =
+		splitTelemetryMetadata(existingMetadata);
+	const sanitizedSensitiveMetadata = stringRecord(
+		maskSensitiveMetadataValue(event.sensitiveMetadata),
+	);
+	const mergedSensitiveMetadata = mergeRecords(
+		sensitiveMetadata,
+		sanitizedSensitiveMetadata,
+	);
+	const normalized = { ...event };
+	if ("metadata" in normalized) {
+		if (metadata) {
+			normalized.metadata = metadata;
+		} else {
+			delete normalized.metadata;
+		}
+	}
+	if (mergedSensitiveMetadata) {
+		normalized.sensitiveMetadata = mergedSensitiveMetadata;
+	} else {
+		delete normalized.sensitiveMetadata;
+	}
+	return normalized;
+}
+
+function splitTelemetryMetadataValue(
+	value: unknown,
+	seen: WeakSet<object>,
+): {
+	safe?: unknown;
+	sensitive?: unknown;
+} {
+	if (Array.isArray(value)) {
+		if (seen.has(value)) {
+			return {
+				safe: "[circular]",
+			};
+		}
+		seen.add(value);
+		const safeItems: unknown[] = [];
+		const sensitiveItems: unknown[] = [];
+		let hasSensitive = false;
+		for (const item of value) {
+			const splitItem = splitTelemetryMetadataValue(item, seen);
+			safeItems.push(splitItem.safe ?? null);
+			sensitiveItems.push(splitItem.sensitive ?? null);
+			hasSensitive = hasSensitive || splitItem.sensitive !== undefined;
+		}
+		seen.delete(value);
+		return {
+			safe: safeItems,
+			sensitive: hasSensitive ? sensitiveItems : undefined,
+		};
+	}
+	if (value && typeof value === "object") {
+		const record = plainRecord(value);
+		if (!record) {
+			return {
+				safe: sanitizeTelemetryMetadataValue(value),
+			};
+		}
+		if (seen.has(value)) {
+			return {
+				safe: "[circular]",
+			};
+		}
+		const nested = splitTelemetryMetadataRecord(record, seen);
+		return {
+			safe: nested.metadata,
+			sensitive: nested.sensitiveMetadata,
+		};
+	}
+	return {
+		safe: sanitizeTelemetryMetadataValue(value),
+	};
+}
+
+function sanitizeTelemetryMetadataValue(value: unknown): unknown {
+	return typeof value === "string" ? sanitizeWithStaticMask(value) : value;
+}
+
+function maskSensitiveMetadataValue(
+	value: unknown,
+	seen = new WeakSet<object>(),
+): unknown {
+	if (typeof value === "string") {
+		return "[sensitive]";
+	}
+	if (Array.isArray(value)) {
+		if (seen.has(value)) {
+			return "[sensitive]";
+		}
+		seen.add(value);
+		const masked = value.map((item) => maskSensitiveMetadataValue(item, seen));
+		seen.delete(value);
+		return masked;
+	}
+	if (value && typeof value === "object") {
+		const record = plainRecord(value);
+		if (!record) {
+			return "[sensitive]";
+		}
+		if (seen.has(value)) {
+			return "[sensitive]";
+		}
+		seen.add(value);
+		const masked = Object.fromEntries(
+			Object.entries(record).map(([key, nested]) => [
+				key,
+				maskSensitiveMetadataValue(nested, seen),
+			]),
+		);
+		seen.delete(value);
+		return masked;
+	}
+	if (value === undefined) {
+		return undefined;
+	}
+	if (value === null) {
+		return null;
+	}
+	return "[sensitive]";
+}
+
+function isSensitiveMetadataKey(key: string): boolean {
+	return SENSITIVE_METADATA_KEY_PATTERN.test(key);
+}
+
+function hasEntries(record: Record<string, unknown>): boolean {
+	return Object.keys(record).length > 0;
+}
+
+function mergeRecords(
+	first?: Record<string, unknown>,
+	second?: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+	if (!first && !second) {
+		return undefined;
+	}
+	const merged: Record<string, unknown> = { ...(first ?? {}) };
+	for (const [key, value] of Object.entries(second ?? {})) {
+		merged[key] = mergeMetadataValues(merged[key], value);
+	}
+	return hasEntries(merged) ? merged : undefined;
+}
+
+function mergeMetadataValues(first: unknown, second: unknown): unknown {
+	if (second === null || second === undefined) {
+		return first;
+	}
+	if (first === null || first === undefined) {
+		return second;
+	}
+	if (Array.isArray(first) && Array.isArray(second)) {
+		return mergeMetadataArrays(first, second);
+	}
+	const firstRecord = plainRecord(first);
+	const secondRecord = plainRecord(second);
+	if (firstRecord && secondRecord) {
+		return mergeRecords(firstRecord, secondRecord);
+	}
+	return second;
+}
+
+function mergeMetadataArrays(first: unknown[], second: unknown[]): unknown[] {
+	const merged: unknown[] = [];
+	const length = Math.max(first.length, second.length);
+	for (let index = 0; index < length; index += 1) {
+		merged[index] = mergeMetadataValues(first[index], second[index]);
+	}
+	return merged;
+}
+
+function plainRecord(value: unknown): Record<string, unknown> | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return undefined;
+	}
+	const prototype = Object.getPrototypeOf(value);
+	return prototype === Object.prototype || prototype === null
+		? (value as Record<string, unknown>)
+		: undefined;
 }
 
 function isCanonicalTurnTelemetryEvent(
@@ -690,12 +933,13 @@ export function getBackgroundTaskHistory(
 }
 
 export async function recordTelemetry(event: TelemetryEvent): Promise<void> {
+	const normalizedEvent = normalizeTelemetryEventMetadata(event);
 	const openTelemetryEnabled = isOpenTelemetryEnabled();
 	if (openTelemetryEnabled) {
-		recordOpenTelemetrySpan(event);
-		recordOpenTelemetryMetric(event);
+		recordOpenTelemetrySpan(normalizedEvent);
+		recordOpenTelemetryMetric(normalizedEvent);
 	}
-	const eventBusTask = mirrorTelemetryToMaestroEventBus(event);
+	const eventBusTask = mirrorTelemetryToMaestroEventBus(normalizedEvent);
 
 	const legacyEnabled = telemetryEnabled && samplingRate > 0;
 	if (!legacyEnabled) {
@@ -709,7 +953,7 @@ export async function recordTelemetry(event: TelemetryEvent): Promise<void> {
 	}
 
 	try {
-		await Promise.all([persistTelemetry(event), eventBusTask]);
+		await Promise.all([persistTelemetry(normalizedEvent), eventBusTask]);
 	} catch (_error) {
 		// Ignore telemetry persistence failures
 	}
