@@ -3,8 +3,11 @@ import { describe, expect, it } from "vitest";
 import {
 	DEFAULT_GUARDED_FILE_RULES,
 	DEFAULT_GUARDED_FILE_RULE_ID,
+	describeDefaultGuardedFileMatch,
 	findDefaultGuardedFileMatch,
 	findDefaultGuardedToolCallMatch,
+	findGuardedFileMatch,
+	findGuardedToolCallMatch,
 } from "../../src/safety/guarded-files.js";
 
 const options = {
@@ -235,5 +238,210 @@ describe("default guarded files", () => {
 		).toMatchObject({
 			category: "Neovim configuration",
 		});
+	});
+
+	it("honors user allowlist entries by guard key", () => {
+		expect(
+			findGuardedFileMatch("/Users/tester/.ssh/config", {
+				...options,
+				policy: {
+					user: { allowlist: ["ssh-gpg-keys"] },
+				},
+			}),
+		).toBeNull();
+	});
+
+	it("honors path allowlist entries without allowing sibling guarded files", () => {
+		expect(
+			findGuardedFileMatch("/Users/tester/.ssh/internal-only", {
+				...options,
+				policy: {
+					user: { allowlist: ["/Users/tester/.ssh/internal-only"] },
+				},
+			}),
+		).toBeNull();
+		expect(
+			findGuardedFileMatch("/Users/tester/.ssh/config", {
+				...options,
+				policy: {
+					user: { allowlist: ["/Users/tester/.ssh/internal-only"] },
+				},
+			}),
+		).toMatchObject({
+			key: "ssh-gpg-keys",
+		});
+	});
+
+	it("does not allow mandatory org guards to be bypassed by user allowlists", () => {
+		expect(
+			findGuardedFileMatch("/Users/tester/.ssh/config", {
+				...options,
+				policy: {
+					organization: { mandatoryKeys: ["ssh-gpg-keys"] },
+					user: { allowlist: ["ssh-gpg-keys", "/Users/tester/.ssh/config"] },
+				},
+			}),
+		).toMatchObject({
+			key: "ssh-gpg-keys",
+			mandatory: true,
+		});
+	});
+
+	it("matches custom org and user guard extensions", () => {
+		expect(
+			findGuardedToolCallMatch(
+				"read",
+				{ path: "/workspace/project/.secrets/token.txt" },
+				{
+					...options,
+					policy: {
+						organization: {
+							rules: [
+								{
+									key: "org-secrets",
+									description: "Organization secret fixtures",
+									patterns: ["**/.secrets/**"],
+									reason: "Organization policy controls secret fixtures.",
+									defaultBehavior: "block",
+								},
+							],
+						},
+					},
+				},
+			),
+		).toMatchObject({
+			key: "org-secrets",
+			source: "organization",
+			defaultBehavior: "block",
+		});
+
+		expect(
+			findGuardedFileMatch("/workspace/project/private-notes.md", {
+				...options,
+				policy: {
+					user: {
+						rules: [
+							{
+								key: "personal-notes",
+								description: "Personal notes",
+								patterns: ["**/private-notes.md"],
+								defaultBehavior: "ask",
+							},
+						],
+					},
+				},
+			}),
+		).toMatchObject({
+			key: "personal-notes",
+			source: "user",
+		});
+	});
+
+	it("prefers block matches across multi-path tool calls", () => {
+		expect(
+			findGuardedToolCallMatch(
+				"move_file",
+				{
+					source: "/workspace/project/.cursor/settings.json",
+					destination: "/workspace/project/.secrets/token.txt",
+				},
+				{
+					...options,
+					policy: {
+						organization: {
+							rules: [
+								{
+									key: "org-secrets",
+									description: "Organization secret fixtures",
+									patterns: ["**/.secrets/**"],
+									defaultBehavior: "block",
+								},
+							],
+						},
+					},
+				},
+			),
+		).toMatchObject({
+			key: "org-secrets",
+			path: "/workspace/project/.secrets/token.txt",
+			defaultBehavior: "block",
+		});
+	});
+
+	it("prefers block matches over approval matches for the same path", () => {
+		expect(
+			findGuardedFileMatch("/Users/tester/.ssh/config", {
+				...options,
+				policy: {
+					organization: {
+						rules: [
+							{
+								key: "org-ssh-freeze",
+								description: "Organization SSH freeze",
+								patterns: ["~/.ssh/config"],
+								defaultBehavior: "block",
+							},
+						],
+					},
+				},
+			}),
+		).toMatchObject({
+			key: "org-ssh-freeze",
+			defaultBehavior: "block",
+		});
+	});
+
+	it("does not allow allowlists to bypass block guards", () => {
+		expect(
+			findGuardedFileMatch("/workspace/project/.secrets/token.txt", {
+				...options,
+				policy: {
+					organization: {
+						rules: [
+							{
+								key: "org-secrets",
+								description: "Organization secret fixtures",
+								patterns: ["**/.secrets/**"],
+								defaultBehavior: "block",
+							},
+						],
+					},
+					user: {
+						allowlist: ["org-secrets", "/workspace/project/.secrets/token.txt"],
+					},
+				},
+			}),
+		).toMatchObject({
+			key: "org-secrets",
+			defaultBehavior: "block",
+		});
+	});
+
+	it("describes blocked guarded file matches as blocked", () => {
+		const match = findGuardedFileMatch(
+			"/workspace/project/.secrets/token.txt",
+			{
+				...options,
+				policy: {
+					organization: {
+						rules: [
+							{
+								key: "org-secrets",
+								description: "Organization secret fixtures",
+								patterns: ["**/.secrets/**"],
+								defaultBehavior: "block",
+							},
+						],
+					},
+				},
+			},
+		);
+		expect(match).not.toBeNull();
+		expect(describeDefaultGuardedFileMatch(match!)).toContain(
+			"is blocked by policy",
+		);
+		expect(describeDefaultGuardedFileMatch(match!)).not.toContain(
+			"requires explicit approval",
+		);
 	});
 });

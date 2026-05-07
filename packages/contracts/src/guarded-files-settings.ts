@@ -14,6 +14,11 @@ export interface GuardedFilesSettings {
 	mandatoryKeys?: string[];
 }
 
+export interface GuardedFilesPolicySettings {
+	user?: GuardedFilesSettings | null;
+	organization?: GuardedFilesSettings | null;
+}
+
 export const DEFAULT_GUARDED_FILE_PATTERNS: GuardedFilePattern[] = [
 	{
 		key: "cursor-config",

@@ -1,7 +1,10 @@
 import { resolve } from "node:path";
 import {
 	DEFAULT_GUARDED_FILE_PATTERNS,
+	type GuardedFileDefaultBehavior,
 	type GuardedFilePattern,
+	type GuardedFilesPolicySettings,
+	normalizeGuardedFilesSettings,
 } from "@evalops/contracts";
 import { minimatch } from "minimatch";
 import {
@@ -27,12 +30,17 @@ export interface GuardedFileMatch {
 	category: string;
 	pattern: string;
 	path: string;
+	defaultBehavior: GuardedFileDefaultBehavior;
+	mandatory: boolean;
+	reason?: string;
+	source: "default" | "organization" | "user";
 }
 
 export interface GuardedFileMatchOptions {
 	cwd?: string;
 	homeDir?: string;
 	env?: NodeJS.ProcessEnv;
+	policy?: GuardedFilesPolicySettings;
 }
 
 export function classifyGuardedFileAccessAction(
@@ -75,6 +83,58 @@ function guardedPatternToRule(pattern: GuardedFilePattern): GuardedFileRule {
 
 export const DEFAULT_GUARDED_FILE_RULES: GuardedFileRule[] =
 	DEFAULT_GUARDED_FILE_PATTERNS.map(guardedPatternToRule);
+
+interface EffectiveGuardedFileRule extends GuardedFileRule {
+	defaultBehavior: GuardedFileDefaultBehavior;
+	reason?: string;
+	source: "default" | "organization" | "user";
+}
+
+interface NormalizedGuardedFilesPolicy {
+	allowlist: string[];
+	mandatoryKeys: Set<string>;
+	rules: EffectiveGuardedFileRule[];
+}
+
+function guardedPatternToEffectiveRule(
+	pattern: GuardedFilePattern,
+	source: EffectiveGuardedFileRule["source"],
+): EffectiveGuardedFileRule {
+	return {
+		key: pattern.key,
+		category: pattern.description,
+		patterns: pattern.patterns,
+		defaultBehavior: pattern.defaultBehavior,
+		...(pattern.reason ? { reason: pattern.reason } : {}),
+		source,
+	};
+}
+
+const DEFAULT_EFFECTIVE_GUARDED_FILE_RULES: EffectiveGuardedFileRule[] =
+	DEFAULT_GUARDED_FILE_PATTERNS.map((pattern) =>
+		guardedPatternToEffectiveRule(pattern, "default"),
+	);
+
+function normalizeGuardedFilesPolicy(
+	policy?: GuardedFilesPolicySettings,
+): NormalizedGuardedFilesPolicy {
+	const organization = normalizeGuardedFilesSettings(policy?.organization);
+	const user = normalizeGuardedFilesSettings(policy?.user);
+	return {
+		allowlist: [...organization.allowlist, ...user.allowlist],
+		mandatoryKeys: new Set([
+			...organization.mandatoryKeys,
+			...user.mandatoryKeys,
+		]),
+		rules: [
+			...DEFAULT_EFFECTIVE_GUARDED_FILE_RULES,
+			...organization.rules.map((rule) =>
+				guardedPatternToEffectiveRule(rule, "organization"),
+			),
+			...user.rules.map((rule) => guardedPatternToEffectiveRule(rule, "user")),
+		],
+	};
+}
 
 const ENV_TOKEN_PATTERN = /%([A-Z0-9_()]+)%/gi;
 const SHELL_ENV_TOKEN_PATTERN =
@@ -156,6 +216,43 @@ function buildCandidatePaths(
 	return Array.from(new Set(candidates.map(normalizeForGlob)));
 }
 
+function allowlistEntryMatchesPath(
+	entry: string,
+	candidates: string[],
+	options: Required<Pick<GuardedFileMatchOptions, "cwd" | "homeDir" | "env">>,
+): boolean {
+	const normalizedEntries = normalizePatternVariants(entry, options);
+	return candidates.some((candidate) =>
+		normalizedEntries.some((normalizedEntry) =>
+			minimatch(candidate, normalizedEntry, {
+				dot: true,
+				nocase: process.platform === "win32",
+			}),
+		),
+	);
+}
+
+function isGuardedMatchAllowlisted(
+	match: Pick<GuardedFileMatch, "key" | "mandatory" | "defaultBehavior">,
+	candidates: string[],
+	policy: NormalizedGuardedFilesPolicy,
+	options: Required<Pick<GuardedFileMatchOptions, "cwd" | "homeDir" | "env">>,
+): boolean {
+	if (match.defaultBehavior === "block") {
+		return false;
+	}
+	if (match.mandatory) {
+		return false;
+	}
+	return policy.allowlist.some((entry) => {
+		const trimmed = entry.trim();
+		return (
+			trimmed === match.key ||
+			allowlistEntryMatchesPath(trimmed, candidates, options)
+		);
+	});
+}
+
 function expandShellEnvTokens(
 	path: string,
 	options: Required<Pick<GuardedFileMatchOptions, "homeDir" | "env">>,
@@ -184,7 +281,7 @@ function expandShellEnvTokens(
 	return expandedAny && !missingToken ? expanded : null;
 }
 
-export function findDefaultGuardedFileMatch(
+export function findGuardedFileMatch(
 	path: string,
 	options: GuardedFileMatchOptions = {},
 ): GuardedFileMatch | null {
@@ -198,8 +295,10 @@ export function findDefaultGuardedFileMatch(
 		env: options.env ?? process.env,
 	};
 	const candidates = buildCandidatePaths(trimmedPath, requiredOptions);
+	const policy = normalizeGuardedFilesPolicy(options.policy);
+	let firstApprovalMatch: GuardedFileMatch | null = null;
 
-	for (const rule of DEFAULT_GUARDED_FILE_RULES) {
+	for (const rule of policy.rules) {
 		for (const pattern of rule.patterns) {
 			const normalizedPatterns = normalizePatternVariants(
 				pattern,
@@ -214,18 +313,38 @@ export function findDefaultGuardedFileMatch(
 				),
 			);
 			if (matches) {
-				return {
+				const match: GuardedFileMatch = {
 					ruleId: DEFAULT_GUARDED_FILE_RULE_ID,
 					key: rule.key,
 					category: rule.category,
 					pattern,
 					path: trimmedPath,
+					defaultBehavior: rule.defaultBehavior,
+					mandatory: policy.mandatoryKeys.has(rule.key),
+					...(rule.reason ? { reason: rule.reason } : {}),
+					source: rule.source,
 				};
+				if (
+					isGuardedMatchAllowlisted(match, candidates, policy, requiredOptions)
+				) {
+					continue;
+				}
+				if (match.defaultBehavior === "block") {
+					return match;
+				}
+				firstApprovalMatch ??= match;
 			}
 		}
 	}
 
-	return null;
+	return firstApprovalMatch;
+}
+
+export function findDefaultGuardedFileMatch(
+	path: string,
+	options: GuardedFileMatchOptions = {},
+): GuardedFileMatch | null {
+	return findGuardedFileMatch(path, options);
 }
 
 function getArgsObject(args: unknown): Record<string, unknown> | null {
@@ -404,22 +523,39 @@ function extractGuardedToolCallPaths(
 	return paths;
 }
 
+export function findGuardedToolCallMatch(
+	toolName: string,
+	args: unknown,
+	options: GuardedFileMatchOptions = {},
+): GuardedFileMatch | null {
+	let firstMatch: GuardedFileMatch | null = null;
+	for (const path of extractGuardedToolCallPaths(toolName, args)) {
+		const match = findGuardedFileMatch(path, options);
+		if (match) {
+			if (match.defaultBehavior === "block") {
+				return match;
+			}
+			firstMatch ??= match;
+		}
+	}
+	return firstMatch;
+}
+
 export function findDefaultGuardedToolCallMatch(
 	toolName: string,
 	args: unknown,
 	options: GuardedFileMatchOptions = {},
 ): GuardedFileMatch | null {
-	for (const path of extractGuardedToolCallPaths(toolName, args)) {
-		const match = findDefaultGuardedFileMatch(path, options);
-		if (match) {
-			return match;
-		}
-	}
-	return null;
+	return findGuardedToolCallMatch(toolName, args, options);
 }
 
 export function describeDefaultGuardedFileMatch(
 	match: GuardedFileMatch,
 ): string {
-	return `Guarded file access requires explicit approval: ${match.category} (${match.pattern}) at ${match.path}.`;
+	const policyReason = match.reason ? ` ${match.reason}` : "";
+	const actionDescription =
+		match.defaultBehavior === "block"
+			? "is blocked by policy"
+			: "requires explicit approval";
+	return `Guarded file access ${actionDescription}: ${match.category} (${match.pattern}) at ${match.path}.${policyReason}`;
 }
