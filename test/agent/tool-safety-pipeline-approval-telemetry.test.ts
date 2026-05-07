@@ -1,8 +1,8 @@
 import { Type } from "@sinclair/typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type {
-	ActionApprovalDecision,
-	ActionApprovalRequest,
+import {
+	type ActionApprovalDecision,
+	type ActionApprovalRequest,
 	ActionApprovalService,
 } from "../../src/agent/action-approval.js";
 import { evaluateToolSafety } from "../../src/agent/transport/tool-safety-pipeline.js";
@@ -24,6 +24,62 @@ const telemetryMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../../src/telemetry/maestro-event-bus.js", () => telemetryMocks);
+
+function createReadTool(): AgentTool {
+	return {
+		name: "read",
+		description: "Read a file",
+		parameters: Type.Object({
+			path: Type.String(),
+		}),
+		execute: async () => ({
+			content: [{ type: "text", text: "ok" }],
+		}),
+	};
+}
+
+function createGuardedReadSafetyContext(options: {
+	approvalService: ActionApprovalService;
+}) {
+	const readTool = createReadTool();
+	return {
+		toolCall: {
+			type: "toolCall" as const,
+			id: "call-guarded-read",
+			name: "read",
+			arguments: { path: "~/.ssh/config" },
+		},
+		tools: [readTool],
+		userMessage: {
+			role: "user" as const,
+			content: "Read the ssh config",
+			timestamp: Date.now(),
+		} satisfies Message,
+		cfg: {
+			tools: [readTool],
+			session: { id: "session-guarded", startedAt: new Date() },
+			user: { id: "user-1", orgId: "workspace-1" },
+		} as AgentRunConfig,
+		clock: { now: () => Date.now() },
+		safetyMiddleware: new SafetyMiddleware({
+			enableContextFirewall: false,
+			enableLoopDetection: false,
+			enableSequenceAnalysis: false,
+		}),
+		workflowState: new WorkflowStateTracker(),
+		adaptiveThresholds: new AdaptiveThresholds(),
+		approvalService: options.approvalService,
+		firewall: new ActionFirewall(),
+		rateLimitState: {
+			recentToolTimestamps: new Map(),
+			toolCallsThisMinute: 0,
+			minuteWindowStart: 0,
+			rateWindowMs: 10_000,
+			rateLimit: 10,
+		},
+		emitToolResult: () => [],
+	};
+}
 
 describe("evaluateToolSafety approval telemetry", () => {
 	afterEach(() => {
@@ -295,5 +351,103 @@ describe("evaluateToolSafety approval telemetry", () => {
 		} finally {
 			process.off("unhandledRejection", onUnhandledRejection);
 		}
+	});
+
+	it("marks guarded-file approval hits with structured audit context", async () => {
+		const approvalService = new ActionApprovalService("prompt");
+		const iterator = evaluateToolSafety(
+			createGuardedReadSafetyContext({ approvalService }),
+		);
+
+		expect((await iterator.next()).done).toBe(false);
+
+		const approvalRequired = await iterator.next();
+		expect(approvalRequired.done).toBe(false);
+		if (approvalRequired.done) {
+			throw new Error("Expected approval-required event");
+		}
+		expect(approvalRequired.value).toMatchObject({
+			type: "action_approval_required",
+			request: {
+				id: "call-guarded-read",
+				toolName: "read",
+				args: { path: "~/.ssh/config" },
+			},
+		});
+		expect(telemetryMocks.recordMaestroApprovalHit).toHaveBeenCalledWith(
+			expect.objectContaining({
+				approval_request_id: "call-guarded-read",
+				policy_id: "guardedFiles_block",
+				risk_level: "guarded_file",
+				decision_mode: "MAESTRO_DECISION_MODE_REQUIRE_APPROVAL",
+				reason: expect.stringContaining("Guarded file access"),
+				context: expect.objectContaining({
+					tool_name: "read",
+					args: { path: "~/.ssh/config" },
+					guarded_file: expect.objectContaining({
+						rule_id: "default-guarded-file",
+						category: "SSH and GPG keys",
+						path: "~/.ssh/config",
+						action: "read",
+					}),
+				}),
+				correlation: {
+					session_id: "session-guarded",
+					agent_run_step_id: "call-guarded-read",
+				},
+			}),
+		);
+
+		expect(approvalService.approve("call-guarded-read", "Confirmed")).toBe(
+			true,
+		);
+		expect((await iterator.next()).done).toBe(false);
+		const final = await iterator.next();
+		expect(final.done).toBe(true);
+		if (!final.done) {
+			throw new Error("Expected final safety verdict");
+		}
+		expect(final.value.verdict).toMatchObject({
+			outcome: "proceed",
+		});
+	});
+
+	it("records guarded-file audit context when non-interactive approval blocks", async () => {
+		const approvalService = new ActionApprovalService("auto");
+		const requestApproval = vi.spyOn(approvalService, "requestApproval");
+		const iterator = evaluateToolSafety(
+			createGuardedReadSafetyContext({ approvalService }),
+		);
+
+		expect((await iterator.next()).done).toBe(false);
+		const final = await iterator.next();
+
+		expect(final.done).toBe(true);
+		if (!final.done) {
+			throw new Error("Expected final safety verdict");
+		}
+		expect(final.value.verdict).toMatchObject({
+			outcome: "blocked",
+		});
+		expect(requestApproval).not.toHaveBeenCalled();
+		expect(telemetryMocks.recordMaestroApprovalHit).toHaveBeenCalledWith(
+			expect.objectContaining({
+				approval_request_id: "call-guarded-read",
+				policy_id: "guardedFiles_block",
+				risk_level: "guarded_file",
+				reason: expect.stringContaining(
+					"Approval mode must be prompt for guarded file access",
+				),
+				context: expect.objectContaining({
+					tool_name: "read",
+					args: { path: "~/.ssh/config" },
+					guarded_file: expect.objectContaining({
+						rule_id: "default-guarded-file",
+						category: "SSH and GPG keys",
+						action: "read",
+					}),
+				}),
+			}),
+		);
 	});
 });
