@@ -14,12 +14,16 @@ import type { AdaptiveThresholds } from "../../safety/adaptive-thresholds.js";
 import { METRICS } from "../../safety/adaptive-thresholds.js";
 import {
 	DEFAULT_GUARDED_FILE_RULE_ID,
+	GUARDED_FILES_BLOCK_POLICY_ID,
+	type GuardedFileMatch,
+	classifyGuardedFileAccessAction,
 	describeDefaultGuardedFileMatch,
 	findDefaultGuardedToolCallMatch,
 } from "../../safety/guarded-files.js";
 import type { SafetyMiddleware } from "../../safety/safety-middleware.js";
 import type { WorkflowStateTracker } from "../../safety/workflow-state.js";
 import {
+	type RecordMaestroApprovalHitInput,
 	recordMaestroApprovalHit,
 	recordMaestroFirewallBlock,
 } from "../../telemetry/maestro-event-bus.js";
@@ -137,6 +141,44 @@ interface ApprovalRegistrationAwareService {
 		requestId: string,
 		options?: { signal?: AbortSignal },
 	) => Promise<ApprovalRegistrationMetadata | null>;
+}
+
+function guardedFileAuditContext(
+	toolName: string,
+	args: Record<string, unknown>,
+	match: GuardedFileMatch | null,
+	metadata: {
+		displayName?: string;
+		summaryLabel?: string;
+	},
+): Record<string, unknown> {
+	const context: Record<string, unknown> = {
+		tool_name: toolName,
+		display_name: metadata.displayName,
+		summary_label: metadata.summaryLabel,
+		args,
+	};
+	if (match) {
+		context.guarded_file = {
+			rule_id: match.ruleId,
+			category: match.category,
+			pattern: match.pattern,
+			path: match.path,
+			action: classifyGuardedFileAccessAction(toolName),
+		};
+	}
+	return context;
+}
+
+function guardedFileAuditFields(
+	guardedFileApprovalRequired: boolean,
+): Pick<RecordMaestroApprovalHitInput, "policy_id" | "risk_level"> {
+	return guardedFileApprovalRequired
+		? {
+				policy_id: GUARDED_FILES_BLOCK_POLICY_ID,
+				risk_level: "guarded_file",
+			}
+		: {};
 }
 
 async function waitForPendingApprovalRegistration(
@@ -526,16 +568,16 @@ export async function* evaluateToolSafety(
 		session: cfg.session,
 		userIntent: extractTextFromContent(userMessage.content),
 	});
-	const initialGuardedFileMatch = findDefaultGuardedToolCallMatch(
+	let guardedFileMatch = findDefaultGuardedToolCallMatch(
 		effectiveToolCall.name,
 		effectiveToolCall.arguments,
 	);
 	let guardedFileApprovalRequired =
-		Boolean(initialGuardedFileMatch) ||
+		Boolean(guardedFileMatch) ||
 		(verdict.action === "require_approval" &&
 			verdict.ruleId === DEFAULT_GUARDED_FILE_RULE_ID);
-	let guardedFileApprovalReason = initialGuardedFileMatch
-		? describeDefaultGuardedFileMatch(initialGuardedFileMatch)
+	let guardedFileApprovalReason = guardedFileMatch
+		? describeDefaultGuardedFileMatch(guardedFileMatch)
 		: guardedFileApprovalRequired && verdict.action === "require_approval"
 			? verdict.reason
 			: undefined;
@@ -736,6 +778,7 @@ export async function* evaluateToolSafety(
 					effectiveToolCall.arguments,
 				);
 				if (guardedMatch) {
+					guardedFileMatch = guardedMatch;
 					guardedFileApprovalRequired = true;
 					guardedFileApprovalReason =
 						describeDefaultGuardedFileMatch(guardedMatch);
@@ -791,6 +834,35 @@ export async function* evaluateToolSafety(
 			if (!permissionHookMadeDecision) {
 				approvalReason = `${guardedFileApprovalReason ?? localApprovalReason ?? "Guarded file access requires explicit approval"} Approval mode must be prompt for guarded file access.`;
 			}
+			const sanitizedApprovalArgs = safetyMiddleware.sanitizeForLogging(
+				effectiveToolCall.arguments as Record<string, unknown>,
+			);
+			const approvalDescription = describeArgs(sanitizedApprovalArgs);
+			recordMaestroApprovalHit({
+				approval_request_id:
+					toolExecutionBridgePlan?.metadata.approvalRequestId ?? toolCall.id,
+				action:
+					approvalDescription.actionDescription ??
+					approvalDescription.summaryLabel ??
+					effectiveToolCall.name,
+				command:
+					typeof sanitizedApprovalArgs.command === "string"
+						? sanitizedApprovalArgs.command
+						: undefined,
+				decision_mode: "MAESTRO_DECISION_MODE_REQUIRE_APPROVAL",
+				...guardedFileAuditFields(true),
+				reason: approvalReason,
+				context: guardedFileAuditContext(
+					effectiveToolCall.name,
+					sanitizedApprovalArgs,
+					guardedFileMatch,
+					approvalDescription,
+				),
+				correlation: {
+					session_id: cfg.session?.id,
+					agent_run_step_id: toolCall.id,
+				},
+			});
 		} else if (approvalService && !permissionHookMadeDecision) {
 			const sanitizedApprovalArgs = safetyMiddleware.sanitizeForLogging(
 				effectiveToolCall.arguments as Record<string, unknown>,
@@ -829,13 +901,17 @@ export async function* evaluateToolSafety(
 						? sanitizedApprovalArgs.command
 						: undefined,
 				decision_mode: "MAESTRO_DECISION_MODE_REQUIRE_APPROVAL",
+				...guardedFileAuditFields(guardedFileApprovalRequired),
 				reason: request.reason,
-				context: {
-					tool_name: request.toolName,
-					display_name: request.displayName,
-					summary_label: request.summaryLabel,
-					args: sanitizedApprovalArgs,
-				},
+				context: guardedFileAuditContext(
+					request.toolName,
+					sanitizedApprovalArgs,
+					guardedFileApprovalRequired ? guardedFileMatch : null,
+					{
+						displayName: request.displayName,
+						summaryLabel: request.summaryLabel,
+					},
+				),
 				correlation: {
 					session_id: cfg.session?.id,
 					agent_run_step_id: toolCall.id,

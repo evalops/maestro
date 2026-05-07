@@ -7,6 +7,9 @@ import {
 import { tokenizeSimple, unwrapShellCommand } from "./bash-safety-analyzer.js";
 
 export const DEFAULT_GUARDED_FILE_RULE_ID = "default-guarded-file";
+export const GUARDED_FILES_BLOCK_POLICY_ID = "guardedFiles_block";
+
+export type GuardedFileAccessAction = "read" | "write" | "execute" | "unknown";
 
 export interface GuardedFileRule {
 	category: string;
@@ -24,6 +27,36 @@ export interface GuardedFileMatchOptions {
 	cwd?: string;
 	homeDir?: string;
 	env?: NodeJS.ProcessEnv;
+}
+
+export function classifyGuardedFileAccessAction(
+	toolName: string,
+): GuardedFileAccessAction {
+	const normalizedToolName = toolName.toLowerCase();
+	if (
+		["write", "edit", "delete_file", "move_file", "copy_file"].includes(
+			normalizedToolName,
+		)
+	) {
+		return "write";
+	}
+	if (
+		[
+			"read",
+			"list",
+			"find",
+			"search",
+			"parallel_ripgrep",
+			"diff",
+			"status",
+		].includes(normalizedToolName)
+	) {
+		return "read";
+	}
+	if (["bash", "background_tasks"].includes(normalizedToolName)) {
+		return "execute";
+	}
+	return "unknown";
 }
 
 export const DEFAULT_GUARDED_FILE_RULES: GuardedFileRule[] = [
