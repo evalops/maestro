@@ -18,6 +18,10 @@ import {
 	mirrorCanonicalTurnEventToMeter,
 } from "./telemetry/meter-service-client.js";
 import {
+	recordCompactionMetric,
+	recordToolInvocationMetric,
+} from "./telemetry/metrics.js";
+import {
 	type CanonicalTurnEvent,
 	setDefaultTelemetryRecorder,
 } from "./telemetry/wide-events.js";
@@ -488,10 +492,52 @@ function recordOpenTelemetrySpan(event: TelemetryEvent): void {
 	}
 }
 
+function recordOpenTelemetryMetric(event: TelemetryEvent): void {
+	try {
+		switch (event.type) {
+			case "tool-execution":
+				recordToolInvocationMetric({
+					toolName: event.toolName,
+					durationMs: event.durationMs,
+					success: event.success,
+					agentRunId: metadataString(event.metadata, [
+						"agentRunId",
+						"agent_run_id",
+					]),
+					skillName: skillNameFromMetadata(event.metadata),
+				});
+				break;
+			case "business-metric":
+				if (event.metric === "compaction.triggered") {
+					recordCompactionMetric({
+						"maestro.session_id": event.metadata?.sessionId,
+						"llm.model.id": event.metadata?.model,
+						"llm.model.provider": event.metadata?.provider,
+					});
+				}
+				break;
+			default:
+				break;
+		}
+	} catch {
+		// Never let metric recording affect runtime behavior.
+	}
+}
+
 function stringRecord(value: unknown): Record<string, unknown> | undefined {
 	return value && typeof value === "object" && !Array.isArray(value)
 		? (value as Record<string, unknown>)
 		: undefined;
+}
+
+function skillNameFromMetadata(
+	metadata: Record<string, unknown> | undefined,
+): string | undefined {
+	return (
+		metadataString(metadata, ["skillName", "skill_name"]) ??
+		metadataString(stringRecord(metadata?.skillMetadata), ["name"]) ??
+		metadataString(stringRecord(metadata?.skill_metadata), ["name"])
+	);
 }
 
 function metadataString(
@@ -647,6 +693,7 @@ export async function recordTelemetry(event: TelemetryEvent): Promise<void> {
 	const openTelemetryEnabled = isOpenTelemetryEnabled();
 	if (openTelemetryEnabled) {
 		recordOpenTelemetrySpan(event);
+		recordOpenTelemetryMetric(event);
 	}
 	const eventBusTask = mirrorTelemetryToMaestroEventBus(event);
 
