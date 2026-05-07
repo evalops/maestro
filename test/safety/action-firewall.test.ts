@@ -99,6 +99,31 @@ function makeEditContext(): ActionApprovalContext {
 	return { toolName: "edit", args: { path: "file.txt" } };
 }
 
+function makeReadPathContext(path: string): ActionApprovalContext {
+	return { toolName: "read", args: { path } };
+}
+
+function makeSearchPathContext(
+	paths: string | string[],
+): ActionApprovalContext {
+	return { toolName: "search", args: { pattern: "Host", paths } };
+}
+
+function makeListPathContext(path: string): ActionApprovalContext {
+	return { toolName: "list", args: { path } };
+}
+
+function makeDeleteFileContext(path: string): ActionApprovalContext {
+	return { toolName: "delete_file", args: { target_file: path } };
+}
+
+function makeMoveFileContext(
+	source: string,
+	destination: string,
+): ActionApprovalContext {
+	return { toolName: "move_file", args: { source, destination } };
+}
+
 function makeTodoContext(): ActionApprovalContext {
 	return { toolName: "todo", args: { items: [] } };
 }
@@ -161,6 +186,77 @@ describe("ActionFirewall", () => {
 			makeBashContext('echo "safe command"'),
 		);
 		expect(verdict.action).toBe("allow");
+	});
+
+	it("requires approval for default guarded file reads", async () => {
+		const verdict = await defaultActionFirewall.evaluate(
+			makeReadPathContext("~/.ssh/config"),
+		);
+		expect(verdict).toMatchObject({
+			action: "require_approval",
+			ruleId: "default-guarded-file",
+		});
+		if (verdict.action !== "require_approval") {
+			throw new Error("Expected guarded file read to require approval");
+		}
+		expect(verdict.reason).toContain("Guarded file access");
+	});
+
+	it("requires approval for guarded file mutations beyond write and edit", async () => {
+		const deleteVerdict = await defaultActionFirewall.evaluate(
+			makeDeleteFileContext("~/.ssh/config"),
+		);
+		expect(deleteVerdict).toMatchObject({
+			action: "require_approval",
+			ruleId: "default-guarded-file",
+		});
+
+		const moveVerdict = await defaultActionFirewall.evaluate(
+			makeMoveFileContext("~/.gnupg/secring.gpg", "./backup.gpg"),
+		);
+		expect(moveVerdict).toMatchObject({
+			action: "require_approval",
+			ruleId: "default-guarded-file",
+		});
+	});
+
+	it("preserves hard blocks for guarded paths under system directories", async () => {
+		const verdict = await defaultActionFirewall.evaluate({
+			toolName: "edit",
+			args: { path: "/etc/windsurf/settings.json" },
+		});
+		expect(verdict).toMatchObject({
+			action: "block",
+			ruleId: "system-path-protection",
+		});
+	});
+
+	it("requires approval for guarded files reached through bash", async () => {
+		const verdict = await defaultActionFirewall.evaluate(
+			makeBashContext("cat ~/.ssh/config"),
+		);
+		expect(verdict).toMatchObject({
+			action: "require_approval",
+			ruleId: "default-guarded-file",
+		});
+	});
+
+	it("requires approval for guarded files reached through search and list", async () => {
+		const searchVerdict = await defaultActionFirewall.evaluate(
+			makeSearchPathContext(["~/.ssh"]),
+		);
+		expect(searchVerdict).toMatchObject({
+			action: "require_approval",
+			ruleId: "default-guarded-file",
+		});
+
+		const listVerdict = await defaultActionFirewall.evaluate(
+			makeListPathContext("~/.gnupg"),
+		);
+		expect(listVerdict).toMatchObject({
+			action: "require_approval",
+			ruleId: "default-guarded-file",
+		});
 	});
 
 	it("respects bash allowlist patterns", async () => {

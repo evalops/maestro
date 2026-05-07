@@ -12,6 +12,11 @@ import {
 } from "../../safety/action-firewall.js";
 import type { AdaptiveThresholds } from "../../safety/adaptive-thresholds.js";
 import { METRICS } from "../../safety/adaptive-thresholds.js";
+import {
+	DEFAULT_GUARDED_FILE_RULE_ID,
+	describeDefaultGuardedFileMatch,
+	findDefaultGuardedToolCallMatch,
+} from "../../safety/guarded-files.js";
 import type { SafetyMiddleware } from "../../safety/safety-middleware.js";
 import type { WorkflowStateTracker } from "../../safety/workflow-state.js";
 import {
@@ -521,6 +526,19 @@ export async function* evaluateToolSafety(
 		session: cfg.session,
 		userIntent: extractTextFromContent(userMessage.content),
 	});
+	const initialGuardedFileMatch = findDefaultGuardedToolCallMatch(
+		effectiveToolCall.name,
+		effectiveToolCall.arguments,
+	);
+	let guardedFileApprovalRequired =
+		Boolean(initialGuardedFileMatch) ||
+		(verdict.action === "require_approval" &&
+			verdict.ruleId === DEFAULT_GUARDED_FILE_RULE_ID);
+	let guardedFileApprovalReason = initialGuardedFileMatch
+		? describeDefaultGuardedFileMatch(initialGuardedFileMatch)
+		: guardedFileApprovalRequired && verdict.action === "require_approval"
+			? verdict.reason
+			: undefined;
 
 	if (verdict.action === "block") {
 		const blockedResult: ToolResultMessage = {
@@ -690,7 +708,11 @@ export async function* evaluateToolSafety(
 	}
 
 	// 6. Approval flow
-	if (verdict.action === "require_approval" || platformApprovalRequest) {
+	if (
+		verdict.action === "require_approval" ||
+		platformApprovalRequest ||
+		guardedFileApprovalRequired
+	) {
 		const localApprovalReason =
 			verdict.action === "require_approval" ? verdict.reason : undefined;
 		let permissionHookMadeDecision = false;
@@ -698,21 +720,33 @@ export async function* evaluateToolSafety(
 			const permissionHookResult = await hookService.runPermissionRequestHooks(
 				effectiveToolCall,
 				platformApprovalRequest?.reason ??
+					guardedFileApprovalReason ??
 					localApprovalReason ??
 					approvalReason ??
 					"Approval required",
 				signal,
 			);
-			if (permissionHookResult.updatedInput) {
+			if (permissionHookResult.updatedInput && !guardedFileApprovalRequired) {
 				effectiveToolCall = {
 					...effectiveToolCall,
 					arguments: permissionHookResult.updatedInput,
 				};
+				const guardedMatch = findDefaultGuardedToolCallMatch(
+					effectiveToolCall.name,
+					effectiveToolCall.arguments,
+				);
+				if (guardedMatch) {
+					guardedFileApprovalRequired = true;
+					guardedFileApprovalReason =
+						describeDefaultGuardedFileMatch(guardedMatch);
+				}
 			}
 			if (permissionHookResult.decision === "allow") {
-				permissionHookMadeDecision = true;
-				approvalAllowed = true;
-				approvalReason = permissionHookResult.decisionReason;
+				if (!guardedFileApprovalRequired) {
+					permissionHookMadeDecision = true;
+					approvalAllowed = true;
+					approvalReason = permissionHookResult.decisionReason;
+				}
 			} else if (permissionHookResult.decision === "deny") {
 				permissionHookMadeDecision = true;
 				approvalAllowed = false;
@@ -749,19 +783,31 @@ export async function* evaluateToolSafety(
 			}
 		}
 
-		if (approvalService && !permissionHookMadeDecision) {
+		if (
+			guardedFileApprovalRequired &&
+			approvalService?.requiresUserInteraction() !== true
+		) {
+			approvalAllowed = false;
+			if (!permissionHookMadeDecision) {
+				approvalReason = `${guardedFileApprovalReason ?? localApprovalReason ?? "Guarded file access requires explicit approval"} Approval mode must be prompt for guarded file access.`;
+			}
+		} else if (approvalService && !permissionHookMadeDecision) {
 			const sanitizedApprovalArgs = safetyMiddleware.sanitizeForLogging(
 				effectiveToolCall.arguments as Record<string, unknown>,
 			);
 			const request =
-				platformApprovalRequest ??
-				({
-					id: toolCall.id,
-					toolName: toolCall.name,
-					...describeArgs(sanitizedApprovalArgs),
-					args: sanitizedApprovalArgs,
-					reason: localApprovalReason ?? "Approval required",
-				} satisfies import("../action-approval.js").ActionApprovalRequest);
+				!guardedFileApprovalRequired && platformApprovalRequest
+					? platformApprovalRequest
+					: ({
+							id: toolCall.id,
+							toolName: toolCall.name,
+							...describeArgs(sanitizedApprovalArgs),
+							args: sanitizedApprovalArgs,
+							reason:
+								guardedFileApprovalReason ??
+								localApprovalReason ??
+								"Approval required",
+						} satisfies import("../action-approval.js").ActionApprovalRequest);
 			const shouldEmitEvents = approvalService.requiresUserInteraction();
 			const decisionPromise = approvalService.requestApproval(request, signal);
 			const registrationMetadata = await waitForPendingApprovalRegistration(
