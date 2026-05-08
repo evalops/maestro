@@ -620,7 +620,9 @@ export class NativeSandbox implements Sandbox {
 		}
 
 		const fullPath = this.resolvePath(path);
-		this.assertWritablePath(fullPath);
+		this.assertWritablePath(fullPath, {
+			blockReadOnlyDescendants: recursive ?? false,
+		});
 		rmSync(fullPath, { recursive: recursive ?? false, force: true });
 	}
 
@@ -670,7 +672,10 @@ export class NativeSandbox implements Sandbox {
 		this.assertWritablePath(targetPath);
 	}
 
-	private assertWritablePath(path: string): void {
+	private assertWritablePath(
+		path: string,
+		options?: { blockReadOnlyDescendants?: boolean },
+	): void {
 		if (this.policy.mode === "danger-full-access") {
 			return;
 		}
@@ -688,9 +693,14 @@ export class NativeSandbox implements Sandbox {
 
 			hasMatchingWritableRoot = true;
 			if (
-				root.readOnlySubpaths.some((readOnlySubpath) =>
-					isPathWithin(targetPath, canonicalizeForAccess(readOnlySubpath)),
-				)
+				root.readOnlySubpaths.some((readOnlySubpath) => {
+					const readOnlyPath = canonicalizeForAccess(readOnlySubpath);
+					return (
+						isPathWithin(targetPath, readOnlyPath) ||
+						(options?.blockReadOnlyDescendants === true &&
+							isPathWithin(readOnlyPath, targetPath))
+					);
+				})
 			) {
 				blockedByReadOnlySubpath = true;
 			}
