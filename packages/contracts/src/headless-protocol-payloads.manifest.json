@@ -511,7 +511,8 @@
 				"summary_label": { "kind": "string", "optional": true },
 				"action_description": { "kind": "string", "optional": true },
 				"args": { "kind": "unknown" },
-				"reason": { "kind": "string" }
+				"reason": { "kind": "string" },
+				"started_at_ms": { "kind": "number", "optional": true }
 			}
 		},
 		"HeadlessServerRequestResolvedMessageSchema": {
@@ -533,7 +534,9 @@
 				"resolved_by": {
 					"kind": "enumRef",
 					"name": "headlessServerRequestResolvedBy"
-				}
+				},
+				"started_at_ms": { "kind": "number", "optional": true },
+				"resolved_at_ms": { "kind": "number", "optional": true }
 			}
 		},
 		"HeadlessRawAgentEventMessageSchema": {
@@ -868,7 +871,8 @@
 				"display_name": { "kind": "string", "optional": true },
 				"summary_label": { "kind": "string", "optional": true },
 				"action_description": { "kind": "string", "optional": true },
-				"args": { "kind": "unknown" }
+				"args": { "kind": "unknown" },
+				"started_at_ms": { "kind": "number", "optional": true }
 			}
 		},
 		"HeadlessPendingRequestStateSchema": {
@@ -899,6 +903,7 @@
 				"summary_label": { "kind": "string", "optional": true },
 				"action_description": { "kind": "string", "optional": true },
 				"args": { "kind": "unknown" },
+				"started_at_ms": { "kind": "number", "optional": true },
 				"source": {
 					"kind": "union",
 					"variants": [

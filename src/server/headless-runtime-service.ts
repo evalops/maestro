@@ -63,6 +63,12 @@ import { WebActionApprovalService } from "./approval-service.js";
 import { getAgentCircuitBreaker } from "./circuit-breaker.js";
 import { clientToolService } from "./client-tools-service.js";
 import {
+	type HostedAgentRuntimeCompleteInput,
+	type HostedAgentRuntimeFailInput,
+	type HostedAgentRuntimeProgressRecorder,
+	createHostedAgentRuntimeProgressRecorder,
+} from "./hosted-agent-runtime-progress.js";
+import {
 	type ServerRequestLifecycleEvent,
 	serverRequestManager,
 } from "./server-request-manager.js";
@@ -607,7 +613,10 @@ type RuntimeOptions = {
 	approvalMode: ApprovalMode;
 	enableClientTools?: boolean;
 	client?: "vscode" | "jetbrains" | "conductor" | "generic";
-	context: Pick<WebServerContext, "createAgent" | "createBackgroundAgent">;
+	context: Pick<
+		WebServerContext,
+		"createAgent" | "createBackgroundAgent" | "hostedRunner"
+	>;
 	sessionManager: SessionManager;
 };
 
@@ -645,6 +654,7 @@ export class HeadlessSessionRuntime {
 	private readonly updateSessionSummary: (event: AgentEvent) => void;
 	private readonly automaticMemoryConsolidation: AutomaticMemoryConsolidationCoordinator;
 	private readonly automaticMemoryExtraction: AutomaticMemoryExtractionCoordinator;
+	private readonly agentRuntimeProgress?: HostedAgentRuntimeProgressRecorder;
 
 	private constructor(
 		options: RuntimeOptions,
@@ -747,6 +757,11 @@ export class HeadlessSessionRuntime {
 		this.updateSessionSummary = createRuntimeSessionSummaryUpdater(
 			this.sessionManager,
 		);
+		this.agentRuntimeProgress = createHostedAgentRuntimeProgressRecorder({
+			sessionId: this.sessionId,
+			hostedRunner: options.context.hostedRunner,
+			workspaceRoot: this.workspaceRoot,
+		});
 
 		this.agent.subscribe((event) => {
 			this.handleAgentEvent(event);
@@ -874,6 +889,7 @@ export class HeadlessSessionRuntime {
 			await this.utilityCommands.dispose();
 			this.fileWatches.dispose();
 			this.agent.abort();
+			await this.agentRuntimeProgress?.flush();
 			await this.automaticMemoryExtraction.flush();
 			await this.automaticMemoryConsolidation.flush();
 			await this.sessionManager.flush();
@@ -886,6 +902,18 @@ export class HeadlessSessionRuntime {
 			}
 		});
 		return disposePromise;
+	}
+
+	async completeHostedAgentRuntimeRun(
+		input: HostedAgentRuntimeCompleteInput = {},
+	): Promise<void> {
+		await this.agentRuntimeProgress?.completeRun(input);
+	}
+
+	async failHostedAgentRuntimeRun(
+		input: HostedAgentRuntimeFailInput,
+	): Promise<void> {
+		await this.agentRuntimeProgress?.failRun(input);
 	}
 
 	disposeBestEffort(reason: string): void {
@@ -2159,6 +2187,7 @@ export class HeadlessSessionRuntime {
 		} catch (error) {
 			const message =
 				error instanceof Error ? error.message : "Unknown remote runtime error";
+			this.agentRuntimeProgress?.recordPromptFailure(message);
 			this.publish({
 				type: "error",
 				message,
@@ -2224,6 +2253,7 @@ export class HeadlessSessionRuntime {
 	private handleAgentEvent(event: AgentEvent): void {
 		this.recordFleetEvent(event);
 		this.updateSessionSummary(event);
+		this.agentRuntimeProgress?.recordAgentEvent(event);
 
 		if (
 			Array.from(this.connections.values()).some(
@@ -2348,6 +2378,7 @@ export class HeadlessSessionRuntime {
 		if (event.request.sessionId !== this.sessionId) {
 			return;
 		}
+		this.agentRuntimeProgress?.recordServerRequestEvent(event);
 
 		if (event.type === "registered") {
 			if (this.publishedServerRequestIds.has(event.request.id)) {
@@ -2370,6 +2401,9 @@ export class HeadlessSessionRuntime {
 					: {}),
 				args: event.request.args,
 				reason: event.request.reason,
+				...(event.request.startedAtMs !== undefined
+					? { started_at_ms: event.request.startedAtMs }
+					: {}),
 			});
 			return;
 		}
@@ -2385,6 +2419,12 @@ export class HeadlessSessionRuntime {
 			resolution: event.resolution,
 			reason: event.reason,
 			resolved_by: event.resolvedBy,
+			...(event.request.startedAtMs !== undefined
+				? { started_at_ms: event.request.startedAtMs }
+				: {}),
+			...(event.resolvedAtMs !== undefined
+				? { resolved_at_ms: event.resolvedAtMs }
+				: {}),
 		});
 	}
 
@@ -2493,7 +2533,10 @@ export type EnsureRuntimeOptions = {
 	enableClientTools?: boolean;
 	client?: "vscode" | "jetbrains" | "conductor" | "generic";
 	registerConnection?: boolean;
-	context: Pick<WebServerContext, "createAgent" | "createBackgroundAgent">;
+	context: Pick<
+		WebServerContext,
+		"createAgent" | "createBackgroundAgent" | "hostedRunner"
+	>;
 	sessionManager: SessionManager;
 };
 

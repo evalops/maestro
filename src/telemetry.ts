@@ -8,15 +8,21 @@ import {
 	initOpenTelemetry,
 	isOpenTelemetryEnabled,
 } from "./opentelemetry.js";
+import { isInternalTelemetryDisabled } from "./telemetry/disablement.js";
 import {
 	type MaestroCorrelation,
 	mirrorTelemetryToMaestroEventBus,
 	resolveMaestroEventBusConfig,
 } from "./telemetry/maestro-event-bus.js";
+import { normalizeTelemetryMetadataInputs } from "./telemetry/metadata-normalization.js";
 import {
 	hasRemoteMeterDestination,
 	mirrorCanonicalTurnEventToMeter,
 } from "./telemetry/meter-service-client.js";
+import {
+	recordCompactionMetric,
+	recordToolInvocationMetric,
+} from "./telemetry/metrics.js";
 import {
 	type CanonicalTurnEvent,
 	setDefaultTelemetryRecorder,
@@ -26,6 +32,8 @@ import {
 	sanitizeOptionalWithStaticMask,
 	sanitizeWithStaticMask,
 } from "./utils/secret-redactor.js";
+
+export { splitTelemetryMetadata } from "./telemetry/metadata-normalization.js";
 
 type BaseTelemetryEvent = {
 	type:
@@ -38,6 +46,7 @@ type BaseTelemetryEvent = {
 		| "business-metric"
 		| "sandbox-violation";
 	timestamp: string;
+	sensitiveMetadata?: Record<string, unknown>;
 };
 
 export interface ApiRequestTelemetry extends BaseTelemetryEvent {
@@ -287,6 +296,38 @@ export function setTelemetryRuntimeOverride(
 	telemetryEnabled = enabled === null ? initialTelemetryEnabled : enabled;
 }
 
+function normalizeTelemetryEventMetadata(
+	event: TelemetryEvent,
+): TelemetryEvent {
+	if (!("metadata" in event) && !("sensitiveMetadata" in event)) {
+		return event;
+	}
+	const existingMetadata =
+		"metadata" in event ? stringRecord(event.metadata) : undefined;
+	const existingSensitiveMetadata =
+		"sensitiveMetadata" in event
+			? stringRecord(event.sensitiveMetadata)
+			: undefined;
+	const { metadata, sensitiveMetadata } = normalizeTelemetryMetadataInputs(
+		existingMetadata,
+		existingSensitiveMetadata,
+	);
+	const normalized = { ...event };
+	if ("metadata" in normalized) {
+		if (metadata) {
+			normalized.metadata = metadata;
+		} else {
+			delete normalized.metadata;
+		}
+	}
+	if (sensitiveMetadata) {
+		normalized.sensitiveMetadata = sensitiveMetadata;
+	} else {
+		delete normalized.sensitiveMetadata;
+	}
+	return normalized;
+}
+
 function isCanonicalTurnTelemetryEvent(
 	event: TelemetryEvent,
 ): event is CanonicalTurnEvent {
@@ -488,10 +529,52 @@ function recordOpenTelemetrySpan(event: TelemetryEvent): void {
 	}
 }
 
+function recordOpenTelemetryMetric(event: TelemetryEvent): void {
+	try {
+		switch (event.type) {
+			case "tool-execution":
+				recordToolInvocationMetric({
+					toolName: event.toolName,
+					durationMs: event.durationMs,
+					success: event.success,
+					agentRunId: metadataString(event.metadata, [
+						"agentRunId",
+						"agent_run_id",
+					]),
+					skillName: skillNameFromMetadata(event.metadata),
+				});
+				break;
+			case "business-metric":
+				if (event.metric === "compaction.triggered") {
+					recordCompactionMetric({
+						"maestro.session_id": event.metadata?.sessionId,
+						"llm.model.id": event.metadata?.model,
+						"llm.model.provider": event.metadata?.provider,
+					});
+				}
+				break;
+			default:
+				break;
+		}
+	} catch {
+		// Never let metric recording affect runtime behavior.
+	}
+}
+
 function stringRecord(value: unknown): Record<string, unknown> | undefined {
 	return value && typeof value === "object" && !Array.isArray(value)
 		? (value as Record<string, unknown>)
 		: undefined;
+}
+
+function skillNameFromMetadata(
+	metadata: Record<string, unknown> | undefined,
+): string | undefined {
+	return (
+		metadataString(metadata, ["skillName", "skill_name"]) ??
+		metadataString(stringRecord(metadata?.skillMetadata), ["name"]) ??
+		metadataString(stringRecord(metadata?.skill_metadata), ["name"])
+	);
 }
 
 function metadataString(
@@ -644,11 +727,17 @@ export function getBackgroundTaskHistory(
 }
 
 export async function recordTelemetry(event: TelemetryEvent): Promise<void> {
+	if (isInternalTelemetryDisabled()) {
+		return;
+	}
+
+	const normalizedEvent = normalizeTelemetryEventMetadata(event);
 	const openTelemetryEnabled = isOpenTelemetryEnabled();
 	if (openTelemetryEnabled) {
-		recordOpenTelemetrySpan(event);
+		recordOpenTelemetrySpan(normalizedEvent);
+		recordOpenTelemetryMetric(normalizedEvent);
 	}
-	const eventBusTask = mirrorTelemetryToMaestroEventBus(event);
+	const eventBusTask = mirrorTelemetryToMaestroEventBus(normalizedEvent);
 
 	const legacyEnabled = telemetryEnabled && samplingRate > 0;
 	if (!legacyEnabled) {
@@ -662,7 +751,7 @@ export async function recordTelemetry(event: TelemetryEvent): Promise<void> {
 	}
 
 	try {
-		await Promise.all([persistTelemetry(event), eventBusTask]);
+		await Promise.all([persistTelemetry(normalizedEvent), eventBusTask]);
 	} catch (_error) {
 		// Ignore telemetry persistence failures
 	}

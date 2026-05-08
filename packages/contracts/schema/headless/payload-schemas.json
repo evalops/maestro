@@ -855,6 +855,10 @@
 				},
 				"reason": {
 					"kind": "string"
+				},
+				"started_at_ms": {
+					"kind": "number",
+					"optional": true
 				}
 			}
 		},
@@ -887,6 +891,14 @@
 				"resolved_by": {
 					"kind": "enumRef",
 					"name": "headlessServerRequestResolvedBy"
+				},
+				"started_at_ms": {
+					"kind": "number",
+					"optional": true
+				},
+				"resolved_at_ms": {
+					"kind": "number",
+					"optional": true
 				}
 			}
 		},
@@ -1465,6 +1477,10 @@
 				},
 				"args": {
 					"kind": "unknown"
+				},
+				"started_at_ms": {
+					"kind": "number",
+					"optional": true
 				}
 			}
 		},
@@ -1530,6 +1546,10 @@
 				},
 				"args": {
 					"kind": "unknown"
+				},
+				"started_at_ms": {
+					"kind": "number",
+					"optional": true
 				},
 				"source": {
 					"kind": "union",

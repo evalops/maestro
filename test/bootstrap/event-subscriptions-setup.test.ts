@@ -79,6 +79,35 @@ function createSessionManagerMock(): SessionManager {
 	} as unknown as SessionManager;
 }
 
+function assistantTurnEndEvent(text = "Done"): AgentEvent {
+	return {
+		type: "turn_end",
+		message: {
+			role: "assistant",
+			content: [{ type: "text", text }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet-4-5-20250929",
+			usage: {
+				input: 1,
+				output: 1,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					total: 0,
+				},
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		},
+		toolResults: [],
+	};
+}
+
 describe("setupEventSubscriptions", () => {
 	afterEach(() => {
 		clearRegisteredHooks();
@@ -126,32 +155,7 @@ describe("setupEventSubscriptions", () => {
 			},
 		});
 
-		await agent.emit({
-			type: "turn_end",
-			message: {
-				role: "assistant",
-				content: [{ type: "text", text: "Done" }],
-				api: "anthropic-messages",
-				provider: "anthropic",
-				model: "claude-sonnet-4-5-20250929",
-				usage: {
-					input: 1,
-					output: 1,
-					cacheRead: 0,
-					cacheWrite: 0,
-					cost: {
-						input: 0,
-						output: 0,
-						cacheRead: 0,
-						cacheWrite: 0,
-						total: 0,
-					},
-				},
-				stopReason: "stop",
-				timestamp: Date.now(),
-			},
-			toolResults: [],
-		});
+		await agent.emit(assistantTurnEndEvent());
 
 		expect(captured).toEqual([
 			{
@@ -160,6 +164,74 @@ describe("setupEventSubscriptions", () => {
 			},
 		]);
 		expect(sessionManager.updateSnapshot).toHaveBeenCalled();
+	});
+
+	it("tracks native policy sandbox modes as sandboxed execution", async () => {
+		const agent = new MockAgent([
+			{
+				role: "user",
+				content: "Run in the workspace",
+				timestamp: Date.now(),
+			},
+		]);
+		const sessionManager = createSessionManagerMock();
+		let completedTurnSandboxMode: string | undefined;
+
+		setupEventSubscriptions({
+			agent: agent as unknown as never,
+			sessionManager,
+			approvalMode: "prompt",
+			sandboxMode: "workspace-write",
+			tsHookCount: 0,
+			cwd: "/tmp/project",
+			enterpriseContext: {
+				isEnterprise: () => false,
+				startSession: () => {},
+				getSession: () => null,
+			},
+			onTurnComplete: (event) => {
+				completedTurnSandboxMode = event.sandboxMode;
+			},
+		});
+
+		await agent.emit({ type: "agent_start" });
+		await agent.emit({ type: "agent_end", messages: [] });
+
+		expect(completedTurnSandboxMode).toBe("local");
+	});
+
+	it("tracks danger-full-access policy mode as unsandboxed execution", async () => {
+		const agent = new MockAgent([
+			{
+				role: "user",
+				content: "Run without confinement",
+				timestamp: Date.now(),
+			},
+		]);
+		const sessionManager = createSessionManagerMock();
+		let completedTurnSandboxMode: string | undefined;
+
+		setupEventSubscriptions({
+			agent: agent as unknown as never,
+			sessionManager,
+			approvalMode: "prompt",
+			sandboxMode: "danger-full-access",
+			tsHookCount: 0,
+			cwd: "/tmp/project",
+			enterpriseContext: {
+				isEnterprise: () => false,
+				startSession: () => {},
+				getSession: () => null,
+			},
+			onTurnComplete: (event) => {
+				completedTurnSandboxMode = event.sandboxMode;
+			},
+		});
+
+		await agent.emit({ type: "agent_start" });
+		await agent.emit({ type: "agent_end", messages: [] });
+
+		expect(completedTurnSandboxMode).toBe("none");
 	});
 
 	it("schedules automatic durable memory extraction after assistant messages", async () => {

@@ -4,6 +4,19 @@ import {
 	getOAuthStorageRevision,
 	loadOAuthCredentials,
 } from "../oauth/storage.js";
+import {
+	EVALOPS_ACCESS_TOKEN_ENV_VARS,
+	EVALOPS_INTEGRATION_PROFILE_ENV_VARS,
+	EVALOPS_MEMORY_MODE_ENV_VARS,
+	EVALOPS_ORGANIZATION_ID_ENV_VARS,
+	EVALOPS_RUNTIME_OWNER_ENV_VARS,
+	EVALOPS_SHIM_TYPE_ENV_VARS,
+	EVALOPS_TRACE_MODE_ENV_VARS,
+	EVALOPS_USER_ID_ENV_VARS,
+	EVALOPS_WORKSPACE_ID_ENV_VARS,
+	readEvalOpsEnv,
+	trimEvalOpsEnvValue,
+} from "./env-aliases.js";
 
 type Env = Record<string, string | undefined>;
 
@@ -65,62 +78,8 @@ let processCredentialCache:
 	  }
 	| undefined;
 
-const ORG_ENV = [
-	"MAESTRO_EVALOPS_ORG_ID",
-	"EVALOPS_ORGANIZATION_ID",
-	"EVALOPS_ORG_ID",
-	"MAESTRO_ENTERPRISE_ORG_ID",
-	"MAESTRO_LLM_GATEWAY_ORG_ID",
-	"MAESTRO_REMOTE_RUNNER_ORG_ID",
-] as const;
-
-const WORKSPACE_ENV = [
-	"MAESTRO_EVALOPS_WORKSPACE_ID",
-	"EVALOPS_WORKSPACE_ID",
-	"MAESTRO_REMOTE_RUNNER_WORKSPACE_ID",
-	"MAESTRO_WORKSPACE_ID",
-] as const;
-
-const USER_ENV = [
-	"MAESTRO_EVALOPS_USER_ID",
-	"EVALOPS_USER_ID",
-	"MAESTRO_USER_ID",
-] as const;
-
-const TOKEN_ENV = ["MAESTRO_EVALOPS_ACCESS_TOKEN", "EVALOPS_TOKEN"] as const;
-const INTEGRATION_PROFILE_ENV = [
-	"MAESTRO_EVALOPS_INTEGRATION_PROFILE",
-	"MAESTRO_INTEGRATION_PROFILE",
-] as const;
-const MEMORY_MODE_ENV = [
-	"MAESTRO_EVALOPS_MEMORY_MODE",
-	"MAESTRO_MEMORY_MODE",
-] as const;
-const RUNTIME_OWNER_ENV = [
-	"MAESTRO_EVALOPS_RUNTIME_OWNER",
-	"MAESTRO_RUNTIME_OWNER",
-] as const;
-const SHIM_TYPE_ENV = [
-	"MAESTRO_EVALOPS_SHIM_TYPE",
-	"MAESTRO_SHIM_TYPE",
-] as const;
-const TRACE_MODE_ENV = [
-	"MAESTRO_EVALOPS_TRACE_MODE",
-	"MAESTRO_TRACE_MODE",
-] as const;
-
 function nonEmptyString(value: unknown): string | undefined {
-	return typeof value === "string" && value.trim().length > 0
-		? value.trim()
-		: undefined;
-}
-
-function readEnv(env: Env, names: readonly string[]): string | undefined {
-	for (const name of names) {
-		const value = nonEmptyString(env[name]);
-		if (value) return value;
-	}
-	return undefined;
+	return trimEvalOpsEnvValue(value);
 }
 
 function recordValue(
@@ -210,16 +169,24 @@ export function resolveManagedEvalOpsContext(
 	const providerRef = asRecord(metadata?.providerRef);
 	const agentMcp = storedAgentMcp(credentials);
 	const accessToken =
-		readEnv(env, TOKEN_ENV) ?? nonEmptyString(credentials?.access);
+		readEvalOpsEnv(env, EVALOPS_ACCESS_TOKEN_ENV_VARS) ??
+		nonEmptyString(credentials?.access);
 	const organizationId =
-		readEnv(env, ORG_ENV) ?? nonEmptyString(metadata?.organizationId);
+		readEvalOpsEnv(env, EVALOPS_ORGANIZATION_ID_ENV_VARS) ??
+		nonEmptyString(metadata?.organizationId);
 	const workspaceId =
-		readEnv(env, WORKSPACE_ENV) ?? agentMcp?.workspaceId ?? organizationId;
-	const agentId = readEnv(env, ["MAESTRO_AGENT_ID"]) ?? agentMcp?.agentId;
-	const runId = readEnv(env, ["MAESTRO_AGENT_RUN_ID"]) ?? agentMcp?.runId;
+		readEvalOpsEnv(env, EVALOPS_WORKSPACE_ID_ENV_VARS) ??
+		agentMcp?.workspaceId ??
+		organizationId;
+	const agentId =
+		readEvalOpsEnv(env, ["MAESTRO_AGENT_ID"]) ?? agentMcp?.agentId;
+	const runId =
+		readEvalOpsEnv(env, ["MAESTRO_AGENT_RUN_ID"]) ?? agentMcp?.runId;
 	const authenticated = Boolean(accessToken || credentials);
 	const managedAgentSession = Boolean(
-		agentMcp?.apiKey || (readEnv(env, TOKEN_ENV) && (agentId || runId)),
+		agentMcp?.apiKey ||
+			(readEvalOpsEnv(env, EVALOPS_ACCESS_TOKEN_ENV_VARS) &&
+				(agentId || runId)),
 	);
 	const managed = Boolean(organizationId && managedAgentSession);
 	const mode = managed
@@ -238,22 +205,30 @@ export function resolveManagedEvalOpsContext(
 		expiresAt: credentials?.expires,
 		inference: managed ? "managed" : "local",
 		integrationProfile:
-			readEnv(env, INTEGRATION_PROFILE_ENV) ?? agentMcp?.integrationProfile,
+			readEvalOpsEnv(env, EVALOPS_INTEGRATION_PROFILE_ENV_VARS) ??
+			agentMcp?.integrationProfile,
 		keyPrefix: agentMcp?.keyPrefix,
 		managed,
-		memoryMode: readEnv(env, MEMORY_MODE_ENV) ?? agentMcp?.memoryMode,
+		memoryMode:
+			readEvalOpsEnv(env, EVALOPS_MEMORY_MODE_ENV_VARS) ?? agentMcp?.memoryMode,
 		mode,
 		organizationId,
 		providerRef,
 		runId,
-		runtimeOwner: readEnv(env, RUNTIME_OWNER_ENV) ?? agentMcp?.runtimeOwner,
+		runtimeOwner:
+			readEvalOpsEnv(env, EVALOPS_RUNTIME_OWNER_ENV_VARS) ??
+			agentMcp?.runtimeOwner,
 		sessionExpiresAt: agentMcp?.sessionExpiresAt,
-		sessionId: readEnv(env, ["MAESTRO_SESSION_ID"]),
-		shimType: readEnv(env, SHIM_TYPE_ENV) ?? agentMcp?.shimType,
+		sessionId: readEvalOpsEnv(env, ["MAESTRO_SESSION_ID"]),
+		shimType:
+			readEvalOpsEnv(env, EVALOPS_SHIM_TYPE_ENV_VARS) ?? agentMcp?.shimType,
 		traceIngestion: managed && runId ? "live" : "not configured",
-		traceMode: readEnv(env, TRACE_MODE_ENV) ?? agentMcp?.traceMode,
+		traceMode:
+			readEvalOpsEnv(env, EVALOPS_TRACE_MODE_ENV_VARS) ?? agentMcp?.traceMode,
 		userEmail: nonEmptyString(metadata?.email),
-		userId: readEnv(env, USER_ENV) ?? nonEmptyString(metadata?.userId),
+		userId:
+			readEvalOpsEnv(env, EVALOPS_USER_ID_ENV_VARS) ??
+			nonEmptyString(metadata?.userId),
 		workspaceId,
 	};
 }

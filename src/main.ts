@@ -156,6 +156,7 @@ import { ServerRequestActionApprovalService } from "./server/approval-service.js
 import { clientToolService } from "./server/client-tools-service.js";
 import { ServerRequestToolRetryService } from "./server/tool-retry-service.js";
 import { SessionManager } from "./session/manager.js";
+import { beaconTimeoutMs } from "./telemetry/beacon.js";
 import { askUserClientTool } from "./tools/ask-user-client.js";
 import type { UpdateCheckResult } from "./update/check.js";
 import { createStartupProfilerFromEnv } from "./utils/checkpoint-profiler.js";
@@ -169,6 +170,7 @@ const packageJson = createRequire(import.meta.url)("../package.json") as {
 	version?: string;
 };
 const VERSION = packageJson.version ?? "unknown";
+const STARTUP_TELEMETRY_EXIT_WAIT_GRACE_MS = 25;
 
 let enterpriseCleanupRegistered = false;
 let checkpointCleanupRegistered = false;
@@ -270,6 +272,29 @@ async function runInteractiveMode(
 			cwd: process.cwd(),
 			reason: sessionEndReason,
 		});
+	}
+}
+
+async function waitForStartupTelemetryForImmediateExit(
+	startupTelemetry: Promise<void>,
+): Promise<void> {
+	let timeout: NodeJS.Timeout | undefined;
+	try {
+		await Promise.race([
+			startupTelemetry,
+			new Promise<void>((resolve) => {
+				timeout = setTimeout(
+					resolve,
+					beaconTimeoutMs(process.env) + STARTUP_TELEMETRY_EXIT_WAIT_GRACE_MS,
+				);
+			}),
+		]);
+	} catch {
+		// Startup telemetry is best effort and must not affect explicit exits.
+	} finally {
+		if (timeout) {
+			clearTimeout(timeout);
+		}
 	}
 }
 
@@ -434,23 +459,42 @@ export async function main(args: string[]) {
 	// Parse arguments early to check for version/help flags before heavy initialization
 	const parsed = parseArgs(args);
 	startupProfiler.checkpoint("cli:parsed");
+	const startupTelemetry = import("./telemetry/cli-startup.js")
+		.then(({ recordCliStartupTelemetry }) =>
+			recordCliStartupTelemetry({
+				args: parsed,
+				clientVersion: VERSION,
+				commandCountLockTimeoutMs: 0,
+				rawArgs: args,
+			}),
+		)
+		.catch(() => undefined);
 
 	// Handle --version early exit (before any async operations)
 	if (parsed.version) {
 		console.log(`Maestro v${VERSION}`);
+		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
 		process.exit(0);
 	}
 
 	// Handle --help early exit (before any logging redirection or heavy init)
 	if (parsed.help) {
 		printHelp(VERSION);
+		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
 		process.exit(0);
 	}
 
 	if (parsed.error) {
 		console.error(chalk.red(parsed.error));
+		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
 		process.exit(1);
 	}
+
+	const exitWithEarlyStartupError = (error: unknown): never => {
+		const message = error instanceof Error ? error.message : String(error);
+		console.error(chalk.red(message));
+		process.exit(1);
+	};
 
 	// Handle `maestro hosted-runner` before importing web-server so hosted
 	// defaults are visible to its module-level runtime profile.
@@ -481,6 +525,34 @@ export async function main(args: string[]) {
 			parsed.port ?? (Number.parseInt(process.env.PORT || "8080", 10) || 8080);
 		await migrate();
 		await startWebServer(port, { skipStartupMigration: true });
+		return;
+	}
+
+	// Bootstrap/status commands need stdout to stay under their direct control.
+	// In particular, `maestro init --json` must be parseable JSON with any
+	// progress or diagnostic output on stderr, so route it before config loading
+	// can emit normal CLI startup logs.
+	if (parsed.command === "init") {
+		try {
+			validateCodexFlags(args, parsed.command);
+		} catch (error) {
+			exitWithEarlyStartupError(error);
+		}
+
+		const { handleInitCommand } = await import("./cli/commands/init.js");
+		await handleInitCommand(parsed.commandArgs ?? []);
+		return;
+	}
+
+	if (parsed.command === "status") {
+		try {
+			validateCodexFlags(args, parsed.command);
+		} catch (error) {
+			exitWithEarlyStartupError(error);
+		}
+
+		const { handleStatusCommand } = await import("./cli/commands/status.js");
+		await handleStatusCommand();
 		return;
 	}
 
@@ -635,7 +707,15 @@ export async function main(args: string[]) {
 	}
 
 	// Validate sandbox mode (applies to both exec and interactive modes)
-	const validSandboxModes = ["docker", "local", "none"];
+	const validSandboxModes = [
+		"docker",
+		"local",
+		"native",
+		"none",
+		"read-only",
+		"workspace-write",
+		"danger-full-access",
+	];
 	if (parsed.sandbox && !validSandboxModes.includes(parsed.sandbox)) {
 		exitWithStartupError(
 			`Unknown sandbox mode "${parsed.sandbox}". Supported: ${validSandboxModes.join(", ")}`,
@@ -745,18 +825,6 @@ export async function main(args: string[]) {
 	if (parsed.command === "evalops") {
 		const { handleEvalOpsCommand } = await import("./cli/commands/evalops.js");
 		await handleEvalOpsCommand(parsed.subcommand, parsed.commandArgs ?? []);
-		return;
-	}
-
-	if (parsed.command === "status") {
-		const { handleStatusCommand } = await import("./cli/commands/status.js");
-		await handleStatusCommand();
-		return;
-	}
-
-	if (parsed.command === "init") {
-		const { handleInitCommand } = await import("./cli/commands/init.js");
-		await handleInitCommand(parsed.commandArgs ?? []);
 		return;
 	}
 

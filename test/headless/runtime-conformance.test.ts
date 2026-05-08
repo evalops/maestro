@@ -650,6 +650,7 @@ class RustHostedHttpConformanceAdapter implements RuntimeConformanceAdapter {
 					return {
 						approved: message.resolution === "approved",
 						reason: message.reason,
+						resolvedAtMs: message.resolved_at_ms,
 						resolvedBy: message.resolved_by,
 					};
 				}
@@ -1187,9 +1188,10 @@ function defineHeadlessRuntimeConformanceSuite(
 				{ role: "controller", subscriptionId: controller.subscription_id },
 			);
 
-			await expect(approval).resolves.toEqual({
+			await expect(approval).resolves.toMatchObject({
 				approved: false,
 				reason: "Denied in conformance",
+				resolvedAtMs: expect.any(Number),
 				resolvedBy: "user",
 			});
 			expect(

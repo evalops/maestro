@@ -29,6 +29,15 @@ function makeTestAnthropicToken(): string {
 let jsonlExportPath = "";
 
 function createMockSessionManager() {
+	const applyMessagesView = <T extends { messages: unknown[] }>(
+		session: T,
+		options?: { messagesView?: "full" | "summary" | "notLoaded" },
+	) => ({
+		...session,
+		messages: options?.messagesView === "notLoaded" ? [] : session.messages,
+		messagesView: options?.messagesView ?? "full",
+	});
+
 	return {
 		listSessions: vi.fn().mockResolvedValue([
 			{
@@ -51,51 +60,74 @@ function createMockSessionManager() {
 				tags: [],
 			},
 		]),
-		loadSession: vi.fn().mockImplementation((id: string) => {
-			if (id === "test-session-1") {
-				return Promise.resolve({
-					id: "test-session-1",
-					title: "Test Session 1",
-					resumeSummary: "Reviewing the session and continuing the next fix.",
-					owner: "anon",
-					createdAt: "2024-01-01T00:00:00Z",
-					updatedAt: "2024-01-02T00:00:00Z",
-					messageCount: 2,
-					messages: [
-						{ role: "user", content: "Hello" },
-						{ role: "assistant", content: "Hi there!" },
-					],
-				});
-			}
-			if (id === "secret-session") {
-				return Promise.resolve({
-					id: "secret-session",
-					title: "Secret Session",
-					owner: "anon",
-					createdAt: "2024-01-01T00:00:00Z",
-					updatedAt: "2024-01-02T00:00:00Z",
-					messageCount: 1,
-					messages: [
-						{
-							role: "user",
-							content: `Deploy with token ${makeTestAnthropicToken()}`,
-						},
-					],
-				});
-			}
-			if (id === "not-found") {
-				return Promise.resolve(null);
-			}
-			return Promise.resolve({
-				id,
-				title: `Session ${id}`,
-				owner: "anon",
-				createdAt: "2024-01-01T00:00:00Z",
-				updatedAt: "2024-01-02T00:00:00Z",
-				messageCount: 0,
-				messages: [],
-			});
-		}),
+		loadSession: vi
+			.fn()
+			.mockImplementation(
+				(
+					id: string,
+					options?: { messagesView?: "full" | "summary" | "notLoaded" },
+				) => {
+					if (id === "test-session-1") {
+						return Promise.resolve(
+							applyMessagesView(
+								{
+									id: "test-session-1",
+									title: "Test Session 1",
+									resumeSummary:
+										"Reviewing the session and continuing the next fix.",
+									owner: "anon",
+									createdAt: "2024-01-01T00:00:00Z",
+									updatedAt: "2024-01-02T00:00:00Z",
+									messageCount: 2,
+									messages: [
+										{ role: "user", content: "Hello" },
+										{ role: "assistant", content: "Hi there!" },
+									],
+								},
+								options,
+							),
+						);
+					}
+					if (id === "secret-session") {
+						return Promise.resolve(
+							applyMessagesView(
+								{
+									id: "secret-session",
+									title: "Secret Session",
+									owner: "anon",
+									createdAt: "2024-01-01T00:00:00Z",
+									updatedAt: "2024-01-02T00:00:00Z",
+									messageCount: 1,
+									messages: [
+										{
+											role: "user",
+											content: `Deploy with token ${makeTestAnthropicToken()}`,
+										},
+									],
+								},
+								options,
+							),
+						);
+					}
+					if (id === "not-found") {
+						return Promise.resolve(null);
+					}
+					return Promise.resolve(
+						applyMessagesView(
+							{
+								id,
+								title: `Session ${id}`,
+								owner: "anon",
+								createdAt: "2024-01-01T00:00:00Z",
+								updatedAt: "2024-01-02T00:00:00Z",
+								messageCount: 0,
+								messages: [],
+							},
+							options,
+						),
+					);
+				},
+			),
 		createSession: vi
 			.fn()
 			.mockImplementation((options?: { title?: string }) => {
@@ -248,6 +280,38 @@ describe("Session Endpoints", () => {
 				"Reviewing the session and continuing the next fix.",
 			);
 			expect(body.messages).toHaveLength(2);
+		});
+
+		it("can return session metadata without loading messages", async () => {
+			const req = createMockRequest("GET");
+			req.url = "/api/sessions/test-session-1?messagesView=notLoaded";
+			const { res, getBody } = createMockResponse();
+
+			await handleSessions(req, res, { id: "test-session-1" }, corsHeaders);
+
+			const body = getBody() as {
+				id: string;
+				messageCount: number;
+				messagesView?: string;
+				messages: unknown[];
+			};
+			expect(body.id).toBe("test-session-1");
+			expect(body.messageCount).toBe(2);
+			expect(body.messagesView).toBe("notLoaded");
+			expect(body.messages).toEqual([]);
+		});
+
+		it("rejects invalid session message views", async () => {
+			const req = createMockRequest("GET");
+			req.url = "/api/sessions/test-session-1?messagesView=everything";
+			const { res, getStatus, getBody } = createMockResponse();
+
+			await handleSessions(req, res, { id: "test-session-1" }, corsHeaders);
+
+			expect(getStatus()).toBe(400);
+			expect(getBody()).toMatchObject({
+				error: expect.stringContaining("Invalid messagesView"),
+			});
 		});
 
 		it("includes pending server requests for the loaded session", async () => {

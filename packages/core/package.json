@@ -1,6 +1,6 @@
 {
 	"name": "@evalops/maestro-core",
-	"version": "0.10.16",
+	"version": "0.10.18",
 	"description": "Maestro agent loop, transport, types, and sandbox primitives — the engine behind all Maestro interfaces",
 	"type": "module",
 	"main": "./dist/packages/core/src/index.js",
@@ -26,6 +26,13 @@
 		"type": "git",
 		"url": "git+https://github.com/evalops/maestro.git",
 		"directory": "packages/core"
+	},
+	"maestro": {
+		"packageBoundary": {
+			"mode": "internal-facade",
+			"allowedExternalSourceRoots": ["../../src"],
+			"rationale": "@evalops/maestro-core is a stable package entrypoint over the root Maestro agent/runtime kernel while package-owned source is being extracted."
+		}
 	},
 	"scripts": {
 		"build": "tsc -p tsconfig.build.json",
@@ -57,7 +64,7 @@
 		"vscode-jsonrpc": "^8.2.0"
 	},
 	"peerDependencies": {
-		"@evalops/tui": "^0.10.16"
+		"@evalops/tui": "^0.10.18"
 	},
 	"peerDependenciesMeta": {
 		"@evalops/tui": {

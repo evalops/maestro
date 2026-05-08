@@ -119,7 +119,10 @@ describe("hosted runner drain", () => {
 			reason: "ttl_expired",
 			requestedBy: "platform",
 		});
-		expect(drainRuntime).toHaveBeenCalledWith("session_123");
+		expect(drainRuntime).toHaveBeenCalledWith("session_123", {
+			reason: "ttl_expired",
+			requestedBy: "platform",
+		});
 		expect(result?.manifest).toMatchObject({
 			protocol_version: HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION,
 			runner_session_id: "mrs_123",
@@ -281,6 +284,8 @@ describe("hosted runner drain", () => {
 				join(workspaceRoot, ".maestro", "sessions", "session.jsonl"),
 			),
 			dispose: vi.fn().mockResolvedValue(undefined),
+			completeHostedAgentRuntimeRun: vi.fn().mockResolvedValue(undefined),
+			failHostedAgentRuntimeRun: vi.fn().mockResolvedValue(undefined),
 		};
 		const headlessRuntimeService = {
 			getRuntimeBySessionId: vi.fn(() => runtime),
@@ -306,6 +311,12 @@ describe("hosted runner drain", () => {
 			"session_123",
 		);
 		expect(runtime.dispose).toHaveBeenCalled();
+		expect(runtime.completeHostedAgentRuntimeRun).toHaveBeenCalledWith({
+			reason: HostedRunnerDrainReasonValue.ProcessShutdown,
+			requestedBy: HostedRunnerDrainRequestedByValue.MaestroWebServer,
+			flushStatus: HostedRunnerRuntimeFlushStatusValue.Completed,
+		});
+		expect(runtime.failHostedAgentRuntimeRun).not.toHaveBeenCalled();
 		expect(result?.manifest).toMatchObject({
 			maestro_session_id: "session_123",
 			reason: HostedRunnerDrainReasonValue.ProcessShutdown,
@@ -316,6 +327,49 @@ describe("hosted runner drain", () => {
 				cursor: 11,
 			},
 			snapshot,
+		});
+	});
+
+	it("fails the Platform AgentRuntime run when active runtime drain is interrupted", async () => {
+		const workspaceRoot = await createTempWorkspace();
+		const context = hostedRunnerContext(workspaceRoot);
+		const snapshot = runtimeSnapshot(workspaceRoot, 12);
+		const runtime = {
+			getSnapshot: vi.fn(() => snapshot),
+			getSessionFile: vi.fn(() =>
+				join(workspaceRoot, ".maestro", "sessions", "session.jsonl"),
+			),
+			dispose: vi.fn().mockRejectedValue(new Error("flush timed out")),
+			completeHostedAgentRuntimeRun: vi.fn().mockResolvedValue(undefined),
+			failHostedAgentRuntimeRun: vi.fn().mockResolvedValue(undefined),
+		};
+		const headlessRuntimeService = {
+			getRuntimeBySessionId: vi.fn(() => runtime),
+		};
+
+		const result = await drainHostedRunnerForShutdown(
+			{
+				hostedRunner: context,
+				headlessRuntimeService,
+			},
+			{
+				reason: HostedRunnerDrainReasonValue.KubernetesPreStop,
+				requestedBy: HostedRunnerDrainRequestedByValue.KubernetesPreStop,
+				now: () => new Date("2026-04-23T00:02:45.000Z"),
+			},
+		);
+
+		expect(result?.status).toBe(HostedRunnerDrainStatusValue.Interrupted);
+		expect(runtime.completeHostedAgentRuntimeRun).not.toHaveBeenCalled();
+		expect(runtime.failHostedAgentRuntimeRun).toHaveBeenCalledWith({
+			errorMessage: "Hosted runner drain failed: flush timed out",
+			reason: HostedRunnerDrainReasonValue.KubernetesPreStop,
+			requestedBy: HostedRunnerDrainRequestedByValue.KubernetesPreStop,
+			retryable: false,
+		});
+		expect(result?.manifest.runtime).toMatchObject({
+			flush_status: HostedRunnerRuntimeFlushStatusValue.Failed,
+			error: "flush timed out",
 		});
 	});
 

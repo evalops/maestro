@@ -46,10 +46,12 @@
 export * from "./headless-protocol-generated.js";
 export * from "./headless-protocol-schemas.generated.js";
 export * as headlessProto from "./proto/maestro/v1/headless_pb.js";
+export * from "./guarded-files-settings.js";
 export * from "./key-value-tokens.js";
 export * from "./mcp-settings.js";
 export * from "./memory.js";
 export * from "./memory-utils.js";
+export * from "./maestro-app-server.js";
 export * from "./onboarding-utils.js";
 export * from "./proto/maestro/v1/headless_pb.js";
 export * from "./runtime-app-server.js";
@@ -415,6 +417,8 @@ export interface ComposerSessionSummary {
 	tags?: string[];
 }
 
+export type ComposerSessionMessagesView = "full" | "summary" | "notLoaded";
+
 export interface ComposerPendingClientToolRequest {
 	toolCallId: string;
 	toolName: string;
@@ -569,6 +573,8 @@ export interface ComposerRunTimelineResponse {
  * Returned when loading a specific session.
  */
 export interface ComposerSession extends ComposerSessionSummary {
+	/** Hydration level used for the messages array. Defaults to full. */
+	messagesView?: ComposerSessionMessagesView;
 	/** Complete conversation history */
 	messages: ComposerMessage[];
 	/** Pending approval requests that still require a decision */
@@ -667,6 +673,7 @@ export interface ComposerActionApprovalRequest {
 	actionDescription?: string;
 	args: unknown;
 	reason: string;
+	startedAtMs?: number;
 	platform?: ComposerPendingRequestPlatformRef;
 }
 
@@ -674,6 +681,7 @@ export interface ComposerActionApprovalDecision {
 	approved: boolean;
 	reason?: string;
 	resolvedBy: "policy" | "user";
+	resolvedAtMs?: number;
 }
 
 export interface ComposerToolRetryRequest {

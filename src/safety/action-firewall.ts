@@ -71,6 +71,11 @@ import {
 	evaluateActionWithActionFirewallGovernanceService,
 	resolveActionFirewallGovernanceServiceConfig,
 } from "./governance-service-client.js";
+import {
+	DEFAULT_GUARDED_FILE_RULE_ID,
+	describeDefaultGuardedFileMatch,
+	findGuardedToolCallMatch,
+} from "./guarded-files.js";
 import { isContainedInWorkspace, isSystemPath } from "./path-containment.js";
 import { checkPolicy } from "./policy.js";
 import { RuleCache } from "./rule-cache.js";
@@ -412,22 +417,23 @@ function extractFilePaths(context: ActionApprovalContext): string[] {
 	const args = getArgsObject(context);
 	if (!args) return [];
 	const paths: string[] = [];
+	const toolName = context.toolName.toLowerCase();
 
 	// Simple extraction for standard file tools
 	// Note: deeper extraction is done in policy.ts, this is for quick system protection
-	if (context.toolName === "write" || context.toolName === "edit") {
+	if (toolName === "write" || toolName === "edit") {
 		const p =
 			getStringArg(context, "file_path") || getStringArg(context, "path");
 		if (p) paths.push(p);
 	}
-	if (context.toolName === "delete_file") {
+	if (toolName === "delete_file") {
 		const p =
 			getStringArg(context, "file_path") ||
 			getStringArg(context, "target_file");
 		if (p) paths.push(p);
 	}
 	// Handle move_file and copy_file - extract both source and destination
-	if (context.toolName === "move_file" || context.toolName === "copy_file") {
+	if (toolName === "move_file" || toolName === "copy_file") {
 		const source =
 			getStringArg(context, "source") ||
 			getStringArg(context, "source_path") ||
@@ -532,6 +538,44 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 		},
 		remediation: () =>
 			"Do not modify critical system paths. If you need to write a file, use the current workspace directory or a temporary folder.",
+	},
+	{
+		id: DEFAULT_GUARDED_FILE_RULE_ID,
+		description:
+			"Block guarded user and editor configuration files when policy requires a hard block",
+		action: "block",
+		evaluate: (ctx) => {
+			const match = findGuardedToolCallMatch(ctx.toolName, ctx.args, {
+				policy: ctx.metadata?.guardedFiles,
+			});
+			if (match?.defaultBehavior === "block") {
+				return {
+					allowed: false,
+					reason: describeDefaultGuardedFileMatch(match),
+					remediation:
+						"Remove the matching custom guard or change its defaultBehavior to ask if this access should be approval-gated instead of blocked.",
+				};
+			}
+			return { allowed: true };
+		},
+	},
+	{
+		id: DEFAULT_GUARDED_FILE_RULE_ID,
+		description:
+			"Require explicit approval before reading or mutating guarded user and editor configuration files",
+		action: "require_approval",
+		evaluate: (ctx) => {
+			const match = findGuardedToolCallMatch(ctx.toolName, ctx.args, {
+				policy: ctx.metadata?.guardedFiles,
+			});
+			if (match) {
+				return {
+					allowed: false,
+					reason: describeDefaultGuardedFileMatch(match),
+				};
+			}
+			return { allowed: true };
+		},
 	},
 	{
 		name: "workspace-containment",

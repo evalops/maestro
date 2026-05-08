@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Maestro Web API",
-    "version": "0.10.16",
+    "version": "0.10.18",
     "description": "Auto-generated from src/web-server.ts routes. Components seeded from runtime schemas."
   },
   "servers": [
@@ -2638,6 +2638,21 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "messagesView",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "full",
+                "summary",
+                "notLoaded"
+              ],
+              "default": "full"
+            },
+            "description": "Controls session message hydration. Use notLoaded for metadata-only fetches or summary for a compact preview."
           }
         ],
         "responses": {
@@ -5846,6 +5861,22 @@
               "type": "string"
             }
           },
+          "messagesView": {
+            "anyOf": [
+              {
+                "const": "full",
+                "type": "string"
+              },
+              {
+                "const": "summary",
+                "type": "string"
+              },
+              {
+                "const": "notLoaded",
+                "type": "string"
+              }
+            ]
+          },
           "messages": {
             "type": "array",
             "items": {
@@ -6171,6 +6202,9 @@
                 "args": {},
                 "reason": {
                   "type": "string"
+                },
+                "startedAtMs": {
+                  "type": "number"
                 },
                 "platform": {
                   "type": "object",

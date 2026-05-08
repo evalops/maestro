@@ -156,6 +156,7 @@ export interface DrainHostedRunnerOptions {
 	hostedRunner?: HostedRunnerContext;
 	drainRuntime?: (
 		sessionId: string,
+		terminal: HostedRunnerRuntimeTerminalInput,
 	) => Promise<HostedRunnerRuntimeDrainResult | null>;
 	now?: () => Date;
 }
@@ -170,6 +171,11 @@ interface HostedRunnerDrainRuntimeContext {
 
 export interface DrainHostedRunnerForShutdownOptions {
 	now?: () => Date;
+	reason?: HostedRunnerDrainReason;
+	requestedBy?: HostedRunnerDrainRequestedBy;
+}
+
+interface HostedRunnerRuntimeTerminalInput {
 	reason?: HostedRunnerDrainReason;
 	requestedBy?: HostedRunnerDrainRequestedBy;
 }
@@ -440,7 +446,10 @@ export async function drainHostedRunner(
 
 	if (activeSessionId && options.drainRuntime) {
 		try {
-			const runtimeResult = await options.drainRuntime(activeSessionId);
+			const runtimeResult = await options.drainRuntime(activeSessionId, {
+				reason: input.reason,
+				requestedBy: input.requestedBy,
+			});
 			const runtimeProtocolVersion =
 				runtimeResult?.protocolVersion ??
 				runtimeResult?.snapshot?.protocolVersion;
@@ -532,6 +541,7 @@ export async function drainHostedRunner(
 async function drainActiveRuntime(
 	context: HostedRunnerDrainRuntimeContext,
 	sessionId: string,
+	terminal: HostedRunnerRuntimeTerminalInput,
 ): Promise<HostedRunnerRuntimeDrainResult | null> {
 	const runtime =
 		context.headlessRuntimeService.getRuntimeBySessionId(sessionId);
@@ -540,7 +550,24 @@ async function drainActiveRuntime(
 	}
 	const snapshot = runtime.getSnapshot();
 	const sessionFile = runtime.getSessionFile();
-	await runtime.dispose();
+	try {
+		await runtime.dispose();
+		await runtime.completeHostedAgentRuntimeRun({
+			reason: terminal.reason,
+			requestedBy: terminal.requestedBy,
+			flushStatus: HostedRunnerRuntimeFlushStatusValue.Completed,
+		});
+	} catch (error) {
+		await runtime.failHostedAgentRuntimeRun({
+			errorMessage: `Hosted runner drain failed: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+			reason: terminal.reason,
+			requestedBy: terminal.requestedBy,
+			retryable: false,
+		});
+		throw error;
+	}
 	return {
 		sessionId: snapshot.session_id,
 		sessionFile,
@@ -563,7 +590,8 @@ export async function drainHostedRunnerForShutdown(
 		},
 		{
 			hostedRunner: context.hostedRunner,
-			drainRuntime: (sessionId) => drainActiveRuntime(context, sessionId),
+			drainRuntime: (sessionId, terminal) =>
+				drainActiveRuntime(context, sessionId, terminal),
 			now: options.now,
 		},
 	);
@@ -579,7 +607,8 @@ export async function handleHostedRunnerDrain(
 	const input = parseHostedRunnerDrainInput(body);
 	const result = await drainHostedRunner(input, {
 		hostedRunner: context.hostedRunner,
-		drainRuntime: (sessionId) => drainActiveRuntime(context, sessionId),
+		drainRuntime: (sessionId, terminal) =>
+			drainActiveRuntime(context, sessionId, terminal),
 	});
 
 	if (!result) {

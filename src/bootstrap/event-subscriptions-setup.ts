@@ -30,6 +30,7 @@ import type { CanonicalTurnEvent } from "../telemetry/wide-events.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("event-subscriptions");
+const nativePolicySandboxModes = new Set(["read-only", "workspace-write"]);
 
 export interface EventSubscriptionsResult {
 	turnTracker: TurnTracker;
@@ -93,7 +94,9 @@ export function setupEventSubscriptions(params: {
 	const trackerSandboxMode =
 		sandboxMode === "docker"
 			? "docker"
-			: sandboxMode === "local" || sandboxMode === "native"
+			: sandboxMode === "local" ||
+					sandboxMode === "native" ||
+					nativePolicySandboxModes.has(sandboxMode ?? "")
 				? "local"
 				: "none";
 	turnTracker.updateContext({

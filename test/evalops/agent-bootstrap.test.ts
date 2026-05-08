@@ -187,6 +187,20 @@ describe("bootstrapEvalOpsAgent", () => {
 		]);
 		expect(calls[0]?.args).toMatchObject({
 			agent_type: "maestro",
+			capabilities: expect.arrayContaining([
+				"maestro:init",
+				"maestro:cli",
+				"code:write",
+				"code:review",
+				"code:test",
+				"shell",
+				"git",
+				"fs",
+				"mcp",
+				"tool.use",
+				"research",
+				"responses:create",
+			]),
 			integration_profile: "managed_runtime",
 			memory_mode: "durable",
 			runtime_owner: "evalops",
@@ -296,6 +310,7 @@ describe("bootstrapEvalOpsAgent", () => {
 
 		expect(calls[0]?.args).toMatchObject({
 			agent_type: "codex",
+			capabilities: ["mcp", "tool.use", "responses:create"],
 			integration_profile: "mcp_otlp",
 			memory_mode: "durable",
 			runtime_owner: "external",
@@ -320,6 +335,77 @@ describe("bootstrapEvalOpsAgent", () => {
 			runtimeOwner: "external",
 			shimType: "command_wrapper",
 			traceMode: "otlp",
+		});
+	});
+
+	it("lets external shims declare explicit agent-registry capabilities", async () => {
+		const calls: Array<{ args: Record<string, unknown>; tool: string }> = [];
+		const createMcpClient = vi.fn(
+			(_endpoint: string, _token: string): EvalOpsMcpClient => ({
+				callTool: async (tool, args) => {
+					calls.push({ args, tool });
+					if (tool === "evalops_register") {
+						return {
+							content: [],
+							structuredContent: {
+								agent_id: "agent_custom",
+								registered: true,
+								run_id: "run_custom",
+							},
+						};
+					}
+					if (tool === "evalops_check_action") {
+						return { content: [], structuredContent: { decision: "allow" } };
+					}
+					if (tool === "evalops_control_plane_summary") {
+						return {
+							content: [],
+							structuredContent: {
+								evidence: [{ id: "proof", trace: "run_custom" }],
+								findings: [],
+								metrics: { total_tools: 1 },
+								policy_controls: [{ label: "Starter policy" }],
+								tools: [{ name: "evalops_check_action" }],
+							},
+						};
+					}
+					throw new Error(`unexpected tool ${tool}`);
+				},
+				close: async () => undefined,
+				connect: async () => undefined,
+			}),
+		);
+
+		await bootstrapEvalOpsAgent(
+			{
+				agentType: "external-agent",
+				capabilities: [" code:write ", "git", "code:write", "x-demo:plan"],
+				mcpUrl: "https://app.evalops.dev",
+			},
+			{
+				createMcpClient,
+				fetch: vi.fn(
+					async () =>
+						new Response(JSON.stringify({ api_key: "eoak_created" }), {
+							status: 201,
+						}),
+				),
+				getOAuthToken: vi.fn().mockResolvedValue("oauth-access"),
+				hasOAuthCredentials: vi.fn().mockReturnValue(true),
+				loadCredentials: vi.fn(() => ({
+					type: "oauth",
+					access: "oauth-access",
+					metadata: { organizationId: "org_evalops" },
+				})),
+				login: vi.fn(),
+				now: () => new Date("2026-05-06T06:00:00Z"),
+				saveCredentials: vi.fn(),
+			},
+		);
+
+		expect(calls[0]?.args).toMatchObject({
+			agent_type: "external-agent",
+			capabilities: ["code:write", "git", "x-demo:plan"],
 		});
 	});
 

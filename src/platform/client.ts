@@ -1,3 +1,7 @@
+import {
+	EVALOPS_ACCESS_TOKEN_ENV_VARS,
+	EVALOPS_ORGANIZATION_ID_ENV_VARS,
+} from "../evalops/env-aliases.js";
 import { getOAuthToken } from "../oauth/index.js";
 import { loadOAuthCredentials } from "../oauth/storage.js";
 import {
@@ -33,6 +37,7 @@ export interface ResolvePlatformServiceConfigOptions {
 	requireBaseUrl?: boolean;
 	requireOrganizationId?: boolean;
 	requireToken?: boolean;
+	allowOAuthTokenFallback?: boolean;
 }
 
 export interface PlatformRequestOptions {
@@ -49,19 +54,8 @@ const SHARED_PLATFORM_BASE_URL_ENV_VARS = [
 	"EVALOPS_BASE_URL",
 ] as const;
 
-const DEFAULT_TOKEN_ENV_VARS = [
-	"MAESTRO_EVALOPS_ACCESS_TOKEN",
-	"EVALOPS_TOKEN",
-] as const;
-
-const DEFAULT_ORGANIZATION_ENV_VARS = [
-	"MAESTRO_EVALOPS_ORG_ID",
-	"EVALOPS_ORGANIZATION_ID",
-	"EVALOPS_ORG_ID",
-	"MAESTRO_ENTERPRISE_ORG_ID",
-	"MAESTRO_LLM_GATEWAY_ORG_ID",
-	"MAESTRO_REMOTE_RUNNER_ORG_ID",
-] as const;
+const DEFAULT_TOKEN_ENV_VARS = EVALOPS_ACCESS_TOKEN_ENV_VARS;
+const DEFAULT_ORGANIZATION_ENV_VARS = EVALOPS_ORGANIZATION_ID_ENV_VARS;
 
 const DEFAULT_TEAM_ENV_VARS = [
 	"MAESTRO_EVALOPS_TEAM_ID",
@@ -160,7 +154,10 @@ export async function resolvePlatformServiceConfig(
 		return null;
 	}
 
-	const token = await resolvePlatformToken(options.tokenEnvVars);
+	const token =
+		options.allowOAuthTokenFallback === false
+			? getEnvValue(options.tokenEnvVars ?? [])
+			: await resolvePlatformToken(options.tokenEnvVars);
 	if (!token && options.requireToken !== false) {
 		return null;
 	}
@@ -186,7 +183,7 @@ export async function resolvePlatformServiceConfig(
 	};
 }
 
-function buildPlatformJsonHeaders(
+export function buildPlatformJsonHeaders(
 	config: Pick<PlatformServiceConfig, "organizationId" | "token">,
 	extraHeaders?: Record<string, string | undefined>,
 ): Record<string, string> {

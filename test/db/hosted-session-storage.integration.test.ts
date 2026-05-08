@@ -232,6 +232,14 @@ describeDb("hosted session database storage", () => {
 			"user",
 			"assistant",
 		]);
+		await expect(
+			manager.loadSession(sessionId, { messagesView: "notLoaded" }),
+		).resolves.toMatchObject({
+			id: sessionId,
+			messageCount: 2,
+			messagesView: "notLoaded",
+			messages: [],
+		});
 
 		const resumed = createWebSessionManagerForRequest(req, false);
 		expect(isHostedSessionManager(resumed)).toBe(true);

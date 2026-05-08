@@ -20,6 +20,14 @@ import { CostTracker } from "./cost-tracker.js";
 import { isRetryableError, retryAsync } from "./errors.js";
 import * as logger from "./logger.js";
 import {
+	type SlackRuntimeEventType,
+	recordSlackAgentRuntimeTrigger,
+} from "./platform-runtime.js";
+import {
+	type RuntimeEventRecorder,
+	createRuntimeEventRecorder,
+} from "./runtime-event-recorder.js";
+import {
 	type Executor,
 	type SandboxConfig,
 	createExecutor,
@@ -55,6 +63,9 @@ import {
 
 // Re-export for backwards compatibility
 export { isRetryableError } from "./errors.js";
+
+const DEFAULT_SLACK_AGENT_PROVIDER = "anthropic";
+const DEFAULT_SLACK_AGENT_MODEL_ID = "claude-opus-4-6";
 
 /**
  * Retry configuration for transient failures
@@ -740,6 +751,13 @@ export function createAgentRunner(
 			);
 			const memory = getMemory(channelDir);
 			let recentMessages = "";
+			let runtimeEventRecorder: RuntimeEventRecorder =
+				createRuntimeEventRecorder(ctx, undefined);
+			const recordRuntimeEvent = (
+				type: SlackRuntimeEventType,
+				message: string,
+				attributes?: Parameters<RuntimeEventRecorder["record"]>[2],
+			) => runtimeEventRecorder.record(type, message, attributes);
 
 			// Build file content section for code/text files attached to current message
 			let fileContentSection = "";
@@ -802,9 +820,35 @@ export function createAgentRunner(
 						]
 					: []),
 			];
+			const onApprovalNeeded: ApprovalRequestCallback | undefined =
+				options?.onApprovalNeeded
+					? async (command, description) => {
+							await recordRuntimeEvent(
+								"RUNTIME_EVENT_TYPE_APPROVAL_REQUESTED",
+								"Slack approval requested",
+								{
+									approval_description: description,
+									command_preview: truncate(command, 500),
+								},
+							);
+							const approved = await options.onApprovalNeeded?.(
+								command,
+								description,
+							);
+							await recordRuntimeEvent(
+								"RUNTIME_EVENT_TYPE_APPROVAL_RESOLVED",
+								approved ? "Slack approval granted" : "Slack approval rejected",
+								{
+									approval_description: description,
+									approved: approved ?? false,
+								},
+							);
+							return approved ?? false;
+						}
+					: undefined;
 			let tools = createSlackAgentTools(executor, {
 				containerName: executor.getContainerName(),
-				onApprovalNeeded: options?.onApprovalNeeded,
+				onApprovalNeeded,
 				scheduleOptions: options?.scheduleCallbacks,
 				extraTools: extraTools.length ? extraTools : undefined,
 				onDeploy: options?.onDeploy,
@@ -820,13 +864,17 @@ export function createAgentRunner(
 				}
 			}
 
-			// Get the model - default to Claude Sonnet 4
+			// Get the model - default to Claude Opus for Slack's main agent surface.
+			const modelId =
+				process.env.SLACK_AGENT_MODEL?.trim() || DEFAULT_SLACK_AGENT_MODEL_ID;
 			const model = getModel(
-				"anthropic",
-				"claude-sonnet-4-20250514",
+				DEFAULT_SLACK_AGENT_PROVIDER,
+				modelId,
 			) as Model<Api>;
 			if (!model) {
-				throw new Error("Failed to get Claude Sonnet 4 model");
+				throw new Error(
+					`Failed to get ${DEFAULT_SLACK_AGENT_PROVIDER}/${modelId} model`,
+				);
 			}
 			const summaryModelId = process.env.SLACK_AGENT_SUMMARY_MODEL;
 			const summaryModel = summaryModelId
@@ -970,6 +1018,16 @@ export function createAgentRunner(
 							label,
 							event.args as Record<string, unknown>,
 						);
+						await recordRuntimeEvent(
+							"RUNTIME_EVENT_TYPE_TOOL_CALL_RECORDED",
+							`Started Slack agent tool ${event.toolName}`,
+							{
+								tool_name: event.toolName,
+								tool_call_id: event.toolCallId,
+								label,
+								tools_executed_so_far: toolsExecuted,
+							},
+						);
 
 						try {
 							await ctx.updateStatus(`Running ${label}...`);
@@ -1021,6 +1079,18 @@ export function createAgentRunner(
 								resultStr,
 							);
 						}
+						await recordRuntimeEvent(
+							"RUNTIME_EVENT_TYPE_TOOL_RESULT_RECORDED",
+							`Finished Slack agent tool ${event.toolName}`,
+							{
+								tool_name: event.toolName,
+								tool_call_id: event.toolCallId,
+								duration_ms: durationMs,
+								is_error: event.isError,
+								result_preview: truncate(resultStr, 500),
+								tools_executed: toolsExecuted,
+							},
+						);
 
 						await store.logMessage(ctx.message.channel, {
 							date: new Date().toISOString(),
@@ -1057,6 +1127,11 @@ export function createAgentRunner(
 					case "message_start":
 						if (event.message.role === "assistant") {
 							logger.logResponseStart(logCtx);
+							await recordRuntimeEvent(
+								"RUNTIME_EVENT_TYPE_AGENT_PROGRESS_RECORDED",
+								"Assistant response started",
+								{ model: `${model.provider}/${model.id}` },
+							);
 						}
 						break;
 
@@ -1083,6 +1158,20 @@ export function createAgentRunner(
 								cacheWriteTokens += record.cacheWriteTokens || 0;
 								cacheReadTokens += record.cacheReadTokens || 0;
 								modelUsed = record.model;
+								await recordRuntimeEvent(
+									"RUNTIME_EVENT_TYPE_MODEL_RESPONSE_RECORDED",
+									"Slack agent model usage observed",
+									{
+										metric_kind: "model_usage",
+										model: record.model,
+										input_tokens: record.inputTokens,
+										output_tokens: record.outputTokens,
+										cache_write_tokens: record.cacheWriteTokens ?? 0,
+										cache_read_tokens: record.cacheReadTokens ?? 0,
+										estimated_cost_usd: record.estimatedCost,
+										run_cost_total_usd: runCostTotal,
+									},
+								);
 							}
 
 							const content = event.message.content;
@@ -1098,6 +1187,17 @@ export function createAgentRunner(
 							}
 
 							const text = textParts.join("\n");
+							await recordRuntimeEvent(
+								"RUNTIME_EVENT_TYPE_MODEL_RESPONSE_RECORDED",
+								"Assistant response completed",
+								{
+									model: assistantMsg.model,
+									stop_reason: assistantMsg.stopReason ?? stopReason,
+									text_length: text.length,
+									thinking_part_count: thinkingParts.length,
+									text_part_count: textParts.length,
+								},
+							);
 
 							for (const thinking of thinkingParts) {
 								logger.logThinking(logCtx, thinking);
@@ -1151,28 +1251,77 @@ export function createAgentRunner(
 				throw new Error("Agent not initialized");
 			}
 
-			// Run with retry logic for transient API failures
-			await retryAsync("Agent prompt", () => activeAgent.prompt(userPrompt), {
-				maxAttempts: 3,
-				initialDelayMs: 1000,
-				maxDelayMs: 30000,
-				onRetry: (attempt, error, delayMs) => {
-					const delaySec = (delayMs / 1000).toFixed(1);
-					logger.logWarning(
-						`API call failed (attempt ${attempt}/3)`,
-						`${error.message}. Retrying in ${delaySec}s...`,
+			try {
+				const runtimeResult = await recordSlackAgentRuntimeTrigger(ctx, {
+					workingDir,
+					channelDir,
+					prompt: ctx.message.text,
+					model: `${model.provider}/${model.id}`,
+				});
+				if (runtimeResult?.runId) {
+					ctx.platformRunId = runtimeResult.runId;
+					runtimeEventRecorder = createRuntimeEventRecorder(
+						ctx,
+						runtimeResult.runId,
 					);
-					queue.enqueue(
-						() =>
-							ctx.respond(
-								`_Temporary error, retrying in ${delaySec}s..._`,
-								false,
-							),
-						"retry notice",
+					logger.logInfo(
+						`Platform AgentRuntime run recorded: ${runtimeResult.runId}`,
 					);
-				},
-			});
+					await recordRuntimeEvent(
+						"RUNTIME_EVENT_TYPE_AGENT_PROGRESS_RECORDED",
+						"Slack agent started processing",
+						{
+							model: `${model.provider}/${model.id}`,
+							channel_dir: channelDir,
+							working_dir: workingDir,
+							attachment_count: ctx.message.attachments.length,
+						},
+					);
+				}
+			} catch (error) {
+				logger.logWarning(
+					"Platform AgentRuntime recording skipped",
+					error instanceof Error ? error.message : String(error),
+				);
+			}
 
+			// Run with retry logic for transient API failures
+			try {
+				await retryAsync("Agent prompt", () => activeAgent.prompt(userPrompt), {
+					maxAttempts: 3,
+					initialDelayMs: 1000,
+					maxDelayMs: 30000,
+					onRetry: (attempt, error, delayMs) => {
+						const delaySec = (delayMs / 1000).toFixed(1);
+						logger.logWarning(
+							`API call failed (attempt ${attempt}/3)`,
+							`${error.message}. Retrying in ${delaySec}s...`,
+						);
+						queue.enqueue(
+							() =>
+								ctx.respond(
+									`_Temporary error, retrying in ${delaySec}s..._`,
+									false,
+								),
+							"retry notice",
+						);
+					},
+				});
+			} catch (error) {
+				await recordRuntimeEvent(
+					"RUNTIME_EVENT_TYPE_AGENT_PROGRESS_RECORDED",
+					"Slack agent observed run failure",
+					{
+						progress_kind: "run_failure_observed",
+						error: error instanceof Error ? error.message : String(error),
+						tools_executed: toolsExecuted,
+						total_cost_usd: runCostTotal,
+					},
+				);
+				throw error;
+			}
+
+			await runtimeEventRecorder.flush();
 			await queue.flush();
 
 			// Get final assistant message and replace main message
@@ -1193,6 +1342,18 @@ export function createAgentRunner(
 							? `${finalText.substring(0, SLACK_MAX_LENGTH - 50)}\n\n_(see thread for full response)_`
 							: finalText;
 					await ctx.replaceMessage(mainText);
+					await recordRuntimeEvent(
+						"RUNTIME_EVENT_TYPE_CHANNEL_MESSAGE_RECORDED",
+						"Slack response posted",
+						{
+							message_kind: "final_response",
+							text_length: finalText.length,
+							truncated_for_main_message: finalText.length > SLACK_MAX_LENGTH,
+							stop_reason: stopReason,
+							tools_executed: toolsExecuted,
+							total_cost_usd: runCostTotal,
+						},
+					);
 				} catch (err) {
 					const errMsg = err instanceof Error ? err.message : String(err);
 					logger.logWarning("Failed to replace message", errMsg);

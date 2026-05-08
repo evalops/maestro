@@ -190,7 +190,7 @@ describe("prompts service client", () => {
 
 	it("warns when configured prompt service is missing an organization id", async () => {
 		delete process.env.PROMPTS_SERVICE_ORGANIZATION_ID;
-		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const logSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 		const fetchMock = vi.fn();
 		vi.stubGlobal("fetch", fetchMock);
 
@@ -213,7 +213,7 @@ describe("prompts service client", () => {
 	it("warns when configured prompt service is missing an access token", async () => {
 		delete process.env.PROMPTS_SERVICE_TOKEN;
 		process.env.MAESTRO_HOME = "/tmp/maestro-prompts-test-no-oauth";
-		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const logSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 		const fetchMock = vi.fn();
 		vi.stubGlobal("fetch", fetchMock);
 

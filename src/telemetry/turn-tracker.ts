@@ -10,6 +10,7 @@ import type { AgentEvent, ThinkingLevel, Usage } from "../agent/types.js";
 import {
 	type CanonicalTurnEvent,
 	type TailSamplingConfig,
+	type TokenUsage,
 	TurnCollector,
 	getSamplingConfigFromEnv,
 } from "./wide-events.js";
@@ -68,6 +69,7 @@ export class TurnTracker {
 	private unsubscribe: (() => void) | null = null;
 	private samplingConfig: Partial<TailSamplingConfig>;
 	private accumulatedUsage: Usage | null = null;
+	private lastMetricTokens: TokenUsage | null = null;
 
 	constructor(
 		private readonly agent: Agent,
@@ -192,6 +194,7 @@ export class TurnTracker {
 		if (!isContinuation || this.turnNumber === 0) {
 			this.turnNumber++;
 			this.accumulatedUsage = null;
+			this.lastMetricTokens = null;
 		}
 
 		this.currentTurn = new TurnCollector(
@@ -277,6 +280,7 @@ export class TurnTracker {
 		};
 
 		const costUsd = this.accumulatedUsage?.cost?.total ?? 0;
+		const metricTokens = diffTokenUsage(tokens, this.lastMetricTokens);
 
 		// Complete the turn
 		const canonicalEvent = this.currentTurn.complete(
@@ -285,7 +289,9 @@ export class TurnTracker {
 			costUsd,
 			errorDetails,
 			abortReason,
+			metricTokens,
 		);
+		this.lastMetricTokens = tokens;
 
 		// Call the callback if provided
 		if (this.config.onTurnComplete) {
@@ -304,4 +310,23 @@ export function createTurnTracker(
 	config: TurnTrackerConfig,
 ): TurnTracker {
 	return new TurnTracker(agent, config);
+}
+
+function diffTokenUsage(
+	current: TokenUsage,
+	previous: TokenUsage | null,
+): TokenUsage {
+	if (!previous) {
+		return current;
+	}
+	return {
+		input: Math.max(0, current.input - previous.input),
+		output: Math.max(0, current.output - previous.output),
+		cacheRead: Math.max(0, current.cacheRead - previous.cacheRead),
+		cacheWrite: Math.max(0, current.cacheWrite - previous.cacheWrite),
+		thinking:
+			current.thinking !== undefined || previous.thinking !== undefined
+				? Math.max(0, (current.thinking ?? 0) - (previous.thinking ?? 0))
+				: undefined,
+	};
 }

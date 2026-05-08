@@ -20,6 +20,7 @@ Options
   --trace-mode <mode>                 none, mcp_events, or otlp
   --memory-mode <mode>                none, read_only, durable, or cerebro
   --runtime-owner <owner>             external or evalops
+  --capability <cap[,cap...]>         Agent capability to declare; repeatable
   --workspace, --workspace-id <id>    Workspace to associate with the registration
   --scope <scope[,scope...]>          Registration scopes to request
   --key-scope <scope[,scope...]>      API key scopes to request
@@ -74,6 +75,14 @@ export function parseInitArgs(args: string[]): EvalOpsInitOptions {
 			case "--key-scope":
 				options.apiKeyScopes = appendScopes(
 					options.apiKeyScopes,
+					readValue(args, i, arg),
+				);
+				i++;
+				break;
+			case "--capabilities":
+			case "--capability":
+				options.capabilities = appendScopes(
+					options.capabilities,
 					readValue(args, i, arg),
 				);
 				i++;

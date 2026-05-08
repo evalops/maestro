@@ -8,7 +8,11 @@ import {
 	buildSessionFileInfo,
 	safeReadSessionEntries,
 } from "./session-context.js";
-import type { SessionMetadata, SessionSummary } from "./types.js";
+import type {
+	SessionMessagesView,
+	SessionMetadata,
+	SessionSummary,
+} from "./types.js";
 
 const logger = createLogger("session-catalog");
 
@@ -28,6 +32,7 @@ export interface LoadedSessionData {
 	id: string;
 	subject?: string;
 	title?: string;
+	summary?: string;
 	resumeSummary?: string;
 	messages: AppMessage[];
 	createdAt: string;
@@ -35,6 +40,7 @@ export interface LoadedSessionData {
 	messageCount: number;
 	favorite: boolean;
 	tags?: string[];
+	messagesView: SessionMessagesView;
 }
 
 function getSortedSessionFiles(sessionDir: string): SessionFileEntry[] {
@@ -79,6 +85,7 @@ export class SessionCatalog {
 						path: filePath,
 						id: info.id,
 						subject: info.subject,
+						title: info.title,
 						created: info.created,
 						modified: stats.mtime,
 						size: stats.size,
@@ -87,6 +94,7 @@ export class SessionCatalog {
 						summary: derivedSummary,
 						resumeSummary: info.resumeSummary,
 						favorite: info.favorite,
+						tags: info.tags,
 						allMessagesText: info.allMessagesText,
 					});
 				} catch (error) {
@@ -152,7 +160,10 @@ export class SessionCatalog {
 		return sessions;
 	}
 
-	loadSession(sessionId: string): LoadedSessionData | null {
+	loadSession(
+		sessionId: string,
+		options: { messagesView?: SessionMessagesView } = {},
+	): LoadedSessionData | null {
 		this.options.beforeRead?.();
 		const sessionFile = this.getSessionFileById(sessionId);
 		if (!sessionFile) {
@@ -161,15 +172,19 @@ export class SessionCatalog {
 
 		const stats = statSync(sessionFile);
 		const entries = safeReadSessionEntries(sessionFile);
-		const info = buildSessionFileInfo(entries, stats);
+		const info = buildSessionFileInfo(entries, stats, {
+			messagesView: options.messagesView,
+		});
 		if (!info) {
 			return null;
 		}
+		const derivedSummary = info.summary || info.firstMessage || "(no summary)";
 
 		return {
 			id: info.id,
 			subject: info.subject,
 			title: info.title ?? info.summary,
+			summary: derivedSummary,
 			resumeSummary: info.resumeSummary,
 			messages: info.messages,
 			createdAt: info.created.toISOString(),
@@ -177,6 +192,7 @@ export class SessionCatalog {
 			messageCount: info.messageCount,
 			favorite: info.favorite,
 			tags: info.tags,
+			messagesView: info.messagesView,
 		};
 	}
 

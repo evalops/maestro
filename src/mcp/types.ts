@@ -40,6 +40,18 @@ export type McpScope = "enterprise" | "plugin" | "project" | "local" | "user";
 export type McpRemoteTrust = "official" | "custom" | "unknown";
 export type McpProjectApprovalDecision = "approved" | "denied";
 export type McpProjectApprovalStatus = "pending" | McpProjectApprovalDecision;
+export type McpWorkspaceTrustMode = "trusted" | "ask" | "blocked" | "untrusted";
+export type McpWorkspaceTrustDefault = "trusted" | "ask" | "untrusted";
+
+export interface McpWorkspaceTrustEntry {
+	workspaceUri: string;
+	mode: Exclude<McpWorkspaceTrustMode, "untrusted">;
+	serverFingerprint?: string;
+	grantedBy?: string;
+	grantedAt?: string;
+	expiresAt?: string;
+	reason?: string;
+}
 
 export interface McpOfficialRegistryInfo {
 	displayName?: string;
@@ -111,6 +123,8 @@ export interface McpConfig {
 	servers: McpServerConfig[];
 	authPresets: McpAuthPresetConfig[];
 	projectRoot?: string;
+	trustedWorkspaces?: Record<string, McpWorkspaceTrustEntry[]>;
+	workspaceTrustDefault?: McpWorkspaceTrustDefault;
 	envLimits?: Record<
 		string,
 		{ effective: number; status: string; message?: string }

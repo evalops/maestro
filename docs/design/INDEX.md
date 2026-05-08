@@ -12,6 +12,8 @@ This directory contains detailed design documentation for each major feature and
 | [Session Recovery & Persistence](SESSION_PERSISTENCE.md) | JSONL storage, buffered writing, and crash recovery |
 | [Headless Control Plane](HEADLESS_CONTROL_PLANE.md) | Remote/session control-plane design for headless, replay, and client callbacks |
 | [Any-Agent EvalOps Control Plane](ANY_AGENT_CONTROL_PLANE.md) | Agent-neutral registration, governance, traces, evidence, memory, and shim strategy |
+| [Platform AgentRuntime Session Bridge](PLATFORM_AGENT_RUNTIME_SESSION_BRIDGE.md) | Hosted-session to Platform AgentRuntime/A2A projection, trace context, and correlation handles |
+| [AgentRuntime Task Mapping](AGENT_RUNTIME_TASK_MAPPING.md) | Mapping local todo, background-task, checkpoint, and swarm state to Platform AgentRuntime adoption phases |
 | [Run Timeline Contract](../protocols/run-timeline.md) | Product-safe run event projection, redaction, visibility, and stable IDs |
 
 ## User Interface
@@ -26,6 +28,8 @@ This directory contains detailed design documentation for each major feature and
 | Document | Description |
 |----------|-------------|
 | [Safety & Firewall System](SAFETY_FIREWALL.md) | Rule-based safety enforcement, dangerous command detection |
+| [Agent Safety Boundary](AGENT_SAFETY_BOUNDARY.md) | Shared boundary for MCP workspace trust, guarded files, approvals, audit, and sandbox policy |
+| [Guarded Files](GUARDED_FILES.md) | Prompt-mode guardrails and audit events for user/editor configuration files |
 | [Platform ToolExecution Bridge](PLATFORM_TOOL_EXECUTION_BRIDGE.md) | Shared policy, approval, and audit bridge for Maestro tool calls |
 | [Enterprise RBAC & Audit](ENTERPRISE_RBAC.md) | Role-based access control, audit logging, and multi-tenancy |
 

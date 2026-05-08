@@ -7,10 +7,16 @@ import type {
 	ComposerRunTimelineVisibility,
 } from "@evalops/contracts";
 import {
+	EVALOPS_ACCESS_TOKEN_ENV_VARS,
+	EVALOPS_ORGANIZATION_ID_ENV_VARS,
+	EVALOPS_WORKSPACE_ID_ENV_VARS,
+} from "../evalops/env-aliases.js";
+import {
 	compactTimelineMetadata,
 	compactTimelineSummary,
 	redactTimelineMetadata,
 } from "../timeline/redaction.js";
+import { isAbortError } from "../utils/abort-error.js";
 import {
 	type PlatformServiceConfig,
 	postPlatformConnect,
@@ -41,25 +47,19 @@ const TIMELINE_BASE_URL_ENV_VARS = [
 const TIMELINE_TOKEN_ENV_VARS = [
 	"MAESTRO_TIMELINE_SERVICE_TOKEN",
 	"MAESTRO_PLATFORM_TIMELINE_SERVICE_TOKEN",
-	"MAESTRO_EVALOPS_ACCESS_TOKEN",
-	"EVALOPS_TOKEN",
+	...EVALOPS_ACCESS_TOKEN_ENV_VARS,
 ] as const;
 
 const TIMELINE_ORGANIZATION_ENV_VARS = [
 	"MAESTRO_TIMELINE_ORG_ID",
 	"MAESTRO_PLATFORM_TIMELINE_ORG_ID",
-	"MAESTRO_EVALOPS_ORG_ID",
-	"EVALOPS_ORGANIZATION_ID",
-	"MAESTRO_ENTERPRISE_ORG_ID",
+	...EVALOPS_ORGANIZATION_ID_ENV_VARS,
 ] as const;
 
 const TIMELINE_WORKSPACE_ENV_VARS = [
 	"MAESTRO_TIMELINE_WORKSPACE_ID",
 	"MAESTRO_PLATFORM_TIMELINE_WORKSPACE_ID",
-	"MAESTRO_REMOTE_RUNNER_WORKSPACE_ID",
-	"MAESTRO_EVALOPS_WORKSPACE_ID",
-	"EVALOPS_WORKSPACE_ID",
-	"MAESTRO_WORKSPACE_ID",
+	...EVALOPS_WORKSPACE_ID_ENV_VARS,
 ] as const;
 
 const TIMELINE_TIMEOUT_ENV_VARS = [
@@ -161,10 +161,6 @@ function stringValue(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim().length > 0
 		? value.trim()
 		: undefined;
-}
-
-function isAbortError(error: unknown): boolean {
-	return error instanceof Error && error.name === "AbortError";
 }
 
 function relatedString(

@@ -771,6 +771,18 @@ function buildPaths(routes: Route[]) {
 				security: [{ ComposerApiKey: [] }],
 				parameters: [
 					{ name: "id", in: "path", required: true, schema: { type: "string" } },
+					{
+						name: "messagesView",
+						in: "query",
+						required: false,
+						schema: {
+							type: "string",
+							enum: ["full", "summary", "notLoaded"],
+							default: "full",
+						},
+						description:
+							"Controls session message hydration. Use notLoaded for metadata-only fetches or summary for a compact preview.",
+					},
 				],
 				responses: {
 					200: {

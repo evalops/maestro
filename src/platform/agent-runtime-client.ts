@@ -1,9 +1,26 @@
 import {
+	EVALOPS_ACCESS_TOKEN_ENV_VARS,
+	EVALOPS_ORGANIZATION_ID_ENV_VARS,
+	EVALOPS_WORKSPACE_ID_ENV_VARS,
+} from "../evalops/env-aliases.js";
+import { isAbortError } from "../utils/abort-error.js";
+import {
+	type A2AServiceConfig,
+	type A2ATask,
+	buildA2AUserMessage,
+	getA2ATask,
+	resolveA2AServiceConfig,
+	resolveA2ATraceContext,
+	sendA2AMessage,
+} from "./a2a-client.js";
+import {
 	type MaestroFactsContext,
 	gatherMaestroSessionFactsContext,
 } from "./cerebro-facts-client.js";
 import {
 	type PlatformServiceConfig,
+	getEnvValue,
+	normalizeBaseUrl,
 	postPlatformConnect,
 	resolvePlatformServiceConfig,
 	trimString,
@@ -17,6 +34,34 @@ import {
 
 const DEFAULT_TIMEOUT_MS = 2_000;
 const DEFAULT_MAX_ATTEMPTS = 2;
+const AGENT_RUNTIME_A2A_ENABLED_ENV_VARS = [
+	"MAESTRO_AGENT_RUNTIME_A2A_ENABLED",
+	"MAESTRO_PLATFORM_A2A_ENABLED",
+] as const;
+const DEDICATED_A2A_BASE_URL_ENV_VARS = [
+	"MAESTRO_PLATFORM_A2A_URL",
+	"MAESTRO_A2A_URL",
+] as const;
+const DEDICATED_A2A_TOKEN_ENV_VARS = [
+	"MAESTRO_PLATFORM_A2A_TOKEN",
+	"MAESTRO_A2A_TOKEN",
+] as const;
+const DEDICATED_A2A_ORGANIZATION_ENV_VARS = [
+	"MAESTRO_PLATFORM_A2A_ORG_ID",
+	"MAESTRO_A2A_ORG_ID",
+] as const;
+const DEDICATED_A2A_WORKSPACE_ENV_VARS = [
+	"MAESTRO_PLATFORM_A2A_WORKSPACE_ID",
+	"MAESTRO_A2A_WORKSPACE_ID",
+] as const;
+const DEDICATED_A2A_TIMEOUT_ENV_VARS = [
+	"MAESTRO_PLATFORM_A2A_TIMEOUT_MS",
+	"MAESTRO_A2A_TIMEOUT_MS",
+] as const;
+const DEDICATED_A2A_MAX_ATTEMPTS_ENV_VARS = [
+	"MAESTRO_PLATFORM_A2A_MAX_ATTEMPTS",
+	"MAESTRO_A2A_MAX_ATTEMPTS",
+] as const;
 
 const HANDLE_TRIGGER_PATH = platformConnectMethodPath(
 	PLATFORM_CONNECT_METHODS.agentRuntime.handleTrigger,
@@ -46,10 +91,6 @@ const LIST_RUN_EVENTS_PATH = platformConnectMethodPath(
 	PLATFORM_CONNECT_METHODS.agentRuntime.listRunEvents,
 );
 
-function isAbortError(error: unknown): boolean {
-	return error instanceof Error && error.name === "AbortError";
-}
-
 const AGENT_RUNTIME_BASE_URL_ENV_VARS = [
 	"MAESTRO_AGENT_RUNTIME_SERVICE_URL",
 	"AGENT_RUNTIME_SERVICE_URL",
@@ -58,23 +99,19 @@ const AGENT_RUNTIME_BASE_URL_ENV_VARS = [
 const AGENT_RUNTIME_TOKEN_ENV_VARS = [
 	"MAESTRO_AGENT_RUNTIME_SERVICE_TOKEN",
 	"AGENT_RUNTIME_SERVICE_TOKEN",
-	"MAESTRO_EVALOPS_ACCESS_TOKEN",
-	"EVALOPS_TOKEN",
+	...EVALOPS_ACCESS_TOKEN_ENV_VARS,
 ] as const;
 
 const AGENT_RUNTIME_ORGANIZATION_ENV_VARS = [
 	"MAESTRO_AGENT_RUNTIME_ORG_ID",
 	"AGENT_RUNTIME_ORGANIZATION_ID",
-	"MAESTRO_EVALOPS_ORG_ID",
-	"EVALOPS_ORGANIZATION_ID",
-	"MAESTRO_ENTERPRISE_ORG_ID",
+	...EVALOPS_ORGANIZATION_ID_ENV_VARS,
 ] as const;
 
 const AGENT_RUNTIME_WORKSPACE_ENV_VARS = [
 	"MAESTRO_AGENT_RUNTIME_WORKSPACE_ID",
 	"AGENT_RUNTIME_WORKSPACE_ID",
-	"MAESTRO_WORKSPACE_ID",
-	"EVALOPS_WORKSPACE_ID",
+	...EVALOPS_WORKSPACE_ID_ENV_VARS,
 ] as const;
 
 const AGENT_RUNTIME_TIMEOUT_ENV_VARS = [
@@ -352,6 +389,8 @@ export interface MaestroSessionRuntimeTriggerInput {
 	agentId?: string;
 	actorId?: string;
 	correlationId?: string;
+	traceparent?: string;
+	tracestate?: string;
 	sourceEventId?: string;
 	idempotencyKey?: string;
 	factsQuery?: string;
@@ -372,6 +411,9 @@ function pickString(
 	return undefined;
 }
 
+// Platform service responses can arrive from Connect JSON, protojson fixtures,
+// or A2A metadata. Keep casing tolerance here so HTTP handlers consume one
+// Maestro-owned shape instead of duplicating wire compatibility checks.
 function pickRecord(
 	record: Record<string, unknown> | undefined,
 	...names: string[]
@@ -677,6 +719,10 @@ export function buildMaestroSessionRuntimeTrigger(
 	const correlationId =
 		trimString(input.correlationId) ?? ["maestro-session", sessionId].join(":");
 	const actorId = trimString(input.actorId);
+	const traceContext = maestroRuntimeTraceContext(input);
+	// Session starts are idempotent per workspace/session pair. The channel and
+	// payload stay Maestro-shaped, while Platform receives enough typed linkage
+	// to build timelines, traces, and support views around the same session.
 	return {
 		workspaceId,
 		agentId,
@@ -697,11 +743,14 @@ export function buildMaestroSessionRuntimeTrigger(
 				route: "maestro_session",
 				maestro_session_id: sessionId,
 				source: "maestro",
+				traceparent: traceContext?.traceparent,
+				tracestate: traceContext?.tracestate,
 			}),
 		},
 		triggerKind: PlatformRuntimeTriggerKindValue.Api,
 		payload: {
 			maestroSessionId: sessionId,
+			...(traceContext ? { trace_context: traceContext } : {}),
 			...(input.metadata ? { metadata: input.metadata } : {}),
 			...(input.factsContext ? { facts_context: input.factsContext } : {}),
 		},
@@ -905,6 +954,12 @@ export async function recordMaestroSessionRuntimeTrigger(
 		signal?: AbortSignal;
 	},
 ): Promise<PlatformAgentRuntimeHandleTriggerResult | null> {
+	// Keep transport selection behind this adapter. Headless session handlers
+	// should only know whether a Platform correlation handle was recorded, not
+	// whether the deployment used Connect or the A2A facade.
+	if (isAgentRuntimeA2AEnabled()) {
+		return await recordMaestroSessionRuntimeTriggerViaA2A(input, options);
+	}
 	const config = options?.config ?? (await resolveAgentRuntimeServiceConfig());
 	if (!config) {
 		return null;
@@ -944,4 +999,285 @@ export async function recordMaestroSessionRuntimeTrigger(
 		}
 		return null;
 	}
+}
+
+async function recordMaestroSessionRuntimeTriggerViaA2A(
+	input: MaestroSessionRuntimeTriggerInput,
+	options?: {
+		config?: PlatformServiceConfig;
+		signal?: AbortSignal;
+	},
+): Promise<PlatformAgentRuntimeHandleTriggerResult | null> {
+	const serviceConfig = options?.config
+		? {
+				...options.config,
+				baseUrl: normalizeBaseUrl(
+					options.config.baseUrl,
+					AGENT_RUNTIME_BASE_URL_SUFFIXES,
+				),
+			}
+		: await resolveAgentRuntimeServiceConfig();
+	const dedicatedWorkspaceId = getEnvValue(DEDICATED_A2A_WORKSPACE_ENV_VARS);
+	// Dedicated A2A env vars deliberately override shared AgentRuntime config,
+	// but managed deployments can omit them and reuse the same service identity
+	// while only flipping the transport feature flag.
+	const config = await resolveA2AServiceConfig({
+		baseUrl: hasDedicatedA2AEnv(DEDICATED_A2A_BASE_URL_ENV_VARS)
+			? undefined
+			: serviceConfig?.baseUrl,
+		token: hasDedicatedA2AEnv(DEDICATED_A2A_TOKEN_ENV_VARS)
+			? undefined
+			: serviceConfig?.token,
+		organizationId: hasDedicatedA2AEnv(DEDICATED_A2A_ORGANIZATION_ENV_VARS)
+			? undefined
+			: serviceConfig?.organizationId,
+		workspaceId:
+			trimString(input.workspaceId) ??
+			(dedicatedWorkspaceId ? undefined : serviceConfig?.workspaceId),
+		agentId: input.agentId ?? "maestro",
+		sessionId: input.sessionId,
+		actorId: input.actorId ?? "maestro",
+		timeoutMs: hasDedicatedA2AEnv(DEDICATED_A2A_TIMEOUT_ENV_VARS)
+			? undefined
+			: serviceConfig?.timeoutMs,
+		maxAttempts: hasDedicatedA2AEnv(DEDICATED_A2A_MAX_ATTEMPTS_ENV_VARS)
+			? undefined
+			: serviceConfig?.maxAttempts,
+	});
+	if (!config) {
+		return null;
+	}
+	let factsContext = input.factsContext;
+	if (!factsContext) {
+		try {
+			factsContext = await gatherMaestroSessionFactsContext(
+				{
+					...input,
+					workspaceId: input.workspaceId ?? config.workspaceId,
+				},
+				{ signal: options?.signal },
+			);
+		} catch (error) {
+			if (isAbortError(error)) {
+				throw error;
+			}
+			factsContext = undefined;
+		}
+	}
+	const workspaceId = trimString(input.workspaceId) ?? config.workspaceId;
+	const sessionId = trimString(input.sessionId);
+	if (!workspaceId || !sessionId) {
+		return null;
+	}
+	const idempotencyKey =
+		trimString(input.idempotencyKey) ??
+		["maestro-session", workspaceId, sessionId].join(":");
+	const correlationId =
+		trimString(input.correlationId) ?? ["maestro-session", sessionId].join(":");
+	const traceContext = maestroRuntimeTraceContext(input);
+	try {
+		const sent = await sendA2AMessage(
+			config,
+			{
+				message: buildA2AUserMessage({
+					messageId: idempotencyKey,
+					contextId: `maestro-session:${sessionId}`,
+					text: `Start Maestro hosted session ${sessionId}`,
+					metadata: {
+						workspaceId,
+						agentId: config.agentId ?? "maestro",
+						sessionId,
+						actorId: config.actorId ?? input.actorId ?? "maestro",
+						correlationId,
+						...(traceContext?.traceparent
+							? { traceparent: traceContext.traceparent }
+							: {}),
+						...(traceContext?.tracestate
+							? { tracestate: traceContext.tracestate }
+							: {}),
+						sourceEventId: trimString(input.sourceEventId) ?? idempotencyKey,
+						sourceEventType: MaestroAgentRuntimeSourceEventType.SessionStarted,
+						metadata: input.metadata,
+						...(factsContext ? { facts_context: factsContext } : {}),
+					},
+				}),
+				configuration: { returnImmediately: true },
+				metadata: {
+					route: "maestro_session",
+					transport: "a2a",
+				},
+				traceContext,
+			},
+			{ signal: options?.signal },
+		);
+		let task = sent.task;
+		try {
+			task = mergeA2ATaskLookupResult(
+				sent.task,
+				await getA2ATask(config, sent.task.id, {
+					signal: options?.signal,
+					traceContext,
+				}),
+			);
+		} catch (error) {
+			if (isAbortError(error)) {
+				throw error;
+			}
+		}
+		return a2aTaskToAgentRuntimeTriggerResult(task, config);
+	} catch (error) {
+		if (isAbortError(error)) {
+			throw error;
+		}
+		return null;
+	}
+}
+
+function isAgentRuntimeA2AEnabled(): boolean {
+	const value = getEnvValue(AGENT_RUNTIME_A2A_ENABLED_ENV_VARS)?.toLowerCase();
+	return value === "1" || value === "true" || value === "yes" || value === "on";
+}
+
+function hasDedicatedA2AEnv(names: readonly string[]): boolean {
+	return getEnvValue(names) !== undefined;
+}
+
+function mergeA2ATaskLookupResult(sent: A2ATask, lookup: A2ATask): A2ATask {
+	const preservedMetadata = { ...(sent.metadata ?? {}) };
+	delete preservedMetadata.agentRunState;
+	delete preservedMetadata.agent_run_state;
+	return {
+		...sent,
+		...lookup,
+		metadata: {
+			...preservedMetadata,
+			...(lookup.metadata ?? {}),
+		},
+	};
+}
+
+function a2aTaskToAgentRuntimeTriggerResult(
+	task: A2ATask,
+	config: A2AServiceConfig,
+): PlatformAgentRuntimeHandleTriggerResult {
+	const metadata = task.metadata ?? {};
+	// A2A returns a task, while the rest of Maestro expects AgentRuntime-shaped
+	// correlation. Prefer Platform-projected metadata and fall back to the task
+	// id so health and identity endpoints still have a durable handle.
+	const runId = pickString(metadata, "agentRunId", "agent_run_id") ?? task.id;
+	const a2aMessageId = pickString(metadata, "a2aMessageId", "a2a_message_id");
+	const a2aTaskId = pickString(metadata, "a2aTaskId", "a2a_task_id") ?? task.id;
+	const agentId =
+		pickString(metadata, "agentId", "agent_id") ?? config.agentId ?? "maestro";
+	const workspaceId =
+		pickString(metadata, "workspaceId", "workspace_id") ?? config.workspaceId;
+	const workerQueue = pickString(metadata, "workerQueue", "worker_queue");
+	const correlationId = pickString(metadata, "correlationId", "correlation_id");
+	const correlationPath = pickString(
+		metadata,
+		"correlationPath",
+		"correlation_path",
+	);
+	const traceparent = pickString(metadata, "traceparent", "trace_parent");
+	const tracestate = pickString(metadata, "tracestate", "trace_state");
+	const idempotencyKey = pickString(
+		metadata,
+		"idempotencyKey",
+		"idempotency_key",
+	);
+	return {
+		run: {
+			id: runId,
+			state:
+				pickString(metadata, "agentRunState", "agent_run_state") ??
+				platformRunStateFromA2ATaskState(task.status?.state),
+			linkage: {
+				runId,
+				workspaceId,
+				agentId,
+			},
+			updatedAt: task.status?.timestamp,
+		},
+		events: [
+			{
+				type: "maestro.platform_runtime.a2a_correlated",
+				runId,
+				message: "Maestro A2A task linked to Platform AgentRuntime run",
+				attributes: {
+					...(a2aMessageId ? { a2a_message_id: a2aMessageId } : {}),
+					a2a_task_id: a2aTaskId,
+					platform_agent_run_id: runId,
+					...(workerQueue ? { worker_queue: workerQueue } : {}),
+					...(correlationId ? { correlation_id: correlationId } : {}),
+					...(correlationPath ? { correlation_path: correlationPath } : {}),
+					...(traceparent ? { traceparent } : {}),
+					...(tracestate ? { tracestate } : {}),
+					...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}),
+				},
+			},
+		],
+		idempotentReplay: pickBoolean(
+			metadata,
+			"idempotentReplay",
+			"idempotent_replay",
+		),
+	};
+}
+
+function platformRunStateFromA2ATaskState(
+	state: string | undefined,
+): PlatformAgentRunStateValue {
+	switch (state?.trim().toLowerCase()) {
+		case "task_state_working":
+		case "working":
+			return PlatformAgentRunStateValue.Running;
+		case "task_state_input_required":
+		case "input-required":
+			return PlatformAgentRunStateValue.Waiting;
+		case "task_state_completed":
+		case "completed":
+			return PlatformAgentRunStateValue.Succeeded;
+		case "task_state_failed":
+		case "task_state_rejected":
+		case "failed":
+		case "rejected":
+			return PlatformAgentRunStateValue.Failed;
+		case "task_state_auth_required":
+		case "auth-required":
+			return PlatformAgentRunStateValue.Waiting;
+		case "task_state_canceled":
+		case "task_state_cancelled":
+		case "canceled":
+		case "cancelled":
+			return PlatformAgentRunStateValue.Cancelled;
+		default:
+			return PlatformAgentRunStateValue.Queued;
+	}
+}
+
+function maestroRuntimeTraceContext(
+	input: Pick<
+		MaestroSessionRuntimeTriggerInput,
+		"metadata" | "traceparent" | "tracestate"
+	>,
+): ReturnType<typeof resolveA2ATraceContext> {
+	const traceparent =
+		trimString(input.traceparent) ??
+		pickString(input.metadata, "traceparent", "trace_parent");
+	const tracestate =
+		trimString(input.tracestate) ??
+		pickString(input.metadata, "tracestate", "trace_state");
+	if (traceparent || tracestate) {
+		return resolveA2ATraceContext(
+			{
+				traceparent,
+				tracestate,
+			},
+			{ envFallback: false },
+		);
+	}
+	return resolveA2ATraceContext({
+		traceparent,
+		tracestate,
+	});
 }

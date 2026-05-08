@@ -503,6 +503,8 @@ function runHeuristicScan(files: string[], root: string): GuardianToolResult {
 		/test\/safety\/context-firewall\.test\.ts$/,
 		/test\/safety\/edge-cases\.test\.ts$/,
 		/test\/safety\/safety-middleware\.test\.ts$/,
+		/test\/telemetry\/beacon\.test\.ts$/,
+		/test\/telemetry\/telemetry-metadata-split\.test\.ts$/,
 		// The runner itself contains regex patterns that look like secrets
 		/src\/guardian\/runner\.ts$/,
 	];

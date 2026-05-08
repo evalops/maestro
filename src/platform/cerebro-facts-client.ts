@@ -1,4 +1,9 @@
 import {
+	EVALOPS_ACCESS_TOKEN_ENV_VARS,
+	EVALOPS_WORKSPACE_ID_ENV_VARS,
+} from "../evalops/env-aliases.js";
+import { isAbortError } from "../utils/abort-error.js";
+import {
 	type DownstreamFailureMode,
 	fetchDownstream,
 } from "../utils/downstream-http.js";
@@ -101,8 +106,7 @@ const CEREBRO_BASE_URL_ENV_VARS = [
 const CEREBRO_TOKEN_ENV_VARS = [
 	"MAESTRO_CEREBRO_TOKEN",
 	"CEREBRO_TOKEN",
-	"MAESTRO_EVALOPS_ACCESS_TOKEN",
-	"EVALOPS_TOKEN",
+	...EVALOPS_ACCESS_TOKEN_ENV_VARS,
 ] as const;
 
 const CEREBRO_WORKSPACE_ENV_VARS = [
@@ -110,8 +114,7 @@ const CEREBRO_WORKSPACE_ENV_VARS = [
 	"CEREBRO_WORKSPACE_ID",
 	"MAESTRO_AGENT_RUNTIME_WORKSPACE_ID",
 	"AGENT_RUNTIME_WORKSPACE_ID",
-	"MAESTRO_WORKSPACE_ID",
-	"EVALOPS_WORKSPACE_ID",
+	...EVALOPS_WORKSPACE_ID_ENV_VARS,
 ] as const;
 
 const CEREBRO_TIMEOUT_ENV_VARS = [
@@ -249,10 +252,6 @@ function pushUniqueChange(
 	}
 	seen.add(key);
 	changes.push(change);
-}
-
-function isAbortError(error: unknown): boolean {
-	return error instanceof Error && error.name === "AbortError";
 }
 
 function pickMetadataString(

@@ -1,6 +1,7 @@
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use maestro_tui::headless::{
     AgentState, FromAgentMessage, ServerRequestResolutionStatus, ServerRequestResolvedBy,
@@ -16,6 +17,13 @@ use serde_json::json;
 use tokio::io::AsyncReadExt;
 
 const APPROVAL_TRIGGER_PREFIX: &str = "__maestro_conformance_approval__:";
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
 
 #[derive(Debug, Deserialize)]
 struct ApprovalTrigger {
@@ -91,6 +99,7 @@ impl HostedRunnerHeadlessMessageExecutor for ConformanceExecutor {
                         tool: trigger.tool,
                         args: trigger.args,
                         reason: trigger.reason,
+                        started_at_ms: Some(now_ms()),
                     }]
                 } else {
                     vec![FromAgentMessage::Status {
@@ -128,6 +137,8 @@ impl HostedRunnerHeadlessMessageExecutor for ConformanceExecutor {
                     resolution,
                     reason,
                     resolved_by: ServerRequestResolvedBy::User,
+                    started_at_ms: None,
+                    resolved_at_ms: Some(now_ms()),
                 }]
             }
             _ => Vec::new(),

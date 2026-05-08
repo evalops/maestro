@@ -6,6 +6,7 @@ import type {
 	AgentToolResult,
 	ToolAnnotations,
 } from "../agent/types.js";
+import { getSkillArtifactMetadataFromDetails } from "../skills/artifact-metadata.js";
 import { logToolFailure, recordToolExecution } from "../telemetry.js";
 import { compileTypeboxSchema } from "../utils/typebox-ajv.js";
 
@@ -90,10 +91,14 @@ export function createTypeboxTool<Schema extends TSchema, Details = undefined>(
 						parsedParams,
 						signal,
 					);
+					const skillMetadata = getSkillArtifactMetadataFromDetails(
+						result.details,
+					);
 					recordToolExecution(options.name, true, performance.now() - start, {
 						toolCallId,
 						attempt,
 						maxAttempts,
+						...(skillMetadata ? { skillMetadata } : {}),
 					});
 					return result;
 				} catch (error: unknown) {

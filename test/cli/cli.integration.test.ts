@@ -248,6 +248,50 @@ vi.mock("../../src/models/registry.js", () => ({
 		) ?? null,
 }));
 
+vi.mock("../../src/evalops/agent-bootstrap.js", async (importOriginal) => {
+	const actual =
+		await importOriginal<
+			typeof import("../../src/evalops/agent-bootstrap.js")
+		>();
+	return {
+		...actual,
+		bootstrapEvalOpsAgent: async (
+			_options: unknown,
+			deps?: { onStatus?: (status: { message: string }) => void },
+		) => {
+			deps?.onStatus?.({
+				message: "Registering Maestro with EvalOps agent MCP",
+			});
+			return {
+				agentId: "agent_json",
+				apiKeyCreated: true,
+				approvalPolicyAttached: true,
+				authenticatedAs: "json@example.com",
+				consoleUrl: "https://app.evalops.dev/overview?env=production",
+				endpoint: "https://app.evalops.dev/mcp",
+				evidenceEventPublished: true,
+				evidenceEvents: 1,
+				governedActionsLoaded: 17,
+				governedInferenceCheckRan: true,
+				integrationProfile: "managed_runtime",
+				keyPrefix: "pk_live_json",
+				memoryMode: "durable",
+				organizationId: "org_json",
+				registryVisible: true,
+				riskFindings: 0,
+				runId: "run_json",
+				runtimeOwner: "evalops",
+				scopesGranted: ["agent:register"],
+				sessionExpiresAt: "2026-05-06T13:00:00Z",
+				shimType: "sdk",
+				stored: true,
+				traceIngestionStarted: true,
+				traceMode: "otlp",
+			};
+		},
+	};
+});
+
 describe("CLI integration", () => {
 	const originalEnv = process.env.ANTHROPIC_API_KEY;
 	const originalAgentDir = process.env.MAESTRO_AGENT_DIR;
@@ -340,6 +384,16 @@ describe("CLI integration", () => {
 		vi.resetModules();
 	});
 
+	async function waitForFile(path: string): Promise<void> {
+		const deadline = Date.now() + 500;
+		while (!existsSync(path)) {
+			if (Date.now() >= deadline) {
+				throw new Error(`Timed out waiting for ${path}`);
+			}
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+	}
+
 	it("emits JSON events in json mode", async () => {
 		await main(["--mode", "json", "hello"]);
 		// Should emit JSONL events like thread_start, turn, item, thread_end
@@ -362,6 +416,37 @@ describe("CLI integration", () => {
 		expect(exitCodes).toEqual([0]);
 		expect(output.some((line) => line.includes("anthropic"))).toBe(true);
 		exitSpy.mockRestore();
+	});
+
+	it("keeps maestro init --json stdout parseable", async () => {
+		const stdoutLines: string[] = [];
+		const stderrLines: string[] = [];
+		console.log = (...args: unknown[]) => {
+			stdoutLines.push(args.map((arg) => String(arg)).join(" "));
+		};
+		console.error = (...args: unknown[]) => {
+			stderrLines.push(args.map((arg) => String(arg)).join(" "));
+		};
+
+		await main(["init", "--json"]);
+
+		expect(stderrLines.join("\n")).toContain(
+			"Registering Maestro with EvalOps agent MCP",
+		);
+		expect(stdoutLines).toHaveLength(1);
+		const parsed = JSON.parse(stdoutLines[0] ?? "{}") as Record<
+			string,
+			unknown
+		>;
+		expect(parsed).toMatchObject({
+			agentId: "agent_json",
+			integrationProfile: "managed_runtime",
+			memoryMode: "durable",
+			organizationId: "org_json",
+			runtimeOwner: "evalops",
+			traceMode: "otlp",
+		});
+		expect(stdoutLines.join("\n")).not.toContain("Loaded configuration");
 	});
 
 	it("exports a saved session as portable jsonl", async () => {
@@ -491,17 +576,129 @@ describe("CLI integration", () => {
 	});
 
 	it("prints maestro version output", async () => {
+		const originalTelemetry = process.env.MAESTRO_TELEMETRY;
+		const originalBeaconFile = process.env.MAESTRO_BEACON_FILE;
+		const originalBufferFile =
+			process.env.MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE;
+		const beaconFile = join(tempAgentDir, "version-beacon.jsonl");
+		const bufferFile = join(tempAgentDir, "version-command-buffer.json");
+		process.env.MAESTRO_TELEMETRY = "1";
+		process.env.MAESTRO_BEACON_FILE = beaconFile;
+		process.env.MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE = bufferFile;
 		const exitCodes: number[] = [];
 		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
 			exitCodes.push(Number(code ?? 0));
 			throw new Error("exit");
 		});
-		await expect(main(["--version"])).rejects.toThrow("exit");
-		expect(exitCodes).toEqual([0]);
-		const combined = output.join("\n");
-		expect(combined).toContain("Maestro v");
-		expect(combined).not.toContain("Composer v");
-		exitSpy.mockRestore();
+		try {
+			await expect(main(["--version"])).rejects.toThrow("exit");
+			expect(exitCodes).toEqual([0]);
+			const combined = output.join("\n");
+			expect(combined).toContain("Maestro v");
+			expect(combined).not.toContain("Composer v");
+			const [startupEvent] = JSON.parse(
+				readFileSync(beaconFile, "utf8").trim(),
+			) as [{ feature: string; action: string }];
+			const commandBuffer = JSON.parse(readFileSync(bufferFile, "utf8")) as {
+				counts: Record<string, number>;
+			};
+			expect(startupEvent).toMatchObject({
+				feature: "cli.startup",
+				action: "version",
+			});
+			expect(commandBuffer.counts).toEqual({
+				"cli.command.version": 1,
+			});
+		} finally {
+			if (originalTelemetry === undefined) {
+				Reflect.deleteProperty(process.env, "MAESTRO_TELEMETRY");
+			} else {
+				process.env.MAESTRO_TELEMETRY = originalTelemetry;
+			}
+			if (originalBeaconFile === undefined) {
+				Reflect.deleteProperty(process.env, "MAESTRO_BEACON_FILE");
+			} else {
+				process.env.MAESTRO_BEACON_FILE = originalBeaconFile;
+			}
+			if (originalBufferFile === undefined) {
+				Reflect.deleteProperty(
+					process.env,
+					"MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE",
+				);
+			} else {
+				process.env.MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE = originalBufferFile;
+			}
+			exitSpy.mockRestore();
+		}
+	});
+
+	it("waits for endpoint startup telemetry before version exits", async () => {
+		const originalTelemetry = process.env.MAESTRO_TELEMETRY;
+		const originalBeaconFile = process.env.MAESTRO_BEACON_FILE;
+		const originalBeaconEndpoint = process.env.MAESTRO_BEACON_ENDPOINT;
+		const originalBufferFile =
+			process.env.MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE;
+		const originalTimeout = process.env.MAESTRO_BEACON_TIMEOUT_MS;
+		const bufferFile = join(tempAgentDir, "version-endpoint-buffer.json");
+		process.env.MAESTRO_TELEMETRY = "1";
+		process.env.MAESTRO_BEACON_FILE = "";
+		process.env.MAESTRO_BEACON_ENDPOINT = "https://telemetry.example.test";
+		process.env.MAESTRO_BEACON_TIMEOUT_MS = "100";
+		process.env.MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE = bufferFile;
+		let fetchCompleted = false;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				() =>
+					new Promise<Response>((resolve) => {
+						setTimeout(() => {
+							fetchCompleted = true;
+							resolve(new Response(null, { status: 200 }));
+						}, 75);
+					}),
+			),
+		);
+		const exitCodes: number[] = [];
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
+			exitCodes.push(Number(code ?? 0));
+			throw new Error("exit");
+		});
+		try {
+			await expect(main(["--version"])).rejects.toThrow("exit");
+			expect(exitCodes).toEqual([0]);
+			expect(fetchCompleted).toBe(true);
+		} finally {
+			if (originalTelemetry === undefined) {
+				Reflect.deleteProperty(process.env, "MAESTRO_TELEMETRY");
+			} else {
+				process.env.MAESTRO_TELEMETRY = originalTelemetry;
+			}
+			if (originalBeaconFile === undefined) {
+				Reflect.deleteProperty(process.env, "MAESTRO_BEACON_FILE");
+			} else {
+				process.env.MAESTRO_BEACON_FILE = originalBeaconFile;
+			}
+			if (originalBeaconEndpoint === undefined) {
+				Reflect.deleteProperty(process.env, "MAESTRO_BEACON_ENDPOINT");
+			} else {
+				process.env.MAESTRO_BEACON_ENDPOINT = originalBeaconEndpoint;
+			}
+			if (originalBufferFile === undefined) {
+				Reflect.deleteProperty(
+					process.env,
+					"MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE",
+				);
+			} else {
+				process.env.MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE = originalBufferFile;
+			}
+			if (originalTimeout === undefined) {
+				Reflect.deleteProperty(process.env, "MAESTRO_BEACON_TIMEOUT_MS");
+			} else {
+				process.env.MAESTRO_BEACON_TIMEOUT_MS = originalTimeout;
+			}
+			exitSpy.mockRestore();
+			vi.unstubAllGlobals();
+		}
 	});
 
 	it("fails fast on invalid task budgets", async () => {
@@ -519,15 +716,130 @@ describe("CLI integration", () => {
 	});
 
 	it("prints providers summary for filter", async () => {
+		const originalTelemetry = process.env.MAESTRO_TELEMETRY;
+		const originalBeaconFile = process.env.MAESTRO_BEACON_FILE;
+		const originalBufferFile =
+			process.env.MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE;
+		const beaconFile = join(tempAgentDir, "models-beacon.jsonl");
+		const bufferFile = join(tempAgentDir, "models-command-buffer.json");
+		process.env.MAESTRO_TELEMETRY = "1";
+		process.env.MAESTRO_BEACON_FILE = beaconFile;
+		process.env.MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE = bufferFile;
 		const exitCodes: number[] = [];
 		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
 			exitCodes.push(Number(code ?? 0));
 			return undefined as never;
 		});
-		await main(["models", "providers", "--provider", "openrouter"]);
-		expect(exitCodes).toEqual([0]);
-		expect(output.join("\n")).toContain("openrouter");
-		exitSpy.mockRestore();
+		try {
+			await main(["models", "providers", "--provider", "openrouter"]);
+			expect(exitCodes).toEqual([0]);
+			expect(output.join("\n")).toContain("openrouter");
+			await waitForFile(beaconFile);
+			await waitForFile(bufferFile);
+			const [startupEvent] = JSON.parse(
+				readFileSync(beaconFile, "utf8").trim(),
+			) as [{ feature: string; action: string }];
+			const commandBuffer = JSON.parse(readFileSync(bufferFile, "utf8")) as {
+				counts: Record<string, number>;
+			};
+			expect(startupEvent).toMatchObject({
+				feature: "cli.startup",
+				action: "models.providers",
+			});
+			expect(commandBuffer.counts).toEqual({
+				"cli.command.models.providers": 1,
+			});
+		} finally {
+			if (originalTelemetry === undefined) {
+				Reflect.deleteProperty(process.env, "MAESTRO_TELEMETRY");
+			} else {
+				process.env.MAESTRO_TELEMETRY = originalTelemetry;
+			}
+			if (originalBeaconFile === undefined) {
+				Reflect.deleteProperty(process.env, "MAESTRO_BEACON_FILE");
+			} else {
+				process.env.MAESTRO_BEACON_FILE = originalBeaconFile;
+			}
+			if (originalBufferFile === undefined) {
+				Reflect.deleteProperty(
+					process.env,
+					"MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE",
+				);
+			} else {
+				process.env.MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE = originalBufferFile;
+			}
+			exitSpy.mockRestore();
+		}
+	});
+
+	it("does not wait for endpoint startup telemetry before subcommands", async () => {
+		const originalTelemetry = process.env.MAESTRO_TELEMETRY;
+		const originalBeaconFile = process.env.MAESTRO_BEACON_FILE;
+		const originalBeaconEndpoint = process.env.MAESTRO_BEACON_ENDPOINT;
+		const originalBufferFile =
+			process.env.MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE;
+		const originalTimeout = process.env.MAESTRO_BEACON_TIMEOUT_MS;
+		process.env.MAESTRO_TELEMETRY = "1";
+		process.env.MAESTRO_BEACON_FILE = "";
+		process.env.MAESTRO_BEACON_ENDPOINT = "https://telemetry.example.test";
+		process.env.MAESTRO_BEACON_TIMEOUT_MS = "10000";
+		process.env.MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE = join(
+			tempAgentDir,
+			"providers-endpoint-buffer.json",
+		);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(() => new Promise<Response>(() => {})),
+		);
+		const exitCodes: number[] = [];
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
+			exitCodes.push(Number(code ?? 0));
+			return undefined as never;
+		});
+		try {
+			const completed = await Promise.race([
+				main(["models", "providers", "--provider", "openrouter"]).then(
+					() => true,
+				),
+				new Promise<boolean>((resolve) => {
+					setTimeout(() => resolve(false), 50);
+				}),
+			]);
+			expect(completed).toBe(true);
+			expect(exitCodes).toEqual([0]);
+			expect(output.join("\n")).toContain("openrouter");
+		} finally {
+			if (originalTelemetry === undefined) {
+				Reflect.deleteProperty(process.env, "MAESTRO_TELEMETRY");
+			} else {
+				process.env.MAESTRO_TELEMETRY = originalTelemetry;
+			}
+			if (originalBeaconFile === undefined) {
+				Reflect.deleteProperty(process.env, "MAESTRO_BEACON_FILE");
+			} else {
+				process.env.MAESTRO_BEACON_FILE = originalBeaconFile;
+			}
+			if (originalBeaconEndpoint === undefined) {
+				Reflect.deleteProperty(process.env, "MAESTRO_BEACON_ENDPOINT");
+			} else {
+				process.env.MAESTRO_BEACON_ENDPOINT = originalBeaconEndpoint;
+			}
+			if (originalBufferFile === undefined) {
+				Reflect.deleteProperty(
+					process.env,
+					"MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE",
+				);
+			} else {
+				process.env.MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE = originalBufferFile;
+			}
+			if (originalTimeout === undefined) {
+				Reflect.deleteProperty(process.env, "MAESTRO_BEACON_TIMEOUT_MS");
+			} else {
+				process.env.MAESTRO_BEACON_TIMEOUT_MS = originalTimeout;
+			}
+			exitSpy.mockRestore();
+			vi.unstubAllGlobals();
+		}
 	});
 
 	it("prints maestro models help for unknown models subcommand", async () => {
@@ -709,6 +1021,22 @@ describe("CLI integration", () => {
 		});
 		await expect(
 			main(["--codex-api-key", "codex-token", "hello"]),
+		).rejects.toThrow("exit");
+		expect(exitCodes).toEqual([1]);
+		expect(output.join("\n")).toContain(
+			"Legacy Codex/ChatGPT auth flags are no longer supported",
+		);
+		exitSpy.mockRestore();
+	});
+
+	it("rejects legacy auth flags before status early exit", async () => {
+		const exitCodes: number[] = [];
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
+			exitCodes.push(Number(code ?? 0));
+			throw new Error("exit");
+		});
+		await expect(
+			main(["--codex-api-key", "codex-token", "status"]),
 		).rejects.toThrow("exit");
 		expect(exitCodes).toEqual([1]);
 		expect(output.join("\n")).toContain(

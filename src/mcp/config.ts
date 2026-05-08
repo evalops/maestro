@@ -71,12 +71,16 @@ import {
 	mcpAuthPresetSchema,
 	mcpConfigSchema,
 	mcpServerSchema,
+	mcpWorkspaceTrustDefaultSchema,
+	mcpWorkspaceTrustEntrySchema,
 } from "./schema.js";
 import type {
 	McpAuthPresetConfig,
 	McpConfig,
 	McpScope,
 	McpServerConfig,
+	McpWorkspaceTrustDefault,
+	McpWorkspaceTrustEntry,
 } from "./types.js";
 
 const logger = createLogger("mcp:config");
@@ -148,6 +152,8 @@ const getEffectiveEnterpriseConfigPath = (): string =>
 type ParsedConfig = {
 	servers: McpServerConfig[];
 	authPresets: McpAuthPresetConfig[];
+	trustedWorkspaces: Record<string, McpWorkspaceTrustEntry[]>;
+	workspaceTrustDefault?: McpWorkspaceTrustDefault;
 };
 type RawMcpConfigFile = z.infer<typeof mcpConfigSchema>;
 type PersistedMcpAuthPresetConfig = Omit<McpAuthPresetInput, "name">;
@@ -208,20 +214,23 @@ export function loadMcpConfig(
 	);
 	const projectCfg = projectRoot
 		? parseConfigFile(resolve(projectRoot, PROJECT_CONFIG_NAME), "project")
-		: { servers: [], authPresets: [] };
+		: { servers: [], authPresets: [], trustedWorkspaces: {} };
 	const localCfg = projectRoot
 		? parseConfigFile(resolve(projectRoot, LOCAL_CONFIG_NAME), "local")
-		: { servers: [], authPresets: [] };
+		: { servers: [], authPresets: [], trustedWorkspaces: {} };
 	const pluginCfg: ParsedConfig = {
 		servers: [
 			...getPlatformMcpPluginServers(),
 			...(options.pluginServers ?? []),
 		],
 		authPresets: [],
+		trustedWorkspaces: {},
 	};
 
 	const merged = new Map<string, McpServerConfig>();
 	const mergedAuthPresets = new Map<string, McpAuthPresetConfig>();
+	const mergedTrustedWorkspaces: Record<string, McpWorkspaceTrustEntry[]> = {};
+	let workspaceTrustDefault: McpWorkspaceTrustDefault | undefined;
 	// precedence: enterprise -> plugin -> project -> local -> user
 	// lower precedence first, higher precedence last so later overrides earlier
 	for (const src of [userCfg, localCfg, projectCfg, pluginCfg, enterpriseCfg]) {
@@ -236,6 +245,15 @@ export function loadMcpConfig(
 			}
 			merged.set(server.name, server);
 		}
+		for (const [serverName, entries] of Object.entries(src.trustedWorkspaces)) {
+			mergedTrustedWorkspaces[serverName] = [
+				...(mergedTrustedWorkspaces[serverName] ?? []),
+				...entries,
+			];
+		}
+		if (src.workspaceTrustDefault) {
+			workspaceTrustDefault = src.workspaceTrustDefault;
+		}
 	}
 
 	const envLimits = options.includeEnvLimits
@@ -246,6 +264,11 @@ export function loadMcpConfig(
 		servers: Array.from(merged.values()),
 		authPresets: Array.from(mergedAuthPresets.values()),
 		projectRoot: projectRoot ? resolve(projectRoot) : undefined,
+		trustedWorkspaces:
+			Object.keys(mergedTrustedWorkspaces).length > 0
+				? mergedTrustedWorkspaces
+				: undefined,
+		workspaceTrustDefault,
 		envLimits,
 	};
 }
@@ -495,7 +518,7 @@ export function updateMcpAuthPresetInConfig(
 
 function parseConfigFile(path: string, scope: McpScope): ParsedConfig {
 	if (!isConfigFile(path)) {
-		return { servers: [], authPresets: [] };
+		return { servers: [], authPresets: [], trustedWorkspaces: {} };
 	}
 	try {
 		const content = readFileSync(path, "utf-8");
@@ -507,7 +530,7 @@ function parseConfigFile(path: string, scope: McpScope): ParsedConfig {
 				path,
 				error: parsed.error.issues.map((e) => e.message).join("; "),
 			});
-			return { servers: [], authPresets: [] };
+			return { servers: [], authPresets: [], trustedWorkspaces: {} };
 		}
 
 		const servers: McpServerConfig[] = [];
@@ -536,7 +559,20 @@ function parseConfigFile(path: string, scope: McpScope): ParsedConfig {
 				if (normalized) authPresets.push(normalized);
 			}
 		}
-		return { servers, authPresets };
+		return {
+			servers,
+			authPresets,
+			trustedWorkspaces: normalizeTrustedWorkspaces(
+				parsed.data.trustedWorkspaces,
+				scope,
+				path,
+			),
+			workspaceTrustDefault: normalizeWorkspaceTrustDefault(
+				parsed.data.workspaceTrustDefault,
+				scope,
+				path,
+			),
+		};
 	} catch (error) {
 		logger.warn("Failed to parse MCP config file", {
 			path,
@@ -544,8 +580,77 @@ function parseConfigFile(path: string, scope: McpScope): ParsedConfig {
 			error: error instanceof Error ? error.message : String(error),
 			stack: error instanceof Error ? error.stack : undefined,
 		});
-		return { servers: [], authPresets: [] };
+		return { servers: [], authPresets: [], trustedWorkspaces: {} };
 	}
+}
+
+function normalizeWorkspaceTrustDefault(
+	raw: unknown,
+	scope: McpScope,
+	path: string,
+): McpWorkspaceTrustDefault | undefined {
+	if (raw === undefined) {
+		return undefined;
+	}
+	const parsed = mcpWorkspaceTrustDefaultSchema.safeParse(raw);
+	if (parsed.success) {
+		return parsed.data;
+	}
+	logger.warn("Invalid MCP workspaceTrustDefault", {
+		scope,
+		path,
+		error: parsed.error.issues.map((issue) => issue.message).join("; "),
+	});
+	return undefined;
+}
+
+function normalizeTrustedWorkspaces(
+	raw: unknown,
+	scope: McpScope,
+	path: string,
+): Record<string, McpWorkspaceTrustEntry[]> {
+	if (raw === undefined) {
+		return {};
+	}
+	if (!isRecord(raw)) {
+		logger.warn("Invalid MCP trustedWorkspaces", {
+			scope,
+			path,
+			error: "expected an object keyed by MCP server name",
+		});
+		return {};
+	}
+	const trustedWorkspaces: Record<string, McpWorkspaceTrustEntry[]> = {};
+	for (const [serverName, entries] of Object.entries(raw)) {
+		if (!Array.isArray(entries)) {
+			logger.warn("Invalid MCP trustedWorkspaces entry", {
+				scope,
+				path,
+				serverName,
+				error: "expected an array of workspace trust entries",
+			});
+			continue;
+		}
+		const validEntries: McpWorkspaceTrustEntry[] = [];
+		for (const [index, entry] of entries.entries()) {
+			const parsed = mcpWorkspaceTrustEntrySchema.safeParse(entry);
+			if (!parsed.success) {
+				logger.warn("Invalid MCP trusted workspace entry", {
+					scope,
+					path,
+					serverName,
+					index,
+					error: parsed.error.issues.map((issue) => issue.message).join("; "),
+				});
+				continue;
+			}
+			validEntries.push(parsed.data);
+		}
+		if (validEntries.length > 0) {
+			trustedWorkspaces[serverName] = validEntries;
+		}
+	}
+	return trustedWorkspaces;
 }
 
 function readWritableMcpConfig(

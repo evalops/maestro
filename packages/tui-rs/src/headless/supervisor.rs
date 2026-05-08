@@ -1805,24 +1805,28 @@ mod tests {
             request_id: Some("req_disconnect".to_string()),
             tool: "bash".to_string(),
             args: serde_json::json!({ "command": "git push" }),
+            started_at_ms: Some(1_771_000_000_000),
         };
         let client_tool = PendingApproval {
             call_id: "call_client_disconnect".to_string(),
             request_id: Some("req_client_disconnect".to_string()),
             tool: "client_tool".to_string(),
             args: serde_json::json!({ "name": "artifacts" }),
+            started_at_ms: None,
         };
         let user_input = PendingApproval {
             call_id: "call_user_disconnect".to_string(),
             request_id: Some("req_user_disconnect".to_string()),
             tool: "ask_user".to_string(),
             args: serde_json::json!({ "question": "continue?" }),
+            started_at_ms: None,
         };
         let tool_retry = PendingApproval {
             call_id: "call_retry_disconnect".to_string(),
             request_id: Some("req_retry_disconnect".to_string()),
             tool: "bash".to_string(),
             args: serde_json::json!({ "command": "retry" }),
+            started_at_ms: None,
         };
         supervisor.state.pending_approvals.push(approval.clone());
         supervisor
@@ -1919,24 +1923,28 @@ mod tests {
             request_id: Some("req_manual".to_string()),
             tool: "bash".to_string(),
             args: serde_json::json!({ "command": "git push" }),
+            started_at_ms: Some(1_771_000_000_000),
         };
         let client_tool = PendingApproval {
             call_id: "call_client_manual".to_string(),
             request_id: Some("req_client_manual".to_string()),
             tool: "client_tool".to_string(),
             args: serde_json::json!({ "name": "artifacts" }),
+            started_at_ms: None,
         };
         let user_input = PendingApproval {
             call_id: "call_user_manual".to_string(),
             request_id: Some("req_user_manual".to_string()),
             tool: "ask_user".to_string(),
             args: serde_json::json!({ "question": "continue?" }),
+            started_at_ms: None,
         };
         let tool_retry = PendingApproval {
             call_id: "call_retry_manual".to_string(),
             request_id: Some("req_retry_manual".to_string()),
             tool: "bash".to_string(),
             args: serde_json::json!({ "command": "retry" }),
+            started_at_ms: None,
         };
         supervisor.state.pending_approvals.push(approval.clone());
         supervisor
@@ -2310,6 +2318,7 @@ mod tests {
             request_id: Some("req_disconnect".to_string()),
             tool: "bash".to_string(),
             args: serde_json::json!({ "command": "git push" }),
+            started_at_ms: Some(1_771_000_000_000),
         };
 
         supervisor.state.current_response = Some(StreamingResponse::new("resp_disconnect".into()));
@@ -3831,24 +3840,28 @@ done
             request_id: Some("req_silence".to_string()),
             tool: "bash".to_string(),
             args: serde_json::json!({ "command": "git push" }),
+            started_at_ms: Some(1_771_000_000_000),
         };
         let client_tool = PendingApproval {
             call_id: "call_client_silence".to_string(),
             request_id: Some("req_client_silence".to_string()),
             tool: "client_tool".to_string(),
             args: serde_json::json!({ "name": "artifacts" }),
+            started_at_ms: None,
         };
         let user_input = PendingApproval {
             call_id: "call_user_silence".to_string(),
             request_id: Some("req_user_silence".to_string()),
             tool: "ask_user".to_string(),
             args: serde_json::json!({ "question": "continue?" }),
+            started_at_ms: None,
         };
         let tool_retry = PendingApproval {
             call_id: "call_retry_silence".to_string(),
             request_id: Some("req_retry_silence".to_string()),
             tool: "bash".to_string(),
             args: serde_json::json!({ "command": "retry" }),
+            started_at_ms: None,
         };
         supervisor.state.pending_approvals.push(approval.clone());
         supervisor

@@ -7,6 +7,7 @@ import {
 	type SessionContextSnapshot,
 	buildSessionContextFromEntries,
 	generateEntryId,
+	selectSessionMessagesForView,
 } from "../session/session-context.js";
 import {
 	applyAttachmentExtracts,
@@ -19,6 +20,7 @@ import {
 	type CompactionEntry,
 	type SessionEntry,
 	type SessionHeaderEntry,
+	type SessionMessagesView,
 	type SessionMetaEntry,
 	type SessionModelMetadata,
 	type SessionSummary,
@@ -285,7 +287,10 @@ export class HostedSessionManager {
 		}));
 	}
 
-	async loadSession(sessionId: string): Promise<{
+	async loadSession(
+		sessionId: string,
+		options: { messagesView?: SessionMessagesView } = {},
+	): Promise<{
 		id: string;
 		subject?: string;
 		title?: string;
@@ -296,11 +301,28 @@ export class HostedSessionManager {
 		messageCount: number;
 		favorite: boolean;
 		tags?: string[];
+		messagesView: SessionMessagesView;
 	} | null> {
 		await this.flush();
 		const row = await this.loadRow(sessionId);
 		if (!row) {
 			return null;
+		}
+		const messagesView = options.messagesView ?? "full";
+		if (messagesView === "notLoaded") {
+			return {
+				id: row.sessionId,
+				subject: row.subject ?? undefined,
+				title: row.title ?? undefined,
+				resumeSummary: row.resumeSummary ?? undefined,
+				messages: [],
+				createdAt: row.createdAt.toISOString(),
+				updatedAt: row.updatedAt.toISOString(),
+				messageCount: row.messageCount,
+				favorite: row.favorite,
+				tags: row.tags ?? undefined,
+				messagesView,
+			};
 		}
 		const entries = await this.loadEntriesForSession(sessionId);
 		const context = buildSessionContextFromEntries(entries);
@@ -320,18 +342,24 @@ export class HostedSessionManager {
 				: context.messages.map((message) =>
 						applyAttachmentExtracts(message, extractedById),
 					);
+		const messageCount = row.messageCount || messages.length;
+		const selectedMessages = selectSessionMessagesForView(
+			messages,
+			messagesView,
+		);
 
 		return {
 			id: row.sessionId,
 			subject: row.subject ?? undefined,
 			title: row.title ?? undefined,
 			resumeSummary: row.resumeSummary ?? undefined,
-			messages,
+			messages: selectedMessages,
 			createdAt: row.createdAt.toISOString(),
 			updatedAt: row.updatedAt.toISOString(),
-			messageCount: messages.length,
+			messageCount,
 			favorite: row.favorite,
 			tags: row.tags ?? undefined,
+			messagesView,
 		};
 	}
 

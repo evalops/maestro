@@ -1,4 +1,12 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -8,6 +16,7 @@ import {
 	selectWorkspacePackages,
 	workspacePackageNeedsBuild,
 	workspaceStampPath,
+	writeInstallStamp,
 } from "../../scripts/ensure-deps.js";
 
 const roots: string[] = [];
@@ -44,6 +53,19 @@ function makeFixture() {
 }
 
 describe("ensure-deps workspace bootstrap", () => {
+	it("gates the install lifecycle to monorepo checkouts", () => {
+		const rootPackage = JSON.parse(readFileSync("package.json", "utf8")) as {
+			scripts?: Record<string, string>;
+		};
+
+		expect(rootPackage.scripts?.postinstall).toContain(
+			"./scripts/ensure-deps.js",
+		);
+		expect(rootPackage.scripts?.postinstall).toContain(
+			"./packages/contracts/package.json",
+		);
+	});
+
 	it("selects a contracts-only bootstrap for web and CI callers", () => {
 		const options = parseOptions([
 			"--no-install",
@@ -76,6 +98,76 @@ describe("ensure-deps workspace bootstrap", () => {
 		writeFileSync(workspaceStampPath(root, spec), hash);
 
 		expect(workspacePackageNeedsBuild(root, spec)).toBe(false);
+	});
+
+	it("records the lockfile stamp when install lifecycle assumes deps are present", () => {
+		const { root } = makeFixture();
+		mkdirSync(join(root, "node_modules"), { recursive: true });
+		writeFileSync(join(root, "bun.lockb"), "lock-v1\n");
+
+		const originalCwd = process.cwd();
+		try {
+			process.chdir(root);
+			writeInstallStamp();
+		} finally {
+			process.chdir(originalCwd);
+		}
+
+		expect(
+			readFileSync(join(root, "node_modules", ".bun-lockb.sha256"), "utf8"),
+		).toMatch(/^[a-f0-9]{64}$/u);
+	});
+
+	it("does not stamp the lockfile hash in no-install mode", () => {
+		const root = mkdtempSync(join(tmpdir(), "maestro-ensure-deps-"));
+		roots.push(root);
+		writeFileSync(join(root, "bun.lockb"), "lock-v1\n");
+		writeFileSync(join(root, "tsconfig.base.json"), JSON.stringify({}));
+		mkdirSync(join(root, "node_modules"), { recursive: true });
+
+		const specs = [
+			{
+				name: "@evalops/contracts",
+				dir: "packages/contracts",
+				outputs: ["dist/index.js", "dist/index.d.ts"],
+			},
+			{
+				name: "@evalops/tui",
+				dir: "packages/tui",
+				outputs: ["dist/index.js", "dist/index.d.ts"],
+			},
+		];
+		for (const spec of specs) {
+			const packageDir = join(root, spec.dir);
+			mkdirSync(join(packageDir, "dist"), { recursive: true });
+			mkdirSync(join(packageDir, "src"), { recursive: true });
+			writeFileSync(
+				join(packageDir, "package.json"),
+				JSON.stringify({ name: spec.name }),
+			);
+			writeFileSync(
+				join(packageDir, "tsconfig.build.json"),
+				JSON.stringify({}),
+			);
+			writeFileSync(join(packageDir, "src", "index.ts"), "export {};\n");
+			writeFileSync(join(packageDir, "dist", "index.js"), "export {};\n");
+			writeFileSync(join(packageDir, "dist", "index.d.ts"), "export {};\n");
+			writeFileSync(
+				workspaceStampPath(root, spec),
+				computeWorkspacePackageHash(root, spec),
+			);
+		}
+
+		const result = spawnSync(
+			process.execPath,
+			[join(process.cwd(), "scripts", "ensure-deps.js"), "--no-install"],
+			{ cwd: root, encoding: "utf8" },
+		);
+
+		expect(result.status).toBe(0);
+		expect(existsSync(join(root, "node_modules", ".bun-lockb.sha256"))).toBe(
+			false,
+		);
 	});
 
 	it("includes contracts codegen inputs in the workspace build hash", () => {

@@ -2,6 +2,7 @@ import {
 	CircuitBreaker,
 	type CircuitBreakerConfig,
 } from "../safety/circuit-breaker.js";
+import { isAbortError } from "./abort-error.js";
 import { createLogger } from "./logger.js";
 
 const logger = createLogger("runtime:downstream");
@@ -44,6 +45,9 @@ export class DownstreamClient {
 		try {
 			return this.breaker ? await this.breaker.execute(fn) : await fn();
 		} catch (error) {
+			if (isAbortError(error)) {
+				throw error;
+			}
 			if (this.failureMode === FailOpen) {
 				logger.warn("Downstream call failed (fail-open)", {
 					downstream: this.name,

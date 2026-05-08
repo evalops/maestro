@@ -116,6 +116,7 @@ import type {
 	ComposerPromptSuggestionResponse,
 	ComposerRunTimelineResponse,
 	ComposerSession,
+	ComposerSessionMessagesView,
 	ComposerSessionSummary,
 	ComposerToolCall,
 	ComposerUndoOperationResponse,
@@ -1886,8 +1887,19 @@ export class ApiClient {
 	/**
 	 * Get a specific session
 	 */
-	async getSession(sessionId: string): Promise<Session> {
-		const data = await this.fetchJsonWithFallback(`/api/sessions/${sessionId}`);
+	async getSession(
+		sessionId: string,
+		options?: { messagesView?: ComposerSessionMessagesView },
+	): Promise<Session> {
+		const params = new URLSearchParams();
+		if (options?.messagesView) {
+			params.set("messagesView", options.messagesView);
+		}
+		const encodedParams = params.toString();
+		const query = encodedParams ? `?${encodedParams}` : "";
+		const data = await this.fetchJsonWithFallback(
+			`/api/sessions/${sessionId}${query}`,
+		);
 		if (VALIDATE_API_RESPONSES && !isComposerSession(data)) {
 			throw new Error("Invalid session payload");
 		}

@@ -37,7 +37,7 @@ import {
 	readFileSync,
 	writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, win32 } from "node:path";
 import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -73,6 +73,7 @@ export interface PrefixPattern {
 export interface PrefixRule {
 	pattern: PrefixPattern;
 	decision: Decision;
+	justification?: string;
 }
 
 /**
@@ -84,6 +85,8 @@ export type RuleMatch =
 			type: "prefix";
 			matchedPrefix: string[];
 			decision: Decision;
+			justification?: string;
+			resolvedProgram?: string;
 	  }
 	| {
 			type: "heuristics";
@@ -100,15 +103,21 @@ export interface Evaluation {
 	matchedRules: RuleMatch[];
 }
 
+export interface PolicyCheckOptions {
+	resolveHostExecutables?: boolean;
+}
+
 /**
  * Policy containing multiple rules indexed by program name.
  * Based on Codex's Policy.
  */
 export class Policy {
 	private rulesByProgram: Map<string, PrefixRule[]>;
+	private hostExecutables: Map<string, Set<string>>;
 
 	constructor() {
 		this.rulesByProgram = new Map();
+		this.hostExecutables = new Map();
 	}
 
 	static empty(): Policy {
@@ -127,6 +136,7 @@ export class Policy {
 		decision: Decision,
 		match?: string[][],
 		notMatch?: string[][],
+		justification?: string,
 	): void {
 		if (prefix.length === 0) {
 			throw new Error("prefix cannot be empty");
@@ -140,7 +150,7 @@ export class Policy {
 			first,
 			rest: rest.map((t) => ({ type: "single", value: t })),
 		};
-		const rule: PrefixRule = { pattern, decision };
+		const rule: PrefixRule = { pattern, decision, justification };
 
 		// Validate match examples
 		if (match) {
@@ -165,6 +175,17 @@ export class Policy {
 		}
 
 		this.addRule(rule);
+	}
+
+	addHostExecutable(name: string, paths: string[]): void {
+		if (!name) {
+			throw new Error("host executable name cannot be empty");
+		}
+		const existing = this.hostExecutables.get(name) ?? new Set<string>();
+		for (const path of paths) {
+			existing.add(path);
+		}
+		this.hostExecutables.set(name, existing);
 	}
 
 	private ruleMatchesCommand(rule: PrefixRule, cmd: string[]): boolean {
@@ -203,17 +224,23 @@ export class Policy {
 	check(
 		cmd: string[],
 		heuristicsFallback?: (cmd: string[]) => Decision,
+		options: PolicyCheckOptions = {},
 	): Evaluation {
-		const matchedRules = this.matchesForCommand(cmd, heuristicsFallback);
+		const matchedRules = this.matchesForCommand(
+			cmd,
+			heuristicsFallback,
+			options,
+		);
 		return this.evaluationFromMatches(matchedRules);
 	}
 
 	checkMultiple(
 		commands: string[][],
 		heuristicsFallback?: (cmd: string[]) => Decision,
+		options: PolicyCheckOptions = {},
 	): Evaluation {
 		const matchedRules = commands.flatMap((cmd) =>
-			this.matchesForCommand(cmd, heuristicsFallback),
+			this.matchesForCommand(cmd, heuristicsFallback, options),
 		);
 		return this.evaluationFromMatches(matchedRules);
 	}
@@ -221,23 +248,38 @@ export class Policy {
 	private matchesForCommand(
 		cmd: string[],
 		heuristicsFallback?: (cmd: string[]) => Decision,
+		options: PolicyCheckOptions = {},
 	): RuleMatch[] {
 		const program = cmd[0];
 		if (!program) {
 			return [];
 		}
 
-		const rules = this.rulesByProgram.get(program) ?? [];
+		const exactRules = this.rulesByProgram.get(program) ?? [];
 
-		const matched: RuleMatch[] = [];
-		for (const rule of rules) {
-			const matchedPrefix = this.matchPrefix(rule.pattern, cmd);
-			if (matchedPrefix) {
-				matched.push({
-					type: "prefix",
-					matchedPrefix,
-					decision: rule.decision,
-				});
+		const matched = this.collectPrefixMatches(exactRules, cmd);
+		if (
+			matched.length === 0 &&
+			options.resolveHostExecutables &&
+			isPathLikeProgram(program)
+		) {
+			const resolvedProgram = program;
+			for (const fallbackProgram of this.hostExecutableFallbackPrograms(
+				resolvedProgram,
+			)) {
+				const fallbackRules = this.rulesByProgram.get(fallbackProgram) ?? [];
+				if (
+					fallbackRules.length > 0 &&
+					this.canUseHostExecutableFallback(fallbackProgram, resolvedProgram)
+				) {
+					matched.push(
+						...this.collectPrefixMatches(
+							fallbackRules,
+							[fallbackProgram, ...cmd.slice(1)],
+							resolvedProgram,
+						),
+					);
+				}
 			}
 		}
 
@@ -250,6 +292,47 @@ export class Policy {
 		}
 
 		return matched;
+	}
+
+	private hostExecutableFallbackPrograms(resolvedProgram: string): string[] {
+		const programs = new Set<string>();
+		for (const [name, paths] of this.hostExecutables) {
+			if (paths.has(resolvedProgram)) {
+				programs.add(name);
+			}
+		}
+		programs.add(hostExecutableBasename(resolvedProgram));
+		return [...programs];
+	}
+
+	private collectPrefixMatches(
+		rules: PrefixRule[],
+		cmd: string[],
+		resolvedProgram?: string,
+	): RuleMatch[] {
+		const matched: RuleMatch[] = [];
+		for (const rule of rules) {
+			const matchedPrefix = this.matchPrefix(rule.pattern, cmd);
+			if (matchedPrefix) {
+				matched.push({
+					type: "prefix",
+					matchedPrefix,
+					decision: rule.decision,
+					justification: rule.justification,
+					resolvedProgram,
+				});
+			}
+		}
+
+		return matched;
+	}
+
+	private canUseHostExecutableFallback(
+		name: string,
+		resolvedProgram: string,
+	): boolean {
+		const allowedPaths = this.hostExecutables.get(name);
+		return allowedPaths?.has(resolvedProgram) === true;
 	}
 
 	private evaluationFromMatches(matchedRules: RuleMatch[]): Evaluation {
@@ -274,6 +357,10 @@ export class Policy {
 	get rules(): Map<string, PrefixRule[]> {
 		return this.rulesByProgram;
 	}
+
+	get hostExecutablePaths(): Map<string, Set<string>> {
+		return this.hostExecutables;
+	}
 }
 
 /**
@@ -283,9 +370,25 @@ export class Policy {
 export function parsePolicy(content: string, identifier: string): Policy {
 	const policy = new Policy();
 
+	const hostExecutableRegex =
+		/host_executable\s*\(\s*([\s\S]*?)\s*\)\s*(?:,?\s*(?=host_executable|prefix_rule|$))/g;
+	for (const match of content.matchAll(hostExecutableRegex)) {
+		const args = match[1];
+		if (!args) continue;
+		try {
+			const parsed = parseHostExecutableArgs(args);
+			policy.addHostExecutable(parsed.name, parsed.paths);
+		} catch (error) {
+			logger.warn(`Failed to parse host executable in ${identifier}`, {
+				error: error instanceof Error ? error.message : String(error),
+				args: args.slice(0, 100),
+			});
+		}
+	}
+
 	// Simple regex-based parser for prefix_rule calls
 	const ruleRegex =
-		/prefix_rule\s*\(\s*([\s\S]*?)\s*\)\s*(?:,?\s*(?=prefix_rule|$))/g;
+		/prefix_rule\s*\(\s*([\s\S]*?)\s*\)\s*(?:,?\s*(?=host_executable|prefix_rule|$))/g;
 
 	for (const match of content.matchAll(ruleRegex)) {
 		const args = match[1];
@@ -317,6 +420,7 @@ export function parsePolicy(content: string, identifier: string): Policy {
 				const rule: PrefixRule = {
 					pattern: { ...pattern, first: firstAlt },
 					decision: parsed.decision,
+					justification: parsed.justification,
 				};
 
 				// Validate match examples
@@ -395,6 +499,7 @@ function matchesPrefix(pattern: PrefixPattern, cmd: string[]): boolean {
 interface ParsedPrefixRule {
 	pattern: (string | string[])[];
 	decision: Decision;
+	justification?: string;
 	match: string[][];
 	notMatch: string[][];
 }
@@ -422,6 +527,11 @@ function parsePrefixRuleArgs(args: string): ParsedPrefixRule {
 		}
 	}
 
+	const justification = parseNamedStringArg(args, "justification");
+	if (justification) {
+		result.justification = justification;
+	}
+
 	// Parse match=...
 	const matchMatch = args.match(/(?<![_])match\s*=\s*(\[[\s\S]*?\](?:\s*,)?)/);
 	if (matchMatch?.[1]) {
@@ -439,6 +549,46 @@ function parsePrefixRuleArgs(args: string): ParsedPrefixRule {
 	}
 
 	return result;
+}
+
+interface ParsedHostExecutable {
+	name: string;
+	paths: string[];
+}
+
+function parseHostExecutableArgs(args: string): ParsedHostExecutable {
+	const name = parseNamedStringArg(args, "name");
+	if (!name) {
+		throw new Error("host_executable name is required");
+	}
+
+	const pathsMatch = args.match(/paths\s*=\s*(\[[\s\S]*?\])/);
+	const paths = pathsMatch?.[1] ? parseStringArray(pathsMatch[1]) : [];
+	return {
+		name,
+		paths,
+	};
+}
+
+function parseNamedStringArg(args: string, name: string): string | undefined {
+	const doubleQuoted = new RegExp(
+		`${name}\\s*=\\s*"([^"\\\\]*(?:\\\\.[^"\\\\]*)*)"`,
+	).exec(args);
+	if (doubleQuoted?.[1] !== undefined) {
+		return unescapePolicyString(doubleQuoted[1]);
+	}
+
+	const singleQuoted = new RegExp(
+		`${name}\\s*=\\s*'([^'\\\\]*(?:\\\\.[^'\\\\]*)*)'`,
+	).exec(args);
+	if (singleQuoted?.[1] !== undefined) {
+		return unescapePolicyString(singleQuoted[1]);
+	}
+	return undefined;
+}
+
+function unescapePolicyString(value: string): string {
+	return value.replace(/\\(["'\\])/g, "$1");
 }
 
 function parsePatternArray(str: string): (string | string[])[] {
@@ -560,11 +710,12 @@ function parseExamplesArray(str: string): string[][] {
 				i++;
 			}
 			i++;
-			// Simple shell-like split
-			const tokens = value.split(/\s+/).filter(Boolean);
+			const tokens = parseCommand(value);
 			if (tokens.length > 0) {
 				result.push(tokens);
 			}
+		} else {
+			i++;
 		}
 	}
 
@@ -601,6 +752,9 @@ export function loadPolicy(workspaceDir: string): Policy {
 					policy.addRule(rule);
 				}
 			}
+			for (const [name, paths] of parsed.hostExecutablePaths) {
+				policy.addHostExecutable(name, [...paths]);
+			}
 			logger.debug("Loaded global execpolicy", { path: globalPath });
 		} catch (error) {
 			logger.warn("Failed to load global execpolicy", {
@@ -618,6 +772,9 @@ export function loadPolicy(workspaceDir: string): Policy {
 				for (const rule of rules) {
 					policy.addRule(rule);
 				}
+			}
+			for (const [name, paths] of parsed.hostExecutablePaths) {
+				policy.addHostExecutable(name, [...paths]);
 			}
 			logger.debug("Loaded project execpolicy", { path: projectPath });
 		} catch (error) {
@@ -690,17 +847,19 @@ export function parseCommand(command: string): string[] {
 	let current = "";
 	let inQuotes = false;
 	let quoteChar = "";
-	let isEscaped = false;
 
-	for (const char of command) {
-		if (isEscaped) {
-			current += char;
-			isEscaped = false;
-			continue;
-		}
-
+	for (let i = 0; i < command.length; i++) {
+		const char = command.charAt(i);
 		if (char === "\\") {
-			isEscaped = true;
+			const nextChar = command.charAt(i + 1);
+			if (shouldEscapeBackslash(nextChar, inQuotes, quoteChar)) {
+				if (nextChar !== "\n") {
+					current += nextChar;
+				}
+				i++;
+			} else {
+				current += char;
+			}
 			continue;
 		}
 
@@ -734,6 +893,37 @@ export function parseCommand(command: string): string[] {
 	return tokens;
 }
 
+function isPathLikeProgram(program: string): boolean {
+	return program.includes("/") || program.includes("\\");
+}
+
+function hostExecutableBasename(program: string): string {
+	return program.includes("\\") ? win32.basename(program) : basename(program);
+}
+
+function shouldEscapeBackslash(
+	nextChar: string,
+	inQuotes: boolean,
+	quoteChar: string,
+): boolean {
+	if (!nextChar) {
+		return false;
+	}
+	if (!inQuotes) {
+		return true;
+	}
+	if (quoteChar === "'") {
+		return false;
+	}
+	return (
+		nextChar === quoteChar ||
+		nextChar === "\\" ||
+		nextChar === "\n" ||
+		nextChar === "$" ||
+		nextChar === "`"
+	);
+}
+
 /**
  * Check a command and return the evaluation result.
  */
@@ -744,7 +934,9 @@ export function checkCommand(
 ): Evaluation {
 	const policy = loadPolicy(workspaceDir);
 	const tokens = parseCommand(command);
-	return policy.check(tokens, heuristicsFallback);
+	return policy.check(tokens, heuristicsFallback, {
+		resolveHostExecutables: true,
+	});
 }
 
 /**

@@ -80,4 +80,32 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).toContain("project specific context");
 		expect(prompt).toContain(`Current working directory: ${projectDir}`);
 	});
+
+	it("warns the agent when the workspace contains guarded path categories", () => {
+		const projectDir = join(testDir, "guarded-project");
+		mkdirSync(join(projectDir, ".idea"), { recursive: true });
+		mkdirSync(join(projectDir, ".ssh"), { recursive: true });
+		writeFileSync(join(projectDir, ".idea", "workspace.xml"), "<project />");
+		writeFileSync(join(projectDir, ".ssh", "id_ed25519"), "private key");
+
+		const prompt = finalizeSystemPrompt("base prompt", undefined, projectDir);
+
+		expect(prompt).toContain("# Guarded Workspace Paths");
+		expect(prompt).toContain("JetBrains project configuration");
+		expect(prompt).toContain("SSH and GPG keys");
+		expect(prompt).toContain("Ask for explicit user approval");
+		expect(prompt).not.toContain("workspace.xml");
+		expect(prompt).not.toContain("id_ed25519");
+		expect(prompt).not.toContain("**/.ssh/**");
+	});
+
+	it("omits guarded workspace guidance when no guarded paths are present", () => {
+		const projectDir = join(testDir, "ordinary-project");
+		mkdirSync(join(projectDir, "src"), { recursive: true });
+		writeFileSync(join(projectDir, "src", "index.ts"), "export {};");
+
+		const prompt = finalizeSystemPrompt("base prompt", undefined, projectDir);
+
+		expect(prompt).not.toContain("# Guarded Workspace Paths");
+	});
 });

@@ -6,7 +6,7 @@ import {
 	headlessProtocolVersion,
 } from "@evalops/contracts";
 import { Value } from "@sinclair/typebox/value";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AssistantMessage } from "../../src/agent/types.js";
 import {
 	HEADLESS_PROTOCOL_VERSION,
@@ -243,6 +243,7 @@ describe("headless protocol helpers", () => {
 				actionDescription: "Running rm -rf dist",
 				args: { command: "rm -rf dist" },
 				reason: "Dangerous command",
+				startedAtMs: 1_000,
 			},
 		});
 
@@ -265,6 +266,7 @@ describe("headless protocol helpers", () => {
 				action_description: "Running rm -rf dist",
 				args: { command: "rm -rf dist" },
 				reason: "Dangerous command",
+				started_at_ms: 1_000,
 			},
 		]);
 		for (const message of messages) {
@@ -281,11 +283,13 @@ describe("headless protocol helpers", () => {
 				toolName: "bash",
 				args: { command: "rm -rf dist" },
 				reason: "Dangerous command",
+				startedAtMs: 1_000,
 			},
 			decision: {
 				approved: false,
 				reason: "Denied by user",
 				resolvedBy: "user",
+				resolvedAtMs: 1_750,
 			},
 		});
 		expect(messages).toEqual([
@@ -297,6 +301,8 @@ describe("headless protocol helpers", () => {
 				resolution: "denied",
 				reason: "Denied by user",
 				resolved_by: "user",
+				started_at_ms: 1_000,
+				resolved_at_ms: 1_750,
 			},
 		]);
 		for (const message of messages) {
@@ -542,6 +548,7 @@ describe("headless protocol helpers", () => {
 			action_description: "Running git push --force",
 			args: { command: "git push --force" },
 			reason: "Force push requires approval",
+			started_at_ms: 1_771_000_000_000,
 		});
 		applyIncomingHeadlessMessage(state, {
 			type: "server_request",
@@ -569,6 +576,7 @@ describe("headless protocol helpers", () => {
 				summary_label: "Ran git push --force",
 				action_description: "Running git push --force",
 				args: { command: "git push --force" },
+				started_at_ms: 1_771_000_000_000,
 				source: "local",
 			},
 			{
@@ -1143,6 +1151,9 @@ describe("headless protocol helpers", () => {
 	});
 
 	it("cancellation helper emits explicit cancelled resolutions for pending requests", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date(4_000));
+
 		const state = createHeadlessRuntimeState();
 
 		applyIncomingHeadlessMessage(state, {
@@ -1200,12 +1211,13 @@ describe("headless protocol helpers", () => {
 			reason: "Retry bash command",
 		});
 
-		expect(
-			buildHeadlessServerRequestCancellationMessages(
-				state,
-				"Interrupted before request completed",
-			),
-		).toEqual([
+		const messages = buildHeadlessServerRequestCancellationMessages(
+			state,
+			"Interrupted before request completed",
+		);
+		vi.useRealTimers();
+
+		expect(messages).toEqual([
 			{
 				type: "server_request_resolved",
 				request_id: "call_bash",
@@ -1214,6 +1226,7 @@ describe("headless protocol helpers", () => {
 				resolution: "cancelled",
 				reason: "Interrupted before request completed",
 				resolved_by: "runtime",
+				resolved_at_ms: 4_000,
 			},
 			{
 				type: "server_request_resolved",
@@ -1223,6 +1236,7 @@ describe("headless protocol helpers", () => {
 				resolution: "cancelled",
 				reason: "Interrupted before request completed",
 				resolved_by: "runtime",
+				resolved_at_ms: 4_000,
 			},
 			{
 				type: "server_request_resolved",
@@ -1232,6 +1246,7 @@ describe("headless protocol helpers", () => {
 				resolution: "cancelled",
 				reason: "Interrupted before request completed",
 				resolved_by: "runtime",
+				resolved_at_ms: 4_000,
 			},
 			{
 				type: "server_request_resolved",
@@ -1241,6 +1256,7 @@ describe("headless protocol helpers", () => {
 				resolution: "cancelled",
 				reason: "Interrupted before request completed",
 				resolved_by: "runtime",
+				resolved_at_ms: 4_000,
 			},
 		]);
 	});

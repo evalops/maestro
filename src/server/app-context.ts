@@ -30,6 +30,11 @@ export interface HostedRunnerContext {
 	listenPort?: number;
 	workspaceId?: string;
 	agentRunId?: string;
+	agentRuntimeLeaseToken?: string;
+	a2aMessageId?: string;
+	a2aTaskId?: string;
+	agentRuntimeWorkerQueue?: string;
+	agentRuntimeCorrelationPath?: string;
 	attachAudience?: string;
 	configuredMaestroSessionId?: string;
 	activeMaestroSessionId?: string;

@@ -1,9 +1,26 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent } from "../../src/agent/agent.js";
 import type { AgentEvent, AssistantMessage } from "../../src/agent/types.js";
 import { TurnTracker } from "../../src/telemetry/turn-tracker.js";
 
+const metricRecorders = vi.hoisted(() => ({
+	recordAgentTurnMetric: vi.fn(),
+	recordLlmRequestMetric: vi.fn(),
+	recordLlmTokenUsageMetric: vi.fn(),
+}));
+
+vi.mock("../../src/telemetry/metrics.js", () => metricRecorders);
+
 describe("TurnTracker", () => {
+	beforeEach(() => {
+		vi.stubEnv("MAESTRO_OTEL", "1");
+		vi.clearAllMocks();
+	});
+
+	afterEach(() => {
+		vi.unstubAllEnvs();
+	});
+
 	it("does not start LLM timing on user message boundaries", () => {
 		let listener: ((event: AgentEvent) => void) | undefined;
 		const agent = {
@@ -303,6 +320,16 @@ describe("TurnTracker", () => {
 			},
 			costUsd: 1.1,
 		});
+		expect(metricRecorders.recordLlmTokenUsageMetric).toHaveBeenNthCalledWith(
+			1,
+			{ input: 10, output: 20, cacheRead: 1, cacheWrite: 2 },
+			expect.any(Object),
+		);
+		expect(metricRecorders.recordLlmTokenUsageMetric).toHaveBeenNthCalledWith(
+			2,
+			{ input: 30, output: 40, cacheRead: 3, cacheWrite: 4 },
+			expect.any(Object),
+		);
 	});
 
 	it("records governed tool failure codes on completed turns", () => {

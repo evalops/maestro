@@ -49,6 +49,9 @@ The host supports:
 - `status` requests (probe `/api/bridge/status`)
 - `launch` requests (start `maestro web` if needed)
 - JSON-RPC notifications (`bridge/status`) when connectivity changes
+- CRX-style browser-control decision notifications
+  (`onBrowserControlDecision`) forwarded to Platform `RecordRunEvent` when
+  Agent Runtime configuration is present
 
 ### Install the native host manifest
 
@@ -86,6 +89,11 @@ Place the manifest in the standard Chrome location (if you did not use the scrip
 | `MAESTRO_BRIDGE_ARGS` | Extra args (JSON array or space-delimited) | empty |
 | `MAESTRO_BRIDGE_POLL_MS` | Status poll interval (ms) | `2000` |
 | `MAESTRO_BRIDGE_LAUNCH_TIMEOUT_MS` | Launch timeout (ms) | `15000` |
+| `MAESTRO_BRIDGE_AGENT_RUNTIME_URL` | Optional Agent Runtime base URL for browser-control decision events | empty |
+| `MAESTRO_BRIDGE_AGENT_RUNTIME_TOKEN` | Optional bearer token for Agent Runtime | empty |
+| `MAESTRO_BRIDGE_AGENT_RUNTIME_ORG_ID` | Optional organization header for Agent Runtime | empty |
+| `MAESTRO_BRIDGE_PLATFORM_RUN_ID` | Fallback Platform run ID when the Conductor receipt does not include one | empty |
+| `MAESTRO_BRIDGE_PLATFORM_RUNTIME_TIMEOUT_MS` | Agent Runtime event write timeout (ms) | `2000` |
 
 When the host launches Maestro, it sets:
 
@@ -96,6 +104,12 @@ MAESTRO_WEB_ORIGIN="*"
 ```
 
 Unless those variables are already set.
+
+When `onBrowserControlDecision` includes `platformRunId`, the native host writes
+a channel-safe `RUNTIME_EVENT_TYPE_AGENT_PROGRESS_RECORDED` event with
+`schemaVersion=browser-control-runtime-decision/v1`. Platform projects that
+event into the browser-control decision metric and Deploy alerts on missing or
+invalid Platform receipts.
 
 ## Notes
 

@@ -36,6 +36,7 @@
 		"../../src/config/lsp-config.ts",
 		"../../src/config/toml-config.ts",
 		"../../src/connectors/**/*.ts",
+		"../../src/evalops/env-aliases.ts",
 		"../../src/evalops/managed-context.ts",
 		"../../src/oauth/**/*.ts",
 		"../../src/platform/**/*.ts",
