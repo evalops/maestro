@@ -144,6 +144,16 @@ describe("tool execution client", () => {
 		});
 	});
 
+	it("preserves remote-runner workspace precedence over shared workspace aliases", async () => {
+		vi.stubEnv("MAESTRO_EVALOPS_WORKSPACE_ID", "ws_generic");
+		vi.stubEnv("EVALOPS_WORKSPACE_ID", "ws_evalops_generic");
+		vi.stubEnv("MAESTRO_REMOTE_RUNNER_WORKSPACE_ID", "ws_remote_runner");
+
+		await expect(resolveToolExecutionServiceConfig()).resolves.toMatchObject({
+			workspaceId: "ws_remote_runner",
+		});
+	});
+
 	it("executes tool requests through the shared connect catalog", async () => {
 		const config = await resolveToolExecutionServiceConfig();
 		if (!config) {
