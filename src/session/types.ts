@@ -157,6 +157,8 @@ export interface SessionMetadata {
 	allMessagesText: string;
 }
 
+export type SessionMessagesView = "full" | "summary" | "notLoaded";
+
 export interface SessionSummary {
 	id: string;
 	subject?: string;

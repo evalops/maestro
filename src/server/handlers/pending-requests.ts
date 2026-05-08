@@ -8,6 +8,7 @@ import {
 	type ComposerPendingRequestResumeResponse,
 } from "@evalops/contracts";
 import { resumeAgentRuntimeRun } from "../../platform/agent-runtime-client.js";
+import { isAbortError } from "../../utils/abort-error.js";
 import type { WebServerContext } from "../app-context.js";
 import { getAuthSubject } from "../authz.js";
 import {
@@ -365,10 +366,6 @@ function hostedResumeEventId(sessionId: string, requestId: string): string {
 
 function platformResumeError(message: string): ApiError {
 	return new ApiError(502, `${message}; local pending request was resolved`);
-}
-
-function isAbortError(error: unknown): boolean {
-	return error instanceof Error && error.name === "AbortError";
 }
 
 async function resumePlatformAgentRuntimeWait(

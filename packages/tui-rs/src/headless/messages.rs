@@ -568,6 +568,8 @@ pub enum FromAgentMessage {
         tool: String,
         args: serde_json::Value,
         reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        started_at_ms: Option<u64>,
     },
     /// Resolution of a structured server-to-client request
     ServerRequestResolved {
@@ -578,6 +580,10 @@ pub enum FromAgentMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
         resolved_by: ServerRequestResolvedBy,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        started_at_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resolved_at_ms: Option<u64>,
     },
     /// Error occurred
     Error {
@@ -975,6 +981,8 @@ pub struct PendingApproval {
     pub request_id: Option<String>,
     pub tool: String,
     pub args: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<u64>,
 }
 
 /// A tool currently executing
@@ -1374,6 +1382,7 @@ impl AgentState {
                         request_id: None,
                         tool: tool.clone(),
                         args: args.clone(),
+                        started_at_ms: None,
                     },
                 );
                 if requires_approval {
@@ -1382,6 +1391,7 @@ impl AgentState {
                         request_id: None,
                         tool: tool.clone(),
                         args: args.clone(),
+                        started_at_ms: None,
                     });
                     Some(AgentEvent::ApprovalRequired {
                         call_id,
@@ -1448,6 +1458,7 @@ impl AgentState {
                         request_id: None,
                         tool: tool.clone(),
                         args: args.clone(),
+                        started_at_ms: None,
                     },
                 );
                 if tool == "ask_user" {
@@ -1457,6 +1468,7 @@ impl AgentState {
                         request_id: None,
                         tool,
                         args,
+                        started_at_ms: None,
                     });
                 } else {
                     self.pending_client_tools.retain(|p| p.call_id != call_id);
@@ -1465,6 +1477,7 @@ impl AgentState {
                         request_id: None,
                         tool,
                         args,
+                        started_at_ms: None,
                     });
                 }
                 None
@@ -1476,6 +1489,7 @@ impl AgentState {
                 request_type,
                 tool,
                 args,
+                started_at_ms,
                 ..
             } => {
                 if request_type != ServerRequestType::ToolRetry
@@ -1488,6 +1502,7 @@ impl AgentState {
                             request_id: None,
                             tool: tool.clone(),
                             args: args.clone(),
+                            started_at_ms,
                         },
                     );
                 }
@@ -1504,6 +1519,7 @@ impl AgentState {
                             request_id,
                             tool,
                             args,
+                            started_at_ms,
                         });
                     }
                     ServerRequestType::ClientTool => {
@@ -1513,6 +1529,7 @@ impl AgentState {
                             request_id,
                             tool,
                             args,
+                            started_at_ms,
                         });
                     }
                     ServerRequestType::UserInput => {
@@ -1522,6 +1539,7 @@ impl AgentState {
                             request_id,
                             tool,
                             args,
+                            started_at_ms,
                         });
                     }
                     ServerRequestType::ToolRetry => {
@@ -1531,6 +1549,7 @@ impl AgentState {
                             request_id,
                             tool,
                             args,
+                            started_at_ms,
                         });
                     }
                 }
@@ -1809,6 +1828,7 @@ mod tests {
                 tool,
                 args,
                 reason,
+                ..
             } => {
                 assert_eq!(request_id, "call_approval");
                 assert_eq!(request_type, ServerRequestType::Approval);
@@ -1833,6 +1853,7 @@ mod tests {
                 tool,
                 args,
                 reason,
+                ..
             } => {
                 assert_eq!(request_id, "call_client");
                 assert_eq!(request_type, ServerRequestType::ClientTool);
@@ -1857,6 +1878,7 @@ mod tests {
                 tool,
                 args,
                 reason,
+                ..
             } => {
                 assert_eq!(request_id, "call_user_input");
                 assert_eq!(request_type, ServerRequestType::UserInput);
@@ -2453,6 +2475,7 @@ mod tests {
             tool: "bash".to_string(),
             args: serde_json::json!({ "command": "git push --force" }),
             reason: "Force push requires approval".to_string(),
+            started_at_ms: Some(1_771_000_000_000),
         });
 
         assert!(event.is_none());
@@ -2467,6 +2490,8 @@ mod tests {
             resolution: ServerRequestResolutionStatus::Denied,
             reason: Some("Denied by user".to_string()),
             resolved_by: ServerRequestResolvedBy::User,
+            started_at_ms: Some(1_771_000_000_000),
+            resolved_at_ms: Some(1_771_000_000_123),
         });
 
         assert!(resolved.is_none());
@@ -2667,6 +2692,7 @@ mod tests {
             tool: "artifacts".to_string(),
             args: serde_json::json!({ "command": "create", "filename": "report.txt" }),
             reason: "Client tool artifacts requires local execution".to_string(),
+            started_at_ms: Some(1_771_000_000_000),
         });
 
         assert!(event.is_none());
@@ -2681,6 +2707,8 @@ mod tests {
             resolution: ServerRequestResolutionStatus::Completed,
             reason: None,
             resolved_by: ServerRequestResolvedBy::Client,
+            started_at_ms: Some(1_771_000_000_000),
+            resolved_at_ms: Some(1_771_000_000_123),
         });
 
         assert!(resolved.is_none());
@@ -2719,6 +2747,8 @@ mod tests {
             resolution: ServerRequestResolutionStatus::Answered,
             reason: None,
             resolved_by: ServerRequestResolvedBy::Client,
+            started_at_ms: Some(1_771_000_000_000),
+            resolved_at_ms: Some(1_771_000_000_123),
         });
 
         assert!(resolved.is_none());
@@ -2746,6 +2776,7 @@ mod tests {
                 }]
             }),
             reason: "Agent requested structured user input".to_string(),
+            started_at_ms: Some(1_771_000_000_000),
         });
 
         state.handle_sent_message(&ToAgentMessage::ServerRequestResponse {
@@ -2788,6 +2819,7 @@ mod tests {
                 "attempt": 1
             }),
             reason: "Retry bash command".to_string(),
+            started_at_ms: Some(1_771_000_000_000),
         });
 
         assert!(event.is_none());
@@ -2832,6 +2864,7 @@ mod tests {
             tool: "artifacts".to_string(),
             args: serde_json::json!({ "command": "create", "filename": "report.txt" }),
             reason: "Client tool artifacts requires local execution".to_string(),
+            started_at_ms: Some(1_771_000_000_000),
         });
 
         let resolved = state.handle_message(FromAgentMessage::ServerRequestResolved {
@@ -2841,6 +2874,8 @@ mod tests {
             resolution: ServerRequestResolutionStatus::Cancelled,
             reason: Some("Interrupted before request completed".to_string()),
             resolved_by: ServerRequestResolvedBy::Runtime,
+            started_at_ms: Some(1_771_000_000_000),
+            resolved_at_ms: Some(1_771_000_000_123),
         });
 
         assert!(resolved.is_none());

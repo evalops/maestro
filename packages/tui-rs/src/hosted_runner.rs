@@ -4352,6 +4352,7 @@ mod tests {
                 request_id: Some("approval-1".to_string()),
                 tool: "bash".to_string(),
                 args: json!({"cmd": "cargo test"}),
+                started_at_ms: Some(1_771_000_000_000),
             }],
             last_status: Some("thinking".to_string()),
             is_ready: true,

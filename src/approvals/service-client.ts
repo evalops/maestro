@@ -355,6 +355,7 @@ function encodeActionPayload(
 			actionDescription: request.actionDescription,
 			args: request.args,
 			reason: request.reason,
+			startedAtMs: request.startedAtMs,
 			sessionId,
 		}),
 		"utf8",
@@ -369,6 +370,7 @@ function buildContextJson(
 		localRequestId: request.id,
 		sessionId,
 		source: "maestro",
+		startedAtMs: request.startedAtMs,
 	});
 }
 
@@ -505,6 +507,7 @@ export async function resolveApprovalWithApprovalsService(
 			decidedBy:
 				decision.resolvedBy === "user" ? "maestro_user" : "maestro_policy",
 			reason: decision.reason,
+			resolvedAtMs: decision.resolvedAtMs,
 		},
 		async () => undefined,
 		() => undefined,

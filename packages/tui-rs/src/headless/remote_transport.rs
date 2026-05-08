@@ -1929,12 +1929,14 @@ mod tests {
                 request_id: None,
                 tool: "bash".to_string(),
                 args: serde_json::json!({"cmd": "ls"}),
+                started_at_ms: Some(1_771_000_000_000),
             }],
             pending_client_tools: vec![PendingApproval {
                 call_id: "call-client".to_string(),
                 request_id: None,
                 tool: "artifacts".to_string(),
                 args: serde_json::json!({"command": "create", "filename": "report.txt"}),
+                started_at_ms: None,
             }],
             pending_user_inputs: vec![PendingApproval {
                 call_id: "call-user-input".to_string(),
@@ -1950,6 +1952,7 @@ mod tests {
                         }]
                     }]
                 }),
+                started_at_ms: None,
             }],
             pending_tool_retries: vec![PendingApproval {
                 call_id: "call-retry".to_string(),
@@ -1961,12 +1964,14 @@ mod tests {
                     "error_message": "command failed",
                     "attempt": 1
                 }),
+                started_at_ms: None,
             }],
             tracked_tools: vec![PendingApproval {
                 call_id: "call-2".to_string(),
                 request_id: None,
                 tool: "read".to_string(),
                 args: serde_json::json!({"path": "package.json"}),
+                started_at_ms: None,
             }],
             active_tools: vec![RemoteActiveToolState {
                 call_id: "call-2".to_string(),

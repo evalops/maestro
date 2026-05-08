@@ -1,4 +1,5 @@
 import type { GuardedFilesPolicySettings } from "@evalops/contracts";
+import { type Clock, systemClock } from "../utils/clock.js";
 
 /**
  * Action Approval System
@@ -42,6 +43,8 @@ export interface ActionApprovalRequest {
 	args: unknown;
 	/** Human-readable reason why approval is required */
 	reason: string;
+	/** Unix timestamp in milliseconds when this approval lifecycle was emitted */
+	startedAtMs?: number;
 	/** Optional Platform correlation for shared approval and audit surfaces */
 	platform?: {
 		source: "approvals_service" | "tool_execution";
@@ -60,6 +63,8 @@ export interface ActionApprovalDecision {
 	reason?: string;
 	/** Who made the decision: automated policy or human user */
 	resolvedBy: "policy" | "user";
+	/** Unix timestamp in milliseconds when this approval lifecycle resolved */
+	resolvedAtMs?: number;
 }
 
 /**
@@ -147,6 +152,8 @@ type PendingEntry = {
 	request: ActionApprovalRequest;
 	/** Resolver function to complete the approval promise */
 	resolve: (decision: ActionApprovalDecision) => void;
+	/** Stamps the decision using the request's time source */
+	stampResolvedAt: (decision: ActionApprovalDecision) => ActionApprovalDecision;
 	/** Cleanup callback to remove abort listeners */
 	cleanup?: () => void;
 };
@@ -165,7 +172,10 @@ export class ActionApprovalService {
 	/** Map of request ID -> pending entry awaiting decision */
 	private pending = new Map<string, PendingEntry>();
 
-	constructor(private mode: ApprovalMode = "prompt") {}
+	constructor(
+		private mode: ApprovalMode = "prompt",
+		protected readonly clock: Clock = systemClock,
+	) {}
 
 	/** Update the approval mode at runtime */
 	setMode(mode: ApprovalMode): void {
@@ -197,32 +207,42 @@ export class ActionApprovalService {
 	async requestApproval(
 		request: ActionApprovalRequest,
 		signal?: AbortSignal,
+		clock: Pick<Clock, "now"> = this.clock,
 	): Promise<ActionApprovalDecision> {
 		// Fast path for auto mode - no queuing needed
 		if (this.mode === "auto") {
-			return {
-				approved: true,
-				reason: "Auto-approved by policy",
-				resolvedBy: "policy",
-			};
+			return this.withResolvedAt(
+				{
+					approved: true,
+					reason: "Auto-approved by policy",
+					resolvedBy: "policy",
+				},
+				clock,
+			);
 		}
 
 		// Fast path for fail mode - immediate rejection
 		if (this.mode === "fail") {
-			return {
-				approved: false,
-				reason: "Denied by approval policy",
-				resolvedBy: "policy",
-			};
+			return this.withResolvedAt(
+				{
+					approved: false,
+					reason: "Denied by approval policy",
+					resolvedBy: "policy",
+				},
+				clock,
+			);
 		}
 
 		// Check if already aborted before queuing
 		if (signal?.aborted) {
-			return {
-				approved: false,
-				reason: "Run aborted",
-				resolvedBy: "policy",
-			};
+			return this.withResolvedAt(
+				{
+					approved: false,
+					reason: "Run aborted",
+					resolvedBy: "policy",
+				},
+				clock,
+			);
 		}
 
 		// Prompt mode: queue the request and wait for user decision
@@ -230,6 +250,7 @@ export class ActionApprovalService {
 			const entry: PendingEntry = {
 				request,
 				resolve: () => {}, // Placeholder, replaced below
+				stampResolvedAt: (decision) => this.withResolvedAt(decision, clock),
 			};
 
 			// Wrap resolver to ensure cleanup on resolution
@@ -243,12 +264,13 @@ export class ActionApprovalService {
 				const onAbort = () => {
 					if (!this.pending.has(request.id)) return;
 					this.pending.delete(request.id);
-					entry.cleanup?.();
-					resolve({
-						approved: false,
-						reason: "Run aborted",
-						resolvedBy: "policy",
-					});
+					entry.resolve(
+						entry.stampResolvedAt({
+							approved: false,
+							reason: "Run aborted",
+							resolvedBy: "policy",
+						}),
+					);
 				};
 				entry.cleanup = () => signal.removeEventListener("abort", onAbort);
 				signal.addEventListener("abort", onAbort, { once: true });
@@ -323,7 +345,16 @@ export class ActionApprovalService {
 			return false;
 		}
 		this.pending.delete(id);
-		entry.resolve(decision);
+		entry.resolve(entry.stampResolvedAt(decision));
 		return true;
+	}
+
+	protected withResolvedAt(
+		decision: ActionApprovalDecision,
+		clock: Pick<Clock, "now"> = this.clock,
+	): ActionApprovalDecision {
+		return decision.resolvedAtMs === undefined
+			? { ...decision, resolvedAtMs: clock.now() }
+			: decision;
 	}
 }

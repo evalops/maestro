@@ -227,6 +227,7 @@ export class HostedAgentRuntimeProgressRecorder {
 					reason: event.request.reason,
 					displayName: event.request.displayName,
 					summaryLabel: event.request.summaryLabel,
+					startedAtMs: event.request.startedAtMs,
 				});
 				return;
 			case "action_approval_resolved":
@@ -236,6 +237,8 @@ export class HostedAgentRuntimeProgressRecorder {
 					resolution: event.decision.approved ? "approved" : "denied",
 					resolvedBy: event.decision.resolvedBy ?? "user",
 					reason: event.decision.reason,
+					startedAtMs: event.request.startedAtMs,
+					resolvedAtMs: event.decision.resolvedAtMs,
 				});
 				return;
 			case "error":
@@ -256,6 +259,7 @@ export class HostedAgentRuntimeProgressRecorder {
 				displayName: event.request.displayName,
 				summaryLabel: event.request.summaryLabel,
 				kind: event.request.kind,
+				startedAtMs: event.request.startedAtMs,
 			});
 			return;
 		}
@@ -265,6 +269,8 @@ export class HostedAgentRuntimeProgressRecorder {
 			resolution: event.resolution,
 			resolvedBy: event.resolvedBy,
 			reason: event.reason,
+			startedAtMs: event.request.startedAtMs,
+			resolvedAtMs: event.resolvedAtMs,
 		});
 	}
 
@@ -355,6 +361,7 @@ export class HostedAgentRuntimeProgressRecorder {
 		displayName?: string;
 		summaryLabel?: string;
 		kind?: ServerRequestLifecycleEvent["request"]["kind"];
+		startedAtMs?: number;
 	}): void {
 		if (this.pendingWaitIds.has(input.id)) {
 			return;
@@ -382,6 +389,7 @@ export class HostedAgentRuntimeProgressRecorder {
 						tool_name: input.toolName,
 						display_name: input.displayName,
 						summary_label: input.summaryLabel,
+						started_at_ms: input.startedAtMs,
 					}),
 				},
 				checkpoint: {
@@ -403,6 +411,8 @@ export class HostedAgentRuntimeProgressRecorder {
 		resolution: string;
 		resolvedBy: string;
 		reason?: string;
+		startedAtMs?: number;
+		resolvedAtMs?: number;
 	}): void {
 		if (this.resumedWaitIds.has(input.id)) {
 			return;
@@ -425,6 +435,8 @@ export class HostedAgentRuntimeProgressRecorder {
 					resolution: input.resolution,
 					resolved_by: input.resolvedBy,
 					reason: input.reason,
+					started_at_ms: input.startedAtMs,
+					resolved_at_ms: input.resolvedAtMs,
 				}),
 			});
 		});

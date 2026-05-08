@@ -4,6 +4,8 @@ import {
 	ActionApprovalService,
 	type ApprovalMode,
 } from "../agent/action-approval.js";
+import { isAbortError } from "../utils/abort-error.js";
+import type { Clock } from "../utils/clock.js";
 import { createLogger } from "../utils/logger.js";
 import {
 	type ApprovalsServiceConfig,
@@ -32,6 +34,7 @@ interface PendingApprovalRegistrationWaiter {
 export interface PlatformBackedActionApprovalOptions {
 	sessionIdProvider?: SessionIdProvider;
 	approvalsServiceConfig?: ApprovalsServiceConfig | false;
+	clock?: Clock;
 }
 
 const logger = createLogger("approvals:platform-action-approval");
@@ -53,7 +56,7 @@ export class PlatformBackedActionApprovalService extends ActionApprovalService {
 		mode?: ApprovalMode,
 		options: PlatformBackedActionApprovalOptions = {},
 	) {
-		super(mode);
+		super(mode, options.clock);
 		this.sessionIdProvider = options.sessionIdProvider;
 		this.approvalsServiceConfig = options.approvalsServiceConfig;
 	}
@@ -61,9 +64,10 @@ export class PlatformBackedActionApprovalService extends ActionApprovalService {
 	override async requestApproval(
 		request: ActionApprovalRequest,
 		signal?: AbortSignal,
+		clock: Pick<Clock, "now"> = this.clock,
 	): Promise<ActionApprovalDecision> {
 		if (!this.requiresUserInteraction()) {
-			return await super.requestApproval(request, signal);
+			return await super.requestApproval(request, signal, clock);
 		}
 
 		const sessionId = this.getSessionId();
@@ -72,7 +76,7 @@ export class PlatformBackedActionApprovalService extends ActionApprovalService {
 			: { remote: null };
 		if ("decision" in remoteRegistration) {
 			this.publishPendingApprovalRegistration(request.id, null);
-			return remoteRegistration.decision;
+			return this.withResolvedAt(remoteRegistration.decision, clock);
 		}
 
 		this.publishPendingApprovalRegistration(request.id, {
@@ -86,12 +90,13 @@ export class PlatformBackedActionApprovalService extends ActionApprovalService {
 		}
 		this.onPendingApprovalRegistered(sessionId, request);
 		try {
-			const decision = await super.requestApproval(request, signal);
+			const decision = await super.requestApproval(request, signal, clock);
 			if (remoteRegistration.remote) {
 				return await this.resolveRemoteApproval(
 					remoteRegistration.remote,
 					decision,
 					signal,
+					clock,
 				);
 			}
 			return decision;
@@ -265,6 +270,9 @@ export class PlatformBackedActionApprovalService extends ActionApprovalService {
 			}
 			return { remote: { config, requestId: remote.requestId } };
 		} catch (error) {
+			if (isAbortError(error)) {
+				throw error;
+			}
 			const message = error instanceof Error ? error.message : String(error);
 			if (config.failureMode === "required") {
 				return {
@@ -290,6 +298,7 @@ export class PlatformBackedActionApprovalService extends ActionApprovalService {
 		remote: RemoteApprovalRegistration,
 		decision: ActionApprovalDecision,
 		signal?: AbortSignal,
+		clock: Pick<Clock, "now"> = this.clock,
 	): Promise<ActionApprovalDecision> {
 		try {
 			await resolveApprovalWithApprovalsService(
@@ -300,13 +309,19 @@ export class PlatformBackedActionApprovalService extends ActionApprovalService {
 			);
 			return decision;
 		} catch (error) {
+			if (isAbortError(error)) {
+				throw error;
+			}
 			const message = error instanceof Error ? error.message : String(error);
 			if (remote.config.failureMode === "required" && decision.approved) {
-				return {
-					approved: false,
-					reason: `Approvals service decision sync failed: ${message}`,
-					resolvedBy: "policy",
-				};
+				return this.withResolvedAt(
+					{
+						approved: false,
+						reason: `Approvals service decision sync failed: ${message}`,
+						resolvedBy: "policy",
+					},
+					clock,
+				);
 			}
 			logger.warn("Failed to sync approval decision to approvals service", {
 				error: message,

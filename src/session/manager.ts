@@ -73,6 +73,7 @@ import {
 	type SessionEntry,
 	type SessionHeaderEntry,
 	type SessionMessageEntry,
+	type SessionMessagesView,
 	type SessionMetaEntry,
 	type SessionMetadata,
 	type SessionSummary,
@@ -1278,7 +1279,10 @@ export class SessionManager {
 	/**
 	 * Load a session by ID
 	 */
-	async loadSession(sessionId: string): Promise<{
+	async loadSession(
+		sessionId: string,
+		options: { messagesView?: SessionMessagesView } = {},
+	): Promise<{
 		id: string;
 		subject?: string;
 		title?: string;
@@ -1289,8 +1293,9 @@ export class SessionManager {
 		messageCount: number;
 		favorite: boolean;
 		tags?: string[];
+		messagesView: SessionMessagesView;
 	} | null> {
-		return this.catalog.loadSession(sessionId);
+		return this.catalog.loadSession(sessionId, options);
 	}
 
 	/**

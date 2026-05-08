@@ -432,6 +432,7 @@ export const HeadlessServerRequestMessageSchema = Type.Object(
 		action_description: Type.Optional(Type.String()),
 		args: Type.Unknown(),
 		reason: Type.String(),
+		started_at_ms: Type.Optional(Type.Number()),
 	},
 	{ additionalProperties: false },
 );
@@ -445,6 +446,8 @@ export const HeadlessServerRequestResolvedMessageSchema = Type.Object(
 		resolution: stringLiteralUnion(headlessServerRequestResolutions),
 		reason: Type.Optional(Type.String()),
 		resolved_by: stringLiteralUnion(headlessServerRequestResolvedBy),
+		started_at_ms: Type.Optional(Type.Number()),
+		resolved_at_ms: Type.Optional(Type.Number()),
 	},
 	{ additionalProperties: false },
 );
@@ -755,6 +758,7 @@ export const HeadlessPendingToolStateSchema = Type.Object(
 		summary_label: Type.Optional(Type.String()),
 		action_description: Type.Optional(Type.String()),
 		args: Type.Unknown(),
+		started_at_ms: Type.Optional(Type.Number()),
 	},
 	{ additionalProperties: false },
 );
@@ -775,6 +779,7 @@ export const HeadlessPendingRequestStateSchema = Type.Object(
 		summary_label: Type.Optional(Type.String()),
 		action_description: Type.Optional(Type.String()),
 		args: Type.Unknown(),
+		started_at_ms: Type.Optional(Type.Number()),
 		source: Type.Union([Type.Literal("local"), Type.Literal("platform")]),
 		platform: Type.Optional(Type.Unknown()),
 	},

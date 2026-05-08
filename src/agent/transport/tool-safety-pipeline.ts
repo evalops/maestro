@@ -750,7 +750,10 @@ export async function* evaluateToolSafety(
 				break;
 			case "wait_approval":
 				toolExecutionBridgePlan = bridgeResult.plan;
-				platformApprovalRequest = bridgeResult.request;
+				platformApprovalRequest =
+					bridgeResult.request.startedAtMs === undefined
+						? { ...bridgeResult.request, startedAtMs: clock.now() }
+						: bridgeResult.request;
 				approvalAllowed = false;
 				approvalReason = bridgeResult.request.reason;
 				break;
@@ -959,9 +962,14 @@ export async function* evaluateToolSafety(
 								guardedFileApprovalReason ??
 								localApprovalReason ??
 								"Approval required",
+							startedAtMs: clock.now(),
 						} satisfies import("../action-approval.js").ActionApprovalRequest);
 			const shouldEmitEvents = approvalService.requiresUserInteraction();
-			const decisionPromise = approvalService.requestApproval(request, signal);
+			const decisionPromise = approvalService.requestApproval(
+				request,
+				signal,
+				clock,
+			);
 			const registrationMetadata = await waitForPendingApprovalRegistration(
 				approvalService,
 				request.id,
@@ -1001,7 +1009,11 @@ export async function* evaluateToolSafety(
 				yield recordEvent({ type: "action_approval_required", request });
 			}
 
-			const decision = await decisionPromise;
+			const rawDecision = await decisionPromise;
+			const decision =
+				rawDecision.resolvedAtMs === undefined
+					? { ...rawDecision, resolvedAtMs: clock.now() }
+					: rawDecision;
 			if (shouldEmitEvents) {
 				yield recordEvent({
 					type: "action_approval_resolved",

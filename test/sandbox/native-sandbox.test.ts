@@ -7,7 +7,8 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { platform } from "node:os";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createSandbox } from "../../src/sandbox/index.js";
 import {
@@ -39,6 +40,8 @@ describe("Native Sandbox", () => {
 			if (platform() === "darwin") {
 				// Most macOS systems have sandbox-exec
 				expect(available).toBe(existsSync("/usr/bin/sandbox-exec"));
+			} else if (platform() === "linux") {
+				expect(available).toBe(false);
 			}
 		});
 	});
@@ -109,6 +112,189 @@ describe("Native Sandbox", () => {
 				expect(written).toBe("written content");
 
 				await sandbox.dispose();
+			});
+
+			it("blocks command cwd outside workspace-write execution roots", async () => {
+				const outsideDir = join(tmpdir(), `sandbox-cwd-outside-${Date.now()}`);
+				mkdirSync(outsideDir, { recursive: true });
+				const sandbox = createNativeSandbox(
+					{
+						mode: "workspace-write",
+						excludeSlashTmp: true,
+						excludeTmpdir: true,
+					},
+					testDir,
+				);
+				await sandbox.initialize();
+
+				try {
+					await expect(sandbox.exec("pwd", outsideDir)).rejects.toThrow(
+						"Cannot execute workspace-write command outside workspace or explicit writable roots",
+					);
+				} finally {
+					await sandbox.dispose();
+					rmSync(outsideDir, { recursive: true, force: true });
+				}
+			});
+
+			it("allows command cwd inside implicit tmp roots", async () => {
+				const tmpWorkspace = join(tmpdir(), `sandbox-cwd-tmp-${Date.now()}`);
+				mkdirSync(tmpWorkspace, { recursive: true });
+				const sandbox = createNativeSandbox(
+					{ mode: "workspace-write" },
+					testDir,
+				);
+				await sandbox.initialize();
+
+				try {
+					const result = await sandbox.exec("pwd", tmpWorkspace);
+					expect(result.exitCode).toBe(0);
+				} finally {
+					await sandbox.dispose();
+					rmSync(tmpWorkspace, { recursive: true, force: true });
+				}
+			});
+
+			it("blocks parent-process writes outside workspace-write roots", async () => {
+				const outsideDir = join(tmpdir(), `sandbox-outside-${Date.now()}`);
+				mkdirSync(outsideDir, { recursive: true });
+				const outsidePath = join(outsideDir, "outside.txt");
+				const sandbox = createNativeSandbox(
+					{
+						mode: "workspace-write",
+						excludeSlashTmp: true,
+						excludeTmpdir: true,
+					},
+					testDir,
+				);
+				await sandbox.initialize();
+
+				try {
+					await expect(
+						sandbox.writeFile(outsidePath, "blocked"),
+					).rejects.toThrow(
+						"Cannot write outside writable roots in workspace-write sandbox mode",
+					);
+					expect(existsSync(outsidePath)).toBe(false);
+				} finally {
+					await sandbox.dispose();
+					rmSync(outsideDir, { recursive: true, force: true });
+				}
+			});
+
+			it("blocks parent-process relative escapes outside the workspace", async () => {
+				const escapedPath = join(dirname(testDir), "escaped.txt");
+				const sandbox = createNativeSandbox(
+					{
+						mode: "workspace-write",
+						excludeSlashTmp: true,
+						excludeTmpdir: true,
+					},
+					testDir,
+				);
+				await sandbox.initialize();
+
+				try {
+					await expect(
+						sandbox.writeFile("../escaped.txt", "blocked"),
+					).rejects.toThrow(
+						"Cannot write outside writable roots in workspace-write sandbox mode",
+					);
+					expect(existsSync(escapedPath)).toBe(false);
+				} finally {
+					await sandbox.dispose();
+					rmSync(escapedPath, { force: true });
+				}
+			});
+
+			it("allows parent-process writes to explicit writable roots", async () => {
+				const writableRoot = join(tmpdir(), `sandbox-writable-${Date.now()}`);
+				mkdirSync(writableRoot, { recursive: true });
+				const allowedPath = join(writableRoot, "allowed.txt");
+				const sandbox = createNativeSandbox(
+					{
+						mode: "workspace-write",
+						writableRoots: [writableRoot],
+						excludeSlashTmp: true,
+						excludeTmpdir: true,
+					},
+					testDir,
+				);
+				await sandbox.initialize();
+
+				try {
+					await sandbox.writeFile(allowedPath, "allowed");
+					expect(await sandbox.readFile(allowedPath)).toBe("allowed");
+				} finally {
+					await sandbox.dispose();
+					rmSync(writableRoot, { recursive: true, force: true });
+				}
+			});
+
+			it("keeps .git read-only for parent-process writes", async () => {
+				const gitDir = join(testDir, ".git");
+				mkdirSync(gitDir, { recursive: true });
+				const sandbox = createNativeSandbox(
+					{
+						mode: "workspace-write",
+						excludeSlashTmp: true,
+						excludeTmpdir: true,
+					},
+					testDir,
+				);
+				await sandbox.initialize();
+
+				try {
+					await expect(
+						sandbox.writeFile(".git/config", "blocked"),
+					).rejects.toThrow(
+						"Cannot write outside writable roots in workspace-write sandbox mode",
+					);
+				} finally {
+					await sandbox.dispose();
+				}
+			});
+
+			it("keeps .git read-only even when default tmp roots are writable", async () => {
+				const gitDir = join(testDir, ".git");
+				mkdirSync(gitDir, { recursive: true });
+				const sandbox = createNativeSandbox(
+					{ mode: "workspace-write" },
+					testDir,
+				);
+				await sandbox.initialize();
+
+				try {
+					await expect(
+						sandbox.writeFile(".git/config", "blocked"),
+					).rejects.toThrow(
+						"Cannot write outside writable roots in workspace-write sandbox mode",
+					);
+				} finally {
+					await sandbox.dispose();
+				}
+			});
+
+			it("keeps worktree gitdir targets read-only under writable tmp roots", async () => {
+				const realGitDir = join(tmpdir(), `sandbox-real-gitdir-${Date.now()}`);
+				mkdirSync(realGitDir, { recursive: true });
+				writeFileSync(join(testDir, ".git"), `gitdir: ${realGitDir}\n`);
+				const sandbox = createNativeSandbox(
+					{ mode: "workspace-write" },
+					testDir,
+				);
+				await sandbox.initialize();
+
+				try {
+					await expect(
+						sandbox.writeFile(join(realGitDir, "config"), "blocked"),
+					).rejects.toThrow(
+						"Cannot write outside writable roots in workspace-write sandbox mode",
+					);
+				} finally {
+					await sandbox.dispose();
+					rmSync(realGitDir, { recursive: true, force: true });
+				}
 			});
 
 			it("throws on write in read-only mode", async () => {
@@ -248,6 +434,25 @@ describe("Native Sandbox", () => {
 				await sandbox.dispose();
 			});
 
+			it("respects URL cwd parameter in execWithArgs", async () => {
+				const subDir = join(testDir, "url-subdir");
+				mkdirSync(subDir);
+				writeFileSync(join(subDir, "marker.txt"), "found-url", "utf-8");
+
+				const sandbox = createNativeSandbox(
+					{ mode: "workspace-write" },
+					testDir,
+				);
+				await sandbox.initialize();
+
+				const result = await sandbox.execWithArgs("cat", ["marker.txt"], {
+					cwd: pathToFileURL(subDir),
+				});
+				expect(result.stdout.trim()).toBe("found-url");
+
+				await sandbox.dispose();
+			});
+
 			it("passes environment variables", async () => {
 				const sandbox = createNativeSandbox(
 					{ mode: "workspace-write" },
@@ -371,6 +576,24 @@ describe("Native Sandbox", () => {
 				cwd: testDir,
 				native: {
 					policy: "workspace-write",
+					networkAccess: true,
+				},
+			});
+
+			expect(sandbox).toBeInstanceOf(NativeSandbox);
+			await sandbox?.dispose();
+		});
+
+		it("treats policy modes as native sandbox requests", async () => {
+			if (!isNativeSandboxAvailable()) {
+				// Skip on platforms without native sandbox support
+				return;
+			}
+
+			const sandbox = await createSandbox({
+				mode: "workspace-write",
+				cwd: testDir,
+				native: {
 					networkAccess: true,
 				},
 			});

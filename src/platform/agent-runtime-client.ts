@@ -1,3 +1,4 @@
+import { isAbortError } from "../utils/abort-error.js";
 import {
 	type A2AServiceConfig,
 	type A2ATask,
@@ -84,10 +85,6 @@ const GET_RUN_PATH = platformConnectMethodPath(
 const LIST_RUN_EVENTS_PATH = platformConnectMethodPath(
 	PLATFORM_CONNECT_METHODS.agentRuntime.listRunEvents,
 );
-
-function isAbortError(error: unknown): boolean {
-	return error instanceof Error && error.name === "AbortError";
-}
 
 const AGENT_RUNTIME_BASE_URL_ENV_VARS = [
 	"MAESTRO_AGENT_RUNTIME_SERVICE_URL",

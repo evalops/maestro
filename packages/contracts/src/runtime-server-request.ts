@@ -68,6 +68,7 @@ export const RuntimeServerRequestSnapshotSchema = Type.Object({
 	args: Type.Unknown(),
 	reason: Type.String(),
 	timestamp: Type.Number(),
+	startedAtMs: Type.Optional(Type.Number()),
 	timeoutMs: Type.Number(),
 	platform: Type.Optional(RuntimeServerRequestPlatformRefSchema),
 });
@@ -89,6 +90,7 @@ export const RuntimeServerRequestResolvedEventSchema = Type.Object({
 	resolution: RuntimeServerRequestResolutionSchema,
 	reason: Type.Optional(Type.String()),
 	resolvedBy: RuntimeServerRequestResolvedBySchema,
+	resolvedAtMs: Type.Optional(Type.Number()),
 });
 export type RuntimeServerRequestResolvedEvent = Static<
 	typeof RuntimeServerRequestResolvedEventSchema

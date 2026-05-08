@@ -1,3 +1,4 @@
+import { isAbortError } from "../utils/abort-error.js";
 import {
 	type DownstreamFailureMode,
 	fetchDownstream,
@@ -249,10 +250,6 @@ function pushUniqueChange(
 	}
 	seen.add(key);
 	changes.push(change);
-}
-
-function isAbortError(error: unknown): boolean {
-	return error instanceof Error && error.name === "AbortError";
 }
 
 function pickMetadataString(

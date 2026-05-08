@@ -148,7 +148,7 @@ describe("evaluateToolSafety approval telemetry", () => {
 				session: { id: "session-1", startedAt: new Date() },
 				user: { id: "user-1", orgId: "workspace-1" },
 			} as AgentRunConfig,
-			clock: { now: () => Date.now() },
+			clock: { now: () => 1_234_567 },
 			safetyMiddleware: new SafetyMiddleware({
 				enableContextFirewall: false,
 				enableLoopDetection: false,
@@ -199,6 +199,7 @@ describe("evaluateToolSafety approval telemetry", () => {
 			request: {
 				id: "call-1",
 				toolName: "bash",
+				startedAtMs: 1_234_567,
 			},
 		});
 		expect(telemetryMocks.recordMaestroApprovalHit).toHaveBeenCalledWith(
@@ -230,6 +231,7 @@ describe("evaluateToolSafety approval telemetry", () => {
 				approved: true,
 				reason: "Looks good",
 				resolvedBy: "user",
+				resolvedAtMs: 1_234_567,
 			},
 		});
 

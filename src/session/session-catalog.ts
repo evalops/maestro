@@ -8,7 +8,11 @@ import {
 	buildSessionFileInfo,
 	safeReadSessionEntries,
 } from "./session-context.js";
-import type { SessionMetadata, SessionSummary } from "./types.js";
+import type {
+	SessionMessagesView,
+	SessionMetadata,
+	SessionSummary,
+} from "./types.js";
 
 const logger = createLogger("session-catalog");
 
@@ -35,6 +39,7 @@ export interface LoadedSessionData {
 	messageCount: number;
 	favorite: boolean;
 	tags?: string[];
+	messagesView: SessionMessagesView;
 }
 
 function getSortedSessionFiles(sessionDir: string): SessionFileEntry[] {
@@ -152,7 +157,10 @@ export class SessionCatalog {
 		return sessions;
 	}
 
-	loadSession(sessionId: string): LoadedSessionData | null {
+	loadSession(
+		sessionId: string,
+		options: { messagesView?: SessionMessagesView } = {},
+	): LoadedSessionData | null {
 		this.options.beforeRead?.();
 		const sessionFile = this.getSessionFileById(sessionId);
 		if (!sessionFile) {
@@ -161,7 +169,9 @@ export class SessionCatalog {
 
 		const stats = statSync(sessionFile);
 		const entries = safeReadSessionEntries(sessionFile);
-		const info = buildSessionFileInfo(entries, stats);
+		const info = buildSessionFileInfo(entries, stats, {
+			messagesView: options.messagesView,
+		});
 		if (!info) {
 			return null;
 		}
@@ -177,6 +187,7 @@ export class SessionCatalog {
 			messageCount: info.messageCount,
 			favorite: info.favorite,
 			tags: info.tags,
+			messagesView: info.messagesView,
 		};
 	}
 

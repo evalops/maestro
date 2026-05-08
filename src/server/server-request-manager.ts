@@ -120,6 +120,7 @@ export class ServerRequestManager {
 
 	registerApproval(options: RegisterApprovalOptions): void {
 		const { request, service } = options;
+		const timestamp = Date.now();
 		const entry: ApprovalRequestEntry = {
 			id: request.id,
 			kind: "approval",
@@ -132,7 +133,8 @@ export class ServerRequestManager {
 			args: request.args,
 			reason: request.reason,
 			platform: request.platform,
-			timestamp: Date.now(),
+			timestamp,
+			startedAtMs: request.startedAtMs ?? timestamp,
 			timeoutMs: options.timeoutMs ?? DEFAULT_APPROVAL_TIMEOUT_MS,
 			resolve: (decision) => service.resolve(request.id, decision),
 		};
@@ -145,6 +147,7 @@ export class ServerRequestManager {
 
 	registerClientTool(options: RegisterClientToolOptions): void {
 		const kind = options.kind ?? "client_tool";
+		const timestamp = Date.now();
 		const entry: ClientToolRequestEntry = {
 			id: options.id,
 			kind,
@@ -159,7 +162,8 @@ export class ServerRequestManager {
 					: kind === "mcp_elicitation"
 						? "MCP server requested additional user input"
 						: `Client tool ${options.toolName} requires local execution`),
-			timestamp: Date.now(),
+			timestamp,
+			startedAtMs: timestamp,
 			timeoutMs: options.timeoutMs ?? DEFAULT_CLIENT_TOOL_TIMEOUT_MS,
 			resolve: options.resolve,
 			cancel: options.cancel,
@@ -173,6 +177,7 @@ export class ServerRequestManager {
 
 	registerToolRetry(options: RegisterToolRetryOptions): void {
 		const { request, service } = options;
+		const timestamp = Date.now();
 		const entry: ToolRetryRequestEntry = {
 			id: request.id,
 			kind: "tool_retry",
@@ -190,7 +195,8 @@ export class ServerRequestManager {
 				...(request.summary ? { summary: request.summary } : {}),
 			},
 			reason: request.summary ?? "Tool retry decision required",
-			timestamp: Date.now(),
+			timestamp,
+			startedAtMs: timestamp,
 			timeoutMs: options.timeoutMs ?? DEFAULT_TOOL_RETRY_TIMEOUT_MS,
 			resolve: (decision) => {
 				switch (decision.action) {
@@ -240,6 +246,7 @@ export class ServerRequestManager {
 			args: entry.args,
 			reason: entry.reason,
 			timestamp: entry.timestamp,
+			startedAtMs: entry.startedAtMs,
 			timeoutMs: entry.timeoutMs,
 			platform: entry.kind === "approval" ? entry.platform : undefined,
 		};
@@ -266,6 +273,7 @@ export class ServerRequestManager {
 				args: entry.args,
 				reason: entry.reason,
 				timestamp: entry.timestamp,
+				startedAtMs: entry.startedAtMs,
 				timeoutMs: entry.timeoutMs,
 				platform: entry.kind === "approval" ? entry.platform : undefined,
 			}));
@@ -275,7 +283,7 @@ export class ServerRequestManager {
 		id: string,
 		decision: Pick<
 			ActionApprovalDecision,
-			"approved" | "reason" | "resolvedBy"
+			"approved" | "reason" | "resolvedBy" | "resolvedAtMs"
 		>,
 	): boolean {
 		const entry = this.pending.get(id);
@@ -284,10 +292,12 @@ export class ServerRequestManager {
 		}
 		const request = this.toSnapshot(entry);
 		this.pending.delete(id);
+		const resolvedAtMs = decision.resolvedAtMs ?? Date.now();
 		const handled = entry.resolve({
 			approved: decision.approved,
 			reason: decision.reason,
 			resolvedBy: decision.resolvedBy,
+			resolvedAtMs,
 		});
 		if (handled) {
 			this.emit({
@@ -296,6 +306,7 @@ export class ServerRequestManager {
 				resolution: decision.approved ? "approved" : "denied",
 				reason: decision.reason,
 				resolvedBy: decision.resolvedBy,
+				resolvedAtMs,
 			});
 		}
 		return handled;
@@ -311,6 +322,7 @@ export class ServerRequestManager {
 		}
 		const request = this.toSnapshot(entry);
 		this.pending.delete(id);
+		const resolvedAtMs = Date.now();
 		const handled = entry.resolve({
 			action: decision.action,
 			reason: decision.reason,
@@ -328,6 +340,7 @@ export class ServerRequestManager {
 							: "aborted",
 				reason: decision.reason,
 				resolvedBy: decision.resolvedBy,
+				resolvedAtMs,
 			});
 		}
 		return handled;
@@ -344,6 +357,7 @@ export class ServerRequestManager {
 		}
 		const request = this.toSnapshot(entry);
 		this.pending.delete(id);
+		const resolvedAtMs = Date.now();
 		const handled = entry.resolve(content, isError);
 		if (handled) {
 			this.emit({
@@ -362,6 +376,7 @@ export class ServerRequestManager {
 							: "Client tool result reported an error"
 					: undefined,
 				resolvedBy: "client",
+				resolvedAtMs,
 			});
 		}
 		return handled;
@@ -384,6 +399,7 @@ export class ServerRequestManager {
 					return false;
 				}
 				claimed = false;
+				const resolvedAtMs = Date.now();
 				const handled = entry.resolve(content, isError);
 				if (handled) {
 					this.emit({
@@ -403,6 +419,7 @@ export class ServerRequestManager {
 									: "Client tool result reported an error"
 							: undefined,
 						resolvedBy: "client",
+						resolvedAtMs,
 					});
 				}
 				return handled;
@@ -421,11 +438,13 @@ export class ServerRequestManager {
 		}
 		const request = this.toSnapshot(entry);
 		this.pending.delete(id);
+		const resolvedAtMs = Date.now();
 		if (entry.kind === "approval") {
 			const handled = entry.resolve({
 				approved: false,
 				reason,
 				resolvedBy: resolvedBy === "runtime" ? "policy" : resolvedBy,
+				resolvedAtMs,
 			});
 			if (handled) {
 				this.emit({
@@ -434,6 +453,7 @@ export class ServerRequestManager {
 					resolution: resolvedBy === "runtime" ? "cancelled" : "denied",
 					reason,
 					resolvedBy,
+					resolvedAtMs,
 				});
 			}
 			return handled;
@@ -451,6 +471,7 @@ export class ServerRequestManager {
 					resolution: "cancelled",
 					reason,
 					resolvedBy,
+					resolvedAtMs,
 				});
 			}
 			return handled;
@@ -463,6 +484,7 @@ export class ServerRequestManager {
 				resolution: resolvedBy === "runtime" ? "cancelled" : "failed",
 				reason,
 				resolvedBy,
+				resolvedAtMs,
 			});
 		}
 		return handled;
@@ -515,6 +537,7 @@ export class ServerRequestManager {
 			args: entry.args,
 			reason: entry.reason,
 			timestamp: entry.timestamp,
+			startedAtMs: entry.startedAtMs,
 			timeoutMs: entry.timeoutMs,
 			platform: entry.kind === "approval" ? entry.platform : undefined,
 		};
