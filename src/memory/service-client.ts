@@ -5,6 +5,10 @@ import {
 	request as httpsRequest,
 } from "node:https";
 import {
+	EVALOPS_ACCESS_TOKEN_ENV_VARS,
+	EVALOPS_ORGANIZATION_ID_ENV_VARS,
+} from "../evalops/env-aliases.js";
+import {
 	getEnvValue,
 	parsePositiveInt,
 	resolveOrganizationId,
@@ -349,8 +353,7 @@ async function resolveMemoryAccessToken(
 ): Promise<string | undefined> {
 	const configuredToken = getEnvValue([
 		"MAESTRO_MEMORY_ACCESS_TOKEN",
-		"MAESTRO_EVALOPS_ACCESS_TOKEN",
-		"EVALOPS_TOKEN",
+		...EVALOPS_ACCESS_TOKEN_ENV_VARS,
 	]);
 	if (configuredToken) {
 		return configuredToken;
@@ -385,9 +388,7 @@ async function resolveRemoteMemoryConfig(): Promise<RemoteMemoryConfig | null> {
 
 	const organizationId = resolveOrganizationId([
 		"MAESTRO_MEMORY_ORGANIZATION_ID",
-		"MAESTRO_EVALOPS_ORG_ID",
-		"EVALOPS_ORGANIZATION_ID",
-		"MAESTRO_ENTERPRISE_ORG_ID",
+		...EVALOPS_ORGANIZATION_ID_ENV_VARS,
 	]);
 	if (!organizationId) {
 		logger.warn(
