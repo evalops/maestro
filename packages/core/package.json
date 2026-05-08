@@ -27,6 +27,13 @@
 		"url": "git+https://github.com/evalops/maestro.git",
 		"directory": "packages/core"
 	},
+	"maestro": {
+		"packageBoundary": {
+			"mode": "internal-facade",
+			"allowedExternalSourceRoots": ["../../src"],
+			"rationale": "@evalops/maestro-core is a stable package entrypoint over the root Maestro agent/runtime kernel while package-owned source is being extracted."
+		}
+	},
 	"scripts": {
 		"build": "tsc -p tsconfig.build.json",
 		"clean": "rm -rf dist"
