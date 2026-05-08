@@ -285,9 +285,7 @@ export function intersectPermissionProfiles(
 				continue;
 			}
 
-			if (
-				isPathWithin(grantedPath, requestedPath)
-			) {
+			if (isPathWithin(grantedPath, requestedPath)) {
 				acceptedEntries.push({
 					path: grantedEntry.path,
 					access: constrainAccess(requestedEntry.access, grantedEntry.access),
