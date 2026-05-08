@@ -749,6 +749,43 @@ describe("Maestro app-server session API", () => {
 		expect(flushCount).toBe(1);
 	});
 
+	it("fails metadata updates when the writer does not persist the change", async () => {
+		const api = createMaestroAppServerSessionApi({
+			loadAllSessions: () => [],
+			listSessions: async () => [],
+			loadSession: async (sessionId, options = {}) =>
+				sessionId === "stale-metadata-thread"
+					? {
+							id: sessionId,
+							title: "Stale thread",
+							summary: "Original summary",
+							createdAt: "2026-01-01T00:00:00.000Z",
+							updatedAt: "2026-01-01T00:00:00.000Z",
+							messageCount: 1,
+							favorite: false,
+							messagesView: options.messagesView ?? "notLoaded",
+						}
+					: null,
+			getSessionFileById: (sessionId) => `db:${sessionId}`,
+			saveSessionSummary: () => {},
+		});
+
+		const response = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "stale-metadata-update",
+			method: "thread/metadata/update",
+			params: {
+				threadId: "stale-metadata-thread",
+				summary: "New summary",
+			},
+		});
+
+		expect(response.error).toMatchObject({
+			code: -32000,
+			message: "Thread metadata update was not persisted",
+		});
+	});
+
 	it("validates hosted thread existence before metadata writes", async () => {
 		let writeCount = 0;
 		const api = createMaestroAppServerSessionApi({

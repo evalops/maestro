@@ -430,6 +430,42 @@ async function summarizeThreadAfterMutation(
 	return summary;
 }
 
+function tagsEqual(left: string[] | undefined, right: string[] | undefined) {
+	if (left === undefined || right === undefined) {
+		return left === right;
+	}
+	return (
+		left.length === right.length &&
+		left.every((value, index) => value === right[index])
+	);
+}
+
+function verifyThreadMetadataPersisted(
+	thread: MaestroAppServerThreadSummary,
+	expected: {
+		title?: string;
+		summary?: string;
+		resumeSummary?: string;
+		favorite?: boolean;
+		tags?: string[];
+	},
+): void {
+	const persisted =
+		(expected.title === undefined || thread.title === expected.title) &&
+		(expected.summary === undefined || thread.summary === expected.summary) &&
+		(expected.resumeSummary === undefined ||
+			thread.resumeSummary === expected.resumeSummary) &&
+		(expected.favorite === undefined ||
+			thread.favorite === expected.favorite) &&
+		(expected.tags === undefined || tagsEqual(thread.tags, expected.tags));
+	if (!persisted) {
+		throw new MaestroAppServerError(
+			-32000,
+			"Thread metadata update was not persisted",
+		);
+	}
+}
+
 function latestGoalFromEntries(
 	entries: SessionEntry[],
 ): MaestroAppServerThreadGoal | null {
@@ -747,9 +783,15 @@ export function createMaestroAppServerSessionApi(
 				}
 				await store.setSessionTags(sessionFile, tags);
 			}
-			return {
-				thread: await summarizeThreadAfterMutation(store, threadId),
-			};
+			const thread = await summarizeThreadAfterMutation(store, threadId);
+			verifyThreadMetadataPersisted(thread, {
+				title,
+				summary,
+				resumeSummary,
+				favorite,
+				tags,
+			});
+			return { thread };
 		},
 
 		async setThreadName(params = {}) {
@@ -766,9 +808,9 @@ export function createMaestroAppServerSessionApi(
 				);
 			}
 			await store.setSessionTitle(sessionFile, name);
-			return {
-				thread: await summarizeThreadAfterMutation(store, threadId),
-			};
+			const thread = await summarizeThreadAfterMutation(store, threadId);
+			verifyThreadMetadataPersisted(thread, { title: name });
+			return { thread };
 		},
 
 		async getThreadGoal(params = {}) {
