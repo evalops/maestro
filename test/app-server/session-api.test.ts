@@ -553,6 +553,36 @@ describe("Maestro app-server session API", () => {
 		expect(Value.Check(MaestroAppServerResponseSchema, name)).toBe(true);
 	});
 
+	it("treats whitespace-only summary metadata updates as no-ops", async () => {
+		const session = await createPersistedSession("metadata prompt", {
+			summary: "Original summary",
+			resumeSummary: "Original resume",
+		});
+		const api = createMaestroAppServerSessionApi(
+			createSessionManager(session.sessionFile),
+		);
+
+		const response = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "metadata-whitespace-update",
+			method: "thread/metadata/update",
+			params: {
+				threadId: session.id,
+				summary: "   ",
+				resumeSummary: "\n\t ",
+			},
+		});
+
+		expect(response.result).toMatchObject({
+			thread: {
+				id: session.id,
+				summary: "Original summary",
+				resumeSummary: "Original resume",
+			},
+		});
+		expect(Value.Check(MaestroAppServerResponseSchema, response)).toBe(true);
+	});
+
 	it("uses hosted metadata writers for db-backed thread references", async () => {
 		const hostedThreads = new Map([
 			[
