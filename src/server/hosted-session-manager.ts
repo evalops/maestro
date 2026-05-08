@@ -117,6 +117,15 @@ export class HostedSessionManager {
 		return this.buildSessionContext().messages.length;
 	}
 
+	private resolveSessionId(sessionRef?: string): string {
+		if (!sessionRef) {
+			return this.sessionId;
+		}
+		return sessionRef.startsWith("db:")
+			? sessionRef.slice("db:".length)
+			: sessionRef;
+	}
+
 	private async ensureSessionRow(
 		sessionId: string,
 		values: Partial<typeof hostedSessions.$inferInsert> = {},
@@ -173,6 +182,47 @@ export class HostedSessionManager {
 					updatedAt: new Date(),
 				})
 				.where(eq(hostedSessions.sessionId, sessionId));
+		});
+	}
+
+	private appendSessionMetaEntry(
+		sessionId: string,
+		fields: Omit<SessionMetaEntry, "type" | "timestamp">,
+		rowUpdates: Partial<typeof hostedSessions.$inferInsert> = {},
+	): void {
+		const entry: SessionMetaEntry = {
+			type: "session_meta",
+			timestamp: new Date().toISOString(),
+			...fields,
+		};
+		if (sessionId === this.sessionId) {
+			this.entries.push(entry);
+		}
+		const messageCount =
+			sessionId === this.sessionId ? this.currentMessageCount() : undefined;
+		this.enqueue(async () => {
+			if (sessionId === this.sessionId) {
+				await this.ensureSessionRow(sessionId, { messageCount });
+			}
+			await getDb().insert(hostedSessionEntries).values({
+				sessionId,
+				entryType: entry.type,
+				entry,
+			});
+			await getDb()
+				.update(hostedSessions)
+				.set({
+					...rowUpdates,
+					...(messageCount !== undefined ? { messageCount } : {}),
+					updatedAt: new Date(),
+				})
+				.where(
+					and(
+						eq(hostedSessions.sessionId, sessionId),
+						eq(hostedSessions.scope, this.scope),
+						isNull(hostedSessions.deletedAt),
+					),
+				);
 		});
 	}
 
@@ -278,6 +328,7 @@ export class HostedSessionManager {
 			id: row.sessionId,
 			subject: row.subject ?? undefined,
 			title: row.title ?? undefined,
+			summary: row.summary ?? undefined,
 			resumeSummary: row.resumeSummary ?? undefined,
 			createdAt: row.createdAt.toISOString(),
 			updatedAt: row.updatedAt.toISOString(),
@@ -294,6 +345,7 @@ export class HostedSessionManager {
 		id: string;
 		subject?: string;
 		title?: string;
+		summary?: string;
 		resumeSummary?: string;
 		messages: AppMessage[];
 		createdAt: string;
@@ -314,6 +366,7 @@ export class HostedSessionManager {
 				id: row.sessionId,
 				subject: row.subject ?? undefined,
 				title: row.title ?? undefined,
+				summary: row.summary ?? undefined,
 				resumeSummary: row.resumeSummary ?? undefined,
 				messages: [],
 				createdAt: row.createdAt.toISOString(),
@@ -352,6 +405,7 @@ export class HostedSessionManager {
 			id: row.sessionId,
 			subject: row.subject ?? undefined,
 			title: row.title ?? undefined,
+			summary: row.summary ?? undefined,
 			resumeSummary: row.resumeSummary ?? undefined,
 			messages: selectedMessages,
 			createdAt: row.createdAt.toISOString(),
@@ -493,39 +547,22 @@ export class HostedSessionManager {
 		sessionId: string,
 		updates: HostedSessionMetadataUpdate,
 	): Promise<void> {
-		await this.flush();
-		const set: Partial<typeof hostedSessions.$inferInsert> = {
-			updatedAt: new Date(),
-		};
+		const set: Partial<typeof hostedSessions.$inferInsert> = {};
 		if (updates.title !== undefined) set.title = updates.title;
 		if (updates.favorite !== undefined) set.favorite = updates.favorite;
 		if (updates.tags !== undefined) set.tags = updates.tags;
-		await getDb()
-			.update(hostedSessions)
-			.set(set)
-			.where(
-				and(
-					eq(hostedSessions.sessionId, sessionId),
-					eq(hostedSessions.scope, this.scope),
-					isNull(hostedSessions.deletedAt),
-				),
-			);
-		const meta: SessionMetaEntry = {
-			type: "session_meta",
-			timestamp: new Date().toISOString(),
-			...(updates.title !== undefined ? { title: updates.title } : {}),
-			...(updates.favorite !== undefined ? { favorite: updates.favorite } : {}),
-			...(updates.tags !== undefined ? { tags: updates.tags } : {}),
-		};
-		if (sessionId === this.sessionId) {
-			this.appendEntry(meta);
-		} else {
-			await getDb().insert(hostedSessionEntries).values({
-				sessionId,
-				entryType: meta.type,
-				entry: meta,
-			});
-		}
+		this.appendSessionMetaEntry(
+			sessionId,
+			{
+				...(updates.title !== undefined ? { title: updates.title } : {}),
+				...(updates.favorite !== undefined
+					? { favorite: updates.favorite }
+					: {}),
+				...(updates.tags !== undefined ? { tags: updates.tags } : {}),
+			},
+			set,
+		);
+		await this.flush();
 	}
 
 	startSession(state: AgentState, options?: { subject?: string }): void {
@@ -684,85 +721,70 @@ export class HostedSessionManager {
 		this.appendEntry(entry);
 	}
 
-	saveSessionSummary(summary: string, _sessionRef?: string): void {
+	saveSessionSummary(summary: string, sessionRef?: string): void {
 		const trimmed = summary.trim();
 		if (!trimmed) return;
-		const sessionId = this.sessionId;
-		const entry: SessionMetaEntry = {
-			type: "session_meta",
-			timestamp: new Date().toISOString(),
-			summary: trimmed,
-		};
-		this.appendEntry(entry);
-		this.enqueue(async () => {
-			await getDb()
-				.update(hostedSessions)
-				.set({ summary: trimmed, updatedAt: new Date() })
-				.where(
-					and(
-						eq(hostedSessions.sessionId, sessionId),
-						eq(hostedSessions.scope, this.scope),
-					),
-				);
-		});
+		const sessionId = this.resolveSessionId(sessionRef);
+		this.appendSessionMetaEntry(
+			sessionId,
+			{ summary: trimmed },
+			{ summary: trimmed },
+		);
 	}
 
-	saveSessionResumeSummary(summary: string, _sessionRef?: string): void {
+	saveSessionResumeSummary(summary: string, sessionRef?: string): void {
 		const trimmed = summary.trim();
 		if (!trimmed) return;
-		const sessionId = this.sessionId;
-		const entry: SessionMetaEntry = {
-			type: "session_meta",
-			timestamp: new Date().toISOString(),
-			resumeSummary: trimmed,
-		};
-		this.appendEntry(entry);
-		this.enqueue(async () => {
-			await getDb()
-				.update(hostedSessions)
-				.set({ resumeSummary: trimmed, updatedAt: new Date() })
-				.where(
-					and(
-						eq(hostedSessions.sessionId, sessionId),
-						eq(hostedSessions.scope, this.scope),
-					),
-				);
-		});
+		const sessionId = this.resolveSessionId(sessionRef);
+		this.appendSessionMetaEntry(
+			sessionId,
+			{ resumeSummary: trimmed },
+			{ resumeSummary: trimmed },
+		);
 	}
 
-	saveSessionMemoryExtractionHash(hash: string, _sessionRef?: string): void {
+	saveSessionMemoryExtractionHash(hash: string, sessionRef?: string): void {
 		const trimmed = hash.trim();
 		if (!trimmed) return;
-		const sessionId = this.sessionId;
-		const entry: SessionMetaEntry = {
-			type: "session_meta",
-			timestamp: new Date().toISOString(),
-			memoryExtractionHash: trimmed,
-		};
-		this.appendEntry(entry);
-		this.enqueue(async () => {
-			await getDb()
-				.update(hostedSessions)
-				.set({ memoryExtractionHash: trimmed, updatedAt: new Date() })
-				.where(
-					and(
-						eq(hostedSessions.sessionId, sessionId),
-						eq(hostedSessions.scope, this.scope),
-					),
-				);
+		const sessionId = this.resolveSessionId(sessionRef);
+		this.appendSessionMetaEntry(
+			sessionId,
+			{ memoryExtractionHash: trimmed },
+			{ memoryExtractionHash: trimmed },
+		);
+	}
+
+	setSessionFavorite(sessionRef: string, favorite: boolean): void {
+		this.appendSessionMetaEntry(
+			this.resolveSessionId(sessionRef),
+			{ favorite },
+			{ favorite },
+		);
+	}
+
+	setSessionTitle(sessionRef: string, title: string): void {
+		this.appendSessionMetaEntry(
+			this.resolveSessionId(sessionRef),
+			{ title },
+			{ title },
+		);
+	}
+
+	setSessionTags(sessionRef: string, tags: string[]): void {
+		this.appendSessionMetaEntry(
+			this.resolveSessionId(sessionRef),
+			{ tags },
+			{ tags },
+		);
+	}
+
+	setSessionAppServerGoal(
+		sessionRef: string,
+		goal: NonNullable<SessionMetaEntry["appServerGoal"]> | null,
+	): void {
+		this.appendSessionMetaEntry(this.resolveSessionId(sessionRef), {
+			appServerGoal: goal,
 		});
-	}
-
-	setSessionFavorite(_sessionRef: string, favorite: boolean): void {
-		void this.updateSessionMetadata(this.sessionId, { favorite });
-	}
-
-	setSessionTitle(_sessionRef: string, title: string): void {
-		void this.updateSessionMetadata(this.sessionId, { title });
-	}
-
-	setSessionTags(_sessionRef: string, tags: string[]): void {
-		void this.updateSessionMetadata(this.sessionId, { tags });
 	}
 
 	getSessionId(): string {

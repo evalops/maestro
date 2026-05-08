@@ -1,9 +1,16 @@
 import {
 	type MaestroAppServerClientRequest,
+	type MaestroAppServerModel,
+	type MaestroAppServerModelListResult,
+	type MaestroAppServerModelProviderCapabilities,
+	type MaestroAppServerModelProviderCapabilitiesReadResult,
 	type MaestroAppServerResponse,
 	type MaestroAppServerThread,
+	type MaestroAppServerThreadGoal,
+	type MaestroAppServerThreadGoalResult,
 	type MaestroAppServerThreadItem,
 	type MaestroAppServerThreadListResult,
+	type MaestroAppServerThreadMetadataUpdateResult,
 	type MaestroAppServerThreadSummary,
 	type MaestroAppServerTurn,
 	type MaestroAppServerTurnsListResult,
@@ -11,6 +18,8 @@ import {
 	maestroAppServerProtocolVersion,
 } from "@evalops/contracts";
 import type { AppMessage } from "../agent/types.js";
+import { getRegisteredModels } from "../models/registry.js";
+import type { RegisteredModel } from "../models/registry.js";
 import type { SessionManager } from "../session/manager.js";
 import { migrateToCurrentVersion } from "../session/migration.js";
 import { safeReadSessionEntries } from "../session/session-context.js";
@@ -27,20 +36,61 @@ const DEFAULT_PAGE_LIMIT = 50;
 const MAX_PAGE_LIMIT = 100;
 
 type JsonRpcId = string | number;
+type MaybePromise<T> = T | Promise<T>;
 
 type SessionStore = Pick<
 	SessionManager,
 	"getSessionFileById" | "loadAllSessions" | "listSessions" | "loadSession"
 > & {
 	loadEntries?: (sessionId: string) => Promise<SessionEntry[] | null>;
+	flush?: () => Promise<void>;
+	saveSessionSummary?: (
+		summary: string,
+		sessionPath?: string,
+	) => MaybePromise<void>;
+	saveSessionResumeSummary?: (
+		summary: string,
+		sessionPath?: string,
+	) => MaybePromise<void>;
+	setSessionFavorite?: (
+		sessionPath: string,
+		favorite: boolean,
+	) => MaybePromise<void>;
+	setSessionTitle?: (sessionPath: string, title: string) => MaybePromise<void>;
+	setSessionTags?: (sessionPath: string, tags: string[]) => MaybePromise<void>;
+	setSessionAppServerGoal?: (
+		sessionPath: string,
+		goal: MaestroAppServerThreadGoal | null,
+	) => MaybePromise<void>;
 };
 
 export interface MaestroAppServerSessionApi {
 	initialize(): MaestroAppServerResponse["result"];
+	listModels(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerModelListResult>;
+	readModelProviderCapabilities(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerModelProviderCapabilitiesReadResult>;
 	listThreads(
 		params?: Record<string, unknown>,
 	): Promise<MaestroAppServerThreadListResult>;
 	readThread(params?: Record<string, unknown>): Promise<MaestroAppServerThread>;
+	updateThreadMetadata(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerThreadMetadataUpdateResult>;
+	setThreadName(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerThreadMetadataUpdateResult>;
+	getThreadGoal(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerThreadGoalResult>;
+	setThreadGoal(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerThreadGoalResult>;
+	clearThreadGoal(
+		params?: Record<string, unknown>,
+	): Promise<MaestroAppServerThreadGoalResult>;
 	listTurns(
 		params?: Record<string, unknown>,
 	): Promise<MaestroAppServerTurnsListResult>;
@@ -130,7 +180,7 @@ function toThreadSummaryFromSessionSummary(
 		source: "session",
 		status: "notLoaded",
 		title: summary.title ?? summary.subject,
-		summary: summary.title ?? summary.subject,
+		summary: summary.summary ?? summary.title ?? summary.subject,
 		resumeSummary: summary.resumeSummary,
 		subject: summary.subject,
 		createdAt: summary.createdAt,
@@ -294,9 +344,278 @@ function parseMessagesView(value: unknown): SessionMessagesView {
 	throw new MaestroAppServerError(-32602, "Invalid messagesView");
 }
 
+function optionalTrimmedString(
+	value: unknown,
+	field: string,
+): string | undefined {
+	if (value === undefined || value === null) {
+		return undefined;
+	}
+	if (typeof value !== "string") {
+		throw new MaestroAppServerError(-32602, `Invalid ${field}`);
+	}
+	return value.trim() || undefined;
+}
+
+function optionalBoolean(value: unknown, field: string): boolean | undefined {
+	if (value === undefined || value === null) {
+		return undefined;
+	}
+	if (typeof value !== "boolean") {
+		throw new MaestroAppServerError(-32602, `Invalid ${field}`);
+	}
+	return value;
+}
+
+function optionalStringArray(
+	value: unknown,
+	field: string,
+): string[] | undefined {
+	if (value === undefined || value === null) {
+		return undefined;
+	}
+	if (
+		!Array.isArray(value) ||
+		value.some((entry) => typeof entry !== "string")
+	) {
+		throw new MaestroAppServerError(-32602, `Invalid ${field}`);
+	}
+	return Array.from(
+		new Set(value.map((entry) => entry.trim()).filter(Boolean)),
+	);
+}
+
+function requireThreadReference(store: SessionStore, threadId: string): string {
+	const sessionFile = store.getSessionFileById(threadId);
+	if (!sessionFile) {
+		throw new MaestroAppServerError(-32004, "Thread not found");
+	}
+	return sessionFile;
+}
+
+async function requireExistingThreadReference(
+	store: SessionStore,
+	threadId: string,
+): Promise<string> {
+	const sessionFile = requireThreadReference(store, threadId);
+	const loaded = await store.loadSession(threadId, {
+		messagesView: "notLoaded",
+	});
+	if (!loaded) {
+		throw new MaestroAppServerError(-32004, "Thread not found");
+	}
+	return sessionFile;
+}
+
+async function flushSessionWrites(store: SessionStore): Promise<void> {
+	await store.flush?.();
+}
+
+async function summarizeThreadAfterMutation(
+	store: SessionStore,
+	threadId: string,
+): Promise<MaestroAppServerThreadSummary> {
+	await flushSessionWrites(store);
+	const loaded = await store.loadSession(threadId, {
+		messagesView: "notLoaded",
+	});
+	if (!loaded) {
+		throw new MaestroAppServerError(-32004, "Thread not found");
+	}
+	const summary = toThreadSummaryFromLoadedSession(loaded);
+	const sessionFile = store.getSessionFileById(threadId);
+	if (sessionFile && !sessionFile.startsWith("db:")) {
+		summary.path = sessionFile;
+	}
+	return summary;
+}
+
+function tagsEqual(left: string[] | undefined, right: string[] | undefined) {
+	if (left === undefined || right === undefined) {
+		return left === right;
+	}
+	return (
+		left.length === right.length &&
+		left.every((value, index) => value === right[index])
+	);
+}
+
+function verifyThreadMetadataPersisted(
+	thread: MaestroAppServerThreadSummary,
+	expected: {
+		title?: string;
+		summary?: string;
+		resumeSummary?: string;
+		favorite?: boolean;
+		tags?: string[];
+	},
+): void {
+	const persisted =
+		(expected.title === undefined || thread.title === expected.title) &&
+		(expected.summary === undefined || thread.summary === expected.summary) &&
+		(expected.resumeSummary === undefined ||
+			thread.resumeSummary === expected.resumeSummary) &&
+		(expected.favorite === undefined ||
+			thread.favorite === expected.favorite) &&
+		(expected.tags === undefined || tagsEqual(thread.tags, expected.tags));
+	if (!persisted) {
+		throw new MaestroAppServerError(
+			-32000,
+			"Thread metadata update was not persisted",
+		);
+	}
+}
+
+function latestGoalFromEntries(
+	entries: SessionEntry[],
+): MaestroAppServerThreadGoal | null {
+	let goal: MaestroAppServerThreadGoal | null = null;
+	for (const entry of entries) {
+		if (entry.type !== "session_meta" || entry.appServerGoal === undefined) {
+			continue;
+		}
+		goal = entry.appServerGoal;
+	}
+	return goal;
+}
+
+function goalsEqual(
+	actual: MaestroAppServerThreadGoal | null,
+	expected: MaestroAppServerThreadGoal | null,
+): boolean {
+	if (actual === null || expected === null) {
+		return actual === expected;
+	}
+	return (
+		actual.objective === expected.objective &&
+		actual.status === expected.status &&
+		actual.tokenBudget === expected.tokenBudget &&
+		actual.createdAt === expected.createdAt &&
+		actual.updatedAt === expected.updatedAt
+	);
+}
+
+async function verifyThreadGoalPersisted(
+	store: SessionStore,
+	threadId: string,
+	expected: MaestroAppServerThreadGoal | null,
+): Promise<MaestroAppServerThreadGoal | null> {
+	const persisted = await loadThreadGoal(store, threadId);
+	if (!goalsEqual(persisted, expected)) {
+		throw new MaestroAppServerError(
+			-32000,
+			"Thread goal update was not persisted",
+		);
+	}
+	return persisted;
+}
+
+function normalizeGoalStatus(
+	value: unknown,
+): MaestroAppServerThreadGoal["status"] {
+	if (value === undefined || value === null) {
+		return "active";
+	}
+	if (value === "active" || value === "complete" || value === "cancelled") {
+		return value;
+	}
+	throw new MaestroAppServerError(-32602, "Invalid status");
+}
+
+function normalizeTokenBudget(value: unknown): number | undefined {
+	if (value === undefined || value === null) {
+		return undefined;
+	}
+	if (
+		typeof value !== "number" ||
+		!Number.isFinite(value) ||
+		value <= 0 ||
+		!Number.isInteger(value)
+	) {
+		throw new MaestroAppServerError(-32602, "Invalid tokenBudget");
+	}
+	return value;
+}
+
+function modelToAppServerModel(model: RegisteredModel): MaestroAppServerModel {
+	const responsesApi =
+		model.api === "openai-responses" || model.api === "openai-codex-responses";
+	const codexBackend = model.api === "openai-codex-responses";
+	return {
+		id: model.id,
+		provider: model.provider,
+		name: model.name || model.id,
+		api: model.api,
+		contextWindow: model.contextWindow,
+		maxTokens: model.maxTokens,
+		cost: model.cost,
+		source: model.source,
+		supportedReasoningEfforts: model.reasoning
+			? ["minimal", "low", "medium", "high", "ultra"]
+			: undefined,
+		defaultReasoningEffort: model.reasoning ? "medium" : undefined,
+		capabilities: {
+			streaming: true,
+			tools: model.toolUse === true,
+			vision: model.input?.includes("image") || false,
+			reasoning: model.reasoning || false,
+			responsesApi,
+			codexBackend,
+			local: model.isLocal,
+		},
+	};
+}
+
+function mergeProviderCapabilities(
+	current: MaestroAppServerModelProviderCapabilities | undefined,
+	model: MaestroAppServerModel,
+	providerName: string,
+): MaestroAppServerModelProviderCapabilities {
+	const capabilities = current?.capabilities ?? {
+		streaming: false,
+		tools: false,
+		vision: false,
+		reasoning: false,
+		responsesApi: false,
+		codexBackend: false,
+		local: false,
+	};
+	const apis = new Set(current?.apis ?? []);
+	apis.add(model.api);
+	return {
+		id: model.provider,
+		name: current?.name ?? providerName,
+		apis: Array.from(apis).sort(),
+		modelCount: (current?.modelCount ?? 0) + 1,
+		capabilities: {
+			streaming: capabilities.streaming || model.capabilities.streaming,
+			tools: capabilities.tools || model.capabilities.tools,
+			vision: capabilities.vision || model.capabilities.vision,
+			reasoning: capabilities.reasoning || model.capabilities.reasoning,
+			responsesApi:
+				capabilities.responsesApi || model.capabilities.responsesApi,
+			codexBackend:
+				capabilities.codexBackend || model.capabilities.codexBackend,
+			local: capabilities.local || model.capabilities.local,
+		},
+	};
+}
+
 export function createMaestroAppServerSessionApi(
 	store: SessionStore,
 ): MaestroAppServerSessionApi {
+	const canUpdateThreadMetadata = Boolean(
+		store.setSessionTitle &&
+			store.saveSessionSummary &&
+			store.saveSessionResumeSummary &&
+			store.setSessionFavorite &&
+			store.setSessionTags,
+	);
+	const canSetThreadName = Boolean(store.setSessionTitle);
+	const canUseThreadGoals = Boolean(
+		store.setSessionAppServerGoal && store.loadEntries,
+	);
+
 	return {
 		initialize() {
 			return {
@@ -306,10 +625,57 @@ export function createMaestroAppServerSessionApi(
 				},
 				capabilities: {
 					sessions: true,
+					modelList: true,
+					modelProviderCapabilities: true,
 					threadList: true,
 					threadRead: true,
+					threadMetadataUpdate: canUpdateThreadMetadata,
+					threadNameSet: canSetThreadName,
+					threadGoals: canUseThreadGoals,
 					turnsList: true,
 				},
+			};
+		},
+
+		async listModels(params = {}) {
+			const provider = optionalTrimmedString(params.provider, "provider");
+			const api = optionalTrimmedString(params.api, "api");
+			const models = getRegisteredModels()
+				.filter((model) => !provider || model.provider === provider)
+				.filter((model) => !api || model.api === api)
+				.map(modelToAppServerModel)
+				.sort((left, right) =>
+					`${left.provider}/${left.id}`.localeCompare(
+						`${right.provider}/${right.id}`,
+					),
+				);
+			return { models };
+		},
+
+		async readModelProviderCapabilities(params = {}) {
+			const provider = optionalTrimmedString(params.provider, "provider");
+			const providers = new Map<
+				string,
+				MaestroAppServerModelProviderCapabilities
+			>();
+			for (const model of getRegisteredModels()) {
+				if (provider && model.provider !== provider) {
+					continue;
+				}
+				const appServerModel = modelToAppServerModel(model);
+				providers.set(
+					model.provider,
+					mergeProviderCapabilities(
+						providers.get(model.provider),
+						appServerModel,
+						model.providerName || model.provider,
+					),
+				);
+			}
+			return {
+				providers: Array.from(providers.values()).sort((left, right) =>
+					left.id.localeCompare(right.id),
+				),
 			};
 		},
 
@@ -360,6 +726,146 @@ export function createMaestroAppServerSessionApi(
 			return thread;
 		},
 
+		async updateThreadMetadata(params = {}) {
+			const threadId = requireThreadId(params);
+			const title = optionalTrimmedString(params.title, "title");
+			const summary = optionalTrimmedString(params.summary, "summary");
+			const resumeSummary = optionalTrimmedString(
+				params.resumeSummary,
+				"resumeSummary",
+			);
+			const favorite = optionalBoolean(params.favorite, "favorite");
+			const tags = optionalStringArray(params.tags, "tags");
+			const sessionFile = await requireExistingThreadReference(store, threadId);
+
+			if (title !== undefined) {
+				if (!store.setSessionTitle) {
+					throw new MaestroAppServerError(
+						-32601,
+						"Thread title updates are not available",
+					);
+				}
+				await store.setSessionTitle(sessionFile, title);
+			}
+			if (summary !== undefined) {
+				if (!store.saveSessionSummary) {
+					throw new MaestroAppServerError(
+						-32601,
+						"Thread summary updates are not available",
+					);
+				}
+				await store.saveSessionSummary(summary, sessionFile);
+			}
+			if (resumeSummary !== undefined) {
+				if (!store.saveSessionResumeSummary) {
+					throw new MaestroAppServerError(
+						-32601,
+						"Thread resume summary updates are not available",
+					);
+				}
+				await store.saveSessionResumeSummary(resumeSummary, sessionFile);
+			}
+			if (favorite !== undefined) {
+				if (!store.setSessionFavorite) {
+					throw new MaestroAppServerError(
+						-32601,
+						"Thread favorite updates are not available",
+					);
+				}
+				await store.setSessionFavorite(sessionFile, favorite);
+			}
+			if (tags !== undefined) {
+				if (!store.setSessionTags) {
+					throw new MaestroAppServerError(
+						-32601,
+						"Thread tag updates are not available",
+					);
+				}
+				await store.setSessionTags(sessionFile, tags);
+			}
+			const thread = await summarizeThreadAfterMutation(store, threadId);
+			verifyThreadMetadataPersisted(thread, {
+				title,
+				summary,
+				resumeSummary,
+				favorite,
+				tags,
+			});
+			return { thread };
+		},
+
+		async setThreadName(params = {}) {
+			const threadId = requireThreadId(params);
+			const name = optionalTrimmedString(params.name, "name");
+			if (!name) {
+				throw new MaestroAppServerError(-32602, "Missing name");
+			}
+			const sessionFile = await requireExistingThreadReference(store, threadId);
+			if (!store.setSessionTitle) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Thread name updates are not available",
+				);
+			}
+			await store.setSessionTitle(sessionFile, name);
+			const thread = await summarizeThreadAfterMutation(store, threadId);
+			verifyThreadMetadataPersisted(thread, { title: name });
+			return { thread };
+		},
+
+		async getThreadGoal(params = {}) {
+			const threadId = requireThreadId(params);
+			return {
+				threadId,
+				goal: await loadThreadGoal(store, threadId),
+			};
+		},
+
+		async setThreadGoal(params = {}) {
+			const threadId = requireThreadId(params);
+			const sessionFile = await requireExistingThreadReference(store, threadId);
+			const objective = optionalTrimmedString(params.objective, "objective");
+			if (!objective) {
+				throw new MaestroAppServerError(-32602, "Missing objective");
+			}
+			const existing = await loadThreadGoal(store, threadId);
+			const now = new Date().toISOString();
+			const goal: MaestroAppServerThreadGoal = {
+				objective,
+				status: normalizeGoalStatus(params.status),
+				tokenBudget: normalizeTokenBudget(params.tokenBudget),
+				createdAt: existing?.createdAt ?? now,
+				updatedAt: now,
+			};
+			if (!store.setSessionAppServerGoal) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Thread goal updates are not available",
+				);
+			}
+			await store.setSessionAppServerGoal(sessionFile, goal);
+			await flushSessionWrites(store);
+			return {
+				threadId,
+				goal: await verifyThreadGoalPersisted(store, threadId, goal),
+			};
+		},
+
+		async clearThreadGoal(params = {}) {
+			const threadId = requireThreadId(params);
+			const sessionFile = await requireExistingThreadReference(store, threadId);
+			if (!store.setSessionAppServerGoal) {
+				throw new MaestroAppServerError(
+					-32601,
+					"Thread goal updates are not available",
+				);
+			}
+			await store.setSessionAppServerGoal(sessionFile, null);
+			await flushSessionWrites(store);
+			await verifyThreadGoalPersisted(store, threadId, null);
+			return { threadId, goal: null };
+		},
+
 		async listTurns(params = {}) {
 			const threadId = requireThreadId(params);
 			const limit = normalizeLimit(params.limit);
@@ -393,6 +899,32 @@ async function loadTurnsForThread(
 	return buildTurnsFromSessionEntries(safeReadSessionEntries(sessionFile));
 }
 
+async function loadThreadGoal(
+	store: SessionStore,
+	threadId: string,
+): Promise<MaestroAppServerThreadGoal | null> {
+	if (store.loadEntries) {
+		const entries = await store.loadEntries(threadId);
+		if (entries) {
+			return latestGoalFromEntries(entries);
+		}
+	}
+	const sessionFile = store.getSessionFileById(threadId);
+	if (!sessionFile) {
+		throw new MaestroAppServerError(-32004, "Thread not found");
+	}
+	if (sessionFile.startsWith("db:")) {
+		const loaded = await store.loadSession(threadId, {
+			messagesView: "notLoaded",
+		});
+		if (!loaded) {
+			throw new MaestroAppServerError(-32004, "Thread not found");
+		}
+		return null;
+	}
+	return latestGoalFromEntries(safeReadSessionEntries(sessionFile));
+}
+
 function isSupportedMethod(
 	method: string,
 ): method is (typeof maestroAppServerClientMethods)[number] {
@@ -418,6 +950,18 @@ export async function handleMaestroAppServerRequest(
 					id,
 					result: api.initialize(),
 				};
+			case "model/list":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.listModels(request.params),
+				};
+			case "modelProvider/capabilities/read":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.readModelProviderCapabilities(request.params),
+				};
 			case "thread/list":
 				return {
 					jsonrpc: "2.0",
@@ -431,6 +975,36 @@ export async function handleMaestroAppServerRequest(
 					result: {
 						thread: await api.readThread(request.params),
 					},
+				};
+			case "thread/metadata/update":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.updateThreadMetadata(request.params),
+				};
+			case "thread/name/set":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.setThreadName(request.params),
+				};
+			case "thread/goal/get":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.getThreadGoal(request.params),
+				};
+			case "thread/goal/set":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.setThreadGoal(request.params),
+				};
+			case "thread/goal/clear":
+				return {
+					jsonrpc: "2.0",
+					id,
+					result: await api.clearThreadGoal(request.params),
 				};
 			case "thread/turns/list":
 				return {

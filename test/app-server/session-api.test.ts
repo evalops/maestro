@@ -189,12 +189,81 @@ describe("Maestro app-server session API", () => {
 			serverInfo: { name: "maestro" },
 			capabilities: {
 				sessions: true,
+				modelList: true,
+				modelProviderCapabilities: true,
 				threadList: true,
 				threadRead: true,
+				threadMetadataUpdate: true,
+				threadNameSet: true,
+				threadGoals: true,
 				turnsList: true,
 			},
 		});
 		expect(Value.Check(MaestroAppServerResponseSchema, response)).toBe(true);
+	});
+
+	it("does not advertise thread goals without a durable goal read path", () => {
+		const api = createMaestroAppServerSessionApi({
+			loadAllSessions: () => [],
+			listSessions: async () => [],
+			loadSession: async () => null,
+			getSessionFileById: (sessionId) => `db:${sessionId}`,
+			setSessionAppServerGoal: () => {},
+		});
+
+		expect(api.initialize()).toMatchObject({
+			capabilities: {
+				threadGoals: false,
+			},
+		});
+	});
+
+	it("lists models and provider capabilities through the app-server contract", async () => {
+		const api = createMaestroAppServerSessionApi(createSessionManager());
+
+		const models = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "models",
+			method: "model/list",
+			params: { provider: "openai-codex" },
+		});
+
+		expect(models.result).toMatchObject({
+			models: expect.arrayContaining([
+				expect.objectContaining({
+					id: "gpt-5.1-codex-max",
+					provider: "openai-codex",
+					capabilities: expect.objectContaining({
+						reasoning: true,
+						responsesApi: true,
+						codexBackend: true,
+					}),
+					defaultReasoningEffort: "medium",
+				}),
+			]),
+		});
+		expect(Value.Check(MaestroAppServerResponseSchema, models)).toBe(true);
+
+		const providers = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "provider-capabilities",
+			method: "modelProvider/capabilities/read",
+			params: { provider: "openai-codex" },
+		});
+
+		expect(providers.result).toMatchObject({
+			providers: [
+				{
+					id: "openai-codex",
+					capabilities: expect.objectContaining({
+						reasoning: true,
+						responsesApi: true,
+						codexBackend: true,
+					}),
+				},
+			],
+		});
+		expect(Value.Check(MaestroAppServerResponseSchema, providers)).toBe(true);
 	});
 
 	it("lists persisted sessions as not-loaded threads with cursor pagination", async () => {
@@ -433,6 +502,597 @@ describe("Maestro app-server session API", () => {
 			content: [{ type: "text", text: "follow up" }],
 		});
 		expect(Value.Check(MaestroAppServerResponseSchema, full)).toBe(true);
+	});
+
+	it("updates thread metadata and name through Codex-style app-server methods", async () => {
+		const session = await createPersistedSession("metadata prompt", {
+			title: "Original title",
+		});
+		const api = createMaestroAppServerSessionApi(
+			createSessionManager(session.sessionFile),
+		);
+
+		const metadata = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "metadata-update",
+			method: "thread/metadata/update",
+			params: {
+				threadId: session.id,
+				summary: "Updated summary",
+				resumeSummary: "Updated resume",
+				favorite: true,
+				tags: [" app-server ", "codex", "codex"],
+			},
+		});
+
+		expect(metadata.result).toMatchObject({
+			thread: {
+				id: session.id,
+				summary: "Updated summary",
+				resumeSummary: "Updated resume",
+				favorite: true,
+				tags: ["app-server", "codex"],
+			},
+		});
+		expect(Value.Check(MaestroAppServerResponseSchema, metadata)).toBe(true);
+
+		const name = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "name-set",
+			method: "thread/name/set",
+			params: { threadId: session.id, name: "Renamed thread" },
+		});
+
+		expect(name.result).toMatchObject({
+			thread: {
+				id: session.id,
+				title: "Renamed thread",
+				summary: "Updated summary",
+			},
+		});
+		expect(Value.Check(MaestroAppServerResponseSchema, name)).toBe(true);
+	});
+
+	it("treats whitespace-only summary metadata updates as no-ops", async () => {
+		const session = await createPersistedSession("metadata prompt", {
+			summary: "Original summary",
+			resumeSummary: "Original resume",
+		});
+		const api = createMaestroAppServerSessionApi(
+			createSessionManager(session.sessionFile),
+		);
+
+		const response = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "metadata-whitespace-update",
+			method: "thread/metadata/update",
+			params: {
+				threadId: session.id,
+				summary: "   ",
+				resumeSummary: "\n\t ",
+			},
+		});
+
+		expect(response.result).toMatchObject({
+			thread: {
+				id: session.id,
+				summary: "Original summary",
+				resumeSummary: "Original resume",
+			},
+		});
+		expect(Value.Check(MaestroAppServerResponseSchema, response)).toBe(true);
+	});
+
+	it("uses hosted metadata writers for db-backed thread references", async () => {
+		const hostedThreads = new Map([
+			[
+				"current-thread",
+				{
+					title: "Current title",
+					summary: "Current summary",
+					resumeSummary: "Current resume",
+					favorite: false,
+					tags: [] as string[],
+				},
+			],
+			[
+				"hosted-thread",
+				{
+					title: "Hosted title",
+					summary: "Hosted summary",
+					resumeSummary: "Hosted resume",
+					favorite: false,
+					tags: [] as string[],
+				},
+			],
+		]);
+		const writtenRefs: string[] = [];
+		const readHostedThread = (sessionRef: string) =>
+			hostedThreads.get(sessionRef.replace(/^db:/, ""));
+		const api = createMaestroAppServerSessionApi({
+			loadAllSessions: () => [],
+			listSessions: async () => [],
+			loadSession: async (sessionId, options = {}) => {
+				const hosted = hostedThreads.get(sessionId);
+				return hosted
+					? {
+							id: sessionId,
+							title: hosted.title,
+							summary: hosted.summary,
+							resumeSummary: hosted.resumeSummary,
+							createdAt: "2026-01-01T00:00:00.000Z",
+							updatedAt: "2026-01-01T00:00:02.000Z",
+							messageCount: 2,
+							favorite: hosted.favorite,
+							tags: hosted.tags,
+							messagesView: options.messagesView ?? "notLoaded",
+						}
+					: null;
+			},
+			getSessionFileById: (sessionId) => `db:${sessionId}`,
+			saveSessionSummary: async (summary, sessionRef) => {
+				writtenRefs.push(sessionRef ?? "");
+				await Promise.resolve();
+				const hosted = readHostedThread(sessionRef ?? "");
+				if (hosted) hosted.summary = summary;
+			},
+			saveSessionResumeSummary: async (summary, sessionRef) => {
+				writtenRefs.push(sessionRef ?? "");
+				await Promise.resolve();
+				const hosted = readHostedThread(sessionRef ?? "");
+				if (hosted) hosted.resumeSummary = summary;
+			},
+			setSessionFavorite: async (sessionRef, favorite) => {
+				writtenRefs.push(sessionRef);
+				await Promise.resolve();
+				const hosted = readHostedThread(sessionRef);
+				if (hosted) hosted.favorite = favorite;
+			},
+			setSessionTitle: async (sessionRef, title) => {
+				writtenRefs.push(sessionRef);
+				await Promise.resolve();
+				const hosted = readHostedThread(sessionRef);
+				if (hosted) hosted.title = title;
+			},
+			setSessionTags: async (sessionRef, tags) => {
+				writtenRefs.push(sessionRef);
+				await Promise.resolve();
+				const hosted = readHostedThread(sessionRef);
+				if (hosted) hosted.tags = tags;
+			},
+		});
+
+		const initialized = api.initialize();
+		expect(initialized).toMatchObject({
+			capabilities: {
+				threadMetadataUpdate: true,
+				threadNameSet: true,
+			},
+		});
+
+		const metadata = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "hosted-metadata-update",
+			method: "thread/metadata/update",
+			params: {
+				threadId: "hosted-thread",
+				summary: "Updated hosted summary",
+				resumeSummary: "Updated hosted resume",
+				favorite: true,
+				tags: ["hosted"],
+			},
+		});
+		expect(metadata.result).toMatchObject({
+			thread: {
+				id: "hosted-thread",
+				summary: "Updated hosted summary",
+				resumeSummary: "Updated hosted resume",
+				favorite: true,
+				tags: ["hosted"],
+			},
+		});
+		expect(writtenRefs).toEqual([
+			"db:hosted-thread",
+			"db:hosted-thread",
+			"db:hosted-thread",
+			"db:hosted-thread",
+		]);
+
+		const name = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "hosted-name-set",
+			method: "thread/name/set",
+			params: { threadId: "hosted-thread", name: "Renamed hosted thread" },
+		});
+		expect(name.result).toMatchObject({
+			thread: {
+				id: "hosted-thread",
+				title: "Renamed hosted thread",
+			},
+		});
+		expect(writtenRefs).toEqual([
+			"db:hosted-thread",
+			"db:hosted-thread",
+			"db:hosted-thread",
+			"db:hosted-thread",
+			"db:hosted-thread",
+		]);
+		expect(hostedThreads.get("current-thread")).toMatchObject({
+			title: "Current title",
+			summary: "Current summary",
+			resumeSummary: "Current resume",
+			favorite: false,
+			tags: [],
+		});
+	});
+
+	it("flushes queued store writes before returning metadata summaries", async () => {
+		let summary = "Original summary";
+		let pendingSummary: string | undefined;
+		let flushCount = 0;
+		const api = createMaestroAppServerSessionApi({
+			loadAllSessions: () => [],
+			listSessions: async () => [],
+			loadSession: async (sessionId, options = {}) =>
+				sessionId === "queued-thread"
+					? {
+							id: sessionId,
+							title: "Queued thread",
+							summary,
+							createdAt: "2026-01-01T00:00:00.000Z",
+							updatedAt: "2026-01-01T00:00:00.000Z",
+							messageCount: 1,
+							favorite: false,
+							messagesView: options.messagesView ?? "notLoaded",
+						}
+					: null,
+			getSessionFileById: (sessionId) => `db:${sessionId}`,
+			saveSessionSummary: (nextSummary) => {
+				pendingSummary = nextSummary;
+			},
+			flush: async () => {
+				flushCount += 1;
+				await Promise.resolve();
+				if (pendingSummary !== undefined) {
+					summary = pendingSummary;
+					pendingSummary = undefined;
+				}
+			},
+		});
+
+		const response = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "queued-summary-update",
+			method: "thread/metadata/update",
+			params: {
+				threadId: "queued-thread",
+				summary: "Flushed summary",
+			},
+		});
+
+		expect(response.result).toMatchObject({
+			thread: {
+				id: "queued-thread",
+				summary: "Flushed summary",
+			},
+		});
+		expect(flushCount).toBe(1);
+	});
+
+	it("fails metadata updates when the writer does not persist the change", async () => {
+		const api = createMaestroAppServerSessionApi({
+			loadAllSessions: () => [],
+			listSessions: async () => [],
+			loadSession: async (sessionId, options = {}) =>
+				sessionId === "stale-metadata-thread"
+					? {
+							id: sessionId,
+							title: "Stale thread",
+							summary: "Original summary",
+							createdAt: "2026-01-01T00:00:00.000Z",
+							updatedAt: "2026-01-01T00:00:00.000Z",
+							messageCount: 1,
+							favorite: false,
+							messagesView: options.messagesView ?? "notLoaded",
+						}
+					: null,
+			getSessionFileById: (sessionId) => `db:${sessionId}`,
+			saveSessionSummary: () => {},
+		});
+
+		const response = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "stale-metadata-update",
+			method: "thread/metadata/update",
+			params: {
+				threadId: "stale-metadata-thread",
+				summary: "New summary",
+			},
+		});
+
+		expect(response.error).toMatchObject({
+			code: -32000,
+			message: "Thread metadata update was not persisted",
+		});
+	});
+
+	it("treats whitespace-only optional metadata strings as absent", async () => {
+		let writeCount = 0;
+		const api = createMaestroAppServerSessionApi({
+			loadAllSessions: () => [],
+			listSessions: async () => [],
+			loadSession: async (sessionId, options = {}) =>
+				sessionId === "blank-summary-thread"
+					? {
+							id: sessionId,
+							title: "Blank summary thread",
+							summary: "Original summary",
+							createdAt: "2026-01-01T00:00:00.000Z",
+							updatedAt: "2026-01-01T00:00:00.000Z",
+							messageCount: 1,
+							favorite: false,
+							messagesView: options.messagesView ?? "notLoaded",
+						}
+					: null,
+			getSessionFileById: (sessionId) => `db:${sessionId}`,
+			saveSessionSummary: () => {
+				writeCount += 1;
+			},
+		});
+
+		const response = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "blank-summary-update",
+			method: "thread/metadata/update",
+			params: {
+				threadId: "blank-summary-thread",
+				summary: "   ",
+			},
+		});
+
+		expect(response.result).toMatchObject({
+			thread: {
+				id: "blank-summary-thread",
+				summary: "Original summary",
+			},
+		});
+		expect(writeCount).toBe(0);
+	});
+
+	it("validates hosted thread existence before metadata writes", async () => {
+		let writeCount = 0;
+		const api = createMaestroAppServerSessionApi({
+			loadAllSessions: () => [],
+			listSessions: async () => [],
+			loadSession: async () => null,
+			getSessionFileById: (sessionId) => `db:${sessionId}`,
+			saveSessionSummary: () => {
+				writeCount += 1;
+			},
+			saveSessionResumeSummary: () => {
+				writeCount += 1;
+			},
+			setSessionFavorite: () => {
+				writeCount += 1;
+			},
+			setSessionTitle: () => {
+				writeCount += 1;
+			},
+			setSessionTags: () => {
+				writeCount += 1;
+			},
+		});
+
+		const response = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "missing-hosted-write",
+			method: "thread/metadata/update",
+			params: {
+				threadId: "missing-hosted-thread",
+				title: "Should not write",
+				summary: "Should not write",
+			},
+		});
+
+		expect(response.error).toMatchObject({
+			code: -32004,
+			message: "Thread not found",
+		});
+		expect(writeCount).toBe(0);
+	});
+
+	it("persists thread goals and clears them through the app-server contract", async () => {
+		const session = await createPersistedSession("goal prompt");
+		const api = createMaestroAppServerSessionApi(
+			createSessionManager(session.sessionFile),
+		);
+
+		const set = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "goal-set",
+			method: "thread/goal/set",
+			params: {
+				threadId: session.id,
+				objective: "Ship the app-server parity slice",
+				tokenBudget: 5000,
+			},
+		});
+
+		expect(set.result).toMatchObject({
+			threadId: session.id,
+			goal: {
+				objective: "Ship the app-server parity slice",
+				status: "active",
+				tokenBudget: 5000,
+				createdAt: expect.any(String),
+				updatedAt: expect.any(String),
+			},
+		});
+		expect(Value.Check(MaestroAppServerResponseSchema, set)).toBe(true);
+
+		const get = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "goal-get",
+			method: "thread/goal/get",
+			params: { threadId: session.id },
+		});
+
+		expect(get.result).toEqual(set.result);
+
+		const fractionalBudget = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "goal-fractional-budget",
+			method: "thread/goal/set",
+			params: {
+				threadId: session.id,
+				objective: "Reject fractional budgets",
+				tokenBudget: 0.5,
+			},
+		});
+
+		expect(fractionalBudget.error).toMatchObject({
+			code: -32602,
+			message: "Invalid tokenBudget",
+		});
+
+		const clear = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "goal-clear",
+			method: "thread/goal/clear",
+			params: { threadId: session.id },
+		});
+
+		expect(clear.result).toEqual({ threadId: session.id, goal: null });
+		expect(Value.Check(MaestroAppServerResponseSchema, clear)).toBe(true);
+	});
+
+	it("sets hosted thread goals without a file-backed goal read", async () => {
+		let storedGoal: unknown;
+		const api = createMaestroAppServerSessionApi({
+			loadAllSessions: () => [],
+			listSessions: async () => [],
+			loadSession: async (sessionId, options = {}) =>
+				sessionId === "hosted-goal-thread"
+					? {
+							id: sessionId,
+							title: "Hosted goal thread",
+							createdAt: "2026-01-01T00:00:00.000Z",
+							updatedAt: "2026-01-01T00:00:00.000Z",
+							messageCount: 1,
+							favorite: false,
+							messagesView: options.messagesView ?? "notLoaded",
+						}
+					: null,
+			getSessionFileById: (sessionId) => `db:${sessionId}`,
+			loadEntries: async (sessionId) =>
+				sessionId === "hosted-goal-thread" && storedGoal !== undefined
+					? [
+							{
+								type: "session_meta",
+								timestamp: "2026-01-01T00:00:00.000Z",
+								appServerGoal: storedGoal,
+							} as SessionEntry,
+						]
+					: [],
+			setSessionAppServerGoal: async (sessionRef, goal) => {
+				await Promise.resolve();
+				if (sessionRef === "db:hosted-goal-thread") {
+					storedGoal = goal;
+				}
+			},
+		});
+
+		expect(api.initialize()).toMatchObject({
+			capabilities: {
+				threadGoals: true,
+			},
+		});
+
+		const response = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "hosted-goal-set",
+			method: "thread/goal/set",
+			params: {
+				threadId: "hosted-goal-thread",
+				objective: "Persist hosted goals",
+			},
+		});
+
+		expect(response.result).toMatchObject({
+			threadId: "hosted-goal-thread",
+			goal: {
+				objective: "Persist hosted goals",
+				status: "active",
+			},
+		});
+		expect(storedGoal).toMatchObject({
+			objective: "Persist hosted goals",
+			status: "active",
+		});
+		expect(Value.Check(MaestroAppServerResponseSchema, response)).toBe(true);
+	});
+
+	it("fails goal updates when the writer does not persist the new goal", async () => {
+		const api = createMaestroAppServerSessionApi({
+			loadAllSessions: () => [],
+			listSessions: async () => [],
+			loadSession: async (sessionId, options = {}) =>
+				sessionId === "stale-goal-thread"
+					? {
+							id: sessionId,
+							title: "Stale goal thread",
+							createdAt: "2026-01-01T00:00:00.000Z",
+							updatedAt: "2026-01-01T00:00:00.000Z",
+							messageCount: 1,
+							favorite: false,
+							messagesView: options.messagesView ?? "notLoaded",
+						}
+					: null,
+			getSessionFileById: (sessionId) => `db:${sessionId}`,
+			loadEntries: async () => [],
+			setSessionAppServerGoal: () => {},
+		});
+
+		const response = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "stale-goal-set",
+			method: "thread/goal/set",
+			params: {
+				threadId: "stale-goal-thread",
+				objective: "This must be durable",
+			},
+		});
+
+		expect(response.error).toMatchObject({
+			code: -32000,
+			message: "Thread goal update was not persisted",
+		});
+	});
+
+	it("validates hosted thread existence before clearing goals", async () => {
+		let writeCount = 0;
+		const api = createMaestroAppServerSessionApi({
+			loadAllSessions: () => [],
+			listSessions: async () => [],
+			loadSession: async () => null,
+			getSessionFileById: (sessionId) => `db:${sessionId}`,
+			setSessionAppServerGoal: () => {
+				writeCount += 1;
+			},
+		});
+
+		const response = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "missing-hosted-goal-clear",
+			method: "thread/goal/clear",
+			params: { threadId: "missing-hosted-thread" },
+		});
+
+		expect(response.error).toMatchObject({
+			code: -32004,
+			message: "Thread not found",
+		});
+		expect(writeCount).toBe(0);
 	});
 
 	it("pages turns without resuming the session", async () => {

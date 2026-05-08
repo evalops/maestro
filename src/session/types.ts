@@ -77,6 +77,13 @@ export interface SessionMetaEntry {
 	favorite?: boolean;
 	title?: string;
 	tags?: string[];
+	appServerGoal?: {
+		objective: string;
+		status: "active" | "complete" | "cancelled";
+		tokenBudget?: number;
+		createdAt: string;
+		updatedAt: string;
+	} | null;
 }
 
 export interface CompactionEntry<T = unknown> extends SessionEntryBase {
@@ -165,6 +172,7 @@ export interface SessionSummary {
 	id: string;
 	subject?: string;
 	title?: string;
+	summary?: string;
 	resumeSummary?: string;
 	createdAt: string;
 	updatedAt: string;

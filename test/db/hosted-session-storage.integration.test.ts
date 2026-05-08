@@ -212,8 +212,8 @@ describeDb("hosted session database storage", () => {
 		manager.startSession(state, { subject: "key:test-subject" });
 		manager.saveMessage(firstUser);
 		manager.saveMessage(firstAssistant);
-		manager.saveSessionSummary("The session is backed by Postgres.");
-		manager.saveSessionResumeSummary(
+		await manager.saveSessionSummary("The session is backed by Postgres.");
+		await manager.saveSessionResumeSummary(
 			"Continue from the database-backed state.",
 		);
 		await manager.flush();
@@ -226,6 +226,7 @@ describeDb("hosted session database storage", () => {
 		expect(loaded).toMatchObject({
 			id: sessionId,
 			messageCount: 2,
+			summary: "The session is backed by Postgres.",
 			resumeSummary: "Continue from the database-backed state.",
 		});
 		expect(loaded?.messages.map((message) => message.role)).toEqual([
@@ -237,8 +238,15 @@ describeDb("hosted session database storage", () => {
 		).resolves.toMatchObject({
 			id: sessionId,
 			messageCount: 2,
+			summary: "The session is backed by Postgres.",
 			messagesView: "notLoaded",
 			messages: [],
+		});
+		const listed = await manager.listSessions();
+		expect(listed[0]).toMatchObject({
+			id: sessionId,
+			summary: "The session is backed by Postgres.",
+			resumeSummary: "Continue from the database-backed state.",
 		});
 
 		const resumed = createWebSessionManagerForRequest(req, false);
