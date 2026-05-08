@@ -21,6 +21,17 @@ const LAUNCH_TIMEOUT_MS = Number.parseInt(
 	process.env.MAESTRO_BRIDGE_LAUNCH_TIMEOUT_MS || "15000",
 	10,
 );
+const PLATFORM_RUNTIME_TIMEOUT_MS = Number.parseInt(
+	process.env.MAESTRO_BRIDGE_PLATFORM_RUNTIME_TIMEOUT_MS ||
+		process.env.MAESTRO_AGENT_RUNTIME_SERVICE_TIMEOUT_MS ||
+		"2000",
+	10,
+);
+const RECORD_RUN_EVENT_PATH =
+	"/agentruntime.v1.AgentRuntimeService/RecordRunEvent";
+const HANDLE_TRIGGER_PATH =
+	"/agentruntime.v1.AgentRuntimeService/HandleTrigger";
+const AGENT_RUNTIME_SERVICE_SUFFIX = "/agentruntime.v1.AgentRuntimeService";
 
 let webProcess = null;
 let statusTimer = null;
@@ -258,9 +269,230 @@ function sendNotification(method, params) {
 	});
 }
 
+function firstEnv(...names) {
+	for (const name of names) {
+		const value = process.env[name]?.trim();
+		if (value) return value;
+	}
+	return "";
+}
+
+function normalizeAgentRuntimeBaseUrl(value) {
+	let normalized = value.trim().replace(/\/+$/, "");
+	for (const suffix of [
+		RECORD_RUN_EVENT_PATH,
+		HANDLE_TRIGGER_PATH,
+		AGENT_RUNTIME_SERVICE_SUFFIX,
+	]) {
+		if (normalized.endsWith(suffix)) {
+			normalized = normalized.slice(0, -suffix.length).replace(/\/+$/, "");
+		}
+	}
+	return normalized;
+}
+
+function platformRuntimeConfigFromEnv() {
+	const baseUrl = firstEnv(
+		"MAESTRO_BRIDGE_AGENT_RUNTIME_URL",
+		"MAESTRO_AGENT_RUNTIME_SERVICE_URL",
+		"AGENT_RUNTIME_SERVICE_URL",
+	);
+	if (!baseUrl) return null;
+	return {
+		baseUrl: normalizeAgentRuntimeBaseUrl(baseUrl),
+		token: firstEnv(
+				"MAESTRO_BRIDGE_AGENT_RUNTIME_TOKEN",
+				"MAESTRO_AGENT_RUNTIME_SERVICE_TOKEN",
+				"AGENT_RUNTIME_SERVICE_TOKEN",
+				"MAESTRO_EVALOPS_ACCESS_TOKEN",
+				"EVALOPS_TOKEN",
+			),
+		organizationId: firstEnv(
+			"MAESTRO_BRIDGE_AGENT_RUNTIME_ORG_ID",
+			"MAESTRO_AGENT_RUNTIME_ORG_ID",
+				"MAESTRO_AGENT_RUNTIME_ORGANIZATION_ID",
+				"AGENT_RUNTIME_ORG_ID",
+				"AGENT_RUNTIME_ORGANIZATION_ID",
+				"MAESTRO_EVALOPS_ORG_ID",
+				"EVALOPS_ORGANIZATION_ID",
+				"EVALOPS_ORG_ID",
+				"MAESTRO_ENTERPRISE_ORG_ID",
+				"MAESTRO_LLM_GATEWAY_ORG_ID",
+				"MAESTRO_REMOTE_RUNNER_ORG_ID",
+			),
+		runId: firstEnv(
+			"MAESTRO_BRIDGE_PLATFORM_RUN_ID",
+			"MAESTRO_AGENT_RUNTIME_RUN_ID",
+			"AGENT_RUNTIME_RUN_ID",
+		),
+		timeoutMs: Number.isFinite(PLATFORM_RUNTIME_TIMEOUT_MS)
+			? PLATFORM_RUNTIME_TIMEOUT_MS
+			: 2000,
+	};
+}
+
+function cleanString(value, maxLength = 256) {
+	if (typeof value !== "string") return "";
+	const trimmed = value.trim();
+	if (!trimmed) return "";
+	return trimmed.slice(0, maxLength);
+}
+
+function cleanBoolean(value) {
+	return typeof value === "boolean" ? value : undefined;
+}
+
+function compactObject(values) {
+	const result = {};
+	for (const [key, value] of Object.entries(values)) {
+		if (value === undefined || value === null || value === "") continue;
+		result[key] = value;
+	}
+	return result;
+}
+
+function browserControlDecisionRunId(params, config) {
+	return (
+		cleanString(params?.platformRunId, 160) ||
+		cleanString(params?.platform_run_id, 160) ||
+		cleanString(params?.runId, 160) ||
+		cleanString(params?.run_id, 160) ||
+		config.runId
+	);
+}
+
+function buildBrowserControlDecisionRuntimeEvent(params, config) {
+	if (!params || typeof params !== "object") return null;
+	const runId = browserControlDecisionRunId(params, config);
+	if (!runId) return null;
+	const method = cleanString(params.method, 120) || "unknown";
+	const decision = cleanString(params.decision, 32) || "unknown";
+	const denyReason = cleanString(params.denyReason ?? params.deny_reason, 120);
+	const methodProfile = cleanString(
+		params.methodProfile ?? params.method_profile,
+		120,
+	);
+	const safeSummary =
+		decision === "denied"
+			? `Browser-control denied: ${method}${denyReason ? ` (${denyReason})` : ""}`
+			: `Browser-control ${decision}: ${method}`;
+
+	return {
+		runId,
+		type: "RUNTIME_EVENT_TYPE_AGENT_PROGRESS_RECORDED",
+		message: safeSummary,
+		attributes: compactObject({
+			schemaVersion: "browser-control-runtime-decision/v1",
+			adapter: "maestro-conductor-native-host",
+			source: "conductor-browser-control-native-host",
+			nativeHost: HOST_NAME,
+			traceId: cleanString(params.traceId ?? params.trace_id, 160),
+			observedAt: cleanString(params.observedAt ?? params.observed_at, 80),
+			method,
+			methodProfile,
+			policyHash: cleanString(params.policyHash ?? params.policy_hash, 160),
+			platformReceiptPresent: cleanBoolean(
+				params.platformReceiptPresent ?? params.platform_receipt_present,
+			),
+			platformReceiptId: cleanString(
+				params.platformReceiptId ?? params.platform_receipt_id,
+				160,
+			),
+			platformRequestHash: cleanString(
+				params.platformRequestHash ?? params.platform_request_hash,
+				160,
+			),
+			approvalRequired: cleanBoolean(
+				params.approvalRequired ?? params.approval_required,
+			),
+			decision,
+			denyReason: denyReason || "none",
+			conductorContractVersion: cleanString(
+				params.conductorContractVersion ??
+					params.conductor_contract_version,
+				80,
+			),
+		}),
+		visibility: {
+			level: "RUNTIME_VISIBILITY_LEVEL_ADMIN_VISIBLE",
+			audiences: [
+				"RUNTIME_AUDIENCE_WORKSPACE_ADMINS",
+				"RUNTIME_AUDIENCE_AUDIT",
+				"RUNTIME_AUDIENCE_SYSTEM",
+			],
+			sensitivity: "RUNTIME_SENSITIVITY_INTERNAL",
+			safeSummary,
+		},
+	};
+}
+
+function runtimeHeaders(config) {
+	return compactObject({
+		Authorization: config.token ? `Bearer ${config.token}` : undefined,
+		"Content-Type": "application/json",
+		"Connect-Protocol-Version": "1",
+		"X-Organization-ID": config.organizationId,
+	});
+}
+
+async function postBrowserControlDecisionToPlatform(params) {
+	const config = platformRuntimeConfigFromEnv();
+	if (!config) {
+		return { recorded: false, reason: "platform_runtime_not_configured" };
+	}
+	const event = buildBrowserControlDecisionRuntimeEvent(params, config);
+	if (!event) {
+		return { recorded: false, reason: "platform_run_id_missing" };
+	}
+
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), config.timeoutMs);
+	try {
+		const response = await fetch(`${config.baseUrl}${RECORD_RUN_EVENT_PATH}`, {
+			method: "POST",
+			headers: runtimeHeaders(config),
+			body: JSON.stringify(event),
+			signal: controller.signal,
+		});
+		if (!response.ok) {
+			return { recorded: false, reason: `platform_runtime_${response.status}` };
+		}
+		const body = await response.json().catch(() => ({}));
+		return {
+			recorded: true,
+			eventId: cleanString(body?.event?.id, 160),
+			sequence: typeof body?.event?.sequence === "number" ? body.event.sequence : undefined,
+		};
+	} catch (error) {
+		return {
+			recorded: false,
+			reason: error instanceof Error ? error.message : String(error),
+		};
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+function handleJsonRpcNotification(message) {
+	if (
+		message.method !== "onBrowserControlDecision" ||
+		Object.hasOwn(message, "id")
+	) {
+		return false;
+	}
+	const params = message.params ?? {};
+	void postBrowserControlDecisionToPlatform(params);
+	return true;
+}
+
 function handleMessage(message) {
 	if (!message || typeof message !== "object") {
 		return;
+	}
+	if (message.jsonrpc === "2.0" && typeof message.method === "string") {
+		if (handleJsonRpcNotification(message)) {
+			return;
+		}
 	}
 	const { id, type } = message;
 	if (id == null || typeof type !== "string") {
