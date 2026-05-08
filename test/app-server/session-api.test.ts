@@ -680,6 +680,59 @@ describe("Maestro app-server session API", () => {
 		});
 	});
 
+	it("flushes queued store writes before returning metadata summaries", async () => {
+		let summary = "Original summary";
+		let pendingSummary: string | undefined;
+		let flushCount = 0;
+		const api = createMaestroAppServerSessionApi({
+			loadAllSessions: () => [],
+			listSessions: async () => [],
+			loadSession: async (sessionId, options = {}) =>
+				sessionId === "queued-thread"
+					? {
+							id: sessionId,
+							title: "Queued thread",
+							summary,
+							createdAt: "2026-01-01T00:00:00.000Z",
+							updatedAt: "2026-01-01T00:00:00.000Z",
+							messageCount: 1,
+							favorite: false,
+							messagesView: options.messagesView ?? "notLoaded",
+						}
+					: null,
+			getSessionFileById: (sessionId) => `db:${sessionId}`,
+			saveSessionSummary: (nextSummary) => {
+				pendingSummary = nextSummary;
+			},
+			flush: async () => {
+				flushCount += 1;
+				await Promise.resolve();
+				if (pendingSummary !== undefined) {
+					summary = pendingSummary;
+					pendingSummary = undefined;
+				}
+			},
+		});
+
+		const response = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "queued-summary-update",
+			method: "thread/metadata/update",
+			params: {
+				threadId: "queued-thread",
+				summary: "Flushed summary",
+			},
+		});
+
+		expect(response.result).toMatchObject({
+			thread: {
+				id: "queued-thread",
+				summary: "Flushed summary",
+			},
+		});
+		expect(flushCount).toBe(1);
+	});
+
 	it("validates hosted thread existence before metadata writes", async () => {
 		let writeCount = 0;
 		const api = createMaestroAppServerSessionApi({

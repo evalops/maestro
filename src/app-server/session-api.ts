@@ -43,6 +43,7 @@ type SessionStore = Pick<
 	"getSessionFileById" | "loadAllSessions" | "listSessions" | "loadSession"
 > & {
 	loadEntries?: (sessionId: string) => Promise<SessionEntry[] | null>;
+	flush?: () => Promise<void>;
 	saveSessionSummary?: (
 		summary: string,
 		sessionPath?: string,
@@ -406,10 +407,15 @@ async function requireExistingThreadReference(
 	return sessionFile;
 }
 
+async function flushSessionWrites(store: SessionStore): Promise<void> {
+	await store.flush?.();
+}
+
 async function summarizeThreadAfterMutation(
 	store: SessionStore,
 	threadId: string,
 ): Promise<MaestroAppServerThreadSummary> {
+	await flushSessionWrites(store);
 	const loaded = await store.loadSession(threadId, {
 		messagesView: "notLoaded",
 	});
@@ -763,6 +769,7 @@ export function createMaestroAppServerSessionApi(
 				);
 			}
 			await store.setSessionAppServerGoal(sessionFile, goal);
+			await flushSessionWrites(store);
 			return { threadId, goal };
 		},
 
@@ -776,6 +783,7 @@ export function createMaestroAppServerSessionApi(
 				);
 			}
 			await store.setSessionAppServerGoal(sessionFile, null);
+			await flushSessionWrites(store);
 			return { threadId, goal: null };
 		},
 

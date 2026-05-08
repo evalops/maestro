@@ -189,7 +189,7 @@ export class HostedSessionManager {
 		sessionId: string,
 		fields: Omit<SessionMetaEntry, "type" | "timestamp">,
 		rowUpdates: Partial<typeof hostedSessions.$inferInsert> = {},
-	): Promise<void> {
+	): void {
 		const entry: SessionMetaEntry = {
 			type: "session_meta",
 			timestamp: new Date().toISOString(),
@@ -224,7 +224,6 @@ export class HostedSessionManager {
 					),
 				);
 		});
-		return this.flush();
 	}
 
 	private async loadRow(sessionId: string): Promise<SessionRow | null> {
@@ -552,7 +551,7 @@ export class HostedSessionManager {
 		if (updates.title !== undefined) set.title = updates.title;
 		if (updates.favorite !== undefined) set.favorite = updates.favorite;
 		if (updates.tags !== undefined) set.tags = updates.tags;
-		await this.appendSessionMetaEntry(
+		this.appendSessionMetaEntry(
 			sessionId,
 			{
 				...(updates.title !== undefined ? { title: updates.title } : {}),
@@ -563,6 +562,7 @@ export class HostedSessionManager {
 			},
 			set,
 		);
+		await this.flush();
 	}
 
 	startSession(state: AgentState, options?: { subject?: string }): void {
@@ -721,63 +721,57 @@ export class HostedSessionManager {
 		this.appendEntry(entry);
 	}
 
-	saveSessionSummary(summary: string, sessionRef?: string): Promise<void> {
+	saveSessionSummary(summary: string, sessionRef?: string): void {
 		const trimmed = summary.trim();
-		if (!trimmed) return Promise.resolve();
+		if (!trimmed) return;
 		const sessionId = this.resolveSessionId(sessionRef);
-		return this.appendSessionMetaEntry(
+		this.appendSessionMetaEntry(
 			sessionId,
 			{ summary: trimmed },
 			{ summary: trimmed },
 		);
 	}
 
-	saveSessionResumeSummary(
-		summary: string,
-		sessionRef?: string,
-	): Promise<void> {
+	saveSessionResumeSummary(summary: string, sessionRef?: string): void {
 		const trimmed = summary.trim();
-		if (!trimmed) return Promise.resolve();
+		if (!trimmed) return;
 		const sessionId = this.resolveSessionId(sessionRef);
-		return this.appendSessionMetaEntry(
+		this.appendSessionMetaEntry(
 			sessionId,
 			{ resumeSummary: trimmed },
 			{ resumeSummary: trimmed },
 		);
 	}
 
-	saveSessionMemoryExtractionHash(
-		hash: string,
-		sessionRef?: string,
-	): Promise<void> {
+	saveSessionMemoryExtractionHash(hash: string, sessionRef?: string): void {
 		const trimmed = hash.trim();
-		if (!trimmed) return Promise.resolve();
+		if (!trimmed) return;
 		const sessionId = this.resolveSessionId(sessionRef);
-		return this.appendSessionMetaEntry(
+		this.appendSessionMetaEntry(
 			sessionId,
 			{ memoryExtractionHash: trimmed },
 			{ memoryExtractionHash: trimmed },
 		);
 	}
 
-	setSessionFavorite(sessionRef: string, favorite: boolean): Promise<void> {
-		return this.appendSessionMetaEntry(
+	setSessionFavorite(sessionRef: string, favorite: boolean): void {
+		this.appendSessionMetaEntry(
 			this.resolveSessionId(sessionRef),
 			{ favorite },
 			{ favorite },
 		);
 	}
 
-	setSessionTitle(sessionRef: string, title: string): Promise<void> {
-		return this.appendSessionMetaEntry(
+	setSessionTitle(sessionRef: string, title: string): void {
+		this.appendSessionMetaEntry(
 			this.resolveSessionId(sessionRef),
 			{ title },
 			{ title },
 		);
 	}
 
-	setSessionTags(sessionRef: string, tags: string[]): Promise<void> {
-		return this.appendSessionMetaEntry(
+	setSessionTags(sessionRef: string, tags: string[]): void {
+		this.appendSessionMetaEntry(
 			this.resolveSessionId(sessionRef),
 			{ tags },
 			{ tags },
@@ -787,8 +781,8 @@ export class HostedSessionManager {
 	setSessionAppServerGoal(
 		sessionRef: string,
 		goal: NonNullable<SessionMetaEntry["appServerGoal"]> | null,
-	): Promise<void> {
-		return this.appendSessionMetaEntry(this.resolveSessionId(sessionRef), {
+	): void {
+		this.appendSessionMetaEntry(this.resolveSessionId(sessionRef), {
 			appServerGoal: goal,
 		});
 	}
