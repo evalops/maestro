@@ -707,7 +707,15 @@ export async function main(args: string[]) {
 	}
 
 	// Validate sandbox mode (applies to both exec and interactive modes)
-	const validSandboxModes = ["docker", "local", "none"];
+	const validSandboxModes = [
+		"docker",
+		"local",
+		"native",
+		"none",
+		"read-only",
+		"workspace-write",
+		"danger-full-access",
+	];
 	if (parsed.sandbox && !validSandboxModes.includes(parsed.sandbox)) {
 		exitWithStartupError(
 			`Unknown sandbox mode "${parsed.sandbox}". Supported: ${validSandboxModes.join(", ")}`,

@@ -11,6 +11,7 @@ import {
 	compactTimelineSummary,
 	redactTimelineMetadata,
 } from "../timeline/redaction.js";
+import { isAbortError } from "../utils/abort-error.js";
 import {
 	type PlatformServiceConfig,
 	postPlatformConnect,
@@ -161,10 +162,6 @@ function stringValue(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim().length > 0
 		? value.trim()
 		: undefined;
-}
-
-function isAbortError(error: unknown): boolean {
-	return error instanceof Error && error.name === "AbortError";
 }
 
 function relatedString(

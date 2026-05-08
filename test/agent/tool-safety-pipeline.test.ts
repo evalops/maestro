@@ -418,6 +418,9 @@ describe("evaluateToolSafety guarded files", () => {
 				reason: expect.stringContaining("Guarded file access"),
 			}),
 			undefined,
+			expect.objectContaining({
+				now: expect.any(Function),
+			}),
 		);
 		expect(result.verdict.effectiveToolCall.arguments).toEqual({
 			path: "~/.ssh/config",
@@ -510,6 +513,9 @@ describe("evaluateToolSafety guarded files", () => {
 				reason: expect.stringContaining("Guarded file access"),
 			}),
 			undefined,
+			expect.objectContaining({
+				now: expect.any(Function),
+			}),
 		);
 	});
 
@@ -628,6 +634,9 @@ describe("evaluateToolSafety guarded files", () => {
 				reason: expect.stringContaining("Guarded file access"),
 			}),
 			undefined,
+			expect.objectContaining({
+				now: expect.any(Function),
+			}),
 		);
 		expect(result.verdict.effectiveToolCall.arguments).toEqual({
 			path: "~/.ssh/config",

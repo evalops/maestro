@@ -44,6 +44,7 @@ describe("ServerRequestManager", () => {
 			approved: false,
 			reason: "Denied by user",
 			resolvedBy: "user",
+			resolvedAtMs: expect.any(Number),
 		});
 		expect(manager.get("approval_1")).toBeUndefined();
 	});
@@ -139,6 +140,7 @@ describe("ServerRequestManager", () => {
 			approved: false,
 			reason: "Interrupted before request completed",
 			resolvedBy: "policy",
+			resolvedAtMs: expect.any(Number),
 		});
 		expect(cancelClientTool).toHaveBeenCalledWith(
 			"Interrupted before request completed",
@@ -176,6 +178,7 @@ describe("ServerRequestManager", () => {
 			approved: false,
 			reason: "Approval request timed out",
 			resolvedBy: "policy",
+			resolvedAtMs: expect.any(Number),
 		});
 		expect(cancelClientTool).toHaveBeenCalledWith(
 			"Client tool execution timed out after 60 seconds. The VS Code extension may not be responding.",
@@ -198,6 +201,7 @@ describe("ServerRequestManager", () => {
 				actionDescription: "Running git push --force",
 				args: { command: "git push --force" },
 				reason: "Force push requires approval",
+				startedAtMs: 1_771_000_000_000,
 			},
 			service,
 		});
@@ -205,6 +209,7 @@ describe("ServerRequestManager", () => {
 			approved: true,
 			reason: "Approved",
 			resolvedBy: "user",
+			resolvedAtMs: 1_771_000_000_500,
 		});
 
 		expect(listener).toHaveBeenNthCalledWith(1, {
@@ -216,6 +221,7 @@ describe("ServerRequestManager", () => {
 				displayName: "Bash",
 				summaryLabel: "Ran git push --force",
 				actionDescription: "Running git push --force",
+				startedAtMs: 1_771_000_000_000,
 			}),
 		});
 		expect(listener).toHaveBeenNthCalledWith(2, {
@@ -227,6 +233,7 @@ describe("ServerRequestManager", () => {
 			resolution: "approved",
 			reason: "Approved",
 			resolvedBy: "user",
+			resolvedAtMs: 1_771_000_000_500,
 		});
 	});
 
@@ -265,6 +272,7 @@ describe("ServerRequestManager", () => {
 			reason:
 				"Client tool execution timed out after 60 seconds. The VS Code extension may not be responding.",
 			resolvedBy: "policy",
+			resolvedAtMs: expect.any(Number),
 		});
 	});
 
@@ -317,6 +325,7 @@ describe("ServerRequestManager", () => {
 			resolution: "answered",
 			reason: undefined,
 			resolvedBy: "client",
+			resolvedAtMs: expect.any(Number),
 		});
 	});
 
@@ -365,6 +374,7 @@ describe("ServerRequestManager", () => {
 			reason:
 				"User input request timed out before the connected client responded.",
 			resolvedBy: "policy",
+			resolvedAtMs: expect.any(Number),
 		});
 	});
 
@@ -409,6 +419,7 @@ describe("ServerRequestManager", () => {
 			resolution: "answered",
 			reason: undefined,
 			resolvedBy: "client",
+			resolvedAtMs: expect.any(Number),
 		});
 
 		manager.registerClientTool({
@@ -443,6 +454,7 @@ describe("ServerRequestManager", () => {
 			reason:
 				"MCP elicitation request timed out before the connected client responded.",
 			resolvedBy: "policy",
+			resolvedAtMs: expect.any(Number),
 		});
 	});
 
@@ -503,6 +515,7 @@ describe("ServerRequestManager", () => {
 			resolution: "retried",
 			reason: "Retry once more",
 			resolvedBy: "user",
+			resolvedAtMs: expect.any(Number),
 		});
 	});
 
@@ -546,6 +559,7 @@ describe("ServerRequestManager", () => {
 			resolution: "cancelled",
 			reason: "Interrupted before retry decision completed",
 			resolvedBy: "runtime",
+			resolvedAtMs: expect.any(Number),
 		});
 	});
 
@@ -586,6 +600,7 @@ describe("ServerRequestManager", () => {
 			reason:
 				"Tool retry request timed out before a retry decision was provided.",
 			resolvedBy: "policy",
+			resolvedAtMs: expect.any(Number),
 		});
 	});
 });

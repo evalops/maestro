@@ -46,7 +46,7 @@ import {
 	summarizeOutboundSensitiveFindings,
 } from "../../safety/outbound-secret-preflight.js";
 import { safeReadSessionEntries } from "../../session/session-context.js";
-import type { SessionEntry } from "../../session/types.js";
+import type { SessionEntry, SessionMessagesView } from "../../session/types.js";
 import { recordMaestroSessionEvent } from "../../telemetry/maestro-event-bus.js";
 import { createLogger } from "../../utils/logger.js";
 import { getAuthSubject } from "../authz.js";
@@ -94,6 +94,18 @@ export type {
 const logger = createLogger("sessions-handler");
 export const sessionIdPattern = /^[a-zA-Z0-9._-]+$/;
 const attachmentIdPattern = /^[a-zA-Z0-9._-]+$/;
+
+function parseSessionMessagesView(
+	value: string | null,
+): SessionMessagesView | null {
+	if (value === null || value === "" || value === "full") {
+		return "full";
+	}
+	if (value === "summary" || value === "notLoaded") {
+		return value;
+	}
+	return null;
+}
 
 function sendSensitiveContentBlockedResponse(
 	req: IncomingMessage,
@@ -306,7 +318,26 @@ export async function handleSessions(
 				sendJson(res, 400, { error: "Invalid session id" }, cors, req);
 				return;
 			}
-			const session = await sessionManager.loadSession(sessionId);
+			const messagesView = parseSessionMessagesView(
+				url.searchParams.get("messagesView") ??
+					url.searchParams.get("itemsView"),
+			);
+			if (!messagesView) {
+				sendJson(
+					res,
+					400,
+					{
+						error:
+							"Invalid messagesView. Expected full, summary, or notLoaded.",
+					},
+					cors,
+					req,
+				);
+				return;
+			}
+			const session = await sessionManager.loadSession(sessionId, {
+				messagesView,
+			});
 
 			if (!session) {
 				sendJson(res, 404, { error: "Session not found" }, cors, req);
@@ -335,6 +366,7 @@ export async function handleSessions(
 				messageCount: session.messageCount,
 				favorite: session.favorite,
 				tags: session.tags,
+				messagesView: session.messagesView,
 				messages: convertAppMessagesToComposer(session.messages || [], {
 					includeAttachmentContent: false,
 				}),

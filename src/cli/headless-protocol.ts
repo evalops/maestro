@@ -309,6 +309,7 @@ export interface HeadlessServerRequestMessage {
 	action_description?: string;
 	args: unknown;
 	reason: string;
+	started_at_ms?: number;
 }
 
 export interface HeadlessServerRequestResolvedMessage {
@@ -319,6 +320,8 @@ export interface HeadlessServerRequestResolvedMessage {
 	resolution: HeadlessServerRequestResolution;
 	reason?: string;
 	resolved_by: HeadlessServerRequestResolvedBy;
+	started_at_ms?: number;
+	resolved_at_ms?: number;
 }
 
 export interface HeadlessUtilityCommandStartedMessage {
@@ -517,6 +520,7 @@ export interface HeadlessPendingApprovalState {
 	summary_label?: string;
 	action_description?: string;
 	args: unknown;
+	started_at_ms?: number;
 }
 
 export interface HeadlessPendingRequestState
@@ -664,6 +668,9 @@ function toUnifiedPendingRequestState(
 			? { action_description: request.action_description }
 			: {}),
 		args: request.args,
+		...(request.started_at_ms !== undefined
+			? { started_at_ms: request.started_at_ms }
+			: {}),
 		source: "local",
 	};
 }
@@ -753,6 +760,7 @@ function toPendingRequestState(params: {
 	summary_label?: string;
 	action_description?: string;
 	args: unknown;
+	started_at_ms?: number;
 }): HeadlessPendingApprovalState {
 	return {
 		call_id: params.call_id,
@@ -766,6 +774,9 @@ function toPendingRequestState(params: {
 			? { action_description: params.action_description }
 			: {}),
 		args: params.args,
+		...(params.started_at_ms !== undefined
+			? { started_at_ms: params.started_at_ms }
+			: {}),
 	};
 }
 
@@ -1124,6 +1135,9 @@ export class HeadlessProtocolTranslator {
 							: {}),
 						args: event.request.args,
 						reason: event.request.reason,
+						...(event.request.startedAtMs !== undefined
+							? { started_at_ms: event.request.startedAtMs }
+							: {}),
 					},
 				];
 			case "error":
@@ -1186,6 +1200,12 @@ export class HeadlessProtocolTranslator {
 						resolution: event.decision.approved ? "approved" : "denied",
 						reason: event.decision.reason,
 						resolved_by: event.decision.resolvedBy,
+						...(event.request.startedAtMs !== undefined
+							? { started_at_ms: event.request.startedAtMs }
+							: {}),
+						...(event.decision.resolvedAtMs !== undefined
+							? { resolved_at_ms: event.decision.resolvedAtMs }
+							: {}),
 					},
 				];
 			default:
@@ -1753,6 +1773,7 @@ function applyIncomingHeadlessMessageInner(
 						summary_label: msg.summary_label,
 						action_description: msg.action_description,
 						args: msg.args,
+						started_at_ms: msg.started_at_ms,
 					}),
 				];
 			} else if (msg.request_type === "client_tool") {
@@ -1765,6 +1786,7 @@ function applyIncomingHeadlessMessageInner(
 						request_id: msg.request_id,
 						tool: msg.tool,
 						args: msg.args,
+						started_at_ms: msg.started_at_ms,
 					}),
 				];
 			} else if (msg.request_type === "mcp_elicitation") {
@@ -1777,6 +1799,7 @@ function applyIncomingHeadlessMessageInner(
 						request_id: msg.request_id,
 						tool: msg.tool,
 						args: msg.args,
+						started_at_ms: msg.started_at_ms,
 					}),
 				];
 			} else if (msg.request_type === "user_input") {
@@ -1789,6 +1812,7 @@ function applyIncomingHeadlessMessageInner(
 						request_id: msg.request_id,
 						tool: msg.tool,
 						args: msg.args,
+						started_at_ms: msg.started_at_ms,
 					}),
 				];
 			} else {
@@ -1801,6 +1825,7 @@ function applyIncomingHeadlessMessageInner(
 						request_id: msg.request_id,
 						tool: msg.tool,
 						args: msg.args,
+						started_at_ms: msg.started_at_ms,
 					}),
 				];
 			}
@@ -1938,6 +1963,13 @@ export function buildHeadlessServerRequestCancellationMessages(
 	>,
 	reason: string,
 ): HeadlessServerRequestResolvedMessage[] {
+	const resolvedAtMs = Date.now();
+	const lifecycleTiming = (request: HeadlessPendingApprovalState) => ({
+		...(request.started_at_ms !== undefined
+			? { started_at_ms: request.started_at_ms }
+			: {}),
+		resolved_at_ms: resolvedAtMs,
+	});
 	return [
 		...state.pending_approvals.map((approval) => ({
 			type: "server_request_resolved" as const,
@@ -1947,6 +1979,7 @@ export function buildHeadlessServerRequestCancellationMessages(
 			resolution: "cancelled" as const,
 			reason,
 			resolved_by: "runtime" as const,
+			...lifecycleTiming(approval),
 		})),
 		...state.pending_client_tools.map((request) => ({
 			type: "server_request_resolved" as const,
@@ -1956,6 +1989,7 @@ export function buildHeadlessServerRequestCancellationMessages(
 			resolution: "cancelled" as const,
 			reason,
 			resolved_by: "runtime" as const,
+			...lifecycleTiming(request),
 		})),
 		...state.pending_mcp_elicitations.map((request) => ({
 			type: "server_request_resolved" as const,
@@ -1965,6 +1999,7 @@ export function buildHeadlessServerRequestCancellationMessages(
 			resolution: "cancelled" as const,
 			reason,
 			resolved_by: "runtime" as const,
+			...lifecycleTiming(request),
 		})),
 		...state.pending_user_inputs.map((request) => ({
 			type: "server_request_resolved" as const,
@@ -1974,6 +2009,7 @@ export function buildHeadlessServerRequestCancellationMessages(
 			resolution: "cancelled" as const,
 			reason,
 			resolved_by: "runtime" as const,
+			...lifecycleTiming(request),
 		})),
 		...state.pending_tool_retries.map((request) => ({
 			type: "server_request_resolved" as const,
@@ -1983,6 +2019,7 @@ export function buildHeadlessServerRequestCancellationMessages(
 			resolution: "cancelled" as const,
 			reason,
 			resolved_by: "runtime" as const,
+			...lifecycleTiming(request),
 		})),
 	];
 }

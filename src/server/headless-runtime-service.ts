@@ -2401,6 +2401,9 @@ export class HeadlessSessionRuntime {
 					: {}),
 				args: event.request.args,
 				reason: event.request.reason,
+				...(event.request.startedAtMs !== undefined
+					? { started_at_ms: event.request.startedAtMs }
+					: {}),
 			});
 			return;
 		}
@@ -2416,6 +2419,12 @@ export class HeadlessSessionRuntime {
 			resolution: event.resolution,
 			reason: event.reason,
 			resolved_by: event.resolvedBy,
+			...(event.request.startedAtMs !== undefined
+				? { started_at_ms: event.request.startedAtMs }
+				: {}),
+			...(event.resolvedAtMs !== undefined
+				? { resolved_at_ms: event.resolvedAtMs }
+				: {}),
 		});
 	}
 

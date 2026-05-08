@@ -307,6 +307,7 @@ export const ComposerActionApprovalRequestSchema = Type.Object({
 	actionDescription: Type.Optional(Type.String()),
 	args: Type.Unknown(),
 	reason: Type.String(),
+	startedAtMs: Type.Optional(Type.Number()),
 	platform: Type.Optional(ComposerPendingRequestPlatformRefSchema),
 });
 
@@ -314,6 +315,7 @@ export const ComposerActionApprovalDecisionSchema = Type.Object({
 	approved: Type.Boolean(),
 	reason: Type.Optional(Type.String()),
 	resolvedBy: Type.Union([Type.Literal("policy"), Type.Literal("user")]),
+	resolvedAtMs: Type.Optional(Type.Number()),
 });
 
 export const ComposerPendingClientToolRequestSchema = Type.Object({
@@ -534,6 +536,12 @@ export const ComposerToolRetryDecisionSchema = Type.Object({
 	]),
 });
 
+export const ComposerSessionMessagesViewSchema = Type.Union([
+	Type.Literal("full"),
+	Type.Literal("summary"),
+	Type.Literal("notLoaded"),
+]);
+
 export const ComposerSessionSchema = Type.Object({
 	id: Type.String(),
 	title: Type.Optional(Type.String()),
@@ -543,6 +551,7 @@ export const ComposerSessionSchema = Type.Object({
 	messageCount: Type.Number(),
 	favorite: Type.Optional(Type.Boolean()),
 	tags: Type.Optional(Type.Array(Type.String())),
+	messagesView: Type.Optional(ComposerSessionMessagesViewSchema),
 	messages: Type.Array(ComposerMessageSchema),
 	pendingApprovalRequests: Type.Optional(
 		Type.Array(ComposerActionApprovalRequestSchema),

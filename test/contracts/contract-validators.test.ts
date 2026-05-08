@@ -98,9 +98,27 @@ describe("contracts validators", () => {
 				actionDescription: "Running rm -rf dist",
 				args: { command: "rm -rf dist" },
 				reason: "Dangerous command",
+				startedAtMs: 1_000,
 			},
 		});
 		expect(approvalEvent.ok).toBe(true);
+		const approvalResolvedEvent = validateSchema(ComposerAgentEventSchema, {
+			type: "action_approval_resolved",
+			request: {
+				id: "approval_1",
+				toolName: "bash",
+				args: { command: "rm -rf dist" },
+				reason: "Dangerous command",
+				startedAtMs: 1_000,
+			},
+			decision: {
+				approved: false,
+				reason: "Denied",
+				resolvedBy: "user",
+				resolvedAtMs: 1_750,
+			},
+		});
+		expect(approvalResolvedEvent.ok).toBe(true);
 	});
 
 	it("rejects malformed headless commands with generated per-type schemas", () => {

@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { buildNativeSandboxPolicy } from "../safety/permission-profile.js";
 import { DockerSandbox, type DockerSandboxConfig } from "./docker-sandbox.js";
 import { LocalSandbox } from "./local-sandbox.js";
 import {
@@ -24,7 +25,8 @@ export {
 	type NativeSandboxMode,
 } from "./native-sandbox.js";
 
-export type SandboxMode = "docker" | "local" | "native" | "none";
+export type SandboxBackendMode = "docker" | "local" | "native" | "none";
+export type SandboxMode = SandboxBackendMode | NativeSandboxMode;
 
 export interface NativeSandboxConfig {
 	/** Sandbox policy mode */
@@ -33,6 +35,10 @@ export interface NativeSandboxConfig {
 	writableRoots?: string[];
 	/** Allow network access */
 	networkAccess?: boolean;
+	/** Exclude TMPDIR from writable roots */
+	excludeTmpdir?: boolean;
+	/** Exclude /tmp from writable roots */
+	excludeSlashTmp?: boolean;
 }
 
 export interface SandboxConfig {
@@ -77,6 +83,25 @@ async function isDockerAvailable(): Promise<boolean> {
 	} catch {
 		return false;
 	}
+}
+
+function isNativeSandboxMode(mode: string): mode is NativeSandboxMode {
+	return (
+		mode === "read-only" ||
+		mode === "workspace-write" ||
+		mode === "danger-full-access"
+	);
+}
+
+function resolveSandboxMode(mode: SandboxMode): {
+	backendMode: SandboxBackendMode;
+	nativePolicy?: NativeSandboxMode;
+} {
+	if (isNativeSandboxMode(mode)) {
+		return { backendMode: "native", nativePolicy: mode };
+	}
+
+	return { backendMode: mode };
 }
 
 export interface CreateSandboxOptions {
@@ -139,8 +164,10 @@ export async function createSandbox(
 		}
 	}
 
+	const { backendMode, nativePolicy } = resolveSandboxMode(mode);
+
 	// Handle each mode
-	switch (mode) {
+	switch (backendMode) {
 		case "none":
 			return undefined;
 
@@ -153,22 +180,39 @@ export async function createSandbox(
 			return new LocalSandbox();
 
 		case "native": {
+			const requestedPolicy =
+				nativePolicy ?? nativeConfig?.policy ?? "workspace-write";
+			if (requestedPolicy === "danger-full-access") {
+				return undefined;
+			}
+
+			const policyModeRequested = nativePolicy !== undefined;
 			// Check native sandbox availability
 			if (!isNativeSandboxAvailable()) {
 				const sandboxType = getNativeSandboxType();
 				console.warn(
 					`[sandbox] Native sandbox (${sandboxType}) not available on this platform.`,
 				);
+				if (policyModeRequested) {
+					throw new Error(
+						`Native sandbox policy mode "${nativePolicy}" requires native sandbox support; refusing to fall back to local execution.`,
+					);
+				}
 				const fallback = isWebServer ? "none" : "local";
 				console.warn(`[sandbox] Falling back to ${fallback} sandbox.`);
 				return isWebServer ? undefined : new LocalSandbox();
 			}
 
-			const policy: NativeSandboxPolicy = {
-				mode: nativeConfig?.policy ?? "workspace-write",
-				writableRoots: nativeConfig?.writableRoots,
-				networkAccess: nativeConfig?.networkAccess ?? true,
-			};
+			const policy: NativeSandboxPolicy = buildNativeSandboxPolicy(
+				{
+					mode: requestedPolicy,
+					writableRoots: nativeConfig?.writableRoots,
+					networkAccess: nativeConfig?.networkAccess ?? true,
+					excludeTmpdir: nativeConfig?.excludeTmpdir,
+					excludeSlashTmp: nativeConfig?.excludeSlashTmp,
+				},
+				cwd,
+			);
 
 			const sandbox = createNativeSandbox(policy, cwd);
 
@@ -180,6 +224,12 @@ export async function createSandbox(
 					"[sandbox] Failed to initialize native sandbox:",
 					error instanceof Error ? error.message : String(error),
 				);
+				if (policyModeRequested) {
+					throw new Error(
+						`Native sandbox policy mode "${nativePolicy}" failed to initialize; refusing to fall back to local execution.`,
+						{ cause: error },
+					);
+				}
 				const fallback = isWebServer ? "none" : "local";
 				console.warn(`[sandbox] Falling back to ${fallback} sandbox.`);
 				return isWebServer ? undefined : new LocalSandbox();

@@ -127,6 +127,7 @@ describe("hosted AgentRuntime progress recorder", () => {
 				args: { command: "git status" },
 				reason: "Confirm shell",
 				timestamp: Date.now(),
+				startedAtMs: 1_000,
 				timeoutMs: 60_000,
 			},
 		};
@@ -136,6 +137,7 @@ describe("hosted AgentRuntime progress recorder", () => {
 			resolution: "approved",
 			resolvedBy: "user",
 			reason: "looks good",
+			resolvedAtMs: 2_000,
 		};
 
 		recorder.recordServerRequestEvent(registered);
@@ -151,6 +153,9 @@ describe("hosted AgentRuntime progress recorder", () => {
 					stepId: "maestro:session_1:tool:call_1",
 					type: PlatformAgentRunWaitTypeValue.Approval,
 					externalRef: "approval_1",
+					payload: expect.objectContaining({
+						started_at_ms: 1_000,
+					}),
 				}),
 				checkpoint: expect.objectContaining({
 					id: "maestro:session_1:checkpoint:approval_1",
@@ -166,6 +171,63 @@ describe("hosted AgentRuntime progress recorder", () => {
 				payload: expect.objectContaining({
 					resolution: "approved",
 					resolved_by: "user",
+					started_at_ms: 1_000,
+					resolved_at_ms: 2_000,
+				}),
+			}),
+		);
+	});
+
+	it("propagates approval lifecycle timing to hosted wait and resume payloads", async () => {
+		const { recorder, waitRun, resumeRun } = createRecorder();
+		const request = {
+			id: "approval_timed",
+			toolName: "shell",
+			displayName: "Shell",
+			summaryLabel: "git push",
+			args: { command: "git push" },
+			reason: "Confirm shell",
+			startedAtMs: 1_000,
+		};
+
+		recorder.recordAgentEvent({
+			type: "action_approval_required",
+			request,
+		} satisfies AgentEvent);
+		recorder.recordAgentEvent({
+			type: "action_approval_resolved",
+			request,
+			decision: {
+				approved: true,
+				resolvedBy: "user",
+				reason: "ship it",
+				resolvedAtMs: 2_250,
+			},
+		} satisfies AgentEvent);
+		await recorder.flush();
+
+		expect(waitRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				wait: expect.objectContaining({
+					id: "maestro:session_1:wait:approval_timed",
+					payload: expect.objectContaining({
+						request_id: "approval_timed",
+						request_type: "approval",
+						started_at_ms: 1_000,
+					}),
+				}),
+			}),
+		);
+		expect(resumeRun).toHaveBeenCalledWith(
+			expect.objectContaining({
+				waitId: "maestro:session_1:wait:approval_timed",
+				payload: expect.objectContaining({
+					request_id: "approval_timed",
+					request_type: "approval",
+					resolution: "approved",
+					resolved_by: "user",
+					started_at_ms: 1_000,
+					resolved_at_ms: 2_250,
 				}),
 			}),
 		);

@@ -358,6 +358,7 @@ message ServerRequestMessage {
   optional string action_description = 7;
   google.protobuf.Value args = 8;
   string reason = 9;
+  optional uint64 started_at_ms = 10;
 }
 
 message ServerRequestResolvedMessage {
@@ -367,6 +368,8 @@ message ServerRequestResolvedMessage {
   ServerRequestResolution resolution = 4;
   optional string reason = 5;
   ServerRequestResolvedBy resolved_by = 6;
+  optional uint64 started_at_ms = 7;
+  optional uint64 resolved_at_ms = 8;
 }
 
 message UtilityCommandStartedMessage {

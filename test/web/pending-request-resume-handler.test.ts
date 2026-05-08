@@ -132,6 +132,7 @@ describe("handlePendingRequestResume", () => {
 			approved: true,
 			reason: "Looks good",
 			resolvedBy: "user",
+			resolvedAtMs: expect.any(Number),
 		});
 		expect(serverRequestManager.get("approval-platform")).toBeUndefined();
 	});

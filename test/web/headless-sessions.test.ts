@@ -818,9 +818,10 @@ describe("headless session runtime", () => {
 					error: "Denied by user",
 				},
 			});
-			await expect(approvalPromise).resolves.toEqual({
+			await expect(approvalPromise).resolves.toMatchObject({
 				approved: false,
 				reason: "Denied by user",
+				resolvedAtMs: expect.any(Number),
 				resolvedBy: "user",
 			});
 
@@ -896,6 +897,8 @@ describe("headless session runtime", () => {
 					resolution: "cancelled",
 					reason: "Interrupted before request completed",
 					resolved_by: "runtime",
+					started_at_ms: expect.any(Number),
+					resolved_at_ms: expect.any(Number),
 				},
 			});
 			expect(replay?.at(-1)).toEqual({
@@ -1047,6 +1050,7 @@ describe("headless session runtime", () => {
 				toolName: "bash",
 				args: { command: "git push --force" },
 				reason: "Force push requires approval",
+				startedAtMs: 1_771_000_000_000,
 			};
 			fakeAgent.emit({
 				type: "action_approval_required",
@@ -1075,9 +1079,10 @@ describe("headless session runtime", () => {
 			]);
 
 			await runtime.send({ type: "interrupt" });
-			await expect(pendingDecision).resolves.toEqual({
+			await expect(pendingDecision).resolves.toMatchObject({
 				approved: false,
 				reason: "Interrupted before request completed",
+				resolvedAtMs: expect.any(Number),
 				resolvedBy: "policy",
 			});
 			expect(
@@ -1095,6 +1100,15 @@ describe("headless session runtime", () => {
 			});
 
 			const replay = runtime.replayFrom(0) ?? [];
+			expect(
+				replay.some(
+					(entry) =>
+						entry.type === "message" &&
+						entry.message.type === "server_request" &&
+						entry.message.request_id === "call_interrupt_approval" &&
+						entry.message.started_at_ms === 1_771_000_000_000,
+				),
+			).toBe(true);
 			const resolutions = replay.filter(
 				(entry) =>
 					entry.type === "message" &&
@@ -1102,6 +1116,13 @@ describe("headless session runtime", () => {
 					entry.message.call_id === "call_interrupt_approval",
 			);
 			expect(resolutions).toHaveLength(1);
+			expect(resolutions[0]).toMatchObject({
+				type: "message",
+				message: expect.objectContaining({
+					started_at_ms: 1_771_000_000_000,
+					resolved_at_ms: expect.any(Number),
+				}),
+			});
 		} finally {
 			await rm(tempDir, { recursive: true, force: true });
 		}
@@ -1215,9 +1236,10 @@ describe("headless session runtime", () => {
 
 			serverRequestManager.cleanup(Date.now() + 60 * 60 * 1000 + 5);
 
-			await expect(pendingDecision).resolves.toEqual({
+			await expect(pendingDecision).resolves.toMatchObject({
 				approved: false,
 				reason: "Approval request timed out",
+				resolvedAtMs: expect.any(Number),
 				resolvedBy: "policy",
 			});
 			expect(runtime.getSnapshot().state.pending_approvals).toEqual([]);
@@ -1298,9 +1320,10 @@ describe("headless session runtime", () => {
 				},
 			});
 
-			await expect(approvalPromise).resolves.toEqual({
+			await expect(approvalPromise).resolves.toMatchObject({
 				approved: false,
 				reason: "Denied by user",
+				resolvedAtMs: expect.any(Number),
 				resolvedBy: "user",
 			});
 
@@ -3987,7 +4010,17 @@ describe("headless session handlers", () => {
 						attempt: 1,
 						summary: "Retry bash command",
 					},
+					started_at_ms: expect.any(Number),
 				},
+			]);
+			expect(runtime.getSnapshot().state.pending_requests).toEqual([
+				expect.objectContaining({
+					id: "retry_1",
+					kind: "tool_retry",
+					call_id: "call_bash",
+					request_id: "retry_1",
+					started_at_ms: expect.any(Number),
+				}),
 			]);
 
 			await runtime.send({

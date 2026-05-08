@@ -31,7 +31,7 @@ export interface Args {
 	execJson?: boolean;
 	execFullAuto?: boolean;
 	execReadOnly?: boolean;
-	/** Sandbox mode: "docker", "local", "native", or "none" */
+	/** Sandbox backend or policy mode */
 	sandbox?: string;
 	execOutputSchema?: string;
 	execOutputLast?: string;
