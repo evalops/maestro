@@ -37,6 +37,14 @@ Platform ToolExecution waits set:
 Approvals that are mirrored into the shared approvals service use
 `platform.source=approvals_service`.
 
+`POST /api/pending-requests/:requestId/resume` is the canonical Maestro UX
+entry point. For hosted AgentRuntime waits with an active `agentRunId`, Maestro
+calls Platform `ResumeRun` before resolving the local request. Governed
+ToolExecution approval resume tokens stay server-side inside the ToolExecution
+bridge plan; the web pending-request payload only exposes correlation ids, and
+the bridge performs `ResumeToolExecution` after the local approval decision is
+released.
+
 This contract is the Maestro-side client/read-model slice for
 `evalops/maestro-internal#1417`. Platform still owns the canonical `AgentRunWait`
 and `ApprovalRequest` APIs; Maestro uses this session projection so clients can

@@ -499,6 +499,7 @@ describe("tool execution bridge", () => {
 		if (prepared.status !== "wait_approval") {
 			throw new Error("expected approval wait");
 		}
+		expect(prepared.request.platform).not.toHaveProperty("resumeToken");
 
 		const decision: ActionApprovalDecision = {
 			approved: true,
