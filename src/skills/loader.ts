@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import { PATHS } from "../config/constants.js";
 import { loadConfiguredPackageResources } from "../packages/runtime.js";
 import { createLogger } from "../utils/logger.js";
+import { promptSafeText } from "../utils/prompt-safe-text.js";
 
 const logger = createLogger("skills:loader");
 
@@ -797,9 +798,13 @@ export function skillsToPrompt(skills: LoadedSkill[]): string {
 	const lines: string[] = ["<available_skills>"];
 
 	for (const skill of skills) {
+		const description = promptSafeText(
+			skill.description,
+			MAX_DESCRIPTION_LENGTH,
+		);
 		lines.push("<skill>");
 		lines.push(`  <name>${escapeXml(skill.name)}</name>`);
-		lines.push(`  <description>${escapeXml(skill.description)}</description>`);
+		lines.push(`  <description>${escapeXml(description ?? "")}</description>`);
 		lines.push(
 			`  <location>${escapeXml(join(skill.sourcePath, "SKILL.md"))}</location>`,
 		);
@@ -880,7 +885,9 @@ export function getSkillsSummary(skills: LoadedSkill[]): string {
 
 	for (const skill of skills) {
 		const tags = skill.tags?.length ? ` [${skill.tags.join(", ")}]` : "";
-		lines.push(`- **${skill.name}**${tags}: ${skill.description}`);
+		const description =
+			promptSafeText(skill.description, MAX_DESCRIPTION_LENGTH) ?? "";
+		lines.push(`- **${skill.name}**${tags}: ${description}`);
 		if (skill.triggers?.length) {
 			lines.push(`  - Triggers: ${skill.triggers.join(", ")}`);
 		}
@@ -926,12 +933,8 @@ export function formatSkillMetadataOnly(skill: LoadedSkill): string {
 		.replace(/>/g, "&gt;")
 		.replace(/"/g, "&quot;");
 
-	// Truncate description to max length per spec, escape XML
-	let description = skill.description;
-	if (description.length > MAX_DESCRIPTION_LENGTH) {
-		description = `${description.slice(0, MAX_DESCRIPTION_LENGTH - 3)}...`;
-	}
-	const escapeDesc = description
+	const description = promptSafeText(skill.description, MAX_DESCRIPTION_LENGTH);
+	const escapeDesc = (description ?? "")
 		.replace(/&/g, "&amp;")
 		.replace(/</g, "&lt;")
 		.replace(/>/g, "&gt;")

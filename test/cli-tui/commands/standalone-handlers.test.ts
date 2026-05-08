@@ -730,6 +730,21 @@ describe("mcp-handlers", () => {
 			);
 		});
 
+		it("normalizes externally-authored MCP prompt descriptions", () => {
+			const status = createDefaultMcpStatus();
+			status.servers[0]!.promptDetails![0]!.description =
+				"  Summarize\n\n\ttracked   issue  ";
+			status.servers[0]!.promptDetails![0]!.arguments![0]!.description =
+				"  Issue\nidentifier  ";
+
+			const output = formatMcpPromptList(status.servers, "test-server");
+
+			expect(output).toContain("Description: Summarize tracked issue");
+			expect(output).toContain("Args: ISSUE (required): Issue identifier");
+			expect(output).not.toContain("\t");
+			expect(output).not.toContain("Summarize\n");
+		});
+
 		it("passes KEY=value prompt args through the TUI MCP prompt command", async () => {
 			vi.mocked(mcpManager.getPrompt).mockResolvedValueOnce({
 				description: "Summarize a tracked issue",

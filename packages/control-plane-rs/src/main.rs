@@ -2,17 +2,14 @@ use base64::{
     engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD},
     Engine as _,
 };
-use hmac::{Hmac, Mac};
-use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use maestro_tui::agent::{FromAgent, NativeAgent, NativeAgentConfig, TokenUsage, ToolResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha1::{Digest, Sha1};
-use sha2::Sha256;
 use std::collections::HashMap;
 use std::env;
 use std::io::{Cursor, Read};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::process::{self, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -22,26 +19,31 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::process::Command;
 use tokio::sync::{mpsc, Mutex};
 
+mod auth;
 mod http;
 mod model_catalog;
+mod runtime_assets;
 
+use auth::*;
 #[cfg(test)]
 use http::parse_request_head;
 pub(crate) use http::MAX_JSON_BODY_BYTES;
 use http::{
     header_end, json_response, origin_allowed, percent_decode_component, query_flag,
     read_request_body, read_request_body_with_limit, read_request_head, requested_cors_origin,
-    response, response_cors_credentials_header, response_cors_origin, response_with_cache,
-    response_with_cache_and_length, response_with_extra_headers,
-    response_with_extra_headers_and_length, response_with_no_store,
-    response_with_no_store_and_length, text_response, with_response_cors_origin, RequestHead,
+    response, response_cors_credentials_header, response_cors_origin, response_with_extra_headers,
+    response_with_extra_headers_and_length, response_with_no_store, text_response,
+    with_response_cors_origin, RequestHead,
 };
+#[cfg(test)]
+use http::{response_with_cache_and_length, response_with_no_store_and_length};
 use model_catalog::{available_models, default_model, resolve_model, ModelInfo};
 #[cfg(test)]
 use model_catalog::{
     builtin_models, default_model_from_registry, emergency_default_model, merge_configured_models,
     merge_llm_gateway_model_catalog, ModelRegistry,
 };
+use runtime_assets::*;
 
 const MAX_EXTRACT_JSON_BODY_BYTES: usize = 72 * 1024 * 1024;
 const DEFAULT_EXTRACT_MAX_CHARS: usize = 200_000;
@@ -50,13 +52,6 @@ const MAX_PROJECT_ONBOARDING_IMPRESSIONS: u8 = 4;
 static ATTACHMENT_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
 type PendingToolResponseSender = mpsc::UnboundedSender<(String, bool, Option<ToolResult>)>;
-const RUNTIME_CONFIG_SCRIPT_PATH: &str = "/__maestro/runtime-config.js";
-const RUNTIME_CONFIG_SCRIPT_TAG: &str =
-    r#"    <script src="/__maestro/runtime-config.js"></script>"#;
-const RUNTIME_SESSION_COOKIE_NAME: &str = "maestro_web_session";
-const RUNTIME_SESSION_COOKIE_CONTEXT: &[u8] = b"maestro-web-session:v1";
-const RUNTIME_SESSION_API_KEY_COOKIE_CONTEXT: &[u8] = b"maestro-web-session-api-key:v1";
-
 #[derive(Debug, Clone)]
 struct Config {
     listen_host: String,
@@ -156,17 +151,6 @@ struct AppState {
     shared_sessions: Arc<Mutex<HashMap<String, SharedSessionGrant>>>,
     approval_modes: Arc<Mutex<HashMap<String, String>>>,
     pending_tool_responses: Arc<Mutex<HashMap<String, PendingToolResponseSender>>>,
-}
-
-#[derive(Debug, Clone)]
-struct AuthContext {
-    subject: Option<String>,
-    unrestricted: bool,
-}
-
-enum RuntimeSessionAuth {
-    Scoped(String),
-    ApiKey,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -3778,12 +3762,6 @@ fn title_from_content(content: &Value) -> Option<String> {
     normalize_title(Some(title)).map(|title| title.chars().take(80).collect())
 }
 
-enum StaticPathResolution {
-    Found(PathBuf),
-    Missing,
-    Forbidden,
-}
-
 async fn handle_chat_endpoint(
     mut stream: TcpStream,
     mut initial: Vec<u8>,
@@ -5390,452 +5368,6 @@ fn sse_headers() -> String {
     )
 }
 
-fn authorize(head: &RequestHead, config: &Config) -> Result<(), Vec<u8>> {
-    if auth_context(head, config).is_some() {
-        Ok(())
-    } else {
-        Err(json_response(
-            401,
-            &serde_json::json!({ "error": "Unauthorized" }),
-        ))
-    }
-}
-
-fn auth_context(head: &RequestHead, config: &Config) -> Option<AuthContext> {
-    let bearer = head
-        .headers
-        .get("authorization")
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .map(str::trim);
-    let header_key = head
-        .headers
-        .get("x-maestro-api-key")
-        .or_else(|| head.headers.get("x-composer-api-key"))
-        .map(String::as_str);
-
-    if header_auth_matches(config, bearer, header_key) {
-        return Some(AuthContext {
-            subject: None,
-            unrestricted: true,
-        });
-    }
-
-    if let Some(subject) = bearer.and_then(bearer_token_subject) {
-        return Some(AuthContext {
-            subject: Some(subject),
-            unrestricted: false,
-        });
-    }
-
-    if let Some(subject) = trusted_proxy_auth_subject(head) {
-        return Some(AuthContext {
-            subject: Some(subject),
-            unrestricted: false,
-        });
-    }
-
-    if let Some(session_auth) = runtime_session_cookie_auth(head, config) {
-        return Some(match session_auth {
-            RuntimeSessionAuth::ApiKey => AuthContext {
-                subject: None,
-                unrestricted: true,
-            },
-            RuntimeSessionAuth::Scoped(subject) => AuthContext {
-                subject: Some(subject),
-                unrestricted: false,
-            },
-        });
-    }
-
-    if !config.require_key && !auth_is_configured(config) {
-        return Some(AuthContext {
-            subject: None,
-            unrestricted: true,
-        });
-    }
-
-    None
-}
-
-fn header_auth_matches(config: &Config, bearer: Option<&str>, header_key: Option<&str>) -> bool {
-    config
-        .api_key
-        .as_deref()
-        .map(|expected| bearer == Some(expected) || header_key == Some(expected))
-        .unwrap_or(false)
-}
-
-fn runtime_session_cookie_auth(head: &RequestHead, config: &Config) -> Option<RuntimeSessionAuth> {
-    let provided = cookie_value(head, RUNTIME_SESSION_COOKIE_NAME)?;
-    let (encoded_subject, _signature) = provided.split_once('.')?;
-    let payload = String::from_utf8(URL_SAFE_NO_PAD.decode(encoded_subject).ok()?).ok()?;
-    let api_key_expected = runtime_session_api_key_cookie_value(config)?;
-    if constant_time_eq(provided.as_bytes(), api_key_expected.as_bytes()) {
-        return Some(RuntimeSessionAuth::ApiKey);
-    }
-    let expected = runtime_session_cookie_value(config, &payload)?;
-    constant_time_eq(provided.as_bytes(), expected.as_bytes())
-        .then_some(RuntimeSessionAuth::Scoped(payload))
-}
-
-fn cookie_value<'a>(head: &'a RequestHead, name: &str) -> Option<&'a str> {
-    let cookies = head.headers.get("cookie")?;
-    cookies.split(';').find_map(|cookie| {
-        let (cookie_name, value) = cookie.trim().split_once('=')?;
-        (cookie_name == name).then_some(value)
-    })
-}
-
-fn trusted_proxy_auth_subject(head: &RequestHead) -> Option<String> {
-    let expected_token = trimmed_env("MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN")?;
-    let provided_token = head
-        .headers
-        .get("x-maestro-proxy-auth")
-        .or_else(|| head.headers.get("x-composer-proxy-auth"))
-        .map(String::as_str)?;
-    if !constant_time_eq(provided_token.as_bytes(), expected_token.as_bytes()) {
-        return None;
-    }
-    [
-        "x-auth-request-email",
-        "x-forwarded-email",
-        "x-auth-request-user",
-    ]
-    .iter()
-    .find_map(|name| {
-        head.headers
-            .get(*name)
-            .and_then(|value| nonempty_str(value).map(str::to_string))
-    })
-}
-
-fn nonempty_str(value: &str) -> Option<&str> {
-    let value = value.trim();
-    (!value.is_empty()).then_some(value)
-}
-
-fn validate_csrf(head: &RequestHead, config: &Config) -> Result<(), Vec<u8>> {
-    if !csrf_applies(head) || !config.require_csrf {
-        return Ok(());
-    }
-    let Some(expected) = config.csrf_token.as_deref() else {
-        return Err(json_response(
-            403,
-            &serde_json::json!({
-                "error": "MAESTRO_WEB_CSRF_TOKEN is required for state-changing requests"
-            }),
-        ));
-    };
-    let provided = head
-        .headers
-        .get("x-composer-csrf")
-        .or_else(|| head.headers.get("x-maestro-csrf"))
-        .or_else(|| head.headers.get("x-csrf-token"))
-        .or_else(|| head.headers.get("x-xsrf-token"))
-        .map(String::as_str);
-    if provided
-        .map(|value| constant_time_eq(value.as_bytes(), expected.as_bytes()))
-        .unwrap_or(false)
-    {
-        Ok(())
-    } else {
-        Err(json_response(
-            403,
-            &serde_json::json!({ "error": "Forbidden: invalid CSRF token" }),
-        ))
-    }
-}
-
-fn csrf_applies(head: &RequestHead) -> bool {
-    head.path.starts_with("/api/") && !matches!(head.method.as_str(), "GET" | "HEAD" | "OPTIONS")
-}
-
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    let diff = left
-        .iter()
-        .zip(right.iter())
-        .fold(0_u8, |diff, (left, right)| diff | (left ^ right));
-    diff == 0
-}
-
-fn auth_is_configured(config: &Config) -> bool {
-    config.api_key.is_some()
-        || env::var("MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN")
-            .map(|value| !value.trim().is_empty())
-            .unwrap_or(false)
-        || env::var("MAESTRO_AUTH_SHARED_SECRET")
-            .map(|value| !value.trim().is_empty())
-            .unwrap_or(false)
-        || env::var("MAESTRO_JWT_SECRET")
-            .map(|value| !value.trim().is_empty())
-            .unwrap_or(false)
-        || env::var("MAESTRO_JWT_JWKS_URL")
-            .map(|value| !value.trim().is_empty())
-            .unwrap_or(false)
-}
-
-fn prod_profile() -> bool {
-    matches!(
-        env::var("MAESTRO_PROFILE")
-            .or_else(|_| env::var("MAESTRO_WEB_PROFILE"))
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "prod" | "production" | "secure" | "hardened"
-    )
-}
-
-fn bearer_token_subject(token: &str) -> Option<String> {
-    shared_bearer_subject(token).or_else(|| jwt_subject(token))
-}
-
-fn shared_bearer_subject(token: &str) -> Option<String> {
-    let Ok(secret) = env::var("MAESTRO_AUTH_SHARED_SECRET") else {
-        return None;
-    };
-    let secret = secret.trim();
-    if secret.is_empty() {
-        return None;
-    }
-    let (encoded_user, provided_signature) = token.split_once('.')?;
-    if provided_signature.contains('.') {
-        return None;
-    }
-    let Ok(user_bytes) = URL_SAFE_NO_PAD.decode(encoded_user) else {
-        return None;
-    };
-    let Ok(user_id) = String::from_utf8(user_bytes) else {
-        return None;
-    };
-    let expected = hmac_sha256_hex(secret.as_bytes(), user_id.as_bytes());
-    if secure_eq(provided_signature.as_bytes(), expected.as_bytes()) {
-        Some(user_id)
-    } else {
-        None
-    }
-}
-
-fn jwt_subject(token: &str) -> Option<String> {
-    match env::var("MAESTRO_JWT_ALG")
-        .ok()
-        .map(|alg| alg.trim().to_string())
-        .filter(|alg| !alg.is_empty())
-        .unwrap_or_else(|| "HS256".to_string())
-        .as_str()
-    {
-        "HS256" => hs256_jwt_subject(token),
-        "RS256" => jwks_jwt_subject(token, Algorithm::RS256),
-        "RS384" => jwks_jwt_subject(token, Algorithm::RS384),
-        "RS512" => jwks_jwt_subject(token, Algorithm::RS512),
-        _ => None,
-    }
-}
-
-fn hs256_jwt_subject(token: &str) -> Option<String> {
-    if env::var("MAESTRO_JWT_ALG")
-        .ok()
-        .map(|alg| alg != "HS256")
-        .unwrap_or(false)
-    {
-        return None;
-    }
-    let Ok(secret) = env::var("MAESTRO_JWT_SECRET") else {
-        return None;
-    };
-    let secret = secret.trim();
-    if secret.is_empty() {
-        return None;
-    }
-    let mut parts = token.split('.');
-    let (Some(header), Some(payload), Some(signature), None) =
-        (parts.next(), parts.next(), parts.next(), parts.next())
-    else {
-        return None;
-    };
-    let Ok(header_value) = URL_SAFE_NO_PAD
-        .decode(header)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .ok_or(())
-    else {
-        return None;
-    };
-    if header_value.get("alg").and_then(Value::as_str) != Some("HS256") {
-        return None;
-    }
-    let signed = format!("{header}.{payload}");
-    let expected = hmac_sha256_base64url(secret.as_bytes(), signed.as_bytes());
-    if !secure_eq(signature.as_bytes(), expected.as_bytes()) {
-        return None;
-    }
-    let Ok(payload_value) = URL_SAFE_NO_PAD
-        .decode(payload)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .ok_or(())
-    else {
-        return None;
-    };
-    let subject = payload_value
-        .get("sub")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|sub| !sub.is_empty())
-        .map(str::to_string)?;
-    let now_secs = now_millis() / 1000;
-    if payload_value
-        .get("exp")
-        .and_then(Value::as_u64)
-        .map(|exp| exp <= now_secs)
-        .unwrap_or(false)
-    {
-        return None;
-    }
-    if payload_value
-        .get("nbf")
-        .and_then(Value::as_u64)
-        .map(|nbf| nbf > now_secs)
-        .unwrap_or(false)
-    {
-        return None;
-    }
-    if let Ok(audience) = env::var("MAESTRO_JWT_AUD") {
-        if !jwt_claim_matches(&payload_value, "aud", audience.trim()) {
-            return None;
-        }
-    }
-    if let Ok(issuer) = env::var("MAESTRO_JWT_ISS") {
-        if !jwt_claim_matches(&payload_value, "iss", issuer.trim()) {
-            return None;
-        }
-    }
-    Some(subject)
-}
-
-fn jwks_jwt_subject(token: &str, algorithm: Algorithm) -> Option<String> {
-    let Ok(header) = decode_header(token) else {
-        return None;
-    };
-    if header.alg != algorithm {
-        return None;
-    }
-    let jwks = load_jwks()?;
-    let key = jwks
-        .keys
-        .iter()
-        .find(|key| {
-            header
-                .kid
-                .as_deref()
-                .map(|kid| key.common.key_id.as_deref() == Some(kid))
-                .unwrap_or(true)
-        })
-        .and_then(|key| DecodingKey::from_jwk(key).ok());
-    let key = key?;
-    let mut validation = Validation::new(algorithm);
-    if let Ok(audience) = env::var("MAESTRO_JWT_AUD") {
-        let audience = audience.trim().to_string();
-        if !audience.is_empty() {
-            validation.set_audience(&[audience]);
-        } else {
-            validation.validate_aud = false;
-        }
-    } else {
-        validation.validate_aud = false;
-    }
-    if let Ok(issuer) = env::var("MAESTRO_JWT_ISS") {
-        let issuer = issuer.trim().to_string();
-        if !issuer.is_empty() {
-            validation.set_issuer(&[issuer]);
-        }
-    }
-    let Ok(data) = decode::<Value>(token, &key, &validation) else {
-        return None;
-    };
-    data.claims
-        .get("sub")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|sub| !sub.is_empty())
-        .map(str::to_string)
-}
-
-fn load_jwks() -> Option<jsonwebtoken::jwk::JwkSet> {
-    if let Ok(raw) = env::var("MAESTRO_JWT_JWKS") {
-        return serde_json::from_str(raw.trim()).ok();
-    }
-    let url = env::var("MAESTRO_JWT_JWKS_URL").ok()?;
-    let url = url.trim();
-    if url.is_empty() {
-        return None;
-    }
-    // `reqwest::blocking` panics when used directly on a Tokio runtime thread.
-    let url = url.to_string();
-    if tokio::runtime::Handle::try_current().is_ok() {
-        return std::thread::spawn(move || fetch_jwks_from_url(&url))
-            .join()
-            .ok()
-            .flatten();
-    }
-    fetch_jwks_from_url(&url)
-}
-
-fn fetch_jwks_from_url(url: &str) -> Option<jsonwebtoken::jwk::JwkSet> {
-    reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()
-        .ok()?
-        .get(url)
-        .header("accept", "application/json")
-        .send()
-        .ok()?
-        .error_for_status()
-        .ok()?
-        .json()
-        .ok()
-}
-
-fn jwt_claim_matches(payload: &Value, claim: &str, expected: &str) -> bool {
-    if expected.is_empty() {
-        return true;
-    }
-    match payload.get(claim) {
-        Some(Value::String(value)) => value == expected,
-        Some(Value::Array(values)) => values.iter().any(|value| value.as_str() == Some(expected)),
-        _ => false,
-    }
-}
-
-fn hmac_sha256_base64url(secret: &[u8], payload: &[u8]) -> String {
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC accepts arbitrary key sizes");
-    mac.update(payload);
-    URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
-}
-
-fn hmac_sha256_hex(secret: &[u8], payload: &[u8]) -> String {
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC accepts arbitrary key sizes");
-    mac.update(payload);
-    mac.finalize()
-        .into_bytes()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
-}
-
-fn secure_eq(left: &[u8], right: &[u8]) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    left.iter()
-        .zip(right)
-        .fold(0u8, |acc, (left, right)| acc | (left ^ right))
-        == 0
-}
-
 async fn build_status_snapshot(state: &AppState) -> StatusSnapshot {
     let started = Instant::now();
     let cwd = state.config.cwd.clone();
@@ -6114,324 +5646,6 @@ async fn workspace_is_empty_for_onboarding(cwd: &Path) -> bool {
 
 async fn async_path_exists(path: PathBuf) -> bool {
     tokio::fs::metadata(path).await.is_ok()
-}
-
-fn is_static_asset_request(head: &RequestHead) -> bool {
-    matches!(head.method.as_str(), "GET" | "HEAD") && !head.path.starts_with("/api/")
-}
-
-fn is_runtime_config_request(head: &RequestHead) -> bool {
-    matches!(head.method.as_str(), "GET" | "HEAD") && head.path == RUNTIME_CONFIG_SCRIPT_PATH
-}
-
-fn runtime_config_response(head: &RequestHead, config: &Config) -> Vec<u8> {
-    let body = runtime_config_script(config);
-    if head.method == "HEAD" {
-        response_with_no_store_and_length(
-            200,
-            "application/javascript; charset=utf-8",
-            &[],
-            body.len(),
-        )
-    } else {
-        response_with_no_store(200, "application/javascript; charset=utf-8", &body)
-    }
-}
-
-fn runtime_config_script(config: &Config) -> Vec<u8> {
-    let csrf_token =
-        serde_json::to_string(&config.csrf_token).unwrap_or_else(|_| "null".to_string());
-    format!("delete window.__MAESTRO_API_KEY__;\nwindow.__MAESTRO_CSRF_TOKEN__ = {csrf_token};\n")
-        .into_bytes()
-}
-
-fn should_inject_runtime_config(config: &Config) -> bool {
-    config.api_key.is_some() || config.csrf_token.is_some()
-}
-
-fn spa_entry_body(bytes: &[u8], config: &Config) -> Vec<u8> {
-    if !should_inject_runtime_config(config) {
-        return bytes.to_vec();
-    }
-    let Ok(html) = std::str::from_utf8(bytes) else {
-        return bytes.to_vec();
-    };
-    if html.contains(RUNTIME_CONFIG_SCRIPT_PATH) {
-        return bytes.to_vec();
-    }
-    let Some(head_end) = html.find("</head>") else {
-        return bytes.to_vec();
-    };
-    let mut updated = String::with_capacity(html.len() + RUNTIME_CONFIG_SCRIPT_TAG.len() + 1);
-    updated.push_str(&html[..head_end]);
-    updated.push_str(RUNTIME_CONFIG_SCRIPT_TAG);
-    updated.push('\n');
-    updated.push_str(&html[head_end..]);
-    updated.into_bytes()
-}
-
-fn runtime_session_cookie_value(config: &Config, subject: &str) -> Option<String> {
-    runtime_session_cookie_value_for_payload(config, RUNTIME_SESSION_COOKIE_CONTEXT, subject)
-}
-
-fn runtime_session_api_key_cookie_value(config: &Config) -> Option<String> {
-    runtime_session_cookie_value_for_payload(
-        config,
-        RUNTIME_SESSION_API_KEY_COOKIE_CONTEXT,
-        "api-key",
-    )
-}
-
-fn runtime_session_cookie_value_for_payload(
-    config: &Config,
-    context: &[u8],
-    payload: &str,
-) -> Option<String> {
-    let api_key = config.api_key.as_deref()?;
-    let mut mac = Hmac::<Sha256>::new_from_slice(api_key.as_bytes()).ok()?;
-    mac.update(context);
-    mac.update(b":");
-    mac.update(payload.as_bytes());
-    let encoded_subject = URL_SAFE_NO_PAD.encode(payload.as_bytes());
-    let signature = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
-    Some(format!("{encoded_subject}.{signature}"))
-}
-
-fn request_is_secure(head: &RequestHead) -> bool {
-    let forwarded_proto = head
-        .headers
-        .get("x-forwarded-proto")
-        .and_then(|value| value.split(',').next())
-        .map(str::trim)
-        .is_some_and(|value| value.eq_ignore_ascii_case("https"));
-    let forwarded_scheme = head
-        .headers
-        .get("x-forwarded-scheme")
-        .map(String::as_str)
-        .is_some_and(|value| value.eq_ignore_ascii_case("https"));
-    let forwarded_ssl = head
-        .headers
-        .get("x-forwarded-ssl")
-        .map(String::as_str)
-        .is_some_and(|value| value.eq_ignore_ascii_case("on"));
-    forwarded_proto || forwarded_scheme || forwarded_ssl
-}
-
-fn is_loopback_listen_host(host: &str) -> bool {
-    let host = host.trim();
-    host.eq_ignore_ascii_case("localhost")
-        || host == "127.0.0.1"
-        || host == "::1"
-        || host == "[::1]"
-}
-
-fn spa_entry_session_cookie_value(head: &RequestHead, config: &Config) -> Option<String> {
-    let bearer = head
-        .headers
-        .get("authorization")
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .map(str::trim);
-    let header_key = head
-        .headers
-        .get("x-maestro-api-key")
-        .or_else(|| head.headers.get("x-composer-api-key"))
-        .map(String::as_str);
-    if header_auth_matches(config, bearer, header_key) {
-        return runtime_session_api_key_cookie_value(config);
-    }
-    if let Some(subject) = trusted_proxy_auth_subject(head) {
-        return runtime_session_cookie_value(config, &subject);
-    }
-    if config.api_key.is_some() && is_loopback_listen_host(&config.listen_host) {
-        return runtime_session_api_key_cookie_value(config);
-    }
-    None
-}
-
-fn spa_entry_extra_headers(head: &RequestHead, config: &Config) -> String {
-    let mut headers = "Cache-Control: no-store, no-cache, must-revalidate\r\n".to_string();
-    if let Some(cookie_value) = spa_entry_session_cookie_value(head, config) {
-        let secure = if request_is_secure(head) {
-            "; Secure"
-        } else {
-            ""
-        };
-        headers.push_str(&format!(
-            "Set-Cookie: {RUNTIME_SESSION_COOKIE_NAME}={cookie_value}; Path=/; HttpOnly; SameSite=Lax{secure}\r\n"
-        ));
-    }
-    headers
-}
-
-fn spa_entry_response(head: &RequestHead, mime: &str, body: &[u8], config: &Config) -> Vec<u8> {
-    let extra_headers = spa_entry_extra_headers(head, config);
-    if head.method == "HEAD" {
-        response_with_extra_headers_and_length(200, mime, &[], &extra_headers, body.len())
-    } else {
-        response_with_extra_headers_and_length(200, mime, body, &extra_headers, body.len())
-    }
-}
-
-async fn static_response(head: &RequestHead, config: &Config) -> Vec<u8> {
-    let Some(path) = resolve_static_path(&config.static_root, &head.path) else {
-        return json_response(403, &serde_json::json!({ "error": "Forbidden" }));
-    };
-
-    match canonical_static_path(&config.static_root, &path).await {
-        StaticPathResolution::Found(path) => match tokio::fs::read(&path).await {
-            Ok(bytes) => {
-                if is_spa_entry_path(&path) {
-                    let body = spa_entry_body(&bytes, config);
-                    spa_entry_response(head, mime_for_path(&path), &body, config)
-                } else if head.method == "HEAD" {
-                    response_with_cache_and_length(
-                        200,
-                        mime_for_path(&path),
-                        &[],
-                        config.static_cache_max_age,
-                        bytes.len(),
-                    )
-                } else {
-                    response_with_cache(
-                        200,
-                        mime_for_path(&path),
-                        &bytes,
-                        config.static_cache_max_age,
-                    )
-                }
-            }
-            Err(_) => json_response(
-                404,
-                &serde_json::json!({
-                    "error": "Not found",
-                    "staticRoot": config.static_root
-                }),
-            ),
-        },
-        StaticPathResolution::Forbidden => {
-            json_response(403, &serde_json::json!({ "error": "Forbidden" }))
-        }
-        StaticPathResolution::Missing => {
-            if !should_spa_fallback(head) {
-                return json_response(
-                    404,
-                    &serde_json::json!({
-                        "error": "Not found",
-                        "staticRoot": config.static_root
-                    }),
-                );
-            }
-            let index = config.static_root.join("index.html");
-            match canonical_static_path(&config.static_root, &index).await {
-                StaticPathResolution::Found(index) => match tokio::fs::read(&index).await {
-                    Ok(bytes) => {
-                        let body = spa_entry_body(&bytes, config);
-                        spa_entry_response(head, "text/html; charset=utf-8", &body, config)
-                    }
-                    Err(_) => json_response(
-                        404,
-                        &serde_json::json!({
-                            "error": "Not found",
-                            "staticRoot": config.static_root
-                        }),
-                    ),
-                },
-                StaticPathResolution::Forbidden => {
-                    json_response(403, &serde_json::json!({ "error": "Forbidden" }))
-                }
-                StaticPathResolution::Missing => json_response(
-                    404,
-                    &serde_json::json!({
-                        "error": "Not found",
-                        "staticRoot": config.static_root
-                    }),
-                ),
-            }
-        }
-    }
-}
-
-fn should_spa_fallback(head: &RequestHead) -> bool {
-    let trimmed = head.path.trim_end_matches('/');
-    let last_segment = trimmed.rsplit('/').next().unwrap_or_default();
-    !last_segment.contains('.')
-}
-
-async fn canonical_static_path(root: &Path, path: &Path) -> StaticPathResolution {
-    let Ok(canonical_root) = tokio::fs::canonicalize(root).await else {
-        return StaticPathResolution::Missing;
-    };
-    match tokio::fs::canonicalize(path).await {
-        Ok(canonical_path) if canonical_path.starts_with(&canonical_root) => {
-            StaticPathResolution::Found(canonical_path)
-        }
-        Ok(_) => StaticPathResolution::Forbidden,
-        Err(_) => StaticPathResolution::Missing,
-    }
-}
-
-fn resolve_static_path(root: &Path, request_path: &str) -> Option<PathBuf> {
-    let trimmed = request_path.trim_start_matches('/');
-    let mut relative = PathBuf::new();
-    if trimmed.is_empty() {
-        relative.push("index.html");
-    } else {
-        for component in Path::new(trimmed).components() {
-            match component {
-                Component::Normal(segment) => {
-                    if segment.to_string_lossy().contains('\\') {
-                        return None;
-                    }
-                    relative.push(segment);
-                }
-                _ => return None,
-            }
-        }
-    }
-
-    let candidate = root.join(&relative);
-    let Some(canonical_root) = root.canonicalize().ok() else {
-        return Some(candidate);
-    };
-    let existing = existing_static_ancestor(&candidate, root)?;
-    if !existing.canonicalize().ok()?.starts_with(&canonical_root) {
-        return None;
-    }
-    Some(candidate)
-}
-
-fn existing_static_ancestor<'a>(mut path: &'a Path, root: &'a Path) -> Option<&'a Path> {
-    loop {
-        if path.exists() {
-            return Some(path);
-        }
-        if path == root {
-            return None;
-        }
-        path = path.parent()?;
-    }
-}
-
-fn is_spa_entry_path(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.eq_ignore_ascii_case("index.html"))
-}
-
-fn mime_for_path(path: &Path) -> &'static str {
-    match path.extension().and_then(|extension| extension.to_str()) {
-        Some("html") => "text/html; charset=utf-8",
-        Some("js") => "application/javascript; charset=utf-8",
-        Some("css") => "text/css; charset=utf-8",
-        Some("json") => "application/json",
-        Some("svg") => "image/svg+xml",
-        Some("png") => "image/png",
-        Some("jpg" | "jpeg") => "image/jpeg",
-        Some("webp") => "image/webp",
-        Some("ico") => "image/x-icon",
-        Some("wasm") => "application/wasm",
-        _ => "application/octet-stream",
-    }
 }
 
 fn env_u16(name: &str, default: u16) -> u16 {
@@ -8266,7 +7480,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn loopback_api_key_web_first_load_mints_session_cookie() {
+    async fn loopback_api_key_web_first_load_requires_authenticated_cookie_issuer() {
         let root = TestDir::new("runtime-config-spa-loopback-api-key");
         fs::write(root.path().join("index.html"), "<html><head></head></html>")
             .expect("index should be written");
@@ -8283,10 +7497,7 @@ mod tests {
         let response = static_response(&head, &config).await;
         let response = String::from_utf8(response).expect("response should be utf-8");
 
-        assert!(response.contains(&format!(
-            "Set-Cookie: {RUNTIME_SESSION_COOKIE_NAME}={}; Path=/; HttpOnly; SameSite=Lax\r\n",
-            runtime_session_api_key_cookie_value(&config).expect("cookie should be available")
-        )));
+        assert!(!response.contains("Set-Cookie: maestro_web_session="));
     }
 
     #[tokio::test]

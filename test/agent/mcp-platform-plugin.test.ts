@@ -138,6 +138,25 @@ describe("platform MCP plugin servers", () => {
 		});
 	});
 
+	it("supports public EvalOps aliases for profile headers", () => {
+		process.env.MAESTRO_PLATFORM_MCP_URL =
+			"https://agent-mcp.evalops.example/mcp";
+		process.env.EVALOPS_ORGANIZATION_ID = "workspace-123";
+		process.env.EVALOPS_INTEGRATION_PROFILE = "mcp_only";
+		process.env.EVALOPS_MEMORY_MODE = "cerebro";
+		process.env.EVALOPS_RUNTIME_OWNER = "customer";
+		process.env.EVALOPS_SHIM_TYPE = "shim";
+		process.env.EVALOPS_TRACE_MODE = "mcp_events";
+
+		expect(getPlatformMcpPluginServers()[0]?.headers).toMatchObject({
+			"X-EvalOps-Integration-Profile": "mcp_only",
+			"X-EvalOps-Memory-Mode": "cerebro",
+			"X-EvalOps-Runtime-Owner": "customer",
+			"X-EvalOps-Shim-Type": "shim",
+			"X-EvalOps-Trace-Mode": "mcp_events",
+		});
+	});
+
 	it("keeps transport session evidence for existing MCP clients", () => {
 		process.env.MAESTRO_PLATFORM_MCP_URL =
 			"https://agent-mcp.evalops.example/mcp/";

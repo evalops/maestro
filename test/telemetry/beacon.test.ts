@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const fakeApiKey = (suffix: string): string => ["sk", suffix].join("-");
+
 describe("telemetry beacon", () => {
 	let tempDir: string;
 	let beaconFile: string;
@@ -38,8 +40,8 @@ describe("telemetry beacon", () => {
 			parameters: {
 				metadata: {
 					command: "interactive",
-					apiKey: "sk-test1234567890abcd",
-					summary: "token=sk-test1234567890abcd",
+					apiKey: fakeApiKey("test1234567890abcd"),
+					summary: `token=${fakeApiKey("test1234567890abcd")}`,
 				},
 				sensitiveMetadata: {
 					cookie: "session=secret-cookie",
@@ -81,11 +83,14 @@ describe("telemetry beacon", () => {
 			parameters: {
 				metadata: {
 					headers: {
-						authorization: "Bearer sk-test1234567890abcd",
+						authorization: `Bearer ${fakeApiKey("test1234567890abcd")}`,
 					},
 					items: [
 						{
-							token: "sk-item1234567890abcd",
+							token: fakeApiKey("item1234567890abcd"),
+						},
+						{
+							apiKey: fakeApiKey("second1234567890abcd"),
 						},
 					],
 				},
@@ -96,6 +101,10 @@ describe("telemetry beacon", () => {
 					items: [
 						{
 							cookie: "session=item-cookie",
+						},
+						null,
+						{
+							password: "pw",
 						},
 					],
 				},
@@ -120,7 +129,48 @@ describe("telemetry beacon", () => {
 					token: "[sensitive]",
 					cookie: "[sensitive]",
 				},
+				{
+					apiKey: "[sensitive]",
+				},
+				{
+					password: "[sensitive]",
+				},
 			],
+		});
+	});
+
+	it("keeps beacon emission safe when metadata contains cycles", async () => {
+		const { emitBeacon } = await import("../../src/telemetry/beacon.js");
+		const metadata: Record<string, unknown> = {
+			command: "interactive",
+		};
+		metadata.self = metadata;
+
+		await emitBeacon({
+			feature: "cli.startup",
+			action: "interactive",
+			timestamp: 1_772_000_000_000_000,
+			source: {
+				client: "cli",
+				clientVersion: "0.10.18",
+				surface: "cli",
+			},
+			parameters: {
+				metadata,
+			},
+		});
+
+		const [event] = JSON.parse((await readFile(beaconFile, "utf8")).trim()) as [
+			{
+				parameters?: {
+					metadata?: Record<string, unknown>;
+				};
+			},
+		];
+
+		expect(event.parameters?.metadata).toEqual({
+			command: "interactive",
+			self: "[circular]",
 		});
 	});
 

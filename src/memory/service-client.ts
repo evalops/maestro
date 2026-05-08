@@ -90,7 +90,7 @@ type ServiceTokenResponseBody = {
 	token?: string;
 };
 
-let memoryServiceTokenCache: CachedServiceToken | undefined;
+const memoryServiceTokenCache = new Map<string, CachedServiceToken>();
 
 function normalizeTopic(topic: string): string {
 	return topic.toLowerCase().trim();
@@ -296,10 +296,10 @@ function issueMemoryServiceTokenRequest(
 						reject(new Error("identity service token response missing token"));
 						return;
 					}
-					memoryServiceTokenCache = {
+					memoryServiceTokenCache.set(organizationId, {
 						token: parsed.token,
 						expiresAtMs: parseServiceTokenExpiresAt(parsed, ttlSeconds),
-					};
+					});
 					resolve(parsed.token);
 				} catch (error) {
 					reject(error);
@@ -319,8 +319,9 @@ async function resolveMemoryServiceToken(
 	if (!url) {
 		return undefined;
 	}
-	if (serviceTokenCacheValid(memoryServiceTokenCache)) {
-		return memoryServiceTokenCache?.token;
+	const cached = memoryServiceTokenCache.get(organizationId);
+	if (serviceTokenCacheValid(cached)) {
+		return cached?.token;
 	}
 
 	const bootstrapKey = resolveMemoryServiceTokenBootstrapKey();
@@ -419,7 +420,7 @@ async function resolveRemoteMemoryConfig(): Promise<RemoteMemoryConfig | null> {
 }
 
 export function resetMemoryServiceTokenCacheForTests(): void {
-	memoryServiceTokenCache = undefined;
+	memoryServiceTokenCache.clear();
 }
 
 function resolveRemoteScope(options?: {

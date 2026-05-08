@@ -4,7 +4,13 @@
  * Tests for the macOS Seatbelt and Linux Landlock sandbox implementations.
  */
 
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { platform } from "node:os";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -172,6 +178,37 @@ describe("Native Sandbox", () => {
 				try {
 					await expect(
 						sandbox.writeFile(outsidePath, "blocked"),
+					).rejects.toThrow(
+						"Cannot write outside writable roots in workspace-write sandbox mode",
+					);
+					expect(existsSync(outsidePath)).toBe(false);
+				} finally {
+					await sandbox.dispose();
+					rmSync(outsideDir, { recursive: true, force: true });
+				}
+			});
+
+			it("blocks parent-process writes through dangling symlinks outside writable roots", async () => {
+				const outsideDir = join(
+					tmpdir(),
+					`sandbox-dangling-target-${Date.now()}`,
+				);
+				mkdirSync(outsideDir, { recursive: true });
+				const outsidePath = join(outsideDir, "created-through-link.txt");
+				symlinkSync(outsidePath, join(testDir, "outside-link.txt"));
+				const sandbox = createNativeSandbox(
+					{
+						mode: "workspace-write",
+						excludeSlashTmp: true,
+						excludeTmpdir: true,
+					},
+					testDir,
+				);
+				await sandbox.initialize();
+
+				try {
+					await expect(
+						sandbox.writeFile("outside-link.txt", "blocked"),
 					).rejects.toThrow(
 						"Cannot write outside writable roots in workspace-write sandbox mode",
 					);
@@ -358,6 +395,36 @@ describe("Native Sandbox", () => {
 				expect(await sandbox.exists("to-delete.txt")).toBe(false);
 
 				await sandbox.dispose();
+			});
+
+			it("deletes workspace symlinks by link path without touching outside targets", async () => {
+				const outsideDir = join(
+					tmpdir(),
+					`sandbox-delete-link-target-${Date.now()}`,
+				);
+				mkdirSync(outsideDir, { recursive: true });
+				const outsidePath = join(outsideDir, "target.txt");
+				writeFileSync(outsidePath, "keep me", "utf-8");
+				const linkPath = join(testDir, "outside-link.txt");
+				symlinkSync(outsidePath, linkPath);
+				const sandbox = createNativeSandbox(
+					{
+						mode: "workspace-write",
+						excludeSlashTmp: true,
+						excludeTmpdir: true,
+					},
+					testDir,
+				);
+				await sandbox.initialize();
+
+				try {
+					await sandbox.delete("outside-link.txt");
+					expect(existsSync(linkPath)).toBe(false);
+					expect(existsSync(outsidePath)).toBe(true);
+				} finally {
+					await sandbox.dispose();
+					rmSync(outsideDir, { recursive: true, force: true });
+				}
 			});
 
 			it("blocks recursive deletes that would remove read-only git metadata", async () => {

@@ -503,4 +503,86 @@ describe("memory service client", () => {
 			`Bearer ${issuedMemoryToken}`,
 		]);
 	});
+
+	it("keys cached identity-issued memory service tokens by organization", async () => {
+		Reflect.deleteProperty(process.env, "MAESTRO_MEMORY_ACCESS_TOKEN");
+		process.env.MAESTRO_MEMORY_IDENTITY_SERVICE_TOKENS_URL =
+			"https://identity.test/identity.v1.TokenService/IssueServiceToken";
+		process.env.MAESTRO_MEMORY_IDENTITY_BOOTSTRAP_KEY = "bootstrap-key";
+
+		const tokenRequests: Array<{ organizationId: string }> = [];
+		const httpsRequest = vi.fn(
+			(
+				_url: URL,
+				_options: {
+					headers?: Record<string, string>;
+					method?: string;
+				},
+				callback: (response: PassThrough & { statusCode?: number }) => void,
+			) => {
+				let body = "";
+				const request = new EventEmitter() as EventEmitter & {
+					end: () => void;
+					write: (chunk: string) => void;
+				};
+				request.write = (chunk: string) => {
+					body += chunk;
+				};
+				request.end = () => {
+					const parsed = JSON.parse(body) as { organization_id: string };
+					tokenRequests.push({ organizationId: parsed.organization_id });
+					const response = new PassThrough() as PassThrough & {
+						statusCode?: number;
+					};
+					response.statusCode = 201;
+					callback(response);
+					response.end(
+						JSON.stringify({
+							token: `identity-token-${parsed.organization_id}`,
+							expires_at: "2099-01-01T00:00:00.000Z",
+						}),
+					);
+				};
+				return request;
+			},
+		);
+		vi.doMock("node:https", () => ({
+			request: httpsRequest,
+		}));
+
+		const authorizations: string[] = [];
+		const fetchMock = vi.fn(
+			async (_input: RequestInfo | URL, init?: RequestInit) => {
+				const headers = new Headers(init?.headers);
+				authorizations.push(headers.get("Authorization") ?? "");
+				return new Response(JSON.stringify({ memories: [], total: 0 }), {
+					status: 200,
+				});
+			},
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const {
+			recallRemoteDurableMemories,
+			resetMemoryServiceTokenCacheForTests,
+		} = await import("../../src/memory/service-client.js");
+		resetMemoryServiceTokenCacheForTests();
+
+		process.env.MAESTRO_EVALOPS_ORG_ID = "org_alpha";
+		await recallRemoteDurableMemories("focused prs", { limit: 1 });
+		process.env.MAESTRO_EVALOPS_ORG_ID = "org_beta";
+		await recallRemoteDurableMemories("focused prs", { limit: 1 });
+		process.env.MAESTRO_EVALOPS_ORG_ID = "org_alpha";
+		await recallRemoteDurableMemories("focused prs", { limit: 1 });
+
+		expect(tokenRequests).toEqual([
+			{ organizationId: "org_alpha" },
+			{ organizationId: "org_beta" },
+		]);
+		expect(authorizations).toEqual([
+			"Bearer identity-token-org_alpha",
+			"Bearer identity-token-org_beta",
+			"Bearer identity-token-org_alpha",
+		]);
+	});
 });

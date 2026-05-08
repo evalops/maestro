@@ -6,6 +6,7 @@ import {
 	trackToolBlocked,
 } from "../telemetry/security-events.js";
 import { createTool } from "../tools/tool-dsl.js";
+import { promptSafeText } from "../utils/prompt-safe-text.js";
 import { mcpManager } from "./manager.js";
 import type { McpToolCallResult } from "./manager.js";
 import { buildMcpToolName } from "./names.js";
@@ -286,18 +287,22 @@ function convertJsonSchemaToTypebox(schema: unknown): TSchema {
 
 	const s = schema as Record<string, unknown>;
 	const type = s.type as string | undefined;
+	const description =
+		typeof s.description === "string"
+			? (promptSafeText(s.description) ?? undefined)
+			: undefined;
 
 	switch (type) {
 		case "string":
-			return Type.String({ description: s.description as string | undefined });
+			return Type.String({ description });
 		case "number":
 		case "integer":
-			return Type.Number({ description: s.description as string | undefined });
+			return Type.Number({ description });
 		case "boolean":
-			return Type.Boolean({ description: s.description as string | undefined });
+			return Type.Boolean({ description });
 		case "array":
 			return Type.Array(convertJsonSchemaToTypebox(s.items), {
-				description: s.description as string | undefined,
+				description,
 			});
 		case "object": {
 			const properties = s.properties as Record<string, unknown> | undefined;
@@ -313,11 +318,11 @@ function convertJsonSchemaToTypebox(schema: unknown): TSchema {
 					: Type.Optional(converted);
 			}
 			return Type.Object(props, {
-				description: s.description as string | undefined,
+				description,
 			});
 		}
 		default:
-			return Type.Unknown({ description: s.description as string | undefined });
+			return Type.Unknown({ description });
 	}
 }
 
@@ -341,7 +346,8 @@ export function createMcpToolWrapper(serverName: string, mcpTool: McpTool) {
 		name: toolName,
 		label: `${serverName}/${mcpTool.name}`,
 		description:
-			mcpTool.description ?? `MCP tool from ${serverName}: ${mcpTool.name}`,
+			promptSafeText(mcpTool.description) ??
+			`MCP tool from ${serverName}: ${mcpTool.name}`,
 		schema,
 		annotations: mcpAnnotations
 			? {
@@ -659,9 +665,10 @@ export const getMcpPromptTool = createTool<
 		try {
 			const result = await mcpManager.getPrompt(server, name, args);
 			const lines: string[] = [`Prompt: ${name}`];
+			const description = promptSafeText(result.description);
 
-			if (result.description) {
-				lines.push(`Description: ${result.description}`);
+			if (description) {
+				lines.push(`Description: ${description}`);
 			}
 
 			if (result.messages.length === 0) {
@@ -679,7 +686,7 @@ export const getMcpPromptTool = createTool<
 			return respond.text(lines.join("\n").trimEnd()).detail({
 				server,
 				name,
-				description: result.description,
+				description: description ?? undefined,
 				messages: result.messages,
 			});
 		} catch (error) {

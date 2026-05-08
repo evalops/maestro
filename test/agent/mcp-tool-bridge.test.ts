@@ -1,5 +1,7 @@
+import type { Tool as McpTool } from "@modelcontextprotocol/sdk/types.js";
 import { Type } from "@sinclair/typebox";
 import { describe, expect, it } from "vitest";
+import { createMcpToolWrapper } from "../../src/mcp/tool-bridge.js";
 
 // Test the JSON Schema to TypeBox conversion logic
 // We can't easily test createMcpToolWrapper without mocking the MCP manager,
@@ -38,6 +40,28 @@ describe("MCP tool bridge schema conversion", () => {
 		expect(schema.type).toBe("object");
 		expect(schema.properties).toBeDefined();
 		expect(schema.properties?.name).toBeDefined();
+	});
+
+	it("normalizes model-facing MCP tool and schema descriptions", () => {
+		const tool = createMcpToolWrapper("test-server", {
+			name: "search",
+			description: "  Search\n\n\tacross   records  ",
+			inputSchema: {
+				type: "object",
+				description: "  Query\n\ninput  ",
+				properties: {
+					query: {
+						type: "string",
+						description: "  Search\nquery  ",
+					},
+				},
+				required: ["query"],
+			},
+		} satisfies McpTool);
+
+		expect(tool.description).toBe("Search across records");
+		expect(tool.parameters.description).toBe("Query input");
+		expect(tool.parameters.properties?.query?.description).toBe("Search query");
 	});
 });
 
