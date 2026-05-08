@@ -86,6 +86,15 @@ describe("resolvePlatformRuntimeConfig", () => {
 		expect(resolved?.organizationId).toBe("org_evalops");
 	});
 
+	it("accepts the enterprise organization id alias for Connect requests", () => {
+		const resolved = resolvePlatformRuntimeConfig({
+			SLACK_AGENT_PLATFORM_RUNTIME_URL: "https://platform.example",
+			MAESTRO_ENTERPRISE_ORG_ID: "org_enterprise",
+		});
+
+		expect(resolved?.organizationId).toBe("org_enterprise");
+	});
+
 	it("stays disabled without a Platform URL", () => {
 		expect(resolvePlatformRuntimeConfig({})).toBeNull();
 	});

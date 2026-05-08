@@ -16,9 +16,12 @@ import {
 } from "node:child_process";
 import {
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	readFileSync,
 	readdirSync,
+	readlinkSync,
+	realpathSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
@@ -272,22 +275,40 @@ function getWritableRootsWithCwd(
 function canonicalize(path: string): string {
 	// On macOS, /var is a symlink to /private/var
 	try {
-		const { realpathSync } = require("node:fs");
 		return realpathSync(path);
 	} catch {
 		return path;
 	}
 }
 
-function canonicalizeForAccess(path: string): string {
+function canonicalizeForAccess(path: string, seen = new Set<string>()): string {
 	const resolvedPath = resolve(path);
-	if (existsSync(resolvedPath)) {
-		return canonicalize(resolvedPath);
-	}
-
 	const missingSegments: string[] = [];
 	let existingParent = resolvedPath;
-	while (!existsSync(existingParent)) {
+
+	while (true) {
+		try {
+			const stat = lstatSync(existingParent);
+			if (stat.isSymbolicLink()) {
+				if (seen.has(existingParent)) {
+					return resolve(existingParent, ...missingSegments);
+				}
+				seen.add(existingParent);
+				const target = readlinkSync(existingParent);
+				const resolvedTarget = isAbsolute(target)
+					? target
+					: resolve(dirname(existingParent), target);
+				return resolve(
+					canonicalizeForAccess(resolvedTarget, seen),
+					...missingSegments,
+				);
+			}
+			return resolve(canonicalize(existingParent), ...missingSegments);
+		} catch {
+			// Keep walking upward. Unlike existsSync, lstatSync sees dangling
+			// symlinks, so writes through them are checked against their targets.
+		}
+
 		const parent = dirname(existingParent);
 		if (parent === existingParent) {
 			return resolvedPath;
@@ -295,8 +316,22 @@ function canonicalizeForAccess(path: string): string {
 		missingSegments.unshift(basename(existingParent));
 		existingParent = parent;
 	}
+}
 
-	return resolve(canonicalize(existingParent), ...missingSegments);
+function canonicalizeDirectoryEntryForAccess(path: string): string {
+	const resolvedPath = resolve(path);
+	return resolve(
+		canonicalizeForAccess(dirname(resolvedPath)),
+		basename(resolvedPath),
+	);
+}
+
+function isSymbolicLinkPath(path: string): boolean {
+	try {
+		return lstatSync(path).isSymbolicLink();
+	} catch {
+		return false;
+	}
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -620,8 +655,12 @@ export class NativeSandbox implements Sandbox {
 		}
 
 		const fullPath = this.resolvePath(path);
+		const canonicalizeTarget = isSymbolicLinkPath(fullPath)
+			? canonicalizeDirectoryEntryForAccess
+			: canonicalizeForAccess;
 		this.assertWritablePath(fullPath, {
 			blockReadOnlyDescendants: recursive ?? false,
+			canonicalizeTarget,
 		});
 		rmSync(fullPath, { recursive: recursive ?? false, force: true });
 	}
@@ -674,13 +713,18 @@ export class NativeSandbox implements Sandbox {
 
 	private assertWritablePath(
 		path: string,
-		options?: { blockReadOnlyDescendants?: boolean },
+		options?: {
+			blockReadOnlyDescendants?: boolean;
+			canonicalizeTarget?: (path: string) => string;
+		},
 	): void {
 		if (this.policy.mode === "danger-full-access") {
 			return;
 		}
 
-		const targetPath = canonicalizeForAccess(path);
+		const targetPath = (options?.canonicalizeTarget ?? canonicalizeForAccess)(
+			path,
+		);
 		const writableRoots = getWritableRootsWithCwd(this.policy, this.cwd);
 		let hasMatchingWritableRoot = false;
 		let blockedByReadOnlySubpath = false;

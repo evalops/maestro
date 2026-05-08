@@ -161,6 +161,37 @@ describe("permission profiles", () => {
 		});
 	});
 
+	it("canonicalizes special tmp paths when intersecting concrete temp paths", () => {
+		const tmpPath = realpathSync("/tmp");
+		const tmpChild = join(tmpPath, "maestro-permission-profile-child");
+
+		const intersection = intersectPermissionProfiles(
+			{
+				fileSystem: {
+					entries: [
+						{ path: { kind: "path", path: tmpChild }, access: "read-write" },
+					],
+				},
+			},
+			{
+				fileSystem: {
+					entries: [
+						{
+							path: { kind: "special", value: "tmp" },
+							access: "read-write",
+						},
+					],
+				},
+			},
+			{ cwd },
+		);
+
+		expect(intersection.fileSystem?.entries).toContainEqual({
+			path: { kind: "path", path: tmpChild },
+			access: "read-write",
+		});
+	});
+
 	it("intersects to the narrower path and least privileged access", () => {
 		const nestedRoot = join(extraRoot, "nested");
 		mkdirSync(nestedRoot, { recursive: true });

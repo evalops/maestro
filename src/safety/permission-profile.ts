@@ -121,7 +121,7 @@ function resolveSpecialPath(
 		case "workspace":
 			return normalizeConcretePath(cwd, cwd);
 		case "tmp":
-			return "/tmp";
+			return normalizeConcretePath("/tmp", cwd);
 		case "tmpdir":
 			return process.env.TMPDIR
 				? normalizeConcretePath(process.env.TMPDIR, cwd)

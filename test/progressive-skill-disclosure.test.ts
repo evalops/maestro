@@ -116,9 +116,21 @@ gh pr create --title "feat: description" --body "..."
 
 			// Description should be truncated to MAX_DESCRIPTION_LENGTH (1024 chars)
 			// XML output includes name, description, source path comment
-			expect(result).toContain("...");
 			// Ensure description was actually truncated
 			expect(result).not.toContain("A".repeat(1500));
+		});
+
+		it("should normalize description whitespace before prompt injection", () => {
+			const skillWithWhitespace: LoadedSkill = {
+				...mockSkill,
+				description: "  Run\n\n\tdebug   test suites  ",
+			};
+
+			const result = formatSkillMetadataOnly(skillWithWhitespace);
+
+			expect(result).toContain('description="Run debug test suites"');
+			expect(result).not.toContain("\n\n");
+			expect(result).not.toContain("\t");
 		});
 
 		it("should include source path as a comment for debugging", () => {

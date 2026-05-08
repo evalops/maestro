@@ -180,6 +180,27 @@ describe("managed EvalOps context", () => {
 		).toBe("org_gateway");
 	});
 
+	it("uses public EvalOps aliases for managed profile metadata", () => {
+		const context = resolveManagedEvalOpsContext({
+			MAESTRO_EVALOPS_ACCESS_TOKEN: "evalops-token",
+			MAESTRO_REMOTE_RUNNER_ORG_ID: "org_remote",
+			MAESTRO_REMOTE_RUNNER_WORKSPACE_ID: "workspace_remote",
+			MAESTRO_AGENT_RUN_ID: "run_remote",
+			EVALOPS_INTEGRATION_PROFILE: "mcp_only",
+			EVALOPS_MEMORY_MODE: "cerebro",
+			EVALOPS_RUNTIME_OWNER: "customer",
+			EVALOPS_SHIM_TYPE: "shim",
+			EVALOPS_TRACE_MODE: "mcp_events",
+		});
+
+		expect(context.managed).toBe(true);
+		expect(context.integrationProfile).toBe("mcp_only");
+		expect(context.memoryMode).toBe("cerebro");
+		expect(context.runtimeOwner).toBe("customer");
+		expect(context.shimType).toBe("shim");
+		expect(context.traceMode).toBe("mcp_events");
+	});
+
 	it("requires an agent session before treating env auth as managed", () => {
 		const loginOnlyContext = resolveManagedEvalOpsContext({
 			MAESTRO_EVALOPS_ACCESS_TOKEN: "evalops-token",

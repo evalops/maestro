@@ -355,8 +355,50 @@ export class ServerRequestManager {
 		if (!entry || entry.kind === "approval" || entry.kind === "tool_retry") {
 			return false;
 		}
-		const request = this.toSnapshot(entry);
+		const clientEntry = entry as ClientToolRequestEntry;
+		const request = this.toSnapshot(
+			clientEntry,
+		) as ClaimedClientToolRequest["request"];
 		this.pending.delete(id);
+		return this.resolveClientToolEntry(clientEntry, request, content, isError);
+	}
+
+	claimClientTool(id: string): ClaimedClientToolRequest | undefined {
+		const entry = this.pending.get(id);
+		if (!entry || entry.kind === "approval" || entry.kind === "tool_retry") {
+			return undefined;
+		}
+		const clientEntry = entry as ClientToolRequestEntry;
+		const request = this.toSnapshot(
+			clientEntry,
+		) as ClaimedClientToolRequest["request"];
+		this.pending.delete(id);
+		let claimed = true;
+		return {
+			request,
+			resolve: (content, isError) => {
+				if (!claimed) {
+					return false;
+				}
+				claimed = false;
+				return this.resolveClientToolEntry(
+					clientEntry,
+					request,
+					content,
+					isError,
+				);
+			},
+		};
+	}
+
+	private resolveClientToolEntry(
+		entry: ClientToolRequestEntry,
+		request: PendingServerRequestSnapshot & {
+			kind: "client_tool" | "mcp_elicitation" | "user_input";
+		},
+		content: ToolResultContent[],
+		isError: boolean,
+	): boolean {
 		const resolvedAtMs = Date.now();
 		const handled = entry.resolve(content, isError);
 		if (handled) {
@@ -380,51 +422,6 @@ export class ServerRequestManager {
 			});
 		}
 		return handled;
-	}
-
-	claimClientTool(id: string): ClaimedClientToolRequest | undefined {
-		const entry = this.pending.get(id);
-		if (!entry || entry.kind === "approval" || entry.kind === "tool_retry") {
-			return undefined;
-		}
-		const request = this.toSnapshot(
-			entry,
-		) as ClaimedClientToolRequest["request"];
-		this.pending.delete(id);
-		let claimed = true;
-		return {
-			request,
-			resolve: (content, isError) => {
-				if (!claimed) {
-					return false;
-				}
-				claimed = false;
-				const resolvedAtMs = Date.now();
-				const handled = entry.resolve(content, isError);
-				if (handled) {
-					this.emit({
-						type: "resolved",
-						request,
-						resolution: isError
-							? "failed"
-							: request.kind === "user_input" ||
-									request.kind === "mcp_elicitation"
-								? "answered"
-								: "completed",
-						reason: isError
-							? request.kind === "user_input"
-								? "User input request reported an error"
-								: request.kind === "mcp_elicitation"
-									? "MCP elicitation request reported an error"
-									: "Client tool result reported an error"
-							: undefined,
-						resolvedBy: "client",
-						resolvedAtMs,
-					});
-				}
-				return handled;
-			},
-		};
 	}
 
 	cancel(

@@ -25,7 +25,12 @@ describe("CLI command telemetry aggregator", () => {
 		vi.resetModules();
 		vi.restoreAllMocks();
 		vi.unstubAllEnvs();
-		await rm(tempDir, { recursive: true, force: true });
+		await rm(tempDir, {
+			recursive: true,
+			force: true,
+			maxRetries: 5,
+			retryDelay: 25,
+		});
 	});
 
 	it("flushes repeated command submissions as one counted beacon event", async () => {
@@ -299,6 +304,16 @@ describe("CLI command telemetry aggregator", () => {
 			"cli.command.second": 1,
 		});
 		expect(disposeSpy).toHaveBeenCalledTimes(1);
+		const disposeResults = disposeSpy.mock.results
+			.map((result) => result.value)
+			.filter(
+				(value): value is Promise<unknown> =>
+					typeof value === "object" &&
+					value !== null &&
+					"then" in value &&
+					typeof value.then === "function",
+			);
+		await Promise.allSettled(disposeResults);
 	});
 
 	it("classifies early-exit flags before parsed subcommands", async () => {
