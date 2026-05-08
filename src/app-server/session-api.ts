@@ -576,7 +576,9 @@ export function createMaestroAppServerSessionApi(
 			store.setSessionTags,
 	);
 	const canSetThreadName = Boolean(store.setSessionTitle);
-	const canWriteThreadGoals = Boolean(store.setSessionAppServerGoal);
+	const canUseThreadGoals = Boolean(
+		store.setSessionAppServerGoal && store.loadEntries,
+	);
 
 	return {
 		initialize() {
@@ -593,7 +595,7 @@ export function createMaestroAppServerSessionApi(
 					threadRead: true,
 					threadMetadataUpdate: canUpdateThreadMetadata,
 					threadNameSet: canSetThreadName,
-					threadGoals: canWriteThreadGoals,
+					threadGoals: canUseThreadGoals,
 					turnsList: true,
 				},
 			};

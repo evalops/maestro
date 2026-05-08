@@ -202,6 +202,22 @@ describe("Maestro app-server session API", () => {
 		expect(Value.Check(MaestroAppServerResponseSchema, response)).toBe(true);
 	});
 
+	it("does not advertise thread goals without a durable goal read path", () => {
+		const api = createMaestroAppServerSessionApi({
+			loadAllSessions: () => [],
+			listSessions: async () => [],
+			loadSession: async () => null,
+			getSessionFileById: (sessionId) => `db:${sessionId}`,
+			setSessionAppServerGoal: () => {},
+		});
+
+		expect(api.initialize()).toMatchObject({
+			capabilities: {
+				threadGoals: false,
+			},
+		});
+	});
+
 	it("lists models and provider capabilities through the app-server contract", async () => {
 		const api = createMaestroAppServerSessionApi(createSessionManager());
 
@@ -873,6 +889,12 @@ describe("Maestro app-server session API", () => {
 				if (sessionRef === "db:hosted-goal-thread") {
 					storedGoal = goal;
 				}
+			},
+		});
+
+		expect(api.initialize()).toMatchObject({
+			capabilities: {
+				threadGoals: true,
 			},
 		});
 

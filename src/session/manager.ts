@@ -1178,6 +1178,14 @@ export class SessionManager {
 		return this.catalog.getSessionFileById(sessionId);
 	}
 
+	async loadEntries(sessionId: string): Promise<SessionEntry[] | null> {
+		const sessionFile = this.getSessionFileById(sessionId);
+		if (!sessionFile) {
+			return null;
+		}
+		return safeReadSessionEntries(sessionFile);
+	}
+
 	/**
 	 * Set the session file to an existing session
 	 */
