@@ -443,6 +443,37 @@ function latestGoalFromEntries(
 	return goal;
 }
 
+function goalsEqual(
+	actual: MaestroAppServerThreadGoal | null,
+	expected: MaestroAppServerThreadGoal | null,
+): boolean {
+	if (actual === null || expected === null) {
+		return actual === expected;
+	}
+	return (
+		actual.objective === expected.objective &&
+		actual.status === expected.status &&
+		actual.tokenBudget === expected.tokenBudget &&
+		actual.createdAt === expected.createdAt &&
+		actual.updatedAt === expected.updatedAt
+	);
+}
+
+async function verifyThreadGoalPersisted(
+	store: SessionStore,
+	threadId: string,
+	expected: MaestroAppServerThreadGoal | null,
+): Promise<MaestroAppServerThreadGoal | null> {
+	const persisted = await loadThreadGoal(store, threadId);
+	if (!goalsEqual(persisted, expected)) {
+		throw new MaestroAppServerError(
+			-32000,
+			"Thread goal update was not persisted",
+		);
+	}
+	return persisted;
+}
+
 function normalizeGoalStatus(
 	value: unknown,
 ): MaestroAppServerThreadGoal["status"] {
@@ -770,7 +801,10 @@ export function createMaestroAppServerSessionApi(
 			}
 			await store.setSessionAppServerGoal(sessionFile, goal);
 			await flushSessionWrites(store);
-			return { threadId, goal };
+			return {
+				threadId,
+				goal: await verifyThreadGoalPersisted(store, threadId, goal),
+			};
 		},
 
 		async clearThreadGoal(params = {}) {
@@ -784,6 +818,7 @@ export function createMaestroAppServerSessionApi(
 			}
 			await store.setSessionAppServerGoal(sessionFile, null);
 			await flushSessionWrites(store);
+			await verifyThreadGoalPersisted(store, threadId, null);
 			return { threadId, goal: null };
 		},
 

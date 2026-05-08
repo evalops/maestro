@@ -858,6 +858,16 @@ describe("Maestro app-server session API", () => {
 						}
 					: null,
 			getSessionFileById: (sessionId) => `db:${sessionId}`,
+			loadEntries: async (sessionId) =>
+				sessionId === "hosted-goal-thread" && storedGoal !== undefined
+					? [
+							{
+								type: "session_meta",
+								timestamp: "2026-01-01T00:00:00.000Z",
+								appServerGoal: storedGoal,
+							} as SessionEntry,
+						]
+					: [],
 			setSessionAppServerGoal: async (sessionRef, goal) => {
 				await Promise.resolve();
 				if (sessionRef === "db:hosted-goal-thread") {
@@ -888,6 +898,43 @@ describe("Maestro app-server session API", () => {
 			status: "active",
 		});
 		expect(Value.Check(MaestroAppServerResponseSchema, response)).toBe(true);
+	});
+
+	it("fails goal updates when the writer does not persist the new goal", async () => {
+		const api = createMaestroAppServerSessionApi({
+			loadAllSessions: () => [],
+			listSessions: async () => [],
+			loadSession: async (sessionId, options = {}) =>
+				sessionId === "stale-goal-thread"
+					? {
+							id: sessionId,
+							title: "Stale goal thread",
+							createdAt: "2026-01-01T00:00:00.000Z",
+							updatedAt: "2026-01-01T00:00:00.000Z",
+							messageCount: 1,
+							favorite: false,
+							messagesView: options.messagesView ?? "notLoaded",
+						}
+					: null,
+			getSessionFileById: (sessionId) => `db:${sessionId}`,
+			loadEntries: async () => [],
+			setSessionAppServerGoal: () => {},
+		});
+
+		const response = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "stale-goal-set",
+			method: "thread/goal/set",
+			params: {
+				threadId: "stale-goal-thread",
+				objective: "This must be durable",
+			},
+		});
+
+		expect(response.error).toMatchObject({
+			code: -32000,
+			message: "Thread goal update was not persisted",
+		});
 	});
 
 	it("validates hosted thread existence before clearing goals", async () => {
