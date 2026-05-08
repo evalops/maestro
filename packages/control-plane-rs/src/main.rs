@@ -7479,6 +7479,171 @@ mod tests {
         }
     }
 
+    #[test]
+    fn web_auth_mode_matrix_pins_control_plane_access() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let preserved_env: Vec<_> = [
+            "MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN",
+            "MAESTRO_AUTH_SHARED_SECRET",
+            "MAESTRO_JWT_SECRET",
+            "MAESTRO_JWT_JWKS_URL",
+        ]
+        .iter()
+        .map(|name| (*name, env::var_os(name)))
+        .collect();
+        for (name, _) in &preserved_env {
+            env::remove_var(name);
+        }
+
+        let api_key_config = auth_test_config();
+        let mut open_dev_config = auth_test_config();
+        open_dev_config.api_key = None;
+        open_dev_config.require_key = false;
+        let scoped_cookie = runtime_session_cookie_value(&api_key_config, "web-user")
+            .expect("scoped cookie should be available");
+        let api_key_cookie = runtime_session_api_key_cookie_value(&api_key_config)
+            .expect("api-key cookie should be available");
+
+        struct AuthMatrixCase {
+            name: &'static str,
+            config: Config,
+            headers: HashMap<String, String>,
+            expected_subject: Option<&'static str>,
+            expected_unrestricted: Option<bool>,
+        }
+
+        let cases = vec![
+            AuthMatrixCase {
+                name: "open local dev when no auth is configured",
+                config: open_dev_config.clone(),
+                headers: HashMap::new(),
+                expected_subject: None,
+                expected_unrestricted: Some(true),
+            },
+            AuthMatrixCase {
+                name: "api key configured rejects anonymous requests",
+                config: api_key_config.clone(),
+                headers: HashMap::new(),
+                expected_subject: None,
+                expected_unrestricted: None,
+            },
+            AuthMatrixCase {
+                name: "api key header grants unrestricted loopback access",
+                config: api_key_config.clone(),
+                headers: HashMap::from([("x-maestro-api-key".to_string(), "api-key".to_string())]),
+                expected_subject: None,
+                expected_unrestricted: Some(true),
+            },
+            AuthMatrixCase {
+                name: "bearer api key grants unrestricted loopback access",
+                config: api_key_config.clone(),
+                headers: HashMap::from([(
+                    "authorization".to_string(),
+                    "Bearer api-key".to_string(),
+                )]),
+                expected_subject: None,
+                expected_unrestricted: Some(true),
+            },
+            AuthMatrixCase {
+                name: "scoped runtime session cookie stays subject-scoped",
+                config: api_key_config.clone(),
+                headers: HashMap::from([(
+                    "cookie".to_string(),
+                    format!("{RUNTIME_SESSION_COOKIE_NAME}={scoped_cookie}"),
+                )]),
+                expected_subject: Some("web-user"),
+                expected_unrestricted: Some(false),
+            },
+            AuthMatrixCase {
+                name: "legacy api-key runtime session cookie stays unrestricted",
+                config: api_key_config.clone(),
+                headers: HashMap::from([(
+                    "cookie".to_string(),
+                    format!("{RUNTIME_SESSION_COOKIE_NAME}={api_key_cookie}"),
+                )]),
+                expected_subject: None,
+                expected_unrestricted: Some(true),
+            },
+        ];
+
+        for case in cases {
+            let head = RequestHead {
+                method: "GET".to_string(),
+                path: "/api/status".to_string(),
+                query: HashMap::new(),
+                headers: case.headers,
+            };
+            let context = auth_context(&head, &case.config);
+            match case.expected_unrestricted {
+                Some(unrestricted) => {
+                    let context = context.unwrap_or_else(|| {
+                        panic!("{} should authorize", case.name);
+                    });
+                    assert_eq!(
+                        context.subject.as_deref(),
+                        case.expected_subject,
+                        "{} subject",
+                        case.name
+                    );
+                    assert_eq!(
+                        context.unrestricted, unrestricted,
+                        "{} unrestricted",
+                        case.name
+                    );
+                }
+                None => assert!(context.is_none(), "{} should reject", case.name),
+            }
+        }
+
+        env::set_var("MAESTRO_AUTH_SHARED_SECRET", "shared-secret");
+        let bearer_user = "bearer-user";
+        let signature = hmac_sha256_hex(b"shared-secret", bearer_user.as_bytes());
+        let bearer = format!("{}.{}", URL_SAFE_NO_PAD.encode(bearer_user), signature);
+        let bearer_head = RequestHead {
+            method: "GET".to_string(),
+            path: "/api/status".to_string(),
+            query: HashMap::new(),
+            headers: HashMap::from([("authorization".to_string(), format!("Bearer {bearer}"))]),
+        };
+        let bearer_context =
+            auth_context(&bearer_head, &open_dev_config).expect("bearer should authorize");
+        assert_eq!(bearer_context.subject.as_deref(), Some(bearer_user));
+        assert!(!bearer_context.unrestricted);
+
+        env::remove_var("MAESTRO_AUTH_SHARED_SECRET");
+        env::set_var("MAESTRO_WEB_TRUST_PROXY_AUTH_TOKEN", "proxy-secret");
+        let proxy_head = RequestHead {
+            method: "GET".to_string(),
+            path: "/api/status".to_string(),
+            query: HashMap::new(),
+            headers: HashMap::from([
+                (
+                    "x-auth-request-email".to_string(),
+                    "proxy-user@evalops.dev".to_string(),
+                ),
+                (
+                    "x-maestro-proxy-auth".to_string(),
+                    "proxy-secret".to_string(),
+                ),
+            ]),
+        };
+        let proxy_context =
+            auth_context(&proxy_head, &open_dev_config).expect("proxy should authorize");
+        assert_eq!(
+            proxy_context.subject.as_deref(),
+            Some("proxy-user@evalops.dev")
+        );
+        assert!(!proxy_context.unrestricted);
+
+        for (name, value) in preserved_env {
+            if let Some(value) = value {
+                env::set_var(name, value);
+            } else {
+                env::remove_var(name);
+            }
+        }
+    }
+
     #[tokio::test]
     async fn loopback_api_key_web_first_load_requires_authenticated_cookie_issuer() {
         let root = TestDir::new("runtime-config-spa-loopback-api-key");

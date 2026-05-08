@@ -51,6 +51,10 @@
  * @module providers/auth
  */
 
+import {
+	EVALOPS_ORGANIZATION_ID_ENV_VARS,
+	readEvalOpsEnv,
+} from "../evalops/env-aliases.js";
 import { getOAuthToken } from "../oauth/index.js";
 import { loadOAuthCredentials } from "../oauth/storage.js";
 import { lookupApiKey } from "./api-keys.js";
@@ -181,17 +185,7 @@ function resolveEvalOpsOrganizationId(
 	if (candidate && candidate.trim().length > 0) {
 		return candidate.trim();
 	}
-	for (const envVar of [
-		"MAESTRO_EVALOPS_ORG_ID",
-		"EVALOPS_ORGANIZATION_ID",
-		"MAESTRO_ENTERPRISE_ORG_ID",
-	]) {
-		const value = process.env[envVar]?.trim();
-		if (value) {
-			return value;
-		}
-	}
-	return undefined;
+	return readEvalOpsEnv(process.env, EVALOPS_ORGANIZATION_ID_ENV_VARS);
 }
 
 function resolveEvalOpsProviderRef(

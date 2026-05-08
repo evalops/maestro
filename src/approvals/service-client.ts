@@ -3,6 +3,11 @@ import type {
 	ActionApprovalDecision,
 	ActionApprovalRequest,
 } from "../agent/action-approval.js";
+import {
+	EVALOPS_ACCESS_TOKEN_ENV_VARS,
+	EVALOPS_ORGANIZATION_ID_ENV_VARS,
+	EVALOPS_WORKSPACE_ID_ENV_VARS,
+} from "../evalops/env-aliases.js";
 import { loadOAuthCredentials } from "../oauth/storage.js";
 import { CONNECT_PROTOCOL_VERSION } from "../platform/client.js";
 import {
@@ -154,11 +159,8 @@ function resolveWorkspaceId(
 	const envWorkspaceId = getEnvValue([
 		"APPROVALS_SERVICE_WORKSPACE_ID",
 		"MAESTRO_APPROVALS_WORKSPACE_ID",
-		"MAESTRO_EVALOPS_WORKSPACE_ID",
-		"MAESTRO_WORKSPACE_ID",
-		"MAESTRO_EVALOPS_ORG_ID",
-		"EVALOPS_ORGANIZATION_ID",
-		"MAESTRO_ENTERPRISE_ORG_ID",
+		...EVALOPS_WORKSPACE_ID_ENV_VARS,
+		...EVALOPS_ORGANIZATION_ID_ENV_VARS,
 	]);
 	if (configuredWorkspaceId ?? envWorkspaceId) {
 		return configuredWorkspaceId ?? envWorkspaceId;
@@ -200,8 +202,7 @@ export function resolveApprovalsServiceConfig(
 		getEnvValue([
 			"APPROVALS_SERVICE_TOKEN",
 			"MAESTRO_APPROVALS_SERVICE_TOKEN",
-			"MAESTRO_EVALOPS_ACCESS_TOKEN",
-			"EVALOPS_TOKEN",
+			...EVALOPS_ACCESS_TOKEN_ENV_VARS,
 		]) ??
 		storedToken;
 

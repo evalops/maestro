@@ -4,6 +4,7 @@ import {
 	type ServerResponse,
 	createServer,
 } from "node:http";
+import { EVALOPS_ORGANIZATION_ID_ENV_VARS } from "../evalops/env-aliases.js";
 import { PLATFORM_HTTP_ROUTES } from "../platform/core-services.js";
 import { fetchDownstream } from "../utils/downstream-http.js";
 import { createLogger } from "../utils/logger.js";
@@ -112,7 +113,7 @@ export interface EvalOpsDelegationTokenResult {
 	tokenType: string;
 }
 
-function getEnvValue(names: string[]): string | undefined {
+function getEnvValue(names: readonly string[]): string | undefined {
 	for (const name of names) {
 		const value = process.env[name]?.trim();
 		if (value) {
@@ -184,11 +185,7 @@ function fetchIdentity(
 }
 
 function getConfiguredOrganizationId(): string | undefined {
-	const organizationId = getEnvValue([
-		"MAESTRO_EVALOPS_ORG_ID",
-		"EVALOPS_ORGANIZATION_ID",
-		"MAESTRO_ENTERPRISE_ORG_ID",
-	]);
+	const organizationId = getEnvValue(EVALOPS_ORGANIZATION_ID_ENV_VARS);
 	return organizationId;
 }
 
