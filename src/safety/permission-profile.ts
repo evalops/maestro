@@ -157,13 +157,6 @@ function isPathWithin(child: string, parent: string): boolean {
 	return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
 }
 
-function accessCovers(
-	requested: FileSystemAccessMode,
-	granted: FileSystemAccessMode,
-): boolean {
-	return ACCESS_RANK[requested] >= ACCESS_RANK[granted];
-}
-
 function constrainAccess(
 	requested: FileSystemAccessMode,
 	granted: FileSystemAccessMode,
@@ -293,8 +286,7 @@ export function intersectPermissionProfiles(
 			}
 
 			if (
-				isPathWithin(grantedPath, requestedPath) &&
-				accessCovers(requestedEntry.access, grantedEntry.access)
+				isPathWithin(grantedPath, requestedPath)
 			) {
 				acceptedEntries.push({
 					path: grantedEntry.path,

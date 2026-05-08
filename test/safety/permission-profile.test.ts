@@ -161,6 +161,33 @@ describe("permission profiles", () => {
 		});
 	});
 
+	it("keeps matching paths when granted access is broader than requested", () => {
+		const intersection = intersectPermissionProfiles(
+			{
+				fileSystem: {
+					entries: [
+						{
+							path: { kind: "special", value: "workspace" },
+							access: "read-only",
+						},
+					],
+				},
+			},
+			{
+				fileSystem: {
+					entries: [
+						{ path: { kind: "path", path: extraRoot }, access: "read-write" },
+					],
+				},
+			},
+			{ cwd },
+		);
+
+		expect(intersection.fileSystem?.entries).toEqual([
+			{ path: { kind: "path", path: extraRoot }, access: "read-only" },
+		]);
+	});
+
 	it("converts native sandbox policy to a profile", () => {
 		const profile = permissionProfileFromNativeSandboxPolicy(
 			{
