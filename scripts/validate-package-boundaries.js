@@ -1,24 +1,18 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import {
+	dirname,
+	extname,
+	isAbsolute,
+	join,
+	relative,
+	resolve,
+	sep,
+} from "node:path";
+import { pathToFileURL } from "node:url";
 import { fileURLToPath } from "node:url";
 import * as ts from "typescript";
 
 const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
-const packagesDir = join(repoRoot, "packages");
-const allowedOutside = [
-	{
-		filePrefix: join(packagesDir, "ai", "src") + sep,
-		allowedPrefixes: [join(repoRoot, "src") + sep],
-	},
-	{
-		filePrefix: join(packagesDir, "core", "src") + sep,
-		allowedPrefixes: [join(repoRoot, "src") + sep],
-	},
-	{
-		filePrefix: join(packagesDir, "governance", "src") + sep,
-		allowedPrefixes: [join(repoRoot, "src") + sep],
-	},
-];
 
 const sourceExtensions = new Set([".ts", ".tsx", ".js", ".jsx"]);
 const ignoredDirs = new Set(["dist", "node_modules", ".external"]);
@@ -28,7 +22,11 @@ function isSubpath(parent, child) {
 	return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
-function isAllowedOutside(filePath, resolvedPath) {
+function withTrailingSep(path) {
+	return path.endsWith(sep) ? path : path + sep;
+}
+
+function isAllowedOutside(filePath, resolvedPath, allowedOutside) {
 	return allowedOutside.some((rule) => {
 		if (!filePath.startsWith(rule.filePrefix)) {
 			return false;
@@ -58,6 +56,85 @@ function resolveImportPath(fromFile, specifier) {
 	}
 
 	return resolved;
+}
+
+function readJson(path) {
+	return JSON.parse(readFileSync(path, "utf8"));
+}
+
+function packageBoundaryConfig(packageJson) {
+	const config = packageJson.maestro?.packageBoundary;
+	if (!config || typeof config !== "object" || Array.isArray(config)) {
+		return undefined;
+	}
+	return config;
+}
+
+function boundaryRulesForPackage(repoRoot, packageRoot, packageJson, errors) {
+	const config = packageBoundaryConfig(packageJson);
+	if (!config) {
+		return [];
+	}
+	const packageName =
+		typeof packageJson.name === "string"
+			? packageJson.name
+			: relative(repoRoot, packageRoot);
+	if (config.mode !== "internal-facade") {
+		errors.push(
+			`${relative(
+				repoRoot,
+				packageRoot,
+			)} has unsupported maestro.packageBoundary.mode ${JSON.stringify(
+				config.mode,
+			)}`,
+		);
+		return [];
+	}
+	if (typeof config.rationale !== "string" || config.rationale.trim() === "") {
+		errors.push(
+			`${packageName} declares an internal facade boundary without a rationale`,
+		);
+	}
+	if (!Array.isArray(config.allowedExternalSourceRoots)) {
+		errors.push(
+			`${packageName} declares an internal facade boundary without allowedExternalSourceRoots`,
+		);
+		return [];
+	}
+
+	const allowedPrefixes = [];
+	for (const root of config.allowedExternalSourceRoots) {
+		if (typeof root !== "string" || root.trim() === "") {
+			errors.push(
+				`${packageName} has an invalid allowedExternalSourceRoots entry`,
+			);
+			continue;
+		}
+		const resolved = resolve(packageRoot, root);
+		if (!isSubpath(repoRoot, resolved)) {
+			errors.push(
+				`${packageName} allows source root ${root} outside the repository`,
+			);
+			continue;
+		}
+		if (isSubpath(packageRoot, resolved)) {
+			errors.push(
+				`${packageName} allows source root ${root} inside its own package; remove the facade exception`,
+			);
+			continue;
+		}
+		allowedPrefixes.push(withTrailingSep(resolved));
+	}
+
+	if (allowedPrefixes.length === 0) {
+		return [];
+	}
+	return [
+		{
+			filePrefix: withTrailingSep(join(packageRoot, "src")),
+			allowedPrefixes,
+		},
+	];
 }
 
 function walk(dir, files = []) {
@@ -148,54 +225,74 @@ function collectSpecifiers(filePath, sourceText) {
 	return specifiers;
 }
 
-const packageRoots = existsSync(packagesDir)
-	? readdirSync(packagesDir, { withFileTypes: true })
-			.filter((entry) => entry.isDirectory())
-			.map((entry) => join(packagesDir, entry.name))
-			.filter((dir) => existsSync(join(dir, "package.json")))
-	: [];
+export function validatePackageBoundaries(root = repoRoot) {
+	const packagesDir = join(root, "packages");
+	const packageRoots = existsSync(packagesDir)
+		? readdirSync(packagesDir, { withFileTypes: true })
+				.filter((entry) => entry.isDirectory())
+				.map((entry) => join(packagesDir, entry.name))
+				.filter((dir) => existsSync(join(dir, "package.json")))
+		: [];
 
-const errors = [];
-
-for (const packageRoot of packageRoots) {
-	const srcRoot = join(packageRoot, "src");
-	const files = walk(srcRoot);
-	for (const filePath of files) {
-		const specifiers = collectSpecifiers(
-			filePath,
-			readFileSync(filePath, "utf8"),
+	const errors = [];
+	const packageJsonByRoot = new Map(
+		packageRoots.map((packageRoot) => [
+			packageRoot,
+			readJson(join(packageRoot, "package.json")),
+		]),
+	);
+	const allowedOutside = [];
+	for (const [packageRoot, packageJson] of packageJsonByRoot) {
+		allowedOutside.push(
+			...boundaryRulesForPackage(root, packageRoot, packageJson, errors),
 		);
-		for (const specifier of specifiers) {
-			if (specifier.startsWith(".")) {
-				const resolved = resolveImportPath(filePath, specifier);
-				if (isSubpath(packageRoot, resolved)) {
-					continue;
-				}
-				if (isAllowedOutside(filePath, resolved)) {
-					continue;
-				}
-				errors.push(
-					`${relative(repoRoot, filePath)} imports ${specifier} which resolves outside ${relative(
-						repoRoot,
-						packageRoot,
-					)}`,
-				);
-				continue;
-			}
+	}
 
-			if (/^@evalops\/.+\/(src|dist)(\/|$)/.test(specifier)) {
-				errors.push(
-					`${relative(repoRoot, filePath)} imports ${specifier}; use package entrypoints instead of /src or /dist`,
-				);
+	for (const packageRoot of packageRoots) {
+		const srcRoot = join(packageRoot, "src");
+		const files = walk(srcRoot);
+		for (const filePath of files) {
+			const specifiers = collectSpecifiers(
+				filePath,
+				readFileSync(filePath, "utf8"),
+			);
+			for (const specifier of specifiers) {
+				if (specifier.startsWith(".")) {
+					const resolved = resolveImportPath(filePath, specifier);
+					if (isSubpath(packageRoot, resolved)) {
+						continue;
+					}
+					if (isAllowedOutside(filePath, resolved, allowedOutside)) {
+						continue;
+					}
+					errors.push(
+						`${relative(root, filePath)} imports ${specifier} which resolves outside ${relative(
+							root,
+							packageRoot,
+						)}`,
+					);
+					continue;
+				}
+
+				if (/^@evalops\/.+\/(src|dist)(\/|$)/.test(specifier)) {
+					errors.push(
+						`${relative(root, filePath)} imports ${specifier}; use package entrypoints instead of /src or /dist`,
+					);
+				}
 			}
 		}
 	}
+
+	return errors;
 }
 
-if (errors.length > 0) {
-	console.error("Package boundary violations detected:");
-	for (const error of errors) {
-		console.error(`- ${error}`);
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+	const errors = validatePackageBoundaries();
+	if (errors.length > 0) {
+		console.error("Package boundary violations detected:");
+		for (const error of errors) {
+			console.error(`- ${error}`);
+		}
+		process.exit(1);
 	}
-	process.exit(1);
 }

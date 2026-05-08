@@ -18,6 +18,20 @@ npm install @evalops/maestro-core
 - **Swarm types** — task scheduling with dependencies for parallel agent execution
 - **Background task primitives** — restart policies, status types, health snapshots
 
+## Boundary Status
+
+`@evalops/maestro-core` is currently an internal facade package: it provides the
+stable package entrypoints for the Maestro agent/runtime kernel, but several
+exports still point at root `src/` implementation files. This is intentional
+only while the package-owned kernel is being extracted. The package declares the
+facade boundary in `package.json` under `maestro.packageBoundary`, and
+`scripts/validate-package-boundaries.js` rejects hidden root-source imports
+unless that metadata and rationale are present.
+
+New runtime primitives should be added under `packages/core/src`. When an
+existing export is moved into package-owned source, remove the facade import
+rather than broadening the exception.
+
 ## Usage
 
 ```typescript
