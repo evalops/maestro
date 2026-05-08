@@ -360,6 +360,32 @@ describe("Native Sandbox", () => {
 				await sandbox.dispose();
 			});
 
+			it("blocks recursive deletes that would remove read-only git metadata", async () => {
+				const gitDir = join(testDir, ".git");
+				mkdirSync(gitDir, { recursive: true });
+				writeFileSync(join(gitDir, "config"), "protected", "utf-8");
+				writeFileSync(join(testDir, "workspace.txt"), "content", "utf-8");
+				const sandbox = createNativeSandbox(
+					{
+						mode: "workspace-write",
+						excludeSlashTmp: true,
+						excludeTmpdir: true,
+					},
+					testDir,
+				);
+				await sandbox.initialize();
+
+				try {
+					await expect(sandbox.delete(".", true)).rejects.toThrow(
+						"Cannot write outside writable roots in workspace-write sandbox mode",
+					);
+					expect(existsSync(join(gitDir, "config"))).toBe(true);
+					expect(existsSync(join(testDir, "workspace.txt"))).toBe(true);
+				} finally {
+					await sandbox.dispose();
+				}
+			});
+
 			it("throws on delete in read-only mode", async () => {
 				const testFile = join(testDir, "protected.txt");
 				writeFileSync(testFile, "protected", "utf-8");
