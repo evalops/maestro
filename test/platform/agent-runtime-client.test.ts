@@ -17,6 +17,7 @@ import {
 	listAgentRuntimeRunEvents,
 	recordAgentRuntimeRunStep,
 	recordMaestroSessionRuntimeTrigger,
+	resolveAgentRuntimeServiceConfig,
 	resumeAgentRuntimeRun,
 	waitAgentRuntimeRun,
 } from "../../src/platform/agent-runtime-client.js";
@@ -50,19 +51,26 @@ describe("agent runtime service client", () => {
 			"EVALOPS_BASE_URL",
 			"MAESTRO_AGENT_RUNTIME_SERVICE_TOKEN",
 			"AGENT_RUNTIME_SERVICE_TOKEN",
+			"MAESTRO_AGENT_RUNTIME_TIMEOUT_MS",
 			"MAESTRO_PLATFORM_A2A_TOKEN",
 			"MAESTRO_A2A_TOKEN",
 			"MAESTRO_EVALOPS_ACCESS_TOKEN",
 			"EVALOPS_TOKEN",
 			"MAESTRO_AGENT_RUNTIME_ORG_ID",
+			"MAESTRO_AGENT_RUNTIME_ORGANIZATION_ID",
+			"AGENT_RUNTIME_ORG_ID",
 			"AGENT_RUNTIME_ORGANIZATION_ID",
 			"MAESTRO_PLATFORM_A2A_ORG_ID",
 			"MAESTRO_A2A_ORG_ID",
 			"MAESTRO_EVALOPS_ORG_ID",
 			"EVALOPS_ORGANIZATION_ID",
+			"EVALOPS_ORG_ID",
 			"MAESTRO_ENTERPRISE_ORG_ID",
 			"MAESTRO_AGENT_RUNTIME_WORKSPACE_ID",
 			"AGENT_RUNTIME_WORKSPACE_ID",
+			"MAESTRO_REMOTE_RUNNER_ORG_ID",
+			"MAESTRO_LLM_GATEWAY_ORG_ID",
+			"MAESTRO_REMOTE_RUNNER_WORKSPACE_ID",
 			"MAESTRO_PLATFORM_A2A_WORKSPACE_ID",
 			"MAESTRO_A2A_WORKSPACE_ID",
 			"MAESTRO_WORKSPACE_ID",
@@ -151,6 +159,19 @@ describe("agent runtime service client", () => {
 
 		expect(resolveCerebroFactsServiceConfig()).toMatchObject({
 			baseUrl: "https://cerebro.test",
+		});
+	});
+
+	it("preserves AgentRuntime workspace precedence ahead of shared EvalOps fallbacks", async () => {
+		vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_URL", "https://runtime.test/");
+		vi.stubEnv("MAESTRO_AGENT_RUNTIME_SERVICE_TOKEN", "runtime-token");
+		vi.stubEnv("MAESTRO_AGENT_RUNTIME_ORG_ID", "org_1");
+		vi.stubEnv("MAESTRO_WORKSPACE_ID", "workspace_maestro");
+		vi.stubEnv("MAESTRO_EVALOPS_WORKSPACE_ID", "workspace_evalops");
+		vi.stubEnv("EVALOPS_WORKSPACE_ID", "workspace_public");
+
+		await expect(resolveAgentRuntimeServiceConfig()).resolves.toMatchObject({
+			workspaceId: "workspace_maestro",
 		});
 	});
 

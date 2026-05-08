@@ -3,6 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	EVALOPS_LEGACY_SERVICE_ORGANIZATION_ID_ENV_VARS,
+	EVALOPS_LEGACY_SERVICE_WORKSPACE_ID_ENV_VARS,
+	EVALOPS_ORGANIZATION_ID_ENV_VARS,
+	EVALOPS_WORKSPACE_ID_ENV_VARS,
+	readEvalOpsEnv,
+} from "../../src/evalops/env-aliases.js";
+import {
 	formatManagedEvalOpsStatus,
 	resolveManagedEvalOpsContext,
 } from "../../src/evalops/managed-context.js";
@@ -46,6 +53,79 @@ describe("managed EvalOps context", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
 		vi.unstubAllEnvs();
+	});
+
+	it("preserves legacy managed aliases as shared EvalOps fallbacks", () => {
+		expect(EVALOPS_ORGANIZATION_ID_ENV_VARS).toContain(
+			"MAESTRO_LLM_GATEWAY_ORG_ID",
+		);
+		expect(EVALOPS_ORGANIZATION_ID_ENV_VARS).toContain(
+			"MAESTRO_REMOTE_RUNNER_ORG_ID",
+		);
+		expect(EVALOPS_WORKSPACE_ID_ENV_VARS).toContain(
+			"MAESTRO_REMOTE_RUNNER_WORKSPACE_ID",
+		);
+		expect(
+			readEvalOpsEnv(
+				{
+					EVALOPS_ORGANIZATION_ID: "org_evalops",
+					MAESTRO_LLM_GATEWAY_ORG_ID: "org_gateway",
+					MAESTRO_REMOTE_RUNNER_ORG_ID: "org_remote",
+					MAESTRO_REMOTE_RUNNER_WORKSPACE_ID: "workspace_remote",
+				},
+				EVALOPS_ORGANIZATION_ID_ENV_VARS,
+			),
+		).toBe("org_evalops");
+		expect(
+			readEvalOpsEnv(
+				{
+					EVALOPS_WORKSPACE_ID: "workspace_evalops",
+					MAESTRO_REMOTE_RUNNER_WORKSPACE_ID: "workspace_remote",
+				},
+				EVALOPS_WORKSPACE_ID_ENV_VARS,
+			),
+		).toBe("workspace_evalops");
+		expect(
+			readEvalOpsEnv(
+				{
+					MAESTRO_ENTERPRISE_ORG_ID: "org_enterprise",
+					MAESTRO_LLM_GATEWAY_ORG_ID: "org_gateway",
+					MAESTRO_REMOTE_RUNNER_ORG_ID: "org_remote",
+				},
+				EVALOPS_ORGANIZATION_ID_ENV_VARS,
+			),
+		).toBe("org_enterprise");
+		expect(
+			readEvalOpsEnv(
+				{
+					MAESTRO_LLM_GATEWAY_ORG_ID: "org_gateway",
+					MAESTRO_REMOTE_RUNNER_ORG_ID: "org_remote",
+				},
+				EVALOPS_ORGANIZATION_ID_ENV_VARS,
+			),
+		).toBe("org_gateway");
+		expect(
+			readEvalOpsEnv(
+				{
+					MAESTRO_REMOTE_RUNNER_ORG_ID: "org_remote",
+				},
+				EVALOPS_ORGANIZATION_ID_ENV_VARS,
+			),
+		).toBe("org_remote");
+		expect(
+			readEvalOpsEnv(
+				{
+					MAESTRO_REMOTE_RUNNER_WORKSPACE_ID: "workspace_remote",
+				},
+				EVALOPS_WORKSPACE_ID_ENV_VARS,
+			),
+		).toBe("workspace_remote");
+		expect(EVALOPS_LEGACY_SERVICE_ORGANIZATION_ID_ENV_VARS).toContain(
+			"MAESTRO_REMOTE_RUNNER_ORG_ID",
+		);
+		expect(EVALOPS_LEGACY_SERVICE_WORKSPACE_ID_ENV_VARS).toContain(
+			"MAESTRO_REMOTE_RUNNER_WORKSPACE_ID",
+		);
 	});
 
 	it("resolves managed mode from stored init credentials when env is sparse", () => {

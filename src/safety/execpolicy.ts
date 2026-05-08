@@ -843,10 +843,30 @@ export function appendAllowPrefixRule(
  * Parse a command string into tokens.
  */
 export function parseCommand(command: string): string[] {
+	return parseCommandSequence(command)[0] ?? [];
+}
+
+function parseCommandSequence(command: string): string[][] {
+	const commands: string[][] = [];
 	const tokens: string[] = [];
 	let current = "";
 	let inQuotes = false;
 	let quoteChar = "";
+
+	const flushToken = () => {
+		if (current) {
+			tokens.push(current);
+			current = "";
+		}
+	};
+	const flushCommand = () => {
+		flushToken();
+		const commandTokens = normalizeShellCommandTokens(tokens);
+		if (commandTokens.length > 0) {
+			commands.push(commandTokens);
+		}
+		tokens.length = 0;
+	};
 
 	for (let i = 0; i < command.length; i++) {
 		const char = command.charAt(i);
@@ -859,6 +879,17 @@ export function parseCommand(command: string): string[] {
 				i++;
 			} else {
 				current += char;
+			}
+			continue;
+		}
+
+		if (!inQuotes && isShellCommandSeparator(command, i)) {
+			flushCommand();
+			if (
+				(command.charAt(i) === "&" && command.charAt(i + 1) === "&") ||
+				(command.charAt(i) === "|" && command.charAt(i + 1) === "|")
+			) {
+				i++;
 			}
 			continue;
 		}
@@ -876,21 +907,80 @@ export function parseCommand(command: string): string[] {
 		}
 
 		if (!inQuotes && /\s/.test(char)) {
-			if (current) {
-				tokens.push(current);
-				current = "";
-			}
+			flushToken();
 			continue;
 		}
 
 		current += char;
 	}
 
-	if (current) {
-		tokens.push(current);
-	}
+	flushCommand();
 
-	return tokens;
+	return commands;
+}
+
+function isShellCommandSeparator(command: string, index: number): boolean {
+	const char = command.charAt(index);
+	if (char === ";") {
+		return true;
+	}
+	if (char === "|") {
+		return command.charAt(index - 1) !== ">";
+	}
+	if (char !== "&") {
+		return false;
+	}
+	if (command.charAt(index + 1) === "&") {
+		return true;
+	}
+	return (
+		command.charAt(index - 1) !== ">" &&
+		command.charAt(index - 1) !== "<" &&
+		command.charAt(index + 1) !== ">"
+	);
+}
+
+function normalizeShellCommandTokens(tokens: string[]): string[] {
+	const normalized: string[] = [];
+	let commandStarted = false;
+	for (let i = 0; i < tokens.length; i++) {
+		const token = tokens[i]!;
+		const redirection = shellRedirection(token);
+		if (redirection) {
+			if (redirection.consumesNextToken) {
+				i++;
+			}
+			continue;
+		}
+		if (!commandStarted && isShellAssignment(token)) {
+			continue;
+		}
+		normalized.push(token);
+		commandStarted = true;
+	}
+	return normalized;
+}
+
+function isShellAssignment(token: string): boolean {
+	return /^[A-Za-z_][A-Za-z0-9_]*=/.test(token);
+}
+
+function shellRedirection(
+	token: string,
+): { consumesNextToken: boolean } | undefined {
+	if (/^(?:\d*)?(?:<>|>>|>\||>|<|<&|>&|<<-?)$/.test(token)) {
+		return { consumesNextToken: true };
+	}
+	if (/^&>>?$/.test(token)) {
+		return { consumesNextToken: true };
+	}
+	if (/^(?:\d*)?(?:<>|>>|>\||>|<|<&|>&|<<-?).+/.test(token)) {
+		return { consumesNextToken: false };
+	}
+	if (/^&>>?.+/.test(token)) {
+		return { consumesNextToken: false };
+	}
+	return undefined;
 }
 
 function isPathLikeProgram(program: string): boolean {
@@ -933,8 +1023,8 @@ export function checkCommand(
 	heuristicsFallback?: (cmd: string[]) => Decision,
 ): Evaluation {
 	const policy = loadPolicy(workspaceDir);
-	const tokens = parseCommand(command);
-	return policy.check(tokens, heuristicsFallback, {
+	const commands = parseCommandSequence(command);
+	return policy.checkMultiple(commands, heuristicsFallback, {
 		resolveHostExecutables: true,
 	});
 }

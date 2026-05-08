@@ -142,11 +142,35 @@ export type MaestroAppServerThreadItem = Static<
 	typeof MaestroAppServerThreadItemSchema
 >;
 
+export const MaestroAppServerCompactionSpanSchema = Type.Object({
+	id: Type.String(),
+	firstKeptEntryId: Type.String(),
+	summary: Type.String(),
+	tokensBefore: Type.Number(),
+	sourceEntryIds: Type.Array(Type.String()),
+});
+export type MaestroAppServerCompactionSpan = Static<
+	typeof MaestroAppServerCompactionSpanSchema
+>;
+
+export const MaestroAppServerThreadGraphSchema = Type.Object({
+	branchId: Type.String(),
+	leafEntryId: Type.Optional(Type.String()),
+	activeEntryIds: Type.Array(Type.String()),
+	compactionSpans: Type.Array(MaestroAppServerCompactionSpanSchema),
+});
+export type MaestroAppServerThreadGraph = Static<
+	typeof MaestroAppServerThreadGraphSchema
+>;
+
 export const MaestroAppServerTurnSchema = Type.Object({
 	id: Type.String(),
+	parentTurnId: Type.Optional(Type.String()),
 	status: MaestroAppServerTurnStatusSchema,
 	startedAt: Type.Optional(Type.String()),
 	completedAt: Type.Optional(Type.String()),
+	sourceEntryIds: Type.Optional(Type.Array(Type.String())),
+	toolCallIds: Type.Optional(Type.Array(Type.String())),
 	items: Type.Array(MaestroAppServerThreadItemSchema),
 });
 export type MaestroAppServerTurn = Static<typeof MaestroAppServerTurnSchema>;
@@ -160,6 +184,7 @@ export const MaestroAppServerThreadSchema = Type.Intersect([
 			Type.Literal("notLoaded"),
 		]),
 		turns: Type.Optional(Type.Array(MaestroAppServerTurnSchema)),
+		graph: Type.Optional(MaestroAppServerThreadGraphSchema),
 	}),
 ]);
 export type MaestroAppServerThread = Static<
@@ -200,6 +225,7 @@ export const MaestroAppServerTurnsListResultSchema = Type.Object({
 	threadId: Type.String(),
 	turns: Type.Array(MaestroAppServerTurnSchema),
 	nextCursor: Type.Union([Type.String(), Type.Null()]),
+	graph: Type.Optional(MaestroAppServerThreadGraphSchema),
 });
 export type MaestroAppServerTurnsListResult = Static<
 	typeof MaestroAppServerTurnsListResultSchema

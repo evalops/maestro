@@ -234,6 +234,58 @@ describe("auth resolver", () => {
 		mockedLoadCreds.mockReset();
 	});
 
+	it("uses legacy LLM gateway org env as EvalOps org fallback", async () => {
+		const mockedGetToken = vi.mocked(getOAuthToken);
+		const mockedLoadCreds = vi.mocked(loadOAuthCredentials);
+		const orgEnvVars = [
+			"MAESTRO_EVALOPS_ORG_ID",
+			"EVALOPS_ORGANIZATION_ID",
+			"EVALOPS_ORG_ID",
+			"MAESTRO_ENTERPRISE_ORG_ID",
+			"MAESTRO_LLM_GATEWAY_ORG_ID",
+			"MAESTRO_REMOTE_RUNNER_ORG_ID",
+		] as const;
+		const originalOrgEnv = Object.fromEntries(
+			orgEnvVars.map((name) => [name, process.env[name]]),
+		);
+		try {
+			for (const name of orgEnvVars) {
+				Reflect.deleteProperty(process.env, name);
+			}
+			process.env.MAESTRO_LLM_GATEWAY_ORG_ID = "org_gateway";
+			mockedGetToken.mockResolvedValue("evalops-token");
+			mockedLoadCreds.mockReturnValue({
+				type: "oauth",
+				access: "evalops-token",
+				refresh: "",
+				expires: Date.now() + 60_000,
+				metadata: {
+					providerRef: {
+						provider: "openai",
+						environment: "prod",
+					},
+				},
+			});
+
+			const resolver = createAuthResolver({ mode: "auto" });
+			const credential = await resolver("evalops");
+
+			expect(credential?.headers).toEqual({
+				"X-Organization-ID": "org_gateway",
+			});
+		} finally {
+			for (const [name, value] of Object.entries(originalOrgEnv)) {
+				if (value === undefined) {
+					Reflect.deleteProperty(process.env, name);
+				} else {
+					process.env[name] = value;
+				}
+			}
+			mockedGetToken.mockReset();
+			mockedLoadCreds.mockReset();
+		}
+	});
+
 	it("prefers the stored EvalOps agent key for managed gateway inference", async () => {
 		const mockedGetToken = vi.mocked(getOAuthToken);
 		const mockedLoadCreds = vi.mocked(loadOAuthCredentials);

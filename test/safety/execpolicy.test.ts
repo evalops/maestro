@@ -399,6 +399,145 @@ prefix_rule(
 			});
 		});
 
+		it("forbids later simple commands separated by shell control operators", () => {
+			const workspaceDir = createWorkspacePolicy(`
+prefix_rule(
+    pattern=["rm", "-rf"],
+    decision="forbidden",
+)
+`);
+
+			expect(
+				checkCommand("echo ok; rm -rf /tmp/nope", workspaceDir),
+			).toMatchObject({
+				decision: "forbidden",
+				matchedRules: [
+					{
+						type: "prefix",
+						matchedPrefix: ["rm", "-rf"],
+					},
+				],
+			});
+			expect(
+				checkCommand("cd /tmp && rm -rf nope", workspaceDir).decision,
+			).toBe("forbidden");
+			expect(checkCommand("false || rm -rf nope", workspaceDir).decision).toBe(
+				"forbidden",
+			);
+			expect(checkCommand("sleep 0 & rm -rf nope", workspaceDir).decision).toBe(
+				"forbidden",
+			);
+
+			const shellWorkspaceDir = createWorkspacePolicy(`
+prefix_rule(
+    pattern=["sh"],
+    decision="forbidden",
+)
+`);
+
+			expect(checkCommand("echo ok | sh", shellWorkspaceDir)).toMatchObject({
+				decision: "forbidden",
+				matchedRules: [
+					{
+						type: "prefix",
+						matchedPrefix: ["sh"],
+					},
+				],
+			});
+		});
+
+		it("evaluates the command after leading environment assignments", () => {
+			const workspaceDir = createWorkspacePolicy(`
+prefix_rule(
+    pattern=["rm", "-rf"],
+    decision="forbidden",
+)
+`);
+
+			expect(
+				checkCommand("SAFE=1 rm -rf /tmp/nope", workspaceDir),
+			).toMatchObject({
+				decision: "forbidden",
+				matchedRules: [
+					{
+						type: "prefix",
+						matchedPrefix: ["rm", "-rf"],
+					},
+				],
+			});
+		});
+
+		it("does not treat redirection operators as command arguments or separators", () => {
+			const pushWorkspaceDir = createWorkspacePolicy(`
+prefix_rule(
+    pattern=["git", "push", "origin", "main"],
+    decision="prompt",
+)
+`);
+
+			expect(
+				checkCommand("git push 2>&1 origin main", pushWorkspaceDir),
+			).toMatchObject({
+				decision: "prompt",
+				matchedRules: [
+					{
+						type: "prefix",
+						matchedPrefix: ["git", "push", "origin", "main"],
+					},
+				],
+			});
+			expect(
+				checkCommand("git push origin main > /tmp/git.log", pushWorkspaceDir),
+			).toMatchObject({
+				decision: "prompt",
+				matchedRules: [
+					{
+						type: "prefix",
+						matchedPrefix: ["git", "push", "origin", "main"],
+					},
+				],
+			});
+			expect(
+				checkCommand("git push origin main >| /tmp/git.log", pushWorkspaceDir),
+			).toMatchObject({
+				decision: "prompt",
+				matchedRules: [
+					{
+						type: "prefix",
+						matchedPrefix: ["git", "push", "origin", "main"],
+					},
+				],
+			});
+
+			const rmWorkspaceDir = createWorkspacePolicy(`
+prefix_rule(
+    pattern=["rm", "-rf"],
+    decision="forbidden",
+)
+`);
+
+			expect(
+				checkCommand("2>/tmp/rm.log rm -rf nope", rmWorkspaceDir),
+			).toMatchObject({
+				decision: "forbidden",
+				matchedRules: [
+					{
+						type: "prefix",
+						matchedPrefix: ["rm", "-rf"],
+					},
+				],
+			});
+			expect(checkCommand("rm <&0 -rf nope", rmWorkspaceDir)).toMatchObject({
+				decision: "forbidden",
+				matchedRules: [
+					{
+						type: "prefix",
+						matchedPrefix: ["rm", "-rf"],
+					},
+				],
+			});
+		});
+
 		it("evaluates every trusted alias for a resolved host executable path", () => {
 			const policy = new Policy();
 			const gitPath = String.raw`C:\Program Files\Git\bin\git.exe`;
