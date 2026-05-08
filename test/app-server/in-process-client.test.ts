@@ -12,15 +12,31 @@ function createApi(overrides: Partial<MaestroAppServerSessionApi> = {}) {
 			serverInfo: { name: "maestro" },
 			capabilities: {
 				sessions: true,
+				modelList: true,
+				modelProviderCapabilities: true,
 				threadList: true,
 				threadRead: true,
+				threadMetadataUpdate: true,
+				threadNameSet: true,
+				threadGoals: true,
 				turnsList: true,
 			},
 		}),
+		listModels: async () => ({ models: [] }),
+		readModelProviderCapabilities: async () => ({ providers: [] }),
 		listThreads: async () => ({ threads: [], nextCursor: null }),
 		readThread: async () => {
 			throw new Error("not implemented");
 		},
+		updateThreadMetadata: async () => {
+			throw new Error("not implemented");
+		},
+		setThreadName: async () => {
+			throw new Error("not implemented");
+		},
+		getThreadGoal: async () => ({ threadId: "thread", goal: null }),
+		setThreadGoal: async () => ({ threadId: "thread", goal: null }),
+		clearThreadGoal: async () => ({ threadId: "thread", goal: null }),
 		listTurns: async () => ({
 			threadId: "thread",
 			turns: [],

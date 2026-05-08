@@ -5,8 +5,15 @@ export const maestroAppServerProtocolVersion = "maestro-app-server.v1" as const;
 
 export const maestroAppServerClientMethods = [
 	"initialize",
+	"model/list",
+	"modelProvider/capabilities/read",
 	"thread/list",
 	"thread/read",
+	"thread/metadata/update",
+	"thread/name/set",
+	"thread/goal/get",
+	"thread/goal/set",
+	"thread/goal/clear",
 	"thread/turns/list",
 ] as const;
 export type MaestroAppServerClientMethod =
@@ -52,8 +59,13 @@ export type MaestroAppServerClientRequest = Static<
 
 export const MaestroAppServerCapabilitiesSchema = Type.Object({
 	sessions: Type.Boolean(),
+	modelList: Type.Boolean(),
+	modelProviderCapabilities: Type.Boolean(),
 	threadList: Type.Boolean(),
 	threadRead: Type.Boolean(),
+	threadMetadataUpdate: Type.Boolean(),
+	threadNameSet: Type.Boolean(),
+	threadGoals: Type.Boolean(),
 	turnsList: Type.Boolean(),
 });
 export type MaestroAppServerCapabilities = Static<
@@ -96,6 +108,25 @@ export const MaestroAppServerThreadSummarySchema = Type.Object({
 });
 export type MaestroAppServerThreadSummary = Static<
 	typeof MaestroAppServerThreadSummarySchema
+>;
+
+export const MaestroAppServerThreadGoalStatuses = [
+	"active",
+	"complete",
+	"cancelled",
+] as const;
+export const MaestroAppServerThreadGoalStatusSchema = stringLiteralUnion(
+	MaestroAppServerThreadGoalStatuses,
+);
+export const MaestroAppServerThreadGoalSchema = Type.Object({
+	objective: Type.String(),
+	status: MaestroAppServerThreadGoalStatusSchema,
+	tokenBudget: Type.Optional(Type.Number()),
+	createdAt: Type.String(),
+	updatedAt: Type.String(),
+});
+export type MaestroAppServerThreadGoal = Static<
+	typeof MaestroAppServerThreadGoalSchema
 >;
 
 export const MaestroAppServerThreadItemSchema = Type.Object({
@@ -150,6 +181,21 @@ export type MaestroAppServerThreadReadResult = Static<
 	typeof MaestroAppServerThreadReadResultSchema
 >;
 
+export const MaestroAppServerThreadMetadataUpdateResultSchema = Type.Object({
+	thread: MaestroAppServerThreadSummarySchema,
+});
+export type MaestroAppServerThreadMetadataUpdateResult = Static<
+	typeof MaestroAppServerThreadMetadataUpdateResultSchema
+>;
+
+export const MaestroAppServerThreadGoalResultSchema = Type.Object({
+	threadId: Type.String(),
+	goal: Type.Union([MaestroAppServerThreadGoalSchema, Type.Null()]),
+});
+export type MaestroAppServerThreadGoalResult = Static<
+	typeof MaestroAppServerThreadGoalResultSchema
+>;
+
 export const MaestroAppServerTurnsListResultSchema = Type.Object({
 	threadId: Type.String(),
 	turns: Type.Array(MaestroAppServerTurnSchema),
@@ -159,14 +205,79 @@ export type MaestroAppServerTurnsListResult = Static<
 	typeof MaestroAppServerTurnsListResultSchema
 >;
 
+export const MaestroAppServerModelCapabilitiesSchema = Type.Object({
+	streaming: Type.Boolean(),
+	tools: Type.Boolean(),
+	vision: Type.Boolean(),
+	reasoning: Type.Boolean(),
+	responsesApi: Type.Boolean(),
+	codexBackend: Type.Boolean(),
+	local: Type.Boolean(),
+});
+export const MaestroAppServerReasoningEffortSchema = Type.Union([
+	Type.Literal("minimal"),
+	Type.Literal("low"),
+	Type.Literal("medium"),
+	Type.Literal("high"),
+	Type.Literal("ultra"),
+]);
+export const MaestroAppServerModelSchema = Type.Object({
+	id: Type.String(),
+	provider: Type.String(),
+	name: Type.String(),
+	api: Type.String(),
+	contextWindow: Type.Optional(Type.Number()),
+	maxTokens: Type.Optional(Type.Number()),
+	cost: Type.Optional(Type.Record(Type.String(), Type.Number())),
+	source: Type.Optional(
+		Type.Union([Type.Literal("builtin"), Type.Literal("custom")]),
+	),
+	supportedReasoningEfforts: Type.Optional(
+		Type.Array(MaestroAppServerReasoningEffortSchema),
+	),
+	defaultReasoningEffort: Type.Optional(MaestroAppServerReasoningEffortSchema),
+	capabilities: MaestroAppServerModelCapabilitiesSchema,
+});
+export type MaestroAppServerModel = Static<typeof MaestroAppServerModelSchema>;
+
+export const MaestroAppServerModelListResultSchema = Type.Object({
+	models: Type.Array(MaestroAppServerModelSchema),
+});
+export type MaestroAppServerModelListResult = Static<
+	typeof MaestroAppServerModelListResultSchema
+>;
+
+export const MaestroAppServerModelProviderCapabilitiesSchema = Type.Object({
+	id: Type.String(),
+	name: Type.String(),
+	apis: Type.Array(Type.String()),
+	modelCount: Type.Number(),
+	capabilities: MaestroAppServerModelCapabilitiesSchema,
+});
+export type MaestroAppServerModelProviderCapabilities = Static<
+	typeof MaestroAppServerModelProviderCapabilitiesSchema
+>;
+
+export const MaestroAppServerModelProviderCapabilitiesReadResultSchema =
+	Type.Object({
+		providers: Type.Array(MaestroAppServerModelProviderCapabilitiesSchema),
+	});
+export type MaestroAppServerModelProviderCapabilitiesReadResult = Static<
+	typeof MaestroAppServerModelProviderCapabilitiesReadResultSchema
+>;
+
 export const MaestroAppServerResponseSchema = Type.Object({
 	jsonrpc: Type.Literal("2.0"),
 	id: MaestroAppServerJsonRpcResponseIdSchema,
 	result: Type.Optional(
 		Type.Union([
 			MaestroAppServerInitializeResultSchema,
+			MaestroAppServerModelListResultSchema,
+			MaestroAppServerModelProviderCapabilitiesReadResultSchema,
 			MaestroAppServerThreadListResultSchema,
 			MaestroAppServerThreadReadResultSchema,
+			MaestroAppServerThreadMetadataUpdateResultSchema,
+			MaestroAppServerThreadGoalResultSchema,
 			MaestroAppServerTurnsListResultSchema,
 		]),
 	),

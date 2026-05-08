@@ -145,6 +145,7 @@ export class SessionCatalog {
 					id: info.id,
 					subject: info.subject,
 					title: info.title ?? info.summary,
+					summary: info.summary || info.firstMessage || undefined,
 					resumeSummary: info.resumeSummary,
 					createdAt: info.created.toISOString(),
 					updatedAt: stats.mtime.toISOString(),

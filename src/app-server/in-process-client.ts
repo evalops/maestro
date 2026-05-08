@@ -1,7 +1,11 @@
 import type {
 	MaestroAppServerClientMethod,
 	MaestroAppServerInitializeResult,
+	MaestroAppServerModelListResult,
+	MaestroAppServerModelProviderCapabilitiesReadResult,
+	MaestroAppServerThreadGoalResult,
 	MaestroAppServerThreadListResult,
+	MaestroAppServerThreadMetadataUpdateResult,
 	MaestroAppServerThreadReadResult,
 	MaestroAppServerTurnsListResult,
 } from "@evalops/contracts";
@@ -30,13 +34,26 @@ type AppServerRequestMethod = Exclude<
 >;
 
 type AppServerMethodResult<M extends AppServerRequestMethod> =
-	M extends "thread/list"
-		? MaestroAppServerThreadListResult
-		: M extends "thread/read"
-			? MaestroAppServerThreadReadResult
-			: M extends "thread/turns/list"
-				? MaestroAppServerTurnsListResult
-				: never;
+	M extends "model/list"
+		? MaestroAppServerModelListResult
+		: M extends "modelProvider/capabilities/read"
+			? MaestroAppServerModelProviderCapabilitiesReadResult
+			: M extends "thread/list"
+				? MaestroAppServerThreadListResult
+				: M extends "thread/read"
+					? MaestroAppServerThreadReadResult
+					: M extends "thread/metadata/update"
+						? MaestroAppServerThreadMetadataUpdateResult
+						: M extends "thread/name/set"
+							? MaestroAppServerThreadMetadataUpdateResult
+							: M extends
+										| "thread/goal/get"
+										| "thread/goal/set"
+										| "thread/goal/clear"
+								? MaestroAppServerThreadGoalResult
+								: M extends "thread/turns/list"
+									? MaestroAppServerTurnsListResult
+									: never;
 
 export class InProcessMaestroAppServerClientError extends Error {
 	constructor(

@@ -755,6 +755,7 @@ export class SessionManager {
 			favorite?: boolean;
 			title?: string;
 			tags?: string[];
+			appServerGoal?: SessionMetaEntry["appServerGoal"];
 		},
 	): void {
 		if (!existsSync(targetFile)) return;
@@ -764,7 +765,8 @@ export class SessionManager {
 			meta.memoryExtractionHash === undefined &&
 			meta.favorite === undefined &&
 			meta.title === undefined &&
-			meta.tags === undefined
+			meta.tags === undefined &&
+			meta.appServerGoal === undefined
 		) {
 			return;
 		}
@@ -884,6 +886,14 @@ export class SessionManager {
 		if (!sessionPath || !existsSync(sessionPath)) return;
 		this.appendSessionMetaEntry(sessionPath, { tags });
 		this.syncSessionMemoryEntry(sessionPath);
+	}
+
+	setSessionAppServerGoal(
+		sessionPath: string,
+		goal: NonNullable<SessionMetaEntry["appServerGoal"]> | null,
+	): void {
+		if (!sessionPath || !existsSync(sessionPath)) return;
+		this.appendSessionMetaEntry(sessionPath, { appServerGoal: goal });
 	}
 
 	private syncSessionMemoryEntry(sessionPath: string): void {
@@ -1286,6 +1296,7 @@ export class SessionManager {
 		id: string;
 		subject?: string;
 		title?: string;
+		summary?: string;
 		resumeSummary?: string;
 		messages: AppMessage[];
 		createdAt: string;
