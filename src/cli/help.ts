@@ -62,7 +62,7 @@ export function printHelp(version: string) {
 		"--mode <mode>           Output mode: text (default), json, or rpc",
 		"--auth <mode>           Credential mode: auto (default), api-key, claude",
 		"--approval-mode <mode>  Action approvals: prompt (default in TUI), auto, fail",
-		"--sandbox <mode>        Sandbox mode: docker, local, none (see docs/SAFETY.md)",
+		"--sandbox <mode>        Sandbox mode: read-only, workspace-write, danger-full-access, native, docker, local, none",
 		"--port <n>              Port for `maestro web` (defaults to PORT env or 8080)",
 		"--continue, -c          Continue previous session",
 		"--resume, -r            Select a session to resume",
@@ -131,7 +131,7 @@ export function printHelp(version: string) {
   CLAUDE_CODE_TOKEN       - Claude Code access token for --auth claude
   ANTHROPIC_OAUTH_TOKEN   - Alternate env for Claude Code bearer tokens
   MAESTRO_AGENT_DIR      - Session storage directory (default: ~/.maestro/agent)
-  MAESTRO_SANDBOX_MODE   - Sandbox mode: docker, local, none (default: none)
+  MAESTRO_SANDBOX_MODE   - Sandbox mode: read-only, workspace-write, danger-full-access
   MAESTRO_CHANGELOG      - Set to off/false/hide/hidden/skip/0 to hide startup changelog banner
   MAESTRO_TUI_MINIMAL    - Set to 1/true to disable animations and reduce TUI effects (SSH-friendly)
   MAESTRO_TUI_TOOL_MAX_CHARS - Max chars shown per tool output panel (0 = unlimited)
@@ -155,7 +155,7 @@ export function printHelp(version: string) {
     --output-schema <file|json> Validate final assistant JSON against a schema
     --output-last-message <path> Write the final assistant message to disk
     --full-auto | --read-only   Force approval policy (auto or fail)
-    --sandbox <mode>            Run in sandbox: docker, local, none
+    --sandbox <mode>            Run in sandbox: read-only, workspace-write, danger-full-access, native, docker, local, none
     --resume <sessionId>        Resume a prior exec session by id
     --last                      Resume the most recent exec session`,
 	)}`;

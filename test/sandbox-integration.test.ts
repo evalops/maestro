@@ -173,6 +173,26 @@ describe("Sandbox", () => {
 			}
 		});
 
+		it("should treat policy MAESTRO_SANDBOX_MODE values as native sandbox requests", async () => {
+			const originalEnv = process.env.MAESTRO_SANDBOX_MODE;
+			const testDir = join(tmpdir(), `sandbox-policy-env-test-${Date.now()}`);
+			mkdirSync(testDir, { recursive: true });
+
+			try {
+				process.env.MAESTRO_SANDBOX_MODE = "workspace-write";
+				const sandbox = await createSandbox({ cwd: testDir });
+				expect(sandbox?.exec).toBeDefined();
+				await sandbox?.dispose();
+			} finally {
+				if (originalEnv === undefined) {
+					Reflect.deleteProperty(process.env, "MAESTRO_SANDBOX_MODE");
+				} else {
+					process.env.MAESTRO_SANDBOX_MODE = originalEnv;
+				}
+				rmSync(testDir, { recursive: true, force: true });
+			}
+		});
+
 		it("should use config file when no explicit mode", async () => {
 			const testDir = join(tmpdir(), `sandbox-create-test-${Date.now()}`);
 			mkdirSync(join(testDir, ".maestro"), { recursive: true });

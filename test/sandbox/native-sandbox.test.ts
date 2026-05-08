@@ -379,6 +379,24 @@ describe("Native Sandbox", () => {
 			await sandbox?.dispose();
 		});
 
+		it("treats policy modes as native sandbox requests", async () => {
+			if (!isNativeSandboxAvailable()) {
+				// Skip on platforms without native sandbox support
+				return;
+			}
+
+			const sandbox = await createSandbox({
+				mode: "workspace-write",
+				cwd: testDir,
+				native: {
+					networkAccess: true,
+				},
+			});
+
+			expect(sandbox).toBeInstanceOf(NativeSandbox);
+			await sandbox?.dispose();
+		});
+
 		it("falls back to local when native not available", async () => {
 			// This test is platform-dependent
 			// On unsupported platforms, native should fall back to local
