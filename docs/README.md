@@ -14,6 +14,7 @@ Use this index to jump to the right guide quickly and see how the pieces connect
 ## Core Reference
 - [Tools Reference](TOOLS_REFERENCE.md) — authoritative slash command and flag definitions.
 - [Safety](SAFETY.md) — approvals, sandboxing, and firewall behavior.
+- [Agent Safety Boundary](design/AGENT_SAFETY_BOUNDARY.md) — how MCP workspace trust, guarded files, approvals, audit, and sandbox policy compose.
 - [Threat Model](THREAT_MODEL.md) — security architecture, trust boundaries, and attack mitigations.
 - [Models](MODELS.md) — provider/model registry sources, overrides, defaults, and OpenAI-compat quirks.
 - [Sessions](SESSIONS.md) — session formats, storage locations, and management commands.
