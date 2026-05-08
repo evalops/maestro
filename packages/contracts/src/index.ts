@@ -51,6 +51,7 @@ export * from "./key-value-tokens.js";
 export * from "./mcp-settings.js";
 export * from "./memory.js";
 export * from "./memory-utils.js";
+export * from "./maestro-app-server.js";
 export * from "./onboarding-utils.js";
 export * from "./proto/maestro/v1/headless_pb.js";
 export * from "./runtime-app-server.js";

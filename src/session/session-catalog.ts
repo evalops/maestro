@@ -32,6 +32,7 @@ export interface LoadedSessionData {
 	id: string;
 	subject?: string;
 	title?: string;
+	summary?: string;
 	resumeSummary?: string;
 	messages: AppMessage[];
 	createdAt: string;
@@ -84,6 +85,7 @@ export class SessionCatalog {
 						path: filePath,
 						id: info.id,
 						subject: info.subject,
+						title: info.title,
 						created: info.created,
 						modified: stats.mtime,
 						size: stats.size,
@@ -92,6 +94,7 @@ export class SessionCatalog {
 						summary: derivedSummary,
 						resumeSummary: info.resumeSummary,
 						favorite: info.favorite,
+						tags: info.tags,
 						allMessagesText: info.allMessagesText,
 					});
 				} catch (error) {
@@ -175,11 +178,13 @@ export class SessionCatalog {
 		if (!info) {
 			return null;
 		}
+		const derivedSummary = info.summary || info.firstMessage || "(no summary)";
 
 		return {
 			id: info.id,
 			subject: info.subject,
 			title: info.title ?? info.summary,
+			summary: derivedSummary,
 			resumeSummary: info.resumeSummary,
 			messages: info.messages,
 			createdAt: info.created.toISOString(),

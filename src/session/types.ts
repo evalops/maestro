@@ -146,6 +146,7 @@ export interface SessionMetadata {
 	path: string;
 	id: string;
 	subject?: string;
+	title?: string;
 	created: Date;
 	modified: Date;
 	size: number;
@@ -154,6 +155,7 @@ export interface SessionMetadata {
 	summary: string;
 	resumeSummary?: string;
 	favorite: boolean;
+	tags?: string[];
 	allMessagesText: string;
 }
 
