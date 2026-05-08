@@ -786,6 +786,49 @@ describe("Maestro app-server session API", () => {
 		});
 	});
 
+	it("treats whitespace-only optional metadata strings as absent", async () => {
+		let writeCount = 0;
+		const api = createMaestroAppServerSessionApi({
+			loadAllSessions: () => [],
+			listSessions: async () => [],
+			loadSession: async (sessionId, options = {}) =>
+				sessionId === "blank-summary-thread"
+					? {
+							id: sessionId,
+							title: "Blank summary thread",
+							summary: "Original summary",
+							createdAt: "2026-01-01T00:00:00.000Z",
+							updatedAt: "2026-01-01T00:00:00.000Z",
+							messageCount: 1,
+							favorite: false,
+							messagesView: options.messagesView ?? "notLoaded",
+						}
+					: null,
+			getSessionFileById: (sessionId) => `db:${sessionId}`,
+			saveSessionSummary: () => {
+				writeCount += 1;
+			},
+		});
+
+		const response = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "blank-summary-update",
+			method: "thread/metadata/update",
+			params: {
+				threadId: "blank-summary-thread",
+				summary: "   ",
+			},
+		});
+
+		expect(response.result).toMatchObject({
+			thread: {
+				id: "blank-summary-thread",
+				summary: "Original summary",
+			},
+		});
+		expect(writeCount).toBe(0);
+	});
+
 	it("validates hosted thread existence before metadata writes", async () => {
 		let writeCount = 0;
 		const api = createMaestroAppServerSessionApi({

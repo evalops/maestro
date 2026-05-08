@@ -354,7 +354,7 @@ function optionalTrimmedString(
 	if (typeof value !== "string") {
 		throw new MaestroAppServerError(-32602, `Invalid ${field}`);
 	}
-	return value.trim();
+	return value.trim() || undefined;
 }
 
 function optionalBoolean(value: unknown, field: string): boolean | undefined {
