@@ -345,6 +345,26 @@ describe("Enterprise Policy Enforcement", () => {
 			expect(result.allowed).toBe(false);
 		});
 
+		it("extracts file paths from apply_patch bodies", async () => {
+			setupPolicy({ paths: { blocked: ["/etc/**"] } });
+			const result = await checkPolicy({
+				toolName: "apply_patch",
+				args: {
+					patch: [
+						"*** Begin Patch",
+						"*** Update File: /etc/cron.d/backdoor",
+						"@@",
+						"-old",
+						"+new",
+						"*** End Patch",
+					].join("\n"),
+				},
+			} as ActionApprovalContext);
+
+			expect(result.allowed).toBe(false);
+			expect(result.reason).toContain("blocked by enterprise policy");
+		});
+
 		it("checks common path argument keys", async () => {
 			const pathKeys = [
 				"path",
