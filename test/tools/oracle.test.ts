@@ -93,6 +93,7 @@ describe("oracleTool", () => {
 		expect(prompt).toContain(
 			"## Stopping Condition\nStop after a concise response",
 		);
+		expect(prompt).toContain("Effort: <S|M|L|XL>");
 		expect(spawnMock).toHaveBeenCalledWith(
 			"maestro",
 			expect.arrayContaining([

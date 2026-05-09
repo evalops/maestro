@@ -251,12 +251,38 @@ export const conductorHighlightElementTool: AgentTool = {
 export const conductorBrowserOperatorTool: AgentTool = {
 	name: "browser_operator",
 	description:
-		"Use Conductor as a browser operator: observe the active page, execute one semantic browser action when supplied, and return verification plus the latest page state. Prefer this over chaining raw browser tools for task-level web interaction.",
+		"Use Conductor as a browser operator: observe the active page, execute one semantic browser action when supplied, and return verification plus the latest page state. Prefer this over chaining raw browser tools. Use an observe -> act -> verify loop, and re-observe before retrying stale selectors.",
 	parameters: Type.Object(
 		{
 			goal: Type.String({
 				description: "The browser task or observation goal.",
 			}),
+			phase: Type.Optional(
+				Type.Union([
+					Type.Literal("observe"),
+					Type.Literal("act"),
+					Type.Literal("verify"),
+					Type.Literal("recover"),
+				]),
+			),
+			previous_observation_id: Type.Optional(
+				Type.String({
+					description:
+						"Opaque observation id from the prior browser_operator result, when retrying or verifying a prior action.",
+				}),
+			),
+			expected_result: Type.Optional(
+				Type.String({
+					description:
+						"Short, redaction-safe success condition for the action, such as a visible result, URL/title change, or selector becoming present.",
+				}),
+			),
+			max_elements: Type.Optional(
+				Type.Number({
+					description:
+						"Maximum interactive elements to include when observing or refreshing page state.",
+				}),
+			),
 			action: Type.Optional(
 				Type.Object(
 					{

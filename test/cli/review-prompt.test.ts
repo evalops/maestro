@@ -18,5 +18,8 @@ describe("buildReviewPrompt", () => {
 		expect(prompt).toContain("Diff summary");
 		expect(prompt).toContain("Staged diff");
 		expect(prompt).toContain("Unstaged diff");
+		expect(prompt).toContain('"effort_signal"');
+		expect(prompt).toContain('"size": "S" | "M" | "L" | "XL"');
+		expect(prompt).toContain("fill overall_* fields and effort_signal");
 	});
 });

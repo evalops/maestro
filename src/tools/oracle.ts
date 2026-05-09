@@ -72,7 +72,7 @@ export const oracleTool = createTool<typeof oracleSchema, OracleToolDetails>({
 			validation:
 				"Inspect referenced artifacts before drawing conclusions, cite file paths and line numbers when possible, and separate evidence from assumptions.",
 			stoppingCondition:
-				"Stop after a concise response with Summary, Insights, optional Next steps, and any uncertainties. Never edit or run code.",
+				"Stop after a concise response with Summary, Insights, optional Next steps, any uncertainties, then final lines `Effort: <S|M|L|XL> (<rough duration or reason>)` and optional `Revisit-if: <signal>`. Never edit or run code.",
 		};
 		const prompt = [
 			"You are the Seer, a read-only software architecture advisor. You must never edit or run code.",
