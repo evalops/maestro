@@ -43,6 +43,7 @@ import {
 } from "../packages/sources.js";
 import type { PackageSpec } from "../packages/types.js";
 import { createLogger } from "../utils/logger.js";
+import { getHomeDir } from "../utils/path-expansion.js";
 import { compileTypeboxSchema } from "../utils/typebox-ajv.js";
 import { PATHS, getAgentDir } from "./constants.js";
 
@@ -645,6 +646,12 @@ function resolveFirstProjectDocPathInDir(
 	return null;
 }
 
+export function resolveProjectDocGlobalDirectories(): string[] {
+	return Array.from(
+		new Set([resolve(getAgentDir()), resolve(getHomeDir(), ".config")]),
+	);
+}
+
 export function resolvePromptLoadedProjectDocPaths(
 	cwdOverride?: string,
 	config?: ComposerConfig,
@@ -662,21 +669,36 @@ export function resolvePromptLoadedProjectDocPaths(
 		return [];
 	}
 	const paths: string[] = [];
+	const loadedPaths = new Set<string>();
 
-	const globalContextDir = resolve(getAgentDir());
-	const globalContextPath = resolveFirstProjectDocPathInDir(
-		globalContextDir,
-		candidates,
-		remainingBytes,
-	);
-	if (globalContextPath) {
-		paths.push(globalContextPath.path);
-		if (remainingBytes !== undefined) {
-			remainingBytes = Math.max(
-				0,
-				remainingBytes - globalContextPath.bytesRead,
-			);
+	const pushResolvedPath = (
+		contextPath: { path: string; bytesRead: number } | null,
+	): void => {
+		if (!contextPath) {
+			return;
 		}
+		const resolvedPath = resolve(contextPath.path);
+		if (loadedPaths.has(resolvedPath)) {
+			return;
+		}
+		loadedPaths.add(resolvedPath);
+		paths.push(resolvedPath);
+		if (remainingBytes !== undefined) {
+			remainingBytes = Math.max(0, remainingBytes - contextPath.bytesRead);
+		}
+	};
+
+	for (const globalContextDir of resolveProjectDocGlobalDirectories()) {
+		if (remainingBytes === 0) {
+			break;
+		}
+		pushResolvedPath(
+			resolveFirstProjectDocPathInDir(
+				globalContextDir,
+				candidates,
+				remainingBytes,
+			),
+		);
 	}
 
 	const directories: string[] = [];
@@ -707,12 +729,7 @@ export function resolvePromptLoadedProjectDocPaths(
 			candidates,
 			remainingBytes,
 		);
-		if (contextPath) {
-			paths.push(contextPath.path);
-			if (remainingBytes !== undefined) {
-				remainingBytes = Math.max(0, remainingBytes - contextPath.bytesRead);
-			}
-		}
+		pushResolvedPath(contextPath);
 	}
 
 	return paths;

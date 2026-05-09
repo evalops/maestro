@@ -15,11 +15,13 @@ import { clearConfigCache } from "../../src/config/index.js";
 describe("buildSystemPrompt", () => {
 	let originalCwd: string;
 	let originalHome: string | undefined;
+	let originalUserHome: string | undefined;
 	let testDir: string;
 
 	beforeEach(() => {
 		originalCwd = process.cwd();
 		originalHome = process.env.MAESTRO_HOME;
+		originalUserHome = process.env.HOME;
 		testDir = join(tmpdir(), `maestro-system-prompt-${Date.now()}`);
 		mkdirSync(testDir, { recursive: true });
 		process.chdir(testDir);
@@ -27,6 +29,7 @@ describe("buildSystemPrompt", () => {
 		const maestroHome = join(testDir, "maestro-home");
 		mkdirSync(maestroHome, { recursive: true });
 		process.env.MAESTRO_HOME = maestroHome;
+		process.env.HOME = testDir;
 		clearConfigCache();
 	});
 
@@ -36,6 +39,11 @@ describe("buildSystemPrompt", () => {
 			Reflect.deleteProperty(process.env, "MAESTRO_HOME");
 		} else {
 			process.env.MAESTRO_HOME = originalHome;
+		}
+		if (originalUserHome === undefined) {
+			Reflect.deleteProperty(process.env, "HOME");
+		} else {
+			process.env.HOME = originalUserHome;
 		}
 		clearConfigCache();
 		if (existsSync(testDir)) {
@@ -115,7 +123,51 @@ describe("buildSystemPrompt", () => {
 		const prompt = finalizeSystemPrompt("base prompt", undefined, projectDir);
 
 		expect(prompt).toContain("project specific context");
+		expect(prompt).toContain(`# AGENTS.md instructions for ${projectDir}`);
+		expect(prompt).toContain("<INSTRUCTIONS>\nproject specific context");
+		expect(prompt).toContain("</INSTRUCTIONS>");
 		expect(prompt).toContain(`Current working directory: ${projectDir}`);
+	});
+
+	it("loads hierarchical agent instructions from root to cwd", () => {
+		const projectDir = join(testDir, "monorepo");
+		const packageDir = join(projectDir, "packages", "api");
+		const cwd = join(packageDir, "src");
+		mkdirSync(cwd, { recursive: true });
+		writeFileSync(join(projectDir, "AGENTS.md"), "root instructions");
+		writeFileSync(join(packageDir, "AGENT.md"), "package instructions");
+
+		const prompt = finalizeSystemPrompt("base prompt", undefined, cwd);
+
+		const rootHeader = `# AGENTS.md instructions for ${projectDir}`;
+		const packageHeader = `# AGENT.md instructions for ${packageDir}`;
+		expect(prompt).toContain(rootHeader);
+		expect(prompt).toContain(packageHeader);
+		expect(prompt.indexOf(rootHeader)).toBeLessThan(
+			prompt.indexOf(packageHeader),
+		);
+		expect(prompt).toContain("<INSTRUCTIONS>\nroot instructions");
+		expect(prompt).toContain("<INSTRUCTIONS>\npackage instructions");
+		expect(prompt).toContain(`</INSTRUCTIONS>\n\n${packageHeader}`);
+	});
+
+	it("loads user-global ~/.config/AGENT.md before project instructions", () => {
+		const projectDir = join(testDir, "global-project");
+		const globalConfigDir = join(testDir, ".config");
+		mkdirSync(projectDir, { recursive: true });
+		mkdirSync(globalConfigDir, { recursive: true });
+		writeFileSync(join(globalConfigDir, "AGENT.md"), "global instructions");
+		writeFileSync(join(projectDir, "AGENTS.md"), "project instructions");
+
+		const prompt = finalizeSystemPrompt("base prompt", undefined, projectDir);
+
+		const globalHeader = `# AGENT.md instructions for ${globalConfigDir}`;
+		const projectHeader = `# AGENTS.md instructions for ${projectDir}`;
+		expect(prompt).toContain(globalHeader);
+		expect(prompt).toContain(projectHeader);
+		expect(prompt.indexOf(globalHeader)).toBeLessThan(
+			prompt.indexOf(projectHeader),
+		);
 	});
 
 	it("warns the agent when the workspace contains guarded path categories", () => {

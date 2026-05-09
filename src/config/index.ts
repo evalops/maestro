@@ -26,6 +26,7 @@ export {
 	DEFAULT_CONFIG,
 	resolveLoadedAppendSystemPromptPath,
 	resolveProjectDocCandidateFilenames,
+	resolveProjectDocGlobalDirectories,
 	resolvePromptLoadedProjectDocPaths,
 	type ComposerConfig,
 	type ConfiguredPackageSpec,

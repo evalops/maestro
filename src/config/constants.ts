@@ -195,7 +195,11 @@ export const PATHS = {
 	AGENT_CONTEXT_FILES: [
 		"AGENTS.override.md",
 		"AGENTS.md",
+		"Agents.md",
+		"agents.md",
 		"AGENT.md",
+		"Agent.md",
+		"agent.md",
 		"CLAUDE.md",
 	] as const,
 } as const;
