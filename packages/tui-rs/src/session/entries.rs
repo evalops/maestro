@@ -1108,16 +1108,34 @@ mod tests {
     use super::*;
     use serde_json::{json, Map, Value};
 
-    fn repo_fixture(name: &str) -> String {
+    fn repo_test_fixture(kind: &str, name: &str) -> String {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
-            .join("test/fixtures/session-wire")
+            .join("test")
+            .join("fixtures")
+            .join(kind)
             .join(name);
         std::fs::read_to_string(path).unwrap()
     }
 
+    fn repo_fixture(name: &str) -> String {
+        repo_test_fixture("session-wire", name)
+    }
+
+    fn repo_replay_fixture(name: &str) -> String {
+        repo_test_fixture("session-replay", name)
+    }
+
     fn parse_fixture(name: &str) -> Vec<SessionEntry> {
         repo_fixture(name)
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    fn parse_replay_fixture(name: &str) -> Vec<SessionEntry> {
+        repo_replay_fixture(name)
             .lines()
             .filter(|line| !line.trim().is_empty())
             .map(|line| serde_json::from_str(line).unwrap())
@@ -1356,6 +1374,306 @@ mod tests {
             let entries = parse_fixture(fixture);
             assert!(!entries.is_empty(), "fixture {fixture} should not be empty");
         }
+    }
+
+    #[derive(Debug, Clone)]
+    struct ReplayToolRequest {
+        args: Value,
+    }
+
+    fn replay_text_content(message: &AppMessage) -> Option<String> {
+        let text = message.text_content();
+        if text.is_empty() {
+            None
+        } else {
+            Some(text)
+        }
+    }
+
+    fn replay_compact_item(
+        id: String,
+        item_type: &str,
+        status: &str,
+        visibility: &str,
+        title: &str,
+    ) -> Map<String, Value> {
+        let mut item = Map::new();
+        item.insert("id".to_string(), json!(id));
+        item.insert("type".to_string(), json!(item_type));
+        item.insert("status".to_string(), json!(status));
+        item.insert("visibility".to_string(), json!(visibility));
+        item.insert("source".to_string(), json!("local"));
+        item.insert("title".to_string(), json!(title));
+        item
+    }
+
+    fn replay_tool_path(request: Option<&ReplayToolRequest>) -> Option<String> {
+        request
+            .and_then(|request| {
+                request
+                    .args
+                    .get("path")
+                    .or_else(|| request.args.get("file_path"))
+            })
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+    }
+
+    fn replay_push_message_items(
+        items: &mut Vec<(String, Value)>,
+        session_id: &str,
+        base_id: &str,
+        timestamp: &str,
+        message: &AppMessage,
+        tool_requests: &mut std::collections::HashMap<String, ReplayToolRequest>,
+    ) {
+        match message {
+            AppMessage::User { .. } => {
+                let mut item = replay_compact_item(
+                    format!("message:{base_id}"),
+                    "message.user",
+                    "completed",
+                    "user",
+                    "User message",
+                );
+                item.insert("role".to_string(), json!("user"));
+                if let Some(summary) = replay_text_content(message) {
+                    item.insert("summary".to_string(), json!(summary));
+                }
+                items.push((timestamp.to_string(), Value::Object(item)));
+            }
+            AppMessage::Assistant { content, .. } => {
+                let mut item = replay_compact_item(
+                    format!("message:{base_id}"),
+                    "message.assistant",
+                    "completed",
+                    "user",
+                    "Assistant response",
+                );
+                item.insert("role".to_string(), json!("assistant"));
+                if let Some(summary) = replay_text_content(message) {
+                    item.insert("summary".to_string(), json!(summary));
+                }
+                items.push((timestamp.to_string(), Value::Object(item)));
+
+                for block in content {
+                    let ContentBlock::ToolCall { id, name, args } = block else {
+                        continue;
+                    };
+                    tool_requests.insert(id.clone(), ReplayToolRequest { args: args.clone() });
+                    let mut request = replay_compact_item(
+                        format!("tool-requested:{base_id}:{id}"),
+                        "tool.requested",
+                        "running",
+                        "user",
+                        &format!("Requested {name}"),
+                    );
+                    request.insert("toolCallId".to_string(), json!(id));
+                    request.insert("toolName".to_string(), json!(name));
+                    items.push((timestamp.to_string(), Value::Object(request)));
+                }
+            }
+            AppMessage::ToolResult {
+                tool_call_id,
+                tool_name,
+                details,
+                is_error,
+                ..
+            } => {
+                let request = tool_requests.get(tool_call_id);
+                if !is_error && (tool_name == "edit" || tool_name == "write") {
+                    let details = details.as_ref();
+                    let edits_applied = details
+                        .and_then(|value| value.get("editsApplied"))
+                        .and_then(Value::as_u64);
+                    let bytes_written = details
+                        .and_then(|value| value.get("bytesWritten"))
+                        .and_then(Value::as_u64);
+                    let display_path = replay_tool_path(request);
+                    let action = if tool_name == "write" {
+                        "wrote"
+                    } else {
+                        "edited"
+                    };
+                    let mut file_change = replay_compact_item(
+                        format!("file-change:{base_id}:{tool_call_id}"),
+                        "file.changed",
+                        "completed",
+                        "user",
+                        &format!("File {action}"),
+                    );
+                    file_change.insert("toolCallId".to_string(), json!(tool_call_id));
+                    file_change.insert("toolName".to_string(), json!(tool_name));
+                    let summary = [
+                        display_path,
+                        bytes_written.map(|bytes| format!("{bytes} bytes")),
+                        edits_applied.map(|edits| format!("{edits} edits")),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                    if !summary.is_empty() {
+                        file_change.insert("summary".to_string(), json!(summary));
+                    }
+                    items.push((timestamp.to_string(), Value::Object(file_change)));
+                }
+
+                let status = if *is_error { "failed" } else { "completed" };
+                let mut result = replay_compact_item(
+                    format!("tool-result:{base_id}:{tool_call_id}"),
+                    if *is_error {
+                        "tool.failed"
+                    } else {
+                        "tool.completed"
+                    },
+                    status,
+                    "user",
+                    &format!("{tool_name} {status}"),
+                );
+                result.insert("role".to_string(), json!("tool"));
+                result.insert("toolCallId".to_string(), json!(tool_call_id));
+                result.insert("toolName".to_string(), json!(tool_name));
+                items.push((timestamp.to_string(), Value::Object(result)));
+            }
+        }
+
+        let _ = session_id;
+    }
+
+    fn replay_normalized_timeline(entries: &[SessionEntry]) -> Value {
+        let mut items: Vec<(String, Value)> = Vec::new();
+        let mut session_id = String::new();
+        let mut tool_requests = std::collections::HashMap::new();
+
+        for entry in entries {
+            match entry {
+                SessionEntry::Session(header) => {
+                    session_id = header.id.clone();
+                    items.push((
+                        header.timestamp.clone(),
+                        Value::Object(replay_compact_item(
+                            format!("session-started:{}", header.id),
+                            "session.started",
+                            "info",
+                            "user",
+                            "Session started",
+                        )),
+                    ));
+                }
+                SessionEntry::Message(message) => {
+                    replay_push_message_items(
+                        &mut items,
+                        &session_id,
+                        message.id.as_deref().unwrap_or("missing-id"),
+                        &message.timestamp,
+                        &message.message,
+                        &mut tool_requests,
+                    );
+                }
+                SessionEntry::BranchSummary(branch) => {
+                    let mut item = replay_compact_item(
+                        format!("branch:{}", branch.id.as_deref().unwrap_or("missing-id")),
+                        "branch.created",
+                        "info",
+                        "admin",
+                        "Branch summary created",
+                    );
+                    item.insert("summary".to_string(), json!(branch.summary));
+                    items.push((branch.timestamp.clone(), Value::Object(item)));
+                }
+                SessionEntry::CustomMessage(message) => {
+                    if !message.display {
+                        continue;
+                    }
+                    let mut item = replay_compact_item(
+                        format!(
+                            "custom-message:{}",
+                            message.id.as_deref().unwrap_or("missing-id")
+                        ),
+                        "custom.event",
+                        "info",
+                        "admin",
+                        &message.custom_type,
+                    );
+                    let content = match &message.content {
+                        MessageContent::Text(text) => Some(text.clone()),
+                        MessageContent::Blocks(blocks) => {
+                            let text = blocks
+                                .iter()
+                                .filter_map(|block| {
+                                    if let ContentBlock::Text { text } = block {
+                                        Some(text.as_str())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            if text.is_empty() {
+                                None
+                            } else {
+                                Some(text)
+                            }
+                        }
+                    };
+                    if let Some(summary) = content {
+                        item.insert("summary".to_string(), json!(summary));
+                    }
+                    items.push((message.timestamp.clone(), Value::Object(item)));
+                }
+                SessionEntry::Compaction(compaction) => {
+                    let mut item = replay_compact_item(
+                        format!(
+                            "compaction:{}",
+                            compaction.id.as_deref().unwrap_or("missing-id")
+                        ),
+                        "compaction.created",
+                        "info",
+                        "admin",
+                        "Context compacted",
+                    );
+                    item.insert("summary".to_string(), json!(compaction.summary));
+                    items.push((compaction.timestamp.clone(), Value::Object(item)));
+                }
+                SessionEntry::SessionMeta(_)
+                | SessionEntry::AttachmentExtract(_)
+                | SessionEntry::ThinkingLevelChange(_)
+                | SessionEntry::ModelChange(_)
+                | SessionEntry::Custom(_)
+                | SessionEntry::Label(_) => {}
+            }
+        }
+
+        items.sort_by(|(left_ts, left), (right_ts, right)| {
+            left_ts.cmp(right_ts).then_with(|| {
+                left["id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .cmp(right["id"].as_str().unwrap_or_default())
+            })
+        });
+        Value::Array(items.into_iter().map(|(_, value)| value).collect())
+    }
+
+    #[test]
+    fn rust_parser_matches_shared_replay_fixture_timeline() {
+        let entries = parse_replay_fixture("legacy-compacted-mcp-session.jsonl");
+        let expected: Value = serde_json::from_str(&repo_replay_fixture(
+            "legacy-compacted-mcp-session.replay.json",
+        ))
+        .unwrap();
+
+        assert_eq!(replay_normalized_timeline(&entries), expected["timeline"]);
+
+        let SessionEntry::Session(header) = &entries[0] else {
+            panic!("expected session header");
+        };
+        assert_eq!(header.id, "replay-legacy-mcp-1");
+        assert_eq!(header.thinking_level, ThinkingLevel::High);
+        assert_eq!(header.parent_session.as_deref(), Some("imported-parent-1"));
+        assert!(header.unified_context_manifest.is_some());
+        assert_eq!(header.tools.len(), 2);
     }
 
     #[test]

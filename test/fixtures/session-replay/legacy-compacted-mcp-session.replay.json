@@ -1,0 +1,190 @@
+{
+	"schemaVersion": "evalops.maestro.session-replay-fixture.v1",
+	"fixture": "legacy-compacted-mcp-session.jsonl",
+	"session": {
+		"id": "replay-legacy-mcp-1",
+		"cwd": "/workspace/replay",
+		"model": "openai/gpt-5.5",
+		"messageCount": 4
+	},
+	"counts": {
+		"timelineItems": 11,
+		"byType": {
+			"session.started": 1,
+			"message.user": 1,
+			"message.assistant": 1,
+			"tool.requested": 2,
+			"file.changed": 1,
+			"tool.completed": 2,
+			"branch.created": 1,
+			"custom.event": 1,
+			"compaction.created": 1
+		},
+		"byStatus": {
+			"info": 4,
+			"completed": 5,
+			"running": 2
+		},
+		"byVisibility": {
+			"user": 8,
+			"admin": 3
+		}
+	},
+	"coverage": {
+		"promptInputs": true,
+		"assistantResponses": true,
+		"toolRequests": true,
+		"toolResults": true,
+		"contextManifest": true,
+		"contextDiagnostics": true,
+		"fileChanges": true,
+		"artifacts": false,
+		"policyDecisions": false,
+		"diagnostics": false,
+		"compactions": true,
+		"pendingRequests": false,
+		"mcpContext": true
+	},
+	"promptContext": {
+		"entries": 1,
+		"projectDocs": 1,
+		"mcpServers": 1
+	},
+	"contextManifest": {
+		"entries": 4,
+		"projectDocs": 1,
+		"mcpServers": 1,
+		"mcpResources": 1,
+		"mcpPrompts": 1,
+		"diagnostics": 1,
+		"byKind": {
+			"project_doc": 1,
+			"mcp_server": 1,
+			"mcp_resource": 1,
+			"mcp_prompt": 1
+		},
+		"bySource": {
+			"filesystem": 1,
+			"mcp_runtime": 3
+		},
+		"byStatus": {
+			"loaded": 1,
+			"connected": 1,
+			"available": 2
+		},
+		"protocolVersion": "maestro.unified-context-manifest.v1",
+		"version": 1,
+		"cwd": "/workspace/replay",
+		"projectDocBytesRead": 18
+	},
+	"timeline": [
+		{
+			"id": "session-started:replay-legacy-mcp-1",
+			"type": "session.started",
+			"status": "info",
+			"visibility": "user",
+			"source": "local",
+			"title": "Session started"
+		},
+		{
+			"id": "message:user-1",
+			"type": "message.user",
+			"status": "completed",
+			"visibility": "user",
+			"source": "local",
+			"title": "User message",
+			"role": "user",
+			"summary": "Reconstruct this MCP-heavy legacy run"
+		},
+		{
+			"id": "message:assistant-1",
+			"type": "message.assistant",
+			"status": "completed",
+			"visibility": "user",
+			"source": "local",
+			"title": "Assistant response",
+			"role": "assistant",
+			"summary": "I will update the replay docs."
+		},
+		{
+			"id": "tool-requested:assistant-1:call-edit",
+			"type": "tool.requested",
+			"status": "running",
+			"visibility": "user",
+			"source": "local",
+			"title": "Requested edit",
+			"toolCallId": "call-edit",
+			"toolName": "edit"
+		},
+		{
+			"id": "tool-requested:assistant-1:call-mcp-search",
+			"type": "tool.requested",
+			"status": "running",
+			"visibility": "user",
+			"source": "local",
+			"title": "Requested mcp__platform__search",
+			"toolCallId": "call-mcp-search",
+			"toolName": "mcp__platform__search"
+		},
+		{
+			"id": "file-change:tool-edit-1:call-edit",
+			"type": "file.changed",
+			"status": "completed",
+			"visibility": "user",
+			"source": "local",
+			"title": "File edited",
+			"toolCallId": "call-edit",
+			"toolName": "edit",
+			"summary": "docs/replay.md | 128 bytes | 2 edits"
+		},
+		{
+			"id": "tool-result:tool-edit-1:call-edit",
+			"type": "tool.completed",
+			"status": "completed",
+			"visibility": "user",
+			"source": "local",
+			"title": "edit completed",
+			"role": "tool",
+			"toolCallId": "call-edit",
+			"toolName": "edit"
+		},
+		{
+			"id": "tool-result:tool-mcp-1:call-mcp-search",
+			"type": "tool.completed",
+			"status": "completed",
+			"visibility": "user",
+			"source": "local",
+			"title": "mcp__platform__search completed",
+			"role": "tool",
+			"toolCallId": "call-mcp-search",
+			"toolName": "mcp__platform__search"
+		},
+		{
+			"id": "branch:branch-1",
+			"type": "branch.created",
+			"status": "info",
+			"visibility": "admin",
+			"source": "local",
+			"title": "Branch summary created",
+			"summary": "Side branch checked Rust parser parity."
+		},
+		{
+			"id": "custom-message:hook-note-1",
+			"type": "custom.event",
+			"status": "info",
+			"visibility": "admin",
+			"source": "local",
+			"title": "hook.note",
+			"summary": "Hook added replay evidence."
+		},
+		{
+			"id": "compaction:compact-1",
+			"type": "compaction.created",
+			"status": "info",
+			"visibility": "admin",
+			"source": "local",
+			"title": "Context compacted",
+			"summary": "Kept replay contract, MCP context, and Rust parser notes."
+		}
+	]
+}
