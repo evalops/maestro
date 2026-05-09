@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import type { Dirent } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
 	type RuntimeConstraintContext,
 	type RuntimeNetworkAccess,
@@ -686,6 +687,22 @@ function buildGuardedWorkspacePromptFragment(cwd: string): string | null {
 	].join("\n");
 }
 
+export function buildFileCitationPromptFragment(cwd = process.cwd()): string {
+	const examplePath = join(cwd, "src/auth/middleware.ts");
+	const exampleUri = `${pathToFileURL(examplePath).href}#L42`;
+
+	return [
+		"# File Citations",
+		"",
+		"When mentioning a workspace file in any user-facing response, link it using Markdown with a `file:///` URI so every surface can make the reference clickable.",
+		"Prefer the displayed text users expect to read, such as `src/auth/middleware.ts`, and percent-encode spaces and other URI characters in the link target.",
+		"Include known line references as URL fragments, such as `#L42`, `#L42-L48`, or `#L42C8`.",
+		"At GitHub comment boundaries, use repository blob URLs instead of local `file:///` URIs when repository metadata is available.",
+		`Good: See [src/auth/middleware.ts](${exampleUri}) for the validation logic.`,
+		"Bad: See src/auth/middleware.ts for the validation logic.",
+	].join("\n");
+}
+
 export function buildBundledSystemPromptBase(toolNames?: string[]): string {
 	const currentYear = new Date().getFullYear();
 	const activeToolNames = toolNames ?? DEFAULT_TOOL_NAMES;
@@ -728,6 +745,8 @@ export function finalizeSystemPrompt(
 	if (runtimeConstraintPrompt) {
 		prompt += `\n\n${runtimeConstraintPrompt}\n`;
 	}
+
+	prompt += `\n\n${buildFileCitationPromptFragment(cwd)}\n`;
 
 	if (appendText) {
 		prompt += "\n\n# Additional System Instructions\n\n";

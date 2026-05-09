@@ -1,8 +1,10 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	buildFileCitationPromptFragment,
 	buildSystemPrompt,
 	detectRuntimeConstraintContext,
 	finalizeSystemPrompt,
@@ -47,6 +49,40 @@ describe("buildSystemPrompt", () => {
 		expect(prompt).toContain(
 			"Length limits: keep text between tool calls to <=25 words. Keep final responses to <=100 words unless the task requires more detail.",
 		);
+	});
+
+	it("injects file citation guidance into bundled and custom prompts", () => {
+		const projectDir = join(testDir, "citation-project");
+		mkdirSync(projectDir, { recursive: true });
+
+		const customPrompt = finalizeSystemPrompt(
+			"custom base prompt",
+			undefined,
+			projectDir,
+		);
+		const exampleUri = `${
+			pathToFileURL(join(projectDir, "src/auth/middleware.ts")).href
+		}#L42`;
+
+		expect(buildSystemPrompt(undefined, [], undefined, {})).toContain(
+			"# File Citations",
+		);
+		expect(customPrompt).toContain("# File Citations");
+		expect(customPrompt).toContain("[src/auth/middleware.ts]");
+		expect(customPrompt).toContain(exampleUri);
+		expect(customPrompt).not.toContain("file:///workspace/");
+		expect(customPrompt).toContain("Bad: See src/auth/middleware.ts");
+	});
+
+	it("keeps file citation guidance compact and URI-oriented", () => {
+		const fragment = buildFileCitationPromptFragment(testDir);
+
+		expect(fragment).toContain("Markdown");
+		expect(fragment).toContain("`file:///` URI");
+		expect(fragment).toContain("percent-encode spaces");
+		expect(fragment).toContain("repository blob URLs");
+		expect(fragment).toContain("#L42-L48");
+		expect(fragment.length - testDir.length).toBeLessThan(900);
 	});
 
 	it("returns exact paths for explicit prompt files only", () => {
