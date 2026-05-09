@@ -5,6 +5,25 @@
 
 export const sessionWireFormatVersion = "session-wire-format.v1" as const;
 
+export const sessionWireSessionHeaderFields = [
+	"type",
+	"version",
+	"id",
+	"timestamp",
+	"cwd",
+	"subject",
+	"model",
+	"modelMetadata",
+	"thinkingLevel",
+	"systemPrompt",
+	"promptMetadata",
+	"promptContextManifest",
+	"unifiedContextManifest",
+	"tools",
+	"branchedFrom",
+	"parentSession",
+] as const;
+
 export const sessionWireStopReasonAliases = {
 	tool_use: "toolUse",
 	tool_calls: "toolUse",

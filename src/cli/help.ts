@@ -129,7 +129,10 @@ export function printHelp(version: string) {
   maestro stats
 
   # Show usage analytics for one session
-  maestro stats --session <session-id>`,
+  maestro stats --session <session-id>
+
+  # Reconstruct the timeline and evidence coverage for a saved run
+  maestro run inspect <session-id> --json`,
 	)}`;
 	const env = `${sectionHeading("Environment Variables:")}${muted(
 		`  GEMINI_API_KEY          - Google Gemini API key
@@ -199,6 +202,12 @@ export function printHelp(version: string) {
   maestro remote extend <session-id> --ttl 2h
   maestro remote stop <session-id> [--reason <text>]`,
 	)}`;
+	const runSection = `${sectionHeading("maestro run")}${muted(
+		`  maestro run inspect <session-id> [--json]
+
+  Reconstructs a saved session into a timeline with prompt, tool, file-change,
+  artifact, policy, diagnostic, compaction, pending-wait, and MCP-context coverage.`,
+	)}`;
 	const initSection = `${sectionHeading("maestro init")}${muted(
 		`  maestro init                         Login, create or reuse an API key, and register this agent
   maestro init --rotate-key           Replace the stored agent MCP API key
@@ -257,6 +266,7 @@ export function printHelp(version: string) {
 			portabilitySection,
 			memorySection,
 			initSection,
+			runSection,
 			remoteSection,
 			hostedRunnerSection,
 			sessionsSection,

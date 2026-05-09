@@ -1,5 +1,23 @@
 {
 	"version": "session-wire-format.v1",
+	"sessionHeaderFields": [
+		"type",
+		"version",
+		"id",
+		"timestamp",
+		"cwd",
+		"subject",
+		"model",
+		"modelMetadata",
+		"thinkingLevel",
+		"systemPrompt",
+		"promptMetadata",
+		"promptContextManifest",
+		"unifiedContextManifest",
+		"tools",
+		"branchedFrom",
+		"parentSession"
+	],
 	"stopReasonAliases": {
 		"tool_use": "toolUse",
 		"tool_calls": "toolUse",

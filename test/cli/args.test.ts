@@ -162,6 +162,57 @@ describe("parseArgs", () => {
 		});
 	});
 
+	it("only treats run as a command for the inspect subcommand", () => {
+		expect(
+			parseArgs(["run", "inspect", "session-123", "--json"]),
+		).toMatchObject({
+			command: "run",
+			subcommand: "inspect",
+			messages: ["session-123"],
+			execJson: true,
+		});
+		expect(parseArgs(["run", "tests", "and", "fix", "failures"])).toMatchObject(
+			{
+				messages: ["run", "tests", "and", "fix", "failures"],
+			},
+		);
+		expect(
+			parseArgs(["run", "tests", "and", "fix", "failures"]).command,
+		).toBeUndefined();
+		expect(parseArgs(["please", "run", "inspect", "my", "logs"])).toMatchObject(
+			{
+				messages: ["please", "run", "inspect", "my", "logs"],
+			},
+		);
+		expect(
+			parseArgs(["please", "run", "inspect", "my", "logs"]).command,
+		).toBeUndefined();
+		expect(
+			parseArgs(["run", "--json", "inspect", "session-123"]),
+		).toMatchObject({
+			command: "run",
+			subcommand: "inspect",
+			messages: ["session-123"],
+			execJson: true,
+		});
+		expect(
+			parseArgs([
+				"run",
+				"--profile",
+				"local",
+				"--json",
+				"inspect",
+				"session-123",
+			]),
+		).toMatchObject({
+			command: "run",
+			subcommand: "inspect",
+			profile: "local",
+			messages: ["session-123"],
+			execJson: true,
+		});
+	});
+
 	it("parses evalops auth commands", () => {
 		expect(parseArgs(["evalops", "login"])).toMatchObject({
 			command: "evalops",
