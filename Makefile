@@ -31,7 +31,7 @@ LOCAL_CEREBRO_REPO ?= ../cerebro
 
 .PHONY: help setup install build build-all compile run-ts run-rs run-rs-debug \
         web web-local dev dev-all developer-surface-check test test-fast test-coverage lint check fmt fmt-unsafe \
-        smoke cerebro-e2e cerebro-e2e-doctor evals verify clean db-up db-down db-migrate
+        smoke cerebro-dev cerebro-env cerebro-e2e cerebro-e2e-doctor evals verify clean db-up db-down db-migrate
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -107,6 +107,27 @@ smoke: build ## Smoke-test the built CLI
 
 cerebro-e2e-doctor: ## Preflight the cross-repo Cerebro local E2E lane
 	LOCAL_CEREBRO_REPO="$(LOCAL_CEREBRO_REPO)" node scripts/check-cerebro-e2e.mjs
+
+cerebro-env: ## Print env exports for running this Maestro checkout against local Cerebro
+	@LOCAL_CEREBRO_REPO="$(LOCAL_CEREBRO_REPO)" node scripts/check-cerebro-e2e.mjs --print-maestro-env
+
+cerebro-dev: cerebro-e2e-doctor ## Start a usable local Cerebro stack with Maestro event ingestion enabled
+	@eval "$$(LOCAL_CEREBRO_REPO="$(LOCAL_CEREBRO_REPO)" node scripts/check-cerebro-e2e.mjs --print-env)" && \
+		LOCAL_MAESTRO_REPO="$(CURDIR)" \
+		LOCAL_HTTP_PORT="$$LOCAL_HTTP_PORT" \
+		LOCAL_ADDR="$$LOCAL_ADDR" \
+		LOCAL_BASE_URL="$$LOCAL_BASE_URL" \
+		MAESTRO_CEREBRO_URL="$$MAESTRO_CEREBRO_URL" \
+		MAESTRO_CEREBRO_WORKSPACE_ID="$$MAESTRO_CEREBRO_WORKSPACE_ID" \
+		MAESTRO_WORKSPACE_ID="$$MAESTRO_WORKSPACE_ID" \
+		MAESTRO_PLATFORM_MCP_URL="$$MAESTRO_PLATFORM_MCP_URL" \
+		MAESTRO_AGENT_MCP_URL="$$MAESTRO_AGENT_MCP_URL" \
+		MAESTRO_CEREBRO_MCP_SCOPES="$$MAESTRO_CEREBRO_MCP_SCOPES" \
+		MAESTRO_PLATFORM_MCP_SCOPES="$$MAESTRO_PLATFORM_MCP_SCOPES" \
+		MAESTRO_AGENT_MCP_SCOPES="$$MAESTRO_AGENT_MCP_SCOPES" \
+		LOCAL_MAESTRO_GENERATE_REPLAY="$$LOCAL_MAESTRO_GENERATE_REPLAY" \
+		LOCAL_MAESTRO_DOCTOR_REPLAY="$$LOCAL_MAESTRO_DOCTOR_REPLAY" \
+		$(MAKE) -C "$(LOCAL_CEREBRO_REPO)" local-maestro-dev
 
 cerebro-e2e: cerebro-e2e-doctor ## Run the cross-repo Cerebro local E2E using this Maestro checkout
 	@eval "$$(LOCAL_CEREBRO_REPO="$(LOCAL_CEREBRO_REPO)" node scripts/check-cerebro-e2e.mjs --print-env)" && \

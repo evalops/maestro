@@ -28,6 +28,30 @@ function printEnv(overrides: NodeJS.ProcessEnv): string {
 	);
 }
 
+function printMaestroEnv(overrides: NodeJS.ProcessEnv): string {
+	return execFileSync(
+		process.execPath,
+		["scripts/check-cerebro-e2e.mjs", "--print-maestro-env"],
+		{
+			cwd: root,
+			encoding: "utf8",
+			env: { ...process.env, ...overrides },
+		},
+	);
+}
+
+function printEnvWithoutDeletingLocal(overrides: NodeJS.ProcessEnv): string {
+	return execFileSync(
+		process.execPath,
+		["scripts/check-cerebro-e2e.mjs", "--print-env"],
+		{
+			cwd: root,
+			encoding: "utf8",
+			env: { ...process.env, ...overrides },
+		},
+	);
+}
+
 describe("Cerebro local E2E config", () => {
 	it("prints the normalized local endpoint env consumed by the nested Cerebro make target", () => {
 		const output = printEnv({
@@ -49,6 +73,23 @@ describe("Cerebro local E2E config", () => {
 		expect(output).toContain("MAESTRO_PLATFORM_MCP_SCOPES='cerebro:read'");
 		expect(output).toContain("MAESTRO_AGENT_MCP_SCOPES='cerebro:read'");
 		expect(output).toContain("MAESTRO_WORKSPACE_ID='workspace_under_test'");
+	});
+
+	it("ignores empty exported LOCAL_* vars when printing nested make env", () => {
+		const output = printEnvWithoutDeletingLocal({
+			MAESTRO_CEREBRO_URL: "http://127.0.0.1:19997/cerebro.v1.CerebroService",
+			LOCAL_HTTP_PORT: "",
+			LOCAL_ADDR: "",
+			LOCAL_BASE_URL: "",
+			LOCAL_MAESTRO_GENERATE_REPLAY: "",
+			LOCAL_MAESTRO_DOCTOR_REPLAY: "",
+		});
+
+		expect(output).toContain("LOCAL_BASE_URL='http://127.0.0.1:19997'");
+		expect(output).toContain("LOCAL_HTTP_PORT='19997'");
+		expect(output).toContain("LOCAL_ADDR=':19997'");
+		expect(output).toContain("LOCAL_MAESTRO_GENERATE_REPLAY='true'");
+		expect(output).toContain("LOCAL_MAESTRO_DOCTOR_REPLAY='auto'");
 	});
 
 	it("honors documented agent MCP aliases when generating nested make env", () => {
@@ -93,6 +134,32 @@ describe("Cerebro local E2E config", () => {
 		expect(fallbackOutput).toContain("MAESTRO_WORKSPACE_ID='cerebro_generic'");
 	});
 
+	it("prints copyable Maestro env for the persistent local dev stack", () => {
+		const output = printMaestroEnv({
+			MAESTRO_CEREBRO_URL: "http://127.0.0.1:19998/cerebro.v1.CerebroService",
+			MAESTRO_CEREBRO_WORKSPACE_ID: "workspace_under_test",
+		});
+
+		expect(output).toContain(
+			"export MAESTRO_CEREBRO_URL='http://127.0.0.1:19998'",
+		);
+		expect(output).toContain("export CEREBRO_URL='http://127.0.0.1:19998'");
+		expect(output).toContain(
+			"export MAESTRO_PLATFORM_MCP_URL='http://127.0.0.1:19998/mcp'",
+		);
+		expect(output).toContain(
+			"export MAESTRO_AGENT_MCP_URL='http://127.0.0.1:19998/mcp'",
+		);
+		expect(output).toContain(
+			"export MAESTRO_WORKSPACE_ID='workspace_under_test'",
+		);
+		expect(output).toContain(
+			"export MAESTRO_CEREBRO_MCP_SCOPES='cerebro:read'",
+		);
+		expect(output).toContain("export MAESTRO_AGENT_MCP_SCOPES='cerebro:read'");
+		expect(output).toContain("export MAESTRO_EVALOPS_MEMORY_MODE='cerebro'");
+	});
+
 	it("does not depend on pinned .env.example defaults for the public developer surface check", () => {
 		const surfaceCheck = readFileSync(
 			resolve(root, "scripts/check-developer-surface.mjs"),
@@ -114,6 +181,10 @@ describe("Cerebro local E2E config", () => {
 		const makefile = readFileSync(resolve(root, "Makefile"), "utf8");
 
 		expect(makefile).toContain("scripts/check-cerebro-e2e.mjs --print-env");
+		expect(makefile).toContain(
+			"scripts/check-cerebro-e2e.mjs --print-maestro-env",
+		);
+		expect(makefile).toContain("local-maestro-dev");
 		expect(makefile).toContain('LOCAL_BASE_URL="$$LOCAL_BASE_URL"');
 		expect(makefile).toContain('MAESTRO_CEREBRO_URL="$$MAESTRO_CEREBRO_URL"');
 		expect(makefile).toContain(
