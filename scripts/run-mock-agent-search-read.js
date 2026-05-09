@@ -63,7 +63,7 @@ const transport = new MockToolTransport(
 					.find((line) => line.includes(tempFile));
 				const number = match?.split(":")[1];
 				lineNumber = number ? Number(number) : 1;
-				foundSearchMatch = Number.isFinite(lineNumber) && lineNumber > 0;
+				foundSearchMatch = !!match && Number.isFinite(lineNumber) && lineNumber > 0;
 				readOperation.args.offset = lineNumber;
 			},
 		},
