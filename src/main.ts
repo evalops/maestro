@@ -891,6 +891,14 @@ export async function main(args: string[]) {
 		return;
 	}
 
+	if (parsed.command === "scenario") {
+		const { handleScenarioCommand } = await import(
+			"./cli/commands/scenario.js"
+		);
+		await handleScenarioCommand(parsed.commandArgs ?? []);
+		return;
+	}
+
 	if (parsed.command === "anthropic") {
 		const { handleAnthropicCommand } = await import(
 			"./cli/commands/anthropic.js"

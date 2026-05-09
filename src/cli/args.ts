@@ -71,6 +71,7 @@ const COMMANDS = new Set([
 	"hooks",
 	"memory",
 	"remote",
+	"scenario",
 	"export",
 	"import",
 ]);
@@ -266,7 +267,8 @@ export function parseArgs(args: string[]): Args {
 					arg === "remote" ||
 					arg === "hosted-runner" ||
 					arg === "init" ||
-					arg === "evalops"
+					arg === "evalops" ||
+					arg === "scenario"
 				) {
 					result.commandArgs = args.slice(i + 1);
 					break;

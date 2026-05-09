@@ -117,8 +117,28 @@ stack, and verifies Cerebro graph projection plus MCP recall.
 
 Use `LOCAL_CEREBRO_REPO=/path/to/cerebro make cerebro-e2e` when Cerebro is not
 checked out next to Maestro. The doctor target verifies the Cerebro checkout,
-Docker Compose, Maestro replay generator, and Cerebro's own E2E preflight before
+Docker Compose, Maestro replay generator, local Cerebro env defaults or
+overrides, configured-port availability, and Cerebro's own E2E preflight before
 the full smoke starts.
+
+First-time local path:
+
+```bash
+gh repo clone evalops/cerebro ../cerebro
+make setup
+make cerebro-e2e-doctor
+make cerebro-e2e
+```
+
+If your local OTEL collector logs are unavailable, keep the graph/MCP proof and
+skip only the collector-log assertion with
+`LOCAL_ASSERT_OTEL=false make cerebro-e2e`.
+
+The default Cerebro API URL is `http://localhost:18080`, but the doctor respects
+`.env` or exported `MAESTRO_CEREBRO_URL` / `LOCAL_BASE_URL` overrides. When you
+move Cerebro to another port, pass the same `LOCAL_HTTP_PORT`, `LOCAL_ADDR`, and
+`LOCAL_BASE_URL` values to the E2E target so the delegated Cerebro make target
+starts on the same endpoint the doctor checked.
 
 ## Usage
 

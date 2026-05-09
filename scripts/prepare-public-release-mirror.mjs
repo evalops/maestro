@@ -41,6 +41,10 @@ const DEFAULT_EXCLUDES = [
 	"scripts/validate-public-package-deps.js",
 ];
 
+const PUBLIC_INCLUDE_OVERRIDES = new Set([
+	".env.example",
+]);
+
 function parseArgs(argv) {
 	const args = {
 		check: false,
@@ -161,6 +165,7 @@ function createMatcher(patterns) {
 	return (relativePath) => {
 		const normalized = normalizePath(relativePath).replace(/^\.?\//u, "");
 		if (!normalized) return false;
+		if (PUBLIC_INCLUDE_OVERRIDES.has(normalized)) return false;
 		if (exact.has(normalized)) return true;
 		if (
 			prefixes.some(

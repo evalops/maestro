@@ -77,6 +77,11 @@ describe("prepare-public-release-mirror", () => {
 			"internal smoke\n",
 		);
 		write(join(source, ".env"), "SECRET=value\n");
+		write(join(source, ".env.local"), "LOCAL_SECRET=value\n");
+		write(
+			join(source, ".env.example"),
+			"MAESTRO_CEREBRO_URL=http://localhost:18080\n",
+		);
 		write(join(source, "docs/internal/notes.md"), "internal\n");
 		write(join(source, ".github/public-release-mirror.exclude"), "");
 
@@ -109,6 +114,10 @@ describe("prepare-public-release-mirror", () => {
 		);
 		expect(existsSync(join(target, "old.txt"))).toBe(false);
 		expect(existsSync(join(target, ".env"))).toBe(false);
+		expect(existsSync(join(target, ".env.local"))).toBe(false);
+		expect(readFileSync(join(target, ".env.example"), "utf8")).toBe(
+			"MAESTRO_CEREBRO_URL=http://localhost:18080\n",
+		);
 		expect(existsSync(join(target, "docs/internal/notes.md"))).toBe(false);
 		expect(existsSync(join(target, ".husky/_/husky.sh"))).toBe(false);
 		expect(existsSync(join(target, "packages/contracts/dist/index.js"))).toBe(

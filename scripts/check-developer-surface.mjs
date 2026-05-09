@@ -16,7 +16,11 @@ const requirements = {
 		["Makefile", "dev-all"],
 		["Makefile", "web-local"],
 		["Makefile", "cerebro-e2e-doctor"],
+		["Makefile", "MAESTRO_CEREBRO_URL"],
+		["Makefile", "MAESTRO_PLATFORM_MCP_URL"],
+		["Makefile", "MAESTRO_WORKSPACE_ID"],
 		["scripts/check-cerebro-e2e.mjs", "Maestro Cerebro local E2E doctor"],
+		["scripts/check-cerebro-e2e.mjs", "--print-env"],
 	],
 	"local introspection": [
 		["package.json", '"telemetry:report"'],
