@@ -285,7 +285,9 @@ function formatRulePathForMarkdown(relativePath: string): string {
 }
 
 function formatRulePathForHtmlComment(relativePath: string): string {
-	return JSON.stringify(relativePath).replaceAll("--", "- -");
+	return JSON.stringify(relativePath).replace(/-{2,}/g, (dashes) =>
+		dashes.split("").join(" "),
+	);
 }
 
 function buildAgentsInitContent(

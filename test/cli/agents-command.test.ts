@@ -165,6 +165,20 @@ describe("handleAgentsInit", () => {
 		expect(prompt).toContain("# Inner fence\n```\nThen continue.\n````");
 	});
 
+	it("escapes repeated dashes in imported rule HTML comments", () => {
+		const rulesDir = join(tmpDir, ".cursor", "rules");
+		mkdirSync(rulesDir, { recursive: true });
+		writeFileSync(join(rulesDir, "bad--->rule.md"), "Do not close comments");
+
+		const target = join(tmpDir, "AGENTS.md");
+		handleAgentsInit(target);
+		const contents = readFileSync(target, "utf-8");
+
+		expect(contents).toContain(
+			'<!-- Imported by maestro /init from: ".cursor/rules/bad- - ->rule.md" -->',
+		);
+	});
+
 	it("does not read symlinked rule files", () => {
 		const outsideDir = mkdtempSync(join(tmpdir(), "agents-secret-"));
 		try {
