@@ -126,6 +126,7 @@ To prove Maestro works against a local Cerebro stack, keep sibling checkouts and
 run:
 
 ```bash
+gh repo clone evalops/cerebro ../cerebro
 make cerebro-e2e-doctor
 make cerebro-e2e
 ```
@@ -136,8 +137,19 @@ Maestro, emits Maestro's canonical Platform replay, publishes it through local
 NATS, and verifies Cerebro graph projection plus MCP recall from the generated
 session traffic. `make cerebro-e2e-doctor` checks the Cerebro checkout, Docker
 Compose, the replay generator, and Cerebro's own local-E2E doctor before the
-full smoke starts. Set `LOCAL_CEREBRO_REPO=/path/to/cerebro` when the checkout
-is not a sibling directory.
+full smoke starts. It also checks the effective local Cerebro URL, MCP URL, and
+workspace from `.env` or exported environment values, then verifies that the
+configured API port is free before the self-contained smoke starts. The default
+URL is `http://localhost:18080`; use `LOCAL_BASE_URL`/`MAESTRO_CEREBRO_URL` plus
+matching Cerebro `LOCAL_HTTP_PORT` overrides when that port is occupied. Set
+`LOCAL_CEREBRO_REPO=/path/to/cerebro` when the checkout is not a sibling
+directory. If your machine cannot surface OTEL collector debug logs, run
+`LOCAL_ASSERT_OTEL=false make cerebro-e2e`.
+
+For direct local Maestro runs against a running Cerebro dev stack, copy the
+Cerebro block from `.env.example`; the Makefile exports those vars to `make`
+targets so `make run-ts`, `make web-local`, and local smokes all see the same
+configuration.
 
 Need Redis or PostgreSQL for a specific workflow? Start from `docker-compose.yml` and use the [Contributor Runbook](docs/CONTRIBUTOR_RUNBOOK.md) for the rest of the repo workflow.
 
