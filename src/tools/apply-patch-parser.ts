@@ -3,6 +3,7 @@ export type ApplyPatchHunk = {
 	newLines: string[];
 	oldNoFinalNewline?: boolean;
 	newNoFinalNewline?: boolean;
+	oldMustEndAtEOF?: boolean;
 };
 
 export type ApplyPatchOperation =
@@ -127,6 +128,7 @@ export function parseApplyPatch(patch: string): ApplyPatchDocument {
 						continue;
 					}
 					if (bodyLine === "*** End of File") {
+						hunk.oldMustEndAtEOF = true;
 						index++;
 						continue;
 					}

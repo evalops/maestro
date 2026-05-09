@@ -248,6 +248,48 @@ describe("apply_patch tool", () => {
 		expect(readFileSync(filePath, "utf-8")).toBe("new");
 	});
 
+	it("honors End of File anchors when matching repeated context", async () => {
+		const filePath = join(testDir, "eof-anchor.txt");
+		writeFileSync(filePath, "anchor\nmiddle\nanchor\n");
+
+		await applyPatchTool.execute("call-eof-anchor", {
+			patch: [
+				"*** Begin Patch",
+				`*** Update File: ${filePath}`,
+				"@@",
+				" anchor",
+				"*** End of File",
+				"+tail",
+				"*** End Patch",
+			].join("\n"),
+		});
+
+		expect(readFileSync(filePath, "utf-8")).toBe(
+			"anchor\nmiddle\nanchor\ntail\n",
+		);
+	});
+
+	it("rejects End of File anchors when context is not at EOF", async () => {
+		const filePath = join(testDir, "bad-eof-anchor.txt");
+		writeFileSync(filePath, "target\ntrailer\n");
+
+		await expect(
+			applyPatchTool.execute("call-bad-eof-anchor", {
+				patch: [
+					"*** Begin Patch",
+					`*** Update File: ${filePath}`,
+					"@@",
+					" target",
+					"*** End of File",
+					"+tail",
+					"*** End Patch",
+				].join("\n"),
+			}),
+		).rejects.toMatchObject({
+			code: "APPLY_PATCH_CONFLICT",
+		});
+	});
+
 	it("adds and deletes files", async () => {
 		const addedPath = join(testDir, "nested", "created.py");
 		const deletedPath = join(testDir, "old.rs");
