@@ -283,6 +283,7 @@ Tools run with **auto-approval** in web mode:
 Available tools:
 - `bash` - Execute shell commands
 - `read` - Read files
+- `apply_patch` - Apply Codex-native patch blocks
 - `write` - Create/overwrite files
 - `edit` - Find and replace in files
 - ... (all Maestro tools)

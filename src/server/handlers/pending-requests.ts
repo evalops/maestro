@@ -306,7 +306,9 @@ function responseFor(
 			sessionId: request.sessionId,
 			resolution,
 			source:
-				request.platform || operation === "ResumeRun" ? "platform" : "local",
+				Boolean(request.platform) || operation === "ResumeRun"
+					? "platform"
+					: "local",
 			platform: request.platform,
 			platformOperation: operation,
 		},

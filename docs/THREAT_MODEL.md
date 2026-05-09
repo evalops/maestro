@@ -24,7 +24,7 @@ This document describes Maestro's security architecture, trust boundaries, and m
 │  │                                                                         │  │
 │  │  ┌─────────────┐   ┌─────────────┐   ┌─────────────────────────────┐  │  │
 │  │  │   Agent     │◄──│   Safety    │◄──│     Tool Execution          │  │  │
-│  │  │   Core      │   │   Layer     │   │  bash · read · write · edit │  │  │
+│  │  │   Core      │   │   Layer     │   │ bash · read · patch/edit │  │  │
 │  │  └─────────────┘   └─────────────┘   └─────────────────────────────┘  │  │
 │  │         │                │                         │                   │  │
 │  │         │                ▼                         ▼                   │  │
@@ -131,7 +131,7 @@ maestro --approval-mode fail
 **Risk:** Agent reads or writes files outside the intended workspace.
 
 **Attack Surface:**
-- `read`, `write`, `edit` tools with path arguments
+- `read`, `apply_patch`, `write`, `edit` tools with path arguments
 - Symlink following
 - Parent directory escapes (`../`)
 

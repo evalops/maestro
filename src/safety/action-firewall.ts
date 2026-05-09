@@ -53,6 +53,7 @@ import type {
 	WorkflowStateSnapshot,
 } from "../agent/action-approval.js";
 export type { ActionApprovalContext } from "../agent/action-approval.js";
+import { parseApplyPatchPaths } from "../tools/apply-patch-parser.js";
 import { createLogger } from "../utils/logger.js";
 import { isCommandAllowlisted } from "./bash-allowlist.js";
 import {
@@ -426,6 +427,12 @@ function extractFilePaths(context: ActionApprovalContext): string[] {
 			getStringArg(context, "file_path") || getStringArg(context, "path");
 		if (p) paths.push(p);
 	}
+	if (toolName === "apply_patch") {
+		const patch = getStringArg(context, "patch");
+		if (patch) {
+			paths.push(...parseApplyPatchPaths(patch));
+		}
+	}
 	if (toolName === "delete_file") {
 		const p =
 			getStringArg(context, "file_path") ||
@@ -513,9 +520,14 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 		evaluate: (ctx) => {
 			// Only check file mutation tools
 			if (
-				!["write", "edit", "delete_file", "move_file", "copy_file"].includes(
-					ctx.toolName,
-				)
+				![
+					"write",
+					"edit",
+					"apply_patch",
+					"delete_file",
+					"move_file",
+					"copy_file",
+				].includes(ctx.toolName)
 			) {
 				return { allowed: true };
 			}
@@ -585,9 +597,14 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 		evaluate: (ctx) => {
 			// Only check file mutation tools
 			if (
-				!["write", "edit", "delete_file", "move_file", "copy_file"].includes(
-					ctx.toolName,
-				)
+				![
+					"write",
+					"edit",
+					"apply_patch",
+					"delete_file",
+					"move_file",
+					"copy_file",
+				].includes(ctx.toolName)
 			) {
 				return { allowed: true };
 			}
@@ -654,7 +671,14 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 		match: (ctx) => {
 			if (process.env.MAESTRO_PLAN_MODE !== "1") return false;
 			const name = ctx.toolName;
-			if (name === "write" || name === "edit" || name === "bash") return true;
+			if (
+				name === "write" ||
+				name === "edit" ||
+				name === "apply_patch" ||
+				name === "bash"
+			) {
+				return true;
+			}
 			if (name === "todo") return true;
 			if (name === "gh_pr") {
 				const action = getStringArg(ctx, "action");

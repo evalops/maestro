@@ -61,6 +61,7 @@ export const myTool = createTool({
 | `diff` | Wrapper around `git diff`. | Modes: workspace, staged, or custom ranges. Also supports `mode: "status"` (legacy) but prefer the dedicated `status` tool. |
 | `status` | Structured `git status` (porcelain v2). | Options: `branchSummary` (-b), `includeIgnored` (`--ignored=matching`), `paths`. Returns parsed status in details + summary text. |
 | `bash` | Executes shell commands (`bash -lc`). | Default timeout 90s (max 600s) and 40KB output cap; mutating commands require a plan when safe-mode is on. Runs from repo root; stdout/stderr streamed. In bash mode, `cd` is handled internally. |
+| `apply_patch` | Applies Codex-native `*** Begin Patch` blocks. | Accepts `patch` and optional `dryRun`. Supports Add/Update/Delete File operations, reports touched files, diffs, hunk counts, diagnostic delta, and validator results. Failed hunks are retryable tool errors with conflict details. |
 | `edit` | Structured find/replace writer. | Accepts `path`, `oldText`, `newText`. Supports `edits` array for multiple sequential edits, `replaceAll` for bulk replacements, and `dryRun` for previews. |
 | `write` | Writes or overwrites files. | Takes `path` + `contents`. Creates directories automatically. |
 | `todo` | Generates TodoWrite-style task lists. | Stored near the project (`~/.maestro/todos.json`). Integrates with `/plan`. |

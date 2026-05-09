@@ -60,6 +60,7 @@ import { codesearchTool } from "./codesearch.js";
 import { diffTool } from "./diff.js";
 
 // File manipulation
+import { applyPatchTool } from "./apply-patch.js";
 import { editTool } from "./edit.js";
 import { extractDocumentTool } from "./extract-document.js";
 import { findTool } from "./find.js";
@@ -119,6 +120,7 @@ export {
 } from "./ask-user.js";
 export { bashTool } from "./bash.js";
 export { backgroundTasksTool } from "./background/tool-handler.js";
+export { applyPatchTool } from "./apply-patch.js";
 export { codesearchTool } from "./codesearch.js";
 export { diffTool } from "./diff.js";
 export { editTool } from "./edit.js";
@@ -171,6 +173,7 @@ export const codingTools = [
 	bashTool,
 	backgroundTasksTool,
 	// File modification
+	applyPatchTool,
 	editTool,
 	writeTool,
 	notebookEditTool,
@@ -211,6 +214,7 @@ export const toolRegistry: Record<string, (typeof codingTools)[number]> = {
 	diff: diffTool,
 	bash: bashTool,
 	background_tasks: backgroundTasksTool,
+	apply_patch: applyPatchTool,
 	edit: editTool,
 	write: writeTool,
 	notebook_edit: notebookEditTool,
