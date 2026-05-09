@@ -116,12 +116,19 @@ stack, and verifies Cerebro graph projection plus MCP recall.
 - `eval "$(make -s cerebro-env)"`
 - `make cerebro-e2e-doctor`
 - `make cerebro-e2e`
+- `make cerebro-e2e-trace`
 
 `make cerebro-dev` starts the sibling Cerebro checkout with Maestro event
 ingestion enabled and leaves it running for real local Maestro use. In another
 Maestro terminal, `eval "$(make -s cerebro-env)"` exports the matching
 Cerebro API, MCP, workspace, and memory-mode variables before `make run-ts` or
 `make web-local`.
+
+`make cerebro-e2e-trace` is the trace-backed rehearsal lane. It delegates to
+Cerebro's `make local-e2e-trace`, builds and smokes this Maestro checkout,
+publishes the generated Maestro replay through local Cerebro, verifies graph and
+MCP recall, and asserts Jaeger contains one trace with both the Cerebro API and
+Maestro consumer spans.
 
 Use `LOCAL_CEREBRO_REPO=/path/to/cerebro make cerebro-e2e` when Cerebro is not
 checked out next to Maestro. The doctor target verifies the Cerebro checkout,

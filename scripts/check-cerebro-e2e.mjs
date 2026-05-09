@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cerebroRepo = resolve(root, process.env.LOCAL_CEREBRO_REPO ?? "../cerebro");
+const requireCerebroTraceTarget =
+	process.env.LOCAL_REQUIRE_CEREBRO_TRACE_TARGET === "true";
 
 let status = 0;
 
@@ -212,6 +214,15 @@ if (existsSync(resolve(cerebroRepo, "Makefile"))) {
 	} else {
 		fail("Cerebro checkout is missing make local-maestro-dev; pull latest main");
 	}
+	if (cerebroMakefile.includes("local-e2e-trace")) {
+		ok("Cerebro trace-backed local E2E target found");
+	} else if (requireCerebroTraceTarget) {
+		fail("Cerebro checkout is missing make local-e2e-trace; pull latest main");
+	} else {
+		warn(
+			"Cerebro checkout is missing make local-e2e-trace; pull latest main before running make cerebro-e2e-trace",
+		);
+	}
 	if (cerebroMakefile.includes("local-maestro-env")) {
 		ok("Cerebro local Maestro env target found");
 	} else {
@@ -364,4 +375,4 @@ if (status !== 0) {
 }
 
 console.log("");
-console.log("Ready to run: make cerebro-e2e");
+console.log("Ready to run: make cerebro-e2e or make cerebro-e2e-trace");

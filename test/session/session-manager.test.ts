@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AgentState } from "../../src/agent/types.js";
+import { UNIFIED_CONTEXT_MANIFEST_PROTOCOL } from "../../src/context/manifest-types.js";
 import { exportSessionToJson } from "../../src/export-html.js";
 import { SessionManager } from "../../src/session/manager.js";
 import type { SessionHeaderEntry } from "../../src/session/types.js";
@@ -44,6 +45,29 @@ function createMockState(): AgentState {
 		isStreaming: false,
 		streamMessage: null,
 		pendingToolCalls: new Map(),
+	};
+}
+
+function createPromptContextManifest() {
+	return {
+		cwd: "/repo",
+		candidates: ["AGENTS.md"],
+		maxBytes: 32768,
+		bytesRead: 10,
+		entries: [
+			{
+				path: "/repo/AGENTS.md",
+				sourceKind: "project" as const,
+				scopeDir: "/repo",
+				candidateName: "AGENTS.md",
+				bytesRead: 10,
+				truncated: false,
+				contentHash: "a".repeat(64),
+				precedenceIndex: 0,
+				content: "guidance",
+			},
+		],
+		diagnostics: [],
 	};
 }
 
@@ -207,22 +231,41 @@ describe("SessionManager - Deferred Session Creation", () => {
 		it("persists prompt context manifest in the session header", () => {
 			const sessionManager = new SessionManager(false);
 			const state = createMockState();
-			state.promptContextManifest = {
+			state.promptContextManifest = createPromptContextManifest();
+
+			sessionManager.startSession(state);
+
+			expect(sessionManager.getHeader()?.promptContextManifest).toEqual(
+				state.promptContextManifest,
+			);
+		});
+
+		it("persists unified context manifest in the session header", () => {
+			const sessionManager = new SessionManager(false);
+			const state = createMockState();
+			const promptContextManifest = createPromptContextManifest();
+			state.promptContextManifest = promptContextManifest;
+			state.unifiedContextManifest = {
+				protocolVersion: UNIFIED_CONTEXT_MANIFEST_PROTOCOL,
+				version: 1,
 				cwd: "/repo",
-				candidates: ["AGENTS.md"],
-				maxBytes: 32768,
-				bytesRead: 10,
+				projectDocs: promptContextManifest,
 				entries: [
 					{
+						id: "project_doc:project:AGENTS.md",
+						kind: "project_doc",
+						source: "filesystem",
+						status: "loaded",
+						label: "AGENTS.md",
 						path: "/repo/AGENTS.md",
-						sourceKind: "project",
 						scopeDir: "/repo",
-						candidateName: "AGENTS.md",
-						bytesRead: 10,
-						truncated: false,
-						contentHash: "a".repeat(64),
 						precedenceIndex: 0,
-						content: "guidance",
+						bytesRead: 10,
+						contentHash: "a".repeat(64),
+						metadata: {
+							sourceKind: "project",
+							truncated: false,
+						},
 					},
 				],
 				diagnostics: [],
@@ -230,9 +273,13 @@ describe("SessionManager - Deferred Session Creation", () => {
 
 			sessionManager.startSession(state);
 
-			expect(sessionManager.getHeader()?.promptContextManifest).toEqual(
-				state.promptContextManifest,
+			expect(sessionManager.getHeader()?.unifiedContextManifest).toEqual(
+				state.unifiedContextManifest,
 			);
+			expect(
+				readSessionHeader(sessionManager.getSessionFile())
+					.unifiedContextManifest,
+			).toEqual(state.unifiedContextManifest);
 		});
 	});
 

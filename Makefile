@@ -31,7 +31,7 @@ LOCAL_CEREBRO_REPO ?= ../cerebro
 
 .PHONY: help setup install build build-all compile run-ts run-rs run-rs-debug \
         web web-local dev dev-all developer-surface-check test test-fast test-coverage lint check fmt fmt-unsafe \
-        smoke cerebro-dev cerebro-env cerebro-e2e cerebro-e2e-doctor evals verify clean db-up db-down db-migrate
+        smoke cerebro-dev cerebro-env cerebro-e2e cerebro-e2e-doctor cerebro-e2e-trace evals verify clean db-up db-down db-migrate
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -148,6 +148,26 @@ cerebro-e2e: cerebro-e2e-doctor ## Run the cross-repo Cerebro local E2E using th
 		LOCAL_MAESTRO_GENERATE_REPLAY="$$LOCAL_MAESTRO_GENERATE_REPLAY" \
 		LOCAL_MAESTRO_DOCTOR_REPLAY="$$LOCAL_MAESTRO_DOCTOR_REPLAY" \
 		$(MAKE) -C "$(LOCAL_CEREBRO_REPO)" local-maestro-e2e
+
+cerebro-e2e-trace: export LOCAL_REQUIRE_CEREBRO_TRACE_TARGET=true
+cerebro-e2e-trace: cerebro-e2e-doctor ## Run the trace-backed Maestro/Cerebro local E2E and prove it in Jaeger
+	@env_exports="$$(LOCAL_CEREBRO_REPO="$(LOCAL_CEREBRO_REPO)" node scripts/check-cerebro-e2e.mjs --print-env)" && \
+		eval "$$env_exports" && \
+		LOCAL_MAESTRO_REPO="$(CURDIR)" \
+		LOCAL_HTTP_PORT="$$LOCAL_HTTP_PORT" \
+		LOCAL_ADDR="$$LOCAL_ADDR" \
+		LOCAL_BASE_URL="$$LOCAL_BASE_URL" \
+		MAESTRO_CEREBRO_URL="$$MAESTRO_CEREBRO_URL" \
+		MAESTRO_CEREBRO_WORKSPACE_ID="$$MAESTRO_CEREBRO_WORKSPACE_ID" \
+		MAESTRO_WORKSPACE_ID="$$MAESTRO_WORKSPACE_ID" \
+		MAESTRO_PLATFORM_MCP_URL="$$MAESTRO_PLATFORM_MCP_URL" \
+		MAESTRO_AGENT_MCP_URL="$$MAESTRO_AGENT_MCP_URL" \
+		MAESTRO_CEREBRO_MCP_SCOPES="$$MAESTRO_CEREBRO_MCP_SCOPES" \
+		MAESTRO_PLATFORM_MCP_SCOPES="$$MAESTRO_PLATFORM_MCP_SCOPES" \
+		MAESTRO_AGENT_MCP_SCOPES="$$MAESTRO_AGENT_MCP_SCOPES" \
+		LOCAL_MAESTRO_GENERATE_REPLAY="$$LOCAL_MAESTRO_GENERATE_REPLAY" \
+		LOCAL_MAESTRO_DOCTOR_REPLAY="$$LOCAL_MAESTRO_DOCTOR_REPLAY" \
+		$(MAKE) -C "$(LOCAL_CEREBRO_REPO)" local-e2e-trace
 
 evals: ## Run eval scenarios
 	npx nx run maestro:evals --skip-nx-cache

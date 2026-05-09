@@ -18,6 +18,7 @@ const requirements = {
 		["Makefile", "cerebro-dev"],
 		["Makefile", "cerebro-env"],
 		["Makefile", "cerebro-e2e-doctor"],
+		["Makefile", "cerebro-e2e-trace"],
 		["Makefile", "MAESTRO_CEREBRO_URL"],
 		["Makefile", "MAESTRO_PLATFORM_MCP_URL"],
 		["Makefile", "MAESTRO_WORKSPACE_ID"],

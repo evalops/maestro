@@ -38,6 +38,7 @@ import {
 import { detectRuntimeConstraintContext } from "./cli/system-prompt.js";
 import { composerManager } from "./composers/index.js";
 import { resolveDefaultApprovalMode } from "./config/default-approval-mode.js";
+import { loadUnifiedContextManifest } from "./context/manifest.js";
 import { initLifecycle, shutdownLifecycle } from "./lifecycle.js";
 import { loadEnv } from "./load-env.js";
 import { bootstrapLsp } from "./lsp/bootstrap.js";
@@ -502,6 +503,9 @@ async function createAgent(
 			cwd,
 			runtimeConstraints,
 		});
+	const unifiedContextManifest = loadUnifiedContextManifest(cwd, {
+		projectDocs: promptContextManifest,
+	});
 
 	// Only include IDE client tools when a compatible client is connected.
 	// Without a connected client, these tools will hang waiting for responses.
@@ -532,6 +536,7 @@ async function createAgent(
 			systemPrompt,
 			promptMetadata,
 			promptContextManifest,
+			unifiedContextManifest,
 			model: registeredModel,
 			thinkingLevel,
 			tools,

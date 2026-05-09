@@ -136,6 +136,7 @@ import {
 } from "./cli/system-prompt.js";
 import { validateFrameworkPreference } from "./config/framework.js";
 import { loadRuntimeConfig } from "./config/runtime-config.js";
+import { loadUnifiedContextManifest } from "./context/manifest.js";
 import { loadEnv } from "./load-env.js";
 import { bootstrapLsp } from "./lsp/bootstrap.js";
 import { withMcpPostKeepMessages } from "./mcp/prompt-recovery.js";
@@ -1295,6 +1296,9 @@ export async function main(args: string[]) {
 			runtimeConstraints,
 			cwd: process.cwd(),
 		});
+	const unifiedContextManifest = loadUnifiedContextManifest(process.cwd(), {
+		projectDocs: promptContextManifest,
+	});
 	startupProfiler.checkpoint("prompt:assembled", {
 		system_bytes: systemPrompt.length,
 	});
@@ -1336,6 +1340,7 @@ export async function main(args: string[]) {
 		promptMetadata,
 		systemPromptSourcePaths,
 		promptContextManifest,
+		unifiedContextManifest,
 		model,
 		reasoningSummary,
 		allTools: configuredAllTools,

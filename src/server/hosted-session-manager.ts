@@ -25,6 +25,7 @@ import {
 	type SessionModelMetadata,
 	type SessionSummary,
 	type SessionTreeEntry,
+	getPersistedSessionPromptContextManifest,
 	isSessionHeaderEntry,
 	isSessionTreeEntry,
 	normalizeSessionEntry,
@@ -485,6 +486,8 @@ export class HostedSessionManager {
 				thinkingLevel: state.thinkingLevel,
 				systemPrompt: state.systemPrompt,
 				promptMetadata: state.promptMetadata,
+				promptContextManifest: getPersistedSessionPromptContextManifest(state),
+				unifiedContextManifest: state.unifiedContextManifest,
 				tools: state.tools.map((tool) => ({
 					name: tool.name,
 					label: tool.label,
@@ -581,7 +584,8 @@ export class HostedSessionManager {
 			thinkingLevel: state.thinkingLevel,
 			systemPrompt: state.systemPrompt,
 			promptMetadata: state.promptMetadata,
-			promptContextManifest: state.promptContextManifest,
+			promptContextManifest: getPersistedSessionPromptContextManifest(state),
+			unifiedContextManifest: state.unifiedContextManifest,
 			tools: state.tools.map((tool) => ({
 				name: tool.name,
 				label: tool.label,

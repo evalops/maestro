@@ -80,6 +80,7 @@ import {
 	type SessionTreeEntry,
 	type SessionTreeNode,
 	type ThinkingLevelChangeEntry,
+	getPersistedSessionPromptContextManifest,
 	isSessionTreeEntry,
 	tryParseSessionEntry,
 } from "./types.js";
@@ -471,7 +472,8 @@ export class SessionManager {
 			thinkingLevel: latestThinkingLevel ?? state.thinkingLevel,
 			systemPrompt: state.systemPrompt,
 			promptMetadata: state.promptMetadata,
-			promptContextManifest: state.promptContextManifest,
+			promptContextManifest: getPersistedSessionPromptContextManifest(state),
+			unifiedContextManifest: state.unifiedContextManifest,
 			tools: state.tools.map((tool) => ({
 				name: tool.name,
 				label: tool.label,
