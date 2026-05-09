@@ -7,6 +7,8 @@ import {
 import {
 	EVALOPS_ACCESS_TOKEN_ENV_VARS,
 	EVALOPS_INTEGRATION_PROFILE_ENV_VARS,
+	EVALOPS_LEGACY_SERVICE_ORGANIZATION_ID_ENV_VARS,
+	EVALOPS_LEGACY_SERVICE_WORKSPACE_ID_ENV_VARS,
 	EVALOPS_MEMORY_MODE_ENV_VARS,
 	EVALOPS_ORGANIZATION_ID_ENV_VARS,
 	EVALOPS_RUNTIME_OWNER_ENV_VARS,
@@ -19,6 +21,16 @@ import {
 } from "./env-aliases.js";
 
 type Env = Record<string, string | undefined>;
+
+const MANAGED_EVALOPS_ORGANIZATION_ID_ENV_VARS = [
+	...EVALOPS_ORGANIZATION_ID_ENV_VARS,
+	...EVALOPS_LEGACY_SERVICE_ORGANIZATION_ID_ENV_VARS,
+] as const;
+
+const MANAGED_EVALOPS_WORKSPACE_ID_ENV_VARS = [
+	...EVALOPS_WORKSPACE_ID_ENV_VARS,
+	...EVALOPS_LEGACY_SERVICE_WORKSPACE_ID_ENV_VARS,
+] as const;
 
 export type EvalOpsManagedTraceState = "live" | "not configured";
 export type EvalOpsManagedEvidencePublisher = "EvalOps" | "none";
@@ -172,10 +184,10 @@ export function resolveManagedEvalOpsContext(
 		readEvalOpsEnv(env, EVALOPS_ACCESS_TOKEN_ENV_VARS) ??
 		nonEmptyString(credentials?.access);
 	const organizationId =
-		readEvalOpsEnv(env, EVALOPS_ORGANIZATION_ID_ENV_VARS) ??
+		readEvalOpsEnv(env, MANAGED_EVALOPS_ORGANIZATION_ID_ENV_VARS) ??
 		nonEmptyString(metadata?.organizationId);
 	const workspaceId =
-		readEvalOpsEnv(env, EVALOPS_WORKSPACE_ID_ENV_VARS) ??
+		readEvalOpsEnv(env, MANAGED_EVALOPS_WORKSPACE_ID_ENV_VARS) ??
 		agentMcp?.workspaceId ??
 		organizationId;
 	const agentId =

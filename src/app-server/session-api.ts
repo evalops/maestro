@@ -8,6 +8,7 @@ import {
 	type MaestroAppServerThread,
 	type MaestroAppServerThreadGoal,
 	type MaestroAppServerThreadGoalResult,
+	type MaestroAppServerThreadGraph,
 	type MaestroAppServerThreadItem,
 	type MaestroAppServerThreadListResult,
 	type MaestroAppServerThreadMetadataUpdateResult,
@@ -21,8 +22,11 @@ import type { AppMessage } from "../agent/types.js";
 import { getRegisteredModels } from "../models/registry.js";
 import type { RegisteredModel } from "../models/registry.js";
 import type { SessionManager } from "../session/manager.js";
-import { migrateToCurrentVersion } from "../session/migration.js";
 import { safeReadSessionEntries } from "../session/session-context.js";
+import {
+	type SessionGraphProjection,
+	buildSessionGraphProjection,
+} from "../session/session-graph-projection.js";
 import type {
 	SessionEntry,
 	SessionMessagesView,
@@ -30,7 +34,6 @@ import type {
 	SessionSummary,
 	SessionTreeEntry,
 } from "../session/types.js";
-import { isSessionTreeEntry } from "../session/types.js";
 
 const DEFAULT_PAGE_LIMIT = 50;
 const MAX_PAGE_LIMIT = 100;
@@ -256,82 +259,33 @@ function treeEntryToItem(entry: SessionTreeEntry): MaestroAppServerThreadItem {
 export function buildTurnsFromSessionEntries(
 	entries: SessionEntry[],
 ): MaestroAppServerTurn[] {
-	migrateToCurrentVersion(entries);
-	const turns: MaestroAppServerTurn[] = [];
-	let current: MaestroAppServerTurn | null = null;
-
-	for (const entry of activeTreeEntriesFromSessionEntries(entries)) {
-		const item = treeEntryToItem(entry);
-		const startsUserTurn =
-			entry.type === "message" && entry.message.role === "user";
-		if (startsUserTurn && current?.items.length) {
-			turns.push(current);
-			current = null;
-		}
-		if (!current) {
-			current = {
-				id: startsUserTurn ? entry.id : `turn-${entry.id}`,
-				status: "completed",
-				startedAt: entry.timestamp,
-				completedAt: entry.timestamp,
-				items: [],
-			};
-		}
-		current.items.push(item);
-		current.completedAt = entry.timestamp;
-	}
-
-	if (current?.items.length) {
-		turns.push(current);
-	}
-
-	return turns;
+	return turnsFromProjection(buildSessionGraphProjection(entries));
 }
 
-function activeTreeEntriesFromSessionEntries(
-	entries: SessionEntry[],
-): SessionTreeEntry[] {
-	const treeEntries = entries.filter(isSessionTreeEntry);
-	const leaf = treeEntries.at(-1);
-	if (!leaf) {
-		return [];
-	}
+function turnsFromProjection(
+	projection: SessionGraphProjection,
+): MaestroAppServerTurn[] {
+	return projection.turns.map((turn) => ({
+		id: turn.id,
+		parentTurnId: turn.parentTurnId,
+		status: turn.status,
+		startedAt: turn.startedAt,
+		completedAt: turn.completedAt,
+		sourceEntryIds: turn.sourceEntryIds,
+		toolCallIds: turn.toolCallIds,
+		items: turn.entries.map(treeEntryToItem),
+	}));
+}
 
-	const entriesById = new Map(treeEntries.map((entry) => [entry.id, entry]));
-	const activePath: SessionTreeEntry[] = [];
-	const seen = new Set<string>();
-	let current: SessionTreeEntry | undefined = leaf;
-
-	while (current && !seen.has(current.id)) {
-		activePath.unshift(current);
-		seen.add(current.id);
-		if (!current.parentId || current.parentId === current.id) {
-			break;
-		}
-		current = entriesById.get(current.parentId);
-	}
-
-	let compactionIndex = -1;
-	for (let index = activePath.length - 1; index >= 0; index -= 1) {
-		if (activePath[index]?.type === "compaction") {
-			compactionIndex = index;
-			break;
-		}
-	}
-	if (compactionIndex === -1) {
-		return activePath;
-	}
-	const compaction = activePath[compactionIndex]!;
-	if (compaction.type !== "compaction") {
-		return activePath;
-	}
-	const firstKeptIndex = activePath.findIndex(
-		(entry, index) =>
-			index < compactionIndex && entry.id === compaction.firstKeptEntryId,
-	);
-	return activePath.slice(
-		firstKeptIndex >= 0 ? firstKeptIndex : compactionIndex,
-	);
+function graphFromProjection(
+	projection: SessionGraphProjection,
+): MaestroAppServerThreadGraph {
+	return {
+		branchId: projection.branchId,
+		leafEntryId: projection.leafEntryId,
+		activeEntryIds: projection.activeEntryIds,
+		compactionSpans: projection.compactionSpans,
+	};
 }
 
 function parseMessagesView(value: unknown): SessionMessagesView {
@@ -411,6 +365,14 @@ async function flushSessionWrites(store: SessionStore): Promise<void> {
 	await store.flush?.();
 }
 
+interface ThreadMetadataExpectation {
+	title?: string;
+	summary?: string;
+	resumeSummary?: string;
+	favorite?: boolean;
+	tags?: string[];
+}
+
 async function summarizeThreadAfterMutation(
 	store: SessionStore,
 	threadId: string,
@@ -442,13 +404,7 @@ function tagsEqual(left: string[] | undefined, right: string[] | undefined) {
 
 function verifyThreadMetadataPersisted(
 	thread: MaestroAppServerThreadSummary,
-	expected: {
-		title?: string;
-		summary?: string;
-		resumeSummary?: string;
-		favorite?: boolean;
-		tags?: string[];
-	},
+	expected: ThreadMetadataExpectation,
 ): void {
 	const persisted =
 		(expected.title === undefined || thread.title === expected.title) &&
@@ -721,7 +677,9 @@ export function createMaestroAppServerSessionApi(
 				thread.path = sessionFile;
 			}
 			if (includeTurns) {
-				thread.turns = await loadTurnsForThread(store, threadId);
+				const projection = await loadProjectionForThread(store, threadId);
+				thread.turns = turnsFromProjection(projection);
+				thread.graph = graphFromProjection(projection);
 			}
 			return thread;
 		},
@@ -870,33 +828,35 @@ export function createMaestroAppServerSessionApi(
 			const threadId = requireThreadId(params);
 			const limit = normalizeLimit(params.limit);
 			const offset = decodeCursor(params.cursor);
-			const turns = await loadTurnsForThread(store, threadId);
+			const projection = await loadProjectionForThread(store, threadId);
+			const turns = turnsFromProjection(projection);
 			const page = turns.slice(offset, offset + limit);
 			const nextOffset = offset + page.length;
 			return {
 				threadId,
 				turns: page,
 				nextCursor: nextOffset < turns.length ? encodeCursor(nextOffset) : null,
+				graph: graphFromProjection(projection),
 			};
 		},
 	};
 }
 
-async function loadTurnsForThread(
+async function loadProjectionForThread(
 	store: SessionStore,
 	threadId: string,
-): Promise<MaestroAppServerTurn[]> {
+): Promise<SessionGraphProjection> {
 	if (store.loadEntries) {
 		const entries = await store.loadEntries(threadId);
 		if (entries) {
-			return buildTurnsFromSessionEntries(entries);
+			return buildSessionGraphProjection(entries);
 		}
 	}
 	const sessionFile = store.getSessionFileById(threadId);
 	if (!sessionFile || sessionFile.startsWith("db:")) {
 		throw new MaestroAppServerError(-32004, "Thread not found");
 	}
-	return buildTurnsFromSessionEntries(safeReadSessionEntries(sessionFile));
+	return buildSessionGraphProjection(safeReadSessionEntries(sessionFile));
 }
 
 async function loadThreadGoal(
