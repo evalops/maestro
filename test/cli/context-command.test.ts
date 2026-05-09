@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	handleContextCommand,
 	renderContextManifestDiff,
@@ -11,9 +11,34 @@ import {
 	diffUnifiedContextManifests,
 	loadUnifiedContextManifest,
 } from "../../src/context/manifest.js";
+import { loadMcpConfig, mcpManager } from "../../src/mcp/index.js";
+
+vi.mock("../../src/mcp/index.js", () => ({
+	loadMcpConfig: vi.fn(() => ({ authPresets: [], servers: [] })),
+	mcpManager: {
+		configure: vi.fn(),
+		connectAll: vi.fn(),
+		disconnectAll: vi.fn(),
+		getStatus: vi.fn(() => ({ authPresets: [], servers: [] })),
+	},
+}));
 
 describe("context command", () => {
 	const tempDirs: string[] = [];
+
+	beforeEach(() => {
+		vi.mocked(loadMcpConfig)
+			.mockReset()
+			.mockReturnValue({ authPresets: [], servers: [] });
+		vi.mocked(mcpManager.configure).mockReset().mockResolvedValue(undefined);
+		vi.mocked(mcpManager.connectAll).mockReset().mockResolvedValue(undefined);
+		vi.mocked(mcpManager.disconnectAll)
+			.mockReset()
+			.mockResolvedValue(undefined);
+		vi.mocked(mcpManager.getStatus)
+			.mockReset()
+			.mockReturnValue({ authPresets: [], servers: [] });
+	});
 
 	afterEach(() => {
 		vi.restoreAllMocks();
@@ -279,5 +304,50 @@ describe("context command", () => {
 		expect(payload.beforeCwd).toBe(resolve(beforeRoot));
 		expect(payload.afterCwd).toBe(resolve(afterRoot));
 		expect(payload.changed).toHaveLength(1);
+	});
+
+	it("reconnects live MCP servers before reading runtime status", async () => {
+		const root = makeTempDir();
+		writeFileSync(join(root, "AGENTS.md"), "root rules");
+		const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+		await handleContextCommand("explain", [root, "--live-mcp", "--json"]);
+
+		expect(mcpManager.configure).toHaveBeenCalledTimes(1);
+		expect(mcpManager.connectAll).toHaveBeenCalledTimes(1);
+		expect(mcpManager.getStatus).toHaveBeenCalledTimes(1);
+		expect(mcpManager.disconnectAll).toHaveBeenCalledTimes(1);
+		expect(
+			vi.mocked(mcpManager.connectAll).mock.invocationCallOrder[0],
+		).toBeLessThan(
+			vi.mocked(mcpManager.getStatus).mock.invocationCallOrder[0]!,
+		);
+		expect(JSON.parse(String(log.mock.calls[0]?.[0])).version).toBe(1);
+	});
+
+	it("reconnects live MCP servers for both diff snapshots", async () => {
+		const beforeRoot = makeTempDir();
+		const afterRoot = makeTempDir();
+		writeFileSync(join(beforeRoot, "AGENTS.md"), "root rules");
+		writeFileSync(join(afterRoot, "AGENTS.md"), "new root rules");
+		vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+		await handleContextCommand("diff", [
+			beforeRoot,
+			afterRoot,
+			"--live-mcp",
+			"--json",
+		]);
+
+		expect(mcpManager.configure).toHaveBeenCalledTimes(2);
+		expect(mcpManager.connectAll).toHaveBeenCalledTimes(2);
+		expect(mcpManager.getStatus).toHaveBeenCalledTimes(2);
+		expect(mcpManager.disconnectAll).toHaveBeenCalledTimes(1);
+		const connectOrders = vi.mocked(mcpManager.connectAll).mock
+			.invocationCallOrder;
+		const statusOrders = vi.mocked(mcpManager.getStatus).mock
+			.invocationCallOrder;
+		expect(connectOrders[0]).toBeLessThan(statusOrders[0]!);
+		expect(connectOrders[1]).toBeLessThan(statusOrders[1]!);
 	});
 });

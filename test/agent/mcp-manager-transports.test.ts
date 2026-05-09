@@ -118,6 +118,29 @@ describe("MCP manager remote transports", () => {
 		expect(manager.isConnected("remote-http")).toBe(true);
 	});
 
+	it("reconnects unchanged configured servers after disconnectAll", async () => {
+		const config = {
+			servers: [
+				{
+					name: "remote-http",
+					transport: "http" as const,
+					url: "https://example.com/mcp",
+				},
+			],
+		};
+
+		await manager.configure(config);
+		expect(manager.isConnected("remote-http")).toBe(true);
+
+		await manager.disconnectAll();
+		expect(manager.isConnected("remote-http")).toBe(false);
+
+		await manager.configure(config);
+
+		expect(httpTransportCtor).toHaveBeenCalledTimes(2);
+		expect(manager.isConnected("remote-http")).toBe(true);
+	});
+
 	it("emits sparse MCP connection and tool usage beacons", async () => {
 		vi.stubEnv("MAESTRO_TELEMETRY", "1");
 		vi.stubEnv("MAESTRO_BEACON_FILE", join(tempDir, "beacon.jsonl"));

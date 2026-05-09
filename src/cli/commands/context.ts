@@ -157,6 +157,7 @@ async function loadContextManifestForCommand(
 	const { loadMcpConfig, mcpManager } = await import("../../mcp/index.js");
 	try {
 		await mcpManager.configure(loadMcpConfig(cwd, { includeEnvLimits: true }));
+		await mcpManager.connectAll();
 		return loadUnifiedContextManifest(cwd, {
 			mcpStatus: mcpManager.getStatus(),
 		});
@@ -182,6 +183,7 @@ async function loadContextManifestPairForCommand(
 		await mcpManager.configure(
 			loadMcpConfig(beforeCwd, { includeEnvLimits: true }),
 		);
+		await mcpManager.connectAll();
 		const before = loadUnifiedContextManifest(beforeCwd, {
 			mcpStatus: mcpManager.getStatus(),
 		});
@@ -189,6 +191,7 @@ async function loadContextManifestPairForCommand(
 		await mcpManager.configure(
 			loadMcpConfig(afterCwd, { includeEnvLimits: true }),
 		);
+		await mcpManager.connectAll();
 		const after = loadUnifiedContextManifest(afterCwd, {
 			mcpStatus: mcpManager.getStatus(),
 		});

@@ -476,6 +476,7 @@ export class McpClientManager extends EventEmitter {
 		const toAdd = nextConfig.servers.filter(
 			(server) => !oldServerNames.has(server.name),
 		);
+		const toAddNames = new Set(toAdd.map((server) => server.name));
 
 		this.config = nextConfig;
 
@@ -498,12 +499,15 @@ export class McpClientManager extends EventEmitter {
 			}),
 		);
 
-		// Connect new servers (don't wait for success)
+		// Connect new servers and unchanged servers that were explicitly disconnected.
 		await Promise.allSettled(
-			toAdd
+			nextConfig.servers
 				.filter(
 					(server) =>
-						!reconnectNames.has(server.name) &&
+						(toAddNames.has(server.name) ||
+							(oldServerNames.has(server.name) &&
+								!reconnectNames.has(server.name) &&
+								!this.servers.has(server.name))) &&
 						canConnectServer(server, nextApprovalMap),
 				)
 				.map((server) => this.connectServer(server)),
