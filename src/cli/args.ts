@@ -60,6 +60,7 @@ const COMMANDS = new Set([
 	"cost",
 	"stats",
 	"status",
+	"run",
 	"agents",
 	"exec",
 	"web",
@@ -82,6 +83,7 @@ const SUBCOMMAND_COMMANDS = new Set([
 	"models",
 	"cost",
 	"stats",
+	"run",
 	"agents",
 	"anthropic",
 	"evalops",
@@ -91,6 +93,45 @@ const SUBCOMMAND_COMMANDS = new Set([
 	"memory",
 	"remote",
 ]);
+
+const FLAGS_WITH_VALUES = new Set([
+	"--mode",
+	"--provider",
+	"--model",
+	"-m",
+	"--task-budget",
+	"--models",
+	"--models-file",
+	"--api-key",
+	"--port",
+	"--system-prompt",
+	"--append-system-prompt",
+	"--session",
+	"--approval-mode",
+	"--auth",
+	"--sandbox",
+	"--output-schema",
+	"--output-last-message",
+	"--tools",
+	"--composer",
+	"--format",
+	"--profile",
+	"--config",
+]);
+
+function nextNonFlagToken(args: string[], start: number): string | undefined {
+	for (let index = start; index < args.length; index++) {
+		const token = args[index];
+		if (!token) continue;
+		if (!token.startsWith("-")) {
+			return token;
+		}
+		if (FLAGS_WITH_VALUES.has(token) && index + 1 < args.length) {
+			index++;
+		}
+	}
+	return undefined;
+}
 
 export function parseArgs(args: string[]): Args {
 	const result: Args = {
@@ -251,9 +292,14 @@ export function parseArgs(args: string[]): Args {
 			}
 			result.configOverrides.push(override);
 		} else if (arg && !arg.startsWith("-")) {
-			if (!result.command && COMMANDS.has(arg)) {
+			const nextArg = args[i + 1];
+			const isCommandToken =
+				COMMANDS.has(arg) &&
+				(arg !== "run" ||
+					(result.messages.length === 0 &&
+						nextNonFlagToken(args, i + 1) === "inspect"));
+			if (!result.command && isCommandToken) {
 				result.command = arg;
-				const nextArg = args[i + 1];
 				const shouldConsumeSubcommand =
 					SUBCOMMAND_COMMANDS.has(arg) &&
 					(arg !== "context" || nextArg === "explain" || nextArg === "diff");
@@ -280,6 +326,15 @@ export function parseArgs(args: string[]): Args {
 				result.messages.push(arg);
 			}
 		}
+	}
+
+	if (
+		result.command === "run" &&
+		!result.subcommand &&
+		result.messages[0] === "inspect"
+	) {
+		result.subcommand = "inspect";
+		result.messages = result.messages.slice(1);
 	}
 
 	return result;

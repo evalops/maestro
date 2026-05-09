@@ -4,6 +4,25 @@
 
 pub const SESSION_WIRE_FORMAT_VERSION: &str = "session-wire-format.v1";
 
+pub const SESSION_HEADER_FIELDS: &[&str] = &[
+    "type",
+    "version",
+    "id",
+    "timestamp",
+    "cwd",
+    "subject",
+    "model",
+    "modelMetadata",
+    "thinkingLevel",
+    "systemPrompt",
+    "promptMetadata",
+    "promptContextManifest",
+    "unifiedContextManifest",
+    "tools",
+    "branchedFrom",
+    "parentSession",
+];
+
 pub const STOP_REASON_ALIASES: &[(&str, &str)] = &[
     ("tool_use", "toolUse"),
     ("tool_calls", "toolUse"),
