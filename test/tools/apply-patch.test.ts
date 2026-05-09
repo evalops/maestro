@@ -208,6 +208,12 @@ describe("apply_patch tool", () => {
 			"export const a = 2;\nexport const b = 2;\n",
 		);
 		expect(getTextOutput(result)).toContain("Applied patch to 1 file(s)");
+		const resultDetails = details(result);
+		expect(resultDetails.filesModified).toEqual([filePath]);
+		expect(resultDetails.diffs?.[filePath]).toContain("-1 export const a = 1;");
+		expect(resultDetails.diffs?.[filePath]).toContain("+1 export const a = 2;");
+		expect(resultDetails.diffs?.[filePath]).toContain("-2 export const b = 1;");
+		expect(resultDetails.diffs?.[filePath]).toContain("+2 export const b = 2;");
 	});
 
 	it("honors EOF newline markers when adding a final newline", async () => {

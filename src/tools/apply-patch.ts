@@ -784,11 +784,17 @@ function addPlannedChange(
 	plan.changes.push(change);
 	plan.hunksApplied += change.hunksApplied;
 	if (change.operation === "add") {
-		plan.filesCreated.push(change.path);
+		pushUnique(plan.filesCreated, change.path);
 	} else if (change.operation === "delete") {
-		plan.filesDeleted.push(change.path);
+		pushUnique(plan.filesDeleted, change.path);
 	} else {
-		plan.filesModified.push(change.path);
+		pushUnique(plan.filesModified, change.path);
+	}
+}
+
+function pushUnique(values: string[], value: string): void {
+	if (!values.includes(value)) {
+		values.push(value);
 	}
 }
 
@@ -815,14 +821,22 @@ function buildDetails(
 		hunksApplied: plan.hunksApplied,
 		hunksFailed: plan.hunksFailed,
 		conflictDetails: plan.conflictDetails,
-		diffs: Object.fromEntries(
-			plan.changes
-				.filter((change) => change.diff !== undefined)
-				.map((change) => [change.path, change.diff ?? ""]),
-		),
+		diffs: buildDiffDetails(plan),
 		editGrammar: "apply_patch",
 		mode,
 	};
+}
+
+function buildDiffDetails(plan: ApplyPatchPlan): Record<string, string> {
+	const diffs: Record<string, string> = {};
+	for (const change of plan.changes) {
+		if (change.diff === undefined) {
+			continue;
+		}
+		const existing = diffs[change.path];
+		diffs[change.path] = existing ? `${existing}\n${change.diff}` : change.diff;
+	}
+	return diffs;
 }
 
 function countChangedFiles(plan: ApplyPatchPlan): number {
