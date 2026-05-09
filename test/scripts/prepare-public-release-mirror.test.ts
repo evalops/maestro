@@ -195,6 +195,47 @@ describe("prepare-public-release-mirror", () => {
 		expect(existsSync(join(target, "public-mirror"))).toBe(false);
 	});
 
+	it("lets explicit excludes remove public include override files", () => {
+		const { source, target } = makeFixture();
+		write(
+			join(source, "package.json"),
+			JSON.stringify(
+				{
+					name: internalPackageName,
+					version: "1.2.3",
+					maestro: {
+						canonicalPackageName: publicPackageName,
+					},
+				},
+				null,
+				2,
+			),
+		);
+		write(join(source, "README.md"), "public readme\n");
+		write(join(source, ".env.example"), "INTERNAL_DEFAULT=value\n");
+		write(
+			join(source, ".github/public-release-mirror.exclude"),
+			".env.example\n",
+		);
+
+		execFileSync(
+			process.execPath,
+			[
+				"scripts/prepare-public-release-mirror.mjs",
+				"--source",
+				source,
+				"--target",
+				target,
+			],
+			{ cwd: process.cwd(), stdio: "pipe" },
+		);
+
+		expect(readFileSync(join(target, "README.md"), "utf8")).toBe(
+			"public readme\n",
+		);
+		expect(existsSync(join(target, ".env.example"))).toBe(false);
+	});
+
 	it("excludes docs/release-ops.md from the default fallback excludes", () => {
 		const { source, target, root } = makeFixture();
 		write(
