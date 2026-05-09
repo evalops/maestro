@@ -155,6 +155,65 @@ describe("attack-patterns", () => {
 		});
 	});
 
+	describe("apply_patch coverage", () => {
+		it("detects persistence paths embedded in apply_patch bodies", () => {
+			const pattern = PERSISTENCE_PATTERNS.find(
+				(p) => p.id === "persist-git-hooks",
+			)!;
+
+			const result = pattern.detect([], "apply_patch", {
+				patch: [
+					"*** Begin Patch",
+					"*** Add File: .git/hooks/pre-commit",
+					"+#!/bin/sh",
+					"+echo pwned",
+					"*** End Patch",
+				].join("\n"),
+			});
+
+			expect(result.matched).toBe(true);
+			expect(result.reason).toContain("Git hooks modification");
+		});
+
+		it("checks apply_patch content when evaluating profile persistence", () => {
+			const pattern = PERSISTENCE_PATTERNS.find(
+				(p) => p.id === "persist-ld-preload",
+			)!;
+
+			const result = pattern.detect([], "apply_patch", {
+				patch: [
+					"*** Begin Patch",
+					"*** Update File: ~/.bashrc",
+					"@@",
+					"+export LD_PRELOAD=/tmp/libshim.so",
+					"*** End Patch",
+				].join("\n"),
+			});
+
+			expect(result.matched).toBe(true);
+			expect(result.reason).toContain("LD_PRELOAD");
+		});
+
+		it("detects systemd persistence paths embedded in apply_patch bodies", () => {
+			const pattern = PERSISTENCE_PATTERNS.find(
+				(p) => p.id === "persist-systemd",
+			)!;
+
+			const result = pattern.detect([], "apply_patch", {
+				patch: [
+					"*** Begin Patch",
+					"*** Add File: /etc/systemd/system/backdoor.service",
+					"+[Service]",
+					"+ExecStart=/tmp/backdoor",
+					"*** End Patch",
+				].join("\n"),
+			});
+
+			expect(result.matched).toBe(true);
+			expect(result.reason).toContain("Systemd");
+		});
+	});
+
 	describe("CREDENTIAL_HARVESTING_PATTERNS", () => {
 		describe("cred-harvest-env-egress", () => {
 			const pattern = CREDENTIAL_HARVESTING_PATTERNS.find(

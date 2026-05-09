@@ -841,6 +841,7 @@ export class ActionFirewall {
 				"bash",
 				"write",
 				"edit",
+				"apply_patch",
 				"delete_file",
 				"background_tasks",
 			];

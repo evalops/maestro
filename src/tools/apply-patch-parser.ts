@@ -1,6 +1,8 @@
 export type ApplyPatchHunk = {
 	oldLines: string[];
 	newLines: string[];
+	oldNoFinalNewline?: boolean;
+	newNoFinalNewline?: boolean;
 };
 
 export type ApplyPatchOperation =
@@ -71,6 +73,9 @@ export function parseApplyPatch(patch: string): ApplyPatchDocument {
 				addLines.push(bodyLine.slice(1));
 				index++;
 			}
+			if (addLines.length === 0) {
+				throw new Error(`Add File ${path} must contain at least one line`);
+			}
 			operations.push({ type: "add", path, lines: addLines });
 			continue;
 		}
@@ -100,6 +105,7 @@ export function parseApplyPatch(patch: string): ApplyPatchDocument {
 					index++;
 				}
 				const hunk: ApplyPatchHunk = { oldLines: [], newLines: [] };
+				let previousPrefix: string | undefined;
 				while (index < endIndex) {
 					const bodyLine = lines[index] ?? "";
 					if (bodyLine.startsWith("@@") || isOperationHeader(bodyLine)) {
@@ -111,6 +117,12 @@ export function parseApplyPatch(patch: string): ApplyPatchDocument {
 						);
 					}
 					if (bodyLine === "\\ No newline at end of file") {
+						if (previousPrefix === "-" || previousPrefix === " ") {
+							hunk.oldNoFinalNewline = true;
+						}
+						if (previousPrefix === "+" || previousPrefix === " ") {
+							hunk.newNoFinalNewline = true;
+						}
 						index++;
 						continue;
 					}
@@ -132,6 +144,7 @@ export function parseApplyPatch(patch: string): ApplyPatchDocument {
 							`Update File ${path} contains an invalid hunk line: ${bodyLine}`,
 						);
 					}
+					previousPrefix = prefix;
 					index++;
 				}
 				if (hunk.oldLines.length === 0 && hunk.newLines.length === 0) {

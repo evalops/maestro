@@ -126,6 +126,18 @@ describe("apply_patch parser", () => {
 			},
 		]);
 	});
+
+	it("rejects empty add-file hunks", () => {
+		const patch = [
+			"*** Begin Patch",
+			"*** Add File: src/empty.ts",
+			"*** End Patch",
+		].join("\n");
+
+		expect(() => parseApplyPatch(patch)).toThrow(
+			"Add File src/empty.ts must contain at least one line",
+		);
+	});
 });
 
 describe("apply_patch tool", () => {
@@ -177,7 +189,7 @@ describe("apply_patch tool", () => {
 		const filePath = join(testDir, "repeated.ts");
 		writeFileSync(filePath, "export const a = 1;\nexport const b = 1;\n");
 
-		await applyPatchTool.execute("call-repeated", {
+		const result = await applyPatchTool.execute("call-repeated", {
 			patch: [
 				"*** Begin Patch",
 				`*** Update File: ${filePath}`,
@@ -195,6 +207,45 @@ describe("apply_patch tool", () => {
 		expect(readFileSync(filePath, "utf-8")).toBe(
 			"export const a = 2;\nexport const b = 2;\n",
 		);
+		expect(getTextOutput(result)).toContain("Applied patch to 1 file(s)");
+	});
+
+	it("honors EOF newline markers when adding a final newline", async () => {
+		const filePath = join(testDir, "missing-final-newline.txt");
+		writeFileSync(filePath, "old");
+
+		await applyPatchTool.execute("call-eof-add-newline", {
+			patch: [
+				"*** Begin Patch",
+				`*** Update File: ${filePath}`,
+				"@@",
+				"-old",
+				"\\ No newline at end of file",
+				"+new",
+				"*** End Patch",
+			].join("\n"),
+		});
+
+		expect(readFileSync(filePath, "utf-8")).toBe("new\n");
+	});
+
+	it("honors EOF newline markers when removing a final newline", async () => {
+		const filePath = join(testDir, "remove-final-newline.txt");
+		writeFileSync(filePath, "old\n");
+
+		await applyPatchTool.execute("call-eof-remove-newline", {
+			patch: [
+				"*** Begin Patch",
+				`*** Update File: ${filePath}`,
+				"@@",
+				"-old",
+				"+new",
+				"\\ No newline at end of file",
+				"*** End Patch",
+			].join("\n"),
+		});
+
+		expect(readFileSync(filePath, "utf-8")).toBe("new");
 	});
 
 	it("adds and deletes files", async () => {

@@ -7,6 +7,7 @@ import {
 	ActionFirewall,
 	defaultActionFirewall,
 } from "../../src/safety/action-firewall.js";
+import { SemanticJudge } from "../../src/safety/semantic-judge.js";
 
 const withPlanMode = async (fn: () => Promise<void>) => {
 	const prev = process.env.MAESTRO_PLAN_MODE;
@@ -526,6 +527,29 @@ describe("ActionFirewall", () => {
 			makeCustomCommandContext("mkfs.ext4 /dev/sda"),
 		);
 		expect(verdict.action).toBe("require_approval");
+	});
+
+	it("runs semantic judge for apply_patch calls", async () => {
+		const firewall = new ActionFirewall();
+		firewall.setSemanticJudge(
+			new SemanticJudge(async () =>
+				JSON.stringify({
+					safe: false,
+					reason: "Patch edits a file unrelated to the user intent.",
+				}),
+			),
+		);
+
+		const verdict = await firewall.evaluate({
+			...makeApplyPatchContext("file.txt"),
+			userIntent: "Inspect the repository",
+		});
+
+		expect(verdict).toMatchObject({
+			action: "require_approval",
+			ruleId: "semantic-judge",
+			reason: "Patch edits a file unrelated to the user intent.",
+		});
 	});
 
 	it("requires approval for mutating tools when plan mode is on", async () => {

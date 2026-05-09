@@ -173,10 +173,7 @@ Use this when a Codex-family model emits its native apply_patch grammar. Use edi
 			}
 		}
 
-		const changedFileCount =
-			plan.filesCreated.length +
-			plan.filesModified.length +
-			plan.filesDeleted.length;
+		const changedFileCount = countChangedFiles(plan);
 		return respond
 			.text(
 				[
@@ -443,11 +440,13 @@ function applyUpdateHunks(
 ): { content: string; hunksApplied: number; conflicts: string[] } {
 	const document = normalizeDocument(previousContent);
 	let lines = [...document.lines];
+	let finalNewline = document.hadFinalNewline;
 	const conflicts: string[] = [];
 	let hunksApplied = 0;
 	for (const [index, hunk] of hunks.entries()) {
 		if (hunk.oldLines.length === 0) {
 			lines = [...lines, ...hunk.newLines];
+			finalNewline = resolveHunkFinalNewline(finalNewline, hunk);
 			hunksApplied++;
 			continue;
 		}
@@ -468,13 +467,27 @@ function applyUpdateHunks(
 			...hunk.newLines,
 			...lines.slice(start + hunk.oldLines.length),
 		];
+		finalNewline = resolveHunkFinalNewline(finalNewline, hunk);
 		hunksApplied++;
 	}
 	return {
-		content: restoreDocumentContent(lines, document),
+		content: restoreDocumentContent(lines, document, finalNewline),
 		hunksApplied,
 		conflicts,
 	};
+}
+
+function resolveHunkFinalNewline(
+	currentFinalNewline: boolean,
+	hunk: ApplyPatchHunk,
+): boolean {
+	if (hunk.newNoFinalNewline === true) {
+		return false;
+	}
+	if (hunk.oldNoFinalNewline === true) {
+		return true;
+	}
+	return currentFinalNewline;
 }
 
 function findLineSequence(lines: string[], needle: string[]): number[] {
@@ -786,6 +799,14 @@ function buildDetails(
 	};
 }
 
+function countChangedFiles(plan: ApplyPatchPlan): number {
+	return new Set([
+		...plan.filesCreated,
+		...plan.filesModified,
+		...plan.filesDeleted,
+	]).size;
+}
+
 function detectLineEnding(text: string): LineEnding {
 	if (text.includes("\r\n")) return "\r\n";
 	if (text.includes("\r")) return "\r";
@@ -806,8 +827,9 @@ function normalizeDocument(content: string): NormalizedDocument {
 function restoreDocumentContent(
 	lines: string[],
 	document: NormalizedDocument,
+	finalNewline = document.hadFinalNewline,
 ): string {
-	return `${document.bom}${serializeLines(lines, document.hadFinalNewline).replace(/\n/g, document.lineEnding)}`;
+	return `${document.bom}${serializeLines(lines, finalNewline).replace(/\n/g, document.lineEnding)}`;
 }
 
 function serializeLines(lines: string[], finalNewline: boolean): string {
