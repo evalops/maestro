@@ -38,6 +38,7 @@ describe("conductor MCP client tools", () => {
 		expect(schema.properties?.previous_observation_id?.type).toBe("string");
 		expect(schema.properties?.expected_result?.type).toBe("string");
 		expect(schema.properties?.max_elements?.type).toBe("number");
+		expect(schema.properties?.include_frames?.type).toBe("boolean");
 		expect(schema.properties?.action?.type).toBe("object");
 		const action = schema.properties?.action;
 		const kindValues = action?.properties?.kind?.anyOf?.map(
@@ -52,5 +53,10 @@ describe("conductor MCP client tools", () => {
 			"scroll",
 			"key",
 		]);
+		expect(action?.properties?.selector?.type).toBe("string");
+		expect(action?.properties?.refId?.type).toBe("string");
+		expect(action?.properties?.ref_id?.type).toBe("string");
+		expect(action?.properties?.frameId?.type).toBe("number");
+		expect(action?.properties?.frame_id?.type).toBe("number");
 	});
 });
