@@ -45,6 +45,7 @@ use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, T
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 
+use crate::hyperlink;
 use crate::palette::theme;
 use crate::syntax;
 
@@ -160,6 +161,13 @@ pub fn render_markdown_with_width(input: &str, _width: Option<usize>) -> Text<'s
 /// - `Some(n)` indicates an ordered list starting at number `n`
 ///
 /// This allows proper rendering of nested lists with correct indentation and markers.
+struct LinkState {
+    url: String,
+    label: String,
+    spans: Vec<Span<'static>>,
+    has_rendered_segment: bool,
+}
+
 struct MarkdownRenderer {
     styles: MarkdownStyles,
     lines: Vec<Line<'static>>,
@@ -170,8 +178,8 @@ struct MarkdownRenderer {
     code_block_content: String,
     code_block_lang: Option<String>,
     blockquote_depth: usize,
-    /// Current link URL (for appending after link text)
-    current_link_url: Option<String>,
+    /// Current link target and visible label while parsing `[label](url)`.
+    current_link: Option<LinkState>,
 }
 
 impl MarkdownRenderer {
@@ -186,7 +194,7 @@ impl MarkdownRenderer {
             code_block_content: String::new(),
             code_block_lang: None,
             blockquote_depth: 0,
-            current_link_url: None,
+            current_link: None,
         }
     }
 
@@ -227,13 +235,82 @@ impl MarkdownRenderer {
     }
 
     fn add_text(&mut self, text: &str) {
+        let style = self.current_style();
         if self.in_code_block {
             self.code_block_content.push_str(text);
+        } else if let Some(link) = self.current_link.as_mut() {
+            link.label.push_str(text);
+            link.spans.push(Span::styled(text.to_string(), style));
         } else {
-            let style = self.current_style();
             self.current_spans
                 .push(Span::styled(text.to_string(), style));
         }
+    }
+
+    fn add_inline_code(&mut self, code: &str) {
+        if let Some(link) = self.current_link.as_mut() {
+            let code_label = format!("`{code}`");
+            link.label.push_str(&code_label);
+            link.spans.push(Span::styled(code_label, self.styles.code));
+            return;
+        }
+        self.current_spans
+            .push(Span::styled(format!("`{code}`"), self.styles.code));
+    }
+
+    fn add_soft_break(&mut self) {
+        let style = self.current_style();
+        if let Some(link) = self.current_link.as_mut() {
+            link.label.push(' ');
+            link.spans.push(Span::styled(" ", style));
+            return;
+        }
+        self.current_spans.push(Span::raw(" "));
+    }
+
+    fn append_link_spans(&mut self, url: &str, label: &str, spans: Vec<Span<'static>>) {
+        if url.starts_with("file://") {
+            if spans.is_empty() {
+                self.current_spans
+                    .push(hyperlink::link_span(url, label, self.styles.link));
+            } else {
+                for span in spans {
+                    self.current_spans.push(Span::styled(
+                        hyperlink::wrap_in_link(url, span.content.as_ref()),
+                        span.style,
+                    ));
+                }
+            }
+            return;
+        }
+        if spans.is_empty() {
+            self.current_spans
+                .push(Span::styled(label.to_string(), self.styles.link));
+        } else {
+            self.current_spans.extend(spans);
+        }
+    }
+
+    fn add_hard_break(&mut self) {
+        let pending_link_segment = if let Some(link) = self.current_link.as_mut() {
+            if link.label.is_empty() && link.spans.is_empty() {
+                None
+            } else {
+                let segment_spans = std::mem::take(&mut link.spans);
+                let segment_label = std::mem::take(&mut link.label);
+                let url = link.url.clone();
+                Some((url, segment_label, segment_spans))
+            }
+        } else {
+            None
+        };
+        if let Some((url, label, spans)) = pending_link_segment {
+            self.append_link_spans(&url, &label, spans);
+            if let Some(link) = self.current_link.as_mut() {
+                link.has_rendered_segment = true;
+            }
+        }
+        self.flush_line();
     }
 
     fn render(&mut self, parser: Parser<'_>) {
@@ -242,16 +319,9 @@ impl MarkdownRenderer {
                 Event::Start(tag) => self.start_tag(tag),
                 Event::End(tag) => self.end_tag(tag),
                 Event::Text(text) => self.add_text(&text),
-                Event::Code(code) => {
-                    self.current_spans
-                        .push(Span::styled(format!("`{code}`"), self.styles.code));
-                }
-                Event::SoftBreak => {
-                    self.current_spans.push(Span::raw(" "));
-                }
-                Event::HardBreak => {
-                    self.flush_line();
-                }
+                Event::Code(code) => self.add_inline_code(&code),
+                Event::SoftBreak => self.add_soft_break(),
+                Event::HardBreak => self.add_hard_break(),
                 Event::Rule => {
                     self.flush_line();
                     self.lines.push(Line::from(Span::styled(
@@ -338,8 +408,12 @@ impl MarkdownRenderer {
             }
             Tag::Link { dest_url, .. } => {
                 self.push_style(self.styles.link);
-                // Store URL for displaying after link text
-                self.current_link_url = Some(dest_url.to_string());
+                self.current_link = Some(LinkState {
+                    url: dest_url.to_string(),
+                    label: String::new(),
+                    spans: Vec::new(),
+                    has_rendered_segment: false,
+                });
             }
             _ => {}
         }
@@ -413,12 +487,28 @@ impl MarkdownRenderer {
             }
             TagEnd::Link => {
                 self.pop_style();
-                // Append the URL after the link text
-                if let Some(url) = self.current_link_url.take() {
-                    self.current_spans.push(Span::styled(
-                        format!(" ({url})"),
-                        Style::default().fg(Color::DarkGray),
-                    ));
+                if let Some(link) = self.current_link.take() {
+                    if link.label.is_empty() && link.spans.is_empty() && link.has_rendered_segment {
+                        if !link.url.starts_with("file://") {
+                            self.current_spans.push(Span::styled(
+                                format!(" ({})", link.url),
+                                Style::default().fg(Color::DarkGray),
+                            ));
+                        }
+                        return;
+                    }
+                    let label = if link.label.is_empty() {
+                        link.url.as_str()
+                    } else {
+                        link.label.as_str()
+                    };
+                    self.append_link_spans(&link.url, label, link.spans);
+                    if !link.url.starts_with("file://") {
+                        self.current_spans.push(Span::styled(
+                            format!(" ({})", link.url),
+                            Style::default().fg(Color::DarkGray),
+                        ));
+                    }
                 }
             }
             _ => {}
@@ -476,5 +566,215 @@ mod tests {
     fn renders_emphasis() {
         let text = render_markdown("This is *italic* text");
         assert!(!text.lines.is_empty());
+    }
+
+    #[test]
+    fn renders_file_uri_links_as_terminal_hyperlinks() {
+        let text =
+            render_markdown("See [src/main.ts](file:///Users/alice/work/maestro/src/main.ts#L42).");
+        let rendered: String = text
+            .lines
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+            .collect();
+
+        assert!(crate::hyperlink::contains_hyperlink(&rendered));
+        assert_eq!(
+            crate::hyperlink::extract_urls(&rendered),
+            vec!["file:///Users/alice/work/maestro/src/main.ts#L42"]
+        );
+        assert_eq!(
+            crate::hyperlink::strip_hyperlinks(&rendered),
+            "See src/main.ts."
+        );
+    }
+
+    #[test]
+    fn keeps_soft_breaks_inside_file_uri_link_labels() {
+        let text =
+            render_markdown("See [src\nmain.ts](file:///Users/alice/work/maestro/src/main.ts).");
+        let rendered: String = text
+            .lines
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+            .collect();
+
+        assert!(crate::hyperlink::contains_hyperlink(&rendered));
+        assert_eq!(
+            crate::hyperlink::strip_hyperlinks(&rendered),
+            "See src main.ts."
+        );
+    }
+
+    #[test]
+    fn preserves_hard_breaks_inside_file_uri_link_labels() {
+        let text =
+            render_markdown("See [src  \nmain.ts](file:///Users/alice/work/maestro/src/main.ts).");
+        let rendered_lines: Vec<String> = text
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+        let rendered = rendered_lines.join("\n");
+
+        assert!(crate::hyperlink::contains_hyperlink(&rendered));
+        assert_eq!(
+            rendered_lines
+                .iter()
+                .map(|line| crate::hyperlink::strip_hyperlinks(line))
+                .collect::<Vec<_>>(),
+            vec!["See src".to_string(), "main.ts.".to_string()]
+        );
+    }
+
+    #[test]
+    fn skips_empty_hard_break_file_uri_link_segments() {
+        let text =
+            render_markdown("See [\\\nmain.ts](file:///Users/alice/work/maestro/src/main.ts).");
+        let rendered_lines: Vec<String> = text
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+        let visible_lines: Vec<String> = rendered_lines
+            .iter()
+            .map(|line| crate::hyperlink::strip_hyperlinks(line))
+            .collect();
+
+        assert!(crate::hyperlink::contains_hyperlink(
+            &rendered_lines.join("\n")
+        ));
+        assert!(visible_lines
+            .iter()
+            .all(|line| !line.contains("file:///Users/alice/work/maestro/src/main.ts")));
+        assert_eq!(
+            visible_lines,
+            vec!["See ".to_string(), "main.ts.".to_string()]
+        );
+    }
+
+    #[test]
+    fn skips_consecutive_empty_hard_break_file_uri_link_segments() {
+        let text = render_markdown(
+            "See [src\\\n\\\nmain.ts](file:///Users/alice/work/maestro/src/main.ts).",
+        );
+        let rendered_lines: Vec<String> = text
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+        let visible_lines: Vec<String> = rendered_lines
+            .iter()
+            .map(|line| crate::hyperlink::strip_hyperlinks(line))
+            .collect();
+
+        assert!(crate::hyperlink::contains_hyperlink(
+            &rendered_lines.join("\n")
+        ));
+        assert!(!visible_lines
+            .iter()
+            .any(|line| line.contains("file:///Users/alice/work/maestro/src/main.ts")));
+        assert_eq!(
+            visible_lines,
+            vec!["See src".to_string(), "main.ts.".to_string()]
+        );
+    }
+
+    #[test]
+    fn skips_empty_link_end_after_hard_break_file_uri_segment() {
+        let text = render_markdown("See [src\\\n](file:///Users/alice/work/maestro/src/main.ts)");
+        let rendered_lines: Vec<String> = text
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+        let visible_lines: Vec<String> = rendered_lines
+            .iter()
+            .map(|line| crate::hyperlink::strip_hyperlinks(line))
+            .collect();
+
+        assert!(crate::hyperlink::contains_hyperlink(
+            &rendered_lines.join("\n")
+        ));
+        assert!(visible_lines
+            .iter()
+            .all(|line| !line.contains("file:///Users/alice/work/maestro/src/main.ts")));
+        assert_eq!(visible_lines, vec!["See src".to_string()]);
+    }
+
+    #[test]
+    fn keeps_non_file_url_fallback_after_empty_hard_break_link_end() {
+        let text = render_markdown("See [the docs\\\n](https://example.com/docs)");
+        let rendered_lines: Vec<String> = text
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+
+        assert_eq!(
+            rendered_lines,
+            vec![
+                "See the docs".to_string(),
+                " (https://example.com/docs)".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn keeps_non_file_links_visible_for_terminal_fallback() {
+        let text = render_markdown("Read [the docs](https://example.com/docs).");
+        let rendered: String = text
+            .lines
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+            .collect();
+
+        assert!(!crate::hyperlink::contains_hyperlink(&rendered));
+        assert_eq!(rendered, "Read the docs (https://example.com/docs).");
+    }
+
+    #[test]
+    fn preserves_nested_styles_in_non_file_links() {
+        let text = render_markdown("Read [the **bold** docs](https://example.com/docs).");
+        let rendered: String = text
+            .lines
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+            .collect();
+        let bold_span = text
+            .lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .find(|span| span.content.as_ref() == "bold")
+            .expect("bold link label span should be preserved");
+
+        assert_eq!(rendered, "Read the bold docs (https://example.com/docs).");
+        assert!(bold_span.style.add_modifier.contains(Modifier::BOLD));
+        assert!(bold_span.style.add_modifier.contains(Modifier::UNDERLINED));
     }
 }
