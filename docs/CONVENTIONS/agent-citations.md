@@ -7,25 +7,26 @@ link the displayed path with a Markdown `file:///` URI.
 ## Format
 
 ```md
-[<displayed-path-or-basename>](file:///<workspace-rooted-or-absolute-path>)
+[<displayed-path-or-basename>](file:///<absolute-path>)
 ```
 
 Examples:
 
 ```md
-[src/auth/middleware.ts](file:///workspace/src/auth/middleware.ts)
+[src/auth/middleware.ts](file:///Users/alice/work/maestro/src/auth/middleware.ts)
 [My Project/test file.js](file:///Users/alice/My%20Project/test%20file.js)
-[src/auth/middleware.ts](file:///workspace/src/auth/middleware.ts#L42)
-[src/auth/middleware.ts](file:///workspace/src/auth/middleware.ts#L42-L48)
-[src/auth/middleware.ts](file:///workspace/src/auth/middleware.ts#L42C8)
+[src/auth/middleware.ts](file:///Users/alice/work/maestro/src/auth/middleware.ts#L42)
+[src/auth/middleware.ts](file:///Users/alice/work/maestro/src/auth/middleware.ts#L42-L48)
+[src/auth/middleware.ts](file:///Users/alice/work/maestro/src/auth/middleware.ts#L42C8)
 ```
 
 ## Rules
 
 - Display the path or basename users should read, not the raw URI.
 - Use `file:///` for local workspace files.
-- Prefer workspace-rooted paths when the file is inside the current workspace.
-- Use absolute paths when a file is outside the current workspace.
+- Use absolute file URIs derived from the current workspace root when the file is
+  inside the current workspace.
+- Use absolute file URIs for files outside the current workspace.
 - Percent-encode spaces and other URI characters in link targets.
 - Include line or column fragments when the agent knows the location.
 - Use GitHub blob URLs at GitHub-comment boundaries instead of `file:///`.
@@ -40,7 +41,7 @@ flow.
 Good:
 
 ```md
-See [src/auth/middleware.ts](file:///workspace/src/auth/middleware.ts#L42) for the validation logic.
+See [src/auth/middleware.ts](file:///Users/alice/work/maestro/src/auth/middleware.ts#L42) for the validation logic.
 ```
 
 Bad:
@@ -60,4 +61,3 @@ for adapting it:
 - VS Code and JetBrains: open the file at the cited line or column.
 - Slack: preserve Markdown so the link remains visible and clickable.
 - GitHub agent: translate local file URIs to repository blob URLs before posting.
-
