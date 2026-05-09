@@ -114,6 +114,20 @@ npx nx run maestro:test --skip-nx-cache
 npx nx run maestro:evals --skip-nx-cache
 ```
 
+To prove Maestro works against a local Cerebro stack, keep sibling checkouts and
+run:
+
+```bash
+make cerebro-e2e
+```
+
+That target delegates to Cerebro's `make local-maestro-e2e` with
+`LOCAL_MAESTRO_REPO` set to the current Maestro checkout. It builds and smokes
+Maestro, emits Maestro's canonical Platform replay, publishes it through local
+NATS, and verifies Cerebro graph projection plus MCP recall from the generated
+session traffic. Set `LOCAL_CEREBRO_REPO=/path/to/cerebro` when the checkout is
+not a sibling directory.
+
 Need Redis or PostgreSQL for a specific workflow? Start from `docker-compose.yml` and use the [Contributor Runbook](docs/CONTRIBUTOR_RUNBOOK.md) for the rest of the repo workflow.
 
 ## Repository Layout

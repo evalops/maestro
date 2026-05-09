@@ -6,9 +6,11 @@ export ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY GROQ_API_KEY \
        OPENROUTER_API_KEY XAI_API_KEY EXA_API_KEY \
        COMPOSER_MODEL COMPOSER_MODEL_PROVIDER
 
+LOCAL_CEREBRO_REPO ?= ../cerebro
+
 .PHONY: help setup install build build-all compile run-ts run-rs run-rs-debug \
         web dev dev-all developer-surface-check test test-fast test-coverage lint check fmt fmt-unsafe \
-        smoke evals verify clean db-up db-down db-migrate
+        smoke cerebro-e2e evals verify clean db-up db-down db-migrate
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -78,6 +80,9 @@ fmt-unsafe: ## Auto-format + unsafe lint fixes
 
 smoke: build ## Smoke-test the built CLI
 	npm run smoke
+
+cerebro-e2e: ## Run the cross-repo Cerebro local E2E using this Maestro checkout
+	LOCAL_MAESTRO_REPO="$(CURDIR)" $(MAKE) -C "$(LOCAL_CEREBRO_REPO)" local-maestro-e2e
 
 evals: ## Run eval scenarios
 	npx nx run maestro:evals --skip-nx-cache
