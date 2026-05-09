@@ -3,8 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-	EVALOPS_LEGACY_SERVICE_ORGANIZATION_ID_ENV_VARS,
-	EVALOPS_LEGACY_SERVICE_WORKSPACE_ID_ENV_VARS,
 	EVALOPS_ORGANIZATION_ID_ENV_VARS,
 	EVALOPS_WORKSPACE_ID_ENV_VARS,
 	readEvalOpsEnv,
@@ -55,14 +53,14 @@ describe("managed EvalOps context", () => {
 		vi.unstubAllEnvs();
 	});
 
-	it("preserves legacy managed aliases as shared EvalOps fallbacks", () => {
-		expect(EVALOPS_ORGANIZATION_ID_ENV_VARS).toContain(
+	it("keeps shared EvalOps aliases generic", () => {
+		expect(EVALOPS_ORGANIZATION_ID_ENV_VARS).not.toContain(
 			"MAESTRO_LLM_GATEWAY_ORG_ID",
 		);
-		expect(EVALOPS_ORGANIZATION_ID_ENV_VARS).toContain(
+		expect(EVALOPS_ORGANIZATION_ID_ENV_VARS).not.toContain(
 			"MAESTRO_REMOTE_RUNNER_ORG_ID",
 		);
-		expect(EVALOPS_WORKSPACE_ID_ENV_VARS).toContain(
+		expect(EVALOPS_WORKSPACE_ID_ENV_VARS).not.toContain(
 			"MAESTRO_REMOTE_RUNNER_WORKSPACE_ID",
 		);
 		expect(
@@ -103,7 +101,7 @@ describe("managed EvalOps context", () => {
 				},
 				EVALOPS_ORGANIZATION_ID_ENV_VARS,
 			),
-		).toBe("org_gateway");
+		).toBeUndefined();
 		expect(
 			readEvalOpsEnv(
 				{
@@ -111,7 +109,7 @@ describe("managed EvalOps context", () => {
 				},
 				EVALOPS_ORGANIZATION_ID_ENV_VARS,
 			),
-		).toBe("org_remote");
+		).toBeUndefined();
 		expect(
 			readEvalOpsEnv(
 				{
@@ -119,13 +117,7 @@ describe("managed EvalOps context", () => {
 				},
 				EVALOPS_WORKSPACE_ID_ENV_VARS,
 			),
-		).toBe("workspace_remote");
-		expect(EVALOPS_LEGACY_SERVICE_ORGANIZATION_ID_ENV_VARS).toContain(
-			"MAESTRO_REMOTE_RUNNER_ORG_ID",
-		);
-		expect(EVALOPS_LEGACY_SERVICE_WORKSPACE_ID_ENV_VARS).toContain(
-			"MAESTRO_REMOTE_RUNNER_WORKSPACE_ID",
-		);
+		).toBeUndefined();
 	});
 
 	it("resolves managed mode from stored init credentials when env is sparse", () => {
