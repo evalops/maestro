@@ -17,6 +17,26 @@ const commands = [
 		cmd: "node",
 		args: ["scripts/smoke-headless.js"],
 	},
+	{
+		name: "mock-agent-read",
+		cmd: "node",
+		args: ["scripts/run-mock-agent.js", "README.md"],
+	},
+	{
+		name: "mock-agent-write-read",
+		cmd: "node",
+		args: ["scripts/run-mock-agent-write-read.js"],
+	},
+	{
+		name: "mock-agent-search-read",
+		cmd: "node",
+		args: ["scripts/run-mock-agent-search-read.js"],
+	},
+	{
+		name: "mock-agent-edit-read",
+		cmd: "node",
+		args: ["scripts/run-mock-agent-edit-read.js"],
+	},
 ];
 
 let hadError = false;

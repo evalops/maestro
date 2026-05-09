@@ -42,13 +42,13 @@ const mockModel = {
 };
 
 let lineNumber = 1;
-let snippet = "";
+let readContent = "";
 const readOperation = {
 	name: "read",
 	args: { path: tempFile, offset: lineNumber },
 	onResult: (result) => {
 		const text = result.content.find((item) => item.type === "text");
-		snippet = text?.text?.split("\n").find((line) => line.trim()) ?? "";
+		readContent = text?.text ?? "";
 	},
 };
 const transport = new MockToolTransport(
@@ -67,7 +67,7 @@ const transport = new MockToolTransport(
 		},
 		readOperation,
 	],
-	() => `Search and read: ${snippet.trim()}`,
+	() => `Search and read: ${readContent.includes("TODO testing") ? "ok" : readContent.trim()}`,
 );
 
 const agent = new Agent({
@@ -89,4 +89,9 @@ if (!finalAssistant) {
 }
 
 console.log(finalAssistant.content.find((c) => c.type === "text")?.text ?? "");
+if (!readContent.includes("TODO testing")) {
+	console.error("mock search/read flow did not read the expected search match");
+	rmSync(tempDir, { recursive: true, force: true });
+	process.exit(1);
+}
 rmSync(tempDir, { recursive: true, force: true });
