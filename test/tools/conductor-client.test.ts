@@ -31,6 +31,13 @@ describe("conductor MCP client tools", () => {
 		expect(conductorBrowserOperatorTool.executionLocation).toBe("client");
 		expect(schema.type).toBe("object");
 		expect(schema.required ?? []).toContain("goal");
+		const phaseValues = schema.properties?.phase?.anyOf?.map(
+			(entry) => entry.const,
+		);
+		expect(phaseValues).toEqual(["observe", "act", "verify", "recover"]);
+		expect(schema.properties?.previous_observation_id?.type).toBe("string");
+		expect(schema.properties?.expected_result?.type).toBe("string");
+		expect(schema.properties?.max_elements?.type).toBe("number");
 		expect(schema.properties?.action?.type).toBe("object");
 		const action = schema.properties?.action;
 		const kindValues = action?.properties?.kind?.anyOf?.map(

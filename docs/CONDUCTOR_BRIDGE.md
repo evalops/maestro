@@ -39,13 +39,18 @@ to the server.
 | MCP bridging | `list_mcp_servers`, `list_mcp_tools`, `list_mcp_resources`, `read_mcp_resource` |
 
 `browser_operator` is the preferred task-level browser-control surface. Call it
-first with a `goal` and no action to observe the current page. Then call it with
-the same `goal` plus an `action` such as `{ "kind": "click", "selector": "..." }`,
+first with `phase: "observe"`, a `goal`, and no action to inspect the current
+page. Then call it with `phase: "act"`, the same `goal`, the prior
+`previous_observation_id` when available, an `expected_result`, and exactly one
+semantic action such as `{ "kind": "click", "selector": "..." }`,
 `{ "kind": "type", "selector": "...", "text": "..." }`, or
-`{ "kind": "select", "selector": "...", "value": "..." }`. Conductor executes
-the action in the active tab, refreshes the page observation, and returns
-verification fields instead of making the model infer success from a low-level
-click or keypress alone.
+`{ "kind": "select", "selector": "...", "value": "..." }`.
+
+Conductor executes the action in the active tab, refreshes the page observation,
+and returns verification fields instead of making the model infer success from a
+low-level click or keypress alone. If verification fails or the selector is
+stale, call `browser_operator` again with `phase: "recover"` and no typed secret
+values; the client should re-observe before retrying.
 
 ## Optional: Native Messaging Host (Auto-Launch + Status)
 
