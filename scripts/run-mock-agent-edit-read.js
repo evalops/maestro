@@ -8,7 +8,7 @@ const __dirname = dirname(__filename);
 const projectRoot = join(__dirname, "..");
 const targetFile = join(projectRoot, "evals", "mock-edit-flow.txt");
 
-let readSummary = "";
+let readContent = "";
 
 await runMockAgentFlow({
 	steps: [
@@ -19,14 +19,17 @@ await runMockAgentFlow({
 			args: { path: targetFile },
 			onResult: (result) => {
 				const firstText = result.content.find((item) => item.type === "text");
-				readSummary =
-					firstText?.text?.split("\n").find((line) => line.trim()) ?? "";
+				readContent = firstText?.text ?? "";
 			},
 		},
 	],
-	buildSummary: () => `Edited ${targetFile}: ${readSummary.trim()}`,
+	buildSummary: () => `Edited ${targetFile}: ${readContent.includes("Updated") ? "ok" : readContent.trim()}`,
 	targetPath: targetFile,
 	tools: ["write", "edit", "read"],
 	cleanup: true,
 	prompt: `Edit ${targetFile}`,
 });
+
+if (!readContent.includes("Updated")) {
+	throw new Error("mock edit/read flow did not read the expected updated file content");
+}

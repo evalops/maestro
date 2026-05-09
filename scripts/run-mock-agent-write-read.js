@@ -8,7 +8,7 @@ const __dirname = dirname(__filename);
 const projectRoot = join(__dirname, "..");
 const targetFile = join(projectRoot, "evals", "mock-agent-flow.txt");
 
-let readSummary = "";
+let readContent = "";
 
 await runMockAgentFlow({
 	steps: [
@@ -18,14 +18,17 @@ await runMockAgentFlow({
 			args: { path: targetFile },
 			onResult: (result) => {
 				const firstText = result.content.find((item) => item.type === "text");
-				readSummary =
-					firstText?.text?.split("\n").find((line) => line.trim()) ?? "";
+				readContent = firstText?.text ?? "";
 			},
 		},
 	],
-	buildSummary: () => `Wrote and read ${targetFile}: ${readSummary.trim()}`,
+	buildSummary: () => `Wrote and read ${targetFile}: ${readContent.includes("Hello evals") ? "ok" : readContent.trim()}`,
 	targetPath: targetFile,
 	tools: ["write", "read"],
 	cleanup: true,
 	prompt: `Write and read ${targetFile}`,
 });
+
+if (!readContent.includes("Hello evals")) {
+	throw new Error("mock write/read flow did not read the expected file content");
+}

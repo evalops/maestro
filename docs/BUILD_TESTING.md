@@ -171,6 +171,9 @@ bun run verify-build
 # Run smoke tests
 bun run smoke
 
+# Run the credential-free local CLI/headless/mock-agent smoke
+npm run smoke:local-e2e
+
 # Run all build tests
 bunx vitest --run test/build/
 ```

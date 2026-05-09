@@ -110,9 +110,14 @@ git clone https://github.com/evalops/maestro.git
 cd maestro
 bun install
 npx nx run maestro:build --skip-nx-cache
+npm run smoke:local-e2e
 npx nx run maestro:test --skip-nx-cache
 npx nx run maestro:evals --skip-nx-cache
 ```
+
+`npm run smoke:local-e2e` is credential-free after build: it checks help,
+version, the headless protocol handshake, and deterministic mock-agent
+read/write/search/edit flows through the built CLI.
 
 For the browser UI without local API keys or Redis, use the local-only dev
 profile:
