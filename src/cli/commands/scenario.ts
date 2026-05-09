@@ -106,6 +106,7 @@ interface ParsedScenarioArgs {
 	json: boolean;
 	junitPath?: string;
 	reportPath?: string;
+	errors: string[];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -501,15 +502,26 @@ function parseScenarioArgs(args: string[]): ParsedScenarioArgs {
 	let json = false;
 	let junitPath: string | undefined;
 	let reportPath: string | undefined;
+	const errors: string[] = [];
 	for (let index = 0; index < rest.length; index++) {
 		const arg = rest[index];
 		if (arg === "--json") {
 			json = true;
 		} else if (arg === "--junit") {
-			junitPath = rest[index + 1];
+			const value = rest[index + 1];
+			if (!value || value.startsWith("-")) {
+				errors.push("--junit requires a non-flag file path");
+				continue;
+			}
+			junitPath = value;
 			index++;
 		} else if (arg === "--report") {
-			reportPath = rest[index + 1];
+			const value = rest[index + 1];
+			if (!value || value.startsWith("-")) {
+				errors.push("--report requires a non-flag file path");
+				continue;
+			}
+			reportPath = value;
 			index++;
 		} else if (arg && !arg.startsWith("-")) {
 			path = arg;
@@ -521,6 +533,7 @@ function parseScenarioArgs(args: string[]): ParsedScenarioArgs {
 		json,
 		junitPath,
 		reportPath,
+		errors,
 	};
 }
 
@@ -529,6 +542,9 @@ export async function handleScenarioCommand(args: string[]): Promise<void> {
 	if (parsed.action === "help") {
 		printScenarioHelp();
 		return;
+	}
+	if (parsed.errors.length > 0) {
+		throw new Error(`Invalid scenario arguments: ${parsed.errors.join("; ")}`);
 	}
 	const pack = await loadScenarioPack(parsed.path);
 	if (parsed.action === "validate") {
