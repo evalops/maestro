@@ -110,10 +110,15 @@ current Maestro checkout, builds and smokes Maestro, generates Maestro's
 canonical Platform replay, publishes that replay through Cerebro's local NATS
 stack, and verifies Cerebro graph projection plus MCP recall.
 
-**Run:** `make cerebro-e2e`
+**Run:**
+
+- `make cerebro-e2e-doctor`
+- `make cerebro-e2e`
 
 Use `LOCAL_CEREBRO_REPO=/path/to/cerebro make cerebro-e2e` when Cerebro is not
-checked out next to Maestro.
+checked out next to Maestro. The doctor target verifies the Cerebro checkout,
+Docker Compose, Maestro replay generator, and Cerebro's own E2E preflight before
+the full smoke starts.
 
 ## Usage
 
@@ -133,6 +138,13 @@ bun run smoke
 
 # Run all build tests
 bunx vitest --run test/build/
+```
+
+For a credential-free browser-server smoke, run:
+
+```bash
+make web-local
+curl http://localhost:8080/api/models
 ```
 
 ### Pre-Commit Checklist
