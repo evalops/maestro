@@ -191,16 +191,20 @@ function parseScenario(value: unknown): Scenario | null {
 	const replayFinalStatus = parseScenarioStatus(replay.finalStatus);
 	const finalStatus = parseScenarioStatus(expect.finalStatus);
 	if (!replayFinalStatus || !finalStatus) return null;
-	const replayEvents = Array.isArray(replay.events)
-		? replay.events
-				.map(parseReplayEvent)
-				.filter((event): event is ReplayEvent => event !== null)
-		: [];
-	const replaySideEffects = Array.isArray(replay.sideEffects)
-		? replay.sideEffects
-				.map(parseSideEffect)
-				.filter((effect): effect is SideEffect => effect !== null)
-		: [];
+	if (!Array.isArray(replay.events)) return null;
+	const replayEvents: ReplayEvent[] = [];
+	for (const rawEvent of replay.events) {
+		const event = parseReplayEvent(rawEvent);
+		if (!event) return null;
+		replayEvents.push(event);
+	}
+	if (!Array.isArray(replay.sideEffects)) return null;
+	const replaySideEffects: SideEffect[] = [];
+	for (const rawSideEffect of replay.sideEffects) {
+		const sideEffect = parseSideEffect(rawSideEffect);
+		if (!sideEffect) return null;
+		replaySideEffects.push(sideEffect);
+	}
 	if (!Array.isArray(expect.sideEffects)) return null;
 	const expectedSideEffects: SideEffectExpectation[] = [];
 	for (const rawSideEffect of expect.sideEffects) {

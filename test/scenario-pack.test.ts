@@ -153,6 +153,62 @@ describe("complex task scenario pack", () => {
 		);
 	});
 
+	it("rejects malformed replay events instead of dropping them", async () => {
+		const tempDir = await mkdtemp(join(tmpdir(), "maestro-scenario-"));
+		const malformedPath = join(tempDir, "malformed-replay-event-pack.json");
+		const rawPack = JSON.parse(
+			await readFile(DEFAULT_SCENARIO_PACK, "utf8"),
+		) as Record<string, unknown> & {
+			scenarios: Array<{
+				id?: string;
+				replay?: { events?: Array<Record<string, unknown>> };
+			}>;
+		};
+		const scenario = rawPack.scenarios.find(
+			(candidate) => candidate.id === "slack-progress-audit",
+		);
+		expect(scenario?.replay?.events).toBeDefined();
+		if (!scenario?.replay?.events) return;
+		scenario.replay.events.push({ text: "missing kind" });
+
+		await writeFile(malformedPath, `${JSON.stringify(rawPack, null, 2)}\n`);
+
+		await expect(loadScenarioPack(malformedPath)).rejects.toThrow(
+			"Scenario pack is malformed",
+		);
+	});
+
+	it("rejects malformed replay side effects instead of dropping them", async () => {
+		const tempDir = await mkdtemp(join(tmpdir(), "maestro-scenario-"));
+		const malformedPath = join(
+			tempDir,
+			"malformed-replay-side-effect-pack.json",
+		);
+		const rawPack = JSON.parse(
+			await readFile(DEFAULT_SCENARIO_PACK, "utf8"),
+		) as Record<string, unknown> & {
+			scenarios: Array<{
+				id?: string;
+				replay?: { sideEffects?: Array<Record<string, unknown>> };
+			}>;
+		};
+		const scenario = rawPack.scenarios.find(
+			(candidate) => candidate.id === "slack-progress-audit",
+		);
+		expect(scenario?.replay?.sideEffects).toBeDefined();
+		if (!scenario?.replay?.sideEffects) return;
+		scenario.replay.sideEffects.push({
+			kind: "slack.final_reply",
+			target: "evalops-alerts",
+		});
+
+		await writeFile(malformedPath, `${JSON.stringify(rawPack, null, 2)}\n`);
+
+		await expect(loadScenarioPack(malformedPath)).rejects.toThrow(
+			"Scenario pack is malformed",
+		);
+	});
+
 	it("requires explicit blocker expectations for blocked scenarios", async () => {
 		const pack = await loadMutableDefaultPack();
 		const scenario = pack.scenarios.find(
