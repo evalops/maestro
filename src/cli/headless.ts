@@ -43,6 +43,7 @@ import {
 	headlessViewerDisallowedCapability,
 	loadPromptAttachments,
 } from "./headless-protocol.js";
+import type { HeadlessRuntimeSelection } from "./headless-runtime-selection.js";
 
 export {
 	HEADLESS_PROTOCOL_VERSION,
@@ -53,6 +54,10 @@ export {
 };
 
 const LOCAL_HEADLESS_CONNECTION_ID = "local";
+
+export interface RunHeadlessModeOptions {
+	runtimeSelection?: HeadlessRuntimeSelection;
+}
 
 function send(msg: HeadlessFromAgentMessage): void {
 	try {
@@ -94,9 +99,11 @@ export async function runHeadlessMode(
 	sessionManager: SessionManager,
 	approvalService?: ActionApprovalService,
 	toolRetryService?: ToolRetryService,
+	options: RunHeadlessModeOptions = {},
 ): Promise<void> {
 	const translator = new HeadlessProtocolTranslator();
 	const state = createHeadlessRuntimeState();
+	void options.runtimeSelection;
 
 	const shouldFilterOutgoingMessage = (
 		msg: HeadlessFromAgentMessage,

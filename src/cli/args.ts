@@ -14,10 +14,14 @@ export interface Args {
 	continue?: boolean;
 	resume?: boolean;
 	help?: boolean;
+	/** Show support-only flags in help output. */
+	hiddenHelp?: boolean;
 	version?: boolean;
 	mode?: Mode;
 	/** Run in headless mode for native TUI communication */
 	headless?: boolean;
+	/** Select the previous headless runtime during a protocol cutover window. */
+	legacyRuntime?: boolean;
 	noSession?: boolean;
 	session?: string;
 	safeMode?: boolean;
@@ -142,6 +146,8 @@ export function parseArgs(args: string[]): Args {
 
 		if (arg === "--help" || arg === "-h") {
 			result.help = true;
+		} else if (arg === "--hidden") {
+			result.hiddenHelp = true;
 		} else if (arg === "--version" || arg === "-v") {
 			result.version = true;
 		} else if (arg?.startsWith("--mode=")) {
@@ -173,6 +179,8 @@ export function parseArgs(args: string[]): Args {
 		} else if (arg === "--headless") {
 			result.headless = true;
 			result.mode = "headless";
+		} else if (arg === "--legacy-runtime") {
+			result.legacyRuntime = true;
 		} else if (arg === "--continue" || arg === "-c") {
 			result.continue = true;
 		} else if (arg === "--resume" || arg === "-r") {

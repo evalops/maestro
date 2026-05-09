@@ -41,6 +41,18 @@ describe("parseArgs", () => {
 		});
 	});
 
+	it("parses hidden support help and legacy headless runtime flags", () => {
+		expect(parseArgs(["--help", "--hidden"])).toMatchObject({
+			help: true,
+			hiddenHelp: true,
+		});
+		expect(parseArgs(["--headless", "--legacy-runtime"])).toMatchObject({
+			headless: true,
+			mode: "headless",
+			legacyRuntime: true,
+		});
+	});
+
 	it("parses export commands and formats", () => {
 		expect(
 			parseArgs([
