@@ -13,7 +13,7 @@ export const TOOL_TAGS: Record<string, string[]> = {
 	// Read operations
 	read: ["read", "file_read", "cat", "head", "tail", "grep"],
 	// Write operations
-	write: ["write", "edit", "file_write", "touch", "mkdir"],
+	write: ["write", "edit", "apply_patch", "file_write", "touch", "mkdir"],
 	// Delete operations
 	delete: ["delete_file", "rm", "rmdir", "unlink"],
 	// Network egress

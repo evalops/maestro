@@ -1,0 +1,707 @@
+import crypto from "node:crypto";
+import { constants } from "node:fs";
+import {
+	access,
+	mkdir,
+	readFile,
+	rename,
+	rm,
+	unlink,
+	writeFile,
+} from "node:fs/promises";
+import { dirname, resolve as resolvePath } from "node:path";
+import { Type } from "@sinclair/typebox";
+import {
+	captureDiagnosticBaseline,
+	collectDiagnosticDelta,
+} from "../lsp/diagnostic-deltas.js";
+import {
+	type DiagnosticDeltaToolSummary,
+	buildDiagnosticDeltaToolSummary,
+	formatDiagnosticDeltaForToolOutput,
+} from "../lsp/diagnostic-repair.js";
+import { assertTeamMemoryContentSafe } from "../memory/team-memory.js";
+import {
+	requirePlanCheck,
+	runValidatorsOnSuccess,
+} from "../safety/safe-mode.js";
+import type { ValidatorRunResult } from "../safety/safe-mode.js";
+import type { Sandbox } from "../sandbox/types.js";
+import {
+	type ApplyPatchDocument,
+	type ApplyPatchHunk,
+	parseApplyPatch,
+} from "./apply-patch-parser.js";
+import { generateDiffString } from "./diff-utils.js";
+import { ToolError, createTool, expandUserPath } from "./tool-dsl.js";
+
+type LineEnding = "\n" | "\r\n" | "\r";
+
+type NormalizedDocument = {
+	original: string;
+	lines: string[];
+	hadFinalNewline: boolean;
+	bom: string;
+	lineEnding: LineEnding;
+};
+
+type PlannedFileChange = {
+	path: string;
+	absolutePath: string;
+	previousContent: string | null;
+	nextContent: string | null;
+	operation: "add" | "update" | "delete";
+	hunksApplied: number;
+	diff?: string;
+};
+
+type DiagnosticBaseline = Awaited<ReturnType<typeof captureDiagnosticBaseline>>;
+
+type ApplyPatchPlan = {
+	filesModified: string[];
+	filesCreated: string[];
+	filesDeleted: string[];
+	hunksApplied: number;
+	hunksFailed: number;
+	conflictDetails?: string[];
+	changes: PlannedFileChange[];
+};
+
+const applyPatchSchema = Type.Object({
+	patch: Type.String({
+		description:
+			"OpenAI apply_patch block from *** Begin Patch to *** End Patch",
+		minLength: 1,
+	}),
+	dryRun: Type.Optional(
+		Type.Boolean({
+			description: "Preview the patch without writing changes",
+			default: false,
+		}),
+	),
+});
+
+export type ApplyPatchToolDetails = {
+	filesModified: string[];
+	filesCreated: string[];
+	filesDeleted: string[];
+	hunksApplied: number;
+	hunksFailed: number;
+	conflictDetails?: string[];
+	diffs?: Record<string, string>;
+	validators?: ValidatorRunResult[];
+	diagnosticDelta?: DiagnosticDeltaToolSummary;
+	diagnosticDeltas?: DiagnosticDeltaToolSummary[];
+	editGrammar: "apply_patch";
+	mode?: "sandbox";
+};
+
+class ApplyPatchConflictError extends ToolError {
+	constructor(message: string, details: ApplyPatchToolDetails) {
+		super(message, "APPLY_PATCH_CONFLICT", details);
+	}
+}
+
+export const applyPatchTool = createTool<
+	typeof applyPatchSchema,
+	ApplyPatchToolDetails
+>({
+	name: "apply_patch",
+	label: "apply_patch",
+	description: `Apply an OpenAI/Codex apply_patch block directly.
+
+Parameters:
+- patch: Patch text using *** Begin Patch / *** End Patch with Add, Update, or Delete File operations.
+- dryRun: Preview only (default: false).
+
+Use this when a Codex-family model emits its native apply_patch grammar. Use edit for targeted find-and-replace edits.`,
+	schema: applyPatchSchema,
+	shouldRetry: (error) => error instanceof ApplyPatchConflictError,
+	async run({ patch, dryRun = false }, { signal, respond, sandbox }) {
+		requirePlanCheck("apply_patch");
+		const throwIfAborted = () => {
+			if (signal?.aborted) {
+				throw new Error("Operation aborted");
+			}
+		};
+
+		const document = parseApplyPatch(patch);
+		const plan = sandbox
+			? await planSandboxPatch(document, sandbox)
+			: await planFilesystemPatch(document);
+		const details = buildDetails(plan, sandbox ? "sandbox" : undefined);
+
+		if (plan.hunksFailed > 0) {
+			throw new ApplyPatchConflictError(
+				`apply_patch failed: ${plan.hunksFailed} hunk(s) could not be applied. Re-read the affected file(s), re-author the patch with fresh context, and retry.`,
+				details,
+			);
+		}
+
+		throwIfAborted();
+		let postWriteOutput = "";
+		if (!dryRun) {
+			if (sandbox) {
+				await writeSandboxChanges(plan, sandbox);
+			} else {
+				const baselines = await captureWriteBaselines(plan);
+				throwIfAborted();
+				try {
+					await writeFilesystemChanges(plan, throwIfAborted);
+					const postWriteDetails = await collectPostWriteDetails(
+						plan,
+						baselines,
+						throwIfAborted,
+					);
+					Object.assign(details, postWriteDetails);
+					if (postWriteDetails.diagnosticDelta) {
+						postWriteOutput = formatDiagnosticDeltaForToolOutput(
+							postWriteDetails.diagnosticDelta,
+						);
+					}
+				} catch (error) {
+					await rollbackFilesystemChanges(plan);
+					throw error;
+				}
+			}
+		}
+
+		const changedFileCount =
+			plan.filesCreated.length +
+			plan.filesModified.length +
+			plan.filesDeleted.length;
+		return respond
+			.text(
+				[
+					dryRun
+						? `Dry run: apply_patch would update ${changedFileCount} file(s) with ${plan.hunksApplied} hunk(s).`
+						: `Applied patch to ${changedFileCount} file(s) with ${plan.hunksApplied} hunk(s).`,
+					postWriteOutput,
+				]
+					.filter(Boolean)
+					.join("\n"),
+			)
+			.detail(details);
+	},
+});
+
+async function planFilesystemPatch(
+	document: ApplyPatchDocument,
+): Promise<ApplyPatchPlan> {
+	const plan = emptyPlan();
+	for (const operation of document.operations) {
+		const absolutePath = resolvePath(expandUserPath(operation.path));
+		if (operation.type === "add") {
+			await assertFileDoesNotExist(absolutePath, operation.path);
+			const nextContent = serializeLines(operation.lines, true);
+			assertTeamMemoryContentSafe(absolutePath, nextContent);
+			addPlannedChange(plan, {
+				path: operation.path,
+				absolutePath,
+				previousContent: null,
+				nextContent,
+				operation: "add",
+				hunksApplied: 1,
+				diff: generateDiffString("", nextContent),
+			});
+		} else if (operation.type === "delete") {
+			const previousContent = await readExistingFile(
+				absolutePath,
+				operation.path,
+			);
+			addPlannedChange(plan, {
+				path: operation.path,
+				absolutePath,
+				previousContent,
+				nextContent: null,
+				operation: "delete",
+				hunksApplied: 1,
+				diff: generateDiffString(previousContent, ""),
+			});
+		} else {
+			const previousContent = await readExistingFile(
+				absolutePath,
+				operation.path,
+			);
+			const applied =
+				operation.hunks.length > 0
+					? applyUpdateHunks(previousContent, operation.hunks)
+					: { content: previousContent, hunksApplied: 0, conflicts: [] };
+			if (applied.conflicts.length > 0) {
+				recordConflicts(plan, operation.path, applied.conflicts);
+				continue;
+			}
+			const nextContent = applied.content;
+			if (operation.moveTo) {
+				const destinationAbsolutePath = resolvePath(
+					expandUserPath(operation.moveTo),
+				);
+				await assertFileDoesNotExist(destinationAbsolutePath, operation.moveTo);
+				assertTeamMemoryContentSafe(destinationAbsolutePath, nextContent);
+				addPlannedChange(plan, {
+					path: operation.path,
+					absolutePath,
+					previousContent,
+					nextContent: null,
+					operation: "delete",
+					hunksApplied: 0,
+					diff: generateDiffString(previousContent, ""),
+				});
+				addPlannedChange(plan, {
+					path: operation.moveTo,
+					absolutePath: destinationAbsolutePath,
+					previousContent: null,
+					nextContent,
+					operation: "add",
+					hunksApplied: applied.hunksApplied,
+					diff: generateDiffString("", nextContent),
+				});
+				continue;
+			}
+			assertTeamMemoryContentSafe(absolutePath, nextContent);
+			addPlannedChange(plan, {
+				path: operation.path,
+				absolutePath,
+				previousContent,
+				nextContent,
+				operation: "update",
+				hunksApplied: applied.hunksApplied,
+				diff: generateDiffString(previousContent, nextContent),
+			});
+		}
+	}
+	return plan;
+}
+
+async function planSandboxPatch(
+	document: ApplyPatchDocument,
+	sandbox: Sandbox,
+): Promise<ApplyPatchPlan> {
+	const plan = emptyPlan();
+	for (const operation of document.operations) {
+		const absolutePath = resolvePath(expandUserPath(operation.path));
+		if (operation.type === "add") {
+			if (await sandbox.exists(operation.path)) {
+				throw new Error(`File already exists: ${operation.path}`);
+			}
+			const nextContent = serializeLines(operation.lines, true);
+			assertTeamMemoryContentSafe(absolutePath, nextContent);
+			addPlannedChange(plan, {
+				path: operation.path,
+				absolutePath,
+				previousContent: null,
+				nextContent,
+				operation: "add",
+				hunksApplied: 1,
+				diff: generateDiffString("", nextContent),
+			});
+		} else if (operation.type === "delete") {
+			if (!(await sandbox.exists(operation.path))) {
+				throw new Error(`File not found in sandbox: ${operation.path}`);
+			}
+			const previousContent = await sandbox.readFile(operation.path);
+			addPlannedChange(plan, {
+				path: operation.path,
+				absolutePath,
+				previousContent,
+				nextContent: null,
+				operation: "delete",
+				hunksApplied: 1,
+				diff: generateDiffString(previousContent, ""),
+			});
+		} else {
+			if (!(await sandbox.exists(operation.path))) {
+				throw new Error(`File not found in sandbox: ${operation.path}`);
+			}
+			const previousContent = await sandbox.readFile(operation.path);
+			const applied =
+				operation.hunks.length > 0
+					? applyUpdateHunks(previousContent, operation.hunks)
+					: { content: previousContent, hunksApplied: 0, conflicts: [] };
+			if (applied.conflicts.length > 0) {
+				recordConflicts(plan, operation.path, applied.conflicts);
+				continue;
+			}
+			const nextContent = applied.content;
+			if (operation.moveTo) {
+				if (await sandbox.exists(operation.moveTo)) {
+					throw new Error(
+						`File already exists in sandbox: ${operation.moveTo}`,
+					);
+				}
+				const destinationAbsolutePath = resolvePath(
+					expandUserPath(operation.moveTo),
+				);
+				assertTeamMemoryContentSafe(destinationAbsolutePath, nextContent);
+				addPlannedChange(plan, {
+					path: operation.path,
+					absolutePath,
+					previousContent,
+					nextContent: null,
+					operation: "delete",
+					hunksApplied: 0,
+					diff: generateDiffString(previousContent, ""),
+				});
+				addPlannedChange(plan, {
+					path: operation.moveTo,
+					absolutePath: destinationAbsolutePath,
+					previousContent: null,
+					nextContent,
+					operation: "add",
+					hunksApplied: applied.hunksApplied,
+					diff: generateDiffString("", nextContent),
+				});
+				continue;
+			}
+			assertTeamMemoryContentSafe(absolutePath, nextContent);
+			addPlannedChange(plan, {
+				path: operation.path,
+				absolutePath,
+				previousContent,
+				nextContent,
+				operation: "update",
+				hunksApplied: applied.hunksApplied,
+				diff: generateDiffString(previousContent, nextContent),
+			});
+		}
+	}
+	return plan;
+}
+
+function applyUpdateHunks(
+	previousContent: string,
+	hunks: ApplyPatchHunk[],
+): { content: string; hunksApplied: number; conflicts: string[] } {
+	const document = normalizeDocument(previousContent);
+	let lines = [...document.lines];
+	const conflicts: string[] = [];
+	let hunksApplied = 0;
+	for (const [index, hunk] of hunks.entries()) {
+		if (hunk.oldLines.length === 0) {
+			lines = [...lines, ...hunk.newLines];
+			hunksApplied++;
+			continue;
+		}
+		const matches = findLineSequence(lines, hunk.oldLines);
+		if (matches.length === 0) {
+			conflicts.push(`hunk ${index + 1}: context not found`);
+			continue;
+		}
+		if (matches.length > 1) {
+			conflicts.push(
+				`hunk ${index + 1}: context matched ${matches.length} times`,
+			);
+			continue;
+		}
+		const start = matches[0] ?? 0;
+		lines = [
+			...lines.slice(0, start),
+			...hunk.newLines,
+			...lines.slice(start + hunk.oldLines.length),
+		];
+		hunksApplied++;
+	}
+	return {
+		content: restoreDocumentContent(lines, document),
+		hunksApplied,
+		conflicts,
+	};
+}
+
+function findLineSequence(lines: string[], needle: string[]): number[] {
+	const matches: number[] = [];
+	if (needle.length === 0 || needle.length > lines.length) {
+		return matches;
+	}
+	for (let index = 0; index <= lines.length - needle.length; index++) {
+		let matched = true;
+		for (let offset = 0; offset < needle.length; offset++) {
+			if (lines[index + offset] !== needle[offset]) {
+				matched = false;
+				break;
+			}
+		}
+		if (matched) {
+			matches.push(index);
+		}
+	}
+	return matches;
+}
+
+async function writeFilesystemChanges(
+	plan: ApplyPatchPlan,
+	throwIfAborted: () => void,
+): Promise<void> {
+	for (const change of plan.changes) {
+		throwIfAborted();
+		if (change.nextContent === null) {
+			await rm(change.absolutePath, { force: true });
+			continue;
+		}
+		await mkdir(dirname(change.absolutePath), { recursive: true });
+		await writeFileAtomically(change.absolutePath, change.nextContent);
+	}
+}
+
+async function writeSandboxChanges(
+	plan: ApplyPatchPlan,
+	sandbox: Sandbox,
+): Promise<void> {
+	validateSandboxRollbackSupport(plan, sandbox);
+	try {
+		for (const change of plan.changes) {
+			if (change.nextContent === null) {
+				if (!sandbox.delete) {
+					throw new Error("Sandbox does not support deleting files");
+				}
+				await sandbox.delete(change.path, false);
+			} else {
+				await sandbox.writeFile(change.path, change.nextContent);
+			}
+		}
+	} catch (error) {
+		await rollbackSandboxChanges(plan, sandbox);
+		throw error;
+	}
+}
+
+function validateSandboxRollbackSupport(
+	plan: ApplyPatchPlan,
+	sandbox: Sandbox,
+): void {
+	const needsDeleteForApplyOrRollback = plan.changes.some(
+		(change) => change.nextContent === null || change.previousContent === null,
+	);
+	if (needsDeleteForApplyOrRollback && !sandbox.delete) {
+		throw new Error(
+			"Sandbox does not support deleting files, so apply_patch cannot safely apply add/delete operations",
+		);
+	}
+}
+
+async function rollbackSandboxChanges(
+	plan: ApplyPatchPlan,
+	sandbox: Sandbox,
+): Promise<void> {
+	for (const change of [...plan.changes].reverse()) {
+		try {
+			if (change.previousContent === null) {
+				await sandbox.delete?.(change.path, false);
+				continue;
+			}
+			await sandbox.writeFile(change.path, change.previousContent);
+		} catch {}
+	}
+}
+
+async function captureWriteBaselines(
+	plan: ApplyPatchPlan,
+): Promise<Map<string, DiagnosticBaseline>> {
+	const baselines = new Map<string, DiagnosticBaseline>();
+	for (const change of plan.changes) {
+		if (change.nextContent === null) {
+			continue;
+		}
+		baselines.set(
+			change.absolutePath,
+			await captureDiagnosticBaseline(change.absolutePath),
+		);
+	}
+	return baselines;
+}
+
+async function collectPostWriteDetails(
+	plan: ApplyPatchPlan,
+	baselines: Map<string, DiagnosticBaseline>,
+	throwIfAborted: () => void,
+): Promise<
+	Pick<
+		ApplyPatchToolDetails,
+		"validators" | "diagnosticDelta" | "diagnosticDeltas"
+	>
+> {
+	const writePaths = plan.changes
+		.filter((change) => change.nextContent !== null)
+		.map((change) => change.absolutePath);
+	if (writePaths.length === 0) {
+		return {};
+	}
+	throwIfAborted();
+	const deltaResults = await Promise.all(
+		writePaths.map((writePath) =>
+			collectDiagnosticDelta(baselines.get(writePath)!),
+		),
+	);
+	const deltas = deltaResults.map((result, index) => {
+		const writePath = writePaths[index] ?? "";
+		return buildDiagnosticDeltaToolSummary({
+			file: writePath,
+			displayPath:
+				plan.changes.find((change) => change.absolutePath === writePath)
+					?.path ?? writePath,
+			result,
+		});
+	});
+	const validatorDiagnostics = Object.fromEntries(
+		deltaResults.flatMap((result) =>
+			Object.entries(result.validatorDiagnostics),
+		),
+	);
+	const validatorSummaries = await runValidatorsOnSuccess(
+		writePaths,
+		validatorDiagnostics,
+	);
+	return {
+		validators: validatorSummaries,
+		diagnosticDelta: deltas[0],
+		diagnosticDeltas: deltas,
+	};
+}
+
+async function rollbackFilesystemChanges(plan: ApplyPatchPlan): Promise<void> {
+	for (const change of [...plan.changes].reverse()) {
+		try {
+			if (change.previousContent === null) {
+				await rm(change.absolutePath, { force: true });
+				continue;
+			}
+			await mkdir(dirname(change.absolutePath), { recursive: true });
+			await writeFileAtomically(change.absolutePath, change.previousContent);
+		} catch {}
+	}
+}
+
+async function writeFileAtomically(
+	filePath: string,
+	contents: string,
+): Promise<void> {
+	const tempPath = `${filePath}.${crypto.randomUUID()}.tmp`;
+	await writeFile(tempPath, contents, "utf-8");
+	try {
+		await rename(tempPath, filePath);
+	} catch (error) {
+		await unlink(tempPath).catch(() => {});
+		throw error;
+	}
+}
+
+async function readExistingFile(
+	absolutePath: string,
+	displayPath: string,
+): Promise<string> {
+	try {
+		await access(absolutePath, constants.R_OK | constants.W_OK);
+		return await readFile(absolutePath, "utf-8");
+	} catch {
+		throw new Error(
+			`File not found: ${displayPath}. Use read to verify the path exists.`,
+		);
+	}
+}
+
+async function assertFileDoesNotExist(
+	absolutePath: string,
+	displayPath: string,
+): Promise<void> {
+	try {
+		await access(absolutePath, constants.F_OK);
+		throw new Error(`File already exists: ${displayPath}`);
+	} catch (error) {
+		if (
+			error instanceof Error &&
+			error.message.startsWith("File already exists:")
+		) {
+			throw error;
+		}
+	}
+}
+
+function emptyPlan(): ApplyPatchPlan {
+	return {
+		filesModified: [],
+		filesCreated: [],
+		filesDeleted: [],
+		hunksApplied: 0,
+		hunksFailed: 0,
+		changes: [],
+	};
+}
+
+function addPlannedChange(
+	plan: ApplyPatchPlan,
+	change: PlannedFileChange,
+): void {
+	plan.changes.push(change);
+	plan.hunksApplied += change.hunksApplied;
+	if (change.operation === "add") {
+		plan.filesCreated.push(change.path);
+	} else if (change.operation === "delete") {
+		plan.filesDeleted.push(change.path);
+	} else {
+		plan.filesModified.push(change.path);
+	}
+}
+
+function recordConflicts(
+	plan: ApplyPatchPlan,
+	path: string,
+	conflicts: string[],
+): void {
+	plan.hunksFailed += conflicts.length;
+	plan.conflictDetails ??= [];
+	for (const conflict of conflicts) {
+		plan.conflictDetails.push(`${path}: ${conflict}`);
+	}
+}
+
+function buildDetails(
+	plan: ApplyPatchPlan,
+	mode?: "sandbox",
+): ApplyPatchToolDetails {
+	return {
+		filesModified: plan.filesModified,
+		filesCreated: plan.filesCreated,
+		filesDeleted: plan.filesDeleted,
+		hunksApplied: plan.hunksApplied,
+		hunksFailed: plan.hunksFailed,
+		conflictDetails: plan.conflictDetails,
+		diffs: Object.fromEntries(
+			plan.changes
+				.filter((change) => change.diff !== undefined)
+				.map((change) => [change.path, change.diff ?? ""]),
+		),
+		editGrammar: "apply_patch",
+		mode,
+	};
+}
+
+function detectLineEnding(text: string): LineEnding {
+	if (text.includes("\r\n")) return "\r\n";
+	if (text.includes("\r")) return "\r";
+	return "\n";
+}
+
+function normalizeDocument(content: string): NormalizedDocument {
+	const bom = content.startsWith("\uFEFF") ? "\uFEFF" : "";
+	const withoutBom = bom ? content.slice(1) : content;
+	const lineEnding = detectLineEnding(withoutBom);
+	const normalized = withoutBom.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+	const hadFinalNewline = normalized.endsWith("\n");
+	const trimmed = hadFinalNewline ? normalized.slice(0, -1) : normalized;
+	const lines = trimmed.length === 0 ? [] : trimmed.split("\n");
+	return { original: content, lines, hadFinalNewline, bom, lineEnding };
+}
+
+function restoreDocumentContent(
+	lines: string[],
+	document: NormalizedDocument,
+): string {
+	return `${document.bom}${serializeLines(lines, document.hadFinalNewline).replace(/\n/g, document.lineEnding)}`;
+}
+
+function serializeLines(lines: string[], finalNewline: boolean): string {
+	if (lines.length === 0) {
+		return finalNewline ? "\n" : "";
+	}
+	return `${lines.join("\n")}${finalNewline ? "\n" : ""}`;
+}

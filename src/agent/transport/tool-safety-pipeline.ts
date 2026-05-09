@@ -257,7 +257,11 @@ function checkRateLimit(ctx: ToolSafetyContext):
 	const toolNameLower = toolCall.name.toLowerCase();
 	if (toolNameLower === "read" || toolNameLower === "glob") {
 		adaptiveThresholds.recordObservation(METRICS.READS_PER_MINUTE, 1);
-	} else if (toolNameLower === "write" || toolNameLower === "edit") {
+	} else if (
+		toolNameLower === "write" ||
+		toolNameLower === "edit" ||
+		toolNameLower === "apply_patch"
+	) {
 		adaptiveThresholds.recordObservation(METRICS.WRITES_PER_MINUTE, 1);
 	} else if (
 		toolNameLower === "webfetch" ||

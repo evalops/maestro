@@ -43,7 +43,7 @@ export const TOOL_CATEGORIES = {
 		"status",
 	],
 	/** File modification tools */
-	write: ["edit", "write", "notebook_edit"],
+	write: ["apply_patch", "edit", "write", "notebook_edit"],
 	/** Shell execution */
 	shell: ["bash", "background_tasks"],
 	/** Web and external tools */

@@ -122,6 +122,7 @@ export const DEFAULT_TOOL_CACHE_CONFIGS: Record<string, ToolCacheConfig> = {
 	},
 
 	// Mutating tools - not cacheable
+	apply_patch: { cacheable: false, ttlSeconds: 0, scope: "session" },
 	write: { cacheable: false, ttlSeconds: 0, scope: "session" },
 	edit: { cacheable: false, ttlSeconds: 0, scope: "session" },
 	bash: { cacheable: false, ttlSeconds: 0, scope: "session" },

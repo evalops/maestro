@@ -15,6 +15,7 @@
 				"diff",
 				"bash",
 				"background_tasks",
+				"apply_patch",
 				"edit",
 				"write",
 				"notebook_edit",
@@ -33,6 +34,7 @@
 				"pipeline_log_activity"
 			],
 			"registryNames": [
+				"apply_patch",
 				"ask_user",
 				"background_tasks",
 				"bash",
@@ -67,8 +69,9 @@
 		"kind": "apiTools",
 		"judgeRubric": "The API tools endpoint should enumerate the coding tools completely and report the correct coding count.",
 		"expected": {
-			"codingCount": 26,
+			"codingCount": 27,
 			"codingNames": [
+				"apply_patch",
 				"ask_user",
 				"background_tasks",
 				"bash",

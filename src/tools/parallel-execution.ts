@@ -78,6 +78,7 @@ export const READ_ONLY_TOOLS = new Set([
  * operations on the same resources.
  */
 export const WRITE_TOOLS = new Set([
+	"apply_patch",
 	"write",
 	"Write",
 	"edit",

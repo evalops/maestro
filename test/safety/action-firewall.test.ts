@@ -99,6 +99,23 @@ function makeEditContext(): ActionApprovalContext {
 	return { toolName: "edit", args: { path: "file.txt" } };
 }
 
+function makeApplyPatchContext(path: string): ActionApprovalContext {
+	return {
+		toolName: "apply_patch",
+		args: {
+			patch: [
+				"*** Begin Patch",
+				`*** Update File: ${path}`,
+				"@@",
+				" old",
+				"-value",
+				"+updated",
+				"*** End Patch",
+			].join("\n"),
+		},
+	};
+}
+
 function makeReadPathContext(path: string): ActionApprovalContext {
 	return { toolName: "read", args: { path } };
 }
@@ -301,6 +318,14 @@ describe("ActionFirewall", () => {
 			makeMoveFileContext("~/.gnupg/secring.gpg", "./backup.gpg"),
 		);
 		expect(moveVerdict).toMatchObject({
+			action: "require_approval",
+			ruleId: "default-guarded-file",
+		});
+
+		const applyPatchVerdict = await defaultActionFirewall.evaluate(
+			makeApplyPatchContext("~/.ssh/config"),
+		);
+		expect(applyPatchVerdict).toMatchObject({
 			action: "require_approval",
 			ruleId: "default-guarded-file",
 		});
@@ -519,6 +544,11 @@ describe("ActionFirewall", () => {
 				makeEditContext(),
 			);
 			expect(editVerdict.action).toBe("require_approval");
+
+			const applyPatchVerdict = await defaultActionFirewall.evaluate(
+				makeApplyPatchContext("file.txt"),
+			);
+			expect(applyPatchVerdict.action).toBe("require_approval");
 
 			const todoVerdict = await defaultActionFirewall.evaluate(
 				makeTodoContext(),

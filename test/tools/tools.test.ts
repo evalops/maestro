@@ -1703,6 +1703,7 @@ describe("codingTools bundle", () => {
 			"diff",
 			"bash",
 			"background_tasks",
+			"apply_patch",
 			"edit",
 			"write",
 			"notebook_edit",

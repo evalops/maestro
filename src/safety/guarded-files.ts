@@ -7,6 +7,7 @@ import {
 	normalizeGuardedFilesSettings,
 } from "@evalops/contracts";
 import { minimatch } from "minimatch";
+import { parseApplyPatchPaths } from "../tools/apply-patch-parser.js";
 import {
 	expandTildePathWithHomeDir,
 	getOsHomeDir,
@@ -48,9 +49,14 @@ export function classifyGuardedFileAccessAction(
 ): GuardedFileAccessAction {
 	const normalizedToolName = toolName.toLowerCase();
 	if (
-		["write", "edit", "delete_file", "move_file", "copy_file"].includes(
-			normalizedToolName,
-		)
+		[
+			"write",
+			"edit",
+			"apply_patch",
+			"delete_file",
+			"move_file",
+			"copy_file",
+		].includes(normalizedToolName)
 	) {
 		return "write";
 	}
@@ -453,6 +459,12 @@ function extractGuardedToolCallPaths(
 			getStringArg(argsObject, "file_path") || getStringArg(argsObject, "path");
 		if (path) {
 			paths.push(path);
+		}
+	}
+	if (normalizedToolName === "apply_patch") {
+		const patch = getStringArg(argsObject, "patch");
+		if (patch) {
+			paths.push(...parseApplyPatchPaths(patch));
 		}
 	}
 	if (normalizedToolName === "delete_file") {

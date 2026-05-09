@@ -23,6 +23,7 @@ describe("subagent-specs", () => {
 		});
 
 		it("should have write tools", () => {
+			expect(TOOL_CATEGORIES.write).toContain("apply_patch");
 			expect(TOOL_CATEGORIES.write).toContain("edit");
 			expect(TOOL_CATEGORIES.write).toContain("write");
 		});
@@ -55,6 +56,7 @@ describe("subagent-specs", () => {
 		it("coder should have all major tools", () => {
 			const spec = SUBAGENT_SPECS.coder;
 			expect(spec.allowedTools).toContain("read");
+			expect(spec.allowedTools).toContain("apply_patch");
 			expect(spec.allowedTools).toContain("write");
 			expect(spec.allowedTools).toContain("edit");
 			expect(spec.allowedTools).toContain("bash");
