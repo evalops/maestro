@@ -26,6 +26,7 @@ import type { ClientToolExecutionService } from "../agent/transport.js";
 import type { AgentTool, Api, Model } from "../agent/types.js";
 import { composerManager } from "../composers/index.js";
 import type { PromptProjectDocManifest } from "../config/index.js";
+import type { UnifiedContextManifest } from "../context/manifest-types.js";
 import type { PromptMetadata } from "../prompts/types.js";
 import type { AuthCredential } from "../providers/auth.js";
 import type { Sandbox } from "../sandbox/types.js";
@@ -85,6 +86,7 @@ export function createAgentInstance(params: {
 	promptMetadata?: PromptMetadata;
 	systemPromptSourcePaths?: string[];
 	promptContextManifest?: PromptProjectDocManifest;
+	unifiedContextManifest?: UnifiedContextManifest;
 	model: Model<Api>;
 	reasoningSummary: "auto" | "detailed" | "concise" | null | undefined;
 	allTools: AgentTool[];
@@ -108,6 +110,7 @@ export function createAgentInstance(params: {
 		promptMetadata,
 		systemPromptSourcePaths,
 		promptContextManifest,
+		unifiedContextManifest,
 		model,
 		reasoningSummary,
 		allTools,
@@ -168,6 +171,7 @@ export function createAgentInstance(params: {
 			promptMetadata,
 			systemPromptSourcePaths,
 			promptContextManifest,
+			unifiedContextManifest,
 			model,
 			thinkingLevel: "off",
 			reasoningSummary,

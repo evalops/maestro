@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { relative, resolve } from "node:path";
 import {
 	type ComposerConfig,
-	type PromptProjectDocDiagnostic,
 	type PromptProjectDocManifest,
 	loadPromptProjectDocManifest,
 } from "../config/index.js";
@@ -14,89 +13,91 @@ import type {
 	McpServerConfig,
 	McpServerStatus,
 } from "../mcp/types.js";
+import {
+	UNIFIED_CONTEXT_MANIFEST_PROTOCOL,
+	type UnifiedContextEntryKind,
+	type UnifiedContextEntrySource,
+	type UnifiedContextEntryStatus,
+	type UnifiedContextManifest,
+	type UnifiedContextManifestContractIssue,
+	type UnifiedContextManifestDiagnostic,
+	type UnifiedContextManifestDiff,
+	type UnifiedContextManifestDiffEntry,
+	type UnifiedContextManifestEntry,
+} from "./manifest-types.js";
 
-export type UnifiedContextEntryKind =
-	| "project_doc"
-	| "mcp_server"
-	| "mcp_resource"
-	| "mcp_prompt";
-
-export type UnifiedContextEntrySource =
-	| "filesystem"
-	| "mcp_config"
-	| "mcp_runtime";
-
-export type UnifiedContextEntryStatus =
-	| "available"
-	| "configured"
-	| "connected"
-	| "disconnected"
-	| "error"
-	| "loaded";
-
-export interface UnifiedContextManifestEntry {
-	id: string;
-	kind: UnifiedContextEntryKind;
-	source: UnifiedContextEntrySource;
-	status: UnifiedContextEntryStatus;
-	label: string;
-	path?: string;
-	scopeDir?: string;
-	serverName?: string;
-	uri?: string;
-	promptName?: string;
-	precedenceIndex?: number;
-	bytesRead?: number;
-	contentHash?: string;
-	metadata?: Record<string, unknown>;
-}
-
-export interface UnifiedContextManifestDiagnostic {
-	code:
-		| PromptProjectDocDiagnostic["code"]
-		| "mcp_config_loaded"
-		| "mcp_config_unreadable"
-		| "mcp_runtime_unavailable";
-	severity: "info" | "warning";
-	message: string;
-	path?: string;
-	scopeDir?: string;
-	entryId?: string;
-}
-
-export interface UnifiedContextManifest {
-	version: 1;
-	cwd: string;
-	projectDocs: PromptProjectDocManifest;
-	entries: UnifiedContextManifestEntry[];
-	diagnostics: UnifiedContextManifestDiagnostic[];
-}
+export {
+	UNIFIED_CONTEXT_MANIFEST_PROTOCOL,
+	type UnifiedContextEntryKind,
+	type UnifiedContextEntrySource,
+	type UnifiedContextEntryStatus,
+	type UnifiedContextManifest,
+	type UnifiedContextManifestContractIssue,
+	type UnifiedContextManifestDiagnostic,
+	type UnifiedContextManifestDiff,
+	type UnifiedContextManifestDiffEntry,
+	type UnifiedContextManifestEntry,
+} from "./manifest-types.js";
 
 export interface LoadUnifiedContextManifestOptions {
 	config?: ComposerConfig;
+	projectDocs?: PromptProjectDocManifest;
 	mcpConfig?: McpConfig;
 	mcpStatus?: McpManagerStatus;
 	includeMcpConfig?: boolean;
 }
 
-export interface UnifiedContextManifestDiffEntry {
-	id: string;
-	kind: UnifiedContextEntryKind;
-	label: string;
-	before?: UnifiedContextManifestEntry;
-	after?: UnifiedContextManifestEntry;
-	changes?: string[];
-}
+const ENTRY_KINDS: ReadonlySet<UnifiedContextEntryKind> = new Set([
+	"project_doc",
+	"mcp_server",
+	"mcp_resource",
+	"mcp_prompt",
+]);
 
-export interface UnifiedContextManifestDiff {
-	beforeCwd: string;
-	afterCwd: string;
-	added: UnifiedContextManifestDiffEntry[];
-	removed: UnifiedContextManifestDiffEntry[];
-	changed: UnifiedContextManifestDiffEntry[];
-	unchanged: UnifiedContextManifestDiffEntry[];
-	diagnostics: UnifiedContextManifestDiagnostic[];
-}
+const ENTRY_SOURCES: ReadonlySet<UnifiedContextEntrySource> = new Set([
+	"filesystem",
+	"mcp_config",
+	"mcp_runtime",
+]);
+
+const ENTRY_STATUSES: ReadonlySet<UnifiedContextEntryStatus> = new Set([
+	"available",
+	"configured",
+	"connected",
+	"disconnected",
+	"error",
+	"loaded",
+]);
+
+const METADATA_KEYS_BY_KIND: Record<
+	UnifiedContextEntryKind,
+	ReadonlySet<string>
+> = {
+	project_doc: new Set(["sourceKind", "truncated", "originalSize", "maxBytes"]),
+	mcp_server: new Set([
+		"transport",
+		"scope",
+		"command",
+		"args",
+		"cwdConfigured",
+		"url",
+		"remoteUrl",
+		"remoteHost",
+		"envKeys",
+		"headerKeys",
+		"headersHelperConfigured",
+		"authPreset",
+		"timeout",
+		"remoteTrust",
+		"projectApproval",
+		"toolCount",
+		"resourceCount",
+		"promptCount",
+		"error",
+	]),
+	mcp_resource: new Set(),
+	mcp_prompt: new Set(["title", "description", "arguments"]),
+};
 
 function stableJson(value: unknown): string {
 	if (value === null || typeof value !== "object") {
@@ -115,6 +116,193 @@ function stableJson(value: unknown): string {
 
 function hashValue(value: unknown): string {
 	return createHash("sha256").update(stableJson(value)).digest("hex");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasRedactedTrue(value: unknown): boolean {
+	return isRecord(value) && value.redacted === true;
+}
+
+function validateRedactedObject(
+	issues: UnifiedContextManifestContractIssue[],
+	value: unknown,
+	path: string,
+	requiredFlag: "configured" | "present" | null,
+): void {
+	if (!isRecord(value) || value.redacted !== true) {
+		issues.push({
+			path,
+			message: "must be summarized as a redacted object",
+		});
+		return;
+	}
+	if (requiredFlag && value[requiredFlag] !== true) {
+		issues.push({
+			path,
+			message: `must include ${requiredFlag}: true`,
+		});
+	}
+}
+
+function validateRedactedUrlObject(
+	issues: UnifiedContextManifestContractIssue[],
+	value: unknown,
+	path: string,
+): void {
+	if (!hasRedactedTrue(value)) {
+		issues.push({
+			path,
+			message: "must be summarized as a redacted URL object",
+		});
+		return;
+	}
+	if (isRecord(value)) {
+		for (const key of Object.keys(value)) {
+			if (!["scheme", "host", "redacted"].includes(key)) {
+				issues.push({
+					path: `${path}.${key}`,
+					message: "is not allowed in redacted URL metadata",
+				});
+			}
+		}
+	}
+}
+
+function validateEntryMetadata(
+	issues: UnifiedContextManifestContractIssue[],
+	entry: UnifiedContextManifestEntry,
+	entryPath: string,
+): void {
+	const metadata = entry.metadata;
+	if (!metadata) {
+		return;
+	}
+	const allowedKeys =
+		METADATA_KEYS_BY_KIND[entry.kind as UnifiedContextEntryKind];
+	if (!allowedKeys) {
+		return;
+	}
+	for (const key of Object.keys(metadata)) {
+		if (!allowedKeys.has(key)) {
+			issues.push({
+				path: `${entryPath}.metadata.${key}`,
+				message: `is not allowed for ${entry.kind} entries`,
+			});
+		}
+	}
+	if (entry.kind !== "mcp_server") {
+		return;
+	}
+
+	if ("command" in metadata) {
+		validateRedactedObject(
+			issues,
+			metadata.command,
+			`${entryPath}.metadata.command`,
+			"configured",
+		);
+	}
+	if ("args" in metadata) {
+		if (!isRecord(metadata.args) || metadata.args.redacted !== true) {
+			issues.push({
+				path: `${entryPath}.metadata.args`,
+				message: "must be summarized as a redacted args object",
+			});
+		} else if (typeof metadata.args.count !== "number") {
+			issues.push({
+				path: `${entryPath}.metadata.args.count`,
+				message: "must include the redacted argument count",
+			});
+		}
+	}
+	if ("url" in metadata) {
+		validateRedactedUrlObject(
+			issues,
+			metadata.url,
+			`${entryPath}.metadata.url`,
+		);
+	}
+	if ("remoteUrl" in metadata) {
+		validateRedactedUrlObject(
+			issues,
+			metadata.remoteUrl,
+			`${entryPath}.metadata.remoteUrl`,
+		);
+	}
+	if ("error" in metadata) {
+		validateRedactedObject(
+			issues,
+			metadata.error,
+			`${entryPath}.metadata.error`,
+			"present",
+		);
+	}
+}
+
+export function validateUnifiedContextManifestContract(
+	manifest: UnifiedContextManifest,
+): UnifiedContextManifestContractIssue[] {
+	const issues: UnifiedContextManifestContractIssue[] = [];
+	if (manifest.protocolVersion !== UNIFIED_CONTEXT_MANIFEST_PROTOCOL) {
+		issues.push({
+			path: "protocolVersion",
+			message: `must be ${UNIFIED_CONTEXT_MANIFEST_PROTOCOL}`,
+		});
+	}
+	if (manifest.version !== 1) {
+		issues.push({ path: "version", message: "must be 1" });
+	}
+
+	const seenIds = new Set<string>();
+	manifest.entries.forEach((entry, index) => {
+		const entryPath = `entries[${index}]`;
+		if (!entry.id) {
+			issues.push({ path: `${entryPath}.id`, message: "is required" });
+		} else if (seenIds.has(entry.id)) {
+			issues.push({ path: `${entryPath}.id`, message: "must be unique" });
+		}
+		seenIds.add(entry.id);
+
+		if (!ENTRY_KINDS.has(entry.kind)) {
+			issues.push({ path: `${entryPath}.kind`, message: "is unsupported" });
+		}
+		if (!ENTRY_SOURCES.has(entry.source)) {
+			issues.push({ path: `${entryPath}.source`, message: "is unsupported" });
+		}
+		if (!ENTRY_STATUSES.has(entry.status)) {
+			issues.push({ path: `${entryPath}.status`, message: "is unsupported" });
+		}
+		if (
+			entry.kind === "project_doc" &&
+			entry.id.startsWith("project_doc:project:/")
+		) {
+			issues.push({
+				path: `${entryPath}.id`,
+				message: "must use a workspace-relative project document identity",
+			});
+		}
+		validateEntryMetadata(issues, entry, entryPath);
+	});
+
+	return issues;
+}
+
+export function assertUnifiedContextManifestContract(
+	manifest: UnifiedContextManifest,
+): void {
+	const issues = validateUnifiedContextManifestContract(manifest);
+	if (issues.length === 0) {
+		return;
+	}
+	throw new Error(
+		[
+			"Unified context manifest contract failed:",
+			...issues.map((issue) => `- ${issue.path}: ${issue.message}`),
+		].join("\n"),
+	);
 }
 
 function normalizeMetadata(
@@ -412,7 +600,8 @@ export function loadUnifiedContextManifest(
 	options: LoadUnifiedContextManifestOptions = {},
 ): UnifiedContextManifest {
 	const cwd = resolve(cwdOverride ?? process.cwd());
-	const projectDocs = loadPromptProjectDocManifest(cwd, options.config);
+	const projectDocs =
+		options.projectDocs ?? loadPromptProjectDocManifest(cwd, options.config);
 	const diagnostics: UnifiedContextManifestDiagnostic[] =
 		projectDocs.diagnostics.map((diagnostic) => ({ ...diagnostic }));
 	const entries = [
@@ -421,13 +610,16 @@ export function loadUnifiedContextManifest(
 		...loadRuntimeMcpEntries(options.mcpStatus, diagnostics),
 	];
 
-	return {
+	const manifest: UnifiedContextManifest = {
+		protocolVersion: UNIFIED_CONTEXT_MANIFEST_PROTOCOL,
 		version: 1,
 		cwd,
 		projectDocs,
 		entries,
 		diagnostics,
 	};
+	assertUnifiedContextManifestContract(manifest);
+	return manifest;
 }
 
 export function diffUnifiedContextManifests(

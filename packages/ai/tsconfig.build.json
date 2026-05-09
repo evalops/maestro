@@ -35,6 +35,7 @@
 		"../../src/config/index.ts",
 		"../../src/config/lsp-config.ts",
 		"../../src/config/toml-config.ts",
+		"../../src/context/manifest-types.ts",
 		"../../src/connectors/**/*.ts",
 		"../../src/evalops/env-aliases.ts",
 		"../../src/evalops/managed-context.ts",

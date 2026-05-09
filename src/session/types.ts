@@ -1,5 +1,6 @@
 import type { AppMessage, ImageContent, TextContent } from "../agent/types.js";
 import type { PromptProjectDocManifest } from "../config/index.js";
+import type { UnifiedContextManifest } from "../context/manifest-types.js";
 import type { PromptMetadata } from "../prompts/types.js";
 
 export const CURRENT_SESSION_VERSION = 2;
@@ -35,9 +36,38 @@ export interface SessionHeaderEntry {
 	systemPrompt?: string;
 	promptMetadata?: PromptMetadata;
 	promptContextManifest?: PromptProjectDocManifest;
+	unifiedContextManifest?: UnifiedContextManifest;
 	tools?: SessionToolInfo[];
 	branchedFrom?: string;
 	parentSession?: string;
+}
+
+function resolveSessionPromptContextManifest(
+	header:
+		| Pick<
+				SessionHeaderEntry,
+				"promptContextManifest" | "unifiedContextManifest"
+		  >
+		| null
+		| undefined,
+): PromptProjectDocManifest | undefined {
+	return (
+		header?.promptContextManifest ?? header?.unifiedContextManifest?.projectDocs
+	);
+}
+
+export function getPersistedSessionPromptContextManifest(
+	header:
+		| Pick<
+				SessionHeaderEntry,
+				"promptContextManifest" | "unifiedContextManifest"
+		  >
+		| null
+		| undefined,
+): PromptProjectDocManifest | undefined {
+	return header?.unifiedContextManifest
+		? undefined
+		: resolveSessionPromptContextManifest(header);
 }
 
 export interface SessionEntryBase {

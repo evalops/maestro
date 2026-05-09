@@ -34,6 +34,7 @@
 import type { GuardedFilesPolicySettings } from "@evalops/contracts";
 import type { TSchema } from "@sinclair/typebox";
 import type { PromptProjectDocManifest } from "../config/index.js";
+import type { UnifiedContextManifest } from "../context/manifest-types.js";
 import type { PromptMetadata } from "../prompts/types.js";
 import type { SkillArtifactMetadata } from "../skills/artifact-metadata.js";
 import type { CheckpointProfiler } from "../utils/checkpoint-profiler.js";
@@ -944,6 +945,8 @@ export interface AgentState {
 	systemPromptSourcePaths?: string[];
 	/** Manifest of project instruction files layered into the current system prompt */
 	promptContextManifest?: PromptProjectDocManifest;
+	/** Full filesystem and MCP context provenance captured for this run */
+	unifiedContextManifest?: UnifiedContextManifest;
 	/** Current model configuration */
 	model: Model<Api>;
 	/** Current thinking level for extended reasoning */

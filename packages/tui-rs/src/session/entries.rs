@@ -362,7 +362,7 @@ pub struct SessionHeader {
         rename = "promptMetadata",
         alias = "prompt_metadata"
     )]
-    pub prompt_metadata: Option<serde_json::Value>,
+    pub prompt_metadata: Option<Box<serde_json::Value>>,
 
     /// Prompt project-doc manifest carried by TypeScript-authored sessions.
     #[serde(
@@ -370,7 +370,15 @@ pub struct SessionHeader {
         rename = "promptContextManifest",
         alias = "prompt_context_manifest"
     )]
-    pub prompt_context_manifest: Option<serde_json::Value>,
+    pub prompt_context_manifest: Option<Box<serde_json::Value>>,
+
+    /// Unified filesystem and MCP context manifest carried by TypeScript-authored sessions.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "unifiedContextManifest",
+        alias = "unified_context_manifest"
+    )]
+    pub unified_context_manifest: Option<Box<serde_json::Value>>,
 
     /// List of tools available to the assistant.
     ///
@@ -1146,6 +1154,13 @@ mod tests {
                 "cwd": "/tmp",
                 "candidates": ["AGENTS.md"],
                 "bytesRead": 12,
+                "entries": [],
+                "diagnostics": []
+            }),
+            "unifiedContextManifest" => json!({
+                "protocolVersion": "maestro.unified-context-manifest.v1",
+                "version": 1,
+                "cwd": "/tmp",
                 "entries": [],
                 "diagnostics": []
             }),

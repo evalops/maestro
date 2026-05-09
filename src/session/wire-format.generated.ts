@@ -27,6 +27,7 @@ export const sessionWireFieldAliases = {
 		system_prompt: "systemPrompt",
 		prompt_metadata: "promptMetadata",
 		prompt_context_manifest: "promptContextManifest",
+		unified_context_manifest: "unifiedContextManifest",
 		branched_from: "branchedFrom",
 		parent_session: "parentSession",
 	},
