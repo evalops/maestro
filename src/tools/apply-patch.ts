@@ -446,7 +446,7 @@ function applyUpdateHunks(
 	for (const [index, hunk] of hunks.entries()) {
 		if (hunk.oldLines.length === 0) {
 			lines = [...lines, ...hunk.newLines];
-			finalNewline = resolveHunkFinalNewline(finalNewline, hunk);
+			finalNewline = resolveHunkFinalNewline(finalNewline, hunk, lines.length);
 			hunksApplied++;
 			continue;
 		}
@@ -470,7 +470,7 @@ function applyUpdateHunks(
 			...hunk.newLines,
 			...lines.slice(start + hunk.oldLines.length),
 		];
-		finalNewline = resolveHunkFinalNewline(finalNewline, hunk);
+		finalNewline = resolveHunkFinalNewline(finalNewline, hunk, lines.length);
 		hunksApplied++;
 	}
 	return {
@@ -483,12 +483,13 @@ function applyUpdateHunks(
 function resolveHunkFinalNewline(
 	currentFinalNewline: boolean,
 	hunk: ApplyPatchHunk,
+	resultLineCount: number,
 ): boolean {
 	if (hunk.newNoFinalNewline === true) {
 		return false;
 	}
 	if (hunk.oldNoFinalNewline === true) {
-		return true;
+		return resultLineCount > 0;
 	}
 	return currentFinalNewline;
 }

@@ -290,6 +290,42 @@ describe("apply_patch tool", () => {
 		});
 	});
 
+	it("does not create a newline when deleting the only no-newline line", async () => {
+		const filePath = join(testDir, "delete-only-no-newline.txt");
+		writeFileSync(filePath, "old");
+
+		await applyPatchTool.execute("call-eof-delete-only-line", {
+			patch: [
+				"*** Begin Patch",
+				`*** Update File: ${filePath}`,
+				"@@",
+				"-old",
+				"\\ No newline at end of file",
+				"*** End Patch",
+			].join("\n"),
+		});
+
+		expect(readFileSync(filePath, "utf-8")).toBe("");
+	});
+
+	it("adds a final newline when deleting the last no-newline line from a non-empty file", async () => {
+		const filePath = join(testDir, "delete-last-no-newline.txt");
+		writeFileSync(filePath, "keep\nold");
+
+		await applyPatchTool.execute("call-eof-delete-last-line", {
+			patch: [
+				"*** Begin Patch",
+				`*** Update File: ${filePath}`,
+				"@@",
+				"-old",
+				"\\ No newline at end of file",
+				"*** End Patch",
+			].join("\n"),
+		});
+
+		expect(readFileSync(filePath, "utf-8")).toBe("keep\n");
+	});
+
 	it("adds and deletes files", async () => {
 		const addedPath = join(testDir, "nested", "created.py");
 		const deletedPath = join(testDir, "old.rs");
