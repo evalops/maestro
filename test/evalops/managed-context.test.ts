@@ -53,14 +53,14 @@ describe("managed EvalOps context", () => {
 		vi.unstubAllEnvs();
 	});
 
-	it("keeps shared EvalOps aliases generic", () => {
+	it("keeps shared EvalOps aliases from adopting service-specific org ids", () => {
 		expect(EVALOPS_ORGANIZATION_ID_ENV_VARS).not.toContain(
 			"MAESTRO_LLM_GATEWAY_ORG_ID",
 		);
 		expect(EVALOPS_ORGANIZATION_ID_ENV_VARS).not.toContain(
 			"MAESTRO_REMOTE_RUNNER_ORG_ID",
 		);
-		expect(EVALOPS_WORKSPACE_ID_ENV_VARS).not.toContain(
+		expect(EVALOPS_WORKSPACE_ID_ENV_VARS).toContain(
 			"MAESTRO_REMOTE_RUNNER_WORKSPACE_ID",
 		);
 		expect(
@@ -117,7 +117,7 @@ describe("managed EvalOps context", () => {
 				},
 				EVALOPS_WORKSPACE_ID_ENV_VARS,
 			),
-		).toBeUndefined();
+		).toBe("workspace_remote");
 	});
 
 	it("resolves managed mode from stored init credentials when env is sparse", () => {
