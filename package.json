@@ -68,6 +68,7 @@
     "web": "node dist/web-server.js",
     "web:rust-control": "packages/control-plane-rs/target/release/maestro-control-plane",
     "web:dev": "node ./scripts/ensure-deps.js --workspace @evalops/contracts && concurrently --names \"server,ui\" --prefix-colors \"blue,green\" \"tsx --watch src/web-server.ts\" \"bun run dev:web\"",
+    "web:dev:local": "MAESTRO_WEB_REQUIRE_KEY=0 MAESTRO_WEB_REQUIRE_REDIS=0 MAESTRO_WEB_ORIGIN=http://localhost:3000 npm run web:dev",
     "bun:lint": "bunx biome check . && bun run lint:evals",
     "bun:test": "node ./scripts/run-vitest.js --run",
     "bun:test:fast": "VITEST_FAST=1 node ./scripts/run-vitest.js --run",

@@ -12,7 +12,11 @@ const requirements = {
 		["package.json", '"dev:all"'],
 		["package.json", '"smoke:event-bus"'],
 		["package.json", '"platform:sdk-smoke"'],
+		["package.json", '"web:dev:local"'],
 		["Makefile", "dev-all"],
+		["Makefile", "web-local"],
+		["Makefile", "cerebro-e2e-doctor"],
+		["scripts/check-cerebro-e2e.mjs", "Maestro Cerebro local E2E doctor"],
 	],
 	"local introspection": [
 		["package.json", '"telemetry:report"'],

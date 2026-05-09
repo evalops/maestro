@@ -196,8 +196,8 @@ async function verifyCLIFunctionality() {
 
 	await check("CLI version command", async () => {
 		const output = runCli(["--version"]);
-		if (!output.includes("Composer")) {
-			throw new Error("Version output doesn't contain 'Composer'");
+		if (!output.includes("Maestro")) {
+			throw new Error("Version output doesn't contain 'Maestro'");
 		}
 	});
 

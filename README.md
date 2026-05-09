@@ -114,10 +114,19 @@ npx nx run maestro:test --skip-nx-cache
 npx nx run maestro:evals --skip-nx-cache
 ```
 
+For the browser UI without local API keys or Redis, use the local-only dev
+profile:
+
+```bash
+make web-local
+curl http://localhost:8080/api/models
+```
+
 To prove Maestro works against a local Cerebro stack, keep sibling checkouts and
 run:
 
 ```bash
+make cerebro-e2e-doctor
 make cerebro-e2e
 ```
 
@@ -125,8 +134,10 @@ That target delegates to Cerebro's `make local-maestro-e2e` with
 `LOCAL_MAESTRO_REPO` set to the current Maestro checkout. It builds and smokes
 Maestro, emits Maestro's canonical Platform replay, publishes it through local
 NATS, and verifies Cerebro graph projection plus MCP recall from the generated
-session traffic. Set `LOCAL_CEREBRO_REPO=/path/to/cerebro` when the checkout is
-not a sibling directory.
+session traffic. `make cerebro-e2e-doctor` checks the Cerebro checkout, Docker
+Compose, the replay generator, and Cerebro's own local-E2E doctor before the
+full smoke starts. Set `LOCAL_CEREBRO_REPO=/path/to/cerebro` when the checkout
+is not a sibling directory.
 
 Need Redis or PostgreSQL for a specific workflow? Start from `docker-compose.yml` and use the [Contributor Runbook](docs/CONTRIBUTOR_RUNBOOK.md) for the rest of the repo workflow.
 

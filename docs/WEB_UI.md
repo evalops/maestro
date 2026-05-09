@@ -98,6 +98,18 @@ This starts:
 - **Server**: http://localhost:8080/api (with auto-reload)
 - **UI**: http://localhost:3000 (Vite dev server)
 
+For local-only development without an API key or Redis, use the explicit local
+profile:
+
+```bash
+make web-local
+curl http://localhost:8080/api/models
+```
+
+That target sets `MAESTRO_WEB_REQUIRE_KEY=0`,
+`MAESTRO_WEB_REQUIRE_REDIS=0`, and
+`MAESTRO_WEB_ORIGIN=http://localhost:3000` before starting the same dev server.
+
 ### Production Mode
 
 Build and run:

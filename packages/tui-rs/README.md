@@ -51,7 +51,7 @@ cd packages/tui-rs
 cargo build --release
 ```
 
-The binary will be at `target/release/composer-tui`.
+The binary will be at `target/release/maestro-tui`.
 
 ## Running
 
@@ -62,14 +62,14 @@ export ANTHROPIC_API_KEY=sk-...
 export OPENAI_API_KEY=sk-...
 
 # Run with default settings (uses Claude by default)
-./target/release/composer-tui
+./target/release/maestro-tui
 
 # Specify a model
-./target/release/composer-tui --model gpt-4o
-./target/release/composer-tui --model claude-sonnet-4-5-20250514
+./target/release/maestro-tui --model gpt-4o
+./target/release/maestro-tui --model claude-sonnet-4-5-20250514
 
 # Resume last session
-./target/release/composer-tui --resume
+./target/release/maestro-tui --resume
 ```
 
 ## Environment Variables
