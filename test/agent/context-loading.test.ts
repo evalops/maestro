@@ -12,11 +12,13 @@ describe("Hierarchical Context File Loading", () => {
 	let testDir: string;
 	let originalEnv: string | undefined;
 	let originalHome: string | undefined;
+	let originalUserHome: string | undefined;
 
 	beforeEach(() => {
 		// Save original state
 		originalEnv = process.env.MAESTRO_AGENT_DIR;
 		originalHome = process.env.MAESTRO_HOME;
+		originalUserHome = process.env.HOME;
 
 		// Create temp test directory
 		testDir = join(tmpdir(), `composer-test-${Date.now()}`);
@@ -24,6 +26,7 @@ describe("Hierarchical Context File Loading", () => {
 
 		const composerHome = join(testDir, "composer-home");
 		process.env.MAESTRO_HOME = composerHome;
+		process.env.HOME = testDir;
 		mkdirSync(composerHome, { recursive: true });
 		clearConfigCache();
 	});
@@ -39,6 +42,11 @@ describe("Hierarchical Context File Loading", () => {
 			Reflect.deleteProperty(process.env, "MAESTRO_HOME");
 		} else {
 			process.env.MAESTRO_HOME = originalHome;
+		}
+		if (originalUserHome === undefined) {
+			Reflect.deleteProperty(process.env, "HOME");
+		} else {
+			process.env.HOME = originalUserHome;
 		}
 		clearConfigCache();
 
@@ -305,6 +313,30 @@ describe("Hierarchical Context File Loading", () => {
 			expect(globalIdx).toBeLessThan(rootIdx);
 			expect(rootIdx).toBeLessThan(packagesIdx);
 			expect(packagesIdx).toBeLessThan(appIdx);
+		});
+
+		it("should not duplicate ~/.config instructions when cwd is inside ~/.config", () => {
+			const globalConfigDir = join(testDir, ".config");
+			const projectDir = join(globalConfigDir, "dotfiles");
+			mkdirSync(projectDir, { recursive: true });
+			writeFileSync(
+				join(globalConfigDir, "AGENT.md"),
+				"# Global Config\nDotfiles guidance",
+			);
+			writeFileSync(join(projectDir, "AGENT.md"), "# Dotfiles\nProject");
+
+			const contextFiles = loadProjectContextFiles(projectDir);
+			const globalMatches = contextFiles.filter(
+				(file) => file.path === join(globalConfigDir, "AGENT.md"),
+			);
+
+			expect(globalMatches).toHaveLength(1);
+			expect(contextFiles.map((file) => file.content)).toEqual(
+				expect.arrayContaining([
+					expect.stringContaining("Dotfiles guidance"),
+					expect.stringContaining("# Dotfiles"),
+				]),
+			);
 		});
 	});
 

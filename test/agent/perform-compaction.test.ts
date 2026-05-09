@@ -1777,6 +1777,65 @@ describe("performCompaction", () => {
 		}
 	});
 
+	it("does not restore ~/.config instructions already layered into the prompt", async () => {
+		const originalCwd = process.cwd();
+		const previousHome = process.env.HOME;
+		const previousMaestroHome = process.env.MAESTRO_HOME;
+		const workspaceDir = mkdtempSync(
+			join(tmpdir(), "maestro-user-config-context-"),
+		);
+		const projectDir = join(workspaceDir, "project");
+		const userConfigDir = join(workspaceDir, ".config");
+		const userConfigPath = join(userConfigDir, "AGENT.md");
+		mkdirSync(projectDir, { recursive: true });
+		mkdirSync(userConfigDir, { recursive: true });
+		writeFileSync(userConfigPath, "# User instructions\nUse the home config.");
+		process.env.HOME = workspaceDir;
+		process.env.MAESTRO_HOME = join(workspaceDir, ".maestro-home");
+		process.chdir(projectDir);
+		clearConfigCache();
+
+		try {
+			const messages = buildConversation(10);
+			messages.splice(
+				2,
+				0,
+				createReadToolCallMessage(userConfigPath, "call-read-user-config"),
+				createReadToolResultMessage(
+					userConfigPath,
+					"call-read-user-config",
+					"# User instructions\nOld home config",
+				),
+			);
+			const agent = createMockAgentWithoutAppendMessage(messages);
+			const sessionManager = createMockSessionManager();
+
+			const result = await performCompaction({ agent, sessionManager });
+
+			expect(result.success).toBe(true);
+			expect(getReplacedMessages(agent)).not.toContainEqual(
+				expect.objectContaining({
+					role: "hookMessage",
+					customType: "read-file",
+					details: { filePath: userConfigPath },
+				}),
+			);
+		} finally {
+			process.chdir(originalCwd);
+			if (previousHome === undefined) {
+				delete process.env.HOME;
+			} else {
+				process.env.HOME = previousHome;
+			}
+			if (previousMaestroHome === undefined) {
+				delete process.env.MAESTRO_HOME;
+			} else {
+				process.env.MAESTRO_HOME = previousMaestroHome;
+			}
+			clearConfigCache();
+		}
+	});
+
 	it("does not restore custom project doc fallback files already layered into the prompt", async () => {
 		const originalCwd = process.cwd();
 		const workspaceDir = mkdtempSync(join(tmpdir(), "maestro-project-doc-"));

@@ -25,6 +25,8 @@ describe("toml-config", () => {
 	let globalDir: string;
 	let projectDir: string;
 	let previousMaestroHome: string | undefined;
+	let previousMaestroAgentDir: string | undefined;
+	let previousHome: string | undefined;
 
 	beforeEach(() => {
 		clearConfigCache();
@@ -32,6 +34,8 @@ describe("toml-config", () => {
 		globalDir = join(testDir, "global", ".maestro");
 		projectDir = join(testDir, "project");
 		previousMaestroHome = process.env.MAESTRO_HOME;
+		previousMaestroAgentDir = process.env.MAESTRO_AGENT_DIR;
+		previousHome = process.env.HOME;
 		mkdirSync(globalDir, { recursive: true });
 		mkdirSync(join(projectDir, ".maestro"), { recursive: true });
 	});
@@ -50,6 +54,16 @@ describe("toml-config", () => {
 			Reflect.deleteProperty(process.env, "MAESTRO_HOME");
 		} else {
 			process.env.MAESTRO_HOME = previousMaestroHome;
+		}
+		if (previousMaestroAgentDir === undefined) {
+			Reflect.deleteProperty(process.env, "MAESTRO_AGENT_DIR");
+		} else {
+			process.env.MAESTRO_AGENT_DIR = previousMaestroAgentDir;
+		}
+		if (previousHome === undefined) {
+			Reflect.deleteProperty(process.env, "HOME");
+		} else {
+			process.env.HOME = previousHome;
 		}
 	});
 
@@ -856,6 +870,66 @@ experimental_instructions_file = ".maestro/instructions.md"
 			expect(resolvedPaths).toEqual(loadedPaths);
 			expect(resolvedPaths).toHaveLength(1);
 			expect(resolvedPaths[0]).toBe(resolve(join(projectDir, "AGENT.md")));
+		});
+
+		it("tracks ~/.config global instructions before project docs under the byte budget", () => {
+			const agentDir = join(testDir, "agent");
+			const configDir = join(testDir, ".config");
+			mkdirSync(agentDir, { recursive: true });
+			mkdirSync(configDir, { recursive: true });
+			writeFileSync(join(agentDir, "AGENT.md"), "A".repeat(40));
+			writeFileSync(join(configDir, "AGENT.md"), "B".repeat(40));
+			writeFileSync(join(projectDir, "AGENT.md"), "C".repeat(40));
+			process.env.MAESTRO_AGENT_DIR = agentDir;
+			process.env.HOME = testDir;
+
+			const config = {
+				...DEFAULT_CONFIG,
+				project_doc_max_bytes: 70,
+			} as ComposerConfig;
+
+			const loadedPaths = loadProjectContextFiles(projectDir, { config }).map(
+				(file) => resolve(file.path),
+			);
+			const resolvedPaths = resolvePromptLoadedProjectDocPaths(
+				projectDir,
+				config,
+			).map((filePath) => resolve(filePath));
+
+			expect(resolvedPaths).toEqual(loadedPaths);
+			expect(resolvedPaths).toEqual([
+				resolve(join(agentDir, "AGENT.md")),
+				resolve(join(configDir, "AGENT.md")),
+			]);
+		});
+
+		it("dedupes ~/.config instructions when cwd is inside ~/.config", () => {
+			const configDir = join(testDir, ".config");
+			const dotfilesDir = join(configDir, "dotfiles");
+			mkdirSync(dotfilesDir, { recursive: true });
+			writeFileSync(join(configDir, "AGENT.md"), "Config guidance");
+			writeFileSync(join(dotfilesDir, "AGENT.md"), "Dotfiles guidance");
+			process.env.MAESTRO_AGENT_DIR = join(testDir, "empty-agent-dir");
+			process.env.HOME = testDir;
+
+			const config = {
+				...DEFAULT_CONFIG,
+				project_doc_max_bytes: 100,
+			} as ComposerConfig;
+
+			const loadedPaths = loadProjectContextFiles(dotfilesDir, { config }).map(
+				(file) => resolve(file.path),
+			);
+			const resolvedPaths = resolvePromptLoadedProjectDocPaths(
+				dotfilesDir,
+				config,
+			).map((filePath) => resolve(filePath));
+			const configInstructionPath = resolve(join(configDir, "AGENT.md"));
+
+			expect(resolvedPaths).toEqual(loadedPaths);
+			expect(
+				resolvedPaths.filter((filePath) => filePath === configInstructionPath),
+			).toHaveLength(1);
 		});
 	});
 });

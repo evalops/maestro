@@ -8,7 +8,7 @@ import {
 	statSync,
 } from "node:fs";
 import type { Dirent } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
 	type RuntimeConstraintContext,
@@ -18,12 +18,12 @@ import {
 } from "@evalops/contracts";
 import chalk from "chalk";
 import { buildSearchGuidelines } from "../agent/search-guidance.js";
-import { getAgentDir } from "../config/constants.js";
 import {
 	type ComposerConfig,
 	loadConfig,
 	resolveLoadedAppendSystemPromptPath,
 	resolveProjectDocCandidateFilenames,
+	resolveProjectDocGlobalDirectories,
 } from "../config/index.js";
 import {
 	DEFAULT_GUARDED_FILE_RULES,
@@ -512,11 +512,16 @@ function resolveContextCandidates(config?: ComposerConfig): string[] {
 	return resolveProjectDocCandidateFilenames(config);
 }
 
+function resolveGlobalInstructionDirs(): string[] {
+	return resolveProjectDocGlobalDirectories();
+}
+
 export function loadProjectContextFiles(
 	cwdOverride?: string,
 	options: { config?: ComposerConfig } = {},
 ): ContextFile[] {
 	const contextFiles: ContextFile[] = [];
+	const loadedContextPaths = new Set<string>();
 
 	const cwd = cwdOverride ?? process.cwd();
 	const config = options.config ?? loadConfig(cwd);
@@ -530,17 +535,27 @@ export function loadProjectContextFiles(
 	if (remainingBytes === 0) {
 		return contextFiles;
 	}
-
-	const globalContextDir = resolve(getAgentDir());
-	const globalContext = loadContextFileFromDir(globalContextDir, {
-		candidates,
-		maxBytes,
-		remainingBytes,
-	});
-	if (globalContext) {
-		contextFiles.push(globalContext.file);
+	const pushContextFile = (loaded: ContextFileLoadResult): void => {
+		const resolvedPath = resolve(loaded.file.path);
+		if (loadedContextPaths.has(resolvedPath)) {
+			return;
+		}
+		loadedContextPaths.add(resolvedPath);
+		contextFiles.push(loaded.file);
 		if (remainingBytes !== undefined) {
-			remainingBytes = Math.max(0, remainingBytes - globalContext.bytesRead);
+			remainingBytes = Math.max(0, remainingBytes - loaded.bytesRead);
+		}
+	};
+
+	for (const globalContextDir of resolveGlobalInstructionDirs()) {
+		if (remainingBytes === 0) break;
+		const globalContext = loadContextFileFromDir(globalContextDir, {
+			candidates,
+			maxBytes,
+			remainingBytes,
+		});
+		if (globalContext) {
+			pushContextFile(globalContext);
 		}
 	}
 
@@ -567,14 +582,25 @@ export function loadProjectContextFiles(
 			remainingBytes,
 		});
 		if (contextFile) {
-			contextFiles.push(contextFile.file);
-			if (remainingBytes !== undefined) {
-				remainingBytes = Math.max(0, remainingBytes - contextFile.bytesRead);
-			}
+			pushContextFile(contextFile);
 		}
 	}
 
 	return contextFiles;
+}
+
+function formatProjectContextFile(file: ContextFile): string {
+	const filename = basename(file.path);
+	const dir = dirname(file.path);
+	return [
+		`# ${filename} instructions for ${dir}`,
+		"",
+		"<INSTRUCTIONS>",
+		file.content.trimEnd(),
+		"</INSTRUCTIONS>",
+		"",
+		"",
+	].join("\n");
 }
 
 // Default tool names when no filter is applied
@@ -729,8 +755,8 @@ export function finalizeSystemPrompt(
 	if (contextFiles.length > 0) {
 		prompt += "\n\n# Project Context\n\n";
 		prompt += "The following project context files have been loaded:\n\n";
-		for (const { path, content } of contextFiles) {
-			prompt += `## ${path}\n\n${content}\n\n`;
+		for (const file of contextFiles) {
+			prompt += formatProjectContextFile(file);
 		}
 	}
 
