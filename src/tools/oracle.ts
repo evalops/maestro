@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { type DelegationPrompt, formatDelegation } from "@evalops/contracts";
 import { Type } from "@sinclair/typebox";
 import type { Static } from "@sinclair/typebox";
 import { getRegisteredModels } from "../models/registry.js";
@@ -59,41 +60,25 @@ export const oracleTool = createTool<typeof oracleSchema, OracleToolDetails>({
 		// Create temporary input file with the Seer summoning
 		const tmpFile = join(tmpdir(), `seer-${randomUUID()}.md`);
 
-		let prompt = `# Summoning the Seer
-
-You are **the Seer**, a prophetic software architect who peers beyond the immediate change to reveal hidden couplings, latent risks, and downstream effects. Temper intuition with evidence: inspect the provided artifacts first, then reason from what you observe. You wield foresight, deep reasoning, and a read-only toolset. You must **never** edit or run code.
-
-## Your Quest
-
-**Task:** ${task}
-
-`;
-
-		if (context) {
-			prompt += `**Context:** ${context}\n\n`;
-		}
-
-		if (files?.length) {
-			prompt += `**Artifacts to Examine:** ${files.join(", ")}\n\n`;
-		}
-
-		prompt += `## Method of Divination
-
-1. Read the referenced files or data before drawing conclusions
-2. Map observations to consequences, citing file paths and line numbers when possible  
-3. Surface trade-offs, alternatives, and assumptions
-
-## Revelation Format
-
-Respond with:
-
-**Summary:** one sentence capturing the core insight.
-
-**Insights:** concise bullets detailing findings, trade-offs, and hidden risks unearthed, grounded in the observed evidence.
-
-**Next steps:** optional guidance on follow-up actions, validations, or open questions.
-
-Always flag uncertainties, assumptions, or blind spots so the summoner knows where the vision grows dim.`;
+		const delegationPrompt: DelegationPrompt = {
+			goal: "Provide read-only architectural guidance for a complex engineering decision.",
+			context:
+				context ??
+				"The caller did not provide extra context beyond the task and artifacts.",
+			task,
+			evidence: files?.length
+				? files.map((file) => `Artifact to examine: ${file}`)
+				: [],
+			validation:
+				"Inspect referenced artifacts before drawing conclusions, cite file paths and line numbers when possible, and separate evidence from assumptions.",
+			stoppingCondition:
+				"Stop after a concise response with Summary, Insights, optional Next steps, and any uncertainties. Never edit or run code.",
+		};
+		const prompt = [
+			"You are the Seer, a read-only software architecture advisor. You must never edit or run code.",
+			"",
+			formatDelegation(delegationPrompt),
+		].join("\n");
 
 		writeFileSync(tmpFile, prompt);
 

@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -136,12 +136,25 @@ describe("SwarmExecutor", () => {
 	});
 
 	it("spawns the maestro CLI for teammate tasks", async () => {
-		spawnMock.mockReturnValue(createMockChildProcess("done"));
+		let prompt = "";
+		spawnMock.mockImplementation((_command: string, args: string[]) => {
+			prompt = readFileSync(args.at(-1)!, "utf-8");
+			return createMockChildProcess("done");
+		});
 
 		const executor = new SwarmExecutor(createConfig());
 		void executor.execute();
 		await waitForSpawn();
 
+		expect(prompt).toContain("## Goal\nComplete swarm task task-1");
+		expect(prompt).toContain("## Context\nYou are teammate");
+		expect(prompt).toContain("## Task\nUpdate the implementation");
+		expect(prompt).toContain(
+			"## Validation\nMake the requested changes directly",
+		);
+		expect(prompt).toContain(
+			"## Stopping Condition\nStop when the assigned task is complete",
+		);
 		expect(spawnMock).toHaveBeenCalledWith(
 			"maestro",
 			expect.arrayContaining([

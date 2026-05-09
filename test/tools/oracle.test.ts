@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
@@ -67,12 +68,31 @@ describe("oracleTool", () => {
 	});
 
 	it("spawns the maestro CLI for seer runs", async () => {
-		spawnMock.mockReturnValue(createMockChildProcess("Foreseen."));
+		let prompt = "";
+		spawnMock.mockImplementation((_command: string, args: string[]) => {
+			prompt = readFileSync(args.at(-1)!, "utf-8");
+			return createMockChildProcess("Foreseen.");
+		});
 
 		const result = await oracleTool.execute("oracle-call", {
 			task: "Review the architecture",
+			context: "The cache path regressed after a refactor.",
+			files: ["src/cache.ts"],
 		});
 
+		expect(prompt).toContain(
+			"You are the Seer, a read-only software architecture advisor.",
+		);
+		expect(prompt).toContain(
+			"## Goal\nProvide read-only architectural guidance",
+		);
+		expect(prompt).toContain("## Context\nThe cache path regressed");
+		expect(prompt).toContain("## Task\nReview the architecture");
+		expect(prompt).toContain("- Artifact to examine: src/cache.ts");
+		expect(prompt).toContain("## Validation\nInspect referenced artifacts");
+		expect(prompt).toContain(
+			"## Stopping Condition\nStop after a concise response",
+		);
 		expect(spawnMock).toHaveBeenCalledWith(
 			"maestro",
 			expect.arrayContaining([
