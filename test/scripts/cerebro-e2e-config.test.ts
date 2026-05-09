@@ -181,6 +181,8 @@ describe("Cerebro local E2E config", () => {
 		const makefile = readFileSync(resolve(root, "Makefile"), "utf8");
 
 		expect(makefile).toContain("scripts/check-cerebro-e2e.mjs --print-env");
+		expect(makefile).toContain('env_exports="$$(LOCAL_CEREBRO_REPO=');
+		expect(makefile).toContain('eval "$$env_exports" &&');
 		expect(makefile).toContain(
 			"scripts/check-cerebro-e2e.mjs --print-maestro-env",
 		);

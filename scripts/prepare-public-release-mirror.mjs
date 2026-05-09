@@ -165,8 +165,8 @@ function createMatcher(patterns) {
 	return (relativePath) => {
 		const normalized = normalizePath(relativePath).replace(/^\.?\//u, "");
 		if (!normalized) return false;
-		if (PUBLIC_INCLUDE_OVERRIDES.has(normalized)) return false;
 		if (exact.has(normalized)) return true;
+		if (PUBLIC_INCLUDE_OVERRIDES.has(normalized)) return false;
 		if (
 			prefixes.some(
 				(prefix) => normalized === prefix || normalized.startsWith(`${prefix}/`),

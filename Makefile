@@ -112,7 +112,8 @@ cerebro-env: ## Print env exports for running this Maestro checkout against loca
 	@LOCAL_CEREBRO_REPO="$(LOCAL_CEREBRO_REPO)" node scripts/check-cerebro-e2e.mjs --print-maestro-env
 
 cerebro-dev: cerebro-e2e-doctor ## Start a usable local Cerebro stack with Maestro event ingestion enabled
-	@eval "$$(LOCAL_CEREBRO_REPO="$(LOCAL_CEREBRO_REPO)" node scripts/check-cerebro-e2e.mjs --print-env)" && \
+	@env_exports="$$(LOCAL_CEREBRO_REPO="$(LOCAL_CEREBRO_REPO)" node scripts/check-cerebro-e2e.mjs --print-env)" && \
+		eval "$$env_exports" && \
 		LOCAL_MAESTRO_REPO="$(CURDIR)" \
 		LOCAL_HTTP_PORT="$$LOCAL_HTTP_PORT" \
 		LOCAL_ADDR="$$LOCAL_ADDR" \
@@ -130,7 +131,8 @@ cerebro-dev: cerebro-e2e-doctor ## Start a usable local Cerebro stack with Maest
 		$(MAKE) -C "$(LOCAL_CEREBRO_REPO)" local-maestro-dev
 
 cerebro-e2e: cerebro-e2e-doctor ## Run the cross-repo Cerebro local E2E using this Maestro checkout
-	@eval "$$(LOCAL_CEREBRO_REPO="$(LOCAL_CEREBRO_REPO)" node scripts/check-cerebro-e2e.mjs --print-env)" && \
+	@env_exports="$$(LOCAL_CEREBRO_REPO="$(LOCAL_CEREBRO_REPO)" node scripts/check-cerebro-e2e.mjs --print-env)" && \
+		eval "$$env_exports" && \
 		LOCAL_MAESTRO_REPO="$(CURDIR)" \
 		LOCAL_HTTP_PORT="$$LOCAL_HTTP_PORT" \
 		LOCAL_ADDR="$$LOCAL_ADDR" \
