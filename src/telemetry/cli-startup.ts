@@ -8,6 +8,7 @@ export interface CliStartupArgs {
 	help?: boolean;
 	error?: string;
 	headless?: boolean;
+	legacyRuntime?: boolean;
 	mode?: "text" | "json" | "rpc" | "headless";
 	messages: string[];
 }
@@ -74,6 +75,7 @@ export async function recordCliStartupTelemetry(
 						command,
 						mode,
 						hasPrompt: options.args.messages.length > 0,
+						legacyRuntimeRequested: options.args.legacyRuntime === true,
 						argCount: options.rawArgs?.length ?? 0,
 					},
 				},

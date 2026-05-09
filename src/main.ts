@@ -120,6 +120,10 @@ import {
 	EXEC_SESSION_SUMMARY_PREFIX,
 	runExecCommand,
 } from "./cli/commands/exec.js";
+import {
+	recordHeadlessRuntimeSelection,
+	selectHeadlessRuntime,
+} from "./cli/headless-runtime-selection.js";
 import { runHeadlessMode } from "./cli/headless.js";
 import { printHelp } from "./cli/help.js";
 import {
@@ -485,13 +489,22 @@ export async function main(args: string[]) {
 
 	// Handle --help early exit (before any logging redirection or heavy init)
 	if (parsed.help) {
-		printHelp(VERSION);
+		printHelp(VERSION, { hidden: parsed.hiddenHelp });
 		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
 		process.exit(0);
 	}
 
 	if (parsed.error) {
 		console.error(chalk.red(parsed.error));
+		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
+		process.exit(1);
+	}
+
+	const isHeadlessMode = parsed.headless || parsed.mode === "headless";
+	if (parsed.legacyRuntime && !isHeadlessMode) {
+		console.error(
+			chalk.red("--legacy-runtime can only be used with --headless mode"),
+		);
 		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
 		process.exit(1);
 	}
@@ -584,7 +597,6 @@ export async function main(args: string[]) {
 		!parsed.messages.length &&
 		(parsed.mode === "text" || parsed.mode === undefined) &&
 		parsed.command === undefined;
-	const isHeadlessMode = parsed.headless || parsed.mode === "headless";
 	if (isLikelyInteractiveTui || isHeadlessMode) {
 		const {
 			redirectLoggerToFile,
@@ -599,6 +611,9 @@ export async function main(args: string[]) {
 		}
 		pipeProcessEventsToLogger();
 	}
+
+	const headlessRuntimeSelection = selectHeadlessRuntime(parsed);
+	recordHeadlessRuntimeSelection(headlessRuntimeSelection);
 
 	const runtimeConfig = loadRuntimeConfig(parsed, process.cwd());
 	startupProfiler.checkpoint("config:loaded");
@@ -1531,6 +1546,7 @@ export async function main(args: string[]) {
 				sessionManager,
 				approvalService,
 				toolRetryService,
+				{ runtimeSelection: headlessRuntimeSelection },
 			);
 		} else if (mode === "rpc") {
 			// RPC mode - headless operation

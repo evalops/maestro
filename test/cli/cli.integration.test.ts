@@ -749,6 +749,22 @@ describe("CLI integration", () => {
 		exitSpy.mockRestore();
 	});
 
+	it("rejects legacy runtime flag before non-headless command dispatch", async () => {
+		const exitCodes: number[] = [];
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
+			exitCodes.push(Number(code ?? 0));
+			throw new Error("exit");
+		});
+
+		await expect(main(["web", "--legacy-runtime"])).rejects.toThrow("exit");
+
+		expect(exitCodes).toEqual([1]);
+		expect(output.join("\n")).toContain(
+			"--legacy-runtime can only be used with --headless mode",
+		);
+		exitSpy.mockRestore();
+	});
+
 	it("prints providers summary for filter", async () => {
 		const originalTelemetry = process.env.MAESTRO_TELEMETRY;
 		const originalBeaconFile = process.env.MAESTRO_BEACON_FILE;
