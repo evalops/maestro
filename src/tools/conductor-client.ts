@@ -248,6 +248,53 @@ export const conductorHighlightElementTool: AgentTool = {
 	execute: async () => ({ content: [], isError: false }),
 };
 
+export const conductorBrowserOperatorTool: AgentTool = {
+	name: "browser_operator",
+	description:
+		"Use Conductor as a browser operator: observe the active page, execute one semantic browser action when supplied, and return verification plus the latest page state. Prefer this over chaining raw browser tools for task-level web interaction.",
+	parameters: Type.Object(
+		{
+			goal: Type.String({
+				description: "The browser task or observation goal.",
+			}),
+			action: Type.Optional(
+				Type.Object(
+					{
+						kind: Type.Union([
+							Type.Literal("click"),
+							Type.Literal("hover"),
+							Type.Literal("type"),
+							Type.Literal("select"),
+							Type.Literal("wait"),
+							Type.Literal("scroll"),
+							Type.Literal("key"),
+						]),
+						selector: Type.Optional(
+							Type.String({
+								description:
+									"CSS selector, node ref, or Conductor element ref returned by observation.",
+							}),
+						),
+						ref: Type.Optional(Type.String()),
+						text: Type.Optional(Type.String()),
+						value: Type.Optional(Type.String()),
+						key: Type.Optional(Type.String()),
+						delta_x: Type.Optional(Type.Number()),
+						delta_y: Type.Optional(Type.Number()),
+						deltaX: Type.Optional(Type.Number()),
+						deltaY: Type.Optional(Type.Number()),
+						timeout_ms: Type.Optional(Type.Number()),
+					},
+					{ additionalProperties: true },
+				),
+			),
+		},
+		{ additionalProperties: true },
+	),
+	executionLocation: "client",
+	execute: async () => ({ content: [], isError: false }),
+};
+
 export const conductorMouseActionTool: AgentTool = {
 	name: "mouse_action",
 	description:
@@ -506,6 +553,7 @@ export const conductorClientTools: AgentTool[] = [
 	conductorNavigateToTool,
 	conductorOpenLinksInTabsTool,
 	conductorHighlightElementTool,
+	conductorBrowserOperatorTool,
 	conductorMouseActionTool,
 	conductorPointerActionTool,
 	conductorKeyboardActionTool,
