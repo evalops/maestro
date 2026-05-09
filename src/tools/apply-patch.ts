@@ -450,7 +450,10 @@ function applyUpdateHunks(
 			hunksApplied++;
 			continue;
 		}
-		const matches = findLineSequence(lines, hunk.oldLines);
+		const matches = findLineSequence(lines, hunk.oldLines).filter(
+			(start) =>
+				!hunk.oldMustEndAtEOF || start + hunk.oldLines.length === lines.length,
+		);
 		if (matches.length === 0) {
 			conflicts.push(`hunk ${index + 1}: context not found`);
 			continue;
