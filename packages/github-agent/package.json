@@ -37,6 +37,7 @@
 	},
 	"dependencies": {
 		"@evalops/ai": "^0.10.18",
+		"@evalops/contracts": "^0.10.18",
 		"@octokit/rest": "^21.0.0",
 		"@octokit/webhooks": "^13.0.0",
 		"@sinclair/typebox": "^0.34.0",

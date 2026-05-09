@@ -139,16 +139,16 @@ describe("TaskExecutor", () => {
 			const task = createTask({ description: "Fix the authentication bug" });
 			const prompt = executor.testBuildPrompt(task);
 
-			expect(prompt).toContain("Fix the authentication bug");
+			expect(prompt).toContain("## Task\nFix the authentication bug");
 		});
 
-		it("should include requirements section", () => {
+		it("should include validation section", () => {
 			const task = createTask();
 			const prompt = executor.testBuildPrompt(task);
 
-			expect(prompt).toContain("## Requirements:");
-			expect(prompt).toContain("Implement the requested changes");
-			expect(prompt).toContain("Add tests");
+			expect(prompt).toContain("## Validation");
+			expect(prompt).toContain("Follow existing code style");
+			expect(prompt).toContain("add tests for new behavior");
 		});
 
 		it("should reference issue number in commit format", () => {
@@ -172,8 +172,11 @@ describe("TaskExecutor", () => {
 			const task = createTask();
 			const prompt = executor.testBuildPrompt(task);
 
+			expect(prompt).toContain("## Evidence");
 			expect(prompt).toContain("Context from previous work");
 			expect(prompt).toContain("Always add tests");
+			expect(prompt.match(/^## /gm)).toHaveLength(6);
+			expect(prompt).toContain("  \\## Learned patterns:");
 		});
 
 		it("should not include memory section when empty", () => {
@@ -182,6 +185,8 @@ describe("TaskExecutor", () => {
 			const prompt = executor.testBuildPrompt(task);
 
 			expect(prompt).not.toContain("Context from previous work");
+			expect(prompt).toContain("- Task type: issue");
+			expect(prompt).toContain("- Task title: Test task title");
 		});
 
 		it("should instruct not to create PR", () => {

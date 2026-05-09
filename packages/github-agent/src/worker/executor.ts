@@ -11,6 +11,7 @@
 
 import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
+import { type DelegationPrompt, formatDelegation } from "@evalops/contracts";
 import type { GitHubApiClient } from "../github/client.js";
 import type { GitHubReporter, TaskProgress } from "../github/reporter.js";
 import type { MemoryStore } from "../memory/store.js";
@@ -199,36 +200,30 @@ export class TaskExecutor {
 
 	private buildPrompt(task: Task): string {
 		const memoryContext = this.memory.getContextForPrompt();
+		const evidence = [
+			`Task type: ${task.type}`,
+			`Task title: ${task.title}`,
+			task.sourceIssue ? `GitHub issue: #${task.sourceIssue}` : undefined,
+			memoryContext
+				? `Context from previous work:\n${memoryContext}`
+				: undefined,
+		].filter((item): item is string => Boolean(item));
+		const delegationPrompt: DelegationPrompt = {
+			goal: "Implement the assigned GitHub task in the Composer codebase.",
+			context:
+				"You are working on the Composer codebase, a coding agent that helps developers.",
+			task: task.description,
+			evidence,
+			validation:
+				"Follow existing code style and patterns, add tests for new behavior, run relevant tests, run the linter, and fix failures before completing.",
+			stoppingCondition: [
+				"Commit your changes with a clear commit message that references the issue.",
+				`Use the format: [composer] <description> (fixes #${task.sourceIssue || "N/A"}).`,
+				"Do NOT create the PR - just commit to the current branch.",
+			].join(" "),
+		};
 
-		const lines: string[] = [
-			"You are working on the Composer codebase (a coding agent that helps developers).",
-			"",
-			task.description,
-			"",
-			"## Requirements:",
-			"1. Implement the requested changes",
-			"2. Follow the existing code style and patterns",
-			"3. Add tests for any new functionality",
-			"4. Run tests and fix any failures before completing",
-			"5. Run the linter and fix any issues",
-			"",
-		];
-
-		if (memoryContext) {
-			lines.push("## Context from previous work:");
-			lines.push(memoryContext);
-			lines.push("");
-		}
-
-		lines.push(
-			"## When you're done:",
-			"Commit your changes with a clear commit message that references the issue.",
-			`Use the format: [composer] <description> (fixes #${task.sourceIssue || "N/A"})`,
-			"",
-			"Do NOT create the PR - just commit to the current branch.",
-		);
-
-		return lines.join("\n");
+		return formatDelegation(delegationPrompt);
 	}
 
 	private async runComposer(

@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { type DelegationPrompt, formatDelegation } from "@evalops/contracts";
 import {
 	buildEvalOpsDelegationEnvironment,
 	issueEvalOpsDelegationToken,
@@ -404,17 +405,19 @@ export class SwarmExecutor {
 			`${this.state.id}-${toSafeTaskTempBasename(task.id)}`,
 		);
 
-		// Build prompt for the teammate
-		let prompt = `# Swarm Task: ${task.id}\n\n`;
-		prompt += `You are teammate "${teammate.name}" in a swarm working on a plan.\n\n`;
-		prompt += `## Your Task\n\n${task.prompt}\n\n`;
-		if (task.files && task.files.length > 0) {
-			prompt += `## Relevant Files\n\n${task.files.map((f) => `- ${f}`).join("\n")}\n\n`;
-		}
-		prompt += "## Instructions\n\n";
-		prompt += "1. Focus ONLY on your assigned task\n";
-		prompt += "2. Make changes directly - do not ask for confirmation\n";
-		prompt += "3. Report completion by summarizing what you did\n";
+		const delegationPrompt: DelegationPrompt = {
+			goal: `Complete swarm task ${task.id} as teammate "${teammate.name}".`,
+			context: `You are teammate "${teammate.name}" in swarm ${this.state.id}, working from plan file ${this.state.config.planFile}.`,
+			task: task.prompt,
+			evidence: task.files?.length
+				? task.files.map((file) => `Relevant file: ${file}`)
+				: [],
+			validation:
+				"Make the requested changes directly, add or update focused tests when behavior changes, and run the relevant verification before finishing.",
+			stoppingCondition:
+				"Stop when the assigned task is complete and report what changed, what you verified, and any blockers. Do not broaden into unrelated tasks.",
+		};
+		const prompt = formatDelegation(delegationPrompt);
 
 		writeFileSync(tmpFile, prompt);
 
