@@ -1,4 +1,10 @@
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -8,6 +14,7 @@ import {
 	clearPolicyCache,
 	parseCommand,
 	parsePolicy,
+	whitelistCommand,
 } from "../../src/safety/execpolicy.js";
 
 describe("execpolicy", () => {
@@ -536,6 +543,26 @@ prefix_rule(
 					},
 				],
 			});
+		});
+
+		it("whitelists every simple command in a compound shell command", () => {
+			const workspaceDir = createWorkspacePolicy("");
+
+			whitelistCommand(workspaceDir, "echo hello && printf done");
+			const policy = readFileSync(
+				join(workspaceDir, ".maestro", "execpolicy"),
+				"utf-8",
+			);
+
+			expect(policy).toContain(
+				'prefix_rule(pattern=["echo", "hello"], decision="allow")',
+			);
+			expect(policy).toContain(
+				'prefix_rule(pattern=["printf", "done"], decision="allow")',
+			);
+			expect(
+				checkCommand("echo hello && printf done", workspaceDir).decision,
+			).toBe("allow");
 		});
 
 		it("evaluates every trusted alias for a resolved host executable path", () => {

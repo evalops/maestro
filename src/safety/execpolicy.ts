@@ -1055,9 +1055,14 @@ export function isCommandForbidden(
  * Whitelist a command by adding an allow rule to the project policy.
  */
 export function whitelistCommand(workspaceDir: string, command: string): void {
-	const tokens = parseCommand(command);
 	const policyPath = join(workspaceDir, ".maestro", "execpolicy");
-	appendAllowPrefixRule(policyPath, tokens);
+	const commands = parseCommandSequence(command);
+	if (commands.length === 0) {
+		throw new Error("prefix cannot be empty");
+	}
+	for (const tokens of commands) {
+		appendAllowPrefixRule(policyPath, tokens);
+	}
 }
 
 /**
