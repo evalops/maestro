@@ -102,6 +102,19 @@ and verifies Maestro's core service paths against the generated descriptors.
 
 **Run:** `MAESTRO_PLATFORM_REPO=/path/to/platform npm run platform:sdk-smoke`
 
+### 8. Cerebro Local E2E (`make cerebro-e2e`)
+
+Cross-repo local usability smoke for Maestro plus Cerebro. From Maestro, the
+target delegates to a sibling Cerebro checkout, sets `LOCAL_MAESTRO_REPO` to the
+current Maestro checkout, builds and smokes Maestro, generates Maestro's
+canonical Platform replay, publishes that replay through Cerebro's local NATS
+stack, and verifies Cerebro graph projection plus MCP recall.
+
+**Run:** `make cerebro-e2e`
+
+Use `LOCAL_CEREBRO_REPO=/path/to/cerebro make cerebro-e2e` when Cerebro is not
+checked out next to Maestro.
+
 ## Usage
 
 ### Local Development
