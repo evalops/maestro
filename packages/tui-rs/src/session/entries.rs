@@ -1489,9 +1489,16 @@ mod tests {
                     let bytes_written = details
                         .and_then(|value| value.get("bytesWritten"))
                         .and_then(Value::as_u64);
+                    let previous_exists = details
+                        .and_then(|value| value.get("previousExists"))
+                        .and_then(Value::as_bool);
                     let display_path = replay_tool_path(request);
                     let action = if tool_name == "write" {
-                        "wrote"
+                        if previous_exists == Some(false) {
+                            "created"
+                        } else {
+                            "wrote"
+                        }
                     } else {
                         "edited"
                     };
@@ -1673,7 +1680,7 @@ mod tests {
         assert_eq!(header.thinking_level, ThinkingLevel::High);
         assert_eq!(header.parent_session.as_deref(), Some("imported-parent-1"));
         assert!(header.unified_context_manifest.is_some());
-        assert_eq!(header.tools.len(), 2);
+        assert_eq!(header.tools.len(), 3);
     }
 
     #[test]
