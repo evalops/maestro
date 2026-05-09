@@ -234,7 +234,7 @@ describe("auth resolver", () => {
 		mockedLoadCreds.mockReset();
 	});
 
-	it("uses legacy LLM gateway org env as EvalOps org fallback", async () => {
+	it("does not use service-specific org env as generic EvalOps org fallback", async () => {
 		const mockedGetToken = vi.mocked(getOAuthToken);
 		const mockedLoadCreds = vi.mocked(loadOAuthCredentials);
 		const orgEnvVars = [
@@ -270,9 +270,7 @@ describe("auth resolver", () => {
 			const resolver = createAuthResolver({ mode: "auto" });
 			const credential = await resolver("evalops");
 
-			expect(credential?.headers).toEqual({
-				"X-Organization-ID": "org_gateway",
-			});
+			expect(credential?.headers).toBeUndefined();
 		} finally {
 			for (const [name, value] of Object.entries(originalOrgEnv)) {
 				if (value === undefined) {
