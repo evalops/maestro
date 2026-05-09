@@ -173,6 +173,30 @@ describe("apply_patch tool", () => {
 		});
 	});
 
+	it("applies repeated filesystem operations against staged patch state", async () => {
+		const filePath = join(testDir, "repeated.ts");
+		writeFileSync(filePath, "export const a = 1;\nexport const b = 1;\n");
+
+		await applyPatchTool.execute("call-repeated", {
+			patch: [
+				"*** Begin Patch",
+				`*** Update File: ${filePath}`,
+				"@@",
+				"-export const a = 1;",
+				"+export const a = 2;",
+				`*** Update File: ${filePath}`,
+				"@@",
+				"-export const b = 1;",
+				"+export const b = 2;",
+				"*** End Patch",
+			].join("\n"),
+		});
+
+		expect(readFileSync(filePath, "utf-8")).toBe(
+			"export const a = 2;\nexport const b = 2;\n",
+		);
+	});
+
 	it("adds and deletes files", async () => {
 		const addedPath = join(testDir, "nested", "created.py");
 		const deletedPath = join(testDir, "old.rs");
@@ -198,6 +222,22 @@ describe("apply_patch tool", () => {
 			filesDeleted: [deletedPath],
 			hunksApplied: 2,
 		});
+	});
+
+	it("rejects adding over an existing non-file path", async () => {
+		const existingDir = join(testDir, "existing-dir");
+		mkdirSync(existingDir);
+
+		await expect(
+			applyPatchTool.execute("call-add-existing-dir", {
+				patch: [
+					"*** Begin Patch",
+					`*** Add File: ${existingDir}`,
+					"+content",
+					"*** End Patch",
+				].join("\n"),
+			}),
+		).rejects.toThrow(`File already exists: ${existingDir}`);
 	});
 
 	it("moves a file while applying update hunks", async () => {
@@ -362,6 +402,36 @@ describe("apply_patch tool", () => {
 		);
 	});
 
+	it("applies repeated sandbox operations against staged patch state", async () => {
+		const sandbox = createMemorySandbox({
+			"repeated.ts": "export const a = 1;\nexport const b = 1;\n",
+		});
+
+		await applyPatchTool.execute(
+			"call-sandbox-repeated",
+			{
+				patch: [
+					"*** Begin Patch",
+					"*** Update File: repeated.ts",
+					"@@",
+					"-export const a = 1;",
+					"+export const a = 2;",
+					"*** Update File: repeated.ts",
+					"@@",
+					"-export const b = 1;",
+					"+export const b = 2;",
+					"*** End Patch",
+				].join("\n"),
+			},
+			undefined,
+			{ sandbox },
+		);
+
+		await expect(sandbox.readFile("repeated.ts")).resolves.toBe(
+			"export const a = 2;\nexport const b = 2;\n",
+		);
+	});
+
 	it("prevents unsafe sandbox add or delete patches when rollback deletes are unavailable", async () => {
 		const sandbox = createMemorySandbox({
 			"first.ts": "export const first = 1;\n",
@@ -393,6 +463,28 @@ describe("apply_patch tool", () => {
 		await expect(sandbox.readFile("second.ts")).resolves.toBe(
 			"export const second = 1;\n",
 		);
+	});
+
+	it("formats sandbox missing-file errors with a readable location", async () => {
+		const sandbox = createMemorySandbox({});
+
+		await expect(
+			applyPatchTool.execute(
+				"call-sandbox-missing",
+				{
+					patch: [
+						"*** Begin Patch",
+						"*** Update File: missing.ts",
+						"@@",
+						"-old",
+						"+new",
+						"*** End Patch",
+					].join("\n"),
+				},
+				undefined,
+				{ sandbox },
+			),
+		).rejects.toThrow("File not found in sandbox: missing.ts");
 	});
 
 	it("throws a retryable ToolError with conflict details for failed hunks", async () => {

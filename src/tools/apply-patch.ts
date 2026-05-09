@@ -55,6 +55,13 @@ type PlannedFileChange = {
 	diff?: string;
 };
 
+type StagedFileState = {
+	path: string;
+	absolutePath: string;
+	exists: boolean;
+	currentContent?: string | null;
+};
+
 type DiagnosticBaseline = Awaited<ReturnType<typeof captureDiagnosticBaseline>>;
 
 type ApplyPatchPlan = {
@@ -189,99 +196,29 @@ async function planFilesystemPatch(
 	document: ApplyPatchDocument,
 ): Promise<ApplyPatchPlan> {
 	const plan = emptyPlan();
-	for (const operation of document.operations) {
-		const absolutePath = resolvePath(expandUserPath(operation.path));
-		if (operation.type === "add") {
-			await assertFileDoesNotExist(absolutePath, operation.path);
-			const nextContent = serializeLines(operation.lines, true);
-			assertTeamMemoryContentSafe(absolutePath, nextContent);
-			addPlannedChange(plan, {
-				path: operation.path,
-				absolutePath,
-				previousContent: null,
-				nextContent,
-				operation: "add",
-				hunksApplied: 1,
-				diff: generateDiffString("", nextContent),
-			});
-		} else if (operation.type === "delete") {
-			const previousContent = await readExistingFile(
-				absolutePath,
-				operation.path,
-			);
-			addPlannedChange(plan, {
-				path: operation.path,
-				absolutePath,
-				previousContent,
-				nextContent: null,
-				operation: "delete",
-				hunksApplied: 1,
-				diff: generateDiffString(previousContent, ""),
-			});
-		} else {
-			const previousContent = await readExistingFile(
-				absolutePath,
-				operation.path,
-			);
-			const applied =
-				operation.hunks.length > 0
-					? applyUpdateHunks(previousContent, operation.hunks)
-					: { content: previousContent, hunksApplied: 0, conflicts: [] };
-			if (applied.conflicts.length > 0) {
-				recordConflicts(plan, operation.path, applied.conflicts);
-				continue;
-			}
-			const nextContent = applied.content;
-			if (operation.moveTo) {
-				const destinationAbsolutePath = resolvePath(
-					expandUserPath(operation.moveTo),
-				);
-				await assertFileDoesNotExist(destinationAbsolutePath, operation.moveTo);
-				assertTeamMemoryContentSafe(destinationAbsolutePath, nextContent);
-				addPlannedChange(plan, {
-					path: operation.path,
-					absolutePath,
-					previousContent,
-					nextContent: null,
-					operation: "delete",
-					hunksApplied: 0,
-					diff: generateDiffString(previousContent, ""),
-				});
-				addPlannedChange(plan, {
-					path: operation.moveTo,
-					absolutePath: destinationAbsolutePath,
-					previousContent: null,
-					nextContent,
-					operation: "add",
-					hunksApplied: applied.hunksApplied,
-					diff: generateDiffString("", nextContent),
-				});
-				continue;
-			}
-			assertTeamMemoryContentSafe(absolutePath, nextContent);
-			addPlannedChange(plan, {
-				path: operation.path,
-				absolutePath,
-				previousContent,
-				nextContent,
-				operation: "update",
-				hunksApplied: applied.hunksApplied,
-				diff: generateDiffString(previousContent, nextContent),
-			});
+	const stagedFiles = new Map<string, StagedFileState>();
+	const getState = async (path: string): Promise<StagedFileState> => {
+		const cached = stagedFiles.get(path);
+		if (cached) {
+			return cached;
 		}
-	}
-	return plan;
-}
+		const absolutePath = resolvePath(expandUserPath(path));
+		const exists = await fileExists(absolutePath);
+		const state = {
+			path,
+			absolutePath,
+			exists,
+			currentContent: exists ? undefined : null,
+		};
+		stagedFiles.set(path, state);
+		return state;
+	};
 
-async function planSandboxPatch(
-	document: ApplyPatchDocument,
-	sandbox: Sandbox,
-): Promise<ApplyPatchPlan> {
-	const plan = emptyPlan();
 	for (const operation of document.operations) {
-		const absolutePath = resolvePath(expandUserPath(operation.path));
+		const state = await getState(operation.path);
+		const { absolutePath } = state;
 		if (operation.type === "add") {
-			if (await sandbox.exists(operation.path)) {
+			if (state.exists) {
 				throw new Error(`File already exists: ${operation.path}`);
 			}
 			const nextContent = serializeLines(operation.lines, true);
@@ -295,11 +232,13 @@ async function planSandboxPatch(
 				hunksApplied: 1,
 				diff: generateDiffString("", nextContent),
 			});
+			state.exists = true;
+			state.currentContent = nextContent;
 		} else if (operation.type === "delete") {
-			if (!(await sandbox.exists(operation.path))) {
-				throw new Error(`File not found in sandbox: ${operation.path}`);
-			}
-			const previousContent = await sandbox.readFile(operation.path);
+			const previousContent = await readFilesystemStateContent(
+				state,
+				operation.path,
+			);
 			addPlannedChange(plan, {
 				path: operation.path,
 				absolutePath,
@@ -309,11 +248,13 @@ async function planSandboxPatch(
 				hunksApplied: 1,
 				diff: generateDiffString(previousContent, ""),
 			});
+			state.exists = false;
+			state.currentContent = null;
 		} else {
-			if (!(await sandbox.exists(operation.path))) {
-				throw new Error(`File not found in sandbox: ${operation.path}`);
-			}
-			const previousContent = await sandbox.readFile(operation.path);
+			const previousContent = await readFilesystemStateContent(
+				state,
+				operation.path,
+			);
 			const applied =
 				operation.hunks.length > 0
 					? applyUpdateHunks(previousContent, operation.hunks)
@@ -324,15 +265,11 @@ async function planSandboxPatch(
 			}
 			const nextContent = applied.content;
 			if (operation.moveTo) {
-				if (await sandbox.exists(operation.moveTo)) {
-					throw new Error(
-						`File already exists in sandbox: ${operation.moveTo}`,
-					);
+				const destinationState = await getState(operation.moveTo);
+				if (destinationState.exists) {
+					throw new Error(`File already exists: ${operation.moveTo}`);
 				}
-				const destinationAbsolutePath = resolvePath(
-					expandUserPath(operation.moveTo),
-				);
-				assertTeamMemoryContentSafe(destinationAbsolutePath, nextContent);
+				assertTeamMemoryContentSafe(destinationState.absolutePath, nextContent);
 				addPlannedChange(plan, {
 					path: operation.path,
 					absolutePath,
@@ -344,13 +281,17 @@ async function planSandboxPatch(
 				});
 				addPlannedChange(plan, {
 					path: operation.moveTo,
-					absolutePath: destinationAbsolutePath,
+					absolutePath: destinationState.absolutePath,
 					previousContent: null,
 					nextContent,
 					operation: "add",
 					hunksApplied: applied.hunksApplied,
 					diff: generateDiffString("", nextContent),
 				});
+				state.exists = false;
+				state.currentContent = null;
+				destinationState.exists = true;
+				destinationState.currentContent = nextContent;
 				continue;
 			}
 			assertTeamMemoryContentSafe(absolutePath, nextContent);
@@ -363,6 +304,134 @@ async function planSandboxPatch(
 				hunksApplied: applied.hunksApplied,
 				diff: generateDiffString(previousContent, nextContent),
 			});
+			state.exists = true;
+			state.currentContent = nextContent;
+		}
+	}
+	return plan;
+}
+
+async function planSandboxPatch(
+	document: ApplyPatchDocument,
+	sandbox: Sandbox,
+): Promise<ApplyPatchPlan> {
+	const plan = emptyPlan();
+	const stagedFiles = new Map<string, StagedFileState>();
+	const getState = async (path: string): Promise<StagedFileState> => {
+		const cached = stagedFiles.get(path);
+		if (cached) {
+			return cached;
+		}
+		const absolutePath = resolvePath(expandUserPath(path));
+		const exists = await sandbox.exists(path);
+		const state = {
+			path,
+			absolutePath,
+			exists,
+			currentContent: exists ? undefined : null,
+		};
+		stagedFiles.set(path, state);
+		return state;
+	};
+
+	for (const operation of document.operations) {
+		const state = await getState(operation.path);
+		const { absolutePath } = state;
+		if (operation.type === "add") {
+			if (state.exists) {
+				throw new Error(`File already exists: ${operation.path}`);
+			}
+			const nextContent = serializeLines(operation.lines, true);
+			assertTeamMemoryContentSafe(absolutePath, nextContent);
+			addPlannedChange(plan, {
+				path: operation.path,
+				absolutePath,
+				previousContent: null,
+				nextContent,
+				operation: "add",
+				hunksApplied: 1,
+				diff: generateDiffString("", nextContent),
+			});
+			state.exists = true;
+			state.currentContent = nextContent;
+		} else if (operation.type === "delete") {
+			const previousContent = await readSandboxStateContent(
+				state,
+				operation.path,
+				sandbox,
+				"in sandbox",
+			);
+			addPlannedChange(plan, {
+				path: operation.path,
+				absolutePath,
+				previousContent,
+				nextContent: null,
+				operation: "delete",
+				hunksApplied: 1,
+				diff: generateDiffString(previousContent, ""),
+			});
+			state.exists = false;
+			state.currentContent = null;
+		} else {
+			const previousContent = await readSandboxStateContent(
+				state,
+				operation.path,
+				sandbox,
+				"in sandbox",
+			);
+			const applied =
+				operation.hunks.length > 0
+					? applyUpdateHunks(previousContent, operation.hunks)
+					: { content: previousContent, hunksApplied: 0, conflicts: [] };
+			if (applied.conflicts.length > 0) {
+				recordConflicts(plan, operation.path, applied.conflicts);
+				continue;
+			}
+			const nextContent = applied.content;
+			if (operation.moveTo) {
+				const destinationState = await getState(operation.moveTo);
+				if (destinationState.exists) {
+					throw new Error(
+						`File already exists in sandbox: ${operation.moveTo}`,
+					);
+				}
+				assertTeamMemoryContentSafe(destinationState.absolutePath, nextContent);
+				addPlannedChange(plan, {
+					path: operation.path,
+					absolutePath,
+					previousContent,
+					nextContent: null,
+					operation: "delete",
+					hunksApplied: 0,
+					diff: generateDiffString(previousContent, ""),
+				});
+				addPlannedChange(plan, {
+					path: operation.moveTo,
+					absolutePath: destinationState.absolutePath,
+					previousContent: null,
+					nextContent,
+					operation: "add",
+					hunksApplied: applied.hunksApplied,
+					diff: generateDiffString("", nextContent),
+				});
+				state.exists = false;
+				state.currentContent = null;
+				destinationState.exists = true;
+				destinationState.currentContent = nextContent;
+				continue;
+			}
+			assertTeamMemoryContentSafe(absolutePath, nextContent);
+			addPlannedChange(plan, {
+				path: operation.path,
+				absolutePath,
+				previousContent,
+				nextContent,
+				operation: "update",
+				hunksApplied: applied.hunksApplied,
+				diff: generateDiffString(previousContent, nextContent),
+			});
+			state.exists = true;
+			state.currentContent = nextContent;
 		}
 	}
 	return plan;
@@ -594,26 +663,68 @@ async function readExistingFile(
 		return await readFile(absolutePath, "utf-8");
 	} catch {
 		throw new Error(
-			`File not found: ${displayPath}. Use read to verify the path exists.`,
+			`File not readable/writable: ${displayPath}. Use read/list to verify the path and permissions.`,
 		);
 	}
 }
 
-async function assertFileDoesNotExist(
-	absolutePath: string,
-	displayPath: string,
-): Promise<void> {
+async function fileExists(absolutePath: string): Promise<boolean> {
 	try {
 		await access(absolutePath, constants.F_OK);
-		throw new Error(`File already exists: ${displayPath}`);
-	} catch (error) {
-		if (
-			error instanceof Error &&
-			error.message.startsWith("File already exists:")
-		) {
-			throw error;
-		}
+		return true;
+	} catch {
+		return false;
 	}
+}
+
+async function readFilesystemStateContent(
+	state: StagedFileState,
+	displayPath: string,
+): Promise<string> {
+	const currentContent = requireLoadedStateContent(state, displayPath);
+	if (currentContent !== undefined) {
+		return currentContent;
+	}
+	const content = await readExistingFile(state.absolutePath, displayPath);
+	state.currentContent = content;
+	return content;
+}
+
+async function readSandboxStateContent(
+	state: StagedFileState,
+	displayPath: string,
+	sandbox: Sandbox,
+	location = "",
+): Promise<string> {
+	const currentContent = requireLoadedStateContent(
+		state,
+		displayPath,
+		location,
+	);
+	if (currentContent !== undefined) {
+		return currentContent;
+	}
+	const content = await sandbox.readFile(displayPath);
+	state.currentContent = content;
+	return content;
+}
+
+function requireLoadedStateContent(
+	state: StagedFileState,
+	displayPath: string,
+	location = "",
+): string | undefined {
+	const locationSuffix = location ? ` ${location}` : "";
+	if (state.currentContent !== undefined) {
+		if (state.currentContent !== null) {
+			return state.currentContent;
+		}
+		throw new Error(`File not found${locationSuffix}: ${displayPath}`);
+	}
+	if (state.exists) {
+		return undefined;
+	}
+	throw new Error(`File not found${locationSuffix}: ${displayPath}`);
 }
 
 function emptyPlan(): ApplyPatchPlan {
