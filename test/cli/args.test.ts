@@ -143,6 +143,25 @@ describe("parseArgs", () => {
 		expect(parsed.subcommand).toBeUndefined();
 	});
 
+	it("parses context diff commands and live MCP discovery", () => {
+		expect(
+			parseArgs([
+				"context",
+				"diff",
+				"/before",
+				"/after",
+				"--json",
+				"--live-mcp",
+			]),
+		).toMatchObject({
+			command: "context",
+			subcommand: "diff",
+			messages: ["/before", "/after"],
+			execJson: true,
+			contextLiveMcp: true,
+		});
+	});
+
 	it("parses evalops auth commands", () => {
 		expect(parseArgs(["evalops", "login"])).toMatchObject({
 			command: "evalops",

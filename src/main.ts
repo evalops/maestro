@@ -570,6 +570,7 @@ export async function main(args: string[]) {
 		const { handleContextCommand } = await import("./cli/commands/context.js");
 		await handleContextCommand(parsed.subcommand, parsed.messages, {
 			json: parsed.execJson,
+			liveMcp: parsed.contextLiveMcp,
 		});
 		return;
 	}
