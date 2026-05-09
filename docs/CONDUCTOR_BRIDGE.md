@@ -42,13 +42,20 @@ to the server.
 first with `phase: "observe"`, a `goal`, and no action to inspect the current
 page. Then call it with `phase: "act"`, the same `goal`, the prior
 `previous_observation_id` when available, an `expected_result`, and exactly one
-semantic action such as `{ "kind": "click", "selector": "..." }`,
-`{ "kind": "type", "selector": "...", "text": "..." }`, or
+semantic action such as `{ "kind": "click", "refId": "..." }`,
+`{ "kind": "type", "refId": "...", "text": "..." }`, or
 `{ "kind": "select", "selector": "...", "value": "..." }`.
+
+Prefer the `refId` returned by observation over a CSS selector. For targets
+inside embedded apps or iframes, preserve both `frameId` and `refId` from the
+observed element and send them back with the action. Use `include_frames: true`
+on observe/recover calls when the target may be inside a frame. Observation
+results may also include page-observer freshness metadata; if a frame changed
+after the prior observation, recover by observing again before retrying.
 
 Conductor executes the action in the active tab, refreshes the page observation,
 and returns verification fields instead of making the model infer success from a
-low-level click or keypress alone. If verification fails or the selector is
+low-level click or keypress alone. If verification fails or the ref/selector is
 stale, call `browser_operator` again with `phase: "recover"` and no typed secret
 values; the client should re-observe before retrying.
 

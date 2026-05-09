@@ -251,7 +251,7 @@ export const conductorHighlightElementTool: AgentTool = {
 export const conductorBrowserOperatorTool: AgentTool = {
 	name: "browser_operator",
 	description:
-		"Use Conductor as a browser operator: observe the active page, execute one semantic browser action when supplied, and return verification plus the latest page state. Prefer this over chaining raw browser tools. Use an observe -> act -> verify loop, and re-observe before retrying stale selectors.",
+		"Use Conductor as a browser operator: observe the active page, execute one semantic browser action when supplied, and return verification plus the latest page state. Prefer this over chaining raw browser tools. Use an observe -> act -> verify loop, prefer observed refId plus frameId targets over selectors, and re-observe before retrying stale refs or selectors.",
 	parameters: Type.Object(
 		{
 			goal: Type.String({
@@ -283,6 +283,12 @@ export const conductorBrowserOperatorTool: AgentTool = {
 						"Maximum interactive elements to include when observing or refreshing page state.",
 				}),
 			),
+			include_frames: Type.Optional(
+				Type.Boolean({
+					description:
+						"Include all frame snapshots. Use this when the target may live inside an embedded app, auth, or payment frame.",
+				}),
+			),
 			action: Type.Optional(
 				Type.Object(
 					{
@@ -298,10 +304,29 @@ export const conductorBrowserOperatorTool: AgentTool = {
 						selector: Type.Optional(
 							Type.String({
 								description:
-									"CSS selector, node ref, or Conductor element ref returned by observation.",
+									"CSS selector fallback for the target. Prefer refId when observation returned one.",
 							}),
 						),
-						ref: Type.Optional(Type.String()),
+						ref: Type.Optional(
+							Type.String({
+								description:
+									"Legacy target ref. If this is a Conductor ref id, prefer putting it in refId.",
+							}),
+						),
+						refId: Type.Optional(
+							Type.String({
+								description:
+									"Stable Conductor element refId returned by observe. Prefer this over selector for follow-up actions.",
+							}),
+						),
+						ref_id: Type.Optional(Type.String()),
+						frameId: Type.Optional(
+							Type.Number({
+								description:
+									"Frame id returned by observe for iframe-scoped targets. Pass it with refId for embedded controls.",
+							}),
+						),
+						frame_id: Type.Optional(Type.Number()),
 						text: Type.Optional(Type.String()),
 						value: Type.Optional(Type.String()),
 						key: Type.Optional(Type.String()),
