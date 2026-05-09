@@ -203,6 +203,37 @@ describe("SessionManager - Deferred Session Creation", () => {
 				state.promptMetadata,
 			);
 		});
+
+		it("persists prompt context manifest in the session header", () => {
+			const sessionManager = new SessionManager(false);
+			const state = createMockState();
+			state.promptContextManifest = {
+				cwd: "/repo",
+				candidates: ["AGENTS.md"],
+				maxBytes: 32768,
+				bytesRead: 10,
+				entries: [
+					{
+						path: "/repo/AGENTS.md",
+						sourceKind: "project",
+						scopeDir: "/repo",
+						candidateName: "AGENTS.md",
+						bytesRead: 10,
+						truncated: false,
+						contentHash: "a".repeat(64),
+						precedenceIndex: 0,
+						content: "guidance",
+					},
+				],
+				diagnostics: [],
+			};
+
+			sessionManager.startSession(state);
+
+			expect(sessionManager.getHeader()?.promptContextManifest).toEqual(
+				state.promptContextManifest,
+			);
+		});
 	});
 
 	describe("Portable session import", () => {

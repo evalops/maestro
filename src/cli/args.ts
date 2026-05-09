@@ -54,6 +54,7 @@ export interface Args {
 
 const COMMANDS = new Set([
 	"config",
+	"context",
 	"models",
 	"cost",
 	"stats",
@@ -75,6 +76,7 @@ const COMMANDS = new Set([
 ]);
 const SUBCOMMAND_COMMANDS = new Set([
 	"config",
+	"context",
 	"models",
 	"cost",
 	"stats",
@@ -248,8 +250,11 @@ export function parseArgs(args: string[]): Args {
 			if (!result.command && COMMANDS.has(arg)) {
 				result.command = arg;
 				const nextArg = args[i + 1];
-				if (
+				const shouldConsumeSubcommand =
 					SUBCOMMAND_COMMANDS.has(arg) &&
+					(arg !== "context" || nextArg === "explain");
+				if (
+					shouldConsumeSubcommand &&
 					i + 1 < args.length &&
 					nextArg &&
 					!nextArg.startsWith("-")

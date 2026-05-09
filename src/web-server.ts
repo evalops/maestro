@@ -497,9 +497,11 @@ async function createAgent(
 		cwd,
 		sandboxMode: process.env.MAESTRO_SANDBOX_MODE ?? null,
 	});
-	const { systemPrompt, promptMetadata } = await resolveMaestroSystemPrompt({
-		runtimeConstraints,
-	});
+	const { systemPrompt, promptMetadata, promptContextManifest } =
+		await resolveMaestroSystemPrompt({
+			cwd,
+			runtimeConstraints,
+		});
 
 	// Only include IDE client tools when a compatible client is connected.
 	// Without a connected client, these tools will hang waiting for responses.
@@ -529,6 +531,7 @@ async function createAgent(
 		initialState: {
 			systemPrompt,
 			promptMetadata,
+			promptContextManifest,
 			model: registeredModel,
 			thinkingLevel,
 			tools,

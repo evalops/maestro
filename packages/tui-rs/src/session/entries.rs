@@ -364,6 +364,14 @@ pub struct SessionHeader {
     )]
     pub prompt_metadata: Option<serde_json::Value>,
 
+    /// Prompt project-doc manifest carried by TypeScript-authored sessions.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "promptContextManifest",
+        alias = "prompt_context_manifest"
+    )]
+    pub prompt_context_manifest: Option<serde_json::Value>,
+
     /// List of tools available to the assistant.
     ///
     /// Empty list is omitted from JSON to reduce file size.
@@ -1133,6 +1141,13 @@ mod tests {
                 "label": "System",
                 "hash": "hash-1",
                 "source": "service"
+            }),
+            "promptContextManifest" => json!({
+                "cwd": "/tmp",
+                "candidates": ["AGENTS.md"],
+                "bytesRead": 12,
+                "entries": [],
+                "diagnostics": []
             }),
             "branchedFrom" => json!("parent-session"),
             "parentSession" => json!("root-session"),

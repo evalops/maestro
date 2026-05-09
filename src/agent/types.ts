@@ -33,6 +33,7 @@
 
 import type { GuardedFilesPolicySettings } from "@evalops/contracts";
 import type { TSchema } from "@sinclair/typebox";
+import type { PromptProjectDocManifest } from "../config/index.js";
 import type { PromptMetadata } from "../prompts/types.js";
 import type { SkillArtifactMetadata } from "../skills/artifact-metadata.js";
 import type { CheckpointProfiler } from "../utils/checkpoint-profiler.js";
@@ -941,6 +942,8 @@ export interface AgentState {
 	promptMetadata?: PromptMetadata;
 	/** Exact prompt source files layered into the current system prompt */
 	systemPromptSourcePaths?: string[];
+	/** Manifest of project instruction files layered into the current system prompt */
+	promptContextManifest?: PromptProjectDocManifest;
 	/** Current model configuration */
 	model: Model<Api>;
 	/** Current thinking level for extended reasoning */

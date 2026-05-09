@@ -39,6 +39,7 @@ import {
 	resolveLoadedAppendSystemPromptPath,
 	resolvePromptLoadedProjectDocPaths,
 } from "../config/index.js";
+import type { PromptProjectDocManifest } from "../config/index.js";
 import type { SessionEntry } from "../session/types.js";
 import { getSkillArtifactMetadataFromDetails } from "../skills/artifact-metadata.js";
 import { readTool } from "../tools/read.js";
@@ -260,7 +261,6 @@ function getExcludedReadRestorePaths(
 	const trackedPlanFilePath = getPlanFilePathForCompactionRestore();
 	return new Set(
 		[
-			...resolvePromptLoadedProjectDocPaths(process.cwd()),
 			...(loadedAppendSystemPromptPath ? [loadedAppendSystemPromptPath] : []),
 			...(trackedPlanFilePath ? [trackedPlanFilePath] : []),
 			...additionalPaths,
@@ -2161,6 +2161,7 @@ export interface CompactionAgent {
 		messages: AppMessage[];
 		model: { api: Api; provider: string; id: string };
 		systemPromptSourcePaths?: string[];
+		promptContextManifest?: PromptProjectDocManifest;
 	};
 	generateSummary(
 		history: AppMessage[],
@@ -2336,10 +2337,13 @@ export async function performCompaction(params: {
 		return { success: false, error: "No earlier messages to compact" };
 	}
 	const keep = stripRuntimeRestoreMessages(messages.slice(boundary));
+	const promptContextPaths = agent.state.promptContextManifest
+		? agent.state.promptContextManifest.entries.map((entry) => entry.path)
+		: resolvePromptLoadedProjectDocPaths(process.cwd());
 	const restoredReadMessages = await collectRecentReadRestoreMessages(
 		older,
 		keep,
-		agent.state.systemPromptSourcePaths,
+		[...promptContextPaths, ...(agent.state.systemPromptSourcePaths ?? [])],
 		readRestoreExecute,
 	);
 	const readPathsRestoredAfterCompaction =

@@ -218,6 +218,7 @@ mod tests {
             thinking_level: Default::default(),
             system_prompt: None,
             prompt_metadata: None,
+            prompt_context_manifest: None,
             tools: vec![],
             branched_from: None,
             parent_session: None,

@@ -5,6 +5,7 @@ import {
 	finalizeSystemPrompt,
 	resolveSystemPromptOverride,
 } from "../cli/system-prompt.js";
+import { loadPromptProjectDocManifest } from "../config/index.js";
 import { resolvePromptTemplate } from "./service-client.js";
 import type { PromptMetadata, ResolvedSystemPrompt } from "./types.js";
 
@@ -40,19 +41,27 @@ export async function resolveMaestroSystemPrompt(options?: {
 	toolNames?: string[];
 	appendPrompt?: string;
 	runtimeConstraints?: RuntimeConstraintContext | null;
+	cwd?: string;
 }): Promise<ResolvedSystemPrompt> {
+	const cwd = options?.cwd ?? process.cwd();
+	const promptContextManifest = loadPromptProjectDocManifest(cwd);
+	const finalizeOptions = {
+		runtimeConstraints: options?.runtimeConstraints,
+		promptContextManifest,
+	};
 	const overridePrompt = resolveSystemPromptOverride(options?.customPrompt);
 	if (overridePrompt) {
 		return {
 			systemPrompt: finalizeSystemPrompt(
 				overridePrompt,
 				options?.appendPrompt,
-				process.cwd(),
-				{ runtimeConstraints: options?.runtimeConstraints },
+				cwd,
+				finalizeOptions,
 			),
 			promptMetadata: buildPromptMetadata(overridePrompt, {
 				source: "override",
 			}),
+			promptContextManifest,
 		};
 	}
 
@@ -66,14 +75,15 @@ export async function resolveMaestroSystemPrompt(options?: {
 			systemPrompt: finalizeSystemPrompt(
 				resolvedPrompt.content,
 				options?.appendPrompt,
-				process.cwd(),
-				{ runtimeConstraints: options?.runtimeConstraints },
+				cwd,
+				finalizeOptions,
 			),
 			promptMetadata: buildPromptMetadata(resolvedPrompt.content, {
 				source: "service",
 				version: resolvedPrompt.version,
 				versionId: resolvedPrompt.versionId,
 			}),
+			promptContextManifest,
 		};
 	}
 
@@ -82,11 +92,12 @@ export async function resolveMaestroSystemPrompt(options?: {
 		systemPrompt: finalizeSystemPrompt(
 			bundledPrompt,
 			options?.appendPrompt,
-			process.cwd(),
-			{ runtimeConstraints: options?.runtimeConstraints },
+			cwd,
+			finalizeOptions,
 		),
 		promptMetadata: buildPromptMetadata(bundledPrompt, {
 			source: "bundled",
 		}),
+		promptContextManifest,
 	};
 }

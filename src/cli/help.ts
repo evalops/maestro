@@ -101,6 +101,9 @@ export function printHelp(version: string) {
   # Confirm managed mode sinks and EvalOps org identity
   maestro status
 
+  # Explain which AGENTS/CLAUDE instruction files are loaded into the prompt
+  maestro context explain
+
   # Export a portable session log
   maestro export <session-id> ./session.jsonl --format jsonl
 

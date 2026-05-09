@@ -4,7 +4,7 @@
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
 	registerPostCompactionCleanup,
@@ -32,7 +32,10 @@ import type {
 	Attachment,
 	Usage,
 } from "../../src/agent/types.js";
-import { clearConfigCache } from "../../src/config/index.js";
+import {
+	type PromptProjectDocManifest,
+	clearConfigCache,
+} from "../../src/config/index.js";
 
 function createUsage(input = 0, output = 0): Usage {
 	return {
@@ -449,7 +452,10 @@ function buildConversation(turns: number): AppMessage[] {
 
 function createMockAgent(
 	messages: AppMessage[],
-	options?: { systemPromptSourcePaths?: string[] },
+	options?: {
+		systemPromptSourcePaths?: string[];
+		promptContextManifest?: PromptProjectDocManifest;
+	},
 ): CompactionAgent {
 	const state = {
 		messages: [...messages],
@@ -459,6 +465,7 @@ function createMockAgent(
 			id: "claude-3-5-sonnet",
 		},
 		systemPromptSourcePaths: options?.systemPromptSourcePaths,
+		promptContextManifest: options?.promptContextManifest,
 	};
 	return {
 		state,
@@ -477,7 +484,10 @@ function createMockAgent(
 
 function createMockAgentWithoutAppendMessage(
 	messages: AppMessage[],
-	options?: { systemPromptSourcePaths?: string[] },
+	options?: {
+		systemPromptSourcePaths?: string[];
+		promptContextManifest?: PromptProjectDocManifest;
+	},
 ): CompactionAgent {
 	const state = {
 		messages: [...messages],
@@ -487,6 +497,7 @@ function createMockAgentWithoutAppendMessage(
 			id: "claude-3-5-sonnet",
 		},
 		systemPromptSourcePaths: options?.systemPromptSourcePaths,
+		promptContextManifest: options?.promptContextManifest,
 	};
 	return {
 		state,
@@ -497,6 +508,31 @@ function createMockAgentWithoutAppendMessage(
 			state.messages = [...nextMessages];
 		}),
 		clearTransientRunState: vi.fn(),
+	};
+}
+
+function createPromptContextManifest(
+	filePath: string,
+	content: string,
+): PromptProjectDocManifest {
+	return {
+		cwd: dirname(filePath),
+		candidates: ["AGENTS.md"],
+		bytesRead: Buffer.byteLength(content),
+		entries: [
+			{
+				path: resolve(filePath),
+				sourceKind: "project",
+				scopeDir: dirname(filePath),
+				candidateName: "AGENTS.md",
+				bytesRead: Buffer.byteLength(content),
+				truncated: false,
+				contentHash: "a".repeat(64),
+				precedenceIndex: 0,
+				content,
+			},
+		],
+		diagnostics: [],
 	};
 }
 
@@ -1758,6 +1794,52 @@ describe("performCompaction", () => {
 					"# AGENTS\nProject instructions",
 				),
 			);
+			const agent = createMockAgentWithoutAppendMessage(messages, {
+				promptContextManifest: createPromptContextManifest(
+					agentContextPath,
+					"# AGENTS\nProject instructions",
+				),
+			});
+			const sessionManager = createMockSessionManager();
+
+			const result = await performCompaction({ agent, sessionManager });
+
+			expect(result.success).toBe(true);
+			expect(getReplacedMessages(agent)).not.toContainEqual(
+				expect.objectContaining({
+					role: "hookMessage",
+					customType: "read-file",
+					details: { filePath: agentContextPath },
+				}),
+			);
+		} finally {
+			process.chdir(originalCwd);
+			clearConfigCache();
+		}
+	});
+
+	it("falls back to resolving prompt docs when compaction has no captured manifest", async () => {
+		const originalCwd = process.cwd();
+		const workspaceDir = mkdtempSync(
+			join(tmpdir(), "maestro-agent-context-fallback-"),
+		);
+		const agentContextPath = join(workspaceDir, "AGENTS.md");
+		writeFileSync(agentContextPath, "# AGENTS\nProject instructions");
+		process.chdir(workspaceDir);
+		clearConfigCache();
+
+		try {
+			const messages = buildConversation(10);
+			messages.splice(
+				2,
+				0,
+				createReadToolCallMessage(agentContextPath, "call-read-agents"),
+				createReadToolResultMessage(
+					agentContextPath,
+					"call-read-agents",
+					"# AGENTS\nProject instructions",
+				),
+			);
 			const agent = createMockAgentWithoutAppendMessage(messages);
 			const sessionManager = createMockSessionManager();
 
@@ -1807,7 +1889,12 @@ describe("performCompaction", () => {
 					"# User instructions\nOld home config",
 				),
 			);
-			const agent = createMockAgentWithoutAppendMessage(messages);
+			const agent = createMockAgentWithoutAppendMessage(messages, {
+				promptContextManifest: createPromptContextManifest(
+					userConfigPath,
+					"# User instructions\nUse the home config.",
+				),
+			});
 			const sessionManager = createMockSessionManager();
 
 			const result = await performCompaction({ agent, sessionManager });
@@ -1861,7 +1948,12 @@ describe("performCompaction", () => {
 					"# Context\nCustom project instructions",
 				),
 			);
-			const agent = createMockAgentWithoutAppendMessage(messages);
+			const agent = createMockAgentWithoutAppendMessage(messages, {
+				promptContextManifest: createPromptContextManifest(
+					contextPath,
+					"# Context\nCurrent project instructions",
+				),
+			});
 			const sessionManager = createMockSessionManager();
 
 			const result = await performCompaction({ agent, sessionManager });
