@@ -42,10 +42,17 @@ export function willDispatchHeadlessRuntime(
 	);
 }
 
+export function isLegacyHeadlessRuntimeRequested(
+	env: NodeJS.ProcessEnv = process.env,
+): boolean {
+	return env[LEGACY_HEADLESS_RUNTIME_ENV] === LEGACY_HEADLESS_RUNTIME_ENV_VALUE;
+}
+
 export function selectHeadlessRuntime(
 	env: NodeJS.ProcessEnv = process.env,
+	options: { allowLegacy?: boolean } = {},
 ): HeadlessRuntimeSelection {
-	if (!isLegacyHeadlessRuntimeRequested(env)) {
+	if (options.allowLegacy !== true || !isLegacyHeadlessRuntimeRequested(env)) {
 		return { kind: "current" };
 	}
 
@@ -55,12 +62,6 @@ export function selectHeadlessRuntime(
 		runtimeId: LEGACY_HEADLESS_RUNTIME_ID,
 		event: LEGACY_HEADLESS_RUNTIME_EVENT,
 	};
-}
-
-export function isLegacyHeadlessRuntimeRequested(
-	env: NodeJS.ProcessEnv = process.env,
-): boolean {
-	return env[LEGACY_HEADLESS_RUNTIME_ENV] === LEGACY_HEADLESS_RUNTIME_ENV_VALUE;
 }
 
 export function recordHeadlessRuntimeSelection(

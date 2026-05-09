@@ -122,7 +122,6 @@ import {
 } from "./cli/commands/exec.js";
 import {
 	isHeadlessModeRequested,
-	isLegacyHeadlessRuntimeRequested,
 	recordHeadlessRuntimeSelection,
 	selectHeadlessRuntime,
 	willDispatchHeadlessRuntime,
@@ -492,7 +491,7 @@ export async function main(args: string[]) {
 
 	// Handle --help early exit (before any logging redirection or heavy init)
 	if (parsed.help) {
-		printHelp(VERSION, { hidden: parsed.hiddenHelp });
+		printHelp(VERSION);
 		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
 		process.exit(0);
 	}
@@ -505,23 +504,6 @@ export async function main(args: string[]) {
 
 	const isHeadlessMode = isHeadlessModeRequested(parsed);
 	const willDispatchHeadlessMode = willDispatchHeadlessRuntime(parsed);
-	const legacyHeadlessRuntimeRequested = isLegacyHeadlessRuntimeRequested();
-	if (legacyHeadlessRuntimeRequested && !isHeadlessMode) {
-		console.error(
-			chalk.red("Legacy headless runtime selection requires headless mode"),
-		);
-		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
-		process.exit(1);
-	}
-	if (legacyHeadlessRuntimeRequested && !willDispatchHeadlessMode) {
-		console.error(
-			chalk.red(
-				"Legacy headless runtime selection requires Maestro-dispatched headless mode",
-			),
-		);
-		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
-		process.exit(1);
-	}
 
 	const exitWithEarlyStartupError = (error: unknown): never => {
 		const message = error instanceof Error ? error.message : String(error);
@@ -626,7 +608,9 @@ export async function main(args: string[]) {
 		pipeProcessEventsToLogger();
 	}
 
-	const headlessRuntimeSelection = selectHeadlessRuntime();
+	const headlessRuntimeSelection = selectHeadlessRuntime(process.env, {
+		allowLegacy: willDispatchHeadlessMode,
+	});
 	recordHeadlessRuntimeSelection(headlessRuntimeSelection);
 
 	const runtimeConfig = loadRuntimeConfig(parsed, process.cwd());

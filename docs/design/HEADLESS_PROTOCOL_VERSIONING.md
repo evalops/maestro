@@ -12,8 +12,10 @@ cutover window, but user-facing commands must keep the normal headless shape:
 `maestro --headless` or `maestro exec --mode=headless`.
 
 The internal gate is only honored when Maestro is already dispatching headless
-mode. When present, Maestro selects the previous headless runtime adapter for the
-cutover window and emits one info-level log event:
+mode. If it is exported broadly, unrelated commands continue to use their normal
+runtime path. When present for a headless dispatch, Maestro selects the previous
+headless runtime adapter for the cutover window and emits one info-level log
+event:
 
 ```text
 runtime_legacy_selected

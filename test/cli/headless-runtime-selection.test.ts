@@ -17,15 +17,26 @@ describe("headless runtime selection", () => {
 
 	it("selects the legacy runtime for the internal cutover gate", () => {
 		expect(
-			selectHeadlessRuntime({
-				[LEGACY_HEADLESS_RUNTIME_ENV]: LEGACY_HEADLESS_RUNTIME_ENV_VALUE,
-			}),
+			selectHeadlessRuntime(
+				{
+					[LEGACY_HEADLESS_RUNTIME_ENV]: LEGACY_HEADLESS_RUNTIME_ENV_VALUE,
+				},
+				{ allowLegacy: true },
+			),
 		).toEqual({
 			kind: "legacy",
 			source: LEGACY_HEADLESS_RUNTIME_ENV,
 			runtimeId: LEGACY_HEADLESS_RUNTIME_ID,
 			event: LEGACY_HEADLESS_RUNTIME_EVENT,
 		});
+	});
+
+	it("ignores the internal cutover gate until headless dispatch allows it", () => {
+		expect(
+			selectHeadlessRuntime({
+				[LEGACY_HEADLESS_RUNTIME_ENV]: LEGACY_HEADLESS_RUNTIME_ENV_VALUE,
+			}),
+		).toEqual({ kind: "current" });
 	});
 
 	it("emits one measurable info event only when legacy runtime is selected", () => {
@@ -35,9 +46,12 @@ describe("headless runtime selection", () => {
 		expect(logger.info).not.toHaveBeenCalled();
 
 		recordHeadlessRuntimeSelection(
-			selectHeadlessRuntime({
-				[LEGACY_HEADLESS_RUNTIME_ENV]: LEGACY_HEADLESS_RUNTIME_ENV_VALUE,
-			}),
+			selectHeadlessRuntime(
+				{
+					[LEGACY_HEADLESS_RUNTIME_ENV]: LEGACY_HEADLESS_RUNTIME_ENV_VALUE,
+				},
+				{ allowLegacy: true },
+			),
 			logger,
 		);
 
