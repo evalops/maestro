@@ -393,6 +393,43 @@ describe("CLI command telemetry aggregator", () => {
 		});
 	});
 
+	it("records legacy runtime startup metadata through the canonical selector", async () => {
+		const { LEGACY_HEADLESS_RUNTIME_ENV, LEGACY_HEADLESS_RUNTIME_ENV_VALUE } =
+			await import("../../src/cli/headless-runtime-selection.js");
+		const { recordCliStartupTelemetry } = await import(
+			"../../src/telemetry/cli-startup.js"
+		);
+
+		await recordCliStartupTelemetry({
+			args: {
+				headless: true,
+				messages: [],
+			},
+			clientVersion: "0.10.18",
+			rawArgs: ["--headless"],
+			now: () => now,
+			env: {
+				...process.env,
+				[LEGACY_HEADLESS_RUNTIME_ENV]: LEGACY_HEADLESS_RUNTIME_ENV_VALUE,
+			},
+		});
+
+		const [startupEvent] = JSON.parse(
+			(await readFile(beaconFile, "utf8")).trim(),
+		) as [
+			{
+				parameters?: {
+					metadata?: Record<string, unknown>;
+				};
+			},
+		];
+
+		expect(startupEvent.parameters?.metadata).toMatchObject({
+			command: "headless",
+			legacyRuntimeRequested: true,
+		});
+	});
+
 	it("records default prompt startup mode as text", async () => {
 		const { recordCliStartupTelemetry } = await import(
 			"../../src/telemetry/cli-startup.js"

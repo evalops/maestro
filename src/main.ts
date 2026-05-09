@@ -122,6 +122,7 @@ import {
 } from "./cli/commands/exec.js";
 import {
 	isHeadlessModeRequested,
+	isLegacyHeadlessRuntimeRequested,
 	recordHeadlessRuntimeSelection,
 	selectHeadlessRuntime,
 	willDispatchHeadlessRuntime,
@@ -504,17 +505,18 @@ export async function main(args: string[]) {
 
 	const isHeadlessMode = isHeadlessModeRequested(parsed);
 	const willDispatchHeadlessMode = willDispatchHeadlessRuntime(parsed);
-	if (parsed.legacyRuntime && !isHeadlessMode) {
+	const legacyHeadlessRuntimeRequested = isLegacyHeadlessRuntimeRequested();
+	if (legacyHeadlessRuntimeRequested && !isHeadlessMode) {
 		console.error(
-			chalk.red("--legacy-runtime can only be used with --headless mode"),
+			chalk.red("Legacy headless runtime selection requires headless mode"),
 		);
 		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
 		process.exit(1);
 	}
-	if (parsed.legacyRuntime && !willDispatchHeadlessMode) {
+	if (legacyHeadlessRuntimeRequested && !willDispatchHeadlessMode) {
 		console.error(
 			chalk.red(
-				"--legacy-runtime can only be used when Maestro dispatches headless mode. Remove the command or use `maestro exec --mode=headless --legacy-runtime`.",
+				"Legacy headless runtime selection requires Maestro-dispatched headless mode",
 			),
 		);
 		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
@@ -624,7 +626,7 @@ export async function main(args: string[]) {
 		pipeProcessEventsToLogger();
 	}
 
-	const headlessRuntimeSelection = selectHeadlessRuntime(parsed);
+	const headlessRuntimeSelection = selectHeadlessRuntime();
 	recordHeadlessRuntimeSelection(headlessRuntimeSelection);
 
 	const runtimeConfig = loadRuntimeConfig(parsed, process.cwd());

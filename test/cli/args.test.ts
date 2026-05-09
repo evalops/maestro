@@ -41,7 +41,7 @@ describe("parseArgs", () => {
 		});
 	});
 
-	it("parses hidden support help and legacy headless runtime flags", () => {
+	it("parses hidden support help and rejects legacy runtime as a CLI flag", () => {
 		expect(parseArgs(["--help", "--hidden"])).toMatchObject({
 			help: true,
 			hiddenHelp: true,
@@ -49,7 +49,8 @@ describe("parseArgs", () => {
 		expect(parseArgs(["--headless", "--legacy-runtime"])).toMatchObject({
 			headless: true,
 			mode: "headless",
-			legacyRuntime: true,
+			legacyRuntimeCliRequested: true,
+			error: "Legacy headless runtime selection is not available from the CLI",
 		});
 	});
 

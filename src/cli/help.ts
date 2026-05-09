@@ -48,6 +48,7 @@ export interface HelpOptions {
 }
 
 export function printHelp(version: string, options_: HelpOptions = {}) {
+	void options_;
 	const header = `${heading("Maestro")} ${muted(
 		`v${version} by EvalOps — AI coding assistant with read, list, search, diff, bash, edit, write, todo tools`,
 	)}`;
@@ -77,15 +78,6 @@ export function printHelp(version: string, options_: HelpOptions = {}) {
 	]
 		.map((line) => `  ${muted(line)}`)
 		.join("\n")}`;
-	const hiddenOptions =
-		options_.hidden === true
-			? `${sectionHeading("Hidden Support Flags")}${muted(
-					`  --legacy-runtime       Use the previous headless runtime during a protocol cutover window
-
-  Hidden flags are support and release-note escape hatches. They are intentionally
-  omitted from default help and are not stable automation surfaces.`,
-				)}`
-			: null;
 	const examples = `${sectionHeading("Examples")}${muted(
 		`  # Interactive mode (no messages = interactive TUI)
   maestro
@@ -272,7 +264,6 @@ export function printHelp(version: string, options_: HelpOptions = {}) {
 			header,
 			usage,
 			options,
-			hiddenOptions,
 			examples,
 			env,
 			execSection,

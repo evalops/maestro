@@ -749,7 +749,7 @@ describe("CLI integration", () => {
 		exitSpy.mockRestore();
 	});
 
-	it("rejects legacy runtime flag before non-headless command dispatch", async () => {
+	it("rejects legacy runtime as a CLI flag", async () => {
 		const exitCodes: number[] = [];
 		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
 			exitCodes.push(Number(code ?? 0));
@@ -764,10 +764,7 @@ describe("CLI integration", () => {
 		expect(exitCodes).toEqual([1, 1]);
 		const combined = output.join("\n");
 		expect(combined).toContain(
-			"--legacy-runtime can only be used with --headless mode",
-		);
-		expect(combined).toContain(
-			"--legacy-runtime can only be used when Maestro dispatches headless mode",
+			"Legacy headless runtime selection is not available from the CLI",
 		);
 		exitSpy.mockRestore();
 	});
