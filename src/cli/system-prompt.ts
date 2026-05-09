@@ -8,7 +8,13 @@ import {
 	statSync,
 } from "node:fs";
 import type { Dirent } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import {
+	type RuntimeConstraintContext,
+	type RuntimeNetworkAccess,
+	buildRuntimeConstraintPrompt,
+	isSandboxModeEnabled,
+} from "@evalops/contracts";
 import chalk from "chalk";
 import { buildSearchGuidelines } from "../agent/search-guidance.js";
 import { getAgentDir } from "../config/constants.js";
@@ -111,6 +117,153 @@ function loadAppendSystemPrompt(cwd: string): string | null {
 	return appendSystemPath
 		? resolveSystemPromptOverride(appendSystemPath)
 		: null;
+}
+
+interface RuntimeConstraintDetectionOptions {
+	cwd?: string;
+	sandboxMode?: string | null;
+	sandboxEnabled?: boolean;
+	readOnly?: boolean;
+	env?: Record<string, string | undefined>;
+}
+
+export interface FinalizeSystemPromptOptions {
+	runtimeConstraints?: RuntimeConstraintContext | null;
+}
+
+function readEnvFlag(
+	env: Record<string, string | undefined>,
+	name: string,
+): boolean {
+	const value = env[name]?.trim().toLowerCase();
+	return value === "1" || value === "true" || value === "yes" || value === "on";
+}
+
+function normalizeNetworkAccess(
+	value?: string,
+): RuntimeNetworkAccess | undefined {
+	const normalized = value?.trim().toLowerCase();
+	if (!normalized) {
+		return undefined;
+	}
+	if (
+		normalized === "disabled" ||
+		normalized === "offline" ||
+		normalized === "none" ||
+		normalized === "no-network"
+	) {
+		return "disabled";
+	}
+	if (
+		normalized === "restricted" ||
+		normalized === "firewall" ||
+		normalized === "gated"
+	) {
+		return "restricted";
+	}
+	if (normalized === "available" || normalized === "enabled") {
+		return "available";
+	}
+	return "unknown";
+}
+
+function resolveGitDirectoryAtPath(path: string): string | null {
+	const gitPath = join(path, ".git");
+	try {
+		const gitStat = statSync(gitPath);
+		if (gitStat.isDirectory()) {
+			return gitPath;
+		}
+		if (!gitStat.isFile()) {
+			return null;
+		}
+		const gitFile = readFileSync(gitPath, "utf8");
+		const match = /^gitdir:\s*(.+?)\s*$/m.exec(gitFile);
+		const gitDir = match?.[1];
+		if (!gitDir) {
+			return null;
+		}
+		return resolve(path, gitDir);
+	} catch {
+		return null;
+	}
+}
+
+function resolveGitDirectory(cwd: string): string | null {
+	let current = resolve(cwd);
+	while (true) {
+		const gitDir = resolveGitDirectoryAtPath(current);
+		if (gitDir) {
+			return gitDir;
+		}
+		const parent = dirname(current);
+		if (parent === current) {
+			return null;
+		}
+		current = parent;
+	}
+}
+
+function resolveGitCommonDirectory(gitDir: string): string {
+	try {
+		const commonDir = readFileSync(join(gitDir, "commondir"), "utf8").trim();
+		if (commonDir) {
+			return resolve(gitDir, commonDir);
+		}
+	} catch {
+		// Older/non-worktree repositories do not have a commondir file.
+	}
+	return gitDir;
+}
+
+function isShallowGitCheckout(cwd: string): boolean {
+	const gitDir = resolveGitDirectory(cwd);
+	if (!gitDir) {
+		return false;
+	}
+	const commonGitDir = resolveGitCommonDirectory(gitDir);
+	return (
+		existsSync(join(commonGitDir, "shallow")) ||
+		existsSync(join(gitDir, "shallow"))
+	);
+}
+
+export function detectRuntimeConstraintContext(
+	options: RuntimeConstraintDetectionOptions = {},
+): RuntimeConstraintContext {
+	const cwd = options.cwd ?? process.cwd();
+	const env = options.env ?? process.env;
+	const sandboxMode =
+		options.sandboxMode ??
+		env.MAESTRO_SANDBOX_MODE ??
+		env.CODEX_SANDBOX_MODE ??
+		env.MAESTRO_SANDBOX ??
+		null;
+	const networkAccess =
+		readEnvFlag(env, "MAESTRO_OFFLINE_EVAL") ||
+		readEnvFlag(env, "CODEX_OFFLINE_EVAL")
+			? "disabled"
+			: normalizeNetworkAccess(
+					env.MAESTRO_NETWORK_ACCESS ?? env.CODEX_NETWORK_ACCESS,
+				);
+
+	return {
+		sandboxMode,
+		sandboxEnabled: options.sandboxEnabled ?? isSandboxModeEnabled(sandboxMode),
+		isShallowGitCheckout: isShallowGitCheckout(cwd),
+		readOnly:
+			options.readOnly ??
+			(readEnvFlag(env, "MAESTRO_READ_ONLY") ||
+				readEnvFlag(env, "CODEX_READ_ONLY")),
+		networkAccess,
+		hostedRunner:
+			readEnvFlag(env, "MAESTRO_HOSTED_RUNNER") ||
+			env.MAESTRO_RUNNER_KIND?.trim().toLowerCase() === "hosted",
+		firewallRestricted:
+			readEnvFlag(env, "MAESTRO_FIREWALL_RESTRICTED") ||
+			readEnvFlag(env, "CODEX_FIREWALL_RESTRICTED"),
+		runnerImage: env.MAESTRO_RUNNER_IMAGE ?? null,
+	};
 }
 
 function buildGuidelines(toolNames: Set<string>, currentYear: number): string {
@@ -549,6 +702,7 @@ export function finalizeSystemPrompt(
 	basePrompt: string,
 	appendPrompt?: string,
 	cwd = process.cwd(),
+	options: FinalizeSystemPromptOptions = {},
 ): string {
 	const appendSource =
 		resolveSystemPromptOverride(appendPrompt) ?? loadAppendSystemPrompt(cwd);
@@ -568,6 +722,13 @@ export function finalizeSystemPrompt(
 		prompt += `\n\n${guardedWorkspaceFragment}\n`;
 	}
 
+	const runtimeConstraintPrompt = buildRuntimeConstraintPrompt(
+		options.runtimeConstraints,
+	);
+	if (runtimeConstraintPrompt) {
+		prompt += `\n\n${runtimeConstraintPrompt}\n`;
+	}
+
 	if (appendText) {
 		prompt += "\n\n# Additional System Instructions\n\n";
 		prompt += `${appendText}\n\n`;
@@ -583,9 +744,15 @@ export function buildSystemPrompt(
 	customPrompt?: string,
 	toolNames?: string[],
 	appendPrompt?: string,
+	options?: FinalizeSystemPromptOptions,
 ): string {
 	const promptSource =
 		resolveSystemPromptOverride(customPrompt) ??
 		buildBundledSystemPromptBase(toolNames);
-	return finalizeSystemPrompt(promptSource, appendPrompt);
+	return finalizeSystemPrompt(
+		promptSource,
+		appendPrompt,
+		process.cwd(),
+		options,
+	);
 }

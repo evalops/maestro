@@ -129,7 +129,10 @@ import {
 	emitUserTurn as emitUserTurnEvent,
 } from "./cli/jsonl-writer.js";
 import { selectSession } from "./cli/session.js";
-import { resolveExplicitSystemPromptSourcePaths } from "./cli/system-prompt.js";
+import {
+	detectRuntimeConstraintContext,
+	resolveExplicitSystemPromptSourcePaths,
+} from "./cli/system-prompt.js";
 import { validateFrameworkPreference } from "./config/framework.js";
 import { loadRuntimeConfig } from "./config/runtime-config.js";
 import { loadEnv } from "./load-env.js";
@@ -152,6 +155,7 @@ import type { AuthMode } from "./providers/auth.js";
 import { AgentRuntimeController } from "./runtime/agent-runtime.js";
 import { registerBackgroundTaskShutdownHooks } from "./runtime/background-task-hooks.js";
 import { configureSafeMode } from "./safety/safe-mode.js";
+import { LocalSandbox } from "./sandbox/index.js";
 import { ServerRequestActionApprovalService } from "./server/approval-service.js";
 import { clientToolService } from "./server/client-tools-service.js";
 import { ServerRequestToolRetryService } from "./server/tool-retry-service.js";
@@ -1123,29 +1127,6 @@ export async function main(args: string[]) {
 	} catch (error) {
 		exitWithStartupError(error);
 	}
-	// ─────────────────────────────────────────────────────────────────────────────
-	// PHASE 9: System Prompt and Tool Configuration
-	// ─────────────────────────────────────────────────────────────────────────────
-
-	// Build the system prompt with project context
-	// The system prompt includes:
-	// - Base instructions for the agent
-	// - Project context files (COMPOSER.md, AGENTS.md, etc.)
-	// - Tool-specific instructions based on available tools
-	const systemPromptToolNames = parsed.tools;
-	const { systemPrompt, promptMetadata } = await resolveMaestroSystemPrompt({
-		customPrompt: parsed.systemPrompt,
-		toolNames: systemPromptToolNames,
-		appendPrompt: parsed.appendSystemPrompt,
-	});
-	startupProfiler.checkpoint("prompt:assembled", {
-		system_bytes: systemPrompt.length,
-	});
-	const systemPromptSourcePaths = resolveExplicitSystemPromptSourcePaths(
-		parsed.systemPrompt,
-		parsed.appendSystemPrompt,
-	);
-
 	// Determine approval mode for tool execution:
 	// - "prompt": Ask user before each tool execution (default for interactive)
 	// - "auto": Automatically approve all tools (default for non-interactive)
@@ -1224,6 +1205,40 @@ export async function main(args: string[]) {
 		? replaceAskUserTool(allTools)
 		: allTools;
 
+	// ─────────────────────────────────────────────────────────────────────────────
+	// PHASE 11: System Prompt Assembly
+	// ─────────────────────────────────────────────────────────────────────────────
+
+	// Build the system prompt with project context after sandbox setup so runtime
+	// constraint fragments reflect the resolved sandbox state, not just the
+	// requested CLI mode.
+	const resolvedConstraintSandboxMode = sandbox
+		? sandbox instanceof LocalSandbox
+			? "local"
+			: (sandboxMode ?? null)
+		: "none";
+	const systemPromptToolNames = parsed.tools;
+	const runtimeConstraints = detectRuntimeConstraintContext({
+		cwd: process.cwd(),
+		sandboxMode: resolvedConstraintSandboxMode,
+		sandboxEnabled:
+			Boolean(sandbox) && resolvedConstraintSandboxMode !== "local",
+		readOnly: parsed.execReadOnly || parsed.readonly ? true : undefined,
+	});
+	const { systemPrompt, promptMetadata } = await resolveMaestroSystemPrompt({
+		customPrompt: parsed.systemPrompt,
+		toolNames: systemPromptToolNames,
+		appendPrompt: parsed.appendSystemPrompt,
+		runtimeConstraints,
+	});
+	startupProfiler.checkpoint("prompt:assembled", {
+		system_bytes: systemPrompt.length,
+	});
+	const systemPromptSourcePaths = resolveExplicitSystemPromptSourcePaths(
+		parsed.systemPrompt,
+		parsed.appendSystemPrompt,
+	);
+
 	// Register sandbox cleanup on exit (only if sandbox is active)
 	if (sandbox && toolsResult.disposeSandbox) {
 		const cleanupSandbox = toolsResult.disposeSandbox;
@@ -1242,7 +1257,7 @@ export async function main(args: string[]) {
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────────
-	// PHASE 11: Agent Creation
+	// PHASE 12: Agent Creation
 	// ─────────────────────────────────────────────────────────────────────────────
 
 	const { createAgentInstance } = await import(

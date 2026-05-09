@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	buildSystemPrompt,
+	detectRuntimeConstraintContext,
 	finalizeSystemPrompt,
 	resolveExplicitSystemPromptSourcePaths,
 } from "../../src/cli/system-prompt.js";
@@ -107,5 +108,178 @@ describe("buildSystemPrompt", () => {
 		const prompt = finalizeSystemPrompt("base prompt", undefined, projectDir);
 
 		expect(prompt).not.toContain("# Guarded Workspace Paths");
+	});
+
+	it("injects sandbox shallow-git runtime guidance", () => {
+		const projectDir = join(testDir, "shallow-project");
+		mkdirSync(join(projectDir, ".git"), { recursive: true });
+		writeFileSync(join(projectDir, ".git", "shallow"), "abc123\n");
+
+		const runtimeConstraints = detectRuntimeConstraintContext({
+			cwd: projectDir,
+			sandboxMode: "workspace-write",
+			env: {},
+		});
+		const prompt = finalizeSystemPrompt("base prompt", undefined, projectDir, {
+			runtimeConstraints,
+		});
+
+		expect(prompt).toContain("# Runtime Constraints");
+		expect(prompt).toContain("sandbox.shallow-git");
+		expect(prompt).toContain("git fetch --unshallow");
+	});
+
+	it("detects shallow git checkouts from repository subdirectories", () => {
+		const projectDir = join(testDir, "nested-shallow-project");
+		const subdir = join(projectDir, "packages", "cli");
+		mkdirSync(join(projectDir, ".git"), { recursive: true });
+		mkdirSync(subdir, { recursive: true });
+		writeFileSync(join(projectDir, ".git", "shallow"), "abc123\n");
+
+		const runtimeConstraints = detectRuntimeConstraintContext({
+			cwd: subdir,
+			sandboxMode: "workspace-write",
+			env: {},
+		});
+
+		expect(runtimeConstraints.isShallowGitCheckout).toBe(true);
+		expect(
+			finalizeSystemPrompt("base prompt", undefined, subdir, {
+				runtimeConstraints,
+			}),
+		).toContain("git fetch --unshallow");
+	});
+
+	it("detects shallow git checkouts from linked worktree common dirs", () => {
+		const projectDir = join(testDir, "linked-worktree-project");
+		const commonGitDir = join(testDir, "common-git");
+		const worktreeGitDir = join(commonGitDir, "worktrees", "linked");
+		mkdirSync(projectDir, { recursive: true });
+		mkdirSync(worktreeGitDir, { recursive: true });
+		writeFileSync(join(projectDir, ".git"), `gitdir: ${worktreeGitDir}\n`);
+		writeFileSync(join(worktreeGitDir, "commondir"), "../..\n");
+		writeFileSync(join(commonGitDir, "shallow"), "abc123\n");
+
+		const runtimeConstraints = detectRuntimeConstraintContext({
+			cwd: projectDir,
+			sandboxMode: "workspace-write",
+			env: {},
+		});
+
+		expect(runtimeConstraints.isShallowGitCheckout).toBe(true);
+		expect(
+			finalizeSystemPrompt("base prompt", undefined, projectDir, {
+				runtimeConstraints,
+			}),
+		).toContain("git fetch --unshallow");
+	});
+
+	it("trims trailing whitespace from gitdir worktree files", () => {
+		const projectDir = join(testDir, "spaced-worktree-project");
+		const commonGitDir = join(testDir, "spaced-common-git");
+		const worktreeGitDir = join(commonGitDir, "worktrees", "spaced");
+		mkdirSync(projectDir, { recursive: true });
+		mkdirSync(worktreeGitDir, { recursive: true });
+		writeFileSync(join(projectDir, ".git"), `gitdir: ${worktreeGitDir} \t\n`);
+		writeFileSync(join(worktreeGitDir, "commondir"), "../..\n");
+		writeFileSync(join(commonGitDir, "shallow"), "abc123\n");
+
+		expect(
+			detectRuntimeConstraintContext({
+				cwd: projectDir,
+				sandboxMode: "workspace-write",
+				env: {},
+			}).isShallowGitCheckout,
+		).toBe(true);
+	});
+
+	it("honors MAESTRO_SANDBOX_MODE when detecting sandbox constraints", () => {
+		const projectDir = join(testDir, "env-sandbox-project");
+		mkdirSync(projectDir, { recursive: true });
+
+		const runtimeConstraints = detectRuntimeConstraintContext({
+			cwd: projectDir,
+			env: { MAESTRO_SANDBOX_MODE: "workspace-write" },
+		});
+
+		expect(runtimeConstraints.sandboxMode).toBe("workspace-write");
+		expect(
+			finalizeSystemPrompt("base prompt", undefined, projectDir, {
+				runtimeConstraints,
+			}),
+		).toContain("sandbox.filesystem");
+	});
+
+	it("prefers sandbox policy env over backend marker env", () => {
+		const projectDir = join(testDir, "policy-env-project");
+		mkdirSync(projectDir, { recursive: true });
+
+		const runtimeConstraints = detectRuntimeConstraintContext({
+			cwd: projectDir,
+			env: {
+				MAESTRO_SANDBOX: "seatbelt",
+				MAESTRO_SANDBOX_MODE: "read-only",
+			},
+		});
+
+		expect(runtimeConstraints.sandboxMode).toBe("read-only");
+		expect(
+			finalizeSystemPrompt("base prompt", undefined, projectDir, {
+				runtimeConstraints,
+			}),
+		).toContain("checkout.read-only");
+	});
+
+	it("preserves explicit no-sandbox state over sandbox env fallback", () => {
+		const projectDir = join(testDir, "resolved-none-project");
+		mkdirSync(projectDir, { recursive: true });
+
+		const runtimeConstraints = detectRuntimeConstraintContext({
+			cwd: projectDir,
+			sandboxMode: "none",
+			sandboxEnabled: false,
+			env: { MAESTRO_SANDBOX_MODE: "read-only" },
+		});
+
+		const prompt = finalizeSystemPrompt("base prompt", undefined, projectDir, {
+			runtimeConstraints,
+		});
+
+		expect(runtimeConstraints.sandboxMode).toBe("none");
+		expect(prompt).not.toContain("checkout.read-only");
+		expect(prompt).not.toContain("# Runtime Constraints");
+	});
+
+	it("injects offline-eval runtime guidance and skips fragments by default", () => {
+		const projectDir = join(testDir, "offline-project");
+		mkdirSync(projectDir, { recursive: true });
+
+		const offlinePrompt = finalizeSystemPrompt(
+			"base prompt",
+			undefined,
+			projectDir,
+			{
+				runtimeConstraints: detectRuntimeConstraintContext({
+					cwd: projectDir,
+					env: { MAESTRO_OFFLINE_EVAL: "1" },
+				}),
+			},
+		);
+		const defaultPrompt = finalizeSystemPrompt(
+			"base prompt",
+			undefined,
+			projectDir,
+			{
+				runtimeConstraints: detectRuntimeConstraintContext({
+					cwd: projectDir,
+					env: {},
+				}),
+			},
+		);
+
+		expect(offlinePrompt).toContain("network.offline");
+		expect(offlinePrompt).toContain("skip web search");
+		expect(offlinePrompt).toContain("network requests are expected to fail");
+		expect(defaultPrompt).not.toContain("# Runtime Constraints");
 	});
 });

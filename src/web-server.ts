@@ -35,6 +35,7 @@ import {
 	disposeCheckpointService,
 	initCheckpointService,
 } from "./checkpoints/index.js";
+import { detectRuntimeConstraintContext } from "./cli/system-prompt.js";
 import { composerManager } from "./composers/index.js";
 import { resolveDefaultApprovalMode } from "./config/default-approval-mode.js";
 import { initLifecycle, shutdownLifecycle } from "./lifecycle.js";
@@ -492,7 +493,13 @@ async function createAgent(
 		auditLogger,
 	});
 
-	const { systemPrompt, promptMetadata } = await resolveMaestroSystemPrompt();
+	const runtimeConstraints = detectRuntimeConstraintContext({
+		cwd,
+		sandboxMode: process.env.MAESTRO_SANDBOX_MODE ?? null,
+	});
+	const { systemPrompt, promptMetadata } = await resolveMaestroSystemPrompt({
+		runtimeConstraints,
+	});
 
 	// Only include IDE client tools when a compatible client is connected.
 	// Without a connected client, these tools will hang waiting for responses.

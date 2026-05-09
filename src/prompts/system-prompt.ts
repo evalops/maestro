@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { RuntimeConstraintContext } from "@evalops/contracts";
 import {
 	buildBundledSystemPromptBase,
 	finalizeSystemPrompt,
@@ -38,11 +39,17 @@ export async function resolveMaestroSystemPrompt(options?: {
 	customPrompt?: string;
 	toolNames?: string[];
 	appendPrompt?: string;
+	runtimeConstraints?: RuntimeConstraintContext | null;
 }): Promise<ResolvedSystemPrompt> {
 	const overridePrompt = resolveSystemPromptOverride(options?.customPrompt);
 	if (overridePrompt) {
 		return {
-			systemPrompt: finalizeSystemPrompt(overridePrompt, options?.appendPrompt),
+			systemPrompt: finalizeSystemPrompt(
+				overridePrompt,
+				options?.appendPrompt,
+				process.cwd(),
+				{ runtimeConstraints: options?.runtimeConstraints },
+			),
 			promptMetadata: buildPromptMetadata(overridePrompt, {
 				source: "override",
 			}),
@@ -59,6 +66,8 @@ export async function resolveMaestroSystemPrompt(options?: {
 			systemPrompt: finalizeSystemPrompt(
 				resolvedPrompt.content,
 				options?.appendPrompt,
+				process.cwd(),
+				{ runtimeConstraints: options?.runtimeConstraints },
 			),
 			promptMetadata: buildPromptMetadata(resolvedPrompt.content, {
 				source: "service",
@@ -70,7 +79,12 @@ export async function resolveMaestroSystemPrompt(options?: {
 
 	const bundledPrompt = buildBundledSystemPromptBase(options?.toolNames);
 	return {
-		systemPrompt: finalizeSystemPrompt(bundledPrompt, options?.appendPrompt),
+		systemPrompt: finalizeSystemPrompt(
+			bundledPrompt,
+			options?.appendPrompt,
+			process.cwd(),
+			{ runtimeConstraints: options?.runtimeConstraints },
+		),
 		promptMetadata: buildPromptMetadata(bundledPrompt, {
 			source: "bundled",
 		}),
