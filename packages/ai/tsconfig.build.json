@@ -42,6 +42,7 @@
 		"../../src/oauth/**/*.ts",
 		"../../src/platform/**/*.ts",
 		"../../src/sandbox/**/*.ts",
+		"../../src/cli/headless-runtime-selection.ts",
 		"../../src/cli/system-prompt.ts",
 		"../../src/prompts/**/*.ts",
 		"../../src/skills/**/*.ts",

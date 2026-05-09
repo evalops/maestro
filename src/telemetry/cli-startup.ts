@@ -1,3 +1,4 @@
+import { isLegacyHeadlessRuntimeRequested } from "../cli/headless-runtime-selection.js";
 import { emitBeacon } from "./beacon.js";
 import { getGlobalCliCommandAggregator } from "./cli-command-aggregator.js";
 
@@ -8,7 +9,6 @@ export interface CliStartupArgs {
 	help?: boolean;
 	error?: string;
 	headless?: boolean;
-	legacyRuntime?: boolean;
 	mode?: "text" | "json" | "rpc" | "headless";
 	messages: string[];
 }
@@ -75,7 +75,7 @@ export async function recordCliStartupTelemetry(
 						command,
 						mode,
 						hasPrompt: options.args.messages.length > 0,
-						legacyRuntimeRequested: options.args.legacyRuntime === true,
+						legacyRuntimeRequested: isLegacyHeadlessRuntimeRequested(env),
 						argCount: options.rawArgs?.length ?? 0,
 					},
 				},

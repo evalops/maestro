@@ -1,7 +1,7 @@
 import { createLogger } from "../utils/logger.js";
-import type { Args } from "./args.js";
 
-export const LEGACY_HEADLESS_RUNTIME_FLAG = "--legacy-runtime";
+export const LEGACY_HEADLESS_RUNTIME_ENV = "MAESTRO_INTERNAL_HEADLESS_RUNTIME";
+export const LEGACY_HEADLESS_RUNTIME_ENV_VALUE = "legacy";
 export const LEGACY_HEADLESS_RUNTIME_ID = "typescript-headless-legacy";
 export const LEGACY_HEADLESS_RUNTIME_EVENT = "runtime_legacy_selected";
 
@@ -11,7 +11,7 @@ export type HeadlessRuntimeSelection =
 	  }
 	| {
 			kind: "legacy";
-			flag: typeof LEGACY_HEADLESS_RUNTIME_FLAG;
+			source: typeof LEGACY_HEADLESS_RUNTIME_ENV;
 			runtimeId: typeof LEGACY_HEADLESS_RUNTIME_ID;
 			event: typeof LEGACY_HEADLESS_RUNTIME_EVENT;
 	  };
@@ -20,14 +20,21 @@ export interface RuntimeSelectionLogger {
 	info(message: string, context?: Record<string, unknown>): void;
 }
 
-export function isHeadlessModeRequested(
-	args: Pick<Args, "headless" | "mode">,
-): boolean {
+type HeadlessModeArgs = {
+	headless?: boolean;
+	mode?: string;
+};
+
+type HeadlessDispatchArgs = HeadlessModeArgs & {
+	command?: string;
+};
+
+export function isHeadlessModeRequested(args: HeadlessModeArgs): boolean {
 	return args.headless === true || args.mode === "headless";
 }
 
 export function willDispatchHeadlessRuntime(
-	args: Pick<Args, "command" | "headless" | "mode">,
+	args: HeadlessDispatchArgs,
 ): boolean {
 	return (
 		isHeadlessModeRequested(args) &&
@@ -36,18 +43,24 @@ export function willDispatchHeadlessRuntime(
 }
 
 export function selectHeadlessRuntime(
-	args: Pick<Args, "legacyRuntime">,
+	env: NodeJS.ProcessEnv = process.env,
 ): HeadlessRuntimeSelection {
-	if (!args.legacyRuntime) {
+	if (!isLegacyHeadlessRuntimeRequested(env)) {
 		return { kind: "current" };
 	}
 
 	return {
 		kind: "legacy",
-		flag: LEGACY_HEADLESS_RUNTIME_FLAG,
+		source: LEGACY_HEADLESS_RUNTIME_ENV,
 		runtimeId: LEGACY_HEADLESS_RUNTIME_ID,
 		event: LEGACY_HEADLESS_RUNTIME_EVENT,
 	};
+}
+
+export function isLegacyHeadlessRuntimeRequested(
+	env: NodeJS.ProcessEnv = process.env,
+): boolean {
+	return env[LEGACY_HEADLESS_RUNTIME_ENV] === LEGACY_HEADLESS_RUNTIME_ENV_VALUE;
 }
 
 export function recordHeadlessRuntimeSelection(
@@ -59,8 +72,8 @@ export function recordHeadlessRuntimeSelection(
 	}
 
 	logger.info(selection.event, {
-		flag: selection.flag,
 		runtime: selection.runtimeId,
+		source: selection.source,
 		surface: "headless",
 	});
 }

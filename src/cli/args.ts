@@ -20,8 +20,8 @@ export interface Args {
 	mode?: Mode;
 	/** Run in headless mode for native TUI communication */
 	headless?: boolean;
-	/** Select the previous headless runtime during a protocol cutover window. */
-	legacyRuntime?: boolean;
+	/** Attempted to use a support-only runtime selector through CLI args. */
+	legacyRuntimeCliRequested?: boolean;
 	noSession?: boolean;
 	session?: string;
 	safeMode?: boolean;
@@ -180,7 +180,9 @@ export function parseArgs(args: string[]): Args {
 			result.headless = true;
 			result.mode = "headless";
 		} else if (arg === "--legacy-runtime") {
-			result.legacyRuntime = true;
+			result.legacyRuntimeCliRequested = true;
+			result.error =
+				"Legacy headless runtime selection is not available from the CLI";
 		} else if (arg === "--continue" || arg === "-c") {
 			result.continue = true;
 		} else if (arg === "--resume" || arg === "-r") {

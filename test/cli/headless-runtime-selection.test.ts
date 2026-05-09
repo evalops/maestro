@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+	LEGACY_HEADLESS_RUNTIME_ENV,
+	LEGACY_HEADLESS_RUNTIME_ENV_VALUE,
 	LEGACY_HEADLESS_RUNTIME_EVENT,
-	LEGACY_HEADLESS_RUNTIME_FLAG,
 	LEGACY_HEADLESS_RUNTIME_ID,
 	isHeadlessModeRequested,
 	recordHeadlessRuntimeSelection,
@@ -14,10 +15,14 @@ describe("headless runtime selection", () => {
 		expect(selectHeadlessRuntime({})).toEqual({ kind: "current" });
 	});
 
-	it("selects the legacy runtime for the hidden escape flag", () => {
-		expect(selectHeadlessRuntime({ legacyRuntime: true })).toEqual({
+	it("selects the legacy runtime for the internal cutover gate", () => {
+		expect(
+			selectHeadlessRuntime({
+				[LEGACY_HEADLESS_RUNTIME_ENV]: LEGACY_HEADLESS_RUNTIME_ENV_VALUE,
+			}),
+		).toEqual({
 			kind: "legacy",
-			flag: LEGACY_HEADLESS_RUNTIME_FLAG,
+			source: LEGACY_HEADLESS_RUNTIME_ENV,
 			runtimeId: LEGACY_HEADLESS_RUNTIME_ID,
 			event: LEGACY_HEADLESS_RUNTIME_EVENT,
 		});
@@ -30,14 +35,16 @@ describe("headless runtime selection", () => {
 		expect(logger.info).not.toHaveBeenCalled();
 
 		recordHeadlessRuntimeSelection(
-			selectHeadlessRuntime({ legacyRuntime: true }),
+			selectHeadlessRuntime({
+				[LEGACY_HEADLESS_RUNTIME_ENV]: LEGACY_HEADLESS_RUNTIME_ENV_VALUE,
+			}),
 			logger,
 		);
 
 		expect(logger.info).toHaveBeenCalledOnce();
 		expect(logger.info).toHaveBeenCalledWith(LEGACY_HEADLESS_RUNTIME_EVENT, {
-			flag: LEGACY_HEADLESS_RUNTIME_FLAG,
 			runtime: LEGACY_HEADLESS_RUNTIME_ID,
+			source: LEGACY_HEADLESS_RUNTIME_ENV,
 			surface: "headless",
 		});
 	});
