@@ -114,6 +114,7 @@ import {
 } from "./checkpoints/index.js";
 import { TuiClientToolService } from "./cli-tui/client-tools/local-client-tool-service.js";
 import { TuiRenderer } from "./cli-tui/tui-renderer.js";
+import { sanitizeTerminalPreview } from "./cli-tui/utils/text-formatting.js";
 import { type Mode, parseArgs } from "./cli/args.js";
 import {
 	EXEC_SESSION_SUMMARY_PREFIX,
@@ -1044,7 +1045,13 @@ export async function main(args: string[]) {
 			return value;
 		}
 		if (process.platform === "win32") {
-			return `"${value.replaceAll('"', '\\"')}"`;
+			const escaped = value
+				.replace(
+					/(\\*)"/g,
+					(_match, slashes: string) => `${slashes}${slashes}\\"`,
+				)
+				.replace(/\\+$/g, (slashes) => `${slashes}${slashes}`);
+			return `"${escaped}"`;
 		}
 		return `'${value.replaceAll("'", "'\\''")}'`;
 	};
@@ -1078,7 +1085,7 @@ export async function main(args: string[]) {
 						`AGENTS instructions already exist at ${result.path}.`,
 						`Preview the proposed update below, then re-run with \`${rerunCommand}\` to apply it.`,
 						"",
-						result.diff ?? "",
+						sanitizeTerminalPreview(result.diff ?? ""),
 					].join("\n"),
 				);
 				return;

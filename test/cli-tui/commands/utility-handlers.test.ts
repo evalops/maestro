@@ -18,6 +18,7 @@ import {
 	handleCopyCommand,
 	handleInitCommand,
 	handleReportCommand,
+	parseInitArgs,
 } from "../../../src/cli-tui/commands/utility-handlers.js";
 import { handleAgentsInit } from "../../../src/cli/commands/agents.js";
 
@@ -200,10 +201,10 @@ describe("utility-handlers", () => {
 			handleInitCommand(ctx, callbacks);
 
 			expect(callbacks.showSuccess).toHaveBeenCalledWith(
-				expect.stringContaining("/init ./custom/path --force"),
+				expect.stringContaining("/init --force ./custom/path"),
 			);
 			expect(callbacks.addContent).toHaveBeenCalledWith(
-				expect.stringContaining("/init ./custom/path --force"),
+				expect.stringContaining("/init --force ./custom/path"),
 			);
 		});
 
@@ -215,8 +216,8 @@ describe("utility-handlers", () => {
 			});
 
 			const ctx = createMockContext(
-				"/init ./custom/path --force",
-				"./custom/path --force",
+				"/init --force ./custom/path",
+				"--force ./custom/path",
 			);
 			const callbacks: InitHandlerCallbacks = {
 				showSuccess: vi.fn(),
@@ -235,7 +236,7 @@ describe("utility-handlers", () => {
 			);
 		});
 
-		it("only treats trailing force flags as /init options", () => {
+		it("preserves literal targets that end with force-looking segments", () => {
 			vi.mocked(handleAgentsInit).mockReturnValue({
 				path: "/custom/path/AGENTS.md",
 				action: "created",
@@ -243,8 +244,8 @@ describe("utility-handlers", () => {
 			});
 
 			const ctx = createMockContext(
-				"/init docs/team --force guide/AGENTS.md",
-				"docs/team --force guide/AGENTS.md",
+				"/init docs/team --force",
+				"docs/team --force",
 			);
 			const callbacks: InitHandlerCallbacks = {
 				showSuccess: vi.fn(),
@@ -255,10 +256,44 @@ describe("utility-handlers", () => {
 
 			handleInitCommand(ctx, callbacks);
 
-			expect(handleAgentsInit).toHaveBeenCalledWith(
-				"docs/team --force guide/AGENTS.md",
-				{ force: false },
-			);
+			expect(handleAgentsInit).toHaveBeenCalledWith("docs/team --force", {
+				force: false,
+			});
+		});
+
+		it("parses leading force flags for /init updates", () => {
+			expect(parseInitArgs("--force docs/team")).toEqual({
+				targetArg: "docs/team",
+				force: true,
+			});
+			expect(parseInitArgs("-f")).toEqual({
+				targetArg: undefined,
+				force: true,
+			});
+		});
+
+		it("strips terminal controls from diff previews", () => {
+			vi.mocked(handleAgentsInit).mockReturnValue({
+				path: "/custom/path/AGENTS.md",
+				action: "preview",
+				diff: `${String.fromCharCode(27)}[2J-old${String.fromCharCode(7)}\n+new`,
+				sources: [],
+			});
+
+			const ctx = createMockContext("/init", "");
+			const callbacks: InitHandlerCallbacks = {
+				showSuccess: vi.fn(),
+				showError: vi.fn(),
+				addContent: vi.fn(),
+				requestRender: vi.fn(),
+			};
+
+			handleInitCommand(ctx, callbacks);
+
+			const preview = vi.mocked(callbacks.addContent).mock.calls[0]?.[0] ?? "";
+			expect(preview).toContain("-old\n+new");
+			expect(preview).not.toContain(String.fromCharCode(27));
+			expect(preview).not.toContain(String.fromCharCode(7));
 		});
 
 		it("shows error when handleAgentsInit throws", () => {

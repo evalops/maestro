@@ -10,6 +10,7 @@
 import { relative } from "node:path";
 import type { AppMessage } from "../../agent/types.js";
 import { handleAgentsInit } from "../../cli/commands/agents.js";
+import { sanitizeTerminalPreview } from "../utils/text-formatting.js";
 import type { CommandExecutionContext } from "./types.js";
 
 export interface CopyHandlerDeps {
@@ -89,10 +90,10 @@ export interface InitHandlerCallbacks {
 }
 
 function buildInitRerunCommand(targetArg: string | undefined): string {
-	return targetArg ? `/init ${targetArg} --force` : "/init --force";
+	return targetArg ? `/init --force ${targetArg}` : "/init --force";
 }
 
-function parseInitArgs(argumentText: string): {
+export function parseInitArgs(argumentText: string): {
 	targetArg: string | undefined;
 	force: boolean;
 } {
@@ -100,12 +101,16 @@ function parseInitArgs(argumentText: string): {
 	if (!trimmed) {
 		return { targetArg: undefined, force: false };
 	}
-	const forceMatch = trimmed.match(/(?:^|\s)(--force|-f)$/);
-	if (!forceMatch) {
-		return { targetArg: trimmed, force: false };
+	if (trimmed === "--force" || trimmed === "-f") {
+		return { targetArg: undefined, force: true };
 	}
-	const targetArg = trimmed.slice(0, forceMatch.index).trim() || undefined;
-	return { targetArg, force: true };
+	for (const flag of ["--force ", "-f "]) {
+		if (trimmed.startsWith(flag)) {
+			const targetArg = trimmed.slice(flag.length).trim() || undefined;
+			return { targetArg, force: true };
+		}
+	}
+	return { targetArg: trimmed, force: false };
 }
 
 /**
@@ -133,7 +138,7 @@ export function handleInitCommand(
 					`AGENTS instructions already exist at ${displayPath}. Preview the proposed update below, then re-run with ${rerunCommand} to apply it.`,
 					"",
 					"```diff",
-					result.diff ?? "",
+					sanitizeTerminalPreview(result.diff ?? ""),
 					"```",
 				].join("\n"),
 			);
