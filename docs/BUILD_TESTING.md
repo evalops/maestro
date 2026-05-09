@@ -112,8 +112,16 @@ stack, and verifies Cerebro graph projection plus MCP recall.
 
 **Run:**
 
+- `make cerebro-dev`
+- `eval "$(make -s cerebro-env)"`
 - `make cerebro-e2e-doctor`
 - `make cerebro-e2e`
+
+`make cerebro-dev` starts the sibling Cerebro checkout with Maestro event
+ingestion enabled and leaves it running for real local Maestro use. In another
+Maestro terminal, `eval "$(make -s cerebro-env)"` exports the matching
+Cerebro API, MCP, workspace, and memory-mode variables before `make run-ts` or
+`make web-local`.
 
 Use `LOCAL_CEREBRO_REPO=/path/to/cerebro make cerebro-e2e` when Cerebro is not
 checked out next to Maestro. The doctor target verifies the Cerebro checkout,

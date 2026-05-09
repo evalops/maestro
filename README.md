@@ -131,6 +131,17 @@ make cerebro-e2e-doctor
 make cerebro-e2e
 ```
 
+To actually use the two repos together locally, start Cerebro from Maestro and
+export the same Cerebro/MCP env into the Maestro terminal:
+
+```bash
+make cerebro-dev
+
+# In another Maestro terminal:
+eval "$(make -s cerebro-env)"
+make run-ts
+```
+
 That target delegates to Cerebro's `make local-maestro-e2e` with
 `LOCAL_MAESTRO_REPO` set to the current Maestro checkout. It builds and smokes
 Maestro, emits Maestro's canonical Platform replay, publishes it through local
@@ -146,10 +157,10 @@ matching Cerebro `LOCAL_HTTP_PORT` overrides when that port is occupied. Set
 directory. If your machine cannot surface OTEL collector debug logs, run
 `LOCAL_ASSERT_OTEL=false make cerebro-e2e`.
 
-For direct local Maestro runs against a running Cerebro dev stack, copy the
-Cerebro block from `.env.example`; the Makefile exports those vars to `make`
-targets so `make run-ts`, `make web-local`, and local smokes all see the same
-configuration.
+For direct local Maestro runs against an already-running Cerebro dev stack,
+`make cerebro-env` prints copyable exports derived from `.env` or shell
+overrides. The Makefile exports those vars to `make` targets so `make run-ts`,
+`make web-local`, and local smokes all see the same configuration.
 
 Need Redis or PostgreSQL for a specific workflow? Start from `docker-compose.yml` and use the [Contributor Runbook](docs/CONTRIBUTOR_RUNBOOK.md) for the rest of the repo workflow.
 

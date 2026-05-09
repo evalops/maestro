@@ -98,6 +98,11 @@ function configuredValue(names, fallback) {
 	return fallback;
 }
 
+function envValue(name, fallback) {
+	const value = process.env[name]?.trim();
+	return value || fallback;
+}
+
 function normalizeUrl(value) {
 	return value.replace(/\/+$/, "").replace(/\/cerebro\.v1\.CerebroService$/, "");
 }
@@ -130,9 +135,9 @@ function portForUrl(value) {
 
 const expectedPort = portForUrl(expectedCerebroUrl);
 const e2eEnv = new Map([
-	["LOCAL_HTTP_PORT", process.env.LOCAL_HTTP_PORT ?? expectedPort],
-	["LOCAL_ADDR", process.env.LOCAL_ADDR ?? `:${expectedPort}`],
-	["LOCAL_BASE_URL", process.env.LOCAL_BASE_URL ?? expectedCerebroUrl],
+	["LOCAL_HTTP_PORT", envValue("LOCAL_HTTP_PORT", expectedPort)],
+	["LOCAL_ADDR", envValue("LOCAL_ADDR", `:${expectedPort}`)],
+	["LOCAL_BASE_URL", envValue("LOCAL_BASE_URL", expectedCerebroUrl)],
 	["MAESTRO_CEREBRO_URL", expectedCerebroUrl],
 	["MAESTRO_CEREBRO_WORKSPACE_ID", expectedCerebroWorkspace],
 	["MAESTRO_WORKSPACE_ID", expectedCerebroWorkspace],
@@ -141,13 +146,39 @@ const e2eEnv = new Map([
 	["MAESTRO_PLATFORM_MCP_SCOPES", expectedCerebroMcpScopes],
 	["MAESTRO_AGENT_MCP_SCOPES", expectedCerebroMcpScopes],
 	["MAESTRO_CEREBRO_MCP_SCOPES", expectedCerebroMcpScopes],
-	["LOCAL_MAESTRO_GENERATE_REPLAY", process.env.LOCAL_MAESTRO_GENERATE_REPLAY ?? "true"],
-	["LOCAL_MAESTRO_DOCTOR_REPLAY", process.env.LOCAL_MAESTRO_DOCTOR_REPLAY ?? "auto"],
+	["LOCAL_MAESTRO_GENERATE_REPLAY", envValue("LOCAL_MAESTRO_GENERATE_REPLAY", "true")],
+	["LOCAL_MAESTRO_DOCTOR_REPLAY", envValue("LOCAL_MAESTRO_DOCTOR_REPLAY", "auto")],
+]);
+
+const maestroEnv = new Map([
+	["MAESTRO_CEREBRO_URL", expectedCerebroUrl],
+	["CEREBRO_URL", expectedCerebroUrl],
+	["CEREBRO_SERVICE_URL", expectedCerebroUrl],
+	["MAESTRO_CEREBRO_WORKSPACE_ID", expectedCerebroWorkspace],
+	["MAESTRO_WORKSPACE_ID", expectedCerebroWorkspace],
+	["CEREBRO_WORKSPACE_ID", expectedCerebroWorkspace],
+	["MAESTRO_PLATFORM_MCP_URL", expectedCerebroMcpUrl],
+	["MAESTRO_AGENT_MCP_URL", expectedCerebroMcpUrl],
+	["MAESTRO_EVALOPS_AGENT_MCP_URL", expectedCerebroMcpUrl],
+	["EVALOPS_AGENT_MCP_URL", expectedCerebroMcpUrl],
+	["MAESTRO_CEREBRO_MCP_SCOPES", expectedCerebroMcpScopes],
+	["MAESTRO_PLATFORM_MCP_SCOPES", expectedCerebroMcpScopes],
+	["MAESTRO_AGENT_MCP_SCOPES", expectedCerebroMcpScopes],
+	["MAESTRO_EVALOPS_AGENT_MCP_SCOPES", expectedCerebroMcpScopes],
+	["MAESTRO_EVALOPS_MEMORY_MODE", "cerebro"],
+	["EVALOPS_MEMORY_MODE", "cerebro"],
 ]);
 
 if (process.argv.includes("--print-env")) {
 	for (const [name, value] of e2eEnv) {
 		console.log(`${name}=${shellQuote(value)}`);
+	}
+	process.exit(0);
+}
+
+if (process.argv.includes("--print-maestro-env")) {
+	for (const [name, value] of maestroEnv) {
+		console.log(`export ${name}=${shellQuote(value)}`);
 	}
 	process.exit(0);
 }
@@ -172,6 +203,20 @@ if (existsSync(resolve(cerebroRepo, "scripts/local-maestro-doctor.sh"))) {
 	ok("Cerebro local Maestro doctor found");
 } else {
 	fail("Cerebro checkout is missing scripts/local-maestro-doctor.sh; pull latest main");
+}
+
+if (existsSync(resolve(cerebroRepo, "Makefile"))) {
+	const cerebroMakefile = readFileSync(resolve(cerebroRepo, "Makefile"), "utf8");
+	if (cerebroMakefile.includes("local-maestro-dev")) {
+		ok("Cerebro local Maestro dev target found");
+	} else {
+		fail("Cerebro checkout is missing make local-maestro-dev; pull latest main");
+	}
+	if (cerebroMakefile.includes("local-maestro-env")) {
+		ok("Cerebro local Maestro env target found");
+	} else {
+		fail("Cerebro checkout is missing make local-maestro-env; pull latest main");
+	}
 }
 
 if (existsSync(resolve(root, "scripts/generate-maestro-platform-replay-fixture.ts"))) {
