@@ -29,6 +29,7 @@ to the server.
 
 | Category | Examples |
 | --- | --- |
+| Operator loop | `browser_operator` observes the active page, performs one semantic action, and returns verification plus latest page state |
 | Read & search | `read_page`, `search_page`, `find_on_page`, `extract_links`, `extract_table_data`, `extract_document` |
 | Navigation & tabs | `navigate_to`, `open_links_in_tabs`, `wait_for_selector`, `scroll_page` |
 | Interaction | `click_element`, `type_text`, `select_element`, `highlight_element`, `mouse_action`, `pointer_action`, `keyboard_action` |
@@ -36,6 +37,15 @@ to the server.
 | Native actions (CDP) | `native_click`, `native_type`, `native_press`, `native_key_down`, `native_key_up` |
 | Skills & artifacts | `run_skill`, `manage_artifact`, `patch_artifact` |
 | MCP bridging | `list_mcp_servers`, `list_mcp_tools`, `list_mcp_resources`, `read_mcp_resource` |
+
+`browser_operator` is the preferred task-level browser-control surface. Call it
+first with a `goal` and no action to observe the current page. Then call it with
+the same `goal` plus an `action` such as `{ "kind": "click", "selector": "..." }`,
+`{ "kind": "type", "selector": "...", "text": "..." }`, or
+`{ "kind": "select", "selector": "...", "value": "..." }`. Conductor executes
+the action in the active tab, refreshes the page observation, and returns
+verification fields instead of making the model infer success from a low-level
+click or keypress alone.
 
 ## Optional: Native Messaging Host (Auto-Launch + Status)
 
