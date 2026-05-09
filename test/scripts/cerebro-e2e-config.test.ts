@@ -42,7 +42,55 @@ describe("Cerebro local E2E config", () => {
 		expect(output).toContain(
 			"MAESTRO_PLATFORM_MCP_URL='http://127.0.0.1:19999/mcp'",
 		);
+		expect(output).toContain(
+			"MAESTRO_AGENT_MCP_URL='http://127.0.0.1:19999/mcp'",
+		);
+		expect(output).toContain("MAESTRO_CEREBRO_MCP_SCOPES='cerebro:read'");
+		expect(output).toContain("MAESTRO_PLATFORM_MCP_SCOPES='cerebro:read'");
+		expect(output).toContain("MAESTRO_AGENT_MCP_SCOPES='cerebro:read'");
 		expect(output).toContain("MAESTRO_WORKSPACE_ID='workspace_under_test'");
+	});
+
+	it("honors documented agent MCP aliases when generating nested make env", () => {
+		const output = printEnv({
+			MAESTRO_CEREBRO_URL: "http://127.0.0.1:18888",
+			MAESTRO_AGENT_MCP_URL: "http://127.0.0.1:18888/mcp/",
+			MAESTRO_AGENT_MCP_SCOPES: "cerebro:read,cerebro:assert",
+		});
+
+		expect(output).toContain(
+			"MAESTRO_PLATFORM_MCP_URL='http://127.0.0.1:18888/mcp'",
+		);
+		expect(output).toContain(
+			"MAESTRO_AGENT_MCP_URL='http://127.0.0.1:18888/mcp'",
+		);
+		expect(output).toContain(
+			"MAESTRO_PLATFORM_MCP_SCOPES='cerebro:read,cerebro:assert'",
+		);
+		expect(output).toContain(
+			"MAESTRO_AGENT_MCP_SCOPES='cerebro:read,cerebro:assert'",
+		);
+	});
+
+	it("matches Cerebro workspace priority when aliases disagree", () => {
+		const output = printEnv({
+			MAESTRO_CEREBRO_WORKSPACE_ID: "cerebro_specific",
+			CEREBRO_WORKSPACE_ID: "cerebro_generic",
+			MAESTRO_WORKSPACE_ID: "maestro_generic",
+		});
+
+		expect(output).toContain("MAESTRO_CEREBRO_WORKSPACE_ID='cerebro_specific'");
+		expect(output).toContain("MAESTRO_WORKSPACE_ID='cerebro_specific'");
+
+		const fallbackOutput = printEnv({
+			CEREBRO_WORKSPACE_ID: "cerebro_generic",
+			MAESTRO_WORKSPACE_ID: "maestro_generic",
+		});
+
+		expect(fallbackOutput).toContain(
+			"MAESTRO_CEREBRO_WORKSPACE_ID='cerebro_generic'",
+		);
+		expect(fallbackOutput).toContain("MAESTRO_WORKSPACE_ID='cerebro_generic'");
 	});
 
 	it("does not depend on pinned .env.example defaults for the public developer surface check", () => {
@@ -71,5 +119,15 @@ describe("Cerebro local E2E config", () => {
 		expect(makefile).toContain(
 			'MAESTRO_PLATFORM_MCP_URL="$$MAESTRO_PLATFORM_MCP_URL"',
 		);
+		expect(makefile).toContain(
+			'MAESTRO_AGENT_MCP_URL="$$MAESTRO_AGENT_MCP_URL"',
+		);
+		expect(makefile).toContain(
+			'MAESTRO_PLATFORM_MCP_SCOPES="$$MAESTRO_PLATFORM_MCP_SCOPES"',
+		);
+		expect(makefile).toContain(
+			'MAESTRO_AGENT_MCP_SCOPES="$$MAESTRO_AGENT_MCP_SCOPES"',
+		);
+		expect(makefile).toContain("MAESTRO_AGENT_MCP_TOKEN");
 	});
 });

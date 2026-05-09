@@ -25,6 +25,7 @@ export interface Args {
 	subcommand?: string;
 	/** Raw arguments owned by command-group handlers. */
 	commandArgs?: string[];
+	contextLiveMcp?: boolean;
 	approvalMode?: "auto" | "prompt" | "fail";
 	authMode?: "auto" | "api-key" | "claude";
 	force?: boolean;
@@ -238,6 +239,8 @@ export function parseArgs(args: string[]): Args {
 			result.exportFormat = args[++i];
 		} else if (arg === "--redact-secrets") {
 			result.redactSecrets = true;
+		} else if (arg === "--live-mcp") {
+			result.contextLiveMcp = true;
 		} else if (arg === "--profile" && i + 1 < args.length) {
 			result.profile = args[++i];
 		} else if (arg === "--config" && i + 1 < args.length) {
@@ -253,7 +256,7 @@ export function parseArgs(args: string[]): Args {
 				const nextArg = args[i + 1];
 				const shouldConsumeSubcommand =
 					SUBCOMMAND_COMMANDS.has(arg) &&
-					(arg !== "context" || nextArg === "explain");
+					(arg !== "context" || nextArg === "explain" || nextArg === "diff");
 				if (
 					shouldConsumeSubcommand &&
 					i + 1 < args.length &&

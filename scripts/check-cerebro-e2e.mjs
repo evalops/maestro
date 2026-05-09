@@ -60,6 +60,30 @@ function commandOutput(command, args) {
 const exampleEnv = readEnvFile(resolve(root, ".env.example"));
 const localEnv = readEnvFile(resolve(root, ".env"));
 
+const CEREBRO_MCP_URL_ENV = [
+	"MAESTRO_PLATFORM_MCP_URL",
+	"MAESTRO_AGENT_MCP_URL",
+	"MAESTRO_EVALOPS_AGENT_MCP_URL",
+	"EVALOPS_AGENT_MCP_URL",
+];
+const CEREBRO_MCP_SCOPES_ENV = [
+	"MAESTRO_PLATFORM_MCP_SCOPES",
+	"MAESTRO_AGENT_MCP_SCOPES",
+	"MAESTRO_EVALOPS_AGENT_MCP_SCOPES",
+	"MAESTRO_CEREBRO_MCP_SCOPES",
+];
+const CEREBRO_WORKSPACE_ENV = [
+	"MAESTRO_CEREBRO_WORKSPACE_ID",
+	"CEREBRO_WORKSPACE_ID",
+	"MAESTRO_AGENT_RUNTIME_WORKSPACE_ID",
+	"AGENT_RUNTIME_WORKSPACE_ID",
+	"MAESTRO_EVALOPS_WORKSPACE_ID",
+	"EVALOPS_WORKSPACE_ID",
+	"MAESTRO_WORKSPACE_ID",
+	"MAESTRO_REMOTE_RUNNER_WORKSPACE_ID",
+	"LOCAL_MAESTRO_WORKSPACE_ID",
+];
+
 function configuredValue(names, fallback) {
 	for (const name of names) {
 		const envValue = process.env[name]?.trim();
@@ -85,13 +109,14 @@ const expectedCerebroUrl = normalizeUrl(
 	),
 );
 const expectedCerebroMcpUrl = normalizeUrl(
-	configuredValue(
-		["MAESTRO_PLATFORM_MCP_URL", "MAESTRO_EVALOPS_AGENT_MCP_URL", "EVALOPS_AGENT_MCP_URL"],
-		`${expectedCerebroUrl}/mcp`,
-	),
+	configuredValue(CEREBRO_MCP_URL_ENV, `${expectedCerebroUrl}/mcp`),
+);
+const expectedCerebroMcpScopes = configuredValue(
+	CEREBRO_MCP_SCOPES_ENV,
+	"cerebro:read",
 );
 const expectedCerebroWorkspace = configuredValue(
-	["MAESTRO_CEREBRO_WORKSPACE_ID", "MAESTRO_WORKSPACE_ID", "CEREBRO_WORKSPACE_ID", "LOCAL_MAESTRO_WORKSPACE_ID"],
+	CEREBRO_WORKSPACE_ENV,
 	"org_evalops_fixture",
 );
 
@@ -112,6 +137,10 @@ const e2eEnv = new Map([
 	["MAESTRO_CEREBRO_WORKSPACE_ID", expectedCerebroWorkspace],
 	["MAESTRO_WORKSPACE_ID", expectedCerebroWorkspace],
 	["MAESTRO_PLATFORM_MCP_URL", expectedCerebroMcpUrl],
+	["MAESTRO_AGENT_MCP_URL", expectedCerebroMcpUrl],
+	["MAESTRO_PLATFORM_MCP_SCOPES", expectedCerebroMcpScopes],
+	["MAESTRO_AGENT_MCP_SCOPES", expectedCerebroMcpScopes],
+	["MAESTRO_CEREBRO_MCP_SCOPES", expectedCerebroMcpScopes],
 	["LOCAL_MAESTRO_GENERATE_REPLAY", process.env.LOCAL_MAESTRO_GENERATE_REPLAY ?? "true"],
 	["LOCAL_MAESTRO_DOCTOR_REPLAY", process.env.LOCAL_MAESTRO_DOCTOR_REPLAY ?? "auto"],
 ]);
@@ -180,12 +209,36 @@ if (existsSync(resolve(root, "Makefile"))) {
 		"CEREBRO_SERVICE_URL",
 		"MAESTRO_CEREBRO_TOKEN",
 		"CEREBRO_TOKEN",
+		"MAESTRO_EVALOPS_ACCESS_TOKEN",
+		"EVALOPS_TOKEN",
 		"MAESTRO_CEREBRO_WORKSPACE_ID",
-		"MAESTRO_WORKSPACE_ID",
 		"CEREBRO_WORKSPACE_ID",
+		"MAESTRO_AGENT_RUNTIME_WORKSPACE_ID",
+		"AGENT_RUNTIME_WORKSPACE_ID",
+		"MAESTRO_WORKSPACE_ID",
+		"MAESTRO_EVALOPS_WORKSPACE_ID",
+		"EVALOPS_WORKSPACE_ID",
+		"MAESTRO_REMOTE_RUNNER_WORKSPACE_ID",
+		"LOCAL_HTTP_PORT",
+		"LOCAL_ADDR",
+		"LOCAL_BASE_URL",
+		"MAESTRO_PLATFORM_MCP_ENABLED",
+		"MAESTRO_AGENT_MCP_ENABLED",
+		"MAESTRO_PLATFORM_MCP_NAME",
+		"MAESTRO_AGENT_MCP_NAME",
 		"MAESTRO_PLATFORM_MCP_URL",
+		"MAESTRO_AGENT_MCP_URL",
 		"MAESTRO_EVALOPS_AGENT_MCP_URL",
+		"EVALOPS_AGENT_MCP_URL",
+		"MAESTRO_PLATFORM_MCP_MANIFEST_URL",
+		"MAESTRO_AGENT_MCP_MANIFEST_URL",
+		"MAESTRO_EVALOPS_AGENT_MCP_MANIFEST_URL",
+		"MAESTRO_PLATFORM_MCP_TOKEN",
+		"MAESTRO_AGENT_MCP_TOKEN",
 		"MAESTRO_CEREBRO_MCP_SCOPES",
+		"MAESTRO_PLATFORM_MCP_SCOPES",
+		"MAESTRO_AGENT_MCP_SCOPES",
+		"MAESTRO_EVALOPS_AGENT_MCP_SCOPES",
 		"MAESTRO_EVALOPS_MEMORY_MODE",
 	];
 	let makefileExportsOk = true;
@@ -221,15 +274,10 @@ if (localEnv.size > 0) {
 	if (localEnv.has("MAESTRO_CEREBRO_URL") || localEnv.has("CEREBRO_URL") || localEnv.has("LOCAL_BASE_URL")) {
 		ok(`effective local Cerebro URL is ${expectedCerebroUrl}`);
 	}
-	if (localEnv.has("MAESTRO_PLATFORM_MCP_URL") || localEnv.has("MAESTRO_EVALOPS_AGENT_MCP_URL")) {
+	if (CEREBRO_MCP_URL_ENV.some((name) => localEnv.has(name))) {
 		ok(`effective local Cerebro MCP URL is ${expectedCerebroMcpUrl}`);
 	}
-	if (
-		localEnv.has("MAESTRO_CEREBRO_WORKSPACE_ID") ||
-		localEnv.has("MAESTRO_WORKSPACE_ID") ||
-		localEnv.has("CEREBRO_WORKSPACE_ID") ||
-		localEnv.has("LOCAL_MAESTRO_WORKSPACE_ID")
-	) {
+	if (CEREBRO_WORKSPACE_ENV.some((name) => localEnv.has(name))) {
 		ok(`effective local Cerebro workspace is ${expectedCerebroWorkspace}`);
 	}
 }

@@ -101,8 +101,14 @@ export function printHelp(version: string) {
   # Confirm managed mode sinks and EvalOps org identity
   maestro status
 
-  # Explain which AGENTS/CLAUDE instruction files are loaded into the prompt
+  # Explain which instruction files and MCP context sources are visible
   maestro context explain
+
+  # Compare context sources between two workspaces
+  maestro context diff ./before ./after
+
+  # Include live MCP resources and prompts in context diagnostics
+  maestro context explain --live-mcp
 
   # Export a portable session log
   maestro export <session-id> ./session.jsonl --format jsonl
