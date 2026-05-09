@@ -41,11 +41,7 @@ describe("parseArgs", () => {
 		});
 	});
 
-	it("parses hidden support help and rejects legacy runtime as a CLI flag", () => {
-		expect(parseArgs(["--help", "--hidden"])).toMatchObject({
-			help: true,
-			hiddenHelp: true,
-		});
+	it("rejects legacy runtime as a CLI flag", () => {
 		expect(parseArgs(["--headless", "--legacy-runtime"])).toMatchObject({
 			headless: true,
 			mode: "headless",

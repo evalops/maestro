@@ -43,12 +43,7 @@ import { badge, heading, muted, sectionHeading } from "../style/theme.js";
  * }
  * ```
  */
-export interface HelpOptions {
-	hidden?: boolean;
-}
-
-export function printHelp(version: string, options_: HelpOptions = {}) {
-	void options_;
+export function printHelp(version: string) {
 	const header = `${heading("Maestro")} ${muted(
 		`v${version} by EvalOps — AI coding assistant with read, list, search, diff, bash, edit, write, todo tools`,
 	)}`;

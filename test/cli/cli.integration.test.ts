@@ -774,11 +774,13 @@ describe("CLI integration", () => {
 		const originalBeaconFile = process.env.MAESTRO_BEACON_FILE;
 		const originalBufferFile =
 			process.env.MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE;
+		const originalLegacyRuntime = process.env.MAESTRO_INTERNAL_HEADLESS_RUNTIME;
 		const beaconFile = join(tempAgentDir, "models-beacon.jsonl");
 		const bufferFile = join(tempAgentDir, "models-command-buffer.json");
 		process.env.MAESTRO_TELEMETRY = "1";
 		process.env.MAESTRO_BEACON_FILE = beaconFile;
 		process.env.MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE = bufferFile;
+		process.env.MAESTRO_INTERNAL_HEADLESS_RUNTIME = "legacy";
 		const exitCodes: number[] = [];
 		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
 			exitCodes.push(Number(code ?? 0));
@@ -792,13 +794,24 @@ describe("CLI integration", () => {
 			await waitForFile(bufferFile);
 			const [startupEvent] = JSON.parse(
 				readFileSync(beaconFile, "utf8").trim(),
-			) as [{ feature: string; action: string }];
+			) as [
+				{
+					feature: string;
+					action: string;
+					parameters?: { metadata?: Record<string, unknown> };
+				},
+			];
 			const commandBuffer = JSON.parse(readFileSync(bufferFile, "utf8")) as {
 				counts: Record<string, number>;
 			};
 			expect(startupEvent).toMatchObject({
 				feature: "cli.startup",
 				action: "models.providers",
+				parameters: {
+					metadata: {
+						legacyRuntimeRequested: false,
+					},
+				},
 			});
 			expect(commandBuffer.counts).toEqual({
 				"cli.command.models.providers": 1,
@@ -821,6 +834,14 @@ describe("CLI integration", () => {
 				);
 			} else {
 				process.env.MAESTRO_CLI_COMMAND_BEACON_BUFFER_FILE = originalBufferFile;
+			}
+			if (originalLegacyRuntime === undefined) {
+				Reflect.deleteProperty(
+					process.env,
+					"MAESTRO_INTERNAL_HEADLESS_RUNTIME",
+				);
+			} else {
+				process.env.MAESTRO_INTERNAL_HEADLESS_RUNTIME = originalLegacyRuntime;
 			}
 			exitSpy.mockRestore();
 		}
