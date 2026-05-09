@@ -1,0 +1,96 @@
+{
+	"version": 1,
+	"description": "Compact conformance anchors for Codex-inspired Maestro surfaces that should not drift silently.",
+	"checks": [
+		{
+			"area": "codex-auth-provider",
+			"path": "docs/MODELS.md",
+			"anchors": [
+				"openai-codex",
+				"openai-codex-responses",
+				"maestro codex login"
+			]
+		},
+		{
+			"area": "codex-auth-provider",
+			"path": "src/agent/providers/openai-codex-session.ts",
+			"anchors": ["OPENAI_CODEX_ORIGINATOR", "codex_cli_rs", "/codex/responses"]
+		},
+		{
+			"area": "native-apply-patch",
+			"path": "src/tools/apply-patch.ts",
+			"anchors": [
+				"Apply an OpenAI/Codex apply_patch block directly",
+				"editGrammar: \"apply_patch\"",
+				"ApplyPatchConflictError"
+			]
+		},
+		{
+			"area": "native-apply-patch",
+			"path": "test/tools/apply-patch.test.ts",
+			"anchors": [
+				"applies repeated filesystem operations against staged patch state",
+				"honors EOF newline markers",
+				"moves a file while applying update hunks"
+			]
+		},
+		{
+			"area": "mcp-resource-prompt-bridge",
+			"path": "src/tools/conductor-client.ts",
+			"anchors": [
+				"list_mcp_resources",
+				"read_mcp_resource",
+				"list_mcp_prompts",
+				"get_mcp_prompt"
+			]
+		},
+		{
+			"area": "mcp-resource-prompt-bridge",
+			"path": "packages/web/src/components/composer-chat.ts",
+			"anchors": [
+				"list_mcp_resources",
+				"read_mcp_resource",
+				"list_mcp_prompts",
+				"get_mcp_prompt"
+			]
+		},
+		{
+			"area": "prompt-queue-parity",
+			"path": "src/cli-tui/queue/queue-controller.ts",
+			"anchors": [
+				"queuedSteering",
+				"queuedFollowUps",
+				"drainSteeringBatchForInterrupt",
+				"Tab queue follow-up"
+			]
+		},
+		{
+			"area": "prompt-queue-parity",
+			"path": "packages/tui-rs/src/app.rs",
+			"anchors": [
+				"should_submit_on_tab",
+				"test_should_submit_on_tab_only_when_idle_with_non_blocked_input",
+				"drain_queued_steering_batch_for_interrupt"
+			]
+		},
+		{
+			"area": "hosted-runtime-parity",
+			"path": "docs/protocols/headless-conformance.md",
+			"anchors": [
+				"runtime-conformance.test.ts",
+				"MAESTRO_RUST_HOSTED_CONFORMANCE=1",
+				"read-only viewers and controller ownership"
+			]
+		},
+		{
+			"area": "hosted-runtime-parity",
+			"path": "test/headless/runtime-conformance.test.ts",
+			"anchors": [
+				"controller",
+				"viewer",
+				"scopes utility file reads to the hosted workspace root",
+				"drain"
+			]
+		}
+	]
+}

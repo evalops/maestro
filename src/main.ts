@@ -121,8 +121,10 @@ import {
 	runExecCommand,
 } from "./cli/commands/exec.js";
 import {
+	isHeadlessModeRequested,
 	recordHeadlessRuntimeSelection,
 	selectHeadlessRuntime,
+	willDispatchHeadlessRuntime,
 } from "./cli/headless-runtime-selection.js";
 import { runHeadlessMode } from "./cli/headless.js";
 import { printHelp } from "./cli/help.js";
@@ -500,10 +502,20 @@ export async function main(args: string[]) {
 		process.exit(1);
 	}
 
-	const isHeadlessMode = parsed.headless || parsed.mode === "headless";
+	const isHeadlessMode = isHeadlessModeRequested(parsed);
+	const willDispatchHeadlessMode = willDispatchHeadlessRuntime(parsed);
 	if (parsed.legacyRuntime && !isHeadlessMode) {
 		console.error(
 			chalk.red("--legacy-runtime can only be used with --headless mode"),
+		);
+		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
+		process.exit(1);
+	}
+	if (parsed.legacyRuntime && !willDispatchHeadlessMode) {
+		console.error(
+			chalk.red(
+				"--legacy-runtime can only be used when Maestro dispatches headless mode. Remove the command or use `maestro exec --mode=headless --legacy-runtime`.",
+			),
 		);
 		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
 		process.exit(1);
@@ -597,7 +609,7 @@ export async function main(args: string[]) {
 		!parsed.messages.length &&
 		(parsed.mode === "text" || parsed.mode === undefined) &&
 		parsed.command === undefined;
-	if (isLikelyInteractiveTui || isHeadlessMode) {
+	if (isLikelyInteractiveTui || willDispatchHeadlessMode) {
 		const {
 			redirectLoggerToFile,
 			redirectConsoleToLogger,
@@ -605,8 +617,8 @@ export async function main(args: string[]) {
 			pipeProcessEventsToLogger,
 		} = await import("./utils/logger.js");
 		redirectLoggerToFile();
-		redirectConsoleToLogger({ preserveErrorStderr: isHeadlessMode });
-		if (!isHeadlessMode) {
+		redirectConsoleToLogger({ preserveErrorStderr: willDispatchHeadlessMode });
+		if (!willDispatchHeadlessMode) {
 			redirectStderrToLogger();
 		}
 		pipeProcessEventsToLogger();

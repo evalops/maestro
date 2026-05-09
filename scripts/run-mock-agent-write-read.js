@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { rmSync } from "node:fs";
 import { runMockAgentFlow } from "./mock-agent-runner.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const projectRoot = join(__dirname, "..");
 const targetFile = join(projectRoot, "evals", "mock-agent-flow.txt");
+
+rmSync(targetFile, { force: true });
 
 let readContent = "";
 
