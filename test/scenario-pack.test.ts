@@ -93,6 +93,44 @@ describe("complex task scenario pack", () => {
 		expect(junit).toContain("browser-computer-grant-task");
 	});
 
+	it("rejects --junit when the value is missing or another flag", async () => {
+		await expect(
+			handleScenarioCommand(["run", DEFAULT_SCENARIO_PACK, "--junit"]),
+		).rejects.toThrow(
+			"Invalid scenario arguments: --junit requires a non-flag file path",
+		);
+
+		await expect(
+			handleScenarioCommand([
+				"run",
+				DEFAULT_SCENARIO_PACK,
+				"--junit",
+				"--json",
+			]),
+		).rejects.toThrow(
+			"Invalid scenario arguments: --junit requires a non-flag file path",
+		);
+	});
+
+	it("rejects --report when the value is missing or another flag", async () => {
+		await expect(
+			handleScenarioCommand(["run", DEFAULT_SCENARIO_PACK, "--report"]),
+		).rejects.toThrow(
+			"Invalid scenario arguments: --report requires a non-flag file path",
+		);
+
+		await expect(
+			handleScenarioCommand([
+				"run",
+				DEFAULT_SCENARIO_PACK,
+				"--report",
+				"--json",
+			]),
+		).rejects.toThrow(
+			"Invalid scenario arguments: --report requires a non-flag file path",
+		);
+	});
+
 	it("rejects malformed scenarios instead of dropping them from the pack", async () => {
 		const tempDir = await mkdtemp(join(tmpdir(), "maestro-scenario-"));
 		const malformedPath = join(tempDir, "malformed-pack.json");
