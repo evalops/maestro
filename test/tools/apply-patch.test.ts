@@ -8,7 +8,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentToolResult } from "../../src/agent/types.js";
 import { runValidatorsOnSuccess } from "../../src/safety/safe-mode.js";
@@ -326,6 +326,32 @@ describe("apply_patch tool", () => {
 		expect(readFileSync(filePath, "utf-8")).toBe("keep\n");
 	});
 
+	it("normalizes filesystem staged state keys by resolved path", async () => {
+		const filePath = join(testDir, "normalized.ts");
+		const variantPath = `${testDir}${sep}.${sep}normalized.ts`;
+		writeFileSync(filePath, "export const a = 1;\nexport const b = 1;\n");
+		expect(variantPath).not.toBe(filePath);
+
+		await applyPatchTool.execute("call-normalized", {
+			patch: [
+				"*** Begin Patch",
+				`*** Update File: ${filePath}`,
+				"@@",
+				"-export const a = 1;",
+				"+export const a = 2;",
+				`*** Update File: ${variantPath}`,
+				"@@",
+				"-export const b = 1;",
+				"+export const b = 2;",
+				"*** End Patch",
+			].join("\n"),
+		});
+
+		expect(readFileSync(filePath, "utf-8")).toBe(
+			"export const a = 2;\nexport const b = 2;\n",
+		);
+	});
+
 	it("adds and deletes files", async () => {
 		const addedPath = join(testDir, "nested", "created.py");
 		const deletedPath = join(testDir, "old.rs");
@@ -558,6 +584,104 @@ describe("apply_patch tool", () => {
 
 		await expect(sandbox.readFile("repeated.ts")).resolves.toBe(
 			"export const a = 2;\nexport const b = 2;\n",
+		);
+	});
+
+	it("normalizes sandbox staged state keys by resolved path", async () => {
+		const sandbox = createMemorySandbox({
+			"normalized.ts": "export const a = 1;\nexport const b = 1;\n",
+		});
+
+		await applyPatchTool.execute(
+			"call-sandbox-normalized",
+			{
+				patch: [
+					"*** Begin Patch",
+					"*** Update File: normalized.ts",
+					"@@",
+					"-export const a = 1;",
+					"+export const a = 2;",
+					"*** Update File: ./normalized.ts",
+					"@@",
+					"-export const b = 1;",
+					"+export const b = 2;",
+					"*** End Patch",
+				].join("\n"),
+			},
+			undefined,
+			{ sandbox },
+		);
+
+		await expect(sandbox.readFile("normalized.ts")).resolves.toBe(
+			"export const a = 2;\nexport const b = 2;\n",
+		);
+	});
+
+	it("keeps absolute and relative sandbox staged paths distinct", async () => {
+		const sandbox = createMemorySandbox({
+			"/tmp/normalized.ts": "export const absolute = 1;\n",
+			"tmp/normalized.ts": "export const relative = 1;\n",
+		});
+
+		await applyPatchTool.execute(
+			"call-sandbox-absolute-normalized",
+			{
+				patch: [
+					"*** Begin Patch",
+					"*** Update File: tmp/normalized.ts",
+					"@@",
+					"-export const relative = 1;",
+					"+export const relative = 2;",
+					"*** Update File: /tmp/normalized.ts",
+					"@@",
+					"-export const absolute = 1;",
+					"+export const absolute = 2;",
+					"*** End Patch",
+				].join("\n"),
+			},
+			undefined,
+			{ sandbox },
+		);
+
+		await expect(sandbox.readFile("/tmp/normalized.ts")).resolves.toBe(
+			"export const absolute = 2;\n",
+		);
+		await expect(sandbox.readFile("tmp/normalized.ts")).resolves.toBe(
+			"export const relative = 2;\n",
+		);
+	});
+
+	it("keeps backslash and slash sandbox staged paths distinct", async () => {
+		const sandbox = createMemorySandbox({
+			"dir\\normalized.ts": "export const backslash = 1;\n",
+			"dir/normalized.ts": "export const slash = 1;\n",
+		});
+
+		await applyPatchTool.execute(
+			"call-sandbox-backslash-normalized",
+			{
+				patch: [
+					"*** Begin Patch",
+					"*** Update File: dir\\normalized.ts",
+					"@@",
+					"-export const backslash = 1;",
+					"+export const backslash = 2;",
+					"*** Update File: dir/normalized.ts",
+					"@@",
+					"-export const slash = 1;",
+					"+export const slash = 2;",
+					"*** End Patch",
+				].join("\n"),
+			},
+			undefined,
+			{ sandbox },
+		);
+
+		await expect(sandbox.readFile("dir\\normalized.ts")).resolves.toBe(
+			"export const backslash = 2;\n",
+		);
+		await expect(sandbox.readFile("dir/normalized.ts")).resolves.toBe(
+			"export const slash = 2;\n",
 		);
 	});
 

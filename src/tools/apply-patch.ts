@@ -195,11 +195,11 @@ async function planFilesystemPatch(
 	const plan = emptyPlan();
 	const stagedFiles = new Map<string, StagedFileState>();
 	const getState = async (path: string): Promise<StagedFileState> => {
-		const cached = stagedFiles.get(path);
+		const absolutePath = resolvePath(expandUserPath(path));
+		const cached = stagedFiles.get(absolutePath);
 		if (cached) {
 			return cached;
 		}
-		const absolutePath = resolvePath(expandUserPath(path));
 		const exists = await fileExists(absolutePath);
 		const state = {
 			path,
@@ -207,7 +207,7 @@ async function planFilesystemPatch(
 			exists,
 			currentContent: exists ? undefined : null,
 		};
-		stagedFiles.set(path, state);
+		stagedFiles.set(absolutePath, state);
 		return state;
 	};
 
@@ -221,7 +221,7 @@ async function planFilesystemPatch(
 			const nextContent = serializeLines(operation.lines, true);
 			assertTeamMemoryContentSafe(absolutePath, nextContent);
 			addPlannedChange(plan, {
-				path: operation.path,
+				path: state.path,
 				absolutePath,
 				previousContent: null,
 				nextContent,
@@ -237,7 +237,7 @@ async function planFilesystemPatch(
 				operation.path,
 			);
 			addPlannedChange(plan, {
-				path: operation.path,
+				path: state.path,
 				absolutePath,
 				previousContent,
 				nextContent: null,
@@ -268,7 +268,7 @@ async function planFilesystemPatch(
 				}
 				assertTeamMemoryContentSafe(destinationState.absolutePath, nextContent);
 				addPlannedChange(plan, {
-					path: operation.path,
+					path: state.path,
 					absolutePath,
 					previousContent,
 					nextContent: null,
@@ -277,7 +277,7 @@ async function planFilesystemPatch(
 					diff: generateDiffString(previousContent, ""),
 				});
 				addPlannedChange(plan, {
-					path: operation.moveTo,
+					path: destinationState.path,
 					absolutePath: destinationState.absolutePath,
 					previousContent: null,
 					nextContent,
@@ -293,7 +293,7 @@ async function planFilesystemPatch(
 			}
 			assertTeamMemoryContentSafe(absolutePath, nextContent);
 			addPlannedChange(plan, {
-				path: operation.path,
+				path: state.path,
 				absolutePath,
 				previousContent,
 				nextContent,
@@ -315,11 +315,12 @@ async function planSandboxPatch(
 	const plan = emptyPlan();
 	const stagedFiles = new Map<string, StagedFileState>();
 	const getState = async (path: string): Promise<StagedFileState> => {
-		const cached = stagedFiles.get(path);
+		const absolutePath = resolvePath(expandUserPath(path));
+		const cacheKey = normalizeSandboxPathKey(path);
+		const cached = stagedFiles.get(cacheKey);
 		if (cached) {
 			return cached;
 		}
-		const absolutePath = resolvePath(expandUserPath(path));
 		const exists = await sandbox.exists(path);
 		const state = {
 			path,
@@ -327,7 +328,7 @@ async function planSandboxPatch(
 			exists,
 			currentContent: exists ? undefined : null,
 		};
-		stagedFiles.set(path, state);
+		stagedFiles.set(cacheKey, state);
 		return state;
 	};
 
@@ -341,7 +342,7 @@ async function planSandboxPatch(
 			const nextContent = serializeLines(operation.lines, true);
 			assertTeamMemoryContentSafe(absolutePath, nextContent);
 			addPlannedChange(plan, {
-				path: operation.path,
+				path: state.path,
 				absolutePath,
 				previousContent: null,
 				nextContent,
@@ -359,7 +360,7 @@ async function planSandboxPatch(
 				"in sandbox",
 			);
 			addPlannedChange(plan, {
-				path: operation.path,
+				path: state.path,
 				absolutePath,
 				previousContent,
 				nextContent: null,
@@ -394,7 +395,7 @@ async function planSandboxPatch(
 				}
 				assertTeamMemoryContentSafe(destinationState.absolutePath, nextContent);
 				addPlannedChange(plan, {
-					path: operation.path,
+					path: state.path,
 					absolutePath,
 					previousContent,
 					nextContent: null,
@@ -403,7 +404,7 @@ async function planSandboxPatch(
 					diff: generateDiffString(previousContent, ""),
 				});
 				addPlannedChange(plan, {
-					path: operation.moveTo,
+					path: destinationState.path,
 					absolutePath: destinationState.absolutePath,
 					previousContent: null,
 					nextContent,
@@ -419,7 +420,7 @@ async function planSandboxPatch(
 			}
 			assertTeamMemoryContentSafe(absolutePath, nextContent);
 			addPlannedChange(plan, {
-				path: operation.path,
+				path: state.path,
 				absolutePath,
 				previousContent,
 				nextContent,
@@ -692,6 +693,27 @@ async function fileExists(absolutePath: string): Promise<boolean> {
 	} catch {
 		return false;
 	}
+}
+
+function normalizeSandboxPathKey(path: string): string {
+	const isAbsolute = path.startsWith("/");
+	const parts = path.split("/").reduce<string[]>((segments, segment) => {
+		if (segment === "" || segment === ".") {
+			return segments;
+		}
+		if (segment === "..") {
+			if (segments.length > 0 && segments.at(-1) !== "..") {
+				segments.pop();
+			} else if (!isAbsolute) {
+				segments.push(segment);
+			}
+			return segments;
+		}
+		segments.push(segment);
+		return segments;
+	}, []);
+	const normalized = parts.join("/");
+	return isAbsolute ? `/${normalized}` : normalized;
 }
 
 async function readFilesystemStateContent(
