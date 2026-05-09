@@ -383,7 +383,7 @@ interface ReadContextResult {
 	maxBytes?: number;
 }
 
-function truncateUtf8(
+export function truncateUtf8(
 	buffer: Buffer,
 	maxBytes: number,
 ): {
