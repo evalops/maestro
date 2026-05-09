@@ -15,6 +15,7 @@ import {
 	getWritablePackageConfigPath,
 	loadConfig,
 	loadConfiguredPackageSpecs,
+	loadPromptProjectDocManifest,
 	parseCliOverride,
 	removeConfiguredPackageSpecFromConfig,
 	resolvePromptLoadedProjectDocPaths,
@@ -930,6 +931,65 @@ experimental_instructions_file = ".maestro/instructions.md"
 			expect(
 				resolvedPaths.filter((filePath) => filePath === configInstructionPath),
 			).toHaveLength(1);
+		});
+
+		it("exposes manifest metadata for loaded, truncated, layered project docs", () => {
+			const appDir = join(projectDir, "apps", "web");
+			mkdirSync(appDir, { recursive: true });
+			writeFileSync(join(projectDir, "AGENTS.md"), "root instructions");
+			writeFileSync(join(appDir, "AGENTS.md"), "child instructions");
+
+			const config = {
+				...DEFAULT_CONFIG,
+				project_doc_max_bytes: 25,
+			} as ComposerConfig;
+
+			const manifest = loadPromptProjectDocManifest(appDir, config);
+
+			expect(manifest.cwd).toBe(resolve(appDir));
+			expect(manifest.maxBytes).toBe(25);
+			expect(manifest.entries.map((entry) => entry.path)).toEqual([
+				resolve(join(projectDir, "AGENTS.md")),
+				resolve(join(appDir, "AGENTS.md")),
+			]);
+			expect(manifest.entries[0]).toMatchObject({
+				sourceKind: "project",
+				scopeDir: resolve(projectDir),
+				candidateName: "AGENTS.md",
+				bytesRead: Buffer.byteLength("root instructions"),
+				truncated: false,
+				precedenceIndex: 0,
+			});
+			expect(manifest.entries[0]?.contentHash).toMatch(/^[a-f0-9]{64}$/);
+			expect(manifest.entries[1]).toMatchObject({
+				sourceKind: "project",
+				scopeDir: resolve(appDir),
+				candidateName: "AGENTS.md",
+				bytesRead: Buffer.byteLength("child in"),
+				truncated: true,
+				precedenceIndex: 1,
+			});
+			expect(manifest.entries[1]?.content).toContain("[Truncated to 8 bytes");
+			expect(manifest.diagnostics.map((diagnostic) => diagnostic.code)).toEqual(
+				expect.arrayContaining(["truncated", "multiple_instruction_layers"]),
+			);
+		});
+
+		it("diagnoses unreadable candidates and continues to the next project doc", () => {
+			mkdirSync(join(projectDir, "AGENTS.md"));
+			writeFileSync(join(projectDir, "CLAUDE.md"), "fallback instructions");
+
+			const manifest = loadPromptProjectDocManifest(projectDir, DEFAULT_CONFIG);
+
+			expect(manifest.entries).toHaveLength(1);
+			expect(manifest.entries[0]).toMatchObject({
+				path: resolve(join(projectDir, "CLAUDE.md")),
+				candidateName: "CLAUDE.md",
+				content: "fallback instructions",
+			});
+			expect(manifest.diagnostics.map((diagnostic) => diagnostic.code)).toEqual(
+				expect.arrayContaining(["read_failed"]),
+			);
 		});
 	});
 });

@@ -23,6 +23,7 @@
  * allowing users to have personal settings that don't get committed to git.
  */
 
+import { createHash } from "node:crypto";
 import {
 	closeSync,
 	existsSync,
@@ -570,6 +571,46 @@ export function resolveProjectDocCandidateFilenames(
 	return Array.from(new Set(merged));
 }
 
+export type PromptProjectDocSourceKind = "global" | "project";
+
+export type PromptProjectDocDiagnosticSeverity = "info" | "warning";
+
+export interface PromptProjectDocManifestEntry {
+	path: string;
+	sourceKind: PromptProjectDocSourceKind;
+	scopeDir: string;
+	candidateName: string;
+	bytesRead: number;
+	truncated: boolean;
+	contentHash: string;
+	precedenceIndex: number;
+	content: string;
+	originalSize?: number;
+	maxBytes?: number;
+}
+
+export interface PromptProjectDocDiagnostic {
+	code:
+		| "budget_exhausted"
+		| "duplicate_skipped"
+		| "multiple_instruction_layers"
+		| "read_failed"
+		| "truncated";
+	severity: PromptProjectDocDiagnosticSeverity;
+	message: string;
+	path?: string;
+	scopeDir?: string;
+}
+
+export interface PromptProjectDocManifest {
+	cwd: string;
+	candidates: string[];
+	maxBytes?: number;
+	bytesRead: number;
+	entries: PromptProjectDocManifestEntry[];
+	diagnostics: PromptProjectDocDiagnostic[];
+}
+
 function truncateUtf8ToValidBytes(buffer: Buffer, bytesRead: number): number {
 	let end = bytesRead;
 	if (end === 0) {
@@ -606,30 +647,55 @@ function truncateUtf8ToValidBytes(buffer: Buffer, bytesRead: number): number {
 	return Math.max(0, end);
 }
 
-function estimateProjectDocBytesRead(
-	filePath: string,
-	budget?: number,
-): number {
-	const stats = statSync(filePath);
-	if (budget === undefined || budget <= 0 || stats.size <= budget) {
-		return stats.size;
-	}
-
-	const fd = openSync(filePath, "r");
-	try {
-		const buffer = Buffer.alloc(budget);
-		const bytesRead = readSync(fd, buffer, 0, budget, 0);
-		return truncateUtf8ToValidBytes(buffer, bytesRead);
-	} finally {
-		closeSync(fd);
-	}
+function hashPromptProjectDocContent(content: string): string {
+	return createHash("sha256").update(content).digest("hex");
 }
 
-function resolveFirstProjectDocPathInDir(
+function readProjectDocContent(
+	filePath: string,
+	budget?: number,
+): {
+	content: string;
+	bytesRead: number;
+	truncated: boolean;
+	originalSize?: number;
+	maxBytes?: number;
+} {
+	const stats = statSync(filePath);
+	if (budget !== undefined && budget > 0 && stats.size > budget) {
+		const fd = openSync(filePath, "r");
+		try {
+			const buffer = Buffer.alloc(budget);
+			const bytesRead = readSync(fd, buffer, 0, budget, 0);
+			const validBytes = truncateUtf8ToValidBytes(buffer, bytesRead);
+			return {
+				content: buffer.slice(0, validBytes).toString("utf-8"),
+				bytesRead: validBytes,
+				truncated: true,
+				originalSize: stats.size,
+				maxBytes: budget,
+			};
+		} finally {
+			closeSync(fd);
+		}
+	}
+
+	const content = readFileSync(filePath, "utf-8");
+	return {
+		content,
+		bytesRead: Buffer.byteLength(content),
+		truncated: false,
+		originalSize: stats.size,
+	};
+}
+
+function loadFirstProjectDocInDir(
 	dir: string,
 	candidates: string[],
+	sourceKind: PromptProjectDocSourceKind,
 	remainingBytes?: number,
-): { path: string; bytesRead: number } | null {
+	diagnostics: PromptProjectDocDiagnostic[] = [],
+): Omit<PromptProjectDocManifestEntry, "precedenceIndex"> | null {
 	if (remainingBytes !== undefined && remainingBytes <= 0) {
 		return null;
 	}
@@ -637,9 +703,34 @@ function resolveFirstProjectDocPathInDir(
 		const filePath = join(dir, filename);
 		if (existsSync(filePath)) {
 			const resolvedPath = resolve(filePath);
+			let read: ReturnType<typeof readProjectDocContent>;
+			try {
+				read = readProjectDocContent(resolvedPath, remainingBytes);
+			} catch (error) {
+				diagnostics.push({
+					code: "read_failed",
+					severity: "warning",
+					message: `Could not read instruction file ${resolvedPath}: ${error instanceof Error ? error.message : String(error)}`,
+					path: resolvedPath,
+					scopeDir: resolve(dir),
+				});
+				continue;
+			}
+			const note = read.truncated
+				? `\n\n[Truncated to ${read.bytesRead} bytes from ${read.originalSize} bytes.]`
+				: "";
+			const content = `${read.content}${note}`;
 			return {
 				path: resolvedPath,
-				bytesRead: estimateProjectDocBytesRead(resolvedPath, remainingBytes),
+				sourceKind,
+				scopeDir: resolve(dir),
+				candidateName: filename,
+				bytesRead: read.bytesRead,
+				truncated: read.truncated,
+				contentHash: hashPromptProjectDocContent(read.content),
+				content,
+				originalSize: read.originalSize,
+				maxBytes: read.maxBytes,
 			};
 		}
 	}
@@ -652,55 +743,7 @@ export function resolveProjectDocGlobalDirectories(): string[] {
 	);
 }
 
-export function resolvePromptLoadedProjectDocPaths(
-	cwdOverride?: string,
-	config?: ComposerConfig,
-): string[] {
-	const cwd = cwdOverride ?? process.cwd();
-	const resolvedConfig = config ?? loadConfig(cwd);
-	const candidates = resolveProjectDocCandidateFilenames(resolvedConfig);
-	const maxBytesRaw = resolvedConfig.project_doc_max_bytes;
-	const maxBytes =
-		typeof maxBytesRaw === "number"
-			? Math.max(0, Math.floor(maxBytesRaw))
-			: undefined;
-	let remainingBytes = maxBytes;
-	if (remainingBytes === 0) {
-		return [];
-	}
-	const paths: string[] = [];
-	const loadedPaths = new Set<string>();
-
-	const pushResolvedPath = (
-		contextPath: { path: string; bytesRead: number } | null,
-	): void => {
-		if (!contextPath) {
-			return;
-		}
-		const resolvedPath = resolve(contextPath.path);
-		if (loadedPaths.has(resolvedPath)) {
-			return;
-		}
-		loadedPaths.add(resolvedPath);
-		paths.push(resolvedPath);
-		if (remainingBytes !== undefined) {
-			remainingBytes = Math.max(0, remainingBytes - contextPath.bytesRead);
-		}
-	};
-
-	for (const globalContextDir of resolveProjectDocGlobalDirectories()) {
-		if (remainingBytes === 0) {
-			break;
-		}
-		pushResolvedPath(
-			resolveFirstProjectDocPathInDir(
-				globalContextDir,
-				candidates,
-				remainingBytes,
-			),
-		);
-	}
-
+function resolveProjectDocAncestorDirectories(cwd: string): string[] {
 	const directories: string[] = [];
 	let currentDir = resolve(cwd);
 	const root = resolve("/");
@@ -719,20 +762,135 @@ export function resolvePromptLoadedProjectDocPaths(
 	}
 
 	directories.reverse();
+	return directories;
+}
 
-	for (const dir of directories) {
+export function loadPromptProjectDocManifest(
+	cwdOverride?: string,
+	config?: ComposerConfig,
+): PromptProjectDocManifest {
+	const cwd = resolve(cwdOverride ?? process.cwd());
+	const resolvedConfig = config ?? loadConfig(cwd);
+	const candidates = resolveProjectDocCandidateFilenames(resolvedConfig);
+	const maxBytesRaw = resolvedConfig.project_doc_max_bytes;
+	const maxBytes =
+		typeof maxBytesRaw === "number"
+			? Math.max(0, Math.floor(maxBytesRaw))
+			: undefined;
+	let remainingBytes = maxBytes;
+	const entries: PromptProjectDocManifestEntry[] = [];
+	const diagnostics: PromptProjectDocDiagnostic[] = [];
+	const loadedPaths = new Set<string>();
+
+	const pushEntry = (
+		entry: Omit<PromptProjectDocManifestEntry, "precedenceIndex"> | null,
+	): void => {
+		if (!entry) {
+			return;
+		}
+		const resolvedPath = resolve(entry.path);
+		if (loadedPaths.has(resolvedPath)) {
+			diagnostics.push({
+				code: "duplicate_skipped",
+				severity: "warning",
+				message: `Skipped duplicate instruction file already loaded from ${resolvedPath}.`,
+				path: resolvedPath,
+				scopeDir: entry.scopeDir,
+			});
+			return;
+		}
+
+		loadedPaths.add(resolvedPath);
+		entries.push({
+			...entry,
+			path: resolvedPath,
+			precedenceIndex: entries.length,
+		});
+		if (entry.truncated) {
+			diagnostics.push({
+				code: "truncated",
+				severity: "warning",
+				message: `Loaded only ${entry.bytesRead} of ${entry.originalSize ?? "unknown"} bytes from ${resolvedPath}.`,
+				path: resolvedPath,
+				scopeDir: entry.scopeDir,
+			});
+		}
+		if (remainingBytes !== undefined) {
+			remainingBytes = Math.max(0, remainingBytes - entry.bytesRead);
+		}
+	};
+
+	const scanDir = (
+		dir: string,
+		sourceKind: PromptProjectDocSourceKind,
+	): boolean => {
 		if (remainingBytes === 0) {
+			diagnostics.push({
+				code: "budget_exhausted",
+				severity: "warning",
+				message: `Skipped instruction lookup under ${resolve(dir)} because project_doc_max_bytes was exhausted.`,
+				scopeDir: resolve(dir),
+			});
+			return false;
+		}
+		pushEntry(
+			loadFirstProjectDocInDir(
+				dir,
+				candidates,
+				sourceKind,
+				remainingBytes,
+				diagnostics,
+			),
+		);
+		return true;
+	};
+
+	for (const globalContextDir of resolveProjectDocGlobalDirectories()) {
+		if (!scanDir(globalContextDir, "global")) {
 			break;
 		}
-		const contextPath = resolveFirstProjectDocPathInDir(
-			dir,
-			candidates,
-			remainingBytes,
-		);
-		pushResolvedPath(contextPath);
 	}
 
-	return paths;
+	for (const dir of resolveProjectDocAncestorDirectories(cwd)) {
+		if (!scanDir(dir, "project")) {
+			break;
+		}
+	}
+
+	const layerCounts = new Map<string, number>();
+	for (const entry of entries) {
+		layerCounts.set(
+			entry.candidateName,
+			(layerCounts.get(entry.candidateName) ?? 0) + 1,
+		);
+	}
+	for (const [candidateName, count] of layerCounts) {
+		if (count > 1) {
+			diagnostics.push({
+				code: "multiple_instruction_layers",
+				severity: "info",
+				message: `${count} ${candidateName} instruction layers were loaded; later project scopes have higher precedence in the prompt.`,
+			});
+		}
+	}
+
+	return {
+		cwd,
+		candidates,
+		maxBytes,
+		bytesRead: entries.reduce((total, entry) => total + entry.bytesRead, 0),
+		entries,
+		diagnostics,
+	};
+}
+
+export function resolvePromptLoadedProjectDocPaths(
+	cwdOverride?: string,
+	config?: ComposerConfig,
+): string[] {
+	return loadPromptProjectDocManifest(cwdOverride, config).entries.map(
+		(entry) => entry.path,
+	);
 }
 
 export function resolveLoadedAppendSystemPromptPath(

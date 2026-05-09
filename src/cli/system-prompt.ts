@@ -1,12 +1,4 @@
-import {
-	closeSync,
-	existsSync,
-	openSync,
-	readFileSync,
-	readSync,
-	readdirSync,
-	statSync,
-} from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import type { Dirent } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -20,10 +12,10 @@ import chalk from "chalk";
 import { buildSearchGuidelines } from "../agent/search-guidance.js";
 import {
 	type ComposerConfig,
-	loadConfig,
+	type PromptProjectDocManifest,
+	type PromptProjectDocManifestEntry,
+	loadPromptProjectDocManifest,
 	resolveLoadedAppendSystemPromptPath,
-	resolveProjectDocCandidateFilenames,
-	resolveProjectDocGlobalDirectories,
 } from "../config/index.js";
 import {
 	DEFAULT_GUARDED_FILE_RULES,
@@ -130,6 +122,7 @@ interface RuntimeConstraintDetectionOptions {
 
 export interface FinalizeSystemPromptOptions {
 	runtimeConstraints?: RuntimeConstraintContext | null;
+	promptContextManifest?: PromptProjectDocManifest;
 }
 
 function readEnvFlag(
@@ -365,22 +358,9 @@ function buildGuidelines(toolNames: Set<string>, currentYear: number): string {
 	return `Guidelines:\n${guidelines.map((g) => `- ${g}`).join("\n")}`;
 }
 
-interface ContextFile {
+export interface ContextFile {
 	path: string;
 	content: string;
-}
-
-interface ContextFileOptions {
-	candidates: string[];
-	maxBytes?: number;
-}
-
-interface ReadContextResult {
-	content: string;
-	truncated: boolean;
-	bytesRead: number;
-	originalSize?: number;
-	maxBytes?: number;
 }
 
 export function truncateUtf8(
@@ -436,160 +416,21 @@ export function truncateUtf8(
 	return { content: slice.toString("utf-8"), bytes: slice.length };
 }
 
-function readContextFile(
-	filePath: string,
-	maxBytes?: number,
-): ReadContextResult | null {
-	if (maxBytes !== undefined && maxBytes > 0) {
-		const stats = statSync(filePath);
-		if (stats.size > maxBytes) {
-			const fd = openSync(filePath, "r");
-			try {
-				const buffer = Buffer.alloc(maxBytes);
-				const bytesRead = readSync(fd, buffer, 0, maxBytes, 0);
-				const truncated = truncateUtf8(buffer, bytesRead);
-				return {
-					content: truncated.content,
-					truncated: true,
-					bytesRead: truncated.bytes,
-					originalSize: stats.size,
-					maxBytes,
-				};
-			} finally {
-				closeSync(fd);
-			}
-		}
-	}
-	const content = readFileSync(filePath, "utf-8");
-	return {
-		content,
-		truncated: false,
-		bytesRead: Buffer.byteLength(content),
-	};
-}
-
-interface ContextFileLoadResult {
-	file: ContextFile;
-	bytesRead: number;
-}
-
-function loadContextFileFromDir(
-	dir: string,
-	options: ContextFileOptions & { remainingBytes?: number },
-): ContextFileLoadResult | null {
-	const { candidates, maxBytes, remainingBytes } = options;
-	const budget = remainingBytes ?? maxBytes;
-	if (budget !== undefined && budget <= 0) {
-		return null;
-	}
-	for (const filename of candidates) {
-		const filePath = join(dir, filename);
-		if (existsSync(filePath)) {
-			try {
-				const result = readContextFile(filePath, budget);
-				if (!result) return null;
-				const note = result.truncated
-					? `\n\n[Truncated to ${result.bytesRead} bytes from ${result.originalSize} bytes.]`
-					: "";
-				return {
-					file: {
-						path: filePath,
-						content: `${result.content}${note}`,
-					},
-					bytesRead: result.bytesRead,
-				};
-			} catch (error) {
-				console.error(
-					chalk.yellow(`Warning: Could not read ${filePath}: ${error}`),
-				);
-			}
-		}
-	}
-	return null;
-}
-
-function resolveContextCandidates(config?: ComposerConfig): string[] {
-	return resolveProjectDocCandidateFilenames(config);
-}
-
-function resolveGlobalInstructionDirs(): string[] {
-	return resolveProjectDocGlobalDirectories();
-}
-
 export function loadProjectContextFiles(
 	cwdOverride?: string,
 	options: { config?: ComposerConfig } = {},
 ): ContextFile[] {
-	const contextFiles: ContextFile[] = [];
-	const loadedContextPaths = new Set<string>();
-
-	const cwd = cwdOverride ?? process.cwd();
-	const config = options.config ?? loadConfig(cwd);
-	const candidates = resolveContextCandidates(config);
-	const maxBytesRaw = config.project_doc_max_bytes;
-	const maxBytes =
-		typeof maxBytesRaw === "number"
-			? Math.max(0, Math.floor(maxBytesRaw))
-			: undefined;
-	let remainingBytes = maxBytes;
-	if (remainingBytes === 0) {
-		return contextFiles;
-	}
-	const pushContextFile = (loaded: ContextFileLoadResult): void => {
-		const resolvedPath = resolve(loaded.file.path);
-		if (loadedContextPaths.has(resolvedPath)) {
-			return;
-		}
-		loadedContextPaths.add(resolvedPath);
-		contextFiles.push(loaded.file);
-		if (remainingBytes !== undefined) {
-			remainingBytes = Math.max(0, remainingBytes - loaded.bytesRead);
-		}
-	};
-
-	for (const globalContextDir of resolveGlobalInstructionDirs()) {
-		if (remainingBytes === 0) break;
-		const globalContext = loadContextFileFromDir(globalContextDir, {
-			candidates,
-			maxBytes,
-			remainingBytes,
-		});
-		if (globalContext) {
-			pushContextFile(globalContext);
-		}
-	}
-
-	const directories: string[] = [];
-	let currentDir = cwd;
-	const root = resolve("/");
-
-	while (true) {
-		directories.push(currentDir);
-		if (currentDir === root) break;
-
-		const parentDir = resolve(currentDir, "..");
-		if (parentDir === currentDir) break;
-		currentDir = parentDir;
-	}
-
-	directories.reverse();
-
-	for (const dir of directories) {
-		if (remainingBytes === 0) break;
-		const contextFile = loadContextFileFromDir(dir, {
-			candidates,
-			maxBytes,
-			remainingBytes,
-		});
-		if (contextFile) {
-			pushContextFile(contextFile);
-		}
-	}
-
-	return contextFiles;
+	return loadPromptProjectDocManifest(cwdOverride, options.config).entries.map(
+		(entry) => ({
+			path: entry.path,
+			content: entry.content,
+		}),
+	);
 }
 
-function formatProjectContextFile(file: ContextFile): string {
+function formatProjectContextFile(
+	file: ContextFile | PromptProjectDocManifestEntry,
+): string {
 	const filename = basename(file.path);
 	const dir = dirname(file.path);
 	return [
@@ -751,7 +592,8 @@ export function finalizeSystemPrompt(
 		resolveSystemPromptOverride(appendPrompt) ?? loadAppendSystemPrompt(cwd);
 	const appendText = appendSource?.trim();
 	let prompt = basePrompt;
-	const contextFiles = loadProjectContextFiles(cwd);
+	const contextFiles =
+		options.promptContextManifest?.entries ?? loadProjectContextFiles(cwd);
 	if (contextFiles.length > 0) {
 		prompt += "\n\n# Project Context\n\n";
 		prompt += "The following project context files have been loaded:\n\n";

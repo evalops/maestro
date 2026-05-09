@@ -24,6 +24,7 @@ export {
 	parseCliOverride,
 	applyCliOverride,
 	DEFAULT_CONFIG,
+	loadPromptProjectDocManifest,
 	resolveLoadedAppendSystemPromptPath,
 	resolveProjectDocCandidateFilenames,
 	resolveProjectDocGlobalDirectories,
@@ -44,4 +45,8 @@ export {
 	type ShellEnvironmentPolicy,
 	type SandboxWorkspaceWriteConfig,
 	type ProfileConfig,
+	type PromptProjectDocManifest,
+	type PromptProjectDocManifestEntry,
+	type PromptProjectDocDiagnostic,
+	type PromptProjectDocSourceKind,
 } from "./toml-config.js";

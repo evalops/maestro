@@ -1,4 +1,5 @@
 import type { AppMessage, ImageContent, TextContent } from "../agent/types.js";
+import type { PromptProjectDocManifest } from "../config/index.js";
 import type { PromptMetadata } from "../prompts/types.js";
 
 export const CURRENT_SESSION_VERSION = 2;
@@ -33,6 +34,7 @@ export interface SessionHeaderEntry {
 	thinkingLevel?: string;
 	systemPrompt?: string;
 	promptMetadata?: PromptMetadata;
+	promptContextManifest?: PromptProjectDocManifest;
 	tools?: SessionToolInfo[];
 	branchedFrom?: string;
 	parentSession?: string;

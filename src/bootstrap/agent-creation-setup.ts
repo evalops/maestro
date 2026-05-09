@@ -25,6 +25,7 @@ import type { ToolRetryConfig, ToolRetryService } from "../agent/tool-retry.js";
 import type { ClientToolExecutionService } from "../agent/transport.js";
 import type { AgentTool, Api, Model } from "../agent/types.js";
 import { composerManager } from "../composers/index.js";
+import type { PromptProjectDocManifest } from "../config/index.js";
 import type { PromptMetadata } from "../prompts/types.js";
 import type { AuthCredential } from "../providers/auth.js";
 import type { Sandbox } from "../sandbox/types.js";
@@ -83,6 +84,7 @@ export function createAgentInstance(params: {
 	systemPrompt: string;
 	promptMetadata?: PromptMetadata;
 	systemPromptSourcePaths?: string[];
+	promptContextManifest?: PromptProjectDocManifest;
 	model: Model<Api>;
 	reasoningSummary: "auto" | "detailed" | "concise" | null | undefined;
 	allTools: AgentTool[];
@@ -105,6 +107,7 @@ export function createAgentInstance(params: {
 		systemPrompt,
 		promptMetadata,
 		systemPromptSourcePaths,
+		promptContextManifest,
 		model,
 		reasoningSummary,
 		allTools,
@@ -164,6 +167,7 @@ export function createAgentInstance(params: {
 			systemPrompt,
 			promptMetadata,
 			systemPromptSourcePaths,
+			promptContextManifest,
 			model,
 			thinkingLevel: "off",
 			reasoningSummary,

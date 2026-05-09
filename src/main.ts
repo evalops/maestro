@@ -560,6 +560,20 @@ export async function main(args: string[]) {
 		return;
 	}
 
+	if (parsed.command === "context") {
+		try {
+			validateCodexFlags(args, parsed.command);
+		} catch (error) {
+			exitWithEarlyStartupError(error);
+		}
+
+		const { handleContextCommand } = await import("./cli/commands/context.js");
+		await handleContextCommand(parsed.subcommand, parsed.messages, {
+			json: parsed.execJson,
+		});
+		return;
+	}
+
 	// If we're about to enter interactive TUI mode (no prompt messages and not RPC/exec),
 	// or headless mode (stdout is JSON-only), redirect all logging/console output to a file.
 	// This must run before config/model loading to catch any early warnings.
@@ -1225,12 +1239,14 @@ export async function main(args: string[]) {
 			Boolean(sandbox) && resolvedConstraintSandboxMode !== "local",
 		readOnly: parsed.execReadOnly || parsed.readonly ? true : undefined,
 	});
-	const { systemPrompt, promptMetadata } = await resolveMaestroSystemPrompt({
-		customPrompt: parsed.systemPrompt,
-		toolNames: systemPromptToolNames,
-		appendPrompt: parsed.appendSystemPrompt,
-		runtimeConstraints,
-	});
+	const { systemPrompt, promptMetadata, promptContextManifest } =
+		await resolveMaestroSystemPrompt({
+			customPrompt: parsed.systemPrompt,
+			toolNames: systemPromptToolNames,
+			appendPrompt: parsed.appendSystemPrompt,
+			runtimeConstraints,
+			cwd: process.cwd(),
+		});
 	startupProfiler.checkpoint("prompt:assembled", {
 		system_bytes: systemPrompt.length,
 	});
@@ -1238,7 +1254,6 @@ export async function main(args: string[]) {
 		parsed.systemPrompt,
 		parsed.appendSystemPrompt,
 	);
-
 	// Register sandbox cleanup on exit (only if sandbox is active)
 	if (sandbox && toolsResult.disposeSandbox) {
 		const cleanupSandbox = toolsResult.disposeSandbox;
@@ -1272,6 +1287,7 @@ export async function main(args: string[]) {
 		systemPrompt,
 		promptMetadata,
 		systemPromptSourcePaths,
+		promptContextManifest,
 		model,
 		reasoningSummary,
 		allTools: configuredAllTools,

@@ -1,3 +1,5 @@
+import type { PromptProjectDocManifest } from "../config/index.js";
+
 export type PromptResolutionSource = "bundled" | "service" | "override";
 
 export interface PromptMetadata {
@@ -28,4 +30,5 @@ export interface ResolvedPromptTemplate {
 export interface ResolvedSystemPrompt {
 	systemPrompt: string;
 	promptMetadata: PromptMetadata;
+	promptContextManifest: PromptProjectDocManifest;
 }

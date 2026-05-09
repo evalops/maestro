@@ -72,6 +72,7 @@ export function createBranchedSessionFromLeaf(
 		thinkingLevel: ctx.context.thinkingLevel,
 		systemPrompt: ctx.header?.systemPrompt,
 		promptMetadata: ctx.header?.promptMetadata,
+		promptContextManifest: ctx.header?.promptContextManifest,
 		tools: ctx.header?.tools,
 		branchedFrom: ctx.sessionFile,
 		parentSession: ctx.sessionId,
@@ -141,6 +142,7 @@ export function createBranchedSessionFromState(
 			thinkingLevel: state.thinkingLevel,
 			systemPrompt: state.systemPrompt,
 			promptMetadata: state.promptMetadata,
+			promptContextManifest: state.promptContextManifest,
 			branchedFrom: ctx.sessionFile,
 			parentSession: ctx.sessionId,
 		};

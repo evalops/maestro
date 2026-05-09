@@ -581,6 +581,7 @@ export class HostedSessionManager {
 			thinkingLevel: state.thinkingLevel,
 			systemPrompt: state.systemPrompt,
 			promptMetadata: state.promptMetadata,
+			promptContextManifest: state.promptContextManifest,
 			tools: state.tools.map((tool) => ({
 				name: tool.name,
 				label: tool.label,

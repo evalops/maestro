@@ -124,6 +124,25 @@ describe("parseArgs", () => {
 		});
 	});
 
+	it("parses context explain commands", () => {
+		expect(parseArgs(["context", "explain", "/repo", "--json"])).toMatchObject({
+			command: "context",
+			subcommand: "explain",
+			messages: ["/repo"],
+			execJson: true,
+		});
+	});
+
+	it("parses context path commands without requiring explain", () => {
+		const parsed = parseArgs(["context", "/repo", "--json"]);
+		expect(parsed).toMatchObject({
+			command: "context",
+			messages: ["/repo"],
+			execJson: true,
+		});
+		expect(parsed.subcommand).toBeUndefined();
+	});
+
 	it("parses evalops auth commands", () => {
 		expect(parseArgs(["evalops", "login"])).toMatchObject({
 			command: "evalops",
