@@ -1,6 +1,7 @@
 import {
 	copyFileSync,
 	existsSync,
+	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	rmSync,
@@ -447,6 +448,39 @@ describe("CLI integration", () => {
 			traceMode: "otlp",
 		});
 		expect(stdoutLines.join("\n")).not.toContain("Loaded configuration");
+	});
+
+	it("includes custom agents init target in force rerun instructions", async () => {
+		const target = join(tempAgentDir, "docs", "team guide", "AGENTS.md");
+		mkdirSync(join(tempAgentDir, "docs", "team guide"), { recursive: true });
+		writeFileSync(target, "# Existing Guidance\n");
+
+		await main(["agents", "init", target]);
+
+		const combined = output.join("\n");
+		const quotedTarget =
+			process.platform === "win32" ? `"${target}"` : `'${target}'`;
+		expect(combined).toContain(`maestro agents init ${quotedTarget} --force`);
+		expect(combined).toContain("Index:");
+		expect(combined).toContain("--- ");
+		expect(combined).toContain("+++ ");
+		expect(readFileSync(target, "utf-8")).toBe("# Existing Guidance\n");
+	});
+
+	it("applies the previewed agents init scaffold when forced", async () => {
+		const target = join(tempAgentDir, "docs", "AGENTS.md");
+		mkdirSync(join(tempAgentDir, "docs"), { recursive: true });
+		writeFileSync(target, "# Existing Guidance\n");
+
+		await main(["agents", "init", target, "--force"]);
+
+		const combined = output.join("\n");
+		const content = readFileSync(target, "utf-8");
+		expect(combined).toContain(`Updated AGENTS instructions at ${target}.`);
+		expect(combined).not.toContain("Echo:");
+		expect(content).toContain("# Repository Guidelines");
+		expect(content).toContain("## Imported AI Tooling Rules");
+		expect(content).not.toContain("# Existing Guidance");
 	});
 
 	it("exports a saved session as portable jsonl", async () => {

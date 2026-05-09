@@ -1030,6 +1030,22 @@ export async function main(args: string[]) {
 	let agentsInitPrompt: string | null = null;
 	let agentsInitPath: string | null = null;
 
+	const quoteShellArg = (value: string): string => {
+		if (/^[A-Za-z0-9_./:=@+-]+$/.test(value)) {
+			return value;
+		}
+		if (process.platform === "win32") {
+			return `"${value.replaceAll('"', '\\"')}"`;
+		}
+		return `'${value.replaceAll("'", "'\\''")}'`;
+	};
+	const buildAgentsInitRerunCommand = (
+		targetArg: string | undefined,
+	): string =>
+		targetArg
+			? `maestro agents init ${quoteShellArg(targetArg)} --force`
+			: "maestro agents init --force";
+
 	// Handle "maestro agents init" command to generate AGENTS.md
 	if (parsed.command === "agents") {
 		const { buildAgentsInitPrompt, handleAgentsInit } = await import(
@@ -1045,9 +1061,25 @@ export async function main(args: string[]) {
 		}
 		try {
 			const targetArg = parsed.messages[0];
-			const filePath = handleAgentsInit(targetArg, { force: parsed.force });
-			agentsInitPath = filePath;
-			agentsInitPrompt = buildAgentsInitPrompt(filePath);
+			const result = handleAgentsInit(targetArg, { force: parsed.force });
+			if (result.action === "preview") {
+				const rerunCommand = buildAgentsInitRerunCommand(targetArg);
+				console.log(
+					[
+						`AGENTS instructions already exist at ${result.path}.`,
+						`Preview the proposed update below, then re-run with \`${rerunCommand}\` to apply it.`,
+						"",
+						result.diff ?? "",
+					].join("\n"),
+				);
+				return;
+			}
+			if (result.action === "updated") {
+				console.log(`Updated AGENTS instructions at ${result.path}.`);
+				return;
+			}
+			agentsInitPath = result.path;
+			agentsInitPrompt = buildAgentsInitPrompt(result.path, result.sources);
 			if (parsed.messages.length === 0) {
 				parsed.messages = [agentsInitPrompt];
 			}

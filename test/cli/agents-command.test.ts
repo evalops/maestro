@@ -34,7 +34,9 @@ describe("handleAgentsInit", () => {
 	});
 
 	it("creates AGENTS.md inside the target directory", () => {
-		const path = handleAgentsInit(tmpDir);
+		const result = handleAgentsInit(tmpDir);
+		const path = result.path;
+		expect(result.action).toBe("created");
 		expect(path).toBe(join(tmpDir, "AGENTS.md"));
 		const contents = readFileSync(path, "utf-8");
 		expect(contents).toContain("# Repository Guidelines");
@@ -42,17 +44,35 @@ describe("handleAgentsInit", () => {
 
 	it("allows targeting a specific file path", () => {
 		const customPath = join(tmpDir, "docs", "Team.md");
-		const path = handleAgentsInit(customPath, { force: true });
+		const result = handleAgentsInit(customPath, { force: true });
+		const path = result.path;
+		expect(result.action).toBe("created");
 		expect(path).toBe(customPath);
 		const contents = readFileSync(path, "utf-8");
 		expect(contents).toContain("docs");
 	});
 
-	it("throws when file exists unless force is provided", () => {
-		const path = handleAgentsInit(tmpDir);
-		expect(() => handleAgentsInit(path)).toThrow(/already exists/i);
-		const forcedPath = handleAgentsInit(path, { force: true });
-		expect(forcedPath).toBe(path);
+	it("previews a diff when file exists unless force is provided", () => {
+		const created = handleAgentsInit(tmpDir);
+		writeFileSync(created.path, "# Existing Guidance\n\nKeep this detail.\n");
+
+		const preview = handleAgentsInit(created.path);
+
+		expect(preview.action).toBe("preview");
+		expect(preview.path).toBe(created.path);
+		expect(preview.diff).toContain("--- ");
+		expect(preview.diff).toContain("+++ ");
+		expect(preview.diff).toContain("-# Existing Guidance");
+		expect(readFileSync(created.path, "utf-8")).toBe(
+			"# Existing Guidance\n\nKeep this detail.\n",
+		);
+
+		const updated = handleAgentsInit(created.path, { force: true });
+		expect(updated.action).toBe("updated");
+		expect(updated.path).toBe(created.path);
+		expect(readFileSync(created.path, "utf-8")).toContain(
+			"Imported AI Tooling Rules",
+		);
 	});
 
 	it("builds a generation prompt with the target path", () => {
@@ -60,6 +80,16 @@ describe("handleAgentsInit", () => {
 		const prompt = buildAgentsInitPrompt(target);
 		expect(prompt).toContain("AGENTS.md");
 		expect(prompt).toContain("Repository Guidelines");
+	});
+
+	it("includes an existing target AGENTS file in the one-shot generation prompt", () => {
+		const target = join(tmpDir, "AGENTS.md");
+		writeFileSync(target, "# Existing Guidance\n\nUse hand-written rules.");
+
+		const prompt = buildAgentsInitPrompt(target);
+
+		expect(prompt).toContain('### "AGENTS.md" (Existing AGENTS.md)');
+		expect(prompt).toContain("Use hand-written rules.");
 	});
 
 	it("discovers existing AI tool rule files with provenance", () => {
@@ -96,7 +126,7 @@ describe("handleAgentsInit", () => {
 		writeFileSync(join(tmpDir, ".windsurfrules"), "Prefer Bun for scripts");
 		writeFileSync(join(tmpDir, ".clinerules"), "Ask before deleting files");
 
-		const path = handleAgentsInit(tmpDir);
+		const path = handleAgentsInit(tmpDir).path;
 		const contents = readFileSync(path, "utf-8");
 
 		expect(contents).toContain("## Imported AI Tooling Rules");
@@ -178,7 +208,7 @@ describe("handleAgentsInit", () => {
 
 		const target = join(tmpDir, "AGENTS.md");
 		const prompt = buildAgentsInitPrompt(target);
-		const path = handleAgentsInit(target, { force: true });
+		const path = handleAgentsInit(target, { force: true }).path;
 		const contents = readFileSync(path, "utf-8");
 
 		expect(prompt).toContain(

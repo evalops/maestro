@@ -3,7 +3,11 @@ import type { AppMessage } from "../../../src/agent/types.js";
 import type { CommandExecutionContext } from "../../../src/cli-tui/commands/types.js";
 
 vi.mock("../../../src/cli/commands/agents.js", () => ({
-	handleAgentsInit: vi.fn(() => "/home/user/project/AGENTS.md"),
+	handleAgentsInit: vi.fn(() => ({
+		path: "/home/user/project/AGENTS.md",
+		action: "created",
+		sources: [],
+	})),
 }));
 
 import {
@@ -127,9 +131,11 @@ describe("utility-handlers", () => {
 
 	describe("handleInitCommand", () => {
 		it("calls handleAgentsInit and shows success on success", () => {
-			vi.mocked(handleAgentsInit).mockReturnValue(
-				"/home/user/project/AGENTS.md",
-			);
+			vi.mocked(handleAgentsInit).mockReturnValue({
+				path: "/home/user/project/AGENTS.md",
+				action: "created",
+				sources: [],
+			});
 
 			const ctx = createMockContext("/init", "");
 			const callbacks: InitHandlerCallbacks = {
@@ -144,6 +150,115 @@ describe("utility-handlers", () => {
 			expect(callbacks.showSuccess).toHaveBeenCalled();
 			expect(callbacks.addContent).toHaveBeenCalled();
 			expect(callbacks.requestRender).toHaveBeenCalled();
+		});
+
+		it("shows a diff preview when AGENTS instructions already exist", () => {
+			vi.mocked(handleAgentsInit).mockReturnValue({
+				path: "/home/user/project/AGENTS.md",
+				action: "preview",
+				diff: "diff --git a/AGENTS.md b/AGENTS.md\n-old\n+new",
+				sources: [],
+			});
+
+			const ctx = createMockContext("/init", "");
+			const callbacks: InitHandlerCallbacks = {
+				showSuccess: vi.fn(),
+				showError: vi.fn(),
+				addContent: vi.fn(),
+				requestRender: vi.fn(),
+			};
+
+			handleInitCommand(ctx, callbacks);
+
+			expect(callbacks.showSuccess).toHaveBeenCalledWith(
+				expect.stringContaining("Previewed AGENTS update"),
+			);
+			expect(callbacks.addContent).toHaveBeenCalledWith(
+				expect.stringContaining("```diff"),
+			);
+			expect(callbacks.addContent).toHaveBeenCalledWith(
+				expect.stringContaining("diff --git"),
+			);
+		});
+
+		it("includes the target path in preview force instructions", () => {
+			vi.mocked(handleAgentsInit).mockReturnValue({
+				path: "/custom/path/AGENTS.md",
+				action: "preview",
+				diff: "diff --git a/AGENTS.md b/AGENTS.md\n-old\n+new",
+				sources: [],
+			});
+
+			const ctx = createMockContext("/init ./custom/path", "./custom/path");
+			const callbacks: InitHandlerCallbacks = {
+				showSuccess: vi.fn(),
+				showError: vi.fn(),
+				addContent: vi.fn(),
+				requestRender: vi.fn(),
+			};
+
+			handleInitCommand(ctx, callbacks);
+
+			expect(callbacks.showSuccess).toHaveBeenCalledWith(
+				expect.stringContaining("/init ./custom/path --force"),
+			);
+			expect(callbacks.addContent).toHaveBeenCalledWith(
+				expect.stringContaining("/init ./custom/path --force"),
+			);
+		});
+
+		it("passes force when provided", () => {
+			vi.mocked(handleAgentsInit).mockReturnValue({
+				path: "/custom/path/AGENTS.md",
+				action: "updated",
+				sources: [],
+			});
+
+			const ctx = createMockContext(
+				"/init ./custom/path --force",
+				"./custom/path --force",
+			);
+			const callbacks: InitHandlerCallbacks = {
+				showSuccess: vi.fn(),
+				showError: vi.fn(),
+				addContent: vi.fn(),
+				requestRender: vi.fn(),
+			};
+
+			handleInitCommand(ctx, callbacks);
+
+			expect(handleAgentsInit).toHaveBeenCalledWith("./custom/path", {
+				force: true,
+			});
+			expect(callbacks.showSuccess).toHaveBeenCalledWith(
+				expect.stringContaining("Updated AGENTS instructions"),
+			);
+		});
+
+		it("only treats trailing force flags as /init options", () => {
+			vi.mocked(handleAgentsInit).mockReturnValue({
+				path: "/custom/path/AGENTS.md",
+				action: "created",
+				sources: [],
+			});
+
+			const ctx = createMockContext(
+				"/init docs/team --force guide/AGENTS.md",
+				"docs/team --force guide/AGENTS.md",
+			);
+			const callbacks: InitHandlerCallbacks = {
+				showSuccess: vi.fn(),
+				showError: vi.fn(),
+				addContent: vi.fn(),
+				requestRender: vi.fn(),
+			};
+
+			handleInitCommand(ctx, callbacks);
+
+			expect(handleAgentsInit).toHaveBeenCalledWith(
+				"docs/team --force guide/AGENTS.md",
+				{ force: false },
+			);
 		});
 
 		it("shows error when handleAgentsInit throws", () => {
@@ -165,7 +280,11 @@ describe("utility-handlers", () => {
 		});
 
 		it("passes target argument when provided", () => {
-			vi.mocked(handleAgentsInit).mockReturnValue("/custom/path/AGENTS.md");
+			vi.mocked(handleAgentsInit).mockReturnValue({
+				path: "/custom/path/AGENTS.md",
+				action: "created",
+				sources: [],
+			});
 
 			const ctx = createMockContext("/init ./custom/path", "./custom/path");
 			const callbacks: InitHandlerCallbacks = {
