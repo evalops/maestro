@@ -31,6 +31,7 @@ describe("platform MCP plugin servers", () => {
 			"EVALOPS_TOKEN",
 			"MAESTRO_WORKSPACE_ID",
 			"MAESTRO_EVALOPS_WORKSPACE_ID",
+			"MAESTRO_REMOTE_RUNNER_WORKSPACE_ID",
 			"MAESTRO_EVALOPS_ORG_ID",
 			"EVALOPS_ORGANIZATION_ID",
 			"MAESTRO_ENTERPRISE_ORG_ID",
@@ -167,6 +168,17 @@ describe("platform MCP plugin servers", () => {
 		expect(server?.headers).toMatchObject({
 			"Mcp-Session-Id": "session-123",
 			"X-EvalOps-Session-Id": "session-123",
+		});
+	});
+
+	it("uses hosted runner workspace alias for Platform MCP headers", () => {
+		process.env.MAESTRO_PLATFORM_MCP_URL =
+			"https://agent-mcp.evalops.example/mcp/";
+		process.env.MAESTRO_REMOTE_RUNNER_WORKSPACE_ID = "workspace-remote";
+
+		const [server] = getPlatformMcpPluginServers();
+		expect(server?.headers).toMatchObject({
+			"X-EvalOps-Workspace-Id": "workspace-remote",
 		});
 	});
 
