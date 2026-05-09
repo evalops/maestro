@@ -13,6 +13,14 @@ The pack covers:
 - Deploy verification with Argo health, immutable image tags, and rollback gate.
 - Cerebro memory conflict handling where fresh evidence supersedes stale memory.
 
+The pack is arranged as a regression ladder:
+
+- `smoke`: a minimal cross-system completion loop suitable for quick local
+  checks.
+- `regression`: deterministic multi-system follow-through checks that should run
+  before merging scenario-sensitive changes.
+- `gauntlet`: the full connector-heavy safety and deploy verification suite.
+
 ## Commands
 
 Validate the pack:
@@ -29,11 +37,27 @@ maestro scenario run evals/scenarios/complex-task-gauntlet.json \
   --report artifacts/complex-task-gauntlet/report.json
 ```
 
+Run only the local smoke rung:
+
+```bash
+maestro scenario run evals/scenarios/complex-task-gauntlet.json --tier smoke
+npm run scenario:smoke
+```
+
+Run smoke plus regression while skipping the connector-heavy gauntlet rung:
+
+```bash
+maestro scenario run evals/scenarios/complex-task-gauntlet.json --max-tier regression
+npm run scenario:regression
+```
+
 Both commands support `--json`.
 
 ## Contract
 
-Every completed scenario must include:
+Every scenario must declare a `tier` of `smoke`, `regression`, or `gauntlet`,
+and the default pack must include at least one scenario in each tier. Every
+completed scenario must include:
 
 - `trigger.accepted`, `progress`, `artifact.created`, and `completed` events.
 - A completion artifact using

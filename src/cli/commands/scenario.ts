@@ -19,8 +19,11 @@ const REQUIRED_EVENT_KINDS = [
 	"artifact.created",
 	"completed",
 ] as const;
+const SCENARIO_TIERS = ["smoke", "regression", "gauntlet"] as const;
+const REQUIRED_SCENARIO_TIERS = new Set<ScenarioTier>(SCENARIO_TIERS);
 
 type ScenarioStatus = "completed" | "blocked" | "failed";
+type ScenarioTier = (typeof SCENARIO_TIERS)[number];
 
 interface ScenarioPack {
 	schemaVersion: string;
@@ -36,6 +39,7 @@ interface ScenarioPack {
 
 interface Scenario {
 	id: string;
+	tier: ScenarioTier;
 	title: string;
 	prompt: string;
 	requiredConnectors: string[];
@@ -88,6 +92,7 @@ interface SideEffectExpectation {
 
 interface ScenarioResult {
 	id: string;
+	tier: ScenarioTier;
 	status: "passed" | "failed";
 	assertions: string[];
 	errors: string[];
@@ -97,6 +102,7 @@ interface ScenarioRunReport {
 	schemaVersion: "evalops.maestro.scenario-run-report.v1";
 	status: "passed" | "failed";
 	scenarioPackId: string;
+	selectedTiers: ScenarioTier[];
 	results: ScenarioResult[];
 }
 
@@ -104,9 +110,16 @@ interface ParsedScenarioArgs {
 	action: "validate" | "run" | "help";
 	path: string;
 	json: boolean;
+	tier?: ScenarioTier;
+	maxTier?: ScenarioTier;
 	junitPath?: string;
 	reportPath?: string;
 	errors: string[];
+}
+
+interface ScenarioRunOptions {
+	tier?: ScenarioTier;
+	maxTier?: ScenarioTier;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -130,6 +143,12 @@ function parseScenarioStatus(value: unknown): ScenarioStatus | null {
 		return value;
 	}
 	return null;
+}
+
+function parseScenarioTier(value: unknown): ScenarioTier | null {
+	return SCENARIO_TIERS.includes(value as ScenarioTier)
+		? (value as ScenarioTier)
+		: null;
 }
 
 function parseSideEffectExpectation(
@@ -174,6 +193,7 @@ function parseReplayEvent(value: unknown): ReplayEvent | null {
 function parseScenario(value: unknown): Scenario | null {
 	if (!isRecord(value)) return null;
 	const id = asString(value.id);
+	const tier = parseScenarioTier(value.tier);
 	const title = asString(value.title);
 	const prompt = asString(value.prompt);
 	const requiredConnectors = asStringArray(value.requiredConnectors);
@@ -181,6 +201,7 @@ function parseScenario(value: unknown): Scenario | null {
 	const expect = isRecord(value.expect) ? value.expect : undefined;
 	if (
 		!id ||
+		!tier ||
 		!title ||
 		!prompt ||
 		requiredConnectors.length === 0 ||
@@ -223,6 +244,7 @@ function parseScenario(value: unknown): Scenario | null {
 
 	return {
 		id,
+		tier,
 		title,
 		prompt,
 		requiredConnectors,
@@ -304,6 +326,14 @@ export function validateScenarioPack(pack: ScenarioPack): string[] {
 			failures.push(`missing required scenario: ${scenarioId}`);
 		}
 	}
+	const scenarioTiers = new Set(
+		pack.scenarios.map((scenario) => scenario.tier),
+	);
+	for (const tier of REQUIRED_SCENARIO_TIERS) {
+		if (!scenarioTiers.has(tier)) {
+			failures.push(`missing required scenario tier: ${tier}`);
+		}
+	}
 	for (const scenario of pack.scenarios) {
 		failures.push(...validateScenario(scenario));
 	}
@@ -363,16 +393,22 @@ function validateScenario(scenario: Scenario): string[] {
 	return failures;
 }
 
-export function runScenarioPack(pack: ScenarioPack): ScenarioRunReport {
+export function runScenarioPack(
+	pack: ScenarioPack,
+	options: ScenarioRunOptions = {},
+): ScenarioRunReport {
+	const selectedTiers = getSelectedTiers(options);
 	const validationFailures = validateScenarioPack(pack);
 	if (validationFailures.length > 0) {
 		return {
 			schemaVersion: "evalops.maestro.scenario-run-report.v1",
 			status: "failed",
 			scenarioPackId: pack.id,
+			selectedTiers,
 			results: [
 				{
 					id: "pack-validation",
+					tier: selectedTiers[0] ?? "smoke",
 					status: "failed",
 					assertions: [],
 					errors: validationFailures,
@@ -381,15 +417,32 @@ export function runScenarioPack(pack: ScenarioPack): ScenarioRunReport {
 		};
 	}
 
-	const results = pack.scenarios.map(runScenario);
+	const scenarios = filterScenariosByTier(pack.scenarios, options);
+	const results = scenarios.map(runScenario);
 	return {
 		schemaVersion: "evalops.maestro.scenario-run-report.v1",
 		status: results.every((result) => result.status === "passed")
 			? "passed"
 			: "failed",
 		scenarioPackId: pack.id,
+		selectedTiers,
 		results,
 	};
+}
+
+function getSelectedTiers(options: ScenarioRunOptions): ScenarioTier[] {
+	if (options.tier) return [options.tier];
+	const maxTier = options.maxTier ?? "gauntlet";
+	const maxIndex = SCENARIO_TIERS.indexOf(maxTier);
+	return SCENARIO_TIERS.slice(0, maxIndex + 1);
+}
+
+function filterScenariosByTier(
+	scenarios: Scenario[],
+	options: ScenarioRunOptions,
+): Scenario[] {
+	const selectedTiers = new Set(getSelectedTiers(options));
+	return scenarios.filter((scenario) => selectedTiers.has(scenario.tier));
 }
 
 function runScenario(scenario: Scenario): ScenarioResult {
@@ -486,6 +539,7 @@ function runScenario(scenario: Scenario): ScenarioResult {
 	}
 	return {
 		id: scenario.id,
+		tier: scenario.tier,
 		status: errors.length === 0 ? "passed" : "failed",
 		assertions,
 		errors,
@@ -500,6 +554,8 @@ function parseScenarioArgs(args: string[]): ParsedScenarioArgs {
 			: "help";
 	let path = DEFAULT_SCENARIO_PACK;
 	let json = false;
+	let tier: ScenarioTier | undefined;
+	let maxTier: ScenarioTier | undefined;
 	let junitPath: string | undefined;
 	let reportPath: string | undefined;
 	const errors: string[] = [];
@@ -507,6 +563,24 @@ function parseScenarioArgs(args: string[]): ParsedScenarioArgs {
 		const arg = rest[index];
 		if (arg === "--json") {
 			json = true;
+		} else if (arg === "--tier") {
+			const value = rest[index + 1];
+			const parsedTier = parseScenarioTier(value);
+			if (!parsedTier) {
+				errors.push(`--tier requires one of: ${SCENARIO_TIERS.join(", ")}`);
+				continue;
+			}
+			tier = parsedTier;
+			index++;
+		} else if (arg === "--max-tier") {
+			const value = rest[index + 1];
+			const parsedTier = parseScenarioTier(value);
+			if (!parsedTier) {
+				errors.push(`--max-tier requires one of: ${SCENARIO_TIERS.join(", ")}`);
+				continue;
+			}
+			maxTier = parsedTier;
+			index++;
 		} else if (arg === "--junit") {
 			const value = rest[index + 1];
 			if (!value || value.startsWith("-")) {
@@ -527,10 +601,15 @@ function parseScenarioArgs(args: string[]): ParsedScenarioArgs {
 			path = arg;
 		}
 	}
+	if (tier && maxTier) {
+		errors.push("--tier and --max-tier cannot be used together");
+	}
 	return {
 		action,
 		path,
 		json,
+		tier,
+		maxTier,
 		junitPath,
 		reportPath,
 		errors,
@@ -553,13 +632,14 @@ export async function handleScenarioCommand(args: string[]): Promise<void> {
 			ok: failures.length === 0,
 			scenarioPackId: pack.id,
 			scenarioCount: pack.scenarios.length,
+			tiers: summarizeScenarioTiers(pack.scenarios),
 			failures,
 		};
 		if (parsed.json) {
 			console.log(JSON.stringify(summary, null, 2));
 		} else if (failures.length === 0) {
 			console.log(
-				`Scenario pack valid: ${pack.id} (${pack.scenarios.length} scenarios)`,
+				`Scenario pack valid: ${pack.id} (${pack.scenarios.length} scenarios; ${formatTierSummary(pack.scenarios)})`,
 			);
 		} else {
 			console.error("Scenario pack invalid:");
@@ -573,7 +653,10 @@ export async function handleScenarioCommand(args: string[]): Promise<void> {
 		return;
 	}
 
-	const report = runScenarioPack(pack);
+	const report = runScenarioPack(pack, {
+		tier: parsed.tier,
+		maxTier: parsed.maxTier,
+	});
 	if (parsed.reportPath) {
 		await writeJson(parsed.reportPath, report);
 	}
@@ -584,10 +667,10 @@ export async function handleScenarioCommand(args: string[]): Promise<void> {
 		console.log(JSON.stringify(report, null, 2));
 	} else {
 		console.log(
-			`Scenario run ${report.status}: ${report.scenarioPackId} (${report.results.length} scenarios)`,
+			`Scenario run ${report.status}: ${report.scenarioPackId} (${report.results.length} scenarios; tiers: ${report.selectedTiers.join(", ")})`,
 		);
 		for (const result of report.results) {
-			console.log(`- ${result.status}: ${result.id}`);
+			console.log(`- ${result.status}: [${result.tier}] ${result.id}`);
 			for (const error of result.errors) {
 				console.log(`  ${error}`);
 			}
@@ -601,10 +684,31 @@ export async function handleScenarioCommand(args: string[]): Promise<void> {
 function printScenarioHelp(): void {
 	console.log(`Usage:
   maestro scenario validate [pack.json] [--json]
-  maestro scenario run [pack.json] [--json] [--junit junit.xml] [--report report.json]
+  maestro scenario run [pack.json] [--json] [--tier smoke|regression|gauntlet] [--max-tier smoke|regression|gauntlet] [--junit junit.xml] [--report report.json]
 
 Default pack:
   ${DEFAULT_SCENARIO_PACK}`);
+}
+
+function summarizeScenarioTiers(
+	scenarios: Scenario[],
+): Record<ScenarioTier, number> {
+	const summary: Record<ScenarioTier, number> = {
+		smoke: 0,
+		regression: 0,
+		gauntlet: 0,
+	};
+	for (const scenario of scenarios) {
+		summary[scenario.tier]++;
+	}
+	return summary;
+}
+
+function formatTierSummary(scenarios: Scenario[]): string {
+	const summary = summarizeScenarioTiers(scenarios);
+	return SCENARIO_TIERS.map(
+		(tierName) => `${tierName}: ${summary[tierName]}`,
+	).join(", ");
 }
 
 async function writeJson(path: string, value: unknown): Promise<void> {
@@ -629,7 +733,7 @@ function renderJUnit(report: ScenarioRunReport): string {
 					? `<failure message="${escapeXml(result.errors[0] ?? "failed")}">${escapeXml(result.errors.join("\n"))}</failure>`
 					: "";
 			const assertions = escapeXml(result.assertions.join("\n"));
-			return `  <testcase classname="maestro.scenario" name="${escapeXml(result.id)}">${failureBody}<system-out>${assertions}</system-out></testcase>`;
+			return `  <testcase classname="maestro.scenario.${escapeXml(result.tier)}" name="${escapeXml(result.id)}">${failureBody}<system-out>${assertions}</system-out></testcase>`;
 		})
 		.join("\n");
 	return `<?xml version="1.0" encoding="UTF-8"?>

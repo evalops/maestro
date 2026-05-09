@@ -28,6 +28,13 @@ describe("complex task scenario pack", () => {
 			"deploy-verification-task",
 			"memory-conflict-task",
 		]);
+		expect(pack.scenarios.map((scenario) => scenario.tier)).toEqual([
+			"smoke",
+			"gauntlet",
+			"regression",
+			"gauntlet",
+			"regression",
+		]);
 	});
 
 	it("runs deterministic scenario replay and emits passing results", async () => {
@@ -35,6 +42,7 @@ describe("complex task scenario pack", () => {
 		const report = runScenarioPack(pack);
 
 		expect(report.status).toBe("passed");
+		expect(report.selectedTiers).toEqual(["smoke", "regression", "gauntlet"]);
 		expect(report.results).toHaveLength(5);
 		expect(report.results.flatMap((result) => result.assertions)).toContain(
 			"final-status:blocked",
@@ -45,6 +53,29 @@ describe("complex task scenario pack", () => {
 		expect(report.results.flatMap((result) => result.assertions)).toContain(
 			"side-effect:cerebro.memory.score:complex-agent-memory-gauntlet",
 		);
+	});
+
+	it("filters deterministic replay by scenario ladder tier", async () => {
+		const pack = await loadScenarioPack(DEFAULT_SCENARIO_PACK);
+		const regressionReport = runScenarioPack(pack, { maxTier: "regression" });
+		const smokeReport = runScenarioPack(pack, { tier: "smoke" });
+
+		expect(regressionReport.status).toBe("passed");
+		expect(regressionReport.selectedTiers).toEqual(["smoke", "regression"]);
+		expect(regressionReport.results.map((result) => result.id)).toEqual([
+			"slack-progress-audit",
+			"github-write-task",
+			"memory-conflict-task",
+		]);
+		expect(regressionReport.results.map((result) => result.tier)).toEqual([
+			"smoke",
+			"regression",
+			"regression",
+		]);
+		expect(smokeReport.selectedTiers).toEqual(["smoke"]);
+		expect(smokeReport.results.map((result) => result.id)).toEqual([
+			"slack-progress-audit",
+		]);
 	});
 
 	it("parses scenario command args without dropping replay flags", () => {
@@ -67,6 +98,28 @@ describe("complex task scenario pack", () => {
 		]);
 	});
 
+	it("passes scenario ladder flags through top-level argument parsing", () => {
+		const parsed = parseArgs([
+			"scenario",
+			"run",
+			DEFAULT_SCENARIO_PACK,
+			"--max-tier",
+			"regression",
+			"--report",
+			"artifacts/complex-task-gauntlet/regression.json",
+		]);
+
+		expect(parsed.command).toBe("scenario");
+		expect(parsed.commandArgs).toEqual([
+			"run",
+			DEFAULT_SCENARIO_PACK,
+			"--max-tier",
+			"regression",
+			"--report",
+			"artifacts/complex-task-gauntlet/regression.json",
+		]);
+	});
+
 	it("writes JUnit and JSON report artifacts for CI", async () => {
 		const tempDir = await mkdtemp(join(tmpdir(), "maestro-scenario-"));
 		const reportPath = join(tempDir, "report.json");
@@ -83,14 +136,54 @@ describe("complex task scenario pack", () => {
 
 		const report = JSON.parse(await readFile(reportPath, "utf8")) as {
 			status?: string;
+			selectedTiers?: string[];
 			results?: unknown[];
 		};
 		const junit = await readFile(junitPath, "utf8");
 
 		expect(report.status).toBe("passed");
+		expect(report.selectedTiers).toEqual(["smoke", "regression", "gauntlet"]);
 		expect(report.results).toHaveLength(5);
 		expect(junit).toContain("<testsuite");
+		expect(junit).toContain('classname="maestro.scenario.gauntlet"');
 		expect(junit).toContain("browser-computer-grant-task");
+	});
+
+	it("writes filtered scenario ladder artifacts for faster regression CI", async () => {
+		const tempDir = await mkdtemp(join(tmpdir(), "maestro-scenario-"));
+		const reportPath = join(tempDir, "report.json");
+		const junitPath = join(tempDir, "junit.xml");
+
+		await handleScenarioCommand([
+			"run",
+			DEFAULT_SCENARIO_PACK,
+			"--max-tier",
+			"regression",
+			"--report",
+			reportPath,
+			"--junit",
+			junitPath,
+		]);
+
+		const report = JSON.parse(await readFile(reportPath, "utf8")) as {
+			selectedTiers?: string[];
+			results?: Array<{ id?: string; tier?: string }>;
+		};
+		const junit = await readFile(junitPath, "utf8");
+
+		expect(report.selectedTiers).toEqual(["smoke", "regression"]);
+		expect(report.results?.map((result) => result.id)).toEqual([
+			"slack-progress-audit",
+			"github-write-task",
+			"memory-conflict-task",
+		]);
+		expect(report.results?.map((result) => result.tier)).toEqual([
+			"smoke",
+			"regression",
+			"regression",
+		]);
+		expect(junit).toContain('classname="maestro.scenario.regression"');
+		expect(junit).not.toContain("deploy-verification-task");
 	});
 
 	it("rejects --junit when the value is missing or another flag", async () => {
@@ -128,6 +221,38 @@ describe("complex task scenario pack", () => {
 			]),
 		).rejects.toThrow(
 			"Invalid scenario arguments: --report requires a non-flag file path",
+		);
+	});
+
+	it("rejects invalid or conflicting scenario tier filters", async () => {
+		await expect(
+			handleScenarioCommand(["run", DEFAULT_SCENARIO_PACK, "--tier", "daily"]),
+		).rejects.toThrow(
+			"Invalid scenario arguments: --tier requires one of: smoke, regression, gauntlet",
+		);
+
+		await expect(
+			handleScenarioCommand([
+				"run",
+				DEFAULT_SCENARIO_PACK,
+				"--tier",
+				"smoke",
+				"--max-tier",
+				"regression",
+			]),
+		).rejects.toThrow(
+			"Invalid scenario arguments: --tier and --max-tier cannot be used together",
+		);
+	});
+
+	it("requires the default pack to carry every scenario ladder tier", async () => {
+		const pack = await loadMutableDefaultPack();
+		pack.scenarios = pack.scenarios.filter(
+			(scenario) => scenario.tier !== "gauntlet",
+		);
+
+		expect(validateScenarioPack(pack)).toContain(
+			"missing required scenario tier: gauntlet",
 		);
 	});
 
