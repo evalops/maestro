@@ -5,28 +5,28 @@
 		"id": "replay-legacy-mcp-1",
 		"cwd": "/workspace/replay",
 		"model": "openai/gpt-5.5",
-		"messageCount": 4
+		"messageCount": 5
 	},
 	"counts": {
-		"timelineItems": 11,
+		"timelineItems": 14,
 		"byType": {
 			"session.started": 1,
 			"message.user": 1,
 			"message.assistant": 1,
-			"tool.requested": 2,
-			"file.changed": 1,
-			"tool.completed": 2,
+			"tool.requested": 3,
+			"file.changed": 2,
+			"tool.completed": 3,
 			"branch.created": 1,
 			"custom.event": 1,
 			"compaction.created": 1
 		},
 		"byStatus": {
 			"info": 4,
-			"completed": 5,
-			"running": 2
+			"completed": 7,
+			"running": 3
 		},
 		"byVisibility": {
-			"user": 8,
+			"user": 11,
 			"admin": 3
 		}
 	},
@@ -127,6 +127,16 @@
 			"toolName": "mcp__platform__search"
 		},
 		{
+			"id": "tool-requested:assistant-1:call-write",
+			"type": "tool.requested",
+			"status": "running",
+			"visibility": "user",
+			"source": "local",
+			"title": "Requested write",
+			"toolCallId": "call-write",
+			"toolName": "write"
+		},
+		{
 			"id": "file-change:tool-edit-1:call-edit",
 			"type": "file.changed",
 			"status": "completed",
@@ -147,6 +157,28 @@
 			"role": "tool",
 			"toolCallId": "call-edit",
 			"toolName": "edit"
+		},
+		{
+			"id": "file-change:tool-write-1:call-write",
+			"type": "file.changed",
+			"status": "completed",
+			"visibility": "user",
+			"source": "local",
+			"title": "File created",
+			"toolCallId": "call-write",
+			"toolName": "write",
+			"summary": "docs/new-replay.md | 64 bytes"
+		},
+		{
+			"id": "tool-result:tool-write-1:call-write",
+			"type": "tool.completed",
+			"status": "completed",
+			"visibility": "user",
+			"source": "local",
+			"title": "write completed",
+			"role": "tool",
+			"toolCallId": "call-write",
+			"toolName": "write"
 		},
 		{
 			"id": "tool-result:tool-mcp-1:call-mcp-search",

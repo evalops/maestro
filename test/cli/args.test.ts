@@ -213,6 +213,29 @@ describe("parseArgs", () => {
 		});
 	});
 
+	it("does not expose internal scenario replay as a public CLI command", () => {
+		expect(
+			parseArgs([
+				"scenario",
+				"run",
+				"evals/internal/complex-task-gauntlet.json",
+			]),
+		).toMatchObject({
+			messages: [
+				"scenario",
+				"run",
+				"evals/internal/complex-task-gauntlet.json",
+			],
+		});
+		expect(
+			parseArgs([
+				"scenario",
+				"run",
+				"evals/internal/complex-task-gauntlet.json",
+			]).command,
+		).toBeUndefined();
+	});
+
 	it("parses evalops auth commands", () => {
 		expect(parseArgs(["evalops", "login"])).toMatchObject({
 			command: "evalops",

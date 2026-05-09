@@ -83,6 +83,9 @@ describe("prepare-public-release-mirror", () => {
 			"MAESTRO_CEREBRO_URL=http://localhost:18080\n",
 		);
 		write(join(source, "docs/internal/notes.md"), "internal\n");
+		write(join(source, "evals/internal/scenario.json"), "{}\n");
+		write(join(source, "scripts/internal/operator-tool.mjs"), "internal\n");
+		write(join(source, "test/internal/operator-tool.test.ts"), "internal\n");
 		write(join(source, ".github/public-release-mirror.exclude"), "");
 
 		write(join(target, "old.txt"), "stale\n");
@@ -91,6 +94,13 @@ describe("prepare-public-release-mirror", () => {
 			join(target, ".github/workflows/public-release-mirror.yml"),
 			"public workflow\n",
 		);
+		write(
+			join(target, "docs/protocols/complex-task-scenarios.md"),
+			"stale public scenario docs\n",
+		);
+		write(join(target, "evals/scenarios/complex-task-gauntlet.json"), "{}\n");
+		write(join(target, "src/cli/commands/scenario.ts"), "export {};\n");
+		write(join(target, "test/scenario-pack.test.ts"), "stale\n");
 		write(join(target, "scripts/smoke-registry-install.js"), "public smoke\n");
 		write(join(target, ".git/config"), '[remote "origin"]\n');
 
@@ -113,12 +123,31 @@ describe("prepare-public-release-mirror", () => {
 			"export const value = 1;\n",
 		);
 		expect(existsSync(join(target, "old.txt"))).toBe(false);
+		expect(
+			existsSync(join(target, "docs/protocols/complex-task-scenarios.md")),
+		).toBe(false);
+		expect(
+			existsSync(join(target, "evals/scenarios/complex-task-gauntlet.json")),
+		).toBe(false);
+		expect(existsSync(join(target, "src/cli/commands/scenario.ts"))).toBe(
+			false,
+		);
+		expect(existsSync(join(target, "test/scenario-pack.test.ts"))).toBe(false);
 		expect(existsSync(join(target, ".env"))).toBe(false);
 		expect(existsSync(join(target, ".env.local"))).toBe(false);
 		expect(readFileSync(join(target, ".env.example"), "utf8")).toBe(
 			"MAESTRO_CEREBRO_URL=http://localhost:18080\n",
 		);
 		expect(existsSync(join(target, "docs/internal/notes.md"))).toBe(false);
+		expect(existsSync(join(target, "evals/internal/scenario.json"))).toBe(
+			false,
+		);
+		expect(existsSync(join(target, "scripts/internal/operator-tool.mjs"))).toBe(
+			false,
+		);
+		expect(
+			existsSync(join(target, "test/internal/operator-tool.test.ts")),
+		).toBe(false);
 		expect(existsSync(join(target, ".husky/_/husky.sh"))).toBe(false);
 		expect(existsSync(join(target, "packages/contracts/dist/index.js"))).toBe(
 			false,
