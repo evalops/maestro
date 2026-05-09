@@ -20,6 +20,21 @@ export interface RuntimeSelectionLogger {
 	info(message: string, context?: Record<string, unknown>): void;
 }
 
+export function isHeadlessModeRequested(
+	args: Pick<Args, "headless" | "mode">,
+): boolean {
+	return args.headless === true || args.mode === "headless";
+}
+
+export function willDispatchHeadlessRuntime(
+	args: Pick<Args, "command" | "headless" | "mode">,
+): boolean {
+	return (
+		isHeadlessModeRequested(args) &&
+		(args.command === undefined || args.command === "exec")
+	);
+}
+
 export function selectHeadlessRuntime(
 	args: Pick<Args, "legacyRuntime">,
 ): HeadlessRuntimeSelection {

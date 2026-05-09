@@ -43,6 +43,7 @@ const mockModel = {
 
 let lineNumber = 1;
 let readContent = "";
+let foundSearchMatch = false;
 const readOperation = {
 	name: "read",
 	args: { path: tempFile, offset: lineNumber },
@@ -62,6 +63,7 @@ const transport = new MockToolTransport(
 					.find((line) => line.includes(tempFile));
 				const number = match?.split(":")[1];
 				lineNumber = number ? Number(number) : 1;
+				foundSearchMatch = Number.isFinite(lineNumber) && lineNumber > 0;
 				readOperation.args.offset = lineNumber;
 			},
 		},
@@ -89,6 +91,11 @@ if (!finalAssistant) {
 }
 
 console.log(finalAssistant.content.find((c) => c.type === "text")?.text ?? "");
+if (!foundSearchMatch) {
+	console.error("mock search/read flow did not find the expected search match");
+	rmSync(tempDir, { recursive: true, force: true });
+	process.exit(1);
+}
 if (!readContent.includes("TODO testing")) {
 	console.error("mock search/read flow did not read the expected search match");
 	rmSync(tempDir, { recursive: true, force: true });

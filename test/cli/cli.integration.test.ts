@@ -757,10 +757,17 @@ describe("CLI integration", () => {
 		});
 
 		await expect(main(["web", "--legacy-runtime"])).rejects.toThrow("exit");
+		await expect(
+			main(["web", "--mode=headless", "--legacy-runtime"]),
+		).rejects.toThrow("exit");
 
-		expect(exitCodes).toEqual([1]);
-		expect(output.join("\n")).toContain(
+		expect(exitCodes).toEqual([1, 1]);
+		const combined = output.join("\n");
+		expect(combined).toContain(
 			"--legacy-runtime can only be used with --headless mode",
+		);
+		expect(combined).toContain(
+			"--legacy-runtime can only be used when Maestro dispatches headless mode",
 		);
 		exitSpy.mockRestore();
 	});
