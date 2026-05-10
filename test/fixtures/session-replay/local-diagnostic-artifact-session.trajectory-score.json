@@ -1,0 +1,100 @@
+{
+	"schemaVersion": "evalops.maestro.agent-trajectory-score.v1",
+	"trajectorySchemaVersion": "evalops.maestro.agent-trajectory.v1",
+	"run": {
+		"id": "replay-local-diagnostic-artifact-1",
+		"sessionId": "replay-local-diagnostic-artifact-1",
+		"source": "local",
+		"platformBacked": false
+	},
+	"counts": {
+		"rules": 4,
+		"passed": 4,
+		"failed": 0,
+		"warnings": 0
+	},
+	"findings": [
+		{
+			"ruleId": "final-event-has-evidence",
+			"status": "pass",
+			"severity": "error",
+			"message": "Final trajectory event has evidence anchors.",
+			"eventIds": ["trajectory:message:assistant-local-2"],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "message:assistant-local-2"
+				}
+			],
+			"remediation": "No action required."
+		},
+		{
+			"ruleId": "local-diagnostic-delta",
+			"status": "pass",
+			"severity": "error",
+			"message": "Matched required event selector local-diagnostic-delta.",
+			"eventIds": [
+				"trajectory:diagnostic-delta:tool-local-edit-1:call-local-edit"
+			],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "diagnostic-delta:tool-local-edit-1:call-local-edit"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-local-edit"
+				}
+			],
+			"remediation": "No action required."
+		},
+		{
+			"ruleId": "local-skill-artifact-linked",
+			"status": "pass",
+			"severity": "error",
+			"message": "Tool call-local-edit produced required artifact skill_artifact_local_1.",
+			"eventIds": [
+				"trajectory:artifact-linked:tool-local-edit-1:call-local-edit"
+			],
+			"evidence": [
+				{
+					"kind": "artifact",
+					"id": "skill_artifact_local_1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "artifact-linked:tool-local-edit-1:call-local-edit"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-local-edit"
+				}
+			],
+			"remediation": "No action required."
+		},
+		{
+			"ruleId": "local-governance-recorded",
+			"status": "pass",
+			"severity": "error",
+			"message": "Matched required event selector local-governance-recorded.",
+			"eventIds": [
+				"trajectory:policy-decision:tool-local-edit-1:call-local-edit"
+			],
+			"evidence": [
+				{
+					"kind": "approval_request",
+					"id": "approval-local-1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "policy-decision:tool-local-edit-1:call-local-edit"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-local-edit"
+				}
+			],
+			"remediation": "No action required."
+		}
+	]
+}

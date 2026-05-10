@@ -91,6 +91,26 @@
 				"scopes utility file reads to the hosted workspace root",
 				"drain"
 			]
+		},
+		{
+			"area": "hosted-runtime-parity",
+			"path": "test/fixtures/headless/conformance-v1.json",
+			"anchors": [
+				"headless-conformance-v1",
+				"server_request_response",
+				"tool_retry",
+				"response_end"
+			]
+		},
+		{
+			"area": "hosted-runtime-parity",
+			"path": "test/headless/protocol-conformance-fixture.test.ts",
+			"anchors": [
+				"assertHeadlessToAgentMessage",
+				"assertHeadlessFromAgentMessage",
+				"HEADLESS_SERVER_CAPABILITIES",
+				"covers a complete prompt through approval, retry, and result lifecycle"
+			]
 		}
 	]
 }

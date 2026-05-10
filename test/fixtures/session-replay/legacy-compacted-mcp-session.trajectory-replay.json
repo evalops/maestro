@@ -1,0 +1,131 @@
+{
+	"schemaVersion": "evalops.maestro.agent-trajectory-replay.v1",
+	"trajectorySchemaVersion": "evalops.maestro.agent-trajectory.v1",
+	"run": {
+		"id": "replay-legacy-mcp-1",
+		"sessionId": "replay-legacy-mcp-1",
+		"source": "local",
+		"platformBacked": false
+	},
+	"deterministic": true,
+	"counts": {
+		"events": 14,
+		"deltas": 0,
+		"errors": 0,
+		"warnings": 0,
+		"toolCalls": 3,
+		"phases": 6
+	},
+	"phases": [
+		{
+			"phase": "setup",
+			"events": 3,
+			"firstSequence": 1,
+			"lastSequence": 14
+		},
+		{
+			"phase": "observe",
+			"events": 1,
+			"firstSequence": 2,
+			"lastSequence": 2
+		},
+		{
+			"phase": "think",
+			"events": 1,
+			"firstSequence": 3,
+			"lastSequence": 3
+		},
+		{
+			"phase": "act",
+			"events": 3,
+			"firstSequence": 4,
+			"lastSequence": 6
+		},
+		{
+			"phase": "verify",
+			"events": 5,
+			"firstSequence": 7,
+			"lastSequence": 11
+		},
+		{
+			"phase": "finish",
+			"events": 1,
+			"firstSequence": 13,
+			"lastSequence": 13
+		}
+	],
+	"toolCalls": [
+		{
+			"toolCallId": "call-edit",
+			"toolName": "edit",
+			"requestedSequence": 4,
+			"resultSequences": [8],
+			"terminalStatus": "completed",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "file-change:tool-edit-1:call-edit"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "tool-requested:assistant-1:call-edit"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "tool-result:tool-edit-1:call-edit"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-edit"
+				}
+			]
+		},
+		{
+			"toolCallId": "call-mcp-search",
+			"toolName": "mcp__platform__search",
+			"requestedSequence": 5,
+			"resultSequences": [11],
+			"terminalStatus": "completed",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "tool-requested:assistant-1:call-mcp-search"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "tool-result:tool-mcp-1:call-mcp-search"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-mcp-search"
+				}
+			]
+		},
+		{
+			"toolCallId": "call-write",
+			"toolName": "write",
+			"requestedSequence": 6,
+			"resultSequences": [10],
+			"terminalStatus": "completed",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "file-change:tool-write-1:call-write"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "tool-requested:assistant-1:call-write"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "tool-result:tool-write-1:call-write"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-write"
+				}
+			]
+		}
+	],
+	"deltas": []
+}

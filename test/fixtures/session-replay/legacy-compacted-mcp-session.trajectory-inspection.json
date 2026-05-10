@@ -1,0 +1,668 @@
+{
+	"schemaVersion": "evalops.maestro.agent-trajectory-inspection.v1",
+	"trajectorySchemaVersion": "evalops.maestro.agent-trajectory.v1",
+	"replaySchemaVersion": "evalops.maestro.agent-trajectory-replay.v1",
+	"scoreSchemaVersion": "evalops.maestro.agent-trajectory-score.v1",
+	"run": {
+		"id": "replay-legacy-mcp-1",
+		"sessionId": "replay-legacy-mcp-1",
+		"source": "local",
+		"platformBacked": false
+	},
+	"redaction": {
+		"default": "redacted",
+		"omitted": [
+			"raw prompts",
+			"raw tool arguments",
+			"raw tool outputs",
+			"full file diffs",
+			"timeline metadata values",
+			"secrets"
+		]
+	},
+	"counts": {
+		"timelineItems": 14,
+		"events": 14,
+		"replayDeltas": 0,
+		"scoreFindings": 3,
+		"scoreFailures": 0,
+		"scoreWarnings": 0,
+		"jumpTargets": 16
+	},
+	"finalAnswer": {
+		"eventId": "trajectory:message:assistant-1",
+		"timelineItemIds": ["message:assistant-1"],
+		"title": "Assistant response",
+		"summary": "I will update the replay docs.",
+		"redacted": true
+	},
+	"timelineItems": [
+		{
+			"id": "session-started:replay-legacy-mcp-1",
+			"timestamp": "2026-05-09T16:00:00.000Z",
+			"type": "session.started",
+			"status": "info",
+			"visibility": "user",
+			"source": "local",
+			"title": "Session started",
+			"metadataKeys": ["cwd"],
+			"redacted": true
+		},
+		{
+			"id": "message:user-1",
+			"timestamp": "2026-05-09T16:00:01.000Z",
+			"type": "message.user",
+			"status": "completed",
+			"visibility": "user",
+			"source": "local",
+			"title": "User message",
+			"summary": "Reconstruct this MCP-heavy legacy run",
+			"role": "user",
+			"metadataKeys": [],
+			"redacted": true
+		},
+		{
+			"id": "message:assistant-1",
+			"timestamp": "2026-05-09T16:00:02.000Z",
+			"type": "message.assistant",
+			"status": "completed",
+			"visibility": "user",
+			"source": "local",
+			"title": "Assistant response",
+			"summary": "I will update the replay docs.",
+			"role": "assistant",
+			"metadataKeys": ["model"],
+			"redacted": true
+		},
+		{
+			"id": "tool-requested:assistant-1:call-edit",
+			"timestamp": "2026-05-09T16:00:02.000Z",
+			"type": "tool.requested",
+			"status": "running",
+			"visibility": "user",
+			"source": "local",
+			"title": "Requested edit",
+			"toolName": "edit",
+			"metadataKeys": [],
+			"redacted": true
+		},
+		{
+			"id": "tool-requested:assistant-1:call-mcp-search",
+			"timestamp": "2026-05-09T16:00:02.000Z",
+			"type": "tool.requested",
+			"status": "running",
+			"visibility": "user",
+			"source": "local",
+			"title": "Requested mcp__platform__search",
+			"toolName": "mcp__platform__search",
+			"metadataKeys": [],
+			"redacted": true
+		},
+		{
+			"id": "tool-requested:assistant-1:call-write",
+			"timestamp": "2026-05-09T16:00:02.000Z",
+			"type": "tool.requested",
+			"status": "running",
+			"visibility": "user",
+			"source": "local",
+			"title": "Requested write",
+			"toolName": "write",
+			"metadataKeys": [],
+			"redacted": true
+		},
+		{
+			"id": "file-change:tool-edit-1:call-edit",
+			"timestamp": "2026-05-09T16:00:03.000Z",
+			"type": "file.changed",
+			"status": "completed",
+			"visibility": "user",
+			"source": "local",
+			"title": "File edited",
+			"summary": "docs/replay.md | 128 bytes | 2 edits",
+			"toolName": "edit",
+			"metadataKeys": [
+				"action",
+				"bytesWritten",
+				"editsApplied",
+				"hasDiff",
+				"path",
+				"previousExists"
+			],
+			"redacted": true
+		},
+		{
+			"id": "tool-result:tool-edit-1:call-edit",
+			"timestamp": "2026-05-09T16:00:03.000Z",
+			"type": "tool.completed",
+			"status": "completed",
+			"visibility": "user",
+			"source": "local",
+			"title": "edit completed",
+			"role": "tool",
+			"toolName": "edit",
+			"metadataKeys": [],
+			"redacted": true
+		},
+		{
+			"id": "file-change:tool-write-1:call-write",
+			"timestamp": "2026-05-09T16:00:03.500Z",
+			"type": "file.changed",
+			"status": "completed",
+			"visibility": "user",
+			"source": "local",
+			"title": "File created",
+			"summary": "docs/new-replay.md | 64 bytes",
+			"toolName": "write",
+			"metadataKeys": [
+				"action",
+				"bytesWritten",
+				"hasDiff",
+				"path",
+				"previousExists"
+			],
+			"redacted": true
+		},
+		{
+			"id": "tool-result:tool-write-1:call-write",
+			"timestamp": "2026-05-09T16:00:03.500Z",
+			"type": "tool.completed",
+			"status": "completed",
+			"visibility": "user",
+			"source": "local",
+			"title": "write completed",
+			"role": "tool",
+			"toolName": "write",
+			"metadataKeys": [],
+			"redacted": true
+		},
+		{
+			"id": "tool-result:tool-mcp-1:call-mcp-search",
+			"timestamp": "2026-05-09T16:00:04.000Z",
+			"type": "tool.completed",
+			"status": "completed",
+			"visibility": "user",
+			"source": "local",
+			"title": "mcp__platform__search completed",
+			"role": "tool",
+			"toolName": "mcp__platform__search",
+			"metadataKeys": [],
+			"redacted": true
+		},
+		{
+			"id": "branch:branch-1",
+			"timestamp": "2026-05-09T16:00:05.000Z",
+			"type": "branch.created",
+			"status": "info",
+			"visibility": "admin",
+			"source": "local",
+			"title": "Branch summary created",
+			"summary": "Side branch checked Rust parser parity.",
+			"metadataKeys": ["fromId"],
+			"redacted": true
+		},
+		{
+			"id": "custom-message:hook-note-1",
+			"timestamp": "2026-05-09T16:00:06.000Z",
+			"type": "custom.event",
+			"status": "info",
+			"visibility": "admin",
+			"source": "local",
+			"title": "hook.note",
+			"summary": "Hook added replay evidence.",
+			"metadataKeys": [],
+			"redacted": true
+		},
+		{
+			"id": "compaction:compact-1",
+			"timestamp": "2026-05-09T16:00:07.000Z",
+			"type": "compaction.created",
+			"status": "info",
+			"visibility": "admin",
+			"source": "local",
+			"title": "Context compacted",
+			"summary": "Kept replay contract, MCP context, and Rust parser notes.",
+			"metadataKeys": ["auto", "fromHook", "tokensBefore"],
+			"redacted": true
+		}
+	],
+	"events": [
+		{
+			"id": "trajectory:session-started:replay-legacy-mcp-1",
+			"sequence": 1,
+			"timestamp": "2026-05-09T16:00:00.000Z",
+			"kind": "session",
+			"phase": "setup",
+			"actor": "system",
+			"type": "session.started",
+			"status": "info",
+			"visibility": "user",
+			"source": "local",
+			"title": "Session started",
+			"relatedIds": [],
+			"timelineItemIds": ["session-started:replay-legacy-mcp-1"],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "session-started:replay-legacy-mcp-1",
+					"redacted": true,
+					"label": "timeline_item:session-started:replay-legacy-mcp-1"
+				}
+			]
+		},
+		{
+			"id": "trajectory:message:user-1",
+			"sequence": 2,
+			"timestamp": "2026-05-09T16:00:01.000Z",
+			"kind": "message",
+			"phase": "observe",
+			"actor": "user",
+			"type": "message.user",
+			"status": "completed",
+			"visibility": "user",
+			"source": "local",
+			"title": "User message",
+			"summary": "Reconstruct this MCP-heavy legacy run",
+			"relatedIds": [],
+			"timelineItemIds": ["message:user-1"],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "message:user-1",
+					"redacted": true,
+					"label": "timeline_item:message:user-1"
+				}
+			]
+		},
+		{
+			"id": "trajectory:message:assistant-1",
+			"sequence": 3,
+			"timestamp": "2026-05-09T16:00:02.000Z",
+			"kind": "message",
+			"phase": "think",
+			"actor": "assistant",
+			"type": "message.assistant",
+			"status": "completed",
+			"visibility": "user",
+			"source": "local",
+			"title": "Assistant response",
+			"summary": "I will update the replay docs.",
+			"relatedIds": [],
+			"timelineItemIds": ["message:assistant-1"],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "message:assistant-1",
+					"redacted": true,
+					"label": "timeline_item:message:assistant-1"
+				}
+			]
+		},
+		{
+			"id": "trajectory:tool-requested:assistant-1:call-edit",
+			"sequence": 4,
+			"timestamp": "2026-05-09T16:00:02.000Z",
+			"kind": "tool",
+			"phase": "act",
+			"actor": "assistant",
+			"type": "tool.requested",
+			"status": "running",
+			"visibility": "user",
+			"source": "local",
+			"title": "Requested edit",
+			"toolName": "edit",
+			"relatedIds": ["call-edit"],
+			"timelineItemIds": ["tool-requested:assistant-1:call-edit"],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "tool-requested:assistant-1:call-edit",
+					"redacted": true,
+					"label": "timeline_item:tool-requested:assistant-1:call-edit"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-edit",
+					"redacted": true,
+					"label": "tool_call:call-edit"
+				}
+			]
+		},
+		{
+			"id": "trajectory:tool-requested:assistant-1:call-mcp-search",
+			"sequence": 5,
+			"timestamp": "2026-05-09T16:00:02.000Z",
+			"kind": "tool",
+			"phase": "act",
+			"actor": "assistant",
+			"type": "tool.requested",
+			"status": "running",
+			"visibility": "user",
+			"source": "local",
+			"title": "Requested mcp__platform__search",
+			"toolName": "mcp__platform__search",
+			"relatedIds": ["call-mcp-search"],
+			"timelineItemIds": ["tool-requested:assistant-1:call-mcp-search"],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "tool-requested:assistant-1:call-mcp-search",
+					"redacted": true,
+					"label": "timeline_item:tool-requested:assistant-1:call-mcp-search"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-mcp-search",
+					"redacted": true,
+					"label": "tool_call:call-mcp-search"
+				}
+			]
+		},
+		{
+			"id": "trajectory:tool-requested:assistant-1:call-write",
+			"sequence": 6,
+			"timestamp": "2026-05-09T16:00:02.000Z",
+			"kind": "tool",
+			"phase": "act",
+			"actor": "assistant",
+			"type": "tool.requested",
+			"status": "running",
+			"visibility": "user",
+			"source": "local",
+			"title": "Requested write",
+			"toolName": "write",
+			"relatedIds": ["call-write"],
+			"timelineItemIds": ["tool-requested:assistant-1:call-write"],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "tool-requested:assistant-1:call-write",
+					"redacted": true,
+					"label": "timeline_item:tool-requested:assistant-1:call-write"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-write",
+					"redacted": true,
+					"label": "tool_call:call-write"
+				}
+			]
+		},
+		{
+			"id": "trajectory:file-change:tool-edit-1:call-edit",
+			"sequence": 7,
+			"timestamp": "2026-05-09T16:00:03.000Z",
+			"kind": "evidence",
+			"phase": "verify",
+			"actor": "runtime",
+			"type": "file.changed",
+			"status": "completed",
+			"visibility": "user",
+			"source": "local",
+			"title": "File edited",
+			"summary": "docs/replay.md | 128 bytes | 2 edits",
+			"toolName": "edit",
+			"relatedIds": ["call-edit"],
+			"timelineItemIds": ["file-change:tool-edit-1:call-edit"],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "file-change:tool-edit-1:call-edit",
+					"redacted": true,
+					"label": "timeline_item:file-change:tool-edit-1:call-edit"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-edit",
+					"redacted": true,
+					"label": "tool_call:call-edit"
+				}
+			]
+		},
+		{
+			"id": "trajectory:tool-result:tool-edit-1:call-edit",
+			"sequence": 8,
+			"timestamp": "2026-05-09T16:00:03.000Z",
+			"kind": "tool",
+			"phase": "verify",
+			"actor": "tool",
+			"type": "tool.completed",
+			"status": "completed",
+			"visibility": "user",
+			"source": "local",
+			"title": "edit completed",
+			"toolName": "edit",
+			"relatedIds": ["call-edit"],
+			"timelineItemIds": ["tool-result:tool-edit-1:call-edit"],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "tool-result:tool-edit-1:call-edit",
+					"redacted": true,
+					"label": "timeline_item:tool-result:tool-edit-1:call-edit"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-edit",
+					"redacted": true,
+					"label": "tool_call:call-edit"
+				}
+			]
+		},
+		{
+			"id": "trajectory:file-change:tool-write-1:call-write",
+			"sequence": 9,
+			"timestamp": "2026-05-09T16:00:03.500Z",
+			"kind": "evidence",
+			"phase": "verify",
+			"actor": "runtime",
+			"type": "file.changed",
+			"status": "completed",
+			"visibility": "user",
+			"source": "local",
+			"title": "File created",
+			"summary": "docs/new-replay.md | 64 bytes",
+			"toolName": "write",
+			"relatedIds": ["call-write"],
+			"timelineItemIds": ["file-change:tool-write-1:call-write"],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "file-change:tool-write-1:call-write",
+					"redacted": true,
+					"label": "timeline_item:file-change:tool-write-1:call-write"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-write",
+					"redacted": true,
+					"label": "tool_call:call-write"
+				}
+			]
+		},
+		{
+			"id": "trajectory:tool-result:tool-write-1:call-write",
+			"sequence": 10,
+			"timestamp": "2026-05-09T16:00:03.500Z",
+			"kind": "tool",
+			"phase": "verify",
+			"actor": "tool",
+			"type": "tool.completed",
+			"status": "completed",
+			"visibility": "user",
+			"source": "local",
+			"title": "write completed",
+			"toolName": "write",
+			"relatedIds": ["call-write"],
+			"timelineItemIds": ["tool-result:tool-write-1:call-write"],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "tool-result:tool-write-1:call-write",
+					"redacted": true,
+					"label": "timeline_item:tool-result:tool-write-1:call-write"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-write",
+					"redacted": true,
+					"label": "tool_call:call-write"
+				}
+			]
+		},
+		{
+			"id": "trajectory:tool-result:tool-mcp-1:call-mcp-search",
+			"sequence": 11,
+			"timestamp": "2026-05-09T16:00:04.000Z",
+			"kind": "tool",
+			"phase": "verify",
+			"actor": "tool",
+			"type": "tool.completed",
+			"status": "completed",
+			"visibility": "user",
+			"source": "local",
+			"title": "mcp__platform__search completed",
+			"toolName": "mcp__platform__search",
+			"relatedIds": ["call-mcp-search"],
+			"timelineItemIds": ["tool-result:tool-mcp-1:call-mcp-search"],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "tool-result:tool-mcp-1:call-mcp-search",
+					"redacted": true,
+					"label": "timeline_item:tool-result:tool-mcp-1:call-mcp-search"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-mcp-search",
+					"redacted": true,
+					"label": "tool_call:call-mcp-search"
+				}
+			]
+		},
+		{
+			"id": "trajectory:branch:branch-1",
+			"sequence": 12,
+			"timestamp": "2026-05-09T16:00:05.000Z",
+			"kind": "context",
+			"phase": "setup",
+			"actor": "system",
+			"type": "branch.created",
+			"status": "info",
+			"visibility": "admin",
+			"source": "local",
+			"title": "Branch summary created",
+			"summary": "Side branch checked Rust parser parity.",
+			"relatedIds": [],
+			"timelineItemIds": ["branch:branch-1"],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "branch:branch-1",
+					"redacted": true,
+					"label": "timeline_item:branch:branch-1"
+				}
+			]
+		},
+		{
+			"id": "trajectory:custom-message:hook-note-1",
+			"sequence": 13,
+			"timestamp": "2026-05-09T16:00:06.000Z",
+			"kind": "runtime",
+			"phase": "finish",
+			"actor": "runtime",
+			"type": "custom.event",
+			"status": "info",
+			"visibility": "admin",
+			"source": "local",
+			"title": "hook.note",
+			"summary": "Hook added replay evidence.",
+			"relatedIds": [],
+			"timelineItemIds": ["custom-message:hook-note-1"],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "custom-message:hook-note-1",
+					"redacted": true,
+					"label": "timeline_item:custom-message:hook-note-1"
+				}
+			]
+		},
+		{
+			"id": "trajectory:compaction:compact-1",
+			"sequence": 14,
+			"timestamp": "2026-05-09T16:00:07.000Z",
+			"kind": "context",
+			"phase": "setup",
+			"actor": "system",
+			"type": "compaction.created",
+			"status": "info",
+			"visibility": "admin",
+			"source": "local",
+			"title": "Context compacted",
+			"summary": "Kept replay contract, MCP context, and Rust parser notes.",
+			"relatedIds": [],
+			"timelineItemIds": ["compaction:compact-1"],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "compaction:compact-1",
+					"redacted": true,
+					"label": "timeline_item:compaction:compact-1"
+				}
+			]
+		}
+	],
+	"replayDeltas": [],
+	"scoreFindings": [
+		{
+			"ruleId": "final-event-has-evidence",
+			"status": "pass",
+			"severity": "error",
+			"message": "Final trajectory event has evidence anchors.",
+			"eventIds": ["trajectory:compaction:compact-1"],
+			"timelineItemIds": ["compaction:compact-1"],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "compaction:compact-1",
+					"redacted": true,
+					"label": "timeline_item:compaction:compact-1"
+				}
+			],
+			"remediation": "No action required."
+		},
+		{
+			"ruleId": "legacy-mcp-search-requested",
+			"status": "pass",
+			"severity": "error",
+			"message": "Matched required event selector legacy-mcp-search-requested.",
+			"eventIds": ["trajectory:tool-requested:assistant-1:call-mcp-search"],
+			"timelineItemIds": ["tool-requested:assistant-1:call-mcp-search"],
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "tool-requested:assistant-1:call-mcp-search",
+					"redacted": true,
+					"label": "timeline_item:tool-requested:assistant-1:call-mcp-search"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-mcp-search",
+					"redacted": true,
+					"label": "tool_call:call-mcp-search"
+				}
+			],
+			"remediation": "No action required."
+		},
+		{
+			"ruleId": "legacy-no-policy-decision",
+			"status": "pass",
+			"severity": "error",
+			"message": "No forbidden event matched selector legacy-no-policy-decision.",
+			"eventIds": [],
+			"timelineItemIds": [],
+			"evidence": [],
+			"remediation": "No action required."
+		}
+	]
+}

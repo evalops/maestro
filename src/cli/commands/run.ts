@@ -1,11 +1,37 @@
 import chalk from "chalk";
 import { parseMcpToolName } from "../../mcp/names.js";
+import {
+	type AgentTrajectoryInspectionReport,
+	buildAgentTrajectoryInspectionReport,
+} from "../../server/agent-trajectory-inspection.js";
+import {
+	type AgentTrajectoryReplayReport,
+	replayAgentTrajectoryReport,
+} from "../../server/agent-trajectory-replay.js";
+import {
+	type AgentTrajectoryScoreReport,
+	type AgentTrajectoryScorerRule,
+	scoreAgentTrajectoryReport,
+} from "../../server/agent-trajectory-scorers.js";
+import {
+	type AgentTrajectoryReport,
+	buildAgentTrajectoryReport,
+} from "../../server/agent-trajectory.js";
 import { buildComposerRunTimeline } from "../../server/session-timeline.js";
 import { SessionManager } from "../../session/manager.js";
 import { migrateToCurrentVersion } from "../../session/migration.js";
 import type { SessionEntry, SessionHeaderEntry } from "../../session/types.js";
 
 const RUN_RECONSTRUCTION_SCHEMA = "evalops.maestro.run-reconstruction.v1";
+const RUN_INSPECT_TRAJECTORY_RULES: AgentTrajectoryScorerRule[] = [
+	{
+		id: "final-event-has-evidence",
+		severity: "error",
+		description:
+			"The final answer or runtime terminal event must have evidence.",
+		finalEvidenceCoverage: true,
+	},
+];
 
 type ComposerRunTimeline = ReturnType<typeof buildComposerRunTimeline>;
 type ComposerRunTimelineItem = ComposerRunTimeline["items"][number];
@@ -79,6 +105,10 @@ interface RunReconstructionReport {
 	promptContext: PromptContextSummary;
 	contextManifest: ContextManifestSummary;
 	timeline: ComposerRunTimeline;
+	trajectory: AgentTrajectoryReport;
+	trajectoryReplay: AgentTrajectoryReplayReport;
+	trajectoryScore: AgentTrajectoryScoreReport;
+	trajectoryInspection: AgentTrajectoryInspectionReport;
 }
 
 function usage(): string {
@@ -299,6 +329,18 @@ async function buildRunReconstructionReport(
 		entries,
 		messages: session.messages,
 	});
+	const trajectory = buildAgentTrajectoryReport(timeline);
+	const trajectoryReplay = replayAgentTrajectoryReport(trajectory);
+	const trajectoryScore = scoreAgentTrajectoryReport(
+		trajectory,
+		RUN_INSPECT_TRAJECTORY_RULES,
+	);
+	const trajectoryInspection = buildAgentTrajectoryInspectionReport({
+		timelineItems: timeline.items,
+		trajectory,
+		replay: trajectoryReplay,
+		score: trajectoryScore,
+	});
 	const counts = countTimeline(timeline);
 	const context = promptContextSummary(header, timeline);
 	const contextManifest = contextManifestSummary(header, timeline, context);
@@ -331,6 +373,10 @@ async function buildRunReconstructionReport(
 		promptContext: context,
 		contextManifest,
 		timeline,
+		trajectory,
+		trajectoryReplay,
+		trajectoryScore,
+		trajectoryInspection,
 	};
 }
 
@@ -374,6 +420,10 @@ function renderRunReconstruction(report: RunReconstructionReport): string {
 		`Session file: ${report.session.sessionFile}`,
 		`Messages: ${report.session.messageCount}`,
 		`Timeline items: ${report.counts.timelineItems}`,
+		`Trajectory events: ${report.trajectory.counts.events}`,
+		`Replay deltas: ${report.trajectoryReplay.counts.deltas} (${report.trajectoryReplay.counts.errors} errors, ${report.trajectoryReplay.counts.warnings} warnings)`,
+		`Trajectory score: ${report.trajectoryScore.counts.failed} failed, ${report.trajectoryScore.counts.warnings} warnings across ${report.trajectoryScore.counts.rules} rule(s)`,
+		`Replay lab: ${report.trajectoryInspection.counts.jumpTargets} event/source jump target(s), redaction=${report.trajectoryInspection.redaction.default}`,
 		`Coverage: ${renderCoverage(report.coverage)}`,
 		`Prompt context: ${report.promptContext.entries} entries (${report.promptContext.projectDocs} docs, ${report.promptContext.mcpServers} MCP servers)`,
 		`Context manifest: ${report.contextManifest.entries} entries (${report.contextManifest.projectDocs} docs, ${report.contextManifest.mcpServers} MCP servers, ${report.contextManifest.mcpResources} resources, ${report.contextManifest.mcpPrompts} prompts, ${report.contextManifest.diagnostics} diagnostics)`,
