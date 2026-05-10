@@ -48,6 +48,11 @@ describe("staged rollout check", () => {
 			hasStagedRolloutAnswer(
 				"- [x] If this PR adds or promotes user-visible behavior, explain the staged-rollout choice (or why staging is unnecessary).",
 			),
+		).toBe(false);
+		expect(
+			hasStagedRolloutAnswer(
+				"- [x] If this PR adds or promotes user-visible behavior, explain the staged-rollout choice (or why staging is unnecessary). Direct exposure safe cleanup.",
+			),
 		).toBe(true);
 		expect(
 			hasStagedRolloutAnswer(

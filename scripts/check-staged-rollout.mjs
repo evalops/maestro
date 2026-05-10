@@ -54,7 +54,6 @@ export function hasStagedRolloutAnswer(body) {
 		.split("\n")
 		.filter((line) => {
 			if (!stagedRolloutTemplatePromptPattern.test(line)) return true;
-			if (/\[[xX]\]/.test(line)) return true;
 			const [, afterPrompt = ""] = line.split(stagedRolloutTemplatePromptPattern);
 			return afterPrompt.replace(/^[\s.:-]+/, "").trim().length > 0;
 		})
