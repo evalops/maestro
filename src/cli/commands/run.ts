@@ -1,5 +1,9 @@
 import chalk from "chalk";
 import { parseMcpToolName } from "../../mcp/names.js";
+import {
+	type AgentTrajectoryReport,
+	buildAgentTrajectoryReport,
+} from "../../server/agent-trajectory.js";
 import { buildComposerRunTimeline } from "../../server/session-timeline.js";
 import { SessionManager } from "../../session/manager.js";
 import { migrateToCurrentVersion } from "../../session/migration.js";
@@ -79,6 +83,7 @@ interface RunReconstructionReport {
 	promptContext: PromptContextSummary;
 	contextManifest: ContextManifestSummary;
 	timeline: ComposerRunTimeline;
+	trajectory: AgentTrajectoryReport;
 }
 
 function usage(): string {
@@ -331,6 +336,7 @@ async function buildRunReconstructionReport(
 		promptContext: context,
 		contextManifest,
 		timeline,
+		trajectory: buildAgentTrajectoryReport(timeline),
 	};
 }
 
@@ -374,6 +380,7 @@ function renderRunReconstruction(report: RunReconstructionReport): string {
 		`Session file: ${report.session.sessionFile}`,
 		`Messages: ${report.session.messageCount}`,
 		`Timeline items: ${report.counts.timelineItems}`,
+		`Trajectory events: ${report.trajectory.counts.events}`,
 		`Coverage: ${renderCoverage(report.coverage)}`,
 		`Prompt context: ${report.promptContext.entries} entries (${report.promptContext.projectDocs} docs, ${report.promptContext.mcpServers} MCP servers)`,
 		`Context manifest: ${report.contextManifest.entries} entries (${report.contextManifest.projectDocs} docs, ${report.contextManifest.mcpServers} MCP servers, ${report.contextManifest.mcpResources} resources, ${report.contextManifest.mcpPrompts} prompts, ${report.contextManifest.diagnostics} diagnostics)`,

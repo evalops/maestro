@@ -22,6 +22,17 @@ Local command:
 npm run test -- test/headless/runtime-conformance.test.ts
 ```
 
+The protocol-level golden transcript lives at
+[`test/fixtures/headless/conformance-v1.json`](../../test/fixtures/headless/conformance-v1.json).
+It intentionally stays smaller than the hosted runtime suite: one handshake,
+one init, one prompt, approval and tool retry server requests, their correlated
+responses and resolutions, and a terminal `response_end`. The fixture is guarded
+by:
+
+```bash
+npm run test -- test/headless/protocol-conformance-fixture.test.ts
+```
+
 Rust hosted-runner wire check:
 
 ```bash

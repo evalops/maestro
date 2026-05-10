@@ -179,7 +179,7 @@ export function printHelp(
   # Show usage analytics for one session
   maestro stats --session <session-id>
 
-  # Reconstruct the timeline and evidence coverage for a saved run
+  # Reconstruct the timeline, trajectory, and evidence coverage for a saved run
   maestro run inspect <session-id> --json`,
 	)}`;
 	const env = `${sectionHeading("Environment Variables:")}${muted(
@@ -253,8 +253,9 @@ export function printHelp(
 	const runSection = `${sectionHeading("maestro run")}${muted(
 		`  maestro run inspect <session-id> [--json]
 
-  Reconstructs a saved session into a timeline with prompt, tool, file-change,
-  artifact, policy, diagnostic, compaction, pending-wait, and MCP-context coverage.`,
+  Reconstructs a saved session into a timeline plus canonical agent trajectory
+  with prompt, tool, file-change, artifact, policy, diagnostic, compaction,
+  pending-wait, and MCP-context coverage.`,
 	)}`;
 	const initSection = `${sectionHeading("maestro init")}${muted(
 		`  maestro init                         Login, create or reuse an API key, and register this agent
