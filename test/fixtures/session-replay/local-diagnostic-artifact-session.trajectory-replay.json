@@ -1,0 +1,109 @@
+{
+	"schemaVersion": "evalops.maestro.agent-trajectory-replay.v1",
+	"trajectorySchemaVersion": "evalops.maestro.agent-trajectory.v1",
+	"run": {
+		"id": "replay-local-diagnostic-artifact-1",
+		"sessionId": "replay-local-diagnostic-artifact-1",
+		"source": "local",
+		"platformBacked": false
+	},
+	"deterministic": true,
+	"counts": {
+		"events": 10,
+		"deltas": 0,
+		"errors": 0,
+		"warnings": 0,
+		"toolCalls": 1,
+		"phases": 6
+	},
+	"phases": [
+		{
+			"phase": "setup",
+			"events": 1,
+			"firstSequence": 1,
+			"lastSequence": 1
+		},
+		{
+			"phase": "observe",
+			"events": 1,
+			"firstSequence": 2,
+			"lastSequence": 2
+		},
+		{
+			"phase": "think",
+			"events": 2,
+			"firstSequence": 3,
+			"lastSequence": 10
+		},
+		{
+			"phase": "act",
+			"events": 1,
+			"firstSequence": 4,
+			"lastSequence": 4
+		},
+		{
+			"phase": "verify",
+			"events": 4,
+			"firstSequence": 5,
+			"lastSequence": 9
+		},
+		{
+			"phase": "govern",
+			"events": 1,
+			"firstSequence": 8,
+			"lastSequence": 8
+		}
+	],
+	"toolCalls": [
+		{
+			"toolCallId": "call-local-edit",
+			"toolName": "edit",
+			"requestedSequence": 4,
+			"resultSequences": [9],
+			"terminalStatus": "completed",
+			"evidence": [
+				{
+					"kind": "approval_request",
+					"id": "approval-local-1"
+				},
+				{
+					"kind": "artifact",
+					"id": "skill_artifact_local_1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "artifact-linked:tool-local-edit-1:call-local-edit"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "diagnostic-delta:tool-local-edit-1:call-local-edit"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "file-change:tool-local-edit-1:call-local-edit"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "policy-decision:tool-local-edit-1:call-local-edit"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "tool-requested:assistant-local-1:call-local-edit"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "tool-result:tool-local-edit-1:call-local-edit"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-local-edit"
+				},
+				{
+					"kind": "tool_execution",
+					"id": "tool-exec-local-1"
+				}
+			]
+		}
+	],
+	"deltas": []
+}

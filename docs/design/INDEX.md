@@ -15,6 +15,7 @@ This directory contains detailed design documentation for each major feature and
 | [Platform AgentRuntime Session Bridge](PLATFORM_AGENT_RUNTIME_SESSION_BRIDGE.md) | Hosted-session to Platform AgentRuntime/A2A projection, trace context, and correlation handles |
 | [AgentRuntime Task Mapping](AGENT_RUNTIME_TASK_MAPPING.md) | Mapping local todo, background-task, checkpoint, and swarm state to Platform AgentRuntime adoption phases |
 | [Run Timeline Contract](../protocols/run-timeline.md) | Product-safe run event projection, redaction, visibility, and stable IDs |
+| [Agent Trajectory Contract](../protocols/agent-trajectory.md) | Portable flight-recorder envelope for replay, scoring, and evidence joins |
 
 ## User Interface
 

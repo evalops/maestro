@@ -1,0 +1,258 @@
+{
+	"schema_version": 1,
+	"name": "headless-conformance-v1",
+	"description": "Canonical headless protocol transcript covering handshake, init, prompt, approval and tool retry server requests, and a completed response.",
+	"steps": [
+		{
+			"direction": "client_to_agent",
+			"message": {
+				"type": "hello",
+				"protocol_version": "2026-04-02",
+				"client_info": {
+					"name": "maestro-headless-conformance",
+					"version": "1.0.0"
+				},
+				"capabilities": {
+					"server_requests": ["approval", "tool_retry"],
+					"utility_operations": [
+						"command_exec",
+						"file_search",
+						"file_watch",
+						"file_read"
+					],
+					"raw_agent_events": true
+				},
+				"role": "controller"
+			}
+		},
+		{
+			"direction": "agent_to_client",
+			"message": {
+				"type": "hello_ok",
+				"protocol_version": "2026-04-02",
+				"connection_id": "conn_conformance_1",
+				"client_protocol_version": "2026-04-02",
+				"role": "controller",
+				"server_capabilities": {
+					"server_requests": [
+						"approval",
+						"client_tool",
+						"mcp_elicitation",
+						"user_input",
+						"tool_retry"
+					],
+					"utility_operations": [
+						"command_exec",
+						"file_search",
+						"file_watch",
+						"file_read"
+					],
+					"raw_agent_events": true,
+					"connection_roles": ["viewer", "controller"]
+				}
+			}
+		},
+		{
+			"direction": "agent_to_client",
+			"message": {
+				"type": "ready",
+				"protocol_version": "2026-04-02",
+				"model": "gpt-5.4",
+				"provider": "openai",
+				"session_id": "sess_conformance_1"
+			}
+		},
+		{
+			"direction": "client_to_agent",
+			"message": {
+				"type": "init",
+				"append_system_prompt": "Use deterministic conformance behavior.",
+				"thinking_level": "off",
+				"approval_mode": "prompt"
+			}
+		},
+		{
+			"direction": "client_to_agent",
+			"message": {
+				"type": "prompt",
+				"content": "Create hello.txt and retry once if the first write fails."
+			}
+		},
+		{
+			"direction": "agent_to_client",
+			"message": {
+				"type": "response_start",
+				"response_id": "resp_conformance_1"
+			}
+		},
+		{
+			"direction": "agent_to_client",
+			"message": {
+				"type": "server_request",
+				"request_id": "req_approval_1",
+				"request_type": "approval",
+				"call_id": "call_write_1",
+				"tool": "bash",
+				"display_name": "Run shell command",
+				"summary_label": "Write hello.txt",
+				"action_description": "printf 'hello\\n' > hello.txt",
+				"args": {
+					"command": "printf 'hello\\n' > hello.txt"
+				},
+				"reason": "Writing to the workspace requires explicit approval.",
+				"started_at_ms": 1778388000000
+			}
+		},
+		{
+			"direction": "client_to_agent",
+			"message": {
+				"type": "server_request_response",
+				"request_id": "req_approval_1",
+				"request_type": "approval",
+				"approved": true,
+				"result": {
+					"success": true,
+					"output": "Approved by conformance fixture"
+				}
+			}
+		},
+		{
+			"direction": "agent_to_client",
+			"message": {
+				"type": "server_request_resolved",
+				"request_id": "req_approval_1",
+				"request_type": "approval",
+				"call_id": "call_write_1",
+				"resolution": "approved",
+				"reason": "Approved by conformance fixture",
+				"resolved_by": "user",
+				"started_at_ms": 1778388000000,
+				"resolved_at_ms": 1778388000100
+			}
+		},
+		{
+			"direction": "agent_to_client",
+			"message": {
+				"type": "tool_start",
+				"call_id": "call_write_1"
+			}
+		},
+		{
+			"direction": "agent_to_client",
+			"message": {
+				"type": "tool_output",
+				"call_id": "call_write_1",
+				"content": "EAGAIN: temporary write failure"
+			}
+		},
+		{
+			"direction": "agent_to_client",
+			"message": {
+				"type": "tool_end",
+				"call_id": "call_write_1",
+				"success": false,
+				"error_code": "EAGAIN"
+			}
+		},
+		{
+			"direction": "agent_to_client",
+			"message": {
+				"type": "server_request",
+				"request_id": "req_retry_1",
+				"request_type": "tool_retry",
+				"call_id": "call_write_1",
+				"tool": "bash",
+				"display_name": "Retry shell command",
+				"summary_label": "Retry hello.txt write",
+				"action_description": "Retry printf 'hello\\n' > hello.txt",
+				"args": {
+					"command": "printf 'hello\\n' > hello.txt",
+					"attempt": 2
+				},
+				"reason": "The first tool attempt failed with a transient write error.",
+				"started_at_ms": 1778388000200
+			}
+		},
+		{
+			"direction": "client_to_agent",
+			"message": {
+				"type": "server_request_response",
+				"request_id": "req_retry_1",
+				"request_type": "tool_retry",
+				"decision_action": "retry",
+				"reason": "Retry transient failure once."
+			}
+		},
+		{
+			"direction": "agent_to_client",
+			"message": {
+				"type": "server_request_resolved",
+				"request_id": "req_retry_1",
+				"request_type": "tool_retry",
+				"call_id": "call_write_1",
+				"resolution": "retried",
+				"reason": "Retry transient failure once.",
+				"resolved_by": "client",
+				"started_at_ms": 1778388000200,
+				"resolved_at_ms": 1778388000300
+			}
+		},
+		{
+			"direction": "agent_to_client",
+			"message": {
+				"type": "tool_start",
+				"call_id": "call_write_1"
+			}
+		},
+		{
+			"direction": "agent_to_client",
+			"message": {
+				"type": "tool_output",
+				"call_id": "call_write_1",
+				"content": "hello.txt"
+			}
+		},
+		{
+			"direction": "agent_to_client",
+			"message": {
+				"type": "tool_end",
+				"call_id": "call_write_1",
+				"success": true
+			}
+		},
+		{
+			"direction": "agent_to_client",
+			"message": {
+				"type": "response_chunk",
+				"response_id": "resp_conformance_1",
+				"content": "Created hello.txt after one approved retry.",
+				"is_thinking": false
+			}
+		},
+		{
+			"direction": "agent_to_client",
+			"message": {
+				"type": "response_end",
+				"response_id": "resp_conformance_1",
+				"usage": {
+					"input_tokens": 16,
+					"output_tokens": 8,
+					"cache_read_tokens": 0,
+					"cache_write_tokens": 0,
+					"total_tokens": 24,
+					"total_cost_usd": 0,
+					"model_id": "gpt-5.4",
+					"provider": "openai"
+				},
+				"tools_summary": {
+					"tools_used": ["bash"],
+					"calls_succeeded": 1,
+					"calls_failed": 1,
+					"summary_labels": ["Write hello.txt", "Retry hello.txt write"]
+				},
+				"duration_ms": 350,
+				"ttft_ms": 20
+			}
+		}
+	]
+}
