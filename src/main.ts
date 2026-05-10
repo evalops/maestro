@@ -100,6 +100,7 @@ import {
 	type Model,
 	isAssistantMessage,
 } from "./agent/index.js";
+import { getAllModes, getModelForMode } from "./agent/modes.js";
 import { applySessionEndHooks } from "./agent/session-lifecycle-hooks.js";
 import { type ToolRetryMode, ToolRetryService } from "./agent/tool-retry.js";
 import {
@@ -168,6 +169,7 @@ import { ServerRequestActionApprovalService } from "./server/approval-service.js
 import { clientToolService } from "./server/client-tools-service.js";
 import { ServerRequestToolRetryService } from "./server/tool-retry-service.js";
 import { SessionManager } from "./session/manager.js";
+import { recordStagedRolloutSurfaceUsage } from "./telemetry.js";
 import { beaconTimeoutMs } from "./telemetry/beacon.js";
 import { askUserClientTool } from "./tools/ask-user-client.js";
 import type { UpdateCheckResult } from "./update/check.js";
@@ -187,6 +189,17 @@ const STARTUP_TELEMETRY_EXIT_WAIT_GRACE_MS = 25;
 let enterpriseCleanupRegistered = false;
 let checkpointCleanupRegistered = false;
 let sandboxCleanupRegistered = false;
+
+function printAllAgentModes(): void {
+	const lines = ["Agent modes:", ""];
+	for (const { mode, config } of getAllModes({ includeHidden: true })) {
+		const hiddenSuffix = config.visible === false ? " [hidden]" : "";
+		lines.push(`${mode}${hiddenSuffix}`);
+		lines.push(`  ${config.description}`);
+		lines.push(`  model: ${getModelForMode(mode)}`);
+	}
+	console.log(lines.join("\n"));
+}
 
 /**
  * Configuration options passed to the interactive TUI renderer.
@@ -491,8 +504,37 @@ export async function main(args: string[]) {
 
 	// Handle --help early exit (before any logging redirection or heavy init)
 	if (parsed.help) {
-		printHelp(VERSION);
-		await waitForStartupTelemetryForImmediateExit(startupTelemetry);
+		const hiddenFlagTelemetry = parsed.helpHidden
+			? recordStagedRolloutSurfaceUsage("hidden_flag_used", {
+					surfaceId: "cli:--help-hidden",
+					surfaceType: "cli_flag",
+					owner: "platform-cli",
+				})
+			: Promise.resolve();
+		printHelp(VERSION, { includeHidden: parsed.helpHidden });
+		await waitForStartupTelemetryForImmediateExit(
+			Promise.all([startupTelemetry, hiddenFlagTelemetry]).then(
+				() => undefined,
+			),
+		);
+		process.exit(0);
+	}
+
+	if (parsed.listModesAll) {
+		const hiddenFlagTelemetry = recordStagedRolloutSurfaceUsage(
+			"hidden_flag_used",
+			{
+				surfaceId: "cli:--list-modes-all",
+				surfaceType: "cli_flag",
+				owner: "agent-runtime",
+			},
+		);
+		printAllAgentModes();
+		await waitForStartupTelemetryForImmediateExit(
+			Promise.all([startupTelemetry, hiddenFlagTelemetry]).then(
+				() => undefined,
+			),
+		);
 		process.exit(0);
 	}
 

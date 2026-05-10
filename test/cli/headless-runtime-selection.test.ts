@@ -41,9 +41,11 @@ describe("headless runtime selection", () => {
 
 	it("emits one measurable info event only when legacy runtime is selected", () => {
 		const logger = { info: vi.fn() };
+		const recorder = vi.fn();
 
-		recordHeadlessRuntimeSelection({ kind: "current" }, logger);
+		recordHeadlessRuntimeSelection({ kind: "current" }, logger, recorder);
 		expect(logger.info).not.toHaveBeenCalled();
+		expect(recorder).not.toHaveBeenCalled();
 
 		recordHeadlessRuntimeSelection(
 			selectHeadlessRuntime(
@@ -53,6 +55,7 @@ describe("headless runtime selection", () => {
 				{ allowLegacy: true },
 			),
 			logger,
+			recorder,
 		);
 
 		expect(logger.info).toHaveBeenCalledOnce();
@@ -60,6 +63,16 @@ describe("headless runtime selection", () => {
 			runtime: LEGACY_HEADLESS_RUNTIME_ID,
 			source: LEGACY_HEADLESS_RUNTIME_ENV,
 			surface: "headless",
+		});
+		expect(recorder).toHaveBeenCalledWith("internal_gate_used", {
+			surfaceId: "internal-gate:headless-runtime-selector",
+			surfaceType: "internal_gate",
+			owner: "headless-runtime",
+			source: LEGACY_HEADLESS_RUNTIME_ENV,
+			metadata: {
+				runtime: LEGACY_HEADLESS_RUNTIME_ID,
+				event: LEGACY_HEADLESS_RUNTIME_EVENT,
+			},
 		});
 	});
 

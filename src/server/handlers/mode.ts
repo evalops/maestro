@@ -44,7 +44,10 @@ export async function handleMode(
 					corsHeaders,
 				);
 			} else if (action === "list") {
-				const modes = getAllModes();
+				const includeHidden =
+					url.searchParams.get("includeHidden") === "true" ||
+					url.searchParams.get("all") === "true";
+				const modes = getAllModes({ includeHidden });
 				sendJson(res, 200, { modes }, corsHeaders);
 			} else if (action === "suggest") {
 				const suggested = suggestMode(task || "");

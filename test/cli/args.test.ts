@@ -41,6 +41,20 @@ describe("parseArgs", () => {
 		});
 	});
 
+	it("parses hidden support discovery flags", () => {
+		expect(parseArgs(["--help-hidden"])).toMatchObject({
+			help: true,
+			helpHidden: true,
+		});
+		expect(parseArgs(["--help-all"])).toMatchObject({
+			help: true,
+			helpHidden: true,
+		});
+		expect(parseArgs(["--list-modes-all"])).toMatchObject({
+			listModesAll: true,
+		});
+	});
+
 	it("rejects unknown CLI flags before they become support surfaces", () => {
 		expect(parseArgs(["--headless", "--legacy-runtime"])).toMatchObject({
 			headless: true,

@@ -1,3 +1,4 @@
+import { recordStagedRolloutSurfaceUsage } from "../telemetry.js";
 import { createLogger } from "../utils/logger.js";
 
 export const LEGACY_HEADLESS_RUNTIME_ENV = "MAESTRO_INTERNAL_HEADLESS_RUNTIME";
@@ -19,6 +20,17 @@ export type HeadlessRuntimeSelection =
 export interface RuntimeSelectionLogger {
 	info(message: string, context?: Record<string, unknown>): void;
 }
+
+export type RuntimeSelectionTelemetryRecorder = (
+	event: "internal_gate_used",
+	options: {
+		surfaceId: string;
+		surfaceType: "internal_gate";
+		owner: string;
+		source: string;
+		metadata?: Record<string, unknown>;
+	},
+) => void;
 
 type HeadlessModeArgs = {
 	headless?: boolean;
@@ -67,6 +79,7 @@ export function selectHeadlessRuntime(
 export function recordHeadlessRuntimeSelection(
 	selection: HeadlessRuntimeSelection,
 	logger: RuntimeSelectionLogger = createLogger("headless-runtime"),
+	recorder: RuntimeSelectionTelemetryRecorder = recordStagedRolloutSurfaceUsage,
 ): void {
 	if (selection.kind !== "legacy") {
 		return;
@@ -76,5 +89,15 @@ export function recordHeadlessRuntimeSelection(
 		runtime: selection.runtimeId,
 		source: selection.source,
 		surface: "headless",
+	});
+	recorder("internal_gate_used", {
+		surfaceId: "internal-gate:headless-runtime-selector",
+		surfaceType: "internal_gate",
+		owner: "headless-runtime",
+		source: selection.source,
+		metadata: {
+			runtime: selection.runtimeId,
+			event: selection.event,
+		},
 	});
 }

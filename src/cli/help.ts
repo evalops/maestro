@@ -23,6 +23,64 @@
  */
 import { badge, heading, muted, sectionHeading } from "../style/theme.js";
 
+interface CliHelpOption {
+	text: string;
+	hidden?: boolean;
+}
+
+const CLI_OPTIONS: CliHelpOption[] = [
+	{ text: "--provider <name>       Provider name (default: anthropic)" },
+	{ text: "-m, --model <id>        Model ID (default: claude-sonnet-4-5)" },
+	{ text: "--task-budget <tokens> API-side Anthropic task budget in tokens" },
+	{
+		text: "--models <patterns>     Comma-separated patterns for Ctrl+P model cycling",
+	},
+	{
+		text: "--tools <names>         Comma-separated tool names to enable (e.g., read,search,list,find)",
+	},
+	{ text: "--api-key <key>         API key (defaults to env vars)" },
+	{
+		text: "--system-prompt <text>  System prompt (default: coding assistant prompt)",
+	},
+	{
+		text: "--append-system-prompt <text>  Append instructions to the system prompt",
+	},
+	{ text: "--mode <mode>           Output mode: text (default), json, or rpc" },
+	{
+		text: "--auth <mode>           Credential mode: auto (default), api-key, claude",
+	},
+	{
+		text: "--approval-mode <mode>  Action approvals: prompt (default in TUI), auto, fail",
+	},
+	{
+		text: "--sandbox <mode>        Sandbox mode: read-only, workspace-write, danger-full-access, native, docker, local, none",
+	},
+	{
+		text: "--port <n>              Port for `maestro web` (defaults to PORT env or 8080)",
+	},
+	{ text: "--continue, -c          Continue previous session" },
+	{ text: "--resume, -r            Select a session to resume" },
+	{ text: "--session <path>        Use specific session file" },
+	{ text: "--no-session            Don't save session (ephemeral)" },
+	{ text: "--safe-mode             Enable extra safety restrictions" },
+	{ text: "--help, -h              Show this help" },
+	{
+		text: "--help-hidden          Show hidden support and staged-rollout flags",
+		hidden: true,
+	},
+	{
+		text: "--list-modes-all       List visible and hidden agent modes",
+		hidden: true,
+	},
+];
+
+function renderHelpOptions(options: CliHelpOption[], includeHidden: boolean) {
+	return options
+		.filter((option) => includeHidden || option.hidden !== true)
+		.map((option) => `  ${muted(option.text)}`)
+		.join("\n");
+}
+
 /**
  * Prints the complete CLI help message to stdout.
  *
@@ -43,36 +101,26 @@ import { badge, heading, muted, sectionHeading } from "../style/theme.js";
  * }
  * ```
  */
-export function printHelp(version: string) {
+export function printHelp(
+	version: string,
+	options?: { includeHidden?: boolean },
+) {
+	const includeHidden = options?.includeHidden === true;
 	const header = `${heading("Maestro")} ${muted(
 		`v${version} by EvalOps — AI coding assistant with read, list, search, diff, bash, edit, write, todo tools`,
 	)}`;
 	const usage = `${sectionHeading("Usage")}${muted(
 		"maestro [options] [messages...]",
 	)}`;
-	const options = `${sectionHeading("Options")}${[
-		"--provider <name>       Provider name (default: anthropic)",
-		"-m, --model <id>        Model ID (default: claude-sonnet-4-5)",
-		"--task-budget <tokens> API-side Anthropic task budget in tokens",
-		"--models <patterns>     Comma-separated patterns for Ctrl+P model cycling",
-		"--tools <names>         Comma-separated tool names to enable (e.g., read,search,list,find)",
-		"--api-key <key>         API key (defaults to env vars)",
-		"--system-prompt <text>  System prompt (default: coding assistant prompt)",
-		"--append-system-prompt <text>  Append instructions to the system prompt",
-		"--mode <mode>           Output mode: text (default), json, or rpc",
-		"--auth <mode>           Credential mode: auto (default), api-key, claude",
-		"--approval-mode <mode>  Action approvals: prompt (default in TUI), auto, fail",
-		"--sandbox <mode>        Sandbox mode: read-only, workspace-write, danger-full-access, native, docker, local, none",
-		"--port <n>              Port for `maestro web` (defaults to PORT env or 8080)",
-		"--continue, -c          Continue previous session",
-		"--resume, -r            Select a session to resume",
-		"--session <path>        Use specific session file",
-		"--no-session            Don't save session (ephemeral)",
-		"--safe-mode             Enable extra safety restrictions",
-		"--help, -h              Show this help",
-	]
-		.map((line) => `  ${muted(line)}`)
-		.join("\n")}`;
+	const renderedOptions = `${sectionHeading("Options")}${renderHelpOptions(
+		CLI_OPTIONS,
+		includeHidden,
+	)}`;
+	const hiddenSupportSection = includeHidden
+		? `${sectionHeading("Hidden Support Flags")}${muted(
+				"  Hidden flags are external support surfaces. Keep them in docs/CONVENTIONS/staged-rollout-registry.json with an owner, telemetry event, and promotion/removal target.",
+			)}`
+		: null;
 	const examples = `${sectionHeading("Examples")}${muted(
 		`  # Interactive mode (no messages = interactive TUI)
   maestro
@@ -258,7 +306,8 @@ export function printHelp(version: string) {
 		[
 			header,
 			usage,
-			options,
+			renderedOptions,
+			hiddenSupportSection,
 			examples,
 			env,
 			execSection,
