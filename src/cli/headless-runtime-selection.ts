@@ -30,7 +30,7 @@ export type RuntimeSelectionTelemetryRecorder = (
 		source: string;
 		metadata?: Record<string, unknown>;
 	},
-) => void;
+) => void | Promise<void>;
 
 type HeadlessModeArgs = {
 	headless?: boolean;
@@ -90,7 +90,7 @@ export function recordHeadlessRuntimeSelection(
 		source: selection.source,
 		surface: "headless",
 	});
-	recorder("internal_gate_used", {
+	void recorder("internal_gate_used", {
 		surfaceId: "internal-gate:headless-runtime-selector",
 		surfaceType: "internal_gate",
 		owner: "headless-runtime",

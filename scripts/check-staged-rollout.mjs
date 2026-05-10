@@ -52,7 +52,12 @@ export function riskySurfaceFiles(paths) {
 export function hasStagedRolloutAnswer(body) {
 	const answerText = String(body ?? "")
 		.split("\n")
-		.filter((line) => !stagedRolloutTemplatePromptPattern.test(line))
+		.filter((line) => {
+			if (!stagedRolloutTemplatePromptPattern.test(line)) return true;
+			if (/\[[xX]\]/.test(line)) return true;
+			const [, afterPrompt = ""] = line.split(stagedRolloutTemplatePromptPattern);
+			return afterPrompt.replace(/^[\s.:-]+/, "").trim().length > 0;
+		})
 		.join("\n");
 	return stagedRolloutAnswerPattern.test(answerText);
 }
