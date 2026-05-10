@@ -41,6 +41,39 @@
 				}
 			}
 		},
+		"HeadlessServerCapabilitiesSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"server_requests": {
+					"kind": "array",
+					"items": {
+						"kind": "enumRef",
+						"name": "headlessServerRequestTypes"
+					},
+					"uniqueItems": true
+				},
+				"utility_operations": {
+					"kind": "array",
+					"items": {
+						"kind": "enumRef",
+						"name": "headlessUtilityOperations"
+					},
+					"uniqueItems": true
+				},
+				"raw_agent_events": {
+					"kind": "boolean"
+				},
+				"connection_roles": {
+					"kind": "array",
+					"items": {
+						"kind": "enumRef",
+						"name": "headlessConnectionRoles"
+					},
+					"uniqueItems": true
+				}
+			}
+		},
 		"HeadlessOptOutNotificationsSchema": {
 			"kind": "array",
 			"items": {
@@ -549,6 +582,11 @@
 				"capabilities": {
 					"kind": "ref",
 					"name": "HeadlessClientCapabilitiesSchema",
+					"optional": true
+				},
+				"server_capabilities": {
+					"kind": "ref",
+					"name": "HeadlessServerCapabilitiesSchema",
 					"optional": true
 				},
 				"opt_out_notifications": {

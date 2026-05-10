@@ -267,6 +267,15 @@ describe("runHeadlessMode", () => {
 			type: "hello_ok",
 			protocol_version: HEADLESS_PROTOCOL_VERSION,
 			opt_out_notifications: ["status", "heartbeat"],
+			server_capabilities: {
+				server_requests: expect.arrayContaining(["approval", "tool_retry"]),
+				utility_operations: expect.arrayContaining([
+					"command_exec",
+					"file_read",
+				]),
+				raw_agent_events: true,
+				connection_roles: expect.arrayContaining(["controller", "viewer"]),
+			},
 		});
 	});
 

@@ -45,6 +45,7 @@
  * - `MAESTRO_MODE`: Override the default mode at startup
  */
 
+import { recordStagedRolloutSurfaceUsage } from "../telemetry.js";
 import { createLogger } from "../utils/logger.js";
 
 // Logger scoped to agent modes for debugging mode transitions
@@ -58,7 +59,7 @@ const logger = createLogger("agent:modes");
  * - "free": Cost-optimized, uses haiku-class models for simple operations
  * - "custom": User-defined settings for specialized workflows
  */
-export type AgentMode = "smart" | "rush" | "free" | "custom";
+export type AgentMode = "smart" | "rush" | "free" | "custom" | "frontier";
 
 /**
  * Model tier representing capability levels that map to provider-specific models.
@@ -100,6 +101,10 @@ export interface ModeConfig {
 	costMultiplier: number;
 	/** Speed hint (1-10, higher is faster) */
 	speedHint: number;
+	/** Whether this mode is shown in default user-facing mode lists. */
+	visible: boolean;
+	/** Owner responsible for promotion or removal when hidden. */
+	rolloutOwner?: string;
 }
 
 /**
@@ -136,6 +141,7 @@ export const MODE_CONFIGS: Record<AgentMode, ModeConfig> = {
 		maxRetries: 3,
 		costMultiplier: 1.0,
 		speedHint: 5,
+		visible: true,
 	},
 	// Rush mode: Speed-optimized for quick iterations
 	rush: {
@@ -149,6 +155,7 @@ export const MODE_CONFIGS: Record<AgentMode, ModeConfig> = {
 		maxRetries: 2,
 		costMultiplier: 0.5,
 		speedHint: 8,
+		visible: true,
 	},
 	// Free mode: Cost-optimized for simple tasks
 	free: {
@@ -162,6 +169,7 @@ export const MODE_CONFIGS: Record<AgentMode, ModeConfig> = {
 		maxRetries: 1,
 		costMultiplier: 0.1,
 		speedHint: 10,
+		visible: true,
 	},
 	// Custom mode: User-configurable defaults (can be overridden at runtime)
 	custom: {
@@ -175,6 +183,21 @@ export const MODE_CONFIGS: Record<AgentMode, ModeConfig> = {
 		maxRetries: 2,
 		costMultiplier: 0.7,
 		speedHint: 6,
+		visible: true,
+	},
+	frontier: {
+		displayName: "Frontier",
+		description: "Experimental high-capability orchestration mode",
+		primaryTier: "opus",
+		fallbackTier: "sonnet",
+		enableThinking: true,
+		thinkingBudget: 20000,
+		useExtendedContext: true,
+		maxRetries: 3,
+		costMultiplier: 1.25,
+		speedHint: 4,
+		visible: false,
+		rolloutOwner: "agent-runtime",
 	},
 };
 
@@ -275,6 +298,14 @@ export function getCurrentMode(): AgentMode {
 export function setCurrentMode(mode: AgentMode): void {
 	logger.info("Setting agent mode", { mode });
 	currentMode = mode;
+	const config = getModeConfig(mode);
+	if (config.visible === false) {
+		recordStagedRolloutSurfaceUsage("hidden_mode_used", {
+			surfaceId: `mode:${mode}`,
+			surfaceType: "mode",
+			owner: config.rolloutOwner,
+		});
+	}
 }
 
 /**
@@ -321,13 +352,15 @@ export function formatModeDisplay(mode: AgentMode): string {
 /**
  * Get all available modes with their descriptions.
  */
-export function getAllModes(): Array<{ mode: AgentMode; config: ModeConfig }> {
-	return (Object.entries(MODE_CONFIGS) as [AgentMode, ModeConfig][]).map(
-		([mode, config]) => ({
+export function getAllModes(options?: {
+	includeHidden?: boolean;
+}): Array<{ mode: AgentMode; config: ModeConfig }> {
+	return (Object.entries(MODE_CONFIGS) as [AgentMode, ModeConfig][])
+		.filter(([, config]) => options?.includeHidden === true || config.visible)
+		.map(([mode, config]) => ({
 			mode,
 			config,
-		}),
-	);
+		}));
 }
 
 /**

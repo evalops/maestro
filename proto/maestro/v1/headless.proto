@@ -133,6 +133,13 @@ message ClientCapabilities {
   optional bool raw_agent_events = 3;
 }
 
+message ServerCapabilities {
+  repeated ServerRequestType server_requests = 1;
+  repeated UtilityOperation utility_operations = 2;
+  optional bool raw_agent_events = 3;
+  repeated ConnectionRole connection_roles = 4;
+}
+
 message ToolResponseResult {
   bool success = 1;
   string output = 2;
@@ -483,6 +490,7 @@ message HelloOkMessage {
   optional ConnectionRole role = 7;
   optional string controller_connection_id = 8;
   optional string lease_expires_at = 9;
+  ServerCapabilities server_capabilities = 10;
 }
 
 message ConnectionInfoMessage {

@@ -16,7 +16,10 @@ import {
 	type HeadlessUtilityCommandTerminalMode,
 	type HeadlessUtilityFileWatchChangeType,
 	type HeadlessUtilityOperation,
+	headlessConnectionRoles,
 	headlessProtocolVersion,
+	headlessServerRequestTypes,
+	headlessUtilityOperations,
 } from "@evalops/contracts";
 import { lookup as lookupMimeType } from "mime-types";
 
@@ -61,6 +64,20 @@ export interface HeadlessClientCapabilities {
 	utility_operations?: HeadlessUtilityOperation[];
 	raw_agent_events?: boolean;
 }
+
+export interface HeadlessServerCapabilities {
+	server_requests: HeadlessServerRequestType[];
+	utility_operations: HeadlessUtilityOperation[];
+	raw_agent_events: boolean;
+	connection_roles: HeadlessConnectionRole[];
+}
+
+export const HEADLESS_SERVER_CAPABILITIES: HeadlessServerCapabilities = {
+	server_requests: [...headlessServerRequestTypes],
+	utility_operations: [...headlessUtilityOperations],
+	raw_agent_events: true,
+	connection_roles: [...headlessConnectionRoles],
+};
 
 export interface HeadlessHelloMessage {
 	type: "hello";
@@ -450,6 +467,7 @@ export interface HeadlessHelloOkMessage {
 	client_protocol_version?: string;
 	client_info?: HeadlessClientInfo;
 	capabilities?: HeadlessClientCapabilities;
+	server_capabilities?: HeadlessServerCapabilities;
 	opt_out_notifications?: HeadlessNotificationType[];
 	role?: HeadlessConnectionRole;
 	controller_connection_id?: string | null;
@@ -581,6 +599,7 @@ export interface HeadlessRuntimeState {
 	client_protocol_version?: string;
 	client_info?: HeadlessClientInfo;
 	capabilities?: HeadlessClientCapabilities;
+	server_capabilities?: HeadlessServerCapabilities;
 	opt_out_notifications?: HeadlessNotificationType[];
 	connection_role?: HeadlessConnectionRole;
 	connection_count: number;
@@ -1248,6 +1267,7 @@ export class HeadlessProtocolTranslator {
 		client_protocol_version?: string;
 		client_info?: HeadlessClientInfo;
 		capabilities?: HeadlessClientCapabilities;
+		server_capabilities?: HeadlessServerCapabilities;
 		opt_out_notifications?: HeadlessNotificationType[];
 		role?: HeadlessConnectionRole;
 		controller_connection_id?: string | null;
@@ -1260,6 +1280,8 @@ export class HeadlessProtocolTranslator {
 			client_protocol_version: metadata.client_protocol_version,
 			client_info: metadata.client_info,
 			capabilities: metadata.capabilities,
+			server_capabilities:
+				metadata.server_capabilities ?? HEADLESS_SERVER_CAPABILITIES,
 			opt_out_notifications: metadata.opt_out_notifications,
 			role: metadata.role,
 			controller_connection_id: metadata.controller_connection_id,
@@ -1572,6 +1594,7 @@ function applyIncomingHeadlessMessageInner(
 			state.client_protocol_version = msg.client_protocol_version;
 			state.client_info = msg.client_info;
 			state.capabilities = msg.capabilities;
+			state.server_capabilities = msg.server_capabilities;
 			state.opt_out_notifications = msg.opt_out_notifications;
 			state.connection_role = msg.role;
 			state.controller_connection_id = msg.controller_connection_id;

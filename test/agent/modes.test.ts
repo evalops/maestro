@@ -22,6 +22,7 @@ describe("agent/modes", () => {
 			expect(MODE_CONFIGS.rush).toBeDefined();
 			expect(MODE_CONFIGS.free).toBeDefined();
 			expect(MODE_CONFIGS.custom).toBeDefined();
+			expect(MODE_CONFIGS.frontier).toBeDefined();
 		});
 
 		it("smart mode uses opus tier", () => {
@@ -119,6 +120,7 @@ describe("agent/modes", () => {
 			expect(parseMode("SMART")).toBe("smart");
 			expect(parseMode("Rush")).toBe("rush");
 			expect(parseMode("FREE")).toBe("free");
+			expect(parseMode("Frontier")).toBe("frontier");
 		});
 
 		it("returns null for invalid modes", () => {
@@ -174,6 +176,15 @@ describe("agent/modes", () => {
 			expect(modes.map((m) => m.mode)).toContain("rush");
 			expect(modes.map((m) => m.mode)).toContain("free");
 			expect(modes.map((m) => m.mode)).toContain("custom");
+			expect(modes.map((m) => m.mode)).not.toContain("frontier");
+		});
+
+		it("returns hidden modes only when requested", () => {
+			const modes = getAllModes({ includeHidden: true });
+			expect(modes.length).toBe(5);
+			expect(modes.map((m) => m.mode)).toContain("frontier");
+			expect(getAllModes().map((m) => m.mode)).not.toContain("frontier");
+			expect(MODE_CONFIGS.frontier.visible).toBe(false);
 		});
 	});
 

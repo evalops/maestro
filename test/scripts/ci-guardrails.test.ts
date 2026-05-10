@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
+import {
+	evaluatePublicMirrorReviewDebt,
+	parsePublicMirrorPulls,
+} from "../../scripts/check-public-mirror-review-debt.mjs";
 import { planCiChecks } from "../../scripts/plan-ci-checks.mjs";
+import {
+	collectFeedbackAuditTargets,
+	parseFeedbackAuditArgs,
+} from "../../scripts/pr-feedback-audit.mjs";
 import {
 	evaluateReadiness,
 	fetchRequiredStatusChecks,
@@ -96,6 +104,25 @@ describe("planCiChecks", () => {
 				changedFiles: ["docs/release-ops.md"],
 			}),
 		).toMatchObject({ coverage: false, publicMirror: true });
+	});
+});
+
+describe("prFeedbackAudit", () => {
+	it("collects internal and public PR inputs into explicit audit targets", () => {
+		const args = parseFeedbackAuditArgs([
+			"--repo",
+			"evalops/maestro-internal",
+			"--also-public",
+			"366",
+			"1851",
+		]);
+
+		expect(
+			collectFeedbackAuditTargets(args, "evalops/maestro-internal"),
+		).toEqual([
+			{ number: 1851, owner: "evalops", repo: "maestro-internal" },
+			{ number: 366, owner: "evalops", repo: "maestro" },
+		]);
 	});
 });
 
@@ -343,5 +370,73 @@ describe("evaluateReadiness", () => {
 		expect(() =>
 			prNumberFromInput("https://example.test/2026/pull/not-a-pr"),
 		).toThrow("Could not parse pull request number");
+	});
+});
+
+describe("public mirror review debt gate", () => {
+	it("allows missing generated mirror PRs", () => {
+		expect(
+			evaluatePublicMirrorReviewDebt({
+				pulls: [],
+				reviewThreadsByPr: new Map(),
+			}).ok,
+		).toBe(true);
+	});
+
+	it("blocks stale public mirror branch updates when review threads are unresolved", () => {
+		const result = evaluatePublicMirrorReviewDebt({
+			pulls: [
+				{
+					html_url: "https://github.com/evalops/maestro/pull/123",
+					number: 123,
+					title: "chore: sync public mirror from internal",
+				},
+			],
+			reviewThreadsByPr: new Map([
+				[
+					123,
+					[
+						{
+							comments: {
+								nodes: [
+									{
+										url: "https://github.com/evalops/maestro/pull/123#discussion_r1",
+									},
+								],
+							},
+							id: "thread-1",
+							isResolved: false,
+							path: "src/tools/apply-patch.ts",
+						},
+					],
+				],
+			]),
+		});
+
+		expect(result.ok).toBe(false);
+		expect(result.failures.join("\n")).toContain(
+			"evalops/maestro#123 has 1 unresolved review thread",
+		);
+		expect(result.failures.join("\n")).toContain(
+			"https://github.com/evalops/maestro/pull/123#discussion_r1",
+		);
+	});
+
+	it("parses public mirror pull API responses", () => {
+		expect(
+			parsePublicMirrorPulls([
+				{
+					html_url: "https://github.com/evalops/maestro/pull/456",
+					number: 456,
+					title: "sync",
+				},
+			]),
+		).toEqual([
+			{
+				html_url: "https://github.com/evalops/maestro/pull/456",
+				number: 456,
+				title: "sync",
+			},
+		]);
 	});
 });

@@ -248,7 +248,13 @@ Handshake acknowledgement:
   "protocol_version": "2026-04-02",
   "connection_id": "conn_123",
   "client_protocol_version": "2026-04-02",
-  "role": "controller"
+  "role": "controller",
+  "server_capabilities": {
+    "server_requests": ["approval", "client_tool", "mcp_elicitation", "user_input", "tool_retry"],
+    "utility_operations": ["command_exec", "file_search", "file_watch", "file_read"],
+    "raw_agent_events": true,
+    "connection_roles": ["controller", "viewer"]
+  }
 }
 ```
 
@@ -281,6 +287,17 @@ Negotiated client capabilities in `hello.capabilities`:
   - `command_exec`, `file_search`, `file_watch`, `file_read`
 - `raw_agent_events`
   - opt into raw internal agent events
+
+Advertised server capabilities in `hello_ok.server_capabilities`:
+
+- `server_requests`
+  - request classes this Maestro runtime can emit when a client advertises support
+- `utility_operations`
+  - utility operations this Maestro runtime can host for clients
+- `raw_agent_events`
+  - whether raw internal agent events are available as an opt-in stream
+- `connection_roles`
+  - connection roles the runtime understands
 
 Optional notification opt-outs in `hello.opt_out_notifications`:
 

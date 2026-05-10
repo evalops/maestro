@@ -14,7 +14,9 @@ export interface Args {
 	continue?: boolean;
 	resume?: boolean;
 	help?: boolean;
+	helpHidden?: boolean;
 	version?: boolean;
+	listModesAll?: boolean;
 	mode?: Mode;
 	/** Run in headless mode for native TUI communication */
 	headless?: boolean;
@@ -153,6 +155,11 @@ export function parseArgs(args: string[]): Args {
 
 		if (arg === "--help" || arg === "-h") {
 			result.help = true;
+		} else if (arg === "--help-hidden" || arg === "--help-all") {
+			result.help = true;
+			result.helpHidden = true;
+		} else if (arg === "--list-modes-all") {
+			result.listModesAll = true;
 		} else if (arg === "--version" || arg === "-v") {
 			result.version = true;
 		} else if (arg?.startsWith("--mode=")) {

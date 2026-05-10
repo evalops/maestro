@@ -3,13 +3,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	HeadlessFromAgentMessageSchema,
+	assertHeadlessFromAgentMessage,
+	headlessConnectionRoles,
 	headlessProtocolVersion,
+	headlessServerRequestTypes,
+	headlessUtilityOperations,
 } from "@evalops/contracts";
 import { Value } from "@sinclair/typebox/value";
 import { describe, expect, it, vi } from "vitest";
 import type { AssistantMessage } from "../../src/agent/types.js";
 import {
 	HEADLESS_PROTOCOL_VERSION,
+	HEADLESS_SERVER_CAPABILITIES,
 	HeadlessProtocolTranslator,
 	applyIncomingHeadlessMessage,
 	applyOutgoingHeadlessMessage,
@@ -51,6 +56,31 @@ function assistantMessage(
 describe("headless protocol helpers", () => {
 	it("exports a concrete protocol version", () => {
 		expect(HEADLESS_PROTOCOL_VERSION).toBe(headlessProtocolVersion);
+	});
+
+	it("advertises a schema-valid complete server capability set", () => {
+		expect(HEADLESS_SERVER_CAPABILITIES).toEqual({
+			server_requests: [...headlessServerRequestTypes],
+			utility_operations: [...headlessUtilityOperations],
+			raw_agent_events: true,
+			connection_roles: [...headlessConnectionRoles],
+		});
+		expect(new Set(HEADLESS_SERVER_CAPABILITIES.server_requests).size).toBe(
+			HEADLESS_SERVER_CAPABILITIES.server_requests.length,
+		);
+		expect(new Set(HEADLESS_SERVER_CAPABILITIES.utility_operations).size).toBe(
+			HEADLESS_SERVER_CAPABILITIES.utility_operations.length,
+		);
+		expect(new Set(HEADLESS_SERVER_CAPABILITIES.connection_roles).size).toBe(
+			HEADLESS_SERVER_CAPABILITIES.connection_roles.length,
+		);
+		expect(() =>
+			assertHeadlessFromAgentMessage({
+				type: "hello_ok",
+				protocol_version: HEADLESS_PROTOCOL_VERSION,
+				server_capabilities: HEADLESS_SERVER_CAPABILITIES,
+			}),
+		).not.toThrow();
 	});
 
 	it("documents the current protocol version in the reference doc", async () => {

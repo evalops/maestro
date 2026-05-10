@@ -64,6 +64,14 @@ Every long-lived hidden external surface must have an owner and one of:
 - a target removal version, or
 - an `indefinite-internal` label with rationale.
 
+Track every hidden flag, hidden mode, protocol capability, and internal gate in
+`docs/CONVENTIONS/staged-rollout-registry.json`. Registry entries must include an
+owner, current status, promotion/removal target, rationale, and telemetry event
+for hidden flags, hidden modes, and internal gates.
+
+`scripts/check-staged-rollout.mjs` validates the registry and, in pull-request
+CI, requires a staged-rollout answer in the PR body when risky surfaces change.
+
 ## PR Checklist Prompt
 
 For PRs that add or promote user-visible behavior, answer:

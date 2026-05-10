@@ -3,8 +3,9 @@
 import { execFileSync } from "node:child_process";
 import process from "node:process";
 
-function parseArgs(argv) {
+export function parseFeedbackAuditArgs(argv) {
 	const args = {
+		alsoPublic: [],
 		check: false,
 		includeResolved: false,
 		prs: [],
@@ -14,6 +15,9 @@ function parseArgs(argv) {
 	for (let index = 0; index < argv.length; index += 1) {
 		const arg = argv[index];
 		switch (arg) {
+			case "--also-public":
+				args.alsoPublic.push(argv[++index] ?? "");
+				break;
 			case "--check":
 				args.check = true;
 				break;
@@ -33,7 +37,7 @@ function parseArgs(argv) {
 
 	if (args.prs.length === 0) {
 		throw new Error(
-			"Usage: node scripts/pr-feedback-audit.mjs [--repo owner/name] [--check] [--include-resolved] <pr-number-or-url> [...]",
+			"Usage: node scripts/pr-feedback-audit.mjs [--repo owner/name] [--check] [--include-resolved] [--also-public public-pr] <pr-number-or-url> [...]",
 		);
 	}
 
@@ -57,6 +61,37 @@ function parsePullRequestInput(value) {
 		throw new Error(`Could not parse pull request number from ${value}`);
 	}
 	return { number: Number(numberMatch[1]) };
+}
+
+export function collectFeedbackAuditTargets(args, defaultRepo) {
+	const [defaultOwner, defaultName] = String(defaultRepo ?? "").split("/");
+	if (defaultRepo && (!defaultOwner || !defaultName)) {
+		throw new Error(`Expected repo as owner/name, got ${defaultRepo}`);
+	}
+	const primaryTargets = args.prs.map((value) => {
+		const input = parsePullRequestInput(value);
+		const owner = input.owner ?? defaultOwner;
+		const repo = input.repo ?? defaultName;
+		if (!owner || !repo) {
+			throw new Error(
+				`Could not resolve repository for PR #${input.number}; pass --repo owner/name or a GitHub pull request URL`,
+			);
+		}
+		return {
+			number: input.number,
+			owner,
+			repo,
+		};
+	});
+	const publicTargets = args.alsoPublic.map((value) => {
+		const input = parsePullRequestInput(value);
+		return {
+			number: input.number,
+			owner: input.owner ?? "evalops",
+			repo: input.repo ?? "maestro",
+		};
+	});
+	return [...primaryTargets, ...publicTargets];
 }
 
 function ghJson(args) {
@@ -166,28 +201,18 @@ function printThread(thread) {
 }
 
 function main() {
-	const args = parseArgs(process.argv.slice(2));
+	const args = parseFeedbackAuditArgs(process.argv.slice(2));
 	const defaultRepo = args.repo ? resolveRepo(args.repo) : "";
-	let currentRepo = defaultRepo;
-	const parsedInputs = args.prs.map(parsePullRequestInput);
-	if (!currentRepo && parsedInputs.some((input) => !input.owner || !input.repo)) {
-		currentRepo = resolveRepo("");
-	}
-	const [defaultOwner, defaultName] = currentRepo.split("/");
-	if (currentRepo && (!defaultOwner || !defaultName)) {
-		throw new Error(`Expected repo as owner/name, got ${currentRepo}`);
-	}
+	const needsDefaultRepo = args.prs.some((value) => {
+		const input = parsePullRequestInput(value);
+		return !input.owner || !input.repo;
+	});
+	const currentRepo = defaultRepo || (needsDefaultRepo ? resolveRepo("") : "");
+	const targets = collectFeedbackAuditTargets(args, currentRepo);
 
 	let unresolvedCount = 0;
-	for (const input of parsedInputs) {
-		const owner = input.owner ?? defaultOwner;
-		const name = input.repo ?? defaultName;
-		if (!owner || !name) {
-			throw new Error(
-				`Could not resolve repository for PR #${input.number}; pass --repo owner/name or a GitHub pull request URL`,
-			);
-		}
-		const threads = fetchReviewThreads(owner, name, input.number);
+	for (const input of targets) {
+		const threads = fetchReviewThreads(input.owner, input.repo, input.number);
 		const visibleThreads = args.includeResolved
 			? threads
 			: threads.filter((thread) => !thread.isResolved);
@@ -195,7 +220,7 @@ function main() {
 		unresolvedCount += unresolved.length;
 
 		console.log(
-			`${owner}/${name}#${input.number}: ${unresolved.length} unresolved review thread(s), ${threads.length} total`,
+			`${input.owner}/${input.repo}#${input.number}: ${unresolved.length} unresolved review thread(s), ${threads.length} total`,
 		);
 		if (visibleThreads.length === 0) {
 			console.log("  no matching review threads");

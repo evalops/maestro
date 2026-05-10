@@ -44,6 +44,7 @@ type BaseTelemetryEvent = {
 		| "background-task"
 		| "api-request"
 		| "business-metric"
+		| "staged-rollout-surface"
 		| "sandbox-violation";
 	timestamp: string;
 	sensitiveMetadata?: Record<string, unknown>;
@@ -149,6 +150,18 @@ export interface BusinessMetricTelemetry extends BaseTelemetryEvent {
 	};
 }
 
+export interface StagedRolloutSurfaceTelemetry extends BaseTelemetryEvent {
+	type: "staged-rollout-surface";
+	event: "hidden_flag_used" | "hidden_mode_used" | "internal_gate_used";
+	surfaceId: string;
+	surfaceType: "cli_flag" | "mode" | "internal_gate" | "protocol_capability";
+	metadata?: {
+		owner?: string;
+		source?: string;
+		[key: string]: unknown;
+	};
+}
+
 /**
  * Sandbox violation tracking for security auditing.
  */
@@ -188,6 +201,7 @@ type TelemetryEvent =
 	| BackgroundTaskTelemetry
 	| ApiRequestTelemetry
 	| BusinessMetricTelemetry
+	| StagedRolloutSurfaceTelemetry
 	| SandboxViolationTelemetry
 	| CanonicalTurnEventBase
 	| CanonicalTurnEvent;
@@ -449,6 +463,20 @@ function recordOpenTelemetrySpan(event: TelemetryEvent): void {
 						span.setAttribute(
 							"maestro.metric.provider",
 							event.metadata.provider,
+						);
+					}
+					span.setStatus({ code: SpanStatusCode.OK });
+					break;
+				case "staged-rollout-surface":
+					span.setAttributes({
+						"maestro.staged_rollout.event": event.event,
+						"maestro.staged_rollout.surface_id": event.surfaceId,
+						"maestro.staged_rollout.surface_type": event.surfaceType,
+					});
+					if (event.metadata?.owner) {
+						span.setAttribute(
+							"maestro.staged_rollout.owner",
+							String(event.metadata.owner),
 						);
 					}
 					span.setStatus({ code: SpanStatusCode.OK });
@@ -985,6 +1013,30 @@ export function recordModelSwitch(
 		sessionId,
 		model: toModel,
 		previousModel: fromModel,
+	});
+}
+
+export function recordStagedRolloutSurfaceUsage(
+	event: StagedRolloutSurfaceTelemetry["event"],
+	options: {
+		surfaceId: string;
+		surfaceType: StagedRolloutSurfaceTelemetry["surfaceType"];
+		owner?: string;
+		source?: string;
+		metadata?: Record<string, unknown>;
+	},
+): Promise<void> {
+	return recordTelemetry({
+		type: "staged-rollout-surface",
+		timestamp: new Date().toISOString(),
+		event,
+		surfaceId: options.surfaceId,
+		surfaceType: options.surfaceType,
+		metadata: {
+			...options.metadata,
+			owner: options.owner,
+			source: options.source,
+		},
 	});
 }
 

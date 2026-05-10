@@ -47,6 +47,24 @@ export const HeadlessClientCapabilitiesSchema = Type.Object(
 	{ additionalProperties: false },
 );
 
+export const HeadlessServerCapabilitiesSchema = Type.Object(
+	{
+		server_requests: Type.Array(
+			stringLiteralUnion(headlessServerRequestTypes),
+			{ uniqueItems: true },
+		),
+		utility_operations: Type.Array(
+			stringLiteralUnion(headlessUtilityOperations),
+			{ uniqueItems: true },
+		),
+		raw_agent_events: Type.Boolean(),
+		connection_roles: Type.Array(stringLiteralUnion(headlessConnectionRoles), {
+			uniqueItems: true,
+		}),
+	},
+	{ additionalProperties: false },
+);
+
 export const HeadlessOptOutNotificationsSchema = Type.Array(
 	stringLiteralUnion(headlessNotificationTypes),
 	{ uniqueItems: true },
@@ -295,6 +313,7 @@ export const HeadlessHelloOkMessageSchema = Type.Object(
 		client_protocol_version: Type.Optional(Type.String()),
 		client_info: Type.Optional(HeadlessClientInfoSchema),
 		capabilities: Type.Optional(HeadlessClientCapabilitiesSchema),
+		server_capabilities: Type.Optional(HeadlessServerCapabilitiesSchema),
 		opt_out_notifications: Type.Optional(HeadlessOptOutNotificationsSchema),
 		role: Type.Optional(stringLiteralUnion(headlessConnectionRoles)),
 		controller_connection_id: Type.Optional(
