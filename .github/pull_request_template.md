@@ -6,6 +6,7 @@
 - [ ] `make lint` (or `bun run bun:lint`)
 - [ ] `make test` (or `npx nx run maestro:test --skip-nx-cache`)
 - [ ] Built any touched packages (e.g., `make build-all`)
+- [ ] If this PR adds or promotes user-visible behavior, explain the staged-rollout choice (or why staging is unnecessary).
 
 ## Optional
 

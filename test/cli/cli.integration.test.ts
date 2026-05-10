@@ -9,6 +9,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { HeadlessErrorMessageSchema } from "@evalops/contracts";
+import { Value } from "@sinclair/typebox/value";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearRegisteredHooks, registerHook } from "../../src/hooks/index.js";
 import { main } from "../../src/main.js";
@@ -749,7 +751,7 @@ describe("CLI integration", () => {
 		exitSpy.mockRestore();
 	});
 
-	it("rejects legacy runtime as a CLI flag", async () => {
+	it("rejects unknown flags before they become support surfaces", async () => {
 		const exitCodes: number[] = [];
 		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
 			exitCodes.push(Number(code ?? 0));
@@ -763,9 +765,7 @@ describe("CLI integration", () => {
 
 		expect(exitCodes).toEqual([1, 1]);
 		const combined = output.join("\n");
-		expect(combined).toContain(
-			"Legacy headless runtime selection is not available from the CLI",
-		);
+		expect(combined).toContain("Unknown option: --legacy-runtime");
 		exitSpy.mockRestore();
 	});
 
@@ -1088,6 +1088,22 @@ describe("CLI integration", () => {
 		exitSpy.mockRestore();
 	});
 
+	it("rejects equals-form ChatGPT auth flags with migration guidance", async () => {
+		const exitCodes: number[] = [];
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
+			exitCodes.push(Number(code ?? 0));
+			throw new Error("exit");
+		});
+		await expect(
+			main(["--provider", "openai", "--model", "gpt-test", "--auth=chatgpt"]),
+		).rejects.toThrow("exit");
+		expect(exitCodes).toEqual([1]);
+		expect(output.join("\n")).toContain(
+			"Legacy Codex/ChatGPT auth flags are no longer supported",
+		);
+		exitSpy.mockRestore();
+	});
+
 	it("rejects Codex subscription tokens", async () => {
 		const exitCodes: number[] = [];
 		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
@@ -1104,6 +1120,57 @@ describe("CLI integration", () => {
 		exitSpy.mockRestore();
 	});
 
+	it("rejects bare Codex subscription token flags with migration guidance", async () => {
+		const exitCodes: number[] = [];
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
+			exitCodes.push(Number(code ?? 0));
+			throw new Error("exit");
+		});
+		await expect(main(["--codex-api-key"])).rejects.toThrow("exit");
+		expect(exitCodes).toEqual([1]);
+		expect(output.join("\n")).toContain(
+			"Legacy Codex/ChatGPT auth flags are no longer supported",
+		);
+		exitSpy.mockRestore();
+	});
+
+	it("keeps early headless auth flag errors schema-compatible", async () => {
+		const exitCodes: number[] = [];
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
+			exitCodes.push(Number(code ?? 0));
+			throw new Error("exit");
+		});
+		await expect(main(["--headless", "--codex-api-key"])).rejects.toThrow(
+			"exit",
+		);
+		expect(exitCodes).toEqual([1]);
+
+		const payload = JSON.parse(output.join(""));
+		expect(Value.Check(HeadlessErrorMessageSchema, payload)).toBe(true);
+		expect(payload).toMatchObject({
+			type: "error",
+			fatal: true,
+			error_type: "fatal",
+		});
+		expect(payload.message).toContain(
+			"Legacy Codex/ChatGPT auth flags are no longer supported",
+		);
+		expect(payload).not.toHaveProperty("stack");
+		exitSpy.mockRestore();
+	});
+
+	it("does not consume following options as deprecated auth flag values", async () => {
+		const exitCodes: number[] = [];
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
+			exitCodes.push(Number(code ?? 0));
+			throw new Error("exit");
+		});
+		await expect(main(["--codex-api-key", "--help"])).rejects.toThrow("exit");
+		expect(exitCodes).toEqual([0]);
+		expect(output.join("\n")).toContain("Maestro");
+		exitSpy.mockRestore();
+	});
+
 	it("rejects legacy auth flags before status early exit", async () => {
 		const exitCodes: number[] = [];
 		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
@@ -1113,6 +1180,36 @@ describe("CLI integration", () => {
 		await expect(
 			main(["--codex-api-key", "codex-token", "status"]),
 		).rejects.toThrow("exit");
+		expect(exitCodes).toEqual([1]);
+		expect(output.join("\n")).toContain(
+			"Legacy Codex/ChatGPT auth flags are no longer supported",
+		);
+		exitSpy.mockRestore();
+	});
+
+	it("rejects legacy auth flags before hosted-runner early exit", async () => {
+		const exitCodes: number[] = [];
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
+			exitCodes.push(Number(code ?? 0));
+			throw new Error("exit");
+		});
+		await expect(
+			main(["hosted-runner", "--codex-api-key", "codex-token"]),
+		).rejects.toThrow("exit");
+		expect(exitCodes).toEqual([1]);
+		expect(output.join("\n")).toContain(
+			"Legacy Codex/ChatGPT auth flags are no longer supported",
+		);
+		exitSpy.mockRestore();
+	});
+
+	it("rejects legacy auth flags before web early exit", async () => {
+		const exitCodes: number[] = [];
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
+			exitCodes.push(Number(code ?? 0));
+			throw new Error("exit");
+		});
+		await expect(main(["web", "--auth", "chatgpt"])).rejects.toThrow("exit");
 		expect(exitCodes).toEqual([1]);
 		expect(output.join("\n")).toContain(
 			"Legacy Codex/ChatGPT auth flags are no longer supported",

@@ -507,9 +507,26 @@ export async function main(args: string[]) {
 
 	const exitWithEarlyStartupError = (error: unknown): never => {
 		const message = error instanceof Error ? error.message : String(error);
-		console.error(chalk.red(message));
+		if (isHeadlessMode) {
+			process.stdout.write(
+				`${JSON.stringify({
+					type: "error",
+					message: `Headless startup failed: ${message}`,
+					fatal: true,
+					error_type: "fatal",
+				})}\n`,
+			);
+		} else {
+			console.error(chalk.red(message));
+		}
 		process.exit(1);
 	};
+
+	try {
+		validateCodexFlags(args, parsed.help ? "help" : parsed.command);
+	} catch (error) {
+		exitWithEarlyStartupError(error);
+	}
 
 	// Handle `maestro hosted-runner` before importing web-server so hosted
 	// defaults are visible to its module-level runtime profile.
@@ -548,36 +565,18 @@ export async function main(args: string[]) {
 	// progress or diagnostic output on stderr, so route it before config loading
 	// can emit normal CLI startup logs.
 	if (parsed.command === "init") {
-		try {
-			validateCodexFlags(args, parsed.command);
-		} catch (error) {
-			exitWithEarlyStartupError(error);
-		}
-
 		const { handleInitCommand } = await import("./cli/commands/init.js");
 		await handleInitCommand(parsed.commandArgs ?? []);
 		return;
 	}
 
 	if (parsed.command === "status") {
-		try {
-			validateCodexFlags(args, parsed.command);
-		} catch (error) {
-			exitWithEarlyStartupError(error);
-		}
-
 		const { handleStatusCommand } = await import("./cli/commands/status.js");
 		await handleStatusCommand();
 		return;
 	}
 
 	if (parsed.command === "context") {
-		try {
-			validateCodexFlags(args, parsed.command);
-		} catch (error) {
-			exitWithEarlyStartupError(error);
-		}
-
 		const { handleContextCommand } = await import("./cli/commands/context.js");
 		await handleContextCommand(parsed.subcommand, parsed.messages, {
 			json: parsed.execJson,
@@ -719,12 +718,6 @@ export async function main(args: string[]) {
 	// - api-key: Require explicit API key from --api-key or env var
 	// - claude: Force Anthropic OAuth (no API key fallback)
 	const authMode: AuthMode = parsed.authMode ?? "auto";
-
-	try {
-		validateCodexFlags(args, parsed.command);
-	} catch (error) {
-		exitWithStartupError(error);
-	}
 
 	const { requireCredential } = createAuthSetup({
 		authMode,
