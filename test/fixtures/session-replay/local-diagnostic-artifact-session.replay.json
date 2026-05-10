@@ -1,0 +1,186 @@
+{
+	"schemaVersion": "evalops.maestro.session-replay-fixture.v1",
+	"fixture": "local-diagnostic-artifact-session.jsonl",
+	"session": {
+		"id": "replay-local-diagnostic-artifact-1",
+		"cwd": "/workspace/local-diagnostic",
+		"model": "openai/gpt-5.5",
+		"messageCount": 4
+	},
+	"counts": {
+		"timelineItems": 10,
+		"byType": {
+			"session.started": 1,
+			"message.user": 1,
+			"message.assistant": 2,
+			"tool.requested": 1,
+			"artifact.linked": 1,
+			"diagnostic.delta": 1,
+			"file.changed": 1,
+			"policy.decision": 1,
+			"tool.completed": 1
+		},
+		"byStatus": {
+			"info": 1,
+			"completed": 6,
+			"running": 1,
+			"failed": 1,
+			"pending": 1
+		},
+		"byVisibility": {
+			"user": 8,
+			"admin": 2
+		}
+	},
+	"coverage": {
+		"promptInputs": true,
+		"assistantResponses": true,
+		"toolRequests": true,
+		"toolResults": true,
+		"contextManifest": true,
+		"contextDiagnostics": true,
+		"fileChanges": true,
+		"artifacts": true,
+		"policyDecisions": true,
+		"diagnostics": true,
+		"compactions": false,
+		"pendingRequests": false,
+		"mcpContext": false
+	},
+	"promptContext": {
+		"entries": 1,
+		"projectDocs": 1,
+		"mcpServers": 0
+	},
+	"contextManifest": {
+		"entries": 2,
+		"projectDocs": 1,
+		"mcpServers": 0,
+		"mcpResources": 0,
+		"mcpPrompts": 0,
+		"diagnostics": 1,
+		"byKind": {
+			"project_doc": 1,
+			"policy": 1
+		},
+		"bySource": {
+			"filesystem": 1,
+			"runtime": 1
+		},
+		"byStatus": {
+			"loaded": 2
+		},
+		"protocolVersion": "maestro.unified-context-manifest.v1",
+		"version": 1,
+		"cwd": "/workspace/local-diagnostic",
+		"projectDocBytesRead": 23
+	},
+	"timeline": [
+		{
+			"id": "session-started:replay-local-diagnostic-artifact-1",
+			"type": "session.started",
+			"status": "info",
+			"visibility": "user",
+			"source": "local",
+			"title": "Session started"
+		},
+		{
+			"id": "message:user-local-1",
+			"type": "message.user",
+			"status": "completed",
+			"visibility": "user",
+			"source": "local",
+			"title": "User message",
+			"role": "user",
+			"summary": "Patch the API handler and keep diagnostic evidence."
+		},
+		{
+			"id": "message:assistant-local-1",
+			"type": "message.assistant",
+			"status": "completed",
+			"visibility": "user",
+			"source": "local",
+			"title": "Assistant response",
+			"role": "assistant",
+			"summary": "I will patch the handler and inspect diagnostics."
+		},
+		{
+			"id": "tool-requested:assistant-local-1:call-local-edit",
+			"type": "tool.requested",
+			"status": "running",
+			"visibility": "user",
+			"source": "local",
+			"title": "Requested edit",
+			"toolCallId": "call-local-edit",
+			"toolName": "edit"
+		},
+		{
+			"id": "artifact-linked:tool-local-edit-1:call-local-edit",
+			"type": "artifact.linked",
+			"status": "completed",
+			"visibility": "admin",
+			"source": "local",
+			"title": "Skill artifact loaded: diagnostic-review",
+			"toolCallId": "call-local-edit",
+			"toolName": "edit",
+			"summary": "diagnostic-review | v1 | project | workspace"
+		},
+		{
+			"id": "diagnostic-delta:tool-local-edit-1:call-local-edit",
+			"type": "diagnostic.delta",
+			"status": "failed",
+			"visibility": "user",
+			"source": "local",
+			"title": "Diagnostics for src/api.ts",
+			"toolCallId": "call-local-edit",
+			"toolName": "edit",
+			"summary": "Diagnostic delta: 1 introduced, 0 repaired, 1 remaining."
+		},
+		{
+			"id": "file-change:tool-local-edit-1:call-local-edit",
+			"type": "file.changed",
+			"status": "completed",
+			"visibility": "user",
+			"source": "local",
+			"title": "File edited",
+			"toolCallId": "call-local-edit",
+			"toolName": "edit",
+			"summary": "src/api.ts | 256 bytes | 1 edits"
+		},
+		{
+			"id": "policy-decision:tool-local-edit-1:call-local-edit",
+			"type": "policy.decision",
+			"status": "pending",
+			"visibility": "admin",
+			"source": "local",
+			"title": "Policy decision for edit",
+			"toolCallId": "call-local-edit",
+			"toolName": "edit",
+			"summary": "Outcome: approval_required | Code: approval_required",
+			"approvalRequestId": "approval-local-1"
+		},
+		{
+			"id": "tool-result:tool-local-edit-1:call-local-edit",
+			"type": "tool.completed",
+			"status": "completed",
+			"visibility": "user",
+			"source": "local",
+			"title": "edit completed",
+			"role": "tool",
+			"toolCallId": "call-local-edit",
+			"toolName": "edit",
+			"approvalRequestId": "approval-local-1",
+			"toolExecutionId": "tool-exec-local-1"
+		},
+		{
+			"id": "message:assistant-local-2",
+			"type": "message.assistant",
+			"status": "completed",
+			"visibility": "user",
+			"source": "local",
+			"title": "Assistant response",
+			"role": "assistant",
+			"summary": "Patch applied; one diagnostic remains and is linked for follow-up."
+		}
+	]
+}

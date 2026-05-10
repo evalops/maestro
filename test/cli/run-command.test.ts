@@ -326,6 +326,71 @@ describe("run command", () => {
 			"file.changed": 1,
 			"compaction.created": 1,
 		});
+		expect(report?.trajectory).toMatchObject({
+			schemaVersion: "evalops.maestro.agent-trajectory.v1",
+			run: {
+				id: sessionId,
+				sessionId,
+				source: "local",
+				platformBacked: false,
+			},
+			counts: {
+				events: report?.counts.timelineItems,
+				byKind: {
+					message: 2,
+					tool: 4,
+					evidence: 1,
+					context: 1,
+				},
+				byPhase: {
+					observe: 1,
+					think: 1,
+					act: 2,
+					verify: 3,
+				},
+			},
+		});
+		const toolCompleted = report?.trajectory.events.find(
+			(event) =>
+				event.type === "tool.completed" &&
+				event.toolName === "mcp__platform__search",
+		);
+		expect(toolCompleted).toMatchObject({
+			actor: "tool",
+			phase: "verify",
+			relatedIds: ["call-mcp-search"],
+			evidence: [
+				{ kind: "timeline_item", id: "tool-result:tool-2:call-mcp-search" },
+				{ kind: "tool_call", id: "call-mcp-search" },
+			],
+		});
+		expect(report?.trajectoryReplay).toMatchObject({
+			schemaVersion: "evalops.maestro.agent-trajectory-replay.v1",
+			counts: {
+				events: report?.trajectory.counts.events,
+				deltas: 0,
+			},
+		});
+		expect(report?.trajectoryScore).toMatchObject({
+			schemaVersion: "evalops.maestro.agent-trajectory-score.v1",
+			counts: {
+				rules: 1,
+				failed: 0,
+			},
+		});
+		expect(report?.trajectoryInspection).toMatchObject({
+			schemaVersion: "evalops.maestro.agent-trajectory-inspection.v1",
+			redaction: {
+				default: "redacted",
+			},
+			counts: {
+				timelineItems: report?.counts.timelineItems,
+				events: report?.trajectory.counts.events,
+			},
+		});
+		expect(
+			report?.trajectoryInspection.scoreFindings[0]?.timelineItemIds,
+		).toEqual(["compaction:compact-1"]);
 	});
 
 	it("migrates legacy entries before reconstructing the timeline", async () => {
@@ -355,6 +420,10 @@ describe("run command", () => {
 		const output = String(log.mock.calls[0]?.[0]);
 		expect(output).toContain(`Run reconstruction: ${sessionId}`);
 		expect(output).toContain("Timeline preview");
+		expect(output).toContain("Trajectory events:");
+		expect(output).toContain("Replay deltas:");
+		expect(output).toContain("Trajectory score:");
+		expect(output).toContain("Replay lab:");
 		expect(output).toContain("yes prompt inputs");
 		expect(output).toContain("yes context manifest");
 		expect(output).toContain("yes MCP context");
@@ -370,6 +439,36 @@ describe("run command", () => {
 
 		const payload = JSON.parse(String(log.mock.calls[0]?.[0]));
 		expect(payload.schemaVersion).toBe("evalops.maestro.run-reconstruction.v1");
+		expect(payload.trajectory.schemaVersion).toBe(
+			"evalops.maestro.agent-trajectory.v1",
+		);
+		expect(payload.trajectoryReplay.schemaVersion).toBe(
+			"evalops.maestro.agent-trajectory-replay.v1",
+		);
+		expect(payload.trajectoryScore.schemaVersion).toBe(
+			"evalops.maestro.agent-trajectory-score.v1",
+		);
+		expect(payload.trajectoryInspection.schemaVersion).toBe(
+			"evalops.maestro.agent-trajectory-inspection.v1",
+		);
+		expect(payload.trajectory.events[0]).toMatchObject({
+			sequence: 1,
+			kind: "session",
+			phase: "setup",
+		});
+		expect(payload.trajectoryInspection.redaction.omitted).toContain(
+			"raw tool outputs",
+		);
+		expect(payload.trajectoryInspection.events[0]).toMatchObject({
+			timelineItemIds: ["session-started:session-reconstruct-1"],
+			evidence: [
+				{
+					kind: "timeline_item",
+					id: "session-started:session-reconstruct-1",
+					redacted: true,
+				},
+			],
+		});
 		expect(payload.contextManifest).toMatchObject({
 			protocolVersion: "maestro.unified-context-manifest.v1",
 			mcpResources: 1,

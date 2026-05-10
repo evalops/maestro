@@ -1,0 +1,279 @@
+{
+	"schemaVersion": "evalops.maestro.agent-trajectory-fixture.v1",
+	"fixture": "session-replay/local-diagnostic-artifact-session.jsonl",
+	"trajectorySchemaVersion": "evalops.maestro.agent-trajectory.v1",
+	"run": {
+		"id": "replay-local-diagnostic-artifact-1",
+		"sessionId": "replay-local-diagnostic-artifact-1",
+		"source": "local",
+		"platformBacked": false
+	},
+	"counts": {
+		"events": 10,
+		"evidenceAnchors": 20,
+		"byKind": {
+			"session": 1,
+			"message": 3,
+			"tool": 2,
+			"artifact": 1,
+			"evidence": 2,
+			"governance": 1
+		},
+		"byPhase": {
+			"setup": 1,
+			"observe": 1,
+			"think": 2,
+			"act": 1,
+			"verify": 4,
+			"govern": 1
+		},
+		"byStatus": {
+			"info": 1,
+			"completed": 6,
+			"running": 1,
+			"failed": 1,
+			"pending": 1
+		}
+	},
+	"events": [
+		{
+			"id": "trajectory:session-started:replay-local-diagnostic-artifact-1",
+			"sequence": 1,
+			"kind": "session",
+			"phase": "setup",
+			"actor": "system",
+			"type": "session.started",
+			"status": "info",
+			"visibility": "user",
+			"source": "local",
+			"title": "Session started",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "session-started:replay-local-diagnostic-artifact-1"
+				}
+			]
+		},
+		{
+			"id": "trajectory:message:user-local-1",
+			"sequence": 2,
+			"kind": "message",
+			"phase": "observe",
+			"actor": "user",
+			"type": "message.user",
+			"status": "completed",
+			"visibility": "user",
+			"source": "local",
+			"title": "User message",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "message:user-local-1"
+				}
+			],
+			"summary": "Patch the API handler and keep diagnostic evidence."
+		},
+		{
+			"id": "trajectory:message:assistant-local-1",
+			"sequence": 3,
+			"kind": "message",
+			"phase": "think",
+			"actor": "assistant",
+			"type": "message.assistant",
+			"status": "completed",
+			"visibility": "user",
+			"source": "local",
+			"title": "Assistant response",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "message:assistant-local-1"
+				}
+			],
+			"summary": "I will patch the handler and inspect diagnostics."
+		},
+		{
+			"id": "trajectory:tool-requested:assistant-local-1:call-local-edit",
+			"sequence": 4,
+			"kind": "tool",
+			"phase": "act",
+			"actor": "assistant",
+			"type": "tool.requested",
+			"status": "running",
+			"visibility": "user",
+			"source": "local",
+			"title": "Requested edit",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "tool-requested:assistant-local-1:call-local-edit"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-local-edit"
+				}
+			],
+			"toolName": "edit",
+			"relatedIds": ["call-local-edit"]
+		},
+		{
+			"id": "trajectory:artifact-linked:tool-local-edit-1:call-local-edit",
+			"sequence": 5,
+			"kind": "artifact",
+			"phase": "verify",
+			"actor": "runtime",
+			"type": "artifact.linked",
+			"status": "completed",
+			"visibility": "admin",
+			"source": "local",
+			"title": "Skill artifact loaded: diagnostic-review",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "artifact-linked:tool-local-edit-1:call-local-edit"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-local-edit"
+				},
+				{
+					"kind": "artifact",
+					"id": "skill_artifact_local_1"
+				}
+			],
+			"toolName": "edit",
+			"relatedIds": ["call-local-edit", "skill_artifact_local_1"],
+			"summary": "diagnostic-review | v1 | project | workspace"
+		},
+		{
+			"id": "trajectory:diagnostic-delta:tool-local-edit-1:call-local-edit",
+			"sequence": 6,
+			"kind": "evidence",
+			"phase": "verify",
+			"actor": "runtime",
+			"type": "diagnostic.delta",
+			"status": "failed",
+			"visibility": "user",
+			"source": "local",
+			"title": "Diagnostics for src/api.ts",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "diagnostic-delta:tool-local-edit-1:call-local-edit"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-local-edit"
+				}
+			],
+			"toolName": "edit",
+			"relatedIds": ["call-local-edit"],
+			"summary": "Diagnostic delta: 1 introduced, 0 repaired, 1 remaining."
+		},
+		{
+			"id": "trajectory:file-change:tool-local-edit-1:call-local-edit",
+			"sequence": 7,
+			"kind": "evidence",
+			"phase": "verify",
+			"actor": "runtime",
+			"type": "file.changed",
+			"status": "completed",
+			"visibility": "user",
+			"source": "local",
+			"title": "File edited",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "file-change:tool-local-edit-1:call-local-edit"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-local-edit"
+				}
+			],
+			"toolName": "edit",
+			"relatedIds": ["call-local-edit"],
+			"summary": "src/api.ts | 256 bytes | 1 edits"
+		},
+		{
+			"id": "trajectory:policy-decision:tool-local-edit-1:call-local-edit",
+			"sequence": 8,
+			"kind": "governance",
+			"phase": "govern",
+			"actor": "runtime",
+			"type": "policy.decision",
+			"status": "pending",
+			"visibility": "admin",
+			"source": "local",
+			"title": "Policy decision for edit",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "policy-decision:tool-local-edit-1:call-local-edit"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-local-edit"
+				},
+				{
+					"kind": "approval_request",
+					"id": "approval-local-1"
+				}
+			],
+			"toolName": "edit",
+			"relatedIds": ["approval-local-1", "call-local-edit"],
+			"summary": "Outcome: approval_required | Code: approval_required"
+		},
+		{
+			"id": "trajectory:tool-result:tool-local-edit-1:call-local-edit",
+			"sequence": 9,
+			"kind": "tool",
+			"phase": "verify",
+			"actor": "tool",
+			"type": "tool.completed",
+			"status": "completed",
+			"visibility": "user",
+			"source": "local",
+			"title": "edit completed",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "tool-result:tool-local-edit-1:call-local-edit"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-local-edit"
+				},
+				{
+					"kind": "tool_execution",
+					"id": "tool-exec-local-1"
+				},
+				{
+					"kind": "approval_request",
+					"id": "approval-local-1"
+				}
+			],
+			"toolName": "edit",
+			"relatedIds": ["approval-local-1", "call-local-edit", "tool-exec-local-1"]
+		},
+		{
+			"id": "trajectory:message:assistant-local-2",
+			"sequence": 10,
+			"kind": "message",
+			"phase": "think",
+			"actor": "assistant",
+			"type": "message.assistant",
+			"status": "completed",
+			"visibility": "user",
+			"source": "local",
+			"title": "Assistant response",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "message:assistant-local-2"
+				}
+			],
+			"summary": "Patch applied; one diagnostic remains and is linked for follow-up."
+		}
+	]
+}
