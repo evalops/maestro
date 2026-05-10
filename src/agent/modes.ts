@@ -300,7 +300,7 @@ export function setCurrentMode(mode: AgentMode): void {
 	currentMode = mode;
 	const config = getModeConfig(mode);
 	if (config.visible === false) {
-		recordStagedRolloutSurfaceUsage("hidden_mode_used", {
+		void recordStagedRolloutSurfaceUsage("hidden_mode_used", {
 			surfaceId: `mode:${mode}`,
 			surfaceType: "mode",
 			owner: config.rolloutOwner,

@@ -44,6 +44,16 @@ describe("staged rollout check", () => {
 				"- [ ] If this PR adds or promotes user-visible behavior, explain the staged-rollout choice (or why staging is unnecessary).",
 			),
 		).toBe(false);
+		expect(
+			hasStagedRolloutAnswer(
+				"- [x] If this PR adds or promotes user-visible behavior, explain the staged-rollout choice (or why staging is unnecessary).",
+			),
+		).toBe(true);
+		expect(
+			hasStagedRolloutAnswer(
+				"- [ ] If this PR adds or promotes user-visible behavior, explain the staged-rollout choice (or why staging is unnecessary). Direct exposure safe cleanup.",
+			),
+		).toBe(true);
 	});
 
 	it("derives a pull request diff base when CI omits explicit base env", () => {
