@@ -41,13 +41,53 @@ describe("parseArgs", () => {
 		});
 	});
 
-	it("rejects legacy runtime as a CLI flag", () => {
+	it("rejects unknown CLI flags before they become support surfaces", () => {
 		expect(parseArgs(["--headless", "--legacy-runtime"])).toMatchObject({
 			headless: true,
 			mode: "headless",
-			legacyRuntimeCliRequested: true,
-			error: "Legacy headless runtime selection is not available from the CLI",
+			error: "Unknown option: --legacy-runtime",
 		});
+		expect(parseArgs(["--experimental-runtime"]).error).toBe(
+			"Unknown option: --experimental-runtime",
+		);
+	});
+
+	it("does not consume command tokens after deprecated value flags", () => {
+		expect(parseArgs(["--codex-api-key"]).error).toBeUndefined();
+		expect(parseArgs(["--codex-api-key", "--help"])).toMatchObject({
+			help: true,
+		});
+		expect(parseArgs(["--codex-api-key", "config", "show"])).toMatchObject({
+			command: "config",
+			subcommand: "show",
+		});
+	});
+
+	it("preserves config init preset flags for the config handler", () => {
+		const longForm = parseArgs(["config", "init", "--preset", "evalops"]);
+		expect(longForm).toMatchObject({
+			command: "config",
+			subcommand: "init",
+			messages: [],
+		});
+		expect(longForm.error).toBeUndefined();
+
+		const shortForm = parseArgs(["config", "init", "-p", "local"]);
+		expect(shortForm).toMatchObject({
+			command: "config",
+			subcommand: "init",
+			messages: [],
+		});
+		expect(shortForm.error).toBeUndefined();
+	});
+
+	it("still rejects unknown config init flags", () => {
+		expect(parseArgs(["config", "init", "--unknown"]).error).toBe(
+			"Unknown option: --unknown",
+		);
+		expect(parseArgs(["config", "init", "--preset=local"]).error).toBe(
+			"Unknown option: --preset=local",
+		);
 	});
 
 	it("parses export commands and formats", () => {

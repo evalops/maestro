@@ -18,8 +18,6 @@ export interface Args {
 	mode?: Mode;
 	/** Run in headless mode for native TUI communication */
 	headless?: boolean;
-	/** Attempted to use a support-only runtime selector through CLI args. */
-	legacyRuntimeCliRequested?: boolean;
 	noSession?: boolean;
 	session?: string;
 	safeMode?: boolean;
@@ -120,6 +118,17 @@ const FLAGS_WITH_VALUES = new Set([
 	"--config",
 ]);
 
+const DEPRECATED_FLAGS_WITH_VALUES = new Set(["--codex-api-key"]);
+const DEPRECATED_FLAG_PREFIXES = ["--auth=chatgpt"];
+
+function isConfigInitPresetFlag(result: Args, arg: string): boolean {
+	return (
+		result.command === "config" &&
+		result.subcommand === "init" &&
+		(arg === "--preset" || arg === "-p")
+	);
+}
+
 function nextNonFlagToken(args: string[], start: number): string | undefined {
 	for (let index = start; index < args.length; index++) {
 		const token = args[index];
@@ -175,10 +184,6 @@ export function parseArgs(args: string[]): Args {
 		} else if (arg === "--headless") {
 			result.headless = true;
 			result.mode = "headless";
-		} else if (arg === "--legacy-runtime") {
-			result.legacyRuntimeCliRequested = true;
-			result.error =
-				"Legacy headless runtime selection is not available from the CLI";
 		} else if (arg === "--continue" || arg === "-c") {
 			result.continue = true;
 		} else if (arg === "--resume" || arg === "-r") {
@@ -296,7 +301,28 @@ export function parseArgs(args: string[]): Args {
 				result.configOverrides = [];
 			}
 			result.configOverrides.push(override);
-		} else if (arg && !arg.startsWith("-")) {
+		} else if (arg && DEPRECATED_FLAGS_WITH_VALUES.has(arg)) {
+			// Preserve the later migration error from validateCodexFlags().
+			const nextArg = args[i + 1];
+			if (nextArg && !nextArg.startsWith("-") && !COMMANDS.has(nextArg)) {
+				i++;
+			}
+		} else if (
+			arg &&
+			(Array.from(DEPRECATED_FLAGS_WITH_VALUES).some((flag) =>
+				arg.startsWith(`${flag}=`),
+			) ||
+				DEPRECATED_FLAG_PREFIXES.some((flag) => arg.startsWith(flag)))
+		) {
+			// Preserve the later migration error from validateCodexFlags().
+		} else if (arg && isConfigInitPresetFlag(result, arg)) {
+			const nextArg = args[i + 1];
+			if (nextArg && !nextArg.startsWith("-")) {
+				i++;
+			}
+		} else if (arg?.startsWith("-")) {
+			result.error = `Unknown option: ${arg}`;
+		} else if (arg) {
 			const nextArg = args[i + 1];
 			const isCommandToken =
 				COMMANDS.has(arg) &&

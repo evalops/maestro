@@ -95,6 +95,14 @@ if (!slackRuntime.includes("./platform-env.js")) {
 	failures.push("packages/slack-agent/src/platform-runtime.ts must use platform-env.ts");
 }
 
+const mainSource = read("src/main.ts");
+const validateCodexFlagCalls = mainSource.match(/\bvalidateCodexFlags\(/g) ?? [];
+if (validateCodexFlagCalls.length !== 1) {
+	failures.push(
+		`src/main.ts must validate legacy Codex flags once at startup, found ${validateCodexFlagCalls.length} calls`,
+	);
+}
+
 if (failures.length > 0) {
 	console.error("drift-prone surface check failed:");
 	for (const failure of failures) {
