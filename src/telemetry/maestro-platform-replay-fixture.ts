@@ -461,6 +461,7 @@ export function buildCanonicalMaestroPlatformReplayFixture(): MaestroPlatformRep
 				evaluation_tool_call_id: BASH_TOOL_CALL_ID,
 				evaluation_tool_execution_id: BASH_TOOL_EXECUTION_ID,
 				eval_run_id: "eval_run_platform_replay_001",
+				scenario_id: CANONICAL_MAESTRO_PLATFORM_REPLAY_FIXTURE_NAME,
 				skill_tool_call_id: SKILL_TOOL_CALL_ID,
 				skill_tool_execution_id: SKILL_TOOL_EXECUTION_ID,
 				skill_invocation_id: "invocation_platform_replay_skill_001",
