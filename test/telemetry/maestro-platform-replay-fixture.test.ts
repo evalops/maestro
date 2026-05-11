@@ -29,6 +29,7 @@ describe("canonical Maestro Platform replay fixture", () => {
 				skill_tool_call_id: "tool_call_platform_replay_skill_001",
 				skill_tool_execution_id: "tool_exec_platform_replay_skill_001",
 				approval_request_id: "approval_platform_replay_001",
+				scenario_id: CANONICAL_MAESTRO_PLATFORM_REPLAY_FIXTURE_NAME,
 			},
 		});
 
@@ -74,6 +75,9 @@ describe("canonical Maestro Platform replay fixture", () => {
 						agent_run_id: "agent_run_platform_replay_001",
 						trace_id: "trace_platform_replay_001",
 						request_id: "request_platform_replay_001",
+						attributes: {
+							scenario_id: CANONICAL_MAESTRO_PLATFORM_REPLAY_FIXTURE_NAME,
+						},
 					},
 				},
 			});
@@ -96,6 +100,11 @@ describe("canonical Maestro Platform replay fixture", () => {
 		const promptVariantSelected = byType.get(
 			MaestroBusEventType.PromptVariantSelected,
 		)?.data;
+		expect(byType.get(MaestroBusEventType.SessionStarted)?.data).toMatchObject({
+			metadata: {
+				scenario_id: CANONICAL_MAESTRO_PLATFORM_REPLAY_FIXTURE_NAME,
+			},
+		});
 		expect(promptVariantSelected).toMatchObject({
 			"@type": "type.googleapis.com/maestro.v1.PromptVariantSelected",
 			prompt_metadata: {
@@ -258,6 +267,7 @@ describe("canonical Maestro Platform replay fixture", () => {
 				evaluation_tool_call_id: "tool_call_platform_replay_bash_001",
 				evaluation_tool_execution_id: "tool_exec_platform_replay_bash_001",
 				eval_run_id: "eval_run_platform_replay_001",
+				scenario_id: "canonical-maestro-session-platform-replay",
 				skill_tool_call_id: "tool_call_platform_replay_skill_001",
 				skill_tool_execution_id: "tool_exec_platform_replay_skill_001",
 				skill_invocation_id: "invocation_platform_replay_skill_001",
