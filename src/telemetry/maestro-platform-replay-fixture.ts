@@ -54,6 +54,7 @@ const baseCorrelation: MaestroCorrelation = {
 	conversation_id: "conversation_platform_replay_001",
 	attributes: {
 		fixture: CANONICAL_MAESTRO_PLATFORM_REPLAY_FIXTURE_NAME,
+		scenario_id: CANONICAL_MAESTRO_PLATFORM_REPLAY_FIXTURE_NAME,
 	},
 };
 
@@ -233,6 +234,7 @@ function buildEvents(): MaestroPlatformReplayFixtureEvent[] {
 				started_at: eventPlan[0].time,
 				metadata: {
 					fixture: CANONICAL_MAESTRO_PLATFORM_REPLAY_FIXTURE_NAME,
+					scenario_id: CANONICAL_MAESTRO_PLATFORM_REPLAY_FIXTURE_NAME,
 				},
 			},
 			0,
@@ -442,6 +444,7 @@ export function buildCanonicalMaestroPlatformReplayFixture(): MaestroPlatformRep
 			skill_tool_call_id: SKILL_TOOL_CALL_ID,
 			skill_tool_execution_id: SKILL_TOOL_EXECUTION_ID,
 			approval_request_id: APPROVAL_REQUEST_ID,
+			scenario_id: CANONICAL_MAESTRO_PLATFORM_REPLAY_FIXTURE_NAME,
 		},
 		subjects,
 		events,
