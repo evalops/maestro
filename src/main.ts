@@ -167,6 +167,7 @@ import { AgentRuntimeController } from "./runtime/agent-runtime.js";
 import { registerBackgroundTaskShutdownHooks } from "./runtime/background-task-hooks.js";
 import { configureSafeMode } from "./safety/safe-mode.js";
 import { LocalSandbox } from "./sandbox/index.js";
+import { initSentry } from "./sentry.js";
 import { ServerRequestActionApprovalService } from "./server/approval-service.js";
 import { clientToolService } from "./server/client-tools-service.js";
 import { ServerRequestToolRetryService } from "./server/tool-retry-service.js";
@@ -722,6 +723,7 @@ export async function main(args: string[]) {
 	// Initialize OpenTelemetry tracing for observability
 	// This is non-blocking (void) to avoid startup latency
 	void initOpenTelemetry("composer-cli");
+	initSentry("maestro-cli");
 
 	const modelLoadPromise = (async () => {
 		await ensureModelsLoaded();

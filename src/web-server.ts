@@ -123,6 +123,7 @@ const getDbModule = (() => {
 		return promise;
 	};
 })();
+import { captureSentryException, flushSentry, initSentry } from "./sentry.js";
 import { WebActionApprovalService } from "./server/approval-service.js";
 import { checkApiAuth, getAuthSubject } from "./server/authz.js";
 import { startAutomationScheduler } from "./server/automations/scheduler.js";
@@ -180,23 +181,26 @@ export { SseSession } from "./server/sse-session.js";
 
 loadEnv();
 void initOpenTelemetry("composer-web-server");
+initSentry("maestro-web-server");
 
 // Global crash handlers
 function registerCrashHandlers() {
 	process.on("uncaughtException", (error) => {
 		logError(error);
+		captureSentryException(error);
 		logger.error("FATAL: Uncaught Exception. Exiting...");
-		process.exit(1);
+		void flushSentry().finally(() => process.exit(1));
 	});
 
 	process.on("unhandledRejection", (reason) => {
-		logError(
+		const error =
 			reason instanceof Error
 				? reason
-				: new Error(`Unhandled Rejection: ${String(reason)}`),
-		);
+				: new Error(`Unhandled Rejection: ${String(reason)}`);
+		logError(error);
+		captureSentryException(error);
 		logger.error("FATAL: Unhandled Rejection. Exiting...");
-		process.exit(1);
+		void flushSentry().finally(() => process.exit(1));
 	});
 }
 
