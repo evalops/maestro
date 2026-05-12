@@ -472,6 +472,9 @@ pub const HEADLESS_THINKING_LEVELS: &[&str] = ${toRustArray(
 pub const HEADLESS_APPROVAL_MODES: &[&str] = ${toRustArray(
 		protocolSpec.approvalModes,
 	)};
+pub const HEADLESS_EXECUTOR_TYPES: &[&str] = ${toRustArray(
+		protocolSpec.executorTypes,
+	)};
 pub const HEADLESS_ERROR_TYPES: &[&str] = ${toRustArray(protocolSpec.errorTypes)};
 pub const HEADLESS_UTILITY_OPERATIONS: &[&str] = ${toRustArray(
 		protocolSpec.utilityOperations,
