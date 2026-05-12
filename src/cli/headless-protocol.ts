@@ -5,6 +5,7 @@ import {
 	type HeadlessApprovalMode,
 	type HeadlessConnectionRole,
 	type HeadlessErrorType,
+	type HeadlessExecutorType,
 	type HeadlessNotificationType,
 	type HeadlessServerRequestResolution,
 	type HeadlessServerRequestResolvedBy,
@@ -242,6 +243,7 @@ export interface HeadlessReadyMessage {
 	protocol_version: string;
 	model: string;
 	provider: string;
+	executor_type?: HeadlessExecutorType;
 	session_id: string | null;
 }
 
@@ -609,6 +611,7 @@ export interface HeadlessRuntimeState {
 	connections: HeadlessConnectionState[];
 	model?: string;
 	provider?: string;
+	executor_type?: HeadlessExecutorType;
 	session_id?: string | null;
 	cwd?: string;
 	git_branch?: string | null;
@@ -1237,11 +1240,14 @@ export class HeadlessProtocolTranslator {
 		sessionManager: SessionManager,
 	): HeadlessReadyMessage {
 		const model = agent.state.model;
+		const executorType: HeadlessExecutorType =
+			model.provider === "scripted-replay" ? "replay" : "live";
 		return {
 			type: "ready",
 			protocol_version: HEADLESS_PROTOCOL_VERSION,
 			model: model.id,
 			provider: model.provider,
+			executor_type: executorType,
 			session_id: sessionManager.getSessionId() ?? null,
 		};
 	}
@@ -1603,6 +1609,7 @@ function applyIncomingHeadlessMessageInner(
 			state.protocol_version = msg.protocol_version;
 			state.model = msg.model;
 			state.provider = msg.provider;
+			state.executor_type = msg.executor_type ?? "live";
 			state.session_id = msg.session_id;
 			state.is_ready = true;
 			return;

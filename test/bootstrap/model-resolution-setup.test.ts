@@ -2,7 +2,7 @@
  * Tests for resolveModelFromArgs() — model/provider resolution from CLI args.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../src/models/registry.js", () => ({
 	resolveAlias: vi.fn().mockReturnValue(null),
@@ -31,11 +31,20 @@ import {
 } from "../../src/models/registry.js";
 
 const mockRequireCredential = vi.fn().mockResolvedValue({ apiKey: "test-key" });
+const originalScenarioPath = process.env.MAESTRO_SCENARIO_PATH;
 
 describe("resolveModelFromArgs", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mockRequireCredential.mockResolvedValue({ apiKey: "test-key" });
+	});
+
+	afterEach(() => {
+		if (originalScenarioPath === undefined) {
+			delete process.env.MAESTRO_SCENARIO_PATH;
+			return;
+		}
+		process.env.MAESTRO_SCENARIO_PATH = originalScenarioPath;
 	});
 
 	it("uses factory defaults when no provider or model specified", async () => {
@@ -127,6 +136,18 @@ describe("resolveModelFromArgs", () => {
 		});
 
 		expect(mockRequireCredential).toHaveBeenCalledWith("anthropic", false);
+	});
+
+	it("still requires non-scripted credentials when scenario env is set", async () => {
+		process.env.MAESTRO_SCENARIO_PATH = "/tmp/replay.json";
+
+		await resolveModelFromArgs({
+			parsedProvider: "openai",
+			parsedModel: "gpt-4o",
+			requireCredential: mockRequireCredential,
+		});
+
+		expect(mockRequireCredential).toHaveBeenCalledWith("openai", false);
 	});
 
 	it("propagates credential errors", async () => {

@@ -101,6 +101,8 @@ import {
 	isAssistantMessage,
 } from "./agent/index.js";
 import { getAllModes, getModelForMode } from "./agent/modes.js";
+import { loadScriptedScenarioFromSource } from "./agent/providers/scripted.js";
+import { scenarioSourceLabel } from "./agent/scenario-source.js";
 import { applySessionEndHooks } from "./agent/session-lifecycle-hooks.js";
 import { type ToolRetryMode, ToolRetryService } from "./agent/tool-retry.js";
 import {
@@ -451,6 +453,15 @@ function resolveSessionStartHookSource(params: {
 	return "cli";
 }
 
+async function readReplayScenarioId(source: string): Promise<string> {
+	try {
+		return (await loadScriptedScenarioFromSource(source)).id;
+	} catch {
+		// The scripted provider surfaces schema and file errors during streaming.
+	}
+	return scenarioSourceLabel(source);
+}
+
 /**
  * Main entry point for the Composer CLI application.
  *
@@ -570,6 +581,18 @@ export async function main(args: string[]) {
 		exitWithEarlyStartupError(error);
 	}
 
+	const replayScenarioPath =
+		parsed.replayScenarioPath ?? process.env.MAESTRO_SCENARIO_PATH;
+	if (replayScenarioPath) {
+		parsed.replayScenarioPath = replayScenarioPath;
+		process.env.MAESTRO_SCENARIO_PATH = replayScenarioPath;
+		process.env.MAESTRO_SCENARIO_ID =
+			await readReplayScenarioId(replayScenarioPath);
+		process.env.MAESTRO_MODE = "replay";
+		parsed.provider = "scripted-replay";
+		parsed.model = "maestro-replay-v1";
+	}
+
 	// Handle `maestro hosted-runner` before importing web-server so hosted
 	// defaults are visible to its module-level runtime profile.
 	if (parsed.command === "hosted-runner") {
@@ -623,6 +646,17 @@ export async function main(args: string[]) {
 		await handleContextCommand(parsed.subcommand, parsed.messages, {
 			json: parsed.execJson,
 			liveMcp: parsed.contextLiveMcp,
+		});
+		return;
+	}
+
+	if (parsed.command === "scenario") {
+		const { handleScenarioCommand } = await import(
+			"./cli/commands/scenario.js"
+		);
+		await handleScenarioCommand(parsed.subcommand, parsed.messages, {
+			json: parsed.execJson,
+			junitPath: parsed.junitPath,
 		});
 		return;
 	}
@@ -1172,6 +1206,18 @@ export async function main(args: string[]) {
 		parsed.continue && !parsed.resume, // continueSession: auto-load most recent
 		parsed.session, // customSessionPath: explicit session file
 	);
+	let scenarioRecorder:
+		| import("./server/scenario-recorder.js").ScriptedScenarioRecorder
+		| undefined;
+	if (parsed.recordScenarioPath) {
+		const { ScriptedScenarioRecorder } = await import(
+			"./server/scenario-recorder.js"
+		);
+		scenarioRecorder = new ScriptedScenarioRecorder({
+			outPath: parsed.recordScenarioPath,
+			recordedFrom: () => sessionManager.getSessionId(),
+		});
+	}
 	startupProfiler.checkpoint("session:created");
 
 	let execResumeApplied = false;
@@ -1540,6 +1586,14 @@ export async function main(args: string[]) {
 		cwd: process.cwd(),
 		enterpriseContext,
 		automaticMemoryExtraction,
+		scenarioReplay:
+			parsed.replayScenarioPath && process.env.MAESTRO_SCENARIO_ID
+				? {
+						path: scenarioSourceLabel(parsed.replayScenarioPath),
+						scenarioId: process.env.MAESTRO_SCENARIO_ID,
+					}
+				: undefined,
+		scenarioRecorder,
 	});
 
 	// ─────────────────────────────────────────────────────────────────────────────

@@ -1,0 +1,472 @@
+{
+	"schemaVersion": "evalops.maestro.agent-trajectory-scenario-result.v1",
+	"scenarioSchemaVersion": "evalops.maestro.scenario.v1",
+	"scenario": {
+		"id": "local-diagnostic-success",
+		"title": "Local diagnostic artifact trajectory stays replayable",
+		"expectedOutcome": "pass",
+		"observedOutcome": "pass",
+		"reviewLabels": ["accepted", "platform_promotion_ready"]
+	},
+	"run": {
+		"id": "replay-local-diagnostic-artifact-1",
+		"sessionId": "replay-local-diagnostic-artifact-1",
+		"source": "local",
+		"platformBacked": false,
+		"scenarioId": "local-diagnostic-success",
+		"replay": true,
+		"generatedAt": "<redacted>"
+	},
+	"counts": {
+		"assertions": 8,
+		"passed": 8,
+		"failed": 0,
+		"warnings": 0,
+		"events": 10,
+		"toolCalls": 1,
+		"replayDeltas": 0,
+		"scoreFailures": 0,
+		"scoreWarnings": 0
+	},
+	"platform": {
+		"primitive": "trajectory",
+		"eventType": "maestro.events.eval.scored",
+		"traceJoinKeys": ["sessionId", "scenarioId", "tool_call"],
+		"rationale": "The local scenario is stored as a redacted trajectory plus replay, scorer, and inspection artifacts until Platform owns cross-run storage.",
+		"evidenceEventType": "maestro.events.eval.scored"
+	},
+	"assumptions": {
+		"workflow": "Agent performs one local edit, links a skill artifact, records diagnostics, emits governance, and finishes with cited evidence.",
+		"correctnessModel": "A successful run has deterministic replay deltas at zero, scorer findings passing, bounded tool count, and provenance anchors for the terminal tool result.",
+		"threatModel": "Inspection artifacts must stay redacted and must not leak adversarial canary strings from untrusted files or prompts.",
+		"researchBasis": [
+			"Trajectory replay should be deterministic and auditable before model-level optimization.",
+			"Human labels and evidence anchors are required to turn replay artifacts into training and evaluation data.",
+			"Efficiency budgets catch regressions that pure correctness scoring misses."
+		]
+	},
+	"assertions": [
+		{
+			"id": "tool-edit-requested",
+			"kind": "event.exists",
+			"status": "pass",
+			"severity": "error",
+			"message": "Matched 1 trajectory event(s).",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "tool-requested:assistant-local-1:call-local-edit",
+					"source": "trajectory",
+					"label": "timeline_item:tool-requested:assistant-local-1:call-local-edit"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-local-edit",
+					"source": "trajectory",
+					"label": "tool_call:call-local-edit"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:tool-requested:assistant-local-1:call-local-edit",
+					"source": "trajectory",
+					"label": "tool.requested:trajectory:tool-requested:assistant-local-1:call-local-edit"
+				}
+			]
+		},
+		{
+			"id": "replay-clean",
+			"kind": "replay.deltas",
+			"status": "pass",
+			"severity": "error",
+			"message": "Replay stayed within delta and error budgets (0 deltas, 0 errors).",
+			"evidence": []
+		},
+		{
+			"id": "artifact-score-passed",
+			"kind": "score.finding",
+			"status": "pass",
+			"severity": "error",
+			"message": "Score finding local-skill-artifact-linked matched pass.",
+			"evidence": [
+				{
+					"kind": "artifact",
+					"id": "skill_artifact_local_1",
+					"source": "trajectory",
+					"label": "artifact:skill_artifact_local_1"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:artifact-linked:tool-local-edit-1:call-local-edit",
+					"source": "trajectory",
+					"label": "artifact.linked:trajectory:artifact-linked:tool-local-edit-1:call-local-edit"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "artifact-linked:tool-local-edit-1:call-local-edit",
+					"source": "trajectory",
+					"label": "timeline_item:artifact-linked:tool-local-edit-1:call-local-edit"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-local-edit",
+					"source": "trajectory",
+					"label": "tool_call:call-local-edit"
+				}
+			]
+		},
+		{
+			"id": "inspection-redacted",
+			"kind": "inspection.redaction",
+			"status": "pass",
+			"severity": "error",
+			"message": "Inspection artifact stayed redacted and omitted forbidden terms.",
+			"evidence": [
+				{
+					"kind": "scenario",
+					"id": "replay-local-diagnostic-artifact-1",
+					"source": "scenario",
+					"label": "inspection:redaction"
+				}
+			]
+		},
+		{
+			"id": "efficiency-budget",
+			"kind": "efficiency.budget",
+			"status": "pass",
+			"severity": "error",
+			"message": "Efficiency budget satisfied. Observed events=10, toolCalls=1, replayDeltas=0, scoreFailures=0, scoreWarnings=0.",
+			"evidence": []
+		},
+		{
+			"id": "terminal-tool-provenance",
+			"kind": "provenance.chain",
+			"status": "pass",
+			"severity": "error",
+			"message": "Event trajectory:tool-result:tool-local-edit-1:call-local-edit includes required provenance anchors.",
+			"evidence": [
+				{
+					"kind": "approval_request",
+					"id": "approval-local-1",
+					"source": "trajectory",
+					"label": "approval_request:approval-local-1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "tool-result:tool-local-edit-1:call-local-edit",
+					"source": "trajectory",
+					"label": "timeline_item:tool-result:tool-local-edit-1:call-local-edit"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-local-edit",
+					"source": "trajectory",
+					"label": "tool_call:call-local-edit"
+				},
+				{
+					"kind": "tool_execution",
+					"id": "tool-exec-local-1",
+					"source": "trajectory",
+					"label": "tool_execution:tool-exec-local-1"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:tool-result:tool-local-edit-1:call-local-edit",
+					"source": "trajectory",
+					"label": "tool.completed:trajectory:tool-result:tool-local-edit-1:call-local-edit"
+				}
+			]
+		},
+		{
+			"id": "human-labels-present",
+			"kind": "human.review",
+			"status": "pass",
+			"severity": "error",
+			"message": "Human review labels present: accepted, platform_promotion_ready.",
+			"evidence": [
+				{
+					"kind": "scenario",
+					"id": "local-diagnostic-success",
+					"source": "scenario",
+					"label": "human-review:labels"
+				}
+			]
+		},
+		{
+			"id": "candidate-no-costlier-than-legacy",
+			"kind": "trajectory.diff",
+			"status": "pass",
+			"severity": "error",
+			"message": "Trajectory diff budget satisfied. Diff eventsDelta=-4, toolCallsDelta=-2, scoreFailuresDelta=0.",
+			"evidence": []
+		}
+	],
+	"provenance": [
+		{
+			"eventId": "trajectory:session-started:replay-local-diagnostic-artifact-1",
+			"eventType": "session.started",
+			"phase": "setup",
+			"actor": "system",
+			"evidence": [
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:session-started:replay-local-diagnostic-artifact-1",
+					"source": "trajectory",
+					"label": "session.started:trajectory:session-started:replay-local-diagnostic-artifact-1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "session-started:replay-local-diagnostic-artifact-1",
+					"source": "trajectory",
+					"label": "timeline_item:session-started:replay-local-diagnostic-artifact-1"
+				}
+			]
+		},
+		{
+			"eventId": "trajectory:message:user-local-1",
+			"eventType": "message.user",
+			"phase": "observe",
+			"actor": "user",
+			"evidence": [
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:message:user-local-1",
+					"source": "trajectory",
+					"label": "message.user:trajectory:message:user-local-1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "message:user-local-1",
+					"source": "trajectory",
+					"label": "timeline_item:message:user-local-1"
+				}
+			]
+		},
+		{
+			"eventId": "trajectory:message:assistant-local-1",
+			"eventType": "message.assistant",
+			"phase": "think",
+			"actor": "assistant",
+			"evidence": [
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:message:assistant-local-1",
+					"source": "trajectory",
+					"label": "message.assistant:trajectory:message:assistant-local-1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "message:assistant-local-1",
+					"source": "trajectory",
+					"label": "timeline_item:message:assistant-local-1"
+				}
+			]
+		},
+		{
+			"eventId": "trajectory:tool-requested:assistant-local-1:call-local-edit",
+			"eventType": "tool.requested",
+			"phase": "act",
+			"actor": "assistant",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "tool-requested:assistant-local-1:call-local-edit",
+					"source": "trajectory",
+					"label": "timeline_item:tool-requested:assistant-local-1:call-local-edit"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-local-edit",
+					"source": "trajectory",
+					"label": "tool_call:call-local-edit"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:tool-requested:assistant-local-1:call-local-edit",
+					"source": "trajectory",
+					"label": "tool.requested:trajectory:tool-requested:assistant-local-1:call-local-edit"
+				}
+			]
+		},
+		{
+			"eventId": "trajectory:artifact-linked:tool-local-edit-1:call-local-edit",
+			"eventType": "artifact.linked",
+			"phase": "verify",
+			"actor": "runtime",
+			"evidence": [
+				{
+					"kind": "artifact",
+					"id": "skill_artifact_local_1",
+					"source": "trajectory",
+					"label": "artifact:skill_artifact_local_1"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:artifact-linked:tool-local-edit-1:call-local-edit",
+					"source": "trajectory",
+					"label": "artifact.linked:trajectory:artifact-linked:tool-local-edit-1:call-local-edit"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "artifact-linked:tool-local-edit-1:call-local-edit",
+					"source": "trajectory",
+					"label": "timeline_item:artifact-linked:tool-local-edit-1:call-local-edit"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-local-edit",
+					"source": "trajectory",
+					"label": "tool_call:call-local-edit"
+				}
+			]
+		},
+		{
+			"eventId": "trajectory:diagnostic-delta:tool-local-edit-1:call-local-edit",
+			"eventType": "diagnostic.delta",
+			"phase": "verify",
+			"actor": "runtime",
+			"evidence": [
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:diagnostic-delta:tool-local-edit-1:call-local-edit",
+					"source": "trajectory",
+					"label": "diagnostic.delta:trajectory:diagnostic-delta:tool-local-edit-1:call-local-edit"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "diagnostic-delta:tool-local-edit-1:call-local-edit",
+					"source": "trajectory",
+					"label": "timeline_item:diagnostic-delta:tool-local-edit-1:call-local-edit"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-local-edit",
+					"source": "trajectory",
+					"label": "tool_call:call-local-edit"
+				}
+			]
+		},
+		{
+			"eventId": "trajectory:file-change:tool-local-edit-1:call-local-edit",
+			"eventType": "file.changed",
+			"phase": "verify",
+			"actor": "runtime",
+			"evidence": [
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:file-change:tool-local-edit-1:call-local-edit",
+					"source": "trajectory",
+					"label": "file.changed:trajectory:file-change:tool-local-edit-1:call-local-edit"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "file-change:tool-local-edit-1:call-local-edit",
+					"source": "trajectory",
+					"label": "timeline_item:file-change:tool-local-edit-1:call-local-edit"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-local-edit",
+					"source": "trajectory",
+					"label": "tool_call:call-local-edit"
+				}
+			]
+		},
+		{
+			"eventId": "trajectory:policy-decision:tool-local-edit-1:call-local-edit",
+			"eventType": "policy.decision",
+			"phase": "govern",
+			"actor": "runtime",
+			"evidence": [
+				{
+					"kind": "approval_request",
+					"id": "approval-local-1",
+					"source": "trajectory",
+					"label": "approval_request:approval-local-1"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:policy-decision:tool-local-edit-1:call-local-edit",
+					"source": "trajectory",
+					"label": "policy.decision:trajectory:policy-decision:tool-local-edit-1:call-local-edit"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "policy-decision:tool-local-edit-1:call-local-edit",
+					"source": "trajectory",
+					"label": "timeline_item:policy-decision:tool-local-edit-1:call-local-edit"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-local-edit",
+					"source": "trajectory",
+					"label": "tool_call:call-local-edit"
+				}
+			]
+		},
+		{
+			"eventId": "trajectory:tool-result:tool-local-edit-1:call-local-edit",
+			"eventType": "tool.completed",
+			"phase": "verify",
+			"actor": "tool",
+			"evidence": [
+				{
+					"kind": "approval_request",
+					"id": "approval-local-1",
+					"source": "trajectory",
+					"label": "approval_request:approval-local-1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "tool-result:tool-local-edit-1:call-local-edit",
+					"source": "trajectory",
+					"label": "timeline_item:tool-result:tool-local-edit-1:call-local-edit"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-local-edit",
+					"source": "trajectory",
+					"label": "tool_call:call-local-edit"
+				},
+				{
+					"kind": "tool_execution",
+					"id": "tool-exec-local-1",
+					"source": "trajectory",
+					"label": "tool_execution:tool-exec-local-1"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:tool-result:tool-local-edit-1:call-local-edit",
+					"source": "trajectory",
+					"label": "tool.completed:trajectory:tool-result:tool-local-edit-1:call-local-edit"
+				}
+			]
+		},
+		{
+			"eventId": "trajectory:message:assistant-local-2",
+			"eventType": "message.assistant",
+			"phase": "think",
+			"actor": "assistant",
+			"evidence": [
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:message:assistant-local-2",
+					"source": "trajectory",
+					"label": "message.assistant:trajectory:message:assistant-local-2"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "message:assistant-local-2",
+					"source": "trajectory",
+					"label": "timeline_item:message:assistant-local-2"
+				}
+			]
+		}
+	],
+	"diff": {
+		"baselineRunId": "replay-legacy-mcp-1",
+		"candidateRunId": "replay-local-diagnostic-artifact-1",
+		"eventsDelta": -4,
+		"toolCallsDelta": -2,
+		"scoreFailuresDelta": 0
+	}
+}

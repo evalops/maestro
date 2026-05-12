@@ -63,6 +63,12 @@ const CLI_OPTIONS: CliHelpOption[] = [
 	{ text: "--session <path>        Use specific session file" },
 	{ text: "--no-session            Don't save session (ephemeral)" },
 	{ text: "--safe-mode             Enable extra safety restrictions" },
+	{
+		text: "--replay <path|uri>     Open a scripted deterministic replay session",
+	},
+	{
+		text: "--record-scenario <path> Record assistant turns as a replay fixture",
+	},
 	{ text: "--help, -h              Show this help" },
 	{
 		text: "--help-hidden          Show hidden support and staged-rollout flags",
@@ -180,7 +186,18 @@ export function printHelp(
   maestro stats --session <session-id>
 
   # Reconstruct the timeline, trajectory, and evidence coverage for a saved run
-  maestro run inspect <session-id> --json`,
+  maestro run inspect <session-id> --json
+
+  # Validate and run a deterministic scenario fixture
+  maestro scenario validate ./test/fixtures/agent-trajectory-scenarios/local-diagnostic-success.json
+  maestro scenario run ./test/fixtures/agent-trajectory-scenarios/local-diagnostic-success.json --junit ./tmp/scenario.xml
+
+  # Open a real agent session backed by a scripted model fixture
+  maestro --replay ./test/fixtures/scripted-replay/basic-tool-call.json
+  maestro --replay gs://evalops-prod-maestro-scenario-fixtures/maestro/scenarios/example.json
+
+  # Record a live run into a replayable scripted scenario
+  maestro --record-scenario ./tmp/recorded-scenario.json "inspect package.json"`,
 	)}`;
 	const env = `${sectionHeading("Environment Variables:")}${muted(
 		`  GEMINI_API_KEY          - Google Gemini API key

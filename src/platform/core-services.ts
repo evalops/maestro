@@ -7,6 +7,8 @@ export const PLATFORM_CONNECT_SERVICES = {
 	agentRuntime: "agentruntime.v1.AgentRuntimeService",
 	approvals: "approvals.v1.ApprovalService",
 	connectors: "connectors.v1.ConnectorService",
+	fermata: "fermata.v1.FermataService",
+	fermataExecution: "fermata.v1.FermataExecutionService",
 	governance: "governance.v1.GovernanceService",
 	llmGateway: "llmgateway.v1.GatewayService",
 	maestroTimeline: "maestro.v1.MaestroTimelineService",
@@ -113,6 +115,22 @@ export const PLATFORM_CONNECT_METHODS = {
 		setSourceOfTruthPolicy: {
 			service: PLATFORM_CONNECT_SERVICES.connectors,
 			method: "SetSourceOfTruthPolicy",
+		},
+	},
+	fermata: {
+		createTestSuite: {
+			service: PLATFORM_CONNECT_SERVICES.fermata,
+			method: "CreateTestSuite",
+		},
+		getTestSuite: {
+			service: PLATFORM_CONNECT_SERVICES.fermata,
+			method: "GetTestSuite",
+		},
+	},
+	fermataExecution: {
+		runTestSuite: {
+			service: PLATFORM_CONNECT_SERVICES.fermataExecution,
+			method: "RunTestSuite",
 		},
 	},
 	governance: {

@@ -367,8 +367,9 @@ export class ProviderTransport implements AgentTransport {
 
 		this.workflowState.reset();
 
+		const scriptedReplayRun = model.provider === "scripted-replay";
 		let credential: AuthCredential | undefined;
-		if (this.options.getAuthContext) {
+		if (this.options.getAuthContext && !scriptedReplayRun) {
 			credential = await this.options.getAuthContext(model.provider);
 		}
 		if (!credential && this.options.getApiKey) {
@@ -381,6 +382,14 @@ export class ProviderTransport implements AgentTransport {
 					source: "env",
 				};
 			}
+		}
+		if (!credential && scriptedReplayRun) {
+			credential = {
+				provider: model.provider,
+				token: "scripted-replay",
+				type: "api-key",
+				source: "env",
+			};
 		}
 		if (!credential) {
 			const envCredential = resolveEnvCredential(model.provider);

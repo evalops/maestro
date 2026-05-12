@@ -44,6 +44,7 @@ const protoToExportKey = {
 	NotificationType: "notificationTypes",
 	ThinkingLevel: "thinkingLevels",
 	ApprovalMode: "approvalModes",
+	ExecutorType: "executorTypes",
 	ErrorType: "errorTypes",
 	UtilityOperation: "utilityOperations",
 	UtilityCommandStream: "utilityCommandStreams",
@@ -195,6 +196,9 @@ export type HeadlessThinkingLevel = (typeof headlessThinkingLevels)[number];
 
 export const headlessApprovalModes = ${toTsConst(protocolSpec.approvalModes)};
 export type HeadlessApprovalMode = (typeof headlessApprovalModes)[number];
+
+export const headlessExecutorTypes = ${toTsConst(protocolSpec.executorTypes)};
+export type HeadlessExecutorType = (typeof headlessExecutorTypes)[number];
 
 export const headlessErrorTypes = ${toTsConst(protocolSpec.errorTypes)};
 export type HeadlessErrorType = (typeof headlessErrorTypes)[number];
@@ -467,6 +471,9 @@ pub const HEADLESS_THINKING_LEVELS: &[&str] = ${toRustArray(
 	)};
 pub const HEADLESS_APPROVAL_MODES: &[&str] = ${toRustArray(
 		protocolSpec.approvalModes,
+	)};
+pub const HEADLESS_EXECUTOR_TYPES: &[&str] = ${toRustArray(
+		protocolSpec.executorTypes,
 	)};
 pub const HEADLESS_ERROR_TYPES: &[&str] = ${toRustArray(protocolSpec.errorTypes)};
 pub const HEADLESS_UTILITY_OPERATIONS: &[&str] = ${toRustArray(

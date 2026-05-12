@@ -276,7 +276,7 @@ describe("parseArgs", () => {
 		});
 	});
 
-	it("does not expose internal scenario replay as a public CLI command", () => {
+	it("parses public scenario replay commands", () => {
 		expect(
 			parseArgs([
 				"scenario",
@@ -284,19 +284,27 @@ describe("parseArgs", () => {
 				"evals/internal/complex-task-gauntlet.json",
 			]),
 		).toMatchObject({
-			messages: [
-				"scenario",
-				"run",
-				"evals/internal/complex-task-gauntlet.json",
-			],
+			command: "scenario",
+			subcommand: "run",
+			messages: ["evals/internal/complex-task-gauntlet.json"],
 		});
+		expect(parseArgs(["--replay", "scenario.json"])).toMatchObject({
+			replayScenarioPath: "scenario.json",
+			messages: [],
+		});
+		expect(parseArgs(["--record-scenario", "recorded.json"])).toMatchObject({
+			recordScenarioPath: "recorded.json",
+			messages: [],
+		});
+	});
+
+	it("keeps --junit out of prompt messages", () => {
 		expect(
-			parseArgs([
-				"scenario",
-				"run",
-				"evals/internal/complex-task-gauntlet.json",
-			]).command,
-		).toBeUndefined();
+			parseArgs(["--junit", "./tmp/scenario.xml", "fix", "the", "bug"]),
+		).toMatchObject({
+			junitPath: "./tmp/scenario.xml",
+			messages: ["fix", "the", "bug"],
+		});
 	});
 
 	it("parses evalops auth commands", () => {

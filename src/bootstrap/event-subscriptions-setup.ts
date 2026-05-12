@@ -17,6 +17,7 @@ import { mcpManager } from "../mcp/manager.js";
 import type { AutomaticMemoryExtractionCoordinator } from "../memory/auto-extraction.js";
 import type { RegisteredModel } from "../models/registry.js";
 import { checkSessionLimits } from "../safety/policy.js";
+import type { ScriptedScenarioRecorder } from "../server/scenario-recorder.js";
 import {
 	type SessionManager,
 	toSessionModelMetadata,
@@ -53,6 +54,11 @@ export function setupEventSubscriptions(params: {
 		getSession: () => { sessionId: string; startedAt: Date } | null;
 	};
 	automaticMemoryExtraction?: AutomaticMemoryExtractionCoordinator;
+	scenarioReplay?: {
+		path: string;
+		scenarioId: string;
+	};
+	scenarioRecorder?: ScriptedScenarioRecorder;
 	/** Optional callback invoked on every turn completion (for perf aggregation). */
 	onTurnComplete?: (event: CanonicalTurnEvent) => void;
 }): EventSubscriptionsResult {
@@ -66,6 +72,8 @@ export function setupEventSubscriptions(params: {
 		enterpriseContext,
 		automaticMemoryExtraction,
 	} = params;
+	let scenarioReplayTagged = false;
+	let scenarioRecordingTagged = false;
 	const updateSessionSummary =
 		createRuntimeSessionSummaryUpdater(sessionManager);
 	const sessionHookService = createSessionHookService({
@@ -140,7 +148,10 @@ export function setupEventSubscriptions(params: {
 		if (event.type === "message_end") {
 			sessionManager.saveMessage(event.message);
 			if (event.message.role === "assistant") {
-				automaticMemoryExtraction?.schedule(sessionManager.getSessionFile());
+				if (!params.scenarioReplay) {
+					automaticMemoryExtraction?.schedule(sessionManager.getSessionFile());
+				}
+				params.scenarioRecorder?.recordAssistantMessage(event.message);
 			}
 
 			// Check if we should initialize session now (after first user message)
@@ -173,6 +184,22 @@ export function setupEventSubscriptions(params: {
 				}
 
 				sessionManager.startSession(agent.state);
+				if (params.scenarioReplay && !scenarioReplayTagged) {
+					sessionManager.appendCustomEntry("scenario_replay", {
+						replay: true,
+						scenarioId: params.scenarioReplay.scenarioId,
+						path: params.scenarioReplay.path,
+						modelProvider: "scripted-replay",
+					});
+					scenarioReplayTagged = true;
+				}
+				if (params.scenarioRecorder && !scenarioRecordingTagged) {
+					sessionManager.appendCustomEntry("scenario_recording", {
+						recording: true,
+						path: params.scenarioRecorder.getOutputPath(),
+					});
+					scenarioRecordingTagged = true;
+				}
 
 				if (enterpriseContext.isEnterprise()) {
 					enterpriseContext.startSession(

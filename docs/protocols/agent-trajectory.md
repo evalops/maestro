@@ -202,6 +202,38 @@ Fixture inspection reports are checked by
 `.trajectory-inspection.json` files beside the existing trajectory, replay, and
 score goldens.
 
+### Phase 7: Scenario acceptance harness
+
+- Promote trajectory, replay, score, and inspection artifacts into versioned
+  scenario files with workflow, correctness, threat-model, and research
+  assumptions.
+- Require human-review labels, Platform trace join keys, provenance chains,
+  efficiency budgets, diff budgets, and adversarial negative fixtures before a
+  scenario can become release-gating evidence.
+- Keep the runner offline and deterministic so CI can validate scenarios without
+  a live model provider.
+
+The initial scenario harness is implemented by
+`src/server/agent-trajectory-scenarios.ts` and exposed through
+`maestro scenario validate <path>` and `maestro scenario run <path>`. The
+contract lives in `packages/contracts/src/scenario.ts`, fixtures live in
+`test/fixtures/agent-trajectory-scenarios`, and
+`scripts/check-agent-trajectory-scenario-fixtures.ts` keeps scenario result and
+JUnit artifacts stable. See `docs/protocols/agent-trajectory-scenarios.md` for
+the scenario contract and Platform promotion path.
+
+Executable replay is exposed separately through `maestro --replay <path>` and
+`MAESTRO_SCENARIO_PATH`. That path selects the synthetic
+`scripted-replay/maestro-replay-v1` model, bypasses external credentials, emits
+zero-cost deterministic model events, and tags the session with
+`scenario_replay` metadata so later CI and Platform consumers can distinguish
+scripted runs from live-model runs.
+
+Scenario recording is exposed through `maestro --record-scenario <path>`. The
+recorder captures assistant text/tool-call frames during the normal runtime,
+preserves tool-call ids and inputs, and keeps the output valid for immediate
+`maestro scenario validate <path>` and `maestro --replay <path>` use.
+
 Longer term, Maestro should own local reconstruction, redaction, and
 permissioned branch/checkpoint actions. Platform should own cross-run storage,
 indexing, trace joins, benchmark-suite aggregation, and durable artifact lookup
@@ -227,6 +259,7 @@ For this phase:
 - `npm run check:agent-trajectory-replay-fixtures`
 - `npm run check:agent-trajectory-score-fixtures`
 - `npm run check:agent-trajectory-inspection-fixtures`
+- `npm run check:agent-trajectory-scenario-fixtures`
 - `npm run test -- test/server/agent-trajectory-validation.test.ts`
 - `npx tsc -p tsconfig.build.json --noEmit`
 

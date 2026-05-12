@@ -104,6 +104,16 @@ describe("Platform core service contract names", () => {
 				PLATFORM_CONNECT_METHODS.toolexecution.recordToolExecutionOutput,
 			),
 		).toBe("/toolexecution.v1.ToolExecutionService/RecordToolExecutionOutput");
+		expect(
+			platformConnectMethodPath(
+				PLATFORM_CONNECT_METHODS.fermata.createTestSuite,
+			),
+		).toBe("/fermata.v1.FermataService/CreateTestSuite");
+		expect(
+			platformConnectMethodPath(
+				PLATFORM_CONNECT_METHODS.fermataExecution.runTestSuite,
+			),
+		).toBe("/fermata.v1.FermataExecutionService/RunTestSuite");
 	});
 
 	it("keeps durable memory on the existing HTTP JSON route", () => {

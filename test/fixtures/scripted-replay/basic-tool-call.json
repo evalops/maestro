@@ -1,0 +1,73 @@
+{
+	"schemaVersion": "evalops.maestro.scripted-scenario.v1",
+	"id": "basic-tool-call",
+	"description": "Deterministic scripted replay fixture that emits text and one tool call.",
+	"metadata": {
+		"recordedFrom": "test",
+		"recordedAt": "2026-05-10T00:00:00.000Z",
+		"modelOriginal": "claude-sonnet-4-5-20250929",
+		"toolsExpected": ["read"],
+		"auditEvents": ["maestro.scenario.replay.ready"]
+	},
+	"frames": [
+		{
+			"index": 0,
+			"statements": [
+				{
+					"kind": "text",
+					"text": "I will inspect the package manifest."
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-read-package-json",
+					"tool": "read",
+					"input": {
+						"file_path": "package.json"
+					},
+					"expectedResult": "success"
+				}
+			]
+		},
+		{
+			"index": 1,
+			"statements": [
+				{
+					"kind": "text",
+					"text": "The manifest has been inspected."
+				},
+				{
+					"kind": "end",
+					"reason": "complete"
+				}
+			]
+		}
+	],
+	"assertions": [
+		{
+			"id": "read-tool-called",
+			"kind": "tool_called",
+			"tool": "read"
+		},
+		{
+			"id": "write-tool-not-called",
+			"kind": "tool_not_called",
+			"tool": "write"
+		},
+		{
+			"id": "fixture-file-exists",
+			"kind": "file_exists",
+			"path": "basic-tool-call.json"
+		},
+		{
+			"id": "fixture-file-contains-schema",
+			"kind": "file_contents",
+			"path": "basic-tool-call.json",
+			"contains": "evalops.maestro.scripted-scenario.v1"
+		},
+		{
+			"id": "audit-event-tagged",
+			"kind": "audit_event_emitted",
+			"eventType": "maestro.scenario.replay.ready"
+		}
+	]
+}

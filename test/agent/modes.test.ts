@@ -181,10 +181,18 @@ describe("agent/modes", () => {
 
 		it("returns hidden modes only when requested", () => {
 			const modes = getAllModes({ includeHidden: true });
-			expect(modes.length).toBe(5);
-			expect(modes.map((m) => m.mode)).toContain("frontier");
+			expect(modes.map((m) => m.mode)).toEqual([
+				"smart",
+				"rush",
+				"free",
+				"custom",
+				"frontier",
+				"replay",
+			]);
 			expect(getAllModes().map((m) => m.mode)).not.toContain("frontier");
+			expect(getAllModes().map((m) => m.mode)).not.toContain("replay");
 			expect(MODE_CONFIGS.frontier.visible).toBe(false);
+			expect(MODE_CONFIGS.replay.visible).toBe(false);
 		});
 	});
 

@@ -32,6 +32,12 @@ export async function* createProviderStream(
 	options: StreamOptions,
 	reasoning: ReasoningOptions,
 ): AsyncGenerator<AssistantMessageEvent, void, unknown> {
+	if (model.api === "scripted-replay") {
+		const { streamScriptedReplay } = await import("../providers/scripted.js");
+		yield* streamScriptedReplay(model, context, options);
+		return;
+	}
+
 	if (model.api === "anthropic-messages") {
 		const { streamAnthropic } = await import("../providers/anthropic.js");
 		yield* streamAnthropic(model as Model<"anthropic-messages">, context, {

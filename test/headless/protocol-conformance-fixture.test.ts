@@ -110,6 +110,18 @@ describe("headless protocol conformance fixture", () => {
 		});
 	});
 
+	it("marks canonical ready messages as live executor runs", async () => {
+		const fixture = await readFixture();
+		const ready =
+			fixture.steps[findStep(fixture, "ready", "agent_to_client")]?.message;
+
+		expect(ready).toMatchObject({
+			type: "ready",
+			protocol_version: HEADLESS_PROTOCOL_VERSION,
+			executor_type: "live",
+		});
+	});
+
 	it("covers a complete prompt through approval, retry, and result lifecycle", async () => {
 		const fixture = await readFixture();
 

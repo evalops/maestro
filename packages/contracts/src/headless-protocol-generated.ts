@@ -71,6 +71,9 @@ export type HeadlessThinkingLevel = (typeof headlessThinkingLevels)[number];
 export const headlessApprovalModes = ["auto", "prompt", "fail"] as const;
 export type HeadlessApprovalMode = (typeof headlessApprovalModes)[number];
 
+export const headlessExecutorTypes = ["live", "replay"] as const;
+export type HeadlessExecutorType = (typeof headlessExecutorTypes)[number];
+
 export const headlessErrorTypes = [
 	"transient",
 	"fatal",

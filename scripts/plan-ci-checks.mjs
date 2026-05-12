@@ -87,6 +87,10 @@ function shouldSkipPublicMirrorForPath(path) {
 		path.startsWith("docs/internal/") ||
 		path === "scripts/configure-npm-trusted-publisher.mjs" ||
 		path === "scripts/deprecate-release.js" ||
+		path === "scripts/plan-ci-checks.mjs" ||
+		path === "scripts/run-scenario-replay-gate.mjs" ||
+		path === "scripts/scenario-replay-governance.mjs" ||
+		path === "scripts/scenario-replay-governance.test.mjs" ||
 		path === "scripts/smoke-registry-install.js" ||
 		path === "scripts/validate-public-package-deps.js" ||
 		path === "AGENTS.md" ||

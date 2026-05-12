@@ -8,6 +8,7 @@ import {
 	headlessApprovalModes,
 	headlessConnectionRoles,
 	headlessErrorTypes,
+	headlessExecutorTypes,
 	headlessNotificationTypes,
 	headlessServerRequestResolutions,
 	headlessServerRequestResolvedBy,
@@ -331,6 +332,7 @@ export const HeadlessReadyMessageSchema = Type.Object(
 		model: Type.String(),
 		provider: Type.String(),
 		session_id: Type.Union([Type.String(), Type.Null()]),
+		executor_type: Type.Optional(stringLiteralUnion(headlessExecutorTypes)),
 	},
 	{ additionalProperties: false },
 );
@@ -873,6 +875,7 @@ export const HeadlessRuntimeStateSchema = Type.Object(
 		connections: Type.Array(HeadlessConnectionStateSchema),
 		model: Type.Optional(Type.String()),
 		provider: Type.Optional(Type.String()),
+		executor_type: Type.Optional(stringLiteralUnion(headlessExecutorTypes)),
 		session_id: Type.Optional(Type.Union([Type.String(), Type.Null()])),
 		cwd: Type.Optional(Type.String()),
 		git_branch: Type.Optional(Type.Union([Type.String(), Type.Null()])),

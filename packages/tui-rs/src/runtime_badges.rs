@@ -40,6 +40,10 @@ pub fn build_runtime_badges(params: RuntimeBadgeParams) -> RuntimeBadges {
         core.push("plan:on".to_string());
     }
 
+    if replay_mode_enabled() {
+        core.push("replay:on".to_string());
+    }
+
     core.extend(enterprise_runtime_badges());
 
     core.push(format!(
@@ -138,6 +142,15 @@ fn thinking_badge_label(level: ThinkingLevel) -> Option<&'static str> {
         ThinkingLevel::High => Some("high"),
         ThinkingLevel::Max => Some("max"),
     }
+}
+
+fn replay_mode_enabled() -> bool {
+    env::var("MAESTRO_MODE")
+        .map(|value| value.trim().eq_ignore_ascii_case("replay"))
+        .unwrap_or(false)
+        || env::var("MAESTRO_SCENARIO_PATH")
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
 }
 
 pub fn enterprise_badges_from_sources(
@@ -351,6 +364,29 @@ mod tests {
         });
 
         assert!(badges.core.contains(&"mcp:1(3)!2".to_string()));
+    }
+
+    #[test]
+    fn test_runtime_badges_mark_scripted_replay_sessions() {
+        let _lock = ENV_MUTEX.lock().expect("lock env");
+        let previous_mode = env::var("MAESTRO_MODE").ok();
+        let previous_scenario_path = env::var("MAESTRO_SCENARIO_PATH").ok();
+        env::set_var("MAESTRO_MODE", "replay");
+        env::remove_var("MAESTRO_SCENARIO_PATH");
+
+        let badges = build_runtime_badges(RuntimeBadgeParams {
+            approval_mode: ApprovalMode::Selective,
+            thinking_level: ThinkingLevel::Off,
+            mcp_connected: 0,
+            mcp_tool_count: 0,
+            mcp_failed: 0,
+            alert_count: 0,
+        });
+
+        restore_env_var("MAESTRO_MODE", previous_mode);
+        restore_env_var("MAESTRO_SCENARIO_PATH", previous_scenario_path);
+
+        assert!(badges.core.contains(&"replay:on".to_string()));
     }
 
     #[test]

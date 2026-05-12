@@ -79,6 +79,12 @@ enum ApprovalMode {
   APPROVAL_MODE_FAIL = 3;
 }
 
+enum ExecutorType {
+  EXECUTOR_TYPE_UNSPECIFIED = 0;
+  EXECUTOR_TYPE_LIVE = 1;
+  EXECUTOR_TYPE_REPLAY = 2;
+}
+
 enum ErrorType {
   ERROR_TYPE_UNSPECIFIED = 0;
   ERROR_TYPE_TRANSIENT = 1;
@@ -308,6 +314,7 @@ message ReadyMessage {
   string model = 2;
   string provider = 3;
   optional string session_id = 4;
+  ExecutorType executor_type = 5;
 }
 
 message ResponseStartMessage {
