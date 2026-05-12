@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="basic-tool-call" tests="5" failures="0" warnings="0">
+	<testcase classname="basic-tool-call" name="read-tool-called"></testcase>
+	<testcase classname="basic-tool-call" name="write-tool-not-called"></testcase>
+	<testcase classname="basic-tool-call" name="fixture-file-exists"></testcase>
+	<testcase classname="basic-tool-call" name="fixture-file-contains-schema"></testcase>
+	<testcase classname="basic-tool-call" name="audit-event-tagged"></testcase>
+</testsuite>

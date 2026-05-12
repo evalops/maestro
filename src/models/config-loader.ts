@@ -66,6 +66,7 @@ export const modelSchema = Type.Object({
 			Type.Literal("google-gemini-cli"),
 			Type.Literal("bedrock-converse"),
 			Type.Literal("vertex-ai"),
+			Type.Literal("scripted-replay"),
 		]),
 	),
 	baseUrl: Type.Optional(Type.String({ minLength: 1 })),

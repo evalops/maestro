@@ -107,7 +107,9 @@ export async function resolveModelFromArgs(params: {
 		);
 	}
 
-	await requireCredential(provider, false);
+	if (provider !== "scripted-replay") {
+		await requireCredential(provider, false);
+	}
 
 	// Resolve model with policy check
 	let model: ReturnType<typeof resolveModel> | undefined;

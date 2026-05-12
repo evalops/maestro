@@ -639,6 +639,11 @@
 							"value": null
 						}
 					]
+				},
+				"executor_type": {
+					"kind": "enumRef",
+					"name": "headlessExecutorTypes",
+					"optional": true
 				}
 			}
 		},
@@ -1799,6 +1804,11 @@
 				},
 				"provider": {
 					"kind": "string",
+					"optional": true
+				},
+				"executor_type": {
+					"kind": "enumRef",
+					"name": "headlessExecutorTypes",
 					"optional": true
 				},
 				"session_id": {

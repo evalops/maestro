@@ -76,7 +76,7 @@ describe("check-public-surface-boundary", () => {
 		expect(result.stdout).toContain("Public surface boundary check passed.");
 	});
 
-	it("rejects package scripts and CLI commands for internal scenarios", () => {
+	it("rejects package scripts for internal scenarios", () => {
 		const root = makeFixture();
 		write(
 			join(root, "package.json"),
@@ -91,10 +91,6 @@ describe("check-public-surface-boundary", () => {
 				2,
 			),
 		);
-		write(
-			join(root, "src/cli/args.ts"),
-			'const COMMANDS = new Set(["scenario"]);\n',
-		);
 
 		const result = runCheck(root);
 
@@ -102,27 +98,20 @@ describe("check-public-surface-boundary", () => {
 		expect(result.stderr).toContain(
 			"package.json exposes internal scenario script: scenario:smoke",
 		);
-		expect(result.stderr).toContain(
-			"src/cli/args.ts exposes internal scenario as a CLI command",
-		);
 	});
 
-	it("rejects legacy public locations for the internal scenario runner", () => {
+	it("rejects legacy public locations for internal scenario docs", () => {
 		const root = makeFixture();
 		write(
 			join(root, "docs/protocols/complex-task-scenarios.md"),
 			"# internal\n",
 		);
-		write(join(root, "src/cli/commands/scenario.ts"), "export {};\n");
 
 		const result = runCheck(root);
 
 		expect(result.status).toBe(1);
 		expect(result.stderr).toContain(
 			"docs/protocols/complex-task-scenarios.md must not exist",
-		);
-		expect(result.stderr).toContain(
-			"src/cli/commands/scenario.ts must not exist",
 		);
 	});
 });

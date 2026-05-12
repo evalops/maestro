@@ -53,6 +53,11 @@ export interface Args {
 	composer?: string;
 	exportFormat?: string;
 	redactSecrets?: boolean;
+	junitPath?: string;
+	/** Open a real agent session backed by a scripted replay scenario. */
+	replayScenarioPath?: string;
+	/** Record assistant turns into a scripted replay scenario file. */
+	recordScenarioPath?: string;
 }
 
 const COMMANDS = new Set([
@@ -77,6 +82,7 @@ const COMMANDS = new Set([
 	"remote",
 	"export",
 	"import",
+	"scenario",
 ]);
 const SUBCOMMAND_COMMANDS = new Set([
 	"config",
@@ -93,6 +99,7 @@ const SUBCOMMAND_COMMANDS = new Set([
 	"hooks",
 	"memory",
 	"remote",
+	"scenario",
 ]);
 
 const FLAGS_WITH_VALUES = new Set([
@@ -118,6 +125,9 @@ const FLAGS_WITH_VALUES = new Set([
 	"--format",
 	"--profile",
 	"--config",
+	"--junit",
+	"--replay",
+	"--record-scenario",
 ]);
 
 const DEPRECATED_FLAGS_WITH_VALUES = new Set(["--codex-api-key"]);
@@ -297,6 +307,12 @@ export function parseArgs(args: string[]): Args {
 			result.exportFormat = args[++i];
 		} else if (arg === "--redact-secrets") {
 			result.redactSecrets = true;
+		} else if (arg === "--junit" && i + 1 < args.length) {
+			result.junitPath = args[++i]!;
+		} else if (arg === "--replay" && i + 1 < args.length) {
+			result.replayScenarioPath = args[++i]!;
+		} else if (arg === "--record-scenario" && i + 1 < args.length) {
+			result.recordScenarioPath = args[++i]!;
 		} else if (arg === "--live-mcp") {
 			result.contextLiveMcp = true;
 		} else if (arg === "--profile" && i + 1 < args.length) {

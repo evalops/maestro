@@ -63,6 +63,7 @@ function createBadgeParams() {
 		alertCount: 0,
 		reducedMotion: false,
 		compactForced: false,
+		replayMode: false,
 	};
 }
 
@@ -150,6 +151,15 @@ describe("buildRuntimeBadges", () => {
 		expect(badges).toContain("ent:on");
 		expect(badges).toContain("ent:policy");
 		expect(badges).toContain("ent:mcp");
+	});
+
+	it("marks scripted replay sessions in the TS TUI runtime badges", () => {
+		const badges = buildRuntimeBadges({
+			...createBadgeParams(),
+			replayMode: true,
+		});
+
+		expect(badges).toContain("replay:on");
 	});
 
 	it("keeps enterprise badge derivation hidden without enterprise sources", () => {

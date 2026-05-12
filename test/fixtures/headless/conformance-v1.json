@@ -59,6 +59,7 @@
 				"protocol_version": "2026-04-02",
 				"model": "gpt-5.4",
 				"provider": "openai",
+				"executor_type": "live",
 				"session_id": "sess_conformance_1"
 			}
 		},

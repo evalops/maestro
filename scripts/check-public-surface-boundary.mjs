@@ -13,7 +13,6 @@ const requiredMirrorExcludes = [
 const forbiddenPublicPaths = [
 	"docs/protocols/complex-task-scenarios.md",
 	"evals/scenarios/complex-task-gauntlet.json",
-	"src/cli/commands/scenario.ts",
 	"test/scenario-pack.test.ts",
 ];
 
@@ -40,11 +39,6 @@ for (const [name, command] of Object.entries(scripts)) {
 	if (String(command).includes("scripts/internal/")) {
 		errors.push(`package.json script ${name} references scripts/internal/`);
 	}
-}
-
-const argsSource = read("src/cli/args.ts");
-if (argsSource.includes('"scenario"')) {
-	errors.push("src/cli/args.ts exposes internal scenario as a CLI command.");
 }
 
 const mirrorExcludePath = ".github/public-release-mirror.exclude";

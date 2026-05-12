@@ -1,0 +1,94 @@
+{
+	"schemaVersion": "evalops.maestro.scenario.v1",
+	"id": "local-diagnostic-success",
+	"title": "Local diagnostic artifact trajectory stays replayable",
+	"description": "Acceptance scenario for a local edit run with artifact, diagnostic, governance, replay, scorer, provenance, and redacted inspection evidence.",
+	"expectedOutcome": "pass",
+	"source": {
+		"trajectoryPath": "../session-replay/local-diagnostic-artifact-session.trajectory.json",
+		"replayPath": "../session-replay/local-diagnostic-artifact-session.trajectory-replay.json",
+		"scorePath": "../session-replay/local-diagnostic-artifact-session.trajectory-score.json",
+		"inspectionPath": "../session-replay/local-diagnostic-artifact-session.trajectory-inspection.json",
+		"baselineTrajectoryPath": "../session-replay/legacy-compacted-mcp-session.trajectory.json",
+		"candidateTrajectoryPath": "../session-replay/local-diagnostic-artifact-session.trajectory.json",
+		"baselineScorePath": "../session-replay/legacy-compacted-mcp-session.trajectory-score.json",
+		"candidateScorePath": "../session-replay/local-diagnostic-artifact-session.trajectory-score.json"
+	},
+	"reviewLabels": ["accepted", "platform_promotion_ready"],
+	"platform": {
+		"primitive": "trajectory",
+		"eventType": "maestro.events.eval.scored",
+		"traceJoinKeys": ["sessionId", "scenarioId", "tool_call"],
+		"rationale": "The local scenario is stored as a redacted trajectory plus replay, scorer, and inspection artifacts until Platform owns cross-run storage."
+	},
+	"assumptions": {
+		"workflow": "Agent performs one local edit, links a skill artifact, records diagnostics, emits governance, and finishes with cited evidence.",
+		"correctnessModel": "A successful run has deterministic replay deltas at zero, scorer findings passing, bounded tool count, and provenance anchors for the terminal tool result.",
+		"threatModel": "Inspection artifacts must stay redacted and must not leak adversarial canary strings from untrusted files or prompts.",
+		"researchBasis": [
+			"Trajectory replay should be deterministic and auditable before model-level optimization.",
+			"Human labels and evidence anchors are required to turn replay artifacts into training and evaluation data.",
+			"Efficiency budgets catch regressions that pure correctness scoring misses."
+		]
+	},
+	"assertions": [
+		{
+			"id": "tool-edit-requested",
+			"kind": "event.exists",
+			"selector": {
+				"kind": "tool",
+				"type": "tool.requested",
+				"toolName": "edit"
+			}
+		},
+		{
+			"id": "replay-clean",
+			"kind": "replay.deltas",
+			"maxReplayDeltas": 0,
+			"maxReplayErrors": 0
+		},
+		{
+			"id": "artifact-score-passed",
+			"kind": "score.finding",
+			"ruleId": "local-skill-artifact-linked",
+			"status": "pass"
+		},
+		{
+			"id": "inspection-redacted",
+			"kind": "inspection.redaction",
+			"forbiddenTerms": ["ADVERSARIAL_CANARY_DO_NOT_LEAK"]
+		},
+		{
+			"id": "efficiency-budget",
+			"kind": "efficiency.budget",
+			"maxEvents": 12,
+			"maxToolCalls": 1,
+			"maxReplayDeltas": 0,
+			"maxScoreFailures": 0,
+			"maxScoreWarnings": 0
+		},
+		{
+			"id": "terminal-tool-provenance",
+			"kind": "provenance.chain",
+			"eventId": "trajectory:tool-result:tool-local-edit-1:call-local-edit",
+			"requiredEvidenceKinds": [
+				"timeline_item",
+				"tool_call",
+				"tool_execution",
+				"approval_request"
+			]
+		},
+		{
+			"id": "human-labels-present",
+			"kind": "human.review",
+			"requiredLabels": ["accepted", "platform_promotion_ready"]
+		},
+		{
+			"id": "candidate-no-costlier-than-legacy",
+			"kind": "trajectory.diff",
+			"maxAddedEvents": 0,
+			"maxAddedToolCalls": 0,
+			"maxAddedScoreFailures": 0
+		}
+	]
+}

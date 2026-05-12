@@ -55,6 +55,7 @@ import type { ToolRetryDecision, ToolRetryRequest } from "./tool-retry.js";
  * - `google-generative-ai` - Google Generative AI (Gemini)
  * - `google-gemini-cli` - Google Cloud Code Assist (Gemini CLI)
  * - `bedrock-converse` - AWS Bedrock Converse API
+ * - `scripted-replay` - Deterministic local scenario replay provider
  */
 export type Api =
 	| "openai-completions"
@@ -64,7 +65,8 @@ export type Api =
 	| "google-generative-ai"
 	| "google-gemini-cli"
 	| "bedrock-converse"
-	| "vertex-ai";
+	| "vertex-ai"
+	| "scripted-replay";
 
 export interface OpenAICompatOverrides {
 	supportsStore?: boolean;

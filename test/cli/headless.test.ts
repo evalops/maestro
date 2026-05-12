@@ -11,6 +11,7 @@ import {
 } from "@evalops/contracts";
 import { Value } from "@sinclair/typebox/value";
 import { describe, expect, it, vi } from "vitest";
+import type { Agent } from "../../src/agent/index.js";
 import type { AssistantMessage } from "../../src/agent/types.js";
 import {
 	HEADLESS_PROTOCOL_VERSION,
@@ -26,6 +27,7 @@ import {
 	createHeadlessRuntimeState,
 	loadPromptAttachments,
 } from "../../src/cli/headless-protocol.js";
+import type { SessionManager } from "../../src/session/manager.js";
 
 function assistantMessage(
 	overrides: Partial<AssistantMessage> = {},
@@ -132,6 +134,86 @@ describe("headless protocol helpers", () => {
 			model_id: "claude-opus-4-6",
 			provider: "anthropic",
 		});
+	});
+
+	it("marks replay executor type in ready messages", () => {
+		const translator = new HeadlessProtocolTranslator();
+		const sessionManager = { getSessionId: () => "session_replay" };
+
+		expect(
+			translator.buildReadyMessage(
+				{
+					state: {
+						model: { id: "maestro-replay-v1", provider: "scripted-replay" },
+					},
+				} as Agent,
+				sessionManager as SessionManager,
+			),
+		).toMatchObject({
+			type: "ready",
+			executor_type: "replay",
+			session_id: "session_replay",
+		});
+	});
+
+	it("does not infer replay executor type from a stale scenario env var", () => {
+		const translator = new HeadlessProtocolTranslator();
+		const sessionManager = { getSessionId: () => "session_live" };
+		const originalScenarioPath = process.env.MAESTRO_SCENARIO_PATH;
+		process.env.MAESTRO_SCENARIO_PATH = "/tmp/stale-scenario.json";
+		try {
+			expect(
+				translator.buildReadyMessage(
+					{
+						state: {
+							model: { id: "gpt-5.4", provider: "openai" },
+						},
+					} as Agent,
+					sessionManager as SessionManager,
+				),
+			).toMatchObject({
+				type: "ready",
+				executor_type: "live",
+				session_id: "session_live",
+			});
+		} finally {
+			if (originalScenarioPath === undefined) {
+				delete process.env.MAESTRO_SCENARIO_PATH;
+			} else {
+				process.env.MAESTRO_SCENARIO_PATH = originalScenarioPath;
+			}
+		}
+	});
+
+	it("tracks ready executor type in runtime state", () => {
+		const state = createHeadlessRuntimeState();
+
+		applyIncomingHeadlessMessage(state, {
+			type: "ready",
+			protocol_version: HEADLESS_PROTOCOL_VERSION,
+			model: "gpt-5.4",
+			provider: "openai",
+			executor_type: "live",
+			session_id: "session_live",
+		});
+
+		expect(state.is_ready).toBe(true);
+		expect(state.executor_type).toBe("live");
+	});
+
+	it("defaults older ready messages without executor type to live", () => {
+		const state = createHeadlessRuntimeState();
+
+		applyIncomingHeadlessMessage(state, {
+			type: "ready",
+			protocol_version: HEADLESS_PROTOCOL_VERSION,
+			model: "gpt-5.4",
+			provider: "openai",
+			session_id: "session_live",
+		});
+
+		expect(state.is_ready).toBe(true);
+		expect(state.executor_type).toBe("live");
 	});
 
 	it("returns zeroed usage when usage metadata is missing", () => {

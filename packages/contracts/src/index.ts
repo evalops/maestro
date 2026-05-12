@@ -59,6 +59,7 @@ export * from "./proto/maestro/v1/headless_pb.js";
 export * from "./runtime-constraints.js";
 export * from "./runtime-app-server.js";
 export * from "./runtime-server-request.js";
+export * from "./scenario.js";
 
 /**
  * Role of a message in the conversation.

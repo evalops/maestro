@@ -266,6 +266,7 @@ Initial runtime state:
   "protocol_version": "2026-04-02",
   "model": "claude-opus-4-6",
   "provider": "anthropic",
+  "executor_type": "live",
   "session_id": null
 }
 ```
@@ -359,7 +360,12 @@ Supported `server_request_response.request_type` values:
 - `hello_ok`
   - handshake acknowledgement
 - `ready`
-  - runtime-ready event with protocol version and active model/provider
+  - runtime-ready event with protocol version, active model/provider, and
+    `executor_type`
+  - `executor_type=live` means the runtime is backed by an external or local
+    model provider; `executor_type=replay` means the session is driven by a
+    deterministic scripted scenario and should be visibly badged as replay by
+    clients and control planes
 - `session_info`
   - current `session_id`, `cwd`, and `git_branch`
 - `connection_info`

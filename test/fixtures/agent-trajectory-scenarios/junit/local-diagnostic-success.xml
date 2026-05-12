@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="local-diagnostic-success" tests="8" failures="0" warnings="0">
+	<testcase classname="local-diagnostic-success" name="tool-edit-requested"></testcase>
+	<testcase classname="local-diagnostic-success" name="replay-clean"></testcase>
+	<testcase classname="local-diagnostic-success" name="artifact-score-passed"></testcase>
+	<testcase classname="local-diagnostic-success" name="inspection-redacted"></testcase>
+	<testcase classname="local-diagnostic-success" name="efficiency-budget"></testcase>
+	<testcase classname="local-diagnostic-success" name="terminal-tool-provenance"></testcase>
+	<testcase classname="local-diagnostic-success" name="human-labels-present"></testcase>
+	<testcase classname="local-diagnostic-success" name="candidate-no-costlier-than-legacy"></testcase>
+</testsuite>

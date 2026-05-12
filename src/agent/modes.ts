@@ -59,7 +59,13 @@ const logger = createLogger("agent:modes");
  * - "free": Cost-optimized, uses haiku-class models for simple operations
  * - "custom": User-defined settings for specialized workflows
  */
-export type AgentMode = "smart" | "rush" | "free" | "custom" | "frontier";
+export type AgentMode =
+	| "smart"
+	| "rush"
+	| "free"
+	| "custom"
+	| "frontier"
+	| "replay";
 
 /**
  * Model tier representing capability levels that map to provider-specific models.
@@ -198,6 +204,20 @@ export const MODE_CONFIGS: Record<AgentMode, ModeConfig> = {
 		speedHint: 4,
 		visible: false,
 		rolloutOwner: "agent-runtime",
+	},
+	replay: {
+		displayName: "Replay",
+		description: "Deterministic scripted scenario replay",
+		primaryTier: "haiku",
+		fallbackTier: "haiku",
+		enableThinking: false,
+		thinkingBudget: 0,
+		useExtendedContext: false,
+		maxRetries: 0,
+		costMultiplier: 0,
+		speedHint: 10,
+		visible: false,
+		rolloutOwner: "agent-evals",
 	},
 };
 

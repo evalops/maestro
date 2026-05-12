@@ -203,6 +203,16 @@ export interface AnthropicOptions extends StreamOptions {
 }
 
 const ANTHROPIC_TASK_BUDGETS_BETA_HEADER = "task-budgets-2026-03-13";
+const ANTHROPIC_TEMPERATURE_UNSUPPORTED_PATTERNS = [
+	/(^|[/])claude-opus-4(?:[-.]|$)/,
+];
+
+function supportsAnthropicTemperature(modelId: string): boolean {
+	const normalizedModelId = modelId.toLowerCase();
+	return !ANTHROPIC_TEMPERATURE_UNSUPPORTED_PATTERNS.some((pattern) =>
+		pattern.test(normalizedModelId),
+	);
+}
 
 interface AnthropicTextContent {
 	type: "text";
@@ -624,7 +634,10 @@ export async function* streamAnthropic(
 		requestBody.tools = tools;
 	}
 
-	if (options.temperature !== undefined) {
+	if (
+		options.temperature !== undefined &&
+		supportsAnthropicTemperature(model.id)
+	) {
 		requestBody.temperature = options.temperature;
 	}
 

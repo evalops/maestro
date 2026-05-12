@@ -1775,6 +1775,29 @@ const PROVIDER_OVERRIDES: Record<string, ProviderOverride> = {
 	},
 };
 
+const SCRIPTED_REPLAY_OVERLAY = {
+	"scripted-replay": {
+		"maestro-replay-v1": {
+			id: "maestro-replay-v1",
+			name: "Maestro Scripted Replay",
+			api: "scripted-replay",
+			provider: "scripted-replay",
+			baseUrl: "http://localhost/scripted-replay",
+			reasoning: false,
+			toolUse: true,
+			input: ["text"],
+			cost: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+			},
+			contextWindow: 1000000,
+			maxTokens: 1,
+		} as Model<"scripted-replay">,
+	},
+} satisfies Record<string, Record<string, Model<Api>>>;
+
 /**
  * Convert generated models to our format (called lazily on first access)
  */
@@ -1835,6 +1858,7 @@ function convertGeneratedModels(): Record<string, Model<Api>[]> {
 		GOOGLE_ANTIGRAVITY_OVERLAY,
 		WRITER_OVERLAY,
 		BEDROCK_OVERLAY,
+		SCRIPTED_REPLAY_OVERLAY,
 	];
 
 	for (const overlay of overlays) {

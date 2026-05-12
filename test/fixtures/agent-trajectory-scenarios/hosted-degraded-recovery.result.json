@@ -1,0 +1,685 @@
+{
+	"schemaVersion": "evalops.maestro.agent-trajectory-scenario-result.v1",
+	"scenarioSchemaVersion": "evalops.maestro.scenario.v1",
+	"scenario": {
+		"id": "hosted-degraded-recovery",
+		"title": "Hosted governed recovery remains explainable",
+		"expectedOutcome": "pass",
+		"observedOutcome": "pass",
+		"reviewLabels": ["accepted", "degraded", "needs_human_review"]
+	},
+	"run": {
+		"id": "hosted-governed-recovery-1",
+		"sessionId": "hosted-governed-recovery-1",
+		"source": "platform",
+		"platformBacked": true,
+		"scenarioId": "hosted-degraded-recovery",
+		"replay": true,
+		"generatedAt": "<redacted>"
+	},
+	"counts": {
+		"assertions": 5,
+		"passed": 5,
+		"failed": 0,
+		"warnings": 0,
+		"events": 16,
+		"toolCalls": 2,
+		"replayDeltas": 0,
+		"scoreFailures": 0,
+		"scoreWarnings": 0
+	},
+	"platform": {
+		"primitive": "event_bus",
+		"eventType": "maestro.events.eval.scored",
+		"traceJoinKeys": [
+			"sessionId",
+			"scenarioId",
+			"approval_request",
+			"tool_call"
+		],
+		"rationale": "Hosted recovery has enough trajectory and approval evidence to publish into Platform eval-scored events.",
+		"evidenceEventType": "maestro.events.eval.scored"
+	},
+	"assumptions": {
+		"workflow": "Hosted runtime asks for approval, observes a failed restart path, records recovery, and finishes with platform-backed evidence.",
+		"correctnessModel": "Recovery is acceptable only when approval precedes the terminal tool result and the recovery scorer passes.",
+		"threatModel": "A hosted failure must not erase approval evidence or hide degraded status from human reviewers.",
+		"researchBasis": [
+			"Long-horizon agent evals need degraded-case fixtures, not only perfect-path goldens.",
+			"Human review labels preserve ambiguous recoveries for later preference and policy tuning.",
+			"Trace join keys are required before replay artifacts can be promoted into shared Platform storage."
+		]
+	},
+	"assertions": [
+		{
+			"id": "approval-wait-present",
+			"kind": "event.exists",
+			"status": "pass",
+			"severity": "error",
+			"message": "Matched 2 trajectory event(s).",
+			"evidence": [
+				{
+					"kind": "approval_request",
+					"id": "approval-hosted-1",
+					"source": "trajectory",
+					"label": "approval_request:approval-hosted-1"
+				},
+				{
+					"kind": "pending_request",
+					"id": "pending-approval-hosted-1",
+					"source": "trajectory",
+					"label": "pending_request:pending-approval-hosted-1"
+				},
+				{
+					"kind": "pending_request",
+					"id": "pending-mcp-hosted-1",
+					"source": "trajectory",
+					"label": "pending_request:pending-mcp-hosted-1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "pending:pending-approval-hosted-1",
+					"source": "trajectory",
+					"label": "timeline_item:pending:pending-approval-hosted-1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "pending:pending-mcp-hosted-1",
+					"source": "trajectory",
+					"label": "timeline_item:pending:pending-mcp-hosted-1"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-hosted-elicit",
+					"source": "trajectory",
+					"label": "tool_call:call-hosted-elicit"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-hosted-restart",
+					"source": "trajectory",
+					"label": "tool_call:call-hosted-restart"
+				},
+				{
+					"kind": "tool_execution",
+					"id": "tool-exec-hosted-1",
+					"source": "trajectory",
+					"label": "tool_execution:tool-exec-hosted-1"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:pending:pending-approval-hosted-1",
+					"source": "trajectory",
+					"label": "wait.pending:trajectory:pending:pending-approval-hosted-1"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:pending:pending-mcp-hosted-1",
+					"source": "trajectory",
+					"label": "wait.pending:trajectory:pending:pending-mcp-hosted-1"
+				}
+			]
+		},
+		{
+			"id": "recovery-score-passed",
+			"kind": "score.finding",
+			"status": "pass",
+			"severity": "error",
+			"message": "Score finding hosted-recovery-after-failure matched pass.",
+			"evidence": [
+				{
+					"kind": "approval_request",
+					"id": "approval-hosted-1",
+					"source": "trajectory",
+					"label": "approval_request:approval-hosted-1"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:runtime:hosted-recovery-1",
+					"source": "trajectory",
+					"label": "runtime.recovery:trajectory:runtime:hosted-recovery-1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "runtime:hosted-recovery-1",
+					"source": "trajectory",
+					"label": "timeline_item:runtime:hosted-recovery-1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "tool-result:hosted-restart-1:call-hosted-restart",
+					"source": "trajectory",
+					"label": "timeline_item:tool-result:hosted-restart-1:call-hosted-restart"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-hosted-restart",
+					"source": "trajectory",
+					"label": "tool_call:call-hosted-restart"
+				},
+				{
+					"kind": "tool_execution",
+					"id": "tool-exec-hosted-1",
+					"source": "trajectory",
+					"label": "tool_execution:tool-exec-hosted-1"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:tool-result:hosted-restart-1:call-hosted-restart",
+					"source": "trajectory",
+					"label": "tool.failed:trajectory:tool-result:hosted-restart-1:call-hosted-restart"
+				}
+			]
+		},
+		{
+			"id": "approval-before-result-score-passed",
+			"kind": "score.finding",
+			"status": "pass",
+			"severity": "error",
+			"message": "Score finding hosted-approval-before-result matched pass.",
+			"evidence": [
+				{
+					"kind": "approval_request",
+					"id": "approval-hosted-1",
+					"source": "trajectory",
+					"label": "approval_request:approval-hosted-1"
+				},
+				{
+					"kind": "pending_request",
+					"id": "pending-approval-hosted-1",
+					"source": "trajectory",
+					"label": "pending_request:pending-approval-hosted-1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "pending:pending-approval-hosted-1",
+					"source": "trajectory",
+					"label": "timeline_item:pending:pending-approval-hosted-1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "tool-result:hosted-restart-1:call-hosted-restart",
+					"source": "trajectory",
+					"label": "timeline_item:tool-result:hosted-restart-1:call-hosted-restart"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-hosted-restart",
+					"source": "trajectory",
+					"label": "tool_call:call-hosted-restart"
+				},
+				{
+					"kind": "tool_execution",
+					"id": "tool-exec-hosted-1",
+					"source": "trajectory",
+					"label": "tool_execution:tool-exec-hosted-1"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:tool-result:hosted-restart-1:call-hosted-restart",
+					"source": "trajectory",
+					"label": "tool.failed:trajectory:tool-result:hosted-restart-1:call-hosted-restart"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:pending:pending-approval-hosted-1",
+					"source": "trajectory",
+					"label": "wait.pending:trajectory:pending:pending-approval-hosted-1"
+				}
+			]
+		},
+		{
+			"id": "hosted-efficiency-budget",
+			"kind": "efficiency.budget",
+			"status": "pass",
+			"severity": "error",
+			"message": "Efficiency budget satisfied. Observed events=16, toolCalls=2, replayDeltas=0, scoreFailures=0, scoreWarnings=0.",
+			"evidence": []
+		},
+		{
+			"id": "degraded-labels-present",
+			"kind": "human.review",
+			"status": "pass",
+			"severity": "error",
+			"message": "Human review labels present: degraded, needs_human_review.",
+			"evidence": [
+				{
+					"kind": "scenario",
+					"id": "hosted-degraded-recovery",
+					"source": "scenario",
+					"label": "human-review:labels"
+				}
+			]
+		}
+	],
+	"provenance": [
+		{
+			"eventId": "trajectory:session-started:hosted-governed-recovery-1",
+			"eventType": "session.started",
+			"phase": "setup",
+			"actor": "platform",
+			"evidence": [
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:session-started:hosted-governed-recovery-1",
+					"source": "trajectory",
+					"label": "session.started:trajectory:session-started:hosted-governed-recovery-1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "session-started:hosted-governed-recovery-1",
+					"source": "trajectory",
+					"label": "timeline_item:session-started:hosted-governed-recovery-1"
+				}
+			]
+		},
+		{
+			"eventId": "trajectory:model-change:hosted-model",
+			"eventType": "model.changed",
+			"phase": "setup",
+			"actor": "platform",
+			"evidence": [
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:model-change:hosted-model",
+					"source": "trajectory",
+					"label": "model.changed:trajectory:model-change:hosted-model"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "model-change:hosted-model",
+					"source": "trajectory",
+					"label": "timeline_item:model-change:hosted-model"
+				}
+			]
+		},
+		{
+			"eventId": "trajectory:message:hosted-user-1",
+			"eventType": "message.user",
+			"phase": "observe",
+			"actor": "user",
+			"evidence": [
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:message:hosted-user-1",
+					"source": "trajectory",
+					"label": "message.user:trajectory:message:hosted-user-1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "message:hosted-user-1",
+					"source": "trajectory",
+					"label": "timeline_item:message:hosted-user-1"
+				}
+			]
+		},
+		{
+			"eventId": "trajectory:message:hosted-assistant-1",
+			"eventType": "message.assistant",
+			"phase": "think",
+			"actor": "assistant",
+			"evidence": [
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:message:hosted-assistant-1",
+					"source": "trajectory",
+					"label": "message.assistant:trajectory:message:hosted-assistant-1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "message:hosted-assistant-1",
+					"source": "trajectory",
+					"label": "timeline_item:message:hosted-assistant-1"
+				}
+			]
+		},
+		{
+			"eventId": "trajectory:tool-requested:hosted-assistant-1:call-hosted-restart",
+			"eventType": "tool.requested",
+			"phase": "act",
+			"actor": "assistant",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "tool-requested:hosted-assistant-1:call-hosted-restart",
+					"source": "trajectory",
+					"label": "timeline_item:tool-requested:hosted-assistant-1:call-hosted-restart"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-hosted-restart",
+					"source": "trajectory",
+					"label": "tool_call:call-hosted-restart"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:tool-requested:hosted-assistant-1:call-hosted-restart",
+					"source": "trajectory",
+					"label": "tool.requested:trajectory:tool-requested:hosted-assistant-1:call-hosted-restart"
+				}
+			]
+		},
+		{
+			"eventId": "trajectory:pending:pending-approval-hosted-1",
+			"eventType": "wait.pending",
+			"phase": "wait",
+			"actor": "platform",
+			"evidence": [
+				{
+					"kind": "approval_request",
+					"id": "approval-hosted-1",
+					"source": "trajectory",
+					"label": "approval_request:approval-hosted-1"
+				},
+				{
+					"kind": "pending_request",
+					"id": "pending-approval-hosted-1",
+					"source": "trajectory",
+					"label": "pending_request:pending-approval-hosted-1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "pending:pending-approval-hosted-1",
+					"source": "trajectory",
+					"label": "timeline_item:pending:pending-approval-hosted-1"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-hosted-restart",
+					"source": "trajectory",
+					"label": "tool_call:call-hosted-restart"
+				},
+				{
+					"kind": "tool_execution",
+					"id": "tool-exec-hosted-1",
+					"source": "trajectory",
+					"label": "tool_execution:tool-exec-hosted-1"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:pending:pending-approval-hosted-1",
+					"source": "trajectory",
+					"label": "wait.pending:trajectory:pending:pending-approval-hosted-1"
+				}
+			]
+		},
+		{
+			"eventId": "trajectory:policy-decision:hosted-assistant-1:call-hosted-restart",
+			"eventType": "policy.decision",
+			"phase": "govern",
+			"actor": "platform",
+			"evidence": [
+				{
+					"kind": "approval_request",
+					"id": "approval-hosted-1",
+					"source": "trajectory",
+					"label": "approval_request:approval-hosted-1"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:policy-decision:hosted-assistant-1:call-hosted-restart",
+					"source": "trajectory",
+					"label": "policy.decision:trajectory:policy-decision:hosted-assistant-1:call-hosted-restart"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "policy-decision:hosted-assistant-1:call-hosted-restart",
+					"source": "trajectory",
+					"label": "timeline_item:policy-decision:hosted-assistant-1:call-hosted-restart"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-hosted-restart",
+					"source": "trajectory",
+					"label": "tool_call:call-hosted-restart"
+				}
+			]
+		},
+		{
+			"eventId": "trajectory:tool-result:hosted-restart-1:call-hosted-restart",
+			"eventType": "tool.failed",
+			"phase": "verify",
+			"actor": "tool",
+			"evidence": [
+				{
+					"kind": "approval_request",
+					"id": "approval-hosted-1",
+					"source": "trajectory",
+					"label": "approval_request:approval-hosted-1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "tool-result:hosted-restart-1:call-hosted-restart",
+					"source": "trajectory",
+					"label": "timeline_item:tool-result:hosted-restart-1:call-hosted-restart"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-hosted-restart",
+					"source": "trajectory",
+					"label": "tool_call:call-hosted-restart"
+				},
+				{
+					"kind": "tool_execution",
+					"id": "tool-exec-hosted-1",
+					"source": "trajectory",
+					"label": "tool_execution:tool-exec-hosted-1"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:tool-result:hosted-restart-1:call-hosted-restart",
+					"source": "trajectory",
+					"label": "tool.failed:trajectory:tool-result:hosted-restart-1:call-hosted-restart"
+				}
+			]
+		},
+		{
+			"eventId": "trajectory:runtime:hosted-recovery-1",
+			"eventType": "runtime.recovery",
+			"phase": "recover",
+			"actor": "platform",
+			"evidence": [
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:runtime:hosted-recovery-1",
+					"source": "trajectory",
+					"label": "runtime.recovery:trajectory:runtime:hosted-recovery-1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "runtime:hosted-recovery-1",
+					"source": "trajectory",
+					"label": "timeline_item:runtime:hosted-recovery-1"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-hosted-restart",
+					"source": "trajectory",
+					"label": "tool_call:call-hosted-restart"
+				}
+			]
+		},
+		{
+			"eventId": "trajectory:message:hosted-assistant-2",
+			"eventType": "message.assistant",
+			"phase": "think",
+			"actor": "assistant",
+			"evidence": [
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:message:hosted-assistant-2",
+					"source": "trajectory",
+					"label": "message.assistant:trajectory:message:hosted-assistant-2"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "message:hosted-assistant-2",
+					"source": "trajectory",
+					"label": "timeline_item:message:hosted-assistant-2"
+				}
+			]
+		},
+		{
+			"eventId": "trajectory:pending:pending-mcp-hosted-1",
+			"eventType": "wait.pending",
+			"phase": "wait",
+			"actor": "platform",
+			"evidence": [
+				{
+					"kind": "pending_request",
+					"id": "pending-mcp-hosted-1",
+					"source": "trajectory",
+					"label": "pending_request:pending-mcp-hosted-1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "pending:pending-mcp-hosted-1",
+					"source": "trajectory",
+					"label": "timeline_item:pending:pending-mcp-hosted-1"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-hosted-elicit",
+					"source": "trajectory",
+					"label": "tool_call:call-hosted-elicit"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:pending:pending-mcp-hosted-1",
+					"source": "trajectory",
+					"label": "wait.pending:trajectory:pending:pending-mcp-hosted-1"
+				}
+			]
+		},
+		{
+			"eventId": "trajectory:tool-requested:hosted-assistant-2:call-hosted-read",
+			"eventType": "tool.requested",
+			"phase": "act",
+			"actor": "assistant",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "tool-requested:hosted-assistant-2:call-hosted-read",
+					"source": "trajectory",
+					"label": "timeline_item:tool-requested:hosted-assistant-2:call-hosted-read"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-hosted-read",
+					"source": "trajectory",
+					"label": "tool_call:call-hosted-read"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:tool-requested:hosted-assistant-2:call-hosted-read",
+					"source": "trajectory",
+					"label": "tool.requested:trajectory:tool-requested:hosted-assistant-2:call-hosted-read"
+				}
+			]
+		},
+		{
+			"eventId": "trajectory:tool-result:hosted-read-1:call-hosted-read",
+			"eventType": "tool.completed",
+			"phase": "verify",
+			"actor": "tool",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "tool-result:hosted-read-1:call-hosted-read",
+					"source": "trajectory",
+					"label": "timeline_item:tool-result:hosted-read-1:call-hosted-read"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-hosted-read",
+					"source": "trajectory",
+					"label": "tool_call:call-hosted-read"
+				},
+				{
+					"kind": "tool_execution",
+					"id": "tool-exec-hosted-read-1",
+					"source": "trajectory",
+					"label": "tool_execution:tool-exec-hosted-read-1"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:tool-result:hosted-read-1:call-hosted-read",
+					"source": "trajectory",
+					"label": "tool.completed:trajectory:tool-result:hosted-read-1:call-hosted-read"
+				}
+			]
+		},
+		{
+			"eventId": "trajectory:artifact-linked:hosted-read-1:call-hosted-read",
+			"eventType": "artifact.linked",
+			"phase": "verify",
+			"actor": "platform",
+			"evidence": [
+				{
+					"kind": "artifact",
+					"id": "skill_artifact_hosted_1",
+					"source": "trajectory",
+					"label": "artifact:skill_artifact_hosted_1"
+				},
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:artifact-linked:hosted-read-1:call-hosted-read",
+					"source": "trajectory",
+					"label": "artifact.linked:trajectory:artifact-linked:hosted-read-1:call-hosted-read"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "artifact-linked:hosted-read-1:call-hosted-read",
+					"source": "trajectory",
+					"label": "timeline_item:artifact-linked:hosted-read-1:call-hosted-read"
+				},
+				{
+					"kind": "tool_call",
+					"id": "call-hosted-read",
+					"source": "trajectory",
+					"label": "tool_call:call-hosted-read"
+				}
+			]
+		},
+		{
+			"eventId": "trajectory:message:hosted-assistant-3",
+			"eventType": "message.assistant",
+			"phase": "think",
+			"actor": "assistant",
+			"evidence": [
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:message:hosted-assistant-3",
+					"source": "trajectory",
+					"label": "message.assistant:trajectory:message:hosted-assistant-3"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "message:hosted-assistant-3",
+					"source": "trajectory",
+					"label": "timeline_item:message:hosted-assistant-3"
+				}
+			]
+		},
+		{
+			"eventId": "trajectory:runtime:hosted-finished-1",
+			"eventType": "runtime.finished",
+			"phase": "finish",
+			"actor": "platform",
+			"evidence": [
+				{
+					"kind": "trajectory_event",
+					"id": "trajectory:runtime:hosted-finished-1",
+					"source": "trajectory",
+					"label": "runtime.finished:trajectory:runtime:hosted-finished-1"
+				},
+				{
+					"kind": "timeline_item",
+					"id": "runtime:hosted-finished-1",
+					"source": "trajectory",
+					"label": "timeline_item:runtime:hosted-finished-1"
+				}
+			]
+		}
+	]
+}
