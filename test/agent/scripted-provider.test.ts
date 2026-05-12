@@ -701,6 +701,20 @@ describe("scripted replay provider", () => {
 		);
 	});
 
+	it("caches file scripted scenarios through the replay source loader", async () => {
+		const scenarioPath = writeScenarioFixture({
+			schemaVersion: MAESTRO_SCRIPTED_SCENARIO_SCHEMA,
+			id: "cached-scenario",
+			description: "Reuse the parsed replay scenario after initial validation.",
+			frames: [],
+		});
+
+		const scenario = await loadScriptedScenarioFromSource(scenarioPath);
+		writeFileSync(scenarioPath, "{");
+
+		expect(await loadScriptedScenarioFromSource(scenarioPath)).toBe(scenario);
+	});
+
 	it("rejects invalid scripted error statement types", () => {
 		const invalidErrorPath = writeScenarioFixture({
 			schemaVersion: MAESTRO_SCRIPTED_SCENARIO_SCHEMA,
