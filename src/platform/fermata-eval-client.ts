@@ -102,7 +102,9 @@ export type FermataAssertionKind =
 	| "ASSERTION_KIND_TRACE_SPAN_DURATION"
 	| "ASSERTION_KIND_TRACE_STEP_COUNT"
 	| "ASSERTION_KIND_TOOL_CALL_F1"
-	| "ASSERTION_KIND_LLM_RUBRIC";
+	| "ASSERTION_KIND_LLM_RUBRIC"
+	| "ASSERTION_KIND_LLM_PAIRWISE_RUBRIC"
+	| "ASSERTION_KIND_AGENT_TRAJECTORY";
 
 export interface FermataLLMRubricAssertion {
 	judgeId: string;
@@ -115,6 +117,59 @@ export interface FermataLLMRubricAssertion {
 	requireCalibratedJudge?: boolean;
 	minJudgeValidationAccuracy?: number;
 	minJudgeValidationCount?: number;
+	rubricVersion?: string;
+	calibrationCohort?: string;
+	advisoryOnly?: boolean;
+}
+
+export interface FermataLLMPairwiseRubricAssertion {
+	judgeId: string;
+	verifierJudgeId?: string;
+	rubric: string;
+	baselineLabel?: string;
+	candidateLabel?: string;
+	minScore?: number;
+	repeat?: number;
+	quorum?: number;
+	recordJudgeValidation?: boolean;
+	requireCalibratedJudge?: boolean;
+	minJudgeValidationAccuracy?: number;
+	minJudgeValidationCount?: number;
+	rubricVersion?: string;
+	calibrationCohort?: string;
+	advisoryOnly?: boolean;
+}
+
+export interface FermataAgentTrajectoryStatusExpectation {
+	id: string;
+	status: string;
+}
+
+export interface FermataAgentTrajectoryStateExpectation {
+	path: string;
+	valueJson?: string;
+}
+
+export interface FermataAgentTrajectoryAssertion {
+	requiredTools?: string[];
+	forbiddenTools?: string[];
+	requiredEvents?: string[];
+	forbiddenEvents?: string[];
+	requiredAssertionStatuses?: FermataAgentTrajectoryStatusExpectation[];
+	requiredStateWrites?: FermataAgentTrajectoryStateExpectation[];
+	forbiddenStateWrites?: FermataAgentTrajectoryStateExpectation[];
+	maxEvents?: number;
+	maxToolCalls?: number;
+	maxReplayDeltas?: number;
+	maxScoreFailures?: number;
+	maxScoreWarnings?: number;
+	maxLatencyMs?: number;
+	maxCostMicros?: number;
+	maxRetries?: number;
+	requireIdempotentReplay?: boolean;
+	forbidDuplicateExternalActions?: boolean;
+	forbiddenExternalActions?: string[];
+	requiredTraceJoinKeys?: string[];
 }
 
 export interface FermataAssertion {
@@ -125,6 +180,8 @@ export interface FermataAssertion {
 	description?: string;
 	metadata?: Record<string, unknown>;
 	llmRubric?: FermataLLMRubricAssertion;
+	llmPairwiseRubric?: FermataLLMPairwiseRubricAssertion;
+	agentTrajectory?: FermataAgentTrajectoryAssertion;
 }
 
 export interface FermataTestCase {

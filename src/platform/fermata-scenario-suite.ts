@@ -1,6 +1,8 @@
 import type {
 	CreateFermataTestSuiteRequest,
+	FermataAgentTrajectoryAssertion,
 	FermataEvalServiceConfig,
+	FermataLLMPairwiseRubricAssertion,
 	FermataLLMRubricAssertion,
 	FermataTestCase,
 	RunFermataTestSuiteRequest,
@@ -62,6 +64,12 @@ interface AgentTrajectoryScenarioResult {
 		rationale?: string;
 	};
 	assertions: AgentTrajectoryScenarioAssertionResult[];
+	provenance?: Array<{
+		eventId: string;
+		eventType: string;
+		phase?: string;
+		actor?: string;
+	}>;
 }
 
 const COUNT_KEYS = [
@@ -87,6 +95,15 @@ export interface FermataScenarioSuiteLLMJudgeOptions {
 	requireCalibratedJudge?: boolean;
 	minJudgeValidationAccuracy?: number;
 	minJudgeValidationCount?: number;
+	rubricVersion?: string;
+	calibrationCohort?: string;
+	advisoryOnly?: boolean;
+}
+
+export interface FermataScenarioSuiteLLMPairwiseJudgeOptions
+	extends FermataScenarioSuiteLLMJudgeOptions {
+	baselineLabel?: string;
+	candidateLabel?: string;
 }
 
 export interface FermataScenarioSuiteOptions {
@@ -102,6 +119,7 @@ export interface FermataScenarioSuiteOptions {
 	maxConcurrency?: number;
 	metadata?: Record<string, unknown>;
 	llmJudge?: FermataScenarioSuiteLLMJudgeOptions;
+	llmPairwiseJudge?: FermataScenarioSuiteLLMPairwiseJudgeOptions;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -195,6 +213,11 @@ function optionalPositiveInteger(
 	return value;
 }
 
+function optionalTrimmed(value: string | undefined): string | undefined {
+	const trimmed = value?.trim();
+	return trimmed || undefined;
+}
+
 function llmRubricConfig(
 	options: FermataScenarioSuiteLLMJudgeOptions,
 ): FermataLLMRubricAssertion {
@@ -223,11 +246,155 @@ function llmRubricConfig(
 			options.minJudgeValidationCount,
 			"minJudgeValidationCount",
 		),
+		rubricVersion: optionalTrimmed(options.rubricVersion),
+		calibrationCohort: optionalTrimmed(options.calibrationCohort),
+		advisoryOnly: options.advisoryOnly,
+	};
+}
+
+function llmPairwiseRubricConfig(
+	options: FermataScenarioSuiteLLMPairwiseJudgeOptions,
+): FermataLLMPairwiseRubricAssertion {
+	const repeat = optionalPositiveInteger(options.repeat, "repeat");
+	const quorum = optionalPositiveInteger(options.quorum, "quorum");
+	if (repeat !== undefined && quorum !== undefined && quorum > repeat) {
+		throw new Error(
+			"Fermata scenario suite LLM judge quorum cannot exceed repeat",
+		);
+	}
+	return {
+		judgeId: requireNonEmpty(options.judgeId, "judgeId"),
+		verifierJudgeId: options.verifierJudgeId?.trim() || undefined,
+		rubric: requireNonEmpty(options.rubric, "rubric"),
+		baselineLabel: options.baselineLabel?.trim() || undefined,
+		candidateLabel: options.candidateLabel?.trim() || undefined,
+		minScore: optionalPositiveNumber(options.minScore, "minScore", 1),
+		repeat,
+		quorum,
+		recordJudgeValidation: options.recordJudgeValidation ?? true,
+		requireCalibratedJudge: options.requireCalibratedJudge,
+		minJudgeValidationAccuracy: optionalPositiveNumber(
+			options.minJudgeValidationAccuracy,
+			"minJudgeValidationAccuracy",
+			1,
+		),
+		minJudgeValidationCount: optionalPositiveInteger(
+			options.minJudgeValidationCount,
+			"minJudgeValidationCount",
+		),
+		rubricVersion: optionalTrimmed(options.rubricVersion),
+		calibrationCohort: optionalTrimmed(options.calibrationCohort),
+		advisoryOnly: options.advisoryOnly,
+	};
+}
+
+function llmJudgeMetadata(
+	options: FermataScenarioSuiteLLMJudgeOptions,
+): Record<string, unknown> {
+	const rubricVersion = optionalTrimmed(options.rubricVersion);
+	const calibrationCohort = optionalTrimmed(options.calibrationCohort);
+	if (
+		options.advisoryOnly === undefined &&
+		!rubricVersion &&
+		!calibrationCohort
+	) {
+		return {};
+	}
+	return {
+		judge_mode: options.advisoryOnly ? "advisory" : "blocking",
+		...(rubricVersion ? { rubric_version: rubricVersion } : {}),
+		...(calibrationCohort ? { calibration_cohort: calibrationCohort } : {}),
 	};
 }
 
 function realScenarioResultJSON(result: AgentTrajectoryScenarioResult): string {
 	return JSON.stringify(result, null, "\t");
+}
+
+function uniqueValues(values: Iterable<string | undefined>): string[] {
+	const seen = new Set<string>();
+	for (const value of values) {
+		const trimmed = value?.trim();
+		if (trimmed) seen.add(trimmed);
+	}
+	return [...seen];
+}
+
+function agentTrajectoryConfig(
+	expected: AgentTrajectoryScenarioResult,
+): FermataAgentTrajectoryAssertion {
+	return {
+		requiredEvents: uniqueValues(
+			expected.provenance?.map((event) => event.eventType) ?? [],
+		),
+		requiredAssertionStatuses: expected.assertions.map((assertion) => ({
+			id: assertion.id,
+			status: assertion.status,
+		})),
+		maxEvents: expected.counts.events,
+		maxToolCalls: expected.counts.toolCalls,
+		maxReplayDeltas: expected.counts.replayDeltas,
+		maxScoreFailures: expected.counts.scoreFailures,
+		maxScoreWarnings: expected.counts.scoreWarnings,
+		requireIdempotentReplay: true,
+		forbidDuplicateExternalActions: true,
+		requiredTraceJoinKeys: expected.platform.traceJoinKeys,
+	};
+}
+
+function agentTrajectoryCase(
+	expected: AgentTrajectoryScenarioResult,
+	actual: AgentTrajectoryScenarioResult,
+): FermataTestCase {
+	const scenarioId = expected.scenario.id;
+	const id = stableId(
+		scenarioId,
+		"agent-trajectory",
+		"native-trajectory-guard",
+	);
+	return {
+		id,
+		name: `${scenarioId} native trajectory guard`,
+		input: serializeCaseInput({
+			scenarioId,
+			title: expected.scenario.title,
+			platformPrimitive: actual.platform.primitive,
+			expectedRunId: expected.run.id,
+			actualRunId: actual.run.id,
+			traceJoinKeys: actual.platform.traceJoinKeys,
+			expectedAssertionIds: expected.assertions.map(
+				(assertion) => assertion.id,
+			),
+			actualAssertionIds: actual.assertions.map((assertion) => assertion.id),
+		}),
+		expectedOutput: realScenarioResultJSON(expected),
+		metadata: {
+			actual_output: realScenarioResultJSON(actual),
+			case_kind: "scenario_agent_trajectory",
+			ci_tier: "core-regression",
+			scenario_id: scenarioId,
+			expected_run_id: expected.run.id,
+			actual_run_id: actual.run.id,
+			expected_assertion_count: expected.counts.assertions,
+			actual_assertion_count: actual.counts.assertions,
+			source: "maestro.agent_trajectory_scenario_result",
+		},
+		assertions: [
+			{
+				id: `${id}.agent-trajectory`,
+				kind: "ASSERTION_KIND_AGENT_TRAJECTORY",
+				target: "response",
+				description:
+					"Native Fermata trajectory assertion evaluates real Maestro replay results for event, assertion, budget, idempotency, and trace-link invariants.",
+				agentTrajectory: agentTrajectoryConfig(expected),
+				metadata: {
+					source: "maestro.agent_trajectory_scenario_result",
+					case_kind: "scenario_agent_trajectory",
+					ci_tier: "core-regression",
+				},
+			},
+		],
+	};
 }
 
 function llmRubricCase(
@@ -256,6 +423,7 @@ function llmRubricCase(
 		metadata: {
 			actual_output: realScenarioResultJSON(actual),
 			case_kind: "scenario_llm_rubric",
+			...llmJudgeMetadata(options),
 			scenario_id: scenarioId,
 			expected_run_id: expected.run.id,
 			actual_run_id: actual.run.id,
@@ -274,6 +442,63 @@ function llmRubricCase(
 				metadata: {
 					source: "maestro.agent_trajectory_scenario_result",
 					case_kind: "scenario_llm_rubric",
+					...llmJudgeMetadata(options),
+				},
+			},
+		],
+	};
+}
+
+function llmPairwiseRubricCase(
+	expected: AgentTrajectoryScenarioResult,
+	actual: AgentTrajectoryScenarioResult,
+	options: FermataScenarioSuiteLLMPairwiseJudgeOptions,
+): FermataTestCase {
+	const scenarioId = expected.scenario.id;
+	const id = stableId(
+		scenarioId,
+		"llm-pairwise-rubric",
+		"semantic-trajectory-preference",
+	);
+	return {
+		id,
+		name: `${scenarioId} semantic trajectory preference`,
+		input: serializeCaseInput({
+			scenarioId,
+			title: expected.scenario.title,
+			platformPrimitive: actual.platform.primitive,
+			baselineRunId: expected.run.id,
+			candidateRunId: actual.run.id,
+			traceJoinKeys: actual.platform.traceJoinKeys,
+			baselineAssertionIds: expected.assertions.map(
+				(assertion) => assertion.id,
+			),
+			candidateAssertionIds: actual.assertions.map((assertion) => assertion.id),
+		}),
+		expectedOutput: realScenarioResultJSON(expected),
+		metadata: {
+			actual_output: realScenarioResultJSON(actual),
+			case_kind: "scenario_llm_pairwise_rubric",
+			...llmJudgeMetadata(options),
+			scenario_id: scenarioId,
+			baseline_run_id: expected.run.id,
+			candidate_run_id: actual.run.id,
+			baseline_assertion_count: expected.counts.assertions,
+			candidate_assertion_count: actual.counts.assertions,
+			source: "maestro.agent_trajectory_scenario_result",
+		},
+		assertions: [
+			{
+				id: `${id}.llm-pairwise-rubric`,
+				kind: "ASSERTION_KIND_LLM_PAIRWISE_RUBRIC",
+				target: "response",
+				description:
+					"Cataloged Fermata LLM judge compares real Maestro trajectory outputs and prefers the stronger candidate.",
+				llmPairwiseRubric: llmPairwiseRubricConfig(options),
+				metadata: {
+					source: "maestro.agent_trajectory_scenario_result",
+					case_kind: "scenario_llm_pairwise_rubric",
+					...llmJudgeMetadata(options),
 				},
 			},
 		],
@@ -450,8 +675,12 @@ export function buildFermataCreateScenarioSuiteRequest(
 			outcomeCase(expected, actual),
 			...countCases(expected, actual),
 			...assertionCases(expected, actual),
+			agentTrajectoryCase(expected, actual),
 			...(options.llmJudge
 				? [llmRubricCase(expected, actual, options.llmJudge)]
+				: []),
+			...(options.llmPairwiseJudge
+				? [llmPairwiseRubricCase(expected, actual, options.llmPairwiseJudge)]
 				: []),
 		],
 		metadata: suiteMetadata(expected, actual, options.metadata),
