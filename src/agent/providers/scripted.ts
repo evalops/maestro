@@ -185,6 +185,15 @@ export function parseScriptedScenario(
 			}
 			if (
 				statement.kind === "tool_call" &&
+				statement.id !== undefined &&
+				(typeof statement.id !== "string" || statement.id.trim().length === 0)
+			) {
+				throw new Error(
+					`Replay scenario ${label} frame ${frame.index} statement ${statementOffset} tool_call id must be a non-empty string when provided`,
+				);
+			}
+			if (
+				statement.kind === "tool_call" &&
 				statement.expectedResult !== undefined &&
 				statement.expectedResult !== "success" &&
 				statement.expectedResult !== "error" &&
@@ -353,6 +362,15 @@ function normalizeToolInput(input: unknown): Record<string, unknown> {
 	return isRecord(input) ? input : {};
 }
 
+function scriptedErrorMessage(
+	statement: Extract<ScriptedStatement, { kind: "error" }>,
+): string {
+	if (statement.type === "transient") {
+		return `Transient scripted replay error; please try again: ${statement.message}`;
+	}
+	return statement.message;
+}
+
 function toolCallId(
 	scenario: ScriptedScenario,
 	frameIndex: number,
@@ -519,7 +537,7 @@ export async function* streamScriptedReplay(
 			}
 			if (statement.kind === "error") {
 				partial.stopReason = "error";
-				partial.errorMessage = statement.message;
+				partial.errorMessage = scriptedErrorMessage(statement);
 				yield { type: "error", reason: "error", error: partial };
 				return;
 			}

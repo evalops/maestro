@@ -14,6 +14,7 @@ import { Type } from "@sinclair/typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { ActionApprovalService } from "../../src/agent/action-approval.js";
 import { Agent } from "../../src/agent/agent.js";
+import { isRetryableError } from "../../src/agent/context-overflow.js";
 import {
 	loadScriptedScenario,
 	loadScriptedScenarioFromSource,
@@ -718,6 +719,92 @@ describe("scripted replay provider", () => {
 		);
 	});
 
+	it("marks transient scripted errors as retryable provider failures", async () => {
+		process.env.MAESTRO_SCENARIO_PATH = writeScenarioFixture({
+			schemaVersion: MAESTRO_SCRIPTED_SCENARIO_SCHEMA,
+			id: "transient-provider-error",
+			description:
+				"Surface transient replay errors as retryable provider failures.",
+			frames: [
+				{
+					index: 0,
+					statements: [
+						{
+							kind: "error",
+							type: "transient",
+							message: "temporary upstream failure",
+						},
+					],
+				},
+			],
+		});
+		const model = getModel(
+			"scripted-replay",
+			"maestro-replay-v1",
+		) as Model<"scripted-replay">;
+
+		const events = await collectEvents(model, {
+			messages: [{ role: "user", content: "Replay the fixture", timestamp: 1 }],
+		});
+		const event = events.at(-1);
+
+		expect(event).toMatchObject({
+			type: "error",
+			reason: "error",
+			error: {
+				stopReason: "error",
+				errorMessage:
+					"Transient scripted replay error; please try again: temporary upstream failure",
+			},
+		});
+		if (!event || event.type !== "error") {
+			throw new Error("expected scripted replay to emit an error event");
+		}
+		expect(isRetryableError(event.error)).toBe(true);
+	});
+
+	it("keeps fatal scripted errors non-retryable", async () => {
+		process.env.MAESTRO_SCENARIO_PATH = writeScenarioFixture({
+			schemaVersion: MAESTRO_SCRIPTED_SCENARIO_SCHEMA,
+			id: "fatal-provider-error",
+			description: "Surface fatal replay errors without retry hints.",
+			frames: [
+				{
+					index: 0,
+					statements: [
+						{
+							kind: "error",
+							type: "fatal",
+							message: "invalid scripted fixture",
+						},
+					],
+				},
+			],
+		});
+		const model = getModel(
+			"scripted-replay",
+			"maestro-replay-v1",
+		) as Model<"scripted-replay">;
+
+		const events = await collectEvents(model, {
+			messages: [{ role: "user", content: "Replay the fixture", timestamp: 1 }],
+		});
+		const event = events.at(-1);
+
+		expect(event).toMatchObject({
+			type: "error",
+			reason: "error",
+			error: {
+				stopReason: "error",
+				errorMessage: "invalid scripted fixture",
+			},
+		});
+		if (!event || event.type !== "error") {
+			throw new Error("expected scripted replay to emit an error event");
+		}
+		expect(isRetryableError(event.error)).toBe(false);
+	});
+
 	it("rejects invalid scripted tool-call expectations", () => {
 		const invalidExpectedResultPath = writeScenarioFixture({
 			schemaVersion: MAESTRO_SCRIPTED_SCENARIO_SCHEMA,
@@ -740,6 +827,29 @@ describe("scripted replay provider", () => {
 
 		expect(() => loadScriptedScenario(invalidExpectedResultPath)).toThrow(
 			/expectedResult must be success, error, or any/,
+		);
+
+		const nonStringToolIdPath = writeScenarioFixture({
+			schemaVersion: MAESTRO_SCRIPTED_SCENARIO_SCHEMA,
+			id: "invalid-tool-id",
+			description: "Reject non-string tool call IDs.",
+			frames: [
+				{
+					index: 0,
+					statements: [
+						{
+							kind: "tool_call",
+							id: 123,
+							tool: "read",
+							input: { file_path: "package.json" },
+						},
+					],
+				},
+			],
+		});
+
+		expect(() => loadScriptedScenario(nonStringToolIdPath)).toThrow(
+			/tool_call id must be a non-empty string/,
 		);
 
 		const emptyToolNamePath = writeScenarioFixture({
