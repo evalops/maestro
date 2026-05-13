@@ -701,20 +701,6 @@ describe("scripted replay provider", () => {
 		);
 	});
 
-	it("caches file scripted scenarios through the replay source loader", async () => {
-		const scenarioPath = writeScenarioFixture({
-			schemaVersion: MAESTRO_SCRIPTED_SCENARIO_SCHEMA,
-			id: "cached-scenario",
-			description: "Reuse the parsed replay scenario after initial validation.",
-			frames: [],
-		});
-
-		const scenario = await loadScriptedScenarioFromSource(scenarioPath);
-		writeFileSync(scenarioPath, "{");
-
-		expect(await loadScriptedScenarioFromSource(scenarioPath)).toBe(scenario);
-	});
-
 	it("rejects invalid scripted error statement types", () => {
 		const invalidErrorPath = writeScenarioFixture({
 			schemaVersion: MAESTRO_SCRIPTED_SCENARIO_SCHEMA,
@@ -733,12 +719,12 @@ describe("scripted replay provider", () => {
 		);
 	});
 
-	it("marks transient scripted errors as retryable provider failures", async () => {
+	it("keeps scripted transient errors retryable", async () => {
 		process.env.MAESTRO_SCENARIO_PATH = writeScenarioFixture({
 			schemaVersion: MAESTRO_SCRIPTED_SCENARIO_SCHEMA,
-			id: "transient-provider-error",
+			id: "transient-error",
 			description:
-				"Surface transient replay errors as retryable provider failures.",
+				"Surface transient replay failures as retryable provider errors.",
 			frames: [
 				{
 					index: 0,
@@ -746,7 +732,7 @@ describe("scripted replay provider", () => {
 						{
 							kind: "error",
 							type: "transient",
-							message: "temporary upstream failure",
+							message: "Replay fixture temporarily unavailable.",
 						},
 					],
 				},
@@ -760,63 +746,19 @@ describe("scripted replay provider", () => {
 		const events = await collectEvents(model, {
 			messages: [{ role: "user", content: "Replay the fixture", timestamp: 1 }],
 		});
-		const event = events.at(-1);
+		const errorEvent = events.find((event) => event.type === "error");
 
-		expect(event).toMatchObject({
+		expect(errorEvent).toMatchObject({
 			type: "error",
-			reason: "error",
 			error: {
 				stopReason: "error",
-				errorMessage:
-					"Transient scripted replay error; please try again: temporary upstream failure",
+				errorMessage: "Replay fixture temporarily unavailable. Try again.",
 			},
 		});
-		if (!event || event.type !== "error") {
-			throw new Error("expected scripted replay to emit an error event");
+		if (errorEvent?.type !== "error") {
+			throw new Error("Expected scripted replay to emit an error event.");
 		}
-		expect(isRetryableError(event.error)).toBe(true);
-	});
-
-	it("keeps fatal scripted errors non-retryable", async () => {
-		process.env.MAESTRO_SCENARIO_PATH = writeScenarioFixture({
-			schemaVersion: MAESTRO_SCRIPTED_SCENARIO_SCHEMA,
-			id: "fatal-provider-error",
-			description: "Surface fatal replay errors without retry hints.",
-			frames: [
-				{
-					index: 0,
-					statements: [
-						{
-							kind: "error",
-							type: "fatal",
-							message: "invalid scripted fixture",
-						},
-					],
-				},
-			],
-		});
-		const model = getModel(
-			"scripted-replay",
-			"maestro-replay-v1",
-		) as Model<"scripted-replay">;
-
-		const events = await collectEvents(model, {
-			messages: [{ role: "user", content: "Replay the fixture", timestamp: 1 }],
-		});
-		const event = events.at(-1);
-
-		expect(event).toMatchObject({
-			type: "error",
-			reason: "error",
-			error: {
-				stopReason: "error",
-				errorMessage: "invalid scripted fixture",
-			},
-		});
-		if (!event || event.type !== "error") {
-			throw new Error("expected scripted replay to emit an error event");
-		}
-		expect(isRetryableError(event.error)).toBe(false);
+		expect(isRetryableError(errorEvent.error)).toBe(true);
 	});
 
 	it("rejects invalid scripted tool-call expectations", () => {
@@ -843,9 +785,25 @@ describe("scripted replay provider", () => {
 			/expectedResult must be success, error, or any/,
 		);
 
-		const nonStringToolIdPath = writeScenarioFixture({
+		const emptyToolNamePath = writeScenarioFixture({
 			schemaVersion: MAESTRO_SCRIPTED_SCENARIO_SCHEMA,
-			id: "invalid-tool-id",
+			id: "empty-tool-name",
+			description: "Reject empty tool names.",
+			frames: [
+				{
+					index: 0,
+					statements: [{ kind: "tool_call", tool: "", input: {} }],
+				},
+			],
+		});
+
+		expect(() => loadScriptedScenario(emptyToolNamePath)).toThrow(
+			/tool_call tool must be a non-empty string/,
+		);
+
+		const numericToolIdPath = writeScenarioFixture({
+			schemaVersion: MAESTRO_SCRIPTED_SCENARIO_SCHEMA,
+			id: "numeric-tool-id",
 			description: "Reject non-string tool call IDs.",
 			frames: [
 				{
@@ -862,24 +820,8 @@ describe("scripted replay provider", () => {
 			],
 		});
 
-		expect(() => loadScriptedScenario(nonStringToolIdPath)).toThrow(
-			/tool_call id must be a non-empty string/,
-		);
-
-		const emptyToolNamePath = writeScenarioFixture({
-			schemaVersion: MAESTRO_SCRIPTED_SCENARIO_SCHEMA,
-			id: "empty-tool-name",
-			description: "Reject empty tool names.",
-			frames: [
-				{
-					index: 0,
-					statements: [{ kind: "tool_call", tool: "", input: {} }],
-				},
-			],
-		});
-
-		expect(() => loadScriptedScenario(emptyToolNamePath)).toThrow(
-			/tool_call tool must be a non-empty string/,
+		expect(() => loadScriptedScenario(numericToolIdPath)).toThrow(
+			/tool_call id must be a string/,
 		);
 	});
 

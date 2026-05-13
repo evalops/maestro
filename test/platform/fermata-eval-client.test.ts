@@ -318,4 +318,102 @@ describe("Fermata eval Platform client", () => {
 			"/fermata.v1.FermataService/CreateTestSuite",
 		);
 	});
+
+	it("sends native Fermata pairwise LLM rubric assertions through the Connect create-suite payload", async () => {
+		const config = await requireFermataEvalServiceConfig();
+		const expected = loadScenarioResult("local-diagnostic-success");
+		const actual = runScenario("local-diagnostic-success");
+		const createRequest = buildFermataCreateScenarioSuiteRequest(
+			config,
+			expected,
+			actual,
+			{
+				llmPairwiseJudge: {
+					judgeId: "pairwise-quality",
+					verifierJudgeId: "pairwise-verifier",
+					rubric:
+						"Prefer the Maestro trajectory with stronger real-world task completion.",
+					baselineLabel: "committed",
+					candidateLabel: "candidate",
+					minScore: 0.7,
+					recordJudgeValidation: true,
+				},
+			},
+		);
+
+		await createFermataTestSuiteWithPlatform(config, createRequest);
+
+		expect(requests).toHaveLength(1);
+		const pairwiseCase = (
+			requests[0]?.body?.cases as Array<{
+				metadata?: Record<string, unknown>;
+				assertions?: Array<Record<string, unknown>>;
+			}>
+		).find(
+			(testCase) =>
+				testCase.metadata?.case_kind === "scenario_llm_pairwise_rubric",
+		);
+		expect(pairwiseCase?.assertions?.[0]).toMatchObject({
+			kind: "ASSERTION_KIND_LLM_PAIRWISE_RUBRIC",
+			llmPairwiseRubric: {
+				judgeId: "pairwise-quality",
+				verifierJudgeId: "pairwise-verifier",
+				rubric:
+					"Prefer the Maestro trajectory with stronger real-world task completion.",
+				baselineLabel: "committed",
+				candidateLabel: "candidate",
+				minScore: 0.7,
+				recordJudgeValidation: true,
+			},
+		});
+		expect(requests[0]?.pathname).toBe(
+			"/fermata.v1.FermataService/CreateTestSuite",
+		);
+	});
+
+	it("sends native Fermata agent trajectory assertions through the Connect create-suite payload", async () => {
+		const config = await requireFermataEvalServiceConfig();
+		const expected = loadScenarioResult("local-diagnostic-success");
+		const actual = runScenario("local-diagnostic-success");
+		const createRequest = buildFermataCreateScenarioSuiteRequest(
+			config,
+			expected,
+			actual,
+		);
+
+		await createFermataTestSuiteWithPlatform(config, createRequest);
+
+		expect(requests).toHaveLength(1);
+		const trajectoryCase = (
+			requests[0]?.body?.cases as Array<{
+				metadata?: Record<string, unknown>;
+				assertions?: Array<Record<string, unknown>>;
+			}>
+		).find(
+			(testCase) =>
+				testCase.metadata?.case_kind === "scenario_agent_trajectory",
+		);
+		expect(trajectoryCase?.assertions?.[0]).toMatchObject({
+			kind: "ASSERTION_KIND_AGENT_TRAJECTORY",
+			agentTrajectory: {
+				requiredEvents: expect.arrayContaining([
+					"session.started",
+					"tool.completed",
+				]),
+				requiredAssertionStatuses: expect.arrayContaining([
+					{ id: "replay-clean", status: "pass" },
+				]),
+				maxEvents: expected.counts.events,
+				maxToolCalls: expected.counts.toolCalls,
+				maxReplayDeltas: expected.counts.replayDeltas,
+				maxScoreFailures: expected.counts.scoreFailures,
+				requireIdempotentReplay: true,
+				forbidDuplicateExternalActions: true,
+				requiredTraceJoinKeys: expected.platform.traceJoinKeys,
+			},
+		});
+		expect(requests[0]?.pathname).toBe(
+			"/fermata.v1.FermataService/CreateTestSuite",
+		);
+	});
 });
