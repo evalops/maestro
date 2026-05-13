@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	captureSentryException,
+	filterSentryIntegrations,
 	flushSentry,
 	initSentry,
 	sentryConfigFromEnv,
@@ -90,6 +91,16 @@ describe("initSentry", () => {
 		expect(sentryMock.init).not.toHaveBeenCalled();
 	});
 
+	it("removes default global crash integrations", () => {
+		expect(
+			filterSentryIntegrations([
+				{ name: "OnUncaughtException" },
+				{ name: "Http" },
+				{ name: "OnUnhandledRejection" },
+			]),
+		).toEqual([{ name: "Http" }]);
+	});
+
 	it("initializes once and retags subsequent entrypoints", async () => {
 		process.env.SENTRY_DSN = "https://public@example.ingest.sentry.io/1";
 
@@ -98,7 +109,10 @@ describe("initSentry", () => {
 
 		expect(sentryMock.init).toHaveBeenCalledTimes(1);
 		expect(sentryMock.init).toHaveBeenCalledWith(
-			expect.objectContaining({ skipOpenTelemetrySetup: true }),
+			expect.objectContaining({
+				integrations: expect.any(Function),
+				skipOpenTelemetrySetup: true,
+			}),
 		);
 		expect(sentryMock.setTag).toHaveBeenCalledWith(
 			"service.name",

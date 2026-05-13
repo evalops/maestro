@@ -12,6 +12,19 @@ interface SentryRuntimeConfig {
 
 let initialized = false;
 
+const globalCrashIntegrationNames = new Set([
+	"OnUncaughtException",
+	"OnUnhandledRejection",
+]);
+
+export function filterSentryIntegrations<T extends { name?: string }>(
+	integrations: T[],
+): T[] {
+	return integrations.filter(
+		(integration) => !globalCrashIntegrationNames.has(integration.name ?? ""),
+	);
+}
+
 function firstNonBlank(...values: Array<string | undefined>): string {
 	for (const value of values) {
 		const trimmed = value?.trim();
@@ -86,6 +99,7 @@ export function initSentry(serviceName: string): boolean {
 			profilesSampleRate: config.profilesSampleRate,
 			sendDefaultPii: config.sendDefaultPii,
 			skipOpenTelemetrySetup: true,
+			integrations: (integrations) => filterSentryIntegrations(integrations),
 		});
 		initialized = true;
 	}
