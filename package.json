@@ -156,6 +156,7 @@
     "@opentelemetry/resources": "^2.6.1",
     "@opentelemetry/sdk-node": "0.216.0",
     "@opentelemetry/semantic-conventions": "^1.40.0",
+    "@sentry/node": "^10.53.1",
     "@sinclair/typebox": "^0.34.49",
     "ajv": "^8.18.0",
     "ajv-formats": "^3.0.1",
