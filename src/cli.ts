@@ -61,6 +61,19 @@ function emitHeadlessStartupError(error: unknown): void {
 	process.stderr.write(`${stack ?? message}\n`);
 }
 
+async function reportFatalCliError(error: unknown): Promise<void> {
+	try {
+		const { captureSentryException, flushSentry, initSentry } = await import(
+			"./sentry.js"
+		);
+		initSentry("maestro-cli");
+		captureSentryException(error);
+		await flushSentry();
+	} catch {
+		// Sentry reporting is best-effort and must not mask the original failure.
+	}
+}
+
 const run = async () => {
 	try {
 		// Prefer the TypeScript entry when running under Bun during development,
@@ -86,6 +99,7 @@ const run = async () => {
 		} else {
 			console.error(err);
 		}
+		await reportFatalCliError(err);
 		process.exit(1);
 	}
 };

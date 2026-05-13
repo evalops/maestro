@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	captureSentryException,
 	flushSentry,
@@ -20,7 +20,32 @@ vi.mock("@sentry/node", () => ({
 	flush: sentryMock.flush,
 }));
 
+const sentryEnvKeys = [
+	"SENTRY_DSN",
+	"SENTRY_ENVIRONMENT",
+	"SENTRY_RELEASE",
+	"SENTRY_TRACES_SAMPLE_RATE",
+	"SENTRY_PROFILES_SAMPLE_RATE",
+	"SENTRY_SEND_DEFAULT_PII",
+	"MAESTRO_RELEASE",
+	"MAESTRO_VERSION",
+	"MAESTRO_ENVIRONMENT",
+	"MAESTRO_PROFILE",
+	"NODE_ENV",
+] as const;
+
+function clearSentryEnv(): void {
+	for (const key of sentryEnvKeys) {
+		delete process.env[key];
+	}
+}
+
+beforeEach(() => {
+	clearSentryEnv();
+});
+
 afterEach(() => {
+	clearSentryEnv();
 	vi.clearAllMocks();
 });
 
@@ -72,6 +97,9 @@ describe("initSentry", () => {
 		expect(initSentry("maestro-web-server")).toBe(true);
 
 		expect(sentryMock.init).toHaveBeenCalledTimes(1);
+		expect(sentryMock.init).toHaveBeenCalledWith(
+			expect.objectContaining({ skipOpenTelemetrySetup: true }),
+		);
 		expect(sentryMock.setTag).toHaveBeenCalledWith(
 			"service.name",
 			"maestro-cli",
