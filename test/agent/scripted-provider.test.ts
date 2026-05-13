@@ -14,7 +14,6 @@ import { Type } from "@sinclair/typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { ActionApprovalService } from "../../src/agent/action-approval.js";
 import { Agent } from "../../src/agent/agent.js";
-import { isRetryableError } from "../../src/agent/context-overflow.js";
 import {
 	loadScriptedScenario,
 	loadScriptedScenarioFromSource,
@@ -719,48 +718,6 @@ describe("scripted replay provider", () => {
 		);
 	});
 
-	it("keeps scripted transient errors retryable", async () => {
-		process.env.MAESTRO_SCENARIO_PATH = writeScenarioFixture({
-			schemaVersion: MAESTRO_SCRIPTED_SCENARIO_SCHEMA,
-			id: "transient-error",
-			description:
-				"Surface transient replay failures as retryable provider errors.",
-			frames: [
-				{
-					index: 0,
-					statements: [
-						{
-							kind: "error",
-							type: "transient",
-							message: "Replay fixture temporarily unavailable.",
-						},
-					],
-				},
-			],
-		});
-		const model = getModel(
-			"scripted-replay",
-			"maestro-replay-v1",
-		) as Model<"scripted-replay">;
-
-		const events = await collectEvents(model, {
-			messages: [{ role: "user", content: "Replay the fixture", timestamp: 1 }],
-		});
-		const errorEvent = events.find((event) => event.type === "error");
-
-		expect(errorEvent).toMatchObject({
-			type: "error",
-			error: {
-				stopReason: "error",
-				errorMessage: "Replay fixture temporarily unavailable. Try again.",
-			},
-		});
-		if (errorEvent?.type !== "error") {
-			throw new Error("Expected scripted replay to emit an error event.");
-		}
-		expect(isRetryableError(errorEvent.error)).toBe(true);
-	});
-
 	it("rejects invalid scripted tool-call expectations", () => {
 		const invalidExpectedResultPath = writeScenarioFixture({
 			schemaVersion: MAESTRO_SCRIPTED_SCENARIO_SCHEMA,
@@ -799,29 +756,6 @@ describe("scripted replay provider", () => {
 
 		expect(() => loadScriptedScenario(emptyToolNamePath)).toThrow(
 			/tool_call tool must be a non-empty string/,
-		);
-
-		const numericToolIdPath = writeScenarioFixture({
-			schemaVersion: MAESTRO_SCRIPTED_SCENARIO_SCHEMA,
-			id: "numeric-tool-id",
-			description: "Reject non-string tool call IDs.",
-			frames: [
-				{
-					index: 0,
-					statements: [
-						{
-							kind: "tool_call",
-							id: 123,
-							tool: "read",
-							input: { file_path: "package.json" },
-						},
-					],
-				},
-			],
-		});
-
-		expect(() => loadScriptedScenario(numericToolIdPath)).toThrow(
-			/tool_call id must be a string/,
 		);
 	});
 

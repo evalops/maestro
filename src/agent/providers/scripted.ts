@@ -185,15 +185,6 @@ export function parseScriptedScenario(
 			}
 			if (
 				statement.kind === "tool_call" &&
-				statement.id !== undefined &&
-				typeof statement.id !== "string"
-			) {
-				throw new Error(
-					`Replay scenario ${label} frame ${frame.index} statement ${statementOffset} tool_call id must be a string`,
-				);
-			}
-			if (
-				statement.kind === "tool_call" &&
 				statement.expectedResult !== undefined &&
 				statement.expectedResult !== "success" &&
 				statement.expectedResult !== "error" &&
@@ -376,18 +367,6 @@ function toolCallId(
 	);
 }
 
-function scriptedErrorMessage(
-	statement: Extract<ScriptedStatement, { kind: "error" }>,
-): string {
-	if (
-		statement.type !== "transient" ||
-		/\btry again\b/i.test(statement.message)
-	) {
-		return statement.message;
-	}
-	return `${statement.message} Try again.`;
-}
-
 function abortError(): Error {
 	const error = new Error("Scripted replay aborted");
 	error.name = "AbortError";
@@ -540,7 +519,7 @@ export async function* streamScriptedReplay(
 			}
 			if (statement.kind === "error") {
 				partial.stopReason = "error";
-				partial.errorMessage = scriptedErrorMessage(statement);
+				partial.errorMessage = statement.message;
 				yield { type: "error", reason: "error", error: partial };
 				return;
 			}

@@ -1,5 +1,5 @@
 import * as Sentry from "@sentry/node";
-import { getPackageVersion } from "./package-metadata.js";
+import { readPackageVersion } from "./package-version.js";
 
 interface SentryRuntimeConfig {
 	dsn: string;
@@ -65,7 +65,7 @@ export function sentryConfigFromEnv(): SentryRuntimeConfig | null {
 		process.env.SENTRY_RELEASE,
 		process.env.MAESTRO_RELEASE,
 		process.env.MAESTRO_VERSION,
-		`maestro@${getPackageVersion()}`,
+		`maestro@${readPackageVersion()}`,
 	);
 
 	return {
