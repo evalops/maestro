@@ -1,9 +1,5 @@
-import { createRequire } from "node:module";
 import * as Sentry from "@sentry/node";
-
-interface PackageMetadata {
-	version?: string;
-}
+import { getPackageVersion } from "./package-metadata.js";
 
 interface SentryRuntimeConfig {
 	dsn: string;
@@ -15,17 +11,6 @@ interface SentryRuntimeConfig {
 }
 
 let initialized = false;
-
-function packageVersion(): string {
-	try {
-		const packageJson = createRequire(import.meta.url)(
-			"../package.json",
-		) as PackageMetadata;
-		return packageJson.version ?? "unknown";
-	} catch {
-		return process.env.MAESTRO_VERSION ?? "unknown";
-	}
-}
 
 function firstNonBlank(...values: Array<string | undefined>): string {
 	for (const value of values) {
@@ -67,7 +52,7 @@ export function sentryConfigFromEnv(): SentryRuntimeConfig | null {
 		process.env.SENTRY_RELEASE,
 		process.env.MAESTRO_RELEASE,
 		process.env.MAESTRO_VERSION,
-		`maestro@${packageVersion()}`,
+		`maestro@${getPackageVersion()}`,
 	);
 
 	return {
@@ -100,6 +85,7 @@ export function initSentry(serviceName: string): boolean {
 			tracesSampleRate: config.tracesSampleRate,
 			profilesSampleRate: config.profilesSampleRate,
 			sendDefaultPii: config.sendDefaultPii,
+			skipOpenTelemetrySetup: true,
 		});
 		initialized = true;
 	}
