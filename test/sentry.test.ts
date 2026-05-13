@@ -110,9 +110,11 @@ describe("initSentry", () => {
 		expect(sentryMock.init).toHaveBeenCalledTimes(1);
 		expect(sentryMock.init).toHaveBeenCalledWith(
 			expect.objectContaining({
-				integrations: expect.any(Function),
 				skipOpenTelemetrySetup: true,
 			}),
+		);
+		expect(sentryMock.init.mock.calls[0]?.[0]).not.toHaveProperty(
+			"integrations",
 		);
 		expect(sentryMock.setTag).toHaveBeenCalledWith(
 			"service.name",

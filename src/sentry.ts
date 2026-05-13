@@ -91,7 +91,7 @@ export function initSentry(serviceName: string): boolean {
 	}
 
 	if (!initialized) {
-		Sentry.init({
+		const options: Parameters<typeof Sentry.init>[0] = {
 			dsn: config.dsn,
 			environment: config.environment,
 			release: config.release,
@@ -99,8 +99,12 @@ export function initSentry(serviceName: string): boolean {
 			profilesSampleRate: config.profilesSampleRate,
 			sendDefaultPii: config.sendDefaultPii,
 			skipOpenTelemetrySetup: true,
-			integrations: (integrations) => filterSentryIntegrations(integrations),
-		});
+		};
+		if (serviceName === "maestro-web-server") {
+			options.integrations = (integrations) =>
+				filterSentryIntegrations(integrations);
+		}
+		Sentry.init(options);
 		initialized = true;
 	}
 
