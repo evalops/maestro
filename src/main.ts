@@ -167,7 +167,7 @@ import { AgentRuntimeController } from "./runtime/agent-runtime.js";
 import { registerBackgroundTaskShutdownHooks } from "./runtime/background-task-hooks.js";
 import { configureSafeMode } from "./safety/safe-mode.js";
 import { LocalSandbox } from "./sandbox/index.js";
-import { initSentry } from "./sentry.js";
+import { captureSentryException, flushSentry, initSentry } from "./sentry.js";
 import { ServerRequestActionApprovalService } from "./server/approval-service.js";
 import { clientToolService } from "./server/client-tools-service.js";
 import { ServerRequestToolRetryService } from "./server/tool-retry-service.js";
@@ -697,7 +697,7 @@ export async function main(args: string[]) {
 			: runtimeConfig.config.model_reasoning_summary === "none"
 				? null
 				: runtimeConfig.config.model_reasoning_summary;
-	const exitWithStartupError = (error: unknown): never => {
+	const exitWithStartupError = async (error: unknown): Promise<never> => {
 		const message = error instanceof Error ? error.message : String(error);
 		const stack = error instanceof Error ? error.stack : undefined;
 		if (isHeadlessMode) {
@@ -713,6 +713,8 @@ export async function main(args: string[]) {
 		} else {
 			console.error(chalk.red(message));
 		}
+		captureSentryException(error);
+		await flushSentry();
 		process.exit(1);
 	};
 
@@ -805,7 +807,7 @@ export async function main(args: string[]) {
 
 	if (parsed.command === "exec") {
 		if (parsed.execFullAuto && parsed.execReadOnly) {
-			exitWithStartupError(
+			await exitWithStartupError(
 				"Cannot combine --full-auto with --read-only in maestro exec.",
 			);
 		}
@@ -822,7 +824,7 @@ export async function main(args: string[]) {
 		"danger-full-access",
 	];
 	if (parsed.sandbox && !validSandboxModes.includes(parsed.sandbox)) {
-		exitWithStartupError(
+		await exitWithStartupError(
 			`Unknown sandbox mode "${parsed.sandbox}". Supported: ${validSandboxModes.join(", ")}`,
 		);
 	}
@@ -1284,7 +1286,7 @@ export async function main(args: string[]) {
 		});
 		model = resolved.model;
 	} catch (error) {
-		exitWithStartupError(error);
+		await exitWithStartupError(error);
 	}
 	// Determine approval mode for tool execution:
 	// - "prompt": Ask user before each tool execution (default for interactive)
@@ -1351,7 +1353,7 @@ export async function main(args: string[]) {
 			cwd: process.cwd(),
 		});
 	} catch (error) {
-		exitWithStartupError(error);
+		await exitWithStartupError(error);
 	}
 	const { allTools, sandbox, sandboxMode } = toolsResult;
 	startupProfiler.checkpoint("tools:prepared", { tools: allTools.length });
