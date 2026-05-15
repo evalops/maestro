@@ -258,7 +258,22 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header(
             "Access-Control-Allow-Headers",
-            "authorization,content-type,x-organization-id,x-evalops-workspace-id,x-maestro-api-key",
+            ",".join(
+                [
+                    "authorization",
+                    "content-type",
+                    "traceparent",
+                    "tracestate",
+                    "x-codex-a2a-token",
+                    "x-evalops-actor-id",
+                    "x-evalops-agent-id",
+                    "x-evalops-session-id",
+                    "x-evalops-workspace-id",
+                    "x-maestro-api-key",
+                    "x-maestro-session-id",
+                    "x-organization-id",
+                ]
+            ),
         )
         self.send_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
         self.end_headers()
