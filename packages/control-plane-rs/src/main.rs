@@ -632,6 +632,10 @@ async fn handle_a2a_endpoint(
         return response(204, "text/plain; charset=utf-8", &[]);
     }
 
+    if let Err(response) = validate_csrf(&head, &state.config) {
+        return response;
+    }
+
     if head.method == "GET" && head.path == "/.well-known/agent-card.json" {
         return json_response(200, &a2a_agent_card(&head, &state.config));
     }
@@ -1522,6 +1526,10 @@ async fn run_a2a_native_turn(
                         finish_tool_metadata(&mut output.tools, &call_id, false);
                     }
                 }
+            }
+            FromAgent::ToolStart { call_id } => {
+                response_end_deadline = None;
+                update_tool_metadata_status(&mut output.tools, &call_id, "running");
             }
             FromAgent::ToolEnd {
                 call_id, success, ..
@@ -6828,13 +6836,17 @@ mod tests {
     }
 
     fn csrf_head(method: &str, token: Option<&str>) -> RequestHead {
+        csrf_head_for_path(method, "/api/status", token)
+    }
+
+    fn csrf_head_for_path(method: &str, path: &str, token: Option<&str>) -> RequestHead {
         let mut headers = HashMap::new();
         if let Some(token) = token {
             headers.insert("x-maestro-csrf".to_string(), token.to_string());
         }
         RequestHead {
             method: method.to_string(),
-            path: "/api/status".to_string(),
+            path: path.to_string(),
             query: HashMap::new(),
             headers,
         }
@@ -7022,7 +7034,7 @@ mod tests {
     }
 
     #[test]
-    fn csrf_validation_requires_matching_token_for_mutating_api_requests() {
+    fn csrf_validation_requires_matching_token_for_mutating_api_and_a2a_requests() {
         let mut config = auth_test_config();
         config.require_csrf = true;
         config.csrf_token = Some("csrf-token".to_string());
@@ -7030,6 +7042,24 @@ mod tests {
         assert!(validate_csrf(&csrf_head("POST", Some("csrf-token")), &config).is_ok());
         assert!(validate_csrf(&csrf_head("POST", Some("wrong-token")), &config).is_err());
         assert!(validate_csrf(&csrf_head("POST", None), &config).is_err());
+        assert!(validate_csrf(
+            &csrf_head_for_path("POST", "/message:send", Some("csrf-token")),
+            &config,
+        )
+        .is_ok());
+        assert!(
+            validate_csrf(&csrf_head_for_path("POST", "/message:send", None), &config).is_err()
+        );
+        assert!(validate_csrf(
+            &csrf_head_for_path("POST", "/tasks/maestro-task-1:cancel", Some("csrf-token")),
+            &config,
+        )
+        .is_ok());
+        assert!(validate_csrf(
+            &csrf_head_for_path("POST", "/tasks/maestro-task-1:cancel", None),
+            &config
+        )
+        .is_err());
         assert!(validate_csrf(&csrf_head("GET", None), &config).is_ok());
     }
 
@@ -7383,6 +7413,32 @@ mod tests {
         } else {
             env::remove_var("MAESTRO_A2A_FAKE_RESPONSE");
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_message_send_requires_csrf_token_when_enabled() {
+        let body = r#"{"message":{"messageId":"msg-1","contextId":"ctx-1","role":"ROLE_USER","parts":[{"text":"hello","mediaType":"text/plain"}]}}"#;
+        let request = format!(
+            "POST /message:send HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let mut initial = request.into_bytes();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (_client, mut server) = tcp_stream_pair().await;
+        let base_state = test_app_state_with_sessions(HashMap::new());
+        let mut config = auth_test_config();
+        config.require_csrf = true;
+        config.csrf_token = Some("csrf-token".to_string());
+        let state = AppState {
+            config: Arc::new(config),
+            ..base_state
+        };
+
+        let response =
+            response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+
+        assert_eq!(response["error"], "Forbidden: invalid CSRF token");
+        assert!(state.a2a_tasks.lock().await.is_empty());
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -8055,6 +8111,44 @@ mod tests {
         } else {
             env::remove_var("MAESTRO_A2A_FAKE_RESPONSE_DELAY_MS");
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_cancel_requires_csrf_token_when_enabled() {
+        let base_state = test_app_state_with_sessions(HashMap::new());
+        let mut config = auth_test_config();
+        config.require_csrf = true;
+        config.csrf_token = Some("csrf-token".to_string());
+        let state = AppState {
+            config: Arc::new(config),
+            ..base_state
+        };
+        state.a2a_tasks.lock().await.insert(
+            "maestro-task-1".to_string(),
+            a2a_task_value(
+                "maestro-task-1",
+                "ctx-1",
+                "TASK_STATE_WORKING",
+                a2a_agent_message("ctx-1", "working"),
+                Vec::new(),
+                Vec::new(),
+                serde_json::json!({ "workspaceId": "ws-1" }),
+            ),
+        );
+
+        let request = "POST /tasks/maestro-task-1:cancel HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\n\r\n";
+        let mut initial = request.as_bytes().to_vec();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (_client, mut server) = tcp_stream_pair().await;
+
+        let response =
+            response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+
+        assert_eq!(response["error"], "Forbidden: invalid CSRF token");
+        assert_eq!(
+            state.a2a_tasks.lock().await["maestro-task-1"]["status"]["state"],
+            "TASK_STATE_WORKING"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

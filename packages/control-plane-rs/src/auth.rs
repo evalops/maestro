@@ -185,7 +185,21 @@ pub(crate) fn validate_csrf(head: &RequestHead, config: &Config) -> Result<(), V
 }
 
 pub(crate) fn csrf_applies(head: &RequestHead) -> bool {
-    head.path.starts_with("/api/") && !matches!(head.method.as_str(), "GET" | "HEAD" | "OPTIONS")
+    if matches!(head.method.as_str(), "GET" | "HEAD" | "OPTIONS") {
+        return false;
+    }
+
+    head.path.starts_with("/api/") || csrf_applies_to_a2a_path(&head.path)
+}
+
+fn csrf_applies_to_a2a_path(path: &str) -> bool {
+    path == "/message:send"
+        || path
+            .strip_prefix("/tasks/")
+            .and_then(|value| value.strip_suffix(":cancel"))
+            .is_some_and(|task_id| {
+                !task_id.is_empty() && !task_id.contains('/') && !task_id.contains(':')
+            })
 }
 
 pub(crate) fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
