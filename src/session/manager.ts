@@ -49,7 +49,10 @@ import {
 	createBranchedSessionFromLeaf as createBranchedSessionFromLeafFn,
 	createBranchedSessionFromState as createBranchedSessionFromStateFn,
 } from "./session-branch.js";
-import { SessionCatalog } from "./session-catalog.js";
+import {
+	type LoadedSessionData,
+	SessionCatalog,
+} from "./session-catalog.js";
 import {
 	type SessionContextSnapshot,
 	buildSessionContextFromEntries,
@@ -1303,20 +1306,7 @@ export class SessionManager {
 	async loadSession(
 		sessionId: string,
 		options: { messagesView?: SessionMessagesView } = {},
-	): Promise<{
-		id: string;
-		subject?: string;
-		title?: string;
-		summary?: string;
-		resumeSummary?: string;
-		messages: AppMessage[];
-		createdAt: string;
-		updatedAt: string;
-		messageCount: number;
-		favorite: boolean;
-		tags?: string[];
-		messagesView: SessionMessagesView;
-	} | null> {
+	): Promise<LoadedSessionData | null> {
 		return this.catalog.loadSession(sessionId, options);
 	}
 
