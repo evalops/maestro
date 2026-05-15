@@ -587,6 +587,11 @@ enum A2ATurnResult {
     Canceled,
 }
 
+struct A2ASendTarget {
+    task_id: String,
+    context_id: String,
+}
+
 fn is_a2a_endpoint(head: &RequestHead) -> bool {
     if head.method == "OPTIONS" {
         return head.path == "/.well-known/agent-card.json"
@@ -720,10 +725,15 @@ fn a2a_task_is_terminal(task: &Value) -> bool {
     )
 }
 
-async fn a2a_resolve_send_task_id(
+fn a2a_task_accepts_message(task: &Value) -> bool {
+    a2a_task_status_state(task) == Some("TASK_STATE_INPUT_REQUIRED")
+}
+
+async fn a2a_resolve_send_target(
     state: &AppState,
     request: &A2ASendMessageRequest,
-) -> Result<String, Vec<u8>> {
+    head: &RequestHead,
+) -> Result<A2ASendTarget, Vec<u8>> {
     let Some(task_id) = request
         .message
         .task_id
@@ -731,7 +741,10 @@ async fn a2a_resolve_send_task_id(
         .map(str::trim)
         .filter(|task_id| !task_id.is_empty())
     else {
-        return Ok(generate_a2a_id("maestro-task"));
+        return Ok(A2ASendTarget {
+            task_id: generate_a2a_id("maestro-task"),
+            context_id: a2a_context_id(request, head),
+        });
     };
 
     let tasks = state.a2a_tasks.lock().await;
@@ -749,24 +762,45 @@ async fn a2a_resolve_send_task_id(
             "A2A terminal tasks cannot accept more messages",
         ));
     }
-    if let Some(message_context_id) = request
+    if !a2a_task_accepts_message(task) {
+        return Err(a2a_error_response(
+            409,
+            "UNSUPPORTED_OPERATION",
+            "A2A task is not ready to accept another message",
+        ));
+    }
+
+    let explicit_context_id = request
         .message
         .context_id
         .as_deref()
         .map(str::trim)
         .filter(|context_id| !context_id.is_empty())
+        .map(str::to_string);
+    let task_context_id = task
+        .get("contextId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|context_id| !context_id.is_empty())
+        .map(str::to_string);
+    if let (Some(message_context_id), Some(task_context_id)) =
+        (explicit_context_id.as_deref(), task_context_id.as_deref())
     {
-        if let Some(task_context_id) = task.get("contextId").and_then(Value::as_str) {
-            if message_context_id != task_context_id {
-                return Err(a2a_error_response(
-                    400,
-                    "INVALID_REQUEST",
-                    "A2A message contextId must match the referenced task",
-                ));
-            }
+        if message_context_id != task_context_id {
+            return Err(a2a_error_response(
+                400,
+                "INVALID_REQUEST",
+                "A2A message contextId must match the referenced task",
+            ));
         }
     }
-    Ok(task_id.to_string())
+    let context_id = explicit_context_id
+        .or(task_context_id)
+        .unwrap_or_else(|| a2a_context_id(request, head));
+    Ok(A2ASendTarget {
+        task_id: task_id.to_string(),
+        context_id,
+    })
 }
 
 async fn a2a_existing_task_history(state: &AppState, task_id: &str) -> Vec<Value> {
@@ -790,6 +824,23 @@ async fn store_a2a_task_unless_canceled(state: &AppState, task_id: &str, task: V
     }
     tasks.insert(task_id.to_string(), task.clone());
     task
+}
+
+async fn register_a2a_cancel_sender(
+    state: &AppState,
+    task_id: &str,
+    cancel_tx: A2ACancelSender,
+) -> Result<(), Vec<u8>> {
+    let mut senders = state.a2a_cancel_senders.lock().await;
+    if senders.contains_key(task_id) {
+        return Err(a2a_error_response(
+            409,
+            "UNSUPPORTED_OPERATION",
+            "A2A task is already running",
+        ));
+    }
+    senders.insert(task_id.to_string(), cancel_tx);
+    Ok(())
 }
 
 async fn handle_a2a_message_send(
@@ -821,22 +872,21 @@ async fn handle_a2a_message_send(
         );
     };
 
-    let context_id = a2a_context_id(&request, head);
-    let task_id = match a2a_resolve_send_task_id(state, &request).await {
-        Ok(task_id) => task_id,
+    let target = match a2a_resolve_send_target(state, &request, head).await {
+        Ok(target) => target,
         Err(response) => return response,
     };
+    let task_id = target.task_id;
+    let context_id = target.context_id;
     let user_message = a2a_user_message_value(&request.message, &context_id);
     let mut history = a2a_existing_task_history(state, &task_id).await;
     history.push(user_message.clone());
 
     let metadata = a2a_task_metadata(head, &request);
     let (cancel_tx, cancel_rx) = watch::channel(false);
-    state
-        .a2a_cancel_senders
-        .lock()
-        .await
-        .insert(task_id.clone(), cancel_tx);
+    if let Err(response) = register_a2a_cancel_sender(state, &task_id, cancel_tx).await {
+        return response;
+    }
     if a2a_return_immediately(&request) {
         let accepted_message = a2a_agent_message(&context_id, "Maestro accepted the A2A task.");
         let mut accepted_history = history.clone();
@@ -7010,9 +7060,9 @@ mod tests {
         let previous_fake = env::var("MAESTRO_A2A_FAKE_RESPONSE").ok();
         env::set_var("MAESTRO_A2A_FAKE_RESPONSE", "follow-up response");
 
-        let body = r#"{"message":{"messageId":"msg-2","contextId":"ctx-1","taskId":"maestro-task-1","role":"ROLE_USER","parts":[{"text":"follow up","mediaType":"text/plain"}]}}"#;
+        let body = r#"{"message":{"messageId":"msg-2","taskId":"maestro-task-1","role":"ROLE_USER","parts":[{"text":"follow up","mediaType":"text/plain"}]}}"#;
         let request = format!(
-            "POST /message:send HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            "POST /message:send HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\nx-evalops-session-id: header-ctx\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
             body.len()
         );
         let mut initial = request.into_bytes();
@@ -7040,8 +7090,10 @@ mod tests {
         let task = &response["task"];
 
         assert_eq!(task["id"], "maestro-task-1");
+        assert_eq!(task["contextId"], "ctx-1");
         assert_eq!(task["status"]["state"], "TASK_STATE_COMPLETED");
         assert_eq!(task["history"].as_array().unwrap().len(), 3);
+        assert_eq!(task["history"][1]["contextId"], "ctx-1");
         assert_eq!(task["history"][2]["parts"][0]["text"], "follow-up response");
 
         if let Some(previous_fake) = previous_fake {
@@ -7081,6 +7133,50 @@ mod tests {
             response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
 
         assert_eq!(response["error"]["code"], "UNSUPPORTED_OPERATION");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_message_send_rejects_active_task_id() {
+        let body = r#"{"message":{"messageId":"msg-2","contextId":"ctx-1","taskId":"maestro-task-1","role":"ROLE_USER","parts":[{"text":"follow up","mediaType":"text/plain"}]}}"#;
+        let request = format!(
+            "POST /message:send HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let mut initial = request.into_bytes();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (_client, mut server) = tcp_stream_pair().await;
+        let state = test_app_state_with_sessions(HashMap::new());
+        let task = a2a_task_value(
+            "maestro-task-1",
+            "ctx-1",
+            "TASK_STATE_WORKING",
+            a2a_agent_message("ctx-1", "working"),
+            Vec::new(),
+            Vec::new(),
+            serde_json::json!({}),
+        );
+        state
+            .a2a_tasks
+            .lock()
+            .await
+            .insert("maestro-task-1".to_string(), task);
+        let (cancel_tx, _cancel_rx) = watch::channel(false);
+        state
+            .a2a_cancel_senders
+            .lock()
+            .await
+            .insert("maestro-task-1".to_string(), cancel_tx);
+
+        let response =
+            response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+        let stored = state.a2a_tasks.lock().await;
+
+        assert_eq!(response["error"]["code"], "UNSUPPORTED_OPERATION");
+        assert_eq!(
+            stored["maestro-task-1"]["status"]["state"],
+            "TASK_STATE_WORKING"
+        );
+        assert_eq!(state.a2a_cancel_senders.lock().await.len(), 1);
     }
 
     #[tokio::test(flavor = "current_thread")]

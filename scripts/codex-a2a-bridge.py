@@ -56,6 +56,10 @@ def terminal(state: str | None) -> bool:
     }
 
 
+def accepts_message(state: str | None) -> bool:
+    return state == "TASK_STATE_INPUT_REQUIRED"
+
+
 def message_text(message: dict[str, Any]) -> str | None:
     parts = message.get("parts")
     if not isinstance(parts, list):
@@ -361,8 +365,8 @@ class Handler(BaseHTTPRequestHandler):
             if not prompt:
                 self.error_json(400, "INVALID_REQUEST", "A2A text part is required")
                 return
-            context_id = str(message.get("contextId") or new_id("codex-a2a-context"))
             requested_task_id = str(message.get("taskId") or "").strip()
+            requested_context_id = str(message.get("contextId") or "").strip()
             with LOCK:
                 if requested_task_id:
                     existing = TASKS.get(requested_task_id)
@@ -376,9 +380,33 @@ class Handler(BaseHTTPRequestHandler):
                             "A2A terminal tasks cannot accept more messages",
                         )
                         return
+                    existing_state = existing.get("status", {}).get("state")
+                    if not accepts_message(existing_state):
+                        self.error_json(
+                            409,
+                            "UNSUPPORTED_OPERATION",
+                            "A2A task is not ready to accept another message",
+                        )
+                        return
+                    existing_context_id = str(existing.get("contextId") or "").strip()
+                    if (
+                        requested_context_id
+                        and existing_context_id
+                        and requested_context_id != existing_context_id
+                    ):
+                        self.error_json(
+                            400,
+                            "INVALID_REQUEST",
+                            "A2A message contextId must match the referenced task",
+                        )
+                        return
+                    context_id = requested_context_id or existing_context_id or new_id(
+                        "codex-a2a-context"
+                    )
                     task_id = requested_task_id
                     history = list(existing.get("history") or [])
                 else:
+                    context_id = requested_context_id or new_id("codex-a2a-context")
                     task_id = new_id("codex-a2a-task")
                     history = []
             history.append(user_message(message, context_id))
