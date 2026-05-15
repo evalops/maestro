@@ -427,6 +427,9 @@ async function handleDynamicToolRequest(
 			result: agentToolResultToDynamicToolResponse(result),
 		};
 	} catch (error: unknown) {
+		if (isAbortError(error)) {
+			throw error;
+		}
 		return {
 			handled: true,
 			result: dynamicToolError(formatErrorMessage(error)),
