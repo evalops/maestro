@@ -49,10 +49,7 @@ import {
 	createBranchedSessionFromLeaf as createBranchedSessionFromLeafFn,
 	createBranchedSessionFromState as createBranchedSessionFromStateFn,
 } from "./session-branch.js";
-import {
-	type LoadedSessionData,
-	SessionCatalog,
-} from "./session-catalog.js";
+import { type LoadedSessionData, SessionCatalog } from "./session-catalog.js";
 import {
 	type SessionContextSnapshot,
 	buildSessionContextFromEntries,
