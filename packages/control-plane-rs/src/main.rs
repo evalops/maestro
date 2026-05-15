@@ -52,6 +52,7 @@ const MAX_PROJECT_ONBOARDING_IMPRESSIONS: u8 = 4;
 const A2A_PROTOCOL_VERSION: &str = "1.0";
 const A2A_DEFAULT_TURN_TIMEOUT_MS: u64 = 180_000;
 const A2A_DEFAULT_RESPONSE_END_SETTLE_MS: u64 = 250;
+const A2A_TERMINAL_TASK_STORE_LIMIT: usize = 128;
 static ATTACHMENT_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
 type PendingToolResponseSender = mpsc::UnboundedSender<(String, bool, Option<ToolResult>)>;
@@ -699,6 +700,7 @@ async fn cancel_a2a_task(state: &AppState, task_id: &str) -> Result<Value, Vec<u
         "timestamp": now_rfc3339()
     });
     let task = task.clone();
+    prune_a2a_terminal_tasks(&mut tasks);
     drop(tasks);
 
     if let Some(sender) = state.a2a_cancel_senders.lock().await.remove(task_id) {
@@ -711,6 +713,12 @@ async fn cancel_a2a_task(state: &AppState, task_id: &str) -> Result<Value, Vec<u
 fn a2a_task_status_state(task: &Value) -> Option<&str> {
     task.get("status")
         .and_then(|status| status.get("state"))
+        .and_then(Value::as_str)
+}
+
+fn a2a_task_status_timestamp(task: &Value) -> Option<&str> {
+    task.get("status")
+        .and_then(|status| status.get("timestamp"))
         .and_then(Value::as_str)
 }
 
@@ -824,7 +832,35 @@ async fn store_a2a_task_unless_canceled(state: &AppState, task_id: &str, task: V
         }
     }
     tasks.insert(task_id.to_string(), task.clone());
+    prune_a2a_terminal_tasks(&mut tasks);
     task
+}
+
+fn prune_a2a_terminal_tasks(tasks: &mut HashMap<String, Value>) {
+    let mut terminal_tasks = tasks
+        .iter()
+        .filter(|(_, task)| a2a_task_is_terminal(task))
+        .map(|(task_id, task)| {
+            (
+                task_id.clone(),
+                a2a_task_status_timestamp(task)
+                    .unwrap_or_default()
+                    .to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    if terminal_tasks.len() <= A2A_TERMINAL_TASK_STORE_LIMIT {
+        return;
+    }
+    terminal_tasks.sort_by(|(left_id, left_timestamp), (right_id, right_timestamp)| {
+        left_timestamp
+            .cmp(right_timestamp)
+            .then_with(|| left_id.cmp(right_id))
+    });
+    let overflow = terminal_tasks.len() - A2A_TERMINAL_TASK_STORE_LIMIT;
+    for (task_id, _) in terminal_tasks.into_iter().take(overflow) {
+        tasks.remove(&task_id);
+    }
 }
 
 async fn register_a2a_cancel_sender(
@@ -901,11 +937,7 @@ async fn handle_a2a_message_send(
             Vec::new(),
             metadata.clone(),
         );
-        state
-            .a2a_tasks
-            .lock()
-            .await
-            .insert(task_id.clone(), task.clone());
+        let task = store_a2a_task_unless_canceled(state, &task_id, task).await;
         let state = state.clone();
         tokio::spawn(async move {
             let _ = complete_a2a_task(
@@ -7429,6 +7461,55 @@ mod tests {
         } else {
             env::remove_var("MAESTRO_A2A_FAKE_RESPONSE_DELAY_MS");
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_task_store_evicts_old_terminal_tasks() {
+        let state = test_app_state_with_sessions(HashMap::new());
+        let working_task = a2a_task_value(
+            "working-task",
+            "ctx-1",
+            "TASK_STATE_WORKING",
+            a2a_agent_message("ctx-1", "still running"),
+            Vec::new(),
+            Vec::new(),
+            serde_json::json!({}),
+        );
+        store_a2a_task_unless_canceled(&state, "working-task", working_task).await;
+
+        for index in 0..=A2A_TERMINAL_TASK_STORE_LIMIT {
+            let task_id = format!("terminal-task-{index}");
+            let mut task = a2a_task_value(
+                &task_id,
+                "ctx-1",
+                "TASK_STATE_COMPLETED",
+                a2a_agent_message("ctx-1", "done"),
+                Vec::new(),
+                Vec::new(),
+                serde_json::json!({}),
+            );
+            task["status"]["timestamp"] = Value::String(format!(
+                "2026-05-15T00:{:02}:{:02}Z",
+                index / 60,
+                index % 60
+            ));
+            store_a2a_task_unless_canceled(&state, &task_id, task).await;
+        }
+
+        let newest_terminal_task_id = format!("terminal-task-{A2A_TERMINAL_TASK_STORE_LIMIT}");
+        let stored = state.a2a_tasks.lock().await;
+
+        assert_eq!(stored.len(), A2A_TERMINAL_TASK_STORE_LIMIT + 1);
+        assert!(stored.contains_key("working-task"));
+        assert!(!stored.contains_key("terminal-task-0"));
+        assert!(stored.contains_key(&newest_terminal_task_id));
+        assert_eq!(
+            stored
+                .values()
+                .filter(|task| a2a_task_is_terminal(task))
+                .count(),
+            A2A_TERMINAL_TASK_STORE_LIMIT
+        );
     }
 
     #[test]
