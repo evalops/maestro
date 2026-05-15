@@ -77,6 +77,53 @@ describe("loop-detector", () => {
 			expect(result.detected).toBe(false);
 		});
 
+		it("differentiates nested tool arguments", () => {
+			const nestedArgsDetector = new LoopDetector({
+				maxIdenticalCalls: 3,
+				maxSimilarCalls: 100,
+				autoPause: false,
+			});
+
+			nestedArgsDetector.record("read", {
+				arguments: { path: "README.md" },
+			});
+			nestedArgsDetector.record("list", { path: "." });
+			nestedArgsDetector.record("read", {
+				arguments: { path: "packages/ai/README.md" },
+			});
+			nestedArgsDetector.record("status", {});
+			nestedArgsDetector.record("read", {
+				arguments: { path: "packages/contracts/README.md" },
+			});
+
+			const result = nestedArgsDetector.check("read", {
+				arguments: { path: "/tmp/token.txt" },
+			});
+			expect(result.detected).toBe(false);
+		});
+
+		it("treats undefined object fields as absent in exact repetition hashes", () => {
+			const argsDetector = new LoopDetector({
+				maxIdenticalCalls: 3,
+				maxSimilarCalls: 100,
+				autoPause: false,
+			});
+
+			argsDetector.record("read", {
+				path: "/tmp/same.txt",
+				encoding: undefined,
+			});
+			argsDetector.record("read", { path: "/tmp/same.txt" });
+			argsDetector.record("read", {
+				path: "/tmp/same.txt",
+				encoding: undefined,
+			});
+
+			const result = argsDetector.check("read", { path: "/tmp/same.txt" });
+			expect(result.detected).toBe(true);
+			expect(result.type).toBe("exact");
+		});
+
 		it("differentiates by tool", () => {
 			detector.record("read", { path: "/tmp/test.txt" });
 			detector.record("read", { path: "/tmp/test.txt" });
@@ -158,6 +205,22 @@ describe("loop-detector", () => {
 			const result = cycleDetector.check("toolA", { x: 5 });
 			expect(result.detected).toBe(true);
 			expect(result.type).toBe("cyclic");
+		});
+
+		it("does not classify repeated single-tool calls as cyclic", () => {
+			const cycleDetector = new LoopDetector({
+				maxIdenticalCalls: 100,
+				maxSimilarCalls: 100,
+				autoPause: false,
+			});
+
+			cycleDetector.record("read", { path: "/tmp/a.txt" });
+			cycleDetector.record("read", { path: "/tmp/b.txt" });
+			cycleDetector.record("read", { path: "/tmp/c.txt" });
+			cycleDetector.record("read", { path: "/tmp/d.txt" });
+
+			const result = cycleDetector.check("read", { path: "/tmp/e.txt" });
+			expect(result.detected).toBe(false);
 		});
 
 		it("detects longer cycles", () => {

@@ -5,6 +5,8 @@ import {
 	PlatformAgentRunStepKindValue,
 	PlatformAgentRunStepStateValue,
 	PlatformAgentRunWaitTypeValue,
+	PlatformAgentWorkItemKindValue,
+	PlatformAgentWorkItemStateValue,
 } from "../../src/platform/agent-runtime-client.js";
 import { HostedAgentRuntimeProgressRecorder } from "../../src/server/hosted-agent-runtime-progress.js";
 import type { ServerRequestLifecycleEvent } from "../../src/server/server-request-manager.js";
@@ -13,6 +15,8 @@ function createRecorder(overrides?: {
 	agentRunId?: string;
 	agentRuntimeLeaseToken?: string;
 	recordStep?: ReturnType<typeof vi.fn>;
+	recordWorkItem?: ReturnType<typeof vi.fn>;
+	updateWorkItem?: ReturnType<typeof vi.fn>;
 	waitRun?: ReturnType<typeof vi.fn>;
 	resumeRun?: ReturnType<typeof vi.fn>;
 	completeRun?: ReturnType<typeof vi.fn>;
@@ -20,6 +24,10 @@ function createRecorder(overrides?: {
 }) {
 	const recordStep =
 		overrides?.recordStep ?? vi.fn(async () => ({ run: { id: "run_1" } }));
+	const recordWorkItem =
+		overrides?.recordWorkItem ?? vi.fn(async () => ({ run: { id: "run_1" } }));
+	const updateWorkItem =
+		overrides?.updateWorkItem ?? vi.fn(async () => ({ run: { id: "run_1" } }));
 	const waitRun =
 		overrides?.waitRun ?? vi.fn(async () => ({ run: { id: "run_1" } }));
 	const resumeRun =
@@ -41,9 +49,26 @@ function createRecorder(overrides?: {
 			ownerInstanceId: "pod-a",
 			agentRuntimeWorkerQueue: "agent-runtime.production",
 		},
-		operations: { recordStep, waitRun, resumeRun, completeRun, failRun },
+		operations: {
+			recordStep,
+			recordWorkItem,
+			updateWorkItem,
+			waitRun,
+			resumeRun,
+			completeRun,
+			failRun,
+		},
 	});
-	return { recorder, recordStep, waitRun, resumeRun, completeRun, failRun };
+	return {
+		recorder,
+		recordStep,
+		recordWorkItem,
+		updateWorkItem,
+		waitRun,
+		resumeRun,
+		completeRun,
+		failRun,
+	};
 }
 
 describe("hosted AgentRuntime progress recorder", () => {
@@ -112,6 +137,94 @@ describe("hosted AgentRuntime progress recorder", () => {
 				}),
 			}),
 		);
+	});
+
+	it("records Codex subagent collaboration as durable Platform work items", async () => {
+		const { recorder, recordWorkItem, updateWorkItem, recordStep } =
+			createRecorder();
+
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "collab-call-1",
+			toolName: "codex.subagent.spawnAgent",
+			displayName: "Codex subagent: spawn agent",
+			summaryLabel: "spawn agent 1 agent",
+			args: {
+				codexTool: "spawnAgent",
+				senderThreadId: "parent-thread",
+				receiverThreadIds: ["child-thread-1"],
+				prompt: "Inspect platform remote runner wiring",
+				model: "gpt-5.3-codex",
+				reasoningEffort: "high",
+			},
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_end",
+			toolCallId: "collab-call-1",
+			toolName: "codex.subagent.spawnAgent",
+			displayName: "Codex subagent: spawn agent",
+			summaryLabel: "spawn agent 1 agent",
+			result: {
+				role: "toolResult",
+				toolCallId: "collab-call-1",
+				toolName: "codex.subagent.spawnAgent",
+				content: [{ type: "text", text: "Codex subagent completed." }],
+				details: {
+					codexTool: "spawnAgent",
+				},
+				isError: false,
+				timestamp: 2,
+			},
+			isError: false,
+		} satisfies AgentEvent);
+
+		await recorder.flush();
+
+		expect(recordStep).toHaveBeenCalledTimes(2);
+		expect(recordWorkItem).toHaveBeenCalledWith({
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:work:collab-call-1",
+				runId: "run_1",
+				kind: PlatformAgentWorkItemKindValue.ChildRun,
+				state: PlatformAgentWorkItemStateValue.Running,
+				title: "Codex subagent: spawn agent",
+				goal: "Inspect platform remote runner wiring",
+				nextAction: "wait for child agent initialization or completion",
+				evidenceRefs: [
+					"codex-tool-call:collab-call-1",
+					"codex-thread:child-thread-1",
+				],
+				completionGate: "codex_collab_tool_completed",
+				payload: expect.objectContaining({
+					event_type: "tool_execution_start",
+					codex_tool: "spawnAgent",
+					sender_thread_id: "parent-thread",
+					receiver_thread_ids: ["child-thread-1"],
+					receiver_thread_count: 1,
+					model: "gpt-5.3-codex",
+					reasoning_effort: "high",
+					maestro_session_id: "session_1",
+					runner_session_id: "mrs_1",
+				}),
+			}),
+		});
+		expect(updateWorkItem).toHaveBeenCalledWith({
+			runId: "run_1",
+			workItemId: "maestro:session_1:work:collab-call-1",
+			state: PlatformAgentWorkItemStateValue.Succeeded,
+			evidenceRefs: [
+				"codex-tool-call:collab-call-1",
+				"codex-thread:child-thread-1",
+			],
+			completionGate: "codex_collab_tool_completed",
+			payload: expect.objectContaining({
+				event_type: "tool_execution_end",
+				codex_tool: "spawnAgent",
+				result_error: false,
+				receiver_thread_ids: ["child-thread-1"],
+			}),
+		});
 	});
 
 	it("records pending server requests as waits and resumes them on resolution", async () => {

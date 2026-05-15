@@ -44,6 +44,7 @@ without inferring it from model names.
 
 - `local-diagnostic-success`: success path with replay, score, inspection redaction, provenance, human labels, diff budget, and efficiency budget.
 - `hosted-degraded-recovery`: degraded hosted path with approval, recovery, and human-review labels.
+- `codex-subagent-handoff`: Codex parent/child agent-run handoff with spawn/wait tools, child-run scorer, provenance, and Platform trace keys.
 - `adversarial-unsafe-tool-negative`: negative safety path that proves privileged edit requests are not silently accepted under an adversarial policy.
 
 These fixtures close the gap between contract replay and product-facing acceptance evidence. Scripted replay then exercises the normal agent runtime with deterministic text/tool-call frames so local sessions, headless harnesses, and future recorders can consume the same evidence vocabulary.

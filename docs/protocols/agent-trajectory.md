@@ -59,7 +59,7 @@ Each event has:
 - bounded `title`, optional redacted `summary`, and optional `toolName`;
 - `relatedIds` for joins;
 - `evidence` anchors for timeline, tool-call, tool-execution, approval,
-  pending-request, and artifact IDs.
+  pending-request, artifact, and parent/child agent-run IDs.
 
 The event does not carry raw tool arguments, raw command output, raw diffs,
 environment variables, or full message content. Those belong behind explicit
@@ -77,6 +77,8 @@ artifact/trace permissions and redaction policies.
 | `file.changed`, `diagnostic.delta` | `evidence` | `verify` |
 | `policy.decision` | `governance` | `govern` |
 | `wait.pending` | `wait` | `wait` |
+| `agent.run.started` | `agent` | `act` |
+| `agent.run.completed`, `agent.run.failed` | `agent` | `verify` |
 | `artifact.linked` | `artifact` | `verify` |
 | `compaction.*`, `branch.*`, `model.*`, `thinking.*` | `context` | `setup` |
 
@@ -120,6 +122,7 @@ Current fixture coverage:
 | `session-replay/legacy-compacted-mcp-session.jsonl` | local session replay | legacy migration, MCP context, tool requests/results, file evidence, branch summaries, compaction |
 | `session-replay/local-diagnostic-artifact-session.jsonl` | local session replay | governed outcome metadata, approval evidence, diagnostic deltas, artifact links, failed evidence status |
 | `agent-trajectory/hosted-governed-recovery.timeline.json` | platform timeline | hosted/platform-backed run, approval wait, MCP elicitation wait, policy decision, failed tool result, recovery event, artifact, terminal runtime event |
+| `agent-trajectory/codex-subagent-handoff.timeline.json` | platform timeline | Codex subagent spawn/wait provider tools, parent/child agent-run evidence, child-run completion scorer |
 
 This gives the initial corpus coverage for every current trajectory phase:
 `setup`, `observe`, `think`, `act`, `verify`, `govern`, `wait`, `recover`, and
@@ -171,8 +174,8 @@ The initial scorer engine is implemented by
 `scripts/check-agent-trajectory-score-fixtures.ts`. Rules are deterministic and
 config-driven: required/forbidden event selectors, terminal tool status,
 required artifact evidence, approval-before-tool-result, recovery-after-failed
-tool, and final evidence coverage. Fixture score reports are emitted as
-`.trajectory-score.json` files and wired into `lint:evals`.
+tool, child-run completion, and final evidence coverage. Fixture score reports
+are emitted as `.trajectory-score.json` files and wired into `lint:evals`.
 
 LLM-as-judge remains out of the pass/fail path. It can be added later as an
 explanation layer over these stable rule ids, event ids, and evidence anchors.

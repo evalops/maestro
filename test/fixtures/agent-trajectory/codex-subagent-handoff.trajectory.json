@@ -1,0 +1,366 @@
+{
+	"schemaVersion": "evalops.maestro.agent-trajectory-fixture.v1",
+	"fixture": "agent-trajectory/codex-subagent-handoff.timeline.json",
+	"trajectorySchemaVersion": "evalops.maestro.agent-trajectory.v1",
+	"run": {
+		"id": "codex-subagent-handoff-1",
+		"sessionId": "codex-subagent-handoff-1",
+		"source": "platform",
+		"platformBacked": true
+	},
+	"counts": {
+		"events": 11,
+		"evidenceAnchors": 33,
+		"byKind": {
+			"session": 1,
+			"message": 3,
+			"tool": 4,
+			"agent": 2,
+			"runtime": 1
+		},
+		"byPhase": {
+			"setup": 1,
+			"observe": 1,
+			"think": 2,
+			"act": 3,
+			"verify": 3,
+			"finish": 1
+		},
+		"byStatus": {
+			"info": 1,
+			"completed": 7,
+			"running": 3
+		}
+	},
+	"events": [
+		{
+			"id": "trajectory:session-started:codex-subagent-handoff-1",
+			"sequence": 1,
+			"kind": "session",
+			"phase": "setup",
+			"actor": "platform",
+			"type": "session.started",
+			"status": "info",
+			"visibility": "user",
+			"source": "platform",
+			"title": "Codex operating-layer session started",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "session-started:codex-subagent-handoff-1"
+				},
+				{
+					"kind": "agent_run",
+					"id": "agent-run-parent-codex-1"
+				}
+			],
+			"relatedIds": ["agent-run-parent-codex-1"]
+		},
+		{
+			"id": "trajectory:message:codex-user-1",
+			"sequence": 2,
+			"kind": "message",
+			"phase": "observe",
+			"actor": "user",
+			"type": "message.user",
+			"status": "completed",
+			"visibility": "user",
+			"source": "platform",
+			"title": "User message",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "message:codex-user-1"
+				}
+			],
+			"summary": "Delegate repository inspection to a Codex subagent."
+		},
+		{
+			"id": "trajectory:message:codex-assistant-1",
+			"sequence": 3,
+			"kind": "message",
+			"phase": "think",
+			"actor": "assistant",
+			"type": "message.assistant",
+			"status": "completed",
+			"visibility": "user",
+			"source": "platform",
+			"title": "Assistant response",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "message:codex-assistant-1"
+				}
+			],
+			"summary": "I will spawn a Codex child agent and wait for its result."
+		},
+		{
+			"id": "trajectory:tool-requested:codex-assistant-1:collab-spawn-1",
+			"sequence": 4,
+			"kind": "tool",
+			"phase": "act",
+			"actor": "assistant",
+			"type": "tool.requested",
+			"status": "running",
+			"visibility": "user",
+			"source": "platform",
+			"title": "Requested codex.subagent.spawnAgent",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "tool-requested:codex-assistant-1:collab-spawn-1"
+				},
+				{
+					"kind": "tool_call",
+					"id": "collab-spawn-1"
+				},
+				{
+					"kind": "agent_run",
+					"id": "agent-run-parent-codex-1"
+				},
+				{
+					"kind": "child_agent_run",
+					"id": "agent-run-child-codex-1"
+				}
+			],
+			"toolName": "codex.subagent.spawnAgent",
+			"relatedIds": [
+				"agent-run-child-codex-1",
+				"agent-run-parent-codex-1",
+				"collab-spawn-1"
+			]
+		},
+		{
+			"id": "trajectory:agent-run:codex-child-1-started",
+			"sequence": 5,
+			"kind": "agent",
+			"phase": "act",
+			"actor": "agent",
+			"type": "agent.run.started",
+			"status": "running",
+			"visibility": "admin",
+			"source": "platform",
+			"title": "Codex child agent started",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "agent-run:codex-child-1-started"
+				},
+				{
+					"kind": "tool_call",
+					"id": "collab-spawn-1"
+				},
+				{
+					"kind": "agent_run",
+					"id": "agent-run-child-codex-1"
+				},
+				{
+					"kind": "parent_agent_run",
+					"id": "agent-run-parent-codex-1"
+				},
+				{
+					"kind": "child_agent_run",
+					"id": "agent-run-child-codex-1"
+				}
+			],
+			"toolName": "codex.subagent.spawnAgent",
+			"relatedIds": [
+				"agent-run-child-codex-1",
+				"agent-run-parent-codex-1",
+				"collab-spawn-1"
+			],
+			"summary": "Child Codex thread received the delegated inspection prompt."
+		},
+		{
+			"id": "trajectory:tool-result:codex-child-1:collab-spawn-1",
+			"sequence": 6,
+			"kind": "tool",
+			"phase": "verify",
+			"actor": "tool",
+			"type": "tool.completed",
+			"status": "completed",
+			"visibility": "user",
+			"source": "platform",
+			"title": "codex.subagent.spawnAgent completed",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "tool-result:codex-child-1:collab-spawn-1"
+				},
+				{
+					"kind": "tool_call",
+					"id": "collab-spawn-1"
+				},
+				{
+					"kind": "agent_run",
+					"id": "agent-run-parent-codex-1"
+				},
+				{
+					"kind": "child_agent_run",
+					"id": "agent-run-child-codex-1"
+				}
+			],
+			"toolName": "codex.subagent.spawnAgent",
+			"relatedIds": [
+				"agent-run-child-codex-1",
+				"agent-run-parent-codex-1",
+				"collab-spawn-1"
+			]
+		},
+		{
+			"id": "trajectory:tool-requested:codex-assistant-1:collab-wait-1",
+			"sequence": 7,
+			"kind": "tool",
+			"phase": "act",
+			"actor": "assistant",
+			"type": "tool.requested",
+			"status": "running",
+			"visibility": "user",
+			"source": "platform",
+			"title": "Requested codex.subagent.wait",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "tool-requested:codex-assistant-1:collab-wait-1"
+				},
+				{
+					"kind": "tool_call",
+					"id": "collab-wait-1"
+				},
+				{
+					"kind": "agent_run",
+					"id": "agent-run-parent-codex-1"
+				},
+				{
+					"kind": "child_agent_run",
+					"id": "agent-run-child-codex-1"
+				}
+			],
+			"toolName": "codex.subagent.wait",
+			"relatedIds": [
+				"agent-run-child-codex-1",
+				"agent-run-parent-codex-1",
+				"collab-wait-1"
+			]
+		},
+		{
+			"id": "trajectory:agent-run:codex-child-1-completed",
+			"sequence": 8,
+			"kind": "agent",
+			"phase": "verify",
+			"actor": "agent",
+			"type": "agent.run.completed",
+			"status": "completed",
+			"visibility": "admin",
+			"source": "platform",
+			"title": "Codex child agent completed",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "agent-run:codex-child-1-completed"
+				},
+				{
+					"kind": "tool_call",
+					"id": "collab-wait-1"
+				},
+				{
+					"kind": "agent_run",
+					"id": "agent-run-child-codex-1"
+				},
+				{
+					"kind": "parent_agent_run",
+					"id": "agent-run-parent-codex-1"
+				},
+				{
+					"kind": "child_agent_run",
+					"id": "agent-run-child-codex-1"
+				}
+			],
+			"toolName": "codex.subagent.wait",
+			"relatedIds": [
+				"agent-run-child-codex-1",
+				"agent-run-parent-codex-1",
+				"collab-wait-1"
+			],
+			"summary": "Child Codex thread returned a bounded repository inspection result."
+		},
+		{
+			"id": "trajectory:tool-result:codex-child-1:collab-wait-1",
+			"sequence": 9,
+			"kind": "tool",
+			"phase": "verify",
+			"actor": "tool",
+			"type": "tool.completed",
+			"status": "completed",
+			"visibility": "user",
+			"source": "platform",
+			"title": "codex.subagent.wait completed",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "tool-result:codex-child-1:collab-wait-1"
+				},
+				{
+					"kind": "tool_call",
+					"id": "collab-wait-1"
+				},
+				{
+					"kind": "agent_run",
+					"id": "agent-run-parent-codex-1"
+				},
+				{
+					"kind": "child_agent_run",
+					"id": "agent-run-child-codex-1"
+				}
+			],
+			"toolName": "codex.subagent.wait",
+			"relatedIds": [
+				"agent-run-child-codex-1",
+				"agent-run-parent-codex-1",
+				"collab-wait-1"
+			]
+		},
+		{
+			"id": "trajectory:message:codex-assistant-2",
+			"sequence": 10,
+			"kind": "message",
+			"phase": "think",
+			"actor": "assistant",
+			"type": "message.assistant",
+			"status": "completed",
+			"visibility": "user",
+			"source": "platform",
+			"title": "Assistant response",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "message:codex-assistant-2"
+				}
+			],
+			"summary": "The child agent returned the repository inspection and no escalation is needed."
+		},
+		{
+			"id": "trajectory:runtime:codex-finished-1",
+			"sequence": 11,
+			"kind": "runtime",
+			"phase": "finish",
+			"actor": "platform",
+			"type": "runtime.finished",
+			"status": "completed",
+			"visibility": "admin",
+			"source": "platform",
+			"title": "Codex operating-layer run finished",
+			"evidence": [
+				{
+					"kind": "timeline_item",
+					"id": "runtime:codex-finished-1"
+				},
+				{
+					"kind": "agent_run",
+					"id": "agent-run-parent-codex-1"
+				}
+			],
+			"relatedIds": ["agent-run-parent-codex-1"]
+		}
+	]
+}

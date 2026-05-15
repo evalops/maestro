@@ -523,10 +523,15 @@ export type ComposerRunTimelineEventType =
 	| "artifact.linked"
 	| "policy.decision"
 	| "wait.pending"
+	| "agent.run.started"
+	| "agent.run.completed"
+	| "agent.run.failed"
 	| "compaction.created"
 	| "branch.created"
 	| "model.changed"
 	| "thinking.changed"
+	| "runtime.recovery"
+	| "runtime.finished"
 	| "custom.event";
 
 export type ComposerRunTimelineStatus =
@@ -556,6 +561,9 @@ export interface ComposerRunTimelineItem {
 	approvalRequestId?: string;
 	toolExecutionId?: string;
 	artifactId?: string;
+	agentRunId?: string;
+	parentAgentRunId?: string;
+	childAgentRunId?: string;
 	remoteRunnerSessionId?: string;
 	platform?: ComposerPendingRequestPlatformRef;
 	platformOperation?: ComposerPendingRequestPlatformOperation;

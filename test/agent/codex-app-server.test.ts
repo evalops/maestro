@@ -58,6 +58,7 @@ class FakeCodexAppServerClient implements CodexAppServerClientLike {
 		private readonly serverToolName = "lookup_ticket",
 		private readonly emitCollabAgentEvents = false,
 		private readonly callDynamicToolBeforeNotifications = false,
+		private readonly dynamicToolCallCount = 1,
 	) {}
 
 	async initialize(
@@ -78,7 +79,7 @@ class FakeCodexAppServerClient implements CodexAppServerClientLike {
 		if (method === "turn/start") {
 			queueMicrotask(async () => {
 				if (this.callDynamicToolBeforeNotifications) {
-					await this.callLookupToolRequest();
+					await this.callLookupToolRequests();
 					this.emitTokenUsage();
 					this.emit("turn/completed", {
 						threadId: "thread-1",
@@ -140,7 +141,7 @@ class FakeCodexAppServerClient implements CodexAppServerClientLike {
 					});
 				}
 				if (this.requestHandlers.size > 0) {
-					await this.callLookupToolRequest();
+					await this.callLookupToolRequests();
 				}
 				this.emitTokenUsage();
 				this.emit("turn/completed", {
@@ -218,7 +219,13 @@ class FakeCodexAppServerClient implements CodexAppServerClientLike {
 		return { handled: false };
 	}
 
-	private async callLookupToolRequest(): Promise<void> {
+	private async callLookupToolRequests(): Promise<void> {
+		for (let index = 0; index < this.dynamicToolCallCount; index++) {
+			await this.callLookupToolRequest(index + 1);
+		}
+	}
+
+	private async callLookupToolRequest(index: number): Promise<void> {
 		if (this.requestHandlers.size === 0) {
 			return;
 		}
@@ -228,7 +235,7 @@ class FakeCodexAppServerClient implements CodexAppServerClientLike {
 			params: {
 				threadId: "thread-1",
 				turnId: "turn-1",
-				callId: "tool-call-1",
+				callId: `tool-call-${index}`,
 				namespace: null,
 				tool: this.serverToolName,
 				arguments: { id: "ABC-123" },
