@@ -165,6 +165,8 @@ function toThreadSummary(
 		title: summary?.title ?? metadata.title ?? metadata.summary,
 		summary: metadata.summary,
 		resumeSummary: summary?.resumeSummary ?? metadata.resumeSummary,
+		memoryExtractionHash:
+			summary?.memoryExtractionHash ?? metadata.memoryExtractionHash,
 		subject: metadata.subject,
 		path: metadata.path,
 		createdAt: metadata.created.toISOString(),
@@ -185,6 +187,7 @@ function toThreadSummaryFromSessionSummary(
 		title: summary.title ?? summary.subject,
 		summary: summary.summary ?? summary.title ?? summary.subject,
 		resumeSummary: summary.resumeSummary,
+		memoryExtractionHash: summary.memoryExtractionHash,
 		subject: summary.subject,
 		createdAt: summary.createdAt,
 		updatedAt: summary.updatedAt,
@@ -200,6 +203,7 @@ function toThreadSummaryFromLoadedSession(loaded: {
 	title?: string;
 	summary?: string;
 	resumeSummary?: string;
+	memoryExtractionHash?: string;
 	createdAt: string;
 	updatedAt: string;
 	messageCount: number;
@@ -213,6 +217,7 @@ function toThreadSummaryFromLoadedSession(loaded: {
 		title: loaded.title ?? loaded.subject,
 		summary: loaded.summary ?? loaded.title ?? loaded.subject,
 		resumeSummary: loaded.resumeSummary,
+		memoryExtractionHash: loaded.memoryExtractionHash,
 		subject: loaded.subject,
 		createdAt: loaded.createdAt,
 		updatedAt: loaded.updatedAt,

@@ -34,6 +34,7 @@ export interface LoadedSessionData {
 	title?: string;
 	summary?: string;
 	resumeSummary?: string;
+	memoryExtractionHash?: string;
 	messages: AppMessage[];
 	createdAt: string;
 	updatedAt: string;
@@ -93,6 +94,7 @@ export class SessionCatalog {
 						firstMessage: info.firstMessage || "(no messages)",
 						summary: derivedSummary,
 						resumeSummary: info.resumeSummary,
+						memoryExtractionHash: info.memoryExtractionHash,
 						favorite: info.favorite,
 						tags: info.tags,
 						allMessagesText: info.allMessagesText,
@@ -147,6 +149,7 @@ export class SessionCatalog {
 					title: info.title ?? info.summary,
 					summary: info.summary || info.firstMessage || undefined,
 					resumeSummary: info.resumeSummary,
+					memoryExtractionHash: info.memoryExtractionHash,
 					createdAt: info.created.toISOString(),
 					updatedAt: stats.mtime.toISOString(),
 					messageCount: info.messageCount,
@@ -187,6 +190,7 @@ export class SessionCatalog {
 			title: info.title ?? info.summary,
 			summary: derivedSummary,
 			resumeSummary: info.resumeSummary,
+			memoryExtractionHash: info.memoryExtractionHash,
 			messages: info.messages,
 			createdAt: info.created.toISOString(),
 			updatedAt: stats.mtime.toISOString(),

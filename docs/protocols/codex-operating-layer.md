@@ -38,7 +38,7 @@ npm run check:codex-operating-layer
 | installed by default | `default-install` | `package.json`, `test/install/native-dependencies.test.ts` |
 | ChatGPT sign-in | `chatgpt-sign-in` | `src/cli/commands/codex.ts`, `test/cli/codex-command.test.ts` |
 | dynamic tools | `dynamic-tools` | `src/codex/compatibility.ts`, `src/agent/providers/codex-app-server.ts`, `test/codex/compatibility.test.ts`, `test/agent/codex-app-server.test.ts` |
-| durable threads, goals, memory | `durable-threads-goals-memory` | `src/session/types.ts`, `test/app-server/session-api.test.ts` |
+| durable threads, goals, memory | `durable-threads-goals-memory` | `src/session/types.ts`, `packages/contracts/src/maestro-app-server.ts`, `test/app-server/session-api.test.ts` |
 | approvals and sandbox policy | `approvals-sandbox-policy` | `src/agent/transport.ts`, `test/agent/provider-transport-provider-tools.test.ts`, `packages/control-plane-rs/src/main.rs`, `docs/protocols/pending-requests.md` |
 | subagents | `subagents` | `src/agent/providers/codex-app-server.ts`, `test/agent/provider-transport-provider-tools.test.ts` |
 | realtime streaming | `realtime-streaming` | `src/server/handlers/runtime-app-server-ws.ts`, `test/server/runtime-app-server-ws.test.ts` |

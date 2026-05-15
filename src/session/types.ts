@@ -193,6 +193,7 @@ export interface SessionMetadata {
 	firstMessage: string;
 	summary: string;
 	resumeSummary?: string;
+	memoryExtractionHash?: string;
 	favorite: boolean;
 	tags?: string[];
 	allMessagesText: string;
@@ -206,6 +207,7 @@ export interface SessionSummary {
 	title?: string;
 	summary?: string;
 	resumeSummary?: string;
+	memoryExtractionHash?: string;
 	createdAt: string;
 	updatedAt: string;
 	messageCount: number;

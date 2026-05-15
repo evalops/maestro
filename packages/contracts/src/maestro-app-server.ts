@@ -98,6 +98,7 @@ export const MaestroAppServerThreadSummarySchema = Type.Object({
 	title: Type.Optional(Type.String()),
 	summary: Type.Optional(Type.String()),
 	resumeSummary: Type.Optional(Type.String()),
+	memoryExtractionHash: Type.Optional(Type.String()),
 	subject: Type.Optional(Type.String()),
 	path: Type.Optional(Type.String()),
 	createdAt: Type.String(),

@@ -98,9 +98,17 @@
 		},
 		{
 			"area": "durable-threads-goals-memory",
+			"evidenceType": "source",
+			"path": "packages/contracts/src/maestro-app-server.ts",
+			"anchors": ["MaestroAppServerThreadSummarySchema", "memoryExtractionHash"]
+		},
+		{
+			"area": "durable-threads-goals-memory",
 			"evidenceType": "test",
 			"path": "test/app-server/session-api.test.ts",
 			"anchors": [
+				"exposes memory extraction hashes in file-backed thread summaries",
+				"exposes hosted memory extraction hashes from thread list and read",
 				"persists thread goals and clears them through the app-server contract",
 				"sets hosted thread goals without a file-backed goal read",
 				"fails goal updates when the writer does not persist the new goal"
