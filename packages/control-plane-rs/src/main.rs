@@ -617,6 +617,34 @@ fn a2a_task_id_from_get_path(path: &str) -> Option<&str> {
     (!id.is_empty() && !id.contains('/') && !id.contains(':')).then_some(id)
 }
 
+fn validate_a2a_protocol_version(head: &RequestHead) -> Result<(), Vec<u8>> {
+    let Some(version) = a2a_requested_protocol_version(head) else {
+        return Ok(());
+    };
+    let version = version.trim();
+    if version == A2A_PROTOCOL_VERSION {
+        Ok(())
+    } else {
+        let message =
+            format!("Unsupported A2A protocol version {version}; expected {A2A_PROTOCOL_VERSION}");
+        Err(a2a_error_response(400, "UNSUPPORTED_VERSION", &message))
+    }
+}
+
+fn a2a_requested_protocol_version(head: &RequestHead) -> Option<&str> {
+    head.headers
+        .get("a2a-version")
+        .and_then(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .find(|part| !part.is_empty())
+        })
+        .or_else(|| head.query.get("a2a-version").map(String::as_str))
+        .or_else(|| head.query.get("A2A-Version").map(String::as_str))
+        .or_else(|| head.query.get("a2aVersion").map(String::as_str))
+}
+
 async fn handle_a2a_endpoint(
     stream: &mut TcpStream,
     initial: &mut Vec<u8>,
@@ -625,6 +653,10 @@ async fn handle_a2a_endpoint(
 ) -> Vec<u8> {
     if head.method == "OPTIONS" {
         return response(204, "text/plain; charset=utf-8", &[]);
+    }
+
+    if let Err(response) = validate_a2a_protocol_version(&head) {
+        return response;
     }
 
     if let Err(response) = validate_csrf(&head, &state.config) {
@@ -7559,6 +7591,29 @@ mod tests {
         assert_eq!(
             response["error"]["message"],
             "A2A configuration must be an object"
+        );
+        assert!(state.a2a_tasks.lock().await.is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_message_send_rejects_incompatible_protocol_version() {
+        let body = r#"{"message":{"messageId":"msg-1","contextId":"ctx-1","role":"ROLE_USER","parts":[{"text":"hello","mediaType":"text/plain"}]}}"#;
+        let request = format!(
+            "POST /message:send?a2a-version=2.0 HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let mut initial = request.into_bytes();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (_client, mut server) = tcp_stream_pair().await;
+        let state = test_app_state_with_sessions(HashMap::new());
+
+        let response =
+            response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+
+        assert_eq!(response["error"]["code"], "UNSUPPORTED_VERSION");
+        assert_eq!(
+            response["error"]["message"],
+            "Unsupported A2A protocol version 2.0; expected 1.0"
         );
         assert!(state.a2a_tasks.lock().await.is_empty());
     }
