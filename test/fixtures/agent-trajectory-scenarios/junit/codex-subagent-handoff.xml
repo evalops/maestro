@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="codex-subagent-handoff" tests="6" failures="0" warnings="0">
+	<testcase classname="codex-subagent-handoff" name="spawn-tool-recorded"></testcase>
+	<testcase classname="codex-subagent-handoff" name="wait-tool-recorded"></testcase>
+	<testcase classname="codex-subagent-handoff" name="child-run-completed"></testcase>
+	<testcase classname="codex-subagent-handoff" name="child-run-provenance"></testcase>
+	<testcase classname="codex-subagent-handoff" name="subagent-efficiency-budget"></testcase>
+	<testcase classname="codex-subagent-handoff" name="subagent-labels-present"></testcase>
+</testsuite>

@@ -121,6 +121,8 @@ export interface ToolSafetyContext {
 		rateWindowMs: number;
 		rateLimit: number;
 	};
+	/** Suppress loop warnings for a transport-managed read-only duplicate while preserving other policy checks. */
+	shouldSkipLoopDetection?: (toolCall: ToolCall) => boolean;
 	// Emit helpers
 	emitToolResult: (
 		message: ToolResultMessage,
@@ -394,6 +396,7 @@ export async function* evaluateToolSafety(
 		toolExecutionBridge,
 		hookService,
 		firewall,
+		shouldSkipLoopDetection,
 		emitToolResult,
 	} = ctx;
 
@@ -510,6 +513,9 @@ export async function* evaluateToolSafety(
 	const safetyCheck = safetyMiddleware.preExecution(
 		effectiveToolCall.name,
 		effectiveToolCall.arguments as Record<string, unknown>,
+		{
+			skipLoopDetection: shouldSkipLoopDetection?.(effectiveToolCall) === true,
+		},
 	);
 
 	if (!safetyCheck.allowed && !safetyCheck.requiresApproval) {

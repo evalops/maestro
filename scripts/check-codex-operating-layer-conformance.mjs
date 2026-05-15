@@ -16,6 +16,7 @@ const requiredAreas = [
 	"durable-threads-goals-memory",
 	"approvals-sandbox-policy",
 	"subagents",
+	"multi-agent-workgraph",
 	"realtime-streaming",
 	"typescript-runtime",
 	"rust-control-plane",
@@ -28,7 +29,9 @@ const allowedEvidenceTypes = new Set([
 	"source",
 	"test",
 	"doc",
+	"fixture",
 	"package-script",
+	"scenario",
 	"live-smoke",
 ]);
 

@@ -33,6 +33,7 @@ import type {
 	ToolCall,
 	ToolResultMessage,
 } from "../types.js";
+import { stableStringify } from "./stable-stringify.js";
 
 const logger = createLogger("transport:tool-execution-bridge");
 
@@ -376,19 +377,6 @@ function classifyToolExecution(
 			resourceKind: "mcp_server",
 		},
 	};
-}
-
-function stableStringify(value: unknown): string {
-	if (Array.isArray(value)) {
-		return `[${value.map((item) => stableStringify(item)).join(",")}]`;
-	}
-	if (value && typeof value === "object") {
-		return `{${Object.entries(value as Record<string, unknown>)
-			.sort(([left], [right]) => left.localeCompare(right))
-			.map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`)
-			.join(",")}}`;
-	}
-	return JSON.stringify(value);
 }
 
 function cloneRecord(value: Record<string, unknown>): Record<string, unknown> {

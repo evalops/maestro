@@ -32,7 +32,7 @@ function assertSessionId(sessionId: string): void {
  * compatibility in single-user deployments.
  */
 function verifySessionOwnership(
-	session: { owner?: unknown; subject?: unknown },
+	session: Record<string, unknown>,
 	subject: string,
 ): boolean {
 	// Check explicit owner field

@@ -82,6 +82,36 @@ const rulesByFixture: Record<string, AgentTrajectoryScorerRule[]> = {
 			},
 		},
 	],
+	"agent-trajectory/codex-subagent-handoff.timeline.json": [
+		...defaultTrajectoryFixtureRules,
+		{
+			id: "codex-child-agent-completed",
+			severity: "error",
+			description: "Codex subagent handoff must preserve child-run completion.",
+			childRunCompleted: {
+				parentAgentRunId: "agent-run-parent-codex-1",
+				childAgentRunId: "agent-run-child-codex-1",
+			},
+		},
+		{
+			id: "codex-subagent-spawn-recorded",
+			severity: "error",
+			description: "Codex subagent handoff must record the spawn provider tool.",
+			anyEvent: {
+				type: "tool.requested",
+				toolName: "codex.subagent.spawnAgent",
+			},
+		},
+		{
+			id: "codex-subagent-wait-recorded",
+			severity: "error",
+			description: "Codex subagent handoff must record the wait provider tool.",
+			anyEvent: {
+				type: "tool.requested",
+				toolName: "codex.subagent.wait",
+			},
+		},
+	],
 };
 
 export function rulesForTrajectoryFixture(

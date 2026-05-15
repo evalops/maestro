@@ -72,15 +72,22 @@ import {
 	type SkillArtifactMetadata,
 	getSkillArtifactMetadataFromDetails,
 } from "../skills/artifact-metadata.js";
-import { getOptimalConcurrency } from "../tools/parallel-execution.js";
+import {
+	getOptimalConcurrency,
+	isReadOnlyTool,
+} from "../tools/parallel-execution.js";
 import { trackUsage } from "../tracking/cost-tracker.js";
 import { getTrainingHeaders } from "../training.js";
 import type { ActionApprovalService } from "./action-approval.js";
 import { getStoredCredentials } from "./keys.js";
 import type { ToolRetryConfig, ToolRetryService } from "./tool-retry.js";
 import { createProviderStream } from "./transport/create-provider-stream.js";
+import { stableStringify } from "./transport/stable-stringify.js";
 import {
+	type ObserveToolExecutionPlan,
 	type PlatformToolExecutionBridge,
+	type ToolExecutionBridgePlan,
+	buildObservedResultMetadata,
 	getDefaultPlatformToolExecutionBridge,
 } from "./transport/tool-execution-bridge.js";
 import { createToolExecutionPromise } from "./transport/tool-execution.js";
@@ -90,6 +97,7 @@ import {
 } from "./transport/tool-safety-pipeline.js";
 import {
 	type PendingExecution,
+	type ToolExecutionOutcome,
 	createToolUpdateQueue,
 	waitForNextExecutionOrUpdate,
 } from "./transport/tool-update-queue.js";
@@ -102,6 +110,7 @@ import {
 import type {
 	AgentEvent,
 	AgentRunConfig,
+	AgentTool,
 	AgentToolResult,
 	AgentTransport,
 	AppMessage,
@@ -118,6 +127,228 @@ type GovernedToolOutcome =
 	| "authentication_required"
 	| "denied"
 	| "rate_limited";
+
+type ReusableToolResultEntry = {
+	message: ToolResultMessage;
+};
+
+type ReusableToolResultCacheGeneration = {
+	value: number;
+};
+
+function getReusableToolResultCacheKey(
+	toolCall: ToolCall,
+	tools: AgentTool[],
+): string | undefined {
+	const tool = tools.find((candidate) => candidate.name === toolCall.name);
+	if (!tool || tool.annotations?.destructiveHint === true) {
+		return undefined;
+	}
+	if (!isReadOnlyTool(tool.name, tool.annotations)) {
+		return undefined;
+	}
+	return `${toolCall.name}:${stableStringify(toolCall.arguments)}`;
+}
+
+function cloneToolResultForCache(
+	message: ToolResultMessage,
+): ToolResultMessage {
+	return {
+		...message,
+		content: message.content.map((item) => ({ ...item })),
+	};
+}
+
+function cloneToolOutcomeForCall(
+	outcome: ToolExecutionOutcome,
+	toolCall: ToolCall,
+	timestamp: number,
+): ToolExecutionOutcome {
+	return {
+		message: {
+			...outcome.message,
+			toolCallId: toolCall.id,
+			toolName: toolCall.name,
+			content: outcome.message.content.map((item) => ({ ...item })),
+			timestamp,
+		},
+		isError: outcome.isError,
+	};
+}
+
+function resolvePlatformToolExecutionBridge(
+	option: PlatformToolExecutionBridge | false | undefined,
+): PlatformToolExecutionBridge | undefined {
+	if (option === false) {
+		return undefined;
+	}
+	return option ?? getDefaultPlatformToolExecutionBridge();
+}
+
+async function recordReusableToolExecutionBridgeOutput({
+	bridge,
+	plan,
+	outcome,
+	durationMs,
+	signal,
+}: {
+	bridge?: PlatformToolExecutionBridge;
+	plan?: ToolExecutionBridgePlan;
+	outcome: ToolExecutionOutcome;
+	durationMs: number;
+	signal?: AbortSignal;
+}): Promise<ToolExecutionOutcome> {
+	if (!bridge || !plan) {
+		return outcome;
+	}
+	const observed =
+		plan.kind === "observe"
+			? await bridge.recordObservation(
+					plan as ObserveToolExecutionPlan,
+					outcome.message,
+					signal,
+				)
+			: undefined;
+	const governedOutput =
+		plan.kind === "governed"
+			? await bridge.recordGovernedOutput(
+					plan,
+					outcome.message,
+					durationMs,
+					signal,
+				)
+			: undefined;
+	return {
+		...outcome,
+		...buildObservedResultMetadata(plan, observed ?? governedOutput),
+	};
+}
+
+function hasReusableToolResultState(
+	cacheKey: string,
+	cache: Map<string, ReusableToolResultEntry>,
+	pending: Map<string, Promise<ToolExecutionOutcome>>,
+	policyCheckedKeys: Set<string>,
+	pendingSafetyChecks: Map<string, number>,
+): boolean {
+	return (
+		cache.has(cacheKey) ||
+		pending.has(cacheKey) ||
+		policyCheckedKeys.has(cacheKey) ||
+		(pendingSafetyChecks.get(cacheKey) ?? 0) > 0
+	);
+}
+
+function incrementPendingReusableToolSafetyCheck(
+	cacheKey: string | undefined,
+	pendingSafetyChecks: Map<string, number>,
+): void {
+	if (!cacheKey) {
+		return;
+	}
+	pendingSafetyChecks.set(
+		cacheKey,
+		(pendingSafetyChecks.get(cacheKey) ?? 0) + 1,
+	);
+}
+
+function decrementPendingReusableToolSafetyCheck(
+	cacheKey: string | undefined,
+	pendingSafetyChecks: Map<string, number>,
+): void {
+	if (!cacheKey) {
+		return;
+	}
+	const nextCount = (pendingSafetyChecks.get(cacheKey) ?? 0) - 1;
+	if (nextCount <= 0) {
+		pendingSafetyChecks.delete(cacheKey);
+		return;
+	}
+	pendingSafetyChecks.set(cacheKey, nextCount);
+}
+
+function clearReusableToolResultState(
+	cache: Map<string, ReusableToolResultEntry>,
+	pending: Map<string, Promise<ToolExecutionOutcome>>,
+	policyCheckedKeys: Set<string>,
+	pendingSafetyChecks: Map<string, number>,
+	cacheGeneration: ReusableToolResultCacheGeneration,
+): void {
+	cache.clear();
+	pending.clear();
+	policyCheckedKeys.clear();
+	pendingSafetyChecks.clear();
+	cacheGeneration.value += 1;
+}
+
+function invalidateReusableToolResultsAfterMutation(
+	toolCall: ToolCall,
+	tools: AgentTool[],
+	cache: Map<string, ReusableToolResultEntry>,
+	pending: Map<string, Promise<ToolExecutionOutcome>>,
+	policyCheckedKeys: Set<string>,
+	pendingSafetyChecks: Map<string, number>,
+	cacheGeneration: ReusableToolResultCacheGeneration,
+): void {
+	if (getReusableToolResultCacheKey(toolCall, tools) !== undefined) {
+		return;
+	}
+	clearReusableToolResultState(
+		cache,
+		pending,
+		policyCheckedKeys,
+		pendingSafetyChecks,
+		cacheGeneration,
+	);
+}
+
+function hasPendingMutatingToolExecution(
+	pendingExecutions: readonly PendingExecution[],
+	tools: AgentTool[],
+): boolean {
+	return pendingExecutions.some(
+		(execution) =>
+			getReusableToolResultCacheKey(execution.toolCall, tools) === undefined,
+	);
+}
+
+function trackReusableToolResult(
+	cacheKey: string,
+	executionPromise: Promise<ToolExecutionOutcome>,
+	cache: Map<string, ReusableToolResultEntry>,
+	pending: Map<string, Promise<ToolExecutionOutcome>>,
+	policyCheckedKeys?: Set<string>,
+	cacheGeneration?: ReusableToolResultCacheGeneration,
+): Promise<ToolExecutionOutcome> {
+	const trackedGeneration = cacheGeneration?.value;
+	const trackedPromise = executionPromise
+		.then((outcome) => {
+			if (
+				!outcome.isError &&
+				outcome.message.isError !== true &&
+				(cacheGeneration === undefined ||
+					cacheGeneration.value === trackedGeneration)
+			) {
+				cache.set(cacheKey, {
+					message: cloneToolResultForCache(outcome.message),
+				});
+			} else {
+				policyCheckedKeys?.delete(cacheKey);
+			}
+			return outcome;
+		})
+		.catch((error) => {
+			policyCheckedKeys?.delete(cacheKey);
+			throw error;
+		})
+		.finally(() => {
+			if (pending.get(cacheKey) === trackedPromise) {
+				pending.delete(cacheKey);
+			}
+		});
+	pending.set(cacheKey, trackedPromise);
+	return trackedPromise;
+}
 
 class AgentEventQueue {
 	private events: AgentEvent[] = [];
@@ -492,6 +723,20 @@ export class ProviderTransport implements AgentTransport {
 		}
 
 		const dynamicToolEventQueue = new AgentEventQueue();
+		const reusableToolResults = new Map<string, ReusableToolResultEntry>();
+		const pendingReusableToolResults = new Map<
+			string,
+			Promise<ToolExecutionOutcome>
+		>();
+		const policyCheckedReusableToolResultKeys = new Set<string>();
+		const pendingReusableToolSafetyChecks = new Map<string, number>();
+		const reusableToolResultCacheGeneration: ReusableToolResultCacheGeneration =
+			{
+				value: 0,
+			};
+		const platformToolExecutionBridge = resolvePlatformToolExecutionBridge(
+			this.options.platformToolExecutionBridge,
+		);
 		const trainingHeaders = getTrainingHeaders();
 		const headers =
 			trainingHeaders || model.headers || credential?.headers
@@ -551,47 +796,88 @@ export class ProviderTransport implements AgentTransport {
 			};
 
 			try {
-				const safetyIterator = evaluateToolSafety({
+				const reusableToolResultKey = getReusableToolResultCacheKey(
 					toolCall,
 					tools,
-					userMessage,
-					cfg,
-					signal,
-					clock: this.clock,
-					safetyMiddleware: this.safetyMiddleware,
-					workflowState: this.workflowState,
-					adaptiveThresholds: this.adaptiveThresholds,
-					auditLogger: this.auditLogger,
-					approvalService: this.options.approvalService,
-					toolExecutionBridge:
-						this.options.platformToolExecutionBridge === false
-							? undefined
-							: (this.options.platformToolExecutionBridge ??
-								getDefaultPlatformToolExecutionBridge()),
-					hookService,
-					firewall,
-					rateLimitState: {
-						recentToolTimestamps: this.recentToolTimestamps,
-						toolCallsThisMinute: this.toolCallsThisMinute,
-						minuteWindowStart: this.minuteWindowStart,
-						rateWindowMs: ProviderTransport.TOOL_RATE_WINDOW_MS,
-						rateLimit: ProviderTransport.TOOL_RATE_LIMIT,
-					},
-					emitToolResult: emitDynamicToolResult,
-				});
+				);
+				const alreadyHadReusableToolResultState =
+					reusableToolResultKey !== undefined &&
+					hasReusableToolResultState(
+						reusableToolResultKey,
+						reusableToolResults,
+						pendingReusableToolResults,
+						policyCheckedReusableToolResultKeys,
+						pendingReusableToolSafetyChecks,
+					);
+				incrementPendingReusableToolSafetyCheck(
+					reusableToolResultKey,
+					pendingReusableToolSafetyChecks,
+				);
+				const shouldSkipLoopDetection = (
+					candidateToolCall: ToolCall,
+				): boolean => {
+					const candidateKey = getReusableToolResultCacheKey(
+						candidateToolCall,
+						tools,
+					);
+					return (
+						candidateKey !== undefined &&
+						candidateKey === reusableToolResultKey &&
+						alreadyHadReusableToolResultState &&
+						hasReusableToolResultState(
+							candidateKey,
+							reusableToolResults,
+							pendingReusableToolResults,
+							policyCheckedReusableToolResultKeys,
+							pendingReusableToolSafetyChecks,
+						)
+					);
+				};
 				let safetyVerdict: ToolSafetyVerdict | undefined;
 				let rateLimitUpdate:
 					| { toolCallsThisMinute: number; minuteWindowStart: number }
 					| undefined;
-				while (true) {
-					const safetyStep = await safetyIterator.next();
-					if (safetyStep.done) {
-						({ verdict: safetyVerdict, rateLimitUpdate } = safetyStep.value);
-						break;
+				try {
+					const safetyIterator = evaluateToolSafety({
+						toolCall,
+						tools,
+						userMessage,
+						cfg,
+						signal,
+						clock: this.clock,
+						safetyMiddleware: this.safetyMiddleware,
+						workflowState: this.workflowState,
+						adaptiveThresholds: this.adaptiveThresholds,
+						auditLogger: this.auditLogger,
+						approvalService: this.options.approvalService,
+						toolExecutionBridge: platformToolExecutionBridge,
+						hookService,
+						firewall,
+						rateLimitState: {
+							recentToolTimestamps: this.recentToolTimestamps,
+							toolCallsThisMinute: this.toolCallsThisMinute,
+							minuteWindowStart: this.minuteWindowStart,
+							rateWindowMs: ProviderTransport.TOOL_RATE_WINDOW_MS,
+							rateLimit: ProviderTransport.TOOL_RATE_LIMIT,
+						},
+						shouldSkipLoopDetection,
+						emitToolResult: emitDynamicToolResult,
+					});
+					while (true) {
+						const safetyStep = await safetyIterator.next();
+						if (safetyStep.done) {
+							({ verdict: safetyVerdict, rateLimitUpdate } = safetyStep.value);
+							break;
+						}
+						if (isDynamicToolApprovalEvent(safetyStep.value)) {
+							dynamicToolEventQueue.push(safetyStep.value);
+						}
 					}
-					if (isDynamicToolApprovalEvent(safetyStep.value)) {
-						dynamicToolEventQueue.push(safetyStep.value);
-					}
+				} finally {
+					decrementPendingReusableToolSafetyCheck(
+						reusableToolResultKey,
+						pendingReusableToolSafetyChecks,
+					);
 				}
 				if (!safetyVerdict || !rateLimitUpdate) {
 					return dynamicToolError("Safety pipeline did not return a verdict.");
@@ -613,6 +899,71 @@ export class ProviderTransport implements AgentTransport {
 						`Client-side tool execution is not available for Codex app-server dynamic tool "${tool.name}".`,
 					);
 				}
+				const policyCheckedReusableToolResultKey =
+					getReusableToolResultCacheKey(effectiveToolCall, tools);
+				const canReuseToolResult =
+					reusableToolResultKey !== undefined &&
+					policyCheckedReusableToolResultKey === reusableToolResultKey;
+				if (canReuseToolResult && reusableToolResultKey) {
+					policyCheckedReusableToolResultKeys.add(reusableToolResultKey);
+				}
+				if (canReuseToolResult) {
+					const cachedEntry = reusableToolResults.get(reusableToolResultKey);
+					if (cachedEntry) {
+						const cacheHitStart = this.clock.now();
+						const cachedOutcome = await recordReusableToolExecutionBridgeOutput(
+							{
+								bridge: platformToolExecutionBridge,
+								plan: safetyVerdict.toolExecutionBridgePlan,
+								outcome: {
+									message: {
+										...cachedEntry.message,
+										toolCallId: toolCall.id,
+										toolName: toolCall.name,
+										content: cachedEntry.message.content.map((item) => ({
+											...item,
+										})),
+										timestamp: this.clock.now(),
+									},
+									isError: false,
+								},
+								durationMs: this.clock.now() - cacheHitStart,
+								signal,
+							},
+						);
+						emitDynamicToolResult(
+							cachedOutcome.message,
+							effectiveToolCall,
+							cachedOutcome.isError,
+						);
+						return toAgentToolResult(capturedResults.at(-1));
+					}
+					const pendingReusable = pendingReusableToolResults.get(
+						reusableToolResultKey,
+					);
+					if (pendingReusable) {
+						const cacheHitStart = this.clock.now();
+						const cachedOutcome = await recordReusableToolExecutionBridgeOutput(
+							{
+								bridge: platformToolExecutionBridge,
+								plan: safetyVerdict.toolExecutionBridgePlan,
+								outcome: cloneToolOutcomeForCall(
+									await pendingReusable,
+									toolCall,
+									this.clock.now(),
+								),
+								durationMs: this.clock.now() - cacheHitStart,
+								signal,
+							},
+						);
+						emitDynamicToolResult(
+							cachedOutcome.message,
+							effectiveToolCall,
+							cachedOutcome.isError,
+						);
+						return toAgentToolResult(capturedResults.at(-1));
+					}
+				}
 				const toolUpdateQueue = createToolUpdateQueue();
 				const executionPromise = createToolExecutionPromise({
 					toolCall,
@@ -630,16 +981,23 @@ export class ProviderTransport implements AgentTransport {
 					toolRetryService: this.options.toolRetryService,
 					toolRetryConfig: this.options.toolRetryConfig,
 					clientToolService: this.options.clientToolService,
-					toolExecutionBridge:
-						this.options.platformToolExecutionBridge === false
-							? undefined
-							: (this.options.platformToolExecutionBridge ??
-								getDefaultPlatformToolExecutionBridge()),
+					toolExecutionBridge: platformToolExecutionBridge,
 					toolExecutionBridgePlan: safetyVerdict.toolExecutionBridgePlan,
 					toolUpdateQueue,
 				});
+				const trackedExecutionPromise =
+					canReuseToolResult && reusableToolResultKey
+						? trackReusableToolResult(
+								reusableToolResultKey,
+								executionPromise,
+								reusableToolResults,
+								pendingReusableToolResults,
+								policyCheckedReusableToolResultKeys,
+								reusableToolResultCacheGeneration,
+							)
+						: executionPromise;
 				const pendingExecutions: PendingExecution[] = [
-					{ toolCall, promise: executionPromise },
+					{ toolCall, promise: trackedExecutionPromise },
 				];
 				let outcome: Awaited<typeof executionPromise> | undefined;
 				while (pendingExecutions.length > 0) {
@@ -662,6 +1020,15 @@ export class ProviderTransport implements AgentTransport {
 				if (!outcome) {
 					return dynamicToolError("Dynamic tool execution did not complete.");
 				}
+				invalidateReusableToolResultsAfterMutation(
+					effectiveToolCall,
+					tools,
+					reusableToolResults,
+					pendingReusableToolResults,
+					policyCheckedReusableToolResultKeys,
+					pendingReusableToolSafetyChecks,
+					reusableToolResultCacheGeneration,
+				);
 				try {
 					applyWorkflowStateHooks({
 						toolCall: effectiveToolCall,
@@ -1167,7 +1534,6 @@ export class ProviderTransport implements AgentTransport {
 						...emitToolResult(skippedResult, toolCall, true),
 					];
 				};
-
 				const scheduleResolveIfNeeded = async (): Promise<AgentEvent[]> => {
 					if (pendingExecutions.length < concurrencyLimit) {
 						return [];
@@ -1183,6 +1549,15 @@ export class ProviderTransport implements AgentTransport {
 							continue;
 						}
 						const outcome = next.outcome;
+						invalidateReusableToolResultsAfterMutation(
+							next.execution.toolCall,
+							tools,
+							reusableToolResults,
+							pendingReusableToolResults,
+							policyCheckedReusableToolResultKeys,
+							pendingReusableToolSafetyChecks,
+							reusableToolResultCacheGeneration,
+						);
 						events.push(
 							...emitToolResult(
 								outcome.message,
@@ -1211,47 +1586,89 @@ export class ProviderTransport implements AgentTransport {
 					}
 					const toolCall = toolCallsToExecute[toolIndex];
 					if (!toolCall) continue;
-
-					// Run safety pipeline (rate limiting, hooks, firewall, approval, validation)
-					const safetyIterator = evaluateToolSafety({
+					const reusableToolResultKey = getReusableToolResultCacheKey(
 						toolCall,
 						tools,
-						userMessage,
-						cfg,
-						signal,
-						clock: this.clock,
-						safetyMiddleware: this.safetyMiddleware,
-						workflowState: this.workflowState,
-						adaptiveThresholds: this.adaptiveThresholds,
-						auditLogger: this.auditLogger,
-						approvalService: this.options.approvalService,
-						toolExecutionBridge:
-							this.options.platformToolExecutionBridge === false
-								? undefined
-								: (this.options.platformToolExecutionBridge ??
-									getDefaultPlatformToolExecutionBridge()),
-						hookService,
-						firewall,
-						rateLimitState: {
-							recentToolTimestamps: this.recentToolTimestamps,
-							toolCallsThisMinute: this.toolCallsThisMinute,
-							minuteWindowStart: this.minuteWindowStart,
-							rateWindowMs: ProviderTransport.TOOL_RATE_WINDOW_MS,
-							rateLimit: ProviderTransport.TOOL_RATE_LIMIT,
-						},
-						emitToolResult,
-					});
+					);
+					const alreadyHadReusableToolResultState =
+						reusableToolResultKey !== undefined &&
+						hasReusableToolResultState(
+							reusableToolResultKey,
+							reusableToolResults,
+							pendingReusableToolResults,
+							policyCheckedReusableToolResultKeys,
+							pendingReusableToolSafetyChecks,
+						);
+					incrementPendingReusableToolSafetyCheck(
+						reusableToolResultKey,
+						pendingReusableToolSafetyChecks,
+					);
+					const shouldSkipLoopDetection = (
+						candidateToolCall: ToolCall,
+					): boolean => {
+						const candidateKey = getReusableToolResultCacheKey(
+							candidateToolCall,
+							tools,
+						);
+						return (
+							candidateKey !== undefined &&
+							candidateKey === reusableToolResultKey &&
+							alreadyHadReusableToolResultState &&
+							hasReusableToolResultState(
+								candidateKey,
+								reusableToolResults,
+								pendingReusableToolResults,
+								policyCheckedReusableToolResultKeys,
+								pendingReusableToolSafetyChecks,
+							)
+						);
+					};
+
+					// Run safety pipeline (rate limiting, hooks, firewall, approval, validation)
 					let safetyVerdict: ToolSafetyVerdict | undefined;
 					let rateLimitUpdate:
 						| { toolCallsThisMinute: number; minuteWindowStart: number }
 						| undefined;
-					while (true) {
-						const safetyStep = await safetyIterator.next();
-						if (safetyStep.done) {
-							({ verdict: safetyVerdict, rateLimitUpdate } = safetyStep.value);
-							break;
+					try {
+						const safetyIterator = evaluateToolSafety({
+							toolCall,
+							tools,
+							userMessage,
+							cfg,
+							signal,
+							clock: this.clock,
+							safetyMiddleware: this.safetyMiddleware,
+							workflowState: this.workflowState,
+							adaptiveThresholds: this.adaptiveThresholds,
+							auditLogger: this.auditLogger,
+							approvalService: this.options.approvalService,
+							toolExecutionBridge: platformToolExecutionBridge,
+							hookService,
+							firewall,
+							rateLimitState: {
+								recentToolTimestamps: this.recentToolTimestamps,
+								toolCallsThisMinute: this.toolCallsThisMinute,
+								minuteWindowStart: this.minuteWindowStart,
+								rateWindowMs: ProviderTransport.TOOL_RATE_WINDOW_MS,
+								rateLimit: ProviderTransport.TOOL_RATE_LIMIT,
+							},
+							shouldSkipLoopDetection,
+							emitToolResult,
+						});
+						while (true) {
+							const safetyStep = await safetyIterator.next();
+							if (safetyStep.done) {
+								({ verdict: safetyVerdict, rateLimitUpdate } =
+									safetyStep.value);
+								break;
+							}
+							yield safetyStep.value;
 						}
-						yield safetyStep.value;
+					} finally {
+						decrementPendingReusableToolSafetyCheck(
+							reusableToolResultKey,
+							pendingReusableToolSafetyChecks,
+						);
 					}
 					if (!safetyVerdict || !rateLimitUpdate) {
 						throw new Error("Safety pipeline did not return a verdict.");
@@ -1277,6 +1694,90 @@ export class ProviderTransport implements AgentTransport {
 						sanitizedExecutionArgs,
 					} = safetyVerdict;
 					// Use hook-modified (pre-validation) args for hook inputs
+					const policyCheckedReusableToolResultKey =
+						getReusableToolResultCacheKey(effectiveToolCall, tools);
+					const canReuseToolResult =
+						reusableToolResultKey !== undefined &&
+						policyCheckedReusableToolResultKey === reusableToolResultKey;
+					if (canReuseToolResult && reusableToolResultKey) {
+						policyCheckedReusableToolResultKeys.add(reusableToolResultKey);
+					}
+					const canServeReusableToolResult =
+						canReuseToolResult &&
+						!hasPendingMutatingToolExecution(pendingExecutions, tools);
+					if (canServeReusableToolResult) {
+						const cachedEntry = reusableToolResults.get(reusableToolResultKey);
+						if (cachedEntry) {
+							const cacheHitStart = this.clock.now();
+							const cachedOutcome =
+								await recordReusableToolExecutionBridgeOutput({
+									bridge: platformToolExecutionBridge,
+									plan: safetyVerdict.toolExecutionBridgePlan,
+									outcome: {
+										message: {
+											...cachedEntry.message,
+											toolCallId: toolCall.id,
+											toolName: toolCall.name,
+											content: cachedEntry.message.content.map((item) => ({
+												...item,
+											})),
+											timestamp: this.clock.now(),
+										},
+										isError: false,
+									},
+									durationMs: this.clock.now() - cacheHitStart,
+									signal,
+								});
+							for (const event of emitToolResult(
+								cachedOutcome.message,
+								toolCall,
+								cachedOutcome.isError,
+								{
+									toolExecutionId: cachedOutcome.toolExecutionId,
+									approvalRequestId: cachedOutcome.approvalRequestId,
+								},
+							)) {
+								yield event;
+							}
+							await checkSteering();
+							if (steeringTriggered) {
+								remainingToolCalls = toolCallsToExecute.slice(toolIndex + 1);
+								break;
+							}
+							continue;
+						}
+						const pendingReusable = pendingReusableToolResults.get(
+							reusableToolResultKey,
+						);
+						if (pendingReusable) {
+							pendingExecutions.push({
+								toolCall,
+								promise: (async () => {
+									const cacheHitStart = this.clock.now();
+									return recordReusableToolExecutionBridgeOutput({
+										bridge: platformToolExecutionBridge,
+										plan: safetyVerdict.toolExecutionBridgePlan,
+										outcome: cloneToolOutcomeForCall(
+											await pendingReusable,
+											toolCall,
+											this.clock.now(),
+										),
+										durationMs: this.clock.now() - cacheHitStart,
+										signal,
+									});
+								})(),
+							});
+							const events = await scheduleResolveIfNeeded();
+							for (const event of events) {
+								yield event;
+							}
+							if (steeringTriggered) {
+								remainingToolCalls = toolCallsToExecute.slice(toolIndex + 1);
+								break;
+							}
+							continue;
+						}
+					}
 
 					// For client tools, set up the execution promise first, then emit event
 					// This prevents race conditions where the client responds before we're listening
@@ -1320,19 +1821,26 @@ export class ProviderTransport implements AgentTransport {
 						toolRetryService: this.options.toolRetryService,
 						toolRetryConfig: this.options.toolRetryConfig,
 						clientToolService: this.options.clientToolService,
-						toolExecutionBridge:
-							this.options.platformToolExecutionBridge === false
-								? undefined
-								: (this.options.platformToolExecutionBridge ??
-									getDefaultPlatformToolExecutionBridge()),
+						toolExecutionBridge: platformToolExecutionBridge,
 						toolExecutionBridgePlan: safetyVerdict.toolExecutionBridgePlan,
 						toolUpdateQueue,
 						clientToolExecPromise,
 					});
+					const trackedExecutionPromise =
+						canReuseToolResult && reusableToolResultKey
+							? trackReusableToolResult(
+									reusableToolResultKey,
+									executionPromise,
+									reusableToolResults,
+									pendingReusableToolResults,
+									policyCheckedReusableToolResultKeys,
+									reusableToolResultCacheGeneration,
+								)
+							: executionPromise;
 
 					pendingExecutions.push({
 						toolCall,
-						promise: executionPromise,
+						promise: trackedExecutionPromise,
 					});
 					const events = await scheduleResolveIfNeeded();
 					for (const event of events) {
@@ -1354,6 +1862,15 @@ export class ProviderTransport implements AgentTransport {
 						continue;
 					}
 					const outcome = next.outcome;
+					invalidateReusableToolResultsAfterMutation(
+						next.execution.toolCall,
+						tools,
+						reusableToolResults,
+						pendingReusableToolResults,
+						policyCheckedReusableToolResultKeys,
+						pendingReusableToolSafetyChecks,
+						reusableToolResultCacheGeneration,
+					);
 					for (const event of emitToolResult(
 						outcome.message,
 						next.execution.toolCall,

@@ -1,0 +1,87 @@
+{
+	"schemaVersion": "evalops.maestro.scenario.v1",
+	"id": "codex-subagent-handoff",
+	"title": "Codex subagent handoff remains traceable",
+	"description": "Acceptance scenario for a Codex app-server parent run that delegates to a child agent and preserves machine-checkable parent/child run evidence.",
+	"expectedOutcome": "pass",
+	"source": {
+		"trajectoryPath": "../agent-trajectory/codex-subagent-handoff.trajectory.json",
+		"replayPath": "../agent-trajectory/codex-subagent-handoff.trajectory-replay.json",
+		"scorePath": "../agent-trajectory/codex-subagent-handoff.trajectory-score.json",
+		"inspectionPath": "../agent-trajectory/codex-subagent-handoff.trajectory-inspection.json"
+	},
+	"reviewLabels": ["accepted", "subagent", "platform_promotion_ready"],
+	"platform": {
+		"primitive": "event_bus",
+		"eventType": "maestro.events.eval.scored",
+		"traceJoinKeys": [
+			"sessionId",
+			"scenarioId",
+			"agent_run",
+			"parent_agent_run",
+			"child_agent_run",
+			"tool_call"
+		],
+		"rationale": "Codex subagent handoffs need child-run evidence before Platform can score delegated work without scraping logs."
+	},
+	"assumptions": {
+		"workflow": "Parent Codex thread spawns a child agent, waits for it, observes completion, and finalizes with parent-run evidence.",
+		"correctnessModel": "A successful handoff records spawn and wait provider tools, child-run start/completion, and parent/child agent-run anchors.",
+		"threatModel": "Delegated work must not disappear into provider-only logs or lose correlation to the parent agent run.",
+		"researchBasis": [
+			"Long-horizon agent evals need child-run semantics as first-class evidence.",
+			"Subagent delegation should be scored from stable run IDs, not human-readable transcripts.",
+			"Trace join keys are required before multi-agent trajectories can be promoted into shared Platform storage."
+		]
+	},
+	"assertions": [
+		{
+			"id": "spawn-tool-recorded",
+			"kind": "event.exists",
+			"selector": {
+				"type": "tool.requested",
+				"toolName": "codex.subagent.spawnAgent"
+			}
+		},
+		{
+			"id": "wait-tool-recorded",
+			"kind": "event.exists",
+			"selector": {
+				"type": "tool.requested",
+				"toolName": "codex.subagent.wait"
+			}
+		},
+		{
+			"id": "child-run-completed",
+			"kind": "score.finding",
+			"ruleId": "codex-child-agent-completed",
+			"status": "pass"
+		},
+		{
+			"id": "child-run-provenance",
+			"kind": "provenance.chain",
+			"eventId": "trajectory:agent-run:codex-child-1-completed",
+			"requiredEvidenceKinds": [
+				"timeline_item",
+				"tool_call",
+				"agent_run",
+				"parent_agent_run",
+				"child_agent_run"
+			]
+		},
+		{
+			"id": "subagent-efficiency-budget",
+			"kind": "efficiency.budget",
+			"maxEvents": 12,
+			"maxToolCalls": 2,
+			"maxReplayDeltas": 0,
+			"maxScoreFailures": 0,
+			"maxScoreWarnings": 0
+		},
+		{
+			"id": "subagent-labels-present",
+			"kind": "human.review",
+			"requiredLabels": ["accepted", "subagent", "platform_promotion_ready"]
+		}
+	]
+}

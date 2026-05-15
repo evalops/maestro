@@ -139,6 +139,46 @@ const events: AgentTrajectoryReport["events"] = [
 		title: "Runtime finished",
 		evidence: [{ kind: "timeline_item", id: "finish" }],
 	},
+	{
+		id: "trajectory:agent-started",
+		sequence: 7,
+		timestamp: "2026-05-09T20:00:07.000Z",
+		kind: "agent",
+		phase: "act",
+		actor: "agent",
+		type: "agent.run.started",
+		status: "running",
+		visibility: "admin",
+		source: "platform",
+		title: "Codex child agent started",
+		toolName: "codex.subagent.spawnAgent",
+		evidence: [
+			{ kind: "timeline_item", id: "agent-started" },
+			{ kind: "agent_run", id: "agent-child-1" },
+			{ kind: "parent_agent_run", id: "agent-parent-1" },
+			{ kind: "child_agent_run", id: "agent-child-1" },
+		],
+	},
+	{
+		id: "trajectory:agent-completed",
+		sequence: 8,
+		timestamp: "2026-05-09T20:00:08.000Z",
+		kind: "agent",
+		phase: "verify",
+		actor: "agent",
+		type: "agent.run.completed",
+		status: "completed",
+		visibility: "admin",
+		source: "platform",
+		title: "Codex child agent completed",
+		toolName: "codex.subagent.wait",
+		evidence: [
+			{ kind: "timeline_item", id: "agent-completed" },
+			{ kind: "agent_run", id: "agent-child-1" },
+			{ kind: "parent_agent_run", id: "agent-parent-1" },
+			{ kind: "child_agent_run", id: "agent-child-1" },
+		],
+	},
 ];
 
 const rules: AgentTrajectoryScorerRule[] = [
@@ -191,6 +231,15 @@ const rules: AgentTrajectoryScorerRule[] = [
 		description: "final event should have evidence",
 		finalEvidenceCoverage: true,
 	},
+	{
+		id: "child-agent-completed",
+		severity: "error",
+		description: "Codex child agent run must complete under the parent.",
+		childRunCompleted: {
+			parentAgentRunId: "agent-parent-1",
+			childAgentRunId: "agent-child-1",
+		},
+	},
 ];
 
 describe("scoreAgentTrajectoryReport", () => {
@@ -198,8 +247,8 @@ describe("scoreAgentTrajectoryReport", () => {
 		const score = scoreAgentTrajectoryReport(report(events), rules);
 
 		expect(score.counts).toEqual({
-			rules: 7,
-			passed: 7,
+			rules: 8,
+			passed: 8,
 			failed: 0,
 			warnings: 0,
 		});
@@ -259,11 +308,79 @@ describe("scoreAgentTrajectoryReport", () => {
 		});
 	});
 
+	it("scores production child-run lifecycle events from agent_run evidence", () => {
+		const productionShapeEvents = events.map((event) =>
+			event.type.startsWith("agent.run.")
+				? {
+						...event,
+						evidence: event.evidence.filter(
+							(anchor) =>
+								anchor.kind !== "parent_agent_run" &&
+								anchor.kind !== "child_agent_run",
+						),
+						relatedIds: ["agent-child-1"],
+					}
+				: event,
+		);
+		const score = scoreAgentTrajectoryReport(report(productionShapeEvents), [
+			{
+				id: "child-run-agent-run-only",
+				severity: "error",
+				description:
+					"production child run events may only carry the child agent_run id",
+				childRunCompleted: {
+					parentAgentRunId: "agent-parent-1",
+					childAgentRunId: "agent-child-1",
+				},
+			},
+		]);
+
+		expect(score.findings[0]).toMatchObject({
+			ruleId: "child-run-agent-run-only",
+			status: "pass",
+			eventIds: ["trajectory:agent-started", "trajectory:agent-completed"],
+		});
+	});
+
+	it("does not satisfy child-run lifecycle scoring from relatedIds alone", () => {
+		const relatedOnlyEvents = events.map((event) =>
+			event.type.startsWith("agent.run.")
+				? {
+						...event,
+						evidence: event.evidence.filter(
+							(anchor) =>
+								anchor.kind !== "agent_run" &&
+								anchor.kind !== "parent_agent_run" &&
+								anchor.kind !== "child_agent_run",
+						),
+						relatedIds: ["agent-child-1"],
+					}
+				: event,
+		);
+		const score = scoreAgentTrajectoryReport(report(relatedOnlyEvents), [
+			{
+				id: "child-run-related-ids-ignored",
+				severity: "error",
+				description: "heterogeneous related IDs must not satisfy child runs",
+				childRunCompleted: {
+					parentAgentRunId: "agent-parent-1",
+					childAgentRunId: "agent-child-1",
+				},
+			},
+		]);
+
+		expect(score.findings[0]).toMatchObject({
+			ruleId: "child-run-related-ids-ignored",
+			status: "fail",
+			eventIds: [],
+		});
+	});
+
 	it("scores the terminal failed runtime event for final evidence", () => {
 		const failedTerminal = {
 			...events[3],
 			id: "trajectory:terminal-recovery",
-			sequence: 7,
+			sequence: 9,
 			evidence: [],
 		};
 		const score = scoreAgentTrajectoryReport(
@@ -282,6 +399,42 @@ describe("scoreAgentTrajectoryReport", () => {
 			ruleId: "terminal-evidence",
 			status: "fail",
 			eventIds: ["trajectory:terminal-recovery"],
+		});
+	});
+
+	it("fails child-run scoring when the completion event loses child evidence", () => {
+		const missingCompletionEvidence = events.map((event) =>
+			event.id === "trajectory:agent-completed"
+				? {
+						...event,
+						evidence: event.evidence.filter(
+							(anchor) =>
+								anchor.kind !== "agent_run" &&
+								anchor.kind !== "child_agent_run",
+						),
+					}
+				: event,
+		);
+		const score = scoreAgentTrajectoryReport(
+			report(missingCompletionEvidence),
+			[
+				{
+					id: "child-run-must-complete",
+					severity: "error",
+					description: "child run completion should be explicit",
+					childRunCompleted: {
+						parentAgentRunId: "agent-parent-1",
+						childAgentRunId: "agent-child-1",
+					},
+				},
+			],
+		);
+
+		expect(score.findings[0]).toMatchObject({
+			ruleId: "child-run-must-complete",
+			status: "fail",
+			eventIds: ["trajectory:agent-started"],
+			remediation: expect.stringContaining("child-run start and completion"),
 		});
 	});
 });

@@ -56,9 +56,17 @@ export const PLATFORM_CONNECT_METHODS = {
 			service: PLATFORM_CONNECT_SERVICES.agentRuntime,
 			method: "RecordRunStep",
 		},
+		recordRunWorkItem: {
+			service: PLATFORM_CONNECT_SERVICES.agentRuntime,
+			method: "RecordRunWorkItem",
+		},
 		resumeRun: {
 			service: PLATFORM_CONNECT_SERVICES.agentRuntime,
 			method: "ResumeRun",
+		},
+		updateRunWorkItem: {
+			service: PLATFORM_CONNECT_SERVICES.agentRuntime,
+			method: "UpdateRunWorkItem",
 		},
 		waitRun: {
 			service: PLATFORM_CONNECT_SERVICES.agentRuntime,

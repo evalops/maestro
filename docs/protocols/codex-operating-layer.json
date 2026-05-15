@@ -141,6 +141,11 @@
 			"evidenceType": "test",
 			"path": "test/agent/provider-transport-provider-tools.test.ts",
 			"anchors": [
+				"reuses repeated read-only tool results across provider turns",
+				"reuses provider read results only after repeated guarded-file approvals",
+				"reuses dynamic read callback results only after repeated guarded-file approvals",
+				"does not reuse cached read results while mutating provider tools are pending",
+				"executes repeated non-read-only provider tool calls independently",
 				"lets Codex dynamic tool callbacks wait for user approval instead of auto-denying",
 				"withTimeout",
 				"action_approval_required",
@@ -174,6 +179,45 @@
 				"codex.subagent.spawnAgent",
 				"tool_execution_start",
 				"tool_execution_end"
+			]
+		},
+		{
+			"area": "multi-agent-workgraph",
+			"evidenceType": "source",
+			"path": "src/platform/core-services.ts",
+			"anchors": ["RecordRunWorkItem", "UpdateRunWorkItem"]
+		},
+		{
+			"area": "multi-agent-workgraph",
+			"evidenceType": "source",
+			"path": "src/platform/agent-runtime-client.ts",
+			"anchors": [
+				"PlatformAgentWorkItemKindValue",
+				"recordAgentRuntimeRunWorkItem",
+				"updateAgentRuntimeRunWorkItem"
+			]
+		},
+		{
+			"area": "multi-agent-workgraph",
+			"evidenceType": "source",
+			"path": "src/server/hosted-agent-runtime-progress.ts",
+			"anchors": [
+				"CODEX_SUBAGENT_TOOL_PREFIX",
+				"recordCodexSubagentWorkItem",
+				"updateCodexSubagentWorkItem",
+				"PlatformAgentWorkItemKindValue.ChildRun",
+				"PlatformAgentWorkItemKindValue.Wait"
+			]
+		},
+		{
+			"area": "multi-agent-workgraph",
+			"evidenceType": "test",
+			"path": "test/server/hosted-agent-runtime-progress.test.ts",
+			"anchors": [
+				"records Codex subagent collaboration as durable Platform work items",
+				"codex.subagent.spawnAgent",
+				"PlatformAgentWorkItemKindValue.ChildRun",
+				"PlatformAgentWorkItemStateValue.Succeeded"
 			]
 		},
 		{
@@ -234,6 +278,7 @@
 			"anchors": [
 				"codex_headless_bridge_round_trips_prompt_approval",
 				"codex_headless_bridge_streams_tool_events_over_websocket",
+				"codex_headless_bridge_bounds_shutdown_wait_after_valid_output",
 				"codex_app_server_timeout_kills_child_process"
 			]
 		},
@@ -244,7 +289,30 @@
 			"anchors": [
 				"approval-before-tool-result",
 				"child-run semantics",
-				"recovery behavior"
+				"recovery behavior",
+				"codex-subagent-handoff.timeline.json"
+			]
+		},
+		{
+			"area": "eval-telemetry",
+			"evidenceType": "fixture",
+			"path": "test/fixtures/agent-trajectory/codex-subagent-handoff.timeline.json",
+			"anchors": [
+				"codex.subagent.spawnAgent",
+				"codex.subagent.wait",
+				"agent-run-parent-codex-1",
+				"agent-run-child-codex-1"
+			]
+		},
+		{
+			"area": "eval-telemetry",
+			"evidenceType": "scenario",
+			"path": "test/fixtures/agent-trajectory-scenarios/codex-subagent-handoff.json",
+			"anchors": [
+				"child-run-completed",
+				"child-run-provenance",
+				"parent_agent_run",
+				"child_agent_run"
 			]
 		},
 		{
@@ -285,8 +353,28 @@
 			"anchors": [
 				"doctor",
 				"real inference with dynamic read tool",
-				"expected token"
+				"loop_detected",
+				"expected token",
+				"assertBoundedDynamicToolUse",
+				"MAESTRO_CODEX_LIVE_SMOKE_MAX_IDENTICAL_TOOL_CALLS"
 			]
+		},
+		{
+			"area": "live-verification",
+			"evidenceType": "test",
+			"path": "test/scripts/codex-live-smoke.test.ts",
+			"anchors": [
+				"summarizes Codex dynamic callbacks by operation args, not volatile IDs",
+				"rejects live transcripts with loop-detector warnings",
+				"rejects repeated identical dynamic tool calls",
+				"requires the final assistant message to exactly match the token"
+			]
+		},
+		{
+			"area": "live-verification",
+			"evidenceType": "test",
+			"path": "test/safety/loop-detector.test.ts",
+			"anchors": ["differentiates nested tool arguments"]
 		},
 		{
 			"area": "live-verification",

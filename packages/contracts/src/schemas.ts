@@ -451,10 +451,15 @@ export const ComposerRunTimelineEventTypeSchema = Type.Union([
 	Type.Literal("artifact.linked"),
 	Type.Literal("policy.decision"),
 	Type.Literal("wait.pending"),
+	Type.Literal("agent.run.started"),
+	Type.Literal("agent.run.completed"),
+	Type.Literal("agent.run.failed"),
 	Type.Literal("compaction.created"),
 	Type.Literal("branch.created"),
 	Type.Literal("model.changed"),
 	Type.Literal("thinking.changed"),
+	Type.Literal("runtime.recovery"),
+	Type.Literal("runtime.finished"),
 	Type.Literal("custom.event"),
 ]);
 
@@ -494,6 +499,9 @@ export const ComposerRunTimelineItemSchema = Type.Object({
 	approvalRequestId: Type.Optional(Type.String()),
 	toolExecutionId: Type.Optional(Type.String()),
 	artifactId: Type.Optional(Type.String()),
+	agentRunId: Type.Optional(Type.String()),
+	parentAgentRunId: Type.Optional(Type.String()),
+	childAgentRunId: Type.Optional(Type.String()),
 	remoteRunnerSessionId: Type.Optional(Type.String()),
 	platform: Type.Optional(ComposerPendingRequestPlatformRefSchema),
 	platformOperation: Type.Optional(
