@@ -241,6 +241,18 @@ def prompt_from_args(args: argparse.Namespace) -> str:
     return text
 
 
+def apply_default_peer_message_fallback(registry: dict[str, Any], args: argparse.Namespace) -> None:
+    if not args.peer:
+        return
+    if args.peer in registry_peers(registry):
+        return
+    default_peer = registry.get("defaultPeer")
+    if not isinstance(default_peer, str) or not default_peer.strip():
+        return
+    args.message = [args.peer, *args.message]
+    args.peer = None
+
+
 def cmd_list(registry: dict[str, Any], args: argparse.Namespace) -> None:
     peers = registry_peers(registry)
     if args.json:
@@ -270,6 +282,7 @@ def cmd_card(registry: dict[str, Any], args: argparse.Namespace) -> None:
 
 
 def cmd_send(registry: dict[str, Any], args: argparse.Namespace) -> None:
+    apply_default_peer_message_fallback(registry, args)
     peer_name, peer = resolve_peer(registry, args.peer)
     text = prompt_from_args(args)
     metadata = {

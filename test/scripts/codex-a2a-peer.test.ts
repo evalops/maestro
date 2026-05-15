@@ -199,6 +199,21 @@ describe("codex-a2a-peer", () => {
 		});
 	});
 
+	it("uses defaultPeer for inline send messages without an explicit peer", async () => {
+		await runPeer(configPath, ["send", "hello", "fleet"], {
+			TEST_A2A_PEER_TOKEN: "super-secret-token",
+		});
+
+		const request = requests.find((item) => item.url === "/message:send");
+		const body = JSON.parse(request?.body ?? "{}");
+		expect(body).toMatchObject({
+			message: {
+				parts: [{ text: "hello fleet", mediaType: "text/plain" }],
+				metadata: { relayPeer: "mock" },
+			},
+		});
+	});
+
 	it("fails closed when the peer token is missing", async () => {
 		await expect(
 			runPeer(configPath, ["send", "mock", "hello"], {}),
