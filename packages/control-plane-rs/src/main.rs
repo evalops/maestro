@@ -1208,7 +1208,15 @@ fn a2a_public_base_url(_head: &RequestHead, config: &Config) -> String {
     } else {
         config.listen_host.clone()
     };
-    if host.contains(':') {
+    if host.starts_with('[') {
+        if host.contains("]:") {
+            format!("http://{host}")
+        } else {
+            format!("http://{host}:{}", config.listen_port)
+        }
+    } else if host.matches(':').count() > 1 {
+        format!("http://[{host}]:{}", config.listen_port)
+    } else if host.contains(':') {
         format!("http://{host}")
     } else {
         format!("http://{host}:{}", config.listen_port)
@@ -7194,6 +7202,44 @@ mod tests {
             card["supportedInterfaces"][0]["url"],
             "http://mini.example.test:18787"
         );
+
+        if let Some(previous_a2a_host) = previous_a2a_host {
+            env::set_var("MAESTRO_A2A_PUBLIC_HOST", previous_a2a_host);
+        } else {
+            env::remove_var("MAESTRO_A2A_PUBLIC_HOST");
+        }
+        if let Some(previous_a2a_url) = previous_a2a_url {
+            env::set_var("MAESTRO_A2A_PUBLIC_URL", previous_a2a_url);
+        } else {
+            env::remove_var("MAESTRO_A2A_PUBLIC_URL");
+        }
+        if let Some(previous_control_url) = previous_control_url {
+            env::set_var("MAESTRO_CONTROL_PUBLIC_URL", previous_control_url);
+        } else {
+            env::remove_var("MAESTRO_CONTROL_PUBLIC_URL");
+        }
+    }
+
+    #[test]
+    fn a2a_agent_card_brackets_ipv6_public_host_and_preserves_port() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous_a2a_host = env::var_os("MAESTRO_A2A_PUBLIC_HOST");
+        let previous_a2a_url = env::var_os("MAESTRO_A2A_PUBLIC_URL");
+        let previous_control_url = env::var_os("MAESTRO_CONTROL_PUBLIC_URL");
+        env::set_var("MAESTRO_A2A_PUBLIC_HOST", "::1");
+        env::remove_var("MAESTRO_A2A_PUBLIC_URL");
+        env::remove_var("MAESTRO_CONTROL_PUBLIC_URL");
+        let mut config = auth_test_config();
+        config.listen_host = "::".to_string();
+        config.listen_port = 18787;
+        let head = parse_request_head(
+            b"GET /.well-known/agent-card.json HTTP/1.1\r\nHost: attacker.test\r\n\r\n",
+        )
+        .expect("request should parse");
+        let card = a2a_agent_card(&head, &config);
+
+        assert_eq!(card["url"], "http://[::1]:18787");
+        assert_eq!(card["supportedInterfaces"][0]["url"], "http://[::1]:18787");
 
         if let Some(previous_a2a_host) = previous_a2a_host {
             env::set_var("MAESTRO_A2A_PUBLIC_HOST", previous_a2a_host);
