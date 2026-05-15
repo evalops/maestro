@@ -167,7 +167,10 @@ def request_json(
     timeout = timeout_seconds
     if timeout is None:
         timeout_ms = peer.get("timeoutMs", registry.get("timeoutMs", 600_000))
-        timeout = float(timeout_ms) / 1000.0
+        try:
+            timeout = float(timeout_ms) / 1000.0
+        except (TypeError, ValueError) as error:
+            raise PeerError("timeoutMs must be numeric") from error
     request = Request(
         f"{peer['url']}{path}",
         data=data,
@@ -244,16 +247,16 @@ def prompt_from_args(args: argparse.Namespace) -> str:
     return text
 
 
-def apply_default_peer_message_fallback(registry: dict[str, Any], args: argparse.Namespace) -> None:
-    if not args.peer:
+def normalize_send_args(registry: dict[str, Any], args: argparse.Namespace) -> None:
+    if args.peer:
         return
-    if args.peer in registry_peers(registry):
+    if not args.message:
         return
-    default_peer = registry.get("defaultPeer")
-    if not isinstance(default_peer, str) or not default_peer.strip():
-        return
-    args.message = [args.peer, *args.message]
-    args.peer = None
+    peers = registry_peers(registry)
+    first_token = args.message[0]
+    if first_token in peers:
+        args.peer = first_token
+        args.message = args.message[1:]
 
 
 def cmd_list(registry: dict[str, Any], args: argparse.Namespace) -> None:
@@ -285,7 +288,7 @@ def cmd_card(registry: dict[str, Any], args: argparse.Namespace) -> None:
 
 
 def cmd_send(registry: dict[str, Any], args: argparse.Namespace) -> None:
-    apply_default_peer_message_fallback(registry, args)
+    normalize_send_args(registry, args)
     peer_name, peer = resolve_peer(registry, args.peer)
     text = prompt_from_args(args)
     metadata = {
@@ -348,7 +351,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     for name in ("send", "relay"):
         send_parser = subcommands.add_parser(name, help="send a message to a peer")
-        send_parser.add_argument("peer", nargs="?", help="peer name")
+        send_parser.add_argument("--peer", help="peer name")
         send_parser.add_argument("message", nargs="*", help="message text, or '-' for stdin")
         send_parser.add_argument("--async", dest="return_immediately", action="store_true", help="return immediately with a working task")
         send_parser.add_argument("--context-id", help="A2A context id")

@@ -196,6 +196,9 @@ describe("codex-a2a-peer", () => {
 		await expect(runPeer(configPath, ["card"], {})).rejects.toMatchObject({
 			stderr: expect.stringContaining("returned invalid JSON"),
 		});
+		await expect(runPeer(configPath, ["card"], {})).rejects.not.toMatchObject({
+			stderr: expect.stringContaining("Traceback"),
+		});
 	});
 
 	it("sends a synchronous handoff through message:send", async () => {
@@ -234,6 +237,40 @@ describe("codex-a2a-peer", () => {
 				parts: [{ text: "hello fleet", mediaType: "text/plain" }],
 				metadata: { relayPeer: "mock" },
 			},
+		});
+	});
+
+	it("fails unknown explicit peers before sending", async () => {
+		await expect(
+			runPeer(configPath, ["send", "--peer", "mok", "hello"], {
+				TEST_A2A_PEER_TOKEN: "super-secret-token",
+			}),
+		).rejects.toMatchObject({
+			stderr: expect.stringContaining("unknown peer 'mok'"),
+		});
+		expect(requests).toHaveLength(0);
+	});
+
+	it("reports invalid configured timeoutMs without a traceback", async () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				defaultPeer: "mock",
+				authRequired: false,
+				timeoutMs: "slow",
+				peers: {
+					mock: {
+						url: baseUrl,
+					},
+				},
+			}),
+		);
+
+		await expect(runPeer(configPath, ["card"], {})).rejects.toMatchObject({
+			stderr: expect.stringContaining("timeoutMs must be numeric"),
+		});
+		await expect(runPeer(configPath, ["card"], {})).rejects.not.toMatchObject({
+			stderr: expect.stringContaining("Traceback"),
 		});
 	});
 
