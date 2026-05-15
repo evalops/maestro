@@ -1125,35 +1125,18 @@ fn a2a_agent_card(head: &RequestHead, config: &Config) -> Value {
     })
 }
 
-fn a2a_public_base_url(head: &RequestHead, config: &Config) -> String {
+fn a2a_public_base_url(_head: &RequestHead, config: &Config) -> String {
     if let Some(url) =
         trimmed_env("MAESTRO_A2A_PUBLIC_URL").or_else(|| trimmed_env("MAESTRO_CONTROL_PUBLIC_URL"))
     {
         return url.trim_end_matches('/').to_string();
     }
-    let proto = head
-        .headers
-        .get("x-forwarded-proto")
-        .and_then(|value| value.split(',').next())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("http");
-    let host = head
-        .headers
-        .get("host")
-        .map(String::as_str)
-        .filter(|host| !host.trim().is_empty())
-        .map(str::trim)
-        .map(str::to_string)
-        .unwrap_or_else(|| {
-            let host = if config.listen_host == "0.0.0.0" || config.listen_host == "::" {
-                "127.0.0.1"
-            } else {
-                config.listen_host.as_str()
-            };
-            format!("{host}:{}", config.listen_port)
-        });
-    format!("{proto}://{host}")
+    let host = if config.listen_host == "0.0.0.0" || config.listen_host == "::" {
+        "127.0.0.1"
+    } else {
+        config.listen_host.as_str()
+    };
+    format!("http://{host}:{}", config.listen_port)
 }
 
 fn a2a_message_text(message: &A2AMessageBody) -> Option<String> {
@@ -7052,19 +7035,35 @@ mod tests {
 
     #[test]
     fn a2a_agent_card_advertises_http_json_interface() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous_a2a_url = env::var_os("MAESTRO_A2A_PUBLIC_URL");
+        let previous_control_url = env::var_os("MAESTRO_CONTROL_PUBLIC_URL");
+        env::remove_var("MAESTRO_A2A_PUBLIC_URL");
+        env::remove_var("MAESTRO_CONTROL_PUBLIC_URL");
         let head = parse_request_head(
-            b"GET /.well-known/agent-card.json HTTP/1.1\r\nHost: mini.local:8080\r\n\r\n",
+            b"GET /.well-known/agent-card.json HTTP/1.1\r\nHost: attacker.test\r\nx-forwarded-proto: https\r\n\r\n",
         )
         .expect("request should parse");
         let card = a2a_agent_card(&head, &auth_test_config());
 
         assert_eq!(card["protocolVersion"], A2A_PROTOCOL_VERSION);
-        assert_eq!(card["url"], "http://mini.local:8080");
+        assert_eq!(card["url"], "http://127.0.0.1:0");
+        assert_eq!(card["supportedInterfaces"][0]["url"], "http://127.0.0.1:0");
         assert_eq!(
             card["supportedInterfaces"][0]["protocolBinding"],
             "HTTP+JSON"
         );
         assert_eq!(card["skills"][0]["id"], "maestro-tui-turn");
+        if let Some(previous_a2a_url) = previous_a2a_url {
+            env::set_var("MAESTRO_A2A_PUBLIC_URL", previous_a2a_url);
+        } else {
+            env::remove_var("MAESTRO_A2A_PUBLIC_URL");
+        }
+        if let Some(previous_control_url) = previous_control_url {
+            env::set_var("MAESTRO_CONTROL_PUBLIC_URL", previous_control_url);
+        } else {
+            env::remove_var("MAESTRO_CONTROL_PUBLIC_URL");
+        }
     }
 
     #[test]

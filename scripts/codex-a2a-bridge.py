@@ -10,6 +10,7 @@ Codex authentication.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import shlex
@@ -355,7 +356,7 @@ class Handler(BaseHTTPRequestHandler):
     def authorized(self) -> bool:
         token = os.environ.get("CODEX_A2A_TOKEN", "").strip()
         if not token:
-            return True
+            return False
         return (
             self.headers.get("Authorization", "") == f"Bearer {token}"
             or self.headers.get("x-maestro-api-key", "") == token
@@ -553,13 +554,16 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     context_id = str(task.get("contextId") or "codex-a2a")
                     canceled = agent_message(context_id, "Task canceled")
-                    task["status"] = {
-                        "state": "TASK_STATE_CANCELED",
-                        "message": canceled,
-                        "timestamp": now_iso(),
-                    }
-                    task["artifacts"] = []
-                    task = dict(task)
+                    task = task_value(
+                        task_id,
+                        context_id,
+                        "TASK_STATE_CANCELED",
+                        canceled,
+                        copy.deepcopy(task.get("history") or []),
+                        artifacts=[],
+                        metadata=copy.deepcopy(task.get("metadata") or {}),
+                    )
+                    TASKS[task_id] = task
                     process = PROCESSES.pop(task_id, None)
             if error is not None:
                 self.error_json(*error)
