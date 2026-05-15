@@ -20,6 +20,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { load as loadYaml } from "js-yaml";
 import { PATHS } from "../config/constants.js";
 import { loadConfiguredPackageResources } from "../packages/runtime.js";
 import { createLogger } from "../utils/logger.js";
@@ -33,19 +34,27 @@ const MAX_DESCRIPTION_LENGTH = 1024;
 const MAX_COMPATIBILITY_LENGTH = 500;
 
 /** Allowed frontmatter fields per Agent Skills spec */
-const ALLOWED_FIELDS = new Set([
+export const SKILL_FRONTMATTER_FIELDS = [
 	"name",
 	"description",
 	"license",
 	"compatibility",
 	"allowed-tools",
+	"argument-hint",
+	"builtin-tools",
+	"model",
+	"mode",
+	"isolatedContext",
 	"metadata",
 	// Legacy fields (deprecated but supported for backwards compatibility)
 	"tags",
 	"author",
 	"version",
 	"triggers",
-]);
+] as const;
+
+/** Allowed frontmatter fields per Agent Skills spec plus Maestro package hints. */
+const ALLOWED_FIELDS = new Set<string>(SKILL_FRONTMATTER_FIELDS);
 
 /**
  * Skill definition from SKILL.md frontmatter (per Agent Skills spec).
@@ -59,8 +68,18 @@ export interface SkillDefinition {
 	license?: string;
 	/** Compatibility/environment requirements (max 500 chars) */
 	compatibility?: string;
-	/** Space-delimited list of pre-approved tools */
-	allowedTools?: string;
+	/** Pre-approved MCP/toolbox tools this skill can use */
+	allowedTools?: string[];
+	/** Built-in Maestro tools this skill needs */
+	builtinTools?: string[];
+	/** Argument hint shown by authoring surfaces */
+	argumentHint?: string;
+	/** Preferred model while this skill is active */
+	model?: string;
+	/** Preferred agent mode while this skill is active */
+	mode?: string;
+	/** Whether the skill should run in isolated context when supported */
+	isolatedContext?: boolean;
 	/** Additional key-value metadata */
 	metadata?: Record<string, string>;
 	/** @deprecated Use metadata instead */
@@ -95,10 +114,16 @@ export interface LoadedSkill extends SkillDefinition {
 export interface SkillResourceDirs {
 	/** Path to scripts directory if it exists */
 	scriptsDir?: string;
-	/** Path to references directory if it exists */
+	/** Path to Sourcegraph/Amp-style singular reference directory if it exists */
+	referenceDir?: string;
+	/** Path to legacy/plural references directory if it exists */
 	referencesDir?: string;
 	/** Path to assets directory if it exists */
 	assetsDir?: string;
+	/** Path to toolbox executable directory if it exists */
+	toolboxDir?: string;
+	/** Path to bundled MCP config if it exists */
+	mcpJsonPath?: string;
 }
 
 /**
@@ -133,6 +158,37 @@ export class SkillLoadError extends Error {
 		super(message);
 		this.name = "SkillLoadError";
 	}
+}
+
+function stringValue(value: unknown): string | undefined {
+	return typeof value === "string" ? value : undefined;
+}
+
+export function stringArrayValue(value: unknown): string[] | undefined {
+	if (Array.isArray(value)) {
+		const values = value
+			.map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+			.filter((entry) => entry.length > 0);
+		return values.length > 0 ? values : undefined;
+	}
+	if (typeof value === "string") {
+		const values = value
+			.split(/[,\s]+/)
+			.map((entry) => entry.trim())
+			.filter((entry) => entry.length > 0);
+		return values.length > 0 ? values : undefined;
+	}
+	return undefined;
+}
+
+function booleanValue(value: unknown): boolean | undefined {
+	if (typeof value === "boolean") return value;
+	if (typeof value === "string") {
+		const normalized = value.toLowerCase();
+		if (normalized === "true") return true;
+		if (normalized === "false") return false;
+	}
+	return undefined;
 }
 
 /**
@@ -219,7 +275,7 @@ function validateFields(frontmatter: Record<string, unknown>): string[] {
 /**
  * Find SKILL.md file (case-insensitive per spec).
  */
-function findSkillMd(dir: string): string | null {
+export function findSkillMd(dir: string): string | null {
 	// Prefer uppercase
 	const uppercase = join(dir, "SKILL.md");
 	if (existsSync(uppercase)) {
@@ -238,7 +294,7 @@ function findSkillMd(dir: string): string | null {
 /**
  * Parse YAML frontmatter from markdown content.
  */
-function parseFrontmatter(content: string): {
+export function parseFrontmatter(content: string): {
 	frontmatter: Record<string, unknown>;
 	body: string;
 } {
@@ -254,82 +310,11 @@ function parseFrontmatter(content: string): {
 	}
 
 	const [, yamlContent, body] = match;
-
-	// Simple YAML parser for common patterns
-	const frontmatter: Record<string, unknown> = {};
-	const lines = yamlContent!.split("\n");
-	let currentKey: string | null = null;
-	let currentArray: string[] | null = null;
-	let inMetadata = false;
-	let metadataObj: Record<string, string> = {};
-
-	for (const line of lines) {
-		const trimmed = line.trim();
-		if (!trimmed || trimmed.startsWith("#")) continue;
-
-		// Check for array item
-		if (trimmed.startsWith("- ") && currentKey && currentArray) {
-			currentArray.push(trimmed.slice(2).trim());
-			continue;
-		}
-
-		// Check for metadata nested key
-		if (inMetadata && line.startsWith("  ") && !trimmed.startsWith("-")) {
-			const colonIndex = trimmed.indexOf(":");
-			if (colonIndex > 0) {
-				const key = trimmed.slice(0, colonIndex).trim();
-				const value = trimmed
-					.slice(colonIndex + 1)
-					.trim()
-					.replace(/^["']|["']$/g, "");
-				metadataObj[key] = value;
-				continue;
-			}
-		}
-
-		// Save previous array if exists
-		if (currentKey && currentArray) {
-			frontmatter[currentKey] = currentArray;
-			currentArray = null;
-		}
-
-		// End metadata block
-		if (inMetadata && !line.startsWith("  ")) {
-			frontmatter.metadata = metadataObj;
-			inMetadata = false;
-			metadataObj = {};
-		}
-
-		// Parse key: value
-		const colonIndex = trimmed.indexOf(":");
-		if (colonIndex > 0) {
-			const key = trimmed.slice(0, colonIndex).trim();
-			const value = trimmed.slice(colonIndex + 1).trim();
-
-			if (key === "metadata" && value === "") {
-				inMetadata = true;
-				currentKey = null;
-			} else if (value === "") {
-				// Start of array
-				currentKey = key;
-				currentArray = [];
-			} else {
-				// Simple value - remove quotes if present
-				frontmatter[key] = value.replace(/^["']|["']$/g, "");
-				currentKey = null;
-			}
-		}
+	const parsed = loadYaml(yamlContent ?? "") ?? {};
+	if (typeof parsed !== "object" || Array.isArray(parsed)) {
+		throw new Error("Frontmatter must be a YAML object");
 	}
-
-	// Save final array if exists
-	if (currentKey && currentArray) {
-		frontmatter[currentKey] = currentArray;
-	}
-
-	// Save metadata if still in block
-	if (inMetadata && Object.keys(metadataObj).length > 0) {
-		frontmatter.metadata = metadataObj;
-	}
+	const frontmatter = parsed as Record<string, unknown>;
 
 	return { frontmatter, body: body! };
 }
@@ -426,17 +411,29 @@ function loadSkillFromDirectory(
 		// Discover resource directories
 		const resourceDirs: SkillResourceDirs = {};
 		const scriptsDir = join(skillDir, "scripts");
+		const referenceDir = join(skillDir, "reference");
 		const referencesDir = join(skillDir, "references");
 		const assetsDir = join(skillDir, "assets");
+		const toolboxDir = join(skillDir, "toolbox");
+		const mcpJsonPath = join(skillDir, "mcp.json");
 
 		if (existsSync(scriptsDir) && statSync(scriptsDir).isDirectory()) {
 			resourceDirs.scriptsDir = scriptsDir;
+		}
+		if (existsSync(referenceDir) && statSync(referenceDir).isDirectory()) {
+			resourceDirs.referenceDir = referenceDir;
 		}
 		if (existsSync(referencesDir) && statSync(referencesDir).isDirectory()) {
 			resourceDirs.referencesDir = referencesDir;
 		}
 		if (existsSync(assetsDir) && statSync(assetsDir).isDirectory()) {
 			resourceDirs.assetsDir = assetsDir;
+		}
+		if (existsSync(toolboxDir) && statSync(toolboxDir).isDirectory()) {
+			resourceDirs.toolboxDir = toolboxDir;
+		}
+		if (existsSync(mcpJsonPath) && statSync(mcpJsonPath).isFile()) {
+			resourceDirs.mcpJsonPath = mcpJsonPath;
 		}
 
 		// Discover bundled resources (legacy flat structure)
@@ -445,7 +442,13 @@ function loadSkillFromDirectory(
 			const files = readdirSync(skillDir);
 			for (const file of files) {
 				if (file.toLowerCase() === "skill.md") continue;
-				if (["scripts", "references", "assets"].includes(file)) continue;
+				if (
+					["scripts", "reference", "references", "assets", "toolbox"].includes(
+						file,
+					)
+				) {
+					continue;
+				}
 				const filePath = join(skillDir, file);
 				const stat = statSync(filePath);
 				if (stat.isFile()) {
@@ -468,7 +471,12 @@ function loadSkillFromDirectory(
 			description,
 			license: frontmatter.license as string | undefined,
 			compatibility: frontmatter.compatibility as string | undefined,
-			allowedTools: frontmatter["allowed-tools"] as string | undefined,
+			allowedTools: stringArrayValue(frontmatter["allowed-tools"]),
+			builtinTools: stringArrayValue(frontmatter["builtin-tools"]),
+			argumentHint: stringValue(frontmatter["argument-hint"]),
+			model: stringValue(frontmatter.model),
+			mode: stringValue(frontmatter.mode),
+			isolatedContext: booleanValue(frontmatter.isolatedContext),
 			metadata: frontmatter.metadata as Record<string, string> | undefined,
 			// Legacy fields for backwards compatibility
 			tags: Array.isArray(frontmatter.tags)
@@ -740,8 +748,11 @@ export function searchSkills(
  */
 export function skillToDict(
 	skill: LoadedSkill,
-): Record<string, string | Record<string, string>> {
-	const result: Record<string, string | Record<string, string>> = {
+): Record<string, string | string[] | boolean | Record<string, string>> {
+	const result: Record<
+		string,
+		string | string[] | boolean | Record<string, string>
+	> = {
 		name: skill.name,
 		description: skill.description,
 	};
@@ -756,6 +767,21 @@ export function skillToDict(
 
 	if (skill.allowedTools) {
 		result["allowed-tools"] = skill.allowedTools;
+	}
+	if (skill.builtinTools) {
+		result["builtin-tools"] = skill.builtinTools;
+	}
+	if (skill.argumentHint) {
+		result["argument-hint"] = skill.argumentHint;
+	}
+	if (skill.model) {
+		result.model = skill.model;
+	}
+	if (skill.mode) {
+		result.mode = skill.mode;
+	}
+	if (skill.isolatedContext !== undefined) {
+		result.isolatedContext = skill.isolatedContext;
 	}
 
 	if (skill.metadata && Object.keys(skill.metadata).length > 0) {
@@ -854,6 +880,33 @@ export function formatSkillForInjection(skill: LoadedSkill): string {
 		lines.push("");
 		for (const resource of skill.resources) {
 			lines.push(`- \`${resource.path}\` (${resource.type})`);
+		}
+		lines.push("");
+	}
+	if (skill.resourceDirs.referenceDir || skill.resourceDirs.referencesDir) {
+		lines.push("## Reference Resources");
+		lines.push("");
+		lines.push("Load detailed references only when needed:");
+		if (skill.resourceDirs.referenceDir) {
+			lines.push(`- \`${skill.resourceDirs.referenceDir}\``);
+		}
+		if (skill.resourceDirs.referencesDir) {
+			lines.push(`- \`${skill.resourceDirs.referencesDir}\``);
+		}
+		lines.push("");
+	}
+	if (skill.resourceDirs.toolboxDir || skill.resourceDirs.mcpJsonPath) {
+		lines.push("## Tool Package");
+		lines.push("");
+		if (skill.resourceDirs.toolboxDir) {
+			lines.push(
+				`- Toolbox executables are bundled under \`${skill.resourceDirs.toolboxDir}\`.`,
+			);
+		}
+		if (skill.resourceDirs.mcpJsonPath) {
+			lines.push(
+				`- Bundled MCP config: \`${skill.resourceDirs.mcpJsonPath}\`.`,
+			);
 		}
 		lines.push("");
 	}

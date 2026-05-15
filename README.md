@@ -75,6 +75,7 @@ maestro web
 - Keys and config: `~/.maestro/keys.json`, `~/.maestro/config.json`
 - MCP servers: `~/.maestro/mcp.json` or `.maestro/mcp.json`
 - Hooks: `~/.maestro/hooks.json` or `.maestro/hooks.json`
+- Skills: `maestro skill new <name>`, `maestro skill lint .maestro/skills`
 - Agent instructions: `AGENT.md`, `.maestro/APPEND_SYSTEM.md`, `~/.maestro/agent/AGENT.md`
 
 ## Safety Model
@@ -96,6 +97,7 @@ See [Safety](docs/SAFETY.md) and the [Threat Model](docs/THREAT_MODEL.md) for th
 | Understand approvals and sandboxing | [Safety](docs/SAFETY.md) |
 | Run the browser interface | [Web UI Guide](docs/WEB_UI.md) |
 | Set up MCP servers | [MCP Guide](docs/MCP_GUIDE.md) |
+| Package reusable skills | [Skill Cookbook](docs/cookbook/skills/README.md) |
 | Work on the repo as a contributor | [Contributor Runbook](docs/CONTRIBUTOR_RUNBOOK.md) |
 | Integrate Maestro headlessly | [Headless protocol](docs/protocols/headless.md) |
 | Bring any coding agent into EvalOps | [Any-Agent Control Plane](docs/design/ANY_AGENT_CONTROL_PLANE.md) |
