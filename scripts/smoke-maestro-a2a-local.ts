@@ -34,7 +34,9 @@ async function openPort(): Promise<number> {
 }
 
 async function waitForHealth(baseUrl: string, stderr: () => string): Promise<void> {
-	for (let attempt = 0; attempt < 80; attempt++) {
+	const timeoutMs = Number.parseInt(process.env.MAESTRO_A2A_SMOKE_READY_TIMEOUT_MS ?? "120000", 10);
+	const deadline = Date.now() + (Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 120000);
+	while (Date.now() < deadline) {
 		try {
 			const response = await fetch(`${baseUrl}/healthz`);
 			if (response.ok) {
@@ -43,7 +45,7 @@ async function waitForHealth(baseUrl: string, stderr: () => string): Promise<voi
 		} catch {
 			// The Rust server may still be compiling or binding the port.
 		}
-		await delay(100);
+		await delay(250);
 	}
 	throw new Error(`Rust control-plane did not become ready:\n${stderr()}`);
 }

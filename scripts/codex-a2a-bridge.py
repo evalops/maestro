@@ -168,14 +168,26 @@ def complete_task(task_id: str, context_id: str, prompt: str, history: list[dict
 
     process: subprocess.Popen[str] | None = None
     try:
+        with LOCK:
+            current = TASKS.get(task_id)
+            if current and current.get("status", {}).get("state") == "TASK_STATE_CANCELED":
+                return
         process = subprocess.Popen(
             codex_command(prompt, output_path),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
         )
+        terminate_before_wait = False
         with LOCK:
-            PROCESSES[task_id] = process
+            current = TASKS.get(task_id)
+            if current and current.get("status", {}).get("state") == "TASK_STATE_CANCELED":
+                terminate_before_wait = True
+            else:
+                PROCESSES[task_id] = process
+        if terminate_before_wait:
+            terminate_process(process)
+            return
         stdout, stderr = process.communicate(timeout=timeout)
         with LOCK:
             PROCESSES.pop(task_id, None)
@@ -382,6 +394,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             requested_task_id = str(message.get("taskId") or "").strip()
             requested_context_id = str(message.get("contextId") or "").strip()
+            immediate = bool((body.get("configuration") or {}).get("returnImmediately"))
             with LOCK:
                 if requested_task_id:
                     existing = TASKS.get(requested_task_id)
@@ -424,28 +437,31 @@ class Handler(BaseHTTPRequestHandler):
                     context_id = requested_context_id or new_id("codex-a2a-context")
                     task_id = new_id("codex-a2a-task")
                     history = []
-            history.append(user_message(message, context_id))
-            immediate = bool((body.get("configuration") or {}).get("returnImmediately"))
-            if immediate:
-                accepted = agent_message(context_id, "Codex accepted the A2A task.")
+                history.append(user_message(message, context_id))
+                if immediate:
+                    status_message = agent_message(context_id, "Codex accepted the A2A task.")
+                    launch_history = [*history, status_message]
+                else:
+                    status_message = agent_message(context_id, "Codex is working on the A2A task.")
+                    launch_history = list(history)
                 task = task_value(
                     task_id,
                     context_id,
                     "TASK_STATE_WORKING",
-                    accepted,
-                    [*history, accepted],
+                    status_message,
+                    launch_history,
                     metadata={"backend": "codex-exec"},
                 )
-                with LOCK:
-                    TASKS[task_id] = task
+                TASKS[task_id] = task
+            if immediate:
                 threading.Thread(
                     target=complete_task,
-                    args=(task_id, context_id, prompt, [*history, accepted]),
+                    args=(task_id, context_id, prompt, launch_history),
                     daemon=True,
                 ).start()
                 self.send_json(200, {"task": task})
                 return
-            complete_task(task_id, context_id, prompt, history)
+            complete_task(task_id, context_id, prompt, launch_history)
             with LOCK:
                 task = TASKS[task_id]
             self.send_json(200, {"task": task})

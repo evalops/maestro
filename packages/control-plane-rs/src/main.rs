@@ -589,9 +589,11 @@ enum A2ATurnResult {
     Canceled,
 }
 
+#[derive(Debug)]
 struct A2ASendTarget {
     task_id: String,
     context_id: String,
+    history: Vec<Value>,
 }
 
 fn is_a2a_endpoint(head: &RequestHead) -> bool {
@@ -738,47 +740,18 @@ fn a2a_task_accepts_message(task: &Value) -> bool {
     a2a_task_status_state(task) == Some("TASK_STATE_INPUT_REQUIRED")
 }
 
-async fn a2a_resolve_send_target(
+async fn claim_a2a_send_task(
     state: &AppState,
     request: &A2ASendMessageRequest,
     head: &RequestHead,
+    metadata: Value,
 ) -> Result<A2ASendTarget, Vec<u8>> {
-    let Some(task_id) = request
+    let requested_task_id = request
         .message
         .task_id
         .as_deref()
         .map(str::trim)
-        .filter(|task_id| !task_id.is_empty())
-    else {
-        return Ok(A2ASendTarget {
-            task_id: generate_a2a_id("maestro-task"),
-            context_id: a2a_context_id(request, head),
-        });
-    };
-
-    let tasks = state.a2a_tasks.lock().await;
-    let Some(task) = tasks.get(task_id) else {
-        return Err(a2a_error_response(
-            404,
-            "TASK_NOT_FOUND",
-            "A2A task not found",
-        ));
-    };
-    if a2a_task_is_terminal(task) {
-        return Err(a2a_error_response(
-            400,
-            "UNSUPPORTED_OPERATION",
-            "A2A terminal tasks cannot accept more messages",
-        ));
-    }
-    if !a2a_task_accepts_message(task) {
-        return Err(a2a_error_response(
-            409,
-            "UNSUPPORTED_OPERATION",
-            "A2A task is not ready to accept another message",
-        ));
-    }
-
+        .filter(|task_id| !task_id.is_empty());
     let explicit_context_id = request
         .message
         .context_id
@@ -786,42 +759,88 @@ async fn a2a_resolve_send_target(
         .map(str::trim)
         .filter(|context_id| !context_id.is_empty())
         .map(str::to_string);
-    let task_context_id = task
-        .get("contextId")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|context_id| !context_id.is_empty())
-        .map(str::to_string);
-    if let (Some(message_context_id), Some(task_context_id)) =
-        (explicit_context_id.as_deref(), task_context_id.as_deref())
-    {
-        if message_context_id != task_context_id {
+
+    let mut tasks = state.a2a_tasks.lock().await;
+    let (task_id, context_id, mut history) = if let Some(task_id) = requested_task_id {
+        let Some(task) = tasks.get(task_id) else {
+            return Err(a2a_error_response(
+                404,
+                "TASK_NOT_FOUND",
+                "A2A task not found",
+            ));
+        };
+        if a2a_task_is_terminal(task) {
             return Err(a2a_error_response(
                 400,
-                "INVALID_REQUEST",
-                "A2A message contextId must match the referenced task",
+                "UNSUPPORTED_OPERATION",
+                "A2A terminal tasks cannot accept more messages",
             ));
         }
-    }
-    let context_id = explicit_context_id
-        .or(task_context_id)
-        .unwrap_or_else(|| a2a_context_id(request, head));
+        if !a2a_task_accepts_message(task) {
+            return Err(a2a_error_response(
+                409,
+                "UNSUPPORTED_OPERATION",
+                "A2A task is not ready to accept another message",
+            ));
+        }
+
+        let task_context_id = task
+            .get("contextId")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|context_id| !context_id.is_empty())
+            .map(str::to_string);
+        if let (Some(message_context_id), Some(task_context_id)) =
+            (explicit_context_id.as_deref(), task_context_id.as_deref())
+        {
+            if message_context_id != task_context_id {
+                return Err(a2a_error_response(
+                    400,
+                    "INVALID_REQUEST",
+                    "A2A message contextId must match the referenced task",
+                ));
+            }
+        }
+        let context_id = explicit_context_id
+            .or(task_context_id)
+            .unwrap_or_else(|| a2a_context_id(request, head));
+        let history = task
+            .get("history")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        (task_id.to_string(), context_id, history)
+    } else {
+        (
+            generate_a2a_id("maestro-task"),
+            explicit_context_id.unwrap_or_else(|| a2a_context_id(request, head)),
+            Vec::new(),
+        )
+    };
+    history.push(a2a_user_message_value(&request.message, &context_id));
+    let working_message = a2a_agent_message(&context_id, "Maestro is working on the A2A task.");
+    let task = a2a_task_value(
+        &task_id,
+        &context_id,
+        "TASK_STATE_WORKING",
+        working_message,
+        history.clone(),
+        Vec::new(),
+        metadata,
+    );
+    tasks.insert(task_id.clone(), task);
+    prune_a2a_terminal_tasks(&mut tasks);
     Ok(A2ASendTarget {
-        task_id: task_id.to_string(),
+        task_id,
         context_id,
+        history,
     })
 }
 
-async fn a2a_existing_task_history(state: &AppState, task_id: &str) -> Vec<Value> {
-    state
-        .a2a_tasks
-        .lock()
-        .await
-        .get(task_id)
-        .and_then(|task| task.get("history"))
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default()
+async fn a2a_canceled_task(state: &AppState, task_id: &str) -> Option<Value> {
+    state.a2a_tasks.lock().await.get(task_id).and_then(|task| {
+        (a2a_task_status_state(task) == Some("TASK_STATE_CANCELED")).then(|| task.clone())
+    })
 }
 
 async fn store_a2a_task_unless_canceled(state: &AppState, task_id: &str, task: Value) -> Value {
@@ -909,20 +928,22 @@ async fn handle_a2a_message_send(
         );
     };
 
-    let target = match a2a_resolve_send_target(state, &request, head).await {
+    let metadata = a2a_task_metadata(head, &request);
+    let target = match claim_a2a_send_task(state, &request, head, metadata.clone()).await {
         Ok(target) => target,
         Err(response) => return response,
     };
     let task_id = target.task_id;
     let context_id = target.context_id;
-    let user_message = a2a_user_message_value(&request.message, &context_id);
-    let mut history = a2a_existing_task_history(state, &task_id).await;
-    history.push(user_message.clone());
+    let history = target.history;
 
-    let metadata = a2a_task_metadata(head, &request);
     let (cancel_tx, cancel_rx) = watch::channel(false);
     if let Err(response) = register_a2a_cancel_sender(state, &task_id, cancel_tx).await {
         return response;
+    }
+    if let Some(task) = a2a_canceled_task(state, &task_id).await {
+        state.a2a_cancel_senders.lock().await.remove(&task_id);
+        return json_response(200, &serde_json::json!({ "task": task }));
     }
     if a2a_return_immediately(&request) {
         let accepted_message = a2a_agent_message(&context_id, "Maestro accepted the A2A task.");
@@ -7301,6 +7322,79 @@ mod tests {
             "TASK_STATE_WORKING"
         );
         assert_eq!(state.a2a_cancel_senders.lock().await.len(), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_claims_input_task_before_launch() {
+        let state = test_app_state_with_sessions(HashMap::new());
+        let existing_message = a2a_agent_message("ctx-1", "Need more input");
+        let task = a2a_task_value(
+            "maestro-task-1",
+            "ctx-1",
+            "TASK_STATE_INPUT_REQUIRED",
+            existing_message.clone(),
+            vec![existing_message],
+            Vec::new(),
+            serde_json::json!({}),
+        );
+        state
+            .a2a_tasks
+            .lock()
+            .await
+            .insert("maestro-task-1".to_string(), task);
+        let head = RequestHead {
+            method: "POST".to_string(),
+            path: "/message:send".to_string(),
+            query: HashMap::new(),
+            headers: HashMap::new(),
+        };
+        let request = A2ASendMessageRequest {
+            message: A2AMessageBody {
+                message_id: Some("msg-2".to_string()),
+                context_id: None,
+                task_id: Some("maestro-task-1".to_string()),
+                role: Some("ROLE_USER".to_string()),
+                parts: vec![A2APartBody {
+                    text: Some("follow up".to_string()),
+                    url: None,
+                    data: None,
+                    metadata: None,
+                    filename: None,
+                    media_type: Some("text/plain".to_string()),
+                }],
+                metadata: None,
+                extensions: None,
+                reference_task_ids: None,
+            },
+            configuration: None,
+            metadata: None,
+        };
+
+        let claimed = claim_a2a_send_task(
+            &state,
+            &request,
+            &head,
+            serde_json::json!({ "test": "metadata" }),
+        )
+        .await
+        .expect("input-required task should be claimed");
+        let stored = state.a2a_tasks.lock().await;
+
+        assert_eq!(claimed.task_id, "maestro-task-1");
+        assert_eq!(claimed.context_id, "ctx-1");
+        assert_eq!(claimed.history.len(), 2);
+        assert_eq!(
+            stored["maestro-task-1"]["status"]["state"],
+            "TASK_STATE_WORKING"
+        );
+        drop(stored);
+
+        let response = response_json(
+            claim_a2a_send_task(&state, &request, &head, serde_json::json!({}))
+                .await
+                .expect_err("already-claimed task should reject overlap"),
+        );
+        assert_eq!(response["error"]["code"], "UNSUPPORTED_OPERATION");
     }
 
     #[tokio::test(flavor = "current_thread")]
