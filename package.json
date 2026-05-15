@@ -108,6 +108,7 @@
     "smoke:event-bus": "tsx scripts/smoke-maestro-event-bus.ts",
     "smoke:a2a-local": "tsx scripts/smoke-maestro-a2a-local.ts",
     "a2a:codex-bridge": "python3 scripts/codex-a2a-bridge.py",
+    "a2a:peer": "python3 scripts/codex-a2a-peer.py",
     "smoke:headless": "node scripts/smoke-headless.js",
     "headless:responsiveness": "node scripts/headless-responsiveness-harness.js",
     "smoke:pack": "node scripts/smoke-packed-cli.js",
