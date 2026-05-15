@@ -50,9 +50,10 @@ def default_public_host() -> str:
 
 def url_authority_host(host: str) -> str:
     if host.startswith("[") and host.endswith("]"):
-        return host
+        inner = host[1:-1].replace("%25", "%").replace("%", "%25")
+        return f"[{inner}]"
     if ":" in host:
-        return f"[{host.replace('%', '%25')}]"
+        return f"[{host.replace('%25', '%').replace('%', '%25')}]"
     return host
 
 
@@ -86,7 +87,7 @@ def terminal(state: str | None) -> bool:
     }
 
 
-def prune_terminal_tasks_locked() -> None:
+def prune_terminal_tasks_locked(protected_task_id: str | None = None) -> None:
     terminal_tasks = sorted(
         (
             str(task.get("status", {}).get("timestamp") or ""),
@@ -98,13 +99,18 @@ def prune_terminal_tasks_locked() -> None:
     overflow = len(terminal_tasks) - TERMINAL_TASK_STORE_LIMIT
     if overflow <= 0:
         return
-    for _, task_id in terminal_tasks[:overflow]:
+    for _, task_id in terminal_tasks:
+        if overflow <= 0:
+            break
+        if task_id == protected_task_id:
+            continue
         TASKS.pop(task_id, None)
+        overflow -= 1
 
 
 def store_task_locked(task_id: str, task: dict[str, Any]) -> None:
     TASKS[task_id] = task
-    prune_terminal_tasks_locked()
+    prune_terminal_tasks_locked(protected_task_id=task_id)
 
 
 def accepts_message(state: str | None) -> bool:
