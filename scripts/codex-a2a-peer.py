@@ -175,6 +175,8 @@ def request_json(
             timeout = float(timeout_ms) / 1000.0
         except (TypeError, ValueError) as error:
             raise PeerError("timeoutMs must be numeric") from error
+    if timeout <= 0:
+        raise PeerError("timeoutMs must be positive")
     request = Request(
         f"{peer['url']}{path}",
         data=data,
@@ -193,7 +195,7 @@ def request_json(
         return {}
     try:
         value = json.loads(payload.decode("utf-8"))
-    except json.JSONDecodeError as error:
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise PeerError(f"{method} {path} returned invalid JSON: {error}") from error
     if not isinstance(value, dict):
         raise PeerError(f"{method} {path} returned non-object JSON")

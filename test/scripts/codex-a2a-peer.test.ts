@@ -88,6 +88,10 @@ describe("codex-a2a-peer", () => {
 				response.end("{not json");
 				return;
 			}
+			if (request.url === "/bad-utf8/.well-known/agent-card.json") {
+				response.end(Buffer.from([0xff]));
+				return;
+			}
 			if (request.url === "/message:send") {
 				response.end(
 					JSON.stringify({
@@ -247,6 +251,28 @@ describe("codex-a2a-peer", () => {
 		});
 	});
 
+	it("reports invalid UTF-8 responses without a traceback", async () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				defaultPeer: "bad",
+				authRequired: false,
+				peers: {
+					bad: {
+						url: `${baseUrl}/bad-utf8`,
+					},
+				},
+			}),
+		);
+
+		await expect(runPeer(configPath, ["card"], {})).rejects.toMatchObject({
+			stderr: expect.stringContaining("returned invalid JSON"),
+		});
+		await expect(runPeer(configPath, ["card"], {})).rejects.not.toMatchObject({
+			stderr: expect.stringContaining("Traceback"),
+		});
+	});
+
 	it("sends a synchronous handoff through message:send", async () => {
 		const output = await runPeer(
 			configPath,
@@ -318,6 +344,30 @@ describe("codex-a2a-peer", () => {
 		await expect(runPeer(configPath, ["card"], {})).rejects.not.toMatchObject({
 			stderr: expect.stringContaining("Traceback"),
 		});
+	});
+
+	it("reports non-positive configured timeoutMs without a traceback", async () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				defaultPeer: "mock",
+				authRequired: false,
+				timeoutMs: -1,
+				peers: {
+					mock: {
+						url: baseUrl,
+					},
+				},
+			}),
+		);
+
+		await expect(runPeer(configPath, ["card"], {})).rejects.toMatchObject({
+			stderr: expect.stringContaining("timeoutMs must be positive"),
+		});
+		await expect(runPeer(configPath, ["card"], {})).rejects.not.toMatchObject({
+			stderr: expect.stringContaining("Traceback"),
+		});
+		expect(requests).toHaveLength(0);
 	});
 
 	it("fails closed when the peer token is missing", async () => {
