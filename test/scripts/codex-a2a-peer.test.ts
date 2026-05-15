@@ -84,6 +84,10 @@ describe("codex-a2a-peer", () => {
 				);
 				return;
 			}
+			if (request.url === "/bad-json/.well-known/agent-card.json") {
+				response.end("{not json");
+				return;
+			}
 			if (request.url === "/message:send") {
 				response.end(
 					JSON.stringify({
@@ -173,6 +177,25 @@ describe("codex-a2a-peer", () => {
 			"Bearer super-secret-token",
 		);
 		expect(requests[0]?.headers["a2a-version"]).toBe("1.0");
+	});
+
+	it("reports malformed JSON responses without a traceback", async () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				defaultPeer: "bad",
+				authRequired: false,
+				peers: {
+					bad: {
+						url: `${baseUrl}/bad-json`,
+					},
+				},
+			}),
+		);
+
+		await expect(runPeer(configPath, ["card"], {})).rejects.toMatchObject({
+			stderr: expect.stringContaining("returned invalid JSON"),
+		});
 	});
 
 	it("sends a synchronous handoff through message:send", async () => {

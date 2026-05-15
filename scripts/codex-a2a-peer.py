@@ -184,7 +184,10 @@ def request_json(
         raise PeerError(f"{method} {path} failed: {error}") from error
     if not payload:
         return {}
-    value = json.loads(payload.decode("utf-8"))
+    try:
+        value = json.loads(payload.decode("utf-8"))
+    except json.JSONDecodeError as error:
+        raise PeerError(f"{method} {path} returned invalid JSON: {error}") from error
     if not isinstance(value, dict):
         raise PeerError(f"{method} {path} returned non-object JSON")
     return value
