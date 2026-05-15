@@ -4933,6 +4933,15 @@ fn codex_app_server_timeout() -> Duration {
     )
 }
 
+fn codex_app_server_shutdown_timeout() -> Duration {
+    Duration::from_millis(
+        env::var("MAESTRO_CODEX_APP_SERVER_SHUTDOWN_TIMEOUT_MS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1_000),
+    )
+}
+
 fn codex_app_server_sandbox_mode() -> Option<String> {
     let bridge_override = env::var("MAESTRO_CODEX_APP_SERVER_SANDBOX").ok();
     let inherited = env::var("MAESTRO_SANDBOX_MODE").ok();
@@ -5930,6 +5939,7 @@ async fn run_codex_app_server_headless_cli(
     let pending_approval_ids = Arc::new(Mutex::new(Vec::new()));
     let approval_run_id = codex_headless_run_id();
     let request_timeout = codex_app_server_timeout();
+    let shutdown_timeout = codex_app_server_shutdown_timeout();
     let mut lines = BufReader::new(stdout).lines();
 
     let request_result = async {
@@ -6055,7 +6065,7 @@ async fn run_codex_app_server_headless_cli(
         let _ = stderr_task.await;
         return output;
     }
-    match tokio::time::timeout(request_timeout, child.wait()).await {
+    match tokio::time::timeout(shutdown_timeout, child.wait()).await {
         Ok(Ok(_status)) => {}
         Ok(Err(error)) => {
             return Err(format!("failed to wait for Codex headless bridge: {error}"));
@@ -9028,7 +9038,7 @@ rl.on("line", (line) => {
         let previous_cli = env::var_os("MAESTRO_CODEX_APP_SERVER_CLI");
         let previous_timeout = env::var_os("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS");
         env::set_var("MAESTRO_CODEX_APP_SERVER_CLI", &cli_path);
-        env::set_var("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS", "50");
+        env::set_var("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS", "500");
 
         let state = test_app_state_with_sessions(HashMap::new());
         let (_client, server) = tcp_stream_pair().await;
@@ -9069,7 +9079,7 @@ rl.on("line", (line) => {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        tokio::time::sleep(Duration::from_millis(650)).await;
         let mut pending = state.pending_tool_responses.lock().await;
         let external_request_id = pending
             .keys()
@@ -9272,8 +9282,10 @@ rl.on("line", (line) => {
         .expect("cli fixture should be written");
         let previous_cli = env::var_os("MAESTRO_CODEX_APP_SERVER_CLI");
         let previous_timeout = env::var_os("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS");
+        let previous_shutdown_timeout = env::var_os("MAESTRO_CODEX_APP_SERVER_SHUTDOWN_TIMEOUT_MS");
         env::set_var("MAESTRO_CODEX_APP_SERVER_CLI", &cli_path);
-        env::set_var("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS", "50");
+        env::set_var("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS", "5000");
+        env::set_var("MAESTRO_CODEX_APP_SERVER_SHUTDOWN_TIMEOUT_MS", "50");
 
         let state = test_app_state_with_sessions(HashMap::new());
         let (_client, mut server) = tcp_stream_pair().await;
@@ -9299,6 +9311,11 @@ rl.on("line", (line) => {
             env::set_var("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS", previous);
         } else {
             env::remove_var("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS");
+        }
+        if let Some(previous) = previous_shutdown_timeout {
+            env::set_var("MAESTRO_CODEX_APP_SERVER_SHUTDOWN_TIMEOUT_MS", previous);
+        } else {
+            env::remove_var("MAESTRO_CODEX_APP_SERVER_SHUTDOWN_TIMEOUT_MS");
         }
 
         assert_eq!(

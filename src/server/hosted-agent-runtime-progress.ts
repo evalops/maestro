@@ -4,16 +4,22 @@ import {
 	PlatformAgentRunStepKindValue,
 	PlatformAgentRunStepStateValue,
 	PlatformAgentRunWaitTypeValue,
+	type PlatformAgentWorkItem,
+	PlatformAgentWorkItemKindValue,
+	PlatformAgentWorkItemStateValue,
 	completeAgentRuntimeRun,
 	failAgentRuntimeRun,
 	recordAgentRuntimeRunStep,
+	recordAgentRuntimeRunWorkItem,
 	resumeAgentRuntimeRun,
+	updateAgentRuntimeRunWorkItem,
 	waitAgentRuntimeRun,
 } from "../platform/agent-runtime-client.js";
 import { createLogger } from "../utils/logger.js";
 import type { ServerRequestLifecycleEvent } from "./server-request-manager.js";
 
 const logger = createLogger("server:hosted-agent-runtime-progress");
+const CODEX_SUBAGENT_TOOL_PREFIX = "codex.subagent.";
 
 export interface HostedAgentRuntimeProgressContext {
 	enabled: true;
@@ -30,6 +36,8 @@ type ProgressOperation = () => Promise<unknown>;
 
 export interface HostedAgentRuntimeProgressRecorderOperations {
 	recordStep?: typeof recordAgentRuntimeRunStep;
+	recordWorkItem?: typeof recordAgentRuntimeRunWorkItem;
+	updateWorkItem?: typeof updateAgentRuntimeRunWorkItem;
 	waitRun?: typeof waitAgentRuntimeRun;
 	resumeRun?: typeof resumeAgentRuntimeRun;
 	completeRun?: typeof completeAgentRuntimeRun;
@@ -75,6 +83,39 @@ function objectKeys(value: unknown): string[] | undefined {
 	return keys.length > 0 ? keys : undefined;
 }
 
+function stringArray(value: unknown): string[] {
+	if (!Array.isArray(value)) {
+		return [];
+	}
+	return value.filter(
+		(item): item is string => typeof item === "string" && item.length > 0,
+	);
+}
+
+function codexSubagentToolName(toolName: string): string | undefined {
+	const tool = toolName.startsWith(CODEX_SUBAGENT_TOOL_PREFIX)
+		? toolName.slice(CODEX_SUBAGENT_TOOL_PREFIX.length)
+		: undefined;
+	return tool || undefined;
+}
+
+function codexSubagentNextAction(tool: string): string {
+	switch (tool) {
+		case "spawnAgent":
+			return "wait for child agent initialization or completion";
+		case "sendInput":
+			return "wait for child agent response";
+		case "resumeAgent":
+			return "wait for resumed child agent response";
+		case "wait":
+			return "wait for selected child agents";
+		case "closeAgent":
+			return "confirm child agent shutdown";
+		default:
+			return "track Codex subagent collaboration";
+	}
+}
+
 function toolDisplayName(event: {
 	displayName?: string;
 	summaryLabel?: string;
@@ -104,6 +145,7 @@ export class HostedAgentRuntimeProgressRecorder {
 	private readonly operations: Required<HostedAgentRuntimeProgressRecorderOperations>;
 	private readonly pendingWaitIds = new Map<string, string>();
 	private readonly resumedWaitIds = new Set<string>();
+	private readonly codexSubagentReceiverThreadIds = new Map<string, string[]>();
 	private pending: Promise<void> = Promise.resolve();
 	private turnIndex = 0;
 	private terminalRecorded = false;
@@ -114,6 +156,10 @@ export class HostedAgentRuntimeProgressRecorder {
 		this.workspaceRoot = options.workspaceRoot;
 		this.operations = {
 			recordStep: options.operations?.recordStep ?? recordAgentRuntimeRunStep,
+			recordWorkItem:
+				options.operations?.recordWorkItem ?? recordAgentRuntimeRunWorkItem,
+			updateWorkItem:
+				options.operations?.updateWorkItem ?? updateAgentRuntimeRunWorkItem,
 			waitRun: options.operations?.waitRun ?? waitAgentRuntimeRun,
 			resumeRun: options.operations?.resumeRun ?? resumeAgentRuntimeRun,
 			completeRun: options.operations?.completeRun ?? completeAgentRuntimeRun,
@@ -192,6 +238,7 @@ export class HostedAgentRuntimeProgressRecorder {
 						arg_keys: objectKeys(event.args),
 					}),
 				});
+				this.recordCodexSubagentWorkItem(event);
 				return;
 			case "tool_execution_end":
 				this.recordStep({
@@ -218,6 +265,7 @@ export class HostedAgentRuntimeProgressRecorder {
 						governed_outcome: event.governedOutcome,
 					}),
 				});
+				this.updateCodexSubagentWorkItem(event);
 				return;
 			case "action_approval_required":
 				this.recordApprovalWait({
@@ -456,6 +504,124 @@ export class HostedAgentRuntimeProgressRecorder {
 		});
 	}
 
+	private recordCodexSubagentWorkItem(
+		event: Extract<AgentEvent, { type: "tool_execution_start" }>,
+	): void {
+		const codexTool = codexSubagentToolName(event.toolName);
+		if (!codexTool) {
+			return;
+		}
+		const runId = nonEmptyString(this.hostedRunner?.agentRunId);
+		if (!this.hostedRunner?.enabled || !runId) {
+			return;
+		}
+		const receiverThreadIds = stringArray(event.args.receiverThreadIds);
+		this.codexSubagentReceiverThreadIds.set(
+			event.toolCallId,
+			receiverThreadIds,
+		);
+		const prompt = nonEmptyString(event.args.prompt);
+		const model = nonEmptyString(event.args.model);
+		const reasoningEffort = nonEmptyString(event.args.reasoningEffort);
+		const workItem: PlatformAgentWorkItem = {
+			id: this.workItemId(event.toolCallId),
+			runId,
+			kind:
+				codexTool === "wait"
+					? PlatformAgentWorkItemKindValue.Wait
+					: PlatformAgentWorkItemKindValue.ChildRun,
+			state:
+				codexTool === "wait"
+					? PlatformAgentWorkItemStateValue.Waiting
+					: PlatformAgentWorkItemStateValue.Running,
+			title: toolDisplayName(event),
+			...(prompt ? { goal: prompt } : {}),
+			nextAction: codexSubagentNextAction(codexTool),
+			...(event.toolExecutionId
+				? { toolExecutionId: event.toolExecutionId }
+				: {}),
+			evidenceRefs: [
+				`codex-tool-call:${event.toolCallId}`,
+				...receiverThreadIds.map((id) => `codex-thread:${id}`),
+			],
+			completionGate: "codex_collab_tool_completed",
+			payload: this.basePayload({
+				event_type: event.type,
+				codex_tool: codexTool,
+				tool_call_id: event.toolCallId,
+				tool_name: event.toolName,
+				display_name: event.displayName,
+				summary_label: event.summaryLabel,
+				sender_thread_id: nonEmptyString(event.args.senderThreadId),
+				receiver_thread_ids: receiverThreadIds,
+				receiver_thread_count: receiverThreadIds.length,
+				model,
+				reasoning_effort: reasoningEffort,
+				arg_keys: objectKeys(event.args),
+			}),
+		};
+		this.enqueue(async () => {
+			await this.operations.recordWorkItem({ runId, workItem });
+		});
+	}
+
+	private updateCodexSubagentWorkItem(
+		event: Extract<AgentEvent, { type: "tool_execution_end" }>,
+	): void {
+		const codexTool = codexSubagentToolName(event.toolName);
+		if (!codexTool) {
+			return;
+		}
+		const runId = nonEmptyString(this.hostedRunner?.agentRunId);
+		if (!this.hostedRunner?.enabled || !runId) {
+			return;
+		}
+		const details =
+			event.result.details &&
+			typeof event.result.details === "object" &&
+			!Array.isArray(event.result.details)
+				? (event.result.details as Record<string, unknown>)
+				: undefined;
+		const detailReceiverThreadIds = stringArray(details?.receiverThreadIds);
+		const receiverThreadIds =
+			detailReceiverThreadIds.length > 0
+				? detailReceiverThreadIds
+				: (this.codexSubagentReceiverThreadIds.get(event.toolCallId) ?? []);
+		this.codexSubagentReceiverThreadIds.delete(event.toolCallId);
+		this.enqueue(async () => {
+			await this.operations.updateWorkItem({
+				runId,
+				workItemId: this.workItemId(event.toolCallId),
+				state: event.isError
+					? PlatformAgentWorkItemStateValue.Failed
+					: PlatformAgentWorkItemStateValue.Succeeded,
+				...(event.toolExecutionId
+					? { toolExecutionId: event.toolExecutionId }
+					: {}),
+				evidenceRefs: [
+					`codex-tool-call:${event.toolCallId}`,
+					...receiverThreadIds.map((id) => `codex-thread:${id}`),
+				],
+				completionGate: event.isError
+					? "codex_collab_tool_failed"
+					: "codex_collab_tool_completed",
+				payload: this.basePayload({
+					event_type: event.type,
+					codex_tool: codexTool,
+					tool_call_id: event.toolCallId,
+					tool_name: event.toolName,
+					display_name: event.displayName,
+					summary_label: event.summaryLabel,
+					error_code: event.errorCode,
+					governed_outcome: event.governedOutcome,
+					result_error: event.isError,
+					receiver_thread_ids: receiverThreadIds,
+					result_detail_keys: objectKeys(details),
+				}),
+			});
+		});
+	}
+
 	private enqueue(operation: ProgressOperation): void {
 		this.pending = this.pending.then(operation, operation).then(
 			() => {},
@@ -513,6 +679,10 @@ export class HostedAgentRuntimeProgressRecorder {
 
 	private toolStepId(toolCallId: string): string {
 		return this.stepId("tool", toolCallId);
+	}
+
+	private workItemId(toolCallId: string): string {
+		return this.stepId("work", toolCallId);
 	}
 
 	private waitId(requestId: string): string {

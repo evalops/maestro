@@ -16,6 +16,7 @@ export type AgentTrajectoryEventKind =
 	| "context"
 	| "wait"
 	| "artifact"
+	| "agent"
 	| "runtime";
 
 export type AgentTrajectoryPhase =
@@ -33,6 +34,7 @@ export type AgentTrajectoryActor =
 	| "user"
 	| "assistant"
 	| "tool"
+	| "agent"
 	| "runtime"
 	| "platform"
 	| "system";
@@ -44,7 +46,10 @@ export interface AgentTrajectoryEvidenceAnchor {
 		| "tool_execution"
 		| "approval_request"
 		| "pending_request"
-		| "artifact";
+		| "artifact"
+		| "agent_run"
+		| "parent_agent_run"
+		| "child_agent_run";
 	id: string;
 }
 
@@ -104,6 +109,7 @@ function kindForTimelineItem(
 	}
 	if (item.type.startsWith("policy.")) return "governance";
 	if (item.type === "wait.pending") return "wait";
+	if (item.type.startsWith("agent.run.")) return "agent";
 	if (item.type.startsWith("artifact.")) return "artifact";
 	if (
 		item.type.startsWith("compaction.") ||
@@ -127,6 +133,8 @@ function phaseForTimelineItem(
 			return item.role === "assistant" ? "think" : "observe";
 		case "tool":
 			return item.type === "tool.requested" ? "act" : "verify";
+		case "agent":
+			return item.type === "agent.run.started" ? "act" : "verify";
 		case "evidence":
 		case "artifact":
 			return "verify";
@@ -146,6 +154,7 @@ function actorForTimelineItem(
 	if (item.role === "assistant") return "assistant";
 	if (item.role === "tool") return "tool";
 	if (item.type === "tool.requested") return "assistant";
+	if (item.type.startsWith("agent.run.")) return "agent";
 	if (item.source === "platform") return "platform";
 	if (
 		item.type.startsWith("session.") ||
@@ -178,6 +187,9 @@ function evidenceForTimelineItem(
 	pushAnchor(anchors, "approval_request", item.approvalRequestId);
 	pushAnchor(anchors, "pending_request", item.pendingRequestId);
 	pushAnchor(anchors, "artifact", item.artifactId);
+	pushAnchor(anchors, "agent_run", item.agentRunId);
+	pushAnchor(anchors, "parent_agent_run", item.parentAgentRunId);
+	pushAnchor(anchors, "child_agent_run", item.childAgentRunId);
 	return anchors;
 }
 
@@ -188,8 +200,12 @@ function relatedIdsForTimelineItem(item: ComposerRunTimelineItem): string[] {
 		item.approvalRequestId,
 		item.pendingRequestId,
 		item.artifactId,
+		item.agentRunId,
+		item.parentAgentRunId,
+		item.childAgentRunId,
 	]
 		.filter((id): id is string => typeof id === "string" && id.length > 0)
+		.filter((id, index, ids) => ids.indexOf(id) === index)
 		.sort();
 }
 

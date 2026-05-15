@@ -72,6 +72,12 @@ const CLAIM_NEXT_RUN_PATH = platformConnectMethodPath(
 const RECORD_RUN_STEP_PATH = platformConnectMethodPath(
 	PLATFORM_CONNECT_METHODS.agentRuntime.recordRunStep,
 );
+const RECORD_RUN_WORK_ITEM_PATH = platformConnectMethodPath(
+	PLATFORM_CONNECT_METHODS.agentRuntime.recordRunWorkItem,
+);
+const UPDATE_RUN_WORK_ITEM_PATH = platformConnectMethodPath(
+	PLATFORM_CONNECT_METHODS.agentRuntime.updateRunWorkItem,
+);
 const WAIT_RUN_PATH = platformConnectMethodPath(
 	PLATFORM_CONNECT_METHODS.agentRuntime.waitRun,
 );
@@ -190,6 +196,28 @@ export enum PlatformAgentRunWaitTypeValue {
 	Timer = "AGENT_RUN_WAIT_TYPE_TIMER",
 }
 
+export enum PlatformAgentWorkItemKindValue {
+	Root = "AGENT_WORK_ITEM_KIND_ROOT",
+	ModelCall = "AGENT_WORK_ITEM_KIND_MODEL_CALL",
+	ToolCall = "AGENT_WORK_ITEM_KIND_TOOL_CALL",
+	ChildRun = "AGENT_WORK_ITEM_KIND_CHILD_RUN",
+	Wait = "AGENT_WORK_ITEM_KIND_WAIT",
+	Memory = "AGENT_WORK_ITEM_KIND_MEMORY",
+	UserInput = "AGENT_WORK_ITEM_KIND_USER_INPUT",
+	Followup = "AGENT_WORK_ITEM_KIND_FOLLOWUP",
+	Recovery = "AGENT_WORK_ITEM_KIND_RECOVERY",
+}
+
+export enum PlatformAgentWorkItemStateValue {
+	Pending = "AGENT_WORK_ITEM_STATE_PENDING",
+	Running = "AGENT_WORK_ITEM_STATE_RUNNING",
+	Waiting = "AGENT_WORK_ITEM_STATE_WAITING",
+	Blocked = "AGENT_WORK_ITEM_STATE_BLOCKED",
+	Succeeded = "AGENT_WORK_ITEM_STATE_SUCCEEDED",
+	Failed = "AGENT_WORK_ITEM_STATE_FAILED",
+	Cancelled = "AGENT_WORK_ITEM_STATE_CANCELLED",
+}
+
 export enum MaestroAgentRuntimeSourceEventType {
 	SessionStarted = "maestro.session_started",
 }
@@ -303,6 +331,33 @@ export interface PlatformAgentRunWait {
 	linkage?: PlatformAgentRun["linkage"];
 }
 
+export interface PlatformAgentWorkItem {
+	id?: string;
+	linkage?: PlatformAgentRun["linkage"];
+	autonomySessionId?: string;
+	runId?: string;
+	workEnvelopeId?: string;
+	parentWorkItemId?: string;
+	ownerChildRunId?: string;
+	kind?: PlatformAgentWorkItemKindValue | string;
+	state?: PlatformAgentWorkItemStateValue | string;
+	title?: string;
+	goal?: string;
+	nextAction?: string;
+	blocker?: string;
+	waitId?: string;
+	toolExecutionId?: string;
+	evidenceRefs?: string[];
+	completionGate?: string;
+	payload?: Record<string, unknown>;
+	createdAt?: string;
+	updatedAt?: string;
+	startedAt?: string;
+	completedAt?: string;
+	failedAt?: string;
+	cancelledAt?: string;
+}
+
 export interface PlatformAgentRuntimeClaimNextRunInput {
 	workerId: string;
 	workerQueue?: string;
@@ -346,6 +401,36 @@ export interface PlatformAgentRuntimeResumeRunInput {
 	waitId: string;
 	resumeEventId?: string;
 	payload?: Record<string, unknown>;
+}
+
+export interface PlatformAgentRuntimeRecordRunWorkItemInput {
+	runId: string;
+	workItem: PlatformAgentWorkItem;
+}
+
+export interface PlatformAgentRuntimeRecordRunWorkItemResult {
+	run: PlatformAgentRun;
+	workItem?: PlatformAgentWorkItem;
+	event?: PlatformRuntimeEvent;
+}
+
+export interface PlatformAgentRuntimeUpdateRunWorkItemInput {
+	runId: string;
+	workItemId: string;
+	state: PlatformAgentWorkItemStateValue | string;
+	nextAction?: string;
+	blocker?: string;
+	waitId?: string;
+	toolExecutionId?: string;
+	evidenceRefs?: string[];
+	completionGate?: string;
+	payload?: Record<string, unknown>;
+}
+
+export interface PlatformAgentRuntimeUpdateRunWorkItemResult {
+	run: PlatformAgentRun;
+	workItem?: PlatformAgentWorkItem;
+	event?: PlatformRuntimeEvent;
 }
 
 export interface PlatformAgentRuntimeRunEventResult {
@@ -576,6 +661,67 @@ function normalizeWait(value: unknown): PlatformAgentRunWait | undefined {
 			"resolved_by_event_id",
 		),
 		linkage: normalizeLinkage(record.linkage),
+	};
+}
+
+function normalizeStringArray(value: unknown): string[] | undefined {
+	if (!Array.isArray(value)) {
+		return undefined;
+	}
+	const strings = value.filter(
+		(item): item is string => typeof item === "string" && item.length > 0,
+	);
+	return strings.length > 0 ? strings : undefined;
+}
+
+function normalizeWorkItem(value: unknown): PlatformAgentWorkItem | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return undefined;
+	}
+	const record = value as Record<string, unknown>;
+	const id = pickString(record, "id");
+	if (!id) {
+		return undefined;
+	}
+	return {
+		id,
+		linkage: normalizeLinkage(record.linkage),
+		autonomySessionId: pickString(
+			record,
+			"autonomySessionId",
+			"autonomy_session_id",
+		),
+		runId: pickString(record, "runId", "run_id"),
+		workEnvelopeId: pickString(record, "workEnvelopeId", "work_envelope_id"),
+		parentWorkItemId: pickString(
+			record,
+			"parentWorkItemId",
+			"parent_work_item_id",
+		),
+		ownerChildRunId: pickString(
+			record,
+			"ownerChildRunId",
+			"owner_child_run_id",
+		),
+		kind: pickString(record, "kind"),
+		state: pickString(record, "state"),
+		title: pickString(record, "title"),
+		goal: pickString(record, "goal"),
+		nextAction: pickString(record, "nextAction", "next_action"),
+		blocker: pickString(record, "blocker"),
+		waitId: pickString(record, "waitId", "wait_id"),
+		toolExecutionId: pickString(record, "toolExecutionId", "tool_execution_id"),
+		evidenceRefs: normalizeStringArray(
+			record.evidenceRefs ?? record.evidence_refs,
+		),
+		completionGate: pickString(record, "completionGate", "completion_gate"),
+		payload: pickRecord(record, "payload"),
+		createdAt: pickString(record, "createdAt", "created_at"),
+		updatedAt: pickString(record, "updatedAt", "updated_at"),
+		startedAt: pickString(record, "startedAt", "started_at"),
+		completedAt: pickString(record, "completedAt", "completed_at"),
+		failedAt: pickString(record, "failedAt", "failed_at"),
+		cancelledAt: pickString(record, "cancelledAt", "cancelled_at"),
 	};
 }
 
@@ -816,6 +962,66 @@ export async function recordAgentRuntimeRunStep(
 	return {
 		run: normalizeRequiredRun(payload),
 		step: normalizeStep(payload.step),
+		event: normalizeEvent(payload.event),
+	};
+}
+
+export async function recordAgentRuntimeRunWorkItem(
+	input: PlatformAgentRuntimeRecordRunWorkItemInput,
+	options?: {
+		config?: PlatformServiceConfig;
+		signal?: AbortSignal;
+	},
+): Promise<PlatformAgentRuntimeRecordRunWorkItemResult> {
+	const payload = await postAgentRuntimeOperation(
+		RECORD_RUN_WORK_ITEM_PATH,
+		{
+			runId: input.runId,
+			workItem: input.workItem,
+		},
+		options,
+	);
+	return {
+		run: normalizeRequiredRun(payload),
+		workItem: normalizeWorkItem(payload.workItem ?? payload.work_item),
+		event: normalizeEvent(payload.event),
+	};
+}
+
+export async function updateAgentRuntimeRunWorkItem(
+	input: PlatformAgentRuntimeUpdateRunWorkItemInput,
+	options?: {
+		config?: PlatformServiceConfig;
+		signal?: AbortSignal;
+	},
+): Promise<PlatformAgentRuntimeUpdateRunWorkItemResult> {
+	const payload = await postAgentRuntimeOperation(
+		UPDATE_RUN_WORK_ITEM_PATH,
+		{
+			runId: input.runId,
+			workItemId: input.workItemId,
+			state: input.state,
+			...(input.nextAction !== undefined
+				? { nextAction: input.nextAction }
+				: {}),
+			...(input.blocker !== undefined ? { blocker: input.blocker } : {}),
+			...(input.waitId !== undefined ? { waitId: input.waitId } : {}),
+			...(input.toolExecutionId !== undefined
+				? { toolExecutionId: input.toolExecutionId }
+				: {}),
+			...(input.evidenceRefs !== undefined
+				? { evidenceRefs: input.evidenceRefs }
+				: {}),
+			...(input.completionGate !== undefined
+				? { completionGate: input.completionGate }
+				: {}),
+			...(input.payload ? { payload: input.payload } : {}),
+		},
+		options,
+	);
+	return {
+		run: normalizeRequiredRun(payload),
+		workItem: normalizeWorkItem(payload.workItem ?? payload.work_item),
 		event: normalizeEvent(payload.event),
 	};
 }

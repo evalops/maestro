@@ -31,6 +31,10 @@ export interface AgentTrajectoryScorerRule {
 	recoveryAfterFailedTool?: {
 		toolCallId: string;
 	};
+	childRunCompleted?: {
+		parentAgentRunId: string;
+		childAgentRunId: string;
+	};
 	finalEvidenceCoverage?: true;
 }
 
@@ -95,6 +99,44 @@ function eventsForTool(
 ): AgentTrajectoryEvent[] {
 	return report.events.filter((event) =>
 		evidenceIds(event, "tool_call").includes(toolCallId),
+	);
+}
+
+function eventReferencesId(
+	event: AgentTrajectoryEvent,
+	kind: AgentTrajectoryEvent["evidence"][number]["kind"],
+	id: string,
+): boolean {
+	return evidenceIds(event, kind).includes(id);
+}
+
+function eventIsCompatibleWithParentRun(
+	event: AgentTrajectoryEvent,
+	parentAgentRunId: string,
+): boolean {
+	const parentIds = evidenceIds(event, "parent_agent_run");
+	return parentIds.length === 0 || parentIds.includes(parentAgentRunId);
+}
+
+function eventReferencesChildRun(
+	event: AgentTrajectoryEvent,
+	childAgentRunId: string,
+): boolean {
+	return (
+		eventReferencesId(event, "child_agent_run", childAgentRunId) ||
+		eventReferencesId(event, "agent_run", childAgentRunId)
+	);
+}
+
+function eventsForChildRun(
+	report: AgentTrajectoryReport,
+	parentAgentRunId: string,
+	childAgentRunId: string,
+): AgentTrajectoryEvent[] {
+	return report.events.filter(
+		(event) =>
+			eventReferencesChildRun(event, childAgentRunId) &&
+			eventIsCompatibleWithParentRun(event, parentAgentRunId),
 	);
 }
 
@@ -286,6 +328,30 @@ function scoreRule(
 					rule,
 					`No recovery event followed failed tool ${rule.recoveryAfterFailedTool.toolCallId}.`,
 					"Emit a recovery-phase event after the failed tool result or mark the scenario as non-recoverable.",
+					events,
+				);
+	}
+
+	if (rule.childRunCompleted) {
+		const events = eventsForChildRun(
+			report,
+			rule.childRunCompleted.parentAgentRunId,
+			rule.childRunCompleted.childAgentRunId,
+		);
+		const started = events.find((event) => event.type === "agent.run.started");
+		const completed = events.find(
+			(event) => event.type === "agent.run.completed",
+		);
+		return started && completed && started.sequence < completed.sequence
+			? passFinding(
+					rule,
+					`Child agent run ${rule.childRunCompleted.childAgentRunId} completed under parent ${rule.childRunCompleted.parentAgentRunId}.`,
+					[started, completed],
+				)
+			: failFinding(
+					rule,
+					`Child agent run ${rule.childRunCompleted.childAgentRunId} did not complete under parent ${rule.childRunCompleted.parentAgentRunId}.`,
+					"Preserve child-run start and completion events with agent_run evidence, and include parent_agent_run/child_agent_run anchors when the timeline source provides them.",
 					events,
 				);
 	}

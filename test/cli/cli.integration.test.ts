@@ -397,6 +397,26 @@ describe("CLI integration", () => {
 		}
 	}
 
+	async function readJsonFileEventually<T>(path: string): Promise<T> {
+		const deadline = Date.now() + 1000;
+		let lastError: unknown;
+		while (Date.now() < deadline) {
+			if (existsSync(path)) {
+				const content = readFileSync(path, "utf8").trim();
+				if (content.length > 0) {
+					try {
+						return JSON.parse(content) as T;
+					} catch (error) {
+						lastError = error;
+					}
+				}
+			}
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		const reason = lastError instanceof Error ? `: ${lastError.message}` : "";
+		throw new Error(`Timed out waiting for parseable JSON in ${path}${reason}`);
+	}
+
 	it("emits JSON events in json mode", async () => {
 		await main(["--mode", "json", "hello"]);
 		// Should emit JSONL events like thread_start, turn, item, thread_end
@@ -635,9 +655,9 @@ describe("CLI integration", () => {
 			const [startupEvent] = JSON.parse(
 				readFileSync(beaconFile, "utf8").trim(),
 			) as [{ feature: string; action: string }];
-			const commandBuffer = JSON.parse(readFileSync(bufferFile, "utf8")) as {
+			const commandBuffer = await readJsonFileEventually<{
 				counts: Record<string, number>;
-			};
+			}>(bufferFile);
 			expect(startupEvent).toMatchObject({
 				feature: "cli.startup",
 				action: "version",
@@ -791,7 +811,9 @@ describe("CLI integration", () => {
 			expect(exitCodes).toEqual([0]);
 			expect(output.join("\n")).toContain("openrouter");
 			await waitForFile(beaconFile);
-			await waitForFile(bufferFile);
+			const commandBuffer = await readJsonFileEventually<{
+				counts: Record<string, number>;
+			}>(bufferFile);
 			const [startupEvent] = JSON.parse(
 				readFileSync(beaconFile, "utf8").trim(),
 			) as [
@@ -801,9 +823,6 @@ describe("CLI integration", () => {
 					parameters?: { metadata?: Record<string, unknown> };
 				},
 			];
-			const commandBuffer = JSON.parse(readFileSync(bufferFile, "utf8")) as {
-				counts: Record<string, number>;
-			};
 			expect(startupEvent).toMatchObject({
 				feature: "cli.startup",
 				action: "models.providers",
