@@ -1229,9 +1229,15 @@ async fn run_a2a_native_turn(
     let mut output = A2ATurnOutput::default();
     let mut last_error: Option<String> = None;
     let mut response_ended = false;
+    let turn_timeout = tokio::time::sleep(timeout);
+    tokio::pin!(turn_timeout);
 
     loop {
         let event = tokio::select! {
+            _ = &mut turn_timeout => {
+                agent.cancel();
+                return Err("A2A native TUI turn timed out".to_string());
+            }
             changed = cancel_rx.changed() => {
                 if changed.is_ok() && *cancel_rx.borrow() {
                     agent.cancel();
@@ -1239,13 +1245,9 @@ async fn run_a2a_native_turn(
                 }
                 continue;
             }
-            event = tokio::time::timeout(timeout, events.recv()) => match event {
-                Ok(Some(event)) => event,
-                Ok(None) => break,
-                Err(_) => {
-                    agent.cancel();
-                    return Err("A2A native TUI turn timed out".to_string());
-                }
+            event = events.recv() => match event {
+                Some(event) => event,
+                None => break,
             },
         };
         match event {
