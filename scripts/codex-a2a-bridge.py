@@ -30,6 +30,7 @@ TASKS: dict[str, dict[str, Any]] = {}
 PROCESSES: dict[str, subprocess.Popen[str]] = {}
 LOCK = threading.Lock()
 MAX_REQUEST_BODY_BYTES = 1024 * 1024
+TERMINAL_TASK_STORE_LIMIT = 128
 
 
 def env(name: str, default: str) -> str:
@@ -66,6 +67,27 @@ def terminal(state: str | None) -> bool:
         "TASK_STATE_CANCELED",
         "TASK_STATE_REJECTED",
     }
+
+
+def prune_terminal_tasks_locked() -> None:
+    terminal_tasks = sorted(
+        (
+            str(task.get("status", {}).get("timestamp") or ""),
+            task_id,
+        )
+        for task_id, task in TASKS.items()
+        if terminal(task.get("status", {}).get("state"))
+    )
+    overflow = len(terminal_tasks) - TERMINAL_TASK_STORE_LIMIT
+    if overflow <= 0:
+        return
+    for _, task_id in terminal_tasks[:overflow]:
+        TASKS.pop(task_id, None)
+
+
+def store_task_locked(task_id: str, task: dict[str, Any]) -> None:
+    TASKS[task_id] = task
+    prune_terminal_tasks_locked()
 
 
 def accepts_message(state: str | None) -> bool:
@@ -267,7 +289,7 @@ def complete_task(task_id: str, context_id: str, prompt: str, history: list[dict
             current = TASKS.get(task_id)
             if current and current.get("status", {}).get("state") == "TASK_STATE_CANCELED":
                 return
-            TASKS[task_id] = next_task
+            store_task_locked(task_id, next_task)
     except ValueError as error:
         metadata["error"] = str(error)
         message = agent_message(context_id, f"invalid Codex A2A timeout: {error}")
@@ -276,13 +298,16 @@ def complete_task(task_id: str, context_id: str, prompt: str, history: list[dict
             current = TASKS.get(task_id)
             if current and current.get("status", {}).get("state") == "TASK_STATE_CANCELED":
                 return
-            TASKS[task_id] = task_value(
+            store_task_locked(
                 task_id,
-                context_id,
-                "TASK_STATE_FAILED",
-                message,
-                [*history, message],
-                metadata=metadata,
+                task_value(
+                    task_id,
+                    context_id,
+                    "TASK_STATE_FAILED",
+                    message,
+                    [*history, message],
+                    metadata=metadata,
+                ),
             )
     except OSError as error:
         metadata["error"] = str(error)
@@ -292,13 +317,16 @@ def complete_task(task_id: str, context_id: str, prompt: str, history: list[dict
             current = TASKS.get(task_id)
             if current and current.get("status", {}).get("state") == "TASK_STATE_CANCELED":
                 return
-            TASKS[task_id] = task_value(
+            store_task_locked(
                 task_id,
-                context_id,
-                "TASK_STATE_FAILED",
-                message,
-                [*history, message],
-                metadata=metadata,
+                task_value(
+                    task_id,
+                    context_id,
+                    "TASK_STATE_FAILED",
+                    message,
+                    [*history, message],
+                    metadata=metadata,
+                ),
             )
     except subprocess.TimeoutExpired:
         if process is not None:
@@ -309,13 +337,16 @@ def complete_task(task_id: str, context_id: str, prompt: str, history: list[dict
             current = TASKS.get(task_id)
             if current and current.get("status", {}).get("state") == "TASK_STATE_CANCELED":
                 return
-            TASKS[task_id] = task_value(
+            store_task_locked(
                 task_id,
-                context_id,
-                "TASK_STATE_FAILED",
-                message,
-                [*history, message],
-                metadata=metadata,
+                task_value(
+                    task_id,
+                    context_id,
+                    "TASK_STATE_FAILED",
+                    message,
+                    [*history, message],
+                    metadata=metadata,
+                ),
             )
     finally:
         if output_path is not None:
@@ -547,7 +578,7 @@ class Handler(BaseHTTPRequestHandler):
                         launch_history,
                         metadata={"backend": "codex-exec"},
                     )
-                    TASKS[task_id] = task
+                    store_task_locked(task_id, task)
             if error is not None:
                 self.error_json(*error)
                 return
@@ -591,7 +622,7 @@ class Handler(BaseHTTPRequestHandler):
                         artifacts=[],
                         metadata=copy.deepcopy(task.get("metadata") or {}),
                     )
-                    TASKS[task_id] = task
+                    store_task_locked(task_id, task)
                     process = PROCESSES.pop(task_id, None)
             if error is not None:
                 self.error_json(*error)
