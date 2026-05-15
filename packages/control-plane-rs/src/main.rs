@@ -751,11 +751,7 @@ async fn complete_a2a_task(
                 Vec::new(),
                 metadata,
             );
-            state
-                .a2a_tasks
-                .lock()
-                .await
-                .insert(task_id.clone(), task.clone());
+            insert_a2a_task_if_not_canceled(state, &task_id, task.clone()).await;
             return task;
         }
     };
@@ -794,12 +790,21 @@ async fn complete_a2a_task(
         })],
         metadata,
     );
-    state
-        .a2a_tasks
-        .lock()
-        .await
-        .insert(task_id.clone(), task.clone());
+    insert_a2a_task_if_not_canceled(state, &task_id, task.clone()).await;
     task
+}
+
+async fn insert_a2a_task_if_not_canceled(state: &AppState, task_id: &str, task: Value) {
+    let mut tasks = state.a2a_tasks.lock().await;
+    let is_canceled = tasks
+        .get(task_id)
+        .and_then(|existing| existing.get("status"))
+        .and_then(|status| status.get("state"))
+        .and_then(Value::as_str)
+        == Some("TASK_STATE_CANCELED");
+    if !is_canceled {
+        tasks.insert(task_id.to_string(), task);
+    }
 }
 
 fn a2a_agent_card(head: &RequestHead, config: &Config) -> Value {
@@ -6767,6 +6772,51 @@ mod tests {
         );
         assert_eq!(task["metadata"]["workspaceId"], "ws-1");
         assert_eq!(state.a2a_tasks.lock().await.len(), 1);
+
+        if let Some(previous_fake) = previous_fake {
+            env::set_var("MAESTRO_A2A_FAKE_RESPONSE", previous_fake);
+        } else {
+            env::remove_var("MAESTRO_A2A_FAKE_RESPONSE");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn complete_a2a_task_does_not_overwrite_canceled_task() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous_fake = env::var("MAESTRO_A2A_FAKE_RESPONSE").ok();
+        env::set_var("MAESTRO_A2A_FAKE_RESPONSE", "hello from fake native turn");
+
+        let state = test_app_state_with_sessions(HashMap::new());
+        let task_id = "task-1".to_string();
+        let context_id = "ctx-1".to_string();
+        state.a2a_tasks.lock().await.insert(
+            task_id.clone(),
+            a2a_task_value(
+                &task_id,
+                &context_id,
+                "TASK_STATE_CANCELED",
+                a2a_agent_message(&context_id, "Task canceled"),
+                Vec::new(),
+                Vec::new(),
+                serde_json::json!({}),
+            ),
+        );
+
+        let task = complete_a2a_task(
+            &state,
+            "hello".to_string(),
+            task_id.clone(),
+            context_id,
+            serde_json::json!({}),
+            serde_json::json!({}),
+        )
+        .await;
+
+        assert_eq!(task["status"]["state"], "TASK_STATE_COMPLETED");
+        assert_eq!(
+            state.a2a_tasks.lock().await[&task_id]["status"]["state"],
+            "TASK_STATE_CANCELED"
+        );
 
         if let Some(previous_fake) = previous_fake {
             env::set_var("MAESTRO_A2A_FAKE_RESPONSE", previous_fake);
