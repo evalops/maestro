@@ -116,6 +116,7 @@ describe("Maestro app-server session API", () => {
 			summary?: string;
 			modifiedAt?: Date;
 			resumeSummary?: string;
+			memoryExtractionHash?: string;
 			tags?: string[];
 			secondPrompt?: string;
 		} = {},
@@ -146,6 +147,12 @@ describe("Maestro app-server session API", () => {
 		if (options.resumeSummary) {
 			manager.saveSessionResumeSummary(options.resumeSummary, sessionFile);
 		}
+		if (options.memoryExtractionHash) {
+			manager.saveSessionMemoryExtractionHash(
+				options.memoryExtractionHash,
+				sessionFile,
+			);
+		}
 		if (options.tags) {
 			manager.setSessionTags(sessionFile, options.tags);
 		}
@@ -153,6 +160,7 @@ describe("Maestro app-server session API", () => {
 			options.title ||
 			options.summary ||
 			options.resumeSummary ||
+			options.memoryExtractionHash ||
 			options.tags
 		) {
 			await manager.flush();
@@ -384,6 +392,51 @@ describe("Maestro app-server session API", () => {
 		});
 	});
 
+	it("exposes memory extraction hashes in file-backed thread summaries", async () => {
+		const session = await createPersistedSession("memory prompt", {
+			title: "Memory thread",
+			memoryExtractionHash: "sha256:file-backed-memory",
+		});
+		const manager = createSessionManager(session.sessionFile);
+		manager.listSessions = async () => {
+			throw new Error(
+				"file-backed memory extraction hashes should come from loaded metadata",
+			);
+		};
+		const api = createMaestroAppServerSessionApi(manager);
+
+		const listed = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "memory-list",
+			method: "thread/list",
+			params: {},
+		});
+
+		expect(listed.result).toMatchObject({
+			threads: [
+				{
+					id: session.id,
+					title: "Memory thread",
+					memoryExtractionHash: "sha256:file-backed-memory",
+				},
+			],
+		});
+		expect(Value.Check(MaestroAppServerResponseSchema, listed)).toBe(true);
+
+		const read = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "memory-read",
+			method: "thread/read",
+			params: { threadId: session.id },
+		});
+
+		expect(read.result?.thread).toMatchObject({
+			id: session.id,
+			memoryExtractionHash: "sha256:file-backed-memory",
+		});
+		expect(Value.Check(MaestroAppServerResponseSchema, read)).toBe(true);
+	});
+
 	it("lists hosted session summaries when file-backed metadata is unavailable", async () => {
 		const summaries = [
 			{
@@ -450,6 +503,66 @@ describe("Maestro app-server session API", () => {
 			threads: [{ id: "hosted-older", favorite: true }],
 			nextCursor: null,
 		});
+	});
+
+	it("exposes hosted memory extraction hashes from thread list and read", async () => {
+		const api = createMaestroAppServerSessionApi({
+			loadAllSessions: () => [],
+			listSessions: async () => [
+				{
+					id: "hosted-memory",
+					subject: "Hosted Memory",
+					createdAt: "2026-01-02T00:00:00.000Z",
+					updatedAt: "2026-01-02T00:01:00.000Z",
+					messageCount: 4,
+					favorite: false,
+					memoryExtractionHash: "sha256:hosted-list-memory",
+				},
+			],
+			loadSession: async (sessionId, options = {}) =>
+				sessionId === "hosted-memory"
+					? {
+							id: sessionId,
+							subject: "Hosted Memory",
+							messages: [],
+							createdAt: "2026-01-02T00:00:00.000Z",
+							updatedAt: "2026-01-02T00:01:00.000Z",
+							messageCount: 4,
+							favorite: false,
+							messagesView: options.messagesView ?? "notLoaded",
+							memoryExtractionHash: "sha256:hosted-read-memory",
+						}
+					: null,
+			getSessionFileById: (sessionId) => `db:${sessionId}`,
+		});
+
+		const listed = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "hosted-memory-list",
+			method: "thread/list",
+			params: {},
+		});
+
+		expect(listed.result?.threads).toEqual([
+			expect.objectContaining({
+				id: "hosted-memory",
+				memoryExtractionHash: "sha256:hosted-list-memory",
+			}),
+		]);
+		expect(Value.Check(MaestroAppServerResponseSchema, listed)).toBe(true);
+
+		const read = await handleMaestroAppServerRequest(api, {
+			jsonrpc: "2.0",
+			id: "hosted-memory-read",
+			method: "thread/read",
+			params: { threadId: "hosted-memory" },
+		});
+
+		expect(read.result?.thread).toMatchObject({
+			id: "hosted-memory",
+			memoryExtractionHash: "sha256:hosted-read-memory",
+		});
+		expect(Value.Check(MaestroAppServerResponseSchema, read)).toBe(true);
 	});
 
 	it("reads a thread and includes Codex-style turns only when requested", async () => {

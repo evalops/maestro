@@ -331,6 +331,7 @@ export class HostedSessionManager {
 			title: row.title ?? undefined,
 			summary: row.summary ?? undefined,
 			resumeSummary: row.resumeSummary ?? undefined,
+			memoryExtractionHash: row.memoryExtractionHash ?? undefined,
 			createdAt: row.createdAt.toISOString(),
 			updatedAt: row.updatedAt.toISOString(),
 			messageCount: row.messageCount,
@@ -348,6 +349,7 @@ export class HostedSessionManager {
 		title?: string;
 		summary?: string;
 		resumeSummary?: string;
+		memoryExtractionHash?: string;
 		messages: AppMessage[];
 		createdAt: string;
 		updatedAt: string;
@@ -369,6 +371,7 @@ export class HostedSessionManager {
 				title: row.title ?? undefined,
 				summary: row.summary ?? undefined,
 				resumeSummary: row.resumeSummary ?? undefined,
+				memoryExtractionHash: row.memoryExtractionHash ?? undefined,
 				messages: [],
 				createdAt: row.createdAt.toISOString(),
 				updatedAt: row.updatedAt.toISOString(),
@@ -408,6 +411,7 @@ export class HostedSessionManager {
 			title: row.title ?? undefined,
 			summary: row.summary ?? undefined,
 			resumeSummary: row.resumeSummary ?? undefined,
+			memoryExtractionHash: row.memoryExtractionHash ?? undefined,
 			messages: selectedMessages,
 			createdAt: row.createdAt.toISOString(),
 			updatedAt: row.updatedAt.toISOString(),
