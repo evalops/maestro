@@ -231,6 +231,22 @@ def complete_task(task_id: str, context_id: str, prompt: str, history: list[dict
             if current and current.get("status", {}).get("state") == "TASK_STATE_CANCELED":
                 return
             TASKS[task_id] = next_task
+    except OSError as error:
+        metadata["error"] = str(error)
+        message = agent_message(context_id, f"codex exec failed to start: {error}")
+        with LOCK:
+            PROCESSES.pop(task_id, None)
+            current = TASKS.get(task_id)
+            if current and current.get("status", {}).get("state") == "TASK_STATE_CANCELED":
+                return
+            TASKS[task_id] = task_value(
+                task_id,
+                context_id,
+                "TASK_STATE_FAILED",
+                message,
+                [*history, message],
+                metadata=metadata,
+            )
     except subprocess.TimeoutExpired:
         if process is not None:
             terminate_process(process)
