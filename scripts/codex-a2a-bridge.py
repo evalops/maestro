@@ -14,7 +14,6 @@ import copy
 import json
 import os
 import shlex
-import signal
 import socket
 import subprocess
 import tempfile
@@ -607,8 +606,6 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> None:
     host = env("CODEX_A2A_BIND", "127.0.0.1")
     port = int(env("CODEX_A2A_PORT", "18787"))
-    if hasattr(signal, "SIGPIPE"):
-        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
     server = ThreadingHTTPServer((host, port), Handler)
     print(f"codex-a2a bridge listening on http://{host}:{port}", flush=True)
     server.serve_forever()
