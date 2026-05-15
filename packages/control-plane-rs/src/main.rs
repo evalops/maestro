@@ -51,6 +51,7 @@ const MAX_EXTRACT_INPUT_BYTES: usize = 50 * 1024 * 1024;
 const MAX_PROJECT_ONBOARDING_IMPRESSIONS: u8 = 4;
 const A2A_PROTOCOL_VERSION: &str = "1.0";
 const A2A_DEFAULT_TURN_TIMEOUT_MS: u64 = 180_000;
+const A2A_DEFAULT_RESPONSE_END_SETTLE_MS: u64 = 250;
 static ATTACHMENT_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
 type PendingToolResponseSender = mpsc::UnboundedSender<(String, bool, Option<ToolResult>)>;
@@ -1124,9 +1125,10 @@ fn a2a_user_message_value(message: &A2AMessageBody, context_id: &str) -> Value {
         object
             .entry("messageId")
             .or_insert_with(|| Value::String(generate_a2a_id("maestro-message")));
-        object
-            .entry("contextId")
-            .or_insert_with(|| Value::String(context_id.to_string()));
+        object.insert(
+            "contextId".to_string(),
+            Value::String(context_id.to_string()),
+        );
         object
             .entry("role")
             .or_insert_with(|| Value::String("ROLE_USER".to_string()));
@@ -1279,14 +1281,29 @@ async fn run_a2a_native_turn(
     let mut output = A2ATurnOutput::default();
     let mut last_error: Option<String> = None;
     let mut response_ended = false;
+    let response_end_settle = Duration::from_millis(env_u64(
+        "MAESTRO_A2A_RESPONSE_END_SETTLE_MS",
+        A2A_DEFAULT_RESPONSE_END_SETTLE_MS,
+    ));
+    let mut response_end_deadline: Option<tokio::time::Instant> = None;
     let turn_timeout = tokio::time::sleep(timeout);
     tokio::pin!(turn_timeout);
 
     loop {
+        let response_end_wait = async {
+            if let Some(deadline) = response_end_deadline {
+                tokio::time::sleep_until(deadline).await;
+            } else {
+                std::future::pending::<()>().await;
+            }
+        };
         let event = tokio::select! {
             _ = &mut turn_timeout => {
                 agent.cancel();
                 return Err("A2A native TUI turn timed out".to_string());
+            }
+            _ = response_end_wait => {
+                break;
             }
             changed = cancel_rx.changed() => {
                 if changed.is_ok() && *cancel_rx.borrow() {
@@ -1301,11 +1318,15 @@ async fn run_a2a_native_turn(
             },
         };
         match event {
+            FromAgent::ResponseStart { .. } => {
+                response_end_deadline = None;
+            }
             FromAgent::ResponseChunk {
                 content,
                 is_thinking,
                 ..
             } => {
+                response_end_deadline = None;
                 if is_thinking {
                     output.thinking_text.push_str(&content);
                 } else {
@@ -1315,7 +1336,7 @@ async fn run_a2a_native_turn(
             FromAgent::ResponseEnd { usage, .. } => {
                 output.usage = usage;
                 response_ended = true;
-                break;
+                response_end_deadline = Some(tokio::time::Instant::now() + response_end_settle);
             }
             FromAgent::ToolCall {
                 call_id,
@@ -1323,6 +1344,7 @@ async fn run_a2a_native_turn(
                 args,
                 requires_approval,
             } => {
+                response_end_deadline = None;
                 record_tool_call_metadata(&mut output.tools, &call_id, &tool, args);
                 if requires_approval {
                     let _ = agent.tool_response_sender().send((
@@ -1338,6 +1360,7 @@ async fn run_a2a_native_turn(
             FromAgent::ToolEnd {
                 call_id, success, ..
             } => {
+                response_end_deadline = None;
                 finish_tool_metadata(&mut output.tools, &call_id, success);
             }
             FromAgent::HookBlocked {
@@ -1345,6 +1368,7 @@ async fn run_a2a_native_turn(
                 tool,
                 reason,
             } => {
+                response_end_deadline = None;
                 if !output
                     .tools
                     .iter()
@@ -6987,6 +7011,31 @@ mod tests {
         };
 
         assert!(a2a_return_immediately(&request));
+    }
+
+    #[test]
+    fn a2a_user_message_value_replaces_empty_context_id() {
+        let message = A2AMessageBody {
+            message_id: Some("msg-1".to_string()),
+            context_id: Some("   ".to_string()),
+            task_id: None,
+            role: Some("ROLE_USER".to_string()),
+            parts: vec![A2APartBody {
+                text: Some("hello".to_string()),
+                url: None,
+                data: None,
+                metadata: None,
+                filename: None,
+                media_type: Some("text/plain".to_string()),
+            }],
+            metadata: None,
+            extensions: None,
+            reference_task_ids: None,
+        };
+
+        let value = a2a_user_message_value(&message, "ctx-1");
+
+        assert_eq!(value["contextId"], "ctx-1");
     }
 
     #[tokio::test(flavor = "current_thread")]
