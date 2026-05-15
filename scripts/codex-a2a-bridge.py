@@ -48,6 +48,23 @@ def default_public_host() -> str:
     return bind_host
 
 
+def url_authority_host(host: str) -> str:
+    if host.startswith("[") and host.endswith("]"):
+        return host
+    if ":" in host:
+        return f"[{host.replace('%', '%25')}]"
+    return host
+
+
+def default_public_url() -> str:
+    public_url = os.environ.get("CODEX_A2A_PUBLIC_URL", "").strip()
+    if public_url:
+        return public_url
+    host = url_authority_host(default_public_host())
+    port = env("CODEX_A2A_PORT", "18787")
+    return f"http://{host}:{port}"
+
+
 def now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -434,10 +451,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200, {"ok": True})
             return
         if path == "/.well-known/agent-card.json":
-            base_url = env(
-                "CODEX_A2A_PUBLIC_URL",
-                f"http://{default_public_host()}:{env('CODEX_A2A_PORT', '18787')}",
-            ).rstrip("/")
+            base_url = default_public_url().rstrip("/")
             self.send_json(
                 200,
                 {
