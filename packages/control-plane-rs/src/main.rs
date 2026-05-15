@@ -1211,19 +1211,57 @@ fn a2a_public_base_url(_head: &RequestHead, config: &Config) -> String {
     } else {
         config.listen_host.clone()
     };
-    if host.starts_with('[') {
-        if host.contains("]:") {
-            format!("http://{host}")
+    format!(
+        "http://{}",
+        a2a_public_host_authority(&host, config.listen_port)
+    )
+}
+
+fn a2a_public_host_authority(host: &str, port: u16) -> String {
+    if let Some(rest) = host.strip_prefix('[') {
+        if let Some(end) = rest.find(']') {
+            let literal = &rest[..end];
+            let suffix = &rest[end + 1..];
+            let authority = format!("[{}]{suffix}", a2a_uri_host(literal));
+            if suffix.starts_with(':') {
+                authority
+            } else {
+                format!("{authority}:{port}")
+            }
         } else {
-            format!("http://{host}:{}", config.listen_port)
+            format!("[{}]:{port}", a2a_uri_host(rest))
         }
     } else if host.matches(':').count() > 1 {
-        format!("http://[{host}]:{}", config.listen_port)
+        format!("[{}]:{port}", a2a_uri_host(host))
     } else if host.contains(':') {
-        format!("http://{host}")
+        host.to_string()
     } else {
-        format!("http://{host}:{}", config.listen_port)
+        format!("{host}:{port}")
     }
+}
+
+fn a2a_uri_host(host: &str) -> String {
+    let mut normalized = String::with_capacity(host.len());
+    let mut chars = host.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '%' {
+            let mut lookahead = chars.clone();
+            let already_encoded = lookahead
+                .next()
+                .is_some_and(|next| next.is_ascii_hexdigit())
+                && lookahead
+                    .next()
+                    .is_some_and(|next| next.is_ascii_hexdigit());
+            if already_encoded {
+                normalized.push(ch);
+            } else {
+                normalized.push_str("%25");
+            }
+        } else {
+            normalized.push(ch);
+        }
+    }
+    normalized
 }
 
 fn a2a_message_text(message: &A2AMessageBody) -> Option<String> {
@@ -7275,6 +7313,47 @@ mod tests {
 
         assert_eq!(card["url"], "http://[::1]:18787");
         assert_eq!(card["supportedInterfaces"][0]["url"], "http://[::1]:18787");
+
+        if let Some(previous_a2a_host) = previous_a2a_host {
+            env::set_var("MAESTRO_A2A_PUBLIC_HOST", previous_a2a_host);
+        } else {
+            env::remove_var("MAESTRO_A2A_PUBLIC_HOST");
+        }
+        if let Some(previous_a2a_url) = previous_a2a_url {
+            env::set_var("MAESTRO_A2A_PUBLIC_URL", previous_a2a_url);
+        } else {
+            env::remove_var("MAESTRO_A2A_PUBLIC_URL");
+        }
+        if let Some(previous_control_url) = previous_control_url {
+            env::set_var("MAESTRO_CONTROL_PUBLIC_URL", previous_control_url);
+        } else {
+            env::remove_var("MAESTRO_CONTROL_PUBLIC_URL");
+        }
+    }
+
+    #[test]
+    fn a2a_agent_card_percent_encodes_scoped_ipv6_public_host() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous_a2a_host = env::var_os("MAESTRO_A2A_PUBLIC_HOST");
+        let previous_a2a_url = env::var_os("MAESTRO_A2A_PUBLIC_URL");
+        let previous_control_url = env::var_os("MAESTRO_CONTROL_PUBLIC_URL");
+        env::set_var("MAESTRO_A2A_PUBLIC_HOST", "fe80::1%en0");
+        env::remove_var("MAESTRO_A2A_PUBLIC_URL");
+        env::remove_var("MAESTRO_CONTROL_PUBLIC_URL");
+        let mut config = auth_test_config();
+        config.listen_host = "::".to_string();
+        config.listen_port = 18787;
+        let head = parse_request_head(
+            b"GET /.well-known/agent-card.json HTTP/1.1\r\nHost: attacker.test\r\n\r\n",
+        )
+        .expect("request should parse");
+        let card = a2a_agent_card(&head, &config);
+
+        assert_eq!(card["url"], "http://[fe80::1%25en0]:18787");
+        assert_eq!(
+            card["supportedInterfaces"][0]["url"],
+            "http://[fe80::1%25en0]:18787"
+        );
 
         if let Some(previous_a2a_host) = previous_a2a_host {
             env::set_var("MAESTRO_A2A_PUBLIC_HOST", previous_a2a_host);
