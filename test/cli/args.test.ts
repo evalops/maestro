@@ -322,6 +322,21 @@ describe("parseArgs", () => {
 		});
 	});
 
+	it("preserves codex login flags for the codex handler", () => {
+		expect(parseArgs(["codex", "login", "--device"])).toMatchObject({
+			command: "codex",
+			subcommand: "login",
+			commandArgs: ["--device"],
+			messages: [],
+		});
+		expect(parseArgs(["codex", "login", "--device-code"])).toMatchObject({
+			command: "codex",
+			subcommand: "login",
+			commandArgs: ["--device-code"],
+			messages: [],
+		});
+	});
+
 	it("preserves evalops init bootstrap arguments for the init handler", () => {
 		expect(
 			parseArgs([

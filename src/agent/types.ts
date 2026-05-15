@@ -51,6 +51,7 @@ import type { ToolRetryDecision, ToolRetryRequest } from "./tool-retry.js";
  * - `openai-completions` - OpenAI Chat Completions API
  * - `openai-responses` - OpenAI Responses API (newer format)
  * - `openai-codex-responses` - ChatGPT Codex Responses backend
+ * - `openai-codex-app-server` - Local Codex app-server with ChatGPT sign-in
  * - `anthropic-messages` - Anthropic Messages API
  * - `google-generative-ai` - Google Generative AI (Gemini)
  * - `google-gemini-cli` - Google Cloud Code Assist (Gemini CLI)
@@ -61,6 +62,7 @@ export type Api =
 	| "openai-completions"
 	| "openai-responses"
 	| "openai-codex-responses"
+	| "openai-codex-app-server"
 	| "anthropic-messages"
 	| "google-generative-ai"
 	| "google-gemini-cli"
@@ -750,6 +752,58 @@ export type AssistantMessageEvent =
 			contentIndex: number;
 			/** Completed tool call */
 			toolCall: ToolCall;
+			/** Partial message state */
+			partial: AssistantMessage;
+	  }
+	| {
+			/** Provider-owned tool execution started outside Maestro's local executor */
+			type: "provider_tool_execution_start";
+			/** Provider tool call identifier */
+			toolCallId: string;
+			/** Provider tool name */
+			toolName: string;
+			/** Optional human-facing label for live UI */
+			displayName?: string;
+			/** Optional compact summary for live UI */
+			summaryLabel?: string;
+			/** Provider tool arguments */
+			args: Record<string, unknown>;
+			/** Partial message state */
+			partial: AssistantMessage;
+	  }
+	| {
+			/** Provider-owned tool execution produced an incremental update */
+			type: "provider_tool_execution_update";
+			/** Provider tool call identifier */
+			toolCallId: string;
+			/** Provider tool name */
+			toolName: string;
+			/** Optional human-facing label for live UI */
+			displayName?: string;
+			/** Optional compact summary for live UI */
+			summaryLabel?: string;
+			/** Provider tool arguments */
+			args: Record<string, unknown>;
+			/** Partial provider result */
+			partialResult: AgentToolResult;
+			/** Partial message state */
+			partial: AssistantMessage;
+	  }
+	| {
+			/** Provider-owned tool execution completed outside Maestro's local executor */
+			type: "provider_tool_execution_end";
+			/** Provider tool call identifier */
+			toolCallId: string;
+			/** Provider tool name */
+			toolName: string;
+			/** Optional human-facing label for live UI */
+			displayName?: string;
+			/** Optional compact summary for live UI */
+			summaryLabel?: string;
+			/** Provider tool result */
+			result: ToolResultMessage;
+			/** Whether the provider tool returned an error */
+			isError: boolean;
 			/** Partial message state */
 			partial: AssistantMessage;
 	  }
@@ -1475,6 +1529,8 @@ export interface StreamOptions {
 	requestBody?: Record<string, unknown>;
 	/** Stable session id for provider-side request grouping/cache keys */
 	sessionId?: string;
+	/** Current working directory for local provider runtimes. */
+	cwd?: string;
 	/** Authentication type for the request */
 	authType?: "api-key" | "anthropic-oauth";
 	/** Optional Anthropic API-side task budget for the current turn */
@@ -1482,6 +1538,8 @@ export interface StreamOptions {
 		total: number;
 		remaining?: number;
 	};
+	/** Optional governed executor for provider-native dynamic tool callbacks. */
+	executeDynamicTool?: (toolCall: ToolCall) => Promise<AgentToolResult>;
 }
 
 /**

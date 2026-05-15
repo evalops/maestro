@@ -7,7 +7,11 @@
  */
 
 import chalk from "chalk";
-import type { AgentTool } from "../agent/types.js";
+import type { AgentTool, Api } from "../agent/types.js";
+import {
+	isCodexAppServerApi,
+	selectCodexDefaultTools,
+} from "../codex/compatibility.js";
 import {
 	type SandboxMode,
 	createSandbox,
@@ -39,9 +43,10 @@ export interface ToolsSetupResult {
 export async function createToolsAndSandbox(params: {
 	parsedTools?: string[];
 	parsedSandbox?: string;
+	modelApi?: Api | string;
 	cwd: string;
 }): Promise<ToolsSetupResult> {
-	const { parsedTools, parsedSandbox, cwd } = params;
+	const { parsedTools, parsedSandbox, modelApi, cwd } = params;
 
 	// Apply --tools filter if user specified a subset
 	let baseTools = codingTools;
@@ -59,6 +64,8 @@ export async function createToolsAndSandbox(params: {
 				`Tools restricted to: ${filteredTools.map((t) => t.name).join(", ")}`,
 			),
 		);
+	} else if (isCodexAppServerApi(modelApi)) {
+		baseTools = selectCodexDefaultTools(codingTools);
 	}
 
 	// Load inline tools from .maestro/tools.json and ~/.maestro/tools.json

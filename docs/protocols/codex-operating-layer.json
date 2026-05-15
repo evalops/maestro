@@ -1,0 +1,290 @@
+{
+	"version": 1,
+	"description": "Executable evidence map for making Maestro a production-grade Codex operating layer across TypeScript, Rust, operator UX, and live verification.",
+	"checks": [
+		{
+			"area": "default-install",
+			"evidenceType": "source",
+			"path": "package.json",
+			"anchors": [
+				"check:codex-operating-layer",
+				"smoke:codex-app-server-live",
+				"tree-sitter",
+				"tree-sitter-bash"
+			]
+		},
+		{
+			"area": "default-install",
+			"evidenceType": "test",
+			"path": "test/install/native-dependencies.test.ts",
+			"anchors": [
+				"trusts tree-sitter native packages required by the CLI safety parser",
+				"tree-sitter",
+				"tree-sitter-bash"
+			]
+		},
+		{
+			"area": "chatgpt-sign-in",
+			"evidenceType": "source",
+			"path": "src/cli/commands/codex.ts",
+			"anchors": [
+				"startChatGptLogin",
+				"waitForLoginCompletion",
+				"readAccount",
+				"maestro codex login"
+			]
+		},
+		{
+			"area": "chatgpt-sign-in",
+			"evidenceType": "test",
+			"path": "test/cli/codex-command.test.ts",
+			"anchors": [
+				"runs browser ChatGPT sign-in",
+				"supports ChatGPT device-code sign-in",
+				"reports current Codex app-server sign-in status",
+				"logs out of ChatGPT for Codex"
+			]
+		},
+		{
+			"area": "dynamic-tools",
+			"evidenceType": "source",
+			"path": "src/codex/compatibility.ts",
+			"anchors": [
+				"CODEX_DEFAULT_TOOL_PROFILE",
+				"CODEX_DYNAMIC_TOOL_CONFORMANCE",
+				"compileCodexDynamicToolSpecs",
+				"item/tool/call"
+			]
+		},
+		{
+			"area": "dynamic-tools",
+			"evidenceType": "source",
+			"path": "src/agent/providers/codex-app-server.ts",
+			"anchors": [
+				"nextCodexStreamItem",
+				"codexDynamicToolStartEvent",
+				"codexDynamicToolEndEvent",
+				"provider_tool_execution_start",
+				"provider_tool_execution_end"
+			]
+		},
+		{
+			"area": "dynamic-tools",
+			"evidenceType": "test",
+			"path": "test/codex/compatibility.test.ts",
+			"anchors": [
+				"tracks the upstream dynamic tool protocol fixture",
+				"compiles the curated Codex default profile into Responses-safe dynamic tools",
+				"renames invalid or reserved tool identifiers while preserving original bindings"
+			]
+		},
+		{
+			"area": "dynamic-tools",
+			"evidenceType": "test",
+			"path": "test/agent/codex-app-server.test.ts",
+			"anchors": [
+				"streams dynamic Maestro tool callbacks as provider-owned tool lifecycle events",
+				"wakes the stream for quiet dynamic tool callbacks before later app-server notifications",
+				"Codex dynamic tool: lookup_ticket",
+				"provider_tool_execution_start",
+				"provider_tool_execution_end"
+			]
+		},
+		{
+			"area": "durable-threads-goals-memory",
+			"evidenceType": "source",
+			"path": "src/session/types.ts",
+			"anchors": ["memoryExtractionHash", "appServerGoal"]
+		},
+		{
+			"area": "durable-threads-goals-memory",
+			"evidenceType": "test",
+			"path": "test/app-server/session-api.test.ts",
+			"anchors": [
+				"persists thread goals and clears them through the app-server contract",
+				"sets hosted thread goals without a file-backed goal read",
+				"fails goal updates when the writer does not persist the new goal"
+			]
+		},
+		{
+			"area": "approvals-sandbox-policy",
+			"evidenceType": "source",
+			"path": "packages/control-plane-rs/src/main.rs",
+			"anchors": [
+				"server_requests\": [\"approval\"]",
+				"codex_headless_pending_request_id",
+				"codex_app_server_approval_mode",
+				"MAESTRO_CODEX_APP_SERVER_SANDBOX"
+			]
+		},
+		{
+			"area": "approvals-sandbox-policy",
+			"evidenceType": "source",
+			"path": "src/agent/transport.ts",
+			"anchors": [
+				"executeDynamicTool",
+				"approvalService: this.options.approvalService",
+				"action_approval_required/resolved",
+				"evaluateToolSafety"
+			]
+		},
+		{
+			"area": "approvals-sandbox-policy",
+			"evidenceType": "test",
+			"path": "test/agent/provider-transport-provider-tools.test.ts",
+			"anchors": [
+				"lets Codex dynamic tool callbacks wait for user approval instead of auto-denying",
+				"withTimeout",
+				"action_approval_required",
+				"ActionApprovalService(\"prompt\")",
+				"mcp_ticket_update"
+			]
+		},
+		{
+			"area": "approvals-sandbox-policy",
+			"evidenceType": "doc",
+			"path": "docs/protocols/pending-requests.md",
+			"anchors": ["approval", "tool_retry", "ResumeToolExecution"]
+		},
+		{
+			"area": "subagents",
+			"evidenceType": "source",
+			"path": "src/agent/providers/codex-app-server.ts",
+			"anchors": [
+				"collabAgentToolCall",
+				"codex.subagent.",
+				"spawnAgent",
+				"wait"
+			]
+		},
+		{
+			"area": "subagents",
+			"evidenceType": "test",
+			"path": "test/agent/provider-transport-provider-tools.test.ts",
+			"anchors": [
+				"forwards Codex subagent tool events without local tool execution",
+				"codex.subagent.spawnAgent",
+				"tool_execution_start",
+				"tool_execution_end"
+			]
+		},
+		{
+			"area": "realtime-streaming",
+			"evidenceType": "source",
+			"path": "src/server/handlers/runtime-app-server-ws.ts",
+			"anchors": [
+				"Runtime app-server request must use JSON-RPC 2.0",
+				"runtime.server_request.registered",
+				"runtime.server_request.resolved"
+			]
+		},
+		{
+			"area": "realtime-streaming",
+			"evidenceType": "test",
+			"path": "test/server/runtime-app-server-ws.test.ts",
+			"anchors": [
+				"streams server request lifecycle notifications",
+				"replays pending server requests after session initialization",
+				"runtime.server_request.registered"
+			]
+		},
+		{
+			"area": "typescript-runtime",
+			"evidenceType": "source",
+			"path": "src/agent/providers/codex-app-server.ts",
+			"anchors": [
+				"thread/start",
+				"turn/start",
+				"item/agentMessage/delta",
+				"thread/tokenUsage/updated"
+			]
+		},
+		{
+			"area": "typescript-runtime",
+			"evidenceType": "test",
+			"path": "test/agent/codex-app-server.test.ts",
+			"anchors": [
+				"streams app-server agent message deltas into assistant text",
+				"registers and services Maestro tools through app-server dynamic tools",
+				"surfaces Codex collab-agent calls as provider-owned tool executions"
+			]
+		},
+		{
+			"area": "rust-control-plane",
+			"evidenceType": "source",
+			"path": "packages/control-plane-rs/src/model_catalog.rs",
+			"anchors": [
+				"codex_app_server_builtin_models",
+				"openai-codex",
+				"openai-codex-app-server"
+			]
+		},
+		{
+			"area": "rust-control-plane",
+			"evidenceType": "test",
+			"path": "packages/control-plane-rs/src/main.rs",
+			"anchors": [
+				"codex_headless_bridge_round_trips_prompt_approval",
+				"codex_headless_bridge_streams_tool_events_over_websocket",
+				"codex_app_server_timeout_kills_child_process"
+			]
+		},
+		{
+			"area": "eval-telemetry",
+			"evidenceType": "doc",
+			"path": "docs/protocols/agent-trajectory.md",
+			"anchors": [
+				"approval-before-tool-result",
+				"child-run semantics",
+				"recovery behavior"
+			]
+		},
+		{
+			"area": "eval-telemetry",
+			"evidenceType": "test",
+			"path": "test/telemetry/maestro-publisher-conformance-fixture.test.ts",
+			"anchors": [
+				"Maestro publisher conformance fixture",
+				"agent_run_publisher_fixture_001",
+				"tool_exec_publisher_fixture_bash_001"
+			]
+		},
+		{
+			"area": "operator-ux-docs",
+			"evidenceType": "doc",
+			"path": "docs/protocols/codex-operating-layer.md",
+			"anchors": [
+				"Prompt-To-Artifact Checklist",
+				"Far-Horizon Success Criteria",
+				"Operator Verification Path",
+				"Completion Bar"
+			]
+		},
+		{
+			"area": "operator-ux-docs",
+			"evidenceType": "doc",
+			"path": "docs/MODELS.md",
+			"anchors": [
+				"OpenAI Codex (Codex app-server + ChatGPT sign-in)",
+				"api: \"openai-codex-app-server\"",
+				"maestro codex login"
+			]
+		},
+		{
+			"area": "live-verification",
+			"evidenceType": "live-smoke",
+			"path": "scripts/smoke-codex-app-server-live.mjs",
+			"anchors": [
+				"doctor",
+				"real inference with dynamic read tool",
+				"expected token"
+			]
+		},
+		{
+			"area": "live-verification",
+			"evidenceType": "package-script",
+			"path": "package.json",
+			"anchors": ["smoke:codex-app-server-live", "check:codex-operating-layer"]
+		}
+	]
+}

@@ -338,6 +338,15 @@ export function parseArgs(args: string[]): Args {
 				DEPRECATED_FLAG_PREFIXES.some((flag) => arg.startsWith(flag)))
 		) {
 			// Preserve the later migration error from validateCodexFlags().
+		} else if (
+			result.command === "codex" &&
+			result.subcommand === "login" &&
+			(arg === "--device" || arg === "--device-code")
+		) {
+			if (!result.commandArgs) {
+				result.commandArgs = [];
+			}
+			result.commandArgs.push(arg);
 		} else if (arg && isConfigInitPresetFlag(result, arg)) {
 			const nextArg = args[i + 1];
 			if (nextArg && !nextArg.startsWith("-")) {

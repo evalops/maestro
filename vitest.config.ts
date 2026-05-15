@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
 if (process.env.FORCE_COLOR && process.env.NO_COLOR) {
@@ -5,11 +6,23 @@ if (process.env.FORCE_COLOR && process.env.NO_COLOR) {
 }
 
 const fastMode = process.env.VITEST_FAST === "1";
-const poolOptions = fastMode
-	? { threads: { singleThread: false } }
-	: { forks: { singleFork: true } };
+const aiPackageSource = fileURLToPath(
+	new URL("./packages/ai/src/", import.meta.url),
+);
 
 export default defineConfig({
+	resolve: {
+		alias: [
+			{
+				find: /^@evalops\/ai$/,
+				replacement: `${aiPackageSource}index.ts`,
+			},
+			{
+				find: /^@evalops\/ai\/(.+)$/,
+				replacement: `${aiPackageSource}$1`,
+			},
+		],
+	},
 	esbuild: {
 		jsx: "automatic",
 		jsxImportSource: "react",
@@ -34,7 +47,8 @@ export default defineConfig({
 		// Isolate tests to prevent module state leakage between test files
 		isolate: true,
 		// Pool configuration for better memory management
-		pool: fastMode ? "threads" : "forks",
+		pool: "forks",
+		maxWorkers: fastMode ? undefined : 1,
 		// Benchmark configuration
 		benchmark: {
 			include: ["test/**/*.bench.ts", "test/**/*.bench.tsx"],
@@ -61,5 +75,4 @@ export default defineConfig({
 			},
 		},
 	},
-	poolOptions,
 });

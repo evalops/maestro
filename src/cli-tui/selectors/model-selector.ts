@@ -14,6 +14,13 @@ import { lookupApiKey } from "../../providers/api-keys.js";
 /**
  * Component that renders a model selector with search
  */
+export const isSelectableWithoutStoredCredential = (
+	model: RegisteredModel,
+): boolean =>
+	model.isLocal ||
+	(model.provider === "openai-codex" &&
+		model.api === "openai-codex-app-server");
+
 export class ModelSelectorComponent extends Container {
 	private searchInput: Input;
 	private listContainer: Container;
@@ -260,8 +267,9 @@ export class ModelSelectorComponent extends Container {
 		usable: boolean;
 		hint?: string;
 	} {
-		// Always allow local endpoints; otherwise require a key
-		if (model.isLocal) return { usable: true };
+		// Local endpoints and Codex app-server models validate at runtime instead
+		// of relying on Maestro's OAuth/API-key credential store.
+		if (isSelectableWithoutStoredCredential(model)) return { usable: true };
 		const oauthProviders = new Set<SupportedOAuthProvider>([
 			"anthropic",
 			"evalops",

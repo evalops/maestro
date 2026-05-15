@@ -119,6 +119,50 @@ type GovernedToolOutcome =
 	| "denied"
 	| "rate_limited";
 
+class AgentEventQueue {
+	private events: AgentEvent[] = [];
+	private pending?: Promise<void>;
+	private wake?: () => void;
+
+	push(event: AgentEvent): void {
+		this.events.push(event);
+		if (this.wake) {
+			const wake = this.wake;
+			this.pending = undefined;
+			this.wake = undefined;
+			wake();
+		}
+	}
+
+	shift(): AgentEvent | undefined {
+		return this.events.shift();
+	}
+
+	wait(): Promise<void> {
+		if (this.events.length > 0) {
+			return Promise.resolve();
+		}
+		if (!this.pending) {
+			this.pending = new Promise<void>((resolve) => {
+				this.wake = resolve;
+			});
+		}
+		return this.pending;
+	}
+
+	clearPendingWaiter(): void {
+		this.pending = undefined;
+		this.wake = undefined;
+	}
+}
+
+function isDynamicToolApprovalEvent(event: AgentEvent): boolean {
+	return (
+		event.type === "action_approval_required" ||
+		event.type === "action_approval_resolved"
+	);
+}
+
 function getGovernedToolResultEventMetadata(details: unknown): {
 	errorCode?: string;
 	approvalRequestId?: string;
@@ -368,8 +412,13 @@ export class ProviderTransport implements AgentTransport {
 		this.workflowState.reset();
 
 		const scriptedReplayRun = model.provider === "scripted-replay";
+		const codexAppServerRun = model.api === "openai-codex-app-server";
 		let credential: AuthCredential | undefined;
-		if (this.options.getAuthContext && !scriptedReplayRun) {
+		if (
+			this.options.getAuthContext &&
+			!scriptedReplayRun &&
+			!codexAppServerRun
+		) {
 			credential = await this.options.getAuthContext(model.provider);
 		}
 		if (!credential && this.options.getApiKey) {
@@ -387,6 +436,14 @@ export class ProviderTransport implements AgentTransport {
 			credential = {
 				provider: model.provider,
 				token: "scripted-replay",
+				type: "api-key",
+				source: "env",
+			};
+		}
+		if (!credential && codexAppServerRun) {
+			credential = {
+				provider: model.provider,
+				token: "codex-app-server",
 				type: "api-key",
 				source: "env",
 			};
@@ -434,6 +491,7 @@ export class ProviderTransport implements AgentTransport {
 			};
 		}
 
+		const dynamicToolEventQueue = new AgentEventQueue();
 		const trainingHeaders = getTrainingHeaders();
 		const headers =
 			trainingHeaders || model.headers || credential?.headers
@@ -444,6 +502,185 @@ export class ProviderTransport implements AgentTransport {
 					}
 				: undefined;
 
+		const executeDynamicTool = async (
+			toolCall: ToolCall,
+		): Promise<AgentToolResult> => {
+			const capturedResults: ToolResultMessage[] = [];
+			const dynamicToolError = (message: string): AgentToolResult => ({
+				content: [{ type: "text", text: message }],
+				isError: true,
+			});
+			const toAgentToolResult = (
+				message: ToolResultMessage | undefined,
+			): AgentToolResult =>
+				message
+					? {
+							content: message.content,
+							isError: message.isError,
+							details: message.details,
+						}
+					: dynamicToolError("Dynamic tool execution was blocked");
+			const emitDynamicToolResult = (
+				message: ToolResultMessage,
+				effectiveToolCall: ToolCall,
+				isError: boolean,
+			): AgentEvent[] => {
+				try {
+					applyWorkflowStateHooks({
+						toolCall: effectiveToolCall,
+						result: message,
+						tracker: this.workflowState,
+						isError,
+					});
+					capturedResults.push(message);
+				} catch (error) {
+					if (error instanceof WorkflowStateError) {
+						capturedResults.push({
+							role: "toolResult",
+							toolCallId: effectiveToolCall.id,
+							toolName: effectiveToolCall.name,
+							content: [{ type: "text", text: error.message }],
+							isError: true,
+							timestamp: this.clock.now(),
+						});
+					} else {
+						throw error;
+					}
+				}
+				return [];
+			};
+
+			try {
+				const safetyIterator = evaluateToolSafety({
+					toolCall,
+					tools,
+					userMessage,
+					cfg,
+					signal,
+					clock: this.clock,
+					safetyMiddleware: this.safetyMiddleware,
+					workflowState: this.workflowState,
+					adaptiveThresholds: this.adaptiveThresholds,
+					auditLogger: this.auditLogger,
+					approvalService: this.options.approvalService,
+					toolExecutionBridge:
+						this.options.platformToolExecutionBridge === false
+							? undefined
+							: (this.options.platformToolExecutionBridge ??
+								getDefaultPlatformToolExecutionBridge()),
+					hookService,
+					firewall,
+					rateLimitState: {
+						recentToolTimestamps: this.recentToolTimestamps,
+						toolCallsThisMinute: this.toolCallsThisMinute,
+						minuteWindowStart: this.minuteWindowStart,
+						rateWindowMs: ProviderTransport.TOOL_RATE_WINDOW_MS,
+						rateLimit: ProviderTransport.TOOL_RATE_LIMIT,
+					},
+					emitToolResult: emitDynamicToolResult,
+				});
+				let safetyVerdict: ToolSafetyVerdict | undefined;
+				let rateLimitUpdate:
+					| { toolCallsThisMinute: number; minuteWindowStart: number }
+					| undefined;
+				while (true) {
+					const safetyStep = await safetyIterator.next();
+					if (safetyStep.done) {
+						({ verdict: safetyVerdict, rateLimitUpdate } = safetyStep.value);
+						break;
+					}
+					if (isDynamicToolApprovalEvent(safetyStep.value)) {
+						dynamicToolEventQueue.push(safetyStep.value);
+					}
+				}
+				if (!safetyVerdict || !rateLimitUpdate) {
+					return dynamicToolError("Safety pipeline did not return a verdict.");
+				}
+				this.toolCallsThisMinute = rateLimitUpdate.toolCallsThisMinute;
+				this.minuteWindowStart = rateLimitUpdate.minuteWindowStart;
+				if (safetyVerdict.outcome === "blocked") {
+					return toAgentToolResult(capturedResults.at(-1));
+				}
+
+				const {
+					effectiveToolCall,
+					validatedArgs,
+					toolDef: tool,
+					sanitizedExecutionArgs,
+				} = safetyVerdict;
+				if (tool.executionLocation === "client") {
+					return dynamicToolError(
+						`Client-side tool execution is not available for Codex app-server dynamic tool "${tool.name}".`,
+					);
+				}
+				const toolUpdateQueue = createToolUpdateQueue();
+				const executionPromise = createToolExecutionPromise({
+					toolCall,
+					effectiveToolCall,
+					tool,
+					validatedArgs,
+					sanitizedExecutionArgs,
+					cfg,
+					signal,
+					clock: this.clock,
+					safetyMiddleware: this.safetyMiddleware,
+					adaptiveThresholds: this.adaptiveThresholds,
+					auditLogger: this.auditLogger,
+					hookService,
+					toolRetryService: this.options.toolRetryService,
+					toolRetryConfig: this.options.toolRetryConfig,
+					clientToolService: this.options.clientToolService,
+					toolExecutionBridge:
+						this.options.platformToolExecutionBridge === false
+							? undefined
+							: (this.options.platformToolExecutionBridge ??
+								getDefaultPlatformToolExecutionBridge()),
+					toolExecutionBridgePlan: safetyVerdict.toolExecutionBridgePlan,
+					toolUpdateQueue,
+				});
+				const pendingExecutions: PendingExecution[] = [
+					{ toolCall, promise: executionPromise },
+				];
+				let outcome: Awaited<typeof executionPromise> | undefined;
+				while (pendingExecutions.length > 0) {
+					const next = await waitForNextExecutionOrUpdate(
+						pendingExecutions,
+						toolUpdateQueue,
+					);
+					if (next.kind === "update") {
+						if (next.event.type === "tool_retry_required") {
+							this.options.toolRetryService?.skip(
+								next.event.request.id,
+								"Codex app-server dynamic tool callbacks cannot prompt for retry",
+								"runtime",
+							);
+						}
+						continue;
+					}
+					outcome = next.outcome;
+				}
+				if (!outcome) {
+					return dynamicToolError("Dynamic tool execution did not complete.");
+				}
+				try {
+					applyWorkflowStateHooks({
+						toolCall: effectiveToolCall,
+						result: outcome.message,
+						tracker: this.workflowState,
+						isError: outcome.isError,
+					});
+				} catch (error) {
+					if (error instanceof WorkflowStateError) {
+						return dynamicToolError(error.message);
+					}
+					throw error;
+				}
+				return toAgentToolResult(outcome.message);
+			} finally {
+				this.safetyMiddleware.clearCredentials();
+			}
+		};
+
 		const streamOptions = {
 			apiKey,
 			maxTokens: model.maxTokens,
@@ -452,7 +689,9 @@ export class ProviderTransport implements AgentTransport {
 			headers,
 			requestBody: credential?.requestBody,
 			sessionId: cfg.session?.id,
+			cwd: this.options.cwd,
 			taskBudget: cfg.taskBudget,
+			executeDynamicTool,
 		};
 
 		let hasMoreToolCalls = true;
@@ -578,9 +817,35 @@ export class ProviderTransport implements AgentTransport {
 					streamOptions,
 					{ reasoning: cfg.reasoning, reasoningSummary: cfg.reasoningSummary },
 				);
+				const streamIterator = stream[Symbol.asyncIterator]();
+				let nextStreamEvent = streamIterator.next();
 
 				try {
-					for await (const event of stream) {
+					while (true) {
+						const queuedDynamicToolEvent = dynamicToolEventQueue.shift();
+						if (queuedDynamicToolEvent) {
+							yield queuedDynamicToolEvent;
+							continue;
+						}
+						const dynamicToolEventReady = dynamicToolEventQueue.wait();
+						const nextEvent = await Promise.race([
+							dynamicToolEventReady.then(() => ({
+								type: "dynamicTool" as const,
+							})),
+							nextStreamEvent.then((result) => ({
+								type: "provider" as const,
+								result,
+							})),
+						]);
+						if (nextEvent.type === "dynamicTool") {
+							continue;
+						}
+						dynamicToolEventQueue.clearPendingWaiter();
+						if (nextEvent.result.done) {
+							break;
+						}
+						const event = nextEvent.result.value;
+						nextStreamEvent = streamIterator.next();
 						if (event.type === "start") {
 							currentAssistantMessage = event.partial;
 							if (currentAssistantMessage) {
@@ -608,6 +873,48 @@ export class ProviderTransport implements AgentTransport {
 									assistantMessageEvent: event,
 								};
 							}
+							continue;
+						}
+
+						if (event.type === "provider_tool_execution_start") {
+							if (!firstModelOutputSeen) {
+								cfg.queryProfiler?.checkpoint("model:first-token");
+								firstModelOutputSeen = true;
+							}
+							yield {
+								type: "tool_execution_start",
+								toolCallId: event.toolCallId,
+								toolName: event.toolName,
+								displayName: event.displayName,
+								summaryLabel: event.summaryLabel,
+								args: event.args,
+							};
+							continue;
+						}
+
+						if (event.type === "provider_tool_execution_update") {
+							yield {
+								type: "tool_execution_update",
+								toolCallId: event.toolCallId,
+								toolName: event.toolName,
+								displayName: event.displayName,
+								summaryLabel: event.summaryLabel,
+								args: event.args,
+								partialResult: event.partialResult,
+							};
+							continue;
+						}
+
+						if (event.type === "provider_tool_execution_end") {
+							yield {
+								type: "tool_execution_end",
+								toolCallId: event.toolCallId,
+								toolName: event.toolName,
+								displayName: event.displayName,
+								summaryLabel: event.summaryLabel,
+								result: event.result,
+								isError: event.isError,
+							};
 							continue;
 						}
 
@@ -679,8 +986,20 @@ export class ProviderTransport implements AgentTransport {
 							break;
 						}
 					}
+					for (
+						let event = dynamicToolEventQueue.shift();
+						event;
+						event = dynamicToolEventQueue.shift()
+					) {
+						yield event;
+					}
+					dynamicToolEventQueue.clearPendingWaiter();
 					streamSuccess = true;
 				} catch (error) {
+					while (dynamicToolEventQueue.shift()) {
+						// Drop queued dynamic tool events from the abandoned stream attempt.
+					}
+					dynamicToolEventQueue.clearPendingWaiter();
 					if (
 						isStreamIdleTimeoutError(error) &&
 						streamAttempt <= maxStreamRetries

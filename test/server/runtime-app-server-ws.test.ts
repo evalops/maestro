@@ -85,7 +85,7 @@ describe("runtime app-server WebSocket", () => {
 						id: "openai-codex",
 						models: expect.arrayContaining([
 							expect.objectContaining({
-								api: "openai-codex-responses",
+								api: "openai-codex-app-server",
 								capabilities: expect.objectContaining({
 									streaming: true,
 									reasoning: true,

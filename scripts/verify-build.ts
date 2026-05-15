@@ -113,7 +113,7 @@ async function verifyModuleStructure() {
 		"session",
 		"config",
 		"safety",
-		"web",
+		"server",
 	];
 
 	for (const module of modules) {

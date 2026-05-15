@@ -14,12 +14,13 @@ use std::process::{self, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::process::Command;
 use tokio::sync::{mpsc, watch, Mutex};
 
 mod auth;
+mod codex_compat;
 mod http;
 mod model_catalog;
 mod runtime_assets;
@@ -53,11 +54,54 @@ const A2A_PROTOCOL_VERSION: &str = "1.0";
 const A2A_DEFAULT_TURN_TIMEOUT_MS: u64 = 180_000;
 const A2A_DEFAULT_RESPONSE_END_SETTLE_MS: u64 = 250;
 const A2A_TERMINAL_TASK_STORE_LIMIT: usize = 128;
+static CODEX_BRIDGE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+static CODEX_HEADLESS_RUN_COUNTER: AtomicU64 = AtomicU64::new(0);
 static ATTACHMENT_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
 type PendingToolResponseSender = mpsc::UnboundedSender<(String, bool, Option<ToolResult>)>;
 type A2ACancelSender = watch::Sender<bool>;
 type A2ACancelReceiver = watch::Receiver<bool>;
+
+#[derive(Debug, PartialEq, Eq)]
+enum CliAction {
+    Serve,
+    Help,
+    Version,
+}
+
+fn parse_cli_action<I, S>(args: I) -> Result<CliAction, String>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    let args = args.into_iter().map(Into::into).collect::<Vec<_>>();
+    if args.is_empty() {
+        return Ok(CliAction::Serve);
+    }
+    if args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
+    {
+        return Ok(CliAction::Help);
+    }
+    if args.len() == 1 && matches!(args[0].as_str(), "-V" | "--version") {
+        return Ok(CliAction::Version);
+    }
+    Err(format!("unexpected argument: {}", args.join(" ")))
+}
+
+fn print_cli_help() {
+    println!(
+        "Maestro Rust control plane\n\n\
+Usage:\n  maestro-control-plane [--help] [--version]\n\n\
+Environment:\n  MAESTRO_CONTROL_HOST  bind host (default: 0.0.0.0)\n  PORT                  bind port (default: 8080)\n  MAESTRO_HOME          state directory for sessions, usage, and preferences\n  MAESTRO_WEB_API_KEY   API key accepted via Bearer or x-maestro-api-key\n  MAESTRO_WEB_REQUIRE_KEY=0 disables API-key auth for local development\n"
+    );
+}
+
+fn print_cli_version() {
+    println!("maestro-control-plane {}", env!("CARGO_PKG_VERSION"));
+}
+
 #[derive(Debug, Clone)]
 struct Config {
     listen_host: String,
@@ -276,6 +320,22 @@ struct HookConcurrencySnapshot {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    match parse_cli_action(env::args().skip(1)) {
+        Ok(CliAction::Serve) => {}
+        Ok(CliAction::Help) => {
+            print_cli_help();
+            return Ok(());
+        }
+        Ok(CliAction::Version) => {
+            print_cli_version();
+            return Ok(());
+        }
+        Err(error) => {
+            eprintln!("{error}\nRun `maestro-control-plane --help` for usage.");
+            process::exit(2);
+        }
+    }
+
     let config = Arc::new(Config::from_env());
     let listener = TcpListener::bind(config.listen_addr()).await?;
     eprintln!(
@@ -518,10 +578,11 @@ fn shared_session_path_from_path(path: &str) -> Option<SharedSessionPath<'_>> {
     Some(SharedSessionPath { token, tail })
 }
 
-fn pending_request_id_from_resume_path(path: &str) -> Option<&str> {
-    let request_id = path
+fn pending_request_id_from_resume_path(path: &str) -> Option<String> {
+    let encoded_request_id = path
         .strip_prefix("/api/pending-requests/")?
         .strip_suffix("/resume")?;
+    let request_id = percent_decode_component(encoded_request_id);
     if request_id.is_empty() || request_id.contains('/') {
         return None;
     }
@@ -752,7 +813,7 @@ async fn cancel_a2a_task(
         "message": a2a_agent_message(&context_id, "Task canceled"),
         "timestamp": now_rfc3339()
     });
-    task["artifacts"] = serde_json::json!([]);
+    task["artifacts"] = Value::Array(Vec::new());
     let task = task.clone();
     prune_a2a_terminal_tasks(&mut tasks);
     drop(tasks);
@@ -939,6 +1000,12 @@ fn a2a_merge_task_metadata(existing_task: &Value, metadata: Value) -> Value {
 
 async fn rollback_a2a_send_claim(state: &AppState, task_id: &str, previous_task: Option<Value>) {
     let mut tasks = state.a2a_tasks.lock().await;
+    let Some(task) = tasks.get(task_id) else {
+        return;
+    };
+    if a2a_task_status_state(task) != Some("TASK_STATE_WORKING") {
+        return;
+    }
     if let Some(previous_task) = previous_task {
         tasks.insert(task_id.to_string(), previous_task);
     } else {
@@ -1308,35 +1375,25 @@ fn a2a_message_text(message: &A2AMessageBody) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-fn trimmed_non_empty_string(value: &str) -> Option<String> {
-    let value = value.trim();
-    (!value.is_empty()).then(|| value.to_string())
-}
-
 fn a2a_context_id(request: &A2ASendMessageRequest, head: &RequestHead) -> String {
-    request
-        .message
-        .context_id
-        .as_deref()
-        .and_then(trimmed_non_empty_string)
+    let normalized = |value: Option<&str>| {
+        value
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    normalized(request.message.context_id.as_deref())
         .or_else(|| {
-            request
-                .message
-                .metadata
-                .as_ref()
-                .and_then(|metadata| metadata.get("sessionId").and_then(Value::as_str))
-                .and_then(trimmed_non_empty_string)
+            normalized(
+                request
+                    .message
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.get("sessionId").and_then(Value::as_str)),
+            )
         })
-        .or_else(|| {
-            head.headers
-                .get("x-evalops-session-id")
-                .and_then(|value| trimmed_non_empty_string(value))
-        })
-        .or_else(|| {
-            head.headers
-                .get("x-maestro-session-id")
-                .and_then(|value| trimmed_non_empty_string(value))
-        })
+        .or_else(|| normalized(head.headers.get("x-evalops-session-id").map(String::as_str)))
+        .or_else(|| normalized(head.headers.get("x-maestro-session-id").map(String::as_str)))
         .unwrap_or_else(|| generate_a2a_id("maestro-context"))
 }
 
@@ -1593,10 +1650,6 @@ async fn run_a2a_native_turn(
                         finish_tool_metadata(&mut output.tools, &call_id, false);
                     }
                 }
-            }
-            FromAgent::ToolStart { call_id } => {
-                response_end_deadline = None;
-                update_tool_metadata_status(&mut output.tools, &call_id, "running");
             }
             FromAgent::ToolEnd {
                 call_id, success, ..
@@ -2314,23 +2367,25 @@ async fn handle_pending_request_resume_endpoint(
             }
         }
     };
-    let Some(sender) = state.pending_tool_responses.lock().await.remove(request_id) else {
+    let Some(sender) = state
+        .pending_tool_responses
+        .lock()
+        .await
+        .remove(&request_id)
+    else {
         return json_response(
             404,
             &serde_json::json!({ "error": format!("No active pending request: {request_id}") }),
         );
     };
     let (approved, result) = pending_tool_response_from_payload(&payload);
-    if sender
-        .send((request_id.to_string(), approved, result))
-        .is_err()
-    {
+    if sender.send((request_id.clone(), approved, result)).is_err() {
         return json_response(
             409,
             &serde_json::json!({ "error": "Pending request is no longer active" }),
         );
     }
-    json_response(200, &pending_request_resume_value(request_id, &payload))
+    json_response(200, &pending_request_resume_value(&request_id, &payload))
 }
 
 async fn load_session_store(path: &Path) -> (SessionStore, bool) {
@@ -4763,6 +4818,16 @@ async fn selected_chat_model(chat: &ChatRequest, state: &AppState) -> String {
     format!("{}/{}", selected.provider, selected.id)
 }
 
+fn codex_app_server_model_id(model: &str) -> Option<String> {
+    let trimmed = model.trim();
+    let (provider, model_id) = trimmed.split_once('/')?;
+    if provider != "openai-codex" {
+        return None;
+    }
+    let model_id = model_id.trim();
+    (!model_id.is_empty()).then(|| model_id.to_string())
+}
+
 async fn usage_provider_model(
     chat: &ChatRequest,
     state: &AppState,
@@ -4831,6 +4896,1347 @@ async fn record_usage_entry(
     if let Ok(bytes) = serde_json::to_vec_pretty(&entries) {
         let _ = tokio::fs::write(path, bytes).await;
     }
+}
+
+fn codex_app_server_cli_path() -> PathBuf {
+    env::var("MAESTRO_CODEX_APP_SERVER_CLI")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            let start_dir = env::current_exe()
+                .ok()
+                .and_then(|path| path.parent().map(Path::to_path_buf))
+                .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+            codex_app_server_cli_path_from_start_dir(&start_dir)
+        })
+}
+
+fn codex_app_server_cli_path_from_start_dir(start_dir: &Path) -> PathBuf {
+    let mut package_root_candidate = None;
+    for dir in start_dir.ancestors() {
+        let cli_path = dir.join("dist/cli.js");
+        if cli_path.exists() {
+            return cli_path;
+        }
+        if package_root_candidate.is_none() && dir.join("package.json").exists() {
+            package_root_candidate = Some(cli_path);
+        }
+    }
+    package_root_candidate.unwrap_or_else(|| start_dir.join("dist/cli.js"))
+}
+
+fn codex_app_server_timeout() -> Duration {
+    Duration::from_millis(
+        env::var("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(240_000),
+    )
+}
+
+fn codex_app_server_sandbox_mode() -> Option<String> {
+    let bridge_override = env::var("MAESTRO_CODEX_APP_SERVER_SANDBOX").ok();
+    let inherited = env::var("MAESTRO_SANDBOX_MODE").ok();
+    codex_app_server_sandbox_mode_from_values(bridge_override.as_deref(), inherited.as_deref())
+}
+
+fn codex_app_server_sandbox_mode_from_values(
+    bridge_override: Option<&str>,
+    inherited: Option<&str>,
+) -> Option<String> {
+    bridge_override
+        .or(inherited)
+        .map(str::trim)
+        .filter(|mode| !mode.is_empty())
+        .filter(|mode| !matches!(*mode, "default" | "inherit"))
+        .map(str::to_string)
+}
+
+fn codex_app_server_approval_mode(session_mode: &str) -> &'static str {
+    match session_mode {
+        "auto" => "auto",
+        "fail" => "fail",
+        _ => "prompt",
+    }
+}
+
+fn truncate_command_output(text: &str) -> String {
+    const MAX_ERROR_CHARS: usize = 4_000;
+    if text.chars().count() <= MAX_ERROR_CHARS {
+        return text.to_string();
+    }
+    let truncated = text.chars().take(MAX_ERROR_CHARS).collect::<String>();
+    format!("{truncated}\n... truncated ...")
+}
+
+#[derive(Clone)]
+struct CodexBridgeOutput {
+    text: String,
+    usage: Option<TokenUsage>,
+    tool_events: Vec<CodexBridgeToolEvent>,
+}
+
+#[derive(Clone)]
+struct CodexBridgeToolEvent {
+    event_type: &'static str,
+    tool_call_id: String,
+    tool_name: String,
+    display_name: Option<String>,
+    summary_label: Option<String>,
+    args: Value,
+    result: Value,
+    is_error: Option<bool>,
+}
+
+#[derive(Clone)]
+struct CodexBridgeToolContext {
+    tool_name: String,
+    display_name: Option<String>,
+    summary_label: Option<String>,
+    args: Value,
+}
+
+fn assistant_output_from_jsonl(stdout: &str) -> Result<CodexBridgeOutput, String> {
+    let mut current_role: Option<String> = None;
+    let mut assistant_text: Option<String> = None;
+    let mut assistant_stop_reason: Option<String> = None;
+    let mut assistant_usage: Option<TokenUsage> = None;
+    let mut tool_events = Vec::new();
+    for line in stdout.lines() {
+        let Ok(event) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if let Some(tool_event) = codex_jsonl_tool_event_from_json(&event) {
+            tool_events.push(tool_event);
+            continue;
+        }
+        if event.get("type").and_then(Value::as_str) == Some("turn") {
+            if event.get("phase").and_then(Value::as_str) == Some("start") {
+                current_role = event
+                    .get("role")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+            } else if event.get("phase").and_then(Value::as_str) == Some("end")
+                && event.get("role").and_then(Value::as_str) == Some("assistant")
+            {
+                current_role = None;
+            }
+            continue;
+        }
+        if current_role.as_deref() != Some("assistant") {
+            continue;
+        }
+        if event.get("type").and_then(Value::as_str) == Some("item")
+            && event.get("subtype").and_then(Value::as_str) == Some("message_complete")
+        {
+            if let Some(stop_reason) = event
+                .get("data")
+                .and_then(|data| data.get("stopReason"))
+                .and_then(Value::as_str)
+            {
+                assistant_stop_reason = Some(stop_reason.to_string());
+            }
+            if let Some(usage) = event
+                .get("data")
+                .and_then(|data| data.get("usage"))
+                .and_then(codex_usage_from_json)
+            {
+                assistant_usage = Some(usage);
+            }
+            if let Some(text) = event
+                .get("data")
+                .and_then(|data| data.get("text"))
+                .and_then(Value::as_str)
+            {
+                assistant_text = Some(text.to_string());
+            }
+        }
+    }
+    if assistant_stop_reason.as_deref() == Some("error") {
+        return Err("Codex app-server bridge returned an error stop reason".to_string());
+    }
+    let text = assistant_text.ok_or_else(|| {
+        "Codex app-server bridge completed without an assistant message".to_string()
+    })?;
+    if text.trim().is_empty() {
+        return Err("Codex app-server bridge returned an empty assistant message".to_string());
+    }
+    Ok(CodexBridgeOutput {
+        text,
+        usage: assistant_usage,
+        tool_events,
+    })
+}
+
+#[cfg(test)]
+fn assistant_text_from_jsonl(stdout: &str) -> Result<String, String> {
+    assistant_output_from_jsonl(stdout).map(|output| output.text)
+}
+
+fn codex_jsonl_tool_event_from_json(event: &Value) -> Option<CodexBridgeToolEvent> {
+    match event.get("type").and_then(Value::as_str)? {
+        "item" => match event.get("subtype").and_then(Value::as_str)? {
+            "tool_call" => {
+                let data = event.get("data")?;
+                let tool_call_id = data
+                    .get("toolCallId")
+                    .or_else(|| data.get("tool_call_id"))
+                    .and_then(Value::as_str)?;
+                let tool_name = data
+                    .get("toolName")
+                    .or_else(|| data.get("tool_name"))
+                    .and_then(Value::as_str)?;
+                let args = data
+                    .get("args")
+                    .cloned()
+                    .unwrap_or_else(|| Value::Object(Map::new()));
+                Some(codex_bridge_tool_start_event(tool_call_id, tool_name, args))
+            }
+            "tool_result" => {
+                let data = event.get("data")?;
+                let tool_call_id = data
+                    .get("toolCallId")
+                    .or_else(|| data.get("tool_call_id"))
+                    .and_then(Value::as_str)?;
+                let tool_name = data
+                    .get("toolName")
+                    .or_else(|| data.get("tool_name"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("tool");
+                let result = data.get("result").cloned().unwrap_or_else(|| {
+                    codex_bridge_tool_result(tool_call_id, tool_name, false, None)
+                });
+                let is_error = data
+                    .get("isError")
+                    .or_else(|| data.get("is_error"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                Some(codex_bridge_tool_end_event(
+                    tool_call_id,
+                    tool_name,
+                    result,
+                    is_error,
+                ))
+            }
+            _ => None,
+        },
+        "item.started" => {
+            let item = event.get("item")?;
+            codex_collab_tool_event_from_jsonl_item(item, false)
+        }
+        "item.completed" => {
+            let item = event.get("item")?;
+            codex_collab_tool_event_from_jsonl_item(item, true)
+        }
+        _ => None,
+    }
+}
+
+fn codex_headless_tool_event_from_json(event: &Value) -> Option<CodexBridgeToolEvent> {
+    match event.get("type").and_then(Value::as_str)? {
+        "tool_call" => {
+            let tool_call_id = event.get("call_id").and_then(Value::as_str)?;
+            let tool_name = event.get("tool").and_then(Value::as_str)?;
+            let args = event
+                .get("args")
+                .cloned()
+                .unwrap_or_else(|| Value::Object(Map::new()));
+            Some(codex_bridge_tool_start_event(tool_call_id, tool_name, args))
+        }
+        "tool_end" => {
+            let tool_call_id = event.get("call_id").and_then(Value::as_str)?;
+            let tool_name = event.get("tool").and_then(Value::as_str).unwrap_or("tool");
+            let success = event
+                .get("success")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let details = codex_headless_tool_end_details(event);
+            Some(codex_bridge_tool_end_event(
+                tool_call_id,
+                tool_name,
+                codex_bridge_tool_result(tool_call_id, tool_name, success, Some(details)),
+                !success,
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn codex_headless_tool_event_from_json_with_context(
+    event: &Value,
+    contexts: &mut HashMap<String, CodexBridgeToolContext>,
+) -> Option<CodexBridgeToolEvent> {
+    let event_type = event.get("type").and_then(Value::as_str)?;
+    if event_type == "tool_call" {
+        let tool_event = codex_headless_tool_event_from_json(event)?;
+        contexts.insert(
+            tool_event.tool_call_id.clone(),
+            CodexBridgeToolContext {
+                tool_name: tool_event.tool_name.clone(),
+                display_name: tool_event.display_name.clone(),
+                summary_label: tool_event.summary_label.clone(),
+                args: tool_event.args.clone(),
+            },
+        );
+        return Some(tool_event);
+    }
+    if event_type != "tool_end" {
+        return None;
+    }
+    let tool_call_id = event.get("call_id").and_then(Value::as_str)?;
+    let context = contexts.remove(tool_call_id);
+    let mut tool_event = codex_headless_tool_event_from_json(event)?;
+    if let Some(context) = context {
+        tool_event.tool_name = context.tool_name;
+        tool_event.display_name = context.display_name;
+        tool_event.summary_label = context.summary_label;
+        tool_event.args = context.args;
+        let success = !tool_event.is_error.unwrap_or(true);
+        let mut details = codex_headless_tool_end_details(event);
+        if let Some(object) = details.as_object_mut() {
+            object.insert("args".to_string(), tool_event.args.clone());
+        }
+        tool_event.result = codex_bridge_tool_result(
+            &tool_event.tool_call_id,
+            &tool_event.tool_name,
+            success,
+            Some(details),
+        );
+    }
+    Some(tool_event)
+}
+
+fn codex_collab_tool_event_from_jsonl_item(
+    item: &Value,
+    completed: bool,
+) -> Option<CodexBridgeToolEvent> {
+    if item.get("type").and_then(Value::as_str) != Some("collab_tool_call") {
+        return None;
+    }
+    let tool_call_id = item.get("id").and_then(Value::as_str)?;
+    let tool = item.get("tool").and_then(Value::as_str)?;
+    let canonical_tool = codex_canonical_collab_tool(tool);
+    let tool_name = format!("codex.subagent.{canonical_tool}");
+    let args = codex_collab_args_from_jsonl_item(item, &canonical_tool);
+    if !completed {
+        return Some(codex_bridge_tool_start_event(
+            tool_call_id,
+            &tool_name,
+            args,
+        ));
+    }
+    let is_error = item
+        .get("status")
+        .and_then(Value::as_str)
+        .is_some_and(|status| status == "failed");
+    let result = codex_bridge_tool_result(tool_call_id, &tool_name, !is_error, Some(args.clone()));
+    Some(codex_bridge_tool_end_event(
+        tool_call_id,
+        &tool_name,
+        result,
+        is_error,
+    ))
+}
+
+fn codex_collab_args_from_jsonl_item(item: &Value, canonical_tool: &str) -> Value {
+    serde_json::json!({
+        "codexTool": canonical_tool,
+        "status": item.get("status").cloned().unwrap_or(Value::Null),
+        "senderThreadId": item.get("sender_thread_id").cloned().unwrap_or(Value::Null),
+        "receiverThreadIds": item.get("receiver_thread_ids").cloned().unwrap_or_else(|| Value::Array(Vec::new())),
+        "prompt": item.get("prompt").cloned().unwrap_or(Value::Null),
+        "model": item.get("model").cloned().unwrap_or(Value::Null),
+        "reasoningEffort": item.get("reasoning_effort").cloned().unwrap_or(Value::Null),
+        "agentsStates": item.get("agents_states").cloned().unwrap_or_else(|| Value::Object(Map::new()))
+    })
+}
+
+fn codex_canonical_collab_tool(tool: &str) -> String {
+    match tool {
+        "spawn_agent" | "spawnAgent" => "spawnAgent".to_string(),
+        "send_input" | "sendInput" => "sendInput".to_string(),
+        "resume_agent" | "resumeAgent" => "resumeAgent".to_string(),
+        "close_agent" | "closeAgent" => "closeAgent".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn codex_bridge_tool_start_event(
+    tool_call_id: &str,
+    tool_name: &str,
+    args: Value,
+) -> CodexBridgeToolEvent {
+    CodexBridgeToolEvent {
+        event_type: "tool_execution_start",
+        tool_call_id: tool_call_id.to_string(),
+        tool_name: tool_name.to_string(),
+        display_name: codex_bridge_tool_display_name(tool_name),
+        summary_label: codex_bridge_tool_summary_label(tool_name, &args),
+        args,
+        result: Value::Null,
+        is_error: None,
+    }
+}
+
+fn codex_bridge_tool_end_event(
+    tool_call_id: &str,
+    tool_name: &str,
+    result: Value,
+    is_error: bool,
+) -> CodexBridgeToolEvent {
+    CodexBridgeToolEvent {
+        event_type: "tool_execution_end",
+        tool_call_id: tool_call_id.to_string(),
+        tool_name: tool_name.to_string(),
+        display_name: codex_bridge_tool_display_name(tool_name),
+        summary_label: codex_bridge_tool_summary_label(tool_name, &Value::Null),
+        args: Value::Object(Map::new()),
+        result,
+        is_error: Some(is_error),
+    }
+}
+
+fn codex_bridge_tool_result(
+    tool_call_id: &str,
+    tool_name: &str,
+    success: bool,
+    details: Option<Value>,
+) -> Value {
+    let text = if success {
+        format!("{tool_name} completed")
+    } else {
+        format!("{tool_name} failed")
+    };
+    let mut result = serde_json::json!({
+        "role": "toolResult",
+        "toolCallId": tool_call_id,
+        "toolName": tool_name,
+        "content": [{ "type": "text", "text": text }],
+        "isError": !success,
+        "timestamp": now_rfc3339()
+    });
+    if let Some(details) = details {
+        result["details"] = details;
+    }
+    result
+}
+
+fn codex_headless_tool_end_details(event: &Value) -> Value {
+    let mut details = Map::new();
+    if let Some(error_code) = event.get("error_code").and_then(Value::as_str) {
+        details.insert(
+            "errorCode".to_string(),
+            Value::String(error_code.to_string()),
+        );
+    }
+    if let Some(approval_request_id) = event.get("approval_request_id").and_then(Value::as_str) {
+        details.insert(
+            "approvalRequestId".to_string(),
+            Value::String(approval_request_id.to_string()),
+        );
+    }
+    if let Some(governed_outcome) = event.get("governed_outcome").and_then(Value::as_str) {
+        details.insert(
+            "governedOutcome".to_string(),
+            Value::String(governed_outcome.to_string()),
+        );
+    }
+    Value::Object(details)
+}
+
+fn codex_bridge_tool_display_name(tool_name: &str) -> Option<String> {
+    tool_name
+        .strip_prefix("codex.subagent.")
+        .map(|tool| format!("Codex subagent: {}", codex_collab_human_tool(tool)))
+}
+
+fn codex_bridge_tool_summary_label(tool_name: &str, args: &Value) -> Option<String> {
+    let tool = tool_name.strip_prefix("codex.subagent.")?;
+    let count = args
+        .get("receiverThreadIds")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    let target = match count {
+        0 => return Some(codex_collab_human_tool(tool).to_string()),
+        1 => "1 agent".to_string(),
+        n => format!("{n} agents"),
+    };
+    Some(format!("{} {target}", codex_collab_human_tool(tool)))
+}
+
+fn codex_collab_human_tool(tool: &str) -> &'static str {
+    match tool {
+        "spawnAgent" => "spawn agent",
+        "sendInput" => "send input",
+        "resumeAgent" => "resume agent",
+        "closeAgent" => "close agent",
+        "wait" => "wait",
+        _ => "subagent",
+    }
+}
+
+fn codex_usage_from_json(usage: &Value) -> Option<TokenUsage> {
+    let input_tokens = value_u64_field(usage, &["input", "tokensInput"]);
+    let output_tokens = value_u64_field(usage, &["output", "tokensOutput"]);
+    let cache_read_tokens = value_u64_field(usage, &["cacheRead", "tokensCacheRead"]);
+    let cache_write_tokens = value_u64_field(usage, &["cacheWrite", "tokensCacheWrite"]);
+    let cost = usage
+        .get("cost")
+        .and_then(|cost| {
+            cost.get("total")
+                .and_then(Value::as_f64)
+                .or_else(|| cost.as_f64())
+        })
+        .or_else(|| usage.get("costTotal").and_then(Value::as_f64));
+
+    if input_tokens == 0
+        && output_tokens == 0
+        && cache_read_tokens == 0
+        && cache_write_tokens == 0
+        && cost.is_none()
+    {
+        return None;
+    }
+
+    Some(TokenUsage {
+        input_tokens,
+        output_tokens,
+        cache_read_tokens,
+        cache_write_tokens,
+        cost,
+    })
+}
+
+fn value_u64_field(value: &Value, names: &[&str]) -> u64 {
+    names
+        .iter()
+        .find_map(|name| {
+            value
+                .get(*name)
+                .and_then(Value::as_u64)
+                .or_else(|| value.get(*name).and_then(Value::as_f64).map(|n| n as u64))
+        })
+        .unwrap_or(0)
+}
+
+struct CodexBridgePrompt {
+    argument: String,
+    temp_dir: PathBuf,
+}
+
+fn codex_bridge_prompt_body(prompt: &str, attachment_paths: &[String]) -> String {
+    let mut body = format!("# Maestro Rust Codex bridge request\n\n{prompt}\n");
+    if !attachment_paths.is_empty() {
+        body.push_str("\n## Attachment files\n\n");
+        body.push_str(
+            "The user uploaded the following files. Inspect these paths with tools as needed before answering:\n",
+        );
+        for path in attachment_paths {
+            body.push_str(&format!("- {path}\n"));
+        }
+    }
+    body
+}
+
+fn unique_temp_name(prefix: &str, counter: &AtomicU64) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    let counter = counter.fetch_add(1, Ordering::Relaxed);
+    format!("{prefix}-{}-{now}-{counter}", process::id())
+}
+
+fn sandbox_visible_temp_dir(cwd: &Path, prefix: &str, counter: &AtomicU64) -> PathBuf {
+    let name = unique_temp_name(prefix, counter);
+    if codex_app_server_sandbox_mode().as_deref() == Some("docker") {
+        cwd.join(format!(".{name}"))
+    } else {
+        env::temp_dir().join(name)
+    }
+}
+
+fn codex_bridge_temp_dir(cwd: &Path) -> PathBuf {
+    sandbox_visible_temp_dir(cwd, "maestro-codex-bridge", &CODEX_BRIDGE_TEMP_COUNTER)
+}
+
+async fn run_codex_bridge_command(mut command: Command) -> Result<std::process::Output, String> {
+    command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("failed to run Codex app-server bridge: {error}"))?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "failed to capture Codex app-server bridge stdout".to_string())?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "failed to capture Codex app-server bridge stderr".to_string())?;
+    let stdout_task = tokio::spawn(async move {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).await.map(|_| bytes)
+    });
+    let stderr_task = tokio::spawn(async move {
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes).await.map(|_| bytes)
+    });
+
+    let status = match tokio::time::timeout(codex_app_server_timeout(), child.wait()).await {
+        Ok(status) => status
+            .map_err(|error| format!("failed to wait for Codex app-server bridge: {error}"))?,
+        Err(_) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            let _ = stdout_task.await;
+            let _ = stderr_task.await;
+            return Err("Codex app-server request timed out".to_string());
+        }
+    };
+    let stdout = stdout_task
+        .await
+        .map_err(|error| format!("failed to join Codex app-server stdout reader: {error}"))?
+        .map_err(|error| format!("failed to read Codex app-server stdout: {error}"))?;
+    let stderr = stderr_task
+        .await
+        .map_err(|error| format!("failed to join Codex app-server stderr reader: {error}"))?
+        .map_err(|error| format!("failed to read Codex app-server stderr: {error}"))?;
+
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+async fn prepare_codex_bridge_prompt(
+    cwd: &Path,
+    prompt: &str,
+    attachment_paths: &[String],
+) -> Result<CodexBridgePrompt, String> {
+    let temp_dir = codex_bridge_temp_dir(cwd);
+    tokio::fs::create_dir_all(&temp_dir)
+        .await
+        .map_err(|error| format!("failed to create Codex bridge prompt directory: {error}"))?;
+    let prompt_path = temp_dir.join("prompt.md");
+    tokio::fs::write(
+        &prompt_path,
+        codex_bridge_prompt_body(prompt, attachment_paths),
+    )
+    .await
+    .map_err(|error| format!("failed to write Codex bridge prompt: {error}"))?;
+    Ok(CodexBridgePrompt {
+        argument: format!(
+            "Use the read tool to read {}. Follow the instructions in that file. If it lists attachment files, inspect them as needed. Reply only with the final answer.",
+            prompt_path.display()
+        ),
+        temp_dir,
+    })
+}
+
+async fn run_codex_app_server_cli(
+    cwd: &Path,
+    model: &str,
+    approval_mode: &str,
+    prompt: &str,
+    attachment_paths: &[String],
+) -> Result<CodexBridgeOutput, String> {
+    let cli_path = codex_app_server_cli_path();
+    if !cli_path.exists() {
+        return Err(format!(
+            "Codex app-server bridge requires {}. Run `npm run build:all` first or set MAESTRO_CODEX_APP_SERVER_CLI.",
+            cli_path.display()
+        ));
+    }
+
+    let node_bin = env::var("MAESTRO_NODE_BIN").unwrap_or_else(|_| "node".to_string());
+    let bridge_prompt = prepare_codex_bridge_prompt(cwd, prompt, attachment_paths).await?;
+    let sandbox_mode = codex_app_server_sandbox_mode();
+    let mut command = Command::new(node_bin);
+    command
+        .arg(cli_path)
+        .arg("--provider")
+        .arg("openai-codex")
+        .arg("--model")
+        .arg(model)
+        .arg("--mode")
+        .arg("json")
+        .arg("--no-session")
+        .arg("--approval-mode")
+        .arg(approval_mode);
+    if let Some(sandbox_mode) = sandbox_mode {
+        command.arg("--sandbox").arg(sandbox_mode);
+    }
+    command
+        .arg(&bridge_prompt.argument)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .env("NO_COLOR", "1")
+        .env("MAESTRO_TELEMETRY_DISABLED", "1")
+        .env(
+            "MAESTRO_USAGE_FILE",
+            bridge_prompt.temp_dir.join("usage.json"),
+        );
+
+    let output_result = run_codex_bridge_command(command).await;
+    let _ = tokio::fs::remove_dir_all(&bridge_prompt.temp_dir).await;
+    let output = output_result?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if output.status.success() {
+        return assistant_output_from_jsonl(&stdout);
+    }
+
+    let mut message = format!(
+        "Codex app-server bridge failed with exit code {}",
+        output.status.code().unwrap_or(1)
+    );
+    if !stderr.is_empty() {
+        message.push_str(&format!(": {}", truncate_command_output(&stderr)));
+    } else if !stdout.is_empty() {
+        message.push_str(&format!(": {}", truncate_command_output(&stdout)));
+    }
+    Err(message)
+}
+
+#[derive(Clone, Copy)]
+enum CodexBridgeTransport {
+    Sse,
+    WebSocket,
+}
+
+async fn send_codex_bridge_event(
+    stream: &mut TcpStream,
+    transport: CodexBridgeTransport,
+    value: &Value,
+) -> Result<(), String> {
+    match transport {
+        CodexBridgeTransport::Sse => send_sse(stream, value).await,
+        CodexBridgeTransport::WebSocket => send_ws_json(stream, value).await,
+    }
+}
+
+async fn send_codex_bridge_tool_event(
+    stream: &mut TcpStream,
+    transport: CodexBridgeTransport,
+    event: &CodexBridgeToolEvent,
+) -> Result<(), String> {
+    let mut object = Map::new();
+    object.insert(
+        "type".to_string(),
+        Value::String(event.event_type.to_string()),
+    );
+    object.insert(
+        "toolCallId".to_string(),
+        Value::String(event.tool_call_id.clone()),
+    );
+    object.insert(
+        "toolName".to_string(),
+        Value::String(event.tool_name.clone()),
+    );
+    if let Some(display_name) = &event.display_name {
+        object.insert(
+            "displayName".to_string(),
+            Value::String(display_name.clone()),
+        );
+    }
+    if let Some(summary_label) = &event.summary_label {
+        object.insert(
+            "summaryLabel".to_string(),
+            Value::String(summary_label.clone()),
+        );
+    }
+    match event.event_type {
+        "tool_execution_start" => {
+            object.insert("args".to_string(), event.args.clone());
+        }
+        "tool_execution_end" => {
+            object.insert("result".to_string(), event.result.clone());
+            object.insert(
+                "isError".to_string(),
+                Value::Bool(event.is_error.unwrap_or(false)),
+            );
+        }
+        _ => return Ok(()),
+    }
+    send_codex_bridge_event(stream, transport, &Value::Object(object)).await
+}
+
+fn codex_headless_usage_from_json(event: &Value) -> Option<TokenUsage> {
+    let usage = event.get("usage")?;
+    let input_tokens = value_u64_field(usage, &["input_tokens", "inputTokens", "input"]);
+    let output_tokens = value_u64_field(usage, &["output_tokens", "outputTokens", "output"]);
+    let cache_read_tokens = value_u64_field(
+        usage,
+        &["cache_read_tokens", "cacheReadTokens", "cacheRead"],
+    );
+    let cache_write_tokens = value_u64_field(
+        usage,
+        &["cache_write_tokens", "cacheWriteTokens", "cacheWrite"],
+    );
+    let cost = usage
+        .get("total_cost_usd")
+        .and_then(Value::as_f64)
+        .or_else(|| usage.get("totalCostUsd").and_then(Value::as_f64))
+        .or_else(|| usage.get("costTotal").and_then(Value::as_f64));
+    if input_tokens == 0
+        && output_tokens == 0
+        && cache_read_tokens == 0
+        && cache_write_tokens == 0
+        && cost.is_none()
+    {
+        return None;
+    }
+    Some(TokenUsage {
+        input_tokens,
+        output_tokens,
+        cache_read_tokens,
+        cache_write_tokens,
+        cost,
+    })
+}
+
+async fn write_codex_headless_message(
+    stdin: &mut tokio::process::ChildStdin,
+    value: &Value,
+) -> Result<(), String> {
+    let mut bytes = serde_json::to_vec(value)
+        .map_err(|error| format!("failed to serialize Codex headless message: {error}"))?;
+    bytes.push(b'\n');
+    stdin
+        .write_all(&bytes)
+        .await
+        .map_err(|error| format!("failed to write Codex headless message: {error}"))
+}
+
+fn codex_headless_approval_response(
+    request_id: &str,
+    approved: bool,
+    result: Option<&ToolResult>,
+) -> Value {
+    let mut result_value = if let Some(result) = result {
+        serde_json::json!({
+            "success": result.success,
+            "output": result.output,
+            "error": result.error
+        })
+    } else if approved {
+        serde_json::json!({
+            "success": true,
+            "output": "Approved"
+        })
+    } else {
+        serde_json::json!({
+            "success": false,
+            "output": "",
+            "error": "Denied by user"
+        })
+    };
+    if result_value.get("error").is_some_and(Value::is_null) {
+        result_value
+            .as_object_mut()
+            .map(|object| object.remove("error"));
+    }
+    serde_json::json!({
+        "type": "server_request_response",
+        "request_id": request_id,
+        "request_type": "approval",
+        "approved": approved,
+        "result": result_value
+    })
+}
+
+fn codex_headless_run_id() -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    let counter = CODEX_HEADLESS_RUN_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("run-{}-{now}-{counter}", process::id())
+}
+
+fn codex_headless_pending_request_id(
+    session_id: Option<&str>,
+    run_id: &str,
+    request_id: &str,
+) -> String {
+    format!(
+        "codex:{}:{}:{}",
+        session_id.unwrap_or("default"),
+        run_id,
+        request_id
+    )
+}
+
+async fn handle_codex_headless_approval_request(
+    stream: &mut TcpStream,
+    transport: CodexBridgeTransport,
+    state: &AppState,
+    session_id: Option<&str>,
+    run_id: &str,
+    request: &Value,
+    pending_approval_ids: &Arc<Mutex<Vec<String>>>,
+    stdin: &mut tokio::process::ChildStdin,
+) -> Result<(), String> {
+    if request.get("request_type").and_then(Value::as_str) != Some("approval") {
+        return Ok(());
+    }
+    let child_request_id = request
+        .get("request_id")
+        .and_then(Value::as_str)
+        .or_else(|| request.get("call_id").and_then(Value::as_str))
+        .ok_or_else(|| "Codex headless approval request missing request_id".to_string())?
+        .to_string();
+    let external_request_id =
+        codex_headless_pending_request_id(session_id, run_id, child_request_id.as_str());
+    let tool_name = request
+        .get("tool")
+        .and_then(Value::as_str)
+        .unwrap_or("tool")
+        .to_string();
+    let args = request
+        .get("args")
+        .cloned()
+        .unwrap_or(Value::Object(Map::new()));
+    let reason = request
+        .get("reason")
+        .and_then(Value::as_str)
+        .unwrap_or("Tool execution requires approval")
+        .to_string();
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+    state
+        .pending_tool_responses
+        .lock()
+        .await
+        .insert(external_request_id.clone(), sender);
+    pending_approval_ids
+        .lock()
+        .await
+        .push(external_request_id.clone());
+
+    send_codex_bridge_event(
+        stream,
+        transport,
+        &serde_json::json!({
+            "type": "action_approval_required",
+            "request": {
+                "id": external_request_id,
+                "toolName": tool_name,
+                "args": args,
+                "reason": reason
+            }
+        }),
+    )
+    .await?;
+
+    let Some((_call_id, approved, result)) = receiver.recv().await else {
+        return Err("Codex headless approval request closed before decision".to_string());
+    };
+    write_codex_headless_message(
+        stdin,
+        &codex_headless_approval_response(&child_request_id, approved, result.as_ref()),
+    )
+    .await
+}
+
+async fn cleanup_codex_headless_approvals(
+    state: &AppState,
+    pending_approval_ids: &Arc<Mutex<Vec<String>>>,
+) {
+    let ids = pending_approval_ids.lock().await.clone();
+    if ids.is_empty() {
+        return;
+    }
+    let mut pending = state.pending_tool_responses.lock().await;
+    for id in ids {
+        pending.remove(&id);
+    }
+}
+
+async fn run_codex_app_server_headless_cli(
+    stream: &mut TcpStream,
+    transport: CodexBridgeTransport,
+    state: &AppState,
+    session_id: Option<&str>,
+    cwd: &Path,
+    model: &str,
+    prompt: &str,
+    attachment_paths: &[String],
+) -> Result<CodexBridgeOutput, String> {
+    let cli_path = codex_app_server_cli_path();
+    if !cli_path.exists() {
+        return Err(format!(
+            "Codex app-server bridge requires {}. Run `npm run build:all` first or set MAESTRO_CODEX_APP_SERVER_CLI.",
+            cli_path.display()
+        ));
+    }
+
+    let node_bin = env::var("MAESTRO_NODE_BIN").unwrap_or_else(|_| "node".to_string());
+    let bridge_prompt = prepare_codex_bridge_prompt(cwd, prompt, attachment_paths).await?;
+    let sandbox_mode = codex_app_server_sandbox_mode();
+    let mut command = Command::new(node_bin);
+    command
+        .arg(cli_path)
+        .arg("--provider")
+        .arg("openai-codex")
+        .arg("--model")
+        .arg(model)
+        .arg("--headless")
+        .arg("--no-session")
+        .arg("--approval-mode")
+        .arg("prompt");
+    if let Some(sandbox_mode) = sandbox_mode {
+        command.arg("--sandbox").arg(sandbox_mode);
+    }
+    command
+        .current_dir(cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .env("NO_COLOR", "1")
+        .env("MAESTRO_TELEMETRY_DISABLED", "1")
+        .env(
+            "MAESTRO_USAGE_FILE",
+            bridge_prompt.temp_dir.join("usage.json"),
+        );
+
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("failed to run Codex headless bridge: {error}"))?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "failed to capture Codex headless stdin".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "failed to capture Codex headless stdout".to_string())?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "failed to capture Codex headless stderr".to_string())?;
+    let stderr_task = tokio::spawn(async move {
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes).await.map(|_| bytes)
+    });
+    let pending_approval_ids = Arc::new(Mutex::new(Vec::new()));
+    let approval_run_id = codex_headless_run_id();
+    let request_timeout = codex_app_server_timeout();
+    let mut lines = BufReader::new(stdout).lines();
+
+    let request_result = async {
+        write_codex_headless_message(
+            &mut stdin,
+            &serde_json::json!({
+                "type": "hello",
+                "protocol_version": "2026-04-02",
+                "client_info": {
+                    "name": "maestro-rust-control-plane"
+                },
+                "capabilities": {
+                    "server_requests": ["approval"]
+                },
+                "role": "controller"
+            }),
+        )
+        .await?;
+        write_codex_headless_message(
+            &mut stdin,
+            &serde_json::json!({
+                "type": "init",
+                "approval_mode": "prompt"
+            }),
+        )
+        .await?;
+        write_codex_headless_message(
+            &mut stdin,
+            &serde_json::json!({
+                "type": "prompt",
+                "content": bridge_prompt.argument
+            }),
+        )
+        .await?;
+
+        let mut assistant_text = String::new();
+        let mut tool_events = Vec::new();
+        let mut tool_contexts: HashMap<String, CodexBridgeToolContext> = HashMap::new();
+        loop {
+            let line = match tokio::time::timeout(request_timeout, lines.next_line()).await {
+                Ok(Ok(Some(line))) => line,
+                Ok(Ok(None)) => break,
+                Ok(Err(error)) => {
+                    return Err(format!("failed to read Codex headless output: {error}"));
+                }
+                Err(_) => return Err("Codex app-server request timed out".to_string()),
+            };
+            let Ok(event) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            match event.get("type").and_then(Value::as_str) {
+                Some("response_chunk") => {
+                    if !event
+                        .get("is_thinking")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                    {
+                        if let Some(content) = event.get("content").and_then(Value::as_str) {
+                            assistant_text.push_str(content);
+                        }
+                    }
+                }
+                Some("response_end") => {
+                    let assistant_usage = codex_headless_usage_from_json(&event);
+                    let _ = write_codex_headless_message(
+                        &mut stdin,
+                        &serde_json::json!({ "type": "shutdown" }),
+                    )
+                    .await;
+                    if assistant_text.trim().is_empty() {
+                        return Err(
+                            "Codex headless bridge returned an empty assistant message".to_string()
+                        );
+                    }
+                    return Ok(CodexBridgeOutput {
+                        text: assistant_text,
+                        usage: assistant_usage,
+                        tool_events,
+                    });
+                }
+                Some("tool_call") | Some("tool_end") => {
+                    if let Some(tool_event) =
+                        codex_headless_tool_event_from_json_with_context(&event, &mut tool_contexts)
+                    {
+                        tool_events.push(tool_event);
+                    }
+                }
+                Some("server_request") => {
+                    handle_codex_headless_approval_request(
+                        stream,
+                        transport,
+                        state,
+                        session_id,
+                        &approval_run_id,
+                        &event,
+                        &pending_approval_ids,
+                        &mut stdin,
+                    )
+                    .await?;
+                }
+                Some("error") => {
+                    let message = event
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("Codex headless bridge error");
+                    if event.get("fatal").and_then(Value::as_bool).unwrap_or(false) {
+                        return Err(message.to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+        Err("Codex headless bridge exited without an assistant response".to_string())
+    }
+    .await;
+
+    let _ = tokio::fs::remove_dir_all(&bridge_prompt.temp_dir).await;
+    cleanup_codex_headless_approvals(state, &pending_approval_ids).await;
+    let output = request_result;
+    if output.is_err() {
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+        let _ = stderr_task.await;
+        return output;
+    }
+    match tokio::time::timeout(request_timeout, child.wait()).await {
+        Ok(Ok(_status)) => {}
+        Ok(Err(error)) => {
+            return Err(format!("failed to wait for Codex headless bridge: {error}"));
+        }
+        Err(_) => {
+            let _ = child.kill().await;
+        }
+    }
+    let _stderr = stderr_task
+        .await
+        .map_err(|error| format!("failed to join Codex headless stderr reader: {error}"))?
+        .map_err(|error| format!("failed to read Codex headless stderr: {error}"))?;
+    output
+}
+
+async fn handle_codex_app_server_chat(
+    stream: &mut TcpStream,
+    state: &AppState,
+    session_id: Option<&str>,
+    model: &str,
+    prompt: &str,
+    attachment_paths: &[String],
+) -> Result<(), String> {
+    handle_codex_app_server_chat_transport(
+        stream,
+        state,
+        session_id,
+        model,
+        prompt,
+        attachment_paths,
+        CodexBridgeTransport::Sse,
+    )
+    .await
+}
+
+async fn handle_codex_app_server_chat_transport(
+    stream: &mut TcpStream,
+    state: &AppState,
+    session_id: Option<&str>,
+    model: &str,
+    prompt: &str,
+    attachment_paths: &[String],
+    transport: CodexBridgeTransport,
+) -> Result<(), String> {
+    let session_approval_mode = approval_mode_for_session(state, session_id).await;
+    let approval_mode = codex_app_server_approval_mode(&session_approval_mode);
+    send_codex_bridge_event(
+        stream,
+        transport,
+        &serde_json::json!({ "type": "agent_start" }),
+    )
+    .await?;
+    send_codex_bridge_event(
+        stream,
+        transport,
+        &serde_json::json!({ "type": "turn_start" }),
+    )
+    .await?;
+    let message = composer_assistant_message("", "", None);
+    send_codex_bridge_event(
+        stream,
+        transport,
+        &serde_json::json!({ "type": "message_start", "message": message }),
+    )
+    .await?;
+
+    let assistant_output_result = if approval_mode == "prompt" {
+        run_codex_app_server_headless_cli(
+            stream,
+            transport,
+            state,
+            session_id,
+            &state.config.cwd,
+            model,
+            prompt,
+            attachment_paths,
+        )
+        .await
+    } else {
+        run_codex_app_server_cli(
+            &state.config.cwd,
+            model,
+            approval_mode,
+            prompt,
+            attachment_paths,
+        )
+        .await
+    };
+    let assistant_output = match assistant_output_result {
+        Ok(output) => output,
+        Err(error) => {
+            send_codex_bridge_event(
+                stream,
+                transport,
+                &serde_json::json!({ "type": "error", "message": error }),
+            )
+            .await?;
+            send_codex_bridge_event(stream, transport, &serde_json::json!({ "type": "done" }))
+                .await?;
+            return Ok(());
+        }
+    };
+    for tool_event in &assistant_output.tool_events {
+        send_codex_bridge_tool_event(stream, transport, tool_event).await?;
+    }
+
+    let message =
+        composer_assistant_message(&assistant_output.text, "", assistant_output.usage.clone());
+    if !assistant_output.text.is_empty() {
+        send_codex_bridge_event(
+            stream,
+            transport,
+            &serde_json::json!({
+                "type": "message_update",
+                "message": message,
+                "assistantMessageEvent": {
+                    "type": "text_delta",
+                    "contentIndex": 0,
+                    "delta": assistant_output.text
+                }
+            }),
+        )
+        .await?;
+    }
+    record_chat_assistant_message(state, session_id, message.clone()).await;
+    record_usage_entry(
+        state,
+        session_id,
+        "openai-codex",
+        model,
+        assistant_output.usage.as_ref(),
+    )
+    .await;
+    send_codex_bridge_event(
+        stream,
+        transport,
+        &serde_json::json!({ "type": "message_end", "message": message }),
+    )
+    .await?;
+    send_codex_bridge_event(
+        stream,
+        transport,
+        &serde_json::json!({
+            "type": "turn_end",
+            "message": message,
+            "toolResults": []
+        }),
+    )
+    .await?;
+    send_codex_bridge_event(
+        stream,
+        transport,
+        &serde_json::json!({
+            "type": "agent_end",
+            "messages": [message],
+            "stopReason": "stop"
+        }),
+    )
+    .await?;
+    send_codex_bridge_event(stream, transport, &serde_json::json!({ "type": "done" })).await?;
+    Ok(())
+}
+
+async fn handle_codex_app_server_chat_ws(
+    stream: &mut TcpStream,
+    state: &AppState,
+    session_id: Option<&str>,
+    model: &str,
+    prompt: &str,
+    attachment_paths: &[String],
+) -> Result<(), String> {
+    handle_codex_app_server_chat_transport(
+        stream,
+        state,
+        session_id,
+        model,
+        prompt,
+        attachment_paths,
+        CodexBridgeTransport::WebSocket,
+    )
+    .await
 }
 
 async fn record_chat_user_message(
@@ -5008,7 +6414,7 @@ async fn handle_chat_endpoint(
     let prompt = build_prompt_from_chat(&chat);
 
     let session_id = chat.session_id.clone();
-    let prepared_attachments = match prepare_chat_attachments(&chat).await {
+    let prepared_attachments = match prepare_chat_attachments(&chat, &state.config.cwd).await {
         Ok(attachments) => attachments,
         Err(error) => {
             stream
@@ -5035,6 +6441,31 @@ async fn handle_chat_endpoint(
         .map_err(|error| error.to_string())?;
 
     let model = selected_chat_model(&chat, &state).await;
+    if let Some(codex_model) = codex_app_server_model_id(&model) {
+        if let Some(session_id) = session_id.as_deref() {
+            send_sse(
+                &mut stream,
+                &serde_json::json!({
+                    "type": "status",
+                    "status": "session",
+                    "details": { "sessionId": session_id, "runtime": "rust-codex-app-server" }
+                }),
+            )
+            .await?;
+        }
+        handle_codex_app_server_chat(
+            &mut stream,
+            &state,
+            session_id.as_deref(),
+            &codex_model,
+            &prompt,
+            &prepared_attachments.paths,
+        )
+        .await?;
+        let _ = stream.shutdown().await;
+        cleanup_prepared_attachments(prepared_attachments).await;
+        return Ok(());
+    }
     let (usage_provider, usage_model) = usage_provider_model(&chat, &state, &model).await;
     let thinking_enabled = chat
         .thinking_level
@@ -5589,7 +7020,7 @@ async fn handle_chat_websocket_endpoint(
     let prompt = build_prompt_from_chat(&chat);
 
     let session_id = chat.session_id.clone();
-    let prepared_attachments = match prepare_chat_attachments(&chat).await {
+    let prepared_attachments = match prepare_chat_attachments(&chat, &state.config.cwd).await {
         Ok(attachments) => attachments,
         Err(error) => {
             send_ws_json(
@@ -5617,6 +7048,32 @@ async fn handle_chat_websocket_endpoint(
     }
 
     let model = selected_chat_model(&chat, &state).await;
+    if let Some(codex_model) = codex_app_server_model_id(&model) {
+        if let Some(session_id) = session_id.as_deref() {
+            send_ws_json(
+                &mut stream,
+                &serde_json::json!({
+                    "type": "status",
+                    "status": "session",
+                    "details": { "sessionId": session_id, "runtime": "rust-codex-app-server" }
+                }),
+            )
+            .await?;
+        }
+        handle_codex_app_server_chat_ws(
+            &mut stream,
+            &state,
+            session_id.as_deref(),
+            &codex_model,
+            &prompt,
+            &prepared_attachments.paths,
+        )
+        .await?;
+        send_ws_close(&mut stream).await?;
+        let _ = stream.shutdown().await;
+        cleanup_prepared_attachments(prepared_attachments).await;
+        return Ok(());
+    }
     let (usage_provider, usage_model) = usage_provider_model(&chat, &state, &model).await;
     let thinking_enabled = chat
         .thinking_level
@@ -6023,7 +7480,10 @@ async fn handle_chat_websocket_endpoint(
     Ok(())
 }
 
-async fn prepare_chat_attachments(chat: &ChatRequest) -> Result<PreparedAttachments, String> {
+async fn prepare_chat_attachments(
+    chat: &ChatRequest,
+    cwd: &Path,
+) -> Result<PreparedAttachments, String> {
     let Some(latest) = chat.messages.last() else {
         return Ok(PreparedAttachments {
             paths: Vec::new(),
@@ -6051,7 +7511,7 @@ async fn prepare_chat_attachments(chat: &ChatRequest) -> Result<PreparedAttachme
         })?;
 
         if temp_dir.is_none() {
-            let dir = chat_attachment_temp_dir();
+            let dir = chat_attachment_temp_dir(cwd);
             tokio::fs::create_dir_all(&dir)
                 .await
                 .map_err(|error| format!("failed to create attachment temp directory: {error}"))?;
@@ -6080,13 +7540,8 @@ fn strip_data_url_prefix(content: &str) -> &str {
         .unwrap_or(content)
 }
 
-fn chat_attachment_temp_dir() -> PathBuf {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or(0);
-    let counter = ATTACHMENT_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    env::temp_dir().join(format!("maestro-chat-{}-{now}-{counter}", process::id()))
+fn chat_attachment_temp_dir(cwd: &Path) -> PathBuf {
+    sandbox_visible_temp_dir(cwd, "maestro-chat", &ATTACHMENT_TEMP_COUNTER)
 }
 
 fn sanitize_attachment_file_name(name: &str) -> String {
@@ -6867,6 +8322,1050 @@ mod tests {
 
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    #[test]
+    fn cli_args_default_to_serving() {
+        assert_eq!(
+            parse_cli_action(Vec::<String>::new()).unwrap(),
+            CliAction::Serve
+        );
+    }
+
+    #[test]
+    fn cli_args_handle_help_and_version_without_serving() {
+        assert_eq!(parse_cli_action(["--help"]).unwrap(), CliAction::Help);
+        assert_eq!(parse_cli_action(["-h"]).unwrap(), CliAction::Help);
+        assert_eq!(parse_cli_action(["--version"]).unwrap(), CliAction::Version);
+        assert_eq!(parse_cli_action(["-V"]).unwrap(), CliAction::Version);
+    }
+
+    #[test]
+    fn cli_args_reject_unknown_values() {
+        let error = parse_cli_action(["--wat"]).unwrap_err();
+        assert!(error.contains("--wat"));
+    }
+
+    #[test]
+    fn codex_app_server_model_ids_require_openai_codex_prefix() {
+        assert_eq!(
+            codex_app_server_model_id("openai-codex/gpt-5.5").as_deref(),
+            Some("gpt-5.5")
+        );
+        assert_eq!(
+            codex_app_server_model_id(" openai-codex/gpt-5.1-codex-max ").as_deref(),
+            Some("gpt-5.1-codex-max")
+        );
+        assert!(codex_app_server_model_id("openai/gpt-5.5").is_none());
+        assert!(codex_app_server_model_id("openai-codex/").is_none());
+    }
+
+    #[test]
+    fn codex_app_server_sandbox_mode_inherits_without_forcing_read_only() {
+        assert_eq!(codex_app_server_sandbox_mode_from_values(None, None), None);
+        assert_eq!(
+            codex_app_server_sandbox_mode_from_values(None, Some("workspace-write")).as_deref(),
+            Some("workspace-write")
+        );
+        assert_eq!(
+            codex_app_server_sandbox_mode_from_values(
+                Some("danger-full-access"),
+                Some("read-only")
+            )
+            .as_deref(),
+            Some("danger-full-access")
+        );
+        assert_eq!(
+            codex_app_server_sandbox_mode_from_values(Some("inherit"), Some("workspace-write")),
+            None
+        );
+    }
+
+    #[test]
+    fn assistant_text_from_jsonl_reads_assistant_completion_only() {
+        let jsonl = r#"noise line
+{"type":"turn","phase":"start","role":"user","turnId":"turn-1"}
+{"type":"item","subtype":"message_complete","turnId":"turn-1","data":{"text":"user text"}}
+{"type":"turn","phase":"end","role":"user","turnId":"turn-1"}
+{"type":"turn","phase":"start","role":"assistant","turnId":"turn-2"}
+{"type":"item","subtype":"message_delta","turnId":"turn-2","data":{"text":"partial"}}
+{"type":"item","subtype":"message_complete","turnId":"turn-2","data":{"text":"assistant text"}}
+{"type":"turn","phase":"end","role":"assistant","turnId":"turn-2"}
+        "#;
+        assert_eq!(
+            assistant_text_from_jsonl(jsonl).as_deref(),
+            Ok("assistant text")
+        );
+    }
+
+    #[test]
+    fn assistant_text_from_jsonl_requires_assistant_completion() {
+        let jsonl = r#"
+{"type":"thread","phase":"start","threadId":"thread-1"}
+{"type":"turn","phase":"start","role":"user","turnId":"turn-1"}
+{"type":"item","subtype":"message_complete","turnId":"turn-1","data":{"text":"user text"}}
+{"type":"turn","phase":"end","role":"user","turnId":"turn-1"}
+"#;
+        assert!(assistant_text_from_jsonl(jsonl)
+            .unwrap_err()
+            .contains("without an assistant message"));
+    }
+
+    #[test]
+    fn assistant_text_from_jsonl_rejects_error_stop_reason() {
+        let jsonl = r#"
+{"type":"turn","phase":"start","role":"assistant","turnId":"turn-1"}
+{"type":"item","subtype":"message_complete","turnId":"turn-1","data":{"text":"","stopReason":"error"}}
+{"type":"turn","phase":"end","role":"assistant","turnId":"turn-1"}
+"#;
+        assert!(assistant_text_from_jsonl(jsonl)
+            .unwrap_err()
+            .contains("error stop reason"));
+    }
+
+    #[test]
+    fn assistant_text_from_jsonl_rejects_empty_assistant_text() {
+        let jsonl = r#"
+{"type":"turn","phase":"start","role":"assistant","turnId":"turn-1"}
+{"type":"item","subtype":"message_complete","turnId":"turn-1","data":{"text":"","stopReason":"stop"}}
+{"type":"turn","phase":"end","role":"assistant","turnId":"turn-1"}
+"#;
+        assert!(assistant_text_from_jsonl(jsonl)
+            .unwrap_err()
+            .contains("empty assistant message"));
+    }
+
+    #[test]
+    fn assistant_output_from_jsonl_reads_usage() {
+        let jsonl = r#"
+{"type":"turn","phase":"start","role":"assistant","turnId":"turn-1"}
+{"type":"item","subtype":"message_complete","turnId":"turn-1","data":{"text":"assistant text","stopReason":"stop","usage":{"input":123,"output":45,"cacheRead":7,"cacheWrite":3,"cost":{"input":0.1,"output":0.2,"cacheRead":0.01,"cacheWrite":0.02,"total":0.33}}}}
+{"type":"turn","phase":"end","role":"assistant","turnId":"turn-1"}
+"#;
+        let output = assistant_output_from_jsonl(jsonl).expect("assistant output");
+        let usage = output.usage.expect("usage");
+
+        assert_eq!(output.text, "assistant text");
+        assert_eq!(usage.input_tokens, 123);
+        assert_eq!(usage.output_tokens, 45);
+        assert_eq!(usage.cache_read_tokens, 7);
+        assert_eq!(usage.cache_write_tokens, 3);
+        assert_eq!(usage.cost, Some(0.33));
+    }
+
+    #[test]
+    fn assistant_output_from_jsonl_records_codex_collab_tool_items() {
+        let jsonl = r#"
+{"type":"item.started","item":{"id":"collab-call-1","type":"collab_tool_call","tool":"spawn_agent","sender_thread_id":"thread-main","receiver_thread_ids":["thread-child"],"prompt":"Inspect routing","agents_states":{},"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"collab-call-1","type":"collab_tool_call","tool":"spawn_agent","sender_thread_id":"thread-main","receiver_thread_ids":["thread-child"],"prompt":"Inspect routing","agents_states":{"thread-child":{"status":"completed","message":"Done"}},"status":"completed"}}
+{"type":"turn","phase":"start","role":"assistant","turnId":"turn-1"}
+{"type":"item","subtype":"message_complete","turnId":"turn-1","data":{"text":"assistant text","stopReason":"stop"}}
+{"type":"turn","phase":"end","role":"assistant","turnId":"turn-1"}
+"#;
+        let output = assistant_output_from_jsonl(jsonl).expect("assistant output");
+
+        assert_eq!(output.text, "assistant text");
+        assert_eq!(output.tool_events.len(), 2);
+        assert_eq!(output.tool_events[0].event_type, "tool_execution_start");
+        assert_eq!(output.tool_events[0].tool_call_id, "collab-call-1");
+        assert_eq!(output.tool_events[0].tool_name, "codex.subagent.spawnAgent");
+        assert_eq!(
+            output.tool_events[0].args["receiverThreadIds"],
+            serde_json::json!(["thread-child"])
+        );
+        assert_eq!(output.tool_events[1].event_type, "tool_execution_end");
+        assert_eq!(output.tool_events[1].is_error, Some(false));
+        assert_eq!(
+            output.tool_events[1].result["details"]["agentsStates"]["thread-child"]["status"],
+            "completed"
+        );
+    }
+
+    #[test]
+    fn assistant_output_from_jsonl_records_maestro_headless_tool_events() {
+        let jsonl = r#"
+{"type":"item","subtype":"tool_call","data":{"toolCallId":"collab-call-2","toolName":"codex.subagent.wait","args":{"codexTool":"wait","receiverThreadIds":["thread-child"]}}}
+{"type":"item","subtype":"tool_result","data":{"toolCallId":"collab-call-2","toolName":"codex.subagent.wait","result":{"role":"toolResult","toolCallId":"collab-call-2","toolName":"codex.subagent.wait","content":[{"type":"text","text":"wait completed"}],"isError":false,"timestamp":1},"isError":false}}
+{"type":"turn","phase":"start","role":"assistant","turnId":"turn-1"}
+{"type":"item","subtype":"message_complete","turnId":"turn-1","data":{"text":"assistant text","stopReason":"stop"}}
+{"type":"turn","phase":"end","role":"assistant","turnId":"turn-1"}
+"#;
+        let output = assistant_output_from_jsonl(jsonl).expect("assistant output");
+
+        assert_eq!(output.tool_events.len(), 2);
+        assert_eq!(output.tool_events[0].tool_name, "codex.subagent.wait");
+        assert_eq!(output.tool_events[1].is_error, Some(false));
+        assert_eq!(
+            output.tool_events[1].result["content"][0]["text"],
+            "wait completed"
+        );
+    }
+
+    #[test]
+    fn codex_headless_usage_omits_empty_usage() {
+        let event = serde_json::json!({
+            "type": "response_end",
+            "usage": {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0
+            }
+        });
+
+        assert!(codex_headless_usage_from_json(&event).is_none());
+    }
+
+    #[test]
+    fn codex_headless_tool_events_preserve_subagent_lifecycle() {
+        let start = codex_headless_tool_event_from_json(&serde_json::json!({
+            "type": "tool_call",
+            "call_id": "collab-call-3",
+            "tool": "codex.subagent.sendInput",
+            "args": {
+                "codexTool": "sendInput",
+                "receiverThreadIds": ["thread-child"],
+                "prompt": "Please continue"
+            }
+        }))
+        .expect("start event");
+        let end = codex_headless_tool_event_from_json(&serde_json::json!({
+            "type": "tool_end",
+            "call_id": "collab-call-3",
+            "tool": "codex.subagent.sendInput",
+            "success": false,
+            "error_code": "subagent_not_found"
+        }))
+        .expect("end event");
+
+        assert_eq!(start.event_type, "tool_execution_start");
+        assert_eq!(start.tool_name, "codex.subagent.sendInput");
+        assert_eq!(start.args["prompt"], "Please continue");
+        assert_eq!(end.event_type, "tool_execution_end");
+        assert_eq!(end.tool_call_id, "collab-call-3");
+        assert_eq!(end.is_error, Some(true));
+        assert_eq!(end.result["details"]["errorCode"], "subagent_not_found");
+        assert_eq!(
+            end.result["content"][0]["text"],
+            "codex.subagent.sendInput failed"
+        );
+    }
+
+    #[test]
+    fn codex_headless_tool_end_uses_start_context_when_end_omits_tool_name() {
+        let mut contexts = HashMap::new();
+        let _ = codex_headless_tool_event_from_json_with_context(
+            &serde_json::json!({
+                "type": "tool_call",
+                "call_id": "collab-call-4",
+                "tool": "codex.subagent.spawnAgent",
+                "args": {
+                    "codexTool": "spawnAgent",
+                    "receiverThreadIds": []
+                }
+            }),
+            &mut contexts,
+        )
+        .expect("start event");
+        let end = codex_headless_tool_event_from_json_with_context(
+            &serde_json::json!({
+                "type": "tool_end",
+                "call_id": "collab-call-4",
+                "success": true
+            }),
+            &mut contexts,
+        )
+        .expect("end event");
+
+        assert_eq!(end.tool_name, "codex.subagent.spawnAgent");
+        assert_eq!(end.summary_label.as_deref(), Some("spawn agent"));
+        assert_eq!(
+            end.result["content"][0]["text"],
+            "codex.subagent.spawnAgent completed"
+        );
+        assert_eq!(end.result["details"]["args"]["codexTool"], "spawnAgent");
+    }
+
+    #[test]
+    fn codex_bridge_prompt_body_lists_attachment_paths() {
+        let body = codex_bridge_prompt_body(
+            "Summarize the upload",
+            &[
+                "/tmp/maestro-chat/a/report.pdf".to_string(),
+                "/tmp/maestro-chat/a/screenshot.png".to_string(),
+            ],
+        );
+        assert!(body.contains("Summarize the upload"));
+        assert!(body.contains("/tmp/maestro-chat/a/report.pdf"));
+        assert!(body.contains("/tmp/maestro-chat/a/screenshot.png"));
+    }
+
+    #[test]
+    fn codex_bridge_temp_dirs_are_unique_per_request() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous_bridge = env::var_os("MAESTRO_CODEX_APP_SERVER_SANDBOX");
+        let previous_sandbox = env::var_os("MAESTRO_SANDBOX_MODE");
+        env::remove_var("MAESTRO_CODEX_APP_SERVER_SANDBOX");
+        env::remove_var("MAESTRO_SANDBOX_MODE");
+        let cwd = TestDir::new("codex-bridge-temp-cwd");
+        let first = codex_bridge_temp_dir(cwd.path());
+        let second = codex_bridge_temp_dir(cwd.path());
+        if let Some(previous) = previous_bridge {
+            env::set_var("MAESTRO_CODEX_APP_SERVER_SANDBOX", previous);
+        } else {
+            env::remove_var("MAESTRO_CODEX_APP_SERVER_SANDBOX");
+        }
+        if let Some(previous) = previous_sandbox {
+            env::set_var("MAESTRO_SANDBOX_MODE", previous);
+        } else {
+            env::remove_var("MAESTRO_SANDBOX_MODE");
+        }
+
+        assert_ne!(first, second);
+        assert!(first
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("maestro-codex-bridge-")));
+    }
+
+    #[test]
+    fn codex_bridge_temp_dir_uses_workspace_for_docker_sandbox() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let cwd = TestDir::new("codex-bridge-docker-cwd");
+        let previous_bridge = env::var_os("MAESTRO_CODEX_APP_SERVER_SANDBOX");
+        let previous_sandbox = env::var_os("MAESTRO_SANDBOX_MODE");
+        env::set_var("MAESTRO_CODEX_APP_SERVER_SANDBOX", "docker");
+        env::remove_var("MAESTRO_SANDBOX_MODE");
+
+        let temp_dir = codex_bridge_temp_dir(cwd.path());
+
+        if let Some(previous) = previous_bridge {
+            env::set_var("MAESTRO_CODEX_APP_SERVER_SANDBOX", previous);
+        } else {
+            env::remove_var("MAESTRO_CODEX_APP_SERVER_SANDBOX");
+        }
+        if let Some(previous) = previous_sandbox {
+            env::set_var("MAESTRO_SANDBOX_MODE", previous);
+        } else {
+            env::remove_var("MAESTRO_SANDBOX_MODE");
+        }
+
+        assert!(temp_dir.starts_with(cwd.path()));
+        assert!(temp_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(".maestro-codex-bridge-")));
+    }
+
+    #[test]
+    fn codex_headless_pending_request_ids_include_run_id() {
+        let first = codex_headless_pending_request_id(Some("session-1"), "run-a", "approval-1");
+        let second = codex_headless_pending_request_id(Some("session-1"), "run-b", "approval-1");
+
+        assert_eq!(first, "codex:session-1:run-a:approval-1");
+        assert_eq!(second, "codex:session-1:run-b:approval-1");
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn codex_app_server_approval_mode_preserves_prompt() {
+        assert_eq!(codex_app_server_approval_mode("auto"), "auto");
+        assert_eq!(codex_app_server_approval_mode("prompt"), "prompt");
+        assert_eq!(codex_app_server_approval_mode("fail"), "fail");
+        assert_eq!(codex_app_server_approval_mode(""), "prompt");
+    }
+
+    #[test]
+    fn codex_app_server_cli_path_resolves_from_package_root_not_workspace() {
+        let package = TestDir::new("codex-package-root");
+        let workspace = TestDir::new("codex-workspace");
+        let package_bin = package.path().join("bin");
+        let package_dist = package.path().join("dist");
+        let workspace_dist = workspace.path().join("dist");
+        fs::create_dir_all(&package_bin).expect("package bin should be created");
+        fs::create_dir_all(&package_dist).expect("package dist should be created");
+        fs::create_dir_all(&workspace_dist).expect("workspace dist should be created");
+        fs::write(package.path().join("package.json"), "{}").expect("package json should exist");
+        fs::write(package_dist.join("cli.js"), "").expect("package cli should exist");
+        fs::write(workspace_dist.join("cli.js"), "").expect("workspace cli should exist");
+
+        let resolved = codex_app_server_cli_path_from_start_dir(&package_bin);
+
+        assert_eq!(resolved, package_dist.join("cli.js"));
+        assert_ne!(resolved, workspace_dist.join("cli.js"));
+    }
+
+    #[test]
+    fn codex_app_server_cli_path_missing_cli_still_points_at_package_root() {
+        let package = TestDir::new("codex-package-root-missing-cli");
+        let package_bin = package.path().join("bin");
+        fs::create_dir_all(&package_bin).expect("package bin should be created");
+        fs::write(package.path().join("package.json"), "{}").expect("package json should exist");
+
+        let resolved = codex_app_server_cli_path_from_start_dir(&package_bin);
+
+        assert_eq!(resolved, package.path().join("dist/cli.js"));
+    }
+
+    #[tokio::test]
+    async fn codex_app_server_cli_isolates_child_usage_file() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let root = TestDir::new("codex-isolated-usage");
+        let cli_path = root.path().join("cli.js");
+        let marker_path = root.path().join("child-usage-file.txt");
+        let server_usage_path = root.path().join("server-usage.json");
+        fs::write(
+            &cli_path,
+            r#"const fs = require("fs");
+fs.writeFileSync(process.env.MAESTRO_USAGE_MARKER, process.env.MAESTRO_USAGE_FILE || "");
+console.log(JSON.stringify({ type: "turn", phase: "start", role: "assistant" }));
+console.log(JSON.stringify({ type: "item", subtype: "message_complete", data: { text: "ok", stopReason: "stop" } }));
+"#,
+        )
+        .expect("cli fixture should be written");
+        let previous_cli = env::var_os("MAESTRO_CODEX_APP_SERVER_CLI");
+        let previous_usage_file = env::var_os("MAESTRO_USAGE_FILE");
+        let previous_marker = env::var_os("MAESTRO_USAGE_MARKER");
+        env::set_var("MAESTRO_CODEX_APP_SERVER_CLI", &cli_path);
+        env::set_var("MAESTRO_USAGE_FILE", &server_usage_path);
+        env::set_var("MAESTRO_USAGE_MARKER", &marker_path);
+
+        let output = run_codex_app_server_cli(root.path(), "gpt-5.5", "fail", "hello", &[])
+            .await
+            .expect("fixture should emit assistant output");
+        let child_usage_file =
+            fs::read_to_string(&marker_path).expect("child should record usage file path");
+
+        if let Some(previous) = previous_cli {
+            env::set_var("MAESTRO_CODEX_APP_SERVER_CLI", previous);
+        } else {
+            env::remove_var("MAESTRO_CODEX_APP_SERVER_CLI");
+        }
+        if let Some(previous) = previous_usage_file {
+            env::set_var("MAESTRO_USAGE_FILE", previous);
+        } else {
+            env::remove_var("MAESTRO_USAGE_FILE");
+        }
+        if let Some(previous) = previous_marker {
+            env::set_var("MAESTRO_USAGE_MARKER", previous);
+        } else {
+            env::remove_var("MAESTRO_USAGE_MARKER");
+        }
+
+        assert_eq!(output.text, "ok");
+        assert_ne!(PathBuf::from(child_usage_file.trim()), server_usage_path);
+        assert!(child_usage_file.trim().ends_with("usage.json"));
+    }
+
+    #[tokio::test]
+    async fn codex_headless_bridge_round_trips_prompt_approval() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let root = TestDir::new("codex-headless-approval");
+        let cli_path = root.path().join("cli.js");
+        let marker_path = root.path().join("approval-response.json");
+        fs::write(
+            &cli_path,
+            r#"const fs = require("fs");
+const readline = require("readline");
+const marker = process.env.MAESTRO_APPROVAL_RESPONSE_MARKER;
+const rl = readline.createInterface({ input: process.stdin, terminal: false });
+function send(value) {
+  process.stdout.write(`${JSON.stringify(value)}\n`);
+}
+rl.on("line", (line) => {
+  const msg = JSON.parse(line);
+  if (msg.type === "prompt") {
+    send({
+      type: "server_request",
+      request_id: "approval-1",
+      request_type: "approval",
+      call_id: "approval-1",
+      tool: "write",
+      args: { path: "file.txt" },
+      reason: "Need approval"
+    });
+  } else if (msg.type === "server_request_response") {
+    fs.writeFileSync(marker, JSON.stringify(msg));
+    send({ type: "response_start", response_id: "response-1" });
+    send({ type: "response_chunk", response_id: "response-1", content: "approved output", is_thinking: false });
+    send({
+      type: "response_end",
+      response_id: "response-1",
+      usage: {
+        input_tokens: 5,
+        output_tokens: 2,
+        cache_read_tokens: 1,
+        cache_write_tokens: 0,
+        total_tokens: 8,
+        total_cost_usd: 0.01,
+        model_id: "gpt-5.5",
+        provider: "openai-codex"
+      },
+      tools_summary: { tools_used: ["write"], calls_succeeded: 1, calls_failed: 0 },
+      duration_ms: 1
+    });
+  } else if (msg.type === "shutdown") {
+    process.exit(0);
+  }
+});
+"#,
+        )
+        .expect("cli fixture should be written");
+        let previous_cli = env::var_os("MAESTRO_CODEX_APP_SERVER_CLI");
+        let previous_marker = env::var_os("MAESTRO_APPROVAL_RESPONSE_MARKER");
+        let previous_timeout = env::var_os("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS");
+        env::set_var("MAESTRO_CODEX_APP_SERVER_CLI", &cli_path);
+        env::set_var("MAESTRO_APPROVAL_RESPONSE_MARKER", &marker_path);
+        env::set_var("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS", "5000");
+
+        let state = test_app_state_with_sessions(HashMap::new());
+        let (_client, server) = tcp_stream_pair().await;
+        let cwd = root.path().to_path_buf();
+        let state_for_run = state.clone();
+        let run = tokio::spawn(async move {
+            let mut server = server;
+            run_codex_app_server_headless_cli(
+                &mut server,
+                CodexBridgeTransport::Sse,
+                &state_for_run,
+                Some("session-1"),
+                &cwd,
+                "gpt-5.5",
+                "hello",
+                &[],
+            )
+            .await
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let (external_request_id, sender) = loop {
+            let mut pending = state.pending_tool_responses.lock().await;
+            let pending_id = pending
+                .keys()
+                .find(|id| id.starts_with("codex:session-1:") && id.ends_with(":approval-1"))
+                .cloned();
+            if let Some(pending_id) = pending_id {
+                let sender = pending
+                    .remove(&pending_id)
+                    .expect("pending approval sender should exist");
+                break (pending_id, sender);
+            }
+            drop(pending);
+            assert!(
+                Instant::now() < deadline,
+                "headless approval request should be registered"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        sender
+            .send((external_request_id, true, None))
+            .expect("approval response should send");
+        let result = run.await.expect("headless run should join");
+
+        if let Some(previous) = previous_cli {
+            env::set_var("MAESTRO_CODEX_APP_SERVER_CLI", previous);
+        } else {
+            env::remove_var("MAESTRO_CODEX_APP_SERVER_CLI");
+        }
+        if let Some(previous) = previous_marker {
+            env::set_var("MAESTRO_APPROVAL_RESPONSE_MARKER", previous);
+        } else {
+            env::remove_var("MAESTRO_APPROVAL_RESPONSE_MARKER");
+        }
+        if let Some(previous) = previous_timeout {
+            env::set_var("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS", previous);
+        } else {
+            env::remove_var("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS");
+        }
+
+        let output = result.expect("headless bridge should complete");
+        let approval_response: Value = serde_json::from_str(
+            &fs::read_to_string(&marker_path).expect("approval response should be recorded"),
+        )
+        .expect("approval response should be json");
+
+        assert_eq!(output.text, "approved output");
+        assert_eq!(output.usage.expect("usage").input_tokens, 5);
+        assert_eq!(approval_response["type"], "server_request_response");
+        assert_eq!(approval_response["request_id"], "approval-1");
+        assert_eq!(approval_response["approved"], true);
+    }
+
+    #[tokio::test]
+    async fn codex_headless_bridge_streams_tool_events_over_websocket() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let root = TestDir::new("codex-headless-ws-tools");
+        let cli_path = root.path().join("cli.js");
+        fs::write(
+            &cli_path,
+            r#"const readline = require("readline");
+const rl = readline.createInterface({ input: process.stdin, terminal: false });
+function send(value) {
+  process.stdout.write(`${JSON.stringify(value)}\n`);
+}
+rl.on("line", (line) => {
+  const msg = JSON.parse(line);
+  if (msg.type === "prompt") {
+    send({
+      type: "tool_call",
+      call_id: "collab-call-ws",
+      tool: "codex.subagent.spawnAgent",
+      args: {
+        codexTool: "spawnAgent",
+        receiverThreadIds: ["child-thread-ws"],
+        prompt: "Inspect the websocket bridge"
+      }
+    });
+    send({
+      type: "tool_end",
+      call_id: "collab-call-ws",
+      success: true
+    });
+    send({ type: "response_start", response_id: "response-1" });
+    send({ type: "response_chunk", response_id: "response-1", content: "websocket output", is_thinking: false });
+    send({ type: "response_end", response_id: "response-1", duration_ms: 1 });
+  } else if (msg.type === "shutdown") {
+    process.exit(0);
+  }
+});
+"#,
+        )
+        .expect("cli fixture should be written");
+        let previous_cli = env::var_os("MAESTRO_CODEX_APP_SERVER_CLI");
+        let previous_timeout = env::var_os("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS");
+        env::set_var("MAESTRO_CODEX_APP_SERVER_CLI", &cli_path);
+        env::set_var("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS", "5000");
+
+        let state = test_app_state_with_sessions(HashMap::new());
+        let (mut client, server) = tcp_stream_pair().await;
+        let state_for_run = state.clone();
+        let run = tokio::spawn(async move {
+            let mut server = server;
+            handle_codex_app_server_chat_transport(
+                &mut server,
+                &state_for_run,
+                Some("session-ws"),
+                "gpt-5.5",
+                "hello",
+                &[],
+                CodexBridgeTransport::WebSocket,
+            )
+            .await
+        });
+        let mut bytes = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), client.read_to_end(&mut bytes))
+            .await
+            .expect("WebSocket stream should close")
+            .expect("WebSocket frames should be readable");
+        let result = run.await.expect("headless websocket run should join");
+
+        if let Some(previous) = previous_cli {
+            env::set_var("MAESTRO_CODEX_APP_SERVER_CLI", previous);
+        } else {
+            env::remove_var("MAESTRO_CODEX_APP_SERVER_CLI");
+        }
+        if let Some(previous) = previous_timeout {
+            env::set_var("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS", previous);
+        } else {
+            env::remove_var("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS");
+        }
+
+        result.expect("headless WebSocket bridge should complete");
+        let events = server_websocket_json_values(&bytes);
+        assert!(events.iter().any(|event| event["type"] == "agent_start"));
+        let start = events
+            .iter()
+            .find(|event| event["type"] == "tool_execution_start")
+            .expect("tool start should stream over WebSocket");
+        let end = events
+            .iter()
+            .find(|event| event["type"] == "tool_execution_end")
+            .expect("tool end should stream over WebSocket");
+        assert_eq!(start["toolCallId"], "collab-call-ws");
+        assert_eq!(start["toolName"], "codex.subagent.spawnAgent");
+        assert_eq!(start["args"]["receiverThreadIds"][0], "child-thread-ws");
+        assert_eq!(end["toolCallId"], "collab-call-ws");
+        assert_eq!(end["isError"], false);
+        assert!(events.iter().any(|event| {
+            event["type"] == "message_update" && event["message"]["content"] == "websocket output"
+        }));
+        assert!(events.iter().any(|event| event["type"] == "done"));
+    }
+
+    #[tokio::test]
+    async fn codex_headless_approval_wait_does_not_consume_request_timeout() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let root = TestDir::new("codex-headless-approval-timeout");
+        let cli_path = root.path().join("cli.js");
+        fs::write(
+            &cli_path,
+            r#"const readline = require("readline");
+const rl = readline.createInterface({ input: process.stdin, terminal: false });
+function send(value) {
+  process.stdout.write(`${JSON.stringify(value)}\n`);
+}
+rl.on("line", (line) => {
+  const msg = JSON.parse(line);
+  if (msg.type === "prompt") {
+    send({
+      type: "server_request",
+      request_id: "approval-wait",
+      request_type: "approval",
+      call_id: "approval-wait",
+      tool: "write",
+      args: { path: "file.txt" },
+      reason: "Need approval"
+    });
+  } else if (msg.type === "server_request_response") {
+    send({ type: "response_start", response_id: "response-1" });
+    send({ type: "response_chunk", response_id: "response-1", content: "waited output", is_thinking: false });
+    send({ type: "response_end", response_id: "response-1", duration_ms: 1 });
+  } else if (msg.type === "shutdown") {
+    process.exit(0);
+  }
+});
+"#,
+        )
+        .expect("cli fixture should be written");
+        let previous_cli = env::var_os("MAESTRO_CODEX_APP_SERVER_CLI");
+        let previous_timeout = env::var_os("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS");
+        env::set_var("MAESTRO_CODEX_APP_SERVER_CLI", &cli_path);
+        env::set_var("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS", "50");
+
+        let state = test_app_state_with_sessions(HashMap::new());
+        let (_client, server) = tcp_stream_pair().await;
+        let cwd = root.path().to_path_buf();
+        let state_for_run = state.clone();
+        let run = tokio::spawn(async move {
+            let mut server = server;
+            run_codex_app_server_headless_cli(
+                &mut server,
+                CodexBridgeTransport::Sse,
+                &state_for_run,
+                Some("session-wait"),
+                &cwd,
+                "gpt-5.5",
+                "hello",
+                &[],
+            )
+            .await
+        });
+
+        let expected_prefix = "codex:session-wait:";
+        let expected_suffix = ":approval-wait";
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if state
+                .pending_tool_responses
+                .lock()
+                .await
+                .keys()
+                .any(|id| id.starts_with(expected_prefix) && id.ends_with(expected_suffix))
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "headless approval request should be registered"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let mut pending = state.pending_tool_responses.lock().await;
+        let external_request_id = pending
+            .keys()
+            .find(|id| id.starts_with(expected_prefix) && id.ends_with(expected_suffix))
+            .cloned()
+            .expect("approval wait should remain pending after request timeout window");
+        let sender = pending
+            .remove(&external_request_id)
+            .expect("approval wait should have a pending sender");
+        drop(pending);
+        sender
+            .send((external_request_id, true, None))
+            .expect("approval response should send");
+        let result = run.await.expect("headless run should join");
+
+        if let Some(previous) = previous_cli {
+            env::set_var("MAESTRO_CODEX_APP_SERVER_CLI", previous);
+        } else {
+            env::remove_var("MAESTRO_CODEX_APP_SERVER_CLI");
+        }
+        if let Some(previous) = previous_timeout {
+            env::set_var("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS", previous);
+        } else {
+            env::remove_var("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS");
+        }
+
+        assert_eq!(
+            result
+                .expect("manual approval wait should not time out")
+                .text,
+            "waited output"
+        );
+    }
+
+    #[tokio::test]
+    async fn codex_headless_bridge_keeps_valid_output_after_nonzero_shutdown() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let root = TestDir::new("codex-headless-nonzero-shutdown");
+        let cli_path = root.path().join("cli.js");
+        fs::write(
+            &cli_path,
+            r#"const readline = require("readline");
+const rl = readline.createInterface({ input: process.stdin, terminal: false });
+function send(value) {
+  process.stdout.write(`${JSON.stringify(value)}\n`);
+}
+rl.on("line", (line) => {
+  const msg = JSON.parse(line);
+  if (msg.type === "prompt") {
+    send({ type: "response_start", response_id: "response-1" });
+    send({ type: "response_chunk", response_id: "response-1", content: "kept output", is_thinking: false });
+    send({
+      type: "response_end",
+      response_id: "response-1",
+      usage: {
+        input_tokens: 1,
+        output_tokens: 1,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        total_tokens: 2,
+        total_cost_usd: 0.01,
+        model_id: "gpt-5.5",
+        provider: "openai-codex"
+      },
+      tools_summary: { tools_used: [], calls_succeeded: 0, calls_failed: 0 },
+      duration_ms: 1
+    });
+  } else if (msg.type === "shutdown") {
+    process.exit(7);
+  }
+});
+"#,
+        )
+        .expect("cli fixture should be written");
+        let previous_cli = env::var_os("MAESTRO_CODEX_APP_SERVER_CLI");
+        let previous_timeout = env::var_os("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS");
+        env::set_var("MAESTRO_CODEX_APP_SERVER_CLI", &cli_path);
+        env::set_var("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS", "5000");
+
+        let state = test_app_state_with_sessions(HashMap::new());
+        let (_client, mut server) = tcp_stream_pair().await;
+        let output = run_codex_app_server_headless_cli(
+            &mut server,
+            CodexBridgeTransport::Sse,
+            &state,
+            None,
+            root.path(),
+            "gpt-5.5",
+            "hello",
+            &[],
+        )
+        .await;
+
+        if let Some(previous) = previous_cli {
+            env::set_var("MAESTRO_CODEX_APP_SERVER_CLI", previous);
+        } else {
+            env::remove_var("MAESTRO_CODEX_APP_SERVER_CLI");
+        }
+        if let Some(previous) = previous_timeout {
+            env::set_var("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS", previous);
+        } else {
+            env::remove_var("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS");
+        }
+
+        assert_eq!(
+            output.expect("valid protocol output should win").text,
+            "kept output"
+        );
+    }
+
+    #[tokio::test]
+    async fn codex_headless_bridge_keeps_valid_output_after_broken_pipe_shutdown() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let root = TestDir::new("codex-headless-broken-pipe-shutdown");
+        let cli_path = root.path().join("cli.js");
+        fs::write(
+            &cli_path,
+            r#"const readline = require("readline");
+const rl = readline.createInterface({ input: process.stdin, terminal: false });
+function send(value) {
+  process.stdout.write(`${JSON.stringify(value)}\n`);
+}
+rl.on("line", (line) => {
+  const msg = JSON.parse(line);
+  if (msg.type === "prompt") {
+    send({ type: "response_start", response_id: "response-1" });
+    send({ type: "response_chunk", response_id: "response-1", content: "kept after broken pipe", is_thinking: false });
+    send({ type: "response_end", response_id: "response-1", duration_ms: 1 });
+    process.stdin.destroy();
+    setTimeout(() => process.exit(0), 10);
+  } else if (msg.type === "shutdown") {
+    process.exit(0);
+  }
+});
+"#,
+        )
+        .expect("cli fixture should be written");
+        let previous_cli = env::var_os("MAESTRO_CODEX_APP_SERVER_CLI");
+        let previous_timeout = env::var_os("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS");
+        env::set_var("MAESTRO_CODEX_APP_SERVER_CLI", &cli_path);
+        env::set_var("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS", "5000");
+
+        let state = test_app_state_with_sessions(HashMap::new());
+        let (_client, mut server) = tcp_stream_pair().await;
+        let output = run_codex_app_server_headless_cli(
+            &mut server,
+            CodexBridgeTransport::Sse,
+            &state,
+            None,
+            root.path(),
+            "gpt-5.5",
+            "hello",
+            &[],
+        )
+        .await;
+
+        if let Some(previous) = previous_cli {
+            env::set_var("MAESTRO_CODEX_APP_SERVER_CLI", previous);
+        } else {
+            env::remove_var("MAESTRO_CODEX_APP_SERVER_CLI");
+        }
+        if let Some(previous) = previous_timeout {
+            env::set_var("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS", previous);
+        } else {
+            env::remove_var("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS");
+        }
+
+        assert_eq!(
+            output
+                .expect("valid output should survive a broken shutdown pipe")
+                .text,
+            "kept after broken pipe"
+        );
+    }
+
+    #[tokio::test]
+    async fn codex_headless_bridge_bounds_shutdown_wait_after_valid_output() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let root = TestDir::new("codex-headless-hung-shutdown");
+        let cli_path = root.path().join("cli.js");
+        fs::write(
+            &cli_path,
+            r#"const readline = require("readline");
+const rl = readline.createInterface({ input: process.stdin, terminal: false });
+function send(value) {
+  process.stdout.write(`${JSON.stringify(value)}\n`);
+}
+rl.on("line", (line) => {
+  const msg = JSON.parse(line);
+  if (msg.type === "prompt") {
+    send({ type: "response_start", response_id: "response-1" });
+    send({ type: "response_chunk", response_id: "response-1", content: "bounded output", is_thinking: false });
+    send({ type: "response_end", response_id: "response-1", duration_ms: 1 });
+  } else if (msg.type === "shutdown") {
+    setInterval(() => {}, 1000);
+  }
+});
+"#,
+        )
+        .expect("cli fixture should be written");
+        let previous_cli = env::var_os("MAESTRO_CODEX_APP_SERVER_CLI");
+        let previous_timeout = env::var_os("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS");
+        env::set_var("MAESTRO_CODEX_APP_SERVER_CLI", &cli_path);
+        env::set_var("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS", "50");
+
+        let state = test_app_state_with_sessions(HashMap::new());
+        let (_client, mut server) = tcp_stream_pair().await;
+        let started = Instant::now();
+        let output = run_codex_app_server_headless_cli(
+            &mut server,
+            CodexBridgeTransport::Sse,
+            &state,
+            None,
+            root.path(),
+            "gpt-5.5",
+            "hello",
+            &[],
+        )
+        .await;
+
+        if let Some(previous) = previous_cli {
+            env::set_var("MAESTRO_CODEX_APP_SERVER_CLI", previous);
+        } else {
+            env::remove_var("MAESTRO_CODEX_APP_SERVER_CLI");
+        }
+        if let Some(previous) = previous_timeout {
+            env::set_var("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS", previous);
+        } else {
+            env::remove_var("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS");
+        }
+
+        assert_eq!(
+            output
+                .expect("valid output should survive a hung shutdown")
+                .text,
+            "bounded output"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "hung shutdown should be bounded"
+        );
+    }
+
+    #[tokio::test]
+    async fn codex_app_server_timeout_kills_child_process() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let root = TestDir::new("codex-timeout");
+        let cli_path = root.path().join("cli.js");
+        let marker_path = root.path().join("still-running.txt");
+        fs::write(
+            &cli_path,
+            r#"const fs = require("fs");
+setTimeout(() => {
+  fs.writeFileSync(process.env.MAESTRO_TIMEOUT_MARKER, "still running");
+}, 150);
+"#,
+        )
+        .expect("cli fixture should be written");
+        let previous_cli = env::var_os("MAESTRO_CODEX_APP_SERVER_CLI");
+        let previous_timeout = env::var_os("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS");
+        let previous_marker = env::var_os("MAESTRO_TIMEOUT_MARKER");
+        env::set_var("MAESTRO_CODEX_APP_SERVER_CLI", &cli_path);
+        env::set_var("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS", "50");
+        env::set_var("MAESTRO_TIMEOUT_MARKER", &marker_path);
+
+        let result = run_codex_app_server_cli(root.path(), "gpt-5.5", "fail", "hello", &[]).await;
+
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let marker_exists = marker_path.exists();
+
+        if let Some(previous) = previous_cli {
+            env::set_var("MAESTRO_CODEX_APP_SERVER_CLI", previous);
+        } else {
+            env::remove_var("MAESTRO_CODEX_APP_SERVER_CLI");
+        }
+        if let Some(previous) = previous_timeout {
+            env::set_var("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS", previous);
+        } else {
+            env::remove_var("MAESTRO_CODEX_APP_SERVER_TIMEOUT_MS");
+        }
+        if let Some(previous) = previous_marker {
+            env::set_var("MAESTRO_TIMEOUT_MARKER", previous);
+        } else {
+            env::remove_var("MAESTRO_TIMEOUT_MARKER");
+        }
+
+        assert!(matches!(
+            result,
+            Err(ref error) if error == "Codex app-server request timed out"
+        ));
+        assert!(
+            !marker_exists,
+            "timed out child process should be terminated before it can keep running"
+        );
+    }
+
     fn auth_test_config() -> Config {
         Config {
             listen_host: "127.0.0.1".to_string(),
@@ -6996,6 +9495,51 @@ mod tests {
             .find("\r\n\r\n")
             .expect("response should contain header separator");
         &response[separator + 4..]
+    }
+
+    fn server_websocket_json_values(bytes: &[u8]) -> Vec<Value> {
+        let mut values = Vec::new();
+        let mut cursor = 0usize;
+        while cursor < bytes.len() {
+            assert!(bytes.len() >= cursor + 2, "incomplete WebSocket frame");
+            let opcode = bytes[cursor] & 0x0f;
+            if opcode == 0x8 {
+                break;
+            }
+            assert_eq!(opcode, 0x1, "expected text WebSocket frame");
+            assert_eq!(
+                bytes[cursor + 1] & 0x80,
+                0,
+                "server WebSocket frames should not be masked"
+            );
+            let mut offset = cursor + 2;
+            let mut len = (bytes[cursor + 1] & 0x7f) as usize;
+            if len == 126 {
+                assert!(bytes.len() >= offset + 2, "incomplete extended length");
+                len = u16::from_be_bytes([bytes[offset], bytes[offset + 1]]) as usize;
+                offset += 2;
+            } else if len == 127 {
+                assert!(bytes.len() >= offset + 8, "incomplete extended length");
+                len = u64::from_be_bytes([
+                    bytes[offset],
+                    bytes[offset + 1],
+                    bytes[offset + 2],
+                    bytes[offset + 3],
+                    bytes[offset + 4],
+                    bytes[offset + 5],
+                    bytes[offset + 6],
+                    bytes[offset + 7],
+                ]) as usize;
+                offset += 8;
+            }
+            assert!(bytes.len() >= offset + len, "incomplete WebSocket payload");
+            values.push(
+                serde_json::from_slice(&bytes[offset..offset + len])
+                    .expect("WebSocket payload should be JSON"),
+            );
+            cursor = offset + len;
+        }
+        values
     }
 
     struct TestDir {
@@ -7326,16 +9870,77 @@ mod tests {
     }
 
     #[test]
-    fn a2a_agent_card_brackets_ipv6_public_host_and_preserves_port() {
+    fn a2a_agent_card_formats_ipv6_listen_hosts() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous_hostname = env::var_os("HOSTNAME");
+        let previous_computername = env::var_os("COMPUTERNAME");
+        let previous_a2a_url = env::var_os("MAESTRO_A2A_PUBLIC_URL");
+        let previous_a2a_host = env::var_os("MAESTRO_A2A_PUBLIC_HOST");
+        let previous_control_url = env::var_os("MAESTRO_CONTROL_PUBLIC_URL");
+        let previous_control_host = env::var_os("MAESTRO_CONTROL_PUBLIC_HOST");
+        env::remove_var("HOSTNAME");
+        env::remove_var("COMPUTERNAME");
+        env::remove_var("MAESTRO_A2A_PUBLIC_URL");
+        env::remove_var("MAESTRO_A2A_PUBLIC_HOST");
+        env::remove_var("MAESTRO_CONTROL_PUBLIC_URL");
+        env::remove_var("MAESTRO_CONTROL_PUBLIC_HOST");
+        let mut config = auth_test_config();
+        config.listen_host = "::1".to_string();
+        config.listen_port = 18787;
+        let head = parse_request_head(
+            b"GET /.well-known/agent-card.json HTTP/1.1\r\nHost: attacker.test\r\n\r\n",
+        )
+        .expect("request should parse");
+        let card = a2a_agent_card(&head, &config);
+
+        assert_eq!(card["url"], "http://[::1]:18787");
+        assert_eq!(card["supportedInterfaces"][0]["url"], "http://[::1]:18787");
+
+        if let Some(previous_hostname) = previous_hostname {
+            env::set_var("HOSTNAME", previous_hostname);
+        } else {
+            env::remove_var("HOSTNAME");
+        }
+        if let Some(previous_computername) = previous_computername {
+            env::set_var("COMPUTERNAME", previous_computername);
+        } else {
+            env::remove_var("COMPUTERNAME");
+        }
+        if let Some(previous_a2a_url) = previous_a2a_url {
+            env::set_var("MAESTRO_A2A_PUBLIC_URL", previous_a2a_url);
+        } else {
+            env::remove_var("MAESTRO_A2A_PUBLIC_URL");
+        }
+        if let Some(previous_a2a_host) = previous_a2a_host {
+            env::set_var("MAESTRO_A2A_PUBLIC_HOST", previous_a2a_host);
+        } else {
+            env::remove_var("MAESTRO_A2A_PUBLIC_HOST");
+        }
+        if let Some(previous_control_url) = previous_control_url {
+            env::set_var("MAESTRO_CONTROL_PUBLIC_URL", previous_control_url);
+        } else {
+            env::remove_var("MAESTRO_CONTROL_PUBLIC_URL");
+        }
+        if let Some(previous_control_host) = previous_control_host {
+            env::set_var("MAESTRO_CONTROL_PUBLIC_HOST", previous_control_host);
+        } else {
+            env::remove_var("MAESTRO_CONTROL_PUBLIC_HOST");
+        }
+    }
+
+    #[test]
+    fn a2a_agent_card_formats_configured_ipv6_public_host() {
         let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
         let previous_a2a_host = env::var_os("MAESTRO_A2A_PUBLIC_HOST");
         let previous_a2a_url = env::var_os("MAESTRO_A2A_PUBLIC_URL");
         let previous_control_url = env::var_os("MAESTRO_CONTROL_PUBLIC_URL");
+        let previous_control_host = env::var_os("MAESTRO_CONTROL_PUBLIC_HOST");
         env::set_var("MAESTRO_A2A_PUBLIC_HOST", "::1");
         env::remove_var("MAESTRO_A2A_PUBLIC_URL");
         env::remove_var("MAESTRO_CONTROL_PUBLIC_URL");
+        env::remove_var("MAESTRO_CONTROL_PUBLIC_HOST");
         let mut config = auth_test_config();
-        config.listen_host = "::".to_string();
+        config.listen_host = "0.0.0.0".to_string();
         config.listen_port = 18787;
         let head = parse_request_head(
             b"GET /.well-known/agent-card.json HTTP/1.1\r\nHost: attacker.test\r\n\r\n",
@@ -7361,6 +9966,11 @@ mod tests {
         } else {
             env::remove_var("MAESTRO_CONTROL_PUBLIC_URL");
         }
+        if let Some(previous_control_host) = previous_control_host {
+            env::set_var("MAESTRO_CONTROL_PUBLIC_HOST", previous_control_host);
+        } else {
+            env::remove_var("MAESTRO_CONTROL_PUBLIC_HOST");
+        }
     }
 
     #[test]
@@ -7369,11 +9979,13 @@ mod tests {
         let previous_a2a_host = env::var_os("MAESTRO_A2A_PUBLIC_HOST");
         let previous_a2a_url = env::var_os("MAESTRO_A2A_PUBLIC_URL");
         let previous_control_url = env::var_os("MAESTRO_CONTROL_PUBLIC_URL");
+        let previous_control_host = env::var_os("MAESTRO_CONTROL_PUBLIC_HOST");
         env::set_var("MAESTRO_A2A_PUBLIC_HOST", "fe80::1%en0");
         env::remove_var("MAESTRO_A2A_PUBLIC_URL");
         env::remove_var("MAESTRO_CONTROL_PUBLIC_URL");
+        env::remove_var("MAESTRO_CONTROL_PUBLIC_HOST");
         let mut config = auth_test_config();
-        config.listen_host = "::".to_string();
+        config.listen_host = "0.0.0.0".to_string();
         config.listen_port = 18787;
         let head = parse_request_head(
             b"GET /.well-known/agent-card.json HTTP/1.1\r\nHost: attacker.test\r\n\r\n",
@@ -7401,6 +10013,11 @@ mod tests {
             env::set_var("MAESTRO_CONTROL_PUBLIC_URL", previous_control_url);
         } else {
             env::remove_var("MAESTRO_CONTROL_PUBLIC_URL");
+        }
+        if let Some(previous_control_host) = previous_control_host {
+            env::set_var("MAESTRO_CONTROL_PUBLIC_HOST", previous_control_host);
+        } else {
+            env::remove_var("MAESTRO_CONTROL_PUBLIC_HOST");
         }
     }
 
@@ -7454,6 +10071,42 @@ mod tests {
         let value = a2a_user_message_value(&message, "ctx-1");
 
         assert_eq!(value["contextId"], "ctx-1");
+    }
+
+    #[test]
+    fn a2a_context_id_ignores_whitespace_before_falling_back() {
+        let request = A2ASendMessageRequest {
+            message: A2AMessageBody {
+                message_id: Some("msg-1".to_string()),
+                context_id: Some("   ".to_string()),
+                task_id: None,
+                role: Some("ROLE_USER".to_string()),
+                parts: vec![A2APartBody {
+                    text: Some("hello".to_string()),
+                    url: None,
+                    data: None,
+                    metadata: None,
+                    filename: None,
+                    media_type: Some("text/plain".to_string()),
+                }],
+                metadata: None,
+                extensions: None,
+                reference_task_ids: None,
+            },
+            configuration: None,
+            metadata: None,
+        };
+        let head = RequestHead {
+            method: "POST".to_string(),
+            path: "/message:send".to_string(),
+            query: HashMap::new(),
+            headers: HashMap::from([(
+                "x-evalops-session-id".to_string(),
+                " header-ctx ".to_string(),
+            )]),
+        };
+
+        assert_eq!(a2a_context_id(&request, &head), "header-ctx");
     }
 
     #[test]
@@ -8011,7 +10664,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn a2a_restores_claim_when_cancel_sender_registration_fails() {
+    async fn a2a_message_send_restores_claimed_task_when_cancel_sender_registration_fails() {
         let body = r#"{"message":{"messageId":"msg-2","contextId":"ctx-1","taskId":"maestro-task-1","role":"ROLE_USER","parts":[{"text":"follow up","mediaType":"text/plain"}]}}"#;
         let request = format!(
             "POST /message:send HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
@@ -8055,10 +10708,12 @@ mod tests {
         assert_eq!(
             stored["maestro-task-1"]["history"]
                 .as_array()
-                .unwrap()
+                .expect("history should be an array")
                 .len(),
             1
         );
+        drop(stored);
+        assert_eq!(state.a2a_cancel_senders.lock().await.len(), 1);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -8096,7 +10751,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn a2a_cancel_clears_existing_artifacts() {
+    async fn a2a_cancel_clears_stale_artifacts() {
         let (_client, mut server) = tcp_stream_pair().await;
         let mut initial =
             b"POST /tasks/maestro-task-1:cancel HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\n\r\n"
@@ -8107,11 +10762,10 @@ mod tests {
             "maestro-task-1",
             "ctx-1",
             "TASK_STATE_INPUT_REQUIRED",
-            a2a_agent_message("ctx-1", "Need more input"),
+            a2a_agent_message("ctx-1", "waiting"),
             Vec::new(),
             vec![serde_json::json!({
-                "artifactId": "artifact-1",
-                "name": "assistant-response",
+                "artifactId": "stale-artifact",
                 "parts": [{ "text": "stale", "mediaType": "text/plain" }]
             })],
             serde_json::json!({}),
@@ -8128,10 +10782,6 @@ mod tests {
 
         assert_eq!(response["status"]["state"], "TASK_STATE_CANCELED");
         assert_eq!(response["artifacts"].as_array().unwrap().len(), 0);
-        assert_eq!(
-            stored["maestro-task-1"]["status"]["state"],
-            "TASK_STATE_CANCELED"
-        );
         assert_eq!(
             stored["maestro-task-1"]["artifacts"]
                 .as_array()
@@ -8354,6 +11004,62 @@ mod tests {
         );
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_cancel_prunes_terminal_task_store() {
+        let state = test_app_state_with_sessions(HashMap::new());
+        for index in 0..A2A_TERMINAL_TASK_STORE_LIMIT {
+            let task_id = format!("terminal-task-{index}");
+            let mut task = a2a_task_value(
+                &task_id,
+                "ctx-1",
+                "TASK_STATE_COMPLETED",
+                a2a_agent_message("ctx-1", "done"),
+                Vec::new(),
+                Vec::new(),
+                serde_json::json!({}),
+            );
+            task["status"]["timestamp"] = Value::String(format!(
+                "2026-05-15T00:{:02}:{:02}Z",
+                index / 60,
+                index % 60
+            ));
+            state.a2a_tasks.lock().await.insert(task_id, task);
+        }
+        let task = a2a_task_value(
+            "cancel-task",
+            "ctx-1",
+            "TASK_STATE_INPUT_REQUIRED",
+            a2a_agent_message("ctx-1", "Need more input"),
+            Vec::new(),
+            Vec::new(),
+            serde_json::json!({}),
+        );
+        state
+            .a2a_tasks
+            .lock()
+            .await
+            .insert("cancel-task".to_string(), task);
+        let request = b"POST /tasks/cancel-task:cancel HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\n\r\n";
+        let mut initial = request.to_vec();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (_client, mut server) = tcp_stream_pair().await;
+
+        let response =
+            response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+        let stored = state.a2a_tasks.lock().await;
+
+        assert_eq!(response["status"]["state"], "TASK_STATE_CANCELED");
+        assert!(stored.contains_key("cancel-task"));
+        assert!(!stored.contains_key("terminal-task-0"));
+        assert_eq!(
+            stored
+                .values()
+                .filter(|task| a2a_task_is_terminal(task))
+                .count(),
+            A2A_TERMINAL_TASK_STORE_LIMIT
+        );
+    }
+
     #[test]
     fn detects_migrated_web_api_routes() {
         for target in [
@@ -8393,10 +11099,25 @@ mod tests {
             "PATCH /api/sessions/session-1 HTTP/1.1\r\nHost: localhost\r\n\r\n",
             "DELETE /api/sessions/session-1 HTTP/1.1\r\nHost: localhost\r\n\r\n",
             "POST /api/pending-requests/request-1/resume HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "POST /api/pending-requests/codex%3Asession-1%3Arun-1%3Aapproval-1/resume HTTP/1.1\r\nHost: localhost\r\n\r\n",
         ] {
             let head = parse_request_head(request.as_bytes()).expect("request should parse");
             assert!(is_local_endpoint(&head), "{request} should be local");
         }
+    }
+
+    #[test]
+    fn pending_resume_path_decodes_url_encoded_request_ids() {
+        assert_eq!(
+            pending_request_id_from_resume_path(
+                "/api/pending-requests/codex%3Asession-1%3Arun-1%3Aapproval-1/resume"
+            )
+            .as_deref(),
+            Some("codex:session-1:run-1:approval-1")
+        );
+        assert!(
+            pending_request_id_from_resume_path("/api/pending-requests/bad%2Fid/resume").is_none()
+        );
     }
 
     #[test]
@@ -9204,6 +11925,13 @@ mod tests {
 
         assert_eq!(model.provider, "openai");
         assert_eq!(model.id, "gpt-5.1-codex-max");
+        assert_eq!(model.api, "openai-responses");
+
+        let codex_app_server = resolve_model("openai-codex/gpt-5.1-codex-max", &registry)
+            .expect("codex app-server model should resolve");
+        assert_eq!(codex_app_server.provider, "openai-codex");
+        assert_eq!(codex_app_server.id, "gpt-5.1-codex-max");
+        assert_eq!(codex_app_server.api, "openai-codex-app-server");
     }
 
     #[test]
@@ -9299,8 +12027,13 @@ mod tests {
 
         let codex = resolve_model("openai/gpt-5.1-codex-max", &registry).expect("codex model");
         assert_eq!(codex.max_tokens, 128_000);
-        assert_eq!(codex.api, "openai-codex-responses");
+        assert_eq!(codex.api, "openai-responses");
         assert!(codex.capabilities.reasoning);
+
+        let codex_app_server =
+            resolve_model("openai-codex/gpt-5.5", &registry).expect("codex app-server model");
+        assert_eq!(codex_app_server.api, "openai-codex-app-server");
+        assert_eq!(codex_app_server.max_tokens, 128_000);
 
         let llama = resolve_model(
             "together-ai/meta-llama/Llama-3.3-70B-Instruct-Turbo",
@@ -10268,7 +13001,8 @@ mod tests {
             }],
         };
 
-        let attachments = prepare_chat_attachments(&chat)
+        let cwd = TestDir::new("attachment-cwd");
+        let attachments = prepare_chat_attachments(&chat, cwd.path())
             .await
             .expect("attachments should prepare");
         let temp_dir = attachments
@@ -10279,6 +13013,60 @@ mod tests {
         drop(attachments);
 
         assert!(!temp_dir.exists(), "temp dir should be removed on drop");
+    }
+
+    #[tokio::test]
+    async fn prepared_attachments_use_workspace_for_docker_sandbox() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let cwd = TestDir::new("attachment-docker-cwd");
+        let previous_bridge = env::var_os("MAESTRO_CODEX_APP_SERVER_SANDBOX");
+        let previous_sandbox = env::var_os("MAESTRO_SANDBOX_MODE");
+        env::set_var("MAESTRO_CODEX_APP_SERVER_SANDBOX", "docker");
+        env::remove_var("MAESTRO_SANDBOX_MODE");
+        let chat = ChatRequest {
+            model: None,
+            thinking_level: None,
+            session_id: None,
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: Value::String("hello".to_string()),
+                attachments: vec![ChatAttachment {
+                    id: Some("att-1".to_string()),
+                    attachment_type: Some("file".to_string()),
+                    file_name: Some("token.txt".to_string()),
+                    mime_type: Some("text/plain".to_string()),
+                    content: Some("aGVsbG8=".to_string()),
+                    content_omitted: None,
+                    extracted_text: None,
+                }],
+                extra: Map::new(),
+            }],
+        };
+
+        let attachments = prepare_chat_attachments(&chat, cwd.path())
+            .await
+            .expect("attachments should prepare");
+
+        if let Some(previous) = previous_bridge {
+            env::set_var("MAESTRO_CODEX_APP_SERVER_SANDBOX", previous);
+        } else {
+            env::remove_var("MAESTRO_CODEX_APP_SERVER_SANDBOX");
+        }
+        if let Some(previous) = previous_sandbox {
+            env::set_var("MAESTRO_SANDBOX_MODE", previous);
+        } else {
+            env::remove_var("MAESTRO_SANDBOX_MODE");
+        }
+
+        let temp_dir = attachments
+            .temp_dir
+            .clone()
+            .expect("temp dir should be created");
+        assert!(temp_dir.starts_with(cwd.path()));
+        assert!(attachments
+            .paths
+            .iter()
+            .all(|path| Path::new(path).starts_with(cwd.path())));
     }
 
     #[tokio::test]
