@@ -388,6 +388,8 @@ class Handler(BaseHTTPRequestHandler):
                 [
                     "authorization",
                     "content-type",
+                    "a2a-version",
+                    "a2a-extensions",
                     "traceparent",
                     "tracestate",
                     "x-codex-a2a-token",
