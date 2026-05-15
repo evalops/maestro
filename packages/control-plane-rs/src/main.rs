@@ -635,9 +635,9 @@ async fn handle_a2a_endpoint(
         return json_response(200, &a2a_agent_card(&head, &state.config));
     }
 
-    if let Err(response) = authorize(&head, &state.config) {
-        return response;
-    }
+    let Some(auth) = auth_context(&head, &state.config) else {
+        return json_response(401, &serde_json::json!({ "error": "Unauthorized" }));
+    };
 
     if head.method == "GET" && head.path == "/tasks" {
         let tasks = state
@@ -645,6 +645,7 @@ async fn handle_a2a_endpoint(
             .lock()
             .await
             .values()
+            .filter(|task| a2a_task_visible_to_auth(task, &auth))
             .cloned()
             .collect::<Vec<_>>();
         return json_response(200, &serde_json::json!({ "tasks": tasks }));
@@ -655,14 +656,20 @@ async fn handle_a2a_endpoint(
             let tasks = state.a2a_tasks.lock().await;
             return tasks.get(task_id).map_or_else(
                 || a2a_error_response(404, "TASK_NOT_FOUND", "A2A task not found"),
-                |task| json_response(200, task),
+                |task| {
+                    if a2a_task_visible_to_auth(task, &auth) {
+                        json_response(200, task)
+                    } else {
+                        a2a_error_response(404, "TASK_NOT_FOUND", "A2A task not found")
+                    }
+                },
             );
         }
     }
 
     if head.method == "POST" {
         if let Some(task_id) = a2a_task_id_from_cancel_path(&head.path) {
-            return match cancel_a2a_task(state, task_id).await {
+            return match cancel_a2a_task(state, task_id, &auth).await {
                 Ok(task) => json_response(200, &task),
                 Err(response) => response,
             };
@@ -670,13 +677,17 @@ async fn handle_a2a_endpoint(
     }
 
     if head.method == "POST" && head.path == "/message:send" {
-        return handle_a2a_message_send(stream, initial, &head, state).await;
+        return handle_a2a_message_send(stream, initial, &head, state, &auth).await;
     }
 
     a2a_error_response(404, "NOT_FOUND", "A2A endpoint not found")
 }
 
-async fn cancel_a2a_task(state: &AppState, task_id: &str) -> Result<Value, Vec<u8>> {
+async fn cancel_a2a_task(
+    state: &AppState,
+    task_id: &str,
+    auth: &AuthContext,
+) -> Result<Value, Vec<u8>> {
     let mut tasks = state.a2a_tasks.lock().await;
     let Some(task) = tasks.get_mut(task_id) else {
         return Err(a2a_error_response(
@@ -685,6 +696,13 @@ async fn cancel_a2a_task(state: &AppState, task_id: &str) -> Result<Value, Vec<u
             "A2A task not found",
         ));
     };
+    if !a2a_task_visible_to_auth(task, auth) {
+        return Err(a2a_error_response(
+            404,
+            "TASK_NOT_FOUND",
+            "A2A task not found",
+        ));
+    }
     if a2a_task_is_terminal(task) {
         return Err(a2a_error_response(
             400,
@@ -742,10 +760,26 @@ fn a2a_task_accepts_message(task: &Value) -> bool {
     a2a_task_status_state(task) == Some("TASK_STATE_INPUT_REQUIRED")
 }
 
+fn a2a_task_owner_subject(task: &Value) -> Option<&str> {
+    task.get("metadata")
+        .and_then(|metadata| metadata.get("ownerSubject"))
+        .and_then(Value::as_str)
+}
+
+fn a2a_task_visible_to_auth(task: &Value, auth: &AuthContext) -> bool {
+    if auth.unrestricted {
+        return true;
+    }
+    auth.subject
+        .as_deref()
+        .is_some_and(|subject| a2a_task_owner_subject(task) == Some(subject))
+}
+
 async fn claim_a2a_send_task(
     state: &AppState,
     request: &A2ASendMessageRequest,
     head: &RequestHead,
+    auth: &AuthContext,
     metadata: Value,
 ) -> Result<A2ASendTarget, Vec<u8>> {
     let requested_task_id = request
@@ -772,6 +806,13 @@ async fn claim_a2a_send_task(
                 "A2A task not found",
             ));
         };
+        if !a2a_task_visible_to_auth(task, auth) {
+            return Err(a2a_error_response(
+                404,
+                "TASK_NOT_FOUND",
+                "A2A task not found",
+            ));
+        }
         if a2a_task_is_terminal(task) {
             return Err(a2a_error_response(
                 400,
@@ -918,6 +959,7 @@ async fn handle_a2a_message_send(
     initial: &mut Vec<u8>,
     head: &RequestHead,
     state: &AppState,
+    auth: &AuthContext,
 ) -> Vec<u8> {
     let body = match read_request_body(stream, initial, head).await {
         Ok(body) => body,
@@ -942,8 +984,8 @@ async fn handle_a2a_message_send(
         );
     };
 
-    let metadata = a2a_task_metadata(head, &request);
-    let target = match claim_a2a_send_task(state, &request, head, metadata.clone()).await {
+    let metadata = a2a_task_metadata(head, &request, auth);
+    let target = match claim_a2a_send_task(state, &request, head, auth, metadata.clone()).await {
         Ok(target) => target,
         Err(response) => return response,
     };
@@ -1236,7 +1278,11 @@ fn a2a_task_value(
     })
 }
 
-fn a2a_task_metadata(head: &RequestHead, request: &A2ASendMessageRequest) -> Value {
+fn a2a_task_metadata(
+    head: &RequestHead,
+    request: &A2ASendMessageRequest,
+    auth: &AuthContext,
+) -> Value {
     let mut metadata = Map::new();
     metadata.insert(
         "runtime".to_string(),
@@ -1247,6 +1293,12 @@ fn a2a_task_metadata(head: &RequestHead, request: &A2ASendMessageRequest) -> Val
         "a2aProtocolVersion".to_string(),
         Value::String(A2A_PROTOCOL_VERSION.to_string()),
     );
+    if let Some(subject) = auth.subject.as_deref() {
+        metadata.insert(
+            "ownerSubject".to_string(),
+            Value::String(subject.to_string()),
+        );
+    }
     for (field, header) in [
         ("workspaceId", "x-evalops-workspace-id"),
         ("agentId", "x-evalops-agent-id"),
@@ -6720,6 +6772,11 @@ mod tests {
         }
     }
 
+    fn shared_secret_bearer_token(secret: &[u8], user_id: &str) -> String {
+        let signature = hmac_sha256_hex(secret, user_id.as_bytes());
+        format!("{}.{}", URL_SAFE_NO_PAD.encode(user_id), signature)
+    }
+
     fn csrf_head(method: &str, token: Option<&str>) -> RequestHead {
         let mut headers = HashMap::new();
         if let Some(token) = token {
@@ -7186,6 +7243,108 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn a2a_tasks_list_only_returns_tasks_owned_by_subject() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous_secret = env::var_os("MAESTRO_AUTH_SHARED_SECRET");
+        env::set_var("MAESTRO_AUTH_SHARED_SECRET", "shared-secret");
+        let state = test_app_state_with_sessions(HashMap::new());
+        for (task_id, owner) in [
+            ("owned-task", Some("user-123")),
+            ("other-task", Some("user-456")),
+            ("unowned-task", None),
+        ] {
+            let mut metadata = Map::new();
+            if let Some(owner) = owner {
+                metadata.insert("ownerSubject".to_string(), Value::String(owner.to_string()));
+            }
+            let task = a2a_task_value(
+                task_id,
+                "ctx-1",
+                "TASK_STATE_COMPLETED",
+                a2a_agent_message("ctx-1", "done"),
+                Vec::new(),
+                Vec::new(),
+                Value::Object(metadata),
+            );
+            state.a2a_tasks.lock().await.insert(task_id.to_string(), task);
+        }
+        let token = shared_secret_bearer_token(b"shared-secret", "user-123");
+        let request = format!(
+            "GET /tasks HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\n\r\n"
+        );
+        let mut initial = request.into_bytes();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (_client, mut server) = tcp_stream_pair().await;
+
+        let response =
+            response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+        let tasks = response["tasks"].as_array().expect("tasks should be an array");
+
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0]["id"], "owned-task");
+
+        if let Some(previous_secret) = previous_secret {
+            env::set_var("MAESTRO_AUTH_SHARED_SECRET", previous_secret);
+        } else {
+            env::remove_var("MAESTRO_AUTH_SHARED_SECRET");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_message_send_rejects_task_follow_up_from_other_subject() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous_secret = env::var_os("MAESTRO_AUTH_SHARED_SECRET");
+        let previous_fake = env::var("MAESTRO_A2A_FAKE_RESPONSE").ok();
+        env::set_var("MAESTRO_AUTH_SHARED_SECRET", "shared-secret");
+        env::set_var("MAESTRO_A2A_FAKE_RESPONSE", "should not run");
+        let state = test_app_state_with_sessions(HashMap::new());
+        let existing_message = a2a_agent_message("ctx-1", "Need more input");
+        let task = a2a_task_value(
+            "owned-task",
+            "ctx-1",
+            "TASK_STATE_INPUT_REQUIRED",
+            existing_message.clone(),
+            vec![existing_message],
+            Vec::new(),
+            serde_json::json!({ "ownerSubject": "user-123" }),
+        );
+        state
+            .a2a_tasks
+            .lock()
+            .await
+            .insert("owned-task".to_string(), task);
+        let token = shared_secret_bearer_token(b"shared-secret", "user-456");
+        let body = r#"{"message":{"messageId":"msg-2","contextId":"ctx-1","taskId":"owned-task","role":"ROLE_USER","parts":[{"text":"follow up","mediaType":"text/plain"}]}}"#;
+        let request = format!(
+            "POST /message:send HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let mut initial = request.into_bytes();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (_client, mut server) = tcp_stream_pair().await;
+
+        let response =
+            response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+
+        assert_eq!(response["error"]["code"], "TASK_NOT_FOUND");
+        assert_eq!(
+            state.a2a_tasks.lock().await["owned-task"]["status"]["state"],
+            "TASK_STATE_INPUT_REQUIRED"
+        );
+
+        if let Some(previous_secret) = previous_secret {
+            env::set_var("MAESTRO_AUTH_SHARED_SECRET", previous_secret);
+        } else {
+            env::remove_var("MAESTRO_AUTH_SHARED_SECRET");
+        }
+        if let Some(previous_fake) = previous_fake {
+            env::set_var("MAESTRO_A2A_FAKE_RESPONSE", previous_fake);
+        } else {
+            env::remove_var("MAESTRO_A2A_FAKE_RESPONSE");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn a2a_message_send_rejects_unknown_task_id() {
         let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
         let previous_fake = env::var("MAESTRO_A2A_FAKE_RESPONSE").ok();
@@ -7384,11 +7543,16 @@ mod tests {
             configuration: None,
             metadata: None,
         };
+        let auth = AuthContext {
+            subject: None,
+            unrestricted: true,
+        };
 
         let claimed = claim_a2a_send_task(
             &state,
             &request,
             &head,
+            &auth,
             serde_json::json!({ "test": "metadata" }),
         )
         .await
@@ -7405,7 +7569,7 @@ mod tests {
         drop(stored);
 
         let response = response_json(
-            claim_a2a_send_task(&state, &request, &head, serde_json::json!({}))
+            claim_a2a_send_task(&state, &request, &head, &auth, serde_json::json!({}))
                 .await
                 .expect_err("already-claimed task should reject overlap"),
         );
