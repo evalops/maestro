@@ -14,6 +14,7 @@ import json
 import os
 import shlex
 import signal
+import socket
 import subprocess
 import tempfile
 import threading
@@ -33,6 +34,16 @@ LOCK = threading.Lock()
 def env(name: str, default: str) -> str:
     value = os.environ.get(name)
     return value.strip() if value and value.strip() else default
+
+
+def default_public_host() -> str:
+    configured_host = env("CODEX_A2A_HOST", "")
+    if configured_host:
+        return configured_host
+    bind_host = env("CODEX_A2A_BIND", "127.0.0.1")
+    if bind_host in {"0.0.0.0", "::"}:
+        return socket.getfqdn() or socket.gethostname() or "127.0.0.1"
+    return bind_host
 
 
 def now_ms() -> int:
@@ -155,23 +166,23 @@ def complete_task(task_id: str, context_id: str, prompt: str, history: list[dict
         "backend": "codex-exec",
         "host": env("CODEX_A2A_AGENT_NAME", env("HOSTNAME", "codex-a2a")),
     }
-    runtime_dir = Path(env("CODEX_A2A_RUNTIME_DIR", str(Path.home() / ".codex" / "a2a")))
-    runtime_dir.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        prefix=f"{task_id}-",
-        suffix=".txt",
-        dir=runtime_dir,
-        delete=False,
-    ) as output_file:
-        output_path = Path(output_file.name)
-
     process: subprocess.Popen[str] | None = None
+    output_path: Path | None = None
     try:
         timeout_raw = env("CODEX_A2A_TURN_TIMEOUT_MS", "600000")
         timeout_ms = int(timeout_raw)
         if timeout_ms <= 0:
             raise ValueError("CODEX_A2A_TURN_TIMEOUT_MS must be positive")
         timeout = timeout_ms / 1000
+        runtime_dir = Path(env("CODEX_A2A_RUNTIME_DIR", str(Path.home() / ".codex" / "a2a")))
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            prefix=f"{task_id}-",
+            suffix=".txt",
+            dir=runtime_dir,
+            delete=False,
+        ) as output_file:
+            output_path = Path(output_file.name)
         with LOCK:
             current = TASKS.get(task_id)
             if current and current.get("status", {}).get("state") == "TASK_STATE_CANCELED":
@@ -285,10 +296,11 @@ def complete_task(task_id: str, context_id: str, prompt: str, history: list[dict
                 metadata=metadata,
             )
     finally:
-        try:
-            output_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        if output_path is not None:
+            try:
+                output_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -298,11 +310,7 @@ class Handler(BaseHTTPRequestHandler):
         if env("CODEX_A2A_ACCESS_LOG", "0") == "1":
             super().log_message(fmt, *args)
 
-    def send_json(self, status: int, value: Any) -> None:
-        body = json_bytes(value)
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
+    def send_cors_headers(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header(
             "Access-Control-Allow-Headers",
@@ -324,8 +332,21 @@ class Handler(BaseHTTPRequestHandler):
             ),
         )
         self.send_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+
+    def send_json(self, status: int, value: Any) -> None:
+        body = json_bytes(value)
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_cors_headers()
         self.end_headers()
         self.wfile.write(body)
+
+    def send_empty(self, status: int) -> None:
+        self.send_response(status)
+        self.send_header("Content-Length", "0")
+        self.send_cors_headers()
+        self.end_headers()
 
     def error_json(self, status: int, code: str, message: str) -> None:
         self.send_json(status, {"error": {"code": code, "message": message}})
@@ -350,7 +371,7 @@ class Handler(BaseHTTPRequestHandler):
             return None
 
     def do_OPTIONS(self) -> None:
-        self.send_json(204, {})
+        self.send_empty(204)
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path
@@ -360,7 +381,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/.well-known/agent-card.json":
             base_url = env(
                 "CODEX_A2A_PUBLIC_URL",
-                f"http://{env('CODEX_A2A_HOST', '127.0.0.1')}:{env('CODEX_A2A_PORT', '18787')}",
+                f"http://{default_public_host()}:{env('CODEX_A2A_PORT', '18787')}",
             ).rstrip("/")
             self.send_json(
                 200,
