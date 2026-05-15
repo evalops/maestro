@@ -35,6 +35,8 @@ def load_json(path: Path) -> dict[str, Any]:
             value = json.load(handle)
     except FileNotFoundError as error:
         raise PeerError(f"peer registry not found: {path}") from error
+    except OSError as error:
+        raise PeerError(f"cannot read peer registry: {path}: {error.strerror or error}") from error
     except json.JSONDecodeError as error:
         raise PeerError(f"peer registry is not valid JSON: {path}: {error}") from error
     if not isinstance(value, dict):
@@ -94,6 +96,8 @@ def read_token_from_file(path_value: str) -> str | None:
         token = path.read_text(encoding="utf-8").strip()
     except FileNotFoundError as error:
         raise PeerError(f"token file not found: {path}") from error
+    except OSError as error:
+        raise PeerError(f"cannot read token file: {path}: {error.strerror or error}") from error
     return token or None
 
 

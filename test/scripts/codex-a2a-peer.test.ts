@@ -163,6 +163,23 @@ describe("codex-a2a-peer", () => {
 		expect(output).not.toContain("super-secret-token");
 	});
 
+	it("reports unreadable registry paths without a traceback", async () => {
+		const registryDirectory = mkdtempSync(
+			join(tmpdir(), "codex-a2a-peer-registry-dir-"),
+		);
+
+		await expect(
+			runPeer(registryDirectory, ["list"], {}),
+		).rejects.toMatchObject({
+			stderr: expect.stringContaining("cannot read peer registry"),
+		});
+		await expect(
+			runPeer(registryDirectory, ["list"], {}),
+		).rejects.not.toMatchObject({
+			stderr: expect.stringContaining("Traceback"),
+		});
+	});
+
 	it("fetches a peer Agent Card with A2A headers", async () => {
 		const output = await runPeer(configPath, ["card", "mock"], {
 			TEST_A2A_PEER_TOKEN: "super-secret-token",
@@ -177,6 +194,35 @@ describe("codex-a2a-peer", () => {
 			"Bearer super-secret-token",
 		);
 		expect(requests[0]?.headers["a2a-version"]).toBe("1.0");
+	});
+
+	it("reports unreadable token files without a traceback", async () => {
+		const tokenDirectory = mkdtempSync(
+			join(tmpdir(), "codex-a2a-peer-token-dir-"),
+		);
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				peers: {
+					mock: {
+						url: `${baseUrl}/message:send`,
+						tokenFile: tokenDirectory,
+					},
+				},
+			}),
+		);
+
+		await expect(
+			runPeer(configPath, ["card", "mock"], {}),
+		).rejects.toMatchObject({
+			stderr: expect.stringContaining("cannot read token file"),
+		});
+		await expect(
+			runPeer(configPath, ["card", "mock"], {}),
+		).rejects.not.toMatchObject({
+			stderr: expect.stringContaining("Traceback"),
+		});
+		expect(requests).toHaveLength(0);
 	});
 
 	it("reports malformed JSON responses without a traceback", async () => {
