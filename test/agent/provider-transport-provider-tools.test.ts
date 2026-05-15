@@ -12,6 +12,10 @@ import type {
 	Model,
 	StreamOptions,
 } from "../../src/agent/types.js";
+import {
+	clearEventBuffer,
+	onSecurityEvent,
+} from "../../src/telemetry/security-events.js";
 
 const mocks = vi.hoisted(() => ({
 	createProviderStream: vi.fn(),
@@ -1288,6 +1292,157 @@ describe("ProviderTransport provider-owned tool events", () => {
 					.join(""),
 			),
 		).toEqual(["read:/tmp/evalops.txt:1", "read:/tmp/evalops.txt:2"]);
+	});
+
+	it("does not skip loop detection when cached reads run behind pending mutations", async () => {
+		clearEventBuffer();
+		const securityEvents: unknown[] = [];
+		const unsubscribe = onSecurityEvent((event) => {
+			securityEvents.push(event);
+		});
+		const readExecute = vi.fn(async (_toolCallId, params) => ({
+			content: [
+				{
+					type: "text" as const,
+					text: `read:${String(params.file_path)}:${readExecute.mock.calls.length}`,
+				},
+			],
+		}));
+		const mutateExecute = vi.fn(async (_toolCallId, params) => {
+			await new Promise((resolve) => setTimeout(resolve, 250));
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text: `mutated:${String(params.file_path)}`,
+					},
+				],
+			};
+		});
+		const readTool: AgentTool = {
+			name: "read",
+			description: "Read a file.",
+			parameters: Type.Object({
+				file_path: Type.String(),
+			}),
+			annotations: {
+				readOnlyHint: true,
+			},
+			execute: readExecute,
+		};
+		const writeTool: AgentTool = {
+			name: "write",
+			description: "Write a file.",
+			parameters: Type.Object({
+				file_path: Type.String(),
+			}),
+			execute: mutateExecute,
+		};
+		const repeatedReadCalls = 4;
+		let streamCount = 0;
+		mocks.createProviderStream.mockImplementation(async function* () {
+			streamCount += 1;
+			const assistant = {
+				...assistantMessage(),
+				content:
+					streamCount <= 2 ? [] : [{ type: "text" as const, text: "done" }],
+				stopReason: streamCount <= 2 ? "tool_use" : "stop",
+				timestamp: streamCount,
+			};
+			yield {
+				type: "start",
+				partial: assistant,
+			} satisfies AssistantMessageEvent;
+			if (streamCount === 1) {
+				yield {
+					type: "toolcall_end",
+					toolCall: {
+						id: "read-cache-primer-for-loop-detection",
+						name: "read",
+						arguments: { file_path: "/tmp/evalops.txt" },
+					},
+					partial: assistant,
+				} satisfies AssistantMessageEvent;
+			} else if (streamCount === 2) {
+				yield {
+					type: "toolcall_end",
+					toolCall: {
+						id: "write-pending-during-loop-detection",
+						name: "write",
+						arguments: { file_path: "/tmp/evalops.txt" },
+					},
+					partial: assistant,
+				} satisfies AssistantMessageEvent;
+				for (let index = 0; index < repeatedReadCalls; index += 1) {
+					yield {
+						type: "toolcall_end",
+						toolCall: {
+							id: `repeated-read-while-write-pending-${index + 1}`,
+							name: "read",
+							arguments: { file_path: "/tmp/evalops.txt" },
+						},
+						partial: assistant,
+					} satisfies AssistantMessageEvent;
+				}
+			}
+			yield {
+				type: "done",
+				reason: assistant.stopReason,
+				message: assistant,
+			} satisfies AssistantMessageEvent;
+		});
+		const transport = new ProviderTransport({
+			maxConcurrentToolExecutions: 2,
+		});
+		const userMessage: Message = {
+			role: "user",
+			content: "Read, mutate, then keep rereading the same file.",
+			timestamp: 1,
+		};
+		const events: AgentEvent[] = [];
+
+		try {
+			for await (const event of transport.run([userMessage], userMessage, {
+				systemPrompt: "Be concise.",
+				tools: [readTool, writeTool],
+				model: codexModel,
+			})) {
+				events.push(event);
+			}
+		} finally {
+			unsubscribe();
+		}
+
+		expect(securityEvents).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					type: "loop_detected",
+					toolName: "read",
+					metadata: expect.objectContaining({
+						action: "warn",
+						loopType: "exact",
+						repetitions: expect.any(Number),
+					}),
+				}),
+			]),
+		);
+		expect(mutateExecute).toHaveBeenCalledTimes(1);
+		const readResults = events.filter(
+			(event): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
+				event.type === "tool_execution_end" && event.toolName === "read",
+		);
+		expect(
+			readResults.map((event) =>
+				event.result.content
+					.map((item) => (item.type === "text" ? item.text : ""))
+					.join(""),
+			),
+		).toEqual(
+			Array.from(
+				{ length: 1 + repeatedReadCalls },
+				(_, index) => `read:/tmp/evalops.txt:${index + 1}`,
+			),
+		);
 	});
 
 	it("reuses provider read results only after repeated guarded-file approvals", async () => {

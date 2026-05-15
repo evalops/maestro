@@ -1633,6 +1633,7 @@ export class ProviderTransport implements AgentTransport {
 							candidateKey !== undefined &&
 							candidateKey === reusableToolResultKey &&
 							alreadyHadReusableToolResultState &&
+							!hasPendingMutatingToolExecution(pendingExecutions, tools) &&
 							hasReusableToolResultState(
 								candidateKey,
 								reusableToolResults,
