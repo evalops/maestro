@@ -82,6 +82,27 @@ def message_text(message: dict[str, Any]) -> str | None:
     return joined or None
 
 
+def task_id_from_get_path(path: str) -> str | None:
+    prefix = "/tasks/"
+    if not path.startswith(prefix):
+        return None
+    task_id = path[len(prefix) :]
+    if not task_id or "/" in task_id or ":" in task_id:
+        return None
+    return task_id
+
+
+def task_id_from_cancel_path(path: str) -> str | None:
+    prefix = "/tasks/"
+    suffix = ":cancel"
+    if not path.startswith(prefix) or not path.endswith(suffix):
+        return None
+    task_id = path[len(prefix) : -len(suffix)]
+    if not task_id or "/" in task_id or ":" in task_id:
+        return None
+    return task_id
+
+
 def agent_message(context_id: str, text: str) -> dict[str, Any]:
     return {
         "messageId": new_id("codex-a2a-message"),
@@ -428,8 +449,8 @@ class Handler(BaseHTTPRequestHandler):
                 tasks = list(TASKS.values())
             self.send_json(200, {"tasks": tasks})
             return
-        if path.startswith("/tasks/"):
-            task_id = path.removeprefix("/tasks/")
+        task_id = task_id_from_get_path(path)
+        if task_id is not None:
             with LOCK:
                 task = TASKS.get(task_id)
             if not task:
@@ -460,7 +481,15 @@ class Handler(BaseHTTPRequestHandler):
             if configuration is not None and not isinstance(configuration, dict):
                 self.error_json(400, "INVALID_REQUEST", "A2A configuration must be an object")
                 return
-            immediate = bool((configuration or {}).get("returnImmediately"))
+            return_immediately = (configuration or {}).get("returnImmediately")
+            if return_immediately is not None and not isinstance(return_immediately, bool):
+                self.error_json(
+                    400,
+                    "INVALID_REQUEST",
+                    "A2A configuration returnImmediately must be a boolean",
+                )
+                return
+            immediate = return_immediately is True
             error: tuple[int, str, str] | None = None
             with LOCK:
                 if requested_task_id:
@@ -536,8 +565,8 @@ class Handler(BaseHTTPRequestHandler):
                 task = TASKS[task_id]
             self.send_json(200, {"task": task})
             return
-        if path.startswith("/tasks/") and path.endswith(":cancel"):
-            task_id = path.removeprefix("/tasks/").removesuffix(":cancel")
+        task_id = task_id_from_cancel_path(path)
+        if task_id is not None:
             error: tuple[int, str, str] | None = None
             process: subprocess.Popen[str] | None = None
             task: dict[str, Any] | None = None
