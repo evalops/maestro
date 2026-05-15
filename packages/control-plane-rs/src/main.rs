@@ -1377,11 +1377,13 @@ fn a2a_task_metadata(
 }
 
 fn a2a_return_immediately(request: &A2ASendMessageRequest) -> Result<bool, &'static str> {
-    let Some(return_immediately) = request
-        .configuration
-        .as_ref()
-        .and_then(|configuration| configuration.get("returnImmediately"))
-    else {
+    let Some(configuration) = request.configuration.as_ref() else {
+        return Ok(false);
+    };
+    let Some(configuration) = configuration.as_object() else {
+        return Err("A2A configuration must be an object");
+    };
+    let Some(return_immediately) = configuration.get("returnImmediately") else {
         return Ok(false);
     };
     return_immediately
@@ -7455,6 +7457,29 @@ mod tests {
         assert_eq!(
             response["error"]["message"],
             "A2A configuration returnImmediately must be a boolean"
+        );
+        assert!(state.a2a_tasks.lock().await.is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_message_send_rejects_non_object_configuration() {
+        let body = r#"{"message":{"messageId":"msg-1","contextId":"ctx-1","role":"ROLE_USER","parts":[{"text":"hello","mediaType":"text/plain"}]},"configuration":"oops"}"#;
+        let request = format!(
+            "POST /message:send HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let mut initial = request.into_bytes();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (_client, mut server) = tcp_stream_pair().await;
+        let state = test_app_state_with_sessions(HashMap::new());
+
+        let response =
+            response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+
+        assert_eq!(response["error"]["code"], "INVALID_REQUEST");
+        assert_eq!(
+            response["error"]["message"],
+            "A2A configuration must be an object"
         );
         assert!(state.a2a_tasks.lock().await.is_empty());
     }
