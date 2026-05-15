@@ -421,7 +421,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/tasks":
             with LOCK:
-                self.send_json(200, {"tasks": list(TASKS.values())})
+                tasks = list(TASKS.values())
+            self.send_json(200, {"tasks": tasks})
             return
         if path.startswith("/tasks/"):
             task_id = path.removeprefix("/tasks/")
@@ -456,64 +457,68 @@ class Handler(BaseHTTPRequestHandler):
                 self.error_json(400, "INVALID_REQUEST", "A2A configuration must be an object")
                 return
             immediate = bool((configuration or {}).get("returnImmediately"))
+            error: tuple[int, str, str] | None = None
             with LOCK:
                 if requested_task_id:
                     existing = TASKS.get(requested_task_id)
                     if not existing:
-                        self.error_json(404, "TASK_NOT_FOUND", "A2A task not found")
-                        return
-                    if terminal(existing.get("status", {}).get("state")):
-                        self.error_json(
+                        error = (404, "TASK_NOT_FOUND", "A2A task not found")
+                    elif terminal(existing.get("status", {}).get("state")):
+                        error = (
                             400,
                             "UNSUPPORTED_OPERATION",
                             "A2A terminal tasks cannot accept more messages",
                         )
-                        return
-                    existing_state = existing.get("status", {}).get("state")
-                    if not accepts_message(existing_state):
-                        self.error_json(
+                    elif not accepts_message(existing.get("status", {}).get("state")):
+                        error = (
                             409,
                             "UNSUPPORTED_OPERATION",
                             "A2A task is not ready to accept another message",
                         )
-                        return
-                    existing_context_id = str(existing.get("contextId") or "").strip()
-                    if (
-                        requested_context_id
-                        and existing_context_id
-                        and requested_context_id != existing_context_id
-                    ):
-                        self.error_json(
-                            400,
-                            "INVALID_REQUEST",
-                            "A2A message contextId must match the referenced task",
-                        )
-                        return
-                    context_id = requested_context_id or existing_context_id or new_id(
-                        "codex-a2a-context"
-                    )
-                    task_id = requested_task_id
-                    history = list(existing.get("history") or [])
+                    else:
+                        existing_context_id = str(existing.get("contextId") or "").strip()
+                        if (
+                            requested_context_id
+                            and existing_context_id
+                            and requested_context_id != existing_context_id
+                        ):
+                            error = (
+                                400,
+                                "INVALID_REQUEST",
+                                "A2A message contextId must match the referenced task",
+                            )
+                        else:
+                            context_id = requested_context_id or existing_context_id or new_id(
+                                "codex-a2a-context"
+                            )
+                            task_id = requested_task_id
+                            history = list(existing.get("history") or [])
                 else:
                     context_id = requested_context_id or new_id("codex-a2a-context")
                     task_id = new_id("codex-a2a-task")
                     history = []
-                history.append(user_message(message, context_id))
-                if immediate:
-                    status_message = agent_message(context_id, "Codex accepted the A2A task.")
-                    launch_history = [*history, status_message]
-                else:
-                    status_message = agent_message(context_id, "Codex is working on the A2A task.")
-                    launch_history = list(history)
-                task = task_value(
-                    task_id,
-                    context_id,
-                    "TASK_STATE_WORKING",
-                    status_message,
-                    launch_history,
-                    metadata={"backend": "codex-exec"},
-                )
-                TASKS[task_id] = task
+                if error is None:
+                    history.append(user_message(message, context_id))
+                    if immediate:
+                        status_message = agent_message(context_id, "Codex accepted the A2A task.")
+                        launch_history = [*history, status_message]
+                    else:
+                        status_message = agent_message(
+                            context_id, "Codex is working on the A2A task."
+                        )
+                        launch_history = list(history)
+                    task = task_value(
+                        task_id,
+                        context_id,
+                        "TASK_STATE_WORKING",
+                        status_message,
+                        launch_history,
+                        metadata={"backend": "codex-exec"},
+                    )
+                    TASKS[task_id] = task
+            if error is not None:
+                self.error_json(*error)
+                return
             if immediate:
                 threading.Thread(
                     target=complete_task,
@@ -529,27 +534,33 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path.startswith("/tasks/") and path.endswith(":cancel"):
             task_id = path.removeprefix("/tasks/").removesuffix(":cancel")
+            error: tuple[int, str, str] | None = None
+            process: subprocess.Popen[str] | None = None
+            task: dict[str, Any] | None = None
             with LOCK:
                 task = TASKS.get(task_id)
                 if not task:
-                    self.error_json(404, "TASK_NOT_FOUND", "A2A task not found")
-                    return
-                if terminal(task.get("status", {}).get("state")):
-                    self.error_json(
+                    error = (404, "TASK_NOT_FOUND", "A2A task not found")
+                elif terminal(task.get("status", {}).get("state")):
+                    error = (
                         400,
                         "TASK_NOT_CANCELABLE",
                         "A2A task cannot be canceled from its current state",
                     )
-                    return
-                context_id = str(task.get("contextId") or "codex-a2a")
-                canceled = agent_message(context_id, "Task canceled")
-                task["status"] = {
-                    "state": "TASK_STATE_CANCELED",
-                    "message": canceled,
-                    "timestamp": now_iso(),
-                }
-                task["artifacts"] = []
-                process = PROCESSES.pop(task_id, None)
+                else:
+                    context_id = str(task.get("contextId") or "codex-a2a")
+                    canceled = agent_message(context_id, "Task canceled")
+                    task["status"] = {
+                        "state": "TASK_STATE_CANCELED",
+                        "message": canceled,
+                        "timestamp": now_iso(),
+                    }
+                    task["artifacts"] = []
+                    task = dict(task)
+                    process = PROCESSES.pop(task_id, None)
+            if error is not None:
+                self.error_json(*error)
+                return
             if process is not None:
                 terminate_process(process)
             self.send_json(200, task)
