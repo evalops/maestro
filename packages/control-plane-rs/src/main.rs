@@ -617,11 +617,6 @@ fn a2a_task_id_from_get_path(path: &str) -> Option<&str> {
     (!id.is_empty() && !id.contains('/') && !id.contains(':')).then_some(id)
 }
 
-fn a2a_task_id_from_cancel_path(path: &str) -> Option<&str> {
-    let id = path.strip_prefix("/tasks/")?.strip_suffix(":cancel")?;
-    (!id.is_empty() && !id.contains('/') && !id.contains(':')).then_some(id)
-}
-
 async fn handle_a2a_endpoint(
     stream: &mut TcpStream,
     initial: &mut Vec<u8>,
