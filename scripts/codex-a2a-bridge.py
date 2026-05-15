@@ -614,7 +614,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
             complete_task(task_id, context_id, prompt, launch_history)
             with LOCK:
-                task = TASKS[task_id]
+                task = TASKS.get(task_id)
+            if task is None:
+                self.error_json(410, "TASK_EXPIRED", "A2A task was pruned after completion")
+                return
             self.send_json(200, {"task": task})
             return
         task_id = task_id_from_cancel_path(path)
