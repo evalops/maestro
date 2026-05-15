@@ -1,15 +1,16 @@
-import { createInterface } from "node:readline/promises";
 import chalk from "chalk";
-import { hasOAuthCredentials, login, logout } from "../../oauth/index.js";
-import { loadOAuthCredentials } from "../../oauth/storage.js";
+import {
+	type CodexAccountReadResult,
+	createCodexAppServerClient,
+} from "../../codex/app-server-client.js";
 
 export async function handleCodexCommand(
 	subcommand?: string,
-	_params: string[] = [],
+	params: string[] = [],
 ): Promise<void> {
 	switch (subcommand) {
 		case "login":
-			await handleLogin();
+			await handleLogin(params);
 			return;
 		case "logout":
 			await handleLogout();
@@ -27,69 +28,127 @@ export async function handleCodexCommand(
 	}
 }
 
-async function promptCode(): Promise<string> {
-	const rl = createInterface({ input: process.stdin, output: process.stdout });
-	try {
-		return await rl.question(
-			"Paste the OpenAI redirect URL or authorization code: ",
-		);
-	} finally {
-		rl.close();
-	}
-}
-
-async function handleLogin(): Promise<void> {
+async function handleLogin(params: string[] = []): Promise<void> {
+	const deviceFlow =
+		params.includes("--device") || params.includes("--device-code");
 	console.log(chalk.bold("Maestro OpenAI Codex Login"));
-	await login("openai-codex", {
-		onAuthUrl: (url) => {
+	const client = createCodexAppServerClient();
+	try {
+		await client.initialize();
+		const login = await client.startChatGptLogin(
+			deviceFlow ? "device" : "browser",
+		);
+		if (isBrowserLogin(login)) {
 			console.log(
-				chalk.yellow(
-					"Open this URL in your browser to authenticate with OpenAI:",
+				chalk.yellow("Open this URL in your browser to sign in with ChatGPT:"),
+			);
+			console.log(chalk.underline(login.authUrl));
+			console.log(chalk.dim("Waiting for ChatGPT sign-in to complete..."));
+			await client.waitForLoginCompletion(login.loginId);
+		} else if (isDeviceCodeLogin(login)) {
+			console.log(chalk.yellow("Open this URL and enter the code:"));
+			console.log(chalk.underline(login.verificationUrl));
+			console.log(chalk.bold(login.userCode));
+			console.log(chalk.dim("Waiting for ChatGPT sign-in to complete..."));
+			await client.waitForLoginCompletion(login.loginId);
+		} else if (isApiKeyLogin(login)) {
+			console.log(
+				chalk.green("OpenAI Codex is already configured with an API key."),
+			);
+			console.log(
+				chalk.dim(
+					'Select provider "openai-codex" or a model like "openai-codex/gpt-5.5".',
 				),
 			);
-			console.log(chalk.underline(url));
-		},
-		onPromptCode: promptCode,
-		onStatus: (status) => console.log(chalk.dim(status)),
-	});
-	console.log(chalk.green("OpenAI Codex credentials saved successfully."));
-	console.log(
-		chalk.dim(
-			'Select provider "openai-codex" or a model like "openai-codex/gpt-5.5".',
-		),
-	);
+			return;
+		} else {
+			throw new Error(`Unsupported Codex login response: ${login.type}`);
+		}
+		const account = await client.readAccount(true);
+		console.log(chalk.green(`Signed in with ChatGPT${accountLabel(account)}.`));
+		console.log(
+			chalk.dim(
+				'Select provider "openai-codex" or a model like "openai-codex/gpt-5.5".',
+			),
+		);
+	} finally {
+		client.close();
+	}
 }
 
 async function handleLogout(): Promise<void> {
-	await logout("openai-codex");
-	console.log(chalk.green("Removed stored OpenAI Codex credentials."));
+	const client = createCodexAppServerClient();
+	try {
+		await client.initialize();
+		await client.logout();
+		console.log(chalk.green("Signed out of ChatGPT for OpenAI Codex."));
+	} finally {
+		client.close();
+	}
 }
 
 async function handleStatus(): Promise<void> {
-	if (!hasOAuthCredentials("openai-codex")) {
-		console.log(chalk.yellow("No stored OpenAI Codex credentials."));
+	const client = createCodexAppServerClient();
+	try {
+		await client.initialize();
+		const account = await client.readAccount(true);
+		if (!account.account) {
+			console.log(chalk.yellow("No ChatGPT sign-in for OpenAI Codex."));
+			console.log(
+				chalk.dim('Run "maestro codex login" to sign in with ChatGPT.'),
+			);
+			return;
+		}
 		console.log(
-			chalk.dim('Run "maestro codex login" to authenticate with OpenAI.'),
+			chalk.green(`OpenAI Codex is signed in${accountLabel(account)}.`),
 		);
-		return;
+	} finally {
+		client.close();
 	}
-	const credentials = loadOAuthCredentials("openai-codex");
-	const remainingMs = Math.max(
-		0,
-		(credentials?.expires ?? Date.now()) - Date.now(),
+}
+
+function accountLabel(state: CodexAccountReadResult): string {
+	const account = state.account;
+	if (!account || account.type !== "chatgpt") {
+		return "";
+	}
+	const plan =
+		typeof account.planType === "string" && account.planType.length > 0
+			? `, ${account.planType}`
+			: "";
+	return ` as ${account.email}${plan}`;
+}
+
+function isBrowserLogin(
+	value: unknown,
+): value is { type: "chatgpt"; loginId: string; authUrl: string } {
+	return (
+		Boolean(value && typeof value === "object") &&
+		(value as { type?: unknown }).type === "chatgpt" &&
+		typeof (value as { loginId?: unknown }).loginId === "string" &&
+		typeof (value as { authUrl?: unknown }).authUrl === "string"
 	);
-	const minutes = Math.round(remainingMs / 60_000);
-	const accountId =
-		typeof credentials?.metadata?.accountId === "string"
-			? credentials.metadata.accountId
-			: undefined;
-	console.log(chalk.green("Stored OpenAI Codex credentials detected."));
-	if (accountId) {
-		console.log(chalk.dim(`ChatGPT account id: ${accountId}`));
-	}
-	console.log(
-		chalk.dim(
-			`Access token expires in ~${minutes} minute${minutes === 1 ? "" : "s"} (auto-refresh enabled).`,
-		),
+}
+
+function isApiKeyLogin(value: unknown): value is { type: "apiKey" } {
+	return (
+		Boolean(value && typeof value === "object") &&
+		(value as { type?: unknown }).type === "apiKey"
+	);
+}
+
+function isDeviceCodeLogin(value: unknown): value is {
+	type: "chatgptDeviceCode";
+	loginId: string;
+	verificationUrl: string;
+	userCode: string;
+} {
+	return (
+		Boolean(value && typeof value === "object") &&
+		(value as { type?: unknown }).type === "chatgptDeviceCode" &&
+		typeof (value as { loginId?: unknown }).loginId === "string" &&
+		typeof (value as { verificationUrl?: unknown }).verificationUrl ===
+			"string" &&
+		typeof (value as { userCode?: unknown }).userCode === "string"
 	);
 }

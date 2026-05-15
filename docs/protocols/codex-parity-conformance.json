@@ -7,9 +7,23 @@
 			"path": "docs/MODELS.md",
 			"anchors": [
 				"openai-codex",
-				"openai-codex-responses",
-				"maestro codex login"
+				"openai-codex-app-server",
+				"Sign in with ChatGPT"
 			]
+		},
+		{
+			"area": "codex-auth-provider",
+			"path": "src/codex/app-server-client.ts",
+			"anchors": [
+				"account/read",
+				"account/login/start",
+				"account/login/completed"
+			]
+		},
+		{
+			"area": "codex-auth-provider",
+			"path": "src/agent/providers/codex-app-server.ts",
+			"anchors": ["thread/start", "turn/start", "item/agentMessage/delta"]
 		},
 		{
 			"area": "codex-auth-provider",

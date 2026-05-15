@@ -496,7 +496,9 @@ function normalizeTokenBudget(value: unknown): number | undefined {
 function modelToAppServerModel(model: RegisteredModel): MaestroAppServerModel {
 	const responsesApi =
 		model.api === "openai-responses" || model.api === "openai-codex-responses";
-	const codexBackend = model.api === "openai-codex-responses";
+	const codexBackend =
+		model.api === "openai-codex-responses" ||
+		model.api === "openai-codex-app-server";
 	return {
 		id: model.id,
 		provider: model.provider,

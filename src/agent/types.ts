@@ -51,6 +51,7 @@ import type { ToolRetryDecision, ToolRetryRequest } from "./tool-retry.js";
  * - `openai-completions` - OpenAI Chat Completions API
  * - `openai-responses` - OpenAI Responses API (newer format)
  * - `openai-codex-responses` - ChatGPT Codex Responses backend
+ * - `openai-codex-app-server` - Local Codex app-server with ChatGPT sign-in
  * - `anthropic-messages` - Anthropic Messages API
  * - `google-generative-ai` - Google Generative AI (Gemini)
  * - `google-gemini-cli` - Google Cloud Code Assist (Gemini CLI)
@@ -61,6 +62,7 @@ export type Api =
 	| "openai-completions"
 	| "openai-responses"
 	| "openai-codex-responses"
+	| "openai-codex-app-server"
 	| "anthropic-messages"
 	| "google-generative-ai"
 	| "google-gemini-cli"
@@ -1475,6 +1477,8 @@ export interface StreamOptions {
 	requestBody?: Record<string, unknown>;
 	/** Stable session id for provider-side request grouping/cache keys */
 	sessionId?: string;
+	/** Current working directory for local provider runtimes. */
+	cwd?: string;
 	/** Authentication type for the request */
 	authType?: "api-key" | "anthropic-oauth";
 	/** Optional Anthropic API-side task budget for the current turn */
@@ -1482,6 +1486,8 @@ export interface StreamOptions {
 		total: number;
 		remaining?: number;
 	};
+	/** Optional governed executor for provider-native dynamic tool callbacks. */
+	executeDynamicTool?: (toolCall: ToolCall) => Promise<AgentToolResult>;
 }
 
 /**

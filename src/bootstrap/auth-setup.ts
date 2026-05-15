@@ -54,7 +54,7 @@ export function validateCodexFlags(args: string[], command?: string): void {
 		});
 		if (codexFlagsUsed) {
 			throw new Error(
-				"Legacy Codex/ChatGPT auth flags are no longer supported. Use the openai-codex provider with `maestro codex login` or CODEX_API_KEY instead.",
+				"Legacy Codex/ChatGPT auth flags are no longer supported. Use the openai-codex provider with `maestro codex login` instead.",
 			);
 		}
 	}

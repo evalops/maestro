@@ -43,8 +43,8 @@ describe("Built-in model registry", () => {
 		const model = getModel("openai-codex", "gpt-5.5");
 		expect(model).toBeTruthy();
 		expect(model?.provider).toBe("openai-codex");
-		expect(model?.api).toBe("openai-codex-responses");
-		expect(model?.baseUrl).toBe("https://chatgpt.com/backend-api");
+		expect(model?.api).toBe("openai-codex-app-server");
+		expect(model?.baseUrl).toBe("codex-app-server://local");
 		expect(model?.contextWindow).toBe(272000);
 		expect(model?.maxTokens).toBe(128000);
 	});

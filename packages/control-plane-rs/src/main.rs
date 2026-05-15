@@ -6866,6 +6866,13 @@ mod tests {
 
         assert_eq!(model.provider, "openai");
         assert_eq!(model.id, "gpt-5.1-codex-max");
+        assert_eq!(model.api, "openai-responses");
+
+        let codex_app_server = resolve_model("openai-codex/gpt-5.1-codex-max", &registry)
+            .expect("codex app-server model should resolve");
+        assert_eq!(codex_app_server.provider, "openai-codex");
+        assert_eq!(codex_app_server.id, "gpt-5.1-codex-max");
+        assert_eq!(codex_app_server.api, "openai-codex-app-server");
     }
 
     #[test]
@@ -6961,8 +6968,13 @@ mod tests {
 
         let codex = resolve_model("openai/gpt-5.1-codex-max", &registry).expect("codex model");
         assert_eq!(codex.max_tokens, 128_000);
-        assert_eq!(codex.api, "openai-codex-responses");
+        assert_eq!(codex.api, "openai-responses");
         assert!(codex.capabilities.reasoning);
+
+        let codex_app_server =
+            resolve_model("openai-codex/gpt-5.5", &registry).expect("codex app-server model");
+        assert_eq!(codex_app_server.api, "openai-codex-app-server");
+        assert_eq!(codex_app_server.max_tokens, 128_000);
 
         let llama = resolve_model(
             "together-ai/meta-llama/Llama-3.3-70B-Instruct-Turbo",

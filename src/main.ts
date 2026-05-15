@@ -937,7 +937,7 @@ export async function main(args: string[]) {
 
 	if (parsed.command === "codex") {
 		const { handleCodexCommand } = await import("./cli/commands/codex.js");
-		await handleCodexCommand(parsed.subcommand, parsed.messages);
+		await handleCodexCommand(parsed.subcommand, parsed.commandArgs ?? []);
 		return;
 	}
 

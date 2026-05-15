@@ -58,7 +58,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 
 Maestro also supports OpenAI, OpenAI Codex with ChatGPT login, Google, OpenRouter, Azure OpenAI, GitHub Copilot, Groq, xAI, Cerebras, and managed EvalOps auth. See [Models](docs/MODELS.md) for provider-specific setup and overrides.
 
-For Codex subscription models, run `maestro codex login` or `/login openai-codex`, then select models under the `openai-codex` provider such as `openai-codex/gpt-5.5`.
+For Codex subscription models, run `maestro codex login` to Sign in with ChatGPT through the Codex app-server, then select models under the `openai-codex` provider such as `openai-codex/gpt-5.5`.
 
 2. Launch the interface you want:
 
