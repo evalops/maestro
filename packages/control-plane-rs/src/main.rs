@@ -1006,6 +1006,10 @@ async fn handle_a2a_message_send(
             "A2A message must contain at least one text part",
         );
     };
+    let return_immediately = match a2a_return_immediately(&request) {
+        Ok(value) => value,
+        Err(error) => return a2a_error_response(400, "INVALID_REQUEST", error),
+    };
 
     let metadata = a2a_task_metadata(head, &request, auth);
     let target = match claim_a2a_send_task(state, &request, head, auth, metadata).await {
@@ -1027,7 +1031,7 @@ async fn handle_a2a_message_send(
         state.a2a_cancel_senders.lock().await.remove(&task_id);
         return json_response(200, &serde_json::json!({ "task": task }));
     }
-    if a2a_return_immediately(&request) {
+    if return_immediately {
         let accepted_message = a2a_agent_message(&context_id, "Maestro accepted the A2A task.");
         let mut accepted_history = history.clone();
         accepted_history.push(accepted_message.clone());
@@ -1373,13 +1377,17 @@ fn a2a_task_metadata(
     Value::Object(metadata)
 }
 
-fn a2a_return_immediately(request: &A2ASendMessageRequest) -> bool {
-    request
+fn a2a_return_immediately(request: &A2ASendMessageRequest) -> Result<bool, &'static str> {
+    let Some(return_immediately) = request
         .configuration
         .as_ref()
         .and_then(|configuration| configuration.get("returnImmediately"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
+    else {
+        return Ok(false);
+    };
+    return_immediately
+        .as_bool()
+        .ok_or("A2A configuration returnImmediately must be a boolean")
 }
 
 async fn run_a2a_native_turn(
@@ -7282,7 +7290,7 @@ mod tests {
             metadata: None,
         };
 
-        assert!(a2a_return_immediately(&request));
+        assert!(a2a_return_immediately(&request).expect("configuration should be valid"));
     }
 
     #[test]
@@ -7375,6 +7383,29 @@ mod tests {
         } else {
             env::remove_var("MAESTRO_A2A_FAKE_RESPONSE");
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_message_send_rejects_non_boolean_return_immediately() {
+        let body = r#"{"message":{"messageId":"msg-1","contextId":"ctx-1","role":"ROLE_USER","parts":[{"text":"hello","mediaType":"text/plain"}]},"configuration":{"returnImmediately":"true"}}"#;
+        let request = format!(
+            "POST /message:send HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let mut initial = request.into_bytes();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (_client, mut server) = tcp_stream_pair().await;
+        let state = test_app_state_with_sessions(HashMap::new());
+
+        let response =
+            response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+
+        assert_eq!(response["error"]["code"], "INVALID_REQUEST");
+        assert_eq!(
+            response["error"]["message"],
+            "A2A configuration returnImmediately must be a boolean"
+        );
+        assert!(state.a2a_tasks.lock().await.is_empty());
     }
 
     #[tokio::test(flavor = "current_thread")]
