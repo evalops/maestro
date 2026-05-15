@@ -554,30 +554,32 @@ class Handler(BaseHTTPRequestHandler):
                             "UNSUPPORTED_OPERATION",
                             "A2A terminal tasks cannot accept more messages",
                         )
-                    elif not accepts_message(existing.get("status", {}).get("state")):
-                        error = (
-                            409,
-                            "UNSUPPORTED_OPERATION",
-                            "A2A task is not ready to accept another message",
-                        )
                     else:
-                        existing_context_id = str(existing.get("contextId") or "").strip()
-                        if (
-                            requested_context_id
-                            and existing_context_id
-                            and requested_context_id != existing_context_id
-                        ):
+                        existing_state = existing.get("status", {}).get("state")
+                        if not accepts_message(existing_state):
                             error = (
-                                400,
-                                "INVALID_REQUEST",
-                                "A2A message contextId must match the referenced task",
+                                409,
+                                "UNSUPPORTED_OPERATION",
+                                "A2A task is not ready to accept another message",
                             )
                         else:
-                            context_id = requested_context_id or existing_context_id or new_id(
-                                "codex-a2a-context"
-                            )
-                            task_id = requested_task_id
-                            history = list(existing.get("history") or [])
+                            existing_context_id = str(existing.get("contextId") or "").strip()
+                            if (
+                                requested_context_id
+                                and existing_context_id
+                                and requested_context_id != existing_context_id
+                            ):
+                                error = (
+                                    400,
+                                    "INVALID_REQUEST",
+                                    "A2A message contextId must match the referenced task",
+                                )
+                            else:
+                                context_id = requested_context_id or existing_context_id or new_id(
+                                    "codex-a2a-context"
+                                )
+                                task_id = requested_task_id
+                                history = list(existing.get("history") or [])
                 else:
                     context_id = requested_context_id or new_id("codex-a2a-context")
                     task_id = new_id("codex-a2a-task")

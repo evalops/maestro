@@ -13,7 +13,7 @@ vi.mock("../../src/models/registry.js", () => ({
 	}),
 	getSupportedProviders: vi
 		.fn()
-		.mockReturnValue(["anthropic", "openai", "bedrock"]),
+		.mockReturnValue(["anthropic", "openai", "bedrock", "openai-codex"]),
 	resolveModel: vi.fn().mockImplementation((provider: string, id: string) => ({
 		api: "anthropic-messages",
 		provider,
@@ -148,6 +148,43 @@ describe("resolveModelFromArgs", () => {
 		});
 
 		expect(mockRequireCredential).toHaveBeenCalledWith("openai", false);
+	});
+
+	it("does not require credentials for Codex app-server models", async () => {
+		(resolveModel as ReturnType<typeof vi.fn>).mockReturnValueOnce({
+			api: "openai-codex-app-server",
+			provider: "openai-codex",
+			id: "gpt-5.5",
+			name: "gpt-5.5",
+			contextWindow: 200000,
+		});
+
+		const result = await resolveModelFromArgs({
+			parsedProvider: "openai-codex",
+			parsedModel: "gpt-5.5",
+			requireCredential: mockRequireCredential,
+		});
+
+		expect(result.model.api).toBe("openai-codex-app-server");
+		expect(mockRequireCredential).not.toHaveBeenCalled();
+	});
+
+	it("still requires credentials for legacy Codex responses models", async () => {
+		(resolveModel as ReturnType<typeof vi.fn>).mockReturnValueOnce({
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			id: "gpt-5-codex",
+			name: "gpt-5-codex",
+			contextWindow: 200000,
+		});
+
+		await resolveModelFromArgs({
+			parsedProvider: "openai-codex",
+			parsedModel: "gpt-5-codex",
+			requireCredential: mockRequireCredential,
+		});
+
+		expect(mockRequireCredential).toHaveBeenCalledWith("openai-codex", false);
 	});
 
 	it("propagates credential errors", async () => {

@@ -235,7 +235,7 @@ describe("Maestro app-server session API", () => {
 					provider: "openai-codex",
 					capabilities: expect.objectContaining({
 						reasoning: true,
-						responsesApi: true,
+						responsesApi: false,
 						codexBackend: true,
 					}),
 					defaultReasoningEffort: "medium",
@@ -257,7 +257,7 @@ describe("Maestro app-server session API", () => {
 					id: "openai-codex",
 					capabilities: expect.objectContaining({
 						reasoning: true,
-						responsesApi: true,
+						responsesApi: false,
 						codexBackend: true,
 					}),
 				},

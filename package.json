@@ -51,7 +51,8 @@
     "check:scripted-scenario-fixtures": "tsx scripts/check-scripted-scenario-fixtures.ts",
     "check:scenario-replay-gate": "node scripts/run-scenario-replay-gate.mjs",
     "check:codex-parity": "node scripts/check-codex-parity-conformance.mjs",
-    "lint:evals": "bun run lint:headless-proto && node scripts/verify-evals.js && node scripts/verify-tool-versions.js && node scripts/validate-system-paths.js && node scripts/validate-package-boundaries.js && node scripts/validate-public-package-deps.js && node scripts/check-public-surface-boundary.mjs && npm run check:context-manifest && npm run check:session-wire-contract && npm run check:session-replay-fixtures && npm run check:agent-trajectory-fixtures && npm run check:agent-trajectory-replay-fixtures && npm run check:agent-trajectory-score-fixtures && npm run check:agent-trajectory-inspection-fixtures && npm run check:agent-trajectory-scenario-fixtures && npm run check:scripted-scenario-fixtures && node scripts/session-wire-format-codegen.mjs --check && node scripts/headless-protocol-codegen.mjs --check && npm run check:drift-surfaces && npm run check:staged-rollout && npm run check:codex-parity && npm run developer-surface:check",
+    "check:codex-operating-layer": "node scripts/check-codex-operating-layer-conformance.mjs",
+    "lint:evals": "bun run lint:headless-proto && node scripts/verify-evals.js && node scripts/verify-tool-versions.js && node scripts/validate-system-paths.js && node scripts/validate-package-boundaries.js && node scripts/validate-public-package-deps.js && node scripts/check-public-surface-boundary.mjs && npm run check:context-manifest && npm run check:session-wire-contract && npm run check:session-replay-fixtures && npm run check:agent-trajectory-fixtures && npm run check:agent-trajectory-replay-fixtures && npm run check:agent-trajectory-score-fixtures && npm run check:agent-trajectory-inspection-fixtures && npm run check:agent-trajectory-scenario-fixtures && npm run check:scripted-scenario-fixtures && node scripts/session-wire-format-codegen.mjs --check && node scripts/headless-protocol-codegen.mjs --check && npm run check:drift-surfaces && npm run check:staged-rollout && npm run check:codex-parity && npm run check:codex-operating-layer && npm run developer-surface:check",
     "platform:sdk-smoke": "tsx scripts/check-platform-sdk-contract.ts",
     "platform:agentruntime-e2e": "tsx scripts/smoke-platform-agentruntime-lifecycle.ts",
     "platform:timeline-e2e": "tsx scripts/smoke-platform-timeline-e2e.ts",
@@ -103,6 +104,7 @@
     "verify": "npm run format && npm run lint && npm run test && npm run build && npm run smoke && npm run telemetry:report",
     "smoke": "node scripts/smoke-cli.js",
     "smoke:local-e2e": "node scripts/smoke-cli.js",
+    "smoke:codex-app-server-live": "node scripts/smoke-codex-app-server-live.mjs",
     "smoke:event-bus": "tsx scripts/smoke-maestro-event-bus.ts",
     "smoke:a2a-local": "tsx scripts/smoke-maestro-a2a-local.ts",
     "a2a:codex-bridge": "python3 scripts/codex-a2a-bridge.py",
@@ -269,6 +271,7 @@
   "packageManager": "bun@1.3.6",
   "trustedDependencies": [
     "electron",
+    "tree-sitter",
     "tree-sitter-bash"
   ]
 }

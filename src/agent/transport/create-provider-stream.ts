@@ -77,6 +77,22 @@ export async function* createProviderStream(
 		return;
 	}
 
+	if (model.api === "openai-codex-app-server") {
+		const { streamCodexAppServer } = await import(
+			"../providers/codex-app-server.js"
+		);
+		yield* streamCodexAppServer(
+			model as Model<"openai-codex-app-server">,
+			context,
+			{
+				...options,
+				reasoningEffort: reasoning.reasoning,
+				reasoningSummary: reasoning.reasoningSummary,
+			},
+		);
+		return;
+	}
+
 	if (model.api === "google-generative-ai") {
 		const { streamGoogle } = await import("../providers/google.js");
 		yield* streamGoogle(model as Model<"google-generative-ai">, context, {

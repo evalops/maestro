@@ -145,6 +145,7 @@ export function printHelp(
 
   # Use Codex subscription models after \`maestro codex login\`
   maestro --provider openai-codex --model gpt-5.5 "Plan this migration"
+  maestro codex doctor
 
   # Bootstrap EvalOps login, API key, and agent registration in one flow
   maestro init

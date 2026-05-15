@@ -107,10 +107,6 @@ export async function resolveModelFromArgs(params: {
 		);
 	}
 
-	if (provider !== "scripted-replay") {
-		await requireCredential(provider, false);
-	}
-
 	// Resolve model with policy check
 	let model: ReturnType<typeof resolveModel> | undefined;
 	try {
@@ -126,6 +122,13 @@ export async function resolveModelFromArgs(params: {
 		throw new Error(
 			`Unknown model "${provider}/${modelId}". Check your models config.`,
 		);
+	}
+
+	if (
+		provider !== "scripted-replay" &&
+		model.api !== "openai-codex-app-server"
+	) {
+		await requireCredential(provider, false);
 	}
 
 	return { provider, modelId, model };

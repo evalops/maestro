@@ -937,7 +937,7 @@ export async function main(args: string[]) {
 
 	if (parsed.command === "codex") {
 		const { handleCodexCommand } = await import("./cli/commands/codex.js");
-		await handleCodexCommand(parsed.subcommand, parsed.messages);
+		await handleCodexCommand(parsed.subcommand, parsed.commandArgs ?? []);
 		return;
 	}
 
@@ -1350,6 +1350,7 @@ export async function main(args: string[]) {
 		toolsResult = await createToolsAndSandbox({
 			parsedTools: parsed.tools,
 			parsedSandbox: parsed.sandbox,
+			modelApi: model.api,
 			cwd: process.cwd(),
 		});
 	} catch (error) {
@@ -1378,7 +1379,11 @@ export async function main(args: string[]) {
 			? "local"
 			: (sandboxMode ?? null)
 		: "none";
-	const systemPromptToolNames = parsed.tools;
+	const systemPromptToolNames =
+		parsed.tools ??
+		(model.api === "openai-codex-app-server"
+			? toolsResult.baseTools.map((tool) => tool.name)
+			: undefined);
 	const runtimeConstraints = detectRuntimeConstraintContext({
 		cwd: process.cwd(),
 		sandboxMode: resolvedConstraintSandboxMode,

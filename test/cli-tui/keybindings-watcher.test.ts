@@ -91,6 +91,7 @@ describe("tui keybindings watcher", () => {
 			JSON.stringify({
 				version: 1,
 				bindings: {
+					"edit-last-follow-up": "alt+up",
 					"external-editor": "shift+left",
 				},
 			}),

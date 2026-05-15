@@ -1,0 +1,46 @@
+{
+	"source": {
+		"repo": "openai/codex",
+		"commit": "5d30764fe9d3c1dad4681c16b190050a7e20447a",
+		"files": [
+			"codex-rs/protocol/src/dynamic_tools.rs",
+			"codex-rs/app-server/src/request_processors/thread_processor.rs",
+			"codex-rs/app-server-protocol/src/protocol/v2/item.rs"
+		]
+	},
+	"dynamicToolSpec": {
+		"requiredFields": ["name", "description", "inputSchema"],
+		"optionalFields": ["namespace", "deferLoading"],
+		"nameMaxLength": 128,
+		"namespaceMaxLength": 64,
+		"identifierPattern": "^[a-zA-Z0-9_-]+$",
+		"reservedNames": ["mcp"],
+		"reservedNamespaces": [
+			"api_tool",
+			"browser",
+			"computer",
+			"container",
+			"file_search",
+			"functions",
+			"image_gen",
+			"multi_tool_use",
+			"python",
+			"python_user_visible",
+			"submodel_delegator",
+			"terminal",
+			"tool_search",
+			"web"
+		],
+		"reservedNamePrefixes": ["mcp__"],
+		"deferLoadingRequiresNamespace": true
+	},
+	"responsesSchema": {
+		"rootType": "object",
+		"unsupportedTopLevelKeywords": ["anyOf", "oneOf", "allOf", "enum", "not"]
+	},
+	"dynamicToolCall": {
+		"method": "item/tool/call",
+		"requiredParams": ["threadId", "turnId", "callId", "tool", "arguments"],
+		"responseContentItemTypes": ["inputText", "inputImage"]
+	}
+}

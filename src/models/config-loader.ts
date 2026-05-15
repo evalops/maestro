@@ -61,6 +61,7 @@ export const modelSchema = Type.Object({
 			Type.Literal("openai-completions"),
 			Type.Literal("openai-responses"),
 			Type.Literal("openai-codex-responses"),
+			Type.Literal("openai-codex-app-server"),
 			Type.Literal("anthropic-messages"),
 			Type.Literal("google-generative-ai"),
 			Type.Literal("google-gemini-cli"),

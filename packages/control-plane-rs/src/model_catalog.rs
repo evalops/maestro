@@ -282,12 +282,10 @@ fn supported_parameter(model: &Value, parameter: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn default_api_for_provider_model(provider: &str, model_id: &str) -> &'static str {
+fn default_api_for_provider_model(provider: &str, _model_id: &str) -> &'static str {
     match provider {
         "anthropic" => "anthropic-messages",
-        "openai" | "azure-openai" | "azure" if model_id.contains("codex") => {
-            "openai-codex-responses"
-        }
+        "openai-codex" => "openai-codex-app-server",
         "openai" | "azure-openai" | "azure" => "openai-responses",
         "openrouter" => "openai-completions",
         "google" | "google-ai" | "gemini" => "google",
@@ -521,13 +519,13 @@ pub(crate) fn resolve_model(input: &str, registry: &ModelRegistry) -> Option<Mod
 }
 
 pub(crate) fn builtin_models() -> Vec<ModelInfo> {
-    vec![
+    let mut models = vec![
         primary_builtin_model(),
         ModelInfo {
             id: "gpt-5.1-codex-max".to_string(),
             provider: "openai".to_string(),
             name: "GPT-5.1 Codex Max".to_string(),
-            api: "openai-codex-responses".to_string(),
+            api: "openai-responses".to_string(),
             context_window: 400_000,
             max_tokens: 128_000,
             reasoning: true,
@@ -544,5 +542,152 @@ pub(crate) fn builtin_models() -> Vec<ModelInfo> {
                 reasoning: true,
             },
         },
+    ];
+    models.extend(codex_app_server_builtin_models());
+    models
+}
+
+fn codex_app_server_builtin_models() -> Vec<ModelInfo> {
+    vec![
+        codex_app_server_model(
+            "gpt-5.1",
+            "GPT-5.1 (Codex)",
+            272_000,
+            128_000,
+            ModelCost {
+                input: 1.25,
+                output: 10.0,
+                cache_read: 0.125,
+                cache_write: 0.0,
+            },
+        ),
+        codex_app_server_model(
+            "gpt-5.1-codex-max",
+            "GPT-5.1 Codex Max",
+            272_000,
+            128_000,
+            ModelCost {
+                input: 1.25,
+                output: 10.0,
+                cache_read: 0.125,
+                cache_write: 0.0,
+            },
+        ),
+        codex_app_server_model(
+            "gpt-5.1-codex-mini",
+            "GPT-5.1 Codex Mini",
+            272_000,
+            128_000,
+            ModelCost {
+                input: 0.25,
+                output: 2.0,
+                cache_read: 0.025,
+                cache_write: 0.0,
+            },
+        ),
+        codex_app_server_model(
+            "gpt-5.2",
+            "GPT-5.2 (Codex)",
+            272_000,
+            128_000,
+            ModelCost {
+                input: 1.75,
+                output: 14.0,
+                cache_read: 0.175,
+                cache_write: 0.0,
+            },
+        ),
+        codex_app_server_model(
+            "gpt-5.2-codex",
+            "GPT-5.2 Codex",
+            272_000,
+            128_000,
+            ModelCost {
+                input: 1.75,
+                output: 14.0,
+                cache_read: 0.175,
+                cache_write: 0.0,
+            },
+        ),
+        codex_app_server_model(
+            "gpt-5.3-codex",
+            "GPT-5.3 Codex",
+            272_000,
+            128_000,
+            ModelCost {
+                input: 1.75,
+                output: 14.0,
+                cache_read: 0.175,
+                cache_write: 0.0,
+            },
+        ),
+        codex_app_server_model(
+            "gpt-5.3-codex-spark",
+            "GPT-5.3 Codex Spark",
+            128_000,
+            128_000,
+            zero_model_cost(),
+        ),
+        codex_app_server_model(
+            "gpt-5.4",
+            "GPT-5.4 (Codex)",
+            272_000,
+            128_000,
+            ModelCost {
+                input: 2.5,
+                output: 15.0,
+                cache_read: 0.25,
+                cache_write: 0.0,
+            },
+        ),
+        codex_app_server_model(
+            "gpt-5.4-mini",
+            "GPT-5.4 Mini (Codex)",
+            272_000,
+            128_000,
+            ModelCost {
+                input: 0.75,
+                output: 4.5,
+                cache_read: 0.075,
+                cache_write: 0.0,
+            },
+        ),
+        codex_app_server_model(
+            "gpt-5.5",
+            "GPT-5.5 (Codex)",
+            272_000,
+            128_000,
+            ModelCost {
+                input: 5.0,
+                output: 30.0,
+                cache_read: 0.5,
+                cache_write: 0.0,
+            },
+        ),
     ]
+}
+
+fn codex_app_server_model(
+    id: &str,
+    name: &str,
+    context_window: u32,
+    max_tokens: u32,
+    cost: ModelCost,
+) -> ModelInfo {
+    ModelInfo {
+        id: id.to_string(),
+        provider: "openai-codex".to_string(),
+        name: name.to_string(),
+        api: "openai-codex-app-server".to_string(),
+        context_window,
+        max_tokens,
+        reasoning: true,
+        cost,
+        capabilities: ModelCapabilities {
+            streaming: true,
+            tools: true,
+            vision: true,
+            reasoning: true,
+        },
+    }
 }

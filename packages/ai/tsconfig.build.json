@@ -37,6 +37,7 @@
 		"../../src/config/toml-config.ts",
 		"../../src/context/manifest-types.ts",
 		"../../src/connectors/**/*.ts",
+		"../../src/codex/**/*.ts",
 		"../../src/evalops/env-aliases.ts",
 		"../../src/evalops/managed-context.ts",
 		"../../src/oauth/**/*.ts",
