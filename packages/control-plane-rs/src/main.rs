@@ -17,7 +17,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::process::Command;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, watch, Mutex};
 
 mod auth;
 mod http;
@@ -49,9 +49,15 @@ const MAX_EXTRACT_JSON_BODY_BYTES: usize = 72 * 1024 * 1024;
 const DEFAULT_EXTRACT_MAX_CHARS: usize = 200_000;
 const MAX_EXTRACT_INPUT_BYTES: usize = 50 * 1024 * 1024;
 const MAX_PROJECT_ONBOARDING_IMPRESSIONS: u8 = 4;
+const A2A_PROTOCOL_VERSION: &str = "1.0";
+const A2A_DEFAULT_TURN_TIMEOUT_MS: u64 = 180_000;
+const A2A_DEFAULT_RESPONSE_END_SETTLE_MS: u64 = 250;
+const A2A_TERMINAL_TASK_STORE_LIMIT: usize = 128;
 static ATTACHMENT_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
 type PendingToolResponseSender = mpsc::UnboundedSender<(String, bool, Option<ToolResult>)>;
+type A2ACancelSender = watch::Sender<bool>;
+type A2ACancelReceiver = watch::Receiver<bool>;
 #[derive(Debug, Clone)]
 struct Config {
     listen_host: String,
@@ -151,6 +157,8 @@ struct AppState {
     shared_sessions: Arc<Mutex<HashMap<String, SharedSessionGrant>>>,
     approval_modes: Arc<Mutex<HashMap<String, String>>>,
     pending_tool_responses: Arc<Mutex<HashMap<String, PendingToolResponseSender>>>,
+    a2a_tasks: Arc<Mutex<HashMap<String, Value>>>,
+    a2a_cancel_senders: Arc<Mutex<HashMap<String, A2ACancelSender>>>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -295,6 +303,8 @@ async fn main() -> anyhow::Result<()> {
         shared_sessions: Arc::new(Mutex::new(shared_sessions)),
         approval_modes: Arc::new(Mutex::new(HashMap::new())),
         pending_tool_responses: Arc::new(Mutex::new(HashMap::new())),
+        a2a_tasks: Arc::new(Mutex::new(HashMap::new())),
+        a2a_cancel_senders: Arc::new(Mutex::new(HashMap::new())),
     };
 
     loop {
@@ -327,6 +337,16 @@ async fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<(),
 
         if is_chat_endpoint(&head) {
             return handle_chat_endpoint(stream, initial, head, state).await;
+        }
+
+        if is_a2a_endpoint(&head) {
+            let response = handle_a2a_endpoint(&mut stream, &mut initial, head, &state).await;
+            stream
+                .write_all(&response)
+                .await
+                .map_err(|error| error.to_string())?;
+            let _ = stream.shutdown().await;
+            return Ok(());
         }
 
         if is_local_endpoint(&head) {
@@ -506,6 +526,1145 @@ fn pending_request_id_from_resume_path(path: &str) -> Option<&str> {
         return None;
     }
     Some(request_id)
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct A2APartBody {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    data: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    metadata: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    filename: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    media_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct A2AMessageBody {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    context_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    role: Option<String>,
+    #[serde(default)]
+    parts: Vec<A2APartBody>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    metadata: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    extensions: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reference_task_ids: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct A2ASendMessageRequest {
+    message: A2AMessageBody,
+    #[serde(default)]
+    configuration: Option<Value>,
+    #[serde(default)]
+    metadata: Option<Value>,
+}
+
+#[derive(Debug, Default)]
+struct A2ATurnOutput {
+    assistant_text: String,
+    thinking_text: String,
+    usage: Option<TokenUsage>,
+    tools: Vec<Value>,
+}
+
+enum A2ATurnResult {
+    Completed(A2ATurnOutput),
+    Canceled,
+}
+
+#[derive(Debug)]
+struct A2ASendTarget {
+    task_id: String,
+    context_id: String,
+    history: Vec<Value>,
+    previous_task: Option<Value>,
+    metadata: Value,
+}
+
+fn is_a2a_endpoint(head: &RequestHead) -> bool {
+    if head.method == "OPTIONS" {
+        return head.path == "/.well-known/agent-card.json"
+            || head.path == "/message:send"
+            || head.path == "/tasks"
+            || head.path.starts_with("/tasks/");
+    }
+    matches!(
+        (head.method.as_str(), head.path.as_str()),
+        ("GET", "/.well-known/agent-card.json") | ("POST", "/message:send") | ("GET", "/tasks")
+    ) || (head.method == "GET" && a2a_task_id_from_get_path(&head.path).is_some())
+        || (head.method == "POST" && a2a_task_id_from_cancel_path(&head.path).is_some())
+}
+
+fn a2a_task_id_from_get_path(path: &str) -> Option<&str> {
+    let id = path.strip_prefix("/tasks/")?;
+    (!id.is_empty() && !id.contains('/') && !id.contains(':')).then_some(id)
+}
+
+fn validate_a2a_protocol_version(head: &RequestHead) -> Result<(), Vec<u8>> {
+    let Some(version) = a2a_requested_protocol_version(head) else {
+        return Ok(());
+    };
+    let version = version.trim();
+    if version == A2A_PROTOCOL_VERSION {
+        Ok(())
+    } else {
+        let message =
+            format!("Unsupported A2A protocol version {version}; expected {A2A_PROTOCOL_VERSION}");
+        Err(a2a_error_response(400, "UNSUPPORTED_VERSION", &message))
+    }
+}
+
+fn a2a_requested_protocol_version(head: &RequestHead) -> Option<&str> {
+    head.headers
+        .get("a2a-version")
+        .and_then(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .find(|part| !part.is_empty())
+        })
+        .or_else(|| head.query.get("a2a-version").map(String::as_str))
+        .or_else(|| head.query.get("A2A-Version").map(String::as_str))
+        .or_else(|| head.query.get("a2aVersion").map(String::as_str))
+}
+
+async fn handle_a2a_endpoint(
+    stream: &mut TcpStream,
+    initial: &mut Vec<u8>,
+    head: RequestHead,
+    state: &AppState,
+) -> Vec<u8> {
+    if head.method == "OPTIONS" {
+        return response(204, "text/plain; charset=utf-8", &[]);
+    }
+
+    if let Err(response) = validate_a2a_protocol_version(&head) {
+        return response;
+    }
+
+    if let Err(response) = validate_csrf(&head, &state.config) {
+        return response;
+    }
+
+    if head.method == "GET" && head.path == "/.well-known/agent-card.json" {
+        return json_response(200, &a2a_agent_card(&head, &state.config));
+    }
+
+    let Some(auth) = auth_context(&head, &state.config) else {
+        return json_response(401, &serde_json::json!({ "error": "Unauthorized" }));
+    };
+
+    if head.method == "GET" && head.path == "/tasks" {
+        let tasks = state
+            .a2a_tasks
+            .lock()
+            .await
+            .values()
+            .filter(|task| a2a_task_visible_to_auth(task, &auth))
+            .cloned()
+            .collect::<Vec<_>>();
+        return json_response(200, &serde_json::json!({ "tasks": tasks }));
+    }
+
+    if head.method == "GET" {
+        if let Some(task_id) = a2a_task_id_from_get_path(&head.path) {
+            let tasks = state.a2a_tasks.lock().await;
+            return tasks.get(task_id).map_or_else(
+                || a2a_error_response(404, "TASK_NOT_FOUND", "A2A task not found"),
+                |task| {
+                    if a2a_task_visible_to_auth(task, &auth) {
+                        json_response(200, task)
+                    } else {
+                        a2a_error_response(404, "TASK_NOT_FOUND", "A2A task not found")
+                    }
+                },
+            );
+        }
+    }
+
+    if head.method == "POST" {
+        if let Some(task_id) = a2a_task_id_from_cancel_path(&head.path) {
+            return match cancel_a2a_task(state, task_id, &auth).await {
+                Ok(task) => json_response(200, &task),
+                Err(response) => response,
+            };
+        }
+    }
+
+    if head.method == "POST" && head.path == "/message:send" {
+        return handle_a2a_message_send(stream, initial, &head, state, &auth).await;
+    }
+
+    a2a_error_response(404, "NOT_FOUND", "A2A endpoint not found")
+}
+
+async fn cancel_a2a_task(
+    state: &AppState,
+    task_id: &str,
+    auth: &AuthContext,
+) -> Result<Value, Vec<u8>> {
+    let mut tasks = state.a2a_tasks.lock().await;
+    let Some(task) = tasks.get_mut(task_id) else {
+        return Err(a2a_error_response(
+            404,
+            "TASK_NOT_FOUND",
+            "A2A task not found",
+        ));
+    };
+    if !a2a_task_visible_to_auth(task, auth) {
+        return Err(a2a_error_response(
+            404,
+            "TASK_NOT_FOUND",
+            "A2A task not found",
+        ));
+    }
+    if a2a_task_is_terminal(task) {
+        return Err(a2a_error_response(
+            400,
+            "TASK_NOT_CANCELABLE",
+            "A2A task cannot be canceled from its current state",
+        ));
+    }
+    let context_id = task
+        .get("contextId")
+        .and_then(Value::as_str)
+        .unwrap_or("a2a")
+        .to_string();
+    task["status"] = serde_json::json!({
+        "state": "TASK_STATE_CANCELED",
+        "message": a2a_agent_message(&context_id, "Task canceled"),
+        "timestamp": now_rfc3339()
+    });
+    task["artifacts"] = serde_json::json!([]);
+    let task = task.clone();
+    prune_a2a_terminal_tasks(&mut tasks);
+    drop(tasks);
+
+    if let Some(sender) = state.a2a_cancel_senders.lock().await.remove(task_id) {
+        let _ = sender.send(true);
+    }
+
+    Ok(task)
+}
+
+fn a2a_task_status_state(task: &Value) -> Option<&str> {
+    task.get("status")
+        .and_then(|status| status.get("state"))
+        .and_then(Value::as_str)
+}
+
+fn a2a_task_status_timestamp(task: &Value) -> Option<&str> {
+    task.get("status")
+        .and_then(|status| status.get("timestamp"))
+        .and_then(Value::as_str)
+}
+
+fn a2a_task_is_terminal(task: &Value) -> bool {
+    matches!(
+        a2a_task_status_state(task),
+        Some(
+            "TASK_STATE_COMPLETED"
+                | "TASK_STATE_FAILED"
+                | "TASK_STATE_CANCELED"
+                | "TASK_STATE_REJECTED"
+        )
+    )
+}
+
+fn a2a_task_accepts_message(task: &Value) -> bool {
+    a2a_task_status_state(task) == Some("TASK_STATE_INPUT_REQUIRED")
+}
+
+fn a2a_task_owner_subject(task: &Value) -> Option<&str> {
+    task.get("metadata")
+        .and_then(|metadata| metadata.get("ownerSubject"))
+        .and_then(Value::as_str)
+}
+
+fn a2a_task_visible_to_auth(task: &Value, auth: &AuthContext) -> bool {
+    if auth.unrestricted {
+        return true;
+    }
+    auth.subject
+        .as_deref()
+        .is_some_and(|subject| a2a_task_owner_subject(task) == Some(subject))
+}
+
+async fn claim_a2a_send_task(
+    state: &AppState,
+    request: &A2ASendMessageRequest,
+    head: &RequestHead,
+    auth: &AuthContext,
+    metadata: Value,
+) -> Result<A2ASendTarget, Vec<u8>> {
+    let requested_task_id = request
+        .message
+        .task_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|task_id| !task_id.is_empty());
+    let explicit_context_id = request
+        .message
+        .context_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|context_id| !context_id.is_empty())
+        .map(str::to_string);
+
+    let mut tasks = state.a2a_tasks.lock().await;
+    let (task_id, context_id, mut history, previous_task, task_metadata) =
+        if let Some(task_id) = requested_task_id {
+            let Some(task) = tasks.get(task_id) else {
+                return Err(a2a_error_response(
+                    404,
+                    "TASK_NOT_FOUND",
+                    "A2A task not found",
+                ));
+            };
+            if !a2a_task_visible_to_auth(task, auth) {
+                return Err(a2a_error_response(
+                    404,
+                    "TASK_NOT_FOUND",
+                    "A2A task not found",
+                ));
+            }
+            if a2a_task_is_terminal(task) {
+                return Err(a2a_error_response(
+                    400,
+                    "UNSUPPORTED_OPERATION",
+                    "A2A terminal tasks cannot accept more messages",
+                ));
+            }
+            if !a2a_task_accepts_message(task) {
+                return Err(a2a_error_response(
+                    409,
+                    "UNSUPPORTED_OPERATION",
+                    "A2A task is not ready to accept another message",
+                ));
+            }
+
+            let task_context_id = task
+                .get("contextId")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|context_id| !context_id.is_empty())
+                .map(str::to_string);
+            if let (Some(message_context_id), Some(task_context_id)) =
+                (explicit_context_id.as_deref(), task_context_id.as_deref())
+            {
+                if message_context_id != task_context_id {
+                    return Err(a2a_error_response(
+                        400,
+                        "INVALID_REQUEST",
+                        "A2A message contextId must match the referenced task",
+                    ));
+                }
+            }
+            let context_id = explicit_context_id
+                .or(task_context_id)
+                .unwrap_or_else(|| a2a_context_id(request, head));
+            let history = task
+                .get("history")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            (
+                task_id.to_string(),
+                context_id,
+                history,
+                Some(task.clone()),
+                a2a_merge_task_metadata(task, metadata),
+            )
+        } else {
+            (
+                generate_a2a_id("maestro-task"),
+                explicit_context_id.unwrap_or_else(|| a2a_context_id(request, head)),
+                Vec::new(),
+                None,
+                metadata,
+            )
+        };
+    history.push(a2a_user_message_value(&request.message, &context_id));
+    let working_message = a2a_agent_message(&context_id, "Maestro is working on the A2A task.");
+    let task = a2a_task_value(
+        &task_id,
+        &context_id,
+        "TASK_STATE_WORKING",
+        working_message,
+        history.clone(),
+        Vec::new(),
+        task_metadata.clone(),
+    );
+    tasks.insert(task_id.clone(), task);
+    prune_a2a_terminal_tasks(&mut tasks);
+    Ok(A2ASendTarget {
+        task_id,
+        context_id,
+        history,
+        previous_task,
+        metadata: task_metadata,
+    })
+}
+
+fn a2a_merge_task_metadata(existing_task: &Value, metadata: Value) -> Value {
+    let mut merged = existing_task
+        .get("metadata")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    if let Value::Object(metadata) = metadata {
+        for (key, value) in metadata {
+            merged.insert(key, value);
+        }
+    }
+    Value::Object(merged)
+}
+
+async fn rollback_a2a_send_claim(state: &AppState, task_id: &str, previous_task: Option<Value>) {
+    let mut tasks = state.a2a_tasks.lock().await;
+    if let Some(previous_task) = previous_task {
+        tasks.insert(task_id.to_string(), previous_task);
+    } else {
+        tasks.remove(task_id);
+    }
+}
+
+async fn a2a_canceled_task(state: &AppState, task_id: &str) -> Option<Value> {
+    state.a2a_tasks.lock().await.get(task_id).and_then(|task| {
+        (a2a_task_status_state(task) == Some("TASK_STATE_CANCELED")).then(|| task.clone())
+    })
+}
+
+async fn store_a2a_task_unless_canceled(state: &AppState, task_id: &str, task: Value) -> Value {
+    let mut tasks = state.a2a_tasks.lock().await;
+    if let Some(existing) = tasks.get(task_id) {
+        if a2a_task_status_state(existing) == Some("TASK_STATE_CANCELED") {
+            return existing.clone();
+        }
+    }
+    tasks.insert(task_id.to_string(), task.clone());
+    prune_a2a_terminal_tasks(&mut tasks);
+    task
+}
+
+fn prune_a2a_terminal_tasks(tasks: &mut HashMap<String, Value>) {
+    let mut terminal_tasks = tasks
+        .iter()
+        .filter(|(_, task)| a2a_task_is_terminal(task))
+        .map(|(task_id, task)| {
+            (
+                task_id.clone(),
+                a2a_task_status_timestamp(task)
+                    .unwrap_or_default()
+                    .to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    if terminal_tasks.len() <= A2A_TERMINAL_TASK_STORE_LIMIT {
+        return;
+    }
+    terminal_tasks.sort_by(|(left_id, left_timestamp), (right_id, right_timestamp)| {
+        left_timestamp
+            .cmp(right_timestamp)
+            .then_with(|| left_id.cmp(right_id))
+    });
+    let overflow = terminal_tasks.len() - A2A_TERMINAL_TASK_STORE_LIMIT;
+    for (task_id, _) in terminal_tasks.into_iter().take(overflow) {
+        tasks.remove(&task_id);
+    }
+}
+
+async fn register_a2a_cancel_sender(
+    state: &AppState,
+    task_id: &str,
+    cancel_tx: A2ACancelSender,
+) -> Result<(), Vec<u8>> {
+    let mut senders = state.a2a_cancel_senders.lock().await;
+    if senders.contains_key(task_id) {
+        return Err(a2a_error_response(
+            409,
+            "UNSUPPORTED_OPERATION",
+            "A2A task is already running",
+        ));
+    }
+    senders.insert(task_id.to_string(), cancel_tx);
+    Ok(())
+}
+
+async fn handle_a2a_message_send(
+    stream: &mut TcpStream,
+    initial: &mut Vec<u8>,
+    head: &RequestHead,
+    state: &AppState,
+    auth: &AuthContext,
+) -> Vec<u8> {
+    let body = match read_request_body(stream, initial, head).await {
+        Ok(body) => body,
+        Err(error) => return a2a_error_response(400, "INVALID_REQUEST", &error),
+    };
+    let request: A2ASendMessageRequest = match serde_json::from_slice(&body) {
+        Ok(request) => request,
+        Err(error) => {
+            return a2a_error_response(
+                400,
+                "INVALID_REQUEST",
+                &format!("invalid A2A message request: {error}"),
+            );
+        }
+    };
+
+    let Some(prompt) = a2a_message_text(&request.message) else {
+        return a2a_error_response(
+            400,
+            "INVALID_REQUEST",
+            "A2A message must contain at least one text part",
+        );
+    };
+    let return_immediately = match a2a_return_immediately(&request) {
+        Ok(value) => value,
+        Err(error) => return a2a_error_response(400, "INVALID_REQUEST", error),
+    };
+
+    let metadata = a2a_task_metadata(head, &request, auth);
+    let target = match claim_a2a_send_task(state, &request, head, auth, metadata).await {
+        Ok(target) => target,
+        Err(response) => return response,
+    };
+    let task_id = target.task_id;
+    let context_id = target.context_id;
+    let history = target.history;
+    let previous_task = target.previous_task;
+    let metadata = target.metadata;
+
+    let (cancel_tx, cancel_rx) = watch::channel(false);
+    if let Err(response) = register_a2a_cancel_sender(state, &task_id, cancel_tx).await {
+        rollback_a2a_send_claim(state, &task_id, previous_task).await;
+        return response;
+    }
+    if let Some(task) = a2a_canceled_task(state, &task_id).await {
+        state.a2a_cancel_senders.lock().await.remove(&task_id);
+        return json_response(200, &serde_json::json!({ "task": task }));
+    }
+    if return_immediately {
+        let accepted_message = a2a_agent_message(&context_id, "Maestro accepted the A2A task.");
+        let mut accepted_history = history.clone();
+        accepted_history.push(accepted_message.clone());
+        let task = a2a_task_value(
+            &task_id,
+            &context_id,
+            "TASK_STATE_WORKING",
+            accepted_message.clone(),
+            accepted_history.clone(),
+            Vec::new(),
+            metadata.clone(),
+        );
+        let task = store_a2a_task_unless_canceled(state, &task_id, task).await;
+        let state = state.clone();
+        tokio::spawn(async move {
+            let _ = complete_a2a_task(
+                &state,
+                prompt,
+                task_id,
+                context_id,
+                accepted_history,
+                metadata,
+                cancel_rx,
+            )
+            .await;
+        });
+        return json_response(200, &serde_json::json!({ "task": task }));
+    }
+
+    let task = complete_a2a_task(
+        state, prompt, task_id, context_id, history, metadata, cancel_rx,
+    )
+    .await;
+    json_response(200, &serde_json::json!({ "task": task }))
+}
+
+async fn complete_a2a_task(
+    state: &AppState,
+    prompt: String,
+    task_id: String,
+    context_id: String,
+    mut history: Vec<Value>,
+    mut metadata: Value,
+    cancel_rx: A2ACancelReceiver,
+) -> Value {
+    let turn = match run_a2a_native_turn(state, prompt, cancel_rx).await {
+        Ok(A2ATurnResult::Completed(turn)) => turn,
+        Ok(A2ATurnResult::Canceled) => {
+            let message = a2a_agent_message(&context_id, "Task canceled");
+            history.push(message.clone());
+            let task = a2a_task_value(
+                &task_id,
+                &context_id,
+                "TASK_STATE_CANCELED",
+                message,
+                history,
+                Vec::new(),
+                metadata,
+            );
+            let task = store_a2a_task_unless_canceled(state, &task_id, task).await;
+            state.a2a_cancel_senders.lock().await.remove(&task_id);
+            return task;
+        }
+        Err(error) => {
+            let message = a2a_agent_message(&context_id, &error);
+            history.push(message.clone());
+            let task = a2a_task_value(
+                &task_id,
+                &context_id,
+                "TASK_STATE_FAILED",
+                message.clone(),
+                history,
+                Vec::new(),
+                metadata,
+            );
+            let task = store_a2a_task_unless_canceled(state, &task_id, task).await;
+            state.a2a_cancel_senders.lock().await.remove(&task_id);
+            return task;
+        }
+    };
+
+    let assistant_text = if turn.assistant_text.trim().is_empty() {
+        "Maestro completed the A2A task without a text response.".to_string()
+    } else {
+        turn.assistant_text
+    };
+    let agent_message = a2a_agent_message(&context_id, &assistant_text);
+    if !turn.thinking_text.trim().is_empty() {
+        metadata["thinking"] = Value::String(turn.thinking_text);
+    }
+    if !turn.tools.is_empty() {
+        metadata["tools"] = Value::Array(turn.tools);
+    }
+    if let Some(usage) = turn.usage {
+        metadata["usage"] = serde_json::json!({
+            "input": usage.input_tokens,
+            "output": usage.output_tokens,
+            "cacheRead": usage.cache_read_tokens,
+            "cacheWrite": usage.cache_write_tokens,
+            "cost": usage.cost.unwrap_or(0.0)
+        });
+    }
+    let task = a2a_task_value(
+        &task_id,
+        &context_id,
+        "TASK_STATE_COMPLETED",
+        agent_message.clone(),
+        {
+            history.push(agent_message);
+            history
+        },
+        vec![serde_json::json!({
+            "artifactId": format!("{task_id}-assistant-response"),
+            "name": "assistant-response",
+            "parts": [{ "text": assistant_text, "mediaType": "text/plain" }]
+        })],
+        metadata,
+    );
+    let task = store_a2a_task_unless_canceled(state, &task_id, task).await;
+    state.a2a_cancel_senders.lock().await.remove(&task_id);
+    task
+}
+
+fn a2a_agent_card(head: &RequestHead, config: &Config) -> Value {
+    let base_url = a2a_public_base_url(head, config);
+    serde_json::json!({
+        "protocolVersion": A2A_PROTOCOL_VERSION,
+        "name": trimmed_env("MAESTRO_A2A_AGENT_NAME")
+            .unwrap_or_else(|| "Maestro Desktop Agent".to_string()),
+        "description": "Local Maestro Rust/TS TUI agent endpoint for A2A task delegation.",
+        "url": base_url,
+        "preferredTransport": "HTTP+JSON",
+        "supportedInterfaces": [{
+            "url": base_url,
+            "protocolBinding": "HTTP+JSON",
+            "protocolVersion": A2A_PROTOCOL_VERSION
+        }],
+        "provider": {
+            "organization": "EvalOps",
+            "url": "https://evalops.com"
+        },
+        "version": env!("CARGO_PKG_VERSION"),
+        "capabilities": {
+            "streaming": false,
+            "pushNotifications": false,
+            "extendedAgentCard": false
+        },
+        "defaultInputModes": ["text/plain"],
+        "defaultOutputModes": ["text/plain", "application/json"],
+        "skills": [{
+            "id": "maestro-tui-turn",
+            "name": "Maestro TUI turn",
+            "description": "Run a prompt through the local Maestro native TUI agent runner.",
+            "tags": ["maestro", "tui", "codex", "a2a"],
+            "examples": [
+                "Review the current workspace and summarize the next highest leverage action."
+            ],
+            "inputModes": ["text/plain"],
+            "outputModes": ["text/plain", "application/json"]
+        }]
+    })
+}
+
+fn a2a_public_base_url(_head: &RequestHead, config: &Config) -> String {
+    if let Some(url) =
+        trimmed_env("MAESTRO_A2A_PUBLIC_URL").or_else(|| trimmed_env("MAESTRO_CONTROL_PUBLIC_URL"))
+    {
+        return url.trim_end_matches('/').to_string();
+    }
+    let host = if let Some(host) = trimmed_env("MAESTRO_A2A_PUBLIC_HOST")
+        .or_else(|| trimmed_env("MAESTRO_CONTROL_PUBLIC_HOST"))
+    {
+        host
+    } else if config.listen_host == "0.0.0.0" || config.listen_host == "::" {
+        trimmed_env("HOSTNAME")
+            .or_else(|| trimmed_env("COMPUTERNAME"))
+            .unwrap_or_else(|| "127.0.0.1".to_string())
+    } else {
+        config.listen_host.clone()
+    };
+    format!(
+        "http://{}",
+        a2a_public_host_authority(&host, config.listen_port)
+    )
+}
+
+fn a2a_public_host_authority(host: &str, port: u16) -> String {
+    if let Some(rest) = host.strip_prefix('[') {
+        if let Some(end) = rest.find(']') {
+            let literal = &rest[..end];
+            let suffix = &rest[end + 1..];
+            let authority = format!("[{}]{suffix}", a2a_uri_host(literal));
+            if suffix.starts_with(':') {
+                authority
+            } else {
+                format!("{authority}:{port}")
+            }
+        } else {
+            format!("[{}]:{port}", a2a_uri_host(rest))
+        }
+    } else if host.matches(':').count() > 1 {
+        format!("[{}]:{port}", a2a_uri_host(host))
+    } else if host.contains(':') {
+        host.to_string()
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
+fn a2a_uri_host(host: &str) -> String {
+    let mut normalized = String::with_capacity(host.len());
+    let mut chars = host.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '%' {
+            let mut lookahead = chars.clone();
+            let already_encoded = lookahead
+                .next()
+                .is_some_and(|next| next.is_ascii_hexdigit())
+                && lookahead
+                    .next()
+                    .is_some_and(|next| next.is_ascii_hexdigit());
+            if already_encoded {
+                normalized.push(ch);
+            } else {
+                normalized.push_str("%25");
+            }
+        } else {
+            normalized.push(ch);
+        }
+    }
+    normalized
+}
+
+fn a2a_message_text(message: &A2AMessageBody) -> Option<String> {
+    let text = message
+        .parts
+        .iter()
+        .filter_map(|part| part.text.as_deref())
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    (!text.is_empty()).then_some(text)
+}
+
+fn trimmed_non_empty_string(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn a2a_context_id(request: &A2ASendMessageRequest, head: &RequestHead) -> String {
+    request
+        .message
+        .context_id
+        .as_deref()
+        .and_then(trimmed_non_empty_string)
+        .or_else(|| {
+            request
+                .message
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("sessionId").and_then(Value::as_str))
+                .and_then(trimmed_non_empty_string)
+        })
+        .or_else(|| {
+            head.headers
+                .get("x-evalops-session-id")
+                .and_then(|value| trimmed_non_empty_string(value))
+        })
+        .or_else(|| {
+            head.headers
+                .get("x-maestro-session-id")
+                .and_then(|value| trimmed_non_empty_string(value))
+        })
+        .unwrap_or_else(|| generate_a2a_id("maestro-context"))
+}
+
+fn a2a_user_message_value(message: &A2AMessageBody, context_id: &str) -> Value {
+    let mut value = serde_json::to_value(message).unwrap_or_else(|_| serde_json::json!({}));
+    if let Value::Object(object) = &mut value {
+        object
+            .entry("messageId")
+            .or_insert_with(|| Value::String(generate_a2a_id("maestro-message")));
+        object.insert(
+            "contextId".to_string(),
+            Value::String(context_id.to_string()),
+        );
+        object
+            .entry("role")
+            .or_insert_with(|| Value::String("ROLE_USER".to_string()));
+    }
+    value
+}
+
+fn a2a_agent_message(context_id: &str, text: &str) -> Value {
+    serde_json::json!({
+        "messageId": generate_a2a_id("maestro-message"),
+        "contextId": context_id,
+        "role": "ROLE_AGENT",
+        "parts": [{ "text": text, "mediaType": "text/plain" }],
+        "metadata": {
+            "runtime": "maestro-rust-control-plane",
+            "surface": "rust-tui"
+        }
+    })
+}
+
+fn a2a_task_value(
+    task_id: &str,
+    context_id: &str,
+    state: &str,
+    status_message: Value,
+    history: Vec<Value>,
+    artifacts: Vec<Value>,
+    metadata: Value,
+) -> Value {
+    serde_json::json!({
+        "id": task_id,
+        "contextId": context_id,
+        "status": {
+            "state": state,
+            "message": status_message,
+            "timestamp": now_rfc3339()
+        },
+        "history": history,
+        "artifacts": artifacts,
+        "metadata": metadata
+    })
+}
+
+fn a2a_task_metadata(
+    head: &RequestHead,
+    request: &A2ASendMessageRequest,
+    auth: &AuthContext,
+) -> Value {
+    let mut metadata = Map::new();
+    metadata.insert(
+        "runtime".to_string(),
+        Value::String("maestro-rust-control-plane".to_string()),
+    );
+    metadata.insert("surface".to_string(), Value::String("rust-tui".to_string()));
+    metadata.insert(
+        "a2aProtocolVersion".to_string(),
+        Value::String(A2A_PROTOCOL_VERSION.to_string()),
+    );
+    if let Some(subject) = auth.subject.as_deref() {
+        metadata.insert(
+            "ownerSubject".to_string(),
+            Value::String(subject.to_string()),
+        );
+    }
+    for (field, header) in [
+        ("workspaceId", "x-evalops-workspace-id"),
+        ("agentId", "x-evalops-agent-id"),
+        ("sessionId", "x-evalops-session-id"),
+        ("actorId", "x-evalops-actor-id"),
+        ("traceparent", "traceparent"),
+        ("tracestate", "tracestate"),
+    ] {
+        if let Some(value) = head.headers.get(header).map(String::as_str) {
+            if !value.trim().is_empty() {
+                metadata.insert(field.to_string(), Value::String(value.trim().to_string()));
+            }
+        }
+    }
+    if let Some(Value::Object(request_metadata)) = request.metadata.as_ref() {
+        for (key, value) in request_metadata {
+            metadata.entry(key.clone()).or_insert_with(|| value.clone());
+        }
+    }
+    if let Some(configuration) = request.configuration.as_ref() {
+        metadata
+            .entry("configuration".to_string())
+            .or_insert_with(|| configuration.clone());
+    }
+    if let Some(Value::Object(message_metadata)) = request.message.metadata.as_ref() {
+        for (key, value) in message_metadata {
+            metadata.entry(key.clone()).or_insert_with(|| value.clone());
+        }
+    }
+    Value::Object(metadata)
+}
+
+fn a2a_return_immediately(request: &A2ASendMessageRequest) -> Result<bool, &'static str> {
+    let Some(configuration) = request.configuration.as_ref() else {
+        return Ok(false);
+    };
+    let Some(configuration) = configuration.as_object() else {
+        return Err("A2A configuration must be an object");
+    };
+    let Some(return_immediately) = configuration.get("returnImmediately") else {
+        return Ok(false);
+    };
+    return_immediately
+        .as_bool()
+        .ok_or("A2A configuration returnImmediately must be a boolean")
+}
+
+async fn run_a2a_native_turn(
+    state: &AppState,
+    prompt: String,
+    mut cancel_rx: A2ACancelReceiver,
+) -> Result<A2ATurnResult, String> {
+    if *cancel_rx.borrow() {
+        return Ok(A2ATurnResult::Canceled);
+    }
+
+    if let Some(response) = trimmed_env("MAESTRO_A2A_FAKE_RESPONSE") {
+        if a2a_wait_for_fake_response_delay(&mut cancel_rx).await {
+            return Ok(A2ATurnResult::Canceled);
+        }
+        return Ok(A2ATurnResult::Completed(A2ATurnOutput {
+            assistant_text: response,
+            ..Default::default()
+        }));
+    }
+
+    let model = if let Some(model) = trimmed_env("MAESTRO_A2A_MODEL") {
+        model
+    } else {
+        let selected = state.selected_model.lock().await;
+        format!("{}/{}", selected.provider, selected.id)
+    };
+    let config = NativeAgentConfig {
+        model,
+        cwd: state.config.cwd.to_string_lossy().to_string(),
+        system_prompt: Some(
+            trimmed_env("MAESTRO_A2A_SYSTEM_PROMPT").unwrap_or_else(|| {
+                "You are the local Maestro Desktop A2A agent. Complete delegated work from peer agents clearly and concisely.".to_string()
+            }),
+        ),
+        thinking_enabled: truthy_env("MAESTRO_A2A_THINKING"),
+        thinking_budget: env::var("MAESTRO_A2A_THINKING_BUDGET")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(10_000),
+        ..NativeAgentConfig::default()
+    };
+    let (agent, mut events) = NativeAgent::new(config).map_err(|error| error.to_string())?;
+    agent
+        .prompt(prompt, Vec::new())
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let timeout = Duration::from_millis(env_u64(
+        "MAESTRO_A2A_TURN_TIMEOUT_MS",
+        A2A_DEFAULT_TURN_TIMEOUT_MS,
+    ));
+    let approval_mode = trimmed_env("MAESTRO_A2A_TOOL_APPROVAL")
+        .unwrap_or_else(|| "fail".to_string())
+        .to_ascii_lowercase();
+    let auto_approve_tools = matches!(approval_mode.as_str(), "auto" | "approve" | "approved");
+    let mut output = A2ATurnOutput::default();
+    let mut last_error: Option<String> = None;
+    let mut response_ended = false;
+    let response_end_settle = Duration::from_millis(env_u64(
+        "MAESTRO_A2A_RESPONSE_END_SETTLE_MS",
+        A2A_DEFAULT_RESPONSE_END_SETTLE_MS,
+    ));
+    let mut response_end_deadline: Option<tokio::time::Instant> = None;
+    let turn_timeout = tokio::time::sleep(timeout);
+    tokio::pin!(turn_timeout);
+
+    loop {
+        let response_end_wait = async {
+            if let Some(deadline) = response_end_deadline {
+                tokio::time::sleep_until(deadline).await;
+            } else {
+                std::future::pending::<()>().await;
+            }
+        };
+        let event = tokio::select! {
+            _ = &mut turn_timeout => {
+                agent.cancel();
+                return Err("A2A native TUI turn timed out".to_string());
+            }
+            _ = response_end_wait => {
+                break;
+            }
+            changed = cancel_rx.changed() => {
+                if changed.is_ok() && *cancel_rx.borrow() {
+                    agent.cancel();
+                    return Ok(A2ATurnResult::Canceled);
+                }
+                continue;
+            }
+            event = events.recv() => match event {
+                Some(event) => event,
+                None => break,
+            },
+        };
+        match event {
+            FromAgent::ResponseStart { .. } => {
+                response_end_deadline = None;
+            }
+            FromAgent::ResponseChunk {
+                content,
+                is_thinking,
+                ..
+            } => {
+                response_end_deadline = None;
+                if is_thinking {
+                    output.thinking_text.push_str(&content);
+                } else {
+                    output.assistant_text.push_str(&content);
+                }
+            }
+            FromAgent::ResponseEnd { usage, .. } => {
+                output.usage = usage;
+                response_ended = true;
+                response_end_deadline = Some(tokio::time::Instant::now() + response_end_settle);
+            }
+            FromAgent::ToolCall {
+                call_id,
+                tool,
+                args,
+                requires_approval,
+            } => {
+                response_end_deadline = None;
+                record_tool_call_metadata(&mut output.tools, &call_id, &tool, args);
+                if requires_approval {
+                    let _ = agent.tool_response_sender().send((
+                        call_id.clone(),
+                        auto_approve_tools,
+                        None,
+                    ));
+                    if !auto_approve_tools {
+                        finish_tool_metadata(&mut output.tools, &call_id, false);
+                    }
+                }
+            }
+            FromAgent::ToolStart { call_id } => {
+                response_end_deadline = None;
+                update_tool_metadata_status(&mut output.tools, &call_id, "running");
+            }
+            FromAgent::ToolEnd {
+                call_id, success, ..
+            } => {
+                response_end_deadline = None;
+                finish_tool_metadata(&mut output.tools, &call_id, success);
+            }
+            FromAgent::HookBlocked {
+                call_id,
+                tool,
+                reason,
+            } => {
+                response_end_deadline = None;
+                if !output
+                    .tools
+                    .iter()
+                    .any(|entry| entry.get("id").and_then(Value::as_str) == Some(&call_id))
+                {
+                    record_tool_call_metadata(&mut output.tools, &call_id, &tool, Value::Null);
+                }
+                finish_tool_metadata(&mut output.tools, &call_id, false);
+                last_error = Some(reason);
+            }
+            FromAgent::Error { message, fatal } => {
+                last_error = Some(message);
+                if fatal {
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if response_ended {
+        Ok(A2ATurnResult::Completed(output))
+    } else {
+        Err(last_error
+            .unwrap_or_else(|| "A2A native TUI turn ended before response_end".to_string()))
+    }
+}
+
+async fn a2a_wait_for_fake_response_delay(cancel_rx: &mut A2ACancelReceiver) -> bool {
+    let delay_ms = env_u64("MAESTRO_A2A_FAKE_RESPONSE_DELAY_MS", 0);
+    if delay_ms == 0 {
+        return *cancel_rx.borrow();
+    }
+
+    let delay = tokio::time::sleep(Duration::from_millis(delay_ms));
+    tokio::pin!(delay);
+    tokio::select! {
+        _ = &mut delay => *cancel_rx.borrow(),
+        changed = cancel_rx.changed() => changed.is_ok() && *cancel_rx.borrow(),
+    }
+}
+
+fn generate_a2a_id(prefix: &str) -> String {
+    let mut bytes = [0_u8; 16];
+    if getrandom::fill(&mut bytes).is_ok() {
+        return format!("{prefix}-{}", URL_SAFE_NO_PAD.encode(bytes));
+    }
+    format!("{prefix}-{}-{}", now_millis(), process::id())
+}
+
+fn a2a_error_response(status: u16, code: &str, message: &str) -> Vec<u8> {
+    json_response(
+        status,
+        &serde_json::json!({ "error": { "code": code, "message": message } }),
+    )
 }
 
 async fn handle_local_endpoint(
@@ -5655,6 +6814,13 @@ fn env_u16(name: &str, default: u16) -> u16 {
         .unwrap_or(default)
 }
 
+fn env_u64(name: &str, default: u64) -> u64 {
+    env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(default)
+}
+
 fn trimmed_env(name: &str) -> Option<String> {
     env::var(name)
         .ok()
@@ -5731,14 +6897,23 @@ mod tests {
         }
     }
 
+    fn shared_secret_bearer_token(secret: &[u8], user_id: &str) -> String {
+        let signature = hmac_sha256_hex(secret, user_id.as_bytes());
+        format!("{}.{}", URL_SAFE_NO_PAD.encode(user_id), signature)
+    }
+
     fn csrf_head(method: &str, token: Option<&str>) -> RequestHead {
+        csrf_head_for_path(method, "/api/status", token)
+    }
+
+    fn csrf_head_for_path(method: &str, path: &str, token: Option<&str>) -> RequestHead {
         let mut headers = HashMap::new();
         if let Some(token) = token {
             headers.insert("x-maestro-csrf".to_string(), token.to_string());
         }
         RequestHead {
             method: method.to_string(),
-            path: "/api/status".to_string(),
+            path: path.to_string(),
             query: HashMap::new(),
             headers,
         }
@@ -5779,6 +6954,8 @@ mod tests {
             shared_sessions: Arc::new(Mutex::new(HashMap::new())),
             approval_modes: Arc::new(Mutex::new(HashMap::new())),
             pending_tool_responses: Arc::new(Mutex::new(HashMap::new())),
+            a2a_tasks: Arc::new(Mutex::new(HashMap::new())),
+            a2a_cancel_senders: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -5924,7 +7101,7 @@ mod tests {
     }
 
     #[test]
-    fn csrf_validation_requires_matching_token_for_mutating_api_requests() {
+    fn csrf_validation_requires_matching_token_for_mutating_api_and_a2a_requests() {
         let mut config = auth_test_config();
         config.require_csrf = true;
         config.csrf_token = Some("csrf-token".to_string());
@@ -5932,6 +7109,24 @@ mod tests {
         assert!(validate_csrf(&csrf_head("POST", Some("csrf-token")), &config).is_ok());
         assert!(validate_csrf(&csrf_head("POST", Some("wrong-token")), &config).is_err());
         assert!(validate_csrf(&csrf_head("POST", None), &config).is_err());
+        assert!(validate_csrf(
+            &csrf_head_for_path("POST", "/message:send", Some("csrf-token")),
+            &config,
+        )
+        .is_ok());
+        assert!(
+            validate_csrf(&csrf_head_for_path("POST", "/message:send", None), &config).is_err()
+        );
+        assert!(validate_csrf(
+            &csrf_head_for_path("POST", "/tasks/maestro-task-1:cancel", Some("csrf-token")),
+            &config,
+        )
+        .is_ok());
+        assert!(validate_csrf(
+            &csrf_head_for_path("POST", "/tasks/maestro-task-1:cancel", None),
+            &config
+        )
+        .is_err());
         assert!(validate_csrf(&csrf_head("GET", None), &config).is_ok());
     }
 
@@ -6025,6 +7220,1138 @@ mod tests {
         let head = parse_request_head(request).expect("request should parse");
 
         assert!(is_local_endpoint(&head));
+    }
+
+    #[test]
+    fn detects_a2a_control_plane_routes() {
+        for request in [
+            "GET /.well-known/agent-card.json HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "POST /message:send HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "GET /tasks/maestro-task-1 HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "GET /tasks HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "POST /tasks/maestro-task-1:cancel HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "OPTIONS /message:send HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        ] {
+            let head = parse_request_head(request.as_bytes()).expect("request should parse");
+            assert!(is_a2a_endpoint(&head), "{request} should be A2A");
+        }
+    }
+
+    #[test]
+    fn a2a_agent_card_advertises_http_json_interface() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous_a2a_url = env::var_os("MAESTRO_A2A_PUBLIC_URL");
+        let previous_a2a_host = env::var_os("MAESTRO_A2A_PUBLIC_HOST");
+        let previous_control_url = env::var_os("MAESTRO_CONTROL_PUBLIC_URL");
+        let previous_control_host = env::var_os("MAESTRO_CONTROL_PUBLIC_HOST");
+        env::remove_var("MAESTRO_A2A_PUBLIC_URL");
+        env::remove_var("MAESTRO_A2A_PUBLIC_HOST");
+        env::remove_var("MAESTRO_CONTROL_PUBLIC_URL");
+        env::remove_var("MAESTRO_CONTROL_PUBLIC_HOST");
+        let head = parse_request_head(
+            b"GET /.well-known/agent-card.json HTTP/1.1\r\nHost: attacker.test\r\nx-forwarded-proto: https\r\n\r\n",
+        )
+        .expect("request should parse");
+        let card = a2a_agent_card(&head, &auth_test_config());
+
+        assert_eq!(card["protocolVersion"], A2A_PROTOCOL_VERSION);
+        assert_eq!(card["url"], "http://127.0.0.1:0");
+        assert_eq!(card["supportedInterfaces"][0]["url"], "http://127.0.0.1:0");
+        assert_eq!(
+            card["supportedInterfaces"][0]["protocolBinding"],
+            "HTTP+JSON"
+        );
+        assert_eq!(card["skills"][0]["id"], "maestro-tui-turn");
+        if let Some(previous_a2a_url) = previous_a2a_url {
+            env::set_var("MAESTRO_A2A_PUBLIC_URL", previous_a2a_url);
+        } else {
+            env::remove_var("MAESTRO_A2A_PUBLIC_URL");
+        }
+        if let Some(previous_a2a_host) = previous_a2a_host {
+            env::set_var("MAESTRO_A2A_PUBLIC_HOST", previous_a2a_host);
+        } else {
+            env::remove_var("MAESTRO_A2A_PUBLIC_HOST");
+        }
+        if let Some(previous_control_url) = previous_control_url {
+            env::set_var("MAESTRO_CONTROL_PUBLIC_URL", previous_control_url);
+        } else {
+            env::remove_var("MAESTRO_CONTROL_PUBLIC_URL");
+        }
+        if let Some(previous_control_host) = previous_control_host {
+            env::set_var("MAESTRO_CONTROL_PUBLIC_HOST", previous_control_host);
+        } else {
+            env::remove_var("MAESTRO_CONTROL_PUBLIC_HOST");
+        }
+    }
+
+    #[test]
+    fn a2a_agent_card_uses_configured_public_host_for_wildcard_binds() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous_a2a_host = env::var_os("MAESTRO_A2A_PUBLIC_HOST");
+        let previous_a2a_url = env::var_os("MAESTRO_A2A_PUBLIC_URL");
+        let previous_control_url = env::var_os("MAESTRO_CONTROL_PUBLIC_URL");
+        env::set_var("MAESTRO_A2A_PUBLIC_HOST", "mini.example.test");
+        env::remove_var("MAESTRO_A2A_PUBLIC_URL");
+        env::remove_var("MAESTRO_CONTROL_PUBLIC_URL");
+        let mut config = auth_test_config();
+        config.listen_host = "0.0.0.0".to_string();
+        config.listen_port = 18787;
+        let head = parse_request_head(
+            b"GET /.well-known/agent-card.json HTTP/1.1\r\nHost: attacker.test\r\n\r\n",
+        )
+        .expect("request should parse");
+        let card = a2a_agent_card(&head, &config);
+
+        assert_eq!(card["url"], "http://mini.example.test:18787");
+        assert_eq!(
+            card["supportedInterfaces"][0]["url"],
+            "http://mini.example.test:18787"
+        );
+
+        if let Some(previous_a2a_host) = previous_a2a_host {
+            env::set_var("MAESTRO_A2A_PUBLIC_HOST", previous_a2a_host);
+        } else {
+            env::remove_var("MAESTRO_A2A_PUBLIC_HOST");
+        }
+        if let Some(previous_a2a_url) = previous_a2a_url {
+            env::set_var("MAESTRO_A2A_PUBLIC_URL", previous_a2a_url);
+        } else {
+            env::remove_var("MAESTRO_A2A_PUBLIC_URL");
+        }
+        if let Some(previous_control_url) = previous_control_url {
+            env::set_var("MAESTRO_CONTROL_PUBLIC_URL", previous_control_url);
+        } else {
+            env::remove_var("MAESTRO_CONTROL_PUBLIC_URL");
+        }
+    }
+
+    #[test]
+    fn a2a_agent_card_brackets_ipv6_public_host_and_preserves_port() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous_a2a_host = env::var_os("MAESTRO_A2A_PUBLIC_HOST");
+        let previous_a2a_url = env::var_os("MAESTRO_A2A_PUBLIC_URL");
+        let previous_control_url = env::var_os("MAESTRO_CONTROL_PUBLIC_URL");
+        env::set_var("MAESTRO_A2A_PUBLIC_HOST", "::1");
+        env::remove_var("MAESTRO_A2A_PUBLIC_URL");
+        env::remove_var("MAESTRO_CONTROL_PUBLIC_URL");
+        let mut config = auth_test_config();
+        config.listen_host = "::".to_string();
+        config.listen_port = 18787;
+        let head = parse_request_head(
+            b"GET /.well-known/agent-card.json HTTP/1.1\r\nHost: attacker.test\r\n\r\n",
+        )
+        .expect("request should parse");
+        let card = a2a_agent_card(&head, &config);
+
+        assert_eq!(card["url"], "http://[::1]:18787");
+        assert_eq!(card["supportedInterfaces"][0]["url"], "http://[::1]:18787");
+
+        if let Some(previous_a2a_host) = previous_a2a_host {
+            env::set_var("MAESTRO_A2A_PUBLIC_HOST", previous_a2a_host);
+        } else {
+            env::remove_var("MAESTRO_A2A_PUBLIC_HOST");
+        }
+        if let Some(previous_a2a_url) = previous_a2a_url {
+            env::set_var("MAESTRO_A2A_PUBLIC_URL", previous_a2a_url);
+        } else {
+            env::remove_var("MAESTRO_A2A_PUBLIC_URL");
+        }
+        if let Some(previous_control_url) = previous_control_url {
+            env::set_var("MAESTRO_CONTROL_PUBLIC_URL", previous_control_url);
+        } else {
+            env::remove_var("MAESTRO_CONTROL_PUBLIC_URL");
+        }
+    }
+
+    #[test]
+    fn a2a_agent_card_percent_encodes_scoped_ipv6_public_host() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous_a2a_host = env::var_os("MAESTRO_A2A_PUBLIC_HOST");
+        let previous_a2a_url = env::var_os("MAESTRO_A2A_PUBLIC_URL");
+        let previous_control_url = env::var_os("MAESTRO_CONTROL_PUBLIC_URL");
+        env::set_var("MAESTRO_A2A_PUBLIC_HOST", "fe80::1%en0");
+        env::remove_var("MAESTRO_A2A_PUBLIC_URL");
+        env::remove_var("MAESTRO_CONTROL_PUBLIC_URL");
+        let mut config = auth_test_config();
+        config.listen_host = "::".to_string();
+        config.listen_port = 18787;
+        let head = parse_request_head(
+            b"GET /.well-known/agent-card.json HTTP/1.1\r\nHost: attacker.test\r\n\r\n",
+        )
+        .expect("request should parse");
+        let card = a2a_agent_card(&head, &config);
+
+        assert_eq!(card["url"], "http://[fe80::1%25en0]:18787");
+        assert_eq!(
+            card["supportedInterfaces"][0]["url"],
+            "http://[fe80::1%25en0]:18787"
+        );
+
+        if let Some(previous_a2a_host) = previous_a2a_host {
+            env::set_var("MAESTRO_A2A_PUBLIC_HOST", previous_a2a_host);
+        } else {
+            env::remove_var("MAESTRO_A2A_PUBLIC_HOST");
+        }
+        if let Some(previous_a2a_url) = previous_a2a_url {
+            env::set_var("MAESTRO_A2A_PUBLIC_URL", previous_a2a_url);
+        } else {
+            env::remove_var("MAESTRO_A2A_PUBLIC_URL");
+        }
+        if let Some(previous_control_url) = previous_control_url {
+            env::set_var("MAESTRO_CONTROL_PUBLIC_URL", previous_control_url);
+        } else {
+            env::remove_var("MAESTRO_CONTROL_PUBLIC_URL");
+        }
+    }
+
+    #[test]
+    fn a2a_send_message_honors_return_immediately_configuration() {
+        let request = A2ASendMessageRequest {
+            message: A2AMessageBody {
+                message_id: Some("msg-1".to_string()),
+                context_id: Some("ctx-1".to_string()),
+                task_id: None,
+                role: Some("ROLE_USER".to_string()),
+                parts: vec![A2APartBody {
+                    text: Some("hello".to_string()),
+                    url: None,
+                    data: None,
+                    metadata: None,
+                    filename: None,
+                    media_type: Some("text/plain".to_string()),
+                }],
+                metadata: None,
+                extensions: None,
+                reference_task_ids: None,
+            },
+            configuration: Some(serde_json::json!({ "returnImmediately": true })),
+            metadata: None,
+        };
+
+        assert!(a2a_return_immediately(&request).expect("configuration should be valid"));
+    }
+
+    #[test]
+    fn a2a_user_message_value_replaces_empty_context_id() {
+        let message = A2AMessageBody {
+            message_id: Some("msg-1".to_string()),
+            context_id: Some("   ".to_string()),
+            task_id: None,
+            role: Some("ROLE_USER".to_string()),
+            parts: vec![A2APartBody {
+                text: Some("hello".to_string()),
+                url: None,
+                data: None,
+                metadata: None,
+                filename: None,
+                media_type: Some("text/plain".to_string()),
+            }],
+            metadata: None,
+            extensions: None,
+            reference_task_ids: None,
+        };
+
+        let value = a2a_user_message_value(&message, "ctx-1");
+
+        assert_eq!(value["contextId"], "ctx-1");
+    }
+
+    #[test]
+    fn a2a_context_id_falls_back_when_message_context_is_blank() {
+        let request = A2ASendMessageRequest {
+            message: A2AMessageBody {
+                message_id: Some("msg-1".to_string()),
+                context_id: Some("   ".to_string()),
+                task_id: None,
+                role: Some("ROLE_USER".to_string()),
+                parts: vec![A2APartBody {
+                    text: Some("hello".to_string()),
+                    url: None,
+                    data: None,
+                    metadata: Some(serde_json::json!({ "sessionId": " metadata-ctx " })),
+                    filename: None,
+                    media_type: Some("text/plain".to_string()),
+                }],
+                metadata: Some(serde_json::json!({ "sessionId": " metadata-ctx " })),
+                extensions: None,
+                reference_task_ids: None,
+            },
+            configuration: None,
+            metadata: None,
+        };
+        let head = parse_request_head(
+            b"POST /message:send HTTP/1.1\r\nHost: localhost\r\nx-evalops-session-id: header-ctx\r\n\r\n",
+        )
+        .expect("request should parse");
+
+        assert_eq!(a2a_context_id(&request, &head), "metadata-ctx");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_message_send_runs_fake_turn_and_records_task() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous_fake = env::var("MAESTRO_A2A_FAKE_RESPONSE").ok();
+        env::set_var("MAESTRO_A2A_FAKE_RESPONSE", "hello from fake native turn");
+
+        let body = r#"{"message":{"messageId":"msg-1","contextId":"ctx-1","role":"ROLE_USER","parts":[{"text":"hello","mediaType":"text/plain"}],"metadata":{"agentId":"ts-tui"}}}"#;
+        let request = format!(
+            "POST /message:send HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\nx-evalops-workspace-id: ws-1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let mut initial = request.into_bytes();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (_client, mut server) = tcp_stream_pair().await;
+        let state = test_app_state_with_sessions(HashMap::new());
+
+        let response =
+            response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+        let task = &response["task"];
+
+        assert_eq!(task["contextId"], "ctx-1");
+        assert_eq!(task["status"]["state"], "TASK_STATE_COMPLETED");
+        assert_eq!(
+            task["artifacts"][0]["parts"][0]["text"],
+            "hello from fake native turn"
+        );
+        assert_eq!(task["metadata"]["workspaceId"], "ws-1");
+        assert_eq!(state.a2a_tasks.lock().await.len(), 1);
+
+        if let Some(previous_fake) = previous_fake {
+            env::set_var("MAESTRO_A2A_FAKE_RESPONSE", previous_fake);
+        } else {
+            env::remove_var("MAESTRO_A2A_FAKE_RESPONSE");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_message_send_requires_csrf_token_when_enabled() {
+        let body = r#"{"message":{"messageId":"msg-1","contextId":"ctx-1","role":"ROLE_USER","parts":[{"text":"hello","mediaType":"text/plain"}]}}"#;
+        let request = format!(
+            "POST /message:send HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let mut initial = request.into_bytes();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (_client, mut server) = tcp_stream_pair().await;
+        let base_state = test_app_state_with_sessions(HashMap::new());
+        let mut config = auth_test_config();
+        config.require_csrf = true;
+        config.csrf_token = Some("csrf-token".to_string());
+        let state = AppState {
+            config: Arc::new(config),
+            ..base_state
+        };
+
+        let response =
+            response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+
+        assert_eq!(response["error"], "Forbidden: invalid CSRF token");
+        assert!(state.a2a_tasks.lock().await.is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_message_send_rejects_non_boolean_return_immediately() {
+        let body = r#"{"message":{"messageId":"msg-1","contextId":"ctx-1","role":"ROLE_USER","parts":[{"text":"hello","mediaType":"text/plain"}]},"configuration":{"returnImmediately":"true"}}"#;
+        let request = format!(
+            "POST /message:send HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let mut initial = request.into_bytes();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (_client, mut server) = tcp_stream_pair().await;
+        let state = test_app_state_with_sessions(HashMap::new());
+
+        let response =
+            response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+
+        assert_eq!(response["error"]["code"], "INVALID_REQUEST");
+        assert_eq!(
+            response["error"]["message"],
+            "A2A configuration returnImmediately must be a boolean"
+        );
+        assert!(state.a2a_tasks.lock().await.is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_message_send_rejects_non_object_configuration() {
+        let body = r#"{"message":{"messageId":"msg-1","contextId":"ctx-1","role":"ROLE_USER","parts":[{"text":"hello","mediaType":"text/plain"}]},"configuration":"oops"}"#;
+        let request = format!(
+            "POST /message:send HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let mut initial = request.into_bytes();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (_client, mut server) = tcp_stream_pair().await;
+        let state = test_app_state_with_sessions(HashMap::new());
+
+        let response =
+            response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+
+        assert_eq!(response["error"]["code"], "INVALID_REQUEST");
+        assert_eq!(
+            response["error"]["message"],
+            "A2A configuration must be an object"
+        );
+        assert!(state.a2a_tasks.lock().await.is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_message_send_rejects_incompatible_protocol_version() {
+        let body = r#"{"message":{"messageId":"msg-1","contextId":"ctx-1","role":"ROLE_USER","parts":[{"text":"hello","mediaType":"text/plain"}]}}"#;
+        let request = format!(
+            "POST /message:send?a2a-version=2.0 HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let mut initial = request.into_bytes();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (_client, mut server) = tcp_stream_pair().await;
+        let state = test_app_state_with_sessions(HashMap::new());
+
+        let response =
+            response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+
+        assert_eq!(response["error"]["code"], "UNSUPPORTED_VERSION");
+        assert_eq!(
+            response["error"]["message"],
+            "Unsupported A2A protocol version 2.0; expected 1.0"
+        );
+        assert!(state.a2a_tasks.lock().await.is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_tasks_list_only_returns_tasks_owned_by_subject() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous_secret = env::var_os("MAESTRO_AUTH_SHARED_SECRET");
+        env::set_var("MAESTRO_AUTH_SHARED_SECRET", "shared-secret");
+        let state = test_app_state_with_sessions(HashMap::new());
+        for (task_id, owner) in [
+            ("owned-task", Some("user-123")),
+            ("other-task", Some("user-456")),
+            ("unowned-task", None),
+        ] {
+            let mut metadata = Map::new();
+            if let Some(owner) = owner {
+                metadata.insert("ownerSubject".to_string(), Value::String(owner.to_string()));
+            }
+            let task = a2a_task_value(
+                task_id,
+                "ctx-1",
+                "TASK_STATE_COMPLETED",
+                a2a_agent_message("ctx-1", "done"),
+                Vec::new(),
+                Vec::new(),
+                Value::Object(metadata),
+            );
+            state
+                .a2a_tasks
+                .lock()
+                .await
+                .insert(task_id.to_string(), task);
+        }
+        let token = shared_secret_bearer_token(b"shared-secret", "user-123");
+        let request = format!(
+            "GET /tasks HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\n\r\n"
+        );
+        let mut initial = request.into_bytes();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (_client, mut server) = tcp_stream_pair().await;
+
+        let response =
+            response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+        let tasks = response["tasks"]
+            .as_array()
+            .expect("tasks should be an array");
+
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0]["id"], "owned-task");
+
+        if let Some(previous_secret) = previous_secret {
+            env::set_var("MAESTRO_AUTH_SHARED_SECRET", previous_secret);
+        } else {
+            env::remove_var("MAESTRO_AUTH_SHARED_SECRET");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_message_send_rejects_task_follow_up_from_other_subject() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous_secret = env::var_os("MAESTRO_AUTH_SHARED_SECRET");
+        let previous_fake = env::var("MAESTRO_A2A_FAKE_RESPONSE").ok();
+        env::set_var("MAESTRO_AUTH_SHARED_SECRET", "shared-secret");
+        env::set_var("MAESTRO_A2A_FAKE_RESPONSE", "should not run");
+        let state = test_app_state_with_sessions(HashMap::new());
+        let existing_message = a2a_agent_message("ctx-1", "Need more input");
+        let task = a2a_task_value(
+            "owned-task",
+            "ctx-1",
+            "TASK_STATE_INPUT_REQUIRED",
+            existing_message.clone(),
+            vec![existing_message],
+            Vec::new(),
+            serde_json::json!({ "ownerSubject": "user-123" }),
+        );
+        state
+            .a2a_tasks
+            .lock()
+            .await
+            .insert("owned-task".to_string(), task);
+        let token = shared_secret_bearer_token(b"shared-secret", "user-456");
+        let body = r#"{"message":{"messageId":"msg-2","contextId":"ctx-1","taskId":"owned-task","role":"ROLE_USER","parts":[{"text":"follow up","mediaType":"text/plain"}]}}"#;
+        let request = format!(
+            "POST /message:send HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let mut initial = request.into_bytes();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (_client, mut server) = tcp_stream_pair().await;
+
+        let response =
+            response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+
+        assert_eq!(response["error"]["code"], "TASK_NOT_FOUND");
+        assert_eq!(
+            state.a2a_tasks.lock().await["owned-task"]["status"]["state"],
+            "TASK_STATE_INPUT_REQUIRED"
+        );
+
+        if let Some(previous_secret) = previous_secret {
+            env::set_var("MAESTRO_AUTH_SHARED_SECRET", previous_secret);
+        } else {
+            env::remove_var("MAESTRO_AUTH_SHARED_SECRET");
+        }
+        if let Some(previous_fake) = previous_fake {
+            env::set_var("MAESTRO_A2A_FAKE_RESPONSE", previous_fake);
+        } else {
+            env::remove_var("MAESTRO_A2A_FAKE_RESPONSE");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_message_send_preserves_owner_metadata_on_unrestricted_follow_up() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous_fake = env::var("MAESTRO_A2A_FAKE_RESPONSE").ok();
+        env::set_var("MAESTRO_A2A_FAKE_RESPONSE", "follow-up response");
+        let state = test_app_state_with_sessions(HashMap::new());
+        let existing_message = a2a_agent_message("ctx-1", "Need more input");
+        let task = a2a_task_value(
+            "owned-task",
+            "ctx-1",
+            "TASK_STATE_INPUT_REQUIRED",
+            existing_message.clone(),
+            vec![existing_message],
+            Vec::new(),
+            serde_json::json!({
+                "ownerSubject": "user-123",
+                "workspaceId": "ws-old"
+            }),
+        );
+        state
+            .a2a_tasks
+            .lock()
+            .await
+            .insert("owned-task".to_string(), task);
+        let body = r#"{"message":{"messageId":"msg-2","contextId":"ctx-1","taskId":"owned-task","role":"ROLE_USER","parts":[{"text":"follow up","mediaType":"text/plain"}]}}"#;
+        let request = format!(
+            "POST /message:send HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\nx-evalops-workspace-id: ws-new\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let mut initial = request.into_bytes();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (_client, mut server) = tcp_stream_pair().await;
+
+        let response =
+            response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+        let task = &response["task"];
+
+        assert_eq!(task["id"], "owned-task");
+        assert_eq!(task["metadata"]["ownerSubject"], "user-123");
+        assert_eq!(task["metadata"]["workspaceId"], "ws-new");
+        assert_eq!(
+            state.a2a_tasks.lock().await["owned-task"]["metadata"]["ownerSubject"],
+            "user-123"
+        );
+
+        if let Some(previous_fake) = previous_fake {
+            env::set_var("MAESTRO_A2A_FAKE_RESPONSE", previous_fake);
+        } else {
+            env::remove_var("MAESTRO_A2A_FAKE_RESPONSE");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_message_send_rejects_unknown_task_id() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous_fake = env::var("MAESTRO_A2A_FAKE_RESPONSE").ok();
+        env::set_var("MAESTRO_A2A_FAKE_RESPONSE", "should not run");
+
+        let body = r#"{"message":{"messageId":"msg-1","contextId":"ctx-1","taskId":"missing-task","role":"ROLE_USER","parts":[{"text":"hello","mediaType":"text/plain"}]}}"#;
+        let request = format!(
+            "POST /message:send HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let mut initial = request.into_bytes();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (_client, mut server) = tcp_stream_pair().await;
+        let state = test_app_state_with_sessions(HashMap::new());
+
+        let response =
+            response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+
+        assert_eq!(response["error"]["code"], "TASK_NOT_FOUND");
+        assert!(state.a2a_tasks.lock().await.is_empty());
+
+        if let Some(previous_fake) = previous_fake {
+            env::set_var("MAESTRO_A2A_FAKE_RESPONSE", previous_fake);
+        } else {
+            env::remove_var("MAESTRO_A2A_FAKE_RESPONSE");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_message_send_reuses_existing_task_id_and_history() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous_fake = env::var("MAESTRO_A2A_FAKE_RESPONSE").ok();
+        env::set_var("MAESTRO_A2A_FAKE_RESPONSE", "follow-up response");
+
+        let body = r#"{"message":{"messageId":"msg-2","taskId":"maestro-task-1","role":"ROLE_USER","parts":[{"text":"follow up","mediaType":"text/plain"}]}}"#;
+        let request = format!(
+            "POST /message:send HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\nx-evalops-session-id: header-ctx\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let mut initial = request.into_bytes();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (_client, mut server) = tcp_stream_pair().await;
+        let state = test_app_state_with_sessions(HashMap::new());
+        let existing_message = a2a_agent_message("ctx-1", "Need more input");
+        let task = a2a_task_value(
+            "maestro-task-1",
+            "ctx-1",
+            "TASK_STATE_INPUT_REQUIRED",
+            existing_message.clone(),
+            vec![existing_message],
+            Vec::new(),
+            serde_json::json!({}),
+        );
+        state
+            .a2a_tasks
+            .lock()
+            .await
+            .insert("maestro-task-1".to_string(), task);
+
+        let response =
+            response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+        let task = &response["task"];
+
+        assert_eq!(task["id"], "maestro-task-1");
+        assert_eq!(task["contextId"], "ctx-1");
+        assert_eq!(task["status"]["state"], "TASK_STATE_COMPLETED");
+        assert_eq!(task["history"].as_array().unwrap().len(), 3);
+        assert_eq!(task["history"][1]["contextId"], "ctx-1");
+        assert_eq!(task["history"][2]["parts"][0]["text"], "follow-up response");
+
+        if let Some(previous_fake) = previous_fake {
+            env::set_var("MAESTRO_A2A_FAKE_RESPONSE", previous_fake);
+        } else {
+            env::remove_var("MAESTRO_A2A_FAKE_RESPONSE");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_message_send_rejects_terminal_task_id() {
+        let body = r#"{"message":{"messageId":"msg-2","contextId":"ctx-1","taskId":"maestro-task-1","role":"ROLE_USER","parts":[{"text":"follow up","mediaType":"text/plain"}]}}"#;
+        let request = format!(
+            "POST /message:send HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let mut initial = request.into_bytes();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (_client, mut server) = tcp_stream_pair().await;
+        let state = test_app_state_with_sessions(HashMap::new());
+        let task = a2a_task_value(
+            "maestro-task-1",
+            "ctx-1",
+            "TASK_STATE_COMPLETED",
+            a2a_agent_message("ctx-1", "complete"),
+            Vec::new(),
+            Vec::new(),
+            serde_json::json!({}),
+        );
+        state
+            .a2a_tasks
+            .lock()
+            .await
+            .insert("maestro-task-1".to_string(), task);
+
+        let response =
+            response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+
+        assert_eq!(response["error"]["code"], "UNSUPPORTED_OPERATION");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_message_send_rejects_active_task_id() {
+        let body = r#"{"message":{"messageId":"msg-2","contextId":"ctx-1","taskId":"maestro-task-1","role":"ROLE_USER","parts":[{"text":"follow up","mediaType":"text/plain"}]}}"#;
+        let request = format!(
+            "POST /message:send HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let mut initial = request.into_bytes();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (_client, mut server) = tcp_stream_pair().await;
+        let state = test_app_state_with_sessions(HashMap::new());
+        let task = a2a_task_value(
+            "maestro-task-1",
+            "ctx-1",
+            "TASK_STATE_WORKING",
+            a2a_agent_message("ctx-1", "working"),
+            Vec::new(),
+            Vec::new(),
+            serde_json::json!({}),
+        );
+        state
+            .a2a_tasks
+            .lock()
+            .await
+            .insert("maestro-task-1".to_string(), task);
+        let (cancel_tx, _cancel_rx) = watch::channel(false);
+        state
+            .a2a_cancel_senders
+            .lock()
+            .await
+            .insert("maestro-task-1".to_string(), cancel_tx);
+
+        let response =
+            response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+        let stored = state.a2a_tasks.lock().await;
+
+        assert_eq!(response["error"]["code"], "UNSUPPORTED_OPERATION");
+        assert_eq!(
+            stored["maestro-task-1"]["status"]["state"],
+            "TASK_STATE_WORKING"
+        );
+        assert_eq!(state.a2a_cancel_senders.lock().await.len(), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_claims_input_task_before_launch() {
+        let state = test_app_state_with_sessions(HashMap::new());
+        let existing_message = a2a_agent_message("ctx-1", "Need more input");
+        let task = a2a_task_value(
+            "maestro-task-1",
+            "ctx-1",
+            "TASK_STATE_INPUT_REQUIRED",
+            existing_message.clone(),
+            vec![existing_message],
+            Vec::new(),
+            serde_json::json!({}),
+        );
+        state
+            .a2a_tasks
+            .lock()
+            .await
+            .insert("maestro-task-1".to_string(), task);
+        let head = RequestHead {
+            method: "POST".to_string(),
+            path: "/message:send".to_string(),
+            query: HashMap::new(),
+            headers: HashMap::new(),
+        };
+        let request = A2ASendMessageRequest {
+            message: A2AMessageBody {
+                message_id: Some("msg-2".to_string()),
+                context_id: None,
+                task_id: Some("maestro-task-1".to_string()),
+                role: Some("ROLE_USER".to_string()),
+                parts: vec![A2APartBody {
+                    text: Some("follow up".to_string()),
+                    url: None,
+                    data: None,
+                    metadata: None,
+                    filename: None,
+                    media_type: Some("text/plain".to_string()),
+                }],
+                metadata: None,
+                extensions: None,
+                reference_task_ids: None,
+            },
+            configuration: None,
+            metadata: None,
+        };
+        let auth = AuthContext {
+            subject: None,
+            unrestricted: true,
+        };
+
+        let claimed = claim_a2a_send_task(
+            &state,
+            &request,
+            &head,
+            &auth,
+            serde_json::json!({ "test": "metadata" }),
+        )
+        .await
+        .expect("input-required task should be claimed");
+        let stored = state.a2a_tasks.lock().await;
+
+        assert_eq!(claimed.task_id, "maestro-task-1");
+        assert_eq!(claimed.context_id, "ctx-1");
+        assert_eq!(claimed.history.len(), 2);
+        assert_eq!(
+            stored["maestro-task-1"]["status"]["state"],
+            "TASK_STATE_WORKING"
+        );
+        drop(stored);
+
+        let response = response_json(
+            claim_a2a_send_task(&state, &request, &head, &auth, serde_json::json!({}))
+                .await
+                .expect_err("already-claimed task should reject overlap"),
+        );
+        assert_eq!(response["error"]["code"], "UNSUPPORTED_OPERATION");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_restores_claim_when_cancel_sender_registration_fails() {
+        let body = r#"{"message":{"messageId":"msg-2","contextId":"ctx-1","taskId":"maestro-task-1","role":"ROLE_USER","parts":[{"text":"follow up","mediaType":"text/plain"}]}}"#;
+        let request = format!(
+            "POST /message:send HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let mut initial = request.into_bytes();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (_client, mut server) = tcp_stream_pair().await;
+        let state = test_app_state_with_sessions(HashMap::new());
+        let existing_message = a2a_agent_message("ctx-1", "Need more input");
+        let task = a2a_task_value(
+            "maestro-task-1",
+            "ctx-1",
+            "TASK_STATE_INPUT_REQUIRED",
+            existing_message.clone(),
+            vec![existing_message],
+            Vec::new(),
+            serde_json::json!({}),
+        );
+        state
+            .a2a_tasks
+            .lock()
+            .await
+            .insert("maestro-task-1".to_string(), task);
+        let (cancel_tx, _cancel_rx) = watch::channel(false);
+        state
+            .a2a_cancel_senders
+            .lock()
+            .await
+            .insert("maestro-task-1".to_string(), cancel_tx);
+
+        let response =
+            response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+        let stored = state.a2a_tasks.lock().await;
+
+        assert_eq!(response["error"]["code"], "UNSUPPORTED_OPERATION");
+        assert_eq!(
+            stored["maestro-task-1"]["status"]["state"],
+            "TASK_STATE_INPUT_REQUIRED"
+        );
+        assert_eq!(
+            stored["maestro-task-1"]["history"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_cancel_rejects_terminal_tasks() {
+        let (_client, mut server) = tcp_stream_pair().await;
+        let mut initial =
+            b"POST /tasks/maestro-task-1:cancel HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\n\r\n"
+                .to_vec();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let state = test_app_state_with_sessions(HashMap::new());
+        let task = a2a_task_value(
+            "maestro-task-1",
+            "ctx-1",
+            "TASK_STATE_COMPLETED",
+            a2a_agent_message("ctx-1", "complete"),
+            Vec::new(),
+            Vec::new(),
+            serde_json::json!({}),
+        );
+        state
+            .a2a_tasks
+            .lock()
+            .await
+            .insert("maestro-task-1".to_string(), task);
+
+        let response =
+            response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+        let stored = state.a2a_tasks.lock().await;
+
+        assert_eq!(response["error"]["code"], "TASK_NOT_CANCELABLE");
+        assert_eq!(
+            stored["maestro-task-1"]["status"]["state"],
+            "TASK_STATE_COMPLETED"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_cancel_clears_existing_artifacts() {
+        let (_client, mut server) = tcp_stream_pair().await;
+        let mut initial =
+            b"POST /tasks/maestro-task-1:cancel HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\n\r\n"
+                .to_vec();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let state = test_app_state_with_sessions(HashMap::new());
+        let task = a2a_task_value(
+            "maestro-task-1",
+            "ctx-1",
+            "TASK_STATE_INPUT_REQUIRED",
+            a2a_agent_message("ctx-1", "Need more input"),
+            Vec::new(),
+            vec![serde_json::json!({
+                "artifactId": "artifact-1",
+                "name": "assistant-response",
+                "parts": [{ "text": "stale", "mediaType": "text/plain" }]
+            })],
+            serde_json::json!({}),
+        );
+        state
+            .a2a_tasks
+            .lock()
+            .await
+            .insert("maestro-task-1".to_string(), task);
+
+        let response =
+            response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+        let stored = state.a2a_tasks.lock().await;
+
+        assert_eq!(response["status"]["state"], "TASK_STATE_CANCELED");
+        assert_eq!(response["artifacts"].as_array().unwrap().len(), 0);
+        assert_eq!(
+            stored["maestro-task-1"]["status"]["state"],
+            "TASK_STATE_CANCELED"
+        );
+        assert_eq!(
+            stored["maestro-task-1"]["artifacts"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_async_completion_preserves_canceled_task_state() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous_fake = env::var("MAESTRO_A2A_FAKE_RESPONSE").ok();
+        env::set_var("MAESTRO_A2A_FAKE_RESPONSE", "late response");
+
+        let state = test_app_state_with_sessions(HashMap::new());
+        let task = a2a_task_value(
+            "maestro-task-1",
+            "ctx-1",
+            "TASK_STATE_CANCELED",
+            a2a_agent_message("ctx-1", "Task canceled"),
+            Vec::new(),
+            Vec::new(),
+            serde_json::json!({}),
+        );
+        state
+            .a2a_tasks
+            .lock()
+            .await
+            .insert("maestro-task-1".to_string(), task);
+
+        let user_message = a2a_user_message_value(
+            &A2AMessageBody {
+                message_id: Some("msg-1".to_string()),
+                context_id: Some("ctx-1".to_string()),
+                task_id: Some("maestro-task-1".to_string()),
+                role: Some("ROLE_USER".to_string()),
+                parts: vec![A2APartBody {
+                    text: Some("hello".to_string()),
+                    url: None,
+                    data: None,
+                    metadata: None,
+                    filename: None,
+                    media_type: Some("text/plain".to_string()),
+                }],
+                metadata: None,
+                extensions: None,
+                reference_task_ids: None,
+            },
+            "ctx-1",
+        );
+        let (_cancel_tx, cancel_rx) = watch::channel(false);
+        let task = complete_a2a_task(
+            &state,
+            "hello".to_string(),
+            "maestro-task-1".to_string(),
+            "ctx-1".to_string(),
+            vec![user_message],
+            serde_json::json!({}),
+            cancel_rx,
+        )
+        .await;
+        let stored = state.a2a_tasks.lock().await;
+
+        assert_eq!(task["status"]["state"], "TASK_STATE_CANCELED");
+        assert_eq!(
+            stored["maestro-task-1"]["status"]["state"],
+            "TASK_STATE_CANCELED"
+        );
+
+        if let Some(previous_fake) = previous_fake {
+            env::set_var("MAESTRO_A2A_FAKE_RESPONSE", previous_fake);
+        } else {
+            env::remove_var("MAESTRO_A2A_FAKE_RESPONSE");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_cancel_signals_return_immediately_worker() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous_fake = env::var("MAESTRO_A2A_FAKE_RESPONSE").ok();
+        let previous_delay = env::var("MAESTRO_A2A_FAKE_RESPONSE_DELAY_MS").ok();
+        env::set_var("MAESTRO_A2A_FAKE_RESPONSE", "late response");
+        env::set_var("MAESTRO_A2A_FAKE_RESPONSE_DELAY_MS", "500");
+
+        let body = r#"{"message":{"messageId":"msg-1","contextId":"ctx-1","role":"ROLE_USER","parts":[{"text":"hello","mediaType":"text/plain"}]},"configuration":{"returnImmediately":true}}"#;
+        let request = format!(
+            "POST /message:send HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let mut initial = request.into_bytes();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (_client, mut server) = tcp_stream_pair().await;
+        let state = test_app_state_with_sessions(HashMap::new());
+
+        let response =
+            response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+        let task_id = response["task"]["id"]
+            .as_str()
+            .expect("task id should be present")
+            .to_string();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            state.a2a_tasks.lock().await[&task_id]["status"]["state"],
+            "TASK_STATE_WORKING"
+        );
+
+        let cancel_request = format!(
+            "POST /tasks/{task_id}:cancel HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\n\r\n"
+        );
+        let mut cancel_initial = cancel_request.into_bytes();
+        let cancel_head = parse_request_head(&cancel_initial).expect("request should parse");
+        let (_client, mut cancel_server) = tcp_stream_pair().await;
+        let cancel_response = response_json(
+            handle_a2a_endpoint(&mut cancel_server, &mut cancel_initial, cancel_head, &state).await,
+        );
+        assert_eq!(cancel_response["status"]["state"], "TASK_STATE_CANCELED");
+
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        let stored = state.a2a_tasks.lock().await;
+        assert_eq!(stored[&task_id]["status"]["state"], "TASK_STATE_CANCELED");
+        assert_eq!(stored[&task_id]["artifacts"].as_array().unwrap().len(), 0);
+
+        if let Some(previous_fake) = previous_fake {
+            env::set_var("MAESTRO_A2A_FAKE_RESPONSE", previous_fake);
+        } else {
+            env::remove_var("MAESTRO_A2A_FAKE_RESPONSE");
+        }
+        if let Some(previous_delay) = previous_delay {
+            env::set_var("MAESTRO_A2A_FAKE_RESPONSE_DELAY_MS", previous_delay);
+        } else {
+            env::remove_var("MAESTRO_A2A_FAKE_RESPONSE_DELAY_MS");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_cancel_requires_csrf_token_when_enabled() {
+        let base_state = test_app_state_with_sessions(HashMap::new());
+        let mut config = auth_test_config();
+        config.require_csrf = true;
+        config.csrf_token = Some("csrf-token".to_string());
+        let state = AppState {
+            config: Arc::new(config),
+            ..base_state
+        };
+        state.a2a_tasks.lock().await.insert(
+            "maestro-task-1".to_string(),
+            a2a_task_value(
+                "maestro-task-1",
+                "ctx-1",
+                "TASK_STATE_WORKING",
+                a2a_agent_message("ctx-1", "working"),
+                Vec::new(),
+                Vec::new(),
+                serde_json::json!({ "workspaceId": "ws-1" }),
+            ),
+        );
+
+        let request = "POST /tasks/maestro-task-1:cancel HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\n\r\n";
+        let mut initial = request.as_bytes().to_vec();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (_client, mut server) = tcp_stream_pair().await;
+
+        let response =
+            response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+
+        assert_eq!(response["error"], "Forbidden: invalid CSRF token");
+        assert_eq!(
+            state.a2a_tasks.lock().await["maestro-task-1"]["status"]["state"],
+            "TASK_STATE_WORKING"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_task_store_evicts_old_terminal_tasks() {
+        let state = test_app_state_with_sessions(HashMap::new());
+        let working_task = a2a_task_value(
+            "working-task",
+            "ctx-1",
+            "TASK_STATE_WORKING",
+            a2a_agent_message("ctx-1", "still running"),
+            Vec::new(),
+            Vec::new(),
+            serde_json::json!({}),
+        );
+        store_a2a_task_unless_canceled(&state, "working-task", working_task).await;
+
+        for index in 0..=A2A_TERMINAL_TASK_STORE_LIMIT {
+            let task_id = format!("terminal-task-{index}");
+            let mut task = a2a_task_value(
+                &task_id,
+                "ctx-1",
+                "TASK_STATE_COMPLETED",
+                a2a_agent_message("ctx-1", "done"),
+                Vec::new(),
+                Vec::new(),
+                serde_json::json!({}),
+            );
+            task["status"]["timestamp"] = Value::String(format!(
+                "2026-05-15T00:{:02}:{:02}Z",
+                index / 60,
+                index % 60
+            ));
+            store_a2a_task_unless_canceled(&state, &task_id, task).await;
+        }
+
+        let newest_terminal_task_id = format!("terminal-task-{A2A_TERMINAL_TASK_STORE_LIMIT}");
+        let stored = state.a2a_tasks.lock().await;
+
+        assert_eq!(stored.len(), A2A_TERMINAL_TASK_STORE_LIMIT + 1);
+        assert!(stored.contains_key("working-task"));
+        assert!(!stored.contains_key("terminal-task-0"));
+        assert!(stored.contains_key(&newest_terminal_task_id));
+        assert_eq!(
+            stored
+                .values()
+                .filter(|task| a2a_task_is_terminal(task))
+                .count(),
+            A2A_TERMINAL_TASK_STORE_LIMIT
+        );
     }
 
     #[test]
@@ -6735,6 +9062,17 @@ mod tests {
 
         assert!(response.contains("Access-Control-Allow-Origin: http://localhost:3000\r\n"));
         assert!(!response.contains("Access-Control-Allow-Origin: http://localhost:4173\r\n"));
+    }
+
+    #[tokio::test]
+    async fn cors_response_allows_platform_organization_header() {
+        let response = with_response_cors_origin("http://localhost:3000".to_string(), async {
+            response(204, "text/plain; charset=utf-8", &[])
+        })
+        .await;
+        let response = String::from_utf8(response).expect("response should be utf-8");
+
+        assert!(response.contains("x-organization-id"));
     }
 
     #[test]
@@ -8078,6 +10416,8 @@ mod tests {
             shared_sessions: Arc::new(Mutex::new(HashMap::new())),
             approval_modes: Arc::new(Mutex::new(HashMap::new())),
             pending_tool_responses: Arc::new(Mutex::new(HashMap::new())),
+            a2a_tasks: Arc::new(Mutex::new(HashMap::new())),
+            a2a_cancel_senders: Arc::new(Mutex::new(HashMap::new())),
         };
         let (_client, mut server) = tcp_stream_pair().await;
         let head = RequestHead {
@@ -8153,6 +10493,8 @@ mod tests {
             shared_sessions: Arc::new(Mutex::new(HashMap::new())),
             approval_modes: Arc::new(Mutex::new(HashMap::new())),
             pending_tool_responses: Arc::new(Mutex::new(HashMap::new())),
+            a2a_tasks: Arc::new(Mutex::new(HashMap::new())),
+            a2a_cancel_senders: Arc::new(Mutex::new(HashMap::new())),
         };
 
         persist_session_store(&state).await;
