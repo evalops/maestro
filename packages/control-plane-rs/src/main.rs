@@ -701,6 +701,7 @@ async fn cancel_a2a_task(state: &AppState, task_id: &str) -> Result<Value, Vec<u
         "message": a2a_agent_message(&context_id, "Task canceled"),
         "timestamp": now_rfc3339()
     });
+    task["artifacts"] = serde_json::json!([]);
     let task = task.clone();
     prune_a2a_terminal_tasks(&mut tasks);
     drop(tasks);
@@ -7428,6 +7429,52 @@ mod tests {
         assert_eq!(
             stored["maestro-task-1"]["status"]["state"],
             "TASK_STATE_COMPLETED"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_cancel_clears_existing_artifacts() {
+        let (_client, mut server) = tcp_stream_pair().await;
+        let mut initial =
+            b"POST /tasks/maestro-task-1:cancel HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\n\r\n"
+                .to_vec();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let state = test_app_state_with_sessions(HashMap::new());
+        let task = a2a_task_value(
+            "maestro-task-1",
+            "ctx-1",
+            "TASK_STATE_INPUT_REQUIRED",
+            a2a_agent_message("ctx-1", "Need more input"),
+            Vec::new(),
+            vec![serde_json::json!({
+                "artifactId": "artifact-1",
+                "name": "assistant-response",
+                "parts": [{ "text": "stale", "mediaType": "text/plain" }]
+            })],
+            serde_json::json!({}),
+        );
+        state
+            .a2a_tasks
+            .lock()
+            .await
+            .insert("maestro-task-1".to_string(), task);
+
+        let response =
+            response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+        let stored = state.a2a_tasks.lock().await;
+
+        assert_eq!(response["status"]["state"], "TASK_STATE_CANCELED");
+        assert_eq!(response["artifacts"].as_array().unwrap().len(), 0);
+        assert_eq!(
+            stored["maestro-task-1"]["status"]["state"],
+            "TASK_STATE_CANCELED"
+        );
+        assert_eq!(
+            stored["maestro-task-1"]["artifacts"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
         );
     }
 
