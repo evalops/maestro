@@ -1099,23 +1099,35 @@ fn a2a_message_text(message: &A2AMessageBody) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
+fn trimmed_non_empty_string(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
 fn a2a_context_id(request: &A2ASendMessageRequest, head: &RequestHead) -> String {
     request
         .message
         .context_id
         .as_deref()
+        .and_then(trimmed_non_empty_string)
         .or_else(|| {
             request
                 .message
                 .metadata
                 .as_ref()
                 .and_then(|metadata| metadata.get("sessionId").and_then(Value::as_str))
+                .and_then(trimmed_non_empty_string)
         })
-        .or_else(|| head.headers.get("x-evalops-session-id").map(String::as_str))
-        .or_else(|| head.headers.get("x-maestro-session-id").map(String::as_str))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
+        .or_else(|| {
+            head.headers
+                .get("x-evalops-session-id")
+                .and_then(|value| trimmed_non_empty_string(value))
+        })
+        .or_else(|| {
+            head.headers
+                .get("x-maestro-session-id")
+                .and_then(|value| trimmed_non_empty_string(value))
+        })
         .unwrap_or_else(|| generate_a2a_id("maestro-context"))
 }
 
@@ -7036,6 +7048,37 @@ mod tests {
         let value = a2a_user_message_value(&message, "ctx-1");
 
         assert_eq!(value["contextId"], "ctx-1");
+    }
+
+    #[test]
+    fn a2a_context_id_falls_back_when_message_context_is_blank() {
+        let request = A2ASendMessageRequest {
+            message: A2AMessageBody {
+                message_id: Some("msg-1".to_string()),
+                context_id: Some("   ".to_string()),
+                task_id: None,
+                role: Some("ROLE_USER".to_string()),
+                parts: vec![A2APartBody {
+                    text: Some("hello".to_string()),
+                    url: None,
+                    data: None,
+                    metadata: Some(serde_json::json!({ "sessionId": " metadata-ctx " })),
+                    filename: None,
+                    media_type: Some("text/plain".to_string()),
+                }],
+                metadata: Some(serde_json::json!({ "sessionId": " metadata-ctx " })),
+                extensions: None,
+                reference_task_ids: None,
+            },
+            configuration: None,
+            metadata: None,
+        };
+        let head = parse_request_head(
+            b"POST /message:send HTTP/1.1\r\nHost: localhost\r\nx-evalops-session-id: header-ctx\r\n\r\n",
+        )
+        .expect("request should parse");
+
+        assert_eq!(a2a_context_id(&request, &head), "metadata-ctx");
     }
 
     #[tokio::test(flavor = "current_thread")]
