@@ -595,6 +595,7 @@ struct A2ASendTarget {
     context_id: String,
     history: Vec<Value>,
     previous_task: Option<Value>,
+    metadata: Value,
 }
 
 fn is_a2a_endpoint(head: &RequestHead) -> bool {
@@ -797,71 +798,78 @@ async fn claim_a2a_send_task(
         .map(str::to_string);
 
     let mut tasks = state.a2a_tasks.lock().await;
-    let (task_id, context_id, mut history, previous_task) = if let Some(task_id) = requested_task_id
-    {
-        let Some(task) = tasks.get(task_id) else {
-            return Err(a2a_error_response(
-                404,
-                "TASK_NOT_FOUND",
-                "A2A task not found",
-            ));
-        };
-        if !a2a_task_visible_to_auth(task, auth) {
-            return Err(a2a_error_response(
-                404,
-                "TASK_NOT_FOUND",
-                "A2A task not found",
-            ));
-        }
-        if a2a_task_is_terminal(task) {
-            return Err(a2a_error_response(
-                400,
-                "UNSUPPORTED_OPERATION",
-                "A2A terminal tasks cannot accept more messages",
-            ));
-        }
-        if !a2a_task_accepts_message(task) {
-            return Err(a2a_error_response(
-                409,
-                "UNSUPPORTED_OPERATION",
-                "A2A task is not ready to accept another message",
-            ));
-        }
-
-        let task_context_id = task
-            .get("contextId")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|context_id| !context_id.is_empty())
-            .map(str::to_string);
-        if let (Some(message_context_id), Some(task_context_id)) =
-            (explicit_context_id.as_deref(), task_context_id.as_deref())
-        {
-            if message_context_id != task_context_id {
+    let (task_id, context_id, mut history, previous_task, task_metadata) =
+        if let Some(task_id) = requested_task_id {
+            let Some(task) = tasks.get(task_id) else {
                 return Err(a2a_error_response(
-                    400,
-                    "INVALID_REQUEST",
-                    "A2A message contextId must match the referenced task",
+                    404,
+                    "TASK_NOT_FOUND",
+                    "A2A task not found",
+                ));
+            };
+            if !a2a_task_visible_to_auth(task, auth) {
+                return Err(a2a_error_response(
+                    404,
+                    "TASK_NOT_FOUND",
+                    "A2A task not found",
                 ));
             }
-        }
-        let context_id = explicit_context_id
-            .or(task_context_id)
-            .unwrap_or_else(|| a2a_context_id(request, head));
-        let history = task
-            .get("history")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        (task_id.to_string(), context_id, history, Some(task.clone()))
-    } else {
-        (
-            generate_a2a_id("maestro-task"),
-            explicit_context_id.unwrap_or_else(|| a2a_context_id(request, head)),
-            Vec::new(),
-            None,
-        )
-    };
+            if a2a_task_is_terminal(task) {
+                return Err(a2a_error_response(
+                    400,
+                    "UNSUPPORTED_OPERATION",
+                    "A2A terminal tasks cannot accept more messages",
+                ));
+            }
+            if !a2a_task_accepts_message(task) {
+                return Err(a2a_error_response(
+                    409,
+                    "UNSUPPORTED_OPERATION",
+                    "A2A task is not ready to accept another message",
+                ));
+            }
+
+            let task_context_id = task
+                .get("contextId")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|context_id| !context_id.is_empty())
+                .map(str::to_string);
+            if let (Some(message_context_id), Some(task_context_id)) =
+                (explicit_context_id.as_deref(), task_context_id.as_deref())
+            {
+                if message_context_id != task_context_id {
+                    return Err(a2a_error_response(
+                        400,
+                        "INVALID_REQUEST",
+                        "A2A message contextId must match the referenced task",
+                    ));
+                }
+            }
+            let context_id = explicit_context_id
+                .or(task_context_id)
+                .unwrap_or_else(|| a2a_context_id(request, head));
+            let history = task
+                .get("history")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            (
+                task_id.to_string(),
+                context_id,
+                history,
+                Some(task.clone()),
+                a2a_merge_task_metadata(task, metadata),
+            )
+        } else {
+            (
+                generate_a2a_id("maestro-task"),
+                explicit_context_id.unwrap_or_else(|| a2a_context_id(request, head)),
+                Vec::new(),
+                None,
+                metadata,
+            )
+        };
     history.push(a2a_user_message_value(&request.message, &context_id));
     let working_message = a2a_agent_message(&context_id, "Maestro is working on the A2A task.");
     let task = a2a_task_value(
@@ -871,7 +879,7 @@ async fn claim_a2a_send_task(
         working_message,
         history.clone(),
         Vec::new(),
-        metadata,
+        task_metadata.clone(),
     );
     tasks.insert(task_id.clone(), task);
     prune_a2a_terminal_tasks(&mut tasks);
@@ -880,7 +888,22 @@ async fn claim_a2a_send_task(
         context_id,
         history,
         previous_task,
+        metadata: task_metadata,
     })
+}
+
+fn a2a_merge_task_metadata(existing_task: &Value, metadata: Value) -> Value {
+    let mut merged = existing_task
+        .get("metadata")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    if let Value::Object(metadata) = metadata {
+        for (key, value) in metadata {
+            merged.insert(key, value);
+        }
+    }
+    Value::Object(merged)
 }
 
 async fn rollback_a2a_send_claim(state: &AppState, task_id: &str, previous_task: Option<Value>) {
@@ -985,7 +1008,7 @@ async fn handle_a2a_message_send(
     };
 
     let metadata = a2a_task_metadata(head, &request, auth);
-    let target = match claim_a2a_send_task(state, &request, head, auth, metadata.clone()).await {
+    let target = match claim_a2a_send_task(state, &request, head, auth, metadata).await {
         Ok(target) => target,
         Err(response) => return response,
     };
@@ -993,6 +1016,7 @@ async fn handle_a2a_message_send(
     let context_id = target.context_id;
     let history = target.history;
     let previous_task = target.previous_task;
+    let metadata = target.metadata;
 
     let (cancel_tx, cancel_rx) = watch::channel(false);
     if let Err(response) = register_a2a_cancel_sender(state, &task_id, cancel_tx).await {
@@ -1173,12 +1197,22 @@ fn a2a_public_base_url(_head: &RequestHead, config: &Config) -> String {
     {
         return url.trim_end_matches('/').to_string();
     }
-    let host = if config.listen_host == "0.0.0.0" || config.listen_host == "::" {
-        "127.0.0.1"
+    let host = if let Some(host) = trimmed_env("MAESTRO_A2A_PUBLIC_HOST")
+        .or_else(|| trimmed_env("MAESTRO_CONTROL_PUBLIC_HOST"))
+    {
+        host
+    } else if config.listen_host == "0.0.0.0" || config.listen_host == "::" {
+        trimmed_env("HOSTNAME")
+            .or_else(|| trimmed_env("COMPUTERNAME"))
+            .unwrap_or_else(|| "127.0.0.1".to_string())
     } else {
-        config.listen_host.as_str()
+        config.listen_host.clone()
     };
-    format!("http://{host}:{}", config.listen_port)
+    if host.contains(':') {
+        format!("http://{host}")
+    } else {
+        format!("http://{host}:{}", config.listen_port)
+    }
 }
 
 fn a2a_message_text(message: &A2AMessageBody) -> Option<String> {
@@ -7094,9 +7128,13 @@ mod tests {
     fn a2a_agent_card_advertises_http_json_interface() {
         let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
         let previous_a2a_url = env::var_os("MAESTRO_A2A_PUBLIC_URL");
+        let previous_a2a_host = env::var_os("MAESTRO_A2A_PUBLIC_HOST");
         let previous_control_url = env::var_os("MAESTRO_CONTROL_PUBLIC_URL");
+        let previous_control_host = env::var_os("MAESTRO_CONTROL_PUBLIC_HOST");
         env::remove_var("MAESTRO_A2A_PUBLIC_URL");
+        env::remove_var("MAESTRO_A2A_PUBLIC_HOST");
         env::remove_var("MAESTRO_CONTROL_PUBLIC_URL");
+        env::remove_var("MAESTRO_CONTROL_PUBLIC_HOST");
         let head = parse_request_head(
             b"GET /.well-known/agent-card.json HTTP/1.1\r\nHost: attacker.test\r\nx-forwarded-proto: https\r\n\r\n",
         )
@@ -7111,6 +7149,57 @@ mod tests {
             "HTTP+JSON"
         );
         assert_eq!(card["skills"][0]["id"], "maestro-tui-turn");
+        if let Some(previous_a2a_url) = previous_a2a_url {
+            env::set_var("MAESTRO_A2A_PUBLIC_URL", previous_a2a_url);
+        } else {
+            env::remove_var("MAESTRO_A2A_PUBLIC_URL");
+        }
+        if let Some(previous_a2a_host) = previous_a2a_host {
+            env::set_var("MAESTRO_A2A_PUBLIC_HOST", previous_a2a_host);
+        } else {
+            env::remove_var("MAESTRO_A2A_PUBLIC_HOST");
+        }
+        if let Some(previous_control_url) = previous_control_url {
+            env::set_var("MAESTRO_CONTROL_PUBLIC_URL", previous_control_url);
+        } else {
+            env::remove_var("MAESTRO_CONTROL_PUBLIC_URL");
+        }
+        if let Some(previous_control_host) = previous_control_host {
+            env::set_var("MAESTRO_CONTROL_PUBLIC_HOST", previous_control_host);
+        } else {
+            env::remove_var("MAESTRO_CONTROL_PUBLIC_HOST");
+        }
+    }
+
+    #[test]
+    fn a2a_agent_card_uses_configured_public_host_for_wildcard_binds() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous_a2a_host = env::var_os("MAESTRO_A2A_PUBLIC_HOST");
+        let previous_a2a_url = env::var_os("MAESTRO_A2A_PUBLIC_URL");
+        let previous_control_url = env::var_os("MAESTRO_CONTROL_PUBLIC_URL");
+        env::set_var("MAESTRO_A2A_PUBLIC_HOST", "mini.example.test");
+        env::remove_var("MAESTRO_A2A_PUBLIC_URL");
+        env::remove_var("MAESTRO_CONTROL_PUBLIC_URL");
+        let mut config = auth_test_config();
+        config.listen_host = "0.0.0.0".to_string();
+        config.listen_port = 18787;
+        let head = parse_request_head(
+            b"GET /.well-known/agent-card.json HTTP/1.1\r\nHost: attacker.test\r\n\r\n",
+        )
+        .expect("request should parse");
+        let card = a2a_agent_card(&head, &config);
+
+        assert_eq!(card["url"], "http://mini.example.test:18787");
+        assert_eq!(
+            card["supportedInterfaces"][0]["url"],
+            "http://mini.example.test:18787"
+        );
+
+        if let Some(previous_a2a_host) = previous_a2a_host {
+            env::set_var("MAESTRO_A2A_PUBLIC_HOST", previous_a2a_host);
+        } else {
+            env::remove_var("MAESTRO_A2A_PUBLIC_HOST");
+        }
         if let Some(previous_a2a_url) = previous_a2a_url {
             env::set_var("MAESTRO_A2A_PUBLIC_URL", previous_a2a_url);
         } else {
@@ -7266,7 +7355,11 @@ mod tests {
                 Vec::new(),
                 Value::Object(metadata),
             );
-            state.a2a_tasks.lock().await.insert(task_id.to_string(), task);
+            state
+                .a2a_tasks
+                .lock()
+                .await
+                .insert(task_id.to_string(), task);
         }
         let token = shared_secret_bearer_token(b"shared-secret", "user-123");
         let request = format!(
@@ -7278,7 +7371,9 @@ mod tests {
 
         let response =
             response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
-        let tasks = response["tasks"].as_array().expect("tasks should be an array");
+        let tasks = response["tasks"]
+            .as_array()
+            .expect("tasks should be an array");
 
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0]["id"], "owned-task");
@@ -7337,6 +7432,58 @@ mod tests {
         } else {
             env::remove_var("MAESTRO_AUTH_SHARED_SECRET");
         }
+        if let Some(previous_fake) = previous_fake {
+            env::set_var("MAESTRO_A2A_FAKE_RESPONSE", previous_fake);
+        } else {
+            env::remove_var("MAESTRO_A2A_FAKE_RESPONSE");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_message_send_preserves_owner_metadata_on_unrestricted_follow_up() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous_fake = env::var("MAESTRO_A2A_FAKE_RESPONSE").ok();
+        env::set_var("MAESTRO_A2A_FAKE_RESPONSE", "follow-up response");
+        let state = test_app_state_with_sessions(HashMap::new());
+        let existing_message = a2a_agent_message("ctx-1", "Need more input");
+        let task = a2a_task_value(
+            "owned-task",
+            "ctx-1",
+            "TASK_STATE_INPUT_REQUIRED",
+            existing_message.clone(),
+            vec![existing_message],
+            Vec::new(),
+            serde_json::json!({
+                "ownerSubject": "user-123",
+                "workspaceId": "ws-old"
+            }),
+        );
+        state
+            .a2a_tasks
+            .lock()
+            .await
+            .insert("owned-task".to_string(), task);
+        let body = r#"{"message":{"messageId":"msg-2","contextId":"ctx-1","taskId":"owned-task","role":"ROLE_USER","parts":[{"text":"follow up","mediaType":"text/plain"}]}}"#;
+        let request = format!(
+            "POST /message:send HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\nx-evalops-workspace-id: ws-new\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let mut initial = request.into_bytes();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (_client, mut server) = tcp_stream_pair().await;
+
+        let response =
+            response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+        let task = &response["task"];
+
+        assert_eq!(task["id"], "owned-task");
+        assert_eq!(task["metadata"]["ownerSubject"], "user-123");
+        assert_eq!(task["metadata"]["workspaceId"], "ws-new");
+        assert_eq!(
+            state.a2a_tasks.lock().await["owned-task"]["metadata"]["ownerSubject"],
+            "user-123"
+        );
+
         if let Some(previous_fake) = previous_fake {
             env::set_var("MAESTRO_A2A_FAKE_RESPONSE", previous_fake);
         } else {
