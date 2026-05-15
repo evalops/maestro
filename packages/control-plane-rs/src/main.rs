@@ -594,6 +594,7 @@ struct A2ASendTarget {
     task_id: String,
     context_id: String,
     history: Vec<Value>,
+    previous_task: Option<Value>,
 }
 
 fn is_a2a_endpoint(head: &RequestHead) -> bool {
@@ -762,7 +763,8 @@ async fn claim_a2a_send_task(
         .map(str::to_string);
 
     let mut tasks = state.a2a_tasks.lock().await;
-    let (task_id, context_id, mut history) = if let Some(task_id) = requested_task_id {
+    let (task_id, context_id, mut history, previous_task) = if let Some(task_id) = requested_task_id
+    {
         let Some(task) = tasks.get(task_id) else {
             return Err(a2a_error_response(
                 404,
@@ -810,12 +812,13 @@ async fn claim_a2a_send_task(
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        (task_id.to_string(), context_id, history)
+        (task_id.to_string(), context_id, history, Some(task.clone()))
     } else {
         (
             generate_a2a_id("maestro-task"),
             explicit_context_id.unwrap_or_else(|| a2a_context_id(request, head)),
             Vec::new(),
+            None,
         )
     };
     history.push(a2a_user_message_value(&request.message, &context_id));
@@ -835,7 +838,17 @@ async fn claim_a2a_send_task(
         task_id,
         context_id,
         history,
+        previous_task,
     })
+}
+
+async fn rollback_a2a_send_claim(state: &AppState, task_id: &str, previous_task: Option<Value>) {
+    let mut tasks = state.a2a_tasks.lock().await;
+    if let Some(previous_task) = previous_task {
+        tasks.insert(task_id.to_string(), previous_task);
+    } else {
+        tasks.remove(task_id);
+    }
 }
 
 async fn a2a_canceled_task(state: &AppState, task_id: &str) -> Option<Value> {
@@ -937,9 +950,11 @@ async fn handle_a2a_message_send(
     let task_id = target.task_id;
     let context_id = target.context_id;
     let history = target.history;
+    let previous_task = target.previous_task;
 
     let (cancel_tx, cancel_rx) = watch::channel(false);
     if let Err(response) = register_a2a_cancel_sender(state, &task_id, cancel_tx).await {
+        rollback_a2a_send_claim(state, &task_id, previous_task).await;
         return response;
     }
     if let Some(task) = a2a_canceled_task(state, &task_id).await {
@@ -7396,6 +7411,57 @@ mod tests {
                 .expect_err("already-claimed task should reject overlap"),
         );
         assert_eq!(response["error"]["code"], "UNSUPPORTED_OPERATION");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_restores_claim_when_cancel_sender_registration_fails() {
+        let body = r#"{"message":{"messageId":"msg-2","contextId":"ctx-1","taskId":"maestro-task-1","role":"ROLE_USER","parts":[{"text":"follow up","mediaType":"text/plain"}]}}"#;
+        let request = format!(
+            "POST /message:send HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let mut initial = request.into_bytes();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (_client, mut server) = tcp_stream_pair().await;
+        let state = test_app_state_with_sessions(HashMap::new());
+        let existing_message = a2a_agent_message("ctx-1", "Need more input");
+        let task = a2a_task_value(
+            "maestro-task-1",
+            "ctx-1",
+            "TASK_STATE_INPUT_REQUIRED",
+            existing_message.clone(),
+            vec![existing_message],
+            Vec::new(),
+            serde_json::json!({}),
+        );
+        state
+            .a2a_tasks
+            .lock()
+            .await
+            .insert("maestro-task-1".to_string(), task);
+        let (cancel_tx, _cancel_rx) = watch::channel(false);
+        state
+            .a2a_cancel_senders
+            .lock()
+            .await
+            .insert("maestro-task-1".to_string(), cancel_tx);
+
+        let response =
+            response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+        let stored = state.a2a_tasks.lock().await;
+
+        assert_eq!(response["error"]["code"], "UNSUPPORTED_OPERATION");
+        assert_eq!(
+            stored["maestro-task-1"]["status"]["state"],
+            "TASK_STATE_INPUT_REQUIRED"
+        );
+        assert_eq!(
+            stored["maestro-task-1"]["history"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
