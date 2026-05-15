@@ -734,6 +734,7 @@ export class ProviderTransport implements AgentTransport {
 			{
 				value: 0,
 			};
+		const pendingDynamicToolExecutions: PendingExecution[] = [];
 		const platformToolExecutionBridge = resolvePlatformToolExecutionBridge(
 			this.options.platformToolExecutionBridge,
 		);
@@ -824,6 +825,10 @@ export class ProviderTransport implements AgentTransport {
 						candidateKey !== undefined &&
 						candidateKey === reusableToolResultKey &&
 						alreadyHadReusableToolResultState &&
+						!hasPendingMutatingToolExecution(
+							pendingDynamicToolExecutions,
+							tools,
+						) &&
 						hasReusableToolResultState(
 							candidateKey,
 							reusableToolResults,
@@ -907,7 +912,10 @@ export class ProviderTransport implements AgentTransport {
 				if (canReuseToolResult && reusableToolResultKey) {
 					policyCheckedReusableToolResultKeys.add(reusableToolResultKey);
 				}
-				if (canReuseToolResult) {
+				const canServeReusableToolResult =
+					canReuseToolResult &&
+					!hasPendingMutatingToolExecution(pendingDynamicToolExecutions, tools);
+				if (canServeReusableToolResult) {
 					const cachedEntry = reusableToolResults.get(reusableToolResultKey);
 					if (cachedEntry) {
 						const cacheHitStart = this.clock.now();
@@ -996,26 +1004,37 @@ export class ProviderTransport implements AgentTransport {
 								reusableToolResultCacheGeneration,
 							)
 						: executionPromise;
-				const pendingExecutions: PendingExecution[] = [
-					{ toolCall, promise: trackedExecutionPromise },
-				];
+				const pendingExecution: PendingExecution = {
+					toolCall: effectiveToolCall,
+					promise: trackedExecutionPromise,
+				};
+				pendingDynamicToolExecutions.push(pendingExecution);
+				const pendingExecutions: PendingExecution[] = [pendingExecution];
 				let outcome: Awaited<typeof executionPromise> | undefined;
-				while (pendingExecutions.length > 0) {
-					const next = await waitForNextExecutionOrUpdate(
-						pendingExecutions,
-						toolUpdateQueue,
-					);
-					if (next.kind === "update") {
-						if (next.event.type === "tool_retry_required") {
-							this.options.toolRetryService?.skip(
-								next.event.request.id,
-								"Codex app-server dynamic tool callbacks cannot prompt for retry",
-								"runtime",
-							);
+				try {
+					while (pendingExecutions.length > 0) {
+						const next = await waitForNextExecutionOrUpdate(
+							pendingExecutions,
+							toolUpdateQueue,
+						);
+						if (next.kind === "update") {
+							if (next.event.type === "tool_retry_required") {
+								this.options.toolRetryService?.skip(
+									next.event.request.id,
+									"Codex app-server dynamic tool callbacks cannot prompt for retry",
+									"runtime",
+								);
+							}
+							continue;
 						}
-						continue;
+						outcome = next.outcome;
 					}
-					outcome = next.outcome;
+				} finally {
+					const pendingIndex =
+						pendingDynamicToolExecutions.indexOf(pendingExecution);
+					if (pendingIndex >= 0) {
+						pendingDynamicToolExecutions.splice(pendingIndex, 1);
+					}
 				}
 				if (!outcome) {
 					return dynamicToolError("Dynamic tool execution did not complete.");

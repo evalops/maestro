@@ -655,6 +655,142 @@ describe("ProviderTransport provider-owned tool events", () => {
 		);
 	});
 
+	it("does not reuse cached dynamic reads while a mutating callback is pending", async () => {
+		const readToolExecute = vi.fn(async (_toolCallId, params) => ({
+			content: [
+				{
+					type: "text" as const,
+					text: `dynamic:${String(params.path)}:${readToolExecute.mock.calls.length}`,
+				},
+			],
+		}));
+		let resolveWriteStarted: (() => void) | undefined;
+		let resolveWrite: (() => void) | undefined;
+		const writeStarted = new Promise<void>((resolve) => {
+			resolveWriteStarted = resolve;
+		});
+		const writeRelease = new Promise<void>((resolve) => {
+			resolveWrite = resolve;
+		});
+		const writeToolExecute = vi.fn(async () => {
+			resolveWriteStarted?.();
+			await writeRelease;
+			return {
+				content: [{ type: "text" as const, text: "write:done" }],
+			};
+		});
+		const readTool: AgentTool = {
+			name: "read",
+			description: "Read a file.",
+			parameters: Type.Object({
+				path: Type.String(),
+			}),
+			annotations: {
+				readOnlyHint: true,
+			},
+			execute: readToolExecute,
+		};
+		const writeTool: AgentTool = {
+			name: "write",
+			description: "Write a file.",
+			parameters: Type.Object({
+				path: Type.String(),
+				content: Type.String(),
+			}),
+			annotations: {
+				readOnlyHint: false,
+			},
+			execute: writeToolExecute,
+		};
+		const assistant = assistantMessage();
+		const dynamicResults: AgentToolResult[] = [];
+		mocks.createProviderStream.mockImplementationOnce(async function* (
+			_model: unknown,
+			_context: unknown,
+			options: StreamOptions,
+		) {
+			yield {
+				type: "start",
+				partial: assistant,
+			} satisfies AssistantMessageEvent;
+			if (!options.executeDynamicTool) {
+				throw new Error("expected dynamic tool callback");
+			}
+			dynamicResults.push(
+				await options.executeDynamicTool({
+					type: "toolCall",
+					id: "dynamic-read-before-write",
+					name: "read",
+					arguments: { path: "/tmp/evalops.txt" },
+				}),
+			);
+			const writePromise = options.executeDynamicTool({
+				type: "toolCall",
+				id: "dynamic-write",
+				name: "write",
+				arguments: {
+					path: "/tmp/evalops.txt",
+					content: "new content",
+				},
+			});
+			await writeStarted;
+			dynamicResults.push(
+				await options.executeDynamicTool({
+					type: "toolCall",
+					id: "dynamic-read-during-write",
+					name: "read",
+					arguments: { path: "/tmp/evalops.txt" },
+				}),
+			);
+			resolveWrite?.();
+			dynamicResults.push(await writePromise);
+			yield {
+				type: "done",
+				reason: "stop",
+				message: assistant,
+			} satisfies AssistantMessageEvent;
+		});
+		const transport = new ProviderTransport();
+		const userMessage: Message = {
+			role: "user",
+			content: "Read, write, and read the same file.",
+			timestamp: 1,
+		};
+
+		await withTimeout(
+			(async () => {
+				for await (const _event of transport.run([userMessage], userMessage, {
+					systemPrompt: "Be concise.",
+					tools: [readTool, writeTool],
+					model: codexModel,
+				})) {
+					// Drain the stream.
+				}
+			})(),
+			"Timed out waiting for dynamic read/write callbacks",
+		);
+
+		expect(readToolExecute).toHaveBeenCalledTimes(2);
+		expect(writeToolExecute).toHaveBeenCalledTimes(1);
+		expect(dynamicResults).toEqual([
+			{
+				content: [{ type: "text", text: "dynamic:/tmp/evalops.txt:1" }],
+				isError: false,
+				details: undefined,
+			},
+			{
+				content: [{ type: "text", text: "dynamic:/tmp/evalops.txt:2" }],
+				isError: false,
+				details: undefined,
+			},
+			{
+				content: [{ type: "text", text: "write:done" }],
+				isError: false,
+				details: undefined,
+			},
+		]);
+	});
+
 	it("records Platform observations for cached dynamic read callbacks", async () => {
 		const { bridge, recordObservation } = createObservingPlatformBridge();
 		const toolExecute = vi.fn(async (_toolCallId, params) => ({
