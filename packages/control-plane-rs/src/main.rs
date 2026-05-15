@@ -49,6 +49,8 @@ const MAX_EXTRACT_JSON_BODY_BYTES: usize = 72 * 1024 * 1024;
 const DEFAULT_EXTRACT_MAX_CHARS: usize = 200_000;
 const MAX_EXTRACT_INPUT_BYTES: usize = 50 * 1024 * 1024;
 const MAX_PROJECT_ONBOARDING_IMPRESSIONS: u8 = 4;
+const A2A_PROTOCOL_VERSION: &str = "1.0";
+const A2A_DEFAULT_TURN_TIMEOUT_MS: u64 = 180_000;
 static ATTACHMENT_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
 type PendingToolResponseSender = mpsc::UnboundedSender<(String, bool, Option<ToolResult>)>;
@@ -151,6 +153,7 @@ struct AppState {
     shared_sessions: Arc<Mutex<HashMap<String, SharedSessionGrant>>>,
     approval_modes: Arc<Mutex<HashMap<String, String>>>,
     pending_tool_responses: Arc<Mutex<HashMap<String, PendingToolResponseSender>>>,
+    a2a_tasks: Arc<Mutex<HashMap<String, Value>>>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -295,6 +298,7 @@ async fn main() -> anyhow::Result<()> {
         shared_sessions: Arc::new(Mutex::new(shared_sessions)),
         approval_modes: Arc::new(Mutex::new(HashMap::new())),
         pending_tool_responses: Arc::new(Mutex::new(HashMap::new())),
+        a2a_tasks: Arc::new(Mutex::new(HashMap::new())),
     };
 
     loop {
@@ -327,6 +331,16 @@ async fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<(),
 
         if is_chat_endpoint(&head) {
             return handle_chat_endpoint(stream, initial, head, state).await;
+        }
+
+        if is_a2a_endpoint(&head) {
+            let response = handle_a2a_endpoint(&mut stream, &mut initial, head, &state).await;
+            stream
+                .write_all(&response)
+                .await
+                .map_err(|error| error.to_string())?;
+            let _ = stream.shutdown().await;
+            return Ok(());
         }
 
         if is_local_endpoint(&head) {
@@ -506,6 +520,637 @@ fn pending_request_id_from_resume_path(path: &str) -> Option<&str> {
         return None;
     }
     Some(request_id)
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct A2APartBody {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    data: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    metadata: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    filename: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    media_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct A2AMessageBody {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    context_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    role: Option<String>,
+    #[serde(default)]
+    parts: Vec<A2APartBody>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    metadata: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    extensions: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reference_task_ids: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct A2ASendMessageRequest {
+    message: A2AMessageBody,
+    #[serde(default)]
+    configuration: Option<Value>,
+    #[serde(default)]
+    metadata: Option<Value>,
+}
+
+#[derive(Debug, Default)]
+struct A2ATurnOutput {
+    assistant_text: String,
+    thinking_text: String,
+    usage: Option<TokenUsage>,
+    tools: Vec<Value>,
+}
+
+fn is_a2a_endpoint(head: &RequestHead) -> bool {
+    if head.method == "OPTIONS" {
+        return head.path == "/.well-known/agent-card.json"
+            || head.path == "/message:send"
+            || head.path == "/tasks"
+            || head.path.starts_with("/tasks/");
+    }
+    matches!(
+        (head.method.as_str(), head.path.as_str()),
+        ("GET", "/.well-known/agent-card.json") | ("POST", "/message:send") | ("GET", "/tasks")
+    ) || (head.method == "GET" && a2a_task_id_from_get_path(&head.path).is_some())
+        || (head.method == "POST" && a2a_task_id_from_cancel_path(&head.path).is_some())
+}
+
+fn a2a_task_id_from_get_path(path: &str) -> Option<&str> {
+    let id = path.strip_prefix("/tasks/")?;
+    (!id.is_empty() && !id.contains('/') && !id.contains(':')).then_some(id)
+}
+
+fn a2a_task_id_from_cancel_path(path: &str) -> Option<&str> {
+    let id = path.strip_prefix("/tasks/")?.strip_suffix(":cancel")?;
+    (!id.is_empty() && !id.contains('/') && !id.contains(':')).then_some(id)
+}
+
+async fn handle_a2a_endpoint(
+    stream: &mut TcpStream,
+    initial: &mut Vec<u8>,
+    head: RequestHead,
+    state: &AppState,
+) -> Vec<u8> {
+    if head.method == "OPTIONS" {
+        return response(204, "text/plain; charset=utf-8", &[]);
+    }
+
+    if head.method == "GET" && head.path == "/.well-known/agent-card.json" {
+        return json_response(200, &a2a_agent_card(&head, &state.config));
+    }
+
+    if let Err(response) = authorize(&head, &state.config) {
+        return response;
+    }
+
+    if head.method == "GET" && head.path == "/tasks" {
+        let tasks = state
+            .a2a_tasks
+            .lock()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        return json_response(200, &serde_json::json!({ "tasks": tasks }));
+    }
+
+    if head.method == "GET" {
+        if let Some(task_id) = a2a_task_id_from_get_path(&head.path) {
+            let tasks = state.a2a_tasks.lock().await;
+            return tasks.get(task_id).map_or_else(
+                || a2a_error_response(404, "TASK_NOT_FOUND", "A2A task not found"),
+                |task| json_response(200, task),
+            );
+        }
+    }
+
+    if head.method == "POST" {
+        if let Some(task_id) = a2a_task_id_from_cancel_path(&head.path) {
+            let mut tasks = state.a2a_tasks.lock().await;
+            let Some(task) = tasks.get_mut(task_id) else {
+                return a2a_error_response(404, "TASK_NOT_FOUND", "A2A task not found");
+            };
+            let context_id = task
+                .get("contextId")
+                .and_then(Value::as_str)
+                .unwrap_or("a2a")
+                .to_string();
+            task["status"] = serde_json::json!({
+                "state": "TASK_STATE_CANCELED",
+                "message": a2a_agent_message(&context_id, "Task canceled"),
+                "timestamp": now_rfc3339()
+            });
+            return json_response(200, task);
+        }
+    }
+
+    if head.method == "POST" && head.path == "/message:send" {
+        return handle_a2a_message_send(stream, initial, &head, state).await;
+    }
+
+    a2a_error_response(404, "NOT_FOUND", "A2A endpoint not found")
+}
+
+async fn handle_a2a_message_send(
+    stream: &mut TcpStream,
+    initial: &mut Vec<u8>,
+    head: &RequestHead,
+    state: &AppState,
+) -> Vec<u8> {
+    let body = match read_request_body(stream, initial, head).await {
+        Ok(body) => body,
+        Err(error) => return a2a_error_response(400, "INVALID_REQUEST", &error),
+    };
+    let request: A2ASendMessageRequest = match serde_json::from_slice(&body) {
+        Ok(request) => request,
+        Err(error) => {
+            return a2a_error_response(
+                400,
+                "INVALID_REQUEST",
+                &format!("invalid A2A message request: {error}"),
+            );
+        }
+    };
+
+    let Some(prompt) = a2a_message_text(&request.message) else {
+        return a2a_error_response(
+            400,
+            "INVALID_REQUEST",
+            "A2A message must contain at least one text part",
+        );
+    };
+
+    let context_id = a2a_context_id(&request, head);
+    let task_id = generate_a2a_id("maestro-task");
+    let user_message = a2a_user_message_value(&request.message, &context_id);
+
+    let metadata = a2a_task_metadata(head, &request);
+    if a2a_return_immediately(&request) {
+        let accepted_message = a2a_agent_message(&context_id, "Maestro accepted the A2A task.");
+        let task = a2a_task_value(
+            &task_id,
+            &context_id,
+            "TASK_STATE_WORKING",
+            accepted_message.clone(),
+            vec![user_message.clone(), accepted_message],
+            Vec::new(),
+            metadata.clone(),
+        );
+        state
+            .a2a_tasks
+            .lock()
+            .await
+            .insert(task_id.clone(), task.clone());
+        let state = state.clone();
+        tokio::spawn(async move {
+            let _ = complete_a2a_task(&state, prompt, task_id, context_id, user_message, metadata)
+                .await;
+        });
+        return json_response(200, &serde_json::json!({ "task": task }));
+    }
+
+    let task = complete_a2a_task(state, prompt, task_id, context_id, user_message, metadata).await;
+    json_response(200, &serde_json::json!({ "task": task }))
+}
+
+async fn complete_a2a_task(
+    state: &AppState,
+    prompt: String,
+    task_id: String,
+    context_id: String,
+    user_message: Value,
+    mut metadata: Value,
+) -> Value {
+    let turn = match run_a2a_native_turn(state, prompt).await {
+        Ok(turn) => turn,
+        Err(error) => {
+            let message = a2a_agent_message(&context_id, &error);
+            let task = a2a_task_value(
+                &task_id,
+                &context_id,
+                "TASK_STATE_FAILED",
+                message.clone(),
+                vec![user_message, message],
+                Vec::new(),
+                metadata,
+            );
+            state
+                .a2a_tasks
+                .lock()
+                .await
+                .insert(task_id.clone(), task.clone());
+            return task;
+        }
+    };
+
+    let assistant_text = if turn.assistant_text.trim().is_empty() {
+        "Maestro completed the A2A task without a text response.".to_string()
+    } else {
+        turn.assistant_text
+    };
+    let agent_message = a2a_agent_message(&context_id, &assistant_text);
+    if !turn.thinking_text.trim().is_empty() {
+        metadata["thinking"] = Value::String(turn.thinking_text);
+    }
+    if !turn.tools.is_empty() {
+        metadata["tools"] = Value::Array(turn.tools);
+    }
+    if let Some(usage) = turn.usage {
+        metadata["usage"] = serde_json::json!({
+            "input": usage.input_tokens,
+            "output": usage.output_tokens,
+            "cacheRead": usage.cache_read_tokens,
+            "cacheWrite": usage.cache_write_tokens,
+            "cost": usage.cost.unwrap_or(0.0)
+        });
+    }
+    let task = a2a_task_value(
+        &task_id,
+        &context_id,
+        "TASK_STATE_COMPLETED",
+        agent_message.clone(),
+        vec![user_message, agent_message],
+        vec![serde_json::json!({
+            "artifactId": format!("{task_id}-assistant-response"),
+            "name": "assistant-response",
+            "parts": [{ "text": assistant_text, "mediaType": "text/plain" }]
+        })],
+        metadata,
+    );
+    state
+        .a2a_tasks
+        .lock()
+        .await
+        .insert(task_id.clone(), task.clone());
+    task
+}
+
+fn a2a_agent_card(head: &RequestHead, config: &Config) -> Value {
+    let base_url = a2a_public_base_url(head, config);
+    serde_json::json!({
+        "protocolVersion": A2A_PROTOCOL_VERSION,
+        "name": trimmed_env("MAESTRO_A2A_AGENT_NAME")
+            .unwrap_or_else(|| "Maestro Desktop Agent".to_string()),
+        "description": "Local Maestro Rust/TS TUI agent endpoint for A2A task delegation.",
+        "url": base_url,
+        "preferredTransport": "HTTP+JSON",
+        "supportedInterfaces": [{
+            "url": base_url,
+            "protocolBinding": "HTTP+JSON",
+            "protocolVersion": A2A_PROTOCOL_VERSION
+        }],
+        "provider": {
+            "organization": "EvalOps",
+            "url": "https://evalops.com"
+        },
+        "version": env!("CARGO_PKG_VERSION"),
+        "capabilities": {
+            "streaming": false,
+            "pushNotifications": false,
+            "extendedAgentCard": false
+        },
+        "defaultInputModes": ["text/plain"],
+        "defaultOutputModes": ["text/plain", "application/json"],
+        "skills": [{
+            "id": "maestro-tui-turn",
+            "name": "Maestro TUI turn",
+            "description": "Run a prompt through the local Maestro native TUI agent runner.",
+            "tags": ["maestro", "tui", "codex", "a2a"],
+            "examples": [
+                "Review the current workspace and summarize the next highest leverage action."
+            ],
+            "inputModes": ["text/plain"],
+            "outputModes": ["text/plain", "application/json"]
+        }]
+    })
+}
+
+fn a2a_public_base_url(head: &RequestHead, config: &Config) -> String {
+    if let Some(url) =
+        trimmed_env("MAESTRO_A2A_PUBLIC_URL").or_else(|| trimmed_env("MAESTRO_CONTROL_PUBLIC_URL"))
+    {
+        return url.trim_end_matches('/').to_string();
+    }
+    let proto = head
+        .headers
+        .get("x-forwarded-proto")
+        .and_then(|value| value.split(',').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("http");
+    let host = head
+        .headers
+        .get("host")
+        .map(String::as_str)
+        .filter(|host| !host.trim().is_empty())
+        .map(str::trim)
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            let host = if config.listen_host == "0.0.0.0" || config.listen_host == "::" {
+                "127.0.0.1"
+            } else {
+                config.listen_host.as_str()
+            };
+            format!("{host}:{}", config.listen_port)
+        });
+    format!("{proto}://{host}")
+}
+
+fn a2a_message_text(message: &A2AMessageBody) -> Option<String> {
+    let text = message
+        .parts
+        .iter()
+        .filter_map(|part| part.text.as_deref())
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    (!text.is_empty()).then_some(text)
+}
+
+fn a2a_context_id(request: &A2ASendMessageRequest, head: &RequestHead) -> String {
+    request
+        .message
+        .context_id
+        .as_deref()
+        .or_else(|| {
+            request
+                .message
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("sessionId").and_then(Value::as_str))
+        })
+        .or_else(|| head.headers.get("x-evalops-session-id").map(String::as_str))
+        .or_else(|| head.headers.get("x-maestro-session-id").map(String::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| generate_a2a_id("maestro-context"))
+}
+
+fn a2a_user_message_value(message: &A2AMessageBody, context_id: &str) -> Value {
+    let mut value = serde_json::to_value(message).unwrap_or_else(|_| serde_json::json!({}));
+    if let Value::Object(object) = &mut value {
+        object
+            .entry("messageId")
+            .or_insert_with(|| Value::String(generate_a2a_id("maestro-message")));
+        object
+            .entry("contextId")
+            .or_insert_with(|| Value::String(context_id.to_string()));
+        object
+            .entry("role")
+            .or_insert_with(|| Value::String("ROLE_USER".to_string()));
+    }
+    value
+}
+
+fn a2a_agent_message(context_id: &str, text: &str) -> Value {
+    serde_json::json!({
+        "messageId": generate_a2a_id("maestro-message"),
+        "contextId": context_id,
+        "role": "ROLE_AGENT",
+        "parts": [{ "text": text, "mediaType": "text/plain" }],
+        "metadata": {
+            "runtime": "maestro-rust-control-plane",
+            "surface": "rust-tui"
+        }
+    })
+}
+
+fn a2a_task_value(
+    task_id: &str,
+    context_id: &str,
+    state: &str,
+    status_message: Value,
+    history: Vec<Value>,
+    artifacts: Vec<Value>,
+    metadata: Value,
+) -> Value {
+    serde_json::json!({
+        "id": task_id,
+        "contextId": context_id,
+        "status": {
+            "state": state,
+            "message": status_message,
+            "timestamp": now_rfc3339()
+        },
+        "history": history,
+        "artifacts": artifacts,
+        "metadata": metadata
+    })
+}
+
+fn a2a_task_metadata(head: &RequestHead, request: &A2ASendMessageRequest) -> Value {
+    let mut metadata = Map::new();
+    metadata.insert(
+        "runtime".to_string(),
+        Value::String("maestro-rust-control-plane".to_string()),
+    );
+    metadata.insert("surface".to_string(), Value::String("rust-tui".to_string()));
+    metadata.insert(
+        "a2aProtocolVersion".to_string(),
+        Value::String(A2A_PROTOCOL_VERSION.to_string()),
+    );
+    for (field, header) in [
+        ("workspaceId", "x-evalops-workspace-id"),
+        ("agentId", "x-evalops-agent-id"),
+        ("sessionId", "x-evalops-session-id"),
+        ("actorId", "x-evalops-actor-id"),
+        ("traceparent", "traceparent"),
+        ("tracestate", "tracestate"),
+    ] {
+        if let Some(value) = head.headers.get(header).map(String::as_str) {
+            if !value.trim().is_empty() {
+                metadata.insert(field.to_string(), Value::String(value.trim().to_string()));
+            }
+        }
+    }
+    if let Some(Value::Object(request_metadata)) = request.metadata.as_ref() {
+        for (key, value) in request_metadata {
+            metadata.entry(key.clone()).or_insert_with(|| value.clone());
+        }
+    }
+    if let Some(configuration) = request.configuration.as_ref() {
+        metadata
+            .entry("configuration".to_string())
+            .or_insert_with(|| configuration.clone());
+    }
+    if let Some(Value::Object(message_metadata)) = request.message.metadata.as_ref() {
+        for (key, value) in message_metadata {
+            metadata.entry(key.clone()).or_insert_with(|| value.clone());
+        }
+    }
+    Value::Object(metadata)
+}
+
+fn a2a_return_immediately(request: &A2ASendMessageRequest) -> bool {
+    request
+        .configuration
+        .as_ref()
+        .and_then(|configuration| configuration.get("returnImmediately"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+async fn run_a2a_native_turn(state: &AppState, prompt: String) -> Result<A2ATurnOutput, String> {
+    if let Some(response) = trimmed_env("MAESTRO_A2A_FAKE_RESPONSE") {
+        return Ok(A2ATurnOutput {
+            assistant_text: response,
+            ..Default::default()
+        });
+    }
+
+    let model = if let Some(model) = trimmed_env("MAESTRO_A2A_MODEL") {
+        model
+    } else {
+        let selected = state.selected_model.lock().await;
+        format!("{}/{}", selected.provider, selected.id)
+    };
+    let config = NativeAgentConfig {
+        model,
+        cwd: state.config.cwd.to_string_lossy().to_string(),
+        system_prompt: Some(
+            trimmed_env("MAESTRO_A2A_SYSTEM_PROMPT").unwrap_or_else(|| {
+                "You are the local Maestro Desktop A2A agent. Complete delegated work from peer agents clearly and concisely.".to_string()
+            }),
+        ),
+        thinking_enabled: truthy_env("MAESTRO_A2A_THINKING"),
+        thinking_budget: env::var("MAESTRO_A2A_THINKING_BUDGET")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(10_000),
+        ..NativeAgentConfig::default()
+    };
+    let (agent, mut events) = NativeAgent::new(config).map_err(|error| error.to_string())?;
+    agent
+        .prompt(prompt, Vec::new())
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let timeout = Duration::from_millis(env_u64(
+        "MAESTRO_A2A_TURN_TIMEOUT_MS",
+        A2A_DEFAULT_TURN_TIMEOUT_MS,
+    ));
+    let approval_mode = trimmed_env("MAESTRO_A2A_TOOL_APPROVAL")
+        .unwrap_or_else(|| "fail".to_string())
+        .to_ascii_lowercase();
+    let auto_approve_tools = matches!(approval_mode.as_str(), "auto" | "approve" | "approved");
+    let mut output = A2ATurnOutput::default();
+    let mut last_error: Option<String> = None;
+    let mut response_ended = false;
+
+    loop {
+        let event = match tokio::time::timeout(timeout, events.recv()).await {
+            Ok(Some(event)) => event,
+            Ok(None) => break,
+            Err(_) => {
+                agent.cancel();
+                return Err("A2A native TUI turn timed out".to_string());
+            }
+        };
+        match event {
+            FromAgent::ResponseChunk {
+                content,
+                is_thinking,
+                ..
+            } => {
+                if is_thinking {
+                    output.thinking_text.push_str(&content);
+                } else {
+                    output.assistant_text.push_str(&content);
+                }
+            }
+            FromAgent::ResponseEnd { usage, .. } => {
+                output.usage = usage;
+                response_ended = true;
+                break;
+            }
+            FromAgent::ToolCall {
+                call_id,
+                tool,
+                args,
+                requires_approval,
+            } => {
+                record_tool_call_metadata(&mut output.tools, &call_id, &tool, args);
+                if requires_approval {
+                    let _ = agent.tool_response_sender().send((
+                        call_id.clone(),
+                        auto_approve_tools,
+                        None,
+                    ));
+                    if !auto_approve_tools {
+                        finish_tool_metadata(&mut output.tools, &call_id, false);
+                    }
+                }
+            }
+            FromAgent::ToolEnd {
+                call_id, success, ..
+            } => {
+                finish_tool_metadata(&mut output.tools, &call_id, success);
+            }
+            FromAgent::HookBlocked {
+                call_id,
+                tool,
+                reason,
+            } => {
+                if !output
+                    .tools
+                    .iter()
+                    .any(|entry| entry.get("id").and_then(Value::as_str) == Some(&call_id))
+                {
+                    record_tool_call_metadata(&mut output.tools, &call_id, &tool, Value::Null);
+                }
+                finish_tool_metadata(&mut output.tools, &call_id, false);
+                last_error = Some(reason);
+            }
+            FromAgent::Error { message, fatal } => {
+                last_error = Some(message);
+                if fatal {
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if response_ended {
+        Ok(output)
+    } else {
+        Err(last_error
+            .unwrap_or_else(|| "A2A native TUI turn ended before response_end".to_string()))
+    }
+}
+
+fn generate_a2a_id(prefix: &str) -> String {
+    let mut bytes = [0_u8; 16];
+    if getrandom::fill(&mut bytes).is_ok() {
+        return format!("{prefix}-{}", URL_SAFE_NO_PAD.encode(bytes));
+    }
+    format!("{prefix}-{}-{}", now_millis(), process::id())
+}
+
+fn a2a_error_response(status: u16, code: &str, message: &str) -> Vec<u8> {
+    json_response(
+        status,
+        &serde_json::json!({ "error": { "code": code, "message": message } }),
+    )
 }
 
 async fn handle_local_endpoint(
@@ -5655,6 +6300,13 @@ fn env_u16(name: &str, default: u16) -> u16 {
         .unwrap_or(default)
 }
 
+fn env_u64(name: &str, default: u64) -> u64 {
+    env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(default)
+}
+
 fn trimmed_env(name: &str) -> Option<String> {
     env::var(name)
         .ok()
@@ -5779,6 +6431,7 @@ mod tests {
             shared_sessions: Arc::new(Mutex::new(HashMap::new())),
             approval_modes: Arc::new(Mutex::new(HashMap::new())),
             pending_tool_responses: Arc::new(Mutex::new(HashMap::new())),
+            a2a_tasks: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -6025,6 +6678,101 @@ mod tests {
         let head = parse_request_head(request).expect("request should parse");
 
         assert!(is_local_endpoint(&head));
+    }
+
+    #[test]
+    fn detects_a2a_control_plane_routes() {
+        for request in [
+            "GET /.well-known/agent-card.json HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "POST /message:send HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "GET /tasks/maestro-task-1 HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "GET /tasks HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "POST /tasks/maestro-task-1:cancel HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "OPTIONS /message:send HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        ] {
+            let head = parse_request_head(request.as_bytes()).expect("request should parse");
+            assert!(is_a2a_endpoint(&head), "{request} should be A2A");
+        }
+    }
+
+    #[test]
+    fn a2a_agent_card_advertises_http_json_interface() {
+        let head = parse_request_head(
+            b"GET /.well-known/agent-card.json HTTP/1.1\r\nHost: mini.local:8080\r\n\r\n",
+        )
+        .expect("request should parse");
+        let card = a2a_agent_card(&head, &auth_test_config());
+
+        assert_eq!(card["protocolVersion"], A2A_PROTOCOL_VERSION);
+        assert_eq!(card["url"], "http://mini.local:8080");
+        assert_eq!(
+            card["supportedInterfaces"][0]["protocolBinding"],
+            "HTTP+JSON"
+        );
+        assert_eq!(card["skills"][0]["id"], "maestro-tui-turn");
+    }
+
+    #[test]
+    fn a2a_send_message_honors_return_immediately_configuration() {
+        let request = A2ASendMessageRequest {
+            message: A2AMessageBody {
+                message_id: Some("msg-1".to_string()),
+                context_id: Some("ctx-1".to_string()),
+                task_id: None,
+                role: Some("ROLE_USER".to_string()),
+                parts: vec![A2APartBody {
+                    text: Some("hello".to_string()),
+                    url: None,
+                    data: None,
+                    metadata: None,
+                    filename: None,
+                    media_type: Some("text/plain".to_string()),
+                }],
+                metadata: None,
+                extensions: None,
+                reference_task_ids: None,
+            },
+            configuration: Some(serde_json::json!({ "returnImmediately": true })),
+            metadata: None,
+        };
+
+        assert!(a2a_return_immediately(&request));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_message_send_runs_fake_turn_and_records_task() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous_fake = env::var("MAESTRO_A2A_FAKE_RESPONSE").ok();
+        env::set_var("MAESTRO_A2A_FAKE_RESPONSE", "hello from fake native turn");
+
+        let body = r#"{"message":{"messageId":"msg-1","contextId":"ctx-1","role":"ROLE_USER","parts":[{"text":"hello","mediaType":"text/plain"}],"metadata":{"agentId":"ts-tui"}}}"#;
+        let request = format!(
+            "POST /message:send HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\nx-evalops-workspace-id: ws-1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let mut initial = request.into_bytes();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (_client, mut server) = tcp_stream_pair().await;
+        let state = test_app_state_with_sessions(HashMap::new());
+
+        let response =
+            response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+        let task = &response["task"];
+
+        assert_eq!(task["contextId"], "ctx-1");
+        assert_eq!(task["status"]["state"], "TASK_STATE_COMPLETED");
+        assert_eq!(
+            task["artifacts"][0]["parts"][0]["text"],
+            "hello from fake native turn"
+        );
+        assert_eq!(task["metadata"]["workspaceId"], "ws-1");
+        assert_eq!(state.a2a_tasks.lock().await.len(), 1);
+
+        if let Some(previous_fake) = previous_fake {
+            env::set_var("MAESTRO_A2A_FAKE_RESPONSE", previous_fake);
+        } else {
+            env::remove_var("MAESTRO_A2A_FAKE_RESPONSE");
+        }
     }
 
     #[test]
@@ -8078,6 +8826,7 @@ mod tests {
             shared_sessions: Arc::new(Mutex::new(HashMap::new())),
             approval_modes: Arc::new(Mutex::new(HashMap::new())),
             pending_tool_responses: Arc::new(Mutex::new(HashMap::new())),
+            a2a_tasks: Arc::new(Mutex::new(HashMap::new())),
         };
         let (_client, mut server) = tcp_stream_pair().await;
         let head = RequestHead {
@@ -8153,6 +8902,7 @@ mod tests {
             shared_sessions: Arc::new(Mutex::new(HashMap::new())),
             approval_modes: Arc::new(Mutex::new(HashMap::new())),
             pending_tool_responses: Arc::new(Mutex::new(HashMap::new())),
+            a2a_tasks: Arc::new(Mutex::new(HashMap::new())),
         };
 
         persist_session_store(&state).await;
