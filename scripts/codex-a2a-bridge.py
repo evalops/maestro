@@ -29,6 +29,7 @@ from urllib.parse import urlparse
 TASKS: dict[str, dict[str, Any]] = {}
 PROCESSES: dict[str, subprocess.Popen[str]] = {}
 LOCK = threading.Lock()
+MAX_REQUEST_BODY_BYTES = 1024 * 1024
 
 
 def env(name: str, default: str) -> str:
@@ -364,6 +365,8 @@ class Handler(BaseHTTPRequestHandler):
     def read_body(self) -> dict[str, Any] | None:
         try:
             length = int(self.headers.get("Content-Length", "0"))
+            if length < 0 or length > MAX_REQUEST_BODY_BYTES:
+                return None
             raw = self.rfile.read(length) if length else b"{}"
             value = json.loads(raw.decode("utf-8"))
             return value if isinstance(value, dict) else None
