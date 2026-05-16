@@ -1029,8 +1029,10 @@ async fn handle_a2a_task_subscribe(
     );
     loop {
         let event = match tokio::time::timeout(heartbeat_interval, receiver.recv()).await {
-            Ok(Ok(task)) => task,
-            Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
+            Ok(Ok(task)) => Some(task),
+            Ok(Err(broadcast::error::RecvError::Lagged(_))) => {
+                current_a2a_subscribe_task(state, task_id, auth).await
+            }
             Ok(Err(broadcast::error::RecvError::Closed)) => break,
             Err(_) => {
                 stream
@@ -1040,38 +1042,62 @@ async fn handle_a2a_task_subscribe(
                 continue;
             }
         };
+        let Some(event) = event else {
+            continue;
+        };
         if event.get("id").and_then(Value::as_str) != Some(task_id) {
             continue;
         }
-        if !a2a_task_visible_to_auth(&event, auth) {
-            continue;
-        }
-        send_a2a_stream_response(
-            stream,
-            &serde_json::json!({ "statusUpdate": a2a_status_update_event(&event) }),
-        )
-        .await?;
-        if a2a_task_is_terminal(&event) {
-            for artifact in event
-                .get("artifacts")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-            {
-                send_a2a_stream_response(
-                    stream,
-                    &serde_json::json!({
-                        "artifactUpdate": a2a_artifact_update_event(&event, artifact)
-                    }),
-                )
-                .await?;
-            }
-            send_a2a_stream_response(stream, &serde_json::json!({ "task": event })).await?;
+        if send_a2a_subscribe_task_update(stream, &event, auth).await? {
             break;
         }
     }
     let _ = stream.shutdown().await;
     Ok(())
+}
+
+async fn current_a2a_subscribe_task(
+    state: &AppState,
+    task_id: &str,
+    auth: &AuthContext,
+) -> Option<Value> {
+    let tasks = state.a2a_tasks.lock().await;
+    let task = tasks.get(task_id)?;
+    a2a_task_visible_to_auth(task, auth).then(|| task.clone())
+}
+
+async fn send_a2a_subscribe_task_update(
+    stream: &mut TcpStream,
+    task: &Value,
+    auth: &AuthContext,
+) -> Result<bool, String> {
+    if !a2a_task_visible_to_auth(task, auth) {
+        return Ok(false);
+    }
+    send_a2a_stream_response(
+        stream,
+        &serde_json::json!({ "statusUpdate": a2a_status_update_event(task) }),
+    )
+    .await?;
+    if a2a_task_is_terminal(task) {
+        for artifact in task
+            .get("artifacts")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            send_a2a_stream_response(
+                stream,
+                &serde_json::json!({
+                    "artifactUpdate": a2a_artifact_update_event(task, artifact)
+                }),
+            )
+            .await?;
+        }
+        send_a2a_stream_response(stream, &serde_json::json!({ "task": task })).await?;
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 async fn send_a2a_stream_response(stream: &mut TcpStream, value: &Value) -> Result<(), String> {
@@ -1365,10 +1391,22 @@ async fn persist_a2a_tasks_locked(state: &AppState) -> Result<(), String> {
         .await
         .map(|ledger| a2a_task_ledger_entries(&ledger))
         .unwrap_or_default();
+    let tasks = state.a2a_tasks.lock().await;
+    let local_task_ids = tasks.keys().cloned().collect::<Vec<_>>();
     let mut retained_entries = existing_entries
         .iter()
         .filter(|entry| {
-            !a2a_ledger_entry_is_control_plane(entry) && !a2a_ledger_entry_is_raw_a2a_task(entry)
+            if a2a_ledger_entry_is_raw_a2a_task(entry) {
+                return false;
+            }
+            if a2a_ledger_entry_is_control_plane(entry) {
+                let task_id = ledger_entry_task_id(entry);
+                if task_id.is_empty() {
+                    return true;
+                }
+                return !local_task_ids.iter().any(|local_id| local_id == task_id);
+            }
+            true
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -1380,10 +1418,7 @@ async fn persist_a2a_tasks_locked(state: &AppState) -> Result<(), String> {
             Some((task_id, entry))
         })
         .collect::<HashMap<_, _>>();
-    let mut control_plane_entries = state
-        .a2a_tasks
-        .lock()
-        .await
+    let mut control_plane_entries = tasks
         .values()
         .cloned()
         .filter_map(|task| {
@@ -1392,6 +1427,7 @@ async fn persist_a2a_tasks_locked(state: &AppState) -> Result<(), String> {
             Some(a2a_ledger_entry_from_task(&task, existing))
         })
         .collect::<Vec<_>>();
+    drop(tasks);
     retained_entries.append(&mut control_plane_entries);
     retained_entries.sort_by(|left, right| {
         ledger_entry_updated_at(left)
@@ -11919,6 +11955,19 @@ setTimeout(() => {
                         "updatedAt": "2026-05-15T00:01:00Z"
                     },
                     {
+                        "id": "maestro-control-plane-other-task",
+                        "kind": "message",
+                        "peer": A2A_CONTROL_PLANE_LEDGER_PEER,
+                        "taskId": "other-control-plane-task",
+                        "contextId": "ctx-other",
+                        "text": "other process request",
+                        "responseText": "other process response",
+                        "state": "TASK_STATE_COMPLETED",
+                        "createdAt": "2026-05-15T00:00:00Z",
+                        "updatedAt": "2026-05-15T00:03:00Z",
+                        "metadata": { "workspaceId": "other-ws" }
+                    },
+                    {
                         "id": "raw-legacy-task",
                         "contextId": "ctx-legacy",
                         "status": {
@@ -11981,6 +12030,13 @@ setTimeout(() => {
             .iter()
             .find(|entry| entry["peer"] == "peer-b")
             .expect("remote peer ledger row should be retained");
+        let other_control_plane_entry = entries
+            .iter()
+            .find(|entry| {
+                entry["peer"] == A2A_CONTROL_PLANE_LEDGER_PEER
+                    && entry["taskId"] == "other-control-plane-task"
+            })
+            .expect("other process control-plane row should be retained");
         let control_plane_entry = entries
             .iter()
             .find(|entry| {
@@ -11994,6 +12050,10 @@ setTimeout(() => {
             .count();
 
         assert_eq!(remote_entry["taskId"], "remote-task");
+        assert_eq!(
+            other_control_plane_entry["metadata"]["workspaceId"],
+            "other-ws"
+        );
         assert_eq!(control_plane_entry["taskId"], "maestro-task-durable");
         assert_eq!(control_plane_entry["state"], "TASK_STATE_COMPLETED");
         assert_eq!(
@@ -12385,6 +12445,90 @@ setTimeout(() => {
         } else {
             env::remove_var("MAESTRO_A2A_SUBSCRIBE_TIMEOUT_MS");
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_task_subscribe_reconciles_current_task_after_broadcast_lag() {
+        let base_state = test_app_state_with_sessions(HashMap::new());
+        let (a2a_task_events, _) = broadcast::channel(1);
+        let state = AppState {
+            a2a_task_events,
+            ..base_state
+        };
+        let initial_task = a2a_task_value(
+            "maestro-task-lagged-subscribe",
+            "ctx-1",
+            "TASK_STATE_WORKING",
+            a2a_agent_message("ctx-1", "working"),
+            vec![a2a_agent_message("ctx-1", "working")],
+            Vec::new(),
+            serde_json::json!({}),
+        );
+        state
+            .a2a_tasks
+            .lock()
+            .await
+            .insert("maestro-task-lagged-subscribe".to_string(), initial_task);
+        let request = "GET /tasks/maestro-task-lagged-subscribe:subscribe HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\n\r\n";
+        let initial = request.as_bytes().to_vec();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (mut client, server) = tcp_stream_pair().await;
+        let state_for_run = state.clone();
+        let run = tokio::spawn(async move {
+            handle_a2a_streaming_endpoint(server, initial, head, state_for_run).await
+        });
+        let mut response_bytes = vec![0_u8; 4096];
+        let initial_len =
+            tokio::time::timeout(Duration::from_secs(2), client.read(&mut response_bytes))
+                .await
+                .expect("subscribe response should start")
+                .expect("subscribe response should be readable");
+        response_bytes.truncate(initial_len);
+
+        let terminal_task = a2a_task_value(
+            "maestro-task-lagged-subscribe",
+            "ctx-1",
+            "TASK_STATE_COMPLETED",
+            a2a_agent_message("ctx-1", "complete after lag"),
+            vec![
+                a2a_agent_message("ctx-1", "working"),
+                a2a_agent_message("ctx-1", "complete after lag"),
+            ],
+            Vec::new(),
+            serde_json::json!({}),
+        );
+        state.a2a_tasks.lock().await.insert(
+            "maestro-task-lagged-subscribe".to_string(),
+            terminal_task.clone(),
+        );
+        publish_a2a_task_update(&state, &terminal_task);
+        for index in 0..4 {
+            let unrelated_task = a2a_task_value(
+                &format!("unrelated-task-{index}"),
+                "ctx-other",
+                "TASK_STATE_WORKING",
+                a2a_agent_message("ctx-other", "noise"),
+                Vec::new(),
+                Vec::new(),
+                serde_json::json!({}),
+            );
+            publish_a2a_task_update(&state, &unrelated_task);
+        }
+
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            client.read_to_end(&mut response_bytes),
+        )
+        .await
+        .expect("subscribe response should close after reconciling lag")
+        .expect("subscribe response should be readable");
+        run.await
+            .expect("subscribe task should join")
+            .expect("subscribe endpoint should succeed");
+        let response = String::from_utf8(response_bytes).expect("response should be utf-8");
+
+        assert!(response.contains("TASK_STATE_COMPLETED"));
+        assert!(response.contains("complete after lag"));
     }
 
     #[tokio::test(flavor = "current_thread")]
