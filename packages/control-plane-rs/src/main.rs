@@ -1880,7 +1880,9 @@ async fn a2a_list_tasks_response(
 fn a2a_task_for_query(task: &Value, head: &RequestHead, include_artifacts: bool) -> Value {
     let mut task = task.clone();
     if !include_artifacts {
-        task["artifacts"] = Value::Array(Vec::new());
+        if let Some(task) = task.as_object_mut() {
+            task.remove("artifacts");
+        }
     }
     if let Ok(Some(history_length)) = a2a_usize_query(head, &["historyLength", "history_length"]) {
         if let Some(history) = task.get_mut("history").and_then(Value::as_array_mut) {
@@ -11881,7 +11883,7 @@ setTimeout(() => {
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0]["id"], "task-a");
         assert_eq!(tasks[0]["history"].as_array().unwrap().len(), 1);
-        assert_eq!(tasks[0]["artifacts"].as_array().unwrap().len(), 0);
+        assert!(tasks[0].get("artifacts").is_none());
     }
 
     #[tokio::test(flavor = "current_thread")]
