@@ -42,6 +42,11 @@ export type AgentRuntimeLedgerState =
 	| "cancelled"
 	| "skipped";
 
+type AgentRuntimePromotionStepState = Exclude<
+	AgentRuntimeLedgerState,
+	"blocked"
+>;
+
 export interface AgentRuntimeLedgerEntry {
 	id: string;
 	sequence: number;
@@ -131,7 +136,7 @@ export type AgentRuntimePromotionOperation =
 			payload: {
 				stepId: string;
 				kind: string;
-				state: AgentRuntimeLedgerState;
+				state: AgentRuntimePromotionStepState;
 				title: string;
 				timestamp: string;
 				toolName?: string;
@@ -359,8 +364,15 @@ function isTerminalState(state: AgentRuntimeLedgerState): boolean {
 
 function isTerminalCandidate(entry: AgentRuntimeLedgerEntry): boolean {
 	return (
-		isTerminalState(entry.state) && !PASSIVE_TERMINAL_ENTRY_KINDS.has(entry.kind)
+		isTerminalState(entry.state) &&
+		!PASSIVE_TERMINAL_ENTRY_KINDS.has(entry.kind)
 	);
+}
+
+function runStepStateForEntry(
+	entry: AgentRuntimeLedgerEntry,
+): AgentRuntimePromotionStepState {
+	return entry.state === "blocked" ? "failed" : entry.state;
 }
 
 function terminalEntry(
@@ -444,7 +456,7 @@ function buildPromotionPlan(
 			payload: {
 				stepId: entry.id,
 				kind: entry.platformShape.stepKind,
-				state: entry.state,
+				state: runStepStateForEntry(entry),
 				title: entry.title,
 				timestamp: entry.timestamp,
 				...(entry.toolName ? { toolName: entry.toolName } : {}),

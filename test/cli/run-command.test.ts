@@ -4,8 +4,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseArgs } from "../../src/cli/args.js";
 import { handleRunCommand, testing } from "../../src/cli/commands/run.js";
-import type { AgentTrajectoryEvent } from "../../src/server/agent-trajectory.js";
 import { buildAgentRuntimeLedgerReport } from "../../src/server/agent-runtime-ledger.js";
+import type { AgentTrajectoryEvent } from "../../src/server/agent-trajectory.js";
 import { SessionManager } from "../../src/session/manager.js";
 
 describe("run command", () => {
@@ -921,6 +921,37 @@ describe("run command", () => {
 					operation.ledgerEntryId === "ledger:event-policy",
 			),
 		).toBe(false);
+	});
+
+	it("maps blocked ledger entries to valid Platform run-step states", () => {
+		const ledger = buildLedgerForEvents("session-denied", [
+			{
+				id: "event-policy-denied",
+				sequence: 1,
+				timestamp: "2026-05-09T10:00:01.000Z",
+				kind: "governance",
+				phase: "govern",
+				actor: "system",
+				type: "policy.decision",
+				status: "denied",
+				visibility: "user",
+				source: "local",
+				title: "Policy denied",
+				evidence: [],
+			},
+		]);
+
+		expect(ledger.entries[0]?.state).toBe("blocked");
+		expect(
+			ledger.promotion.operations.find(
+				(operation) =>
+					operation.operation === "record_run_step" &&
+					operation.ledgerEntryId === "ledger:event-policy-denied",
+			),
+		).toMatchObject({
+			operation: "record_run_step",
+			payload: { state: "failed" },
+		});
 	});
 
 	it("keeps informational final events eligible for completion promotion", () => {
