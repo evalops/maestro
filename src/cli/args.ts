@@ -104,6 +104,7 @@ const SUBCOMMAND_COMMANDS = new Set([
 	"remote",
 	"scenario",
 ]);
+const RUN_SUBCOMMANDS = new Set(["inspect", "ledger", "replay", "promote"]);
 
 const FLAGS_WITH_VALUES = new Set([
 	"--mode",
@@ -363,7 +364,7 @@ export function parseArgs(args: string[]): Args {
 				COMMANDS.has(arg) &&
 				(arg !== "run" ||
 					(result.messages.length === 0 &&
-						nextNonFlagToken(args, i + 1) === "inspect"));
+						RUN_SUBCOMMANDS.has(nextNonFlagToken(args, i + 1) ?? "")));
 			if (!result.command && isCommandToken) {
 				result.command = arg;
 				const shouldConsumeSubcommand =
@@ -398,9 +399,10 @@ export function parseArgs(args: string[]): Args {
 	if (
 		result.command === "run" &&
 		!result.subcommand &&
-		result.messages[0] === "inspect"
+		result.messages[0] &&
+		RUN_SUBCOMMANDS.has(result.messages[0])
 	) {
-		result.subcommand = "inspect";
+		result.subcommand = result.messages[0];
 		result.messages = result.messages.slice(1);
 	}
 

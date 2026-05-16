@@ -192,6 +192,7 @@ export function printHelp(
 
   # Reconstruct the timeline, trajectory, and evidence coverage for a saved run
   maestro run inspect <session-id> --json
+  maestro run promote <session-id>
 
   # Validate and run a deterministic scenario fixture
   maestro scenario validate ./test/fixtures/agent-trajectory-scenarios/local-diagnostic-success.json
@@ -280,10 +281,14 @@ export function printHelp(
 	)}`;
 	const runSection = `${sectionHeading("maestro run")}${muted(
 		`  maestro run inspect <session-id> [--json]
+  maestro run ledger <session-id>
+  maestro run replay <session-id>
+  maestro run promote <session-id>
 
   Reconstructs a saved session into a timeline plus canonical agent trajectory
   with prompt, tool, file-change, artifact, policy, diagnostic, compaction,
-  pending-wait, and MCP-context coverage.`,
+  pending-wait, and MCP-context coverage. The ledger/replay/promote commands
+  expose the local AgentRuntime projection and dry-run Platform promotion plan.`,
 	)}`;
 	const initSection = `${sectionHeading("maestro init")}${muted(
 		`  maestro init                         Login, create or reuse an API key, and register this agent

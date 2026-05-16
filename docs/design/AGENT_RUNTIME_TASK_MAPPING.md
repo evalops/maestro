@@ -113,6 +113,9 @@ plan for existing local todo stores.
 
 ## Minimal Maestro Work For The Next Phase
 
+0. Expose saved sessions as a local AgentRuntime ledger through
+   `maestro run ledger|replay|promote`, giving harnesses an inspectable dry-run
+   promotion contract before live Platform write-through is enabled.
 1. Add a small `HostedAgentRuntimeTaskProgressRecorder` adapter beside the
    existing hosted progress recorder, or extend the existing recorder with
    methods that accept normalized task events.
