@@ -41,6 +41,11 @@ export interface SkillScaffoldResult {
 	files: string[];
 }
 
+type SkillLintOptions = {
+	describeToolbox?: boolean;
+	platform?: NodeJS.Platform;
+};
+
 export const SKILL_BODY_MAX_LINES = 500;
 export const SKILL_BODY_MAX_CHARS = 20_000;
 
@@ -330,8 +335,11 @@ export function isWindowsRunnableToolboxEntry(
 	return contentSample.startsWith("#!");
 }
 
-async function isExecutable(path: string): Promise<boolean> {
-	if (process.platform === "win32") {
+async function isExecutable(
+	path: string,
+	platform: NodeJS.Platform = process.platform,
+): Promise<boolean> {
+	if (platform === "win32") {
 		try {
 			return isWindowsRunnableToolboxEntry(
 				path,
@@ -351,7 +359,7 @@ async function isExecutable(path: string): Promise<boolean> {
 
 async function validateToolbox(
 	skillDir: string,
-	options: { describeToolbox?: boolean } = {},
+	options: SkillLintOptions = {},
 ): Promise<SkillLintIssue[]> {
 	const toolboxDir = join(skillDir, "toolbox");
 	if (!existsSync(toolboxDir) || !statSync(toolboxDir).isDirectory()) return [];
@@ -361,7 +369,7 @@ async function validateToolbox(
 		if (entry.startsWith(".") || entry.toLowerCase() === "readme.md") continue;
 		const path = join(toolboxDir, entry);
 		if (!statSync(path).isFile()) continue;
-		if (!(await isExecutable(path))) {
+		if (!(await isExecutable(path, options.platform))) {
 			issues.push(
 				issue(
 					"toolbox_not_executable",
@@ -395,7 +403,7 @@ async function validateToolbox(
 
 export async function lintSkillDirectory(
 	skillDir: string,
-	options: { describeToolbox?: boolean } = {},
+	options: SkillLintOptions = {},
 ): Promise<SkillLintResult> {
 	const resolvedDir = resolve(skillDir);
 	const skillFile = findSkillMd(resolvedDir);
@@ -495,7 +503,7 @@ export async function lintSkillDirectory(
 
 export async function lintSkillPaths(
 	paths: string[],
-	options: { describeToolbox?: boolean } = {},
+	options: SkillLintOptions = {},
 ): Promise<SkillLintResult[]> {
 	const results: SkillLintResult[] = [];
 	for (const path of paths) {

@@ -257,6 +257,42 @@ describe("skill package format", () => {
 		expect(hasSkillLintErrors([result])).toBe(false);
 	});
 
+	it("validates toolbox executables with Windows runnable shapes", async () => {
+		const root = tempRoot();
+		const invalidSkillDir = join(root, "invalid-toolbox");
+		const validSkillDir = join(root, "valid-toolbox");
+		await mkdir(join(invalidSkillDir, "toolbox"), { recursive: true });
+		await mkdir(join(validSkillDir, "toolbox"), { recursive: true });
+		writeFileSync(
+			join(invalidSkillDir, "SKILL.md"),
+			`---\nname: invalid-toolbox\ndescription: "Run toolbox commands. Use when testing Windows executable validation."\n---\n\n# Invalid Toolbox\n`,
+		);
+		writeFileSync(join(invalidSkillDir, "toolbox", "run"), "echo nope\n");
+		writeFileSync(
+			join(validSkillDir, "SKILL.md"),
+			`---\nname: valid-toolbox\ndescription: "Run toolbox commands. Use when testing Windows executable validation."\n---\n\n# Valid Toolbox\n`,
+		);
+		writeFileSync(join(validSkillDir, "toolbox", "run.cmd"), "@echo off\n");
+		writeFileSync(
+			join(validSkillDir, "toolbox", "run-node"),
+			"#!/usr/bin/env node\nconsole.log('ok');\n",
+		);
+
+		const invalidResult = await lintSkillDirectory(invalidSkillDir, {
+			platform: "win32",
+		});
+		const validResult = await lintSkillDirectory(validSkillDir, {
+			platform: "win32",
+		});
+
+		expect(invalidResult.issues).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ code: "toolbox_not_executable" }),
+			]),
+		);
+		expect(hasSkillLintErrors([validResult])).toBe(false);
+	});
+
 	it("preserves backslashes in scaffolded descriptions", () => {
 		const root = tempRoot();
 		const description = "Handle C:\\new folder\\templates literally.";
