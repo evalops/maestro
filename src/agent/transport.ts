@@ -1407,7 +1407,6 @@ export class ProviderTransport implements AgentTransport {
 			} // end while retry loop
 
 			if (toolCallsToExecute.length > 0) {
-				toolResults = [];
 				const toolUpdateQueue = createToolUpdateQueue();
 				const pendingExecutions: PendingExecution[] = [];
 				const rawConcurrency = this.options.maxConcurrentToolExecutions ?? 2;
