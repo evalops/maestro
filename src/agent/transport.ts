@@ -1143,7 +1143,8 @@ export class ProviderTransport implements AgentTransport {
 			let currentAssistantMessage: AssistantMessage | null = null;
 			let completedAssistantMessage: AssistantMessage | null = null;
 			const toolCallsToExecute: ToolCall[] = [];
-			let toolResults: ToolResultMessage[] = [];
+			const toolResults: ToolResultMessage[] = [];
+			const pendingProviderToolResultMessages: ToolResultMessage[] = [];
 			let steeringAfterTools: QueuedMessage<AppMessage>[] | null = null;
 			let pendingNextTurn = false;
 			let encounteredError = false;
@@ -1178,6 +1179,8 @@ export class ProviderTransport implements AgentTransport {
 					// Reset state for retry
 					currentAssistantMessage = null;
 					toolCallsToExecute.length = 0;
+					toolResults.length = 0;
+					pendingProviderToolResultMessages.length = 0;
 					pendingNextTurn = false;
 
 					const backoffMs = Math.min(
@@ -1292,6 +1295,8 @@ export class ProviderTransport implements AgentTransport {
 						}
 
 						if (event.type === "provider_tool_execution_end") {
+							toolResults.push(event.result);
+							pendingProviderToolResultMessages.push(event.result);
 							yield {
 								type: "tool_execution_end",
 								toolCallId: event.toolCallId,
@@ -1358,6 +1363,11 @@ export class ProviderTransport implements AgentTransport {
 									}
 								}
 							}
+							for (const message of pendingProviderToolResultMessages) {
+								yield { type: "message_start", message };
+								yield { type: "message_end", message };
+							}
+							pendingProviderToolResultMessages.length = 0;
 							pendingNextTurn = toolCallsToExecute.length > 0;
 							continue;
 						}
@@ -1404,7 +1414,6 @@ export class ProviderTransport implements AgentTransport {
 			} // end while retry loop
 
 			if (toolCallsToExecute.length > 0) {
-				toolResults = [];
 				const toolUpdateQueue = createToolUpdateQueue();
 				const pendingExecutions: PendingExecution[] = [];
 				const rawConcurrency = this.options.maxConcurrentToolExecutions ?? 2;

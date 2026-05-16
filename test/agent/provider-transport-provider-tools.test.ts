@@ -26,6 +26,9 @@ vi.mock("../../src/agent/transport/create-provider-stream.js", () => ({
 }));
 
 const { ProviderTransport } = await import("../../src/agent/transport.js");
+const { StreamIdleTimeoutError } = await import(
+	"../../src/providers/stream-idle-timeout.js"
+);
 
 const codexModel: Model<"openai-codex-app-server"> = {
 	id: "gpt-5.5",
@@ -212,6 +215,22 @@ describe("ProviderTransport provider-owned tool events", () => {
 					}),
 				}),
 				expect.objectContaining({
+					type: "message_start",
+					message: expect.objectContaining({
+						role: "toolResult",
+						toolCallId: "collab-call-1",
+						toolName: "codex.subagent.spawnAgent",
+					}),
+				}),
+				expect.objectContaining({
+					type: "message_end",
+					message: expect.objectContaining({
+						role: "toolResult",
+						toolCallId: "collab-call-1",
+						toolName: "codex.subagent.spawnAgent",
+					}),
+				}),
+				expect.objectContaining({
 					type: "tool_execution_end",
 					toolCallId: "collab-call-1",
 					toolName: "codex.subagent.spawnAgent",
@@ -223,11 +242,347 @@ describe("ProviderTransport provider-owned tool events", () => {
 				}),
 			]),
 		);
+		const assistantMessageEndIndex = events.findIndex(
+			(event) =>
+				event.type === "message_end" && event.message.role === "assistant",
+		);
+		const providerToolMessageStartIndex = events.findIndex(
+			(event) =>
+				event.type === "message_start" &&
+				event.message.role === "toolResult" &&
+				event.message.toolCallId === "collab-call-1",
+		);
+		expect(assistantMessageEndIndex).toBeGreaterThanOrEqual(0);
+		expect(providerToolMessageStartIndex).toBeGreaterThan(
+			assistantMessageEndIndex,
+		);
 		const turnEnd = events.find((event) => event.type === "turn_end");
 		expect(turnEnd).toMatchObject({
 			type: "turn_end",
-			toolResults: [],
+			toolResults: [
+				expect.objectContaining({
+					role: "toolResult",
+					toolCallId: "collab-call-1",
+					toolName: "codex.subagent.spawnAgent",
+				}),
+			],
 		});
+	});
+
+	it("preserves provider-owned tool results when local tool calls run in the same turn", async () => {
+		const localToolExecute = vi.fn(async () => ({
+			content: [{ type: "text", text: "local read completed" }],
+		}));
+		const localTool: AgentTool = {
+			name: "read",
+			description: "Read a file locally.",
+			parameters: Type.Object({
+				file_path: Type.String(),
+			}),
+			annotations: {
+				readOnlyHint: true,
+			},
+			execute: localToolExecute,
+		};
+		let streamCount = 0;
+		let secondTurnMessages: Message[] | undefined;
+		mocks.createProviderStream.mockImplementation(async function* (
+			_model: unknown,
+			context: { messages: Message[] },
+		) {
+			streamCount += 1;
+			if (streamCount === 1) {
+				const assistant = {
+					...assistantMessage(),
+					content: [],
+					stopReason: "tool_use",
+					timestamp: 1,
+				};
+				yield {
+					type: "start",
+					partial: assistant,
+				} satisfies AssistantMessageEvent;
+				yield {
+					type: "provider_tool_execution_end",
+					toolCallId: "collab-call-1",
+					toolName: "codex.subagent.spawnAgent",
+					displayName: "Codex subagent: spawn agent",
+					summaryLabel: "spawn agent 1 agent",
+					result: {
+						role: "toolResult",
+						toolCallId: "collab-call-1",
+						toolName: "codex.subagent.spawnAgent",
+						content: [{ type: "text", text: "Codex subagent completed." }],
+						isError: false,
+						timestamp: 2,
+					},
+					isError: false,
+					partial: assistant,
+				} satisfies AssistantMessageEvent;
+				yield {
+					type: "toolcall_end",
+					toolCall: {
+						id: "read-call-1",
+						name: "read",
+						arguments: { file_path: "/tmp/evalops.txt" },
+					},
+					partial: assistant,
+				} satisfies AssistantMessageEvent;
+				yield {
+					type: "done",
+					reason: "tool_use",
+					message: assistant,
+				} satisfies AssistantMessageEvent;
+				return;
+			}
+
+			secondTurnMessages = context.messages;
+			const assistant = {
+				...assistantMessage(),
+				content: [{ type: "text" as const, text: "done" }],
+				stopReason: "stop",
+				timestamp: 3,
+			};
+			yield {
+				type: "start",
+				partial: assistant,
+			} satisfies AssistantMessageEvent;
+			yield {
+				type: "done",
+				reason: "stop",
+				message: assistant,
+			} satisfies AssistantMessageEvent;
+		});
+		const transport = new ProviderTransport();
+		const userMessage: Message = {
+			role: "user",
+			content: "Delegate and then read the file.",
+			timestamp: 1,
+		};
+		const events: AgentEvent[] = [];
+
+		for await (const event of transport.run([userMessage], userMessage, {
+			systemPrompt: "Be concise.",
+			tools: [localTool],
+			model: codexModel,
+		})) {
+			events.push(event);
+		}
+
+		expect(localToolExecute).toHaveBeenCalledTimes(1);
+		const turnEnds = events.filter(
+			(event): event is Extract<AgentEvent, { type: "turn_end" }> =>
+				event.type === "turn_end",
+		);
+		expect(turnEnds[0]).toMatchObject({
+			type: "turn_end",
+			toolResults: [
+				expect.objectContaining({
+					role: "toolResult",
+					toolCallId: "collab-call-1",
+					toolName: "codex.subagent.spawnAgent",
+				}),
+				expect.objectContaining({
+					role: "toolResult",
+					toolCallId: "read-call-1",
+					toolName: "read",
+				}),
+			],
+		});
+		expect(secondTurnMessages).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					role: "toolResult",
+					toolCallId: "collab-call-1",
+					toolName: "codex.subagent.spawnAgent",
+				}),
+				expect.objectContaining({
+					role: "toolResult",
+					toolCallId: "read-call-1",
+					toolName: "read",
+				}),
+			]),
+		);
+	});
+
+	it("drops provider-owned tool results from abandoned stream retry attempts", async () => {
+		const localToolExecute = vi.fn(async () => ({
+			content: [{ type: "text", text: "local read completed" }],
+		}));
+		const localTool: AgentTool = {
+			name: "read",
+			description: "Read a file locally.",
+			parameters: Type.Object({
+				file_path: Type.String(),
+			}),
+			annotations: {
+				readOnlyHint: true,
+			},
+			execute: localToolExecute,
+		};
+		let streamCount = 0;
+		let secondTurnMessages: Message[] | undefined;
+		mocks.createProviderStream.mockImplementation(async function* (
+			_model: unknown,
+			context: { messages: Message[] },
+		) {
+			streamCount += 1;
+			if (streamCount === 1) {
+				const assistant = {
+					...assistantMessage(),
+					content: [],
+					stopReason: "tool_use",
+					timestamp: 1,
+				};
+				yield {
+					type: "start",
+					partial: assistant,
+				} satisfies AssistantMessageEvent;
+				yield {
+					type: "provider_tool_execution_end",
+					toolCallId: "stale-provider-call",
+					toolName: "codex.subagent.spawnAgent",
+					result: {
+						role: "toolResult",
+						toolCallId: "stale-provider-call",
+						toolName: "codex.subagent.spawnAgent",
+						content: [{ type: "text", text: "abandoned result" }],
+						isError: false,
+						timestamp: 2,
+					},
+					isError: false,
+					partial: assistant,
+				} satisfies AssistantMessageEvent;
+				throw new StreamIdleTimeoutError(1, "openai-codex");
+			}
+
+			if (streamCount === 2) {
+				const assistant = {
+					...assistantMessage(),
+					content: [],
+					stopReason: "tool_use",
+					timestamp: 3,
+				};
+				yield {
+					type: "start",
+					partial: assistant,
+				} satisfies AssistantMessageEvent;
+				yield {
+					type: "provider_tool_execution_end",
+					toolCallId: "fresh-provider-call",
+					toolName: "codex.subagent.spawnAgent",
+					result: {
+						role: "toolResult",
+						toolCallId: "fresh-provider-call",
+						toolName: "codex.subagent.spawnAgent",
+						content: [{ type: "text", text: "fresh result" }],
+						isError: false,
+						timestamp: 4,
+					},
+					isError: false,
+					partial: assistant,
+				} satisfies AssistantMessageEvent;
+				yield {
+					type: "toolcall_end",
+					toolCall: {
+						id: "read-call-1",
+						name: "read",
+						arguments: { file_path: "/tmp/evalops.txt" },
+					},
+					partial: assistant,
+				} satisfies AssistantMessageEvent;
+				yield {
+					type: "done",
+					reason: "tool_use",
+					message: assistant,
+				} satisfies AssistantMessageEvent;
+				return;
+			}
+
+			secondTurnMessages = context.messages;
+			const assistant = {
+				...assistantMessage(),
+				content: [{ type: "text" as const, text: "done" }],
+				stopReason: "stop",
+				timestamp: 5,
+			};
+			yield {
+				type: "start",
+				partial: assistant,
+			} satisfies AssistantMessageEvent;
+			yield {
+				type: "done",
+				reason: "stop",
+				message: assistant,
+			} satisfies AssistantMessageEvent;
+		});
+		const transport = new ProviderTransport();
+		const userMessage: Message = {
+			role: "user",
+			content: "Delegate after a retry.",
+			timestamp: 1,
+		};
+		const events: AgentEvent[] = [];
+
+		for await (const event of transport.run([userMessage], userMessage, {
+			systemPrompt: "Be concise.",
+			tools: [localTool],
+			model: codexModel,
+		})) {
+			events.push(event);
+		}
+
+		expect(streamCount).toBe(3);
+		expect(localToolExecute).toHaveBeenCalledTimes(1);
+		const turnEnd = events.find(
+			(event): event is Extract<AgentEvent, { type: "turn_end" }> =>
+				event.type === "turn_end",
+		);
+		expect(turnEnd?.toolResults).toEqual([
+			expect.objectContaining({
+				toolCallId: "fresh-provider-call",
+				toolName: "codex.subagent.spawnAgent",
+			}),
+			expect.objectContaining({
+				toolCallId: "read-call-1",
+				toolName: "read",
+			}),
+		]);
+		expect(secondTurnMessages).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					role: "toolResult",
+					toolCallId: "fresh-provider-call",
+					toolName: "codex.subagent.spawnAgent",
+				}),
+				expect.objectContaining({
+					role: "toolResult",
+					toolCallId: "read-call-1",
+					toolName: "read",
+				}),
+			]),
+		);
+		expect(secondTurnMessages).not.toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					role: "toolResult",
+					toolCallId: "stale-provider-call",
+				}),
+			]),
+		);
+		const providerToolMessageEvents = events.filter(
+			(
+				event,
+			): event is Extract<
+				AgentEvent,
+				{ type: "message_start" | "message_end" }
+			> =>
+				(event.type === "message_start" || event.type === "message_end") &&
+				event.message.role === "toolResult",
+		);
+		expect(
+			providerToolMessageEvents.map((event) => event.message.toolCallId),
+		).not.toContain("stale-provider-call");
 	});
 
 	it("lets Codex dynamic tool callbacks wait for user approval instead of auto-denying", async () => {
