@@ -33,10 +33,11 @@ python3 scripts/codex-a2a-peer.py card mac-mini
 python3 scripts/codex-a2a-peer.py send --from dev-desktop mac-mini "Validate the desktop sign-in flow on macOS"
 python3 scripts/codex-a2a-peer.py relay dev-desktop --stdin < handoff.md
 python3 scripts/codex-a2a-peer.py task mac-mini codex-a2a-task-123
+python3 scripts/codex-a2a-peer.py cancel mac-mini codex-a2a-task-123
 ```
 
 For async work, pass `--async`; the command prints the task id and current state,
-which can be polled later with `task`.
+which can be polled later with `task` or stopped with `cancel`.
 
 When the bridge receives relay metadata, it prepends a small prompt envelope so
 the receiving Codex turn can see routing/correlation context without the caller
