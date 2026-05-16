@@ -1,0 +1,71 @@
+name: Bazel RBE
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .bazelignore
+      - .bazelrc
+      - .bazelversion
+      - .github/actions/setup-bun-nx/action.yml
+      - .github/workflows/bazel-rbe.yml
+      - .node-version
+      - BUILD.bazel
+      - MODULE.bazel
+      - Makefile
+      - bun.lockb
+      - docs/development/bazel.md
+      - nx.json
+      - package.json
+      - packages/**/package.json
+      - packages/**/project.json
+      - project.json
+      - scripts/run-bazel-rbe.sh
+      - tool-versions.json
+      - tools/bazel/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  smoke:
+    if: github.event_name == 'workflow_dispatch' || vars.BAZEL_RBE_ENABLED == 'true'
+    runs-on:
+      - self-hosted
+      - Linux
+      - X64
+      - evalops-maestro-rbe
+    timeout-minutes: 20
+    env:
+      BAZEL_RBE_USE_EXISTING_TUNNEL: "true"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v5.6.0 (tag v5)
+        with:
+          go-version: "stable"
+          cache: false
+
+      - name: Install Bazel tools
+        env:
+          GOFLAGS: -mod=mod
+        run: |
+          set -euo pipefail
+          go install github.com/bazelbuild/bazelisk@latest
+          go install github.com/bazelbuild/buildtools/buildifier@latest
+
+      - name: Verify Bazel graph
+        run: make bazel-check
+
+      - name: Run Buildfarm smoke test
+        run: make bazel-rbe-smoke

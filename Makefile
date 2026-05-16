@@ -28,14 +28,38 @@ export ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY GROQ_API_KEY \
        MAESTRO_EVALOPS_MEMORY_MODE EVALOPS_MEMORY_MODE
 
 LOCAL_CEREBRO_REPO ?= ../cerebro
+BAZEL ?= $(shell if command -v bazelisk >/dev/null 2>&1; then command -v bazelisk; elif command -v go >/dev/null 2>&1; then printf '%s/bin/bazelisk' "$$(go env GOPATH)"; else printf bazelisk; fi)
+BUILDIFIER ?= $(shell if command -v buildifier >/dev/null 2>&1; then command -v buildifier; elif command -v go >/dev/null 2>&1; then printf '%s/bin/buildifier' "$$(go env GOPATH)"; else printf buildifier; fi)
+BAZEL_TARGETS ?= //...
+BAZEL_REMOTE_CONFIG ?= remote-gcp-dev
+BAZEL_RBE_SMOKE_TARGETS ?= //:maestro_bazel_contract_test
+BAZEL_CI_REMOTE_DOWNLOAD_FLAGS ?= --remote_download_outputs=minimal
 
-.PHONY: help setup install build build-all compile run-ts run-rs run-rs-debug \
+.PHONY: help bazel-check bazel-format bazel-mod-tidy bazel-rbe-smoke bazel-test bazel-test-remote setup install build build-all compile run-ts run-rs run-rs-debug \
         web web-local dev dev-all developer-surface-check test test-fast test-coverage lint check fmt fmt-unsafe \
         smoke cerebro-dev cerebro-env cerebro-e2e cerebro-e2e-doctor cerebro-e2e-trace evals verify clean db-up db-down db-migrate
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
+
+bazel-mod-tidy:
+	$(BAZEL) mod tidy
+
+bazel-format:
+	$(BUILDIFIER) -r .
+
+bazel-check: bazel-mod-tidy bazel-format bazel-test
+	git diff --exit-code
+
+bazel-test:
+	$(BAZEL) test $(BAZEL_TARGETS)
+
+bazel-test-remote:
+	$(BAZEL) test --config=$(BAZEL_REMOTE_CONFIG) $(BAZEL_CI_REMOTE_DOWNLOAD_FLAGS) $(BAZEL_TARGETS)
+
+bazel-rbe-smoke:
+	BAZEL_TARGETS="$(BAZEL_RBE_SMOKE_TARGETS)" ./scripts/run-bazel-rbe.sh
 
 setup: ## First-time project bootstrap
 	@test -f .env || { test -f .env.example || { echo "error: .env.example not found — is this a complete checkout?" >&2; exit 1; }; \
