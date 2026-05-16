@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { A2AMessage, A2ATask } from "./a2a-client.js";
@@ -65,6 +65,12 @@ export interface UpdateA2ATaskInput extends A2ATaskLedgerOptions {
 
 const TERMINAL_STATE_PATTERN =
 	/(COMPLETED|FAILED|CANCELED|CANCELLED|REJECTED|INPUT_REQUIRED|AUTH_REQUIRED)/u;
+const LEDGER_LOCK_RETRY_MS = 25;
+const LEDGER_LOCK_HEARTBEAT_MS = 10_000;
+const LEDGER_LOCK_STALE_MS = 30_000;
+const LEDGER_LOCK_TIMEOUT_MS = 5000;
+const LEDGER_LOCK_OWNER_FILE = "owner";
+const LEDGER_LOCK_HEARTBEAT_FILE = "heartbeat";
 
 export function getA2ATaskLedgerPath(path?: string): string {
 	const configured =
@@ -105,133 +111,289 @@ export async function saveA2ATaskLedger(
 	ledger: A2ATaskLedgerFile,
 	options: A2ATaskLedgerOptions = {},
 ): Promise<string> {
+	return withA2ATaskLedgerLock(options, () =>
+		writeA2ATaskLedger(ledger, options),
+	);
+}
+
+async function writeA2ATaskLedger(
+	ledger: A2ATaskLedgerFile,
+	options: A2ATaskLedgerOptions = {},
+): Promise<string> {
 	const path = getA2ATaskLedgerPath(options.path);
+	const tempPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
 	await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-	await writeFile(`${path}.tmp`, `${JSON.stringify(ledger, null, 2)}\n`, {
-		mode: 0o600,
-	});
-	await rename(`${path}.tmp`, path);
+	try {
+		await writeFile(tempPath, `${JSON.stringify(ledger, null, 2)}\n`, {
+			mode: 0o600,
+		});
+		await rename(tempPath, path);
+	} catch (error) {
+		await rm(tempPath, { force: true }).catch(() => undefined);
+		throw error;
+	}
 	return path;
+}
+
+async function withA2ATaskLedgerLock<T>(
+	options: A2ATaskLedgerOptions,
+	fn: () => Promise<T>,
+): Promise<T> {
+	const path = getA2ATaskLedgerPath(options.path);
+	const lockPath = `${path}.lock`;
+	const lockToken = `${process.pid}:${randomUUID()}`;
+	await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+	const deadline = Date.now() + LEDGER_LOCK_TIMEOUT_MS;
+	for (;;) {
+		try {
+			await mkdir(lockPath, { mode: 0o700 });
+			await writeLedgerLockMetadata(lockPath, lockToken);
+			break;
+		} catch (error) {
+			if (!hasNodeCode(error, "EEXIST") || Date.now() >= deadline) {
+				throw error;
+			}
+			if (await isStaleLedgerLock(lockPath)) {
+				await rm(lockPath, { force: true, recursive: true });
+				continue;
+			}
+			await sleep(LEDGER_LOCK_RETRY_MS);
+		}
+	}
+	const stopHeartbeat = startLedgerLockHeartbeat(lockPath, lockToken);
+	try {
+		return await fn();
+	} finally {
+		stopHeartbeat();
+		if (await isOwnedLedgerLock(lockPath, lockToken)) {
+			await rm(lockPath, { force: true, recursive: true });
+		}
+	}
+}
+
+async function writeLedgerLockMetadata(
+	lockPath: string,
+	lockToken: string,
+): Promise<void> {
+	try {
+		await writeFile(join(lockPath, LEDGER_LOCK_OWNER_FILE), `${lockToken}\n`, {
+			mode: 0o600,
+		});
+		await writeLedgerLockHeartbeat(lockPath);
+	} catch (error) {
+		await rm(lockPath, { force: true, recursive: true }).catch(() => undefined);
+		throw error;
+	}
+}
+
+function startLedgerLockHeartbeat(
+	lockPath: string,
+	lockToken: string,
+): () => void {
+	const interval: ReturnType<typeof setInterval> = setInterval(() => {
+		void refreshLedgerLockHeartbeat(lockPath, lockToken);
+	}, LEDGER_LOCK_HEARTBEAT_MS);
+	if (
+		typeof interval === "object" &&
+		"unref" in interval &&
+		typeof interval.unref === "function"
+	) {
+		interval.unref();
+	}
+	return () => clearInterval(interval);
+}
+
+async function refreshLedgerLockHeartbeat(
+	lockPath: string,
+	lockToken: string,
+): Promise<void> {
+	try {
+		if (await isOwnedLedgerLock(lockPath, lockToken)) {
+			await writeLedgerLockHeartbeat(lockPath);
+		}
+	} catch {
+		// Best-effort only; ownership is re-checked before lock cleanup.
+	}
+}
+
+async function writeLedgerLockHeartbeat(lockPath: string): Promise<void> {
+	await writeFile(
+		join(lockPath, LEDGER_LOCK_HEARTBEAT_FILE),
+		`${Date.now()}\n`,
+		{ mode: 0o600 },
+	);
+}
+
+async function isOwnedLedgerLock(
+	lockPath: string,
+	lockToken: string,
+): Promise<boolean> {
+	try {
+		const owner = await readFile(
+			join(lockPath, LEDGER_LOCK_OWNER_FILE),
+			"utf8",
+		);
+		return owner.trim() === lockToken;
+	} catch {
+		return false;
+	}
+}
+
+async function isStaleLedgerLock(lockPath: string): Promise<boolean> {
+	try {
+		const lock = await statLedgerLockHeartbeat(lockPath);
+		return Date.now() - lock.mtimeMs > LEDGER_LOCK_STALE_MS;
+	} catch (error) {
+		return hasNodeCode(error, "ENOENT");
+	}
+}
+
+async function statLedgerLockHeartbeat(
+	lockPath: string,
+): Promise<{ mtimeMs: number }> {
+	for (const path of [
+		join(lockPath, LEDGER_LOCK_HEARTBEAT_FILE),
+		join(lockPath, LEDGER_LOCK_OWNER_FILE),
+		lockPath,
+	]) {
+		try {
+			return await stat(path);
+		} catch (error) {
+			if (!hasNodeCode(error, "ENOENT")) {
+				throw error;
+			}
+		}
+	}
+	throw Object.assign(new Error(`Ledger lock ${lockPath} does not exist`), {
+		code: "ENOENT",
+	});
 }
 
 export async function recordA2ATaskStart(
 	input: RecordA2ATaskStartInput,
 ): Promise<{ entry: A2ATaskLedgerEntry; path: string }> {
-	const ledger = await loadA2ATaskLedger(input);
-	const now = (input.now ?? new Date()).toISOString();
-	const taskId = trimString(input.task.id) ?? fail("A2A task id is required");
-	const existingIndex = ledger.tasks.findIndex(
-		(entry) => entry.peer === input.peer && entry.taskId === taskId,
-	);
-	const metadata = cleanMetadata(input.metadata);
-	const userText = input.text.trim();
-	const entry: A2ATaskLedgerEntry = {
-		...(existingIndex >= 0 ? ledger.tasks[existingIndex] : {}),
-		id:
-			existingIndex >= 0
-				? ledger.tasks[existingIndex]!.id
-				: `maestro-a2a-task-${randomUUID()}`,
-		kind: input.kind ?? "delegation",
-		peer: input.peer,
-		...(input.peerDisplayName
-			? { peerDisplayName: input.peerDisplayName }
-			: {}),
-		taskId,
-		...(trimString(input.task.contextId ?? input.contextId)
-			? { contextId: trimString(input.task.contextId ?? input.contextId) }
-			: {}),
-		...(trimString(input.messageId)
-			? { messageId: trimString(input.messageId) }
-			: {}),
-		text: userText,
-		...(trimString(input.role) ? { role: trimString(input.role) } : {}),
-		...(trimString(input.cwd) ? { cwd: trimString(input.cwd) } : {}),
-		state: input.task.status.state,
-		...(metadata ? { metadata } : {}),
-		transcript: [
-			{
-				at: now,
-				role: "user",
-				text: userText,
-				...(trimString(input.messageId)
-					? { messageId: trimString(input.messageId) }
-					: {}),
-			},
-		],
-		createdAt:
-			existingIndex >= 0 ? ledger.tasks[existingIndex]!.createdAt : now,
-		updatedAt: now,
-	};
-	const taskText = extractA2ATaskText(input.task);
-	if (taskText) {
-		entry.responseText = taskText;
-		entry.transcript.push({
-			at: now,
-			role: "agent",
-			text: taskText,
+	return withA2ATaskLedgerLock(input, async () => {
+		const ledger = await loadA2ATaskLedger(input);
+		const now = (input.now ?? new Date()).toISOString();
+		const taskId = trimString(input.task.id) ?? fail("A2A task id is required");
+		const existingIndex = ledger.tasks.findIndex(
+			(entry) => entry.peer === input.peer && entry.taskId === taskId,
+		);
+		const metadata = cleanMetadata(input.metadata);
+		const userText = input.text.trim();
+		const entry: A2ATaskLedgerEntry = {
+			...(existingIndex >= 0 ? ledger.tasks[existingIndex] : {}),
+			id:
+				existingIndex >= 0
+					? ledger.tasks[existingIndex]!.id
+					: `maestro-a2a-task-${randomUUID()}`,
+			kind: input.kind ?? "delegation",
+			peer: input.peer,
+			...(input.peerDisplayName
+				? { peerDisplayName: input.peerDisplayName }
+				: {}),
+			taskId,
+			...(trimString(input.task.contextId ?? input.contextId)
+				? { contextId: trimString(input.task.contextId ?? input.contextId) }
+				: {}),
+			...(trimString(input.messageId)
+				? { messageId: trimString(input.messageId) }
+				: {}),
+			text: userText,
+			...(trimString(input.role) ? { role: trimString(input.role) } : {}),
+			...(trimString(input.cwd) ? { cwd: trimString(input.cwd) } : {}),
 			state: input.task.status.state,
-			messageId: input.task.status.message?.messageId,
-		});
-	}
-	if (isTerminalA2AState(entry.state)) {
-		entry.completedAt = now;
-	}
-	if (existingIndex >= 0) {
-		ledger.tasks[existingIndex] = entry;
-	} else {
-		ledger.tasks.push(entry);
-	}
-	const path = await saveA2ATaskLedger(ledger, input);
-	return { entry, path };
+			...(metadata ? { metadata } : {}),
+			transcript: [
+				{
+					at: now,
+					role: "user",
+					text: userText,
+					...(trimString(input.messageId)
+						? { messageId: trimString(input.messageId) }
+						: {}),
+				},
+			],
+			createdAt:
+				existingIndex >= 0 ? ledger.tasks[existingIndex]!.createdAt : now,
+			updatedAt: now,
+		};
+		const taskText = extractA2ATaskText(input.task);
+		if (taskText) {
+			entry.responseText = taskText;
+			entry.transcript.push({
+				at: now,
+				role: "agent",
+				text: taskText,
+				state: input.task.status.state,
+				messageId: input.task.status.message?.messageId,
+			});
+		}
+		if (isTerminalA2AState(entry.state)) {
+			entry.completedAt = now;
+		} else {
+			delete entry.completedAt;
+		}
+		if (existingIndex >= 0) {
+			ledger.tasks[existingIndex] = entry;
+		} else {
+			ledger.tasks.push(entry);
+		}
+		const path = await writeA2ATaskLedger(ledger, input);
+		return { entry, path };
+	});
 }
 
 export async function updateA2ATaskInLedger(
 	input: UpdateA2ATaskInput,
 ): Promise<{ entry: A2ATaskLedgerEntry | null; path: string }> {
-	const ledger = await loadA2ATaskLedger(input);
-	const taskId = trimString(input.task.id) ?? fail("A2A task id is required");
-	const index = ledger.tasks.findIndex(
-		(entry) => entry.peer === input.peer && entry.taskId === taskId,
-	);
-	const path = getA2ATaskLedgerPath(input.path);
-	if (index < 0) {
-		return { entry: null, path };
-	}
-	const now = (input.now ?? new Date()).toISOString();
-	const previous = ledger.tasks[index]!;
-	const responseText = extractA2ATaskText(input.task) ?? previous.responseText;
-	const entry: A2ATaskLedgerEntry = {
-		...previous,
-		state: input.task.status.state,
-		...(trimString(input.task.contextId)
-			? { contextId: trimString(input.task.contextId) }
-			: {}),
-		...(responseText ? { responseText } : {}),
-		updatedAt: now,
-		...(isTerminalA2AState(input.task.status.state)
-			? { completedAt: previous.completedAt ?? now }
-			: {}),
-	};
-	if (
-		responseText &&
-		!entry.transcript.some(
-			(item) => item.role === "agent" && item.text === responseText,
-		)
-	) {
-		entry.transcript = [
-			...entry.transcript,
-			{
-				at: now,
-				role: "agent",
-				text: responseText,
-				state: input.task.status.state,
-				messageId: input.task.status.message?.messageId,
-			},
-		];
-	}
-	ledger.tasks[index] = entry;
-	await saveA2ATaskLedger(ledger, input);
-	return { entry, path };
+	return withA2ATaskLedgerLock(input, async () => {
+		const ledger = await loadA2ATaskLedger(input);
+		const taskId = trimString(input.task.id) ?? fail("A2A task id is required");
+		const index = ledger.tasks.findIndex(
+			(entry) => entry.peer === input.peer && entry.taskId === taskId,
+		);
+		const path = getA2ATaskLedgerPath(input.path);
+		if (index < 0) {
+			return { entry: null, path };
+		}
+		const now = (input.now ?? new Date()).toISOString();
+		const previous = ledger.tasks[index]!;
+		const responseText =
+			extractA2ATaskText(input.task) ?? previous.responseText;
+		const entry: A2ATaskLedgerEntry = {
+			...previous,
+			state: input.task.status.state,
+			...(trimString(input.task.contextId)
+				? { contextId: trimString(input.task.contextId) }
+				: {}),
+			...(responseText ? { responseText } : {}),
+			updatedAt: now,
+			...(isTerminalA2AState(input.task.status.state)
+				? { completedAt: previous.completedAt ?? now }
+				: {}),
+		};
+		if (
+			responseText &&
+			!entry.transcript.some(
+				(item) => item.role === "agent" && item.text === responseText,
+			)
+		) {
+			entry.transcript = [
+				...entry.transcript,
+				{
+					at: now,
+					role: "agent",
+					text: responseText,
+					state: input.task.status.state,
+					messageId: input.task.status.message?.messageId,
+				},
+			];
+		}
+		ledger.tasks[index] = entry;
+		await writeA2ATaskLedger(ledger, input);
+		return { entry, path };
+	});
 }
 
 export function listA2ATaskEntries(
@@ -387,6 +549,10 @@ function expandHome(path: string): string {
 
 function hasNodeCode(error: unknown, code: string): boolean {
 	return isRecord(error) && error.code === code;
+}
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

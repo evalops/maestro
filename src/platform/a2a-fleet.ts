@@ -1,3 +1,4 @@
+import { isAbortError } from "../utils/abort-error.js";
 import { type A2AAgentCard, discoverA2AAgentCard } from "./a2a-client.js";
 import {
 	type A2APeerRegistryEntry,
@@ -10,6 +11,8 @@ import {
 	latestA2ATaskForPeer,
 	loadA2ATaskLedger,
 } from "./a2a-task-ledger.js";
+
+const DEFAULT_A2A_FLEET_PROBE_TIMEOUT_MS = 10_000;
 
 export interface A2AFleetOptions {
 	registryPath?: string;
@@ -62,7 +65,10 @@ export async function inspectA2AFleet(
 		Object.entries(registry.peers)
 			.sort(([left], [right]) => left.localeCompare(right))
 			.map(async ([name, entry]) =>
-				inspectPeer(name, entry, latestA2ATaskForPeer(ledger, name), options),
+				inspectPeer(name, entry, latestA2ATaskForPeer(ledger, name), {
+					...options,
+					registryTimeoutMs: registry.timeoutMs,
+				}),
 			),
 	);
 	return {
@@ -93,7 +99,7 @@ async function inspectPeer(
 	name: string,
 	entry: A2APeerRegistryEntry,
 	lastTask: A2ATaskLedgerEntry | undefined,
-	options: A2AFleetOptions,
+	options: A2AFleetOptions & { registryTimeoutMs?: number },
 ): Promise<A2AFleetPeerSummary> {
 	const base = basePeerSummary(name, entry, lastTask);
 	try {
@@ -101,7 +107,11 @@ async function inspectPeer(
 			path: options.registryPath,
 			timeoutMs: options.timeoutMs,
 		});
-		const card = await discoverA2AAgentCard(peer.config);
+		const card = await discoverA2AAgentCard({
+			...peer.config,
+			timeoutMs: fleetProbeTimeoutMs(peer.config.timeoutMs, entry, options),
+			maxAttempts: 1,
+		});
 		return {
 			...base,
 			status: "online",
@@ -115,12 +125,26 @@ async function inspectPeer(
 				card.supportedInterfaces[0]?.protocolVersion ?? base.protocolVersion,
 		};
 	} catch (error) {
+		if (isAbortError(error)) {
+			throw error;
+		}
 		return {
 			...base,
 			status: "unreachable",
 			error: error instanceof Error ? error.message : String(error),
 		};
 	}
+}
+
+function fleetProbeTimeoutMs(
+	resolvedTimeoutMs: number,
+	entry: A2APeerRegistryEntry,
+	options: A2AFleetOptions & { registryTimeoutMs?: number },
+): number {
+	if (options.timeoutMs || entry.timeoutMs || options.registryTimeoutMs) {
+		return resolvedTimeoutMs;
+	}
+	return Math.min(resolvedTimeoutMs, DEFAULT_A2A_FLEET_PROBE_TIMEOUT_MS);
 }
 
 function basePeerSummary(

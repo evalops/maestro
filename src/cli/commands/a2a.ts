@@ -32,6 +32,7 @@ import {
 	updateA2ATaskInLedger,
 } from "../../platform/a2a-task-ledger.js";
 import { getEnvValue } from "../../platform/client.js";
+import { isAbortError } from "../../utils/abort-error.js";
 
 const DEFAULT_WAIT_MS = 300_000;
 const DEFAULT_WAIT_INTERVAL_MS = 5_000;
@@ -676,6 +677,9 @@ async function persistA2ALedgerBestEffort(
 	try {
 		await action();
 	} catch (error) {
+		if (isAbortError(error)) {
+			throw error;
+		}
 		console.error(
 			chalk.yellow(
 				`A2A task ledger warning: could not ${description}: ${errorMessage(error)}`,

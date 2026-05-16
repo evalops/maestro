@@ -1,4 +1,11 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import {
+	mkdir,
+	mkdtemp,
+	readFile,
+	stat,
+	utimes,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -105,6 +112,119 @@ describe("A2A task ledger", () => {
 			}),
 		]);
 	});
+
+	it("preserves concurrent task starts in the same ledger", async () => {
+		const path = join(
+			await mkdtemp(join(tmpdir(), "maestro-a2a-ledger-concurrent-")),
+			"tasks.json",
+		);
+
+		await Promise.all([
+			recordA2ATaskStart({
+				path,
+				peer: "mac-mini",
+				task: {
+					id: "task-mac-1",
+					status: { state: "TASK_STATE_SUBMITTED" },
+				},
+				text: "run mac checks",
+				now: NOW,
+			}),
+			recordA2ATaskStart({
+				path,
+				peer: "dev-desktop",
+				task: {
+					id: "task-dev-1",
+					status: { state: "TASK_STATE_SUBMITTED" },
+				},
+				text: "run dev checks",
+				now: NOW,
+			}),
+		]);
+
+		await expect(loadA2ATaskLedger({ path })).resolves.toMatchObject({
+			tasks: expect.arrayContaining([
+				expect.objectContaining({
+					peer: "mac-mini",
+					taskId: "task-mac-1",
+				}),
+				expect.objectContaining({
+					peer: "dev-desktop",
+					taskId: "task-dev-1",
+				}),
+			]),
+		});
+		await expect(loadA2ATaskLedger({ path })).resolves.toHaveProperty(
+			"tasks.length",
+			2,
+		);
+	});
+
+	it("recovers stale task ledger locks before writing", async () => {
+		const path = join(
+			await mkdtemp(join(tmpdir(), "maestro-a2a-ledger-stale-lock-")),
+			"tasks.json",
+		);
+		const lockPath = `${path}.lock`;
+		await mkdir(lockPath);
+		const stale = new Date(Date.now() - 60_000);
+		await utimes(lockPath, stale, stale);
+
+		await recordA2ATaskStart({
+			path,
+			peer: "mac-mini",
+			task: {
+				id: "task-mac-1",
+				status: { state: "TASK_STATE_SUBMITTED" },
+			},
+			text: "run checks after stale lock",
+			now: NOW,
+		});
+
+		await expect(loadA2ATaskLedger({ path })).resolves.toHaveProperty(
+			"tasks.length",
+			1,
+		);
+		await expect(stat(lockPath)).rejects.toMatchObject({ code: "ENOENT" });
+	});
+
+	it("clears stale completedAt when re-recording a task in a non-terminal state", async () => {
+		const path = join(
+			await mkdtemp(join(tmpdir(), "maestro-a2a-ledger-restart-")),
+			"tasks.json",
+		);
+
+		await recordA2ATaskStart({
+			path,
+			peer: "dev-desktop",
+			task: {
+				id: "task-dev-3",
+				status: { state: "TASK_STATE_COMPLETED" },
+			},
+			text: "finish the smoke",
+			now: NOW,
+		});
+		await recordA2ATaskStart({
+			path,
+			peer: "dev-desktop",
+			task: {
+				id: "task-dev-3",
+				status: { state: "TASK_STATE_SUBMITTED" },
+			},
+			text: "restart with more input",
+			now: LATER,
+		});
+
+		const ledger = await loadA2ATaskLedger({ path });
+		expect(ledger.tasks[0]).toMatchObject({
+			peer: "dev-desktop",
+			taskId: "task-dev-3",
+			state: "TASK_STATE_SUBMITTED",
+			text: "restart with more input",
+		});
+		expect(ledger.tasks[0]?.completedAt).toBeUndefined();
+	});
+
 	it("rejects array-shaped ledger files instead of treating them as empty", async () => {
 		const path = join(
 			await mkdtemp(join(tmpdir(), "maestro-a2a-ledger-array-")),
