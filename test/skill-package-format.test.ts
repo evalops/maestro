@@ -17,6 +17,7 @@ import {
 	buildSkillPackagePublishContract,
 	buildSkillRuntimeActivation,
 	evaluateSkillPackages,
+	formatSkillPackageInstallSource,
 	hasSkillEvalFailures,
 	hasSkillLintErrors,
 	isWindowsRunnableToolboxEntry,
@@ -358,6 +359,15 @@ describe("skill package format", () => {
 		expect(payload.install.local).toBe(payload.install.source);
 		expect(payload.install.npm).toBeUndefined();
 		expect(payload.issues).toEqual([]);
+	});
+
+	it("preserves drive-qualified local install hints across Windows drives", () => {
+		expect(
+			formatSkillPackageInstallSource(
+				{ type: "local", path: "D:\\skills\\review-pack" },
+				"C:\\workspace",
+			),
+		).toBe("local:D:\\skills\\review-pack");
 	});
 
 	it("keeps publish-check install hints tied to the inspected source type", async () => {

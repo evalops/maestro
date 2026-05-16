@@ -1,4 +1,4 @@
-import { relative } from "node:path";
+import { isAbsolute, relative } from "node:path";
 import {
 	collectPackageValidationIssues,
 	inspectPackageSource,
@@ -55,6 +55,14 @@ export interface BuildSkillPackagePublishContractOptions {
 	describeToolbox?: boolean;
 }
 
+const WINDOWS_DRIVE_PATH_REGEX = /^[A-Za-z]:[\\/]/;
+
+function windowsDriveLetter(path: string): string | null {
+	return WINDOWS_DRIVE_PATH_REGEX.test(path)
+		? path.slice(0, 1).toLowerCase()
+		: null;
+}
+
 function packageKeywords(discovered: DiscoveredPackage | null): string[] {
 	return Array.isArray(discovered?.packageJson.keywords)
 		? discovered.packageJson.keywords
@@ -75,7 +83,10 @@ function buildInstallCommands(input: {
 	cwd: string;
 	source: PackageSource;
 }): SkillPackageInstallCommandSet {
-	const installSource = formatInstallSource(input.source, input.cwd);
+	const installSource = formatSkillPackageInstallSource(
+		input.source,
+		input.cwd,
+	);
 	const command = `maestro skill install ${installSource}`;
 	switch (input.source.type) {
 		case "local":
@@ -87,11 +98,23 @@ function buildInstallCommands(input: {
 	}
 }
 
-function formatInstallSource(source: PackageSource, cwd: string): string {
+export function formatSkillPackageInstallSource(
+	source: PackageSource,
+	cwd: string,
+): string {
 	if (source.type !== "local") {
 		return formatPackageSource(source);
 	}
+	const sourceDrive = windowsDriveLetter(source.path);
+	const cwdDrive = windowsDriveLetter(cwd);
+	if (sourceDrive && cwdDrive && sourceDrive !== cwdDrive) {
+		return `local:${source.path}`;
+	}
+
 	const relativePath = relative(cwd, source.path) || ".";
+	if (isAbsolute(relativePath) || WINDOWS_DRIVE_PATH_REGEX.test(relativePath)) {
+		return `local:${relativePath}`;
+	}
 	const localPath = relativePath.startsWith(".")
 		? relativePath
 		: `./${relativePath}`;

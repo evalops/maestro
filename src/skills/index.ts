@@ -97,5 +97,6 @@ export {
 	type SkillPackageInstallCommandSet,
 	type SkillPackagePublishContract,
 	buildSkillPackagePublishContract,
+	formatSkillPackageInstallSource,
 	formatSkillPackagePublishContract,
 } from "./package-contract.js";
