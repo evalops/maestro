@@ -162,6 +162,15 @@ function validateStringArrayField(
 	return [];
 }
 
+function isBooleanFrontmatterValue(value: unknown): boolean {
+	if (typeof value === "boolean") return true;
+	if (typeof value === "string") {
+		const normalized = value.toLowerCase();
+		return normalized === "true" || normalized === "false";
+	}
+	return false;
+}
+
 function validateBody(body: string, path: string): SkillLintIssue[] {
 	const issues: SkillLintIssue[] = [];
 	const lines = body.split("\n").length;
@@ -460,7 +469,7 @@ export async function lintSkillDirectory(
 		}
 		if (
 			frontmatter.isolatedContext !== undefined &&
-			typeof frontmatter.isolatedContext !== "boolean"
+			!isBooleanFrontmatterValue(frontmatter.isolatedContext)
 		) {
 			issues.push(
 				issue(

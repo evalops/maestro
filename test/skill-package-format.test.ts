@@ -78,6 +78,23 @@ describe("skill package format", () => {
 		);
 	});
 
+	it("accepts quoted isolatedContext consistently across load and lint", async () => {
+		const workspace = tempRoot();
+		const skillDir = join(workspace, ".maestro", "skills", "reviewing-prs");
+		await mkdir(skillDir, { recursive: true });
+		writeFileSync(
+			join(skillDir, "SKILL.md"),
+			`---\nname: reviewing-prs\ndescription: "Review pull requests. Use when the user asks for PR review."\nisolatedContext: "true"\n---\n\n# Reviewing PRs\n`,
+		);
+
+		const lintResult = await lintSkillDirectory(skillDir);
+		const loaded = loadSkills(workspace, { includeSystem: false });
+
+		expect(hasSkillLintErrors([lintResult])).toBe(false);
+		expect(loaded.errors).toEqual([]);
+		expect(loaded.skills[0]?.isolatedContext).toBe(true);
+	});
+
 	it("coerces scalar metadata frontmatter values to strings", async () => {
 		const workspace = tempRoot();
 		const skillDir = join(workspace, ".maestro", "skills", "shipping-releases");
