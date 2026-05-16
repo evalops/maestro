@@ -42,6 +42,11 @@ export type AgentRuntimeLedgerState =
 	| "cancelled"
 	| "skipped";
 
+type AgentRuntimePromotionStepState = Exclude<
+	AgentRuntimeLedgerState,
+	"blocked"
+>;
+
 export interface AgentRuntimeLedgerEntry {
 	id: string;
 	sequence: number;
@@ -131,7 +136,7 @@ export type AgentRuntimePromotionOperation =
 			payload: {
 				stepId: string;
 				kind: string;
-				state: AgentRuntimeLedgerState;
+				state: AgentRuntimePromotionStepState;
 				title: string;
 				timestamp: string;
 				toolName?: string;
@@ -283,7 +288,7 @@ function workItemKindForEntry(kind: AgentRuntimeLedgerEntryKind): string {
 function waitTypeForEntry(
 	kind: AgentRuntimeLedgerEntryKind,
 ): string | undefined {
-	if (kind === "wait" || kind === "governance") {
+	if (kind === "wait") {
 		return "AGENT_RUN_WAIT_TYPE_APPROVAL";
 	}
 	return undefined;
@@ -342,25 +347,84 @@ function replaySummary(
 	};
 }
 
+const PASSIVE_TERMINAL_ENTRY_KINDS = new Set<AgentRuntimeLedgerEntryKind>([
+	"run",
+	"wait",
+	"governance",
+]);
+
+function isTerminalState(state: AgentRuntimeLedgerState): boolean {
+	return (
+		state === "succeeded" ||
+		state === "skipped" ||
+		state === "failed" ||
+		state === "cancelled"
+	);
+}
+
+function isTerminalCandidate(entry: AgentRuntimeLedgerEntry): boolean {
+	return (
+		isTerminalState(entry.state) &&
+		!PASSIVE_TERMINAL_ENTRY_KINDS.has(entry.kind)
+	);
+}
+
+function runStepStateForEntry(
+	entry: AgentRuntimeLedgerEntry,
+): AgentRuntimePromotionStepState {
+	return entry.state === "blocked" ? "failed" : entry.state;
+}
+
+function terminalEntry(
+	entries: AgentRuntimeLedgerEntry[],
+): AgentRuntimeLedgerEntry | undefined {
+	const last = entries.at(-1);
+	if (!last || !isTerminalState(last.state)) return undefined;
+	if (isTerminalCandidate(last)) return last;
+	for (let index = entries.length - 1; index >= 0; index -= 1) {
+		const entry = entries[index];
+		if (entry && isTerminalCandidate(entry)) return entry;
+	}
+	return undefined;
+}
+
 function terminalOperation(
 	runId: string,
 	entries: AgentRuntimeLedgerEntry[],
-): AgentRuntimePromotionOperation {
-	const last = entries.at(-1);
-	const succeeded = last?.state === "succeeded" || last?.state === "skipped";
+): AgentRuntimePromotionOperation | undefined {
+	const terminal = terminalEntry(entries);
+	if (!terminal) return undefined;
+	const succeeded =
+		terminal.state === "succeeded" || terminal.state === "skipped";
 	return {
 		operation: succeeded ? "complete_run" : "fail_run",
 		id: `promote:${runId}:terminal`,
 		payload: {
 			state: succeeded ? "succeeded" : "failed",
-			timestamp: last?.timestamp ?? new Date(0).toISOString(),
+			timestamp: terminal.timestamp,
 			...(succeeded
 				? {}
 				: {
-						reason: `Final ledger entry ended in ${last?.state ?? "unknown"} state.`,
+						reason: `Terminal ledger entry ended in ${terminal.state} state.`,
 					}),
 		},
 	};
+}
+
+function terminalOperationWarning(
+	entries: AgentRuntimeLedgerEntry[],
+): string | undefined {
+	const last = entries.at(-1);
+	if (!last) {
+		return "Terminal operation omitted because no ledger entries were available.";
+	}
+	if (terminalEntry(entries)) {
+		return undefined;
+	}
+	if (isTerminalState(last.state)) {
+		return "Terminal operation omitted because no substantive terminal ledger entry was available.";
+	}
+	return `Terminal operation omitted because final ledger entry ended in ${last.state} state.`;
 }
 
 function buildPromotionPlan(
@@ -392,7 +456,7 @@ function buildPromotionPlan(
 			payload: {
 				stepId: entry.id,
 				kind: entry.platformShape.stepKind,
-				state: entry.state,
+				state: runStepStateForEntry(entry),
 				title: entry.title,
 				timestamp: entry.timestamp,
 				...(entry.toolName ? { toolName: entry.toolName } : {}),
@@ -425,7 +489,13 @@ function buildPromotionPlan(
 		}
 	}
 
-	operations.push(terminalOperation(runId, entries));
+	const terminal = terminalOperation(runId, entries);
+	if (terminal) operations.push(terminal);
+	const terminalWarning = terminalOperationWarning(entries);
+	const warnings = [
+		"Promotion plan is dry-run only; no Platform AgentRuntime writes were performed.",
+		...(terminalWarning ? [terminalWarning] : []),
+	];
 
 	return {
 		schemaVersion: AGENT_RUNTIME_PROMOTION_PLAN_SCHEMA,
@@ -433,9 +503,7 @@ function buildPromotionPlan(
 		sessionId,
 		idempotencyKey,
 		operations,
-		warnings: [
-			"Promotion plan is dry-run only; no Platform AgentRuntime writes were performed.",
-		],
+		warnings,
 	};
 }
 
