@@ -61,7 +61,10 @@ function createCommittedGitRepo(dir: string): void {
 }
 
 async function writeOssSkillPackage(workspace: string): Promise<string> {
-	const packageDir = join(workspace, "vendor", "review-skills");
+	return writeOssSkillPackageAt(join(workspace, "vendor", "review-skills"));
+}
+
+async function writeOssSkillPackageAt(packageDir: string): Promise<string> {
 	const skillDir = join(packageDir, "skills", "reviewing-prs");
 	await mkdir(skillDir, { recursive: true });
 	writeFileSync(
@@ -368,6 +371,23 @@ describe("skill package format", () => {
 				"C:\\workspace",
 			),
 		).toBe("local:D:\\skills\\review-pack");
+	});
+
+	it("quotes install commands when local sources contain spaces", async () => {
+		const workspace = tempRoot();
+		const packageDir = join(workspace, "My Skills", "review-pack");
+		await writeOssSkillPackageAt(packageDir);
+
+		const contract = await buildSkillPackagePublishContract(
+			"./My Skills/review-pack",
+			{ cwd: workspace },
+		);
+
+		expect(contract.install.source).toBe(
+			"maestro skill install 'local:./My Skills/review-pack'",
+		);
+		expect(contract.install.local).toBe(contract.install.source);
+		expect(contract.issues).toEqual([]);
 	});
 
 	it("keeps publish-check install hints tied to the inspected source type", async () => {

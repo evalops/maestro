@@ -57,6 +57,7 @@ export interface BuildSkillPackagePublishContractOptions {
 }
 
 const WINDOWS_DRIVE_PATH_REGEX = /^[A-Za-z]:[\\/]/;
+const SHELL_SAFE_INSTALL_SOURCE_REGEX = /^[A-Za-z0-9_@%+=:,./\\-]+$/;
 
 function windowsDriveLetter(path: string): string | null {
 	return WINDOWS_DRIVE_PATH_REGEX.test(path)
@@ -88,7 +89,7 @@ function buildInstallCommands(input: {
 		input.source,
 		input.cwd,
 	);
-	const command = `maestro skill install ${installSource}`;
+	const command = `maestro skill install ${quoteShellArg(installSource)}`;
 	switch (input.source.type) {
 		case "local":
 			return { source: command, local: command };
@@ -97,6 +98,13 @@ function buildInstallCommands(input: {
 		case "npm":
 			return { source: command, npm: command };
 	}
+}
+
+function quoteShellArg(value: string): string {
+	if (SHELL_SAFE_INSTALL_SOURCE_REGEX.test(value)) {
+		return value;
+	}
+	return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 export function formatSkillPackageInstallSource(
