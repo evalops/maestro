@@ -327,8 +327,6 @@ def cmd_task(registry: dict[str, Any], args: argparse.Namespace) -> None:
 
 
 def cmd_cancel(registry: dict[str, Any], args: argparse.Namespace) -> None:
-    if args.peer is None and args.task_id in registry_peers(registry):
-        raise PeerError(f"task id is required for peer {args.task_id!r}")
     _, peer = resolve_peer(registry, args.peer)
     payload = request_json(
         registry,
@@ -391,7 +389,7 @@ def build_parser() -> argparse.ArgumentParser:
     task_parser.set_defaults(handler=cmd_task)
 
     cancel_parser = subcommands.add_parser("cancel", help="cancel a task on a peer")
-    cancel_parser.add_argument("peer", nargs="?", help="peer name")
+    cancel_parser.add_argument("peer", help="peer name")
     cancel_parser.add_argument("task_id", help="task id")
     cancel_parser.add_argument("--json", action="store_true", help="print JSON")
     cancel_parser.add_argument("--timeout", type=float, help="request timeout in seconds")
