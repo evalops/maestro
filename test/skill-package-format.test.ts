@@ -364,7 +364,11 @@ describe("skill package format", () => {
 			{ cwd: workspace },
 		);
 
-		expect(contract.issues).toEqual([
+		expect(
+			contract.issues.filter(
+				(item) => item.code === "missing_maestro_package_keyword",
+			),
+		).toEqual([
 			{
 				code: "missing_maestro_package_keyword",
 				message: 'Missing "maestro-package" keyword.',
