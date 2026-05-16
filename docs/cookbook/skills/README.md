@@ -55,6 +55,24 @@ Run strict validation with:
 maestro skill lint .maestro/skills/reviewing-prs --describe-toolbox
 ```
 
+## Eval Harness
+
+Use `maestro skill eval` when a package needs pass/fail evidence rather than
+plain lint output:
+
+```bash
+maestro skill eval .maestro/skills/reviewing-prs --describe-toolbox
+maestro skill eval .maestro/skills/reviewing-prs --json
+```
+
+The eval harness scores each package against the local Agent Core constraints:
+loadable `SKILL.md`, bounded MCP `includeTools`, runnable toolbox entries, and
+the progressive-disclosure budget. The checked-in smoke corpus runs with:
+
+```bash
+npm run evals:skill-package
+```
+
 ## Model And Mode Hints
 
 Skills can declare model and mode preferences:

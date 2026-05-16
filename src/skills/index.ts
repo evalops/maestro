@@ -67,3 +67,14 @@ export {
 	toolboxDescribeSpawnCommand,
 	toolboxDescribeSpawnOptions,
 } from "./linter.js";
+
+export {
+	type SkillEvalAssertion,
+	type SkillEvalCase,
+	type SkillEvalOutcome,
+	type SkillEvalReport,
+	type SkillEvalResult,
+	evaluateSkillPackages,
+	formatSkillEvalText,
+	hasSkillEvalFailures,
+} from "./eval-harness.js";
