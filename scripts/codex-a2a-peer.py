@@ -327,19 +327,12 @@ def cmd_task(registry: dict[str, Any], args: argparse.Namespace) -> None:
 
 
 def cmd_cancel(registry: dict[str, Any], args: argparse.Namespace) -> None:
-    peer_arg = args.peer
-    task_id = args.task_id
-    if not task_id:
-        if not peer_arg:
-            raise PeerError("task id is required")
-        task_id = peer_arg
-        peer_arg = None
-    _, peer = resolve_peer(registry, peer_arg)
+    _, peer = resolve_peer(registry, args.peer)
     payload = request_json(
         registry,
         peer,
         "POST",
-        f"/tasks/{quote(task_id, safe='')}:cancel",
+        f"/tasks/{quote(args.task_id, safe='')}:cancel",
         timeout_seconds=args.timeout,
     )
     print_task(payload, args.json)
@@ -397,7 +390,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     cancel_parser = subcommands.add_parser("cancel", help="cancel a task on a peer")
     cancel_parser.add_argument("peer", nargs="?", help="peer name")
-    cancel_parser.add_argument("task_id", nargs="?", help="task id")
+    cancel_parser.add_argument("task_id", help="task id")
     cancel_parser.add_argument("--json", action="store_true", help="print JSON")
     cancel_parser.add_argument("--timeout", type=float, help="request timeout in seconds")
     cancel_parser.set_defaults(handler=cmd_cancel)
