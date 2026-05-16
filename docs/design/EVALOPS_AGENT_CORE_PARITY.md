@@ -170,9 +170,11 @@ maestro run promote <session-id>
 
 `maestro run ledger` emits `evalops.maestro.agent-runtime-ledger.v1`: run
 metadata, ordered ledger entries, replay determinism, and a dry-run promotion
-plan. `maestro run replay` emits the replay summary, while `maestro run promote`
-emits `evalops.maestro.agent-runtime-promotion-plan.v1` operations shaped like
-Platform AgentRuntime trigger, step, work-item, wait, and terminal writes.
+plan. `maestro run replay` emits
+`evalops.maestro.agent-runtime-replay-summary.v1`, while
+`maestro run promote` emits `evalops.maestro.agent-runtime-promotion-plan.v1`
+operations shaped like Platform AgentRuntime trigger, step, work-item, wait,
+and terminal writes.
 
 This is the local parity layer before live promotion: it gives harnesses and
 operators a stable inspect/replay/promote contract without introducing a second

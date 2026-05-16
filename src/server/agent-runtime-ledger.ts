@@ -12,6 +12,8 @@ import type {
 
 export const AGENT_RUNTIME_LEDGER_SCHEMA =
 	"evalops.maestro.agent-runtime-ledger.v1";
+export const AGENT_RUNTIME_REPLAY_SUMMARY_SCHEMA =
+	"evalops.maestro.agent-runtime-replay-summary.v1";
 export const AGENT_RUNTIME_PROMOTION_PLAN_SCHEMA =
 	"evalops.maestro.agent-runtime-promotion-plan.v1";
 
@@ -89,7 +91,7 @@ export interface AgentRuntimeLedgerReport {
 }
 
 export interface AgentRuntimeLedgerReplaySummary {
-	schemaVersion: AgentTrajectoryReplayReport["schemaVersion"];
+	schemaVersion: typeof AGENT_RUNTIME_REPLAY_SUMMARY_SCHEMA;
 	deterministic: boolean;
 	events: number;
 	deltas: number;
@@ -327,7 +329,7 @@ function replaySummary(
 	entries: AgentRuntimeLedgerEntry[],
 ): AgentRuntimeLedgerReplaySummary {
 	return {
-		schemaVersion: replay.schemaVersion,
+		schemaVersion: AGENT_RUNTIME_REPLAY_SUMMARY_SCHEMA,
 		deterministic: replay.counts.deltas === 0 && replay.counts.errors === 0,
 		events: replay.counts.events,
 		deltas: replay.counts.deltas,

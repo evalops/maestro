@@ -418,6 +418,7 @@ describe("run command", () => {
 				model: "openai/gpt-5.5",
 			},
 			replay: {
+				schemaVersion: "evalops.maestro.agent-runtime-replay-summary.v1",
 				deterministic: true,
 				deltas: 0,
 				errors: 0,
@@ -559,6 +560,9 @@ describe("run command", () => {
 		expect(payload.agentRuntimeLedger.schemaVersion).toBe(
 			"evalops.maestro.agent-runtime-ledger.v1",
 		);
+		expect(payload.agentRuntimeLedger.replay.schemaVersion).toBe(
+			"evalops.maestro.agent-runtime-replay-summary.v1",
+		);
 		expect(payload.agentRuntimeLedger.promotion.operations[0]).toMatchObject({
 			operation: "handle_trigger",
 			payload: {
@@ -607,7 +611,7 @@ describe("run command", () => {
 			ledger.counts.entries,
 		);
 		expect(replay).toMatchObject({
-			schemaVersion: "evalops.maestro.agent-trajectory-replay.v1",
+			schemaVersion: "evalops.maestro.agent-runtime-replay-summary.v1",
 			deterministic: true,
 			deltas: 0,
 		});
