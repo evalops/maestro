@@ -416,10 +416,13 @@ async function validateToolbox(
 	const issues: SkillLintIssue[] = [];
 	const directoryEntries = readdirSync(toolboxDir);
 	const platform = options.platform ?? process.platform;
+	let toolboxEntryCount = 0;
+	let runnableEntryCount = 0;
 	for (const entry of directoryEntries) {
 		if (entry.startsWith(".") || entry.toLowerCase() === "readme.md") continue;
 		const path = join(toolboxDir, entry);
 		if (!statSync(path).isFile()) continue;
+		toolboxEntryCount += 1;
 		if (platform !== "win32" && isWindowsRunnableToolboxEntry(path)) {
 			continue;
 		}
@@ -441,6 +444,7 @@ async function validateToolbox(
 			);
 			continue;
 		}
+		runnableEntryCount += 1;
 		if (options.describeToolbox) {
 			const result = spawnSync(toolboxDescribeSpawnCommand(path, platform), {
 				env: { ...process.env, MAESTRO_TOOLBOX_ACTION: "describe" },
@@ -459,6 +463,20 @@ async function validateToolbox(
 				);
 			}
 		}
+	}
+	if (
+		toolboxEntryCount > 0 &&
+		runnableEntryCount === 0 &&
+		issues.length === 0
+	) {
+		issues.push(
+			issue(
+				"toolbox_no_runnable_entries",
+				"error",
+				toolboxDir,
+				"Toolbox must include at least one executable entry runnable on the target platform.",
+			),
+		);
 	}
 	return issues;
 }

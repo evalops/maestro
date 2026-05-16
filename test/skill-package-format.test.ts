@@ -618,6 +618,25 @@ describe("skill package format", () => {
 		expect(hasSkillLintErrors([validResult])).toBe(false);
 	});
 
+	it("requires at least one platform-runnable toolbox entry", async () => {
+		const root = tempRoot();
+		const skillDir = join(root, "windows-only-toolbox");
+		await mkdir(join(skillDir, "toolbox"), { recursive: true });
+		writeFileSync(
+			join(skillDir, "SKILL.md"),
+			`---\nname: windows-only-toolbox\ndescription: "Run toolbox commands. Use when testing platform runnable validation."\n---\n\n# Windows Only Toolbox\n`,
+		);
+		writeFileSync(join(skillDir, "toolbox", "run.cmd"), "@echo off\n");
+
+		const result = await lintSkillDirectory(skillDir, { platform: "linux" });
+
+		expect(result.issues).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ code: "toolbox_no_runnable_entries" }),
+			]),
+		);
+	});
+
 	it("preserves backslashes in scaffolded descriptions", () => {
 		const root = tempRoot();
 		const description = "Handle C:\\new folder\\templates literally.";
