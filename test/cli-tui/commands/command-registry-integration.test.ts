@@ -54,6 +54,7 @@ function createMockOptions(): CommandRegistryOptions & {
 		review: noop,
 		undoChanges: noop,
 		mention: noop,
+		a2a: noop,
 		access: noop,
 		pii: noop,
 		audit: noop,
@@ -473,6 +474,26 @@ describe("command-registry-integration", () => {
 			thinkingEntry!.execute("/thinking --help");
 
 			expect(mockCtx.renderHelp).toHaveBeenCalled();
+		});
+
+		it("reports async command failures through the command context", async () => {
+			const opts = createMockOptions();
+			const mockCtx = createMockContext(
+				"/a2a accept bad-code",
+				"accept bad-code",
+			);
+			vi.mocked(opts.createContext).mockReturnValueOnce(mockCtx);
+			opts.handlers.a2a = vi.fn(async () => {
+				throw new Error("bad pairing code");
+			});
+			const { entries } = buildCommandRegistry(opts);
+			const a2aEntry = entries.find((e) => e.matches("/a2a accept bad-code"));
+
+			await a2aEntry!.execute("/a2a accept bad-code");
+
+			expect(mockCtx.showError).toHaveBeenCalledWith(
+				"Command failed: bad pairing code",
+			);
 		});
 	});
 

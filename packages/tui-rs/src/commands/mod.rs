@@ -99,8 +99,8 @@ pub use matcher::{
 };
 pub use registry::{build_command_registry, CommandRegistry};
 pub use types::{
-    Command, CommandAction, CommandArgument, CommandArgumentType, CommandCategory, CommandContext,
-    CommandError, CommandHandler, CommandOutput, CommandResult, ExportAction, HistoryAction,
-    HooksAction, McpAction, ModalType, QueueAction, QueueModeKind, SessionAction, SkillsAction,
-    ToolHistoryAction, UsageAction,
+    A2aAction, Command, CommandAction, CommandArgument, CommandArgumentType, CommandCategory,
+    CommandContext, CommandError, CommandHandler, CommandOutput, CommandResult, ExportAction,
+    HistoryAction, HooksAction, McpAction, ModalType, QueueAction, QueueModeKind, SessionAction,
+    SkillsAction, ToolHistoryAction, UsageAction,
 };
