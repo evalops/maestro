@@ -43,5 +43,5 @@ the receiving Codex turn can see routing/correlation context without the caller
 repeating it in the user text. Only scalar allowlisted fields are rendered:
 `actorId`, `agentId`, `handoffFrom`, `relayPeer`, `relaySentAt`, `requestKind`,
 `sessionId`, `workspaceId`, plus normalized `taskId`, `contextId`, and
-`messageId`. Scalar values are capped before rendering; headers, tokens,
+`messageId`. Finite scalar values are capped before rendering; headers, tokens,
 configuration, and arbitrary metadata are never copied into the prompt.

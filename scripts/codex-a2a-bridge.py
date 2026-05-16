@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
 import shlex
 import socket
@@ -141,6 +142,8 @@ def safe_prompt_metadata_value(value: Any) -> str | int | float | bool | None:
     if isinstance(value, bool):
         return value
     if isinstance(value, (int, float)):
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
         serialized = str(value)
         if len(serialized) > PROMPT_METADATA_VALUE_LIMIT:
             return serialized[:PROMPT_METADATA_VALUE_LIMIT]
@@ -157,6 +160,7 @@ def safe_prompt_metadata(
     message: dict[str, Any],
     task_id: str,
     context_id: str,
+    normalized_message: dict[str, Any] | None = None,
 ) -> dict[str, str | int | float | bool]:
     metadata = message.get("metadata")
     safe: dict[str, str | int | float | bool] = {}
@@ -173,7 +177,8 @@ def safe_prompt_metadata(
         safe["taskId"] = task_id
     if context_id:
         safe["contextId"] = context_id
-    message_id = safe_prompt_metadata_value(message.get("messageId"))
+    message_id_source = normalized_message or message
+    message_id = safe_prompt_metadata_value(message_id_source.get("messageId"))
     if message_id is not None:
         safe["messageId"] = message_id
     return safe
@@ -184,8 +189,9 @@ def build_codex_prompt(
     prompt: str,
     task_id: str,
     context_id: str,
+    normalized_message: dict[str, Any] | None = None,
 ) -> str:
-    metadata = safe_prompt_metadata(message, task_id, context_id)
+    metadata = safe_prompt_metadata(message, task_id, context_id, normalized_message)
     if not metadata:
         return prompt
     metadata_json = json.dumps(metadata, separators=(",", ":"), ensure_ascii=False, sort_keys=True)
@@ -680,7 +686,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.error_json(*error)
                 return
             prompt = build_codex_prompt(
-                normalized_message or message, prompt_text, task_id, context_id
+                message, prompt_text, task_id, context_id, normalized_message
             )
             if immediate:
                 threading.Thread(

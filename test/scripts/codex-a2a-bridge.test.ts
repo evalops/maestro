@@ -22,11 +22,12 @@ message = payload["message"]
 prompt = payload["prompt"]
 task_id = payload["taskId"]
 context_id = payload["contextId"]
+normalized_message = None
 if payload.get("normalizeMessage"):
-    message = bridge.user_message(message, context_id)
+    normalized_message = bridge.user_message(message, context_id)
 print(json.dumps({
-    "metadata": bridge.safe_prompt_metadata(message, task_id, context_id),
-    "prompt": bridge.build_codex_prompt(message, prompt, task_id, context_id),
+    "metadata": bridge.safe_prompt_metadata(message, task_id, context_id, normalized_message),
+    "prompt": bridge.build_codex_prompt(message, prompt, task_id, context_id, normalized_message),
 }, sort_keys=True))
 `;
 
@@ -124,6 +125,7 @@ describe("codex-a2a-bridge prompt metadata", () => {
 					token: fakeCredential,
 				},
 			},
+			normalizeMessage: true,
 			prompt: "Plain request",
 			taskId: "task-1",
 		});
@@ -226,6 +228,27 @@ describe("codex-a2a-bridge prompt metadata", () => {
 
 		expect(result.metadata.sessionId).toBe("9".repeat(256));
 		expect(result.prompt).not.toContain("9".repeat(257));
+	});
+
+	it("drops non-finite numeric metadata values from the JSON envelope", async () => {
+		const payloadJson = JSON.stringify({
+			contextId: "ctx-1",
+			message: {
+				metadata: {
+					handoffFrom: "dev-desktop",
+					sessionId: "__NON_FINITE_LITERAL__",
+				},
+			},
+			prompt: "Keep the envelope valid",
+			taskId: "task-1",
+		}).replace('"__NON_FINITE_LITERAL__"', "NaN");
+
+		const result = await buildPromptFromPayloadJson(payloadJson);
+		const envelope = parsePromptEnvelope(result.prompt);
+
+		expect(envelope.metadata.handoffFrom).toBe("dev-desktop");
+		expect(envelope.metadata).not.toHaveProperty("sessionId");
+		expect(result.prompt).not.toContain("NaN");
 	});
 
 	it("includes generated message ids when normalized handoff messages omit them", async () => {
