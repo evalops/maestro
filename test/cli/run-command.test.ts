@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseArgs } from "../../src/cli/args.js";
 import { handleRunCommand, testing } from "../../src/cli/commands/run.js";
+import type { AgentTrajectoryEvent } from "../../src/server/agent-trajectory.js";
 import { buildAgentRuntimeLedgerReport } from "../../src/server/agent-runtime-ledger.js";
 import { SessionManager } from "../../src/session/manager.js";
 
@@ -210,6 +211,44 @@ describe("run command", () => {
 			entries.map((entry) => JSON.stringify(entry)).join("\n"),
 		);
 		return { sessionDir, sessionId };
+	}
+
+	function buildLedgerForEvents(
+		sessionId: string,
+		events: AgentTrajectoryEvent[],
+	) {
+		return buildAgentRuntimeLedgerReport({
+			session: { id: sessionId },
+			timeline: {
+				source: "local",
+				generatedAt: "2026-05-09T10:00:03.000Z",
+				items: [],
+			},
+			trajectory: {
+				schemaVersion: "evalops.maestro.agent-trajectory.v1",
+				run: {
+					id: sessionId,
+					sessionId,
+					source: "local",
+					generatedAt: "2026-05-09T10:00:03.000Z",
+					platformBacked: false,
+				},
+				counts: {
+					events: events.length,
+					evidenceAnchors: 0,
+					byKind: {},
+					byPhase: {},
+					byStatus: {},
+				},
+				events,
+			},
+			replay: {
+				schemaVersion: "evalops.maestro.agent-trajectory-replay.v1",
+				trajectorySchemaVersion: "evalops.maestro.agent-trajectory.v1",
+				counts: { events: events.length, deltas: 0, errors: 0, warnings: 0 },
+				deltas: [],
+			},
+		});
 	}
 
 	function makeLegacySessionDir(): { sessionDir: string; sessionId: string } {
@@ -695,6 +734,214 @@ describe("run command", () => {
 			failed: 1,
 			succeeded: 1,
 		});
+		expect(ledger.promotion.operations.at(-1)).toMatchObject({
+			operation: "complete_run",
+			payload: { state: "succeeded" },
+		});
+	});
+
+	it("omits dry-run terminal promotion operations for non-terminal final state", () => {
+		const ledger = buildAgentRuntimeLedgerReport({
+			session: { id: "session-running" },
+			timeline: {
+				source: "local",
+				generatedAt: "2026-05-09T10:00:02.000Z",
+				items: [],
+			},
+			trajectory: {
+				schemaVersion: "evalops.maestro.agent-trajectory.v1",
+				run: {
+					id: "session-running",
+					sessionId: "session-running",
+					source: "local",
+					generatedAt: "2026-05-09T10:00:02.000Z",
+					platformBacked: false,
+				},
+				counts: {
+					events: 1,
+					evidenceAnchors: 0,
+					byKind: {},
+					byPhase: {},
+					byStatus: {},
+				},
+				events: [
+					{
+						id: "event-running-tool",
+						sequence: 1,
+						timestamp: "2026-05-09T10:00:01.000Z",
+						kind: "tool",
+						phase: "act",
+						actor: "tool",
+						type: "tool.requested",
+						status: "running",
+						visibility: "user",
+						source: "local",
+						title: "Tool running",
+						evidence: [],
+					},
+				],
+			},
+			replay: {
+				schemaVersion: "evalops.maestro.agent-trajectory-replay.v1",
+				trajectorySchemaVersion: "evalops.maestro.agent-trajectory.v1",
+				counts: { events: 1, deltas: 0, errors: 0, warnings: 0 },
+				deltas: [],
+			},
+		});
+
+		expect(
+			ledger.promotion.operations.some(
+				(operation) =>
+					operation.operation === "complete_run" ||
+					operation.operation === "fail_run",
+			),
+		).toBe(false);
+		expect(ledger.promotion.warnings).toContain(
+			"Terminal operation omitted because final ledger entry ended in running state.",
+		);
+	});
+
+	it("omits terminal promotion operations for non-terminal final states", () => {
+		for (const scenario of [
+			{
+				status: "pending",
+				ledgerState: "waiting",
+				kind: "wait",
+				phase: "wait",
+				actor: "platform",
+				type: "wait.pending",
+			},
+			{
+				status: "denied",
+				ledgerState: "blocked",
+				kind: "governance",
+				phase: "govern",
+				actor: "system",
+				type: "policy.decision",
+			},
+		] as const) {
+			const ledger = buildLedgerForEvents(`session-${scenario.ledgerState}`, [
+				{
+					id: `event-${scenario.ledgerState}`,
+					sequence: 1,
+					timestamp: "2026-05-09T10:00:01.000Z",
+					kind: scenario.kind,
+					phase: scenario.phase,
+					actor: scenario.actor,
+					type: scenario.type,
+					status: scenario.status,
+					visibility: "user",
+					source: "local",
+					title: `Final ${scenario.ledgerState} event`,
+					evidence: [],
+				},
+			]);
+
+			expect(
+				ledger.promotion.operations.some(
+					(operation) =>
+						operation.operation === "complete_run" ||
+						operation.operation === "fail_run",
+				),
+			).toBe(false);
+			expect(ledger.promotion.warnings).toContain(
+				`Terminal operation omitted because final ledger entry ended in ${scenario.ledgerState} state.`,
+			);
+		}
+	});
+
+	it("keeps passive info entries succeeded without treating them as terminal", () => {
+		const ledger = buildLedgerForEvents("session-info-only", [
+			{
+				id: "event-session-started",
+				sequence: 1,
+				timestamp: "2026-05-09T10:00:01.000Z",
+				kind: "session",
+				phase: "setup",
+				actor: "system",
+				type: "session.started",
+				status: "info",
+				visibility: "user",
+				source: "local",
+				title: "Session started",
+				evidence: [],
+			},
+		]);
+
+		expect(ledger.entries[0]?.state).toBe("succeeded");
+		expect(
+			ledger.promotion.operations.some(
+				(operation) =>
+					operation.operation === "complete_run" ||
+					operation.operation === "fail_run",
+			),
+		).toBe(false);
+		expect(ledger.promotion.warnings).toContain(
+			"Terminal operation omitted because no substantive terminal ledger entry was available.",
+		);
+	});
+
+	it("does not project governance decisions as active waits", () => {
+		const ledger = buildLedgerForEvents("session-governance", [
+			{
+				id: "event-policy",
+				sequence: 1,
+				timestamp: "2026-05-09T10:00:01.000Z",
+				kind: "governance",
+				phase: "govern",
+				actor: "system",
+				type: "policy.decision",
+				status: "info",
+				visibility: "user",
+				source: "local",
+				title: "Policy decision recorded",
+				evidence: [],
+			},
+			{
+				id: "event-final-message",
+				sequence: 2,
+				timestamp: "2026-05-09T10:00:02.000Z",
+				kind: "message",
+				phase: "think",
+				actor: "assistant",
+				type: "message.assistant",
+				status: "completed",
+				visibility: "user",
+				source: "local",
+				title: "Assistant response",
+				evidence: [],
+			},
+		]);
+
+		expect(ledger.entries[0]?.platformShape.waitType).toBeUndefined();
+		expect(
+			ledger.promotion.operations.some(
+				(operation) =>
+					operation.operation === "wait_run" &&
+					operation.ledgerEntryId === "ledger:event-policy",
+			),
+		).toBe(false);
+	});
+
+	it("keeps informational final events eligible for completion promotion", () => {
+		const ledger = buildLedgerForEvents("session-info", [
+			{
+				id: "event-info",
+				sequence: 1,
+				timestamp: "2026-05-09T10:00:01.000Z",
+				kind: "context",
+				phase: "setup",
+				actor: "system",
+				type: "model.info",
+				status: "info",
+				visibility: "user",
+				source: "local",
+				title: "Model metadata recorded",
+				evidence: [],
+			},
+		]);
+
+		expect(ledger.entries[0]?.state).toBe("succeeded");
 		expect(ledger.promotion.operations.at(-1)).toMatchObject({
 			operation: "complete_run",
 			payload: { state: "succeeded" },
