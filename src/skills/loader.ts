@@ -536,7 +536,7 @@ function loadSkillFromDirectory(
 		const skill: LoadedSkill = {
 			name,
 			description,
-			license: frontmatter.license as string | undefined,
+			license: stringValue(frontmatter.license),
 			compatibility: frontmatter.compatibility as string | undefined,
 			allowedTools: stringArrayValue(frontmatter["allowed-tools"]),
 			builtinTools: stringArrayValue(frontmatter["builtin-tools"]),

@@ -13,6 +13,7 @@ import {
 	loadSkills,
 	parseFrontmatter,
 	scaffoldSkill,
+	skillToDict,
 	toolboxDescribeSpawnCommand,
 	toolboxDescribeSpawnOptions,
 } from "../src/skills/index.js";
@@ -123,6 +124,22 @@ describe("skill package format", () => {
 		});
 		expect(buildSkillArtifactMetadata(skills[0]!).version).toBe("1.2");
 		expect(buildSkillArtifactMetadata(skills[0]!).workspaceId).toBe("42");
+	});
+
+	it("does not expose non-string license frontmatter values", async () => {
+		const workspace = tempRoot();
+		const skillDir = join(workspace, ".maestro", "skills", "shipping-releases");
+		await mkdir(skillDir, { recursive: true });
+		writeFileSync(
+			join(skillDir, "SKILL.md"),
+			`---\nname: shipping-releases\ndescription: "Ship releases. Use when the user asks for release validation."\nlicense: 2.1\n---\n\n# Shipping Releases\n`,
+		);
+
+		const { skills, errors } = loadSkills(workspace, { includeSystem: false });
+
+		expect(errors).toEqual([]);
+		expect(skills[0]?.license).toBeUndefined();
+		expect(skillToDict(skills[0]!)).not.toHaveProperty("license");
 	});
 
 	it("fails lint when bundled MCP tools are unfiltered", async () => {
