@@ -1,4 +1,5 @@
 import { isAbsolute, relative } from "node:path";
+import { MISSING_MAESTRO_PACKAGE_KEYWORD_MESSAGE } from "../packages/constants.js";
 import {
 	collectPackageValidationIssues,
 	inspectPackageSource,
@@ -14,7 +15,7 @@ import {
 
 export const SKILL_PACKAGE_CONTRACT_SCHEMA =
 	"evalops.maestro.skill-package-publish-contract.v1";
-export const MAESTRO_PACKAGE_KEYWORD = "maestro-package";
+export { MAESTRO_PACKAGE_KEYWORD } from "../packages/constants.js";
 export const MAESTRO_SKILL_PACKAGE_KEYWORD = "maestro-skill-package";
 
 export interface SkillPackageContractIssue {
@@ -74,7 +75,7 @@ function issue(code: string, message: string): SkillPackageContractIssue {
 }
 
 function mapValidationIssue(message: string): SkillPackageContractIssue {
-	return message === `Missing "${MAESTRO_PACKAGE_KEYWORD}" keyword.`
+	return message === MISSING_MAESTRO_PACKAGE_KEYWORD_MESSAGE
 		? issue("missing_maestro_package_keyword", message)
 		: issue("package_validation", message);
 }
