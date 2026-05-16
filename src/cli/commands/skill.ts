@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { inspect } from "node:util";
 import chalk from "chalk";
 import { PATHS } from "../../config/constants.js";
 import {
@@ -137,6 +138,7 @@ async function handleList(workspaceDir: string, options: SkillCommandOptions) {
 async function handleInspect(
 	workspaceDir: string,
 	name: string | undefined,
+	options: SkillCommandOptions,
 ) {
 	if (!name) {
 		throw new Error("maestro skill inspect requires a skill name");
@@ -153,7 +155,17 @@ async function handleInspect(
 		resources: skill.resources,
 		resourceDirs: skill.resourceDirs,
 	};
-	console.log(JSON.stringify(payload, null, 2));
+	if (options.json) {
+		console.log(JSON.stringify(payload, null, 2));
+		return;
+	}
+	console.log(
+		inspect(payload, {
+			colors: process.stdout.isTTY,
+			compact: false,
+			depth: null,
+		}),
+	);
 }
 
 async function handleLint(
@@ -225,7 +237,7 @@ export async function handleSkillCommand(
 			await handleList(workspaceDir, parsedOptions);
 			return;
 		case "inspect":
-			await handleInspect(workspaceDir, positionals[0]);
+			await handleInspect(workspaceDir, positionals[0], parsedOptions);
 			return;
 		case "lint":
 			await handleLint(workspaceDir, positionals, parsedOptions);
