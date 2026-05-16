@@ -42,9 +42,13 @@ async function buildPrompt(input: {
 	taskId: string;
 	contextId: string;
 }) {
+	return buildPromptFromPayloadJson(JSON.stringify(input));
+}
+
+async function buildPromptFromPayloadJson(payloadJson: string) {
 	const { stdout } = await execFileAsync(
 		"python3",
-		["-c", helperCode, JSON.stringify(bridgePath), JSON.stringify(input)],
+		["-c", helperCode, JSON.stringify(bridgePath), payloadJson],
 		{ encoding: "utf8" },
 	);
 	return JSON.parse(stdout) as HelperResult;
@@ -202,5 +206,45 @@ describe("codex-a2a-bridge prompt metadata", () => {
 		expect(result.metadata).not.toHaveProperty("handoffFrom");
 		expect(result.metadata).not.toHaveProperty("relayPeer");
 		expect(result.metadata).not.toHaveProperty("requestKind");
+	});
+
+	it("caps overlong numeric metadata values before prompt injection", async () => {
+		const hugeNumericLiteral = "9".repeat(300);
+		const payloadJson = JSON.stringify({
+			contextId: "ctx-1",
+			message: {
+				metadata: {
+					handoffFrom: "dev-desktop",
+					sessionId: "__HUGE_NUMERIC_LITERAL__",
+				},
+			},
+			prompt: "Keep the envelope small",
+			taskId: "task-1",
+		}).replace('"__HUGE_NUMERIC_LITERAL__"', hugeNumericLiteral);
+
+		const result = await buildPromptFromPayloadJson(payloadJson);
+
+		expect(result.metadata.sessionId).toBe("9".repeat(256));
+		expect(result.prompt).not.toContain("9".repeat(257));
+	});
+
+	it("includes generated message ids when normalized handoff messages omit them", async () => {
+		const result = await buildPrompt({
+			contextId: "ctx-1",
+			message: {
+				metadata: {
+					relayPeer: "mac-mini",
+				},
+			},
+			normalizeMessage: true,
+			prompt: "Carry correlation data",
+			taskId: "task-1",
+		});
+
+		const envelope = parsePromptEnvelope(result.prompt);
+		expect(envelope.metadata.messageId).toEqual(
+			expect.stringMatching(/^codex-a2a-message-/),
+		);
+		expect(envelope.metadata.relayPeer).toBe("mac-mini");
 	});
 });

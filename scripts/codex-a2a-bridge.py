@@ -141,6 +141,9 @@ def safe_prompt_metadata_value(value: Any) -> str | int | float | bool | None:
     if isinstance(value, bool):
         return value
     if isinstance(value, (int, float)):
+        serialized = str(value)
+        if len(serialized) > PROMPT_METADATA_VALUE_LIMIT:
+            return serialized[:PROMPT_METADATA_VALUE_LIMIT]
         return value
     if isinstance(value, str):
         trimmed = value.strip()
