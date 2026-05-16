@@ -28,7 +28,7 @@ export ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY GROQ_API_KEY \
        MAESTRO_EVALOPS_MEMORY_MODE EVALOPS_MEMORY_MODE
 
 LOCAL_CEREBRO_REPO ?= ../cerebro
-BAZEL ?= $(shell if command -v bazelisk >/dev/null 2>&1; then command -v bazelisk; elif command -v go >/dev/null 2>&1; then printf '%s/bin/bazelisk' "$$(go env GOPATH)"; else printf bazelisk; fi)
+BAZEL ?= $(shell if command -v bazelisk >/dev/null 2>&1; then command -v bazelisk; elif command -v go >/dev/null 2>&1 && test -x "$$(go env GOPATH)/bin/bazelisk"; then printf '%s/bin/bazelisk' "$$(go env GOPATH)"; elif command -v bazel >/dev/null 2>&1; then command -v bazel; else printf bazelisk; fi)
 BUILDIFIER ?= $(shell if command -v buildifier >/dev/null 2>&1; then command -v buildifier; elif command -v go >/dev/null 2>&1; then printf '%s/bin/buildifier' "$$(go env GOPATH)"; else printf buildifier; fi)
 BAZEL_TARGETS ?= //...
 BAZEL_REMOTE_CONFIG ?= remote-gcp-dev
