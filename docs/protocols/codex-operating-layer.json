@@ -276,6 +276,33 @@
 			]
 		},
 		{
+			"area": "remote-runner-continuity",
+			"evidenceType": "source",
+			"path": "src/server/handlers/hosted-runner-drain.ts",
+			"anchors": [
+				"evalops.remote-runner.work-continuity.v1",
+				"collectHostedRunnerWorkContinuity",
+				"codex_subagent_child_run_ids",
+				"codex_subagent_thread_ids"
+			]
+		},
+		{
+			"area": "remote-runner-continuity",
+			"evidenceType": "test",
+			"path": "test/server/hosted-runner-drain.test.ts",
+			"anchors": [
+				"records Codex subagent continuity without copying prompt payloads into manifest metadata",
+				"HOSTED_RUNNER_WORK_CONTINUITY_VERSION",
+				"codex_subagent_child_run_ids"
+			]
+		},
+		{
+			"area": "remote-runner-continuity",
+			"evidenceType": "doc",
+			"path": "docs/protocols/hosted-runner-contract.md",
+			"anchors": ["work_continuity", "Codex subagent child runs"]
+		},
+		{
 			"area": "realtime-streaming",
 			"evidenceType": "source",
 			"path": "src/server/handlers/runtime-app-server-ws.ts",

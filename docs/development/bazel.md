@@ -29,5 +29,5 @@ make bazel-rbe-smoke
 ```
 
 Trusted CI should run on the repo-scoped Buildfarm runner label
-`evalops-maestro-rbe` after Deploy has registered that runner through
+`evalops-maestro-internal-rbe` after Deploy has registered that runner through
 `additional_bazel_buildfarm_runners`.

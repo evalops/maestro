@@ -187,7 +187,8 @@ The manifest protocol is
 `evalops.remote-runner.snapshot-manifest.v1`. Both Rust-hosted and
 TypeScript-hosted drain paths write this same local manifest envelope, including
 the runtime flush status, workspace export contract, headless runtime snapshot,
-and `retention_policy` metadata describing visibility and redaction classes.
+`work_continuity` metadata for active/pending Codex subagent child runs, and
+`retention_policy` metadata describing visibility and redaction classes.
 Maestro does not upload to GCS, S3, Modal storage, Daytona storage, or any
 other provider store. Upload, retention, workspace artifact hydration, and
 choosing which manifest should be restored are Platform responsibilities. See
