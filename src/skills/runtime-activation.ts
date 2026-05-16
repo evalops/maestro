@@ -254,6 +254,22 @@ function buildMcpActivation(
 			);
 			continue;
 		}
+		if (
+			server.args !== undefined &&
+			(!Array.isArray(server.args) ||
+				server.args.some((arg) => typeof arg !== "string"))
+		) {
+			warnings.push(`MCP server '${name}' args entries must be strings.`);
+			continue;
+		}
+		if (
+			server.env !== undefined &&
+			(!isRecord(server.env) ||
+				Object.values(server.env).some((value) => typeof value !== "string"))
+		) {
+			warnings.push(`MCP server '${name}' env values must be strings.`);
+			continue;
+		}
 		servers.push({
 			name,
 			command,

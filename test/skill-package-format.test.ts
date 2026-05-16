@@ -355,6 +355,50 @@ describe("skill package format", () => {
 		});
 	});
 
+	it("omits MCP servers with invalid launch metadata from runtime activation", async () => {
+		const workspace = tempRoot();
+		const skillDir = join(workspace, ".maestro", "skills", "bad-launch-mcp");
+		await mkdir(skillDir, { recursive: true });
+		writeFileSync(
+			join(skillDir, "SKILL.md"),
+			"---\nname: bad-launch-mcp\ndescription: Test invalid MCP launch metadata.\n---\n\n# Bad Launch MCP\n",
+		);
+		writeFileSync(
+			join(skillDir, "mcp.json"),
+			JSON.stringify({
+				badArgs: {
+					command: "npx",
+					args: ["-y", 42],
+					includeTools: ["bad_args"],
+				},
+				badEnv: {
+					command: "npx",
+					env: { TOKEN: 42 },
+					includeTools: ["bad_env"],
+				},
+				good: {
+					command: "npx",
+					args: ["-y", "server"],
+					env: { TOKEN: "${TOKEN}" },
+					includeTools: ["good_tool"],
+				},
+			}),
+		);
+
+		const { skills, errors } = loadSkills(workspace, { includeSystem: false });
+
+		expect(errors).toEqual([]);
+		expect(
+			buildSkillRuntimeActivation(skills[0]!).toolPackage.mcp,
+		).toMatchObject({
+			servers: [{ name: "good", includeTools: ["good_tool"] }],
+			warnings: [
+				"MCP server 'badArgs' args entries must be strings.",
+				"MCP server 'badEnv' env values must be strings.",
+			],
+		});
+	});
+
 	it("degrades oversized MCP configs to bounded activation warnings", async () => {
 		const workspace = tempRoot();
 		const skillDir = join(workspace, ".maestro", "skills", "oversized-mcp");
