@@ -21,6 +21,38 @@ function toolCallId(value: unknown): string | undefined {
 		: undefined;
 }
 
+const FORBIDDEN_FIXTURE_KEYS = new Set([
+	"raw_prompt",
+	"prompt",
+	"messages",
+	"tool_args",
+	"tool_arguments",
+	"args",
+	"stdout",
+	"stderr",
+	"credentials",
+	"api_key",
+	"access_token",
+	"withheld_content",
+	"withheld_vfs_bytes",
+]);
+
+function collectObjectKeys(
+	value: unknown,
+	keys = new Set<string>(),
+): Set<string> {
+	if (!value || typeof value !== "object") return keys;
+	if (Array.isArray(value)) {
+		for (const item of value) collectObjectKeys(item, keys);
+		return keys;
+	}
+	for (const [key, child] of Object.entries(value)) {
+		keys.add(key);
+		collectObjectKeys(child, keys);
+	}
+	return keys;
+}
+
 describe("canonical Maestro publisher conformance fixture", () => {
 	const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -35,7 +67,7 @@ describe("canonical Maestro publisher conformance fixture", () => {
 			event_count: 4,
 			origin: {
 				repository: "evalops/maestro",
-				issue: "evalops/maestro#49",
+				issue: "evalops/maestro#434",
 				publisher_package: "packages/ai",
 				generated_by:
 					"scripts/generate-maestro-publisher-conformance-fixture.ts",
@@ -56,7 +88,7 @@ describe("canonical Maestro publisher conformance fixture", () => {
 			"evt_maestro_publisher_004_skill_failed",
 		]);
 
-		for (const event of fixture.events) {
+		for (const [index, event] of fixture.events.entries()) {
 			expect(event).toMatchObject({
 				spec_version: "1.0",
 				source: "maestro-publisher-fixture",
@@ -73,16 +105,33 @@ describe("canonical Maestro publisher conformance fixture", () => {
 						actor_id: "user_publisher_fixture",
 						principal_id: "principal_publisher_fixture",
 						trace_id: "trace_publisher_fixture_001",
+						request_id: "request_publisher_fixture_001",
+						remote_runner_session_id: "remote_runner_publisher_fixture_001",
+						objective_id: "objective_publisher_fixture_001",
+						conversation_id: "conversation_publisher_fixture_001",
 						attributes: {
 							fixture: "maestro-publisher-conformance",
 							publisher_contract: "maestro.v1",
 						},
+					},
+					metadata: {
+						data_classification: "internal",
+						retention_class: "operational_audit",
+						safe_summary: expect.any(String),
 					},
 				},
 			});
 			expect(event.extensions.dataschema).toMatch(
 				/^buf\.build\/evalops\/proto\/maestro\.v1\./,
 			);
+			expect(event.extensions.traceparent).toBe(
+				`00-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-${String(index + 1).padStart(16, "0")}-01`,
+			);
+			expect(event.extensions.tracestate).toBe(
+				`evalops=maestro-publisher-${String(index + 1).padStart(2, "0")}`,
+			);
+			expect(event.data.correlation).not.toHaveProperty("traceparent");
+			expect(event.data.correlation).not.toHaveProperty("tracestate");
 		}
 	});
 
@@ -96,7 +145,7 @@ describe("canonical Maestro publisher conformance fixture", () => {
 			approval_request_id: "approval_publisher_fixture_001",
 			governance_decision_id: "governance_decision_publisher_fixture_001",
 			action: "Run workspace test command",
-			command: "bunx vitest --run test/telemetry",
+			command: "workspace test command",
 			risk_level: "RISK_LEVEL_MEDIUM",
 			decision_mode: "MAESTRO_DECISION_MODE_REQUIRE_APPROVAL",
 			policy_id: "policy_workspace_test_approval",
@@ -114,7 +163,7 @@ describe("canonical Maestro publisher conformance fixture", () => {
 			capability: "workspace:test",
 			risk_level: "RISK_LEVEL_MEDIUM",
 			safe_arguments: {
-				command_summary: "bunx vitest --run test/telemetry",
+				command_summary: "Run telemetry test suite",
 			},
 			prompt_metadata: {
 				name: "maestro-system",
@@ -181,10 +230,25 @@ describe("canonical Maestro publisher conformance fixture", () => {
 		expect(sortedKeys(toolCompleted?.safe_output)).toEqual(
 			fixture.stable_untyped_keys.safe_output,
 		);
+		expect(sortedKeys(toolAttempt?.metadata)).toEqual(
+			fixture.stable_untyped_keys.metadata,
+		);
 		expect(fixture.expected_assertions).toMatchObject({
 			required_event_types: fixture.subjects,
 			required_subjects: fixture.subjects,
 		});
+	});
+
+	it("keeps publisher fixtures free of raw prompts, tool args, and withheld payloads", async () => {
+		const fixture = await buildCanonicalMaestroPublisherConformanceFixture();
+		const keys = collectObjectKeys(fixture);
+
+		expect([...keys].filter((key) => FORBIDDEN_FIXTURE_KEYS.has(key))).toEqual(
+			[],
+		);
+		expect(JSON.stringify(fixture)).not.toMatch(
+			/(Bearer\s+|sk-[A-Za-z0-9]|api[_-]?key|authorization)/i,
+		);
 	});
 
 	it("uses standalone agent run step ids instead of aliasing tool call ids", async () => {
