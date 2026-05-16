@@ -53,13 +53,28 @@ export {
 export { createSkillTool, invalidateSkillCache } from "./tool.js";
 export {
 	type SkillLintIssue,
+	type SkillLintOptions,
 	type SkillLintResult,
 	type SkillScaffoldOptions,
 	SKILL_BODY_MAX_CHARS,
 	SKILL_BODY_MAX_LINES,
 	formatSkillLintText,
 	hasSkillLintErrors,
+	isWindowsRunnableToolboxEntry,
 	lintSkillDirectory,
 	lintSkillPaths,
 	scaffoldSkill,
+	toolboxDescribeSpawnCommand,
+	toolboxDescribeSpawnOptions,
 } from "./linter.js";
+
+export {
+	type SkillEvalAssertion,
+	type SkillEvalCase,
+	type SkillEvalOutcome,
+	type SkillEvalReport,
+	type SkillEvalResult,
+	evaluateSkillPackages,
+	formatSkillEvalText,
+	hasSkillEvalFailures,
+} from "./eval-harness.js";

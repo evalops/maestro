@@ -4,8 +4,11 @@ import { inspect } from "node:util";
 import chalk from "chalk";
 import { PATHS } from "../../config/constants.js";
 import {
+	evaluateSkillPackages,
 	findSkill,
+	formatSkillEvalText,
 	formatSkillListItem,
+	hasSkillEvalFailures,
 	hasSkillLintErrors,
 	lintSkillPaths,
 	loadSkills,
@@ -29,6 +32,7 @@ Commands:
   list                         List available system, user, and project skills
   inspect <name>               Print one skill package manifest
   lint [path...]               Validate skill packages
+  eval [path...]               Score skill packages against Agent Core constraints
   new <name>                   Scaffold a skill package
 
 Options:
@@ -192,6 +196,28 @@ async function handleLint(
 	}
 }
 
+async function handleEval(
+	workspaceDir: string,
+	paths: string[],
+	options: SkillCommandOptions,
+) {
+	const evalPaths = paths.length > 0 ? paths : defaultLintPaths(workspaceDir);
+	const report = await evaluateSkillPackages(
+		evalPaths.map((path) => ({ path })),
+		{
+			describeToolbox: options.describeToolbox,
+		},
+	);
+	if (options.json) {
+		console.log(JSON.stringify(report, null, 2));
+	} else {
+		console.log(formatSkillEvalText(report));
+	}
+	if (hasSkillEvalFailures(report)) {
+		process.exitCode = 1;
+	}
+}
+
 async function handleNew(
 	workspaceDir: string,
 	name: string | undefined,
@@ -246,6 +272,9 @@ export async function handleSkillCommand(
 			return;
 		case "lint":
 			await handleLint(workspaceDir, positionals, parsedOptions);
+			return;
+		case "eval":
+			await handleEval(workspaceDir, positionals, parsedOptions);
 			return;
 		case "new":
 			await handleNew(workspaceDir, positionals[0], parsedOptions);
