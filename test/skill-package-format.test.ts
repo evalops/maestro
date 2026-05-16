@@ -390,6 +390,26 @@ describe("skill package format", () => {
 		expect(contract.issues).toEqual([]);
 	});
 
+	it("does not add skill keyword issues when package discovery fails", async () => {
+		const workspace = tempRoot();
+		await mkdir(join(workspace, "vendor", "broken-skills"), {
+			recursive: true,
+		});
+
+		const contract = await buildSkillPackagePublishContract(
+			"./vendor/broken-skills",
+			{ cwd: workspace },
+		);
+
+		expect(contract.issues).toHaveLength(1);
+		expect(contract.issues[0]).toMatchObject({
+			code: "package_validation",
+		});
+		expect(contract.issues[0]?.message).toContain(
+			"No valid package.json found",
+		);
+	});
+
 	it('emits one issue when the "maestro-package" keyword is missing', async () => {
 		const workspace = tempRoot();
 		const packageDir = await writeOssSkillPackage(workspace);

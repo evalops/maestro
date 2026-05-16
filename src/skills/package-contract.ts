@@ -130,7 +130,7 @@ function collectContractIssues(input: {
 }): SkillPackageContractIssue[] {
 	const issues = input.validationIssues.map(mapValidationIssue);
 	const keywords = packageKeywords(input.discovered);
-	if (!keywords.includes(MAESTRO_SKILL_PACKAGE_KEYWORD)) {
+	if (input.discovered && !keywords.includes(MAESTRO_SKILL_PACKAGE_KEYWORD)) {
 		issues.push(
 			issue(
 				"missing_maestro_skill_package_keyword",
