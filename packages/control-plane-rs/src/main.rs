@@ -1379,7 +1379,11 @@ async fn persist_a2a_tasks(state: &AppState) {
             return;
         }
     };
+    let heartbeat_task =
+        spawn_a2a_task_ledger_lock_heartbeat(&file_lock, a2a_task_ledger_lock_heartbeat_interval());
     let result = persist_a2a_tasks_locked(state).await;
+    heartbeat_task.abort();
+    let _ = heartbeat_task.await;
     release_a2a_task_ledger_file_lock(file_lock).await;
     if let Err(error) = result {
         eprintln!("{error}");
@@ -1545,6 +1549,31 @@ async fn write_a2a_task_ledger_lock_heartbeat(lock_path: &Path) -> Result<(), St
             "failed to write A2A task ledger lock heartbeat {}: {error}",
             lock_path.display()
         )
+    })
+}
+
+fn a2a_task_ledger_lock_heartbeat_interval() -> Duration {
+    Duration::from_millis(
+        (A2A_LEDGER_LOCK_STALE_MS / 3)
+            .max(A2A_LEDGER_LOCK_RETRY_MS)
+            .max(1),
+    )
+}
+
+fn spawn_a2a_task_ledger_lock_heartbeat(
+    file_lock: &A2ATaskLedgerFileLock,
+    interval: Duration,
+) -> tokio::task::JoinHandle<()> {
+    let lock_path = file_lock.path.clone();
+    let token = file_lock.token.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(interval).await;
+            if !a2a_task_ledger_lock_is_owned(&lock_path, &token).await {
+                break;
+            }
+            let _ = write_a2a_task_ledger_lock_heartbeat(&lock_path).await;
+        }
     })
 }
 
@@ -1889,7 +1918,8 @@ async fn a2a_list_tasks_response(
         })
         .filter(|task| {
             status_timestamp_after.as_deref().is_none_or(|after| {
-                a2a_task_status_timestamp(task).is_some_and(|timestamp| timestamp >= after)
+                a2a_task_status_timestamp(task)
+                    .is_some_and(|timestamp| a2a_timestamp_at_or_after(timestamp, after))
             })
         })
         .map(|task| a2a_task_for_query(task, head, include_artifacts))
@@ -1919,6 +1949,16 @@ async fn a2a_list_tasks_response(
         "pageSize": page_size,
         "totalSize": total_size
     }))
+}
+
+fn a2a_timestamp_at_or_after(timestamp: &str, after: &str) -> bool {
+    match (
+        chrono::DateTime::parse_from_rfc3339(timestamp),
+        chrono::DateTime::parse_from_rfc3339(after),
+    ) {
+        (Ok(timestamp), Ok(after)) => timestamp >= after,
+        _ => timestamp >= after,
+    }
 }
 
 fn a2a_task_for_query(task: &Value, head: &RequestHead, include_artifacts: bool) -> Value {
@@ -11903,7 +11943,11 @@ setTimeout(() => {
                 })],
                 serde_json::json!({}),
             );
-            task["status"]["timestamp"] = Value::String(format!("2026-05-15T00:0{minute}:00Z"));
+            task["status"]["timestamp"] = Value::String(if task_id == "task-a" {
+                "2026-05-15T00:03:00+00:00".to_string()
+            } else {
+                format!("2026-05-15T00:0{minute}:00Z")
+            });
             state
                 .a2a_tasks
                 .lock()
@@ -11928,6 +11972,20 @@ setTimeout(() => {
         assert_eq!(tasks[0]["id"], "task-a");
         assert_eq!(tasks[0]["history"].as_array().unwrap().len(), 1);
         assert!(tasks[0].get("artifacts").is_none());
+
+        let request = "GET /tasks?statusTimestampAfter=2026-05-15T00:03:00Z HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\n\r\n";
+        let mut initial = request.as_bytes().to_vec();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (_client, mut server) = tcp_stream_pair().await;
+
+        let response =
+            response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+        let tasks = response["tasks"]
+            .as_array()
+            .expect("tasks should be an array");
+
+        assert_eq!(response["totalSize"], 1);
+        assert_eq!(tasks[0]["id"], "task-a");
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -12127,6 +12185,32 @@ setTimeout(() => {
                 .expect("ledger existence should be checkable"),
             "ledger should be written after lock release"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_task_ledger_lock_heartbeat_refreshes_while_owned() {
+        let root = TestDir::new("a2a-task-ledger-lock-heartbeat");
+        let tasks_path = root.path().join("tasks.json");
+        let file_lock = acquire_a2a_task_ledger_file_lock(&tasks_path)
+            .await
+            .expect("lock should be acquired");
+        let heartbeat_path = file_lock.path.join(A2A_LEDGER_LOCK_HEARTBEAT_FILE);
+        let first_heartbeat = tokio::fs::read_to_string(&heartbeat_path)
+            .await
+            .expect("heartbeat should be readable");
+
+        let heartbeat_task =
+            spawn_a2a_task_ledger_lock_heartbeat(&file_lock, Duration::from_millis(10));
+        tokio::time::sleep(Duration::from_millis(35)).await;
+        heartbeat_task.abort();
+        let _ = heartbeat_task.await;
+
+        let refreshed_heartbeat = tokio::fs::read_to_string(&heartbeat_path)
+            .await
+            .expect("heartbeat should still be readable");
+        assert_ne!(refreshed_heartbeat, first_heartbeat);
+
+        release_a2a_task_ledger_file_lock(file_lock).await;
     }
 
     #[tokio::test(flavor = "current_thread")]
