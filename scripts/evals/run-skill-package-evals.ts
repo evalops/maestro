@@ -75,9 +75,19 @@ try {
 	const nonExecutableToolbox = await writePackage(root, "non-executable-toolbox", {
 		toolboxMode: "non-executable",
 	});
+	const firstPartySkillPackages = [
+		"pr-review",
+		"release-verification",
+		"incident-triage",
+	].map((name) => ({
+		id: `first-party-${name}`,
+		path: join(process.cwd(), "skills", name),
+		expectedOutcome: "pass" as const,
+	}));
 
 	const report = await evaluateSkillPackages(
 		[
+			...firstPartySkillPackages,
 			{
 				id: "valid-agent-core-package",
 				path: valid,

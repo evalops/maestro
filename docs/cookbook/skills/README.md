@@ -18,6 +18,21 @@ reviewing-prs/
   mcp.json.example
 ```
 
+## First-Party Operational Skills
+
+Maestro ships three system skills for common EvalOps operator workflows:
+
+- `pr-review`: reviews pull requests for correctness, regressions, missing tests,
+  and merge readiness.
+- `release-verification`: checks release readiness and post-release health from
+  CI, tags, deploy evidence, rollback notes, and operator artifacts.
+- `incident-triage`: builds an incident timeline, scopes blast radius, identifies
+  mitigation, and preserves evidence.
+
+Each package includes `SKILL.md`, scoped `reference/` guidance, bounded
+`mcp.json`, and an executable `toolbox/` helper. They are scored by
+`npm run evals:skill-package` alongside the synthetic pass/fail corpus.
+
 ## Bundled MCP Server
 
 Copy `mcp.json.example` to `mcp.json` and keep the exposed tools filtered:
