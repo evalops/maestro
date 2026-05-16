@@ -248,7 +248,7 @@ describe("parseArgs", () => {
 		});
 	});
 
-	it("only treats run as a command for the inspect subcommand", () => {
+	it("only treats run as a command for known run subcommands", () => {
 		expect(
 			parseArgs(["run", "inspect", "session-123", "--json"]),
 		).toMatchObject({
@@ -281,6 +281,16 @@ describe("parseArgs", () => {
 			messages: ["session-123"],
 			execJson: true,
 		});
+		for (const subcommand of ["ledger", "replay", "promote"] as const) {
+			expect(
+				parseArgs(["run", "--json", subcommand, "session-123"]),
+			).toMatchObject({
+				command: "run",
+				subcommand,
+				messages: ["session-123"],
+				execJson: true,
+			});
+		}
 		expect(
 			parseArgs([
 				"run",

@@ -189,8 +189,8 @@ describe("run command", () => {
 					role: "toolResult",
 					toolCallId: "call-mcp-search",
 					toolName: "mcp__platform__search",
-					content: [{ type: "text", text: "no results" }],
-					isError: false,
+					content: [{ type: "text", text: "search failed" }],
+					isError: true,
 					timestamp: 1778320803500,
 				},
 			},
@@ -340,7 +340,8 @@ describe("run command", () => {
 			"message.user": 1,
 			"message.assistant": 1,
 			"tool.requested": 2,
-			"tool.completed": 2,
+			"tool.completed": 1,
+			"tool.failed": 1,
 			"file.changed": 1,
 			"compaction.created": 1,
 		});
@@ -368,12 +369,12 @@ describe("run command", () => {
 				},
 			},
 		});
-		const toolCompleted = report?.trajectory.events.find(
+		const failedToolResult = report?.trajectory.events.find(
 			(event) =>
-				event.type === "tool.completed" &&
+				event.type === "tool.failed" &&
 				event.toolName === "mcp__platform__search",
 		);
-		expect(toolCompleted).toMatchObject({
+		expect(failedToolResult).toMatchObject({
 			actor: "tool",
 			phase: "verify",
 			relatedIds: ["call-mcp-search"],
@@ -436,6 +437,10 @@ describe("run command", () => {
 			evidence: 1,
 			checkpoint: 1,
 		});
+		expect(report?.agentRuntimeLedger.counts.byState).toMatchObject({
+			running: 2,
+			failed: 1,
+		});
 		expect(
 			report?.agentRuntimeLedger.entries.find(
 				(entry) => entry.type === "tool.completed",
@@ -450,11 +455,29 @@ describe("run command", () => {
 		});
 		expect(
 			report?.agentRuntimeLedger.entries.find(
-				(entry) => entry.type === "tool.requested",
+				(entry) =>
+					entry.type === "tool.requested" &&
+					entry.toolName === "mcp__platform__search",
 			),
 		).toMatchObject({
 			kind: "tool_call",
 			state: "running",
+			platformShape: {
+				stepKind: "AGENT_RUN_STEP_KIND_TOOL_CALL_INTENT",
+				workItemKind: "AGENT_WORK_ITEM_KIND_TOOL_CALL",
+			},
+		});
+		expect(
+			report?.agentRuntimeLedger.entries.find(
+				(entry) => entry.type === "tool.failed",
+			),
+		).toMatchObject({
+			kind: "tool_result",
+			state: "failed",
+			platformShape: {
+				stepKind: "AGENT_RUN_STEP_KIND_TOOL_RESULT",
+				workItemKind: "AGENT_WORK_ITEM_KIND_TOOL_CALL",
+			},
 		});
 		expect(
 			report?.agentRuntimeLedger.promotion.operations.at(-1),
