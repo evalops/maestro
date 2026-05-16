@@ -80,6 +80,37 @@ describe("A2A TUI command handler", () => {
 		expect(content.join("\n")).toContain("A2A fleet");
 		expect(context.showError).not.toHaveBeenCalled();
 	});
+
+	it("routes reply commands to the native CLI handoff message", async () => {
+		const context = createContext(
+			"reply dev-desktop task-123 use the short smoke",
+		);
+
+		await handleA2ATuiCommand(context, {
+			addContent: vi.fn(),
+			requestRender: vi.fn(),
+		});
+
+		expect(context.showInfo).toHaveBeenCalledWith(
+			"Use `maestro a2a reply <peer> <task-id> <text> --wait` to continue an actionable A2A task while the TUI task panel is being wired.",
+		);
+		expect(context.showError).not.toHaveBeenCalled();
+	});
+
+	it("includes reply commands in the fallback help", async () => {
+		const content: string[] = [];
+		const context = createContext("wat");
+
+		await handleA2ATuiCommand(context, {
+			addContent(text) {
+				content.push(text);
+			},
+			requestRender: vi.fn(),
+		});
+
+		expect(content.join("\n")).toContain("/a2a reply <peer> <task-id> <text>");
+		expect(context.showError).not.toHaveBeenCalled();
+	});
 });
 
 function createContext(argumentText: string): CommandExecutionContext {
