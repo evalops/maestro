@@ -794,7 +794,7 @@ async fn handle_a2a_endpoint(
                 || a2a_error_response(404, "TASK_NOT_FOUND", "A2A task not found"),
                 |task| {
                     if a2a_task_visible_to_auth(task, &auth) {
-                        json_response(200, &a2a_task_for_query(task, &head, true))
+                        json_response(200, &a2a_task_for_query(task, true, None))
                     } else {
                         a2a_error_response(404, "TASK_NOT_FOUND", "A2A task not found")
                     }
@@ -1911,6 +1911,10 @@ async fn a2a_list_tasks_response(
         Ok(None) => false,
         Err(message) => return Err(a2a_error_response(400, "INVALID_REQUEST", &message)),
     };
+    let history_length = match a2a_usize_query(head, &["historyLength", "history_length"]) {
+        Ok(value) => value,
+        Err(message) => return Err(a2a_error_response(400, "INVALID_REQUEST", &message)),
+    };
 
     let mut tasks = state
         .a2a_tasks
@@ -1936,18 +1940,15 @@ async fn a2a_list_tasks_response(
                     .is_some_and(|timestamp| a2a_timestamp_at_or_after(timestamp, after))
             })
         })
-        .map(|task| a2a_task_for_query(task, head, include_artifacts))
+        .map(|task| a2a_task_for_query(task, include_artifacts, history_length))
         .collect::<Vec<_>>();
     tasks.sort_by(|left, right| {
-        a2a_task_status_timestamp(right)
-            .unwrap_or_default()
-            .cmp(a2a_task_status_timestamp(left).unwrap_or_default())
-            .then_with(|| {
-                left.get("id")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .cmp(right.get("id").and_then(Value::as_str).unwrap_or_default())
-            })
+        compare_a2a_task_status_timestamps_desc(left, right).then_with(|| {
+            left.get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .cmp(right.get("id").and_then(Value::as_str).unwrap_or_default())
+        })
     });
     let total_size = tasks.len();
     let page = tasks
@@ -1975,14 +1976,34 @@ fn a2a_timestamp_at_or_after(timestamp: &str, after: &str) -> bool {
     }
 }
 
-fn a2a_task_for_query(task: &Value, head: &RequestHead, include_artifacts: bool) -> Value {
+fn compare_a2a_task_status_timestamps_desc(left: &Value, right: &Value) -> std::cmp::Ordering {
+    let left_timestamp = a2a_task_status_timestamp(left);
+    let right_timestamp = a2a_task_status_timestamp(right);
+    match (
+        left_timestamp.and_then(|timestamp| chrono::DateTime::parse_from_rfc3339(timestamp).ok()),
+        right_timestamp.and_then(|timestamp| chrono::DateTime::parse_from_rfc3339(timestamp).ok()),
+    ) {
+        (Some(left), Some(right)) => right.cmp(&left),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => right_timestamp
+            .unwrap_or_default()
+            .cmp(left_timestamp.unwrap_or_default()),
+    }
+}
+
+fn a2a_task_for_query(
+    task: &Value,
+    include_artifacts: bool,
+    history_length: Option<usize>,
+) -> Value {
     let mut task = task.clone();
     if !include_artifacts {
         if let Some(task) = task.as_object_mut() {
             task.remove("artifacts");
         }
     }
-    if let Ok(Some(history_length)) = a2a_usize_query(head, &["historyLength", "history_length"]) {
+    if let Some(history_length) = history_length {
         if let Some(history) = task.get_mut("history").and_then(Value::as_array_mut) {
             if history_length == 0 {
                 history.clear();
@@ -11955,10 +11976,31 @@ setTimeout(() => {
     #[tokio::test(flavor = "current_thread")]
     async fn a2a_tasks_list_supports_spec_filters_pagination_and_payload_trimming() {
         let state = test_app_state_with_sessions(HashMap::new());
-        for (task_id, context_id, status, minute) in [
-            ("task-a", "ctx-1", "TASK_STATE_COMPLETED", 3),
-            ("task-b", "ctx-1", "TASK_STATE_COMPLETED", 2),
-            ("task-c", "ctx-2", "TASK_STATE_WORKING", 1),
+        for (task_id, context_id, status, timestamp) in [
+            (
+                "task-a",
+                "ctx-1",
+                "TASK_STATE_COMPLETED",
+                "2026-05-15T00:03:00+00:00",
+            ),
+            (
+                "task-b",
+                "ctx-1",
+                "TASK_STATE_COMPLETED",
+                "2026-05-15T00:02:00Z",
+            ),
+            (
+                "task-c",
+                "ctx-2",
+                "TASK_STATE_WORKING",
+                "2026-05-15T00:01:00Z",
+            ),
+            (
+                "task-d",
+                "ctx-1",
+                "TASK_STATE_COMPLETED",
+                "2026-05-14T19:04:00-05:00",
+            ),
         ] {
             let mut task = a2a_task_value(
                 task_id,
@@ -11975,11 +12017,7 @@ setTimeout(() => {
                 })],
                 serde_json::json!({}),
             );
-            task["status"]["timestamp"] = Value::String(if task_id == "task-a" {
-                "2026-05-15T00:03:00+00:00".to_string()
-            } else {
-                format!("2026-05-15T00:0{minute}:00Z")
-            });
+            task["status"]["timestamp"] = Value::String(timestamp.to_string());
             state
                 .a2a_tasks
                 .lock()
@@ -11997,11 +12035,11 @@ setTimeout(() => {
             .as_array()
             .expect("tasks should be an array");
 
-        assert_eq!(response["totalSize"], 2);
+        assert_eq!(response["totalSize"], 3);
         assert_eq!(response["pageSize"], 1);
         assert_eq!(response["nextPageToken"], "1");
         assert_eq!(tasks.len(), 1);
-        assert_eq!(tasks[0]["id"], "task-a");
+        assert_eq!(tasks[0]["id"], "task-d");
         assert_eq!(tasks[0]["history"].as_array().unwrap().len(), 1);
         assert!(tasks[0].get("artifacts").is_none());
 
@@ -12016,8 +12054,27 @@ setTimeout(() => {
             .as_array()
             .expect("tasks should be an array");
 
-        assert_eq!(response["totalSize"], 1);
-        assert_eq!(tasks[0]["id"], "task-a");
+        assert_eq!(response["totalSize"], 2);
+        assert_eq!(tasks[0]["id"], "task-d");
+        assert_eq!(tasks[1]["id"], "task-a");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_tasks_list_rejects_invalid_history_length() {
+        let state = test_app_state_with_sessions(HashMap::new());
+        let request = "GET /tasks?historyLength=abc HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\n\r\n";
+        let mut initial = request.as_bytes().to_vec();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (_client, mut server) = tcp_stream_pair().await;
+
+        let response =
+            response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+
+        assert_eq!(response["error"]["code"], "INVALID_REQUEST");
+        assert_eq!(
+            response["error"]["message"],
+            "A2A query parameter historyLength must be an integer"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

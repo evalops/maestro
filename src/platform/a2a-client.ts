@@ -301,7 +301,7 @@ export async function discoverA2AAgentCard(
 	const response = await fetchDownstream(
 		`${config.baseUrl}/.well-known/agent-card.json`,
 		{
-			method: "GET",
+			method: "POST",
 			headers: buildA2AHeaders(config),
 			signal: options.signal,
 		},

@@ -273,7 +273,7 @@ describe("platform A2A client", () => {
 		});
 
 		expect(requests[0]).toMatchObject({
-			method: "GET",
+			method: "POST",
 			url: "https://platform.test/.well-known/agent-card.json",
 			headers: expect.objectContaining({
 				authorization: "Bearer a2a-token",
