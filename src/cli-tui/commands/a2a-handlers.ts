@@ -10,6 +10,10 @@ import {
 	listA2ATaskEntries,
 	loadA2ATaskLedger,
 } from "../../platform/a2a-task-ledger.js";
+import {
+	formatA2AWorkGraphCodexSubagents,
+	formatA2AWorkGraphSummary,
+} from "../../platform/a2a-work-graph.js";
 import type { CommandExecutionContext } from "./types.js";
 
 export interface A2ACommandHandlerDeps {
@@ -78,6 +82,7 @@ export async function handleA2ATuiCommand(
 	if (subcommand === "tasks") {
 		const peer = parsed.positionals.shift();
 		const tasksPath = stringFlag(parsed.flags, "--tasks");
+		const includeWorkGraphDetails = parsed.flags.get("--work-graph") === true;
 		const ledger = await loadA2ATaskLedger({ path: tasksPath });
 		const entries = listA2ATaskEntries(ledger, { peer });
 		deps.addContent(
@@ -86,9 +91,19 @@ export async function handleA2ATuiCommand(
 				entries.length === 0
 					? "No delegated tasks recorded yet."
 					: entries
-							.map(
-								(entry) =>
+							.map((entry) =>
+								[
 									`${entry.peer} ${entry.taskId} ${entry.state} ${entry.text}`,
+									formatA2AWorkGraphSummary(entry.workGraph),
+									includeWorkGraphDetails
+										? formatA2AWorkGraphCodexSubagents(entry.workGraph)
+										: undefined,
+									includeWorkGraphDetails && entry.workGraph?.correlationPath
+										? `Correlation: ${entry.workGraph.correlationPath}`
+										: undefined,
+								]
+									.filter(Boolean)
+									.join("\n  "),
 							)
 							.join("\n"),
 			].join("\n"),
@@ -130,6 +145,12 @@ export async function handleA2ATuiCommand(
 		);
 		return;
 	}
+	if (subcommand === "coordinate") {
+		context.showInfo(
+			"Use `maestro a2a coordinate [peer] --refresh` to refresh actionable A2A tasks, or add `--reply <text>` to answer the selected task while the TUI coordination panel is being wired.",
+		);
+		return;
+	}
 	if (subcommand === "reply" || subcommand === "continue") {
 		context.showInfo(
 			"Use `maestro a2a reply <peer> <task-id> <text> --wait` to continue an actionable A2A task while the TUI task panel is being wired.",
@@ -149,6 +170,7 @@ export async function handleA2ATuiCommand(
 			"/a2a peers",
 			"/a2a delegate <peer> <text>",
 			"/a2a reply <peer> <task-id> <text>",
+			"/a2a coordinate [peer] [--reply <text>]",
 			"/a2a tasks [peer]",
 			"/a2a send <peer> <text>",
 		].join("\n"),

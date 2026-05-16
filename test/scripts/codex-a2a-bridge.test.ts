@@ -29,9 +29,139 @@ print(json.dumps({
 }, sort_keys=True))
 `;
 
+const fixtureHelperCode = `
+import importlib.util
+import json
+import os
+import sys
+import threading
+import urllib.error
+import urllib.request
+
+script_path = json.loads(sys.argv[1])
+scenario = sys.argv[2]
+
+fixture_token = "-".join(["test", "token"])
+os.environ["CODEX_A2A_TOKEN"] = fixture_token
+os.environ["CODEX_A2A_FIXTURE_MODE"] = "input-required-once"
+os.environ["CODEX_A2A_CODEX_BIN"] = "/tmp/codex-a2a-fixture-mode-must-not-run-codex"
+
+spec = importlib.util.spec_from_file_location("codex_a2a_bridge", script_path)
+bridge = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(bridge)
+
+with bridge.LOCK:
+    bridge.TASKS.clear()
+    bridge.PROCESSES.clear()
+
+server = bridge.ThreadingHTTPServer(("127.0.0.1", 0), bridge.Handler)
+thread = threading.Thread(target=server.serve_forever, daemon=True)
+thread.start()
+
+def message(text, task_id=None, context_id=None):
+    value = {
+        "message": {
+            "messageId": "user-message-" + text.lower().replace(" ", "-"),
+            "parts": [{"text": text, "mediaType": "text/plain"}],
+            "role": "ROLE_USER",
+        }
+    }
+    if task_id is not None:
+        value["message"]["taskId"] = task_id
+    if context_id is not None:
+        value["message"]["contextId"] = context_id
+    return value
+
+def post(body):
+    data = json.dumps(body).encode("utf-8")
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{server.server_port}/message:send",
+        data=data,
+        headers={
+            "Authorization": " ".join(["Bearer", fixture_token]),
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return {
+                "status": response.status,
+                "body": json.loads(response.read().decode("utf-8")),
+            }
+    except urllib.error.HTTPError as error:
+        return {
+            "status": error.code,
+            "body": json.loads(error.read().decode("utf-8")),
+        }
+
+try:
+    responses = []
+    initial = post(message("Please prepare the deployment summary"))
+    responses.append(initial)
+    task = initial.get("body", {}).get("task", {})
+    task_id = task.get("id")
+    context_id = task.get("contextId")
+    if scenario == "initial":
+        pass
+    elif scenario == "follow-up":
+        responses.append(post(message("The deploy target is staging.", task_id, context_id)))
+    elif scenario == "context-mismatch":
+        responses.append(post(message("The deploy target is staging.", task_id, "wrong-context")))
+    elif scenario == "terminal-rejects":
+        responses.append(post(message("The deploy target is staging.", task_id, context_id)))
+        responses.append(post(message("One more update.", task_id, context_id)))
+    else:
+        raise AssertionError(f"unknown scenario: {scenario}")
+    print(json.dumps({"responses": responses}, sort_keys=True))
+finally:
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=5)
+`;
+
 type HelperResult = {
 	metadata: Record<string, unknown>;
 	prompt: string;
+};
+
+type BridgeResponse = {
+	status: number;
+	body: {
+		error?: {
+			code: string;
+			message: string;
+		};
+		task?: {
+			id: string;
+			contextId: string;
+			status: {
+				state: string;
+				message: {
+					contextId: string;
+					role: string;
+					parts: Array<{ text: string; mediaType: string }>;
+				};
+			};
+			history: Array<{
+				messageId: string;
+				contextId: string;
+				role: string;
+				parts: Array<{ text: string; mediaType: string }>;
+			}>;
+			artifacts: Array<{
+				artifactId: string;
+				name: string;
+				parts: Array<{ text: string; mediaType: string }>;
+			}>;
+			metadata: Record<string, unknown>;
+		};
+	};
+};
+
+type FixtureScenarioResult = {
+	responses: BridgeResponse[];
 };
 
 const mockToken = ["super", "secret", "token"].join("-");
@@ -54,6 +184,25 @@ async function buildPromptFromPayloadJson(payloadJson: string) {
 		{ encoding: "utf8" },
 	);
 	return JSON.parse(stdout) as HelperResult;
+}
+
+async function runFixtureScenario(scenario: string) {
+	const { stdout } = await execFileAsync(
+		"python3",
+		["-c", fixtureHelperCode, JSON.stringify(bridgePath), scenario],
+		{ encoding: "utf8" },
+	);
+	return JSON.parse(stdout) as FixtureScenarioResult;
+}
+
+function taskFrom(response: BridgeResponse) {
+	expect(response.status).toBe(200);
+	expect(response.body.task).toBeDefined();
+	return response.body.task;
+}
+
+function textFrom(parts: Array<{ text: string }>) {
+	return parts.map((part) => part.text).join("\n");
 }
 
 function parsePromptEnvelope(prompt: string) {
@@ -247,5 +396,78 @@ describe("codex-a2a-bridge prompt metadata", () => {
 			expect.stringMatching(/^codex-a2a-message-/),
 		);
 		expect(envelope.metadata.relayPeer).toBe("mac-mini");
+	});
+});
+
+describe("codex-a2a-bridge input-required fixture", () => {
+	it("stores and returns a stable input-required task with an agent question", async () => {
+		const { responses } = await runFixtureScenario("initial");
+		const task = taskFrom(responses[0]);
+
+		expect(task?.id).toBe("codex-a2a-fixture-task-input-required-once");
+		expect(task?.contextId).toBe(
+			"codex-a2a-fixture-context-input-required-once",
+		);
+		expect(task?.status.state).toBe("TASK_STATE_INPUT_REQUIRED");
+		expect(task?.status.message.contextId).toBe(task?.contextId);
+		expect(task?.status.message.role).toBe("ROLE_AGENT");
+		expect(textFrom(task?.status.message.parts ?? [])).toMatch(/what .*need/i);
+		expect(task?.history).toHaveLength(2);
+		expect(task?.history[0]).toMatchObject({
+			contextId: task?.contextId,
+			role: "ROLE_USER",
+		});
+		expect(task?.history[1]).toEqual(task?.status.message);
+		expect(task?.artifacts).toEqual([]);
+		expect(task?.metadata).toMatchObject({
+			backend: "codex-a2a-fixture",
+			fixtureMode: "input-required-once",
+		});
+	});
+
+	it("accepts a same-context follow-up and completes the same task with an artifact", async () => {
+		const { responses } = await runFixtureScenario("follow-up");
+		const initialTask = taskFrom(responses[0]);
+		const completedTask = taskFrom(responses[1]);
+
+		expect(completedTask?.id).toBe(initialTask?.id);
+		expect(completedTask?.contextId).toBe(initialTask?.contextId);
+		expect(completedTask?.status.state).toBe("TASK_STATE_COMPLETED");
+		expect(completedTask?.history).toHaveLength(4);
+		expect(completedTask?.history[0]).toEqual(initialTask?.history[0]);
+		expect(completedTask?.history[1]).toEqual(initialTask?.history[1]);
+		expect(textFrom(completedTask?.history[2].parts ?? [])).toContain(
+			"The deploy target is staging.",
+		);
+		expect(completedTask?.artifacts).toHaveLength(1);
+		expect(textFrom(completedTask?.artifacts[0].parts ?? [])).toContain(
+			"The deploy target is staging.",
+		);
+	});
+
+	it("rejects a follow-up when the context does not match the task", async () => {
+		const { responses } = await runFixtureScenario("context-mismatch");
+		const initialTask = taskFrom(responses[0]);
+		const mismatch = responses[1];
+
+		expect(initialTask?.status.state).toBe("TASK_STATE_INPUT_REQUIRED");
+		expect(mismatch.status).toBe(400);
+		expect(mismatch.body.error).toMatchObject({
+			code: "INVALID_REQUEST",
+			message: "A2A message contextId must match the referenced task",
+		});
+	});
+
+	it("rejects additional messages after the fixture task reaches a terminal state", async () => {
+		const { responses } = await runFixtureScenario("terminal-rejects");
+		const completedTask = taskFrom(responses[1]);
+		const terminalFollowUp = responses[2];
+
+		expect(completedTask?.status.state).toBe("TASK_STATE_COMPLETED");
+		expect(terminalFollowUp.status).toBe(400);
+		expect(terminalFollowUp.body.error).toMatchObject({
+			code: "UNSUPPORTED_OPERATION",
+			message: "A2A terminal tasks cannot accept more messages",
+		});
 	});
 });

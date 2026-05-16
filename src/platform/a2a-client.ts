@@ -700,8 +700,8 @@ function normalizeA2AStreamEvent(
 			: payload;
 		return {
 			...statusUpdatePayload,
-			type: "statusUpdate",
 			status: statusUpdatePayload.status as A2ATaskStatus,
+			type: "statusUpdate",
 		};
 	}
 	const artifactUpdatePayload = isRecord(payload.artifactUpdate)
@@ -709,8 +709,8 @@ function normalizeA2AStreamEvent(
 		: payload;
 	return {
 		...artifactUpdatePayload,
-		type: "artifactUpdate",
 		artifact: artifactUpdatePayload.artifact as A2AArtifact,
+		type: "artifactUpdate",
 	};
 }
 

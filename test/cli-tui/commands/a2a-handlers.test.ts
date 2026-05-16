@@ -29,6 +29,34 @@ describe("A2A TUI command handler", () => {
 						taskId: "task-dev-1",
 						text: "run full workspace checks",
 						state: "TASK_STATE_WORKING",
+						workGraph: {
+							state: "waiting",
+							itemCount: 3,
+							activeItemCount: 3,
+							childRunCount: 1,
+							childRunIds: ["agent_run_child_1"],
+							toolCallCount: 2,
+							pendingToolCallCount: 1,
+							toolExecutionIds: ["tool_exec_1"],
+							waitItemCount: 1,
+							waitIds: ["thread_child_1"],
+							codexSubagents: {
+								edgeCount: 1,
+								edges: [
+									{
+										spawnToolCallId: "toolu_spawn_child",
+										childRunId: "agent_run_child_1",
+										operation: "spawn_agent",
+										status: "running",
+									},
+								],
+								childRunIds: ["agent_run_child_1"],
+								toolCallIds: ["toolu_spawn_child"],
+								threadIds: ["thread_child_1"],
+							},
+							correlationPath:
+								"platform_agent_run_id=run_1 active_work_items=3 blocked_work_items=0 child_runs=1",
+						},
 						createdAt: "2026-05-16T00:00:00.000Z",
 						updatedAt: "2026-05-16T00:00:00.000Z",
 					},
@@ -37,7 +65,7 @@ describe("A2A TUI command handler", () => {
 		);
 		vi.stubEnv("MAESTRO_A2A_TASKS_FILE", tasksPath);
 		const content: string[] = [];
-		const context = createContext("tasks");
+		const context = createContext("tasks --work-graph");
 
 		await handleA2ATuiCommand(context, {
 			addContent(text) {
@@ -50,6 +78,14 @@ describe("A2A TUI command handler", () => {
 		expect(content.join("\n")).toContain("dev-desktop");
 		expect(content.join("\n")).toContain("task-dev-1");
 		expect(content.join("\n")).toContain("TASK_STATE_WORKING");
+		expect(content.join("\n")).toContain("Work graph: waiting");
+		expect(content.join("\n")).toContain("Codex subagents: edges 1");
+		expect(content.join("\n")).toContain(
+			"lifecycle spawn_agent:running(agent_run_child_1)",
+		);
+		expect(content.join("\n")).toContain(
+			"Correlation: platform_agent_run_id=run_1 active_work_items=3 blocked_work_items=0 child_runs=1",
+		);
 		expect(context.showError).not.toHaveBeenCalled();
 	});
 
@@ -78,6 +114,25 @@ describe("A2A TUI command handler", () => {
 			timeoutMs: 2500,
 		});
 		expect(content.join("\n")).toContain("A2A fleet");
+		expect(context.showError).not.toHaveBeenCalled();
+	});
+
+	it("renders coordinate as a TUI-aware CLI placeholder", async () => {
+		const context = createContext(
+			"coordinate mac-mini --reply use the short smoke",
+		);
+
+		await handleA2ATuiCommand(context, {
+			addContent: vi.fn(),
+			requestRender: vi.fn(),
+		});
+
+		expect(context.showInfo).toHaveBeenCalledWith(
+			expect.stringContaining("maestro a2a coordinate [peer] --refresh"),
+		);
+		expect(context.showInfo).toHaveBeenCalledWith(
+			expect.stringContaining("--reply <text>"),
+		);
 		expect(context.showError).not.toHaveBeenCalled();
 	});
 });

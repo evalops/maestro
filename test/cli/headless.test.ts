@@ -616,6 +616,207 @@ describe("headless protocol helpers", () => {
 		]);
 	});
 
+	it("preserves Codex subagent lifecycle edges without prompt payloads", () => {
+		const state = createHeadlessRuntimeState();
+		const spawnArgs = {
+			prompt: "Sensitive child task prompt",
+			codexWorkGraph: {
+				schemaVersion: "evalops.maestro.codex.subagent-workgraph.v1",
+				childRuns: [
+					{
+						threadId: "child-thread-1",
+						childRunId: "agent-run-child-1",
+						operation: "spawnAgent",
+					},
+				],
+			},
+		};
+
+		applyIncomingHeadlessMessage(state, {
+			type: "tool_call",
+			call_id: "collab-spawn-1",
+			tool: "codex.subagent.spawnAgent",
+			args: spawnArgs,
+			requires_approval: false,
+		});
+		expect(state.codex_subagent_edges).toEqual([
+			{
+				spawn_tool_call_id: "collab-spawn-1",
+				child_run_id: "agent-run-child-1",
+				thread_id: "child-thread-1",
+				operation: "spawn_agent",
+				status: "waiting_for_restore",
+			},
+		]);
+
+		applyIncomingHeadlessMessage(state, {
+			type: "tool_end",
+			call_id: "collab-spawn-1",
+			success: true,
+		});
+		applyIncomingHeadlessMessage(state, {
+			type: "tool_call",
+			call_id: "collab-close-1",
+			tool: "codex.subagent.closeAgent",
+			args: {
+				receiverThreadIds: ["child-thread-1"],
+				childRunIds: ["agent-run-child-1"],
+			},
+			requires_approval: false,
+		});
+		applyIncomingHeadlessMessage(state, {
+			type: "tool_end",
+			call_id: "collab-close-1",
+			success: true,
+		});
+
+		expect(state.codex_subagent_edges).toEqual([
+			{
+				wait_tool_call_id: "collab-close-1",
+				child_run_id: "agent-run-child-1",
+				thread_id: "child-thread-1",
+				operation: "close_agent",
+				status: "closed",
+			},
+			{
+				spawn_tool_call_id: "collab-spawn-1",
+				child_run_id: "agent-run-child-1",
+				thread_id: "child-thread-1",
+				operation: "spawn_agent",
+				status: "completed",
+			},
+		]);
+		expect(JSON.stringify(state.codex_subagent_edges)).not.toContain(
+			"Sensitive child task prompt",
+		);
+	});
+
+	it("keeps durable Codex subagent edges across runtime reset messages", () => {
+		const state = createHeadlessRuntimeState();
+		const edge = {
+			spawn_tool_call_id: "collab-spawn-reset",
+			child_run_id: "agent-run-child-reset",
+			thread_id: "child-thread-reset",
+			operation: "spawn_agent",
+			status: "waiting_for_restore",
+		};
+		state.codex_subagent_edges = [edge];
+
+		applyOutgoingHeadlessMessage(state, { type: "interrupt" });
+		expect(state.codex_subagent_edges).toEqual([edge]);
+
+		applyOutgoingHeadlessMessage(state, { type: "cancel" });
+		expect(state.codex_subagent_edges).toEqual([edge]);
+
+		applyOutgoingHeadlessMessage(state, { type: "shutdown" });
+		expect(state.codex_subagent_edges).toEqual([edge]);
+	});
+
+	it("preserves restored terminal Codex subagent statuses during close propagation", () => {
+		const state = createHeadlessRuntimeState();
+		state.codex_subagent_edges = [
+			{
+				spawn_tool_call_id: "collab-spawn-restored",
+				child_run_id: "agent-run-child-restored",
+				thread_id: "child-thread-restored",
+				operation: "spawn_agent",
+				status: "cancelled",
+			},
+		];
+
+		applyIncomingHeadlessMessage(state, {
+			type: "tool_call",
+			call_id: "collab-close-restored",
+			tool: "codex.subagent.closeAgent",
+			args: {
+				receiverThreadIds: ["child-thread-restored"],
+				childRunIds: ["agent-run-child-restored"],
+			},
+			requires_approval: false,
+		});
+		applyIncomingHeadlessMessage(state, {
+			type: "tool_end",
+			call_id: "collab-close-restored",
+			success: true,
+		});
+
+		expect(state.codex_subagent_edges).toEqual([
+			{
+				wait_tool_call_id: "collab-close-restored",
+				child_run_id: "agent-run-child-restored",
+				thread_id: "child-thread-restored",
+				operation: "close_agent",
+				status: "closed",
+			},
+			{
+				spawn_tool_call_id: "collab-spawn-restored",
+				child_run_id: "agent-run-child-restored",
+				thread_id: "child-thread-restored",
+				operation: "spawn_agent",
+				status: "cancelled",
+			},
+		]);
+	});
+
+	it("normalizes older restored states before tracking Codex subagent edges", () => {
+		const state = createHeadlessRuntimeState();
+		delete (state as Partial<ReturnType<typeof createHeadlessRuntimeState>>)
+			.codex_subagent_edges;
+
+		applyIncomingHeadlessMessage(state, {
+			type: "tool_call",
+			call_id: "collab-spawn-legacy",
+			tool: "codex.subagent.spawnAgent",
+			args: {
+				childRunIds: ["agent-run-child-legacy"],
+				receiverThreadIds: ["child-thread-legacy"],
+			},
+			requires_approval: false,
+		});
+
+		expect(state.codex_subagent_edges).toEqual([
+			{
+				spawn_tool_call_id: "collab-spawn-legacy",
+				child_run_id: "agent-run-child-legacy",
+				thread_id: "child-thread-legacy",
+				operation: "spawn_agent",
+				status: "waiting_for_restore",
+			},
+		]);
+	});
+
+	it("marks denied restored Codex subagent edges failed after tracked source cleanup", () => {
+		const state = createHeadlessRuntimeState();
+		state.codex_subagent_edges = [
+			{
+				spawn_tool_call_id: "collab-spawn-denied",
+				child_run_id: "agent-run-child-denied",
+				thread_id: "child-thread-denied",
+				operation: "spawn_agent",
+				status: "waiting_for_restore",
+			},
+		];
+
+		applyIncomingHeadlessMessage(state, {
+			type: "server_request_resolved",
+			request_id: "approval-denied",
+			request_type: "approval",
+			call_id: "collab-spawn-denied",
+			resolution: "denied",
+			resolved_by: "policy",
+		});
+
+		expect(state.codex_subagent_edges).toEqual([
+			{
+				spawn_tool_call_id: "collab-spawn-denied",
+				child_run_id: "agent-run-child-denied",
+				thread_id: "child-thread-denied",
+				operation: "spawn_agent",
+				status: "failed",
+			},
+		]);
+	});
+
 	it("tracks approval server requests in the runtime state", () => {
 		const state = createHeadlessRuntimeState();
 

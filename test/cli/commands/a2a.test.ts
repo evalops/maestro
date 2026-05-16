@@ -51,13 +51,42 @@ describe("A2A CLI command helpers", () => {
 			"mac-mini",
 			"ping",
 			"--wait",
+			"--work-graph",
 			"--timeout-ms",
 			"1000",
 		]);
 
 		expect(parsed.positionals).toEqual(["send", "mac-mini", "ping"]);
 		expect(parsed.flags.get("--wait")).toBe(true);
+		expect(parsed.flags.get("--work-graph")).toBe(true);
 		expect(parsed.flags.get("--timeout-ms")).toBe("1000");
+	});
+
+	it("parses direct task output work graph flags", () => {
+		const reply = parseA2AArgs([
+			"reply",
+			"mac-mini",
+			"task-1",
+			"use",
+			"the",
+			"short",
+			"smoke",
+			"--work-graph",
+		]);
+		expect(reply.positionals).toEqual([
+			"reply",
+			"mac-mini",
+			"task-1",
+			"use",
+			"the",
+			"short",
+			"smoke",
+		]);
+		expect(reply.flags.get("--work-graph")).toBe(true);
+
+		const wait = parseA2AArgs(["wait", "mac-mini", "task-1", "--work-graph"]);
+		expect(wait.positionals).toEqual(["wait", "mac-mini", "task-1"]);
+		expect(wait.flags.get("--work-graph")).toBe(true);
 	});
 
 	it("parses task reply flags without swallowing reply text", () => {
@@ -104,6 +133,43 @@ describe("A2A CLI command helpers", () => {
 		expect(tasks.positionals).toEqual(["tasks"]);
 		expect(tasks.flags.get("--json")).toBe(true);
 		expect(tasks.flags.get("--refresh")).toBe(true);
+
+		const workGraph = parseA2AArgs(["tasks", "mac-mini", "--work-graph"]);
+		expect(workGraph.positionals).toEqual(["tasks", "mac-mini"]);
+		expect(workGraph.flags.get("--work-graph")).toBe(true);
+	});
+
+	it("parses coordinate flags without swallowing reply text", () => {
+		const parsed = parseA2AArgs([
+			"coordinate",
+			"mac-mini",
+			"--refresh",
+			"--reply",
+			"use",
+			"the",
+			"short",
+			"smoke",
+			"--wait",
+			"--json",
+			"--tasks",
+			"/tmp/tasks.json",
+		]);
+
+		expect(parsed.positionals).toEqual(["coordinate", "mac-mini"]);
+		expect(parsed.flags.get("--refresh")).toBe(true);
+		expect(parsed.flags.get("--reply")).toBe("use the short smoke");
+		expect(parsed.flags.get("--wait")).toBe(true);
+		expect(parsed.flags.get("--json")).toBe(true);
+		expect(parsed.flags.get("--tasks")).toBe("/tmp/tasks.json");
+	});
+
+	it("rejects coordinate reply flags without reply text", () => {
+		expect(() =>
+			parseA2AArgs(["coordinate", "mac-mini", "--reply", "--wait"]),
+		).toThrow("--reply requires text");
+		expect(() => parseA2AArgs(["coordinate", "mac-mini", "--reply="])).toThrow(
+			"Usage: maestro a2a coordinate [peer] --reply <text> [--wait]",
+		);
 	});
 
 	it("parses leading flags after locating the subcommand", () => {

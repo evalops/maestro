@@ -82,6 +82,19 @@ function mapValidationIssue(message: string): SkillPackageContractIssue {
 		: issue("package_validation", message);
 }
 
+export function quoteSkillPackageInstallSourceArg(
+	value: string,
+	platform = process.platform,
+): string {
+	if (SHELL_SAFE_INSTALL_SOURCE_REGEX.test(value)) {
+		return value;
+	}
+	if (platform === "win32") {
+		return `"${value.replace(/"/g, '\\"')}"`;
+	}
+	return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
 function buildInstallCommands(input: {
 	cwd: string;
 	platform: NodeJS.Platform;
@@ -91,7 +104,7 @@ function buildInstallCommands(input: {
 		input.source,
 		input.cwd,
 	);
-	const command = `maestro skill install ${quoteShellArg(installSource, input.platform)}`;
+	const command = `maestro skill install ${quoteSkillPackageInstallSourceArg(installSource, input.platform)}`;
 	switch (input.source.type) {
 		case "local":
 			return { source: command, local: command };
@@ -100,16 +113,6 @@ function buildInstallCommands(input: {
 		case "npm":
 			return { source: command, npm: command };
 	}
-}
-
-function quoteShellArg(value: string, platform: NodeJS.Platform): string {
-	if (SHELL_SAFE_INSTALL_SOURCE_REGEX.test(value)) {
-		return value;
-	}
-	if (platform === "win32") {
-		return `"${value.replace(/"/g, '\\"')}"`;
-	}
-	return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 export function formatSkillPackageInstallSource(
@@ -239,8 +242,8 @@ export function formatSkillPackagePublishContract(
 		`Source: ${contract.resolvedSource}`,
 		`Skills: ${contract.resources.skills.length}`,
 		"Install:",
-		...installCommands.map((command) => `  ${command}`),
 	];
+	lines.push(...installCommands.map((command) => `  ${command}`));
 	if (contract.evalReport) {
 		lines.push("", "Eval:", formatSkillEvalText(contract.evalReport));
 	}

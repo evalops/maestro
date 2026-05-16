@@ -212,6 +212,18 @@ describe("command-registry-integration", () => {
 		);
 	});
 
+	it("advertises /a2a coordinate in the TUI command catalog", () => {
+		const opts = createMockOptions();
+		const { commands } = buildCommandRegistry(opts);
+		const a2a = commands.find((command) => command.name === "a2a");
+
+		expect(a2a?.usage).toContain("coordinate");
+		expect(a2a?.examples).toContain("/a2a coordinate");
+		expect(a2a?.examples).toContain(
+			"/a2a coordinate mac-mini --work-graph --reply use the short smoke",
+		);
+	});
+
 	it("every entry has a valid command with name and description", () => {
 		const opts = createMockOptions();
 		const { entries } = buildCommandRegistry(opts);

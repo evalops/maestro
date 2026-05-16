@@ -11,6 +11,7 @@ import {
 	latestA2ATaskForPeer,
 	loadA2ATaskLedger,
 } from "./a2a-task-ledger.js";
+import type { A2AWorkGraphMetadata } from "./a2a-work-graph.js";
 
 const DEFAULT_A2A_FLEET_PROBE_TIMEOUT_MS = 10_000;
 
@@ -51,6 +52,7 @@ export interface A2AFleetTaskSummary {
 	state: string;
 	text: string;
 	responseText?: string;
+	workGraph?: A2AWorkGraphMetadata;
 	updatedAt: string;
 }
 
@@ -91,6 +93,7 @@ function fleetTaskSummary(
 		state: entry.state,
 		text: entry.text,
 		...(entry.responseText ? { responseText: entry.responseText } : {}),
+		...(entry.workGraph ? { workGraph: entry.workGraph } : {}),
 		updatedAt: entry.updatedAt,
 	};
 }

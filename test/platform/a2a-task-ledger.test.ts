@@ -40,6 +40,45 @@ describe("A2A task ledger", () => {
 			task: {
 				id: "task-dev-1",
 				status: { state: "TASK_STATE_SUBMITTED" },
+				metadata: {
+					workGraph: {
+						state: "waiting",
+						itemCount: "3",
+						activeItemCount: 3,
+						childRunCount: 1,
+						childRunIds: ["agent_run_child_1", ""],
+						toolCallCount: 2,
+						pendingToolCallCount: 1,
+						toolExecutionIds: ["tool_exec_1"],
+						waitItemCount: 1,
+						waitIds: ["thread_child_1"],
+						stateCounts: {
+							AGENT_WORK_ITEM_STATE_WAITING: "1",
+						},
+						correlationPath:
+							"platform_agent_run_id=run_1 active_work_items=3 blocked_work_items=0 child_runs=1",
+						codexSubagents: {
+							edgeCount: "1",
+							edges: [
+								{
+									spawnToolCallId: "toolu_spawn_child",
+									waitToolCallId: "toolu_wait_child",
+									childRunId: "agent_run_child_1",
+									threadId: "thread_child_1",
+									operation: "spawn_agent",
+									status: "running",
+								},
+								{
+									operation: "missing_ids",
+									status: "ignored",
+								},
+							],
+							childRunIds: ["agent_run_child_1"],
+							toolCallIds: ["toolu_spawn_child", "toolu_wait_child"],
+							threadIds: ["thread_child_1"],
+						},
+					},
+				},
 			},
 			text: "run the full checks",
 			messageId: "message-1",
@@ -76,6 +115,22 @@ describe("A2A task ledger", () => {
 						{ role: "user", text: "run the full checks" },
 						{ role: "agent", text: "checks passed" },
 					],
+					workGraph: {
+						state: "waiting",
+						itemCount: 3,
+						childRunIds: ["agent_run_child_1"],
+						codexSubagents: {
+							edgeCount: 1,
+							threadIds: ["thread_child_1"],
+							edges: [
+								{
+									childRunId: "agent_run_child_1",
+									operation: "spawn_agent",
+									status: "running",
+								},
+							],
+						},
+					},
 				},
 			],
 		});

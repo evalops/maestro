@@ -150,6 +150,7 @@ function normalizeState(value: unknown): HeadlessRuntimeState {
 		return createHeadlessRuntimeState();
 	}
 	const state = structuredClone(value as HeadlessRuntimeState);
+	state.codex_subagent_edges ??= [];
 	syncHeadlessPendingRequests(state);
 	return state;
 }

@@ -26,6 +26,8 @@ import {
 	type A2ATaskLedgerEntry,
 	extractA2ATaskText,
 	getA2ATaskLedgerPath,
+	isActionRequiredA2AState,
+	isFinalA2AState,
 	isTerminalA2AState,
 	listA2ATaskEntries,
 	loadA2ATaskLedger,
@@ -33,6 +35,11 @@ import {
 	recordA2ATaskStart,
 	updateA2ATaskInLedger,
 } from "../../platform/a2a-task-ledger.js";
+import {
+	extractA2AWorkGraphMetadata,
+	formatA2AWorkGraphCodexSubagents,
+	formatA2AWorkGraphSummary,
+} from "../../platform/a2a-work-graph.js";
 import { getEnvValue } from "../../platform/client.js";
 import { isAbortError } from "../../utils/abort-error.js";
 
@@ -54,6 +61,14 @@ const A2A_VALUE_FLAGS_BY_SUBCOMMAND: Record<string, readonly string[]> = {
 		"--max-wait-ms",
 		"--registry",
 		"--role",
+		"--tasks",
+		"--timeout-ms",
+	],
+	coordinate: [
+		"--interval-ms",
+		"--max-wait-ms",
+		"--registry",
+		"--reply",
 		"--tasks",
 		"--timeout-ms",
 	],
@@ -86,12 +101,18 @@ const A2A_VALUE_FLAGS_BY_SUBCOMMAND: Record<string, readonly string[]> = {
 };
 const A2A_BOOLEAN_FLAGS_BY_SUBCOMMAND: Record<string, readonly string[]> = {
 	accept: ["--default"],
-	delegate: ["--wait"],
+	coordinate: ["--json", "--refresh", "--wait", "--work-graph"],
+	delegate: ["--wait", "--work-graph"],
 	fleet: ["--json"],
-	reply: ["--wait"],
-	send: ["--wait"],
-	tasks: ["--json", "--refresh"],
+	reply: ["--wait", "--work-graph"],
+	send: ["--wait", "--work-graph"],
+	tasks: ["--json", "--refresh", "--work-graph"],
+	wait: ["--work-graph"],
 };
+const A2A_COLLECT_VALUE_FLAGS_BY_SUBCOMMAND: Record<string, readonly string[]> =
+	{
+		coordinate: ["--reply"],
+	};
 const A2A_LEADING_VALUE_FLAGS = new Set(
 	Object.values(A2A_VALUE_FLAGS_BY_SUBCOMMAND).flat(),
 );
@@ -137,6 +158,9 @@ export async function handleA2ACommand(args: string[]): Promise<void> {
 		case "continue":
 			await handleA2AReply(parsed);
 			return;
+		case "coordinate":
+			await handleA2ACoordinate(parsed);
+			return;
 		case "tasks":
 			await handleA2ATasks(parsed);
 			return;
@@ -159,6 +183,9 @@ export function parseA2AArgs(args: string[]): ParsedA2AArgs {
 	const valueFlags = new Set(A2A_VALUE_FLAGS_BY_SUBCOMMAND[subcommand] ?? []);
 	const booleanFlags = new Set(
 		A2A_BOOLEAN_FLAGS_BY_SUBCOMMAND[subcommand] ?? [],
+	);
+	const collectValueFlags = new Set(
+		A2A_COLLECT_VALUE_FLAGS_BY_SUBCOMMAND[subcommand] ?? [],
 	);
 	for (let index = 0; index < args.length; index++) {
 		const arg = args[index];
@@ -189,11 +216,36 @@ export function parseA2AArgs(args: string[]): ParsedA2AArgs {
 				continue;
 			}
 			if (inlineValue !== undefined) {
+				if (collectValueFlags.has(flag) && !inlineValue.trim()) {
+					throw new Error(collectValueFlagMissingTextMessage(flag, subcommand));
+				}
 				flags.set(flag, inlineValue);
 				continue;
 			}
 			if (booleanFlags.has(flag)) {
 				flags.set(flag, true);
+				continue;
+			}
+			if (collectValueFlags.has(flag)) {
+				const values: string[] = [];
+				while (args[index + 1] && args[index + 1] !== "--") {
+					const next = args[index + 1]!;
+					const [nextFlag] = next.split("=", 2);
+					if (
+						next.startsWith("--") &&
+						nextFlag &&
+						(valueFlags.has(nextFlag) || booleanFlags.has(nextFlag))
+					) {
+						break;
+					}
+					values.push(next);
+					index++;
+				}
+				const value = values.join(" ").trim();
+				if (!value) {
+					throw new Error(collectValueFlagMissingTextMessage(flag, subcommand));
+				}
+				flags.set(flag, value);
 				continue;
 			}
 			const next = args[index + 1];
@@ -208,6 +260,17 @@ export function parseA2AArgs(args: string[]): ParsedA2AArgs {
 		positionals.push(arg);
 	}
 	return { flags, positionals };
+}
+
+function collectValueFlagMissingTextMessage(
+	flag: string,
+	subcommand: string,
+): string {
+	const usage =
+		subcommand === "coordinate" && flag === "--reply"
+			? "\nUsage: maestro a2a coordinate [peer] --reply <text> [--wait]"
+			: "";
+	return `${flag} requires text${usage}`;
 }
 
 function findA2ASubcommandIndex(args: readonly string[]): number {
@@ -448,7 +511,9 @@ async function handleA2ASend(parsed: ParsedA2AArgs): Promise<void> {
 	const task = wait
 		? await waitForA2ATask(peer.config, sent.task.id, parsed)
 		: sent.task;
-	printTask(task);
+	printTask(task, {
+		includeWorkGraphDetails: booleanFlag(parsed, "--work-graph"),
+	});
 }
 
 async function handleA2ADelegate(parsed: ParsedA2AArgs): Promise<void> {
@@ -515,7 +580,9 @@ async function handleA2ADelegate(parsed: ParsedA2AArgs): Promise<void> {
 			}),
 		);
 	}
-	printTask(task);
+	printTask(task, {
+		includeWorkGraphDetails: booleanFlag(parsed, "--work-graph"),
+	});
 }
 
 async function handleA2AReply(parsed: ParsedA2AArgs): Promise<void> {
@@ -578,7 +645,171 @@ async function handleA2AReply(parsed: ParsedA2AArgs): Promise<void> {
 			}),
 		);
 	}
-	printTask(task);
+	printTask(task, {
+		includeWorkGraphDetails: booleanFlag(parsed, "--work-graph"),
+	});
+}
+
+async function handleA2ACoordinate(parsed: ParsedA2AArgs): Promise<void> {
+	const peerName = parsed.positionals.shift();
+	if (parsed.positionals.length > 0) {
+		fail("Usage: maestro a2a coordinate [peer] [--reply <text>] [--wait]");
+	}
+	const replyText = stringFlag(parsed, "--reply");
+	if (parsed.flags.has("--reply") && !replyText) {
+		fail("Usage: maestro a2a coordinate [peer] --reply <text> [--wait]");
+	}
+	if (replyText) {
+		await handleA2ACoordinateReply(parsed, peerName, replyText);
+		return;
+	}
+	await refreshA2ANonFinalTaskLedger(parsed, peerName);
+	const ledger = await loadA2ATaskLedger({
+		path: stringFlag(parsed, "--tasks"),
+	});
+	const tasks = actionableA2ATaskEntries(ledger, peerName);
+	if (booleanFlag(parsed, "--json")) {
+		console.log(
+			JSON.stringify(
+				{
+					path: getA2ATaskLedgerPath(stringFlag(parsed, "--tasks")),
+					tasks: tasks.map((entry) => ({
+						id: entry.id,
+						kind: entry.kind,
+						peer: entry.peer,
+						taskId: entry.taskId,
+						contextId: entry.contextId,
+						state: entry.state,
+						text: entry.text,
+						responseText: entry.responseText,
+						workGraph: entry.workGraph,
+						updatedAt: entry.updatedAt,
+					})),
+				},
+				null,
+				2,
+			),
+		);
+		return;
+	}
+	console.log(
+		`A2A coordinate (${getA2ATaskLedgerPath(stringFlag(parsed, "--tasks"))})`,
+	);
+	if (tasks.length === 0) {
+		console.log(chalk.dim("  No actionable A2A tasks require coordination."));
+		return;
+	}
+	for (const task of tasks) {
+		console.log(
+			`${task.peer} ${chalk.bold(task.taskId)} ${task.state} ${chalk.dim(task.updatedAt)}`,
+		);
+		console.log(chalk.dim(`  ${task.text}`));
+		if (task.responseText) {
+			console.log(`  ${task.responseText}`);
+		}
+		printLedgerWorkGraph(task, booleanFlag(parsed, "--work-graph"));
+	}
+}
+
+async function handleA2ACoordinateReply(
+	parsed: ParsedA2AArgs,
+	peerName: string | undefined,
+	text: string,
+): Promise<void> {
+	await refreshA2ANonFinalTaskLedger(parsed, peerName);
+	const ledger = await loadA2ATaskLedger({
+		path: stringFlag(parsed, "--tasks"),
+	});
+	const entry = selectCoordinateReplyTask(ledger, peerName);
+	if (!entry) {
+		fail("No actionable A2A task is waiting for coordinator input.");
+	}
+	const peer = await resolveA2APeer(entry.peer, {
+		path: stringFlag(parsed, "--registry"),
+		timeoutMs: numberFlag(parsed, "--timeout-ms"),
+	});
+	const messageId = `maestro-a2a-message-${randomUUID()}`;
+	const sent = await sendA2AMessage(peer.config, {
+		message: buildA2AUserMessage({
+			messageId,
+			contextId: entry.contextId,
+			taskId: entry.taskId,
+			text,
+			metadata: {
+				requestKind: "maestro-peer-coordinate-reply",
+				relayPeer: peer.name,
+				referencedTaskId: entry.taskId,
+			},
+		}),
+		configuration: { returnImmediately: true },
+	});
+	const replyTask: A2ATask = {
+		...sent.task,
+		id: entry.taskId,
+		contextId: sent.task.contextId ?? entry.contextId,
+	};
+	const json = booleanFlag(parsed, "--json");
+	if (!json) {
+		console.log(`Coordinated ${chalk.bold(peer.name)} task ${entry.taskId}`);
+	}
+	await persistA2ALedgerBestEffort("record coordinate reply locally", () =>
+		recordA2ATaskReply({
+			path: stringFlag(parsed, "--tasks"),
+			peer: peer.name,
+			peerDisplayName: peer.entry.displayName,
+			task: replyTask,
+			text,
+			messageId,
+			metadata: {
+				requestKind: "maestro-peer-coordinate-reply",
+				relayPeer: peer.name,
+				referencedTaskId: entry.taskId,
+			},
+		}),
+	);
+	const task = booleanFlag(parsed, "--wait")
+		? await waitForA2ATask(peer.config, entry.taskId, parsed)
+		: replyTask;
+	if (booleanFlag(parsed, "--wait")) {
+		await persistA2ALedgerBestEffort(
+			"sync coordinate task result locally",
+			() =>
+				updateA2ATaskInLedger({
+					path: stringFlag(parsed, "--tasks"),
+					peer: peer.name,
+					task,
+				}),
+		);
+	}
+	if (json) {
+		console.log(JSON.stringify({ peer: peer.name, task }, null, 2));
+		return;
+	}
+	printTask(task, {
+		includeWorkGraphDetails: booleanFlag(parsed, "--work-graph"),
+	});
+}
+
+function actionableA2ATaskEntries(
+	ledger: { tasks: A2ATaskLedgerEntry[] },
+	peerName: string | undefined,
+): A2ATaskLedgerEntry[] {
+	return listA2ATaskEntries(ledger, { peer: peerName }).filter((entry) =>
+		isActionRequiredA2AState(entry.state),
+	);
+}
+
+function selectCoordinateReplyTask(
+	ledger: { tasks: A2ATaskLedgerEntry[] },
+	peerName: string | undefined,
+): A2ATaskLedgerEntry | undefined {
+	const tasks = actionableA2ATaskEntries(ledger, peerName);
+	if (tasks.length > 1) {
+		fail(
+			"Multiple actionable A2A tasks found; use `maestro a2a reply <peer> <task-id> <text>`.",
+		);
+	}
+	return tasks[0];
 }
 
 async function loadA2AReplyLedgerEntry(
@@ -628,6 +859,7 @@ async function handleA2ATasks(parsed: ParsedA2AArgs): Promise<void> {
 						state: entry.state,
 						text: entry.text,
 						responseText: entry.responseText,
+						workGraph: entry.workGraph,
 						updatedAt: entry.updatedAt,
 					})),
 				},
@@ -652,6 +884,7 @@ async function handleA2ATasks(parsed: ParsedA2AArgs): Promise<void> {
 		if (task.responseText) {
 			console.log(`  ${task.responseText}`);
 		}
+		printLedgerWorkGraph(task, booleanFlag(parsed, "--work-graph"));
 	}
 }
 
@@ -674,7 +907,9 @@ async function handleA2AWait(parsed: ParsedA2AArgs): Promise<void> {
 			task,
 		}),
 	);
-	printTask(task);
+	printTask(task, {
+		includeWorkGraphDetails: booleanFlag(parsed, "--work-graph"),
+	});
 }
 
 async function refreshA2ATaskLedger(
@@ -701,6 +936,41 @@ async function refreshA2ATaskLedger(
 	}
 }
 
+async function refreshA2ANonFinalTaskLedger(
+	parsed: ParsedA2AArgs,
+	peerFilter: string | undefined,
+): Promise<void> {
+	const ledger = await loadA2ATaskLedger({
+		path: stringFlag(parsed, "--tasks"),
+	});
+	for (const entry of listA2ATaskEntries(ledger, { peer: peerFilter })) {
+		if (isFinalA2AState(entry.state)) {
+			continue;
+		}
+		try {
+			const peer = await resolveA2APeer(entry.peer, {
+				path: stringFlag(parsed, "--registry"),
+				timeoutMs: numberFlag(parsed, "--timeout-ms"),
+			});
+			const task = await getA2ATask(peer.config, entry.taskId);
+			await updateA2ATaskInLedger({
+				path: stringFlag(parsed, "--tasks"),
+				peer: entry.peer,
+				task,
+			});
+		} catch (error) {
+			if (isAbortError(error)) {
+				throw error;
+			}
+			console.error(
+				chalk.yellow(
+					`A2A coordinate warning: could not refresh ${entry.peer} task ${entry.taskId}: ${errorMessage(error)}`,
+				),
+			);
+		}
+	}
+}
+
 async function waitForA2ATask(
 	config: A2AServiceConfig,
 	taskId: string,
@@ -723,16 +993,51 @@ async function waitForA2ATask(
 	return lastTask;
 }
 
-function printTask(task: A2ATask): void {
+function printTask(
+	task: A2ATask,
+	options: { includeWorkGraphDetails?: boolean } = {},
+): void {
 	console.log(`Task ${task.id}: ${task.status.state}`);
 	const text = a2aTaskText(task);
 	if (text) {
 		console.log(text);
 	}
+	printTaskWorkGraph(task, Boolean(options.includeWorkGraphDetails));
 }
 
 function a2aTaskText(task: A2ATask): string | undefined {
 	return extractA2ATaskText(task);
+}
+
+function printTaskWorkGraph(task: A2ATask, includeDetails: boolean): void {
+	printWorkGraphLines(extractA2AWorkGraphMetadata(task), includeDetails);
+}
+
+function printLedgerWorkGraph(
+	entry: A2ATaskLedgerEntry,
+	includeDetails: boolean,
+): void {
+	printWorkGraphLines(entry.workGraph, includeDetails);
+}
+
+function printWorkGraphLines(
+	workGraph: A2ATaskLedgerEntry["workGraph"],
+	includeDetails: boolean,
+): void {
+	const summary = formatA2AWorkGraphSummary(workGraph);
+	if (summary) {
+		console.log(chalk.dim(`  ${summary}`));
+	}
+	if (!includeDetails) {
+		return;
+	}
+	const codexSubagents = formatA2AWorkGraphCodexSubagents(workGraph);
+	if (codexSubagents) {
+		console.log(chalk.dim(`  ${codexSubagents}`));
+	}
+	if (workGraph?.correlationPath) {
+		console.log(chalk.dim(`  Correlation: ${workGraph.correlationPath}`));
+	}
 }
 
 export const isA2AWaitCompletionState = isTerminalA2AState;
@@ -811,11 +1116,12 @@ function printA2AHelp(): void {
   maestro a2a peers
   maestro a2a fleet [--json]
   maestro a2a card <peer>
-  maestro a2a delegate <peer> <text> [--role <role>] [--cwd <path>] [--wait]
-  maestro a2a reply <peer> <task-id> <text> [--wait]
-  maestro a2a send <peer> <text> [--wait]
-  maestro a2a tasks [peer] [--json] [--refresh]
-  maestro a2a wait <peer> <task-id>
+  maestro a2a coordinate [peer] [--reply <text>] [--wait] [--json] [--work-graph]
+  maestro a2a delegate <peer> <text> [--role <role>] [--cwd <path>] [--wait] [--work-graph]
+  maestro a2a reply <peer> <task-id> <text> [--wait] [--work-graph]
+  maestro a2a send <peer> <text> [--wait] [--work-graph]
+  maestro a2a tasks [peer] [--json] [--refresh] [--work-graph]
+  maestro a2a wait <peer> <task-id> [--work-graph]
 
 Pairing codes carry Agent Card and transport coordinates only. Configure auth with
 --token-env or --token-file when accepting a peer; bearer tokens are never embedded.`);

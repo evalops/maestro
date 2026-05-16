@@ -957,6 +957,18 @@
 				"output": { "kind": "string" }
 			}
 		},
+		"HeadlessCodexSubagentContinuityEdgeSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"spawn_tool_call_id": { "kind": "string", "optional": true },
+				"wait_tool_call_id": { "kind": "string", "optional": true },
+				"child_run_id": { "kind": "string", "optional": true },
+				"thread_id": { "kind": "string", "optional": true },
+				"operation": { "kind": "string" },
+				"status": { "kind": "string" }
+			}
+		},
 		"HeadlessStreamingResponseStateSchema": {
 			"kind": "object",
 			"additionalProperties": false,
@@ -1142,6 +1154,14 @@
 				"tracked_tools": {
 					"kind": "array",
 					"items": { "kind": "ref", "name": "HeadlessPendingToolStateSchema" }
+				},
+				"codex_subagent_edges": {
+					"kind": "array",
+					"optional": true,
+					"items": {
+						"kind": "ref",
+						"name": "HeadlessCodexSubagentContinuityEdgeSchema"
+					}
 				},
 				"last_error": { "kind": "string", "optional": true },
 				"last_error_type": {
