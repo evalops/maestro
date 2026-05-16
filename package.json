@@ -60,6 +60,7 @@
     "format": "biome format .",
     "check": "npm run lint && npm run check --workspaces --if-present && tsc -p tsconfig.build.json --noEmit",
     "evals": "npm run build && node scripts/run-evals.js",
+    "evals:skill-package": "bun run build && bunx tsx scripts/evals/run-skill-package-evals.ts",
     "evals:pipeline-tool-integration": "bun run build && bunx tsx scripts/evals/run-pipeline-tool-integration-evals.ts",
     "evals:shared-memory-integration": "bun run build && bunx tsx scripts/evals/run-shared-memory-integration-evals.ts",
     "evals:platform-fermata-scenario-suite": "bun run build && bunx tsx scripts/evals/run-platform-fermata-scenario-suite.ts",

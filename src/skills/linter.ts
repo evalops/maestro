@@ -8,7 +8,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { constants, access } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { basename, extname, join, resolve } from "node:path";
 import {
 	SKILL_FRONTMATTER_FIELDS,
 	findSkillMd,
@@ -40,6 +40,11 @@ export interface SkillScaffoldResult {
 	directory: string;
 	files: string[];
 }
+
+export type SkillLintOptions = {
+	describeToolbox?: boolean;
+	platform?: NodeJS.Platform;
+};
 
 export const SKILL_BODY_MAX_LINES = 500;
 export const SKILL_BODY_MAX_CHARS = 20_000;
@@ -155,6 +160,15 @@ function validateStringArrayField(
 		];
 	}
 	return [];
+}
+
+function isBooleanFrontmatterValue(value: unknown): boolean {
+	if (typeof value === "boolean") return true;
+	if (typeof value === "string") {
+		const normalized = value.toLowerCase();
+		return normalized === "true" || normalized === "false";
+	}
+	return false;
 }
 
 function validateBody(body: string, path: string): SkillLintIssue[] {
@@ -305,7 +319,59 @@ function validateMcpJson(skillDir: string): SkillLintIssue[] {
 	return issues;
 }
 
-async function isExecutable(path: string): Promise<boolean> {
+const DEFAULT_WINDOWS_EXECUTABLE_EXTENSIONS = ".COM;.EXE;.BAT;.CMD;.PS1";
+
+function windowsExecutableExtensions(
+	pathExt = process.env.PATHEXT,
+): Set<string> {
+	return new Set(
+		(pathExt || DEFAULT_WINDOWS_EXECUTABLE_EXTENSIONS)
+			.split(";")
+			.map((entry) => entry.trim().toUpperCase())
+			.filter(Boolean),
+	);
+}
+
+export function isWindowsRunnableToolboxEntry(
+	path: string,
+	pathExt = process.env.PATHEXT,
+): boolean {
+	const extension = extname(path).toUpperCase();
+	return Boolean(
+		extension && windowsExecutableExtensions(pathExt).has(extension),
+	);
+}
+
+export function toolboxDescribeSpawnOptions(options: SkillLintOptions = {}): {
+	encoding: "utf8";
+	env: NodeJS.ProcessEnv;
+	shell?: boolean;
+	timeout: number;
+} {
+	const platform = options.platform ?? process.platform;
+	return {
+		env: { ...process.env, MAESTRO_TOOLBOX_ACTION: "describe" },
+		encoding: "utf8",
+		timeout: 5000,
+		...(platform === "win32" ? { shell: true } : {}),
+	};
+}
+
+export function toolboxDescribeSpawnCommand(
+	path: string,
+	options: SkillLintOptions = {},
+): string {
+	const platform = options.platform ?? process.platform;
+	return platform === "win32" ? `"${path}"` : path;
+}
+
+async function isExecutable(
+	path: string,
+	platform: NodeJS.Platform = process.platform,
+): Promise<boolean> {
+	if (platform === "win32") {
+		return isWindowsRunnableToolboxEntry(path);
+	}
 	try {
 		await access(path, constants.X_OK);
 		return true;
@@ -316,7 +382,7 @@ async function isExecutable(path: string): Promise<boolean> {
 
 async function validateToolbox(
 	skillDir: string,
-	options: { describeToolbox?: boolean } = {},
+	options: SkillLintOptions = {},
 ): Promise<SkillLintIssue[]> {
 	const toolboxDir = join(skillDir, "toolbox");
 	if (!existsSync(toolboxDir) || !statSync(toolboxDir).isDirectory()) return [];
@@ -326,7 +392,7 @@ async function validateToolbox(
 		if (entry.startsWith(".") || entry.toLowerCase() === "readme.md") continue;
 		const path = join(toolboxDir, entry);
 		if (!statSync(path).isFile()) continue;
-		if (!(await isExecutable(path))) {
+		if (!(await isExecutable(path, options.platform))) {
 			issues.push(
 				issue(
 					"toolbox_not_executable",
@@ -338,11 +404,10 @@ async function validateToolbox(
 			continue;
 		}
 		if (options.describeToolbox) {
-			const result = spawnSync(path, {
-				env: { ...process.env, MAESTRO_TOOLBOX_ACTION: "describe" },
-				encoding: "utf8",
-				timeout: 5000,
-			});
+			const result = spawnSync(
+				toolboxDescribeSpawnCommand(path, options),
+				toolboxDescribeSpawnOptions(options),
+			);
 			if (result.status !== 0) {
 				issues.push(
 					issue(
@@ -360,7 +425,7 @@ async function validateToolbox(
 
 export async function lintSkillDirectory(
 	skillDir: string,
-	options: { describeToolbox?: boolean } = {},
+	options: SkillLintOptions = {},
 ): Promise<SkillLintResult> {
 	const resolvedDir = resolve(skillDir);
 	const skillFile = findSkillMd(resolvedDir);
@@ -417,7 +482,7 @@ export async function lintSkillDirectory(
 		}
 		if (
 			frontmatter.isolatedContext !== undefined &&
-			typeof frontmatter.isolatedContext !== "boolean"
+			!isBooleanFrontmatterValue(frontmatter.isolatedContext)
 		) {
 			issues.push(
 				issue(
@@ -460,7 +525,7 @@ export async function lintSkillDirectory(
 
 export async function lintSkillPaths(
 	paths: string[],
-	options: { describeToolbox?: boolean } = {},
+	options: SkillLintOptions = {},
 ): Promise<SkillLintResult[]> {
 	const results: SkillLintResult[] = [];
 	for (const path of paths) {

@@ -8,10 +8,14 @@ import { handleSkillCommand } from "../src/cli/commands/skill.js";
 import { buildSkillArtifactMetadata } from "../src/skills/artifact-metadata.js";
 import {
 	hasSkillLintErrors,
+	isWindowsRunnableToolboxEntry,
 	lintSkillDirectory,
 	loadSkills,
 	parseFrontmatter,
 	scaffoldSkill,
+	skillToDict,
+	toolboxDescribeSpawnCommand,
+	toolboxDescribeSpawnOptions,
 } from "../src/skills/index.js";
 
 const tempDirs: string[] = [];
@@ -53,6 +57,7 @@ describe("skill package format", () => {
 				2,
 			),
 		);
+		writeFileSync(join(skillDir, "mcp.json.example"), "{}\n");
 		writeFileSync(
 			join(skillDir, "reference", "rubric.md"),
 			"# Rubric\n\nFind bugs before style notes.\n",
@@ -75,6 +80,29 @@ describe("skill package format", () => {
 		expect(skills[0]?.resourceDirs.mcpJsonPath).toBe(
 			join(skillDir, "mcp.json"),
 		);
+		expect(skills[0]?.resources.map((resource) => resource.name)).not.toContain(
+			"mcp.json",
+		);
+		expect(skills[0]?.resources.map((resource) => resource.name)).not.toContain(
+			"mcp.json.example",
+		);
+	});
+
+	it("accepts quoted isolatedContext consistently across load and lint", async () => {
+		const workspace = tempRoot();
+		const skillDir = join(workspace, ".maestro", "skills", "reviewing-prs");
+		await mkdir(skillDir, { recursive: true });
+		writeFileSync(
+			join(skillDir, "SKILL.md"),
+			`---\nname: reviewing-prs\ndescription: "Review pull requests. Use when the user asks for PR review."\nisolatedContext: "true"\n---\n\n# Reviewing PRs\n`,
+		);
+
+		const lintResult = await lintSkillDirectory(skillDir);
+		const loaded = loadSkills(workspace, { includeSystem: false });
+
+		expect(hasSkillLintErrors([lintResult])).toBe(false);
+		expect(loaded.errors).toEqual([]);
+		expect(loaded.skills[0]?.isolatedContext).toBe(true);
 	});
 
 	it("coerces scalar metadata frontmatter values to strings", async () => {
@@ -96,6 +124,48 @@ describe("skill package format", () => {
 		});
 		expect(buildSkillArtifactMetadata(skills[0]!).version).toBe("1.2");
 		expect(buildSkillArtifactMetadata(skills[0]!).workspaceId).toBe("42");
+	});
+
+	it("does not expose non-string license frontmatter values", async () => {
+		const workspace = tempRoot();
+		const skillDir = join(workspace, ".maestro", "skills", "shipping-releases");
+		await mkdir(skillDir, { recursive: true });
+		writeFileSync(
+			join(skillDir, "SKILL.md"),
+			`---\nname: shipping-releases\ndescription: "Ship releases. Use when the user asks for release validation."\nlicense: 2.1\ncompatibility: ">=0.10"\n---\n\n# Shipping Releases\n`,
+		);
+
+		const { skills, errors } = loadSkills(workspace, { includeSystem: false });
+
+		expect(errors).toEqual([]);
+		expect(skills[0]?.license).toBeUndefined();
+		expect(skills[0]?.compatibility).toBe(">=0.10");
+		expect(skillToDict(skills[0]!)).not.toHaveProperty("license");
+	});
+
+	it("rejects non-string compatibility metadata fields", async () => {
+		const workspace = tempRoot();
+		const skillDir = join(workspace, ".maestro", "skills", "shipping-releases");
+		await mkdir(skillDir, { recursive: true });
+		writeFileSync(
+			join(skillDir, "SKILL.md"),
+			`---\nname: shipping-releases\ndescription: "Ship releases. Use when the user asks for release validation."\ncompatibility: 0\n---\n\n# Shipping Releases\n`,
+		);
+
+		const lintResult = await lintSkillDirectory(skillDir);
+		const loaded = loadSkills(workspace, { includeSystem: false });
+
+		expect(hasSkillLintErrors([lintResult])).toBe(true);
+		expect(lintResult.issues).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					code: "invalid_compatibility",
+					severity: "error",
+				}),
+			]),
+		);
+		expect(loaded.skills).toEqual([]);
+		expect(loaded.errors[0]?.code).toBe("INVALID_COMPATIBILITY");
 	});
 
 	it("fails lint when bundled MCP tools are unfiltered", async () => {
@@ -222,6 +292,36 @@ describe("skill package format", () => {
 		expect(errors.join("\n")).toContain("1 skill load warning(s).");
 	});
 
+	it("classifies Windows toolbox entries by executable extension", () => {
+		expect(isWindowsRunnableToolboxEntry("tool.cmd", ".CMD;.EXE")).toBe(true);
+		expect(isWindowsRunnableToolboxEntry("tool.exe", ".CMD;.EXE")).toBe(true);
+		expect(isWindowsRunnableToolboxEntry("tool.ps1", ".CMD;.EXE")).toBe(false);
+		expect(isWindowsRunnableToolboxEntry("tool")).toBe(false);
+	});
+
+	it("runs Windows toolbox describe checks through the shell", () => {
+		expect(toolboxDescribeSpawnOptions({ platform: "win32" })).toEqual(
+			expect.objectContaining({
+				encoding: "utf8",
+				shell: true,
+				timeout: 5000,
+			}),
+		);
+		expect(
+			toolboxDescribeSpawnOptions({ platform: "darwin" }),
+		).not.toHaveProperty("shell");
+		expect(
+			toolboxDescribeSpawnCommand("C:\\Program Files\\tool.cmd", {
+				platform: "win32",
+			}),
+		).toBe('"C:\\Program Files\\tool.cmd"');
+		expect(
+			toolboxDescribeSpawnCommand("/usr/local/bin/tool", {
+				platform: "darwin",
+			}),
+		).toBe("/usr/local/bin/tool");
+	});
+
 	it("scaffolds a package that passes lint", async () => {
 		const root = tempRoot();
 		const scaffold = scaffoldSkill(root, "processing-incidents", {
@@ -243,6 +343,38 @@ describe("skill package format", () => {
 			]),
 		);
 		expect(hasSkillLintErrors([result])).toBe(false);
+	});
+
+	it("validates toolbox executables with Windows runnable shapes", async () => {
+		const root = tempRoot();
+		const invalidSkillDir = join(root, "invalid-toolbox");
+		const validSkillDir = join(root, "valid-toolbox");
+		await mkdir(join(invalidSkillDir, "toolbox"), { recursive: true });
+		await mkdir(join(validSkillDir, "toolbox"), { recursive: true });
+		writeFileSync(
+			join(invalidSkillDir, "SKILL.md"),
+			`---\nname: invalid-toolbox\ndescription: "Run toolbox commands. Use when testing Windows executable validation."\n---\n\n# Invalid Toolbox\n`,
+		);
+		writeFileSync(join(invalidSkillDir, "toolbox", "run"), "echo nope\n");
+		writeFileSync(
+			join(validSkillDir, "SKILL.md"),
+			`---\nname: valid-toolbox\ndescription: "Run toolbox commands. Use when testing Windows executable validation."\n---\n\n# Valid Toolbox\n`,
+		);
+		writeFileSync(join(validSkillDir, "toolbox", "run.cmd"), "@echo off\n");
+
+		const invalidResult = await lintSkillDirectory(invalidSkillDir, {
+			platform: "win32",
+		});
+		const validResult = await lintSkillDirectory(validSkillDir, {
+			platform: "win32",
+		});
+
+		expect(invalidResult.issues).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ code: "toolbox_not_executable" }),
+			]),
+		);
+		expect(hasSkillLintErrors([validResult])).toBe(false);
 	});
 
 	it("preserves backslashes in scaffolded descriptions", () => {

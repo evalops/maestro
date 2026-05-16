@@ -27,6 +27,15 @@ import { createLogger } from "../utils/logger.js";
 import { promptSafeText } from "../utils/prompt-safe-text.js";
 
 const logger = createLogger("skills:loader");
+const LEGACY_FLAT_RESOURCE_EXCLUDES = new Set([
+	"scripts",
+	"reference",
+	"references",
+	"assets",
+	"toolbox",
+	"mcp.json",
+	"mcp.json.example",
+]);
 
 /** Maximum lengths per Agent Skills spec */
 const MAX_NAME_LENGTH = 64;
@@ -296,7 +305,7 @@ function validateDescription(description: string): string | null {
 /**
  * Validate compatibility per Agent Skills spec.
  */
-function validateCompatibility(compatibility: string): string | null {
+function validateCompatibility(compatibility: unknown): string | null {
 	if (typeof compatibility !== "string") {
 		return "Compatibility must be a string";
 	}
@@ -446,10 +455,8 @@ function loadSkillFromDirectory(
 		}
 
 		// Validate compatibility if present
-		if (frontmatter.compatibility) {
-			const compatError = validateCompatibility(
-				frontmatter.compatibility as string,
-			);
+		if (frontmatter.compatibility !== undefined) {
+			const compatError = validateCompatibility(frontmatter.compatibility);
 			if (compatError) {
 				return new SkillLoadError(
 					compatError,
@@ -504,11 +511,7 @@ function loadSkillFromDirectory(
 			const files = readdirSync(skillDir);
 			for (const file of files) {
 				if (file.toLowerCase() === "skill.md") continue;
-				if (
-					["scripts", "reference", "references", "assets", "toolbox"].includes(
-						file,
-					)
-				) {
+				if (LEGACY_FLAT_RESOURCE_EXCLUDES.has(file.toLowerCase())) {
 					continue;
 				}
 				const filePath = join(skillDir, file);
@@ -531,8 +534,8 @@ function loadSkillFromDirectory(
 		const skill: LoadedSkill = {
 			name,
 			description,
-			license: frontmatter.license as string | undefined,
-			compatibility: frontmatter.compatibility as string | undefined,
+			license: stringValue(frontmatter.license),
+			compatibility: stringValue(frontmatter.compatibility),
 			allowedTools: stringArrayValue(frontmatter["allowed-tools"]),
 			builtinTools: stringArrayValue(frontmatter["builtin-tools"]),
 			argumentHint: stringValue(frontmatter["argument-hint"]),
