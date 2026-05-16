@@ -191,6 +191,30 @@ function booleanValue(value: unknown): boolean | undefined {
 	return undefined;
 }
 
+function metadataRecordValue(
+	value: unknown,
+): Record<string, string> | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return undefined;
+	}
+
+	const metadata: Record<string, string> = {};
+	for (const [key, entry] of Object.entries(value)) {
+		if (
+			typeof entry !== "string" &&
+			typeof entry !== "number" &&
+			typeof entry !== "boolean"
+		) {
+			continue;
+		}
+		const normalized = String(entry).trim();
+		if (normalized.length > 0) {
+			metadata[key] = normalized;
+		}
+	}
+	return Object.keys(metadata).length > 0 ? metadata : undefined;
+}
+
 /**
  * Validate skill name per Agent Skills spec.
  */
@@ -477,7 +501,7 @@ function loadSkillFromDirectory(
 			model: stringValue(frontmatter.model),
 			mode: stringValue(frontmatter.mode),
 			isolatedContext: booleanValue(frontmatter.isolatedContext),
-			metadata: frontmatter.metadata as Record<string, string> | undefined,
+			metadata: metadataRecordValue(frontmatter.metadata),
 			// Legacy fields for backwards compatibility
 			tags: Array.isArray(frontmatter.tags)
 				? (frontmatter.tags as string[])

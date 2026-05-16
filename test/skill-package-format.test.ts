@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseArgs } from "../src/cli/args.js";
 import { handleSkillCommand } from "../src/cli/commands/skill.js";
+import { buildSkillArtifactMetadata } from "../src/skills/artifact-metadata.js";
 import {
 	hasSkillLintErrors,
 	lintSkillDirectory,
@@ -74,6 +75,27 @@ describe("skill package format", () => {
 		expect(skills[0]?.resourceDirs.mcpJsonPath).toBe(
 			join(skillDir, "mcp.json"),
 		);
+	});
+
+	it("coerces scalar metadata frontmatter values to strings", async () => {
+		const workspace = tempRoot();
+		const skillDir = join(workspace, ".maestro", "skills", "shipping-releases");
+		await mkdir(skillDir, { recursive: true });
+		writeFileSync(
+			join(skillDir, "SKILL.md"),
+			`---\nname: shipping-releases\ndescription: "Ship releases. Use when the user asks for release validation."\nmetadata:\n  currentVersion: 1.2\n  workspaceId: 42\n  dryRun: true\n  nested:\n    ignored: true\n---\n\n# Shipping Releases\n`,
+		);
+
+		const { skills, errors } = loadSkills(workspace, { includeSystem: false });
+
+		expect(errors).toEqual([]);
+		expect(skills[0]?.metadata).toEqual({
+			currentVersion: "1.2",
+			workspaceId: "42",
+			dryRun: "true",
+		});
+		expect(buildSkillArtifactMetadata(skills[0]!).version).toBe("1.2");
+		expect(buildSkillArtifactMetadata(skills[0]!).workspaceId).toBe("42");
 	});
 
 	it("fails lint when bundled MCP tools are unfiltered", async () => {
