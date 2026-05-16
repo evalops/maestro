@@ -56,6 +56,7 @@ describe("skill package format", () => {
 				2,
 			),
 		);
+		writeFileSync(join(skillDir, "mcp.json.example"), "{}\n");
 		writeFileSync(
 			join(skillDir, "reference", "rubric.md"),
 			"# Rubric\n\nFind bugs before style notes.\n",
@@ -77,6 +78,12 @@ describe("skill package format", () => {
 		expect(skills[0]?.resourceDirs.toolboxDir).toBe(join(skillDir, "toolbox"));
 		expect(skills[0]?.resourceDirs.mcpJsonPath).toBe(
 			join(skillDir, "mcp.json"),
+		);
+		expect(skills[0]?.resources.map((resource) => resource.name)).not.toContain(
+			"mcp.json",
+		);
+		expect(skills[0]?.resources.map((resource) => resource.name)).not.toContain(
+			"mcp.json.example",
 		);
 	});
 

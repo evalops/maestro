@@ -27,6 +27,15 @@ import { createLogger } from "../utils/logger.js";
 import { promptSafeText } from "../utils/prompt-safe-text.js";
 
 const logger = createLogger("skills:loader");
+const LEGACY_FLAT_RESOURCE_EXCLUDES = new Set([
+	"scripts",
+	"reference",
+	"references",
+	"assets",
+	"toolbox",
+	"mcp.json",
+	"mcp.json.example",
+]);
 
 /** Maximum lengths per Agent Skills spec */
 const MAX_NAME_LENGTH = 64;
@@ -504,11 +513,7 @@ function loadSkillFromDirectory(
 			const files = readdirSync(skillDir);
 			for (const file of files) {
 				if (file.toLowerCase() === "skill.md") continue;
-				if (
-					["scripts", "reference", "references", "assets", "toolbox"].includes(
-						file,
-					)
-				) {
+				if (LEGACY_FLAT_RESOURCE_EXCLUDES.has(file.toLowerCase())) {
 					continue;
 				}
 				const filePath = join(skillDir, file);
