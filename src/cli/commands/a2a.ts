@@ -594,6 +594,9 @@ async function loadA2AReplyLedgerEntry(
 			(entry) => entry.taskId === taskId,
 		);
 	} catch (error) {
+		if (isAbortError(error)) {
+			throw error;
+		}
 		console.error(
 			chalk.yellow(
 				`A2A task ledger warning: could not load task reply context: ${errorMessage(error)}`,
