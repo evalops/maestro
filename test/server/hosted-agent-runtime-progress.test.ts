@@ -355,12 +355,24 @@ describe("hosted AgentRuntime progress recorder", () => {
 
 		recorder.recordAgentEvent({
 			type: "tool_execution_start",
+			toolCallId: "spawn-call",
+			toolName: "codex.subagent.spawnAgent",
+			displayName: "Codex subagent: spawn",
+			args: {
+				codexTool: "spawnAgent",
+				receiverThreadIds: ["child-thread-1"],
+				childRunIds: ["agent-run-child-1"],
+				prompt: "Review the implementation",
+			},
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
 			toolCallId: "multi-send-call",
 			toolName: "codex.subagent.sendInput",
 			displayName: "Codex subagent: send input",
 			args: {
 				codexTool: "sendInput",
-				receiverThreadIds: ["child-thread-1", "child-thread-2"],
+				receiverThreadIds: ["child-thread-1"],
 				childRunIds: ["agent-run-child-1", "agent-run-child-2"],
 				prompt: "Compare the two implementations",
 			},
@@ -368,17 +380,21 @@ describe("hosted AgentRuntime progress recorder", () => {
 
 		await recorder.flush();
 
-		const workItem = recordWorkItem.mock.calls[0]?.[0].workItem;
+		const workItem = recordWorkItem.mock.calls
+			.map((call) => call[0].workItem)
+			.find((item) => item.id === "maestro:session_1:work:multi-send-call");
 		expect(workItem).toEqual(
 			expect.objectContaining({
 				id: "maestro:session_1:work:multi-send-call",
 				payload: expect.objectContaining({
-					receiver_thread_ids: ["child-thread-1", "child-thread-2"],
+					receiver_thread_ids: ["child-thread-1"],
 					child_run_ids: ["agent-run-child-1", "agent-run-child-2"],
+					linked_work_item_ids: ["maestro:session_1:work:spawn-call"],
 				}),
 			}),
 		);
 		expect(workItem).not.toHaveProperty("ownerChildRunId");
+		expect(workItem).not.toHaveProperty("parentWorkItemId");
 	});
 
 	it("records pending server requests as waits and resumes them on resolution", async () => {

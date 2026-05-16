@@ -540,7 +540,9 @@ export class HostedAgentRuntimeProgressRecorder {
 		const linkedWorkItemIds =
 			this.codexSubagentLinkedWorkItemIds(receiverThreadIds);
 		const parentWorkItemId =
-			linkedWorkItemIds.length === 1 ? linkedWorkItemIds[0] : undefined;
+			ownerChildRunId && linkedWorkItemIds.length === 1
+				? linkedWorkItemIds[0]
+				: undefined;
 		const workItemId = this.workItemId(event.toolCallId);
 		this.codexSubagentReceiverThreadIds.set(
 			event.toolCallId,
