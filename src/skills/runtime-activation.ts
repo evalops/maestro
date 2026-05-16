@@ -70,7 +70,7 @@ export interface SkillRuntimeMcpActivation {
 
 export interface SkillRuntimeMcpServer {
 	name: string;
-	command?: string;
+	command: string;
 	includeTools: string[];
 }
 
