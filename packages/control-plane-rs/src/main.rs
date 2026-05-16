@@ -5252,11 +5252,86 @@ fn codex_collab_args_from_jsonl_item(item: &Value, canonical_tool: &str) -> Valu
         "status": item.get("status").cloned().unwrap_or(Value::Null),
         "senderThreadId": item.get("sender_thread_id").cloned().unwrap_or(Value::Null),
         "receiverThreadIds": item.get("receiver_thread_ids").cloned().unwrap_or_else(|| Value::Array(Vec::new())),
+        "childRunIds": codex_collab_child_run_ids_from_item(item),
         "prompt": item.get("prompt").cloned().unwrap_or(Value::Null),
         "model": item.get("model").cloned().unwrap_or(Value::Null),
         "reasoningEffort": item.get("reasoning_effort").cloned().unwrap_or(Value::Null),
         "agentsStates": item.get("agents_states").cloned().unwrap_or_else(|| Value::Object(Map::new()))
     })
+}
+
+fn codex_collab_child_run_ids_from_item(item: &Value) -> Value {
+    for key in ["child_run_ids", "childRunIds"] {
+        if let Some(ids) = item.get(key).and_then(Value::as_array) {
+            let child_run_ids = ids
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(|id| Value::String(id.to_string()))
+                .collect::<Vec<_>>();
+            if !child_run_ids.is_empty() {
+                return Value::Array(child_run_ids);
+            }
+        }
+    }
+
+    let child_run_ids = item
+        .get("receiver_thread_ids")
+        .and_then(Value::as_array)
+        .map(|ids| {
+            ids.iter()
+                .filter_map(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(|id| Value::String(format!("codex-thread:{id}")))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    Value::Array(child_run_ids)
+}
+
+fn codex_bridge_tool_args(tool_name: &str, args: Value) -> Value {
+    if !tool_name.starts_with("codex.subagent.") {
+        return args;
+    }
+    let mut object = match args {
+        Value::Object(object) => object,
+        other => return other,
+    };
+    let has_child_run_ids = object
+        .get("childRunIds")
+        .and_then(Value::as_array)
+        .is_some_and(|ids| {
+            ids.iter()
+                .any(|id| id.as_str().is_some_and(|id| !id.is_empty()))
+        });
+    if has_child_run_ids {
+        return Value::Object(object);
+    }
+    if let Some(ids) = object.get("child_run_ids").and_then(Value::as_array) {
+        let child_run_ids = ids
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .map(|id| Value::String(id.to_string()))
+            .collect::<Vec<_>>();
+        if !child_run_ids.is_empty() {
+            object.insert("childRunIds".to_string(), Value::Array(child_run_ids));
+            return Value::Object(object);
+        }
+    }
+    let child_run_ids = object
+        .get("receiverThreadIds")
+        .and_then(Value::as_array)
+        .map(|ids| {
+            ids.iter()
+                .filter_map(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(|id| Value::String(format!("codex-thread:{id}")))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    object.insert("childRunIds".to_string(), Value::Array(child_run_ids));
+    Value::Object(object)
 }
 
 fn codex_canonical_collab_tool(tool: &str) -> String {
@@ -5274,6 +5349,7 @@ fn codex_bridge_tool_start_event(
     tool_name: &str,
     args: Value,
 ) -> CodexBridgeToolEvent {
+    let args = codex_bridge_tool_args(tool_name, args);
     CodexBridgeToolEvent {
         event_type: "tool_execution_start",
         tool_call_id: tool_call_id.to_string(),
@@ -8481,11 +8557,36 @@ mod tests {
             output.tool_events[0].args["receiverThreadIds"],
             serde_json::json!(["thread-child"])
         );
+        assert_eq!(
+            output.tool_events[0].args["childRunIds"],
+            serde_json::json!(["codex-thread:thread-child"])
+        );
         assert_eq!(output.tool_events[1].event_type, "tool_execution_end");
         assert_eq!(output.tool_events[1].is_error, Some(false));
         assert_eq!(
             output.tool_events[1].result["details"]["agentsStates"]["thread-child"]["status"],
             "completed"
+        );
+    }
+
+    #[test]
+    fn assistant_output_from_jsonl_preserves_explicit_codex_child_run_ids() {
+        let jsonl = r#"
+{"type":"item.started","item":{"id":"collab-call-1","type":"collab_tool_call","tool":"spawn_agent","sender_thread_id":"thread-main","receiver_thread_ids":["thread-child"],"child_run_ids":["agent-run-child-1"],"prompt":"Inspect routing","agents_states":{},"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"collab-call-1","type":"collab_tool_call","tool":"spawn_agent","sender_thread_id":"thread-main","receiver_thread_ids":["thread-child"],"child_run_ids":["agent-run-child-1"],"prompt":"Inspect routing","agents_states":{},"status":"completed"}}
+{"type":"turn","phase":"start","role":"assistant","turnId":"turn-1"}
+{"type":"item","subtype":"message_complete","turnId":"turn-1","data":{"text":"assistant text","stopReason":"stop"}}
+{"type":"turn","phase":"end","role":"assistant","turnId":"turn-1"}
+"#;
+        let output = assistant_output_from_jsonl(jsonl).expect("assistant output");
+
+        assert_eq!(
+            output.tool_events[0].args["childRunIds"],
+            serde_json::json!(["agent-run-child-1"])
+        );
+        assert_eq!(
+            output.tool_events[1].result["details"]["childRunIds"],
+            serde_json::json!(["agent-run-child-1"])
         );
     }
 
@@ -8992,6 +9093,10 @@ rl.on("line", (line) => {
         assert_eq!(start["toolCallId"], "collab-call-ws");
         assert_eq!(start["toolName"], "codex.subagent.spawnAgent");
         assert_eq!(start["args"]["receiverThreadIds"][0], "child-thread-ws");
+        assert_eq!(
+            start["args"]["childRunIds"][0],
+            "codex-thread:child-thread-ws"
+        );
         assert_eq!(end["toolCallId"], "collab-call-ws");
         assert_eq!(end["isError"], false);
         assert!(events.iter().any(|event| {

@@ -70,6 +70,7 @@ type CodexUserInput =
 	| { type: "image"; url: string };
 
 const DEFAULT_TURN_TIMEOUT_MS = 30 * 60_000;
+const CODEX_THREAD_CHILD_RUN_PREFIX = "codex-thread:";
 const CODEX_COLLAB_TOOLS = new Set([
 	"spawnAgent",
 	"sendInput",
@@ -85,6 +86,7 @@ type CodexCollabAgentToolCallItem = {
 	status: string;
 	senderThreadId: string;
 	receiverThreadIds: string[];
+	childRunIds?: string[];
 	prompt: string | null;
 	model: string | null;
 	reasoningEffort: string | null;
@@ -438,7 +440,10 @@ function isCodexCollabAgentToolCallItem(
 		typeof value.status !== "string" ||
 		typeof value.senderThreadId !== "string" ||
 		!Array.isArray(value.receiverThreadIds) ||
-		!value.receiverThreadIds.every((id) => typeof id === "string")
+		!value.receiverThreadIds.every((id) => typeof id === "string") ||
+		(value.childRunIds !== undefined &&
+			(!Array.isArray(value.childRunIds) ||
+				!value.childRunIds.every((id) => typeof id === "string")))
 	) {
 		return false;
 	}
@@ -512,11 +517,21 @@ function codexCollabArgs(
 		turnId: scope.turnId,
 		senderThreadId: item.senderThreadId,
 		receiverThreadIds: item.receiverThreadIds,
+		childRunIds: codexCollabChildRunIds(item),
 		prompt: item.prompt,
 		model: item.model,
 		reasoningEffort: item.reasoningEffort,
 		agentsStates: item.agentsStates,
 	};
+}
+
+function codexCollabChildRunIds(item: CodexCollabAgentToolCallItem): string[] {
+	if (item.childRunIds && item.childRunIds.length > 0) {
+		return item.childRunIds;
+	}
+	return item.receiverThreadIds.map(
+		(threadId) => `${CODEX_THREAD_CHILD_RUN_PREFIX}${threadId}`,
+	);
 }
 
 function codexCollabToolName(tool: string): string {
