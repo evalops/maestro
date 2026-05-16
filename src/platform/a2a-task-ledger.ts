@@ -68,7 +68,7 @@ const TERMINAL_STATE_PATTERN =
 const LEDGER_LOCK_RETRY_MS = 25;
 const LEDGER_LOCK_HEARTBEAT_MS = 10_000;
 const LEDGER_LOCK_STALE_MS = 30_000;
-const LEDGER_LOCK_TIMEOUT_MS = 5000;
+const LEDGER_LOCK_TIMEOUT_MS = LEDGER_LOCK_STALE_MS + LEDGER_LOCK_RETRY_MS;
 const LEDGER_LOCK_OWNER_FILE = "owner";
 const LEDGER_LOCK_HEARTBEAT_FILE = "heartbeat";
 
@@ -150,12 +150,15 @@ async function withA2ATaskLedgerLock<T>(
 			await writeLedgerLockMetadata(lockPath, lockToken);
 			break;
 		} catch (error) {
-			if (!hasNodeCode(error, "EEXIST") || Date.now() >= deadline) {
+			if (!hasNodeCode(error, "EEXIST")) {
 				throw error;
 			}
 			if (await isStaleLedgerLock(lockPath)) {
 				await rm(lockPath, { force: true, recursive: true });
 				continue;
+			}
+			if (Date.now() >= deadline) {
+				throw error;
 			}
 			await sleep(LEDGER_LOCK_RETRY_MS);
 		}
