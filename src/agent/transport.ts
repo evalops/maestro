@@ -1143,7 +1143,7 @@ export class ProviderTransport implements AgentTransport {
 			let currentAssistantMessage: AssistantMessage | null = null;
 			let completedAssistantMessage: AssistantMessage | null = null;
 			const toolCallsToExecute: ToolCall[] = [];
-			let toolResults: ToolResultMessage[] = [];
+			const toolResults: ToolResultMessage[] = [];
 			let steeringAfterTools: QueuedMessage<AppMessage>[] | null = null;
 			let pendingNextTurn = false;
 			let encounteredError = false;
