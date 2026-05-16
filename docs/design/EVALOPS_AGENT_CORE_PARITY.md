@@ -27,7 +27,7 @@ EvalOps Agent Core must feel local-first on day one and cloud-governed when atta
 
 | Hermes capability | EvalOps parity surface | First durable slice |
 | --- | --- | --- |
-| One installable OSS agent | `@evalops/maestro` public package | Keep Agent Core in Maestro, not a new repo |
+| One installable OSS agent | public Maestro package | Keep Agent Core in Maestro, not a new repo |
 | Progressive skills | `skills/`, `.maestro/skills`, `maestro skill` | Skill package linter/scaffolder |
 | Bundled MCP/tool plugins | Skill `mcp.json` and `toolbox/` | Require `includeTools` for all bundled MCP servers |
 | Local sessions and recall | Maestro sessions, run inspection, trajectories | Promote into a local AgentRuntime ledger |
