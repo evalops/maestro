@@ -41,7 +41,7 @@ export interface SkillScaffoldResult {
 	files: string[];
 }
 
-type SkillLintOptions = {
+export type SkillLintOptions = {
 	describeToolbox?: boolean;
 	platform?: NodeJS.Platform;
 };
@@ -342,6 +342,21 @@ export function isWindowsRunnableToolboxEntry(
 	);
 }
 
+export function toolboxDescribeSpawnOptions(options: SkillLintOptions = {}): {
+	encoding: "utf8";
+	env: NodeJS.ProcessEnv;
+	shell?: boolean;
+	timeout: number;
+} {
+	const platform = options.platform ?? process.platform;
+	return {
+		env: { ...process.env, MAESTRO_TOOLBOX_ACTION: "describe" },
+		encoding: "utf8",
+		timeout: 5000,
+		...(platform === "win32" ? { shell: true } : {}),
+	};
+}
+
 async function isExecutable(
 	path: string,
 	platform: NodeJS.Platform = process.platform,
@@ -381,11 +396,7 @@ async function validateToolbox(
 			continue;
 		}
 		if (options.describeToolbox) {
-			const result = spawnSync(path, {
-				env: { ...process.env, MAESTRO_TOOLBOX_ACTION: "describe" },
-				encoding: "utf8",
-				timeout: 5000,
-			});
+			const result = spawnSync(path, toolboxDescribeSpawnOptions(options));
 			if (result.status !== 0) {
 				issues.push(
 					issue(

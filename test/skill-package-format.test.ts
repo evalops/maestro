@@ -13,6 +13,7 @@ import {
 	loadSkills,
 	parseFrontmatter,
 	scaffoldSkill,
+	toolboxDescribeSpawnOptions,
 } from "../src/skills/index.js";
 
 const tempDirs: string[] = [];
@@ -245,6 +246,19 @@ describe("skill package format", () => {
 		expect(isWindowsRunnableToolboxEntry("tool.exe", ".CMD;.EXE")).toBe(true);
 		expect(isWindowsRunnableToolboxEntry("tool.ps1", ".CMD;.EXE")).toBe(false);
 		expect(isWindowsRunnableToolboxEntry("tool")).toBe(false);
+	});
+
+	it("runs Windows toolbox describe checks through the shell", () => {
+		expect(toolboxDescribeSpawnOptions({ platform: "win32" })).toEqual(
+			expect.objectContaining({
+				encoding: "utf8",
+				shell: true,
+				timeout: 5000,
+			}),
+		);
+		expect(
+			toolboxDescribeSpawnOptions({ platform: "darwin" }),
+		).not.toHaveProperty("shell");
 	});
 
 	it("scaffolds a package that passes lint", async () => {
