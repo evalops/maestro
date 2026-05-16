@@ -355,6 +355,27 @@ describe("skill package format", () => {
 		});
 	});
 
+	it("degrades oversized MCP configs to bounded activation warnings", async () => {
+		const workspace = tempRoot();
+		const skillDir = join(workspace, ".maestro", "skills", "oversized-mcp");
+		await mkdir(skillDir, { recursive: true });
+		writeFileSync(
+			join(skillDir, "SKILL.md"),
+			"---\nname: oversized-mcp\ndescription: Test oversized MCP activation surfaces.\n---\n\n# Oversized MCP\n",
+		);
+		writeFileSync(join(skillDir, "mcp.json"), " ".repeat(1024 * 1024 + 1));
+
+		const { skills, errors } = loadSkills(workspace, { includeSystem: false });
+
+		expect(errors).toEqual([]);
+		expect(
+			buildSkillRuntimeActivation(skills[0]!).toolPackage.mcp,
+		).toMatchObject({
+			servers: [],
+			warnings: [expect.stringContaining("mcp.json is too large to load")],
+		});
+	});
+
 	it("degrades unreadable toolbox directories to an empty activation", async () => {
 		if (process.platform === "win32" || process.getuid?.() === 0) {
 			return;

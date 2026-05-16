@@ -10,6 +10,8 @@ import { join } from "node:path";
 import { isWindowsRunnableToolboxEntry } from "./linter.js";
 import type { LoadedSkill, SkillResource } from "./loader.js";
 
+const MAX_MCP_JSON_BYTES = 1024 * 1024;
+
 export interface SkillRuntimeActivation {
 	name: string;
 	source: LoadedSkill["sourceType"];
@@ -203,6 +205,13 @@ function buildMcpActivation(
 	}
 
 	const warnings: string[] = [];
+	const stats = statSync(mcpJsonPath);
+	if (stats.size > MAX_MCP_JSON_BYTES) {
+		warnings.push(
+			`mcp.json is too large to load: ${stats.size} bytes exceeds ${MAX_MCP_JSON_BYTES} byte limit.`,
+		);
+		return { configPath: mcpJsonPath, servers: [], warnings };
+	}
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(readFileSync(mcpJsonPath, "utf8"));
