@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ComposerRunTimelineItem } from "@evalops/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseArgs } from "../../src/cli/args.js";
 import { handleRunCommand, testing } from "../../src/cli/commands/run.js";
@@ -216,13 +217,14 @@ describe("run command", () => {
 	function buildLedgerForEvents(
 		sessionId: string,
 		events: AgentTrajectoryEvent[],
+		timelineItems: ComposerRunTimelineItem[] = [],
 	) {
 		return buildAgentRuntimeLedgerReport({
 			session: { id: sessionId },
 			timeline: {
 				source: "local",
 				generatedAt: "2026-05-09T10:00:03.000Z",
-				items: [],
+				items: timelineItems,
 			},
 			trajectory: {
 				schemaVersion: "evalops.maestro.agent-trajectory.v1",
@@ -249,6 +251,23 @@ describe("run command", () => {
 				deltas: [],
 			},
 		});
+	}
+
+	function timelineItem(
+		sessionId: string,
+		item: Partial<ComposerRunTimelineItem> &
+			Pick<ComposerRunTimelineItem, "id">,
+	): ComposerRunTimelineItem {
+		return {
+			sessionId,
+			timestamp: "2026-05-09T10:00:01.000Z",
+			type: "wait.pending",
+			title: "Wait pending",
+			visibility: "user",
+			source: "local",
+			status: "pending",
+			...item,
+		};
 	}
 
 	function makeLegacySessionDir(): { sessionDir: string; sessionId: string } {
@@ -515,7 +534,7 @@ describe("run command", () => {
 			kind: "tool_result",
 			state: "failed",
 			platformShape: {
-				stepKind: "AGENT_RUN_STEP_KIND_TOOL_RESULT",
+				stepKind: "AGENT_RUN_STEP_KIND_ERROR",
 				workItemKind: "AGENT_WORK_ITEM_KIND_TOOL_CALL",
 			},
 		});
@@ -921,6 +940,117 @@ describe("run command", () => {
 					operation.ledgerEntryId === "ledger:event-policy",
 			),
 		).toBe(false);
+	});
+
+	it("preserves wait type semantics from pending request kind", () => {
+		const sessionId = "session-wait-types";
+		const scenarios = [
+			{
+				id: "approval-wait",
+				pendingRequestKind: "approval",
+				waitType: "AGENT_RUN_WAIT_TYPE_APPROVAL",
+			},
+			{
+				id: "tool-retry-wait",
+				pendingRequestKind: "tool_retry",
+				waitType: "AGENT_RUN_WAIT_TYPE_APPROVAL",
+			},
+			{
+				id: "client-tool-wait",
+				pendingRequestKind: "client_tool",
+				waitType: "AGENT_RUN_WAIT_TYPE_INPUT",
+			},
+			{
+				id: "mcp-elicitation-wait",
+				pendingRequestKind: "mcp_elicitation",
+				waitType: "AGENT_RUN_WAIT_TYPE_INPUT",
+			},
+			{
+				id: "user-input-wait",
+				pendingRequestKind: "user_input",
+				waitType: "AGENT_RUN_WAIT_TYPE_INPUT",
+			},
+		] as const;
+		const ledger = buildLedgerForEvents(
+			sessionId,
+			scenarios.map((scenario, index) => ({
+				id: `event-${scenario.id}`,
+				sequence: index + 1,
+				timestamp: `2026-05-09T10:00:0${index + 1}.000Z`,
+				kind: "wait",
+				phase: "wait",
+				actor: "platform",
+				type: "wait.pending",
+				status: "pending",
+				visibility: "user",
+				source: "local",
+				title: `Wait for ${scenario.pendingRequestKind}`,
+				evidence: [{ kind: "timeline_item", id: scenario.id }],
+			})),
+			scenarios.map((scenario) =>
+				timelineItem(sessionId, {
+					id: scenario.id,
+					pendingRequestId: scenario.id,
+					pendingRequestKind: scenario.pendingRequestKind,
+				}),
+			),
+		);
+
+		for (const scenario of scenarios) {
+			expect(
+				ledger.entries.find((entry) => entry.timelineItemId === scenario.id)
+					?.platformShape.waitType,
+			).toBe(scenario.waitType);
+			expect(
+				ledger.promotion.operations.find(
+					(operation) =>
+						operation.operation === "wait_run" &&
+						operation.ledgerEntryId === `ledger:event-${scenario.id}`,
+				),
+			).toMatchObject({
+				operation: "wait_run",
+				payload: { waitType: scenario.waitType },
+			});
+		}
+	});
+
+	it("classifies failed tool results as error steps", () => {
+		const ledger = buildLedgerForEvents("session-failed-tool", [
+			{
+				id: "event-tool-failed",
+				sequence: 1,
+				timestamp: "2026-05-09T10:00:01.000Z",
+				kind: "tool",
+				phase: "verify",
+				actor: "tool",
+				type: "tool.failed",
+				status: "failed",
+				visibility: "user",
+				source: "local",
+				title: "Tool failed",
+				toolName: "mcp__platform__search",
+				evidence: [],
+			},
+		]);
+
+		expect(ledger.entries[0]).toMatchObject({
+			kind: "tool_result",
+			state: "failed",
+			platformShape: { stepKind: "AGENT_RUN_STEP_KIND_ERROR" },
+		});
+		expect(
+			ledger.promotion.operations.find(
+				(operation) =>
+					operation.operation === "record_run_step" &&
+					operation.ledgerEntryId === "ledger:event-tool-failed",
+			),
+		).toMatchObject({
+			operation: "record_run_step",
+			payload: {
+				kind: "AGENT_RUN_STEP_KIND_ERROR",
+				state: "failed",
+			},
+		});
 	});
 
 	it("maps blocked ledger entries to valid Platform run-step states", () => {

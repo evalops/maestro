@@ -251,13 +251,13 @@ function stepKindForEntry(
 	entryKind: AgentRuntimeLedgerEntryKind,
 	event: AgentTrajectoryEvent,
 ): string {
+	if (event.status === "failed") return "AGENT_RUN_STEP_KIND_ERROR";
 	if (entryKind === "model_call") return "AGENT_RUN_STEP_KIND_MODEL_CALL";
 	if (entryKind === "tool_call") return "AGENT_RUN_STEP_KIND_TOOL_CALL_INTENT";
 	if (entryKind === "tool_result") return "AGENT_RUN_STEP_KIND_TOOL_RESULT";
 	if (entryKind === "wait" || entryKind === "governance") {
 		return "AGENT_RUN_STEP_KIND_APPROVAL_WAIT";
 	}
-	if (event.status === "failed") return "AGENT_RUN_STEP_KIND_ERROR";
 	return "AGENT_RUN_STEP_KIND_SYSTEM";
 }
 
@@ -287,19 +287,40 @@ function workItemKindForEntry(kind: AgentRuntimeLedgerEntryKind): string {
 
 function waitTypeForEntry(
 	kind: AgentRuntimeLedgerEntryKind,
+	timelineItem?: ComposerRunTimelineItem,
 ): string | undefined {
-	if (kind === "wait") {
-		return "AGENT_RUN_WAIT_TYPE_APPROVAL";
+	if (kind !== "wait") {
+		return undefined;
 	}
+	switch (timelineItem?.pendingRequestKind) {
+		case "approval":
+		case "tool_retry":
+			return "AGENT_RUN_WAIT_TYPE_APPROVAL";
+		case "client_tool":
+		case "mcp_elicitation":
+		case "user_input":
+			return "AGENT_RUN_WAIT_TYPE_INPUT";
+	}
+	if (timelineItem?.approvalRequestId) return "AGENT_RUN_WAIT_TYPE_APPROVAL";
+	if (timelineItem?.pendingRequestId) return "AGENT_RUN_WAIT_TYPE_INPUT";
 	return undefined;
 }
 
 function buildLedgerEntries(
+	timeline: ComposerRunTimelineResponse,
 	trajectory: AgentTrajectoryReport,
 ): AgentRuntimeLedgerEntry[] {
+	const timelineItemsById = new Map(
+		timeline.items.map((item) => [item.id, item] as const),
+	);
 	return trajectory.events.map((event) => {
 		const kind = kindForEvent(event);
 		const state = stateForStatus(event.status);
+		const timelineItemId = timelineIdForEvent(event);
+		const timelineItem = timelineItemId
+			? timelineItemsById.get(timelineItemId)
+			: undefined;
+		const waitType = waitTypeForEntry(kind, timelineItem);
 		return {
 			id: `ledger:${event.id}`,
 			sequence: event.sequence,
@@ -313,9 +334,7 @@ function buildLedgerEntries(
 			visibility: event.visibility,
 			source: event.source,
 			trajectoryEventId: event.id,
-			...(timelineIdForEvent(event)
-				? { timelineItemId: timelineIdForEvent(event) }
-				: {}),
+			...(timelineItemId ? { timelineItemId } : {}),
 			...(event.toolName ? { toolName: event.toolName } : {}),
 			...(event.summary ? { summary: event.summary } : {}),
 			relatedIds: event.relatedIds ?? [],
@@ -323,7 +342,7 @@ function buildLedgerEntries(
 			platformShape: {
 				stepKind: stepKindForEntry(kind, event),
 				workItemKind: workItemKindForEntry(kind),
-				...(waitTypeForEntry(kind) ? { waitType: waitTypeForEntry(kind) } : {}),
+				...(waitType ? { waitType } : {}),
 			},
 		};
 	});
@@ -510,7 +529,7 @@ function buildPromotionPlan(
 export function buildAgentRuntimeLedgerReport(
 	options: BuildAgentRuntimeLedgerOptions,
 ): AgentRuntimeLedgerReport {
-	const entries = buildLedgerEntries(options.trajectory);
+	const entries = buildLedgerEntries(options.timeline, options.trajectory);
 	const byKind: Record<string, number> = {};
 	const byState: Record<string, number> = {};
 	for (const entry of entries) {
