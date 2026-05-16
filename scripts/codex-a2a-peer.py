@@ -326,6 +326,25 @@ def cmd_task(registry: dict[str, Any], args: argparse.Namespace) -> None:
     print_task(payload, args.json)
 
 
+def cmd_cancel(registry: dict[str, Any], args: argparse.Namespace) -> None:
+    peer_arg = args.peer
+    task_id = args.task_id
+    if not task_id:
+        if not peer_arg:
+            raise PeerError("task id is required")
+        task_id = peer_arg
+        peer_arg = None
+    _, peer = resolve_peer(registry, peer_arg)
+    payload = request_json(
+        registry,
+        peer,
+        "POST",
+        f"/tasks/{quote(task_id, safe='')}:cancel",
+        timeout_seconds=args.timeout,
+    )
+    print_task(payload, args.json)
+
+
 def cmd_tasks(registry: dict[str, Any], args: argparse.Namespace) -> None:
     _, peer = resolve_peer(registry, args.peer)
     payload = request_json(registry, peer, "GET", "/tasks", timeout_seconds=args.timeout)
@@ -375,6 +394,13 @@ def build_parser() -> argparse.ArgumentParser:
     task_parser.add_argument("--json", action="store_true", help="print JSON")
     task_parser.add_argument("--timeout", type=float, help="request timeout in seconds")
     task_parser.set_defaults(handler=cmd_task)
+
+    cancel_parser = subcommands.add_parser("cancel", help="cancel a task on a peer")
+    cancel_parser.add_argument("peer", nargs="?", help="peer name")
+    cancel_parser.add_argument("task_id", nargs="?", help="task id")
+    cancel_parser.add_argument("--json", action="store_true", help="print JSON")
+    cancel_parser.add_argument("--timeout", type=float, help="request timeout in seconds")
+    cancel_parser.set_defaults(handler=cmd_cancel)
 
     tasks_parser = subcommands.add_parser("tasks", help="list retained tasks from a peer")
     tasks_parser.add_argument("peer", nargs="?", help="peer name")
