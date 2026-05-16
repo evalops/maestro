@@ -242,6 +242,20 @@ describe("ProviderTransport provider-owned tool events", () => {
 				}),
 			]),
 		);
+		const assistantMessageEndIndex = events.findIndex(
+			(event) =>
+				event.type === "message_end" && event.message.role === "assistant",
+		);
+		const providerToolMessageStartIndex = events.findIndex(
+			(event) =>
+				event.type === "message_start" &&
+				event.message.role === "toolResult" &&
+				event.message.toolCallId === "collab-call-1",
+		);
+		expect(assistantMessageEndIndex).toBeGreaterThanOrEqual(0);
+		expect(providerToolMessageStartIndex).toBeGreaterThan(
+			assistantMessageEndIndex,
+		);
 		const turnEnd = events.find((event) => event.type === "turn_end");
 		expect(turnEnd).toMatchObject({
 			type: "turn_end",
@@ -556,6 +570,19 @@ describe("ProviderTransport provider-owned tool events", () => {
 				}),
 			]),
 		);
+		const providerToolMessageEvents = events.filter(
+			(
+				event,
+			): event is Extract<
+				AgentEvent,
+				{ type: "message_start" | "message_end" }
+			> =>
+				(event.type === "message_start" || event.type === "message_end") &&
+				event.message.role === "toolResult",
+		);
+		expect(
+			providerToolMessageEvents.map((event) => event.message.toolCallId),
+		).not.toContain("stale-provider-call");
 	});
 
 	it("lets Codex dynamic tool callbacks wait for user approval instead of auto-denying", async () => {

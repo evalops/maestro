@@ -1144,6 +1144,7 @@ export class ProviderTransport implements AgentTransport {
 			let completedAssistantMessage: AssistantMessage | null = null;
 			const toolCallsToExecute: ToolCall[] = [];
 			const toolResults: ToolResultMessage[] = [];
+			const pendingProviderToolResultMessages: ToolResultMessage[] = [];
 			let steeringAfterTools: QueuedMessage<AppMessage>[] | null = null;
 			let pendingNextTurn = false;
 			let encounteredError = false;
@@ -1179,6 +1180,7 @@ export class ProviderTransport implements AgentTransport {
 					currentAssistantMessage = null;
 					toolCallsToExecute.length = 0;
 					toolResults.length = 0;
+					pendingProviderToolResultMessages.length = 0;
 					pendingNextTurn = false;
 
 					const backoffMs = Math.min(
@@ -1294,8 +1296,7 @@ export class ProviderTransport implements AgentTransport {
 
 						if (event.type === "provider_tool_execution_end") {
 							toolResults.push(event.result);
-							yield { type: "message_start", message: event.result };
-							yield { type: "message_end", message: event.result };
+							pendingProviderToolResultMessages.push(event.result);
 							yield {
 								type: "tool_execution_end",
 								toolCallId: event.toolCallId,
@@ -1362,6 +1363,11 @@ export class ProviderTransport implements AgentTransport {
 									}
 								}
 							}
+							for (const message of pendingProviderToolResultMessages) {
+								yield { type: "message_start", message };
+								yield { type: "message_end", message };
+							}
+							pendingProviderToolResultMessages.length = 0;
 							pendingNextTurn = toolCallsToExecute.length > 0;
 							continue;
 						}
