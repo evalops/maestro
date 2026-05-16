@@ -122,6 +122,18 @@ export {
 	type MaestroPlatformReplayFixtureEvent,
 } from "./maestro-platform-replay-fixture.js";
 
+export {
+	buildAgentOperatingPlaneContext,
+	buildAgentOperatingPlaneCorrelation,
+	buildAgentOperatingPlaneMetadata,
+	type AgentOperatingPlaneContext,
+	type AgentOperatingPlaneContextInput,
+	type AgentOperatingPlaneCorrelationInput,
+	type AgentOperatingPlaneDataClassification,
+	type AgentOperatingPlaneMetadataInput,
+	type AgentOperatingPlaneRetentionClass,
+} from "./agent-operating-plane-context.js";
+
 // Wide events (canonical turn events)
 export {
 	TurnCollector,

@@ -300,6 +300,9 @@ describe("maestro event bus", () => {
 				correlation: {
 					workspace_id: "workspace_123",
 					session_id: "session_123",
+					traceparent:
+						"00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+					tracestate: "evalops=maestro-test",
 				},
 				tool_call_id: "tool_1",
 				tool_name: "bash",
@@ -331,8 +334,12 @@ describe("maestro event bus", () => {
 				user_id: "user_123",
 				workspace_id: "workspace_123",
 				maestro_session_id: "session_123",
+				traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+				tracestate: "evalops=maestro-test",
 			},
 		});
+		expect(event.data.correlation).not.toHaveProperty("traceparent");
+		expect(event.data.correlation).not.toHaveProperty("tracestate");
 		expect(event.data["@type"]).toBe(
 			"type.googleapis.com/maestro.v1.ToolCallAttempt",
 		);
@@ -438,6 +445,7 @@ describe("maestro event bus", () => {
 			principal_id: "principal_123",
 			trace_id: "trace_123",
 			traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+			tracestate: "evalops=maestro-test",
 			request_id: "request_123",
 			parent_event_id: "event_parent",
 			attributes: {
@@ -463,6 +471,7 @@ describe("maestro event bus", () => {
 			principal_id: "principal_123",
 			trace_id: "trace_123",
 			traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+			tracestate: "evalops=maestro-test",
 			request_id: "request_123",
 			parent_event_id: "event_parent",
 			task_id: "task_123",

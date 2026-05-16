@@ -139,12 +139,28 @@ describe("OpenTelemetry correlation", () => {
 			traceId: "  ",
 			metadata: {
 				traceId: "trace_metadata",
+				traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+				tracestate: "evalops=maestro-test",
+				actorId: "user_metadata",
+				principalId: "principal_metadata",
+				requestId: "request_metadata",
+				remoteRunnerSessionId: "remote_runner_metadata",
+				objectiveId: "objective_metadata",
+				conversationId: "conversation_metadata",
 			},
 		});
 
 		expect(spanAttributes).toHaveLength(1);
 		expect(spanAttributes[0]).toMatchObject({
 			"trace.id": "trace_metadata",
+			traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+			tracestate: "evalops=maestro-test",
+			"agent.actor.id": "user_metadata",
+			"evalops.principal_id": "principal_metadata",
+			"request.id": "request_metadata",
+			"evalops.remote_runner_session_id": "remote_runner_metadata",
+			"evalops.objective_id": "objective_metadata",
+			"evalops.conversation_id": "conversation_metadata",
 			"maestro.turn.id": "turn_event",
 		});
 	});

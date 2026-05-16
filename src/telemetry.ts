@@ -657,9 +657,22 @@ function eventCorrelationOverrides(
 			"tool_call_id",
 		]),
 		agent_id: metadataString(metadata, ["agentId", "agent_id"]),
+		actor_id: metadataString(metadata, ["actorId", "actor_id"]),
+		principal_id: metadataString(metadata, ["principalId", "principal_id"]),
 		trace_id:
 			topLevelTraceId ?? metadataString(metadata, ["traceId", "trace_id"]),
+		traceparent: metadataString(metadata, ["traceparent", "trace_parent"]),
+		tracestate: metadataString(metadata, ["tracestate", "trace_state"]),
 		request_id: metadataString(metadata, ["requestId", "request_id"]),
+		remote_runner_session_id: metadataString(metadata, [
+			"remoteRunnerSessionId",
+			"remote_runner_session_id",
+		]),
+		objective_id: metadataString(metadata, ["objectiveId", "objective_id"]),
+		conversation_id: metadataString(metadata, [
+			"conversationId",
+			"conversation_id",
+		]),
 	};
 }
 
@@ -687,10 +700,17 @@ function maestroCorrelationSpanAttributes(
 		"evalops.workspace_id": correlation.workspace_id ?? principal?.workspace_id,
 		"maestro.session_id": correlation.session_id,
 		"agent.id": correlation.agent_id,
+		"agent.actor.id": correlation.actor_id,
+		"evalops.principal_id": correlation.principal_id,
 		"maestro.agent_run_id": correlation.agent_run_id,
 		"maestro.agent_run_step_id": correlation.agent_run_step_id,
 		"trace.id": correlation.trace_id,
+		traceparent: correlation.traceparent,
+		tracestate: correlation.tracestate,
 		"request.id": correlation.request_id,
+		"evalops.remote_runner_session_id": correlation.remote_runner_session_id,
+		"evalops.objective_id": correlation.objective_id,
+		"evalops.conversation_id": correlation.conversation_id,
 		"maestro.surface": config.defaultSurface,
 	};
 

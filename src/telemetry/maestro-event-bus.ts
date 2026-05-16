@@ -82,6 +82,7 @@ export interface MaestroCorrelation {
 	principal_id?: string;
 	trace_id?: string;
 	traceparent?: string;
+	tracestate?: string;
 	request_id?: string;
 	parent_event_id?: string;
 	remote_runner_session_id?: string;
@@ -148,6 +149,7 @@ export interface ApprovalHitEventData extends Record<string, unknown> {
 	policy_id?: string;
 	reason?: string;
 	context?: Record<string, unknown>;
+	metadata?: Record<string, unknown>;
 	occurred_at: string;
 }
 
@@ -191,6 +193,7 @@ export interface ToolCallAttemptEventData extends Record<string, unknown> {
 	safe_arguments?: Record<string, unknown>;
 	redactions?: string[];
 	idempotency_key?: string;
+	metadata?: Record<string, unknown>;
 	attempted_at: string;
 }
 
@@ -208,6 +211,7 @@ export interface ToolCallResultEventData extends Record<string, unknown> {
 	redactions?: string[];
 	error_code?: string;
 	error_message?: string;
+	metadata?: Record<string, unknown>;
 	completed_at: string;
 }
 
@@ -307,6 +311,7 @@ export interface SkillOutcomeEventData extends Record<string, unknown> {
 	evaluation_assertion_count?: number;
 	evaluation_rationale?: string;
 	stop_reason?: string;
+	metadata?: Record<string, unknown>;
 	outcome_at: string;
 }
 
@@ -360,6 +365,7 @@ export interface RecordMaestroApprovalHitInput {
 	policy_id?: string;
 	reason?: string;
 	context?: Record<string, unknown>;
+	metadata?: Record<string, unknown>;
 	correlation?: Partial<MaestroCorrelation>;
 	occurred_at?: string;
 	env?: Env;
@@ -395,6 +401,7 @@ export interface RecordMaestroToolCallAttemptInput {
 	safe_arguments?: Record<string, unknown>;
 	redactions?: string[];
 	idempotency_key?: string;
+	metadata?: Record<string, unknown>;
 	correlation?: Partial<MaestroCorrelation>;
 	attempted_at?: string;
 	env?: Env;
@@ -414,6 +421,7 @@ export interface RecordMaestroToolCallCompletedInput {
 	redactions?: string[];
 	error_code?: string;
 	error_message?: string;
+	metadata?: Record<string, unknown>;
 	correlation?: Partial<MaestroCorrelation>;
 	completed_at?: string;
 	env?: Env;
@@ -480,6 +488,7 @@ export interface RecordMaestroSkillOutcomeInput {
 	evaluation_assertion_count?: number;
 	evaluation_rationale?: string;
 	stop_reason?: string;
+	metadata?: Record<string, unknown>;
 	correlation?: Partial<MaestroCorrelation>;
 	outcome_at?: string;
 	env?: Env;
@@ -608,6 +617,7 @@ function defaultCorrelation(
 		principal_id: readEnv(env, ["MAESTRO_PRINCIPAL_ID"]),
 		trace_id: readEnv(env, ["TRACE_ID", "OTEL_TRACE_ID"]),
 		traceparent: readEnv(env, ["TRACEPARENT", "TRACE_PARENT"]),
+		tracestate: readEnv(env, ["TRACESTATE", "TRACE_STATE"]),
 		request_id: readEnv(env, ["MAESTRO_REQUEST_ID"]),
 		remote_runner_session_id: readEnv(env, [
 			"MAESTRO_REMOTE_RUNNER_SESSION_ID",
@@ -862,6 +872,7 @@ export function maestroCorrelationToChronicleMetadata(
 	putCanonicalMetadata("principal_id", correlation.principal_id);
 	putCanonicalMetadata("trace_id", correlation.trace_id);
 	putCanonicalMetadata("traceparent", correlation.traceparent);
+	putCanonicalMetadata("tracestate", correlation.tracestate);
 	putCanonicalMetadata("request_id", correlation.request_id);
 	putCanonicalMetadata(
 		"remote_runner_session_id",
@@ -951,7 +962,11 @@ export function buildMaestroCloudEvent<TData extends Record<string, unknown>>(
 function maestroDataCorrelation(
 	correlation: MaestroCorrelation,
 ): MaestroCorrelation {
-	const { traceparent: _traceparent, ...dataCorrelation } = correlation;
+	const {
+		traceparent: _traceparent,
+		tracestate: _tracestate,
+		...dataCorrelation
+	} = correlation;
 	return dataCorrelation;
 }
 
@@ -968,6 +983,7 @@ function maestroContextExtensions(
 	putMetadata(extensions, "agent_run_step_id", correlation.agent_run_step_id);
 	putMetadata(extensions, "trace_id", correlation.trace_id);
 	putMetadata(extensions, "traceparent", correlation.traceparent);
+	putMetadata(extensions, "tracestate", correlation.tracestate);
 	putMetadata(extensions, "request_id", correlation.request_id);
 	putMetadata(extensions, "source_issue", correlation.attributes?.source_issue);
 	putMetadata(extensions, "task_id", correlation.attributes?.task_id);
@@ -1068,6 +1084,78 @@ function correlationFromMetadata(
 				? record.toolCallId
 				: typeof record.tool_call_id === "string"
 					? record.tool_call_id
+					: undefined,
+		organization_id:
+			typeof record.organizationId === "string"
+				? record.organizationId
+				: typeof record.organization_id === "string"
+					? record.organization_id
+					: undefined,
+		user_id:
+			typeof record.userId === "string"
+				? record.userId
+				: typeof record.user_id === "string"
+					? record.user_id
+					: undefined,
+		agent_id:
+			typeof record.agentId === "string"
+				? record.agentId
+				: typeof record.agent_id === "string"
+					? record.agent_id
+					: undefined,
+		actor_id:
+			typeof record.actorId === "string"
+				? record.actorId
+				: typeof record.actor_id === "string"
+					? record.actor_id
+					: undefined,
+		principal_id:
+			typeof record.principalId === "string"
+				? record.principalId
+				: typeof record.principal_id === "string"
+					? record.principal_id
+					: undefined,
+		trace_id:
+			typeof record.traceId === "string"
+				? record.traceId
+				: typeof record.trace_id === "string"
+					? record.trace_id
+					: undefined,
+		traceparent:
+			typeof record.traceparent === "string"
+				? record.traceparent
+				: typeof record.trace_parent === "string"
+					? record.trace_parent
+					: undefined,
+		tracestate:
+			typeof record.tracestate === "string"
+				? record.tracestate
+				: typeof record.trace_state === "string"
+					? record.trace_state
+					: undefined,
+		request_id:
+			typeof record.requestId === "string"
+				? record.requestId
+				: typeof record.request_id === "string"
+					? record.request_id
+					: undefined,
+		remote_runner_session_id:
+			typeof record.remoteRunnerSessionId === "string"
+				? record.remoteRunnerSessionId
+				: typeof record.remote_runner_session_id === "string"
+					? record.remote_runner_session_id
+					: undefined,
+		objective_id:
+			typeof record.objectiveId === "string"
+				? record.objectiveId
+				: typeof record.objective_id === "string"
+					? record.objective_id
+					: undefined,
+		conversation_id:
+			typeof record.conversationId === "string"
+				? record.conversationId
+				: typeof record.conversation_id === "string"
+					? record.conversation_id
 					: undefined,
 	};
 }
@@ -1204,6 +1292,7 @@ export function recordMaestroApprovalHit(
 			policy_id: event.policy_id,
 			reason: event.reason,
 			context: event.context,
+			metadata: event.metadata,
 			occurred_at: occurredAt,
 		},
 		{ env: event.env, eventId: event.event_id, time: occurredAt },
@@ -1259,6 +1348,7 @@ export function recordMaestroToolCallAttempt(
 			safe_arguments: event.safe_arguments,
 			redactions: event.redactions,
 			idempotency_key: event.idempotency_key,
+			metadata: event.metadata,
 			attempted_at: attemptedAt,
 		},
 		{ env: event.env, eventId: event.event_id, time: attemptedAt },
@@ -1288,6 +1378,7 @@ export function recordMaestroToolCallCompleted(
 			redactions: event.redactions,
 			error_code: event.error_code,
 			error_message: event.error_message,
+			metadata: event.metadata,
 			completed_at: completedAt,
 		},
 		{ env: event.env, eventId: event.event_id, time: completedAt },
@@ -1406,6 +1497,7 @@ export function recordMaestroSkillOutcome(
 			evaluation_assertion_count: event.evaluation_assertion_count,
 			evaluation_rationale: event.evaluation_rationale,
 			stop_reason: event.stop_reason,
+			metadata: event.metadata,
 			outcome_at: outcomeAt,
 		},
 		{ env: event.env, eventId: event.event_id, time: outcomeAt },
