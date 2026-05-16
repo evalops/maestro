@@ -30,8 +30,9 @@ Maestro ships three system skills for common EvalOps operator workflows:
   mitigation, and preserves evidence.
 
 Each package includes `SKILL.md`, scoped `reference/` guidance, bounded
-`mcp.json`, and an executable `toolbox/` helper. They are scored by
-`npm run evals:skill-package` alongside the synthetic pass/fail corpus.
+`mcp.json`, and executable `toolbox/` helpers for Unix and Windows shells. They
+are scored by `npm run evals:skill-package` alongside the synthetic pass/fail
+corpus.
 
 ## Bundled MCP Server
 
@@ -69,6 +70,10 @@ Run strict validation with:
 ```bash
 maestro skill lint .maestro/skills/reviewing-prs --describe-toolbox
 ```
+
+If a toolbox helper is shell-specific, include a same-stem Windows companion such
+as `list-pr-files.cmd` or `list-pr-files.ps1`. The linter validates the runnable
+entry for the target platform and ignores the sibling meant for the other shell.
 
 ## Runtime Activation
 

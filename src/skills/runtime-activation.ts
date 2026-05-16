@@ -74,6 +74,10 @@ export interface SkillRuntimeMcpServer {
 	includeTools: string[];
 }
 
+export interface SkillRuntimeActivationOptions {
+	platform?: NodeJS.Platform;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
@@ -126,11 +130,14 @@ function nonEmptyStringList(value: unknown): StringListParseResult {
 	return { status: "valid", values };
 }
 
-function isRunnableFile(path: string | undefined): path is string {
+function isRunnableFile(
+	path: string | undefined,
+	platform: NodeJS.Platform = process.platform,
+): path is string {
 	if (!isFile(path)) {
 		return false;
 	}
-	if (process.platform === "win32") {
+	if (platform === "win32") {
 		return isWindowsRunnableToolboxEntry(path);
 	}
 	try {
@@ -169,6 +176,7 @@ function buildResourceDirectories(
 
 function buildToolboxActivation(
 	toolboxDir: string | undefined,
+	options: SkillRuntimeActivationOptions = {},
 ): SkillRuntimeToolboxActivation | undefined {
 	if (!isDirectory(toolboxDir)) {
 		return undefined;
@@ -188,7 +196,9 @@ function buildToolboxActivation(
 			(entry) => !entry.startsWith(".") && entry.toLowerCase() !== "readme.md",
 		)
 		.map((entry) => ({ name: entry, path: join(toolboxDir, entry) }))
-		.filter((entry) => isRunnableFile(entry.path))
+		.filter((entry) =>
+			isRunnableFile(entry.path, options.platform ?? process.platform),
+		)
 		.sort((left, right) => left.name.localeCompare(right.name));
 
 	return {
@@ -299,8 +309,12 @@ function buildMcpActivation(
  */
 export function buildSkillRuntimeActivation(
 	skill: LoadedSkill,
+	options: SkillRuntimeActivationOptions = {},
 ): SkillRuntimeActivation {
-	const toolbox = buildToolboxActivation(skill.resourceDirs.toolboxDir);
+	const toolbox = buildToolboxActivation(
+		skill.resourceDirs.toolboxDir,
+		options,
+	);
 	const mcp = buildMcpActivation(skill.resourceDirs.mcpJsonPath);
 
 	return {

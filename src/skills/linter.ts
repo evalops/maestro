@@ -358,6 +358,26 @@ export function isWindowsRunnableToolboxEntry(
 	);
 }
 
+function hasWindowsRunnableToolboxCompanion(
+	entry: string,
+	directoryEntries: string[],
+	pathExt = process.env.PATHEXT,
+): boolean {
+	if (isWindowsRunnableToolboxEntry(entry, pathExt)) {
+		return false;
+	}
+	const entryStem = basename(entry, extname(entry)).toLowerCase();
+	return directoryEntries.some((candidate) => {
+		if (candidate === entry) {
+			return false;
+		}
+		if (!isWindowsRunnableToolboxEntry(candidate, pathExt)) {
+			return false;
+		}
+		return basename(candidate, extname(candidate)).toLowerCase() === entryStem;
+	});
+}
+
 export function shouldUseShellForToolboxDescribe(
 	platform: NodeJS.Platform = process.platform,
 ): boolean {
@@ -394,11 +414,23 @@ async function validateToolbox(
 	if (!existsSync(toolboxDir) || !statSync(toolboxDir).isDirectory()) return [];
 
 	const issues: SkillLintIssue[] = [];
-	for (const entry of readdirSync(toolboxDir)) {
+	const directoryEntries = readdirSync(toolboxDir);
+	const platform = options.platform ?? process.platform;
+	for (const entry of directoryEntries) {
 		if (entry.startsWith(".") || entry.toLowerCase() === "readme.md") continue;
 		const path = join(toolboxDir, entry);
 		if (!statSync(path).isFile()) continue;
-		if (!(await isExecutable(path, options.platform))) {
+		if (platform !== "win32" && isWindowsRunnableToolboxEntry(path)) {
+			continue;
+		}
+		if (
+			platform === "win32" &&
+			!isWindowsRunnableToolboxEntry(path) &&
+			hasWindowsRunnableToolboxCompanion(entry, directoryEntries)
+		) {
+			continue;
+		}
+		if (!(await isExecutable(path, platform))) {
 			issues.push(
 				issue(
 					"toolbox_not_executable",
@@ -410,15 +442,12 @@ async function validateToolbox(
 			continue;
 		}
 		if (options.describeToolbox) {
-			const result = spawnSync(
-				toolboxDescribeSpawnCommand(path, options.platform),
-				{
-					env: { ...process.env, MAESTRO_TOOLBOX_ACTION: "describe" },
-					encoding: "utf8",
-					shell: shouldUseShellForToolboxDescribe(options.platform),
-					timeout: 5000,
-				},
-			);
+			const result = spawnSync(toolboxDescribeSpawnCommand(path, platform), {
+				env: { ...process.env, MAESTRO_TOOLBOX_ACTION: "describe" },
+				encoding: "utf8",
+				shell: shouldUseShellForToolboxDescribe(platform),
+				timeout: 5000,
+			});
 			if (result.status !== 0) {
 				issues.push(
 					issue(

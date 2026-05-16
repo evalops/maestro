@@ -219,6 +219,29 @@ describe("skill package format", () => {
 				expect(
 					activation.toolPackage.toolbox?.entries.map((entry) => entry.name),
 				).toContain(toolbox);
+				const windowsActivation = buildSkillRuntimeActivation(skill!, {
+					platform: "win32",
+				});
+				expect(
+					windowsActivation.toolPackage.toolbox?.entries.map(
+						(entry) => entry.name,
+					),
+				).toContain(`${toolbox}.cmd`);
+				expect(
+					windowsActivation.toolPackage.toolbox?.entries.map(
+						(entry) => entry.name,
+					),
+				).not.toContain(toolbox);
+
+				const windowsLint = await lintSkillDirectory(
+					join(systemSkillsDir, name),
+					{ platform: "win32" },
+				);
+				expect(
+					windowsLint.issues.filter((issue) =>
+						issue.code.startsWith("toolbox_"),
+					),
+				).toEqual([]);
 			}
 		} finally {
 			if (originalHome === undefined) {
