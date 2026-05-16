@@ -53,9 +53,25 @@ const logger = createLogger("safety:bash-parser");
 const isTestEnv =
 	process.env.VITEST === "true" || process.env.NODE_ENV === "test";
 
-// Dynamic import types - tree-sitter is loaded at runtime to handle missing bindings
-type ParserType = InstanceType<typeof import("tree-sitter")>;
-type SyntaxNode = import("tree-sitter").SyntaxNode;
+// Tree-sitter is optional at runtime, so keep its compile-time shape local.
+interface SyntaxNode {
+	type: string;
+	hasError: boolean;
+	children: SyntaxNode[];
+	startIndex: number;
+	endIndex: number;
+	childForFieldName(name: string): SyntaxNode | null;
+}
+
+interface ParserType {
+	parse(input: string): { rootNode: SyntaxNode };
+	setLanguage(language: unknown): void;
+}
+
+type ParserConstructor = new () => ParserType;
+
+const treeSitterModuleName = "tree-sitter";
+const treeSitterBashModuleName = "tree-sitter-bash";
 
 /**
  * Parser State - Lazy initialization with singleton pattern
@@ -101,12 +117,13 @@ async function initParser(): Promise<boolean> {
 	try {
 		// Dynamic imports for native modules - may fail if bindings missing
 		const [Parser, BashLanguage] = await Promise.all([
-			import("tree-sitter").then((m) => m.default),
-			import("tree-sitter-bash").then((m) => m.default),
+			import(treeSitterModuleName).then(
+				(m) => (m.default ?? m) as ParserConstructor,
+			),
+			import(treeSitterBashModuleName).then((m) => m.default ?? m),
 		]);
 		parser = new Parser();
-		// Type cast needed because tree-sitter-bash types don't perfectly align
-		parser.setLanguage(BashLanguage as import("tree-sitter").Language);
+		parser.setLanguage(BashLanguage);
 		parserAvailable = true;
 		logger.debug("Tree-sitter bash parser initialized successfully");
 	} catch (error) {

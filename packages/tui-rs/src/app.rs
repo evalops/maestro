@@ -3371,13 +3371,22 @@ Add the required fields and retry.",
                     [
                         "## A2A peer pairing",
                         "",
+                        "/a2a fleet",
                         "/a2a peers",
+                        "/a2a tasks [peer]",
                         "/a2a accept <pairing-code>",
+                        "/a2a delegate <peer> <text>",
                         "/a2a send <peer> <text>",
                         "",
-                        "Native pairing codes are shared with the TypeScript CLI/TUI. Use `maestro a2a offer` to create a code from a running peer.",
+                        "Native pairing codes, fleet views, and delegation ledgers are shared with the TypeScript CLI/TUI.",
                     ]
                     .join("\n"),
+                );
+            }
+            A2aAction::Fleet => {
+                self.state.add_system_message(
+                    "A2A fleet inspection uses the shared Maestro peer registry. Run `maestro a2a fleet` for live health and task summaries until the Rust fleet reader is wired into this view."
+                        .to_string(),
                 );
             }
             A2aAction::Peers => {
@@ -3386,10 +3395,22 @@ Add the required fields and retry.",
                         .to_string(),
                 );
             }
+            A2aAction::Tasks { peer } => {
+                let scope = peer.as_deref().unwrap_or("all peers");
+                self.state.add_system_message(format!(
+                    "A2A task ledger requested for {scope}. Run `maestro a2a tasks` for the current durable ledger until the Rust task reader is wired into this view."
+                ));
+            }
             A2aAction::Accept { code } => {
                 self.state.add_system_message(format!(
                     "A2A pairing code captured ({} chars). Run `maestro a2a accept <code>` or use the TypeScript TUI `/a2a accept <code>` to persist it in the shared registry.",
                     code.len()
+                ));
+            }
+            A2aAction::Delegate { peer, text } => {
+                self.state.add_system_message(format!(
+                    "A2A delegation prepared for `{peer}` ({} chars). Run `maestro a2a delegate {peer} <text> --wait` while the Rust delegation controller is connected to the shared A2A client.",
+                    text.len()
                 ));
             }
             A2aAction::Send { peer, text } => {

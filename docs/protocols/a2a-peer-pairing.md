@@ -41,9 +41,10 @@ bash scripts/smoke-maestro-a2a-tmux.sh
 ```
 
 The smoke launches two local Maestro peers in tmux, exchanges native pairing
-codes, accepts each peer into isolated registries, then verifies `send --wait`
-and explicit `wait`. See [A2A tmux smoke](./a2a-tmux-smoke.md) for the harness
-contract and troubleshooting knobs.
+codes, accepts each peer into isolated registries, delegates work into a durable
+task ledger, then verifies `fleet`, `tasks`, `send`, and explicit `wait`. See
+[A2A tmux smoke](./a2a-tmux-smoke.md) for the harness contract and
+troubleshooting knobs.
 
 ## TUI Surface
 

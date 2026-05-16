@@ -511,12 +511,29 @@ fn parse_a2a_action(raw: &str) -> Result<A2aAction, CommandError> {
         .unwrap_or_default();
     match subcommand.as_str() {
         "" | "help" => Ok(A2aAction::Help),
+        "fleet" => Ok(A2aAction::Fleet),
         "peers" | "list" => Ok(A2aAction::Peers),
+        "tasks" => Ok(A2aAction::Tasks {
+            peer: tokens.get(1).cloned(),
+        }),
         "accept" => {
             let code = tokens
                 .get(1)
                 .ok_or_else(|| CommandError::new("Usage: /a2a accept <pairing-code>"))?;
             Ok(A2aAction::Accept { code: code.clone() })
+        }
+        "delegate" => {
+            let peer = tokens
+                .get(1)
+                .ok_or_else(|| CommandError::new("Usage: /a2a delegate <peer> <text>"))?;
+            let text = tokens.get(2..).unwrap_or(&[]).join(" ");
+            if text.trim().is_empty() {
+                return Err(CommandError::new("Usage: /a2a delegate <peer> <text>"));
+            }
+            Ok(A2aAction::Delegate {
+                peer: peer.clone(),
+                text,
+            })
         }
         "send" => {
             let peer = tokens
@@ -533,7 +550,7 @@ fn parse_a2a_action(raw: &str) -> Result<A2aAction, CommandError> {
         }
         _ => Err(
             CommandError::new(format!("Unknown A2A subcommand: {subcommand}"))
-                .with_hint("Usage: /a2a [peers|accept <code>|send <peer> <text>]"),
+                .with_hint("Usage: /a2a [fleet|peers|tasks|accept <code>|delegate <peer> <text>|send <peer> <text>]"),
         ),
     }
 }
@@ -754,7 +771,7 @@ pub fn build_command_registry() -> CommandRegistry {
     registry.register(
         Command::new(
             "a2a",
-            "Pair and inspect A2A peer agents",
+            "Pair, inspect, and delegate to A2A peer agents",
             CommandCategory::Tools,
             Box::new(|ctx| {
                 Ok(CommandOutput::Action(CommandAction::A2a(parse_a2a_action(
@@ -762,7 +779,7 @@ pub fn build_command_registry() -> CommandRegistry {
                 )?)))
             }),
         )
-        .usage("/a2a [peers|accept <code>|send <peer> <text>]"),
+        .usage("/a2a [fleet|peers|tasks|accept <code>|delegate <peer> <text>|send <peer> <text>]"),
     );
 
     // Queue command
@@ -1958,6 +1975,17 @@ mod tests {
     #[test]
     fn a2a_command_parses_peer_actions() {
         let registry = build_command_registry();
+
+        assert!(registry.execute("/a2a fleet", "/tmp", None, None).is_ok());
+        assert!(registry.execute("/a2a tasks", "/tmp", None, None).is_ok());
+        assert!(registry
+            .execute(
+                "/a2a delegate mac-mini run workspace smoke",
+                "/tmp",
+                None,
+                None,
+            )
+            .is_ok());
 
         match registry
             .execute("/a2a peers", "/tmp", None, None)

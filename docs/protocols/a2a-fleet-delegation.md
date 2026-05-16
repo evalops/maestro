@@ -1,0 +1,66 @@
+# A2A Fleet And Delegation
+
+Native A2A pairing makes peers discoverable. The fleet layer turns those peers
+into a small, durable operator network: inspect who is available, delegate work,
+poll task state, and keep a local transcript of what was asked and what came
+back.
+
+## Commands
+
+```sh
+maestro a2a fleet [--json] [--registry <path>] [--tasks <path>]
+maestro a2a delegate <peer> <text> [--role <role>] [--cwd <path>] [--wait]
+maestro a2a tasks [peer] [--json] [--refresh]
+maestro a2a wait <peer> <task-id>
+```
+
+`fleet` reads the native peer registry, fetches each peer Agent Card when
+reachable, and joins the result with the local task ledger. It never prints
+bearer token values. Peers that cannot be reached are still shown with their
+registry URL and a bounded error.
+
+`delegate` sends a normal A2A `message:send` request with Maestro delegation
+metadata: origin, peer name, role, and working directory. The resulting task is
+recorded in the local ledger before optional waiting begins.
+
+`tasks` reads the durable ledger and can refresh known task IDs from their
+registered peers. This gives the operator a single place to see outstanding work
+across the Mac mini, dev desktop, and local Maestro instances.
+
+## Files
+
+The peer registry remains:
+
+```text
+~/.maestro/a2a/peers.json
+```
+
+The task ledger defaults to:
+
+```text
+~/.maestro/a2a/tasks.json
+```
+
+`MAESTRO_A2A_TASKS_FILE` overrides the ledger path. `CODEX_A2A_TASKS_FILE` is
+accepted as a migration alias.
+
+## Acceptance Tests
+
+Before this feature, the following tests fail:
+
+```sh
+npm run test:fast -- test/cli/commands/a2a-fleet-delegation.test.ts test/cli-tui/commands/a2a-handlers.test.ts
+cargo test -p maestro-tui commands::registry::tests::a2a_command_parses_peer_actions
+```
+
+After implementation, they must pass and prove:
+
+- `maestro a2a delegate <peer> <text> --wait` sends real HTTP+JSON A2A traffic,
+  records the task, updates the final state, and stores a transcript.
+- `maestro a2a fleet --json` shows peer health, Agent Card capabilities, and the
+  peer's most recent ledger task without leaking token values.
+- `maestro a2a tasks --json` reads the ledger and can be used as a fleet task
+  view.
+- TypeScript and Rust TUIs both recognize `/a2a fleet`, `/a2a tasks`, and
+  `/a2a delegate`.
+

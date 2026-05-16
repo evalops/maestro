@@ -9,6 +9,7 @@ import {
 	getA2ATask,
 	sendA2AMessage,
 } from "../../platform/a2a-client.js";
+import { inspectA2AFleet } from "../../platform/a2a-fleet.js";
 import {
 	createA2APeerPairingPayload,
 	createA2APeerPairingPayloadFromAgentCard,
@@ -21,27 +22,71 @@ import {
 	resolveA2APeer,
 	upsertA2APeerFromPairingPayload,
 } from "../../platform/a2a-peer-registry.js";
+import {
+	extractA2ATaskText,
+	getA2ATaskLedgerPath,
+	isTerminalA2AState,
+	listA2ATaskEntries,
+	loadA2ATaskLedger,
+	recordA2ATaskStart,
+	updateA2ATaskInLedger,
+} from "../../platform/a2a-task-ledger.js";
 import { getEnvValue } from "../../platform/client.js";
 
 const DEFAULT_WAIT_MS = 300_000;
 const DEFAULT_WAIT_INTERVAL_MS = 5_000;
-const A2A_VALUE_FLAGS = new Set([
-	"--agent-card-url",
-	"--base-url",
-	"--interval-ms",
-	"--max-wait-ms",
-	"--name",
-	"--organization-id",
-	"--peer-id",
-	"--registry",
-	"--timeout-ms",
-	"--token-env",
-	"--token-file",
-	"--ttl-minutes",
-	"--url",
-	"--workspace-id",
-]);
-const A2A_BOOLEAN_FLAGS = new Set(["--default", "--wait"]);
+const A2A_VALUE_FLAGS_BY_SUBCOMMAND: Record<string, readonly string[]> = {
+	accept: [
+		"--name",
+		"--organization-id",
+		"--registry",
+		"--token-env",
+		"--token-file",
+		"--workspace-id",
+	],
+	card: ["--registry", "--timeout-ms"],
+	delegate: [
+		"--cwd",
+		"--interval-ms",
+		"--max-wait-ms",
+		"--registry",
+		"--role",
+		"--tasks",
+		"--timeout-ms",
+	],
+	fleet: ["--registry", "--tasks", "--timeout-ms"],
+	offer: [
+		"--agent-card-url",
+		"--base-url",
+		"--name",
+		"--peer-id",
+		"--ttl-minutes",
+		"--url",
+	],
+	peers: ["--registry"],
+	send: ["--interval-ms", "--max-wait-ms", "--registry", "--timeout-ms"],
+	tasks: ["--registry", "--tasks", "--timeout-ms"],
+	wait: [
+		"--interval-ms",
+		"--max-wait-ms",
+		"--registry",
+		"--tasks",
+		"--timeout-ms",
+	],
+};
+const A2A_BOOLEAN_FLAGS_BY_SUBCOMMAND: Record<string, readonly string[]> = {
+	accept: ["--default"],
+	delegate: ["--wait"],
+	fleet: ["--json"],
+	send: ["--wait"],
+	tasks: ["--json", "--refresh"],
+};
+const A2A_LEADING_VALUE_FLAGS = new Set(
+	Object.values(A2A_VALUE_FLAGS_BY_SUBCOMMAND).flat(),
+);
+const A2A_LEADING_BOOLEAN_FLAGS = new Set(
+	Object.values(A2A_BOOLEAN_FLAGS_BY_SUBCOMMAND).flat(),
+);
 
 export interface ParsedA2AArgs {
 	positionals: string[];
@@ -64,11 +109,21 @@ export async function handleA2ACommand(args: string[]): Promise<void> {
 		case "list":
 			await handleA2APeers(parsed);
 			return;
+		case "fleet":
+			await handleA2AFleet(parsed);
+			return;
 		case "card":
 			await handleA2ACard(parsed);
 			return;
 		case "send":
 			await handleA2ASend(parsed);
+			return;
+		case "delegate":
+		case "delegation":
+			await handleA2ADelegate(parsed);
+			return;
+		case "tasks":
+			await handleA2ATasks(parsed);
 			return;
 		case "wait":
 			await handleA2AWait(parsed);
@@ -81,6 +136,15 @@ export async function handleA2ACommand(args: string[]): Promise<void> {
 export function parseA2AArgs(args: string[]): ParsedA2AArgs {
 	const flags = new Map<string, string | boolean>();
 	const positionals: string[] = [];
+	const subcommandIndex = findA2ASubcommandIndex(args);
+	const subcommand =
+		subcommandIndex >= 0
+			? canonicalA2ASubcommand(args[subcommandIndex])
+			: "help";
+	const valueFlags = new Set(A2A_VALUE_FLAGS_BY_SUBCOMMAND[subcommand] ?? []);
+	const booleanFlags = new Set(
+		A2A_BOOLEAN_FLAGS_BY_SUBCOMMAND[subcommand] ?? [],
+	);
 	for (let index = 0; index < args.length; index++) {
 		const arg = args[index];
 		if (!arg) continue;
@@ -93,7 +157,19 @@ export function parseA2AArgs(args: string[]): ParsedA2AArgs {
 			if (!flag) {
 				continue;
 			}
-			if (!A2A_VALUE_FLAGS.has(flag) && !A2A_BOOLEAN_FLAGS.has(flag)) {
+			if (
+				index < subcommandIndex &&
+				!valueFlags.has(flag) &&
+				!booleanFlags.has(flag) &&
+				(A2A_LEADING_VALUE_FLAGS.has(flag) ||
+					A2A_LEADING_BOOLEAN_FLAGS.has(flag))
+			) {
+				if (A2A_LEADING_VALUE_FLAGS.has(flag) && inlineValue === undefined) {
+					index++;
+				}
+				continue;
+			}
+			if (!valueFlags.has(flag) && !booleanFlags.has(flag)) {
 				positionals.push(arg);
 				continue;
 			}
@@ -101,7 +177,7 @@ export function parseA2AArgs(args: string[]): ParsedA2AArgs {
 				flags.set(flag, inlineValue);
 				continue;
 			}
-			if (A2A_BOOLEAN_FLAGS.has(flag)) {
+			if (booleanFlags.has(flag)) {
 				flags.set(flag, true);
 				continue;
 			}
@@ -117,6 +193,45 @@ export function parseA2AArgs(args: string[]): ParsedA2AArgs {
 		positionals.push(arg);
 	}
 	return { flags, positionals };
+}
+
+function findA2ASubcommandIndex(args: readonly string[]): number {
+	for (let index = 0; index < args.length; index++) {
+		const arg = args[index];
+		if (!arg || arg === "--") {
+			break;
+		}
+		if (!arg.startsWith("--")) {
+			return index;
+		}
+		const [flag = "", inlineValue] = arg.split("=", 2);
+		if (A2A_LEADING_VALUE_FLAGS.has(flag) && inlineValue === undefined) {
+			index++;
+			continue;
+		}
+		if (
+			A2A_LEADING_VALUE_FLAGS.has(flag) ||
+			A2A_LEADING_BOOLEAN_FLAGS.has(flag)
+		) {
+			continue;
+		}
+		break;
+	}
+	return -1;
+}
+
+function canonicalA2ASubcommand(input: string | undefined): string {
+	switch (input?.toLowerCase()) {
+		case "pair":
+		case "create":
+			return "offer";
+		case "list":
+			return "peers";
+		case "delegation":
+			return "delegate";
+		default:
+			return input?.toLowerCase() ?? "help";
+	}
 }
 
 async function handleA2AOffer(parsed: ParsedA2AArgs): Promise<void> {
@@ -239,6 +354,56 @@ async function handleA2ACard(parsed: ParsedA2AArgs): Promise<void> {
 	console.log(JSON.stringify(card, null, 2));
 }
 
+async function handleA2AFleet(parsed: ParsedA2AArgs): Promise<void> {
+	const fleet = await inspectA2AFleet({
+		registryPath: stringFlag(parsed, "--registry"),
+		tasksPath: stringFlag(parsed, "--tasks"),
+		timeoutMs: numberFlag(parsed, "--timeout-ms"),
+	});
+	if (booleanFlag(parsed, "--json")) {
+		console.log(JSON.stringify(fleet, null, 2));
+		return;
+	}
+	console.log(`A2A fleet (${fleet.registryPath})`);
+	if (fleet.peers.length === 0) {
+		console.log(
+			chalk.dim("  No peers registered. Run maestro a2a accept <code>."),
+		);
+		return;
+	}
+	for (const peer of fleet.peers) {
+		const status =
+			peer.status === "online" ? chalk.green("online") : chalk.yellow("down");
+		const label = peer.displayName
+			? `${peer.name} (${peer.displayName})`
+			: peer.name;
+		console.log(`${status} ${chalk.bold(label)} ${chalk.dim(peer.url)}`);
+		if (peer.model || peer.cwd || peer.auth) {
+			console.log(
+				chalk.dim(
+					`  ${[
+						peer.model ? `model=${peer.model}` : undefined,
+						peer.cwd ? `cwd=${peer.cwd}` : undefined,
+						peer.auth ? `auth=${peer.auth}` : undefined,
+					]
+						.filter(Boolean)
+						.join(" ")}`,
+				),
+			);
+		}
+		if (peer.lastTask) {
+			console.log(
+				chalk.dim(
+					`  last=${peer.lastTask.id} ${peer.lastTask.state} ${peer.lastTask.text}`,
+				),
+			);
+		}
+		if (peer.error) {
+			console.log(chalk.dim(`  error=${peer.error}`));
+		}
+	}
+}
+
 async function handleA2ASend(parsed: ParsedA2AArgs): Promise<void> {
 	const peerName =
 		parsed.positionals.shift() ?? fail("Usage: maestro a2a send <peer> <text>");
@@ -269,6 +434,122 @@ async function handleA2ASend(parsed: ParsedA2AArgs): Promise<void> {
 	printTask(task);
 }
 
+async function handleA2ADelegate(parsed: ParsedA2AArgs): Promise<void> {
+	const peerName =
+		parsed.positionals.shift() ??
+		fail("Usage: maestro a2a delegate <peer> <text>");
+	const text = parsed.positionals.join(" ").trim();
+	if (!text) {
+		fail("Usage: maestro a2a delegate <peer> <text>");
+	}
+	const peer = await resolveA2APeer(peerName, {
+		path: stringFlag(parsed, "--registry"),
+		timeoutMs: numberFlag(parsed, "--timeout-ms"),
+	});
+	const wait = booleanFlag(parsed, "--wait");
+	const role = stringFlag(parsed, "--role");
+	const cwd = stringFlag(parsed, "--cwd") ?? process.cwd();
+	const messageId = `maestro-a2a-message-${randomUUID()}`;
+	const contextId = `maestro-a2a-context-${randomUUID()}`;
+	const sent = await sendA2AMessage(peer.config, {
+		message: buildA2AUserMessage({
+			messageId,
+			contextId,
+			text,
+			metadata: {
+				requestKind: "maestro-peer-delegation",
+				relayPeer: peer.name,
+				...(role ? { delegationRole: role } : {}),
+				...(cwd ? { delegationCwd: cwd } : {}),
+			},
+		}),
+		configuration: { returnImmediately: true },
+	});
+	console.log(`Delegated to ${chalk.bold(peer.name)} as task ${sent.task.id}`);
+	await persistA2ALedgerBestEffort("record delegated task locally", () =>
+		recordA2ATaskStart({
+			path: stringFlag(parsed, "--tasks"),
+			peer: peer.name,
+			peerDisplayName: peer.entry.displayName,
+			task: sent.task,
+			text,
+			messageId,
+			contextId,
+			kind: "delegation",
+			role,
+			cwd,
+			metadata: {
+				requestKind: "maestro-peer-delegation",
+				relayPeer: peer.name,
+				delegationRole: role,
+				delegationCwd: cwd,
+			},
+		}),
+	);
+	const task = wait
+		? await waitForA2ATask(peer.config, sent.task.id, parsed)
+		: sent.task;
+	if (wait) {
+		await persistA2ALedgerBestEffort("sync delegated task result locally", () =>
+			updateA2ATaskInLedger({
+				path: stringFlag(parsed, "--tasks"),
+				peer: peer.name,
+				task,
+			}),
+		);
+	}
+	printTask(task);
+}
+
+async function handleA2ATasks(parsed: ParsedA2AArgs): Promise<void> {
+	const peerName = parsed.positionals.shift();
+	if (booleanFlag(parsed, "--refresh")) {
+		await refreshA2ATaskLedger(parsed, peerName);
+	}
+	const ledger = await loadA2ATaskLedger({
+		path: stringFlag(parsed, "--tasks"),
+	});
+	const tasks = listA2ATaskEntries(ledger, { peer: peerName });
+	if (booleanFlag(parsed, "--json")) {
+		console.log(
+			JSON.stringify(
+				{
+					path: getA2ATaskLedgerPath(stringFlag(parsed, "--tasks")),
+					tasks: tasks.map((entry) => ({
+						id: entry.id,
+						kind: entry.kind,
+						peer: entry.peer,
+						taskId: entry.taskId,
+						state: entry.state,
+						text: entry.text,
+						responseText: entry.responseText,
+						updatedAt: entry.updatedAt,
+					})),
+				},
+				null,
+				2,
+			),
+		);
+		return;
+	}
+	console.log(
+		`A2A tasks (${getA2ATaskLedgerPath(stringFlag(parsed, "--tasks"))})`,
+	);
+	if (tasks.length === 0) {
+		console.log(chalk.dim("  No delegated tasks recorded yet."));
+		return;
+	}
+	for (const task of tasks) {
+		console.log(
+			`${task.peer} ${chalk.bold(task.taskId)} ${task.state} ${chalk.dim(task.updatedAt)}`,
+		);
+		console.log(chalk.dim(`  ${task.text}`));
+		if (task.responseText) {
+			console.log(`  ${task.responseText}`);
+		}
+	}
+}
+
 async function handleA2AWait(parsed: ParsedA2AArgs): Promise<void> {
 	const peerName =
 		parsed.positionals.shift() ??
@@ -280,7 +561,39 @@ async function handleA2AWait(parsed: ParsedA2AArgs): Promise<void> {
 		path: stringFlag(parsed, "--registry"),
 		timeoutMs: numberFlag(parsed, "--timeout-ms"),
 	});
-	printTask(await waitForA2ATask(peer.config, taskId, parsed));
+	const task = await waitForA2ATask(peer.config, taskId, parsed);
+	await persistA2ALedgerBestEffort("sync task result locally", () =>
+		updateA2ATaskInLedger({
+			path: stringFlag(parsed, "--tasks"),
+			peer: peer.name,
+			task,
+		}),
+	);
+	printTask(task);
+}
+
+async function refreshA2ATaskLedger(
+	parsed: ParsedA2AArgs,
+	peerFilter: string | undefined,
+): Promise<void> {
+	const ledger = await loadA2ATaskLedger({
+		path: stringFlag(parsed, "--tasks"),
+	});
+	for (const entry of listA2ATaskEntries(ledger, { peer: peerFilter })) {
+		if (isTerminalA2AState(entry.state)) {
+			continue;
+		}
+		const peer = await resolveA2APeer(entry.peer, {
+			path: stringFlag(parsed, "--registry"),
+			timeoutMs: numberFlag(parsed, "--timeout-ms"),
+		});
+		const task = await getA2ATask(peer.config, entry.taskId);
+		await updateA2ATaskInLedger({
+			path: stringFlag(parsed, "--tasks"),
+			peer: entry.peer,
+			task,
+		});
+	}
 }
 
 async function waitForA2ATask(
@@ -293,14 +606,11 @@ async function waitForA2ATask(
 		numberFlag(parsed, "--interval-ms") ?? DEFAULT_WAIT_INTERVAL_MS;
 	const deadline = Date.now() + maxWaitMs;
 	let lastTask = await getA2ATask(config, taskId);
-	while (
-		!isA2AWaitCompletionState(lastTask.status.state) &&
-		Date.now() < deadline
-	) {
+	while (!isTerminalA2AState(lastTask.status.state) && Date.now() < deadline) {
 		await sleep(intervalMs);
 		lastTask = await getA2ATask(config, taskId);
 	}
-	if (!isA2AWaitCompletionState(lastTask.status.state)) {
+	if (!isTerminalA2AState(lastTask.status.state)) {
 		throw new Error(
 			`Timed out waiting for A2A task ${taskId}; last state ${lastTask.status.state}`,
 		);
@@ -317,36 +627,10 @@ function printTask(task: A2ATask): void {
 }
 
 function a2aTaskText(task: A2ATask): string | undefined {
-	const statusText = task.status.message?.parts
-		.map((part) => part.text)
-		.find(
-			(text): text is string =>
-				typeof text === "string" && text.trim().length > 0,
-		);
-	if (statusText) {
-		return statusText;
-	}
-	return task.artifacts
-		?.flatMap((artifact) => artifact.parts)
-		.map((part) => part.text)
-		.find(
-			(text): text is string =>
-				typeof text === "string" && text.trim().length > 0,
-		);
+	return extractA2ATaskText(task);
 }
 
-export function isA2AWaitCompletionState(state: string): boolean {
-	const normalized = state.toUpperCase().replace(/[\s-]+/gu, "_");
-	return (
-		normalized.includes("COMPLETED") ||
-		normalized.includes("FAILED") ||
-		normalized.includes("CANCELED") ||
-		normalized.includes("CANCELLED") ||
-		normalized.includes("REJECTED") ||
-		normalized.includes("INPUT_REQUIRED") ||
-		normalized.includes("AUTH_REQUIRED")
-	);
-}
+export const isA2AWaitCompletionState = isTerminalA2AState;
 
 function baseUrlFromAgentCardUrl(agentCardUrl: string): string {
 	const parsed = new URL(agentCardUrl);
@@ -385,6 +669,21 @@ function booleanFlag(parsed: ParsedA2AArgs, name: string): boolean {
 	return parsed.flags.get(name) === true;
 }
 
+async function persistA2ALedgerBestEffort(
+	description: string,
+	action: () => Promise<unknown>,
+): Promise<void> {
+	try {
+		await action();
+	} catch (error) {
+		console.error(
+			chalk.yellow(
+				`A2A task ledger warning: could not ${description}: ${errorMessage(error)}`,
+			),
+		);
+	}
+}
+
 function fail(message: string): never {
 	throw new Error(message);
 }
@@ -402,8 +701,11 @@ function printA2AHelp(): void {
   maestro a2a offer --url <base-url> [--name <display-name>] [--peer-id <id>]
   maestro a2a accept <pairing-code> [--name <peer>] [--default] [--token-env ENV]
   maestro a2a peers
+  maestro a2a fleet [--json]
   maestro a2a card <peer>
+  maestro a2a delegate <peer> <text> [--role <role>] [--cwd <path>] [--wait]
   maestro a2a send <peer> <text> [--wait]
+  maestro a2a tasks [peer] [--json] [--refresh]
   maestro a2a wait <peer> <task-id>
 
 Pairing codes carry Agent Card and transport coordinates only. Configure auth with

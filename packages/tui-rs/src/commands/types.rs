@@ -357,10 +357,16 @@ pub enum McpAction {
 pub enum A2aAction {
     /// Show native A2A pairing help.
     Help,
+    /// Show A2A fleet health.
+    Fleet,
     /// List paired peers.
     Peers,
+    /// List delegated A2A tasks.
+    Tasks { peer: Option<String> },
     /// Accept a pairing code.
     Accept { code: String },
+    /// Delegate work to a peer.
+    Delegate { peer: String, text: String },
     /// Send a message to a peer.
     Send { peer: String, text: String },
 }
