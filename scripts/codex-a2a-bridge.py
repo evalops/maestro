@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
 import shlex
 import socket
@@ -141,6 +142,11 @@ def safe_prompt_metadata_value(value: Any) -> str | int | float | bool | None:
     if isinstance(value, bool):
         return value
     if isinstance(value, (int, float)):
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
+        serialized = str(value)
+        if len(serialized) > PROMPT_METADATA_VALUE_LIMIT:
+            return serialized[:PROMPT_METADATA_VALUE_LIMIT]
         return value
     if isinstance(value, str):
         trimmed = value.strip()
@@ -154,6 +160,7 @@ def safe_prompt_metadata(
     message: dict[str, Any],
     task_id: str,
     context_id: str,
+    normalized_message: dict[str, Any] | None = None,
 ) -> dict[str, str | int | float | bool]:
     metadata = message.get("metadata")
     safe: dict[str, str | int | float | bool] = {}
@@ -170,7 +177,8 @@ def safe_prompt_metadata(
         safe["taskId"] = task_id
     if context_id:
         safe["contextId"] = context_id
-    message_id = safe_prompt_metadata_value(message.get("messageId"))
+    message_id_source = normalized_message or message
+    message_id = safe_prompt_metadata_value(message_id_source.get("messageId"))
     if message_id is not None:
         safe["messageId"] = message_id
     return safe
@@ -181,8 +189,9 @@ def build_codex_prompt(
     prompt: str,
     task_id: str,
     context_id: str,
+    normalized_message: dict[str, Any] | None = None,
 ) -> str:
-    metadata = safe_prompt_metadata(message, task_id, context_id)
+    metadata = safe_prompt_metadata(message, task_id, context_id, normalized_message)
     if not metadata:
         return prompt
     metadata_json = json.dumps(metadata, separators=(",", ":"), ensure_ascii=False, sort_keys=True)
@@ -611,6 +620,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             immediate = return_immediately is True
             error: tuple[int, str, str] | None = None
+            normalized_message: dict[str, Any] | None = None
             with LOCK:
                 if requested_task_id:
                     existing = TASKS.get(requested_task_id)
@@ -653,7 +663,8 @@ class Handler(BaseHTTPRequestHandler):
                     task_id = new_id("codex-a2a-task")
                     history = []
                 if error is None:
-                    history.append(user_message(message, context_id))
+                    normalized_message = user_message(message, context_id)
+                    history.append(normalized_message)
                     if immediate:
                         status_message = agent_message(context_id, "Codex accepted the A2A task.")
                         launch_history = [*history, status_message]
@@ -674,7 +685,9 @@ class Handler(BaseHTTPRequestHandler):
             if error is not None:
                 self.error_json(*error)
                 return
-            prompt = build_codex_prompt(message, prompt_text, task_id, context_id)
+            prompt = build_codex_prompt(
+                message, prompt_text, task_id, context_id, normalized_message
+            )
             if immediate:
                 threading.Thread(
                     target=complete_task,
