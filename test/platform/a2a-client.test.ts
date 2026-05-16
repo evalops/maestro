@@ -483,6 +483,50 @@ describe("platform A2A client", () => {
 		]);
 	});
 
+	it("skips malformed A2A SSE frames without aborting the stream", async () => {
+		const config = await resolveA2AServiceConfig();
+		if (!config) {
+			throw new Error("expected config");
+		}
+		vi.mocked(fetch).mockImplementationOnce(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url = typeof input === "string" ? input : input.toString();
+				const parsed = new URL(url);
+				requests.push({
+					body: parseRequestBody(init?.body),
+					headers: headersToRecord(init?.headers),
+					method: init?.method,
+					pathname: parsed.pathname,
+					url,
+				});
+				return sseResponse([
+					"data: not-json\n\n",
+					"data: null\n\n",
+					'data: {"statusUpdate":{"taskId":"run_stream","status":{"state":"TASK_STATE_COMPLETED"},"final":true}}\n\n',
+				]);
+			},
+		);
+
+		const events = await collectAsyncIterable(
+			streamA2AMessage(config, {
+				message: buildA2AUserMessage({
+					messageId: "msg_stream_malformed",
+					contextId: "session_1",
+					text: "Stream through malformed frames",
+				}),
+			}),
+		);
+
+		expect(events).toEqual([
+			{
+				type: "statusUpdate",
+				taskId: "run_stream",
+				status: { state: "TASK_STATE_COMPLETED" },
+				final: true,
+			},
+		]);
+	});
+
 	it("gets an A2A task by run id", async () => {
 		const config = await resolveA2AServiceConfig();
 		if (!config) {

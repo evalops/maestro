@@ -580,7 +580,16 @@ function parseA2AStreamEventFrame(frame: string): A2AStreamEvent | undefined {
 		return undefined;
 	}
 
-	const payload = JSON.parse(dataLines.join("\n")) as Record<string, unknown>;
+	let payload: Record<string, unknown>;
+	try {
+		const parsed = JSON.parse(dataLines.join("\n")) as unknown;
+		if (!isRecord(parsed)) {
+			return undefined;
+		}
+		payload = parsed;
+	} catch {
+		return undefined;
+	}
 	eventType ??= inferA2AStreamEventType(payload);
 	if (!eventType) {
 		return undefined;
