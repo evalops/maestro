@@ -646,8 +646,8 @@ function normalizeA2AStreamEvent(
 			? payload.statusUpdate
 			: payload;
 		return {
-			type: "statusUpdate",
 			...statusUpdatePayload,
+			type: "statusUpdate",
 			status: statusUpdatePayload.status as A2ATaskStatus,
 		};
 	}
@@ -655,8 +655,8 @@ function normalizeA2AStreamEvent(
 		? payload.artifactUpdate
 		: payload;
 	return {
-		type: "artifactUpdate",
 		...artifactUpdatePayload,
+		type: "artifactUpdate",
 		artifact: artifactUpdatePayload.artifact as A2AArtifact,
 	};
 }
