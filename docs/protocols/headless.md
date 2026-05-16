@@ -124,6 +124,15 @@ snapshot manifest. The manifest directory comes from `--snapshot-root`,
         }
       ]
     },
+    "work_continuity": {
+      "protocol_version": "evalops.remote-runner.work-continuity.v1",
+      "active_tool_count": 0,
+      "tracked_tool_count": 0,
+      "pending_request_count": 0,
+      "codex_subagent_tool_call_ids": [],
+      "codex_subagent_child_run_ids": [],
+      "codex_subagent_thread_ids": []
+    },
     "retention_policy": {
       "policy_version": "evalops.remote-runner.retention.v1",
       "managed_by": "platform",

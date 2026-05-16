@@ -89,7 +89,12 @@ pub fn save_queue_modes(steering_mode: QueueMode, follow_up_mode: QueueMode) -> 
 }
 
 fn ui_state_path() -> Option<PathBuf> {
-    if let Ok(path) = env::var("MAESTRO_UI_STATE") {
+    let configured_path = env::var("MAESTRO_UI_STATE").ok();
+    ui_state_path_from_env_value(configured_path.as_deref())
+}
+
+fn ui_state_path_from_env_value(path: Option<&str>) -> Option<PathBuf> {
+    if let Some(path) = path {
         if !path.trim().is_empty() {
             let raw = PathBuf::from(path);
             if let Some(expanded) = expand_tilde(&raw) {
@@ -159,56 +164,33 @@ mod tests {
     // ========================================================================
     // UI State Path Tests
     // ========================================================================
-    // NOTE: These tests modify environment variables which is not thread-safe.
-    // They use unique env var names to avoid race conditions with parallel tests.
 
     #[test]
     fn test_ui_state_path_default() {
-        // Test default behavior by temporarily checking if env var is unset
-        // Note: Due to parallel test execution, we can't reliably clear env vars
-        // Instead, verify the function returns a valid path structure
-        let current_env = std::env::var("MAESTRO_UI_STATE").ok();
-        if current_env.is_none() || current_env.as_ref().is_some_and(|v| v.trim().is_empty()) {
-            let path = ui_state_path();
-            if let Some(p) = path {
-                assert!(
-                    p.ends_with("ui-state.json"),
-                    "Expected path to end with ui-state.json, got: {:?}",
-                    p
-                );
-                assert!(
-                    p.to_string_lossy().contains(".composer"),
-                    "Expected path to contain .composer, got: {:?}",
-                    p
-                );
-            }
+        let path = ui_state_path_from_env_value(None);
+        if let Some(p) = path {
+            assert!(
+                p.ends_with("ui-state.json"),
+                "Expected path to end with ui-state.json, got: {:?}",
+                p
+            );
+            assert!(
+                p.to_string_lossy().contains(".composer"),
+                "Expected path to contain .composer, got: {:?}",
+                p
+            );
         }
-        // If env var is set by another test, skip this test's assertions
     }
 
     #[test]
     fn test_ui_state_path_from_env() {
-        // Save original value
-        let original = std::env::var("MAESTRO_UI_STATE").ok();
-
-        std::env::set_var("MAESTRO_UI_STATE", "/tmp/custom-ui-state.json");
-        let path = ui_state_path();
+        let path = ui_state_path_from_env_value(Some("/tmp/custom-ui-state.json"));
         assert_eq!(path, Some(PathBuf::from("/tmp/custom-ui-state.json")));
-
-        // Restore original value
-        match original {
-            Some(v) => std::env::set_var("MAESTRO_UI_STATE", v),
-            None => std::env::remove_var("MAESTRO_UI_STATE"),
-        }
     }
 
     #[test]
     fn test_ui_state_path_empty_env() {
-        // Save original value
-        let original = std::env::var("MAESTRO_UI_STATE").ok();
-
-        std::env::set_var("MAESTRO_UI_STATE", "   ");
-        let path = ui_state_path();
+        let path = ui_state_path_from_env_value(Some("   "));
         // Should fall back to default when env var is empty/whitespace
         if let Some(p) = path {
             assert!(
@@ -217,31 +199,15 @@ mod tests {
                 p
             );
         }
-
-        // Restore original value
-        match original {
-            Some(v) => std::env::set_var("MAESTRO_UI_STATE", v),
-            None => std::env::remove_var("MAESTRO_UI_STATE"),
-        }
     }
 
     #[test]
     fn test_ui_state_path_tilde_expansion() {
-        // Save original value
-        let original = std::env::var("MAESTRO_UI_STATE").ok();
-
-        std::env::set_var("MAESTRO_UI_STATE", "~/my-ui-state.json");
-        let path = ui_state_path();
+        let path = ui_state_path_from_env_value(Some("~/my-ui-state.json"));
         if let Some(p) = path {
             // Should not start with ~ after expansion
             assert!(!p.to_string_lossy().starts_with('~'));
             assert!(p.to_string_lossy().ends_with("my-ui-state.json"));
-        }
-
-        // Restore original value
-        match original {
-            Some(v) => std::env::set_var("MAESTRO_UI_STATE", v),
-            None => std::env::remove_var("MAESTRO_UI_STATE"),
         }
     }
 }
