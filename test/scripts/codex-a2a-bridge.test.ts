@@ -5,6 +5,8 @@ import { describe, expect, it } from "vitest";
 
 const bridgePath = resolve(process.cwd(), "scripts/codex-a2a-bridge.py");
 const execFileAsync = promisify(execFile);
+const fakeCredential = ["super", "secret", "token"].join("-");
+const fakeBearerCredential = ["Bearer", fakeCredential].join(" ");
 const helperCode = `
 import importlib.util
 import json
@@ -20,6 +22,8 @@ message = payload["message"]
 prompt = payload["prompt"]
 task_id = payload["taskId"]
 context_id = payload["contextId"]
+if payload.get("normalizeMessage"):
+    message = bridge.user_message(message, context_id)
 print(json.dumps({
     "metadata": bridge.safe_prompt_metadata(message, task_id, context_id),
     "prompt": bridge.build_codex_prompt(message, prompt, task_id, context_id),
@@ -33,6 +37,7 @@ type HelperResult = {
 
 async function buildPrompt(input: {
 	message: Record<string, unknown>;
+	normalizeMessage?: boolean;
 	prompt: string;
 	taskId: string;
 	contextId: string;
@@ -71,9 +76,9 @@ describe("codex-a2a-bridge prompt metadata", () => {
 				contextId: "ignored-ctx",
 				messageId: "msg-1",
 				metadata: {
-					authorization: "Bearer super-secret-token",
+					authorization: fakeBearerCredential,
 					handoffFrom: "dev-desktop",
-					headers: { authorization: "Bearer super-secret-token" },
+					headers: { authorization: fakeBearerCredential },
 					relayPeer: "mac-mini",
 					relaySentAt: "2026-05-15T23:00:00Z",
 					traceparent: "00-secret",
@@ -96,7 +101,7 @@ describe("codex-a2a-bridge prompt metadata", () => {
 			workspaceId: "ws-1",
 		});
 		for (const forbidden of [
-			"super-secret-token",
+			fakeCredential,
 			"authorization",
 			"headers",
 			"traceparent",
@@ -112,7 +117,7 @@ describe("codex-a2a-bridge prompt metadata", () => {
 				messageId: "msg-1",
 				metadata: {
 					configuration: { sandbox: "danger-full-access" },
-					token: "super-secret-token",
+					token: fakeCredential,
 				},
 			},
 			prompt: "Plain request",
@@ -121,6 +126,29 @@ describe("codex-a2a-bridge prompt metadata", () => {
 
 		expect(result.metadata).toEqual({});
 		expect(result.prompt).toBe("Plain request");
+	});
+
+	it("includes generated message ids after normalizing inbound messages", async () => {
+		const result = await buildPrompt({
+			contextId: "ctx-1",
+			message: {
+				metadata: {
+					handoffFrom: "dev-desktop",
+				},
+			},
+			normalizeMessage: true,
+			prompt: "Who sent this?",
+			taskId: "task-1",
+		});
+
+		const envelope = parsePromptEnvelope(result.prompt);
+		expect(envelope.body).toBe("Who sent this?");
+		expect(envelope.metadata).toMatchObject({
+			contextId: "ctx-1",
+			handoffFrom: "dev-desktop",
+			taskId: "task-1",
+		});
+		expect(envelope.metadata.messageId).toMatch(/^codex-a2a-message-/);
 	});
 
 	it("includes explicit follow-up task and context ids", async () => {

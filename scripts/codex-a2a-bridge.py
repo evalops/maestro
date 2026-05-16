@@ -611,6 +611,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             immediate = return_immediately is True
             error: tuple[int, str, str] | None = None
+            normalized_message: dict[str, Any] | None = None
             with LOCK:
                 if requested_task_id:
                     existing = TASKS.get(requested_task_id)
@@ -653,7 +654,8 @@ class Handler(BaseHTTPRequestHandler):
                     task_id = new_id("codex-a2a-task")
                     history = []
                 if error is None:
-                    history.append(user_message(message, context_id))
+                    normalized_message = user_message(message, context_id)
+                    history.append(normalized_message)
                     if immediate:
                         status_message = agent_message(context_id, "Codex accepted the A2A task.")
                         launch_history = [*history, status_message]
@@ -674,7 +676,9 @@ class Handler(BaseHTTPRequestHandler):
             if error is not None:
                 self.error_json(*error)
                 return
-            prompt = build_codex_prompt(message, prompt_text, task_id, context_id)
+            prompt = build_codex_prompt(
+                normalized_message or message, prompt_text, task_id, context_id
+            )
             if immediate:
                 threading.Thread(
                     target=complete_task,
