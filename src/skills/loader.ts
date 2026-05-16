@@ -305,7 +305,7 @@ function validateDescription(description: string): string | null {
 /**
  * Validate compatibility per Agent Skills spec.
  */
-function validateCompatibility(compatibility: string): string | null {
+function validateCompatibility(compatibility: unknown): string | null {
 	if (typeof compatibility !== "string") {
 		return "Compatibility must be a string";
 	}
@@ -455,10 +455,8 @@ function loadSkillFromDirectory(
 		}
 
 		// Validate compatibility if present
-		if (frontmatter.compatibility) {
-			const compatError = validateCompatibility(
-				frontmatter.compatibility as string,
-			);
+		if (frontmatter.compatibility !== undefined) {
+			const compatError = validateCompatibility(frontmatter.compatibility);
 			if (compatError) {
 				return new SkillLoadError(
 					compatError,

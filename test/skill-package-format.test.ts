@@ -143,6 +143,31 @@ describe("skill package format", () => {
 		expect(skillToDict(skills[0]!)).not.toHaveProperty("license");
 	});
 
+	it("rejects non-string compatibility metadata fields", async () => {
+		const workspace = tempRoot();
+		const skillDir = join(workspace, ".maestro", "skills", "shipping-releases");
+		await mkdir(skillDir, { recursive: true });
+		writeFileSync(
+			join(skillDir, "SKILL.md"),
+			`---\nname: shipping-releases\ndescription: "Ship releases. Use when the user asks for release validation."\ncompatibility: 0\n---\n\n# Shipping Releases\n`,
+		);
+
+		const lintResult = await lintSkillDirectory(skillDir);
+		const loaded = loadSkills(workspace, { includeSystem: false });
+
+		expect(hasSkillLintErrors([lintResult])).toBe(true);
+		expect(lintResult.issues).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					code: "invalid_compatibility",
+					severity: "error",
+				}),
+			]),
+		);
+		expect(loaded.skills).toEqual([]);
+		expect(loaded.errors[0]?.code).toBe("INVALID_COMPATIBILITY");
+	});
+
 	it("fails lint when bundled MCP tools are unfiltered", async () => {
 		const skillDir = join(tempRoot(), "researching-code");
 		await mkdir(skillDir, { recursive: true });
