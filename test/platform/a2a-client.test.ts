@@ -273,8 +273,8 @@ describe("platform A2A client", () => {
 		});
 
 		expect(requests[0]).toMatchObject({
-			method: "POST",
 			url: "https://platform.test/.well-known/agent-card.json",
+			method: "GET",
 			headers: expect.objectContaining({
 				authorization: "Bearer a2a-token",
 				"x-evalops-workspace-id": "ws_1",
@@ -567,8 +567,8 @@ describe("platform A2A client", () => {
 		);
 
 		expect(requests[0]).toMatchObject({
-			method: "GET",
 			url: "https://platform.test/tasks/run_1:subscribe",
+			method: "POST",
 			headers: expect.objectContaining({
 				accept: "text/event-stream",
 				traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",

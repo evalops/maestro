@@ -58,6 +58,7 @@ const A2A_DEFAULT_LIST_PAGE_SIZE: usize = 50;
 const A2A_MAX_LIST_PAGE_SIZE: usize = 100;
 const A2A_DEFAULT_SUBSCRIBE_TIMEOUT_MS: u64 = 60_000;
 const A2A_DEFAULT_SUBSCRIBE_HEARTBEAT_MS: u64 = 15_000;
+const A2A_TASK_EVENT_REPLAY_LIMIT: usize = 256;
 const A2A_LEDGER_LOCK_RETRY_MS: u64 = 25;
 const A2A_LEDGER_LOCK_STALE_MS: u64 = 30_000;
 const A2A_LEDGER_LOCK_TIMEOUT_MS: u64 = A2A_LEDGER_LOCK_STALE_MS + A2A_LEDGER_LOCK_RETRY_MS;
@@ -218,8 +219,22 @@ struct AppState {
     pending_tool_responses: Arc<Mutex<HashMap<String, PendingToolResponseSender>>>,
     a2a_tasks: Arc<Mutex<HashMap<String, Value>>>,
     a2a_task_persist_lock: Arc<Mutex<()>>,
-    a2a_task_events: broadcast::Sender<Value>,
+    a2a_task_events: broadcast::Sender<A2ATaskUpdateEvent>,
+    a2a_task_event_history: Arc<Mutex<HashMap<String, A2ATaskEventHistory>>>,
     a2a_cancel_senders: Arc<Mutex<HashMap<String, A2ACancelSender>>>,
+}
+
+#[derive(Clone, Debug)]
+struct A2ATaskUpdateEvent {
+    task_id: String,
+    sequence: u64,
+    task: Value,
+}
+
+#[derive(Debug, Default)]
+struct A2ATaskEventHistory {
+    next_sequence: u64,
+    events: Vec<A2ATaskUpdateEvent>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -385,6 +400,7 @@ async fn main() -> anyhow::Result<()> {
         a2a_tasks: Arc::new(Mutex::new(a2a_tasks)),
         a2a_task_persist_lock: Arc::new(Mutex::new(())),
         a2a_task_events,
+        a2a_task_event_history: Arc::new(Mutex::new(HashMap::new())),
         a2a_cancel_senders: Arc::new(Mutex::new(HashMap::new())),
     };
 
@@ -1009,6 +1025,7 @@ async fn handle_a2a_task_subscribe(
         &serde_json::json!({ "statusUpdate": a2a_status_update_event(&current) }),
     )
     .await?;
+    let mut next_replay_sequence = a2a_task_event_next_sequence(state, task_id).await;
 
     let subscribe_timeout = Duration::from_millis(
         env_u64(
@@ -1032,9 +1049,30 @@ async fn handle_a2a_task_subscribe(
         }
         let wait_timeout = remaining.min(heartbeat_interval);
         let event = match tokio::time::timeout(wait_timeout, receiver.recv()).await {
-            Ok(Ok(task)) => Some(task),
+            Ok(Ok(event)) => {
+                if event.task_id == task_id {
+                    next_replay_sequence = event.sequence.saturating_add(1);
+                    Some(event.task)
+                } else {
+                    None
+                }
+            }
             Ok(Err(broadcast::error::RecvError::Lagged(_))) => {
-                current_a2a_subscribe_task(state, task_id, auth).await
+                let replay =
+                    a2a_task_events_since(state, task_id, next_replay_sequence, auth).await;
+                if replay.is_empty() {
+                    next_replay_sequence = a2a_task_event_next_sequence(state, task_id).await;
+                    current_a2a_subscribe_task(state, task_id, auth).await
+                } else {
+                    for event in replay {
+                        next_replay_sequence = event.sequence.saturating_add(1);
+                        if send_a2a_subscribe_task_update(stream, &event.task, auth).await? {
+                            let _ = stream.shutdown().await;
+                            return Ok(());
+                        }
+                    }
+                    continue;
+                }
             }
             Ok(Err(broadcast::error::RecvError::Closed)) => break,
             Err(_) => {
@@ -1070,6 +1108,40 @@ async fn current_a2a_subscribe_task(
     let tasks = state.a2a_tasks.lock().await;
     let task = tasks.get(task_id)?;
     a2a_task_visible_to_auth(task, auth).then(|| task.clone())
+}
+
+async fn a2a_task_event_next_sequence(state: &AppState, task_id: &str) -> u64 {
+    state
+        .a2a_task_event_history
+        .lock()
+        .await
+        .get(task_id)
+        .map(|history| history.next_sequence)
+        .unwrap_or(0)
+}
+
+async fn a2a_task_events_since(
+    state: &AppState,
+    task_id: &str,
+    sequence: u64,
+    auth: &AuthContext,
+) -> Vec<A2ATaskUpdateEvent> {
+    state
+        .a2a_task_event_history
+        .lock()
+        .await
+        .get(task_id)
+        .map(|history| {
+            history
+                .events
+                .iter()
+                .filter(|event| {
+                    event.sequence >= sequence && a2a_task_visible_to_auth(&event.task, auth)
+                })
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 async fn send_a2a_subscribe_task_update(
@@ -1194,7 +1266,7 @@ async fn cancel_a2a_task(
     if let Some(sender) = state.a2a_cancel_senders.lock().await.remove(task_id) {
         let _ = sender.send(true);
     }
-    publish_a2a_task_update(state, &task);
+    publish_a2a_task_update(state, &task).await;
     persist_a2a_tasks(state).await;
 
     Ok(task)
@@ -1645,8 +1717,34 @@ fn unix_millis_now() -> u128 {
         .unwrap_or(0)
 }
 
-fn publish_a2a_task_update(state: &AppState, task: &Value) {
-    let _ = state.a2a_task_events.send(task.clone());
+async fn publish_a2a_task_update(state: &AppState, task: &Value) {
+    let Some(task_id) = task
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|task_id| !task_id.is_empty())
+    else {
+        return;
+    };
+    let event = {
+        let mut histories = state.a2a_task_event_history.lock().await;
+        let history = histories.entry(task_id.to_string()).or_default();
+        let event = A2ATaskUpdateEvent {
+            task_id: task_id.to_string(),
+            sequence: history.next_sequence,
+            task: task.clone(),
+        };
+        history.next_sequence = history.next_sequence.saturating_add(1);
+        history.events.push(event.clone());
+        let overflow = history
+            .events
+            .len()
+            .saturating_sub(A2A_TASK_EVENT_REPLAY_LIMIT);
+        if overflow > 0 {
+            history.events.drain(..overflow);
+        }
+        event
+    };
+    let _ = state.a2a_task_events.send(event);
 }
 
 fn a2a_ledger_entry_is_control_plane(entry: &Value) -> bool {
@@ -1881,9 +1979,8 @@ async fn a2a_list_tasks_response(
         Ok(None) => A2A_DEFAULT_LIST_PAGE_SIZE,
         Err(message) => return Err(a2a_error_response(400, "INVALID_REQUEST", &message)),
     };
-    let page_token = match a2a_usize_query(head, &["pageToken", "page_token", "offset"]) {
-        Ok(Some(value)) => value,
-        Ok(None) => 0,
+    let page_start = match a2a_task_page_start(head) {
+        Ok(value) => value,
         Err(message) => return Err(a2a_error_response(400, "INVALID_REQUEST", &message)),
     };
     let context_id = a2a_string_query(head, &["contextId", "context_id"]);
@@ -1935,21 +2032,20 @@ async fn a2a_list_tasks_response(
         .map(|task| a2a_task_for_query(task, include_artifacts, history_length))
         .collect::<Vec<_>>();
     tasks.sort_by(|left, right| {
-        compare_a2a_task_status_timestamps_desc(left, right).then_with(|| {
-            left.get("id")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .cmp(right.get("id").and_then(Value::as_str).unwrap_or_default())
-        })
+        compare_a2a_task_status_timestamps_desc(left, right)
+            .then_with(|| a2a_task_id_for_sort(left).cmp(a2a_task_id_for_sort(right)))
     });
     let total_size = tasks.len();
+    let page_start_index = a2a_task_page_start_index(&tasks, &page_start);
     let page = tasks
         .into_iter()
-        .skip(page_token)
+        .skip(page_start_index)
         .take(page_size)
         .collect::<Vec<_>>();
-    let next_offset = page_token.saturating_add(page.len());
-    let next_page_token = (next_offset < total_size).then(|| next_offset.to_string());
+    let next_offset = page_start_index.saturating_add(page.len());
+    let next_page_token = (next_offset < total_size)
+        .then(|| page.last().and_then(a2a_task_page_token))
+        .flatten();
     Ok(serde_json::json!({
         "tasks": page,
         "nextPageToken": next_page_token.unwrap_or_default(),
@@ -1969,8 +2065,16 @@ fn a2a_timestamp_at_or_after(timestamp: &str, after: &str) -> bool {
 }
 
 fn compare_a2a_task_status_timestamps_desc(left: &Value, right: &Value) -> std::cmp::Ordering {
-    let left_timestamp = a2a_task_status_timestamp(left);
-    let right_timestamp = a2a_task_status_timestamp(right);
+    compare_a2a_status_timestamps_desc(
+        a2a_task_status_timestamp(left),
+        a2a_task_status_timestamp(right),
+    )
+}
+
+fn compare_a2a_status_timestamps_desc(
+    left_timestamp: Option<&str>,
+    right_timestamp: Option<&str>,
+) -> std::cmp::Ordering {
     match (
         left_timestamp.and_then(|timestamp| chrono::DateTime::parse_from_rfc3339(timestamp).ok()),
         right_timestamp.and_then(|timestamp| chrono::DateTime::parse_from_rfc3339(timestamp).ok()),
@@ -1982,6 +2086,110 @@ fn compare_a2a_task_status_timestamps_desc(left: &Value, right: &Value) -> std::
             .unwrap_or_default()
             .cmp(left_timestamp.unwrap_or_default()),
     }
+}
+
+#[derive(Debug)]
+enum A2ATaskPageStart {
+    Beginning,
+    Offset(usize),
+    Cursor(A2ATaskPageCursor),
+}
+
+#[derive(Debug)]
+struct A2ATaskPageCursor {
+    status_timestamp: String,
+    id: String,
+}
+
+fn a2a_task_page_start(head: &RequestHead) -> Result<A2ATaskPageStart, String> {
+    if let Some(token) = a2a_string_query(head, &["pageToken", "page_token"]) {
+        if let Ok(offset) = token.parse::<usize>() {
+            return Ok(A2ATaskPageStart::Offset(offset));
+        }
+        return parse_a2a_task_page_token(&token).map(A2ATaskPageStart::Cursor);
+    }
+    match a2a_usize_query(head, &["offset"])? {
+        Some(offset) => Ok(A2ATaskPageStart::Offset(offset)),
+        None => Ok(A2ATaskPageStart::Beginning),
+    }
+}
+
+fn parse_a2a_task_page_token(token: &str) -> Result<A2ATaskPageCursor, String> {
+    let bytes = URL_SAFE_NO_PAD
+        .decode(token.as_bytes())
+        .map_err(|_| "A2A query parameter pageToken must be a valid task page token".to_string())?;
+    let value: Value = serde_json::from_slice(&bytes)
+        .map_err(|_| "A2A query parameter pageToken must be a valid task page token".to_string())?;
+    let id = value
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| {
+            "A2A query parameter pageToken must be a valid task page token".to_string()
+        })?;
+    Ok(A2ATaskPageCursor {
+        status_timestamp: value
+            .get("statusTimestamp")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        id: id.to_string(),
+    })
+}
+
+fn a2a_task_page_start_index(tasks: &[Value], page_start: &A2ATaskPageStart) -> usize {
+    match page_start {
+        A2ATaskPageStart::Beginning => 0,
+        A2ATaskPageStart::Offset(offset) => *offset,
+        A2ATaskPageStart::Cursor(cursor) => tasks
+            .iter()
+            .position(|task| a2a_task_matches_page_cursor(task, cursor))
+            .map(|index| index.saturating_add(1))
+            .unwrap_or_else(|| {
+                tasks
+                    .iter()
+                    .position(|task| a2a_task_sorts_after_page_cursor(task, cursor))
+                    .unwrap_or(tasks.len())
+            }),
+    }
+}
+
+fn a2a_task_matches_page_cursor(task: &Value, cursor: &A2ATaskPageCursor) -> bool {
+    a2a_task_id_for_sort(task) == cursor.id
+        && compare_a2a_status_timestamps_desc(
+            a2a_task_status_timestamp(task),
+            Some(cursor.status_timestamp.as_str()),
+        )
+        .is_eq()
+}
+
+fn a2a_task_sorts_after_page_cursor(task: &Value, cursor: &A2ATaskPageCursor) -> bool {
+    match compare_a2a_status_timestamps_desc(
+        a2a_task_status_timestamp(task),
+        Some(cursor.status_timestamp.as_str()),
+    ) {
+        std::cmp::Ordering::Less => false,
+        std::cmp::Ordering::Equal => a2a_task_id_for_sort(task) > cursor.id.as_str(),
+        std::cmp::Ordering::Greater => true,
+    }
+}
+
+fn a2a_task_page_token(task: &Value) -> Option<String> {
+    let id = a2a_task_id_for_sort(task);
+    if id.is_empty() {
+        return None;
+    }
+    let value = serde_json::json!({
+        "statusTimestamp": a2a_task_status_timestamp(task).unwrap_or_default(),
+        "id": id,
+    });
+    serde_json::to_vec(&value)
+        .ok()
+        .map(|bytes| URL_SAFE_NO_PAD.encode(bytes))
+}
+
+fn a2a_task_id_for_sort(task: &Value) -> &str {
+    task.get("id").and_then(Value::as_str).unwrap_or_default()
 }
 
 fn a2a_task_for_query(
@@ -2159,7 +2367,7 @@ async fn claim_a2a_send_task(
     tasks.insert(task_id.clone(), task.clone());
     prune_a2a_terminal_tasks(&mut tasks);
     drop(tasks);
-    publish_a2a_task_update(state, &task);
+    publish_a2a_task_update(state, &task).await;
     persist_a2a_tasks(state).await;
     Ok(A2ASendTarget {
         task_id,
@@ -2195,7 +2403,7 @@ async fn rollback_a2a_send_claim(state: &AppState, task_id: &str, previous_task:
     if let Some(previous_task) = previous_task {
         tasks.insert(task_id.to_string(), previous_task.clone());
         drop(tasks);
-        publish_a2a_task_update(state, &previous_task);
+        publish_a2a_task_update(state, &previous_task).await;
     } else {
         tasks.remove(task_id);
         drop(tasks);
@@ -2219,7 +2427,7 @@ async fn store_a2a_task_unless_canceled(state: &AppState, task_id: &str, task: V
     tasks.insert(task_id.to_string(), task.clone());
     prune_a2a_terminal_tasks(&mut tasks);
     drop(tasks);
-    publish_a2a_task_update(state, &task);
+    publish_a2a_task_update(state, &task).await;
     persist_a2a_tasks(state).await;
     task
 }
@@ -11053,6 +11261,7 @@ setTimeout(() => {
             a2a_tasks: Arc::new(Mutex::new(HashMap::new())),
             a2a_task_persist_lock: Arc::new(Mutex::new(())),
             a2a_task_events,
+            a2a_task_event_history: Arc::new(Mutex::new(HashMap::new())),
             a2a_cancel_senders: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -11267,6 +11476,20 @@ setTimeout(() => {
         .is_ok());
         assert!(validate_csrf(
             &csrf_head_for_path("POST", "/message:stream", None),
+            &config
+        )
+        .is_err());
+        assert!(validate_csrf(
+            &csrf_head_for_path(
+                "POST",
+                "/tasks/maestro-task-1:subscribe",
+                Some("csrf-token")
+            ),
+            &config,
+        )
+        .is_ok());
+        assert!(validate_csrf(
+            &csrf_head_for_path("POST", "/tasks/maestro-task-1:subscribe", None),
             &config
         )
         .is_err());
@@ -12043,11 +12266,45 @@ setTimeout(() => {
 
         assert_eq!(response["totalSize"], 3);
         assert_eq!(response["pageSize"], 1);
-        assert_eq!(response["nextPageToken"], "1");
+        let next_page_token = response["nextPageToken"]
+            .as_str()
+            .expect("next page token should be a string");
+        assert!(!next_page_token.is_empty());
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0]["id"], "task-d");
         assert_eq!(tasks[0]["history"].as_array().unwrap().len(), 1);
         assert!(tasks[0].get("artifacts").is_none());
+
+        let mut newer_task = a2a_task_value(
+            "task-e",
+            "ctx-1",
+            "TASK_STATE_COMPLETED",
+            a2a_agent_message("ctx-1", "newer"),
+            Vec::new(),
+            Vec::new(),
+            serde_json::json!({}),
+        );
+        newer_task["status"]["timestamp"] = Value::String("2026-05-15T00:05:00Z".to_string());
+        state
+            .a2a_tasks
+            .lock()
+            .await
+            .insert("task-e".to_string(), newer_task);
+        let request = format!(
+            "GET /tasks?contextId=ctx-1&status=completed&pageSize=1&historyLength=1&pageToken={next_page_token} HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\n\r\n"
+        );
+        let mut initial = request.as_bytes().to_vec();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (_client, mut server) = tcp_stream_pair().await;
+
+        let response =
+            response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+        let tasks = response["tasks"]
+            .as_array()
+            .expect("tasks should be an array");
+
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0]["id"], "task-a");
 
         let request = "GET /tasks?statusTimestampAfter=2026-05-15T00:03:00Z HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\n\r\n";
         let mut initial = request.as_bytes().to_vec();
@@ -12060,9 +12317,10 @@ setTimeout(() => {
             .as_array()
             .expect("tasks should be an array");
 
-        assert_eq!(response["totalSize"], 2);
-        assert_eq!(tasks[0]["id"], "task-d");
-        assert_eq!(tasks[1]["id"], "task-a");
+        assert_eq!(response["totalSize"], 3);
+        assert_eq!(tasks[0]["id"], "task-e");
+        assert_eq!(tasks[1]["id"], "task-d");
+        assert_eq!(tasks[2]["id"], "task-a");
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -12601,7 +12859,7 @@ setTimeout(() => {
             "maestro-task-active-subscribe".to_string(),
             terminal_task.clone(),
         );
-        publish_a2a_task_update(&state, &terminal_task);
+        publish_a2a_task_update(&state, &terminal_task).await;
         tokio::time::timeout(
             Duration::from_secs(2),
             client.read_to_end(&mut response_bytes),
@@ -12730,6 +12988,23 @@ setTimeout(() => {
                 .expect("subscribe response should be readable");
         response_bytes.truncate(initial_len);
 
+        let intermediate_task = a2a_task_value(
+            "maestro-task-lagged-subscribe",
+            "ctx-1",
+            "TASK_STATE_WORKING",
+            a2a_agent_message("ctx-1", "halfway after lag"),
+            vec![
+                a2a_agent_message("ctx-1", "working"),
+                a2a_agent_message("ctx-1", "halfway after lag"),
+            ],
+            Vec::new(),
+            serde_json::json!({}),
+        );
+        state.a2a_tasks.lock().await.insert(
+            "maestro-task-lagged-subscribe".to_string(),
+            intermediate_task.clone(),
+        );
+        publish_a2a_task_update(&state, &intermediate_task).await;
         let terminal_task = a2a_task_value(
             "maestro-task-lagged-subscribe",
             "ctx-1",
@@ -12737,6 +13012,7 @@ setTimeout(() => {
             a2a_agent_message("ctx-1", "complete after lag"),
             vec![
                 a2a_agent_message("ctx-1", "working"),
+                a2a_agent_message("ctx-1", "halfway after lag"),
                 a2a_agent_message("ctx-1", "complete after lag"),
             ],
             Vec::new(),
@@ -12746,7 +13022,7 @@ setTimeout(() => {
             "maestro-task-lagged-subscribe".to_string(),
             terminal_task.clone(),
         );
-        publish_a2a_task_update(&state, &terminal_task);
+        publish_a2a_task_update(&state, &terminal_task).await;
         for index in 0..4 {
             let unrelated_task = a2a_task_value(
                 &format!("unrelated-task-{index}"),
@@ -12757,7 +13033,7 @@ setTimeout(() => {
                 Vec::new(),
                 serde_json::json!({}),
             );
-            publish_a2a_task_update(&state, &unrelated_task);
+            publish_a2a_task_update(&state, &unrelated_task).await;
         }
 
         tokio::time::timeout(
@@ -12773,6 +13049,7 @@ setTimeout(() => {
         let response = String::from_utf8(response_bytes).expect("response should be utf-8");
 
         assert!(response.contains("TASK_STATE_COMPLETED"));
+        assert!(response.contains("halfway after lag"));
         assert!(response.contains("complete after lag"));
     }
 
@@ -15661,6 +15938,7 @@ setTimeout(() => {
             a2a_tasks: Arc::new(Mutex::new(HashMap::new())),
             a2a_task_persist_lock: Arc::new(Mutex::new(())),
             a2a_task_events: broadcast::channel(256).0,
+            a2a_task_event_history: Arc::new(Mutex::new(HashMap::new())),
             a2a_cancel_senders: Arc::new(Mutex::new(HashMap::new())),
         };
         let (_client, mut server) = tcp_stream_pair().await;
@@ -15741,6 +16019,7 @@ setTimeout(() => {
             a2a_tasks: Arc::new(Mutex::new(HashMap::new())),
             a2a_task_persist_lock: Arc::new(Mutex::new(())),
             a2a_task_events: broadcast::channel(256).0,
+            a2a_task_event_history: Arc::new(Mutex::new(HashMap::new())),
             a2a_cancel_senders: Arc::new(Mutex::new(HashMap::new())),
         };
 

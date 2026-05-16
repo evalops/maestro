@@ -301,7 +301,7 @@ export async function discoverA2AAgentCard(
 	const response = await fetchDownstream(
 		`${config.baseUrl}/.well-known/agent-card.json`,
 		{
-			method: "POST",
+			method: "GET",
 			headers: buildA2AHeaders(config),
 			signal: options.signal,
 		},
@@ -381,7 +381,7 @@ export async function* subscribeA2ATask(
 	const response = await fetchDownstream(
 		`${config.baseUrl}/tasks/${encodeURIComponent(trimmedTaskId)}:subscribe`,
 		{
-			method: "GET",
+			method: "POST",
 			headers: {
 				...buildA2AHeaders(config, options.traceContext),
 				Accept: "text/event-stream",
