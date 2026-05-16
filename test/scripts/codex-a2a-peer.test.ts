@@ -49,9 +49,11 @@ describe("codex-a2a-peer", () => {
 	let baseUrl: string;
 	let configPath: string;
 	let requests: CapturedRequest[];
+	let waitTaskPolls: number;
 
 	beforeEach(async () => {
 		requests = [];
+		waitTaskPolls = 0;
 		server = createServer(async (request, response) => {
 			const body = await readBody(request);
 			requests.push({
@@ -93,13 +95,55 @@ describe("codex-a2a-peer", () => {
 				return;
 			}
 			if (request.url === "/message:send") {
+				const parsedBody = JSON.parse(body || "{}");
+				const messageText = parsedBody?.message?.parts?.[0]?.text ?? "";
+				if (messageText === "direct message") {
+					response.end(
+						JSON.stringify({
+							message: {
+								role: "ROLE_AGENT",
+								parts: [{ text: "direct response", mediaType: "text/plain" }],
+							},
+						}),
+					);
+					return;
+				}
+				if (messageText === "slow ack") {
+					await new Promise((resolveSlow) => setTimeout(resolveSlow, 100));
+					response.end(
+						JSON.stringify({
+							task: {
+								id: "task-wait",
+								contextId: "ctx-1",
+								status: {
+									state: "TASK_STATE_WORKING",
+									message: {
+										role: "ROLE_AGENT",
+										parts: [{ text: "slow ack", mediaType: "text/plain" }],
+									},
+								},
+								artifacts: [],
+								history: [],
+								metadata: {},
+							},
+						}),
+					);
+					return;
+				}
+				const isAsyncWaitTask =
+					messageText === "slow work" &&
+					parsedBody?.configuration?.returnImmediately === true;
+				const taskId = isAsyncWaitTask ? "task-wait" : "task-1";
+				const state = isAsyncWaitTask
+					? "TASK_STATE_WORKING"
+					: "TASK_STATE_COMPLETED";
 				response.end(
 					JSON.stringify({
 						task: {
-							id: "task-1",
+							id: taskId,
 							contextId: "ctx-1",
 							status: {
-								state: "TASK_STATE_COMPLETED",
+								state,
 								message: {
 									role: "ROLE_AGENT",
 									parts: [{ text: "hello from peer", mediaType: "text/plain" }],
@@ -108,6 +152,85 @@ describe("codex-a2a-peer", () => {
 							artifacts: [],
 							history: [],
 							metadata: {},
+						},
+					}),
+				);
+				return;
+			}
+			if (request.url === "/tasks/task-wait") {
+				waitTaskPolls += 1;
+				const completed = waitTaskPolls >= 2;
+				response.end(
+					JSON.stringify({
+						id: "task-wait",
+						contextId: "ctx-1",
+						status: {
+							state: completed ? "TASK_STATE_COMPLETED" : "TASK_STATE_WORKING",
+							message: {
+								role: "ROLE_AGENT",
+								parts: [
+									{
+										text: completed ? "done after wait" : "still working",
+										mediaType: "text/plain",
+									},
+								],
+							},
+						},
+					}),
+				);
+				return;
+			}
+			if (request.url === "/tasks/task-lowercase") {
+				waitTaskPolls += 1;
+				const completed = waitTaskPolls >= 2;
+				response.end(
+					JSON.stringify({
+						id: "task-lowercase",
+						contextId: "ctx-1",
+						status: {
+							state: completed ? "completed" : "working",
+							message: {
+								role: "ROLE_AGENT",
+								parts: [
+									{
+										text: completed ? "lowercase done" : "lowercase active",
+										mediaType: "text/plain",
+									},
+								],
+							},
+						},
+					}),
+				);
+				return;
+			}
+			if (request.url === "/tasks/task-slow") {
+				await new Promise((resolveSlow) => setTimeout(resolveSlow, 100));
+				response.end(
+					JSON.stringify({
+						id: "task-slow",
+						contextId: "ctx-1",
+						status: {
+							state: "TASK_STATE_WORKING",
+							message: {
+								role: "ROLE_AGENT",
+								parts: [{ text: "slow poll", mediaType: "text/plain" }],
+							},
+						},
+					}),
+				);
+				return;
+			}
+			if (request.url === "/tasks/task-never") {
+				response.end(
+					JSON.stringify({
+						id: "task-never",
+						contextId: "ctx-1",
+						status: {
+							state: "TASK_STATE_WORKING",
+							message: {
+								role: "ROLE_AGENT",
+								parts: [{ text: "still working", mediaType: "text/plain" }],
+							},
 						},
 					}),
 				);
@@ -328,6 +451,279 @@ describe("codex-a2a-peer", () => {
 				metadata: { relayPeer: "mock" },
 			},
 		});
+	});
+
+	it("sends async work and waits for the returned task to settle", async () => {
+		const output = await runPeer(
+			configPath,
+			[
+				"send",
+				"--wait",
+				"--wait-interval",
+				"0.01",
+				"--max-wait",
+				"1",
+				"mock",
+				"slow",
+				"work",
+			],
+			{ TEST_A2A_PEER_TOKEN: "super-secret-token" },
+		);
+
+		expect(output).toContain("task: task-wait");
+		expect(output).toContain("state: TASK_STATE_COMPLETED");
+		expect(output).toContain("done after wait");
+		const sendRequest = requests.find((item) => item.url === "/message:send");
+		expect(JSON.parse(sendRequest?.body ?? "{}")).toMatchObject({
+			configuration: { returnImmediately: true },
+		});
+		expect(
+			requests.filter((item) => item.url === "/tasks/task-wait"),
+		).toHaveLength(2);
+	});
+
+	it("prints direct message responses for send --wait without requiring a task id", async () => {
+		const output = await runPeer(
+			configPath,
+			["send", "--wait", "mock", "direct", "message"],
+			{ TEST_A2A_PEER_TOKEN: "super-secret-token" },
+		);
+
+		expect(output).toContain("direct response");
+		expect(
+			requests.filter((item) => item.url?.startsWith("/tasks/")),
+		).toHaveLength(0);
+	});
+
+	it("waits for an existing peer task to settle", async () => {
+		const output = await runPeer(
+			configPath,
+			["wait", "mock", "task-wait", "--interval", "0.01", "--max-wait", "1"],
+			{ TEST_A2A_PEER_TOKEN: "super-secret-token" },
+		);
+
+		expect(output).toContain("task: task-wait");
+		expect(output).toContain("state: TASK_STATE_COMPLETED");
+		expect(output).toContain("done after wait");
+		expect(
+			requests.filter((item) => item.url === "/tasks/task-wait"),
+		).toHaveLength(2);
+	});
+
+	it("treats lowercase A2A active states as still waiting", async () => {
+		const output = await runPeer(
+			configPath,
+			[
+				"wait",
+				"mock",
+				"task-lowercase",
+				"--interval",
+				"0.01",
+				"--max-wait",
+				"1",
+			],
+			{ TEST_A2A_PEER_TOKEN: "super-secret-token" },
+		);
+
+		expect(output).toContain("task: task-lowercase");
+		expect(output).toContain("state: completed");
+		expect(output).toContain("lowercase done");
+		expect(
+			requests.filter((item) => item.url === "/tasks/task-lowercase"),
+		).toHaveLength(2);
+	});
+
+	it("fails bounded waits without a traceback when a task keeps working", async () => {
+		await expect(
+			runPeer(
+				configPath,
+				[
+					"wait",
+					"mock",
+					"task-never",
+					"--interval",
+					"0.01",
+					"--max-wait",
+					"0.02",
+				],
+				{ TEST_A2A_PEER_TOKEN: "super-secret-token" },
+			),
+		).rejects.toMatchObject({
+			stderr: expect.stringContaining("did not finish within 0.02s"),
+		});
+		await expect(
+			runPeer(
+				configPath,
+				[
+					"wait",
+					"mock",
+					"task-never",
+					"--interval",
+					"0.01",
+					"--max-wait",
+					"0.02",
+				],
+				{ TEST_A2A_PEER_TOKEN: "super-secret-token" },
+			),
+		).rejects.not.toMatchObject({
+			stderr: expect.stringContaining("Traceback"),
+		});
+		expect(requests.some((item) => item.url === "/tasks/task-never")).toBe(
+			true,
+		);
+	});
+
+	it("caps each wait poll to the remaining max-wait deadline", async () => {
+		await expect(
+			runPeer(
+				configPath,
+				[
+					"wait",
+					"mock",
+					"task-slow",
+					"--interval",
+					"0.01",
+					"--max-wait",
+					"0.05",
+					"--timeout",
+					"10",
+				],
+				{ TEST_A2A_PEER_TOKEN: "super-secret-token" },
+			),
+		).rejects.toMatchObject({
+			stderr: expect.stringContaining("did not finish within 0.05s"),
+		});
+		expect(requests.some((item) => item.url === "/tasks/task-slow")).toBe(true);
+	});
+
+	it("preserves configured timeoutMs while capping wait poll deadlines", async () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				defaultPeer: "mock",
+				timeoutMs: 20,
+				peers: {
+					mock: {
+						url: baseUrl,
+						tokenEnv: "TEST_A2A_PEER_TOKEN",
+					},
+				},
+			}),
+		);
+
+		await expect(
+			runPeer(
+				configPath,
+				["wait", "mock", "task-slow", "--interval", "0.01", "--max-wait", "1"],
+				{ TEST_A2A_PEER_TOKEN: "super-secret-token" },
+			),
+		).rejects.toMatchObject({
+			stderr: expect.stringContaining("GET /tasks/task-slow timed out"),
+		});
+		await expect(
+			runPeer(
+				configPath,
+				["wait", "mock", "task-slow", "--interval", "0.01", "--max-wait", "1"],
+				{ TEST_A2A_PEER_TOKEN: "super-secret-token" },
+			),
+		).rejects.not.toMatchObject({
+			stderr: expect.stringContaining("Traceback"),
+		});
+		expect(requests.some((item) => item.url === "/tasks/task-slow")).toBe(true);
+	});
+
+	it("caps the initial send --wait request to the max-wait deadline", async () => {
+		await expect(
+			runPeer(
+				configPath,
+				[
+					"send",
+					"--wait",
+					"--max-wait",
+					"0.05",
+					"--timeout",
+					"10",
+					"mock",
+					"slow",
+					"ack",
+				],
+				{ TEST_A2A_PEER_TOKEN: "super-secret-token" },
+			),
+		).rejects.toMatchObject({
+			stderr: expect.stringContaining(
+				"message:send did not finish within 0.05s",
+			),
+		});
+		expect(requests.some((item) => item.url === "/message:send")).toBe(true);
+		expect(requests.some((item) => item.url?.startsWith("/tasks/"))).toBe(
+			false,
+		);
+	});
+
+	it("preserves configured timeoutMs for the initial send --wait request", async () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				defaultPeer: "mock",
+				timeoutMs: 20,
+				peers: {
+					mock: {
+						url: baseUrl,
+						tokenEnv: "TEST_A2A_PEER_TOKEN",
+					},
+				},
+			}),
+		);
+
+		await expect(
+			runPeer(
+				configPath,
+				["send", "--wait", "--max-wait", "1", "mock", "slow", "ack"],
+				{ TEST_A2A_PEER_TOKEN: "super-secret-token" },
+			),
+		).rejects.toMatchObject({
+			stderr: expect.stringContaining("POST /message:send timed out"),
+		});
+		expect(requests.some((item) => item.url === "/message:send")).toBe(true);
+		expect(requests.some((item) => item.url?.startsWith("/tasks/"))).toBe(
+			false,
+		);
+	});
+
+	it("rejects non-finite wait arguments before sending", async () => {
+		await expect(
+			runPeer(configPath, ["wait", "mock", "task-1", "--max-wait", "inf"], {
+				TEST_A2A_PEER_TOKEN: "super-secret-token",
+			}),
+		).rejects.toMatchObject({
+			stderr: expect.stringContaining("must be finite"),
+		});
+		await expect(
+			runPeer(configPath, ["wait", "mock", "task-1", "--interval", "nan"], {
+				TEST_A2A_PEER_TOKEN: "super-secret-token",
+			}),
+		).rejects.toMatchObject({
+			stderr: expect.stringContaining("must be finite"),
+		});
+		await expect(
+			runPeer(configPath, ["wait", "mock", "task-1", "--timeout", "nan"], {
+				TEST_A2A_PEER_TOKEN: "super-secret-token",
+			}),
+		).rejects.toMatchObject({
+			stderr: expect.stringContaining("must be finite"),
+		});
+		await expect(
+			runPeer(
+				configPath,
+				["send", "--peer", "mock", "--wait", "--timeout", "inf", "hello"],
+				{
+					TEST_A2A_PEER_TOKEN: "super-secret-token",
+				},
+			),
+		).rejects.toMatchObject({
+			stderr: expect.stringContaining("must be finite"),
+		});
+		expect(requests).toHaveLength(0);
 	});
 
 	it("cancels a peer task with A2A headers", async () => {
