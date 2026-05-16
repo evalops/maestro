@@ -137,7 +137,6 @@ async function handleList(workspaceDir: string, options: SkillCommandOptions) {
 async function handleInspect(
 	workspaceDir: string,
 	name: string | undefined,
-	options: SkillCommandOptions,
 ) {
 	if (!name) {
 		throw new Error("maestro skill inspect requires a skill name");
@@ -154,10 +153,6 @@ async function handleInspect(
 		resources: skill.resources,
 		resourceDirs: skill.resourceDirs,
 	};
-	if (options.json) {
-		console.log(JSON.stringify(payload, null, 2));
-		return;
-	}
 	console.log(JSON.stringify(payload, null, 2));
 }
 
@@ -230,7 +225,7 @@ export async function handleSkillCommand(
 			await handleList(workspaceDir, parsedOptions);
 			return;
 		case "inspect":
-			await handleInspect(workspaceDir, positionals[0], parsedOptions);
+			await handleInspect(workspaceDir, positionals[0]);
 			return;
 		case "lint":
 			await handleLint(workspaceDir, positionals, parsedOptions);
