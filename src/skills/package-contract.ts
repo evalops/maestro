@@ -63,6 +63,12 @@ function issue(code: string, message: string): SkillPackageContractIssue {
 	return { code, message };
 }
 
+function mapValidationIssue(message: string): SkillPackageContractIssue {
+	return message === `Missing "${MAESTRO_PACKAGE_KEYWORD}" keyword.`
+		? issue("missing_maestro_package_keyword", message)
+		: issue("package_validation", message);
+}
+
 function buildInstallCommands(input: {
 	cwd: string;
 	resolvedPath: string;
@@ -91,18 +97,8 @@ function collectContractIssues(input: {
 	skillCount: number;
 	evalReport: SkillEvalReport | null;
 }): SkillPackageContractIssue[] {
-	const issues = input.validationIssues.map((message) =>
-		issue("package_validation", message),
-	);
+	const issues = input.validationIssues.map(mapValidationIssue);
 	const keywords = packageKeywords(input.discovered);
-	if (!keywords.includes(MAESTRO_PACKAGE_KEYWORD)) {
-		issues.push(
-			issue(
-				"missing_maestro_package_keyword",
-				`package.json keywords must include "${MAESTRO_PACKAGE_KEYWORD}".`,
-			),
-		);
-	}
 	if (!keywords.includes(MAESTRO_SKILL_PACKAGE_KEYWORD)) {
 		issues.push(
 			issue(
@@ -111,7 +107,7 @@ function collectContractIssues(input: {
 			),
 		);
 	}
-	if (input.skillCount === 0) {
+	if (input.validationIssues.length === 0 && input.skillCount === 0) {
 		issues.push(
 			issue(
 				"missing_skill_resources",

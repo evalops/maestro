@@ -13,6 +13,7 @@ import { parseArgs } from "../src/cli/args.js";
 import { handleSkillCommand } from "../src/cli/commands/skill.js";
 import { buildSkillArtifactMetadata } from "../src/skills/artifact-metadata.js";
 import {
+	buildSkillPackagePublishContract,
 	buildSkillRuntimeActivation,
 	evaluateSkillPackages,
 	hasSkillEvalFailures,
@@ -337,6 +338,38 @@ describe("skill package format", () => {
 			"maestro skill install npm:@test/maestro-review-skills@1.0.0",
 		);
 		expect(payload.issues).toEqual([]);
+	});
+
+	it('emits one issue when the "maestro-package" keyword is missing', async () => {
+		const workspace = tempRoot();
+		const packageDir = await writeOssSkillPackage(workspace);
+		writeFileSync(
+			join(packageDir, "package.json"),
+			JSON.stringify(
+				{
+					name: "@test/maestro-review-skills",
+					version: "1.0.0",
+					keywords: ["maestro-skill-package"],
+					maestro: {
+						skills: ["./skills"],
+					},
+				},
+				null,
+				2,
+			),
+		);
+
+		const contract = await buildSkillPackagePublishContract(
+			"./vendor/review-skills",
+			{ cwd: workspace },
+		);
+
+		expect(contract.issues).toEqual([
+			{
+				code: "missing_maestro_package_keyword",
+				message: 'Missing "maestro-package" keyword.',
+			},
+		]);
 	});
 
 	it("installs validated OSS skill packages into the selected config scope", async () => {
