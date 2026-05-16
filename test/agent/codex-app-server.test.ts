@@ -343,6 +343,7 @@ describe("Codex app-server provider", () => {
 						codexTool: "spawnAgent",
 						prompt: "Inspect the repo for routing bugs",
 						receiverThreadIds: ["child-thread-1"],
+						childRunIds: ["codex-thread:child-thread-1"],
 						model: "gpt-5.3-codex",
 						reasoningEffort: "high",
 					}),
@@ -364,6 +365,7 @@ describe("Codex app-server provider", () => {
 						],
 						details: expect.objectContaining({
 							codexTool: "spawnAgent",
+							childRunIds: ["codex-thread:child-thread-1"],
 							agentsStates: expect.objectContaining({
 								"child-thread-1": expect.objectContaining({
 									status: "completed",

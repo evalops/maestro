@@ -20,6 +20,7 @@ import type { ServerRequestLifecycleEvent } from "./server-request-manager.js";
 
 const logger = createLogger("server:hosted-agent-runtime-progress");
 const CODEX_SUBAGENT_TOOL_PREFIX = "codex.subagent.";
+const CODEX_THREAD_CHILD_RUN_PREFIX = "codex-thread:";
 
 export interface HostedAgentRuntimeProgressContext {
 	enabled: true;
@@ -99,6 +100,21 @@ function codexSubagentToolName(toolName: string): string | undefined {
 	return tool || undefined;
 }
 
+function codexThreadChildRunId(threadId: string): string {
+	return `${CODEX_THREAD_CHILD_RUN_PREFIX}${threadId}`;
+}
+
+function codexSubagentChildRunIds(
+	args: Record<string, unknown>,
+	receiverThreadIds: string[],
+): string[] {
+	const explicit = stringArray(args.childRunIds ?? args.child_run_ids);
+	if (explicit.length > 0) {
+		return explicit;
+	}
+	return receiverThreadIds.map(codexThreadChildRunId);
+}
+
 function codexSubagentNextAction(tool: string): string {
 	switch (tool) {
 		case "spawnAgent":
@@ -146,6 +162,8 @@ export class HostedAgentRuntimeProgressRecorder {
 	private readonly pendingWaitIds = new Map<string, string>();
 	private readonly resumedWaitIds = new Set<string>();
 	private readonly codexSubagentReceiverThreadIds = new Map<string, string[]>();
+	private readonly codexSubagentToolChildRunIds = new Map<string, string[]>();
+	private readonly codexSubagentThreadWorkItemIds = new Map<string, string>();
 	private pending: Promise<void> = Promise.resolve();
 	private turnIndex = 0;
 	private terminalRecorded = false;
@@ -516,16 +534,31 @@ export class HostedAgentRuntimeProgressRecorder {
 			return;
 		}
 		const receiverThreadIds = stringArray(event.args.receiverThreadIds);
+		const childRunIds = codexSubagentChildRunIds(event.args, receiverThreadIds);
+		const ownerChildRunId = childRunIds[0];
+		const linkedWorkItemIds =
+			this.codexSubagentLinkedWorkItemIds(receiverThreadIds);
+		const parentWorkItemId =
+			linkedWorkItemIds.length === 1 ? linkedWorkItemIds[0] : undefined;
+		const workItemId = this.workItemId(event.toolCallId);
 		this.codexSubagentReceiverThreadIds.set(
 			event.toolCallId,
 			receiverThreadIds,
 		);
+		this.codexSubagentToolChildRunIds.set(event.toolCallId, childRunIds);
+		if (codexTool === "spawnAgent") {
+			for (const threadId of receiverThreadIds) {
+				this.codexSubagentThreadWorkItemIds.set(threadId, workItemId);
+			}
+		}
 		const prompt = nonEmptyString(event.args.prompt);
 		const model = nonEmptyString(event.args.model);
 		const reasoningEffort = nonEmptyString(event.args.reasoningEffort);
 		const workItem: PlatformAgentWorkItem = {
-			id: this.workItemId(event.toolCallId),
+			id: workItemId,
 			runId,
+			...(parentWorkItemId ? { parentWorkItemId } : {}),
+			...(ownerChildRunId ? { ownerChildRunId } : {}),
 			kind:
 				codexTool === "wait"
 					? PlatformAgentWorkItemKindValue.Wait
@@ -543,6 +576,7 @@ export class HostedAgentRuntimeProgressRecorder {
 			evidenceRefs: [
 				`codex-tool-call:${event.toolCallId}`,
 				...receiverThreadIds.map((id) => `codex-thread:${id}`),
+				...childRunIds.map((id) => `codex-child-run:${id}`),
 			],
 			completionGate: "codex_collab_tool_completed",
 			payload: this.basePayload({
@@ -555,6 +589,8 @@ export class HostedAgentRuntimeProgressRecorder {
 				sender_thread_id: nonEmptyString(event.args.senderThreadId),
 				receiver_thread_ids: receiverThreadIds,
 				receiver_thread_count: receiverThreadIds.length,
+				child_run_ids: childRunIds,
+				linked_work_item_ids: linkedWorkItemIds,
 				model,
 				reasoning_effort: reasoningEffort,
 				arg_keys: objectKeys(event.args),
@@ -587,7 +623,23 @@ export class HostedAgentRuntimeProgressRecorder {
 			detailReceiverThreadIds.length > 0
 				? detailReceiverThreadIds
 				: (this.codexSubagentReceiverThreadIds.get(event.toolCallId) ?? []);
+		const detailChildRunIds = stringArray(
+			details?.childRunIds ?? details?.child_run_ids,
+		);
+		const childRunIds =
+			detailChildRunIds.length > 0
+				? detailChildRunIds
+				: (this.codexSubagentToolChildRunIds.get(event.toolCallId) ??
+					codexSubagentChildRunIds({}, receiverThreadIds));
+		const linkedWorkItemIds =
+			this.codexSubagentLinkedWorkItemIds(receiverThreadIds);
 		this.codexSubagentReceiverThreadIds.delete(event.toolCallId);
+		this.codexSubagentToolChildRunIds.delete(event.toolCallId);
+		if (codexTool === "closeAgent" && !event.isError) {
+			for (const threadId of receiverThreadIds) {
+				this.codexSubagentThreadWorkItemIds.delete(threadId);
+			}
+		}
 		this.enqueue(async () => {
 			await this.operations.updateWorkItem({
 				runId,
@@ -601,6 +653,7 @@ export class HostedAgentRuntimeProgressRecorder {
 				evidenceRefs: [
 					`codex-tool-call:${event.toolCallId}`,
 					...receiverThreadIds.map((id) => `codex-thread:${id}`),
+					...childRunIds.map((id) => `codex-child-run:${id}`),
 				],
 				completionGate: event.isError
 					? "codex_collab_tool_failed"
@@ -616,10 +669,21 @@ export class HostedAgentRuntimeProgressRecorder {
 					governed_outcome: event.governedOutcome,
 					result_error: event.isError,
 					receiver_thread_ids: receiverThreadIds,
+					child_run_ids: childRunIds,
+					linked_work_item_ids: linkedWorkItemIds,
 					result_detail_keys: objectKeys(details),
 				}),
 			});
 		});
+	}
+
+	private codexSubagentLinkedWorkItemIds(
+		receiverThreadIds: string[],
+	): string[] {
+		const linked = receiverThreadIds
+			.map((threadId) => this.codexSubagentThreadWorkItemIds.get(threadId))
+			.filter((id): id is string => Boolean(id));
+		return Array.from(new Set(linked));
 	}
 
 	private enqueue(operation: ProgressOperation): void {
