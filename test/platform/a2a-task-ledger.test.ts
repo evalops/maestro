@@ -21,6 +21,7 @@ const LATER = new Date("2026-05-16T00:01:00.000Z");
 
 describe("A2A task ledger", () => {
 	afterEach(() => {
+		vi.useRealTimers();
 		vi.unstubAllEnvs();
 	});
 
@@ -185,6 +186,40 @@ describe("A2A task ledger", () => {
 			"tasks.length",
 			1,
 		);
+		await expect(stat(lockPath)).rejects.toMatchObject({ code: "ENOENT" });
+	});
+
+	it("waits through the stale-lock horizon before failing acquisition", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-05-16T00:00:00.000Z"));
+		const path = join(
+			await mkdtemp(join(tmpdir(), "maestro-a2a-ledger-lock-horizon-")),
+			"tasks.json",
+		);
+		const lockPath = `${path}.lock`;
+		await mkdir(lockPath);
+		const freshEnough = new Date(Date.now() - 1000);
+		await utimes(lockPath, freshEnough, freshEnough);
+
+		const write = recordA2ATaskStart({
+			path,
+			peer: "mac-mini",
+			task: {
+				id: "task-mac-1",
+				status: { state: "TASK_STATE_SUBMITTED" },
+			},
+			text: "recover after abandoned lock",
+			now: NOW,
+		});
+		await vi.advanceTimersByTimeAsync(31_000);
+
+		await expect(write).resolves.toMatchObject({
+			entry: {
+				peer: "mac-mini",
+				taskId: "task-mac-1",
+				text: "recover after abandoned lock",
+			},
+		});
 		await expect(stat(lockPath)).rejects.toMatchObject({ code: "ENOENT" });
 	});
 
