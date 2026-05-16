@@ -169,6 +169,24 @@ describe("hosted AgentRuntime progress recorder", () => {
 				codexTool: "spawnAgent",
 				senderThreadId: "parent-thread",
 				receiverThreadIds: ["child-thread-1"],
+				codexWorkGraph: {
+					schemaVersion: "evalops.maestro.codex.subagent-workgraph.v1",
+					toolCallId: "collab-call-1",
+					tool: "spawnAgent",
+					status: "inProgress",
+					parent: {
+						threadId: "parent-thread",
+						turnId: "turn-1",
+						senderThreadId: "parent-thread",
+					},
+					childRuns: [
+						{
+							threadId: "child-thread-1",
+							childRunId: "codex-thread:child-thread-1",
+							operation: "spawnAgent",
+						},
+					],
+				},
 				prompt: "Inspect platform remote runner wiring",
 				model: "gpt-5.3-codex",
 				reasoningEffort: "high",
@@ -221,6 +239,16 @@ describe("hosted AgentRuntime progress recorder", () => {
 					receiver_thread_ids: ["child-thread-1"],
 					receiver_thread_count: 1,
 					child_run_ids: ["codex-thread:child-thread-1"],
+					codex_work_graph: expect.objectContaining({
+						schemaVersion: "evalops.maestro.codex.subagent-workgraph.v1",
+						toolCallId: "collab-call-1",
+						childRuns: [
+							expect.objectContaining({
+								threadId: "child-thread-1",
+								childRunId: "codex-thread:child-thread-1",
+							}),
+						],
+					}),
 					linked_work_item_ids: [],
 					model: "gpt-5.3-codex",
 					reasoning_effort: "high",
@@ -245,6 +273,14 @@ describe("hosted AgentRuntime progress recorder", () => {
 				result_error: false,
 				receiver_thread_ids: ["child-thread-1"],
 				child_run_ids: ["codex-thread:child-thread-1"],
+				codex_work_graph: expect.objectContaining({
+					toolCallId: "collab-call-1",
+					childRuns: [
+						expect.objectContaining({
+							childRunId: "codex-thread:child-thread-1",
+						}),
+					],
+				}),
 				linked_work_item_ids: ["maestro:session_1:work:collab-call-1"],
 			}),
 		});
@@ -283,6 +319,24 @@ describe("hosted AgentRuntime progress recorder", () => {
 				senderThreadId: "parent-thread",
 				receiverThreadIds: ["child-thread-1"],
 				childRunIds: ["agent-run-child-1"],
+				codexWorkGraph: {
+					schemaVersion: "evalops.maestro.codex.subagent-workgraph.v1",
+					toolCallId: "spawn-delegation-call",
+					tool: "spawnAgent",
+					status: "inProgress",
+					parent: {
+						threadId: "parent-thread",
+						turnId: "turn-1",
+						senderThreadId: "parent-thread",
+					},
+					childRuns: [
+						{
+							threadId: "child-thread-1",
+							childRunId: "agent-run-child-1",
+							operation: "spawnAgent",
+						},
+					],
+				},
 				prompt: "Audit remote runner drain behavior",
 				requiredCapability: "code:review",
 			},
@@ -301,6 +355,24 @@ describe("hosted AgentRuntime progress recorder", () => {
 					codexTool: "spawnAgent",
 					receiverThreadIds: ["child-thread-1"],
 					childRunIds: ["agent-run-child-1"],
+					codexWorkGraph: {
+						schemaVersion: "evalops.maestro.codex.subagent-workgraph.v1",
+						toolCallId: "spawn-delegation-call",
+						tool: "spawnAgent",
+						status: "completed",
+						parent: {
+							threadId: "parent-thread",
+							turnId: "turn-1",
+							senderThreadId: "parent-thread",
+						},
+						childRuns: [
+							{
+								threadId: "child-thread-1",
+								childRunId: "agent-run-child-1",
+								operation: "spawnAgent",
+							},
+						],
+					},
 				},
 				isError: false,
 				timestamp: 3,
@@ -324,6 +396,14 @@ describe("hosted AgentRuntime progress recorder", () => {
 					owner_child_run_id: "agent-run-child-1",
 					receiver_thread_ids: ["child-thread-1"],
 					child_run_ids: ["agent-run-child-1"],
+					codex_work_graph: expect.objectContaining({
+						toolCallId: "spawn-delegation-call",
+						childRuns: [
+							expect.objectContaining({
+								childRunId: "agent-run-child-1",
+							}),
+						],
+					}),
 					required_capability: "code:review",
 				}),
 			}),
@@ -348,8 +428,232 @@ describe("hosted AgentRuntime progress recorder", () => {
 				agent_run_id: "run_1",
 				work_item_id: "maestro:session_1:work:spawn-delegation-call",
 				child_run_ids: ["agent-run-child-1"],
+				codex_work_graph: expect.objectContaining({
+					toolCallId: "spawn-delegation-call",
+					status: "completed",
+				}),
 			}),
 			errorMessage: undefined,
+		});
+	});
+
+	it("clears Codex delegation ids when delegation resolution fails", async () => {
+		const delegateAgent = vi.fn(
+			async (_input: PlatformAgentRegistryDelegateInput) => ({
+				delegation: {
+					id: "delegation_1",
+					status: PlatformDelegationStatusValue.Pending,
+				},
+			}),
+		);
+		const resolveDelegation = vi.fn(
+			async (_input: PlatformAgentRegistryResolveDelegationInput) => {
+				throw new Error("platform unavailable");
+			},
+		);
+		const { recorder } = createRecorder({
+			delegateAgent,
+			resolveDelegation,
+		});
+		const consoleError = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => {});
+		const delegationIds = (
+			recorder as unknown as {
+				codexSubagentDelegationIds: Map<string, string>;
+			}
+		).codexSubagentDelegationIds;
+
+		try {
+			recorder.recordAgentEvent({
+				type: "tool_execution_start",
+				toolCallId: "spawn-delegation-call",
+				toolName: "codex.subagent.spawnAgent",
+				displayName: "Codex subagent: spawn agent",
+				args: {
+					codexTool: "spawnAgent",
+					receiverThreadIds: ["child-thread-1"],
+					childRunIds: ["agent-run-child-1"],
+					prompt: "Audit remote runner drain behavior",
+				},
+			});
+			await recorder.flush();
+
+			expect(delegationIds.get("spawn-delegation-call")).toBe("delegation_1");
+
+			recorder.recordAgentEvent({
+				type: "tool_execution_end",
+				toolCallId: "spawn-delegation-call",
+				toolName: "codex.subagent.spawnAgent",
+				displayName: "Codex subagent: spawn agent",
+				result: {
+					role: "toolResult",
+					toolCallId: "spawn-delegation-call",
+					toolName: "codex.subagent.spawnAgent",
+					content: [{ type: "text", text: "spawn completed" }],
+					details: {
+						codexTool: "spawnAgent",
+						receiverThreadIds: ["child-thread-1"],
+						childRunIds: ["agent-run-child-1"],
+					},
+					isError: false,
+					timestamp: 3,
+				},
+				isError: false,
+			} satisfies AgentEvent);
+			await recorder.flush();
+
+			expect(resolveDelegation).toHaveBeenCalledTimes(1);
+			expect(delegationIds.has("spawn-delegation-call")).toBe(false);
+			expect(
+				consoleError.mock.calls.some((call) =>
+					call
+						.join(" ")
+						.includes("Failed to resolve Codex subagent delegation"),
+				),
+			).toBe(true);
+		} finally {
+			consoleError.mockRestore();
+		}
+	});
+
+	it("preserves work item update errors when delegation resolution also fails", async () => {
+		const updateWorkItem = vi.fn(async () => {
+			throw new Error("update unavailable");
+		});
+		const delegateAgent = vi.fn(
+			async (_input: PlatformAgentRegistryDelegateInput) => ({
+				delegation: {
+					id: "delegation_1",
+					status: PlatformDelegationStatusValue.Pending,
+				},
+			}),
+		);
+		const resolveDelegation = vi.fn(
+			async (_input: PlatformAgentRegistryResolveDelegationInput) => {
+				throw new Error("resolve unavailable");
+			},
+		);
+		const { recorder } = createRecorder({
+			updateWorkItem,
+			delegateAgent,
+			resolveDelegation,
+		});
+		const consoleError = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => {});
+		const delegationIds = (
+			recorder as unknown as {
+				codexSubagentDelegationIds: Map<string, string>;
+			}
+		).codexSubagentDelegationIds;
+
+		try {
+			recorder.recordAgentEvent({
+				type: "tool_execution_start",
+				toolCallId: "spawn-delegation-call",
+				toolName: "codex.subagent.spawnAgent",
+				displayName: "Codex subagent: spawn agent",
+				args: {
+					codexTool: "spawnAgent",
+					receiverThreadIds: ["child-thread-1"],
+					childRunIds: ["agent-run-child-1"],
+					prompt: "Audit remote runner drain behavior",
+				},
+			});
+			await recorder.flush();
+
+			recorder.recordAgentEvent({
+				type: "tool_execution_end",
+				toolCallId: "spawn-delegation-call",
+				toolName: "codex.subagent.spawnAgent",
+				displayName: "Codex subagent: spawn agent",
+				result: {
+					role: "toolResult",
+					toolCallId: "spawn-delegation-call",
+					toolName: "codex.subagent.spawnAgent",
+					content: [{ type: "text", text: "spawn completed" }],
+					details: {
+						codexTool: "spawnAgent",
+						receiverThreadIds: ["child-thread-1"],
+						childRunIds: ["agent-run-child-1"],
+					},
+					isError: false,
+					timestamp: 3,
+				},
+				isError: false,
+			} satisfies AgentEvent);
+			await recorder.flush();
+
+			const logged = consoleError.mock.calls.map((call) => call.join(" "));
+			expect(logged.some((line) => line.includes("resolve unavailable"))).toBe(
+				true,
+			);
+			expect(
+				logged.some(
+					(line) =>
+						line.includes("Failed to record hosted AgentRuntime progress") &&
+						line.includes("update unavailable"),
+				),
+			).toBe(true);
+			expect(delegationIds.has("spawn-delegation-call")).toBe(false);
+		} finally {
+			consoleError.mockRestore();
+		}
+	});
+
+	it("derives Codex child work items from work graph evidence when legacy arrays are absent", async () => {
+		const { recorder, recordWorkItem } = createRecorder();
+
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "graph-only-spawn",
+			toolName: "codex.subagent.spawnAgent",
+			displayName: "Codex subagent: spawn agent",
+			args: {
+				codexTool: "spawnAgent",
+				codexWorkGraph: {
+					schemaVersion: "evalops.maestro.codex.subagent-workgraph.v1",
+					toolCallId: "graph-only-spawn",
+					tool: "spawnAgent",
+					status: "inProgress",
+					parent: {
+						threadId: "parent-thread",
+						turnId: "turn-graph",
+						senderThreadId: "parent-thread",
+					},
+					childRuns: [
+						{
+							threadId: "graph-child-thread",
+							childRunId: "agent-run-child-graph",
+							operation: "spawnAgent",
+						},
+					],
+				},
+				prompt: "Replay child graph evidence",
+			},
+		});
+
+		await recorder.flush();
+
+		expect(recordWorkItem).toHaveBeenCalledWith({
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:work:graph-only-spawn",
+				ownerChildRunId: "agent-run-child-graph",
+				evidenceRefs: [
+					"codex-tool-call:graph-only-spawn",
+					"codex-thread:graph-child-thread",
+					"codex-child-run:agent-run-child-graph",
+				],
+				payload: expect.objectContaining({
+					receiver_thread_ids: ["graph-child-thread"],
+					child_run_ids: ["agent-run-child-graph"],
+					codex_work_graph: expect.objectContaining({
+						toolCallId: "graph-only-spawn",
+					}),
+				}),
+			}),
 		});
 	});
 

@@ -81,7 +81,9 @@ uses JSONL output to verify that the final assistant message exactly matches the
 token, fails on loop-detector warnings, runs the real inference from an isolated
 temporary workspace, and enforces bounded dynamic tool calls with
 `MAESTRO_CODEX_LIVE_SMOKE_MAX_TOTAL_TOOL_CALLS` and
-`MAESTRO_CODEX_LIVE_SMOKE_MAX_IDENTICAL_TOOL_CALLS`.
+`MAESTRO_CODEX_LIVE_SMOKE_MAX_IDENTICAL_TOOL_CALLS`. It also runs real Codex
+subagent spawn/wait inference and requires `codexWorkGraph` evidence on both
+`codex.subagent.spawnAgent` and `codex.subagent.wait`.
 
 ## Completion Bar
 

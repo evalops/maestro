@@ -351,6 +351,24 @@ describe("Codex app-server provider", () => {
 						prompt: "Inspect the repo for routing bugs",
 						receiverThreadIds: ["child-thread-1"],
 						childRunIds: ["codex-thread:child-thread-1"],
+						codexWorkGraph: expect.objectContaining({
+							schemaVersion: "evalops.maestro.codex.subagent-workgraph.v1",
+							toolCallId: "collab-call-1",
+							tool: "spawnAgent",
+							status: "inProgress",
+							parent: {
+								threadId: "thread-1",
+								turnId: "turn-1",
+								senderThreadId: "thread-1",
+							},
+							childRuns: [
+								{
+									threadId: "child-thread-1",
+									childRunId: "codex-thread:child-thread-1",
+									operation: "spawnAgent",
+								},
+							],
+						}),
 						model: "gpt-5.3-codex",
 						reasoningEffort: "high",
 					}),
@@ -373,6 +391,17 @@ describe("Codex app-server provider", () => {
 						details: expect.objectContaining({
 							codexTool: "spawnAgent",
 							childRunIds: ["codex-thread:child-thread-1"],
+							codexWorkGraph: expect.objectContaining({
+								toolCallId: "collab-call-1",
+								tool: "spawnAgent",
+								status: "completed",
+								childRuns: [
+									expect.objectContaining({
+										threadId: "child-thread-1",
+										childRunId: "codex-thread:child-thread-1",
+									}),
+								],
+							}),
 							agentsStates: expect.objectContaining({
 								"child-thread-1": expect.objectContaining({
 									status: "completed",
@@ -417,6 +446,13 @@ describe("Codex app-server provider", () => {
 					toolCallId: "collab-call-1",
 					args: expect.objectContaining({
 						childRunIds: ["codex-thread:child-thread-1"],
+						codexWorkGraph: expect.objectContaining({
+							childRuns: [
+								expect.objectContaining({
+									childRunId: "codex-thread:child-thread-1",
+								}),
+							],
+						}),
 					}),
 				}),
 				expect.objectContaining({
@@ -425,6 +461,13 @@ describe("Codex app-server provider", () => {
 					result: expect.objectContaining({
 						details: expect.objectContaining({
 							childRunIds: ["codex-thread:child-thread-1"],
+							codexWorkGraph: expect.objectContaining({
+								childRuns: [
+									expect.objectContaining({
+										childRunId: "codex-thread:child-thread-1",
+									}),
+								],
+							}),
 						}),
 					}),
 				}),
