@@ -1014,6 +1014,39 @@ describe("run command", () => {
 		}
 	});
 
+	it("keeps unknown wait entries represented with an approval fallback", () => {
+		const ledger = buildLedgerForEvents("session-unknown-wait", [
+			{
+				id: "event-unknown-wait",
+				sequence: 1,
+				timestamp: "2026-05-09T10:00:01.000Z",
+				kind: "wait",
+				phase: "wait",
+				actor: "platform",
+				type: "wait.pending",
+				status: "pending",
+				visibility: "user",
+				source: "platform",
+				title: "Wait pending",
+				evidence: [{ kind: "timeline_item", id: "platform-wait" }],
+			},
+		]);
+
+		expect(ledger.entries[0]?.platformShape.waitType).toBe(
+			"AGENT_RUN_WAIT_TYPE_APPROVAL",
+		);
+		expect(
+			ledger.promotion.operations.find(
+				(operation) =>
+					operation.operation === "wait_run" &&
+					operation.ledgerEntryId === "ledger:event-unknown-wait",
+			),
+		).toMatchObject({
+			operation: "wait_run",
+			payload: { waitType: "AGENT_RUN_WAIT_TYPE_APPROVAL" },
+		});
+	});
+
 	it("classifies failed tool results as error steps", () => {
 		const ledger = buildLedgerForEvents("session-failed-tool", [
 			{
@@ -1048,6 +1081,44 @@ describe("run command", () => {
 			operation: "record_run_step",
 			payload: {
 				kind: "AGENT_RUN_STEP_KIND_ERROR",
+				state: "failed",
+			},
+		});
+	});
+
+	it("keeps failed model calls classified as model-call steps", () => {
+		const ledger = buildLedgerForEvents("session-failed-model", [
+			{
+				id: "event-model-failed",
+				sequence: 1,
+				timestamp: "2026-05-09T10:00:01.000Z",
+				kind: "message",
+				phase: "think",
+				actor: "assistant",
+				type: "message.assistant",
+				status: "failed",
+				visibility: "user",
+				source: "local",
+				title: "Assistant failed",
+				evidence: [],
+			},
+		]);
+
+		expect(ledger.entries[0]).toMatchObject({
+			kind: "model_call",
+			state: "failed",
+			platformShape: { stepKind: "AGENT_RUN_STEP_KIND_MODEL_CALL" },
+		});
+		expect(
+			ledger.promotion.operations.find(
+				(operation) =>
+					operation.operation === "record_run_step" &&
+					operation.ledgerEntryId === "ledger:event-model-failed",
+			),
+		).toMatchObject({
+			operation: "record_run_step",
+			payload: {
+				kind: "AGENT_RUN_STEP_KIND_MODEL_CALL",
 				state: "failed",
 			},
 		});
