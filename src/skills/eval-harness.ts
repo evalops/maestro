@@ -1,11 +1,12 @@
 import { basename } from "node:path";
 import {
 	type SkillLintIssue,
-	type SkillLintOptions,
 	type SkillLintResult,
 	hasSkillLintErrors,
 	lintSkillPaths,
 } from "./linter.js";
+
+type SkillEvalOptions = NonNullable<Parameters<typeof lintSkillPaths>[1]>;
 
 export type SkillEvalOutcome = "pass" | "fail";
 export type SkillEvalAssertionStatus = "pass" | "fail";
@@ -135,7 +136,7 @@ function resultId(
 
 export async function evaluateSkillPackages(
 	cases: SkillEvalCase[],
-	options: SkillLintOptions = {},
+	options: SkillEvalOptions = {},
 ): Promise<SkillEvalReport> {
 	const results: SkillEvalResult[] = [];
 	for (const evalCase of cases) {
