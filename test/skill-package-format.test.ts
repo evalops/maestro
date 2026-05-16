@@ -240,15 +240,11 @@ describe("skill package format", () => {
 		expect(errors.join("\n")).toContain("1 skill load warning(s).");
 	});
 
-	it("classifies Windows toolbox entries by executable extension or shebang", () => {
-		expect(isWindowsRunnableToolboxEntry("tool.cmd", "", ".CMD;.EXE")).toBe(
-			true,
-		);
-		expect(isWindowsRunnableToolboxEntry("tool", "#!/usr/bin/env node\n")).toBe(
-			true,
-		);
-		expect(isWindowsRunnableToolboxEntry("tool.txt", "echo hi")).toBe(false);
-		expect(isWindowsRunnableToolboxEntry("tool", "echo hi")).toBe(false);
+	it("classifies Windows toolbox entries by executable extension", () => {
+		expect(isWindowsRunnableToolboxEntry("tool.cmd", ".CMD;.EXE")).toBe(true);
+		expect(isWindowsRunnableToolboxEntry("tool.exe", ".CMD;.EXE")).toBe(true);
+		expect(isWindowsRunnableToolboxEntry("tool.ps1", ".CMD;.EXE")).toBe(false);
+		expect(isWindowsRunnableToolboxEntry("tool")).toBe(false);
 	});
 
 	it("scaffolds a package that passes lint", async () => {
@@ -290,10 +286,6 @@ describe("skill package format", () => {
 			`---\nname: valid-toolbox\ndescription: "Run toolbox commands. Use when testing Windows executable validation."\n---\n\n# Valid Toolbox\n`,
 		);
 		writeFileSync(join(validSkillDir, "toolbox", "run.cmd"), "@echo off\n");
-		writeFileSync(
-			join(validSkillDir, "toolbox", "run-node"),
-			"#!/usr/bin/env node\nconsole.log('ok');\n",
-		);
 
 		const invalidResult = await lintSkillDirectory(invalidSkillDir, {
 			platform: "win32",

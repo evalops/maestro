@@ -334,14 +334,12 @@ function windowsExecutableExtensions(
 
 export function isWindowsRunnableToolboxEntry(
 	path: string,
-	contentSample = "",
 	pathExt = process.env.PATHEXT,
 ): boolean {
 	const extension = extname(path).toUpperCase();
-	if (extension && windowsExecutableExtensions(pathExt).has(extension)) {
-		return true;
-	}
-	return contentSample.startsWith("#!");
+	return Boolean(
+		extension && windowsExecutableExtensions(pathExt).has(extension),
+	);
 }
 
 async function isExecutable(
@@ -349,14 +347,7 @@ async function isExecutable(
 	platform: NodeJS.Platform = process.platform,
 ): Promise<boolean> {
 	if (platform === "win32") {
-		try {
-			return isWindowsRunnableToolboxEntry(
-				path,
-				readFileSync(path, "utf8").slice(0, 256),
-			);
-		} catch {
-			return false;
-		}
+		return isWindowsRunnableToolboxEntry(path);
 	}
 	try {
 		await access(path, constants.X_OK);
