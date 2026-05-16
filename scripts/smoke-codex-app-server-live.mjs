@@ -96,6 +96,7 @@ function stableJson(value) {
 			left.localeCompare(right),
 		);
 		return `{${entries
+			.filter(([, entryValue]) => entryValue !== undefined)
 			.map(([key, entryValue]) => `${JSON.stringify(key)}:${stableJson(entryValue)}`)
 			.join(",")}}`;
 	}
