@@ -10,6 +10,7 @@ back.
 ```sh
 maestro a2a fleet [--json] [--registry <path>] [--tasks <path>]
 maestro a2a delegate <peer> <text> [--role <role>] [--cwd <path>] [--wait]
+maestro a2a reply <peer> <task-id> <text> [--wait]
 maestro a2a tasks [peer] [--json] [--refresh]
 maestro a2a wait <peer> <task-id>
 ```
@@ -22,6 +23,10 @@ registry URL and a bounded error.
 `delegate` sends a normal A2A `message:send` request with Maestro delegation
 metadata: origin, peer name, role, and working directory. The resulting task is
 recorded in the local ledger before optional waiting begins.
+
+`reply` continues an existing remote A2A task by sending `message.taskId` and
+the durable ledger `contextId` when available. It appends the operator's reply
+to the same local transcript and can wait for the peer's follow-up result.
 
 `tasks` reads the durable ledger and can refresh known task IDs from their
 registered peers. This gives the operator a single place to see outstanding work
@@ -50,6 +55,7 @@ Before this feature, the following tests fail:
 
 ```sh
 npm run test:fast -- test/cli/commands/a2a-fleet-delegation.test.ts test/cli-tui/commands/a2a-handlers.test.ts
+npm run test:fast -- test/cli/commands/a2a.test.ts test/platform/a2a-task-ledger.test.ts
 cargo test -p maestro-tui commands::registry::tests::a2a_command_parses_peer_actions
 ```
 
@@ -57,10 +63,12 @@ After implementation, they must pass and prove:
 
 - `maestro a2a delegate <peer> <text> --wait` sends real HTTP+JSON A2A traffic,
   records the task, updates the final state, and stores a transcript.
+- `maestro a2a reply <peer> <task-id> <text> --wait` sends a follow-up message
+  with the original task id and context id, appends to the same transcript, and
+  does not mark `INPUT_REQUIRED` or `AUTH_REQUIRED` tasks as completed.
 - `maestro a2a fleet --json` shows peer health, Agent Card capabilities, and the
   peer's most recent ledger task without leaking token values.
 - `maestro a2a tasks --json` reads the ledger and can be used as a fleet task
   view.
-- TypeScript and Rust TUIs both recognize `/a2a fleet`, `/a2a tasks`, and
-  `/a2a delegate`.
-
+- TypeScript and Rust TUIs both recognize `/a2a fleet`, `/a2a tasks`,
+  `/a2a delegate`, and `/a2a reply`.

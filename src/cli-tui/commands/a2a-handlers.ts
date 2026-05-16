@@ -130,6 +130,12 @@ export async function handleA2ATuiCommand(
 		);
 		return;
 	}
+	if (subcommand === "reply" || subcommand === "continue") {
+		context.showInfo(
+			"Use `maestro a2a reply <peer> <task-id> <text> --wait` to continue an actionable A2A task while the TUI task panel is being wired.",
+		);
+		return;
+	}
 	if (subcommand === "delegate") {
 		context.showInfo(
 			"Use `maestro a2a delegate <peer> <text> --wait` for native A2A delegation while the TUI task panel is being wired.",
@@ -142,6 +148,7 @@ export async function handleA2ATuiCommand(
 			"/a2a fleet",
 			"/a2a peers",
 			"/a2a delegate <peer> <text>",
+			"/a2a reply <peer> <task-id> <text>",
 			"/a2a tasks [peer]",
 			"/a2a send <peer> <text>",
 		].join("\n"),
