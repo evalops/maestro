@@ -9,6 +9,7 @@ import {
 	hasSkillLintErrors,
 	lintSkillDirectory,
 	loadSkills,
+	parseFrontmatter,
 	scaffoldSkill,
 } from "../src/skills/index.js";
 
@@ -116,6 +117,22 @@ describe("skill package format", () => {
 			]),
 		);
 		expect(hasSkillLintErrors([result])).toBe(false);
+	});
+
+	it("preserves backslashes in scaffolded descriptions", () => {
+		const root = tempRoot();
+		const description = "Handle C:\\new folder\\templates literally.";
+		const scaffold = scaffoldSkill(root, "handling-windows-paths", {
+			description,
+		});
+
+		const rawSkill = readFileSync(
+			join(scaffold.directory, "SKILL.md"),
+			"utf-8",
+		);
+		const { frontmatter } = parseFrontmatter(rawSkill);
+
+		expect(frontmatter.description).toBe(description);
 	});
 
 	it("routes maestro skill as a command with raw command args", () => {

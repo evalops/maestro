@@ -569,7 +569,9 @@ export function scaffoldSkill(
 	mkdirSync(join(directory, "toolbox"), { recursive: true });
 
 	const skillMd = join(directory, "SKILL.md");
-	const escapedDescription = description.replace(/"/g, '\\"');
+	const escapedDescription = description
+		.replace(/\\/g, "\\\\")
+		.replace(/"/g, '\\"');
 	writeFileSync(
 		skillMd,
 		[
