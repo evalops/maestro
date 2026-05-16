@@ -4,9 +4,15 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { handleA2ATuiCommand } from "../../../src/cli-tui/commands/a2a-handlers.js";
 import type { CommandExecutionContext } from "../../../src/cli-tui/commands/types.js";
+import { inspectA2AFleet } from "../../../src/platform/a2a-fleet.js";
+
+vi.mock("../../../src/platform/a2a-fleet.js", () => ({
+	inspectA2AFleet: vi.fn(),
+}));
 
 describe("A2A TUI command handler", () => {
 	afterEach(() => {
+		vi.clearAllMocks();
 		vi.unstubAllEnvs();
 	});
 
@@ -44,6 +50,34 @@ describe("A2A TUI command handler", () => {
 		expect(content.join("\n")).toContain("dev-desktop");
 		expect(content.join("\n")).toContain("task-dev-1");
 		expect(content.join("\n")).toContain("TASK_STATE_WORKING");
+		expect(context.showError).not.toHaveBeenCalled();
+	});
+
+	it("forwards fleet timeout flags to the inspector", async () => {
+		vi.mocked(inspectA2AFleet).mockResolvedValueOnce({
+			generatedAt: "2026-05-16T00:00:00.000Z",
+			registryPath: "/tmp/peers.json",
+			tasksPath: "/tmp/tasks.json",
+			peers: [],
+		});
+		const content: string[] = [];
+		const context = createContext(
+			"fleet --registry /tmp/peers.json --tasks /tmp/tasks.json --timeout-ms 2500",
+		);
+
+		await handleA2ATuiCommand(context, {
+			addContent(text) {
+				content.push(text);
+			},
+			requestRender: vi.fn(),
+		});
+
+		expect(inspectA2AFleet).toHaveBeenCalledWith({
+			registryPath: "/tmp/peers.json",
+			tasksPath: "/tmp/tasks.json",
+			timeoutMs: 2500,
+		});
+		expect(content.join("\n")).toContain("A2A fleet");
 		expect(context.showError).not.toHaveBeenCalled();
 	});
 });
