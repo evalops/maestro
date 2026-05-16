@@ -4,6 +4,7 @@ import { inspect } from "node:util";
 import chalk from "chalk";
 import { PATHS } from "../../config/constants.js";
 import {
+	buildSkillRuntimeActivation,
 	evaluateSkillPackages,
 	findSkill,
 	formatSkillEvalText,
@@ -172,6 +173,7 @@ async function handleInspect(
 		sourcePath: skill.sourcePath,
 		resources: skill.resources,
 		resourceDirs: skill.resourceDirs,
+		runtimeActivation: buildSkillRuntimeActivation(skill),
 	};
 	if (options.json) {
 		console.log(JSON.stringify(payload, null, 2));

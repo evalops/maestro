@@ -88,6 +88,52 @@ Unfiltered MCP servers are rejected because they inflate prompt/tool surface and
 
 `toolbox/` is optional. Executables in that directory are expected to support `MAESTRO_TOOLBOX_ACTION=describe` so Maestro can register them as typed tools when the skill is active.
 
+When the `Skill` tool loads a package, it returns a `skillRuntimeActivation`
+manifest alongside artifact metadata. `maestro skill inspect <name> --json`
+emits the same contract for local harnesses:
+
+```json
+{
+  "runtimeActivation": {
+    "name": "reviewing-prs",
+    "source": "project",
+    "profile": {
+      "model": "gpt-5.5",
+      "mode": "review",
+      "isolatedContext": true
+    },
+    "tools": {
+      "allowed": ["github.get_pull_request"],
+      "builtin": ["read", "search"]
+    },
+    "resources": {
+      "directories": {
+        "reference": ".maestro/skills/reviewing-prs/reference",
+        "toolbox": ".maestro/skills/reviewing-prs/toolbox"
+      }
+    },
+    "toolPackage": {
+      "mcp": {
+        "configPath": ".maestro/skills/reviewing-prs/mcp.json",
+        "servers": [
+          {
+            "name": "github",
+            "command": "npx",
+            "includeTools": ["get_pull_request", "list_pull_request_files"]
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+The activation manifest exposes scoped paths, toolbox entries, MCP server names,
+and `includeTools` bounds. It does not copy MCP environment values into
+agent-visible details or telemetry. MCP servers with missing or malformed
+`includeTools` are omitted from the activatable server list and reported through
+manifest warnings.
+
 ## CLI Contract
 
 `maestro skill` is the public authoring surface:
@@ -117,6 +163,6 @@ Lint rules:
 1. Local AgentRuntime ledger: one SQLite store for runs, tool calls, waits, summaries, checkpoints, and session search.
 2. `maestro goal`: persistent objective loop backed by the local ledger, promotable to Platform Objectives.
 3. `maestro workboard`: local multi-agent board mapped to Platform AgentRuns when attached.
-4. Skill-bundled MCP lifecycle: start servers only when the skill triggers, stop them on cooldown/session end.
-5. Skill-bundled toolbox registration: expose described toolbox commands as governed tools while the skill is active.
+4. Skill-bundled MCP lifecycle: activate servers from `skillRuntimeActivation` only when the skill triggers, stop them on cooldown/session end.
+5. Skill-bundled toolbox registration: expose described toolbox commands from `skillRuntimeActivation` as governed tools while the skill is active.
 6. Public cookbook and conformance fixtures for third-party skill authors.
