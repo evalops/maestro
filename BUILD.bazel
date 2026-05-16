@@ -1,0 +1,30 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+package(default_visibility = ["//visibility:private"])
+
+filegroup(
+    name = "workspace_manifests",
+    srcs = [
+        ".github/actions/setup-bun-nx/action.yml",
+        ".node-version",
+        "bun.lockb",
+        "nx.json",
+        "package.json",
+        "project.json",
+        "tool-versions.json",
+    ],
+)
+
+filegroup(
+    name = "nx_project_manifests",
+    srcs = glob(["packages/*/project.json"]),
+)
+
+sh_test(
+    name = "maestro_bazel_contract_test",
+    srcs = ["tools/bazel/maestro_bazel_contract_test.sh"],
+    data = [
+        ":nx_project_manifests",
+        ":workspace_manifests",
+    ],
+)
