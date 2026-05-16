@@ -153,6 +153,30 @@ Lint rules:
 - `description` exists, is <= 1024 chars, and says when to use the skill.
 - The body stays under 500 lines and about 5k tokens.
 - `allowed-tools` and `builtin-tools` are strings or lists of strings.
+
+## Local AgentRuntime Ledger
+
+Saved sessions now have a local AgentRuntime projection layered on top of the
+existing run reconstruction command. The ledger is deterministic and dry-run
+only: it does not require Platform credentials, does not write remote
+AgentRuntime state, and does not copy raw tool outputs into promotion payloads.
+
+```bash
+maestro run inspect <session-id> --json
+maestro run ledger <session-id>
+maestro run replay <session-id>
+maestro run promote <session-id>
+```
+
+`maestro run ledger` emits `evalops.maestro.agent-runtime-ledger.v1`: run
+metadata, ordered ledger entries, replay determinism, and a dry-run promotion
+plan. `maestro run replay` emits the replay summary, while `maestro run promote`
+emits `evalops.maestro.agent-runtime-promotion-plan.v1` operations shaped like
+Platform AgentRuntime trigger, step, work-item, wait, and terminal writes.
+
+This is the local parity layer before live promotion: it gives harnesses and
+operators a stable inspect/replay/promote contract without introducing a second
+runtime source of truth or a new local database dependency.
 - `isolatedContext` is boolean when present.
 - `mcp.json` is valid JSON.
 - Every MCP server has `command` and non-empty `includeTools`.

@@ -1,6 +1,10 @@
 import chalk from "chalk";
 import { parseMcpToolName } from "../../mcp/names.js";
 import {
+	type AgentRuntimeLedgerReport,
+	buildAgentRuntimeLedgerReport,
+} from "../../server/agent-runtime-ledger.js";
+import {
 	type AgentTrajectoryInspectionReport,
 	buildAgentTrajectoryInspectionReport,
 } from "../../server/agent-trajectory-inspection.js";
@@ -109,10 +113,11 @@ interface RunReconstructionReport {
 	trajectoryReplay: AgentTrajectoryReplayReport;
 	trajectoryScore: AgentTrajectoryScoreReport;
 	trajectoryInspection: AgentTrajectoryInspectionReport;
+	agentRuntimeLedger: AgentRuntimeLedgerReport;
 }
 
 function usage(): string {
-	return "Usage: maestro run inspect <session-id> [--json]";
+	return "Usage: maestro run inspect|ledger|replay|promote <session-id> [--json]";
 }
 
 function exitWithUsage(message: string): never {
@@ -341,6 +346,17 @@ async function buildRunReconstructionReport(
 		replay: trajectoryReplay,
 		score: trajectoryScore,
 	});
+	const agentRuntimeLedger = buildAgentRuntimeLedgerReport({
+		session: {
+			id: session.id,
+			sessionFile,
+			...(header?.cwd ? { cwd: header.cwd } : {}),
+			...(header?.model ? { model: header.model } : {}),
+		},
+		timeline,
+		trajectory,
+		replay: trajectoryReplay,
+	});
 	const counts = countTimeline(timeline);
 	const context = promptContextSummary(header, timeline);
 	const contextManifest = contextManifestSummary(header, timeline, context);
@@ -377,6 +393,7 @@ async function buildRunReconstructionReport(
 		trajectoryReplay,
 		trajectoryScore,
 		trajectoryInspection,
+		agentRuntimeLedger,
 	};
 }
 
@@ -424,6 +441,7 @@ function renderRunReconstruction(report: RunReconstructionReport): string {
 		`Replay deltas: ${report.trajectoryReplay.counts.deltas} (${report.trajectoryReplay.counts.errors} errors, ${report.trajectoryReplay.counts.warnings} warnings)`,
 		`Trajectory score: ${report.trajectoryScore.counts.failed} failed, ${report.trajectoryScore.counts.warnings} warnings across ${report.trajectoryScore.counts.rules} rule(s)`,
 		`Replay lab: ${report.trajectoryInspection.counts.jumpTargets} event/source jump target(s), redaction=${report.trajectoryInspection.redaction.default}`,
+		`AgentRuntime ledger: ${report.agentRuntimeLedger.counts.entries} entries, ${report.agentRuntimeLedger.counts.promotionOperations} dry-run promotion op(s), replay deterministic=${report.agentRuntimeLedger.replay.deterministic ? "yes" : "no"}`,
 		`Coverage: ${renderCoverage(report.coverage)}`,
 		`Prompt context: ${report.promptContext.entries} entries (${report.promptContext.projectDocs} docs, ${report.promptContext.mcpServers} MCP servers)`,
 		`Context manifest: ${report.contextManifest.entries} entries (${report.contextManifest.projectDocs} docs, ${report.contextManifest.mcpServers} MCP servers, ${report.contextManifest.mcpResources} resources, ${report.contextManifest.mcpPrompts} prompts, ${report.contextManifest.diagnostics} diagnostics)`,
@@ -442,7 +460,12 @@ export async function handleRunCommand(
 	args: string[] = [],
 	options: RunInspectOptions = {},
 ): Promise<void> {
-	if (subcommand !== "inspect") {
+	if (
+		subcommand !== "inspect" &&
+		subcommand !== "ledger" &&
+		subcommand !== "replay" &&
+		subcommand !== "promote"
+	) {
 		exitWithUsage("Run subcommand required.");
 	}
 	const sessionId = args.find((arg) => !arg.startsWith("-"));
@@ -453,6 +476,19 @@ export async function handleRunCommand(
 	const report = await buildRunReconstructionReport(sessionId, options);
 	if (!report) {
 		exitWithUsage(`Session not found: ${sessionId}`);
+	}
+
+	if (subcommand === "ledger") {
+		console.log(JSON.stringify(report.agentRuntimeLedger, null, 2));
+		return;
+	}
+	if (subcommand === "replay") {
+		console.log(JSON.stringify(report.agentRuntimeLedger.replay, null, 2));
+		return;
+	}
+	if (subcommand === "promote") {
+		console.log(JSON.stringify(report.agentRuntimeLedger.promotion, null, 2));
+		return;
 	}
 
 	if (options.json || args.includes("--json")) {

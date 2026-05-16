@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseArgs } from "../../src/cli/args.js";
 import { handleRunCommand, testing } from "../../src/cli/commands/run.js";
+import { buildAgentRuntimeLedgerReport } from "../../src/server/agent-runtime-ledger.js";
 import { SessionManager } from "../../src/session/manager.js";
 
 describe("run command", () => {
@@ -271,6 +272,23 @@ describe("run command", () => {
 		expect(parsed.execJson).toBe(true);
 	});
 
+	it("parses run ledger as a subcommand", () => {
+		const parsed = parseArgs(["run", "ledger", "session-1"]);
+
+		expect(parsed.command).toBe("run");
+		expect(parsed.subcommand).toBe("ledger");
+		expect(parsed.messages).toEqual(["session-1"]);
+	});
+
+	it("parses run subcommands when flags appear before the subcommand", () => {
+		const parsed = parseArgs(["run", "--json", "ledger", "session-1"]);
+
+		expect(parsed.command).toBe("run");
+		expect(parsed.subcommand).toBe("ledger");
+		expect(parsed.messages).toEqual(["session-1"]);
+		expect(parsed.execJson).toBe(true);
+	});
+
 	it("builds a JSON reconstruction report from a saved session", async () => {
 		const { sessionDir, sessionId } = makeSessionDir();
 
@@ -388,6 +406,62 @@ describe("run command", () => {
 				events: report?.trajectory.counts.events,
 			},
 		});
+		expect(report?.agentRuntimeLedger).toMatchObject({
+			schemaVersion: "evalops.maestro.agent-runtime-ledger.v1",
+			run: {
+				id: sessionId,
+				sessionId,
+				source: "local",
+				platformBacked: false,
+				cwd: "/workspace/app",
+				model: "openai/gpt-5.5",
+			},
+			replay: {
+				deterministic: true,
+				deltas: 0,
+				errors: 0,
+			},
+			promotion: {
+				schemaVersion: "evalops.maestro.agent-runtime-promotion-plan.v1",
+				sessionId,
+				warnings: [
+					"Promotion plan is dry-run only; no Platform AgentRuntime writes were performed.",
+				],
+			},
+		});
+		expect(report?.agentRuntimeLedger.counts.byKind).toMatchObject({
+			model_call: 1,
+			tool_call: 2,
+			tool_result: 2,
+			evidence: 1,
+			checkpoint: 1,
+		});
+		expect(
+			report?.agentRuntimeLedger.entries.find(
+				(entry) => entry.type === "tool.completed",
+			),
+		).toMatchObject({
+			kind: "tool_result",
+			state: "succeeded",
+			platformShape: {
+				stepKind: "AGENT_RUN_STEP_KIND_TOOL_RESULT",
+				workItemKind: "AGENT_WORK_ITEM_KIND_TOOL_CALL",
+			},
+		});
+		expect(
+			report?.agentRuntimeLedger.entries.find(
+				(entry) => entry.type === "tool.requested",
+			),
+		).toMatchObject({
+			kind: "tool_call",
+			state: "running",
+		});
+		expect(
+			report?.agentRuntimeLedger.promotion.operations.at(-1),
+		).toMatchObject({
+			operation: "complete_run",
+			payload: { state: "succeeded" },
+		});
 		expect(
 			report?.trajectoryInspection.scoreFindings[0]?.timelineItemIds,
 		).toEqual(["compaction:compact-1"]);
@@ -459,6 +533,16 @@ describe("run command", () => {
 		expect(payload.trajectoryInspection.redaction.omitted).toContain(
 			"raw tool outputs",
 		);
+		expect(payload.agentRuntimeLedger.schemaVersion).toBe(
+			"evalops.maestro.agent-runtime-ledger.v1",
+		);
+		expect(payload.agentRuntimeLedger.promotion.operations[0]).toMatchObject({
+			operation: "handle_trigger",
+			payload: {
+				sourceEventType: "maestro.local_ledger_promote",
+				sessionId,
+			},
+		});
 		expect(payload.trajectoryInspection.events[0]).toMatchObject({
 			timelineItemIds: ["session-started:session-reconstruct-1"],
 			evidence: [
@@ -479,5 +563,114 @@ describe("run command", () => {
 				(item: { type: string }) => item.type === "tool.completed",
 			),
 		).toBe(true);
+	});
+
+	it("prints JSON AgentRuntime ledger, replay, and promotion projections", async () => {
+		const { sessionDir, sessionId } = makeSessionDir();
+		const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+		await handleRunCommand("ledger", [sessionId], { sessionDir });
+		await handleRunCommand("replay", [sessionId], { sessionDir });
+		await handleRunCommand("promote", [sessionId], { sessionDir });
+
+		const ledger = JSON.parse(String(log.mock.calls[0]?.[0]));
+		const replay = JSON.parse(String(log.mock.calls[1]?.[0]));
+		const promote = JSON.parse(String(log.mock.calls[2]?.[0]));
+
+		expect(ledger.schemaVersion).toBe(
+			"evalops.maestro.agent-runtime-ledger.v1",
+		);
+		expect(ledger.counts.promotionOperations).toBeGreaterThan(
+			ledger.counts.entries,
+		);
+		expect(replay).toMatchObject({
+			schemaVersion: "evalops.maestro.agent-trajectory-replay.v1",
+			deterministic: true,
+			deltas: 0,
+		});
+		expect(promote).toMatchObject({
+			schemaVersion: "evalops.maestro.agent-runtime-promotion-plan.v1",
+			runId: sessionId,
+			sessionId,
+		});
+		expect(
+			promote.operations.some(
+				(operation: { operation: string }) =>
+					operation.operation === "record_run_step",
+			),
+		).toBe(true);
+	});
+
+	it("uses the final ledger entry for dry-run terminal promotion state", () => {
+		const ledger = buildAgentRuntimeLedgerReport({
+			session: { id: "session-recovered" },
+			timeline: {
+				source: "local",
+				generatedAt: "2026-05-09T10:00:03.000Z",
+				items: [],
+			},
+			trajectory: {
+				schemaVersion: "evalops.maestro.agent-trajectory.v1",
+				run: {
+					id: "session-recovered",
+					sessionId: "session-recovered",
+					source: "local",
+					generatedAt: "2026-05-09T10:00:03.000Z",
+					platformBacked: false,
+				},
+				counts: {
+					events: 2,
+					evidenceAnchors: 0,
+					byKind: {},
+					byPhase: {},
+					byStatus: {},
+				},
+				events: [
+					{
+						id: "event-failed-tool",
+						sequence: 1,
+						timestamp: "2026-05-09T10:00:01.000Z",
+						kind: "tool",
+						phase: "verify",
+						actor: "tool",
+						type: "tool.completed",
+						status: "failed",
+						visibility: "user",
+						source: "local",
+						title: "Tool failed",
+						evidence: [],
+					},
+					{
+						id: "event-final-message",
+						sequence: 2,
+						timestamp: "2026-05-09T10:00:02.000Z",
+						kind: "message",
+						phase: "think",
+						actor: "assistant",
+						type: "message.assistant",
+						status: "completed",
+						visibility: "user",
+						source: "local",
+						title: "Assistant response",
+						evidence: [],
+					},
+				],
+			},
+			replay: {
+				schemaVersion: "evalops.maestro.agent-trajectory-replay.v1",
+				trajectorySchemaVersion: "evalops.maestro.agent-trajectory.v1",
+				counts: { events: 2, deltas: 0, errors: 0, warnings: 0 },
+				deltas: [],
+			},
+		});
+
+		expect(ledger.counts.byState).toMatchObject({
+			failed: 1,
+			succeeded: 1,
+		});
+		expect(ledger.promotion.operations.at(-1)).toMatchObject({
+			operation: "complete_run",
+			payload: { state: "succeeded" },
+		});
 	});
 });
