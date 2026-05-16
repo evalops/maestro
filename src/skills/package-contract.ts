@@ -4,7 +4,7 @@ import {
 	inspectPackageSource,
 } from "../packages/inspection.js";
 import { formatPackageSource } from "../packages/sources.js";
-import type { DiscoveredPackage } from "../packages/types.js";
+import type { DiscoveredPackage, PackageSource } from "../packages/types.js";
 import {
 	type SkillEvalReport,
 	evaluateSkillPackages,
@@ -23,7 +23,9 @@ export interface SkillPackageContractIssue {
 }
 
 export interface SkillPackageInstallCommandSet {
-	local: string;
+	source: string;
+	local?: string;
+	git?: string;
 	npm?: string;
 }
 
@@ -71,24 +73,29 @@ function mapValidationIssue(message: string): SkillPackageContractIssue {
 
 function buildInstallCommands(input: {
 	cwd: string;
-	resolvedPath: string;
-	discovered: DiscoveredPackage | null;
+	source: PackageSource;
 }): SkillPackageInstallCommandSet {
-	const relativePath = relative(input.cwd, input.resolvedPath) || ".";
+	const installSource = formatInstallSource(input.source, input.cwd);
+	const command = `maestro skill install ${installSource}`;
+	switch (input.source.type) {
+		case "local":
+			return { source: command, local: command };
+		case "git":
+			return { source: command, git: command };
+		case "npm":
+			return { source: command, npm: command };
+	}
+}
+
+function formatInstallSource(source: PackageSource, cwd: string): string {
+	if (source.type !== "local") {
+		return formatPackageSource(source);
+	}
+	const relativePath = relative(cwd, source.path) || ".";
 	const localPath = relativePath.startsWith(".")
 		? relativePath
 		: `./${relativePath}`;
-	const local = `maestro skill install local:${localPath}`;
-	const name = input.discovered?.packageJson.name;
-	const version = input.discovered?.packageJson.version;
-	return {
-		local,
-		...(name
-			? {
-					npm: `maestro skill install npm:${name}${version ? `@${version}` : ""}`,
-				}
-			: {}),
-	};
+	return `local:${localPath}`;
 }
 
 function collectContractIssues(input: {
@@ -170,8 +177,7 @@ export async function buildSkillPackagePublishContract(
 		},
 		install: buildInstallCommands({
 			cwd,
-			resolvedPath: inspected.resolvedPath,
-			discovered: inspected.discovered,
+			source: inspected.source,
 		}),
 		evalReport,
 		issues,
@@ -181,16 +187,22 @@ export async function buildSkillPackagePublishContract(
 export function formatSkillPackagePublishContract(
 	contract: SkillPackagePublishContract,
 ): string {
+	const installCommands = [
+		contract.install.source,
+		contract.install.local,
+		contract.install.git,
+		contract.install.npm,
+	].filter(
+		(command, index, commands): command is string =>
+			typeof command === "string" && commands.indexOf(command) === index,
+	);
 	const lines = [
 		`Skill package: ${contract.package.name ?? "(unknown)"}${contract.package.version ? `@${contract.package.version}` : ""}`,
 		`Source: ${contract.resolvedSource}`,
 		`Skills: ${contract.resources.skills.length}`,
 		"Install:",
-		`  ${contract.install.local}`,
+		...installCommands.map((command) => `  ${command}`),
 	];
-	if (contract.install.npm) {
-		lines.push(`  ${contract.install.npm}`);
-	}
 	if (contract.evalReport) {
 		lines.push("", "Eval:", formatSkillEvalText(contract.evalReport));
 	}

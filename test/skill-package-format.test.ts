@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import {
 	chmodSync,
 	mkdtempSync,
@@ -39,6 +40,23 @@ function tempRoot(): string {
 	const dir = mkdtempSync(join(tmpdir(), "maestro-skill-package-"));
 	tempDirs.push(dir);
 	return dir;
+}
+
+function createCommittedGitRepo(dir: string): void {
+	execFileSync("git", ["init", "-q"], { cwd: dir, stdio: "ignore" });
+	execFileSync("git", ["config", "user.email", "test@example.com"], {
+		cwd: dir,
+		stdio: "ignore",
+	});
+	execFileSync("git", ["config", "user.name", "Test User"], {
+		cwd: dir,
+		stdio: "ignore",
+	});
+	execFileSync("git", ["add", "."], { cwd: dir, stdio: "ignore" });
+	execFileSync("git", ["commit", "-q", "-m", "initial"], {
+		cwd: dir,
+		stdio: "ignore",
+	});
 }
 
 async function writeOssSkillPackage(workspace: string): Promise<string> {
@@ -323,7 +341,7 @@ describe("skill package format", () => {
 			schemaVersion: string;
 			package: { name: string; version: string };
 			resources: { skills: string[] };
-			install: { npm?: string };
+			install: { source: string; local?: string; npm?: string };
 			issues: unknown[];
 		};
 		expect(payload.schemaVersion).toBe(
@@ -334,10 +352,32 @@ describe("skill package format", () => {
 			version: "1.0.0",
 		});
 		expect(payload.resources.skills).toHaveLength(1);
-		expect(payload.install.npm).toBe(
-			"maestro skill install npm:@test/maestro-review-skills@1.0.0",
+		expect(payload.install.source).toBe(
+			"maestro skill install local:./vendor/review-skills",
 		);
+		expect(payload.install.local).toBe(payload.install.source);
+		expect(payload.install.npm).toBeUndefined();
 		expect(payload.issues).toEqual([]);
+	});
+
+	it("keeps publish-check install hints tied to the inspected source type", async () => {
+		const workspace = tempRoot();
+		const packageDir = await writeOssSkillPackage(workspace);
+		createCommittedGitRepo(packageDir);
+
+		const contract = await buildSkillPackagePublishContract(
+			`git:${packageDir}`,
+			{ cwd: workspace },
+		);
+
+		expect(contract.install.source).toBe(
+			`maestro skill install git:${packageDir}`,
+		);
+		expect(contract.install.git).toBe(contract.install.source);
+		expect(contract.install.local).toBeUndefined();
+		expect(contract.install.npm).toBeUndefined();
+		expect(contract.install.source).not.toContain(".maestro");
+		expect(contract.issues).toEqual([]);
 	});
 
 	it('emits one issue when the "maestro-package" keyword is missing', async () => {
@@ -364,11 +404,7 @@ describe("skill package format", () => {
 			{ cwd: workspace },
 		);
 
-		expect(
-			contract.issues.filter(
-				(item) => item.code === "missing_maestro_package_keyword",
-			),
-		).toEqual([
+		expect(contract.issues).toEqual([
 			{
 				code: "missing_maestro_package_keyword",
 				message: 'Missing "maestro-package" keyword.',

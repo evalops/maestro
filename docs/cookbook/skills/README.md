@@ -132,6 +132,10 @@ maestro skill publish-check ./packages/review-skills --describe-toolbox
 maestro skill publish-check ./packages/review-skills --json
 ```
 
+The emitted install hint mirrors the checked source. Local checks print a
+`local:` command, git checks print the stable `git:` spec, and npm checks print
+the npm install spec rather than inferring one from package metadata.
+
 Consumers install through the same package runtime used by the TUI package
 commands:
 
