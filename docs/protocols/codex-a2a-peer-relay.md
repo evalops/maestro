@@ -31,13 +31,22 @@ Common commands:
 python3 scripts/codex-a2a-peer.py list
 python3 scripts/codex-a2a-peer.py card mac-mini
 python3 scripts/codex-a2a-peer.py send --from dev-desktop mac-mini "Validate the desktop sign-in flow on macOS"
+python3 scripts/codex-a2a-peer.py send --wait --from dev-desktop mac-mini "Validate the desktop sign-in flow on macOS"
 python3 scripts/codex-a2a-peer.py relay dev-desktop --stdin < handoff.md
 python3 scripts/codex-a2a-peer.py task mac-mini codex-a2a-task-123
+python3 scripts/codex-a2a-peer.py wait mac-mini codex-a2a-task-123 --max-wait 300
 python3 scripts/codex-a2a-peer.py cancel mac-mini codex-a2a-task-123
 ```
 
 For async work, pass `--async`; the command prints the task id and current state,
-which can be polled later with `task` or stopped with `cancel`.
+which can be polled later with `task`, waited on with `wait`, or stopped with
+`cancel`. For one-shot handoffs where the caller wants the final answer but
+still needs bounded polling, pass `send --wait`; it requests an async task and
+then polls `GET /tasks/{id}` until the task leaves `TASK_STATE_SUBMITTED` or
+`TASK_STATE_WORKING`. `wait` and `send --wait` are bounded by `--max-wait`
+(default: 300 seconds) and sleep between polls with `--interval` or
+`--wait-interval` (default: 5 seconds), so they are safe for fleet scripts that
+must not run unbounded watchers.
 
 When the bridge receives relay metadata, it prepends a small prompt envelope so
 the receiving Codex turn can see routing/correlation context without the caller

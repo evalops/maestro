@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
+import socket
 import sys
 import time
 import uuid
@@ -23,6 +25,14 @@ from urllib.request import Request, urlopen
 
 DEFAULT_CONFIG_PATH = "~/.codex/fleet/peers.json"
 A2A_VERSION = "1.0"
+ACTIVE_TASK_STATES = {
+    "submitted",
+    "task_state_submitted",
+    "task_state_working",
+    "working",
+}
+DEFAULT_WAIT_INTERVAL_SECONDS = 5.0
+DEFAULT_WAIT_MAX_SECONDS = 300.0
 
 
 class PeerError(Exception):
@@ -189,6 +199,8 @@ def request_json(
     except HTTPError as error:
         detail = error.read().decode("utf-8", errors="replace").strip()
         raise PeerError(f"{method} {path} failed with HTTP {error.code}: {detail}") from error
+    except (TimeoutError, socket.timeout) as error:
+        raise PeerError(f"{method} {path} timed out") from error
     except URLError as error:
         raise PeerError(f"{method} {path} failed: {error}") from error
     if not payload:
@@ -202,17 +214,66 @@ def request_json(
     return value
 
 
-def task_text(task: dict[str, Any]) -> str:
+def positive_seconds(value: str) -> float:
+    try:
+        seconds = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be numeric") from error
+    if not math.isfinite(seconds):
+        raise argparse.ArgumentTypeError("must be finite")
+    if seconds <= 0:
+        raise argparse.ArgumentTypeError("must be positive")
+    return seconds
+
+
+def task_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    task = payload.get("task")
+    if isinstance(task, dict):
+        return task
+    return payload
+
+
+def task_state(payload: dict[str, Any]) -> str:
+    task = task_from_payload(payload)
     status = task.get("status") if isinstance(task.get("status"), dict) else {}
-    message = status.get("message") if isinstance(status.get("message"), dict) else {}
-    parts = message.get("parts") if isinstance(message.get("parts"), list) else []
+    state = status.get("state")
+    return state if isinstance(state, str) else ""
+
+
+def task_is_active(payload: dict[str, Any]) -> bool:
+    return task_state(payload).strip().lower() in ACTIVE_TASK_STATES
+
+
+def task_id_from_payload(payload: dict[str, Any]) -> str:
+    task = task_from_payload(payload)
+    task_id = task.get("id")
+    return task_id if isinstance(task_id, str) else ""
+
+
+def text_from_parts(parts: Any) -> str:
+    if not isinstance(parts, list):
+        return ""
     texts = [
         str(part.get("text"))
         for part in parts
         if isinstance(part, dict) and isinstance(part.get("text"), str)
     ]
-    if texts:
-        return "\n".join(texts).strip()
+    return "\n".join(texts).strip()
+
+
+def task_text(task: dict[str, Any]) -> str:
+    status = task.get("status") if isinstance(task.get("status"), dict) else {}
+    message = status.get("message") if isinstance(status.get("message"), dict) else {}
+    text = text_from_parts(message.get("parts"))
+    if text:
+        return text
+    direct_message = task.get("message") if isinstance(task.get("message"), dict) else {}
+    text = text_from_parts(direct_message.get("parts"))
+    if text:
+        return text
+    text = text_from_parts(task.get("parts"))
+    if text:
+        return text
     artifacts = task.get("artifacts") if isinstance(task.get("artifacts"), list) else []
     for artifact in artifacts:
         if not isinstance(artifact, dict):
@@ -227,7 +288,7 @@ def print_task(payload: dict[str, Any], as_json: bool) -> None:
     if as_json:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return
-    task = payload.get("task") if isinstance(payload.get("task"), dict) else payload
+    task = task_from_payload(payload)
     status = task.get("status") if isinstance(task.get("status"), dict) else {}
     print(f"task: {task.get('id', '')}")
     print(f"state: {status.get('state', '')}")
@@ -238,6 +299,49 @@ def print_task(payload: dict[str, Any], as_json: bool) -> None:
     if text:
         print()
         print(text)
+
+
+def wait_for_task(
+    registry: dict[str, Any],
+    peer: dict[str, Any],
+    task_id: str,
+    interval_seconds: float,
+    max_wait_seconds: float,
+    timeout_seconds: float | None,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + max_wait_seconds
+    latest_payload: dict[str, Any] = {}
+    latest_state = "unknown"
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise PeerError(
+                f"task {task_id!r} did not finish within {max_wait_seconds:g}s; latest state: {latest_state}"
+            )
+        request_timeout = remaining if timeout_seconds is None else min(timeout_seconds, remaining)
+        try:
+            latest_payload = request_json(
+                registry,
+                peer,
+                "GET",
+                f"/tasks/{quote(task_id, safe='')}",
+                timeout_seconds=request_timeout,
+            )
+        except PeerError as error:
+            if time.monotonic() >= deadline:
+                raise PeerError(
+                    f"task {task_id!r} did not finish within {max_wait_seconds:g}s; latest state: {latest_state}"
+                ) from error
+            raise
+        latest_state = task_state(latest_payload) or "unknown"
+        if not task_is_active(latest_payload):
+            return latest_payload
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise PeerError(
+                f"task {task_id!r} did not finish within {max_wait_seconds:g}s; latest state: {latest_state}"
+            )
+        time.sleep(min(interval_seconds, remaining))
 
 
 def prompt_from_args(args: argparse.Namespace) -> str:
@@ -303,6 +407,7 @@ def cmd_send(registry: dict[str, Any], args: argparse.Namespace) -> None:
     }
     if args.from_agent:
         metadata["handoffFrom"] = args.from_agent
+    return_immediately = bool(args.return_immediately or args.wait)
     body = {
         "message": {
             "messageId": args.message_id or f"codex-a2a-peer-{uuid.uuid4().hex}",
@@ -310,19 +415,45 @@ def cmd_send(registry: dict[str, Any], args: argparse.Namespace) -> None:
             "parts": [{"text": text, "mediaType": "text/plain"}],
             "metadata": metadata,
         },
-        "configuration": {"returnImmediately": bool(args.return_immediately)},
+        "configuration": {"returnImmediately": return_immediately},
     }
     if args.context_id:
         body["message"]["contextId"] = args.context_id
     if args.task_id:
         body["message"]["taskId"] = args.task_id
     payload = request_json(registry, peer, "POST", "/message:send", body, timeout_seconds=args.timeout)
+    if args.wait:
+        if task_is_active(payload):
+            task_id = task_id_from_payload(payload)
+            if not task_id:
+                raise PeerError("message:send response did not include a task id to wait on")
+            payload = wait_for_task(
+                registry,
+                peer,
+                task_id,
+                args.wait_interval,
+                args.max_wait,
+                args.timeout,
+            )
     print_task(payload, args.json)
 
 
 def cmd_task(registry: dict[str, Any], args: argparse.Namespace) -> None:
     _, peer = resolve_peer(registry, args.peer)
     payload = request_json(registry, peer, "GET", f"/tasks/{quote(args.task_id, safe='')}", timeout_seconds=args.timeout)
+    print_task(payload, args.json)
+
+
+def cmd_wait(registry: dict[str, Any], args: argparse.Namespace) -> None:
+    _, peer = resolve_peer(registry, args.peer)
+    payload = wait_for_task(
+        registry,
+        peer,
+        args.task_id,
+        args.interval,
+        args.max_wait,
+        args.timeout,
+    )
     print_task(payload, args.json)
 
 
@@ -364,7 +495,7 @@ def build_parser() -> argparse.ArgumentParser:
     card_parser = subcommands.add_parser("card", help="fetch a peer Agent Card")
     card_parser.add_argument("peer", nargs="?", help="peer name")
     card_parser.add_argument("--json", action="store_true", help="print JSON")
-    card_parser.add_argument("--timeout", type=float, help="request timeout in seconds")
+    card_parser.add_argument("--timeout", type=positive_seconds, help="request timeout in seconds")
     card_parser.set_defaults(handler=cmd_card)
 
     for name in ("send", "relay"):
@@ -372,33 +503,65 @@ def build_parser() -> argparse.ArgumentParser:
         send_parser.add_argument("--peer", help="peer name")
         send_parser.add_argument("message", nargs="*", help="message text, or '-' for stdin")
         send_parser.add_argument("--async", dest="return_immediately", action="store_true", help="return immediately with a working task")
+        send_parser.add_argument("--wait", action="store_true", help="poll the returned task until it settles")
+        send_parser.add_argument(
+            "--wait-interval",
+            type=positive_seconds,
+            default=DEFAULT_WAIT_INTERVAL_SECONDS,
+            help=f"seconds between --wait polls (default: {DEFAULT_WAIT_INTERVAL_SECONDS:g})",
+        )
+        send_parser.add_argument(
+            "--max-wait",
+            type=positive_seconds,
+            default=DEFAULT_WAIT_MAX_SECONDS,
+            help=f"maximum seconds to wait before failing (default: {DEFAULT_WAIT_MAX_SECONDS:g})",
+        )
         send_parser.add_argument("--context-id", help="A2A context id")
         send_parser.add_argument("--task-id", help="A2A task id for follow-up messages")
         send_parser.add_argument("--message-id", help="A2A message id")
         send_parser.add_argument("--from", dest="from_agent", help="originating agent name for handoff metadata")
         send_parser.add_argument("--stdin", action="store_true", help="read message text from stdin")
         send_parser.add_argument("--json", action="store_true", help="print JSON")
-        send_parser.add_argument("--timeout", type=float, help="request timeout in seconds")
+        send_parser.add_argument("--timeout", type=positive_seconds, help="request timeout in seconds")
         send_parser.set_defaults(handler=cmd_send)
 
     task_parser = subcommands.add_parser("task", help="fetch a task from a peer")
     task_parser.add_argument("peer", nargs="?", help="peer name")
     task_parser.add_argument("task_id", help="task id")
     task_parser.add_argument("--json", action="store_true", help="print JSON")
-    task_parser.add_argument("--timeout", type=float, help="request timeout in seconds")
+    task_parser.add_argument("--timeout", type=positive_seconds, help="request timeout in seconds")
     task_parser.set_defaults(handler=cmd_task)
+
+    wait_parser = subcommands.add_parser("wait", help="poll a peer task until it settles")
+    wait_parser.add_argument("peer", nargs="?", help="peer name")
+    wait_parser.add_argument("task_id", help="task id")
+    wait_parser.add_argument("--json", action="store_true", help="print JSON")
+    wait_parser.add_argument(
+        "--interval",
+        type=positive_seconds,
+        default=DEFAULT_WAIT_INTERVAL_SECONDS,
+        help=f"seconds between polls (default: {DEFAULT_WAIT_INTERVAL_SECONDS:g})",
+    )
+    wait_parser.add_argument(
+        "--max-wait",
+        type=positive_seconds,
+        default=DEFAULT_WAIT_MAX_SECONDS,
+        help=f"maximum seconds to wait before failing (default: {DEFAULT_WAIT_MAX_SECONDS:g})",
+    )
+    wait_parser.add_argument("--timeout", type=positive_seconds, help="request timeout in seconds")
+    wait_parser.set_defaults(handler=cmd_wait)
 
     cancel_parser = subcommands.add_parser("cancel", help="cancel a task on a peer")
     cancel_parser.add_argument("peer", help="peer name")
     cancel_parser.add_argument("task_id", help="task id")
     cancel_parser.add_argument("--json", action="store_true", help="print JSON")
-    cancel_parser.add_argument("--timeout", type=float, help="request timeout in seconds")
+    cancel_parser.add_argument("--timeout", type=positive_seconds, help="request timeout in seconds")
     cancel_parser.set_defaults(handler=cmd_cancel)
 
     tasks_parser = subcommands.add_parser("tasks", help="list retained tasks from a peer")
     tasks_parser.add_argument("peer", nargs="?", help="peer name")
     tasks_parser.add_argument("--json", action="store_true", help="print JSON")
-    tasks_parser.add_argument("--timeout", type=float, help="request timeout in seconds")
+    tasks_parser.add_argument("--timeout", type=positive_seconds, help="request timeout in seconds")
     tasks_parser.set_defaults(handler=cmd_tasks)
     return parser
 
