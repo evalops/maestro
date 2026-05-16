@@ -553,18 +553,12 @@ function findServerSentEventBoundary(
 	input: string,
 	startIndex: number,
 ): { start: number; end: number } | -1 {
-	const boundaries = ["\r\n\r\n", "\n\n", "\r\r"];
-	let earliest: { start: number; end: number } | undefined;
-	for (const boundary of boundaries) {
-		const index = input.indexOf(boundary, startIndex);
-		if (index === -1) {
-			continue;
-		}
-		if (!earliest || index < earliest.start) {
-			earliest = { start: index, end: index + boundary.length };
-		}
-	}
-	return earliest ?? -1;
+	const boundary = /(?:\r\n|\r|\n)(?:\r\n|\r|\n)/gu;
+	boundary.lastIndex = startIndex;
+	const match = boundary.exec(input);
+	return match
+		? { start: match.index, end: match.index + match[0].length }
+		: -1;
 }
 
 function parseA2AStreamEventFrame(frame: string): A2AStreamEvent | undefined {
