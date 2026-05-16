@@ -108,7 +108,9 @@ describe("A2A TUI command handler", () => {
 			requestRender: vi.fn(),
 		});
 
-		expect(content.join("\n")).not.toContain("/a2a reply <peer> <task-id> <text>");
+		expect(content.join("\n")).not.toContain(
+			"/a2a reply <peer> <task-id> <text>",
+		);
 		expect(context.showError).not.toHaveBeenCalled();
 	});
 });

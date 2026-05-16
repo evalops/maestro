@@ -180,8 +180,7 @@ export const PRIMARY_COMMAND_CATALOG: readonly CommandCatalogEntry[] = [
 	}),
 	withArgs("a2a", "a2a", {
 		description: "Pair, inspect, and delegate to A2A peer agents",
-		usage:
-			"/a2a [accept <code>|fleet|peers|tasks|delegate <peer> <text>]",
+		usage: "/a2a [accept <code>|fleet|peers|tasks|delegate <peer> <text>]",
 		tags: ["tools", "agents"],
 		examples: [
 			"/a2a fleet",
