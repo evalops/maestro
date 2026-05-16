@@ -488,10 +488,12 @@ async function* parseA2AStreamEvents(
 	const reader = response.body.getReader();
 	const decoder = new TextDecoder();
 	let buffer = "";
+	let completed = false;
 	try {
 		while (true) {
 			const { done, value } = await reader.read();
 			if (done) {
+				completed = true;
 				break;
 			}
 			buffer += decoder.decode(value, { stream: true });
@@ -513,6 +515,9 @@ async function* parseA2AStreamEvents(
 			}
 		}
 	} finally {
+		if (!completed) {
+			await reader.cancel().catch(() => undefined);
+		}
 		reader.releaseLock();
 	}
 }

@@ -193,7 +193,8 @@ pub(crate) fn csrf_applies(head: &RequestHead) -> bool {
 }
 
 fn csrf_applies_to_a2a_path(path: &str) -> bool {
-    path == "/message:send" || a2a_task_id_from_cancel_path(path).is_some()
+    matches!(path, "/message:send" | "/message:stream")
+        || a2a_task_id_from_cancel_path(path).is_some()
 }
 
 pub(crate) fn a2a_task_id_from_cancel_path(path: &str) -> Option<&str> {

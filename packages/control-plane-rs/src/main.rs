@@ -57,6 +57,11 @@ const A2A_TERMINAL_TASK_STORE_LIMIT: usize = 128;
 const A2A_DEFAULT_LIST_PAGE_SIZE: usize = 50;
 const A2A_MAX_LIST_PAGE_SIZE: usize = 100;
 const A2A_DEFAULT_SUBSCRIBE_TIMEOUT_MS: u64 = 60_000;
+const A2A_LEDGER_LOCK_RETRY_MS: u64 = 25;
+const A2A_LEDGER_LOCK_STALE_MS: u64 = 30_000;
+const A2A_LEDGER_LOCK_TIMEOUT_MS: u64 = A2A_LEDGER_LOCK_STALE_MS + A2A_LEDGER_LOCK_RETRY_MS;
+const A2A_LEDGER_LOCK_OWNER_FILE: &str = "owner";
+const A2A_LEDGER_LOCK_HEARTBEAT_FILE: &str = "heartbeat";
 const EVALOPS_A2A_EXTENSION_URI: &str = "https://evalops.com/a2a/extensions/operating-plane/v1";
 const A2A_CONTROL_PLANE_LEDGER_PEER: &str = "maestro-control-plane";
 const A2A_CONTROL_PLANE_LEDGER_DISPLAY_NAME: &str = "Maestro Control Plane";
@@ -915,20 +920,27 @@ async fn handle_a2a_message_stream(
     let task_id = target.task_id;
     let context_id = target.context_id;
     let history = target.history;
-    let previous_task = target.previous_task;
+    let mut previous_task = target.previous_task;
     let metadata = target.metadata;
     let (cancel_tx, cancel_rx) = watch::channel(false);
     if let Err(response) = register_a2a_cancel_sender(state, &task_id, cancel_tx).await {
-        rollback_a2a_send_claim(state, &task_id, previous_task).await;
+        rollback_a2a_send_claim(state, &task_id, previous_task.take()).await;
         return write_response_and_close(stream, response).await;
     }
 
-    stream
-        .write_all(sse_headers().as_bytes())
-        .await
-        .map_err(|error| error.to_string())?;
+    if let Err(error) = stream.write_all(sse_headers().as_bytes()).await {
+        state.a2a_cancel_senders.lock().await.remove(&task_id);
+        rollback_a2a_send_claim(state, &task_id, previous_task.take()).await;
+        return Err(error.to_string());
+    }
     if let Some(task) = state.a2a_tasks.lock().await.get(&task_id).cloned() {
-        send_a2a_stream_response(stream, &serde_json::json!({ "task": task })).await?;
+        if let Err(error) =
+            send_a2a_stream_response(stream, &serde_json::json!({ "task": task })).await
+        {
+            state.a2a_cancel_senders.lock().await.remove(&task_id);
+            rollback_a2a_send_claim(state, &task_id, previous_task.take()).await;
+            return Err(error);
+        }
     }
     let task = complete_a2a_task(
         state, prompt, task_id, context_id, history, metadata, cancel_rx,
@@ -1328,13 +1340,31 @@ fn a2a_message_from_ledger_transcript(context_id: &str, item: &Value) -> Option<
 
 async fn persist_a2a_tasks(state: &AppState) {
     let _guard = state.a2a_task_persist_lock.lock().await;
+    let file_lock = match acquire_a2a_task_ledger_file_lock(&state.config.a2a_tasks_file_path).await
+    {
+        Ok(file_lock) => file_lock,
+        Err(error) => {
+            eprintln!("{error}");
+            return;
+        }
+    };
+    let result = persist_a2a_tasks_locked(state).await;
+    release_a2a_task_ledger_file_lock(file_lock).await;
+    if let Err(error) = result {
+        eprintln!("{error}");
+    }
+}
+
+async fn persist_a2a_tasks_locked(state: &AppState) -> Result<(), String> {
     let existing_entries = read_a2a_task_ledger_value(&state.config.a2a_tasks_file_path)
         .await
         .map(|ledger| a2a_task_ledger_entries(&ledger))
         .unwrap_or_default();
     let mut retained_entries = existing_entries
         .iter()
-        .filter(|entry| !a2a_ledger_entry_is_control_plane(entry))
+        .filter(|entry| {
+            !a2a_ledger_entry_is_control_plane(entry) && !a2a_ledger_entry_is_raw_a2a_task(entry)
+        })
         .cloned()
         .collect::<Vec<_>>();
     let existing_control_plane_entries = existing_entries
@@ -1368,28 +1398,175 @@ async fn persist_a2a_tasks(state: &AppState) {
     let path = &state.config.a2a_tasks_file_path;
     if let Some(parent) = path.parent() {
         if let Err(error) = tokio::fs::create_dir_all(parent).await {
-            eprintln!(
+            return Err(format!(
                 "failed to create A2A task ledger directory {}: {error}",
                 parent.display()
-            );
-            return;
+            ));
         }
     }
-    let tmp_path = path.with_extension("json.tmp");
+    let tmp_path = a2a_task_ledger_temp_path(path);
     if let Err(error) = tokio::fs::write(&tmp_path, body).await {
-        eprintln!(
+        return Err(format!(
             "failed to write A2A task ledger {}: {error}",
             tmp_path.display()
-        );
-        return;
+        ));
     }
     if let Err(error) = tokio::fs::rename(&tmp_path, path).await {
-        eprintln!(
+        let message = format!(
             "failed to replace A2A task ledger {}: {error}",
             path.display()
         );
         let _ = tokio::fs::remove_file(&tmp_path).await;
+        return Err(message);
     }
+    Ok(())
+}
+
+struct A2ATaskLedgerFileLock {
+    path: PathBuf,
+    token: String,
+}
+
+async fn acquire_a2a_task_ledger_file_lock(path: &Path) -> Result<A2ATaskLedgerFileLock, String> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await.map_err(|error| {
+            format!(
+                "failed to create A2A task ledger directory {}: {error}",
+                parent.display()
+            )
+        })?;
+    }
+    let lock_path = a2a_task_ledger_lock_path(path);
+    let token = format!(
+        "{}:{}",
+        process::id(),
+        ATTACHMENT_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+    let deadline = Instant::now() + Duration::from_millis(A2A_LEDGER_LOCK_TIMEOUT_MS);
+    loop {
+        match tokio::fs::create_dir(&lock_path).await {
+            Ok(()) => {
+                if let Err(error) = write_a2a_task_ledger_lock_metadata(&lock_path, &token).await {
+                    let _ = tokio::fs::remove_dir_all(&lock_path).await;
+                    return Err(error);
+                }
+                return Ok(A2ATaskLedgerFileLock {
+                    path: lock_path,
+                    token,
+                });
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                if a2a_task_ledger_lock_is_stale(&lock_path).await {
+                    let _ = tokio::fs::remove_dir_all(&lock_path).await;
+                    continue;
+                }
+                if Instant::now() >= deadline {
+                    return Err(format!(
+                        "timed out waiting for A2A task ledger lock {}",
+                        lock_path.display()
+                    ));
+                }
+                tokio::time::sleep(Duration::from_millis(A2A_LEDGER_LOCK_RETRY_MS)).await;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "failed to acquire A2A task ledger lock {}: {error}",
+                    lock_path.display()
+                ));
+            }
+        }
+    }
+}
+
+async fn write_a2a_task_ledger_lock_metadata(lock_path: &Path, token: &str) -> Result<(), String> {
+    tokio::fs::write(
+        lock_path.join(A2A_LEDGER_LOCK_OWNER_FILE),
+        format!("{token}\n"),
+    )
+    .await
+    .map_err(|error| {
+        format!(
+            "failed to write A2A task ledger lock owner {}: {error}",
+            lock_path.display()
+        )
+    })?;
+    write_a2a_task_ledger_lock_heartbeat(lock_path).await
+}
+
+async fn write_a2a_task_ledger_lock_heartbeat(lock_path: &Path) -> Result<(), String> {
+    tokio::fs::write(
+        lock_path.join(A2A_LEDGER_LOCK_HEARTBEAT_FILE),
+        format!("{}\n", unix_millis_now()),
+    )
+    .await
+    .map_err(|error| {
+        format!(
+            "failed to write A2A task ledger lock heartbeat {}: {error}",
+            lock_path.display()
+        )
+    })
+}
+
+async fn release_a2a_task_ledger_file_lock(file_lock: A2ATaskLedgerFileLock) {
+    if a2a_task_ledger_lock_is_owned(&file_lock.path, &file_lock.token).await {
+        let _ = tokio::fs::remove_dir_all(&file_lock.path).await;
+    }
+}
+
+async fn a2a_task_ledger_lock_is_owned(lock_path: &Path, token: &str) -> bool {
+    tokio::fs::read_to_string(lock_path.join(A2A_LEDGER_LOCK_OWNER_FILE))
+        .await
+        .map(|owner| owner.trim() == token)
+        .unwrap_or(false)
+}
+
+async fn a2a_task_ledger_lock_is_stale(lock_path: &Path) -> bool {
+    let modified_at = match a2a_task_ledger_lock_modified_at(lock_path).await {
+        Some(modified_at) => modified_at,
+        None => return true,
+    };
+    SystemTime::now()
+        .duration_since(modified_at)
+        .map(|age| age > Duration::from_millis(A2A_LEDGER_LOCK_STALE_MS))
+        .unwrap_or(false)
+}
+
+async fn a2a_task_ledger_lock_modified_at(lock_path: &Path) -> Option<SystemTime> {
+    for path in [
+        lock_path.join(A2A_LEDGER_LOCK_HEARTBEAT_FILE),
+        lock_path.join(A2A_LEDGER_LOCK_OWNER_FILE),
+        lock_path.to_path_buf(),
+    ] {
+        match tokio::fs::metadata(&path).await {
+            Ok(metadata) => return metadata.modified().ok(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+fn a2a_task_ledger_lock_path(path: &Path) -> PathBuf {
+    let mut lock_path = path.as_os_str().to_os_string();
+    lock_path.push(".lock");
+    PathBuf::from(lock_path)
+}
+
+fn a2a_task_ledger_temp_path(path: &Path) -> PathBuf {
+    let mut tmp_path = path.as_os_str().to_os_string();
+    tmp_path.push(format!(
+        ".{}.{}.tmp",
+        process::id(),
+        ATTACHMENT_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    PathBuf::from(tmp_path)
+}
+
+fn unix_millis_now() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
 }
 
 fn publish_a2a_task_update(state: &AppState, task: &Value) {
@@ -1398,6 +1575,13 @@ fn publish_a2a_task_update(state: &AppState, task: &Value) {
 
 fn a2a_ledger_entry_is_control_plane(entry: &Value) -> bool {
     entry.get("peer").and_then(Value::as_str) == Some(A2A_CONTROL_PLANE_LEDGER_PEER)
+}
+
+fn a2a_ledger_entry_is_raw_a2a_task(entry: &Value) -> bool {
+    entry.get("peer").is_none()
+        && entry.get("taskId").is_none()
+        && entry.get("id").and_then(Value::as_str).is_some()
+        && entry.get("status").and_then(Value::as_object).is_some()
 }
 
 fn a2a_ledger_entry_from_task(task: &Value, existing: Option<&Value>) -> Value {
@@ -10964,6 +11148,16 @@ setTimeout(() => {
             validate_csrf(&csrf_head_for_path("POST", "/message:send", None), &config).is_err()
         );
         assert!(validate_csrf(
+            &csrf_head_for_path("POST", "/message:stream", Some("csrf-token")),
+            &config,
+        )
+        .is_ok());
+        assert!(validate_csrf(
+            &csrf_head_for_path("POST", "/message:stream", None),
+            &config
+        )
+        .is_err());
+        assert!(validate_csrf(
             &csrf_head_for_path("POST", "/tasks/maestro-task-1:cancel", Some("csrf-token")),
             &config,
         )
@@ -11713,6 +11907,29 @@ setTimeout(() => {
                         "state": "TASK_STATE_COMPLETED",
                         "createdAt": "2026-05-15T00:00:00Z",
                         "updatedAt": "2026-05-15T00:01:00Z"
+                    },
+                    {
+                        "id": "raw-legacy-task",
+                        "contextId": "ctx-legacy",
+                        "status": {
+                            "state": "TASK_STATE_COMPLETED",
+                            "message": {
+                                "messageId": "legacy-msg",
+                                "contextId": "ctx-legacy",
+                                "role": "ROLE_AGENT",
+                                "parts": [{ "text": "legacy complete" }]
+                            },
+                            "timestamp": "2026-05-15T00:02:00Z"
+                        },
+                        "history": [
+                            {
+                                "messageId": "legacy-user",
+                                "contextId": "ctx-legacy",
+                                "role": "ROLE_USER",
+                                "parts": [{ "text": "legacy request" }]
+                            }
+                        ],
+                        "metadata": { "workspaceId": "legacy-ws" }
                     }
                 ]
             }))
@@ -11729,6 +11946,15 @@ setTimeout(() => {
             Vec::new(),
             serde_json::json!({ "workspaceId": "ws-1" }),
         );
+        let raw_legacy_task = load_a2a_tasks(&state.config.a2a_tasks_file_path)
+            .await
+            .remove("raw-legacy-task")
+            .expect("raw legacy task should hydrate before migration");
+        state
+            .a2a_tasks
+            .lock()
+            .await
+            .insert("raw-legacy-task".to_string(), raw_legacy_task);
 
         store_a2a_task_unless_canceled(&state, "maestro-task-durable", task).await;
         let loaded = load_a2a_tasks(&state.config.a2a_tasks_file_path).await;
@@ -11747,8 +11973,15 @@ setTimeout(() => {
             .expect("remote peer ledger row should be retained");
         let control_plane_entry = entries
             .iter()
-            .find(|entry| entry["peer"] == A2A_CONTROL_PLANE_LEDGER_PEER)
+            .find(|entry| {
+                entry["peer"] == A2A_CONTROL_PLANE_LEDGER_PEER
+                    && entry["taskId"] == "maestro-task-durable"
+            })
             .expect("control-plane ledger row should be written");
+        let raw_legacy_entries = entries
+            .iter()
+            .filter(|entry| entry["id"] == "raw-legacy-task")
+            .count();
 
         assert_eq!(remote_entry["taskId"], "remote-task");
         assert_eq!(control_plane_entry["taskId"], "maestro-task-durable");
@@ -11758,10 +11991,71 @@ setTimeout(() => {
             A2A_CONTROL_PLANE_LEDGER_DISPLAY_NAME
         );
         assert_eq!(control_plane_entry["a2aTask"]["id"], "maestro-task-durable");
+        assert_eq!(
+            raw_legacy_entries, 0,
+            "raw legacy A2A rows should be migrated away from the shared TS ledger shape"
+        );
+        assert!(entries.iter().any(|entry| {
+            entry["peer"] == A2A_CONTROL_PLANE_LEDGER_PEER
+                && entry["taskId"] == "raw-legacy-task"
+                && entry["a2aTask"]["id"] == "raw-legacy-task"
+        }));
         assert!(!loaded.contains_key("remote-task"));
         assert_eq!(
             loaded["maestro-task-durable"]["metadata"]["workspaceId"],
             "ws-1"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_task_store_waits_for_shared_ledger_file_lock() {
+        let root = TestDir::new("a2a-task-ledger-lock");
+        let base_state = test_app_state_with_sessions(HashMap::new());
+        let mut config = auth_test_config();
+        config.a2a_tasks_file_path = root.path().join("tasks.json");
+        let state = AppState {
+            config: Arc::new(config),
+            ..base_state
+        };
+        let lock_path = a2a_task_ledger_lock_path(&state.config.a2a_tasks_file_path);
+        tokio::fs::create_dir_all(&lock_path)
+            .await
+            .expect("test lock should be created");
+        let task = a2a_task_value(
+            "maestro-task-locked",
+            "ctx-1",
+            "TASK_STATE_COMPLETED",
+            a2a_agent_message("ctx-1", "complete"),
+            Vec::new(),
+            Vec::new(),
+            serde_json::json!({}),
+        );
+        let state_for_store = state.clone();
+        let store = tokio::spawn(async move {
+            store_a2a_task_unless_canceled(&state_for_store, "maestro-task-locked", task).await;
+        });
+
+        tokio::time::sleep(Duration::from_millis(A2A_LEDGER_LOCK_RETRY_MS * 3)).await;
+        assert!(
+            tokio::fs::try_exists(&state.config.a2a_tasks_file_path)
+                .await
+                .expect("ledger existence should be checkable")
+                == false,
+            "persist should wait for the shared TS ledger lock before writing"
+        );
+        tokio::fs::remove_dir_all(&lock_path)
+            .await
+            .expect("test lock should be released");
+        tokio::time::timeout(Duration::from_secs(2), store)
+            .await
+            .expect("store should finish after lock release")
+            .expect("store task should join");
+
+        assert!(
+            tokio::fs::try_exists(&state.config.a2a_tasks_file_path)
+                .await
+                .expect("ledger existence should be checkable"),
+            "ledger should be written after lock release"
         );
     }
 

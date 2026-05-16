@@ -545,6 +545,56 @@ describe("platform A2A client", () => {
 		]);
 	});
 
+	it("cancels the A2A SSE body when the consumer stops early", async () => {
+		const config = await resolveA2AServiceConfig();
+		if (!config) {
+			throw new Error("expected config");
+		}
+		let canceled = false;
+		vi.mocked(fetch).mockImplementationOnce(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url = typeof input === "string" ? input : input.toString();
+				const parsed = new URL(url);
+				requests.push({
+					body: parseRequestBody(init?.body),
+					headers: headersToRecord(init?.headers),
+					method: init?.method,
+					pathname: parsed.pathname,
+					url,
+				});
+				const encoder = new TextEncoder();
+				return new Response(
+					new ReadableStream({
+						start(controller) {
+							controller.enqueue(
+								encoder.encode(
+									'data: {"taskId":"run_cancel","status":{"state":"TASK_STATE_WORKING"}}\n\n',
+								),
+							);
+						},
+						cancel() {
+							canceled = true;
+						},
+					}),
+					{ headers: { "content-type": "text/event-stream" } },
+				);
+			},
+		);
+
+		for await (const event of subscribeA2ATask(config, "run_cancel")) {
+			expect(event).toMatchObject({
+				type: "statusUpdate",
+				taskId: "run_cancel",
+			});
+			break;
+		}
+
+		expect(canceled).toBe(true);
+		expect(requests.at(-1)?.url).toBe(
+			"https://platform.test/tasks/run_cancel:subscribe",
+		);
+	});
+
 	it("gets an A2A task with explicit trace headers", async () => {
 		const config = await resolveA2AServiceConfig();
 		if (!config) {
