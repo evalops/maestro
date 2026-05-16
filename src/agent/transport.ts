@@ -1292,6 +1292,9 @@ export class ProviderTransport implements AgentTransport {
 						}
 
 						if (event.type === "provider_tool_execution_end") {
+							toolResults.push(event.result);
+							yield { type: "message_start", message: event.result };
+							yield { type: "message_end", message: event.result };
 							yield {
 								type: "tool_execution_end",
 								toolCallId: event.toolCallId,

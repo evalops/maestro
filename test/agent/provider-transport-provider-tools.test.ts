@@ -212,6 +212,22 @@ describe("ProviderTransport provider-owned tool events", () => {
 					}),
 				}),
 				expect.objectContaining({
+					type: "message_start",
+					message: expect.objectContaining({
+						role: "toolResult",
+						toolCallId: "collab-call-1",
+						toolName: "codex.subagent.spawnAgent",
+					}),
+				}),
+				expect.objectContaining({
+					type: "message_end",
+					message: expect.objectContaining({
+						role: "toolResult",
+						toolCallId: "collab-call-1",
+						toolName: "codex.subagent.spawnAgent",
+					}),
+				}),
+				expect.objectContaining({
 					type: "tool_execution_end",
 					toolCallId: "collab-call-1",
 					toolName: "codex.subagent.spawnAgent",
@@ -226,7 +242,13 @@ describe("ProviderTransport provider-owned tool events", () => {
 		const turnEnd = events.find((event) => event.type === "turn_end");
 		expect(turnEnd).toMatchObject({
 			type: "turn_end",
-			toolResults: [],
+			toolResults: [
+				expect.objectContaining({
+					role: "toolResult",
+					toolCallId: "collab-call-1",
+					toolName: "codex.subagent.spawnAgent",
+				}),
+			],
 		});
 	});
 
