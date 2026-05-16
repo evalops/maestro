@@ -390,6 +390,23 @@ describe("skill package format", () => {
 		expect(contract.issues).toEqual([]);
 	});
 
+	it("uses Windows command quoting for install source hints on win32", async () => {
+		const workspace = tempRoot();
+		const packageDir = join(workspace, "My Skills", "review-pack");
+		await writeOssSkillPackageAt(packageDir);
+
+		const contract = await buildSkillPackagePublishContract(
+			"./My Skills/review-pack",
+			{ cwd: workspace, platform: "win32" },
+		);
+
+		expect(contract.install.source).toBe(
+			'maestro skill install "local:./My Skills/review-pack"',
+		);
+		expect(contract.install.local).toBe(contract.install.source);
+		expect(contract.issues).toEqual([]);
+	});
+
 	it("keeps publish-check install hints tied to the inspected source type", async () => {
 		const workspace = tempRoot();
 		const packageDir = await writeOssSkillPackage(workspace);

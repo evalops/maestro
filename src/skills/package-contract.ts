@@ -54,6 +54,7 @@ export interface SkillPackagePublishContract {
 export interface BuildSkillPackagePublishContractOptions {
 	cwd?: string;
 	describeToolbox?: boolean;
+	platform?: NodeJS.Platform;
 }
 
 const WINDOWS_DRIVE_PATH_REGEX = /^[A-Za-z]:[\\/]/;
@@ -83,13 +84,14 @@ function mapValidationIssue(message: string): SkillPackageContractIssue {
 
 function buildInstallCommands(input: {
 	cwd: string;
+	platform: NodeJS.Platform;
 	source: PackageSource;
 }): SkillPackageInstallCommandSet {
 	const installSource = formatSkillPackageInstallSource(
 		input.source,
 		input.cwd,
 	);
-	const command = `maestro skill install ${quoteShellArg(installSource)}`;
+	const command = `maestro skill install ${quoteShellArg(installSource, input.platform)}`;
 	switch (input.source.type) {
 		case "local":
 			return { source: command, local: command };
@@ -100,9 +102,12 @@ function buildInstallCommands(input: {
 	}
 }
 
-function quoteShellArg(value: string): string {
+function quoteShellArg(value: string, platform: NodeJS.Platform): string {
 	if (SHELL_SAFE_INSTALL_SOURCE_REGEX.test(value)) {
 		return value;
+	}
+	if (platform === "win32") {
+		return `"${value.replace(/"/g, '\\"')}"`;
 	}
 	return `'${value.replace(/'/g, "'\\''")}'`;
 }
@@ -209,6 +214,7 @@ export async function buildSkillPackagePublishContract(
 		},
 		install: buildInstallCommands({
 			cwd,
+			platform: options.platform ?? process.platform,
 			source: inspected.source,
 		}),
 		evalReport,
