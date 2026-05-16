@@ -1575,6 +1575,9 @@ fn publish_a2a_task_update(state: &AppState, task: &Value) {
 
 fn a2a_ledger_entry_is_control_plane(entry: &Value) -> bool {
     entry.get("peer").and_then(Value::as_str) == Some(A2A_CONTROL_PLANE_LEDGER_PEER)
+        || (entry.get("peer").is_none()
+            && entry.get("id").and_then(Value::as_str).is_some()
+            && entry.get("status").and_then(Value::as_object).is_some())
 }
 
 fn a2a_ledger_entry_is_raw_a2a_task(entry: &Value) -> bool {
@@ -12130,6 +12133,82 @@ setTimeout(() => {
             "local response"
         );
         assert_eq!(loaded["local-task"]["history"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_task_persist_rewrites_legacy_control_plane_ledger_entries() {
+        let root = TestDir::new("a2a-task-ledger-legacy-rewrite");
+        let base_state = test_app_state_with_sessions(HashMap::new());
+        let mut config = auth_test_config();
+        config.a2a_tasks_file_path = root.path().join("tasks.json");
+        let state = AppState {
+            config: Arc::new(config),
+            ..base_state
+        };
+        tokio::fs::write(
+            &state.config.a2a_tasks_file_path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "tasks": [
+                    {
+                        "id": "remote-ledger-row",
+                        "kind": "message",
+                        "peer": "peer-b",
+                        "taskId": "remote-task",
+                        "text": "remote peer task",
+                        "state": "TASK_STATE_COMPLETED",
+                        "createdAt": "2026-05-15T00:00:00Z",
+                        "updatedAt": "2026-05-15T00:01:00Z"
+                    },
+                    {
+                        "id": "raw-legacy-task",
+                        "contextId": "ctx-legacy",
+                        "status": {
+                            "state": "TASK_STATE_COMPLETED",
+                            "message": {
+                                "messageId": "legacy-msg",
+                                "contextId": "ctx-legacy",
+                                "role": "ROLE_AGENT",
+                                "parts": [{ "text": "legacy complete" }]
+                            }
+                        },
+                        "metadata": { "workspaceId": "legacy-ws" }
+                    }
+                ]
+            }))
+            .expect("ledger should serialize"),
+        )
+        .await
+        .expect("ledger should be written");
+
+        let loaded = load_a2a_tasks(&state.config.a2a_tasks_file_path).await;
+        state.a2a_tasks.lock().await.extend(loaded);
+
+        persist_a2a_tasks(&state).await;
+
+        let ledger: Value = serde_json::from_slice(
+            &tokio::fs::read(&state.config.a2a_tasks_file_path)
+                .await
+                .expect("ledger should be readable"),
+        )
+        .expect("ledger should be json");
+        let entries = ledger["tasks"]
+            .as_array()
+            .expect("ledger tasks should be an array");
+        let control_plane_entry = entries
+            .iter()
+            .find(|entry| entry["taskId"] == "raw-legacy-task")
+            .expect("legacy task should be rewritten as a control-plane row");
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(control_plane_entry["peer"], A2A_CONTROL_PLANE_LEDGER_PEER);
+        assert_eq!(control_plane_entry["a2aTask"]["id"], "raw-legacy-task");
+        assert_eq!(
+            control_plane_entry["a2aTask"]["metadata"]["workspaceId"],
+            "legacy-ws"
+        );
+        assert!(!entries
+            .iter()
+            .any(|entry| entry.get("peer").is_none() && entry["id"] == "raw-legacy-task"));
     }
 
     #[tokio::test(flavor = "current_thread")]
