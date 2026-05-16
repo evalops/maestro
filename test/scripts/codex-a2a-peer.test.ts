@@ -360,6 +360,17 @@ describe("codex-a2a-peer", () => {
 		);
 	});
 
+	it("rejects ambiguous one-argument cancel calls that match a peer", async () => {
+		await expect(
+			runPeer(configPath, ["cancel", "mock"], {
+				TEST_A2A_PEER_TOKEN: "super-secret-token",
+			}),
+		).rejects.toMatchObject({
+			stderr: expect.stringContaining("task id is required for peer 'mock'"),
+		});
+		expect(requests).toHaveLength(0);
+	});
+
 	it("fails unknown explicit peers before sending", async () => {
 		await expect(
 			runPeer(configPath, ["send", "--peer", "mok", "hello"], {

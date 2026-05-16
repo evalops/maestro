@@ -327,6 +327,8 @@ def cmd_task(registry: dict[str, Any], args: argparse.Namespace) -> None:
 
 
 def cmd_cancel(registry: dict[str, Any], args: argparse.Namespace) -> None:
+    if args.peer is None and args.task_id in registry_peers(registry):
+        raise PeerError(f"task id is required for peer {args.task_id!r}")
     _, peer = resolve_peer(registry, args.peer)
     payload = request_json(
         registry,
