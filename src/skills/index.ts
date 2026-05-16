@@ -88,3 +88,14 @@ export {
 	formatSkillEvalText,
 	hasSkillEvalFailures,
 } from "./eval-harness.js";
+export {
+	MAESTRO_PACKAGE_KEYWORD,
+	MAESTRO_SKILL_PACKAGE_KEYWORD,
+	SKILL_PACKAGE_CONTRACT_SCHEMA,
+	type BuildSkillPackagePublishContractOptions,
+	type SkillPackageContractIssue,
+	type SkillPackageInstallCommandSet,
+	type SkillPackagePublishContract,
+	buildSkillPackagePublishContract,
+	formatSkillPackagePublishContract,
+} from "./package-contract.js";

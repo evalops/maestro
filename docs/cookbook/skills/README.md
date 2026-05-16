@@ -108,6 +108,43 @@ the progressive-disclosure budget. The checked-in smoke corpus runs with:
 npm run evals:skill-package
 ```
 
+## OSS Publish And Install
+
+Distribute OSS skill packs as normal npm or git packages with this
+`package.json` shape:
+
+```json
+{
+  "name": "@acme/maestro-review-skills",
+  "version": "1.0.0",
+  "keywords": ["maestro-package", "maestro-skill-package"],
+  "maestro": {
+    "skills": ["./skills"]
+  }
+}
+```
+
+Before publishing, run the contract check from the package root or a consumer
+workspace:
+
+```bash
+maestro skill publish-check ./packages/review-skills --describe-toolbox
+maestro skill publish-check ./packages/review-skills --json
+```
+
+Consumers install through the same package runtime used by the TUI package
+commands:
+
+```bash
+maestro skill install npm:@acme/maestro-review-skills@1.0.0 --scope user
+maestro skill install git:github.com/acme/maestro-review-skills@v1.0.0 --scope project
+maestro skill install ./packages/review-skills --scope local
+```
+
+`maestro skill install` validates the publish contract first, writes the package
+source into the selected config scope, and leaves toolbox execution disabled
+during validation unless `publish-check --describe-toolbox` is used explicitly.
+
 ## Model And Mode Hints
 
 Skills can declare model and mode preferences:

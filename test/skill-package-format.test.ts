@@ -40,6 +40,56 @@ function tempRoot(): string {
 	return dir;
 }
 
+async function writeOssSkillPackage(workspace: string): Promise<string> {
+	const packageDir = join(workspace, "vendor", "review-skills");
+	const skillDir = join(packageDir, "skills", "reviewing-prs");
+	await mkdir(skillDir, { recursive: true });
+	writeFileSync(
+		join(packageDir, "package.json"),
+		JSON.stringify(
+			{
+				name: "@test/maestro-review-skills",
+				version: "1.0.0",
+				keywords: ["maestro-package", "maestro-skill-package"],
+				maestro: {
+					skills: ["./skills"],
+				},
+			},
+			null,
+			2,
+		),
+	);
+	writeFileSync(
+		join(skillDir, "SKILL.md"),
+		`---\nname: reviewing-prs\ndescription: "Review pull requests. Use when the user asks for PR review."\nallowed-tools:\n  - read\nbuiltin-tools:\n  - read\nisolatedContext: true\n---\n\n# Reviewing PRs\n\nKeep findings first and cite exact files.\n`,
+	);
+	return packageDir;
+}
+
+async function captureSkillCommand(
+	subcommand: string,
+	args: string[],
+	workspaceDir: string,
+): Promise<{ logs: string[]; errors: string[] }> {
+	const originalLog = console.log;
+	const originalError = console.error;
+	const logs: string[] = [];
+	const errors: string[] = [];
+	console.log = (...values: unknown[]) => {
+		logs.push(values.map((value) => String(value)).join(" "));
+	};
+	console.error = (...values: unknown[]) => {
+		errors.push(values.map((value) => String(value)).join(" "));
+	};
+	try {
+		await handleSkillCommand(subcommand, args, { workspaceDir });
+	} finally {
+		console.log = originalLog;
+		console.error = originalError;
+	}
+	return { logs, errors };
+}
+
 afterEach(() => {
 	for (const dir of tempDirs.splice(0)) {
 		rmSync(dir, { recursive: true, force: true });
@@ -255,6 +305,71 @@ describe("skill package format", () => {
 				process.env.MAESTRO_SYSTEM_SKILLS_DIR = originalSystemSkills;
 			}
 		}
+	});
+
+	it("emits the OSS skill package publish/install contract", async () => {
+		const workspace = tempRoot();
+		await writeOssSkillPackage(workspace);
+
+		const { logs, errors } = await captureSkillCommand(
+			"publish-check",
+			["./vendor/review-skills", "--json"],
+			workspace,
+		);
+
+		expect(errors).toEqual([]);
+		const payload = JSON.parse(logs.join("\n")) as {
+			schemaVersion: string;
+			package: { name: string; version: string };
+			resources: { skills: string[] };
+			install: { npm?: string };
+			issues: unknown[];
+		};
+		expect(payload.schemaVersion).toBe(
+			"evalops.maestro.skill-package-publish-contract.v1",
+		);
+		expect(payload.package).toMatchObject({
+			name: "@test/maestro-review-skills",
+			version: "1.0.0",
+		});
+		expect(payload.resources.skills).toHaveLength(1);
+		expect(payload.install.npm).toBe(
+			"maestro skill install npm:@test/maestro-review-skills@1.0.0",
+		);
+		expect(payload.issues).toEqual([]);
+	});
+
+	it("installs validated OSS skill packages into the selected config scope", async () => {
+		const workspace = tempRoot();
+		await mkdir(join(workspace, ".maestro"), { recursive: true });
+		await writeOssSkillPackage(workspace);
+
+		const { logs, errors } = await captureSkillCommand(
+			"install",
+			["./vendor/review-skills", "--scope", "project", "--json"],
+			workspace,
+		);
+
+		expect(errors).toEqual([]);
+		const payload = JSON.parse(logs.join("\n")) as {
+			installed: boolean;
+			config: { path: string; scope: string };
+		};
+		expect(payload.installed).toBe(true);
+		expect(payload.config).toMatchObject({
+			path: join(workspace, ".maestro", "config.toml"),
+			scope: "project",
+		});
+		expect(readFileSync(payload.config.path, "utf8")).toContain(
+			"../vendor/review-skills",
+		);
+
+		const loaded = loadSkills(workspace, { includeSystem: false });
+		expect(loaded.errors).toEqual([]);
+		expect(loaded.skills.map((skill) => skill.name)).toContain("reviewing-prs");
+		expect(
+			loaded.skills.find((skill) => skill.name === "reviewing-prs")?.sourceType,
+		).toBe("project");
 	});
 
 	it("accepts quoted isolatedContext consistently across load and lint", async () => {

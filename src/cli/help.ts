@@ -269,6 +269,8 @@ export function printHelp(
 	const skillSection = `${sectionHeading("maestro skill")}${muted(
 		`  maestro skill list                 List available progressive skills
   maestro skill inspect <name>       Print one skill package manifest
+  maestro skill install <source>     Validate and install an OSS skill package
+  maestro skill publish-check <src>  Validate an OSS skill package for publishing
   maestro skill new <name>           Scaffold SKILL.md, reference/, scripts/, toolbox/, and mcp.json.example
   maestro skill lint [path...]       Validate frontmatter, budget, mcp.json includeTools, and toolbox shape`,
 	)}`;
