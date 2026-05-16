@@ -91,8 +91,8 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 
 use super::messages::{
-    ActiveFileWatch, ActiveTool, AgentState, FromAgentMessage, InitConfig, PendingApproval,
-    StreamingResponse, ToAgentMessage, TokenUsage,
+    ActiveFileWatch, ActiveTool, AgentState, CodexSubagentContinuityEdge, FromAgentMessage,
+    InitConfig, PendingApproval, StreamingResponse, ToAgentMessage, TokenUsage,
 };
 
 /// A recorded session entry (either a sent or received message).
@@ -247,6 +247,8 @@ pub struct AgentStateCheckpoint {
     #[serde(default)]
     pub active_tools: Vec<ActiveToolCheckpoint>,
     #[serde(default)]
+    pub codex_subagent_edges: Vec<CodexSubagentContinuityEdge>,
+    #[serde(default)]
     pub active_utility_commands: Vec<ActiveUtilityCommandCheckpoint>,
     #[serde(default)]
     pub active_file_watches: Vec<ActiveFileWatchCheckpoint>,
@@ -302,6 +304,7 @@ impl AgentStateCheckpoint {
                     elapsed_ms: tool.started.elapsed().as_millis() as u64,
                 })
                 .collect(),
+            codex_subagent_edges: state.codex_subagent_edges.clone(),
             active_utility_commands: state
                 .active_utility_commands
                 .values()
@@ -387,6 +390,7 @@ impl AgentStateCheckpoint {
                     )
                 })
                 .collect(),
+            codex_subagent_edges: self.codex_subagent_edges,
             active_utility_commands: self
                 .active_utility_commands
                 .into_iter()

@@ -43,6 +43,9 @@ SAFE_PROMPT_METADATA_KEYS = {
     "sessionId",
     "workspaceId",
 }
+INPUT_REQUIRED_ONCE_FIXTURE_MODE = "input-required-once"
+INPUT_REQUIRED_ONCE_FIXTURE_TASK_ID = "codex-a2a-fixture-task-input-required-once"
+INPUT_REQUIRED_ONCE_FIXTURE_CONTEXT_ID = "codex-a2a-fixture-context-input-required-once"
 
 
 def env(name: str, default: str) -> str:
@@ -97,6 +100,10 @@ def terminal(state: str | None) -> bool:
         "TASK_STATE_CANCELED",
         "TASK_STATE_REJECTED",
     }
+
+
+def fixture_mode() -> str:
+    return os.environ.get("CODEX_A2A_FIXTURE_MODE", "").strip()
 
 
 def prune_terminal_tasks_locked(protected_task_id: str | None = None) -> None:
@@ -241,6 +248,15 @@ def user_message(message: dict[str, Any], context_id: str) -> dict[str, Any]:
     return copied
 
 
+def fixture_agent_message(context_id: str, suffix: str, text: str) -> dict[str, Any]:
+    return {
+        "messageId": f"codex-a2a-fixture-message-{suffix}",
+        "contextId": context_id,
+        "role": "ROLE_AGENT",
+        "parts": [{"text": text, "mediaType": "text/plain"}],
+    }
+
+
 def task_value(
     task_id: str,
     context_id: str,
@@ -262,6 +278,101 @@ def task_value(
         "artifacts": artifacts or [],
         "metadata": metadata or {},
     }
+
+
+def input_required_once_fixture_task(
+    message: dict[str, Any],
+    prompt_text: str,
+    requested_task_id: str,
+    requested_context_id: str,
+) -> tuple[int, dict[str, Any]]:
+    task_id = requested_task_id or INPUT_REQUIRED_ONCE_FIXTURE_TASK_ID
+    context_id = requested_context_id or INPUT_REQUIRED_ONCE_FIXTURE_CONTEXT_ID
+    with LOCK:
+        existing = TASKS.get(task_id)
+        if requested_task_id:
+            if not existing:
+                return 404, {"error": {"code": "TASK_NOT_FOUND", "message": "A2A task not found"}}
+            existing_state = existing.get("status", {}).get("state")
+            if terminal(existing_state):
+                return (
+                    400,
+                    {
+                        "error": {
+                            "code": "UNSUPPORTED_OPERATION",
+                            "message": "A2A terminal tasks cannot accept more messages",
+                        }
+                    },
+                )
+            if not accepts_message(existing_state):
+                return (
+                    409,
+                    {
+                        "error": {
+                            "code": "UNSUPPORTED_OPERATION",
+                            "message": "A2A task is not ready to accept another message",
+                        }
+                    },
+                )
+            existing_context_id = str(existing.get("contextId") or "").strip()
+            if (
+                requested_context_id
+                and existing_context_id
+                and requested_context_id != existing_context_id
+            ):
+                return (
+                    400,
+                    {
+                        "error": {
+                            "code": "INVALID_REQUEST",
+                            "message": "A2A message contextId must match the referenced task",
+                        }
+                    },
+                )
+            context_id = (
+                requested_context_id
+                or existing_context_id
+                or INPUT_REQUIRED_ONCE_FIXTURE_CONTEXT_ID
+            )
+            normalized_message = user_message(message, context_id)
+            final_text = f"Fixture completed after user reply: {prompt_text}"
+            final_message = fixture_agent_message(context_id, "completed", final_text)
+            task = task_value(
+                task_id,
+                context_id,
+                "TASK_STATE_COMPLETED",
+                final_message,
+                [*copy.deepcopy(existing.get("history") or []), normalized_message, final_message],
+                artifacts=[
+                    {
+                        "artifactId": f"{task_id}-fixture-response",
+                        "name": "fixture-response",
+                        "parts": [{"text": final_text, "mediaType": "text/plain"}],
+                    }
+                ],
+                metadata={
+                    "backend": "codex-a2a-fixture",
+                    "fixtureMode": INPUT_REQUIRED_ONCE_FIXTURE_MODE,
+                },
+            )
+            store_task_locked(task_id, task)
+            return 200, {"task": task}
+        question = "What do you need to continue this A2A task?"
+        question_message = fixture_agent_message(context_id, "input-required", question)
+        normalized_message = user_message(message, context_id)
+        task = task_value(
+            task_id,
+            context_id,
+            "TASK_STATE_INPUT_REQUIRED",
+            question_message,
+            [normalized_message, question_message],
+            metadata={
+                "backend": "codex-a2a-fixture",
+                "fixtureMode": INPUT_REQUIRED_ONCE_FIXTURE_MODE,
+            },
+        )
+        store_task_locked(task_id, task)
+        return 200, {"task": task}
 
 
 def json_bytes(value: Any) -> bytes:
@@ -617,6 +728,15 @@ class Handler(BaseHTTPRequestHandler):
                     "INVALID_REQUEST",
                     "A2A configuration returnImmediately must be a boolean",
                 )
+                return
+            if fixture_mode() == INPUT_REQUIRED_ONCE_FIXTURE_MODE:
+                status, response = input_required_once_fixture_task(
+                    message,
+                    prompt_text,
+                    requested_task_id,
+                    requested_context_id,
+                )
+                self.send_json(status, response)
                 return
             immediate = return_immediately is True
             error: tuple[int, str, str] | None = None

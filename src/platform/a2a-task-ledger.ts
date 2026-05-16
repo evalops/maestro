@@ -3,6 +3,11 @@ import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { A2AMessage, A2ATask } from "./a2a-client.js";
+import {
+	type A2AWorkGraphMetadata,
+	extractA2AWorkGraphMetadata,
+	normalizeA2AWorkGraphMetadata,
+} from "./a2a-work-graph.js";
 import { getEnvValue, trimString } from "./client.js";
 
 export type A2ATaskKind = "delegation" | "message";
@@ -30,6 +35,7 @@ export interface A2ATaskLedgerEntry {
 	state: string;
 	responseText?: string;
 	metadata?: Record<string, string | number | boolean>;
+	workGraph?: A2AWorkGraphMetadata;
 	transcript: A2ATaskTranscriptEntry[];
 	createdAt: string;
 	updatedAt: string;
@@ -297,6 +303,7 @@ export async function recordA2ATaskStart(
 			(entry) => entry.peer === input.peer && entry.taskId === taskId,
 		);
 		const metadata = cleanMetadata(input.metadata);
+		const workGraph = extractA2AWorkGraphMetadata(input.task);
 		const userText = input.text.trim();
 		const entry: A2ATaskLedgerEntry = {
 			...(existingIndex >= 0 ? ledger.tasks[existingIndex] : {}),
@@ -321,6 +328,7 @@ export async function recordA2ATaskStart(
 			...(trimString(input.cwd) ? { cwd: trimString(input.cwd) } : {}),
 			state: input.task.status.state,
 			...(metadata ? { metadata } : {}),
+			...(workGraph ? { workGraph } : {}),
 			transcript: [
 				{
 					at: now,
@@ -377,6 +385,8 @@ export async function recordA2ATaskReply(
 			...(previous?.metadata ?? {}),
 			...(input.metadata ?? {}),
 		});
+		const workGraph =
+			extractA2AWorkGraphMetadata(input.task) ?? previous?.workGraph;
 		const userText = input.text.trim();
 		const taskResponse = extractA2ATaskResponse(input.task);
 		const responseText = taskResponse?.text ?? previous?.responseText;
@@ -401,6 +411,7 @@ export async function recordA2ATaskReply(
 			state: input.task.status.state,
 			...(responseText ? { responseText } : {}),
 			...(metadata ? { metadata } : {}),
+			...(workGraph ? { workGraph } : {}),
 			transcript: [
 				...(previous?.transcript ?? []),
 				{
@@ -458,6 +469,8 @@ export async function updateA2ATaskInLedger(
 		const previous = ledger.tasks[index]!;
 		const taskResponse = extractA2ATaskResponse(input.task);
 		const responseText = taskResponse?.text ?? previous.responseText;
+		const workGraph =
+			extractA2AWorkGraphMetadata(input.task) ?? previous.workGraph;
 		const entry: A2ATaskLedgerEntry = {
 			...previous,
 			state: input.task.status.state,
@@ -465,6 +478,7 @@ export async function updateA2ATaskInLedger(
 				? { contextId: trimString(input.task.contextId) }
 				: {}),
 			...(responseText ? { responseText } : {}),
+			...(workGraph ? { workGraph } : {}),
 			updatedAt: now,
 			...(isFinalA2AState(input.task.status.state)
 				? { completedAt: previous.completedAt ?? now }
@@ -639,6 +653,10 @@ function normalizeLedgerEntry(
 	}
 	if (isRecord(input.metadata)) {
 		entry.metadata = cleanMetadata(input.metadata);
+	}
+	const workGraph = normalizeA2AWorkGraphMetadata(input.workGraph);
+	if (workGraph) {
+		entry.workGraph = workGraph;
 	}
 	return entry;
 }

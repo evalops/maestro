@@ -3373,7 +3373,8 @@ Add the required fields and retry.",
                         "",
                         "/a2a fleet",
                         "/a2a peers",
-                        "/a2a tasks [peer]",
+                        "/a2a tasks [peer] [--work-graph]",
+                        "/a2a coordinate [peer] [--reply <text>] [--work-graph]",
                         "/a2a accept <pairing-code>",
                         "/a2a delegate <peer> <text>",
                         "/a2a reply <peer> <task-id> <text>",
@@ -3396,10 +3397,47 @@ Add the required fields and retry.",
                         .to_string(),
                 );
             }
-            A2aAction::Tasks { peer } => {
+            A2aAction::Tasks {
+                peer,
+                include_work_graph,
+            } => {
                 let scope = peer.as_deref().unwrap_or("all peers");
+                let graph_hint = if include_work_graph {
+                    " with Platform work graph and Codex subagent summaries"
+                } else {
+                    ""
+                };
+                let graph_flag = if include_work_graph {
+                    " --work-graph"
+                } else {
+                    ""
+                };
                 self.state.add_system_message(format!(
-                    "A2A task ledger requested for {scope}. Run `maestro a2a tasks` for the current durable ledger until the Rust task reader is wired into this view."
+                    "A2A task ledger requested for {scope}{graph_hint}. Run `maestro a2a tasks{graph_flag}` for the current durable ledger until the Rust task reader is wired into this view."
+                ));
+            }
+            A2aAction::Coordinate {
+                peer,
+                reply,
+                include_work_graph,
+            } => {
+                let scope = peer.as_deref().unwrap_or("all peers");
+                let reply_hint = reply
+                    .as_ref()
+                    .map(|value| format!(" with a {} character reply", value.len()))
+                    .unwrap_or_default();
+                let graph_hint = if include_work_graph {
+                    " and Platform work graph context"
+                } else {
+                    ""
+                };
+                let graph_flag = if include_work_graph {
+                    " --work-graph"
+                } else {
+                    ""
+                };
+                self.state.add_system_message(format!(
+                    "A2A coordination requested for {scope}{reply_hint}{graph_hint}. Run `maestro a2a coordinate [peer] --reply <text> --wait{graph_flag}` while the Rust coordination controller is connected to the shared A2A client."
                 ));
             }
             A2aAction::Accept { code } => {

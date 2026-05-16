@@ -514,8 +514,42 @@ fn parse_a2a_action(raw: &str) -> Result<A2aAction, CommandError> {
         "fleet" => Ok(A2aAction::Fleet),
         "peers" | "list" => Ok(A2aAction::Peers),
         "tasks" => Ok(A2aAction::Tasks {
-            peer: tokens.get(1).cloned(),
+            peer: first_a2a_positional(&tokens, 1),
+            include_work_graph: has_a2a_flag(&tokens, "--work-graph"),
         }),
+        "coordinate" => {
+            let reply_index = tokens.iter().position(|value| value == "--reply");
+            let peer = first_a2a_positional(
+                reply_index
+                    .map(|index| &tokens[..index])
+                    .unwrap_or_else(|| tokens.as_slice()),
+                1,
+            );
+            let include_work_graph = has_a2a_flag(&tokens, "--work-graph");
+            let reply = reply_index.map(|index| {
+                tokens
+                    .get(index + 1..)
+                    .unwrap_or(&[])
+                    .iter()
+                    .take_while(|value| !value.starts_with("--"))
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            });
+            let reply = reply.and_then(|value| {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            });
+            Ok(A2aAction::Coordinate {
+                peer,
+                reply,
+                include_work_graph,
+            })
+        }
         "accept" => {
             let code = tokens
                 .get(1)
@@ -565,11 +599,44 @@ fn parse_a2a_action(raw: &str) -> Result<A2aAction, CommandError> {
                 text,
             })
         }
-        _ => Err(
-            CommandError::new(format!("Unknown A2A subcommand: {subcommand}"))
-                .with_hint("Usage: /a2a [fleet|peers|tasks|accept <code>|delegate <peer> <text>|reply <peer> <task-id> <text>|send <peer> <text>]"),
-        ),
+        _ => Err(CommandError::new(format!("Unknown A2A subcommand: {subcommand}")).with_hint(
+            "Usage: /a2a [fleet|peers|tasks [--work-graph]|coordinate [--work-graph]|accept <code>|delegate <peer> <text>|reply <peer> <task-id> <text>|send <peer> <text>]",
+        )),
     }
+}
+
+fn has_a2a_flag(tokens: &[String], flag: &str) -> bool {
+    tokens.iter().any(|value| value == flag)
+}
+
+fn first_a2a_positional(tokens: &[String], start: usize) -> Option<String> {
+    let mut index = start;
+    while index < tokens.len() {
+        let token = &tokens[index];
+        if token.starts_with("--") {
+            if a2a_value_flag(token) && !token.contains('=') {
+                index += 2;
+            } else {
+                index += 1;
+            }
+            continue;
+        }
+        return Some(token.clone());
+    }
+    None
+}
+
+fn a2a_value_flag(token: &str) -> bool {
+    matches!(
+        token,
+        "--registry"
+            | "--tasks"
+            | "--timeout-ms"
+            | "--interval-ms"
+            | "--max-wait-ms"
+            | "--role"
+            | "--cwd"
+    )
 }
 
 /// Build the default command registry with all built-in commands
@@ -796,7 +863,7 @@ pub fn build_command_registry() -> CommandRegistry {
                 )?)))
             }),
         )
-        .usage("/a2a [fleet|peers|tasks|accept <code>|delegate <peer> <text>|reply <peer> <task-id> <text>|send <peer> <text>]"),
+        .usage("/a2a [fleet|peers|tasks [--work-graph]|coordinate [--work-graph]|accept <code>|delegate <peer> <text>|reply <peer> <task-id> <text>|send <peer> <text>]"),
     );
 
     // Queue command
@@ -1996,6 +2063,12 @@ mod tests {
         assert!(registry.execute("/a2a fleet", "/tmp", None, None).is_ok());
         assert!(registry.execute("/a2a tasks", "/tmp", None, None).is_ok());
         assert!(registry
+            .execute("/a2a tasks --work-graph mac-mini", "/tmp", None, None)
+            .is_ok());
+        assert!(registry
+            .execute("/a2a coordinate", "/tmp", None, None)
+            .is_ok());
+        assert!(registry
             .execute(
                 "/a2a delegate mac-mini run workspace smoke",
                 "/tmp",
@@ -2010,6 +2083,20 @@ mod tests {
         {
             CommandOutput::Action(CommandAction::A2a(A2aAction::Peers)) => {}
             other => panic!("expected a2a peers action, got {other:?}"),
+        }
+
+        match registry
+            .execute("/a2a tasks --work-graph mac-mini", "/tmp", None, None)
+            .expect("a2a task work graph view should parse")
+        {
+            CommandOutput::Action(CommandAction::A2a(A2aAction::Tasks {
+                peer,
+                include_work_graph,
+            })) => {
+                assert_eq!(peer.as_deref(), Some("mac-mini"));
+                assert!(include_work_graph);
+            }
+            other => panic!("expected a2a tasks action, got {other:?}"),
         }
 
         match registry
@@ -2046,6 +2133,48 @@ mod tests {
                 assert_eq!(text, "use the short smoke");
             }
             other => panic!("expected a2a reply action, got {other:?}"),
+        }
+
+        match registry
+            .execute(
+                "/a2a coordinate mac-mini --work-graph --reply use the short smoke",
+                "/tmp",
+                None,
+                None,
+            )
+            .expect("a2a coordinate should parse")
+        {
+            CommandOutput::Action(CommandAction::A2a(A2aAction::Coordinate {
+                peer,
+                reply,
+                include_work_graph,
+            })) => {
+                assert_eq!(peer.as_deref(), Some("mac-mini"));
+                assert_eq!(reply.as_deref(), Some("use the short smoke"));
+                assert!(include_work_graph);
+            }
+            other => panic!("expected a2a coordinate action, got {other:?}"),
+        }
+
+        match registry
+            .execute(
+                "/a2a coordinate --work-graph mac-mini --reply use the short smoke",
+                "/tmp",
+                None,
+                None,
+            )
+            .expect("a2a coordinate should parse work-graph before peer")
+        {
+            CommandOutput::Action(CommandAction::A2a(A2aAction::Coordinate {
+                peer,
+                reply,
+                include_work_graph,
+            })) => {
+                assert_eq!(peer.as_deref(), Some("mac-mini"));
+                assert_eq!(reply.as_deref(), Some("use the short smoke"));
+                assert!(include_work_graph);
+            }
+            other => panic!("expected a2a coordinate action, got {other:?}"),
         }
 
         match registry

@@ -29,8 +29,8 @@ npm run check:codex-operating-layer
   parent/child work can be inspected, resumed, scored, and restored remotely.
   Spawned children also become Platform agent-registry delegations so ownership,
   routing capability, resolution, and evidence refs survive remote execution.
-  TS and Rust both normalize child run ids, and follow-up subagent tools link
-  back to the spawned child work item.
+  TS and Rust both normalize child run ids and persist subagent edge lifecycle
+  state, so spawn/send/resume/wait/close edges survive drain and restore.
 - Rust can expose the same Codex models through the control plane, bridge
   Codex headless runs, stream SSE/WebSocket events, handle approval requests,
   and preserve sandbox policy.
@@ -52,6 +52,7 @@ npm run check:codex-operating-layer
 | approvals and sandbox policy | `approvals-sandbox-policy` | `src/agent/transport.ts`, `test/agent/provider-transport-provider-tools.test.ts`, `packages/control-plane-rs/src/main.rs`, `docs/protocols/pending-requests.md` |
 | subagents | `subagents` | `src/agent/providers/codex-app-server.ts`, `test/agent/provider-transport-provider-tools.test.ts` |
 | multi-agent work graph | `multi-agent-workgraph` | `src/platform/agent-runtime-client.ts`, `src/platform/agent-registry-client.ts`, `src/agent/providers/codex-app-server.ts`, `packages/control-plane-rs/src/main.rs`, `src/server/hosted-agent-runtime-progress.ts`, `test/server/hosted-agent-runtime-progress.test.ts` |
+| remote runner continuity | `remote-runner-continuity` | `src/server/handlers/hosted-runner-drain.ts`, `packages/tui-rs/src/hosted_runner.rs`, `packages/tui-rs/src/headless/messages.rs`, `test/server/hosted-runner-drain.test.ts` |
 | realtime streaming | `realtime-streaming` | `src/server/handlers/runtime-app-server-ws.ts`, `test/server/runtime-app-server-ws.test.ts` |
 | TypeScript runtime | `typescript-runtime` | `src/agent/providers/codex-app-server.ts`, `test/agent/codex-app-server.test.ts` |
 | Rust runtime | `rust-control-plane` | `packages/control-plane-rs/src/model_catalog.rs`, `packages/control-plane-rs/src/main.rs` |
@@ -71,8 +72,8 @@ npm run check:codex-parity
 Use the runtime gate before merging changes that affect Codex execution:
 
 ```bash
-npm test -- test/agent/codex-app-server.test.ts test/agent/provider-transport-provider-tools.test.ts test/codex/app-server-client.test.ts test/codex/compatibility.test.ts test/cli/codex-command.test.ts test/scripts/codex-operating-layer-conformance.test.ts test/scripts/codex-parity-conformance.test.ts test/server/runtime-app-server-ws.test.ts test/headless/runtime-conformance.test.ts
-cargo test codex_ --no-default-features
+npm test -- test/agent/codex-app-server.test.ts test/agent/provider-transport-provider-tools.test.ts test/codex/app-server-client.test.ts test/codex/compatibility.test.ts test/cli/codex-command.test.ts test/scripts/codex-operating-layer-conformance.test.ts test/scripts/codex-parity-conformance.test.ts test/server/runtime-app-server-ws.test.ts test/server/hosted-runner-drain.test.ts test/headless/runtime-conformance.test.ts
+npm run tui-rs:test -- hosted_runner
 npm run smoke:codex-app-server-live
 ```
 
@@ -83,7 +84,9 @@ temporary workspace, and enforces bounded dynamic tool calls with
 `MAESTRO_CODEX_LIVE_SMOKE_MAX_TOTAL_TOOL_CALLS` and
 `MAESTRO_CODEX_LIVE_SMOKE_MAX_IDENTICAL_TOOL_CALLS`. It also runs real Codex
 subagent spawn/wait inference and requires `codexWorkGraph` evidence on both
-`codex.subagent.spawnAgent` and `codex.subagent.wait`.
+`codex.subagent.spawnAgent` and `codex.subagent.wait`; the remote-runner drain
+tests then require lifecycle-edge continuity for spawn/send/resume/wait/close
+without copying child prompts into manifest metadata.
 
 ## Completion Bar
 

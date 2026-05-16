@@ -25,10 +25,12 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::headless::messages::{
-    ApprovalMode, ClientCapabilities, ClientInfo, ConnectionRole, ConnectionState,
-    FromAgentMessage, InitConfig, ServerRequestType, ThinkingLevel, ToAgentMessage,
-    UtilityCommandShellMode, UtilityCommandStream, UtilityCommandTerminalMode,
-    UtilityFileSearchMatch, UtilityOperation, HEADLESS_PROTOCOL_VERSION,
+    active_codex_subagent_status, codex_subagent_child_runs, codex_subagent_edge_key,
+    codex_subagent_operation, codex_subagent_status_is_terminal, ApprovalMode, ClientCapabilities,
+    ClientInfo, CodexSubagentContinuityEdge, ConnectionRole, ConnectionState, FromAgentMessage,
+    InitConfig, ServerRequestType, ThinkingLevel, ToAgentMessage, UtilityCommandShellMode,
+    UtilityCommandStream, UtilityCommandTerminalMode, UtilityFileSearchMatch, UtilityOperation,
+    CODEX_SUBAGENT_TOOL_PREFIX, CODEX_SUBAGENT_WORK_GRAPH_SCHEMA, HEADLESS_PROTOCOL_VERSION,
 };
 use crate::headless::{AgentState, AgentSupervisor, AsyncTransportError};
 
@@ -47,9 +49,6 @@ const DEFAULT_LISTEN_PORT: u16 = 8080;
 const DEFAULT_HEARTBEAT_INTERVAL_MS: u64 = 15_000;
 const CONNECTION_IDLE_MS: i64 = (DEFAULT_HEARTBEAT_INTERVAL_MS as i64) * 3;
 const MAX_EVENTS: usize = 1024;
-const CODEX_SUBAGENT_TOOL_PREFIX: &str = "codex.subagent.";
-const CODEX_SUBAGENT_WORK_GRAPH_SCHEMA: &str = "evalops.maestro.codex.subagent-workgraph.v1";
-
 #[derive(Debug, Clone)]
 pub struct HostedRunnerConfig {
     pub runner_session_id: String,
@@ -549,6 +548,8 @@ struct RuntimeStateSnapshot {
     pending_tool_retries: Vec<serde_json::Value>,
     tracked_tools: Vec<serde_json::Value>,
     active_tools: Vec<serde_json::Value>,
+    #[serde(default)]
+    codex_subagent_edges: Vec<CodexSubagentContinuityEdge>,
     active_utility_commands: Vec<ActiveUtilityCommandSnapshot>,
     active_file_watches: Vec<ActiveFileWatchSnapshot>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -622,6 +623,8 @@ struct WorkContinuityManifest {
     codex_subagent_tool_call_ids: Vec<String>,
     codex_subagent_child_run_ids: Vec<String>,
     codex_subagent_thread_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    codex_subagent_edges: Vec<CodexSubagentContinuityEdge>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -672,16 +675,85 @@ fn default_retention_policy_manifest() -> RetentionPolicyManifest {
     }
 }
 
+fn add_codex_subagent_edge(
+    edges: &mut BTreeSet<CodexSubagentContinuityEdge>,
+    edge: CodexSubagentContinuityEdge,
+) {
+    let key = codex_subagent_edge_key(&edge);
+    edges.retain(|existing| codex_subagent_edge_key(existing) != key);
+    edges.insert(edge);
+}
+
+fn collect_codex_subagent_edges_from_source(
+    source: &serde_json::Value,
+    edges: &mut BTreeSet<CodexSubagentContinuityEdge>,
+) {
+    let tool = json_string_field(source, &["tool"]).unwrap_or_default();
+    let Some(operation) = codex_subagent_operation(&tool) else {
+        return;
+    };
+    let call_id = json_string_field(source, &["call_id", "callId", "tool_call_id", "toolCallId"])
+        .unwrap_or_default();
+    if call_id.is_empty() {
+        return;
+    }
+    let child_runs = codex_subagent_child_runs(source.get("args"));
+    if child_runs.is_empty() {
+        add_codex_subagent_edge(
+            edges,
+            CodexSubagentContinuityEdge {
+                spawn_tool_call_id: (operation == "spawn_agent").then(|| call_id.clone()),
+                wait_tool_call_id: (operation != "spawn_agent").then(|| call_id.clone()),
+                child_run_id: None,
+                thread_id: None,
+                operation: operation.to_string(),
+                status: active_codex_subagent_status(operation).to_string(),
+            },
+        );
+        return;
+    }
+    for (child_run_id, thread_id) in child_runs {
+        add_codex_subagent_edge(
+            edges,
+            CodexSubagentContinuityEdge {
+                spawn_tool_call_id: (operation == "spawn_agent").then(|| call_id.clone()),
+                wait_tool_call_id: (operation != "spawn_agent").then(|| call_id.clone()),
+                child_run_id,
+                thread_id,
+                operation: operation.to_string(),
+                status: active_codex_subagent_status(operation).to_string(),
+            },
+        );
+    }
+}
+
 fn default_work_continuity_manifest(snapshot: &RuntimeSnapshot) -> WorkContinuityManifest {
     let state = &snapshot.state;
     let mut tool_call_ids = BTreeSet::new();
     let mut child_run_ids = BTreeSet::new();
     let mut thread_ids = BTreeSet::new();
+    let mut codex_subagent_edges = BTreeSet::new();
+    let mut codex_tracked_source_call_ids = BTreeSet::new();
     let pending_request_count = state.pending_approvals.len()
         + state.pending_client_tools.len()
         + state.pending_mcp_elicitations.len()
         + state.pending_user_inputs.len()
         + state.pending_tool_retries.len();
+    for edge in &state.codex_subagent_edges {
+        if let Some(call_id) = edge.spawn_tool_call_id.as_ref() {
+            tool_call_ids.insert(call_id.clone());
+        }
+        if let Some(call_id) = edge.wait_tool_call_id.as_ref() {
+            tool_call_ids.insert(call_id.clone());
+        }
+        if let Some(child_run_id) = edge.child_run_id.as_ref() {
+            child_run_ids.insert(child_run_id.clone());
+        }
+        if let Some(thread_id) = edge.thread_id.as_ref() {
+            thread_ids.insert(thread_id.clone());
+        }
+        add_codex_subagent_edge(&mut codex_subagent_edges, edge.clone());
+    }
     for source in state
         .tracked_tools
         .iter()
@@ -703,8 +775,10 @@ fn default_work_continuity_manifest(snapshot: &RuntimeSnapshot) -> WorkContinuit
             if let Some(call_id) =
                 json_string_field(source, &["call_id", "callId", "tool_call_id", "toolCallId"])
             {
+                codex_tracked_source_call_ids.insert(call_id.clone());
                 tool_call_ids.insert(call_id);
             }
+            collect_codex_subagent_edges_from_source(source, &mut codex_subagent_edges);
         }
     }
     for active_tool in &state.active_tools {
@@ -714,18 +788,59 @@ fn default_work_continuity_manifest(snapshot: &RuntimeSnapshot) -> WorkContinuit
                 active_tool,
                 &["call_id", "callId", "tool_call_id", "toolCallId"],
             ) {
+                let has_tracked_source = tool_call_ids.contains(&call_id);
                 tool_call_ids.insert(call_id);
+                if !has_tracked_source {
+                    collect_codex_subagent_edges_from_source(
+                        active_tool,
+                        &mut codex_subagent_edges,
+                    );
+                }
             }
         }
     }
+    let codex_subagent_edges = codex_subagent_edges.into_iter().collect::<Vec<_>>();
+    let active_codex_subagent_edge_count = codex_subagent_edges
+        .iter()
+        .filter(|edge| !codex_subagent_status_is_terminal(&edge.status))
+        .count();
+    let non_codex_active_tool_count = state
+        .active_tools
+        .iter()
+        .filter(|tool| {
+            !json_string_field(tool, &["tool"])
+                .unwrap_or_default()
+                .starts_with(CODEX_SUBAGENT_TOOL_PREFIX)
+        })
+        .count();
+    let non_codex_tracked_tool_count = state
+        .tracked_tools
+        .iter()
+        .filter(|tool| {
+            !json_string_field(tool, &["call_id", "callId", "tool_call_id", "toolCallId"])
+                .is_some_and(|call_id| codex_tracked_source_call_ids.contains(&call_id))
+        })
+        .count();
+    let tracked_codex_subagent_count = tool_call_ids.len().max(codex_subagent_edges.len());
+    let active_tool_count = if codex_subagent_edges.is_empty() {
+        state.active_tools.len()
+    } else {
+        non_codex_active_tool_count + active_codex_subagent_edge_count
+    };
+    let tracked_tool_count = if codex_subagent_edges.is_empty() {
+        state.tracked_tools.len()
+    } else {
+        non_codex_tracked_tool_count + tracked_codex_subagent_count
+    };
     WorkContinuityManifest {
         protocol_version: HOSTED_RUNNER_WORK_CONTINUITY_VERSION.to_string(),
-        active_tool_count: state.active_tools.len(),
-        tracked_tool_count: state.tracked_tools.len(),
+        active_tool_count,
+        tracked_tool_count,
         pending_request_count,
         codex_subagent_tool_call_ids: tool_call_ids.into_iter().collect(),
         codex_subagent_child_run_ids: child_run_ids.into_iter().collect(),
         codex_subagent_thread_ids: thread_ids.into_iter().collect(),
+        codex_subagent_edges,
     }
 }
 
@@ -1532,6 +1647,10 @@ impl SharedRunner {
                             .collect()
                     })
                     .or_else(|| restored_state.map(|state| state.active_tools.clone()))
+                    .unwrap_or_default(),
+                codex_subagent_edges: agent_state
+                    .map(|state| state.codex_subagent_edges.clone())
+                    .or_else(|| restored_state.map(|state| state.codex_subagent_edges.clone()))
                     .unwrap_or_default(),
                 active_utility_commands: state.active_utility_commands.values().cloned().collect(),
                 active_file_watches: state.active_file_watches.values().cloned().collect(),
@@ -4207,6 +4326,60 @@ mod tests {
     }
 
     #[test]
+    fn runtime_state_snapshot_serializes_empty_codex_subagent_edges() {
+        let snapshot = RuntimeSnapshot {
+            protocol_version: HEADLESS_PROTOCOL_VERSION.to_string(),
+            session_id: "session_empty_edges".to_string(),
+            cursor: 0,
+            last_init: None,
+            state: RuntimeStateSnapshot {
+                protocol_version: Some(HEADLESS_PROTOCOL_VERSION.to_string()),
+                client_protocol_version: None,
+                client_info: None,
+                capabilities: None,
+                opt_out_notifications: None,
+                connection_role: None,
+                connection_count: 0,
+                subscriber_count: 0,
+                controller_subscription_id: None,
+                controller_connection_id: None,
+                connections: Vec::new(),
+                model: Some("gpt-5.4".to_string()),
+                provider: Some("rust".to_string()),
+                session_id: Some("session_empty_edges".to_string()),
+                cwd: None,
+                git_branch: None,
+                current_response: None,
+                pending_approvals: Vec::new(),
+                pending_client_tools: Vec::new(),
+                pending_mcp_elicitations: Vec::new(),
+                pending_user_inputs: Vec::new(),
+                pending_tool_retries: Vec::new(),
+                tracked_tools: Vec::new(),
+                active_tools: Vec::new(),
+                codex_subagent_edges: Vec::new(),
+                active_utility_commands: Vec::new(),
+                active_file_watches: Vec::new(),
+                last_error: None,
+                last_error_type: None,
+                last_status: Some("Ready".to_string()),
+                last_response_duration_ms: None,
+                last_ttft_ms: None,
+                is_ready: true,
+                is_responding: false,
+            },
+        };
+
+        let value = serde_json::to_value(&snapshot).expect("snapshot json");
+        let empty_edges = json!([]);
+
+        assert_eq!(
+            value.pointer("/state/codex_subagent_edges"),
+            Some(&empty_edges)
+        );
+    }
+
+    #[test]
     fn work_continuity_manifest_extracts_codex_subagent_ids() {
         let snapshot: RuntimeSnapshot = serde_json::from_value(json!({
             "protocolVersion": HEADLESS_PROTOCOL_VERSION,
@@ -4281,8 +4454,226 @@ mod tests {
             continuity.codex_subagent_thread_ids,
             vec!["child-thread-rust".to_string()]
         );
+        assert_eq!(
+            continuity.codex_subagent_edges,
+            vec![CodexSubagentContinuityEdge {
+                spawn_tool_call_id: Some("collab-spawn-rust".to_string()),
+                wait_tool_call_id: None,
+                child_run_id: Some("agent-run-child-rust".to_string()),
+                thread_id: Some("child-thread-rust".to_string()),
+                operation: "spawn_agent".to_string(),
+                status: "waiting_for_restore".to_string(),
+            }]
+        );
         let continuity_json = serde_json::to_string(&continuity).expect("continuity json");
         assert!(!continuity_json.contains("Sensitive Rust subagent prompt"));
+    }
+
+    #[test]
+    fn work_continuity_manifest_preserves_restored_codex_subagent_edges() {
+        let snapshot: RuntimeSnapshot = serde_json::from_value(json!({
+            "protocolVersion": HEADLESS_PROTOCOL_VERSION,
+            "session_id": "session_rust_restored",
+            "cursor": 10,
+            "last_init": null,
+            "state": {
+                "protocol_version": HEADLESS_PROTOCOL_VERSION,
+                "connection_count": 0,
+                "subscriber_count": 0,
+                "connections": [],
+                "model": "gpt-5.4",
+                "provider": "rust",
+                "session_id": "session_rust_restored",
+                "pending_approvals": [],
+                "pending_client_tools": [],
+                "pending_mcp_elicitations": [],
+                "pending_user_inputs": [],
+                "pending_tool_retries": [],
+                "tracked_tools": [],
+                "active_tools": [],
+                "codex_subagent_edges": [
+                    {
+                        "spawn_tool_call_id": "collab-spawn-rust-restored",
+                        "child_run_id": "agent-run-child-rust-restored",
+                        "thread_id": "child-thread-rust-restored",
+                        "operation": "spawn_agent",
+                        "status": "completed"
+                    },
+                    {
+                        "wait_tool_call_id": "collab-close-rust-restored",
+                        "child_run_id": "agent-run-child-rust-restored",
+                        "thread_id": "child-thread-rust-restored",
+                        "operation": "close_agent",
+                        "status": "closed"
+                    }
+                ],
+                "active_utility_commands": [],
+                "active_file_watches": [],
+                "is_ready": true,
+                "is_responding": false
+            }
+        }))
+        .expect("runtime snapshot");
+
+        let continuity = default_work_continuity_manifest(&snapshot);
+
+        assert_eq!(continuity.active_tool_count, 0);
+        assert_eq!(continuity.tracked_tool_count, 2);
+        assert_eq!(continuity.pending_request_count, 0);
+        assert_eq!(
+            continuity.codex_subagent_tool_call_ids,
+            vec![
+                "collab-close-rust-restored".to_string(),
+                "collab-spawn-rust-restored".to_string(),
+            ]
+        );
+        assert_eq!(
+            continuity.codex_subagent_child_run_ids,
+            vec!["agent-run-child-rust-restored".to_string()]
+        );
+        assert_eq!(
+            continuity.codex_subagent_thread_ids,
+            vec!["child-thread-rust-restored".to_string()]
+        );
+        assert_eq!(
+            continuity.codex_subagent_edges,
+            vec![
+                CodexSubagentContinuityEdge {
+                    spawn_tool_call_id: None,
+                    wait_tool_call_id: Some("collab-close-rust-restored".to_string()),
+                    child_run_id: Some("agent-run-child-rust-restored".to_string()),
+                    thread_id: Some("child-thread-rust-restored".to_string()),
+                    operation: "close_agent".to_string(),
+                    status: "closed".to_string(),
+                },
+                CodexSubagentContinuityEdge {
+                    spawn_tool_call_id: Some("collab-spawn-rust-restored".to_string()),
+                    wait_tool_call_id: None,
+                    child_run_id: Some("agent-run-child-rust-restored".to_string()),
+                    thread_id: Some("child-thread-rust-restored".to_string()),
+                    operation: "spawn_agent".to_string(),
+                    status: "completed".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn work_continuity_manifest_counts_mixed_codex_and_regular_tools() {
+        let snapshot: RuntimeSnapshot = serde_json::from_value(json!({
+            "protocolVersion": HEADLESS_PROTOCOL_VERSION,
+            "session_id": "session_rust_mixed",
+            "cursor": 11,
+            "last_init": null,
+            "state": {
+                "protocol_version": HEADLESS_PROTOCOL_VERSION,
+                "connection_count": 0,
+                "subscriber_count": 0,
+                "connections": [],
+                "model": "gpt-5.4",
+                "provider": "rust",
+                "session_id": "session_rust_mixed",
+                "pending_approvals": [],
+                "pending_client_tools": [],
+                "pending_mcp_elicitations": [],
+                "pending_user_inputs": [],
+                "pending_tool_retries": [],
+                "tracked_tools": [{
+                    "call_id": "regular-tracked-rust",
+                    "tool": "shell.exec",
+                    "args": {
+                        "command": "pwd"
+                    }
+                }],
+                "active_tools": [{
+                    "call_id": "regular-active-rust",
+                    "tool": "shell.exec",
+                    "output": "running"
+                }],
+                "codex_subagent_edges": [
+                    {
+                        "spawn_tool_call_id": "collab-spawn-mixed",
+                        "child_run_id": "agent-run-child-mixed",
+                        "thread_id": "child-thread-mixed",
+                        "operation": "spawn_agent",
+                        "status": "completed"
+                    },
+                    {
+                        "wait_tool_call_id": "collab-wait-mixed",
+                        "child_run_id": "agent-run-child-mixed",
+                        "thread_id": "child-thread-mixed",
+                        "operation": "wait_agent",
+                        "status": "wait_pending"
+                    }
+                ],
+                "active_utility_commands": [],
+                "active_file_watches": [],
+                "is_ready": true,
+                "is_responding": false
+            }
+        }))
+        .expect("runtime snapshot");
+
+        let continuity = default_work_continuity_manifest(&snapshot);
+
+        assert_eq!(continuity.active_tool_count, 2);
+        assert_eq!(continuity.tracked_tool_count, 3);
+        assert_eq!(
+            continuity.codex_subagent_tool_call_ids,
+            vec![
+                "collab-spawn-mixed".to_string(),
+                "collab-wait-mixed".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn work_continuity_manifest_treats_acknowledged_send_input_as_terminal() {
+        let snapshot: RuntimeSnapshot = serde_json::from_value(json!({
+            "protocolVersion": HEADLESS_PROTOCOL_VERSION,
+            "session_id": "session_rust_acknowledged",
+            "cursor": 12,
+            "last_init": null,
+            "state": {
+                "protocol_version": HEADLESS_PROTOCOL_VERSION,
+                "connection_count": 0,
+                "subscriber_count": 0,
+                "connections": [],
+                "model": "gpt-5.4",
+                "provider": "rust",
+                "session_id": "session_rust_acknowledged",
+                "pending_approvals": [],
+                "pending_client_tools": [],
+                "pending_mcp_elicitations": [],
+                "pending_user_inputs": [],
+                "pending_tool_retries": [],
+                "tracked_tools": [],
+                "active_tools": [],
+                "codex_subagent_edges": [
+                    {
+                        "wait_tool_call_id": "collab-send-ack",
+                        "child_run_id": "agent-run-child-ack",
+                        "thread_id": "child-thread-ack",
+                        "operation": "send_input",
+                        "status": "acknowledged"
+                    }
+                ],
+                "active_utility_commands": [],
+                "active_file_watches": [],
+                "is_ready": true,
+                "is_responding": false
+            }
+        }))
+        .expect("runtime snapshot");
+
+        let continuity = default_work_continuity_manifest(&snapshot);
+
+        assert_eq!(continuity.active_tool_count, 0);
+        assert_eq!(continuity.tracked_tool_count, 1);
+        assert_eq!(
+            continuity.codex_subagent_tool_call_ids,
+            vec!["collab-send-ack".to_string()]
+        );
     }
 
     #[tokio::test]

@@ -93,6 +93,10 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+pub(crate) const CODEX_SUBAGENT_TOOL_PREFIX: &str = "codex.subagent.";
+pub(crate) const CODEX_SUBAGENT_WORK_GRAPH_SCHEMA: &str =
+    "evalops.maestro.codex.subagent-workgraph.v1";
+
 /// Current headless protocol version shared with the TypeScript runtime.
 pub use super::generated_protocol::HEADLESS_PROTOCOL_VERSION;
 
@@ -914,6 +918,8 @@ pub struct AgentState {
     pub active_file_watches: HashMap<String, ActiveFileWatch>,
     /// Tracks tool metadata until a tool run completes, even when approval is not required.
     pub tracked_tools: HashMap<String, PendingApproval>,
+    /// Durable Codex app-server subagent edge metadata for restore/drain continuity.
+    pub codex_subagent_edges: Vec<CodexSubagentContinuityEdge>,
     /// Last error message
     pub last_error: Option<String>,
     /// Last structured error type
@@ -985,6 +991,21 @@ pub struct PendingApproval {
     pub started_at_ms: Option<u64>,
 }
 
+/// Durable edge metadata for Codex app-server subagent tools.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CodexSubagentContinuityEdge {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawn_tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    pub operation: String,
+    pub status: String,
+}
+
 /// A tool currently executing
 #[derive(Debug, Clone, PartialEq)]
 pub struct ActiveTool {
@@ -1020,7 +1041,287 @@ pub struct ActiveFileWatch {
     pub owner_connection_id: Option<String>,
 }
 
+pub(crate) fn codex_subagent_operation(tool: &str) -> Option<&'static str> {
+    let suffix = tool
+        .strip_prefix(CODEX_SUBAGENT_TOOL_PREFIX)
+        .unwrap_or(tool);
+    match suffix {
+        "spawnAgent" | "spawn_agent" => Some("spawn_agent"),
+        "sendInput" | "send_input" => Some("send_input"),
+        "resumeAgent" | "resume_agent" => Some("resume_agent"),
+        "wait" | "waitAgent" | "wait_agent" => Some("wait_agent"),
+        "closeAgent" | "close_agent" => Some("close_agent"),
+        _ => None,
+    }
+}
+
+pub(crate) fn active_codex_subagent_status(operation: &str) -> &'static str {
+    match operation {
+        "send_input" => "waiting_for_input_ack",
+        "wait_agent" => "wait_pending",
+        "close_agent" => "waiting_for_close",
+        "resume_agent" => "restoring",
+        _ => "waiting_for_restore",
+    }
+}
+
+fn terminal_codex_subagent_status(operation: &str, success: bool) -> &'static str {
+    if !success {
+        return "failed";
+    }
+    match operation {
+        "spawn_agent" => "spawned",
+        "send_input" => "acknowledged",
+        "resume_agent" => "resumed",
+        "close_agent" => "closed",
+        _ => "completed",
+    }
+}
+
+pub(crate) fn codex_subagent_status_is_terminal(status: &str) -> bool {
+    let normalized = status
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .map(|ch| if ch == '-' || ch == ' ' { '_' } else { ch })
+        .collect::<String>();
+    matches!(
+        normalized.as_str(),
+        "closed"
+            | "explicitly_closed"
+            | "succeeded"
+            | "success"
+            | "completed"
+            | "complete"
+            | "done"
+            | "acknowledged"
+            | "failed"
+            | "failure"
+            | "error"
+            | "cancelled"
+            | "canceled"
+    )
+}
+
+pub(crate) fn json_string_from_object(
+    object: &serde_json::Map<String, serde_json::Value>,
+    keys: &[&str],
+) -> Option<String> {
+    keys.iter().find_map(|key| {
+        object
+            .get(*key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+    })
+}
+
+pub(crate) fn json_string_array_from_object(
+    object: &serde_json::Map<String, serde_json::Value>,
+    keys: &[&str],
+) -> Vec<String> {
+    keys.iter()
+        .find_map(|key| object.get(*key).and_then(serde_json::Value::as_array))
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn has_codex_work_graph(args: Option<&serde_json::Value>) -> bool {
+    let Some(args) = args.and_then(serde_json::Value::as_object) else {
+        return false;
+    };
+    let Some(graph) = args
+        .get("codexWorkGraph")
+        .or_else(|| args.get("codex_work_graph"))
+        .and_then(serde_json::Value::as_object)
+    else {
+        return false;
+    };
+    json_string_from_object(graph, &["schemaVersion", "schema_version"]).as_deref()
+        == Some(CODEX_SUBAGENT_WORK_GRAPH_SCHEMA)
+}
+
+pub(crate) fn codex_subagent_child_runs(
+    args: Option<&serde_json::Value>,
+) -> Vec<(Option<String>, Option<String>)> {
+    let Some(args) = args.and_then(serde_json::Value::as_object) else {
+        return Vec::new();
+    };
+    let child_run_ids = json_string_array_from_object(args, &["childRunIds", "child_run_ids"]);
+    let thread_ids =
+        json_string_array_from_object(args, &["receiverThreadIds", "receiver_thread_ids"]);
+    let graph = args
+        .get("codexWorkGraph")
+        .or_else(|| args.get("codex_work_graph"));
+    let mut graph_runs = Vec::new();
+    if let Some(graph) = graph.and_then(serde_json::Value::as_object) {
+        if let Some(child_runs) = graph
+            .get("childRuns")
+            .or_else(|| graph.get("child_runs"))
+            .and_then(serde_json::Value::as_array)
+        {
+            for child_run in child_runs {
+                let Some(child_run) = child_run.as_object() else {
+                    continue;
+                };
+                graph_runs.push((
+                    json_string_from_object(child_run, &["childRunId", "child_run_id"]),
+                    json_string_from_object(child_run, &["threadId", "thread_id"]),
+                ));
+            }
+        }
+    }
+    let count = child_run_ids
+        .len()
+        .max(thread_ids.len())
+        .max(graph_runs.len())
+        .max(1);
+    let mut runs = Vec::new();
+    for index in 0..count {
+        let child_run_id = child_run_ids
+            .get(index)
+            .cloned()
+            .or_else(|| graph_runs.get(index).and_then(|run| run.0.clone()));
+        let thread_id = thread_ids
+            .get(index)
+            .cloned()
+            .or_else(|| graph_runs.get(index).and_then(|run| run.1.clone()));
+        if child_run_id.is_some() || thread_id.is_some() {
+            runs.push((child_run_id, thread_id));
+        }
+    }
+    runs
+}
+
+pub(crate) fn codex_subagent_edge_key(edge: &CodexSubagentContinuityEdge) -> String {
+    [
+        edge.spawn_tool_call_id.as_deref().unwrap_or_default(),
+        edge.wait_tool_call_id.as_deref().unwrap_or_default(),
+        edge.child_run_id.as_deref().unwrap_or_default(),
+        edge.thread_id.as_deref().unwrap_or_default(),
+        edge.operation.as_str(),
+    ]
+    .join("\0")
+}
+
 impl AgentState {
+    fn upsert_codex_subagent_edges(
+        &mut self,
+        call_id: &str,
+        tool: &str,
+        args: Option<&serde_json::Value>,
+        status: &str,
+    ) {
+        let Some(operation) = codex_subagent_operation(tool) else {
+            return;
+        };
+        if !tool.starts_with(CODEX_SUBAGENT_TOOL_PREFIX) && !has_codex_work_graph(args) {
+            return;
+        }
+        let child_runs = codex_subagent_child_runs(args);
+        let mut edges = Vec::new();
+        if child_runs.is_empty() {
+            edges.push(CodexSubagentContinuityEdge {
+                spawn_tool_call_id: (operation == "spawn_agent").then(|| call_id.to_string()),
+                wait_tool_call_id: (operation != "spawn_agent").then(|| call_id.to_string()),
+                child_run_id: None,
+                thread_id: None,
+                operation: operation.to_string(),
+                status: status.to_string(),
+            });
+        } else {
+            for (child_run_id, thread_id) in child_runs {
+                edges.push(CodexSubagentContinuityEdge {
+                    spawn_tool_call_id: (operation == "spawn_agent").then(|| call_id.to_string()),
+                    wait_tool_call_id: (operation != "spawn_agent").then(|| call_id.to_string()),
+                    child_run_id,
+                    thread_id,
+                    operation: operation.to_string(),
+                    status: status.to_string(),
+                });
+            }
+        }
+
+        let mut existing = self
+            .codex_subagent_edges
+            .iter()
+            .cloned()
+            .map(|edge| (codex_subagent_edge_key(&edge), edge))
+            .collect::<HashMap<_, _>>();
+        for edge in &edges {
+            existing.insert(codex_subagent_edge_key(edge), edge.clone());
+        }
+        if matches!(status, "closed" | "completed")
+            && matches!(operation, "close_agent" | "wait_agent")
+        {
+            for edge in existing.values_mut() {
+                if edge.operation == operation || codex_subagent_status_is_terminal(&edge.status) {
+                    continue;
+                }
+                let same_child = edge.child_run_id.as_ref().is_some_and(|child_run_id| {
+                    edges
+                        .iter()
+                        .any(|closed_edge| closed_edge.child_run_id.as_ref() == Some(child_run_id))
+                }) || edge.thread_id.as_ref().is_some_and(|thread_id| {
+                    edges
+                        .iter()
+                        .any(|closed_edge| closed_edge.thread_id.as_ref() == Some(thread_id))
+                });
+                if same_child {
+                    edge.status = "completed".to_string();
+                }
+            }
+        }
+        let mut sorted_edges = existing.into_values().collect::<Vec<_>>();
+        sorted_edges.sort_by(|left, right| {
+            codex_subagent_edge_key(left).cmp(&codex_subagent_edge_key(right))
+        });
+        self.codex_subagent_edges = sorted_edges;
+    }
+
+    fn mark_codex_subagent_edges_failed_for_call(&mut self, call_id: &str) {
+        if call_id.is_empty() {
+            return;
+        }
+        let mut changed = false;
+        for edge in &mut self.codex_subagent_edges {
+            let matches = edge.spawn_tool_call_id.as_deref() == Some(call_id)
+                || edge.wait_tool_call_id.as_deref() == Some(call_id);
+            if matches && !codex_subagent_status_is_terminal(&edge.status) {
+                edge.status = "failed".to_string();
+                changed = true;
+            }
+        }
+        if changed {
+            self.codex_subagent_edges.sort_by(|left, right| {
+                codex_subagent_edge_key(left).cmp(&codex_subagent_edge_key(right))
+            });
+        }
+    }
+
+    fn fail_codex_subagent_edge(&mut self, call_id: &str) {
+        if let Some(source) = self.tracked_tools.get(call_id).cloned() {
+            if let Some(operation) = codex_subagent_operation(&source.tool) {
+                self.upsert_codex_subagent_edges(
+                    call_id,
+                    &source.tool,
+                    Some(&source.args),
+                    terminal_codex_subagent_status(operation, false),
+                );
+            }
+        }
+        self.mark_codex_subagent_edges_failed_for_call(call_id);
+    }
+
     /// Clear volatile runtime activity that can become stale across transport gaps.
     pub fn clear_transient_progress(&mut self) {
         self.current_response = None;
@@ -1098,6 +1399,9 @@ impl AgentState {
             ToAgentMessage::ToolResponse {
                 call_id, approved, ..
             } => {
+                if !approved {
+                    self.fail_codex_subagent_edge(call_id);
+                }
                 let _ = self.remove_pending_approval(call_id);
                 if !approved {
                     self.tracked_tools.remove(call_id);
@@ -1114,9 +1418,19 @@ impl AgentState {
                 ..
             } => match request_type {
                 ServerRequestType::Approval => {
+                    let call_id = self
+                        .pending_approvals
+                        .iter()
+                        .find(|p| pending_request_matches(p, request_id))
+                        .map(|p| p.call_id.clone())
+                        .unwrap_or_else(|| request_id.clone());
+                    if approved != &Some(true) {
+                        self.fail_codex_subagent_edge(&call_id);
+                    }
                     self.pending_approvals
                         .retain(|p| !pending_request_matches(p, request_id));
                     if approved != &Some(true) {
+                        self.tracked_tools.remove(&call_id);
                         self.tracked_tools.remove(request_id);
                     }
                 }
@@ -1385,6 +1699,14 @@ impl AgentState {
                         started_at_ms: None,
                     },
                 );
+                if let Some(operation) = codex_subagent_operation(&tool) {
+                    self.upsert_codex_subagent_edges(
+                        &call_id,
+                        &tool,
+                        Some(&args),
+                        active_codex_subagent_status(operation),
+                    );
+                }
                 if requires_approval {
                     self.pending_approvals.push(PendingApproval {
                         call_id: call_id.clone(),
@@ -1433,8 +1755,27 @@ impl AgentState {
             }
 
             FromAgentMessage::ToolEnd { call_id, success } => {
-                let tool = self.active_tools.remove(&call_id);
-                self.tracked_tools.remove(&call_id);
+                let active_tool = self.active_tools.remove(&call_id);
+                let tracked_tool = self.tracked_tools.remove(&call_id);
+                if let Some(source) = tracked_tool.as_ref() {
+                    if let Some(operation) = codex_subagent_operation(&source.tool) {
+                        self.upsert_codex_subagent_edges(
+                            &call_id,
+                            &source.tool,
+                            Some(&source.args),
+                            terminal_codex_subagent_status(operation, success),
+                        );
+                    }
+                } else if let Some(source) = active_tool.as_ref() {
+                    if let Some(operation) = codex_subagent_operation(&source.tool) {
+                        self.upsert_codex_subagent_edges(
+                            &call_id,
+                            &source.tool,
+                            None,
+                            terminal_codex_subagent_status(operation, success),
+                        );
+                    }
+                }
                 self.pending_approvals.retain(|p| p.call_id != call_id);
                 self.pending_client_tools.retain(|p| p.call_id != call_id);
                 self.pending_user_inputs.retain(|p| p.call_id != call_id);
@@ -1442,7 +1783,7 @@ impl AgentState {
                 Some(AgentEvent::ToolEnd {
                     call_id,
                     success,
-                    duration: tool.map(|t| t.started.elapsed()),
+                    duration: active_tool.map(|t| t.started.elapsed()),
                 })
             }
 
@@ -1461,6 +1802,14 @@ impl AgentState {
                         started_at_ms: None,
                     },
                 );
+                if let Some(operation) = codex_subagent_operation(&tool) {
+                    self.upsert_codex_subagent_edges(
+                        &call_id,
+                        &tool,
+                        Some(&args),
+                        active_codex_subagent_status(operation),
+                    );
+                }
                 if tool == "ask_user" {
                     self.pending_user_inputs.retain(|p| p.call_id != call_id);
                     self.pending_user_inputs.push(PendingApproval {
@@ -1504,6 +1853,14 @@ impl AgentState {
                             args: args.clone(),
                             started_at_ms,
                         },
+                    );
+                }
+                if let Some(operation) = codex_subagent_operation(&tool) {
+                    self.upsert_codex_subagent_edges(
+                        &call_id,
+                        &tool,
+                        Some(&args),
+                        active_codex_subagent_status(operation),
                     );
                 }
                 let request_id = if request_id == call_id {
@@ -1568,6 +1925,7 @@ impl AgentState {
                         self.pending_approvals
                             .retain(|p| !pending_request_matches(p, &request_id));
                         if resolution != ServerRequestResolutionStatus::Approved {
+                            self.fail_codex_subagent_edge(&call_id);
                             self.tracked_tools.remove(&call_id);
                         }
                     }
@@ -1575,6 +1933,7 @@ impl AgentState {
                         self.pending_client_tools
                             .retain(|p| !pending_request_matches(p, &request_id));
                         if resolution == ServerRequestResolutionStatus::Cancelled {
+                            self.fail_codex_subagent_edge(&call_id);
                             self.tracked_tools.remove(&call_id);
                         }
                     }
@@ -1582,6 +1941,7 @@ impl AgentState {
                         self.pending_user_inputs
                             .retain(|p| !pending_request_matches(p, &request_id));
                         if resolution != ServerRequestResolutionStatus::Answered {
+                            self.fail_codex_subagent_edge(&call_id);
                             self.tracked_tools.remove(&call_id);
                         }
                     }
@@ -2881,5 +3241,76 @@ mod tests {
         assert!(resolved.is_none());
         assert!(state.pending_client_tools.is_empty());
         assert!(!state.tracked_tools.contains_key("call_client"));
+    }
+
+    #[test]
+    fn state_preserves_codex_subagent_edges_across_runtime_reset_messages() {
+        let mut state = AgentState::default();
+        let edge = CodexSubagentContinuityEdge {
+            spawn_tool_call_id: Some("collab-spawn-reset".to_string()),
+            wait_tool_call_id: None,
+            child_run_id: Some("agent-run-child-reset".to_string()),
+            thread_id: Some("child-thread-reset".to_string()),
+            operation: "spawn_agent".to_string(),
+            status: "waiting_for_restore".to_string(),
+        };
+        state.codex_subagent_edges = vec![edge.clone()];
+
+        state.clear_pending_request_state();
+        assert_eq!(state.codex_subagent_edges, vec![edge.clone()]);
+
+        state.handle_sent_message(&ToAgentMessage::Interrupt);
+        assert_eq!(state.codex_subagent_edges, vec![edge.clone()]);
+
+        state.handle_sent_message(&ToAgentMessage::Cancel);
+        assert_eq!(state.codex_subagent_edges, vec![edge.clone()]);
+
+        state.handle_sent_message(&ToAgentMessage::Shutdown);
+        assert_eq!(state.codex_subagent_edges, vec![edge]);
+    }
+
+    #[test]
+    fn state_marks_denied_restored_codex_subagent_edges_failed_without_tracked_source() {
+        let mut state = AgentState {
+            codex_subagent_edges: vec![CodexSubagentContinuityEdge {
+                spawn_tool_call_id: Some("collab-spawn-denied".to_string()),
+                wait_tool_call_id: None,
+                child_run_id: Some("agent-run-child-denied".to_string()),
+                thread_id: Some("child-thread-denied".to_string()),
+                operation: "spawn_agent".to_string(),
+                status: "waiting_for_restore".to_string(),
+            }],
+            ..Default::default()
+        };
+
+        let resolved = state.handle_message(FromAgentMessage::ServerRequestResolved {
+            request_id: "approval-denied".to_string(),
+            request_type: ServerRequestType::Approval,
+            call_id: "collab-spawn-denied".to_string(),
+            resolution: ServerRequestResolutionStatus::Denied,
+            reason: Some("Denied by policy".to_string()),
+            resolved_by: ServerRequestResolvedBy::Policy,
+            started_at_ms: Some(1_771_000_000_000),
+            resolved_at_ms: Some(1_771_000_000_123),
+        });
+
+        assert!(resolved.is_none());
+        assert_eq!(
+            state.codex_subagent_edges,
+            vec![CodexSubagentContinuityEdge {
+                spawn_tool_call_id: Some("collab-spawn-denied".to_string()),
+                wait_tool_call_id: None,
+                child_run_id: Some("agent-run-child-denied".to_string()),
+                thread_id: Some("child-thread-denied".to_string()),
+                operation: "spawn_agent".to_string(),
+                status: "failed".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn codex_subagent_terminal_statuses_include_send_input_acknowledged() {
+        assert!(codex_subagent_status_is_terminal("acknowledged"));
+        assert!(codex_subagent_status_is_terminal("Acknowledged"));
     }
 }

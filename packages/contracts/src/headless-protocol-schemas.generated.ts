@@ -816,6 +816,18 @@ export const HeadlessActiveToolStateSchema = Type.Object(
 	{ additionalProperties: false },
 );
 
+export const HeadlessCodexSubagentContinuityEdgeSchema = Type.Object(
+	{
+		spawn_tool_call_id: Type.Optional(Type.String()),
+		wait_tool_call_id: Type.Optional(Type.String()),
+		child_run_id: Type.Optional(Type.String()),
+		thread_id: Type.Optional(Type.String()),
+		operation: Type.String(),
+		status: Type.String(),
+	},
+	{ additionalProperties: false },
+);
+
 export const HeadlessStreamingResponseStateSchema = Type.Object(
 	{
 		response_id: Type.String(),
@@ -894,6 +906,9 @@ export const HeadlessRuntimeStateSchema = Type.Object(
 		),
 		active_file_watches: Type.Array(HeadlessActiveFileWatchStateSchema),
 		tracked_tools: Type.Array(HeadlessPendingToolStateSchema),
+		codex_subagent_edges: Type.Optional(
+			Type.Array(HeadlessCodexSubagentContinuityEdgeSchema),
+		),
 		last_error: Type.Optional(Type.String()),
 		last_error_type: Type.Optional(stringLiteralUnion(headlessErrorTypes)),
 		last_status: Type.Optional(Type.String()),

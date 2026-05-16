@@ -36,6 +36,7 @@ import {
 	isComposerAgentEvent,
 	validateSchema,
 } from "../../packages/contracts/src/validators.js";
+import { createHeadlessRuntimeState } from "../../src/cli/headless-protocol.js";
 
 describe("contracts validators", () => {
 	it("accepts a minimal chat request", () => {
@@ -145,6 +146,25 @@ describe("contracts validators", () => {
 			assertHeadlessRuntimeStreamEnvelope({
 				type: "heartbeat",
 				cursor: 3,
+			}),
+		).not.toThrow();
+	});
+
+	it("accepts legacy headless runtime snapshots without Codex subagent edge state", () => {
+		const state = createHeadlessRuntimeState();
+		delete (state as Partial<typeof state>).codex_subagent_edges;
+
+		expect(() =>
+			assertHeadlessRuntimeStreamEnvelope({
+				type: "reset",
+				reason: "restored_from_snapshot",
+				snapshot: {
+					protocolVersion: "2026-04-02",
+					session_id: "sess_legacy_edges",
+					cursor: 4,
+					last_init: null,
+					state,
+				},
 			}),
 		).not.toThrow();
 	});

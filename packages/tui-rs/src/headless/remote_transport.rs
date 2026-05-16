@@ -21,9 +21,10 @@ use tokio_util::sync::CancellationToken;
 use super::async_transport::{AsyncTransportError, RemoteErrorKind};
 use super::messages::{
     ActiveFileWatch, ActiveUtilityCommand, AgentState, ApprovalMode, ClientCapabilities,
-    ClientInfo, ConnectionRole, ConnectionState, FromAgentMessage, HeadlessErrorType, InitConfig,
-    PendingApproval, ServerRequestType, StreamingResponse, ThinkingLevel, ToAgentMessage,
-    UtilityCommandShellMode, UtilityCommandTerminalMode, UtilityOperation,
+    ClientInfo, CodexSubagentContinuityEdge, ConnectionRole, ConnectionState, FromAgentMessage,
+    HeadlessErrorType, InitConfig, PendingApproval, ServerRequestType, StreamingResponse,
+    ThinkingLevel, ToAgentMessage, UtilityCommandShellMode, UtilityCommandTerminalMode,
+    UtilityOperation,
 };
 
 const MESSAGE_POST_MAX_RETRIES: u32 = 10;
@@ -313,6 +314,8 @@ struct RemoteRuntimeStateSnapshot {
     #[serde(default)]
     active_tools: Vec<RemoteActiveToolState>,
     #[serde(default)]
+    codex_subagent_edges: Vec<CodexSubagentContinuityEdge>,
+    #[serde(default)]
     active_utility_commands: Vec<RemoteActiveUtilityCommandState>,
     #[serde(default)]
     active_file_watches: Vec<RemoteActiveFileWatchState>,
@@ -376,6 +379,7 @@ impl RemoteRuntimeStateSnapshot {
                     )
                 })
                 .collect(),
+            codex_subagent_edges: self.codex_subagent_edges,
             active_utility_commands: self
                 .active_utility_commands
                 .into_iter()
@@ -1978,6 +1982,14 @@ mod tests {
                 tool: "read".to_string(),
                 output: "partial".to_string(),
             }],
+            codex_subagent_edges: vec![CodexSubagentContinuityEdge {
+                spawn_tool_call_id: Some("collab-spawn-remote".to_string()),
+                wait_tool_call_id: None,
+                child_run_id: Some("agent-run-child-remote".to_string()),
+                thread_id: Some("child-thread-remote".to_string()),
+                operation: "spawn_agent".to_string(),
+                status: "waiting_for_restore".to_string(),
+            }],
             active_utility_commands: vec![RemoteActiveUtilityCommandState {
                 command_id: "cmd-1".to_string(),
                 command: "echo hi".to_string(),
@@ -2033,6 +2045,11 @@ mod tests {
         );
         assert_eq!(state.tracked_tools.len(), 1);
         assert_eq!(state.active_tools.len(), 1);
+        assert_eq!(state.codex_subagent_edges.len(), 1);
+        assert_eq!(
+            state.codex_subagent_edges[0].child_run_id.as_deref(),
+            Some("agent-run-child-remote")
+        );
         assert_eq!(state.active_utility_commands.len(), 1);
         assert_eq!(state.active_file_watches.len(), 1);
         assert_eq!(

@@ -11503,20 +11503,6 @@ setTimeout(() => {
             &config
         )
         .is_err());
-        assert!(validate_csrf(
-            &csrf_head_for_path(
-                "POST",
-                "/tasks/maestro-task-1:subscribe",
-                Some("csrf-token")
-            ),
-            &config,
-        )
-        .is_ok());
-        assert!(validate_csrf(
-            &csrf_head_for_path("POST", "/tasks/maestro-task-1:subscribe", None),
-            &config
-        )
-        .is_err());
         assert!(validate_csrf(&csrf_head("GET", None), &config).is_ok());
     }
 

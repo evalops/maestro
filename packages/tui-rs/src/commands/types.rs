@@ -362,7 +362,16 @@ pub enum A2aAction {
     /// List paired peers.
     Peers,
     /// List delegated A2A tasks.
-    Tasks { peer: Option<String> },
+    Tasks {
+        peer: Option<String>,
+        include_work_graph: bool,
+    },
+    /// Coordinate actionable A2A tasks.
+    Coordinate {
+        peer: Option<String>,
+        reply: Option<String>,
+        include_work_graph: bool,
+    },
     /// Accept a pairing code.
     Accept { code: String },
     /// Delegate work to a peer.

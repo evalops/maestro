@@ -4,8 +4,17 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import {
+	CODEX_SUBAGENT_TOOL_PREFIX,
+	CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
 	HEADLESS_PROTOCOL_VERSION,
+	type HeadlessCodexSubagentContinuityEdge,
+	activeCodexSubagentStatus,
+	buildCodexSubagentContinuityEdges,
+	codexSubagentEdgeKey,
+	codexSubagentOperation,
+	codexSubagentStatusIsTerminal,
 	createHeadlessRuntimeState,
+	stringArray,
 } from "../../cli/headless-protocol.js";
 import type { HostedRunnerContext, WebServerContext } from "../app-context.js";
 import type { HeadlessRuntimeSnapshot } from "../headless-runtime-service.js";
@@ -27,10 +36,6 @@ export const HOSTED_RUNNER_RETENTION_POLICY_VERSION =
 
 export const HOSTED_RUNNER_WORK_CONTINUITY_VERSION =
 	"evalops.remote-runner.work-continuity.v1";
-
-const CODEX_SUBAGENT_TOOL_PREFIX = "codex.subagent.";
-const CODEX_SUBAGENT_WORK_GRAPH_SCHEMA =
-	"evalops.maestro.codex.subagent-workgraph.v1";
 
 export enum HostedRunnerDrainStatusValue {
 	Drained = "drained",
@@ -177,6 +182,7 @@ export interface HostedRunnerWorkContinuity {
 	codex_subagent_tool_call_ids: string[];
 	codex_subagent_child_run_ids: string[];
 	codex_subagent_thread_ids: string[];
+	codex_subagent_edges?: HeadlessCodexSubagentContinuityEdge[];
 }
 
 export interface HostedRunnerDrainResult {
@@ -452,12 +458,23 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
-function stringArray(value: unknown): string[] {
-	return Array.isArray(value)
-		? value.filter(
-				(item): item is string => typeof item === "string" && item.length > 0,
-			)
-		: [];
+function collectCodexSubagentEdgesFromSource(
+	source: { call_id: string; tool: string; args?: unknown },
+	edges: Map<string, HeadlessCodexSubagentContinuityEdge>,
+): void {
+	const operation = codexSubagentOperation(source.tool);
+	if (!operation) {
+		return;
+	}
+	const status = activeCodexSubagentStatus(operation);
+	for (const edge of buildCodexSubagentContinuityEdges({
+		call_id: source.call_id,
+		tool: source.tool,
+		args: source.args,
+		status,
+	})) {
+		edges.set(codexSubagentEdgeKey(edge), edge);
+	}
 }
 
 function collectCodexWorkArgs(
@@ -515,6 +532,25 @@ function collectHostedRunnerWorkContinuity(
 	const codexToolCallIds = new Set<string>();
 	const childRunIds = new Set<string>();
 	const threadIds = new Set<string>();
+	const codexSubagentEdges = new Map<
+		string,
+		HeadlessCodexSubagentContinuityEdge
+	>();
+	for (const edge of state.codex_subagent_edges ?? []) {
+		codexSubagentEdges.set(codexSubagentEdgeKey(edge), edge);
+		if (edge.spawn_tool_call_id) {
+			codexToolCallIds.add(edge.spawn_tool_call_id);
+		}
+		if (edge.wait_tool_call_id) {
+			codexToolCallIds.add(edge.wait_tool_call_id);
+		}
+		if (edge.child_run_id) {
+			childRunIds.add(edge.child_run_id);
+		}
+		if (edge.thread_id) {
+			threadIds.add(edge.thread_id);
+		}
+	}
 	const trackedSources = [
 		...state.tracked_tools,
 		...state.pending_approvals,
@@ -523,6 +559,7 @@ function collectHostedRunnerWorkContinuity(
 		...state.pending_user_inputs,
 		...state.pending_tool_retries,
 	];
+	const codexTrackedSourceCallIds = new Set<string>();
 	for (const source of trackedSources) {
 		const tool = source.tool;
 		const isCodexSubagentTool = tool.startsWith(CODEX_SUBAGENT_TOOL_PREFIX);
@@ -533,18 +570,49 @@ function collectHostedRunnerWorkContinuity(
 			isCodexSubagentTool,
 		);
 		if (isCodexSubagentTool || hasCodexWorkArgs) {
+			codexTrackedSourceCallIds.add(source.call_id);
 			codexToolCallIds.add(source.call_id);
+			collectCodexSubagentEdgesFromSource(source, codexSubagentEdges);
 		}
 	}
 	for (const activeTool of state.active_tools) {
 		if (activeTool.tool.startsWith(CODEX_SUBAGENT_TOOL_PREFIX)) {
+			const hasTrackedSource = codexToolCallIds.has(activeTool.call_id);
 			codexToolCallIds.add(activeTool.call_id);
+			if (!hasTrackedSource) {
+				collectCodexSubagentEdgesFromSource(
+					{ call_id: activeTool.call_id, tool: activeTool.tool },
+					codexSubagentEdges,
+				);
+			}
 		}
 	}
+	const sortedEdges = [...codexSubagentEdges.values()].sort((left, right) =>
+		codexSubagentEdgeKey(left).localeCompare(codexSubagentEdgeKey(right)),
+	);
+	const activeCodexSubagentEdgeCount = sortedEdges.filter(
+		(edge) => !codexSubagentStatusIsTerminal(edge.status),
+	).length;
+	const nonCodexActiveToolCount = state.active_tools.filter(
+		(tool) => !tool.tool.startsWith(CODEX_SUBAGENT_TOOL_PREFIX),
+	).length;
+	const nonCodexTrackedToolCount = state.tracked_tools.filter(
+		(tool) => !codexTrackedSourceCallIds.has(tool.call_id),
+	).length;
+	const trackedCodexSubagentCount = Math.max(
+		codexToolCallIds.size,
+		sortedEdges.length,
+	);
 	return {
 		protocol_version: HOSTED_RUNNER_WORK_CONTINUITY_VERSION,
-		active_tool_count: state.active_tools.length,
-		tracked_tool_count: state.tracked_tools.length,
+		active_tool_count:
+			sortedEdges.length > 0
+				? nonCodexActiveToolCount + activeCodexSubagentEdgeCount
+				: state.active_tools.length,
+		tracked_tool_count:
+			sortedEdges.length > 0
+				? nonCodexTrackedToolCount + trackedCodexSubagentCount
+				: state.tracked_tools.length,
 		pending_request_count:
 			state.pending_approvals.length +
 			state.pending_client_tools.length +
@@ -554,6 +622,7 @@ function collectHostedRunnerWorkContinuity(
 		codex_subagent_tool_call_ids: [...codexToolCallIds].sort(),
 		codex_subagent_child_run_ids: [...childRunIds].sort(),
 		codex_subagent_thread_ids: [...threadIds].sort(),
+		...(sortedEdges.length > 0 ? { codex_subagent_edges: sortedEdges } : {}),
 	};
 }
 

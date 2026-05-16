@@ -331,6 +331,15 @@ describe("hosted runner drain", () => {
 			codex_subagent_tool_call_ids: ["collab-spawn-1"],
 			codex_subagent_child_run_ids: ["agent-run-child-1"],
 			codex_subagent_thread_ids: ["child-thread-1"],
+			codex_subagent_edges: [
+				{
+					spawn_tool_call_id: "collab-spawn-1",
+					child_run_id: "agent-run-child-1",
+					thread_id: "child-thread-1",
+					operation: "spawn_agent",
+					status: "waiting_for_restore",
+				},
+			],
 		});
 		const manifestWithoutSnapshot = {
 			...result!.manifest,
@@ -395,6 +404,162 @@ describe("hosted runner drain", () => {
 			codex_subagent_tool_call_ids: ["collab-spawn-2"],
 			codex_subagent_child_run_ids: ["agent-run-child-2"],
 			codex_subagent_thread_ids: ["child-thread-2"],
+			codex_subagent_edges: [
+				{
+					spawn_tool_call_id: "collab-spawn-2",
+					child_run_id: "agent-run-child-2",
+					thread_id: "child-thread-2",
+					operation: "spawn_agent",
+					status: "waiting_for_restore",
+				},
+			],
+		});
+	});
+
+	it("records Codex subagent edge lifecycle from restored runtime state", async () => {
+		const workspaceRoot = await createTempWorkspace();
+		const context = hostedRunnerContext(workspaceRoot);
+		const snapshot = runtimeSnapshot(workspaceRoot);
+		snapshot.state.codex_subagent_edges = [
+			{
+				spawn_tool_call_id: "collab-spawn-restored",
+				child_run_id: "agent-run-child-restored",
+				thread_id: "child-thread-restored",
+				operation: "spawn_agent",
+				status: "completed",
+			},
+			{
+				wait_tool_call_id: "collab-close-restored",
+				child_run_id: "agent-run-child-restored",
+				thread_id: "child-thread-restored",
+				operation: "close_agent",
+				status: "closed",
+			},
+		];
+
+		const result = await drainHostedRunner(
+			{ reason: "ttl_expired" },
+			{
+				hostedRunner: context,
+				drainRuntime: vi.fn().mockResolvedValue({
+					sessionId: "session_123",
+					snapshot,
+				}),
+				now: () => new Date("2026-04-23T00:05:00.000Z"),
+			},
+		);
+
+		expect(result?.manifest.work_continuity).toEqual({
+			protocol_version: HOSTED_RUNNER_WORK_CONTINUITY_VERSION,
+			active_tool_count: 0,
+			tracked_tool_count: 2,
+			pending_request_count: 0,
+			codex_subagent_tool_call_ids: [
+				"collab-close-restored",
+				"collab-spawn-restored",
+			],
+			codex_subagent_child_run_ids: ["agent-run-child-restored"],
+			codex_subagent_thread_ids: ["child-thread-restored"],
+			codex_subagent_edges: [
+				{
+					wait_tool_call_id: "collab-close-restored",
+					child_run_id: "agent-run-child-restored",
+					thread_id: "child-thread-restored",
+					operation: "close_agent",
+					status: "closed",
+				},
+				{
+					spawn_tool_call_id: "collab-spawn-restored",
+					child_run_id: "agent-run-child-restored",
+					thread_id: "child-thread-restored",
+					operation: "spawn_agent",
+					status: "completed",
+				},
+			],
+		});
+	});
+
+	it("preserves regular tool counts when Codex subagent edges are present", async () => {
+		const workspaceRoot = await createTempWorkspace();
+		const context = hostedRunnerContext(workspaceRoot);
+		const snapshot = runtimeSnapshot(workspaceRoot);
+		snapshot.state.active_tools = [
+			{
+				call_id: "regular-active-tool",
+				tool: "shell.exec",
+				output: "still running",
+			},
+		];
+		snapshot.state.tracked_tools = [
+			{
+				call_id: "regular-tracked-tool",
+				tool: "shell.exec",
+				args: { command: "npm test" },
+			},
+		];
+		snapshot.state.codex_subagent_edges = [
+			{
+				spawn_tool_call_id: "collab-spawn-restored",
+				child_run_id: "agent-run-child-restored",
+				thread_id: "child-thread-restored",
+				operation: "spawn_agent",
+				status: "waiting_for_restore",
+			},
+		];
+
+		const result = await drainHostedRunner(
+			{ reason: "ttl_expired" },
+			{
+				hostedRunner: context,
+				drainRuntime: vi.fn().mockResolvedValue({
+					sessionId: "session_123",
+					snapshot,
+				}),
+				now: () => new Date("2026-04-23T00:05:30.000Z"),
+			},
+		);
+
+		expect(result?.manifest.work_continuity).toMatchObject({
+			active_tool_count: 2,
+			tracked_tool_count: 2,
+			codex_subagent_tool_call_ids: ["collab-spawn-restored"],
+			codex_subagent_child_run_ids: ["agent-run-child-restored"],
+			codex_subagent_thread_ids: ["child-thread-restored"],
+		});
+	});
+
+	it("treats acknowledged Codex send input edges as terminal continuity", async () => {
+		const workspaceRoot = await createTempWorkspace();
+		const context = hostedRunnerContext(workspaceRoot);
+		const snapshot = runtimeSnapshot(workspaceRoot);
+		snapshot.state.codex_subagent_edges = [
+			{
+				wait_tool_call_id: "collab-send-ack",
+				child_run_id: "agent-run-child-ack",
+				thread_id: "child-thread-ack",
+				operation: "send_input",
+				status: "acknowledged",
+			},
+		];
+
+		const result = await drainHostedRunner(
+			{ reason: "ttl_expired" },
+			{
+				hostedRunner: context,
+				drainRuntime: vi.fn().mockResolvedValue({
+					sessionId: "session_123",
+					snapshot,
+				}),
+				now: () => new Date("2026-04-23T00:05:40.000Z"),
+			},
+		);
+
+		expect(result?.manifest.work_continuity).toMatchObject({
+			active_tool_count: 0,
+			tracked_tool_count: 1,
+			codex_subagent_tool_call_ids: ["collab-send-ack"],
+			codex_subagent_child_run_ids: ["agent-run-child-ack"],
+			codex_subagent_thread_ids: ["child-thread-ack"],
 		});
 	});
 
@@ -569,6 +734,15 @@ describe("hosted runner drain", () => {
 			codex_subagent_tool_call_ids: ["collab-spawn-interrupted"],
 			codex_subagent_child_run_ids: ["agent-run-child-interrupted"],
 			codex_subagent_thread_ids: ["child-thread-interrupted"],
+			codex_subagent_edges: [
+				{
+					spawn_tool_call_id: "collab-spawn-interrupted",
+					child_run_id: "agent-run-child-interrupted",
+					thread_id: "child-thread-interrupted",
+					operation: "spawn_agent",
+					status: "waiting_for_restore",
+				},
+			],
 		});
 	});
 

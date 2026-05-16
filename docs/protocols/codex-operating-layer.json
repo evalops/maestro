@@ -169,7 +169,10 @@
 				"collabAgentToolCall",
 				"codex.subagent.",
 				"spawnAgent",
-				"wait"
+				"sendInput",
+				"resumeAgent",
+				"wait",
+				"closeAgent"
 			]
 		},
 		{
@@ -231,6 +234,9 @@
 				"codex_work_graph",
 				"recordCodexSubagentWorkItem",
 				"updateCodexSubagentWorkItem",
+				"sendInput",
+				"resumeAgent",
+				"closeAgent",
 				"PlatformAgentWorkItemKindValue.ChildRun",
 				"PlatformAgentWorkItemKindValue.Wait"
 			]
@@ -268,6 +274,7 @@
 				"records Codex spawn handoffs as Platform agent-registry delegations",
 				"links follow-up Codex subagent tools to the spawned child work item",
 				"codex.subagent.spawnAgent",
+				"codex.subagent.sendInput",
 				"ownerChildRunId",
 				"parentWorkItemId",
 				"codex_work_graph",
@@ -283,7 +290,48 @@
 				"evalops.remote-runner.work-continuity.v1",
 				"collectHostedRunnerWorkContinuity",
 				"codex_subagent_child_run_ids",
-				"codex_subagent_thread_ids"
+				"codex_subagent_thread_ids",
+				"codex_subagent_edges",
+				"collectCodexSubagentEdgesFromSource",
+				"codexSubagentOperation"
+			]
+		},
+		{
+			"area": "remote-runner-continuity",
+			"evidenceType": "source",
+			"path": "src/cli/headless-protocol.ts",
+			"anchors": [
+				"HeadlessCodexSubagentContinuityEdge",
+				"buildCodexSubagentContinuityEdges",
+				"codexSubagentOperation",
+				"spawn_agent",
+				"send_input",
+				"resume_agent",
+				"wait_agent",
+				"close_agent"
+			]
+		},
+		{
+			"area": "remote-runner-continuity",
+			"evidenceType": "source",
+			"path": "packages/tui-rs/src/hosted_runner.rs",
+			"anchors": [
+				"evalops.remote-runner.work-continuity.v1",
+				"CodexSubagentContinuityEdge",
+				"codex_subagent_edges",
+				"close_agent"
+			]
+		},
+		{
+			"area": "remote-runner-continuity",
+			"evidenceType": "source",
+			"path": "packages/tui-rs/src/headless/messages.rs",
+			"anchors": [
+				"CodexSubagentContinuityEdge",
+				"codex_subagent_edges",
+				"send_input",
+				"resume_agent",
+				"close_agent"
 			]
 		},
 		{
@@ -292,8 +340,11 @@
 			"path": "test/server/hosted-runner-drain.test.ts",
 			"anchors": [
 				"records Codex subagent continuity without copying prompt payloads into manifest metadata",
+				"records Codex subagent edge lifecycle from restored runtime state",
 				"HOSTED_RUNNER_WORK_CONTINUITY_VERSION",
-				"codex_subagent_child_run_ids"
+				"codex_subagent_child_run_ids",
+				"codex_subagent_edges",
+				"close_agent"
 			]
 		},
 		{
