@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import {
 	chmodSync,
 	mkdtempSync,
@@ -13,8 +14,10 @@ import { parseArgs } from "../src/cli/args.js";
 import { handleSkillCommand } from "../src/cli/commands/skill.js";
 import { buildSkillArtifactMetadata } from "../src/skills/artifact-metadata.js";
 import {
+	buildSkillPackagePublishContract,
 	buildSkillRuntimeActivation,
 	evaluateSkillPackages,
+	formatSkillPackageInstallSource,
 	hasSkillEvalFailures,
 	hasSkillLintErrors,
 	isWindowsRunnableToolboxEntry,
@@ -38,6 +41,76 @@ function tempRoot(): string {
 	const dir = mkdtempSync(join(tmpdir(), "maestro-skill-package-"));
 	tempDirs.push(dir);
 	return dir;
+}
+
+function createCommittedGitRepo(dir: string): void {
+	execFileSync("git", ["init", "-q"], { cwd: dir, stdio: "ignore" });
+	execFileSync("git", ["config", "user.email", "test@example.com"], {
+		cwd: dir,
+		stdio: "ignore",
+	});
+	execFileSync("git", ["config", "user.name", "Test User"], {
+		cwd: dir,
+		stdio: "ignore",
+	});
+	execFileSync("git", ["add", "."], { cwd: dir, stdio: "ignore" });
+	execFileSync("git", ["commit", "-q", "-m", "initial"], {
+		cwd: dir,
+		stdio: "ignore",
+	});
+}
+
+async function writeOssSkillPackage(workspace: string): Promise<string> {
+	return writeOssSkillPackageAt(join(workspace, "vendor", "review-skills"));
+}
+
+async function writeOssSkillPackageAt(packageDir: string): Promise<string> {
+	const skillDir = join(packageDir, "skills", "reviewing-prs");
+	await mkdir(skillDir, { recursive: true });
+	writeFileSync(
+		join(packageDir, "package.json"),
+		JSON.stringify(
+			{
+				name: "@test/maestro-review-skills",
+				version: "1.0.0",
+				keywords: ["maestro-package", "maestro-skill-package"],
+				maestro: {
+					skills: ["./skills"],
+				},
+			},
+			null,
+			2,
+		),
+	);
+	writeFileSync(
+		join(skillDir, "SKILL.md"),
+		`---\nname: reviewing-prs\ndescription: "Review pull requests. Use when the user asks for PR review."\nallowed-tools:\n  - read\nbuiltin-tools:\n  - read\nisolatedContext: true\n---\n\n# Reviewing PRs\n\nKeep findings first and cite exact files.\n`,
+	);
+	return packageDir;
+}
+
+async function captureSkillCommand(
+	subcommand: string,
+	args: string[],
+	workspaceDir: string,
+): Promise<{ logs: string[]; errors: string[] }> {
+	const originalLog = console.log;
+	const originalError = console.error;
+	const logs: string[] = [];
+	const errors: string[] = [];
+	console.log = (...values: unknown[]) => {
+		logs.push(values.map((value) => String(value)).join(" "));
+	};
+	console.error = (...values: unknown[]) => {
+		errors.push(values.map((value) => String(value)).join(" "));
+	};
+	try {
+		await handleSkillCommand(subcommand, args, { workspaceDir });
+	} finally {
+		console.log = originalLog;
+		console.error = originalError;
+	}
+	return { logs, errors };
 }
 
 afterEach(() => {
@@ -255,6 +328,188 @@ describe("skill package format", () => {
 				process.env.MAESTRO_SYSTEM_SKILLS_DIR = originalSystemSkills;
 			}
 		}
+	});
+
+	it("emits the OSS skill package publish/install contract", async () => {
+		const workspace = tempRoot();
+		await writeOssSkillPackage(workspace);
+
+		const { logs, errors } = await captureSkillCommand(
+			"publish-check",
+			["./vendor/review-skills", "--json"],
+			workspace,
+		);
+
+		expect(errors).toEqual([]);
+		const payload = JSON.parse(logs.join("\n")) as {
+			schemaVersion: string;
+			package: { name: string; version: string };
+			resources: { skills: string[] };
+			install: { source: string; local?: string; npm?: string };
+			issues: unknown[];
+		};
+		expect(payload.schemaVersion).toBe(
+			"evalops.maestro.skill-package-publish-contract.v1",
+		);
+		expect(payload.package).toMatchObject({
+			name: "@test/maestro-review-skills",
+			version: "1.0.0",
+		});
+		expect(payload.resources.skills).toHaveLength(1);
+		expect(payload.install.source).toBe(
+			"maestro skill install local:./vendor/review-skills",
+		);
+		expect(payload.install.local).toBe(payload.install.source);
+		expect(payload.install.npm).toBeUndefined();
+		expect(payload.issues).toEqual([]);
+	});
+
+	it("preserves drive-qualified local install hints across Windows drives", () => {
+		expect(
+			formatSkillPackageInstallSource(
+				{ type: "local", path: "D:\\skills\\review-pack" },
+				"C:\\workspace",
+			),
+		).toBe("local:D:\\skills\\review-pack");
+	});
+
+	it("quotes install commands when local sources contain spaces", async () => {
+		const workspace = tempRoot();
+		const packageDir = join(workspace, "My Skills", "review-pack");
+		await writeOssSkillPackageAt(packageDir);
+
+		const contract = await buildSkillPackagePublishContract(
+			"./My Skills/review-pack",
+			{ cwd: workspace },
+		);
+
+		expect(contract.install.source).toBe(
+			"maestro skill install 'local:./My Skills/review-pack'",
+		);
+		expect(contract.install.local).toBe(contract.install.source);
+		expect(contract.issues).toEqual([]);
+	});
+
+	it("uses Windows command quoting for install source hints on win32", async () => {
+		const workspace = tempRoot();
+		const packageDir = join(workspace, "My Skills", "review-pack");
+		await writeOssSkillPackageAt(packageDir);
+
+		const contract = await buildSkillPackagePublishContract(
+			"./My Skills/review-pack",
+			{ cwd: workspace, platform: "win32" },
+		);
+
+		expect(contract.install.source).toBe(
+			'maestro skill install "local:./My Skills/review-pack"',
+		);
+		expect(contract.install.local).toBe(contract.install.source);
+		expect(contract.issues).toEqual([]);
+	});
+
+	it("keeps publish-check install hints tied to the inspected source type", async () => {
+		const workspace = tempRoot();
+		const packageDir = await writeOssSkillPackage(workspace);
+		createCommittedGitRepo(packageDir);
+
+		const contract = await buildSkillPackagePublishContract(
+			`git:${packageDir}`,
+			{ cwd: workspace },
+		);
+
+		expect(contract.install.source).toBe(
+			`maestro skill install git:${packageDir}`,
+		);
+		expect(contract.install.git).toBe(contract.install.source);
+		expect(contract.install.local).toBeUndefined();
+		expect(contract.install.npm).toBeUndefined();
+		expect(contract.install.source).not.toContain(".maestro");
+		expect(contract.issues).toEqual([]);
+	});
+
+	it("does not add skill keyword issues when package discovery fails", async () => {
+		const workspace = tempRoot();
+		await mkdir(join(workspace, "vendor", "broken-skills"), {
+			recursive: true,
+		});
+
+		const contract = await buildSkillPackagePublishContract(
+			"./vendor/broken-skills",
+			{ cwd: workspace },
+		);
+
+		expect(contract.issues).toHaveLength(1);
+		expect(contract.issues[0]).toMatchObject({
+			code: "package_validation",
+		});
+		expect(contract.issues[0]?.message).toContain(
+			"No valid package.json found",
+		);
+	});
+
+	it('emits one issue when the "maestro-package" keyword is missing', async () => {
+		const workspace = tempRoot();
+		const packageDir = await writeOssSkillPackage(workspace);
+		writeFileSync(
+			join(packageDir, "package.json"),
+			JSON.stringify(
+				{
+					name: "@test/maestro-review-skills",
+					version: "1.0.0",
+					keywords: ["maestro-skill-package"],
+					maestro: {
+						skills: ["./skills"],
+					},
+				},
+				null,
+				2,
+			),
+		);
+
+		const contract = await buildSkillPackagePublishContract(
+			"./vendor/review-skills",
+			{ cwd: workspace },
+		);
+
+		expect(contract.issues).toEqual([
+			{
+				code: "missing_maestro_package_keyword",
+				message: 'Missing "maestro-package" keyword.',
+			},
+		]);
+	});
+
+	it("installs validated OSS skill packages into the selected config scope", async () => {
+		const workspace = tempRoot();
+		await mkdir(join(workspace, ".maestro"), { recursive: true });
+		await writeOssSkillPackage(workspace);
+
+		const { logs, errors } = await captureSkillCommand(
+			"install",
+			["./vendor/review-skills", "--scope", "project", "--json"],
+			workspace,
+		);
+
+		expect(errors).toEqual([]);
+		const payload = JSON.parse(logs.join("\n")) as {
+			installed: boolean;
+			config: { path: string; scope: string };
+		};
+		expect(payload.installed).toBe(true);
+		expect(payload.config).toMatchObject({
+			path: join(workspace, ".maestro", "config.toml"),
+			scope: "project",
+		});
+		expect(readFileSync(payload.config.path, "utf8")).toContain(
+			"../vendor/review-skills",
+		);
+
+		const loaded = loadSkills(workspace, { includeSystem: false });
+		expect(loaded.errors).toEqual([]);
+		expect(loaded.skills.map((skill) => skill.name)).toContain("reviewing-prs");
+		expect(
+			loaded.skills.find((skill) => skill.name === "reviewing-prs")?.sourceType,
+		).toBe("project");
 	});
 
 	it("accepts quoted isolatedContext consistently across load and lint", async () => {

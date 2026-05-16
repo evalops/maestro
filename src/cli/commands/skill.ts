@@ -4,11 +4,17 @@ import { inspect } from "node:util";
 import chalk from "chalk";
 import { PATHS } from "../../config/constants.js";
 import {
+	type WritablePackageScope,
+	addConfiguredPackageSpecToConfig,
+} from "../../config/index.js";
+import {
+	buildSkillPackagePublishContract,
 	buildSkillRuntimeActivation,
 	evaluateSkillPackages,
 	findSkill,
 	formatSkillEvalText,
 	formatSkillListItem,
+	formatSkillPackagePublishContract,
 	hasSkillEvalFailures,
 	hasSkillLintErrors,
 	lintSkillPaths,
@@ -24,6 +30,7 @@ interface SkillCommandOptions {
 	description?: string;
 	force?: boolean;
 	describeToolbox?: boolean;
+	scope?: WritablePackageScope;
 }
 
 interface SkillCommandContext {
@@ -37,12 +44,15 @@ function formatSkillHelp(): string {
 Commands:
   list                         List available system, user, and project skills
   inspect <name>               Print one skill package manifest
+  install <source>             Validate and install an OSS skill package
+  publish-check <source>       Validate an OSS skill package before publishing
   lint [path...]               Validate skill packages
   eval [path...]               Score skill packages against Agent Core constraints
   new <name>                   Scaffold a skill package
 
 Options:
   --json                       Emit machine-readable JSON
+  --scope <local|project|user> Install scope for 'install' (default: local)
   --dir <path>                 Base directory for 'new' (default: .maestro/skills)
   --description <text>         Description for 'new'
   --force                      Allow 'new' to overwrite an existing directory
@@ -58,6 +68,13 @@ function readValue(args: string[], index: number, flag: string): string {
 	return value;
 }
 
+function parseScope(value: string): WritablePackageScope {
+	if (value === "local" || value === "project" || value === "user") {
+		return value;
+	}
+	throw new Error("--scope must be local, project, or user");
+}
+
 function parseOptions(args: string[]): {
 	options: SkillCommandOptions;
 	positionals: string[];
@@ -69,6 +86,10 @@ function parseOptions(args: string[]): {
 		switch (arg) {
 			case "--json":
 				options.json = true;
+				break;
+			case "--scope":
+				options.scope = parseScope(readValue(args, i, arg));
+				i++;
 				break;
 			case "--dir":
 				options.dir = readValue(args, i, arg);
@@ -105,6 +126,74 @@ function defaultLintPaths(workspaceDir: string): string[] {
 		join(PATHS.MAESTRO_HOME, "skills"),
 	].filter((path) => existsSync(path));
 	return candidates.length > 0 ? candidates : [join(workspaceDir, "skills")];
+}
+
+async function handleInstall(
+	workspaceDir: string,
+	sourceSpec: string | undefined,
+	options: SkillCommandOptions,
+) {
+	if (!sourceSpec) {
+		throw new Error("maestro skill install requires a package source");
+	}
+	const contract = await buildSkillPackagePublishContract(sourceSpec, {
+		cwd: workspaceDir,
+		describeToolbox: false,
+	});
+	if (contract.issues.length > 0) {
+		if (options.json) {
+			console.log(JSON.stringify({ installed: false, contract }, null, 2));
+		} else {
+			console.log(formatSkillPackagePublishContract(contract));
+			console.error(
+				chalk.red("Skill package install blocked by contract issues."),
+			);
+		}
+		process.exitCode = 1;
+		return;
+	}
+
+	const installed = addConfiguredPackageSpecToConfig({
+		workspaceDir,
+		scope: options.scope ?? "local",
+		spec: sourceSpec,
+	});
+	if (options.json) {
+		console.log(
+			JSON.stringify({ installed: true, config: installed, contract }, null, 2),
+		);
+		return;
+	}
+	console.log(
+		chalk.green(
+			`Installed skill package ${contract.package.name ?? sourceSpec}`,
+		),
+	);
+	console.log(chalk.dim(`scope: ${installed.scope}`));
+	console.log(chalk.dim(`config: ${installed.path}`));
+	console.log(chalk.dim("Run `maestro skill list` to see loaded skills."));
+}
+
+async function handlePublishCheck(
+	workspaceDir: string,
+	sourceSpec: string | undefined,
+	options: SkillCommandOptions,
+) {
+	if (!sourceSpec) {
+		throw new Error("maestro skill publish-check requires a package source");
+	}
+	const contract = await buildSkillPackagePublishContract(sourceSpec, {
+		cwd: workspaceDir,
+		describeToolbox: options.describeToolbox,
+	});
+	if (options.json) {
+		console.log(JSON.stringify(contract, null, 2));
+	} else {
+		console.log(formatSkillPackagePublishContract(contract));
+	}
+	if (contract.issues.length > 0) {
+		process.exitCode = 1;
+	}
 }
 
 async function handleList(
@@ -280,6 +369,12 @@ export async function handleSkillCommand(
 			return;
 		case "inspect":
 			await handleInspect(workspaceDir, positionals[0], parsedOptions);
+			return;
+		case "install":
+			await handleInstall(workspaceDir, positionals[0], parsedOptions);
+			return;
+		case "publish-check":
+			await handlePublishCheck(workspaceDir, positionals[0], parsedOptions);
 			return;
 		case "lint":
 			await handleLint(workspaceDir, positionals, parsedOptions);
