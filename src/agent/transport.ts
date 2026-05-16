@@ -1178,6 +1178,7 @@ export class ProviderTransport implements AgentTransport {
 					// Reset state for retry
 					currentAssistantMessage = null;
 					toolCallsToExecute.length = 0;
+					toolResults.length = 0;
 					pendingNextTurn = false;
 
 					const backoffMs = Math.min(
