@@ -574,6 +574,43 @@ describe("codex-a2a-peer", () => {
 		expect(requests.some((item) => item.url === "/tasks/task-slow")).toBe(true);
 	});
 
+	it("caps default wait poll timeouts to the configured peer timeout", async () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				defaultPeer: "mock",
+				tokenEnv: "TEST_A2A_PEER_TOKEN",
+				timeoutMs: 20,
+				peers: {
+					mock: {
+						url: `${baseUrl}/message:send`,
+					},
+				},
+			}),
+		);
+
+		await expect(
+			runPeer(
+				configPath,
+				[
+					"wait",
+					"mock",
+					"task-slow",
+					"--interval",
+					"0.01",
+					"--max-wait",
+					"0.35",
+				],
+				{ TEST_A2A_PEER_TOKEN: "super-secret-token" },
+			),
+		).rejects.toMatchObject({
+			stderr: expect.stringContaining("GET /tasks/task-slow timed out"),
+		});
+		expect(
+			requests.filter((item) => item.url === "/tasks/task-slow"),
+		).toHaveLength(1);
+	});
+
 	it("rejects non-finite wait arguments before sending", async () => {
 		await expect(
 			runPeer(configPath, ["wait", "mock", "task-1", "--max-wait", "inf"], {

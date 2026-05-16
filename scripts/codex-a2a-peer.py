@@ -165,6 +165,17 @@ def peer_headers(registry: dict[str, Any], peer: dict[str, Any]) -> tuple[dict[s
     return headers, token_source
 
 
+def resolve_timeout_seconds(registry: dict[str, Any], peer: dict[str, Any]) -> float:
+    timeout_ms = peer.get("timeoutMs", registry.get("timeoutMs", 600_000))
+    try:
+        timeout = float(timeout_ms) / 1000.0
+    except (TypeError, ValueError) as error:
+        raise PeerError("timeoutMs must be numeric") from error
+    if timeout <= 0:
+        raise PeerError("timeoutMs must be positive")
+    return timeout
+
+
 def request_json(
     registry: dict[str, Any],
     peer: dict[str, Any],
@@ -180,11 +191,7 @@ def request_json(
         headers["Content-Type"] = "application/json"
     timeout = timeout_seconds
     if timeout is None:
-        timeout_ms = peer.get("timeoutMs", registry.get("timeoutMs", 600_000))
-        try:
-            timeout = float(timeout_ms) / 1000.0
-        except (TypeError, ValueError) as error:
-            raise PeerError("timeoutMs must be numeric") from error
+        timeout = resolve_timeout_seconds(registry, peer)
     if timeout <= 0:
         raise PeerError("timeoutMs must be positive")
     request = Request(
@@ -312,13 +319,15 @@ def wait_for_task(
     deadline = time.monotonic() + max_wait_seconds
     latest_payload: dict[str, Any] = {}
     latest_state = "unknown"
+    default_timeout_seconds = None if timeout_seconds is not None else resolve_timeout_seconds(registry, peer)
+    poll_timeout_seconds = timeout_seconds if timeout_seconds is not None else default_timeout_seconds
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise PeerError(
                 f"task {task_id!r} did not finish within {max_wait_seconds:g}s; latest state: {latest_state}"
             )
-        request_timeout = remaining if timeout_seconds is None else min(timeout_seconds, remaining)
+        request_timeout = min(poll_timeout_seconds, remaining)
         try:
             latest_payload = request_json(
                 registry,
