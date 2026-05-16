@@ -32,6 +32,37 @@ to the same local transcript and can wait for the peer's follow-up result.
 registered peers. This gives the operator a single place to see outstanding work
 across the Mac mini, dev desktop, and local Maestro instances.
 
+## Native Control-Plane Surface
+
+The Rust control-plane A2A server uses the same task ledger path as the CLI. On
+startup it restores known tasks from the ledger, and each task state transition
+is written back to disk before being published to local subscribers.
+
+Supported A2A HTTP+JSON operations:
+
+```text
+GET  /.well-known/agent-card.json
+GET  /extendedAgentCard
+POST /message:send
+POST /message:stream
+GET  /tasks
+GET  /tasks/{id}
+GET  /tasks/{id}:subscribe
+POST /tasks/{id}:subscribe
+POST /tasks/{id}:cancel
+```
+
+`GET /tasks` accepts the spec-shaped fleet filters `contextId`, `status`,
+`statusTimestampAfter`, `pageSize`, `pageToken`, `historyLength`, and
+`includeArtifacts`. List responses include `nextPageToken`, `pageSize`, and
+`totalSize`.
+
+`POST /message:stream` and `tasks/{id}:subscribe` use Server-Sent Events with A2A
+`StreamResponse` payloads (`task`, `statusUpdate`, and `artifactUpdate`). The
+public Agent Card advertises streaming plus authenticated extended-card support,
+and the extended card declares Maestro's EvalOps operating-plane extension for
+workspace/session/trace/retention correlation metadata.
+
 ## Files
 
 The peer registry remains:

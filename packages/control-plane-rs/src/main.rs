@@ -17,7 +17,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::process::Command;
-use tokio::sync::{mpsc, watch, Mutex};
+use tokio::sync::{broadcast, mpsc, watch, Mutex};
 
 mod auth;
 mod codex_compat;
@@ -54,6 +54,10 @@ const A2A_PROTOCOL_VERSION: &str = "1.0";
 const A2A_DEFAULT_TURN_TIMEOUT_MS: u64 = 180_000;
 const A2A_DEFAULT_RESPONSE_END_SETTLE_MS: u64 = 250;
 const A2A_TERMINAL_TASK_STORE_LIMIT: usize = 128;
+const A2A_DEFAULT_LIST_PAGE_SIZE: usize = 50;
+const A2A_MAX_LIST_PAGE_SIZE: usize = 100;
+const A2A_DEFAULT_SUBSCRIBE_TIMEOUT_MS: u64 = 60_000;
+const EVALOPS_A2A_EXTENSION_URI: &str = "https://evalops.com/a2a/extensions/operating-plane/v1";
 const CODEX_SUBAGENT_WORK_GRAPH_SCHEMA: &str = "evalops.maestro.codex.subagent-workgraph.v1";
 static CODEX_BRIDGE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 static CODEX_HEADLESS_RUN_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -115,6 +119,7 @@ struct Config {
     session_store_path: PathBuf,
     command_prefs_path: PathBuf,
     usage_file_path: PathBuf,
+    a2a_tasks_file_path: PathBuf,
     static_root: PathBuf,
     static_cache_max_age: u64,
     llm_gateway_models_url: Option<String>,
@@ -154,6 +159,7 @@ impl Config {
                 .unwrap_or_else(|_| default_session_store_path(&cwd)),
             command_prefs_path: command_prefs_path(),
             usage_file_path: usage_file_path(),
+            a2a_tasks_file_path: a2a_tasks_file_path(),
             static_root: env::var("MAESTRO_WEB_STATIC_ROOT")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from("packages/web/dist")),
@@ -203,6 +209,8 @@ struct AppState {
     approval_modes: Arc<Mutex<HashMap<String, String>>>,
     pending_tool_responses: Arc<Mutex<HashMap<String, PendingToolResponseSender>>>,
     a2a_tasks: Arc<Mutex<HashMap<String, Value>>>,
+    a2a_task_persist_lock: Arc<Mutex<()>>,
+    a2a_task_events: broadcast::Sender<Value>,
     a2a_cancel_senders: Arc<Mutex<HashMap<String, A2ACancelSender>>>,
 }
 
@@ -347,6 +355,8 @@ async fn main() -> anyhow::Result<()> {
         load_session_store(&config.session_store_path).await;
     let shared_sessions = sessions.shared_sessions.clone();
     let command_prefs = load_command_prefs(&config.command_prefs_path).await;
+    let a2a_tasks = load_a2a_tasks(&config.a2a_tasks_file_path).await;
+    let (a2a_task_events, _) = broadcast::channel(256);
 
     let state = AppState {
         config: config.clone(),
@@ -364,7 +374,9 @@ async fn main() -> anyhow::Result<()> {
         shared_sessions: Arc::new(Mutex::new(shared_sessions)),
         approval_modes: Arc::new(Mutex::new(HashMap::new())),
         pending_tool_responses: Arc::new(Mutex::new(HashMap::new())),
-        a2a_tasks: Arc::new(Mutex::new(HashMap::new())),
+        a2a_tasks: Arc::new(Mutex::new(a2a_tasks)),
+        a2a_task_persist_lock: Arc::new(Mutex::new(())),
+        a2a_task_events,
         a2a_cancel_senders: Arc::new(Mutex::new(HashMap::new())),
     };
 
@@ -398,6 +410,10 @@ async fn handle_connection(mut stream: TcpStream, state: AppState) -> Result<(),
 
         if is_chat_endpoint(&head) {
             return handle_chat_endpoint(stream, initial, head, state).await;
+        }
+
+        if is_a2a_streaming_endpoint(&head) {
+            return handle_a2a_streaming_endpoint(stream, initial, head, state).await;
         }
 
         if is_a2a_endpoint(&head) {
@@ -664,18 +680,40 @@ fn is_a2a_endpoint(head: &RequestHead) -> bool {
     if head.method == "OPTIONS" {
         return head.path == "/.well-known/agent-card.json"
             || head.path == "/message:send"
+            || head.path == "/message:stream"
+            || head.path == "/extendedAgentCard"
             || head.path == "/tasks"
             || head.path.starts_with("/tasks/");
     }
     matches!(
         (head.method.as_str(), head.path.as_str()),
-        ("GET", "/.well-known/agent-card.json") | ("POST", "/message:send") | ("GET", "/tasks")
+        ("GET", "/.well-known/agent-card.json")
+            | ("GET", "/extendedAgentCard")
+            | ("POST", "/message:send")
+            | ("POST", "/message:stream")
+            | ("GET", "/tasks")
     ) || (head.method == "GET" && a2a_task_id_from_get_path(&head.path).is_some())
         || (head.method == "POST" && a2a_task_id_from_cancel_path(&head.path).is_some())
+        || (head.method == "GET" && a2a_task_id_from_subscribe_path(&head.path).is_some())
+        || (head.method == "POST" && a2a_task_id_from_subscribe_path(&head.path).is_some())
+}
+
+fn is_a2a_streaming_endpoint(head: &RequestHead) -> bool {
+    (head.method == "POST" && head.path == "/message:stream")
+        || ((head.method == "GET" || head.method == "POST")
+            && a2a_task_id_from_subscribe_path(&head.path).is_some())
 }
 
 fn a2a_task_id_from_get_path(path: &str) -> Option<&str> {
     let id = path.strip_prefix("/tasks/")?;
+    (!id.is_empty() && !id.contains('/') && !id.contains(':')).then_some(id)
+}
+
+fn a2a_task_id_from_subscribe_path(path: &str) -> Option<&str> {
+    let id = path
+        .strip_prefix("/tasks/")?
+        .strip_suffix(":subscribe")
+        .or_else(|| path.strip_prefix("/tasks/")?.strip_suffix("/subscribe"))?;
     (!id.is_empty() && !id.contains('/') && !id.contains(':')).then_some(id)
 }
 
@@ -733,16 +771,15 @@ async fn handle_a2a_endpoint(
         return json_response(401, &serde_json::json!({ "error": "Unauthorized" }));
     };
 
+    if head.method == "GET" && head.path == "/extendedAgentCard" {
+        return json_response(200, &a2a_extended_agent_card(&head, &state.config));
+    }
+
     if head.method == "GET" && head.path == "/tasks" {
-        let tasks = state
-            .a2a_tasks
-            .lock()
-            .await
-            .values()
-            .filter(|task| a2a_task_visible_to_auth(task, &auth))
-            .cloned()
-            .collect::<Vec<_>>();
-        return json_response(200, &serde_json::json!({ "tasks": tasks }));
+        return match a2a_list_tasks_response(&head, state, &auth).await {
+            Ok(value) => json_response(200, &value),
+            Err(response) => response,
+        };
     }
 
     if head.method == "GET" {
@@ -752,7 +789,7 @@ async fn handle_a2a_endpoint(
                 || a2a_error_response(404, "TASK_NOT_FOUND", "A2A task not found"),
                 |task| {
                     if a2a_task_visible_to_auth(task, &auth) {
-                        json_response(200, task)
+                        json_response(200, &a2a_task_for_query(task, &head, true))
                     } else {
                         a2a_error_response(404, "TASK_NOT_FOUND", "A2A task not found")
                     }
@@ -775,6 +812,264 @@ async fn handle_a2a_endpoint(
     }
 
     a2a_error_response(404, "NOT_FOUND", "A2A endpoint not found")
+}
+
+async fn handle_a2a_streaming_endpoint(
+    mut stream: TcpStream,
+    mut initial: Vec<u8>,
+    head: RequestHead,
+    state: AppState,
+) -> Result<(), String> {
+    if let Err(response) = validate_a2a_protocol_version(&head) {
+        return write_response_and_close(&mut stream, response).await;
+    }
+    if let Err(response) = validate_csrf(&head, &state.config) {
+        return write_response_and_close(&mut stream, response).await;
+    }
+    let Some(auth) = auth_context(&head, &state.config) else {
+        return write_response_and_close(
+            &mut stream,
+            json_response(401, &serde_json::json!({ "error": "Unauthorized" })),
+        )
+        .await;
+    };
+
+    if head.method == "POST" && head.path == "/message:stream" {
+        return handle_a2a_message_stream(&mut stream, &mut initial, &head, &state, &auth).await;
+    }
+    if (head.method == "GET" || head.method == "POST")
+        && a2a_task_id_from_subscribe_path(&head.path).is_some()
+    {
+        return handle_a2a_task_subscribe(&mut stream, &head, &state, &auth).await;
+    }
+    write_response_and_close(
+        &mut stream,
+        a2a_error_response(404, "NOT_FOUND", "A2A streaming endpoint not found"),
+    )
+    .await
+}
+
+async fn write_response_and_close(stream: &mut TcpStream, response: Vec<u8>) -> Result<(), String> {
+    stream
+        .write_all(&response)
+        .await
+        .map_err(|error| error.to_string())?;
+    let _ = stream.shutdown().await;
+    Ok(())
+}
+
+async fn handle_a2a_message_stream(
+    stream: &mut TcpStream,
+    initial: &mut Vec<u8>,
+    head: &RequestHead,
+    state: &AppState,
+    auth: &AuthContext,
+) -> Result<(), String> {
+    let body = match read_request_body(stream, initial, head).await {
+        Ok(body) => body,
+        Err(error) => {
+            return write_response_and_close(
+                stream,
+                a2a_error_response(400, "INVALID_REQUEST", &error),
+            )
+            .await;
+        }
+    };
+    let request: A2ASendMessageRequest = match serde_json::from_slice(&body) {
+        Ok(request) => request,
+        Err(error) => {
+            return write_response_and_close(
+                stream,
+                a2a_error_response(
+                    400,
+                    "INVALID_REQUEST",
+                    &format!("invalid A2A message request: {error}"),
+                ),
+            )
+            .await;
+        }
+    };
+    let Some(prompt) = a2a_message_text(&request.message) else {
+        return write_response_and_close(
+            stream,
+            a2a_error_response(
+                400,
+                "INVALID_REQUEST",
+                "A2A message must contain at least one text part",
+            ),
+        )
+        .await;
+    };
+    if let Err(error) = a2a_return_immediately(&request) {
+        return write_response_and_close(stream, a2a_error_response(400, "INVALID_REQUEST", error))
+            .await;
+    }
+
+    let metadata = a2a_task_metadata(head, &request, auth);
+    let target = match claim_a2a_send_task(state, &request, head, auth, metadata).await {
+        Ok(target) => target,
+        Err(response) => return write_response_and_close(stream, response).await,
+    };
+    let task_id = target.task_id;
+    let context_id = target.context_id;
+    let history = target.history;
+    let previous_task = target.previous_task;
+    let metadata = target.metadata;
+    let (cancel_tx, cancel_rx) = watch::channel(false);
+    if let Err(response) = register_a2a_cancel_sender(state, &task_id, cancel_tx).await {
+        rollback_a2a_send_claim(state, &task_id, previous_task).await;
+        return write_response_and_close(stream, response).await;
+    }
+
+    stream
+        .write_all(sse_headers().as_bytes())
+        .await
+        .map_err(|error| error.to_string())?;
+    if let Some(task) = state.a2a_tasks.lock().await.get(&task_id).cloned() {
+        send_a2a_stream_response(stream, &serde_json::json!({ "task": task })).await?;
+    }
+    let task = complete_a2a_task(
+        state, prompt, task_id, context_id, history, metadata, cancel_rx,
+    )
+    .await;
+    send_a2a_stream_response(
+        stream,
+        &serde_json::json!({ "statusUpdate": a2a_status_update_event(&task) }),
+    )
+    .await?;
+    for artifact in task
+        .get("artifacts")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        send_a2a_stream_response(
+            stream,
+            &serde_json::json!({
+                "artifactUpdate": a2a_artifact_update_event(&task, artifact)
+            }),
+        )
+        .await?;
+    }
+    send_a2a_stream_response(stream, &serde_json::json!({ "task": task })).await?;
+    let _ = stream.shutdown().await;
+    Ok(())
+}
+
+async fn handle_a2a_task_subscribe(
+    stream: &mut TcpStream,
+    head: &RequestHead,
+    state: &AppState,
+    auth: &AuthContext,
+) -> Result<(), String> {
+    let task_id = a2a_task_id_from_subscribe_path(&head.path)
+        .expect("subscribe path should have been recognized");
+    let mut receiver = state.a2a_task_events.subscribe();
+    let current = {
+        let tasks = state.a2a_tasks.lock().await;
+        let Some(task) = tasks.get(task_id) else {
+            return write_response_and_close(
+                stream,
+                a2a_error_response(404, "TASK_NOT_FOUND", "A2A task not found"),
+            )
+            .await;
+        };
+        if !a2a_task_visible_to_auth(task, auth) {
+            return write_response_and_close(
+                stream,
+                a2a_error_response(404, "TASK_NOT_FOUND", "A2A task not found"),
+            )
+            .await;
+        }
+        task.clone()
+    };
+
+    stream
+        .write_all(sse_headers().as_bytes())
+        .await
+        .map_err(|error| error.to_string())?;
+    send_a2a_stream_response(stream, &serde_json::json!({ "task": current.clone() })).await?;
+    send_a2a_stream_response(
+        stream,
+        &serde_json::json!({ "statusUpdate": a2a_status_update_event(&current) }),
+    )
+    .await?;
+    if a2a_task_is_terminal(&current) {
+        let _ = stream.shutdown().await;
+        return Ok(());
+    }
+
+    let timeout_ms = env_u64(
+        "MAESTRO_A2A_SUBSCRIBE_TIMEOUT_MS",
+        A2A_DEFAULT_SUBSCRIBE_TIMEOUT_MS,
+    );
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let event = match tokio::time::timeout(remaining, receiver.recv()).await {
+            Ok(Ok(task)) => task,
+            Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
+            Ok(Err(broadcast::error::RecvError::Closed)) | Err(_) => break,
+        };
+        if event.get("id").and_then(Value::as_str) != Some(task_id) {
+            continue;
+        }
+        if !a2a_task_visible_to_auth(&event, auth) {
+            continue;
+        }
+        send_a2a_stream_response(
+            stream,
+            &serde_json::json!({ "statusUpdate": a2a_status_update_event(&event) }),
+        )
+        .await?;
+        if a2a_task_is_terminal(&event) {
+            for artifact in event
+                .get("artifacts")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                send_a2a_stream_response(
+                    stream,
+                    &serde_json::json!({
+                        "artifactUpdate": a2a_artifact_update_event(&event, artifact)
+                    }),
+                )
+                .await?;
+            }
+            send_a2a_stream_response(stream, &serde_json::json!({ "task": event })).await?;
+            break;
+        }
+    }
+    let _ = stream.shutdown().await;
+    Ok(())
+}
+
+async fn send_a2a_stream_response(stream: &mut TcpStream, value: &Value) -> Result<(), String> {
+    send_sse(stream, value).await
+}
+
+fn a2a_status_update_event(task: &Value) -> Value {
+    serde_json::json!({
+        "taskId": task.get("id").cloned().unwrap_or(Value::Null),
+        "contextId": task.get("contextId").cloned().unwrap_or(Value::Null),
+        "status": task.get("status").cloned().unwrap_or(Value::Null),
+        "metadata": task.get("metadata").cloned().unwrap_or_else(|| serde_json::json!({}))
+    })
+}
+
+fn a2a_artifact_update_event(task: &Value, artifact: &Value) -> Value {
+    serde_json::json!({
+        "taskId": task.get("id").cloned().unwrap_or(Value::Null),
+        "contextId": task.get("contextId").cloned().unwrap_or(Value::Null),
+        "artifact": artifact,
+        "append": false,
+        "lastChunk": true,
+        "metadata": task.get("metadata").cloned().unwrap_or_else(|| serde_json::json!({}))
+    })
 }
 
 async fn cancel_a2a_task(
@@ -822,6 +1117,8 @@ async fn cancel_a2a_task(
     if let Some(sender) = state.a2a_cancel_senders.lock().await.remove(task_id) {
         let _ = sender.send(true);
     }
+    publish_a2a_task_update(state, &task);
+    persist_a2a_tasks(state).await;
 
     Ok(task)
 }
@@ -867,6 +1164,239 @@ fn a2a_task_visible_to_auth(task: &Value, auth: &AuthContext) -> bool {
     auth.subject
         .as_deref()
         .is_some_and(|subject| a2a_task_owner_subject(task) == Some(subject))
+}
+
+async fn load_a2a_tasks(path: &Path) -> HashMap<String, Value> {
+    let raw = match tokio::fs::read_to_string(path).await {
+        Ok(raw) => raw,
+        Err(error) => {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                eprintln!("failed to read A2A task ledger {}: {error}", path.display());
+            }
+            return HashMap::new();
+        }
+    };
+    let parsed: Value = match serde_json::from_str(&raw) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            eprintln!(
+                "failed to parse A2A task ledger {}: {error}",
+                path.display()
+            );
+            return HashMap::new();
+        }
+    };
+    let tasks = parsed
+        .get("tasks")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    tasks
+        .into_iter()
+        .filter_map(|task| {
+            let task_id = task.get("id").and_then(Value::as_str)?.trim().to_string();
+            (!task_id.is_empty()).then_some((task_id, task))
+        })
+        .collect()
+}
+
+async fn persist_a2a_tasks(state: &AppState) {
+    let _guard = state.a2a_task_persist_lock.lock().await;
+    let mut tasks = state
+        .a2a_tasks
+        .lock()
+        .await
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    tasks.sort_by(|left, right| {
+        a2a_task_status_timestamp(left)
+            .unwrap_or_default()
+            .cmp(a2a_task_status_timestamp(right).unwrap_or_default())
+            .then_with(|| {
+                left.get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .cmp(right.get("id").and_then(Value::as_str).unwrap_or_default())
+            })
+    });
+    let body = serde_json::to_vec_pretty(&serde_json::json!({ "tasks": tasks }))
+        .unwrap_or_else(|_| br#"{"tasks":[]}"#.to_vec());
+    let path = &state.config.a2a_tasks_file_path;
+    if let Some(parent) = path.parent() {
+        if let Err(error) = tokio::fs::create_dir_all(parent).await {
+            eprintln!(
+                "failed to create A2A task ledger directory {}: {error}",
+                parent.display()
+            );
+            return;
+        }
+    }
+    let tmp_path = path.with_extension("json.tmp");
+    if let Err(error) = tokio::fs::write(&tmp_path, body).await {
+        eprintln!(
+            "failed to write A2A task ledger {}: {error}",
+            tmp_path.display()
+        );
+        return;
+    }
+    if let Err(error) = tokio::fs::rename(&tmp_path, path).await {
+        eprintln!(
+            "failed to replace A2A task ledger {}: {error}",
+            path.display()
+        );
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+    }
+}
+
+fn publish_a2a_task_update(state: &AppState, task: &Value) {
+    let _ = state.a2a_task_events.send(task.clone());
+}
+
+async fn a2a_list_tasks_response(
+    head: &RequestHead,
+    state: &AppState,
+    auth: &AuthContext,
+) -> Result<Value, Vec<u8>> {
+    let page_size = match a2a_usize_query(head, &["pageSize", "page_size", "limit"]) {
+        Ok(Some(value)) => value.clamp(1, A2A_MAX_LIST_PAGE_SIZE),
+        Ok(None) => A2A_DEFAULT_LIST_PAGE_SIZE,
+        Err(message) => return Err(a2a_error_response(400, "INVALID_REQUEST", &message)),
+    };
+    let page_token = match a2a_usize_query(head, &["pageToken", "page_token", "offset"]) {
+        Ok(Some(value)) => value,
+        Ok(None) => 0,
+        Err(message) => return Err(a2a_error_response(400, "INVALID_REQUEST", &message)),
+    };
+    let context_id = a2a_string_query(head, &["contextId", "context_id"]);
+    let status =
+        a2a_string_query(head, &["status", "state"]).map(|value| a2a_normalize_state(&value));
+    let status_timestamp_after = a2a_string_query(
+        head,
+        &[
+            "statusTimestampAfter",
+            "status_timestamp_after",
+            "lastUpdatedAfter",
+            "last_updated_after",
+        ],
+    );
+    let include_artifacts = match a2a_bool_query(head, &["includeArtifacts", "include_artifacts"]) {
+        Ok(Some(value)) => value,
+        Ok(None) => false,
+        Err(message) => return Err(a2a_error_response(400, "INVALID_REQUEST", &message)),
+    };
+
+    let mut tasks = state
+        .a2a_tasks
+        .lock()
+        .await
+        .values()
+        .filter(|task| a2a_task_visible_to_auth(task, auth))
+        .filter(|task| {
+            context_id.as_deref().is_none_or(|context_id| {
+                task.get("contextId")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| value == context_id)
+            })
+        })
+        .filter(|task| {
+            status
+                .as_deref()
+                .is_none_or(|status| a2a_task_status_state(task) == Some(status))
+        })
+        .filter(|task| {
+            status_timestamp_after.as_deref().is_none_or(|after| {
+                a2a_task_status_timestamp(task).is_some_and(|timestamp| timestamp >= after)
+            })
+        })
+        .map(|task| a2a_task_for_query(task, head, include_artifacts))
+        .collect::<Vec<_>>();
+    tasks.sort_by(|left, right| {
+        a2a_task_status_timestamp(right)
+            .unwrap_or_default()
+            .cmp(a2a_task_status_timestamp(left).unwrap_or_default())
+            .then_with(|| {
+                left.get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .cmp(right.get("id").and_then(Value::as_str).unwrap_or_default())
+            })
+    });
+    let total_size = tasks.len();
+    let page = tasks
+        .into_iter()
+        .skip(page_token)
+        .take(page_size)
+        .collect::<Vec<_>>();
+    let next_offset = page_token.saturating_add(page.len());
+    let next_page_token = (next_offset < total_size).then(|| next_offset.to_string());
+    Ok(serde_json::json!({
+        "tasks": page,
+        "nextPageToken": next_page_token.unwrap_or_default(),
+        "pageSize": page_size,
+        "totalSize": total_size
+    }))
+}
+
+fn a2a_task_for_query(task: &Value, head: &RequestHead, include_artifacts: bool) -> Value {
+    let mut task = task.clone();
+    if !include_artifacts {
+        task["artifacts"] = Value::Array(Vec::new());
+    }
+    if let Ok(Some(history_length)) = a2a_usize_query(head, &["historyLength", "history_length"]) {
+        if let Some(history) = task.get_mut("history").and_then(Value::as_array_mut) {
+            if history_length == 0 {
+                history.clear();
+            } else if history.len() > history_length {
+                let start = history.len() - history_length;
+                history.drain(..start);
+            }
+        }
+    }
+    task
+}
+
+fn a2a_string_query(head: &RequestHead, names: &[&str]) -> Option<String> {
+    names.iter().find_map(|name| {
+        head.query
+            .get(*name)
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn a2a_usize_query(head: &RequestHead, names: &[&str]) -> Result<Option<usize>, String> {
+    let Some(value) = a2a_string_query(head, names) else {
+        return Ok(None);
+    };
+    value
+        .parse::<usize>()
+        .map(Some)
+        .map_err(|_| format!("A2A query parameter {} must be an integer", names[0]))
+}
+
+fn a2a_bool_query(head: &RequestHead, names: &[&str]) -> Result<Option<bool>, String> {
+    let Some(value) = a2a_string_query(head, names) else {
+        return Ok(None);
+    };
+    match value.to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Ok(Some(true)),
+        "0" | "false" | "no" | "off" => Ok(Some(false)),
+        _ => Err(format!(
+            "A2A query parameter {} must be a boolean",
+            names[0]
+        )),
+    }
+}
+
+fn a2a_normalize_state(value: &str) -> String {
+    let upper = value.trim().to_ascii_uppercase();
+    if upper.starts_with("TASK_STATE_") {
+        upper
+    } else {
+        format!("TASK_STATE_{upper}")
+    }
 }
 
 async fn claim_a2a_send_task(
@@ -974,8 +1504,11 @@ async fn claim_a2a_send_task(
         Vec::new(),
         task_metadata.clone(),
     );
-    tasks.insert(task_id.clone(), task);
+    tasks.insert(task_id.clone(), task.clone());
     prune_a2a_terminal_tasks(&mut tasks);
+    drop(tasks);
+    publish_a2a_task_update(state, &task);
+    persist_a2a_tasks(state).await;
     Ok(A2ASendTarget {
         task_id,
         context_id,
@@ -1008,10 +1541,14 @@ async fn rollback_a2a_send_claim(state: &AppState, task_id: &str, previous_task:
         return;
     }
     if let Some(previous_task) = previous_task {
-        tasks.insert(task_id.to_string(), previous_task);
+        tasks.insert(task_id.to_string(), previous_task.clone());
+        drop(tasks);
+        publish_a2a_task_update(state, &previous_task);
     } else {
         tasks.remove(task_id);
+        drop(tasks);
     }
+    persist_a2a_tasks(state).await;
 }
 
 async fn a2a_canceled_task(state: &AppState, task_id: &str) -> Option<Value> {
@@ -1029,6 +1566,9 @@ async fn store_a2a_task_unless_canceled(state: &AppState, task_id: &str, task: V
     }
     tasks.insert(task_id.to_string(), task.clone());
     prune_a2a_terminal_tasks(&mut tasks);
+    drop(tasks);
+    publish_a2a_task_update(state, &task);
+    persist_a2a_tasks(state).await;
     task
 }
 
@@ -1256,11 +1796,12 @@ async fn complete_a2a_task(
 
 fn a2a_agent_card(head: &RequestHead, config: &Config) -> Value {
     let base_url = a2a_public_base_url(head, config);
-    serde_json::json!({
+    let mut card = serde_json::json!({
         "protocolVersion": A2A_PROTOCOL_VERSION,
         "name": trimmed_env("MAESTRO_A2A_AGENT_NAME")
             .unwrap_or_else(|| "Maestro Desktop Agent".to_string()),
-        "description": "Local Maestro Rust/TS TUI agent endpoint for A2A task delegation.",
+        "description": trimmed_env("MAESTRO_A2A_AGENT_DESCRIPTION")
+            .unwrap_or_else(|| "Local Maestro Rust/TS TUI agent endpoint for A2A task delegation.".to_string()),
         "url": base_url,
         "preferredTransport": "HTTP+JSON",
         "supportedInterfaces": [{
@@ -1274,24 +1815,137 @@ fn a2a_agent_card(head: &RequestHead, config: &Config) -> Value {
         },
         "version": env!("CARGO_PKG_VERSION"),
         "capabilities": {
-            "streaming": false,
+            "streaming": true,
             "pushNotifications": false,
-            "extendedAgentCard": false
+            "extendedAgentCard": true,
+            "extensions": [a2a_operating_plane_extension(false)]
         },
         "defaultInputModes": ["text/plain"],
         "defaultOutputModes": ["text/plain", "application/json"],
-        "skills": [{
-            "id": "maestro-tui-turn",
-            "name": "Maestro TUI turn",
-            "description": "Run a prompt through the local Maestro native TUI agent runner.",
-            "tags": ["maestro", "tui", "codex", "a2a"],
-            "examples": [
-                "Review the current workspace and summarize the next highest leverage action."
+        "skills": a2a_agent_skills()
+    });
+    if let Some(security) = a2a_agent_card_security(config) {
+        if let Value::Object(card) = &mut card {
+            card.insert("securitySchemes".to_string(), security.0);
+            card.insert("securityRequirements".to_string(), security.1);
+        }
+    }
+    card
+}
+
+fn a2a_extended_agent_card(head: &RequestHead, config: &Config) -> Value {
+    let mut card = a2a_agent_card(head, config);
+    if let Value::Object(card_object) = &mut card {
+        card_object.insert(
+            "documentationUrl".to_string(),
+            Value::String(
+                "https://github.com/evalops/maestro/tree/main/docs/protocols".to_string(),
+            ),
+        );
+        card_object.insert(
+            "metadata".to_string(),
+            serde_json::json!({
+                "runtime": "maestro-rust-control-plane",
+                "taskStore": "durable-file",
+                "taskStorePath": config.a2a_tasks_file_path.to_string_lossy(),
+                "streamingEndpoints": ["/message:stream", "/tasks/{id}:subscribe"],
+                "taskList": {
+                    "filters": ["contextId", "status", "statusTimestampAfter"],
+                    "pagination": { "defaultPageSize": A2A_DEFAULT_LIST_PAGE_SIZE, "maxPageSize": A2A_MAX_LIST_PAGE_SIZE },
+                    "historyLength": true,
+                    "includeArtifacts": true
+                },
+                "operatingPlane": {
+                    "extensionUri": EVALOPS_A2A_EXTENSION_URI,
+                    "correlationFields": [
+                        "workspaceId",
+                        "sessionId",
+                        "agentId",
+                        "actorId",
+                        "traceparent",
+                        "tracestate"
+                    ],
+                    "retentionFields": ["data_classification", "retention_class", "safe_summary"]
+                }
+            }),
+        );
+        card_object.insert(
+            "capabilities".to_string(),
+            serde_json::json!({
+                "streaming": true,
+                "pushNotifications": false,
+                "extendedAgentCard": true,
+                "extensions": [a2a_operating_plane_extension(true)]
+            }),
+        );
+    }
+    card
+}
+
+fn a2a_operating_plane_extension(extended: bool) -> Value {
+    serde_json::json!({
+        "uri": EVALOPS_A2A_EXTENSION_URI,
+        "description": "Carries EvalOps/Maestro workspace, session, trace, retention, and approval correlation metadata without changing core A2A task semantics.",
+        "required": false,
+        "params": {
+            "version": "1",
+            "metadataFields": [
+                "workspaceId",
+                "sessionId",
+                "agentId",
+                "actorId",
+                "traceparent",
+                "tracestate",
+                "data_classification",
+                "retention_class",
+                "safe_summary"
             ],
-            "inputModes": ["text/plain"],
-            "outputModes": ["text/plain", "application/json"]
-        }]
+            "extendedAgentCard": extended
+        }
     })
+}
+
+fn a2a_agent_card_security(config: &Config) -> Option<(Value, Value)> {
+    if !config.require_key {
+        return None;
+    }
+    Some((
+        serde_json::json!({
+            "maestroApiKey": {
+                "type": "apiKey",
+                "in": "header",
+                "name": "x-maestro-api-key",
+                "description": "Maestro control-plane API key."
+            },
+            "bearer": {
+                "type": "http",
+                "scheme": "bearer",
+                "description": "Bearer token accepted by Maestro shared-secret auth."
+            }
+        }),
+        serde_json::json!([
+            { "maestroApiKey": [] },
+            { "bearer": [] }
+        ]),
+    ))
+}
+
+fn a2a_agent_skills() -> Value {
+    let mut skill = serde_json::json!({
+        "id": "maestro-tui-turn",
+        "name": "Maestro TUI turn",
+        "description": "Run a prompt through the local Maestro native TUI agent runner.",
+        "tags": ["maestro", "tui", "codex", "a2a", "fleet"],
+        "examples": [
+            "Review the current workspace and summarize the next highest leverage action."
+        ],
+        "inputModes": ["text/plain"],
+        "outputModes": ["text/plain", "application/json"]
+    });
+    if let Some(model) = trimmed_env("MAESTRO_A2A_MODEL") {
+        skill["metadata"] = serde_json::json!({ "defaultModel": model });
+    }
+    Value::Array(vec![skill])
 }
 
 fn a2a_public_base_url(_head: &RequestHead, config: &Config) -> String {
@@ -3969,6 +4623,13 @@ fn usage_file_path() -> PathBuf {
     env::var("MAESTRO_USAGE_FILE")
         .map(PathBuf::from)
         .unwrap_or_else(|_| maestro_home().join("usage.json"))
+}
+
+fn a2a_tasks_file_path() -> PathBuf {
+    env::var("MAESTRO_A2A_TASKS_FILE")
+        .or_else(|_| env::var("CODEX_A2A_TASKS_FILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| maestro_home().join("a2a/tasks.json"))
 }
 
 async fn read_json_value(path: &str) -> Option<Value> {
@@ -9660,6 +10321,7 @@ setTimeout(() => {
             session_store_path: PathBuf::from("sessions.json"),
             command_prefs_path: PathBuf::from("command-prefs.json"),
             usage_file_path: PathBuf::from("usage.jsonl"),
+            a2a_tasks_file_path: unique_test_dir("maestro-a2a-tasks").join("tasks.json"),
             static_root: PathBuf::from("dist"),
             static_cache_max_age: 0,
             llm_gateway_models_url: None,
@@ -9716,6 +10378,7 @@ setTimeout(() => {
 
     fn test_app_state_with_sessions(sessions: HashMap<String, SessionRecord>) -> AppState {
         let config = Arc::new(auth_test_config());
+        let (a2a_task_events, _) = broadcast::channel(256);
         AppState {
             config: config.clone(),
             started_at: Instant::now(),
@@ -9736,6 +10399,8 @@ setTimeout(() => {
             approval_modes: Arc::new(Mutex::new(HashMap::new())),
             pending_tool_responses: Arc::new(Mutex::new(HashMap::new())),
             a2a_tasks: Arc::new(Mutex::new(HashMap::new())),
+            a2a_task_persist_lock: Arc::new(Mutex::new(())),
+            a2a_task_events,
             a2a_cancel_senders: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -10055,6 +10720,9 @@ setTimeout(() => {
             "POST /message:send HTTP/1.1\r\nHost: localhost\r\n\r\n",
             "GET /tasks/maestro-task-1 HTTP/1.1\r\nHost: localhost\r\n\r\n",
             "GET /tasks HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "POST /message:stream HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "GET /tasks/maestro-task-1:subscribe HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "GET /extendedAgentCard HTTP/1.1\r\nHost: localhost\r\n\r\n",
             "POST /tasks/maestro-task-1:cancel HTTP/1.1\r\nHost: localhost\r\n\r\n",
             "OPTIONS /message:send HTTP/1.1\r\nHost: localhost\r\n\r\n",
         ] {
@@ -10086,6 +10754,16 @@ setTimeout(() => {
         assert_eq!(
             card["supportedInterfaces"][0]["protocolBinding"],
             "HTTP+JSON"
+        );
+        assert_eq!(card["capabilities"]["streaming"], true);
+        assert_eq!(card["capabilities"]["extendedAgentCard"], true);
+        assert_eq!(
+            card["capabilities"]["extensions"][0]["uri"],
+            EVALOPS_A2A_EXTENSION_URI
+        );
+        assert_eq!(
+            card["securitySchemes"]["maestroApiKey"]["name"],
+            "x-maestro-api-key"
         );
         assert_eq!(card["skills"][0]["id"], "maestro-tui-turn");
         if let Some(previous_a2a_url) = previous_a2a_url {
@@ -10605,6 +11283,166 @@ setTimeout(() => {
         } else {
             env::remove_var("MAESTRO_AUTH_SHARED_SECRET");
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_tasks_list_supports_spec_filters_pagination_and_payload_trimming() {
+        let state = test_app_state_with_sessions(HashMap::new());
+        for (task_id, context_id, status, minute) in [
+            ("task-a", "ctx-1", "TASK_STATE_COMPLETED", 3),
+            ("task-b", "ctx-1", "TASK_STATE_COMPLETED", 2),
+            ("task-c", "ctx-2", "TASK_STATE_WORKING", 1),
+        ] {
+            let mut task = a2a_task_value(
+                task_id,
+                context_id,
+                status,
+                a2a_agent_message(context_id, "done"),
+                vec![
+                    a2a_agent_message(context_id, "first"),
+                    a2a_agent_message(context_id, "second"),
+                ],
+                vec![serde_json::json!({
+                    "artifactId": format!("{task_id}-artifact"),
+                    "parts": [{ "text": "artifact", "mediaType": "text/plain" }]
+                })],
+                serde_json::json!({}),
+            );
+            task["status"]["timestamp"] = Value::String(format!("2026-05-15T00:0{minute}:00Z"));
+            state
+                .a2a_tasks
+                .lock()
+                .await
+                .insert(task_id.to_string(), task);
+        }
+        let request = "GET /tasks?contextId=ctx-1&status=completed&pageSize=1&historyLength=1 HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\n\r\n";
+        let mut initial = request.as_bytes().to_vec();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (_client, mut server) = tcp_stream_pair().await;
+
+        let response =
+            response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
+        let tasks = response["tasks"]
+            .as_array()
+            .expect("tasks should be an array");
+
+        assert_eq!(response["totalSize"], 2);
+        assert_eq!(response["pageSize"], 1);
+        assert_eq!(response["nextPageToken"], "1");
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0]["id"], "task-a");
+        assert_eq!(tasks[0]["history"].as_array().unwrap().len(), 1);
+        assert_eq!(tasks[0]["artifacts"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_task_store_persists_control_plane_tasks_to_ledger_file() {
+        let root = TestDir::new("a2a-task-ledger");
+        let base_state = test_app_state_with_sessions(HashMap::new());
+        let mut config = auth_test_config();
+        config.a2a_tasks_file_path = root.path().join("tasks.json");
+        let state = AppState {
+            config: Arc::new(config),
+            ..base_state
+        };
+        let task = a2a_task_value(
+            "maestro-task-durable",
+            "ctx-1",
+            "TASK_STATE_COMPLETED",
+            a2a_agent_message("ctx-1", "complete"),
+            Vec::new(),
+            Vec::new(),
+            serde_json::json!({ "workspaceId": "ws-1" }),
+        );
+
+        store_a2a_task_unless_canceled(&state, "maestro-task-durable", task).await;
+        let loaded = load_a2a_tasks(&state.config.a2a_tasks_file_path).await;
+
+        assert_eq!(
+            loaded["maestro-task-durable"]["metadata"]["workspaceId"],
+            "ws-1"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_message_stream_emits_task_status_and_artifact_events() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous_fake = env::var("MAESTRO_A2A_FAKE_RESPONSE").ok();
+        env::set_var("MAESTRO_A2A_FAKE_RESPONSE", "streamed fake response");
+        let body = r#"{"message":{"messageId":"msg-1","contextId":"ctx-stream","role":"ROLE_USER","parts":[{"text":"hello","mediaType":"text/plain"}]}}"#;
+        let request = format!(
+            "POST /message:stream HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let initial = request.into_bytes();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let state = test_app_state_with_sessions(HashMap::new());
+        let (mut client, server) = tcp_stream_pair().await;
+        let state_for_run = state.clone();
+        let run = tokio::spawn(async move {
+            handle_a2a_streaming_endpoint(server, initial, head, state_for_run).await
+        });
+        let mut bytes = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), client.read_to_end(&mut bytes))
+            .await
+            .expect("stream response should close")
+            .expect("stream response should be readable");
+        run.await
+            .expect("stream task should join")
+            .expect("stream endpoint should succeed");
+        let response = String::from_utf8(bytes).expect("response should be utf-8");
+
+        assert!(response.contains("Content-Type: text/event-stream"));
+        assert!(response.contains("\"statusUpdate\""));
+        assert!(response.contains("\"artifactUpdate\""));
+        assert!(response.contains("streamed fake response"));
+        assert_eq!(state.a2a_tasks.lock().await.len(), 1);
+
+        if let Some(previous_fake) = previous_fake {
+            env::set_var("MAESTRO_A2A_FAKE_RESPONSE", previous_fake);
+        } else {
+            env::remove_var("MAESTRO_A2A_FAKE_RESPONSE");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_task_subscribe_streams_existing_terminal_snapshot() {
+        let state = test_app_state_with_sessions(HashMap::new());
+        let task = a2a_task_value(
+            "maestro-task-subscribe",
+            "ctx-1",
+            "TASK_STATE_COMPLETED",
+            a2a_agent_message("ctx-1", "complete"),
+            Vec::new(),
+            Vec::new(),
+            serde_json::json!({}),
+        );
+        state
+            .a2a_tasks
+            .lock()
+            .await
+            .insert("maestro-task-subscribe".to_string(), task);
+        let request = "GET /tasks/maestro-task-subscribe:subscribe HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\n\r\n";
+        let initial = request.as_bytes().to_vec();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (mut client, server) = tcp_stream_pair().await;
+        let state_for_run = state.clone();
+        let run = tokio::spawn(async move {
+            handle_a2a_streaming_endpoint(server, initial, head, state_for_run).await
+        });
+        let mut bytes = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), client.read_to_end(&mut bytes))
+            .await
+            .expect("subscribe response should close")
+            .expect("subscribe response should be readable");
+        run.await
+            .expect("subscribe task should join")
+            .expect("subscribe endpoint should succeed");
+        let response = String::from_utf8(bytes).expect("response should be utf-8");
+
+        assert!(response.contains("Content-Type: text/event-stream"));
+        assert!(response.contains("\"statusUpdate\""));
+        assert!(response.contains("maestro-task-subscribe"));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -13374,6 +14212,7 @@ setTimeout(() => {
             session_store_path: static_root.join("sessions.json"),
             command_prefs_path: static_root.join("command-prefs.json"),
             usage_file_path: static_root.join("usage.json"),
+            a2a_tasks_file_path: static_root.join("a2a-tasks.json"),
             static_root: static_root.clone(),
             static_cache_max_age: 60,
             llm_gateway_models_url: None,
@@ -13414,6 +14253,7 @@ setTimeout(() => {
             session_store_path: static_root.join("sessions.json"),
             command_prefs_path: static_root.join("command-prefs.json"),
             usage_file_path: static_root.join("usage.json"),
+            a2a_tasks_file_path: static_root.join("a2a-tasks.json"),
             static_root: static_root.clone(),
             static_cache_max_age: 60,
             llm_gateway_models_url: None,
@@ -13459,6 +14299,7 @@ setTimeout(() => {
                 session_store_path: root.path().join("sessions.json"),
                 command_prefs_path: root.path().join("command-prefs.json"),
                 usage_file_path: root.path().join("usage.json"),
+                a2a_tasks_file_path: root.path().join("a2a-tasks.json"),
                 static_root: root.path().to_path_buf(),
                 static_cache_max_age: 60,
                 llm_gateway_models_url: None,
@@ -13487,6 +14328,8 @@ setTimeout(() => {
             approval_modes: Arc::new(Mutex::new(HashMap::new())),
             pending_tool_responses: Arc::new(Mutex::new(HashMap::new())),
             a2a_tasks: Arc::new(Mutex::new(HashMap::new())),
+            a2a_task_persist_lock: Arc::new(Mutex::new(())),
+            a2a_task_events: broadcast::channel(256).0,
             a2a_cancel_senders: Arc::new(Mutex::new(HashMap::new())),
         };
         let (_client, mut server) = tcp_stream_pair().await;
@@ -13533,6 +14376,7 @@ setTimeout(() => {
                 session_store_path: session_store_path.clone(),
                 command_prefs_path: root.path().join("command-prefs.json"),
                 usage_file_path: root.path().join("usage.json"),
+                a2a_tasks_file_path: root.path().join("a2a-tasks.json"),
                 static_root: root.path().to_path_buf(),
                 static_cache_max_age: 60,
                 llm_gateway_models_url: None,
@@ -13564,6 +14408,8 @@ setTimeout(() => {
             approval_modes: Arc::new(Mutex::new(HashMap::new())),
             pending_tool_responses: Arc::new(Mutex::new(HashMap::new())),
             a2a_tasks: Arc::new(Mutex::new(HashMap::new())),
+            a2a_task_persist_lock: Arc::new(Mutex::new(())),
+            a2a_task_events: broadcast::channel(256).0,
             a2a_cancel_senders: Arc::new(Mutex::new(HashMap::new())),
         };
 
