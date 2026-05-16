@@ -22,7 +22,12 @@ function tempRoot(): string {
 async function writeSkillPackage(
 	root: string,
 	name: string,
-	options: { mcpTools?: string[]; toolbox?: boolean } = {},
+	options: {
+		allowedTools?: string;
+		frontmatterExtras?: string;
+		mcpTools?: string[];
+		toolbox?: boolean;
+	} = {},
 ): Promise<string> {
 	const skillDir = join(root, name);
 	await mkdir(join(skillDir, "reference"), { recursive: true });
@@ -42,9 +47,15 @@ async function writeSkillPackage(
 		);
 		chmodSync(toolPath, 0o755);
 	}
+	const allowedTools =
+		options.allowedTools ??
+		"allowed-tools:\n  - read\nbuiltin-tools:\n  - read";
+	const frontmatterExtras = options.frontmatterExtras
+		? `${options.frontmatterExtras}\n`
+		: "";
 	writeFileSync(
 		join(skillDir, "SKILL.md"),
-		`---\nname: ${name}\ndescription: "Evaluate ${name}. Use when the user asks for Agent Core skill validation."\nallowed-tools:\n  - read\nbuiltin-tools:\n  - read\nisolatedContext: true\n---\n\n# ${name}\n\nKeep the package small and load heavy context from reference files.\n`,
+		`---\nname: ${name}\ndescription: "Evaluate ${name}. Use when the user asks for Agent Core skill validation."\n${allowedTools}\n${frontmatterExtras}isolatedContext: true\n---\n\n# ${name}\n\nKeep the package small and load heavy context from reference files.\n`,
 	);
 	writeFileSync(
 		join(skillDir, "reference", "overview.md"),
@@ -112,6 +123,44 @@ describe("skill package eval harness", () => {
 		expect(formatSkillEvalText(report)).toContain(
 			"2 passed, 0 failed, score 1.00",
 		);
+	});
+
+	it("marks loader-rejected frontmatter as non-loadable", async () => {
+		const root = tempRoot();
+		const unexpectedField = await writeSkillPackage(root, "future-field", {
+			frontmatterExtras: "unknownField: true",
+		});
+		const invalidToolList = await writeSkillPackage(root, "bad-tools", {
+			allowedTools: "allowed-tools: []\nbuiltin-tools:\n  - read",
+		});
+
+		const report = await evaluateSkillPackages([
+			{
+				id: "unexpected-field",
+				path: unexpectedField,
+				expectedOutcome: "fail",
+			},
+			{
+				id: "invalid-tool-list",
+				path: invalidToolList,
+				expectedOutcome: "fail",
+			},
+		]);
+
+		expect(report.summary).toEqual({
+			total: 2,
+			passed: 2,
+			failed: 0,
+			score: 1,
+		});
+		for (const result of report.results) {
+			expect(result.assertions).toContainEqual(
+				expect.objectContaining({
+					code: "skill_md_loadable",
+					status: "fail",
+				}),
+			);
+		}
 	});
 
 	it("routes maestro skill eval and emits JSON", async () => {

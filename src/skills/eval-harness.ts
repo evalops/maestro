@@ -63,16 +63,23 @@ function hasIssuePrefix(result: SkillLintResult, prefixes: string[]): boolean {
 	);
 }
 
+const LOADER_BLOCKING_ISSUE_CODES = [
+	"missing_skill_md",
+	"invalid_skill_md",
+	"unexpected_field",
+	"missing_name",
+	"invalid_name",
+	"name_too_long",
+	"name_mismatch",
+	"missing_description",
+	"description_too_long",
+	"invalid_compatibility",
+	"invalid_string_list",
+];
+
 function assertionsFor(result: SkillLintResult): SkillEvalAssertion[] {
 	const lintPasses = !hasSkillLintErrors([result]);
-	const loadable = !hasIssue(result, [
-		"missing_skill_md",
-		"invalid_skill_md",
-		"missing_name",
-		"invalid_name",
-		"name_mismatch",
-		"missing_description",
-	]);
+	const loadable = !hasIssue(result, LOADER_BLOCKING_ISSUE_CODES);
 	const boundedMcp = !hasIssue(result, [
 		"mcp_tools_unfiltered",
 		"invalid_mcp_include_tools",
