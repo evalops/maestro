@@ -174,6 +174,10 @@ export function printHelp(
   # Import a portable session log into this workspace
   maestro import ./session.json
 
+  # Scaffold and validate progressive skill packages
+  maestro skill new processing-incidents --description "Process incident reports. Use when the user asks for incident triage."
+  maestro skill lint .maestro/skills
+
   # Start a hosted EvalOps runner session and wait for attach readiness
   maestro remote start --workspace ws_123 --repo evalops/foo --branch main --ttl 90m --wait --verify
 
@@ -261,6 +265,12 @@ export function printHelp(
   maestro memory export <id>      Export metrics log as JSONL
   maestro memory watch [id] [ms]  Poll status/metrics continuously`,
 	)}`;
+	const skillSection = `${sectionHeading("maestro skill")}${muted(
+		`  maestro skill list                 List available progressive skills
+  maestro skill inspect <name>       Print one skill package manifest
+  maestro skill new <name>           Scaffold SKILL.md, reference/, scripts/, toolbox/, and mcp.json.example
+  maestro skill lint [path...]       Validate frontmatter, budget, mcp.json includeTools, and toolbox shape`,
+	)}`;
 	const remoteSection = `${sectionHeading("maestro remote")}${muted(
 		`  maestro remote start --workspace <id> --repo <repo> --branch <branch> [--ttl 90m] [--wait] [--verify]
   maestro remote list --workspace <id> [--state running]
@@ -333,6 +343,7 @@ export function printHelp(
 			webSection,
 			portabilitySection,
 			memorySection,
+			skillSection,
 			initSection,
 			runSection,
 			remoteSection,

@@ -662,6 +662,12 @@ export async function main(args: string[]) {
 		return;
 	}
 
+	if (parsed.command === "skill") {
+		const { handleSkillCommand } = await import("./cli/commands/skill.js");
+		await handleSkillCommand(parsed.subcommand, parsed.commandArgs ?? []);
+		return;
+	}
+
 	// If we're about to enter interactive TUI mode (no prompt messages and not RPC/exec),
 	// or headless mode (stdout is JSON-only), redirect all logging/console output to a file.
 	// This must run before config/model loading to catch any early warnings.

@@ -35,13 +35,31 @@ export {
 	type SkillDefinition,
 	type SkillResource,
 	findSkill,
+	findSkillMd,
 	formatSkillForInjection,
 	formatSkillListItem,
 	formatSkillMetadataOnly,
 	formatSkillsForSystemPrompt,
 	getSkillsSummary,
 	loadSkills,
+	parseFrontmatter,
 	searchSkills,
+	skillToDict,
+	skillToJson,
+	skillsToPrompt,
+	stringArrayValue,
 } from "./loader.js";
 
 export { createSkillTool, invalidateSkillCache } from "./tool.js";
+export {
+	type SkillLintIssue,
+	type SkillLintResult,
+	type SkillScaffoldOptions,
+	SKILL_BODY_MAX_CHARS,
+	SKILL_BODY_MAX_LINES,
+	formatSkillLintText,
+	hasSkillLintErrors,
+	lintSkillDirectory,
+	lintSkillPaths,
+	scaffoldSkill,
+} from "./linter.js";
