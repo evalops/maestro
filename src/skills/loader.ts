@@ -151,6 +151,7 @@ export class SkillLoadError extends Error {
 			| "INVALID_NAME"
 			| "INVALID_DESCRIPTION"
 			| "INVALID_COMPATIBILITY"
+			| "INVALID_TOOL_LIST"
 			| "UNEXPECTED_FIELDS"
 			| "NAME_MISMATCH"
 			| "READ_ERROR",
@@ -166,8 +167,14 @@ function stringValue(value: unknown): string | undefined {
 
 export function stringArrayValue(value: unknown): string[] | undefined {
 	if (Array.isArray(value)) {
+		if (
+			value.length === 0 ||
+			value.some((entry) => typeof entry !== "string" || entry.trim() === "")
+		) {
+			return undefined;
+		}
 		const values = value
-			.map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+			.map((entry) => entry.trim())
 			.filter((entry) => entry.length > 0);
 		return values.length > 0 ? values : undefined;
 	}
@@ -179,6 +186,26 @@ export function stringArrayValue(value: unknown): string[] | undefined {
 		return values.length > 0 ? values : undefined;
 	}
 	return undefined;
+}
+
+function validateStringArrayField(
+	value: unknown,
+	field: string,
+): string | null {
+	if (value === undefined) {
+		return null;
+	}
+	if (typeof value === "string") {
+		return stringArrayValue(value)
+			? null
+			: `${field} must be a non-empty string or list of non-empty strings`;
+	}
+	if (Array.isArray(value)) {
+		return stringArrayValue(value)
+			? null
+			: `${field} entries must all be non-empty strings`;
+	}
+	return `${field} must be a non-empty string or list of non-empty strings`;
 }
 
 function booleanValue(value: unknown): boolean | undefined {
@@ -428,6 +455,17 @@ function loadSkillFromDirectory(
 					compatError,
 					skillFile,
 					"INVALID_COMPATIBILITY",
+				);
+			}
+		}
+
+		for (const field of ["allowed-tools", "builtin-tools"]) {
+			const toolListError = validateStringArrayField(frontmatter[field], field);
+			if (toolListError) {
+				return new SkillLoadError(
+					toolListError,
+					skillFile,
+					"INVALID_TOOL_LIST",
 				);
 			}
 		}

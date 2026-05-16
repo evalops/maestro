@@ -118,6 +118,31 @@ describe("skill package format", () => {
 		);
 	});
 
+	it("rejects mixed-type tool permission lists", async () => {
+		const workspace = tempRoot();
+		const skillDir = join(workspace, ".maestro", "skills", "reviewing-prs");
+		await mkdir(skillDir, { recursive: true });
+		writeFileSync(
+			join(skillDir, "SKILL.md"),
+			`---\nname: reviewing-prs\ndescription: "Review pull requests. Use when the user asks for PR review."\nallowed-tools:\n  - read\n  - 123\nbuiltin-tools:\n  - read\n---\n\n# Reviewing PRs\n`,
+		);
+
+		const lintResult = await lintSkillDirectory(skillDir);
+		const loaded = loadSkills(workspace, { includeSystem: false });
+
+		expect(hasSkillLintErrors([lintResult])).toBe(true);
+		expect(lintResult.issues).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					code: "invalid_string_list",
+					severity: "error",
+				}),
+			]),
+		);
+		expect(loaded.skills).toEqual([]);
+		expect(loaded.errors[0]?.code).toBe("INVALID_TOOL_LIST");
+	});
+
 	it("scaffolds a package that passes lint", async () => {
 		const root = tempRoot();
 		const scaffold = scaffoldSkill(root, "processing-incidents", {
