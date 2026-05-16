@@ -132,7 +132,7 @@ export async function handleA2ATuiCommand(
 	}
 	if (subcommand === "reply" || subcommand === "continue") {
 		context.showInfo(
-			"A2A task replies are not available in the TUI or CLI yet.",
+			"Use `maestro a2a reply <peer> <task-id> <text> --wait` to continue an actionable A2A task while the TUI task panel is being wired.",
 		);
 		return;
 	}
@@ -148,6 +148,7 @@ export async function handleA2ATuiCommand(
 			"/a2a fleet",
 			"/a2a peers",
 			"/a2a delegate <peer> <text>",
+			"/a2a reply <peer> <task-id> <text>",
 			"/a2a tasks [peer]",
 			"/a2a send <peer> <text>",
 		].join("\n"),

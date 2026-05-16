@@ -304,6 +304,125 @@ describe("A2A fleet delegation CLI", () => {
 		expect(plainLogs(errors)).not.toContain("super-secret-token");
 	});
 
+	it("replies to an existing task using the durable context", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-reply-"));
+		const registryPath = join(dir, "peers.json");
+		const tasksPath = join(dir, "tasks.json");
+		await writeRegistry(registryPath, baseUrl);
+		await writeFile(
+			tasksPath,
+			JSON.stringify({
+				tasks: [
+					{
+						id: "maestro-a2a-ledger-1",
+						kind: "delegation",
+						peer: "mac-mini",
+						taskId: "task-mac-mini-1",
+						contextId: "maestro-a2a-context-test",
+						messageId: "message-1",
+						text: "review the branch",
+						state: "TASK_STATE_INPUT_REQUIRED",
+						transcript: [
+							{
+								at: "2026-05-16T00:00:00.000Z",
+								role: "user",
+								text: "review the branch",
+								messageId: "message-1",
+							},
+						],
+						createdAt: "2026-05-16T00:00:00.000Z",
+						updatedAt: "2026-05-16T00:00:00.000Z",
+					},
+				],
+			}),
+		);
+		vi.stubEnv("MAC_MINI_A2A_TOKEN", "super-secret-token");
+
+		await handleA2ACommand([
+			"reply",
+			"mac-mini",
+			"task-mac-mini-1",
+			"use",
+			"the",
+			"short",
+			"smoke",
+			"--wait",
+			"--registry",
+			registryPath,
+			"--tasks",
+			tasksPath,
+			"--max-wait-ms",
+			"1000",
+			"--interval-ms",
+			"10",
+			"--timeout-ms",
+			"1000",
+		]);
+
+		expect(requests).toHaveLength(1);
+		expect(recordValue(requests[0]!.body, "message.taskId")).toBe(
+			"task-mac-mini-1",
+		);
+		expect(recordValue(requests[0]!.body, "message.contextId")).toBe(
+			"maestro-a2a-context-test",
+		);
+		expect(recordValue(requests[0]!.body, "message.metadata")).toMatchObject({
+			requestKind: "maestro-peer-task-reply",
+			referencedTaskId: "task-mac-mini-1",
+			relayPeer: "mac-mini",
+		});
+		expect(plainLogs(logs)).toContain(
+			"Replied to mac-mini task task-mac-mini-1",
+		);
+		expect(plainLogs(logs)).toContain("mac mini finished the smoke plan");
+
+		const ledgerRaw = await readFile(tasksPath, "utf8");
+		expect(ledgerRaw).toContain("review the branch");
+		expect(ledgerRaw).toContain("use the short smoke");
+		expect(ledgerRaw).toContain("mac mini finished the smoke plan");
+		expect(ledgerRaw).not.toContain("super-secret-token");
+		expect(errors.join("\n")).toBe("");
+	});
+
+	it("replies by task id when the local ledger context cannot be loaded", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-reply-no-ledger-"));
+		const registryPath = join(dir, "peers.json");
+		const tasksPath = join(dir, "tasks-as-dir");
+		await writeRegistry(registryPath, baseUrl);
+		await mkdir(tasksPath);
+		vi.stubEnv("MAC_MINI_A2A_TOKEN", "super-secret-token");
+
+		await expect(
+			handleA2ACommand([
+				"reply",
+				"mac-mini",
+				"task-mac-mini-1",
+				"use",
+				"the",
+				"short",
+				"smoke",
+				"--registry",
+				registryPath,
+				"--tasks",
+				tasksPath,
+				"--timeout-ms",
+				"1000",
+			]),
+		).resolves.toBeUndefined();
+
+		expect(requests).toHaveLength(1);
+		expect(recordValue(requests[0]!.body, "message.taskId")).toBe(
+			"task-mac-mini-1",
+		);
+		expect(recordValue(requests[0]!.body, "message.contextId")).toBeUndefined();
+		expect(plainLogs(logs)).toContain(
+			"Replied to mac-mini task task-mac-mini-1",
+		);
+		expect(plainLogs(errors)).toContain("could not load task reply context");
+		expect(plainLogs(errors)).toContain("A2A task ledger warning");
+		expect(plainLogs(errors)).not.toContain("super-secret-token");
+	});
+
 	it("reports wait completion when local ledger update fails", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "maestro-a2a-wait-ledger-fail-"));
 		const registryPath = join(dir, "peers.json");

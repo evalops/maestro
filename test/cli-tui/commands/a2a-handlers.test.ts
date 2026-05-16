@@ -81,7 +81,7 @@ describe("A2A TUI command handler", () => {
 		expect(context.showError).not.toHaveBeenCalled();
 	});
 
-	it("reports reply commands as unavailable", async () => {
+	it("routes reply commands to the native CLI handoff message", async () => {
 		const context = createContext(
 			"reply dev-desktop task-123 use the short smoke",
 		);
@@ -92,12 +92,12 @@ describe("A2A TUI command handler", () => {
 		});
 
 		expect(context.showInfo).toHaveBeenCalledWith(
-			"A2A task replies are not available in the TUI or CLI yet.",
+			"Use `maestro a2a reply <peer> <task-id> <text> --wait` to continue an actionable A2A task while the TUI task panel is being wired.",
 		);
 		expect(context.showError).not.toHaveBeenCalled();
 	});
 
-	it("omits reply commands from the fallback help", async () => {
+	it("includes reply commands in the fallback help", async () => {
 		const content: string[] = [];
 		const context = createContext("wat");
 
@@ -108,7 +108,7 @@ describe("A2A TUI command handler", () => {
 			requestRender: vi.fn(),
 		});
 
-		expect(content.join("\n")).not.toContain("/a2a reply <peer> <task-id> <text>");
+		expect(content.join("\n")).toContain("/a2a reply <peer> <task-id> <text>");
 		expect(context.showError).not.toHaveBeenCalled();
 	});
 });

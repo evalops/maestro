@@ -63,8 +63,22 @@ export interface UpdateA2ATaskInput extends A2ATaskLedgerOptions {
 	task: A2ATask;
 }
 
-const TERMINAL_STATE_PATTERN =
-	/(COMPLETED|FAILED|CANCELED|CANCELLED|REJECTED|INPUT_REQUIRED|AUTH_REQUIRED)/u;
+export interface RecordA2ATaskReplyInput extends A2ATaskLedgerOptions {
+	peer: string;
+	peerDisplayName?: string;
+	task: A2ATask;
+	text: string;
+	messageId: string;
+	metadata?: Record<string, string | number | boolean | undefined>;
+}
+
+interface A2ATaskResponseText {
+	text: string;
+	messageId?: string;
+}
+
+const FINAL_STATE_PATTERN = /(COMPLETED|FAILED|CANCELED|CANCELLED|REJECTED)/u;
+const ACTION_REQUIRED_STATE_PATTERN = /(INPUT_REQUIRED|AUTH_REQUIRED)/u;
 const LEDGER_LOCK_RETRY_MS = 25;
 const LEDGER_LOCK_HEARTBEAT_MS = 10_000;
 const LEDGER_LOCK_STALE_MS = 30_000;
@@ -321,19 +335,99 @@ export async function recordA2ATaskStart(
 				existingIndex >= 0 ? ledger.tasks[existingIndex]!.createdAt : now,
 			updatedAt: now,
 		};
-		const taskText = extractA2ATaskText(input.task);
-		if (taskText) {
-			entry.responseText = taskText;
+		const taskResponse = extractA2ATaskResponse(input.task);
+		if (taskResponse) {
+			entry.responseText = taskResponse.text;
 			entry.transcript.push({
 				at: now,
 				role: "agent",
-				text: taskText,
+				text: taskResponse.text,
 				state: input.task.status.state,
-				messageId: input.task.status.message?.messageId,
+				messageId: taskResponse.messageId,
 			});
 		}
-		if (isTerminalA2AState(entry.state)) {
+		if (isFinalA2AState(entry.state)) {
 			entry.completedAt = now;
+		} else {
+			delete entry.completedAt;
+		}
+		if (existingIndex >= 0) {
+			ledger.tasks[existingIndex] = entry;
+		} else {
+			ledger.tasks.push(entry);
+		}
+		const path = await writeA2ATaskLedger(ledger, input);
+		return { entry, path };
+	});
+}
+
+export async function recordA2ATaskReply(
+	input: RecordA2ATaskReplyInput,
+): Promise<{ entry: A2ATaskLedgerEntry; path: string }> {
+	return withA2ATaskLedgerLock(input, async () => {
+		const ledger = await loadA2ATaskLedger(input);
+		const now = (input.now ?? new Date()).toISOString();
+		const taskId = trimString(input.task.id) ?? fail("A2A task id is required");
+		const existingIndex = ledger.tasks.findIndex(
+			(entry) => entry.peer === input.peer && entry.taskId === taskId,
+		);
+		const previous =
+			existingIndex >= 0 ? ledger.tasks[existingIndex] : undefined;
+		const metadata = cleanMetadata({
+			...(previous?.metadata ?? {}),
+			...(input.metadata ?? {}),
+		});
+		const userText = input.text.trim();
+		const taskResponse = extractA2ATaskResponse(input.task);
+		const responseText = taskResponse?.text ?? previous?.responseText;
+		const entry: A2ATaskLedgerEntry = {
+			...(previous ?? {}),
+			id: previous?.id ?? `maestro-a2a-task-${randomUUID()}`,
+			kind: previous?.kind ?? "message",
+			peer: input.peer,
+			...((input.peerDisplayName ?? previous?.peerDisplayName)
+				? {
+						peerDisplayName: input.peerDisplayName ?? previous?.peerDisplayName,
+					}
+				: {}),
+			taskId,
+			...(trimString(input.task.contextId ?? previous?.contextId)
+				? { contextId: trimString(input.task.contextId ?? previous?.contextId) }
+				: {}),
+			messageId: input.messageId,
+			text: previous?.text ?? userText,
+			...(previous?.role ? { role: previous.role } : {}),
+			...(previous?.cwd ? { cwd: previous.cwd } : {}),
+			state: input.task.status.state,
+			...(responseText ? { responseText } : {}),
+			...(metadata ? { metadata } : {}),
+			transcript: [
+				...(previous?.transcript ?? []),
+				{
+					at: now,
+					role: "user",
+					text: userText,
+					messageId: input.messageId,
+				},
+			],
+			createdAt: previous?.createdAt ?? now,
+			updatedAt: now,
+			...(previous?.completedAt ? { completedAt: previous.completedAt } : {}),
+		};
+		if (taskResponse && shouldAppendAgentTranscript(entry, taskResponse)) {
+			entry.transcript = [
+				...entry.transcript,
+				{
+					at: now,
+					role: "agent",
+					text: taskResponse.text,
+					state: input.task.status.state,
+					messageId: taskResponse.messageId,
+				},
+			];
+		}
+		if (isFinalA2AState(input.task.status.state)) {
+			entry.completedAt = previous?.completedAt ?? now;
 		} else {
 			delete entry.completedAt;
 		}
@@ -362,8 +456,8 @@ export async function updateA2ATaskInLedger(
 		}
 		const now = (input.now ?? new Date()).toISOString();
 		const previous = ledger.tasks[index]!;
-		const responseText =
-			extractA2ATaskText(input.task) ?? previous.responseText;
+		const taskResponse = extractA2ATaskResponse(input.task);
+		const responseText = taskResponse?.text ?? previous.responseText;
 		const entry: A2ATaskLedgerEntry = {
 			...previous,
 			state: input.task.status.state,
@@ -372,24 +466,22 @@ export async function updateA2ATaskInLedger(
 				: {}),
 			...(responseText ? { responseText } : {}),
 			updatedAt: now,
-			...(isTerminalA2AState(input.task.status.state)
+			...(isFinalA2AState(input.task.status.state)
 				? { completedAt: previous.completedAt ?? now }
 				: {}),
 		};
-		if (
-			responseText &&
-			!entry.transcript.some(
-				(item) => item.role === "agent" && item.text === responseText,
-			)
-		) {
+		if (!isFinalA2AState(input.task.status.state)) {
+			delete entry.completedAt;
+		}
+		if (taskResponse && shouldAppendAgentTranscript(entry, taskResponse)) {
 			entry.transcript = [
 				...entry.transcript,
 				{
 					at: now,
 					role: "agent",
-					text: responseText,
+					text: taskResponse.text,
 					state: input.task.status.state,
-					messageId: input.task.status.message?.messageId,
+					messageId: taskResponse.messageId,
 				},
 			];
 		}
@@ -417,21 +509,60 @@ export function latestA2ATaskForPeer(
 }
 
 export function extractA2ATaskText(task: A2ATask): string | undefined {
-	return (
-		firstMessageText(task.status.message) ??
-		task.artifacts
-			?.flatMap((artifact) => artifact.parts)
-			.map((part) => trimString(part.text))
-			.find((text): text is string => Boolean(text)) ??
-		task.history
-			?.filter(isAgentMessage)
-			.map(firstMessageText)
-			.find((text): text is string => Boolean(text))
-	);
+	return extractA2ATaskResponse(task)?.text;
+}
+
+function extractA2ATaskResponse(
+	task: A2ATask,
+): A2ATaskResponseText | undefined {
+	const statusText = firstMessageText(task.status.message);
+	if (statusText) {
+		return {
+			text: statusText,
+			messageId: task.status.message?.messageId,
+		};
+	}
+	const artifactText = task.artifacts
+		?.flatMap((artifact) => artifact.parts)
+		.map((part) => trimString(part.text))
+		.find((text): text is string => Boolean(text));
+	if (artifactText) {
+		return { text: artifactText };
+	}
+	const latestAgentMessage = latestAgentMessageInHistory(task.history);
+	const historyText = firstMessageText(latestAgentMessage);
+	if (historyText) {
+		return {
+			text: historyText,
+			messageId: latestAgentMessage?.messageId,
+		};
+	}
+	return undefined;
+}
+
+function shouldAppendAgentTranscript(
+	entry: A2ATaskLedgerEntry,
+	response: A2ATaskResponseText,
+): boolean {
+	if (response.messageId) {
+		return !entry.transcript.some(
+			(item) => item.role === "agent" && item.messageId === response.messageId,
+		);
+	}
+	const last = entry.transcript.at(-1);
+	return !last || last.role !== "agent" || last.text !== response.text;
 }
 
 export function isTerminalA2AState(state: string): boolean {
-	return TERMINAL_STATE_PATTERN.test(
+	return isFinalA2AState(state) || isActionRequiredA2AState(state);
+}
+
+export function isFinalA2AState(state: string): boolean {
+	return FINAL_STATE_PATTERN.test(state.toUpperCase().replace(/[\s-]+/gu, "_"));
+}
+
+export function isActionRequiredA2AState(state: string): boolean {
+	return ACTION_REQUIRED_STATE_PATTERN.test(
 		state.toUpperCase().replace(/[\s-]+/gu, "_"),
 	);
 }
@@ -443,6 +574,23 @@ function firstMessageText(message: A2AMessage | undefined): string | undefined {
 function isAgentMessage(message: A2AMessage): boolean {
 	const role = message.role.toUpperCase();
 	return role === "ROLE_AGENT" || role === "AGENT";
+}
+
+function latestAgentMessageInHistory(
+	history: A2AMessage[] | undefined,
+): A2AMessage | undefined {
+	if (!history) {
+		return undefined;
+	}
+	for (const message of [...history].reverse()) {
+		if (!isAgentMessage(message)) {
+			continue;
+		}
+		if (firstMessageText(message)) {
+			return message;
+		}
+	}
+	return undefined;
 }
 
 function normalizeLedgerEntry(

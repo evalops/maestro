@@ -23,11 +23,13 @@ import {
 	upsertA2APeerFromPairingPayload,
 } from "../../platform/a2a-peer-registry.js";
 import {
+	type A2ATaskLedgerEntry,
 	extractA2ATaskText,
 	getA2ATaskLedgerPath,
 	isTerminalA2AState,
 	listA2ATaskEntries,
 	loadA2ATaskLedger,
+	recordA2ATaskReply,
 	recordA2ATaskStart,
 	updateA2ATaskInLedger,
 } from "../../platform/a2a-task-ledger.js";
@@ -65,6 +67,13 @@ const A2A_VALUE_FLAGS_BY_SUBCOMMAND: Record<string, readonly string[]> = {
 		"--url",
 	],
 	peers: ["--registry"],
+	reply: [
+		"--interval-ms",
+		"--max-wait-ms",
+		"--registry",
+		"--tasks",
+		"--timeout-ms",
+	],
 	send: ["--interval-ms", "--max-wait-ms", "--registry", "--timeout-ms"],
 	tasks: ["--registry", "--tasks", "--timeout-ms"],
 	wait: [
@@ -79,6 +88,7 @@ const A2A_BOOLEAN_FLAGS_BY_SUBCOMMAND: Record<string, readonly string[]> = {
 	accept: ["--default"],
 	delegate: ["--wait"],
 	fleet: ["--json"],
+	reply: ["--wait"],
 	send: ["--wait"],
 	tasks: ["--json", "--refresh"],
 };
@@ -122,6 +132,10 @@ export async function handleA2ACommand(args: string[]): Promise<void> {
 		case "delegate":
 		case "delegation":
 			await handleA2ADelegate(parsed);
+			return;
+		case "reply":
+		case "continue":
+			await handleA2AReply(parsed);
 			return;
 		case "tasks":
 			await handleA2ATasks(parsed);
@@ -230,6 +244,8 @@ function canonicalA2ASubcommand(input: string | undefined): string {
 			return "peers";
 		case "delegation":
 			return "delegate";
+		case "continue":
+			return "reply";
 		default:
 			return input?.toLowerCase() ?? "help";
 	}
@@ -502,6 +518,94 @@ async function handleA2ADelegate(parsed: ParsedA2AArgs): Promise<void> {
 	printTask(task);
 }
 
+async function handleA2AReply(parsed: ParsedA2AArgs): Promise<void> {
+	const peerName =
+		parsed.positionals.shift() ??
+		fail("Usage: maestro a2a reply <peer> <task-id> <text>");
+	const taskId =
+		parsed.positionals.shift() ??
+		fail("Usage: maestro a2a reply <peer> <task-id> <text>");
+	const text = parsed.positionals.join(" ").trim();
+	if (!text) {
+		fail("Usage: maestro a2a reply <peer> <task-id> <text>");
+	}
+	const peer = await resolveA2APeer(peerName, {
+		path: stringFlag(parsed, "--registry"),
+		timeoutMs: numberFlag(parsed, "--timeout-ms"),
+	});
+	const existing = await loadA2AReplyLedgerEntry(parsed, peer.name, taskId);
+	const wait = booleanFlag(parsed, "--wait");
+	const messageId = `maestro-a2a-message-${randomUUID()}`;
+	const sent = await sendA2AMessage(peer.config, {
+		message: buildA2AUserMessage({
+			messageId,
+			contextId: existing?.contextId,
+			taskId,
+			text,
+			metadata: {
+				requestKind: "maestro-peer-task-reply",
+				relayPeer: peer.name,
+				referencedTaskId: taskId,
+			},
+		}),
+		configuration: { returnImmediately: true },
+	});
+	console.log(`Replied to ${chalk.bold(peer.name)} task ${sent.task.id}`);
+	await persistA2ALedgerBestEffort("record task reply locally", () =>
+		recordA2ATaskReply({
+			path: stringFlag(parsed, "--tasks"),
+			peer: peer.name,
+			peerDisplayName: peer.entry.displayName,
+			task: sent.task,
+			text,
+			messageId,
+			metadata: {
+				requestKind: "maestro-peer-task-reply",
+				relayPeer: peer.name,
+				referencedTaskId: taskId,
+			},
+		}),
+	);
+	const task = wait
+		? await waitForA2ATask(peer.config, sent.task.id, parsed)
+		: sent.task;
+	if (wait) {
+		await persistA2ALedgerBestEffort("sync replied task result locally", () =>
+			updateA2ATaskInLedger({
+				path: stringFlag(parsed, "--tasks"),
+				peer: peer.name,
+				task,
+			}),
+		);
+	}
+	printTask(task);
+}
+
+async function loadA2AReplyLedgerEntry(
+	parsed: ParsedA2AArgs,
+	peerName: string,
+	taskId: string,
+): Promise<A2ATaskLedgerEntry | undefined> {
+	try {
+		const ledger = await loadA2ATaskLedger({
+			path: stringFlag(parsed, "--tasks"),
+		});
+		return listA2ATaskEntries(ledger, { peer: peerName }).find(
+			(entry) => entry.taskId === taskId,
+		);
+	} catch (error) {
+		if (isAbortError(error)) {
+			throw error;
+		}
+		console.error(
+			chalk.yellow(
+				`A2A task ledger warning: could not load task reply context: ${errorMessage(error)}`,
+			),
+		);
+		return undefined;
+	}
+}
+
 async function handleA2ATasks(parsed: ParsedA2AArgs): Promise<void> {
 	const peerName = parsed.positionals.shift();
 	if (booleanFlag(parsed, "--refresh")) {
@@ -708,6 +812,7 @@ function printA2AHelp(): void {
   maestro a2a fleet [--json]
   maestro a2a card <peer>
   maestro a2a delegate <peer> <text> [--role <role>] [--cwd <path>] [--wait]
+  maestro a2a reply <peer> <task-id> <text> [--wait]
   maestro a2a send <peer> <text> [--wait]
   maestro a2a tasks [peer] [--json] [--refresh]
   maestro a2a wait <peer> <task-id>
