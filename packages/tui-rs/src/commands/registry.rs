@@ -74,9 +74,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::types::{
-    ArgumentValue, Command, CommandAction, CommandArgument, CommandCategory, CommandContext,
-    CommandError, CommandOutput, CommandResult, ExportAction, HistoryAction, HooksAction,
-    McpAction, ModalType, QueueAction, QueueModeKind, SessionAction, SkillsAction,
+    A2aAction, ArgumentValue, Command, CommandAction, CommandArgument, CommandCategory,
+    CommandContext, CommandError, CommandOutput, CommandResult, ExportAction, HistoryAction,
+    HooksAction, McpAction, ModalType, QueueAction, QueueModeKind, SessionAction, SkillsAction,
     ToolHistoryAction, UsageAction,
 };
 use crate::git;
@@ -503,6 +503,41 @@ fn parse_mcp_prompts_action(raw: &str) -> Result<McpAction, CommandError> {
     })
 }
 
+fn parse_a2a_action(raw: &str) -> Result<A2aAction, CommandError> {
+    let tokens = tokenize_command_args(raw);
+    let subcommand = tokens
+        .first()
+        .map(|value| value.to_ascii_lowercase())
+        .unwrap_or_default();
+    match subcommand.as_str() {
+        "" | "help" => Ok(A2aAction::Help),
+        "peers" | "list" => Ok(A2aAction::Peers),
+        "accept" => {
+            let code = tokens
+                .get(1)
+                .ok_or_else(|| CommandError::new("Usage: /a2a accept <pairing-code>"))?;
+            Ok(A2aAction::Accept { code: code.clone() })
+        }
+        "send" => {
+            let peer = tokens
+                .get(1)
+                .ok_or_else(|| CommandError::new("Usage: /a2a send <peer> <text>"))?;
+            let text = tokens.get(2..).unwrap_or(&[]).join(" ");
+            if text.trim().is_empty() {
+                return Err(CommandError::new("Usage: /a2a send <peer> <text>"));
+            }
+            Ok(A2aAction::Send {
+                peer: peer.clone(),
+                text,
+            })
+        }
+        _ => Err(
+            CommandError::new(format!("Unknown A2A subcommand: {subcommand}"))
+                .with_hint("Usage: /a2a [peers|accept <code>|send <peer> <text>]"),
+        ),
+    }
+}
+
 /// Build the default command registry with all built-in commands
 ///
 /// Constructs and returns a fully populated `CommandRegistry` containing all
@@ -714,6 +749,21 @@ pub fn build_command_registry() -> CommandRegistry {
         CommandCategory::Ui,
         Box::new(|_| Ok(CommandOutput::Action(CommandAction::CopyLastMessage))),
     ));
+
+    // A2A peer pairing command
+    registry.register(
+        Command::new(
+            "a2a",
+            "Pair and inspect A2A peer agents",
+            CommandCategory::Tools,
+            Box::new(|ctx| {
+                Ok(CommandOutput::Action(CommandAction::A2a(parse_a2a_action(
+                    &ctx.raw_args,
+                )?)))
+            }),
+        )
+        .usage("/a2a [peers|accept <code>|send <peer> <text>]"),
+    );
 
     // Queue command
     registry.register(
@@ -1902,6 +1952,46 @@ mod tests {
         assert!(registry.get("git").is_some());
         assert!(registry.get("diff").is_some());
         assert!(registry.get("review").is_some());
+        assert!(registry.get("a2a").is_some());
+    }
+
+    #[test]
+    fn a2a_command_parses_peer_actions() {
+        let registry = build_command_registry();
+
+        match registry
+            .execute("/a2a peers", "/tmp", None, None)
+            .expect("a2a peers should parse")
+        {
+            CommandOutput::Action(CommandAction::A2a(A2aAction::Peers)) => {}
+            other => panic!("expected a2a peers action, got {other:?}"),
+        }
+
+        match registry
+            .execute(
+                "/a2a accept maestro-pair-v1.payload.checksum",
+                "/tmp",
+                None,
+                None,
+            )
+            .expect("a2a accept should parse")
+        {
+            CommandOutput::Action(CommandAction::A2a(A2aAction::Accept { code })) => {
+                assert_eq!(code, "maestro-pair-v1.payload.checksum");
+            }
+            other => panic!("expected a2a accept action, got {other:?}"),
+        }
+
+        match registry
+            .execute("/a2a send mac-mini review this branch", "/tmp", None, None)
+            .expect("a2a send should parse")
+        {
+            CommandOutput::Action(CommandAction::A2a(A2aAction::Send { peer, text })) => {
+                assert_eq!(peer, "mac-mini");
+                assert_eq!(text, "review this branch");
+            }
+            other => panic!("expected a2a send action, got {other:?}"),
+        }
     }
 
     #[test]

@@ -994,6 +994,12 @@ export async function main(args: string[]) {
 		return;
 	}
 
+	if (parsed.command === "a2a") {
+		const { handleA2ACommand } = await import("./cli/commands/a2a.js");
+		await handleA2ACommand(parsed.commandArgs ?? []);
+		return;
+	}
+
 	if (parsed.command === "anthropic") {
 		const { handleAnthropicCommand } = await import(
 			"./cli/commands/anthropic.js"

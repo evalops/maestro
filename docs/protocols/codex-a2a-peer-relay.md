@@ -1,5 +1,9 @@
 # Codex A2A Peer Relay
 
+> Legacy note: this Python relay is retained as migration scaffolding. New peer
+> setup should use native Maestro pairing codes; see
+> [A2A Peer Pairing](./a2a-peer-pairing.md).
+
 `scripts/codex-a2a-peer.py` lets a fleet host initiate A2A handoffs to other
 Codex bridge peers without an operator brokering each `message:send` call.
 

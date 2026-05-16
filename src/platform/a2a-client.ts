@@ -176,7 +176,7 @@ export interface A2ATraceContext {
 	tracestate?: string;
 }
 
-function normalizeA2ABaseUrl(baseUrl: string): string {
+export function normalizeA2ABaseUrl(baseUrl: string): string {
 	let normalized = baseUrl.trim().replace(/\/+$/u, "");
 	for (const suffix of A2A_BASE_URL_SUFFIXES) {
 		if (normalized.endsWith(suffix)) {

@@ -232,6 +232,8 @@ pub enum CommandAction {
     CompactConversation(Option<String>),
     /// MCP (Model Context Protocol) actions
     Mcp(McpAction),
+    /// Agent-to-Agent peer pairing actions
+    A2a(A2aAction),
     /// Hook system management action
     HooksManage(HooksAction),
     /// Show usage and cost statistics
@@ -348,6 +350,19 @@ pub enum McpAction {
         name: Option<String>,
         arguments: HashMap<String, String>,
     },
+}
+
+/// Actions for A2A peer pairing commands.
+#[derive(Debug, Clone)]
+pub enum A2aAction {
+    /// Show native A2A pairing help.
+    Help,
+    /// List paired peers.
+    Peers,
+    /// Accept a pairing code.
+    Accept { code: String },
+    /// Send a message to a peer.
+    Send { peer: String, text: String },
 }
 
 /// Actions for managing the hook system

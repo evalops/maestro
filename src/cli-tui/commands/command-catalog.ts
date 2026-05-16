@@ -178,6 +178,15 @@ export const PRIMARY_COMMAND_CATALOG: readonly CommandCatalogEntry[] = [
 		usage: "/commands list | /commands run <name> [k=v]...",
 		tags: ["session", "automation"],
 	}),
+	withArgs("a2a", "a2a", {
+		description: "Pair and inspect A2A peer agents",
+		usage: "/a2a [accept <code>|peers|send <peer> <text>]",
+		tags: ["tools", "agents"],
+		examples: [
+			"/a2a peers",
+			"/a2a accept maestro-pair-v1.payload.checksum --name mac-mini",
+		],
+	}),
 	withArgs("report", "report", {
 		description: "Collect info for bug reports or general feedback",
 		usage: "/report [bug|feedback]",
