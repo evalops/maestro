@@ -21,11 +21,13 @@ describe("A2A fleet delegation CLI", () => {
 	let server: Server;
 	let baseUrl: string;
 	let requests: RequestRecord[];
+	let taskFetches: number;
 	let logs: string[];
 	let errors: string[];
 
 	beforeEach(async () => {
 		requests = [];
+		taskFetches = 0;
 		logs = [];
 		errors = [];
 		vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
@@ -103,6 +105,7 @@ describe("A2A fleet delegation CLI", () => {
 				request.method === "GET" &&
 				request.url === "/tasks/task-mac-mini-1"
 			) {
+				taskFetches += 1;
 				response.writeHead(200, { "Content-Type": "application/json" });
 				response.end(
 					JSON.stringify({
@@ -244,6 +247,20 @@ describe("A2A fleet delegation CLI", () => {
 				state: "TASK_STATE_COMPLETED",
 			}),
 		]);
+		const fetchesAfterCompletion = taskFetches;
+
+		logs = [];
+		await handleA2ACommand([
+			"tasks",
+			"--refresh",
+			"--registry",
+			registryPath,
+			"--tasks",
+			tasksPath,
+			"--timeout-ms",
+			"1000",
+		]);
+		expect(taskFetches).toBe(fetchesAfterCompletion);
 		expect(errors.join("\n")).toBe("");
 	});
 

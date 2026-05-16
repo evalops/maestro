@@ -55,6 +55,7 @@ export async function handleA2ATuiCommand(
 		const fleet = await inspectA2AFleet({
 			registryPath: stringFlag(parsed.flags, "--registry"),
 			tasksPath: stringFlag(parsed.flags, "--tasks"),
+			timeoutMs: numberFlag(parsed.flags, "--timeout-ms"),
 		});
 		deps.addContent(
 			[
@@ -168,4 +169,16 @@ function stringFlag(
 ): string | undefined {
 	const value = flags.get(name);
 	return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function numberFlag(
+	flags: Map<string, string | boolean>,
+	name: string,
+): number | undefined {
+	const value = stringFlag(flags, name);
+	if (!value) {
+		return undefined;
+	}
+	const parsed = Number(value);
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
