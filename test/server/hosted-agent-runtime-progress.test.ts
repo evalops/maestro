@@ -186,6 +186,7 @@ describe("hosted AgentRuntime progress recorder", () => {
 			workItem: expect.objectContaining({
 				id: "maestro:session_1:work:collab-call-1",
 				runId: "run_1",
+				ownerChildRunId: "codex-thread:child-thread-1",
 				kind: PlatformAgentWorkItemKindValue.ChildRun,
 				state: PlatformAgentWorkItemStateValue.Running,
 				title: "Codex subagent: spawn agent",
@@ -194,6 +195,7 @@ describe("hosted AgentRuntime progress recorder", () => {
 				evidenceRefs: [
 					"codex-tool-call:collab-call-1",
 					"codex-thread:child-thread-1",
+					"codex-child-run:codex-thread:child-thread-1",
 				],
 				completionGate: "codex_collab_tool_completed",
 				payload: expect.objectContaining({
@@ -202,6 +204,8 @@ describe("hosted AgentRuntime progress recorder", () => {
 					sender_thread_id: "parent-thread",
 					receiver_thread_ids: ["child-thread-1"],
 					receiver_thread_count: 1,
+					child_run_ids: ["codex-thread:child-thread-1"],
+					linked_work_item_ids: [],
 					model: "gpt-5.3-codex",
 					reasoning_effort: "high",
 					maestro_session_id: "session_1",
@@ -216,6 +220,7 @@ describe("hosted AgentRuntime progress recorder", () => {
 			evidenceRefs: [
 				"codex-tool-call:collab-call-1",
 				"codex-thread:child-thread-1",
+				"codex-child-run:codex-thread:child-thread-1",
 			],
 			completionGate: "codex_collab_tool_completed",
 			payload: expect.objectContaining({
@@ -223,8 +228,173 @@ describe("hosted AgentRuntime progress recorder", () => {
 				codex_tool: "spawnAgent",
 				result_error: false,
 				receiver_thread_ids: ["child-thread-1"],
+				child_run_ids: ["codex-thread:child-thread-1"],
+				linked_work_item_ids: ["maestro:session_1:work:collab-call-1"],
 			}),
 		});
+	});
+
+	it("links follow-up Codex subagent tools to the spawned child work item", async () => {
+		const { recorder, recordWorkItem, updateWorkItem } = createRecorder();
+
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "spawn-call",
+			toolName: "codex.subagent.spawnAgent",
+			displayName: "Codex subagent: spawn agent",
+			args: {
+				codexTool: "spawnAgent",
+				receiverThreadIds: ["child-thread-1"],
+				childRunIds: ["agent-run-child-1"],
+				prompt: "Review the remote-runner deployment",
+			},
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "send-call",
+			toolName: "codex.subagent.sendInput",
+			displayName: "Codex subagent: send input",
+			args: {
+				codexTool: "sendInput",
+				receiverThreadIds: ["child-thread-1"],
+				childRunIds: ["agent-run-child-1"],
+				prompt: "Focus on drain/restore risks",
+			},
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "wait-call",
+			toolName: "codex.subagent.wait",
+			displayName: "Codex subagent: wait",
+			args: {
+				codexTool: "wait",
+				receiverThreadIds: ["child-thread-1"],
+				childRunIds: ["agent-run-child-1"],
+			},
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_end",
+			toolCallId: "wait-call",
+			toolName: "codex.subagent.wait",
+			displayName: "Codex subagent: wait",
+			result: {
+				role: "toolResult",
+				toolCallId: "wait-call",
+				toolName: "codex.subagent.wait",
+				content: [{ type: "text", text: "wait completed" }],
+				details: {
+					codexTool: "wait",
+					receiverThreadIds: ["child-thread-1"],
+					childRunIds: ["agent-run-child-1"],
+				},
+				isError: false,
+				timestamp: 3,
+			},
+			isError: false,
+		} satisfies AgentEvent);
+
+		await recorder.flush();
+
+		expect(recordWorkItem).toHaveBeenNthCalledWith(1, {
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:work:spawn-call",
+				ownerChildRunId: "agent-run-child-1",
+				payload: expect.objectContaining({
+					child_run_ids: ["agent-run-child-1"],
+					linked_work_item_ids: [],
+				}),
+			}),
+		});
+		expect(recordWorkItem).toHaveBeenNthCalledWith(2, {
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:work:send-call",
+				parentWorkItemId: "maestro:session_1:work:spawn-call",
+				ownerChildRunId: "agent-run-child-1",
+				nextAction: "wait for child agent response",
+				payload: expect.objectContaining({
+					child_run_ids: ["agent-run-child-1"],
+					linked_work_item_ids: ["maestro:session_1:work:spawn-call"],
+				}),
+			}),
+		});
+		expect(recordWorkItem).toHaveBeenNthCalledWith(3, {
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:work:wait-call",
+				parentWorkItemId: "maestro:session_1:work:spawn-call",
+				ownerChildRunId: "agent-run-child-1",
+				kind: PlatformAgentWorkItemKindValue.Wait,
+				state: PlatformAgentWorkItemStateValue.Waiting,
+				nextAction: "wait for selected child agents",
+				payload: expect.objectContaining({
+					child_run_ids: ["agent-run-child-1"],
+					linked_work_item_ids: ["maestro:session_1:work:spawn-call"],
+				}),
+			}),
+		});
+		expect(updateWorkItem).toHaveBeenCalledWith(
+			expect.objectContaining({
+				runId: "run_1",
+				workItemId: "maestro:session_1:work:wait-call",
+				state: PlatformAgentWorkItemStateValue.Succeeded,
+				evidenceRefs: expect.arrayContaining([
+					"codex-child-run:agent-run-child-1",
+				]),
+				payload: expect.objectContaining({
+					child_run_ids: ["agent-run-child-1"],
+					linked_work_item_ids: ["maestro:session_1:work:spawn-call"],
+				}),
+			}),
+		);
+	});
+
+	it("omits ambiguous owner child run ids for multi-target subagent calls", async () => {
+		const { recorder, recordWorkItem } = createRecorder();
+
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "spawn-call",
+			toolName: "codex.subagent.spawnAgent",
+			displayName: "Codex subagent: spawn",
+			args: {
+				codexTool: "spawnAgent",
+				receiverThreadIds: ["child-thread-1"],
+				childRunIds: ["agent-run-child-1"],
+				prompt: "Review the implementation",
+			},
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "multi-send-call",
+			toolName: "codex.subagent.sendInput",
+			displayName: "Codex subagent: send input",
+			args: {
+				codexTool: "sendInput",
+				receiverThreadIds: ["child-thread-1"],
+				childRunIds: ["agent-run-child-1", "agent-run-child-2"],
+				prompt: "Compare the two implementations",
+			},
+		});
+
+		await recorder.flush();
+
+		const workItem = recordWorkItem.mock.calls
+			.map((call) => call[0].workItem)
+			.find((item) => item.id === "maestro:session_1:work:multi-send-call");
+		expect(workItem).toEqual(
+			expect.objectContaining({
+				id: "maestro:session_1:work:multi-send-call",
+				payload: expect.objectContaining({
+					receiver_thread_ids: ["child-thread-1"],
+					child_run_ids: ["agent-run-child-1", "agent-run-child-2"],
+					linked_work_item_ids: ["maestro:session_1:work:spawn-call"],
+				}),
+			}),
+		);
+		expect(workItem).not.toHaveProperty("ownerChildRunId");
+		expect(workItem).not.toHaveProperty("parentWorkItemId");
 	});
 
 	it("records pending server requests as waits and resumes them on resolution", async () => {

@@ -49,6 +49,7 @@ import { isContextFirewallBlockingEnabled } from "../config/env-vars.js";
 import { type ToolHookService, createToolHookService } from "../hooks/index.js";
 import { getProviderNetworkConfig } from "../providers/network-config.js";
 import { isStreamIdleTimeoutError } from "../providers/stream-idle-timeout.js";
+import { isAbortError } from "../utils/abort-error.js";
 import { type Clock, systemClock } from "../utils/clock.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -85,6 +86,7 @@ import { createProviderStream } from "./transport/create-provider-stream.js";
 import { stableStringify } from "./transport/stable-stringify.js";
 import {
 	type ObserveToolExecutionPlan,
+	type ObserveToolExecutionResult,
 	type PlatformToolExecutionBridge,
 	type ToolExecutionBridgePlan,
 	buildObservedResultMetadata,
@@ -201,23 +203,37 @@ async function recordReusableToolExecutionBridgeOutput({
 	if (!bridge || !plan) {
 		return outcome;
 	}
-	const observed =
-		plan.kind === "observe"
-			? await bridge.recordObservation(
-					plan as ObserveToolExecutionPlan,
-					outcome.message,
-					signal,
-				)
-			: undefined;
-	const governedOutput =
-		plan.kind === "governed"
-			? await bridge.recordGovernedOutput(
-					plan,
-					outcome.message,
-					durationMs,
-					signal,
-				)
-			: undefined;
+	let observed: ObserveToolExecutionResult | undefined;
+	let governedOutput: ObserveToolExecutionResult | undefined;
+	try {
+		observed =
+			plan.kind === "observe"
+				? await bridge.recordObservation(
+						plan as ObserveToolExecutionPlan,
+						outcome.message,
+						signal,
+					)
+				: undefined;
+		governedOutput =
+			plan.kind === "governed"
+				? await bridge.recordGovernedOutput(
+						plan,
+						outcome.message,
+						durationMs,
+						signal,
+					)
+				: undefined;
+	} catch (error) {
+		if (isAbortError(error)) {
+			throw error;
+		}
+		logger.warn("Failed to record reusable tool execution bridge output", {
+			error: error instanceof Error ? error.message : String(error),
+			toolName: outcome.message.toolName,
+			toolCallId: outcome.message.toolCallId,
+			bridgeMode: plan.kind,
+		});
+	}
 	return {
 		...outcome,
 		...buildObservedResultMetadata(plan, observed ?? governedOutput),
