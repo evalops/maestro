@@ -350,23 +350,24 @@ describe("codex-a2a-peer", () => {
 		expect(request?.headers["a2a-version"]).toBe("1.0");
 	});
 
-	it("uses defaultPeer when cancel is called with only a task id", async () => {
-		await runPeer(configPath, ["cancel", "task-1"], {
-			TEST_A2A_PEER_TOKEN: "super-secret-token",
-		});
-
-		expect(requests.some((item) => item.url === "/tasks/task-1:cancel")).toBe(
-			true,
-		);
-	});
-
-	it("rejects ambiguous one-argument cancel calls that match a peer", async () => {
+	it("requires an explicit peer and task id for cancel", async () => {
 		await expect(
 			runPeer(configPath, ["cancel", "mock"], {
 				TEST_A2A_PEER_TOKEN: "super-secret-token",
 			}),
 		).rejects.toMatchObject({
-			stderr: expect.stringContaining("task id is required for peer 'mock'"),
+			stderr: expect.stringContaining("the following arguments are required"),
+		});
+		expect(requests).toHaveLength(0);
+	});
+
+	it("fails unknown explicit cancel peers before sending", async () => {
+		await expect(
+			runPeer(configPath, ["cancel", "mok", "task-1"], {
+				TEST_A2A_PEER_TOKEN: "super-secret-token",
+			}),
+		).rejects.toMatchObject({
+			stderr: expect.stringContaining("unknown peer 'mok'"),
 		});
 		expect(requests).toHaveLength(0);
 	});
