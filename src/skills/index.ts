@@ -52,6 +52,16 @@ export {
 
 export { createSkillTool, invalidateSkillCache } from "./tool.js";
 export {
+	type SkillRuntimeActivation,
+	type SkillRuntimeMcpActivation,
+	type SkillRuntimeMcpServer,
+	type SkillRuntimeResource,
+	type SkillRuntimeResourceDirectories,
+	type SkillRuntimeToolboxActivation,
+	type SkillRuntimeToolboxEntry,
+	buildSkillRuntimeActivation,
+} from "./runtime-activation.js";
+export {
 	type SkillLintIssue,
 	type SkillLintResult,
 	type SkillScaffoldOptions,

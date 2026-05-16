@@ -1,4 +1,10 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +13,7 @@ import { parseArgs } from "../src/cli/args.js";
 import { handleSkillCommand } from "../src/cli/commands/skill.js";
 import { buildSkillArtifactMetadata } from "../src/skills/artifact-metadata.js";
 import {
+	buildSkillRuntimeActivation,
 	hasSkillLintErrors,
 	isWindowsRunnableToolboxEntry,
 	lintSkillDirectory,
@@ -91,6 +98,68 @@ describe("skill package format", () => {
 		expect(skills[0]?.resources.map((resource) => resource.name)).not.toContain(
 			"mcp.json.example",
 		);
+	});
+
+	it("emits the runtime activation contract from skill inspect json", async () => {
+		const workspace = tempRoot();
+		const skillDir = join(workspace, ".maestro", "skills", "reviewing-prs");
+		await mkdir(join(skillDir, "reference"), { recursive: true });
+		writeFileSync(
+			join(skillDir, "SKILL.md"),
+			`---\nname: reviewing-prs\ndescription: "Review pull requests. Use when the user asks for PR review."\nallowed-tools:\n  - read\nbuiltin-tools:\n  - read\nisolatedContext: true\n---\n\n# Reviewing PRs\n`,
+		);
+		writeFileSync(
+			join(skillDir, "mcp.json"),
+			JSON.stringify({
+				github: {
+					command: "npx",
+					includeTools: ["get_pull_request"],
+					env: { GITHUB_TOKEN: "${GITHUB_TOKEN}" },
+				},
+			}),
+		);
+
+		const originalLog = console.log;
+		const logs: string[] = [];
+		console.log = (...args: unknown[]) => {
+			logs.push(args.map((arg) => String(arg)).join(" "));
+		};
+		try {
+			await handleSkillCommand("inspect", ["reviewing-prs", "--json"], {
+				workspaceDir: workspace,
+			});
+		} finally {
+			console.log = originalLog;
+		}
+
+		const payload = JSON.parse(logs.join("\n")) as {
+			runtimeActivation?: {
+				name: string;
+				tools: { allowed: string[]; builtin: string[] };
+				resources: { directories: { reference?: string } };
+				toolPackage: {
+					mcp?: {
+						configPath: string;
+						servers: Array<{ name: string; includeTools: string[] }>;
+					};
+				};
+			};
+		};
+
+		expect(payload.runtimeActivation).toMatchObject({
+			name: "reviewing-prs",
+			tools: { allowed: ["read"], builtin: ["read"] },
+			resources: { directories: { reference: join(skillDir, "reference") } },
+			toolPackage: {
+				mcp: {
+					configPath: join(skillDir, "mcp.json"),
+					servers: [{ name: "github", includeTools: ["get_pull_request"] }],
+				},
+			},
+		});
+		expect(
+			payload.runtimeActivation?.toolPackage.mcp?.servers[0],
+		).not.toHaveProperty("env");
 	});
 
 	it("accepts quoted isolatedContext consistently across load and lint", async () => {
@@ -215,6 +284,108 @@ describe("skill package format", () => {
 		expect(result.issues.map((issue) => issue.code)).toContain(
 			"mcp_tools_unfiltered",
 		);
+	});
+
+	it("omits mixed-type bundled MCP includeTools from runtime activation", async () => {
+		const workspace = tempRoot();
+		const skillDir = join(workspace, ".maestro", "skills", "reviewing-prs");
+		await mkdir(skillDir, { recursive: true });
+		writeFileSync(
+			join(skillDir, "SKILL.md"),
+			`---\nname: reviewing-prs\ndescription: "Review pull requests. Use when the user asks for PR review."\nallowed-tools:\n  - read\nbuiltin-tools:\n  - read\n---\n\n# Reviewing PRs\n`,
+		);
+		writeFileSync(
+			join(skillDir, "mcp.json"),
+			JSON.stringify({
+				github: {
+					command: "npx",
+					includeTools: ["get_pull_request", 42, "list_pull_request_files"],
+				},
+			}),
+		);
+
+		const { skills, errors } = loadSkills(workspace, { includeSystem: false });
+
+		expect(errors).toEqual([]);
+		expect(
+			buildSkillRuntimeActivation(skills[0]!).toolPackage.mcp,
+		).toMatchObject({
+			servers: [],
+			warnings: [
+				"MCP server 'github' includeTools entries must be non-empty strings.",
+			],
+		});
+	});
+
+	it("omits unbounded bundled MCP servers from runtime activation", async () => {
+		const workspace = tempRoot();
+		const skillDir = join(workspace, ".maestro", "skills", "reviewing-prs");
+		await mkdir(skillDir, { recursive: true });
+		writeFileSync(
+			join(skillDir, "SKILL.md"),
+			`---\nname: reviewing-prs\ndescription: "Review pull requests. Use when the user asks for PR review."\n---\n\n# Reviewing PRs\n`,
+		);
+		writeFileSync(
+			join(skillDir, "mcp.json"),
+			JSON.stringify({
+				github: {
+					command: "npx",
+				},
+				unsafe: {
+					includeTools: ["unsafe_tool"],
+				},
+				linear: {
+					command: "npx",
+					includeTools: ["get_issue"],
+				},
+			}),
+		);
+
+		const { skills, errors } = loadSkills(workspace, { includeSystem: false });
+
+		expect(errors).toEqual([]);
+		expect(
+			buildSkillRuntimeActivation(skills[0]!).toolPackage.mcp,
+		).toMatchObject({
+			servers: [{ name: "linear", includeTools: ["get_issue"] }],
+			warnings: [
+				"MCP server 'github' does not declare bounded includeTools.",
+				"MCP server 'unsafe' requires a non-empty command.",
+			],
+		});
+	});
+
+	it("degrades unreadable toolbox directories to an empty activation", async () => {
+		if (process.platform === "win32" || process.getuid?.() === 0) {
+			return;
+		}
+
+		const workspace = tempRoot();
+		const skillDir = join(workspace, ".maestro", "skills", "reviewing-prs");
+		const toolboxDir = join(skillDir, "toolbox");
+		await mkdir(toolboxDir, { recursive: true });
+		writeFileSync(
+			join(skillDir, "SKILL.md"),
+			`---\nname: reviewing-prs\ndescription: "Review pull requests. Use when the user asks for PR review."\n---\n\n# Reviewing PRs\n`,
+		);
+		writeFileSync(join(toolboxDir, "run"), "echo ok\n", { mode: 0o755 });
+		const { skills, errors } = loadSkills(workspace, { includeSystem: false });
+		chmodSync(toolboxDir, 0o000);
+
+		try {
+			expect(errors).toEqual([]);
+			expect(
+				buildSkillRuntimeActivation(skills[0]!).toolPackage.toolbox,
+			).toMatchObject({
+				directory: toolboxDir,
+				entries: [],
+				warnings: [
+					expect.stringContaining("toolbox directory could not be read"),
+				],
+			});
+		} finally {
+			chmodSync(toolboxDir, 0o700);
+		}
 	});
 
 	it("classifies Windows toolbox entries by executable extension", () => {
@@ -403,6 +574,7 @@ describe("skill package format", () => {
 				sourcePath: skill.sourcePath,
 				resources: skill.resources,
 				resourceDirs: skill.resourceDirs,
+				runtimeActivation: buildSkillRuntimeActivation(skill),
 			},
 			null,
 			2,

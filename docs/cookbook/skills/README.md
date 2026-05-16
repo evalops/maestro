@@ -55,6 +55,21 @@ Run strict validation with:
 maestro skill lint .maestro/skills/reviewing-prs --describe-toolbox
 ```
 
+## Runtime Activation
+
+Loading a skill through the `Skill` tool returns a `skillRuntimeActivation`
+object in the tool result details. The same shape is available locally:
+
+```bash
+maestro skill inspect reviewing-prs --json
+```
+
+Use this manifest in harnesses and adapters when you need to see which
+references, toolbox executables, MCP servers, and tool bounds become active. MCP
+environment values remain in `mcp.json`; they are not copied into the activation
+manifest. Servers with missing or malformed `includeTools` are reported as
+warnings and omitted from the activatable server list.
+
 ## Eval Harness
 
 Use `maestro skill eval` when a package needs pass/fail evidence rather than
