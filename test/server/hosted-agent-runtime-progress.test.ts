@@ -350,6 +350,37 @@ describe("hosted AgentRuntime progress recorder", () => {
 		);
 	});
 
+	it("omits ambiguous owner child run ids for multi-target subagent calls", async () => {
+		const { recorder, recordWorkItem } = createRecorder();
+
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "multi-send-call",
+			toolName: "codex.subagent.sendInput",
+			displayName: "Codex subagent: send input",
+			args: {
+				codexTool: "sendInput",
+				receiverThreadIds: ["child-thread-1", "child-thread-2"],
+				childRunIds: ["agent-run-child-1", "agent-run-child-2"],
+				prompt: "Compare the two implementations",
+			},
+		});
+
+		await recorder.flush();
+
+		const workItem = recordWorkItem.mock.calls[0]?.[0].workItem;
+		expect(workItem).toEqual(
+			expect.objectContaining({
+				id: "maestro:session_1:work:multi-send-call",
+				payload: expect.objectContaining({
+					receiver_thread_ids: ["child-thread-1", "child-thread-2"],
+					child_run_ids: ["agent-run-child-1", "agent-run-child-2"],
+				}),
+			}),
+		);
+		expect(workItem).not.toHaveProperty("ownerChildRunId");
+	});
+
 	it("records pending server requests as waits and resumes them on resolution", async () => {
 		const { recorder, waitRun, resumeRun } = createRecorder();
 		const registered: ServerRequestLifecycleEvent = {
