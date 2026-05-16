@@ -8,6 +8,7 @@ import { handleSkillCommand } from "../src/cli/commands/skill.js";
 import { buildSkillArtifactMetadata } from "../src/skills/artifact-metadata.js";
 import {
 	hasSkillLintErrors,
+	isWindowsRunnableToolboxEntry,
 	lintSkillDirectory,
 	loadSkills,
 	parseFrontmatter,
@@ -220,6 +221,17 @@ describe("skill package format", () => {
 
 		expect(logs.join("\n")).toContain("No skills found.");
 		expect(errors.join("\n")).toContain("1 skill load warning(s).");
+	});
+
+	it("classifies Windows toolbox entries by executable extension or shebang", () => {
+		expect(isWindowsRunnableToolboxEntry("tool.cmd", "", ".CMD;.EXE")).toBe(
+			true,
+		);
+		expect(isWindowsRunnableToolboxEntry("tool", "#!/usr/bin/env node\n")).toBe(
+			true,
+		);
+		expect(isWindowsRunnableToolboxEntry("tool.txt", "echo hi")).toBe(false);
+		expect(isWindowsRunnableToolboxEntry("tool", "echo hi")).toBe(false);
 	});
 
 	it("scaffolds a package that passes lint", async () => {

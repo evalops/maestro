@@ -8,7 +8,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { constants, access } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { basename, extname, join, resolve } from "node:path";
 import {
 	SKILL_FRONTMATTER_FIELDS,
 	findSkillMd,
@@ -305,7 +305,42 @@ function validateMcpJson(skillDir: string): SkillLintIssue[] {
 	return issues;
 }
 
+const DEFAULT_WINDOWS_EXECUTABLE_EXTENSIONS = ".COM;.EXE;.BAT;.CMD;.PS1";
+
+function windowsExecutableExtensions(
+	pathExt = process.env.PATHEXT,
+): Set<string> {
+	return new Set(
+		(pathExt || DEFAULT_WINDOWS_EXECUTABLE_EXTENSIONS)
+			.split(";")
+			.map((entry) => entry.trim().toUpperCase())
+			.filter(Boolean),
+	);
+}
+
+export function isWindowsRunnableToolboxEntry(
+	path: string,
+	contentSample = "",
+	pathExt = process.env.PATHEXT,
+): boolean {
+	const extension = extname(path).toUpperCase();
+	if (extension && windowsExecutableExtensions(pathExt).has(extension)) {
+		return true;
+	}
+	return contentSample.startsWith("#!");
+}
+
 async function isExecutable(path: string): Promise<boolean> {
+	if (process.platform === "win32") {
+		try {
+			return isWindowsRunnableToolboxEntry(
+				path,
+				readFileSync(path, "utf8").slice(0, 256),
+			);
+		} catch {
+			return false;
+		}
+	}
 	try {
 		await access(path, constants.X_OK);
 		return true;

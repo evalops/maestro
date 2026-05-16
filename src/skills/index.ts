@@ -59,6 +59,7 @@ export {
 	SKILL_BODY_MAX_LINES,
 	formatSkillLintText,
 	hasSkillLintErrors,
+	isWindowsRunnableToolboxEntry,
 	lintSkillDirectory,
 	lintSkillPaths,
 	scaffoldSkill,
