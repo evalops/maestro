@@ -123,6 +123,11 @@ async function handleList(workspaceDir: string, options: SkillCommandOptions) {
 
 	if (result.skills.length === 0) {
 		console.log(chalk.dim("No skills found."));
+		if (result.errors.length > 0) {
+			console.error(
+				chalk.yellow(`\n${result.errors.length} skill load warning(s).`),
+			);
+		}
 		return;
 	}
 	for (const skill of result.skills) {

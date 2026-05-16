@@ -118,6 +118,37 @@ describe("skill package format", () => {
 		);
 	});
 
+	it("fails lint when mcp includeTools contains invalid entries", async () => {
+		const skillDir = join(tempRoot(), "researching-code");
+		await mkdir(skillDir, { recursive: true });
+		writeFileSync(
+			join(skillDir, "SKILL.md"),
+			`---\nname: researching-code\ndescription: "Research code paths. Use when the user asks for codebase investigation."\n---\n\n# Researching Code\n`,
+		);
+		writeFileSync(
+			join(skillDir, "mcp.json"),
+			JSON.stringify({
+				github: {
+					command: "npx",
+					args: ["-y", "server"],
+					includeTools: ["search", ""],
+				},
+			}),
+		);
+
+		const result = await lintSkillDirectory(skillDir);
+
+		expect(hasSkillLintErrors([result])).toBe(true);
+		expect(result.issues).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					code: "invalid_mcp_include_tools",
+					severity: "error",
+				}),
+			]),
+		);
+	});
+
 	it("rejects mixed-type tool permission lists", async () => {
 		const workspace = tempRoot();
 		const skillDir = join(workspace, ".maestro", "skills", "reviewing-prs");
@@ -141,6 +172,54 @@ describe("skill package format", () => {
 		);
 		expect(loaded.skills).toEqual([]);
 		expect(loaded.errors[0]?.code).toBe("INVALID_TOOL_LIST");
+	});
+
+	it("reports load warnings when list finds no valid skills", async () => {
+		const workspace = tempRoot();
+		const systemSkillsDir = join(workspace, "empty-system-skills");
+		const maestroHome = join(workspace, "maestro-home");
+		const skillDir = join(workspace, ".maestro", "skills", "broken-skill");
+		await mkdir(systemSkillsDir, { recursive: true });
+		await mkdir(maestroHome, { recursive: true });
+		await mkdir(skillDir, { recursive: true });
+		writeFileSync(
+			join(skillDir, "SKILL.md"),
+			`---\ndescription: "Broken skill. Use when the user asks for load warnings."\n---\n\n# Broken Skill\n`,
+		);
+		const previousSystemSkillsDir = process.env.MAESTRO_SYSTEM_SKILLS_DIR;
+		const previousMaestroHome = process.env.MAESTRO_HOME;
+		const originalLog = console.log;
+		const originalError = console.error;
+		const logs: string[] = [];
+		const errors: string[] = [];
+		process.env.MAESTRO_SYSTEM_SKILLS_DIR = systemSkillsDir;
+		process.env.MAESTRO_HOME = maestroHome;
+		console.log = (...args: unknown[]) => {
+			logs.push(args.map((arg) => String(arg)).join(" "));
+		};
+		console.error = (...args: unknown[]) => {
+			errors.push(args.map((arg) => String(arg)).join(" "));
+		};
+
+		try {
+			await handleSkillCommand("list", [], { workspaceDir: workspace });
+		} finally {
+			if (previousSystemSkillsDir === undefined) {
+				delete process.env.MAESTRO_SYSTEM_SKILLS_DIR;
+			} else {
+				process.env.MAESTRO_SYSTEM_SKILLS_DIR = previousSystemSkillsDir;
+			}
+			if (previousMaestroHome === undefined) {
+				delete process.env.MAESTRO_HOME;
+			} else {
+				process.env.MAESTRO_HOME = previousMaestroHome;
+			}
+			console.log = originalLog;
+			console.error = originalError;
+		}
+
+		expect(logs.join("\n")).toContain("No skills found.");
+		expect(errors.join("\n")).toContain("1 skill load warning(s).");
 	});
 
 	it("scaffolds a package that passes lint", async () => {
