@@ -374,6 +374,11 @@ tags:
 			);
 
 			writeFileSync(join(skillDir, "helper.sh"), "#!/bin/bash");
+			mkdirSync(join(skillDir, "references"), { recursive: true });
+			writeFileSync(
+				join(skillDir, "references", "guide.md"),
+				"# Guide\n\nLoaded only when needed.\n",
+			);
 
 			const { skills } = loadSkills(testDir, { includeSystem: false });
 			const formatted = formatSkillForInjection(skills[0]!);
@@ -383,6 +388,8 @@ tags:
 			expect(formatted).toContain("**Tags:** test");
 			expect(formatted).toContain("## Bundled Resources");
 			expect(formatted).toContain("helper.sh");
+			expect(formatted).toContain("## Resource Directories");
+			expect(formatted).toContain(join(skillDir, "references"));
 			expect(formatted).toContain("## Instructions");
 			expect(formatted).toContain("## Workflow");
 		});
