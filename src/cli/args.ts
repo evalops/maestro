@@ -78,6 +78,7 @@ const COMMANDS = new Set([
 	"openai",
 	"codex",
 	"hooks",
+	"skill",
 	"memory",
 	"remote",
 	"export",
@@ -97,6 +98,7 @@ const SUBCOMMAND_COMMANDS = new Set([
 	"openai",
 	"codex",
 	"hooks",
+	"skill",
 	"memory",
 	"remote",
 	"scenario",
@@ -379,7 +381,8 @@ export function parseArgs(args: string[]): Args {
 					arg === "remote" ||
 					arg === "hosted-runner" ||
 					arg === "init" ||
-					arg === "evalops"
+					arg === "evalops" ||
+					arg === "skill"
 				) {
 					result.commandArgs = args.slice(i + 1);
 					break;

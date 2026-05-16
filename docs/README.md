@@ -20,6 +20,7 @@ Use this index to jump to the right guide quickly and see how the pieces connect
 - [Sessions](SESSIONS.md) — session formats, storage locations, and management commands.
 - [Prompt Queue](PROMPT_QUEUE.md) — queue lifecycle, prioritization, and diagnostics hooks.
 - [MCP Guide](MCP_GUIDE.md) — Model Context Protocol setup and usage.
+- [Skill Cookbook](cookbook/skills/README.md) — progressive skill package authoring, linting, bundled MCP, and toolbox examples.
 - [Headless Protocol Reference](protocols/headless.md) — versioned JSON-over-stdio contract for Chat, TUIs, and other embedders.
 - [Codex Parity Conformance](protocols/codex-parity-conformance.md) — compact anchors for Codex-inspired auth, patching, MCP, queue, and hosted-runtime surfaces.
 - [Hosted Runner Contract](protocols/hosted-runner-contract.md) — provider-neutral runtime contract for account-scoped remote Maestro sessions.
@@ -41,6 +42,7 @@ Use this index to jump to the right guide quickly and see how the pieces connect
   - [Any-Agent EvalOps Control Plane](design/ANY_AGENT_CONTROL_PLANE.md) - agent-neutral control-plane, registry, shim, trace, evidence, and memory integration strategy.
   - [Platform AgentRuntime Session Bridge](design/PLATFORM_AGENT_RUNTIME_SESSION_BRIDGE.md) — hosted-session trigger projection, A2A fallback, trace context, and boundary normalization.
   - [AgentRuntime Task Mapping](design/AGENT_RUNTIME_TASK_MAPPING.md) — next-phase todo/background/swarm projection into Platform AgentRuntime.
+  - [EvalOps Agent Core Parity](design/EVALOPS_AGENT_CORE_PARITY.md) — Hermes-class local-first distribution target and skill package spec.
   - Core Systems: Tool System, Agent State Machine, Context Management, Session Persistence
   - User Interface: TUI Rendering, Web UI Architecture
   - Safety & Security: Safety Firewall, Enterprise RBAC, OAuth Authentication
