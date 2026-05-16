@@ -587,6 +587,119 @@ describe("platform A2A client", () => {
 		]);
 	});
 
+	it("unwraps JSON-RPC envelopes in A2A SSE frames", async () => {
+		const config = await resolveA2AServiceConfig();
+		if (!config) {
+			throw new Error("expected config");
+		}
+		vi.mocked(fetch).mockImplementationOnce(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url = typeof input === "string" ? input : input.toString();
+				const parsed = new URL(url);
+				requests.push({
+					body: parseRequestBody(init?.body),
+					headers: headersToRecord(init?.headers),
+					method: init?.method,
+					pathname: parsed.pathname,
+					url,
+				});
+				return sseResponse([
+					'data: {"jsonrpc":"2.0","id":1,"result":{"task":{"id":"run_rpc","status":{"state":"TASK_STATE_SUBMITTED"}}}}\n\n',
+					'event: message\ndata: {"jsonrpc":"2.0","id":2,"result":{"message":{"messageId":"msg_rpc","contextId":"session_1","role":"ROLE_AGENT","parts":[{"text":"rpc","mediaType":"text/plain"}]}}}\n\n',
+					'event: statusUpdate\ndata: {"jsonrpc":"2.0","id":3,"result":{"taskId":"run_rpc","status":{"state":"TASK_STATE_COMPLETED"},"final":true}}\n\n',
+					'event: artifactUpdate\ndata: {"jsonrpc":"2.0","id":4,"result":{"taskId":"run_rpc","artifact":{"artifactId":"artifact_rpc","parts":[{"text":"wrapped","mediaType":"text/plain"}]},"lastChunk":true}}\n\n',
+				]);
+			},
+		);
+
+		const events = await collectAsyncIterable(
+			streamA2AMessage(config, {
+				message: buildA2AUserMessage({
+					messageId: "msg_stream_rpc",
+					contextId: "session_1",
+					text: "Stream JSON-RPC envelopes",
+				}),
+			}),
+		);
+
+		expect(events).toEqual([
+			{
+				type: "task",
+				task: {
+					id: "run_rpc",
+					status: { state: "TASK_STATE_SUBMITTED" },
+				},
+			},
+			{
+				type: "message",
+				message: {
+					messageId: "msg_rpc",
+					contextId: "session_1",
+					role: "ROLE_AGENT",
+					parts: [{ text: "rpc", mediaType: "text/plain" }],
+				},
+			},
+			{
+				type: "statusUpdate",
+				taskId: "run_rpc",
+				status: { state: "TASK_STATE_COMPLETED" },
+				final: true,
+			},
+			{
+				type: "artifactUpdate",
+				taskId: "run_rpc",
+				artifact: {
+					artifactId: "artifact_rpc",
+					parts: [{ text: "wrapped", mediaType: "text/plain" }],
+				},
+				lastChunk: true,
+			},
+		]);
+	});
+
+	it("does not unwrap non-JSON-RPC A2A payload result fields", async () => {
+		const config = await resolveA2AServiceConfig();
+		if (!config) {
+			throw new Error("expected config");
+		}
+		vi.mocked(fetch).mockImplementationOnce(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url = typeof input === "string" ? input : input.toString();
+				const parsed = new URL(url);
+				requests.push({
+					body: parseRequestBody(init?.body),
+					headers: headersToRecord(init?.headers),
+					method: init?.method,
+					pathname: parsed.pathname,
+					url,
+				});
+				return sseResponse([
+					'data: {"task":{"id":"run_direct","status":{"state":"TASK_STATE_SUBMITTED"}},"result":{"task":{"id":"wrong","status":{"state":"TASK_STATE_FAILED"}}}}\n\n',
+				]);
+			},
+		);
+
+		const events = await collectAsyncIterable(
+			streamA2AMessage(config, {
+				message: buildA2AUserMessage({
+					messageId: "msg_stream_result_extension",
+					contextId: "session_1",
+					text: "Stream a direct A2A payload with a result extension",
+				}),
+			}),
+		);
+
+		expect(events).toEqual([
+			{
+				type: "task",
+				task: {
+					id: "run_direct",
+					status: { state: "TASK_STATE_SUBMITTED" },
+				},
+			},
+		]);
+	});
+
 	it("gets an A2A task by run id", async () => {
 		const config = await resolveA2AServiceConfig();
 		if (!config) {
