@@ -618,6 +618,7 @@ function parseA2AStreamEventFrame(frame: string): A2AStreamEvent | undefined {
 	} catch {
 		return undefined;
 	}
+	payload = unwrapA2AStreamPayload(payload);
 	eventType ??= inferA2AStreamEventType(payload);
 	if (!eventType) {
 		return undefined;
@@ -667,6 +668,14 @@ function inferA2AStreamEventType(
 		return "message";
 	}
 	return undefined;
+}
+
+function unwrapA2AStreamPayload(
+	payload: Record<string, unknown>,
+): Record<string, unknown> {
+	return payload.jsonrpc === "2.0" && isRecord(payload.result)
+		? payload.result
+		: payload;
 }
 
 function normalizeA2AStreamEvent(
