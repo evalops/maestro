@@ -155,6 +155,25 @@ describe("ProviderTransport provider-owned tool events", () => {
 				args: {
 					codexTool: "spawnAgent",
 					receiverThreadIds: ["child-thread-1"],
+					childRunIds: ["agent-run-child-1"],
+					codexWorkGraph: {
+						schemaVersion: "evalops.maestro.codex.subagent-workgraph.v1",
+						toolCallId: "collab-call-1",
+						tool: "spawnAgent",
+						status: "inProgress",
+						parent: {
+							threadId: "parent-thread",
+							turnId: "turn-1",
+							senderThreadId: "parent-thread",
+						},
+						childRuns: [
+							{
+								threadId: "child-thread-1",
+								childRunId: "agent-run-child-1",
+								operation: "spawnAgent",
+							},
+						],
+					},
 				},
 				partial: assistant,
 			} satisfies AssistantMessageEvent;
@@ -172,6 +191,25 @@ describe("ProviderTransport provider-owned tool events", () => {
 					details: {
 						codexTool: "spawnAgent",
 						receiverThreadIds: ["child-thread-1"],
+						childRunIds: ["agent-run-child-1"],
+						codexWorkGraph: {
+							schemaVersion: "evalops.maestro.codex.subagent-workgraph.v1",
+							toolCallId: "collab-call-1",
+							tool: "spawnAgent",
+							status: "completed",
+							parent: {
+								threadId: "parent-thread",
+								turnId: "turn-1",
+								senderThreadId: "parent-thread",
+							},
+							childRuns: [
+								{
+									threadId: "child-thread-1",
+									childRunId: "agent-run-child-1",
+									operation: "spawnAgent",
+								},
+							],
+						},
 					},
 					isError: false,
 					timestamp: 2,
@@ -212,6 +250,17 @@ describe("ProviderTransport provider-owned tool events", () => {
 					args: expect.objectContaining({
 						codexTool: "spawnAgent",
 						receiverThreadIds: ["child-thread-1"],
+						childRunIds: ["agent-run-child-1"],
+						codexWorkGraph: expect.objectContaining({
+							schemaVersion: "evalops.maestro.codex.subagent-workgraph.v1",
+							toolCallId: "collab-call-1",
+							childRuns: [
+								expect.objectContaining({
+									threadId: "child-thread-1",
+									childRunId: "agent-run-child-1",
+								}),
+							],
+						}),
 					}),
 				}),
 				expect.objectContaining({
@@ -238,6 +287,12 @@ describe("ProviderTransport provider-owned tool events", () => {
 					result: expect.objectContaining({
 						role: "toolResult",
 						toolName: "codex.subagent.spawnAgent",
+						details: expect.objectContaining({
+							codexWorkGraph: expect.objectContaining({
+								toolCallId: "collab-call-1",
+								status: "completed",
+							}),
+						}),
 					}),
 				}),
 			]),

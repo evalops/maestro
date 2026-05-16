@@ -976,22 +976,6 @@ export function formatSkillForInjection(skill: LoadedSkill): string {
 		lines.push("");
 	}
 
-	const resourceDirectories = [
-		["scripts", skill.resourceDirs.scriptsDir],
-		["references", skill.resourceDirs.referencesDir],
-		["assets", skill.resourceDirs.assetsDir],
-	].filter((entry): entry is [string, string] => typeof entry[1] === "string");
-	if (resourceDirectories.length > 0) {
-		lines.push("## Resource Directories");
-		lines.push("");
-		lines.push("You can inspect these bundled directories when needed:");
-		lines.push("");
-		for (const [name, path] of resourceDirectories) {
-			lines.push(`- \`${path}\` (${name})`);
-		}
-		lines.push("");
-	}
-
 	lines.push("## Instructions");
 	lines.push("");
 	lines.push(skill.content);

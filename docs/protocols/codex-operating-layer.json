@@ -228,6 +228,7 @@
 				"agent-registry-delegation",
 				"ownerChildRunId",
 				"parentWorkItemId",
+				"codex_work_graph",
 				"recordCodexSubagentWorkItem",
 				"updateCodexSubagentWorkItem",
 				"PlatformAgentWorkItemKindValue.ChildRun",
@@ -238,13 +239,25 @@
 			"area": "multi-agent-workgraph",
 			"evidenceType": "source",
 			"path": "src/agent/providers/codex-app-server.ts",
-			"anchors": ["childRunIds", "codexCollabChildRunIds"]
+			"anchors": [
+				"childRunIds",
+				"codexWorkGraph",
+				"evalops.maestro.codex.subagent-workgraph.v1",
+				"codexCollabWorkGraph",
+				"codexCollabChildRunIds"
+			]
 		},
 		{
 			"area": "multi-agent-workgraph",
 			"evidenceType": "source",
 			"path": "packages/control-plane-rs/src/main.rs",
-			"anchors": ["childRunIds", "codex_collab_child_run_ids_from_item"]
+			"anchors": [
+				"childRunIds",
+				"codexWorkGraph",
+				"evalops.maestro.codex.subagent-workgraph.v1",
+				"codex_collab_work_graph_from_jsonl_item",
+				"codex_collab_child_run_ids_from_item"
+			]
 		},
 		{
 			"area": "multi-agent-workgraph",
@@ -257,6 +270,7 @@
 				"codex.subagent.spawnAgent",
 				"ownerChildRunId",
 				"parentWorkItemId",
+				"codex_work_graph",
 				"PlatformAgentWorkItemKindValue.ChildRun",
 				"PlatformAgentWorkItemStateValue.Succeeded"
 			]
@@ -394,9 +408,14 @@
 			"anchors": [
 				"doctor",
 				"real inference with dynamic read tool",
+				"real inference with Codex subagent",
 				"loop_detected",
 				"expected token",
 				"assertBoundedDynamicToolUse",
+				"assertSubagentWorkGraphUse",
+				"codex.subagent.spawnAgent",
+				"codex.subagent.wait",
+				"codexWorkGraph",
 				"MAESTRO_CODEX_LIVE_SMOKE_MAX_IDENTICAL_TOOL_CALLS"
 			]
 		},
@@ -408,7 +427,13 @@
 				"summarizes Codex dynamic callbacks by operation args, not volatile IDs",
 				"rejects live transcripts with loop-detector warnings",
 				"rejects repeated identical dynamic tool calls",
-				"requires the final assistant message to exactly match the token"
+				"requires the final assistant message to exactly match the token",
+				"accepts a subagent spawn/wait transcript with work-graph evidence",
+				"rejects subagent transcripts missing work-graph evidence",
+				"requires wait evidence to target the spawned child run",
+				"requires structured completed status for the waited child",
+				"requires exactly one spawn and one wait operation",
+				"requires the live subagent proof to wait for the child agent"
 			]
 		},
 		{

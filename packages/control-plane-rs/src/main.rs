@@ -54,6 +54,7 @@ const A2A_PROTOCOL_VERSION: &str = "1.0";
 const A2A_DEFAULT_TURN_TIMEOUT_MS: u64 = 180_000;
 const A2A_DEFAULT_RESPONSE_END_SETTLE_MS: u64 = 250;
 const A2A_TERMINAL_TASK_STORE_LIMIT: usize = 128;
+const CODEX_SUBAGENT_WORK_GRAPH_SCHEMA: &str = "evalops.maestro.codex.subagent-workgraph.v1";
 static CODEX_BRIDGE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 static CODEX_HEADLESS_RUN_COUNTER: AtomicU64 = AtomicU64::new(0);
 static ATTACHMENT_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -5247,12 +5248,16 @@ fn codex_collab_tool_event_from_jsonl_item(
 }
 
 fn codex_collab_args_from_jsonl_item(item: &Value, canonical_tool: &str) -> Value {
+    let child_run_ids = codex_collab_child_run_ids_from_item(item);
+    let codex_work_graph =
+        codex_collab_work_graph_from_jsonl_item(item, canonical_tool, &child_run_ids);
     serde_json::json!({
         "codexTool": canonical_tool,
         "status": item.get("status").cloned().unwrap_or(Value::Null),
         "senderThreadId": item.get("sender_thread_id").cloned().unwrap_or(Value::Null),
         "receiverThreadIds": item.get("receiver_thread_ids").cloned().unwrap_or_else(|| Value::Array(Vec::new())),
-        "childRunIds": codex_collab_child_run_ids_from_item(item),
+        "childRunIds": child_run_ids,
+        "codexWorkGraph": codex_work_graph,
         "prompt": item.get("prompt").cloned().unwrap_or(Value::Null),
         "model": item.get("model").cloned().unwrap_or(Value::Null),
         "reasoningEffort": item.get("reasoning_effort").cloned().unwrap_or(Value::Null),
@@ -5289,6 +5294,62 @@ fn codex_collab_child_run_ids_from_item(item: &Value) -> Value {
     Value::Array(child_run_ids)
 }
 
+fn codex_collab_work_graph_from_jsonl_item(
+    item: &Value,
+    canonical_tool: &str,
+    child_run_ids: &Value,
+) -> Value {
+    let receiver_thread_ids = item
+        .get("receiver_thread_ids")
+        .and_then(Value::as_array)
+        .map(|ids| {
+            ids.iter()
+                .filter_map(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let child_run_ids = child_run_ids
+        .as_array()
+        .map(|ids| {
+            ids.iter()
+                .filter_map(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let child_runs = receiver_thread_ids
+        .iter()
+        .enumerate()
+        .map(|(index, thread_id)| {
+            let child_run_id = child_run_ids
+                .get(index)
+                .cloned()
+                .unwrap_or_else(|| format!("codex-thread:{thread_id}"));
+            serde_json::json!({
+                "threadId": thread_id,
+                "childRunId": child_run_id,
+                "operation": canonical_tool,
+            })
+        })
+        .collect::<Vec<_>>();
+    let sender_thread_id = item.get("sender_thread_id").cloned().unwrap_or(Value::Null);
+    serde_json::json!({
+        "schemaVersion": CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
+        "toolCallId": item.get("id").cloned().unwrap_or(Value::Null),
+        "tool": canonical_tool,
+        "status": item.get("status").cloned().unwrap_or(Value::Null),
+        "parent": {
+            "threadId": sender_thread_id.clone(),
+            "turnId": item.get("turn_id").cloned().unwrap_or(Value::Null),
+            "senderThreadId": sender_thread_id,
+        },
+        "childRuns": child_runs,
+    })
+}
+
 fn codex_bridge_tool_args(tool_name: &str, args: Value) -> Value {
     if !tool_name.starts_with("codex.subagent.") {
         return args;
@@ -5304,34 +5365,109 @@ fn codex_bridge_tool_args(tool_name: &str, args: Value) -> Value {
             ids.iter()
                 .any(|id| id.as_str().is_some_and(|id| !id.is_empty()))
         });
-    if has_child_run_ids {
-        return Value::Object(object);
-    }
-    if let Some(ids) = object.get("child_run_ids").and_then(Value::as_array) {
-        let child_run_ids = ids
-            .iter()
-            .filter_map(Value::as_str)
-            .filter(|id| !id.is_empty())
-            .map(|id| Value::String(id.to_string()))
-            .collect::<Vec<_>>();
-        if !child_run_ids.is_empty() {
-            object.insert("childRunIds".to_string(), Value::Array(child_run_ids));
-            return Value::Object(object);
+    if !has_child_run_ids {
+        if let Some(ids) = object.get("child_run_ids").and_then(Value::as_array) {
+            let child_run_ids = ids
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(|id| Value::String(id.to_string()))
+                .collect::<Vec<_>>();
+            if !child_run_ids.is_empty() {
+                object.insert("childRunIds".to_string(), Value::Array(child_run_ids));
+            }
         }
     }
-    let child_run_ids = object
+    let has_child_run_ids = object
+        .get("childRunIds")
+        .and_then(Value::as_array)
+        .is_some_and(|ids| {
+            ids.iter()
+                .any(|id| id.as_str().is_some_and(|id| !id.is_empty()))
+        });
+    if !has_child_run_ids {
+        let child_run_ids = object
+            .get("receiverThreadIds")
+            .and_then(Value::as_array)
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(Value::as_str)
+                    .filter(|id| !id.is_empty())
+                    .map(|id| Value::String(format!("codex-thread:{id}")))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        object.insert("childRunIds".to_string(), Value::Array(child_run_ids));
+    }
+    let has_work_graph = object
+        .get("codexWorkGraph")
+        .or_else(|| object.get("codex_work_graph"))
+        .and_then(Value::as_object)
+        .is_some();
+    if !has_work_graph {
+        object.insert(
+            "codexWorkGraph".to_string(),
+            codex_collab_work_graph_from_args_object(tool_name, &object),
+        );
+    }
+    Value::Object(object)
+}
+
+fn codex_collab_work_graph_from_args_object(tool_name: &str, object: &Map<String, Value>) -> Value {
+    let canonical_tool = object
+        .get("codexTool")
+        .and_then(Value::as_str)
+        .or_else(|| tool_name.strip_prefix("codex.subagent."))
+        .unwrap_or(tool_name);
+    let receiver_thread_ids = object
         .get("receiverThreadIds")
         .and_then(Value::as_array)
         .map(|ids| {
             ids.iter()
                 .filter_map(Value::as_str)
                 .filter(|id| !id.is_empty())
-                .map(|id| Value::String(format!("codex-thread:{id}")))
+                .map(str::to_string)
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    object.insert("childRunIds".to_string(), Value::Array(child_run_ids));
-    Value::Object(object)
+    let child_run_ids = object
+        .get("childRunIds")
+        .and_then(Value::as_array)
+        .map(|ids| {
+            ids.iter()
+                .filter_map(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let child_runs = receiver_thread_ids
+        .iter()
+        .enumerate()
+        .map(|(index, thread_id)| {
+            let child_run_id = child_run_ids
+                .get(index)
+                .cloned()
+                .unwrap_or_else(|| format!("codex-thread:{thread_id}"));
+            serde_json::json!({
+                "threadId": thread_id,
+                "childRunId": child_run_id,
+                "operation": canonical_tool,
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "schemaVersion": CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
+        "toolCallId": object.get("toolCallId").cloned().unwrap_or(Value::Null),
+        "tool": canonical_tool,
+        "status": object.get("status").cloned().unwrap_or(Value::Null),
+        "parent": {
+            "threadId": object.get("threadId").cloned().unwrap_or(Value::Null),
+            "turnId": object.get("turnId").cloned().unwrap_or(Value::Null),
+            "senderThreadId": object.get("senderThreadId").cloned().unwrap_or(Value::Null),
+        },
+        "childRuns": child_runs,
+    })
 }
 
 fn codex_canonical_collab_tool(tool: &str) -> String {
@@ -8561,8 +8697,20 @@ mod tests {
             output.tool_events[0].args["childRunIds"],
             serde_json::json!(["codex-thread:thread-child"])
         );
+        assert_eq!(
+            output.tool_events[0].args["codexWorkGraph"]["schemaVersion"],
+            CODEX_SUBAGENT_WORK_GRAPH_SCHEMA
+        );
+        assert_eq!(
+            output.tool_events[0].args["codexWorkGraph"]["childRuns"][0]["childRunId"],
+            "codex-thread:thread-child"
+        );
         assert_eq!(output.tool_events[1].event_type, "tool_execution_end");
         assert_eq!(output.tool_events[1].is_error, Some(false));
+        assert_eq!(
+            output.tool_events[1].result["details"]["codexWorkGraph"]["status"],
+            "completed"
+        );
         assert_eq!(
             output.tool_events[1].result["details"]["agentsStates"]["thread-child"]["status"],
             "completed"
@@ -8588,6 +8736,10 @@ mod tests {
             output.tool_events[1].result["details"]["childRunIds"],
             serde_json::json!(["agent-run-child-1"])
         );
+        assert_eq!(
+            output.tool_events[1].result["details"]["codexWorkGraph"]["childRuns"][0]["childRunId"],
+            "agent-run-child-1"
+        );
     }
 
     #[test]
@@ -8603,6 +8755,10 @@ mod tests {
 
         assert_eq!(output.tool_events.len(), 2);
         assert_eq!(output.tool_events[0].tool_name, "codex.subagent.wait");
+        assert_eq!(
+            output.tool_events[0].args["codexWorkGraph"]["childRuns"][0]["childRunId"],
+            "codex-thread:thread-child"
+        );
         assert_eq!(output.tool_events[1].is_error, Some(false));
         assert_eq!(
             output.tool_events[1].result["content"][0]["text"],
@@ -9095,6 +9251,10 @@ rl.on("line", (line) => {
         assert_eq!(start["args"]["receiverThreadIds"][0], "child-thread-ws");
         assert_eq!(
             start["args"]["childRunIds"][0],
+            "codex-thread:child-thread-ws"
+        );
+        assert_eq!(
+            start["args"]["codexWorkGraph"]["childRuns"][0]["childRunId"],
             "codex-thread:child-thread-ws"
         );
         assert_eq!(end["toolCallId"], "collab-call-ws");

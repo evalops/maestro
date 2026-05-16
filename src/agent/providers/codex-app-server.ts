@@ -71,6 +71,8 @@ type CodexUserInput =
 
 const DEFAULT_TURN_TIMEOUT_MS = 30 * 60_000;
 const CODEX_THREAD_CHILD_RUN_PREFIX = "codex-thread:";
+const CODEX_SUBAGENT_WORK_GRAPH_SCHEMA =
+	"evalops.maestro.codex.subagent-workgraph.v1";
 const CODEX_COLLAB_TOOLS = new Set([
 	"spawnAgent",
 	"sendInput",
@@ -91,6 +93,23 @@ type CodexCollabAgentToolCallItem = {
 	model: string | null;
 	reasoningEffort: string | null;
 	agentsStates: Record<string, unknown>;
+};
+
+type CodexSubagentWorkGraph = {
+	schemaVersion: typeof CODEX_SUBAGENT_WORK_GRAPH_SCHEMA;
+	toolCallId: string;
+	tool: string;
+	status: string;
+	parent: {
+		threadId: string;
+		turnId: string;
+		senderThreadId: string;
+	};
+	childRuns: Array<{
+		threadId: string;
+		childRunId: string;
+		operation: string;
+	}>;
 };
 
 export async function* streamCodexAppServer(
@@ -510,6 +529,7 @@ function codexCollabArgs(
 	item: CodexCollabAgentToolCallItem,
 	scope: { threadId: string; turnId: string },
 ): Record<string, unknown> {
+	const childRunIds = codexCollabChildRunIds(item);
 	return {
 		codexTool: item.tool,
 		status: item.status,
@@ -517,11 +537,36 @@ function codexCollabArgs(
 		turnId: scope.turnId,
 		senderThreadId: item.senderThreadId,
 		receiverThreadIds: item.receiverThreadIds,
-		childRunIds: codexCollabChildRunIds(item),
+		childRunIds,
+		codexWorkGraph: codexCollabWorkGraph(item, scope, childRunIds),
 		prompt: item.prompt,
 		model: item.model,
 		reasoningEffort: item.reasoningEffort,
 		agentsStates: item.agentsStates,
+	};
+}
+
+function codexCollabWorkGraph(
+	item: CodexCollabAgentToolCallItem,
+	scope: { threadId: string; turnId: string },
+	childRunIds: string[],
+): CodexSubagentWorkGraph {
+	return {
+		schemaVersion: CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
+		toolCallId: item.id,
+		tool: item.tool,
+		status: item.status,
+		parent: {
+			threadId: scope.threadId,
+			turnId: scope.turnId,
+			senderThreadId: item.senderThreadId,
+		},
+		childRuns: item.receiverThreadIds.map((threadId, index) => ({
+			threadId,
+			childRunId:
+				childRunIds[index] ?? `${CODEX_THREAD_CHILD_RUN_PREFIX}${threadId}`,
+			operation: item.tool,
+		})),
 	};
 }
 

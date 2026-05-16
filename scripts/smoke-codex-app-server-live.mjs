@@ -16,6 +16,8 @@ const baseEnv = {
 
 const DEFAULT_MAX_TOTAL_TOOL_CALLS = 3;
 const DEFAULT_MAX_IDENTICAL_TOOL_CALLS = 1;
+const CODEX_SUBAGENT_WORK_GRAPH_SCHEMA =
+	"evalops.maestro.codex.subagent-workgraph.v1";
 
 const loopWarningPatterns = [
 	/Exact repetition loop detected/i,
@@ -96,7 +98,6 @@ function stableJson(value) {
 			left.localeCompare(right),
 		);
 		return `{${entries
-			.filter(([, entryValue]) => entryValue !== undefined)
 			.map(([key, entryValue]) => `${JSON.stringify(key)}:${stableJson(entryValue)}`)
 			.join(",")}}`;
 	}
@@ -171,13 +172,7 @@ function findLoopWarningText(output) {
 	return null;
 }
 
-export function assertBoundedDynamicToolUse({
-	stdout,
-	stderr = "",
-	expectedToken,
-	maxTotalToolCalls = DEFAULT_MAX_TOTAL_TOOL_CALLS,
-	maxIdenticalToolCalls = DEFAULT_MAX_IDENTICAL_TOOL_CALLS,
-}) {
+function assertNoLoopWarnings(stdout, stderr = "") {
 	const combinedOutput = `${stdout}\n${stderr}`;
 	const warningText = findLoopWarningText(combinedOutput);
 	if (warningText) {
@@ -185,6 +180,16 @@ export function assertBoundedDynamicToolUse({
 			`Codex live smoke emitted a loop warning: ${warningText}`,
 		);
 	}
+}
+
+export function assertBoundedDynamicToolUse({
+	stdout,
+	stderr = "",
+	expectedToken,
+	maxTotalToolCalls = DEFAULT_MAX_TOTAL_TOOL_CALLS,
+	maxIdenticalToolCalls = DEFAULT_MAX_IDENTICAL_TOOL_CALLS,
+}) {
+	assertNoLoopWarnings(stdout, stderr);
 
 	const events = parseJsonlEvents(stdout);
 	const finalAssistantText = getFinalAssistantText(events).trim();
@@ -209,6 +214,262 @@ export function assertBoundedDynamicToolUse({
 		);
 	}
 	return summary;
+}
+
+function toolEvents(events, subtype, toolName) {
+	return events.filter(
+		(event) =>
+			event?.type === "item" &&
+			event.subtype === subtype &&
+			event.data?.toolName === toolName,
+	);
+}
+
+function toolResultDetails(event) {
+	const result = event?.data?.result;
+	if (isRecord(result) && isRecord(result.details)) {
+		return result.details;
+	}
+	const data = event?.data;
+	if (isRecord(data) && isRecord(data.details)) {
+		return data.details;
+	}
+	return {};
+}
+
+function assertCodexWorkGraph(
+	graph,
+	label,
+	expectedTool,
+	{ allowEmptyChildRuns = false } = {},
+) {
+	if (!isRecord(graph)) {
+		throw new Error(`${label} is missing codexWorkGraph`);
+	}
+	if (graph.schemaVersion !== CODEX_SUBAGENT_WORK_GRAPH_SCHEMA) {
+		throw new Error(
+			`${label} has unexpected codexWorkGraph schema ${JSON.stringify(graph.schemaVersion)}`,
+		);
+	}
+	if (graph.tool !== expectedTool) {
+		throw new Error(
+			`${label} has unexpected codexWorkGraph tool ${JSON.stringify(graph.tool)}`,
+		);
+	}
+	if (typeof graph.toolCallId !== "string" || graph.toolCallId.length === 0) {
+		throw new Error(`${label} codexWorkGraph is missing toolCallId`);
+	}
+	if (!Array.isArray(graph.childRuns)) {
+		throw new Error(`${label} codexWorkGraph is missing childRuns`);
+	}
+	if (!allowEmptyChildRuns && graph.childRuns.length === 0) {
+		throw new Error(`${label} codexWorkGraph is missing childRuns`);
+	}
+	for (const [index, childRun] of graph.childRuns.entries()) {
+		if (!isRecord(childRun)) {
+			throw new Error(`${label} childRuns[${index}] is not an object`);
+		}
+		for (const key of ["threadId", "childRunId", "operation"]) {
+			if (typeof childRun[key] !== "string" || childRun[key].length === 0) {
+				throw new Error(`${label} childRuns[${index}] is missing ${key}`);
+			}
+		}
+	}
+	return graph.childRuns;
+}
+
+function assertToolCallWorkGraph(event, label, expectedTool, options) {
+	const args = event?.data?.args;
+	const graph = isRecord(args) ? args.codexWorkGraph : undefined;
+	return assertCodexWorkGraph(graph, label, expectedTool, options);
+}
+
+function assertToolResultWorkGraph(event, label, expectedTool, options) {
+	const details = toolResultDetails(event);
+	return assertCodexWorkGraph(
+		details.codexWorkGraph,
+		label,
+		expectedTool,
+		options,
+	);
+}
+
+function sortedChildRunIds(childRuns, label) {
+	const ids = childRuns.map((childRun) => childRun.childRunId).sort();
+	if (ids.length === 0) {
+		throw new Error(`${label} has no childRunIds`);
+	}
+	return ids;
+}
+
+function childRunIdsFromEvent(event) {
+	const args = event?.data?.args;
+	const details = toolResultDetails(event);
+	const ids = isRecord(args) ? args.childRunIds : details.childRunIds;
+	return Array.isArray(ids)
+		? ids.filter((id) => typeof id === "string" && id.length > 0).sort()
+		: [];
+}
+
+function formatIds(ids) {
+	return JSON.stringify([...ids].sort());
+}
+
+function assertSameChildRunIds(expectedIds, actualIds, label) {
+	if (
+		expectedIds.length !== actualIds.length ||
+		expectedIds.some((id, index) => id !== actualIds[index])
+	) {
+		throw new Error(
+			`${label} childRunIds ${formatIds(actualIds)} do not match spawned childRunIds ${formatIds(expectedIds)}`,
+		);
+	}
+}
+
+function assertEventTargetsSpawnedChildRuns(event, graphChildRuns, spawnedIds, label) {
+	const graphIds = sortedChildRunIds(graphChildRuns, `${label} codexWorkGraph`);
+	assertSameChildRunIds(spawnedIds, graphIds, `${label} codexWorkGraph`);
+
+	const eventIds = childRunIdsFromEvent(event);
+	if (eventIds.length > 0) {
+		assertSameChildRunIds(spawnedIds, eventIds, label);
+	}
+}
+
+function assertWaitResultHasCompletedAgentState(event, expectedChildRuns) {
+	const details = toolResultDetails(event);
+	const states = details.agentsStates;
+	if (!isRecord(states) || Object.keys(states).length === 0) {
+		throw new Error(
+			"codex.subagent.wait result is missing child agentsStates evidence",
+		);
+	}
+	for (const childRun of expectedChildRuns) {
+		const state = states[childRun.threadId];
+		if (!isRecord(state)) {
+			throw new Error(
+				`codex.subagent.wait result is missing child agent state for ${childRun.threadId}`,
+			);
+		}
+		if (state.status !== "completed") {
+			throw new Error(
+				`codex.subagent.wait child ${childRun.threadId} status ${JSON.stringify(state.status)} is not completed`,
+			);
+		}
+	}
+}
+
+function assertExactlyOneToolEvent(events, label) {
+	if (events.length !== 1) {
+		throw new Error(
+			`subagent smoke expected exactly one ${label}, received ${events.length}`,
+		);
+	}
+}
+
+export function assertSubagentWorkGraphUse({
+	stdout,
+	stderr = "",
+	expectedToken,
+}) {
+	assertNoLoopWarnings(stdout, stderr);
+
+	const events = parseJsonlEvents(stdout);
+	const finalAssistantText = getFinalAssistantText(events).trim();
+	if (finalAssistantText !== expectedToken) {
+		throw new Error(
+			`subagent smoke final assistant text did not exactly match expected token ${expectedToken}. Received ${JSON.stringify(finalAssistantText)}`,
+		);
+	}
+
+	const spawnCalls = toolEvents(
+		events,
+		"tool_call",
+		"codex.subagent.spawnAgent",
+	);
+	const spawnResults = toolEvents(
+		events,
+		"tool_result",
+		"codex.subagent.spawnAgent",
+	);
+	const waitCalls = toolEvents(events, "tool_call", "codex.subagent.wait");
+	const waitResults = toolEvents(events, "tool_result", "codex.subagent.wait");
+
+	assertExactlyOneToolEvent(
+		spawnCalls,
+		"codex.subagent.spawnAgent tool_call",
+	);
+	assertExactlyOneToolEvent(
+		spawnResults,
+		"codex.subagent.spawnAgent tool_result",
+	);
+	assertExactlyOneToolEvent(waitCalls, "codex.subagent.wait tool_call");
+	assertExactlyOneToolEvent(waitResults, "codex.subagent.wait tool_result");
+
+	const spawnCallChildRuns = assertToolCallWorkGraph(
+		spawnCalls[0],
+		"codex.subagent.spawnAgent tool_call",
+		"spawnAgent",
+		{ allowEmptyChildRuns: true },
+	);
+	const spawnResultChildRuns = assertToolResultWorkGraph(
+		spawnResults[0],
+		"codex.subagent.spawnAgent tool_result",
+		"spawnAgent",
+	);
+	const waitCallChildRuns = assertToolCallWorkGraph(
+		waitCalls[0],
+		"codex.subagent.wait tool_call",
+		"wait",
+	);
+	const waitResultChildRuns = assertToolResultWorkGraph(
+		waitResults[0],
+		"codex.subagent.wait tool_result",
+		"wait",
+	);
+	const spawnedIds = sortedChildRunIds(
+		spawnResultChildRuns,
+		"codex.subagent.spawnAgent tool_result codexWorkGraph",
+	);
+	if (spawnCallChildRuns.length > 0) {
+		assertEventTargetsSpawnedChildRuns(
+			spawnCalls[0],
+			spawnCallChildRuns,
+			spawnedIds,
+			"codex.subagent.spawnAgent tool_call",
+		);
+	}
+	assertEventTargetsSpawnedChildRuns(
+		spawnResults[0],
+		spawnResultChildRuns,
+		spawnedIds,
+		"codex.subagent.spawnAgent tool_result",
+	);
+	assertEventTargetsSpawnedChildRuns(
+		waitCalls[0],
+		waitCallChildRuns,
+		spawnedIds,
+		"codex.subagent.wait tool_call",
+	);
+	assertEventTargetsSpawnedChildRuns(
+		waitResults[0],
+		waitResultChildRuns,
+		spawnedIds,
+		"codex.subagent.wait tool_result",
+	);
+	assertWaitResultHasCompletedAgentState(waitResults[0], waitResultChildRuns);
+
+	return {
+		spawnCalls: spawnCalls.length,
+		spawnResults: spawnResults.length,
+		waitCalls: waitCalls.length,
+		waitResults: waitResults.length,
+		childRunCount:
+			spawnCallChildRuns.length +
+			spawnResultChildRuns.length +
+			waitCallChildRuns.length +
+			waitResultChildRuns.length,
+	};
 }
 
 export function main() {
@@ -255,6 +516,34 @@ export function main() {
 		console.log("[codex-live-smoke] real inference returned expected token");
 		console.log(
 			`[codex-live-smoke] dynamic tool calls bounded: total=${summary.totalCalls} unique=${summary.uniqueCalls} max_identical=${summary.maxIdenticalCalls}`,
+		);
+
+		const subagentToken = `codex-subagent-live-smoke-${Date.now().toString(36)}`;
+		const subagentResult = run(
+			"real inference with Codex subagent",
+			[
+				"--provider",
+				"openai-codex",
+				"--model",
+				"gpt-5.5",
+				"--mode",
+				"json",
+				"--no-session",
+				"--approval-mode",
+				"fail",
+				"--sandbox",
+				"read-only",
+				`Spawn exactly one Codex subagent with this child task: reply exactly ${subagentToken}. Wait for the subagent. Then reply exactly ${subagentToken} and nothing else.`,
+			],
+			{ cwd: tempDir, timeoutMs: 240_000 },
+		);
+		const subagentSummary = assertSubagentWorkGraphUse({
+			...subagentResult,
+			expectedToken: subagentToken,
+		});
+		console.log("[codex-live-smoke] subagent returned expected token");
+		console.log(
+			`[codex-live-smoke] subagent work graph observed: spawn=${subagentSummary.spawnCalls} wait=${subagentSummary.waitCalls} child_runs=${subagentSummary.childRunCount}`,
 		);
 	} finally {
 		rmSync(tempDir, { recursive: true, force: true });
