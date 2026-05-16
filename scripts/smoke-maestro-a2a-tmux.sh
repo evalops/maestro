@@ -157,6 +157,7 @@ assert_message_stream() {
 	local body
 	local stream_output
 
+	# shellcheck disable=SC2016 # The single-quoted string is JavaScript; ${messageId} is a JS template expression.
 	body="$(MESSAGE_ID="$message_id" node -e '
 const messageId = process.env.MESSAGE_ID;
 process.stdout.write(JSON.stringify({
