@@ -1,9 +1,15 @@
 import { parseA2AArgs } from "../../cli/commands/a2a.js";
+import { inspectA2AFleet } from "../../platform/a2a-fleet.js";
 import { decodeA2APeerPairingCode } from "../../platform/a2a-peer-pairing.js";
 import {
 	listA2APeers,
 	upsertA2APeerFromPairingPayload,
 } from "../../platform/a2a-peer-registry.js";
+import {
+	getA2ATaskLedgerPath,
+	listA2ATaskEntries,
+	loadA2ATaskLedger,
+} from "../../platform/a2a-task-ledger.js";
 import type { CommandExecutionContext } from "./types.js";
 
 export interface A2ACommandHandlerDeps {
@@ -18,7 +24,9 @@ export async function handleA2ATuiCommand(
 	const parsed = parseA2AArgs(splitCommandArgs(context.argumentText));
 	const subcommand = parsed.positionals.shift()?.toLowerCase() ?? "help";
 	if (subcommand === "peers" || subcommand === "list") {
-		const { path, registry } = await listA2APeers();
+		const { path, registry } = await listA2APeers({
+			path: stringFlag(parsed.flags, "--registry"),
+		});
 		const entries = Object.entries(registry.peers).sort(([left], [right]) =>
 			left.localeCompare(right),
 		);
@@ -43,6 +51,50 @@ export async function handleA2ATuiCommand(
 		deps.requestRender();
 		return;
 	}
+	if (subcommand === "fleet") {
+		const fleet = await inspectA2AFleet({
+			registryPath: stringFlag(parsed.flags, "--registry"),
+			tasksPath: stringFlag(parsed.flags, "--tasks"),
+		});
+		deps.addContent(
+			[
+				`A2A fleet (${fleet.registryPath})`,
+				fleet.peers.length === 0
+					? "No peers registered. Use /a2a accept <pairing-code>."
+					: fleet.peers
+							.map((peer) => {
+								const last = peer.lastTask
+									? ` last=${peer.lastTask.id} ${peer.lastTask.state}`
+									: "";
+								return `${peer.status} ${peer.name} ${peer.url}${last}`;
+							})
+							.join("\n"),
+			].join("\n"),
+		);
+		deps.requestRender();
+		return;
+	}
+	if (subcommand === "tasks") {
+		const peer = parsed.positionals.shift();
+		const tasksPath = stringFlag(parsed.flags, "--tasks");
+		const ledger = await loadA2ATaskLedger({ path: tasksPath });
+		const entries = listA2ATaskEntries(ledger, { peer });
+		deps.addContent(
+			[
+				`A2A tasks (${getA2ATaskLedgerPath(tasksPath)})`,
+				entries.length === 0
+					? "No delegated tasks recorded yet."
+					: entries
+							.map(
+								(entry) =>
+									`${entry.peer} ${entry.taskId} ${entry.state} ${entry.text}`,
+							)
+							.join("\n"),
+			].join("\n"),
+		);
+		deps.requestRender();
+		return;
+	}
 	if (subcommand === "accept") {
 		const code = parsed.positionals.shift();
 		if (!code) {
@@ -55,6 +107,7 @@ export async function handleA2ATuiCommand(
 			makeDefault: parsed.flags.get("--default") === true,
 			tokenEnv: stringFlag(parsed.flags, "--token-env"),
 			tokenFile: stringFlag(parsed.flags, "--token-file"),
+			path: stringFlag(parsed.flags, "--registry"),
 		});
 		context.showInfo(`Registered A2A peer ${result.name}.`);
 		deps.addContent(
@@ -76,10 +129,19 @@ export async function handleA2ATuiCommand(
 		);
 		return;
 	}
+	if (subcommand === "delegate") {
+		context.showInfo(
+			"Use `maestro a2a delegate <peer> <text> --wait` for native A2A delegation while the TUI task panel is being wired.",
+		);
+		return;
+	}
 	deps.addContent(
 		[
 			"/a2a accept <pairing-code> [--name <peer>] [--default] [--token-env ENV]",
+			"/a2a fleet",
 			"/a2a peers",
+			"/a2a delegate <peer> <text>",
+			"/a2a tasks [peer]",
 			"/a2a send <peer> <text>",
 		].join("\n"),
 	);
