@@ -144,7 +144,9 @@
 				"reuses repeated read-only tool results across provider turns",
 				"reuses provider read results only after repeated guarded-file approvals",
 				"reuses dynamic read callback results only after repeated guarded-file approvals",
+				"does not reuse cached dynamic reads while a mutating callback is pending",
 				"does not reuse cached read results while mutating provider tools are pending",
+				"does not skip loop detection when cached reads run behind pending mutations",
 				"executes repeated non-read-only provider tool calls independently",
 				"lets Codex dynamic tool callbacks wait for user approval instead of auto-denying",
 				"withTimeout",
@@ -203,6 +205,9 @@
 			"path": "src/server/hosted-agent-runtime-progress.ts",
 			"anchors": [
 				"CODEX_SUBAGENT_TOOL_PREFIX",
+				"codexThreadChildRunId",
+				"ownerChildRunId",
+				"parentWorkItemId",
 				"recordCodexSubagentWorkItem",
 				"updateCodexSubagentWorkItem",
 				"PlatformAgentWorkItemKindValue.ChildRun",
@@ -211,11 +216,26 @@
 		},
 		{
 			"area": "multi-agent-workgraph",
+			"evidenceType": "source",
+			"path": "src/agent/providers/codex-app-server.ts",
+			"anchors": ["childRunIds", "codexCollabChildRunIds"]
+		},
+		{
+			"area": "multi-agent-workgraph",
+			"evidenceType": "source",
+			"path": "packages/control-plane-rs/src/main.rs",
+			"anchors": ["childRunIds", "codex_collab_child_run_ids_from_item"]
+		},
+		{
+			"area": "multi-agent-workgraph",
 			"evidenceType": "test",
 			"path": "test/server/hosted-agent-runtime-progress.test.ts",
 			"anchors": [
 				"records Codex subagent collaboration as durable Platform work items",
+				"links follow-up Codex subagent tools to the spawned child work item",
 				"codex.subagent.spawnAgent",
+				"ownerChildRunId",
+				"parentWorkItemId",
 				"PlatformAgentWorkItemKindValue.ChildRun",
 				"PlatformAgentWorkItemStateValue.Succeeded"
 			]
