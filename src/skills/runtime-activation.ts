@@ -205,7 +205,13 @@ function buildMcpActivation(
 	}
 
 	const warnings: string[] = [];
-	const stats = statSync(mcpJsonPath);
+	let stats: ReturnType<typeof statSync>;
+	try {
+		stats = statSync(mcpJsonPath);
+	} catch (error) {
+		warnings.push(`mcp.json could not be inspected: ${errorMessage(error)}`);
+		return { configPath: mcpJsonPath, servers: [], warnings };
+	}
 	if (stats.size > MAX_MCP_JSON_BYTES) {
 		warnings.push(
 			`mcp.json is too large to load: ${stats.size} bytes exceeds ${MAX_MCP_JSON_BYTES} byte limit.`,
