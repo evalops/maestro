@@ -555,7 +555,7 @@ describe("platform A2A client", () => {
 				});
 				return sseResponse([
 					'data: {"task":{"id":"run_mixed","status":{"state":"TASK_STATE_SUBMITTED"}}}\r\n\n',
-					'event: statusUpdate\ndata: {"taskId":"run_mixed","status":{"state":"TASK_STATE_COMPLETED"},"final":true}\n\r\n',
+					'event: statusUpdate\r\ndata: {"taskId":"run_mixed","status":{"state":"TASK_STATE_COMPLETED"},"final":true}\r\n\r\n',
 				]);
 			},
 		);
