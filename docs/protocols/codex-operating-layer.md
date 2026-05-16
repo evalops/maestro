@@ -27,6 +27,8 @@ npm run check:codex-operating-layer
   lifecycle events, and streaming output.
 - Hosted Codex subagent collaboration records Platform AgentRun work items so
   parent/child work can be inspected, resumed, scored, and restored remotely.
+  Spawned children also become Platform agent-registry delegations so ownership,
+  routing capability, resolution, and evidence refs survive remote execution.
   TS and Rust both normalize child run ids, and follow-up subagent tools link
   back to the spawned child work item.
 - Rust can expose the same Codex models through the control plane, bridge
@@ -49,7 +51,7 @@ npm run check:codex-operating-layer
 | durable threads, goals, memory | `durable-threads-goals-memory` | `src/session/types.ts`, `packages/contracts/src/maestro-app-server.ts`, `test/app-server/session-api.test.ts` |
 | approvals and sandbox policy | `approvals-sandbox-policy` | `src/agent/transport.ts`, `test/agent/provider-transport-provider-tools.test.ts`, `packages/control-plane-rs/src/main.rs`, `docs/protocols/pending-requests.md` |
 | subagents | `subagents` | `src/agent/providers/codex-app-server.ts`, `test/agent/provider-transport-provider-tools.test.ts` |
-| multi-agent work graph | `multi-agent-workgraph` | `src/platform/agent-runtime-client.ts`, `src/agent/providers/codex-app-server.ts`, `packages/control-plane-rs/src/main.rs`, `src/server/hosted-agent-runtime-progress.ts`, `test/server/hosted-agent-runtime-progress.test.ts` |
+| multi-agent work graph | `multi-agent-workgraph` | `src/platform/agent-runtime-client.ts`, `src/platform/agent-registry-client.ts`, `src/agent/providers/codex-app-server.ts`, `packages/control-plane-rs/src/main.rs`, `src/server/hosted-agent-runtime-progress.ts`, `test/server/hosted-agent-runtime-progress.test.ts` |
 | realtime streaming | `realtime-streaming` | `src/server/handlers/runtime-app-server-ws.ts`, `test/server/runtime-app-server-ws.test.ts` |
 | TypeScript runtime | `typescript-runtime` | `src/agent/providers/codex-app-server.ts`, `test/agent/codex-app-server.test.ts` |
 | Rust runtime | `rust-control-plane` | `packages/control-plane-rs/src/model_catalog.rs`, `packages/control-plane-rs/src/main.rs` |

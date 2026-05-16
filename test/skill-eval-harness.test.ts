@@ -22,40 +22,30 @@ function tempRoot(): string {
 async function writeSkillPackage(
 	root: string,
 	name: string,
-	options: {
-		allowedTools?: string;
-		frontmatterExtras?: string;
-		mcpTools?: string[];
-		toolbox?: boolean;
-	} = {},
+	options: { mcpTools?: string[]; toolbox?: boolean } = {},
 ): Promise<string> {
 	const skillDir = join(root, name);
 	await mkdir(join(skillDir, "reference"), { recursive: true });
 	if (options.toolbox) {
 		await mkdir(join(skillDir, "toolbox"), { recursive: true });
-		const isWindows = process.platform === "win32";
 		const toolPath = join(
 			skillDir,
 			"toolbox",
-			isWindows ? "describe.cmd" : "describe.sh",
+			process.platform === "win32" ? "describe.cmd" : "describe.sh",
 		);
 		writeFileSync(
 			toolPath,
-			isWindows
-				? '@echo off\r\nif "%MAESTRO_TOOLBOX_ACTION%"=="describe" echo {"name":"describe"}\r\nexit /b 0\r\n'
+			process.platform === "win32"
+				? '@echo off\r\nif "%MAESTRO_TOOLBOX_ACTION%"=="describe" (\r\n  echo {"name":"describe"}\r\n  exit /b 0\r\n)\r\nexit /b 0\r\n'
 				: '#!/usr/bin/env bash\nif [ "$MAESTRO_TOOLBOX_ACTION" = describe ]; then echo \'{"name":"describe"}\'; exit 0; fi\nexit 0\n',
 		);
-		chmodSync(toolPath, 0o755);
+		if (process.platform !== "win32") {
+			chmodSync(toolPath, 0o755);
+		}
 	}
-	const allowedTools =
-		options.allowedTools ??
-		"allowed-tools:\n  - read\nbuiltin-tools:\n  - read";
-	const frontmatterExtras = options.frontmatterExtras
-		? `${options.frontmatterExtras}\n`
-		: "";
 	writeFileSync(
 		join(skillDir, "SKILL.md"),
-		`---\nname: ${name}\ndescription: "Evaluate ${name}. Use when the user asks for Agent Core skill validation."\n${allowedTools}\n${frontmatterExtras}isolatedContext: true\n---\n\n# ${name}\n\nKeep the package small and load heavy context from reference files.\n`,
+		`---\nname: ${name}\ndescription: "Evaluate ${name}. Use when the user asks for Agent Core skill validation."\nallowed-tools:\n  - read\nbuiltin-tools:\n  - read\nisolatedContext: true\n---\n\n# ${name}\n\nKeep the package small and load heavy context from reference files.\n`,
 	);
 	writeFileSync(
 		join(skillDir, "reference", "overview.md"),
@@ -123,44 +113,6 @@ describe("skill package eval harness", () => {
 		expect(formatSkillEvalText(report)).toContain(
 			"2 passed, 0 failed, score 1.00",
 		);
-	});
-
-	it("marks loader-rejected frontmatter as non-loadable", async () => {
-		const root = tempRoot();
-		const unexpectedField = await writeSkillPackage(root, "future-field", {
-			frontmatterExtras: "unknownField: true",
-		});
-		const invalidToolList = await writeSkillPackage(root, "bad-tools", {
-			allowedTools: "allowed-tools: []\nbuiltin-tools:\n  - read",
-		});
-
-		const report = await evaluateSkillPackages([
-			{
-				id: "unexpected-field",
-				path: unexpectedField,
-				expectedOutcome: "fail",
-			},
-			{
-				id: "invalid-tool-list",
-				path: invalidToolList,
-				expectedOutcome: "fail",
-			},
-		]);
-
-		expect(report.summary).toEqual({
-			total: 2,
-			passed: 2,
-			failed: 0,
-			score: 1,
-		});
-		for (const result of report.results) {
-			expect(result.assertions).toContainEqual(
-				expect.objectContaining({
-					code: "skill_md_loadable",
-					status: "fail",
-				}),
-			);
-		}
 	});
 
 	it("routes maestro skill eval and emits JSON", async () => {

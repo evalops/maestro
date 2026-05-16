@@ -187,7 +187,12 @@
 			"area": "multi-agent-workgraph",
 			"evidenceType": "source",
 			"path": "src/platform/core-services.ts",
-			"anchors": ["RecordRunWorkItem", "UpdateRunWorkItem"]
+			"anchors": [
+				"RecordRunWorkItem",
+				"UpdateRunWorkItem",
+				"agents.v1.AgentService",
+				"ResolveDelegation"
+			]
 		},
 		{
 			"area": "multi-agent-workgraph",
@@ -202,10 +207,25 @@
 		{
 			"area": "multi-agent-workgraph",
 			"evidenceType": "source",
+			"path": "src/platform/agent-registry-client.ts",
+			"anchors": [
+				"PlatformDelegationStatusValue",
+				"delegateAgentWithPlatform",
+				"resolveAgentDelegationWithPlatform",
+				"contextPayload",
+				"resultPayload"
+			]
+		},
+		{
+			"area": "multi-agent-workgraph",
+			"evidenceType": "source",
 			"path": "src/server/hosted-agent-runtime-progress.ts",
 			"anchors": [
 				"CODEX_SUBAGENT_TOOL_PREFIX",
 				"codexThreadChildRunId",
+				"codexSubagentDelegationIds",
+				"recordCodexSubagentDelegation",
+				"agent-registry-delegation",
 				"ownerChildRunId",
 				"parentWorkItemId",
 				"recordCodexSubagentWorkItem",
@@ -232,6 +252,7 @@
 			"path": "test/server/hosted-agent-runtime-progress.test.ts",
 			"anchors": [
 				"records Codex subagent collaboration as durable Platform work items",
+				"records Codex spawn handoffs as Platform agent-registry delegations",
 				"links follow-up Codex subagent tools to the spawned child work item",
 				"codex.subagent.spawnAgent",
 				"ownerChildRunId",

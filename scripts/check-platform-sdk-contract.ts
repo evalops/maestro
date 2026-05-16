@@ -23,6 +23,10 @@ const serviceModules = {
 		specifier: "agentruntime/v1/runtime_pb",
 		exportName: "AgentRuntimeService",
 	},
+	agents: {
+		specifier: "agents/v1/agents_pb",
+		exportName: "AgentService",
+	},
 	approvals: {
 		specifier: "approvals/v1/approvals_pb",
 		exportName: "ApprovalService",
@@ -30,6 +34,14 @@ const serviceModules = {
 	connectors: {
 		specifier: "connectors/v1/connectors_pb",
 		exportName: "ConnectorService",
+	},
+	fermata: {
+		specifier: "fermata/v1/fermata_pb",
+		exportName: "FermataService",
+	},
+	fermataExecution: {
+		specifier: "fermata/v1/worker_pb",
+		exportName: "FermataExecutionService",
 	},
 	governance: {
 		specifier: "governance/v1/governance_pb",

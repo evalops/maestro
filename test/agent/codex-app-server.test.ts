@@ -59,6 +59,7 @@ class FakeCodexAppServerClient implements CodexAppServerClientLike {
 		private readonly emitCollabAgentEvents = false,
 		private readonly callDynamicToolBeforeNotifications = false,
 		private readonly dynamicToolCallCount = 1,
+		private readonly collabChildRunIds?: string[],
 	) {}
 
 	async initialize(
@@ -111,6 +112,9 @@ class FakeCodexAppServerClient implements CodexAppServerClientLike {
 							status: "inProgress",
 							senderThreadId: "thread-1",
 							receiverThreadIds: ["child-thread-1"],
+							...(this.collabChildRunIds
+								? { childRunIds: this.collabChildRunIds }
+								: {}),
 							prompt: "Inspect the repo for routing bugs",
 							model: "gpt-5.3-codex",
 							reasoningEffort: "high",
@@ -128,6 +132,9 @@ class FakeCodexAppServerClient implements CodexAppServerClientLike {
 							status: "completed",
 							senderThreadId: "thread-1",
 							receiverThreadIds: ["child-thread-1"],
+							...(this.collabChildRunIds
+								? { childRunIds: this.collabChildRunIds }
+								: {}),
 							prompt: "Inspect the repo for routing bugs",
 							model: "gpt-5.3-codex",
 							reasoningEffort: "high",
@@ -382,6 +389,47 @@ describe("Codex app-server provider", () => {
 				content: [{ type: "text", text: "Hello from Codex app-server" }],
 			},
 		});
+	});
+
+	it("falls back from empty Codex child run IDs to receiver thread child IDs", async () => {
+		const client = new FakeCodexAppServerClient(
+			true,
+			true,
+			"lookup_ticket",
+			true,
+			false,
+			1,
+			[""],
+		);
+		const events: AssistantMessageEvent[] = [];
+
+		for await (const event of streamCodexAppServer(model, context, {
+			codexAppServerClient: client,
+			cwd: "/tmp/project",
+		})) {
+			events.push(event);
+		}
+
+		expect(events).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					type: "provider_tool_execution_start",
+					toolCallId: "collab-call-1",
+					args: expect.objectContaining({
+						childRunIds: ["codex-thread:child-thread-1"],
+					}),
+				}),
+				expect.objectContaining({
+					type: "provider_tool_execution_end",
+					toolCallId: "collab-call-1",
+					result: expect.objectContaining({
+						details: expect.objectContaining({
+							childRunIds: ["codex-thread:child-thread-1"],
+						}),
+					}),
+				}),
+			]),
+		);
 	});
 
 	it("returns a useful sign-in error when ChatGPT auth is missing", async () => {

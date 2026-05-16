@@ -53,7 +53,6 @@ export {
 export { createSkillTool, invalidateSkillCache } from "./tool.js";
 export {
 	type SkillLintIssue,
-	type SkillLintOptions,
 	type SkillLintResult,
 	type SkillScaffoldOptions,
 	SKILL_BODY_MAX_CHARS,
@@ -64,8 +63,8 @@ export {
 	lintSkillDirectory,
 	lintSkillPaths,
 	scaffoldSkill,
+	shouldUseShellForToolboxDescribe,
 	toolboxDescribeSpawnCommand,
-	toolboxDescribeSpawnOptions,
 } from "./linter.js";
 
 export {

@@ -18,6 +18,7 @@ export interface HostedRunnerConfig {
 	host?: string;
 	port: number;
 	workspaceId?: string;
+	agentId?: string;
 	agentRunId?: string;
 	maestroSessionId?: string;
 	attachAudience?: string;
@@ -38,6 +39,7 @@ Options:
   --host <host>             Bind host when --listen is not used
   --port <port>             Bind port when --listen is not used
   --workspace-id <id>       EvalOps workspace id for metadata
+  --agent-id <id>           Platform agent-registry agent id for metadata
   --agent-run-id <id>       Platform AgentRun id for metadata
   --maestro-session-id <id> Existing Maestro session id for metadata
   --attach-audience <aud>   Expected attach audience metadata
@@ -49,7 +51,7 @@ Environment:
   MAESTRO_WORKSPACE_ROOT
   MAESTRO_REMOTE_RUNNER_SNAPSHOT_ROOT, REMOTE_RUNNER_SNAPSHOT_ROOT
   MAESTRO_HOSTED_RUNNER_LISTEN, MAESTRO_HOSTED_RUNNER_HOST, MAESTRO_HOSTED_RUNNER_PORT, PORT
-  MAESTRO_REMOTE_RUNNER_WORKSPACE_ID, MAESTRO_AGENT_RUN_ID, MAESTRO_SESSION_ID
+  MAESTRO_REMOTE_RUNNER_WORKSPACE_ID, MAESTRO_AGENT_ID, MAESTRO_AGENT_RUN_ID, MAESTRO_SESSION_ID
   MAESTRO_ATTACH_AUDIENCE`;
 
 function parseHostedRunnerOptions(
@@ -249,6 +251,9 @@ export async function resolveHostedRunnerConfig(
 				"MAESTRO_REMOTE_RUNNER_WORKSPACE_ID",
 				"MAESTRO_WORKSPACE_ID",
 			]),
+		agentId:
+			getLastFlag(parsed, "agent-id") ??
+			getEnvValue(env, ["MAESTRO_REMOTE_RUNNER_AGENT_ID", "MAESTRO_AGENT_ID"]),
 		agentRunId: getLastFlag(parsed, "agent-run-id") ?? env.MAESTRO_AGENT_RUN_ID,
 		maestroSessionId:
 			getLastFlag(parsed, "maestro-session-id") ?? env.MAESTRO_SESSION_ID,
@@ -282,6 +287,10 @@ export function applyHostedRunnerEnvironment(config: HostedRunnerConfig): void {
 	if (config.agentRunId) {
 		process.env.MAESTRO_AGENT_RUN_ID = config.agentRunId;
 	}
+	if (config.agentId) {
+		process.env.MAESTRO_AGENT_ID = config.agentId;
+		process.env.MAESTRO_REMOTE_RUNNER_AGENT_ID = config.agentId;
+	}
 	if (config.maestroSessionId) {
 		process.env.MAESTRO_SESSION_ID = config.maestroSessionId;
 	}
@@ -303,6 +312,7 @@ export function toHostedRunnerContext(
 		listenHost: config.host,
 		listenPort: config.port,
 		workspaceId: config.workspaceId,
+		agentId: config.agentId,
 		agentRunId: config.agentRunId,
 		attachAudience: config.attachAudience,
 		configuredMaestroSessionId: config.maestroSessionId,

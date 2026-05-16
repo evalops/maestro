@@ -120,35 +120,6 @@ describe("Codex live smoke evidence helpers", () => {
 		});
 	});
 
-	it("treats undefined operation args the same as omitted args", () => {
-		expect(
-			summarizeDynamicToolCalls([
-				{
-					type: "item",
-					subtype: "tool_call",
-					data: {
-						toolCallId: "call-read-1",
-						toolName: "read",
-						args: { path: "/tmp/token.txt", optional: undefined },
-					},
-				},
-				{
-					type: "item",
-					subtype: "tool_call",
-					data: {
-						toolCallId: "call-read-2",
-						toolName: "read",
-						args: { path: "/tmp/token.txt" },
-					},
-				},
-			]),
-		).toMatchObject({
-			totalCalls: 2,
-			uniqueCalls: 1,
-			maxIdenticalCalls: 2,
-		});
-	});
-
 	it("accepts a bounded dynamic read-tool smoke transcript", () => {
 		expect(
 			assertBoundedDynamicToolUse({

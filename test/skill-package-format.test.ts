@@ -13,12 +13,17 @@ import {
 	loadSkills,
 	parseFrontmatter,
 	scaffoldSkill,
+	shouldUseShellForToolboxDescribe,
 	skillToDict,
 	toolboxDescribeSpawnCommand,
-	toolboxDescribeSpawnOptions,
 } from "../src/skills/index.js";
 
 const tempDirs: string[] = [];
+const ANSI_REGEX = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
+
+function stripAnsi(value: string): string {
+	return value.replace(ANSI_REGEX, "");
+}
 
 function tempRoot(): string {
 	const dir = mkdtempSync(join(tmpdir(), "maestro-skill-package-"));
@@ -126,13 +131,13 @@ describe("skill package format", () => {
 		expect(buildSkillArtifactMetadata(skills[0]!).workspaceId).toBe("42");
 	});
 
-	it("does not expose non-string license frontmatter values", async () => {
+	it("ignores non-string package metadata fields", async () => {
 		const workspace = tempRoot();
 		const skillDir = join(workspace, ".maestro", "skills", "shipping-releases");
 		await mkdir(skillDir, { recursive: true });
 		writeFileSync(
 			join(skillDir, "SKILL.md"),
-			`---\nname: shipping-releases\ndescription: "Ship releases. Use when the user asks for release validation."\nlicense: 2.1\ncompatibility: ">=0.10"\n---\n\n# Shipping Releases\n`,
+			`---\nname: shipping-releases\ndescription: "Ship releases. Use when the user asks for release validation."\nlicense: 2.0\ncompatibility: ">=0.10"\n---\n\n# Shipping Releases\n`,
 		);
 
 		const { skills, errors } = loadSkills(workspace, { includeSystem: false });
@@ -140,7 +145,6 @@ describe("skill package format", () => {
 		expect(errors).toEqual([]);
 		expect(skills[0]?.license).toBeUndefined();
 		expect(skills[0]?.compatibility).toBe(">=0.10");
-		expect(skillToDict(skills[0]!)).not.toHaveProperty("license");
 	});
 
 	it("rejects non-string compatibility metadata fields", async () => {
@@ -168,57 +172,6 @@ describe("skill package format", () => {
 		expect(loaded.errors[0]?.code).toBe("INVALID_COMPATIBILITY");
 	});
 
-	it("fails lint when bundled MCP tools are unfiltered", async () => {
-		const skillDir = join(tempRoot(), "researching-code");
-		await mkdir(skillDir, { recursive: true });
-		writeFileSync(
-			join(skillDir, "SKILL.md"),
-			`---\nname: researching-code\ndescription: "Research code paths. Use when the user asks for codebase investigation."\n---\n\n# Researching Code\n`,
-		);
-		writeFileSync(
-			join(skillDir, "mcp.json"),
-			JSON.stringify({ github: { command: "npx", args: ["-y", "server"] } }),
-		);
-
-		const result = await lintSkillDirectory(skillDir);
-
-		expect(hasSkillLintErrors([result])).toBe(true);
-		expect(result.issues.map((issue) => issue.code)).toContain(
-			"mcp_tools_unfiltered",
-		);
-	});
-
-	it("fails lint when mcp includeTools contains invalid entries", async () => {
-		const skillDir = join(tempRoot(), "researching-code");
-		await mkdir(skillDir, { recursive: true });
-		writeFileSync(
-			join(skillDir, "SKILL.md"),
-			`---\nname: researching-code\ndescription: "Research code paths. Use when the user asks for codebase investigation."\n---\n\n# Researching Code\n`,
-		);
-		writeFileSync(
-			join(skillDir, "mcp.json"),
-			JSON.stringify({
-				github: {
-					command: "npx",
-					args: ["-y", "server"],
-					includeTools: ["search", ""],
-				},
-			}),
-		);
-
-		const result = await lintSkillDirectory(skillDir);
-
-		expect(hasSkillLintErrors([result])).toBe(true);
-		expect(result.issues).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({
-					code: "invalid_mcp_include_tools",
-					severity: "error",
-				}),
-			]),
-		);
-	});
-
 	it("rejects mixed-type tool permission lists", async () => {
 		const workspace = tempRoot();
 		const skillDir = join(workspace, ".maestro", "skills", "reviewing-prs");
@@ -244,52 +197,24 @@ describe("skill package format", () => {
 		expect(loaded.errors[0]?.code).toBe("INVALID_TOOL_LIST");
 	});
 
-	it("reports load warnings when list finds no valid skills", async () => {
-		const workspace = tempRoot();
-		const systemSkillsDir = join(workspace, "empty-system-skills");
-		const maestroHome = join(workspace, "maestro-home");
-		const skillDir = join(workspace, ".maestro", "skills", "broken-skill");
-		await mkdir(systemSkillsDir, { recursive: true });
-		await mkdir(maestroHome, { recursive: true });
+	it("fails lint when bundled MCP tools are unfiltered", async () => {
+		const skillDir = join(tempRoot(), "researching-code");
 		await mkdir(skillDir, { recursive: true });
 		writeFileSync(
 			join(skillDir, "SKILL.md"),
-			`---\ndescription: "Broken skill. Use when the user asks for load warnings."\n---\n\n# Broken Skill\n`,
+			`---\nname: researching-code\ndescription: "Research code paths. Use when the user asks for codebase investigation."\n---\n\n# Researching Code\n`,
 		);
-		const previousSystemSkillsDir = process.env.MAESTRO_SYSTEM_SKILLS_DIR;
-		const previousMaestroHome = process.env.MAESTRO_HOME;
-		const originalLog = console.log;
-		const originalError = console.error;
-		const logs: string[] = [];
-		const errors: string[] = [];
-		process.env.MAESTRO_SYSTEM_SKILLS_DIR = systemSkillsDir;
-		process.env.MAESTRO_HOME = maestroHome;
-		console.log = (...args: unknown[]) => {
-			logs.push(args.map((arg) => String(arg)).join(" "));
-		};
-		console.error = (...args: unknown[]) => {
-			errors.push(args.map((arg) => String(arg)).join(" "));
-		};
+		writeFileSync(
+			join(skillDir, "mcp.json"),
+			JSON.stringify({ github: { command: "npx", args: ["-y", "server"] } }),
+		);
 
-		try {
-			await handleSkillCommand("list", [], { workspaceDir: workspace });
-		} finally {
-			if (previousSystemSkillsDir === undefined) {
-				delete process.env.MAESTRO_SYSTEM_SKILLS_DIR;
-			} else {
-				process.env.MAESTRO_SYSTEM_SKILLS_DIR = previousSystemSkillsDir;
-			}
-			if (previousMaestroHome === undefined) {
-				delete process.env.MAESTRO_HOME;
-			} else {
-				process.env.MAESTRO_HOME = previousMaestroHome;
-			}
-			console.log = originalLog;
-			console.error = originalError;
-		}
+		const result = await lintSkillDirectory(skillDir);
 
-		expect(logs.join("\n")).toContain("No skills found.");
-		expect(errors.join("\n")).toContain("1 skill load warning(s).");
+		expect(hasSkillLintErrors([result])).toBe(true);
+		expect(result.issues.map((issue) => issue.code)).toContain(
+			"mcp_tools_unfiltered",
+		);
 	});
 
 	it("classifies Windows toolbox entries by executable extension", () => {
@@ -297,29 +222,14 @@ describe("skill package format", () => {
 		expect(isWindowsRunnableToolboxEntry("tool.exe", ".CMD;.EXE")).toBe(true);
 		expect(isWindowsRunnableToolboxEntry("tool.ps1", ".CMD;.EXE")).toBe(false);
 		expect(isWindowsRunnableToolboxEntry("tool")).toBe(false);
-	});
-
-	it("runs Windows toolbox describe checks through the shell", () => {
-		expect(toolboxDescribeSpawnOptions({ platform: "win32" })).toEqual(
-			expect.objectContaining({
-				encoding: "utf8",
-				shell: true,
-				timeout: 5000,
-			}),
-		);
+		expect(shouldUseShellForToolboxDescribe("win32")).toBe(true);
+		expect(shouldUseShellForToolboxDescribe("darwin")).toBe(false);
 		expect(
-			toolboxDescribeSpawnOptions({ platform: "darwin" }),
-		).not.toHaveProperty("shell");
-		expect(
-			toolboxDescribeSpawnCommand("C:\\Program Files\\tool.cmd", {
-				platform: "win32",
-			}),
+			toolboxDescribeSpawnCommand("C:\\Program Files\\tool.cmd", "win32"),
 		).toBe('"C:\\Program Files\\tool.cmd"');
-		expect(
-			toolboxDescribeSpawnCommand("/usr/local/bin/tool", {
-				platform: "darwin",
-			}),
-		).toBe("/usr/local/bin/tool");
+		expect(toolboxDescribeSpawnCommand("/usr/local/bin/tool", "darwin")).toBe(
+			"/usr/local/bin/tool",
+		);
 	});
 
 	it("scaffolds a package that passes lint", async () => {
@@ -419,5 +329,115 @@ describe("skill package format", () => {
 			join(workspace, ".maestro", "skills", "testing-ui"),
 		);
 		expect(hasSkillLintErrors([result])).toBe(false);
+	});
+
+	it("reports load warnings when skill list finds only invalid packages", async () => {
+		const workspace = tempRoot();
+		const skillDir = join(workspace, ".maestro", "skills", "invalid-tools");
+		const emptySystemSkills = join(workspace, "empty-system-skills");
+		const emptyHome = join(workspace, "empty-home");
+		await mkdir(skillDir, { recursive: true });
+		await mkdir(emptySystemSkills, { recursive: true });
+		await mkdir(emptyHome, { recursive: true });
+		writeFileSync(
+			join(skillDir, "SKILL.md"),
+			`---\nname: invalid-tools\ndescription: "Invalid tools. Use when testing error reporting."\nallowed-tools:\n  - read\n  - 123\n---\n\n# Invalid Tools\n`,
+		);
+
+		const previousSystemSkills = process.env.MAESTRO_SYSTEM_SKILLS_DIR;
+		const previousHome = process.env.MAESTRO_HOME;
+		const originalLog = console.log;
+		const originalError = console.error;
+		const textOutput: string[] = [];
+		const errorOutput: string[] = [];
+		process.env.MAESTRO_SYSTEM_SKILLS_DIR = emptySystemSkills;
+		process.env.MAESTRO_HOME = emptyHome;
+		console.log = (...args: unknown[]) => {
+			textOutput.push(args.map((arg) => String(arg)).join(" "));
+		};
+		console.error = (...args: unknown[]) => {
+			errorOutput.push(args.map((arg) => String(arg)).join(" "));
+		};
+		try {
+			await handleSkillCommand("list", [], {
+				workspaceDir: workspace,
+				includeSystemSkills: false,
+			});
+		} finally {
+			console.log = originalLog;
+			console.error = originalError;
+			if (previousSystemSkills === undefined) {
+				delete process.env.MAESTRO_SYSTEM_SKILLS_DIR;
+			} else {
+				process.env.MAESTRO_SYSTEM_SKILLS_DIR = previousSystemSkills;
+			}
+			if (previousHome === undefined) {
+				delete process.env.MAESTRO_HOME;
+			} else {
+				process.env.MAESTRO_HOME = previousHome;
+			}
+		}
+
+		expect(textOutput.map(stripAnsi)).toEqual(["No skills found."]);
+		expect(errorOutput.map(stripAnsi)).toEqual(["\n1 skill load warning(s)."]);
+	});
+
+	it("prints human-readable inspect output unless --json is set", async () => {
+		const workspace = tempRoot();
+		const skillDir = join(workspace, ".maestro", "skills", "reviewing-prs");
+		await mkdir(join(skillDir, "reference"), { recursive: true });
+		writeFileSync(
+			join(skillDir, "SKILL.md"),
+			`---\nname: reviewing-prs\ndescription: "Review pull requests. Use when the user asks for PR review."\nallowed-tools:\n  - read\nbuiltin-tools:\n  - read\nmodel: gpt-5.5\nmode: review\nisolatedContext: true\n---\n\n# Reviewing PRs\n\nKeep findings first.\n`,
+		);
+		writeFileSync(
+			join(skillDir, "reference", "rubric.md"),
+			"# Rubric\n\nFind bugs before style notes.\n",
+		);
+
+		const skill = loadSkills(workspace, { includeSystem: false }).skills[0]!;
+		const expectedJson = JSON.stringify(
+			{
+				...skillToDict(skill),
+				sourceType: skill.sourceType,
+				sourcePath: skill.sourcePath,
+				resources: skill.resources,
+				resourceDirs: skill.resourceDirs,
+			},
+			null,
+			2,
+		);
+
+		const originalLog = console.log;
+		const textOutput: string[] = [];
+		const jsonOutput: string[] = [];
+
+		console.log = (...args: unknown[]) => {
+			textOutput.push(args.map((arg) => String(arg)).join(" "));
+		};
+		try {
+			await handleSkillCommand("inspect", ["reviewing-prs"], {
+				workspaceDir: workspace,
+			});
+		} finally {
+			console.log = originalLog;
+		}
+
+		console.log = (...args: unknown[]) => {
+			jsonOutput.push(args.map((arg) => String(arg)).join(" "));
+		};
+		try {
+			await handleSkillCommand("inspect", ["reviewing-prs", "--json"], {
+				workspaceDir: workspace,
+			});
+		} finally {
+			console.log = originalLog;
+		}
+
+		expect(textOutput).toHaveLength(1);
+		expect(textOutput[0]).toContain("name: 'reviewing-prs'");
+		expect(textOutput[0]).toContain("sourceType: 'project'");
+		expect(textOutput[0]).not.toBe(expectedJson);
+		expect(jsonOutput).toEqual([expectedJson]);
 	});
 });

@@ -526,8 +526,9 @@ function codexCollabArgs(
 }
 
 function codexCollabChildRunIds(item: CodexCollabAgentToolCallItem): string[] {
-	if (item.childRunIds && item.childRunIds.length > 0) {
-		return item.childRunIds;
+	const childRunIds = item.childRunIds?.filter((id) => id.length > 0) ?? [];
+	if (childRunIds.length > 0) {
+		return childRunIds;
 	}
 	return item.receiverThreadIds.map(
 		(threadId) => `${CODEX_THREAD_CHILD_RUN_PREFIX}${threadId}`,
