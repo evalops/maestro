@@ -168,8 +168,9 @@ describe("platform A2A client", () => {
 				if (parsed.pathname === "/message:stream") {
 					return sseResponse([
 						'data: {"task":{"id":"run_stream","contextId":"session_1","status":{"state":"TASK_STATE_SUBMITTED"}}}\n\n',
-						'data: {"statusUpdate":{"taskId":"run_stream","contextId":"session_1","status":{"state":"TASK_STATE_WORKING","timestamp":"2026-05-16T12:00:00.000Z"},"metadata":{"step":"start"}}}\n\n',
-						'data: {"artifactUpdate":{"taskId":"run_stream","contextId":"session_1","artifact":{"artifactId":"artifact_1","name":"summary","parts":[{"text":"done","mediaType":"text/plain"}]},"append":false,"lastChunk":true}}\n\n',
+						'event: message\ndata: {"message":{"messageId":"msg_agent","contextId":"session_1","role":"ROLE_AGENT","parts":[{"text":"streaming","mediaType":"text/plain"}]}}\n\n',
+						'data: {"statusUpdate":{"type":"payload-status","taskId":"run_stream","contextId":"session_1","status":{"state":"TASK_STATE_WORKING","timestamp":"2026-05-16T12:00:00.000Z"},"metadata":{"step":"start"}}}\n\n',
+						'data: {"artifactUpdate":{"type":"payload-artifact","taskId":"run_stream","contextId":"session_1","artifact":{"artifactId":"artifact_1","name":"summary","parts":[{"text":"done","mediaType":"text/plain"}]},"append":false,"lastChunk":true}}\n\n',
 					]);
 				}
 
@@ -456,6 +457,15 @@ describe("platform A2A client", () => {
 					id: "run_stream",
 					contextId: "session_1",
 					status: { state: "TASK_STATE_SUBMITTED" },
+				},
+			},
+			{
+				type: "message",
+				message: {
+					messageId: "msg_agent",
+					contextId: "session_1",
+					role: "ROLE_AGENT",
+					parts: [{ text: "streaming", mediaType: "text/plain" }],
 				},
 			},
 			{

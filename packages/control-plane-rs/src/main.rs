@@ -1020,20 +1020,25 @@ async fn handle_a2a_task_subscribe(
     )
     .await?;
 
-    let timeout_ms = env_u64(
-        "MAESTRO_A2A_SUBSCRIBE_TIMEOUT_MS",
-        A2A_DEFAULT_SUBSCRIBE_TIMEOUT_MS,
+    let heartbeat_interval = Duration::from_millis(
+        env_u64(
+            "MAESTRO_A2A_SUBSCRIBE_TIMEOUT_MS",
+            A2A_DEFAULT_SUBSCRIBE_TIMEOUT_MS,
+        )
+        .max(1),
     );
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            break;
-        }
-        let event = match tokio::time::timeout(remaining, receiver.recv()).await {
+        let event = match tokio::time::timeout(heartbeat_interval, receiver.recv()).await {
             Ok(Ok(task)) => task,
             Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
-            Ok(Err(broadcast::error::RecvError::Closed)) | Err(_) => break,
+            Ok(Err(broadcast::error::RecvError::Closed)) => break,
+            Err(_) => {
+                stream
+                    .write_all(b": keep-alive\n\n")
+                    .await
+                    .map_err(|error| error.to_string())?;
+                continue;
+            }
         };
         if event.get("id").and_then(Value::as_str) != Some(task_id) {
             continue;
@@ -12302,6 +12307,9 @@ setTimeout(() => {
 
     #[tokio::test(flavor = "current_thread")]
     async fn a2a_task_subscribe_streams_active_task_until_terminal_update() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous_timeout = env::var("MAESTRO_A2A_SUBSCRIBE_TIMEOUT_MS").ok();
+        env::set_var("MAESTRO_A2A_SUBSCRIBE_TIMEOUT_MS", "10");
         let state = test_app_state_with_sessions(HashMap::new());
         let initial_task = a2a_task_value(
             "maestro-task-active-subscribe",
@@ -12332,6 +12340,7 @@ setTimeout(() => {
                 .expect("subscribe response should start")
                 .expect("subscribe response should be readable");
         response_bytes.truncate(initial_len);
+        tokio::time::sleep(Duration::from_millis(30)).await;
         let terminal_task = a2a_task_value(
             "maestro-task-active-subscribe",
             "ctx-1",
@@ -12370,6 +12379,12 @@ setTimeout(() => {
         assert!(response.contains("event: artifactUpdate"));
         assert!(response.contains("TASK_STATE_COMPLETED"));
         assert!(response.contains("artifact body"));
+
+        if let Some(previous_timeout) = previous_timeout {
+            env::set_var("MAESTRO_A2A_SUBSCRIBE_TIMEOUT_MS", previous_timeout);
+        } else {
+            env::remove_var("MAESTRO_A2A_SUBSCRIBE_TIMEOUT_MS");
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]

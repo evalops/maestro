@@ -171,11 +171,20 @@ export interface SendA2AMessageResult {
 	task: A2ATask;
 }
 
-export type A2AStreamEventType = "task" | "statusUpdate" | "artifactUpdate";
+export type A2AStreamEventType =
+	| "task"
+	| "message"
+	| "statusUpdate"
+	| "artifactUpdate";
 
 export interface A2ATaskStreamEvent {
 	type: "task";
 	task: A2ATask;
+}
+
+export interface A2AMessageStreamEvent {
+	type: "message";
+	message: A2AMessage;
 }
 
 export interface A2AStatusUpdateStreamEvent {
@@ -199,6 +208,7 @@ export interface A2AArtifactUpdateStreamEvent {
 
 export type A2AStreamEvent =
 	| A2ATaskStreamEvent
+	| A2AMessageStreamEvent
 	| A2AStatusUpdateStreamEvent
 	| A2AArtifactUpdateStreamEvent;
 
@@ -602,6 +612,7 @@ function parseA2AStreamEventType(
 ): A2AStreamEventType | undefined {
 	if (
 		value === "task" ||
+		value === "message" ||
 		value === "statusUpdate" ||
 		value === "artifactUpdate"
 	) {
@@ -616,6 +627,9 @@ function inferA2AStreamEventType(
 	if (isRecord(payload.task)) {
 		return "task";
 	}
+	if (isRecord(payload.message)) {
+		return "message";
+	}
 	if (isRecord(payload.statusUpdate)) {
 		return "statusUpdate";
 	}
@@ -628,6 +642,12 @@ function inferA2AStreamEventType(
 	if (isRecord(payload.status)) {
 		return "statusUpdate";
 	}
+	if (
+		typeof payload.messageId === "string" &&
+		typeof payload.role === "string"
+	) {
+		return "message";
+	}
 	return undefined;
 }
 
@@ -639,6 +659,12 @@ function normalizeA2AStreamEvent(
 		return {
 			type: "task",
 			task: (payload.task ?? payload) as A2ATask,
+		};
+	}
+	if (eventType === "message") {
+		return {
+			type: "message",
+			message: (payload.message ?? payload) as A2AMessage,
 		};
 	}
 	if (eventType === "statusUpdate") {
