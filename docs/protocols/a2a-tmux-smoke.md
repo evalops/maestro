@@ -4,7 +4,9 @@
 Maestro A2A pairing and delegation. It launches two local Maestro control-plane
 peers in tmux, uses the TypeScript `maestro a2a` CLI to exchange pairing codes,
 stores each peer in an isolated registry, delegates work into a durable task
-ledger, then verifies fleet health, task listing, `send`, and explicit `wait`.
+ledger, then verifies fleet health, task listing, Agent Card streaming
+capability, filtered/paginated `GET /tasks`, bounded `message:stream` SSE,
+`send`, and explicit `wait`.
 
 Run it from the repo root:
 
@@ -12,8 +14,9 @@ Run it from the repo root:
 bash scripts/smoke-maestro-a2a-tmux.sh
 ```
 
-The harness deliberately avoids the legacy Python relay. The only A2A client
-entrypoint it drives is:
+The harness deliberately avoids the legacy Python relay. It drives the native
+TypeScript A2A CLI plus direct local HTTP probes against the Rust control-plane
+surface:
 
 ```sh
 bun run a2a -- offer ...
@@ -24,6 +27,9 @@ bun run a2a -- fleet ...
 bun run a2a -- tasks ...
 bun run a2a -- send ...
 bun run a2a -- wait ...
+curl /.well-known/agent-card.json
+curl /tasks?...filters...
+curl /message:stream
 ```
 
 ## What it proves
@@ -38,6 +44,13 @@ bun run a2a -- wait ...
   bearer token values.
 - Peer B can send to peer A, parse the returned task id, and complete a bounded
   explicit `wait`.
+- The native Rust control-plane Agent Card advertises
+  `capabilities.streaming=true`.
+- The native Rust control-plane task list honors bounded local filters and
+  pagination: `status`, `contextId`, `pageSize`, `pageToken`, `historyLength`,
+  and `includeArtifacts`.
+- `POST /message:stream` returns a bounded Server-Sent Events response
+  containing task status and artifact updates.
 
 The local peers use `MAESTRO_A2A_FAKE_RESPONSE` so the smoke validates A2A
 transport, task storage, registry lookup, and CLI orchestration without spending
@@ -55,6 +68,12 @@ By default the script kills the tmux session on exit. Set
 `MAESTRO_A2A_TMUX_KEEP_SESSION=1` to inspect the peer panes after a failure.
 Logs, temporary peer registries, and task ledgers are written under
 `tmp/a2a-tmux-smoke/`.
+
+The HTTP checks are intentionally local and bounded. The streaming probe uses
+`MAESTRO_A2A_FAKE_RESPONSE` through `POST /message:stream`, so it should emit
+task status/artifact events and close without requiring an active model call.
+Terminal task subscribe success is not part of this smoke because the A2A
+contract reserves subscribe for nonterminal work.
 
 ## Expected output
 

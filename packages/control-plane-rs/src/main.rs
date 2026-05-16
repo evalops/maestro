@@ -58,6 +58,8 @@ const A2A_DEFAULT_LIST_PAGE_SIZE: usize = 50;
 const A2A_MAX_LIST_PAGE_SIZE: usize = 100;
 const A2A_DEFAULT_SUBSCRIBE_TIMEOUT_MS: u64 = 60_000;
 const EVALOPS_A2A_EXTENSION_URI: &str = "https://evalops.com/a2a/extensions/operating-plane/v1";
+const A2A_CONTROL_PLANE_LEDGER_PEER: &str = "maestro-control-plane";
+const A2A_CONTROL_PLANE_LEDGER_DISPLAY_NAME: &str = "Maestro Control Plane";
 const CODEX_SUBAGENT_WORK_GRAPH_SCHEMA: &str = "evalops.maestro.codex.subagent-workgraph.v1";
 static CODEX_BRIDGE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 static CODEX_HEADLESS_RUN_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -984,6 +986,17 @@ async fn handle_a2a_task_subscribe(
         task.clone()
     };
 
+    if a2a_task_is_terminal(&current) {
+        return write_response_and_close(
+            stream,
+            a2a_error_response(
+                400,
+                "UNSUPPORTED_OPERATION",
+                "A2A terminal tasks cannot be subscribed to",
+            ),
+        )
+        .await;
+    }
     stream
         .write_all(sse_headers().as_bytes())
         .await
@@ -994,10 +1007,6 @@ async fn handle_a2a_task_subscribe(
         &serde_json::json!({ "statusUpdate": a2a_status_update_event(&current) }),
     )
     .await?;
-    if a2a_task_is_terminal(&current) {
-        let _ = stream.shutdown().await;
-        return Ok(());
-    }
 
     let timeout_ms = env_u64(
         "MAESTRO_A2A_SUBSCRIBE_TIMEOUT_MS",
@@ -1049,7 +1058,26 @@ async fn handle_a2a_task_subscribe(
 }
 
 async fn send_a2a_stream_response(stream: &mut TcpStream, value: &Value) -> Result<(), String> {
-    send_sse(stream, value).await
+    let Some(event_name) = a2a_stream_event_name(value) else {
+        return send_sse(stream, value).await;
+    };
+    let body = serde_json::to_string(value).map_err(|error| error.to_string())?;
+    stream
+        .write_all(format!("event: {event_name}\ndata: {body}\n\n").as_bytes())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+fn a2a_stream_event_name(value: &Value) -> Option<&'static str> {
+    if value.get("task").is_some() {
+        Some("task")
+    } else if value.get("statusUpdate").is_some() {
+        Some("statusUpdate")
+    } else if value.get("artifactUpdate").is_some() {
+        Some("artifactUpdate")
+    } else {
+        None
+    }
 }
 
 fn a2a_status_update_event(task: &Value) -> Value {
@@ -1167,32 +1195,12 @@ fn a2a_task_visible_to_auth(task: &Value, auth: &AuthContext) -> bool {
 }
 
 async fn load_a2a_tasks(path: &Path) -> HashMap<String, Value> {
-    let raw = match tokio::fs::read_to_string(path).await {
-        Ok(raw) => raw,
-        Err(error) => {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                eprintln!("failed to read A2A task ledger {}: {error}", path.display());
-            }
-            return HashMap::new();
-        }
+    let Some(parsed) = read_a2a_task_ledger_value(path).await else {
+        return HashMap::new();
     };
-    let parsed: Value = match serde_json::from_str(&raw) {
-        Ok(parsed) => parsed,
-        Err(error) => {
-            eprintln!(
-                "failed to parse A2A task ledger {}: {error}",
-                path.display()
-            );
-            return HashMap::new();
-        }
-    };
-    let tasks = parsed
-        .get("tasks")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    tasks
+    a2a_task_ledger_entries(&parsed)
         .into_iter()
+        .filter_map(|entry| a2a_task_from_ledger_entry(&entry))
         .filter_map(|task| {
             let task_id = task.get("id").and_then(Value::as_str)?.trim().to_string();
             (!task_id.is_empty()).then_some((task_id, task))
@@ -1200,27 +1208,162 @@ async fn load_a2a_tasks(path: &Path) -> HashMap<String, Value> {
         .collect()
 }
 
+async fn read_a2a_task_ledger_value(path: &Path) -> Option<Value> {
+    let raw = match tokio::fs::read_to_string(path).await {
+        Ok(raw) => raw,
+        Err(error) => {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                eprintln!("failed to read A2A task ledger {}: {error}", path.display());
+            }
+            return None;
+        }
+    };
+    match serde_json::from_str(&raw) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            eprintln!(
+                "failed to parse A2A task ledger {}: {error}",
+                path.display()
+            );
+            None
+        }
+    }
+}
+
+fn a2a_task_ledger_entries(ledger: &Value) -> Vec<Value> {
+    ledger
+        .get("tasks")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn a2a_task_from_ledger_entry(entry: &Value) -> Option<Value> {
+    let peer = entry.get("peer").and_then(Value::as_str);
+    if peer.is_some_and(|peer| peer != A2A_CONTROL_PLANE_LEDGER_PEER) {
+        return None;
+    }
+    if let Some(task) = entry.get("a2aTask").and_then(Value::as_object) {
+        let task = Value::Object(task.clone());
+        if task.get("id").and_then(Value::as_str).is_some() {
+            return Some(task);
+        }
+    }
+    if entry.get("id").and_then(Value::as_str).is_some()
+        && entry.get("status").and_then(Value::as_object).is_some()
+    {
+        return Some(entry.clone());
+    }
+    if peer != Some(A2A_CONTROL_PLANE_LEDGER_PEER) {
+        return None;
+    }
+    let task_id = entry.get("taskId").and_then(Value::as_str)?;
+    let context_id = entry
+        .get("contextId")
+        .and_then(Value::as_str)
+        .unwrap_or("maestro-control-plane");
+    let state = entry
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or("TASK_STATE_UNKNOWN");
+    let updated_at = entry
+        .get("updatedAt")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(now_rfc3339);
+    let status_message_text = entry
+        .get("responseText")
+        .and_then(Value::as_str)
+        .or_else(|| entry.get("text").and_then(Value::as_str))
+        .unwrap_or("Restored A2A task from Maestro ledger.");
+    let status_message = a2a_agent_message(context_id, status_message_text);
+    let history = entry
+        .get("transcript")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| a2a_message_from_ledger_transcript(context_id, item))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let metadata = entry
+        .get("metadata")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let mut task = a2a_task_value(
+        task_id,
+        context_id,
+        state,
+        status_message,
+        history,
+        Vec::new(),
+        metadata,
+    );
+    task["status"]["timestamp"] = Value::String(updated_at);
+    Some(task)
+}
+
+fn a2a_message_from_ledger_transcript(context_id: &str, item: &Value) -> Option<Value> {
+    let text = item.get("text").and_then(Value::as_str)?.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let role = match item.get("role").and_then(Value::as_str) {
+        Some(role) if role.eq_ignore_ascii_case("agent") => "ROLE_AGENT",
+        _ => "ROLE_USER",
+    };
+    let message_id = item
+        .get("messageId")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| generate_a2a_id("maestro-message"));
+    Some(serde_json::json!({
+        "messageId": message_id,
+        "contextId": context_id,
+        "role": role,
+        "parts": [{ "text": text, "mediaType": "text/plain" }]
+    }))
+}
+
 async fn persist_a2a_tasks(state: &AppState) {
     let _guard = state.a2a_task_persist_lock.lock().await;
-    let mut tasks = state
+    let existing_entries = read_a2a_task_ledger_value(&state.config.a2a_tasks_file_path)
+        .await
+        .map(|ledger| a2a_task_ledger_entries(&ledger))
+        .unwrap_or_default();
+    let mut retained_entries = existing_entries
+        .iter()
+        .filter(|entry| !a2a_ledger_entry_is_control_plane(entry))
+        .cloned()
+        .collect::<Vec<_>>();
+    let existing_control_plane_entries = existing_entries
+        .into_iter()
+        .filter(|entry| a2a_ledger_entry_is_control_plane(entry))
+        .filter_map(|entry| {
+            let task_id = entry.get("taskId").and_then(Value::as_str)?.to_string();
+            Some((task_id, entry))
+        })
+        .collect::<HashMap<_, _>>();
+    let mut control_plane_entries = state
         .a2a_tasks
         .lock()
         .await
         .values()
         .cloned()
+        .filter_map(|task| {
+            let task_id = task.get("id").and_then(Value::as_str)?;
+            let existing = existing_control_plane_entries.get(task_id);
+            Some(a2a_ledger_entry_from_task(&task, existing))
+        })
         .collect::<Vec<_>>();
-    tasks.sort_by(|left, right| {
-        a2a_task_status_timestamp(left)
-            .unwrap_or_default()
-            .cmp(a2a_task_status_timestamp(right).unwrap_or_default())
-            .then_with(|| {
-                left.get("id")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .cmp(right.get("id").and_then(Value::as_str).unwrap_or_default())
-            })
+    retained_entries.append(&mut control_plane_entries);
+    retained_entries.sort_by(|left, right| {
+        ledger_entry_updated_at(left)
+            .cmp(ledger_entry_updated_at(right))
+            .then_with(|| ledger_entry_task_id(left).cmp(ledger_entry_task_id(right)))
     });
-    let body = serde_json::to_vec_pretty(&serde_json::json!({ "tasks": tasks }))
+    let body = serde_json::to_vec_pretty(&serde_json::json!({ "tasks": retained_entries }))
         .unwrap_or_else(|_| br#"{"tasks":[]}"#.to_vec());
     let path = &state.config.a2a_tasks_file_path;
     if let Some(parent) = path.parent() {
@@ -1251,6 +1394,218 @@ async fn persist_a2a_tasks(state: &AppState) {
 
 fn publish_a2a_task_update(state: &AppState, task: &Value) {
     let _ = state.a2a_task_events.send(task.clone());
+}
+
+fn a2a_ledger_entry_is_control_plane(entry: &Value) -> bool {
+    entry.get("peer").and_then(Value::as_str) == Some(A2A_CONTROL_PLANE_LEDGER_PEER)
+}
+
+fn a2a_ledger_entry_from_task(task: &Value, existing: Option<&Value>) -> Value {
+    let task_id = task
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown-task");
+    let context_id = task.get("contextId").and_then(Value::as_str);
+    let state = a2a_task_status_state(task).unwrap_or("TASK_STATE_UNKNOWN");
+    let updated_at = a2a_task_status_timestamp(task)
+        .map(str::to_string)
+        .unwrap_or_else(now_rfc3339);
+    let transcript = a2a_task_transcript(task, state, &updated_at);
+    let text = transcript
+        .iter()
+        .find(|entry| entry.get("role").and_then(Value::as_str) == Some("user"))
+        .and_then(|entry| entry.get("text").and_then(Value::as_str))
+        .map(str::to_string)
+        .or_else(|| {
+            existing
+                .and_then(|entry| entry.get("text").and_then(Value::as_str))
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| format!("A2A task {task_id}"));
+    let response_text = a2a_task_response_text(task);
+    let created_at = existing
+        .and_then(|entry| entry.get("createdAt").and_then(Value::as_str))
+        .map(str::to_string)
+        .or_else(|| {
+            transcript
+                .first()
+                .and_then(|entry| entry.get("at").and_then(Value::as_str))
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| updated_at.clone());
+    let metadata = a2a_clean_ledger_metadata(task.get("metadata"));
+    let mut entry = serde_json::json!({
+        "id": existing
+            .and_then(|entry| entry.get("id").and_then(Value::as_str))
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("maestro-control-plane-{task_id}")),
+        "kind": "message",
+        "peer": A2A_CONTROL_PLANE_LEDGER_PEER,
+        "peerDisplayName": A2A_CONTROL_PLANE_LEDGER_DISPLAY_NAME,
+        "taskId": task_id,
+        "text": text,
+        "state": state,
+        "transcript": transcript,
+        "createdAt": created_at,
+        "updatedAt": updated_at,
+        "metadata": metadata,
+        "a2aTask": task
+    });
+    if let Some(context_id) = context_id {
+        entry["contextId"] = Value::String(context_id.to_string());
+    }
+    if let Some(message_id) = a2a_task_first_user_message_id(task) {
+        entry["messageId"] = Value::String(message_id);
+    }
+    if let Some(response_text) = response_text {
+        entry["responseText"] = Value::String(response_text);
+    }
+    if a2a_task_is_terminal(task) {
+        entry["completedAt"] = entry["updatedAt"].clone();
+    }
+    entry
+}
+
+fn a2a_task_transcript(task: &Value, state: &str, updated_at: &str) -> Vec<Value> {
+    task.get("history")
+        .and_then(Value::as_array)
+        .map(|history| {
+            history
+                .iter()
+                .filter_map(|message| a2a_transcript_entry_from_message(message, state, updated_at))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn a2a_transcript_entry_from_message(
+    message: &Value,
+    state: &str,
+    updated_at: &str,
+) -> Option<Value> {
+    let text = a2a_message_value_text(message)?;
+    let role = match message.get("role").and_then(Value::as_str) {
+        Some(role)
+            if role.eq_ignore_ascii_case("ROLE_AGENT") || role.eq_ignore_ascii_case("agent") =>
+        {
+            "agent"
+        }
+        _ => "user",
+    };
+    let mut entry = serde_json::json!({
+        "at": updated_at,
+        "role": role,
+        "text": text
+    });
+    if role == "agent" {
+        entry["state"] = Value::String(state.to_string());
+    }
+    if let Some(message_id) = message.get("messageId").and_then(Value::as_str) {
+        entry["messageId"] = Value::String(message_id.to_string());
+    }
+    Some(entry)
+}
+
+fn a2a_task_response_text(task: &Value) -> Option<String> {
+    task.get("status")
+        .and_then(|status| status.get("message"))
+        .and_then(a2a_message_value_text)
+        .or_else(|| {
+            task.get("artifacts")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .flat_map(|artifact| {
+                    artifact
+                        .get("parts")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                })
+                .filter_map(|part| part.get("text").and_then(Value::as_str))
+                .map(str::trim)
+                .find(|text| !text.is_empty())
+                .map(str::to_string)
+        })
+        .or_else(|| {
+            task.get("history")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .rev()
+                .find(|message| {
+                    message
+                        .get("role")
+                        .and_then(Value::as_str)
+                        .is_some_and(|role| {
+                            role.eq_ignore_ascii_case("ROLE_AGENT")
+                                || role.eq_ignore_ascii_case("agent")
+                        })
+                })
+                .and_then(a2a_message_value_text)
+        })
+}
+
+fn a2a_message_value_text(message: &Value) -> Option<String> {
+    let text = message
+        .get("parts")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter_map(|part| part.get("text").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    (!text.is_empty()).then_some(text)
+}
+
+fn a2a_task_first_user_message_id(task: &Value) -> Option<String> {
+    task.get("history")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|message| {
+            message
+                .get("role")
+                .and_then(Value::as_str)
+                .is_none_or(|role| {
+                    role.eq_ignore_ascii_case("ROLE_USER") || role.eq_ignore_ascii_case("user")
+                })
+        })
+        .and_then(|message| message.get("messageId").and_then(Value::as_str))
+        .map(str::to_string)
+}
+
+fn a2a_clean_ledger_metadata(metadata: Option<&Value>) -> Value {
+    let object = metadata
+        .and_then(Value::as_object)
+        .map(|metadata| {
+            metadata
+                .iter()
+                .filter_map(|(key, value)| match value {
+                    Value::String(_) | Value::Number(_) | Value::Bool(_) => {
+                        Some((key.clone(), value.clone()))
+                    }
+                    _ => None,
+                })
+                .collect::<Map<_, _>>()
+        })
+        .unwrap_or_default();
+    Value::Object(object)
+}
+
+fn ledger_entry_updated_at(entry: &Value) -> &str {
+    entry
+        .get("updatedAt")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+}
+
+fn ledger_entry_task_id(entry: &Value) -> &str {
+    entry
+        .get("taskId")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
 }
 
 async fn a2a_list_tasks_response(
@@ -11345,6 +11700,26 @@ setTimeout(() => {
             config: Arc::new(config),
             ..base_state
         };
+        tokio::fs::write(
+            &state.config.a2a_tasks_file_path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "tasks": [
+                    {
+                        "id": "remote-ledger-row",
+                        "kind": "message",
+                        "peer": "peer-b",
+                        "taskId": "remote-task",
+                        "text": "remote peer task",
+                        "state": "TASK_STATE_COMPLETED",
+                        "createdAt": "2026-05-15T00:00:00Z",
+                        "updatedAt": "2026-05-15T00:01:00Z"
+                    }
+                ]
+            }))
+            .expect("ledger should serialize"),
+        )
+        .await
+        .expect("existing ledger should be written");
         let task = a2a_task_value(
             "maestro-task-durable",
             "ctx-1",
@@ -11357,11 +11732,108 @@ setTimeout(() => {
 
         store_a2a_task_unless_canceled(&state, "maestro-task-durable", task).await;
         let loaded = load_a2a_tasks(&state.config.a2a_tasks_file_path).await;
+        let ledger: Value = serde_json::from_slice(
+            &tokio::fs::read(&state.config.a2a_tasks_file_path)
+                .await
+                .expect("ledger should be readable"),
+        )
+        .expect("ledger should be json");
+        let entries = ledger["tasks"]
+            .as_array()
+            .expect("ledger tasks should be an array");
+        let remote_entry = entries
+            .iter()
+            .find(|entry| entry["peer"] == "peer-b")
+            .expect("remote peer ledger row should be retained");
+        let control_plane_entry = entries
+            .iter()
+            .find(|entry| entry["peer"] == A2A_CONTROL_PLANE_LEDGER_PEER)
+            .expect("control-plane ledger row should be written");
 
+        assert_eq!(remote_entry["taskId"], "remote-task");
+        assert_eq!(control_plane_entry["taskId"], "maestro-task-durable");
+        assert_eq!(control_plane_entry["state"], "TASK_STATE_COMPLETED");
+        assert_eq!(
+            control_plane_entry["peerDisplayName"],
+            A2A_CONTROL_PLANE_LEDGER_DISPLAY_NAME
+        );
+        assert_eq!(control_plane_entry["a2aTask"]["id"], "maestro-task-durable");
+        assert!(!loaded.contains_key("remote-task"));
         assert_eq!(
             loaded["maestro-task-durable"]["metadata"]["workspaceId"],
             "ws-1"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_task_load_skips_remote_cli_ledger_entries() {
+        let root = TestDir::new("a2a-task-ledger-remote-skip");
+        let tasks_path = root.path().join("tasks.json");
+        tokio::fs::write(
+            &tasks_path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "tasks": [
+                    {
+                        "id": "remote-ledger-row",
+                        "kind": "message",
+                        "peer": "peer-b",
+                        "taskId": "remote-task",
+                        "text": "remote peer task",
+                        "state": "TASK_STATE_COMPLETED",
+                        "createdAt": "2026-05-15T00:00:00Z",
+                        "updatedAt": "2026-05-15T00:01:00Z"
+                    },
+                    {
+                        "id": "raw-legacy-task",
+                        "contextId": "ctx-legacy",
+                        "status": {
+                            "state": "TASK_STATE_COMPLETED",
+                            "message": {
+                                "messageId": "legacy-msg",
+                                "contextId": "ctx-legacy",
+                                "role": "ROLE_AGENT",
+                                "parts": [{ "text": "legacy complete" }]
+                            }
+                        },
+                        "metadata": { "workspaceId": "legacy-ws" }
+                    },
+                    {
+                        "id": "maestro-control-plane-local-task",
+                        "kind": "message",
+                        "peer": A2A_CONTROL_PLANE_LEDGER_PEER,
+                        "taskId": "local-task",
+                        "contextId": "ctx-local",
+                        "text": "local request",
+                        "responseText": "local response",
+                        "state": "TASK_STATE_COMPLETED",
+                        "transcript": [
+                            { "role": "user", "text": "local request", "messageId": "msg-local" },
+                            { "role": "agent", "text": "local response", "state": "TASK_STATE_COMPLETED" }
+                        ],
+                        "createdAt": "2026-05-15T00:00:00Z",
+                        "updatedAt": "2026-05-15T00:02:00Z",
+                        "metadata": { "workspaceId": "local-ws" }
+                    }
+                ]
+            }))
+            .expect("ledger should serialize"),
+        )
+        .await
+        .expect("ledger should be written");
+
+        let loaded = load_a2a_tasks(&tasks_path).await;
+
+        assert!(!loaded.contains_key("remote-task"));
+        assert_eq!(
+            loaded["raw-legacy-task"]["metadata"]["workspaceId"],
+            "legacy-ws"
+        );
+        assert_eq!(loaded["local-task"]["metadata"]["workspaceId"], "local-ws");
+        assert_eq!(
+            loaded["local-task"]["status"]["message"]["parts"][0]["text"],
+            "local response"
+        );
+        assert_eq!(loaded["local-task"]["history"].as_array().unwrap().len(), 2);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -11393,6 +11865,9 @@ setTimeout(() => {
         let response = String::from_utf8(bytes).expect("response should be utf-8");
 
         assert!(response.contains("Content-Type: text/event-stream"));
+        assert!(response.contains("event: task"));
+        assert!(response.contains("event: statusUpdate"));
+        assert!(response.contains("event: artifactUpdate"));
         assert!(response.contains("\"statusUpdate\""));
         assert!(response.contains("\"artifactUpdate\""));
         assert!(response.contains("streamed fake response"));
@@ -11406,7 +11881,7 @@ setTimeout(() => {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn a2a_task_subscribe_streams_existing_terminal_snapshot() {
+    async fn a2a_task_subscribe_rejects_existing_terminal_task() {
         let state = test_app_state_with_sessions(HashMap::new());
         let task = a2a_task_value(
             "maestro-task-subscribe",
@@ -11439,10 +11914,87 @@ setTimeout(() => {
             .expect("subscribe task should join")
             .expect("subscribe endpoint should succeed");
         let response = String::from_utf8(bytes).expect("response should be utf-8");
+        let body: Value =
+            serde_json::from_str(response_body_text(&response)).expect("body should be json");
+
+        assert!(response.contains("400 Bad Request"));
+        assert_eq!(body["error"]["code"], "UNSUPPORTED_OPERATION");
+        assert!(body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("terminal tasks cannot be subscribed"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_task_subscribe_streams_active_task_until_terminal_update() {
+        let state = test_app_state_with_sessions(HashMap::new());
+        let initial_task = a2a_task_value(
+            "maestro-task-active-subscribe",
+            "ctx-1",
+            "TASK_STATE_WORKING",
+            a2a_agent_message("ctx-1", "working"),
+            vec![a2a_agent_message("ctx-1", "working")],
+            Vec::new(),
+            serde_json::json!({}),
+        );
+        state
+            .a2a_tasks
+            .lock()
+            .await
+            .insert("maestro-task-active-subscribe".to_string(), initial_task);
+        let request = "GET /tasks/maestro-task-active-subscribe:subscribe HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\n\r\n";
+        let initial = request.as_bytes().to_vec();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (mut client, server) = tcp_stream_pair().await;
+        let state_for_run = state.clone();
+        let run = tokio::spawn(async move {
+            handle_a2a_streaming_endpoint(server, initial, head, state_for_run).await
+        });
+        let mut response_bytes = vec![0_u8; 4096];
+        let initial_len =
+            tokio::time::timeout(Duration::from_secs(2), client.read(&mut response_bytes))
+                .await
+                .expect("subscribe response should start")
+                .expect("subscribe response should be readable");
+        response_bytes.truncate(initial_len);
+        let terminal_task = a2a_task_value(
+            "maestro-task-active-subscribe",
+            "ctx-1",
+            "TASK_STATE_COMPLETED",
+            a2a_agent_message("ctx-1", "complete"),
+            vec![
+                a2a_agent_message("ctx-1", "working"),
+                a2a_agent_message("ctx-1", "complete"),
+            ],
+            vec![serde_json::json!({
+                "artifactId": "artifact-1",
+                "parts": [{ "text": "artifact body", "mediaType": "text/plain" }]
+            })],
+            serde_json::json!({}),
+        );
+        state.a2a_tasks.lock().await.insert(
+            "maestro-task-active-subscribe".to_string(),
+            terminal_task.clone(),
+        );
+        publish_a2a_task_update(&state, &terminal_task);
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            client.read_to_end(&mut response_bytes),
+        )
+        .await
+        .expect("subscribe response should close")
+        .expect("subscribe response should be readable");
+        run.await
+            .expect("subscribe task should join")
+            .expect("subscribe endpoint should succeed");
+        let response = String::from_utf8(response_bytes).expect("response should be utf-8");
 
         assert!(response.contains("Content-Type: text/event-stream"));
-        assert!(response.contains("\"statusUpdate\""));
-        assert!(response.contains("maestro-task-subscribe"));
+        assert!(response.contains("event: task"));
+        assert!(response.contains("event: statusUpdate"));
+        assert!(response.contains("event: artifactUpdate"));
+        assert!(response.contains("TASK_STATE_COMPLETED"));
+        assert!(response.contains("artifact body"));
     }
 
     #[tokio::test(flavor = "current_thread")]

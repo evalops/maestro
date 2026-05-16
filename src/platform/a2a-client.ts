@@ -171,6 +171,37 @@ export interface SendA2AMessageResult {
 	task: A2ATask;
 }
 
+export type A2AStreamEventType = "task" | "statusUpdate" | "artifactUpdate";
+
+export interface A2ATaskStreamEvent {
+	type: "task";
+	task: A2ATask;
+}
+
+export interface A2AStatusUpdateStreamEvent {
+	type: "statusUpdate";
+	taskId?: string;
+	contextId?: string;
+	status: A2ATaskStatus;
+	final?: boolean;
+	metadata?: Record<string, unknown>;
+}
+
+export interface A2AArtifactUpdateStreamEvent {
+	type: "artifactUpdate";
+	taskId?: string;
+	contextId?: string;
+	artifact: A2AArtifact;
+	append?: boolean;
+	lastChunk?: boolean;
+	metadata?: Record<string, unknown>;
+}
+
+export type A2AStreamEvent =
+	| A2ATaskStreamEvent
+	| A2AStatusUpdateStreamEvent
+	| A2AArtifactUpdateStreamEvent;
+
 export interface A2ATraceContext {
 	traceparent?: string;
 	tracestate?: string;
@@ -280,6 +311,91 @@ export async function sendA2AMessage(
 	input: SendA2AMessageInput,
 	options: { signal?: AbortSignal } = {},
 ): Promise<SendA2AMessageResult> {
+	const { body, traceContext } = buildA2AMessageRequestBody(config, input);
+	const response = await fetchDownstream(
+		`${config.baseUrl}/message:send`,
+		{
+			method: "POST",
+			headers: buildA2AHeaders(config, traceContext),
+			body: JSON.stringify(body),
+			signal: options.signal,
+		},
+		{
+			serviceName: "platform-a2a",
+			failureMode: "required",
+			timeoutMs: config.timeoutMs,
+			maxAttempts: config.maxAttempts,
+		},
+	);
+	await throwForA2AError(response, "send message");
+	return (await response.json()) as SendA2AMessageResult;
+}
+
+export async function* streamA2AMessage(
+	config: A2AServiceConfig,
+	input: SendA2AMessageInput,
+	options: { signal?: AbortSignal } = {},
+): AsyncIterable<A2AStreamEvent> {
+	const { body, traceContext } = buildA2AMessageRequestBody(config, input);
+	const response = await fetchDownstream(
+		`${config.baseUrl}/message:stream`,
+		{
+			method: "POST",
+			headers: {
+				...buildA2AHeaders(config, traceContext),
+				Accept: "text/event-stream",
+			},
+			body: JSON.stringify(body),
+			signal: options.signal,
+		},
+		{
+			serviceName: "platform-a2a",
+			failureMode: "required",
+			timeoutMs: config.timeoutMs,
+			maxAttempts: config.maxAttempts,
+		},
+	);
+	await throwForA2AError(response, "stream message");
+	yield* parseA2AStreamEvents(response);
+}
+
+export async function* subscribeA2ATask(
+	config: A2AServiceConfig,
+	taskId: string,
+	options: { signal?: AbortSignal; traceContext?: A2ATraceContext } = {},
+): AsyncIterable<A2AStreamEvent> {
+	const trimmedTaskId = trimString(taskId);
+	if (!trimmedTaskId) {
+		throw new Error("A2A task id is required");
+	}
+	const response = await fetchDownstream(
+		`${config.baseUrl}/tasks/${encodeURIComponent(trimmedTaskId)}:subscribe`,
+		{
+			method: "GET",
+			headers: {
+				...buildA2AHeaders(config, options.traceContext),
+				Accept: "text/event-stream",
+			},
+			signal: options.signal,
+		},
+		{
+			serviceName: "platform-a2a",
+			failureMode: "required",
+			timeoutMs: config.timeoutMs,
+			maxAttempts: config.maxAttempts,
+		},
+	);
+	await throwForA2AError(response, "subscribe task");
+	yield* parseA2AStreamEvents(response);
+}
+
+function buildA2AMessageRequestBody(
+	config: A2AServiceConfig,
+	input: SendA2AMessageInput,
+): {
+	body: Omit<SendA2AMessageInput, "traceContext">;
+	traceContext?: A2ATraceContext;
+} {
 	// `traceContext` is caller control data, not part of the A2A request body.
 	// Project it into headers and message metadata so Platform can join
 	// the task to traces without receiving a Maestro-private wrapper field.
@@ -306,23 +422,7 @@ export async function sendA2AMessage(
 			},
 		},
 	};
-	const response = await fetchDownstream(
-		`${config.baseUrl}/message:send`,
-		{
-			method: "POST",
-			headers: buildA2AHeaders(config, traceContext),
-			body: JSON.stringify(body),
-			signal: options.signal,
-		},
-		{
-			serviceName: "platform-a2a",
-			failureMode: "required",
-			timeoutMs: config.timeoutMs,
-			maxAttempts: config.maxAttempts,
-		},
-	);
-	await throwForA2AError(response, "send message");
-	return (await response.json()) as SendA2AMessageResult;
+	return { body, traceContext };
 }
 
 export function resolveA2ATraceContext(
@@ -376,6 +476,179 @@ export async function getA2ATask(
 	);
 	await throwForA2AError(response, "get task");
 	return (await response.json()) as A2ATask;
+}
+
+async function* parseA2AStreamEvents(
+	response: Response,
+): AsyncIterable<A2AStreamEvent> {
+	if (!response.body) {
+		return;
+	}
+
+	const reader = response.body.getReader();
+	const decoder = new TextDecoder();
+	let buffer = "";
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) {
+				break;
+			}
+			buffer += decoder.decode(value, { stream: true });
+			const parsed = splitCompleteServerSentEvents(buffer);
+			buffer = parsed.remainder;
+			for (const frame of parsed.frames) {
+				const event = parseA2AStreamEventFrame(frame);
+				if (event) {
+					yield event;
+				}
+			}
+		}
+
+		buffer += decoder.decode();
+		if (buffer.trim()) {
+			const event = parseA2AStreamEventFrame(buffer);
+			if (event) {
+				yield event;
+			}
+		}
+	} finally {
+		reader.releaseLock();
+	}
+}
+
+function splitCompleteServerSentEvents(input: string): {
+	frames: string[];
+	remainder: string;
+} {
+	const frames: string[] = [];
+	let cursor = 0;
+	while (cursor < input.length) {
+		const lineBreakIndex = findServerSentEventBoundary(input, cursor);
+		if (lineBreakIndex === -1) {
+			break;
+		}
+		frames.push(input.slice(cursor, lineBreakIndex.start));
+		cursor = lineBreakIndex.end;
+	}
+	return { frames, remainder: input.slice(cursor) };
+}
+
+function findServerSentEventBoundary(
+	input: string,
+	startIndex: number,
+): { start: number; end: number } | -1 {
+	const boundaries = ["\r\n\r\n", "\n\n", "\r\r"];
+	let earliest: { start: number; end: number } | undefined;
+	for (const boundary of boundaries) {
+		const index = input.indexOf(boundary, startIndex);
+		if (index === -1) {
+			continue;
+		}
+		if (!earliest || index < earliest.start) {
+			earliest = { start: index, end: index + boundary.length };
+		}
+	}
+	return earliest ?? -1;
+}
+
+function parseA2AStreamEventFrame(frame: string): A2AStreamEvent | undefined {
+	let eventType: A2AStreamEventType | undefined;
+	const dataLines: string[] = [];
+	for (const line of frame.split(/\r\n|\n|\r/u)) {
+		if (!line || line.startsWith(":")) {
+			continue;
+		}
+		const separatorIndex = line.indexOf(":");
+		const field = separatorIndex === -1 ? line : line.slice(0, separatorIndex);
+		const rawValue =
+			separatorIndex === -1 ? "" : line.slice(separatorIndex + 1);
+		const value = rawValue.startsWith(" ") ? rawValue.slice(1) : rawValue;
+		if (field === "event") {
+			eventType = parseA2AStreamEventType(value);
+		}
+		if (field === "data") {
+			dataLines.push(value);
+		}
+	}
+	if (dataLines.length === 0) {
+		return undefined;
+	}
+
+	const payload = JSON.parse(dataLines.join("\n")) as Record<string, unknown>;
+	eventType ??= inferA2AStreamEventType(payload);
+	if (!eventType) {
+		return undefined;
+	}
+	return normalizeA2AStreamEvent(eventType, payload);
+}
+
+function parseA2AStreamEventType(
+	value: string,
+): A2AStreamEventType | undefined {
+	if (
+		value === "task" ||
+		value === "statusUpdate" ||
+		value === "artifactUpdate"
+	) {
+		return value;
+	}
+	return undefined;
+}
+
+function inferA2AStreamEventType(
+	payload: Record<string, unknown>,
+): A2AStreamEventType | undefined {
+	if (isRecord(payload.task)) {
+		return "task";
+	}
+	if (isRecord(payload.statusUpdate)) {
+		return "statusUpdate";
+	}
+	if (isRecord(payload.artifactUpdate) || isRecord(payload.artifact)) {
+		return "artifactUpdate";
+	}
+	if (isRecord(payload.status) && typeof payload.id === "string") {
+		return "task";
+	}
+	if (isRecord(payload.status)) {
+		return "statusUpdate";
+	}
+	return undefined;
+}
+
+function normalizeA2AStreamEvent(
+	eventType: A2AStreamEventType,
+	payload: Record<string, unknown>,
+): A2AStreamEvent {
+	if (eventType === "task") {
+		return {
+			type: "task",
+			task: (payload.task ?? payload) as A2ATask,
+		};
+	}
+	if (eventType === "statusUpdate") {
+		const statusUpdatePayload = isRecord(payload.statusUpdate)
+			? payload.statusUpdate
+			: payload;
+		return {
+			type: "statusUpdate",
+			...statusUpdatePayload,
+			status: statusUpdatePayload.status as A2ATaskStatus,
+		};
+	}
+	const artifactUpdatePayload = isRecord(payload.artifactUpdate)
+		? payload.artifactUpdate
+		: payload;
+	return {
+		type: "artifactUpdate",
+		...artifactUpdatePayload,
+		artifact: artifactUpdatePayload.artifact as A2AArtifact,
+	};
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function buildA2AHeaders(

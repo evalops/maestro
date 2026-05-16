@@ -6,6 +6,8 @@ import {
 	resolveA2AServiceConfig,
 	resolveA2ATraceContext,
 	sendA2AMessage,
+	streamA2AMessage,
+	subscribeA2ATask,
 } from "../../src/platform/a2a-client.js";
 
 type CapturedRequest = {
@@ -28,6 +30,33 @@ function parseRequestBody(
 	return typeof body === "string"
 		? (JSON.parse(body) as Record<string, unknown>)
 		: undefined;
+}
+
+function sseResponse(chunks: string[]): Response {
+	const encoder = new TextEncoder();
+	return new Response(
+		new ReadableStream({
+			start(controller) {
+				for (const chunk of chunks) {
+					controller.enqueue(encoder.encode(chunk));
+				}
+				controller.close();
+			},
+		}),
+		{
+			headers: { "content-type": "text/event-stream" },
+		},
+	);
+}
+
+async function collectAsyncIterable<T>(
+	iterable: AsyncIterable<T>,
+): Promise<T[]> {
+	const values: T[] = [];
+	for await (const value of iterable) {
+		values.push(value);
+	}
+	return values;
 }
 
 describe("platform A2A client", () => {
@@ -136,12 +165,28 @@ describe("platform A2A client", () => {
 					});
 				}
 
+				if (parsed.pathname === "/message:stream") {
+					return sseResponse([
+						'data: {"task":{"id":"run_stream","contextId":"session_1","status":{"state":"TASK_STATE_SUBMITTED"}}}\n\n',
+						'data: {"statusUpdate":{"taskId":"run_stream","contextId":"session_1","status":{"state":"TASK_STATE_WORKING","timestamp":"2026-05-16T12:00:00.000Z"},"metadata":{"step":"start"}}}\n\n',
+						'data: {"artifactUpdate":{"taskId":"run_stream","contextId":"session_1","artifact":{"artifactId":"artifact_1","name":"summary","parts":[{"text":"done","mediaType":"text/plain"}]},"append":false,"lastChunk":true}}\n\n',
+					]);
+				}
+
 				if (parsed.pathname === "/tasks/run_1") {
 					return Response.json({
 						id: "run_1",
 						contextId: "session_1",
 						status: { state: "TASK_STATE_COMPLETED" },
 					});
+				}
+
+				if (parsed.pathname === "/tasks/run_1:subscribe") {
+					return sseResponse([
+						'data: {"taskId":"run_1","status":{"state":"TASK_STATE_WORKING"}}\r\n\r\n',
+						'data: {"taskId":"run_1","artifact":{"artifactId":"artifact_2","parts":[{"text":"partial"}]},"append":true}\r\n\r\n',
+						'data: {"taskId":"run_1","status":{"state":"TASK_STATE_COMPLETED"},"final":true}\r\n\r\n',
+					]);
 				}
 
 				return Response.json(
@@ -357,6 +402,87 @@ describe("platform A2A client", () => {
 		).not.toHaveProperty("tracestate");
 	});
 
+	it("streams A2A message events with Platform correlation metadata", async () => {
+		const config = await resolveA2AServiceConfig();
+		if (!config) {
+			throw new Error("expected config");
+		}
+
+		const events = await collectAsyncIterable(
+			streamA2AMessage(config, {
+				message: buildA2AUserMessage({
+					messageId: "msg_stream",
+					contextId: "session_1",
+					text: "Stream the release smoke test",
+				}),
+				traceContext: {
+					traceparent:
+						"00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+					tracestate: "evalops=maestro",
+				},
+			}),
+		);
+
+		expect(requests[0]).toMatchObject({
+			method: "POST",
+			url: "https://platform.test/message:stream",
+			body: {
+				message: expect.objectContaining({
+					messageId: "msg_stream",
+					metadata: expect.objectContaining({
+						workspaceId: "ws_1",
+						agentId: "agent_maestro",
+						sessionId: "session_1",
+						actorId: "user_1",
+						traceparent:
+							"00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+						tracestate: "evalops=maestro",
+					}),
+				}),
+			},
+			headers: expect.objectContaining({
+				accept: "text/event-stream",
+				authorization: "Bearer a2a-token",
+				traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+				tracestate: "evalops=maestro",
+				"x-evalops-workspace-id": "ws_1",
+			}),
+		});
+		expect(requests[0]?.body).not.toHaveProperty("traceContext");
+		expect(events).toEqual([
+			{
+				type: "task",
+				task: {
+					id: "run_stream",
+					contextId: "session_1",
+					status: { state: "TASK_STATE_SUBMITTED" },
+				},
+			},
+			{
+				type: "statusUpdate",
+				taskId: "run_stream",
+				contextId: "session_1",
+				status: {
+					state: "TASK_STATE_WORKING",
+					timestamp: "2026-05-16T12:00:00.000Z",
+				},
+				metadata: { step: "start" },
+			},
+			{
+				type: "artifactUpdate",
+				taskId: "run_stream",
+				contextId: "session_1",
+				artifact: {
+					artifactId: "artifact_1",
+					name: "summary",
+					parts: [{ text: "done", mediaType: "text/plain" }],
+				},
+				append: false,
+				lastChunk: true,
+			},
+		]);
+	});
+
 	it("gets an A2A task by run id", async () => {
 		const config = await resolveA2AServiceConfig();
 		if (!config) {
@@ -368,6 +494,55 @@ describe("platform A2A client", () => {
 			status: { state: "TASK_STATE_COMPLETED" },
 		});
 		expect(requests[0]?.url).toBe("https://platform.test/tasks/run_1");
+	});
+
+	it("subscribes to A2A task SSE updates with explicit trace headers", async () => {
+		const config = await resolveA2AServiceConfig();
+		if (!config) {
+			throw new Error("expected config");
+		}
+
+		const events = await collectAsyncIterable(
+			subscribeA2ATask(config, "run_1", {
+				traceContext: {
+					traceparent:
+						"00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+					tracestate: "evalops=maestro",
+				},
+			}),
+		);
+
+		expect(requests[0]).toMatchObject({
+			method: "GET",
+			url: "https://platform.test/tasks/run_1:subscribe",
+			headers: expect.objectContaining({
+				accept: "text/event-stream",
+				traceparent: "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01",
+				tracestate: "evalops=maestro",
+			}),
+		});
+		expect(events).toEqual([
+			{
+				type: "statusUpdate",
+				taskId: "run_1",
+				status: { state: "TASK_STATE_WORKING" },
+			},
+			{
+				type: "artifactUpdate",
+				taskId: "run_1",
+				artifact: {
+					artifactId: "artifact_2",
+					parts: [{ text: "partial" }],
+				},
+				append: true,
+			},
+			{
+				type: "statusUpdate",
+				taskId: "run_1",
+				status: { state: "TASK_STATE_COMPLETED" },
+				final: true,
+			},
+		]);
 	});
 
 	it("gets an A2A task with explicit trace headers", async () => {
