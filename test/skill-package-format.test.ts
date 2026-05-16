@@ -14,6 +14,8 @@ import { handleSkillCommand } from "../src/cli/commands/skill.js";
 import { buildSkillArtifactMetadata } from "../src/skills/artifact-metadata.js";
 import {
 	buildSkillRuntimeActivation,
+	evaluateSkillPackages,
+	hasSkillEvalFailures,
 	hasSkillLintErrors,
 	isWindowsRunnableToolboxEntry,
 	lintSkillDirectory,
@@ -160,6 +162,99 @@ describe("skill package format", () => {
 		expect(
 			payload.runtimeActivation?.toolPackage.mcp?.servers[0],
 		).not.toHaveProperty("env");
+	});
+
+	it("loads first-party operational system skills with scoped runtime surfaces", async () => {
+		const originalHome = process.env.MAESTRO_HOME;
+		const originalSystemSkills = process.env.MAESTRO_SYSTEM_SKILLS_DIR;
+		const isolatedHome = tempRoot();
+		const workspace = tempRoot();
+		const systemSkillsDir = join(process.cwd(), "skills");
+		const expected = [
+			{ name: "pr-review", toolbox: "review-summary" },
+			{ name: "release-verification", toolbox: "release-readiness" },
+			{ name: "incident-triage", toolbox: "incident-timeline" },
+		];
+
+		try {
+			process.env.MAESTRO_HOME = isolatedHome;
+			process.env.MAESTRO_SYSTEM_SKILLS_DIR = systemSkillsDir;
+
+			const { skills, errors } = loadSkills(workspace);
+			const skillsByName = new Map(skills.map((skill) => [skill.name, skill]));
+			const report = await evaluateSkillPackages(
+				expected.map((skill) => ({
+					id: `first-party-${skill.name}`,
+					path: join(systemSkillsDir, skill.name),
+					expectedOutcome: "pass" as const,
+				})),
+				{ describeToolbox: true },
+			);
+
+			expect(errors).toEqual([]);
+			expect(report.summary).toMatchObject({
+				total: 3,
+				passed: 3,
+				failed: 0,
+				score: 1,
+			});
+			expect(hasSkillEvalFailures(report)).toBe(false);
+
+			for (const { name, toolbox } of expected) {
+				const skill = skillsByName.get(name);
+				expect(skill).toBeTruthy();
+				expect(skill?.sourceType).toBe("system");
+				expect(skill?.resourceDirs.referenceDir).toBe(
+					join(systemSkillsDir, name, "reference"),
+				);
+
+				const activation = buildSkillRuntimeActivation(skill!);
+				expect(activation.resources.directories.reference).toBe(
+					join(systemSkillsDir, name, "reference"),
+				);
+				expect(activation.toolPackage.mcp?.servers[0]?.name).toBe("github");
+				expect(
+					activation.toolPackage.mcp?.servers[0]?.includeTools.length,
+				).toBeGreaterThan(0);
+				expect(
+					activation.toolPackage.toolbox?.entries.map((entry) => entry.name),
+				).toContain(toolbox);
+				const windowsActivation = buildSkillRuntimeActivation(skill!, {
+					platform: "win32",
+				});
+				expect(
+					windowsActivation.toolPackage.toolbox?.entries.map(
+						(entry) => entry.name,
+					),
+				).toContain(`${toolbox}.cmd`);
+				expect(
+					windowsActivation.toolPackage.toolbox?.entries.map(
+						(entry) => entry.name,
+					),
+				).not.toContain(toolbox);
+
+				const windowsLint = await lintSkillDirectory(
+					join(systemSkillsDir, name),
+					{ platform: "win32" },
+				);
+				expect(
+					windowsLint.issues.filter((issue) =>
+						issue.code.startsWith("toolbox_"),
+					),
+				).toEqual([]);
+			}
+		} finally {
+			if (originalHome === undefined) {
+				delete process.env.MAESTRO_HOME;
+			} else {
+				process.env.MAESTRO_HOME = originalHome;
+			}
+			if (originalSystemSkills === undefined) {
+				delete process.env.MAESTRO_SYSTEM_SKILLS_DIR;
+			} else {
+				process.env.MAESTRO_SYSTEM_SKILLS_DIR = originalSystemSkills;
+			}
+		}
 	});
 
 	it("accepts quoted isolatedContext consistently across load and lint", async () => {
@@ -521,6 +616,25 @@ describe("skill package format", () => {
 			]),
 		);
 		expect(hasSkillLintErrors([validResult])).toBe(false);
+	});
+
+	it("requires at least one platform-runnable toolbox entry", async () => {
+		const root = tempRoot();
+		const skillDir = join(root, "windows-only-toolbox");
+		await mkdir(join(skillDir, "toolbox"), { recursive: true });
+		writeFileSync(
+			join(skillDir, "SKILL.md"),
+			`---\nname: windows-only-toolbox\ndescription: "Run toolbox commands. Use when testing platform runnable validation."\n---\n\n# Windows Only Toolbox\n`,
+		);
+		writeFileSync(join(skillDir, "toolbox", "run.cmd"), "@echo off\n");
+
+		const result = await lintSkillDirectory(skillDir, { platform: "linux" });
+
+		expect(result.issues).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ code: "toolbox_no_runnable_entries" }),
+			]),
+		);
 	});
 
 	it("preserves backslashes in scaffolded descriptions", () => {
