@@ -25,6 +25,13 @@ export const HOSTED_RUNNER_SNAPSHOT_MANIFEST_VERSION =
 export const HOSTED_RUNNER_RETENTION_POLICY_VERSION =
 	"evalops.remote-runner.retention.v1";
 
+export const HOSTED_RUNNER_WORK_CONTINUITY_VERSION =
+	"evalops.remote-runner.work-continuity.v1";
+
+const CODEX_SUBAGENT_TOOL_PREFIX = "codex.subagent.";
+const CODEX_SUBAGENT_WORK_GRAPH_SCHEMA =
+	"evalops.maestro.codex.subagent-workgraph.v1";
+
 export enum HostedRunnerDrainStatusValue {
 	Drained = "drained",
 	Interrupted = "interrupted",
@@ -105,6 +112,24 @@ export interface HostedRunnerRuntimeDrainResult {
 	snapshot?: HeadlessRuntimeSnapshot;
 }
 
+class HostedRunnerRuntimeDrainError extends Error {
+	readonly sessionId: string;
+	readonly sessionFile?: string;
+	readonly protocolVersion?: string;
+	readonly cursor?: number;
+	readonly snapshot?: HeadlessRuntimeSnapshot;
+
+	constructor(message: string, runtime: HostedRunnerRuntimeDrainResult) {
+		super(message);
+		this.name = "HostedRunnerRuntimeDrainError";
+		this.sessionId = runtime.sessionId;
+		this.sessionFile = runtime.sessionFile;
+		this.protocolVersion = runtime.protocolVersion;
+		this.cursor = runtime.cursor;
+		this.snapshot = runtime.snapshot;
+	}
+}
+
 export interface HostedRunnerWorkspaceExportPath {
 	input: string;
 	path: string;
@@ -134,6 +159,7 @@ export interface HostedRunnerSnapshotManifest {
 		mode: HostedRunnerWorkspaceExportMode;
 		paths: HostedRunnerWorkspaceExportPath[];
 	};
+	work_continuity: HostedRunnerWorkContinuity;
 	snapshot: HeadlessRuntimeSnapshot;
 	retention_policy: HostedRunnerRetentionPolicy;
 	git?: {
@@ -141,6 +167,16 @@ export interface HostedRunnerSnapshotManifest {
 		branch?: string;
 		dirty?: boolean;
 	};
+}
+
+export interface HostedRunnerWorkContinuity {
+	protocol_version: typeof HOSTED_RUNNER_WORK_CONTINUITY_VERSION;
+	active_tool_count: number;
+	tracked_tool_count: number;
+	pending_request_count: number;
+	codex_subagent_tool_call_ids: string[];
+	codex_subagent_child_run_ids: string[];
+	codex_subagent_thread_ids: string[];
 }
 
 export interface HostedRunnerDrainResult {
@@ -412,6 +448,115 @@ function buildHostedRunnerRetentionPolicy(): HostedRunnerRetentionPolicy {
 	};
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function stringArray(value: unknown): string[] {
+	return Array.isArray(value)
+		? value.filter(
+				(item): item is string => typeof item === "string" && item.length > 0,
+			)
+		: [];
+}
+
+function collectCodexWorkArgs(
+	args: unknown,
+	childRunIds: Set<string>,
+	threadIds: Set<string>,
+	includeLooseArgs = false,
+): boolean {
+	if (!isRecord(args)) {
+		return false;
+	}
+	const graph = args.codexWorkGraph ?? args.codex_work_graph;
+	const hasCodexGraph =
+		isRecord(graph) &&
+		(graph.schemaVersion === CODEX_SUBAGENT_WORK_GRAPH_SCHEMA ||
+			graph.schema_version === CODEX_SUBAGENT_WORK_GRAPH_SCHEMA);
+	if (!includeLooseArgs && !hasCodexGraph) {
+		return false;
+	}
+	for (const childRunId of stringArray(
+		args.childRunIds ?? args.child_run_ids,
+	)) {
+		childRunIds.add(childRunId);
+	}
+	for (const threadId of stringArray(
+		args.receiverThreadIds ?? args.receiver_thread_ids,
+	)) {
+		threadIds.add(threadId);
+	}
+	if (isRecord(graph)) {
+		const graphChildRuns = graph.childRuns ?? graph.child_runs;
+		for (const childRun of Array.isArray(graphChildRuns)
+			? graphChildRuns
+			: []) {
+			if (!isRecord(childRun)) {
+				continue;
+			}
+			const childRunId = childRun.childRunId ?? childRun.child_run_id;
+			if (typeof childRunId === "string" && childRunId) {
+				childRunIds.add(childRunId);
+			}
+			const threadId = childRun.threadId ?? childRun.thread_id;
+			if (typeof threadId === "string" && threadId) {
+				threadIds.add(threadId);
+			}
+		}
+	}
+	return includeLooseArgs || hasCodexGraph;
+}
+
+function collectHostedRunnerWorkContinuity(
+	snapshot: HeadlessRuntimeSnapshot,
+): HostedRunnerWorkContinuity {
+	const state = snapshot.state;
+	const codexToolCallIds = new Set<string>();
+	const childRunIds = new Set<string>();
+	const threadIds = new Set<string>();
+	const trackedSources = [
+		...state.tracked_tools,
+		...state.pending_approvals,
+		...state.pending_client_tools,
+		...state.pending_mcp_elicitations,
+		...state.pending_user_inputs,
+		...state.pending_tool_retries,
+	];
+	for (const source of trackedSources) {
+		const tool = source.tool;
+		const isCodexSubagentTool = tool.startsWith(CODEX_SUBAGENT_TOOL_PREFIX);
+		const hasCodexWorkArgs = collectCodexWorkArgs(
+			source.args,
+			childRunIds,
+			threadIds,
+			isCodexSubagentTool,
+		);
+		if (isCodexSubagentTool || hasCodexWorkArgs) {
+			codexToolCallIds.add(source.call_id);
+		}
+	}
+	for (const activeTool of state.active_tools) {
+		if (activeTool.tool.startsWith(CODEX_SUBAGENT_TOOL_PREFIX)) {
+			codexToolCallIds.add(activeTool.call_id);
+		}
+	}
+	return {
+		protocol_version: HOSTED_RUNNER_WORK_CONTINUITY_VERSION,
+		active_tool_count: state.active_tools.length,
+		tracked_tool_count: state.tracked_tools.length,
+		pending_request_count:
+			state.pending_approvals.length +
+			state.pending_client_tools.length +
+			state.pending_mcp_elicitations.length +
+			state.pending_user_inputs.length +
+			state.pending_tool_retries.length,
+		codex_subagent_tool_call_ids: [...codexToolCallIds].sort(),
+		codex_subagent_child_run_ids: [...childRunIds].sort(),
+		codex_subagent_thread_ids: [...threadIds].sort(),
+	};
+}
+
 export async function drainHostedRunner(
 	input: HostedRunnerDrainInput,
 	options: DrainHostedRunnerOptions,
@@ -474,9 +619,21 @@ export async function drainHostedRunner(
 			runtimeSnapshot = runtimeResult?.snapshot;
 		} catch (error) {
 			status = HostedRunnerDrainStatusValue.Interrupted;
+			const interruptedRuntime =
+				error instanceof HostedRunnerRuntimeDrainError ? error : undefined;
+			runtimeSnapshot = interruptedRuntime?.snapshot;
 			runtime = {
 				flush_status: HostedRunnerRuntimeFlushStatusValue.Failed,
-				session_id: activeSessionId,
+				session_id: interruptedRuntime?.sessionId ?? activeSessionId,
+				...(interruptedRuntime?.sessionFile
+					? { session_file: interruptedRuntime.sessionFile }
+					: {}),
+				...(interruptedRuntime?.protocolVersion
+					? { protocol_version: interruptedRuntime.protocolVersion }
+					: {}),
+				...(interruptedRuntime?.cursor !== undefined
+					? { cursor: interruptedRuntime.cursor }
+					: {}),
 				error: error instanceof Error ? error.message : String(error),
 			};
 		}
@@ -510,6 +667,7 @@ export async function drainHostedRunner(
 			mode: HostedRunnerWorkspaceExportModeValue.LocalPathContract,
 			paths: exportPaths,
 		},
+		work_continuity: collectHostedRunnerWorkContinuity(snapshot),
 		snapshot,
 		retention_policy: buildHostedRunnerRetentionPolicy(),
 		...(git ? { git } : {}),
@@ -566,7 +724,16 @@ async function drainActiveRuntime(
 			requestedBy: terminal.requestedBy,
 			retryable: false,
 		});
-		throw error;
+		throw new HostedRunnerRuntimeDrainError(
+			error instanceof Error ? error.message : String(error),
+			{
+				sessionId: snapshot.session_id,
+				sessionFile,
+				protocolVersion: snapshot.protocolVersion,
+				cursor: snapshot.cursor,
+				snapshot,
+			},
+		);
 	}
 	return {
 		sessionId: snapshot.session_id,
