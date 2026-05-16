@@ -22,7 +22,11 @@ registry URL and a bounded error.
 
 `delegate` sends a normal A2A `message:send` request with Maestro delegation
 metadata: origin, peer name, role, and working directory. The resulting task is
-recorded in the local ledger before optional waiting begins.
+recorded in the local ledger before optional waiting begins. Treat the A2A task
+as an operator projection over durable agent/objective/run state rather than as
+the run itself: the task id is the protocol handle, `contextId` is the durable
+conversation/work envelope, and Maestro stores the peer-local transcript needed
+to resume, reply, audit, or wait later.
 
 `reply` continues an existing remote A2A task by sending `message.taskId` and
 the durable ledger `contextId` when available. It appends the operator's reply
@@ -31,6 +35,52 @@ to the same local transcript and can wait for the peer's follow-up result.
 `tasks` reads the durable ledger and can refresh known task IDs from their
 registered peers. This gives the operator a single place to see outstanding work
 across the Mac mini, dev desktop, and local Maestro instances.
+
+## Native Control-Plane Surface
+
+The Rust control-plane A2A server uses the same task ledger path as the CLI. On
+startup it restores known tasks from the ledger, and each task state transition
+is written back to disk before being published to local subscribers.
+
+The CLI ledger is a JSON object with a top-level `tasks` array. Each entry keeps
+the local ledger id, peer name, remote `taskId`, optional `contextId` and
+`messageId`, current A2A `state`, operator request text, optional role/cwd,
+latest response text, transcript entries, metadata, and created/updated/completed
+timestamps. The ledger deliberately stores peer/task correlation and transcript
+shape, not bearer token material.
+
+Supported A2A HTTP+JSON operations:
+
+```text
+GET  /.well-known/agent-card.json
+GET  /extendedAgentCard
+POST /message:send
+POST /message:stream
+GET  /tasks
+GET  /tasks/{id}
+GET  /tasks/{id}:subscribe
+POST /tasks/{id}:subscribe
+POST /tasks/{id}:cancel
+```
+
+`GET /tasks` accepts the spec-shaped fleet filters `contextId`, `status`,
+`statusTimestampAfter`, `pageSize`, `pageToken`, `historyLength`, and
+`includeArtifacts`. The implementation also accepts snake_case aliases
+(`context_id`, `page_size`, `page_token`, `status_timestamp_after`,
+`history_length`, and `include_artifacts`) plus `state`, `limit`, `offset`,
+`lastUpdatedAfter`, and `last_updated_after` for local operator convenience.
+List responses are sorted by newest status timestamp first and include `tasks`,
+`nextPageToken`, `pageSize`, and `totalSize`. `includeArtifacts=false` is the
+default; `historyLength=0` suppresses history in list responses.
+
+`POST /message:stream`, `GET /tasks/{id}:subscribe`, and
+`POST /tasks/{id}:subscribe` use Server-Sent Events with A2A `StreamResponse`
+payloads (`task`, `statusUpdate`, and `artifactUpdate`). Subscribe is for
+nonterminal work; terminal tasks should be read with `GET /tasks/{id}` and must
+not be treated as a replayable subscription stream. The public Agent Card
+advertises `capabilities.streaming=true` plus authenticated extended-card
+support, and the extended card declares Maestro's EvalOps operating-plane
+extension for workspace/session/trace/retention correlation metadata.
 
 ## Files
 
@@ -48,6 +98,33 @@ The task ledger defaults to:
 
 `MAESTRO_A2A_TASKS_FILE` overrides the ledger path. `CODEX_A2A_TASKS_FILE` is
 accepted as a migration alias.
+
+## Operator Verification
+
+Use bounded one-shot checks against a local control-plane peer:
+
+```sh
+BASE_URL=http://127.0.0.1:18787
+TASK_ID=<task-id-from-delegate-or-send>
+CONTEXT_ID=<context-id-from-task-detail>
+
+curl -fsS "$BASE_URL/.well-known/agent-card.json" \
+  | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{const j=JSON.parse(s);if(j.capabilities?.streaming!==true)process.exit(1);})'
+
+curl -fsS "$BASE_URL/tasks?status=TASK_STATE_COMPLETED&pageSize=1&pageToken=0&historyLength=1&includeArtifacts=false"
+curl -fsS "$BASE_URL/tasks?contextId=$CONTEXT_ID&pageSize=1&includeArtifacts=false"
+curl -fsS --max-time 10 \
+  -H 'Content-Type: application/json' \
+  -d '{"message":{"messageId":"operator-smoke","contextId":"operator-smoke-context","role":"ROLE_USER","parts":[{"text":"stream smoke","mediaType":"text/plain"}]}}' \
+  "$BASE_URL/message:stream" \
+  | rg '"statusUpdate"|"artifactUpdate"'
+```
+
+For the full local harness, run:
+
+```sh
+bash scripts/smoke-maestro-a2a-tmux.sh
+```
 
 ## Acceptance Tests
 

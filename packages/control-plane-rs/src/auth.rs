@@ -193,11 +193,21 @@ pub(crate) fn csrf_applies(head: &RequestHead) -> bool {
 }
 
 fn csrf_applies_to_a2a_path(path: &str) -> bool {
-    path == "/message:send" || a2a_task_id_from_cancel_path(path).is_some()
+    matches!(path, "/message:send" | "/message:stream")
+        || a2a_task_id_from_cancel_path(path).is_some()
+        || a2a_task_id_from_subscribe_path(path).is_some()
 }
 
 pub(crate) fn a2a_task_id_from_cancel_path(path: &str) -> Option<&str> {
     let id = path.strip_prefix("/tasks/")?.strip_suffix(":cancel")?;
+    (!id.is_empty() && !id.contains('/') && !id.contains(':')).then_some(id)
+}
+
+pub(crate) fn a2a_task_id_from_subscribe_path(path: &str) -> Option<&str> {
+    let id = path
+        .strip_prefix("/tasks/")?
+        .strip_suffix(":subscribe")
+        .or_else(|| path.strip_prefix("/tasks/")?.strip_suffix("/subscribe"))?;
     (!id.is_empty() && !id.contains('/') && !id.contains(':')).then_some(id)
 }
 
