@@ -44,11 +44,19 @@ async function writePackage(
 	}
 	if (options.toolboxMode) {
 		await mkdir(join(skillDir, "toolbox"), { recursive: true });
-		const toolPath = join(skillDir, "toolbox", "describe.sh");
-		writeFileSync(
-			toolPath,
-			"#!/usr/bin/env bash\nif [ \"$MAESTRO_TOOLBOX_ACTION\" = describe ]; then echo '{\"name\":\"describe\"}'; exit 0; fi\nexit 0\n",
+		const isWindows = process.platform === "win32";
+		const toolPath = join(
+			skillDir,
+			"toolbox",
+			isWindows && options.toolboxMode === "valid"
+				? "describe.cmd"
+				: "describe.sh",
 		);
+		const contents =
+			isWindows && options.toolboxMode === "valid"
+				? "@echo off\r\nif \"%MAESTRO_TOOLBOX_ACTION%\"==\"describe\" echo {\"name\":\"describe\"}\r\nexit /b 0\r\n"
+				: "#!/usr/bin/env bash\nif [ \"$MAESTRO_TOOLBOX_ACTION\" = describe ]; then echo '{\"name\":\"describe\"}'; exit 0; fi\nexit 0\n";
+		writeFileSync(toolPath, contents);
 		if (options.toolboxMode === "valid") {
 			chmodSync(toolPath, 0o755);
 		}
