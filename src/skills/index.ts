@@ -64,5 +64,6 @@ export {
 	lintSkillDirectory,
 	lintSkillPaths,
 	scaffoldSkill,
+	toolboxDescribeSpawnCommand,
 	toolboxDescribeSpawnOptions,
 } from "./linter.js";

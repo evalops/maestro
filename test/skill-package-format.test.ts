@@ -13,6 +13,7 @@ import {
 	loadSkills,
 	parseFrontmatter,
 	scaffoldSkill,
+	toolboxDescribeSpawnCommand,
 	toolboxDescribeSpawnOptions,
 } from "../src/skills/index.js";
 
@@ -259,6 +260,16 @@ describe("skill package format", () => {
 		expect(
 			toolboxDescribeSpawnOptions({ platform: "darwin" }),
 		).not.toHaveProperty("shell");
+		expect(
+			toolboxDescribeSpawnCommand("C:\\Program Files\\tool.cmd", {
+				platform: "win32",
+			}),
+		).toBe('"C:\\Program Files\\tool.cmd"');
+		expect(
+			toolboxDescribeSpawnCommand("/usr/local/bin/tool", {
+				platform: "darwin",
+			}),
+		).toBe("/usr/local/bin/tool");
 	});
 
 	it("scaffolds a package that passes lint", async () => {

@@ -357,6 +357,14 @@ export function toolboxDescribeSpawnOptions(options: SkillLintOptions = {}): {
 	};
 }
 
+export function toolboxDescribeSpawnCommand(
+	path: string,
+	options: SkillLintOptions = {},
+): string {
+	const platform = options.platform ?? process.platform;
+	return platform === "win32" ? `"${path}"` : path;
+}
+
 async function isExecutable(
 	path: string,
 	platform: NodeJS.Platform = process.platform,
@@ -396,7 +404,10 @@ async function validateToolbox(
 			continue;
 		}
 		if (options.describeToolbox) {
-			const result = spawnSync(path, toolboxDescribeSpawnOptions(options));
+			const result = spawnSync(
+				toolboxDescribeSpawnCommand(path, options),
+				toolboxDescribeSpawnOptions(options),
+			);
 			if (result.status !== 0) {
 				issues.push(
 					issue(
