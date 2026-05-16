@@ -28,10 +28,17 @@ async function writeSkillPackage(
 	await mkdir(join(skillDir, "reference"), { recursive: true });
 	if (options.toolbox) {
 		await mkdir(join(skillDir, "toolbox"), { recursive: true });
-		const toolPath = join(skillDir, "toolbox", "describe.sh");
+		const isWindows = process.platform === "win32";
+		const toolPath = join(
+			skillDir,
+			"toolbox",
+			isWindows ? "describe.cmd" : "describe.sh",
+		);
 		writeFileSync(
 			toolPath,
-			'#!/usr/bin/env bash\nif [ "$MAESTRO_TOOLBOX_ACTION" = describe ]; then echo \'{"name":"describe"}\'; exit 0; fi\nexit 0\n',
+			isWindows
+				? '@echo off\r\nif "%MAESTRO_TOOLBOX_ACTION%"=="describe" echo {"name":"describe"}\r\nexit /b 0\r\n'
+				: '#!/usr/bin/env bash\nif [ "$MAESTRO_TOOLBOX_ACTION" = describe ]; then echo \'{"name":"describe"}\'; exit 0; fi\nexit 0\n',
 		);
 		chmodSync(toolPath, 0o755);
 	}
