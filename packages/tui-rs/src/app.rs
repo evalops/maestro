@@ -2829,6 +2829,9 @@ Add the required fields and retry.",
             CommandAction::Mcp(action) => {
                 self.handle_mcp_action(action).await;
             }
+            CommandAction::A2a(action) => {
+                self.handle_a2a_action(action);
+            }
             CommandAction::HooksManage(hooks_action) => {
                 self.handle_hooks_action(hooks_action);
             }
@@ -3354,6 +3357,46 @@ Add the required fields and retry.",
                 self.state.add_system_message(
                     render_mcp_prompt_lines(&prompt_servers, server_filter.as_deref()).join("\n"),
                 );
+            }
+        }
+    }
+
+    /// Handle A2A peer-pairing actions.
+    fn handle_a2a_action(&mut self, action: crate::commands::A2aAction) {
+        use crate::commands::A2aAction;
+
+        match action {
+            A2aAction::Help => {
+                self.state.add_system_message(
+                    [
+                        "## A2A peer pairing",
+                        "",
+                        "/a2a peers",
+                        "/a2a accept <pairing-code>",
+                        "/a2a send <peer> <text>",
+                        "",
+                        "Native pairing codes are shared with the TypeScript CLI/TUI. Use `maestro a2a offer` to create a code from a running peer.",
+                    ]
+                    .join("\n"),
+                );
+            }
+            A2aAction::Peers => {
+                self.state.add_system_message(
+                    "A2A peer listing uses the shared Maestro peer registry. Run `maestro a2a peers` for the current registry until the Rust registry reader is wired into this view."
+                        .to_string(),
+                );
+            }
+            A2aAction::Accept { code } => {
+                self.state.add_system_message(format!(
+                    "A2A pairing code captured ({} chars). Run `maestro a2a accept <code>` or use the TypeScript TUI `/a2a accept <code>` to persist it in the shared registry.",
+                    code.len()
+                ));
+            }
+            A2aAction::Send { peer, text } => {
+                self.state.add_system_message(format!(
+                    "A2A send request prepared for `{peer}` ({} chars). Run `maestro a2a send {peer} <text> --wait` while the Rust send controller is connected to the shared A2A client.",
+                    text.len()
+                ));
             }
         }
     }

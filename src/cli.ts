@@ -76,6 +76,14 @@ async function reportFatalCliError(error: unknown): Promise<void> {
 
 const run = async () => {
 	try {
+		if (process.argv[2] === "a2a") {
+			const { loadEnv } = await import("./load-env.js");
+			loadEnv();
+			const { handleA2ACommand } = await import("./cli/commands/a2a.js");
+			await handleA2ACommand(process.argv.slice(3));
+			return;
+		}
+
 		// Prefer the TypeScript entry when running under Bun during development,
 		// but fall back to the compiled JS for bundled/compiled binaries.
 		const loadMain = async () => {

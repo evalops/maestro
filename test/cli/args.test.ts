@@ -148,6 +148,29 @@ describe("parseArgs", () => {
 		});
 	});
 
+	it("preserves a2a command-group arguments for the native peer handler", () => {
+		expect(
+			parseArgs([
+				"a2a",
+				"accept",
+				"maestro-pair-v1.payload.checksum",
+				"--name",
+				"mac-mini",
+				"--default",
+			]),
+		).toMatchObject({
+			command: "a2a",
+			commandArgs: [
+				"accept",
+				"maestro-pair-v1.payload.checksum",
+				"--name",
+				"mac-mini",
+				"--default",
+			],
+			messages: [],
+		});
+	});
+
 	it("preserves hosted-runner arguments for the hosted entrypoint", () => {
 		expect(
 			parseArgs([
