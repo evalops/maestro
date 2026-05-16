@@ -806,31 +806,42 @@ export class HostedAgentRuntimeProgressRecorder {
 				});
 			} finally {
 				if (codexTool === "spawnAgent" && delegationId) {
-					await this.operations.resolveDelegation({
-						delegationId,
-						status: event.isError
-							? PlatformDelegationStatusValue.Failed
-							: PlatformDelegationStatusValue.Completed,
-						resultPayload: this.basePayload({
-							event_type: "codex_subagent_delegation_resolved",
-							codex_tool: codexTool,
+					try {
+						await this.operations.resolveDelegation({
+							delegationId,
+							status: event.isError
+								? PlatformDelegationStatusValue.Failed
+								: PlatformDelegationStatusValue.Completed,
+							resultPayload: this.basePayload({
+								event_type: "codex_subagent_delegation_resolved",
+								codex_tool: codexTool,
+								agent_run_id: runId,
+								work_item_id: this.workItemId(event.toolCallId),
+								tool_call_id: event.toolCallId,
+								tool_name: event.toolName,
+								result_error: event.isError,
+								receiver_thread_ids: receiverThreadIds,
+								child_run_ids: childRunIds,
+								linked_work_item_ids: linkedWorkItemIds,
+								result_detail_keys: objectKeys(details),
+							}),
+							errorMessage: event.isError
+								? (event.errorCode ??
+									event.governedOutcome ??
+									"Codex subagent spawn failed")
+								: undefined,
+						});
+					} catch (error) {
+						logger.warn("Failed to resolve Codex subagent delegation", {
+							error: error instanceof Error ? error.message : String(error),
+							session_id: this.sessionId,
 							agent_run_id: runId,
-							work_item_id: this.workItemId(event.toolCallId),
 							tool_call_id: event.toolCallId,
-							tool_name: event.toolName,
-							result_error: event.isError,
-							receiver_thread_ids: receiverThreadIds,
-							child_run_ids: childRunIds,
-							linked_work_item_ids: linkedWorkItemIds,
-							result_detail_keys: objectKeys(details),
-						}),
-						errorMessage: event.isError
-							? (event.errorCode ??
-								event.governedOutcome ??
-								"Codex subagent spawn failed")
-							: undefined,
-					});
-					this.codexSubagentDelegationIds.delete(event.toolCallId);
+							delegation_id: delegationId,
+						});
+					} finally {
+						this.codexSubagentDelegationIds.delete(event.toolCallId);
+					}
 				}
 			}
 		});
