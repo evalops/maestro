@@ -57,6 +57,7 @@ const A2A_TERMINAL_TASK_STORE_LIMIT: usize = 128;
 const A2A_DEFAULT_LIST_PAGE_SIZE: usize = 50;
 const A2A_MAX_LIST_PAGE_SIZE: usize = 100;
 const A2A_DEFAULT_SUBSCRIBE_TIMEOUT_MS: u64 = 60_000;
+const A2A_DEFAULT_SUBSCRIBE_HEARTBEAT_MS: u64 = 15_000;
 const A2A_LEDGER_LOCK_RETRY_MS: u64 = 25;
 const A2A_LEDGER_LOCK_STALE_MS: u64 = 30_000;
 const A2A_LEDGER_LOCK_TIMEOUT_MS: u64 = A2A_LEDGER_LOCK_STALE_MS + A2A_LEDGER_LOCK_RETRY_MS;
@@ -697,12 +698,9 @@ fn is_a2a_endpoint(head: &RequestHead) -> bool {
         ("GET", "/.well-known/agent-card.json")
             | ("GET", "/extendedAgentCard")
             | ("POST", "/message:send")
-            | ("POST", "/message:stream")
             | ("GET", "/tasks")
     ) || (head.method == "GET" && a2a_task_id_from_get_path(&head.path).is_some())
         || (head.method == "POST" && a2a_task_id_from_cancel_path(&head.path).is_some())
-        || (head.method == "GET" && a2a_task_id_from_subscribe_path(&head.path).is_some())
-        || (head.method == "POST" && a2a_task_id_from_subscribe_path(&head.path).is_some())
 }
 
 fn is_a2a_streaming_endpoint(head: &RequestHead) -> bool {
@@ -1020,21 +1018,37 @@ async fn handle_a2a_task_subscribe(
     )
     .await?;
 
-    let heartbeat_interval = Duration::from_millis(
+    let subscribe_timeout = Duration::from_millis(
         env_u64(
             "MAESTRO_A2A_SUBSCRIBE_TIMEOUT_MS",
             A2A_DEFAULT_SUBSCRIBE_TIMEOUT_MS,
         )
         .max(1),
     );
+    let heartbeat_interval = Duration::from_millis(
+        env_u64(
+            "MAESTRO_A2A_SUBSCRIBE_HEARTBEAT_MS",
+            A2A_DEFAULT_SUBSCRIBE_HEARTBEAT_MS,
+        )
+        .max(1),
+    );
+    let deadline = Instant::now() + subscribe_timeout;
     loop {
-        let event = match tokio::time::timeout(heartbeat_interval, receiver.recv()).await {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let wait_timeout = remaining.min(heartbeat_interval);
+        let event = match tokio::time::timeout(wait_timeout, receiver.recv()).await {
             Ok(Ok(task)) => Some(task),
             Ok(Err(broadcast::error::RecvError::Lagged(_))) => {
                 current_a2a_subscribe_task(state, task_id, auth).await
             }
             Ok(Err(broadcast::error::RecvError::Closed)) => break,
             Err(_) => {
+                if Instant::now() >= deadline {
+                    break;
+                }
                 stream
                     .write_all(b": keep-alive\n\n")
                     .await
@@ -11355,14 +11369,32 @@ setTimeout(() => {
             "POST /message:send HTTP/1.1\r\nHost: localhost\r\n\r\n",
             "GET /tasks/maestro-task-1 HTTP/1.1\r\nHost: localhost\r\n\r\n",
             "GET /tasks HTTP/1.1\r\nHost: localhost\r\n\r\n",
-            "POST /message:stream HTTP/1.1\r\nHost: localhost\r\n\r\n",
-            "GET /tasks/maestro-task-1:subscribe HTTP/1.1\r\nHost: localhost\r\n\r\n",
             "GET /extendedAgentCard HTTP/1.1\r\nHost: localhost\r\n\r\n",
             "POST /tasks/maestro-task-1:cancel HTTP/1.1\r\nHost: localhost\r\n\r\n",
             "OPTIONS /message:send HTTP/1.1\r\nHost: localhost\r\n\r\n",
         ] {
             let head = parse_request_head(request.as_bytes()).expect("request should parse");
             assert!(is_a2a_endpoint(&head), "{request} should be A2A");
+        }
+    }
+
+    #[test]
+    fn detects_a2a_streaming_routes_separately() {
+        for request in [
+            "POST /message:stream HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "GET /tasks/maestro-task-1:subscribe HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "POST /tasks/maestro-task-1:subscribe HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "GET /tasks/maestro-task-1/subscribe HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        ] {
+            let head = parse_request_head(request.as_bytes()).expect("request should parse");
+            assert!(
+                is_a2a_streaming_endpoint(&head),
+                "{request} should be streaming A2A"
+            );
+            assert!(
+                !is_a2a_endpoint(&head),
+                "{request} should not be handled by non-streaming A2A routing"
+            );
         }
     }
 
@@ -12453,7 +12485,9 @@ setTimeout(() => {
     async fn a2a_task_subscribe_streams_active_task_until_terminal_update() {
         let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
         let previous_timeout = env::var("MAESTRO_A2A_SUBSCRIBE_TIMEOUT_MS").ok();
-        env::set_var("MAESTRO_A2A_SUBSCRIBE_TIMEOUT_MS", "10");
+        let previous_heartbeat = env::var("MAESTRO_A2A_SUBSCRIBE_HEARTBEAT_MS").ok();
+        env::set_var("MAESTRO_A2A_SUBSCRIBE_TIMEOUT_MS", "250");
+        env::set_var("MAESTRO_A2A_SUBSCRIBE_HEARTBEAT_MS", "10");
         let state = test_app_state_with_sessions(HashMap::new());
         let initial_task = a2a_task_value(
             "maestro-task-active-subscribe",
@@ -12528,6 +12562,70 @@ setTimeout(() => {
             env::set_var("MAESTRO_A2A_SUBSCRIBE_TIMEOUT_MS", previous_timeout);
         } else {
             env::remove_var("MAESTRO_A2A_SUBSCRIBE_TIMEOUT_MS");
+        }
+        if let Some(previous_heartbeat) = previous_heartbeat {
+            env::set_var("MAESTRO_A2A_SUBSCRIBE_HEARTBEAT_MS", previous_heartbeat);
+        } else {
+            env::remove_var("MAESTRO_A2A_SUBSCRIBE_HEARTBEAT_MS");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a2a_task_subscribe_times_out_active_stream() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let previous_timeout = env::var("MAESTRO_A2A_SUBSCRIBE_TIMEOUT_MS").ok();
+        let previous_heartbeat = env::var("MAESTRO_A2A_SUBSCRIBE_HEARTBEAT_MS").ok();
+        env::set_var("MAESTRO_A2A_SUBSCRIBE_TIMEOUT_MS", "40");
+        env::set_var("MAESTRO_A2A_SUBSCRIBE_HEARTBEAT_MS", "10");
+        let state = test_app_state_with_sessions(HashMap::new());
+        let initial_task = a2a_task_value(
+            "maestro-task-timeout-subscribe",
+            "ctx-1",
+            "TASK_STATE_WORKING",
+            a2a_agent_message("ctx-1", "working"),
+            vec![a2a_agent_message("ctx-1", "working")],
+            Vec::new(),
+            serde_json::json!({}),
+        );
+        state
+            .a2a_tasks
+            .lock()
+            .await
+            .insert("maestro-task-timeout-subscribe".to_string(), initial_task);
+        let request = "GET /tasks/maestro-task-timeout-subscribe:subscribe HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\n\r\n";
+        let initial = request.as_bytes().to_vec();
+        let head = parse_request_head(&initial).expect("request should parse");
+        let (mut client, server) = tcp_stream_pair().await;
+        let state_for_run = state.clone();
+        let run = tokio::spawn(async move {
+            handle_a2a_streaming_endpoint(server, initial, head, state_for_run).await
+        });
+        let mut response_bytes = Vec::new();
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            client.read_to_end(&mut response_bytes),
+        )
+        .await
+        .expect("subscribe response should close after timeout")
+        .expect("subscribe response should be readable");
+        run.await
+            .expect("subscribe task should join")
+            .expect("subscribe endpoint should succeed");
+        let response = String::from_utf8(response_bytes).expect("response should be utf-8");
+
+        assert!(response.contains("Content-Type: text/event-stream"));
+        assert!(response.contains("TASK_STATE_WORKING"));
+        assert!(response.contains(": keep-alive"));
+
+        if let Some(previous_timeout) = previous_timeout {
+            env::set_var("MAESTRO_A2A_SUBSCRIBE_TIMEOUT_MS", previous_timeout);
+        } else {
+            env::remove_var("MAESTRO_A2A_SUBSCRIBE_TIMEOUT_MS");
+        }
+        if let Some(previous_heartbeat) = previous_heartbeat {
+            env::set_var("MAESTRO_A2A_SUBSCRIBE_HEARTBEAT_MS", previous_heartbeat);
+        } else {
+            env::remove_var("MAESTRO_A2A_SUBSCRIBE_HEARTBEAT_MS");
         }
     }
 
