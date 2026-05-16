@@ -60,6 +60,29 @@ describe("A2A CLI command helpers", () => {
 		expect(parsed.flags.get("--timeout-ms")).toBe("1000");
 	});
 
+	it("parses task reply flags without swallowing reply text", () => {
+		const parsed = parseA2AArgs([
+			"reply",
+			"mac-mini",
+			"task-1",
+			"use",
+			"--json",
+			"--wait",
+			"--tasks",
+			"/tmp/tasks.json",
+		]);
+
+		expect(parsed.positionals).toEqual([
+			"reply",
+			"mac-mini",
+			"task-1",
+			"use",
+			"--json",
+		]);
+		expect(parsed.flags.get("--wait")).toBe(true);
+		expect(parsed.flags.get("--tasks")).toBe("/tmp/tasks.json");
+	});
+
 	it("scopes json and refresh flags to fleet task views", () => {
 		const delegate = parseA2AArgs([
 			"delegate",

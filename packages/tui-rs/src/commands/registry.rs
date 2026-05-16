@@ -535,6 +535,23 @@ fn parse_a2a_action(raw: &str) -> Result<A2aAction, CommandError> {
                 text,
             })
         }
+        "reply" | "continue" => {
+            let peer = tokens
+                .get(1)
+                .ok_or_else(|| CommandError::new("Usage: /a2a reply <peer> <task-id> <text>"))?;
+            let task_id = tokens
+                .get(2)
+                .ok_or_else(|| CommandError::new("Usage: /a2a reply <peer> <task-id> <text>"))?;
+            let text = tokens.get(3..).unwrap_or(&[]).join(" ");
+            if text.trim().is_empty() {
+                return Err(CommandError::new("Usage: /a2a reply <peer> <task-id> <text>"));
+            }
+            Ok(A2aAction::Reply {
+                peer: peer.clone(),
+                task_id: task_id.clone(),
+                text,
+            })
+        }
         "send" => {
             let peer = tokens
                 .get(1)
@@ -550,7 +567,7 @@ fn parse_a2a_action(raw: &str) -> Result<A2aAction, CommandError> {
         }
         _ => Err(
             CommandError::new(format!("Unknown A2A subcommand: {subcommand}"))
-                .with_hint("Usage: /a2a [fleet|peers|tasks|accept <code>|delegate <peer> <text>|send <peer> <text>]"),
+                .with_hint("Usage: /a2a [fleet|peers|tasks|accept <code>|delegate <peer> <text>|reply <peer> <task-id> <text>|send <peer> <text>]"),
         ),
     }
 }
@@ -779,7 +796,7 @@ pub fn build_command_registry() -> CommandRegistry {
                 )?)))
             }),
         )
-        .usage("/a2a [fleet|peers|tasks|accept <code>|delegate <peer> <text>|send <peer> <text>]"),
+        .usage("/a2a [fleet|peers|tasks|accept <code>|delegate <peer> <text>|reply <peer> <task-id> <text>|send <peer> <text>]"),
     );
 
     // Queue command
@@ -2008,6 +2025,27 @@ mod tests {
                 assert_eq!(code, "maestro-pair-v1.payload.checksum");
             }
             other => panic!("expected a2a accept action, got {other:?}"),
+        }
+
+        match registry
+            .execute(
+                "/a2a reply mac-mini task-1 use the short smoke",
+                "/tmp",
+                None,
+                None,
+            )
+            .expect("a2a reply should parse")
+        {
+            CommandOutput::Action(CommandAction::A2a(A2aAction::Reply {
+                peer,
+                task_id,
+                text,
+            })) => {
+                assert_eq!(peer, "mac-mini");
+                assert_eq!(task_id, "task-1");
+                assert_eq!(text, "use the short smoke");
+            }
+            other => panic!("expected a2a reply action, got {other:?}"),
         }
 
         match registry

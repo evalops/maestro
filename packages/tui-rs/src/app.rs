@@ -3376,6 +3376,7 @@ Add the required fields and retry.",
                         "/a2a tasks [peer]",
                         "/a2a accept <pairing-code>",
                         "/a2a delegate <peer> <text>",
+                        "/a2a reply <peer> <task-id> <text>",
                         "/a2a send <peer> <text>",
                         "",
                         "Native pairing codes, fleet views, and delegation ledgers are shared with the TypeScript CLI/TUI.",
@@ -3410,6 +3411,16 @@ Add the required fields and retry.",
             A2aAction::Delegate { peer, text } => {
                 self.state.add_system_message(format!(
                     "A2A delegation prepared for `{peer}` ({} chars). Run `maestro a2a delegate {peer} <text> --wait` while the Rust delegation controller is connected to the shared A2A client.",
+                    text.len()
+                ));
+            }
+            A2aAction::Reply {
+                peer,
+                task_id,
+                text,
+            } => {
+                self.state.add_system_message(format!(
+                    "A2A task reply prepared for `{peer}` task `{task_id}` ({} chars). Run `maestro a2a reply {peer} {task_id} <text> --wait` while the Rust task-continuation controller is connected to the shared A2A client.",
                     text.len()
                 ));
             }
