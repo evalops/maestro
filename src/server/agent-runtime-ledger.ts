@@ -251,9 +251,11 @@ function stepKindForEntry(
 	entryKind: AgentRuntimeLedgerEntryKind,
 	event: AgentTrajectoryEvent,
 ): string {
-	if (event.status === "failed") return "AGENT_RUN_STEP_KIND_ERROR";
 	if (entryKind === "model_call") return "AGENT_RUN_STEP_KIND_MODEL_CALL";
 	if (entryKind === "tool_call") return "AGENT_RUN_STEP_KIND_TOOL_CALL_INTENT";
+	if (entryKind === "tool_result" && event.status === "failed") {
+		return "AGENT_RUN_STEP_KIND_ERROR";
+	}
 	if (entryKind === "tool_result") return "AGENT_RUN_STEP_KIND_TOOL_RESULT";
 	if (entryKind === "wait" || entryKind === "governance") {
 		return "AGENT_RUN_STEP_KIND_APPROVAL_WAIT";
@@ -303,7 +305,7 @@ function waitTypeForEntry(
 	}
 	if (timelineItem?.approvalRequestId) return "AGENT_RUN_WAIT_TYPE_APPROVAL";
 	if (timelineItem?.pendingRequestId) return "AGENT_RUN_WAIT_TYPE_INPUT";
-	return undefined;
+	return "AGENT_RUN_WAIT_TYPE_APPROVAL";
 }
 
 function buildLedgerEntries(
