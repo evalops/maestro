@@ -537,6 +537,56 @@ describe("platform A2A client", () => {
 		]);
 	});
 
+	it("handles mixed-newline A2A SSE frame delimiters", async () => {
+		const config = await resolveA2AServiceConfig();
+		if (!config) {
+			throw new Error("expected config");
+		}
+		vi.mocked(fetch).mockImplementationOnce(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url = typeof input === "string" ? input : input.toString();
+				const parsed = new URL(url);
+				requests.push({
+					body: parseRequestBody(init?.body),
+					headers: headersToRecord(init?.headers),
+					method: init?.method,
+					pathname: parsed.pathname,
+					url,
+				});
+				return sseResponse([
+					'data: {"task":{"id":"run_mixed","status":{"state":"TASK_STATE_SUBMITTED"}}}\r\n\n',
+					'event: statusUpdate\ndata: {"taskId":"run_mixed","status":{"state":"TASK_STATE_COMPLETED"},"final":true}\n\r\n',
+				]);
+			},
+		);
+
+		const events = await collectAsyncIterable(
+			streamA2AMessage(config, {
+				message: buildA2AUserMessage({
+					messageId: "msg_stream_mixed",
+					contextId: "session_1",
+					text: "Stream mixed newline frames",
+				}),
+			}),
+		);
+
+		expect(events).toEqual([
+			{
+				type: "task",
+				task: {
+					id: "run_mixed",
+					status: { state: "TASK_STATE_SUBMITTED" },
+				},
+			},
+			{
+				type: "statusUpdate",
+				taskId: "run_mixed",
+				status: { state: "TASK_STATE_COMPLETED" },
+				final: true,
+			},
+		]);
+	});
+
 	it("gets an A2A task by run id", async () => {
 		const config = await resolveA2AServiceConfig();
 		if (!config) {
