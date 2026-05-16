@@ -714,14 +714,6 @@ fn a2a_task_id_from_get_path(path: &str) -> Option<&str> {
     (!id.is_empty() && !id.contains('/') && !id.contains(':')).then_some(id)
 }
 
-fn a2a_task_id_from_subscribe_path(path: &str) -> Option<&str> {
-    let id = path
-        .strip_prefix("/tasks/")?
-        .strip_suffix(":subscribe")
-        .or_else(|| path.strip_prefix("/tasks/")?.strip_suffix("/subscribe"))?;
-    (!id.is_empty() && !id.contains('/') && !id.contains(':')).then_some(id)
-}
-
 fn validate_a2a_protocol_version(head: &RequestHead) -> Result<(), Vec<u8>> {
     let Some(version) = a2a_requested_protocol_version(head) else {
         return Ok(());
@@ -11285,6 +11277,20 @@ setTimeout(() => {
         .is_ok());
         assert!(validate_csrf(
             &csrf_head_for_path("POST", "/tasks/maestro-task-1:cancel", None),
+            &config
+        )
+        .is_err());
+        assert!(validate_csrf(
+            &csrf_head_for_path(
+                "POST",
+                "/tasks/maestro-task-1:subscribe",
+                Some("csrf-token")
+            ),
+            &config,
+        )
+        .is_ok());
+        assert!(validate_csrf(
+            &csrf_head_for_path("POST", "/tasks/maestro-task-1:subscribe", None),
             &config
         )
         .is_err());
