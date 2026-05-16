@@ -537,7 +537,7 @@ function loadSkillFromDirectory(
 			name,
 			description,
 			license: stringValue(frontmatter.license),
-			compatibility: frontmatter.compatibility as string | undefined,
+			compatibility: stringValue(frontmatter.compatibility),
 			allowedTools: stringArrayValue(frontmatter["allowed-tools"]),
 			builtinTools: stringArrayValue(frontmatter["builtin-tools"]),
 			argumentHint: stringValue(frontmatter["argument-hint"]),

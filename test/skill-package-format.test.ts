@@ -132,13 +132,14 @@ describe("skill package format", () => {
 		await mkdir(skillDir, { recursive: true });
 		writeFileSync(
 			join(skillDir, "SKILL.md"),
-			`---\nname: shipping-releases\ndescription: "Ship releases. Use when the user asks for release validation."\nlicense: 2.1\n---\n\n# Shipping Releases\n`,
+			`---\nname: shipping-releases\ndescription: "Ship releases. Use when the user asks for release validation."\nlicense: 2.1\ncompatibility: ">=0.10"\n---\n\n# Shipping Releases\n`,
 		);
 
 		const { skills, errors } = loadSkills(workspace, { includeSystem: false });
 
 		expect(errors).toEqual([]);
 		expect(skills[0]?.license).toBeUndefined();
+		expect(skills[0]?.compatibility).toBe(">=0.10");
 		expect(skillToDict(skills[0]!)).not.toHaveProperty("license");
 	});
 
