@@ -40,6 +40,8 @@ describe("hosted-runner command config", () => {
 				"0.0.0.0:9090",
 				"--workspace-id",
 				"ws_123",
+				"--agent-id",
+				"maestro-codex-parent",
 				"--agent-run-id",
 				"ar_123",
 			],
@@ -54,6 +56,7 @@ describe("hosted-runner command config", () => {
 			host: "0.0.0.0",
 			port: 9090,
 			workspaceId: "ws_123",
+			agentId: "maestro-codex-parent",
 			agentRunId: "ar_123",
 		});
 		expect(toHostedRunnerContext(config)).toMatchObject({
@@ -64,6 +67,7 @@ describe("hosted-runner command config", () => {
 			snapshotRoot: join(realpathSync(workspaceRoot), ".runner-snapshots"),
 			listenHost: "0.0.0.0",
 			listenPort: 9090,
+			agentId: "maestro-codex-parent",
 		});
 	});
 
@@ -76,6 +80,7 @@ describe("hosted-runner command config", () => {
 			MAESTRO_REMOTE_RUNNER_SNAPSHOT_ROOT: ".snapshots",
 			MAESTRO_HOSTED_RUNNER_PORT: "7070",
 			MAESTRO_REMOTE_RUNNER_WORKSPACE_ID: "ws_env",
+			MAESTRO_REMOTE_RUNNER_AGENT_ID: "maestro-codex-env",
 		});
 
 		expect(config).toMatchObject({
@@ -85,6 +90,7 @@ describe("hosted-runner command config", () => {
 			snapshotRoot: join(realpathSync(workspaceRoot), ".snapshots"),
 			port: 7070,
 			workspaceId: "ws_env",
+			agentId: "maestro-codex-env",
 		});
 	});
 

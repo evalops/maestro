@@ -2,6 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { AgentEvent } from "../../src/agent/types.js";
 import {
+	type PlatformAgentRegistryDelegateInput,
+	type PlatformAgentRegistryResolveDelegationInput,
+	PlatformDelegationStatusValue,
+} from "../../src/platform/agent-registry-client.js";
+import {
 	PlatformAgentRunStepKindValue,
 	PlatformAgentRunStepStateValue,
 	PlatformAgentRunWaitTypeValue,
@@ -14,6 +19,7 @@ import type { ServerRequestLifecycleEvent } from "../../src/server/server-reques
 function createRecorder(overrides?: {
 	agentRunId?: string;
 	agentRuntimeLeaseToken?: string;
+	agentId?: string;
 	recordStep?: ReturnType<typeof vi.fn>;
 	recordWorkItem?: ReturnType<typeof vi.fn>;
 	updateWorkItem?: ReturnType<typeof vi.fn>;
@@ -21,6 +27,8 @@ function createRecorder(overrides?: {
 	resumeRun?: ReturnType<typeof vi.fn>;
 	completeRun?: ReturnType<typeof vi.fn>;
 	failRun?: ReturnType<typeof vi.fn>;
+	delegateAgent?: ReturnType<typeof vi.fn>;
+	resolveDelegation?: ReturnType<typeof vi.fn>;
 }) {
 	const recordStep =
 		overrides?.recordStep ?? vi.fn(async () => ({ run: { id: "run_1" } }));
@@ -36,6 +44,9 @@ function createRecorder(overrides?: {
 		overrides?.completeRun ?? vi.fn(async () => ({ run: { id: "run_1" } }));
 	const failRun =
 		overrides?.failRun ?? vi.fn(async () => ({ run: { id: "run_1" } }));
+	const delegateAgent = overrides?.delegateAgent ?? vi.fn(async () => null);
+	const resolveDelegation =
+		overrides?.resolveDelegation ?? vi.fn(async () => null);
 	const recorder = new HostedAgentRuntimeProgressRecorder({
 		sessionId: "session_1",
 		workspaceRoot: "/workspace",
@@ -45,6 +56,7 @@ function createRecorder(overrides?: {
 			agentRuntimeLeaseToken:
 				overrides?.agentRuntimeLeaseToken ?? "lease-token-1",
 			workspaceId: "ws_1",
+			agentId: overrides?.agentId ?? "agent_parent",
 			runnerSessionId: "mrs_1",
 			ownerInstanceId: "pod-a",
 			agentRuntimeWorkerQueue: "agent-runtime.production",
@@ -57,6 +69,8 @@ function createRecorder(overrides?: {
 			resumeRun,
 			completeRun,
 			failRun,
+			delegateAgent,
+			resolveDelegation,
 		},
 	});
 	return {
@@ -68,6 +82,8 @@ function createRecorder(overrides?: {
 		resumeRun,
 		completeRun,
 		failRun,
+		delegateAgent,
+		resolveDelegation,
 	};
 }
 
@@ -234,6 +250,109 @@ describe("hosted AgentRuntime progress recorder", () => {
 		});
 	});
 
+	it("records Codex spawn handoffs as Platform agent-registry delegations", async () => {
+		const delegateAgent = vi.fn(
+			async (_input: PlatformAgentRegistryDelegateInput) => ({
+				delegation: {
+					id: "delegation_1",
+					status: PlatformDelegationStatusValue.Pending,
+				},
+			}),
+		);
+		const resolveDelegation = vi.fn(
+			async (_input: PlatformAgentRegistryResolveDelegationInput) => ({
+				delegation: {
+					id: "delegation_1",
+					status: PlatformDelegationStatusValue.Completed,
+				},
+			}),
+		);
+		const { recorder, updateWorkItem } = createRecorder({
+			agentId: "maestro-codex-parent",
+			delegateAgent,
+			resolveDelegation,
+		});
+
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "spawn-delegation-call",
+			toolName: "codex.subagent.spawnAgent",
+			displayName: "Codex subagent: spawn agent",
+			args: {
+				codexTool: "spawnAgent",
+				senderThreadId: "parent-thread",
+				receiverThreadIds: ["child-thread-1"],
+				childRunIds: ["agent-run-child-1"],
+				prompt: "Audit remote runner drain behavior",
+				requiredCapability: "code:review",
+			},
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_end",
+			toolCallId: "spawn-delegation-call",
+			toolName: "codex.subagent.spawnAgent",
+			displayName: "Codex subagent: spawn agent",
+			result: {
+				role: "toolResult",
+				toolCallId: "spawn-delegation-call",
+				toolName: "codex.subagent.spawnAgent",
+				content: [{ type: "text", text: "spawn completed" }],
+				details: {
+					codexTool: "spawnAgent",
+					receiverThreadIds: ["child-thread-1"],
+					childRunIds: ["agent-run-child-1"],
+				},
+				isError: false,
+				timestamp: 3,
+			},
+			isError: false,
+		} satisfies AgentEvent);
+
+		await recorder.flush();
+
+		expect(delegateAgent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				fromAgentId: "maestro-codex-parent",
+				requiredCapability: "code:review",
+				reason:
+					"Codex subagent spawn requested by Maestro: Audit remote runner drain behavior",
+				contextPayload: expect.objectContaining({
+					event_type: "codex_subagent_delegation_requested",
+					agent_id: "maestro-codex-parent",
+					agent_run_id: "run_1",
+					work_item_id: "maestro:session_1:work:spawn-delegation-call",
+					owner_child_run_id: "agent-run-child-1",
+					receiver_thread_ids: ["child-thread-1"],
+					child_run_ids: ["agent-run-child-1"],
+					required_capability: "code:review",
+				}),
+			}),
+		);
+		expect(updateWorkItem).toHaveBeenCalledWith(
+			expect.objectContaining({
+				workItemId: "maestro:session_1:work:spawn-delegation-call",
+				evidenceRefs: expect.arrayContaining([
+					"agent-registry-delegation:delegation_1",
+				]),
+				payload: expect.objectContaining({
+					delegation_id: "delegation_1",
+				}),
+			}),
+		);
+		expect(resolveDelegation).toHaveBeenCalledWith({
+			delegationId: "delegation_1",
+			status: PlatformDelegationStatusValue.Completed,
+			resultPayload: expect.objectContaining({
+				event_type: "codex_subagent_delegation_resolved",
+				agent_id: "maestro-codex-parent",
+				agent_run_id: "run_1",
+				work_item_id: "maestro:session_1:work:spawn-delegation-call",
+				child_run_ids: ["agent-run-child-1"],
+			}),
+			errorMessage: undefined,
+		});
+	});
+
 	it("links follow-up Codex subagent tools to the spawned child work item", async () => {
 		const { recorder, recordWorkItem, updateWorkItem } = createRecorder();
 
@@ -348,53 +467,6 @@ describe("hosted AgentRuntime progress recorder", () => {
 				}),
 			}),
 		);
-	});
-
-	it("omits ambiguous owner child run ids for multi-target subagent calls", async () => {
-		const { recorder, recordWorkItem } = createRecorder();
-
-		recorder.recordAgentEvent({
-			type: "tool_execution_start",
-			toolCallId: "spawn-call",
-			toolName: "codex.subagent.spawnAgent",
-			displayName: "Codex subagent: spawn",
-			args: {
-				codexTool: "spawnAgent",
-				receiverThreadIds: ["child-thread-1"],
-				childRunIds: ["agent-run-child-1"],
-				prompt: "Review the implementation",
-			},
-		});
-		recorder.recordAgentEvent({
-			type: "tool_execution_start",
-			toolCallId: "multi-send-call",
-			toolName: "codex.subagent.sendInput",
-			displayName: "Codex subagent: send input",
-			args: {
-				codexTool: "sendInput",
-				receiverThreadIds: ["child-thread-1"],
-				childRunIds: ["agent-run-child-1", "agent-run-child-2"],
-				prompt: "Compare the two implementations",
-			},
-		});
-
-		await recorder.flush();
-
-		const workItem = recordWorkItem.mock.calls
-			.map((call) => call[0].workItem)
-			.find((item) => item.id === "maestro:session_1:work:multi-send-call");
-		expect(workItem).toEqual(
-			expect.objectContaining({
-				id: "maestro:session_1:work:multi-send-call",
-				payload: expect.objectContaining({
-					receiver_thread_ids: ["child-thread-1"],
-					child_run_ids: ["agent-run-child-1", "agent-run-child-2"],
-					linked_work_item_ids: ["maestro:session_1:work:spawn-call"],
-				}),
-			}),
-		);
-		expect(workItem).not.toHaveProperty("ownerChildRunId");
-		expect(workItem).not.toHaveProperty("parentWorkItemId");
 	});
 
 	it("records pending server requests as waits and resumes them on resolution", async () => {

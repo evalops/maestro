@@ -20,6 +20,14 @@ describe("Platform core service contract names", () => {
 			),
 		).toBe("/agentruntime.v1.AgentRuntimeService/ClaimNextRun");
 		expect(
+			platformConnectMethodPath(PLATFORM_CONNECT_METHODS.agents.delegate),
+		).toBe("/agents.v1.AgentService/Delegate");
+		expect(
+			platformConnectMethodPath(
+				PLATFORM_CONNECT_METHODS.agents.resolveDelegation,
+			),
+		).toBe("/agents.v1.AgentService/ResolveDelegation");
+		expect(
 			platformConnectMethodPath(
 				PLATFORM_CONNECT_METHODS.agentRuntime.recordRunStep,
 			),

@@ -178,7 +178,15 @@ def request_json(
     if body is not None:
         data = json.dumps(body, separators=(",", ":")).encode("utf-8")
         headers["Content-Type"] = "application/json"
-    timeout = resolve_request_timeout(registry, peer, timeout_seconds)
+    timeout = timeout_seconds
+    if timeout is None:
+        timeout_ms = peer.get("timeoutMs", registry.get("timeoutMs", 600_000))
+        try:
+            timeout = float(timeout_ms) / 1000.0
+        except (TypeError, ValueError) as error:
+            raise PeerError("timeoutMs must be numeric") from error
+    if timeout <= 0:
+        raise PeerError("timeoutMs must be positive")
     request = Request(
         f"{peer['url']}{path}",
         data=data,
@@ -204,34 +212,6 @@ def request_json(
     if not isinstance(value, dict):
         raise PeerError(f"{method} {path} returned non-object JSON")
     return value
-
-
-def resolve_request_timeout(
-    registry: dict[str, Any],
-    peer: dict[str, Any],
-    timeout_seconds: float | None,
-) -> float:
-    timeout = timeout_seconds
-    if timeout is None:
-        timeout_ms = peer.get("timeoutMs", registry.get("timeoutMs", 600_000))
-        try:
-            timeout = float(timeout_ms) / 1000.0
-        except (TypeError, ValueError) as error:
-            raise PeerError("timeoutMs must be numeric") from error
-    if not math.isfinite(timeout):
-        raise PeerError("timeoutMs must be finite")
-    if timeout <= 0:
-        raise PeerError("timeoutMs must be positive")
-    return timeout
-
-
-def request_timeout_for_remaining_budget(
-    registry: dict[str, Any],
-    peer: dict[str, Any],
-    timeout_seconds: float | None,
-    remaining_seconds: float,
-) -> float:
-    return min(resolve_request_timeout(registry, peer, timeout_seconds), remaining_seconds)
 
 
 def positive_seconds(value: str) -> float:
@@ -341,12 +321,7 @@ def wait_for_task(
             raise PeerError(
                 f"task {task_id!r} did not finish within {max_wait_seconds:g}s; latest state: {latest_state}"
             )
-        request_timeout = request_timeout_for_remaining_budget(
-            registry,
-            peer,
-            timeout_seconds,
-            remaining,
-        )
+        request_timeout = remaining if timeout_seconds is None else min(timeout_seconds, remaining)
         try:
             latest_payload = request_json(
                 registry,
@@ -455,12 +430,7 @@ def cmd_send(registry: dict[str, Any], args: argparse.Namespace) -> None:
         send_remaining = wait_started_at + args.max_wait - time.monotonic()
         if send_remaining <= 0:
             raise PeerError(f"message:send did not finish within {args.max_wait:g}s")
-        send_timeout = request_timeout_for_remaining_budget(
-            registry,
-            peer,
-            args.timeout,
-            send_remaining,
-        )
+        send_timeout = send_remaining if args.timeout is None else min(args.timeout, send_remaining)
     try:
         payload = request_json(registry, peer, "POST", "/message:send", body, timeout_seconds=send_timeout)
     except PeerError as error:

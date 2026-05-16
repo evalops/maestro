@@ -5,6 +5,7 @@ export interface PlatformConnectMethodDescriptor {
 
 export const PLATFORM_CONNECT_SERVICES = {
 	agentRuntime: "agentruntime.v1.AgentRuntimeService",
+	agents: "agents.v1.AgentService",
 	approvals: "approvals.v1.ApprovalService",
 	connectors: "connectors.v1.ConnectorService",
 	fermata: "fermata.v1.FermataService",
@@ -71,6 +72,16 @@ export const PLATFORM_CONNECT_METHODS = {
 		waitRun: {
 			service: PLATFORM_CONNECT_SERVICES.agentRuntime,
 			method: "WaitRun",
+		},
+	},
+	agents: {
+		delegate: {
+			service: PLATFORM_CONNECT_SERVICES.agents,
+			method: "Delegate",
+		},
+		resolveDelegation: {
+			service: PLATFORM_CONNECT_SERVICES.agents,
+			method: "ResolveDelegation",
 		},
 	},
 	approvals: {

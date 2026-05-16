@@ -44,20 +44,18 @@ async function writePackage(
 	}
 	if (options.toolboxMode) {
 		await mkdir(join(skillDir, "toolbox"), { recursive: true });
-		const isWindows = process.platform === "win32";
+		const useWindowsTool =
+			process.platform === "win32" && options.toolboxMode === "valid";
 		const toolPath = join(
 			skillDir,
 			"toolbox",
-			isWindows && options.toolboxMode === "valid"
-				? "describe.cmd"
-				: "describe.sh",
+			useWindowsTool ? "describe.cmd" : "describe.sh",
 		);
-		const contents =
-			isWindows && options.toolboxMode === "valid"
-				? "@echo off\r\nif \"%MAESTRO_TOOLBOX_ACTION%\"==\"describe\" echo {\"name\":\"describe\"}\r\nexit /b 0\r\n"
-				: "#!/usr/bin/env bash\nif [ \"$MAESTRO_TOOLBOX_ACTION\" = describe ]; then echo '{\"name\":\"describe\"}'; exit 0; fi\nexit 0\n";
-		writeFileSync(toolPath, contents);
-		if (options.toolboxMode === "valid") {
+		const toolScript = useWindowsTool
+			? '@echo off\r\nif "%MAESTRO_TOOLBOX_ACTION%"=="describe" (\r\n  echo {"name":"describe"}\r\n  exit /b 0\r\n)\r\nexit /b 0\r\n'
+			: "#!/usr/bin/env bash\nif [ \"$MAESTRO_TOOLBOX_ACTION\" = describe ]; then echo '{\"name\":\"describe\"}'; exit 0; fi\nexit 0\n";
+		writeFileSync(toolPath, toolScript);
+		if (options.toolboxMode === "valid" && process.platform !== "win32") {
 			chmodSync(toolPath, 0o755);
 		}
 	}

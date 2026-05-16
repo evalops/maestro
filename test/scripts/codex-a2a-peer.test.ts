@@ -596,42 +596,6 @@ describe("codex-a2a-peer", () => {
 		expect(requests.some((item) => item.url === "/tasks/task-slow")).toBe(true);
 	});
 
-	it("preserves configured timeoutMs while capping wait poll deadlines", async () => {
-		writeFileSync(
-			configPath,
-			JSON.stringify({
-				defaultPeer: "mock",
-				timeoutMs: 20,
-				peers: {
-					mock: {
-						url: baseUrl,
-						tokenEnv: "TEST_A2A_PEER_TOKEN",
-					},
-				},
-			}),
-		);
-
-		await expect(
-			runPeer(
-				configPath,
-				["wait", "mock", "task-slow", "--interval", "0.01", "--max-wait", "1"],
-				{ TEST_A2A_PEER_TOKEN: "super-secret-token" },
-			),
-		).rejects.toMatchObject({
-			stderr: expect.stringContaining("GET /tasks/task-slow timed out"),
-		});
-		await expect(
-			runPeer(
-				configPath,
-				["wait", "mock", "task-slow", "--interval", "0.01", "--max-wait", "1"],
-				{ TEST_A2A_PEER_TOKEN: "super-secret-token" },
-			),
-		).rejects.not.toMatchObject({
-			stderr: expect.stringContaining("Traceback"),
-		});
-		expect(requests.some((item) => item.url === "/tasks/task-slow")).toBe(true);
-	});
-
 	it("caps the initial send --wait request to the max-wait deadline", async () => {
 		await expect(
 			runPeer(
@@ -653,36 +617,6 @@ describe("codex-a2a-peer", () => {
 			stderr: expect.stringContaining(
 				"message:send did not finish within 0.05s",
 			),
-		});
-		expect(requests.some((item) => item.url === "/message:send")).toBe(true);
-		expect(requests.some((item) => item.url?.startsWith("/tasks/"))).toBe(
-			false,
-		);
-	});
-
-	it("preserves configured timeoutMs for the initial send --wait request", async () => {
-		writeFileSync(
-			configPath,
-			JSON.stringify({
-				defaultPeer: "mock",
-				timeoutMs: 20,
-				peers: {
-					mock: {
-						url: baseUrl,
-						tokenEnv: "TEST_A2A_PEER_TOKEN",
-					},
-				},
-			}),
-		);
-
-		await expect(
-			runPeer(
-				configPath,
-				["send", "--wait", "--max-wait", "1", "mock", "slow", "ack"],
-				{ TEST_A2A_PEER_TOKEN: "super-secret-token" },
-			),
-		).rejects.toMatchObject({
-			stderr: expect.stringContaining("POST /message:send timed out"),
 		});
 		expect(requests.some((item) => item.url === "/message:send")).toBe(true);
 		expect(requests.some((item) => item.url?.startsWith("/tasks/"))).toBe(

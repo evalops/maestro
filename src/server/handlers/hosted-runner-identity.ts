@@ -15,6 +15,7 @@ export interface HostedRunnerIdentity {
 	owner_instance_id: string;
 	ready: boolean;
 	draining: boolean;
+	agent_id?: string;
 	agent_run_id?: string;
 	a2a_message_id?: string;
 	a2a_task_id?: string;
@@ -41,6 +42,7 @@ export async function buildHostedRunnerIdentity(
 		owner_instance_id: hostedRunner.ownerInstanceId,
 		ready: readiness.status === "ready",
 		draining,
+		...(hostedRunner.agentId ? { agent_id: hostedRunner.agentId } : {}),
 		...(hostedRunner.agentRunId
 			? { agent_run_id: hostedRunner.agentRunId }
 			: {}),

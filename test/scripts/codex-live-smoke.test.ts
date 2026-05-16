@@ -120,7 +120,7 @@ describe("Codex live smoke evidence helpers", () => {
 		});
 	});
 
-	it("treats undefined operation args the same as omitted args", () => {
+	it("ignores undefined operation args when summarizing dynamic calls", () => {
 		expect(
 			summarizeDynamicToolCalls([
 				{
@@ -129,7 +129,9 @@ describe("Codex live smoke evidence helpers", () => {
 					data: {
 						toolCallId: "call-read-1",
 						toolName: "read",
-						args: { path: "/tmp/token.txt", optional: undefined },
+						args: {
+							arguments: { path: "/tmp/token.txt" },
+						},
 					},
 				},
 				{
@@ -138,7 +140,12 @@ describe("Codex live smoke evidence helpers", () => {
 					data: {
 						toolCallId: "call-read-2",
 						toolName: "read",
-						args: { path: "/tmp/token.txt" },
+						args: {
+							arguments: {
+								path: "/tmp/token.txt",
+								optionalPreview: undefined,
+							},
+						},
 					},
 				},
 			]),

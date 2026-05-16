@@ -41,7 +41,7 @@ export interface SkillScaffoldResult {
 	files: string[];
 }
 
-export type SkillLintOptions = {
+type SkillLintOptions = {
 	describeToolbox?: boolean;
 	platform?: NodeJS.Platform;
 };
@@ -148,6 +148,22 @@ function validateStringArrayField(
 ): SkillLintIssue[] {
 	const value = frontmatter[field];
 	if (value === undefined) return [];
+	if (Array.isArray(value)) {
+		if (
+			value.length === 0 ||
+			value.some((entry) => typeof entry !== "string" || entry.trim() === "")
+		) {
+			return [
+				issue(
+					"invalid_string_list",
+					"error",
+					path,
+					`${field} entries must all be non-empty strings.`,
+				),
+			];
+		}
+		return [];
+	}
 	const normalized = stringArrayValue(value);
 	if (!normalized || normalized.length === 0) {
 		return [
@@ -342,26 +358,16 @@ export function isWindowsRunnableToolboxEntry(
 	);
 }
 
-export function toolboxDescribeSpawnOptions(options: SkillLintOptions = {}): {
-	encoding: "utf8";
-	env: NodeJS.ProcessEnv;
-	shell?: boolean;
-	timeout: number;
-} {
-	const platform = options.platform ?? process.platform;
-	return {
-		env: { ...process.env, MAESTRO_TOOLBOX_ACTION: "describe" },
-		encoding: "utf8",
-		timeout: 5000,
-		...(platform === "win32" ? { shell: true } : {}),
-	};
+export function shouldUseShellForToolboxDescribe(
+	platform: NodeJS.Platform = process.platform,
+): boolean {
+	return platform === "win32";
 }
 
 export function toolboxDescribeSpawnCommand(
 	path: string,
-	options: SkillLintOptions = {},
+	platform: NodeJS.Platform = process.platform,
 ): string {
-	const platform = options.platform ?? process.platform;
 	return platform === "win32" ? `"${path}"` : path;
 }
 
@@ -405,8 +411,13 @@ async function validateToolbox(
 		}
 		if (options.describeToolbox) {
 			const result = spawnSync(
-				toolboxDescribeSpawnCommand(path, options),
-				toolboxDescribeSpawnOptions(options),
+				toolboxDescribeSpawnCommand(path, options.platform),
+				{
+					env: { ...process.env, MAESTRO_TOOLBOX_ACTION: "describe" },
+					encoding: "utf8",
+					shell: shouldUseShellForToolboxDescribe(options.platform),
+					timeout: 5000,
+				},
 			);
 			if (result.status !== 0) {
 				issues.push(

@@ -1,5 +1,10 @@
 import type { AgentEvent } from "../agent/types.js";
 import {
+	PlatformDelegationStatusValue,
+	delegateAgentWithPlatform,
+	resolveAgentDelegationWithPlatform,
+} from "../platform/agent-registry-client.js";
+import {
 	type PlatformAgentRunStep,
 	PlatformAgentRunStepKindValue,
 	PlatformAgentRunStepStateValue,
@@ -21,6 +26,7 @@ import type { ServerRequestLifecycleEvent } from "./server-request-manager.js";
 const logger = createLogger("server:hosted-agent-runtime-progress");
 const CODEX_SUBAGENT_TOOL_PREFIX = "codex.subagent.";
 const CODEX_THREAD_CHILD_RUN_PREFIX = "codex-thread:";
+const DEFAULT_CODEX_SUBAGENT_DELEGATION_CAPABILITY = "code:write";
 
 export interface HostedAgentRuntimeProgressContext {
 	enabled: true;
@@ -31,6 +37,7 @@ export interface HostedAgentRuntimeProgressContext {
 	workspaceId?: string;
 	runnerSessionId?: string;
 	ownerInstanceId?: string;
+	agentId?: string;
 }
 
 type ProgressOperation = () => Promise<unknown>;
@@ -43,6 +50,8 @@ export interface HostedAgentRuntimeProgressRecorderOperations {
 	resumeRun?: typeof resumeAgentRuntimeRun;
 	completeRun?: typeof completeAgentRuntimeRun;
 	failRun?: typeof failAgentRuntimeRun;
+	delegateAgent?: typeof delegateAgentWithPlatform;
+	resolveDelegation?: typeof resolveAgentDelegationWithPlatform;
 }
 
 export interface HostedAgentRuntimeProgressRecorderOptions {
@@ -132,6 +141,38 @@ function codexSubagentNextAction(tool: string): string {
 	}
 }
 
+function codexSubagentDelegationTargetAgentId(
+	args: Record<string, unknown>,
+): string | undefined {
+	return (
+		nonEmptyString(args.toAgentId) ??
+		nonEmptyString(args.to_agent_id) ??
+		nonEmptyString(args.targetAgentId) ??
+		nonEmptyString(args.target_agent_id)
+	);
+}
+
+function codexSubagentDelegationRequiredCapability(
+	args: Record<string, unknown>,
+	targetAgentId?: string,
+): string | undefined {
+	const explicit =
+		nonEmptyString(args.requiredCapability) ??
+		nonEmptyString(args.required_capability) ??
+		nonEmptyString(args.capability);
+	return (
+		explicit ??
+		(targetAgentId ? undefined : DEFAULT_CODEX_SUBAGENT_DELEGATION_CAPABILITY)
+	);
+}
+
+function codexSubagentDelegationReason(prompt: string | undefined): string {
+	if (!prompt) {
+		return "Codex subagent spawn requested by Maestro";
+	}
+	return `Codex subagent spawn requested by Maestro: ${prompt}`.slice(0, 512);
+}
+
 function toolDisplayName(event: {
 	displayName?: string;
 	summaryLabel?: string;
@@ -164,6 +205,7 @@ export class HostedAgentRuntimeProgressRecorder {
 	private readonly codexSubagentReceiverThreadIds = new Map<string, string[]>();
 	private readonly codexSubagentToolChildRunIds = new Map<string, string[]>();
 	private readonly codexSubagentThreadWorkItemIds = new Map<string, string>();
+	private readonly codexSubagentDelegationIds = new Map<string, string>();
 	private pending: Promise<void> = Promise.resolve();
 	private turnIndex = 0;
 	private terminalRecorded = false;
@@ -182,6 +224,11 @@ export class HostedAgentRuntimeProgressRecorder {
 			resumeRun: options.operations?.resumeRun ?? resumeAgentRuntimeRun,
 			completeRun: options.operations?.completeRun ?? completeAgentRuntimeRun,
 			failRun: options.operations?.failRun ?? failAgentRuntimeRun,
+			delegateAgent:
+				options.operations?.delegateAgent ?? delegateAgentWithPlatform,
+			resolveDelegation:
+				options.operations?.resolveDelegation ??
+				resolveAgentDelegationWithPlatform,
 		};
 	}
 
@@ -535,14 +582,11 @@ export class HostedAgentRuntimeProgressRecorder {
 		}
 		const receiverThreadIds = stringArray(event.args.receiverThreadIds);
 		const childRunIds = codexSubagentChildRunIds(event.args, receiverThreadIds);
-		const ownerChildRunId =
-			childRunIds.length === 1 ? childRunIds[0] : undefined;
+		const ownerChildRunId = childRunIds[0];
 		const linkedWorkItemIds =
 			this.codexSubagentLinkedWorkItemIds(receiverThreadIds);
 		const parentWorkItemId =
-			ownerChildRunId && linkedWorkItemIds.length === 1
-				? linkedWorkItemIds[0]
-				: undefined;
+			linkedWorkItemIds.length === 1 ? linkedWorkItemIds[0] : undefined;
 		const workItemId = this.workItemId(event.toolCallId);
 		this.codexSubagentReceiverThreadIds.set(
 			event.toolCallId,
@@ -602,6 +646,80 @@ export class HostedAgentRuntimeProgressRecorder {
 		this.enqueue(async () => {
 			await this.operations.recordWorkItem({ runId, workItem });
 		});
+		if (codexTool === "spawnAgent") {
+			this.recordCodexSubagentDelegation({
+				event,
+				runId,
+				workItemId,
+				parentWorkItemId,
+				ownerChildRunId,
+				receiverThreadIds,
+				childRunIds,
+				linkedWorkItemIds,
+				prompt,
+				model,
+				reasoningEffort,
+			});
+		}
+	}
+
+	private recordCodexSubagentDelegation(input: {
+		event: Extract<AgentEvent, { type: "tool_execution_start" }>;
+		runId: string;
+		workItemId: string;
+		parentWorkItemId?: string;
+		ownerChildRunId?: string;
+		receiverThreadIds: string[];
+		childRunIds: string[];
+		linkedWorkItemIds: string[];
+		prompt?: string;
+		model?: string;
+		reasoningEffort?: string;
+	}): void {
+		const fromAgentId = nonEmptyString(this.hostedRunner?.agentId) ?? "maestro";
+		const toAgentId = codexSubagentDelegationTargetAgentId(input.event.args);
+		const requiredCapability = codexSubagentDelegationRequiredCapability(
+			input.event.args,
+			toAgentId,
+		);
+		this.enqueue(async () => {
+			const result = await this.operations.delegateAgent({
+				fromAgentId,
+				...(toAgentId ? { toAgentId } : {}),
+				...(requiredCapability ? { requiredCapability } : {}),
+				contextPayload: this.basePayload({
+					event_type: "codex_subagent_delegation_requested",
+					codex_tool: "spawnAgent",
+					agent_run_id: input.runId,
+					work_item_id: input.workItemId,
+					parent_work_item_id: input.parentWorkItemId,
+					owner_child_run_id: input.ownerChildRunId,
+					tool_call_id: input.event.toolCallId,
+					tool_name: input.event.toolName,
+					display_name: input.event.displayName,
+					summary_label: input.event.summaryLabel,
+					from_agent_id: fromAgentId,
+					to_agent_id: toAgentId,
+					required_capability: requiredCapability,
+					sender_thread_id: nonEmptyString(input.event.args.senderThreadId),
+					receiver_thread_ids: input.receiverThreadIds,
+					child_run_ids: input.childRunIds,
+					linked_work_item_ids: input.linkedWorkItemIds,
+					prompt: input.prompt,
+					model: input.model,
+					reasoning_effort: input.reasoningEffort,
+					arg_keys: objectKeys(input.event.args),
+				}),
+				reason: codexSubagentDelegationReason(input.prompt),
+			});
+			const delegationId = result?.delegation?.id;
+			if (delegationId) {
+				this.codexSubagentDelegationIds.set(
+					input.event.toolCallId,
+					delegationId,
+				);
+			}
+		});
 	}
 
 	private updateCodexSubagentWorkItem(
@@ -644,39 +762,88 @@ export class HostedAgentRuntimeProgressRecorder {
 			}
 		}
 		this.enqueue(async () => {
-			await this.operations.updateWorkItem({
-				runId,
-				workItemId: this.workItemId(event.toolCallId),
-				state: event.isError
-					? PlatformAgentWorkItemStateValue.Failed
-					: PlatformAgentWorkItemStateValue.Succeeded,
-				...(event.toolExecutionId
-					? { toolExecutionId: event.toolExecutionId }
-					: {}),
-				evidenceRefs: [
-					`codex-tool-call:${event.toolCallId}`,
-					...receiverThreadIds.map((id) => `codex-thread:${id}`),
-					...childRunIds.map((id) => `codex-child-run:${id}`),
-				],
-				completionGate: event.isError
-					? "codex_collab_tool_failed"
-					: "codex_collab_tool_completed",
-				payload: this.basePayload({
-					event_type: event.type,
-					codex_tool: codexTool,
-					tool_call_id: event.toolCallId,
-					tool_name: event.toolName,
-					display_name: event.displayName,
-					summary_label: event.summaryLabel,
-					error_code: event.errorCode,
-					governed_outcome: event.governedOutcome,
-					result_error: event.isError,
-					receiver_thread_ids: receiverThreadIds,
-					child_run_ids: childRunIds,
-					linked_work_item_ids: linkedWorkItemIds,
-					result_detail_keys: objectKeys(details),
-				}),
-			});
+			const delegationId = this.codexSubagentDelegationIds.get(
+				event.toolCallId,
+			);
+			const delegationEvidenceRefs = delegationId
+				? [`agent-registry-delegation:${delegationId}`]
+				: [];
+			try {
+				await this.operations.updateWorkItem({
+					runId,
+					workItemId: this.workItemId(event.toolCallId),
+					state: event.isError
+						? PlatformAgentWorkItemStateValue.Failed
+						: PlatformAgentWorkItemStateValue.Succeeded,
+					...(event.toolExecutionId
+						? { toolExecutionId: event.toolExecutionId }
+						: {}),
+					evidenceRefs: [
+						`codex-tool-call:${event.toolCallId}`,
+						...receiverThreadIds.map((id) => `codex-thread:${id}`),
+						...childRunIds.map((id) => `codex-child-run:${id}`),
+						...delegationEvidenceRefs,
+					],
+					completionGate: event.isError
+						? "codex_collab_tool_failed"
+						: "codex_collab_tool_completed",
+					payload: this.basePayload({
+						event_type: event.type,
+						codex_tool: codexTool,
+						tool_call_id: event.toolCallId,
+						tool_name: event.toolName,
+						display_name: event.displayName,
+						summary_label: event.summaryLabel,
+						error_code: event.errorCode,
+						governed_outcome: event.governedOutcome,
+						result_error: event.isError,
+						receiver_thread_ids: receiverThreadIds,
+						child_run_ids: childRunIds,
+						linked_work_item_ids: linkedWorkItemIds,
+						delegation_id: delegationId,
+						result_detail_keys: objectKeys(details),
+					}),
+				});
+			} finally {
+				if (codexTool === "spawnAgent" && delegationId) {
+					try {
+						await this.operations.resolveDelegation({
+							delegationId,
+							status: event.isError
+								? PlatformDelegationStatusValue.Failed
+								: PlatformDelegationStatusValue.Completed,
+							resultPayload: this.basePayload({
+								event_type: "codex_subagent_delegation_resolved",
+								codex_tool: codexTool,
+								agent_run_id: runId,
+								work_item_id: this.workItemId(event.toolCallId),
+								tool_call_id: event.toolCallId,
+								tool_name: event.toolName,
+								result_error: event.isError,
+								receiver_thread_ids: receiverThreadIds,
+								child_run_ids: childRunIds,
+								linked_work_item_ids: linkedWorkItemIds,
+								result_detail_keys: objectKeys(details),
+							}),
+							errorMessage: event.isError
+								? (event.errorCode ??
+									event.governedOutcome ??
+									"Codex subagent spawn failed")
+								: undefined,
+						});
+					} catch (error) {
+						logger.warn("Failed to resolve Codex subagent delegation", {
+							error: error instanceof Error ? error.message : String(error),
+							session_id: this.sessionId,
+							agent_run_id: runId,
+							tool_call_id: event.toolCallId,
+							delegation_id: delegationId,
+						});
+					} finally {
+						this.codexSubagentDelegationIds.delete(event.toolCallId);
+					}
+				}
+			}
 		});
 	}
 
@@ -727,6 +894,9 @@ export class HostedAgentRuntimeProgressRecorder {
 				: {}),
 			...(this.hostedRunner?.ownerInstanceId
 				? { owner_instance_id: this.hostedRunner.ownerInstanceId }
+				: {}),
+			...(this.hostedRunner?.agentId
+				? { agent_id: this.hostedRunner.agentId }
 				: {}),
 			...(this.hostedRunner?.agentRuntimeWorkerQueue
 				? { worker_queue: this.hostedRunner.agentRuntimeWorkerQueue }

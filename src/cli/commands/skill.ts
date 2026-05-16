@@ -25,6 +25,11 @@ interface SkillCommandOptions {
 	describeToolbox?: boolean;
 }
 
+interface SkillCommandContext {
+	workspaceDir?: string;
+	includeSystemSkills?: boolean;
+}
+
 function formatSkillHelp(): string {
 	return `maestro skill <command> [options]
 
@@ -101,8 +106,17 @@ function defaultLintPaths(workspaceDir: string): string[] {
 	return candidates.length > 0 ? candidates : [join(workspaceDir, "skills")];
 }
 
-async function handleList(workspaceDir: string, options: SkillCommandOptions) {
-	const result = loadSkills(workspaceDir);
+async function handleList(
+	workspaceDir: string,
+	options: SkillCommandOptions,
+	context: SkillCommandContext,
+) {
+	const result = loadSkills(
+		workspaceDir,
+		context.includeSystemSkills === undefined
+			? undefined
+			: { includeSystem: context.includeSystemSkills },
+	);
 	if (options.json) {
 		console.log(
 			JSON.stringify(
@@ -127,15 +141,10 @@ async function handleList(workspaceDir: string, options: SkillCommandOptions) {
 
 	if (result.skills.length === 0) {
 		console.log(chalk.dim("No skills found."));
-		if (result.errors.length > 0) {
-			console.error(
-				chalk.yellow(`\n${result.errors.length} skill load warning(s).`),
-			);
+	} else {
+		for (const skill of result.skills) {
+			console.log(formatSkillListItem(skill));
 		}
-		return;
-	}
-	for (const skill of result.skills) {
-		console.log(formatSkillListItem(skill));
 	}
 	if (result.errors.length > 0) {
 		console.error(
@@ -248,7 +257,7 @@ async function handleNew(
 export async function handleSkillCommand(
 	subcommand: string | undefined,
 	args: string[] = [],
-	options: { workspaceDir?: string } = {},
+	options: SkillCommandContext = {},
 ): Promise<void> {
 	if (
 		!subcommand ||
@@ -265,7 +274,7 @@ export async function handleSkillCommand(
 
 	switch (subcommand) {
 		case "list":
-			await handleList(workspaceDir, parsedOptions);
+			await handleList(workspaceDir, parsedOptions, options);
 			return;
 		case "inspect":
 			await handleInspect(workspaceDir, positionals[0], parsedOptions);

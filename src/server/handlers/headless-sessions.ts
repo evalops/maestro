@@ -627,6 +627,7 @@ async function recordPlatformAgentRuntimeSessionStart(options: {
 	// all join on the same Maestro session.
 	const result = await recordMaestroSessionRuntimeTrigger({
 		workspaceId: hostedRunner?.workspaceId,
+		agentId: hostedRunner?.agentId,
 		sessionId: snapshot.session_id,
 		actorId: options.subject,
 		correlationId: `maestro-session:${snapshot.session_id}`,
@@ -642,6 +643,7 @@ async function recordPlatformAgentRuntimeSessionStart(options: {
 			workspace_root: options.workspaceRoot,
 			runner_session_id: hostedRunner?.runnerSessionId,
 			owner_instance_id: hostedRunner?.ownerInstanceId,
+			agent_id: hostedRunner?.agentId,
 		},
 	});
 	if (!hostedRunner || !result) {
@@ -652,6 +654,9 @@ async function recordPlatformAgentRuntimeSessionStart(options: {
 	)?.attributes;
 	if (result.run.id) {
 		hostedRunner.agentRunId = result.run.id;
+	}
+	if (result.run.linkage?.agentId) {
+		hostedRunner.agentId = result.run.linkage.agentId;
 	}
 	hostedRunner.agentRuntimeLeaseToken = result.run.lease?.token;
 	// Store only support-grade handles on the hosted runner. The full run/task

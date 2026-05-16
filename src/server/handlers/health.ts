@@ -28,6 +28,7 @@ export interface HealthCheckResult {
 			workspaceRoot: string;
 			snapshotRoot?: string;
 			workspaceId?: string;
+			agentId?: string;
 			agentRunId?: string;
 			a2aMessageId?: string;
 			a2aTaskId?: string;
@@ -74,6 +75,7 @@ export async function checkHostedRunnerReadiness(
 			? { snapshotRoot: hostedRunner.snapshotRoot }
 			: {}),
 		workspaceId: hostedRunner.workspaceId,
+		agentId: hostedRunner.agentId,
 		agentRunId: hostedRunner.agentRunId,
 		a2aMessageId: hostedRunner.a2aMessageId,
 		a2aTaskId: hostedRunner.a2aTaskId,

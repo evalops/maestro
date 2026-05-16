@@ -92,14 +92,15 @@ function stableJson(value) {
 		return `[${value.map((item) => stableJson(item)).join(",")}]`;
 	}
 	if (value && typeof value === "object") {
-		const entries = Object.entries(value)
-			.filter(([, entryValue]) => typeof entryValue !== "undefined")
-			.sort(([left], [right]) => left.localeCompare(right));
+		const entries = Object.entries(value).sort(([left], [right]) =>
+			left.localeCompare(right),
+		);
 		return `{${entries
+			.filter(([, entryValue]) => entryValue !== undefined)
 			.map(([key, entryValue]) => `${JSON.stringify(key)}:${stableJson(entryValue)}`)
 			.join(",")}}`;
 	}
-	return JSON.stringify(value) ?? "undefined";
+	return JSON.stringify(value);
 }
 
 function isRecord(value) {

@@ -29,6 +29,7 @@ export interface HostedRunnerContext {
 	listenHost?: string;
 	listenPort?: number;
 	workspaceId?: string;
+	agentId?: string;
 	agentRunId?: string;
 	agentRuntimeLeaseToken?: string;
 	a2aMessageId?: string;
