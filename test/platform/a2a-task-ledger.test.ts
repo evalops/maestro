@@ -11,7 +11,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	getA2ATaskLedgerPath,
+	isFinalA2AState,
+	isTerminalA2AState,
 	loadA2ATaskLedger,
+	recordA2ATaskReply,
 	recordA2ATaskStart,
 	updateA2ATaskInLedger,
 } from "../../src/platform/a2a-task-ledger.js";
@@ -110,6 +113,294 @@ describe("A2A task ledger", () => {
 			expect.objectContaining({
 				role: "user",
 				text: "run --json checks",
+			}),
+		]);
+	});
+
+	it("records task replies without marking action-required states completed", async () => {
+		const path = join(
+			await mkdtemp(join(tmpdir(), "maestro-a2a-ledger-reply-")),
+			"tasks.json",
+		);
+
+		await recordA2ATaskStart({
+			path,
+			peer: "dev-desktop",
+			task: {
+				id: "task-dev-2",
+				contextId: "context-dev-2",
+				status: { state: "TASK_STATE_INPUT_REQUIRED" },
+			},
+			text: "review the branch",
+			messageId: "message-1",
+			now: NOW,
+		});
+		await recordA2ATaskReply({
+			path,
+			peer: "dev-desktop",
+			task: {
+				id: "task-dev-2",
+				contextId: "context-dev-2",
+				status: { state: "TASK_STATE_WORKING" },
+				history: [
+					{
+						messageId: "agent-message-old",
+						role: "ROLE_AGENT",
+						parts: [{ text: "old agent result", mediaType: "text/plain" }],
+					},
+					{
+						messageId: "agent-message-new",
+						role: "ROLE_AGENT",
+						parts: [
+							{
+								text: "latest agent continuation",
+								mediaType: "text/plain",
+							},
+						],
+					},
+				],
+			},
+			text: "use the smaller smoke suite",
+			messageId: "message-2",
+			now: LATER,
+		});
+
+		const ledger = await loadA2ATaskLedger({ path });
+		expect(ledger.tasks[0]).toMatchObject({
+			peer: "dev-desktop",
+			taskId: "task-dev-2",
+			contextId: "context-dev-2",
+			state: "TASK_STATE_WORKING",
+			text: "review the branch",
+			responseText: "latest agent continuation",
+			transcript: [
+				{ role: "user", text: "review the branch" },
+				{ role: "user", text: "use the smaller smoke suite" },
+				{ role: "agent", text: "latest agent continuation" },
+			],
+		});
+		expect(ledger.tasks[0]?.completedAt).toBeUndefined();
+		expect(isTerminalA2AState("TASK_STATE_INPUT_REQUIRED")).toBe(true);
+		expect(isFinalA2AState("TASK_STATE_INPUT_REQUIRED")).toBe(false);
+	});
+
+	it("clears stale completedAt when re-recording a task in a non-final state", async () => {
+		const path = join(
+			await mkdtemp(join(tmpdir(), "maestro-a2a-ledger-restart-")),
+			"tasks.json",
+		);
+
+		await recordA2ATaskStart({
+			path,
+			peer: "dev-desktop",
+			task: {
+				id: "task-dev-3",
+				status: { state: "TASK_STATE_COMPLETED" },
+			},
+			text: "finish the smoke",
+			now: NOW,
+		});
+		await recordA2ATaskStart({
+			path,
+			peer: "dev-desktop",
+			task: {
+				id: "task-dev-3",
+				status: { state: "TASK_STATE_INPUT_REQUIRED" },
+			},
+			text: "restart with more input",
+			now: LATER,
+		});
+
+		const ledger = await loadA2ATaskLedger({ path });
+		expect(ledger.tasks[0]).toMatchObject({
+			peer: "dev-desktop",
+			taskId: "task-dev-3",
+			state: "TASK_STATE_INPUT_REQUIRED",
+			text: "restart with more input",
+		});
+		expect(ledger.tasks[0]?.completedAt).toBeUndefined();
+	});
+
+	it("records the latest agent history response for continued tasks", async () => {
+		const path = join(
+			await mkdtemp(join(tmpdir(), "maestro-a2a-ledger-history-reply-")),
+			"tasks.json",
+		);
+
+		await recordA2ATaskStart({
+			path,
+			peer: "dev-desktop",
+			task: {
+				id: "task-dev-4",
+				contextId: "context-dev-4",
+				status: { state: "TASK_STATE_INPUT_REQUIRED" },
+				history: [
+					{
+						messageId: "message-1",
+						role: "ROLE_USER",
+						parts: [{ text: "review the branch", mediaType: "text/plain" }],
+					},
+					{
+						messageId: "agent-message-1",
+						role: "ROLE_AGENT",
+						parts: [{ text: "which suite?", mediaType: "text/plain" }],
+					},
+				],
+			},
+			text: "review the branch",
+			messageId: "message-1",
+			now: NOW,
+		});
+		await recordA2ATaskReply({
+			path,
+			peer: "dev-desktop",
+			task: {
+				id: "task-dev-4",
+				contextId: "context-dev-4",
+				status: { state: "TASK_STATE_COMPLETED" },
+				history: [
+					{
+						messageId: "message-1",
+						role: "ROLE_USER",
+						parts: [{ text: "review the branch", mediaType: "text/plain" }],
+					},
+					{
+						messageId: "agent-message-1",
+						role: "ROLE_AGENT",
+						parts: [{ text: "which suite?", mediaType: "text/plain" }],
+					},
+					{
+						messageId: "message-2",
+						role: "ROLE_USER",
+						parts: [{ text: "short smoke", mediaType: "text/plain" }],
+					},
+					{
+						messageId: "agent-message-2",
+						role: "ROLE_AGENT",
+						parts: [{ text: "short smoke passed", mediaType: "text/plain" }],
+					},
+				],
+			},
+			text: "short smoke",
+			messageId: "message-2",
+			now: LATER,
+		});
+
+		const ledger = await loadA2ATaskLedger({ path });
+		expect(ledger.tasks[0]).toMatchObject({
+			responseText: "short smoke passed",
+			transcript: [
+				{ role: "user", text: "review the branch" },
+				{ role: "agent", text: "which suite?" },
+				{ role: "user", text: "short smoke" },
+				{ role: "agent", text: "short smoke passed" },
+			],
+		});
+	});
+
+	it("keeps repeated agent reply text when message ids differ", async () => {
+		const path = join(
+			await mkdtemp(join(tmpdir(), "maestro-a2a-ledger-repeat-reply-")),
+			"tasks.json",
+		);
+
+		await recordA2ATaskStart({
+			path,
+			peer: "dev-desktop",
+			task: {
+				id: "task-dev-repeat",
+				contextId: "context-dev-repeat",
+				status: { state: "TASK_STATE_INPUT_REQUIRED" },
+				history: [
+					{
+						messageId: "message-1",
+						role: "ROLE_USER",
+						parts: [{ text: "start", mediaType: "text/plain" }],
+					},
+					{
+						messageId: "agent-message-1",
+						role: "ROLE_AGENT",
+						parts: [{ text: "Done", mediaType: "text/plain" }],
+					},
+				],
+			},
+			text: "start",
+			messageId: "message-1",
+			now: NOW,
+		});
+		await recordA2ATaskReply({
+			path,
+			peer: "dev-desktop",
+			task: {
+				id: "task-dev-repeat",
+				contextId: "context-dev-repeat",
+				status: { state: "TASK_STATE_INPUT_REQUIRED" },
+				history: [
+					{
+						messageId: "message-1",
+						role: "ROLE_USER",
+						parts: [{ text: "start", mediaType: "text/plain" }],
+					},
+					{
+						messageId: "agent-message-1",
+						role: "ROLE_AGENT",
+						parts: [{ text: "Done", mediaType: "text/plain" }],
+					},
+					{
+						messageId: "message-2",
+						role: "ROLE_USER",
+						parts: [{ text: "continue", mediaType: "text/plain" }],
+					},
+					{
+						messageId: "agent-message-2",
+						role: "ROLE_AGENT",
+						parts: [{ text: "Done", mediaType: "text/plain" }],
+					},
+				],
+			},
+			text: "continue",
+			messageId: "message-2",
+			now: LATER,
+		});
+		await updateA2ATaskInLedger({
+			path,
+			peer: "dev-desktop",
+			task: {
+				id: "task-dev-repeat",
+				contextId: "context-dev-repeat",
+				status: { state: "TASK_STATE_INPUT_REQUIRED" },
+				history: [
+					{
+						messageId: "agent-message-2",
+						role: "ROLE_AGENT",
+						parts: [{ text: "Done", mediaType: "text/plain" }],
+					},
+				],
+			},
+			now: new Date("2026-05-16T00:02:00.000Z"),
+		});
+
+		const ledger = await loadA2ATaskLedger({ path });
+		expect(ledger.tasks[0]?.transcript).toEqual([
+			expect.objectContaining({
+				role: "user",
+				text: "start",
+				messageId: "message-1",
+			}),
+			expect.objectContaining({
+				role: "agent",
+				text: "Done",
+				messageId: "agent-message-1",
+			}),
+			expect.objectContaining({
+				role: "user",
+				text: "continue",
+				messageId: "message-2",
+			}),
+			expect.objectContaining({
+				role: "agent",
+				text: "Done",
+				messageId: "agent-message-2",
 			}),
 		]);
 	});

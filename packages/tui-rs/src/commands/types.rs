@@ -367,6 +367,12 @@ pub enum A2aAction {
     Accept { code: String },
     /// Delegate work to a peer.
     Delegate { peer: String, text: String },
+    /// Continue an existing A2A task.
+    Reply {
+        peer: String,
+        task_id: String,
+        text: String,
+    },
     /// Send a message to a peer.
     Send { peer: String, text: String },
 }

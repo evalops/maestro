@@ -358,26 +358,6 @@ export function isWindowsRunnableToolboxEntry(
 	);
 }
 
-function hasWindowsRunnableToolboxCompanion(
-	entry: string,
-	directoryEntries: string[],
-	pathExt = process.env.PATHEXT,
-): boolean {
-	if (isWindowsRunnableToolboxEntry(entry, pathExt)) {
-		return false;
-	}
-	const entryStem = basename(entry, extname(entry)).toLowerCase();
-	return directoryEntries.some((candidate) => {
-		if (candidate === entry) {
-			return false;
-		}
-		if (!isWindowsRunnableToolboxEntry(candidate, pathExt)) {
-			return false;
-		}
-		return basename(candidate, extname(candidate)).toLowerCase() === entryStem;
-	});
-}
-
 export function shouldUseShellForToolboxDescribe(
 	platform: NodeJS.Platform = process.platform,
 ): boolean {
@@ -414,26 +394,11 @@ async function validateToolbox(
 	if (!existsSync(toolboxDir) || !statSync(toolboxDir).isDirectory()) return [];
 
 	const issues: SkillLintIssue[] = [];
-	const directoryEntries = readdirSync(toolboxDir);
-	const platform = options.platform ?? process.platform;
-	let toolboxEntryCount = 0;
-	let runnableEntryCount = 0;
-	for (const entry of directoryEntries) {
+	for (const entry of readdirSync(toolboxDir)) {
 		if (entry.startsWith(".") || entry.toLowerCase() === "readme.md") continue;
 		const path = join(toolboxDir, entry);
 		if (!statSync(path).isFile()) continue;
-		toolboxEntryCount += 1;
-		if (platform !== "win32" && isWindowsRunnableToolboxEntry(path)) {
-			continue;
-		}
-		if (
-			platform === "win32" &&
-			!isWindowsRunnableToolboxEntry(path) &&
-			hasWindowsRunnableToolboxCompanion(entry, directoryEntries)
-		) {
-			continue;
-		}
-		if (!(await isExecutable(path, platform))) {
+		if (!(await isExecutable(path, options.platform))) {
 			issues.push(
 				issue(
 					"toolbox_not_executable",
@@ -444,14 +409,16 @@ async function validateToolbox(
 			);
 			continue;
 		}
-		runnableEntryCount += 1;
 		if (options.describeToolbox) {
-			const result = spawnSync(toolboxDescribeSpawnCommand(path, platform), {
-				env: { ...process.env, MAESTRO_TOOLBOX_ACTION: "describe" },
-				encoding: "utf8",
-				shell: shouldUseShellForToolboxDescribe(platform),
-				timeout: 5000,
-			});
+			const result = spawnSync(
+				toolboxDescribeSpawnCommand(path, options.platform),
+				{
+					env: { ...process.env, MAESTRO_TOOLBOX_ACTION: "describe" },
+					encoding: "utf8",
+					shell: shouldUseShellForToolboxDescribe(options.platform),
+					timeout: 5000,
+				},
+			);
 			if (result.status !== 0) {
 				issues.push(
 					issue(
@@ -463,20 +430,6 @@ async function validateToolbox(
 				);
 			}
 		}
-	}
-	if (
-		toolboxEntryCount > 0 &&
-		runnableEntryCount === 0 &&
-		issues.length === 0
-	) {
-		issues.push(
-			issue(
-				"toolbox_no_runnable_entries",
-				"error",
-				toolboxDir,
-				"Toolbox must include at least one executable entry runnable on the target platform.",
-			),
-		);
 	}
 	return issues;
 }
