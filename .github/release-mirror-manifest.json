@@ -11,6 +11,7 @@
     "scripts/headless-protocol-codegen.mjs",
     "scripts/install-smoke-utils.js",
     "scripts/package-metadata.js",
+    "scripts/release-notes.js",
     "scripts/release-readiness.js",
     "scripts/send-release-notification.mjs",
     "scripts/smoke-packed-cli.js",
