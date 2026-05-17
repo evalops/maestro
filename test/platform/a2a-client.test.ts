@@ -1,8 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	buildA2AUserMessage,
+	createA2ATaskPushNotificationConfig,
+	deleteA2ATaskPushNotificationConfig,
 	discoverA2AAgentCard,
 	getA2ATask,
+	getA2ATaskPushNotificationConfig,
+	listA2ATaskPushNotificationConfigs,
 	resolveA2AServiceConfig,
 	resolveA2ATraceContext,
 	sendA2AMessage,
@@ -101,6 +105,8 @@ describe("platform A2A client", () => {
 			"TRACE_STATE",
 			"MAESTRO_TRACEPARENT",
 			"MAESTRO_TRACESTATE",
+			"MAESTRO_PLATFORM_A2A_EXTENSIONS",
+			"MAESTRO_A2A_EXTENSIONS",
 		]) {
 			vi.stubEnv(name, "");
 		}
@@ -179,6 +185,39 @@ describe("platform A2A client", () => {
 						id: "run_1",
 						contextId: "session_1",
 						status: { state: "TASK_STATE_COMPLETED" },
+					});
+				}
+
+				if (parsed.pathname === "/tasks/run_1/pushNotificationConfigs") {
+					if (init?.method === "POST") {
+						return Response.json({
+							id: "cfg_1",
+							taskId: "run_1",
+							url: "https://hooks.test/a2a",
+							token: "notify-token",
+						});
+					}
+					return Response.json({
+						configs: [
+							{
+								id: "cfg_1",
+								taskId: "run_1",
+								url: "https://hooks.test/a2a",
+								token: "notify-token",
+							},
+						],
+					});
+				}
+
+				if (parsed.pathname === "/tasks/run_1/pushNotificationConfigs/cfg_1") {
+					if (init?.method === "DELETE") {
+						return Response.json({});
+					}
+					return Response.json({
+						id: "cfg_1",
+						taskId: "run_1",
+						url: "https://hooks.test/a2a",
+						token: "notify-token",
 					});
 				}
 
@@ -343,6 +382,80 @@ describe("platform A2A client", () => {
 			}),
 		});
 		expect(requests[0]?.body).not.toHaveProperty("traceContext");
+	});
+
+	it("projects requested A2A extensions into headers and message body", async () => {
+		const config = await resolveA2AServiceConfig({
+			extensions: ["https://evalops.com/a2a/extensions/operating-plane/v1"],
+		});
+		if (!config) {
+			throw new Error("expected config");
+		}
+
+		await sendA2AMessage(config, {
+			message: buildA2AUserMessage({
+				messageId: "msg_extension",
+				contextId: "session_1",
+				text: "Run with negotiated extension",
+				extensions: ["https://example.test/a2a/extensions/custom/v1"],
+			}),
+		});
+
+		expect(requests[0]?.headers).toMatchObject({
+			"a2a-extensions":
+				"https://evalops.com/a2a/extensions/operating-plane/v1,https://example.test/a2a/extensions/custom/v1",
+		});
+		expect(requests[0]?.body).toMatchObject({
+			message: {
+				extensions: ["https://example.test/a2a/extensions/custom/v1"],
+			},
+		});
+	});
+
+	it("configures A2A task push notifications", async () => {
+		const config = await resolveA2AServiceConfig();
+		if (!config) {
+			throw new Error("expected config");
+		}
+
+		await expect(
+			createA2ATaskPushNotificationConfig(config, "run_1", {
+				id: "cfg_1",
+				url: "https://hooks.test/a2a",
+				token: "notify-token",
+			}),
+		).resolves.toMatchObject({
+			id: "cfg_1",
+			taskId: "run_1",
+		});
+		await expect(
+			listA2ATaskPushNotificationConfigs(config, "run_1"),
+		).resolves.toMatchObject({
+			configs: [{ id: "cfg_1", taskId: "run_1" }],
+		});
+		await expect(
+			getA2ATaskPushNotificationConfig(config, "run_1", "cfg_1"),
+		).resolves.toMatchObject({
+			id: "cfg_1",
+			taskId: "run_1",
+		});
+		await expect(
+			deleteA2ATaskPushNotificationConfig(config, "run_1", "cfg_1"),
+		).resolves.toBeUndefined();
+
+		expect(
+			requests.map((request) => `${request.method} ${request.pathname}`),
+		).toEqual([
+			"POST /tasks/run_1/pushNotificationConfigs",
+			"GET /tasks/run_1/pushNotificationConfigs",
+			"GET /tasks/run_1/pushNotificationConfigs/cfg_1",
+			"DELETE /tasks/run_1/pushNotificationConfigs/cfg_1",
+		]);
+		expect(requests[0]?.body).toMatchObject({
+			id: "cfg_1",
+			url: "https://hooks.test/a2a",
+			token: "notify-token",
+		});
 	});
 
 	it("keeps explicit partial trace context isolated from env tracestate", () => {

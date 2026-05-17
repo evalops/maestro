@@ -196,6 +196,7 @@ fn csrf_applies_to_a2a_path(path: &str) -> bool {
     matches!(path, "/message:send" | "/message:stream")
         || a2a_task_id_from_cancel_path(path).is_some()
         || a2a_task_id_from_subscribe_path(path).is_some()
+        || a2a_push_notification_config_path(path).is_some()
 }
 
 pub(crate) fn a2a_task_id_from_cancel_path(path: &str) -> Option<&str> {
@@ -209,6 +210,19 @@ pub(crate) fn a2a_task_id_from_subscribe_path(path: &str) -> Option<&str> {
         .strip_suffix(":subscribe")
         .or_else(|| path.strip_prefix("/tasks/")?.strip_suffix("/subscribe"))?;
     (!id.is_empty() && !id.contains('/') && !id.contains(':')).then_some(id)
+}
+
+fn a2a_push_notification_config_path(path: &str) -> Option<()> {
+    let rest = path.strip_prefix("/tasks/")?;
+    let (task_id, suffix) = rest.split_once("/pushNotificationConfigs")?;
+    if task_id.is_empty() || task_id.contains('/') || task_id.contains(':') {
+        return None;
+    }
+    if suffix.is_empty() {
+        return Some(());
+    }
+    let config_id = suffix.strip_prefix('/')?;
+    (!config_id.is_empty() && !config_id.contains('/') && !config_id.contains(':')).then_some(())
 }
 
 pub(crate) fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
