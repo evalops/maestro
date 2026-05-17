@@ -116,7 +116,13 @@ jobs:
           HUSKY: "0"
         run: |
           set -euo pipefail
-          if git diff --quiet; then
+          if [[ -z "$(git status --porcelain)" ]]; then
+            if [[ "$BRANCH_EXISTS" == "true" ]] && [[ "$(git rev-parse HEAD)" != "$(git rev-parse "origin/$RELEASE_BRANCH")" ]]; then
+              git push origin "$RELEASE_BRANCH"
+              echo "Release branch $RELEASE_BRANCH advanced to current $RELEASE_BASE_REF."
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             echo "Release branch $RELEASE_BRANCH already up to date."
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
@@ -169,14 +175,18 @@ jobs:
           EOF
           )
 
-          existing_pr=$(gh pr list \
+          existing_pr_number=$(gh pr list \
             --base "$BASE_REF" \
             --head "$RELEASE_BRANCH" \
-            --json number,url \
-            --jq '.[0].url // ""')
+            --json number \
+            --jq '.[0].number // ""')
 
-          if [[ -n "$existing_pr" ]]; then
-            echo "Release PR already exists: $existing_pr"
+          if [[ -n "$existing_pr_number" ]]; then
+            gh pr edit "$existing_pr_number" \
+              --title "Release v${RELEASE_VERSION}" \
+              --body "$pr_body"
+            existing_pr_url=$(gh pr view "$existing_pr_number" --json url --jq '.url')
+            echo "Release PR already exists and was updated: $existing_pr_url"
             exit 0
           fi
 

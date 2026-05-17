@@ -20,7 +20,7 @@ import {
 import {
 	buildChangelogEntryFromGit,
 	insertChangelogEntry,
-	replaceOrInsertChangelogEntry,
+	mergeOrInsertChangelogEntry,
 } from "./release-notes.js";
 import { execSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -48,7 +48,7 @@ function updateChangelog(newVersion, { replaceExisting = false } = {}) {
 		const content = readFileSync(changelogPath, "utf-8");
 		const newEntry = buildChangelogEntryFromGit(newVersion);
 		const nextContent = replaceExisting
-			? replaceOrInsertChangelogEntry(content, newVersion, newEntry)
+			? mergeOrInsertChangelogEntry(content, newVersion, newEntry)
 			: insertChangelogEntry(content, newEntry);
 		writeFileSync(changelogPath, nextContent);
 		console.log(`📝 Updated CHANGELOG.md with ${newVersion}`);

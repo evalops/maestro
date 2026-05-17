@@ -147,6 +147,107 @@ export function replaceOrInsertChangelogEntry(content, version, entry) {
 }
 
 /**
+ * @param {string} entry
+ */
+function parseChangelogEntrySections(entry) {
+	const lines = entry.trim().split("\n");
+	const heading = lines[0] ?? "";
+	/** @type {Record<string, string[]>} */
+	const sections = {};
+	/** @type {string[]} */
+	const intro = [];
+	let currentSection = "";
+
+	for (const line of lines.slice(1)) {
+		const sectionMatch = line.match(/^###\s+(.+?)\s*$/);
+		if (sectionMatch) {
+			currentSection = sectionMatch[1] ?? "";
+			sections[currentSection] ??= [];
+			continue;
+		}
+		if (!currentSection) {
+			if (line.trim()) {
+				intro.push(line);
+			}
+			continue;
+		}
+		if (currentSection && line.trim()) {
+			sections[currentSection].push(line);
+		}
+	}
+
+	return { heading, intro, sections };
+}
+
+/**
+ * @param {Record<string, string[]>} sections
+ * @param {string} section
+ * @param {string} line
+ */
+function pushUniqueSectionLine(sections, section, line) {
+	sections[section] ??= [];
+	if (!sections[section].includes(line)) {
+		sections[section].push(line);
+	}
+}
+
+/**
+ * @param {string} heading
+ * @param {{ intro?: string[]; sections: Record<string, string[]> }} parsed
+ */
+function formatChangelogEntryFromSections(heading, parsed) {
+	const lines = [heading];
+	if (parsed.intro && parsed.intro.length > 0) {
+		lines.push("", ...parsed.intro);
+	}
+	const orderedSections = [
+		...SECTION_ORDER,
+		...Object.keys(parsed.sections).filter(
+			(section) => !SECTION_ORDER.includes(section),
+		),
+	];
+
+	for (const section of orderedSections) {
+		const entries = parsed.sections[section] ?? [];
+		if (entries.length === 0) {
+			continue;
+		}
+		lines.push("", `### ${section}`, "", ...entries);
+	}
+
+	return lines.join("\n");
+}
+
+/**
+ * @param {string} content
+ * @param {string} version
+ * @param {string} entry
+ */
+export function mergeOrInsertChangelogEntry(content, version, entry) {
+	const existing = extractChangelogEntry(content, version);
+	if (!existing) {
+		return insertChangelogEntry(content, entry);
+	}
+
+	const existingEntry = parseChangelogEntrySections(existing);
+	const generatedEntry = parseChangelogEntrySections(entry);
+	const mergedSections = { ...existingEntry.sections };
+
+	for (const section of Object.keys(generatedEntry.sections)) {
+		for (const line of generatedEntry.sections[section] ?? []) {
+			pushUniqueSectionLine(mergedSections, section, line);
+		}
+	}
+
+	const mergedEntry = formatChangelogEntryFromSections(
+		existingEntry.heading || generatedEntry.heading,
+		{ intro: existingEntry.intro, sections: mergedSections },
+	);
+
+	return content.replace(existing, mergedEntry);
+}
+
+/**
  * @param {string} content
  * @param {string} version
  */
