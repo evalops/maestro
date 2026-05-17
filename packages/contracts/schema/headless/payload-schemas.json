@@ -827,6 +827,14 @@
 				"success": {
 					"kind": "boolean"
 				},
+				"tool": {
+					"kind": "string",
+					"optional": true
+				},
+				"details": {
+					"kind": "unknown",
+					"optional": true
+				},
 				"error_code": {
 					"kind": "string",
 					"optional": true

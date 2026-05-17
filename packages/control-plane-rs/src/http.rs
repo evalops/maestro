@@ -11,7 +11,7 @@ tokio::task_local! {
 
 const MAX_HEADER_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_JSON_BODY_BYTES: usize = 32 * 1024 * 1024;
-const CORS_ALLOW_HEADERS: &str = "authorization,content-type,a2a-version,a2a-extensions,traceparent,tracestate,x-organization-id,x-evalops-agent-id,x-evalops-actor-id,x-evalops-session-id,x-evalops-workspace-id,x-composer-artifact-access,x-composer-api-key,x-composer-approval-mode,x-composer-client,x-composer-client-tools,x-composer-csrf,x-composer-agent-id,x-composer-slim-events,x-composer-workspace,x-composer-workspace-id,x-maestro-artifact-access,x-maestro-api-key,x-maestro-approval-mode,x-maestro-agent-id,x-maestro-client,x-maestro-client-tools,x-maestro-csrf,x-maestro-slim-events,x-maestro-workspace,x-maestro-workspace-id,x-csrf-token,x-xsrf-token";
+const CORS_ALLOW_HEADERS: &str = "authorization,content-type,a2a-version,a2a-extensions,traceparent,tracestate,x-a2a-notification-token,x-organization-id,x-evalops-agent-id,x-evalops-actor-id,x-evalops-session-id,x-evalops-workspace-id,x-composer-artifact-access,x-composer-api-key,x-composer-approval-mode,x-composer-client,x-composer-client-tools,x-composer-csrf,x-composer-agent-id,x-composer-slim-events,x-composer-workspace,x-composer-workspace-id,x-maestro-artifact-access,x-maestro-api-key,x-maestro-approval-mode,x-maestro-agent-id,x-maestro-client,x-maestro-client-tools,x-maestro-csrf,x-maestro-slim-events,x-maestro-workspace,x-maestro-workspace-id,x-csrf-token,x-xsrf-token";
 
 #[derive(Debug)]
 pub(crate) struct RequestHead {
@@ -258,6 +258,7 @@ pub(crate) fn response_with_extra_headers_and_length(
     );
     let reason = match status {
         200 => "OK",
+        202 => "Accepted",
         204 => "No Content",
         400 => "Bad Request",
         401 => "Unauthorized",
@@ -270,6 +271,7 @@ pub(crate) fn response_with_extra_headers_and_length(
         429 => "Too Many Requests",
         500 => "Internal Server Error",
         501 => "Not Implemented",
+        503 => "Service Unavailable",
         _ => "OK",
     };
     let cors_origin = response_cors_origin();

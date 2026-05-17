@@ -60,6 +60,7 @@ class FakeCodexAppServerClient implements CodexAppServerClientLike {
 		private readonly callDynamicToolBeforeNotifications = false,
 		private readonly dynamicToolCallCount = 1,
 		private readonly collabChildRunIds?: string[],
+		private readonly collabTool = "spawnAgent",
 	) {}
 
 	async initialize(
@@ -108,7 +109,7 @@ class FakeCodexAppServerClient implements CodexAppServerClientLike {
 						item: {
 							type: "collabAgentToolCall",
 							id: "collab-call-1",
-							tool: "spawnAgent",
+							tool: this.collabTool,
 							status: "inProgress",
 							senderThreadId: "thread-1",
 							receiverThreadIds: ["child-thread-1"],
@@ -128,7 +129,7 @@ class FakeCodexAppServerClient implements CodexAppServerClientLike {
 						item: {
 							type: "collabAgentToolCall",
 							id: "collab-call-1",
-							tool: "spawnAgent",
+							tool: this.collabTool,
 							status: "completed",
 							senderThreadId: "thread-1",
 							receiverThreadIds: ["child-thread-1"],
@@ -420,6 +421,103 @@ describe("Codex app-server provider", () => {
 		});
 	});
 
+	it("normalizes Codex collab-agent operation aliases before emitting provider tools", async () => {
+		const client = new FakeCodexAppServerClient(
+			true,
+			true,
+			"lookup_ticket",
+			true,
+			false,
+			1,
+			["agent-run-child-1"],
+			"wait_agent",
+		);
+		const events: AssistantMessageEvent[] = [];
+
+		for await (const event of streamCodexAppServer(model, context, {
+			codexAppServerClient: client,
+			cwd: "/tmp/project",
+		})) {
+			events.push(event);
+		}
+
+		expect(events).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					type: "provider_tool_execution_start",
+					toolCallId: "collab-call-1",
+					toolName: "codex.subagent.wait",
+					displayName: "Codex subagent: wait",
+					summaryLabel: "wait 1 agent",
+					args: expect.objectContaining({
+						codexTool: "wait",
+						childRunIds: ["agent-run-child-1"],
+						codexWorkGraph: expect.objectContaining({
+							tool: "wait",
+							childRuns: [
+								expect.objectContaining({
+									operation: "wait",
+									childRunId: "agent-run-child-1",
+								}),
+							],
+						}),
+					}),
+				}),
+				expect.objectContaining({
+					type: "provider_tool_execution_end",
+					toolCallId: "collab-call-1",
+					toolName: "codex.subagent.wait",
+					result: expect.objectContaining({
+						toolName: "codex.subagent.wait",
+						details: expect.objectContaining({
+							codexTool: "wait",
+							codexWorkGraph: expect.objectContaining({
+								tool: "wait",
+								status: "completed",
+							}),
+						}),
+					}),
+				}),
+			]),
+		);
+	});
+
+	it("rejects prototype-chain collab-agent tool aliases", async () => {
+		const client = new FakeCodexAppServerClient(
+			true,
+			true,
+			"lookup_ticket",
+			true,
+			false,
+			1,
+			["agent-run-child-1"],
+			"__proto__",
+		);
+		const events: AssistantMessageEvent[] = [];
+
+		for await (const event of streamCodexAppServer(model, context, {
+			codexAppServerClient: client,
+			cwd: "/tmp/project",
+		})) {
+			events.push(event);
+		}
+
+		expect(
+			events.some(
+				(event) =>
+					event.type === "provider_tool_execution_start" &&
+					event.toolCallId === "collab-call-1",
+			),
+		).toBe(false);
+		expect(
+			events.some(
+				(event) =>
+					event.type === "provider_tool_execution_end" &&
+					event.toolCallId === "collab-call-1",
+			),
+		).toBe(false);
+	});
+
 	it("falls back from empty Codex child run IDs to receiver thread child IDs", async () => {
 		const client = new FakeCodexAppServerClient(
 			true,
@@ -633,6 +731,8 @@ describe("Codex app-server provider", () => {
 			execute: async (_toolCallId, args) => ({
 				content: [{ type: "text", text: `Ticket ${String(args.id)} is open.` }],
 				details: { source: "ticket-system" },
+				toolExecutionId: "tool-exec-dynamic-1",
+				approvalRequestId: "approval-dynamic-1",
 			}),
 		};
 		const events: AssistantMessageEvent[] = [];
@@ -669,6 +769,8 @@ describe("Codex app-server provider", () => {
 					toolCallId: "tool-call-1",
 					toolName: "lookup_ticket",
 					displayName: "Codex dynamic tool: lookup_ticket",
+					toolExecutionId: "tool-exec-dynamic-1",
+					approvalRequestId: "approval-dynamic-1",
 					isError: false,
 					result: expect.objectContaining({
 						role: "toolResult",
@@ -681,6 +783,18 @@ describe("Codex app-server provider", () => {
 				}),
 			]),
 		);
+		const endEvent = events.find(
+			(
+				event,
+			): event is Extract<
+				AssistantMessageEvent,
+				{ type: "provider_tool_execution_end" }
+			> =>
+				event.type === "provider_tool_execution_end" &&
+				event.toolCallId === "tool-call-1",
+		);
+		expect(endEvent?.result).not.toHaveProperty("toolExecutionId");
+		expect(endEvent?.result).not.toHaveProperty("approvalRequestId");
 		expect(client.serverRequestResults).toEqual([
 			{
 				handled: true,

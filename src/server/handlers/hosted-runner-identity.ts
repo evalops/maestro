@@ -50,6 +50,21 @@ export async function buildHostedRunnerIdentity(
 			? { a2a_message_id: hostedRunner.a2aMessageId }
 			: {}),
 		...(hostedRunner.a2aTaskId ? { a2a_task_id: hostedRunner.a2aTaskId } : {}),
+		...(hostedRunner.lastPlatformA2APush
+			? {
+					last_platform_a2a_push: {
+						kind: hostedRunner.lastPlatformA2APush.kind,
+						task_id: hostedRunner.lastPlatformA2APush.taskId,
+						context_id: hostedRunner.lastPlatformA2APush.contextId,
+						state: hostedRunner.lastPlatformA2APush.state,
+						final: hostedRunner.lastPlatformA2APush.final,
+						received_at: hostedRunner.lastPlatformA2APush.receivedAt,
+						runtime_event_id: hostedRunner.lastPlatformA2APush.runtimeEventId,
+						runtime_event_type:
+							hostedRunner.lastPlatformA2APush.runtimeEventType,
+					},
+				}
+			: {}),
 		...(hostedRunner.agentRuntimeWorkerQueue
 			? { agent_runtime_worker_queue: hostedRunner.agentRuntimeWorkerQueue }
 			: {}),

@@ -34,6 +34,16 @@ export interface HostedRunnerContext {
 	agentRuntimeLeaseToken?: string;
 	a2aMessageId?: string;
 	a2aTaskId?: string;
+	lastPlatformA2APush?: {
+		kind: "statusUpdate" | "artifactUpdate" | "task" | "message";
+		taskId?: string;
+		contextId?: string;
+		state?: string;
+		final?: boolean;
+		receivedAt: string;
+		runtimeEventId?: string;
+		runtimeEventType?: string;
+	};
 	agentRuntimeWorkerQueue?: string;
 	agentRuntimeCorrelationPath?: string;
 	attachAudience?: string;

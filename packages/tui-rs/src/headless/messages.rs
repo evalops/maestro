@@ -557,7 +557,14 @@ pub enum FromAgentMessage {
     /// Tool output chunk
     ToolOutput { call_id: String, content: String },
     /// Tool execution ended
-    ToolEnd { call_id: String, success: bool },
+    ToolEnd {
+        call_id: String,
+        success: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        details: Option<serde_json::Value>,
+    },
     /// Client-side tool execution requested
     ClientToolRequest {
         call_id: String,
@@ -1202,6 +1209,50 @@ pub(crate) fn codex_subagent_child_runs(
     runs
 }
 
+fn has_codex_subagent_args(args: &serde_json::Value) -> bool {
+    let Some(object) = args.as_object() else {
+        return false;
+    };
+    has_codex_work_graph(Some(args))
+        || !json_string_array_from_object(object, &["childRunIds", "child_run_ids"]).is_empty()
+        || !json_string_array_from_object(object, &["receiverThreadIds", "receiver_thread_ids"])
+            .is_empty()
+}
+
+fn merge_codex_subagent_args(
+    base: Option<&serde_json::Value>,
+    patch: &serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Value {
+    let mut merged = base
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    for (key, value) in patch {
+        merged.insert(key.clone(), value.clone());
+    }
+    serde_json::Value::Object(merged)
+}
+
+fn codex_subagent_tool_end_args(
+    source_args: Option<&serde_json::Value>,
+    details: Option<&serde_json::Value>,
+) -> Option<serde_json::Value> {
+    let Some(details_object) = details.and_then(serde_json::Value::as_object) else {
+        return source_args.cloned();
+    };
+    if let Some(args) = details_object
+        .get("args")
+        .and_then(serde_json::Value::as_object)
+    {
+        return Some(merge_codex_subagent_args(source_args, args));
+    }
+    let details = serde_json::Value::Object(details_object.clone());
+    if has_codex_subagent_args(&details) {
+        return Some(merge_codex_subagent_args(source_args, details_object));
+    }
+    source_args.cloned()
+}
+
 pub(crate) fn codex_subagent_edge_key(edge: &CodexSubagentContinuityEdge) -> String {
     [
         edge.spawn_tool_call_id.as_deref().unwrap_or_default(),
@@ -1257,6 +1308,19 @@ impl AgentState {
             .cloned()
             .map(|edge| (codex_subagent_edge_key(&edge), edge))
             .collect::<HashMap<_, _>>();
+        if edges
+            .iter()
+            .any(|edge| edge.child_run_id.is_some() || edge.thread_id.is_some())
+        {
+            existing.retain(|_, edge| {
+                let same_tool_call = edge.spawn_tool_call_id.as_deref() == Some(call_id)
+                    || edge.wait_tool_call_id.as_deref() == Some(call_id);
+                !(same_tool_call
+                    && edge.operation == operation
+                    && edge.child_run_id.is_none()
+                    && edge.thread_id.is_none())
+            });
+        }
         for edge in &edges {
             existing.insert(codex_subagent_edge_key(edge), edge.clone());
         }
@@ -1754,24 +1818,28 @@ impl AgentState {
                 Some(AgentEvent::ToolOutput { call_id, content })
             }
 
-            FromAgentMessage::ToolEnd { call_id, success } => {
+            FromAgentMessage::ToolEnd {
+                call_id,
+                success,
+                tool,
+                details,
+            } => {
                 let active_tool = self.active_tools.remove(&call_id);
                 let tracked_tool = self.tracked_tools.remove(&call_id);
-                if let Some(source) = tracked_tool.as_ref() {
-                    if let Some(operation) = codex_subagent_operation(&source.tool) {
-                        self.upsert_codex_subagent_edges(
-                            &call_id,
-                            &source.tool,
-                            Some(&source.args),
-                            terminal_codex_subagent_status(operation, success),
+                let source_tool = tool
+                    .as_deref()
+                    .or_else(|| tracked_tool.as_ref().map(|source| source.tool.as_str()))
+                    .or_else(|| active_tool.as_ref().map(|source| source.tool.as_str()));
+                if let Some(tool) = source_tool {
+                    if let Some(operation) = codex_subagent_operation(tool) {
+                        let args = codex_subagent_tool_end_args(
+                            tracked_tool.as_ref().map(|source| &source.args),
+                            details.as_ref(),
                         );
-                    }
-                } else if let Some(source) = active_tool.as_ref() {
-                    if let Some(operation) = codex_subagent_operation(&source.tool) {
                         self.upsert_codex_subagent_edges(
                             &call_id,
-                            &source.tool,
-                            None,
+                            tool,
+                            args.as_ref(),
                             terminal_codex_subagent_status(operation, success),
                         );
                     }
@@ -3309,8 +3377,58 @@ mod tests {
     }
 
     #[test]
-    fn codex_subagent_terminal_statuses_include_send_input_acknowledged() {
+    fn state_uses_codex_subagent_tool_end_details_for_child_targets() {
+        let mut state = AgentState::default();
+
+        state.handle_message(FromAgentMessage::ToolCall {
+            call_id: "collab-spawn-complete".to_string(),
+            tool: "codex.subagent.spawnAgent".to_string(),
+            args: serde_json::json!({ "receiverThreadIds": [] }),
+            requires_approval: false,
+        });
+        state.handle_message(FromAgentMessage::ToolEnd {
+            call_id: "collab-spawn-complete".to_string(),
+            success: true,
+            tool: Some("codex.subagent.spawnAgent".to_string()),
+            details: Some(serde_json::json!({
+                "receiverThreadIds": ["child-thread-complete"],
+                "childRunIds": ["agent-run-child-complete"],
+                "codexWorkGraph": {
+                    "schemaVersion": CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
+                    "childRuns": [{
+                        "threadId": "child-thread-complete",
+                        "childRunId": "agent-run-child-complete",
+                        "operation": "spawnAgent"
+                    }]
+                },
+                "prompt": "Sensitive child task prompt"
+            })),
+        });
+
+        assert_eq!(
+            state.codex_subagent_edges,
+            vec![CodexSubagentContinuityEdge {
+                spawn_tool_call_id: Some("collab-spawn-complete".to_string()),
+                wait_tool_call_id: None,
+                child_run_id: Some("agent-run-child-complete".to_string()),
+                thread_id: Some("child-thread-complete".to_string()),
+                operation: "spawn_agent".to_string(),
+                status: "spawned".to_string(),
+            }]
+        );
+        let encoded = serde_json::to_string(&state.codex_subagent_edges).unwrap();
+        assert!(!encoded.contains("Sensitive child task prompt"));
+    }
+
+    #[test]
+    fn codex_subagent_terminal_statuses_keep_spawned_and_resumed_active() {
         assert!(codex_subagent_status_is_terminal("acknowledged"));
         assert!(codex_subagent_status_is_terminal("Acknowledged"));
+        assert!(codex_subagent_status_is_terminal("completed"));
+        assert!(codex_subagent_status_is_terminal("closed"));
+        assert!(!codex_subagent_status_is_terminal("spawned"));
+        assert!(!codex_subagent_status_is_terminal("Spawned"));
+        assert!(!codex_subagent_status_is_terminal("resumed"));
+        assert!(!codex_subagent_status_is_terminal("reSumed"));
     }
 }

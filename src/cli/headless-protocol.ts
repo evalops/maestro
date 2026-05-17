@@ -305,6 +305,8 @@ export interface HeadlessToolEndMessage {
 	type: "tool_end";
 	call_id: string;
 	success: boolean;
+	tool?: string;
+	details?: unknown;
 	error_code?: string;
 	approval_request_id?: string;
 	governed_outcome?: string;
@@ -882,6 +884,71 @@ export function collectCodexChildRuns(args: unknown): Array<{
 	return runs.filter((run) => run.child_run_id || run.thread_id);
 }
 
+function hasCodexSubagentArgs(value: unknown): boolean {
+	if (!isRecord(value)) {
+		return false;
+	}
+	return (
+		hasCodexWorkGraph(value) ||
+		stringArray(value.childRunIds ?? value.child_run_ids).length > 0 ||
+		stringArray(value.receiverThreadIds ?? value.receiver_thread_ids).length > 0
+	);
+}
+
+function mergeRecordArgs(
+	base: unknown,
+	patch: Record<string, unknown>,
+): unknown {
+	return {
+		...(isRecord(base) ? base : {}),
+		...patch,
+	};
+}
+
+function codexSubagentToolEndArgs(
+	sourceArgs: unknown,
+	details: unknown,
+): unknown {
+	if (!isRecord(details)) {
+		return sourceArgs;
+	}
+	const wrappedArgs = details.args;
+	if (isRecord(wrappedArgs)) {
+		return mergeRecordArgs(sourceArgs, wrappedArgs);
+	}
+	if (hasCodexSubagentArgs(details)) {
+		return mergeRecordArgs(sourceArgs, details);
+	}
+	return sourceArgs;
+}
+
+const CODEX_SUBAGENT_DETAIL_KEYS = [
+	"codexTool",
+	"codex_tool",
+	"status",
+	"threadId",
+	"thread_id",
+	"turnId",
+	"turn_id",
+	"senderThreadId",
+	"sender_thread_id",
+	"receiverThreadIds",
+	"receiver_thread_ids",
+	"childRunIds",
+	"child_run_ids",
+	"codexWorkGraph",
+	"codex_work_graph",
+	"agentsStates",
+	"agents_states",
+] as const;
+
+const CODEX_SUBAGENT_DETAIL_REDACTED_KEYS = new Set([
+	"prompt",
+	"model",
+	"reasoningEffort",
+	"reasoning_effort",
+]);
+
 function hasCodexWorkGraph(args: unknown): boolean {
 	if (!isRecord(args)) {
 		return false;
@@ -892,6 +959,39 @@ function hasCodexWorkGraph(args: unknown): boolean {
 		(graph.schemaVersion === CODEX_SUBAGENT_WORK_GRAPH_SCHEMA ||
 			graph.schema_version === CODEX_SUBAGENT_WORK_GRAPH_SCHEMA)
 	);
+}
+
+function sanitizeCodexSubagentDetailValue(value: unknown): unknown {
+	if (Array.isArray(value)) {
+		return value.map((item) => sanitizeCodexSubagentDetailValue(item));
+	}
+	if (!isRecord(value)) {
+		return value;
+	}
+	const out: Record<string, unknown> = {};
+	for (const [key, child] of Object.entries(value)) {
+		if (CODEX_SUBAGENT_DETAIL_REDACTED_KEYS.has(key)) {
+			continue;
+		}
+		out[key] = sanitizeCodexSubagentDetailValue(child);
+	}
+	return out;
+}
+
+function codexSubagentToolEndDetails(
+	toolName: string,
+	details: unknown,
+): Record<string, unknown> | undefined {
+	if (!toolName.startsWith(CODEX_SUBAGENT_TOOL_PREFIX) || !isRecord(details)) {
+		return undefined;
+	}
+	const out: Record<string, unknown> = {};
+	for (const key of CODEX_SUBAGENT_DETAIL_KEYS) {
+		if (details[key] !== undefined) {
+			out[key] = sanitizeCodexSubagentDetailValue(details[key]);
+		}
+	}
+	return Object.keys(out).length > 0 ? out : undefined;
 }
 
 export function codexSubagentEdgeKey(
@@ -963,6 +1063,21 @@ function upsertCodexSubagentContinuityEdges(
 			edge,
 		]),
 	);
+	if (edges.some((edge) => edge.child_run_id || edge.thread_id)) {
+		for (const [key, edge] of existing) {
+			const sameToolCall =
+				edge.spawn_tool_call_id === input.call_id ||
+				edge.wait_tool_call_id === input.call_id;
+			if (
+				sameToolCall &&
+				edge.operation === operation &&
+				!edge.child_run_id &&
+				!edge.thread_id
+			) {
+				existing.delete(key);
+			}
+		}
+	}
 	for (const edge of edges) {
 		existing.set(codexSubagentEdgeKey(edge), edge);
 	}
@@ -1420,18 +1535,23 @@ export class HeadlessProtocolTranslator {
 					},
 				];
 			}
-			case "tool_execution_end":
+			case "tool_execution_end": {
 				this.noteToolExecution(
 					event.toolName,
 					undefined,
 					event.summaryLabel,
 					!event.isError,
 				);
+				const details = codexSubagentToolEndDetails(
+					event.toolName,
+					event.result.details,
+				);
 				return [
 					{
 						type: "tool_end",
 						call_id: event.toolCallId,
 						success: !event.isError,
+						...(details ? { tool: event.toolName, details } : {}),
 						...(event.errorCode ? { error_code: event.errorCode } : {}),
 						...(event.approvalRequestId
 							? { approval_request_id: event.approvalRequestId }
@@ -1441,6 +1561,7 @@ export class HeadlessProtocolTranslator {
 							: {}),
 					},
 				];
+			}
 			case "tool_batch_summary": {
 				const message = event.summary.trim();
 				if (!message) {
@@ -2079,16 +2200,18 @@ function applyIncomingHeadlessMessageInner(
 				state.pending_tool_retries.find(
 					(request) => request.call_id === msg.call_id,
 				);
-			if (source) {
-				const operation = codexSubagentOperation(source.tool);
-				if (operation) {
-					upsertCodexSubagentContinuityEdges(state, {
-						call_id: msg.call_id,
-						tool: source.tool,
-						args: source.args,
-						status: terminalCodexSubagentStatus(operation, msg.success),
-					});
-				}
+			const active = state.active_tools.find(
+				(tool) => tool.call_id === msg.call_id,
+			);
+			const tool = msg.tool ?? source?.tool ?? active?.tool;
+			const operation = tool ? codexSubagentOperation(tool) : undefined;
+			if (tool && operation) {
+				upsertCodexSubagentContinuityEdges(state, {
+					call_id: msg.call_id,
+					tool,
+					args: codexSubagentToolEndArgs(source?.args, msg.details),
+					status: terminalCodexSubagentStatus(operation, msg.success),
+				});
 			}
 			state.active_tools = state.active_tools.filter(
 				(tool) => tool.call_id !== msg.call_id,

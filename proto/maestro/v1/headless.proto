@@ -354,6 +354,8 @@ message ToolOutputMessage {
 message ToolEndMessage {
   string call_id = 1;
   bool success = 2;
+  optional string tool = 3;
+  google.protobuf.Value details = 4;
 }
 
 message ClientToolRequestMessage {

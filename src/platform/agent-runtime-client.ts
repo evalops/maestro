@@ -62,6 +62,14 @@ const DEDICATED_A2A_MAX_ATTEMPTS_ENV_VARS = [
 	"MAESTRO_PLATFORM_A2A_MAX_ATTEMPTS",
 	"MAESTRO_A2A_MAX_ATTEMPTS",
 ] as const;
+const DEDICATED_A2A_CALLBACK_URL_ENV_VARS = [
+	"MAESTRO_PLATFORM_A2A_CALLBACK_URL",
+	"MAESTRO_A2A_CALLBACK_URL",
+] as const;
+const DEDICATED_A2A_CALLBACK_TOKEN_ENV_VARS = [
+	"MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN",
+	"MAESTRO_A2A_CALLBACK_TOKEN",
+] as const;
 
 const HANDLE_TRIGGER_PATH = platformConnectMethodPath(
 	PLATFORM_CONNECT_METHODS.agentRuntime.handleTrigger,
@@ -1284,6 +1292,7 @@ async function recordMaestroSessionRuntimeTriggerViaA2A(
 	const correlationId =
 		trimString(input.correlationId) ?? ["maestro-session", sessionId].join(":");
 	const traceContext = maestroRuntimeTraceContext(input);
+	const pushNotificationConfig = platformA2APushNotificationConfig(sessionId);
 	try {
 		const sent = await sendA2AMessage(
 			config,
@@ -1310,7 +1319,12 @@ async function recordMaestroSessionRuntimeTriggerViaA2A(
 						...(factsContext ? { facts_context: factsContext } : {}),
 					},
 				}),
-				configuration: { returnImmediately: true },
+				configuration: {
+					returnImmediately: true,
+					...(pushNotificationConfig
+						? { taskPushNotificationConfig: pushNotificationConfig }
+						: {}),
+				},
 				metadata: {
 					route: "maestro_session",
 					transport: "a2a",
@@ -1340,6 +1354,21 @@ async function recordMaestroSessionRuntimeTriggerViaA2A(
 		}
 		return null;
 	}
+}
+
+function platformA2APushNotificationConfig(
+	sessionId: string,
+): { id: string; url: string; token?: string } | undefined {
+	const url = getEnvValue(DEDICATED_A2A_CALLBACK_URL_ENV_VARS);
+	if (!url) {
+		return undefined;
+	}
+	const token = getEnvValue(DEDICATED_A2A_CALLBACK_TOKEN_ENV_VARS);
+	return {
+		id: `maestro-session-${sessionId}`,
+		url,
+		...(token ? { token } : {}),
+	};
 }
 
 function isAgentRuntimeA2AEnabled(): boolean {

@@ -53,6 +53,7 @@
 
 import {
 	EVALOPS_ORGANIZATION_ID_ENV_VARS,
+	EVALOPS_WORKSPACE_ID_ENV_VARS,
 	readEvalOpsEnv,
 } from "../evalops/env-aliases.js";
 import { getOAuthToken } from "../oauth/index.js";
@@ -150,6 +151,20 @@ function getNonEmptyString(value: unknown): string | undefined {
 		: undefined;
 }
 
+function firstNonEmptyString(...values: unknown[]): string | undefined {
+	for (const value of values) {
+		const candidate = getNonEmptyString(value);
+		if (candidate) {
+			return candidate;
+		}
+	}
+	return undefined;
+}
+
+function readFirstEnv(names: readonly string[]): string | undefined {
+	return firstNonEmptyString(...names.map((name) => process.env[name]));
+}
+
 function getStringArray(value: unknown): string[] {
 	return Array.isArray(value)
 		? value
@@ -232,26 +247,106 @@ function resolveEvalOpsProviderRef(
 function resolveEvalOpsRequestMetadata(
 	metadata?: Record<string, unknown>,
 ): Record<string, string> {
+	const agentMcp = isRecord(metadata?.agentMcp) ? metadata.agentMcp : undefined;
+	const agentID = firstNonEmptyString(
+		metadata?.agentId,
+		metadata?.agent_id,
+		agentMcp?.agentId,
+		agentMcp?.agent_id,
+		readFirstEnv(["MAESTRO_EVALOPS_AGENT_ID", "MAESTRO_AGENT_ID"]),
+	);
+	const runID = firstNonEmptyString(
+		metadata?.agentRunId,
+		metadata?.agent_run_id,
+		metadata?.runId,
+		metadata?.run_id,
+		agentMcp?.runId,
+		agentMcp?.run_id,
+		readFirstEnv(["MAESTRO_EVALOPS_RUN_ID", "MAESTRO_AGENT_RUN_ID"]),
+	);
+	const sessionID = firstNonEmptyString(
+		metadata?.maestroSessionId,
+		metadata?.maestro_session_id,
+		metadata?.sessionId,
+		metadata?.session_id,
+		agentMcp?.sessionId,
+		agentMcp?.session_id,
+		readFirstEnv(["MAESTRO_SESSION_ID", "MAESTRO_EVALOPS_SESSION_ID"]),
+	);
+	const workspaceID = firstNonEmptyString(
+		metadata?.workspaceId,
+		metadata?.workspace_id,
+		agentMcp?.workspaceId,
+		agentMcp?.workspace_id,
+		readEvalOpsEnv(process.env, EVALOPS_WORKSPACE_ID_ENV_VARS),
+	);
+	const objectiveID = firstNonEmptyString(
+		metadata?.objectiveId,
+		metadata?.objective_id,
+		agentMcp?.objectiveId,
+		agentMcp?.objective_id,
+		readFirstEnv(["MAESTRO_OBJECTIVE_ID", "MAESTRO_EVALOPS_OBJECTIVE_ID"]),
+	);
+	const stepID = firstNonEmptyString(
+		metadata?.agentRunStepId,
+		metadata?.agent_run_step_id,
+		metadata?.stepId,
+		metadata?.step_id,
+		agentMcp?.agentRunStepId,
+		agentMcp?.agent_run_step_id,
+		readFirstEnv([
+			"MAESTRO_AGENT_RUN_STEP_ID",
+			"MAESTRO_EVALOPS_AGENT_RUN_STEP_ID",
+		]),
+	);
+	const traceID = firstNonEmptyString(
+		metadata?.traceId,
+		metadata?.trace_id,
+		agentMcp?.traceId,
+		agentMcp?.trace_id,
+		readFirstEnv(["MAESTRO_TRACE_ID", "TRACE_ID"]),
+	);
+	const turnID = firstNonEmptyString(
+		metadata?.turnId,
+		metadata?.turn_id,
+		agentMcp?.turnId,
+		agentMcp?.turn_id,
+		readFirstEnv(["MAESTRO_TURN_ID", "MAESTRO_EVALOPS_TURN_ID"]),
+	);
+	const toolCallID = firstNonEmptyString(
+		metadata?.toolCallId,
+		metadata?.tool_call_id,
+		agentMcp?.toolCallId,
+		agentMcp?.tool_call_id,
+		readFirstEnv(["MAESTRO_TOOL_CALL_ID", "MAESTRO_EVALOPS_TOOL_CALL_ID"]),
+	);
+	const workload = firstNonEmptyString(
+		metadata?.workload,
+		agentMcp?.workload,
+		readFirstEnv(["MAESTRO_EVALOPS_WORKLOAD", "MAESTRO_WORKLOAD"]),
+	);
+	const surface =
+		firstNonEmptyString(
+			metadata?.surface,
+			agentMcp?.surface,
+			readFirstEnv(["MAESTRO_EVALOPS_SURFACE", "MAESTRO_SURFACE"]),
+		) ?? "maestro";
+
 	return Object.fromEntries(
 		Object.entries({
-			agent_id:
-				getNonEmptyString(metadata?.agentId) ??
-				getNonEmptyString(metadata?.agent_id) ??
-				process.env.MAESTRO_EVALOPS_AGENT_ID?.trim() ??
-				process.env.MAESTRO_AGENT_ID?.trim(),
-			run_id:
-				getNonEmptyString(metadata?.runId) ??
-				getNonEmptyString(metadata?.run_id) ??
-				process.env.MAESTRO_EVALOPS_RUN_ID?.trim(),
-			session_id:
-				getNonEmptyString(metadata?.sessionId) ??
-				getNonEmptyString(metadata?.session_id) ??
-				process.env.MAESTRO_SESSION_ID?.trim(),
-			surface:
-				getNonEmptyString(metadata?.surface) ??
-				process.env.MAESTRO_EVALOPS_SURFACE?.trim() ??
-				process.env.MAESTRO_SURFACE?.trim() ??
-				"maestro",
+			agent_id: agentID,
+			workspace_id: workspaceID,
+			objective_id: objectiveID,
+			run_id: runID,
+			agent_run_id: runID,
+			agent_run_step_id: stepID,
+			session_id: sessionID,
+			maestro_session_id: sessionID,
+			surface,
+			trace_id: traceID,
+			turn_id: turnID,
+			tool_call_id: toolCallID,
+			workload,
 		}).filter(
 			(entry): entry is [string, string] =>
 				typeof entry[1] === "string" && entry[1].trim().length > 0,

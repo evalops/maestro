@@ -10,6 +10,10 @@ import { getRequestHeader, secureCompare, sendJson } from "./server-utils.js";
 
 const logger = createLogger("middleware:ip-access");
 
+interface AuthBoundaryOptions {
+	exemptPaths?: readonly string[];
+}
+
 // Helper for consistent safe URL parsing
 function getPathname(req: IncomingMessage): string {
 	try {
@@ -202,6 +206,7 @@ export function createAuthMiddleware(
 	apiKey: string | null,
 	corsHeaders: Record<string, string>,
 	requireApiKey = false,
+	options: AuthBoundaryOptions = {},
 ): Middleware {
 	return async (req, res, next) => {
 		const pathname = getPathname(req);
@@ -209,6 +214,9 @@ export function createAuthMiddleware(
 		const isDebugRoute = pathname.startsWith("/debug");
 		const requiresAuthBoundary = isApiRoute || isDebugRoute;
 		if (requiresAuthBoundary) {
+			if (options.exemptPaths?.includes(pathname)) {
+				return next();
+			}
 			const missingKey = !apiKey || apiKey.length === 0;
 
 			// No key provided
@@ -265,6 +273,7 @@ export function createCsrfMiddleware(
 	token: string | null,
 	corsHeaders: Record<string, string>,
 	enabled = false,
+	options: AuthBoundaryOptions = {},
 ): Middleware {
 	if (!enabled || !token) {
 		return (_req, _res, next) => next();
@@ -276,6 +285,9 @@ export function createCsrfMiddleware(
 		}
 		const pathname = getPathname(req);
 		if (!pathname.startsWith("/api")) {
+			return next();
+		}
+		if (options.exemptPaths?.includes(pathname)) {
 			return next();
 		}
 		const value = getRequestHeader(

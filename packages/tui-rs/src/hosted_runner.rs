@@ -4628,10 +4628,10 @@ mod tests {
     }
 
     #[test]
-    fn work_continuity_manifest_treats_acknowledged_send_input_as_terminal() {
+    fn work_continuity_manifest_keeps_spawned_and_resumed_codex_subagents_active() {
         let snapshot: RuntimeSnapshot = serde_json::from_value(json!({
             "protocolVersion": HEADLESS_PROTOCOL_VERSION,
-            "session_id": "session_rust_acknowledged",
+            "session_id": "session_rust_active_subagents",
             "cursor": 12,
             "last_init": null,
             "state": {
@@ -4641,7 +4641,7 @@ mod tests {
                 "connections": [],
                 "model": "gpt-5.4",
                 "provider": "rust",
-                "session_id": "session_rust_acknowledged",
+                "session_id": "session_rust_active_subagents",
                 "pending_approvals": [],
                 "pending_client_tools": [],
                 "pending_mcp_elicitations": [],
@@ -4651,11 +4651,25 @@ mod tests {
                 "active_tools": [],
                 "codex_subagent_edges": [
                     {
+                        "spawn_tool_call_id": "collab-spawn-active",
+                        "child_run_id": "agent-run-child-spawned",
+                        "thread_id": "child-thread-spawned",
+                        "operation": "spawn_agent",
+                        "status": "spawned"
+                    },
+                    {
                         "wait_tool_call_id": "collab-send-ack",
                         "child_run_id": "agent-run-child-ack",
                         "thread_id": "child-thread-ack",
                         "operation": "send_input",
                         "status": "acknowledged"
+                    },
+                    {
+                        "wait_tool_call_id": "collab-resume-active",
+                        "child_run_id": "agent-run-child-resumed",
+                        "thread_id": "child-thread-resumed",
+                        "operation": "resume_agent",
+                        "status": "resumed"
                     }
                 ],
                 "active_utility_commands": [],
@@ -4668,11 +4682,15 @@ mod tests {
 
         let continuity = default_work_continuity_manifest(&snapshot);
 
-        assert_eq!(continuity.active_tool_count, 0);
-        assert_eq!(continuity.tracked_tool_count, 1);
+        assert_eq!(continuity.active_tool_count, 2);
+        assert_eq!(continuity.tracked_tool_count, 3);
         assert_eq!(
             continuity.codex_subagent_tool_call_ids,
-            vec!["collab-send-ack".to_string()]
+            vec![
+                "collab-resume-active".to_string(),
+                "collab-send-ack".to_string(),
+                "collab-spawn-active".to_string()
+            ]
         );
     }
 

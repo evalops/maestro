@@ -416,6 +416,57 @@ describe("hosted AgentRuntime progress recorder", () => {
 				]),
 				payload: expect.objectContaining({
 					delegation_id: "delegation_1",
+					delegation_resolution: "deferred_until_child_terminal_edge",
+				}),
+			}),
+		);
+		expect(resolveDelegation).not.toHaveBeenCalled();
+
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "wait-delegation-call",
+			toolName: "codex.subagent.wait",
+			displayName: "Codex subagent: wait",
+			args: {
+				codexTool: "wait",
+				receiverThreadIds: ["child-thread-1"],
+				childRunIds: ["agent-run-child-1"],
+			},
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_end",
+			toolCallId: "wait-delegation-call",
+			toolName: "codex.subagent.wait",
+			displayName: "Codex subagent: wait",
+			result: {
+				role: "toolResult",
+				toolCallId: "wait-delegation-call",
+				toolName: "codex.subagent.wait",
+				content: [{ type: "text", text: "wait completed" }],
+				details: {
+					codexTool: "wait",
+					receiverThreadIds: ["child-thread-1"],
+					childRunIds: ["agent-run-child-1"],
+					agentsStates: {
+						"child-thread-1": {
+							status: "completed",
+						},
+					},
+				},
+				isError: false,
+				timestamp: 4,
+			},
+			isError: false,
+		} satisfies AgentEvent);
+
+		await recorder.flush();
+
+		expect(updateWorkItem).toHaveBeenCalledWith(
+			expect.objectContaining({
+				workItemId: "maestro:session_1:work:wait-delegation-call",
+				payload: expect.objectContaining({
+					delegation_id: "delegation_1",
+					delegation_resolution: "resolved_from_child_terminal_edge",
 				}),
 			}),
 		);
@@ -424,17 +475,209 @@ describe("hosted AgentRuntime progress recorder", () => {
 			status: PlatformDelegationStatusValue.Completed,
 			resultPayload: expect.objectContaining({
 				event_type: "codex_subagent_delegation_resolved",
+				codex_tool: "wait",
+				codex_subagent_operation: "wait_agent",
+				codex_subagent_edge_status: "completed",
 				agent_id: "maestro-codex-parent",
 				agent_run_id: "run_1",
-				work_item_id: "maestro:session_1:work:spawn-delegation-call",
+				work_item_id: "maestro:session_1:work:wait-delegation-call",
+				resolution_tool_call_id: "wait-delegation-call",
 				child_run_ids: ["agent-run-child-1"],
-				codex_work_graph: expect.objectContaining({
-					toolCallId: "spawn-delegation-call",
-					status: "completed",
-				}),
 			}),
 			errorMessage: undefined,
 		});
+	});
+
+	it("resolves every Codex delegation targeted by a multi-child wait", async () => {
+		let delegationIndex = 0;
+		const delegateAgent = vi.fn(
+			async (_input: PlatformAgentRegistryDelegateInput) => {
+				delegationIndex += 1;
+				return {
+					delegation: {
+						id: `delegation_${delegationIndex}`,
+						status: PlatformDelegationStatusValue.Pending,
+					},
+				};
+			},
+		);
+		const resolveDelegation = vi.fn(
+			async (_input: PlatformAgentRegistryResolveDelegationInput) => ({
+				delegation: {
+					id: _input.delegationId,
+					status: PlatformDelegationStatusValue.Completed,
+				},
+			}),
+		);
+		const { recorder, updateWorkItem } = createRecorder({
+			delegateAgent,
+			resolveDelegation,
+		});
+
+		for (const child of [
+			{
+				callId: "spawn-child-1",
+				threadId: "child-thread-1",
+				runId: "child-run-1",
+			},
+			{
+				callId: "spawn-child-2",
+				threadId: "child-thread-2",
+				runId: "child-run-2",
+			},
+		]) {
+			recorder.recordAgentEvent({
+				type: "tool_execution_start",
+				toolCallId: child.callId,
+				toolName: "codex.subagent.spawnAgent",
+				displayName: "Codex subagent: spawn agent",
+				args: {
+					codexTool: "spawnAgent",
+					receiverThreadIds: [child.threadId],
+					childRunIds: [child.runId],
+					prompt: `Spawn ${child.runId}`,
+				},
+			});
+		}
+		await recorder.flush();
+
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "wait-all-children",
+			toolName: "codex.subagent.wait",
+			displayName: "Codex subagent: wait",
+			args: {
+				codexTool: "wait",
+				receiverThreadIds: ["child-thread-1", "child-thread-2"],
+				childRunIds: ["child-run-1", "child-run-2"],
+			},
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_end",
+			toolCallId: "wait-all-children",
+			toolName: "codex.subagent.wait",
+			displayName: "Codex subagent: wait",
+			result: {
+				role: "toolResult",
+				toolCallId: "wait-all-children",
+				toolName: "codex.subagent.wait",
+				content: [{ type: "text", text: "both children completed" }],
+				details: {
+					codexTool: "wait",
+					receiverThreadIds: ["child-thread-1", "child-thread-2"],
+					childRunIds: ["child-run-1", "child-run-2"],
+				},
+				isError: false,
+				timestamp: 5,
+			},
+			isError: false,
+		} satisfies AgentEvent);
+
+		await recorder.flush();
+
+		expect(updateWorkItem).toHaveBeenCalledWith(
+			expect.objectContaining({
+				workItemId: "maestro:session_1:work:wait-all-children",
+				evidenceRefs: expect.arrayContaining([
+					"agent-registry-delegation:delegation_1",
+					"agent-registry-delegation:delegation_2",
+				]),
+				payload: expect.objectContaining({
+					delegation_id: "delegation_1",
+					delegation_ids: ["delegation_1", "delegation_2"],
+					delegation_resolution: "resolved_from_child_terminal_edge",
+				}),
+			}),
+		);
+		expect(resolveDelegation).toHaveBeenCalledTimes(2);
+		expect(resolveDelegation).toHaveBeenCalledWith(
+			expect.objectContaining({
+				delegationId: "delegation_1",
+				status: PlatformDelegationStatusValue.Completed,
+				resultPayload: expect.objectContaining({
+					delegation_ids: ["delegation_1", "delegation_2"],
+					child_run_ids: ["child-run-1", "child-run-2"],
+				}),
+			}),
+		);
+		expect(resolveDelegation).toHaveBeenCalledWith(
+			expect.objectContaining({
+				delegationId: "delegation_2",
+				status: PlatformDelegationStatusValue.Completed,
+				resultPayload: expect.objectContaining({
+					delegation_ids: ["delegation_1", "delegation_2"],
+					child_run_ids: ["child-run-1", "child-run-2"],
+				}),
+			}),
+		);
+	});
+
+	it("uses terminal-edge-specific failure messages when resolving Codex delegations", async () => {
+		const delegateAgent = vi.fn(
+			async (_input: PlatformAgentRegistryDelegateInput) => ({
+				delegation: {
+					id: "delegation_1",
+					status: PlatformDelegationStatusValue.Pending,
+				},
+			}),
+		);
+		const resolveDelegation = vi.fn(
+			async (_input: PlatformAgentRegistryResolveDelegationInput) => ({
+				delegation: {
+					id: "delegation_1",
+					status: PlatformDelegationStatusValue.Failed,
+				},
+			}),
+		);
+		const { recorder } = createRecorder({
+			delegateAgent,
+			resolveDelegation,
+		});
+
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "spawn-before-wait-failure",
+			toolName: "codex.subagent.spawnAgent",
+			displayName: "Codex subagent: spawn agent",
+			args: {
+				codexTool: "spawnAgent",
+				receiverThreadIds: ["child-thread-1"],
+				childRunIds: ["child-run-1"],
+				prompt: "Spawn then fail wait",
+			},
+		});
+		await recorder.flush();
+
+		recorder.recordAgentEvent({
+			type: "tool_execution_end",
+			toolCallId: "wait-failed",
+			toolName: "codex.subagent.wait",
+			displayName: "Codex subagent: wait",
+			result: {
+				role: "toolResult",
+				toolCallId: "wait-failed",
+				toolName: "codex.subagent.wait",
+				content: [{ type: "text", text: "wait failed" }],
+				details: {
+					codexTool: "wait",
+					receiverThreadIds: ["child-thread-1"],
+					childRunIds: ["child-run-1"],
+				},
+				isError: true,
+				timestamp: 6,
+			},
+			isError: true,
+		} satisfies AgentEvent);
+
+		await recorder.flush();
+
+		expect(resolveDelegation).toHaveBeenCalledWith(
+			expect.objectContaining({
+				delegationId: "delegation_1",
+				status: PlatformDelegationStatusValue.Failed,
+				errorMessage: "Codex subagent wait failed",
+			}),
+		);
 	});
 
 	it("clears Codex delegation ids when delegation resolution fails", async () => {
@@ -498,6 +741,42 @@ describe("hosted AgentRuntime progress recorder", () => {
 					},
 					isError: false,
 					timestamp: 3,
+				},
+				isError: false,
+			} satisfies AgentEvent);
+			await recorder.flush();
+
+			expect(resolveDelegation).not.toHaveBeenCalled();
+			expect(delegationIds.get("spawn-delegation-call")).toBe("delegation_1");
+
+			recorder.recordAgentEvent({
+				type: "tool_execution_start",
+				toolCallId: "wait-delegation-call",
+				toolName: "codex.subagent.wait",
+				displayName: "Codex subagent: wait",
+				args: {
+					codexTool: "wait",
+					receiverThreadIds: ["child-thread-1"],
+					childRunIds: ["agent-run-child-1"],
+				},
+			});
+			recorder.recordAgentEvent({
+				type: "tool_execution_end",
+				toolCallId: "wait-delegation-call",
+				toolName: "codex.subagent.wait",
+				displayName: "Codex subagent: wait",
+				result: {
+					role: "toolResult",
+					toolCallId: "wait-delegation-call",
+					toolName: "codex.subagent.wait",
+					content: [{ type: "text", text: "wait completed" }],
+					details: {
+						codexTool: "wait",
+						receiverThreadIds: ["child-thread-1"],
+						childRunIds: ["agent-run-child-1"],
+					},
+					isError: false,
+					timestamp: 4,
 				},
 				isError: false,
 			} satisfies AgentEvent);
@@ -580,6 +859,39 @@ describe("hosted AgentRuntime progress recorder", () => {
 					},
 					isError: false,
 					timestamp: 3,
+				},
+				isError: false,
+			} satisfies AgentEvent);
+			await recorder.flush();
+
+			recorder.recordAgentEvent({
+				type: "tool_execution_start",
+				toolCallId: "wait-delegation-call",
+				toolName: "codex.subagent.wait",
+				displayName: "Codex subagent: wait",
+				args: {
+					codexTool: "wait",
+					receiverThreadIds: ["child-thread-1"],
+					childRunIds: ["agent-run-child-1"],
+				},
+			});
+			recorder.recordAgentEvent({
+				type: "tool_execution_end",
+				toolCallId: "wait-delegation-call",
+				toolName: "codex.subagent.wait",
+				displayName: "Codex subagent: wait",
+				result: {
+					role: "toolResult",
+					toolCallId: "wait-delegation-call",
+					toolName: "codex.subagent.wait",
+					content: [{ type: "text", text: "wait completed" }],
+					details: {
+						codexTool: "wait",
+						receiverThreadIds: ["child-thread-1"],
+						childRunIds: ["agent-run-child-1"],
+					},
+					isError: false,
+					timestamp: 4,
 				},
 				isError: false,
 			} satisfies AgentEvent);
@@ -771,6 +1083,198 @@ describe("hosted AgentRuntime progress recorder", () => {
 				}),
 			}),
 		);
+	});
+
+	it("normalizes Codex subagent operation aliases before recording hosted work items", async () => {
+		const { recorder, recordWorkItem, updateWorkItem } = createRecorder();
+
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "spawn-snake",
+			toolName: "codex.subagent.spawn_agent",
+			displayName: "Codex subagent: spawn agent",
+			args: {
+				codexTool: "spawn_agent",
+				receiverThreadIds: ["child-thread-1"],
+				childRunIds: ["agent-run-child-1"],
+				prompt: "Review the remote runner",
+			},
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "wait-snake",
+			toolName: "codex.subagent.wait_agent",
+			displayName: "Codex subagent: wait",
+			args: {
+				codexTool: "wait_agent",
+				receiverThreadIds: ["child-thread-1"],
+				childRunIds: ["agent-run-child-1"],
+			},
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "close-snake",
+			toolName: "codex.subagent.close_agent",
+			displayName: "Codex subagent: close agent",
+			args: {
+				codexTool: "close_agent",
+				receiverThreadIds: ["child-thread-1"],
+				childRunIds: ["agent-run-child-1"],
+			},
+		});
+		recorder.recordAgentEvent({
+			type: "tool_execution_end",
+			toolCallId: "close-snake",
+			toolName: "codex.subagent.close_agent",
+			displayName: "Codex subagent: close agent",
+			result: {
+				role: "toolResult",
+				toolCallId: "close-snake",
+				toolName: "codex.subagent.close_agent",
+				content: [{ type: "text", text: "closed" }],
+				details: {
+					codexTool: "close_agent",
+					receiverThreadIds: ["child-thread-1"],
+					childRunIds: ["agent-run-child-1"],
+				},
+				isError: false,
+				timestamp: 4,
+			},
+			isError: false,
+		} satisfies AgentEvent);
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "send-after-close",
+			toolName: "codex.subagent.send_input",
+			displayName: "Codex subagent: send input",
+			args: {
+				codexTool: "send_input",
+				receiverThreadIds: ["child-thread-1"],
+				childRunIds: ["agent-run-child-1"],
+			},
+		});
+
+		await recorder.flush();
+
+		expect(recordWorkItem).toHaveBeenNthCalledWith(1, {
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:work:spawn-snake",
+				ownerChildRunId: "agent-run-child-1",
+				payload: expect.objectContaining({
+					codex_tool: "spawnAgent",
+				}),
+			}),
+		});
+		expect(recordWorkItem).toHaveBeenNthCalledWith(2, {
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:work:wait-snake",
+				parentWorkItemId: "maestro:session_1:work:spawn-snake",
+				kind: PlatformAgentWorkItemKindValue.Wait,
+				state: PlatformAgentWorkItemStateValue.Waiting,
+				nextAction: "wait for selected child agents",
+				payload: expect.objectContaining({
+					codex_tool: "wait",
+				}),
+			}),
+		});
+		expect(recordWorkItem).toHaveBeenNthCalledWith(3, {
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:work:close-snake",
+				parentWorkItemId: "maestro:session_1:work:spawn-snake",
+				nextAction: "confirm child agent shutdown",
+				payload: expect.objectContaining({
+					codex_tool: "closeAgent",
+				}),
+			}),
+		});
+		const sendAfterClose = recordWorkItem.mock.calls[3]?.[0]?.workItem;
+		expect(sendAfterClose).toEqual(
+			expect.objectContaining({
+				id: "maestro:session_1:work:send-after-close",
+				nextAction: "wait for child agent response",
+				payload: expect.objectContaining({
+					codex_tool: "sendInput",
+					linked_work_item_ids: [],
+				}),
+			}),
+		);
+		expect(sendAfterClose?.parentWorkItemId).toBeUndefined();
+		expect(updateWorkItem).toHaveBeenCalledWith(
+			expect.objectContaining({
+				workItemId: "maestro:session_1:work:close-snake",
+				state: PlatformAgentWorkItemStateValue.Succeeded,
+				payload: expect.objectContaining({
+					codex_tool: "closeAgent",
+				}),
+			}),
+		);
+	});
+
+	it("preserves future Codex subagent operation names as generic hosted work items", async () => {
+		const { recorder, recordWorkItem } = createRecorder();
+
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "broadcast-plan",
+			toolName: "codex.subagent.broadcastPlan",
+			displayName: "Codex subagent: broadcast plan",
+			args: {
+				codexTool: "broadcastPlan",
+				receiverThreadIds: ["child-thread-2"],
+				childRunIds: ["agent-run-child-2"],
+			},
+		});
+
+		await recorder.flush();
+
+		expect(recordWorkItem).toHaveBeenCalledWith({
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:work:broadcast-plan",
+				ownerChildRunId: "agent-run-child-2",
+				kind: PlatformAgentWorkItemKindValue.ChildRun,
+				state: PlatformAgentWorkItemStateValue.Running,
+				nextAction: "track Codex subagent collaboration",
+				payload: expect.objectContaining({
+					codex_tool: "broadcastPlan",
+					tool_name: "codex.subagent.broadcastPlan",
+					receiver_thread_ids: ["child-thread-2"],
+					child_run_ids: ["agent-run-child-2"],
+				}),
+			}),
+		});
+	});
+
+	it("records prototype-chain subagent suffixes as safe string fallbacks", async () => {
+		const { recorder, recordWorkItem } = createRecorder();
+
+		recorder.recordAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "proto-suffix",
+			toolName: "codex.subagent.__proto__",
+			displayName: "Codex subagent: unknown",
+			args: {
+				receiverThreadIds: ["child-thread-3"],
+				childRunIds: ["agent-run-child-3"],
+			},
+		});
+
+		await recorder.flush();
+
+		expect(recordWorkItem).toHaveBeenCalledWith({
+			runId: "run_1",
+			workItem: expect.objectContaining({
+				id: "maestro:session_1:work:proto-suffix",
+				nextAction: "track Codex subagent collaboration",
+				payload: expect.objectContaining({
+					codex_tool: "__proto__",
+					tool_name: "codex.subagent.__proto__",
+				}),
+			}),
+		});
 	});
 
 	it("records pending server requests as waits and resumes them on resolution", async () => {

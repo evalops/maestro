@@ -12,6 +12,7 @@ describe("printHelp", () => {
 		printHelp("0.0.0");
 
 		const output = log.mock.calls.map((call) => call.join(" ")).join("\n");
+		expect(output).toContain("maestro operating-plane");
 		expect(output).not.toContain("--legacy-runtime");
 		expect(output).not.toContain("Hidden Support Flags");
 		expect(output).not.toContain("--list-modes-all");

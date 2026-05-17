@@ -343,6 +343,82 @@ describe("headless protocol helpers", () => {
 		}
 	});
 
+	it("translates Codex subagent completion details into safe tool_end evidence", () => {
+		const translator = new HeadlessProtocolTranslator();
+		const messages = translator.handleAgentEvent({
+			type: "tool_execution_end",
+			toolCallId: "collab-spawn-complete",
+			toolName: "codex.subagent.spawnAgent",
+			result: {
+				role: "toolResult",
+				toolCallId: "collab-spawn-complete",
+				toolName: "codex.subagent.spawnAgent",
+				content: [{ type: "text", text: "Codex subagent completed." }],
+				details: {
+					receiverThreadIds: ["child-thread-complete"],
+					childRunIds: ["agent-run-child-complete"],
+					codexWorkGraph: {
+						schemaVersion: "evalops.maestro.codex.subagent-workgraph.v1",
+						childRuns: [
+							{
+								threadId: "child-thread-complete",
+								childRunId: "agent-run-child-complete",
+								operation: "spawnAgent",
+								prompt: "Sensitive nested child task prompt",
+							},
+						],
+					},
+					agentsStates: {
+						"child-thread-complete": {
+							status: "completed",
+							model: "sensitive-model-choice",
+						},
+					},
+					prompt: "Sensitive child task prompt",
+				},
+				isError: false,
+				timestamp: Date.now(),
+			},
+			isError: false,
+		});
+
+		expect(messages).toEqual([
+			{
+				type: "tool_end",
+				call_id: "collab-spawn-complete",
+				success: true,
+				tool: "codex.subagent.spawnAgent",
+				details: {
+					receiverThreadIds: ["child-thread-complete"],
+					childRunIds: ["agent-run-child-complete"],
+					codexWorkGraph: {
+						schemaVersion: "evalops.maestro.codex.subagent-workgraph.v1",
+						childRuns: [
+							{
+								threadId: "child-thread-complete",
+								childRunId: "agent-run-child-complete",
+								operation: "spawnAgent",
+							},
+						],
+					},
+					agentsStates: {
+						"child-thread-complete": { status: "completed" },
+					},
+				},
+			},
+		]);
+		expect(JSON.stringify(messages)).not.toContain(
+			"Sensitive child task prompt",
+		);
+		expect(JSON.stringify(messages)).not.toContain(
+			"Sensitive nested child task prompt",
+		);
+		expect(JSON.stringify(messages)).not.toContain("sensitive-model-choice");
+		for (const message of messages) {
+			expect(Value.Check(HeadlessFromAgentMessageSchema, message)).toBe(true);
+		}
+	});
+
 	it("translates approval requests into legacy and server_request messages", () => {
 		const translator = new HeadlessProtocolTranslator();
 		const messages = translator.handleAgentEvent({
@@ -684,6 +760,54 @@ describe("headless protocol helpers", () => {
 				thread_id: "child-thread-1",
 				operation: "spawn_agent",
 				status: "completed",
+			},
+		]);
+		expect(JSON.stringify(state.codex_subagent_edges)).not.toContain(
+			"Sensitive child task prompt",
+		);
+	});
+
+	it("uses Codex subagent completion details when start args omit child targets", () => {
+		const state = createHeadlessRuntimeState();
+
+		applyIncomingHeadlessMessage(state, {
+			type: "tool_call",
+			call_id: "collab-spawn-complete",
+			tool: "codex.subagent.spawnAgent",
+			args: {
+				receiverThreadIds: [],
+			},
+			requires_approval: false,
+		});
+		applyIncomingHeadlessMessage(state, {
+			type: "tool_end",
+			call_id: "collab-spawn-complete",
+			success: true,
+			tool: "codex.subagent.spawnAgent",
+			details: {
+				receiverThreadIds: ["child-thread-complete"],
+				childRunIds: ["agent-run-child-complete"],
+				codexWorkGraph: {
+					schemaVersion: "evalops.maestro.codex.subagent-workgraph.v1",
+					childRuns: [
+						{
+							threadId: "child-thread-complete",
+							childRunId: "agent-run-child-complete",
+							operation: "spawnAgent",
+						},
+					],
+				},
+				prompt: "Sensitive child task prompt",
+			},
+		});
+
+		expect(state.codex_subagent_edges).toEqual([
+			{
+				spawn_tool_call_id: "collab-spawn-complete",
+				child_run_id: "agent-run-child-complete",
+				thread_id: "child-thread-complete",
+				operation: "spawn_agent",
+				status: "spawned",
 			},
 		]);
 		expect(JSON.stringify(state.codex_subagent_edges)).not.toContain(
