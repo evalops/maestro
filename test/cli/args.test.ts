@@ -171,6 +171,31 @@ describe("parseArgs", () => {
 		});
 	});
 
+	it("preserves operating-plane command-group arguments for operator lookups", () => {
+		expect(
+			parseArgs([
+				"operating-plane",
+				"status",
+				"--thread-id",
+				"C123:1740000000.000100",
+				"--evidence-id",
+				"gateway:req_123",
+				"--json",
+			]),
+		).toMatchObject({
+			command: "operating-plane",
+			commandArgs: [
+				"status",
+				"--thread-id",
+				"C123:1740000000.000100",
+				"--evidence-id",
+				"gateway:req_123",
+				"--json",
+			],
+			messages: [],
+		});
+	});
+
 	it("preserves hosted-runner arguments for the hosted entrypoint", () => {
 		expect(
 			parseArgs([

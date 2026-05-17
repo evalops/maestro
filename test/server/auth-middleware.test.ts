@@ -19,9 +19,10 @@ interface MockResponse {
 function makeReq(
 	headers: Record<string, string> = {},
 	url = "/api/chat",
+	method = "GET",
 ): IncomingMessage {
 	return {
-		method: "GET",
+		method,
 		url,
 		headers,
 	} as IncomingMessage;
@@ -188,5 +189,44 @@ describe("createAuthMiddleware", () => {
 		expect(nextCalled).toBe(false);
 		expect(res.statusCode).toBe(401);
 		expect(JSON.parse(res.body)).toEqual({ error: "Unauthorized" });
+	});
+
+	it("can exempt an internal callback path from API key auth", async () => {
+		const { createAuthMiddleware } = await importMiddlewares({});
+		const middleware = createAuthMiddleware("web-api-key", corsHeaders, true, {
+			exemptPaths: ["/api/platform/a2a/push"],
+		});
+		const res = makeRes();
+		let nextCalled = false;
+
+		await middleware(makeReq({}, "/api/platform/a2a/push", "POST"), res, () => {
+			nextCalled = true;
+		});
+
+		expect(nextCalled).toBe(true);
+		expect(res.writableEnded).toBe(false);
+	});
+});
+
+describe("createCsrfMiddleware", () => {
+	afterEach(() => {
+		process.env = { ...originalEnv };
+		vi.resetModules();
+	});
+
+	it("can exempt an internal callback path from CSRF checks", async () => {
+		const { createCsrfMiddleware } = await importMiddlewares({});
+		const middleware = createCsrfMiddleware("csrf-token", corsHeaders, true, {
+			exemptPaths: ["/api/platform/a2a/push"],
+		});
+		const res = makeRes();
+		let nextCalled = false;
+
+		await middleware(makeReq({}, "/api/platform/a2a/push", "POST"), res, () => {
+			nextCalled = true;
+		});
+
+		expect(nextCalled).toBe(true);
+		expect(res.writableEnded).toBe(false);
 	});
 });

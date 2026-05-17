@@ -129,6 +129,7 @@ import { checkApiAuth, getAuthSubject } from "./server/authz.js";
 import { startAutomationScheduler } from "./server/automations/scheduler.js";
 import { clientToolService } from "./server/client-tools-service.js";
 import { handleChatWebSocket } from "./server/handlers/chat-ws.js";
+import { platformA2APushAuthBoundaryExemptPaths } from "./server/handlers/platform-a2a-push.js";
 import { handleRuntimeAppServerWebSocket } from "./server/handlers/runtime-app-server-ws.js";
 import {
 	sessionIdPattern,
@@ -253,6 +254,7 @@ const WEB_API_KEY = process.env.MAESTRO_WEB_API_KEY?.trim() || null;
 const requireKeyEnv = process.env.MAESTRO_WEB_REQUIRE_KEY;
 const requireRedisEnv = process.env.MAESTRO_WEB_REQUIRE_REDIS;
 const CSRF_TOKEN = process.env.MAESTRO_WEB_CSRF_TOKEN?.trim() || null;
+const AUTH_BOUNDARY_EXEMPT_PATHS = platformA2APushAuthBoundaryExemptPaths();
 const REQUIRE_CSRF =
 	(PROD_PROFILE && process.env.MAESTRO_WEB_REQUIRE_CSRF !== "0") ||
 	Boolean(process.env.MAESTRO_WEB_CSRF_TOKEN);
@@ -745,8 +747,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 				TRUST_PROXY_HOPS,
 			),
 			createCorsMiddleware(CORS_HEADERS),
-			createAuthMiddleware(WEB_API_KEY, CORS_HEADERS, REQUIRE_WEB_API_KEY),
-			createCsrfMiddleware(CSRF_TOKEN, CORS_HEADERS, REQUIRE_CSRF),
+			createAuthMiddleware(WEB_API_KEY, CORS_HEADERS, REQUIRE_WEB_API_KEY, {
+				exemptPaths: AUTH_BOUNDARY_EXEMPT_PATHS,
+			}),
+			createCsrfMiddleware(CSRF_TOKEN, CORS_HEADERS, REQUIRE_CSRF, {
+				exemptPaths: AUTH_BOUNDARY_EXEMPT_PATHS,
+			}),
 			createWorkspaceConfigMiddleware(CORS_HEADERS),
 			createRouterMiddleware(router),
 		]);

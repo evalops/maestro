@@ -1000,6 +1000,14 @@ export async function main(args: string[]) {
 		return;
 	}
 
+	if (parsed.command === "operating-plane") {
+		const { handleOperatingPlaneCommand } = await import(
+			"./cli/commands/operating-plane.js"
+		);
+		await handleOperatingPlaneCommand(parsed.commandArgs ?? []);
+		return;
+	}
+
 	if (parsed.command === "anthropic") {
 		const { handleAnthropicCommand } = await import(
 			"./cli/commands/anthropic.js"

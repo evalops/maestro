@@ -65,7 +65,9 @@
 				"codexDynamicToolStartEvent",
 				"codexDynamicToolEndEvent",
 				"provider_tool_execution_start",
-				"provider_tool_execution_end"
+				"provider_tool_execution_end",
+				"toolExecutionId",
+				"approvalRequestId"
 			]
 		},
 		{
@@ -87,7 +89,9 @@
 				"wakes the stream for quiet dynamic tool callbacks before later app-server notifications",
 				"Codex dynamic tool: lookup_ticket",
 				"provider_tool_execution_start",
-				"provider_tool_execution_end"
+				"provider_tool_execution_end",
+				"tool-exec-dynamic-1",
+				"approval-dynamic-1"
 			]
 		},
 		{
@@ -148,11 +152,20 @@
 				"does not reuse cached read results while mutating provider tools are pending",
 				"does not skip loop detection when cached reads run behind pending mutations",
 				"executes repeated non-read-only provider tool calls independently",
+				"records Platform observations for cached dynamic read callbacks",
 				"lets Codex dynamic tool callbacks wait for user approval instead of auto-denying",
+				"preserves Platform joins for denied Codex dynamic callbacks",
+				"returns workflow-state errors from cached dynamic callbacks",
 				"withTimeout",
 				"action_approval_required",
 				"ActionApprovalService(\"prompt\")",
-				"mcp_ticket_update"
+				"mcp_ticket_update",
+				"observed:dynamic-observed-read-1",
+				"approval:dynamic-observed-read-1",
+				"tool-exec-denied-dynamic-1",
+				"approval-denied-dynamic-1",
+				"observed:codex-dynamic-redact-1",
+				"observed:codex-dynamic-redact-2"
 			]
 		},
 		{
@@ -232,6 +245,8 @@
 				"ownerChildRunId",
 				"parentWorkItemId",
 				"codex_work_graph",
+				"deferred_until_child_terminal_edge",
+				"resolved_from_child_terminal_edge",
 				"recordCodexSubagentWorkItem",
 				"updateCodexSubagentWorkItem",
 				"sendInput",
@@ -273,6 +288,8 @@
 				"records Codex subagent collaboration as durable Platform work items",
 				"records Codex spawn handoffs as Platform agent-registry delegations",
 				"links follow-up Codex subagent tools to the spawned child work item",
+				"deferred_until_child_terminal_edge",
+				"resolved_from_child_terminal_edge",
 				"codex.subagent.spawnAgent",
 				"codex.subagent.sendInput",
 				"ownerChildRunId",

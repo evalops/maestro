@@ -128,6 +128,12 @@ describe("Platform core service contract names", () => {
 		expect(PLATFORM_HTTP_ROUTES.memory.recall).toBe("/v1/memories/recall");
 	});
 
+	it("pins the AgentRuntime operating-plane inspection HTTP route", () => {
+		expect(PLATFORM_HTTP_ROUTES.agentRuntime.operatingPlaneRuns).toBe(
+			"/v1/agent-operating-plane/runs",
+		);
+	});
+
 	it("pins identity HTTP routes used by EvalOps login and delegation", () => {
 		expect(PLATFORM_HTTP_ROUTES.identity.authGoogleStart).toBe(
 			"/v1/auth/google/start",

@@ -24,13 +24,19 @@ npm run check:codex-operating-layer
   the Maestro CLI.
 - TypeScript can run Codex app-server threads with dynamic tools, dynamic-tool
   lifecycle events, approval-gated dynamic callbacks, token usage, subagent
-  lifecycle events, and streaming output.
+  lifecycle events, and streaming output. Dynamic callback lifecycle events keep
+  Platform `toolExecutionId` and `approvalRequestId` joins, including denied
+  governance callbacks, so hosted timelines, approvals, and ToolExecution
+  governance can be audited without exposing those IDs to the model-facing tool
+  result payload.
 - Hosted Codex subagent collaboration records Platform AgentRun work items so
   parent/child work can be inspected, resumed, scored, and restored remotely.
   Spawned children also become Platform agent-registry delegations so ownership,
-  routing capability, resolution, and evidence refs survive remote execution.
-  TS and Rust both normalize child run ids and persist subagent edge lifecycle
-  state, so spawn/send/resume/wait/close edges survive drain and restore.
+  routing capability, resolution, and evidence refs survive remote execution;
+  spawn only opens the delegation, while wait/close or child restore failure
+  resolves it. TS and Rust both normalize child run ids and persist subagent
+  edge lifecycle state, so spawn/send/resume/wait/close edges survive drain and
+  restore.
 - Rust can expose the same Codex models through the control plane, bridge
   Codex headless runs, stream SSE/WebSocket events, handle approval requests,
   and preserve sandbox policy.
