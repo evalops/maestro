@@ -118,6 +118,7 @@ describe("agent registry service client", () => {
 					expect(body).toMatchObject({
 						fromAgentId: "maestro-parent",
 						requiredCapability: "code:review",
+						a2aSkillId: "maestro.subagent.code-review",
 						reason: "spawn requested",
 					});
 					expect(decodePayload(body?.contextPayload)).toEqual({
@@ -132,6 +133,11 @@ describe("agent registry service client", () => {
 								fromAgentId: "maestro-parent",
 								toAgentId: "maestro-child",
 								status: PlatformDelegationStatusValue.Pending,
+								a2aTaskId: "remote_task_1",
+								a2aMessageId: "a2a-delegation_1",
+								a2aEndpointUrl: "https://peer.test/a2a/message:send",
+								a2aDispatchStatus: "submitted",
+								a2aSkillId: "maestro.subagent.code-review",
 							},
 						}),
 						{ status: 200, headers: { "Content-Type": "application/json" } },
@@ -164,6 +170,7 @@ describe("agent registry service client", () => {
 			delegateAgentWithPlatform({
 				fromAgentId: "maestro-parent",
 				requiredCapability: "code:review",
+				a2aSkillId: "maestro.subagent.code-review",
 				contextPayload: {
 					agent_run_id: "run_1",
 					child_run_ids: ["agent-run-child-1"],
@@ -177,6 +184,11 @@ describe("agent registry service client", () => {
 				fromAgentId: "maestro-parent",
 				toAgentId: "maestro-child",
 				status: PlatformDelegationStatusValue.Pending,
+				a2aTaskId: "remote_task_1",
+				a2aMessageId: "a2a-delegation_1",
+				a2aEndpointUrl: "https://peer.test/a2a/message:send",
+				a2aDispatchStatus: "submitted",
+				a2aSkillId: "maestro.subagent.code-review",
 			},
 		});
 		await expect(

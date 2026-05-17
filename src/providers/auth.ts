@@ -255,19 +255,12 @@ function resolveEvalOpsRequestMetadata(
 		agentMcp?.agent_id,
 		readFirstEnv(["MAESTRO_EVALOPS_AGENT_ID", "MAESTRO_AGENT_ID"]),
 	);
-	const legacyRunID = firstNonEmptyString(
+	const platformRunID = firstNonEmptyString(
 		metadata?.runId,
 		metadata?.run_id,
 		agentMcp?.runId,
 		agentMcp?.run_id,
 		readFirstEnv(["MAESTRO_EVALOPS_RUN_ID"]),
-	);
-	const platformSessionID = firstNonEmptyString(
-		metadata?.sessionId,
-		metadata?.session_id,
-		agentMcp?.sessionId,
-		agentMcp?.session_id,
-		readFirstEnv(["MAESTRO_EVALOPS_SESSION_ID"]),
 	);
 	const agentRunID = firstNonEmptyString(
 		metadata?.agentRunId,
@@ -275,9 +268,16 @@ function resolveEvalOpsRequestMetadata(
 		agentMcp?.agentRunId,
 		agentMcp?.agent_run_id,
 		readFirstEnv(["MAESTRO_AGENT_RUN_ID", "MAESTRO_EVALOPS_AGENT_RUN_ID"]),
-		legacyRunID,
+		platformRunID,
 	);
-	const runID = legacyRunID ?? agentRunID;
+	const runID = platformRunID ?? agentRunID;
+	const platformSessionID = firstNonEmptyString(
+		metadata?.sessionId,
+		metadata?.session_id,
+		agentMcp?.sessionId,
+		agentMcp?.session_id,
+		readFirstEnv(["MAESTRO_EVALOPS_SESSION_ID"]),
+	);
 	const maestroSessionID = firstNonEmptyString(
 		metadata?.maestroSessionId,
 		metadata?.maestro_session_id,
