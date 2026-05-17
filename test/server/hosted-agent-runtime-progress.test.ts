@@ -386,6 +386,7 @@ describe("hosted AgentRuntime progress recorder", () => {
 			expect.objectContaining({
 				fromAgentId: "maestro-codex-parent",
 				requiredCapability: "code:review",
+				a2aSkillId: "maestro.subagent.code-review",
 				reason:
 					"Codex subagent spawn requested by Maestro: Audit remote runner drain behavior",
 				contextPayload: expect.objectContaining({
@@ -405,6 +406,7 @@ describe("hosted AgentRuntime progress recorder", () => {
 						],
 					}),
 					required_capability: "code:review",
+					a2a_skill_id: "maestro.subagent.code-review",
 				}),
 			}),
 		);

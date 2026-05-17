@@ -248,6 +248,116 @@ function codexSubagentDelegationRequiredCapability(
 	);
 }
 
+function codexSubagentDelegationA2ASkillID(
+	args: Record<string, unknown>,
+	requiredCapability?: string,
+): string | undefined {
+	const explicit =
+		nonEmptyString(args.a2aSkillId) ??
+		nonEmptyString(args.a2a_skill_id) ??
+		nonEmptyString(args.agentSkillId) ??
+		nonEmptyString(args.agent_skill_id) ??
+		nonEmptyString(args.subagentSkillId) ??
+		nonEmptyString(args.subagent_skill_id) ??
+		nonEmptyString(args.skillId) ??
+		nonEmptyString(args.skill_id);
+	if (explicit) {
+		return explicit.trim();
+	}
+	const subagentType =
+		nonEmptyString(args.agentType) ??
+		nonEmptyString(args.agent_type) ??
+		nonEmptyString(args.subagentType) ??
+		nonEmptyString(args.subagent_type);
+	return (
+		codexSubagentTypeA2ASkillID(subagentType) ??
+		codexSubagentCapabilityA2ASkillID(requiredCapability)
+	);
+}
+
+function codexSubagentTypeA2ASkillID(
+	value: string | undefined,
+): string | undefined {
+	const token = codexSubagentSkillToken(value);
+	if (!token) {
+		return undefined;
+	}
+	switch (token) {
+		case "pr-review":
+		case "review":
+		case "reviewer":
+		case "code-review":
+		case "code-reviewer":
+			return "maestro.subagent.code-review";
+		case "test":
+		case "qa":
+		case "ci":
+		case "ci-monitor":
+		case "test-runner":
+			return "maestro.subagent.test-runner";
+		case "explore":
+		case "explorer":
+		case "repo-explorer":
+		case "research":
+		case "competitive-intel":
+		case "people-research":
+			return "maestro.subagent.repo-explorer";
+		case "release":
+		case "release-shepherd":
+			return "maestro.subagent.release-shepherd";
+		case "worker":
+		case "coder":
+		case "code":
+		case "code-writer":
+		case "default":
+			return "maestro.subagent.code-writer";
+		default:
+			return `maestro.subagent.${token}`;
+	}
+}
+
+function codexSubagentCapabilityA2ASkillID(
+	value: string | undefined,
+): string | undefined {
+	const token = codexSubagentSkillToken(value);
+	if (!token) {
+		return undefined;
+	}
+	switch (token) {
+		case "code-review":
+			return "maestro.subagent.code-review";
+		case "code-test":
+		case "test-run":
+		case "test-runner":
+			return "maestro.subagent.test-runner";
+		case "repo-explore":
+		case "repo-explorer":
+		case "code-search":
+			return "maestro.subagent.repo-explorer";
+		case "release-shepherd":
+		case "release-manage":
+			return "maestro.subagent.release-shepherd";
+		case "code-write":
+		case "code-edit":
+		case "code-implement":
+			return "maestro.subagent.code-writer";
+		default:
+			return `maestro.subagent.${token}`;
+	}
+}
+
+function codexSubagentSkillToken(
+	value: string | undefined,
+): string | undefined {
+	const token = value
+		?.trim()
+		.toLowerCase()
+		.replace(/[:_/. ]+/g, "-")
+		.replace(/-{2,}/g, "-")
+		.replace(/^-|-$/g, "");
+	return token || undefined;
+}
+
 function codexSubagentDelegationReason(prompt: string | undefined): string {
 	if (!prompt) {
 		return "Codex subagent spawn requested by Maestro";
@@ -876,11 +986,16 @@ export class HostedAgentRuntimeProgressRecorder {
 			input.event.args,
 			toAgentId,
 		);
+		const a2aSkillId = codexSubagentDelegationA2ASkillID(
+			input.event.args,
+			requiredCapability,
+		);
 		this.enqueue(async () => {
 			const result = await this.operations.delegateAgent({
 				fromAgentId,
 				...(toAgentId ? { toAgentId } : {}),
 				...(requiredCapability ? { requiredCapability } : {}),
+				...(a2aSkillId ? { a2aSkillId } : {}),
 				contextPayload: this.basePayload({
 					event_type: "codex_subagent_delegation_requested",
 					codex_tool: "spawnAgent",
@@ -895,6 +1010,7 @@ export class HostedAgentRuntimeProgressRecorder {
 					from_agent_id: fromAgentId,
 					to_agent_id: toAgentId,
 					required_capability: requiredCapability,
+					a2a_skill_id: a2aSkillId,
 					sender_thread_id: nonEmptyString(input.event.args.senderThreadId),
 					receiver_thread_ids: input.receiverThreadIds,
 					child_run_ids: input.childRunIds,

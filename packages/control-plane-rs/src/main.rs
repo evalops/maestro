@@ -3750,10 +3750,12 @@ fn a2a_extended_agent_card(head: &RequestHead, config: &Config) -> Value {
                         "workspaceId",
                         "sessionId",
                         "agentId",
+                        "a2aSkillId",
                         "actorId",
                         "traceparent",
                         "tracestate"
                     ],
+                    "subagentRequestMetadataPath": "evalops.subagentRequest",
                     "retentionFields": ["data_classification", "retention_class", "safe_summary"]
                 }
             }),
@@ -3782,9 +3784,11 @@ fn a2a_operating_plane_extension(extended: bool) -> Value {
                 "workspaceId",
                 "sessionId",
                 "agentId",
+                "a2aSkillId",
                 "actorId",
                 "traceparent",
                 "tracestate",
+                "evalops.subagentRequest",
                 "data_classification",
                 "retention_class",
                 "safe_summary"
@@ -3834,7 +3838,71 @@ fn a2a_agent_skills() -> Value {
     if let Some(model) = trimmed_env("MAESTRO_A2A_MODEL") {
         skill["metadata"] = serde_json::json!({ "defaultModel": model });
     }
-    Value::Array(vec![skill])
+    Value::Array(vec![
+        skill,
+        a2a_subagent_skill(
+            "maestro.subagent.code-writer",
+            "Maestro code writer subagent",
+            "Delegate bounded implementation work to a target-owned Maestro coding child agent.",
+            &["maestro", "subagent", "code", "write"],
+            "code-writer",
+        ),
+        a2a_subagent_skill(
+            "maestro.subagent.code-review",
+            "Maestro code review subagent",
+            "Delegate code review and risk analysis to a target-owned Maestro review child agent.",
+            &["maestro", "subagent", "code", "review"],
+            "code-review",
+        ),
+        a2a_subagent_skill(
+            "maestro.subagent.test-runner",
+            "Maestro test runner subagent",
+            "Delegate test execution, failure triage, and verification evidence capture to a target-owned Maestro child agent.",
+            &["maestro", "subagent", "test", "ci"],
+            "test-runner",
+        ),
+        a2a_subagent_skill(
+            "maestro.subagent.repo-explorer",
+            "Maestro repo explorer subagent",
+            "Delegate repository inspection and context gathering to a target-owned Maestro exploration child agent.",
+            &["maestro", "subagent", "repo", "explore"],
+            "repo-explorer",
+        ),
+        a2a_subagent_skill(
+            "maestro.subagent.release-shepherd",
+            "Maestro release shepherd subagent",
+            "Delegate release, rollout, and merge-follow-through work to a target-owned Maestro child agent.",
+            &["maestro", "subagent", "release", "deploy"],
+            "release-shepherd",
+        ),
+    ])
+}
+
+fn a2a_subagent_skill(
+    id: &str,
+    name: &str,
+    description: &str,
+    tags: &[&str],
+    lane_id: &str,
+) -> Value {
+    serde_json::json!({
+        "id": id,
+        "name": name,
+        "description": description,
+        "tags": tags,
+        "inputModes": ["text/plain", "application/json"],
+        "outputModes": ["text/plain", "application/json"],
+        "metadata": {
+            "evalopsSkillKind": "maestro-subagent",
+            "subagentLaneId": lane_id,
+            "operatingPlaneExtension": EVALOPS_A2A_EXTENSION_URI,
+            "requestMetadataPath": "evalops.subagentRequest",
+            "approvalPolicy": "target-maestro-policy",
+            "contextGrantPolicy": "bounded-policy-grants",
+            "resultPolicy": "summary-and-artifacts",
+            "workGraph": "target AgentRun child-agent work items"
+        }
+    })
 }
 
 fn a2a_public_base_url(_head: &RequestHead, config: &Config) -> String {
@@ -12891,6 +12959,25 @@ setTimeout(() => {
             "x-maestro-api-key"
         );
         assert_eq!(card["skills"][0]["id"], "maestro-tui-turn");
+        let skill_ids = card["skills"]
+            .as_array()
+            .expect("skills should be an array")
+            .iter()
+            .filter_map(|skill| skill.get("id").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert!(skill_ids.contains(&"maestro.subagent.code-review"));
+        assert!(skill_ids.contains(&"maestro.subagent.test-runner"));
+        assert!(skill_ids.contains(&"maestro.subagent.repo-explorer"));
+        let code_review_skill = card["skills"]
+            .as_array()
+            .expect("skills should be an array")
+            .iter()
+            .find(|skill| skill["id"] == "maestro.subagent.code-review")
+            .expect("code review subagent skill should be advertised");
+        assert_eq!(
+            code_review_skill["metadata"]["requestMetadataPath"],
+            "evalops.subagentRequest"
+        );
         if let Some(previous_a2a_url) = previous_a2a_url {
             env::set_var("MAESTRO_A2A_PUBLIC_URL", previous_a2a_url);
         } else {

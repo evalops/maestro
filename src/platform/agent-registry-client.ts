@@ -96,12 +96,19 @@ export interface PlatformDelegationRecord {
 	errorMessage?: string;
 	createdAt?: string;
 	resolvedAt?: string;
+	a2aTaskId?: string;
+	a2aMessageId?: string;
+	a2aEndpointUrl?: string;
+	a2aDispatchStatus?: string;
+	a2aDispatchError?: string;
+	a2aSkillId?: string;
 }
 
 export interface PlatformAgentRegistryDelegateInput {
 	fromAgentId: string;
 	toAgentId?: string;
 	requiredCapability?: string;
+	a2aSkillId?: string;
 	objectiveId?: string;
 	workflowRunId?: string;
 	workflowStepId?: string;
@@ -199,6 +206,20 @@ function normalizeDelegation(
 		errorMessage: firstString(record, "errorMessage", "error_message"),
 		createdAt: firstString(record, "createdAt", "created_at"),
 		resolvedAt: firstString(record, "resolvedAt", "resolved_at"),
+		a2aTaskId: firstString(record, "a2aTaskId", "a2a_task_id"),
+		a2aMessageId: firstString(record, "a2aMessageId", "a2a_message_id"),
+		a2aEndpointUrl: firstString(record, "a2aEndpointUrl", "a2a_endpoint_url"),
+		a2aDispatchStatus: firstString(
+			record,
+			"a2aDispatchStatus",
+			"a2a_dispatch_status",
+		),
+		a2aDispatchError: firstString(
+			record,
+			"a2aDispatchError",
+			"a2a_dispatch_error",
+		),
+		a2aSkillId: firstString(record, "a2aSkillId", "a2a_skill_id"),
 	}) as PlatformDelegationRecord;
 }
 
@@ -284,6 +305,7 @@ export async function delegateAgentWithPlatform(
 			fromAgentId: input.fromAgentId,
 			toAgentId: input.toAgentId,
 			requiredCapability: input.requiredCapability,
+			a2aSkillId: input.a2aSkillId,
 			objectiveId: input.objectiveId,
 			workflowRunId: input.workflowRunId,
 			workflowStepId: input.workflowStepId,
