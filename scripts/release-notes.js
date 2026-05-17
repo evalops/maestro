@@ -2,11 +2,14 @@
 // @ts-check
 
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const DEFAULT_MAX_ITEMS_PER_SECTION = 12;
 const SECTION_ORDER = ["Added", "Changed", "Fixed"];
+const RELEASE_NOTE_MARKER_PATTERN =
+	/<!--\s*maestro-release-note:([a-f0-9]{12})\s*-->/i;
 
 const MIRROR_SYNC_SUBJECTS = [
 	/^chore:\s+sync public mirror from internal\b/i,
@@ -59,10 +62,40 @@ export function formatReleaseNoteSubject(subject) {
 }
 
 /**
+ * @param {string} subject
+ */
+function getReleaseNoteMarker(subject) {
+	return createHash("sha256").update(subject.trim()).digest("hex").slice(0, 12);
+}
+
+/**
+ * @param {string} note
+ * @param {string} subject
+ */
+function appendReleaseNoteMarker(note, subject) {
+	return `${note} <!-- maestro-release-note:${getReleaseNoteMarker(subject)} -->`;
+}
+
+/**
+ * @param {string} line
+ */
+function extractReleaseNoteMarker(line) {
+	return line.match(RELEASE_NOTE_MARKER_PATTERN)?.[1] ?? "";
+}
+
+/**
+ * @param {string} line
+ */
+function stripReleaseNoteMarker(line) {
+	return line.replace(RELEASE_NOTE_MARKER_PATTERN, "").trim();
+}
+
+/**
  * @param {string[]} subjects
- * @param {{ maxItemsPerSection?: number }} [options]
+ * @param {{ includeMarkers?: boolean; maxItemsPerSection?: number }} [options]
  */
 export function groupReleaseNotes(subjects, options = {}) {
+	const includeMarkers = options.includeMarkers ?? false;
 	const maxItemsPerSection =
 		options.maxItemsPerSection ?? DEFAULT_MAX_ITEMS_PER_SECTION;
 	/** @type {Record<string, string[]>} */
@@ -84,7 +117,9 @@ export function groupReleaseNotes(subjects, options = {}) {
 		seen.add(note);
 		const section = classifyReleaseNoteSubject(subject);
 		if (grouped[section].length < maxItemsPerSection) {
-			grouped[section].push(note);
+			grouped[section].push(
+				includeMarkers ? appendReleaseNoteMarker(note, subject) : note,
+			);
 		}
 	}
 
@@ -103,6 +138,7 @@ export function groupReleaseNotes(subjects, options = {}) {
 export function buildChangelogEntry(options) {
 	const date = options.date ?? new Date().toISOString().slice(0, 10);
 	const grouped = groupReleaseNotes(options.subjects, {
+		includeMarkers: true,
 		maxItemsPerSection: options.maxItemsPerSection,
 	});
 	const lines = [`## [${options.version}] - ${date}`];
@@ -180,14 +216,51 @@ function parseChangelogEntrySections(entry) {
 }
 
 /**
+ * @param {string} line
+ */
+function getSectionLineIdentityKeys(line) {
+	const marker = extractReleaseNoteMarker(line);
+	const visibleLine = stripReleaseNoteMarker(line);
+	const keys = [];
+	if (marker) {
+		keys.push(`marker:${marker}`);
+	}
+	if (visibleLine) {
+		keys.push(`visible:${visibleLine}`);
+	}
+	return keys;
+}
+
+/**
+ * @param {Record<string, string[]>} sections
+ */
+function getExistingSectionLineKeys(sections) {
+	const keys = new Set();
+	for (const lines of Object.values(sections)) {
+		for (const line of lines) {
+			for (const key of getSectionLineIdentityKeys(line)) {
+				keys.add(key);
+			}
+		}
+	}
+	return keys;
+}
+
+/**
  * @param {Record<string, string[]>} sections
  * @param {string} section
  * @param {string} line
+ * @param {Set<string>} existingKeys
  */
-function pushUniqueSectionLine(sections, section, line) {
+function pushUniqueSectionLine(sections, section, line, existingKeys) {
 	sections[section] ??= [];
-	if (!sections[section].includes(line)) {
-		sections[section].push(line);
+	const lineKeys = getSectionLineIdentityKeys(line);
+	if (lineKeys.some((key) => existingKeys.has(key))) {
+		return;
+	}
+	sections[section].push(line);
+	for (const key of lineKeys) {
+		existingKeys.add(key);
 	}
 }
 
@@ -232,10 +305,11 @@ export function mergeOrInsertChangelogEntry(content, version, entry) {
 	const existingEntry = parseChangelogEntrySections(existing);
 	const generatedEntry = parseChangelogEntrySections(entry);
 	const mergedSections = { ...existingEntry.sections };
+	const existingLineKeys = getExistingSectionLineKeys(mergedSections);
 
 	for (const section of Object.keys(generatedEntry.sections)) {
 		for (const line of generatedEntry.sections[section] ?? []) {
-			pushUniqueSectionLine(mergedSections, section, line);
+			pushUniqueSectionLine(mergedSections, section, line, existingLineKeys);
 		}
 	}
 
