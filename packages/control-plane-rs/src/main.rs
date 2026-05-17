@@ -916,7 +916,7 @@ async fn handle_a2a_endpoint(
     if head.method == "POST" {
         if let Some(task_id) = a2a_task_id_from_cancel_path(&head.path) {
             return match cancel_a2a_task(state, task_id, &auth).await {
-                Ok(task) => json_response(200, &task),
+                Ok(task) => json_response(200, &a2a_public_task(&task)),
                 Err(response) => response,
             };
         }
@@ -1047,8 +1047,11 @@ async fn handle_a2a_message_stream(
         return Err(error.to_string());
     }
     if let Some(task) = state.a2a_tasks.lock().await.get(&task_id).cloned() {
-        if let Err(error) =
-            send_a2a_stream_response(stream, &serde_json::json!({ "task": task })).await
+        if let Err(error) = send_a2a_stream_response(
+            stream,
+            &serde_json::json!({ "task": a2a_public_task(&task) }),
+        )
+        .await
         {
             state.a2a_cancel_senders.lock().await.remove(&task_id);
             rollback_a2a_send_claim(state, &task_id, previous_task.take()).await;
@@ -1078,7 +1081,11 @@ async fn handle_a2a_message_stream(
         )
         .await?;
     }
-    send_a2a_stream_response(stream, &serde_json::json!({ "task": task })).await?;
+    send_a2a_stream_response(
+        stream,
+        &serde_json::json!({ "task": a2a_public_task(&task) }),
+    )
+    .await?;
     let _ = stream.shutdown().await;
     Ok(())
 }
@@ -1279,7 +1286,11 @@ async fn send_a2a_subscribe_task_update(
             )
             .await?;
         }
-        send_a2a_stream_response(stream, &serde_json::json!({ "task": task })).await?;
+        send_a2a_stream_response(
+            stream,
+            &serde_json::json!({ "task": a2a_public_task(task) }),
+        )
+        .await?;
         return Ok(true);
     }
     Ok(false)
@@ -1309,6 +1320,7 @@ fn a2a_stream_event_name(value: &Value) -> Option<&'static str> {
 }
 
 fn a2a_status_update_event(task: &Value) -> Value {
+    let task = a2a_public_task(task);
     serde_json::json!({
         "taskId": task.get("id").cloned().unwrap_or(Value::Null),
         "contextId": task.get("contextId").cloned().unwrap_or(Value::Null),
@@ -1318,6 +1330,7 @@ fn a2a_status_update_event(task: &Value) -> Value {
 }
 
 fn a2a_artifact_update_event(task: &Value, artifact: &Value) -> Value {
+    let task = a2a_public_task(task);
     serde_json::json!({
         "taskId": task.get("id").cloned().unwrap_or(Value::Null),
         "contextId": task.get("contextId").cloned().unwrap_or(Value::Null),
@@ -1326,6 +1339,69 @@ fn a2a_artifact_update_event(task: &Value, artifact: &Value) -> Value {
         "lastChunk": true,
         "metadata": task.get("metadata").cloned().unwrap_or_else(|| serde_json::json!({}))
     })
+}
+
+fn a2a_public_task(task: &Value) -> Value {
+    let mut task = task.clone();
+    a2a_redact_push_notification_metadata(&mut task);
+    task
+}
+
+fn a2a_redact_push_notification_metadata(task: &mut Value) {
+    let Some(metadata) = task.get_mut("metadata").and_then(Value::as_object_mut) else {
+        return;
+    };
+    let Some(configs) = metadata
+        .get_mut(A2A_PUSH_NOTIFICATION_CONFIG_METADATA_KEY)
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    for config in configs {
+        a2a_redact_push_notification_secret_fields(config);
+    }
+}
+
+fn a2a_redacted_push_notification_config(config: &Value) -> Value {
+    let mut config = config.clone();
+    a2a_redact_push_notification_secret_fields(&mut config);
+    config
+}
+
+fn a2a_redact_push_notification_secret_fields(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            for (key, value) in object {
+                if a2a_push_notification_secret_key(key) {
+                    *value = Value::String("<redacted>".to_string());
+                } else {
+                    a2a_redact_push_notification_secret_fields(value);
+                }
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                a2a_redact_push_notification_secret_fields(value);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn a2a_push_notification_secret_key(key: &str) -> bool {
+    let normalized = key.replace(['_', '-', '.', ' '], "").to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "token"
+            | "authtoken"
+            | "bearertoken"
+            | "authorization"
+            | "authorizationheader"
+            | "credential"
+            | "credentials"
+            | "secret"
+            | "password"
+    )
 }
 
 async fn cancel_a2a_task(
@@ -1865,12 +1941,12 @@ fn dispatch_a2a_push_notifications(task: &Value) {
     }
     let payloads = a2a_push_notification_payloads(task);
     for config in configs {
-        for payload in payloads.clone() {
-            let config = config.clone();
-            let _ = tokio::task::spawn_blocking(move || {
+        let payloads = payloads.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            for payload in payloads {
                 send_a2a_push_notification(&payload, &config);
-            });
-        }
+            }
+        });
     }
 }
 
@@ -1914,6 +1990,7 @@ fn send_a2a_push_notification(payload: &Value, config: &Value) {
     ));
     let Ok(client) = reqwest::blocking::Client::builder()
         .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none())
         .build()
     else {
         return;
@@ -1941,6 +2018,16 @@ fn a2a_push_authorization_header(authentication: &Map<String, Value>) -> Option<
         .get("scheme")
         .and_then(Value::as_str)
         .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            authentication
+                .get("schemes")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .find_map(Value::as_str)
+                .map(str::trim)
+        })
         .filter(|value| !value.is_empty())?;
     let credentials = authentication
         .get("credentials")
@@ -2400,7 +2487,7 @@ fn a2a_task_for_query(
     include_artifacts: bool,
     history_length: Option<usize>,
 ) -> Value {
-    let mut task = task.clone();
+    let mut task = a2a_public_task(task);
     if !include_artifacts {
         if let Some(task) = task.as_object_mut() {
             task.remove("artifacts");
@@ -2982,6 +3069,9 @@ async fn handle_a2a_push_notification_config_list(
         200,
         &serde_json::json!({
             "configs": a2a_task_push_notification_configs(task)
+                .iter()
+                .map(a2a_redacted_push_notification_config)
+                .collect::<Vec<_>>()
         }),
     )
 }
@@ -3010,7 +3100,7 @@ async fn handle_a2a_push_notification_config_get(
                     "A2A push notification config not found",
                 )
             },
-            |config| json_response(200, &config),
+            |config| json_response(200, &a2a_redacted_push_notification_config(&config)),
         )
 }
 
@@ -3055,7 +3145,7 @@ async fn handle_a2a_push_notification_config_create(
     tasks.insert(task_id.to_string(), task.clone());
     drop(tasks);
     persist_a2a_tasks(state).await;
-    json_response(200, &config)
+    json_response(200, &a2a_redacted_push_notification_config(&config))
 }
 
 async fn handle_a2a_push_notification_config_delete(
@@ -3137,7 +3227,7 @@ async fn handle_a2a_message_send(
     }
     if let Some(task) = a2a_canceled_task(state, &task_id).await {
         state.a2a_cancel_senders.lock().await.remove(&task_id);
-        return json_response(200, &serde_json::json!({ "task": task }));
+        return json_response(200, &serde_json::json!({ "task": a2a_public_task(&task) }));
     }
     if return_immediately {
         let accepted_message = a2a_agent_message(&context_id, "Maestro accepted the A2A task.");
@@ -3166,14 +3256,14 @@ async fn handle_a2a_message_send(
             )
             .await;
         });
-        return json_response(200, &serde_json::json!({ "task": task }));
+        return json_response(200, &serde_json::json!({ "task": a2a_public_task(&task) }));
     }
 
     let task = complete_a2a_task(
         state, prompt, task_id, context_id, history, metadata, cancel_rx,
     )
     .await;
-    json_response(200, &serde_json::json!({ "task": task }))
+    json_response(200, &serde_json::json!({ "task": a2a_public_task(&task) }))
 }
 
 async fn complete_a2a_task(
@@ -12740,6 +12830,14 @@ setTimeout(() => {
         );
         assert_eq!(
             task["metadata"]["pushNotificationConfigs"][0]["token"],
+            "<redacted>"
+        );
+        let stored_tasks = state.a2a_tasks.lock().await;
+        let stored_task = stored_tasks
+            .get(task["id"].as_str().expect("task id should be a string"))
+            .expect("task should be stored");
+        assert_eq!(
+            stored_task["metadata"]["pushNotificationConfigs"][0]["token"],
             "notify-token"
         );
         assert!(task["metadata"].get("configuration").is_none());
@@ -12870,6 +12968,21 @@ setTimeout(() => {
         assert!(a2a_push_ip_is_private(mapped_loopback));
     }
 
+    #[test]
+    fn a2a_push_authorization_header_accepts_schemes_list() {
+        let authentication = serde_json::json!({
+            "schemes": ["Bearer"],
+            "credentials": "secret"
+        });
+        let header = a2a_push_authorization_header(
+            authentication
+                .as_object()
+                .expect("authentication should be an object"),
+        );
+
+        assert_eq!(header.as_deref(), Some("Bearer secret"));
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn a2a_message_send_ignores_push_config_metadata_smuggling() {
         let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
@@ -12960,6 +13073,12 @@ setTimeout(() => {
             response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
         assert_eq!(created["id"], "notify-1");
         assert_eq!(created["taskId"], "task-push");
+        assert_eq!(created["token"], "<redacted>");
+        assert_eq!(
+            state.a2a_tasks.lock().await["task-push"]["metadata"]["pushNotificationConfigs"][0]
+                ["token"],
+            "notify-token"
+        );
         assert!(state.a2a_task_event_history.lock().await.is_empty());
 
         let mut initial =
@@ -12969,6 +13088,7 @@ setTimeout(() => {
         let listed =
             response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
         assert_eq!(listed["configs"][0]["id"], "notify-1");
+        assert_eq!(listed["configs"][0]["token"], "<redacted>");
 
         let mut initial =
             b"GET /tasks/task-push/pushNotificationConfigs/notify-1 HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\n\r\n".to_vec();
@@ -12976,7 +13096,7 @@ setTimeout(() => {
         let (_client, mut server) = tcp_stream_pair().await;
         let fetched =
             response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
-        assert_eq!(fetched["token"], "notify-token");
+        assert_eq!(fetched["token"], "<redacted>");
 
         let mut initial =
             b"DELETE /tasks/task-push/pushNotificationConfigs/notify-1 HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\n\r\n".to_vec();
