@@ -3014,7 +3014,6 @@ async fn handle_a2a_push_notification_config_create(
     };
     tasks.insert(task_id.to_string(), task.clone());
     drop(tasks);
-    publish_a2a_task_update(state, &task).await;
     persist_a2a_tasks(state).await;
     json_response(200, &config)
 }
@@ -3037,7 +3036,6 @@ async fn handle_a2a_push_notification_config_delete(
     };
     tasks.insert(task_id.to_string(), task.clone());
     drop(tasks);
-    publish_a2a_task_update(state, &task).await;
     persist_a2a_tasks(state).await;
     json_response(200, &serde_json::json!({}))
 }
@@ -12792,6 +12790,7 @@ setTimeout(() => {
         assert!(payloads[1]["artifactUpdate"]["metadata"]
             .get(A2A_PUSH_NOTIFICATION_CONFIG_METADATA_KEY)
             .is_none());
+        assert_eq!(payloads[2]["task"]["metadata"]["workspaceId"], "ws-1");
         assert!(payloads[2]["task"]["metadata"]
             .get(A2A_PUSH_NOTIFICATION_CONFIG_METADATA_KEY)
             .is_none());
@@ -12921,6 +12920,7 @@ setTimeout(() => {
             response_json(handle_a2a_endpoint(&mut server, &mut initial, head, &state).await);
         assert_eq!(created["id"], "notify-1");
         assert_eq!(created["taskId"], "task-push");
+        assert!(state.a2a_task_event_history.lock().await.is_empty());
 
         let mut initial =
             b"GET /tasks/task-push/pushNotificationConfigs HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\n\r\n".to_vec();
@@ -12948,6 +12948,7 @@ setTimeout(() => {
         assert!(state.a2a_tasks.lock().await["task-push"]["metadata"]
             .get("pushNotificationConfigs")
             .is_none());
+        assert!(state.a2a_task_event_history.lock().await.is_empty());
 
         let mut initial =
             b"DELETE /tasks/task-push/pushNotificationConfigs/notify-1 HTTP/1.1\r\nHost: localhost\r\nx-maestro-api-key: api-key\r\n\r\n".to_vec();
