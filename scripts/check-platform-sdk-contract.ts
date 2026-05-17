@@ -255,6 +255,17 @@ async function assertMemoryContract(
 	}
 }
 
+function assertAgentRuntimeHttpContract(): void {
+	if (
+		PLATFORM_HTTP_ROUTES.agentRuntime.operatingPlaneRuns !==
+		"/v1/agent-operating-plane/runs"
+	) {
+		throw new Error(
+			`agent runtime operating-plane HTTP route drifted: ${PLATFORM_HTTP_ROUTES.agentRuntime.operatingPlaneRuns}`,
+		);
+	}
+}
+
 async function assertIdentityContract(
 	importPackageModule: (specifier: string) => Promise<Record<string, unknown>>,
 ): Promise<void> {
@@ -320,6 +331,7 @@ async function main(): Promise<void> {
 
 		const { importPackageModule } = installPackedSdk(tempDir, tarball);
 		await assertConnectContracts(importPackageModule);
+		assertAgentRuntimeHttpContract();
 		await assertMemoryContract(importPackageModule);
 		await assertIdentityContract(importPackageModule);
 		console.log(

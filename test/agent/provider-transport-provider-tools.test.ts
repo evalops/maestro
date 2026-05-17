@@ -13,6 +13,10 @@ import type {
 	StreamOptions,
 } from "../../src/agent/types.js";
 import {
+	WorkflowStateError,
+	registerWorkflowStateHook,
+} from "../../src/safety/workflow-state.js";
+import {
 	clearEventBuffer,
 	onSecurityEvent,
 } from "../../src/telemetry/security-events.js";
@@ -814,6 +818,268 @@ describe("ProviderTransport provider-owned tool events", () => {
 		expect(toolExecutionEndIndex).toBeGreaterThan(approvalResolvedIndex);
 	});
 
+	it("preserves Platform joins for denied Codex dynamic callbacks", async () => {
+		const toolExecute = vi.fn(async () => ({
+			content: [{ type: "text" as const, text: "should not execute" }],
+		}));
+		const dynamicTool: AgentTool = {
+			name: "mcp_ticket_update",
+			description: "Update a ticket.",
+			parameters: Type.Object({
+				id: Type.String(),
+			}),
+			execute: toolExecute,
+		};
+		const deniedPlan = {
+			kind: "governed" as const,
+			mode: "governed" as const,
+			classification: {} as never,
+			config: {} as never,
+			request: {} as never,
+			metadata: {
+				toolExecutionId: "tool-exec-denied-dynamic-1",
+				approvalRequestId: "approval-denied-dynamic-1",
+			},
+		};
+		const bridge: PlatformToolExecutionBridge = {
+			prepare: vi.fn(async () => ({
+				status: "deny" as const,
+				reason: "Platform denied dynamic callback",
+				plan: deniedPlan,
+			})),
+			resolveApproval: vi.fn(),
+			recordObservation: vi.fn(),
+			recordGovernedOutput: vi.fn(),
+		};
+		const assistant = assistantMessage();
+		const dynamicResults: AgentToolResult[] = [];
+		mocks.createProviderStream.mockImplementationOnce(async function* (
+			_model: unknown,
+			_context: unknown,
+			options: StreamOptions,
+		) {
+			yield {
+				type: "start",
+				partial: assistant,
+			} satisfies AssistantMessageEvent;
+			if (!options.executeDynamicTool) {
+				throw new Error("expected dynamic tool callback");
+			}
+			yield {
+				type: "provider_tool_execution_start",
+				toolCallId: "codex-dynamic-denied-1",
+				toolName: "mcp_ticket_update",
+				displayName: "Codex dynamic tool: mcp_ticket_update",
+				summaryLabel: "mcp_ticket_update",
+				args: { id: "ABC-123" },
+				partial: assistant,
+			} satisfies AssistantMessageEvent;
+			const dynamicResult = await options.executeDynamicTool({
+				type: "toolCall",
+				id: "codex-dynamic-denied-1",
+				name: "mcp_ticket_update",
+				arguments: { id: "ABC-123" },
+			});
+			dynamicResults.push(dynamicResult);
+			yield {
+				type: "provider_tool_execution_end",
+				toolCallId: "codex-dynamic-denied-1",
+				toolName: "mcp_ticket_update",
+				displayName: "Codex dynamic tool: mcp_ticket_update",
+				summaryLabel: "mcp_ticket_update",
+				toolExecutionId: dynamicResult.toolExecutionId,
+				approvalRequestId: dynamicResult.approvalRequestId,
+				result: {
+					role: "toolResult",
+					toolCallId: "codex-dynamic-denied-1",
+					toolName: "mcp_ticket_update",
+					content: dynamicResult.content,
+					details: dynamicResult.details,
+					isError: dynamicResult.isError === true,
+					timestamp: 2,
+				},
+				isError: dynamicResult.isError === true,
+				partial: assistant,
+			} satisfies AssistantMessageEvent;
+			yield {
+				type: "done",
+				reason: "stop",
+				message: assistant,
+			} satisfies AssistantMessageEvent;
+		});
+		const transport = new ProviderTransport({
+			platformToolExecutionBridge: bridge,
+		});
+		const userMessage: Message = {
+			role: "user",
+			content: "Use Codex dynamic tools to update the ticket.",
+			timestamp: 1,
+		};
+		const events: AgentEvent[] = [];
+
+		await withTimeout(
+			(async () => {
+				for await (const event of transport.run([userMessage], userMessage, {
+					systemPrompt: "Be concise.",
+					tools: [dynamicTool],
+					model: codexModel,
+				})) {
+					events.push(event);
+				}
+			})(),
+			"Timed out waiting for denied Codex dynamic callback",
+		);
+
+		expect(toolExecute).not.toHaveBeenCalled();
+		expect(dynamicResults).toEqual([
+			{
+				content: [{ type: "text", text: "Platform denied dynamic callback" }],
+				isError: true,
+				details: undefined,
+				toolExecutionId: "tool-exec-denied-dynamic-1",
+				approvalRequestId: "approval-denied-dynamic-1",
+			},
+		]);
+		const endEvent = events.find(
+			(event): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
+				event.type === "tool_execution_end" &&
+				event.toolCallId === "codex-dynamic-denied-1",
+		);
+		expect(endEvent).toMatchObject({
+			toolExecutionId: "tool-exec-denied-dynamic-1",
+			approvalRequestId: "approval-denied-dynamic-1",
+			isError: true,
+		});
+		expect(endEvent?.result).not.toHaveProperty("toolExecutionId");
+		expect(endEvent?.result).not.toHaveProperty("approvalRequestId");
+	});
+
+	it("returns workflow-state errors from cached dynamic callbacks", async () => {
+		const { bridge, recordObservation } = createObservingPlatformBridge();
+		const toolExecute = vi.fn(async () => ({
+			content: [{ type: "text" as const, text: "redacted" }],
+		}));
+		const redactTool: AgentTool = {
+			name: "redact_transcript",
+			description: "Redact a transcript.",
+			parameters: Type.Object({}),
+			annotations: {
+				readOnlyHint: true,
+			},
+			execute: toolExecute,
+		};
+		const assistant = assistantMessage();
+		const dynamicResults: AgentToolResult[] = [];
+		mocks.createProviderStream.mockImplementationOnce(async function* (
+			_model: unknown,
+			_context: unknown,
+			options: StreamOptions,
+		) {
+			yield {
+				type: "start",
+				partial: assistant,
+			} satisfies AssistantMessageEvent;
+			if (!options.executeDynamicTool) {
+				throw new Error("expected dynamic tool callback");
+			}
+			for (let index = 1; index <= 2; index++) {
+				const toolCallId = `codex-dynamic-redact-${index}`;
+				yield {
+					type: "provider_tool_execution_start",
+					toolCallId,
+					toolName: "redact_transcript",
+					displayName: "Codex dynamic tool: redact_transcript",
+					summaryLabel: "redact_transcript",
+					args: {},
+					partial: assistant,
+				} satisfies AssistantMessageEvent;
+				const dynamicResult = await options.executeDynamicTool({
+					type: "toolCall",
+					id: toolCallId,
+					name: "redact_transcript",
+					arguments: {},
+				});
+				dynamicResults.push(dynamicResult);
+				yield {
+					type: "provider_tool_execution_end",
+					toolCallId,
+					toolName: "redact_transcript",
+					displayName: "Codex dynamic tool: redact_transcript",
+					summaryLabel: "redact_transcript",
+					toolExecutionId: dynamicResult.toolExecutionId,
+					approvalRequestId: dynamicResult.approvalRequestId,
+					result: {
+						role: "toolResult",
+						toolCallId,
+						toolName: "redact_transcript",
+						content: dynamicResult.content,
+						details: dynamicResult.details,
+						isError: dynamicResult.isError === true,
+						timestamp: index,
+					},
+					isError: dynamicResult.isError === true,
+					partial: assistant,
+				} satisfies AssistantMessageEvent;
+			}
+			yield {
+				type: "done",
+				reason: "stop",
+				message: assistant,
+			} satisfies AssistantMessageEvent;
+		});
+		const transport = new ProviderTransport({
+			platformToolExecutionBridge: bridge,
+		});
+		const userMessage: Message = {
+			role: "user",
+			content: "Use Codex dynamic redaction twice.",
+			timestamp: 1,
+		};
+
+		await withTimeout(
+			(async () => {
+				for await (const _event of transport.run([userMessage], userMessage, {
+					systemPrompt: "Be concise.",
+					tools: [redactTool],
+					model: codexModel,
+				})) {
+					// Drain the stream.
+				}
+			})(),
+			"Timed out waiting for cached dynamic workflow-state errors",
+		);
+
+		expect(toolExecute).toHaveBeenCalledTimes(1);
+		expect(
+			dynamicResults.map((result) =>
+				result.content
+					.map((item) => (item.type === "text" ? item.text : ""))
+					.join(""),
+			),
+		).toEqual([
+			expect.stringContaining("redact_transcript could not determine"),
+			expect.stringContaining("redact_transcript could not determine"),
+		]);
+		expect(dynamicResults).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					isError: true,
+					toolExecutionId: "observed:codex-dynamic-redact-1",
+					approvalRequestId: "approval:codex-dynamic-redact-1",
+				}),
+				expect.objectContaining({
+					isError: true,
+					toolExecutionId: "observed:codex-dynamic-redact-2",
+					approvalRequestId: "approval:codex-dynamic-redact-2",
+				}),
+			]),
+		);
+		expect(recordObservation).toHaveBeenCalledTimes(2);
+		expect(
+			recordObservation.mock.calls.map(([, result]) => result.toolCallId),
+		).toEqual(["codex-dynamic-redact-1", "codex-dynamic-redact-2"]);
+	});
+
 	it("reuses dynamic read callback results only after repeated guarded-file approvals", async () => {
 		const approvalService = new ActionApprovalService("prompt");
 		const toolExecute = vi.fn(async (_toolCallId, params) => ({
@@ -873,6 +1139,8 @@ describe("ProviderTransport provider-owned tool events", () => {
 					toolName: "read",
 					displayName: "Codex dynamic tool: read",
 					summaryLabel: "read",
+					toolExecutionId: result.toolExecutionId,
+					approvalRequestId: result.approvalRequestId,
 					result: {
 						role: "toolResult",
 						toolCallId,
@@ -1020,6 +1288,8 @@ describe("ProviderTransport provider-owned tool events", () => {
 					toolName: "read",
 					displayName: "Codex dynamic tool: read",
 					summaryLabel: "read",
+					toolExecutionId: result.toolExecutionId,
+					approvalRequestId: result.approvalRequestId,
 					result: {
 						role: "toolResult",
 						toolCallId,
@@ -1253,6 +1523,8 @@ describe("ProviderTransport provider-owned tool events", () => {
 					toolName: "read",
 					displayName: "Codex dynamic tool: read",
 					summaryLabel: "read",
+					toolExecutionId: result.toolExecutionId,
+					approvalRequestId: result.approvalRequestId,
 					result: {
 						role: "toolResult",
 						toolCallId,
@@ -1280,15 +1552,16 @@ describe("ProviderTransport provider-owned tool events", () => {
 			content: "Use Codex dynamic reads twice.",
 			timestamp: 1,
 		};
+		const events: AgentEvent[] = [];
 
 		await withTimeout(
 			(async () => {
-				for await (const _event of transport.run([userMessage], userMessage, {
+				for await (const event of transport.run([userMessage], userMessage, {
 					systemPrompt: "Be concise.",
 					tools: [readTool],
 					model: codexModel,
 				})) {
-					// Drain the stream.
+					events.push(event);
 				}
 			})(),
 			"Timed out waiting for observed Codex dynamic reads",
@@ -1299,6 +1572,18 @@ describe("ProviderTransport provider-owned tool events", () => {
 		expect(
 			recordObservation.mock.calls.map(([, result]) => result.toolCallId),
 		).toEqual(["dynamic-observed-read-1", "dynamic-observed-read-2"]);
+		const readResults = events.filter(
+			(event): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
+				event.type === "tool_execution_end" && event.toolName === "read",
+		);
+		expect(readResults.map((event) => event.toolExecutionId)).toEqual([
+			"observed:dynamic-observed-read-1",
+			"observed:dynamic-observed-read-2",
+		]);
+		expect(readResults.map((event) => event.approvalRequestId)).toEqual([
+			"approval:dynamic-observed-read-1",
+			"approval:dynamic-observed-read-2",
+		]);
 	});
 
 	it("reuses repeated read-only tool results across provider turns", async () => {

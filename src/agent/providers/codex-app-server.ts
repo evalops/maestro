@@ -73,12 +73,28 @@ const DEFAULT_TURN_TIMEOUT_MS = 30 * 60_000;
 const CODEX_THREAD_CHILD_RUN_PREFIX = "codex-thread:";
 const CODEX_SUBAGENT_WORK_GRAPH_SCHEMA =
 	"evalops.maestro.codex.subagent-workgraph.v1";
-const CODEX_COLLAB_TOOLS = new Set([
-	"spawnAgent",
-	"sendInput",
-	"resumeAgent",
-	"wait",
-	"closeAgent",
+
+type CodexCollabTool =
+	| "spawnAgent"
+	| "sendInput"
+	| "resumeAgent"
+	| "wait"
+	| "closeAgent";
+
+const CODEX_COLLAB_TOOL_ALIASES = new Map<string, CodexCollabTool>([
+	["spawnAgent", "spawnAgent"],
+	["spawn_agent", "spawnAgent"],
+	["sendInput", "sendInput"],
+	["send_input", "sendInput"],
+	["resumeAgent", "resumeAgent"],
+	["resumeSubagent", "resumeAgent"],
+	["resume_agent", "resumeAgent"],
+	["resume_subagent", "resumeAgent"],
+	["wait", "wait"],
+	["waitAgent", "wait"],
+	["wait_agent", "wait"],
+	["closeAgent", "closeAgent"],
+	["close_agent", "closeAgent"],
 ]);
 
 type CodexCollabAgentToolCallItem = {
@@ -455,7 +471,7 @@ function isCodexCollabAgentToolCallItem(
 	if (
 		typeof value.id !== "string" ||
 		typeof value.tool !== "string" ||
-		!CODEX_COLLAB_TOOLS.has(value.tool) ||
+		!canonicalCodexCollabTool(value.tool) ||
 		typeof value.status !== "string" ||
 		typeof value.senderThreadId !== "string" ||
 		!Array.isArray(value.receiverThreadIds) ||
@@ -480,12 +496,13 @@ function codexCollabToolStartEvent(
 	output: AssistantMessage,
 	scope: { threadId: string; turnId: string },
 ): AssistantMessageEvent {
-	const toolName = codexCollabToolName(item.tool);
+	const tool = canonicalCodexCollabTool(item.tool) ?? item.tool;
+	const toolName = codexCollabToolName(tool);
 	return {
 		type: "provider_tool_execution_start",
 		toolCallId: item.id,
 		toolName,
-		displayName: codexCollabDisplayName(item.tool),
+		displayName: codexCollabDisplayName(tool),
 		summaryLabel: codexCollabSummaryLabel(item),
 		args: codexCollabArgs(item, scope),
 		partial: output,
@@ -497,14 +514,15 @@ function codexCollabToolEndEvent(
 	output: AssistantMessage,
 	scope: { threadId: string; turnId: string },
 ): AssistantMessageEvent {
-	const toolName = codexCollabToolName(item.tool);
+	const tool = canonicalCodexCollabTool(item.tool) ?? item.tool;
+	const toolName = codexCollabToolName(tool);
 	const isError = item.status === "failed";
 	const details = codexCollabArgs(item, scope);
 	return {
 		type: "provider_tool_execution_end",
 		toolCallId: item.id,
 		toolName,
-		displayName: codexCollabDisplayName(item.tool),
+		displayName: codexCollabDisplayName(tool),
 		summaryLabel: codexCollabSummaryLabel(item),
 		result: {
 			role: "toolResult",
@@ -513,7 +531,7 @@ function codexCollabToolEndEvent(
 			content: [
 				{
 					type: "text",
-					text: `${codexCollabDisplayName(item.tool)} ${isError ? "failed" : "completed"}.`,
+					text: `${codexCollabDisplayName(tool)} ${isError ? "failed" : "completed"}.`,
 				},
 			],
 			details,
@@ -529,16 +547,17 @@ function codexCollabArgs(
 	item: CodexCollabAgentToolCallItem,
 	scope: { threadId: string; turnId: string },
 ): Record<string, unknown> {
+	const tool = canonicalCodexCollabTool(item.tool) ?? item.tool;
 	const childRunIds = codexCollabChildRunIds(item);
 	return {
-		codexTool: item.tool,
+		codexTool: tool,
 		status: item.status,
 		threadId: scope.threadId,
 		turnId: scope.turnId,
 		senderThreadId: item.senderThreadId,
 		receiverThreadIds: item.receiverThreadIds,
 		childRunIds,
-		codexWorkGraph: codexCollabWorkGraph(item, scope, childRunIds),
+		codexWorkGraph: codexCollabWorkGraph(item, scope, childRunIds, tool),
 		prompt: item.prompt,
 		model: item.model,
 		reasoningEffort: item.reasoningEffort,
@@ -550,11 +569,12 @@ function codexCollabWorkGraph(
 	item: CodexCollabAgentToolCallItem,
 	scope: { threadId: string; turnId: string },
 	childRunIds: string[],
+	tool: string,
 ): CodexSubagentWorkGraph {
 	return {
 		schemaVersion: CODEX_SUBAGENT_WORK_GRAPH_SCHEMA,
 		toolCallId: item.id,
-		tool: item.tool,
+		tool,
 		status: item.status,
 		parent: {
 			threadId: scope.threadId,
@@ -565,7 +585,7 @@ function codexCollabWorkGraph(
 			threadId,
 			childRunId:
 				childRunIds[index] ?? `${CODEX_THREAD_CHILD_RUN_PREFIX}${threadId}`,
-			operation: item.tool,
+			operation: tool,
 		})),
 	};
 }
@@ -589,12 +609,17 @@ function codexCollabDisplayName(tool: string): string {
 }
 
 function codexCollabSummaryLabel(item: CodexCollabAgentToolCallItem): string {
+	const tool = canonicalCodexCollabTool(item.tool) ?? item.tool;
 	const targetCount = item.receiverThreadIds.length;
 	if (targetCount === 0) {
-		return codexCollabHumanTool(item.tool);
+		return codexCollabHumanTool(tool);
 	}
 	const targetLabel = targetCount === 1 ? "1 agent" : `${targetCount} agents`;
-	return `${codexCollabHumanTool(item.tool)} ${targetLabel}`;
+	return `${codexCollabHumanTool(tool)} ${targetLabel}`;
+}
+
+function canonicalCodexCollabTool(tool: string): CodexCollabTool | undefined {
+	return CODEX_COLLAB_TOOL_ALIASES.get(tool);
 }
 
 function codexCollabHumanTool(tool: string): string {
@@ -749,6 +774,8 @@ function codexDynamicToolEndEvent(
 		toolName,
 		displayName: codexDynamicToolDisplayName(toolName),
 		summaryLabel: toolName,
+		toolExecutionId: result.toolExecutionId,
+		approvalRequestId: result.approvalRequestId,
 		result: {
 			role: "toolResult",
 			toolCallId: params.callId,

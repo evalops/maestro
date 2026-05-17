@@ -269,6 +269,9 @@ export const PLATFORM_CONNECT_METHODS = {
 } as const;
 
 export const PLATFORM_HTTP_ROUTES = {
+	agentRuntime: {
+		operatingPlaneRuns: "/v1/agent-operating-plane/runs",
+	},
 	identity: {
 		apiKeys: "/v1/api-keys",
 		authGoogleStart: "/v1/auth/google/start",

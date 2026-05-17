@@ -281,6 +281,14 @@ export function printHelp(
   maestro remote extend <session-id> --ttl 2h
   maestro remote stop <session-id> [--reason <text>]`,
 	)}`;
+	const operatingPlaneSection = `${sectionHeading("maestro operating-plane")}${muted(
+		`  maestro operating-plane status --thread-id <slack-thread> [--evidence-id <id>] [--auth-subject <subject>]
+  maestro operating-plane status --trace-id <id> --json
+
+  Fetches the Platform operating-plane ledger and prints a content-free value
+  proof report with identity, model/tool/approval/trace/evidence/cost status,
+  allowed evidence ids/revisions, blockers, next actions, and withheld reasons.`,
+	)}`;
 	const runSection = `${sectionHeading("maestro run")}${muted(
 		`  maestro run inspect <session-id> [--json]
   maestro run ledger <session-id>
@@ -354,6 +362,7 @@ export function printHelp(
 			initSection,
 			runSection,
 			remoteSection,
+			operatingPlaneSection,
 			hostedRunnerSection,
 			sessionsSection,
 			sessionsDiscovery,

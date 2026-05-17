@@ -70,6 +70,7 @@ const COMMANDS = new Set([
 	"run",
 	"agents",
 	"a2a",
+	"operating-plane",
 	"exec",
 	"web",
 	"hosted-runner",
@@ -382,6 +383,7 @@ export function parseArgs(args: string[]): Args {
 				if (
 					arg === "remote" ||
 					arg === "a2a" ||
+					arg === "operating-plane" ||
 					arg === "hosted-runner" ||
 					arg === "init" ||
 					arg === "evalops" ||

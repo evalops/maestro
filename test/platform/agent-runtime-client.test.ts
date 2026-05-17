@@ -1525,14 +1525,23 @@ describe("agent runtime service client", () => {
 		vi.stubEnv("MAESTRO_PLATFORM_A2A_TOKEN", "a2a-token");
 		vi.stubEnv("MAESTRO_PLATFORM_A2A_ORG_ID", "a2a-org");
 		vi.stubEnv("MAESTRO_PLATFORM_A2A_WORKSPACE_ID", "a2a-ws");
+		vi.stubEnv(
+			"MAESTRO_PLATFORM_A2A_CALLBACK_URL",
+			"https://maestro.test/api/platform/a2a/push",
+		);
+		vi.stubEnv("MAESTRO_PLATFORM_A2A_CALLBACK_TOKEN", "callback-token");
 
 		const requests: string[] = [];
 		const headers: Record<string, string>[] = [];
+		const bodies: unknown[] = [];
 		const fetchMock = vi.fn(
 			async (input: RequestInfo | URL, init?: RequestInit) => {
 				const url = String(input);
 				requests.push(url);
 				headers.push(headersToRecord(init?.headers));
+				if (typeof init?.body === "string") {
+					bodies.push(JSON.parse(init.body));
+				}
 				if (url === "https://bridge.test/message:send") {
 					return Response.json({
 						task: {
@@ -1568,6 +1577,16 @@ describe("agent runtime service client", () => {
 			"content-type": "application/json",
 			"x-organization-id": "a2a-org",
 			"x-evalops-workspace-id": "a2a-ws",
+		});
+		expect(bodies[0]).toMatchObject({
+			configuration: {
+				returnImmediately: true,
+				taskPushNotificationConfig: {
+					id: "maestro-session-session_1",
+					url: "https://maestro.test/api/platform/a2a/push",
+					token: "callback-token",
+				},
+			},
 		});
 	});
 

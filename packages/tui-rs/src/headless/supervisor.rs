@@ -1265,6 +1265,8 @@ pub fn agent_event_to_message(event: &AgentEvent) -> FromAgentMessage {
         } => FromAgentMessage::ToolEnd {
             call_id: call_id.clone(),
             success: *success,
+            tool: None,
+            details: None,
         },
         AgentEvent::Error {
             request_id,

@@ -624,6 +624,10 @@ export interface AgentToolResult<TDetails = unknown> {
 	details?: TDetails;
 	/** Whether the execution resulted in an error */
 	isError?: boolean;
+	/** Optional Platform ToolExecution identifier used for audit joins */
+	toolExecutionId?: string;
+	/** Optional Platform approval request identifier correlated to ToolExecution */
+	approvalRequestId?: string;
 }
 
 /**
@@ -768,6 +772,8 @@ export type AssistantMessageEvent =
 			summaryLabel?: string;
 			/** Provider tool arguments */
 			args: Record<string, unknown>;
+			/** Optional Platform ToolExecution identifier */
+			toolExecutionId?: string;
 			/** Partial message state */
 			partial: AssistantMessage;
 	  }
@@ -786,6 +792,8 @@ export type AssistantMessageEvent =
 			args: Record<string, unknown>;
 			/** Partial provider result */
 			partialResult: AgentToolResult;
+			/** Optional Platform ToolExecution identifier */
+			toolExecutionId?: string;
 			/** Partial message state */
 			partial: AssistantMessage;
 	  }
@@ -804,6 +812,10 @@ export type AssistantMessageEvent =
 			result: ToolResultMessage;
 			/** Whether the provider tool returned an error */
 			isError: boolean;
+			/** Optional Platform ToolExecution identifier */
+			toolExecutionId?: string;
+			/** Optional Platform approval request identifier correlated to ToolExecution */
+			approvalRequestId?: string;
 			/** Partial message state */
 			partial: AssistantMessage;
 	  }
@@ -1263,6 +1275,8 @@ export type AgentEvent =
 			type: "tool_execution_update";
 			/** Tool call identifier */
 			toolCallId: string;
+			/** Optional Platform ToolExecution identifier */
+			toolExecutionId?: string;
 			/** Name of the tool */
 			toolName: string;
 			/** Optional human-facing label for live UI */

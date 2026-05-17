@@ -751,25 +751,38 @@ export class ProviderTransport implements AgentTransport {
 		const executeDynamicTool = async (
 			toolCall: ToolCall,
 		): Promise<AgentToolResult> => {
-			const capturedResults: ToolResultMessage[] = [];
+			const capturedResults: ToolExecutionOutcome[] = [];
 			const dynamicToolError = (message: string): AgentToolResult => ({
 				content: [{ type: "text", text: message }],
 				isError: true,
 			});
 			const toAgentToolResult = (
-				message: ToolResultMessage | undefined,
-			): AgentToolResult =>
-				message
-					? {
-							content: message.content,
-							isError: message.isError,
-							details: message.details,
-						}
-					: dynamicToolError("Dynamic tool execution was blocked");
+				outcome: ToolExecutionOutcome | ToolResultMessage | undefined,
+			): AgentToolResult => {
+				if (!outcome) {
+					return dynamicToolError("Dynamic tool execution was blocked");
+				}
+				const message = "message" in outcome ? outcome.message : outcome;
+				return {
+					content: message.content,
+					isError: "message" in outcome ? outcome.isError : message.isError,
+					details: message.details,
+					...("message" in outcome && outcome.toolExecutionId
+						? { toolExecutionId: outcome.toolExecutionId }
+						: {}),
+					...("message" in outcome && outcome.approvalRequestId
+						? { approvalRequestId: outcome.approvalRequestId }
+						: {}),
+				};
+			};
 			const emitDynamicToolResult = (
 				message: ToolResultMessage,
 				effectiveToolCall: ToolCall,
 				isError: boolean,
+				metadata?: {
+					toolExecutionId?: string;
+					approvalRequestId?: string;
+				},
 			): AgentEvent[] => {
 				try {
 					applyWorkflowStateHooks({
@@ -778,16 +791,24 @@ export class ProviderTransport implements AgentTransport {
 						tracker: this.workflowState,
 						isError,
 					});
-					capturedResults.push(message);
+					capturedResults.push({
+						message,
+						isError,
+						...metadata,
+					});
 				} catch (error) {
 					if (error instanceof WorkflowStateError) {
 						capturedResults.push({
-							role: "toolResult",
-							toolCallId: effectiveToolCall.id,
-							toolName: effectiveToolCall.name,
-							content: [{ type: "text", text: error.message }],
+							message: {
+								role: "toolResult",
+								toolCallId: effectiveToolCall.id,
+								toolName: effectiveToolCall.name,
+								content: [{ type: "text", text: error.message }],
+								isError: true,
+								timestamp: this.clock.now(),
+							},
 							isError: true,
-							timestamp: this.clock.now(),
+							...metadata,
 						});
 					} else {
 						throw error;
@@ -943,8 +964,12 @@ export class ProviderTransport implements AgentTransport {
 							cachedOutcome.message,
 							effectiveToolCall,
 							cachedOutcome.isError,
+							{
+								toolExecutionId: cachedOutcome.toolExecutionId,
+								approvalRequestId: cachedOutcome.approvalRequestId,
+							},
 						);
-						return toAgentToolResult(capturedResults.at(-1));
+						return toAgentToolResult(capturedResults.at(-1) ?? cachedOutcome);
 					}
 					const pendingReusable = pendingReusableToolResults.get(
 						reusableToolResultKey,
@@ -968,8 +993,12 @@ export class ProviderTransport implements AgentTransport {
 							cachedOutcome.message,
 							effectiveToolCall,
 							cachedOutcome.isError,
+							{
+								toolExecutionId: cachedOutcome.toolExecutionId,
+								approvalRequestId: cachedOutcome.approvalRequestId,
+							},
 						);
-						return toAgentToolResult(capturedResults.at(-1));
+						return toAgentToolResult(capturedResults.at(-1) ?? cachedOutcome);
 					}
 				}
 				const toolUpdateQueue = createToolUpdateQueue();
@@ -1057,11 +1086,23 @@ export class ProviderTransport implements AgentTransport {
 					});
 				} catch (error) {
 					if (error instanceof WorkflowStateError) {
-						return dynamicToolError(error.message);
+						return toAgentToolResult({
+							message: {
+								role: "toolResult",
+								toolCallId: effectiveToolCall.id,
+								toolName: effectiveToolCall.name,
+								content: [{ type: "text", text: error.message }],
+								isError: true,
+								timestamp: this.clock.now(),
+							},
+							isError: true,
+							toolExecutionId: outcome.toolExecutionId,
+							approvalRequestId: outcome.approvalRequestId,
+						});
 					}
 					throw error;
 				}
-				return toAgentToolResult(outcome.message);
+				return toAgentToolResult(outcome);
 			} finally {
 				this.safetyMiddleware.clearCredentials();
 			}
@@ -1273,6 +1314,7 @@ export class ProviderTransport implements AgentTransport {
 							yield {
 								type: "tool_execution_start",
 								toolCallId: event.toolCallId,
+								toolExecutionId: event.toolExecutionId,
 								toolName: event.toolName,
 								displayName: event.displayName,
 								summaryLabel: event.summaryLabel,
@@ -1285,6 +1327,7 @@ export class ProviderTransport implements AgentTransport {
 							yield {
 								type: "tool_execution_update",
 								toolCallId: event.toolCallId,
+								toolExecutionId: event.toolExecutionId,
 								toolName: event.toolName,
 								displayName: event.displayName,
 								summaryLabel: event.summaryLabel,
@@ -1300,6 +1343,8 @@ export class ProviderTransport implements AgentTransport {
 							yield {
 								type: "tool_execution_end",
 								toolCallId: event.toolCallId,
+								toolExecutionId: event.toolExecutionId,
+								approvalRequestId: event.approvalRequestId,
 								toolName: event.toolName,
 								displayName: event.displayName,
 								summaryLabel: event.summaryLabel,

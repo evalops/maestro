@@ -63,6 +63,10 @@ import { handleOllama } from "./handlers/ollama.js";
 import { handlePackageStatus } from "./handlers/package.js";
 import { handlePendingRequestResume } from "./handlers/pending-requests.js";
 import { handlePlan } from "./handlers/plan.js";
+import {
+	PLATFORM_A2A_PUSH_CALLBACK_PATH,
+	handlePlatformA2APushCallback,
+} from "./handlers/platform-a2a-push.js";
 import { handlePolicyValidate } from "./handlers/policy.js";
 import { handlePreview } from "./handlers/preview.js";
 import { handlePromptSuggestion } from "./handlers/prompt-suggestion.js";
@@ -140,6 +144,11 @@ export function createRoutes(context: WebServerContext): Route[] {
 			method: "POST",
 			path: HOSTED_RUNNER_DRAIN_PATH,
 			handler: (req, res) => handleHostedRunnerDrain(req, res, context),
+		},
+		{
+			method: "POST",
+			path: PLATFORM_A2A_PUSH_CALLBACK_PATH,
+			handler: (req, res) => handlePlatformA2APushCallback(req, res, context),
 		},
 		{
 			method: "POST",

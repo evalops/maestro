@@ -27,12 +27,40 @@ describe("auth resolver", () => {
 	const originalOpenAICodex = process.env.OPENAI_CODEX_TOKEN;
 	const originalClaude = process.env.CLAUDE_CODE_TOKEN;
 	const originalCodex = process.env.CODEX_API_KEY;
+	const evalOpsRequestMetadataEnvVars = [
+		"EVALOPS_WORKSPACE_ID",
+		"MAESTRO_AGENT_ID",
+		"MAESTRO_AGENT_RUN_ID",
+		"MAESTRO_AGENT_RUN_STEP_ID",
+		"MAESTRO_EVALOPS_AGENT_ID",
+		"MAESTRO_EVALOPS_AGENT_RUN_STEP_ID",
+		"MAESTRO_EVALOPS_OBJECTIVE_ID",
+		"MAESTRO_EVALOPS_RUN_ID",
+		"MAESTRO_EVALOPS_SESSION_ID",
+		"MAESTRO_EVALOPS_SURFACE",
+		"MAESTRO_EVALOPS_TOOL_CALL_ID",
+		"MAESTRO_EVALOPS_TURN_ID",
+		"MAESTRO_EVALOPS_WORKLOAD",
+		"MAESTRO_EVALOPS_WORKSPACE_ID",
+		"MAESTRO_OBJECTIVE_ID",
+		"MAESTRO_SESSION_ID",
+		"MAESTRO_SURFACE",
+		"MAESTRO_TOOL_CALL_ID",
+		"MAESTRO_TRACE_ID",
+		"MAESTRO_TURN_ID",
+		"MAESTRO_WORKLOAD",
+		"MAESTRO_WORKSPACE_ID",
+		"TRACE_ID",
+	] as const;
 
 	beforeEach(() => {
 		Reflect.deleteProperty(process.env, "ANTHROPIC_API_KEY");
 		Reflect.deleteProperty(process.env, "OPENAI_API_KEY");
 		Reflect.deleteProperty(process.env, "OPENAI_CODEX_TOKEN");
 		Reflect.deleteProperty(process.env, "CLAUDE_CODE_TOKEN");
+		for (const name of evalOpsRequestMetadataEnvVars) {
+			Reflect.deleteProperty(process.env, name);
+		}
 	});
 
 	afterEach(() => {
@@ -62,12 +90,9 @@ describe("auth resolver", () => {
 			process.env.CODEX_API_KEY = originalCodex;
 		}
 		Reflect.deleteProperty(process.env, "EVALOPS_FEATURE_FLAGS_PATH");
-		Reflect.deleteProperty(process.env, "MAESTRO_AGENT_ID");
-		Reflect.deleteProperty(process.env, "MAESTRO_EVALOPS_AGENT_ID");
-		Reflect.deleteProperty(process.env, "MAESTRO_EVALOPS_RUN_ID");
-		Reflect.deleteProperty(process.env, "MAESTRO_EVALOPS_SURFACE");
-		Reflect.deleteProperty(process.env, "MAESTRO_SESSION_ID");
-		Reflect.deleteProperty(process.env, "MAESTRO_SURFACE");
+		for (const name of evalOpsRequestMetadataEnvVars) {
+			Reflect.deleteProperty(process.env, name);
+		}
 		resetFeatureFlagCacheForTests();
 		vi.clearAllMocks();
 	});
@@ -294,7 +319,6 @@ describe("auth resolver", () => {
 			refresh: "",
 			expires: Date.now() + 60_000,
 			metadata: {
-				agentId: "agent_cli",
 				organizationId: "org_evalops",
 				providerRef: {
 					provider: "openai",
@@ -302,8 +326,11 @@ describe("auth resolver", () => {
 				},
 				agentMcp: {
 					apiKey: "pk_live_agent",
+					agentId: "agent_cli",
 					expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+					runId: "run_agent_key",
 					scopes: ["agent:register", "llm_gateway:invoke"],
+					workspaceId: "workspace_agent_key",
 				},
 			},
 		});
@@ -318,6 +345,9 @@ describe("auth resolver", () => {
 		expect(credential?.requestBody).toEqual({
 			metadata: {
 				agent_id: "agent_cli",
+				workspace_id: "workspace_agent_key",
+				run_id: "run_agent_key",
+				agent_run_id: "run_agent_key",
 				surface: "maestro",
 			},
 			provider_ref: {
@@ -420,9 +450,17 @@ describe("auth resolver", () => {
 		const mockedGetToken = vi.mocked(getOAuthToken);
 		const mockedLoadCreds = vi.mocked(loadOAuthCredentials);
 		process.env.MAESTRO_AGENT_ID = "agent_cli";
+		process.env.MAESTRO_AGENT_RUN_ID = "generic_run_should_not_win";
 		process.env.MAESTRO_EVALOPS_RUN_ID = "run_123";
+		process.env.MAESTRO_EVALOPS_WORKSPACE_ID = "workspace_123";
+		process.env.MAESTRO_OBJECTIVE_ID = "objective_123";
+		process.env.MAESTRO_AGENT_RUN_STEP_ID = "step_123";
 		process.env.MAESTRO_SESSION_ID = "session_456";
 		process.env.MAESTRO_SURFACE = "cli";
+		process.env.MAESTRO_TRACE_ID = "trace_123";
+		process.env.MAESTRO_TURN_ID = "turn_123";
+		process.env.MAESTRO_TOOL_CALL_ID = "tool_call_123";
+		process.env.MAESTRO_WORKLOAD = "maestro-coding-session";
 		mockedGetToken.mockResolvedValue("evalops-token");
 		mockedLoadCreds.mockReturnValue({
 			type: "oauth",
@@ -444,9 +482,18 @@ describe("auth resolver", () => {
 		expect(credential?.requestBody).toEqual({
 			metadata: {
 				agent_id: "agent_cli",
+				workspace_id: "workspace_123",
+				objective_id: "objective_123",
 				run_id: "run_123",
+				agent_run_id: "run_123",
+				agent_run_step_id: "step_123",
 				session_id: "session_456",
+				maestro_session_id: "session_456",
 				surface: "cli",
+				trace_id: "trace_123",
+				turn_id: "turn_123",
+				tool_call_id: "tool_call_123",
+				workload: "maestro-coding-session",
 			},
 			provider_ref: {
 				provider: "openai",

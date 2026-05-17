@@ -535,6 +535,16 @@ attributes (`evalops.organization_id`, `enduser.id`, `evalops.workspace_id`,
 those attributes into first-class trace fields, and Cerebro imports the same
 event correlation into org/user/session/run/tool graph nodes.
 
+When a session uses an EvalOps managed model provider, Maestro also forwards the
+same content-free join keys to `llm-gateway` request metadata. The gateway
+metadata includes `agent_id`, `workspace_id`, `objective_id`, `run_id`,
+`agent_run_id`, `agent_run_step_id`, `session_id`, `maestro_session_id`,
+`trace_id`, `turn_id`, `tool_call_id`, `workload`, and `surface` when those
+values are available from stored managed-agent identity or the environment. This
+lets Platform's AgentRuntime operating ledger attach model usage to the same run
+as tool execution, approval, trace, and timeline evidence without copying raw
+prompts or responses into operator surfaces.
+
 For direct Cerebro MCP access through the EvalOps plugin, set
 `MAESTRO_PLATFORM_MCP_URL`, `MAESTRO_EVALOPS_AGENT_MCP_URL`, or the manifest
 form `MAESTRO_PLATFORM_MCP_MANIFEST_URL`, then grant scopes with
