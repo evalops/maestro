@@ -318,6 +318,13 @@ function resolveEvalOpsRequestMetadata(
 		agentMcp?.trace_id,
 		readFirstEnv(["MAESTRO_TRACE_ID", "TRACE_ID"]),
 	);
+	const threadID = firstNonEmptyString(
+		metadata?.threadId,
+		metadata?.thread_id,
+		agentMcp?.threadId,
+		agentMcp?.thread_id,
+		readFirstEnv(["MAESTRO_THREAD_ID", "MAESTRO_EVALOPS_THREAD_ID"]),
+	);
 	const turnID = firstNonEmptyString(
 		metadata?.turnId,
 		metadata?.turn_id,
@@ -356,6 +363,7 @@ function resolveEvalOpsRequestMetadata(
 			maestro_session_id: maestroSessionID,
 			surface,
 			trace_id: traceID,
+			thread_id: threadID,
 			turn_id: turnID,
 			tool_call_id: toolCallID,
 			workload,

@@ -39,6 +39,7 @@ describe("auth resolver", () => {
 		"MAESTRO_EVALOPS_RUN_ID",
 		"MAESTRO_EVALOPS_SESSION_ID",
 		"MAESTRO_EVALOPS_SURFACE",
+		"MAESTRO_EVALOPS_THREAD_ID",
 		"MAESTRO_EVALOPS_TOOL_CALL_ID",
 		"MAESTRO_EVALOPS_TURN_ID",
 		"MAESTRO_EVALOPS_WORKLOAD",
@@ -46,6 +47,7 @@ describe("auth resolver", () => {
 		"MAESTRO_OBJECTIVE_ID",
 		"MAESTRO_SESSION_ID",
 		"MAESTRO_SURFACE",
+		"MAESTRO_THREAD_ID",
 		"MAESTRO_TOOL_CALL_ID",
 		"MAESTRO_TRACE_ID",
 		"MAESTRO_TURN_ID",
@@ -459,6 +461,7 @@ describe("auth resolver", () => {
 		process.env.MAESTRO_SESSION_ID = "session_456";
 		process.env.MAESTRO_SURFACE = "cli";
 		process.env.MAESTRO_TRACE_ID = "trace_123";
+		process.env.MAESTRO_THREAD_ID = "maestro/message/msg_123";
 		process.env.MAESTRO_TURN_ID = "turn_123";
 		process.env.MAESTRO_TOOL_CALL_ID = "tool_call_123";
 		process.env.MAESTRO_WORKLOAD = "maestro-coding-session";
@@ -492,6 +495,7 @@ describe("auth resolver", () => {
 				maestro_session_id: "session_456",
 				surface: "cli",
 				trace_id: "trace_123",
+				thread_id: "maestro/message/msg_123",
 				turn_id: "turn_123",
 				tool_call_id: "tool_call_123",
 				workload: "maestro-coding-session",
@@ -524,6 +528,7 @@ describe("auth resolver", () => {
 				},
 				runId: "run_legacy",
 				sessionId: "session_platform",
+				threadId: "maestro/message/msg_platform",
 			},
 		});
 
@@ -536,6 +541,7 @@ describe("auth resolver", () => {
 				maestro_session_id: "session_maestro",
 				run_id: "run_legacy",
 				session_id: "session_platform",
+				thread_id: "maestro/message/msg_platform",
 			},
 		});
 		mockedGetToken.mockReset();
