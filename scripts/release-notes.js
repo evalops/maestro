@@ -136,6 +136,19 @@ export function insertChangelogEntry(content, entry) {
 /**
  * @param {string} content
  * @param {string} version
+ * @param {string} entry
+ */
+export function replaceOrInsertChangelogEntry(content, version, entry) {
+	const existing = extractChangelogEntry(content, version);
+	if (!existing) {
+		return insertChangelogEntry(content, entry);
+	}
+	return content.replace(existing, entry.trim());
+}
+
+/**
+ * @param {string} content
+ * @param {string} version
  */
 export function extractChangelogEntry(content, version) {
 	const escapedVersion = version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

@@ -62,40 +62,73 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Bump versioned files
+      - id: version
+        run: |
+          set -euo pipefail
+          release_version="$(node scripts/version.js next "$RELEASE_BUMP_TYPE")"
+          {
+            echo "release_version=$release_version"
+            echo "branch=release/v${release_version}"
+          } >> "$GITHUB_OUTPUT"
+
+      - id: branch
         env:
-          BUMP_TYPE: ${{ env.RELEASE_BUMP_TYPE }}
-        run: npm run "version:${BUMP_TYPE}"
+          RELEASE_BRANCH: ${{ steps.version.outputs.branch }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --heads origin "$RELEASE_BRANCH" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Prepare versioned files
+        env:
+          RELEASE_BRANCH: ${{ steps.version.outputs.branch }}
+          RELEASE_VERSION: ${{ steps.version.outputs.release_version }}
+          BRANCH_EXISTS: ${{ steps.branch.outputs.exists }}
+        run: |
+          set -euo pipefail
+          if [[ "$BRANCH_EXISTS" == "true" ]]; then
+            git fetch origin \
+              "${RELEASE_BRANCH}:refs/remotes/origin/${RELEASE_BRANCH}" \
+              "${RELEASE_BASE_REF}:refs/remotes/origin/${RELEASE_BASE_REF}"
+            git switch -C "$RELEASE_BRANCH" "origin/$RELEASE_BRANCH"
+            git branch --set-upstream-to="origin/$RELEASE_BRANCH" "$RELEASE_BRANCH"
+            git merge --no-edit "origin/${RELEASE_BASE_REF}"
+            node scripts/version.js set "$RELEASE_VERSION"
+          else
+            npm run "version:${RELEASE_BUMP_TYPE}"
+            git switch -c "$RELEASE_BRANCH"
+          fi
 
       - id: release
         uses: ./.github/actions/release-context
         with:
-          fallback-to-package-version: "true"
-
-      - id: version
-        run: echo "branch=release/v${{ steps.release.outputs.release_version }}" >> "$GITHUB_OUTPUT"
+          requested-version: ${{ steps.version.outputs.release_version }}
 
       - name: Commit release branch
         id: commit
         env:
           RELEASE_BRANCH: ${{ steps.version.outputs.branch }}
+          RELEASE_VERSION: ${{ steps.version.outputs.release_version }}
+          BRANCH_EXISTS: ${{ steps.branch.outputs.exists }}
           HUSKY: "0"
         run: |
           set -euo pipefail
           if git diff --quiet; then
-            echo "::error::Version bump did not produce any file changes." >&2
-            exit 1
-          fi
-          if git ls-remote --exit-code --heads origin "$RELEASE_BRANCH" >/dev/null 2>&1; then
-            echo "Remote branch $RELEASE_BRANCH already exists; reusing its release PR."
-            echo "created=false" >> "$GITHUB_OUTPUT"
+            echo "Release branch $RELEASE_BRANCH already up to date."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          git switch -c "$RELEASE_BRANCH"
           git add .
-          git commit -m "Release v${{ steps.release.outputs.release_version }}"
-          git push --set-upstream origin "$RELEASE_BRANCH"
-          echo "created=true" >> "$GITHUB_OUTPUT"
+          git commit -m "Release v${RELEASE_VERSION}"
+          if [[ "$BRANCH_EXISTS" == "true" ]]; then
+            git push origin "$RELEASE_BRANCH"
+          else
+            git push --set-upstream origin "$RELEASE_BRANCH"
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Extract generated changelog entry
         id: changelog
