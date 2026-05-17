@@ -235,12 +235,19 @@ export interface A2ATraceContext {
 	tracestate?: string;
 }
 
-export interface A2ATaskPushNotificationAuthentication {
-	schemes: string[];
-	credentials?: string;
-	/** @deprecated Use schemes. Accepted only for older Maestro peers. */
-	scheme?: string;
-}
+export type A2ATaskPushNotificationAuthentication =
+	| {
+			schemes: string[];
+			credentials?: string;
+			/** @deprecated Use schemes. Accepted only for older Maestro peers. */
+			scheme?: string;
+	  }
+	| {
+			/** @deprecated Use schemes. Accepted only for older Maestro peers. */
+			scheme: string;
+			credentials?: string;
+			schemes?: string[];
+	  };
 
 export interface A2ATaskPushNotificationConfig {
 	tenant?: string;
