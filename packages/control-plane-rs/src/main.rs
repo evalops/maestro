@@ -1905,7 +1905,7 @@ fn send_a2a_push_notification(payload: &Value, config: &Value) {
     let Some(url) = config.get("url").and_then(Value::as_str) else {
         return;
     };
-    if validate_a2a_push_notification_url(url).is_err() {
+    if validate_a2a_push_notification_url(url, true).is_err() {
         return;
     }
     let timeout = Duration::from_millis(env_u64(
@@ -2474,7 +2474,11 @@ async fn claim_a2a_send_task(
         .task_id
         .as_deref()
         .map(str::trim)
-        .filter(|task_id| !task_id.is_empty());
+        .filter(|task_id| !task_id.is_empty())
+        .map(str::to_string);
+    let task_id = requested_task_id
+        .clone()
+        .unwrap_or_else(|| generate_a2a_id("maestro-task"));
     let explicit_context_id = request
         .message
         .context_id
@@ -2482,11 +2486,12 @@ async fn claim_a2a_send_task(
         .map(str::trim)
         .filter(|context_id| !context_id.is_empty())
         .map(str::to_string);
+    let push_config = a2a_push_notification_config_from_send_request(request, &task_id).await?;
 
     let mut tasks = state.a2a_tasks.lock().await;
     let (task_id, context_id, mut history, previous_task, mut task_metadata) =
-        if let Some(task_id) = requested_task_id {
-            let Some(task) = tasks.get(task_id) else {
+        if requested_task_id.is_some() {
+            let Some(task) = tasks.get(&task_id) else {
                 return Err(a2a_error_response(
                     404,
                     "TASK_NOT_FOUND",
@@ -2541,7 +2546,7 @@ async fn claim_a2a_send_task(
                 .cloned()
                 .unwrap_or_default();
             (
-                task_id.to_string(),
+                task_id,
                 context_id,
                 history,
                 Some(task.clone()),
@@ -2549,14 +2554,14 @@ async fn claim_a2a_send_task(
             )
         } else {
             (
-                generate_a2a_id("maestro-task"),
+                task_id,
                 explicit_context_id.unwrap_or_else(|| a2a_context_id(request, head)),
                 Vec::new(),
                 None,
                 metadata,
             )
         };
-    if let Some(config) = a2a_push_notification_config_from_send_request(request, &task_id)? {
+    if let Some(config) = push_config {
         task_metadata = a2a_metadata_with_push_notification_config(task_metadata, config)
             .map_err(|message| a2a_error_response(400, "INVALID_REQUEST", &message))?;
     }
@@ -2599,7 +2604,7 @@ fn a2a_merge_task_metadata(existing_task: &Value, metadata: Value) -> Value {
     Value::Object(merged)
 }
 
-fn a2a_push_notification_config_from_send_request(
+async fn a2a_push_notification_config_from_send_request(
     request: &A2ASendMessageRequest,
     task_id: &str,
 ) -> Result<Option<Value>, Vec<u8>> {
@@ -2613,9 +2618,25 @@ fn a2a_push_notification_config_from_send_request(
     let Some(config) = config else {
         return Ok(None);
     };
-    normalize_a2a_push_notification_config(task_id, config.clone(), false)
+    normalize_a2a_push_notification_config_blocking(task_id, config.clone(), false)
+        .await
         .map(Some)
         .map_err(|message| a2a_error_response(400, "INVALID_REQUEST", &message))
+}
+
+async fn normalize_a2a_push_notification_config_blocking(
+    task_id: &str,
+    config: Value,
+    require_task_match: bool,
+) -> Result<Value, String> {
+    let task_id = task_id.to_string();
+    // URL validation resolves DNS to reject private callback targets, so keep it
+    // off Tokio worker threads on request paths.
+    tokio::task::spawn_blocking(move || {
+        normalize_a2a_push_notification_config(&task_id, config, require_task_match)
+    })
+    .await
+    .map_err(|error| format!("A2A push notification config validation failed: {error}"))?
 }
 
 fn a2a_metadata_key_is_reserved(key: &str) -> bool {
@@ -2653,7 +2674,7 @@ fn a2a_task_push_notification_configs(task: &Value) -> Vec<Value> {
     configs
         .iter()
         .filter_map(|config| {
-            normalize_a2a_push_notification_config(task_id, config.clone(), true).ok()
+            normalize_a2a_push_notification_config_without_dns(task_id, config.clone(), true).ok()
         })
         .collect()
 }
@@ -2662,6 +2683,23 @@ fn normalize_a2a_push_notification_config(
     task_id: &str,
     config: Value,
     require_task_match: bool,
+) -> Result<Value, String> {
+    normalize_a2a_push_notification_config_inner(task_id, config, require_task_match, true)
+}
+
+fn normalize_a2a_push_notification_config_without_dns(
+    task_id: &str,
+    config: Value,
+    require_task_match: bool,
+) -> Result<Value, String> {
+    normalize_a2a_push_notification_config_inner(task_id, config, require_task_match, false)
+}
+
+fn normalize_a2a_push_notification_config_inner(
+    task_id: &str,
+    config: Value,
+    require_task_match: bool,
+    resolve_dns: bool,
 ) -> Result<Value, String> {
     let mut object = config
         .as_object()
@@ -2673,7 +2711,7 @@ fn normalize_a2a_push_notification_config(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "A2A push notification config url is required".to_string())?;
-    validate_a2a_push_notification_url(url)?;
+    validate_a2a_push_notification_url(url, resolve_dns)?;
     object.insert("url".to_string(), Value::String(url.to_string()));
 
     let configured_task_id = object
@@ -2706,7 +2744,7 @@ fn normalize_a2a_push_notification_config(
     Ok(Value::Object(object))
 }
 
-fn validate_a2a_push_notification_url(url: &str) -> Result<(), String> {
+fn validate_a2a_push_notification_url(url: &str, resolve_dns: bool) -> Result<(), String> {
     let parsed = reqwest::Url::parse(url)
         .map_err(|error| format!("A2A push notification config url is invalid: {error}"))?;
     match parsed.scheme() {
@@ -2724,7 +2762,8 @@ fn validate_a2a_push_notification_url(url: &str) -> Result<(), String> {
         .ok_or_else(|| "A2A push notification config url must include a host".to_string())?;
     let port = parsed.port_or_known_default().unwrap_or(443);
     if !truthy_env("MAESTRO_A2A_PUSH_ALLOW_PRIVATE")
-        && (a2a_push_host_is_private(host) || a2a_push_host_resolves_private(host, port))
+        && (a2a_push_host_is_private(host)
+            || (resolve_dns && a2a_push_host_resolves_private(host, port)))
     {
         return Err(
             "A2A push notification config url host is private; set MAESTRO_A2A_PUSH_ALLOW_PRIVATE=1 for local development"
@@ -2997,10 +3036,11 @@ async fn handle_a2a_push_notification_config_create(
             );
         }
     };
-    let config = match normalize_a2a_push_notification_config(task_id, raw_config, true) {
-        Ok(config) => config,
-        Err(message) => return a2a_error_response(400, "INVALID_REQUEST", &message),
-    };
+    let config =
+        match normalize_a2a_push_notification_config_blocking(task_id, raw_config, true).await {
+            Ok(config) => config,
+            Err(message) => return a2a_error_response(400, "INVALID_REQUEST", &message),
+        };
     let mut tasks = state.a2a_tasks.lock().await;
     let Some(existing_task) = tasks.get(task_id) else {
         return a2a_error_response(404, "TASK_NOT_FOUND", "A2A task not found");
