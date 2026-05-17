@@ -17,6 +17,10 @@ import {
 	verifyAlignedVersions,
 	writePackageJson,
 } from "./workspace-utils.js";
+import {
+	buildChangelogEntryFromGit,
+	insertChangelogEntry,
+} from "./release-notes.js";
 import { execSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -41,18 +45,9 @@ function updateChangelog(newVersion) {
 	const changelogPath = join(process.cwd(), "CHANGELOG.md");
 	try {
 		const content = readFileSync(changelogPath, "utf-8");
-		const date = new Date().toISOString().split("T")[0];
-		const newEntry = `\n## [${newVersion}] - ${date}\n\n### Added\n\n### Changed\n\n### Fixed\n\n`;
-		
-		// Insert after the first heading
-		const lines = content.split("\n");
-		const insertIndex = lines.findIndex(line => line.startsWith("## "));
-		
-		if (insertIndex !== -1) {
-			lines.splice(insertIndex, 0, newEntry);
-			writeFileSync(changelogPath, lines.join("\n"));
-			console.log(`📝 Updated CHANGELOG.md with ${newVersion}`);
-		}
+		const newEntry = buildChangelogEntryFromGit(newVersion);
+		writeFileSync(changelogPath, insertChangelogEntry(content, newEntry));
+		console.log(`📝 Updated CHANGELOG.md with ${newVersion}`);
 	} catch (error) {
 		console.warn("⚠️  Could not update CHANGELOG.md:", error.message);
 	}
